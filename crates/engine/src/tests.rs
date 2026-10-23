@@ -13439,6 +13439,13 @@ fn layer_commands_act_on_the_whole_layer_selection() {
     s.run("layer.move", &json!({"to": 1e9})).unwrap();
     assert_eq!(names(&s), ["Cities", "Lakes", "Rivers", "Countries"]);
     assert!(s.run("layer.move", &json!({"to": 1})).is_err(), "several layers can't go to the middle");
+    // "to" is where the topmost of them lands, as for one layer: 2 of 4 at 2 is the bottom.
+    s.run("edit.undo", &Value::Null).unwrap();
+    s.run("layer.move", &json!({"to": 2})).unwrap();
+    assert_eq!(names(&s), ["Cities", "Lakes", "Rivers", "Countries"]);
+    s.run("edit.undo", &Value::Null).unwrap();
+    s.run("layer.move", &json!({"to": 3})).unwrap();
+    assert_eq!(names(&s), ["Cities", "Lakes", "Rivers", "Countries"]);
     s.run("edit.undo", &Value::Null).unwrap();
     assert_eq!(names(&s), ["Rivers", "Countries", "Cities", "Lakes"]);
     // Selectable on all of them.

@@ -91,7 +91,7 @@ pub fn commands() -> Vec<C> {
         C::new("layer.moveDown", "Move Down", "Layers", |s, p| move_layer(s, p, 1)).params(r#"{"layer"?: name|id (default: the active layer)}"#).when(need_layer),
         C::new("layer.move", "Move", "Layers", move_to)
             .when(need_layer)
-            .params(r#"{"layer"?: name|id | [name|id] (default: the layer selection; several keep their order, and "to" is 0 for the top or past the end for the bottom), "to": position (0 = top)}"#),
+            .params(r#"{"layer"?: name|id | [name|id] (default: the layer selection), "to": position (0 = top; past the end, the bottom). Several keep their order, the topmost landing at "to" as one layer would, and go only to the top or the bottom (one in a group, to its group's): with 4 layers and 2 of them, 2 or more is the bottom, 1 is refused}"#),
         C::new("layer.zoomTo", "Zoom To Layer", "Layers", |s, p| {
             let ids = layer_ids(s, p)?;
             let e = ids.iter().filter_map(|id| s.map().layer(*id)).fold(rustgis_geom::Extent::EMPTY, |e, l| e.union(&l.shown_extent()));
@@ -2485,7 +2485,7 @@ fn move_to(s: &mut Session, p: &Value) -> CmdResult {
     let top = match to {
         0 => true,
         t if t >= len.saturating_sub(ids.len()) => false,
-        _ => return Err("several layers move to the top (to 0) or the bottom (to past the end)".into()),
+        _ => return Err("several layers move only to the top (to 0) or the bottom".into()),
     };
     let mut ids = ids;
     ids.sort_by_key(|id| m.layer_index(*id));
