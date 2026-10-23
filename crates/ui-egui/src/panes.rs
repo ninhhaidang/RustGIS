@@ -1676,6 +1676,16 @@ fn layer_row(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, scale: f64, reorder: 
 
 /// A layer's right-click menu (its row in any Layers view). Move Up and Move Down only with
 /// `reorder` (the drawing order view, unfiltered).
+/// Makes a group of layers from a menu, then asks for its name, as the default one says nothing.
+fn new_group(app: &mut RustGisApp, params: Value) {
+    let Ok(made) = app.run("group.add", params) else { return };
+    let Some(id) = made.get("group").and_then(Value::as_u64) else { return };
+    let name = app.session.map().groups.iter().find(|g| u64::from(g.id) == id).map(|g| g.name.clone()).unwrap_or_default();
+    let _ = app.run("ui.dialog", json!({"name": "renameGroup"}));
+    app.dialogs.layer = id.to_string();
+    app.dialogs.text = name;
+}
+
 /// The menu of several layers picked together: what acts on all of them; what needs one layer is
 /// there, dimmed, so it is known why it can't be used.
 fn layers_menu(app: &mut RustGisApp, ui: &mut Ui, picked: &[u32], reorder: bool) {
@@ -1713,14 +1723,30 @@ fn layers_menu(app: &mut RustGisApp, ui: &mut Ui, picked: &[u32], reorder: bool)
     if ui.add_enabled(reorder, egui::Button::new(tl!("Move To Bottom"))).clicked() {
         act(app, ui, "layer.move", json!({"to": 1_000_000_000u64}));
     }
-    // A service's collections stay in their service group.
-    if ui
-        .add_enabled(!in_service, egui::Button::new(tl!("Move To New Group")))
-        .on_disabled_hover_text(tl!("A service's layers stay in their service group."))
-        .clicked()
-    {
-        let _ = app.run("group.add", json!({"layers": picked}));
-        ui.close();
+    // As one layer's Group menu; a service's collections stay in their service group.
+    if in_service {
+        ui.add_enabled(false, egui::Button::new(tl!("Group")))
+            .on_disabled_hover_text(tl!("A service's layers stay in their service group."));
+    } else {
+        let groups: Vec<(u32, String)> = app.session.map().groups.iter().map(|g| (g.id, g.name.clone())).collect();
+        let grouped = picked.iter().any(|id| app.session.map().group_of(*id).is_some());
+        ui.menu_button(tl!("Group"), |ui| {
+            if ui.button(tl!("New Group")).clicked() {
+                new_group(app, json!({"layers": picked}));
+                ui.close();
+            }
+            if grouped && ui.button(tl!("Remove From Group")).clicked() {
+                act(app, ui, "layer.group", json!({"group": null}));
+            }
+            if !groups.is_empty() {
+                ui.separator();
+                for (id, name) in &groups {
+                    if ui.button(crate::i18n::fmt("Move To {group}", &[("group", name)])).clicked() {
+                        act(app, ui, "layer.group", json!({"group": id}));
+                    }
+                }
+            }
+        });
     }
     ui.separator();
     for label in ["Attribute Table", "Symbology"] {
@@ -1816,7 +1842,7 @@ fn layer_menu(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, reorder: bool) {
         let current = app.session.map().group_of(l.id).map(|g| g.id);
         ui.menu_button(tl!("Group"), |ui| {
             if ui.button(tl!("New Group")).clicked() {
-                let _ = app.run("group.add", json!({"layers": [l.id]}));
+                new_group(app, json!({"layers": [l.id]}));
                 ui.close();
             }
             if current.is_some() && ui.button(tl!("Remove From Group")).clicked() {

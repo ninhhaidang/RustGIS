@@ -28,7 +28,7 @@ pub fn commands() -> Vec<C> {
         C::new("group.remove", "Remove Group", "Layers", remove).params(r#"{"group": name|id} (and its layers)"#),
         C::new("layer.group", "Move To Group", "Layers", move_to_group)
             .when(super::need_layer)
-            .params(r#"{"layer"?: name|id (default: the active layer), "group": name|id|null (null takes it out of its group), "before"?: name|id (the layer it goes just above: one of the group's, or out of a group any other; without it, next to the group's layers, or where it is when taken out)}"#),
+            .params(r#"{"layer"?: name|id | [name|id] (default: the layer selection), "group": name|id|null (null takes it out of its group), "before"?: name|id (the layer it goes just above: one of the group's, or out of a group any other; without it, next to the group's layers, or where it is when taken out)}"#),
     ]
 }
 
@@ -183,12 +183,31 @@ fn remove(s: &mut Session, p: &Value) -> CmdResult {
 }
 
 fn move_to_group(s: &mut Session, p: &Value) -> CmdResult {
-    let layer = s.layer_id(p)?;
     let group = match p.get("group") {
         None => return Err("give the group's name or id (\"group\"), or null to take the layer out of its group".into()),
         Some(Value::Null) => None,
         Some(_) => Some(group_id(s.map(), p)?),
     };
+    // Several (a list, or the layer selection): each in or out of the group, one undo step.
+    let ids = super::layer::layer_ids(s, p)?;
+    if ids.len() > 1 {
+        if p.get("before").is_some_and(|v| !v.is_null()) {
+            return Err("\"before\" places one layer: give a single layer with it".into());
+        }
+        if group.is_some() {
+            for id in &ids {
+                groupable(s, *id)?;
+            }
+        }
+        let m = s.map_mut();
+        let mut ids = ids;
+        ids.sort_by_key(|id| m.layer_index(*id));
+        for id in &ids {
+            m.set_group(*id, group);
+        }
+        return Ok(json!({"layers": ids, "group": group}));
+    }
+    let layer = s.layer_id(p)?;
     if group.is_some() {
         groupable(s, layer)?;
     }

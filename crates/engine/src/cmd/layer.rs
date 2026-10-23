@@ -2477,29 +2477,48 @@ fn move_to(s: &mut Session, p: &Value) -> CmdResult {
     if let [id] = ids[..] {
         return move_one(s, id, to);
     }
-    // Several: to the top or the bottom, keeping their order among themselves.
+    // Several: to the top or the bottom, keeping their order among themselves. A layer in a group
+    // stays in it, going to the top or the bottom of its group.
     let m = s.map_mut();
-    let mut at: Vec<(usize, u32)> = ids.iter().filter_map(|id| m.layer_index(*id).map(|i| (i, *id))).collect();
-    at.sort_unstable();
-    let (n, len) = (at.len(), m.layers.len());
+    let len = m.layers.len();
     let to = usize::try_from(to).unwrap_or(usize::MAX);
-    if to == 0 {
-        for (k, (i, _)) in at.iter().enumerate() {
-            if *i != k {
-                m.move_layer(*i, k)?;
-            }
-        }
-    } else if to >= len.saturating_sub(n) {
-        for (k, (i, _)) in at.iter().rev().enumerate() {
-            let t = len - 1 - k;
-            if *i != t {
-                m.move_layer(*i, t)?;
-            }
-        }
-    } else {
-        return Err("several layers move to the top (to 0) or the bottom (to past the end)".into());
+    let top = match to {
+        0 => true,
+        t if t >= len.saturating_sub(ids.len()) => false,
+        _ => return Err("several layers move to the top (to 0) or the bottom (to past the end)".into()),
+    };
+    let mut ids = ids;
+    ids.sort_by_key(|id| m.layer_index(*id));
+    if !top {
+        ids.reverse();
+    }
+    // The layers out of groups first: moving those within a group shifts no other layer.
+    let (loose, grouped): (Vec<u32>, Vec<u32>) = ids.into_iter().partition(|id| m.group_of(*id).is_none());
+    for (k, id) in loose.iter().enumerate() {
+        let t = if top { k } else { len.saturating_sub(1 + k) };
+        move_to_index(m, *id, t)?;
+    }
+    let mut placed: Vec<(u32, usize)> = Vec::new();
+    for id in grouped {
+        let Some(g) = m.group_of(id).map(|g| g.id) else { continue };
+        let run: Vec<usize> =
+            m.layers.iter().enumerate().filter(|(_, l)| m.group_of(l.id).is_some_and(|x| x.id == g)).map(|(i, _)| i).collect();
+        let (Some(&lo), Some(&hi)) = (run.first(), run.last()) else { continue };
+        let k = placed.iter().filter(|(x, _)| *x == g).count();
+        placed.push((g, k));
+        let t = if top { lo + k } else { hi.saturating_sub(k) };
+        move_to_index(m, id, t)?;
     }
     Ok(Value::Null)
+}
+
+/// Moves a layer to index `t` of the drawing order, if it isn't there already.
+fn move_to_index(m: &mut rustgis_map::Map, id: u32, t: usize) -> Result<(), String> {
+    let i = m.layer_index(id).ok_or("no such layer")?;
+    if i != t {
+        m.move_layer(i, t)?;
+    }
+    Ok(())
 }
 
 fn move_one(s: &mut Session, id: u32, to: u64) -> CmdResult {

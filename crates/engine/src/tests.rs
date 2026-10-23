@@ -13471,3 +13471,42 @@ fn layer_selection_survives_a_failed_project_open() {
     let _ = s.run("project.openText", &json!({"text": "not a project"}));
     assert_eq!(s.selected_layers(), before);
 }
+
+#[test]
+fn several_layers_move_to_the_top_with_one_in_a_group() {
+    let mut s = world();
+    let names = |s: &Session| s.map().layers.iter().map(|l| l.name.clone()).collect::<Vec<_>>();
+    s.run("group.add", &json!({"layers": ["Lakes", "Countries"]})).unwrap();
+    assert_eq!(names(&s), ["Cities", "Rivers", "Lakes", "Countries"]);
+    s.run("layer.select", &json!({"layer": ["Rivers", "Countries"]})).unwrap();
+    // A layer out of a group goes to the map's top; one in a group, to its group's top.
+    let depth = s.undo_depth();
+    s.run("layer.move", &json!({"to": 0})).unwrap();
+    assert_eq!(names(&s), ["Rivers", "Cities", "Countries", "Lakes"]);
+    assert_eq!(s.undo_depth(), depth + 1);
+    s.run("layer.move", &json!({"to": 1e9})).unwrap();
+    assert_eq!(names(&s), ["Cities", "Lakes", "Countries", "Rivers"]);
+    let group = |s: &Session, n: &str| s.map().layer_by_name(n).and_then(|l| s.map().group_of(l.id)).map(|g| g.name.clone());
+    assert_eq!(group(&s, "Countries").as_deref(), Some("New Group"));
+}
+
+#[test]
+fn several_layers_go_into_and_out_of_a_group_in_one_step() {
+    let mut s = world();
+    let group = |s: &Session, n: &str| s.map().layer_by_name(n).and_then(|l| s.map().group_of(l.id)).map(|g| g.name.clone());
+    s.run("group.add", &json!({"name": "Water", "layers": ["Lakes"]})).unwrap();
+    s.run("layer.select", &json!({"layer": ["Cities", "Rivers"]})).unwrap();
+    let depth = s.undo_depth();
+    s.run("layer.group", &json!({"group": "Water"})).unwrap();
+    assert_eq!(group(&s, "Cities").as_deref(), Some("Water"));
+    assert_eq!(group(&s, "Rivers").as_deref(), Some("Water"));
+    assert_eq!(s.undo_depth(), depth + 1);
+    s.run("layer.group", &json!({"layer": ["Cities", "Rivers"], "group": null})).unwrap();
+    assert_eq!(group(&s, "Cities"), None);
+    assert_eq!(group(&s, "Rivers"), None);
+    assert_eq!(group(&s, "Lakes").as_deref(), Some("Water"));
+    // "before" places one layer; an unknown one fails the whole list.
+    assert!(s.run("layer.group", &json!({"layer": ["Cities", "Rivers"], "group": "Water", "before": "Lakes"})).is_err());
+    assert!(s.run("layer.group", &json!({"layer": ["Cities", "Nope"], "group": "Water"})).is_err());
+    assert_eq!(group(&s, "Cities"), None);
+}
