@@ -11846,11 +11846,18 @@ fn layer_color_honours_an_explicit_fill_alpha() {
 #[test]
 fn layer_color_leaves_the_outline_alone() {
     let mut s = world();
-    let stroke = |s: &Session| s.map().layer_by_name("Countries").unwrap().renderer.base_symbol().stroke;
-    s.run("layer.outline", &json!({"layer": "Countries", "color": "#00FF00"})).unwrap();
-    let before = stroke(&s);
+    let symbol = |s: &Session| s.map().layer_by_name("Countries").unwrap().renderer.base_symbol();
+    let rgb = |c: rustgis_map::Rgba| (c.r(), c.g(), c.b());
+    // An outline that was never set stays as it was too.
+    let default_stroke = symbol(&s).stroke;
     s.run("layer.color", &json!({"layer": "Countries", "color": "#336699"})).unwrap();
-    assert_eq!(stroke(&s), before, "changing the fill must not change a chosen outline");
+    assert_eq!(symbol(&s).stroke, default_stroke, "a default outline is not re-derived from the new fill");
+    // A chosen outline survives a fill change.
+    s.run("layer.outline", &json!({"layer": "Countries", "color": "#00FF00"})).unwrap();
+    let before = symbol(&s).stroke;
+    s.run("layer.color", &json!({"layer": "Countries", "color": "#996633"})).unwrap();
+    assert_eq!(symbol(&s).stroke, before, "changing the fill must not change a chosen outline");
+    assert_eq!(rgb(symbol(&s).fill), (0x99, 0x66, 0x33), "changing the fill must set the requested RGB");
 }
 
 #[test]
