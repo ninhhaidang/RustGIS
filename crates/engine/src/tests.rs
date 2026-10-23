@@ -13510,3 +13510,61 @@ fn several_layers_go_into_and_out_of_a_group_in_one_step() {
     assert!(s.run("layer.group", &json!({"layer": ["Cities", "Nope"], "group": "Water"})).is_err());
     assert_eq!(group(&s, "Cities"), None);
 }
+
+#[test]
+fn another_project_starts_with_no_layer_selection() {
+    let mut s = world();
+    let text = serde_json::to_string(&s.project).unwrap();
+    let mut t = Session::new(Project::default());
+    t.run("project.openText", &json!({"text": text})).unwrap();
+    let opened_active = t.active_layer.and_then(|id| t.map().layer(id)).map(|l| l.name.clone()).unwrap();
+    // Picked around the layer the next project starts active on, with the same ids there.
+    let other = if opened_active == "Lakes" { "Cities" } else { "Lakes" };
+    s.run("layer.select", &json!({"layer": [other, opened_active.as_str()]})).unwrap();
+    s.run("project.openText", &json!({"text": text})).unwrap();
+    assert!(s.selected_layers().len() <= 1, "{:?}", s.selected_layers());
+}
+
+#[test]
+fn a_layer_selection_left_behind_stays_gone() {
+    let mut s = world();
+    let id = |s: &Session, n: &str| s.map().layer_by_name(n).map(|l| l.id).unwrap();
+    s.run("layer.select", &json!({"layer": ["Cities", "Lakes"]})).unwrap();
+    let lakes = id(&s, "Lakes");
+    // Another layer becomes active on its own (as adding data does), then Lakes again.
+    s.active_layer = Some(id(&s, "Rivers"));
+    s.run("layer.visibility", &json!({"layer": "Rivers", "visible": true})).unwrap();
+    s.active_layer = Some(lakes);
+    assert_eq!(s.selected_layers(), vec![lakes]);
+}
+
+#[test]
+fn a_one_layer_list_names_that_layer_not_the_active_one() {
+    let mut s = world();
+    let group = |s: &Session, n: &str| s.map().layer_by_name(n).and_then(|l| s.map().group_of(l.id)).map(|g| g.name.clone());
+    s.run("group.add", &json!({"name": "Water", "layers": ["Lakes"]})).unwrap();
+    s.run("layer.select", &json!({"layer": "Rivers"})).unwrap();
+    s.run("layer.group", &json!({"layer": ["Cities"], "group": "Water"})).unwrap();
+    assert_eq!(group(&s, "Cities").as_deref(), Some("Water"));
+    assert_eq!(group(&s, "Rivers"), None);
+}
+
+#[test]
+fn a_layer_list_needs_no_active_layer() {
+    let mut s = world();
+    s.active_layer = None;
+    s.run("layer.visibility", &json!({"layer": ["Cities", "Rivers"], "visible": false})).unwrap();
+    s.run("layer.selectable", &json!({"layer": ["Cities"], "on": false})).unwrap();
+    assert!(!s.map().layer_by_name("Rivers").unwrap().visible);
+    assert!(!s.map().layer_by_name("Cities").unwrap().selectable);
+}
+
+#[test]
+fn toggling_out_the_only_picked_layer_leaves_none_active() {
+    let mut s = world();
+    s.run("layer.select", &json!({"layer": "Cities"})).unwrap();
+    s.run("layer.select", &json!({"layer": "Cities", "mode": "toggle"})).unwrap();
+    assert_eq!(s.active_layer, None);
+    assert!(s.selected_layers().is_empty());
+    assert!(s.run("layer.remove", &Value::Null).is_err(), "nothing picked, nothing removed");
+}

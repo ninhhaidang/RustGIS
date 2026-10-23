@@ -802,8 +802,13 @@ impl Session {
                 self.notify(format!("{id} ignores {} (it reads {reads})", said.join(", ")), false);
             }
         }
-        // Layer conditions apply to the layer the parameters name, falling back to the active one.
-        let named = params.get("layer").and_then(|_| self.layer_id(params).ok());
+        // Layer conditions apply to the layer the parameters name (the first of a list), falling
+        // back to the active one.
+        let named = match params.get("layer") {
+            Some(serde_json::Value::Array(list)) => list.first().and_then(|v| self.layer_id(&serde_json::json!({"layer": v})).ok()),
+            Some(_) => self.layer_id(params).ok(),
+            None => None,
+        };
         let active = self.active_layer;
         if named.is_some() {
             self.active_layer = named;
@@ -991,8 +996,9 @@ impl Session {
             project_starts: self.project_starts,
             history_from_file: self.history_from_file,
             active_layer: self.active_layer,
-            layer_selection: self.layer_selection.clone(),
-            layer_selection_of: self.layer_selection_of,
+            // Moved, not copied: the next project's layers reuse the same ids.
+            layer_selection: take(&mut self.layer_selection),
+            layer_selection_of: self.layer_selection_of.take(),
             table_layer: self.table_layer,
             table_standalone: self.table_standalone,
             tool: self.tool,
@@ -1316,6 +1322,12 @@ impl Session {
             && map.layer(id).is_none()
         {
             self.active_layer = map.layers.first().map(|l| l.id);
+        }
+        // A layer selection made around another active layer is over, for good: the active layer
+        // coming back later doesn't bring it back.
+        if self.layer_selection_of != self.active_layer {
+            self.layer_selection.clear();
+            self.layer_selection_of = self.active_layer;
         }
         if let Some(id) = self.table_layer
             && map.layer(id).is_none()

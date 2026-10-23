@@ -512,7 +512,11 @@ pub fn follow_layer_filter(app: &mut RustGisApp) {
     // Layers picked together are the ones in sight too: a removal must not take one the filter hides.
     let picked = app.session.selected_layers();
     if picked.len() > 1 {
-        let keep: Vec<u32> = picked.iter().copied().filter(|id| shown(&app.session, *id) == Some(true)).collect();
+        let active = app.session.active_layer;
+        // The active layer last, so it stays active if the filter shows it.
+        let mut keep: Vec<u32> =
+            picked.iter().copied().filter(|id| shown(&app.session, *id) == Some(true) && Some(*id) != active).collect();
+        keep.extend(active.filter(|id| shown(&app.session, *id) == Some(true)));
         if keep.len() < picked.len() && !keep.is_empty() {
             let _ = app.run("layer.select", json!({"layer": keep}));
         }
@@ -1604,7 +1608,8 @@ fn layer_row(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, scale: f64, reorder: 
     } else if resp.clicked() {
         click_layer(app, ui, l.id);
     }
-    if resp.double_clicked() {
+    // Not with Ctrl, Command or Shift held: that is picking layers, and would drop the others.
+    if resp.double_clicked() && !ui.input(|i| i.modifiers.command || i.modifiers.shift) {
         let _ = app.run("layer.select", json!({"layer": l.id}));
         app.ui.open_right(RightPane::Symbology);
     }
@@ -1687,8 +1692,6 @@ fn layer_row(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, scale: f64, reorder: 
     Rect::from_min_max(r.min, pos2(r.max.x, ui.min_rect().max.y.max(r.max.y)))
 }
 
-/// A layer's right-click menu (its row in any Layers view). Move Up and Move Down only with
-/// `reorder` (the drawing order view, unfiltered).
 /// Makes a group of layers from a menu, then asks for its name, as the default one says nothing.
 fn new_group(app: &mut RustGisApp, params: Value) {
     let Ok(made) = app.run("group.add", params) else { return };
@@ -1774,6 +1777,8 @@ fn layers_menu(app: &mut RustGisApp, ui: &mut Ui, picked: &[u32], reorder: bool)
     }
 }
 
+/// A layer's right-click menu (its row in any Layers view). Move Up and Move Down only with
+/// `reorder` (the drawing order view, unfiltered).
 fn layer_menu(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, reorder: bool) {
     // Once, as the menu opens: a command each frame it stays open would draw the map again each
     // time (a command moves the session's revision).

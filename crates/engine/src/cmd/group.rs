@@ -207,7 +207,7 @@ fn move_to_group(s: &mut Session, p: &Value) -> CmdResult {
         }
         return Ok(json!({"layers": ids, "group": group}));
     }
-    let layer = s.layer_id(p)?;
+    let layer = ids.first().copied().ok_or("no such layer")?;
     if group.is_some() {
         groupable(s, layer)?;
     }

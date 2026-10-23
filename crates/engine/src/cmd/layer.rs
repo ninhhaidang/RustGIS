@@ -48,7 +48,7 @@ pub fn commands() -> Vec<C> {
             .when(need_layer)
             .params(r#"{"layer"?: name|id | [name|id] (default: the layer selection)}"#),
         C::new("layer.select", "Select Layer", "Layers", select)
-            .params(r#"{"layer"?: name|id | [name|id] (default: the active layer; the last of a list becomes the active layer), "mode"?: "replace" (only these; the default) | "toggle" (each in or out of the layer selection) | "extend" (added to it)}"#)
+            .params(r#"{"layer"?: name|id | [name|id] (default: the active layer; the last of a list becomes the active layer), "mode"?: "replace" (only these; the default) | "toggle" (each in or out of the layer selection; the last one out leaves no active layer) | "extend" (added to it)}"#)
             .view(),
         C::new("layer.rename", "Rename", "Layers", |s, p| {
             let n = s_req(p, "name")?.trim().chars().take(200).collect::<String>();
