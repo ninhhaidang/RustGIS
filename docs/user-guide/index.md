@@ -39,8 +39,8 @@ This guide walks through RustGIS by task. Each page covers one part of the app:
   on the map; Select By Attributes, Select Layer By Location and the attribute table still select
   in it, since they name the layer.
   **Pick several layers** with ++ctrl++ (++cmd++ on a Mac) and click to add or drop one, or
-  ++shift++ and click to take the rows from the last one clicked; the layer clicked last stays the
-  one the Style and Data tabs act on. Right-click one of them to zoom to them all, show or hide
+  ++shift++ and click to take the rows from the last one clicked; the layer clicked last, outlined,
+  is the one the Style and Data tabs act on. Right-click one of them to zoom to them all, show or hide
   them, make them selectable or not, move them to the top or bottom of the drawing order (one in
   a group, to the top or bottom of its group), put them in a group or take them out of one, or
   remove them (++delete++ does too); a layer the filter hides is left out. A new group made from

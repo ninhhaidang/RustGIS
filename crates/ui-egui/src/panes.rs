@@ -980,6 +980,15 @@ fn selection_groups(app: &mut RustGisApp, ui: &mut Ui, layers: &[Layer], shows: 
     n
 }
 
+/// The active layer's row (the one the Style and Data tabs act on) among those picked: a thin
+/// outline, as a file browser marks the item with focus.
+fn active_outline(ui: &Ui, r: Rect, active: bool, t: &Tokens) {
+    if active {
+        let stroke = Stroke::new(1.0, t.accent);
+        ui.painter().rect_stroke(r.shrink2(vec2(4.0, 1.0)), CornerRadius::same(5), stroke, egui::StrokeKind::Inside);
+    }
+}
+
 /// A click on a layer's row: alone makes it the only layer picked, with Ctrl or Command it joins
 /// or leaves the layer selection, with Shift the rows between the last one clicked and this one
 /// are picked (once the pane has drawn them: `resolve_layer_range`).
@@ -1029,6 +1038,7 @@ fn selection_row(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, t: &Tokens) {
     } else if resp.hovered() {
         ui.painter().rect_filled(r.shrink2(vec2(4.0, 1.0)), CornerRadius::same(5), t.hover);
     }
+    active_outline(ui, r, app.session.active_layer == Some(l.id), t);
     // Lined up with the other views' checkboxes and names.
     let cb = Rect::from_center_size(pos2(r.min.x + 33.0, cy), vec2(14.0, 14.0));
     let cb_resp = ui.interact(hit(cb), egui::Id::new(("layer_selectable", l.id)), Sense::click());
@@ -1507,7 +1517,9 @@ fn layer_row(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, scale: f64, reorder: 
         (text, w)
     });
     let shown = if l.definition_query.is_some() { format!("{}  {}", l.name, tl!("(filtered)")) } else { l.name.clone() };
-    let font = if active { semibold(12.5) } else { regular(12.5) };
+    // Every picked row looks alike; the active one has an outline (`active_outline`), not a
+    // bolder name, which would read as the only one picked.
+    let font = regular(12.5);
     let room = ui.available_width() - NAME_X - badge.as_ref().map_or(8.0, |(_, w)| w + 18.0);
     let name = row_name(ui, shown.clone(), font, room);
     let sense = if reorder { Sense::click_and_drag() } else { Sense::click() };
@@ -1524,6 +1536,7 @@ fn layer_row(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, scale: f64, reorder: 
     } else if resp.hovered() || dragging {
         ui.painter().rect_filled(r.shrink2(vec2(4.0, 1.0)), CornerRadius::same(5), t.hover);
     }
+    active_outline(ui, r, active, t);
     let mut x = r.min.x + 10.0;
     // Expand arrow.
     let raster_legend = l.raster.as_ref().map(|r| r.legend());
