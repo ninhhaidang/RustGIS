@@ -11844,6 +11844,16 @@ fn layer_color_honours_an_explicit_fill_alpha() {
 }
 
 #[test]
+fn layer_color_leaves_the_outline_alone() {
+    let mut s = world();
+    let stroke = |s: &Session| s.map().layer_by_name("Countries").unwrap().renderer.base_symbol().stroke;
+    s.run("layer.outline", &json!({"layer": "Countries", "color": "#00FF00"})).unwrap();
+    let before = stroke(&s);
+    s.run("layer.color", &json!({"layer": "Countries", "color": "#336699"})).unwrap();
+    assert_eq!(stroke(&s), before, "changing the fill must not change a chosen outline");
+}
+
+#[test]
 fn buffer_point_adds_only_the_buffer() {
     let mut s = world();
     let before = s.map().layers.len();

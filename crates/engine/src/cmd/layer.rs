@@ -117,8 +117,12 @@ pub fn commands() -> Vec<C> {
                 let g = l.geometry_type();
                 let fill = |sym: &rustgis_map::Symbol| {
                     let mut out = sym.with_fill(c, g);
-                    if explicit_alpha && g == GeometryType::Polygon {
-                        out.fill = c;
+                    if g == GeometryType::Polygon {
+                        // The outline is its own setting (`layer.outline`); only the fill changes.
+                        out.stroke = sym.stroke;
+                        if explicit_alpha {
+                            out.fill = c;
+                        }
                     }
                     out
                 };
