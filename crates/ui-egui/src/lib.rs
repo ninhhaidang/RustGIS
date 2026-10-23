@@ -491,6 +491,13 @@ pub struct UiState {
     /// The active layer the filter hid (so it stopped being active), selected again once the
     /// filter shows it, unless another layer was picked meanwhile.
     pub layer_filter_hid: Option<u32>,
+    /// The Layers pane's layer selection as the frame began (the rows tint from it), the layers its
+    /// rows list in the order drawn (what a Shift+click spans), the row a Shift+click spans from,
+    /// and the one it was made on, resolved once the rows are all drawn.
+    pub layer_picked: Vec<u32>,
+    pub layer_rows: Vec<u32>,
+    pub layer_anchor: Option<u32>,
+    pub layer_range: Option<u32>,
     /// How the Layers pane lists the layers (#301). Kept for the session, not saved.
     pub layers_view: LayersView,
     /// The command an item picked in the browser opens with (web).
@@ -692,6 +699,10 @@ impl Default for UiState {
             layer_filter: String::new(),
             layer_filter_map: String::new(),
             layer_filter_hid: None,
+            layer_picked: Vec::new(),
+            layer_rows: Vec::new(),
+            layer_anchor: None,
+            layer_range: None,
             layers_view: LayersView::DrawingOrder,
             dynamic_text: None,
             scale_text: None,

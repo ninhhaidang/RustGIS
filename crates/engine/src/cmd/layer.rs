@@ -43,12 +43,13 @@ pub fn commands() -> Vec<C> {
         ),
         C::new("layer.addDataText", "Add Data (from text)", "Home › Add", add_data_text).params(r#"{"fileName": "name.geojson|.csv|.tsv", "text": string, "name"?: text, "x"?, "y"?, "wkt"?, "crs"?, "delimiter"? (as layer.addData, for delimited text)}"#),
         C::new("layer.addSample", "Add Sample Data", "Home › Add › Add Data", add_sample).params(r#"{"name": "countries"|"cities"|"rivers"|"lakes"}"#),
-        C::new("layer.remove", "Remove", "Layers", remove).key("Delete").when(need_layer).params(r#"{"layer"?: name|id}"#),
-        C::new("layer.select", "Select Layer", "Layers", |s, p| {
-            s.active_layer = Some(s.layer_id(p)?);
-            Ok(Value::Null)
-        }).params(r#"{"layer"?: name|id (default: the active layer)}"#)
-        .view(),
+        C::new("layer.remove", "Remove", "Layers", remove)
+            .key("Delete")
+            .when(need_layer)
+            .params(r#"{"layer"?: name|id | [name|id] (default: the layer selection)}"#),
+        C::new("layer.select", "Select Layer", "Layers", select)
+            .params(r#"{"layer"?: name|id | [name|id] (default: the active layer; the last of a list becomes the active layer), "mode"?: "replace" (only these; the default) | "toggle" (each in or out of the layer selection) | "extend" (added to it)}"#)
+            .view(),
         C::new("layer.rename", "Rename", "Layers", |s, p| {
             let n = s_req(p, "name")?.trim().chars().take(200).collect::<String>();
             if n.is_empty() {
@@ -71,22 +72,35 @@ pub fn commands() -> Vec<C> {
         }).params(r#"{"layer"?, "name": string}"#)
         .when(need_layer),
         C::new("layer.visibility", "Visibility", "Layers", |s, p| {
-            let on = b(p, "visible");
-            with(s, p, |l| l.visible = on.unwrap_or(!l.visible))
-        }).params(r#"{"layer"?, "visible"?: bool (toggles when omitted)}"#)
+            let ids = layer_ids(s, p)?;
+            // Toggled together: every layer takes the opposite of the active layer's state (or the
+            // first one's), not each its own, which would swap shown and hidden ones.
+            let on = b(p, "visible").unwrap_or_else(|| {
+                let lead = s.active_layer.filter(|a| ids.contains(a)).or(ids.first().copied());
+                !lead.and_then(|id| s.map().layer(id)).is_some_and(|l| l.visible)
+            });
+            for id in ids {
+                if let Some(l) = s.map_mut().layer_mut(id) {
+                    l.visible = on;
+                }
+            }
+            Ok(Value::Null)
+        }).params(r#"{"layer"?: name|id | [name|id] (default: the layer selection), "visible"?: bool (toggles when omitted: all take the opposite of the active layer's state)}"#)
         .when(need_layer),
         C::new("layer.moveUp", "Move Up", "Layers", |s, p| move_layer(s, p, -1)).params(r#"{"layer"?: name|id (default: the active layer)}"#).when(need_layer),
         C::new("layer.moveDown", "Move Down", "Layers", |s, p| move_layer(s, p, 1)).params(r#"{"layer"?: name|id (default: the active layer)}"#).when(need_layer),
-        C::new("layer.move", "Move", "Layers", move_to).when(need_layer).params(r#"{"layer"?: name|id, "to": position (0 = top)}"#),
+        C::new("layer.move", "Move", "Layers", move_to)
+            .when(need_layer)
+            .params(r#"{"layer"?: name|id | [name|id] (default: the layer selection; several keep their order, and "to" is 0 for the top or past the end for the bottom), "to": position (0 = top)}"#),
         C::new("layer.zoomTo", "Zoom To Layer", "Layers", |s, p| {
-            let id = s.layer_id(p)?;
-            let e = s.map().layer(id).map(|l| l.shown_extent()).unwrap_or_default();
+            let ids = layer_ids(s, p)?;
+            let e = ids.iter().filter_map(|id| s.map().layer(*id)).fold(rustgis_geom::Extent::EMPTY, |e, l| e.union(&l.shown_extent()));
             if e.is_empty() {
-                return Err("the layer has no features".into());
+                return Err(if ids.len() > 1 { "the layers have no features" } else { "the layer has no features" }.into());
             }
             s.zoom_to(&e);
             Ok(Value::Null)
-        }).params(r#"{"layer"?: name|id (default: the active layer)}"#)
+        }).params(r#"{"layer"?: name|id | [name|id] (default: the layer selection; zooms to all of them)}"#)
         .view()
         .when(need_layer),
         C::new("layer.symbology", "Symbology", "Style › Drawing", symbology)
@@ -189,9 +203,18 @@ pub fn commands() -> Vec<C> {
         .when(need_layer)
         .params(r#"{"layer"?, "min"?: scale (out beyond), "max"?: scale (in beyond)}"#),
         C::new("layer.selectable", "Selectable", "Layers", |s, p| {
-            let on = b(p, "on");
-            with(s, p, |l| l.selectable = on.unwrap_or(!l.selectable))
-        }).params(r#"{"layer"?, "on"?: bool (toggles when omitted)}"#)
+            let ids = layer_ids(s, p)?;
+            let on = b(p, "on").unwrap_or_else(|| {
+                let lead = s.active_layer.filter(|a| ids.contains(a)).or(ids.first().copied());
+                !lead.and_then(|id| s.map().layer(id)).is_some_and(|l| l.selectable)
+            });
+            for id in ids {
+                if let Some(l) = s.map_mut().layer_mut(id).filter(|l| !l.is_raster()) {
+                    l.selectable = on;
+                }
+            }
+            Ok(Value::Null)
+        }).params(r#"{"layer"?: name|id | [name|id] (default: the layer selection), "on"?: bool (toggles when omitted: all take the opposite of the active layer's state)}"#)
         .when(need_feature_layer),
         C::new("layer.expand", "Expand Legend", "Layers", |s, p| {
             let on = b(p, "on");
@@ -2346,15 +2369,91 @@ pub(crate) fn drop_layers(s: &mut Session, ids: &[u32]) {
 }
 
 fn remove(s: &mut Session, p: &Value) -> CmdResult {
-    let id = s.layer_id(p)?;
+    let ids = layer_ids(s, p)?;
     let m = s.map_mut();
-    let i = m.layer_index(id).ok_or("no such layer")?;
-    let name = m.layers.remove(i).name;
-    m.set_group(id, None);
-    let next = m.layers.get(i.min(m.layers.len().saturating_sub(1))).map(|l| l.id);
-    s.active_layer = next;
+    // The layer that takes the place of the topmost one removed becomes the active layer.
+    let at = ids.iter().filter_map(|id| m.layer_index(*id)).min().ok_or("no such layer")?;
+    let mut names = Vec::new();
+    for id in ids {
+        if let Some(i) = m.layer_index(id) {
+            names.push(m.layers.remove(i).name);
+            m.set_group(id, None);
+        }
+    }
+    let next = m.layers.get(at.min(m.layers.len().saturating_sub(1))).map(|l| l.id);
+    s.set_layer_selection(next.into_iter().collect(), next);
     // A legend that left it out forgets it.
-    legends_follow_layer(s, &name, None);
+    for name in names {
+        legends_follow_layer(s, &name, None);
+    }
+    Ok(Value::Null)
+}
+
+/// The most layers one command takes in a list.
+const MAX_LAYER_LIST: usize = 10_000;
+
+/// The layers a command acts on: `layer` as a name or id, or a list of them; else the layer
+/// selection (the active layer alone when nothing else is picked).
+pub(crate) fn layer_ids(s: &Session, p: &Value) -> Result<Vec<u32>, String> {
+    match p.get("layer") {
+        Some(Value::Array(list)) => {
+            if list.is_empty() {
+                return Err("name at least one layer (\"layer\")".into());
+            }
+            if list.len() > MAX_LAYER_LIST {
+                return Err(format!("at most {MAX_LAYER_LIST} layers at a time"));
+            }
+            let mut ids = Vec::new();
+            for v in list {
+                if !(v.is_number() || v.is_string()) {
+                    return Err("each layer is a name or an id".into());
+                }
+                let id = s.layer_id(&json!({"layer": v}))?;
+                if !ids.contains(&id) {
+                    ids.push(id);
+                }
+            }
+            Ok(ids)
+        }
+        Some(_) => Ok(vec![s.layer_id(p)?]),
+        None => {
+            let ids = s.selected_layers();
+            if ids.is_empty() { Err("select a layer in the Layers pane first".into()) } else { Ok(ids) }
+        }
+    }
+}
+
+/// `layer.select`: the layers picked in the Layers pane, replaced, toggled or extended.
+fn select(s: &mut Session, p: &Value) -> CmdResult {
+    let ids = match p.get("layer") {
+        Some(Value::Array(_)) => layer_ids(s, p)?,
+        _ => vec![s.layer_id(p)?],
+    };
+    match ps(p, "mode").unwrap_or("replace") {
+        "replace" => s.set_layer_selection(ids, None),
+        "extend" => {
+            let mut picked = s.selected_layers();
+            picked.extend(ids.iter().copied());
+            s.set_layer_selection(picked, ids.last().copied());
+        }
+        "toggle" => {
+            let mut picked = s.selected_layers();
+            let mut active = s.active_layer;
+            for id in ids {
+                if let Some(at) = picked.iter().position(|x| *x == id) {
+                    picked.remove(at);
+                    if active == Some(id) {
+                        active = picked.last().copied();
+                    }
+                } else {
+                    picked.push(id);
+                    active = Some(id);
+                }
+            }
+            s.set_layer_selection(picked, active);
+        }
+        other => return Err(format!("unknown mode '{other}' (replace, toggle or extend)")),
+    }
     Ok(Value::Null)
 }
 
@@ -2373,8 +2472,37 @@ fn move_layer(s: &mut Session, p: &Value, d: i32) -> CmdResult {
 /// Moves a layer to a position in the drawing order: 0 is the top, anything past the end the
 /// bottom. One command (and one undo step) however far the layer travels.
 fn move_to(s: &mut Session, p: &Value) -> CmdResult {
-    let id = s.layer_id(p)?;
+    let ids = layer_ids(s, p)?;
     let to = uint(p, "to").ok_or("to is required: the position in the drawing order, 0 at the top")?;
+    if let [id] = ids[..] {
+        return move_one(s, id, to);
+    }
+    // Several: to the top or the bottom, keeping their order among themselves.
+    let m = s.map_mut();
+    let mut at: Vec<(usize, u32)> = ids.iter().filter_map(|id| m.layer_index(*id).map(|i| (i, *id))).collect();
+    at.sort_unstable();
+    let (n, len) = (at.len(), m.layers.len());
+    let to = usize::try_from(to).unwrap_or(usize::MAX);
+    if to == 0 {
+        for (k, (i, _)) in at.iter().enumerate() {
+            if *i != k {
+                m.move_layer(*i, k)?;
+            }
+        }
+    } else if to >= len.saturating_sub(n) {
+        for (k, (i, _)) in at.iter().rev().enumerate() {
+            let t = len - 1 - k;
+            if *i != t {
+                m.move_layer(*i, t)?;
+            }
+        }
+    } else {
+        return Err("several layers move to the top (to 0) or the bottom (to past the end)".into());
+    }
+    Ok(Value::Null)
+}
+
+fn move_one(s: &mut Session, id: u32, to: u64) -> CmdResult {
     let m = s.map_mut();
     let i = m.layer_index(id).ok_or("no such layer")?;
     let to = usize::try_from(to).unwrap_or(usize::MAX).min(m.layers.len().saturating_sub(1));

@@ -13378,3 +13378,96 @@ fn scans_have_no_coordinates_to_give_away() {
     assert!(s.run("share.exportRaster", &json!({"path": out.display().to_string()})).is_ok());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn layer_selection_replaces_toggles_and_extends() {
+    let mut s = world();
+    let name = |s: &Session, id: u32| s.map().layer(id).map(|l| l.name.clone()).unwrap_or_default();
+    let picked = |s: &Session| s.selected_layers().into_iter().map(|id| name(s, id)).collect::<Vec<_>>();
+    let id = |s: &Session, n: &str| s.map().layer_by_name(n).map(|l| l.id).unwrap();
+    let depth = s.undo_depth();
+    s.run("layer.select", &json!({"layer": "Cities"})).unwrap();
+    assert_eq!(picked(&s), ["Cities"]);
+    // Toggled in, the layer becomes active; toggled out, another of the selection does.
+    s.run("layer.select", &json!({"layer": "Lakes", "mode": "toggle"})).unwrap();
+    assert_eq!(picked(&s), ["Cities", "Lakes"]);
+    assert_eq!(s.active_layer, Some(id(&s, "Lakes")));
+    s.run("layer.select", &json!({"layer": "Lakes", "mode": "toggle"})).unwrap();
+    assert_eq!(picked(&s), ["Cities"]);
+    assert_eq!(s.active_layer, Some(id(&s, "Cities")));
+    // Extended by a list; the last of it is active. A plain select starts over.
+    s.run("layer.select", &json!({"layer": ["Rivers", "Countries", "Rivers"], "mode": "extend"})).unwrap();
+    assert_eq!(picked(&s), ["Cities", "Rivers", "Countries"]);
+    assert_eq!(s.active_layer, Some(id(&s, "Countries")));
+    s.run("layer.select", &json!({"layer": "Rivers"})).unwrap();
+    assert_eq!(picked(&s), ["Rivers"]);
+    // Choosing layers is not an undo step. A bad layer, mode or list changes nothing.
+    assert_eq!(s.undo_depth(), depth);
+    s.run("layer.select", &json!({"layer": ["Cities", "Lakes"]})).unwrap();
+    for p in [
+        json!({"layer": ["Cities", "Nope"]}),
+        json!({"layer": [], "mode": "toggle"}),
+        json!({"layer": [null]}),
+        json!({"layer": [[1]]}),
+        json!({"layer": "Cities", "mode": "sideways"}),
+    ] {
+        assert!(s.run("layer.select", &p).is_err(), "{p}");
+    }
+    assert_eq!(picked(&s), ["Cities", "Lakes"]);
+    // Setting the active layer on its own (adding data, a removal) leaves the selection behind.
+    s.active_layer = Some(id(&s, "Rivers"));
+    assert_eq!(picked(&s), ["Rivers"]);
+}
+
+#[test]
+fn layer_commands_act_on_the_whole_layer_selection() {
+    let mut s = world();
+    let names = |s: &Session| s.map().layers.iter().map(|l| l.name.clone()).collect::<Vec<_>>();
+    assert_eq!(names(&s), ["Cities", "Rivers", "Lakes", "Countries"]);
+    // Hidden and shown layers swap to one state: the opposite of the active layer's (the last
+    // one listed, Rivers, hidden: all are shown).
+    s.run("layer.visibility", &json!({"layer": "Rivers", "visible": false})).unwrap();
+    s.run("layer.select", &json!({"layer": ["Countries", "Rivers"]})).unwrap();
+    s.run("layer.visibility", &Value::Null).unwrap();
+    let shown = |s: &Session, n: &str| s.map().layer_by_name(n).unwrap().visible;
+    assert!(shown(&s, "Rivers") && shown(&s, "Countries"));
+    s.run("layer.visibility", &json!({"visible": false})).unwrap();
+    assert!(!shown(&s, "Rivers") && !shown(&s, "Countries") && shown(&s, "Cities"));
+    // To the top and to the bottom, keeping their order, each one undo step.
+    s.run("layer.move", &json!({"to": 0})).unwrap();
+    assert_eq!(names(&s), ["Rivers", "Countries", "Cities", "Lakes"]);
+    s.run("layer.move", &json!({"to": 1e9})).unwrap();
+    assert_eq!(names(&s), ["Cities", "Lakes", "Rivers", "Countries"]);
+    assert!(s.run("layer.move", &json!({"to": 1})).is_err(), "several layers can't go to the middle");
+    s.run("edit.undo", &Value::Null).unwrap();
+    assert_eq!(names(&s), ["Rivers", "Countries", "Cities", "Lakes"]);
+    // Selectable on all of them.
+    s.run("layer.selectable", &json!({"on": false})).unwrap();
+    assert!(!s.map().layer_by_name("Rivers").unwrap().selectable && !s.map().layer_by_name("Countries").unwrap().selectable);
+    assert!(s.map().layer_by_name("Cities").unwrap().selectable);
+    // Zoom to both: a view command, no undo step.
+    let depth = s.undo_depth();
+    s.run("layer.zoomTo", &Value::Null).unwrap();
+    assert_eq!(s.undo_depth(), depth);
+    // Removing: one undo step; the layer that takes the topmost one's place is active alone.
+    s.run("layer.remove", &Value::Null).unwrap();
+    assert_eq!(names(&s), ["Cities", "Lakes"]);
+    assert_eq!(s.undo_depth(), depth + 1);
+    assert_eq!(s.selected_layers(), vec![s.active_layer.unwrap()]);
+    assert_eq!(s.active_layer, s.map().layer_by_name("Cities").map(|l| l.id));
+    s.run("edit.undo", &Value::Null).unwrap();
+    assert_eq!(names(&s), ["Rivers", "Countries", "Cities", "Lakes"]);
+    // A list with an unknown layer removes nothing.
+    assert!(s.run("layer.remove", &json!({"layer": ["Rivers", "Nope"]})).is_err());
+    assert_eq!(names(&s).len(), 4);
+}
+
+#[test]
+fn layer_selection_survives_a_failed_project_open() {
+    let mut s = world();
+    s.run("layer.select", &json!({"layer": ["Cities", "Lakes"]})).unwrap();
+    let before = s.selected_layers();
+    // Another project replaces this one and fails: the selection comes back with it.
+    let _ = s.run("project.openText", &json!({"text": "not a project"}));
+    assert_eq!(s.selected_layers(), before);
+}

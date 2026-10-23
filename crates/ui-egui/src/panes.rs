@@ -509,6 +509,14 @@ pub fn follow_layer_filter(app: &mut RustGisApp) {
     let q = filter_query(&app.ui.layer_filter);
     // Whether the filter shows layer `id` (None: the map has no such layer).
     let shown = |s: &Session, id: u32| s.map().layer(id).map(|l| filter_shows(&q, &l.name));
+    // Layers picked together are the ones in sight too: a removal must not take one the filter hides.
+    let picked = app.session.selected_layers();
+    if picked.len() > 1 {
+        let keep: Vec<u32> = picked.iter().copied().filter(|id| shown(&app.session, *id) == Some(true)).collect();
+        if keep.len() < picked.len() && !keep.is_empty() {
+            let _ = app.run("layer.select", json!({"layer": keep}));
+        }
+    }
     match (app.session.active_layer, app.ui.layer_filter_hid) {
         (Some(id), _) if shown(&app.session, id) == Some(false) => {
             // No command clears the active layer; it is view state, like a click on an empty row.
@@ -554,6 +562,8 @@ fn contents(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
     ui.add_space(8.0);
     filter_box(app, ui);
     // (Which layer is active as the filter changes: `follow_layer_filter`, every frame.)
+    app.ui.layer_picked = app.session.selected_layers();
+    app.ui.layer_rows.clear();
     let q = filter_query(&app.ui.layer_filter);
     let filtering = !q.is_empty();
     let shows = |name: &str| filter_shows(&q, name);
@@ -667,6 +677,7 @@ fn contents(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
             LayersView::DataSource => source_groups(app, ui, &layers, &tiles, scale, &shows, t),
             LayersView::Selection => selection_groups(app, ui, &layers, &shows, t),
         };
+        resolve_layer_range(app);
         if app.ui.service_import.is_some() {
             ui.horizontal(|ui| {
                 ui.spinner();
@@ -969,10 +980,43 @@ fn selection_groups(app: &mut RustGisApp, ui: &mut Ui, layers: &[Layer], shows: 
     n
 }
 
+/// A click on a layer's row: alone makes it the only layer picked, with Ctrl or Command it joins
+/// or leaves the layer selection, with Shift the rows between the last one clicked and this one
+/// are picked (once the pane has drawn them: `resolve_layer_range`).
+fn click_layer(app: &mut RustGisApp, ui: &Ui, id: u32) {
+    let (shift, toggle) = ui.input(|i| (i.modifiers.shift, i.modifiers.command));
+    if shift {
+        app.ui.layer_range = Some(id);
+        return;
+    }
+    let mode = if toggle { "toggle" } else { "replace" };
+    let _ = app.run("layer.select", json!({"layer": id, "mode": mode}));
+    app.ui.layer_anchor = Some(id);
+}
+
+/// Picks the rows from the anchor to the layer a Shift+click was made on, in the order the pane
+/// lists them (collapsed groups' layers and filtered ones are not listed, so not picked); the
+/// layer clicked ends up active. Without a listed anchor, only that layer.
+fn resolve_layer_range(app: &mut RustGisApp) {
+    let Some(to) = app.ui.layer_range.take() else { return };
+    let rows = &app.ui.layer_rows;
+    let from = app.ui.layer_anchor.or(app.session.active_layer);
+    let span = match (from.and_then(|f| rows.iter().position(|r| *r == f)), rows.iter().position(|r| *r == to)) {
+        (Some(a), Some(b)) if a <= b => rows[a..=b].to_vec(),
+        (Some(a), Some(b)) => rows[b..=a].iter().rev().copied().collect(),
+        _ => vec![to],
+    };
+    let _ = app.run("layer.select", json!({"layer": span}));
+    if app.ui.layer_anchor.is_none() {
+        app.ui.layer_anchor = from;
+    }
+}
+
 /// A layer's row in the Selection view: a box for whether it can be selected
 /// (`layer.selectable`), its name, and how many of its features are selected with a ✕ that clears
 /// them (`select.rows`). A click makes it the active layer; right-click opens its menu.
 fn selection_row(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, t: &Tokens) {
+    app.ui.layer_rows.push(l.id);
     let count = l.selection.len();
     // The name starts at 48 and stops short of the count and its ✕.
     let counted = if count > 0 { 22.0 + 4.0 + crate::widgets::text_w(ui, &count.to_string(), regular(12.0)) + 8.0 } else { 0.0 };
@@ -980,7 +1024,7 @@ fn selection_row(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, t: &Tokens) {
     let name = row_name(ui, l.name.clone(), regular(12.5), ui.available_width() - 48.0 - 8.0 - counted);
     let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), name.row_h), Sense::click());
     let cy = r.min.y + 13.0;
-    if app.session.active_layer == Some(l.id) {
+    if app.ui.layer_picked.contains(&l.id) {
         ui.painter().rect_filled(r.shrink2(vec2(4.0, 1.0)), CornerRadius::same(5), t.selection);
     } else if resp.hovered() {
         ui.painter().rect_filled(r.shrink2(vec2(4.0, 1.0)), CornerRadius::same(5), t.hover);
@@ -1022,7 +1066,7 @@ fn selection_row(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, t: &Tokens) {
         None => resp,
     };
     if resp.clicked() {
-        let _ = app.run("layer.select", json!({"layer": l.id}));
+        click_layer(app, ui, l.id);
     }
     resp.context_menu(|ui| layer_menu(app, ui, l, false));
 }
@@ -1452,7 +1496,9 @@ impl RowName {
 /// A layer's row and, expanded, its legend; returns the rectangle of both. With `reorder` off
 /// (the list is filtered or children are sorted by name) the row can't be dragged.
 fn layer_row(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, scale: f64, reorder: bool, t: &Tokens) -> Rect {
+    app.ui.layer_rows.push(l.id);
     let active = app.session.active_layer == Some(l.id);
+    let picked = app.ui.layer_picked.contains(&l.id);
     // The name takes two lines when it must (the tooltip has it whole when cut), leaving room for
     // the selection badge.
     let badge = (!l.selection.is_empty()).then(|| {
@@ -1473,7 +1519,7 @@ fn layer_row(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, scale: f64, reorder: 
         egui::DragAndDrop::set_payload(ui.ctx(), DraggedLayer(l.id));
     }
     let dragging = egui::DragAndDrop::payload::<DraggedLayer>(ui.ctx()).is_some_and(|d| d.0 == l.id);
-    if active {
+    if picked {
         ui.painter().rect_filled(r.shrink2(vec2(4.0, 1.0)), CornerRadius::same(5), t.selection);
     } else if resp.hovered() || dragging {
         ui.painter().rect_filled(r.shrink2(vec2(4.0, 1.0)), CornerRadius::same(5), t.hover);
@@ -1543,7 +1589,7 @@ fn layer_row(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, scale: f64, reorder: 
     } else if ar_resp.clicked() {
         let _ = app.run("layer.expand", json!({"layer": l.id}));
     } else if resp.clicked() {
-        let _ = app.run("layer.select", json!({"layer": l.id}));
+        click_layer(app, ui, l.id);
     }
     if resp.double_clicked() {
         let _ = app.run("layer.select", json!({"layer": l.id}));
@@ -1630,11 +1676,73 @@ fn layer_row(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, scale: f64, reorder: 
 
 /// A layer's right-click menu (its row in any Layers view). Move Up and Move Down only with
 /// `reorder` (the drawing order view, unfiltered).
+/// The menu of several layers picked together: what acts on all of them; what needs one layer is
+/// there, dimmed, so it is known why it can't be used.
+fn layers_menu(app: &mut RustGisApp, ui: &mut Ui, picked: &[u32], reorder: bool) {
+    let in_service = picked.iter().any(|id| app.session.map().service_groups.iter().any(|g| g.children.iter().any(|c| c.layer == *id)));
+    let ids = json!(picked);
+    let act = |app: &mut RustGisApp, ui: &mut Ui, id: &str, extra: Value| {
+        let mut p = json!({"layer": ids});
+        if let (Some(p), Some(extra)) = (p.as_object_mut(), extra.as_object()) {
+            p.extend(extra.clone());
+        }
+        let _ = app.run(id, p);
+        ui.close();
+    };
+    if ui.button(tl!("Zoom To Layers")).clicked() {
+        act(app, ui, "layer.zoomTo", Value::Null);
+    }
+    ui.separator();
+    if ui.button(tl!("Show Selected")).clicked() {
+        act(app, ui, "layer.visibility", json!({"visible": true}));
+    }
+    if ui.button(tl!("Hide Selected")).clicked() {
+        act(app, ui, "layer.visibility", json!({"visible": false}));
+    }
+    if ui.button(tl!("Make Selectable")).clicked() {
+        act(app, ui, "layer.selectable", json!({"on": true}));
+    }
+    if ui.button(tl!("Make Not Selectable")).clicked() {
+        act(app, ui, "layer.selectable", json!({"on": false}));
+    }
+    ui.separator();
+    // Not while the list is filtered: the layers would move among hidden ones.
+    if ui.add_enabled(reorder, egui::Button::new(tl!("Move To Top"))).clicked() {
+        act(app, ui, "layer.move", json!({"to": 0}));
+    }
+    if ui.add_enabled(reorder, egui::Button::new(tl!("Move To Bottom"))).clicked() {
+        act(app, ui, "layer.move", json!({"to": 1_000_000_000u64}));
+    }
+    // A service's collections stay in their service group.
+    if ui
+        .add_enabled(!in_service, egui::Button::new(tl!("Move To New Group")))
+        .on_disabled_hover_text(tl!("A service's layers stay in their service group."))
+        .clicked()
+    {
+        let _ = app.run("group.add", json!({"layers": picked}));
+        ui.close();
+    }
+    ui.separator();
+    for label in ["Attribute Table", "Symbology"] {
+        ui.add_enabled(false, egui::Button::new(tl!(label))).on_disabled_hover_text(tl!("Pick a single layer."));
+    }
+    ui.separator();
+    if ui.button(tl!("Remove")).clicked() {
+        act(app, ui, "layer.remove", Value::Null);
+    }
+}
+
 fn layer_menu(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, reorder: bool) {
     // Once, as the menu opens: a command each frame it stays open would draw the map again each
     // time (a command moves the session's revision).
-    if app.session.active_layer != Some(l.id) {
+    // A layer outside the layer selection becomes the only one picked; one inside keeps it.
+    if !app.session.selected_layers().contains(&l.id) {
         let _ = app.session.run("layer.select", &json!({"layer": l.id}));
+    }
+    let picked = app.session.selected_layers();
+    if picked.len() > 1 {
+        layers_menu(app, ui, &picked, reorder);
+        return;
     }
     let service_child = app.session.map().service_groups.iter().any(|g| g.children.iter().any(|c| c.layer == l.id));
     if service_child && ui.add_enabled(app.ui.service_import.is_none(), egui::Button::new(tl!("Refresh"))).clicked() {
