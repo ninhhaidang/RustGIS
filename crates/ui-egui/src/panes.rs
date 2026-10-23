@@ -1716,16 +1716,19 @@ fn layers_menu(app: &mut RustGisApp, ui: &mut Ui, picked: &[u32], reorder: bool)
         act(app, ui, "layer.zoomTo", Value::Null);
     }
     ui.separator();
-    if ui.button(tl!("Show Selected")).clicked() {
+    // "Layers", not "Selected": the selection a bare word means is of features, and the next
+    // two items are about that one.
+    if ui.button(tl!("Show Layers")).clicked() {
         act(app, ui, "layer.visibility", json!({"visible": true}));
     }
-    if ui.button(tl!("Hide Selected")).clicked() {
+    if ui.button(tl!("Hide Layers")).clicked() {
         act(app, ui, "layer.visibility", json!({"visible": false}));
     }
-    if ui.button(tl!("Make Selectable")).clicked() {
+    let tip = tl!("Whether the Select tool picks these layers' features on the map");
+    if ui.button(tl!("Allow Feature Selection")).on_hover_text(tip).clicked() {
         act(app, ui, "layer.selectable", json!({"on": true}));
     }
-    if ui.button(tl!("Make Not Selectable")).clicked() {
+    if ui.button(tl!("Block Feature Selection")).on_hover_text(tip).clicked() {
         act(app, ui, "layer.selectable", json!({"on": false}));
     }
     ui.separator();
