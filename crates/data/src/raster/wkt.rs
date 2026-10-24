@@ -718,6 +718,11 @@ fn wgs84_like(datum: Option<&Node>) -> Option<&'static str> {
         | "GDA_1994"
         | "GDA94"
         | "GEOCENTRIC_DATUM_OF_AUSTRALIA_1994"
+        // GDA2020 (EPSG:7844): not in the list before, so it got the "no conversion" warning
+        // though it's drawn in the right place, like GDA94.
+        | "GDA_2020"
+        | "GDA2020"
+        | "GEOCENTRIC_DATUM_OF_AUSTRALIA_2020"
         // SIRGAS 2000, the datum of Brazil and most of Latin America (EPSG:4674): its
         // transformation to WGS 84 is null, like the others here.
         | "SIRGAS_2000"
@@ -1166,6 +1171,16 @@ mod tests {
             let old = format!(r#"GEOGCS["GCS_old",DATUM["{datum}",{spheroid}],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]]"#);
             assert!(read_wkt(&old).unwrap().1.is_some_and(|n| n.contains(datum)), "{datum}");
         }
+    }
+
+    #[test]
+    fn gda2020_reads_as_wgs_84_without_a_note() {
+        // As ArcGIS writes a GDA2020 .prj (Esri name).
+        let geographic = r#"GEOGCS["GCS_GDA2020",DATUM["D_GDA2020",SPHEROID["GRS_1980",6378137.0,298.257222101]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]]"#;
+        assert_eq!(read_wkt(geographic), Ok((Crs::LonLat, None)));
+        // The EPSG datum name, as OGC WKT writes it.
+        let ogc = geographic.replace("D_GDA2020", "Geocentric_Datum_of_Australia_2020");
+        assert_eq!(read_wkt(&ogc), Ok((Crs::LonLat, None)));
     }
 
     #[test]
