@@ -19,7 +19,7 @@ use crate::draw::{Drawn, Frame, Label, Pass, draw_layers, tiles_in};
 use crate::mvt::{GeomKind, Tile};
 use crate::source::{Resolve, Resolved, Spec, resolve};
 use crate::sprite::{self, Load, Sprite};
-use crate::style::{FeatureCtx, LayerKind, LineCap, LineJoin, Rgba, Source, StyleLayer};
+use crate::style::{FeatureCtx, LayerKind, LineCap, LineJoin, PATTERNS, Rgba, Source, StyleLayer};
 use crate::template;
 
 /// The width of a fill's outline, points (as [`draw`](crate::draw::draw) strokes it).
@@ -44,6 +44,8 @@ pub struct VectorTiles {
     pub attribution: Vec<String>,
     /// Some tiles (or the sprite) are still on their way.
     pub pending: bool,
+    /// What of the style was left out and why, as a drawing's error.
+    pub error: Option<String>,
 }
 
 /// One data tile placed on the map.
@@ -83,7 +85,15 @@ pub fn vector_tiles(spec: &Spec, frame: &Frame, view: &Extent, reach: Option<&Ex
         draw_layers(None, size, &frame.extent(size.0, size.1), &r, frame, Pass::Labels, &mut d);
     }
     let attribution = r.attribution.clone();
-    Some(VectorTiles { style: r, source, tiles, level, labels: d.labels, attribution, pending: pending || d.pending })
+    let error = crate::draw::left_out(&r, frame, true);
+    Some(VectorTiles { style: r, source, tiles, level, labels: d.labels, attribution, pending: pending || d.pending, error })
+}
+
+/// Whether `style` fills with patterns at any zoom of `level`: only then do its meshes need the
+/// sprites.
+pub fn draws_patterns(style: &Resolved, level: u8) -> bool {
+    let (lo, hi) = (f32::from(level), f32::from(level) + 1.0);
+    style.style.layers.iter().any(|l| shown_in(l, lo, hi) && l.draws_patterns())
 }
 
 /// The one vector source whose shapes are all a style shows at any zoom of `level` (besides its
@@ -96,6 +106,9 @@ fn drawn_source(r: &Resolved, level: u8) -> Option<String> {
             LayerKind::Background | LayerKind::Symbol | LayerKind::Other => {}
             // Lines painted with a pattern aren't drawn (see `draw::drawable`).
             LayerKind::Line if l.has_paint("line-pattern") => {}
+            // A mesh's fill has one pattern's colour for the level: one changing with the zoom
+            // is drawn zoom by zoom. (Its name may be an `image`, so only the expression tells.)
+            LayerKind::Fill | LayerKind::FillExtrusion if PATTERNS.iter().any(|p| l.paint_uses_zoom(p)) => return None,
             LayerKind::Fill | LayerKind::FillExtrusion | LayerKind::Line | LayerKind::Circle => {
                 let at = FeatureCtx::zoom_only;
                 // The level runs up to the next, excluded: what steps there belongs to it.
@@ -184,6 +197,9 @@ pub struct TileShapes {
     pub runs: Vec<Run>,
     /// Pattern fills are left out until the sprite has arrived.
     pub waiting: bool,
+    /// The ids of the style's sprites its pattern fills were made from, if it has any: other
+    /// sprites read (one that failed read after all, say) change them.
+    pub sheets: Option<Vec<String>>,
 }
 
 /// The average colour of a sprite's image (straight RGBA, 0..1).
@@ -210,6 +226,11 @@ fn average(img: &tiny_skia::Pixmap) -> Option<[f32; 4]> {
 /// the next level, in its order. Its background, when it has one, is the first run, filling the
 /// square.
 pub fn shapes(style: &Resolved, source: &str, tile: &Tile, level: u8) -> TileShapes {
+    shapes_with(style, source, tile, level, &|| sprite::load(&style.sprites, false))
+}
+
+/// [`shapes`], with `load` to load the style's sprites.
+fn shapes_with(style: &Resolved, source: &str, tile: &Tile, level: u8, load: &dyn Fn() -> Load) -> TileShapes {
     // The sprite, loaded the first time a pattern needs it.
     let mut sheet: Option<Option<Arc<Sprite>>> = None;
     // Each pattern's average colour, found once (a pass over its pixels).
@@ -252,7 +273,7 @@ pub fn shapes(style: &Resolved, source: &str, tile: &Tile, level: u8) -> TileSha
         let free = layer.paint_feature_free();
         let mut fixed: [Option<Vec<Paint>>; 4] = Default::default();
         for (fi, f) in tl.features.iter().enumerate() {
-            let ctx = |zoom| FeatureCtx { zoom, kind: f.kind, id: f.id, props: &f.props };
+            let ctx = |zoom| FeatureCtx { zoom, kind: f.kind, id: f.id, props: &f.props, images: None };
             if !layer.matches(&ctx(lo)) {
                 continue;
             }
@@ -271,21 +292,27 @@ pub fn shapes(style: &Resolved, source: &str, tile: &Tile, level: u8) -> TileSha
                         let (oa, ob) = (layer.fill_opacity(&a), layer.fill_opacity(&b));
                         let mut color = [rgba(ca, oa), rgba(cb, ob)];
                         // A pattern names an image of the sprite; one that names none isn't drawn.
-                        let pattern = match ["fill-pattern", "fill-extrusion-pattern"].into_iter().find(|p| layer.has_paint(p)) {
+                        let pattern = match PATTERNS.into_iter().find(|p| layer.has_paint(p)) {
                             Some(p) => {
-                                let Some(crate::style::Val::Str(name)) =
-                                    layer.paint_value(p, &a).filter(|v| v.as_str().is_some_and(|n| !n.is_empty()))
-                                else {
+                                // A feature with no name needs no sprite, unless it is the sprite
+                                // that says (an `image` expression).
+                                let named = |v: &crate::style::Val| v.as_str().is_some_and(|n| !n.is_empty());
+                                if !layer.paint_uses_image(p) && !layer.paint_value(p, &a).is_some_and(|v| named(&v)) {
                                     break 'p out;
-                                };
-                                let sprite = sheet.get_or_insert_with(|| match style.sprite.as_deref().map(|b| sprite::load(b, false)) {
-                                    Some(Load::Ready(s)) => Some(s),
-                                    Some(Load::Pending) => {
+                                }
+                                let sprite = sheet.get_or_insert_with(|| match load() {
+                                    Load::Ready(s) => Some(s),
+                                    Load::Pending => {
                                         waiting = true;
                                         None
                                     }
-                                    _ => None,
+                                    Load::Failed => None,
                                 });
+                                let images = sprite.as_deref();
+                                let Some(crate::style::Val::Str(name)) = layer.paint_value(p, &FeatureCtx { images, ..a }).filter(named)
+                                else {
+                                    break 'p out;
+                                };
                                 let found = match averages.get(&name) {
                                     Some(a) => *a,
                                     None => {
@@ -366,7 +393,9 @@ pub fn shapes(style: &Resolved, source: &str, tile: &Tile, level: u8) -> TileSha
             runs.push(Run { layer: li, min_zoom: layer.min_zoom, max_zoom: layer.max_zoom, extent: tl.extent, shapes });
         }
     }
-    TileShapes { runs, waiting }
+    // (None could be read, or none yet: none.)
+    let sheets = sheet.map(|s| s.map_or_else(Vec::new, |s| s.sheet_ids()));
+    TileShapes { runs, waiting, sheets }
 }
 
 #[cfg(test)]
@@ -518,6 +547,64 @@ mod tests {
         // As `draw` leaves them out: the style has no sprite to take the pattern from.
         assert!(!s.waiting && s.runs.iter().all(|r| r.layer > 1));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_pattern_chosen_with_image_asks_the_loaded_sprite() {
+        let pattern = |name: &str, value: &str| {
+            let style = STYLE.replacen(
+                '[',
+                &format!(
+                    r#"[{{"id": "p", "type": "fill", "source": "x", "source-layer": "parks", "paint": {{"fill-pattern": {value}}}}},"#
+                ),
+                1,
+            );
+            let (spec, dir) = archive(name, &style);
+            ready(&spec);
+            (tile(&spec, 2.5), dir)
+        };
+        let shaped = |v: &VectorTiles, load: &dyn Fn() -> Load| {
+            let Payload::Vector(t) = &*v.tiles[0].payload else { panic!("a vector tile") };
+            shapes_with(&v.style, &v.source, t, v.level, load)
+        };
+        let loaded = || Load::Ready(Arc::new(crate::draw::tests::sheet()));
+        let (v, dir) = pattern("image-pattern", r#"["coalesce", ["image", "nope"], ["image", "red"]]"#);
+        // With the sprite: the fill is drawn, and says from how many sprites.
+        let s = shaped(&v, &loaded);
+        assert!(!s.waiting && s.sheets == Some(vec!["default".to_owned()]) && s.runs.iter().any(|r| r.layer == 0));
+        // While it's on its way: left out, and made again.
+        let s = shaped(&v, &|| Load::Pending);
+        assert!(s.waiting && s.sheets == Some(Vec::new()) && s.runs.iter().all(|r| r.layer != 0));
+        // Failed: left out, and not waiting.
+        let s = shaped(&v, &|| Load::Failed);
+        assert!(!s.waiting && s.sheets == Some(Vec::new()) && s.runs.iter().all(|r| r.layer != 0));
+        let _ = std::fs::remove_dir_all(dir);
+        // A name no feature has, with no `image`: nothing asks the sprite, so nothing waits for it.
+        let (v, dir) = pattern("no-pattern-name", r#"["get", "no-such-field"]"#);
+        let s = shaped(&v, &|| Load::Pending);
+        assert!(!s.waiting && s.sheets.is_none() && s.runs.iter().all(|r| r.layer != 0));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_pattern_changing_with_the_zoom_is_drawn_zoom_by_zoom() {
+        let source = |name: &str, value: &str| {
+            let style = STYLE.replacen(
+                '[',
+                &format!(
+                    r#"[{{"id": "p", "type": "fill", "source": "x", "source-layer": "parks", "paint": {{"fill-pattern": {value}}}}},"#
+                ),
+                1,
+            );
+            let (spec, dir) = archive(name, &style);
+            let found = drawn_source(&ready(&spec), 2);
+            let _ = std::fs::remove_dir_all(dir);
+            found
+        };
+        // One mesh colour for the level can't show a step within it, whatever names the steps give.
+        assert!(source("zoom-image-pattern", r#"["step", ["zoom"], ["image", "red"], 2.5, ["image", "blue"]]"#).is_none());
+        assert!(source("zoom-named-pattern", r#"["step", ["zoom"], "red", 2.5, "blue"]"#).is_none());
+        assert!(source("fixed-pattern", r#""red""#).is_some());
     }
 
     #[test]

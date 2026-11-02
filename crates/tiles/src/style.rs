@@ -22,6 +22,12 @@ const MAX_ARRAY: usize = 4096;
 const MAX_STR: usize = 1 << 16;
 const MAX_LAYERS: usize = 10_000;
 const MAX_SOURCES: usize = 256;
+/// The most sprites a style's are read from.
+pub(crate) const MAX_SPRITES: usize = 16;
+/// The paint properties that fill with an image of a sprite.
+pub(crate) const PATTERNS: [&str; 2] = ["fill-pattern", "fill-extrusion-pattern"];
+/// The longest sprite id read: pictures and meshes each keep the ids they were made from.
+const MAX_SPRITE_ID: usize = 128;
 const MAX_PROPS: usize = 256;
 const MAX_STOPS: usize = 1024;
 /// The most lights a multidirectional hillshade takes: each shades every pixel again.
@@ -62,12 +68,15 @@ pub struct FeatureCtx<'a> {
     pub kind: GeomKind,
     pub id: Option<u64>,
     pub props: &'a [(String, Value)],
+    /// The style's sprite, while an icon is chosen: `["image", name]` is `name` when it has
+    /// that image, else null.
+    pub images: Option<&'a crate::sprite::Sprite>,
 }
 
 impl FeatureCtx<'static> {
     /// Context with no feature (background, raster, zoom-only properties).
     pub fn zoom_only(zoom: f32) -> Self {
-        FeatureCtx { zoom, kind: GeomKind::Unknown, id: None, props: &[] }
+        FeatureCtx { zoom, kind: GeomKind::Unknown, id: None, props: &[], images: None }
     }
 }
 
@@ -266,6 +275,16 @@ impl Expr {
         free(&self.0)
     }
 
+    /// Whether it depends on the zoom.
+    pub fn uses_zoom(&self) -> bool {
+        calls(&self.0, Op::Zoom)
+    }
+
+    /// Whether it asks the sprite for an image (`["image", name]`).
+    pub fn uses_image(&self) -> bool {
+        calls(&self.0, Op::Image)
+    }
+
     /// A `color-relief-color` at `zoom` as colours by height: an `interpolate` or `step` on
     /// `["elevation"]` whose stops' colours are worked out once, or a single colour. `None` for
     /// anything else, which a layer can't be drawn from pixel by pixel.
@@ -380,6 +399,7 @@ enum Op {
     Rgb,
     /// A `color-relief` layer's height (see [`Expr::elevation_ramp`]); null anywhere else.
     Elevation,
+    Image,
 }
 
 fn op_of(name: &str) -> Option<Op> {
@@ -415,6 +435,7 @@ fn op_of(name: &str) -> Option<Op> {
         "typeof" => TypeOf,
         "concat" => Concat,
         "upcase" => Upcase,
+        "image" => Image,
         "downcase" => Downcase,
         "+" => Add,
         "-" => Sub,
@@ -464,11 +485,25 @@ enum Node {
     LegacyIn(Box<Node>, Vec<Val>),
 }
 
+/// Whether `n` holds a call of `op`.
+fn calls(n: &Node, op: Op) -> bool {
+    let any = |list: &[(f64, Node)]| list.iter().any(|(_, o)| calls(o, op));
+    match n {
+        Node::Call(o, args) => *o == op || args.iter().any(|a| calls(a, op)),
+        Node::Match(input, arms, default) => calls(input, op) || arms.iter().any(|(_, o)| calls(o, op)) || calls(default, op),
+        Node::Step(input, first, stops) => calls(input, op) || calls(first, op) || any(stops),
+        Node::Interp(_, input, stops) => calls(input, op) || any(stops),
+        Node::Let(binds, body) => binds.iter().any(|(_, v)| calls(v, op)) || calls(body, op),
+        Node::Tokens(inner) | Node::LegacyIn(inner, _) => calls(inner, op),
+        Node::Lit(_) | Node::Var(_) | Node::LegacyGet(_) | Node::LegacyHas(_) => false,
+    }
+}
+
 /// See [`Expr::feature_free`].
 fn free(n: &Node) -> bool {
     match n {
         Node::Lit(_) | Node::Var(_) => true,
-        Node::Call(op, args) => !matches!(op, Op::Get | Op::Has | Op::Id | Op::GeomType) && args.iter().all(free),
+        Node::Call(op, args) => !matches!(op, Op::Get | Op::Has | Op::Id | Op::GeomType | Op::Image) && args.iter().all(free),
         Node::Match(input, arms, default) => free(input) && arms.iter().all(|(_, o)| free(o)) && free(default),
         Node::Step(input, first, stops) => free(input) && free(first) && stops.iter().all(|(_, o)| free(o)),
         Node::Interp(_, input, stops) => free(input) && stops.iter().all(|(_, o)| free(o)),
@@ -573,7 +608,7 @@ fn compile_op(name: &str, args: &[Json], depth: usize) -> Option<Node> {
         "number-format" => Node::Call(Op::ToString, vec![arg(0)]),
         "within" => Node::Lit(Val::Bool(false)),
         "is-supported-script" => Node::Lit(Val::Bool(true)),
-        "properties" | "feature-state" | "line-progress" | "accumulated" | "heatmap-density" | "image" | "collator" | "resolved-locale"
+        "properties" | "feature-state" | "line-progress" | "accumulated" | "heatmap-density" | "collator" | "resolved-locale"
         | "global-state" | "object" | "distance" => null(),
         _ => Node::Call(op_of(name)?, args.iter().take(MAX_ARRAY).map(|j| compile(j, d)).collect()),
     })
@@ -977,6 +1012,10 @@ fn call(op: Op, args: &[Node], f: &FeatureCtx, vars: &mut Vars) -> Val {
         }
         Upcase => arg(0).as_str().map_or(Val::Null, |s| Val::Str(s.to_uppercase())),
         Downcase => arg(0).as_str().map_or(Val::Null, |s| Val::Str(s.to_lowercase())),
+        Image => match (arg(0).as_str(), f.images) {
+            (Some(name), Some(sprite)) if sprite.has(name) => Val::Str(name.to_owned()),
+            _ => Val::Null,
+        },
         Add => nums(&v).map_or(Val::Null, |n| Val::Num(n.iter().sum())),
         Mul => nums(&v).map_or(Val::Null, |n| Val::Num(n.iter().product())),
         Sub => match (num(0), num(1), v.len()) {
@@ -1085,6 +1124,38 @@ fn substitute_tokens(s: &str, f: &FeatureCtx) -> String {
 // Style, sources, layers
 // ---------------------------------------------------------------------------------------------------------------
 
+/// A style's `sprite` array: its sprites as (id, address), at most [`MAX_SPRITES`] of the entries
+/// that can be read, each id once; and what was left out, a line per reason.
+fn parse_sprites(entries: &[Json]) -> (Vec<(String, String)>, Vec<String>) {
+    let mut sprites: Vec<(String, String)> = Vec::new();
+    let (mut unread, mut repeated, mut past) = (0usize, 0usize, 0usize);
+    // An empty id or address is none: an empty address would resolve to the style's own folder.
+    let given = |v: Option<&Json>| str_of(v).filter(|s| !s.is_empty());
+    for s in entries {
+        match (given(s.get("id")).filter(|id| id.len() <= MAX_SPRITE_ID), given(s.get("url"))) {
+            (Some(id), _) if sprites.iter().any(|(i, _)| *i == id) => repeated += 1,
+            (Some(_), Some(_)) if sprites.len() >= MAX_SPRITES => past += 1,
+            (Some(id), Some(url)) => sprites.push((id, url)),
+            _ => unread += 1,
+        }
+    }
+    let total = entries.len();
+    let mut left_out = Vec::new();
+    if unread > 0 {
+        left_out
+            .push(format!("{unread} of {total} sprites left out, so their icons and patterns aren't drawn: no usable id or no address"));
+    }
+    if repeated > 0 {
+        left_out.push(format!("{repeated} of {total} sprites left out, so their icons and patterns aren't drawn: another has the same id"));
+    }
+    if past > 0 {
+        left_out.push(format!(
+            "{past} of {total} sprites left out, so their icons and patterns aren't drawn: a style's first {MAX_SPRITES} are read"
+        ));
+    }
+    (sprites, left_out)
+}
+
 /// A parsed style. URLs are left as given.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Style {
@@ -1092,7 +1163,13 @@ pub struct Style {
     pub sources: Vec<(String, Source)>,
     pub layers: Vec<StyleLayer>,
     pub glyphs: Option<String>,
-    pub sprite: Option<String>,
+    /// The style's sprites as (id, address). Images of the sprite with the id `default`, which
+    /// a style giving just one address has, are named `<name>`; those of the others `<id>:<name>`.
+    pub sprites: Vec<(String, String)>,
+    /// What of its `sprite` array couldn't be read, and why.
+    pub sprites_left_out: Vec<String>,
+    /// How many sprites it lists, read or not.
+    pub sprites_listed: usize,
     /// Where the style places the map, from its root properties.
     pub view: StyleView,
 }
@@ -1281,19 +1358,20 @@ impl Style {
             .take(MAX_SOURCES)
             .map(|(k, v)| (k.clone(), Source::parse(v)))
             .collect();
-        let sprite = match o.get("sprite") {
-            Some(Json::String(s)) => Some(s.clone()),
-            Some(Json::Array(a)) => {
-                a.iter().find(|s| s.get("id").and_then(Json::as_str) == Some("default")).or(a.first()).and_then(|s| str_of(s.get("url")))
-            }
-            _ => None,
+        let (sprites, sprites_left_out) = match o.get("sprite") {
+            // (An empty address would resolve to the style's own folder.)
+            Some(Json::String(s)) if !s.is_empty() => (vec![("default".to_owned(), s.clone())], Vec::new()),
+            Some(Json::Array(a)) => parse_sprites(a),
+            _ => (Vec::new(), Vec::new()),
         };
         Ok(Style {
             name: str_of(o.get("name")).unwrap_or_default(),
             sources,
             layers: layers.iter().take(MAX_LAYERS).filter_map(StyleLayer::parse).collect(),
             glyphs: str_of(o.get("glyphs")),
-            sprite,
+            sprites,
+            sprites_left_out,
+            sprites_listed: o.get("sprite").map_or(0, |s| s.as_array().map_or(1, Vec::len)),
             view: StyleView::parse(o),
         })
     }
@@ -1476,6 +1554,33 @@ impl StyleLayer {
     /// Whether a paint property is set (e.g. `fill-pattern`).
     pub fn has_paint(&self, name: &str) -> bool {
         self.paint.contains_key(name)
+    }
+
+    /// Whether the paint property `name` depends on the zoom.
+    pub fn paint_uses_zoom(&self, name: &str) -> bool {
+        self.paint.get(name).is_some_and(Expr::uses_zoom)
+    }
+
+    /// Whether the paint property `name` asks the sprite for an image.
+    pub fn paint_uses_image(&self, name: &str) -> bool {
+        self.paint.get(name).is_some_and(Expr::uses_image)
+    }
+
+    /// Whether it draws icons of the style's sprites: a label's. (Another kind of layer may name
+    /// one, and draw none.)
+    pub fn draws_icons(&self) -> bool {
+        self.kind == LayerKind::Symbol && self.has_layout("icon-image")
+    }
+
+    /// Whether it fills with patterns of the style's sprites. (A line painted with a pattern isn't
+    /// drawn at all: see `draw::drawable`.)
+    pub fn draws_patterns(&self) -> bool {
+        matches!(self.kind, LayerKind::Fill | LayerKind::FillExtrusion) && PATTERNS.iter().any(|p| self.has_paint(p))
+    }
+
+    /// Whether it draws images of the style's sprites.
+    pub fn draws_images(&self) -> bool {
+        self.draws_icons() || self.draws_patterns()
     }
 
     /// Whether every paint and layout property of the layer is the same for every feature at a
@@ -1761,7 +1866,7 @@ mod tests {
     }
 
     fn ctx(zoom: f32, kind: GeomKind, props: &[(String, Value)]) -> FeatureCtx<'_> {
-        FeatureCtx { zoom, kind, id: Some(42), props }
+        FeatureCtx { zoom, kind, id: Some(42), props, images: None }
     }
 
     fn ev(j: Json, f: &FeatureCtx) -> Val {
@@ -1923,6 +2028,93 @@ mod tests {
         assert_eq!(ev(json!([1, 2]), &f), Val::Arr(vec![Val::Num(1.0), Val::Num(2.0)]));
         assert_eq!(ev(json!(["Noto Sans Bold"]), &f), Val::Arr(vec![str_val("Noto Sans Bold")]));
         assert_eq!(ev(json!(["image", "x"]), &f), Val::Null);
+    }
+
+    #[test]
+    fn image_names_a_sprite_by_its_id() {
+        let at = json!({"x": 0, "y": 0, "width": 2, "height": 2});
+        let picture = || tiny_skia::Pixmap::new(2, 2).unwrap();
+        let sprite =
+            crate::sprite::Sprite::of(vec![("nautical", json!({"light/red": at}), picture()), ("base", json!({"bus": at}), picture())]);
+        let f = FeatureCtx { images: Some(&sprite), ..ctx(10.0, GeomKind::Point, &[]) };
+        assert_eq!(ev(json!(["image", "nautical:light/red"]), &f), str_val("nautical:light/red"));
+        // Not from another sprite, nor with no id: on to the next choice.
+        assert_eq!(ev(json!(["image", "base:light/red"]), &f), Val::Null);
+        assert_eq!(ev(json!(["image", "light/red"]), &f), Val::Null);
+        assert_eq!(ev(json!(["coalesce", ["image", "base:light/red"], ["image", "base:bus"]]), &f), str_val("base:bus"));
+    }
+
+    #[test]
+    fn expressions_say_what_they_depend_on() {
+        let on = |j: Json| Expr::property(&j);
+        assert!(on(json!(["step", ["zoom"], ["image", "a"], 2.5, ["image", "b"]])).uses_zoom());
+        assert!(on(json!({"stops": [[2, "a"], [3, "b"]]})).uses_zoom());
+        assert!(!on(json!(["get", "pattern"])).uses_zoom() && !on(json!("a")).uses_zoom());
+        assert!(on(json!(["coalesce", ["get", "x"], ["image", "a"]])).uses_image());
+        assert!(on(json!(["case", ["has", "x"], ["image", "a"], "b"])).uses_image());
+        assert!(!on(json!(["get", "pattern"])).uses_image() && !on(json!("a")).uses_image());
+    }
+
+    #[test]
+    fn reads_a_styles_sprites_and_says_what_it_left_out() {
+        let parse = |sprite: Json| Style::parse(&json!({"version": 8, "sprite": sprite, "sources": {}, "layers": []})).unwrap();
+        // One address is the `default` sprite; a list keeps its ids.
+        assert_eq!(parse(json!("https://x/s")).sprites, [("default".to_owned(), "https://x/s".to_owned())]);
+        assert!(parse(json!("")).sprites.is_empty());
+        let listed = parse(json!([{"id": "base", "url": "a"}]));
+        assert_eq!(listed.sprites, [("base".to_owned(), "a".to_owned())]);
+        assert!(listed.sprites_left_out.is_empty());
+        // What can't be read doesn't count towards the limit: a sprite after it is still read.
+        let mut list: Vec<Json> = (0..MAX_SPRITES + 2).map(|_| json!({"url": "no-id"})).collect();
+        list.push(json!({"id": "default", "url": "b"}));
+        let late = parse(Json::Array(list));
+        assert_eq!(late.sprites, [("default".to_owned(), "b".to_owned())]);
+        assert_eq!(late.sprites_left_out.len(), 1);
+        let total = MAX_SPRITES + 3;
+        assert!(
+            late.sprites_left_out[0].starts_with(&format!("{} of {total} sprites left out", MAX_SPRITES + 2)),
+            "{:?}",
+            late.sprites_left_out
+        );
+        // A repeated id, and those past the limit, each said with how many.
+        let mut list: Vec<Json> = (0..MAX_SPRITES + 3).map(|i| json!({"id": format!("s{i}"), "url": "u"})).collect();
+        list.push(json!({"id": "s0", "url": "again"}));
+        let many = parse(Json::Array(list));
+        assert_eq!(many.sprites.len(), MAX_SPRITES);
+        assert_eq!(many.sprites[0].1, "u");
+        let said = many.sprites_left_out.join("; ");
+        assert!(
+            said.contains("1 of 20 sprites left out") && said.contains("same id") && said.contains("3 of 20 sprites left out"),
+            "{said}"
+        );
+        // An empty id or address is none.
+        let empty = parse(json!([{"id": "a", "url": ""}, {"id": "", "url": "b"}, {"id": "c", "url": "d"}]));
+        assert_eq!(empty.sprites, [("c".to_owned(), "d".to_owned())]);
+        assert!(empty.sprites_left_out[0].starts_with("2 of 3 sprites left out"), "{:?}", empty.sprites_left_out);
+        // An id too long to keep with every picture and mesh is none either.
+        let long = parse(json!([{"id": "x".repeat(MAX_SPRITE_ID + 1), "url": "a"}, {"id": "x".repeat(MAX_SPRITE_ID), "url": "b"}]));
+        assert_eq!(long.sprites.len(), 1);
+        assert_eq!(long.sprites[0].1, "b");
+    }
+
+    #[test]
+    fn image_is_its_name_when_the_sprite_has_it() {
+        let index = json!({"light/red": {"x": 0, "y": 0, "width": 2, "height": 2}, "generic": {"x": 0, "y": 0, "width": 2, "height": 2}});
+        let Some(sheet) = tiny_skia::Pixmap::new(2, 2) else { panic!("no pixmap") };
+        let sprite = crate::sprite::Sprite::new(&index, sheet);
+        let props = [("colour".to_owned(), Value::String("red".into()))];
+        let f = FeatureCtx { images: Some(&sprite), ..ctx(10.0, GeomKind::Point, &props) };
+        let light = |colour: &str| json!(["image", ["concat", "light/", colour]]);
+        assert_eq!(ev(light("red"), &f), str_val("light/red"));
+        assert_eq!(ev(light("blue"), &f), Val::Null);
+        // The first image the sprite has, as a style picks a light's icon by its colour.
+        let pick = |c: Json| ev(json!(["coalesce", ["image", ["concat", "light/", c]], ["image", "generic"]]), &f);
+        assert_eq!(pick(json!(["get", "colour"])), str_val("light/red"));
+        assert_eq!(pick(json!("blue")), str_val("generic"));
+        // Without the sprite, no image is there to be had.
+        let bare = FeatureCtx { images: None, ..f };
+        assert_eq!(ev(light("red"), &bare), Val::Null);
+        assert!(!Expr::property(&light("red")).feature_free(), "depends on the sprite");
     }
 
     #[test]
@@ -2109,7 +2301,7 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(st.name, "t");
-        assert_eq!(st.sprite.as_deref(), Some("b"));
+        assert_eq!(st.sprites, vec![("x".to_owned(), "a".to_owned()), ("default".to_owned(), "b".to_owned())]);
         assert_eq!(st.glyphs.as_deref(), Some("g/{fontstack}/{range}.pbf"));
         assert_eq!(st.layers.len(), 2);
         assert_eq!(st.layers[1].kind, LayerKind::Other);
@@ -2322,7 +2514,7 @@ mod tests {
         assert_eq!(counts, want.into_iter().collect());
         assert!(matches!(st.source("streets"), Some(Source::Vector { url: Some(_), .. })));
         assert!(matches!(st.source("relief"), Some(Source::Raster { tile_size: 256, max_zoom: 6, .. })));
-        assert!(st.glyphs.is_some() && st.sprite.is_some());
+        assert!(st.glyphs.is_some() && !st.sprites.is_empty());
 
         let feats = sample_features();
         let mut labels = 0;
@@ -2330,7 +2522,7 @@ mod tests {
         for z in 0..=20 {
             for l in &st.layers {
                 for (kind, p) in &feats {
-                    let f = FeatureCtx { zoom: z as f32 + 0.5, kind: *kind, id: Some(1), props: p };
+                    let f = FeatureCtx { zoom: z as f32 + 0.5, kind: *kind, id: Some(1), props: p, images: None };
                     labels += touch_all(l, &f);
                     matched += usize::from(l.matches(&f));
                 }
@@ -2471,7 +2663,7 @@ mod tests {
         for i in 0..5000 {
             let j = random_json(&mut r, 0);
             let (kind, p) = &feats[i % feats.len()];
-            let f = FeatureCtx { zoom: (i % 23) as f32, kind: *kind, id: Some(i as u64), props: p };
+            let f = FeatureCtx { zoom: (i % 23) as f32, kind: *kind, id: Some(i as u64), props: p, images: None };
             let _ = Expr::property(&j).eval(&f);
             let _ = Expr::filter(&j).eval(&f);
             let l = StyleLayer::parse(&json!({"id": "f", "type": "symbol", "filter": j.clone(),
@@ -2650,7 +2842,7 @@ mod feature_free_tests {
     #[test]
     fn filters_compare_properties_in_place_as_they_did() {
         let props = vec![("class".to_string(), Value::String("motorway".into())), ("rank".to_string(), Value::Number(3.0))];
-        let f = FeatureCtx { zoom: 10.0, kind: GeomKind::LineString, id: Some(7), props: &props };
+        let f = FeatureCtx { zoom: 10.0, kind: GeomKind::LineString, id: Some(7), props: &props, images: None };
         let is = |j: Json| Expr::filter(&j).eval(&f) == Val::Bool(true);
         assert!(is(serde_json::json!(["==", "class", "motorway"])));
         assert!(!is(serde_json::json!(["!=", "class", "motorway"])));

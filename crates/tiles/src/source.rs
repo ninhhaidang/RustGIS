@@ -75,9 +75,9 @@ impl Spec {
 /// A style whose sources all have tile addresses.
 pub struct Resolved {
     pub style: Style,
-    /// The style's sprite (an address without `.json`/`.png`), when it has one RustGIS can
+    /// The style's sprites as (id, address without `.json`/`.png`), those RustGIS can
     /// fetch.
-    pub sprite: Option<String>,
+    pub sprites: Vec<(String, String)>,
     /// Credits from the layer and its sources, without duplicates.
     pub attribution: Vec<String>,
     /// What of the style was left out and why, said with every drawing of it as its error.
@@ -104,7 +104,7 @@ fn kept(old: Arc<Resolved>, new: Arc<Resolved>) -> Arc<Resolved> {
     if old.left_out != new.left_out
         || old.waiting != new.waiting
         || old.style != new.style
-        || old.sprite != new.sprite
+        || old.sprites != new.sprites
         || old.attribution != new.attribution
     {
         return new;
@@ -260,7 +260,7 @@ fn resolve_anew(spec: &Spec, key: String) -> Resolve {
     }
     // Sources given by a TileJSON address.
     let base = spec.url.clone();
-    let Sources { left_out, waiting } = match resolve_sources(&mut style, spec, &base) {
+    let Sources { mut left_out, waiting } = match resolve_sources(&mut style, spec, &base) {
         Ok(Some(sources)) => sources,
         Ok(None) => return Resolve::Pending,
         Err(e) => return Resolve::Failed(e),
@@ -278,14 +278,9 @@ fn resolve_anew(spec: &Spec, key: String) -> Resolve {
             credit(attribution);
         }
     }
-    // The sprite is the style's choice; one that can't be fetched only loses the icons.
-    let sprite = style
-        .sprite
-        .as_deref()
-        .filter(|s| !s.starts_with("mapbox://"))
-        .map(|s| template::join(&base, s))
-        .filter(|s| address::check(s, Some(&base)).is_ok());
-    let r = Arc::new(Resolved { style, attribution, sprite, left_out, made: Mutex::new(Instant::now()), waiting });
+    let (sprites, sprites_left_out) = resolve_sprites(&style, &base);
+    left_out.extend(sprites_left_out);
+    let r = Arc::new(Resolved { style, attribution, sprites, left_out, made: Mutex::new(Instant::now()), waiting });
     let mut all = resolved().lock().unwrap_or_else(|e| e.into_inner());
     // A few layers are in use at a time: past that many, start again rather than grow.
     if all.len() >= MAX_RESOLVED {
@@ -293,6 +288,38 @@ fn resolve_anew(spec: &Spec, key: String) -> Resolve {
     }
     all.insert(key, r.clone());
     Resolve::Ready(r)
+}
+
+/// A style's sprites with their addresses resolved against `base`, those RustGIS can fetch, and
+/// what was left out of them, and why, if a layer not hidden draws images and so misses them: the
+/// sprites are the style's choice, and one that can't be fetched only loses its own icons.
+fn resolve_sprites(style: &Style, base: &str) -> (Vec<(String, String)>, Vec<String>) {
+    let mut sprites = Vec::new();
+    let mut left_out = style.sprites_left_out.clone();
+    let (mut mapbox, mut refused) = (Vec::new(), Vec::new());
+    for (id, s) in &style.sprites {
+        let address = template::join(base, s);
+        if s.starts_with("mapbox://") {
+            mapbox.push(id.as_str());
+        } else if address::check(&address, Some(base)).is_err() {
+            refused.push(id.as_str());
+        } else {
+            sprites.push((id.clone(), address));
+        }
+    }
+    let total = style.sprites_listed;
+    let mut say = |ids: &[&str], why: &str| {
+        if !ids.is_empty() {
+            let (n, ids) = (ids.len(), ids.join(", "));
+            left_out.push(format!("{n} of {total} sprites left out, so their icons and patterns aren't drawn ({why}): {ids}"));
+        }
+    };
+    say(&mapbox, "mapbox:// addresses need Mapbox's own library");
+    say(&refused, "RustGIS won't fetch their addresses");
+    if !style.layers.iter().any(|l| l.visible && l.draws_images()) {
+        left_out.clear();
+    }
+    (sprites, left_out)
 }
 
 /// What resolving a style's sources left out of it.
@@ -794,7 +821,7 @@ mod tests {
         let doc = serde_json::json!({"version": 8, "sources": {}, "layers": [{"id": "bg", "type": "background", "paint": {"background-color": "#f00"}}]});
         let r = Resolved {
             style: Style::parse(&doc).unwrap(),
-            sprite: None,
+            sprites: Vec::new(),
             attribution: Vec::new(),
             left_out: Vec::new(),
             made: Mutex::new(Instant::now()),
@@ -826,7 +853,7 @@ mod tests {
         assert!(matches!(style.source("dem"), Some(Source::Other)));
         let r = Resolved {
             style,
-            sprite: None,
+            sprites: Vec::new(),
             attribution: Vec::new(),
             left_out: sources.left_out,
             made: Mutex::new(Instant::now()),
@@ -848,7 +875,7 @@ mod tests {
         let left_out = vec!["elevation source dem left out, so its relief isn't drawn: gone".to_owned()];
         let r = Resolved {
             style: Style::parse(&doc).unwrap(),
-            sprite: None,
+            sprites: Vec::new(),
             attribution: Vec::new(),
             left_out,
             made: Mutex::new(Instant::now()),
@@ -866,7 +893,7 @@ mod tests {
         let Some(long_ago) = Instant::now().checked_sub(cache::RETRY * 2) else { return };
         let stale = Resolved {
             style: Style::parse(&doc).unwrap(),
-            sprite: None,
+            sprites: Vec::new(),
             attribution: Vec::new(),
             left_out: vec!["x".into()],
             made: Mutex::new(long_ago),
@@ -875,7 +902,7 @@ mod tests {
         assert!(!stale.current());
         let complete = Resolved {
             style: Style::parse(&doc).unwrap(),
-            sprite: None,
+            sprites: Vec::new(),
             attribution: Vec::new(),
             left_out: Vec::new(),
             made: Mutex::new(long_ago),
@@ -886,7 +913,7 @@ mod tests {
         let s = spec(Kind::Raster, "https://expired.example.com/{z}/{x}/{y}.png");
         let expired = Arc::new(Resolved {
             style: Style::parse(&doc).unwrap(),
-            sprite: None,
+            sprites: Vec::new(),
             attribution: Vec::new(),
             left_out: vec!["x".into()],
             made: Mutex::new(long_ago),
@@ -918,7 +945,7 @@ mod tests {
         let made = |left_out: &[&str], at: Instant| {
             Arc::new(Resolved {
                 style: Style::parse(&doc).unwrap(),
-                sprite: None,
+                sprites: Vec::new(),
                 attribution: Vec::new(),
                 left_out: left_out.iter().map(|s| s.to_string()).collect(),
                 made: Mutex::new(at),
@@ -935,7 +962,7 @@ mod tests {
         assert!(Arc::ptr_eq(&kept(old.clone(), new.clone()), &new));
         let other = Arc::new(Resolved {
             style: Style::parse(&serde_json::json!({"version": 8, "sources": {}, "layers": [{"id": "bg", "type": "background"}]})).unwrap(),
-            sprite: None,
+            sprites: Vec::new(),
             attribution: Vec::new(),
             left_out: vec!["dem: gone".into()],
             made: Mutex::new(Instant::now()),
@@ -945,7 +972,7 @@ mod tests {
         // Still waiting for an elevation source, or no longer: the new one.
         let arrived = Arc::new(Resolved {
             style: Style::parse(&doc).unwrap(),
-            sprite: None,
+            sprites: Vec::new(),
             attribution: Vec::new(),
             left_out: vec!["dem: gone".into()],
             made: Mutex::new(Instant::now()),
@@ -955,13 +982,65 @@ mod tests {
         // Only its credits changed: the new one too.
         let recredited = Arc::new(Resolved {
             style: Style::parse(&doc).unwrap(),
-            sprite: None,
+            sprites: Vec::new(),
             attribution: vec!["© Example".into()],
             left_out: vec!["dem: gone".into()],
             made: Mutex::new(Instant::now()),
             waiting: false,
         });
         assert!(Arc::ptr_eq(&kept(old, recredited.clone()), &recredited));
+    }
+
+    #[test]
+    fn sprites_that_cant_be_fetched_are_said() {
+        let base = "https://t.example.com/style.json";
+        let icons = serde_json::json!([{"id": "i", "type": "symbol", "source": "s", "layout": {"icon-image": "x"}}]);
+        let doc = serde_json::json!({"version": 8, "sources": {}, "layers": icons, "sprite": [
+            {"id": "good", "url": "sprites/a"},
+            {"id": "box", "url": "mapbox://sprites/x"},
+            {"id": "meta", "url": "http://169.254.169.254/s"},
+            {"url": "no-id"}]});
+        let (sprites, said) = resolve_sprites(&Style::parse(&doc).unwrap(), base);
+        assert_eq!(sprites, [("good".to_owned(), "https://t.example.com/sprites/a".to_owned())]);
+        assert_eq!(said.len(), 3, "{said:?}");
+        assert!(said[0].starts_with("1 of 4 sprites left out"), "{said:?}");
+        assert!(said[1].starts_with("1 of 4 sprites left out") && said[1].contains("mapbox://") && said[1].ends_with(": box"), "{said:?}");
+        assert!(said[2].starts_with("1 of 4 sprites left out") && said[2].ends_with(": meta"), "{said:?}");
+        // One line per reason, however many: with how many, and which.
+        let two = |layers: &serde_json::Value| {
+            let doc = serde_json::json!({"version": 8, "sources": {}, "layers": layers, "sprite": [
+                {"id": "a", "url": "mapbox://sprites/a"}, {"id": "b", "url": "mapbox://sprites/b"}]});
+            resolve_sprites(&Style::parse(&doc).unwrap(), base).1
+        };
+        // Said only of a style that misses them: not with no layer drawing images, or one hidden.
+        assert!(two(&serde_json::json!([])).is_empty());
+        let hidden = serde_json::json!([{"id": "i", "type": "symbol", "source": "s", "layout": {"icon-image": "x", "visibility": "none"}}]);
+        assert!(two(&hidden).is_empty());
+        let said = two(&icons);
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert!(said[0].starts_with("2 of 2 sprites left out") && said[0].ends_with(": a, b"), "{said:?}");
+        // Clean: nothing to say.
+        let doc = serde_json::json!({"version": 8, "sources": {}, "layers": [], "sprite": "https://t.example.com/s"});
+        assert!(resolve_sprites(&Style::parse(&doc).unwrap(), base).1.is_empty());
+    }
+
+    #[test]
+    fn only_layers_drawing_images_miss_a_sprite() {
+        let layer = |j: serde_json::Value| crate::style::StyleLayer::parse(&j).unwrap();
+        let of = |kind: &str, what: serde_json::Value| {
+            let mut l = serde_json::json!({"id": "a", "type": kind, "source": "s"});
+            l.as_object_mut().unwrap().extend(what.as_object().unwrap().clone());
+            layer(l)
+        };
+        assert!(of("symbol", serde_json::json!({"layout": {"icon-image": "x"}})).draws_images());
+        assert!(of("fill", serde_json::json!({"paint": {"fill-pattern": "x"}})).draws_images());
+        assert!(!of("symbol", serde_json::json!({"layout": {"text-field": "x"}})).draws_images());
+        assert!(!of("fill", serde_json::json!({"paint": {"fill-color": "#000"}})).draws_images());
+        // A line painted with a pattern isn't drawn, so it misses nothing.
+        assert!(!of("line", serde_json::json!({"paint": {"line-pattern": "x"}})).draws_images());
+        // Nor does another kind of layer naming an icon, or a pattern, that it doesn't draw.
+        assert!(!of("circle", serde_json::json!({"layout": {"icon-image": "x"}})).draws_images());
+        assert!(!of("circle", serde_json::json!({"paint": {"fill-pattern": "x"}})).draws_images());
     }
 
     #[test]

@@ -30,6 +30,7 @@ use web_time::{Duration, Instant};
 use crate::cache::{self, Payload};
 use crate::draw::{Drawn, Frame, Item, Pass, draw_layers, overhang};
 use crate::source::Resolved;
+use crate::sprite::{self, Load};
 use crate::style::{LayerKind, Source};
 use crate::template::{self, Placed, TileId};
 
@@ -67,6 +68,28 @@ struct Entry {
     /// Drawn while some of it was on its way, at this cache generation: drawn again once the
     /// cache has more.
     waiting: Option<u64>,
+    /// For a style with pattern fills, the ids of the sprites it was drawn from.
+    sheets: Option<Vec<String>>,
+}
+
+/// Whether any of a style's sprites are on their way and, if it shows pattern fills at `zoom` and
+/// none are, the ids of those read: what its pictures' fills are drawn from now.
+fn sprites_read(r: &Resolved, zoom: f32, ppp: f32) -> (bool, Option<Vec<String>>) {
+    if !r.style.layers.iter().any(|l| l.visible_at(zoom) && l.draws_patterns()) {
+        return (false, None);
+    }
+    match sprite::load(&r.sprites, ppp >= 1.5) {
+        Load::Pending => (true, None),
+        Load::Ready(s) => (false, Some(s.sheet_ids())),
+        Load::Failed => (false, Some(Vec::new())),
+    }
+}
+
+/// Whether a picture drawn from the sprites `sheets` still serves while `pending` of them are on
+/// their way and `read` have been read. Other sprites read (one that failed read after all, or
+/// another failing instead) draw it again, once; until then it stands.
+fn sprites_serve(sheets: Option<&[String]>, pending: bool, read: Option<&[String]>) -> bool {
+    pending || sheets == read
 }
 
 #[derive(Default)]
@@ -209,6 +232,7 @@ pub(crate) fn cover(r: &Arc<Resolved>, frame: &Frame, view: &Extent, reach: Opti
     let m_per_px = TileId::span(z) / f64::from(side);
     let key = |tile| Key { style: Arc::as_ptr(r) as usize, tile, step: step as i32, ppp: ppp.to_bits() };
     let generation = cache::generation();
+    let (sprites_pending, read) = sprites_read(r, zoom, ppp);
     // A view of more squares than a covering holds (a huge window) is drawn straight instead;
     // a reach of more keeps to the view.
     let span = TileId::span(z);
@@ -229,9 +253,14 @@ pub(crate) fn cover(r: &Arc<Resolved>, frame: &Frame, view: &Extent, reach: Opti
             let in_view = p.extent().intersects(view);
             let e = s.entries.get_mut(&key(p.id)).filter(|e| e.style.upgrade().is_some_and(|x| Arc::ptr_eq(&x, r)));
             match e {
-                Some(e) if !in_view || e.waiting.is_none_or(|g| g == generation) => {
+                Some(e)
+                    if !in_view
+                        || (e.waiting.is_none_or(|g| g == generation)
+                            && sprites_serve(e.sheets.as_deref(), sprites_pending, read.as_deref())) =>
+                {
                     e.used = tick;
-                    *pending |= in_view && e.waiting.is_some();
+                    // (A sprite on its way may add to it: an export waits.)
+                    *pending |= in_view && (e.waiting.is_some() || sprites_pending);
                     found.push((p, Some(e.picture.clone())));
                 }
                 _ if in_view => {
@@ -286,8 +315,14 @@ pub(crate) fn cover(r: &Arc<Resolved>, frame: &Frame, view: &Extent, reach: Opti
             *pending |= waiting;
             let bytes = pm.data().len();
             let picture = Arc::new(Payload::Image(pm));
-            let entry =
-                Entry { style: Arc::downgrade(r), picture: picture.clone(), bytes, used: tick, waiting: waiting.then_some(generation) };
+            let entry = Entry {
+                style: Arc::downgrade(r),
+                picture: picture.clone(),
+                bytes,
+                used: tick,
+                waiting: waiting.then_some(generation),
+                sheets: read.clone(),
+            };
             s.bytes += bytes;
             if let Some(old) = s.entries.insert(key(slot.0.id), entry) {
                 s.bytes = s.bytes.saturating_sub(old.bytes);
@@ -564,6 +599,22 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         panic!("still pending");
+    }
+
+    #[test]
+    fn a_picture_is_drawn_again_when_other_sprites_are_read() {
+        let ids = |list: &[&str]| list.iter().map(|id| id.to_string()).collect::<Vec<_>>();
+        let (none, a, b, both) = (ids(&[]), ids(&["a"]), ids(&["a2"]), ids(&["a", "a2"]));
+        // No pattern fills: it stands.
+        assert!(sprites_serve(None, false, None));
+        // Drawn from all that could be read: it stands while the other keeps failing...
+        assert!(sprites_serve(Some(&a), false, Some(&a)) && sprites_serve(Some(&none), false, Some(&none)));
+        // ...and while that one is asked for again...
+        assert!(sprites_serve(Some(&a), true, None));
+        // ...and is drawn again when it is read, or another is read in its place.
+        assert!(!sprites_serve(Some(&a), false, Some(&both)) && !sprites_serve(Some(&a), false, Some(&b)));
+        // Drawn while they were on their way: once they've come.
+        assert!(!sprites_serve(None, false, Some(&both)));
     }
 
     #[test]

@@ -164,13 +164,13 @@ type LastTile = (std::sync::Weak<crate::tile_mesh::TileMesh>, [f64; 2], [f32; 4]
 type Last = std::collections::HashMap<usize, (std::sync::Weak<rustgis_tiles::source::Resolved>, Vec<LastTile>)>;
 static LAST: std::sync::OnceLock<std::sync::Mutex<Last>> = std::sync::OnceLock::new();
 
-/// The meshes of `v`'s tiles, and whether some were made while the sprite was on its way. A map
+/// The meshes of `v`'s tiles, and whether a sprite they use is on its way. A map
 /// drawn for the screen at a pace (see `rustgis_tiles::Pace`) makes those missing a frame's worth
 /// at a time, nearest `centre` first, the tiles drawn last standing in for the rest meanwhile,
 /// clipped to their squares.
 fn mesh_tiles(v: &rustgis_tiles::shapes::VectorTiles, centre: [f64; 2]) -> (Vec<MeshTile>, bool) {
     let pace = rustgis_tiles::pace();
-    let meshes = crate::tile_mesh::meshes(&v.style, &v.source, &v.tiles, v.level, pace.map(|(_, until)| (until, centre)));
+    let (meshes, mut waiting) = crate::tile_mesh::meshes(&v.style, &v.source, &v.tiles, v.level, pace.map(|(_, until)| (until, centre)));
     let lock = || LAST.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
     let key = std::sync::Arc::as_ptr(&v.style) as usize;
     let last: Vec<MeshTile> = lock()
@@ -183,7 +183,7 @@ fn mesh_tiles(v: &rustgis_tiles::shapes::VectorTiles, centre: [f64; 2]) -> (Vec<
                 .collect()
         })
         .unwrap_or_default();
-    let (mut stood_in, mut tiles, mut waiting) = (Vec::new(), Vec::new(), false);
+    let (mut stood_in, mut tiles) = (Vec::new(), Vec::new());
     for (d, m) in v.tiles.iter().zip(meshes) {
         let o = [d.at.min_x, d.at.max_y];
         match m {
@@ -346,7 +346,8 @@ pub(crate) fn draw(
                 if !tiles.is_empty() {
                     g.cmds.push(DrawCmd::TileMeshes { tiles });
                 }
-                let d = rustgis_tiles::Drawn { labels: v.labels, attribution: v.attribution, pending: v.pending || waiting, error: None };
+                let d =
+                    rustgis_tiles::Drawn { labels: v.labels, attribution: v.attribution, pending: v.pending || waiting, error: v.error };
                 collect(d, &t.name, &mut out);
                 continue;
             }

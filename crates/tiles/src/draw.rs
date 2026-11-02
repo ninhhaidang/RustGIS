@@ -61,9 +61,37 @@ pub(crate) struct Item {
     pub(crate) clip: Extent,
 }
 
-/// What of a resolved style was left out, as a drawing's error: the style still draws.
-fn left_out(r: &Resolved) -> Option<String> {
-    (!r.left_out.is_empty()).then(|| r.left_out.join("; "))
+/// What of a resolved style was left out, as a drawing's error (the style still draws): what
+/// resolving it left out, and any sprites that couldn't be read, for the images shown at `frame`.
+/// A drawing takes its images at the frame's density; a mesh (`mesh`) its pattern fills at 1×.
+pub(crate) fn left_out(r: &Resolved, frame: &Frame, mesh: bool) -> Option<String> {
+    let zoom = template::style_zoom(frame.m_per_px * f64::from(frame.ppp));
+    let shown = |draws: fn(&StyleLayer) -> bool| r.style.layers.iter().any(|l| l.visible_at(zoom) && draws(l));
+    let hi_dpi = frame.ppp >= 1.5;
+    let unread = sprite_notes(shown(StyleLayer::draws_icons), shown(StyleLayer::draws_patterns), hi_dpi, hi_dpi && !mesh, |hi, what| {
+        sprite::unread_note(&r.sprites, r.style.sprites_listed, &sprite::load(&r.sprites, hi), what)
+    });
+    let all: Vec<&str> = r.left_out.iter().map(String::as_str).chain(unread.iter().map(String::as_str)).collect();
+    (!all.is_empty()).then(|| all.join("; "))
+}
+
+/// What to say of sprites that couldn't be read (`note`, at a density), for what is shown: a style's
+/// `icons` come at one density, and its `patterns` at another or the same.
+fn sprite_notes(
+    icons: bool,
+    patterns: bool,
+    icons_hi: bool,
+    patterns_hi: bool,
+    note: impl Fn(bool, &str) -> Option<String>,
+) -> Vec<String> {
+    let notes = match (icons, patterns) {
+        (false, false) => [None, None],
+        (true, false) => [note(icons_hi, "icons"), None],
+        (false, true) => [note(patterns_hi, "patterns"), None],
+        (true, true) if icons_hi == patterns_hi => [note(icons_hi, "icons and patterns"), None],
+        (true, true) => [note(icons_hi, "icons"), note(patterns_hi, "patterns")],
+    };
+    notes.into_iter().flatten().collect()
 }
 
 /// Draws `spec` into `pm` at `opacity`. Labels are collected when `labels` is set.
@@ -81,7 +109,7 @@ pub fn draw(pm: &mut Pixmap, spec: &Spec, opacity: f32, frame: &Frame, labels: b
         }
     };
     out.attribution = r.attribution.clone();
-    out.error = left_out(&r);
+    out.error = left_out(&r, frame, false);
     out.pending |= r.waiting;
     if !(frame.m_per_px.is_finite() && frame.m_per_px > 0.0) || opacity <= 0.0 {
         return out;
@@ -141,13 +169,13 @@ pub(crate) fn draw_layers(
     let mut sprite_state: Option<Option<Arc<Sprite>>> = None;
     let mut sprite = |pending: &mut bool| -> Option<Arc<Sprite>> {
         sprite_state
-            .get_or_insert_with(|| match r.sprite.as_deref().map(|b| sprite::load(b, frame.ppp >= 1.5)) {
-                Some(Load::Ready(s)) => Some(s),
-                Some(Load::Pending) => {
+            .get_or_insert_with(|| match sprite::load(&r.sprites, frame.ppp >= 1.5) {
+                Load::Ready(s) => Some(s),
+                Load::Pending => {
                     *pending = true;
                     None
                 }
-                Some(Load::Failed) | None => None,
+                Load::Failed => None,
             })
             .clone()
     };
@@ -306,7 +334,7 @@ fn place_as(
         }
     };
     out.attribution = r.attribution.clone();
-    out.error = left_out(&r);
+    out.error = left_out(&r, frame, false);
     out.pending |= r.waiting;
     if !(frame.m_per_px.is_finite() && frame.m_per_px > 0.0) || opacity <= 0.0 {
         return Some(out);
@@ -413,7 +441,7 @@ pub fn pick(spec: &Spec, x: f64, y: f64, m_per_px: f64, tol_px: f32, limit: usiz
             let p = [((x - it.at.min_x) * units) as f32, ((it.at.max_y - y) * units) as f32];
             let px = (m_per_px * units) as f32;
             for (fi, f) in l.features.iter().enumerate() {
-                let ctx = FeatureCtx { zoom, kind: f.kind, id: f.id, props: &f.props };
+                let ctx = FeatureCtx { zoom, kind: f.kind, id: f.id, props: &f.props, images: None };
                 if !layer.matches(&ctx) {
                     continue;
                 }
@@ -781,7 +809,7 @@ fn draw_vector(pm: &mut Pixmap, it: &Item, layer: &StyleLayer, frame: &Frame, zo
         if boxes.get(i).is_some_and(|b| b[0] > area[2] || b[2] < area[0] || b[1] > area[3] || b[3] < area[1]) {
             continue;
         }
-        let ctx = FeatureCtx { zoom, kind: f.kind, id: f.id, props: &f.props };
+        let ctx = FeatureCtx { zoom, kind: f.kind, id: f.id, props: &f.props, images: None };
         if !layer.matches(&ctx) {
             continue;
         }
@@ -801,8 +829,9 @@ fn draw_vector(pm: &mut Pixmap, it: &Item, layer: &StyleLayer, frame: &Frame, zo
                 paint.anti_alias = true;
                 // A pattern from the sprite, repeated from a fixed point of the world so it
                 // lines up across tiles and stays put as the map moves.
+                // (Its name may be an `image` expression, which asks the sprite.)
                 let image = pattern(layer).and_then(|p| {
-                    let name = layer.paint_value(p, &ctx)?;
+                    let name = layer.paint_value(p, &FeatureCtx { images: sheet, ..ctx })?;
                     sheet?.image(name.as_str()?, None)
                 });
                 if pattern(layer).is_some() && image.is_none() {
@@ -1185,8 +1214,63 @@ pub(crate) mod tests {
             &serde_json::json!({"id": "a", "type": "fill", "source": "s", "source-layer": "l", "paint": {"fill-pattern": "nope"}}),
         )
         .unwrap();
-        draw_vector(&mut pm, &item(vec![square]), &missing, &world_frame(), 0.0, Some(&sheet()), &[]);
+        draw_vector(&mut pm, &item(vec![square.clone()]), &missing, &world_frame(), 0.0, Some(&sheet()), &[]);
         assert_eq!(pm.pixel(32, 32).unwrap().alpha(), 0);
+        // A pattern chosen with `image`: the first the sprite has.
+        let chosen = StyleLayer::parse(&serde_json::json!({"id": "a", "type": "fill", "source": "s", "source-layer": "l",
+            "paint": {"fill-pattern": ["coalesce", ["image", "nope"], ["image", "red"]]}}))
+        .unwrap();
+        let mut pm = Pixmap::new(64, 64).unwrap();
+        draw_vector(&mut pm, &item(vec![square]), &chosen, &world_frame(), 0.0, Some(&sheet()), &[]);
+        let px = pm.pixel(32, 32).unwrap();
+        assert_eq!((px.red(), px.green(), px.alpha()), (255, 0, 255));
+    }
+
+    #[test]
+    fn sprite_notes_say_what_each_density_loses() {
+        // Only the 1× sprites failed.
+        let note = |hi: bool, what: &str| (!hi).then(|| what.to_owned());
+        // A drawing at high density takes all from `@2x`: nothing lost.
+        assert!(sprite_notes(true, true, true, true, note).is_empty());
+        // A mesh at high density: its icons from `@2x`, its patterns from 1×.
+        assert_eq!(sprite_notes(true, true, true, false, note), ["patterns"]);
+        // At 1×, both, in one line.
+        assert_eq!(sprite_notes(true, true, false, false, note), ["icons and patterns"]);
+        assert_eq!(sprite_notes(true, false, false, false, note), ["icons"]);
+        assert_eq!(sprite_notes(false, true, false, false, note), ["patterns"]);
+        // Nothing shown that needs them: nothing to say, however they fared.
+        assert!(sprite_notes(false, false, false, false, note).is_empty());
+        // Each density failing: a line each.
+        assert_eq!(sprite_notes(true, true, true, false, |_, what| Some(what.to_owned())), ["icons", "patterns"]);
+    }
+
+    #[test]
+    fn fills_with_a_pattern_of_a_named_sprite() {
+        let picture = |c: tiny_skia::Color| {
+            let mut p = Pixmap::new(4, 4).unwrap();
+            p.fill(c);
+            p
+        };
+        let at = serde_json::json!({"x": 0, "y": 0, "width": 4, "height": 4});
+        let (red, green) = (tiny_skia::Color::from_rgba8(255, 0, 0, 255), tiny_skia::Color::from_rgba8(0, 255, 0, 255));
+        // Two sprites with an image of the same name: the id picks.
+        let sprites = crate::sprite::Sprite::of(vec![
+            ("base", serde_json::json!({"dots": at}), picture(red)),
+            ("nautical", serde_json::json!({"dots": at}), picture(green)),
+        ]);
+        let square = crate::mvt::Feature {
+            id: None,
+            kind: GeomKind::Polygon,
+            geometry: vec![vec![[0.0, 0.0], [4096.0, 0.0], [4096.0, 4096.0], [0.0, 4096.0], [0.0, 0.0]]],
+            props: Vec::new(),
+        };
+        let layer = StyleLayer::parse(&serde_json::json!({"id": "a", "type": "fill", "source": "s", "source-layer": "l",
+            "paint": {"fill-pattern": ["image", "nautical:dots"]}}))
+        .unwrap();
+        let mut pm = Pixmap::new(64, 64).unwrap();
+        draw_vector(&mut pm, &item(vec![square]), &layer, &world_frame(), 0.0, Some(&sprites), &[]);
+        let px = pm.pixel(32, 32).unwrap();
+        assert_eq!((px.red(), px.green(), px.alpha()), (0, 255, 255));
     }
 
     /// A one-feature MVT layer with one string property, `name`.
