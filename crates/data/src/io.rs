@@ -1853,13 +1853,14 @@ struct ShapefileParts {
 
 /// Decodes attributes and shapes together, tracking geometry lost during CRS conversion so
 /// a later projection definition cannot silently repair an incomplete layer.
-fn read_shapefile_parts(parts: ShapefileParts, name: &str, crs: Option<Crs>) -> Result<(Dataset, ReadReport)> {
+fn read_shapefile_parts(mut parts: ShapefileParts, name: &str, crs: Option<Crs>) -> Result<(Dataset, ReadReport)> {
     use shapefile::Shape;
     use shapefile::dbase::FieldValue;
     use std::io::Cursor;
     let fmt = |e: shapefile::Error| DataError::Format(format!("Shapefile: {e}"));
     let mut encoding_notes = Vec::new();
     let encoding = crate::dbf::encoding(parts.cpg.as_deref(), parts.dbf.get(29).copied().unwrap_or(0), &mut encoding_notes);
+    crate::dbf::readable_header_date(&mut parts.dbf);
     let dbf = shapefile::dbase::ReaderBuilder::new()
         .with_encoding(encoding.decoder())
         .build(Cursor::new(parts.dbf))
@@ -2886,6 +2887,42 @@ mod tests {
         assert_eq!(ds.geometry_type, GeometryType::Polygon);
         assert!(read_path(&dir.join("x.kml")).is_err());
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A `.dbf` whose header date is zero, as GeoLibre's runner writes, opens with its rows:
+    /// read from a file, from a zip, and streamed (#1272).
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_dbf_with_a_zero_header_date_opens() {
+        use shapefile::dbase::{FieldValue, Record, TableWriterBuilder};
+        let dir = tempfile::tempdir().unwrap();
+        let shp = dir.path().join("curvas.shp");
+        {
+            let table = TableWriterBuilder::new().add_character_field("name".try_into().unwrap(), 10);
+            let mut w = shapefile::Writer::from_path(&shp, table).unwrap();
+            for name in ["a", "b"] {
+                let mut r = Record::default();
+                r.insert("name".into(), FieldValue::Character(Some(name.into())));
+                w.write_shape_and_record(&shapefile::Point::new(1.0, 2.0), &r).unwrap();
+            }
+        }
+        let dbf = shp.with_extension("dbf");
+        let mut bytes = std::fs::read(&dbf).unwrap();
+        bytes[1..4].copy_from_slice(&[0, 0, 0]);
+        std::fs::write(&dbf, &bytes).unwrap();
+        let names = |ds: &Dataset| (0..ds.features.len()).map(|r| ds.value(r, 0).clone()).collect::<Vec<_>>();
+        let rows = vec![Value::Text("a".into()), Value::Text("b".into())];
+        let (ds, rep) = read_path(&shp).unwrap();
+        assert_eq!(names(&ds), rows);
+        assert!(rep.messages.is_empty(), "{:?}", rep.messages);
+        let entries: Vec<(String, Vec<u8>)> =
+            ["shp", "shx", "dbf"].iter().map(|e| (format!("curvas.{e}"), std::fs::read(shp.with_extension(e)).unwrap())).collect();
+        let layers = read_zip("curvas.zip", &crate::zip::write(&entries).unwrap()).unwrap();
+        assert_eq!(names(&layers[0].0), rows);
+        let src = crate::source::shp::ShpSource::open_path(&shp, "curvas").unwrap();
+        assert_eq!(names(&crate::source::materialize(&src).unwrap().0), rows);
+        // The file itself is left as it was.
+        assert_eq!(std::fs::read(&dbf).unwrap(), bytes);
     }
 
     /// A projected Shapefile is converted to longitude/latitude by its `.prj` (issue #84).

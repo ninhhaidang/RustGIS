@@ -159,6 +159,17 @@ fn page_name(page: u16) -> Option<&'static str> {
     })
 }
 
+/// Makes a `.dbf` header's last-update date (bytes 1–3: years since 1900, month, day) one `dbase`
+/// accepts, so a writer that leaves it zero doesn't make the file unreadable (#1272). Nothing reads
+/// the date, so a placeholder (1 January of its year) is all it takes; a real date is kept.
+pub(crate) fn readable_header_date(dbf: &mut [u8]) {
+    if let Some([month, day]) = dbf.get_mut(2..4)
+        && (!(1..=12).contains(month) || !(1..=31).contains(day))
+    {
+        (*month, *day) = (1, 1);
+    }
+}
+
 /// A code-page label should be a few bytes. Bound reads even for a hostile sidecar.
 pub(crate) fn read_cpg(path: &std::path::Path, notes: &mut Vec<String>) -> Option<Vec<u8>> {
     match try_read_cpg(path) {
@@ -191,6 +202,28 @@ fn try_read_cpg(path: &std::path::Path) -> std::io::Result<Option<Vec<u8>>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A header date that isn't one gets a placeholder; a real one, and a header cut too short
+    /// to have one, are left as they are.
+    #[test]
+    fn a_header_date_that_isnt_one_is_made_readable() {
+        for (date, readable) in [
+            ([0, 0, 0], [0, 1, 1]),
+            ([126, 0, 1], [126, 1, 1]),
+            ([126, 11, 0], [126, 1, 1]),
+            ([126, 13, 1], [126, 1, 1]),
+            ([126, 2, 32], [126, 1, 1]),
+            ([126, 11, 1], [126, 11, 1]),
+            ([255, 12, 31], [255, 12, 31]),
+        ] {
+            let mut header = [3, date[0], date[1], date[2], 9];
+            readable_header_date(&mut header);
+            assert_eq!(header, [3, readable[0], readable[1], readable[2], 9], "{date:?}");
+        }
+        let mut short = [3, 0, 0];
+        readable_header_date(&mut short);
+        assert_eq!(short, [3, 0, 0]);
+    }
 
     /// Every language driver dbase's own table names and RustGIS read before keeps its code page:
     /// the table replaced dbase's, and must not lose or change one of its entries.
