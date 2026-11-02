@@ -1930,6 +1930,7 @@ fn split(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
     let mut whole: Vec<Option<std::borrow::Cow<'_, Geometry>>> = vec![None; located.len()];
     let mut layers = Vec::new();
     let mut empty = 0usize;
+    let mut cand_buf = Vec::new();
     for (name, members) in groups {
         let polys: Vec<&Zone> = members.iter().filter_map(|zi| zones.get(*zi)).collect();
         let mask = match polys.as_slice() {
@@ -1939,7 +1940,8 @@ fn split(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
         let ext = polys.iter().fold(Extent::EMPTY, |e, z| e.union(&z.ext));
         let mut out = copy_schema(ds, format!("{prefix}_{name}"), ds.geometry_type);
         keep_source_crs(&mut out, ds, sp);
-        for li in index.candidates(&ext) {
+        index.candidates_into(&ext, &mut cand_buf);
+        for &li in &cand_buf {
             let Some((r, e)) = located.get(li) else { continue };
             let Some(f) = ds.features.get(*r) else { continue };
             let (Some(g), Some(slot)) = (f.geometry.as_ref().filter(|_| e.intersects(&ext)), whole.get_mut(li)) else { continue };
@@ -2954,11 +2956,13 @@ fn count_points(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
         .collect();
     let index = ExtentIndex::new(zones.iter().map(|(_, _, ext)| *ext));
     let mut counts = vec![0i64; out.features.len()];
+    let mut cand_buf = Vec::new();
     for r in rows(inp, p, "points", pts) {
         let Some(g) = pts.features.get(r).and_then(|f| f.geometry.as_ref()) else { continue };
         let pg = to_geo(g);
         let ext = merc_extent(&pg);
-        for zi in index.candidates(&ext) {
+        index.candidates_into(&ext, &mut cand_buf);
+        for &zi in &cand_buf {
             let Some((row, mp, z_ext)) = zones.get(zi) else { continue };
             if z_ext.intersects(&ext)
                 && mp.intersects(&pg)
@@ -4059,22 +4063,32 @@ impl ExtentIndex {
         false
     }
 
-    /// The features whose extents may meet `ext`, in order and once each: every feature without a
-    /// grid. Each still needs its own test.
-    fn candidates(&self, ext: &Extent) -> Vec<usize> {
-        let Some(grid) = &self.grid else { return (0..self.len).collect() };
-        let Some(((x0, y0), (x1, y1))) = self.query_cells(ext) else { return Vec::new() };
-        let mut found = Vec::new();
+    /// Replaces the contents of `out` with the candidate features meeting `ext`, in order and once each.
+    /// Without a grid that is every feature, whether or not it meets `ext`.
+    fn candidates_into(&self, ext: &Extent, out: &mut Vec<usize>) {
+        out.clear();
+        let Some(grid) = &self.grid else {
+            out.extend(0..self.len);
+            return;
+        };
+        let Some(((x0, y0), (x1, y1))) = self.query_cells(ext) else { return };
         for x in x0..=x1 {
             for y in y0..=y1 {
                 if let Some(indices) = grid.get(&(x, y)) {
-                    found.extend_from_slice(indices);
+                    out.extend_from_slice(indices);
                 }
             }
         }
-        found.sort_unstable();
-        found.dedup();
-        found
+        out.sort_unstable();
+        out.dedup();
+    }
+
+    /// The features whose extents may meet `ext`, in order and once each: every feature without a
+    /// grid. Each still needs its own test.
+    fn candidates(&self, ext: &Extent) -> Vec<usize> {
+        let mut out = Vec::new();
+        self.candidates_into(ext, &mut out);
+        out
     }
 }
 
@@ -4410,12 +4424,11 @@ fn spatial_join(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
     let join_fields_len = join.fields.len();
 
     let index = ExtentIndex::new(join_geoms.iter().map(|j| j.ext));
-    // The join features whose extents may meet `ext`, in join order.
-    let candidates = |ext: &Extent| index.candidates(ext);
     let nearby = Nearby { feats: &join_geoms, index: &index };
 
     let mut total_matches = 0usize;
     let mut written_features = 0usize;
+    let mut cand_buf = Vec::new();
 
     for tr in target_rows {
         let Some(tf) = target.features.get(tr) else { continue };
@@ -4429,7 +4442,8 @@ fn spatial_join(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
 
             match mode {
                 JoinMatch::Intersects | JoinMatch::Contains | JoinMatch::Within => {
-                    for j in candidates(&t_ext).into_iter().filter_map(at) {
+                    index.candidates_into(&t_ext, &mut cand_buf);
+                    for j in cand_buf.iter().copied().filter_map(at) {
                         let hit = match mode {
                             JoinMatch::Contains => extent_contains(&t_ext, &j.ext) && Contains::contains(&t_geo, &j.geo),
                             JoinMatch::Within => extent_contains(&j.ext, &t_ext) && Contains::contains(&j.geo, &t_geo),
@@ -4443,7 +4457,8 @@ fn spatial_join(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
                 JoinMatch::CentreIn => {
                     if let Some(pt) = interior_point(tg) {
                         let (p_ext, p_geo) = (pt.extent(), to_geo(&pt));
-                        for j in candidates(&p_ext).into_iter().filter_map(at) {
+                        index.candidates_into(&p_ext, &mut cand_buf);
+                        for j in cand_buf.iter().copied().filter_map(at) {
                             if j.ext.intersects(&p_ext) && j.geo.intersects(&p_geo) {
                                 matches.push((j.row, None));
                             }
@@ -4452,7 +4467,8 @@ fn spatial_join(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
                 }
                 JoinMatch::LargestOverlap => {
                     let mut best: Option<(usize, f64)> = None;
-                    for j in candidates(&t_ext).into_iter().filter_map(at) {
+                    index.candidates_into(&t_ext, &mut cand_buf);
+                    for j in cand_buf.iter().copied().filter_map(at) {
                         if !t_ext.intersects(&j.ext) {
                             continue;
                         }
@@ -7424,6 +7440,21 @@ mod tests {
         let near_start = index.candidates(&Extent::new(0.0, 0.0, 0.02, 0.005));
         assert!(near_start.first() == Some(&0) && near_start.len() < 20, "{near_start:?}");
         assert!(index.candidates(&Extent::new(5.0, 5.0, 6.0, 6.0)).is_empty());
+
+        let mut buf = Vec::new();
+        index.candidates_into(&Extent::new(0.0, 0.0, 0.02, 0.005), &mut buf);
+        assert_eq!(buf, near_start);
+        let ptr = buf.as_ptr();
+        index.candidates_into(&Extent::new(5.0, 5.0, 6.0, 6.0), &mut buf);
+        assert!(buf.is_empty());
+        assert_eq!(buf.as_ptr(), ptr, "the buffer's allocation is reused");
+
+        // An index without a grid (<= 16 features) replaces the buffer with all feature indices.
+        let small_index = ExtentIndex::new((0..5).map(|i| Extent::new(f64::from(i), 0.0, f64::from(i) + 0.1, 0.1)));
+        assert!(small_index.cell_size().is_none());
+        let mut stale_buf = vec![999];
+        small_index.candidates_into(&Extent::new(0.0, 0.0, 10.0, 10.0), &mut stale_buf);
+        assert_eq!(stale_buf, (0..5).collect::<Vec<_>>());
     }
 
     #[test]
