@@ -19,14 +19,16 @@ Based on the RustGIS user guide, Analysis › Geoprocessing tools
      one covers), `update` (`input`, `update`: the input's polygons with the update polygons
      laid over them), `split` (`input`, `split`, `field`: one clipped layer per split polygon
      or field value)
-   - generalization: `dissolve` (`input`, `field`), `simplify` (`input`, `tolerance`)
+   - generalization: `dissolve` (`input`, `field`, `statistics`: summary fields over each
+     group's records, as in `summaryStatistics`), `simplify` (`input`, `tolerance`)
    - geometry: `convexHull`, `featureToPoint`, `featureVerticesToPoints`, `xyTableToPoint`
      (`input`, `x`, `y`, `crs`), `calculateGeometry`; `polygonToLine`, `splitLineAtVertices`,
      `featureEnvelopeToPolygon`, `unsplitLine` (`input`, optional `output`; see the user guide
      for envelope axes and endpoint-joining rules)
    - selection: `selectByLocation` (`input`, `select`, `distance`, `invert`), `selectByAttributes`
      (`input`, `where`)
-   - statistics: `countPoints` (Summarize Within: `polygons`, `points`), `summaryStatistics`
+   - statistics: `countPoints` (Summarize Within: `polygons`, `points`, `statistics`: summary
+     fields of the points in each polygon, as in `summaryStatistics`), `summaryStatistics`
      (`input`, `statistics`, `case`), `pivotTable` (`input`, `fields`, `pivot`, `value`, `statistic`),
      `tabulateIntersection` (`zones`, `zoneFields`, `classes`, `classFields`, `sumFields`: class
      areas and totals shared out to zones by overlap)

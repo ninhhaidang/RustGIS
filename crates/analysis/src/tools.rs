@@ -25,6 +25,15 @@ const DISTANCE_MATCHES: &[&str] = &["Closest", "Within a distance"];
 const JOIN_OPERATIONS: &[&str] = &["Join one to one", "Join one to many"];
 const TARGET_RECORDS: &[&str] = &["Keep all", "Keep only matching"];
 const KERNEL_TYPES: &[&str] = &["Quartic", "Gaussian"];
+/// The separator CONCATENATE joins values with, in the tools that take a statistics list.
+const SEPARATOR: P = P {
+    name: "separator",
+    label: "Separator",
+    kind: K::Text,
+    required: false,
+    default: "\", \"",
+    help: "Put between the values CONCATENATE joins.",
+};
 
 pub static TOOLS: &[ToolSpec] = &[
     ToolSpec {
@@ -204,6 +213,15 @@ pub static TOOLS: &[ToolSpec] = &[
         params: &[
             P { name: "input", label: "Input Features", kind: K::PolygonLayer, required: true, default: "", help: "" },
             P { name: "field", label: "Dissolve Field", kind: K::Field, required: false, default: "", help: "" },
+            P {
+                name: "statistics",
+                label: "Statistics",
+                kind: K::FieldStatistics { input: "input", statistics: crate::StatisticList::Summary },
+                required: false,
+                default: "",
+                help: "Summary fields to add, as (field, statistic) pairs over each group's polygons, e.g. [{\"field\": \"pop\", \"statistic\": \"SUM\"}] adds SUM_pop. The statistics of Summary Statistics.",
+            },
+            SEPARATOR,
             P { name: "output", label: "Output Name", kind: K::Text, required: false, default: "", help: "" },
         ],
         run: dissolve,
@@ -444,6 +462,15 @@ pub static TOOLS: &[ToolSpec] = &[
         params: &[
             P { name: "polygons", label: "Input Polygons", kind: K::PolygonLayer, required: true, default: "", help: "" },
             P { name: "points", label: "Input Summary Features", kind: K::PointLayer, required: true, default: "", help: "" },
+            P {
+                name: "statistics",
+                label: "Statistics",
+                kind: K::FieldStatistics { input: "points", statistics: crate::StatisticList::Summary },
+                required: false,
+                default: "",
+                help: "Summary fields to add, as (field, statistic) pairs over the points in each polygon, e.g. [{\"field\": \"pop\", \"statistic\": \"SUM\"}] adds SUM_pop. The statistics of Summary Statistics.",
+            },
+            SEPARATOR,
             P { name: "output", label: "Output Name", kind: K::Text, required: false, default: "", help: "" },
         ],
         run: count_points,
@@ -487,14 +514,7 @@ pub static TOOLS: &[ToolSpec] = &[
                 default: "",
                 help: "Groups records by the combination of these fields' values. Scripts and the AI Assistant can give several fields as a list.",
             },
-            P {
-                name: "separator",
-                label: "Separator",
-                kind: K::Text,
-                required: false,
-                default: "\", \"",
-                help: "Put between the values CONCATENATE joins.",
-            },
+            SEPARATOR,
         ],
         run: summary_statistics,
     },
@@ -1967,6 +1987,10 @@ fn split(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
     Ok(ToolResult { output: Output::Layers(layers), messages: vec![msg] })
 }
 
+/// Dissolve: one feature for each value of the dissolve field (one for all without it), the union
+/// of the (selected) polygons holding it, with the value, `count` (the polygons merged) and the
+/// statistics asked for, as `<STAT>_<field>`, over exactly the records merged: a record without a
+/// polygon is left out of both.
 fn dissolve(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
     let ds = input(inp, p, "input")?;
     if ds.geometry_type != GeometryType::Polygon {
@@ -1974,28 +1998,45 @@ fn dissolve(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
     }
     let field = s(p, "field").trim();
     let fi = if field.is_empty() { None } else { Some(find_field_case_insensitive(ds, field)?) };
-    let mut groups: Vec<(Value, Vec<MultiPolygon<f64>>)> = Vec::new();
-    for r in rows(inp, p, "input", ds) {
+    let (requests, separator) = summary_requests(ds, p)?;
+    // Each group's key, polygons and records.
+    let mut groups: Vec<(Value, Vec<MultiPolygon<f64>>, Vec<usize>)> = Vec::new();
+    for r in each_once(rows(inp, p, "input", ds)) {
         let Some(mp) = ds.features.get(r).and_then(|f| f.geometry.as_ref()).and_then(to_multipolygon) else { continue };
         let key = fi.map(|fi| ds.value(r, fi).clone()).unwrap_or(Value::Null);
-        match groups.iter_mut().find(|(k, _)| *k == key) {
-            Some(g) => g.1.push(mp),
-            None => groups.push((key, vec![mp])),
+        match groups.iter_mut().find(|(k, _, _)| *k == key) {
+            Some(g) => {
+                g.1.push(mp);
+                g.2.push(r);
+            }
+            None => groups.push((key, vec![mp], vec![r])),
         }
     }
-    let fields = match fi.and_then(|i| ds.fields.get(i)) {
+    let mut fields = match fi.and_then(|i| ds.fields.get(i)) {
         Some(f) => vec![f.clone(), Field::new("count", FieldType::Integer)],
         None => vec![Field::new("count", FieldType::Integer)],
     };
+    let added = statistic_fields(ds, &requests, false, &fields)?;
+    let first_added = fields.len();
+    fields.extend(added);
     let mut out = Dataset::new(out_name(p, format!("{}_Dissolve", ds.name)), GeometryType::Polygon, fields);
-    for (key, parts) in groups {
+    let mut rounded = Rounded::new(requests.len());
+    for (key, parts, mut records) in groups {
         let n = parts.len() as i64;
         let u = union_all(parts.iter().flat_map(|m| m.0.iter()));
-        let attrs = if fi.is_some() { vec![key, Value::Int(n)] } else { vec![Value::Int(n)] };
+        let mut attrs = if fi.is_some() { vec![key, Value::Int(n)] } else { vec![Value::Int(n)] };
+        if !requests.is_empty() {
+            record_order(&mut records);
+            // Each record is in one group: counted here, each is counted once.
+            rounded.count_texts(ds, &records, &requests, false);
+            attrs.extend(statistic_values(ds, &records, &requests, false, separator, &mut rounded));
+        }
         out.push(from_multipolygon(&u), attrs);
     }
     let n = out.features.len();
-    result(out, format!("Dissolve: {n} features"))
+    let mut messages = vec![format!("Dissolve: {n} features")];
+    messages.extend(rounded_notice(&rounded, out.fields.get(first_added..).unwrap_or_default()));
+    Ok(ToolResult { output: Output::Layer(out), messages })
 }
 
 fn convex_hull(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
@@ -2943,14 +2984,17 @@ fn merc_extent(g: &impl geo::CoordsIter<Scalar = f64>) -> Extent {
 /// or on its edge; a feature of several points counts once in each polygon it meets. Each point is
 /// tested only against the polygons whose extents hold it, through an [`ExtentIndex`]. The extents
 /// are in Web Mercator, where the test runs, so a point beyond the map's latitude limit still
-/// meets a polygon reaching that limit.
+/// meets a polygon reaching that limit. The statistics asked for, of the point layer's fields,
+/// are over the same points, as `<STAT>_<field>` after `point_count`.
 fn count_points(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
     let polys = input(inp, p, "polygons")?;
     let pts = input(inp, p, "points")?;
+    let (requests, separator) = summary_requests(pts, p)?;
     let mut out = polys.clone();
     out.name = out_name(p, format!("{}_Summarize", polys.name));
     out.source = None;
     let fi = out.ensure_field("point_count", FieldType::Integer);
+    let added = statistic_fields(pts, &requests, false, &out.fields)?;
     // Each polygon's row, shape and extent; a feature without polygons meets no point.
     let zones: Vec<(usize, MultiPolygon<f64>, Extent)> = out
         .features
@@ -2964,11 +3008,16 @@ fn count_points(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
         .collect();
     let index = ExtentIndex::new(zones.iter().map(|(_, _, ext)| *ext));
     let mut counts = vec![0i64; out.features.len()];
+    // Each polygon's points, kept only for statistics.
+    let mut members: Vec<Vec<usize>> = if requests.is_empty() { Vec::new() } else { vec![Vec::new(); out.features.len()] };
+    // The points in at least one polygon, each once: the ones the statistics read.
+    let mut summarised: Vec<usize> = Vec::new();
     let mut cand_buf = Vec::new();
-    for r in rows(inp, p, "points", pts) {
+    for r in each_once(rows(inp, p, "points", pts)) {
         let Some(g) = pts.features.get(r).and_then(|f| f.geometry.as_ref()) else { continue };
         let pg = to_geo(g);
         let ext = merc_extent(&pg);
+        let mut met = false;
         index.candidates_into(&ext, &mut cand_buf);
         for &zi in &cand_buf {
             let Some((row, mp, z_ext)) = zones.get(zi) else { continue };
@@ -2977,7 +3026,20 @@ fn count_points(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
                 && let Some(c) = counts.get_mut(*row)
             {
                 *c += 1;
+                met = true;
+                if let Some(m) = members.get_mut(*row) {
+                    // One entry for each point in each polygon it meets: many overlapping polygons
+                    // can make that more than memory holds, an error rather than an abort. The
+                    // statistics then take each polygon's list as it is, one polygon at a time.
+                    m.try_reserve(1).map_err(|e| {
+                        format!("Summarize Within: not enough memory to keep each polygon's points for its statistics: {e}")
+                    })?;
+                    m.push(r);
+                }
             }
+        }
+        if met && !requests.is_empty() {
+            summarised.push(r);
         }
     }
     let total: i64 = counts.iter().sum();
@@ -2986,7 +3048,30 @@ fn count_points(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
             *v = Value::Int(n);
         }
     }
-    result(out, format!("Summarize Within: {total} points counted"))
+    let mut rounded = Rounded::new(requests.len());
+    let first = out.fields.len();
+    if !requests.is_empty() {
+        out.fields.extend(added);
+        // A point in several overlapping polygons is read for each of them: counted over the
+        // points, not the polygons' lists, each is counted once.
+        rounded.count_texts(pts, &summarised, &requests, false);
+        let width = out.fields.len();
+        for (f, mut records) in out.features.iter_mut().zip(members) {
+            if f.attrs.len() < width {
+                f.attrs.resize(width, Value::Null);
+            }
+            record_order(&mut records);
+            let values = statistic_values(pts, &records, &requests, false, separator, &mut rounded);
+            for (i, v) in values.into_iter().enumerate() {
+                if let Some(slot) = f.attrs.get_mut(first + i) {
+                    *slot = v;
+                }
+            }
+        }
+    }
+    let mut messages = vec![format!("Summarize Within: {total} points counted")];
+    messages.extend(rounded_notice(&rounded, out.fields.get(first..).unwrap_or_default()));
+    Ok(ToolResult { output: Output::Layer(out), messages })
 }
 
 /// A lon/lat line or ring as a `geo` line string, in degrees.
@@ -3178,8 +3263,8 @@ fn calculate_geometry(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> 
     })
 }
 
-/// The longest separator Summary Statistics joins CONCATENATE's values with, in bytes: each value
-/// adds one, so a long one would multiply the output's size.
+/// The longest separator CONCATENATE joins values with, in bytes: each value adds one, so a long
+/// one would multiply the output's size.
 const MAX_SEPARATOR: usize = 256;
 
 /// Summary Statistics: a row for each group of records sharing the case fields' values, holding
@@ -3203,14 +3288,9 @@ fn summary_statistics(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> 
     let separator = concatenate_separator(p)?;
     let mut fields: Vec<Field> = cases.iter().filter_map(|&c| ds.fields.get(c).cloned()).collect();
     fields.push(Field::new("FREQUENCY", FieldType::Integer));
-    for r in &requests {
-        let (name, numeric) = ds.fields.get(r.field).map(|f| (f.name.as_str(), f.ty.is_numeric())).unwrap_or_default();
-        let field = Field::new(format!("{}_{name}", r.stat.name()), r.stat.output_type(numeric || field_only));
-        if fields.iter().any(|f| f.name.eq_ignore_ascii_case(&field.name)) {
-            return Err(format!("the output would have two fields named '{}'", field.name));
-        }
-        fields.push(field);
-    }
+    let added = statistic_fields(ds, &requests, field_only, &fields)?;
+    let first_added = fields.len();
+    fields.extend(added);
     if let Some(c) = cases.iter().filter_map(|&c| ds.fields.get(c)).find(|f| f.name.eq_ignore_ascii_case("FREQUENCY")) {
         return Err(format!("the case field '{}' has the name of the output's FREQUENCY field", c.name));
     }
@@ -3220,26 +3300,172 @@ fn summary_statistics(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> 
     let mut rs = rows(inp, p, "input", ds);
     rs.sort_unstable();
     rs.dedup();
+    let mut rounded = Rounded::new(requests.len());
+    rounded.count_texts(ds, &rs, &requests, field_only);
     for group in stats::group_rows(ds, &rs, &cases) {
         let mut row = group.key;
         row.push(stats::count(group.rows.len()));
-        // Each field's values are read once, however many of its statistics are asked for.
-        let mut read: Vec<(usize, stats::Column)> = Vec::new();
-        for r in &requests {
-            let i = match read.iter().position(|(f, _)| *f == r.field) {
-                Some(i) => i,
-                None => {
-                    read.push((r.field, stats::column(ds, &group.rows, r.field, field_only)));
-                    read.len() - 1
-                }
-            };
-            row.push(read.get(i).map_or(Value::Null, |(_, c)| stats::compute(r.stat, c, separator)));
-        }
+        row.extend(statistic_values(ds, &group.rows, &requests, field_only, separator, &mut rounded));
         // One past the last id: `push` would search them all for each group.
         out.push_next(None, row);
     }
     let n = out.features.len();
-    Ok(ToolResult { output: Output::Table(out), messages: vec![format!("Summary Statistics: {n} rows")] })
+    let mut messages = vec![format!("Summary Statistics: {n} rows")];
+    messages.extend(rounded_notice(&rounded, out.fields.get(first_added..).unwrap_or_default()));
+    Ok(ToolResult { output: Output::Table(out), messages })
+}
+
+/// The output fields of a statistics list over `ds`: `<STAT>_<field>` for each request, typed by
+/// the statistic and the field (numeric when `as_numbers`). A name that differs only in case from
+/// one in `taken` (the tool's other output fields) or from another statistic's is an error, not a
+/// renamed field.
+fn statistic_fields(ds: &Dataset, requests: &[crate::stats::Request], as_numbers: bool, taken: &[Field]) -> Result<Vec<Field>, String> {
+    let mut out: Vec<Field> = Vec::with_capacity(requests.len());
+    for r in requests {
+        let (name, numeric) = ds.fields.get(r.field).map(|f| (f.name.as_str(), f.ty.is_numeric())).unwrap_or_default();
+        let field = Field::new(format!("{}_{name}", r.stat.name()), r.stat.output_type(numeric || as_numbers));
+        if taken.iter().chain(&out).any(|f| f.name.eq_ignore_ascii_case(&field.name)) {
+            return Err(format!("the output would have two fields named '{}'", field.name));
+        }
+        out.push(field);
+    }
+    Ok(out)
+}
+
+/// What a statistics list lost to decimals, counted over every group for [`rounded_notice`].
+struct Rounded {
+    /// For each request, how many of its results came out rounded from a whole number past 2^53.
+    results: Vec<usize>,
+    /// For each input field read as numbers that holds some, by name, how many of its values were
+    /// whole numbers written as text past the i64 range, read as decimals.
+    texts: Vec<(String, usize)>,
+}
+
+impl Rounded {
+    /// Nothing counted yet, for `requests` requests.
+    fn new(requests: usize) -> Rounded {
+        Rounded { results: vec![0; requests], texts: Vec::new() }
+    }
+
+    /// Adds, for each field `requests` read as numbers from `ds`, how many of its values among the
+    /// records `rows` are whole numbers written as text past the i64 range, read as decimals.
+    /// Called once over the records a tool reads, each once, so a value is counted once however
+    /// many groups (Summarize Within's polygons) it is summarised in.
+    fn count_texts(&mut self, ds: &Dataset, rows: &[usize], requests: &[crate::stats::Request], as_numbers: bool) {
+        // Each field once, in the requests' order, which names them in the notice.
+        let mut fields: Vec<usize> = Vec::new();
+        for r in requests {
+            if !fields.contains(&r.field) {
+                fields.push(r.field);
+            }
+        }
+        for field in fields {
+            let n = crate::stats::column(ds, rows, field, as_numbers).rounded_texts();
+            if n == 0 {
+                continue;
+            }
+            let name = ds.fields.get(field).map(|f| f.name.as_str()).unwrap_or_default();
+            match self.texts.iter_mut().find(|(f, _)| f == name) {
+                Some((_, count)) => *count += n,
+                None => self.texts.push((name.to_string(), n)),
+            }
+        }
+    }
+}
+
+/// The values of a statistics list over the records `rows` of `ds`, one per request, in the
+/// requests' order. `rows` must be in record order, each once: FIRST, LAST and CONCATENATE follow
+/// it. Each field's values are read once, however many of its statistics are asked for. Each
+/// value that comes out rounded from whole numbers past 2^53 adds one to its request's count in
+/// `rounded`, for [`rounded_notice`]; the whole numbers written as text that reading a field as
+/// numbers rounds are counted by [`Rounded::count_texts`], per record rather than per group.
+fn statistic_values(
+    ds: &Dataset,
+    rows: &[usize],
+    requests: &[crate::stats::Request],
+    as_numbers: bool,
+    separator: &str,
+    rounded: &mut Rounded,
+) -> Vec<Value> {
+    use crate::stats;
+    let mut read: Vec<(usize, stats::Column)> = Vec::new();
+    let mut out = Vec::with_capacity(requests.len());
+    for r in requests {
+        let i = match read.iter().position(|(f, _)| *f == r.field) {
+            Some(i) => i,
+            None => {
+                read.push((r.field, stats::column(ds, rows, r.field, as_numbers)));
+                read.len() - 1
+            }
+        };
+        let value = read.get(i).map_or(Value::Null, |(_, c)| {
+            let v = stats::compute(r.stat, c, separator);
+            if stats::rounded(r.stat, c, &v)
+                && let Some(n) = rounded.results.get_mut(out.len())
+            {
+                *n += 1;
+            }
+            v
+        });
+        out.push(value);
+    }
+    out
+}
+
+/// The notices for what a statistics list lost to decimals: the statistics that came out rounded,
+/// naming their output fields `fields` (one per request, as `rounded` counts them), as a decimal
+/// field holds whole numbers exactly only up to 2^53; and the whole numbers written as text past
+/// the i64 range that were read as decimals, whose statistics aren't checked, naming their input
+/// fields. Empty when nothing was rounded.
+fn rounded_notice(rounded: &Rounded, fields: &[Field]) -> Vec<String> {
+    let mut notices = Vec::new();
+    let total: usize = rounded.results.iter().sum();
+    if total > 0 {
+        let names: Vec<&str> = rounded.results.iter().zip(fields).filter(|(n, _)| **n > 0).map(|(_, f)| f.name.as_str()).collect();
+        let results = if total == 1 { "result" } else { "results" };
+        notices.push(format!(
+            "{total} {results} rounded in {}: a decimal field holds whole numbers exactly only up to 2^53 (9007199254740992)",
+            names.join(", ")
+        ));
+    }
+    let total: usize = rounded.texts.iter().map(|(_, n)| n).sum();
+    if total > 0 {
+        let names: Vec<&str> = rounded.texts.iter().map(|(f, _)| f.as_str()).collect();
+        let (numbers, are, were, decimals, them) =
+            if total == 1 { ("number", "is", "was", "a decimal", "it") } else { ("numbers", "are", "were", "decimals", "them") };
+        notices.push(format!(
+            "{total} whole {numbers} written as text in {} {are} past the 64-bit integer range and {were} read as {decimals}, so statistics of {them} may be rounded",
+            names.join(", ")
+        ));
+    }
+    notices
+}
+
+/// The statistics list of a tool that adds statistics to its own output (Dissolve, Summarize
+/// Within), read from `statistics` over the fields of `ds`, with the separator CONCATENATE joins
+/// values with. The separator is read only with a list: a run without one ignores it.
+fn summary_requests<'a>(ds: &Dataset, p: &'a Json) -> Result<(Vec<crate::stats::Request>, &'a str), String> {
+    let requests = crate::stats::parse_requests(ds, p.get("statistics"))?;
+    let separator = if requests.is_empty() { DEFAULT_SEPARATOR } else { concatenate_separator(p)? };
+    Ok((requests, separator))
+}
+
+/// `rows`, as [`rows`] gives them, with each record once, at its first place: a selection that
+/// lists a record twice still counts it once. Rows in increasing order (all of a layer's, or a
+/// selection made in the app) hold each record once already and are returned as they are; any
+/// other selection is deduplicated through a set its own size, not the layer's.
+fn each_once(rows: Vec<usize>) -> Vec<usize> {
+    if rows.windows(2).all(|w| matches!(w, [a, b] if a < b)) {
+        return rows;
+    }
+    let mut seen = HashSet::with_capacity(rows.len());
+    rows.into_iter().filter(|&r| seen.insert(r)).collect()
+}
+
+/// Puts `rows` in record order, each once, as [`statistic_values`] takes them, in place.
+fn record_order(rows: &mut Vec<usize>) {
+    rows.sort_unstable();
+    rows.dedup();
 }
 
 /// The key fields a table tool groups by, such as Summary Statistics' case fields: one field's name,
@@ -3272,11 +3498,15 @@ fn key_fields(ds: &Dataset, v: Option<&Json>, label: &str) -> Result<Vec<usize>,
     Ok(out)
 }
 
-/// The separator CONCATENATE joins values with: `, ` unless given. A bad one is refused whatever
-/// the statistics; the Tools pane leaves it out of runs without CONCATENATE.
+/// The separator CONCATENATE joins values with unless one is given.
+const DEFAULT_SEPARATOR: &str = ", ";
+
+/// The separator CONCATENATE joins values with: [`DEFAULT_SEPARATOR`] unless given. A bad one is
+/// refused whatever the statistics (Dissolve and Summarize Within read it only with a statistics
+/// list); the Tools pane leaves it out of runs without CONCATENATE.
 fn concatenate_separator(p: &Json) -> Result<&str, String> {
     match p.get("separator") {
-        None | Some(Json::Null) => Ok(", "),
+        None | Some(Json::Null) => Ok(DEFAULT_SEPARATOR),
         Some(Json::String(t)) if t.len() <= MAX_SEPARATOR => Ok(t.as_str()),
         Some(Json::String(_)) => Err(format!("Separator can be at most {MAX_SEPARATOR} bytes")),
         Some(_) => Err("Separator must be text".into()),
@@ -3864,8 +4094,9 @@ fn extent_contains(a: &Extent, b: &Extent) -> bool {
 /// value as text, empty when unset, which stands for its default). The Tools pane hides and leaves
 /// out one that doesn't. Spatial Join's search distance, units and distance field apply only to the
 /// match options that measure distances, its merge rules only to one-to-one joins. Summary
-/// Statistics' field applies only without a statistics list, its separator only to one with
-/// CONCATENATE; Pivot Table's separator only to the CONCATENATE statistic.
+/// Statistics' field applies only without a statistics list; its separator, and Dissolve's and
+/// Summarize Within's, only to a list with CONCATENATE; Pivot Table's separator only to the
+/// CONCATENATE statistic.
 pub fn param_applies(tool: &str, param: &str, value: &dyn Fn(&str) -> String) -> bool {
     match (tool, param) {
         ("spatialJoin", "distance" | "units" | "distanceField") => {
@@ -3879,7 +4110,7 @@ pub fn param_applies(tool: &str, param: &str, value: &dyn Fn(&str) -> String) ->
             list.as_array().is_none_or(|items| items.is_empty())
         }
         ("pivotTable", "separator") => value("statistic").trim().eq_ignore_ascii_case("CONCATENATE"),
-        ("summaryStatistics", "separator") => {
+        ("summaryStatistics" | "dissolve" | "countPoints", "separator") => {
             let list = serde_json::from_str::<Json>(&value("statistics")).unwrap_or(Json::Null);
             let concatenates =
                 |i: &Json| i.get("statistic").and_then(Json::as_str).is_some_and(|s| s.trim().eq_ignore_ascii_case("CONCATENATE"));
@@ -6870,6 +7101,10 @@ mod tests {
             serde_json::json!({"input": "pts", "fields": ["k", 3], "pivot": "k", "value": "v", "statistic": "P100"}),
             serde_json::json!({"input": "polys", "fields": {"k": 1}, "pivot": 5, "value": ["v"], "statistic": 7, "separator": []}),
             serde_json::json!({"input": "pts", "fields": "", "pivot": "v", "value": "k", "statistic": "concatenate", "output": ""}),
+            serde_json::json!({"input": "polys", "polygons": "polys", "points": "pts", "field": "k", "statistics": [{"field": "k", "statistic": "CONCATENATE"}, {"field": "k", "statistic": "MODE"}], "separator": "\u{0}"}),
+            serde_json::json!({"input": "pts", "polygons": "polys", "points": "pts", "statistics": [{"field": "v", "statistic": "P99"}, {"field": "v", "statistic": "CV"}, {"field": "v", "statistic": "CONCATENATE"}], "separator": ""}),
+            serde_json::json!({"input": "polys", "polygons": "polys", "points": "pts", "statistics": [{"field": "k", "statistic": "SUM"}, {"field": "v", "statistic": "MEDIAN"}], "separator": null}),
+            serde_json::json!({"input": "polys", "polygons": "polys", "points": "pts", "statistics": "[{\"field\": \"v\", \"statistic\": \"LAST\"}]", "separator": {"a": 1}}),
             serde_json::json!({"zones": "polys", "zoneFields": ["k", 3], "classes": "polys", "classFields": "k", "sumFields": {"v": 1}}),
             serde_json::json!({"zones": "polys", "zoneFields": "k", "classes": "polys", "classFields": ["k", "K"], "sumFields": ["v", "k"]}),
             serde_json::json!({"zones": "pts", "zoneFields": "k", "classes": "polys", "sumFields": "v", "output": 7}),
@@ -8937,6 +9172,105 @@ mod tests {
         assert!(param_applies("summaryStatistics", "separator", &with("[{\"field\": \"v\", \"statistic\": \"concatenate\"}]")));
         assert!(!param_applies("summaryStatistics", "separator", &with("[{\"field\": \"concatenate_ids\", \"statistic\": \"SUM\"}]")));
         assert!(!param_applies("summaryStatistics", "separator", &with("[{\"field\": ")));
+    }
+
+    /// Dissolve and Summarize Within show their separator only for a list with CONCATENATE, as
+    /// Summary Statistics does; their other parameters always apply.
+    #[test]
+    fn summary_field_parameters_apply() {
+        let with = |list: &'static str| move |k: &str| if k == "statistics" { list.to_string() } else { String::new() };
+        for tool in ["dissolve", "countPoints"] {
+            assert!(!param_applies(tool, "separator", &with("")), "{tool}");
+            assert!(!param_applies(tool, "separator", &with("[{\"field\": \"v\", \"statistic\": \"SUM\"}]")), "{tool}");
+            assert!(param_applies(tool, "separator", &with("[{\"field\": \"v\", \"statistic\": \" Concatenate \"}]")), "{tool}");
+            assert!(!param_applies(tool, "separator", &with("[{")), "{tool}");
+            for param in ["statistics", "output", "field", "polygons", "points", "input"] {
+                assert!(param_applies(tool, param, &with("")), "{tool} {param}");
+            }
+        }
+        // Each statistics list reads the fields of the layer it summarises.
+        let kind = |tool: &str| crate::tool(tool).and_then(|t| t.params.iter().find(|p| p.name == "statistics")).map(|p| p.kind);
+        assert_eq!(kind("dissolve"), Some(K::FieldStatistics { input: "input", statistics: crate::StatisticList::Summary }));
+        assert_eq!(kind("countPoints"), Some(K::FieldStatistics { input: "points", statistics: crate::StatisticList::Summary }));
+        for tool in ["dissolve", "countPoints", "summaryStatistics"] {
+            let separator = crate::tool(tool).and_then(|t| t.params.iter().find(|p| p.name == "separator"));
+            assert_eq!(separator.map(|p| (p.kind, p.default)), Some((K::Text, "\", \"")), "{tool}");
+        }
+    }
+
+    /// Summary field names clash with the tool's own fields and with each other in any case; the
+    /// first clash is named.
+    #[test]
+    fn statistic_fields_refuse_case_insensitive_clashes() {
+        use crate::stats::{Request, Stat};
+        let ds = Dataset::new(
+            "t",
+            GeometryType::Point,
+            vec![Field::new("pop", FieldType::Integer), Field::new("POP", FieldType::Double), Field::new("name", FieldType::Text)],
+        );
+        let req = |field, stat| Request { field, stat };
+        let fields = statistic_fields(&ds, &[req(0, Stat::Sum), req(2, Stat::First), req(2, Stat::Count)], false, &[]).unwrap();
+        let shape: Vec<(&str, FieldType)> = fields.iter().map(|f| (f.name.as_str(), f.ty)).collect();
+        assert_eq!(shape, [("SUM_pop", FieldType::Double), ("FIRST_name", FieldType::Text), ("COUNT_name", FieldType::Integer)]);
+        let err = statistic_fields(&ds, &[req(0, Stat::Sum), req(1, Stat::Sum)], false, &[]).unwrap_err();
+        assert_eq!(err, "the output would have two fields named 'SUM_POP'");
+        let taken = [Field::new("count", FieldType::Integer), Field::new("sum_Pop", FieldType::Text)];
+        let err = statistic_fields(&ds, &[req(2, Stat::Max), req(0, Stat::Sum)], false, &taken).unwrap_err();
+        assert_eq!(err, "the output would have two fields named 'SUM_pop'");
+        assert!(statistic_fields(&ds, &[], false, &taken).unwrap().is_empty());
+        // Read as numbers, a text field's statistics are numbers.
+        let numbers = statistic_fields(&ds, &[req(2, Stat::Min)], true, &[]).unwrap();
+        assert_eq!(numbers.first().map(|f| f.ty), Some(FieldType::Double));
+    }
+
+    /// A separator is read only with a statistics list, so a run without one is unchanged by a
+    /// bad separator; with a list, a bad one is refused as Summary Statistics refuses it.
+    #[test]
+    fn summary_requests_read_the_separator_only_with_a_list() {
+        let ds = Dataset::new("t", GeometryType::Point, vec![Field::new("v", FieldType::Double)]);
+        let long = "x".repeat(MAX_SEPARATOR + 1);
+        for p in [serde_json::json!({"separator": 5}), serde_json::json!({"separator": long, "statistics": ""})] {
+            let (requests, separator) = summary_requests(&ds, &p).unwrap();
+            assert!(requests.is_empty());
+            assert_eq!(separator, ", ");
+        }
+        let list = serde_json::json!([{"field": "v", "statistic": "SUM"}]);
+        assert!(summary_requests(&ds, &serde_json::json!({"separator": 5, "statistics": list})).is_err());
+        assert!(summary_requests(&ds, &serde_json::json!({"separator": long, "statistics": list})).is_err());
+        let p = serde_json::json!({"separator": " | ", "statistics": list});
+        assert_eq!(summary_requests(&ds, &p).map(|(r, s)| (r.len(), s.to_string())), Ok((1, " | ".to_string())));
+        let mut rows = vec![5, 2, 9, 2, 0];
+        record_order(&mut rows);
+        assert_eq!(rows, [0, 2, 5, 9]);
+    }
+
+    /// A selection's rows are taken once each, at their first place, whether they are listed out
+    /// of order or sorted with a record repeated; rows in increasing order are already unique.
+    #[test]
+    fn each_once_keeps_the_first_of_a_repeated_row() {
+        assert_eq!(each_once(vec![3, 1, 3, 0, 1]), [3, 1, 0]);
+        assert_eq!(each_once(vec![0, 0, 2, 7, 7]), [0, 2, 7]);
+        assert_eq!(each_once(vec![0, 1, 2]), [0, 1, 2]);
+        assert_eq!(each_once(vec![4]), [4]);
+        assert!(each_once(Vec::new()).is_empty());
+    }
+
+    /// Summarize Within writes its statistics in the fields it adds even for a polygon whose row
+    /// holds fewer values than the layer has fields (a hand-built or hostile layer).
+    #[test]
+    fn summarize_within_statistics_fill_short_rows() {
+        let mut polys =
+            Dataset::new("polys", GeometryType::Polygon, vec![Field::new("a", FieldType::Text), Field::new("b", FieldType::Text)]);
+        polys.features.push(Feature { id: 0, geometry: Some(sq(0.0, 0.0, 2.0)), attrs: vec![] });
+        let mut pts = Dataset::new("pts", GeometryType::Point, vec![Field::new("v", FieldType::Integer)]);
+        pts.push(Some(Geometry::Point(Coord::new(1.0, 1.0))), vec![Value::Int(4)]);
+        pts.push(Some(Geometry::Point(Coord::new(1.5, 1.0))), vec![Value::Int(6)]);
+        let m = Map(HashMap::from([("polys".to_string(), polys), ("pts".to_string(), pts)]));
+        let p = serde_json::json!({"polygons": "polys", "points": "pts", "statistics": [{"field": "v", "statistic": "SUM"}]});
+        let out = layer(crate::run("countPoints", &m, &p).unwrap());
+        let names: Vec<&str> = out.fields.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["a", "b", "point_count", "SUM_v"]);
+        assert_eq!(out.value(0, 3), &Value::Float(10.0));
     }
 
     /// Incomes by county and year, one record for each, in long form; `rows` adds records.
