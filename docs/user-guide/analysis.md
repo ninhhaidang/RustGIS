@@ -225,12 +225,22 @@ to a point's circle, 64 to a semicircular line end). Between vertices, those edg
 to 0.031 % of the distance inside the true curve in the projection plane, and up to 0.125 % at
 polygon corners and line joins, in addition to the projection error. Negative Buffer
 distances shrink polygons. Buffer and Select Layer By Location limit distances to 5,000 km.
-Buffer limits retained outlines to 2,000,000 vertices before dissolving and checks the dissolved
-result too. Multipoint discs count before union even when they overlap, cumulatively across features. A request that exceeds
-the budget fails with an error; split large features or select fewer features and run smaller batches. This limits retained
-geometry, not every temporary allocation inside a complex polygon operation. Select Layer By
-Location applies the same shared budget to its distance-buffered selector outlines; selection at
-zero distance uses the original geometries without this buffer limit.
+Ordinary Buffer limits each feature to 2,000,000 outline vertices. Its retained output has a
+separate memory budget: 512 MiB on desktop, 128 MiB in the browser, including geometry
+allocations, copied attributes and spare row capacity. Features are processed in bounded
+batches, in input order. Many small buffers can therefore exceed 2,000,000 vertices together.
+Dissolve All retains the shared 2,000,000-vertex limit before union and checks the dissolved
+result too. Multipoint discs count before their union even when they overlap; for Dissolve All
+their charges also accumulate across features.
+Distance-based Select Layer By Location uses the same per-selector complexity limit and
+memory budget for retained selector geometries, row capacity and a conservative spatial-index
+storage allowance. With more than 16 distance selectors, selection stops with an error after
+50,000,000 actual candidate checks across all target features, on both the grid and fallback
+paths. Early matches stop their scan, so large input counts alone do not refuse a request.
+Smaller selector sets keep their bounded-width linear scan. Selection at zero distance keeps
+its existing behavior without these buffer limits. An excessive request fails with an error, never partial output; select fewer features
+or split complex features. These budgets cover retained results, not total process memory:
+the input layers, temporary geometry on active workers and polygon-overlay scratch are additional.
 **Calculate Geometry Attributes** measures polygon areas and perimeters, and line lengths,
 on the WGS 84 ellipsoid, independently of the map's display projection. Holes are subtracted
 regardless of ring winding, and multipart measurements are summed. Ring directions are

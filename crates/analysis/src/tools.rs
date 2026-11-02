@@ -13,7 +13,7 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, TryReserveError};
 
 use crate::convert::{from_line, from_multipolygon, from_point, to_geo, to_multiline, to_multipolygon};
-use crate::geodesic::{PARALLEL_FEATURES, VERTEX_BUDGET_ERROR, charge, geodesic_buffer_with_limit, geodesic_buffers_with_limit};
+use crate::geodesic::{PARALLEL_FEATURES, VERTEX_BUDGET_ERROR, geodesic_buffer_with_limit, geodesic_buffers_with_limit};
 use crate::{Inputs, Output, OutputLayer, ParamKind as K, ParamSpec as P, ToolResult, ToolSpec};
 
 const UNITS: &[&str] = &["Kilometers", "Meters", "Miles", "Feet"];
@@ -1221,18 +1221,115 @@ fn union_all<'a>(polys: impl IntoIterator<Item = &'a geo::Polygon<f64>>) -> Mult
 // ---------------------------------------------------------------------------------------------
 // tools
 
-/// At most 32 MB of retained outline coordinates, before dataset/overlay overhead. The same
-/// budget applies before dissolve, so a large dissolved request cannot accumulate every disc.
+/// Per-feature outline complexity, and cumulative pre-union complexity for Dissolve All.
+/// Two million coordinates occupy roughly 32 MB before containers and overlay scratch.
 const MAX_BUFFER_VERTICES: usize = 2_000_000;
+/// Retained ordinary output/selector storage, separate from overlay complexity. Temporary
+/// geometry on each worker and the already loaded input are additional to this allowance.
+const MAX_BUFFER_BYTES: usize = if cfg!(target_arch = "wasm32") { 128 << 20 } else { 512 << 20 };
+/// Drain results regularly instead of keeping a second whole-layer result array.
+const BUFFER_BATCH: usize = 256;
+/// Bound actual candidate checks across all targets for large distance-selector sets, with
+/// or without a grid. Small sets keep their bounded-width linear scan.
+const MAX_SELECTOR_CHECKS: usize = 50_000_000;
+const BUFFER_STORAGE_ERROR: &str = "Buffer output or distance selectors exceed their memory budget; select fewer features";
+
+/// Shared retained-storage accounting; workers charge payloads before handing them back.
+struct BufferStorage(std::sync::atomic::AtomicUsize);
+
+impl BufferStorage {
+    /// A fixed byte allowance, independent of the machine's reported free memory.
+    fn new(bytes: usize) -> Self {
+        Self(std::sync::atomic::AtomicUsize::new(bytes))
+    }
+
+    /// Reserve bytes atomically, without wrapping or retaining an over-budget result.
+    fn charge(&self, bytes: usize) -> Result<(), &'static str> {
+        use std::sync::atomic::Ordering;
+        let mut left = self.0.load(Ordering::Relaxed);
+        loop {
+            let next = left.checked_sub(bytes).ok_or(BUFFER_STORAGE_ERROR)?;
+            match self.0.compare_exchange_weak(left, next, Ordering::Relaxed, Ordering::Relaxed) {
+                Ok(_) => return Ok(()),
+                Err(current) => left = current,
+            }
+        }
+    }
+
+    /// Grow retained row storage geometrically, charging spare capacity as well as used rows.
+    fn reserve<T>(&self, rows: &mut Vec<T>, additional: usize) -> Result<(), &'static str> {
+        let needed = rows.len().checked_add(additional).ok_or(BUFFER_STORAGE_ERROR)?;
+        if needed <= rows.capacity() {
+            return Ok(());
+        }
+        let size = std::mem::size_of::<T>().max(1);
+        let old = rows.capacity();
+        let affordable = old.saturating_add(self.0.load(std::sync::atomic::Ordering::Relaxed) / size);
+        let grown = needed.max(old.saturating_mul(2)).min(affordable);
+        if grown < needed {
+            return Err(BUFFER_STORAGE_ERROR);
+        }
+        self.charge((grown - old).saturating_mul(size))?;
+        rows.try_reserve_exact(grown - rows.len()).map_err(|_| BUFFER_STORAGE_ERROR)?;
+        // Allocators may give more than requested. Account for that capacity too.
+        self.charge(rows.capacity().saturating_sub(grown).saturating_mul(size))
+    }
+}
+
+/// Ordinary per-feature Buffer: bounded result batches, a per-feature complexity limit and
+/// one byte budget for row capacity, geometry allocations and copied attributes together.
+fn buffer_rows(
+    geoms: &[(&Feature, &Geometry)],
+    metres: f64,
+    vertices: usize,
+    bytes: usize,
+    fields: usize,
+) -> Result<Vec<Feature>, &'static str> {
+    let storage = BufferStorage::new(bytes);
+    let mut output = Vec::new();
+    for batch in geoms.chunks(BUFFER_BATCH) {
+        let made = crate::parallel::try_map(
+            batch,
+            PARALLEL_FEATURES,
+            || (),
+            |_, _, (f, g)| -> Result<Option<Feature>, &'static str> {
+                let Some(geometry) = geodesic_buffer_with_limit(g, metres, vertices)?.geometry else { return Ok(None) };
+                // Charge the requested attribute storage before copying potentially large text.
+                // Fallible allocation also makes an exhausted allocator an ordinary tool error.
+                let requested = f.attrs.iter().take(fields).fold(
+                    rustgis_data::source::chunk_memory::geometry_bytes(&geometry)
+                        .saturating_add(fields.saturating_mul(std::mem::size_of::<Value>())),
+                    |n, v| n.saturating_add(if let Value::Text(text) = v { text.len() } else { 0 }),
+                );
+                storage.charge(requested)?;
+                let mut attrs = Vec::new();
+                attrs.try_reserve_exact(fields).map_err(|_| BUFFER_STORAGE_ERROR)?;
+                for value in f.attrs.iter().take(fields) {
+                    attrs.push(try_clone_value(value).map_err(|_| BUFFER_STORAGE_ERROR)?);
+                }
+                attrs.resize(fields, Value::Null);
+                let feature = Feature { id: 0, geometry: Some(geometry), attrs };
+                let actual = rustgis_data::source::chunk_memory::feature_bytes(&feature);
+                storage.charge(actual.saturating_sub(requested))?;
+                Ok(Some(feature))
+            },
+        )?;
+        for mut feature in made.into_iter().flatten() {
+            storage.reserve(&mut output, 1)?;
+            feature.id = (output.len() as u64).saturating_add(1);
+            output.push(feature);
+        }
+    }
+    Ok(output)
+}
 
 /// Buffer with the output budget shared by all selected input features.
 fn buffer(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
-    buffer_with_vertex_limit(inp, p, MAX_BUFFER_VERTICES)
+    buffer_with_limits(inp, p, MAX_BUFFER_VERTICES, MAX_BUFFER_BYTES)
 }
 
-/// Runs the tool with a vertex budget; the explicit limit also lets the regression exercise
-/// exhaustion with a few features rather than allocating millions of coordinates.
-fn buffer_with_vertex_limit(inp: &dyn Inputs, p: &Json, limit: usize) -> Result<ToolResult, String> {
+/// Independent complexity and retained-output budgets; injectable for small boundary tests.
+fn buffer_with_limits(inp: &dyn Inputs, p: &Json, limit: usize, bytes: usize) -> Result<ToolResult, String> {
     let ds = input(inp, p, "input")?;
     let d = num(p, "distance").ok_or("Distance must be a number")?;
     let metres = to_metres(d, s(p, "units"))?;
@@ -1244,31 +1341,31 @@ fn buffer_with_vertex_limit(inp: &dyn Inputs, p: &Json, limit: usize) -> Result<
     let picked: Vec<&Feature> = rows(inp, p, "input", ds).into_iter().filter_map(|r| ds.features.get(r)).collect();
     let geoms: Vec<(&Feature, &Geometry)> = picked.iter().filter_map(|f| Some((*f, f.geometry.as_ref()?))).collect();
     let without = picked.len() - geoms.len();
-    let buffers = geodesic_buffers_with_limit(&geoms.iter().map(|(_, g)| *g).collect::<Vec<_>>(), metres, limit)?;
-    // Buffers with nothing in them: points at a negative distance, polygons that shrink away,
-    // features with no finite coordinates.
-    let mut empty = 0;
-    for ((f, _), geom) in geoms.iter().zip(buffers) {
-        let Some(geom) = geom else {
-            empty += 1;
-            continue;
-        };
-        if s(p, "dissolve") == "All" {
+    let empty = if s(p, "dissolve") != "All" {
+        let features = buffer_rows(&geoms, metres, limit, bytes, out.fields.len())?;
+        let empty = geoms.len() - features.len();
+        out.features = features.into();
+        empty
+    } else {
+        // Dissolve still accumulates outlines for one overlay, so retain its shared complexity
+        // limit, including multipoint discs before union and the final union's coordinates.
+        let buffers = geodesic_buffers_with_limit(&geoms.iter().map(|(_, g)| *g).collect::<Vec<_>>(), metres, limit)?;
+        let empty = buffers.iter().filter(|g| g.is_none()).count();
+        for geom in buffers.into_iter().flatten() {
             all.extend(to_multipolygon(&geom));
-        } else {
-            out.push(Some(geom), f.attrs.clone());
         }
-    }
-    if !all.is_empty() {
-        out.fields.clear();
-        let u = union_all(all.iter().flat_map(|m| m.0.iter()));
-        if u.coords_count() > limit {
-            return Err(VERTEX_BUDGET_ERROR.into());
+        if !all.is_empty() {
+            out.fields.clear();
+            let u = union_all(all.iter().flat_map(|m| m.0.iter()));
+            if u.coords_count() > limit {
+                return Err(VERTEX_BUDGET_ERROR.into());
+            }
+            if let Some(geom) = from_multipolygon(&u) {
+                out.push(Some(geom), vec![]);
+            }
         }
-        if let Some(geom) = from_multipolygon(&u) {
-            out.push(Some(geom), vec![]);
-        }
-    }
+        empty
+    };
     let n = out.features.len();
     let units = if s(p, "units").is_empty() { "Kilometers" } else { s(p, "units") };
     let mut r = result(out, format!("Buffer: {n} features at {d} {units}"))?;
@@ -2279,15 +2376,45 @@ fn simplify(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
     result(out, format!("Simplify: {before} → {after} vertices"))
 }
 
+/// Conservative heap accounting for the geometry variants produced by `to_geo`. Coordinate
+/// capacities are exact; private polygon-interior arrays use an upper allocation allowance.
+fn selector_heap_bytes(g: &geo::Geometry<f64>) -> usize {
+    let line = |l: &geo::LineString<f64>| l.0.capacity().saturating_mul(std::mem::size_of::<geo::Coord<f64>>());
+    match g {
+        geo::Geometry::Point(_) => 0,
+        geo::Geometry::MultiPoint(p) => p.0.capacity().saturating_mul(std::mem::size_of::<geo::Point<f64>>()),
+        geo::Geometry::MultiLineString(p) => {
+            p.0.iter().fold(p.0.capacity().saturating_mul(std::mem::size_of::<geo::LineString<f64>>()), |n, l| n.saturating_add(line(l)))
+        }
+        geo::Geometry::MultiPolygon(p) => {
+            p.0.iter().fold(p.0.capacity().saturating_mul(std::mem::size_of::<geo::Polygon<f64>>()), |n, p| {
+                let interiors = if p.interiors().is_empty() { 0 } else { p.interiors().len().max(4).saturating_mul(2) };
+                p.interiors().iter().fold(
+                    n.saturating_add(line(p.exterior()))
+                        .saturating_add(interiors.saturating_mul(std::mem::size_of::<geo::LineString<f64>>())),
+                    |n, l| n.saturating_add(line(l)),
+                )
+            })
+        }
+        // `to_geo` emits only the four variants above.
+        _ => 0,
+    }
+}
+
 /// Select against nearby selectors, indexed in the projection used by the predicate and after
 /// any distance buffer. Inversion and input row order keep the exhaustive selection's semantics.
 fn select_by_location(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
-    select_by_location_with_vertex_limit(inp, p, MAX_BUFFER_VERTICES)
+    select_by_location_with_limits(inp, p, MAX_BUFFER_VERTICES, MAX_BUFFER_BYTES)
 }
 
-/// Bounds retained distance-buffer outlines across selectors before building the spatial index.
-/// Zero-distance selection uses original geometries and does not consume the buffer budget.
-fn select_by_location_with_vertex_limit(inp: &dyn Inputs, p: &Json, limit: usize) -> Result<ToolResult, String> {
+/// Bounds each distance-buffered selector's complexity and their combined retained storage.
+/// Zero-distance selection uses original geometries without a buffer budget.
+fn select_by_location_with_limits(inp: &dyn Inputs, p: &Json, limit: usize, bytes: usize) -> Result<ToolResult, String> {
+    select_by_location_with_work_limit(inp, p, limit, bytes, MAX_SELECTOR_CHECKS)
+}
+
+/// Injects the large-selector candidate allowance for deterministic work-exhaustion regressions.
+fn select_by_location_with_work_limit(inp: &dyn Inputs, p: &Json, limit: usize, bytes: usize, checks: usize) -> Result<ToolResult, String> {
     let ds = input(inp, p, "input")?;
     let sel_ds = input(inp, p, "select")?;
     let dist = to_metres(num(p, "distance").unwrap_or(0.0).max(0.0), s(p, "units"))?;
@@ -2296,39 +2423,64 @@ fn select_by_location_with_vertex_limit(inp: &dyn Inputs, p: &Json, limit: usize
     }
     let chosen = rows(inp, p, "select", sel_ds);
     let picked: Vec<&Geometry> = chosen.iter().filter_map(|r| sel_ds.features.get(*r)?.geometry.as_ref()).collect();
-    // Buffered, charged to the budget and converted in one step, on several cores when there are
-    // many, so each buffer is dropped once converted.
-    let remaining = std::sync::atomic::AtomicUsize::new(limit);
-    let selectors: Vec<(geo::Geometry<f64>, Extent)> = crate::parallel::try_map(
-        &picked,
-        PARALLEL_FEATURES,
-        || (),
-        |_, _, g| {
-            let b = if dist > 0.0 {
-                let buffered = geodesic_buffer_with_limit(g, dist, remaining.load(std::sync::atomic::Ordering::Relaxed))?;
-                charge(&remaining, limit, buffered.charged_vertices)?;
-                buffered.geometry
-            } else {
-                None
-            };
-            let gg = to_geo(b.as_ref().unwrap_or(g));
-            let ext = merc_extent(&gg);
-            Ok::<_, &'static str>((gg, ext))
-        },
-    )?;
+    // Each selector has its own complexity limit. Retained selectors share a separate byte
+    // budget; zero-distance selection keeps its existing unbuffered behavior.
+    let storage = BufferStorage::new(if dist > 0.0 { bytes } else { usize::MAX });
+    let mut selectors = Vec::new();
+    for batch in picked.chunks(BUFFER_BATCH) {
+        let made = crate::parallel::try_map(
+            batch,
+            PARALLEL_FEATURES,
+            || (),
+            |_, _, g| {
+                let b = if dist > 0.0 { geodesic_buffer_with_limit(g, dist, limit)?.geometry } else { None };
+                let gg = to_geo(b.as_ref().unwrap_or(g));
+                if dist > 0.0 {
+                    storage.charge(selector_heap_bytes(&gg))?;
+                }
+                let ext = merc_extent(&gg);
+                Ok::<_, &'static str>((gg, ext))
+            },
+        )?;
+        storage.reserve(&mut selectors, made.len())?;
+        selectors.extend(made);
+    }
+    // The index also has an independent one-million-reference construction limit. Charge its
+    // temporary extent array before building and its retained allocations before selection.
+    if dist > 0.0 {
+        storage.charge(selectors.len().saturating_mul(std::mem::size_of::<Extent>()))?;
+    }
     let index = ExtentIndex::new(selectors.iter().map(|(_, ext)| *ext));
+    if dist > 0.0 {
+        storage.charge(index.storage_bytes())?;
+    }
     let invert = s(p, "invert") == "Yes";
-    let hits: Vec<usize> = (0..ds.features.len())
-        .filter(|r| {
-            let Some(g) = ds.features.get(*r).and_then(|f| f.geometry.as_ref()) else {
-                return false;
-            };
-            let gg = to_geo(g);
-            let ext = merc_extent(&gg);
-            let hit = index.any_candidate(&ext, |i| selectors.get(i).is_some_and(|(s, e)| e.intersects(&ext) && s.intersects(&gg)));
-            hit != invert
-        })
-        .collect();
+    let bounded_checks = dist > 0.0 && selectors.len() > ExtentIndex::MAX_LINEAR_FEATURES;
+    let mut remaining_checks = checks;
+    let mut hits = Vec::new();
+    for (r, feature) in ds.features.iter().enumerate() {
+        let Some(g) = feature.geometry.as_ref() else { continue };
+        let gg = to_geo(g);
+        let ext = merc_extent(&gg);
+        let mut exhausted = false;
+        let hit = index.any_candidate(&ext, |i| {
+            if bounded_checks {
+                if remaining_checks == 0 {
+                    exhausted = true;
+                    // Stop the candidate traversal; this sentinel is never used as a match.
+                    return true;
+                }
+                remaining_checks -= 1;
+            }
+            selectors.get(i).is_some_and(|(s, e)| e.intersects(&ext) && s.intersects(&gg))
+        });
+        if exhausted {
+            return Err(format!("Distance selection exceeds its limit of {checks} selector checks; select fewer features or selectors"));
+        }
+        if hit != invert {
+            hits.push(r);
+        }
+    }
     let n = hits.len();
     let mut messages = vec![format!("Selected {n} features in {}", ds.name)];
     let without = ds.features.iter().filter(|f| f.geometry.is_none()).count();
@@ -3813,6 +3965,8 @@ struct ExtentIndex {
 }
 
 impl ExtentIndex {
+    /// Small sets deliberately use a bounded-width linear scan instead of a grid.
+    const MAX_LINEAR_FEATURES: usize = 16;
     /// The most cell references the grid may hold.
     const MAX_REFERENCES: usize = 1_000_000;
 
@@ -3828,7 +3982,7 @@ impl ExtentIndex {
             grid: None,
             len: extents.len(),
         };
-        if extents.len() <= 16 || total.is_empty() {
+        if extents.len() <= Self::MAX_LINEAR_FEATURES || total.is_empty() {
             return index;
         }
         let mut references = 0usize;
@@ -3850,6 +4004,17 @@ impl ExtentIndex {
         }
         index.grid = Some(grid);
         index
+    }
+
+    /// Conservative retained grid allocation estimate: spare reference capacity plus table
+    /// buckets/control bytes, allowing twice the advertised usable hash capacity.
+    fn storage_bytes(&self) -> usize {
+        self.grid.as_ref().map_or(0, |grid| {
+            let bucket = std::mem::size_of::<((i64, i64), Vec<usize>)>().saturating_add(1);
+            grid.values().fold(grid.capacity().saturating_mul(2).saturating_mul(bucket), |n, rows| {
+                n.saturating_add(rows.capacity().saturating_mul(std::mem::size_of::<usize>()))
+            })
+        })
     }
 
     /// The cell holding a position, clamped to the grid (a non-finite one goes in the first).
@@ -5499,8 +5664,8 @@ mod tests {
         assert!(ran * 2 >= tested, "only {ran} of {tested} layer tools ran on these inputs");
     }
 
-    /// The budget covers accumulated features and pre-union multipoint discs, including
-    /// dissolve requests. Exhaustion is an error, never a partial layer or a silent skip.
+    /// Complexity is per feature for ordinary buffers, cumulative before dissolve. Multipoint
+    /// discs still count before union, including when every disc overlaps.
     #[test]
     fn buffer_vertex_budget_covers_features_and_multipoint_discs() {
         let point = Coord::new(0.0, 0.0);
@@ -5512,8 +5677,13 @@ mod tests {
         let mut m = Map(HashMap::from([("p".to_string(), ds)]));
         for dissolve in ["None", "All"] {
             let params = serde_json::json!({"input": "p", "distance": 1, "dissolve": dissolve});
-            assert!(buffer_with_vertex_limit(&m, &params, 2 * vertices).is_ok());
-            assert!(buffer_with_vertex_limit(&m, &params, vertices).unwrap_err().contains("vertex budget"));
+            assert!(buffer_with_limits(&m, &params, 2 * vertices, MAX_BUFFER_BYTES).is_ok());
+            let limited = buffer_with_limits(&m, &params, vertices, MAX_BUFFER_BYTES);
+            if dissolve == "All" {
+                assert!(limited.unwrap_err().contains("vertex budget"));
+            } else {
+                assert!(limited.is_ok());
+            }
         }
         // Crossing thin rectangles add intersection vertices during dissolve even though no
         // original vertex lies inside the other rectangle. The inputs fit; the union does not.
@@ -5539,17 +5709,17 @@ mod tests {
             .sum();
         let cross_inputs = Map(HashMap::from([("cross".into(), cross)]));
         let mut params = serde_json::json!({"input":"cross", "distance":0, "dissolve":"None"});
-        assert!(buffer_with_vertex_limit(&cross_inputs, &params, outline_vertices).is_ok());
+        assert!(buffer_with_limits(&cross_inputs, &params, outline_vertices, MAX_BUFFER_BYTES).is_ok());
         params["dissolve"] = serde_json::json!("All");
-        let union = layer(buffer_with_vertex_limit(&cross_inputs, &params, usize::MAX).unwrap());
+        let union = layer(buffer_with_limits(&cross_inputs, &params, usize::MAX, MAX_BUFFER_BYTES).unwrap());
         assert!(union.features[0].geometry.as_ref().unwrap().coord_count() > outline_vertices);
-        assert!(buffer_with_vertex_limit(&cross_inputs, &params, outline_vertices).unwrap_err().contains("vertex budget"));
+        assert!(buffer_with_limits(&cross_inputs, &params, outline_vertices, MAX_BUFFER_BYTES).unwrap_err().contains("vertex budget"));
         // All discs overlap: the final union fits, but collecting the discs must still stop.
         m.0.get_mut("p").unwrap().features.clear();
         m.0.get_mut("p").unwrap().push(Some(Geometry::MultiPoint(vec![point; 3])), vec![]);
         for dissolve in ["None", "All"] {
             let params = serde_json::json!({"input": "p", "distance": 1, "dissolve": dissolve});
-            assert!(buffer_with_vertex_limit(&m, &params, 2 * vertices).unwrap_err().contains("vertex budget"));
+            assert!(buffer_with_limits(&m, &params, 2 * vertices, MAX_BUFFER_BYTES).unwrap_err().contains("vertex budget"));
         }
         // Each feature's discs fit alone, but their combined pre-union charge does not.
         m.0.get_mut("p").unwrap().features.clear();
@@ -5558,9 +5728,57 @@ mod tests {
         }
         for dissolve in ["None", "All"] {
             let params = serde_json::json!({"input":"p", "distance":1, "dissolve":dissolve});
-            assert!(buffer_with_vertex_limit(&m, &params, 4 * vertices).is_ok());
-            assert!(buffer_with_vertex_limit(&m, &params, 3 * vertices).unwrap_err().contains("vertex budget"));
+            assert!(buffer_with_limits(&m, &params, 4 * vertices, MAX_BUFFER_BYTES).is_ok());
+            let limited = buffer_with_limits(&m, &params, 3 * vertices, MAX_BUFFER_BYTES);
+            if dissolve == "All" {
+                assert!(limited.unwrap_err().contains("vertex budget"));
+            } else {
+                assert!(limited.is_ok());
+            }
         }
+    }
+
+    /// More than two result batches fit a per-feature limit that cannot hold two circles
+    /// together. Rows retain their order, ids, attributes and exact existing geometries.
+    #[test]
+    fn buffer_storage_replaces_the_cross_feature_vertex_ceiling() {
+        let point = Geometry::Point(Coord::new(8.0, 46.0));
+        let expected = geodesic_buffer(&point, 5000.0).unwrap();
+        let vertices = expected.coord_count();
+        let mut ds = Dataset::new("points", GeometryType::Point, vec![Field::new("i", FieldType::Integer)]);
+        for i in 0..(2 * BUFFER_BATCH + 1) {
+            ds.push(Some(point.clone()), vec![Value::Int(i as i64)]);
+        }
+        let m = Map(HashMap::from([("points".into(), ds)]));
+        let p = serde_json::json!({"input":"points", "distance":5});
+        let output = layer(buffer_with_limits(&m, &p, vertices, MAX_BUFFER_BYTES).unwrap());
+        assert_eq!(output.features.len(), 2 * BUFFER_BATCH + 1);
+        for (i, f) in output.features.iter().enumerate() {
+            assert_eq!(f.id, i as u64 + 1);
+            assert_eq!(f.geometry.as_ref(), Some(&expected));
+            assert_eq!(f.attrs, vec![Value::Int(i as i64)]);
+        }
+        assert!(buffer_with_limits(&m, &p, vertices, 0).unwrap_err().contains("memory budget"));
+        // No partial output or input edits are returned on failure after earlier batches fit.
+        let first_batch_bytes = rustgis_data::source::chunk_memory::feature_bytes(&output.features[0]) * BUFFER_BATCH
+            + std::mem::size_of::<Feature>() * BUFFER_BATCH;
+        assert!(buffer_with_limits(&m, &p, vertices, first_batch_bytes).unwrap_err().contains("memory budget"));
+        assert_eq!(m.0["points"].features.len(), 2 * BUFFER_BATCH + 1);
+    }
+
+    /// Storage includes copied text, geometry containers and the retained row array. Exercise
+    /// the exact one-row boundary without allocating a large dataset.
+    #[test]
+    fn buffer_storage_counts_attributes_and_row_capacity() {
+        let g = Geometry::Point(Coord::new(8.0, 46.0));
+        let mut ds = Dataset::new("points", GeometryType::Point, vec![Field::new("text", FieldType::Text)]);
+        ds.push(Some(g.clone()), vec![Value::Text("x".repeat(4096))]);
+        let expected = Feature { id: 1, geometry: geodesic_buffer(&g, 5000.0), attrs: ds.features[0].attrs.clone() };
+        let bytes = std::mem::size_of::<Feature>() + rustgis_data::source::chunk_memory::feature_bytes(&expected);
+        let m = Map(HashMap::from([("points".into(), ds)]));
+        let p = serde_json::json!({"input":"points", "distance":5});
+        assert_eq!(layer(buffer_with_limits(&m, &p, MAX_BUFFER_VERTICES, bytes).unwrap()).features[0], expected);
+        assert!(buffer_with_limits(&m, &p, MAX_BUFFER_VERTICES, bytes - 1).unwrap_err().contains("memory budget"));
     }
 
     #[test]
@@ -7000,8 +7218,8 @@ mod tests {
         assert_eq!(out.features.iter().filter_map(|f| f.geometry.clone()).collect::<Vec<_>>(), expected);
     }
 
-    /// Distance selection shares one outline budget, including overlapping multipoint discs.
-    /// Exhaustion must fail before producing a partial selection, even when inverted.
+    /// Distance selection bounds each selector, including its overlapping multipoint discs,
+    /// independently of other selectors. Exhaustion is an error, including when inverted.
     #[test]
     fn location_selection_bounds_accumulated_buffer_outlines() {
         let point = Coord::new(0.0, 0.0);
@@ -7015,24 +7233,113 @@ mod tests {
         let mut m = Map(HashMap::from([("selectors".into(), selectors), ("features".into(), features)]));
         for invert in ["No", "Yes"] {
             let p = serde_json::json!({"input":"features", "select":"selectors", "distance":1, "invert":invert});
-            let result = select_by_location_with_vertex_limit(&m, &p, 2 * vertices).unwrap();
+            let result = select_by_location_with_limits(&m, &p, 2 * vertices, MAX_BUFFER_BYTES).unwrap();
             let Output::Selection { rows, .. } = result.output else { panic!("expected selection") };
             assert_eq!(rows, if invert == "No" { vec![0] } else { vec![] });
-            assert!(select_by_location_with_vertex_limit(&m, &p, vertices).unwrap_err().contains("vertex budget"));
+            assert!(select_by_location_with_limits(&m, &p, vertices, MAX_BUFFER_BYTES).is_ok());
         }
         // A zero-distance predicate does not allocate buffer outlines.
         let p = serde_json::json!({"input":"features", "select":"selectors", "distance":0});
-        assert!(select_by_location_with_vertex_limit(&m, &p, 0).is_ok());
+        assert!(select_by_location_with_limits(&m, &p, 0, MAX_BUFFER_BYTES).is_ok());
         m.0.get_mut("selectors").unwrap().features.clear();
         m.0.get_mut("selectors").unwrap().push(Some(Geometry::MultiPoint(vec![point; 3])), vec![]);
         let p = serde_json::json!({"input":"features", "select":"selectors", "distance":1});
-        assert!(select_by_location_with_vertex_limit(&m, &p, 2 * vertices).unwrap_err().contains("vertex budget"));
+        assert!(select_by_location_with_limits(&m, &p, 2 * vertices, MAX_BUFFER_BYTES).unwrap_err().contains("vertex budget"));
         m.0.get_mut("selectors").unwrap().features.clear();
         for _ in 0..2 {
             m.0.get_mut("selectors").unwrap().push(Some(Geometry::MultiPoint(vec![point; 2])), vec![]);
         }
-        assert!(select_by_location_with_vertex_limit(&m, &p, 4 * vertices).is_ok());
-        assert!(select_by_location_with_vertex_limit(&m, &p, 3 * vertices).unwrap_err().contains("vertex budget"));
+        assert!(select_by_location_with_limits(&m, &p, 4 * vertices, MAX_BUFFER_BYTES).is_ok());
+        assert!(select_by_location_with_limits(&m, &p, 3 * vertices, MAX_BUFFER_BYTES).is_ok());
+    }
+
+    /// A byte budget charges retained selector geometries, row capacity, extent scratch and
+    /// the spatial index. Selector complexity remains per feature, on either inversion path.
+    #[test]
+    fn distance_selection_storage_includes_its_index() {
+        let g = Geometry::Point(Coord::new(8.0, 46.0));
+        let buffered = geodesic_buffer(&g, 5000.0).unwrap();
+        let gg = to_geo(&buffered);
+        let ext = merc_extent(&gg);
+        let n = 32;
+        let before_index =
+            n * (selector_heap_bytes(&gg) + std::mem::size_of::<(geo::Geometry<f64>, Extent)>() + std::mem::size_of::<Extent>());
+        let index_bytes = ExtentIndex::new((0..n).map(|_| ext)).storage_bytes();
+        assert!(index_bytes > 0);
+        let mut selectors = Dataset::new("selectors", GeometryType::Point, vec![]);
+        for _ in 0..n {
+            selectors.push(Some(g.clone()), vec![]);
+        }
+        let mut points = Dataset::new("points", GeometryType::Point, vec![]);
+        points.push(Some(g), vec![]);
+        let m = Map(HashMap::from([("points".into(), points), ("selectors".into(), selectors)]));
+        for invert in ["No", "Yes"] {
+            let p = serde_json::json!({"input":"points", "select":"selectors", "distance":5, "invert":invert});
+            assert!(select_by_location_with_limits(&m, &p, buffered.coord_count(), before_index).unwrap_err().contains("memory budget"));
+            let output = select_by_location_with_limits(&m, &p, buffered.coord_count(), before_index + index_bytes).unwrap();
+            let Output::Selection { rows, .. } = output.output else { panic!("expected selection") };
+            assert_eq!(rows, if invert == "No" { vec![0] } else { vec![] });
+        }
+    }
+
+    /// A small selector set deliberately has no grid. Its bounded-width scan remains linear
+    /// in the target count and must not consume the large-grid fallback allowance.
+    #[test]
+    fn small_distance_selector_sets_keep_their_unindexed_behavior() {
+        let mut selectors = Dataset::new("selectors", GeometryType::Point, vec![]);
+        for _ in 0..2 {
+            selectors.push(Some(Geometry::Point(Coord::new(0.0, 0.0))), vec![]);
+        }
+        let mut points = Dataset::new("points", GeometryType::Point, vec![]);
+        points.push(Some(Geometry::Point(Coord::new(1.0, 1.0))), vec![]);
+        let m = Map(HashMap::from([("points".into(), points), ("selectors".into(), selectors)]));
+        let p = serde_json::json!({"input":"points", "select":"selectors", "distance":1});
+        let result = select_by_location_with_work_limit(&m, &p, MAX_BUFFER_VERTICES, MAX_BUFFER_BYTES, 0).unwrap();
+        let Output::Selection { rows, .. } = result.output else { panic!("expected selection") };
+        assert!(rows.is_empty());
+    }
+
+    /// Clustered selectors overflow the grid's reference allowance. The first target matches
+    /// immediately and the second misses every circle; exhaustion discards earlier matches.
+    #[test]
+    fn distance_selection_bounds_actual_candidate_checks() {
+        let centre = Geometry::Point(Coord::new(0.0, 0.0));
+        let mut selectors = Dataset::new("selectors", GeometryType::Point, vec![]);
+        let count = 2000;
+        for _ in 0..count {
+            selectors.push(Some(centre.clone()), vec![]);
+        }
+        let mut points = Dataset::new("points", GeometryType::Point, vec![]);
+        points.push(Some(centre), vec![]);
+        points.push(Some(Geometry::Point(Coord::new(0.008, 0.008))), vec![]);
+        let mut m = Map(HashMap::from([("points".into(), points), ("selectors".into(), selectors)]));
+        for invert in ["No", "Yes"] {
+            let p = serde_json::json!({"input":"points", "select":"selectors", "distance":1, "invert":invert});
+            let result = select_by_location_with_work_limit(&m, &p, MAX_BUFFER_VERTICES, MAX_BUFFER_BYTES, count + 1).unwrap();
+            let Output::Selection { rows, .. } = result.output else { panic!("expected selection") };
+            assert_eq!(rows, if invert == "No" { vec![0] } else { vec![1] });
+            assert!(
+                select_by_location_with_work_limit(&m, &p, MAX_BUFFER_VERTICES, MAX_BUFFER_BYTES, count)
+                    .unwrap_err()
+                    .contains("selector checks")
+            );
+        }
+        let p = serde_json::json!({"input":"points", "select":"selectors", "distance":0});
+        assert!(select_by_location_with_work_limit(&m, &p, MAX_BUFFER_VERTICES, MAX_BUFFER_BYTES, 0).is_ok());
+        // Seventeen circles fit the grid. Unique candidates on this path consume the same
+        // allowance: one early match followed by seventeen misses needs eighteen checks.
+        m.0.get_mut("selectors").unwrap().features.truncate(17);
+        for invert in ["No", "Yes"] {
+            let p = serde_json::json!({"input":"points", "select":"selectors", "distance":1, "invert":invert});
+            let result = select_by_location_with_work_limit(&m, &p, MAX_BUFFER_VERTICES, MAX_BUFFER_BYTES, 18).unwrap();
+            let Output::Selection { rows, .. } = result.output else { panic!("expected selection") };
+            assert_eq!(rows, if invert == "No" { vec![0] } else { vec![1] });
+            assert!(
+                select_by_location_with_work_limit(&m, &p, MAX_BUFFER_VERTICES, MAX_BUFFER_BYTES, 17)
+                    .unwrap_err()
+                    .contains("selector checks")
+            );
+        }
     }
 
     #[test]
