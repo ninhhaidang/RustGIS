@@ -17787,6 +17787,136 @@ fn mixed_geometry_no_fill_preserves_other_symbols_classes_and_undo() {
     }
 }
 
+/// After No Fill, a new symbology or a fill in the symbol's colour draws fills again (#1301), on
+/// a layer read into memory (its symbols' fills made transparent) and on a streamed or mixed one
+/// (a transparent fill over symbols that points and lines share) alike. Gradient fills, with
+/// colours of their own, always did.
+#[test]
+fn fills_come_back_after_no_fill() {
+    use rustgis_data::{Coord, Dataset, Field, FieldType, Geometry, GeometryType, Value as Attr};
+    let square = |x: f64| {
+        Geometry::Polygon(vec![vec![vec![
+            Coord::new(x, 0.0),
+            Coord::new(x + 1.0, 0.0),
+            Coord::new(x + 1.0, 1.0),
+            Coord::new(x, 1.0),
+            Coord::new(x, 0.0),
+        ]]])
+    };
+    let dataset = |mixed: bool| {
+        let mut ds =
+            Dataset::new("parcels", GeometryType::Polygon, vec![Field::new("kind", FieldType::Text), Field::new("n", FieldType::Integer)]);
+        for (i, kind) in ["a", "b", "a"].into_iter().enumerate() {
+            ds.push(Some(square(i as f64 * 2.0)), vec![Attr::Text(kind.into()), Attr::Int(i as i64)]);
+        }
+        if mixed {
+            ds.push(Some(Geometry::Point(Coord::new(10.0, 0.5))), vec![Attr::Text("a".into()), Attr::Int(9)]);
+        }
+        ds
+    };
+    // Whether the polygons draw a fill: each of them, or, with none loaded (a streamed layer
+    // away from its features), the layer's own fills over its symbol.
+    let filled = |s: &Session| {
+        let l = s.map().layer(s.active_layer.unwrap()).unwrap();
+        let draws = |fills: &[rustgis_map::fills::FillLayer], fill: rustgis_map::Rgba| {
+            if fills.is_empty() { fill.a() > 0 } else { fills.iter().any(|f| f.draws(fill)) }
+        };
+        let polygons: Vec<usize> =
+            (0..l.dataset.features.len()).filter(|r| matches!(l.dataset.features[*r].geometry, Some(Geometry::Polygon(_)))).collect();
+        if polygons.is_empty() {
+            draws(&l.fill_layers, l.renderer.base_symbol().fill)
+        } else {
+            polygons.iter().all(|r| draws(l.fills(*r), l.symbol(*r).fill))
+        }
+    };
+    for case in ["memory", "mixed", "streamed"] {
+        let mut s = Session::new(Project::default());
+        if case == "streamed" {
+            let path = std::env::temp_dir().join(format!("rustgis-engine-{}-fill-after-no-fill.geojson", std::process::id()));
+            std::fs::write(&path, rustgis_data::io::to_geojson(&dataset(false)).to_string()).unwrap();
+            s.run("layer.addData", &json!({"path": path.to_string_lossy(), "stream": true})).unwrap();
+            let _ = std::fs::remove_file(path);
+            let id = s.active_layer.unwrap();
+            let l = s.map_mut().layer_mut(id).unwrap();
+            assert!(l.is_streamed());
+            l.dataset.features.clear();
+        } else {
+            let id = s.map_mut().add_dataset(dataset(case == "mixed"));
+            s.active_layer = Some(id);
+        }
+        let id = s.active_layer.unwrap();
+        assert!(filled(&s), "{case}: filled to begin with");
+        let steps = [
+            json!({"command": "layer.symbology", "params": {"type": "single"}}),
+            json!({"command": "layer.symbology", "params": {"type": "unique", "field": "kind"}}),
+            // Again on the same field and scheme, which carries the classes over.
+            json!({"command": "layer.symbology", "params": {"type": "unique", "field": "kind"}}),
+            json!({"command": "layer.symbology", "params": {"type": "graduated", "field": "n", "classes": 2}}),
+            json!({"command": "layer.symbology", "params": {"type": "graduated", "field": "n", "classes": 2}}),
+            json!({"command": "layer.ramp", "params": {"ramp": "Harbour"}}),
+            json!({"command": "layer.color", "params": {"color": "#336699"}}),
+            json!({"command": "layer.fillLayers", "params": {"fills": [{"pattern": "solid"}]}}),
+            json!({"command": "layer.fillLayers", "params": {"fills": [{"pattern": "hatch", "angle": 45}]}}),
+            json!({"command": "layer.fillLayers", "params": {"fills": []}}),
+            json!({"command": "layer.fillLayers", "params": {"fills": [{"pattern": "gradient", "color": "#336699"}]}}),
+        ];
+        // Graduated classes need values, which the streamed layer hasn't loaded.
+        for step in steps.into_iter().filter(|st| case != "streamed" || st["params"]["type"] != "graduated") {
+            s.run("layer.noFill", &Value::Null).unwrap();
+            assert!(!filled(&s), "{case}: No Fill hides the fills before {step}");
+            // The path each layer takes: a transparent fill over the symbols of a streamed or
+            // mixed layer, the symbols' own fills made transparent on the other.
+            let l = s.map().layer(id).unwrap();
+            let over = matches!(l.fill_layers.as_slice(), [f] if f.color.is_some_and(|c| c.a() == 0));
+            assert_eq!(over, case != "memory", "{case}: No Fill's path");
+            assert_eq!(l.no_fill, Some(if over { rustgis_map::NoFill::Override } else { rustgis_map::NoFill::Symbols }));
+            s.run(step["command"].as_str().unwrap(), &step["params"]).unwrap();
+            assert!(filled(&s), "{case}: {step} after No Fill draws fills");
+        }
+        // A fill given its own transparent colour leaves the polygons unfilled.
+        for colour in ["#11223300", "#00000000"] {
+            s.run("layer.symbology", &json!({"type": "single"})).unwrap();
+            s.run("layer.noFill", &Value::Null).unwrap();
+            s.run("layer.fillLayers", &json!({"fills": [{"pattern": "solid", "color": colour}]})).unwrap();
+            assert!(!filled(&s), "{case}: a transparent fill {colour} stays transparent");
+            // A new symbology then keeps that fill and turns No Fill off, showing the symbols'
+            // fills under it.
+            s.run("layer.symbology", &json!({"type": "single"})).unwrap();
+            let l = s.map().layer(id).unwrap();
+            assert!(
+                matches!(l.fill_layers.as_slice(), [f] if f.color.is_some_and(|c| c.a() == 0)),
+                "{case}: the chosen fill {colour} stays"
+            );
+            assert_eq!(l.no_fill, None, "{case}: No Fill is off");
+            assert!(l.renderer.base_symbol().fill.a() > 0, "{case}: the symbol's fill is shown");
+        }
+        // One class's fills after No Fill show that class alone: a hatch, or its symbol's own
+        // fill ([]). The streamed layer has no rows loaded to look at.
+        if case != "streamed" {
+            // Without the transparent layer fill chosen above, which a class without fills takes.
+            s.run("layer.fillLayers", &json!({"fills": []})).unwrap();
+            for fills in [json!([{"pattern": "hatch"}]), json!([])] {
+                s.run("layer.symbology", &json!({"type": "unique", "field": "kind"})).unwrap();
+                s.run("layer.noFill", &Value::Null).unwrap();
+                s.run("layer.fillLayers", &json!({"value": "a", "fills": fills})).unwrap();
+                let l = s.map().layer(id).unwrap();
+                let shows = |row: usize| {
+                    l.fills(row).iter().any(|f| f.draws(l.symbol(row).fill)) || (l.fills(row).is_empty() && l.symbol(row).fill.a() > 0)
+                };
+                assert!(shows(0) && shows(2), "{case}: class a shows with {fills}");
+                assert!(!shows(1), "{case}: class b keeps No Fill with {fills}");
+            }
+        }
+    }
+    // A fill colour chosen transparent isn't No Fill: a new symbology keeps it.
+    let mut s = Session::new(Project::default());
+    let id = s.map_mut().add_dataset(dataset(false));
+    s.active_layer = Some(id);
+    s.run("layer.color", &json!({"color": "#33669900"})).unwrap();
+    s.run("layer.symbology", &json!({"type": "unique", "field": "kind"})).unwrap();
+    assert!(!filled(&s), "a chosen transparent fill stays");
+}
+
 /// Other families can be outside a streamed polygon layer's current view when No Fill runs.
 #[test]
 fn mixed_geometry_no_fill_preserves_unloaded_point_symbols() {

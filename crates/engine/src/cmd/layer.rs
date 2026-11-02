@@ -4,7 +4,9 @@ use std::path::Path;
 
 use rustgis_data::{GeometryType, photo};
 use rustgis_map::symbology::{ClassRef, ClassStyle, LABEL_SIZE, MAX_STROKES};
-use rustgis_map::{ClassMethod, Glyph, LineCap, LineJoin, LineMark, LineMarkers, LineStroke, Marker, Placements, Ramp, Renderer, Rgba};
+use rustgis_map::{
+    ClassMethod, Glyph, LineCap, LineJoin, LineMark, LineMarkers, LineStroke, Marker, NoFill, Placements, Ramp, Renderer, Rgba,
+};
 use serde_json::{Value, json};
 
 use super::{b, f, need_feature_layer, need_layer, ps, uint};
@@ -116,7 +118,11 @@ pub fn commands() -> Vec<C> {
                 Some(rl) => rl.style.set_ramp(r),
                 None => {
                     let g = l.geometry_type();
-                    l.renderer.apply_ramp(r, g)
+                    l.renderer.apply_ramp(r, g);
+                    // New colours after No Fill are drawn (#1301).
+                    if take_no_fill(l) == Some(NoFill::Symbols) {
+                        l.renderer.map_symbols(show_fill);
+                    }
                 }
             })
         }).params(r#"{"layer"?, "ramp": colour ramp name}"#)
@@ -149,6 +155,8 @@ pub fn commands() -> Vec<C> {
                     Renderer::Proportional { base, .. } => *base = fill(base),
                     other => *other = Renderer::Single(fill(&other.base_symbol())),
                 }
+                // A fill colour after No Fill is drawn, unless it is transparent itself (#1301).
+                take_no_fill(l);
             })
         })
         .when(need_feature_layer)
@@ -159,8 +167,8 @@ pub fn commands() -> Vec<C> {
                     // Symbols are shared by geometry families. A polygon-only fill override
                     // leaves point markers and line strokes (including their markers) intact.
                     // A streamed layer may have other families outside the loaded window.
-                    let fill = rustgis_map::fills::FillLayer { color: Some(Rgba::rgb(0, 0, 0).with_alpha(0)), ..Default::default() };
-                    l.fill_layers = vec![fill];
+                    l.no_fill = Some(NoFill::Override);
+                    l.fill_layers = vec![no_fill_override()];
                     match &mut l.renderer {
                         Renderer::Unique { class_fills, other_fills, .. } => {
                             class_fills.clear();
@@ -171,6 +179,7 @@ pub fn commands() -> Vec<C> {
                     }
                 } else {
                     l.renderer.map_symbols(|sym| sym.fill = sym.fill.with_alpha(0));
+                    l.no_fill = Some(NoFill::Symbols);
                 }
             })
         })
@@ -672,6 +681,49 @@ fn line_strokes(s: &mut Session, p: &Value) -> CmdResult {
     Ok(json!({"strokes": n}))
 }
 
+/// The alpha a polygon fill gets back when No Fill is turned off: a new polygon symbol's.
+fn shown_fill_alpha() -> u8 {
+    rustgis_map::Symbol::default_for(GeometryType::Polygon, 0).fill.a()
+}
+
+/// The one transparent fill No Fill lays over a layer's symbols.
+fn no_fill_override() -> rustgis_map::fills::FillLayer {
+    rustgis_map::fills::FillLayer { color: Some(Rgba::rgb(0, 0, 0).with_alpha(0)), ..Default::default() }
+}
+
+/// Turns No Fill off, dropping its override if it laid one, and says how it was on. The caller
+/// shows the symbols' fills on the other path, where only it knows which.
+fn take_no_fill(l: &mut rustgis_map::Layer) -> Option<NoFill> {
+    let hidden = l.no_fill.take();
+    if hidden == Some(NoFill::Override) && is_no_fill_override(&l.fill_layers) {
+        l.fill_layers.clear();
+    }
+    hidden
+}
+
+/// Whether the fills are No Fill's own, rather than a transparent fill chosen with `layer.fillLayers`.
+fn is_no_fill_override(fills: &[rustgis_map::fills::FillLayer]) -> bool {
+    let o = no_fill_override();
+    matches!(fills, [f] if matches!(f.pattern, rustgis_map::fills::FillPattern::Solid) && f.color == o.color)
+}
+
+/// The symbol of one class, for its own fills.
+fn class_symbol<'a>(r: &'a mut Renderer, class: &ClassRef) -> Option<&'a mut rustgis_map::Symbol> {
+    match (r, class) {
+        (Renderer::Unique { classes, .. }, ClassRef::Value(v)) => classes.iter_mut().find(|(k, _)| k == v).map(|(_, s)| s),
+        (Renderer::Unique { other, .. }, ClassRef::Other) => Some(other),
+        (Renderer::Graduated { symbols, .. }, ClassRef::Index(i)) => symbols.get_mut(*i),
+        _ => None,
+    }
+}
+
+/// A symbol's fill No Fill made transparent, shown again in its own colour.
+fn show_fill(sym: &mut rustgis_map::Symbol) {
+    if sym.fill.a() == 0 {
+        sym.fill = sym.fill.with_alpha(shown_fill_alpha());
+    }
+}
+
 /// `layer.fillLayers`: a polygon layer's stacked fills (or a class's own, with `value`, `index`
 /// or `other`), bottom first; `[]` goes back to the symbol's single fill.
 fn fill_layers(s: &mut Session, p: &Value) -> CmdResult {
@@ -846,10 +898,34 @@ fn fill_layers(s: &mut Session, p: &Value) -> CmdResult {
     if !l.has_geometry(GeometryType::Polygon) || l.graphics || l.is_raster() {
         return Err("this works on layers containing polygons".into());
     }
+    // A fill in the symbol's colour, or the symbol's own fill ([]), asked for after No Fill: the
+    // symbols' fills are shown again, or they would draw nothing (#1301). A class's fills show
+    // that class's alone.
+    let in_symbol_colour = fills.is_empty() || fills.iter().any(|f| f.color.is_none());
+    let hidden = l.no_fill;
     let count = fills.len();
     match class {
-        Some(c) => l.renderer.set_class_fills(&c, fills)?,
-        None => l.fill_layers = fills,
+        Some(c) => {
+            // Without fills of its own the class takes the layer's, which No Fill's override
+            // hides: a solid fill in the symbol's colour instead.
+            let fills =
+                if fills.is_empty() && hidden == Some(NoFill::Override) { vec![rustgis_map::fills::FillLayer::default()] } else { fills };
+            l.renderer.set_class_fills(&c, fills)?;
+            if in_symbol_colour && hidden == Some(NoFill::Symbols) {
+                class_symbol(&mut l.renderer, &c).into_iter().for_each(show_fill);
+            }
+        }
+        None => {
+            if in_symbol_colour && hidden == Some(NoFill::Symbols) {
+                l.renderer.map_symbols(show_fill);
+                l.no_fill = None;
+            }
+            // Fills set here replace No Fill's own, even transparent ones.
+            if hidden == Some(NoFill::Override) {
+                l.no_fill = None;
+            }
+            l.fill_layers = fills;
+        }
     }
     Ok(json!({"fills": count}))
 }
@@ -3263,11 +3339,17 @@ fn symbology(s: &mut Session, p: &Value) -> CmdResult {
     let classes = f(p, "classes").map(|c| c.clamp(1.0, 12.0) as usize).unwrap_or(5);
     let l = s.map().layer(id).ok_or("no such layer")?;
     let g = l.geometry_type();
+    // A new symbology after No Fill draws fills again (#1301).
+    let hidden = l.no_fill;
     let base = l.renderer.base_symbol();
     let base = if matches!(l.renderer, Renderer::Graduated { .. } | Renderer::Unique { .. }) {
         rustgis_map::Symbol { ..rustgis_map::Symbol::default_for(g, id) }.with_fill(base.fill, g)
     } else {
         base
+    };
+    let base = match hidden {
+        Some(NoFill::Symbols) if base.fill.a() == 0 => rustgis_map::Symbol { fill: base.fill.with_alpha(shown_fill_alpha()), ..base },
+        _ => base,
     };
     let field = |numeric_only: bool| -> Result<String, String> {
         if let Some(x) = ps(p, "field") {
@@ -3324,7 +3406,14 @@ fn symbology(s: &mut Session, p: &Value) -> CmdResult {
     // Applied again on the same field, the classes keep the labels set by hand, and the colours
     // and outlines set by hand too while the colour scheme stays (#314).
     r.carry_edits_from(&l.renderer, g);
-    with(s, p, |l| l.renderer = r)
+    // The same field and scheme again carry the classes' alpha, which No Fill made 0.
+    if hidden == Some(NoFill::Symbols) {
+        r.map_symbols(show_fill);
+    }
+    with(s, p, |l| {
+        l.renderer = r;
+        take_no_fill(l);
+    })
 }
 
 /// The class `value`, `index` or `other: true` name in a command's parameters, or `None` when

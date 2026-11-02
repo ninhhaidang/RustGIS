@@ -98,6 +98,16 @@ impl Basemap {
     }
 }
 
+/// How No Fill hid a layer's polygon fills ([`Layer::no_fill`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NoFill {
+    /// One transparent fill over every symbol: on streamed layers and layers with points or lines,
+    /// whose symbols those share.
+    Override,
+    /// Every symbol's fill made transparent.
+    Symbols,
+}
+
 /// A layer: a dataset drawn with a renderer and labels.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Layer {
@@ -158,6 +168,10 @@ pub struct Layer {
     /// [`fills::FillLayer`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty", deserialize_with = "fills::de_fills")]
     pub fill_layers: Vec<fills::FillLayer>,
+    /// How No Fill hides the polygon fills, while it is on: a new symbology, a fill colour or a
+    /// fill in the symbol's colour shows them again. A fill colour chosen transparent isn't this.
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "de_no_fill")]
+    pub no_fill: Option<NoFill>,
     /// Draws the stacked strokes in levels (symbol levels): every feature's strokes of one
     /// [`LineStroke::level`] before any of the next, so road casings join under the cores
     /// instead of cutting across them where lines meet.
@@ -377,6 +391,7 @@ impl Layer {
             extrusion: None,
             line_strokes: Vec::new(),
             fill_layers: Vec::new(),
+            no_fill: None,
             stroke_levels: false,
             marker_rotation: None,
             symbol_by: Default::default(),
@@ -2627,6 +2642,21 @@ pub const REFERENCE_SCALES: (f64, f64) = (1.0, 1e9);
 /// far in, its lines would otherwise be drawn thousands of pixels wide.
 pub const SIZE_FACTORS: (f64, f64) = (0.01, 32.0);
 
+/// A [`Layer::no_fill`] this version doesn't know (a later variant, another type, or edited by
+/// hand) reads as off, rather than failing the whole project.
+fn de_no_fill<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<NoFill>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Read {
+        Known(NoFill),
+        Other(serde::de::IgnoredAny),
+    }
+    Ok(match Option::<Read>::deserialize(d)? {
+        Some(Read::Known(how)) => Some(how),
+        Some(Read::Other(_)) | None => None,
+    })
+}
+
 /// Reads a layer's reference scale as `layer.referenceScale` would leave it: one out of
 /// [`REFERENCE_SCALES`] (or not a number) is none. A project file is hostile input.
 fn de_reference_scale<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<f64>, D::Error> {
@@ -2796,6 +2826,28 @@ mod tests {
         // Without a reference scale nothing is written.
         l.reference_scale = None;
         assert!(!serde_json::to_string(&l).unwrap().contains("reference_scale"));
+    }
+
+    #[test]
+    fn no_fill_is_saved_only_when_on_and_an_unknown_one_reads_as_off() {
+        let mut l = Layer::new(1, Dataset::new("parcels", GeometryType::Polygon, vec![]));
+        assert!(!serde_json::to_string(&l).unwrap().contains("no_fill"));
+        for how in [NoFill::Override, NoFill::Symbols] {
+            l.no_fill = Some(how);
+            let text = serde_json::to_string(&l).unwrap();
+            assert_eq!(serde_json::from_str::<Layer>(&text).unwrap().no_fill, Some(how));
+        }
+        let mut v = serde_json::to_value(&l).unwrap();
+        for unknown in [
+            serde_json::json!("Later"),
+            serde_json::json!(1),
+            serde_json::json!(true),
+            serde_json::json!({"Override": 1}),
+            serde_json::Value::Null,
+        ] {
+            v["no_fill"] = unknown.clone();
+            assert_eq!(serde_json::from_value::<Layer>(v.clone()).unwrap().no_fill, None, "{unknown}");
+        }
     }
 
     #[test]
