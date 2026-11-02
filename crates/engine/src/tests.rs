@@ -11182,6 +11182,34 @@ fn arcgis_features_read_past_the_record_limit() {
     );
 }
 
+/// WFS 2.0 without next links reads every page through service.add, with no loss notice.
+#[test]
+fn wfs_service_reads_offset_pages_without_next_links() {
+    use ogc_server::{Route, Server};
+    let page = |ids: &[u32]| {
+        json!({"type": "FeatureCollection", "features": ids.iter().map(|id| {
+            json!({"type": "Feature", "id": id, "properties": {"n": id}, "geometry": {"type": "Point", "coordinates": [id, 1]}})
+        }).collect::<Vec<_>>()})
+        .to_string()
+    };
+    let query = "SERVICE=WFS&VERSION=2.0.0&REQUEST=GetFeature&TYPENAMES=roads";
+    let format = "OUTPUTFORMAT=application%2Fjson&SRSNAME=EPSG:4326";
+    let server = Server::new(vec![
+        Route::new(&format!("/wfs?{query}&{format}&COUNT=50000"), &page(&[1, 2])),
+        Route::new(&format!("/wfs?{query}&SRSNAME=EPSG:4326&RESULTTYPE=hits"), r#"<FeatureCollection numberMatched="3"/>"#),
+        Route::new(&format!("/wfs?{query}&{format}&STARTINDEX=2&COUNT=2"), &page(&[3])),
+    ]);
+    let caps = format!(
+        r#"<WFS_Capabilities version="2.0.0"><OperationsMetadata><Operation name="GetFeature"><DCP><HTTP><Get href="{}/wfs?"/></HTTP></DCP></Operation></OperationsMetadata><FeatureTypeList><FeatureType><Name>roads</Name><Title>Roads</Title></FeatureType></FeatureTypeList></WFS_Capabilities>"#,
+        server.base
+    );
+    let mut s = Session::new(Project::default());
+    let result = s.run("service.add", &json!({"url": format!("{}/wfs", server.base), "layer": "roads", "text": caps})).unwrap();
+    assert_eq!(result["features"], 3);
+    assert!(s.notices.is_empty(), "{:?}", s.notices.iter().map(|n| &n.text).collect::<Vec<_>>());
+    assert_eq!(server.requests().len(), 3);
+}
+
 /// A feature layer comes whole unless an area is asked for (#819): then only the features that
 /// cross it, a WFS 1.1 or 2.0 asked with `BBOX` latitude first in urn:ogc:def:crs:EPSG::4326. A
 /// WFS 1.0, or an area across the antimeridian, is asked whole, and says so.
@@ -11217,8 +11245,13 @@ fn service_features_asked_for_over_an_area() {
     add(&mut s, "2.0.0", Some(json!("full")));
     add(&mut s, "2.0.0", Some(json!([170.0, -20.0, -170.0, -10.0])));
     add(&mut s, "1.0.0", Some(piaui.clone()));
-    let boxes: Vec<Option<String>> =
-        server.requests().iter().map(|r| r.query.iter().find(|(k, _)| k == "BBOX").map(|(_, v)| v.clone())).collect();
+    // WFS 2.0 also asks for hits; those requests must preserve the feature query's box.
+    let requests = server.requests();
+    let is_hits = |r: &&ogc_server::Request| r.query.iter().any(|(k, v)| k == "RESULTTYPE" && v == "hits");
+    let bbox = |r: &ogc_server::Request| r.query.iter().find(|(k, _)| k == "BBOX").map(|(_, v)| v.clone());
+    let boxes: Vec<Option<String>> = requests.iter().filter(|r| !is_hits(r)).map(bbox).collect();
+    let hit_boxes: Vec<Option<String>> = requests.iter().filter(is_hits).map(bbox).collect();
+    assert_eq!(hit_boxes, boxes[1..5]);
     assert_eq!(boxes.len(), 6);
     assert_eq!(boxes[0].as_deref(), Some("-10.93,-45.99,-2.74,-40.37,urn:ogc:def:crs:EPSG::4326"));
     assert!(boxes[1].as_deref().is_some_and(|b| b.ends_with(",urn:ogc:def:crs:EPSG::4326")), "{boxes:?}");
