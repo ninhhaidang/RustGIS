@@ -265,8 +265,39 @@ fn grid(ui: &mut Ui, id: &str, add: impl FnOnce(&mut Ui)) {
 fn content(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, c: &Class, t: &Tokens) {
     field(app, ui, l, c);
     ui.add_space(4.0);
+    // Closed until the class has an expression.
+    let owner = egui::Id::unique((layer_key(app, l), c.name));
+    egui::CollapsingHeader::new(RichText::new(tl!("By Expression")).font(semibold(12.5)))
+        .id_salt(owner.with("label_by_open"))
+        .default_open(!c.it.by.is_empty())
+        .show(ui, |ui| by_expression(app, ui, l, c, t));
+    ui.add_space(4.0);
     heading(ui, "SQL Query");
     sql(app, ui, l, c, t);
+}
+
+/// The class's text, size, colour and angle per feature from expressions (`labels.by`); each
+/// empty takes the field, or the class's own setting.
+fn by_expression(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, c: &Class, t: &Tokens) {
+    ui.label(
+        RichText::new(tl!(
+            "Text, e.g. \"name\" || ' (' || round(\"pop\" / 1e6, 1) || ' M)', in place of the field; size in points, color as '#RRGGBB', angle in degrees clockwise. Empty: the field's or the class's own."
+        ))
+        .small()
+        .color(t.text_dim),
+    );
+    let by = &c.it.by;
+    let mut rows = vec![("text", tl!("Text"), &by.text), ("size", tl!("Size"), &by.size), ("color", tl!("Color"), &by.color)];
+    // Labels along lines keep the line's angle (one set by command still shows, to clear it).
+    if !(l.geometry_type() == rustgis_engine::data::GeometryType::Polyline && c.it.placement.along_line()) || by.angle.is_some() {
+        rows.push(("angle", tl!("Angle"), &by.angle));
+    }
+    let owner = egui::Id::unique((layer_key(app, l), c.name));
+    for (key, label, cur) in rows {
+        if let Some(text) = crate::panes::expression_box(ui, owner.with(("label_by", key)), label, cur.as_deref(), &l.dataset, t) {
+            run(app, "labels.by", c.params(json!({ key: text })));
+        }
+    }
 }
 
 fn heading(ui: &mut Ui, text: &str) {
@@ -1552,6 +1583,43 @@ mod tests {
         assert_eq!(app.session.undo_depth(), steps + 1, "letting go runs labels.style once");
         app.run("edit.undo", json!(null)).unwrap();
         assert_eq!(app.session.map().layer(id).unwrap().labels.default.color, before, "one undo takes the whole pick back");
+    }
+
+    /// The Content tab's By Expression boxes set the class's text and size per feature in one
+    /// step each; one that doesn't read says why and isn't applied.
+    #[test]
+    fn label_expressions_are_set_in_the_content_tab() {
+        use egui::accesskit::Role;
+        let app = with_cities();
+        let steps = app.session.undo_depth();
+        let mut h = harness(app);
+        h.run();
+        let by = |h: &egui_kittest::Harness<'_, RustGisApp>| {
+            h.state().session.map().layer(h.state().session.active_layer.unwrap()).unwrap().labels.default.by.clone()
+        };
+        h.get_by_label("By Expression").click();
+        h.run();
+        let enter = |h: &mut egui_kittest::Harness<'static, RustGisApp>, label: &str, text: &str| {
+            h.get_by_role_and_label(Role::TextInput, label).focus();
+            h.run();
+            h.get_by_role_and_label(Role::TextInput, label).type_text(text);
+            h.run();
+            h.key_press(egui::Key::Enter);
+            h.run();
+        };
+        enter(&mut h, "Text", "nosuch || 'x'");
+        assert!(h.query_by_label_contains("Invalid:").is_some(), "says why");
+        assert_eq!((by(&h).text, h.state().session.undo_depth()), (None, steps), "not applied");
+        h.get_by_role_and_label(Role::TextInput, "Text").focus();
+        h.run();
+        h.key_press(egui::Key::Escape);
+        h.run();
+        enter(&mut h, "Text", "upper(name)");
+        assert_eq!(by(&h).text.as_deref(), Some("upper(name)"));
+        enter(&mut h, "Size", "scale_linear(pop_max, 0, 2e7, 8, 20)");
+        assert_eq!(by(&h).size.as_deref(), Some("scale_linear(pop_max, 0, 2e7, 8, 20)"));
+        assert_eq!(h.state().session.undo_depth(), steps + 2, "a step each");
+        assert!(h.query_by_role_and_label(Role::TextInput, "Angle").is_some(), "points take an angle");
     }
 
     fn clause(app: &RustGisApp) -> Option<String> {

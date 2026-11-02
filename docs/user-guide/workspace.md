@@ -209,6 +209,12 @@ Each layer keeps its look:
 Projects and styles from QGIS 1 and 2 read too: their legend gives the layers' order, and the
 older names of the same settings are read.
 
+A label's text that is an expression (not only a field) carries over as its class's text
+expression, and its data-defined size (turned from the text's unit into points), colour and
+rotation as its [expressions](cartography.md#labeling); QGIS 2's counterclockwise rotation is
+turned clockwise. Other data-defined label settings are noted by name, and a colour expression
+on see-through text is drawn opaque, noted.
+
 A symbol's data-defined size, fill and outline colours, outline width and marker angle carry over
 as the layer's [symbol expressions](cartography.md#symbols-by-expression), sizes turned from the
 symbol's unit (millimetres, points, pixels, inches; map units at the reference scale) into points, where RustGIS's [expression language](expressions.md) reads them. A marker of several layers
@@ -227,7 +233,7 @@ over the map, label backgrounds of other shapes drawn as rectangles, label dista
 and polygons, a distance around points moved straight up, labels wrapped at a shortest line
 length or justified, values outside a graduated renderer's ranges in its first or last class, file options
 such as `layerid` that RustGIS doesn't read) and what was skipped (arrow lines, other data-defined
-settings, draw effects, label callouts, labels from expressions, contours and other raster
+settings, draw effects, label callouts, contours and other raster
 renderers RustGIS has no match for, PostGIS, WFS
 and other sources RustGIS doesn't read, diagrams, joins, virtual fields, a layer's other styles,
 and the project's print layouts, annotations, bookmarks, map themes and relations). A database

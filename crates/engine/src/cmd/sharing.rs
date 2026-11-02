@@ -592,17 +592,32 @@ pub(crate) fn note_label_classes(s: &mut Session, kind: &str, p: &Value) {
     let Some(l) = s.layer_id(p).ok().and_then(|id| s.map().layer(id)).filter(|l| l.labels.enabled) else { return };
     let n = l.labels.classes.len().min(MAX_LABEL_CLASSES);
     let clause = l.labels.default.where_.as_deref().is_some_and(|w| !w.trim().is_empty());
+    // A Default class without a field has no labels in the style: by a text expression alone, or
+    // by nothing.
+    let no_field = l.labels.default.field.is_empty();
     let text = if !l.labels.default.visible {
         Some(match n {
             0 => format!("{}'s style has no labels: its Default class is hidden.", l.name),
             _ => format!("{}'s style has no labels: its Default class is hidden, and its other label classes aren't in it.", l.name),
+        })
+    } else if no_field {
+        Some(match l.labels.default.by.text {
+            Some(_) => format!("{}'s style has no labels: its Default class's text is an expression, which isn't in it.", l.name),
+            None => format!("{}'s style has no labels: its Default class has no label field.", l.name),
         })
     } else {
         (n > 0 || clause).then(|| {
             format!("{}'s style labels every feature with its Default class; its label classes' SQL clauses aren't in it.", l.name)
         })
     };
-    if let Some(text) = text {
+    // Its expressions have no MapLibre equivalent written for them.
+    let by = (l.labels.default.visible && !no_field && !l.labels.default.by.is_empty()).then(|| {
+        format!(
+            "{}'s style labels with the Default class's field and text symbol ({}); its label expressions aren't in it.",
+            l.name, l.labels.default.field
+        )
+    });
+    for text in text.into_iter().chain(by) {
         s.notify(text, false);
     }
 }

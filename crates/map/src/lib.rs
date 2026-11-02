@@ -11,6 +11,7 @@ pub mod geolibre;
 mod geometry_kinds;
 pub mod globe;
 pub mod graphics;
+pub mod label_by;
 pub mod layout;
 pub mod lod;
 pub mod palette;

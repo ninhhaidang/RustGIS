@@ -368,7 +368,7 @@ it unchanged.
 The **Labeling pane** brings together the label classes and the chosen class's field, SQL
 clause, text symbol, placement and visibility limits. Under its header (the layer, labels on or
 off, and the class chosen), a tab per topic shows one part at a time: **Content** (the label field,
-with a search in its list, above the SQL query), **Symbol**, **Position** and
+with a search in its list, the class's expressions under **By Expression**, and the SQL query), **Symbol**, **Position** and
 **Range**. Open it for a feature layer with Layers › right-click › **Labeling Properties…**,
 **View › Windows › Labeling**, or **Labeling › Labels › Properties**. It runs the same commands as
 the ribbon, so each setting change undoes on its own (a dragged size or a colour pick is one step).
@@ -379,6 +379,29 @@ Turn labels on per layer (Labeling › Labels › **Label**), then:
 - **Label field and text**: the field the labels show
   (`labels.field={"layer": "Cities", "field": "name"}`), and the text symbol's size (4–72 points),
   colour, halo, bold and italic (`labels.style={"layer": "Cities", "size": 12, "color": "#5A1E0A", "halo": true}`).
+- **By expression**: a class's **Text**, **Size**, **Color** and **Angle** per feature from an
+  [expression](expressions.md) (Labeling pane › Content › **By Expression**). The text replaces
+  the field's, as in `"name" || ' (' || round(pop_max / 1e6, 1) || ' M)'`, so a class with a
+  text expression needs no field; a feature whose text is null or blank isn't labelled (in the
+  example, one with no name). The size is in points (kept within 4–72), the colour is text as
+  for [symbols](#symbols-by-expression) (`'#d7301f'`, `'navy'`, `'r,g,b[,a]'`), and the angle
+  turns a point's or polygon's label about its centre, in degrees clockwise, kept upright (one
+  past 90° reads from its other end, as labels along lines do; those keep the line's angle). Where an expression gives null, or text that isn't a colour,
+  the class's own setting is used; `@map_scale` is the scale the map is drawn at. An expression
+  applies when its box loses focus; one that doesn't read shows why and isn't applied, and one
+  that stops reading (a field removed) is drawn as if it weren't set. **Convert** keeps each
+  label's text, and its size, colour and angle by expression (at the map's scale) in `SIZE`,
+  `COLOR` and `ANGLE` fields the annotation's classes draw by. A Web Style or Web Layer export labels with the
+  field, size and colour of the Default class, without its expressions (and says so). By command
+  (a key left out keeps its expression, `null` or `""` removes it; `class` as for the other label
+  commands):
+
+  ```text
+  labels.by={"layer":"Cities","text":"upper(name)","size":"scale_linear(pop_max, 0, 2e7, 8, 20)"}
+  labels.by={"layer":"Cities","color":"CASE WHEN pop_max > 1e7 THEN '#d7301f' END","angle":"15"}
+  labels.by={"layer":"Cities","text":null}
+  ```
+
 - **Halo and letter spacing**: a halo is white behind dark text and dark behind light, and thin,
   unless it is given a colour and a width of its own (Labeling pane › Symbol › **Halo color**,
   **Halo width**: how far it reaches beyond the letters, 0–10 points). The letters can be set

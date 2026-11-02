@@ -8,6 +8,7 @@ use roxmltree::Node;
 
 use super::{QGIS_SCALE, Report, child, color, data_defined_on, expr, prop, props};
 use crate::Rgba;
+use crate::label_by::LabelBy;
 use crate::layout::TextAlign;
 use crate::symbology::{
     DEFAULT_LABEL_CLASS, HALO_WIDTH, LABEL_OFFSET, LABEL_SIZE, LabelBackground, LabelClass, LabelPlacement, Labeling, MAX_LABEL_CLASSES,
@@ -154,18 +155,24 @@ fn class(
 ) -> Option<LabelClass> {
     let text = child(settings, "text-style")?;
     let field = text.attribute("fieldName").map(str::trim).unwrap_or_default();
+    let mut by = LabelBy::default();
     let field = if text.attribute("isExpression") == Some("1") {
-        // An expression that is only a field.
+        // An expression that is only a field labels from it; any other is the text's expression
+        // (one RustGIS can't read is noted when the layer's fields are known).
         let bare = field.strip_prefix('"').and_then(|f| f.strip_suffix('"')).unwrap_or(field);
-        if bare.is_empty() || !bare.chars().all(|c| c.is_alphanumeric() || c == '_' || c == ' ') {
-            report.skipped(layer, format!("labels whose text is the expression `{field}` (only a field's)"));
+        if !bare.is_empty() && bare.chars().all(|c| c.is_alphanumeric() || c == '_' || c == ' ') {
+            bare.to_string()
+        } else if field.len() > rustgis_data::query::MAX_LEN {
+            report.skipped(layer, "labels whose text is an expression too long to read");
             return None;
+        } else {
+            by.text = Some(field.to_string()).filter(|t| !t.is_empty());
+            String::new()
         }
-        bare.to_string()
     } else {
         field.to_string()
     };
-    if field.is_empty() {
+    if field.is_empty() && by.text.is_none() {
         return None;
     }
     let num = |n: Node, k: &str| n.attribute(k).and_then(|v| v.trim().parse::<f64>().ok()).filter(|v| v.is_finite());
@@ -173,9 +180,13 @@ fn class(
     // size's unit.
     let size_unit = text.attribute("fontSizeUnit").unwrap_or("Point");
     let size = points(num(text, "fontSize").unwrap_or(10.0), size_unit, "label sizes", layer, report);
+    data_defined(settings, size_unit, &mut by, layer, report);
     let opacity = num(text, "textOpacity").unwrap_or(1.0).clamp(0.0, 1.0) as f32;
     let c = text.attribute("textColor").and_then(color).unwrap_or(Rgba::rgb(0, 0, 0));
     let c = c.with_alpha((f32::from(c.a()) * opacity).round() as u8);
+    if by.color.is_some() && opacity < 1.0 {
+        report.approximated(layer, "see-through labels coloured by expression, drawn opaque");
+    }
     let style = text.attribute("namedStyle").unwrap_or_default().to_ascii_lowercase();
     let weight = num(text, "fontWeight").unwrap_or(50.0);
     let bold = style.contains("bold")
@@ -253,7 +264,59 @@ fn class(
         wrap_length,
         line_align,
         repeat,
+        by,
     })
+}
+
+/// Takes label `settings`' data-defined size (in `size_unit`, turned into points), colour and
+/// rotation into `by` as expressions, and notes the others by name.
+fn data_defined(settings: Node, size_unit: &str, by: &mut LabelBy, layer: &str, report: &mut Report) {
+    let active = super::symbol::active_properties_in(settings, "dd_properties");
+    // A layout that isn't read (QGIS 2's) is still noted.
+    if active.is_empty() && data_defined_on(settings) {
+        report.skipped(layer, "data-defined label settings (from fields or expressions)");
+    }
+    let mut left: Vec<&str> = Vec::new();
+    for (name, property) in active {
+        let text = super::symbol::property_text(property);
+        let slot = match name {
+            "Size" => &mut by.size,
+            "Color" => &mut by.color,
+            // (Clockwise in degrees, as RustGIS's; QGIS 2's `Rotation` turned counterclockwise.)
+            "LabelRotation" | "Rotation" => &mut by.angle,
+            _ => {
+                left.push(name);
+                continue;
+            }
+        };
+        let Some(text) = text else {
+            left.push(name);
+            continue;
+        };
+        let text = match name {
+            // QGIS's size is in the text's unit.
+            "Size" => {
+                let k = points(1.0, size_unit, "label sizes", layer, report);
+                if (k - 1.0).abs() < 1e-9 || !k.is_finite() { text } else { format!("({text}) * {}", (k * 1e6).round() / 1e6) }
+            }
+            "Rotation" => format!("-({text})"),
+            _ => text,
+        };
+        if slot.is_none() {
+            *slot = Some(text);
+        } else {
+            // Both rotations set: the first is kept, the other noted.
+            left.push(name);
+        }
+    }
+    if !left.is_empty() {
+        left.sort_unstable();
+        left.dedup();
+        let more = left.len().saturating_sub(12);
+        left.truncate(12);
+        let more = if more > 0 { format!(", and {more} more") } else { String::new() };
+        report.skipped(layer, format!("data-defined label settings ({}{more})", left.join(", ")));
+    }
 }
 
 /// A label's wrapping (QGIS's `<text-format>`): its wrap character, its automatic wrap length
@@ -452,9 +515,6 @@ fn unread(settings: Node, geometry: Option<&str>, layer: &str, report: &mut Repo
     }
     if child(settings, "callout").is_some_and(|c| prop(&props(c), "enabled") == Some("1")) {
         report.skipped(layer, "label callouts (lines from a label to its feature)");
-    }
-    if data_defined_on(settings) {
-        report.skipped(layer, "data-defined label settings (from fields or expressions)");
     }
 }
 

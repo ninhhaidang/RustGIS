@@ -204,7 +204,7 @@ Open questions rather than plans; discuss before building.
 - Cartography: single, unique values, graduated colours (natural breaks, equal interval,
   quantile, geometric interval, standard deviation, manual, arithmetic progression, head/tail
   breaks) and proportional symbols; symbol size, colours, outline width and angle by expression;
-  nested layer groups; label classes with SQL queries, managed in the Labeling pane; straight and
+  label text, size, colour and angle by expression; nested layer groups; label classes with SQL queries, managed in the Labeling pane; straight and
   curved line placement, offsets, backgrounds, halos, wrapping, repeats, other positions round a
   point, installed font families and annotation; stacked and dashed line strokes, markers and hash
   marks along lines, stacked, shifted and turned point marks, font markers, hatch, marker, gradient

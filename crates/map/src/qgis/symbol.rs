@@ -886,7 +886,13 @@ fn point_offset(p: &[(String, String)], size: f32, reference: Option<f64>, layer
 
 /// The data-defined properties switched on in `node`'s own `data_defined_properties`, by name.
 fn active_properties<'a, 'i>(node: Node<'a, 'i>) -> Vec<(&'a str, Node<'a, 'i>)> {
-    let Some(dd) = node.children().find(|c| c.has_tag_name("data_defined_properties")) else { return Vec::new() };
+    active_properties_in(node, "data_defined_properties")
+}
+
+/// The data-defined properties switched on in `node`'s own `tag` (`data_defined_properties` of a
+/// symbol, `dd_properties` of label settings), by name.
+pub(super) fn active_properties_in<'a, 'i>(node: Node<'a, 'i>, tag: &str) -> Vec<(&'a str, Node<'a, 'i>)> {
+    let Some(dd) = node.children().find(|c| c.has_tag_name(tag)) else { return Vec::new() };
     let mut out = Vec::new();
     for props in dd.descendants().filter(|o| o.has_tag_name("Option") && o.attribute("name") == Some("properties")) {
         for p in props.children().filter(|c| c.has_tag_name("Option")).take(64) {
@@ -901,7 +907,7 @@ fn active_properties<'a, 'i>(node: Node<'a, 'i>) -> Vec<(&'a str, Node<'a, 'i>)>
 
 /// A data-defined property's expression: a field's (`type` 2) quoted, or the expression's own
 /// (`type` 3); `None` for a fixed value or text too long to read.
-fn property_text(property: Node) -> Option<String> {
+pub(super) fn property_text(property: Node) -> Option<String> {
     let named = |name: &str| {
         property.children().find(|c| c.has_tag_name("Option") && c.attribute("name") == Some(name)).and_then(|o| o.attribute("value"))
     };

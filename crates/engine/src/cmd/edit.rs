@@ -180,8 +180,14 @@ fn delete_field(s: &mut Session, p: &Json) -> CmdResult {
     // layer's first name-like field (keeping its name, clause and visibility). Another class on it
     // labels with Default's field instead. A class clause naming it no longer reads, and takes no
     // features, which go on to the next class: it is kept to edit, not dropped with its text symbol.
+    // (Default labelling by a text expression that still reads only loses its field.)
     if l.labels.default.field.eq_ignore_ascii_case(&removed) {
-        l.labels.restart_default(&l.dataset);
+        let by_text = l.labels.default.by.text.as_deref().is_some_and(|t| rustgis_data::query::parse(t, &l.dataset).is_ok());
+        if by_text {
+            l.labels.default.field.clear();
+        } else {
+            l.labels.restart_default(&l.dataset);
+        }
     }
     l.labels.repoint_missing_fields(&l.dataset);
     if let Some(q) = &l.definition_query

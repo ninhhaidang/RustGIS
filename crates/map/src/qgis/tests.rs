@@ -1207,6 +1207,63 @@ fn gradient_and_shapeburst_fills_carry_over() {
     assert!(matches!(fills[0].pattern, FillPattern::Shapeburst { distance: None, .. }), "{fills:?}");
 }
 
+/// A label text that is an expression, and data-defined label size, colour and rotation, carry
+/// over as the label class's expressions; sizes in another unit are turned into points, and
+/// what isn't drawn by expression is noted by name.
+#[test]
+fn label_expressions_and_data_defined_label_settings_carry_over() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/qgis/generated/qml");
+    let read = |text: &str| {
+        let mut report = Report::default();
+        let s = read_style(text, "points", &mut report).unwrap();
+        (s.labels.unwrap().default, report)
+    };
+    let (c, report) = read(&std::fs::read_to_string(dir.join("label-expression-text.qml")).unwrap());
+    assert_eq!(c.by.text.as_deref(), Some(r#""name" || ' (' || to_string("value") || ')'"#));
+    assert!(c.field.is_empty());
+    assert!(!report.notes.iter().any(|n| n.text.contains("expression")), "{:?}", report.notes);
+    let (c, report) = read(&std::fs::read_to_string(dir.join("label-data-defined.qml")).unwrap());
+    assert_eq!(c.field, "name");
+    assert_eq!(
+        (c.by.size.as_deref(), c.by.color.as_deref(), c.by.angle.as_deref()),
+        (Some(r#""value" / 5 + 6"#), Some(r#""kind""#), Some(r#""angle""#))
+    );
+    assert!(!report.notes.iter().any(|n| n.text.contains("data-defined")), "{:?}", report.notes);
+    // A size in millimetres, QGIS 2's counterclockwise rotation, and one RustGIS has no place for.
+    let qml = |unit: &str, props: &str| {
+        format!(
+            r#"<qgis version="3.40.0"><labeling type="simple"><settings><text-style fieldName="name" fontSize="3" fontSizeUnit="{unit}"/>
+            <dd_properties><Option type="Map"><Option name="properties" type="Map">{props}</Option></Option></dd_properties></settings></labeling></qgis>"#
+        )
+    };
+    let dd = |name: &str, expr: &str| {
+        format!(
+            r#"<Option name="{name}" type="Map"><Option name="active" type="bool" value="true"/><Option name="expression" value="{expr}"/><Option name="type" type="int" value="3"/></Option>"#
+        )
+    };
+    let (c, report) =
+        read(&qml("MM", &[dd("Size", "2 + 1"), dd("Rotation", "&quot;deg&quot;"), dd("Show", "1"), dd("Family", "'Arial'")].concat()));
+    assert_eq!((c.by.size.as_deref(), c.by.angle.as_deref()), (Some("(2 + 1) * 2.834646"), Some(r#"-("deg")"#)));
+    assert!(report.notes.iter().any(|n| n.text.contains("data-defined label settings (Family, Show)")), "{:?}", report.notes);
+    // Past twelve names, how many more.
+    let many: String = (1..=14).map(|i| dd(&format!("Unknown{i:02}"), "1")).collect();
+    let (_, report) = read(&qml("Point", &many));
+    assert!(report.notes.iter().any(|n| n.text.contains("Unknown12, and 2 more)")), "{:?}", report.notes);
+    // Both rotations: the first is kept, the other noted.
+    let (c, report) = read(&qml("Point", &[dd("LabelRotation", "10"), dd("Rotation", "20")].concat()));
+    assert_eq!(c.by.angle.as_deref(), Some("10"));
+    assert!(report.notes.iter().any(|n| n.text.contains("data-defined label settings (Rotation)")), "{:?}", report.notes);
+    // An expression too long to read: the class is left out, said.
+    let long = format!(
+        r#"<qgis version="3.40.0"><labeling type="simple"><settings><text-style isExpression="1" fieldName="'{}'"/></settings></labeling></qgis>"#,
+        "x".repeat(20_000)
+    );
+    let mut report = Report::default();
+    let s = read_style(&long, "points", &mut report);
+    assert!(!s.is_ok_and(|s| s.labels.is_some()));
+    assert!(report.notes.iter().any(|n| n.text.contains("too long")), "{:?}", report.notes);
+}
+
 /// Data-defined size, colours, outline width and angle carry over as the layer's expressions:
 /// a field's quoted, sizes in millimetres turned into points; an angle that is a field still
 /// turns the markers by it, as before.

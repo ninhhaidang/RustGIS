@@ -112,7 +112,8 @@ _GeoLibre: docs/features.md › Layers, styling, and labels; docs/user-guide/sty
 - [x] **Layer groups**.
 - [ ] **Rule-based and expression renderers**: nested rules with scale ranges. Partial: a symbol's
   size, colours, outline width and marker angle by expression (Symbology › By Expression,
-  `layer.symbolBy`); display filters are per-scale clauses; rule renderers are missing
+  `layer.symbolBy`); label text, size, colour and angle by expression (Labeling pane › Content ›
+  By Expression, `labels.by`); display filters are per-scale clauses; rule renderers are missing
   (_Roadmap: expressions and cartography_).
 - [ ] **Heatmap and point-clustering renderers**. Partial: hexagon/square aggregation; kernel density
   is implemented as an analysis tool, while dynamic heatmap and point-clustering renderers remain outstanding

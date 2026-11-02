@@ -1886,6 +1886,10 @@ pub struct LabelClass {
     /// the one at its middle, as QGIS's repeat distance; none is the one at its middle.
     #[serde(default, deserialize_with = "de_repeat", skip_serializing_if = "Option::is_none")]
     pub repeat: Option<f32>,
+    /// Its text, size, colour and angle per feature, each by an expression (none set: the field,
+    /// size and colour above alone).
+    #[serde(default, skip_serializing_if = "crate::label_by::LabelBy::is_empty", deserialize_with = "crate::label_by::de_label_by")]
+    pub by: crate::label_by::LabelBy,
 }
 
 /// The longest wrap character kept (characters).
@@ -2315,6 +2319,7 @@ impl LabelClass {
             wrap_length: 0,
             line_align: crate::layout::TextAlign::Left,
             repeat: None,
+            by: Default::default(),
         }
     }
 
@@ -2415,7 +2420,10 @@ impl Labeling {
             Some(_) => self.default.field.clone(),
             None => LabelClass::default_for(ds).field,
         };
-        for c in self.classes.iter_mut().filter(|c| ds.field_index(&c.field).is_none()) {
+        // (A class whose text is an expression that still reads keeps its own, which it doesn't
+        // label from.)
+        let by_text = |c: &LabelClass| c.by.text.as_deref().is_some_and(|t| rustgis_data::query::parse(t, ds).is_ok());
+        for c in self.classes.iter_mut().filter(|c| ds.field_index(&c.field).is_none() && !by_text(c)) {
             c.field.clone_from(&fallback);
         }
     }
@@ -2728,6 +2736,15 @@ mod tests {
         l.classes[0].field = "gone".into();
         l.repoint_missing_fields(&ds);
         assert_eq!(l.classes[0].field, "name");
+        // A class labelling by a text expression keeps its own field while that reads, and is
+        // repointed like the rest once it doesn't.
+        for (text, field) in [("upper(name)", "gone"), ("upper(gone)", "name")] {
+            l.classes[0].field = "gone".into();
+            l.classes[0].by.text = Some(text.into());
+            l.repoint_missing_fields(&ds);
+            assert_eq!(l.classes[0].field, field, "{text}");
+        }
+        l.classes[0].by.text = None;
         // Default on a field that's gone starts again on a name-like one, keeping its own settings.
         (l.enabled, l.default.name, l.default.visible, l.default.where_) = (true, "Rest".into(), false, Some("name = 'x'".into()));
         l.default.field = "gone".into();

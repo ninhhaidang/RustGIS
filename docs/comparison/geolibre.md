@@ -66,8 +66,8 @@ differences in the short answer, in platform, technology and focus, are the ones
   clustering, diagrams, blend modes, layer groups, a data-defined label engine, and style
   interchange with SLD, QGIS QML and Mapbox GL JSON. RustGIS covers the common renderers and
   SQL-filtered label classes, stacked line symbols, symbol levels, blend modes and layer groups,
-  symbol size, colours, outline width and angle by expression, but not rule-based renderers or
-  data-defined labels.
+  symbol size, colours, outline width and angle by expression, and label text, size, colour and
+  angle by expression, but not rule-based renderers.
 - **3D.** GeoLibre has a Cesium globe with terrain, 3D Tiles, I3S, Gaussian splats, CZML and
   Google Photorealistic 3D Tiles. RustGIS has a globe, terrain-draped tilted views, 2.5D
   extrusion and LiDAR point layers.

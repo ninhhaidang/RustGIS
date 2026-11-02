@@ -3588,9 +3588,24 @@ fn render_frame(map: &mut Map, view: &View, full_res_rasters: bool, backend: Bac
                 }
             }
             // Each label class labels every feature its clause takes, as in ArcGIS Pro (#732), when
-            // shown, in range and on a field the layer has (#618).
-            let label_fields: Vec<Option<usize>> = if labels.enabled && !display.paused {
-                labels.in_order().map(|c| ds_ptr.field_index(&c.field).filter(|_| c.visible && c.in_range(scale, distance))).collect()
+            // shown, in range and on a field the layer has (#618) or by a text expression. Its
+            // expressions are compiled once for the drawing.
+            let label_exprs: Vec<Option<rustgis_map::label_by::LabelExprs>> = if labels.enabled && !display.paused {
+                labels.in_order().map(|c| rustgis_map::label_by::LabelExprs::new(&c.by, ds_ptr, Some(label_scale))).collect()
+            } else {
+                Vec::new()
+            };
+            // For each class: `None` when it labels nothing here, else its field (if it has one).
+            let label_fields: Vec<Option<Option<usize>>> = if labels.enabled && !display.paused {
+                labels
+                    .in_order()
+                    .zip(&label_exprs)
+                    .map(|(c, e)| {
+                        let field = ds_ptr.field_index(&c.field);
+                        let by_text = e.as_ref().is_some_and(|e| e.has_text());
+                        (c.visible && c.in_range(scale, distance) && (field.is_some() || by_text)).then_some(field)
+                    })
+                    .collect()
             } else {
                 Vec::new()
             };
@@ -3666,11 +3681,19 @@ fn render_frame(map: &mut Map, view: &View, full_res_rasters: bool, backend: Bac
                         // (Along a line, the label is put on its stretch in view below.)
                         let (x, y) = point.unwrap_or_default();
                         let Some(fi) = label_fields.get(ci).copied().flatten() else { continue };
-                        let v = ds_ptr.value(row, fi);
-                        if v.is_null() {
-                            continue;
-                        }
-                        let raw = v.to_string();
+                        let exprs = label_exprs.get(ci).and_then(Option::as_ref);
+                        // Its text by expression, else from its field; none: no label.
+                        let raw = match exprs.and_then(|e| e.text(ds_ptr, row)) {
+                            Some(Some(t)) => t,
+                            Some(None) => continue,
+                            None => {
+                                let Some(v) = fi.map(|fi| ds_ptr.value(row, fi)).filter(|v| !v.is_null()) else { continue };
+                                v.to_string()
+                            }
+                        };
+                        // Its size and colour by expression, else the class's.
+                        let csize = exprs.and_then(|e| e.size(ds_ptr, row)).unwrap_or(class.size);
+                        let ccolor = exprs.and_then(|e| e.color(ds_ptr, row)).unwrap_or(class.color);
                         // Wrapped into lines as its class says; not a label curved character by
                         // character along a line (one line of characters, as QGIS curves it).
                         // (One too long to curve goes straight, and is wrapped as a straight one.)
@@ -3681,12 +3704,11 @@ fn render_frame(map: &mut Map, view: &View, full_res_rasters: bool, backend: Bac
                             if curving || (class.wrap_char.is_none() && class.wrap_length == 0) { raw } else { class.wrap(&raw) };
                         // Placed as at its own size, then that much farther out: the gap between
                         // the label and its feature grows with it too.
-                        let size = class.size * label_factor;
+                        let size = csize * label_factor;
                         let font = class_fonts.get(ci).copied().flatten();
                         let face = text::Face { bold: class.bold, italic: class.italic, serif: false, family: font };
                         let spacing = class.spacing * label_factor;
-                        let (bw, bh) =
-                            (text::spaced_block_width(&text, class.size, face, class.spacing), text::block_height(&text, class.size));
+                        let (bw, bh) = (text::spaced_block_width(&text, csize, face, class.spacing), text::block_height(&text, csize));
                         // Where a placement puts it, moved as its class says (points, as the
                         // text's size), unless along a line.
                         let place = |p: LabelPlacement| {
@@ -3731,7 +3753,14 @@ fn render_frame(map: &mut Map, view: &View, full_res_rasters: bool, backend: Bac
                             }
                         } else {
                             let (lx, ly) = place(class.placement);
-                            places.push((0, lx, ly, None, Vec::new()));
+                            // Turned by its angle expression (degrees clockwise), about its centre,
+                            // kept upright as labels turned with a turned map are.
+                            let turned = exprs
+                                .and_then(|e| e.angle(ds_ptr, row))
+                                .filter(|a| *a != 0.0)
+                                .map(|a| rustgis_tiles::symbols::upright(a.to_radians()))
+                                .filter(|a| *a != 0.0);
+                            places.push((0, lx, ly, turned, Vec::new()));
                         }
                         // Layers above first, then the classes listed first (#732), then bigger
                         // polygons: a class (ci ≤ MAX_LABEL_CLASSES, 1e9 each) never outweighs a
@@ -3765,8 +3794,8 @@ fn render_frame(map: &mut Map, view: &View, full_res_rasters: bool, backend: Bac
                                     x: lx,
                                     y: ly,
                                     size,
-                                    color: class.color,
-                                    halo: class.halo.then_some(class.halo_color_for(class.color)),
+                                    color: ccolor,
+                                    halo: class.halo.then_some(class.halo_color_for(ccolor)),
                                     halo_width: class.halo_width.map(|w| w * label_factor),
                                     bold: class.bold,
                                     icon: None,
@@ -5414,6 +5443,56 @@ mod tests {
         // A clause that doesn't read takes no feature.
         capitals(m.layer_mut(id).unwrap(), "gone = 1");
         assert_eq!(sizes(&mut m), both);
+    }
+
+    /// A class's text, size, colour and angle by expressions, per feature; null text: no label.
+    #[test]
+    fn label_expressions_set_each_labels_text_size_colour_and_angle() {
+        let mut m = Map::new("Map");
+        let fields = vec![Field::new("name", FieldType::Text), Field::new("pop", FieldType::Double)];
+        let mut d = Dataset::new("pts", GeometryType::Point, fields);
+        d.push(Some(Geometry::Point(Coord::new(2.35, 48.85))), vec![Value::Text("Paris".into()), Value::Float(2.1e6)]);
+        d.push(Some(Geometry::Point(Coord::new(4.83, 45.76))), vec![Value::Text("Lyon".into()), Value::Float(5.2e5)]);
+        d.push(Some(Geometry::Point(Coord::new(5.37, 43.3))), vec![Value::Null, Value::Float(8.7e5)]);
+        let id = m.add_dataset(d);
+        m.layer_mut(id).unwrap().labels.enabled = true;
+        let camera = Camera { center: lonlat_to_merc(Coord::new(3.6, 46.3)), res: 5000.0, bearing: 0.0, pitch: 0.0 };
+        let view = View { width: 800.0, height: 600.0, pixels_per_point: 1.0, camera, sky: false };
+        let labels = |m: &mut Map| {
+            let mut v: Vec<(String, f32, [u8; 4], Option<f32>)> =
+                render(m, &view).unwrap().labels.into_iter().map(|l| (l.text, l.size, l.color.0, l.angle)).collect();
+            v.sort_by(|a, b| a.0.cmp(&b.0));
+            v
+        };
+        let class = m.layer(id).unwrap().labels.default.clone();
+        let plain = labels(&mut m);
+        assert_eq!(plain.iter().map(|l| l.0.as_str()).collect::<Vec<_>>(), ["Lyon", "Paris"], "from its field");
+        assert!(plain.iter().all(|l| l.1 == class.size && l.2 == class.color.0 && l.3.is_none()));
+        m.layer_mut(id).unwrap().labels.default.by = rustgis_map::label_by::LabelBy {
+            text: Some("upper(name) || ' ' || round(pop / 1e6, 1)".into()),
+            size: Some("scale_linear(pop, 0, 2e6, 8, 20)".into()),
+            color: Some("CASE WHEN pop > 1e6 THEN '#ff0000' END".into()),
+            angle: Some("if(pop > 1e6, 90, 0)".into()),
+        };
+        let by = labels(&mut m);
+        // Marseille's name is null: so is its text, and it isn't labelled.
+        assert_eq!(by.iter().map(|l| l.0.as_str()).collect::<Vec<_>>(), ["LYON 0.5", "PARIS 2.1"]);
+        let (lyon, paris) = (&by[0], &by[1]);
+        assert_eq!((paris.1, paris.2), (20.0, [255, 0, 0, 255]));
+        assert!(paris.3.is_some_and(|a| (a - 90f32.to_radians()).abs() < 1e-4), "{:?}", paris.3);
+        assert!((lyon.1 - 11.12).abs() < 1e-3, "{}", lyon.1);
+        // No colour or a zero angle: the class's colour, upright.
+        assert_eq!((lyon.2, lyon.3), (class.color.0, None));
+        // Past 90°, a label is kept upright: 135° reads as -45°.
+        m.layer_mut(id).unwrap().labels.default.by.angle = Some("135".into());
+        let turned = labels(&mut m);
+        assert!(turned.iter().all(|l| l.3.is_some_and(|a| (a + 45f32.to_radians()).abs() < 1e-4)), "{turned:?}");
+        // A text expression labels a layer without the class's field; one that no longer reads
+        // leaves the text to it.
+        m.layer_mut(id).unwrap().labels.default.field = "gone".into();
+        assert_eq!(labels(&mut m).len(), 2);
+        m.layer_mut(id).unwrap().labels.default.by.text = Some("gone || 'x'".into());
+        assert!(labels(&mut m).is_empty(), "neither the expression nor the field reads");
     }
 
     /// A lock keeps source ids wider than a wasm32 pointer distinct, including when a label

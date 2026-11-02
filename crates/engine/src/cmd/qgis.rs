@@ -238,8 +238,19 @@ fn check_fields(l: &mut rustgis_map::Layer, name: &str, report: &mut Report) {
             report.skipped(name, format!("the label class \"{}\", whose clause `{w}` doesn't fit the layer ({e})", c.name));
             c.visible = false;
         }
-        // (A class with no field set labels nothing, and isn't noted.)
-        if c.visible && !c.field.is_empty() && l.dataset.field_index(&c.field).is_none() {
+        // Its data-defined text, size, colour and angle: an expression that doesn't read here is
+        // left out, as the symbol's are below.
+        for (what, slot) in [("text", &mut c.by.text), ("size", &mut c.by.size), ("colour", &mut c.by.color), ("angle", &mut c.by.angle)] {
+            if let Some(text) = slot.as_deref()
+                && let Err(e) = rustgis_data::query::parse(text, &l.dataset)
+            {
+                report.skipped(name, format!("the label {what} `{text}` of the class \"{}\" ({e})", c.name));
+                *slot = None;
+            }
+        }
+        // (A class with no field set labels nothing, and isn't noted; one whose text is an
+        // expression needs none.)
+        if c.visible && c.by.text.is_none() && !c.field.is_empty() && l.dataset.field_index(&c.field).is_none() {
             report.skipped(name, format!("labels from the field {}, which the layer hasn't", c.field));
             c.visible = false;
         }
