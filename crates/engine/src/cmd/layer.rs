@@ -2703,12 +2703,15 @@ pub fn columns_of(name: &str, bytes: &[u8], p: &Value) -> CmdResult {
     } else if is_delimited_name(name) {
         let bytes = bytes.get(..COLUMNS_PREFIX).unwrap_or(bytes);
         let text = match std::str::from_utf8(bytes) {
-            Ok(text) => text,
+            Ok(text) => text.into(),
             // The part read may end inside a character.
-            Err(e) if e.error_len().is_none() => std::str::from_utf8(bytes.get(..e.valid_up_to()).unwrap_or_default()).unwrap_or_default(),
-            Err(_) => return Err(format!("{name} is not UTF-8 text")),
+            Err(e) if e.error_len().is_none() => {
+                std::str::from_utf8(bytes.get(..e.valid_up_to()).unwrap_or_default()).unwrap_or_default().into()
+            }
+            // Another encoding (Latin-1, UTF-16), as reading the file takes it.
+            Err(_) => rustgis_data::io::delimited_text(name, bytes).map_err(err)?.0,
         };
-        rustgis_data::io::csv_columns(text, parse_delimiter(ps(p, "delimiter"))?).map_err(err)?
+        rustgis_data::io::csv_columns(&text, parse_delimiter(ps(p, "delimiter"))?).map_err(err)?
     } else {
         return Err(format!("{name}: not delimited text (CSV, TSV, TXT) or a spreadsheet"));
     };
@@ -2739,9 +2742,11 @@ fn read_delimited(
     }
     let Some(opts) = csv_options(p)? else { return Ok(None) };
     let bytes = bytes()?;
-    let text = std::str::from_utf8(&bytes).map_err(|_| format!("{name} is not UTF-8 text"))?;
+    let (text, note) = rustgis_data::io::delimited_text(name, &bytes).map_err(|e| e.to_string())?;
     let stem = Path::new(name).file_stem().and_then(|s| s.to_str()).unwrap_or("layer");
-    rustgis_data::io::read_csv_with(text, stem, &opts).map(Some).map_err(|e| format!("{name}: {e}"))
+    let (ds, mut report) = rustgis_data::io::read_csv_with(&text, stem, &opts).map_err(|e| format!("{name}: {e}"))?;
+    report.messages.extend(note);
+    Ok(Some((ds, report)))
 }
 
 /// The file name for data downloaded from `url`: its last path segment when that has an extension

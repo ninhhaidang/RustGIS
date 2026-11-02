@@ -10246,11 +10246,23 @@ fn spreadsheets_feeds_landxml_and_polylines() {
     assert_eq!(c["columns"], json!(["stop;Lon;Lat"]));
     assert!(s.run("info.fileColumns", &json!({"path": csv, "delimiter": ";;"})).is_err());
     assert!(s.run("info.fileColumns", &json!({"path": dir.join("missing.csv").display().to_string()})).is_err());
-    // Only the start of delimited text is read: a character cut at its end isn't an error, bytes
-    // that aren't UTF-8 are.
+    // Only the start of delimited text is read: a character cut at its end isn't an error, and
+    // bytes that aren't UTF-8 are read as Latin-1 (#1303), as the file is.
     let cut = crate::cmd::layer::columns_of("t.csv", b"lon,lat,name\n1,2,\xc3", &json!({})).unwrap();
     assert_eq!(cut["x"], "lon");
-    assert!(crate::cmd::layer::columns_of("t.csv", b"lon,lat\n\xff,2\n", &json!({})).is_err());
+    let latin1 = crate::cmd::layer::columns_of("t.csv", b"lon;lat;munic\xedpio\n\xff;2;x\n", &json!({})).unwrap();
+    assert_eq!(latin1["columns"], json!(["lon", "lat", "município"]));
+    // A Latin-1 file with its x/y columns named, as a public source's CSV is added: read, with
+    // a notice saying how.
+    let cnes = dir.join("cnes.csv");
+    std::fs::write(&cnes, b"NO_FANTASIA;NU_LATITUDE;NU_LONGITUDE\nPOSTO S\xc3O JOS\xc9;-5.09;-42.80\n").unwrap();
+    s.notices.clear();
+    let r = s
+        .run("layer.addData", &json!({"path": cnes.display().to_string(), "x": "NU_LONGITUDE", "y": "NU_LATITUDE", "delimiter": ";"}))
+        .unwrap();
+    let l = s.map().layer(r["layer"].as_u64().unwrap() as u32).unwrap();
+    assert_eq!(l.dataset.value(0, 0), &rustgis_data::Value::Text("POSTO SÃO JOSÉ".into()));
+    assert!(s.notices.iter().any(|n| n.text.contains("Windows-1252")), "{:?}", s.notices);
     // A GeoRSS feed as plain .xml, by its contents.
     let feed = dir.join("quakes.xml");
     std::fs::write(&feed, r#"<rss xmlns:georss="http://www.georss.org/georss"><channel><item><title>Q</title><georss:point>45 -110</georss:point></item></channel></rss>"#).unwrap();

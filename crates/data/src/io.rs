@@ -201,7 +201,7 @@ pub fn read_bytes(file_name: &str, bytes: &[u8]) -> Result<(Dataset, ReadReport)
         // A TopoJSON topology named .json: its first object, saying what else it holds.
         "json" if crate::topojson::looks_like_topojson(text()?) => return first_layer(file_name, bytes),
         "geojson" | "json" => read_geojson(text()?, &name)?,
-        "csv" | "tsv" | "txt" => read_csv(text()?, &name)?,
+        "csv" | "tsv" | "txt" => read_csv_bytes(file_name, bytes, &name)?,
         // A MIF without its .mid (an upload of the one file): no attributes.
         "mif" => crate::mapinfo::read_bytes(bytes, None, &name)?,
         // Picked or dropped with its .dbf, a Shapefile comes zipped (`gather_shapefiles`).
@@ -261,7 +261,8 @@ pub fn read_path(path: &Path) -> Result<(Dataset, ReadReport)> {
         }
         "csv" | "tsv" | "txt" => {
             check_size(path)?;
-            read_csv(&std::fs::read_to_string(path)?, &name)?
+            let leaf = path.file_name().and_then(|n| n.to_str()).unwrap_or("layer.csv");
+            read_csv_bytes(leaf, &std::fs::read(path)?, &name)?
         }
         "shp" => {
             check_size(path)?;
@@ -1312,6 +1313,41 @@ pub fn csv_columns(text: &str, delimiter: Option<u8>) -> Result<Columns> {
     let rows: Vec<Vec<String>> =
         rdr.records().flatten().take(COLUMN_SAMPLE_ROWS).map(|r| r.iter().map(|s| s.to_string()).collect()).collect();
     Ok(Columns { delimiter: Some(delimiter), ..columns_of(&headers, &rows) })
+}
+
+/// The text of a delimited file from its bytes, and the note to report when it wasn't UTF-8.
+/// UTF-8 is read as it is. A UTF-16 byte-order mark (Excel's "Unicode text") is read as UTF-16.
+/// Other bytes are read as Windows-1252, the code page most Latin-1 files use: Latin-1's
+/// characters, plus quotes and dashes in 0x80–0x9F. Many public sources still publish CSV in it
+/// (Brazil's DATASUS, INEP and TSE among them). Bytes with a NUL in them aren't text.
+pub fn delimited_text<'a>(file_name: &str, bytes: &'a [u8]) -> Result<(std::borrow::Cow<'a, str>, Option<String>)> {
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        return Ok((text.into(), None));
+    }
+    if let Some((enc, _)) = encoding_rs::Encoding::for_bom(bytes).filter(|(enc, _)| *enc != encoding_rs::UTF_8) {
+        let (text, malformed) = enc.decode_with_bom_removal(bytes);
+        let mut note = format!("{file_name} was read as {} text", enc.name());
+        if malformed {
+            note.push_str("; bytes that weren't valid in it became the replacement character (U+FFFD)");
+        }
+        return Ok((text, Some(note)));
+    }
+    if bytes.contains(&0) {
+        return Err(DataError::Format(format!("{file_name} is not text")));
+    }
+    // A UTF-8 byte-order mark before a stray Latin-1 byte (Excel's "CSV UTF-8" edited elsewhere)
+    // would become "ï»¿" at the start of the first header.
+    let (text, _) = encoding_rs::WINDOWS_1252.decode_without_bom_handling(bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes));
+    Ok((text, Some(format!("{file_name} isn't UTF-8 text: it was read as Windows-1252 (Latin-1)"))))
+}
+
+/// Reads delimited text from its bytes, in the encoding [`delimited_text`] finds, saying which
+/// when it isn't UTF-8.
+fn read_csv_bytes(file_name: &str, bytes: &[u8], name: &str) -> Result<(Dataset, ReadReport)> {
+    let (text, note) = delimited_text(file_name, bytes)?;
+    let (ds, mut report) = read_csv(&text, name)?;
+    report.messages.extend(note);
+    Ok((ds, report))
 }
 
 /// Reads CSV; columns named like longitude/latitude become point geometry.
@@ -2848,6 +2884,36 @@ mod tests {
         // Nothing to read is no columns, not a crash.
         assert!(csv_columns("", None).unwrap().names.is_empty());
         let _ = csv_columns("\"unclosed\n", None);
+    }
+
+    /// CSV that isn't UTF-8 (#1303): Latin-1, as many public sources publish it, and UTF-16 with
+    /// its byte-order mark are read, with a note; bytes with a NUL aren't text.
+    #[test]
+    fn csv_in_latin1_or_utf16() {
+        let latin1 = b"nome;lat;lon\nS\xe3o Jos\xe9;-5.1;-42.8\n";
+        let (ds, rep) = read_bytes("cnes.csv", latin1).unwrap();
+        assert_eq!(ds.value(0, 0), &Value::Text("São José".into()));
+        assert_eq!(ds.features[0].geometry, Some(Geometry::Point(Coord::new(-42.8, -5.1))));
+        assert!(rep.messages.iter().any(|m| m.contains("cnes.csv") && m.contains("Windows-1252")), "{:?}", rep.messages);
+        // Inside a zip too, as public sources ship it.
+        let zipped = crate::zip::write(&[("cnes.csv".to_string(), latin1.to_vec())]).unwrap();
+        assert_eq!(read_bytes("cnes.zip", &zipped).unwrap().0.value(0, 0), &Value::Text("São José".into()));
+        // UTF-16 little-endian with its mark.
+        let utf16: Vec<u8> = [0xff, 0xfe].into_iter().chain("nome,n\nJosé,1\n".encode_utf16().flat_map(u16::to_le_bytes)).collect();
+        let (ds, rep) = read_bytes("t.csv", &utf16).unwrap();
+        assert_eq!(ds.value(0, 0), &Value::Text("José".into()));
+        assert!(rep.messages.iter().any(|m| m.contains("UTF-16") && !m.contains("replacement")), "{:?}", rep.messages);
+        // An odd last byte isn't UTF-16: replaced, and said.
+        let mut odd = utf16.clone();
+        odd.push(b'x');
+        let (_, rep) = read_bytes("t.csv", &odd).unwrap();
+        assert!(rep.messages.iter().any(|m| m.contains("UTF-16") && m.contains("replacement")), "{:?}", rep.messages);
+        // A UTF-8 byte-order mark before a Latin-1 byte doesn't end up in the first header.
+        let (ds, _) = read_bytes("t.csv", b"\xef\xbb\xbfnome;n\nS\xe3o;1\n").unwrap();
+        assert_eq!((ds.fields[0].name.as_str(), ds.value(0, 0)), ("nome", &Value::Text("São".into())));
+        // UTF-8 says nothing; binary data named .csv is refused.
+        assert!(read_bytes("t.csv", "nome,n\nJosé,1\n".as_bytes()).unwrap().1.messages.is_empty());
+        assert!(read_bytes("t.csv", b"a,b\n\x00\xff\x01,2\n").is_err());
     }
 
     #[test]
