@@ -128,13 +128,11 @@ fn text<'a>(v: &'a Value, k: &str) -> Option<&'a str> {
 pub fn open(app: &mut RustGisApp, s: &Source) -> Result<(), String> {
     let x = &s.extra;
     match s.kind.as_str() {
-        "file" => {
-            let mut p = json!({"path": s.address});
-            if let Some(l) = text(x, "layer") {
-                p["layer"] = json!(l);
-            }
-            app.run("layer.addData", p).map(|_| ())
-        }
+        "file" => match text(x, "layer") {
+            Some(l) => app.run("layer.addData", json!({"path": s.address, "layer": l})).map(|_| ()),
+            // A file holding several layers asks which to add, as Add Data does (#934).
+            None => crate::layerchooser::add_file(app, &s.address).map(|_| ()),
+        },
         "url" => {
             let mut p = json!({"url": s.address, "name": s.name});
             if let Some(l) = text(x, "layer") {

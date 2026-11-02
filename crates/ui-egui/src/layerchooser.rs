@@ -236,6 +236,22 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    /// A file in Recent or Favourites with several layers asks which to add, as Add Data does; one
+    /// recorded with its layer adds that layer.
+    #[test]
+    fn a_recent_file_with_several_layers_asks_which() {
+        let mut app = RustGisApp::new(Session::new(Project::default()));
+        let gdb = std::env::temp_dir().join("rustgis-recent-asks.gdb").display().to_string();
+        let file =
+            |extra: Value| rustgis_engine::sources::Source { kind: "file".into(), name: "Parcels".into(), address: gdb.clone(), extra };
+        crate::sourcespane::open(&mut app, &file(Value::Null)).unwrap();
+        assert_eq!(app.ui.choosing.iter().map(|c| c.path.as_str()).collect::<Vec<_>>(), [gdb.as_str()]);
+        app.ui.choosing.clear();
+        // (The geodatabase isn't there, so adding its layer fails: but it asks nothing.)
+        let _ = crate::sourcespane::open(&mut app, &file(json!({"layer": "roads"})));
+        assert!(app.ui.choosing.is_empty());
+    }
+
     /// A file with several layers lists them, all ticked, and adds the ones chosen, each by name;
     /// one with a single layer, or that can't be listed, is added as before.
     #[test]
