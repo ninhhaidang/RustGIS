@@ -10,6 +10,7 @@
 
 use std::cell::Cell;
 
+use crate::Canvas;
 use rustgis_map::Rgba;
 use rustgis_map::fills::{self, FillPattern, GradientPoint, GradientShape, Spread, Stop, Stops};
 use tiny_skia::{
@@ -58,7 +59,7 @@ pub(crate) struct Part<'a> {
 /// (A gradient in the view's box takes the picture's: in a tilted view, drawn in bands, each
 /// band's.)
 pub(crate) fn draw(
-    pm: &mut Pixmap,
+    pm: &mut Canvas,
     part: &Part,
     exterior: impl FnOnce() -> Option<Path>,
     pattern: &FillPattern,
@@ -99,7 +100,7 @@ pub(crate) fn draw(
             let ramp = fills::ramp(color, color2, stops, discrete);
             let burst =
                 Burst { ramp: &ramp, distance: distance.map(|d| d * ppp), blur: f32::from(blur) * ppp, outer_only: edges.is_some() };
-            shapeburst(pm, part, edges.as_ref().unwrap_or(path), &burst);
+            shapeburst(pm.pixels(), part, edges.as_ref().unwrap_or(path), &burst);
             true
         }
         _ => false,
@@ -590,7 +591,7 @@ mod tests {
             blur: 0,
             ignore_rings: false,
         };
-        assert!(draw(&mut pm, &part, || None, &pattern, red, 1.0));
+        assert!(crate::canvas::with_canvas(&mut pm, |c| draw(c, &part, || None, &pattern, red, 1.0)));
         let at = |x: u32| pm.pixel(x, 200).map(|p| (p.red(), p.green(), p.blue())).unwrap();
         assert_eq!(at(30), (255, 0, 0), "near the edge");
         assert_eq!(at(150), (0, 255, 0), "past halfway in");
@@ -622,7 +623,7 @@ mod tests {
             blur: 0,
             ignore_rings: false,
         };
-        assert!(draw(&mut pm, &part, || None, &pattern, red, 1.0));
+        assert!(crate::canvas::with_canvas(&mut pm, |c| draw(c, &part, || None, &pattern, red, 1.0)));
         // One coarse grid (padded a little) and the mask, no full-resolution tile (each about
         // 300,000 cells, sixteen of them).
         let picture = 2000.0 * 2000.0;
@@ -635,7 +636,7 @@ mod tests {
             let mut pm = Pixmap::new(2000, 2000).unwrap();
             let budget = Cell::new(start);
             let part = Part { path: &path, whole: None, centroid: None, clip: None, whole_depth: &none, budget: &budget };
-            assert!(draw(&mut pm, &part, || None, pattern, red, 1.0));
+            assert!(crate::canvas::with_canvas(&mut pm, |c| draw(c, &part, || None, pattern, red, 1.0)));
             (budget.get() - start, pm)
         };
         let deep = FillPattern::Shapeburst {

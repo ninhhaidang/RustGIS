@@ -1,6 +1,7 @@
 use super::*;
 use crate::{Extent, View};
 use rustgis_map::{Camera, Rgba};
+use tiny_skia::Pixmap;
 
 #[test]
 fn cached_pixels_equal_sequential_strokes_including_overlap_and_alpha() {
@@ -69,12 +70,12 @@ fn cached_pixels_equal_sequential_strokes_including_overlap_and_alpha() {
                     if i % 11 == 0 {
                         styled.stroke_width = 5.0;
                     }
-                    ctx.stacked_line(&mut expected, &parts, &styled, &strokes);
-                    batch.draw(&ctx, &mut actual, &parts, &styled, &strokes);
+                    crate::canvas::with_canvas(&mut expected, |c| ctx.stacked_line(c, &parts, &styled, &strokes));
+                    crate::canvas::with_canvas(&mut actual, |c| batch.draw(&ctx, c, &parts, &styled, &strokes));
                     // Repeated features verify unchanged overlap compositing order.
                     if i % 13 == 0 {
-                        ctx.stacked_line(&mut expected, &parts, &styled, &strokes);
-                        batch.draw(&ctx, &mut actual, &parts, &styled, &strokes);
+                        crate::canvas::with_canvas(&mut expected, |c| ctx.stacked_line(c, &parts, &styled, &strokes));
+                        crate::canvas::with_canvas(&mut actual, |c| batch.draw(&ctx, c, &parts, &styled, &strokes));
                     }
                 }
                 let mismatch = actual.data().iter().zip(expected.data()).position(|(a, b)| a != b);
@@ -109,7 +110,9 @@ fn path_storage_is_reused_and_large_paths_are_not_retained() {
     let mut allocation = None;
     for i in 0..200 {
         let x = f64::from(i % 20) * 10.0;
-        paths.draw(&ctx, &mut image, &[vec![Coord::new(x, 0.0), Coord::new(x + 1.0, 1.0)]], &symbol, &strokes);
+        crate::canvas::with_canvas(&mut image, |c| {
+            paths.draw(&ctx, c, &[vec![Coord::new(x, 0.0), Coord::new(x + 1.0, 1.0)]], &symbol, &strokes)
+        });
         assert!(paths.cached.as_ref().is_some_and(|path| path.points().len() <= CACHE_POINTS));
         let current = paths.cached.as_ref().unwrap().points().as_ptr();
         if let Some(previous) = allocation {
@@ -127,10 +130,10 @@ fn path_storage_is_reused_and_large_paths_are_not_retained() {
     // Empty and invalid paths must neither replay stale geometry nor poison later reuse.
     for parts in [vec![], vec![vec![]], vec![vec![Coord::new(f64::NAN, 0.0)]]] {
         let before = image.data().to_vec();
-        paths.draw(&ctx, &mut image, &parts, &symbol, &strokes);
+        crate::canvas::with_canvas(&mut image, |c| paths.draw(&ctx, c, &parts, &symbol, &strokes));
         assert_eq!(image.data(), before);
         assert!(paths.cached.is_none());
     }
-    paths.draw(&ctx, &mut image, &[vec![Coord::new(0.0, 0.0), Coord::new(1.0, 1.0)]], &symbol, &strokes);
+    crate::canvas::with_canvas(&mut image, |c| paths.draw(&ctx, c, &[vec![Coord::new(0.0, 0.0), Coord::new(1.0, 1.0)]], &symbol, &strokes));
     assert!(paths.cached.is_some());
 }

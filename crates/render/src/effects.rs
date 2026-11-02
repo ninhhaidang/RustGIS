@@ -4,6 +4,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::Canvas;
 use rustgis_data::{Dataset, Geometry};
 use rustgis_map::effects::{Aggregation, Extrusion};
 use rustgis_map::{Ramp, Rgba, Symbol};
@@ -60,7 +61,9 @@ impl AggregationBins {
             }
         }
     }
-    pub fn draw(&self, pm: &mut Pixmap, ctx: &Ctx, a: Aggregation, base: &Symbol) {
+    /// Draws the bins as hexagons or squares `a.size` points across, shaded by their counts on
+    /// the ember ramp, each outlined.
+    pub fn draw(&self, pm: &mut Canvas, ctx: &Ctx, a: Aggregation, base: &Symbol) {
         let bins = &self.bins;
         let s = (a.size.clamp(4.0, 400.0) * ctx.ppp as f64) as f32;
         let sqrt3 = 3f32.sqrt();
@@ -93,7 +96,7 @@ impl AggregationBins {
 /// Polygons extruded upward on screen by their height (`px_per_m` pixels per metre), drawn far
 /// to near, with shadows first, then walls (lit by their facing), then roofs.
 pub(crate) fn extrude(
-    pm: &mut Pixmap,
+    pm: &mut Canvas,
     ctx: &Ctx,
     ds: &Dataset,
     geoms: &[Option<&Geometry>],
@@ -150,7 +153,8 @@ fn shapes(
     shapes
 }
 
-fn paint_shapes(pm: &mut Pixmap, ctx: &Ctx, x: &Extrusion, shapes: &[Shape], shadows: bool, solids: bool) {
+/// Draws extruded `shapes`: their shadows (`shadows`), then their walls and roofs (`solids`).
+fn paint_shapes(pm: &mut Canvas, ctx: &Ctx, x: &Extrusion, shapes: &[Shape], shadows: bool, solids: bool) {
     let poly_path = |rings: &[Vec<(f32, f32)>], dx: f32, dy: f32| {
         let mut pb = PathBuilder::new();
         for r in rings {
@@ -325,7 +329,9 @@ impl ExtrusionSpool {
         }
         Ok(())
     }
-    pub fn draw(&mut self, pm: &mut Pixmap, ctx: &Ctx, x: &Extrusion) -> rustgis_data::Result<()> {
+    /// Draws the spooled shapes as [`paint_shapes`] does, every shadow before any wall; an error
+    /// if the spool can't be read back.
+    pub fn draw(&mut self, pm: &mut Canvas, ctx: &Ctx, x: &Extrusion) -> rustgis_data::Result<()> {
         #[cfg(test)]
         check_spool_failure("draw")?;
         #[cfg(not(target_arch = "wasm32"))]

@@ -9,6 +9,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
+use crate::Canvas;
 use rustgis_geom::Coord;
 use rustgis_map::fills::{FillLayer, FillPattern};
 use rustgis_map::{Marker, Rgba, Symbol};
@@ -48,7 +49,7 @@ thread_local! {
 impl Ctx<'_> {
     /// Draws `polys` with its stacked `fills`, bottom first (a fill without a colour of its own
     /// takes the symbol's), then the symbol's outline over them.
-    pub(crate) fn filled(&self, pm: &mut Pixmap, polys: &[Vec<Vec<Coord>>], s: &Symbol, fills: &[FillLayer]) {
+    pub(crate) fn filled(&self, pm: &mut Canvas, polys: &[Vec<Vec<Coord>>], s: &Symbol, fills: &[FillLayer]) {
         let Some(path) = self.polygon_path(polys) else { return };
         // The map's origin in device pixels, in f64: the patterns' lattice point.
         let origin = match self.globe {
@@ -334,7 +335,7 @@ fn key(pattern: &FillPattern, color: Rgba, ppp: f32) -> Key {
 /// for now) is kept among the provisional ones instead, which all go once one of a named family
 /// is settled (the index is done, for every family; the label font's, unnamed, is settled from
 /// the start and says nothing about it).
-fn tile(key: &Key, settled: impl FnOnce() -> bool, w: f32, h: f32, draw: impl FnOnce(&mut Pixmap)) -> Option<Arc<Pixmap>> {
+fn tile(key: &Key, settled: impl FnOnce() -> bool, w: f32, h: f32, draw: impl FnOnce(&mut Canvas)) -> Option<Arc<Pixmap>> {
     if let Some(t) = TILES.with(|t| t.borrow().by_key.get(key).cloned()) {
         return t;
     }
@@ -347,11 +348,11 @@ fn tile(key: &Key, settled: impl FnOnce() -> bool, w: f32, h: f32, draw: impl Fn
         return t;
     }
     let made = (w.is_finite() && h.is_finite() && w <= MAX_TILE_PX + 1.0 && h <= MAX_TILE_PX + 1.0)
-        .then(|| Pixmap::new(w.max(1.0) as u32, h.max(1.0) as u32))
+        .then(|| Canvas::new(w.max(1.0) as u32, h.max(1.0) as u32))
         .flatten()
         .map(|mut pm| {
             draw(&mut pm);
-            Arc::new(pm)
+            Arc::new(pm.into_pixmap())
         });
     if !keep {
         PROVISIONAL.with(|p| {

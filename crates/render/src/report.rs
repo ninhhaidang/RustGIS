@@ -282,7 +282,7 @@ pub fn draw_page(doc: &Doc, pages: &[Page], n: usize, dpi: f64, layouts: &[Layou
     if px > MAX_PIXELS {
         k *= (MAX_PIXELS / px).sqrt();
     }
-    let mut pm = Pixmap::new((wmm * k).round().max(1.0) as u32, (hmm * k).round().max(1.0) as u32)?;
+    let mut pm = crate::Canvas::new((wmm * k).round().max(1.0) as u32, (hmm * k).round().max(1.0) as u32)?;
     pm.fill(tiny_skia::Color::WHITE);
     let content_w = (wmm - 2.0 * MARGIN).max(10.0);
     let content_h = ((hmm - MARGIN - FOOTER).max(MARGIN + 20.0)) - MARGIN;
@@ -448,7 +448,7 @@ pub fn draw_page(doc: &Doc, pages: &[Page], n: usize, dpi: f64, layouts: &[Layou
     let num = format!("Page {} of {}", n + 1, pages.len());
     let nw = width_mm(&num, 7.5, false);
     text::text_at(&mut pm, &num, at(MARGIN + content_w - nw), fy, pt_px(7.5), DIM, false, text::Align::Left, false);
-    Some((pm, wmm, hmm))
+    Some((pm.into_pixmap(), wmm, hmm))
 }
 
 #[cfg(test)]

@@ -4,10 +4,11 @@
 //! clockwise by its own angle and, where it turns ([`LineMarkers::rotate`]), the point's: its
 //! offset turned with it.
 
+use crate::Canvas;
 #[cfg(doc)]
 use rustgis_map::LineMarkers;
 use rustgis_map::{LineMark, LineStroke, Rgba, Symbol};
-use tiny_skia::{FillRule, LineCap, LineJoin, PathBuilder, Pixmap, Stroke, Transform};
+use tiny_skia::{FillRule, LineCap, LineJoin, PathBuilder, Stroke, Transform};
 
 use crate::{marker_path, paint};
 
@@ -66,7 +67,7 @@ fn marks(sym: &Symbol, strokes: &[LineStroke]) -> Vec<Mark> {
 /// Draws a point of symbol `sym` at (`x`, `y`) device pixels: `strokes`' marks, else its marker,
 /// turned `turn` degrees clockwise about the point; with `halo`, a selection halo round each.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn draw(pm: &mut Pixmap, x: f32, y: f32, sym: &Symbol, strokes: &[LineStroke], turn: f32, halo: Option<Rgba>, ppp: f32) {
+pub(crate) fn draw(pm: &mut Canvas, x: f32, y: f32, sym: &Symbol, strokes: &[LineStroke], turn: f32, halo: Option<Rgba>, ppp: f32) {
     if !(x.is_finite() && y.is_finite()) {
         return;
     }
@@ -139,6 +140,7 @@ mod tests {
     use super::*;
     use rustgis_data::GeometryType;
     use rustgis_map::{Glyph, LineMarkers, Marker};
+    use tiny_skia::Pixmap;
 
     fn ink(pm: &Pixmap, x: u32, y: u32) -> bool {
         pm.pixel(x, y).is_some_and(|p| p.alpha() > 200)
@@ -156,18 +158,18 @@ mod tests {
         // A big red square under a small black one, and a black one 20 pt to the right.
         let strokes = [mark(Marker::Square, red, 20.0, (0.0, 0.0), 0.0), mark(Marker::Square, black, 6.0, (20.0, 0.0), 0.0)];
         let mut pm = Pixmap::new(100, 100).unwrap();
-        draw(&mut pm, 50.0, 50.0, &sym, &strokes, 0.0, None, 1.0);
+        crate::canvas::with_canvas(&mut pm, |c| draw(c, 50.0, 50.0, &sym, &strokes, 0.0, None, 1.0));
         let at = |pm: &Pixmap, x, y| pm.pixel(x, y).map(|p| (p.red(), p.alpha()));
         assert_eq!(at(&pm, 50, 50), Some((255, 255)), "the red one at the point");
         assert_eq!(at(&pm, 70, 50), Some((0, 255)), "the black one 20 pt right");
         // Turned 90° clockwise: the offset turns with it, to 20 pt below.
         let mut pm = Pixmap::new(100, 100).unwrap();
-        draw(&mut pm, 50.0, 50.0, &sym, &strokes, 90.0, None, 1.0);
+        crate::canvas::with_canvas(&mut pm, |c| draw(c, 50.0, 50.0, &sym, &strokes, 90.0, None, 1.0));
         assert!(ink(&pm, 50, 70) && !ink(&pm, 70, 50));
         // A mark's own angle turns its offset too, and adds to the point's.
         let own = [mark(Marker::Square, black, 6.0, (20.0, 0.0), 90.0)];
         let mut pm = Pixmap::new(100, 100).unwrap();
-        draw(&mut pm, 50.0, 50.0, &sym, &own, -90.0, None, 1.0);
+        crate::canvas::with_canvas(&mut pm, |c| draw(c, 50.0, 50.0, &sym, &own, -90.0, None, 1.0));
         assert!(ink(&pm, 70, 50), "-90 + 90: not turned");
         // A mark that doesn't turn keeps its own angle alone.
         let mut fixed = own;
@@ -175,20 +177,20 @@ mod tests {
             m.rotate = false;
         }
         let mut pm = Pixmap::new(100, 100).unwrap();
-        draw(&mut pm, 50.0, 50.0, &sym, &fixed, -90.0, None, 1.0);
+        crate::canvas::with_canvas(&mut pm, |c| draw(c, 50.0, 50.0, &sym, &fixed, -90.0, None, 1.0));
         assert!(ink(&pm, 50, 70) && !ink(&pm, 70, 50), "its own 90° only");
         // No strokes: the symbol's marker, turned (a triangle's tip goes from up to right).
         let tri = Symbol { marker: Marker::Triangle, size: 30.0, stroke_width: 0.0, ..Symbol::default_for(GeometryType::Point, 0) };
         let mut pm = Pixmap::new(100, 100).unwrap();
-        draw(&mut pm, 50.0, 50.0, &tri, &[], 90.0, None, 1.0);
+        crate::canvas::with_canvas(&mut pm, |c| draw(c, 50.0, 50.0, &tri, &[], 90.0, None, 1.0));
         assert!(ink(&pm, 64, 50) && !ink(&pm, 50, 35));
         // A stroke of no markers draws nothing at a point; a character draws.
         let line = LineStroke::default();
         let mut pm = Pixmap::new(100, 100).unwrap();
-        draw(&mut pm, 50.0, 50.0, &sym, &[line], 0.0, None, 1.0);
+        crate::canvas::with_canvas(&mut pm, |c| draw(c, 50.0, 50.0, &sym, &[line], 0.0, None, 1.0));
         assert!(pm.pixels().iter().all(|p| p.alpha() == 0));
         let chr = [mark(Marker::Char(Glyph::new('I', "")), black, 40.0, (0.0, 0.0), 0.0)];
-        draw(&mut pm, 50.0, 50.0, &sym, &chr, 0.0, None, 1.0);
+        crate::canvas::with_canvas(&mut pm, |c| draw(c, 50.0, 50.0, &sym, &chr, 0.0, None, 1.0));
         assert!(pm.pixels().iter().any(|p| p.alpha() > 200));
         assert!(reach(&sym, &strokes) >= 23.0 && plain(&[], 0.0) && !plain(&strokes, 0.0) && !plain(&[], 1.0));
     }
