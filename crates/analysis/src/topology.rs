@@ -99,7 +99,12 @@ pub fn overlaps(ds: &Dataset, rows: &[usize]) -> Checked {
     p.sort_by(|a, b| a.2.min().x.partial_cmp(&b.2.min().x).unwrap_or(std::cmp::Ordering::Equal));
     let mut out = Vec::new();
     let mut work = 0usize;
+    crate::control::begin(p.len());
     for (i, (ra, a, ba)) in p.iter().enumerate() {
+        if crate::control::cancelled() {
+            return Checked::partial(out);
+        }
+        crate::control::reached(i);
         for (rb, b, bb) in p.iter().skip(i + 1) {
             if bb.min().x > ba.max().x {
                 break;
@@ -197,7 +202,12 @@ fn self_crossing(path: &[Coord], closed: bool) -> Option<Coord> {
 /// Lines and polygon rings that cross themselves.
 pub fn self_intersections(ds: &Dataset, rows: &[usize]) -> Checked {
     let mut out = Vec::new();
-    for r in rows {
+    crate::control::begin(rows.len());
+    for (i, r) in rows.iter().enumerate() {
+        if crate::control::cancelled() {
+            return Checked::partial(out);
+        }
+        crate::control::reached(i);
         let Some(g) = ds.features.get(*r).and_then(|f| f.geometry.as_ref()) else { continue };
         let paths: Vec<(Vec<Coord>, bool)> = match g {
             Geometry::Line(parts) => parts.iter().map(|p| (p.clone(), false)).collect(),
@@ -240,7 +250,12 @@ pub fn dangles(ds: &Dataset, rows: &[usize], tol_m: f64) -> Checked {
     // Each part's segments go into the cells their (widened) boxes cover.
     let mut grid: std::collections::HashMap<(i64, i64), Vec<(usize, usize)>> = std::collections::HashMap::new();
     let mut work = 0usize;
+    crate::control::begin(lines.len());
     for (li, (_, parts)) in lines.iter().enumerate() {
+        if crate::control::cancelled() {
+            return Checked::partial(Vec::new());
+        }
+        crate::control::reached(li);
         for (pi, part) in parts.iter().enumerate() {
             for w in part.windows(2) {
                 let (Some(a), Some(b)) = (w.first(), w.get(1)) else { continue };
@@ -262,7 +277,12 @@ pub fn dangles(ds: &Dataset, rows: &[usize], tol_m: f64) -> Checked {
         }
     }
     let mut out = Vec::new();
+    crate::control::begin(lines.len());
     for (li, (r, parts)) in lines.iter().enumerate() {
+        if crate::control::cancelled() {
+            return Checked::partial(out);
+        }
+        crate::control::reached(li);
         for (pi, part) in parts.iter().enumerate() {
             // A closed part has no ends.
             if part.len() < 2 || part.first() == part.last() {
@@ -319,7 +339,12 @@ pub fn not_covered(ds: &Dataset, rows: &[usize], by: &Dataset) -> Checked {
     let all: Vec<usize> = (0..by.features.len()).collect();
     let polys = polygons(by, &all);
     let mut out = Vec::new();
-    for r in rows {
+    crate::control::begin(rows.len());
+    for (i, r) in rows.iter().enumerate() {
+        if crate::control::cancelled() {
+            return Checked::partial(out);
+        }
+        crate::control::reached(i);
         let pts: Vec<Coord> = match ds.features.get(*r).and_then(|f| f.geometry.as_ref()) {
             Some(Geometry::Point(c)) => vec![*c],
             Some(Geometry::MultiPoint(v)) => v.clone(),

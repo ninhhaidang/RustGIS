@@ -148,6 +148,7 @@ pub(crate) fn geodesic_buffers_with_limit(geoms: &[&Geometry], metres: f64, limi
 /// a buffer past the budget stops the others.
 fn buffers_on(geoms: &[&Geometry], metres: f64, threads: usize, limit: usize) -> Result<Vec<Option<Geometry>>, &'static str> {
     let remaining = std::sync::atomic::AtomicUsize::new(limit);
+    crate::control::begin(geoms.len());
     crate::parallel::try_map_on(
         geoms,
         threads,

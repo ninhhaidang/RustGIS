@@ -251,7 +251,12 @@ pub fn random_points(ds: &Dataset, rows: &[usize], per: usize, seed: u64) -> Vec
         (state >> 11) as f64 / (1u64 << 53) as f64
     };
     let mut out = Vec::new();
-    for r in rows {
+    crate::control::begin(rows.len());
+    for (i, r) in rows.iter().enumerate() {
+        if crate::control::cancelled() {
+            break;
+        }
+        crate::control::reached(i);
         let Some(Geometry::Polygon(polys)) = ds.features.get(*r).and_then(|f| f.geometry.as_ref()) else { continue };
         let e = ds.features.get(*r).and_then(|f| f.geometry.as_ref()).map(|g| g.extent()).unwrap_or_default();
         let mut placed = 0;

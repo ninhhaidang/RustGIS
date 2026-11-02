@@ -346,6 +346,7 @@ fn viewshed_on(threads: Option<usize>, r: &Raster, b: usize, observer: Coord, he
     let rows = usize::try_from(last - first + 1).unwrap_or(0);
     let threads = threads.unwrap_or_else(|| crate::parallel::threads_for_rows(rows, usize::try_from(ray_work).unwrap_or(usize::MAX), 0));
     let window = out.chunks_mut(w).skip(usize::try_from(first).unwrap_or(0)).take(rows);
+    crate::control::begin(rows);
     crate::parallel::for_each_row(
         window,
         threads,
@@ -384,7 +385,7 @@ fn viewshed_on(threads: Option<usize>, r: &Raster, b: usize, observer: Coord, he
                 }
             }
         },
-    );
+    )?;
     Ok(out)
 }
 
@@ -431,6 +432,7 @@ fn idw_on(
     let threads =
         threads.unwrap_or_else(|| crate::parallel::threads_for_rows(h, w.saturating_mul(h).saturating_mul(points.len()), scratch_bytes));
     let mut data = vec![NODATA; w * h];
+    crate::control::begin(h);
     crate::parallel::for_each_row(
         data.chunks_mut(w),
         threads,
@@ -464,7 +466,7 @@ fn idw_on(
                 *o = if v.is_finite() { v as f32 } else { NODATA };
             }
         },
-    );
+    )?;
     let gt = GeoTransform { origin_x: extent.min_x, origin_y: extent.max_y, pixel_width: cell_deg, pixel_height: -cell_deg };
     Raster::new(name, w as u32, h as u32, vec![data], gt, Crs::LonLat, Some(NODATA as f64), ColorHint::Gray, "Float32")
         .map_err(|e| e.to_string())

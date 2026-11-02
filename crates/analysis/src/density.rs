@@ -167,7 +167,12 @@ fn accumulate_density<F>(
 ) where
     F: Fn(f64, f64) -> f64,
 {
-    for &(p, wgt) in points {
+    crate::control::begin(points.len());
+    for (i, &(p, wgt)) in points.iter().enumerate() {
+        if crate::control::cancelled() {
+            return;
+        }
+        crate::control::reached(i);
         if wgt <= 0.0 || !wgt.is_finite() || !p.is_finite() {
             continue;
         }

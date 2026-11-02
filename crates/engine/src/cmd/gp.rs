@@ -774,11 +774,29 @@ fn zonal_stats(s: &mut Session, p: &Value) -> CmdResult {
 
 /// Runs a (built-in) tool and applies its result, as `gp.run` does.
 pub fn run_tool(s: &mut Session, tool: &str, params: &Value) -> CmdResult {
+    run_tool_with(s, tool, params, &rustgis_analysis::control::Control::new())
+}
+
+/// [`run_tool`] under `control`: setting its flag from another thread stops the tool at its next
+/// check, with an error and nothing applied, and its count follows the tool's progress. One
+/// cancelled before it starts reads nothing and runs nothing, and is kept in the history too.
+pub fn run_tool_with(
+    s: &mut Session,
+    tool: &str,
+    params: &Value,
+    control: &std::sync::Arc<rustgis_analysis::control::Control>,
+) -> CmdResult {
     let tool = tool_id(tool).unwrap_or(tool).to_string();
     let params = params.clone();
     let t0 = now_ms();
+    if control.is_cancelled() {
+        let spec = rustgis_analysis::tool(&tool);
+        let name = spec.map(|t| t.name).unwrap_or("Tool").to_string();
+        let e = format!("{name} was cancelled before it started");
+        return apply(s, Ran { name, id: tool, command: None, started: t0 }, recorded(spec, params), Err(e), 0);
+    }
     let inputs = map_inputs(s, rustgis_analysis::tool(&tool), &params)?;
-    let mut res = rustgis_analysis::run(&tool, &inputs, &params);
+    let mut res = rustgis_analysis::run_with(&tool, &inputs, &params, control);
     if let Ok(result) = &mut res {
         result.messages.extend(inputs.messages.iter().cloned());
     }

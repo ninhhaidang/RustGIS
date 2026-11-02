@@ -1287,6 +1287,7 @@ fn buffer_rows(
 ) -> Result<Vec<Feature>, &'static str> {
     let storage = BufferStorage::new(bytes);
     let mut output = Vec::new();
+    crate::control::begin(geoms.len());
     for batch in geoms.chunks(BUFFER_BATCH) {
         let made = crate::parallel::try_map(
             batch,
@@ -1356,6 +1357,9 @@ fn buffer_with_limits(inp: &dyn Inputs, p: &Json, limit: usize, bytes: usize) ->
         }
         if !all.is_empty() {
             out.fields.clear();
+            crate::control::check()?;
+            // The union isn't counted: the buffers' count ends here rather than stand at its end.
+            crate::control::begin(0);
             let u = union_all(all.iter().flat_map(|m| m.0.iter()));
             if u.coords_count() > limit {
                 return Err(VERTEX_BUDGET_ERROR.into());
@@ -2429,6 +2433,7 @@ fn select_by_location_with_work_limit(inp: &dyn Inputs, p: &Json, limit: usize, 
     // budget; zero-distance selection keeps its existing unbuffered behavior.
     let storage = BufferStorage::new(if dist > 0.0 { bytes } else { usize::MAX });
     let mut selectors = Vec::new();
+    crate::control::begin(picked.len());
     for batch in picked.chunks(BUFFER_BATCH) {
         let made = crate::parallel::try_map(
             batch,
@@ -2460,7 +2465,10 @@ fn select_by_location_with_work_limit(inp: &dyn Inputs, p: &Json, limit: usize, 
     let bounded_checks = dist > 0.0 && selectors.len() > ExtentIndex::MAX_LINEAR_FEATURES;
     let mut remaining_checks = checks;
     let mut hits = Vec::new();
+    crate::control::begin(ds.features.len());
     for (r, feature) in ds.features.iter().enumerate() {
+        crate::control::check()?;
+        crate::control::reached(r);
         let Some(g) = feature.geometry.as_ref() else { continue };
         let gg = to_geo(g);
         let ext = merc_extent(&gg);
@@ -6120,6 +6128,72 @@ mod tests {
         // Two antipodes still have their circles.
         let ends = buffered(Geometry::MultiPoint(vec![Coord::new(0.0, 0.0), Coord::new(180.0, 0.0)]), 100.0);
         assert_eq!(ends.len(), 2);
+    }
+
+    #[test]
+    fn a_tool_cancelled_while_it_runs_stops_with_how_far_it_came() {
+        // 2,000 points on 400 × 400 cells: 320 M cell-point pairs, far longer than the watcher takes
+        // to notice the first rows.
+        let mut pts = Dataset::new("pts", GeometryType::Point, vec![Field::new("v", FieldType::Double)]);
+        for i in 0..2_000 {
+            let (x, y) = (f64::from(i % 50) * 0.2, f64::from(i / 50) * 0.25);
+            pts.push(Some(Geometry::Point(Coord::new(x, y))), vec![Value::Float(f64::from(i))]);
+        }
+        let m = Map(HashMap::from([("pts".to_string(), pts)]));
+        let params = serde_json::json!({"input": "pts", "field": "v", "extent": "0,0,10,10", "pixelSize": 0.025});
+        // Asked to stop before it starts: it never does.
+        let control = crate::control::Control::new();
+        control.cancel();
+        assert_eq!(
+            crate::run_with("idwInterpolation", &m, &params, &control).err().as_deref(),
+            Some("IDW Interpolation was cancelled before it started")
+        );
+        // Asked once it has made some rows: it stops well before the end.
+        let control = crate::control::Control::new();
+        let watcher = {
+            let control = control.clone();
+            std::thread::spawn(move || {
+                let end = std::time::Instant::now() + std::time::Duration::from_secs(60);
+                while control.progress().is_none_or(|(done, _)| done == 0) && std::time::Instant::now() < end {
+                    std::thread::yield_now();
+                }
+                control.cancel();
+            })
+        };
+        let r = crate::run_with("idwInterpolation", &m, &params, &control);
+        let _ = watcher.join();
+        let e = r.err().unwrap_or_default();
+        assert!(e.starts_with("IDW Interpolation was cancelled "), "{e}");
+        let (done, total) = control.progress().unwrap_or_default();
+        assert!(total == 400 && done < total, "{done} of {total} rows");
+        // Without a control nothing changes.
+        assert!(
+            crate::run("idwInterpolation", &m, &serde_json::json!({"input": "pts", "field": "v", "extent": "0,0,10,10", "pixelSize": 1.0}))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn buffers_count_their_features_toward_the_progress() {
+        let mut pts = Dataset::new("pts", GeometryType::Point, vec![]);
+        for i in 0..40 {
+            pts.push(Some(Geometry::Point(Coord::new(f64::from(i) * 0.1, 0.0))), vec![]);
+        }
+        let m = Map(HashMap::from([("pts".to_string(), pts)]));
+        let control = crate::control::Control::new();
+        crate::run_with("buffer", &m, &serde_json::json!({"input": "pts", "distance": 100.0}), &control).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(control.progress(), Some((40, 40)));
+        // The same control for a tool that doesn't count shows no count, not the buffers'.
+        crate::run_with("convexHull", &m, &serde_json::json!({"input": "pts"}), &control).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(control.progress(), None);
+        // Dissolved, the union after the buffers isn't counted: the buffers' count ends before it.
+        let dissolve = serde_json::json!({"input": "pts", "distance": 100.0, "dissolve": "All"});
+        crate::run_with("buffer", &m, &dissolve, &control).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(control.progress(), None);
+        // A loop counting each feature as it reaches it ends with all of them counted.
+        let near = serde_json::json!({"input": "pts", "select": "pts", "distance": 10.0});
+        crate::run_with("selectByLocation", &m, &near, &control).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(control.progress(), Some((40, 40)));
     }
 
     #[test]
