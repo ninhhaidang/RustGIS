@@ -82,7 +82,9 @@ jobs:
           restore-keys: fuzz-corpus-${{ matrix.target }}-
       - name: Build
         working-directory: fuzz
-        run: cargo fuzz build -O
+        # The target is spelled out: cargo-fuzz defaults to the target it was built for, and the
+        # prebuilt binary the install action fetches is musl, which sanitizers can't link.
+        run: cargo fuzz build -O --target x86_64-unknown-linux-gnu
       - name: Seed the corpus
         working-directory: fuzz
         run: target/x86_64-unknown-linux-gnu/release/seeds
@@ -102,7 +104,7 @@ jobs:
           # Fork mode with the ignore flags keeps fuzzing past a finding, so one known failure (an
           # unreleased fix in a dependency, say) doesn't stop the rest of the target being explored.
           # Each failing input is saved in artifacts/<target>/.
-          cargo fuzz run -O "$TARGET" -- -fork=1 -ignore_crashes=1 -ignore_ooms=1 -ignore_timeouts=1 \
+          cargo fuzz run -O --target x86_64-unknown-linux-gnu "$TARGET" -- -fork=1 -ignore_crashes=1 -ignore_ooms=1 -ignore_timeouts=1 \
             -max_total_time="$n" -rss_limit_mb=2048 -timeout=10
       - name: Findings
         id: findings
