@@ -1144,7 +1144,9 @@ fn trend(app: &mut RustGisApp, ui: &mut Ui, rasters: &[String]) {
             let (cancel, done, result) = (r.cancel.clone(), r.done.clone(), r.result.clone());
             // A panic on the thread (a hostile store) lands as an error, so the run always ends;
             // a thread the system can't start is said.
+            let diagnostics = app.session.diagnostics.capture();
             let spawned = std::thread::Builder::new().name("trend".into()).spawn(move || {
+                let _diagnostics = diagnostics.enter();
                 let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     job.run(&cancel, &done).map(|rasters| (rasters, job.dates()))
                 }))

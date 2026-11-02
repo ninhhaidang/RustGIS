@@ -416,14 +416,21 @@ pub fn status_bar(app: &mut RustGisApp, ui: &mut Ui) {
                             sep(ui, &t);
                         }
                     }
-                    // Cut to the room left (the whole notice on hover), so a long one doesn't run
-                    // over the selection count and coordinates.
-                    if let Some(n) = app.session.notices.last() {
-                        ui.add(
-                            egui::Label::new(egui::RichText::new(&n.text).size(11.5).color(if n.error { t.red } else { t.text_dim }))
+                    if ui.small_button(tl!("Diagnostics")).on_hover_text(tl!("Review messages and failed network requests")).clicked() {
+                        app.ui.open_right(crate::RightPane::DiagnosticLog);
+                    }
+                    // Cut to the room left (the whole notice on hover), so it doesn't run
+                    // over the selection count and coordinates. A click opens its history.
+                    if let Some(n) = app.session.notices.last()
+                        && ui.add(
+                            egui::Button::new(egui::RichText::new(&n.text).size(11.5).color(if n.error { t.red } else { t.text_dim }))
+                                .frame(false)
+                                .small()
                                 .truncate(),
                         )
-                        .on_hover_text(&n.text);
+                        .on_hover_text(crate::i18n::fmt("{message}\n{open}", &[("message", &n.text), ("open", tl_raw!("Open Diagnostics"))]))
+                        .clicked() {
+                        app.ui.open_right(crate::RightPane::DiagnosticLog);
                     }
                 });
             });
@@ -630,6 +637,11 @@ pub fn shortcuts(app: &mut RustGisApp, ctx: &egui::Context) {
         if id == "edit.paste" && !p.get("text").and_then(Value::as_str).is_some_and(|t| t.trim_start().starts_with('{')) {
             continue;
         }
+        // Exhausted undo/redo shortcuts are inert, like their disabled toolbar buttons.
+        // Do not dispatch them: a failed command is retained by Diagnostics.
+        if (id == "edit.undo" && !app.session.can_undo()) || (id == "edit.redo" && !app.session.can_redo()) {
+            continue;
+        }
         // A command that can't run now says why, as its greyed ribbon button does (#456).
         // Running out of undo or redo needs no word.
         if !matches!(id, "edit.undo" | "edit.redo")
@@ -674,6 +686,7 @@ pub(crate) const UI_COMMANDS: &[(&str, &str, &str)] = &[
     ("ui.pane.geoprocessing", "Tools Pane", "View › Windows"),
     ("ui.pane.symbology", "Symbology Pane", "Style › Drawing"),
     ("ui.pane.labeling", "Labeling Pane", "View › Windows"),
+    ("ui.pane.diagnosticLog", "Diagnostics", "View › Windows"),
     ("ui.pane.assistant", "AI Assistant", "Analyze › AI"),
     ("ui.pane.sql", "SQL Pane", "Analyze › Workflows"),
     ("ui.pane.directions", "Directions", "Home › Navigate"),

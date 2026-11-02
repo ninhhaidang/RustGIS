@@ -189,7 +189,9 @@ pub(crate) fn draw(pm: &mut Pixmap, n: &Native, t: &TileLayer, view: &View, flat
     let opacity = t.opacity.clamp(0.0, 1.0);
     let (mut pending, mut error) = (false, None);
     for p in pictures {
-        match cache::get(&p.url, Want::Image) {
+        // A WMTS tile past the service's coverage is routine; a WMS picture (any area asked) isn't.
+        let state = if matches!(n.how, How::Tiles(_)) { cache::get_tile(&p.url, Want::Image) } else { cache::get(&p.url, Want::Image) };
+        match state {
             State::Ready(payload) => {
                 if let Payload::Image(img) = &*payload {
                     paint(pm, img, p.area, p.area, opacity, &place);

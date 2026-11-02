@@ -6,6 +6,7 @@
 
 pub mod color;
 mod dbf;
+pub mod diagnostics;
 pub mod dirs;
 pub mod dxf;
 pub mod export;

@@ -822,12 +822,15 @@ fn read_slices(
         #[cfg(not(target_arch = "wasm32"))]
         {
             let next = AtomicUsize::new(0);
+            let capture = rustgis_data::diagnostics::Capture::current();
             std::thread::scope(|scope| -> Result<(), String> {
                 type Read = Result<Option<(Arc<Raster>, usize)>, String>;
                 let (tx, rx) = std::sync::mpsc::sync_channel::<(usize, Read)>(readers);
                 for _ in 0..readers {
                     let (tx, next) = (tx.clone(), &next);
+                    let capture = &capture;
                     scope.spawn(move || {
+                        let _diagnostic_scope = capture.enter();
                         loop {
                             let k = next.fetch_add(1, Ordering::Relaxed);
                             let Some(&i) = steps.get(k) else { break };
@@ -1050,10 +1053,12 @@ fn run_telling<T: Send>(
     use std::sync::mpsc::{RecvTimeoutError, channel};
     let (cancel, done) = (AtomicBool::new(false), AtomicUsize::new(0));
     let total = total.max(1);
+    let capture = rustgis_data::diagnostics::Capture::current();
     std::thread::scope(|scope| {
         let (sent, ended) = channel();
         let (c, d) = (&cancel, &done);
         let worker = scope.spawn(move || {
+            let _diagnostic_scope = capture.enter();
             let _ = sent.send(work(c, d));
         });
         let mut told = usize::MAX;

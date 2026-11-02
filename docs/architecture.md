@@ -42,6 +42,27 @@ Plugin commands (`plugin:<plugin>/<command>`) dispatch through `Session::run` to
 changes form one undo step. WebAssembly plugins reach the session through permission-checked
 requests. Process plugins use the same host protocol but are not sandboxed (see [Plugins](plugins.md)).
 
+## Troubleshooting diagnostics
+
+`rustgis_data::diagnostics` provides the bounded, sanitized session history without a UI
+dependency. `Session::notify` and `Session::warn` retain messages immediately, independently
+of pane visibility and project undo/persistence. Command sources contain registered ids,
+never command parameters. Errors rejected before command execution are captured too.
+The frontend also routes UI-only command failures through the notice path, without duplicating
+errors already reported by an engine command.
+Unavailable undo/redo keyboard shortcuts do not dispatch a command, matching their disabled
+toolbar buttons; direct command failures still follow the same capture path.
+
+HTTP failures are observed at the shared tile/data/service transport boundaries, not by
+polling failed cache entries. A weak `Capture` travels through tile scheduling, native worker
+queues, data/render workers, and browser fetch callbacks. Synchronous scopes restore the
+previous owner; browser futures receive explicit captures and never hold a thread-local scope
+across an await. Unowned requests are not broadcast to other sessions. Transport metadata
+uses observed statuses and known timeout/connection causes only.
+
+The egui Diagnostics pane (`ui.pane.diagnosticLog`) filters and copies these sanitized records.
+The existing Diagnostic Monitor (`ui.pane.diagnostics`) remains the performance view.
+
 ## Never crash
 
 Production code forbids unsafe Rust. Library crates deny Clippy's unwrap, expect, panic,

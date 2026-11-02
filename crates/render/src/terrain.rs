@@ -183,7 +183,7 @@ fn tile_height(
         }
         let u = template::expand(url, id, 256, false, &[]);
         let got = if fetch {
-            match cache::get(&u, Want::Image) {
+            match cache::get_tile(&u, Want::Image) {
                 State::Ready(p) => Some(p),
                 State::Pending => {
                     *pending.borrow_mut() = true;

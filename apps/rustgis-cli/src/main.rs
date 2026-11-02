@@ -94,8 +94,9 @@ fn run(s: &mut Session, id: &str, p: Value) -> Result<Value, String> {
         eprintln!();
     }
     TOLD_TENTH.store(usize::MAX, Ordering::Relaxed);
-    // A failure is noted too; it's printed once, by the caller.
-    for n in s.notices_since(mark).iter().filter(|n| r.as_ref().err() != Some(&n.text)) {
+    // A failure is noted too, redacted; it's printed once, by the caller.
+    let told = r.as_ref().err().map(|e| rustgis_engine::data::diagnostics::redact(e));
+    for n in s.notices_since(mark).iter().filter(|n| r.as_ref().err() != Some(&n.text) && told.as_ref() != Some(&n.text)) {
         eprintln!("rustgis-cli: {}{}", if n.error { "error: " } else { "" }, n.text);
     }
     r.map_err(|e| format!("{id}: {e}"))

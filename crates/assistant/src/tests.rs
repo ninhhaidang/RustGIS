@@ -387,6 +387,20 @@ fn tool_results_carry_notices() {
     assert!(quiet.get("notices").is_none(), "{quiet}");
 }
 
+/// A failed command's error isn't listed again among its notices, even when the notice is the
+/// error redacted (an address with a query).
+#[test]
+fn a_failed_commands_redacted_error_is_not_repeated_as_a_notice() {
+    let mut s = sample();
+    let call = ToolCall {
+        id: "x".into(),
+        name: "run_command".into(),
+        args: json!({"command": "layer.addData", "params": {"path": "/no/such/dir/data.geojson?token=hidden"}}),
+    };
+    let err = tools::run(&mut s, &call).unwrap_err();
+    assert_eq!(err.lines().count(), 1, "{err}");
+}
+
 /// map.activate / map.remove must not report the newly visible map's layers as layersAdded (#212).
 #[test]
 fn map_switch_and_remove_do_not_report_layers_added() {

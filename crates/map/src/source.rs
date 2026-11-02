@@ -1006,7 +1006,11 @@ impl SourceLayer {
         };
         #[cfg(not(target_arch = "wasm32"))]
         if !block {
+            // The read's requests (a remote FlatGeobuf's or GeoParquet's ranges) belong to the
+            // session that asked for it: its diagnostics capture goes with the thread.
+            let capture = rustgis_data::diagnostics::Capture::current();
             let spawned = std::thread::Builder::new().name("rustgis-source".into()).spawn(move || {
+                let _diagnostics = capture.enter();
                 job();
                 GENERATION.fetch_add(1, Ordering::Relaxed);
                 if let Some(w) = waker().lock().ok().and_then(|w| w.clone()) {

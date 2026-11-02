@@ -3161,7 +3161,7 @@ fn named_fonts_unread(layout: &Layout) -> Option<&'static str> {
 pub fn layout_bytes(s: &mut Session, li: usize, pdf: bool, dpi: f64, all: bool) -> Result<Vec<u8>, String> {
     let saved = s.project.layouts.get(li).ok_or("no layout")?.clone();
     if let Some(note) = named_fonts_unread(&saved) {
-        s.notify(note, false);
+        s.warn(note);
     }
     let dpi = if dpi.is_finite() { dpi.clamp(36.0, 600.0) } else { 150.0 };
     let current = saved.series.as_ref().map_or(0, |sr| sr.page);
@@ -3173,7 +3173,7 @@ pub fn layout_bytes(s: &mut Session, li: usize, pdf: bool, dpi: f64, all: bool) 
     let pages: Vec<usize> = match (&names, all && pdf) {
         (Some(n), true) => {
             if n.len() > 500 {
-                s.notify(format!("The map series has {} pages; the PDF holds the first 500", n.len()), false);
+                s.warn(format!("The map series has {} pages; the PDF holds the first 500", n.len()));
             }
             (0..n.len().min(500)).collect()
         }

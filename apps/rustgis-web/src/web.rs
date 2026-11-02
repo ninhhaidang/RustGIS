@@ -5,6 +5,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use rustgis_ui_egui::rustgis_engine::data::diagnostics::Capture;
 use rustgis_ui_egui::{Inbox, RustGisApp, Services, Slot};
 
 use crate::parts::Notes;
@@ -571,7 +572,19 @@ async fn unless_stalled(
 
 /// Downloads `url`, or the byte range it asks for (a PMTiles archive's part: see
 /// `rustgis_tiles::cache::split_range`).
-async fn fetch_bytes(url: &str) -> Result<Vec<u8>, String> {
+/// A status in `omit` is an expected answer (a tile past a map's edge): its failure makes no
+/// record of its own, as on the desktop.
+async fn fetch_bytes(url: &str, capture: Capture, omit: &'static [u16]) -> Result<Vec<u8>, String> {
+    use rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::{cache::RequestDiagnostics, failure::Failure};
+    let mut diagnostics = RequestDiagnostics::with_capture(url, "GET", capture);
+    diagnostics.omit_statuses(omit);
+    fetch_bytes_inner(url, &mut diagnostics).await.inspect_err(|error| diagnostics.failed(&Failure::new(url, error)))
+}
+
+async fn fetch_bytes_inner(
+    url: &str,
+    diagnostics: &mut rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::cache::RequestDiagnostics<'_>,
+) -> Result<Vec<u8>, String> {
     let err = |e: wasm_bindgen::JsValue| format!("{e:?}");
     let window = web_sys::window().ok_or("no window")?;
     use rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::cache;
@@ -629,7 +642,10 @@ async fn fetch_bytes(url: &str) -> Result<Vec<u8>, String> {
     // say why, so the likely reasons are named, with the browser's own message but not its stack.
     let resp: web_sys::Response = unless_stalled(promise, abort.as_ref())
         .await
-        .ok_or_else(stalled)?
+        .ok_or_else(|| {
+            diagnostics.timed_out();
+            stalled()
+        })?
         .map_err(|e| {
             let why = e.dyn_ref::<js_sys::Error>().map(|e| String::from(e.message())).unwrap_or_else(|| err(e));
             format!(
@@ -638,6 +654,7 @@ async fn fetch_bytes(url: &str) -> Result<Vec<u8>, String> {
         })?
         .dyn_into()
         .map_err(err)?;
+    diagnostics.answered(resp.status());
     if !resp.ok() {
         return Err(format!("HTTP {}", resp.status()));
     }
@@ -675,7 +692,10 @@ async fn fetch_bytes(url: &str) -> Result<Vec<u8>, String> {
         loop {
             // Headers came and then the body stalled: given up as a fetch that doesn't answer.
             // (Aborting the fetch has cancelled its body too.)
-            let Some(chunk) = unless_stalled(reader.read(), abort.as_ref()).await else { return Err(stalled()) };
+            let Some(chunk) = unless_stalled(reader.read(), abort.as_ref()).await else {
+                diagnostics.timed_out();
+                return Err(stalled());
+            };
             let chunk = chunk.map_err(err)?;
             if js_sys::Reflect::get(&chunk, &"done".into()).ok().and_then(|d| d.as_bool()).unwrap_or(true) {
                 break;
@@ -707,7 +727,17 @@ async fn fetch_bytes(url: &str) -> Result<Vec<u8>, String> {
 
 /// POSTs a JSON document and reads the answer (at most the tile cache's `MAX_BYTES`), without
 /// following redirects; an error status is `HTTP <status>`.
-async fn post_json(url: &str, body: &str) -> Result<Vec<u8>, String> {
+async fn post_json(url: &str, body: &str, capture: Capture) -> Result<Vec<u8>, String> {
+    use rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::{cache::RequestDiagnostics, failure::Failure};
+    let mut diagnostics = RequestDiagnostics::with_capture(url, "POST", capture);
+    post_json_inner(url, body, &mut diagnostics).await.inspect_err(|error| diagnostics.failed(&Failure::new(url, error)))
+}
+
+async fn post_json_inner(
+    url: &str,
+    body: &str,
+    diagnostics: &mut rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::cache::RequestDiagnostics<'_>,
+) -> Result<Vec<u8>, String> {
     use rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::cache;
     let err = |e: wasm_bindgen::JsValue| format!("{e:?}");
     let window = web_sys::window().ok_or("no window")?;
@@ -724,6 +754,7 @@ async fn post_json(url: &str, body: &str) -> Result<Vec<u8>, String> {
         .map_err(|_| "the browser couldn't reach it (offline, or the server doesn't accept requests from web pages)".to_string())?
         .dyn_into()
         .map_err(err)?;
+    diagnostics.answered(resp.status());
     if !resp.ok() {
         return Err(format!("HTTP {}", resp.status()));
     }
@@ -738,7 +769,16 @@ async fn post_json(url: &str, body: &str) -> Result<Vec<u8>, String> {
 /// Asks for an address's headers (`HEAD`): a TIFF header's announced length and the type. The
 /// browser shows a page `X-TIFF-Header-Length` only when the server exposes it
 /// (`Access-Control-Expose-Headers`); without it, the header is read as any other file's.
-async fn head(url: &str) -> Result<rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::cache::Head, String> {
+async fn head(url: &str, capture: Capture) -> Result<rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::cache::Head, String> {
+    use rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::{cache::RequestDiagnostics, failure::Failure};
+    let mut diagnostics = RequestDiagnostics::with_capture(url, "HEAD", capture);
+    head_inner(url, &mut diagnostics).await.inspect_err(|error| diagnostics.failed(&Failure::new(url, error)))
+}
+
+async fn head_inner(
+    url: &str,
+    diagnostics: &mut rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::cache::RequestDiagnostics<'_>,
+) -> Result<rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::cache::Head, String> {
     use rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::{cache, s3};
     let err = |e: wasm_bindgen::JsValue| format!("{e:?}");
     let window = web_sys::window().ok_or("no window")?;
@@ -761,6 +801,7 @@ async fn head(url: &str) -> Result<rustgis_ui_egui::rustgis_engine::render::rust
         .map_err(|_| "the browser couldn't reach it (offline, or the server doesn't accept requests from web pages)".to_string())?
         .dyn_into()
         .map_err(err)?;
+    diagnostics.answered(resp.status());
     if !resp.ok() {
         return Err(format!("HTTP {}", resp.status()));
     }
@@ -843,8 +884,13 @@ fn clipboard() -> Option<web_sys::Clipboard> {
 /// the app must not read what the user saved on the site.
 fn services(inbox: Inbox, font_inbox: Inbox, notes: Notes, ctx: egui::Context, embedded: bool) -> Services {
     // Map tiles come through the browser's fetch (the app repaints when they arrive).
-    rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::cache::set_fetcher(|url, done| {
-        wasm_bindgen_futures::spawn_local(async move { done(fetch_bytes(&url).await) });
+    rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::cache::set_fetcher_omitting(|url, done, omit| {
+        let capture = Capture::current();
+        wasm_bindgen_futures::spawn_local(async move {
+            let result = fetch_bytes(&url, capture.clone(), omit).await;
+            let _scope = capture.enter();
+            done(result);
+        });
     });
     // Their pictures are decoded by the browser, off the page's thread.
     rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::cache::set_image_decoder(|bytes, done| {
@@ -861,11 +907,21 @@ fn services(inbox: Inbox, font_inbox: Inbox, notes: Notes, ctx: egui::Context, e
     });
     // So are HEAD requests (a GeoTIFF made on request saying how long its header is).
     rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::cache::set_header(|url, done| {
-        wasm_bindgen_futures::spawn_local(async move { done(head(&url).await) });
+        let capture = Capture::current();
+        wasm_bindgen_futures::spawn_local(async move {
+            let result = head(&url, capture.clone()).await;
+            let _scope = capture.enter();
+            done(result);
+        });
     });
     // So are JSON documents POSTed (the NLDI's flowtrace).
     rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::cache::set_poster(|url, body, done| {
-        wasm_bindgen_futures::spawn_local(async move { done(post_json(&url, &body).await) });
+        let capture = Capture::current();
+        wasm_bindgen_futures::spawn_local(async move {
+            let result = post_json(&url, &body, capture.clone()).await;
+            let _scope = capture.enter();
+            done(result);
+        });
     });
     let open_inbox = inbox.clone();
     let font_ctx = ctx.clone();
@@ -920,8 +976,9 @@ fn services(inbox: Inbox, font_inbox: Inbox, notes: Notes, ctx: egui::Context, e
         recovery: None,
         fetch_font: Some(Box::new(move |url: &str| {
             let (url, inbox, ctx) = (url.to_string(), font_sink.clone(), font_ctx.clone());
+            let capture = Capture::current();
             wasm_bindgen_futures::spawn_local(async move {
-                match fetch_bytes(&url).await {
+                match fetch_bytes(&url, capture, &[]).await {
                     Ok(bytes) => {
                         inbox.lock().unwrap_or_else(|e| e.into_inner()).push((url, bytes));
                         ctx.request_repaint();
@@ -1018,8 +1075,9 @@ fn services(inbox: Inbox, font_inbox: Inbox, notes: Notes, ctx: egui::Context, e
         })),
         fetch: Some(Box::new(move |url: &str, slot| {
             let (url, ctx) = (url.to_string(), fetch_ctx.clone());
+            let capture = Capture::current();
             wasm_bindgen_futures::spawn_local(async move {
-                let r = fetch_bytes(&url).await.map_err(|e| format!("{url}: {e}"));
+                let r = fetch_bytes(&url, capture, &[]).await.map_err(|e| format!("{url}: {e}"));
                 *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
                 ctx.request_repaint();
             });

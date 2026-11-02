@@ -105,7 +105,9 @@ pub(crate) fn make(url: &str) -> Made {
     let mut pictures = Vec::with_capacity(plan.parts.len());
     let (mut waiting, mut error) = (false, None);
     for p in &plan.parts {
-        match cache::get(&p.url, Want::Image) {
+        // A matrix tile past the service's coverage is routine; a WMS picture (any area asked) isn't.
+        let state = if p.tile.is_some() { cache::get_tile(&p.url, Want::Image) } else { cache::get(&p.url, Want::Image) };
+        match state {
             State::Ready(payload) => pictures.push(Some(payload)),
             State::Pending => waiting = true,
             State::Failed(e) => {

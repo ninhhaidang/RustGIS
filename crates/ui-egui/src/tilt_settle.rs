@@ -100,7 +100,9 @@ impl<K: Copy + PartialEq> TiltSettle<K> {
         {
             let (tx, rx) = std::sync::mpsc::channel();
             let ctx = ctx.clone();
+            let diagnostics = rustgis_engine::data::diagnostics::Capture::current();
             let spawned = std::thread::Builder::new().name("rustgis-map-frame".into()).spawn(move || {
+                let _diagnostics = diagnostics.enter();
                 // Without an answer (a panic) `take` finds the channel closed. It is closed before
                 // the frame is woken, so the woken frame finds the job over, not still running.
                 if let Ok(done) = std::panic::catch_unwind(work) {

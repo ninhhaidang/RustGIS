@@ -467,7 +467,9 @@ fn run_script(s: &mut Session, a: &Value, tokens: usize) -> Result<String, Strin
         }
         Err(e) => {
             // Nothing was kept, so no line ran and no layer was added.
-            let said: Vec<&&str> = notices.iter().filter(|t| **t != e).collect();
+            // The notice of the failure is the error redacted: compared as such, it isn't repeated.
+            let told = rustgis_engine::data::diagnostics::redact(&e);
+            let said: Vec<&&str> = notices.iter().filter(|t| **t != e && **t != told).collect();
             let out = json!({"success": false, "result": null, "lines": 0, "layersAdded": [], "notices": said,
                 "error": clip(&e, 8000), "duration_s": secs});
             Err(bounded_json(&out, tokens))
@@ -494,7 +496,8 @@ fn with_notices(r: Value, s: &Session, mark: u64) -> Value {
 /// A failed run's error with what the command said before failing (a GDAL layer that couldn't be
 /// converted).
 fn error_with_notices(e: String, s: &Session, mark: u64) -> String {
-    let said: Vec<&str> = s.notices_since(mark).iter().map(|n| n.text.as_str()).filter(|t| *t != e).collect();
+    let told = rustgis_engine::data::diagnostics::redact(&e);
+    let said: Vec<&str> = s.notices_since(mark).iter().map(|n| n.text.as_str()).filter(|t| *t != e && *t != told).collect();
     // Preserve the original 8,000-character diagnostic assembly cap for MCP errors;
     // the agent additionally applies its serialized output budget.
     if said.is_empty() { e } else { clip(&format!("{e}\n{}", said.join("\n")), 8000) }

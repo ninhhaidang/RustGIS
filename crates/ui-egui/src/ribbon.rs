@@ -2120,16 +2120,28 @@ fn view_tab(app: &mut RustGisApp, ui: &mut Ui) {
                 app.ui.right == Some(RightPane::Labeling),
             );
         });
-        small(
-            ui,
-            app,
-            "table",
-            "Attribute Table",
-            "Open the selected layer's table.",
-            "table.open",
-            Value::Null,
-            app.session.table_layer.is_some(),
-        );
+        col(ui, |ui| {
+            small(
+                ui,
+                app,
+                "table",
+                "Attribute Table",
+                "Open the selected layer's table.",
+                "table.open",
+                Value::Null,
+                app.session.table_layer.is_some(),
+            );
+            small(
+                ui,
+                app,
+                "identify",
+                "Diagnostics",
+                "Review errors, warnings, information and failed network requests from this session.",
+                "ui.pane.diagnosticLog",
+                Value::Null,
+                app.ui.right == Some(RightPane::DiagnosticLog),
+            );
+        });
     });
     group(ui, "Navigation", |ui| {
         big(ui, app, "zoom_world", "World", "Zoom to the whole world.", "map.zoomWorld", Value::Null, false, false);

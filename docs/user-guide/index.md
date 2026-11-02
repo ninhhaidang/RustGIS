@@ -97,9 +97,9 @@ This guide walks through RustGIS by task. Each page covers one part of the app:
 - **Status bar**: the scale (type one, or pick from the list), the zoom level, bearing and pitch
   (click them to face north and look straight down again), the pointer's coordinates (click them
   to switch between decimal degrees and DMS), the coordinate system (click it to change the
-  projection), the selection count (with a button to clear it), the latest notice, the last draw
-  time, the frame rate and a **GPU**/**CPU** renderer switch. While agents control the desktop app,
-  it also shows the MCP relay or file bridge.
+  projection), the selection count (with a button to clear it), the latest notice (click to open
+  **Diagnostics**), a **Diagnostics** button, the last draw time, the frame rate and a **GPU**/**CPU**
+  renderer switch. While agents control the desktop app, it also shows the MCP relay or file bridge.
 
 **Command Search** (++ctrl+k++, or the box at the top right) finds commands and geoprocessing
 tools by name. Commands with an interactive entry point open their dialog, file picker or pane
@@ -114,6 +114,31 @@ To give the map more room, collapse the ribbon to its tab row with the chevron a
 end, by double-clicking a tab, or with ++ctrl+f1++ (++cmd+f1++ on macOS, where F1 may need the Fn
 key). Click a tab to peek at its commands while collapsed. When the window is narrower than the
 ribbon, arrows at its ends scroll it.
+
+### Diagnostics
+
+Open **View › Windows › Diagnostics**, click the status-bar notice or **Diagnostics** button,
+or search for **Diagnostics** in Command Search (`ui.pane.diagnosticLog`). This troubleshooting
+history is separate from **Help › Diagnostic Monitor**, which still shows performance metrics.
+
+Messages are collected even while the pane is closed. The newest entries appear first, with
+a UTC timestamp, severity, and source (such as the command id or Network). Expand **Technical
+details** for failed requests: their address, method, observed HTTP status and duration when
+available. Native connection failures and timeouts are identified when the transport knows
+them; an opaque browser failure does not claim a status or a specific DNS, CORS, or connection cause.
+
+Use **All**, **Errors**, **Warnings**, **Info**, or **Network failures** to filter the history.
+**Copy diagnostics** copies the filtered entries and their technical details, including folded
+details. **Clear** clears all entries, not just the selected filter. Closing or reopening the
+pane does not clear it.
+
+The last 500 entries are kept in memory for this session, including across project changes;
+older entries are discarded. Each message is limited to 2 KiB and technical details to 8 KiB.
+Nothing is saved in `.rgis` projects or sent automatically. Credentials are removed before
+retention: addresses omit user information, query strings and fragments; credential fields
+and structured payloads are omitted conservatively, which can also remove surrounding context.
+Review copied diagnostics for private layer names or file paths before sharing them.
+
 
 ## The ribbon
 

@@ -3613,6 +3613,14 @@ fn a_shortcut_that_cannot_run_says_why() {
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
     h.step();
     assert!(h.state().session.notices_since(mark).is_empty());
+    // Exhausted redo is equally quiet; available redo still runs.
+    while h.state().session.can_redo() {
+        h.state_mut().run("edit.redo", json!(null)).unwrap();
+    }
+    let mark = h.state().session.notice_mark();
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Y);
+    h.step();
+    assert!(h.state().session.notices_since(mark).is_empty());
 }
 
 #[test]

@@ -86,6 +86,7 @@ pub fn show(app: &mut RustGisApp, ui: &mut Ui) {
         let (id, width) = match right {
             RightPane::WebData => ("right_pane_web", 440.0),
             RightPane::Notebook => ("right_pane_notebook", (room / 2.0).max(320.0).min(max)),
+            RightPane::DiagnosticLog => ("right_pane_diagnostic_log", 480.0),
             _ => ("right_pane", 320.0),
         };
         let pane = egui::Panel::right(id).resizable(true).default_size(width).size_range(260.0..=max).frame(frame).show(ui, |ui| {
@@ -141,6 +142,7 @@ fn right_title(pane: RightPane) -> (&'static str, &'static str) {
         RightPane::Profile => ("Profile", "ui.pane.profile"),
         RightPane::TimeSeries => ("Time Series", "ui.pane.timeSeries"),
         RightPane::Diagnostics => ("Diagnostic Monitor", "ui.pane.diagnostics"),
+        RightPane::DiagnosticLog => ("Diagnostics", "ui.pane.diagnosticLog"),
         RightPane::Infographics => ("Infographics", "ui.pane.infographics"),
         RightPane::Report => ("Report", "ui.pane.report"),
         RightPane::Presentation => ("Presentation", "ui.pane.presentation"),
@@ -180,6 +182,10 @@ fn right_pane(app: &mut RustGisApp, ui: &mut Ui, right: RightPane, t: &Tokens) {
         crate::sqlpane::show(app, ui, t);
         return;
     }
+    if right == RightPane::DiagnosticLog {
+        crate::diagnosticlog::show(app, ui, t);
+        return;
+    }
     // The Script pane fits its box to the pane's height, the buttons kept in view (#653).
     if right == RightPane::Script {
         crate::analysispane::script_pane(app, ui, t);
@@ -203,7 +209,7 @@ fn right_pane(app: &mut RustGisApp, ui: &mut Ui, right: RightPane, t: &Tokens) {
             RightPane::Report => crate::reportpane::report(app, ui, t),
             RightPane::Presentation => crate::docpanes::presentation(app, ui, t),
             RightPane::Notebook => crate::docpanes::notebook(app, ui, t),
-            RightPane::Assistant | RightPane::Sql | RightPane::Script => {}
+            RightPane::Assistant | RightPane::Sql | RightPane::Script | RightPane::DiagnosticLog => {}
             RightPane::Shares => crate::docpanes::shares(app, ui, t),
             RightPane::Directions => crate::navui::show(app, ui, t),
             RightPane::Bookmarks => crate::bookmarkpane::show(app, ui, t),

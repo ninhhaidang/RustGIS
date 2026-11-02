@@ -550,7 +550,7 @@ pub(crate) fn tiles_in(src: &Source, view: &Extent, reach: Option<&Extent>, fram
         let Some(u) = url(p.id) else { continue };
         // Past the view, only what the cache already has.
         let state = if p.extent().intersects(view) {
-            cache::get(&u, want)
+            cache::get_tile(&u, want)
         } else {
             match cache::peek(&u) {
                 Some(payload) => State::Ready(payload),
