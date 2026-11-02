@@ -77,10 +77,17 @@ fn entry(ui: &mut Ui, record: &Record, t: &Tokens) {
         Severity::Warning => (tl!("Warning"), t.amber),
         Severity::Info => (tl!("Info"), t.accent_text),
     };
+    // A source is a command id (kept as written) or one of the history's own words.
+    let source = match record.source.as_str() {
+        "Application" => tl!("Application"),
+        "Network" => tl!("Network"),
+        "Plugin" => tl!("Plugin"),
+        command => command,
+    };
     ui.horizontal_wrapped(|ui| {
         ui.label(RichText::new(time(record.timestamp_ms)).small().monospace().color(t.text_dim));
         ui.label(RichText::new(severity).small().strong().color(color));
-        ui.label(RichText::new(record.source.as_str()).small().color(t.text_dim));
+        ui.label(RichText::new(source).small().color(t.text_dim));
     });
     ui.add(egui::Label::new(&record.message).wrap().selectable(true));
     if !record.details.is_empty() || record.network.is_some() {

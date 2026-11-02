@@ -104,10 +104,10 @@ fn fetch(root: &str, keys: &[String]) -> Result<(HashMap<String, Vec<u8>>, usize
                         break;
                     }
                     // A missing file is an expected answer here (see `is_absent`), not a failure: its 404
-                    // or 403 makes no network record of its own (one note per server says the
+                    // or 403 isn't recorded one by one (one note per server says the
                     // omission, and a store refusing everything still says "access denied"), while
                     // a real one (a 500, a timeout) does, with its address, status and duration.
-                    let got = crate::render::rustgis_tiles::cache::download_blocking_expecting(&format!("{root}/{k}"), &[404, 403]);
+                    let got = crate::render::rustgis_tiles::cache::download_blocking_omitting(&format!("{root}/{k}"), &[404, 403]);
                     match got {
                         Ok(b) => {
                             let len = b.len() as u64;

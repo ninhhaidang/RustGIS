@@ -547,6 +547,7 @@ pub struct UiState {
     pub right: Option<RightPane>,
     /// The right panes open as tabs, in the order they were opened (#303).
     pub right_open: Vec<RightPane>,
+    /// The Diagnostics pane's filter (it also picks what **Copy diagnostics** copies).
     pub diagnostic_filter: rustgis_engine::data::diagnostics::Filter,
     diagnostic_snapshot: Option<(u64, Vec<rustgis_engine::data::diagnostics::Record>)>,
     /// The Web Data service the Web Data pane shows (a `ui.dialog` name, see
@@ -1775,9 +1776,9 @@ impl RustGisApp {
         if let Err(e) = &r {
             log::info!("{id}: {e}");
             // UI-only failures can return before an engine command emits a notice.
-            let text = rustgis_engine::data::diagnostics::redact(e);
-            if !self.session.notices_since(notice_mark).iter().any(|notice| notice.error && notice.text == text) {
-                self.session.notify(text, true);
+            let text = rustgis_engine::data::diagnostics::Redacted::new(e);
+            if !self.session.notices_since(notice_mark).iter().any(|notice| notice.error && notice.text == text.as_str()) {
+                self.session.notify_redacted(text, true);
             }
         }
         // Commands can replace the project, switch maps or change the renderer while the pane

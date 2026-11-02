@@ -183,13 +183,18 @@ pub fn get(url: &str, want: Want) -> State {
     request(url, want, &[])
 }
 
-/// Like [`get`], for a map tile: a server's 404 for it is routine (the map asks past an area's
-/// edges), so it makes no network record of its own; each would flood the history and evict
-/// real failures. A picture that isn't a tile (a single-image layer, a layout's picture, a
-/// style's sprite sheet) goes through [`get`], so its 404 is recorded.
+/// Like [`get`], for a map tile: a server's 404 (no tile there) or 410 (no longer there) for it
+/// is routine (the map asks past an area's edges, and the map draws both as a gap: see
+/// [`crate::warp::missing`]), so it isn't recorded as a failure; each would flood the history
+/// and evict real failures. The omission is noted once per server instead. A picture that isn't
+/// a tile (a single-image layer, a layout's picture, a style's sprite sheet) goes through
+/// [`get`], so its 404 is recorded.
 pub fn get_tile(url: &str, want: Want) -> State {
-    request(url, want, &[404])
+    request(url, want, TILE_OMIT)
 }
+
+/// The statuses a map tile's request omits ([`get_tile`]).
+const TILE_OMIT: &[u16] = &[404, 410];
 
 /// [`get`] with the statuses that are expected answers for this fetch.
 fn request(url: &str, want: Want, omit: &'static [u16]) -> State {
@@ -620,7 +625,8 @@ pub struct RequestDiagnostics<'a> {
     status: Option<u16>,
     timed_out: bool,
     /// Statuses the caller expects (a tile past a map's edge, a store's absent chunk): their
-    /// failures make no network record, as each would flood the history.
+    /// failures aren't recorded one by one, as each would flood the history. One note per server
+    /// says that they're omitted ([`rustgis_data::diagnostics::Capture::note_absence`]).
     omit: &'static [u16],
 }
 
@@ -634,7 +640,8 @@ impl<'a> RequestDiagnostics<'a> {
         Self { url, method, capture, started: Instant::now(), status: None, timed_out: false, omit: &[] }
     }
 
-    /// Statuses whose failures are expected answers, not records (see [`Self::omit`]).
+    /// Statuses whose failures are expected answers, noted once per server, not recorded each
+    /// (a tile past a map's edge, a store's absent chunk).
     pub fn omit_statuses(&mut self, omit: &'static [u16]) {
         self.omit = omit;
     }
@@ -654,6 +661,11 @@ impl<'a> RequestDiagnostics<'a> {
         self.timed_out = true;
     }
 
+    /// A request's result, its failure recorded ([`Self::failed`]) on the way through.
+    pub fn record<T>(&self, result: Result<T, Failure>) -> Result<T, Failure> {
+        result.inspect_err(|failure| self.failed(failure))
+    }
+
     pub fn failed(&self, failure: &Failure) {
         use crate::failure::Reason;
         use rustgis_data::diagnostics::{Network, NetworkKind};
@@ -670,7 +682,7 @@ impl<'a> RequestDiagnostics<'a> {
         if let Some(status) = self.status
             && self.omit.contains(&status)
         {
-            self.capture.absence_said(url, status);
+            self.capture.note_absence(self.method, url, status);
             return;
         }
         let mut details = match (range, tail) {
@@ -679,12 +691,12 @@ impl<'a> RequestDiagnostics<'a> {
             _ => String::new(),
         };
         // Explicitly exclude Answer::excerpt: an arbitrary server response is not diagnostics.
+        // Each header is redacted on its own line: a credential header (`www-authenticate`) ends
+        // redaction of the text it is in, which would drop the headers after it.
         if let Some(answer) = &failure.answer {
             for (name, value) in &answer.headers {
                 if crate::failure::KEPT_HEADERS.contains(&name.as_str()) {
-                    details.push_str(name);
-                    details.push_str(": ");
-                    details.push_str(value);
+                    details.push_str(&rustgis_data::diagnostics::redact(&format!("{name}: {value}")));
                     details.push('\n');
                 }
             }
@@ -776,11 +788,11 @@ pub fn download_blocking_limited(url: &str, max: usize) -> Result<Vec<u8>, Strin
     download_blocking_within(url, max, BLOCKING_TIMEOUT).map_err(large_file_hint)
 }
 
-/// Like [`download_blocking`], but a status in `omit` is an expected answer: its failure makes no
-/// network record of its own (a store's absent chunk, which the caller counts itself).
+/// Like [`download_blocking`], but a status in `omit` is an expected answer: its failure isn't
+/// recorded, only noted once per server (a store's absent chunk, which the caller counts itself).
 #[cfg(not(target_arch = "wasm32"))]
-pub fn download_blocking_expecting(url: &str, omit: &'static [u16]) -> Result<Vec<u8>, String> {
-    download_blocking_omitting(url, MAX_DOWNLOAD, BLOCKING_TIMEOUT, omit).map_err(large_file_hint)
+pub fn download_blocking_omitting(url: &str, omit: &'static [u16]) -> Result<Vec<u8>, String> {
+    download_blocking_omitting_within(url, MAX_DOWNLOAD, BLOCKING_TIMEOUT, omit).map_err(large_file_hint)
 }
 
 /// A blocking download that ran out of time says how to add a large file instead.
@@ -796,13 +808,14 @@ fn large_file_hint(e: String) -> String {
 /// Like [`download_blocking_limited`], giving up after `timeout` (with the bare error).
 #[cfg(not(target_arch = "wasm32"))]
 pub fn download_blocking_within(url: &str, max: usize, timeout: std::time::Duration) -> Result<Vec<u8>, String> {
-    download_blocking_omitting(url, max, timeout, &[])
+    download_blocking_omitting_within(url, max, timeout, &[])
 }
 
 /// Like [`download_blocking_within`], but a status in `omit` is an expected answer: its failure
-/// makes no network record (a store's absent chunk, which the caller counts itself).
+/// isn't recorded, only noted once per server (a store's absent chunk, which the caller counts
+/// itself).
 #[cfg(not(target_arch = "wasm32"))]
-fn download_blocking_omitting(url: &str, max: usize, timeout: std::time::Duration, omit: &'static [u16]) -> Result<Vec<u8>, String> {
+fn download_blocking_omitting_within(url: &str, max: usize, timeout: std::time::Duration, omit: &'static [u16]) -> Result<Vec<u8>, String> {
     crate::address::check(url, None)?;
     native::get(&native::download_agent(timeout), &download_address(url, max), omit)
 }
@@ -926,8 +939,8 @@ pub fn head(url: &str, done: HeadDone) {
 }
 
 /// Fetches an address's bytes, uncached (through the browser's fetcher, or the worker threads).
-/// A status in `omit` is an expected answer: its failure makes no network record (a tile past a
-/// map's edge).
+/// A status in `omit` is an expected answer: its failure isn't recorded, only noted once per
+/// server (a tile past a map's edge).
 pub(crate) fn fetch_bytes(url: String, done: Done, omit: &'static [u16]) {
     let f = fetcher().lock().unwrap_or_else(|e| e.into_inner()).clone();
     match f {
@@ -1294,56 +1307,52 @@ mod native {
     /// them.
     pub(super) fn head_with(agent: &ureq::Agent, url: &str) -> Result<super::Head, String> {
         let mut diagnostics = super::RequestDiagnostics::new(url, "HEAD");
-        head_answer(agent, url, &mut diagnostics).map_err(|failure| {
-            diagnostics.failed(&failure);
-            failure.message
-        })
-    }
-
-    fn head_answer(agent: &ureq::Agent, url: &str, diagnostics: &mut super::RequestDiagnostics<'_>) -> Result<super::Head, Failure> {
-        let prepared = crate::s3::prepare(url)?;
-        if prepared.signed {
-            return Ok(super::Head::default());
-        }
-        let mut at = prepared.url.clone();
-        for redirects in 0..=5 {
-            let mut req = agent.head(&at);
-            if redirects == 0 {
-                for (k, v) in &prepared.headers {
-                    req = req.header(k.as_str(), v.as_str());
+        let answer = (|| -> Result<super::Head, Failure> {
+            let prepared = crate::s3::prepare(url)?;
+            if prepared.signed {
+                return Ok(super::Head::default());
+            }
+            let mut at = prepared.url.clone();
+            for redirects in 0..=5 {
+                let mut req = agent.head(&at);
+                if redirects == 0 {
+                    for (k, v) in &prepared.headers {
+                        req = req.header(k.as_str(), v.as_str());
+                    }
                 }
-            }
-            diagnostics.sending();
-            let resp = req.config().http_status_as_error(false).build().call().map_err(unanswered)?;
-            diagnostics.answered(resp.status().as_u16());
-            let header = |k: &str| resp.headers().get(k).and_then(|v| v.to_str().ok());
-            if resp.status().is_redirection() {
-                let next = crate::template::join(&at, header("location").ok_or("a redirect with no Location")?);
-                crate::address::check(&next, Some(&at))?;
-                if at.starts_with("https://") && !next.starts_with("https://") {
-                    return Err(format!("{next}: a redirect from https to http").into());
+                diagnostics.sending();
+                let resp = req.config().http_status_as_error(false).build().call().map_err(unanswered)?;
+                diagnostics.answered(resp.status().as_u16());
+                let header = |k: &str| resp.headers().get(k).and_then(|v| v.to_str().ok());
+                if resp.status().is_redirection() {
+                    let next = crate::template::join(&at, header("location").ok_or("a redirect with no Location")?);
+                    crate::address::check(&next, Some(&at))?;
+                    if at.starts_with("https://") && !next.starts_with("https://") {
+                        return Err(format!("{next}: a redirect from https to http").into());
+                    }
+                    at = next;
+                    continue;
                 }
-                at = next;
-                continue;
+                if resp.status().as_u16() >= 400 {
+                    // The selected headers say who refused and what it wants: kept, as a GET's
+                    // refusal keeps them, so the history's details aren't only a status.
+                    let headers: Vec<(String, String)> = resp
+                        .headers()
+                        .iter()
+                        .filter(|(k, _)| crate::failure::KEPT_HEADERS.contains(&k.as_str()))
+                        .map(|(k, v)| (k.as_str().to_string(), String::from_utf8_lossy(v.as_bytes()).into_owned()))
+                        .collect();
+                    return Err(Failure::answered("", resp.status().as_u16(), &headers, &[]));
+                }
+                return Ok(super::Head {
+                    tiff_header_length: header("x-tiff-header-length").and_then(super::tiff_header_length),
+                    content_type: header("content-type").map(str::to_string),
+                    accepts_ranges: header("accept-ranges").is_some_and(super::accepts_byte_ranges),
+                });
             }
-            if resp.status().as_u16() >= 400 {
-                // The selected headers say who refused and what it wants: kept, as a GET's
-                // refusal keeps them, so the history's details aren't only a status.
-                let headers: Vec<(String, String)> = resp
-                    .headers()
-                    .iter()
-                    .filter(|(k, _)| crate::failure::KEPT_HEADERS.contains(&k.as_str()))
-                    .map(|(k, v)| (k.as_str().to_string(), String::from_utf8_lossy(v.as_bytes()).into_owned()))
-                    .collect();
-                return Err(Failure::answered("", resp.status().as_u16(), &headers, &[]));
-            }
-            return Ok(super::Head {
-                tiff_header_length: header("x-tiff-header-length").and_then(super::tiff_header_length),
-                content_type: header("content-type").map(str::to_string),
-                accepts_ranges: header("accept-ranges").is_some_and(super::accepts_byte_ranges),
-            });
-        }
-        Err("too many redirects".into())
+            Err("too many redirects".into())
+        })();
+        diagnostics.record(answer).map_err(|failure| failure.message)
     }
 
     /// POSTs a JSON document on a thread of its own.
@@ -1359,46 +1368,37 @@ mod native {
     /// POSTs a JSON document and reads the answer (at most [`MAX_BYTES`]); an error status is
     /// `http status: <status>`, and a redirect isn't followed.
     pub(super) fn post_with(agent: &ureq::Agent, url: &str, body: &str) -> Result<Vec<u8>, String> {
-        let mut diagnostics = super::RequestDiagnostics::new(url, "POST");
-        post_answer(agent, url, body, &mut diagnostics).map_err(|failure| {
-            diagnostics.failed(&failure);
-            failure.message
-        })
-    }
-
-    fn post_answer(
-        agent: &ureq::Agent,
-        url: &str,
-        body: &str,
-        diagnostics: &mut super::RequestDiagnostics<'_>,
-    ) -> Result<Vec<u8>, Failure> {
         use std::io::Read;
-        let mut resp = agent
-            .post(url)
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json")
-            .config()
-            .http_status_as_error(false)
-            .build()
-            .send(body)
-            .map_err(unanswered)?;
-        let status = resp.status().as_u16();
-        diagnostics.answered(status);
-        if !(200..300).contains(&status) {
-            return Err(Failure::without_answer("", format!("http status: {status}"), Reason::Status(status)));
-        }
-        let mut buf = Vec::new();
-        resp.body_mut()
-            .with_config()
-            .limit(MAX_BYTES as u64 + 2)
-            .reader()
-            .take(MAX_BYTES as u64 + 1)
-            .read_to_end(&mut buf)
-            .map_err(|e| e.to_string())?;
-        if buf.len() > MAX_BYTES {
-            return Err(format!("larger than {MAX_BYTES} bytes").into());
-        }
-        Ok(buf)
+        let mut diagnostics = super::RequestDiagnostics::new(url, "POST");
+        let answer = (|| -> Result<Vec<u8>, Failure> {
+            let mut resp = agent
+                .post(url)
+                .header("Content-Type", "application/json")
+                .header("Accept", "application/json")
+                .config()
+                .http_status_as_error(false)
+                .build()
+                .send(body)
+                .map_err(unanswered)?;
+            let status = resp.status().as_u16();
+            diagnostics.answered(status);
+            if !(200..300).contains(&status) {
+                return Err(Failure::without_answer("", format!("http status: {status}"), Reason::Status(status)));
+            }
+            let mut buf = Vec::new();
+            resp.body_mut()
+                .with_config()
+                .limit(MAX_BYTES as u64 + 2)
+                .reader()
+                .take(MAX_BYTES as u64 + 1)
+                .read_to_end(&mut buf)
+                .map_err(|e| e.to_string())?;
+            if buf.len() > MAX_BYTES {
+                return Err(format!("larger than {MAX_BYTES} bytes").into());
+            }
+            Ok(buf)
+        })();
+        diagnostics.record(answer).map_err(|failure| failure.message)
     }
 
     /// Downloads on a thread of its own, so a large file doesn't hold up the tiles.
@@ -1497,198 +1497,192 @@ mod native {
 
     /// The answer to `url`; a refusal keeps the server's answer only when `detail` asks for it,
     /// as tiles a server doesn't have are routine and only their status is read. A status in
-    /// `omit` is an expected answer: its failure makes no network record.
+    /// `omit` is an expected answer: its failure isn't recorded, only noted once per server.
     fn fetch_answer(agent: &ureq::Agent, url: &str, detail: bool, omit: &'static [u16]) -> Result<Vec<u8>, Failure> {
+        use std::io::Read;
         // Local file failures are not network traffic.
-        if crate::mbtiles::is_tile(url) || url.starts_with(LOCAL) {
-            return fetch_answer_inner(agent, url, detail, &mut super::RequestDiagnostics::new(url, "GET"));
-        }
+        let local = crate::mbtiles::is_tile(url) || url.starts_with(LOCAL);
         let mut diagnostics = super::RequestDiagnostics::new(url, "GET");
         diagnostics.omit_statuses(omit);
-        fetch_answer_inner(agent, url, detail, &mut diagnostics).inspect_err(|failure| diagnostics.failed(failure))
-    }
-
-    fn fetch_answer_inner(
-        agent: &ureq::Agent,
-        url: &str,
-        detail: bool,
-        diagnostics: &mut super::RequestDiagnostics<'_>,
-    ) -> Result<Vec<u8>, Failure> {
-        use std::io::Read;
-        if crate::mbtiles::is_tile(url) {
-            return crate::mbtiles::read_local(url).map_err(Failure::from);
-        }
-        if let Some(local) = url.strip_prefix(LOCAL) {
-            let (path, range) = super::split_range(local);
-            let (a, b) = range.ok_or("a local read without a range")?;
-            return crate::pmtiles::read_file(path, a, b - a + 1).map_err(Failure::from);
-        }
-        let (url, limit) = super::split_download_limit(url);
-        let max = limit.unwrap_or(MAX_BYTES);
-        let (url, mut tail) = super::split_tail(url);
-        let (url, mut range) = super::split_range(url);
-        // The last bytes asked for, while the file's length is asked for instead (see below).
-        let mut measuring: Option<u64> = None;
-        // An `s3://` address becomes its web address, and a request to an S3 connection's
-        // endpoint is signed.
-        let prepared = crate::s3::prepare(url)?;
-        let mut at = prepared.url.clone();
-        let mut redirects = 0;
-        let mut resp = loop {
-            let mut req = agent.get(&at);
-            if let Some((a, b)) = range {
-                req = req.header("Range", &format!("bytes={a}-{b}"));
-            } else if let Some(n) = tail {
-                req = req.header("Range", &format!("bytes=-{n}"));
+        let answer = (|| -> Result<Vec<u8>, Failure> {
+            if crate::mbtiles::is_tile(url) {
+                return crate::mbtiles::read_local(url).map_err(Failure::from);
             }
-            // A range of the file's own bytes: a server compressing its answer would count the
-            // range in the compressed ones.
-            if range.is_some() || tail.is_some() {
-                req = req.header("Accept-Encoding", "identity");
+            if let Some(local) = url.strip_prefix(LOCAL) {
+                let (path, range) = super::split_range(local);
+                let (a, b) = range.ok_or("a local read without a range")?;
+                return crate::pmtiles::read_file(path, a, b - a + 1).map_err(Failure::from);
             }
-            if redirects == 0 {
-                for (k, v) in &prepared.headers {
-                    req = req.header(k.as_str(), v.as_str());
+            let (url, limit) = super::split_download_limit(url);
+            let max = limit.unwrap_or(MAX_BYTES);
+            let (url, mut tail) = super::split_tail(url);
+            let (url, mut range) = super::split_range(url);
+            // The last bytes asked for, while the file's length is asked for instead (see below).
+            let mut measuring: Option<u64> = None;
+            // An `s3://` address becomes its web address, and a request to an S3 connection's
+            // endpoint is signed.
+            let prepared = crate::s3::prepare(url)?;
+            let mut at = prepared.url.clone();
+            let mut redirects = 0;
+            let mut resp = loop {
+                let mut req = agent.get(&at);
+                if let Some((a, b)) = range {
+                    req = req.header("Range", &format!("bytes={a}-{b}"));
+                } else if let Some(n) = tail {
+                    req = req.header("Range", &format!("bytes=-{n}"));
                 }
-            }
-            // An Earthdata Login token goes to NASA's Earthdata data hosts only, asked for at
-            // each hop: a redirect that leaves them (to a presigned address) goes without it.
-            if !prepared.signed
-                && let Some(auth) = crate::earthdata::authorization(&at)
-            {
-                req = req.header("Authorization", &auth);
-            }
-            // An ArcGIS sign-in's token goes to the portal and the servers it covers, asked for at
-            // each hop like Earthdata's.
-            if !prepared.signed
-                && let Some(auth) = crate::arcgis_auth::authorization_fresh(&at)
-            {
-                req = req.header("X-Esri-Authorization", &auth);
-            }
-            // An error status is answered, not failed: its headers and body say who refused.
-            diagnostics.sending();
-            let mut resp = req.config().http_status_as_error(false).build().call().map_err(unanswered)?;
-            let status = resp.status().as_u16();
-            diagnostics.answered(status);
-            // A data host refusing the request (or the token): say what to do.
-            if status == 401 && crate::earthdata::is_data_host(&at) {
-                return Err(Failure::without_answer("", crate::earthdata::refused_message(url), Reason::Status(status)));
-            }
-            // A store that serves ranges but not the last bytes by their count (GitHub's release
-            // files, on Azure storage, answer `bytes=-n` with 501): the file's length from a
-            // one-byte range's `Content-Range`, then the last bytes by their place, at the same
-            // address. A server that gives no length goes on as one without ranges; the one-byte
-            // range redirected is asked for again where it leads, and refused fails as any refusal.
-            if let Some(n) = tail.filter(|_| status == 501 && range.is_none()) {
-                (measuring, tail, range) = (Some(n), None, Some((0, 0)));
-                continue;
-            }
-            if let Some(n) = measuring.filter(|_| status < 300) {
-                measuring = None;
-                let header = resp.headers().get("content-range").and_then(|v| v.to_str().ok());
-                match header.filter(|_| status == 206).and_then(content_range_total) {
-                    Some(len) => {
-                        range = Some((len.saturating_sub(n), len - 1));
-                        // The probe's byte read, so its connection goes back to the pool for the
-                        // next request; a body that won't read is left, the request goes on.
-                        let _ = resp.body_mut().with_config().limit(64).read_to_vec();
-                        continue;
+                // A range of the file's own bytes: a server compressing its answer would count the
+                // range in the compressed ones.
+                if range.is_some() || tail.is_some() {
+                    req = req.header("Accept-Encoding", "identity");
+                }
+                if redirects == 0 {
+                    for (k, v) in &prepared.headers {
+                        req = req.header(k.as_str(), v.as_str());
                     }
-                    None => return Err(format!("{url}: {}", super::NO_RANGES).into()),
                 }
+                // An Earthdata Login token goes to NASA's Earthdata data hosts only, asked for at
+                // each hop: a redirect that leaves them (to a presigned address) goes without it.
+                if !prepared.signed
+                    && let Some(auth) = crate::earthdata::authorization(&at)
+                {
+                    req = req.header("Authorization", &auth);
+                }
+                // An ArcGIS sign-in's token goes to the portal and the servers it covers, asked for at
+                // each hop like Earthdata's.
+                if !prepared.signed
+                    && let Some(auth) = crate::arcgis_auth::authorization_fresh(&at)
+                {
+                    req = req.header("X-Esri-Authorization", &auth);
+                }
+                // An error status is answered, not failed: its headers and body say who refused.
+                diagnostics.sending();
+                let mut resp = req.config().http_status_as_error(false).build().call().map_err(unanswered)?;
+                let status = resp.status().as_u16();
+                diagnostics.answered(status);
+                // A data host refusing the request (or the token): say what to do.
+                if status == 401 && crate::earthdata::is_data_host(&at) {
+                    return Err(Failure::without_answer("", crate::earthdata::refused_message(url), Reason::Status(status)));
+                }
+                // A store that serves ranges but not the last bytes by their count (GitHub's release
+                // files, on Azure storage, answer `bytes=-n` with 501): the file's length from a
+                // one-byte range's `Content-Range`, then the last bytes by their place, at the same
+                // address. A server that gives no length goes on as one without ranges; the one-byte
+                // range redirected is asked for again where it leads, and refused fails as any refusal.
+                if let Some(n) = tail.filter(|_| status == 501 && range.is_none()) {
+                    (measuring, tail, range) = (Some(n), None, Some((0, 0)));
+                    continue;
+                }
+                if let Some(n) = measuring.filter(|_| status < 300) {
+                    measuring = None;
+                    let header = resp.headers().get("content-range").and_then(|v| v.to_str().ok());
+                    match header.filter(|_| status == 206).and_then(content_range_total) {
+                        Some(len) => {
+                            range = Some((len.saturating_sub(n), len - 1));
+                            // The probe's byte read, so its connection goes back to the pool for the
+                            // next request; a body that won't read is left, the request goes on.
+                            let _ = resp.body_mut().with_config().limit(64).read_to_vec();
+                            continue;
+                        }
+                        None => return Err(format!("{url}: {}", super::NO_RANGES).into()),
+                    }
+                }
+                if status >= 400 {
+                    // A signed request's refusal is told by its status alone: an answer's headers and
+                    // body are the server's text, and a server may echo the request's Authorization
+                    // header (the access key's id) back in it.
+                    return Err(if detail && !prepared.signed {
+                        refused(&mut resp)
+                    } else {
+                        Failure::without_answer("", format!("http status: {status}"), Reason::Status(status))
+                    });
+                }
+                if !resp.status().is_redirection() {
+                    break resp;
+                }
+                // A signed request goes only where its credentials are for.
+                if prepared.signed {
+                    return Err(format!(
+                        "{url}: the S3 endpoint answered with a redirect (HTTP {}), which a signed request doesn't follow: \
+                         check the connection's region and endpoint",
+                        resp.status().as_u16()
+                    )
+                    .into());
+                }
+                let location = resp.headers().get("location").and_then(|v| v.to_str().ok()).ok_or("a redirect with no Location")?;
+                let next = crate::template::join(&at, location);
+                // An Earthdata data host sends a request it didn't accept to Earthdata Login.
+                if crate::earthdata::is_data_host(&at) && crate::earthdata::is_login(&next) {
+                    return Err(Failure::without_answer("", crate::earthdata::refused_message(url), Reason::Status(401)));
+                }
+                // Where a redirect leads is the server's choice, not the user's.
+                crate::address::check(&next, Some(&at))?;
+                // Never from HTTPS down to plain HTTP.
+                if at.starts_with("https://") && !next.starts_with("https://") {
+                    return Err(format!("{next}: a redirect from https to http").into());
+                }
+                redirects += 1;
+                if redirects > 5 {
+                    return Err("too many redirects".into());
+                }
+                at = next;
+            };
+            if resp.status().as_u16() == 204 {
+                return Ok(Vec::new());
             }
-            if status >= 400 {
-                // A signed request's refusal is told by its status alone: an answer's headers and
-                // body are the server's text, and a server may echo the request's Authorization
-                // header (the access key's id) back in it.
-                return Err(if detail && !prepared.signed {
-                    refused(&mut resp)
-                } else {
-                    Failure::without_answer("", format!("http status: {status}"), Reason::Status(status))
-                });
-            }
-            if !resp.status().is_redirection() {
-                break resp;
-            }
-            // A signed request goes only where its credentials are for.
-            if prepared.signed {
-                return Err(format!(
-                    "{url}: the S3 endpoint answered with a redirect (HTTP {}), which a signed request doesn't follow: check the connection's region and endpoint",
-                    resp.status().as_u16()
-                ).into());
-            }
-            let location = resp.headers().get("location").and_then(|v| v.to_str().ok()).ok_or("a redirect with no Location")?;
-            let next = crate::template::join(&at, location);
-            // An Earthdata data host sends a request it didn't accept to Earthdata Login.
-            if crate::earthdata::is_data_host(&at) && crate::earthdata::is_login(&next) {
-                return Err(Failure::without_answer("", crate::earthdata::refused_message(url), Reason::Status(401)));
-            }
-            // Where a redirect leads is the server's choice, not the user's.
-            crate::address::check(&next, Some(&at))?;
-            // Never from HTTPS down to plain HTTP.
-            if at.starts_with("https://") && !next.starts_with("https://") {
-                return Err(format!("{next}: a redirect from https to http").into());
-            }
-            redirects += 1;
-            if redirects > 5 {
-                return Err("too many redirects".into());
-            }
-            at = next;
-        };
-        if resp.status().as_u16() == 204 {
-            return Ok(Vec::new());
-        }
-        // A range asked for and the whole file answered (200): fine for a range from the start
-        // that holds the whole file (a small archive's header read), cut to the range; otherwise
-        // the server doesn't do ranges.
-        let whole = range.is_some() && resp.status().as_u16() != 206;
-        if let Some((a, _)) = range.filter(|_| whole)
-            && a > 0
-        {
-            return Err(format!("{url}: {}", super::NO_RANGES).into());
-        }
-        let mut buf = Vec::new();
-        if !resp.status().is_success() {
-            return Err(format!("HTTP {}", resp.status().as_u16()).into());
-        }
-        // The last bytes asked for and the whole file answered: fine when it is no longer.
-        if let Some(n) = tail.filter(|_| resp.status().as_u16() != 206) {
-            // Read one byte past `n` (no more, and no error at the limit): a longer file is
-            // reported as a server without ranges, so the file is downloaded whole instead.
-            let limit = n.min(max as u64).saturating_add(1);
-            resp.body_mut()
-                .with_config()
-                .limit(limit.saturating_add(1))
-                .reader()
-                .take(limit)
-                .read_to_end(&mut buf)
-                .map_err(|e| e.to_string())?;
-            if buf.len() as u64 > n {
+            // A range asked for and the whole file answered (200): fine for a range from the start
+            // that holds the whole file (a small archive's header read), cut to the range; otherwise
+            // the server doesn't do ranges.
+            let whole = range.is_some() && resp.status().as_u16() != 206;
+            if let Some((a, _)) = range.filter(|_| whole)
+                && a > 0
+            {
                 return Err(format!("{url}: {}", super::NO_RANGES).into());
             }
+            let mut buf = Vec::new();
+            if !resp.status().is_success() {
+                return Err(format!("HTTP {}", resp.status().as_u16()).into());
+            }
+            // The last bytes asked for and the whole file answered: fine when it is no longer.
+            if let Some(n) = tail.filter(|_| resp.status().as_u16() != 206) {
+                // Read one byte past `n` (no more, and no error at the limit): a longer file is
+                // reported as a server without ranges, so the file is downloaded whole instead.
+                let limit = n.min(max as u64).saturating_add(1);
+                resp.body_mut()
+                    .with_config()
+                    .limit(limit.saturating_add(1))
+                    .reader()
+                    .take(limit)
+                    .read_to_end(&mut buf)
+                    .map_err(|e| e.to_string())?;
+                if buf.len() as u64 > n {
+                    return Err(format!("{url}: {}", super::NO_RANGES).into());
+                }
+                if buf.len() > max {
+                    return Err(format!("larger than {max} bytes").into());
+                }
+                return Ok(buf);
+            }
+            // ureq limits the wire bytes; `take` also caps the decoded bytes when gzip expands them.
+            resp.body_mut()
+                .with_config()
+                .limit(max as u64 + 2)
+                .reader()
+                .take(max as u64 + 1)
+                .read_to_end(&mut buf)
+                .map_err(|e| e.to_string())?;
             if buf.len() > max {
                 return Err(format!("larger than {max} bytes").into());
             }
-            return Ok(buf);
-        }
-        // ureq limits the wire bytes; `take` also caps the decoded bytes when gzip expands them.
-        resp.body_mut()
-            .with_config()
-            .limit(max as u64 + 2)
-            .reader()
-            .take(max as u64 + 1)
-            .read_to_end(&mut buf)
-            .map_err(|e| e.to_string())?;
-        if buf.len() > max {
-            return Err(format!("larger than {max} bytes").into());
-        }
-        if let Some((a, b)) = range.filter(|_| whole) {
-            if buf.len() as u64 > b - a + 1 {
-                return Err(format!("{url}: {}", super::NO_RANGES).into());
+            if let Some((a, b)) = range.filter(|_| whole) {
+                if buf.len() as u64 > b - a + 1 {
+                    return Err(format!("{url}: {}", super::NO_RANGES).into());
+                }
+                buf.truncate(usize::try_from(b - a + 1).unwrap_or(usize::MAX));
             }
-            buf.truncate(usize::try_from(b - a + 1).unwrap_or(usize::MAX));
-        }
-        Ok(buf)
+            Ok(buf)
+        })();
+        if local { answer } else { diagnostics.record(answer) }
     }
 }
 
@@ -1883,6 +1877,49 @@ mod tests {
         assert!(network_records(&history, &url).is_empty());
     }
 
+    /// A map tile a server no longer has (410) is routine, as a missing one (404) is: noted once
+    /// for the server, not recorded as a failure. A server error is still recorded.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn network_diagnostics_skip_gone_map_tiles_and_keep_server_errors() {
+        let history = rustgis_data::diagnostics::History::default();
+        let _scope = history.enter();
+        let answer = |status: &str| format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        let base = serve(vec![answer("410 Gone"), answer("500 Error")]);
+        let gone = format!("{base}/tiles/0/0/0.png");
+        assert_eq!(native::get(&native::agent(), &gone, TILE_OMIT).unwrap_err(), "http status: 410");
+        let notes = network_records(&history, &gone);
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].severity, rustgis_data::diagnostics::Severity::Warning, "a note, not a failure");
+        let failed = format!("{base}/tiles/1/1/1.png");
+        assert_eq!(native::get(&native::agent(), &failed, TILE_OMIT).unwrap_err(), "http status: 500");
+        let records = network_records(&history, &failed);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].severity, rustgis_data::diagnostics::Severity::Error);
+    }
+
+    /// A credential header in a refusal is taken out by itself: the headers after it (which
+    /// say who refused) are kept.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn network_diagnostics_keep_headers_after_a_credential_header() {
+        let history = rustgis_data::diagnostics::History::default();
+        let _scope = history.enter();
+        let base = serve(vec![
+            "HTTP/1.1 403 Forbidden\r\nWWW-Authenticate: Basic realm=\"private-realm\"\r\nRetry-After: 30\r\ncf-ray: 8a1-BOG\r\nX-Amzn-RequestId: amzn-1155\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                .into(),
+        ]);
+        let url = format!("{base}/refused");
+        native::head_with(&native::agent(), &url).unwrap_err();
+        let records = network_records(&history, &url);
+        assert_eq!(records.len(), 1);
+        let details = &records[0].details;
+        for kept in ["retry-after: 30", "cf-ray: 8a1-BOG", "x-amzn-requestid: amzn-1155"] {
+            assert!(details.contains(kept), "{kept} in {details:?}");
+        }
+        assert!(!details.contains("private-realm"), "{details:?}");
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn network_diagnostics_skip_routine_tile_404s_and_keep_other_statuses() {
@@ -1983,6 +2020,16 @@ mod tests {
         let network = records[0].network.as_ref().unwrap();
         assert_eq!((network.status, network.kind), (None, NetworkKind::Timeout));
         assert!(network.duration_ms.is_some_and(|duration| duration >= 1));
+    }
+
+    /// A local read (a PMTiles archive's part on disk) that fails is not network traffic: the
+    /// history keeps no record of it.
+    #[test]
+    fn network_diagnostics_skip_failed_local_reads() {
+        let history = rustgis_data::diagnostics::History::default();
+        let _scope = history.enter();
+        native::get(&native::agent(), "local-file:/nonexistent-1155.pmtiles", &[]).unwrap_err();
+        assert!(history.records().is_empty(), "{:?}", history.records());
     }
 
     #[test]
@@ -2474,8 +2521,8 @@ mod tests {
         let _ = get("test://omit/style.json", Want::Json);
         let omits = std::mem::take(&mut *OMITS.lock().unwrap());
         let omit = |name: &str| omits.iter().find(|(u, _)| u.ends_with(name)).map(|(_, o)| *o);
-        assert_eq!(omit("tile.png"), Some(&[404][..]));
-        assert_eq!(omit("tile.pbf"), Some(&[404][..]));
+        assert_eq!(omit("tile.png"), Some(&[404, 410][..]));
+        assert_eq!(omit("tile.pbf"), Some(&[404, 410][..]));
         assert_eq!(omit("picture.png"), Some(&[][..]));
         assert_eq!(omit("style.json"), Some(&[][..]));
     }

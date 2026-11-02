@@ -7,17 +7,24 @@ send searches, coordinates, data or assistant context to those services, as desc
 ## Local troubleshooting history
 
 **Diagnostics** keeps a bounded, in-memory history of messages and failed tile, service and
-data requests for the current session, even while its pane is closed. It is not telemetry:
+data requests for the current session, even while its pane is closed (a map tile the server
+doesn't have is routine: noted once per server, not listed). It is not telemetry:
 nothing is uploaded automatically, written to preferences, or saved in a project. **Copy
 diagnostics** explicitly copies the filtered entries; **Clear** removes the history.
 
 Credentials are removed before diagnostic text is retained. URL user information, all query
 strings (including signed URLs), fragments, credential fields, and structured payloads are
-omitted conservatively. Request and response bodies are not captured by network diagnostics.
+omitted conservatively. A credential field in the middle of a line is removed when its value is
+one word or quoted (`… password: hunter2`), but a value of several words reads as prose and is
+kept (`… password: correct horse battery` keeps all three), so check such text before sharing.
+After `Basic` (without a colon) at the start of a line, the rest of the text is removed only
+when the next word looks like base64: it has a digit or punctuation (a sentence-ending mark
+`.,!?;:)` at its end doesn't count), has 16 characters or more, or has 8 or more with a capital
+after the first letter. So a very short Basic credential such as `YTpi` is kept.
+Request and response bodies are not captured by network diagnostics.
 Background requests carry their originating session's weak capture token; failures are not
 broadcast to other embedded or Python sessions. Layer names, file paths and URL paths can
 still identify private data, so review copied diagnostics before sharing them.
-
 
 ## Online services
 

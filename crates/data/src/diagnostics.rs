@@ -26,6 +26,17 @@ pub enum Severity {
     Info,
 }
 
+impl Severity {
+    /// The word the copied report shows (the pane shows its own, translated).
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Error => "Error",
+            Self::Warning => "Warning",
+            Self::Info => "Info",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Filter {
     #[default]
@@ -57,6 +68,18 @@ pub enum NetworkKind {
     Other,
 }
 
+impl NetworkKind {
+    /// The words the copied report shows (the pane shows its own, translated).
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Http => "HTTP failure",
+            Self::Connection => "Connection failure",
+            Self::Timeout => "Timeout",
+            Self::Other => "Request failure",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Network {
     pub url: String,
@@ -83,10 +106,11 @@ struct State {
     generation: u64,
     records: VecDeque<Record>,
     /// Servers whose expected absences have been said (one note each, so a second misconfigured
-    /// tile source isn't silent once the first has spoken). Bounded; cleared with the records.
-    absences_said: Vec<String>,
-    /// Whether servers past [`MAX_ABSENT_SERVERS`] have been said to go unlisted.
-    absences_overflow_said: bool,
+    /// tile source isn't silent once the first has spoken), each with its note's record id: once
+    /// the note leaves the history, the server is said again. Bounded; cleared with the records.
+    absences_said: Vec<(String, u64)>,
+    /// The note that servers past [`MAX_ABSENT_SERVERS`] go unlisted, while the history holds it.
+    absences_overflow_said: Option<u64>,
 }
 
 static CLOCK: Mutex<Option<fn() -> u64>> = Mutex::new(None);
@@ -183,6 +207,21 @@ impl History {
         });
     }
 
+    /// [`History::push`] for a message already through [`redact`] (a notice the session redacted
+    /// for its status bar): it is only bounded, so a notice isn't redacted again for each copy.
+    /// Only a [`Redacted`], which `redact` alone makes, gets this path.
+    pub fn push_redacted(&self, severity: Severity, source: &str, message: &Redacted) {
+        self.retain(Record {
+            id: 0,
+            timestamp_ms: timestamp_ms(),
+            severity,
+            source: bounded(source, MAX_SOURCE_BYTES),
+            message: truncated(message.as_str(), MAX_MESSAGE_BYTES),
+            details: String::new(),
+            network: None,
+        });
+    }
+
     fn retain(&self, record: Record) {
         store(&mut lock(&self.0), record);
     }
@@ -197,7 +236,7 @@ impl History {
         state.records.clear();
         // A source said before the clear is said again: the pane must not stay silent about it.
         state.absences_said.clear();
-        state.absences_overflow_said = false;
+        state.absences_overflow_said = None;
         state.generation = state.generation.wrapping_add(1);
     }
 
@@ -206,23 +245,30 @@ impl History {
         lock(&self.0).generation
     }
 
-    /// Plain text suitable for a clipboard or a troubleshooting attachment. Timestamps are UTC
-    /// Unix milliseconds, explicitly labelled so they cannot be mistaken for local time.
+    /// Plain text suitable for a clipboard or a troubleshooting attachment, oldest entry first.
+    /// Timestamps are UTC Unix milliseconds, explicitly labelled so they cannot be mistaken for
+    /// local time; a status or duration the request didn't have is left out.
     pub fn report(&self, filter: Filter) -> String {
         let records = self.records();
         let mut report = String::from("RustGIS Diagnostics\nTimestamps: Unix milliseconds (UTC)\n");
         for record in records.iter().filter(|record| filter.matches(record)) {
-            let _ =
-                writeln!(report, "\n#{} {} {:?} [{}] {}", record.id, record.timestamp_ms, record.severity, record.source, record.message);
+            let _ = writeln!(
+                report,
+                "\n#{} {} {} [{}] {}",
+                record.id,
+                record.timestamp_ms,
+                record.severity.label(),
+                record.source,
+                record.message
+            );
             if !record.details.is_empty() {
                 let _ = writeln!(report, "{}", record.details);
             }
             if let Some(network) = &record.network {
-                let _ = writeln!(
-                    report,
-                    "{} {}\nKind: {:?}; status: {:?}; duration_ms: {:?}",
-                    network.method, network.url, network.kind, network.status, network.duration_ms
-                );
+                let mut facts = vec![format!("Kind: {}", network.kind.label())];
+                facts.extend(network.status.map(|status| format!("status: {status}")));
+                facts.extend(network.duration_ms.map(|ms| format!("duration: {ms} ms")));
+                let _ = writeln!(report, "{} {}\n{}", network.method, network.url, facts.join("; "));
             }
         }
         report
@@ -232,13 +278,19 @@ impl History {
 impl Capture {
     /// Says once per server, per history, that expected absences (a tile past a map's edge, a
     /// store's absent chunk) are omitted: the pane is not silent about a misconfigured source
-    /// while the history stays free of their flood. Later absences from that server add nothing.
-    pub fn absence_said(&self, url: &str, status: u16) {
+    /// while the history stays free of their flood. Later absences from that server add nothing,
+    /// until its note leaves the history.
+    pub fn note_absence(&self, method: &str, url: &str, status: u16) {
         let Some(state) = self.0.upgrade() else { return };
         // The server is the address's origin (scheme, host and port): two tile sources on one
         // host but different ports are two sources. An address without a web origin (`s3://`)
-        // is its scheme and host, so two buckets are two sources.
-        let server = url::Url::parse(url)
+        // is its scheme and host, so two buckets are two sources. They come first, so only the
+        // address's first part is parsed: an oversized address keeps its own server.
+        let mut head = url.len().min(MAX_URL_BYTES);
+        while !url.is_char_boundary(head) {
+            head -= 1;
+        }
+        let server = url::Url::parse(url.get(..head).unwrap_or(""))
             .map(|u| {
                 let origin = u.origin();
                 if origin.is_tuple() { origin.ascii_serialization() } else { format!("{}://{}", u.scheme(), u.host_str().unwrap_or("")) }
@@ -246,17 +298,17 @@ impl Capture {
             .unwrap_or_default();
         // Checked, marked and stored under one lock: a Clear between can't leave the note behind.
         let mut guard = lock(&state);
-        if guard.absences_said.contains(&server) {
+        if guard.absences_said.iter().any(|(said, _)| *said == server) {
             return;
         }
         if guard.absences_said.len() >= MAX_ABSENT_SERVERS {
             // Past the cap a new server isn't listed, and that is said once.
-            if std::mem::replace(&mut guard.absences_overflow_said, true) {
+            if guard.absences_overflow_said.is_some() {
                 return;
             }
             let message =
                 format!("expected absences from further servers are not listed: this history names the first {MAX_ABSENT_SERVERS} servers");
-            store(
+            let id = store(
                 &mut guard,
                 Record {
                     id: 0,
@@ -268,12 +320,10 @@ impl Capture {
                     network: None,
                 },
             );
+            guard.absences_overflow_said = Some(id);
             return;
         }
-        guard.absences_said.push(server);
-        // The address without its query or fragment, or a secret in its path, as a failure's
-        // record keeps it.
-        let url = path_secrets_redacted(url.get(..url.find(['?', '#']).unwrap_or(url.len())).unwrap_or(""));
+        let url = clean_address(url);
         let record = Record {
             id: 0,
             timestamp_ms: timestamp_ms(),
@@ -284,31 +334,20 @@ impl Capture {
                 MAX_MESSAGE_BYTES,
             ),
             details: String::new(),
-            network: Some(Network {
-                url: bounded(&url, MAX_URL_BYTES),
-                method: "GET".to_string(),
-                status: Some(status),
-                duration_ms: None,
-                kind: NetworkKind::Http,
-            }),
+            network: Some(Network { url, method: known_method(method), status: Some(status), duration_ms: None, kind: NetworkKind::Http }),
         };
-        store(&mut guard, record);
+        let id = store(&mut guard, record);
+        guard.absences_said.push((server, id));
     }
 
-    /// Retains one sanitized failure only in the originating live session. Callers supply local
-    /// classifications/metadata only, never bodies, arbitrary server text, or header dumps.
+    /// Retains one sanitized failure only in the originating live session. Callers supply the
+    /// request's own facts (address, method, status, duration) and its failure's message: the
+    /// transport's, or the browser's. `details` may hold the few response headers a refusal
+    /// keeps. A response body is never passed. Everything is redacted and bounded here.
     pub fn network_failure(&self, source: &str, message: &str, details: &str, mut network: Network) {
         let Some(state) = self.0.upgrade() else { return };
-        network.url = if network.url.len() > MAX_INPUT_BYTES {
-            "[oversized address omitted]".to_string()
-        } else {
-            let end = network.url.find(['?', '#']).unwrap_or(network.url.len());
-            bounded(&path_secrets_redacted(network.url.get(..end).unwrap_or("")), MAX_URL_BYTES)
-        };
-        network.method = match network.method.as_str() {
-            "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS" => network.method,
-            _ => "OTHER".to_string(),
-        };
+        network.url = clean_address(&network.url);
+        network.method = known_method(&network.method);
         History(state).retain(Record {
             id: 0,
             timestamp_ms: timestamp_ms(),
@@ -321,15 +360,40 @@ impl Capture {
     }
 }
 
-/// Adds a record to a locked history: numbered, the oldest let go past [`MAX_RECORDS`].
-fn store(state: &mut State, mut record: Record) {
+/// An address as a record keeps it: without its query or fragment, a secret in its path taken
+/// out, bounded; one over [`MAX_INPUT_BYTES`] is omitted whole.
+fn clean_address(url: &str) -> String {
+    if url.len() > MAX_INPUT_BYTES {
+        return "[oversized address omitted]".to_string();
+    }
+    let end = url.find(['?', '#']).unwrap_or(url.len());
+    bounded(&path_secrets_redacted(url.get(..end).unwrap_or("")), MAX_URL_BYTES)
+}
+
+/// The request's method when it is one of the usual ones, else `OTHER`.
+fn known_method(method: &str) -> String {
+    match method {
+        "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS" => method.to_string(),
+        _ => "OTHER".to_string(),
+    }
+}
+
+/// Adds a record to a locked history: numbered, the oldest let go past [`MAX_RECORDS`]. An
+/// absence note let go frees its server to be said again. Returns the record's id.
+fn store(state: &mut State, mut record: Record) -> u64 {
     state.next_id = state.next_id.saturating_add(1);
     state.generation = state.generation.wrapping_add(1);
     record.id = state.next_id;
-    if state.records.len() >= MAX_RECORDS {
-        state.records.pop_front();
+    if state.records.len() >= MAX_RECORDS
+        && let Some(gone) = state.records.pop_front()
+    {
+        state.absences_said.retain(|(_, id)| *id != gone.id);
+        if state.absences_overflow_said == Some(gone.id) {
+            state.absences_overflow_said = None;
+        }
     }
     state.records.push_back(record);
+    state.next_id
 }
 
 /// An address (without its query) with the value of each `name=value` in its path that names a
@@ -359,29 +423,79 @@ fn path_secrets_redacted(address: &str) -> String {
     out
 }
 
+/// Text that has been through [`redact`]. Only [`Redacted::new`] makes one, so a path that takes
+/// a `Redacted` (the history's bound-only [`History::push_redacted`]) can't be handed raw text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Redacted(String);
+
+impl Redacted {
+    pub fn new(text: &str) -> Self {
+        Self(redact(text))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
 /// Redacts, then bounds: a record's copy of a message or of details.
 fn bounded(text: &str, limit: usize) -> String {
     let mut clean = redact(text);
-    if clean.len() > limit {
+    cut_with_ellipsis(&mut clean, limit);
+    clean
+}
+
+/// `text` cut to `limit` bytes at a character, an ellipsis marking the cut.
+fn cut_with_ellipsis(text: &mut String, limit: usize) {
+    if text.len() > limit {
         let mut end = limit.saturating_sub(3);
-        while !clean.is_char_boundary(end) {
+        while !text.is_char_boundary(end) {
             end = end.saturating_sub(1);
         }
-        clean.truncate(end);
-        clean.push('…');
+        text.truncate(end);
+        text.push('…');
     }
-    clean
+}
+
+fn truncated(text: &str, limit: usize) -> String {
+    let mut text = text.to_string();
+    cut_with_ellipsis(&mut text, limit);
+    text
+}
+
+/// A bidirectional embedding, override or isolate control: it reorders the text around it.
+fn bidi_control(c: char) -> bool {
+    matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+}
+
+/// A character kept out of retained text: a control or a bidi control.
+fn hostile_control(c: char) -> bool {
+    c.is_control() || bidi_control(c)
 }
 
 fn separator(c: char) -> bool {
     c.is_whitespace()
-        || c.is_control()
-        || matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}' | ':' | '=' | ';' | ',' | '?' | '&' | '#' | '@' | '"' | '\'' | '{' | '}' | '[' | ']' | '<' | '>' | '(' | ')' | '`')
+        || hostile_control(c)
+        || matches!(c, ':' | '=' | ';' | ',' | '?' | '&' | '#' | '@' | '"' | '\'' | '{' | '}' | '[' | ']' | '<' | '>' | '(' | ')' | '`')
 }
 
-fn secret_name(key: &str) -> bool {
-    // Decode only names, never values: decoding a URL value could introduce whitespace and
-    // incorrectly end its redacted query. Work and allocation are capped by MAX_INPUT_BYTES.
+/// A name's letters and digits in lower case: how credential names are compared, so `Pass-Word`,
+/// `pass_word` and `PASSWORD` are one name.
+fn normalized_key(key: &str) -> impl Iterator<Item = char> + '_ {
+    key.chars().filter(char::is_ascii_alphanumeric).map(|c| c.to_ascii_lowercase())
+}
+
+/// Whether `key` is `target` (lower case, letters and digits) however it is written.
+fn key_is(key: &str, target: &str) -> bool {
+    normalized_key(key).eq(target.chars())
+}
+
+/// A name with its percent and `\u` escapes decoded, to the depth an attacker could nest them.
+fn decoded_name(key: &str) -> String {
     let mut name = key.to_string();
     for _ in 0..4 {
         let bytes = name.as_bytes();
@@ -414,8 +528,22 @@ fn secret_name(key: &str) -> bool {
         }
         name = decoded;
     }
-    let normalized: String = name.chars().filter(|c| c.is_ascii_alphanumeric()).flat_map(char::to_lowercase).collect();
-    crate::source::credentials::secret_key(&name)
+    name
+}
+
+fn secret_name(key: &str) -> bool {
+    // Decode only names, never values: decoding a URL value could introduce whitespace and
+    // incorrectly end its redacted query. Work and allocation are capped by MAX_INPUT_BYTES, and
+    // a name with nothing to decode is not copied.
+    let decoded;
+    let name = if key.contains(['%', '\\']) {
+        decoded = decoded_name(key);
+        decoded.as_str()
+    } else {
+        key
+    };
+    let normalized: String = normalized_key(name).collect();
+    crate::source::credentials::secret_key(name)
         || crate::source::credentials::secret_key(&normalized)
         || normalized.contains("credential")
         || normalized.contains("connectionstring")
@@ -435,8 +563,9 @@ fn secret_name(key: &str) -> bool {
 /// Whether the name is an HTTP credential header: its value is always a scheme and a credential
 /// (or, for cookies, a list of them), however many words it holds.
 fn credential_header(key: &str) -> bool {
-    let normalized: String = key.chars().filter(|c| c.is_ascii_alphanumeric()).flat_map(char::to_lowercase).collect();
-    matches!(normalized.as_str(), "authorization" | "proxyauthorization" | "wwwauthenticate" | "proxyauthenticate" | "cookie" | "setcookie")
+    ["authorization", "proxyauthorization", "wwwauthenticate", "proxyauthenticate", "cookie", "setcookie"]
+        .iter()
+        .any(|name| key_is(key, name))
 }
 
 /// Whether `{`, `[` or `<` opens structured content (a JSON value or a tag) rather than an
@@ -470,7 +599,7 @@ fn opens_structured(rest: &str) -> bool {
 /// A bare credential line is redacted only for an unambiguous secret name: `key`, `body` and
 /// their like read as ordinary words ("Key column 'id' is missing").
 fn bare_name(key: &str) -> bool {
-    let normalized: String = key.chars().filter(|c| c.is_ascii_alphanumeric()).flat_map(char::to_lowercase).collect();
+    let normalized: String = normalized_key(key).collect();
     !matches!(normalized.as_str(), "key" | "body" | "userid" | "username" | "authentication" | "wwwauthenticate" | "proxyauthenticate")
         && !normalized.contains("body")
         && secret_name(key)
@@ -485,16 +614,21 @@ fn credential_shaped(word: &str) -> bool {
 }
 
 /// Whether a word after a scheme word (`Basic`) looks like its base64 credential: shaped like a
-/// credential, or a capital past its first letter ("dXNlcjpwYXNz"), so "Basic settings" keeps.
+/// credential, or 8 characters or more with a capital past its first letter ("dXNlcjpwYXNz"), so
+/// "Basic settings" and "Basic API configuration" keep. A shorter one with neither digit nor
+/// padding (`YTpi`, "a:b") reads as a word and keeps too.
 fn base64_shaped(word: &str) -> bool {
-    credential_shaped(word) || word.chars().skip(1).any(char::is_uppercase)
+    let word = word.trim_end_matches(['.', ',', '!', '?', ';', ':', ')']);
+    credential_shaped(word) || (word.chars().count() >= 8 && word.chars().skip(1).any(char::is_uppercase))
 }
 
 /// Sanitizes before bounding. Oversized input is omitted *whole*, so a secret can never be
 /// retained because its identifying key lay beyond a clipped prefix. URL queries/fragments
 /// are all omitted, including unknown/encoded signing schemes. JSON/XML bodies are not logged.
 /// A credential field discards the remaining text: quoted, multiline and malformed values need
-/// not be parsed correctly to remain private. Diagnostics intentionally prefer less context.
+/// not be parsed correctly to remain private. Diagnostics intentionally prefer less context. What
+/// counts as a field is narrower in the middle of a line: `name: several words` there reads as
+/// prose and is kept (see `docs/privacy.md`).
 pub fn redact(text: &str) -> String {
     if text.len() > MAX_INPUT_BYTES {
         return "[oversized diagnostic omitted]".to_string();
@@ -575,18 +709,29 @@ pub fn redact(text: &str) -> String {
                             && url.password().is_none()
                             && url.query().is_none()
                             && url.fragment().is_none()
-                            && !address
-                                .chars()
-                                .any(|c| c.is_control() || matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')) =>
+                            && !address.chars().any(hostile_control) =>
                     {
                         out.push_str(&path_secrets_redacted(address));
                     }
                     Ok(mut url) if url.has_host() => {
+                        // Sentence punctuation after the address (`…@example.org, retrying`)
+                        // isn't the address's: parsed with it, it would join the host (or be an
+                        // empty port, dropped). It is set aside and put back after; with a query,
+                        // the note below puts it back instead.
+                        let mut kept = None;
+                        if let Some(c) = address.chars().last().filter(|c| matches!(c, ':' | ',' | ';' | ')' | '.'))
+                            && !address.contains(['?', '#'])
+                            && let Ok(trimmed) = url::Url::parse(address.get(..address.len() - c.len_utf8()).unwrap_or(""))
+                            && trimmed.has_host()
+                        {
+                            (url, kept) = (trimmed, Some(c));
+                        }
                         let _ = url.set_username("");
                         let _ = url.set_password(None);
                         url.set_query(None);
                         url.set_fragment(None);
                         out.push_str(&path_secrets_redacted(url.as_str()));
+                        out.extend(kept);
                     }
                     _ => out.push_str("[address omitted]"),
                 }
@@ -645,8 +790,7 @@ pub fn redact(text: &str) -> String {
                 }
             }
             // A two-word key ("User ID=alice") is one field name across the space.
-            let name: String = atom.chars().filter(|c| c.is_ascii_alphanumeric()).flat_map(char::to_lowercase).collect();
-            if name == "user"
+            if key_is(atom, "user")
                 && after_space.split(separator).next().is_some_and(|next| {
                     next.eq_ignore_ascii_case("id")
                         && after_space.get(next.len()..).is_some_and(|value| value.trim_start().starts_with([':', '=']))
@@ -658,7 +802,8 @@ pub fn redact(text: &str) -> String {
             // A `Bearer <token>` is a credential wherever it sits ("server: Bearer xyz"); a
             // `Basic <token>` too, but only after a field name, so "Basic plan" keeps. The token
             // goes with it, and the rest of the line keeps.
-            if (name == "bearer" || (name == "basic" && field_before)) && after.chars().next().is_some_and(char::is_whitespace) {
+            if (key_is(atom, "bearer") || (key_is(atom, "basic") && field_before)) && after.chars().next().is_some_and(char::is_whitespace)
+            {
                 out.push_str(REDACTED);
                 field_before = false;
                 let value = after.trim_start();
@@ -691,20 +836,13 @@ pub fn redact(text: &str) -> String {
             i += end;
         } else {
             // Drop control/escape characters (including terminal escapes and bidi controls).
-            if c == '\n' || c == '\t' || !c.is_control() && !matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}') {
+            if c == '\n' || c == '\t' || !hostile_control(c) {
                 out.push(c);
             }
             i += c.len_utf8();
         }
     }
-    if out.len() > MAX_DETAILS_BYTES {
-        let mut end = MAX_DETAILS_BYTES.saturating_sub(3);
-        while !out.is_char_boundary(end) {
-            end = end.saturating_sub(1);
-        }
-        out.truncate(end);
-        out.push('…');
-    }
+    cut_with_ellipsis(&mut out, MAX_DETAILS_BYTES);
     out
 }
 
@@ -845,6 +983,8 @@ mod tests {
             "Exported to alice@example.org: 3 rows",
             "Loaded a@2x.png and parcels@2020",
             "Basic settings were saved",
+            "Basic API configuration failed",
+            "Basic Settings were saved",
             "Column 'key' is missing",
             "Layer 'Body Mass' failed",
             "The 'password' field is required.",
@@ -982,7 +1122,7 @@ mod tests {
         let history = History::default();
         let capture = history.capture();
         for i in 0..MAX_ABSENT_SERVERS + 3 {
-            capture.absence_said(&format!("https://tiles{i}.example.org/0/0/0.png"), 404);
+            capture.note_absence("GET", &format!("https://tiles{i}.example.org/0/0/0.png"), 404);
         }
         let records = history.records();
         // One note for each server up to the cap, then one saying further servers aren't listed.
@@ -992,18 +1132,51 @@ mod tests {
         // Clear says it again.
         history.clear();
         for i in 0..MAX_ABSENT_SERVERS + 3 {
-            capture.absence_said(&format!("https://tiles{i}.example.org/0/0/0.png"), 404);
+            capture.note_absence("GET", &format!("https://tiles{i}.example.org/0/0/0.png"), 404);
         }
         assert_eq!(history.records().len(), MAX_ABSENT_SERVERS + 1);
+    }
+
+    #[test]
+    fn absences_are_said_again_once_their_note_leaves_the_history() {
+        let history = History::default();
+        let capture = history.capture();
+        let notes = |url: &str| history.records().iter().filter(|r| r.network.as_ref().is_some_and(|n| n.url == url)).count();
+        let url = "https://tiles.example.org/0/0/0.png";
+        capture.note_absence("GET", url, 404);
+        capture.note_absence("GET", url, 404);
+        assert_eq!(notes(url), 1, "said once while its note is in the history");
+        for i in 0..MAX_RECORDS {
+            history.push(Severity::Info, "Application", &format!("filler {i}"), "");
+        }
+        assert_eq!(notes(url), 0);
+        capture.note_absence("GET", url, 404);
+        assert_eq!(notes(url), 1, "said again once its note was let go");
+        // So is the note that further servers go unlisted.
+        let unlisted =
+            |history: &History| history.records().iter().filter(|r| r.message.contains("further servers are not listed")).count();
+        for i in 0..MAX_ABSENT_SERVERS + 1 {
+            capture.note_absence("GET", &format!("https://tiles{i}.example.org/0/0/0.png"), 404);
+        }
+        assert_eq!(unlisted(&history), 1);
+        for i in 0..MAX_RECORDS {
+            history.push(Severity::Info, "Application", &format!("filler {i}"), "");
+        }
+        capture.note_absence("GET", "https://another.example.org/0/0/0.png", 404);
+        assert_eq!(history.records().iter().filter(|r| r.network.is_some()).count(), 1, "a freed server is listed");
+        for i in 0..MAX_ABSENT_SERVERS {
+            capture.note_absence("GET", &format!("https://more{i}.example.org/0/0/0.png"), 404);
+        }
+        assert_eq!(unlisted(&history), 1, "the unlisted note is said again");
     }
 
     #[test]
     fn absences_without_a_web_origin_are_said_per_bucket() {
         let history = History::default();
         let capture = history.capture();
-        capture.absence_said("s3://first-bucket/tiles/0/0/0.png", 404);
-        capture.absence_said("s3://first-bucket/tiles/1/1/1.png", 404);
-        capture.absence_said("s3://second-bucket/tiles/0/0/0.png", 404);
+        capture.note_absence("GET", "s3://first-bucket/tiles/0/0/0.png", 404);
+        capture.note_absence("GET", "s3://first-bucket/tiles/1/1/1.png", 404);
+        capture.note_absence("GET", "s3://second-bucket/tiles/0/0/0.png", 404);
         assert_eq!(history.records().len(), 2, "one note for each bucket");
     }
 
@@ -1011,7 +1184,7 @@ mod tests {
     fn secrets_in_a_url_path_are_redacted() {
         let history = History::default();
         let capture = history.capture();
-        capture.absence_said("https://tiles.example.org/token=hidden-path-value/0/0/0.png", 404);
+        capture.note_absence("GET", "https://tiles.example.org/token=hidden-path-value/0/0/0.png", 404);
         failed(&capture, "failed");
         let report = history.report(Filter::All);
         assert!(!report.contains("hidden-path-value"), "{report}");
@@ -1036,7 +1209,92 @@ mod tests {
     fn addresses_without_anything_to_take_out_stay_as_written() {
         assert_eq!(redact("Could not reach https://example.org: timeout"), "Could not reach https://example.org: timeout");
         assert_eq!(redact("failed https://example.org/a/b, retrying"), "failed https://example.org/a/b, retrying");
-        // User info still goes, with the address rewritten without it.
-        assert_eq!(redact("Could not reach https://alice:hidden@example.org: timeout"), "Could not reach https://example.org/ timeout");
+    }
+
+    /// Taking user information out rewrites the address, and the punctuation that ended it in the
+    /// sentence stays with the sentence.
+    #[test]
+    fn removing_user_information_keeps_the_sentence_punctuation() {
+        assert_eq!(redact("Could not reach https://alice:hidden@example.org: timeout"), "Could not reach https://example.org/: timeout");
+        assert_eq!(redact("Could not reach https://alice:hidden@example.org, retrying"), "Could not reach https://example.org/, retrying");
+        assert_eq!(redact("Could not reach https://alice:hidden@example.org. Retrying"), "Could not reach https://example.org/. Retrying");
+        assert_eq!(
+            redact("Could not reach https://alice:hidden@example.org/x. Retrying"),
+            "Could not reach https://example.org/x. Retrying"
+        );
+        assert_eq!(redact("(see https://alice:hidden@example.org/x)"), "(see https://example.org/x)");
+    }
+
+    /// Redacting what is already redacted changes nothing: a notice is redacted once and bounded
+    /// afterwards, and a command's failure is told apart from its notice by the same text.
+    #[test]
+    fn redaction_is_idempotent() {
+        for text in [
+            "Authorization: Bearer hidden",
+            "failed\ntoken abc123",
+            "Could not reach https://alice:hidden@example.org/x?token=a: timeout",
+            "x=1 password=hunter2 rest",
+            "B.earer hidden then more",
+            "Layer {2020} failed \u{1}\u{202e}",
+            "Basic dXNlcjpwYXNz",
+            "{\"a\": 1}",
+        ] {
+            let once = redact(text);
+            assert_eq!(redact(&once), once, "{text}");
+        }
+        // A name written around its punctuation is still the name.
+        assert_eq!(redact("server: B.earer hidden"), "server: [REDACTED]");
+        assert_eq!(redact("server: Ba-sic dXNlcjpwYXNz"), "server: [REDACTED]");
+        assert_eq!(redact("pass%77ord=x"), "[REDACTED]");
+    }
+
+    #[test]
+    fn text_already_redacted_is_only_bounded() {
+        let history = History::default();
+        let long = "word ".repeat(1000);
+        history.push_redacted(Severity::Info, "Application", &Redacted::new(&long));
+        history.push(Severity::Info, "Application", &long, "");
+        let records = history.records();
+        assert_eq!(records[0].message, records[1].message);
+        assert!(records[0].message.len() <= MAX_MESSAGE_BYTES && records[0].message.ends_with('…'));
+        // What the type holds has been through `redact`, whatever went in.
+        assert_eq!(Redacted::new("Authorization: Bearer hidden").as_str(), "[REDACTED]");
+    }
+
+    #[test]
+    fn absence_notes_name_the_method_and_bound_oversized_addresses() {
+        let history = History::default();
+        let capture = history.capture();
+        capture.note_absence("HEAD", "https://tiles.example.org/0/0/0.png", 404);
+        capture.note_absence("BREW", "https://other.example.org/0/0/0.png", 404);
+        let long = format!("https://big.example.org/{}", "a".repeat(MAX_INPUT_BYTES));
+        let other_long = format!("https://huge.example.org/{}", "a".repeat(MAX_INPUT_BYTES));
+        capture.note_absence("GET", &long, 404);
+        capture.note_absence("GET", &long, 404);
+        capture.note_absence("GET", &other_long, 404);
+        let records = history.records();
+        let method = |i: usize| records[i].network.as_ref().map(|n| n.method.as_str());
+        assert_eq!((method(0), method(1)), (Some("HEAD"), Some("OTHER")));
+        assert_eq!(records.len(), 4, "each oversized address's server is said once");
+        assert_eq!(records[2].network.as_ref().map(|n| n.url.as_str()), Some("[oversized address omitted]"));
+    }
+
+    #[test]
+    fn reports_print_plain_values_and_leave_out_what_is_absent() {
+        let history = History::default();
+        let capture = history.capture();
+        let network = |status, duration_ms| Network {
+            url: "https://example.org/x".into(),
+            method: "GET".into(),
+            status,
+            duration_ms,
+            kind: NetworkKind::Http,
+        };
+        capture.network_failure("Network", "http status: 503", "", network(Some(503), Some(7)));
+        capture.network_failure("Network", "the browser couldn't reach it", "", network(None, None));
+        let report = history.report(Filter::All);
+        assert!(report.contains("Kind: HTTP failure; status: 503; duration: 7 ms"), "{report}");
+        assert!(report.contains("Kind: HTTP failure\n"), "{report}");
+        assert!(!report.contains("Some(") && !report.contains("None"), "{report}");
     }
 }
