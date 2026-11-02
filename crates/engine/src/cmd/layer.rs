@@ -61,11 +61,38 @@ pub fn commands() -> Vec<C> {
             if n.is_empty() {
                 return Err("name is required".into());
             }
-            let old = s.map().layer(s.layer_id(p)?).map(|l| l.name.clone()).unwrap_or_default();
+            let id = s.layer_id(p)?;
+            let old = s.map().layer(id).map(|l| l.name.clone()).unwrap_or_default();
+            // The terrain keeps its DEM by name: did it name this layer, and was the name its own?
+            let on_old = terrain_dem(s).is_some_and(|d| d.eq_ignore_ascii_case(&old));
+            let old_was_shared = named_layers(s, &old) > 1;
             let r = with(s, p, |l| {
                 l.name = n.clone();
                 l.dataset.name = n.clone();
             })?;
+            // A rename to the same name (case aside) changes nothing the terrain reads.
+            if let Some(dem) = terrain_dem(s).filter(|_| !n.eq_ignore_ascii_case(&old)) {
+                if on_old && old_was_shared {
+                    // Two layers had the DEM's name: which one the terrain was on can't be told.
+                    s.map_mut().view.terrain = None;
+                    s.notify(format!("Terrain turned off: its name '{dem}' was shared by two layers, so which one gave the heights can't be told; turn Terrain on again from the layer you want"), false);
+                } else if on_old && named_layers(s, &n) == 1 {
+                    // The DEM itself, renamed to a name of its own: the terrain follows it.
+                    set_terrain_dem(s, n.clone());
+                } else if on_old || n.eq_ignore_ascii_case(&dem) {
+                    // The DEM renamed onto another layer's name, or another layer given the DEM's:
+                    // the first layer of that name would give the heights.
+                    let shared = if on_old { n.clone() } else { dem };
+                    let said = if named_layers(s, &shared) > 1 {
+                        format!("Terrain turned off: two layers are now called '{shared}'; rename one and turn Terrain on again")
+                    } else {
+                        // The DEM was gone (removed), and this layer took its name.
+                        format!("Terrain turned off: its DEM '{shared}' was missing, and a layer now has that name; turn Terrain on again to use it")
+                    };
+                    s.map_mut().view.terrain = None;
+                    s.notify(said, false);
+                }
+            }
             // Layers masked by this one follow the new name.
             for l in &mut s.map_mut().layers {
                 if l.mask.as_deref().is_some_and(|m| m.eq_ignore_ascii_case(&old)) {
@@ -2888,6 +2915,26 @@ fn add_remote(s: &mut Session, p: &Value, url: &str, src: Box<dyn rustgis_data::
     Ok(json!({"layer": id, "layers": [id], "features": info.count, "streamed": true, "inPlace": true}))
 }
 
+/// The name of the layer the map's terrain takes its heights from, when it has one.
+fn terrain_dem(s: &Session) -> Option<String> {
+    match &s.map().view.terrain {
+        Some(rustgis_map::view::Terrain { source: rustgis_map::view::TerrainSource::Layer(n), .. }) => Some(n.clone()),
+        _ => None,
+    }
+}
+
+/// Points the map's terrain at the layer called `name`.
+fn set_terrain_dem(s: &mut Session, name: String) {
+    if let Some(rustgis_map::view::Terrain { source: rustgis_map::view::TerrainSource::Layer(n), .. }) = &mut s.map_mut().view.terrain {
+        *n = name;
+    }
+}
+
+/// How many layers are called `name` (as layers are looked up, ignoring case).
+fn named_layers(s: &Session, name: &str) -> usize {
+    s.map().layers.iter().filter(|l| l.name.eq_ignore_ascii_case(name)).count()
+}
+
 /// Whether a web address names a GeoTIFF (by its path's extension).
 pub fn is_tiff_url(url: &str) -> bool {
     let url = rustgis_data::s3_address::inner(url);
@@ -3137,9 +3184,25 @@ pub(crate) fn drop_layers(s: &mut Session, ids: &[u32]) {
     // The tile layers drawn over them keep their place.
     m.release_tiles(ids);
     m.layers.retain(|l| !ids.contains(&l.id));
+    terrain_follows_removal(s, &names);
     for n in &names {
         legends_follow_layer(s, n, None);
     }
+}
+
+/// After layers called `names` are removed: a terrain drawn from one of them would lose its
+/// relief, or take another layer's heights by that name, so it is turned off, and said.
+fn terrain_follows_removal(s: &mut Session, names: &[String]) {
+    let Some(dem) = terrain_dem(s).filter(|d| names.iter().any(|n| n.eq_ignore_ascii_case(d))) else { return };
+    s.map_mut().view.terrain = None;
+    let said = if named_layers(s, &dem) > 0 {
+        format!(
+            "Terrain turned off: one of the layers called '{dem}' was removed, so which one gives the heights can't be told; turn Terrain on again"
+        )
+    } else {
+        format!("Terrain turned off: its DEM '{dem}' was removed")
+    };
+    s.notify(said, false);
 }
 
 fn remove(s: &mut Session, p: &Value) -> CmdResult {
@@ -3158,6 +3221,7 @@ fn remove(s: &mut Session, p: &Value) -> CmdResult {
     }
     let next = m.layers.get(at.min(m.layers.len().saturating_sub(1))).map(|l| l.id);
     s.set_layer_selection(next.into_iter().collect(), next);
+    terrain_follows_removal(s, &names);
     // A legend that left it out forgets it.
     for name in names {
         legends_follow_layer(s, &name, None);

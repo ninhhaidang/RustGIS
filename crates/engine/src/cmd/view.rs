@@ -49,7 +49,7 @@ pub fn commands() -> Vec<C> {
         })
         .params(r#"{"mode": "none"|"distance", "distance"?: metres from the view's centre}"#),
         C::new("map.terrain", "Terrain", "View › Scene", terrain).params(
-            r#"{"layer"?: a DEM raster layer (heights in metres) | "tiles"?: elevation tile URL with {z}/{x}/{y}, "encoding"?: "terrarium"|"mapbox" (tiles; default terrarium), "exaggeration"?: 0 to 20 (default 1, or the terrain's), "off"?: true}"#,
+            r#"{"layer"?: a DEM raster layer (heights in metres; without layer or tiles, and no terrain yet, the active layer when it is a raster) | "tiles"?: elevation tile URL with {z}/{x}/{y}, "encoding"?: "terrarium"|"mapbox" (tiles; default terrarium), "exaggeration"?: 0 to 20 (default 1, or the terrain's), "off"?: true}"#,
         ),
         C::new("map.displayType", "Display Type", "View › Options", |s, p| {
             let fast = match ps(p, "mode").ok_or("mode is required")? {
@@ -233,12 +233,30 @@ fn terrain(s: &mut Session, p: &Value) -> CmdResult {
         }
         (None, None) => None,
     };
+    // Nothing named and no terrain yet (Terrain from the ribbon or command search): the active
+    // layer, when it is a raster, is the DEM.
+    let was_off = s.map().view.terrain.is_none();
+    let source = source.or_else(|| {
+        if !was_off {
+            return None;
+        }
+        let l = s.active_layer.and_then(|id| s.map().layer(id)).filter(|l| l.raster.is_some())?;
+        Some(TerrainSource::Layer(l.name.clone()))
+    });
+    // Relief shows on a tilted Web Mercator map only (the globe and other projections stay flat).
+    let mercator = matches!(s.map().projection, rustgis_map::Projection::WebMercator);
+    let flat = s.map().camera.pitch.abs() < 0.5;
     let m = s.map_mut();
+    let old_terrain = m.view.terrain.clone();
     let t = match (source, m.view.terrain.take()) {
         (Some(source), old) => Terrain { source, exaggeration: exaggeration.or(old.map(|t| t.exaggeration)).unwrap_or(1.0) },
         // Only a new exaggeration: the terrain keeps its source.
         (None, Some(old)) => Terrain { exaggeration: exaggeration.unwrap_or(old.exaggeration), ..old },
-        (None, None) => return Err("layer (a DEM raster layer) or tiles (an elevation tile URL) is required".into()),
+        (None, None) => {
+            return Err(
+                "make a DEM raster layer the active layer first (a script can instead name a layer, or give elevation tiles)".into()
+            );
+        }
     };
     let out = json!({
         "source": match &t.source {
@@ -247,6 +265,38 @@ fn terrain(s: &mut Session, p: &Value) -> CmdResult {
         },
         "exaggeration": t.exaggeration,
     });
+    // The terrain keeps its DEM by name: with two layers of that name (a rename can make them),
+    // it would draw the first one's heights. Checked for a terrain kept on too.
+    if let TerrainSource::Layer(n) = &t.source
+        && m.layers.iter().filter(|l| l.name.eq_ignore_ascii_case(n)).count() > 1
+    {
+        let e = format!("two layers are called '{n}': rename one, then turn Terrain on");
+        // A terrain that was on stays as it was.
+        if let Some(old) = old_terrain {
+            m.view.terrain = Some(old);
+        }
+        return Err(e);
+    }
+    let heights_from = match &t.source {
+        TerrainSource::Layer(n) => Some(n.clone()),
+        TerrainSource::Tiles { .. } => None,
+    };
     m.view.terrain = Some(t);
+    // Turned on: which layer gives the heights (any raster can be the active layer, an RGB image
+    // too), and what to do to see the relief.
+    if was_off {
+        let mut said = Vec::new();
+        if let Some(n) = heights_from {
+            said.push(format!("heights from '{n}' (its first band, in metres)"));
+        }
+        if !mercator {
+            said.push("relief shows on a tilted Web Mercator map, not on this projection".to_string());
+        } else if flat {
+            said.push("tilt the map (drag with the right button, or Shift+Up) to see the relief".to_string());
+        }
+        if !said.is_empty() {
+            s.notify(format!("Terrain is on: {}", said.join("; ")), false);
+        }
+    }
     Ok(out)
 }

@@ -577,9 +577,15 @@ fn package_map(s: &Session, mobile: bool, tol: f64) -> Result<Vec<u8>, String> {
     if mobile {
         // Groups folded into their layers: a hidden group's layers are dropped with the others.
         m.bake_groups();
-        let hidden: Vec<u32> = m.layers.iter().filter(|l| !l.visible).map(|l| l.id).collect();
+        // A hidden DEM still gives the terrain its heights (it can stay hidden): it is kept.
+        let dem = match &m.view.terrain {
+            Some(rustgis_map::view::Terrain { source: rustgis_map::view::TerrainSource::Layer(n), .. }) => Some(n.clone()),
+            _ => None,
+        };
+        let kept = |l: &rustgis_map::Layer| l.visible || (l.is_raster() && dem.as_deref().is_some_and(|d| l.name.eq_ignore_ascii_case(d)));
+        let hidden: Vec<u32> = m.layers.iter().filter(|l| !kept(l)).map(|l| l.id).collect();
         m.release_tiles(&hidden);
-        m.layers.retain(|l| l.visible);
+        m.layers.retain(|l| kept(l));
         for l in &mut m.layers {
             if l.is_raster() || tol <= 0.0 {
                 continue;

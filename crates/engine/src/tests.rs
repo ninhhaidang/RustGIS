@@ -3731,6 +3731,107 @@ fn terrain_is_set_from_a_dem_or_tiles() {
     assert_eq!(back.terrain, s.map().view.terrain);
     s.run("map.terrain", &json!({"off": true})).unwrap();
     assert!(s.map().view.terrain.is_none());
+    // Nothing named: the active layer, when it is a raster, is the DEM; a vector one is refused,
+    // saying to make a DEM the active layer.
+    s.active_layer = s.map().layer_by_name("Countries").map(|l| l.id);
+    assert!(s.run("map.terrain", &json!({})).unwrap_err().contains("make a DEM raster layer the active layer"));
+    s.run("layer.addDataBytes", &json!({"fileName": "dem.tif", "data": dem_b64()})).unwrap();
+    let dem = s.map().layers.iter().find(|l| l.is_raster()).unwrap();
+    let (id, name) = (dem.id, dem.name.clone());
+    s.active_layer = Some(id);
+    let v = s.run("map.terrain", &json!({"exaggeration": 3})).unwrap();
+    assert_eq!((v["source"]["layer"].as_str(), v["exaggeration"].as_f64()), (Some(name.as_str()), Some(3.0)));
+    // On a map looked at straight down, a notice names the layer picked and says to tilt it.
+    let said = s.notices.last().unwrap().text.clone();
+    assert!(said.contains(&format!("heights from '{name}'")) && said.contains("tilt the map"), "{said}");
+    // A change of exaggeration alone says nothing again.
+    let mark = s.notice_mark();
+    s.run("map.terrain", &json!({"exaggeration": 2})).unwrap();
+    assert!(s.notices_since(mark).iter().all(|n| !n.text.contains("Terrain is on")), "{:?}", s.notices_since(mark));
+    // Two layers of the DEM's name: refused, since the terrain keeps it by name.
+    s.run("map.terrain", &json!({"off": true})).unwrap();
+    s.run("layer.addDataBytes", &json!({"fileName": "dem.tif", "data": dem_b64()})).unwrap();
+    let second = s.map().layers.iter().filter(|l| l.is_raster()).map(|l| l.id).max().unwrap();
+    s.active_layer = Some(second);
+    s.run("layer.rename", &json!({"name": name})).unwrap();
+    let e = s.run("map.terrain", &json!({})).unwrap_err();
+    assert!(e.contains("two layers are called"), "{e}");
+    s.run("layer.rename", &json!({"name": "dem 2"})).unwrap();
+    s.active_layer = Some(id);
+    s.run("map.terrain", &json!({})).unwrap();
+    // A project saved with a terrain on a shared DEM name says so as it opens.
+    {
+        let mut saved = s.project.clone();
+        let m = &mut saved.maps[0];
+        let first = m.layers.iter().find(|l| l.is_raster()).map(|l| l.name.clone()).unwrap();
+        if let Some(l) = m.layers.iter_mut().filter(|l| l.is_raster()).nth(1) {
+            l.name = first.clone();
+        }
+        m.view.terrain = Some(rustgis_map::view::Terrain { source: rustgis_map::view::TerrainSource::Layer(first), exaggeration: 1.0 });
+        let mut opened = Session::new(Project::default());
+        crate::cmd::project::reset_to(&mut opened, saved);
+        assert!(opened.notices.iter().any(|n| n.text.contains("is shared by two layers")), "{:?}", opened.notices);
+    }
+    // Renaming another layer leaves the terrain as it is.
+    s.run("layer.rename", &json!({"layer": "Countries", "name": "Paises"})).unwrap();
+    assert!(s.map().view.terrain.is_some());
+    s.run("layer.rename", &json!({"layer": "Paises", "name": "Countries"})).unwrap();
+    // Renaming the DEM onto another layer's name turns the terrain off, said.
+    s.active_layer = Some(id);
+    s.run("layer.rename", &json!({"name": "dem 2"})).unwrap();
+    assert!(s.map().view.terrain.is_none());
+    assert!(s.notices.last().unwrap().text.contains("two layers are now called 'dem 2'"), "{:?}", s.notices.last());
+    s.run("layer.rename", &json!({"name": name})).unwrap();
+    s.run("map.terrain", &json!({"layer": name})).unwrap();
+    // Removing the DEM turns the terrain off, said.
+    {
+        let mut t = Session::new(Project::default());
+        t.run("layer.addDataBytes", &json!({"fileName": "dem.tif", "data": dem_b64()})).unwrap();
+        t.run("map.terrain", &json!({})).unwrap();
+        t.run("layer.remove", &json!({})).unwrap();
+        assert!(t.map().view.terrain.is_none());
+        assert!(t.notices.last().unwrap().text.contains("was removed"), "{:?}", t.notices.last());
+        // A mobile map package keeps a hidden DEM, which still gives the heights.
+        t.run("layer.addDataBytes", &json!({"fileName": "dem.tif", "data": dem_b64()})).unwrap();
+        t.run("map.terrain", &json!({})).unwrap();
+        t.run("layer.visibility", &json!({})).unwrap();
+        assert!(t.map().layers.iter().any(|l| l.is_raster() && !l.visible));
+        let pkg = std::env::temp_dir().join(format!("rustgis-terrain-{}.rgismpk", std::process::id()));
+        t.run("map.package", &json!({"path": pkg.display().to_string(), "mobile": true})).unwrap();
+        t.run("map.import", &json!({"path": pkg.display().to_string()})).unwrap();
+        let _ = std::fs::remove_file(&pkg);
+        let packaged = t.project.maps.last().unwrap();
+        assert!(packaged.layers.iter().any(|l| l.is_raster()), "the hidden DEM is in the package");
+        assert!(packaged.view.terrain.is_some());
+        t.run("layer.remove", &json!({"layer": t.map().layers.iter().find(|l| l.is_raster()).map(|l| l.id).unwrap()})).unwrap();
+        // So does removing a group that holds it.
+        t.run("layer.addDataBytes", &json!({"fileName": "dem.tif", "data": dem_b64()})).unwrap();
+        let dem = t.map().layers.iter().find(|l| l.is_raster()).map(|l| l.id).unwrap();
+        let group = t.run("group.add", &json!({"name": "Relevo", "layers": [dem]})).unwrap()["group"].clone();
+        t.active_layer = Some(dem);
+        t.run("map.terrain", &json!({})).unwrap();
+        t.run("group.remove", &json!({"group": group})).unwrap();
+        assert!(t.map().view.terrain.is_none());
+        assert!(t.notices.last().unwrap().text.contains("was removed"), "{:?}", t.notices.last());
+    }
+    // Renaming the DEM keeps the terrain on it.
+    s.run("layer.rename", &json!({"name": "Relevo"})).unwrap();
+    assert_eq!(s.run("map.terrain", &json!({"exaggeration": 1})).unwrap()["source"]["layer"], "Relevo");
+    // A second layer renamed to the DEM's name: the terrain, now ambiguous, is turned off, and
+    // said.
+    s.active_layer = Some(second);
+    s.run("layer.rename", &json!({"name": "relevo"})).unwrap();
+    assert!(s.map().view.terrain.is_none());
+    assert!(s.notices.last().unwrap().text.contains("Terrain turned off: two layers are now called"), "{:?}", s.notices.last());
+    s.run("layer.rename", &json!({"name": "dem 2"})).unwrap();
+    s.active_layer = Some(id);
+    s.run("map.terrain", &json!({"layer": "Relevo"})).unwrap();
+    let name = "Relevo".to_string();
+    // Once on, nothing named changes nothing but what is given: the active layer doesn't replace it.
+    s.active_layer = s.map().layer_by_name("Countries").map(|l| l.id);
+    let v = s.run("map.terrain", &json!({})).unwrap();
+    assert_eq!(v["source"]["layer"].as_str(), Some(name.as_str()));
+    s.run("map.terrain", &json!({"off": true})).unwrap();
 }
 
 #[test]

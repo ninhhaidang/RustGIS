@@ -72,8 +72,10 @@ ground's heights, labels and point markers stand on it, and nearer slopes hide w
 them. The heights come from a DEM raster layer of the project (heights in metres; the layer can
 stay hidden) or from elevation tiles: Terrarium (`terrarium`, as the free
 `https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png`) or Mapbox
-Terrain-RGB (`mapbox`, also MapTiler's). `map.terrain` sets it: `{"layer": "DEM"}` or
-`{"tiles": "https://…/{z}/{x}/{y}.png", "encoding": "terrarium"}`, with `"exaggeration"`
+Terrain-RGB (`mapbox`, also MapTiler's). **View › Scene › Terrain** turns it on from the active
+layer (make the DEM the active layer first) and off again; a notice names the layer and says to
+tilt the map. `map.terrain` sets it: `{"layer": "DEM"}`, or `{}` for the active raster layer when
+no terrain is on, or `{"tiles": "https://…/{z}/{x}/{y}.png", "encoding": "terrarium"}`, with `"exaggeration"`
 (0 to 20, default 1) to stretch the heights; `{"exaggeration": 2}` alone changes only that, and
 `{"off": true}` flattens the map again. Terrain is saved with the project and shows in exported
 maps; a flat (untilted) view, the globe and other projections stay flat, extruded layers are

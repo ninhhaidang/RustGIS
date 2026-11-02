@@ -1847,6 +1847,19 @@ impl RustGisApp {
     /// layer for Add Data, a service's), and a layer the command names is its own.
     /// Also whether another layer has that name, so the step would replay on the first of them.
     fn layer_acted_on(&mut self, id: &str, params: &Value) -> Option<(String, bool)> {
+        // Terrain with nothing named, while none is on, takes the active raster: named, so the
+        // step replays on that DEM (a change of exaggeration on a terrain already on names none).
+        if id == "map.terrain" {
+            let named = ["layer", "tiles"].iter().any(|k| params.get(*k).is_some_and(|v| !v.is_null()))
+                || params.get("off").and_then(serde_json::Value::as_bool) == Some(true);
+            let map = self.session.map();
+            if named || map.view.terrain.is_some() {
+                return None;
+            }
+            let name = self.session.active_layer.and_then(|l| map.layer(l)).filter(|l| l.raster.is_some()).map(|l| l.name.clone())?;
+            let shared = map.layers.iter().filter(|l| l.name.eq_ignore_ascii_case(&name)).count() > 1;
+            return Some((name, shared));
+        }
         let spec = self.session.registry.get(id).filter(|c| c.mutates && params.get("layer").is_none_or(Value::is_null)).copied()?;
         if !spec.param_keys().is_some_and(|k| k.contains(&"layer")) {
             return None;
@@ -4151,6 +4164,24 @@ const DEFAULTS_TO_ACTIVE_LAYER: &[&str] = &[
 mod record_tests {
     use super::{DEFAULTS_TO_ACTIVE_LAYER, RustGisApp};
     use serde_json::json;
+
+    /// Terrain run with nothing named (from command search) records the DEM it took, so the
+    /// step replays on it; a change of exaggeration on a terrain already on records none.
+    #[test]
+    fn a_terrain_step_names_the_dem_it_took() {
+        let mut app = RustGisApp::with_sample();
+        let grid = "bmNvbHMgMgpucm93cyAyCnhsbGNvcm5lciAwCnlsbGNvcm5lciAwCmNlbGxzaXplIDEKTk9EQVRBX3ZhbHVlIC05OTk5CjEgMgozIDQK";
+        app.session.run("layer.addDataBytes", &json!({"fileName": "grid.asc", "data": grid})).unwrap();
+        let dem = app.session.map().layers.iter().find(|l| l.raster.is_some()).map(|l| (l.id, l.name.clone())).unwrap();
+        app.session.active_layer = Some(dem.0);
+        app.ws.recording = Some(Vec::new());
+        app.run("map.terrain", serde_json::Value::Null).unwrap();
+        app.run("map.terrain", json!({"exaggeration": 2})).unwrap();
+        let steps = app.ws.recording.clone().unwrap();
+        let layers: Vec<Option<&serde_json::Value>> =
+            steps.iter().filter(|s| s.command == "map.terrain").map(|s| s.params.get("layer")).collect();
+        assert_eq!(layers, [Some(&json!(dem.1)), None]);
+    }
 
     /// Every command with an optional `layer` either needs an active layer to be enabled, defaults
     /// to it (`DEFAULTS_TO_ACTIVE_LAYER`), or reads `layer` as something else: a recorded step

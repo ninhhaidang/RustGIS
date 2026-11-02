@@ -204,6 +204,40 @@ fn reset(s: &mut Session, p: Project) {
     // nothing of the new project is fetched before.
     s.s3_pending.clear();
     crate::s3_connections::resolve_project_s3(s);
+    // A terrain saved on a DEM name two layers share draws the first of them: said, as the
+    // project opens (its layers keep their names).
+    let shared: Vec<(String, String)> = s
+        .project
+        .maps
+        .iter()
+        .filter_map(|m| match &m.view.terrain {
+            Some(rustgis_map::view::Terrain { source: rustgis_map::view::TerrainSource::Layer(n), .. })
+                if m.layers.iter().filter(|l| l.name.eq_ignore_ascii_case(n)).count() > 1 =>
+            {
+                Some((m.name.clone(), n.clone()))
+            }
+            _ => None,
+        })
+        .collect();
+    // One notice, with a count when several maps are so.
+    match shared.as_slice() {
+        [] => {}
+        [(map, dem)] => s.notify(
+            format!("{map}: its terrain's DEM name '{dem}' is shared by two layers, so the first of them gives the heights; rename one and turn Terrain on again"),
+            false,
+        ),
+        _ => {
+            let maps: Vec<String> = shared.iter().map(|(map, dem)| format!("{map} ('{dem}')")).collect();
+            s.notify(
+                format!(
+                    "{} maps have a terrain whose DEM name is shared by two layers, so the first of them gives the heights: {}; rename one and turn Terrain on again",
+                    shared.len(),
+                    maps.join(", ")
+                ),
+                false,
+            );
+        }
+    }
 }
 
 fn new(s: &mut Session, p: &Value) -> CmdResult {
