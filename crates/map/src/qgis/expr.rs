@@ -75,8 +75,9 @@ fn map_vars(expr: &str, f: impl Fn(char, &str) -> Option<String>) -> String {
                 let end =
                     (i + 1..=chars.len()).find(|j| !chars.get(*j).is_some_and(|d| d.is_alphanumeric() || *d == '_')).unwrap_or(chars.len());
                 let name: String = chars.get(i + 1..end).unwrap_or_default().iter().collect();
-                let after_word = i > 0 && chars.get(i - 1).is_some_and(|d| d.is_alphanumeric() || *d == '_');
-                match f(c, &name).filter(|_| !after_word) {
+                // (Right after a word too: `WHEN@map_scale` reads the scale, in QGIS and in RustGIS,
+                // whose names hold neither `@` nor `$`.)
+                match f(c, &name) {
                     Some(with) => out.push_str(&with),
                     None => {
                         out.push(c);
@@ -272,8 +273,15 @@ mod tests {
         assert_eq!(to_sql("@map_scale < 5000").as_deref(), Some(format!("(@map_scale / {k}) < 5000").as_str()));
         assert_eq!(
             super::rustgis_scales("$scale > 1 AND \"@map_scale\" = '$scale' AND @map_scales = 2 AND a$scale"),
-            format!("(@map_scale / {k}) > 1 AND \"@map_scale\" = '$scale' AND @map_scales = 2 AND a$scale")
+            format!("(@map_scale / {k}) > 1 AND \"@map_scale\" = '$scale' AND @map_scales = 2 AND a(@map_scale / {k})")
         );
         assert_eq!(to_sql(&"a".repeat(MAX_LEN + 1)), None);
+        // A scale right after a word is read and converted too, as the expression reads it.
+        assert_eq!(
+            to_sql("CASE WHEN@map_scale < 5 THEN 'a' END").as_deref(),
+            Some(format!("CASE WHEN(@map_scale / {k}) < 5 THEN 'a' END").as_str())
+        );
+        assert!(super::reads_scale("CASE WHEN@map_scale < 5 THEN 'a' END") && super::reads_scale("a$scale"));
+        assert!(!super::reads_scale("\"@map_scale\" = '$scale' AND @map_scales = 2"));
     }
 }

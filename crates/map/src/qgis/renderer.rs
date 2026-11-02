@@ -436,7 +436,7 @@ fn unique(
 }
 
 /// The most rules classed by expression: one `WHEN` each.
-const MAX_RULE_CLASSES: usize = 200;
+const MAX_RULE_CLASSES: usize = crate::symbology::MAX_EXPRESSION_CLASSES;
 
 /// The rules as Unique Values by an expression ([`super::rules_expression`]): `CASE WHEN <rule
 /// 1> THEN 'Rule 1' … END`, each rule's condition its filters and its parents', an else rule's

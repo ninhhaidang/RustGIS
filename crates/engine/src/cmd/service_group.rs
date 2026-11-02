@@ -357,7 +357,7 @@ fn refresh(s: &mut Session, p: &Value) -> CmdResult {
     if !singled.is_empty() {
         s.notify(
             format!(
-                "layers whose classes read fields the refreshed service no longer has, or no longer read as numbers, are drawn with a single symbol ({}: {})",
+                "layers whose classes read fields the refreshed service no longer has, or no longer read as numbers, or whose class expression no longer reads, are drawn with a single symbol ({}: {})",
                 singled.len(),
                 singled.join(", ")
             ),

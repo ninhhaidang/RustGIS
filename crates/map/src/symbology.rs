@@ -765,6 +765,9 @@ pub struct LegendEntry {
 
 /// Most unique-value classes created automatically.
 pub const MAX_UNIQUE: usize = 64;
+/// The most classes by an expression: a QGIS rule-based style's rules (one class each), kept when
+/// its classes are made again from the expression.
+pub const MAX_EXPRESSION_CLASSES: usize = 200;
 
 /// The colour of a new Unique Values renderer's `<all other values>` class.
 pub const OTHER_FILL: Rgba = Rgba::rgb(0xB0, 0xB0, 0xB0);
@@ -915,13 +918,27 @@ impl Renderer {
     /// [`Renderer::unique_by`], and how many kept features with a geometry have a value past the
     /// first [`MAX_UNIQUE`] (in text order), drawn as `<all other values>`.
     pub fn unique_by_counted(ds: &Dataset, rows: &[bool], expression: &str, ramp: Ramp, base: Symbol) -> Result<(Renderer, usize), String> {
+        Self::unique_by_up_to(ds, rows, expression, ramp, base, MAX_UNIQUE)
+    }
+
+    /// [`Renderer::unique_by_counted`] keeping up to `max` values (at most
+    /// [`MAX_EXPRESSION_CLASSES`]), and how many features have a value past them.
+    pub fn unique_by_up_to(
+        ds: &Dataset,
+        rows: &[bool],
+        expression: &str,
+        ramp: Ramp,
+        base: Symbol,
+        max: usize,
+    ) -> Result<(Renderer, usize), String> {
+        let max = max.clamp(1, MAX_EXPRESSION_CLASSES);
         let text = expression.trim();
         if text.chars().count() > rustgis_data::query::MAX_LEN {
             return Err(format!("the expression is longer than {} characters", rustgis_data::query::MAX_LEN));
         }
         let e = rustgis_data::query::parse(text, ds)?;
         let env = rustgis_data::query::Env::default();
-        // The first values in order, never more than MAX_UNIQUE kept, each with its features: one
+        // The first values in order, never more than `max` kept, each with its features: one
         // put out of the first can't come back (any later one is past the last kept), so its
         // features and every later one past the last kept are counted as the rest.
         let mut kept: BTreeMap<String, usize> = BTreeMap::new();
@@ -934,12 +951,12 @@ impl Renderer {
             };
             // (A feature without a geometry draws nothing, so it isn't counted.)
             let drawn = usize::from(ds.features.get(r).is_some_and(|f| f.geometry.is_some()));
-            if kept.len() >= MAX_UNIQUE && kept.last_key_value().is_some_and(|(last, _)| v > *last) {
+            if kept.len() >= max && kept.last_key_value().is_some_and(|(last, _)| v > *last) {
                 rest += drawn;
                 continue;
             }
             *kept.entry(v).or_insert(0) += drawn;
-            if kept.len() > MAX_UNIQUE {
+            if kept.len() > max {
                 rest += kept.pop_last().map_or(0, |(_, n)| n);
             }
         }
