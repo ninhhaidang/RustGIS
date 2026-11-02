@@ -188,23 +188,37 @@ pub fn extent_to_merc(e: &Extent) -> Extent {
     Extent::from_points(Coord::new(west, sw.y), Coord::new(east, ne.y))
 }
 
+/// Great-circle distance (metres) from the latitudes' cosines and the lat/lon differences (radians).
+#[inline]
+fn haversine_from_trig(dlat: f64, dlon: f64, cos1: f64, cos2: f64) -> f64 {
+    let h = (dlat / 2.0).sin().powi(2) + cos1 * cos2 * (dlon / 2.0).sin().powi(2);
+    2.0 * EARTH_RADIUS_M * h.sqrt().clamp(0.0, 1.0).asin()
+}
+
 /// Great-circle distance between two lon/lat points (metres); NaN for non-finite coordinates.
 pub fn haversine_m(a: Coord, b: Coord) -> f64 {
     let (la1, la2) = (a.y.to_radians(), b.y.to_radians());
-    let dlat = la2 - la1;
-    let dlon = (b.x - a.x).to_radians();
-    let h = (dlat / 2.0).sin().powi(2) + la1.cos() * la2.cos() * (dlon / 2.0).sin().powi(2);
-    2.0 * EARTH_RADIUS_M * h.sqrt().clamp(0.0, 1.0).asin()
+    haversine_from_trig(la2 - la1, (b.x - a.x).to_radians(), la1.cos(), la2.cos())
 }
 
 /// Length of a lon/lat polyline along great circles (metres).
 pub fn geodesic_length_m(pts: &[Coord]) -> f64 {
-    pts.windows(2)
-        .map(|w| match w {
-            [a, b] => haversine_m(*a, *b),
-            _ => 0.0,
-        })
-        .sum()
+    let Some((first, rest)) = pts.split_first() else { return 0.0 };
+    let mut total = 0.0;
+    let mut prev_la = first.y.to_radians();
+    let mut prev_cos = prev_la.cos();
+    let mut prev_x = first.x;
+
+    for pt in rest {
+        let cur_la = pt.y.to_radians();
+        let cur_cos = cur_la.cos();
+        total += haversine_from_trig(cur_la - prev_la, (pt.x - prev_x).to_radians(), prev_cos, cur_cos);
+
+        prev_la = cur_la;
+        prev_cos = cur_cos;
+        prev_x = pt.x;
+    }
+    total
 }
 
 /// A lon/lat point as a unit vector from the Earth's centre.
@@ -378,14 +392,21 @@ pub fn geodesic_ring_area_m2(ring: &[Coord]) -> f64 {
     if n < 3 {
         return 0.0;
     }
+    // With n >= 3, first() and get(i) always succeed, maintaining the carried-over sin1 across edges.
+    let Some(p0) = ring.first() else {
+        return 0.0;
+    };
+    let mut sin1 = p0.y.to_radians().sin();
     let mut total = 0.0;
     for i in 0..n {
         let (Some(p1), Some(p2)) = (ring.get(i), ring.get((i + 1) % n)) else { continue };
+        let sin2 = p2.y.to_radians().sin();
         // An edge that jumps across the antimeridian (179° to -179°) is a short hop east, not 358°
         // west. A full 360° edge (-180° to 180°, as a world-wide rectangle has) is kept as it is.
         let dlon = p2.x - p1.x;
         let dlon = if dlon.abs() > 180.0 && dlon.abs() < 360.0 { wrap_lon(dlon) } else { dlon };
-        total += dlon.to_radians() * (2.0 + p1.y.to_radians().sin() + p2.y.to_radians().sin());
+        total += dlon.to_radians() * (2.0 + sin1 + sin2);
+        sin1 = sin2;
     }
     (total * EARTH_RADIUS_M * EARTH_RADIUS_M / 2.0).abs()
 }
@@ -636,6 +657,13 @@ mod tests {
         assert!(geodesic_ring_area_m2(&[origin, Coord::new(1.0, 0.0), Coord::new(1.0, f64::INFINITY)]).is_nan());
         // Heading away from a broken place is no place either.
         assert!(geodesic_destination(Coord::new(10.0, 50.0), 90.0, f64::NAN).x.is_nan());
+    }
+
+    #[test]
+    fn geodesic_length_matches_summed_haversine_across_the_antimeridian() {
+        let poly = [Coord::new(0.0, 0.0), Coord::new(10.0, 20.0), Coord::new(179.0, -30.0), Coord::new(-179.0, -31.0)];
+        let per_segment: f64 = poly.windows(2).map(|w| haversine_m(w[0], w[1])).sum();
+        assert_eq!(geodesic_length_m(&poly), per_segment);
     }
 
     #[test]
