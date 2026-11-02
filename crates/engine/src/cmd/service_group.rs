@@ -264,8 +264,10 @@ fn refresh(s: &mut Session, p: &Value) -> CmdResult {
             .collect(),
     };
     let mut children = Vec::new();
-    // Label expressions a refresh left unreadable, said once each layer is read.
+    // Label expressions a refresh left unreadable, said once each layer is read; and the layers
+    // whose classes no longer read, drawn with a single symbol.
     let mut notes = Vec::new();
+    let mut singled = Vec::new();
     for ((mut child, mut dataset), existing) in reads.into_iter().zip(matches) {
         let existing = existing.and_then(|id| s.map_mut().layer_mut(id));
         if let Some(layer) = existing {
@@ -278,6 +280,7 @@ fn refresh(s: &mut Session, p: &Value) -> CmdResult {
             layer.selection.clear();
             let invalid_renderer = match &layer.renderer {
                 rustgis_map::Renderer::Single(_) => false,
+                rustgis_map::Renderer::Unique { expression: Some(e), .. } => rustgis_data::query::parse(e, &layer.dataset).is_err(),
                 rustgis_map::Renderer::Unique { field, .. } => layer.dataset.field_index(field).is_none(),
                 rustgis_map::Renderer::Graduated { field, .. } | rustgis_map::Renderer::Proportional { field, .. } => {
                     layer.dataset.field_index(field).and_then(|i| layer.dataset.fields.get(i)).is_none_or(|f| !f.ty.is_numeric())
@@ -285,6 +288,9 @@ fn refresh(s: &mut Session, p: &Value) -> CmdResult {
             };
             if changed_type || invalid_renderer {
                 layer.renderer = rustgis_map::Renderer::Single(rustgis_map::Symbol::default_for(layer.geometry_type(), layer.id));
+                if invalid_renderer {
+                    singled.push(layer.name.clone());
+                }
             }
             // (Labels by a text expression that still reads need no field.)
             let reads =
@@ -344,6 +350,16 @@ fn refresh(s: &mut Session, p: &Value) -> CmdResult {
             format!(
                 "label expressions that don't read against the refreshed fields are kept but left out when drawing ({lost}, in {})",
                 names.join(", ")
+            ),
+            false,
+        );
+    }
+    if !singled.is_empty() {
+        s.notify(
+            format!(
+                "layers whose classes read fields the refreshed service no longer has, or no longer read as numbers, are drawn with a single symbol ({}: {})",
+                singled.len(),
+                singled.join(", ")
             ),
             false,
         );

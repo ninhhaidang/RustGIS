@@ -1083,10 +1083,16 @@ fn complete_shown_legends(map: &mut Map, scale: f64) -> Option<Vec<(u32, Vec<Leg
             rustgis_map::Renderer::Unique { field, classes, .. } => Some((field, classes)),
             _ => None,
         };
-        let fi = unique.and_then(|(field, _)| layer.dataset.field_index(field));
-        let fields = unique
-            .filter(|_| fi.is_some())
-            .map_or_else(Vec::new, |(field, _)| vec![rustgis_data::Field::new(field, rustgis_data::FieldType::Text)]);
+        // By expression: a feature of each class seen is kept whole, for the legend to class again.
+        let by_expression = layer.renderer.expression().is_some();
+        let fi = unique.filter(|_| !by_expression).and_then(|(field, _)| layer.dataset.field_index(field));
+        let fields = if by_expression {
+            layer.dataset.fields.clone()
+        } else {
+            unique
+                .filter(|_| fi.is_some())
+                .map_or_else(Vec::new, |(field, _)| vec![rustgis_data::Field::new(field, rustgis_data::FieldType::Text)])
+        };
         let mut sample = rustgis_data::Dataset::new("legend", layer.geometry_type(), fields);
         let mut used = std::collections::HashSet::new();
         let mut any = false;
@@ -1096,9 +1102,20 @@ fn complete_shown_legends(map: &mut Map, scale: f64) -> Option<Vec<(u32, Vec<Leg
         let result = crate::visit_complete(source.as_ref(), &mut |features| {
             chunk.dataset.features = features.into();
             let rows = chunk.drawn_rows(scale);
+            let classer = by_expression.then(|| chunk.renderer.classer(&chunk.dataset, Some(scale)));
             for row in rows.iter().enumerate().filter_map(|(row, keep)| keep.then_some(row)) {
                 any = true;
-                if let Some((_, classes)) = unique {
+                if let Some(c) = &classer {
+                    let key = chunk.renderer.unique_class(&chunk.dataset, row, c).unwrap_or(usize::MAX);
+                    // Kept with its id ($id), without its geometry.
+                    if used.insert(key)
+                        && let Some(f) = chunk.dataset.features.get(row)
+                    {
+                        let mut f = f.clone();
+                        f.geometry = None;
+                        sample.features.push(f);
+                    }
+                } else if let Some((_, classes)) = unique {
                     let value = fi.map(|fi| chunk.dataset.value(row, fi).to_string());
                     let key = value.as_ref().and_then(|v| classes.iter().position(|(k, _)| k == v)).unwrap_or(classes.len());
                     if used.insert(key) {
@@ -1116,7 +1133,8 @@ fn complete_shown_legends(map: &mut Map, scale: f64) -> Option<Vec<(u32, Vec<Leg
             return None;
         }
         if any {
-            out.push((layer.id, layer.renderer.legend_for(&sample, &[])));
+            // (A sample of the classes seen: classed again at this scale, by expression.)
+            out.push((layer.id, layer.renderer.legend_at(&sample, &[], Some(scale))));
         }
     }
     Some(out)
@@ -1938,6 +1956,7 @@ mod tests {
                 other_strokes: Vec::new(),
                 class_fills: Default::default(),
                 other_fills: Vec::new(),
+                expression: None,
             };
         }
         // How far down the legend draws, in pixels.

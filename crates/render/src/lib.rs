@@ -2273,6 +2273,7 @@ pub fn gpu_may_turn(map: &Map, view: &View) -> bool {
             && !l.has_fills()
             && l.marker_rotation.is_none()
             && l.symbol_by.is_empty()
+            && l.renderer.expression().is_none()
             && (l.extrusion.is_none() || view.camera.pitch != 0.0)
             && !(view.camera.pitch != 0.0 && l.renderer.has_char_markers() && stands_up(map, l))
     })
@@ -3358,8 +3359,9 @@ fn render_frame(map: &mut Map, view: &View, full_res_rasters: bool, backend: Bac
                 && !layer.has_strokes()
                 && !layer.has_fills()
                 && layer.marker_rotation.is_none()
-                // Symbols by expression are styled per feature on the CPU.
+                // Symbols and classes by expression are styled per feature on the CPU.
                 && layer.symbol_by.is_empty()
+                && layer.renderer.expression().is_none()
                 && !upright.contains(&layer.id);
             // Lyon refuses degenerate geometry tiny-skia draws fine, a layer too dense to mesh
             // (`MAX_LAYER_VERTICES`) is quicker splatted, and zoomed in far, features reaching too
@@ -3615,7 +3617,7 @@ fn render_frame(map: &mut Map, view: &View, full_res_rasters: bool, backend: Bac
                 // `render_frame`'s contract) waits for the font index; a frame on screen doesn't.
                 let find = if full_res_rasters { families::find } else { families::find_ready };
                 let class_fonts: Vec<Option<u16>> = labels.in_order().map(|c| c.font.as_deref().and_then(find)).collect();
-                let classes = rustgis_map::LabelMatcher::new(labels, ds_ptr);
+                let classes = rustgis_map::LabelMatcher::new(labels, ds_ptr, Some(label_scale));
                 let lid = layer.id;
                 // Whether a class labels lines along them: those take the stretch of a line in
                 // view, wherever its label point is.
@@ -7841,6 +7843,7 @@ mod tests {
             other_strokes: Vec::new(),
             class_fills: Default::default(),
             other_fills: Vec::new(),
+            expression: None,
         };
         l.line_strokes = vec![stroke(green, 3.0)];
         // 0.3° is about 22 px from the centre at this resolution.

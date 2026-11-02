@@ -812,6 +812,219 @@ fn a_symbol_is_set_by_expressions() {
 }
 
 #[test]
+fn unique_values_class_by_an_expression() {
+    let mut s = world();
+    let e = "CASE WHEN pop_max >= 10000000 THEN 'mega' ELSE 'city' END";
+    // Classed by a field that isn't the first, which clearing the expression comes back to.
+    let by = s.map().layer_by_name("Cities").unwrap().dataset.fields.last().unwrap().name.clone();
+    assert_ne!(Some(&by), s.map().layer_by_name("Cities").unwrap().dataset.fields.first().map(|f| &f.name));
+    s.run("layer.symbology", &json!({"layer": "Cities", "type": "unique", "field": by})).unwrap();
+    s.run("layer.symbology", &json!({"layer": "Cities", "type": "unique", "expression": e})).unwrap();
+    let keys = |s: &Session| match &s.map().layer_by_name("Cities").unwrap().renderer {
+        rustgis_map::Renderer::Unique { classes, .. } => classes.iter().map(|c| c.0.clone()).collect::<Vec<_>>(),
+        r => panic!("{r:?}"),
+    };
+    let expression = |s: &Session| s.map().layer_by_name("Cities").unwrap().renderer.expression().map(str::to_string);
+    assert_eq!((keys(&s), expression(&s).as_deref()), (vec!["city".to_string(), "mega".to_string()], Some(e)));
+    let depth = s.undo_depth();
+    for (bad, says) in [
+        (json!({"layer": "Cities", "type": "unique", "expression": "nosuch + 1"}), "nosuch"),
+        (json!({"layer": "Cities", "type": "unique", "expression": e, "field": "name"}), "not both"),
+        (json!({"layer": "Cities", "type": "graduated", "expression": e}), "only Unique Values"),
+        (json!({"layer": "Cities", "type": "unique", "expression": 5}), "expression is text"),
+    ] {
+        let err = s.run("layer.symbology", &bad).unwrap_err();
+        assert!(err.contains(says), "{bad}: {err}");
+    }
+    assert_eq!(s.undo_depth(), depth);
+    // Applied again with neither a field nor an expression (another colour scheme): the same
+    // expression. Null or blank goes back to a field; undo brings the expression back.
+    s.run("layer.symbology", &json!({"layer": "Cities", "type": "unique", "ramp": "Ember"})).unwrap();
+    assert_eq!(expression(&s).as_deref(), Some(e));
+    s.run("layer.symbology", &json!({"layer": "Cities", "type": "unique", "expression": null})).unwrap();
+    assert!(expression(&s).is_none());
+    assert_eq!(s.map().layer_by_name("Cities").unwrap().renderer.field(), Some(by.as_str()), "back to the field it had");
+    s.undo();
+    assert_eq!(expression(&s).as_deref(), Some(e));
+    // A style shared to the web says it draws one symbol; a map draws the classes.
+    let dir = std::env::temp_dir().join(format!("rustgis-unique-by-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    s.run("share.webStyle", &json!({"layer": "Cities", "path": dir.join("cities.json").display().to_string()})).unwrap();
+    assert!(s.notices.iter().any(|n| n.text.contains("classes by expression aren't in it")), "{:?}", s.notices.last());
+    s.run("share.exportMap", &json!({"path": dir.join("map.png").display().to_string(), "width": 320, "height": 200})).unwrap();
+    std::fs::remove_dir_all(&dir).ok();
+    // More values than classes: the features past them are said, with how many; a few values
+    // say nothing.
+    let past = |s: &Session| s.notices.iter().filter(|n| n.text.contains("past the first")).count();
+    assert_eq!(past(&s), 0);
+    s.run("layer.symbology", &json!({"layer": "Cities", "type": "unique", "expression": "name"})).unwrap();
+    let l = s.map().layer_by_name("Cities").unwrap();
+    let (_, rest) =
+        rustgis_map::Renderer::unique_by_counted(&l.dataset, &[], "name", rustgis_map::Ramp::Harbour, l.renderer.base_symbol()).unwrap();
+    assert!(rest > 0);
+    let said =
+        format!("Cities: {rest} features whose value is past the first {} values the expression gives", rustgis_map::symbology::MAX_UNIQUE);
+    assert!(s.notices.iter().any(|n| n.text.starts_with(&said)), "{:?}", s.notices.last());
+    s.undo();
+    // Shared to the web, the one symbol is one that draws: not a rest without a fill or an outline
+    // width.
+    let cities = s.map().layer_by_name("Cities").unwrap().id;
+    let l = s.map_mut().layer_mut(cities).unwrap();
+    let rustgis_map::Renderer::Unique { other, classes, .. } = &mut l.renderer else { panic!() };
+    (other.fill, other.stroke, other.stroke_width) = (rustgis_map::Rgba::new(0, 0, 0, 0), rustgis_map::Rgba::rgb(9, 9, 9), 0.0);
+    let first = classes[0].1.fill.hex();
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("one.json");
+    s.run("share.webStyle", &json!({"layer": "Cities", "path": path.display().to_string()})).unwrap();
+    let style: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let circle = style["layers"].as_array().unwrap().iter().find(|l| l["type"] == "circle").unwrap();
+    assert_eq!(circle["paint"]["circle-color"], json!(first));
+    assert!(s.notices.iter().any(|n| n.text.contains("one symbol (its first class's)")), "{:?}", s.notices.last());
+    // A point's rest of no size draws nothing either, however it is filled.
+    let l = s.map_mut().layer_mut(cities).unwrap();
+    let rustgis_map::Renderer::Unique { other, .. } = &mut l.renderer else { panic!() };
+    (other.fill, other.size) = (rustgis_map::Rgba::rgb(9, 9, 9), 0.0);
+    s.run("share.webStyle", &json!({"layer": "Cities", "path": path.display().to_string()})).unwrap();
+    let style: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let circle = style["layers"].as_array().unwrap().iter().find(|l| l["type"] == "circle").unwrap();
+    assert_eq!(circle["paint"]["circle-color"], json!(first));
+    // A line's colour is its stroke's, as the map draws it.
+    let mut ds = rustgis_data::Dataset::new("ways", rustgis_data::GeometryType::Polyline, vec![]);
+    ds.push(Some(rustgis_data::Geometry::Line(vec![vec![rustgis_data::Coord::new(0.0, 0.0), rustgis_data::Coord::new(1.0, 1.0)]])), vec![]);
+    let ways = s.map_mut().add_dataset(ds);
+    let l = s.map_mut().layer_mut(ways).unwrap();
+    let mut sym = l.renderer.base_symbol();
+    (sym.fill, sym.stroke) = (rustgis_map::Rgba::rgb(1, 2, 3), rustgis_map::Rgba::rgb(200, 100, 50));
+    l.renderer = rustgis_map::Renderer::Single(sym);
+    s.run("share.webStyle", &json!({"layer": ways, "path": path.display().to_string()})).unwrap();
+    let style: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let line = style["layers"].as_array().unwrap().iter().find(|l| l["type"] == "line").unwrap();
+    assert_eq!(line["paint"]["line-color"], json!(sym.stroke.hex()));
+    // By expression, a line's rest with a fill but no stroke draws nothing: the first class's.
+    let mut ds = rustgis_data::Dataset::new(
+        "kinds",
+        rustgis_data::GeometryType::Polyline,
+        vec![rustgis_data::Field::new("k", rustgis_data::FieldType::Text)],
+    );
+    ds.push(
+        Some(rustgis_data::Geometry::Line(vec![vec![rustgis_data::Coord::new(0.0, 0.0), rustgis_data::Coord::new(1.0, 1.0)]])),
+        vec![rustgis_data::Value::Text("a".into())],
+    );
+    let kinds = s.map_mut().add_dataset(ds);
+    s.run("layer.symbology", &json!({"layer": kinds, "type": "unique", "expression": "k || 'x'"})).unwrap();
+    let l = s.map_mut().layer_mut(kinds).unwrap();
+    let rustgis_map::Renderer::Unique { other, classes, .. } = &mut l.renderer else { panic!() };
+    (other.fill, other.stroke) = (rustgis_map::Rgba::rgb(1, 2, 3), rustgis_map::Rgba::new(0, 0, 0, 0));
+    let first = classes[0].1.stroke.hex();
+    s.run("share.webStyle", &json!({"layer": kinds, "path": path.display().to_string()})).unwrap();
+    let style: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let line = style["layers"].as_array().unwrap().iter().find(|l| l["type"] == "line").unwrap();
+    assert_eq!(line["paint"]["line-color"], json!(first));
+    std::fs::remove_dir_all(&dir).ok();
+    // Deleting a field it reads: a single symbol, as for a renderer on that field, and said.
+    let mark = s.notice_mark();
+    let rustgis_map::Renderer::Unique { classes, .. } = &s.map().layer_by_name("Cities").unwrap().renderer else { panic!() };
+    let first_fill = classes[0].1.fill;
+    s.run("edit.deleteField", &json!({"layer": "Cities", "field": "pop_max"})).unwrap();
+    let rustgis_map::Renderer::Single(drawn) = &s.map().layer_by_name("Cities").unwrap().renderer else { panic!() };
+    assert_eq!(drawn.fill, first_fill, "drawn with the first class's symbol");
+    assert!(s.notices_since(mark).iter().any(|n| n.text.contains("drawn with a single symbol")), "{:?}", s.notices_since(mark));
+    // A field nothing draws by goes without a word about the symbols.
+    let mark = s.notice_mark();
+    s.run("edit.deleteField", &json!({"layer": "Cities", "field": "name"})).unwrap();
+    assert!(!s.notices_since(mark).iter().any(|n| n.text.contains("single symbol")), "{:?}", s.notices_since(mark));
+}
+
+#[test]
+fn qgis_rules_class_features_and_say_which_several_rules_pick() {
+    let mut s = world();
+    let qml = |rules: &str| {
+        format!(
+            r#"<qgis version="3.40.0"><renderer-v2 type="RuleRenderer"><rules key="r">{rules}</rules><symbols>
+            <symbol type="marker" name="0"><layer class="SimpleMarker" enabled="1"><prop k="color" v="255,0,0,255"/></layer></symbol>
+            <symbol type="marker" name="1"><layer class="SimpleMarker" enabled="1"><prop k="color" v="0,0,255,255"/></layer></symbol>
+            </symbols></renderer-v2></qgis>"#
+        )
+    };
+    let notes =
+        |r: &serde_json::Value| r["notes"].as_array().unwrap().iter().map(|n| n["text"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    // Every city of more than a million picks both rules, at the same scales.
+    let big = s.map().layer_by_name("Cities").unwrap();
+    let both = (0..big.dataset.features.len())
+        .filter(|r| big.dataset.field_index("pop_max").and_then(|f| big.dataset.value(*r, f).as_f64()).is_some_and(|v| v > 5_000_000.0))
+        .count();
+    assert!(both > 0);
+    let rules = r#"<rule filter="&quot;pop_max&quot; &gt; 1000000 AND length(name) &gt; 0" symbol="0" label="Million"/>
+        <rule filter="&quot;pop_max&quot; &gt; 5000000" symbol="1" label="Five"/>"#;
+    let r = s.run("style.importQgis", &json!({"layer": "Cities", "text": qml(rules)})).unwrap();
+    let said = notes(&r);
+    assert!(said.iter().any(|n| n.contains(&format!("{both} features that more than one of its rules picks"))), "{said:?}");
+    let l = s.map().layer_by_name("Cities").unwrap();
+    assert!(l.renderer.expression().is_some_and(|e| e.contains("THEN 'Million'")), "{:?}", l.renderer);
+    // At scales that never meet, nothing is said.
+    let apart = r#"<rule filter="&quot;pop_max&quot; &gt; 1000000 AND length(name) &gt; 0" symbol="0" scalemaxdenom="10000"/>
+        <rule filter="&quot;pop_max&quot; &gt; 5000000" symbol="1" scalemindenom="20000"/>"#;
+    let said = notes(&s.run("style.importQgis", &json!({"layer": "Cities", "text": qml(apart)})).unwrap());
+    assert!(!said.iter().any(|n| n.contains("more than one")), "{said:?}");
+    // Rules reading the map's scale can't be counted at no scale: said without a count.
+    let scaled = r#"<rule filter="$scale &gt; 0 AND &quot;pop_max&quot; &gt; 1000000" symbol="0"/>
+        <rule filter="&quot;pop_max&quot; &gt; 5000000" symbol="1"/>"#;
+    let said = notes(&s.run("style.importQgis", &json!({"layer": "Cities", "text": qml(scaled)})).unwrap());
+    assert!(said.iter().any(|n| n.contains("features that more than one of its rules picks (if any)")), "{said:?}");
+    // The scale named only in quotes is text: counted.
+    let quoted = r#"<rule filter="&quot;pop_max&quot; &gt; 1000000 AND name &lt;&gt; '@map_scale'" symbol="0"/>
+        <rule filter="&quot;pop_max&quot; &gt; 5000000" symbol="1"/>"#;
+    let said = notes(&s.run("style.importQgis", &json!({"layer": "Cities", "text": qml(quoted)})).unwrap());
+    assert!(said.iter().any(|n| n.contains(&format!("{both} features that more than one of its rules picks"))), "{said:?}");
+    // Only the features its definition query keeps are counted.
+    let cities = s.map().layer_by_name("Cities").unwrap();
+    let shown = (0..cities.dataset.features.len())
+        .filter(|r| {
+            cities.dataset.field_index("pop_max").and_then(|f| cities.dataset.value(*r, f).as_f64()).is_some_and(|v| v > 10_000_000.0)
+        })
+        .count();
+    assert!(shown > 0 && shown < both);
+    s.run("layer.definitionQuery", &json!({"layer": "Cities", "where": "pop_max > 10000000"})).unwrap();
+    let said = notes(&s.run("style.importQgis", &json!({"layer": "Cities", "text": qml(rules)})).unwrap());
+    assert!(said.iter().any(|n| n.contains(&format!("{shown} features that more than one of its rules picks"))), "{said:?}");
+    s.run("layer.definitionQuery", &json!({"layer": "Cities", "where": ""})).unwrap();
+    // An else rule picks what its siblings don't: nothing two rules pick.
+    let rest = r#"<rule filter="&quot;pop_max&quot; &gt; 0"><rule filter="&quot;pop_max&quot; &lt; 1000000" symbol="0"/><rule filter="ELSE" symbol="1"/></rule>"#;
+    let said = notes(&s.run("style.importQgis", &json!({"layer": "Cities", "text": qml(rest)})).unwrap());
+    assert!(!said.iter().any(|n| n.contains("more than one")), "{said:?}");
+    // A rule whose filter names a field the layer hasn't: left out by its label, the others kept.
+    let gone = r#"<rule filter="&quot;nosuch&quot; + 1 &gt; 2" symbol="0" label="Gone"/><rule filter="&quot;pop_max&quot; &gt; 5" symbol="1" label="Kept"/>"#;
+    let said = notes(&s.run("style.importQgis", &json!({"layer": "Cities", "text": qml(gone)})).unwrap());
+    assert!(said.iter().any(|n| n.contains("the rule \"Gone\"") && n.contains("nosuch")), "{said:?}");
+    // Several that don't fit: one note, with how many and the first.
+    let two = format!("{gone}<rule filter=\"&quot;nosuch2&quot; = 1\" symbol=\"0\" label=\"Gone too\"/>");
+    let said = notes(&s.run("style.importQgis", &json!({"layer": "Cities", "text": qml(&two)})).unwrap());
+    assert_eq!(said.iter().filter(|n| n.contains("fit the layer")).count(), 1, "{said:?}");
+    assert!(said.iter().any(|n| n.contains("2 rules whose filters don't fit the layer, the first \"Gone\"")), "{said:?}");
+    s.run("style.importQgis", &json!({"layer": "Cities", "text": qml(gone)})).unwrap();
+    let l = s.map().layer_by_name("Cities").unwrap();
+    let rustgis_map::Renderer::Unique { classes, expression: Some(e), .. } = &l.renderer else { panic!("{:?}", l.renderer) };
+    assert_eq!((classes.len(), classes[0].0.as_str()), (1, "Kept"));
+    assert!(!e.contains("nosuch"), "{e}");
+    let styler = l.styler(Some(1e6));
+    let drawn = (0..l.dataset.features.len()).filter(|r| styler.symbol(*r).fill == rustgis_map::Rgba::rgb(0, 0, 255)).count();
+    assert!(drawn > 0, "the kept rule draws");
+    // None that reads: the first rule's symbol for every feature, as before rules were classed.
+    let none = r#"<rule filter="&quot;nosuch&quot; = 1" symbol="1"/><rule filter="$area &gt; 2" symbol="0"/>"#;
+    let said = notes(&s.run("style.importQgis", &json!({"layer": "Cities", "text": qml(none)})).unwrap());
+    assert!(said.iter().any(|n| n.contains("none of whose filters fit the layer")), "{said:?}");
+    let l = s.map().layer_by_name("Cities").unwrap();
+    assert!(matches!(l.renderer, rustgis_map::Renderer::Single(sym) if sym.fill == rustgis_map::Rgba::rgb(0, 0, 255)), "{:?}", l.renderer);
+    // A layer's filter that is an expression now carries over.
+    let filtered = r#"<qgis version="3.40.0"><labeling type="rule-based"><rules key="r">
+        <rule filter="length(&quot;name&quot;) &lt;= 5"><settings><text-style fieldName="name"/></settings></rule></rules></labeling></qgis>"#;
+    let said = notes(&s.run("style.importQgis", &json!({"layer": "Cities", "text": filtered})).unwrap());
+    assert!(said.is_empty(), "{said:?}");
+    let l = s.map().layer_by_name("Cities").unwrap();
+    assert_eq!(l.labels.classes.first().and_then(|c| c.where_.as_deref()), Some("length(\"name\") <= 5"));
+}
+
+#[test]
 fn labels_are_set_by_expressions() {
     let mut s = world();
     let r = s
@@ -18058,6 +18271,8 @@ fn ogc_refresh_reconciles_fields_and_preserves_compatible_settings() {
             // Reordered and additional fields do not invalidate references by name.
             server.set(ITEMS, &features(json!({"extra":true, "name":"Updated", "value":20, "keep":1})));
             s.run("service.refresh", &target).unwrap();
+            let singled = |s: &Session| s.notices.iter().filter(|n| n.text.contains("drawn with a single symbol (1: Places)")).count();
+            assert_eq!(singled(&s), 0);
             let l = s.map().layer(layer).unwrap();
             assert_eq!(l.renderer, style);
             assert_eq!(l.labels, labels);
@@ -18068,6 +18283,18 @@ fn ogc_refresh_reconciles_fields_and_preserves_compatible_settings() {
             s.run("service.refresh", &target).unwrap();
             let l = s.map().layer(layer).unwrap();
             assert!(matches!(l.renderer, rustgis_map::Renderer::Single(_)));
+            assert_eq!(singled(&s), 1, "the classes going is said");
+            // Classes by an expression on a field that goes too.
+            s.run("edit.undo", &Value::Null).unwrap();
+            s.run("layer.symbology", &json!({"layer":layer, "type":"unique", "expression":"value || ''"})).unwrap();
+            s.run("service.refresh", &target).unwrap();
+            let l = s.map().layer(layer).unwrap();
+            assert_eq!(l.renderer, rustgis_map::Renderer::Single(rustgis_map::Symbol::default_for(l.geometry_type(), l.id)));
+            assert_eq!(singled(&s), 2);
+            s.run("edit.undo", &Value::Null).unwrap();
+            s.run("edit.undo", &Value::Null).unwrap();
+            s.run("service.refresh", &target).unwrap();
+            let l = s.map().layer(layer).unwrap();
             assert!(!l.labels.enabled);
             assert!(l.labels.default.field.is_empty());
             assert_eq!(l.labels.default.size, 19.);

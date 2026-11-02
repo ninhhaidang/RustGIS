@@ -148,6 +148,8 @@ impl Compiled {
 pub struct Styler<'a> {
     layer: &'a Layer,
     by: Option<Compiled>,
+    /// Its renderer's class expression compiled (Unique Values by expression).
+    classer: Option<crate::Classer>,
 }
 
 impl<'a> Styler<'a> {
@@ -158,12 +160,29 @@ impl<'a> Styler<'a> {
             let env = Env { map_scale: map_scale.filter(|s| s.is_finite() && *s > 0.0) };
             Compiled::new(&layer.symbol_by, &layer.dataset, env, layer.geometry_type() == rustgis_data::GeometryType::Point)
         };
-        Styler { layer, by }
+        let classer = (!layer.graphics && layer.renderer.expression().is_some()).then(|| layer.renderer.classer(&layer.dataset, map_scale));
+        Styler { layer, by, classer }
     }
 
     /// Whether no expression applies: every row draws as the layer's own methods give it.
     pub fn is_plain(&self) -> bool {
-        self.by.is_none()
+        self.by.is_none() && self.classer.is_none()
+    }
+
+    /// The row's symbol, strokes and fills from its renderer, classed by its expression when it
+    /// has one.
+    fn base(&self, row: usize) -> (Symbol, &'a [LineStroke], &'a [FillLayer]) {
+        match &self.classer {
+            Some(c) => self.layer.style_and_fills_with(row, c),
+            None => self.layer.style_and_fills(row),
+        }
+    }
+
+    fn base_symbol(&self, row: usize) -> Symbol {
+        match &self.classer {
+            Some(c) => self.layer.style_and_fills_with(row, c).0,
+            None => self.layer.symbol(row),
+        }
     }
 
     fn apply(&self, row: usize, sym: Symbol) -> Symbol {
@@ -174,16 +193,22 @@ impl<'a> Styler<'a> {
     }
 
     pub fn symbol(&self, row: usize) -> Symbol {
-        self.apply(row, self.layer.symbol(row))
+        self.apply(row, self.base_symbol(row))
     }
 
     pub fn style(&self, row: usize) -> (Symbol, &'a [LineStroke]) {
-        let (sym, strokes) = self.layer.style(row);
+        let (sym, strokes) = match &self.classer {
+            Some(_) => {
+                let (sym, strokes, _) = self.base(row);
+                (sym, strokes)
+            }
+            None => self.layer.style(row),
+        };
         (self.apply(row, sym), strokes)
     }
 
     pub fn style_and_fills(&self, row: usize) -> (Symbol, &'a [LineStroke], &'a [FillLayer]) {
-        let (sym, strokes, fills) = self.layer.style_and_fills(row);
+        let (sym, strokes, fills) = self.base(row);
         (self.apply(row, sym), strokes, fills)
     }
 
@@ -202,7 +227,7 @@ impl<'a> Styler<'a> {
         // symbol per feature, not the marks), else the feature's class's.
         let base = match &self.layer.renderer {
             crate::Renderer::Proportional { .. } => self.layer.renderer.base_symbol().size,
-            _ => self.layer.symbol(row).size,
+            _ => self.base_symbol(row).size,
         };
         if base.is_nan() || base <= 0.0 {
             return Cow::Borrowed(strokes);
@@ -246,6 +271,31 @@ mod tests {
             l.dataset.push(Some(Geometry::Point(Coord::new(0.0, 0.0))), vec![pop, Value::Text(kind.into()), Value::Float(deg)]);
         }
         l
+    }
+
+    #[test]
+    fn a_drawing_classes_by_its_renderers_expression_at_its_scale() {
+        let mut l = points();
+        let base = l.symbol(0);
+        let e = "CASE WHEN @map_scale > 10000 THEN 'far' WHEN kind = 'a' THEN 'a' END";
+        l.dataset.push(Some(Geometry::Point(Coord::new(0.0, 0.0))), vec![Value::Null, Value::Text("a".into()), Value::Null]);
+        l.renderer = crate::Renderer::unique_by(&l.dataset, &[], "kind || 'x'", crate::Ramp::Harbour, base).unwrap();
+        let crate::Renderer::Unique { expression, classes, other, class_strokes, .. } = &mut l.renderer else { panic!() };
+        *expression = Some(e.into());
+        *classes = vec![("a".into(), Symbol { size: 11.0, ..base }), ("far".into(), Symbol { size: 22.0, ..base })];
+        *other = Symbol { size: 3.0, ..base };
+        class_strokes.insert("a".into(), vec![LineStroke::default()]);
+        let st = l.styler(Some(4000.0));
+        assert!(!st.is_plain());
+        let sizes = |st: &Styler| (0..4).map(|r| st.symbol(r).size).collect::<Vec<_>>();
+        assert_eq!(sizes(&st), [11.0, 3.0, 3.0, 11.0]);
+        assert_eq!(sizes(&l.styler(Some(40_000.0))), [22.0; 4]);
+        // Without a map, @map_scale is null; one row at a time, too.
+        assert_eq!(sizes(&l.styler(None)), [11.0, 3.0, 3.0, 11.0]);
+        assert_eq!(l.symbol(0).size, 11.0);
+        // The class's own strokes come with it.
+        assert_eq!((st.style(0).1.len(), st.style(1).1.len()), (1, 0));
+        assert_eq!(st.style_and_fills(0).0.size, 11.0);
     }
 
     #[test]

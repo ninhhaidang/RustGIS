@@ -223,14 +223,14 @@ fn add_layer(s: &mut Session, layer: &qgis::ProjectLayer, has_dir: bool, report:
             Err(e) => report.skipped(name, format!("its filter `{q}` ({e})")),
         }
     }
-    check_fields(l, name, report);
+    check_fields(l, name, &layer.style.rules, report);
     Ok(Some(added_name))
 }
 
 /// Checks what a style names against the layer's fields: its label classes' clauses and fields
 /// (a class that can't label is switched off) and the field a Unique Values or Graduated Colors
 /// renderer classes by.
-fn check_fields(l: &mut rustgis_map::Layer, name: &str, report: &mut Report) {
+fn check_fields(l: &mut rustgis_map::Layer, name: &str, rules: &[qgis::RuleFilter], report: &mut Report) {
     for c in std::iter::once(&mut l.labels.default).chain(l.labels.classes.iter_mut()) {
         if let Some(w) = c.where_.clone()
             && let Err(e) = rustgis_data::query::parse(&w, &l.dataset)
@@ -255,7 +255,14 @@ fn check_fields(l: &mut rustgis_map::Layer, name: &str, report: &mut Report) {
             c.visible = false;
         }
     }
+    // Classes by expression (the style's rule-based renderer's): a rule whose filter doesn't read
+    // here is left out, the rest kept.
+    if l.renderer.expression().is_some() && !rules.is_empty() {
+        let kept = fit_rules(l, name, rules, report);
+        note_overlapping_rules(l, name, &kept, report);
+    }
     let field = match &l.renderer {
+        rustgis_map::Renderer::Unique { expression: Some(_), .. } => None,
         rustgis_map::Renderer::Unique { field, .. } | rustgis_map::Renderer::Graduated { field, .. } => Some(field.clone()),
         _ => None,
     };
@@ -279,6 +286,102 @@ fn check_fields(l: &mut rustgis_map::Layer, name: &str, report: &mut Report) {
             *slot = None;
         }
     }
+}
+
+/// Leaves the rules of a rule-based renderer (classed by expression) that don't read on `l`'s
+/// fields out of its classes, each noted; none left: the first rule's symbol for every feature,
+/// noted. The rules kept.
+fn fit_rules(l: &mut rustgis_map::Layer, name: &str, rules: &[qgis::RuleFilter], report: &mut Report) -> Vec<qgis::RuleFilter> {
+    let mut kept = Vec::new();
+    // Those that don't fit, said once: how many, and the first.
+    let mut unfit: Option<(String, usize)> = None;
+    for r in rules {
+        match rustgis_data::query::parse(&r.when, &l.dataset) {
+            Ok(_) => kept.push(r.clone()),
+            Err(e) => match &mut unfit {
+                Some((_, n)) => *n += 1,
+                None => unfit = Some((format!("\"{}\", whose filter `{}` doesn't fit the layer ({e})", r.key, r.condition), 1)),
+            },
+        }
+    }
+    if let Some((first, n)) = unfit {
+        let what =
+            if n == 1 { format!("the rule {first}") } else { format!("{n} rules whose filters don't fit the layer, the first {first}") };
+        report.skipped(name, what);
+    }
+    if kept.len() == rules.len() {
+        return kept;
+    }
+    let rustgis_map::Renderer::Unique { classes, class_strokes, class_fills, expression, .. } = &mut l.renderer else { return kept };
+    if kept.is_empty() {
+        // As before rules were classed: the first rule's symbol, strokes and fills.
+        let first = rules.first().and_then(|r| classes.iter().find(|c| c.0 == r.key)).cloned();
+        if let Some((key, sym)) = first {
+            let strokes = class_strokes.get(&key).cloned().unwrap_or_default();
+            let fills = class_fills.get(&key).cloned().unwrap_or_default();
+            l.renderer = rustgis_map::Renderer::Single(sym);
+            l.line_strokes = strokes;
+            l.fill_layers = fills;
+        }
+        report.approximated(name, "its rules, none of whose filters fit the layer, drawn with the first rule's symbol");
+        return kept;
+    }
+    let keys: std::collections::HashSet<&str> = kept.iter().map(|r| r.key.as_str()).collect();
+    classes.retain(|c| keys.contains(c.0.as_str()));
+    class_strokes.retain(|k, _| keys.contains(k.as_str()));
+    class_fills.retain(|k, _| keys.contains(k.as_str()));
+    *expression = Some(qgis::rules_expression(&kept));
+    kept
+}
+
+/// The most rule checks counted (rules × features): past it, the features that several rules
+/// pick are noted as a possibility.
+const MAX_RULE_CHECKS: usize = 20_000_000;
+
+/// Notes the features of `l` that more than one of a rule-based renderer's `rules` picks at some
+/// scale: QGIS draws such a feature with each rule's symbol, RustGIS with the first's.
+fn note_overlapping_rules(l: &rustgis_map::Layer, name: &str, rules: &[qgis::RuleFilter], report: &mut Report) {
+    let ds = &l.dataset;
+    let mut compiled: Vec<_> = rules.iter().filter_map(|r| Some((r, rustgis_data::query::parse(&r.condition, ds).ok()?))).collect();
+    // Only rules some scale draws together can pick a feature together: in the order of where
+    // they start zoomed in, a rule meets one before it when it starts within the farthest out
+    // any of those reaches (a sweep over their scale ranges).
+    compiled.sort_by(|a, b| a.0.inside.unwrap_or(0.0).total_cmp(&b.0.inside.unwrap_or(0.0)));
+    if !together(compiled.iter().map(|c| c.0)) {
+        return;
+    }
+    let what = "each with the first rule that picks it, where QGIS draws it with every one";
+    // Rules read at no map scale can't be counted for one that reads it (an else rule beside a
+    // rule with a scale range does too).
+    let scaled = compiled.iter().any(|(r, _)| qgis::reads_scale(&r.condition));
+    if scaled || compiled.len().saturating_mul(ds.features.len()) > MAX_RULE_CHECKS || l.source.is_some() {
+        report.approximated(name, format!("features that more than one of its rules picks (if any), drawn {what}"));
+        return;
+    }
+    let env = rustgis_data::query::Env::default();
+    // (Only the features its definition query keeps are drawn.)
+    let shown = l.visible_rows();
+    let n = (0..ds.features.len())
+        .filter(|row| shown.get(*row).copied().unwrap_or(false) && ds.features.get(*row).is_some_and(|f| f.geometry.is_some()))
+        .filter(|row| together(compiled.iter().filter(|(_, e)| rustgis_data::query::matches(e, ds, *row, &env)).map(|c| c.0)))
+        .count();
+    if n > 0 {
+        report.approximated(name, format!("{n} features that more than one of its rules picks, drawn {what}"));
+    }
+}
+
+/// Whether two of `rules` (in the order of where they start zoomed in) are drawn at some scale
+/// together: one starts within the farthest out any rule before it reaches.
+fn together<'a>(rules: impl Iterator<Item = &'a qgis::RuleFilter>) -> bool {
+    let mut reach: Option<f64> = None;
+    // (A range that starts in beyond where it ends out is never drawn.)
+    for r in rules.filter(|r| r.inside.unwrap_or(0.0) <= r.out.unwrap_or(f64::INFINITY)) {
+        if reach.is_some_and(|out| r.inside.unwrap_or(0.0) <= out) {
+            return true;
+        }
+        reach = Some(reach.unwrap_or(f64::NEG_INFINITY).max(r.out.unwrap_or(f64::INFINITY)));
+    }
+    false
 }
 
 /// Gives what a QGIS web layer was added as the layer's visibility, opacity and blending mode.
@@ -434,7 +537,7 @@ fn import_style(s: &mut Session, p: &Value) -> CmdResult {
             report.skipped(&name, "a raster's colouring, which a feature layer hasn't (only its opacity and scale range are taken)");
         }
         style.apply(l);
-        check_fields(l, &name, &mut report);
+        check_fields(l, &name, &style.rules, &mut report);
     }
     Ok(json!({"notes": report.notes.iter().map(note_json).collect::<Vec<_>>()}))
 }

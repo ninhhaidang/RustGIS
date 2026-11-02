@@ -209,6 +209,7 @@ fn categorized(r: Node, layer: &str, style: &mut Style, report: &mut Report, sym
         other_strokes,
         class_fills,
         other_fills,
+        expression: None,
     });
 }
 
@@ -278,36 +279,63 @@ fn graduated(r: Node, layer: &str, style: &mut Style, report: &mut Report, sym: 
     });
 }
 
-/// A rule of a rule-based renderer that draws: its filter and its parents' (`ELSE` for an else
-/// rule), and whether a scale range applies along the way.
+/// A rule of a rule-based renderer that draws: its filter and its parents' (an else rule's own
+/// left out), for an else rule and each else rule above it the siblings it takes the rest of (what
+/// none of them draws), and the scale range along the way (RustGIS's scales: drawn out to 1:`.0`,
+/// in to 1:`.1`).
 struct Rule<'a, 'i> {
     filters: Vec<String>,
+    else_of: Vec<std::rc::Rc<Option<Vec<super::Sibling>>>>,
     node: Node<'a, 'i>,
-    scaled: bool,
+    scales: (Option<f64>, Option<f64>),
+}
+
+impl Rule<'_, '_> {
+    fn scaled(&self) -> bool {
+        self.scales.0.is_some() || self.scales.1.is_some()
+    }
 }
 
 fn rules(r: Node, layer: &str, style: &mut Style, report: &mut Report, sym: &SymbolOf) {
     let mut leaves = Vec::new();
+    let mut left = 0;
     if let Some(root) = child(r, "rules") {
-        flatten(root, Vec::new(), false, &mut leaves, 0);
+        flatten(root, Vec::new(), (None, None), Vec::new(), &mut leaves, 0, &mut left);
     }
+    if left > 0 {
+        report.skipped(layer, format!("{left} of its rules, past the {MAX_CLASSES} RustGIS reads or nested more than 32 deep"));
+    }
+    // Each symbol read once, however many ways the rules are tried (its notes said once).
+    let seen: std::cell::RefCell<BTreeMap<Option<String>, Option<Converted>>> = Default::default();
+    let sym = |name: Option<&str>, report: &mut Report| -> Option<Converted> {
+        let key = name.map(str::to_string);
+        if let Some(c) = seen.borrow().get(&key) {
+            return c.clone();
+        }
+        let c = sym(name, report);
+        seen.borrow_mut().insert(key, c.clone());
+        c
+    };
     // Rules that draw: those with a symbol and not switched off.
     let drawn: Vec<&Rule> =
         leaves.iter().filter(|l| l.node.attribute("symbol").is_some() && l.node.attribute("active") != Some("0")).collect();
-    if drawn.iter().any(|l| l.scaled) {
-        report.approximated(layer, "rules shown only at some scales, drawn at every scale");
-    }
-    // Every rule picks values of one field (an else rule for the rest): Unique Values.
+    // Every rule picks values of one field (an else rule for the rest), at every scale: Unique
+    // Values.
     let mut field: Option<String> = None;
     let mut classes: Vec<(String, Converted, Option<String>)> = Vec::new();
     let mut other: Option<Converted> = None;
-    let mut simple = !drawn.is_empty();
-    for rule in &drawn {
-        let Some(c) = sym(rule.node.attribute("symbol"), report) else { continue };
+    let mut other_label: Option<String> = None;
+    let mut simple = !drawn.is_empty() && !drawn.iter().any(|l| l.scaled());
+    for rule in drawn.iter().filter(|_| simple) {
         let label = rule.node.attribute("label").map(str::to_string);
-        if rule.filters.iter().any(|f| f.trim().eq_ignore_ascii_case("ELSE")) {
-            if rule.filters.len() == 1 {
-                other = Some(c);
+        if !rule.else_of.is_empty() {
+            // (Only the first draws the rest; a later one's symbol isn't read.)
+            if rule.filters.is_empty() && rule.else_of.len() == 1 {
+                if other.is_none()
+                    && let Some(c) = sym(rule.node.attribute("symbol"), report)
+                {
+                    (other, other_label) = (Some(c), else_label(rule));
+                }
                 continue;
             }
             simple = false;
@@ -317,6 +345,7 @@ fn rules(r: Node, layer: &str, style: &mut Style, report: &mut Report, sym: &Sym
         match parts.as_deref() {
             Some([(f, values)]) if field.as_ref().is_none_or(|g| g.eq_ignore_ascii_case(f)) => {
                 field = Some(f.clone());
+                let Some(c) = sym(rule.node.attribute("symbol"), report) else { continue };
                 for v in values {
                     if classes.len() < MAX_CLASSES {
                         classes.push((v.clone(), c.clone(), label.clone()));
@@ -330,78 +359,219 @@ fn rules(r: Node, layer: &str, style: &mut Style, report: &mut Report, sym: &Sym
         }
     }
     if simple && let Some(field) = field {
-        let mut class_strokes = BTreeMap::new();
-        let mut class_fills = BTreeMap::new();
-        let mut class_labels = BTreeMap::new();
-        for (v, c, label) in &classes {
-            if c.stacked() {
-                class_strokes.insert(v.clone(), c.strokes.clone());
-            }
-            if !c.fills.is_empty() {
-                class_fills.insert(v.clone(), c.fills.clone());
-            }
-            if let Some(l) = label.as_ref().filter(|l| !l.is_empty() && *l != v) {
-                class_labels.insert(v.clone(), l.clone());
-            }
-        }
-        let (other_symbol, other_strokes, other_fills) = match &other {
-            Some(c) => (c.symbol, if c.stacked() { c.strokes.clone() } else { Vec::new() }, c.fills.clone()),
-            None => (symbol::hidden(), Vec::new(), Vec::new()),
-        };
-        style.line_strokes = Some(Vec::new());
-        style.fill_layers = Some(Vec::new());
-        style.renderer = Some(Renderer::Unique {
-            field,
-            classes: classes.into_iter().map(|(v, c, _)| (v, c.symbol)).collect(),
-            other: other_symbol,
-            ramp: Ramp::default(),
-            class_labels,
-            other_label: None,
-            class_strokes,
-            other_strokes,
-            class_fills,
-            other_fills,
-        });
+        unique(style, field, None, classes, other.as_ref(), other_label);
         return;
     }
-    // One rule (or none but an else): its symbol for every feature.
-    if drawn.len() == 1 && drawn.first().is_some_and(|r| r.filters.is_empty()) || drawn.is_empty() {
+    // One rule (or none but an else, beside nothing that draws): its symbol for every feature.
+    let plain = |r: &&Rule| r.filters.is_empty() && r.else_of.iter().all(|s| s.as_ref().as_ref().is_some_and(Vec::is_empty)) && !r.scaled();
+    if drawn.len() == 1 && drawn.first().is_some_and(plain) || drawn.is_empty() {
         if let Some(c) = drawn.first().and_then(|r| sym(r.node.attribute("symbol"), report)) {
-            style.line_strokes = Some(if c.stacked() { c.strokes.clone() } else { Vec::new() });
-            style.fill_layers = Some(c.fills.clone());
-            style.renderer = Some(Renderer::Single(c.symbol));
+            single(style, &c);
         }
         return;
     }
-    report
-        .approximated(layer, format!("its {} rules (filters beyond one field's values), drawn with the first rule's symbol", drawn.len()));
+    // Any other rules: Unique Values classed by the first rule a feature meets, each a class.
+    if by_expression(&drawn, style, report, &sym) {
+        return;
+    }
+    report.approximated(
+        layer,
+        format!("its {} rules (filters too long or too many to class by), drawn with the first rule's symbol", drawn.len()),
+    );
     if let Some(c) = drawn.first().and_then(|r| sym(r.node.attribute("symbol"), report)) {
-        style.line_strokes = Some(if c.stacked() { c.strokes.clone() } else { Vec::new() });
-        style.fill_layers = Some(c.fills.clone());
-        style.renderer = Some(Renderer::Single(c.symbol));
+        single(style, &c);
     }
 }
 
-/// The leaf rules under `node`, each with its own filter and its parents', and whether a scale
-/// range applies along the way. Bounded in depth and number.
-fn flatten<'a, 'i>(node: Node<'a, 'i>, filters: Vec<String>, scaled: bool, out: &mut Vec<Rule<'a, 'i>>, depth: usize) {
+/// One symbol for every feature, with its stacked strokes and fills.
+fn single(style: &mut Style, c: &Converted) {
+    style.line_strokes = Some(if c.stacked() { c.strokes.clone() } else { Vec::new() });
+    style.fill_layers = Some(c.fills.clone());
+    style.renderer = Some(Renderer::Single(c.symbol));
+}
+
+/// A Unique Values renderer on `field`, or by `expression`, with these classes (value, symbol,
+/// legend label) and the rest drawn with `other` (none: not drawn).
+fn unique(
+    style: &mut Style,
+    field: String,
+    expression: Option<String>,
+    classes: Vec<(String, Converted, Option<String>)>,
+    other: Option<&Converted>,
+    other_label: Option<String>,
+) {
+    let mut class_strokes = BTreeMap::new();
+    let mut class_fills = BTreeMap::new();
+    let mut class_labels = BTreeMap::new();
+    for (v, c, label) in &classes {
+        if c.stacked() {
+            class_strokes.insert(v.clone(), c.strokes.clone());
+        }
+        if !c.fills.is_empty() {
+            class_fills.insert(v.clone(), c.fills.clone());
+        }
+        if let Some(l) = label.as_ref().filter(|l| !l.is_empty() && *l != v) {
+            class_labels.insert(v.clone(), l.clone());
+        }
+    }
+    let (other_symbol, other_strokes, other_fills) = match other {
+        Some(c) => (c.symbol, if c.stacked() { c.strokes.clone() } else { Vec::new() }, c.fills.clone()),
+        None => (symbol::hidden(), Vec::new(), Vec::new()),
+    };
+    style.line_strokes = Some(Vec::new());
+    style.fill_layers = Some(Vec::new());
+    style.renderer = Some(Renderer::Unique {
+        field,
+        classes: classes.into_iter().map(|(v, c, _)| (v, c.symbol)).collect(),
+        other: other_symbol,
+        ramp: Ramp::default(),
+        class_labels,
+        other_label,
+        class_strokes,
+        other_strokes,
+        class_fills,
+        other_fills,
+        expression,
+    });
+}
+
+/// The most rules classed by expression: one `WHEN` each.
+const MAX_RULE_CLASSES: usize = 200;
+
+/// The rules as Unique Values by an expression ([`super::rules_expression`]): `CASE WHEN <rule
+/// 1> THEN 'Rule 1' … END`, each rule's condition its filters and its parents', an else rule's
+/// that none of its siblings draws, and its scale range. A feature meets the first rule it can
+/// (QGIS draws it with every rule it meets: the engine counts such features, from
+/// `style.rules`). A top-level else rule draws the rest. False when the rules don't fit in one
+/// expression.
+fn by_expression(drawn: &[&Rule], style: &mut Style, report: &mut Report, sym: &SymbolOf) -> bool {
+    let mut rules: Vec<super::RuleFilter> = Vec::new();
+    let mut classes: Vec<(String, Converted, Option<String>)> = Vec::new();
+    let mut other: Option<Converted> = None;
+    let mut other_label: Option<String> = None;
+    let mut keys = std::collections::HashSet::new();
+    let quoted = |f: &String| expr::to_sql(f).map(|e| format!("({e})"));
+    for (i, rule) in drawn.iter().enumerate() {
+        // A top-level else rule at every scale: the rest. (A later one draws nothing more, a
+        // feature being drawn with the first rule it meets: its symbol isn't read.)
+        let rest = rule.else_of.len() == 1 && rule.filters.is_empty() && !rule.scaled();
+        if rest && other.is_some() {
+            continue;
+        }
+        let Some(c) = sym(rule.node.attribute("symbol"), report) else { continue };
+        if rest {
+            (other, other_label) = (Some(c), else_label(rule));
+            continue;
+        }
+        let Some(mut parts) = rule.filters.iter().map(quoted).collect::<Option<Vec<String>>>() else { return false };
+        for siblings in rule.else_of.iter().filter(|s| s.as_ref().as_ref().is_none_or(|s| !s.is_empty())) {
+            let Some(rest) = super::none_of(siblings) else { return false };
+            parts.push(rest);
+        }
+        // What it picks (an else rule: what none of its siblings draws), then at its scales.
+        let filter = if parts.is_empty() { "TRUE".to_string() } else { parts.join(" AND ") };
+        let when = super::within(filter.clone(), rule.scales);
+        // Its legend label, or its number, once.
+        let label = rule.node.attribute("label").map(str::trim).filter(|l| !l.is_empty()).map(str::to_string);
+        let mut key = label.clone().unwrap_or_else(|| format!("Rule {}", i + 1));
+        let mut n = 2;
+        while !keys.insert(key.to_lowercase()) {
+            key = format!("{} ({n})", label.as_deref().unwrap_or("Rule"));
+            n += 1;
+        }
+        rules.push(super::RuleFilter { key: key.clone(), when, condition: filter, out: rule.scales.0, inside: rule.scales.1 });
+        classes.push((key, c, None));
+        if rules.len() > MAX_RULE_CLASSES || super::rules_expression(&rules).chars().count() > rustgis_data::query::MAX_LEN {
+            return false;
+        }
+    }
+    if rules.is_empty() {
+        return false;
+    }
+    unique(style, String::new(), Some(super::rules_expression(&rules)), classes, other.as_ref(), other_label);
+    style.rules = rules;
+    true
+}
+
+/// The most rules read from one renderer's rules, and the most an else rule is the rest of.
+const MAX_RULES_READ: usize = MAX_CLASSES * 2;
+
+/// The rules under `node` that draw, each with its own filter and its parents', for an else rule
+/// its siblings, and the scale range along the way. A rule with a symbol and rules under it comes
+/// after them: a feature meets the first rule it can, and QGIS draws the inner rule's symbol on
+/// top. A rule under an else rule takes only what the else rule does (`else_of`, the sibling
+/// sets of the else rules above). Bounded in depth and number: the rules left out are counted in
+/// `left`.
+#[allow(clippy::too_many_arguments)]
+fn flatten<'a, 'i>(
+    node: Node<'a, 'i>,
+    filters: Vec<String>,
+    scales: (Option<f64>, Option<f64>),
+    else_of: Vec<std::rc::Rc<Option<Vec<super::Sibling>>>>,
+    out: &mut Vec<Rule<'a, 'i>>,
+    depth: usize,
+    left: &mut usize,
+) {
+    // A rule draws with a symbol, or with none and no rules under it (as `rules` reads them).
+    let draws = |r: Node| r.attribute("symbol").is_some() || !r.children().any(|c| c.has_tag_name("rule"));
     if depth > 32 || out.len() >= MAX_CLASSES {
+        *left += super::drawing_rules(node.children(), draws);
         return;
     }
-    for rule in node.children().filter(|c| c.has_tag_name("rule")) {
+    let rules: Vec<Node> = node.children().filter(|c| c.has_tag_name("rule")).take(MAX_RULES_READ).collect();
+    *left += super::drawing_rules(node.children().filter(|c| c.has_tag_name("rule")).skip(rules.len()), draws);
+    let range = |rule: Node| super::rule_scales(rule, scales);
+    // What an else rule here is the rest of: its siblings where they draw, shared by every else
+    // rule (read only when there is one).
+    let siblings: std::rc::Rc<Option<Vec<super::Sibling>>> =
+        std::rc::Rc::new(if rules.iter().any(|r| r.attribute("filter").is_some_and(is_else)) {
+            let itself = |r: Node| r.attribute("symbol").is_some();
+            let mut budget = MAX_RULES_READ;
+            super::siblings(rules.iter().copied(), scales, &itself, false, depth, &mut budget)
+        } else {
+            Some(Vec::new())
+        });
+    for (i, rule) in rules.iter().copied().enumerate() {
+        if out.len() >= MAX_CLASSES {
+            *left += super::drawing_rules(rules.get(i..).unwrap_or_default().iter().copied(), draws);
+            break;
+        }
+        // Switched off: neither it nor the rules under it draw.
+        if rule.attribute("active") == Some("0") {
+            continue;
+        }
         let mut f = filters.clone();
-        if let Some(filter) = rule.attribute("filter").map(str::trim).filter(|f| !f.is_empty()) {
+        let own = rule.attribute("filter").map(str::trim).filter(|f| !f.is_empty());
+        let mut else_of = else_of.clone();
+        if own.is_some_and(is_else) {
+            else_of.push(siblings.clone());
+        }
+        if let Some(filter) = own.filter(|o| !is_else(o)) {
             f.push(filter.to_string());
         }
-        let scaled = scaled || rule.attribute("scalemindenom").is_some() || rule.attribute("scalemaxdenom").is_some();
+        let s = range(rule);
         let children = rule.children().any(|c| c.has_tag_name("rule"));
-        if rule.attribute("symbol").is_some() || !children {
-            out.push(Rule { filters: f.clone(), node: rule, scaled });
-        }
         if children {
-            flatten(rule, f, scaled, out, depth + 1);
+            flatten(rule, f.clone(), s, else_of.clone(), out, depth + 1, left);
+        }
+        if rule.attribute("symbol").is_some() || !children {
+            if out.len() < MAX_CLASSES {
+                out.push(Rule { filters: f, else_of, node: rule, scales: s });
+            } else {
+                // Its rules under it took the last room.
+                *left += 1;
+            }
         }
     }
+}
+
+/// An else rule's legend label for `<all other values>`, if it has one.
+fn else_label(rule: &Rule) -> Option<String> {
+    rule.node.attribute("label").map(str::trim).filter(|l| !l.is_empty()).map(str::to_string)
+}
+
+fn is_else(f: &str) -> bool {
+    f.trim().eq_ignore_ascii_case("ELSE")
 }
 
 fn wrapper_name(kind: &str) -> &'static str {

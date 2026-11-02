@@ -589,6 +589,17 @@ pub(crate) fn note_label_classes(s: &mut Session, kind: &str, p: &Value) {
     if !matches!(kind, "webLayer" | "webStyle") {
         return;
     }
+    // Unique Values by expression: the style draws every feature with the other values' symbol.
+    let classes = s.layer_id(p).ok().and_then(|id| s.map().layer(id)).filter(|l| l.renderer.expression().is_some()).map(|l| {
+        let which = match &l.renderer {
+            Renderer::Unique { other, .. } if other.draws(l.geometry_type()) => "its other values'",
+            _ => "its first class's",
+        };
+        format!("{}'s style draws every feature with one symbol ({which}): its classes by expression aren't in it.", l.name)
+    });
+    if let Some(text) = classes {
+        s.notify(text, false);
+    }
     let Some(l) = s.layer_id(p).ok().and_then(|id| s.map().layer(id)).filter(|l| l.labels.enabled) else { return };
     let n = l.labels.classes.len().min(MAX_LABEL_CLASSES);
     let clause = l.labels.default.where_.as_deref().is_some_and(|w| !w.trim().is_empty());
@@ -622,6 +633,16 @@ pub(crate) fn note_label_classes(s: &mut Session, kind: &str, p: &Value) {
     }
 }
 
+/// The one symbol a web style draws Unique Values by expression with: the rest's, or where that
+/// draws nothing (a rule-based style without an else rule), the first class's. A line draws its
+/// stroke; an area or point its fill, or an outline with a width.
+fn one_symbol(r: &Renderer, g: GeometryType) -> rustgis_map::Symbol {
+    match r {
+        Renderer::Unique { other, .. } if other.draws(g) => *other,
+        r => r.base_symbol(),
+    }
+}
+
 /// A MapLibre (version 8) style for a layer, its symbology as expressions over a GeoJSON source.
 /// Its labels are the Default class's, none when it is hidden (see `note_label_classes`).
 pub fn web_style(l: &Layer) -> Value {
@@ -632,6 +653,10 @@ pub fn web_style(l: &Layer) -> Value {
     let color = |pick: fn(&rustgis_map::Symbol) -> Rgba| -> Value {
         match &l.renderer {
             Renderer::Single(sym) => json!(pick(sym).hex()),
+            // Classes by expression have no MapLibre expression written for them: one symbol, the
+            // rest's, or the first class's where the rest isn't drawn (noted by
+            // `note_label_classes`).
+            Renderer::Unique { expression: Some(_), .. } => json!(pick(&one_symbol(&l.renderer, l.geometry_type())).hex()),
             Renderer::Unique { field, classes, other, .. } => {
                 // MapLibre rejects repeated labels: the first class of a value wins.
                 let mut e = vec![json!("match"), json!(["to-string", prop(field)])];
@@ -665,6 +690,7 @@ pub fn web_style(l: &Layer) -> Value {
     let opacity = 1.0 - f64::from(l.transparency.clamp(0.0, 100.0)) / 100.0;
     let width = match &l.renderer {
         Renderer::Single(s) | Renderer::Proportional { base: s, .. } => f64::from(s.stroke_width),
+        Renderer::Unique { expression: Some(_), .. } => f64::from(one_symbol(&l.renderer, l.geometry_type()).stroke_width),
         Renderer::Unique { other, .. } => f64::from(other.stroke_width),
         Renderer::Graduated { symbols, .. } => symbols.first().map_or(1.0, |s| f64::from(s.stroke_width)),
     };
@@ -675,7 +701,7 @@ pub fn web_style(l: &Layer) -> Value {
             layers.push(json!({"id": format!("{src}-outline"), "type": "line", "source": src, "paint": {"line-color": color(|s| s.stroke), "line-width": width}}));
         }
         GeometryType::Polyline => {
-            layers.push(json!({"id": format!("{src}-line"), "type": "line", "source": src, "paint": {"line-color": color(|s| s.fill), "line-width": width.max(1.0), "line-opacity": opacity}}))
+            layers.push(json!({"id": format!("{src}-line"), "type": "line", "source": src, "paint": {"line-color": color(|s| s.stroke), "line-width": width.max(1.0), "line-opacity": opacity}}))
         }
         _ => {
             let radius = match &l.renderer {
@@ -685,6 +711,7 @@ pub fn web_style(l: &Layer) -> Value {
                 }
                 Renderer::Proportional { min_size, max_size, .. } => json!(f64::from(*min_size + *max_size) / 4.0),
                 Renderer::Single(s) => json!(f64::from(s.size) / 2.0),
+                Renderer::Unique { expression: Some(_), .. } => json!(f64::from(one_symbol(&l.renderer, l.geometry_type()).size) / 2.0),
                 Renderer::Unique { other, .. } => json!(f64::from(other.size) / 2.0),
                 Renderer::Graduated { symbols, .. } => json!(symbols.first().map_or(4.0, |s| f64::from(s.size) / 2.0)),
             };

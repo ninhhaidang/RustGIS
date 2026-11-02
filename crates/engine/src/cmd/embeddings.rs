@@ -235,6 +235,7 @@ pub(crate) fn style_points(s: &mut Session, id: u32) {
         other_strokes: Vec::new(),
         class_fills: Default::default(),
         other_fills: Vec::new(),
+        expression: None,
     };
 }
 

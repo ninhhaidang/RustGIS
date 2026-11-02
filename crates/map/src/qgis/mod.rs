@@ -122,6 +122,149 @@ pub struct Style {
     /// and out beyond 1:`max_scale`. `Some(None)` clears a limit.
     pub min_scale: Option<Option<f64>>,
     pub max_scale: Option<Option<f64>>,
+    /// A rule-based renderer's rules classed by expression, in the order a feature meets them.
+    /// Not a setting: what the importer checks the layer's features against (the features
+    /// several rules pick).
+    pub rules: Vec<RuleFilter>,
+}
+
+/// One rule of a rule-based renderer classed by expression: its class (`key`), the condition it
+/// is drawn by (`when`: its filters, an else rule's siblings, its scale range), its filter alone
+/// (its filters and its parents') and the scales it draws between (RustGIS's: out to 1:`out`, in
+/// to 1:`inside`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RuleFilter {
+    pub key: String,
+    pub when: String,
+    pub condition: String,
+    pub out: Option<f64>,
+    pub inside: Option<f64>,
+}
+
+/// A rule beside an else rule: its filter (none: every feature), the scales it draws between
+/// (RustGIS's scales: drawn out to 1:`.0`, in to 1:`.1`), and for one that draws nothing itself,
+/// the rules under it it draws through (`under`). The else rule takes what none of them draws.
+pub(super) struct Sibling {
+    pub(super) filter: Option<String>,
+    pub(super) scales: (Option<f64>, Option<f64>),
+    pub(super) under: Option<Vec<Sibling>>,
+}
+
+/// The siblings an else rule beside `rules` is the rest of (`None`: more than `budget` rules
+/// under them, or nested more than 32 deep). As QGIS has it, a rule counts only where it draws
+/// (`itself`: with a symbol or label settings) or where a rule under it does; a switched-off rule
+/// never does. Else rules count among the rules under a sibling (`with_else`), each drawing where
+/// it does.
+pub(super) fn siblings<'a, 'i: 'a>(
+    rules: impl Iterator<Item = Node<'a, 'i>>,
+    parent: (Option<f64>, Option<f64>),
+    itself: &impl Fn(Node) -> bool,
+    with_else: bool,
+    depth: usize,
+    budget: &mut usize,
+) -> Option<Vec<Sibling>> {
+    let mut out = Vec::new();
+    for r in rules.filter(|c| c.has_tag_name("rule") && c.attribute("active") != Some("0")) {
+        if depth > 32 || *budget == 0 {
+            return None;
+        }
+        *budget -= 1;
+        let filter = r.attribute("filter").map(str::trim).filter(|f| !f.is_empty());
+        let filter = match filter {
+            Some(f) if f.eq_ignore_ascii_case("ELSE") && !with_else => continue,
+            Some(f) if f.eq_ignore_ascii_case("ELSE") => None,
+            f => f.map(str::to_string),
+        };
+        let scales = rule_scales(r, parent);
+        let under = if itself(r) { None } else { Some(siblings(r.children(), scales, itself, true, depth + 1, budget)?) };
+        // (One that draws nothing, nor anything under it, takes nothing from the else rule.)
+        if under.as_ref().is_none_or(|u| !u.is_empty()) {
+            out.push(Sibling { filter, scales, under });
+        }
+    }
+    Some(out)
+}
+
+/// The scales a rule draws between (as [`Sibling::scales`]) inside a parent drawing between
+/// `parent`: its scalemaxdenom is the out-beyond limit, its scalemindenom the in-beyond, and a
+/// rule inside another is drawn only within both ranges.
+pub(super) fn rule_scales(rule: Node, parent: (Option<f64>, Option<f64>)) -> (Option<f64>, Option<f64>) {
+    let denom = |k: &str| {
+        rule.attribute(k).and_then(|v| v.trim().parse::<f64>().ok()).filter(|v| v.is_finite() && *v > 0.0).map(|v| v * QGIS_SCALE)
+    };
+    (
+        match (denom("scalemaxdenom"), parent.0) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        },
+        match (denom("scalemindenom"), parent.1) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (a, b) => a.or(b),
+        },
+    )
+}
+
+/// `filter` with the conditions of the scale range `scales` (`@map_scale`; none, as in an export,
+/// meets every range).
+pub(super) fn within(filter: String, scales: (Option<f64>, Option<f64>)) -> String {
+    let mut c = filter;
+    if let Some(out) = scales.0 {
+        c.push_str(&format!(" AND (@map_scale IS NULL OR @map_scale <= {})", out.round()));
+    }
+    if let Some(inside) = scales.1 {
+        c.push_str(&format!(" AND (@map_scale IS NULL OR @map_scale >= {})", inside.round()));
+    }
+    c
+}
+
+/// What an else rule beside `siblings` takes: none of what they draw, at their scales. A filter
+/// unknown (null) for a feature isn't met, as QGIS has it. `None` when a filter can't be read, or
+/// the siblings weren't (see [`siblings`]).
+pub(super) fn none_of(siblings: &Option<Vec<Sibling>>) -> Option<String> {
+    let drawn_by = siblings.as_ref()?.iter().map(drawn_by).collect::<Option<Vec<String>>>()?;
+    Some(if drawn_by.is_empty() { String::new() } else { format!("NOT coalesce({}, FALSE)", drawn_by.join(" OR ")) })
+}
+
+/// Where a sibling draws: its filter at its scales, and for one drawing through the rules under
+/// it, where one of them does.
+fn drawn_by(sib: &Sibling) -> Option<String> {
+    let f = match &sib.filter {
+        Some(f) => format!("({})", expr::to_sql(f)?),
+        None => "TRUE".into(),
+    };
+    let mut c = within(f, sib.scales);
+    if let Some(under) = &sib.under {
+        let under = under.iter().map(drawn_by).collect::<Option<Vec<String>>>()?;
+        c = format!("{c} AND ({})", under.join(" OR "));
+    }
+    Some(format!("({c})"))
+}
+
+/// Whether an expression reads the map's scale (`@map_scale`, `$scale`), outside quotes.
+pub fn reads_scale(expr: &str) -> bool {
+    expr::reads_scale(expr)
+}
+
+/// How many of the rules `roots` and those under them draw (`draws`): switched on, and under no
+/// rule switched off. For the rules a reader leaves out.
+pub(super) fn drawing_rules<'a, 'i: 'a>(roots: impl Iterator<Item = Node<'a, 'i>>, draws: impl Fn(Node) -> bool) -> usize {
+    let on = |n: Node| n.attribute("active") != Some("0");
+    roots
+        .filter(|r| r.has_tag_name("rule"))
+        .map(|r| {
+            r.descendants()
+                .filter(|d| d.has_tag_name("rule") && draws(*d))
+                .filter(|d| d.ancestors().take_while(|a| *a != r).chain(std::iter::once(r)).all(|a| !a.has_tag_name("rule") || on(a)))
+                .count()
+        })
+        .sum()
+}
+
+/// The expression that classes a feature by the first of `rules` it meets: `CASE WHEN <when>
+/// THEN '<key>' … END`.
+pub fn rules_expression(rules: &[RuleFilter]) -> String {
+    let whens: Vec<String> = rules.iter().map(|r| format!("WHEN {} THEN '{}'", r.when, r.key.replace('\'', "''"))).collect();
+    format!("CASE {} END", whens.join(" "))
 }
 
 impl Style {
@@ -273,9 +416,15 @@ pub fn read_project(text: &str, dir: &str, report: &mut Report) -> Result<Projec
         let vector = kind == "vector";
         let definition_query = match &source {
             Source::File { subset: Some(q), .. } => match expr::to_sql(q) {
+                // A definition query is read with no map scale, so one reading it would take no
+                // feature.
+                Some(_) if expr::reads_scale(q) => {
+                    report.skipped(&name, "its filter (subset string), which reads the map's scale, which a filter has none of");
+                    None
+                }
                 Some(sql) => Some(sql),
                 None => {
-                    report.skipped(&name, format!("its filter (subset string) `{q}`, which doesn't read as a RustGIS definition query"));
+                    report.skipped(&name, "its filter (subset string), which is too long to read");
                     None
                 }
             },

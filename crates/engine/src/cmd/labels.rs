@@ -497,7 +497,7 @@ fn convert(s: &mut Session, p: &Value) -> CmdResult {
     }
     let classes = !l.labels.classes.is_empty();
     let rows = l.visible_rows();
-    let matcher = LabelMatcher::new(&l.labels, &l.dataset);
+    let matcher = LabelMatcher::new(&l.labels, &l.dataset, Some(scale));
     let mut out_fields = vec![Field::new("TEXT", FieldType::Text)];
     if classes {
         out_fields.push(Field::new("CLASS", FieldType::Text));

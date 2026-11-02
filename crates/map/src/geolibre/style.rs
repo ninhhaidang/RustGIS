@@ -64,6 +64,7 @@ pub fn apply(layer: &mut Layer, record: &Value, report: &mut Report) {
             other_strokes: Vec::new(),
             class_fills: Default::default(),
             other_fills: Vec::new(),
+            expression: None,
         };
     } else if mode == "graduated" {
         let mut pairs: Vec<_> =

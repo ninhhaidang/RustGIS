@@ -85,6 +85,16 @@ fn repair_source(s: &mut Session, p: &Value) -> CmdResult {
                         l.name
                     ));
                 }
+                // Classes by an expression that reads on the old fields must read on the new ones.
+                if let Some(e) = l.renderer.expression().filter(|e| rustgis_data::query::parse(e, &l.dataset).is_ok())
+                    && let Err(why) =
+                        rustgis_data::query::parse(e, &rustgis_data::Dataset::new("", info.geometry_type, info.fields.clone()))
+                {
+                    return Err(format!(
+                        "{full} doesn't fit {}'s symbology, which classes by `{e}` ({why}): choose a file that has its fields",
+                        l.name
+                    ));
+                }
             }
             s.map_mut().layer_mut(id).ok_or("the layer no longer exists")?.replace_source(new);
         }

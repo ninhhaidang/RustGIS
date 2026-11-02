@@ -70,7 +70,8 @@ Correct, robust and recoverable, with the foundations other themes stand on.
 ### Expressions and cartography
 Next on top of the expression language:
 - Expression labels, with rotation, case, priority and number formats.
-- Rule-based renderer: ordered rules with an expression, symbol and scale range.
+- Rule-based renderer: ordered rules with an expression, symbol and scale range, edited as such
+  (QGIS's rules import as Unique Values by expression).
 - Quick filters in the attribute table; pop-up templates (chosen fields, formats for dates, links
   and images, a title).
 
@@ -203,7 +204,7 @@ Open questions rather than plans; discuss before building.
   gallery (OpenFreeMap, USGS Imagery), worldviews.
 - Cartography: single, unique values, graduated colours (natural breaks, equal interval,
   quantile, geometric interval, standard deviation, manual, arithmetic progression, head/tail
-  breaks) and proportional symbols; symbol size, colours, outline width and angle by expression;
+  breaks) and proportional symbols; Unique Values by expression; symbol size, colours, outline width and angle by expression;
   label text, size, colour and angle by expression; nested layer groups; label classes with SQL queries, managed in the Labeling pane; straight and
   curved line placement, offsets, backgrounds, halos, wrapping, repeats, other positions round a
   point, installed font families and annotation; stacked and dashed line strokes, markers and hash

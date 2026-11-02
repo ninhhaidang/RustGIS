@@ -1,7 +1,9 @@
-//! QGIS expressions as RustGIS SQL clauses: the part of QGIS's expression language a filter
-//! mostly is (fields compared with values, `LIKE`, `IS NULL`, `IN`, joined by `AND`, `OR` and
-//! `NOT`) carried over as it is, and anything else (functions, arithmetic, `CASE`, variables)
-//! refused rather than guessed at, so the caller can note it.
+//! QGIS expressions as RustGIS ones. The part of QGIS's expression language a filter mostly is
+//! (fields compared with values, `LIKE`, `IS NULL`, `IN`, joined by `AND`, `OR` and `NOT`) is
+//! written out as RustGIS SQL, as it always was; the rest (functions, arithmetic, `CASE`,
+//! variables) is kept as it is for RustGIS's expression language
+//! ([`rustgis_data::query`]), which reads much of QGIS's. Either is checked against a layer's
+//! fields where it is used, and what doesn't read there is noted.
 
 /// The most characters of an expression read.
 const MAX_LEN: usize = 10_000;
@@ -16,13 +18,68 @@ enum Token {
     Word(String),
 }
 
-/// `expr` as a RustGIS SQL clause, or `None` when it uses more of QGIS's language than that has.
-/// The clause is checked against a layer's fields where it is used.
+/// `expr` as a RustGIS expression: written out as a RustGIS SQL clause when it is one, else as
+/// it is. `None` only when it is empty or too long to read.
 pub fn to_sql(expr: &str) -> Option<String> {
     let expr = expr.trim();
-    if expr.is_empty() || expr.len() > MAX_LEN {
+    if expr.is_empty() || expr.chars().count() > MAX_LEN {
         return None;
     }
+    Some(clause(expr).unwrap_or_else(|| rustgis_scales(expr)))
+}
+
+/// Whether a QGIS expression reads the map's scale (`@map_scale`, `$scale`), outside quotes.
+pub(super) fn reads_scale(expr: &str) -> bool {
+    rustgis_scales(expr) != expr
+}
+
+/// A QGIS expression with its map scale (`@map_scale`, `$scale`, QGIS's at 96 dpi) read as
+/// RustGIS's ([`super::QGIS_SCALE`] of it), so `@map_scale < 50000` picks the same zoom in both;
+/// text within quotes is left as it is.
+pub(super) fn rustgis_scales(expr: &str) -> String {
+    let chars: Vec<char> = expr.chars().collect();
+    let mut out = String::with_capacity(expr.len());
+    let mut quote: Option<char> = None;
+    let mut i = 0;
+    while let Some(&c) = chars.get(i) {
+        match quote {
+            Some(q) => {
+                if c == q {
+                    quote = None;
+                }
+                out.push(c);
+                i += 1;
+            }
+            None if c == '\'' || c == '"' => {
+                quote = Some(c);
+                out.push(c);
+                i += 1;
+            }
+            None if c == '@' || c == '$' => {
+                let end =
+                    (i + 1..=chars.len()).find(|j| !chars.get(*j).is_some_and(|d| d.is_alphanumeric() || *d == '_')).unwrap_or(chars.len());
+                let name: String = chars.get(i + 1..end).unwrap_or_default().iter().collect();
+                let after_word = i > 0 && chars.get(i - 1).is_some_and(|d| d.is_alphanumeric() || *d == '_');
+                if !after_word && ((c == '@' && name.eq_ignore_ascii_case("map_scale")) || (c == '$' && name.eq_ignore_ascii_case("scale")))
+                {
+                    out.push_str(&format!("(@map_scale / {})", super::QGIS_SCALE));
+                } else {
+                    out.push(c);
+                    out.push_str(&name);
+                }
+                i = end;
+            }
+            None => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+/// `expr` as a RustGIS SQL clause, or `None` when it uses more of QGIS's language than that has.
+fn clause(expr: &str) -> Option<String> {
     let tokens = tokenize(expr)?;
     let mut out = Vec::with_capacity(tokens.len());
     for t in &tokens {
@@ -176,7 +233,7 @@ fn quoted(chars: &[char], start: usize, q: char) -> Option<(String, usize)> {
 
 #[cfg(test)]
 mod tests {
-    use super::to_sql;
+    use super::{MAX_LEN, to_sql};
 
     #[test]
     fn filters_carry_over_and_the_rest_is_refused() {
@@ -189,8 +246,18 @@ mod tests {
         // Exponents written out, and TRUE and FALSE as values, as RustGIS SQL reads them.
         assert_eq!(to_sql("d < 2.5E-4 OR d > -1e+2").as_deref(), Some(r#""d" < 0.00025 OR "d" > -100"#));
         assert_eq!(to_sql("flag = TRUE AND gone = false").as_deref(), Some(r#""flag" = true AND "gone" = false"#));
-        for refused in ["upper(\"name\") = 'X'", "\"a\" + 1 > 2", "\"a\" || 'x' = 'y'", "@map_scale < 5000", "'unclosed", "", "a ! b"] {
-            assert_eq!(to_sql(refused), None, "{refused}");
+        // The rest is kept as it is, for the expression language to read where it is used.
+        for kept in ["upper(\"name\") = 'X'", "\"a\" + 1 > 2", "\"a\" || 'x' = 'y'", "@row_number < 5000", "'unclosed", "a ! b"] {
+            assert_eq!(to_sql(&format!("  {kept} ")).as_deref(), Some(kept), "{kept}");
         }
+        assert_eq!(to_sql("  "), None);
+        // QGIS's map scale read as RustGIS's, outside quotes only.
+        let k = super::super::QGIS_SCALE;
+        assert_eq!(to_sql("@map_scale < 5000").as_deref(), Some(format!("(@map_scale / {k}) < 5000").as_str()));
+        assert_eq!(
+            super::rustgis_scales("$scale > 1 AND \"@map_scale\" = '$scale' AND @map_scales = 2 AND a$scale"),
+            format!("(@map_scale / {k}) > 1 AND \"@map_scale\" = '$scale' AND @map_scales = 2 AND a$scale")
+        );
+        assert_eq!(to_sql(&"a".repeat(MAX_LEN + 1)), None);
     }
 }

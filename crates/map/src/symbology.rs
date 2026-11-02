@@ -125,6 +125,16 @@ const LAYER_COLORS: [[u8; 3]; 8] = [
 ];
 
 impl Symbol {
+    /// Whether anything is drawn with this symbol for a `g` feature: a line its stroke, an area
+    /// or point its fill or an outline with a width (a point of size 0 nothing).
+    pub fn draws(&self, g: GeometryType) -> bool {
+        match g {
+            GeometryType::Polyline => self.stroke.a() > 0,
+            GeometryType::Point if self.size <= 0.0 => false,
+            _ => self.fill.a() > 0 || (self.stroke.a() > 0 && self.stroke_width > 0.0),
+        }
+    }
+
     pub fn default_for(g: GeometryType, seed: u32) -> Symbol {
         let c = LAYER_COLORS.get(seed as usize % LAYER_COLORS.len()).copied().unwrap_or([0x4A, 0x90, 0xD9]);
         let base = Rgba::rgb(c[0], c[1], c[2]);
@@ -694,6 +704,12 @@ pub enum Renderer {
         /// The stacked fills of `other`; empty takes the layer's.
         #[serde(default, skip_serializing_if = "Vec::is_empty", deserialize_with = "crate::fills::de_fills")]
         other_fills: Vec<FillLayer>,
+        /// Unique Values by expression: a feature's class value is this expression's (in the
+        /// language of [`rustgis_data::query`]) in place of `field`'s, which is then empty. The
+        /// text is kept and compiled against the layer's fields where it is used
+        /// ([`Renderer::classer`]); where it doesn't read, or gives null, a feature is `other`.
+        #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "de_expression")]
+        expression: Option<String>,
     },
     /// Upper bounds of each class (ascending) and one symbol per class.
     Graduated {
@@ -733,6 +749,10 @@ pub enum Renderer {
 /// The legend label of a Unique Values renderer's fallback class.
 pub const OTHER_VALUES: &str = "<all other values>";
 
+/// The most features × classes a legend of Unique Values by expression classes its features for
+/// (it is worked out as the Layers pane is drawn): past it, every class is listed.
+pub const MAX_LEGEND_STEPS: usize = 2_000_000;
+
 /// One legend row.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LegendEntry {
@@ -761,6 +781,24 @@ pub enum ClassRef {
     Index(usize),
     /// The Unique Values fallback, `<all other values>`.
     Other,
+}
+
+/// Reads a class expression leniently: text up to [`rustgis_data::query::MAX_LEN`], blank or
+/// anything else none.
+fn de_expression<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(match serde_json::Value::deserialize(d)? {
+        serde_json::Value::String(s) if !s.trim().is_empty() && s.chars().count() <= rustgis_data::query::MAX_LEN => Some(s),
+        _ => None,
+    })
+}
+
+/// A renderer's class expression ([`Renderer::Unique`]'s `expression`) compiled against a
+/// dataset's fields for one drawing, with the map scale it reads (`@map_scale`); nothing for a
+/// renderer that classes by a field. Built by [`Renderer::classer`].
+#[derive(Clone, Debug, Default)]
+pub struct Classer {
+    expr: Option<rustgis_data::query::Expr>,
+    env: rustgis_data::query::Env,
 }
 
 /// The class a feature falls in ([`Renderer::class_of`]): a place in the classes, or Unique
@@ -805,10 +843,30 @@ impl Renderer {
         }
     }
 
+    /// The field it classes or sizes by; `None` for a single symbol and for Unique Values by
+    /// expression ([`Renderer::expression`]).
     pub fn field(&self) -> Option<&str> {
         match self {
-            Renderer::Single(_) => None,
+            Renderer::Single(_) | Renderer::Unique { expression: Some(_), .. } => None,
             Renderer::Unique { field, .. } | Renderer::Graduated { field, .. } | Renderer::Proportional { field, .. } => Some(field),
+        }
+    }
+
+    /// The expression Unique Values class by, in place of a field.
+    pub fn expression(&self) -> Option<&str> {
+        match self {
+            Renderer::Unique { expression: Some(e), .. } => Some(e),
+            _ => None,
+        }
+    }
+
+    /// Its class expression ([`Renderer::expression`]) compiled against `ds` for drawing at the
+    /// map scale 1:`map_scale` (none: no map, as in an export of the features).
+    pub fn classer(&self, ds: &Dataset, map_scale: Option<f64>) -> Classer {
+        let Some(text) = self.expression() else { return Classer::default() };
+        Classer {
+            expr: rustgis_data::query::parse(text, ds).ok(),
+            env: rustgis_data::query::Env { map_scale: map_scale.filter(|s| s.is_finite() && *s > 0.0) },
         }
     }
 
@@ -841,7 +899,69 @@ impl Renderer {
             other_strokes: Vec::new(),
             class_fills: Default::default(),
             other_fills: Vec::new(),
+            expression: None,
         })
+    }
+
+    /// Builds a Unique Values renderer classing by an expression's values over the rows `rows`
+    /// keeps (a row past its end counts), at most [`MAX_UNIQUE`] of them in order; a row whose
+    /// value is null is `other`. The values are those it gives without a map (`@map_scale` null):
+    /// a value it gives only at some scales is a class once it is given then (as a style import
+    /// makes them), else drawn as `other`. The text is checked against `ds`'s fields.
+    pub fn unique_by(ds: &Dataset, rows: &[bool], expression: &str, ramp: Ramp, base: Symbol) -> Result<Renderer, String> {
+        Self::unique_by_counted(ds, rows, expression, ramp, base).map(|(r, _)| r)
+    }
+
+    /// [`Renderer::unique_by`], and how many kept features with a geometry have a value past the
+    /// first [`MAX_UNIQUE`] (in text order), drawn as `<all other values>`.
+    pub fn unique_by_counted(ds: &Dataset, rows: &[bool], expression: &str, ramp: Ramp, base: Symbol) -> Result<(Renderer, usize), String> {
+        let text = expression.trim();
+        if text.chars().count() > rustgis_data::query::MAX_LEN {
+            return Err(format!("the expression is longer than {} characters", rustgis_data::query::MAX_LEN));
+        }
+        let e = rustgis_data::query::parse(text, ds)?;
+        let env = rustgis_data::query::Env::default();
+        // The first values in order, never more than MAX_UNIQUE kept, each with its features: one
+        // put out of the first can't come back (any later one is past the last kept), so its
+        // features and every later one past the last kept are counted as the rest.
+        let mut kept: BTreeMap<String, usize> = BTreeMap::new();
+        let mut rest = 0usize;
+        for r in (0..ds.features.len()).filter(|r| rows.get(*r).copied().unwrap_or(true)) {
+            let v = match rustgis_data::query::value(&e, ds, r, &env) {
+                rustgis_data::Value::Null => continue,
+                rustgis_data::Value::Text(t) => t,
+                v => v.to_string(),
+            };
+            // (A feature without a geometry draws nothing, so it isn't counted.)
+            let drawn = usize::from(ds.features.get(r).is_some_and(|f| f.geometry.is_some()));
+            if kept.len() >= MAX_UNIQUE && kept.last_key_value().is_some_and(|(last, _)| v > *last) {
+                rest += drawn;
+                continue;
+            }
+            *kept.entry(v).or_insert(0) += drawn;
+            if kept.len() > MAX_UNIQUE {
+                rest += kept.pop_last().map_or(0, |(_, n)| n);
+            }
+        }
+        let vals: Vec<String> = kept.into_keys().collect();
+        let n = vals.len();
+        let classes = vals.into_iter().enumerate().map(|(k, v)| (v, base.with_ramp_fill(ramp.pick(k, n), ds.geometry_type))).collect();
+        Ok((
+            Renderer::Unique {
+                field: String::new(),
+                classes,
+                other: base.with_ramp_fill(OTHER_FILL, ds.geometry_type),
+                ramp,
+                class_labels: BTreeMap::new(),
+                other_label: None,
+                class_strokes: BTreeMap::new(),
+                other_strokes: Vec::new(),
+                class_fills: Default::default(),
+                other_fills: Vec::new(),
+                expression: Some(text.to_string()),
+            },
+            rest,
+        ))
     }
 
     /// Builds a graduated-colours renderer on a numeric `field`, classing the rows `rows` keeps (a
@@ -973,7 +1093,28 @@ impl Renderer {
     /// first class) or `<all other values>`, a Graduated Colors class's index; `None` for the other
     /// renderers, and for a Graduated Colors row without a number.
     fn class_of(&self, ds: &Dataset, row: usize) -> Option<Slot> {
+        self.class_in(ds, row, &self.classer(ds, None))
+    }
+
+    /// [`Renderer::class_of`] with its class expression compiled (`c`, from [`Renderer::classer`]).
+    fn class_in(&self, ds: &Dataset, row: usize, c: &Classer) -> Option<Slot> {
         match self {
+            Renderer::Unique { expression: Some(_), classes, .. } => {
+                let Some(e) = &c.expr else { return Some(Slot::Other) };
+                let printed;
+                let v = match rustgis_data::query::value(e, ds, row, &c.env) {
+                    rustgis_data::Value::Null => return Some(Slot::Other),
+                    rustgis_data::Value::Text(t) => {
+                        printed = t;
+                        printed.as_str()
+                    }
+                    v => {
+                        printed = v.to_string();
+                        printed.as_str()
+                    }
+                };
+                Some(classes.iter().position(|(k, _)| k == v).map_or(Slot::Other, Slot::Class))
+            }
             Renderer::Unique { field, classes, .. } => {
                 let Some(fi) = ds.field_index(field) else { return Some(Slot::Other) };
                 // Text compares as it is; other values as they print.
@@ -1028,6 +1169,22 @@ impl Renderer {
     /// [`Renderer::fills_for`]), the feature classed once for all three.
     pub fn style_fills_for(&self, ds: &Dataset, row: usize) -> (Symbol, Option<&[LineStroke]>, Option<&[FillLayer]>) {
         let slot = self.class_of(ds, row);
+        (self.symbol_in(ds, row, slot), self.strokes_in(slot), self.fills_in(slot))
+    }
+
+    /// The place in `classes` of the Unique Values class a feature row falls in (`c` from
+    /// [`Renderer::classer`]); `None` for `<all other values>` and the other renderers.
+    pub fn unique_class(&self, ds: &Dataset, row: usize, c: &Classer) -> Option<usize> {
+        match (self, self.class_in(ds, row, c)) {
+            (Renderer::Unique { .. }, Some(Slot::Class(i))) => Some(i),
+            _ => None,
+        }
+    }
+
+    /// [`Renderer::style_fills_for`] with its class expression compiled ([`Renderer::classer`]),
+    /// for drawing many features.
+    pub fn style_fills_with(&self, ds: &Dataset, row: usize, c: &Classer) -> (Symbol, Option<&[LineStroke]>, Option<&[FillLayer]>) {
+        let slot = self.class_in(ds, row, c);
         (self.symbol_in(ds, row, slot), self.strokes_in(slot), self.fills_in(slot))
     }
 
@@ -1205,13 +1362,38 @@ impl Renderer {
     /// The classes may come from a style file or from before a definition query changed, so they
     /// can name values no kept feature has. The other renderers list their classes as they are.
     pub fn legend_for(&self, ds: &Dataset, rows: &[bool]) -> Vec<LegendEntry> {
-        let Renderer::Unique { field, classes, other, class_labels, other_label, .. } = self else { return self.legend() };
+        self.legend_at(ds, rows, None)
+    }
+
+    /// [`Renderer::legend_for`] for the map drawn at 1:`map_scale` (none: no map), which Unique
+    /// Values by an expression reading `@map_scale` class by. One whose expression would take
+    /// more than [`MAX_LEGEND_STEPS`] to class every kept feature lists all its classes.
+    pub fn legend_at(&self, ds: &Dataset, rows: &[bool], map_scale: Option<f64>) -> Vec<LegendEntry> {
+        let Renderer::Unique { field, classes, other, class_labels, other_label, expression, other_fills, other_strokes, .. } = self else {
+            return self.legend();
+        };
+        // A fallback that draws nothing has nothing to stand for in a legend: its own symbol as
+        // `Symbol::draws` has it (as a web style does), else its stacked strokes (on lines and
+        // points) or stacked fills (on areas); a point of size 0 draws none of them.
+        let polygon = ds.geometry_type == GeometryType::Polygon;
+        let strokes = !polygon
+            && other_strokes.iter().any(|s| s.color.unwrap_or(other.stroke).a() > 0 && s.width.unwrap_or(other.stroke_width) > 0.0);
+        let fills = polygon && other_fills.iter().any(|f| f.draws(other.fill));
+        let sized = ds.geometry_type != GeometryType::Point || other.size > 0.0;
+        let visible = other.draws(ds.geometry_type) || (sized && (strokes || fills));
+        if expression.is_some() && ds.features.len().saturating_mul(classes.len().max(1)) > MAX_LEGEND_STEPS {
+            let mut all = self.legend();
+            all.retain(|e| visible || !e.fallback);
+            return all;
+        }
         // A value matches its first class, as in `symbol_for`.
         let mut index: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
         for (i, (k, _)) in classes.iter().enumerate() {
             index.entry(k.as_str()).or_insert(i);
         }
         let fi = ds.field_index(field);
+        // By expression: each feature classed as it is drawn.
+        let classer = expression.as_ref().map(|_| self.classer(ds, map_scale));
         let mut used = vec![false; classes.len()];
         let mut other_used = false;
         // Distinct classes still unseen: once every class and "other" are in, the rest can't add any.
@@ -1219,12 +1401,19 @@ impl Renderer {
         // One buffer for every value's text, rather than a string per feature.
         let mut text = String::new();
         for r in (0..ds.features.len()).filter(|r| rows.get(*r).copied().unwrap_or(true)) {
-            let class = fi.and_then(|fi| {
-                use std::fmt::Write;
-                text.clear();
-                write!(text, "{}", ds.value(r, fi)).ok()?;
-                index.get(text.as_str()).copied()
-            });
+            let class = if let Some(c) = &classer {
+                match self.class_in(ds, r, c) {
+                    Some(Slot::Class(i)) => classes.get(i).and_then(|(k, _)| index.get(k.as_str()).copied()),
+                    _ => None,
+                }
+            } else {
+                fi.and_then(|fi| {
+                    use std::fmt::Write;
+                    text.clear();
+                    write!(text, "{}", ds.value(r, fi)).ok()?;
+                    index.get(text.as_str()).copied()
+                })
+            };
             let seen = match class.and_then(|i| used.get_mut(i)) {
                 Some(u) => std::mem::replace(u, true),
                 None => std::mem::replace(&mut other_used, true),
@@ -1243,9 +1432,6 @@ impl Renderer {
             .map(|((k, s), _)| LegendEntry { label: unique_label(class_labels, k), symbol: *s, fallback: false })
             .collect();
         v.sort_by_cached_key(|e| e.label.to_lowercase());
-        // A fully transparent fallback draws nothing, so it has nothing to stand for in a legend.
-        // Lines draw with their stroke only.
-        let visible = other.stroke.a() > 0 || (ds.geometry_type != GeometryType::Polyline && other.fill.a() > 0);
         if other_used && visible {
             v.push(LegendEntry { label: other_label.clone().unwrap_or_else(|| OTHER_VALUES.into()), symbol: *other, fallback: true });
         }
@@ -1397,7 +1583,7 @@ impl Renderer {
     }
 
     /// Carries hand-made class edits over from `old` when the symbology is applied again (#314).
-    /// On the same field, a class that is still there keeps its legend label (a Graduated Colors
+    /// On the same field (or expression), a class that is still there keeps its legend label (a Graduated Colors
     /// class keeps its edits only while the ranges are the same: they belong to a range). With the
     /// same colour scheme too, it keeps the colour and outline set by hand: those that aren't what
     /// the scheme gave it at its place in `old` (see [`carry_class`]). The other classes take the
@@ -1418,6 +1604,7 @@ impl Renderer {
                     other_strokes,
                     class_fills,
                     other_fills,
+                    expression,
                 },
                 Renderer::Unique {
                     field: of,
@@ -1430,8 +1617,9 @@ impl Renderer {
                     other_strokes: oos,
                     class_fills: ocf,
                     other_fills: oof,
+                    expression: oe,
                 },
-            ) if field == of => {
+            ) if field == of && expression == oe => {
                 let same_scheme = ramp == or;
                 let n = oc.len();
                 // Strokes and fills are drawn by hand, as labels are: a class keeps them whatever
@@ -2362,18 +2550,22 @@ pub type LabelKey = (u32, u64, usize, usize);
 /// clause takes a row labels it.
 pub struct LabelMatcher<'a> {
     classes: Vec<(&'a LabelClass, Option<Option<rustgis_data::query::Expr>>)>,
+    env: rustgis_data::query::Env,
 }
 
 impl<'a> LabelMatcher<'a> {
-    pub fn new(labels: &'a Labeling, ds: &Dataset) -> Self {
-        LabelMatcher { classes: labels.in_order().map(|c| (c, c.query(ds))).collect() }
+    /// `map_scale`: the scale (1:N) the labels are drawn at, which a clause may read
+    /// (`@map_scale`); none: no map.
+    pub fn new(labels: &'a Labeling, ds: &Dataset, map_scale: Option<f64>) -> Self {
+        let env = rustgis_data::query::Env { map_scale: map_scale.filter(|s| s.is_finite() && *s > 0.0) };
+        LabelMatcher { classes: labels.in_order().map(|c| (c, c.query(ds))).collect(), env }
     }
 
     /// The classes whose clause takes `row`, each with its place in `Labeling::in_order`.
     pub fn classes_of(&self, ds: &Dataset, row: usize) -> impl Iterator<Item = (usize, &'a LabelClass)> {
         self.classes.iter().enumerate().filter_map(move |(i, (c, q))| match q {
             Some(None) => Some((i, *c)),
-            Some(Some(e)) if rustgis_data::query::eval(e, ds, row) => Some((i, *c)),
+            Some(Some(e)) if rustgis_data::query::matches(e, ds, row, &self.env) => Some((i, *c)),
             _ => None,
         })
     }
@@ -2766,7 +2958,7 @@ mod tests {
         let class = |name: &str, w: &str| LabelClass { name: name.into(), where_: Some(w.into()), ..LabelClass::default_for(&ds) };
         l.classes = vec![class("Big", "pop > 100"), class("Medium", "pop > 10"), class("Broken", "nope = 1")];
         let names = |l: &Labeling| -> Vec<Vec<(usize, String)>> {
-            let m = LabelMatcher::new(l, &ds);
+            let m = LabelMatcher::new(l, &ds, None);
             (0..3).map(|r| m.classes_of(&ds, r).map(|(i, c)| (i, c.name.clone())).collect()).collect()
         };
         let (big, medium, default) = ((0, "Big".to_string()), (1, "Medium".to_string()), (3, "Default".to_string()));
@@ -2821,6 +3013,7 @@ mod tests {
             other_strokes: Vec::new(),
             class_fills: Default::default(),
             other_fills: Vec::new(),
+            expression: None,
         };
         let labels = |rows: &[bool]| r.legend_for(&d, rows).into_iter().map(|e| e.label).collect::<Vec<_>>();
         assert_eq!(labels(&[]), ["a", "b", "<all other values>"]);
@@ -2842,6 +3035,7 @@ mod tests {
             other_strokes: Vec::new(),
             class_fills: Default::default(),
             other_fills: Vec::new(),
+            expression: None,
         };
         let shown = twice.legend_for(&d, &[]);
         assert_eq!(shown.iter().map(|e| e.label.as_str()).collect::<Vec<_>>(), ["a", "b", "<all other values>"]);
@@ -2858,6 +3052,7 @@ mod tests {
             other_strokes: Vec::new(),
             class_fills: Default::default(),
             other_fills: Vec::new(),
+            expression: None,
         };
         assert_eq!(gone.legend_for(&d, &[]).len(), 1);
         // The fallback row is marked as such, whatever a class is called.
@@ -2872,6 +3067,7 @@ mod tests {
             other_strokes: Vec::new(),
             class_fills: Default::default(),
             other_fills: Vec::new(),
+            expression: None,
         };
         let mut d2 = d.clone();
         d2.push(None, vec![Value::Text(OTHER_VALUES.into())]);
@@ -2905,6 +3101,7 @@ mod tests {
             other_strokes: Vec::new(),
             class_fills: Default::default(),
             other_fills: Vec::new(),
+            expression: None,
         };
         let labels = |r: &Renderer, rows: &[bool]| r.legend_for(&d, rows).into_iter().map(|e| e.label).collect::<Vec<_>>();
         assert_eq!(labels(&r, &[]), ["a"], "z falls in the invisible fallback");
@@ -2923,6 +3120,7 @@ mod tests {
             other_strokes: Vec::new(),
             class_fills: Default::default(),
             other_fills: Vec::new(),
+            expression: None,
         };
         assert_eq!(labels(&r2, &[]), ["a", OTHER_VALUES]);
         // A line's fill draws nothing: a fallback with only a fill is invisible on lines.
@@ -2941,9 +3139,40 @@ mod tests {
             other_strokes: Vec::new(),
             class_fills: Default::default(),
             other_fills: Vec::new(),
+            expression: None,
         };
         assert!(r3.legend_for(&lines, &[]).is_empty());
         assert_eq!(labels(&r3, &[]), ["a", OTHER_VALUES], "a polygon fill still shows");
+        // An outline without a width draws nothing, nor does a point of size 0 (as a web style has it).
+        let with_other = |r: &Renderer, o: Symbol| match r.clone() {
+            Renderer::Unique { field, classes, ramp, class_labels, other_label, class_strokes, class_fills, expression, .. } => {
+                Renderer::Unique {
+                    field,
+                    classes,
+                    other: o,
+                    ramp,
+                    class_labels,
+                    other_label,
+                    class_strokes,
+                    other_strokes: Vec::new(),
+                    class_fills,
+                    other_fills: Vec::new(),
+                    expression,
+                }
+            }
+            r => r,
+        };
+        let mut hairline = stroked;
+        hairline.stroke_width = 0.0;
+        assert_eq!(labels(&with_other(&r, hairline), &[]), ["a"]);
+        // A line's stroke draws whatever its width.
+        assert!(!with_other(&r, hairline).legend_for(&lines, &[]).is_empty());
+        let mut points = Dataset::new("p", GeometryType::Point, vec![Field::new("g", FieldType::Text)]);
+        points.push(None, vec![Value::Text("z".into())]);
+        let mut dot = Symbol::default_for(GeometryType::Point, 3);
+        assert!(!with_other(&r, dot).legend_for(&points, &[]).is_empty(), "a sized point shows");
+        dot.size = 0.0;
+        assert!(with_other(&r, dot).legend_for(&points, &[]).is_empty());
         // The full legend (the symbology editor's list) keeps it.
         assert_eq!(r.legend().len(), 2);
     }
@@ -2971,6 +3200,7 @@ mod tests {
             other_strokes: Vec::new(),
             class_fills: Default::default(),
             other_fills: Vec::new(),
+            expression: None,
         };
         let legend = renderer.legend();
         assert_eq!(
@@ -3168,6 +3398,149 @@ mod tests {
     }
 
     #[test]
+    fn unique_values_by_an_expression_count_what_is_past_their_classes() {
+        let base = Symbol::default_for(GeometryType::Point, 0);
+        let mut d = Dataset::new("p", GeometryType::Point, vec![rustgis_data::Field::new("n", rustgis_data::FieldType::Integer)]);
+        // 100 values, each on two features, in no order: the first 64 (as text) are kept.
+        for i in (0..100i64).rev().chain(0..100) {
+            d.push(Some(rustgis_data::Geometry::Point(rustgis_geom::Coord::new(0.0, 0.0))), vec![rustgis_data::Value::Int(i)]);
+        }
+        let (r, rest) = Renderer::unique_by_counted(&d, &[], "n", Ramp::Harbour, base).unwrap();
+        let Renderer::Unique { classes, .. } = &r else { panic!() };
+        let mut all: Vec<String> = (0..100).map(|i: i64| i.to_string()).collect();
+        all.sort();
+        assert_eq!(classes.iter().map(|c| c.0.clone()).collect::<Vec<_>>(), all[..MAX_UNIQUE]);
+        assert_eq!(rest, 2 * (100 - MAX_UNIQUE));
+        let (_, rest) = Renderer::unique_by_counted(&d, &[], "n % 10", Ramp::Harbour, base).unwrap();
+        assert_eq!(rest, 0);
+        // A feature without a geometry draws nothing, so it isn't counted.
+        d.push(None, vec![rustgis_data::Value::Int(99)]);
+        let (_, rest) = Renderer::unique_by_counted(&d, &[], "n", Ramp::Harbour, base).unwrap();
+        assert_eq!(rest, 2 * (100 - MAX_UNIQUE));
+    }
+
+    /// The rest is in the legend when its stacked fills or strokes draw, though its own symbol
+    /// doesn't.
+    #[test]
+    fn the_rests_stacked_fills_and_strokes_put_it_in_the_legend() {
+        for g in [GeometryType::Polygon, GeometryType::Polyline] {
+            let mut d = Dataset::new("p", g, vec![]);
+            let shape = match g {
+                GeometryType::Polygon => rustgis_data::Geometry::Polygon(vec![vec![vec![
+                    rustgis_geom::Coord::new(0.0, 0.0),
+                    rustgis_geom::Coord::new(1.0, 0.0),
+                    rustgis_geom::Coord::new(0.0, 1.0),
+                    rustgis_geom::Coord::new(0.0, 0.0),
+                ]]]),
+                _ => rustgis_data::Geometry::Line(vec![vec![rustgis_geom::Coord::new(0.0, 0.0), rustgis_geom::Coord::new(1.0, 1.0)]]),
+            };
+            d.push(Some(shape), vec![]);
+            let mut r = Renderer::unique_by(&d, &[], "NULL", Ramp::Harbour, Symbol::default_for(g, 0)).unwrap();
+            let Renderer::Unique { other, .. } = &mut r else { panic!() };
+            (other.fill, other.stroke) = (Rgba::new(0, 0, 0, 0), Rgba::new(0, 0, 0, 0));
+            let rest = |r: &Renderer| r.legend_for(&d, &[]).iter().any(|e| e.fallback);
+            assert!(!rest(&r), "{g:?}: nothing draws");
+            let Renderer::Unique { other_fills, other_strokes, .. } = &mut r else { panic!() };
+            match g {
+                GeometryType::Polygon => {
+                    other_fills.push(crate::fills::FillLayer { color: Some(Rgba::rgb(1, 2, 3)), ..Default::default() })
+                }
+                _ => other_strokes.push(LineStroke { color: Some(Rgba::rgb(1, 2, 3)), width: Some(2.0), ..Default::default() }),
+            }
+            assert!(rest(&r), "{g:?}: the stacked one draws");
+        }
+    }
+
+    /// Label clauses read the scale the labels are drawn at.
+    #[test]
+    fn label_clauses_read_the_drawing_scale() {
+        let mut d = Dataset::new("p", GeometryType::Point, vec![]);
+        d.push(Some(rustgis_data::Geometry::Point(rustgis_geom::Coord::new(0.0, 0.0))), vec![]);
+        let mut l = Labeling::default_for(&d);
+        l.default.where_ = Some("@map_scale > 1000".into());
+        assert_eq!(LabelMatcher::new(&l, &d, Some(5_000.0)).classes_of(&d, 0).count(), 1);
+        assert_eq!(LabelMatcher::new(&l, &d, Some(500.0)).classes_of(&d, 0).count(), 0);
+        assert_eq!(LabelMatcher::new(&l, &d, None).classes_of(&d, 0).count(), 0);
+    }
+
+    #[test]
+    fn unique_values_class_by_an_expression() {
+        let mut d =
+            Dataset::new("t", GeometryType::Point, vec![Field::new("pop", FieldType::Integer), Field::new("name", FieldType::Text)]);
+        for (pop, name) in [(5, "a"), (500, "b"), (50_000, "c"), (7, "d")] {
+            d.push(None, vec![Value::Int(pop), Value::Text(name.into())]);
+        }
+        d.push(None, vec![Value::Null, Value::Text("e".into())]);
+        let base = Symbol::default_for(GeometryType::Point, 0);
+        let e = "CASE WHEN pop >= 1000 THEN 'city' WHEN pop >= 100 THEN 'town' WHEN pop < 100 THEN 'village' END";
+        let r = Renderer::unique_by(&d, &[], e, Ramp::Harbour, base).unwrap();
+        let Renderer::Unique { field, classes, expression, .. } = &r else { panic!() };
+        assert!(field.is_empty());
+        assert_eq!(expression.as_deref(), Some(e));
+        assert_eq!(classes.iter().map(|c| c.0.as_str()).collect::<Vec<_>>(), ["city", "town", "village"], "a null value isn't a class");
+        assert_eq!((r.field(), r.expression()), (None, Some(e)));
+        let c = r.classer(&d, None);
+        let class: Vec<Option<usize>> = (0..5).map(|row| r.unique_class(&d, row, &c)).collect();
+        assert_eq!(class, [Some(2), Some(1), Some(0), Some(2), None]);
+        assert_eq!(r.symbol_for(&d, 1), classes[1].1, "one row at a time too");
+        // The legend lists the classes some kept feature has, and the rest for the null.
+        let labels = |rows: &[bool]| r.legend_for(&d, rows).into_iter().map(|e| e.label).collect::<Vec<_>>();
+        assert_eq!(labels(&[]), ["city", "town", "village", OTHER_VALUES]);
+        assert_eq!(labels(&[true, false, false, true, false]), ["village"]);
+        // Numbers and values that print: as they print.
+        let r = Renderer::unique_by(&d, &[], "pop % 2", Ramp::Harbour, base).unwrap();
+        let Renderer::Unique { classes, .. } = &r else { panic!() };
+        assert_eq!(classes.iter().map(|c| c.0.as_str()).collect::<Vec<_>>(), ["0", "1"]);
+        // What doesn't read is refused when it's set, and classes nothing where it no longer reads.
+        assert!(Renderer::unique_by(&d, &[], "nope + 1", Ramp::Harbour, base).unwrap_err().contains("nope"));
+        assert!(Renderer::unique_by(&d, &[], &"1".repeat(rustgis_data::query::MAX_LEN + 1), Ramp::Harbour, base).is_err());
+        let other = Dataset::new("t", GeometryType::Point, vec![Field::new("x", FieldType::Integer)]);
+        let mut other = other;
+        other.push(None, vec![Value::Int(1)]);
+        assert_eq!(r.unique_class(&other, 0, &r.classer(&other, None)), None);
+        // A renderer by a field has no expression to compile, and classes as before.
+        let by_field = Renderer::unique(&d, &[], "name", Ramp::Harbour, base).unwrap();
+        assert_eq!((by_field.field(), by_field.expression()), (Some("name"), None));
+        assert_eq!(by_field.unique_class(&d, 1, &by_field.classer(&d, None)), Some(1));
+    }
+
+    #[test]
+    fn a_class_expression_reads_the_map_scale_and_saves_as_text() {
+        let mut d = Dataset::new("t", GeometryType::Point, vec![Field::new("pop", FieldType::Integer)]);
+        d.push(None, vec![Value::Int(5)]);
+        let base = Symbol::default_for(GeometryType::Point, 0);
+        let e = "CASE WHEN @map_scale IS NULL OR @map_scale < 10000 THEN 'near' ELSE 'far' END";
+        let r = Renderer::unique_by(&d, &[], e, Ramp::Harbour, base).unwrap();
+        let Renderer::Unique { classes, .. } = &r else { panic!() };
+        let key = |scale| r.unique_class(&d, 0, &r.classer(&d, scale)).and_then(|i| classes.get(i)).map(|c| c.0.as_str());
+        assert_eq!((key(None), key(Some(5000.0)), key(Some(50_000.0))), (Some("near"), Some("near"), None), "'far' isn't a class");
+        // Saved as its text; read back the same, and junk read as none.
+        let json = serde_json::to_value(&r).unwrap();
+        assert_eq!(json["Unique"]["expression"], e);
+        assert_eq!(serde_json::from_value::<Renderer>(json.clone()).unwrap(), r);
+        for junk in [serde_json::json!(5), serde_json::json!("  "), serde_json::json!("x".repeat(rustgis_data::query::MAX_LEN + 1))] {
+            let mut j = json.clone();
+            j["Unique"]["expression"] = junk;
+            assert_eq!(serde_json::from_value::<Renderer>(j).unwrap().expression(), None);
+        }
+        // A renderer from before: no expression key, and none written.
+        let by_field = Renderer::unique(&d, &[], "pop", Ramp::Harbour, base).unwrap();
+        let json = serde_json::to_value(&by_field).unwrap();
+        assert!(json["Unique"].get("expression").is_none());
+        // Edits carry over on the same expression only.
+        let mut again = Renderer::unique_by(&d, &[], e, Ramp::Harbour, base).unwrap();
+        let mut edited = r.clone();
+        if let Renderer::Unique { class_labels, .. } = &mut edited {
+            class_labels.insert("near".into(), "Near".into());
+        }
+        again.carry_edits_from(&edited, GeometryType::Point);
+        assert_eq!(again.legend()[0].label, "Near");
+        let mut other = Renderer::unique_by(&d, &[], "'near'", Ramp::Harbour, base).unwrap();
+        other.carry_edits_from(&edited, GeometryType::Point);
+        assert_eq!(other.legend()[0].label, "near");
+    }
+
+    #[test]
     fn classes_come_from_the_kept_rows() {
         let mut d = Dataset::new("t", GeometryType::Polygon, vec![Field::new("v", FieldType::Double)]);
         for v in [1.0, 2.0, 3.0, 1000.0] {
@@ -3209,6 +3582,7 @@ mod tests {
             other_strokes: Vec::new(),
             class_fills: Default::default(),
             other_fills: Vec::new(),
+            expression: None,
         }
     }
 

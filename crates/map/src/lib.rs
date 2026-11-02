@@ -36,8 +36,8 @@ pub use color::{Ramp, RampGroup, Rgba};
 pub use globe::{Globe, Projection};
 pub use raster::{RasterDefaults, RasterLayer, RasterRenderer, RasterStyle, Resampling, Stretch};
 pub use symbology::{
-    ClassMethod, FontName, Glyph, LabelBackground, LabelClass, LabelKey, LabelMatcher, LabelPlacement, Labeling, LineCap, LineJoin,
-    LineMark, LineMarkers, LineStroke, Marker, MarkerRotation, Placements, Renderer, Symbol,
+    ClassMethod, Classer, FontName, Glyph, LabelBackground, LabelClass, LabelKey, LabelMatcher, LabelPlacement, Labeling, LineCap,
+    LineJoin, LineMark, LineMarkers, LineStroke, Marker, MarkerRotation, Placements, Renderer, Symbol,
 };
 pub use tiles::{TileKind, TileLayer};
 
@@ -707,6 +707,16 @@ impl Layer {
         (symbol, strokes.unwrap_or(&self.line_strokes), fills.unwrap_or(&self.fill_layers))
     }
 
+    /// [`Layer::style_and_fills`] with its renderer's class expression compiled (`c`, from
+    /// [`Renderer::classer`]), as a drawing of many features takes it.
+    pub fn style_and_fills_with(&self, row: usize, c: &Classer) -> (Symbol, &[LineStroke], &[fills::FillLayer]) {
+        if self.graphics || self.renderer.expression().is_none() {
+            return self.style_and_fills(row);
+        }
+        let (symbol, strokes, fills) = self.renderer.style_fills_with(&self.dataset, row, c);
+        (symbol, strokes.unwrap_or(&self.line_strokes), fills.unwrap_or(&self.fill_layers))
+    }
+
     /// Whether some feature may be drawn with stacked fills ([`Layer::fills`]).
     pub fn has_fills(&self) -> bool {
         !self.graphics && (!self.fill_layers.is_empty() || self.renderer.has_class_fills())
@@ -1008,10 +1018,10 @@ impl Layer {
         let query = self.definition_query.as_deref().is_some_and(|q| !q.trim().is_empty());
         let timed = self.time.as_ref().is_some_and(|t| t.window.is_some());
         if !query && !timed && self.display_filters.is_empty() {
-            return (!self.dataset.features.is_empty()).then(|| self.renderer.legend_for(&self.dataset, &[]));
+            return (!self.dataset.features.is_empty()).then(|| self.renderer.legend_at(&self.dataset, &[], Some(scale)));
         }
         let rows = self.drawn_rows(scale);
-        rows.contains(&true).then(|| self.renderer.legend_for(&self.dataset, &rows))
+        rows.contains(&true).then(|| self.renderer.legend_at(&self.dataset, &rows, Some(scale)))
     }
 
     /// Rows passing the definition query (all rows when none or invalid).
@@ -2887,6 +2897,7 @@ mod tests {
             other_strokes: wild.clone(),
             class_fills: Default::default(),
             other_fills: Vec::new(),
+            expression: None,
         };
         let back: Layer = serde_json::from_str(&serde_json::to_string(&l).unwrap()).unwrap();
         let Renderer::Unique { class_strokes, other_strokes, .. } = &back.renderer else { panic!("unique renderer expected") };
@@ -3363,6 +3374,7 @@ mod tests {
             other_strokes: Vec::new(),
             class_fills: Default::default(),
             other_fills: Vec::new(),
+            expression: None,
         };
         let labels = |l: &Layer, scale| l.shown_legend(scale).map(|v| v.into_iter().map(|e| e.label).collect::<Vec<_>>());
         assert_eq!(labels(l, 1e6), Some(vec!["1".to_string(), "2".to_string()]), "no 9, no <all other values>");

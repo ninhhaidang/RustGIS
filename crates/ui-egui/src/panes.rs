@@ -2006,7 +2006,12 @@ fn layer_row(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, scale: f64, reorder: 
     {
         raster_legend_rows(ui, entries, 74.0, t);
     } else if l.expanded && has_legend {
-        let field = l.renderer.field().unwrap_or("").to_string();
+        // (By expression: the expression, cut short.)
+        let field = match l.renderer.expression() {
+            Some(e) if e.chars().count() > 60 => format!("{}…", e.chars().take(60).collect::<String>()),
+            Some(e) => e.to_string(),
+            None => l.renderer.field().unwrap_or("").to_string(),
+        };
         ui.horizontal(|ui| {
             ui.add_space(74.0);
             ui.label(egui::RichText::new(field).size(11.0).color(t.text_dim));
@@ -4199,8 +4204,14 @@ fn symbology(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
     }
     match &l.renderer {
         Renderer::Single(s) => symbol_editor(app, ui, *s, g, t),
-        Renderer::Unique { field, classes, ramp, .. } => {
-            field_combo(app, ui, "Field", field, &all, "unique");
+        Renderer::Unique { field, classes, ramp, expression, .. } => {
+            field_combo(app, ui, "Field", if expression.is_some() { tl!("(expression)") } else { field.as_str() }, &all, "unique");
+            // Or by an expression's values: blank goes back to the field.
+            let id = egui::Id::unique(("unique_expression", crate::labelpane::layer_key(app, &l)));
+            if let Some(text) = expression_box(ui, id, tl!("Expression"), expression.as_deref(), &l.dataset, t) {
+                let e = if text.is_empty() { Value::Null } else { json!(text) };
+                let _ = app.run("layer.symbology", json!({"type": "unique", "expression": e, "ramp": ramp.name()}));
+            }
             ramp_picker(app, ui, ramp, t);
             ui.add_space(6.0);
             ui.label(
@@ -6650,6 +6661,7 @@ mod tests {
             other_strokes: Vec::new(),
             class_fills: Default::default(),
             other_fills: Vec::new(),
+            expression: None,
         };
         let listed = stroke_classes(&r);
         let refs: Vec<&ClassRef> = listed.iter().map(|(c, ..)| c).collect();
@@ -7186,6 +7198,41 @@ mod tests {
         );
         h.run_steps(6);
         h
+    }
+
+    /// Unique Values class by the expression typed under the field; clearing it goes back to a field.
+    #[test]
+    fn unique_values_are_classed_by_the_expression_typed() {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        let mut h = symbology_retry_harness();
+        let id = layer(h.state(), "retry");
+        h.state_mut().run("layer.symbology", json!({"type": "unique", "field": "c_valid"})).unwrap();
+        h.run_steps(3);
+        let steps = h.state().session.undo_depth();
+        let enter = |h: &mut egui_kittest::Harness<'static, RustGisApp>, text: &str| {
+            h.get_by_role_and_label(Role::TextInput, "Expression").focus();
+            h.run();
+            h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+            h.get_by_role_and_label(Role::TextInput, "Expression").type_text(text);
+            h.run();
+            h.key_press(egui::Key::Enter);
+            h.run_steps(3);
+        };
+        let renderer = |h: &egui_kittest::Harness<'static, RustGisApp>| h.state().session.map().layer(id).unwrap().renderer.clone();
+        enter(&mut h, "nosuch + 1");
+        assert!(h.query_by_label_contains("Invalid:").is_some(), "says why");
+        assert_eq!((renderer(&h).expression(), h.state().session.undo_depth()), (None, steps), "not applied");
+        h.get_by_role_and_label(Role::TextInput, "Expression").focus();
+        h.run();
+        h.key_press(egui::Key::Escape);
+        h.run();
+        enter(&mut h, "if(c_valid > 15, 'high', 'low')");
+        let Renderer::Unique { classes, expression, .. } = renderer(&h) else { panic!() };
+        assert_eq!(expression.as_deref(), Some("if(c_valid > 15, 'high', 'low')"));
+        assert_eq!(classes.iter().map(|c| c.0.as_str()).collect::<Vec<_>>(), ["high", "low"], "the rows the query keeps");
+        assert_eq!(h.state().session.undo_depth(), steps + 1);
+        assert!(h.query_all_by_role(Role::ComboBox).any(|n| n.value().as_deref() == Some("(expression)")));
     }
 
     /// A different populated field fixes classification without changing the query or styling on failure.

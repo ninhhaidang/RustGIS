@@ -913,10 +913,10 @@ pub(super) fn property_text(property: Node) -> Option<String> {
     };
     let text = match named("type").map(str::trim) {
         Some("2") => format!("\"{}\"", named("field")?.trim().replace('"', "\"\"")),
-        Some("3") => named("expression")?.trim().to_string(),
+        Some("3") => super::expr::rustgis_scales(named("expression")?.trim()),
         _ => return None,
     };
-    Some(text).filter(|t| !t.is_empty() && t != "\"\"" && t.len() <= rustgis_data::query::MAX_LEN - 32)
+    Some(text).filter(|t| !t.is_empty() && t != "\"\"" && t.chars().count() <= rustgis_data::query::MAX_LEN - 32)
 }
 
 /// Takes the data-defined property `name` of a symbol layer (its settings `p`) of a `kind`

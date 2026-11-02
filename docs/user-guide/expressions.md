@@ -11,6 +11,8 @@ One expression language serves every place that reads values from features:
   marker's size, the fill and outline colours, the outline width and a marker's angle.
 - [Labels by expression](cartography.md#labeling) take a label class's text, size, colour and
   angle per feature.
+- [Unique Values](cartography.md) can class features by an expression's value instead of a
+  field's.
 
 ```sql
 pop_est > 100000000 AND continent = 'Asia'
@@ -69,7 +71,7 @@ operator: write `a < b AND b < c`, not `a < b < c`.
 | `'text'`, `'it''s'` | Text in single quotes; two quotes stand for one |
 | `TRUE`, `FALSE`, `NULL` | Booleans and the missing value |
 | `pop_est`, `"Pop Est"`, `!Pop Est!` | A field, by name, ignoring letter case; quote a name with spaces, punctuation or the name of a keyword (`"OR"`, `"null"`) |
-| `@map_scale`, `$scale` | The scale denominator of the map being drawn: set in [symbols](cartography.md#symbols-by-expression) and [labels](cartography.md#labeling) by expression, null in queries and Calculate Field |
+| `@map_scale`, `$scale` | The scale denominator of the map being drawn: set in [symbols](cartography.md#symbols-by-expression), [labels](cartography.md#labeling) and Unique Values classes by expression, null in queries and Calculate Field |
 | `@row_number` | The feature's position in the layer, from 1 |
 | `$id` | The feature's id |
 

@@ -16,7 +16,17 @@ Select a layer in Layers and open **Style › Symbology** (or the Symbology pane
   classes that drawn features use (after the definition query and display filters);
   `<all other values>` appears only when a drawn feature falls outside the classes and its symbol
   is not fully transparent. A layout legend can leave it out with **Hide other values** (see
-  [Layouts](layouts.md)).
+  [Layouts](layouts.md)). Instead of a field, Unique Values can class by an
+  [expression](expressions.md) typed in the **Expression** box under the field: one colour per
+  distinct value it gives (`CASE WHEN pop_max > 1e7 THEN 'large' ELSE 'small' END`, `upper(kind)`),
+  a feature where it gives null in `<all other values>`. The classes are the values it gives
+  without a map; it can read `@map_scale`, so a feature can move between those classes as the map
+  zooms (a value it gives only at some scales draws as `<all other values>`), and the Layers pane
+  and layout legends list the classes drawn at the map's scale (on a layer too large to class
+  every feature for a legend, past 2,000,000 features × classes, all its classes). Clearing the
+  box goes back to a field. A layer classed by expression is drawn on the CPU, and a web style
+  shared from it draws every feature with one symbol, which a notice says
+  (`layer.symbology={"type": "unique", "expression": "…"}`).
 - **Graduated Colors**: 1 to 12 classes of a numeric field by natural breaks (Jenks), equal
   interval, quantile, geometric interval, standard deviation, arithmetic progression or head/tail
   breaks (the Method list is in alphabetical order). Geometric interval makes class
