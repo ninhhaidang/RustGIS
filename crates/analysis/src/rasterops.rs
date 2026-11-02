@@ -12,6 +12,24 @@ pub const NODATA: f32 = -3.4e38;
 /// Largest output raster built (pixels).
 pub const MAX_PIXELS: usize = 64_000_000;
 
+/// Room for a grid of `w × h` cells of `T` (an output band, or a working grid of one), empty: a
+/// grid the machine can't hold is an error saying so, instead of ending the program. (In the
+/// browser and on Windows the check is reliable; Linux may promise memory it can't give later.)
+pub fn grid<T>(w: usize, h: usize) -> Result<Vec<T>, String> {
+    let no_memory = || format!("not enough memory for a {w} × {h} raster");
+    let n = w.checked_mul(h).ok_or_else(no_memory)?;
+    let mut v = Vec::new();
+    v.try_reserve_exact(n).map_err(|_| no_memory())?;
+    Ok(v)
+}
+
+/// A `w × h` band filled with `fill` ([`grid`]).
+pub fn new_band<T: Clone>(w: usize, h: usize, fill: T) -> Result<Vec<T>, String> {
+    let mut v = grid(w, h)?;
+    v.resize(w * h, fill);
+    Ok(v)
+}
+
 /// A new single- or multi-band raster on `r`'s grid.
 pub fn derive(r: &Raster, name: &str, bands: Vec<Vec<f32>>) -> Result<Raster, String> {
     r.require_coordinates()?;
@@ -43,18 +61,18 @@ fn gradient(r: &Raster, data: &[f32], col: i64, row: i64, zf: f64, (cx, cy): (f6
     Some((dzdx * r.transform.pixel_width.signum(), dzdy * -r.transform.pixel_height.signum()))
 }
 
-fn per_cell(r: &Raster, f: impl Fn(i64, i64) -> Option<f64>) -> Vec<f32> {
-    let mut out = Vec::with_capacity(r.width as usize * r.height as usize);
+fn per_cell(r: &Raster, f: impl Fn(i64, i64) -> Option<f64>) -> Result<Vec<f32>, String> {
+    let mut out = grid(r.width as usize, r.height as usize)?;
     for row in 0..r.height as i64 {
         for col in 0..r.width as i64 {
             out.push(f(col, row).filter(|v| v.is_finite()).map(|v| v as f32).unwrap_or(NODATA));
         }
     }
-    out
+    Ok(out)
 }
 
 /// Draw the interior from three borrowed rows; edges and no-data keep the scalar path.
-fn terrain(r: &Raster, data: &[f32], zf: f64, f: impl Fn(f64, f64) -> f64) -> Vec<f32> {
+fn terrain(r: &Raster, data: &[f32], zf: f64, f: impl Fn(f64, f64) -> f64) -> Result<Vec<f32>, String> {
     let (w, h) = (r.width as usize, r.height as usize);
     let cell = r.cell_size_m();
     let scalar = |c, row| {
@@ -67,7 +85,7 @@ fn terrain(r: &Raster, data: &[f32], zf: f64, f: impl Fn(f64, f64) -> f64) -> Ve
         return per_cell(r, scalar);
     }
     let value = |v: Option<f64>| v.filter(|v| v.is_finite()).map(|v| v as f32).unwrap_or(NODATA);
-    let mut out = Vec::with_capacity(len);
+    let mut out = grid(w, h)?;
     out.extend((0..w).map(|c| value(scalar(c as i64, 0))));
     for (row, ((top, mid), bottom)) in data.chunks_exact(w).zip(data.chunks_exact(w).skip(1)).zip(data.chunks_exact(w).skip(2)).enumerate()
     {
@@ -89,26 +107,19 @@ fn terrain(r: &Raster, data: &[f32], zf: f64, f: impl Fn(f64, f64) -> f64) -> Ve
         out.push(value(scalar((w - 1) as i64, row as i64)));
     }
     out.extend((0..w).map(|c| value(scalar(c as i64, (h - 1) as i64))));
-    out
+    Ok(out)
 }
 
 /// Slope in degrees.
 pub fn slope(r: &Raster, b: usize, zf: f64) -> Result<Vec<f32>, String> {
     let d = band(r, b)?;
-    Ok(terrain(r, d, zf, |gx, gy| gx.hypot(gy).atan().to_degrees()))
+    terrain(r, d, zf, |gx, gy| gx.hypot(gy).atan().to_degrees())
 }
 
 /// Aspect: the compass direction the slope faces, in degrees (flat cells are -1).
 pub fn aspect(r: &Raster, b: usize) -> Result<Vec<f32>, String> {
     let d = band(r, b)?;
-    Ok(terrain(
-        r,
-        d,
-        1.0,
-        |gx, gy| {
-            if gx.abs() < 1e-12 && gy.abs() < 1e-12 { -1.0 } else { (-gx).atan2(-gy).to_degrees().rem_euclid(360.0) }
-        },
-    ))
+    terrain(r, d, 1.0, |gx, gy| if gx.abs() < 1e-12 && gy.abs() < 1e-12 { -1.0 } else { (-gx).atan2(-gy).to_degrees().rem_euclid(360.0) })
 }
 
 /// Hillshade (0–255) lit from `azimuth` and `altitude` degrees.
@@ -116,12 +127,12 @@ pub fn hillshade(r: &Raster, b: usize, azimuth: f64, altitude: f64, zf: f64) -> 
     let d = band(r, b)?;
     let (zen, az) = ((90.0 - altitude).to_radians(), azimuth.to_radians());
     let (cos_zen, sin_zen) = (zen.cos(), zen.sin());
-    Ok(terrain(r, d, zf, |gx, gy| {
+    terrain(r, d, zf, |gx, gy| {
         let slope = gx.hypot(gy).atan();
         let aspect = (-gx).atan2(-gy);
         let v = cos_zen * slope.cos() + sin_zen * slope.sin() * (az - aspect).cos();
         (v.max(0.0) * 255.0).round()
-    }))
+    })
 }
 
 /// A band arithmetic expression over `b1`, `b2`… (+ - * / and parentheses, numbers).
@@ -129,7 +140,7 @@ pub fn band_math(r: &Raster, expr: &str) -> Result<Vec<f32>, String> {
     let e = Expr::parse(expr, r.band_count())?;
     let n = r.width as usize * r.height as usize;
     let mut vals = vec![0.0f64; r.band_count()];
-    let mut out = Vec::with_capacity(n);
+    let mut out = grid(r.width as usize, r.height as usize)?;
     for i in 0..n {
         let mut ok = true;
         for (bi, b) in r.bands.iter().enumerate() {
@@ -151,19 +162,19 @@ pub fn band_math(r: &Raster, expr: &str) -> Result<Vec<f32>, String> {
 /// Remaps value ranges `[lo, hi)` to new values; other values become no-data unless `keep`.
 pub fn remap(r: &Raster, b: usize, ranges: &[(f64, f64, f64)], keep: bool) -> Result<Vec<f32>, String> {
     let d = band(r, b)?;
-    Ok(d.iter()
-        .map(|v| {
-            if !r.is_valid(*v) {
-                return NODATA;
-            }
-            let x = *v as f64;
-            match ranges.iter().find(|(lo, hi, _)| x >= *lo && x < *hi) {
-                Some((_, _, new)) => *new as f32,
-                None if keep => *v,
-                None => NODATA,
-            }
-        })
-        .collect())
+    let mut out = grid(r.width as usize, r.height as usize)?;
+    out.extend(d.iter().map(|v| {
+        if !r.is_valid(*v) {
+            return NODATA;
+        }
+        let x = *v as f64;
+        match ranges.iter().find(|(lo, hi, _)| x >= *lo && x < *hi) {
+            Some((_, _, new)) => *new as f32,
+            None if keep => *v,
+            None => NODATA,
+        }
+    }));
+    Ok(out)
 }
 
 /// `band`'s values resampled (nearest neighbour) onto `target`'s grid, through longitude/latitude.
@@ -172,14 +183,17 @@ pub fn resample_to(src: &Raster, b: usize, target: &Raster) -> Result<Vec<f32>, 
     target.require_coordinates()?;
     band(src, b)?;
     if src.width == target.width && src.height == target.height && src.transform == target.transform && src.crs == target.crs {
-        return Ok(band(src, b)?.iter().map(|v| if src.is_valid(*v) { *v } else { NODATA }).collect());
+        let d = band(src, b)?;
+        let mut out = grid(src.width as usize, src.height as usize)?;
+        out.extend(d.iter().map(|v| if src.is_valid(*v) { *v } else { NODATA }));
+        return Ok(out);
     }
-    Ok(per_cell(target, |c, row| {
+    per_cell(target, |c, row| {
         let w = target.transform.to_world(c as f64 + 0.5, row as f64 + 0.5);
         let ll = target.transformer().to_lonlat(w)?;
         let (sc, sr) = src.pixel_at(ll)?;
         src.value(b, sc, sr).map(f64::from)
-    }))
+    })
 }
 
 /// A weighted sum of criteria (each already scored, e.g. 1–10) on one grid; no-data anywhere
@@ -194,19 +208,19 @@ pub fn weighted_overlay(criteria: &[(Vec<f32>, f64)]) -> Result<Vec<f32>, String
     if total <= 0.0 {
         return Err("the weights must add up to more than zero".into());
     }
-    Ok((0..n)
-        .map(|i| {
-            let mut s = 0.0;
-            for (vals, w) in criteria {
-                let v = vals.get(i).copied().unwrap_or(NODATA);
-                if v == NODATA || !v.is_finite() {
-                    return NODATA;
-                }
-                s += v as f64 * w.max(0.0) / total;
+    let mut out = grid(n, 1)?;
+    out.extend((0..n).map(|i| {
+        let mut s = 0.0;
+        for (vals, w) in criteria {
+            let v = vals.get(i).copied().unwrap_or(NODATA);
+            if v == NODATA || !v.is_finite() {
+                return NODATA;
             }
-            s as f32
-        })
-        .collect())
+            s += v as f64 * w.max(0.0) / total;
+        }
+        s as f32
+    }));
+    Ok(out)
 }
 
 /// Metres between two longitude/latitude points.
@@ -338,7 +352,7 @@ fn viewshed_on(threads: Option<usize>, r: &Raster, b: usize, observer: Coord, he
         return Err("the radius covers too many cells; use a smaller radius".into());
     }
     let w = r.width as usize;
-    let mut out = vec![NODATA; w * r.height as usize];
+    let mut out = new_band(w, r.height as usize, NODATA)?;
     const R: f64 = 6_371_000.0 * 4.0 / 3.0;
     // Each cell walks its own ray and writes only itself, so the rows within the radius are made
     // on several threads when the work is large (#1252).
@@ -431,7 +445,7 @@ fn idw_on(
     let scratch_bytes = points.len().saturating_mul(std::mem::size_of::<(f64, f64)>());
     let threads =
         threads.unwrap_or_else(|| crate::parallel::threads_for_rows(h, w.saturating_mul(h).saturating_mul(points.len()), scratch_bytes));
-    let mut data = vec![NODATA; w * h];
+    let mut data = new_band(w, h, NODATA)?;
     crate::control::begin(h);
     crate::parallel::for_each_row(
         data.chunks_mut(w),
@@ -539,9 +553,11 @@ pub fn kmeans(r: &Raster, bands: &[usize], k: usize, iterations: usize) -> Resul
     });
     let rank: Vec<usize> = (0..centres.len()).map(|c| order.iter().position(|o| *o == c).unwrap_or(0)).collect();
     let mut p = Vec::with_capacity(data.len());
-    Ok((0..n)
-        .map(|i| if pixel_into(i, &mut p) { (rank.get(nearest(&p, &centres)).copied().unwrap_or(0) + 1) as f32 } else { NODATA })
-        .collect())
+    let mut out = grid(r.width as usize, r.height as usize)?;
+    out.extend(
+        (0..n).map(|i| if pixel_into(i, &mut p) { (rank.get(nearest(&p, &centres)).copied().unwrap_or(0) + 1) as f32 } else { NODATA }),
+    );
+    Ok(out)
 }
 
 /// Minimum-distance classification: each pixel takes the class whose training mean is closest.
@@ -552,22 +568,22 @@ pub fn classify_min_distance(r: &Raster, bands: &[usize], means: &[(f32, Vec<f64
     }
     let n = r.width as usize * r.height as usize;
     let mut p: Vec<f64> = Vec::with_capacity(data.len());
-    Ok((0..n)
-        .map(|i| {
-            p.clear();
-            for d in &data {
-                match d.get(i).copied().filter(|v| r.is_valid(*v)) {
-                    Some(v) => p.push(f64::from(v)),
-                    None => return NODATA,
-                }
+    let mut out = grid(r.width as usize, r.height as usize)?;
+    out.extend((0..n).map(|i| {
+        p.clear();
+        for d in &data {
+            match d.get(i).copied().filter(|v| r.is_valid(*v)) {
+                Some(v) => p.push(f64::from(v)),
+                None => return NODATA,
             }
-            means
-                .iter()
-                .map(|(c, m)| (*c, m.iter().zip(&p).map(|(a, b)| (a - b).powi(2)).sum::<f64>()))
-                .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
-                .map_or(NODATA, |x| x.0)
-        })
-        .collect())
+        }
+        means
+            .iter()
+            .map(|(c, m)| (*c, m.iter().zip(&p).map(|(a, b)| (a - b).powi(2)).sum::<f64>()))
+            .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .map_or(NODATA, |x| x.0)
+    }));
+    Ok(out)
 }
 
 /// The mean of each band over the pixels whose centres fall in a polygon (lon/lat rings).
@@ -1124,6 +1140,17 @@ impl Expr {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A grid the machine can't hold is an error naming its size, not the end of the program
+    /// (#1291); one it can is the size asked for.
+    #[test]
+    fn a_grid_too_large_to_hold_is_an_error() {
+        let huge = 1usize << 31;
+        assert_eq!(grid::<f32>(huge, huge).unwrap_err(), format!("not enough memory for a {huge} × {huge} raster"));
+        assert!(new_band(usize::MAX, 2, 0.0f32).is_err_and(|e| e.starts_with("not enough memory")));
+        assert_eq!(new_band(3, 2, NODATA), Ok(vec![NODATA; 6]));
+        assert!(grid::<f64>(4, 5).is_ok_and(|g| g.is_empty() && g.capacity() >= 20));
+    }
 
     /// Viewshed rows made on several threads see what one thread sees (#1252), with the radius
     /// inside the raster and reaching past its edges.

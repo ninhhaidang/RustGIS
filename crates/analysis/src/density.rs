@@ -282,7 +282,7 @@ pub fn kernel_density(
     let gt = GeoTransform { origin_x, origin_y, pixel_width: cell_size, pixel_height: -cell_size };
 
     // Accumulate in f64 to avoid precision loss when many point contributions overlap
-    let mut grid = vec![0.0f64; total_cells];
+    let mut grid = crate::rasterops::new_band(w, h_rows, 0.0f64)?;
 
     match kernel {
         KernelType::Quartic => {
@@ -313,7 +313,7 @@ pub fn kernel_density(
         }
     }
 
-    let mut grid_f32 = Vec::with_capacity(total_cells);
+    let mut grid_f32 = crate::rasterops::grid(w, h_rows)?;
     for d in grid {
         let val = d as f32;
         if !val.is_finite() {

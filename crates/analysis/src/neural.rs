@@ -359,9 +359,7 @@ pub fn classify(r: &Raster, model: &Mlp, nodata: f32) -> Result<(Vec<f32>, Vec<f
         return Err(format!("{} has no band {}", r.name, b + 1));
     }
     let (w, h) = (r.width as i64, r.height as i64);
-    let n = (w * h).max(0) as usize;
-    let mut class = Vec::with_capacity(n);
-    let mut prob = Vec::with_capacity(n);
+    let (mut class, mut prob) = (crate::rasterops::grid(w as usize, h as usize)?, crate::rasterops::grid(w as usize, h as usize)?);
     let mut x = vec![0.0f32; model.bands.len()];
     crate::control::begin(h as usize);
     for row in 0..h {

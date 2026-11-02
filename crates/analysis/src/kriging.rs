@@ -353,7 +353,7 @@ fn kriging_on(
     let threads =
         threads.unwrap_or_else(|| crate::parallel::threads_for_rows(h, w.saturating_mul(h).saturating_mul(work_per_cell), scratch_bytes));
     let scratch = || (Vec::<(f64, f64, Coord)>::with_capacity(points.len()), KrigingBuffers::new());
-    let (mut pred_data, mut var_data) = (vec![NODATA; w * h], vec![NODATA; w * h]);
+    let (mut pred_data, mut var_data) = (crate::rasterops::new_band(w, h, NODATA)?, crate::rasterops::new_band(w, h, NODATA)?);
     let rows = pred_data.chunks_mut(w).zip(var_data.chunks_mut(w));
     crate::control::begin(h);
     crate::parallel::for_each_row(rows, threads, scratch, |(near, buffers), row, (pred, var): (&mut [f32], &mut [f32])| {

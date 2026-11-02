@@ -477,6 +477,11 @@ struct Canvas {
 }
 
 impl Canvas {
+    /// Its output bands on a `w × h` grid, every cell `outside` ([`crate::rasterops::new_band`]).
+    fn bands(&self, w: usize, h: usize) -> Result<Vec<Vec<f32>>, String> {
+        (0..self.out_bands).map(|_| crate::rasterops::new_band(w, h, self.outside)).collect()
+    }
+
     /// How `r` is held: as a `picture` (a scan being georeferenced), a grey byte image gains
     /// alpha as a colour one does; as data, it keeps its one band, and a cell with no value is
     /// its no-data, else NaN in a floating-point type and 0 in a whole-number one, as GDAL leaves
@@ -607,7 +612,7 @@ fn sampled(
     let (ow, oh) = (g.width, g.height);
     let method = if matches!(r.color, ColorHint::Palette(_)) { Resampling::Nearest } else { method };
     let sampler = Sampler { r, method, alpha: canvas.alpha_src, round: !r.data_type.starts_with("Float") };
-    let mut bands: Vec<Vec<f32>> = vec![vec![canvas.outside; ow * oh]; canvas.out_bands];
+    let mut bands = canvas.bands(ow, oh)?;
     let mut coords: Vec<Option<(f64, f64)>> = vec![None; ow];
     let mut nodes = Vec::new();
     let mut px = vec![f32::NAN; canvas.nb];
@@ -644,7 +649,7 @@ fn aggregated(
     let mode = mode || matches!(r.color, ColorHint::Palette(_));
     let round = !r.data_type.starts_with("Float");
     let nearest = Sampler { r, method: Resampling::Nearest, alpha: None, round };
-    let mut bands: Vec<Vec<f32>> = vec![vec![canvas.outside; ow * oh]; canvas.out_bands];
+    let mut bands = canvas.bands(ow, oh)?;
     let mut nodes = Vec::new();
     // Cell corners: a row's top edge, then its bottom edge (the next row's top).
     let x_at = |i: usize| g.min_x + i as f64 * g.cell_x;
