@@ -438,7 +438,9 @@ impl Domain {
                 let lon0 = if proj == "utm" { param("zone").map(|z| z * 6.0 - 183.0 + pm).unwrap_or(lon0) } else { lon0 };
                 Domain::Band { lon0, half: 30.0 }
             }
-            "stere" | "sterea" | "somerc" | "krovak" => Domain::Cap { center: Coord::new(lon0, lat0), radius: 60.0 },
+            "stere" | "sterea" | "somerc" | "krovak" | "cass" | "poly" | "omerc" => {
+                Domain::Cap { center: Coord::new(lon0, lat0), radius: 60.0 }
+            }
             "laea" | "aeqd" => Domain::Cap { center: Coord::new(lon0, lat0), radius: 120.0 },
             "aea" | "lcc" => {
                 let (a, b) = (param("lat_1").unwrap_or(lat0), param("lat_2").unwrap_or(lat0));
@@ -613,7 +615,7 @@ impl Projector {
             return Ok(Projector { engine, to_meter: 1.0, domain, lon0, edge: std::sync::OnceLock::new() });
         }
         let native = proj4rs::Proj::from_proj_string(&def).map_err(|e| match e {
-            // A known code whose method isn't implemented (EPSG:5880's +proj=poly, say): name it.
+            // A known code whose method isn't implemented (EPSG:8441's +proj=labrd, say): name it.
             proj4rs::errors::Error::ProjectionNotFound => format!("{code}: its projection method (+proj={proj}) isn't supported"),
             e => format!("{code}: {e}"),
         })?;
@@ -1036,8 +1038,8 @@ mod tests {
         assert!(p.domain.contains(Coord::new(-50.0, -15.0)) && !p.domain.contains(Coord::new(-55.0, 60.0)));
     }
 
-    /// Sinusoidal (opengeos/RustGIS#563), which proj4rs lacks: Esri's systems draw, against
-    /// pyproj 3.7.1 (PROJ 9.5.1), and wrap opposite their central meridian.
+    /// Sinusoidal (opengeos/RustGIS#563), computed here before proj4rs 0.3 grew one: Esri's
+    /// systems draw, against pyproj 3.7.1 (PROJ 9.5.1), and wrap opposite their central meridian.
     #[test]
     fn sinusoidal_codes_draw() {
         let check = |code: &str, (lon, lat): (f64, f64), (x, y): (f64, f64), lon0: f64| {
@@ -1163,14 +1165,24 @@ mod tests {
 
     #[test]
     fn codes_whose_method_cannot_be_drawn_are_refused() {
-        // EPSG:5880 (SIRGAS 2000 / Brazil Polyconic) is in the EPSG table, but its method
-        // (+proj=poly) has no implementation: refuse it rather than accept it and draw the map
-        // in Web Mercator while naming EPSG:5880 (opengeos/RustGIS#208).
-        assert!(lookup("EPSG:5880").is_ok(), "the code itself is known");
-        let e = Projector::new("EPSG:5880").unwrap_err();
-        assert!(e.contains("EPSG:5880") && e.contains("poly"), "{e}");
-        let e = crate::Projection::from_code("EPSG:5880").unwrap_err();
-        assert!(e.contains("poly"), "{e}");
+        // EPSG:8441 (Laborde) is in the EPSG table, but its method (+proj=labrd) has no
+        // implementation: refuse it rather than accept it and draw the map in Web Mercator while
+        // naming EPSG:8441 (opengeos/RustGIS#208).
+        assert!(lookup("EPSG:8441").is_ok(), "the code itself is known");
+        let e = Projector::new("EPSG:8441").unwrap_err();
+        assert!(e.contains("EPSG:8441") && e.contains("labrd"), "{e}");
+        let e = crate::Projection::from_code("EPSG:8441").unwrap_err();
+        assert!(e.contains("labrd"), "{e}");
+        // proj4rs 0.3 added Cassini, the polyconic, Equal Earth and the oblique Mercator: their
+        // codes are accepted (EPSG:5880's polyconic, whose refusal was #208), and draw where PROJ
+        // does: 54°W 10°S lands at (5 000 000, 8 894 145.167) in pyproj 3.8.0's EPSG:5880, its
+        // false easting less a million-odd metres.
+        for ok in ["EPSG:5880", "EPSG:2057", "EPSG:3068", "EPSG:8858"] {
+            crate::Projection::from_code(ok).unwrap_or_else(|e| panic!("{ok}: {e}"));
+        }
+        let brazil = Projector::new("EPSG:5880").unwrap_or_else(|e| panic!("{e}"));
+        let m = brazil.forward(Coord::new(-54.0, -10.0)).unwrap();
+        assert!((m.x - 5_000_000.0).abs() < 0.01 && (m.y - 8_894_145.167).abs() < 0.01, "{m:?}");
         // Codes that can be drawn are still accepted, by number or preset.
         for ok in ["EPSG:3035", "epsg:32633", "EPSG:8858", "equalEarth", "usaAlbers", "mercator", "globe"] {
             crate::Projection::from_code(ok).unwrap_or_else(|e| panic!("{ok}: {e}"));

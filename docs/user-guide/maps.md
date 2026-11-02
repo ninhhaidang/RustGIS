@@ -336,9 +336,9 @@ projection, and clicking the coordinate system in the status bar opens the **Coo
 System** dialog, which also takes a projected EPSG code (such as `3035`, `32633` for UTM zone
 33N or `2056` for Switzerland) or an ESRI code, the one `.prj` files and ArcGIS name (such as
 `ESRI:102033` for South America Albers Equal Area Conic, or `ESRI:54030` for World Robinson). A
-code whose projection method or datum grid RustGIS can't use (Polyconic such as `5880`, Cassini,
-oblique Mercator, or a NAD27 code that needs a grid) is refused with the reason, rather than drawn
-in another projection. RustGIS supports a subset of Esri's projected systems, checked against
+code whose projection method or datum grid RustGIS can't use (Laborde such as `8441`, or a NAD27
+code that needs a grid) is refused with the reason, rather than drawn in another projection.
+RustGIS supports a subset of Esri's projected systems, checked against
 PROJ at representative points; unsupported codes such as World Miller (`ESRI:54003`) are refused
 as unknown codes. The presets:
 

@@ -74,8 +74,9 @@ and S-JTSK, the same built-in Helmert datum transformation as the EPSG definitio
 transformation in the file takes precedence. RDN2008 and IGM95 are treated as WGS 84-like
 datums. These transformations do not replace regional grid corrections for survey accuracy. An
 unrecognized datum keeps its ellipsoid and produces a notice when no transformation is
-available. Swiss oblique Mercator and the standard Krovak East/North variant are supported from
-their parameters.
+available. Swiss oblique Mercator, the standard Krovak East/North variant, and the oblique
+Mercator, Cassini-Soldner, polyconic and Equal Earth methods are supported from their
+parameters.
 
 Shapefile text uses a supported `.cpg` encoding, otherwise the `.dbf` code page, with UTF-8 as
 the fallback. Keep the sidecar files together.

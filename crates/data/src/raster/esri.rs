@@ -12,8 +12,10 @@
 //! from the south-west corner; 20°E 30°N and 40°W 40°N for world systems) with RustGIS's
 //! `Projector` and with pyproj, and kept only when they agree within 1 m. Left out:
 //!
-//! - systems whose method proj4rs lacks (`col_urban`, `omerc`, `cass`, `eqdc`, `poly`, `ortho`,
-//!   `bonne`, `wink2` and more), and the NAD27 ones whose grids proj4rs can't load: 167;
+//! - systems whose method proj4rs 0.2, against which the table was checked, lacks (`col_urban`,
+//!   `omerc`, `cass`, `eqdc`, `poly`, `ortho`, `bonne`, `wink2` and more; 0.3 grew the oblique
+//!   Mercator, Cassini, the polyconic, the equidistant conic and the orthographic, whose ESRI
+//!   systems are candidates to add), and the NAD27 ones whose grids proj4rs can't load: 167;
 //! - six world systems RustGIS computes on a sphere where PROJ uses the ellipsoid or other
 //!   parameters, kilometres apart: World Miller (54003), the WGS 84 Equal Earths (54035–54037)
 //!   and the Winkel Tripel NGS pair (53042, 54042), whose `lat_1` RustGIS doesn't read. The
@@ -22,7 +24,7 @@
 //!   (Molodensky–Badekas for Korean 1985, a chain of operations for NGO 1948 …), and the 11
 //!   planetary ones (Moon, Mars), whose bodies the map can't hold;
 //! - the seven PROJ can't write as a PROJ string (Hammer–Aitoff, Fuller, Cube, Tobler …) and the
-//!   two oblique Mercators it refuses (53025, 54025).
+//!   two two-point oblique Mercators (53025, 54025), for which RustGIS has no WKT form.
 //!
 //! The three Earth sinusoidal systems (Sphere and World Sinusoidal, 53008 and 54008, and Africa
 //! Sinusoidal, 102011) were added afterwards (opengeos/RustGIS#563): RustGIS computes the
