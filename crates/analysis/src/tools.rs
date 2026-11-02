@@ -550,6 +550,42 @@ pub static TOOLS: &[ToolSpec] = &[
         run: pivot_table,
     },
     ToolSpec {
+        id: "tabulateIntersection",
+        name: "Tabulate Intersection",
+        toolbox: "Analysis › Statistics",
+        summary: "How much of each zone each class of polygons covers, with the classes' totals shared out to the zones by area.",
+        params: &[
+            P { name: "zones", label: "Input Zone Features", kind: K::PolygonLayer, required: true, default: "", help: "" },
+            P {
+                name: "zoneFields",
+                label: "Zone Fields",
+                kind: K::Fields { input: "zones" },
+                required: true,
+                default: "",
+                help: "Zones sharing these fields' values make one zone. Scripts and the AI Assistant can give several fields as a list.",
+            },
+            P { name: "classes", label: "Input Class Features", kind: K::PolygonLayer, required: true, default: "", help: "" },
+            P {
+                name: "classFields",
+                label: "Class Fields",
+                kind: K::Fields { input: "classes" },
+                required: false,
+                default: "",
+                help: "Class features sharing these fields' values make one class. Leave empty to treat them all as one class.",
+            },
+            P {
+                name: "sumFields",
+                label: "Sum Fields",
+                kind: K::Fields { input: "classes" },
+                required: false,
+                default: "",
+                help: "Numeric fields of the class features whose values are shared out to the zones by the part of each feature's area in them.",
+            },
+            P { name: "output", label: "Output Name", kind: K::Text, required: false, default: "", help: "" },
+        ],
+        run: tabulate_intersection,
+    },
+    ToolSpec {
         id: "exportFeatures",
         name: "Export Features",
         toolbox: "Conversion",
@@ -2789,9 +2825,147 @@ fn count_points(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
     result(out, format!("Summarize Within: {total} points counted"))
 }
 
+/// A lon/lat line or ring as a `geo` line string, in degrees.
+fn lonlat_line(coords: &[Coord]) -> geo::LineString<f64> {
+    geo::LineString::new(coords.iter().map(|c| geo::Coord { x: c.x, y: c.y }).collect())
+}
+
+/// The ground area (square metres, holes taken out) and perimeter (metres, holes included) of a
+/// lon/lat polygon geometry on the WGS 84 ellipsoid, as Calculate Geometry Attributes gives them;
+/// zero for any other geometry.
+fn ground_area_perimeter(g: &Geometry) -> (f64, f64) {
+    use geo::GeodesicArea;
+    let (mut a, mut per) = (0.0, 0.0);
+    let Geometry::Polygon(polys) = g else { return (a, per) };
+    for rings in polys {
+        for (i, r) in rings.iter().enumerate() {
+            let mut ring = lonlat_line(r);
+            ring.close();
+            // Orient in continuous longitude space, including small dateline crossings.
+            let mut longitude = ring.0.first().map_or(0.0, |c| c.x);
+            for c in &mut ring.0 {
+                longitude += (c.x - longitude + 180.0).rem_euclid(360.0) - 180.0;
+                c.x = longitude;
+            }
+            let polar = ring.0.first().zip(ring.0.last()).is_some_and(|(a, b)| (a.x - b.x).abs() > 180.0);
+            let orientable = !polar && ring.0.iter().all(|c| c.x.is_finite() && (-90.0..=90.0).contains(&c.y));
+            let polygon = geo::Polygon::new(ring, vec![]);
+            let (rp, ra) = if orientable {
+                polygon.orient(Direction::Default).geodesic_perimeter_area_unsigned()
+            } else {
+                // Keep smaller polar caps; invalid coordinates bypass planar orientation.
+                let (perimeter, area) = polygon.geodesic_perimeter_area_signed();
+                (perimeter, area.abs())
+            };
+            a += if i == 0 { ra } else { -ra };
+            per += rp;
+        }
+    }
+    (a, per)
+}
+
+/// The area of a ring in square degrees of longitude and latitude, by the shoelace formula: zero
+/// for a ring that has collapsed onto a line or point. Coordinates are taken from the first
+/// vertex, so a ring far from the origin keeps the precision of its own size.
+fn lonlat_ring_area(ring: &[Coord]) -> f64 {
+    let Some(o) = ring.first() else { return 0.0 };
+    let d = |c: &Coord| (c.x - o.x, c.y - o.y);
+    (ring.iter().zip(ring.iter().cycle().skip(1)).map(|(a, b)| d(a).0 * d(b).1 - d(b).0 * d(a).1).sum::<f64>() / 2.0).abs()
+}
+
+/// The area (square metres, holes taken out) of a lon/lat polygon geometry on a sphere of the
+/// Earth's radius, as the map draws it: each edge a straight line in Web Mercator, which is a rhumb
+/// line, with longitudes as they are (not folded across the antimeridian) and latitudes clamped to
+/// the map's limit, as the overlay takes them. A polygon cut along any straight line on the map
+/// splits this area exactly, so the parts' areas add up to the whole's, up to the overlay's
+/// rounding of the cut ([`OverlayGrid`]). Zero for any other geometry.
+fn map_area_m2(g: &Geometry) -> f64 {
+    let Geometry::Polygon(polys) = g else { return 0.0 };
+    let r2 = rustgis_geom::EARTH_RADIUS_M * rustgis_geom::EARTH_RADIUS_M;
+    polys.iter().flat_map(|rings| rings.iter().enumerate()).map(|(i, r)| if i == 0 { 1.0 } else { -1.0 } * rhumb_ring_area(r) * r2).sum()
+}
+
+/// The area of a ring of rhumb lines on the unit sphere, |∮ sin φ dλ|, for [`map_area_m2`]. The
+/// integral is the area element cos φ dφ dλ taken round the ring by Green's theorem, the one
+/// Chamberlain & Duquette (JPL, 2007) evaluate with edges straight in longitude and latitude
+/// ([`rustgis_geom::geodesic_ring_area_m2`]). Along a rhumb line the isometric latitude
+/// ψ = ln tan(π/4 + φ/2), the Mercator y over the radius (Snyder, *Map Projections: A Working
+/// Manual*, USGS Professional Paper 1395, 1987, on the Mercator projection), changes linearly with
+/// the longitude λ, and sin φ = tanh ψ, so an edge's integral is Δλ/Δψ × (ln cosh ψ₂ − ln cosh ψ₁);
+/// for a short Δψ, where that difference cancels, its Taylor series about the middle. Longitudes
+/// are not folded, as on the map, so the ring's Δλ add up to 0 and no ring winds around a pole: a
+/// ring stored around one with a jump across the antimeridian is the flat shape the map draws.
+fn rhumb_ring_area(ring: &[Coord]) -> f64 {
+    let iso = |c: &Coord| c.y.clamp(-rustgis_geom::MAX_LAT, rustgis_geom::MAX_LAT).to_radians().tan().asinh();
+    let ln_cosh = |x: f64| x.abs() + (-2.0 * x.abs()).exp().ln_1p() - std::f64::consts::LN_2;
+    let mut total = 0.0;
+    for (a, b) in ring.iter().zip(ring.iter().cycle().skip(1)) {
+        let dlon = b.x - a.x;
+        let (p1, p2) = (iso(a), iso(b));
+        let dpsi = p2 - p1;
+        let mean_sin = if dpsi.abs() < 1e-4 {
+            // tanh over the edge, averaged: tanh m + Δψ²/24 × tanh″ m, with tanh″ = −2 tanh sech².
+            let t = ((p1 + p2) / 2.0).tanh();
+            t - dpsi * dpsi / 12.0 * t * (1.0 - t * t)
+        } else {
+            (ln_cosh(p2) - ln_cosh(p1)) / dpsi
+        };
+        total += dlon.to_radians() * mean_sin;
+    }
+    total.abs()
+}
+
+/// The overlay's grid for a feature cut by masks within a Web Mercator extent. The overlay keeps 29
+/// integer bits about the centre of its operands' extent (see [`clip`]), a grid step of the extent
+/// over 2^30, so it moves each vertex by less than a step: the area by less than the perimeter times
+/// a step, and a sliver it leaves along an edge is no wider than a step.
+struct OverlayGrid {
+    /// The grid step, in Web Mercator metres, taken over the feature and all its masks.
+    step: f64,
+    /// How far rounding can move the feature's area, relative to it: twice the perimeter times the
+    /// step over the area, from 1e-9 to 1. A part closer than this to the whole may be the whole.
+    rounding: f64,
+}
+
+impl OverlayGrid {
+    /// The grid for the polygon feature `g` cut by masks within `domain`.
+    fn new(g: &Geometry, domain: &Extent) -> Self {
+        let mp = to_multipolygon(g).unwrap_or_else(|| MultiPolygon::new(vec![]));
+        let ext = domain.union(&merc_extent(&mp));
+        let step = ext.width().max(ext.height()) / f64::from(1_u32 << 30);
+        let (area, perimeter) = merc_area_perimeter(&mp);
+        let rounding = if area > 0.0 && step.is_finite() { (2.0 * perimeter * step / area).clamp(1e-9, 1.0) } else { 1e-9 };
+        OverlayGrid { step: if step.is_finite() { step } else { 0.0 }, rounding }
+    }
+
+    /// Whether the grid measures the feature finely: rounding can move its area by at most 1%.
+    fn resolves(&self) -> bool {
+        self.rounding <= 0.01
+    }
+
+    /// Whether a polygon part is wider on average than the grid step: more than the slivers
+    /// rounding leaves along an edge, which are less than a step wide. A part's average width is
+    /// twice its area over its perimeter (a long strip's perimeter is twice its length).
+    fn wider(&self, g: &Geometry) -> bool {
+        to_multipolygon(g).is_some_and(|mp| {
+            let (area, perimeter) = merc_area_perimeter(&mp);
+            2.0 * area > perimeter * self.step
+        })
+    }
+}
+
+/// The planar area and perimeter (holes included) of polygons in Web Mercator metres.
+fn merc_area_perimeter(mp: &MultiPolygon<f64>) -> (f64, f64) {
+    use geo::{Area, Euclidean, Length};
+    let perimeter = mp.0.iter().flat_map(|p| std::iter::once(p.exterior()).chain(p.interiors())).map(|r| Euclidean.length(r)).sum();
+    (mp.unsigned_area(), perimeter)
+}
+
+/// Calculate Geometry Attributes: adds `area_km2` and `perimeter_km` to a polygon layer (see
+/// [`ground_area_perimeter`]), `length_km` to a line layer, and `point_x`/`point_y` (a label point)
+/// to any other, updating the layer in place.
 fn calculate_geometry(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
-    use geo::{Geodesic, GeodesicArea, Length};
-    let line = |coords: &[Coord]| geo::LineString::new(coords.iter().map(|c| geo::Coord { x: c.x, y: c.y }).collect());
+    use geo::{Geodesic, Length};
     let ds = input(inp, p, "input")?;
     let mut out = ds.clone();
     match ds.geometry_type {
@@ -2799,33 +2973,7 @@ fn calculate_geometry(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> 
             let fa = out.ensure_field("area_km2", FieldType::Double);
             let fp = out.ensure_field("perimeter_km", FieldType::Double);
             for f in &mut out.features {
-                let (mut a, mut per) = (0.0, 0.0);
-                if let Some(Geometry::Polygon(polys)) = &f.geometry {
-                    for rings in polys {
-                        for (i, r) in rings.iter().enumerate() {
-                            let mut ring = line(r);
-                            ring.close();
-                            // Orient in continuous longitude space, including small dateline crossings.
-                            let mut longitude = ring.0.first().map_or(0.0, |c| c.x);
-                            for c in &mut ring.0 {
-                                longitude += (c.x - longitude + 180.0).rem_euclid(360.0) - 180.0;
-                                c.x = longitude;
-                            }
-                            let polar = ring.0.first().zip(ring.0.last()).is_some_and(|(a, b)| (a.x - b.x).abs() > 180.0);
-                            let orientable = !polar && ring.0.iter().all(|c| c.x.is_finite() && (-90.0..=90.0).contains(&c.y));
-                            let polygon = geo::Polygon::new(ring, vec![]);
-                            let (rp, ra) = if orientable {
-                                polygon.orient(Direction::Default).geodesic_perimeter_area_unsigned()
-                            } else {
-                                // Keep smaller polar caps; invalid coordinates bypass planar orientation.
-                                let (perimeter, area) = polygon.geodesic_perimeter_area_signed();
-                                (perimeter, area.abs())
-                            };
-                            a += if i == 0 { ra } else { -ra };
-                            per += rp;
-                        }
-                    }
-                }
+                let (a, per) = f.geometry.as_ref().map_or((0.0, 0.0), ground_area_perimeter);
                 if let Some(v) = f.attrs.get_mut(fa) {
                     *v = Value::Float(a / 1e6);
                 }
@@ -2838,7 +2986,7 @@ fn calculate_geometry(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> 
             let fl = out.ensure_field("length_km", FieldType::Double);
             for f in &mut out.features {
                 let len: f64 = match &f.geometry {
-                    Some(Geometry::Line(parts)) => parts.iter().map(|p| Geodesic.length(&line(p))).sum(),
+                    Some(Geometry::Line(parts)) => parts.iter().map(|p| Geodesic.length(&lonlat_line(p))).sum(),
                     _ => 0.0,
                 };
                 if let Some(v) = f.attrs.get_mut(fl) {
@@ -3143,6 +3291,387 @@ fn pivot_column_name(field: &str, v: &Value) -> String {
     let kept: String = name.chars().take(MAX_PIVOT_NAME).collect();
     let name = if text { kept.trim_matches('_').to_string() } else { kept };
     if !text || name.is_empty() || name.starts_with(char::is_numeric) { format!("{field}{name}") } else { name }
+}
+
+/// A zone of Tabulate Intersection: the zone features sharing the zone fields' values, as one mask.
+struct TabulateZone {
+    /// The zone fields' values.
+    key: Vec<Value>,
+    /// The lon/lat extent of its features, for the index.
+    ext: Extent,
+    /// Its features' polygons in Web Mercator, unioned when there are several, as [`mask_of`] does.
+    mask: MultiPolygon<f64>,
+    /// The Web Mercator extent of its mask, for [`OverlayGrid`].
+    merc_ext: Extent,
+    /// Its area in square metres as the map draws it ([`map_area_m2`]), overlaps between its
+    /// features counted once.
+    map_area_m2: f64,
+}
+
+/// What one class covers of one zone: its class features' parts in the zone, and the shares of
+/// their sum fields' values, in the order of the sum fields.
+struct TabulateCell {
+    parts: Vec<Geometry>,
+    sums: Vec<f64>,
+}
+
+/// Tabulate Intersection: a row for each zone and class that overlap, holding the zone fields, the
+/// class fields, `area_km2` (the ground area of the class in the zone, class features overlapping
+/// each other counted once), `percentage` (that area as a percentage of the zone's) and each sum
+/// field's share: the sum, over the class's features, of the field's value times the part of the
+/// feature's area inside the zone. Rows are sorted by the zone fields' values, then the class
+/// fields', as Summary Statistics sorts its groups; pairs that only touch get none. Only selected
+/// features are used when a layer has a selection. The messages count features without a polygon
+/// (left out: no geometry, an empty one, a line or a point), zones with no rows, class features
+/// with no value in a sum field and, with sum fields, class features not wholly inside the zones,
+/// whose values are not wholly shared out.
+///
+/// `area_km2` is measured on the ellipsoid, as Calculate Geometry Attributes measures it. The
+/// percentages and shares compare areas measured as the map draws the polygons instead
+/// ([`map_area_m2`]): the overlay cuts along straight lines on the map, which that measure splits
+/// exactly and the ellipsoid's geodesic edges don't, so a feature's shares in zones that cover it
+/// without overlapping each other add up to its whole value, up to the overlay's rounding: a part
+/// that leaves nothing outside its zone wider than the overlay's grid is the whole ([`OverlayGrid`]).
+fn tabulate_intersection(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
+    let zones = input(inp, p, "zones")?;
+    let classes = input(inp, p, "classes")?;
+    for ds in [zones, classes] {
+        if ds.geometry_type != GeometryType::Polygon {
+            return Err(format!("'{}' is not a polygon layer", ds.name));
+        }
+    }
+    let zone_keys = key_fields(zones, p.get("zoneFields"), "Zone Field")?;
+    if zone_keys.is_empty() {
+        return Err("'Zone Fields' is required".into());
+    }
+    let class_keys = key_fields(classes, p.get("classFields"), "Class Field")?;
+    let sum_fields = key_fields(classes, p.get("sumFields"), "Sum Field")?;
+    for &f in &sum_fields {
+        let Some(field) = classes.fields.get(f) else { continue };
+        if !field.ty.is_numeric() {
+            return Err(format!("the sum field '{}' is not numeric", field.name));
+        }
+        if class_keys.contains(&f) {
+            return Err(format!("the sum field '{}' can't also be a class field", field.name));
+        }
+    }
+    // Record order, each record once, whatever order a selection lists them in.
+    let sorted_rows = |k: &str, ds: &Dataset| {
+        let mut rs = rows(inp, p, k, ds);
+        rs.sort_unstable();
+        rs.dedup();
+        rs
+    };
+    // A feature without geometry, with an empty one (`"coordinates": []`), with a line or point in
+    // a polygon layer, or whose polygons have no area in its own coordinates (a collapsed ring) has
+    // no polygon, so no area to tabulate. The area is taken in longitude and latitude, so a polygon
+    // the map's latitude limit flattens still counts as one.
+    let has_shape = |g: &Geometry| matches!(g, Geometry::Polygon(polys) if polys.iter().any(|rings| rings.first().is_some_and(|r| lonlat_ring_area(r) > 0.0)));
+    let shapeless = |ds: &Dataset, rs: &[usize]| {
+        rs.iter().filter(|&&r| ds.features.get(r).and_then(|f| f.geometry.as_ref()).is_none_or(|g| !has_shape(g))).count()
+    };
+    let zone_rows = sorted_rows("zones", zones);
+    let class_rows = sorted_rows("classes", classes);
+    let (zones_shapeless, classes_shapeless) = (shapeless(zones, &zone_rows), shapeless(classes, &class_rows));
+    // The map ends at the latitude limit: the overlay takes parts beyond it as lying along it.
+    let beyond_limit = |ds: &Dataset, rs: &[usize]| {
+        let beyond = |g: &Geometry| {
+            let e = g.extent();
+            has_shape(g) && (e.max_y > rustgis_geom::MAX_LAT || e.min_y < -rustgis_geom::MAX_LAT)
+        };
+        rs.iter().filter(|&&r| ds.features.get(r).and_then(|f| f.geometry.as_ref()).is_some_and(beyond)).count()
+    };
+    let (zones_beyond, classes_beyond) = (beyond_limit(zones, &zone_rows), beyond_limit(classes, &class_rows));
+    // Features with a ring that jumps across the antimeridian unsplit: the overlay, like the map,
+    // takes such a ring the long way round, while `area_km2` takes its ground shape.
+    let unsplit = |ds: &Dataset, rs: &[usize]| {
+        let jumps = |g: &Geometry| {
+            has_shape(g)
+                && matches!(g, Geometry::Polygon(polys) if polys.iter().flatten().any(|r| {
+                    r.iter().zip(r.iter().cycle().skip(1)).any(|(a, b)| (b.x - a.x).abs() > 180.0)
+                }))
+        };
+        rs.iter().filter(|&&r| ds.features.get(r).and_then(|f| f.geometry.as_ref()).is_some_and(jumps)).count()
+    };
+    let (zones_unsplit, classes_unsplit) = (unsplit(zones, &zone_rows), unsplit(classes, &class_rows));
+    let zone_list: Vec<TabulateZone> = crate::stats::group_rows(zones, &zone_rows, &zone_keys)
+        .into_iter()
+        .map(|group| {
+            let shapes: Vec<&Geometry> =
+                group.rows.iter().filter_map(|&r| zones.features.get(r)?.geometry.as_ref()).filter(|g| has_shape(g)).collect();
+            let ext = shapes.iter().fold(Extent::EMPTY, |e, g| e.union(&g.extent()));
+            let mask = mask_of(MultiPolygon::new(shapes.iter().filter_map(|g| to_multipolygon(g)).flat_map(|m| m.0).collect()));
+            let map_area = from_multipolygon(&mask).map_or(0.0, |g| map_area_m2(&g));
+            let merc_ext = merc_extent(&mask);
+            TabulateZone { key: group.key, ext, mask, merc_ext, map_area_m2: map_area }
+        })
+        .collect();
+    let class_groups = crate::stats::group_rows(classes, &class_rows, &class_keys);
+    let index = ExtentIndex::new(zone_list.iter().map(|z| z.ext));
+    let mut cells: std::collections::BTreeMap<(usize, usize), TabulateCell> = std::collections::BTreeMap::new();
+    // For each sum field, the class features in some zone whose value isn't a number.
+    let mut missing = vec![0usize; sum_fields.len()];
+    // With sum fields, the class features whose shares come to less than their whole value.
+    let mut outside = 0usize;
+    // The class features meeting a zone, not wholly inside one, whose area the overlay's rounding
+    // can move by more than 1%: their parts are measured only roughly.
+    let mut unresolved = 0usize;
+    // The unions of the masks of the zones near a feature, for the outside check, by the zones'
+    // indices: neighbouring features near the same zones reuse them, as Clip reuses its masks.
+    const MAX_CACHED_UNIONS: usize = 8;
+    let mut near_unions: std::collections::VecDeque<(Vec<usize>, MultiPolygon<f64>)> = std::collections::VecDeque::new();
+    for (ci, group) in class_groups.iter().enumerate() {
+        for &r in &group.rows {
+            let Some(g) = classes.features.get(r).and_then(|f| f.geometry.as_ref()).filter(|g| has_shape(g)) else { continue };
+            let ext = g.extent();
+            let near: Vec<usize> =
+                index.candidates(&ext).into_iter().filter(|&zi| zone_list.get(zi).is_some_and(|z| z.ext.intersects(&ext))).collect();
+            if near.is_empty() {
+                outside += usize::from(!sum_fields.is_empty());
+                continue;
+            }
+            // Overlapping parts of one feature are unioned once, so they count once.
+            let whole = dissolved(g);
+            let values: Vec<Option<f64>> = sum_fields.iter().map(|&f| classes.value(r, f).as_f64()).collect();
+            let mut whole_area: Option<f64> = None;
+            // The overlay's grid for this feature and all the zones near it, for the outside check,
+            // which cuts it by their union: see [`OverlayGrid`].
+            let near_merc = near.iter().filter_map(|&zi| zone_list.get(zi)).fold(Extent::EMPTY, |e, z| e.union(&z.merc_ext));
+            let mut grid: Option<OverlayGrid> = None;
+            let resolved = grid.get_or_insert_with(|| OverlayGrid::new(&whole, &near_merc)).resolves();
+            let mut inside = false;
+            // Whether one zone holds the whole feature, so none of it lies outside them all; and
+            // whether a zone got a part of it as cut, rounded, not the whole.
+            let mut held = false;
+            let mut cut_part = false;
+            for &zi in &near {
+                let Some(zone) = zone_list.get(zi) else { continue };
+                // A cut that leaves nothing, or nothing with area, when the feature's interior meets
+                // the zone's lost that part to rounding. Only a feature the grid doesn't resolve can
+                // lose more than that rounding allows, so only for one is the zone asked, by the
+                // exact predicate: if it covers the feature, the part is the whole feature; if it
+                // only meets it, the feature is measured roughly, as for a part as cut.
+                let total = *whole_area.get_or_insert_with(|| map_area_m2(&whole));
+                let lost = |cut_part: &mut bool| -> Option<Geometry> {
+                    if resolved {
+                        return None;
+                    }
+                    let m = to_multipolygon(&whole).map(|w| zone.mask.relate(&w))?;
+                    if m.is_covers() && total > 0.0 {
+                        return Some(whole.as_ref().clone());
+                    }
+                    *cut_part |= m.is_intersects() && !m.is_touches();
+                    None
+                };
+                let cut = part(&whole, &zone.mask, true).map(|p| (map_area_m2(&p), p)).filter(|(a, _)| *a > 0.0 && a.is_finite());
+                let (mut piece, mut piece_area) = match cut {
+                    Some((a, p)) => (p, a),
+                    None => match lost(&mut cut_part) {
+                        Some(w) => (w, total),
+                        None => continue,
+                    },
+                };
+                inside = true;
+                // A part within the overlay's rounding of the whole may be the whole feature, the cut
+                // only moving its vertices onto the grid: it is when nothing lies outside the zone,
+                // or, for a feature the grid resolves, nothing wider than the grid. (For one it
+                // doesn't, what lies outside can be as narrow as the feature itself.) Then the part
+                // is the whole, unrounded. The grid is the one this cut used, over the feature and
+                // this zone alone, so a wide zone nearby doesn't coarsen it.
+                let zone_grid = OverlayGrid::new(&whole, &zone.merc_ext);
+                if total > 0.0
+                    && piece_area >= total * (1.0 - zone_grid.rounding)
+                    && part(&whole, &zone.mask, false).is_none_or(|rest| zone_grid.resolves() && !zone_grid.wider(&rest))
+                {
+                    piece = whole.as_ref().clone();
+                    piece_area = total;
+                    held = true;
+                } else {
+                    cut_part = true;
+                }
+                let cell = cells.entry((zi, ci)).or_insert_with(|| TabulateCell { parts: Vec::new(), sums: vec![0.0; sum_fields.len()] });
+                if !sum_fields.is_empty() {
+                    // The part inside can come out a rounding error larger than the whole.
+                    let share = if total > 0.0 { (piece_area / total).min(1.0) } else { 0.0 };
+                    for (sum, v) in cell.sums.iter_mut().zip(&values) {
+                        if let Some(v) = v {
+                            *sum += v * share;
+                        }
+                    }
+                }
+                cell.parts.push(piece);
+            }
+            if inside {
+                for (m, v) in missing.iter_mut().zip(&values) {
+                    *m += usize::from(v.is_none());
+                }
+            }
+            // With sum fields, a feature none of whose value is shared out, or with a part outside
+            // every zone wider than the overlay's grid, isn't wholly shared out: what is left of it
+            // once the zones near it, unioned, are taken away. Zones that overlap each other can't
+            // hide such a part, as shares adding up to the whole could.
+            // Whether the feature's interior meets a zone's, by the exact predicate rather than the
+            // overlay: one near a zone only by its extent meets none, and one too narrow for the
+            // grid can meet a zone with no part surviving the cut.
+            let meets = inside
+                || to_multipolygon(&whole).is_some_and(|w| {
+                    near.iter().filter_map(|&zi| zone_list.get(zi)).any(|z| {
+                        let m = z.mask.relate(&w);
+                        m.is_intersects() && !m.is_touches()
+                    })
+                });
+            // Rough when a zone got a part of it as cut, or lost one to rounding, even if another
+            // zone holds it whole, or when it meets a zone but no part of it survived the cut.
+            unresolved += usize::from(!resolved && (cut_part || (meets && !inside)));
+            if !sum_fields.is_empty() && !held {
+                // A feature meeting no zone lies wholly outside them; one whose parts didn't
+                // survive the cut is reported as roughly measured, above.
+                let lies_outside = !meets || {
+                    let grid = grid.get_or_insert_with(|| OverlayGrid::new(&whole, &near_merc));
+                    let rest = if let [zi] = near.as_slice() {
+                        zone_list.get(*zi).and_then(|z| part(&whole, &z.mask, false))
+                    } else {
+                        if let Some(pos) = near_unions.iter().position(|(ids, _)| *ids == near) {
+                            if let Some(entry) = near_unions.remove(pos) {
+                                near_unions.push_back(entry);
+                            }
+                        } else {
+                            if near_unions.len() == MAX_CACHED_UNIONS {
+                                near_unions.pop_front();
+                            }
+                            let union = union_all(near.iter().filter_map(|&zi| zone_list.get(zi)).flat_map(|z| z.mask.0.iter()));
+                            near_unions.push_back((near.clone(), union));
+                        }
+                        near_unions.back().and_then(|(_, union)| part(&whole, union, false))
+                    };
+                    rest.is_some_and(|r| grid.wider(&r))
+                };
+                outside += usize::from(lies_outside);
+            }
+        }
+    }
+    let mut out = Dataset::new(
+        out_name(p, format!("{}_Tabulate", zones.name)),
+        GeometryType::None,
+        zone_keys.iter().filter_map(|&k| zones.fields.get(k).cloned()).collect(),
+    );
+    out.crs_incomplete = zones.crs_incomplete || classes.crs_incomplete;
+    // A class field, or an output field, whose name is taken gets a suffix (`name_2`).
+    for f in class_keys.iter().filter_map(|&k| classes.fields.get(k)) {
+        let name = unique_field(&out, &f.name);
+        out.fields.push(Field { name, ..f.clone() });
+    }
+    for base in
+        ["area_km2", "percentage"].into_iter().chain(sum_fields.iter().filter_map(|&f| classes.fields.get(f).map(|f| f.name.as_str())))
+    {
+        let name = unique_field(&out, base);
+        out.fields.push(Field::new(name, FieldType::Double));
+    }
+    let mut zones_hit: HashSet<usize> = HashSet::new();
+    for ((zi, ci), cell) in cells {
+        let (Some(zone), Some(class)) = (zone_list.get(zi), class_groups.get(ci)) else { continue };
+        zones_hit.insert(zi);
+        // Parts of a class's features that overlap each other are unioned, so they count once.
+        let union;
+        let covered = match cell.parts.as_slice() {
+            [one] => one,
+            parts => {
+                let polys: Vec<MultiPolygon<f64>> = parts.iter().filter_map(to_multipolygon).collect();
+                let Some(g) = from_multipolygon(&union_all(polys.iter().flat_map(|m| m.0.iter()))) else {
+                    let key: Vec<String> = zone.key.iter().map(ToString::to_string).collect();
+                    return Err(format!(
+                        "Tabulate Intersection: the parts of a class in the zone '{}' could not be combined",
+                        key.join(", ")
+                    ));
+                };
+                union = g;
+                &union
+            }
+        };
+        let mut row = zone.key.clone();
+        row.extend(class.key.iter().cloned());
+        row.push(Value::Float(ground_area_perimeter(covered).0 / 1e6));
+        let covered_area = map_area_m2(covered);
+        row.push(if zone.map_area_m2 > 0.0 { Value::Float(covered_area / zone.map_area_m2 * 100.0) } else { Value::Null });
+        row.extend(cell.sums.into_iter().map(Value::Float));
+        // One past the last id: `push` would search them all for each row.
+        out.push_next(None, row);
+    }
+    let mut messages = vec![match out.features.len() {
+        1 => "Tabulate Intersection: 1 row".to_string(),
+        n => format!("Tabulate Intersection: {n} rows"),
+    }];
+    for (n, layer) in [(zones_shapeless, "zone"), (classes_shapeless, "class")] {
+        match n {
+            0 => {}
+            1 => messages.push(format!("1 {layer} feature has no polygon and was left out")),
+            n => messages.push(format!("{n} {layer} features have no polygon and were left out")),
+        }
+    }
+    // Zones without geometry are counted above, not again here.
+    match zone_list.iter().enumerate().filter(|(zi, z)| !z.ext.is_empty() && !zones_hit.contains(zi)).count() {
+        0 => {}
+        1 => messages.push("1 zone overlaps no class feature, so it has no rows".into()),
+        n => messages.push(format!("{n} zones overlap no class feature, so they have no rows")),
+    }
+    let features = |n: usize, layer: &str| if n == 1 { format!("1 {layer} feature") } else { format!("{n} {layer} features") };
+    // One notice for the sum fields' missing values, naming each field that has some.
+    let missing: Vec<(usize, &str)> = sum_fields
+        .iter()
+        .zip(missing)
+        .filter(|(_, n)| *n > 0)
+        .map(|(&f, n)| (n, classes.fields.get(f).map_or("", |f| f.name.as_str())))
+        .collect();
+    match missing.as_slice() {
+        [] => {}
+        [(1, name)] => messages.push(format!("1 class feature has no value in '{name}', left out of its shares")),
+        [(n, name)] => messages.push(format!("{n} class features have no value in '{name}', left out of its shares")),
+        several => {
+            let list: Vec<String> = several.iter().map(|(n, name)| format!("{} in '{name}'", features(*n, "class"))).collect();
+            messages.push(format!("class features with no value in a sum field are left out of its shares: {}", list.join(", ")));
+        }
+    }
+    let beyond: Vec<String> = [(zones_beyond, "zone"), (classes_beyond, "class")]
+        .into_iter()
+        .filter(|(n, _)| *n > 0)
+        .map(|(n, layer)| features(n, layer))
+        .collect();
+    if !beyond.is_empty() {
+        let verb = if zones_beyond + classes_beyond == 1 { "reaches" } else { "reach" };
+        messages.push(format!(
+            "{} {verb} beyond {:.2}° latitude, where the map ends: parts there are taken as lying along it, with no area",
+            beyond.join(" and "),
+            rustgis_geom::MAX_LAT
+        ));
+    }
+    let unsplit: Vec<String> = [(zones_unsplit, "zone"), (classes_unsplit, "class")]
+        .into_iter()
+        .filter(|(n, _)| *n > 0)
+        .map(|(n, layer)| features(n, layer))
+        .collect();
+    if !unsplit.is_empty() {
+        let verb = if zones_unsplit + classes_unsplit == 1 { "crosses" } else { "cross" };
+        messages.push(format!(
+            "{} {verb} the antimeridian without being split there: the map draws them the long way round, and their percentages and shares follow the map, while area_km2 follows the ground",
+            unsplit.join(" and ")
+        ));
+    }
+    match unresolved {
+        0 => {}
+        1 => messages.push(
+            "1 class feature is so narrow next to its zones that the overlay's rounding can move its area by more than 1%: its parts are measured only roughly"
+                .into(),
+        ),
+        n => messages.push(format!(
+            "{n} class features are so narrow next to their zones that the overlay's rounding can move their areas by more than 1%: their parts are measured only roughly"
+        )),
+    }
+    match outside {
+        0 => {}
+        1 => messages.push("1 class feature lies partly or wholly outside the zones: its value outside isn't shared out".into()),
+        n => messages.push(format!("{n} class features lie partly or wholly outside the zones: their values outside aren't shared out")),
+    }
+    Ok(ToolResult { output: Output::Table(out), messages })
 }
 
 fn export_features(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
@@ -6033,6 +6562,10 @@ mod tests {
             serde_json::json!({"input": "pts", "fields": ["k", 3], "pivot": "k", "value": "v", "statistic": "P100"}),
             serde_json::json!({"input": "polys", "fields": {"k": 1}, "pivot": 5, "value": ["v"], "statistic": 7, "separator": []}),
             serde_json::json!({"input": "pts", "fields": "", "pivot": "v", "value": "k", "statistic": "concatenate", "output": ""}),
+            serde_json::json!({"zones": "polys", "zoneFields": ["k", 3], "classes": "polys", "classFields": "k", "sumFields": {"v": 1}}),
+            serde_json::json!({"zones": "polys", "zoneFields": "k", "classes": "polys", "classFields": ["k", "K"], "sumFields": ["v", "k"]}),
+            serde_json::json!({"zones": "pts", "zoneFields": "k", "classes": "polys", "sumFields": "v", "output": 7}),
+            serde_json::json!({"zones": "polys", "zoneFields": "k", "classes": "polys", "classFields": "k", "output": ""}),
         ];
         for t in TOOLS {
             for p in &junk {
@@ -6041,6 +6574,21 @@ mod tests {
                 assert!(!matches!(&r, Err(e) if e.ends_with("failed unexpectedly")), "{} panicked on {p}", t.id);
             }
         }
+    }
+
+    /// The map measure takes rings as the map draws them: a band around the world stored as a
+    /// rectangle from −180° to 180° has its whole area, and a ring stored around a pole with a jump
+    /// across the antimeridian, which the map draws flat, has none.
+    #[test]
+    fn map_area_measures_rings_as_the_map_draws_them() {
+        let ring = |pts: &[(f64, f64)]| Geometry::Polygon(vec![vec![pts.iter().map(|&(x, y)| Coord::new(x, y)).collect()]]);
+        let r2 = rustgis_geom::EARTH_RADIUS_M * rustgis_geom::EARTH_RADIUS_M;
+        let band = map_area_m2(&ring(&[(-180.0, 0.0), (180.0, 0.0), (180.0, 60.0), (-180.0, 60.0), (-180.0, 0.0)]));
+        let expected = r2 * std::f64::consts::TAU * 60f64.to_radians().sin();
+        assert!((band / expected - 1.0).abs() < 1e-12, "{band} m², not {expected}");
+        let around_pole = map_area_m2(&ring(&[(0.0, 60.0), (90.0, 60.0), (180.0, 60.0), (-90.0, 60.0), (0.0, 60.0)]));
+        // Zero, up to rounding on the scale of the Earth's radius squared.
+        assert!(around_pole.abs() < 1.0, "{around_pole} m²");
     }
 
     /// Parcels and zones for Intersect: `p1` is a 2° square that zone `z1` covers the right half of;

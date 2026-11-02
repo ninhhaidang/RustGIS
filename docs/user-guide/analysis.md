@@ -118,6 +118,7 @@ Use these ids in `gp.run`'s `tool` parameter (`gp.tools` lists the available too
 | Summarize Within | `countPoints` | Analysis › Summarize |
 | Summary Statistics | `summaryStatistics` | Analysis › Statistics |
 | Pivot Table | `pivotTable` | Analysis › Statistics |
+| Tabulate Intersection | `tabulateIntersection` | Analysis › Statistics |
 | Export Features | `exportFeatures` | Conversion |
 | Vector to PMTiles | `vectorToPmtiles` | Analyze › Tools |
 | Raster to PMTiles | `rasterToPmtiles` | Analyze › Tools |
@@ -559,6 +560,59 @@ output is named `<input>_Pivot` unless `output` names it.
 The AI Assistant uses Pivot Table for questions such as "mean household income by county and year":
 it runs the tool with `county` as the row field, `year` as the pivot field and `MEAN`, then reads
 the table it names with `read_features`, a row per county.
+
+**Tabulate Intersection** (`tabulateIntersection`) measures how much of each zone each class of
+polygons covers, and shares the classes' totals out to the zones by area. Both layers are polygon
+layers. Zone features sharing the values of the `zoneFields` (one field, or several as a list) make
+one zone, and class features sharing the values of the `classFields` make one class; with no class
+fields, all the class features are one class. The tool makes a standalone table with a row for each
+zone and class that overlap (pairs that only touch get none), sorted by the zone fields' values,
+then the class fields', with empty values first, as Summary Statistics sorts its rows:
+
+| Field | Holds |
+| --- | --- |
+| The zone fields | The zone's values |
+| The class fields | The class's values |
+| `area_km2` | The ground area of the class in the zone, in km², where class features overlap each other counted once |
+| `percentage` | The class's area in the zone as a percentage of the zone's area, both measured as the map draws them (below; empty for a zone with no area) |
+| Each of `sumFields` | The sum, over the class's features, of the field's value times the part of the feature's area inside the zone |
+
+A field name already used in the table, ignoring case, gets `_2` (`_3` and so on), as when a
+class field and a zone field are both called `name`.
+
+The sum fields share a total out by area, as for population counted by census block and wanted by
+school district: a block half inside a district gives it half its population. They must be numeric,
+and can't also be class fields. Zones that overlap each other each get their share, so a value can
+be shared out more than once; the value of a feature's part outside every zone isn't shared out.
+
+`area_km2` is measured on the ellipsoid, as Calculate Geometry Attributes measures it. The
+percentages and shares compare areas measured on a sphere with each edge as the map draws it (a
+straight line on the map), the lines the tool cuts along, so the shares of a feature that zones
+cover without overlapping each other add up to its whole value, up to the overlay's rounding of the
+cut. The overlay rounds coordinates to a grid (the size of the zones near a feature over about a
+billion), so a part that leaves nothing outside its zone wider than that grid is the whole feature,
+and only parts outside every zone wider than the grid are reported. A feature so narrow next to its
+zones that the rounding can move its area by more than 1% is measured only roughly, unless it lies
+wholly inside a zone, and the tool says how many there are. The percentages of classes that overlap
+each other can add up to more than 100. Like the other overlay tools, it works on the map, which
+ends at 85.05° north and south: parts of polygons beyond that are taken as lying along it, so
+overlaps there have no area ([#1033](https://github.com/opengeos/RustGIS/issues/1033)); the tool
+says how many features reach beyond it.
+
+The tool says how many zone and class features have no polygon (no geometry, an empty one, a line or
+point, or a ring collapsed to no area; they are left out), how many cross the antimeridian without
+being split there (the map, and with it the percentages and shares, takes them the long way round,
+while area_km2 takes their ground shape), how many zones overlap no class feature and so have no
+rows, how many class features have no value in a sum field (they add nothing to its shares) and,
+with sum fields, how many class features lie partly or wholly outside the zones. Only selected
+features are used when a layer has a selection, and the table is named `<zones>_Tabulate` unless
+`output` names it.
+
+```text
+gp.run={"tool":"tabulateIntersection","params":{"zones":"districts","zoneFields":"district","classes":"blocks","sumFields":["population"]}}
+gp.run={"tool":"tabulateIntersection","params":{"zones":"counties","zoneFields":"county","classes":"landcover","classFields":"class"}}
+```
+
 <figure markdown="span">
   ![Tissot's indicatrix on the Robinson projection: circles of 800 km every 30°, stretched and sheared toward the poles](https://assets.rustgis.app/images/tissot.webp)
   <figcaption>Tissot's indicatrix on Robinson: equal circles, stretched and sheared by the projection.</figcaption>

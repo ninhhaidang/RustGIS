@@ -114,7 +114,6 @@ And alongside it:
   a line layer).
 - Hot-spot statistics (Getis-Ord Gi\*), and emerging hot spots on the time slider.
 - Charts linked to the selection: histogram, scatter, bar and box plots of a layer's fields.
-- Tabulate intersection: one layer's counts and totals shared out to another by area overlap.
 - Reverse geocoding, and the US Census geocoder beside Nominatim and Photon; a DEM downloader so
   viewshed works without a loaded elevation raster _(open)_.
 
@@ -220,7 +219,8 @@ Open questions rather than plans; discuss before building.
   relationships, archiving.
 - Analysis: selection by attributes and location; polygon, lasso and radius on the map; overlay
   (clip, erase, split, intersect, identity, union, symmetrical difference, update), proximity
-  (buffer, near) and summary tools, pivot tables, spatial join by intersection, centre, largest
+  (buffer, near) and summary tools, pivot tables, tabulate intersection (class areas and totals
+  shared out to zones by overlap), spatial join by intersection, centre, largest
   overlap, closest and distance with merge rules, join field (non-spatial attribute join), feature
   vertices to points, zonal statistics, kernel density, A5 grids, kriging, Calculate Field with an
   expression language, Calculate Geometry with metric or imperial units, Project Raster, and

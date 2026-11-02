@@ -27,7 +27,9 @@ Based on the RustGIS user guide, Analysis › Geoprocessing tools
    - selection: `selectByLocation` (`input`, `select`, `distance`, `invert`), `selectByAttributes`
      (`input`, `where`)
    - statistics: `countPoints` (Summarize Within: `polygons`, `points`), `summaryStatistics`
-     (`input`, `statistics`, `case`), `pivotTable` (`input`, `fields`, `pivot`, `value`, `statistic`)
+     (`input`, `statistics`, `case`), `pivotTable` (`input`, `fields`, `pivot`, `value`, `statistic`),
+     `tabulateIntersection` (`zones`, `zoneFields`, `classes`, `classFields`, `sumFields`: class
+     areas and totals shared out to zones by overlap)
    - joins: `spatialJoin` (`target`, `join`, `match`), `joinField` (`target`, `targetField`,
      `joinTable`, `joinField`, `fields`, `prefix`, `duplicates`)
    - conversion: `exportFeatures` (`input`, `where`)
