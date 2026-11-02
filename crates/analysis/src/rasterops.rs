@@ -13,21 +13,15 @@ pub const NODATA: f32 = -3.4e38;
 pub const MAX_PIXELS: usize = 64_000_000;
 
 /// Room for a grid of `w × h` cells of `T` (an output band, or a working grid of one), empty: a
-/// grid the machine can't hold is an error saying so, instead of ending the program. (In the
-/// browser and on Windows the check is reliable; Linux may promise memory it can't give later.)
+/// grid the machine can't hold is an error saying so, instead of ending the program
+/// ([`rustgis_data::raster::grid`]).
 pub fn grid<T>(w: usize, h: usize) -> Result<Vec<T>, String> {
-    let no_memory = || format!("not enough memory for a {w} × {h} raster");
-    let n = w.checked_mul(h).ok_or_else(no_memory)?;
-    let mut v = Vec::new();
-    v.try_reserve_exact(n).map_err(|_| no_memory())?;
-    Ok(v)
+    rustgis_data::raster::grid(w, h).map_err(|e| e.to_string())
 }
 
 /// A `w × h` band filled with `fill` ([`grid`]).
 pub fn new_band<T: Clone>(w: usize, h: usize, fill: T) -> Result<Vec<T>, String> {
-    let mut v = grid(w, h)?;
-    v.resize(w * h, fill);
-    Ok(v)
+    rustgis_data::raster::filled(w, h, fill).map_err(|e| e.to_string())
 }
 
 /// A new single- or multi-band raster on `r`'s grid.
@@ -812,7 +806,7 @@ fn project_ring(r: &Raster, ring: &[Coord]) -> Option<Vec<(f64, f64)>> {
 /// The rings are projected onto the raster's own grid once and filled by scanline, so a large
 /// raster costs a pass over the polygon edges per row rather than a point test per cell.
 /// A malformed ring or a failed projection rejects the entire polygon part, including its holes.
-pub fn polygon_mask(r: &Raster, polygons: &[Vec<Vec<Coord>>]) -> Option<(Range<u32>, Range<u32>, Vec<bool>)> {
+pub fn polygon_mask(r: &Raster, polygons: &[Vec<Vec<Coord>>]) -> Result<Option<(Range<u32>, Range<u32>, Vec<bool>)>, String> {
     polygon_mask_with_failures(r, polygons, &mut Vec::new())
 }
 
@@ -822,7 +816,7 @@ pub fn polygon_mask_with_failures(
     r: &Raster,
     polygons: &[Vec<Vec<Coord>>],
     failed_parts: &mut Vec<usize>,
-) -> Option<(Range<u32>, Range<u32>, Vec<bool>)> {
+) -> Result<Option<(Range<u32>, Range<u32>, Vec<bool>)>, String> {
     let projected: Vec<Vec<Vec<(f64, f64)>>> = polygons
         .iter()
         .enumerate()
@@ -840,16 +834,16 @@ pub fn polygon_mask_with_failures(
         (c0, r0, c1, r1) = (c0.min(x), r0.min(y), c1.max(x), r1.max(y));
     }
     if !(c0.is_finite() && r0.is_finite() && c1.is_finite() && r1.is_finite()) {
-        return None;
+        return Ok(None);
     }
     let clamp = |v: f64, n: u32| v.clamp(0.0, f64::from(n)) as u32;
     let cols = clamp(c0.floor(), r.width)..clamp(c1.ceil(), r.width);
     let rows = clamp(r0.floor(), r.height)..clamp(r1.ceil(), r.height);
     if cols.is_empty() || rows.is_empty() {
-        return None;
+        return Ok(None);
     }
     let w = (cols.end - cols.start) as usize;
-    let mut mask = vec![false; w * (rows.end - rows.start) as usize];
+    let mut mask = new_band(w, (rows.end - rows.start) as usize, false)?;
     let mut xs: Vec<f64> = Vec::new();
     for (ri, row) in rows.clone().enumerate() {
         let y = f64::from(row) + 0.5;
@@ -885,13 +879,14 @@ pub fn polygon_mask_with_failures(
         (tc0, tr0, tc1, tr1) = (tc0.min(c), tr0.min(rr), tc1.max(c + 1), tr1.max(rr + 1));
     }
     if tc0 >= tc1 || tr0 >= tr1 {
-        return None;
+        return Ok(None);
     }
-    let trimmed: Vec<bool> =
-        (tr0..tr1).flat_map(|rr| (tc0..tc1).map(move |c| (rr, c))).map(|(rr, c)| mask.get(rr * w + c).copied().unwrap_or(false)).collect();
+    let mut trimmed = grid(tc1 - tc0, tr1 - tr0)?;
+    trimmed
+        .extend((tr0..tr1).flat_map(|rr| (tc0..tc1).map(move |c| (rr, c))).map(|(rr, c)| mask.get(rr * w + c).copied().unwrap_or(false)));
     let cols = cols.start + tc0 as u32..cols.start + tc1 as u32;
     let rows = rows.start + tr0 as u32..rows.start + tr1 as u32;
-    Some((cols, rows, trimmed))
+    Ok(Some((cols, rows, trimmed)))
 }
 
 /// Summary statistics of raster cells within a zone.
@@ -1008,7 +1003,7 @@ pub(crate) fn zonal_statistics_with_failures(
         return Ok(Vec::new());
     }
 
-    let Some((cols, rows, mask)) = polygon_mask_with_failures(r, polygons, failed_parts) else {
+    let Some((cols, rows, mask)) = polygon_mask_with_failures(r, polygons, failed_parts)? else {
         return Ok(vec![ZoneStats::default(); bands.len()]);
     };
 
@@ -1281,7 +1276,7 @@ mod tests {
         };
         // A square with a hole, and a second polygon in the south-west corner.
         let polys = vec![vec![sq(0.005, 0.005, 0.015, 0.015), sq(0.009, 0.009, 0.011, 0.011)], vec![sq(0.0, 0.0, 0.002, 0.002)]];
-        let (cols, rows, mask) = polygon_mask(&r, &polys).unwrap_or_else(|| panic!("no mask"));
+        let (cols, rows, mask) = polygon_mask(&r, &polys).unwrap().unwrap_or_else(|| panic!("no mask"));
         assert_eq!((cols.clone(), rows.clone()), (0..15, 5..20));
         assert_eq!(mask.iter().filter(|m| **m).count(), 100 - 4 + 4);
         let at = |col: u32, row: u32| mask[((row - rows.start) * 15 + col - cols.start) as usize];
@@ -1290,8 +1285,8 @@ mod tests {
         assert!(!at(9, 9) && !at(10, 10), "the hole stays out");
         assert!(at(0, 19) && at(1, 18) && !at(2, 18));
         // Outside the raster, or too small to hold a cell centre: nothing.
-        assert!(polygon_mask(&r, &[vec![sq(1.0, 1.0, 2.0, 2.0)]]).is_none());
-        assert!(polygon_mask(&r, &[vec![sq(0.0051, 0.0051, 0.0052, 0.0052)]]).is_none());
+        assert!(polygon_mask(&r, &[vec![sq(1.0, 1.0, 2.0, 2.0)]]).unwrap().is_none());
+        assert!(polygon_mask(&r, &[vec![sq(0.0051, 0.0051, 0.0052, 0.0052)]]).unwrap().is_none());
     }
 
     /// A failed hole drops only its containing part and reports that part, even with no mask.
@@ -1311,7 +1306,7 @@ mod tests {
         assert_eq!(stats[0].count, 4);
         assert_eq!(failures, vec![0]);
         failures.clear();
-        assert!(polygon_mask_with_failures(&r, &[invalid], &mut failures).is_none());
+        assert!(polygon_mask_with_failures(&r, &[invalid], &mut failures).unwrap().is_none());
         assert_eq!(failures, vec![0]);
     }
 
@@ -1593,7 +1588,7 @@ mod tests {
         ]];
         let bad_ext_stats = zonal_statistics(&r, &[0], &bad_ext_with_hole).unwrap();
         assert_eq!(bad_ext_stats[0], ZoneStats::default());
-        assert!(polygon_mask(&r, &bad_ext_with_hole).is_none());
+        assert!(polygon_mask(&r, &bad_ext_with_hole).unwrap().is_none());
 
         // 8. Exterior ring with non-finite/unprojectable coordinate is rejected
         let nan_ext_with_hole = vec![vec![
@@ -1602,14 +1597,14 @@ mod tests {
         ]];
         let nan_ext_stats = zonal_statistics(&r, &[0], &nan_ext_with_hole).unwrap();
         assert_eq!(nan_ext_stats[0], ZoneStats::default());
-        assert!(polygon_mask(&r, &nan_ext_with_hole).is_none());
+        assert!(polygon_mask(&r, &nan_ext_with_hole).unwrap().is_none());
 
         // 9. Polygon with defective hole (< 3 vertices or non-finite) is rejected rather than silently discarding the hole
         let bad_hole_poly = vec![vec![
             sq(0.005, 0.005, 0.015, 0.015),                           // valid exterior (5 points)
             vec![Coord::new(0.009, 0.009), Coord::new(0.011, 0.011)], // invalid hole: only 2 points!
         ]];
-        assert!(polygon_mask(&r, &bad_hole_poly).is_none(), "polygon with defective hole must be rejected");
+        assert!(polygon_mask(&r, &bad_hole_poly).unwrap().is_none(), "polygon with defective hole must be rejected");
         let bad_hole_stats = zonal_statistics(&r, &[0], &bad_hole_poly).unwrap();
         assert_eq!(bad_hole_stats[0], ZoneStats::default());
 
@@ -1617,7 +1612,7 @@ mod tests {
             sq(0.005, 0.005, 0.015, 0.015),
             vec![Coord::new(f64::NAN, 0.009), Coord::new(0.011, 0.009), Coord::new(0.011, 0.011), Coord::new(f64::NAN, 0.009)],
         ]];
-        assert!(polygon_mask(&r, &nan_hole_poly).is_none(), "polygon with non-finite hole must be rejected");
+        assert!(polygon_mask(&r, &nan_hole_poly).unwrap().is_none(), "polygon with non-finite hole must be rejected");
     }
 
     #[test]

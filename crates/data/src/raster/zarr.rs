@@ -1155,7 +1155,7 @@ fn axis(v: &[f64]) -> Option<(f64, f64)> {
 pub fn assemble(store: &Store, plan: &Plan, chunks: &HashMap<String, Vec<u8>>, name: &str, crs: Option<Crs>) -> Result<Raster> {
     let a = store.array(&plan.var).ok_or_else(|| bad("the variable is gone"))?;
     let (h, w) = (a.shape.get(plan.y).copied().unwrap_or(0) as usize, a.shape.get(plan.x).copied().unwrap_or(0) as usize);
-    let mut grid = vec![f32::NAN; h * w];
+    let mut grid = super::filled(w, h, f32::NAN)?;
     let (cy, cx) = (a.chunks.get(plan.y).copied().unwrap_or(1).max(1), a.chunks.get(plan.x).copied().unwrap_or(1).max(1));
     let nd = a.shape.len();
     // Values meaning "no data", before any scaling, as xarray reads them: the CF attributes, and a
@@ -1270,7 +1270,7 @@ pub fn assemble(store: &Store, plan: &Plan, chunks: &HashMap<String, Vec<u8>>, n
     };
     // North up and west to east: flip rows (or columns) as needed.
     if dy > 0.0 {
-        let mut flipped = Vec::with_capacity(grid.len());
+        let mut flipped = super::grid(w, h)?;
         for r in (0..h).rev() {
             flipped.extend_from_slice(grid.get(r * w..(r + 1) * w).unwrap_or_default());
         }

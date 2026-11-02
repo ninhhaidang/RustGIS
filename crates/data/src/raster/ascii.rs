@@ -72,7 +72,7 @@ pub(super) fn read_with_nodata(text: &str, name: &str, crs: Option<Crs>, sidecar
         y -= dy / 2.0;
     }
     // Each value takes at least two characters, so the text bounds what to reserve.
-    let mut data = Vec::with_capacity(n.min(text.len() / 2 + 1));
+    let mut data = super::room(n.min(text.len() / 2 + 1), w as usize, h as usize)?;
     let mut rounded = 0u64;
     let uncounted = Uncounted::new(nodata_exact, sidecar_nodata);
     for (i, t) in tokens.take(n).enumerate() {

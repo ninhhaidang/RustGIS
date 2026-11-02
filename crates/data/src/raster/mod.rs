@@ -29,6 +29,31 @@ use serde::{Deserialize, Serialize};
 
 use crate::{DataError, Result};
 
+/// Room for a band of `w × h` samples of `T`, empty: a band the machine can't hold is an error
+/// saying so, instead of ending the program (#1291). (In the browser and on Windows the check is
+/// reliable; Linux may promise memory it can't give later.)
+pub fn grid<T>(w: usize, h: usize) -> Result<Vec<T>> {
+    room(w.checked_mul(h).ok_or_else(|| no_memory(w, h))?, w, h)
+}
+
+/// A `w × h` band filled with `fill` ([`grid`]).
+pub fn filled<T: Clone>(w: usize, h: usize, fill: T) -> Result<Vec<T>> {
+    let mut v = grid(w, h)?;
+    v.resize(w * h, fill);
+    Ok(v)
+}
+
+/// Room for `n` samples of a `w × h` band (fewer than all of them, when fewer can come).
+pub(crate) fn room<T>(n: usize, w: usize, h: usize) -> Result<Vec<T>> {
+    let mut v = Vec::new();
+    v.try_reserve_exact(n).map_err(|_| no_memory(w, h))?;
+    Ok(v)
+}
+
+fn no_memory(w: usize, h: usize) -> DataError {
+    DataError::Format(format!("not enough memory for a {w} × {h} raster"))
+}
+
 /// Most samples (pixels × bands) held in memory: 120 million (480 MB), or 32 million in the
 /// browser, whose memory is much tighter. Reading briefly needs about twice this.
 #[cfg(not(target_arch = "wasm32"))]
@@ -733,9 +758,10 @@ pub(crate) fn unreferenced(w: u32, h: u32) -> GeoTransform {
 }
 
 /// Every `k`-th pixel of interleaved `ch`-sample pixels, one vector per band.
-fn deinterleave<T: Copy + Into<f32>>(raw: &[T], w: u32, h: u32, ch: usize, k: u32) -> Vec<Vec<f32>> {
+fn deinterleave<T: Copy + Into<f32>>(raw: &[T], w: u32, h: u32, ch: usize, k: u32) -> Result<Vec<Vec<f32>>> {
     let step = k.max(1) as usize;
-    let mut bands: Vec<Vec<f32>> = (0..ch).map(|_| Vec::with_capacity((w as usize).div_ceil(step) * (h as usize).div_ceil(step))).collect();
+    let (ow, oh) = ((w as usize).div_ceil(step), (h as usize).div_ceil(step));
+    let mut bands: Vec<Vec<f32>> = (0..ch).map(|_| grid(ow, oh)).collect::<Result<_>>()?;
     for row in (0..h as usize).step_by(step) {
         for col in (0..w as usize).step_by(step) {
             let at = (row * w as usize + col) * ch;
@@ -744,7 +770,7 @@ fn deinterleave<T: Copy + Into<f32>>(raw: &[T], w: u32, h: u32, ch: usize, k: u3
             }
         }
     }
-    bands
+    Ok(bands)
 }
 
 /// Reads a PNG or JPEG as a raster with no coordinates (`georeferenced` is false): its bands as
@@ -804,14 +830,14 @@ fn read_scan_limited<R: std::io::BufRead + std::io::Seek>(name: &str, mut source
         }
     }
     let (bands, color, data_type) = match &img {
-        D::ImageLuma8(i) => (deinterleave(i.as_raw(), w, h, ch, k), ColorHint::Gray, "UInt8"),
-        D::ImageLumaA8(i) => (deinterleave(i.as_raw(), w, h, ch, k), ColorHint::GrayAlpha, "UInt8"),
-        D::ImageRgb8(i) => (deinterleave(i.as_raw(), w, h, ch, k), ColorHint::Rgb { alpha: false }, "UInt8"),
-        D::ImageRgba8(i) => (deinterleave(i.as_raw(), w, h, ch, k), ColorHint::Rgb { alpha: true }, "UInt8"),
-        D::ImageLuma16(i) => (deinterleave(i.as_raw(), w, h, ch, k), ColorHint::Gray, "UInt16"),
-        D::ImageLumaA16(i) => (deinterleave(i.as_raw(), w, h, ch, k), ColorHint::GrayAlpha, "UInt16"),
-        D::ImageRgb16(i) => (deinterleave(i.as_raw(), w, h, ch, k), ColorHint::Rgb { alpha: false }, "UInt16"),
-        D::ImageRgba16(i) => (deinterleave(i.as_raw(), w, h, ch, k), ColorHint::Rgb { alpha: true }, "UInt16"),
+        D::ImageLuma8(i) => (deinterleave(i.as_raw(), w, h, ch, k)?, ColorHint::Gray, "UInt8"),
+        D::ImageLumaA8(i) => (deinterleave(i.as_raw(), w, h, ch, k)?, ColorHint::GrayAlpha, "UInt8"),
+        D::ImageRgb8(i) => (deinterleave(i.as_raw(), w, h, ch, k)?, ColorHint::Rgb { alpha: false }, "UInt8"),
+        D::ImageRgba8(i) => (deinterleave(i.as_raw(), w, h, ch, k)?, ColorHint::Rgb { alpha: true }, "UInt8"),
+        D::ImageLuma16(i) => (deinterleave(i.as_raw(), w, h, ch, k)?, ColorHint::Gray, "UInt16"),
+        D::ImageLumaA16(i) => (deinterleave(i.as_raw(), w, h, ch, k)?, ColorHint::GrayAlpha, "UInt16"),
+        D::ImageRgb16(i) => (deinterleave(i.as_raw(), w, h, ch, k)?, ColorHint::Rgb { alpha: false }, "UInt16"),
+        D::ImageRgba16(i) => (deinterleave(i.as_raw(), w, h, ch, k)?, ColorHint::Rgb { alpha: true }, "UInt16"),
         _ => return Err(fail(&"this pixel format isn't supported")),
     };
     drop(img);
@@ -1000,6 +1026,20 @@ pub fn read_prj(path: &Path) -> Option<String> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// A band the machine can't hold is an error naming its size, not the end of the program
+    /// (#1291), on 64-bit (the reservation fails) and wasm32 (the size overflows) alike; one it can
+    /// is the size asked for.
+    #[test]
+    fn a_band_too_large_to_hold_is_an_error() {
+        let huge = 1usize << 31;
+        let err = grid::<f32>(huge, huge).unwrap_err().to_string();
+        assert_eq!(err, format!("not enough memory for a {huge} × {huge} raster"));
+        assert!(filled(usize::MAX, 2, 0u8).is_err());
+        assert!(room::<f64>(usize::MAX / 2, 1, 1).is_err(), "too many bytes to ask for");
+        assert_eq!(filled(3, 2, f32::NAN).map(|v| v.len()).ok(), Some(6));
+        assert!(grid::<u16>(4, 5).is_ok_and(|g| g.is_empty() && g.capacity() >= 20));
+    }
 
     /// A PNG of `w`×`h` pixels, red in its top half and blue below.
     pub(crate) fn png(w: u32, h: u32) -> Vec<u8> {

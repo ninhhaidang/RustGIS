@@ -283,6 +283,8 @@ pub fn kernel_density(
 
     // Accumulate in f64 to avoid precision loss when many point contributions overlap
     let mut grid = crate::rasterops::new_band(w, h_rows, 0.0f64)?;
+    // (The output's room too, before the work: a grid that can't be held fails first.)
+    let mut grid_f32 = crate::rasterops::grid(w, h_rows)?;
 
     match kernel {
         KernelType::Quartic => {
@@ -313,7 +315,6 @@ pub fn kernel_density(
         }
     }
 
-    let mut grid_f32 = crate::rasterops::grid(w, h_rows)?;
     for d in grid {
         let val = d as f32;
         if !val.is_finite() {

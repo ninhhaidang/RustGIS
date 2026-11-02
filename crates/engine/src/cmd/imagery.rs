@@ -731,7 +731,7 @@ fn process(s: &mut Session, p: &Value) -> CmdResult {
                 log::warn!("{pl}: {} feature(s) failed polygon validation during clipping", failed_features.len());
             }
             let mut failed_parts = Vec::new();
-            let (cols, rows, mask) = rasterops::polygon_mask_with_failures(&r, &polygons, &mut failed_parts).ok_or_else(|| {
+            let (cols, rows, mask) = rasterops::polygon_mask_with_failures(&r, &polygons, &mut failed_parts)?.ok_or_else(|| {
                 format!("no cell of {} falls inside {pl} ({} polygon part(s) failed raster projection)", r.name, failed_parts.len())
             })?;
             let out = clip_window(&r, cols, rows, Some(&mask), name(p, format!("{}_clip", r.name)))?;
