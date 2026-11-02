@@ -1256,6 +1256,16 @@ fn label_expressions_and_data_defined_label_settings_carry_over() {
     let (c, report) = read(&qml("Point", &[dd("LabelRotation", "10"), dd("Rotation", "20")].concat()));
     assert_eq!(c.by.angle.as_deref(), Some("10"));
     assert!(report.notes.iter().any(|n| n.text.contains("data-defined label settings (Rotation)")), "{:?}", report.notes);
+    // An empty expression labels nothing: the class is left out, said.
+    for empty in ["", "&quot;&quot;", "&quot; &quot;", "  "] {
+        let qml = format!(
+            r#"<qgis version="3.40.0"><labeling type="simple"><settings><text-style isExpression="1" fieldName="{empty}"/></settings></labeling></qgis>"#
+        );
+        let mut report = Report::default();
+        let s = read_style(&qml, "points", &mut report);
+        assert!(!s.is_ok_and(|s| s.labels.is_some()), "{empty:?}");
+        assert!(report.notes.iter().any(|n| n.text.contains("an empty expression")), "{empty:?}: {:?}", report.notes);
+    }
     // An expression too long to read: the class is left out, said.
     let long = format!(
         r#"<qgis version="3.40.0"><labeling type="simple"><settings><text-style isExpression="1" fieldName="'{}'"/></settings></labeling></qgis>"#,
