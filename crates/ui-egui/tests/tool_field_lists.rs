@@ -492,8 +492,7 @@ fn summarize_within_statistics_offer_the_point_layers_fields() {
     h.get_by_role_and_label(egui::accesskit::Role::Button, "CONCATENATE").click_accesskit();
     h.run_steps(3);
     assert!(h.query_all_by_label("Separator").count() > 0);
-    h.get_by_role_and_label(egui::accesskit::Role::Button, "Run").click();
-    h.run_steps(3);
+    click_run(&mut h);
     assert!(h.state().gp.last.as_ref().unwrap().0);
     let history = h.state().session.project.gp_history.last().unwrap();
     assert_eq!(history.params["statistics"], json!([{"field":"target_only","statistic":"CONCATENATE"}]));
