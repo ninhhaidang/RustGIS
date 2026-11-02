@@ -33,6 +33,19 @@ fn harness(tool: &str, values: serde_json::Value) -> Harness<'static, RustGisApp
     h
 }
 
+/// Clicks Run and waits for the tool to land: on the desktop it runs on a thread of its own.
+fn click_run(h: &mut Harness<'_, RustGisApp>) {
+    h.get_by_role_and_label(egui::accesskit::Role::Button, "Run").click();
+    h.run_steps(1);
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while h.state().gp.tool_run.is_some() {
+        assert!(std::time::Instant::now() < end, "the run never landed");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        h.run_steps(1);
+    }
+    h.run_steps(2);
+}
+
 /// AccessKit labels distinguish the list's field and statistic selectors from other tool inputs.
 fn choose(h: &mut Harness<'_, RustGisApp>, label: &str, value: &str) {
     h.get_by_role_and_label(egui::accesskit::Role::ComboBox, label).click();
@@ -52,8 +65,7 @@ fn summary_list_runs_with_ordered_case_fields_and_reopens_from_history() {
     h.get_by_label("amount").click();
     h.run_steps(2);
     choose(&mut h, "Statistic", "SUM");
-    h.get_by_role_and_label(egui::accesskit::Role::Button, "Run").click();
-    h.run_steps(3);
+    click_run(&mut h);
     let history = h.state().session.project.gp_history.last().unwrap();
     assert_eq!(history.params["statistics"], json!([{"field":"amount","statistic":"SUM"}]));
     assert_eq!(history.params["case"], json!(["region", "category"]));
@@ -67,8 +79,7 @@ fn summary_list_runs_with_ordered_case_fields_and_reopens_from_history() {
     reversed["case"] = json!(["category", "region"]);
     h.state_mut().run("ui.gp.open", json!({"tool":"summaryStatistics", "values":reversed})).unwrap();
     h.run_steps(3);
-    h.get_by_role_and_label(egui::accesskit::Role::Button, "Run").click();
-    h.run_steps(3);
+    click_run(&mut h);
     let output = &h.state().session.project.tables.last().unwrap().dataset;
     assert_eq!(output.fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["category", "region", "FREQUENCY", "SUM_amount"]);
     assert_eq!(output.value(0, 3).as_f64(), Some(16.3));
@@ -92,8 +103,7 @@ fn merge_rules_offer_join_fields_and_text_rules_and_preserve_delimiter() {
     h.run_steps(2);
     let rules: serde_json::Value = serde_json::from_str(&h.state().gp.values["merge"]).unwrap();
     assert_eq!(rules, json!([{"field":"category","rule":"join","delimiter":"; "}]));
-    h.get_by_role_and_label(egui::accesskit::Role::Button, "Run").click();
-    h.run_steps(3);
+    click_run(&mut h);
     let history = h.state().session.project.gp_history.last().unwrap();
     assert_eq!(history.params["merge"], json!([{"field":"category","rule":"join","delimiter":"; "}]));
 }
@@ -223,8 +233,7 @@ fn model_merge_fields_follow_the_wired_join_input() {
 fn invalid_statistics_text_is_not_changed_into_an_empty_list() {
     let mut h = harness("summaryStatistics", json!({"input":"Records", "field":"amount", "statistics":"null"}));
     assert!(h.query_by_label("JSON value").is_some());
-    h.get_by_role_and_label(egui::accesskit::Role::Button, "Run").click();
-    h.run_steps(3);
+    click_run(&mut h);
     let result = h.state().gp.last.as_ref().unwrap();
     assert!(!result.0);
     assert!(result.1.iter().any(|message| message.contains("Statistics must be a list")));
@@ -421,8 +430,7 @@ fn summary_picker_excludes_case_variant_output_collisions() {
     assert!(h.query_by_role_and_label(egui::accesskit::Role::Button, "COUNT").is_none());
     h.get_by_role_and_label(egui::accesskit::Role::Button, "SUM").click_accesskit();
     h.run_steps(2);
-    h.get_by_role_and_label(egui::accesskit::Role::Button, "Run").click();
-    h.run_steps(3);
+    click_run(&mut h);
     assert!(h.state().gp.last.as_ref().unwrap().0);
     let output = &h.state().session.project.tables.last().unwrap().dataset;
     assert_eq!(output.fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["FREQUENCY", "COUNT_region", "SUM_REGION"]);
@@ -448,8 +456,7 @@ fn saved_duplicate_statistics_explain_how_to_repair_them() {
     h.get_all_by_role_and_label(egui::accesskit::Role::Button, "Remove").nth(1).unwrap().click();
     h.run_steps(3);
     assert!(h.query_by_label("Statistic is already listed for this field.").is_none());
-    h.get_by_role_and_label(egui::accesskit::Role::Button, "Run").click();
-    h.run_steps(3);
+    click_run(&mut h);
     assert!(h.state().gp.last.as_ref().unwrap().0);
     let output = &h.state().session.project.tables.last().unwrap().dataset;
     assert_eq!(output.value(0, 1).as_f64(), Some(16.3));

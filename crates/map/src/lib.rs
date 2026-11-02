@@ -1244,6 +1244,9 @@ pub struct Map {
     pub body: String,
     #[serde(default)]
     next_layer_id: u32,
+    /// Process-local identity, kept by undo snapshots but never stored in a project.
+    #[serde(skip, default = "next_layer_instance")]
+    instance_id: u64,
 }
 
 fn earth() -> String {
@@ -1350,7 +1353,18 @@ impl Map {
             time: None,
             body: earth(),
             next_layer_id: 1,
+            instance_id: next_layer_instance(),
         }
+    }
+
+    /// Identifies this live map, whatever its name or place among the project's maps.
+    pub fn instance_id(&self) -> u64 {
+        self.instance_id
+    }
+
+    /// Starts a distinct live map after copying one. Undo snapshots keep the original identity.
+    pub fn renew_instance_id(&mut self) {
+        self.instance_id = next_layer_instance();
     }
 
     /// Every address the map keeps to read its data again (service groups and their layers'

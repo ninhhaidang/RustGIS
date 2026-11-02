@@ -460,6 +460,7 @@ fn import_maps(s: &mut Session, p: &Value) -> CmdResult {
             m.name = format!("{base} ({i})");
         }
         names.push(m.name.clone());
+        m.renew_instance_id();
         s.project.maps.push(m);
     }
     // Repair what was read (rasters reopen, cameras clamp); the sources that read S3 wait for

@@ -57,6 +57,19 @@ Open a tool from **Analyze › Portal › Feature Analysis** or **Raster Analysi
 which searches every tool) or Command Search. Fill in its parameters and click **Run**: new
 layers or tables are added to the project; selection tools select existing rows and Calculate
 Geometry Attributes updates the input layer. Each run is listed under **Analyze › History**.
+
+In the desktop app a tool runs in the background, so the map and the rest of the window stay in
+use. While it runs, the Tools pane shows its name, a **Cancel** button and, for the tools that
+count their work (Viewshed, IDW Interpolation, Kriging, Kernel Density, Buffer, Select Layer By
+Location and others), a progress bar. One tool runs at a time. A cancelled run adds nothing, and
+for a tool that counts its work, its message says how far through its current step it got. Edits
+made to its input layers while it runs are kept: a selection it makes selects the same features
+where they now are (and says how many are gone), and a result that would replace an edited
+layer, or one loaded whole meanwhile, is refused. Renaming the map while it runs is fine; after
+switching to another map, a result that adds to or changes the map is refused (one made only of
+tables or a file is still made). Opening another project drops the run. Scripts, models, the AI
+Assistant, the command line and the web app wait for each tool to finish.
+
 From the command line or a script (`gp.run`), a built-in tool's parameter with a list of choices, such as Buffer's
 units, takes one of them in any letter case (`"meters"` for `Meters`); any other value is an error
 that names the choices (Buffer's units no longer take the abbreviations `m`, `mi` or `metres`).
@@ -766,8 +779,9 @@ next visit. The runner's code comes from jsDelivr, pinned to one geolibre-wasm r
 same trust as installing that package. Tools that read files by path (LiDAR files, for instance) need the desktop app,
 since a web page has no file system.
 
-In the desktop app and on the command line, RustGIS waits while a tool runs, so a long run on
-a large raster or point cloud keeps the window busy until it finishes. In the web app the run
+In the desktop app the Tools pane runs a GeoLibre tool in the background like any other; its
+**Cancel** takes effect when the GeoLibre program ends, and the result is then dropped. On the
+command line RustGIS waits while a tool runs. In the web app the run
 is started in the background and the result is added when it ends, but the tool itself runs
 in the page, so the page is busy while it computes.
 

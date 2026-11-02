@@ -6917,6 +6917,15 @@ fn offline_sync_rejects_incompatible_fields_and_preserves_safe_refreshes() {
         let offline = &s.project.maps.iter().find(|m| m.name == "Fieldwork (offline)").unwrap().layer_by_name("Assets").unwrap().dataset;
         assert_eq!(offline.fields, source.fields, "{mode}");
         assert_eq!(offline.features, source.features, "{mode}");
+        // The synced copy is a map, with layers, of its own (a background run finds its map by it).
+        let ids: Vec<u64> = s.project.maps.iter().map(|m| m.instance_id()).collect();
+        assert!(ids.iter().enumerate().all(|(i, a)| ids[..i].iter().all(|b| a != b)), "{mode}: {ids:?}");
+        let offline_map = s.project.maps.iter().find(|m| m.name == "Fieldwork (offline)").unwrap();
+        assert_ne!(
+            offline_map.layer_by_name("Assets").unwrap().instance_id(),
+            s.map().layer_by_name("Assets").unwrap().instance_id(),
+            "{mode}"
+        );
     }
 
     for mode in ["source_deleted", "geometry_only", "offline_added", "source_reordered", "source_type_changed", "empty_offline_schema"] {
@@ -23881,4 +23890,278 @@ fn a_cancelled_tool_leaves_the_map_as_it_was_and_says_so_in_the_history() {
     // The same run, not cancelled, adds its raster.
     crate::cmd::gp::run_tool(&mut s, "idwInterpolation", &params).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(s.map().layers.len(), layers + 1);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn built_in_tools_run_off_the_session() {
+    use crate::cmd::gp::{tool_abandon, tool_complete, tool_start, tool_waiting};
+    use rustgis_analysis::control::Control;
+    fn sends<T: Send>(_: &T) {}
+    let mut s = world();
+    // Started: what it reads is taken now; it runs elsewhere while the project goes on.
+    let run = tool_start(&mut s, "buffer", &json!({"input": "Cities", "distance": 50})).unwrap();
+    assert_eq!(run.tool, "buffer");
+    sends(&run);
+    let id = run.id;
+    assert!(tool_waiting(&s, id));
+    let made = std::thread::spawn(move || run.run(&Control::new()));
+    s.run("layer.remove", &json!({"layer": "Cities"})).unwrap();
+    let done = made.join().unwrap();
+    tool_complete(&mut s, id, done).unwrap();
+    // Applied as gp.run applies a run: its layer, its history, undo.
+    let before = s.map().layers.len();
+    s.run("gp.finish", &json!({"id": id})).unwrap();
+    assert_eq!(s.map().layers.len(), before + 1);
+    let h = s.project.gp_history.last().unwrap();
+    assert!(h.ok && h.tool == "Buffer" && h.params["input"] == "Cities", "{h:?}");
+    s.run("edit.undo", &Value::Null).unwrap();
+    assert_eq!(s.map().layers.len(), before);
+    // Cancelled before it starts (a cancel while it runs is the analysis crate's test): it fails,
+    // saying so, and adds nothing (a failed command leaves the project as it was, as a failed
+    // gp.run does).
+    let mut s = world();
+    let layers = s.map().layers.len();
+    let run = tool_start(&mut s, "idwInterpolation", &json!({"input": "Cities", "field": "pop_max", "pixelSize": 5.0})).unwrap();
+    let control = Control::new();
+    control.cancel();
+    let id = run.id;
+    let done = run.run(&control);
+    tool_complete(&mut s, id, done).unwrap();
+    let e = s.run("gp.finish", &json!({"id": id})).unwrap_err();
+    assert_eq!(e, "IDW Interpolation was cancelled before it started");
+    assert_eq!(s.map().layers.len(), layers);
+    // Inputs it can't read fail its run, in the history, rather than its start.
+    let missing = std::env::temp_dir().join(format!("rustgis-no-such-bg-{}.geojson", std::process::id()));
+    let run = tool_start(&mut s, "merge", &json!({"inputs": [missing.display().to_string(), "Cities"]})).unwrap();
+    let id = run.id;
+    let done = run.run(&Control::new());
+    tool_complete(&mut s, id, done).unwrap();
+    let e = s.run("gp.finish", &json!({"id": id})).unwrap_err();
+    assert!(e.starts_with(&missing.display().to_string()), "{e}");
+    // Parameters are checked when it starts; plugin tools start their own way; a run completes once.
+    assert!(tool_start(&mut s, "buffer", &json!({})).err().unwrap().contains("required"));
+    assert!(tool_start(&mut s, "plugin:none/x", &json!({})).err().unwrap().contains("no tool"));
+    let again = tool_start(&mut s, "buffer", &json!({"input": "Cities", "distance": 50})).unwrap();
+    let id = again.id;
+    tool_complete(&mut s, id, again.run(&Control::new())).unwrap();
+    let late = tool_start(&mut s, "buffer", &json!({"input": "Cities", "distance": 50})).unwrap();
+    let done = late.run(&Control::new());
+    assert!(tool_complete(&mut s, id, done).unwrap_err().contains("dropped"), "completed once");
+    s.run("gp.finish", &json!({"id": id})).unwrap();
+    // A run whose map is no longer the active one adds nothing to the one that is, and says so.
+    s.run("map.new", &json!({"name": "Second"})).unwrap();
+    s.project.active_map = 0;
+    let run = tool_start(&mut s, "buffer", &json!({"input": "Cities", "distance": 50})).unwrap();
+    s.project.active_map = 1;
+    let layers = s.map().layers.len();
+    let (id, done) = (run.id, run.run(&Control::new()));
+    tool_complete(&mut s, id, done).unwrap();
+    let e = s.run("gp.finish", &json!({"id": id})).unwrap_err();
+    assert!(e.contains("no longer the active one"), "{e}");
+    assert_eq!(s.map().layers.len(), layers);
+    // A tool that rewrites its layer applies when the layer is as it read it, and is refused when
+    // it was edited meanwhile, even only in its fields (the rows, however many, aren't compared).
+    let mut s = world();
+    let run = tool_start(&mut s, "calculateGeometry", &json!({"input": "Countries"})).unwrap();
+    let (id, done) = (run.id, run.run(&Control::new()));
+    tool_complete(&mut s, id, done).unwrap();
+    s.run("gp.finish", &json!({"id": id})).unwrap();
+    // Renamed meanwhile, the layer it read is updated, under its new name.
+    let run = tool_start(&mut s, "calculateGeometry", &json!({"input": "Countries"})).unwrap();
+    s.run("layer.rename", &json!({"layer": "Countries", "name": "Nations"})).unwrap();
+    let (id, done) = (run.id, run.run(&Control::new()));
+    tool_complete(&mut s, id, done).unwrap();
+    s.run("gp.finish", &json!({"id": id})).unwrap();
+    let nations = s.map().layer_by_name("Nations").unwrap();
+    assert_eq!(nations.dataset.name, "Nations");
+    s.run("layer.rename", &json!({"layer": "Nations", "name": "Countries"})).unwrap();
+    let run = tool_start(&mut s, "calculateGeometry", &json!({"input": "Countries"})).unwrap();
+    let countries = s.map_mut().layers.iter_mut().find(|l| l.name == "Countries").unwrap();
+    countries.dataset.fields[0].name = "renamed".into();
+    let (id, done) = (run.id, run.run(&Control::new()));
+    tool_complete(&mut s, id, done).unwrap();
+    let e = s.run("gp.finish", &json!({"id": id})).unwrap_err();
+    assert!(e.contains("changed while"), "{e}");
+    // Opening another project drops its runs; one whose thread couldn't start is forgotten.
+    let run = tool_start(&mut s, "buffer", &json!({"input": "Cities", "distance": 50})).unwrap();
+    s.run("project.new", &Value::Null).unwrap();
+    assert!(!tool_waiting(&s, run.id));
+    let mut s = world();
+    let run = tool_start(&mut s, "buffer", &json!({"input": "Cities", "distance": 50})).unwrap();
+    tool_abandon(&mut s, run.id);
+    assert!(!tool_waiting(&s, run.id));
+}
+
+/// A background selection on a streamed layer renamed while it ran selects the features it chose
+/// where they are in the layer's window; a run whose map moved (one before it was deleted) still
+/// lands on it.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn background_runs_follow_renamed_streamed_layers_and_moved_maps() {
+    use crate::cmd::gp::{tool_complete, tool_start};
+    use rustgis_analysis::control::Control;
+    let path = grid_fgb("bgrenamed", 50);
+    let mut s = Session::new(Project::default());
+    s.run("layer.addData", &json!({"path": path.display().to_string(), "stream": true})).unwrap();
+    // Only a corner is in view: the window holds part of the source, in its own order.
+    let v = view_of(&mut s, rustgis_geom::Extent::new(0.0, 0.0, 20.0, 20.0));
+    crate::render::render_png(s.map_mut(), &v).unwrap();
+    assert!(s.map().layers[0].dataset.features.len() < 2500, "only part of the source is in the window");
+    let run = tool_start(&mut s, "selectByAttributes", &json!({"input": "bgrenamed", "where": "x > 0 AND x < 20"})).unwrap();
+    s.run("layer.rename", &json!({"layer": "bgrenamed", "name": "Renamed"})).unwrap();
+    let (id, done) = (run.id, run.run(&Control::new()));
+    tool_complete(&mut s, id, done).unwrap();
+    s.run("gp.finish", &json!({"id": id})).unwrap();
+    let l = s.map().layer_by_name("Renamed").unwrap();
+    let x = |f: &rustgis_data::Feature| f.attrs.get(1).and_then(|v| v.as_f64()).unwrap_or(f64::NAN);
+    let mut selected: Vec<u64> = l.selection.iter().map(|&r| l.dataset.features[r].id).collect();
+    let mut expected: Vec<u64> = l.dataset.features.iter().filter(|f| x(f) > 0.0 && x(f) < 20.0).map(|f| f.id).collect();
+    selected.sort_unstable();
+    expected.sort_unstable();
+    assert!(!expected.is_empty() && selected == expected, "{selected:?} vs {expected:?}");
+    // What it selected outside the window isn't selected, and that is said.
+    let said = &s.project.gp_history.last().unwrap().messages;
+    assert!(said.iter().any(|m| m.contains("outside the part of it read for the view")), "{said:?}");
+    let _ = std::fs::remove_file(path);
+    // A map deleted before the run's own map moves it up: the result still lands there.
+    let mut s = world();
+    s.project.maps.insert(0, rustgis_map::Map::new("Before"));
+    s.project.active_map = 1;
+    let layers = s.map().layers.len();
+    let run = tool_start(&mut s, "buffer", &json!({"input": "Cities", "distance": 50})).unwrap();
+    s.run("map.remove", &json!({"name": "Before"})).unwrap();
+    assert_eq!(s.project.active_map, 0);
+    let (id, done) = (run.id, run.run(&Control::new()));
+    tool_complete(&mut s, id, done).unwrap();
+    s.run("gp.finish", &json!({"id": id})).unwrap();
+    assert_eq!(s.map().layers.len(), layers + 1);
+    // Its map deleted and another given its name, holding a layer of the same id from another
+    // source: that isn't the layer it read, and its selection doesn't land there.
+    let path = grid_fgb("bgother", 5);
+    let mut s = world();
+    s.run("map.new", &json!({"name": "Ran"})).unwrap();
+    s.project.active_map = s.project.maps.iter().position(|m| m.name == "Ran").unwrap();
+    s.run("layer.addData", &json!({"path": path.display().to_string(), "stream": true, "name": "Points"})).unwrap();
+    let read_id = s.map().layer_by_name("Points").unwrap().id;
+    let run = tool_start(&mut s, "selectByAttributes", &json!({"input": "Points", "where": "i >= 0"})).unwrap();
+    s.run("map.remove", &json!({"name": "Ran"})).unwrap();
+    s.run("map.new", &json!({"name": "Ran"})).unwrap();
+    s.project.active_map = s.project.maps.iter().position(|m| m.name == "Ran").unwrap();
+    let other = grid_fgb("bgother2", 5);
+    s.run("layer.addData", &json!({"path": other.display().to_string(), "stream": true, "name": "Points"})).unwrap();
+    assert_eq!(s.map().layer_by_name("Points").unwrap().id, read_id, "the same id, on a map of the same name");
+    let (id, done) = (run.id, run.run(&Control::new()));
+    tool_complete(&mut s, id, done).unwrap();
+    let e = s.run("gp.finish", &json!({"id": id})).unwrap_err();
+    assert!(e.contains("was deleted or is no longer the active one"), "{e}");
+    assert!(s.map().layer_by_name("Points").unwrap().selection.is_empty());
+    let _ = (std::fs::remove_file(path), std::fs::remove_file(other));
+}
+
+/// A background run's result lands on its map renamed while it ran; its selection of a streamed
+/// layer whose window was read again meanwhile selects the same features, saying how many left
+/// it; and its update of a streamed layer loaded whole and edited meanwhile is refused.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn background_runs_follow_a_renamed_map_a_moved_window_and_a_loaded_layer() {
+    use crate::cmd::gp::{tool_complete, tool_start};
+    use rustgis_analysis::control::Control;
+    let mut s = world();
+    let layers = s.map().layers.len();
+    let run = tool_start(&mut s, "buffer", &json!({"input": "Cities", "distance": 50})).unwrap();
+    s.run("map.rename", &json!({"name": "Renamed while it ran"})).unwrap();
+    let (id, done) = (run.id, run.run(&Control::new()));
+    tool_complete(&mut s, id, done).unwrap();
+    s.run("gp.finish", &json!({"id": id})).unwrap();
+    assert_eq!(s.map().layers.len(), layers + 1);
+    // Renamed and the rename undone: the same map.
+    let layers = s.map().layers.len();
+    let run = tool_start(&mut s, "buffer", &json!({"input": "Cities", "distance": 50})).unwrap();
+    s.run("map.rename", &json!({"name": "Renamed again"})).unwrap();
+    s.run("edit.undo", &Value::Null).unwrap();
+    let (id, done) = (run.id, run.run(&Control::new()));
+    tool_complete(&mut s, id, done).unwrap();
+    s.run("gp.finish", &json!({"id": id})).unwrap();
+    assert_eq!(s.map().layers.len(), layers + 1);
+    // Deleted, and another map made with its name: the new layer doesn't land there.
+    s.run("map.new", &json!({"name": "Other"})).unwrap();
+    let ran = s.project.maps[0].name.clone();
+    s.project.active_map = 0;
+    let run = tool_start(&mut s, "buffer", &json!({"input": "Cities", "distance": 50})).unwrap();
+    s.run("map.remove", &json!({"name": ran})).unwrap();
+    s.run("map.new", &json!({"name": ran})).unwrap();
+    s.project.active_map = s.project.maps.iter().position(|m| m.name == ran).unwrap();
+    let (id, done) = (run.id, run.run(&Control::new()));
+    tool_complete(&mut s, id, done).unwrap();
+    let e = s.run("gp.finish", &json!({"id": id})).unwrap_err();
+    assert!(e.contains("was deleted or is no longer the active one"), "{e}");
+    assert!(s.map().layers.is_empty());
+    // A selection in the window (so the tool reads the window), then the view moves.
+    let path = grid_fgb("bgwindow", 50);
+    let mut s = Session::new(Project::default());
+    s.run("layer.addData", &json!({"path": path.display().to_string(), "stream": true})).unwrap();
+    let v = view_of(&mut s, rustgis_geom::Extent::new(0.0, 0.0, 20.0, 20.0));
+    crate::render::render_png(s.map_mut(), &v).unwrap();
+    let ids = |s: &Session| -> Vec<u64> { s.map().layers[0].dataset.features.iter().map(|f| f.id).collect() };
+    let x = |f: &rustgis_data::Feature| f.attrs.get(1).and_then(|v| v.as_f64()).unwrap_or(f64::NAN);
+    let picked: std::collections::HashSet<u64> =
+        s.map().layers[0].dataset.features.iter().filter(|f| x(f) > 0.0 && x(f) < 20.0).map(|f| f.id).collect();
+    let before = ids(&s);
+    let n = before.len();
+    s.map_mut().layers[0].selection = (0..n).collect();
+    let run = tool_start(&mut s, "selectByAttributes", &json!({"input": "bgwindow", "where": "x > 0 AND x < 20"})).unwrap();
+    // The view moved: the window, read again, holds part of what it did, in another order.
+    let l = &mut s.map_mut().layers[0];
+    l.dataset.features = l.dataset.features.iter().rev().filter(|f| f.id % 3 != 0).cloned().collect();
+    l.selection.clear();
+    let after = ids(&s);
+    let (id, done) = (run.id, run.run(&Control::new()));
+    tool_complete(&mut s, id, done).unwrap();
+    s.run("gp.finish", &json!({"id": id})).unwrap();
+    let l = &s.map().layers[0];
+    let mut selected: Vec<u64> = l.selection.iter().map(|&r| l.dataset.features[r].id).collect();
+    let mut expected: Vec<u64> = after.iter().copied().filter(|i| picked.contains(i)).collect();
+    selected.sort_unstable();
+    expected.sort_unstable();
+    assert!(!expected.is_empty() && expected.len() < picked.len(), "{} of {}", expected.len(), picked.len());
+    assert_eq!(selected, expected);
+    let said = &s.project.gp_history.last().unwrap().messages;
+    assert!(said.iter().any(|m| m.contains("no longer there")), "{said:?}");
+    // Streamed and read whole, then loaded whole while the tool ran, and one of the features it
+    // selects deleted: its selection, rows of the whole source, lands on the others, and says so.
+    s.map_mut().layers[0].selection.clear();
+    let mut t = Session::new(Project::default());
+    t.run("layer.addData", &json!({"path": path.display().to_string(), "stream": true})).unwrap();
+    let v = view_of(&mut t, rustgis_geom::Extent::new(0.0, 0.0, 20.0, 20.0));
+    crate::render::render_png(t.map_mut(), &v).unwrap();
+    let run = tool_start(&mut t, "selectByAttributes", &json!({"input": "bgwindow", "where": "i < 100"})).unwrap();
+    t.run("layer.loadAll", &json!({"layer": t.map().layers[0].id})).unwrap();
+    // One of the features it selects is deleted meanwhile.
+    let i = |f: &rustgis_data::Feature| f.attrs.first().and_then(|v| v.as_f64()).unwrap_or(f64::NAN);
+    let first = t.map().layers[0].dataset.features.iter().position(|f| i(f) == 0.0).unwrap();
+    t.map_mut().layers[0].selection = vec![first];
+    t.run("edit.enable", &json!({"on": true})).unwrap();
+    t.run("edit.delete", &Value::Null).unwrap();
+    let (id, done) = (run.id, run.run(&Control::new()));
+    tool_complete(&mut t, id, done).unwrap();
+    t.run("gp.finish", &json!({"id": id})).unwrap();
+    let l = &t.map().layers[0];
+    assert!(!l.is_streamed());
+    assert_eq!(l.selection.len(), 99);
+    assert!(l.selection.iter().all(|&r| i(&l.dataset.features[r]) < 100.0 && i(&l.dataset.features[r]) != 0.0));
+    let said = &t.project.gp_history.last().unwrap().messages;
+    assert!(said.iter().any(|m| m.contains("1 of the features selected in bgwindow were deleted while it ran")), "{said:?}");
+    // Streamed and read whole, then loaded whole and edited while the tool ran: its update
+    // would discard the edit.
+    let run = tool_start(&mut s, "calculateGeometry", &json!({"input": "bgwindow"})).unwrap();
+    s.run("layer.loadAll", &json!({"layer": s.map().layers[0].id})).unwrap();
+    s.run("edit.enable", &json!({"on": true})).unwrap();
+    s.run("edit.setValue", &json!({"layer": "bgwindow", "row": 0, "field": "i", "value": -1})).unwrap();
+    let (id, done) = (run.id, run.run(&Control::new()));
+    tool_complete(&mut s, id, done).unwrap();
+    let e = s.run("gp.finish", &json!({"id": id})).unwrap_err();
+    assert!(e.contains("loaded whole or replaced while"), "{e}");
+    assert!(s.map().layers[0].dataset.features.iter().any(|f| f.attrs.first().and_then(|v| v.as_f64()) == Some(-1.0)));
+    let _ = std::fs::remove_file(path);
 }

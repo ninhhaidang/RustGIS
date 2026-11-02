@@ -268,6 +268,7 @@ pub fn commands() -> Vec<C> {
             } else {
                 let mut m = a.data.clone();
                 m.name = map_name;
+                m.renew_instance_id();
                 // Reading a project checks only maps' layers, not offline snapshots', so their
                 // selections are put right here.
                 for l in &mut m.layers {
@@ -340,8 +341,11 @@ pub(crate) fn fill_cache(s: &mut Session) -> usize {
 
 /// The longitude/latitude extent the flat map's view shows.
 pub fn view_extent(s: &Session) -> Extent {
-    let m = s.map();
-    let (w, h) = s.view_size;
+    view_extent_of(s.map(), s.view_size)
+}
+
+/// The longitude/latitude extent a `size` view of map `m` shows.
+pub fn view_extent_of(m: &rustgis_map::Map, (w, h): (f64, f64)) -> Extent {
     let e = m.camera.extent(w, h);
     let mut ll = Extent::EMPTY;
     for i in 0..=8 {
@@ -727,6 +731,11 @@ fn offline_sync(s: &mut Session, p: &Value) -> CmdResult {
         let name = m.name.clone();
         *m = fresh.clone();
         m.name = name;
+        // A copy of the source map: a map, and layers, of its own.
+        m.renew_instance_id();
+        for l in &mut m.layers {
+            l.renew_instance_id();
+        }
     }
     if let Some(a) = s.project.offline_areas.get_mut(ai) {
         a.data = fresh;
