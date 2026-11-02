@@ -1,8 +1,9 @@
 //! Lyon tessellation of layer geometry into GPU meshes, matching the tiny-skia CPU path's
 //! rules: EvenOdd holes, round joins and caps, the 0.35 physical-pixel decimation of
-//! `Ctx::ring_path`, and screen-constant stroke widths — strokes tessellate at width 1.0 in
-//! map units and the vertex shader displaces along lyon's unit normal by
-//! `stroke_px * map_per_px / 2`, so one tessellation serves every zoom.
+//! `Ctx::ring_path`, and screen-constant stroke widths — the vertex shader displaces along
+//! lyon's unit normal by `stroke_px * map_per_px / 2`, so one tessellation serves every zoom
+//! the camera fast path shows it at (strokes are tessellated at the widest of those, see
+//! [`tessellation_width`]).
 
 use lyon::path::Path;
 use lyon::tessellation::{
@@ -13,8 +14,8 @@ use rustgis_data::Geometry;
 use rustgis_geom::{Coord, Extent};
 use rustgis_map::{Layer, Marker, Rgba, Symbol};
 
-use crate::SELECTION;
 use crate::gpu_scene::{DrawCmd, MeshVertex, PointInstance, f32_holds};
+use crate::{GPU_CULL_MARGIN, SELECTION};
 
 /// Why a mesh wasn't made; the caller falls the layer (or the outline) back to the CPU path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -197,8 +198,30 @@ pub(crate) fn fill_polygon(
     Ok((!out.indices.is_empty()).then_some((out.vertices, out.indices)))
 }
 
-/// Strokes rings (closed, polygon outlines) or line parts (open) at width 1.0; the vertex
-/// shader applies the real width. Ring outlines take no width floor (`Ctx::polygon`),
+/// The width (map units) a stroke `width_px` physical pixels wide is tessellated at: the widest
+/// it is drawn at before the scene is made again, `map_per_px` zoomed out as far as the camera
+/// fast path moves a mesh (the extent it was collected for, padded by [`GPU_CULL_MARGIN`] on
+/// each side). Lyon places a join's inner vertex where the two offset edges meet unless that
+/// point would pass the far ends of both edges, and then folds the join; that test needs the
+/// width drawn. Tessellated at a fixed 1.0, a near-hairpin kept its inner vertex, many widths
+/// out along the bisector, and the vertex shader's width stretched it into a spike reaching
+/// far past both edges (#1295). Tessellated wider than drawn only folds a few sharp joins
+/// lyon would not have. 1.0 when the product isn't a usable width (the tests' `map_per_px` of
+/// 0).
+fn tessellation_width(width_px: f32, map_per_px: f64) -> f32 {
+    let w = (f64::from(width_px) * map_per_px * (1.0 + 2.0 * GPU_CULL_MARGIN)) as f32;
+    // The round joins' tolerance is a fraction of it: that must be a positive normal float too.
+    if w > 0.0 && (w * STROKE_TOLERANCE).is_normal() { w } else { 1.0 }
+}
+
+/// Round caps and joins, as a fraction of the tessellation width: about 31 segments per full
+/// circle — lyon's default (0.1 at a width of 1) gives about 5, and the vertex shader scales the
+/// normals up to any stroke_px, which would read as polygonal next to tiny-skia's analytic
+/// curves.
+const STROKE_TOLERANCE: f32 = 0.005;
+
+/// Strokes rings (closed, polygon outlines) or line parts (open) at [`tessellation_width`]; the
+/// vertex shader applies the real width. Ring outlines take no width floor (`Ctx::polygon`),
 /// line parts floor at half a physical pixel (`Ctx::line`). `Err(TooDense)` once the vertices
 /// would pass `limit`, as soon as one doesn't fit.
 #[allow(clippy::too_many_arguments)]
@@ -214,12 +237,12 @@ fn stroke(
 ) -> Result<Option<(Vec<MeshVertex>, Vec<u32>)>, TessError> {
     let mut out: VertexBuffers<MeshVertex, u32> = VertexBuffers::new();
     let mut tess = StrokeTessellator::new();
-    // Tolerance is in the tessellation's own units (the radius here is 0.5): 0.005 gives ~31
-    // segments per full circle of round cap/join — lyon's default 0.1 gives ~5, and the
-    // vertex shader scales the normals up to any stroke_px, which would read as polygonal
-    // next to tiny-skia's analytic curves.
-    let options =
-        StrokeOptions::default().with_line_width(1.0).with_tolerance(0.005).with_line_cap(LineCap::Round).with_line_join(LineJoin::Round);
+    let width = tessellation_width(width_px, map_per_px);
+    let options = StrokeOptions::default()
+        .with_line_width(width)
+        .with_tolerance(width * STROKE_TOLERANCE)
+        .with_line_cap(LineCap::Round)
+        .with_line_join(LineJoin::Round);
     for ring in rings {
         for pts in decimate_runs(ring, map_per_px) {
             if pts.len() < min_points {
@@ -233,12 +256,11 @@ fn stroke(
                 b.line_to(lyon::math::point(p[0], p[1]));
             }
             b.end(closed);
-            // position_on_path = position - normal * half_width, half_width = 0.5 at width 1.0.
             let room = limit.saturating_sub(out.vertices.len());
             let mut builder = Capped::new(
                 BuffersBuilder::new(&mut out, |v: StrokeVertex| {
-                    let (p, n) = (v.position(), v.normal());
-                    MeshVertex { position: [p.x - n.x * 0.5, p.y - n.y * 0.5], normal: [n.x, n.y], color, stroke_px: width_px, _pad: 0.0 }
+                    let (p, n) = (v.position_on_path(), v.normal());
+                    MeshVertex { position: [p.x, p.y], normal: [n.x, n.y], color, stroke_px: width_px, _pad: 0.0 }
                 }),
                 room,
             );
@@ -726,5 +748,46 @@ mod tests {
     #[test]
     fn premultiplies_alpha() {
         assert_eq!(premul(Rgba::rgb(255, 0, 0).with_alpha(128)), [128.0 / 255.0, 0.0, 0.0, 128.0 / 255.0]);
+    }
+
+    /// Near-hairpins (slivers like the CIREN soils' in #1295): lyon must fold a join whose two
+    /// offset edges meet past both edges. Tessellated narrower than drawn, the inner vertex
+    /// stayed and the shader stretched it into a spike up to 80 half-widths long. Every vertex,
+    /// drawn at the collected zoom and zoomed out as far as the camera fast path goes, stays
+    /// within half the drawn width of the path. The wider tip folds only at the zoomed-out
+    /// width: its edges meet 15 half-widths out, short of its 1000-unit edges at the collected
+    /// zoom (20 half-widths of 50) and past them zoomed out (10 of 100).
+    #[test]
+    fn near_hairpin_strokes_stay_within_their_width() {
+        let dist = |q: [f64; 2], a: Coord, b: Coord| {
+            let (dx, dy) = (b.x - a.x, b.y - a.y);
+            let t = (((q[0] - a.x) * dx + (q[1] - a.y) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
+            (q[0] - a.x - t * dx).hypot(q[1] - a.y - t * dy)
+        };
+        let (width_px, map_per_px) = (2.0, 50.0);
+        for tip in [20.0, 134.0] {
+            let path = vec![Coord::new(0.0, 0.0), Coord::new(1000.0, 0.0), Coord::new(0.0, tip)];
+            let ring = stroke_rings(&[vec![path.clone()]], [0.0, 0.0], [0.0; 4], width_px, map_per_px, NO_LIMIT);
+            let line = stroke_lines(std::slice::from_ref(&path), [0.0, 0.0], [0.0; 4], width_px, map_per_px, NO_LIMIT);
+            for (what, mesh, closed) in [("polygon outline", ring, true), ("line", line, false)] {
+                let (v, _) = mesh.expect("stroke").expect("non-empty");
+                let mut segments: Vec<(Coord, Coord)> = path.windows(2).map(|s| (s[0], s[1])).collect();
+                if closed {
+                    segments.push((path[2], path[0]));
+                }
+                for zoomed_out in [1.0, 1.0 + 2.0 * GPU_CULL_MARGIN] {
+                    // The vertex shader's displacement: normal * stroke_px * map_per_px / 2.
+                    let half = f64::from(width_px) * map_per_px * zoomed_out / 2.0;
+                    for x in &v {
+                        let q = [
+                            f64::from(x.position[0]) + f64::from(x.normal[0]) * half,
+                            f64::from(x.position[1]) + f64::from(x.normal[1]) * half,
+                        ];
+                        let d = segments.iter().map(|(a, b)| dist(q, *a, *b)).fold(f64::INFINITY, f64::min);
+                        assert!(d <= half * 1.01, "{what}, tip {tip}, x{zoomed_out}: a vertex {:.1} half-widths from the path", d / half);
+                    }
+                }
+            }
+        }
     }
 }
