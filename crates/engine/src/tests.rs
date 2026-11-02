@@ -11209,6 +11209,75 @@ fn dropped_z_values_are_said_on_import_and_export() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// A standalone table can hold geometry whose Z values were dropped when it was read (a plugin's
+/// output, a project file): exporting it says so, to every format, once the file is written, as
+/// `share.exportLayer` does. A table read without Z, and a write that fails, say nothing of it.
+#[test]
+fn exporting_a_table_says_its_dropped_z_values() {
+    let dir = std::env::temp_dir().join(format!("rustgis-engine-table-zm-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let src = dir.join("wells.geojson");
+    std::fs::write(
+        &src,
+        r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"depth":30},"geometry":{"type":"Point","coordinates":[1,2,30]}}]}"#,
+    )
+    .unwrap();
+    isolate_plugins();
+    let mut s = Session::new(Project::default());
+    let (wells, report) = rustgis_data::io::read_path(&src).unwrap();
+    assert!(wells.zm_dropped && report.messages.iter().any(|m| m.contains("Z or M")), "premise: the reader dropped Z");
+    s.project.add_table(wells);
+    let said = |s: &Session, mark| -> Vec<String> {
+        s.notices_since(mark).iter().filter(|n| n.text.contains("Z or M")).map(|n| n.text.clone()).collect()
+    };
+    for ext in ["geojson", "csv", "shp", "zip"] {
+        let out = dir.join(format!("wells.{ext}")).display().to_string();
+        let mark = s.notice_mark();
+        s.run("share.exportTable", &json!({"table": "wells", "path": out})).unwrap();
+        assert_eq!(said(&s, mark), [format!("{out}: its geometry has no Z or M values, which were dropped when wells was read")], ".{ext}");
+    }
+    // The file holds x and y only.
+    assert!(std::fs::read_to_string(dir.join("wells.geojson")).unwrap().contains("[1.0,2.0]"));
+    // A project file keeps what the table's read lost, as it does a layer's (the Z or M values,
+    // the coordinate system, geometry lost to it), so a table opened from one says it too.
+    let crs = rustgis_data::raster::Crs::parse("EPSG:3857").unwrap();
+    {
+        let wells = s.project.tables.last_mut().unwrap();
+        wells.crs = Some(crs);
+        wells.crs_incomplete = true;
+    }
+    let project = dir.join("wells.rgis");
+    s.run("project.saveAs", &json!({"path": project.display().to_string()})).unwrap();
+    let mut t = Session::new(Project::default());
+    t.run("project.open", &json!({"path": project.display().to_string()})).unwrap();
+    let opened = &t.project.tables.get(t.table_index(&json!({"table": "wells"})).unwrap()).unwrap().dataset;
+    assert!(opened.zm_dropped && opened.crs_incomplete && opened.crs == Some(crs), "{opened:?}");
+    let out = dir.join("opened.geojson").display().to_string();
+    let mark = t.notice_mark();
+    t.run("share.exportTable", &json!({"table": "wells", "path": out})).unwrap();
+    assert_eq!(said(&t, mark), [format!("{out}: its geometry has no Z or M values, which were dropped when wells was read")]);
+    // A write that fails says nothing of what the file would have lacked.
+    let missing = dir.join("missing").join("wells.geojson").display().to_string();
+    let mark = s.notice_mark();
+    assert!(s.run("share.exportTable", &json!({"table": "wells", "path": missing})).is_err());
+    assert!(said(&s, mark).is_empty(), "{:?}", s.notices_since(mark));
+    // A table read without Z: no notice.
+    std::fs::write(
+        dir.join("flat.geojson"),
+        r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"depth":30},"geometry":{"type":"Point","coordinates":[1,2]}}]}"#,
+    )
+    .unwrap();
+    let (flat, _) = rustgis_data::io::read_path(&dir.join("flat.geojson")).unwrap();
+    assert!(!flat.zm_dropped, "premise");
+    s.project.add_table(flat);
+    for ext in ["geojson", "shp"] {
+        let mark = s.notice_mark();
+        s.run("share.exportTable", &json!({"table": "flat", "path": dir.join(format!("flat.{ext}"))})).unwrap();
+        assert!(said(&s, mark).is_empty(), ".{ext}: {:?}", s.notices_since(mark));
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// What an import says about positions, an export says again: a NAD 27 Shapefile whose `.prj`
 /// has no shift to WGS 84 (read whole or in place, and after the project is saved and opened)
 /// exported to GeoJSON, but not written back to a Shapefile in NAD 27; and a Shapefile without a
@@ -23358,5 +23427,96 @@ fn merge_distinguishes_case_sensitive_file_paths() {
         })
         .collect();
     assert_eq!(coordinates, [1.0, 2.0]);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// Exporting to a Shapefile says which field names it changed to fit dBase's 10 bytes, as the
+/// file has them, from a layer read whole or in place; names that fit, and other formats, give no
+/// such notice.
+#[test]
+fn shapefile_exports_say_which_field_names_they_changed() {
+    let dir = std::env::temp_dir().join(format!("rustgis-engine-shp-names-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let src = dir.join("sites.geojson");
+    std::fs::write(
+        &src,
+        r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"population_2020":1,"Population_2021":2,"id":3},"geometry":{"type":"Point","coordinates":[1,2]}}]}"#,
+    )
+    .unwrap();
+    isolate_plugins();
+    let mut s = Session::new(Project::default());
+    let changed = |s: &Session, mark| -> Vec<String> {
+        s.notices_since(mark).iter().filter(|n| n.text.contains("changed to fit a Shapefile")).map(|n| n.text.clone()).collect()
+    };
+    for stream in [false, true] {
+        let id = s.run("layer.addData", &json!({"path": src, "stream": stream})).unwrap()["layer"].as_u64().unwrap();
+        for ext in ["shp", "zip"] {
+            let out = dir.join(format!("out-{stream}.{ext}")).display().to_string();
+            let mark = s.notice_mark();
+            s.run("share.exportLayer", &json!({"layer": id, "path": out})).unwrap();
+            assert_eq!(
+                changed(&s, mark),
+                [format!(
+                    "{out}: 2 field names were changed to fit a Shapefile (10 bytes at most, unique ignoring case): \
+                     'Population_2021' → 'Population', 'population_2020' → 'populati_1'"
+                )],
+                "stream {stream}, .{ext}"
+            );
+            // The names the notice gives are the file's.
+            let back = s.run("layer.addData", &json!({"path": out})).unwrap()["layer"].as_u64().unwrap() as u32;
+            let names: Vec<&str> = s.map().layer(back).unwrap().dataset.fields.iter().map(|f| f.name.as_str()).collect();
+            // The reader orders the fields by name, capitals first.
+            assert_eq!(names, ["Population", "id", "populati_1"], "stream {stream}, .{ext}");
+        }
+        // Other formats keep the names and say nothing of them.
+        let mark = s.notice_mark();
+        s.run("share.exportLayer", &json!({"layer": id, "path": dir.join(format!("out-{stream}.geojson"))})).unwrap();
+        assert!(changed(&s, mark).is_empty(), "{:?}", s.notices_since(mark));
+    }
+    // Names that fit: no notice.
+    let mut s = world();
+    let mark = s.notice_mark();
+    s.run("share.exportLayer", &json!({"layer": "Countries", "path": dir.join("countries.shp")})).unwrap();
+    assert!(changed(&s, mark).is_empty(), "{:?}", s.notices_since(mark));
+    // A standalone table can hold geometry (a plugin's output table is read from GeoJSON whole,
+    // and a project file keeps a table's geometry), so `share.exportTable` can write a Shapefile
+    // too, and says the same of its names.
+    use rustgis_data::{Dataset, Field, FieldType, Geometry, GeometryType};
+    use rustgis_geom::Coord;
+    let table = |name: &str, field: &str| {
+        let mut ds = Dataset::new(name, GeometryType::Point, vec![Field::new(field, FieldType::Integer)]);
+        ds.push(Some(Geometry::Point(Coord::new(1.0, 2.0))), vec![rustgis_data::Value::Int(1)]);
+        ds
+    };
+    s.project.add_table(table("Sites", "population_2020"));
+    for ext in ["shp", "zip"] {
+        let out = dir.join(format!("sites.{ext}")).display().to_string();
+        let mark = s.notice_mark();
+        s.run("share.exportTable", &json!({"table": "Sites", "path": out})).unwrap();
+        assert_eq!(
+            changed(&s, mark),
+            [format!(
+                "{out}: 1 field name was changed to fit a Shapefile (10 bytes at most, unique ignoring case): \
+                 'population_2020' → 'population'"
+            )],
+            ".{ext}"
+        );
+        let back = s.run("layer.addData", &json!({"path": out})).unwrap()["layer"].as_u64().unwrap() as u32;
+        let names: Vec<&str> = s.map().layer(back).unwrap().dataset.fields.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["population"], ".{ext}");
+    }
+    // To another format, or with names that fit: no notice.
+    s.project.add_table(table("Fits", "population"));
+    for (table, ext) in [("Sites", "geojson"), ("Fits", "shp")] {
+        let mark = s.notice_mark();
+        s.run("share.exportTable", &json!({"table": table, "path": dir.join(format!("{table}.{ext}"))})).unwrap();
+        assert!(changed(&s, mark).is_empty(), "{table}.{ext}: {:?}", s.notices_since(mark));
+    }
+    // A table without geometry is never a Shapefile: an error, and nothing said of its names.
+    s.run("gp.run", &json!({"tool": "summaryStatistics", "params": {"input": "Countries", "field": "pop_est"}})).unwrap();
+    let stats = s.project.tables.last().unwrap().name.clone();
+    let mark = s.notice_mark();
+    assert!(s.run("share.exportTable", &json!({"table": stats, "path": dir.join("stats.shp")})).is_err());
+    assert!(changed(&s, mark).is_empty(), "{:?}", s.notices_since(mark));
     std::fs::remove_dir_all(dir).unwrap();
 }

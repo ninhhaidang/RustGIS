@@ -202,7 +202,9 @@ pub struct Table {
 }
 
 /// A table as a file holds it: the dataset's fields beside the id (absent from files written
-/// before tables had ids). Read field by field, since `flatten` would buffer every row first.
+/// before tables had ids), with what its read lost, as a layer keeps it: the coordinate system,
+/// geometry lost to it and Z or M values dropped (absent from files written before tables kept
+/// them). Read field by field, since `flatten` would buffer every row first.
 #[derive(Deserialize)]
 struct TableFile {
     #[serde(default)]
@@ -213,11 +215,17 @@ struct TableFile {
     features: Vec<Feature>,
     #[serde(default)]
     source: Option<String>,
+    #[serde(default)]
+    crs: Option<rustgis_data::raster::Crs>,
+    #[serde(default)]
+    crs_incomplete: bool,
+    #[serde(default)]
+    zm_dropped: bool,
 }
 
 impl From<TableFile> for Table {
     fn from(t: TableFile) -> Self {
-        let TableFile { id, name, geometry_type, fields, features, source } = t;
+        let TableFile { id, name, geometry_type, fields, features, source, crs, crs_incomplete, zm_dropped } = t;
         Table {
             id,
             dataset: Dataset {
@@ -226,9 +234,9 @@ impl From<TableFile> for Table {
                 fields,
                 features: features.into(),
                 source,
-                crs: None,
-                crs_incomplete: false,
-                zm_dropped: false,
+                crs,
+                crs_incomplete,
+                zm_dropped,
                 windowed: false,
             },
         }

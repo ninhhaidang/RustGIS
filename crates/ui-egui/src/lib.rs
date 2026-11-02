@@ -3249,6 +3249,7 @@ impl RustGisApp {
                 let ext = if ext == "shp" { "zip".to_string() } else { ext };
                 let name = format!("{}.{ext}", l.name);
                 let notes = rustgis_engine::data::export_notes([(ds, l.extent())], &name, crs);
+                let names_note = if ext == "zip" { io::shapefile_names_note(&ds.fields, &name) } else { None };
                 if left_out > 0 {
                     self.session.notify(format!("{name}: {left_out} features without drawable geometry were left out"), false);
                 }
@@ -3256,7 +3257,7 @@ impl RustGisApp {
                     self.session.notify(format!("{name}: no .prj written, as {} has no WKT form", crs.label()), false);
                 }
                 if self.download(&name, bytes) {
-                    for note in notes {
+                    for note in notes.into_iter().chain(names_note) {
                         self.session.notify(note, false);
                     }
                 }
@@ -4358,6 +4359,42 @@ mod download_service_tests {
         assert!(!app.download("archive.pmtiles", vec![1, 2, 3]));
         assert!(app.session.notices.iter().any(|n| n.error && n.text.contains("browser rejected download")));
         assert!(!app.session.notices.iter().any(|n| n.text.contains("Downloaded")));
+    }
+
+    /// The web app's Shapefile download says which field names it changed, once the browser takes
+    /// the file; names that fit, other formats and a refused download say nothing of them.
+    #[test]
+    fn shapefile_download_says_which_field_names_it_changed() {
+        use rustgis_engine::data::{Dataset, Field, FieldType, Geometry, GeometryType, Value};
+        use rustgis_engine::geom::Coord;
+        let changed = |app: &RustGisApp| app.session.notices.iter().filter(|n| n.text.contains("changed to fit a Shapefile")).count();
+        let with = |accept: bool| {
+            let download: Box<dyn Fn(&str, Vec<u8>) -> Result<(), String>> =
+                if accept { Box::new(|_, _| Ok(())) } else { Box::new(|_, _| Err("browser rejected download".into())) };
+            let mut app = RustGisApp::with_sample().with_services(Services { download: Some(download), ..Default::default() });
+            let mut ds = Dataset::new("Sites", GeometryType::Point, vec![Field::new("population_2020", FieldType::Integer)]);
+            ds.push(Some(Geometry::Point(Coord::new(1.0, 2.0))), vec![Value::Int(1)]);
+            let id = app.session.map_mut().add_dataset(ds);
+            app.session.active_layer = Some(id);
+            app
+        };
+        let mut app = with(true);
+        app.run("ui.exportLayer", json!({"format": "shp"})).unwrap();
+        assert_eq!(changed(&app), 1);
+        assert!(app.session.notices.iter().any(|n| n.text
+            == "Sites.zip: 1 field name was changed to fit a Shapefile (10 bytes at most, unique ignoring case): \
+                'population_2020' → 'population'"));
+        app.run("ui.exportLayer", json!({"format": "geojson"})).unwrap();
+        assert_eq!(changed(&app), 1, "GeoJSON keeps the name");
+        let mut app = with(false);
+        let _ = app.run("ui.exportLayer", json!({"format": "shp"}));
+        assert!(app.session.notices.iter().any(|n| n.error && n.text.contains("browser rejected download")));
+        assert_eq!(changed(&app), 0, "nothing was downloaded");
+        let mut app = with(true);
+        let countries = app.session.map().layers.iter().find(|l| l.name == "Countries").map(|l| l.id);
+        app.session.active_layer = countries;
+        app.run("ui.exportLayer", json!({"format": "shp"})).unwrap();
+        assert_eq!(changed(&app), 0, "the sample's names fit");
     }
 
     #[test]
