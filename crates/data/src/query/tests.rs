@@ -473,3 +473,46 @@ fn a_computed_in_list_skips_nulls_and_a_long_pattern_matches_nothing() {
     assert_eq!(rows(&costly.replace(" LIKE ", " NOT LIKE ")), Vec::<usize>::new());
     assert!(!like(&"a".repeat(65536), &format!("%{}b", "a".repeat(1000))));
 }
+
+#[test]
+fn geometry_is_measured_on_the_ellipsoid() {
+    use crate::{Geometry, Measure};
+    use rustgis_geom::{Coord, SQUARE_METRES_PER_ACRE};
+    // Parcels near Memphis: squares 0.001° (about 2.5 acres) and 0.002° (about 10 acres) a side.
+    let square = |x: f64, y: f64, d: f64| {
+        let ring = vec![Coord::new(x, y), Coord::new(x + d, y), Coord::new(x + d, y + d), Coord::new(x, y + d), Coord::new(x, y)];
+        Geometry::Polygon(vec![vec![ring]])
+    };
+    let mut d = Dataset::new("parcels", GeometryType::Polygon, vec![Field::new("zoning", FieldType::Text)]);
+    d.push(Some(square(-90.0, 35.1, 0.001)), vec![Value::Text("R-1".into())]);
+    d.push(Some(square(-90.01, 35.1, 0.002)), vec![Value::Text("R-1".into())]);
+    d.push(Some(square(-90.02, 35.1, 0.002)), vec![Value::Text("C-2".into())]);
+    d.push(None, vec![Value::Text("R-1".into())]);
+    d.push(Some(square(500.0, 35.1, 0.002)), vec![Value::Text("R-1".into())]);
+
+    let f = |text: &str, row: usize| value(&parse(text, &d).unwrap(), &d, row, &Env::default()).as_f64();
+    // The same figures as Calculate Geometry stores.
+    for (text, m) in [("$area", Measure::Area), ("$PERIMETER", Measure::Perimeter)] {
+        let want = d.features.get(1).and_then(|f| f.geometry.as_ref()).and_then(|g| g.wgs84_measure(m));
+        assert_eq!(f(text, 1), want, "{text}");
+    }
+    let acres = f("area('AC')", 1).unwrap();
+    assert!((acres - f("$area", 1).unwrap() / SQUARE_METRES_PER_ACRE).abs() < 1e-12 && (9.0..11.0).contains(&acres), "{acres}");
+    assert_eq!(f("area()", 1), f("$area", 1));
+    assert_eq!(f("perimeter('m')", 1), f("$perimeter", 1));
+    // No geometry, or coordinates that aren't longitudes and latitudes: null.
+    assert_eq!(f("$area", 3), None);
+    assert_eq!(f("$area", 4), None);
+    assert_eq!(select("area('ac') BETWEEN 5 AND 20 AND zoning = 'R-1'", &d).unwrap(), vec![1]);
+
+    // A measure of another kind of layer is an error, not a column of nulls.
+    assert!(parse("$length > 1", &d).is_err_and(|e| e.contains("perimeter")));
+    assert!(parse("line_length('mi') > 1", &d).is_err_and(|e| e.contains("polyline")));
+    // So is a unit it doesn't know, or one that isn't fixed text.
+    assert!(parse("area('acres') > 1", &d).is_err_and(|e| e.contains("ac, ft2")));
+    assert!(parse("area('ft') > 1", &d).is_err());
+    assert!(parse("area(zoning) > 1", &d).is_err_and(|e| e.contains("as text")));
+    let lines = Dataset::new("roads", GeometryType::Polyline, vec![]);
+    assert!(parse("$area > 1", &lines).is_err_and(|e| e.contains("polygon")));
+    assert!(parse("$length > 1 AND line_length('mi') < 2", &lines).is_ok());
+}

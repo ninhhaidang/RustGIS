@@ -1,6 +1,6 @@
 //! Geometry: points, polylines and polygons (each possibly multi-part), plus hit testing.
 
-use rustgis_geom::{Coord, Extent};
+use rustgis_geom::{Coord, Extent, wgs84_length_m, wgs84_ring_perimeter_area_m2};
 use serde::{Deserialize, Serialize};
 
 /// Subdivisions of the label fallback grid; both endpoints are sampled.
@@ -24,6 +24,57 @@ impl GeometryType {
             GeometryType::Polyline => "Polyline",
             GeometryType::Polygon => "Polygon",
             GeometryType::None => "Table",
+        }
+    }
+}
+
+/// What [`Geometry::wgs84_measure`] measures.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Measure {
+    /// A polygon's area, in square metres; holes subtract.
+    Area,
+    /// The length of a polygon's rings, holes included, in metres.
+    Perimeter,
+    /// A line's length, in metres.
+    Length,
+}
+
+impl Measure {
+    /// The measure named `key` (`area`, `perimeter`, `length`, any case).
+    pub fn from_key(key: &str) -> Option<Measure> {
+        [("area", Measure::Area), ("perimeter", Measure::Perimeter), ("length", Measure::Length)]
+            .into_iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(key))
+            .map(|(_, m)| m)
+    }
+
+    /// The units it can be given in, by key, with the square metres or metres in one.
+    pub fn units(self) -> &'static [(&'static str, f64)] {
+        match self {
+            Measure::Area => &[
+                ("m2", 1.0),
+                ("km2", 1e6),
+                ("ha", 1e4),
+                ("ac", rustgis_geom::SQUARE_METRES_PER_ACRE),
+                ("ft2", rustgis_geom::SQUARE_METRES_PER_SQUARE_FOOT),
+                ("mi2", rustgis_geom::SQUARE_METRES_PER_SQUARE_MILE),
+            ],
+            Measure::Perimeter | Measure::Length => {
+                &[("m", 1.0), ("km", 1e3), ("ft", rustgis_geom::METRES_PER_FOOT), ("mi", rustgis_geom::METRES_PER_MILE)]
+            }
+        }
+    }
+
+    /// The square metres or metres in the unit `key` (any case), if it is one of [`Self::units`].
+    pub fn unit(self, key: &str) -> Option<f64> {
+        self.units().iter().find(|(k, _)| k.eq_ignore_ascii_case(key)).map(|u| u.1)
+    }
+
+    /// The kind of layer it measures.
+    pub fn geometry_type(self) -> GeometryType {
+        match self {
+            Measure::Area | Measure::Perimeter => GeometryType::Polygon,
+            Measure::Length => GeometryType::Polyline,
         }
     }
 }
@@ -53,6 +104,37 @@ impl Geometry {
             Geometry::MultiPoint(v) => v.iter().copied().for_each(f),
             Geometry::Line(parts) => parts.iter().flatten().copied().for_each(f),
             Geometry::Polygon(polys) => polys.iter().flatten().flatten().copied().for_each(f),
+        }
+    }
+
+    /// `m` of this longitude/latitude geometry on the WGS 84 ellipsoid: what Calculate Geometry
+    /// stores and `$area`, `$perimeter` and `$length` read. `None` for another kind of geometry,
+    /// an empty one, or one whose coordinates aren't longitudes and latitudes (a shape drawn or
+    /// buffered across the antimeridian may run to ±360°).
+    pub fn wgs84_measure(&self, m: Measure) -> Option<f64> {
+        let mut valid = self.coord_count() > 0;
+        self.for_each_coord(|c| valid &= c.is_finite() && c.x.abs() <= 360.0 && c.y.abs() <= 90.0);
+        if !valid {
+            return None;
+        }
+        match (self, m) {
+            // Full-turn and polar rings retain the documented exceptions to geoprocessing parity:
+            // docs/user-guide/analysis.md (Calculate Geometry Attributes).
+            (Geometry::Polygon(polys), Measure::Area) => Some(
+                polys
+                    .iter()
+                    .map(|rings| {
+                        rings
+                            .iter()
+                            .enumerate()
+                            .map(|(i, r)| wgs84_ring_perimeter_area_m2(r).1 * if i == 0 { 1.0 } else { -1.0 })
+                            .sum::<f64>()
+                    })
+                    .sum(),
+            ),
+            (Geometry::Polygon(polys), Measure::Perimeter) => Some(polys.iter().flatten().map(|r| wgs84_ring_perimeter_area_m2(r).0).sum()),
+            (Geometry::Line(parts), Measure::Length) => Some(parts.iter().map(|r| wgs84_length_m(r)).sum()),
+            _ => None,
         }
     }
 

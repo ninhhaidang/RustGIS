@@ -218,7 +218,7 @@ fn add_layer(s: &mut Session, layer: &qgis::ProjectLayer, has_dir: bool, report:
     layer.style.apply(l);
     // What reads only against the layer's fields: its definition query, and what the style names.
     if let Some(q) = &layer.definition_query {
-        match rustgis_data::query::parse(q, &l.dataset) {
+        match parse_imported(q, &l.dataset) {
             Ok(_) => l.definition_query = Some(q.clone()),
             Err(e) => report.skipped(name, format!("its filter `{q}` ({e})")),
         }
@@ -227,13 +227,22 @@ fn add_layer(s: &mut Session, layer: &qgis::ProjectLayer, has_dir: bool, report:
     Ok(Some(added_name))
 }
 
+/// An imported QGIS expression read on `ds`. QGIS measures `$area`, `$perimeter` and `$length`
+/// in the project's units, which aren't read yet, so an expression using them doesn't read.
+fn parse_imported(text: &str, ds: &rustgis_data::Dataset) -> Result<rustgis_data::query::Expr, String> {
+    if qgis::reads_measure(text) {
+        return Err("it measures in the QGIS project's units, which RustGIS doesn't read yet".into());
+    }
+    rustgis_data::query::parse(text, ds)
+}
+
 /// Checks what a style names against the layer's fields: its label classes' clauses and fields
 /// (a class that can't label is switched off) and the field a Unique Values or Graduated Colors
 /// renderer classes by.
 fn check_fields(l: &mut rustgis_map::Layer, name: &str, rules: &[qgis::RuleFilter], report: &mut Report) {
     for c in std::iter::once(&mut l.labels.default).chain(l.labels.classes.iter_mut()) {
         if let Some(w) = c.where_.clone()
-            && let Err(e) = rustgis_data::query::parse(&w, &l.dataset)
+            && let Err(e) = parse_imported(&w, &l.dataset)
         {
             report.skipped(name, format!("the label class \"{}\", whose clause `{w}` doesn't fit the layer ({e})", c.name));
             c.visible = false;
@@ -242,7 +251,7 @@ fn check_fields(l: &mut rustgis_map::Layer, name: &str, rules: &[qgis::RuleFilte
         // left out, as the symbol's are below.
         for (what, slot) in [("text", &mut c.by.text), ("size", &mut c.by.size), ("colour", &mut c.by.color), ("angle", &mut c.by.angle)] {
             if let Some(text) = slot.as_deref()
-                && let Err(e) = rustgis_data::query::parse(text, &l.dataset)
+                && let Err(e) = parse_imported(text, &l.dataset)
             {
                 report.skipped(name, format!("the label {what} `{text}` of the class \"{}\" ({e})", c.name));
                 *slot = None;
@@ -280,7 +289,7 @@ fn check_fields(l: &mut rustgis_map::Layer, name: &str, rules: &[qgis::RuleFilte
         ("angle", &mut by.angle),
     ] {
         if let Some(text) = slot.as_deref()
-            && let Err(e) = rustgis_data::query::parse(text, &l.dataset)
+            && let Err(e) = parse_imported(text, &l.dataset)
         {
             report.skipped(name, format!("its data-defined symbol {what} `{text}` ({e})"));
             *slot = None;
@@ -296,7 +305,7 @@ fn fit_rules(l: &mut rustgis_map::Layer, name: &str, rules: &[qgis::RuleFilter],
     // Those that don't fit, said once: how many, and the first.
     let mut unfit: Option<(String, usize)> = None;
     for r in rules {
-        match rustgis_data::query::parse(&r.when, &l.dataset) {
+        match parse_imported(&r.when, &l.dataset) {
             Ok(_) => kept.push(r.clone()),
             Err(e) => match &mut unfit {
                 Some((_, n)) => *n += 1,
@@ -342,7 +351,7 @@ const MAX_RULE_CHECKS: usize = 20_000_000;
 /// scale: QGIS draws such a feature with each rule's symbol, RustGIS with the first's.
 fn note_overlapping_rules(l: &rustgis_map::Layer, name: &str, rules: &[qgis::RuleFilter], report: &mut Report) {
     let ds = &l.dataset;
-    let mut compiled: Vec<_> = rules.iter().filter_map(|r| Some((r, rustgis_data::query::parse(&r.condition, ds).ok()?))).collect();
+    let mut compiled: Vec<_> = rules.iter().filter_map(|r| Some((r, parse_imported(&r.condition, ds).ok()?))).collect();
     // Only rules some scale draws together can pick a feature together: in the order of where
     // they start zoomed in, a rule meets one before it when it starts within the farthest out
     // any of those reaches (a sweep over their scale ranges).

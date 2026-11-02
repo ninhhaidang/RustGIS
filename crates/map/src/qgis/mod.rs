@@ -26,7 +26,7 @@ use serde::Serialize;
 use crate::Rgba;
 use crate::effects::Blend;
 use crate::symbology::{Labeling, LineStroke, MarkerRotation, Renderer};
-pub use expr::to_sql;
+pub use expr::{reads_measure, to_sql};
 pub use source::{Source, is_drive_relative, is_relative};
 
 /// The most XML nodes a project or style is read with (a large project's file is some hundred

@@ -264,7 +264,8 @@ complement. Edges follow the shortest geodesics between vertices. The output fie
 `area_km2`, `perimeter_km` and `length_km`; point coordinates are unchanged.
 Spatial Join's **Largest overlap** still measures area on a sphere of radius 6,371 km; it can
 differ from the ellipsoid by up to about 0.9 % (a small area near a pole). The same WGS 84
-measure backs the attribute table's **Calculate Geometry** (`edit.calculateGeometry`), the map's
+measure backs the attribute table's **Calculate Geometry** (`edit.calculateGeometry`), the
+[expressions](expressions.md#values)' `$area`, `$perimeter` and `$length`, the map's
 **Measure** tools on the Earth, and every network tool's edge and route lengths, so all of these
 read the same number for the same geometry, with two exceptions. A polygon ring with a full-turn
 (-180° to 180°) edge, such as a globe-wide band, is measured on the sphere by the attribute table

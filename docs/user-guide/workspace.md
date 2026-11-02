@@ -239,7 +239,8 @@ SQL (fields compared with values, `LIKE`, `IN`, `IS NULL`, joined by `AND`, `OR`
 before, the rest (functions, arithmetic, `CASE`, `@map_scale`) as they are, for the
 [expression language](expressions.md), QGIS's map scale (`@map_scale`, `$scale`) read as RustGIS's
 (see below), in filters and in data-defined symbol and label settings. One it can't read on the layer (a function or variable it
-lacks, a field the layer hasn't) is noted and left out. What RustGIS doesn't draw as QGIS does is drawn as
+lacks, a field the layer hasn't) is noted and left out, as is one measuring with `$area`,
+`$perimeter` or `$length`, which QGIS gives in the project's units. What RustGIS doesn't draw as QGIS does is drawn as
 near as it can, or left out, and said: the import's notes list, layer by layer, what was
 approximated (gradient and shapeburst fills' offsets left out and colour ramps other than gradients drawn from their first colour to their last, SVG, raster and random fills and dense brushes as a tint of their colour, SVG markers as circles,
 dashed polygon outlines solid, label halos with sharp corners drawn round and blended ones drawn

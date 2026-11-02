@@ -18,7 +18,7 @@
 //! too costly to match ([`MAX_LIKE_STEPS`]) is unknown. Arithmetic on a
 //! null, a division by zero or an overflow gives null; `+` joins text that isn't a number.
 
-use crate::{Dataset, Value};
+use crate::{Dataset, Measure, Value};
 use std::borrow::Cow;
 
 #[cfg(test)]
@@ -114,6 +114,9 @@ pub enum Var {
     RowNumber,
     /// `$id`: the feature's id.
     Id,
+    /// `$area`, `$perimeter`, `$length`, `area(unit)`, `perimeter(unit)`, `line_length(unit)`:
+    /// the feature's geometry measured on the WGS 84 ellipsoid, divided by the unit's size.
+    Measure(Measure, f64),
 }
 
 /// Values an expression reads from where it runs.
@@ -155,6 +158,10 @@ pub enum Func {
     Concat,
     ColorRgb,
     ColorRgba,
+    /// Parsed into [`Var::Measure`], like the two below.
+    Area,
+    Perimeter,
+    LineLength,
 }
 
 /// Functions by name, with their fewest and most arguments.
@@ -190,6 +197,9 @@ const FUNCS: &[(&str, Func, usize, usize)] = &[
     ("concat", Func::Concat, 1, MAX_ARGS),
     ("color_rgb", Func::ColorRgb, 3, 3),
     ("color_rgba", Func::ColorRgba, 4, 4),
+    ("area", Func::Area, 0, 1),
+    ("perimeter", Func::Perimeter, 0, 1),
+    ("line_length", Func::LineLength, 0, 1),
 ];
 
 #[derive(Clone, Debug, PartialEq)]
@@ -595,6 +605,17 @@ impl Parser<'_> {
     fn field(&self, name: &str) -> Result<Expr, String> {
         self.ds.field_index(name).map(Expr::Field).ok_or_else(|| format!("no field named '{name}'"))
     }
+    /// `m` in units of `size`, on a layer of the kind it measures.
+    fn measure(&self, name: &str, m: Measure, size: f64) -> Result<Expr, String> {
+        let want = m.geometry_type();
+        if self.ds.geometry_type != want {
+            let hint = if m == Measure::Length { " (use perimeter on polygons)" } else { "" };
+            return Err(format!("'{name}' measures {} layers{hint}", want.label().to_ascii_lowercase()));
+        }
+        Ok(Expr::Var(Var::Measure(m, size)))
+    }
+    /// A value: a literal, a field, a variable (a measure only on a layer it fits), a call, a
+    /// `CASE` or a bracketed expression.
     fn primary(&mut self) -> Result<Expr, String> {
         match self.next() {
             Some(Tok::LParen) => {
@@ -613,7 +634,10 @@ impl Parser<'_> {
                 "@map_scale" | "$scale" => Ok(Expr::Var(Var::MapScale)),
                 "@row_number" => Ok(Expr::Var(Var::RowNumber)),
                 "$id" => Ok(Expr::Var(Var::Id)),
-                _ => Err(format!("unknown variable '{v}'")),
+                name => match name.strip_prefix('$').and_then(Measure::from_key) {
+                    Some(m) => self.measure(&v, m, 1.0),
+                    None => Err(format!("unknown variable '{v}'")),
+                },
             },
             Some(Tok::Ident(s)) => {
                 if self.toks.get(self.pos) == Some(&Tok::LParen) {
@@ -635,6 +659,8 @@ impl Parser<'_> {
             other => Err(format!("expected a value, found {}", show(other.as_ref()))),
         }
     }
+    /// A call of the function `name`, its arguments counted; a measure's call becomes the
+    /// variable it reads, its unit (fixed text) checked here.
     fn call(&mut self, name: &str) -> Result<Expr, String> {
         let &(fname, f, min, max) =
             FUNCS.iter().find(|(n, ..)| n.eq_ignore_ascii_case(name)).ok_or_else(|| format!("unknown function '{name}'"))?;
@@ -663,7 +689,26 @@ impl Parser<'_> {
             };
             return Err(format!("{fname} takes {n} argument{}", if n == "1" { "" } else { "s" }));
         }
-        Ok(Expr::Call(f, args))
+        let m = match f {
+            Func::Area => Measure::Area,
+            Func::Perimeter => Measure::Perimeter,
+            Func::LineLength => Measure::Length,
+            _ => return Ok(Expr::Call(f, args)),
+        };
+        // The unit is fixed text, so an unknown one is an error here rather than a null per row.
+        let size = match args.first() {
+            None => 1.0,
+            Some(Expr::Lit(Value::Text(u))) => m.unit(u).ok_or_else(|| {
+                let keys: Vec<&str> = m.units().iter().map(|u| u.0).collect();
+                format!("{fname} has no unit '{u}': use one of {}", keys.join(", "))
+            })?,
+            // QGIS's area($geometry) and the like land here.
+            Some(_) => {
+                let example = if m == Measure::Area { "ha" } else { "km" };
+                return Err(format!("{fname} measures the feature's own geometry: its argument is a unit as text, such as '{example}'"));
+            }
+        };
+        self.measure(fname, m, size)
     }
     fn case(&mut self) -> Result<Expr, String> {
         self.deeper()?;
@@ -995,6 +1040,7 @@ impl<'a> Eval<'a> {
         }
     }
 
+    /// `e`'s value on this row: null where it can't be worked out (a missing field, an error).
     fn value(&self, e: &'a Expr) -> Cow<'a, Value> {
         match e {
             Expr::Lit(v) => Cow::Borrowed(v),
@@ -1003,6 +1049,16 @@ impl<'a> Eval<'a> {
                 Var::MapScale => self.env.map_scale.map(real).unwrap_or(Value::Null),
                 Var::RowNumber => i64::try_from(self.row).ok().and_then(|r| r.checked_add(1)).map(Value::Int).unwrap_or(Value::Null),
                 Var::Id => self.ds.features.get(self.row).and_then(|f| i64::try_from(f.id).ok()).map(Value::Int).unwrap_or(Value::Null),
+                Var::Measure(m, size) => self
+                    .ds
+                    .features
+                    .get(self.row)
+                    .and_then(|f| f.geometry.as_ref())
+                    .and_then(|g| g.wgs84_measure(*m))
+                    // A hole larger than its polygon measures below zero: no sensible area.
+                    .filter(|v| *v >= 0.0)
+                    .map(|v| real(v / size))
+                    .unwrap_or(Value::Null),
             }),
             Expr::Chain(first, rest) => {
                 let mut acc = self.value(first).into_owned();
@@ -1045,6 +1101,7 @@ impl<'a> Eval<'a> {
         }
     }
 
+    /// The value of the function `f` over `args` on this row.
     fn call(&self, f: Func, args: &'a [Expr]) -> Cow<'a, Value> {
         let arg = |i: usize| args.get(i).map(|a| self.value(a)).unwrap_or(Cow::Owned(Value::Null));
         let n = |i: usize| arg(i).as_f64();
@@ -1207,6 +1264,8 @@ impl<'a> Eval<'a> {
                 (Some(r), Some(g), Some(b), Some(a)) => Value::Text(format!("{},{},{},{}", channel(r), channel(g), channel(b), channel(a))),
                 _ => Value::Null,
             },
+            // Parsed into variables, so never called.
+            Func::Area | Func::Perimeter | Func::LineLength => Value::Null,
         })
     }
 }

@@ -936,6 +936,25 @@ fn unique_values_class_by_an_expression() {
 }
 
 #[test]
+fn qgis_measures_in_project_units_are_left_out() {
+    // QGIS's $area is in the project's units, which aren't read: left out, noted, not read as m².
+    let mut s = world();
+    let qml = |filter: &str| {
+        format!(
+            r#"<qgis version="3.40.0"><renderer-v2 type="RuleRenderer"><rules key="r">
+            <rule filter="{filter}" symbol="0" label="Big"/><rule filter="&quot;pop_est&quot; &gt; 5" symbol="0" label="Kept"/></rules>
+            <symbols><symbol type="fill" name="0"><layer class="SimpleFill" enabled="1"/></symbol></symbols></renderer-v2></qgis>"#
+        )
+    };
+    let r = s.run("style.importQgis", &json!({"layer": "Countries", "text": qml("$area &gt; 2")})).unwrap();
+    let said: Vec<&str> = r["notes"].as_array().unwrap().iter().filter_map(|n| n["text"].as_str()).collect();
+    assert!(said.iter().any(|n| n.contains("the rule \"Big\"") && n.contains("project's units")), "{said:?}");
+    // Named only in quotes, it is text: the rule reads.
+    let r = s.run("style.importQgis", &json!({"layer": "Countries", "text": qml("name &lt;&gt; '$area'")})).unwrap();
+    assert!(!r["notes"].to_string().contains("project's units"), "{r}");
+}
+
+#[test]
 fn qgis_rules_class_features_and_say_which_several_rules_pick() {
     let mut s = world();
     let qml = |rules: &str| {
