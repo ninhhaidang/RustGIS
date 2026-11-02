@@ -1,5 +1,7 @@
 //! The tools.
 
+mod geometry;
+
 use geo::{
     BooleanOps, Contains, ConvexHull, CoordsIter, InteriorPoint, Intersects, MultiPolygon, Orient, Relate, Simplify, orient::Direction,
 };
@@ -25,6 +27,50 @@ const TARGET_RECORDS: &[&str] = &["Keep all", "Keep only matching"];
 const KERNEL_TYPES: &[&str] = &["Quartic", "Gaussian"];
 
 pub static TOOLS: &[ToolSpec] = &[
+    ToolSpec {
+        id: "polygonToLine",
+        name: "Polygon To Line",
+        toolbox: "Data Management › Features",
+        summary: "Converts polygon boundaries, including holes, to multipart lines. Shared boundaries are kept for each feature.",
+        params: &[
+            P { name: "input", label: "Input Features", kind: K::PolygonLayer, required: true, default: "", help: "" },
+            P { name: "output", label: "Output Name", kind: K::Text, required: false, default: "", help: "" },
+        ],
+        run: polygon_to_line,
+    },
+    ToolSpec {
+        id: "splitLineAtVertices",
+        name: "Split Line At Vertices",
+        toolbox: "Data Management › Features",
+        summary: "Writes a separate two-vertex line for each consecutive vertex pair.",
+        params: &[
+            P { name: "input", label: "Input Features", kind: K::Layer, required: true, default: "", help: "" },
+            P { name: "output", label: "Output Name", kind: K::Text, required: false, default: "", help: "" },
+        ],
+        run: split_line_at_vertices,
+    },
+    ToolSpec {
+        id: "featureEnvelopeToPolygon",
+        name: "Feature Envelope To Polygon",
+        toolbox: "Data Management › Features",
+        summary: "Writes one axis-aligned bounding rectangle per feature in stored longitude/latitude coordinates. Zero-area envelopes are skipped.",
+        params: &[
+            P { name: "input", label: "Input Features", kind: K::Layer, required: true, default: "", help: "" },
+            P { name: "output", label: "Output Name", kind: K::Text, required: false, default: "", help: "" },
+        ],
+        run: feature_envelope_to_polygon,
+    },
+    ToolSpec {
+        id: "unsplitLine",
+        name: "Unsplit Line",
+        toolbox: "Data Management › Features",
+        summary: "Joins exact endpoint matches through degree-two nodes when all attributes agree. Branches stay separate.",
+        params: &[
+            P { name: "input", label: "Input Features", kind: K::Layer, required: true, default: "", help: "" },
+            P { name: "output", label: "Output Name", kind: K::Text, required: false, default: "", help: "" },
+        ],
+        run: geometry::unsplit,
+    },
     ToolSpec {
         id: "buffer",
         name: "Buffer",
@@ -4246,6 +4292,21 @@ fn join_field_tool(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
     let output = if out.geometry_type == rustgis_data::GeometryType::None { Output::Table(out) } else { Output::Layer(out) };
 
     Ok(ToolResult { output, messages })
+}
+
+/// Keeps polygon boundaries in stored coordinates, including interior rings.
+fn polygon_to_line(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
+    geometry::convert(inp, p, geometry::Conversion::PolygonToLine)
+}
+
+/// Emits consecutive vertex pairs without interpolating or projecting them.
+fn split_line_at_vertices(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
+    geometry::split(inp, p)
+}
+
+/// Encloses each feature independently in longitude/latitude axes.
+fn feature_envelope_to_polygon(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
+    geometry::convert(inp, p, geometry::Conversion::FeatureEnvelopeToPolygon)
 }
 
 #[cfg(test)]

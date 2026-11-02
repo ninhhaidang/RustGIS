@@ -152,6 +152,9 @@ Open questions rather than plans; discuss before building.
 - An in-app Python console; an R package.
 
 ## Done
+
+- Geometry conversions: Polygon To Line, Split Line At Vertices, Feature Envelope To Polygon
+  and Unsplit Line, available in the Tools pane and through `gp.run`.
 - Customizable keyboard shortcuts with portable JSON import/export ([#562](https://github.com/opengeos/RustGIS/issues/562)).
 - Save edits back to existing GeoPackage and PostGIS tables on desktop, with atomic saves,
   conflict detection and discard/reload ([#1041](https://github.com/opengeos/RustGIS/issues/1041)).
