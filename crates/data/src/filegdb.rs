@@ -209,8 +209,44 @@ fn wkids(t: &[u8], x: &[u8]) -> Vec<(String, u32)> {
         .collect()
 }
 
+/// The coordinate system Esri data names: by its EPSG or Esri `code` (a WKID), else from its `wkt`,
+/// with the transformer to longitude/latitude. `(None, None)` for longitude/latitude, and for a
+/// system that can't be read, which `report` says; coordinates are then read as longitude/latitude.
+/// The File Geodatabase and ArcGIS protocol buffer readers share it.
+pub(crate) fn esri_crs(code: Option<u32>, wkt: Option<&str>, report: &mut ReadReport) -> (Option<Crs>, Option<Transformer>) {
+    // By its code, else from the WKT.
+    let by_code = code.and_then(crs_of_code).and_then(|c| match c.transformer() {
+        Ok(t) if c != Crs::LonLat => Some((Some(c), Some(t))),
+        Ok(_) => Some((None, None)),
+        Err(_) => None,
+    });
+    match (by_code, wkt) {
+        (Some(by_code), _) => by_code,
+        (None, Some(wkt)) => match crate::raster::wkt::read_wkt(wkt) {
+            Ok((c, note)) => {
+                if let Some(n) = note {
+                    report.messages.push(format!("coordinate system: {n}"));
+                }
+                match c.transformer() {
+                    Ok(t) if c != Crs::LonLat => (Some(c), Some(t)),
+                    Ok(_) => (None, None),
+                    Err(e) => {
+                        report.messages.push(format!("coordinate system: {e}; coordinates are read as longitude/latitude"));
+                        (None, None)
+                    }
+                }
+            }
+            Err(e) => {
+                report.messages.push(format!("coordinate system: {e}; coordinates are read as longitude/latitude"));
+                (None, None)
+            }
+        },
+        (None, None) => (None, None),
+    }
+}
+
 /// A coordinate system by its EPSG or Esri code.
-fn crs_of_code(code: u32) -> Option<Crs> {
+pub(crate) fn crs_of_code(code: u32) -> Option<Crs> {
     Crs::from_epsg(code).or_else(|| {
         let proj4 = crate::raster::crs::esri_proj4(code)?;
         Crs::custom(crate::raster::crs::CustomCrs {
@@ -238,36 +274,8 @@ fn read_table(name: &str, t: &[u8], x: &[u8], wkid: Option<u32>) -> Result<Optio
         Shape::None => GeometryType::None,
         Shape::Other(code) => return Err(DataError::Unsupported(format!("geometry type {code}"))),
     };
-    // Its coordinate system: by its code, else from the geometry field's WKT.
-    let by_code = wkid.filter(|_| table.geometry.is_some()).and_then(crs_of_code).and_then(|c| match c.transformer() {
-        Ok(t) if c != Crs::LonLat => Some((Some(c), Some(t))),
-        Ok(_) => Some((None, None)),
-        Err(_) => None,
-    });
     let wkt = table.geometry.as_ref().map(|g| g.wkt.as_str()).filter(|w| !w.is_empty() && !w.starts_with('{'));
-    let (crs, to_lonlat) = match (by_code, wkt) {
-        (Some(by_code), _) => by_code,
-        (None, Some(wkt)) => match crate::raster::wkt::read_wkt(wkt) {
-            Ok((c, note)) => {
-                if let Some(n) = note {
-                    report.messages.push(format!("coordinate system: {n}"));
-                }
-                match c.transformer() {
-                    Ok(t) if c != Crs::LonLat => (Some(c), Some(t)),
-                    Ok(_) => (None, None),
-                    Err(e) => {
-                        report.messages.push(format!("coordinate system: {e}; coordinates are read as longitude/latitude"));
-                        (None, None)
-                    }
-                }
-            }
-            Err(e) => {
-                report.messages.push(format!("coordinate system: {e}; coordinates are read as longitude/latitude"));
-                (None, None)
-            }
-        },
-        (None, None) => (None, None),
-    };
+    let (crs, to_lonlat) = esri_crs(wkid.filter(|_| table.geometry.is_some()), wkt, &mut report);
     // The attribute fields: every field but the geometry, and the object ID first.
     let mut fields: Vec<Field> = Vec::new();
     let mut columns: Vec<usize> = Vec::new();
@@ -1032,7 +1040,7 @@ fn split<T: Clone>(pts: &[T], sizes: &[usize]) -> Vec<Vec<T>> {
 }
 
 /// Twice the signed area of a ring (positive counterclockwise).
-fn signed_area(ring: &[Coord]) -> f64 {
+pub(crate) fn signed_area(ring: &[Coord]) -> f64 {
     // From the first point: products of projected coordinates in the millions (or more) would round
     // a small ring's area away.
     let o = ring.first().copied().unwrap_or(Coord::new(0.0, 0.0));

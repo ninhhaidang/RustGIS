@@ -107,6 +107,15 @@ const INCLUDED: &[Included] = &[
         notices: &["projection-engine-db-doc-README-licensing.txt"],
     },
     Included {
+        what: "ArcGIS feature-service answers as protocol buffers (esripbf.rs), after Terrio's ESRIPBF reader \
+               (https://github.com/opengeos/terrio), adapted to RustGIS's features. Both follow Esri's published \
+               FeatureCollection.proto (https://github.com/Esri/arcgis-pbf, Apache-2.0, whose text is in \
+               LICENSE).",
+        krate: "rustgis-data",
+        paths: &["crates/data/src/esripbf.rs"],
+        notices: &["terrio-LICENSE.txt"],
+    },
+    Included {
         what: "Coordinate systems by EPSG code: the definitions of the crs-definitions crate and of epsg_gap.rs, \
                and the axis orders of epsg_axes.rs, are derived from the EPSG Geodetic Parameter Dataset, which \
                is owned by IOGP (the International Association of Oil & Gas Producers) and published under its \

@@ -109,9 +109,15 @@ pub fn read_layers(file_name: &str, bytes: &[u8]) -> Result<Vec<LayerRead>> {
         "dxf" => plain(crate::dxf::read(file_name, bytes, &crate::dxf::Options::default())?),
         // OpenStreetMap PBF, not a vector tile (`.pbf` too).
         "pbf" if crate::osm::looks_like_osm_pbf(bytes) => plain(crate::osm::read(file_name, bytes)?),
+        // An ArcGIS feature service's answer to a query (`f=pbf`), fetched or saved: told by its
+        // content, as `.pbf` names OpenStreetMap too.
+        "pbf" if crate::esripbf::is_esripbf(bytes) => {
+            let name = Path::new(file_name).file_stem().and_then(|s| s.to_str()).unwrap_or("layer");
+            plain(vec![crate::esripbf::read(bytes, name)?])
+        }
         "pbf" => {
             return Err(DataError::Unsupported(format!(
-                "{file_name}: a .pbf that isn't OpenStreetMap data (vector tiles are added with Add Tile Layer)"
+                "{file_name}: a .pbf that isn't OpenStreetMap data or an ArcGIS feature service's answer (vector tiles are added with Add Tile Layer)"
             )));
         }
         // A TopoJSON topology, named .topojson or .json.
@@ -131,8 +137,9 @@ pub fn read_layers(file_name: &str, bytes: &[u8]) -> Result<Vec<LayerRead>> {
 }
 
 /// The extension of a file from its first bytes, for a download whose address doesn't say:
-/// GeoParquet, FlatGeobuf, GeoTIFF, a zip, a GeoPackage, KML, GPX, GeoJSON, delimited text or
-/// JPEG 2000 (`None` for anything else, such as a web page).
+/// GeoParquet, FlatGeobuf, GeoTIFF, a zip, a GeoPackage, an ArcGIS feature service's protocol
+/// buffer answer (`pbf`), KML, GPX, GeoJSON, delimited text or JPEG 2000 (`None` for anything
+/// else, such as a web page).
 pub fn sniff_extension(bytes: &[u8]) -> Option<&'static str> {
     if let Some(ext) = crate::raster::jpeg2000_extension(bytes) {
         return Some(ext);
@@ -164,6 +171,9 @@ pub fn sniff_extension(bytes: &[u8]) -> Option<&'static str> {
                 "las"
             }
         }
+        // An ArcGIS feature service's answer to a query (`…/query?…&f=pbf`, whose address has no
+        // extension), read by content under `.pbf`.
+        _ if crate::esripbf::is_esripbf(bytes) => "pbf",
         _ if start.starts_with('{') || start.starts_with('[') => "geojson",
         _ if start.starts_with('<') && text.contains("<kml") => "kml",
         _ if start.starts_with('<') && text.contains("<gpx") => "gpx",

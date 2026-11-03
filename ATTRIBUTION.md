@@ -68,8 +68,11 @@ Copyright (c) 1996 The Regents of the University of California, under a BSD-styl
 cmocean's (MIT, as above) and rio-tiler's cfastie, rplumbo and schwarzwald. The full licence
 texts are in THIRD-PARTY-LICENSES.txt.
 
-Three small pieces of code follow other projects' code, and their licences are in
-THIRD-PARTY-LICENSES.txt too: where a label goes in an area (`pole_of_inaccessibility` in
+Four pieces of code follow other projects' code, and their licences are in
+THIRD-PARTY-LICENSES.txt too: the reader of ArcGIS feature-service answers as protocol buffers
+(`crates/data/src/esripbf.rs`) follows [Terrio](https://github.com/opengeos/terrio)'s ESRIPBF reader
+(Copyright (c) 2026 Qiusheng Wu and Terrio contributors, MIT), and both follow Esri's published
+[`FeatureCollection.proto`](https://github.com/Esri/arcgis-pbf) (Apache-2.0); where a label goes in an area (`pole_of_inaccessibility` in
 `crates/tiles/src/symbols.rs`) follows [polylabel](https://github.com/mapbox/polylabel)
 (Copyright (c) 2016 Mapbox, ISC); telling expression filters from legacy ones
 (`is_expression_filter` in `crates/tiles/src/style.rs`) follows the

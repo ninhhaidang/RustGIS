@@ -76,6 +76,68 @@ fn layers() -> Result<(Project, Vec<Dataset>)> {
     Ok((s.project.clone(), layers))
 }
 
+/// An ArcGIS feature-service answer as a protocol buffer (`FeatureCollection.proto`): one feature of
+/// geometry type `kind` with an object id and a name, parts of `lengths` vertices (none: one part)
+/// and its coordinates, X and Y as differences; Z and M follow X and Y when `zm`.
+fn esripbf(kind: u64, zm: bool, lengths: &[u64], coords: &[i64]) -> Vec<u8> {
+    fn varint(out: &mut Vec<u8>, mut v: u64) {
+        while v >= 0x80 {
+            out.push((v as u8 & 0x7f) | 0x80);
+            v >>= 7;
+        }
+        out.push(v as u8);
+    }
+    let number = |field: u64, v: u64| {
+        let mut out = Vec::new();
+        varint(&mut out, field << 3);
+        varint(&mut out, v);
+        out
+    };
+    let message = |field: u64, bytes: &[u8]| {
+        let mut out = Vec::new();
+        varint(&mut out, (field << 3) | 2);
+        varint(&mut out, bytes.len() as u64);
+        out.extend_from_slice(bytes);
+        out
+    };
+    let double = |field: u64, v: f64| {
+        let mut out = Vec::new();
+        varint(&mut out, (field << 3) | 1);
+        out.extend_from_slice(&v.to_le_bytes());
+        out
+    };
+    let packed = |values: Vec<u64>| {
+        let mut out = Vec::new();
+        for v in values {
+            varint(&mut out, v);
+        }
+        out
+    };
+    let zigzag = |v: i64| ((v << 1) ^ (v >> 63)) as u64;
+    let scale = [double(1, 0.5), double(2, 0.5), double(3, 1.0), double(4, 1.0)].concat();
+    let translate = [double(1, -74.1), double(2, 4.6)].concat();
+    let transform = [number(1, 1), message(2, &scale), message(3, &translate)].concat();
+    let field = |name: &str, ty: u64| message(13, &[message(1, name.as_bytes()), number(2, ty)].concat());
+    let mut geometry = Vec::new();
+    if !lengths.is_empty() {
+        geometry.extend(message(2, &packed(lengths.to_vec())));
+    }
+    geometry.extend(message(3, &packed(coords.iter().map(|&c| zigzag(c)).collect())));
+    let feature = [message(1, &number(5, 1)), message(1, &message(1, b"seed")), message(2, &geometry)].concat();
+    let result = [
+        number(7, kind),
+        message(8, &number(1, 4326)),
+        number(10, u64::from(zm)),
+        number(11, u64::from(zm)),
+        message(12, &transform),
+        field("OBJECTID", 6),
+        field("NAME", 4),
+        message(15, &feature),
+    ]
+    .concat();
+    [message(1, b"10.0"), message(2, &message(1, &result))].concat()
+}
+
 fn main() -> Result<()> {
     let (project, layers) = layers()?;
 
@@ -138,6 +200,14 @@ fn main() -> Result<()> {
         }],
     };
     seed(&dir, &mut n, &mvt::encode(&tile))?;
+
+    // ArcGIS feature-service answers (`f=pbf`): RustGIS doesn't write them, so they are encoded
+    // here, a point, a line with Z and M, and a polygon with a hole.
+    let (dir, mut n) = (corpus("esripbf")?, 0);
+    seed(&dir, &mut n, &esripbf(0, false, &[], &[4, 6]))?;
+    seed(&dir, &mut n, &esripbf(2, true, &[2, 2], &[1, 1, 7, 3, 2, 0, 7, 0, 5, 5, 9, 1, 0, 1, 9, 2]))?;
+    let ring = [0, 0, 0, 10, 10, 0, 0, -10, -10, 0, 2, 2, 2, 0, 0, 2, -2, 0, 0, -2];
+    seed(&dir, &mut n, &esripbf(3, false, &[5, 5], &ring))?;
 
     let (dir, mut n) = (corpus("project")?, 0);
     let mut small = project;

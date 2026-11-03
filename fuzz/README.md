@@ -12,6 +12,7 @@ allocations and hangs that hand-written hostile-input tests don't anticipate.
 | `wkt` | `raster::wkt::read_wkt` | `.prj` files, GeoPackage spatial reference rows |
 | `wkb` | `wkb::decode` | GeoPackage, GeoParquet and PostGIS geometry |
 | `mvt` | `rustgis_tiles::mvt::decode` | vector tiles |
+| `esripbf` | `esripbf::is_esripbf`, then `esripbf::read` | ArcGIS feature-service answers as protocol buffers (`f=pbf`) |
 | `project` | `Project::from_json` | `.rgis` projects |
 
 This crate is its own workspace, outside RustGIS's: `cargo build`, `cargo xtask ci`, the wasm

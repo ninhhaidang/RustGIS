@@ -58,7 +58,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [read_layers, sniff, geotiff, wkt, wkb, mvt, project]
+        target: [read_layers, sniff, geotiff, wkt, wkb, mvt, esripbf, project]
     env:
       SECONDS_PER_TARGET: ${{ github.event_name == 'pull_request' && '60' || inputs.seconds || '600' }}
       TARGET: ${{ matrix.target }}

@@ -68,6 +68,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "esripbf"
+path = "fuzz_targets/esripbf.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "project"
 path = "fuzz_targets/project.rs"
 test = false

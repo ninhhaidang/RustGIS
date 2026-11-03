@@ -9,6 +9,7 @@ mod dbf;
 pub mod diagnostics;
 pub mod dirs;
 pub mod dxf;
+pub mod esripbf;
 pub mod export;
 pub mod filegdb;
 mod footprint;
