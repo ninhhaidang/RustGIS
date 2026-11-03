@@ -4383,16 +4383,19 @@ fn ramp_picker(app: &mut RustGisApp, ui: &mut Ui, cur: &Ramp, t: &Tokens) {
 /// layer whose classes take their colors from the scheme (#1355).
 fn ramp_picker_with(app: &mut RustGisApp, ui: &mut Ui, cur: &Ramp, t: &Tokens, invert: bool) {
     ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(tl!("Color scheme")).size(11.5).color(t.text_dim));
-        if invert {
+    let heading = egui::RichText::new(tl!("Color scheme")).size(11.5).color(t.text_dim);
+    if invert {
+        ui.horizontal(|ui| {
+            ui.label(heading);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.small_button(tl!("Invert Color Ramp")).on_hover_text(tl!("Reverse the order of the classes' colors.")).clicked() {
                     let _ = app.run("layer.invertRamp", json!({}));
                 }
             });
-        }
-    });
+        });
+    } else {
+        ui.label(heading);
+    }
     let grid = |app: &mut RustGisApp, ui: &mut Ui, id: &str, ramps: Vec<Ramp>| {
         // Two to a row, in the width left inside the group's indent.
         let w = (ui.available_width() - 8.0) / 2.0;

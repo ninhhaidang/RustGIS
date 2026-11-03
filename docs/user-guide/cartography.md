@@ -187,9 +187,11 @@ Colors or Unique Values layer's classes along the legend's order, so the highest
 lowest class's colour. Colours edited by hand travel with the reversal, but a polygon fill's
 opacity stays with its position in the legend, as it does when a colour scheme is applied: a
 semi-transparent fill picked for the first class is still the first class's opacity afterwards.
-Applying it twice gives the original back. A class drawn with fills or strokes of its
-own (stacked fills, line strokes) keeps them, since they are drawn instead of the class's symbol,
-and the others reverse among themselves; a notice says how many classes were left as they are.
+Applying it twice gives the original back. A class drawn from a stack of its own (stacked
+fills on a polygon layer, stacked strokes on a line or point layer) keeps it, since the stack is
+drawn instead of the class's symbol, and the others reverse among themselves; a notice says how
+many classes were left as they are. A stack the layer doesn't draw (a polygon's stacked strokes)
+doesn't count.
 Choosing a colour scheme again starts from the scheme's own order, but classing the layer again
 on the same field, ranges and scheme keeps the reversed colours, as it keeps other colours edited
 by hand. On a Stretch raster the command switches the existing "Invert color scheme" option.

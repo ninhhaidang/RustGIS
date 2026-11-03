@@ -25499,7 +25499,9 @@ fn layer_invert_ramp_reverses_the_class_colors() {
     s.run("layer.symbology", &json!({"layer": "Countries", "type": "graduated", "field": "pop_est", "classes": 5})).unwrap();
     let before = colors(&s);
     assert_eq!(before.len(), 5);
+    let mark = s.notice_mark();
     s.run("layer.invertRamp", &json!({"layer": "Countries"})).unwrap();
+    assert!(s.notices_since(mark).is_empty(), "nothing was left as it was, so nothing is said: {:?}", s.notices_since(mark));
     let mut reversed = before.clone();
     reversed.reverse();
     assert_eq!(colors(&s), reversed);
@@ -25535,13 +25537,15 @@ fn layer_invert_ramp_reverses_the_class_colors() {
     s.run("layer.symbology", &json!({"layer": "Countries", "type": "graduated", "field": "pop_est", "classes": 5})).unwrap();
     s.run("layer.fillLayers", &json!({"layer": "Countries", "index": 0, "fills": [{"color": "#FF0000", "pattern": "solid"}]})).unwrap();
     let own = |s: &Session| match &s.map().layer_by_name("Countries").unwrap().renderer {
-        rustgis_map::Renderer::Graduated { class_fills, .. } => class_fills.keys().copied().collect::<Vec<_>>(),
-        _ => vec![],
+        rustgis_map::Renderer::Graduated { class_fills, .. } => class_fills.clone(),
+        _ => Default::default(),
     };
     let mark = s.notice_mark();
     let before = colors(&s);
+    let fills_before = own(&s);
+    assert_eq!(fills_before.keys().copied().collect::<Vec<_>>(), vec![0]);
     s.run("layer.invertRamp", &json!({"layer": "Countries"})).unwrap();
-    assert_eq!(own(&s), vec![0], "the class keeps its own fills");
+    assert_eq!(own(&s), fills_before, "the class keeps its own fills, as they were");
     // Class 0 keeps its colour, and the others reverse among themselves.
     let after = colors(&s);
     assert_eq!(after[0], before[0]);

@@ -1559,12 +1559,18 @@ impl Renderer {
     }
 
     /// The classes whose colors a ramp gives, in the order the legend lists them, and how many
-    /// more the ramp can't recolor: a class with a stack of fills or strokes of its own
-    /// (`class_fills`, `class_strokes`) is drawn from the stack instead of its symbol. Only the
-    /// first entry of a Unique Values value is drawn, so a repeated value counts once. They are
-    /// indices into `classes` (Unique Values) or `symbols` (Graduated Colors). `None` for the
-    /// other renderers.
-    fn ramp_slots(&self) -> Option<(Vec<usize>, usize)> {
+    /// more the ramp can't recolor: a class whose own stack of fills (a polygon) or strokes (a line
+    /// or a point's marks) is drawn instead of its symbol (see the drawing in `rustgis-render`:
+    /// a polygon's stacked strokes and a line's stacked fills are not drawn at all). An empty stack
+    /// is no stack. Only the first entry of a Unique Values value is drawn, so a repeated value
+    /// counts once. They are indices into `classes` (Unique Values) or `symbols` (Graduated
+    /// Colors). `None` for the other renderers.
+    fn ramp_slots(&self, g: GeometryType) -> Option<(Vec<usize>, usize)> {
+        // Whether a class's own stacks replace its symbol, for the geometry the layer draws.
+        let replaced = |fills: Option<&Vec<FillLayer>>, strokes: Option<&Vec<LineStroke>>| match g {
+            GeometryType::Polygon => fills.is_some_and(|f| !f.is_empty()),
+            _ => strokes.is_some_and(|s| !s.is_empty()),
+        };
         let (mut slots, mut kept) = (Vec::new(), 0);
         match self {
             Renderer::Unique { classes, class_fills, class_strokes, .. } => {
@@ -1574,7 +1580,7 @@ impl Renderer {
                     if !seen.insert(value.as_str()) {
                         continue;
                     }
-                    if class_fills.contains_key(value) || class_strokes.contains_key(value) {
+                    if replaced(class_fills.get(value), class_strokes.get(value)) {
                         kept += 1;
                     } else {
                         slots.push(i);
@@ -1583,7 +1589,7 @@ impl Renderer {
             }
             Renderer::Graduated { symbols, class_fills, class_strokes, .. } => {
                 for i in 0..symbols.len() {
-                    if class_fills.contains_key(&i) || class_strokes.contains_key(&i) {
+                    if replaced(class_fills.get(&i), class_strokes.get(&i)) {
                         kept += 1;
                     } else {
                         slots.push(i);
@@ -1606,12 +1612,12 @@ impl Renderer {
     /// Reverses the colours of the classes (#1355), in the order the legend lists them: the first
     /// class takes the last one's colour, and so on. Colours edited by hand travel with their
     /// class's old position, and a polygon fill keeps its own opacity. Applied twice it gives the
-    /// original back. A class drawn from a stack of fills or strokes of its own, and a repeat of a
-    /// Unique Values value (which no feature draws), keep theirs and take no part in the reversal.
+    /// original back. A class drawn from a stack of its own (fills for a polygon, strokes for a line or
+    /// a point), and a repeat of a Unique Values value (which no feature draws), keep theirs and take no part in the reversal.
     /// Returns how many classes were kept for their own stacks, or `None` for a renderer without
     /// classes coloured from a ramp.
     pub fn reverse_ramp(&mut self, g: GeometryType) -> Option<usize> {
-        let (slots, kept) = self.ramp_slots()?;
+        let (slots, kept) = self.ramp_slots(g)?;
         let old: Vec<Symbol> = slots.iter().filter_map(|&i| self.class_symbol_mut(i).map(|s| *s)).collect();
         for (pos, &i) in slots.iter().enumerate() {
             let from = old.len().checked_sub(1 + pos).and_then(|k| old.get(k));
@@ -4081,11 +4087,57 @@ mod tests {
         // A class with a stack of its own is kept, counted, and the others reverse among themselves.
         let mut r = unique_with(&[("a", 1), ("b", 2), ("c", 3), ("d", 4)]);
         if let Renderer::Unique { class_strokes, .. } = &mut r {
-            class_strokes.insert("a".into(), Vec::new());
+            class_strokes.insert("a".into(), vec![LineStroke::default()]);
         }
         assert_eq!(r.reverse_ramp(g), Some(1));
         assert_eq!(reds(&r), vec![("a".into(), 1), ("b".into(), 4), ("c".into(), 3), ("d".into(), 2)]);
         // Nothing to reverse for a single symbol.
         assert_eq!(Renderer::Single(Symbol::default_for(g, 0)).reverse_ramp(g), None);
+    }
+
+    /// #1355: which stack replaces a class's symbol depends on what the layer draws: a polygon's
+    /// own fills, a line's or a point's own strokes. The other kind is not drawn, and an empty
+    /// stack is no stack, so those classes take part in the reversal.
+    #[test]
+    fn reverse_ramp_keeps_only_the_classes_whose_stack_is_drawn() {
+        let reds = |r: &Renderer| match r {
+            Renderer::Unique { classes, .. } => classes.iter().map(|c| c.1.fill.r()).collect::<Vec<_>>(),
+            _ => vec![],
+        };
+        let with = |fills: bool, strokes: bool, empty: bool| {
+            let mut r = unique_with(&[("a", 1), ("b", 2), ("c", 3)]);
+            if let Renderer::Unique { class_fills, class_strokes, .. } = &mut r {
+                if fills {
+                    class_fills.insert("a".into(), if empty { vec![] } else { vec![FillLayer::default()] });
+                }
+                if strokes {
+                    class_strokes.insert("a".into(), if empty { vec![] } else { vec![LineStroke::default()] });
+                }
+            }
+            r
+        };
+        let (kept, reversed) = (vec![1, 3, 2], vec![3, 2, 1]);
+        // (stacks of class a, geometry) -> the classes that reverse, and how many are kept.
+        for (fills, strokes, empty, g, take_part) in [
+            (true, false, false, GeometryType::Polygon, false),
+            (false, true, false, GeometryType::Polygon, true),
+            (false, true, false, GeometryType::Polyline, false),
+            (true, false, false, GeometryType::Polyline, true),
+            (false, true, false, GeometryType::Point, false),
+            (true, false, false, GeometryType::Point, true),
+            (true, true, true, GeometryType::Polygon, true),
+            (true, true, true, GeometryType::Polyline, true),
+        ] {
+            let mut r = with(fills, strokes, empty);
+            let n = r.reverse_ramp(g);
+            let case = format!("fills {fills}, strokes {strokes}, empty {empty}, {g:?}");
+            if take_part {
+                assert_eq!(n, Some(0), "{case}");
+                assert_eq!(reds(&r), reversed, "{case}");
+            } else {
+                assert_eq!(n, Some(1), "{case}");
+                assert_eq!(reds(&r), kept, "{case}");
+            }
+        }
     }
 }
