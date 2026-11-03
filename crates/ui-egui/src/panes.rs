@@ -4550,7 +4550,7 @@ fn legend_list(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, t: &Tokens) {
         |ui| {
             ui.set_width(ui.available_width());
             let legend = l.renderer.legend();
-            // Unique Values legends sort their classes by label: row i shows class `order[i]`,
+            // Unique Values legends sort their classes (by value or by label): row i shows class `order[i]`,
             // and the rows past them (`<all other values>`) keep their place.
             let order = l.renderer.class_order();
             // At most MAX_UNIQUE classes (a style import can bring more), then Unique Values'

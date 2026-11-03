@@ -871,6 +871,164 @@ fn unique_values_by_expression_keep_their_classes_and_say_scales() {
     assert_eq!(kept.iter().map(|c| c.0.as_str()).collect::<Vec<_>>(), ["overview"]);
 }
 
+/// A layer of points read from GeoJSON, one for each value given, in that order: the integer
+/// field `n` holds it, the text field `code` its digits, the text field `name` "h" and them.
+fn numbered_points(values: &[i64]) -> Session {
+    let feats: Vec<Value> = values
+        .iter()
+        .enumerate()
+        .map(|(i, n)| {
+            json!({"type": "Feature", "geometry": {"type": "Point", "coordinates": [i as f64 * 0.1, 0.0]},
+                "properties": {"n": n, "code": n.to_string(), "name": format!("h{n}")}})
+        })
+        .collect();
+    let text = json!({"type": "FeatureCollection", "features": feats}).to_string();
+    let (ds, _) = rustgis_data::io::read_geojson(&text, "Herds").unwrap();
+    let ty = |f: &str| ds.fields[ds.field_index(f).unwrap()].ty;
+    assert_eq!(
+        (ty("n"), ty("code"), ty("name")),
+        (rustgis_data::FieldType::Integer, rustgis_data::FieldType::Text, rustgis_data::FieldType::Text)
+    );
+    let mut s = Session::new(Project::default());
+    let id = s.map_mut().add_dataset(ds);
+    s.active_layer = Some(id);
+    s
+}
+
+fn herd_legend(s: &Session) -> Vec<String> {
+    s.map().layer_by_name("Herds").unwrap().renderer.legend().into_iter().map(|e| e.label).collect()
+}
+
+fn herd_classes(s: &Session) -> Vec<String> {
+    match &s.map().layer_by_name("Herds").unwrap().renderer {
+        rustgis_map::Renderer::Unique { classes, .. } => classes.iter().map(|c| c.0.clone()).collect(),
+        r => panic!("{r:?}"),
+    }
+}
+
+/// #1340: Unique Values on an integer field lists its classes and legend by number, as on a text
+/// field holding only numbers; a text field of other text keeps text order.
+#[test]
+fn unique_values_on_a_number_field_are_in_numeric_order() {
+    let herds = [10153, 12490, 14443, 1741, 1910, 19947, 2723, 3076, 3672, 4060, 5985, 7636, 9081, 9627];
+    let mut s = numbered_points(&herds);
+    let mut sorted = herds.to_vec();
+    sorted.sort_unstable();
+    let numbers: Vec<String> = sorted.iter().map(i64::to_string).collect();
+    let mut legend = numbers.clone();
+    legend.push("<all other values>".into());
+    for field in ["n", "code"] {
+        let mark = s.notice_mark();
+        s.run("layer.symbology", &json!({"layer": "Herds", "type": "unique", "field": field})).unwrap();
+        assert_eq!(herd_classes(&s), numbers, "{field}");
+        assert_eq!(herd_legend(&s), legend, "{field}");
+        // Every value has a class: nothing to say.
+        assert!(!s.notices_since(mark).iter().any(|n| n.text.contains("past the first")), "{:?}", s.notices_since(mark));
+    }
+    // A renamed class keeps its value's row.
+    s.run("layer.symbology", &json!({"layer": "Herds", "type": "unique", "field": "n"})).unwrap();
+    s.run("layer.classStyle", &json!({"layer": "Herds", "value": "9627", "label": "Most"})).unwrap();
+    let mut renamed = legend.clone();
+    renamed[sorted.iter().position(|v| *v == 9627).unwrap()] = "Most".into();
+    assert_eq!(herd_legend(&s), renamed);
+    // Text: text order.
+    s.run("layer.symbology", &json!({"layer": "Herds", "type": "unique", "field": "name"})).unwrap();
+    let mut names: Vec<String> = herds.iter().map(|n| format!("h{n}")).collect();
+    names.sort();
+    assert_eq!(herd_classes(&s), names);
+    names.push("<all other values>".into());
+    assert_eq!(herd_legend(&s), names);
+}
+
+/// More values than Unique Values keeps: the first by number (or by text, for text) are classes,
+/// and the features past them are said, with how many, whether classed by a field or an
+/// expression.
+#[test]
+fn unique_values_on_a_field_say_what_is_past_their_classes() {
+    let max = rustgis_map::symbology::MAX_UNIQUE;
+    // 100 values, each on two features, in no order.
+    let values: Vec<i64> = (0..100).rev().chain(0..100).map(|i| i * 7).collect();
+    let mut s = numbered_points(&values);
+    let past = 2 * (100 - max);
+    let first: Vec<String> = (0..max as i64).map(|i| (i * 7).to_string()).collect();
+    for field in ["n", "code"] {
+        let mark = s.notice_mark();
+        s.run("layer.symbology", &json!({"layer": "Herds", "type": "unique", "field": field})).unwrap();
+        assert_eq!(herd_classes(&s), first, "{field}");
+        let said = format!(
+            "Herds: {past} features whose value is past the first {max} values of {field} (by number) are drawn as <all other values>"
+        );
+        assert!(s.notices_since(mark).iter().any(|n| n.text == said), "{said}\n{:?}", s.notices_since(mark));
+    }
+    let mark = s.notice_mark();
+    s.run("layer.symbology", &json!({"layer": "Herds", "type": "unique", "expression": "n"})).unwrap();
+    assert_eq!(herd_classes(&s), first);
+    let said = format!("Herds: {past} features whose value is past the first {max} values the expression gives (by number)");
+    assert!(s.notices_since(mark).iter().any(|n| n.text.starts_with(&said)), "{:?}", s.notices_since(mark));
+    // Text: the first in text order.
+    let mark = s.notice_mark();
+    s.run("layer.symbology", &json!({"layer": "Herds", "type": "unique", "field": "name"})).unwrap();
+    let mut names: Vec<String> = (0..100).map(|i| format!("h{}", i * 7)).collect();
+    names.sort();
+    assert_eq!(herd_classes(&s), names[..max]);
+    let said = format!("Herds: {past} features whose value is past the first {max} values of name (in text order)");
+    assert!(s.notices_since(mark).iter().any(|n| n.text.starts_with(&said)), "{:?}", s.notices_since(mark));
+    // A selection of fewer values says nothing.
+    let mark = s.notice_mark();
+    s.run("layer.definitionQuery", &json!({"layer": "Herds", "where": "n < 300"})).unwrap();
+    s.run("layer.symbology", &json!({"layer": "Herds", "type": "unique", "field": "n"})).unwrap();
+    assert_eq!(herd_classes(&s).len(), 43);
+    assert!(!s.notices_since(mark).iter().any(|n| n.text.contains("past the first")), "{:?}", s.notices_since(mark));
+}
+
+/// Subtypes draw the layer by Unique Values of the subtype field: past 64 values, the features
+/// drawn as <all other values> are said too.
+#[test]
+fn subtypes_say_what_is_past_their_classes() {
+    let max = rustgis_map::symbology::MAX_UNIQUE;
+    let subtypes = json!([{"code": 0, "name": "None"}, {"code": 7, "name": "Seven"}]);
+    let past = |s: &Session, mark| {
+        s.notices_since(mark).iter().filter(|n| n.text.contains("past the first")).map(|n| n.text.clone()).collect::<Vec<_>>()
+    };
+    // 100 values, each on two features.
+    let values: Vec<i64> = (0..100).rev().chain(0..100).map(|i| i * 7).collect();
+    let mut s = numbered_points(&values);
+    let mark = s.notice_mark();
+    s.run("data.subtypes", &json!({"layer": "Herds", "field": "n", "subtypes": subtypes})).unwrap();
+    let first: Vec<String> = (0..max as i64).map(|i| (i * 7).to_string()).collect();
+    assert_eq!(herd_classes(&s), first);
+    let said = format!(
+        "Herds: {} features whose value is past the first {max} values of n (by number) are drawn as <all other values>",
+        2 * (100 - max)
+    );
+    assert_eq!(past(&s, mark), [said]);
+    // Only the features a definition query lets through are drawn, so only they are counted;
+    // the classes still come from every feature.
+    s.run("layer.definitionQuery", &json!({"layer": "Herds", "where": "n >= 600"})).unwrap();
+    let mark = s.notice_mark();
+    s.run("data.subtypes", &json!({"layer": "Herds", "field": "n", "subtypes": subtypes})).unwrap();
+    assert_eq!(herd_classes(&s), first, "classes from every feature");
+    let said = format!(
+        "Herds: {} features whose value is past the first {max} values of n (by number) are drawn as <all other values>",
+        2 * (100 - 600 / 7 - 1)
+    );
+    assert_eq!(past(&s, mark), [said]);
+    s.run("layer.definitionQuery", &json!({"layer": "Herds", "where": "n < 300"})).unwrap();
+    let mark = s.notice_mark();
+    s.run("data.subtypes", &json!({"layer": "Herds", "field": "n", "subtypes": subtypes})).unwrap();
+    assert!(past(&s, mark).is_empty(), "every drawn feature has a class");
+    s.run("layer.definitionQuery", &json!({"layer": "Herds", "where": ""})).unwrap();
+    // Not drawn by them, or with fewer values: nothing to say.
+    let mark = s.notice_mark();
+    s.run("data.subtypes", &json!({"layer": "Herds", "field": "n", "subtypes": subtypes, "symbolize": false})).unwrap();
+    assert!(past(&s, mark).is_empty());
+    let mut s = numbered_points(&[0, 7, 14, 7]);
+    let mark = s.notice_mark();
+    s.run("data.subtypes", &json!({"layer": "Herds", "field": "n", "subtypes": subtypes})).unwrap();
+    assert_eq!(herd_classes(&s), ["0", "7", "14"]);
+    assert!(past(&s, mark).is_empty());
+}
+
 #[test]
 fn unique_values_class_by_an_expression() {
     let mut s = world();
@@ -926,7 +1084,8 @@ fn unique_values_class_by_an_expression() {
     let l = s.map().layer_by_name("Cities").unwrap();
     let (_, rest) =
         rustgis_map::Renderer::unique_by_counted(&l.dataset, &[], "name", rustgis_map::Ramp::Harbour, l.renderer.base_symbol()).unwrap();
-    assert!(rest > 0);
+    assert!(rest.features > 0 && !rest.by_number);
+    let rest = rest.features;
     let said =
         format!("Cities: {rest} features whose value is past the first {} values the expression gives", rustgis_map::symbology::MAX_UNIQUE);
     assert!(s.notices.iter().any(|n| n.text.starts_with(&said)), "{:?}", s.notices.last());
@@ -4450,7 +4609,10 @@ fn layer_class_style_edits_one_class() {
     }
     // A numeric value names its class as the data prints it, whether sent as an integer or not.
     s.run("layer.symbology", &json!({"layer": "Countries", "type": "unique", "field": "pop_est"})).unwrap();
-    for v in [json!(211049527), json!(211049527.0)] {
+    // A whole value among the first classes (the smallest, as they're in numeric order).
+    let rustgis_map::Renderer::Unique { classes, .. } = renderer(&s) else { panic!("unique renderer expected") };
+    let whole = classes.iter().find_map(|(k, _)| k.parse::<i64>().ok().filter(|n| *n > 1000)).unwrap();
+    for v in [json!(whole), json!(whole as f64)] {
         let r = s.run("layer.classStyle", &json!({"layer": "Countries", "value": v, "label": "Brazil"})).unwrap();
         assert_eq!(r["label"], "Brazil", "{v}");
     }

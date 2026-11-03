@@ -3,6 +3,7 @@
 
 use std::collections::BTreeMap;
 
+use rustgis_data::value::PastClasses;
 use rustgis_data::{Dataset, FieldType, GeometryType};
 use serde::{Deserialize, Serialize};
 
@@ -886,12 +887,19 @@ impl Renderer {
     /// Builds a unique-values renderer on `field`, from the rows `rows` keeps (a row past its end
     /// counts, so `&[]` keeps them all).
     pub fn unique(ds: &Dataset, rows: &[bool], field: &str, ramp: Ramp, base: Symbol) -> Result<Renderer, String> {
+        Self::unique_counted(ds, rows, field, ramp, base).map(|(r, _)| r)
+    }
+
+    /// [`Renderer::unique`], and how many kept features with a geometry have a value past the
+    /// first [`MAX_UNIQUE`] (by number when every value reads as one, else by text), drawn as
+    /// `<all other values>`.
+    pub fn unique_counted(ds: &Dataset, rows: &[bool], field: &str, ramp: Ramp, base: Symbol) -> Result<(Renderer, PastClasses), String> {
         let fi = ds.field_index(field).ok_or_else(|| format!("no field named '{field}'"))?;
-        let vals = ds.unique_values(fi, rows, MAX_UNIQUE);
+        let (vals, rest) = ds.unique_values_counted(fi, rows, MAX_UNIQUE);
         let n = vals.len();
         let classes = vals.into_iter().enumerate().map(|(k, v)| (v, base.with_ramp_fill(ramp.pick(k, n), ds.geometry_type))).collect();
         let other = base.with_ramp_fill(OTHER_FILL, ds.geometry_type);
-        Ok(Renderer::Unique {
+        let renderer = Renderer::Unique {
             field: ds.fields.get(fi).map(|f| f.name.clone()).unwrap_or_default(),
             classes,
             other,
@@ -903,7 +911,8 @@ impl Renderer {
             class_fills: Default::default(),
             other_fills: Vec::new(),
             expression: None,
-        })
+        };
+        Ok((renderer, rest))
     }
 
     /// Builds a Unique Values renderer classing by an expression's values over the rows `rows`
@@ -916,8 +925,15 @@ impl Renderer {
     }
 
     /// [`Renderer::unique_by`], and how many kept features with a geometry have a value past the
-    /// first [`MAX_UNIQUE`] (in text order), drawn as `<all other values>`.
-    pub fn unique_by_counted(ds: &Dataset, rows: &[bool], expression: &str, ramp: Ramp, base: Symbol) -> Result<(Renderer, usize), String> {
+    /// first [`MAX_UNIQUE`] (by number when every value reads as one, else by text), drawn as
+    /// `<all other values>`.
+    pub fn unique_by_counted(
+        ds: &Dataset,
+        rows: &[bool],
+        expression: &str,
+        ramp: Ramp,
+        base: Symbol,
+    ) -> Result<(Renderer, PastClasses), String> {
         Self::unique_by_up_to(ds, rows, expression, ramp, base, MAX_UNIQUE)
     }
 
@@ -930,7 +946,7 @@ impl Renderer {
         ramp: Ramp,
         base: Symbol,
         max: usize,
-    ) -> Result<(Renderer, usize), String> {
+    ) -> Result<(Renderer, PastClasses), String> {
         let max = max.clamp(1, MAX_EXPRESSION_CLASSES);
         let text = expression.trim();
         if text.chars().count() > rustgis_data::query::MAX_LEN {
@@ -938,11 +954,11 @@ impl Renderer {
         }
         let e = rustgis_data::query::parse(text, ds)?;
         let env = rustgis_data::query::Env::default();
-        // The first values in order, never more than `max` kept, each with its features: one
-        // put out of the first can't come back (any later one is past the last kept), so its
-        // features and every later one past the last kept are counted as the rest.
-        let mut kept: BTreeMap<String, usize> = BTreeMap::new();
-        let mut rest = 0usize;
+        // The first values by text, and while every value reads as a number, by number too: the
+        // order is known only once every feature is classed (`rustgis_data::value::numeric_classes`).
+        let mut by_text: FirstValues<String> = FirstValues::new(max);
+        let mut by_number: FirstValues<rustgis_data::value::ClassText> = FirstValues::new(max);
+        let mut text_seen = false;
         for r in (0..ds.features.len()).filter(|r| rows.get(*r).copied().unwrap_or(true)) {
             let v = match rustgis_data::query::value(&e, ds, r, &env) {
                 rustgis_data::Value::Null => continue,
@@ -951,16 +967,22 @@ impl Renderer {
             };
             // (A feature without a geometry draws nothing, so it isn't counted.)
             let drawn = usize::from(ds.features.get(r).is_some_and(|f| f.geometry.is_some()));
-            if kept.len() >= max && kept.last_key_value().is_some_and(|(last, _)| v > *last) {
-                rest += drawn;
-                continue;
+            // Read as a number once.
+            let read = rustgis_data::value::ClassText::new(v);
+            text_seen = text_seen || read.orders_as_text();
+            if !text_seen {
+                by_number.add(read.clone(), drawn);
             }
-            *kept.entry(v).or_insert(0) += drawn;
-            if kept.len() > max {
-                rest += kept.pop_last().map_or(0, |(_, n)| n);
-            }
+            by_text.add(read.into_text(), drawn);
         }
-        let vals: Vec<String> = kept.into_keys().collect();
+        // (Numbers come before the empty text and `<Null>`, so with any number, one is kept.)
+        let numeric = !text_seen && rustgis_data::value::ClassText::numeric(by_number.kept.keys());
+        let (vals, features): (Vec<String>, usize) = if numeric {
+            (by_number.kept.into_keys().map(rustgis_data::value::ClassText::into_text).collect(), by_number.rest)
+        } else {
+            (by_text.kept.into_keys().collect(), by_text.rest)
+        };
+        let rest = PastClasses { features, by_number: numeric };
         let n = vals.len();
         let classes = vals.into_iter().enumerate().map(|(k, v)| (v, base.with_ramp_fill(ramp.pick(k, n), ds.geometry_type))).collect();
         Ok((
@@ -1442,34 +1464,49 @@ impl Renderer {
                 }
             }
         }
-        let mut v: Vec<LegendEntry> = classes
-            .iter()
-            .zip(&used)
-            .filter(|(_, u)| **u)
-            .map(|((k, s), _)| LegendEntry { label: unique_label(class_labels, k), symbol: *s, fallback: false })
+        let mut v: Vec<LegendEntry> = self
+            .class_order()
+            .into_iter()
+            .filter(|i| used.get(*i).copied().unwrap_or(false))
+            .filter_map(|i| classes.get(i))
+            .map(|(k, s)| LegendEntry { label: unique_label(class_labels, k), symbol: *s, fallback: false })
             .collect();
-        v.sort_by_cached_key(|e| e.label.to_lowercase());
         if other_used && visible {
             v.push(LegendEntry { label: other_label.clone().unwrap_or_else(|| OTHER_VALUES.into()), symbol: *other, fallback: true });
         }
         v
     }
 
-    /// The order `legend()` lists the Unique Values classes in: their indices in `classes`,
-    /// sorted by label without regard to case (a stable sort, so a repeated value keeps its first
-    /// class first). Empty for the other renderers, whose legend follows their classes.
+    /// The order `legend()` lists the Unique Values classes in: their indices in `classes`, by
+    /// value when [`Renderer::classes_by_number`] (9 before 10, a class renamed by hand in its
+    /// value's place), else by label without regard to case. The sort is stable, so a repeated
+    /// value keeps its first class first. Empty for the other renderers, whose legend follows
+    /// their classes.
     pub fn class_order(&self) -> Vec<usize> {
         let Renderer::Unique { classes, class_labels, .. } = self else { return Vec::new() };
         let mut order: Vec<usize> = (0..classes.len()).collect();
-        order.sort_by_cached_key(|i| classes.get(*i).map(|(k, _)| unique_label(class_labels, k).to_lowercase()));
+        if self.classes_by_number() {
+            // (Each value read as a number once; the sort is stable.)
+            order.sort_by_cached_key(|i| rustgis_data::value::ClassText::new(classes.get(*i).map(|(k, _)| k.clone()).unwrap_or_default()));
+        } else {
+            order.sort_by_cached_key(|i| classes.get(*i).map(|(k, _)| unique_label(class_labels, k).to_lowercase()));
+        }
         order
+    }
+
+    /// Whether Unique Values' classes are ordered by number: when their values read as numbers
+    /// ([`rustgis_data::value::numeric_classes`]), as a numeric field's do. False for the other
+    /// renderers.
+    pub fn classes_by_number(&self) -> bool {
+        let Renderer::Unique { classes, .. } = self else { return false };
+        rustgis_data::value::numeric_classes(classes.iter().map(|(k, _)| k.as_str()))
     }
 
     pub fn legend(&self) -> Vec<LegendEntry> {
         match self {
             Renderer::Single(_) => Vec::new(),
             Renderer::Unique { classes, other, class_labels, other_label, .. } => {
-                // Keep symbols attached to their sorted labels and the fallback at the end.
+                // Keep symbols attached to their classes in `class_order` and the fallback at the end.
                 let mut v: Vec<LegendEntry> = self
                     .class_order()
                     .into_iter()
@@ -1755,6 +1792,33 @@ fn carry_class(new: Symbol, old: &Symbol, scheme: Rgba, g: GeometryType) -> Symb
 pub fn normalize_label(t: &str) -> String {
     let t: String = t.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
     t.trim().chars().take(MAX_LABEL).collect::<String>().trim_end().to_string()
+}
+
+/// The first values in a map's order, never more than `max` kept, each with how many features
+/// with a geometry have it, and how many have a value past them. A value put out of the first
+/// can't come back (any later one is past the last kept), so its features and every later one
+/// past the last kept are counted as the rest.
+struct FirstValues<K: Ord> {
+    kept: BTreeMap<K, usize>,
+    rest: usize,
+    max: usize,
+}
+
+impl<K: Ord> FirstValues<K> {
+    fn new(max: usize) -> Self {
+        FirstValues { kept: BTreeMap::new(), rest: 0, max }
+    }
+
+    fn add(&mut self, v: K, drawn: usize) {
+        if self.kept.len() >= self.max && self.kept.last_key_value().is_some_and(|(last, _)| v > *last) {
+            self.rest += drawn;
+            return;
+        }
+        *self.kept.entry(v).or_insert(0) += drawn;
+        if self.kept.len() > self.max {
+            self.rest += self.kept.pop_last().map_or(0, |(_, n)| n);
+        }
+    }
 }
 
 /// A Unique Values class's legend label: the one set by hand, or its value.
@@ -3418,22 +3482,125 @@ mod tests {
     fn unique_values_by_an_expression_count_what_is_past_their_classes() {
         let base = Symbol::default_for(GeometryType::Point, 0);
         let mut d = Dataset::new("p", GeometryType::Point, vec![rustgis_data::Field::new("n", rustgis_data::FieldType::Integer)]);
-        // 100 values, each on two features, in no order: the first 64 (as text) are kept.
+        // 100 values, each on two features, in no order: the first 64 (by number) are kept.
         for i in (0..100i64).rev().chain(0..100) {
             d.push(Some(rustgis_data::Geometry::Point(rustgis_geom::Coord::new(0.0, 0.0))), vec![rustgis_data::Value::Int(i)]);
         }
         let (r, rest) = Renderer::unique_by_counted(&d, &[], "n", Ramp::Harbour, base).unwrap();
         let Renderer::Unique { classes, .. } = &r else { panic!() };
-        let mut all: Vec<String> = (0..100).map(|i: i64| i.to_string()).collect();
+        let all: Vec<String> = (0..100).map(|i: i64| i.to_string()).collect();
+        assert_eq!(classes.iter().map(|c| c.0.clone()).collect::<Vec<_>>(), all[..MAX_UNIQUE]);
+        assert_eq!(rest, PastClasses { features: 2 * (100 - MAX_UNIQUE), by_number: true });
+        // Text the expression makes of them is kept in text order.
+        let (r, rest) = Renderer::unique_by_counted(&d, &[], "'k' || n", Ramp::Harbour, base).unwrap();
+        let Renderer::Unique { classes, .. } = &r else { panic!() };
+        let mut all: Vec<String> = (0..100).map(|i: i64| format!("k{i}")).collect();
         all.sort();
         assert_eq!(classes.iter().map(|c| c.0.clone()).collect::<Vec<_>>(), all[..MAX_UNIQUE]);
-        assert_eq!(rest, 2 * (100 - MAX_UNIQUE));
+        assert_eq!(rest, PastClasses { features: 2 * (100 - MAX_UNIQUE), by_number: false });
+        // One text among the numbers, given last: the first are taken in text order, though every
+        // value before it read as a number, and though those kept are all numbers.
+        let (r, rest) = Renderer::unique_by_counted(&d, &[], "CASE WHEN n = 99 THEN 'x' ELSE n END", Ramp::Harbour, base).unwrap();
+        let Renderer::Unique { classes, .. } = &r else { panic!() };
+        let mut all: Vec<String> = (0..99).map(|i: i64| i.to_string()).chain(["x".to_string()]).collect();
+        all.sort();
+        assert_eq!(classes.iter().map(|c| c.0.clone()).collect::<Vec<_>>(), all[..MAX_UNIQUE]);
+        assert_eq!(rest, PastClasses { features: 2 * (100 - MAX_UNIQUE), by_number: false });
         let (_, rest) = Renderer::unique_by_counted(&d, &[], "n % 10", Ramp::Harbour, base).unwrap();
-        assert_eq!(rest, 0);
+        assert_eq!(rest, PastClasses { features: 0, by_number: true });
         // A feature without a geometry draws nothing, so it isn't counted.
         d.push(None, vec![rustgis_data::Value::Int(99)]);
         let (_, rest) = Renderer::unique_by_counted(&d, &[], "n", Ramp::Harbour, base).unwrap();
-        assert_eq!(rest, 2 * (100 - MAX_UNIQUE));
+        assert_eq!(rest.features, 2 * (100 - MAX_UNIQUE));
+    }
+
+    /// #1340: Unique Values on a numeric field, by the field or by an expression, class and list
+    /// their values in numeric order; on a text field, in text order and by label, as before.
+    #[test]
+    fn unique_values_of_numbers_are_in_numeric_order() {
+        let point = || Some(rustgis_data::Geometry::Point(rustgis_geom::Coord::new(0.0, 0.0)));
+        let base = Symbol::default_for(GeometryType::Point, 0);
+        let fields = vec![Field::new("i", FieldType::Integer), Field::new("r", FieldType::Double), Field::new("t", FieldType::Text)];
+        let mut d = Dataset::new("t", GeometryType::Point, fields);
+        for (i, r, t) in [(10153, 10.0, "b"), (1741, 2.5, "A"), (9627, -1.0, "10"), (9, 10.0, "9")] {
+            d.push(point(), vec![Value::Int(i), Value::Float(r), Value::Text(t.into())]);
+        }
+        let values = |r: &Renderer| match r {
+            Renderer::Unique { classes, .. } => classes.iter().map(|c| c.0.clone()).collect::<Vec<_>>(),
+            _ => panic!("{r:?}"),
+        };
+        let labels = |l: Vec<LegendEntry>| l.into_iter().map(|e| e.label).collect::<Vec<_>>();
+        for (by, expected) in [("i", ["9", "1741", "9627", "10153"]), ("r", ["-1", "2.5", "10", ""])] {
+            let expected: Vec<&str> = expected.into_iter().filter(|v| !v.is_empty()).collect();
+            let by_field = Renderer::unique(&d, &[], by, Ramp::Harbour, base).unwrap();
+            let by_expression = Renderer::unique_by(&d, &[], by, Ramp::Harbour, base).unwrap();
+            for r in [&by_field, &by_expression] {
+                assert_eq!(values(r), expected, "{by}");
+                assert!(r.classes_by_number());
+                let mut legend = expected.clone();
+                legend.push(OTHER_VALUES);
+                assert_eq!(labels(r.legend()), legend, "{by}");
+                assert_eq!(labels(r.legend_for(&d, &[])), expected, "{by}: what is drawn");
+            }
+        }
+        // A text field: text order, and the legend by label without regard to case.
+        let r = Renderer::unique(&d, &[], "t", Ramp::Harbour, base).unwrap();
+        assert_eq!(values(&r), ["10", "9", "A", "b"]);
+        assert!(!r.classes_by_number());
+        assert_eq!(labels(r.legend_for(&d, &[])), ["10", "9", "A", "b"]);
+        // Nulls are a class after the numbers.
+        d.push(point(), vec![Value::Null]);
+        let r = Renderer::unique(&d, &[], "i", Ramp::Harbour, base).unwrap();
+        assert_eq!(values(&r), ["9", "1741", "9627", "10153", "<Null>"]);
+        assert_eq!(labels(r.legend_for(&d, &[])), ["9", "1741", "9627", "10153", "<Null>"]);
+    }
+
+    /// A class of numbers renamed by hand keeps its value's place in the legend; classes saved in
+    /// text order (a project from before) are listed in numeric order too.
+    #[test]
+    fn a_renamed_number_class_keeps_its_place() {
+        let s = |c| Symbol::default_for(GeometryType::Polygon, c);
+        let mut r = unique(&[("10", s(0)), ("100", s(1)), ("9", s(2))], s(3), Ramp::Ember);
+        assert_eq!(r.class_order(), [2, 0, 1]);
+        let labels = |r: &Renderer| r.legend().into_iter().map(|e| e.label).collect::<Vec<_>>();
+        assert_eq!(labels(&r), ["9", "10", "100", OTHER_VALUES]);
+        let style = ClassStyle { label: Some("Arable".into()), ..Default::default() };
+        r.set_class_style(&ClassRef::Value("100".into()), &style, GeometryType::Polygon).unwrap();
+        assert_eq!(labels(&r), ["9", "10", "Arable", OTHER_VALUES]);
+        // Each row keeps its class's own symbol.
+        let fills: Vec<Rgba> = r.legend().iter().map(|e| e.symbol.fill).collect();
+        assert_eq!(fills, [s(2).fill, s(0).fill, s(1).fill, s(3).fill]);
+        // A repeated value keeps its first class first.
+        let r = unique(&[("10", s(0)), ("9", s(1)), ("10", s(2))], s(3), Ramp::Ember);
+        assert_eq!(r.class_order(), [1, 0, 2]);
+        // With text among them, by label as before.
+        let r = unique(&[("10", s(0)), ("b", s(1)), ("9", s(2)), ("A", s(4))], s(3), Ramp::Ember);
+        assert_eq!(labels(&r), ["10", "9", "A", "b", OTHER_VALUES]);
+    }
+
+    /// Past [`MAX_UNIQUE`] values, the classes are the smallest numbers and the features past
+    /// them are counted; with fewer, none are.
+    #[test]
+    fn unique_values_of_a_field_count_what_is_past_their_classes() {
+        let base = Symbol::default_for(GeometryType::Point, 0);
+        let mut d = Dataset::new("p", GeometryType::Point, vec![Field::new("n", FieldType::Integer)]);
+        for i in (0..100i64).rev().chain(0..100) {
+            d.push(Some(rustgis_data::Geometry::Point(rustgis_geom::Coord::new(0.0, 0.0))), vec![Value::Int(i)]);
+        }
+        let (r, rest) = Renderer::unique_counted(&d, &[], "n", Ramp::Harbour, base).unwrap();
+        let Renderer::Unique { classes, .. } = &r else { panic!() };
+        let first: Vec<String> = (0..MAX_UNIQUE).map(|i| i.to_string()).collect();
+        assert_eq!(classes.iter().map(|c| c.0.clone()).collect::<Vec<_>>(), first);
+        assert_eq!(rest, PastClasses { features: 2 * (100 - MAX_UNIQUE), by_number: true });
+        // The same as by the expression of the field.
+        assert_eq!(Renderer::unique_by_counted(&d, &[], "n", Ramp::Harbour, base).unwrap().1, rest);
+        // A feature without a geometry draws nothing, so it isn't counted.
+        d.push(None, vec![Value::Int(99)]);
+        assert_eq!(Renderer::unique_counted(&d, &[], "n", Ramp::Harbour, base).unwrap().1, rest);
+        let rows: Vec<bool> = (0..d.features.len()).map(|r| r < 100).collect();
+        assert_eq!(Renderer::unique_counted(&d, &rows, "n", Ramp::Harbour, base).unwrap().1.features, 100 - MAX_UNIQUE);
+        let few: Vec<bool> = (0..d.features.len()).map(|r| r < MAX_UNIQUE).collect();
+        assert_eq!(Renderer::unique_counted(&d, &few, "n", Ramp::Harbour, base).unwrap().1.features, 0);
     }
 
     /// The rest is in the legend when its stacked fills or strokes draw, though its own symbol
@@ -3584,7 +3751,7 @@ mod tests {
             panic!("unique renderer expected")
         };
         let keys: Vec<&str> = classes.iter().map(|(k, _)| k.as_str()).collect();
-        assert_eq!(keys, vec!["1000", "2"]);
+        assert_eq!(keys, vec!["2", "1000"]);
     }
 
     fn unique(classes: &[(&str, Symbol)], other: Symbol, ramp: Ramp) -> Renderer {

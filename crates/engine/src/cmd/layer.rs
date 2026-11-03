@@ -4013,7 +4013,7 @@ fn symbology(s: &mut Session, p: &Value) -> CmdResult {
         _ => expression,
     };
     // Features past the first values an expression's classes keep.
-    let mut rest = 0;
+    let mut rest = rustgis_data::value::PastClasses::default();
     let mut r = match kind.as_str() {
         "single" | "singlesymbol" => Renderer::Single(base),
         "unique" | "uniquevalues" => match &expression {
@@ -4026,7 +4026,11 @@ fn symbology(s: &mut Session, p: &Value) -> CmdResult {
                 }
                 r
             }
-            None => Renderer::unique(&l.dataset, &rows()?, &field(false)?, ramp.unwrap_or(Ramp::Harbour), base)?,
+            None => {
+                let (r, n) = Renderer::unique_counted(&l.dataset, &rows()?, &field(false)?, ramp.unwrap_or(Ramp::Harbour), base)?;
+                rest = n;
+                r
+            }
         },
         "graduated" | "graduatedcolors" => {
             let (field, ramp) = (field(true)?, ramp.unwrap_or(Ramp::Ember));
@@ -4059,14 +4063,22 @@ fn symbology(s: &mut Session, p: &Value) -> CmdResult {
     let name = l.name.clone();
     // Classes are the values given with no map scale: one given only at some scales never is.
     let by_scale = r.expression().is_some_and(rustgis_map::qgis::reads_scale);
+    // Where the values past the classes come from, and in which order the first are kept.
+    let values = match &r {
+        Renderer::Unique { expression: Some(_), .. } => "the expression gives".to_string(),
+        Renderer::Unique { field, .. } => format!("of {field}"),
+        _ => String::new(),
+    };
+    let order = if rest.by_number { "by number" } else { "in text order" };
     let out = with(s, p, |l| {
         l.renderer = r;
         take_no_fill(l);
     })?;
-    if rest > 0 {
+    if rest.features > 0 {
+        let rest = rest.features;
         s.notify(
             format!(
-                "{name}: {rest} features whose value is past the first {keep} values the expression gives (in text order) are drawn as <all other values>"
+                "{name}: {rest} features whose value is past the first {keep} values {values} ({order}) are drawn as <all other values>"
             ),
             false,
         );
