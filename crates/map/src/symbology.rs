@@ -163,6 +163,23 @@ impl Symbol {
         self
     }
 
+    /// The colours a ramp gives a class, taken from `src`: the fill, and a line's or polygon's
+    /// outline. A polygon keeps its own fill opacity.
+    fn with_colors_of(mut self, src: &Symbol, g: GeometryType) -> Symbol {
+        match g {
+            GeometryType::Polyline => {
+                self.fill = src.fill;
+                self.stroke = src.stroke;
+            }
+            GeometryType::Polygon => {
+                self.fill = src.fill.with_alpha(self.fill.a());
+                self.stroke = src.stroke;
+            }
+            _ => self.fill = src.fill,
+        }
+        self
+    }
+
     /// Ramp colours change hue, not a polygon's existing fill opacity (even below 150).
     fn with_ramp_fill(self, c: Rgba, g: GeometryType) -> Symbol {
         let mut out = self.with_fill(c, g);
@@ -1539,6 +1556,25 @@ impl Renderer {
                 LegendEntry { label: fmt_num(*max), symbol: Symbol { size: *max_size, ..*base }, fallback: false },
             ],
         }
+    }
+
+    /// Reverses the colours of the classes (#1355): the first class takes the last one's colour, and
+    /// so on. Colours edited by hand travel with their class's old position, and a polygon fill
+    /// keeps its own opacity. Applied twice it gives the original back. Returns false for a
+    /// renderer without classes coloured from a ramp.
+    pub fn reverse_ramp(&mut self, g: GeometryType) -> bool {
+        fn reversed(symbols: &mut [&mut Symbol], g: GeometryType) {
+            let old: Vec<Symbol> = symbols.iter().map(|s| **s).collect();
+            for (s, from) in symbols.iter_mut().zip(old.iter().rev()) {
+                **s = s.with_colors_of(from, g);
+            }
+        }
+        match self {
+            Renderer::Unique { classes, .. } => reversed(&mut classes.iter_mut().map(|c| &mut c.1).collect::<Vec<_>>(), g),
+            Renderer::Graduated { symbols, .. } => reversed(&mut symbols.iter_mut().collect::<Vec<_>>(), g),
+            _ => return false,
+        }
+        true
     }
 
     /// Recolours every class from a ramp, preserving each polygon fill's opacity.

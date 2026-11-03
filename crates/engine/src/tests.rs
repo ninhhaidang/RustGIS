@@ -25481,3 +25481,40 @@ fn a_pdf_says_which_frames_and_pages_it_draws_as_pictures() {
         s.notices_since(mark)[0].text.ends_with("(page 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20 and 5 more)")
     );
 }
+
+#[test]
+fn layer_invert_ramp_reverses_the_class_colors() {
+    // #1355: Invert Color Ramp reverses the order of a layer's class colours.
+    let mut s = world();
+    let colors = |s: &Session| -> Vec<rustgis_map::Rgba> {
+        match &s.map().layer_by_name("Countries").unwrap().renderer {
+            rustgis_map::Renderer::Graduated { symbols, .. } => symbols.iter().map(|y| y.fill).collect(),
+            rustgis_map::Renderer::Unique { classes, .. } => classes.iter().map(|c| c.1.fill).collect(),
+            _ => vec![],
+        }
+    };
+    // A single symbol has no color scheme to invert.
+    s.run("layer.symbology", &json!({"layer": "Countries", "type": "single"})).unwrap();
+    assert!(s.run("layer.invertRamp", &json!({"layer": "Countries"})).is_err());
+    s.run("layer.symbology", &json!({"layer": "Countries", "type": "graduated", "field": "pop_est", "classes": 5})).unwrap();
+    let before = colors(&s);
+    assert_eq!(before.len(), 5);
+    s.run("layer.invertRamp", &json!({"layer": "Countries"})).unwrap();
+    let mut reversed = before.clone();
+    reversed.reverse();
+    assert_eq!(colors(&s), reversed);
+    // Twice is the original; one undo step undoes one inversion.
+    s.run("layer.invertRamp", &json!({"layer": "Countries"})).unwrap();
+    assert_eq!(colors(&s), before);
+    s.run("layer.invertRamp", &json!({"layer": "Countries"})).unwrap();
+    s.run("edit.undo", &Value::Null).unwrap();
+    assert_eq!(colors(&s), before);
+    // Unique Values too.
+    s.run("layer.symbology", &json!({"layer": "Countries", "type": "unique", "field": "income_grp"})).unwrap();
+    let before = colors(&s);
+    s.run("layer.invertRamp", &json!({"layer": "Countries"})).unwrap();
+    let mut reversed = before.clone();
+    reversed.reverse();
+    assert_eq!(colors(&s), reversed);
+    assert!(s.run("layer.invertRamp", &json!({"layer": "Nope"})).is_err());
+}

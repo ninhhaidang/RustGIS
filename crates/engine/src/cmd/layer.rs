@@ -154,6 +154,22 @@ pub fn commands() -> Vec<C> {
             })
         }).params(r#"{"layer"?, "ramp": colour ramp name}"#)
         .when(need_layer),
+        C::new("layer.invertRamp", "Invert Color Ramp", "Style › Drawing", |s, p| {
+            let id = s.layer_id(p)?;
+            let l = s.map_mut().layer_mut(id).ok_or("no such layer")?;
+            let done = match &mut l.raster {
+                Some(rl) => rl.style.invert_ramp(),
+                None => {
+                    let g = l.geometry_type();
+                    l.renderer.reverse_ramp(g)
+                }
+            };
+            if !done {
+                return Err("the layer has no color scheme to invert: use Graduated or Unique Values (or a Stretch raster)".into());
+            }
+            Ok(Value::Null)
+        }).params(r#"{"layer"?}"#)
+        .when(need_layer),
         C::new("layer.classStyle", "Class Style", "Style › Drawing", class_style)
             .when(need_feature_layer)
             .params(
