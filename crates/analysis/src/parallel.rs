@@ -30,6 +30,12 @@ pub(crate) fn threads_for(items: usize, min_items: usize) -> usize {
     cores().min(items.div_ceil(BATCH)).max(1)
 }
 
+/// [`threads_for`], each thread holding up to `scratch_bytes` at its peak (a feature's raster
+/// masks, say): no more than [`SCRATCH_BUDGET`] holds.
+pub(crate) fn threads_for_scratch(items: usize, min_items: usize, scratch_bytes: usize) -> usize {
+    threads_for(items, min_items).min(1 + SCRATCH_BUDGET / scratch_bytes.max(1))
+}
+
 /// How many threads to make `rows` raster rows on, `work` in all, each thread taking
 /// `scratch_bytes` of scratch: one below [`MIN_ROW_WORK`] and in the browser, no more than there
 /// are rows, and no more than [`SCRATCH_BUDGET`] holds (a scratch per point, for millions of
@@ -167,11 +173,13 @@ pub(crate) fn try_map_on<T: Sync, S, R: Send, E: Send + From<Cancelled>>(
         while !failed.load(Ordering::Relaxed) {
             let from = next.fetch_add(BATCH, Ordering::Relaxed);
             let Some(batch) = items.get(from..items.len().min(from.saturating_add(BATCH))).filter(|b| !b.is_empty()) else { break };
-            if control::cancelled() {
-                failed.store(true, Ordering::Relaxed);
-                return Err((from, Cancelled.into()));
-            }
+            // Cancel is looked at, and progress counted, item by item, as on one thread: an item
+            // can take long (a large zone, say), so a batch of them would hold both back.
             for (k, item) in batch.iter().enumerate() {
+                if control::cancelled() {
+                    failed.store(true, Ordering::Relaxed);
+                    return Err((from + k, Cancelled.into()));
+                }
                 match f(&mut s, from + k, item) {
                     Ok(r) => made.push((from + k, r)),
                     Err(e) => {
@@ -179,9 +187,8 @@ pub(crate) fn try_map_on<T: Sync, S, R: Send, E: Send + From<Cancelled>>(
                         return Err((from + k, e));
                     }
                 }
+                control::advance(1);
             }
-            // Counted a batch at a time: the threads share one count.
-            control::advance(batch.len());
         }
         Ok(made)
     };
