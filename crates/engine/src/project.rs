@@ -55,7 +55,7 @@ pub fn open_command(path: &str) -> &'static str {
 }
 /// Format version written to files.
 pub const FORMAT: u32 = 1;
-/// Largest project file read (512 MiB).
+/// Largest project file read or saved (512 MiB).
 pub const MAX_BYTES: u64 = 512 << 20;
 
 /// The address a saved file keeps. Only web addresses can contain layer credentials. A tile
@@ -766,6 +766,7 @@ impl Project {
     /// keeps them. This process remembers the 32 most recent distinct saved snapshots with stripped
     /// addresses: opening identical plain project text restores them until that snapshot is evicted
     /// or RustGIS closes. Packages and imports never restore them.
+    /// Refuses text larger than the opening limit, restoring live paths and addresses on failure.
     pub fn saved_text(&mut self, dir: Option<&Path>) -> Result<(String, usize), String> {
         self.ensure_imports_complete()?;
         let was = strip_addresses(self.addresses_mut());
@@ -800,10 +801,12 @@ impl Project {
                 *address = original.clone();
             }
         }
-        if let Ok(text) = &text
-            && n > 0
-        {
-            let (len, hash) = identity(text);
+        let text = text?;
+        if text.len() as u64 > MAX_BYTES {
+            return Err(format!("the project is too large to save (maximum {} MiB)", MAX_BYTES >> 20));
+        }
+        if n > 0 {
+            let (len, hash) = identity(&text);
             let mut kept = kept();
             kept.retain(|entry| (entry.len, entry.hash) != (len, hash));
             if kept.len() >= MAX_WRITTEN {
@@ -811,7 +814,7 @@ impl Project {
             }
             kept.push(Written { len, hash, was });
         }
-        text.map(|text| (text, n))
+        Ok((text, n))
     }
 
     /// The project as an autosaved recovery copy keeps it: its text without passwords, keys, tokens
