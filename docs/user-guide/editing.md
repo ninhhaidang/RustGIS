@@ -41,6 +41,32 @@ you edit the value or choose units; click **Apply elevation** to apply the new i
   and flip line direction. A single point turns and scales on itself, so Rotate and Scale leave
   points (text graphics included) as they are: with only points selected they change nothing,
   say so, and add no undo step. Edit › Tools lists every editing tool.
+- **Cut Polygon** (Edit › Tools, or the Editing pane): select polygons, then click a line across
+  them and double-click to finish. Each polygon the line crosses from edge to edge is cut into
+  pieces; a zigzag line can make several. The pieces keep the original's attributes. The
+  original row keeps the largest piece, together with any parts of a multipart polygon that the
+  line missed; every other piece becomes a feature of its own, and the pieces end up selected.
+  Holes the line misses stay in the piece around them. A line that stops inside a polygon cuts
+  nothing there; a line end within a centimetre of an edge counts as on it. When the cut
+  succeeds, a notice says how many selected features the line didn't cut (`missed` in the
+  result). A line that cuts none of them gives an error instead.
+  `edit.cutPolygon={"line": {"type": "LineString", "coordinates": [[0.3, -1], [0.3, 2]]}}`.
+- **Reshape** (Edit › Tools, or the Editing pane): select one line or polygon, then draw a line
+  that leaves its edge and comes back to it. For a polygon, the stretch of boundary between the
+  line's first and last crossings is replaced by the line, keeping whichever of the two possible
+  shapes is larger. A hole left wholly outside the new boundary goes with the part reshaped away,
+  and a notice says how many (`holesRemoved` in the result). A reshape that would make the
+  boundary cross itself, or a hole cross its outer ring, is refused. For a line, the stretch between two crossings is replaced. A drawn
+  line that crosses only once replaces the shorter end, so start on the line and draw out to
+  extend or redirect an end (`edit.reshape={"line": …}`).
+- **Trace** (Edit › Features): while drawing a feature, a cut or a reshape, click a point on a
+  line or polygon edge, then another point on the same edge. The sketch follows the edge between
+  them, going the shorter way round a ring; click a point partway to go the other way. Turn on
+  snapping so clicks land exactly on the edge. From scripts,
+  `edit.trace={"from": [lon, lat], "to": [lon, lat]}` returns the path along the nearest edge
+  passing within the snapping tolerance of both points (`"layer"` keeps the search to one layer;
+  add `"row"` to trace a given feature), and how far each point was from the edge (`fromOffM`, `toOffM`, in Web Mercator metres, which
+  run longer than ground metres away from the equator).
 - **Edit Vertices** (Edit › Features): reshape the selected features on the map. Their vertices
   show as square handles and each edge has a round midpoint handle. Drag a vertex to move it;
   drag a midpoint, or click an edge, to insert a vertex; click a vertex and press ++delete++ to

@@ -696,6 +696,7 @@ pub(crate) const UI_COMMANDS: &[(&str, &str, &str)] = &[
     ("ui.importShapefile", "Import Shapefile with Projection…", "Home › Add"),
     ("ui.measurementUnits", "Toggle Imperial Measurements", "Home › Inspect › Measure"),
     ("ui.moveSharedVertices", "Shared Vertices", "Edit › Features"),
+    ("ui.traceEdges", "Trace", "Edit › Features"),
     ("ui.exportMap", "Export Map…", "Publish › Output"),
     ("ui.checkUpdate", "Check for Updates…", "Help › Help"),
 ];

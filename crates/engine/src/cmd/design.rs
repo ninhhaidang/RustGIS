@@ -13,6 +13,8 @@ use super::{b, f, need_feature_layer, ps};
 use crate::{CmdResult, CommandSpec as C, Session};
 
 mod shared_vertex;
+mod sketch;
+pub use sketch::{MAX_LINE, trace_between};
 mod snap_vertex;
 
 /// One edited feature: its state before (none for an insert) and its row after (none for a
@@ -57,6 +59,13 @@ fn now() -> f64 {
 /// calculation rules, then domains, contingent values and constraint rules (an error undoes the
 /// whole command). Records the archive and the edit counts.
 pub(crate) fn apply(s: &mut Session, id: u32, changes: Vec<Change>) -> Result<(), String> {
+    apply_with(s, id, changes, true)
+}
+
+/// [`apply`], with `new_defaults` false for added rows that carry another feature's attributes
+/// (the pieces of a cut): they keep them, with no subtype defaults or elevation filled in.
+/// Calculation rules and checks still run on every row.
+pub(crate) fn apply_with(s: &mut Session, id: u32, changes: Vec<Change>, new_defaults: bool) -> Result<(), String> {
     if changes.is_empty() {
         return Ok(());
     }
@@ -77,7 +86,8 @@ pub(crate) fn apply(s: &mut Session, id: u32, changes: Vec<Change>) -> Result<()
             }
         }
     };
-    let new_rows: Vec<usize> = changes.iter().filter(|c| c.before.is_none()).filter_map(|c| c.row).collect();
+    let new_rows: Vec<usize> =
+        if new_defaults { changes.iter().filter(|c| c.before.is_none()).filter_map(|c| c.row).collect() } else { Vec::new() };
     let zs: Vec<(usize, Option<f64>)> = new_rows
         .iter()
         .map(|r| {
@@ -369,6 +379,15 @@ pub fn commands() -> Vec<C> {
         ),
         C::new("edit.explode", "Explode", "Edit › Features › Modify", explode).when(need_editable_selection),
         C::new("edit.split", "Split", "Edit › Features › Modify", split).when(need_editable_selection).params(r#"{"lon", "lat"}"#),
+        C::new("edit.cutPolygon", "Cut Polygon", "Edit › Features › Modify", sketch::cut_polygon)
+            .when(need_editable_selection)
+            .params(r#"{"line": GeoJSON LineString (lon/lat) drawn across the selected polygons}"#),
+        C::new("edit.reshape", "Reshape", "Edit › Features › Modify", sketch::reshape)
+            .when(need_editable_selection)
+            .params(r#"{"line": GeoJSON LineString (lon/lat) drawn across the selected line or polygon's boundary}"#),
+        C::new("edit.trace", "Trace Edge Path", "Edit › Features", sketch::trace).view().params(
+            r#"{"from": [lon, lat], "to": [lon, lat], "layer"?, "row"?: number (else the nearest edge within the tolerance), "tolerancePx"?: number (default: the snapping tolerance)}"#,
+        ),
         C::new("edit.traverse", "Traverse", "Edit › Features › Modify", traverse).when(need_editable).params(
             r#"{"layer"?, "start": [lon, lat], "units"?: "Meters" (default)|"Feet"|"Kilometers"|"Miles", "legs": [{"distance": number, "bearing": degrees from north}]} (closed in a polygon layer, open in a line layer)"#,
         ),

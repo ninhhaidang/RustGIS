@@ -26,6 +26,7 @@ mod parallel;
 mod parameters;
 pub mod rasterops;
 pub mod selection;
+pub mod sketch_edit;
 mod stats;
 pub mod tissot;
 mod tools;

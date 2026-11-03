@@ -94,10 +94,10 @@ And alongside it:
 - Editable standalone tables (they are read-only today).
 - Export into an existing GeoPackage as an added or replaced table, leaving its other tables
   ([#852](https://github.com/opengeos/RustGIS/issues/852); export refuses an existing file today).
-- Polygon editing: cut a polygon, reshape and trace _(open)_; then shared edges, where moving one
-  boundary moves its neighbour's too. Coincident polygon vertices can already move together
-  with Shared Vertices (`edit.moveSharedVertex`); different vertex densities and linked
-  insertion/deletion remain open.
+- Polygon editing: shared edges, where moving one boundary moves its neighbour's too.
+  Coincident polygon vertices can already move together with Shared Vertices
+  (`edit.moveSharedVertex`); different vertex densities and linked insertion/deletion remain
+  open.
 - Editor tracking fields (created/edited by and at).
 - Attribute table columns: rename, hide and reorder _(open)_.
 - Persistent attribute joins and virtual fields. _Coordinate first_ (they change `Feature`).
@@ -150,6 +150,8 @@ Open questions rather than plans; discuss before building.
 
 ## Done
 
+- Polygon editing: Cut Polygon, Reshape (polygons and lines) and Trace along an edge while
+  drawing, on the map and through `edit.cutPolygon`, `edit.reshape` and `edit.trace`.
 - Geometry conversions: Polygon To Line, Split Line At Vertices, Feature Envelope To Polygon
   and Unsplit Line, available in the Tools pane and through `gp.run`.
 - Summary fields (sum, mean, first… — every Summary Statistics statistic) on Dissolve, over each

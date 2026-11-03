@@ -2281,6 +2281,15 @@ impl RustGisApp {
                 }
                 return Ok(serde_json::json!({"on": on}));
             }
+            "ui.traceEdges" => {
+                let on = match p.get("on") {
+                    None => !self.map.trace_edges,
+                    Some(Value::Bool(on)) => *on,
+                    _ => return Err(tl!("Trace must be on or off").into()),
+                };
+                self.map.trace_edges = on;
+                return Ok(serde_json::json!({"on": on}));
+            }
             "ui.map.gpu" => {
                 self.map.gpu_enabled = p.get("on").and_then(Value::as_bool).unwrap_or(!self.map.gpu_enabled);
                 // `"remember": false` turns it on or off for this visit only (a `?gpu` link).

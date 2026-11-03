@@ -2532,7 +2532,7 @@ fn edit_tab(app: &mut RustGisApp, ui: &mut Ui) {
             app,
             "calc_geom",
             "Modify",
-            "Move, rotate, scale, merge, explode, split or flip the selected features.",
+            "Move, rotate, scale, merge, explode, split, cut, reshape or flip the selected features.",
             "ui.pane.editing",
             Value::Null,
             pane,
@@ -2548,6 +2548,16 @@ fn edit_tab(app: &mut RustGisApp, ui: &mut Ui) {
                 "ui.moveSharedVertices",
                 Value::Null,
                 app.map.move_shared_vertices,
+            );
+            small(
+                ui,
+                app,
+                "line_tool",
+                "Trace",
+                "While drawing, click two points on a feature's edge to follow the edge between them.",
+                "ui.traceEdges",
+                Value::Null,
+                app.map.trace_edges,
             );
         });
     });
@@ -2567,6 +2577,8 @@ fn edit_tab(app: &mut RustGisApp, ui: &mut Ui) {
                 app.map.split_mode = true;
                 ui.close();
             }
+            menu_item(ui, app, "split", "Cut Polygon", "tool.set", json!({"tool": "cutPolygon"}));
+            menu_item(ui, app, "polygon_tool", "Reshape", "tool.set", json!({"tool": "reshape"}));
             menu_item(ui, app, "vertices", "Edit Vertices", "tool.set", json!({"tool": "editVertices"}));
             menu_item(ui, app, "calc_geom", "Move, Rotate, Scale…", "ui.pane.editing", Value::Null);
         });

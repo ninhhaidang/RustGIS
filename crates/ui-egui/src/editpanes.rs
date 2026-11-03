@@ -191,6 +191,25 @@ pub fn editing(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
         if r.on_disabled_hover_text(not_for_texts).clicked() {
             app.map.split_mode = !split;
         }
+        for (tool, label, hint) in [
+            (rustgis_engine::Tool::CutPolygon, "Cut Polygon", "Draw a line across the selected polygons; double-click to cut them"),
+            (rustgis_engine::Tool::Reshape, "Reshape", "Draw a line across the selected feature's edge; double-click to reshape it"),
+        ] {
+            let on = app.session.tool == tool;
+            let r = ui.add_enabled(!only_texts || on, egui::Button::selectable(on, tl!(label)));
+            if r.on_hover_text(tl!(hint)).on_disabled_hover_text(not_for_texts).clicked() {
+                app.map.cancel_sketch();
+                run(app, "tool.set", json!({"tool": if on { "explore" } else { tool.code() }}));
+            }
+        }
+        let on = app.map.trace_edges;
+        if ui
+            .add(egui::Button::selectable(on, tl!("Trace")))
+            .on_hover_text(tl!("While drawing, click two points on a feature's edge to follow the edge between them"))
+            .clicked()
+        {
+            run(app, "ui.traceEdges", Value::Null);
+        }
         let on = app.session.tool == rustgis_engine::Tool::EditVertices;
         let r = ui.add_enabled(!only_texts || on, egui::Button::selectable(on, tl!("Edit Vertices")));
         if r.on_hover_text(tl!("Drag vertices on the map; click an edge to add one")).on_disabled_hover_text(not_for_texts).clicked() {

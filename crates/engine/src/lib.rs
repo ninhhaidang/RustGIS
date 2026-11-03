@@ -291,6 +291,10 @@ pub enum Tool {
     CreatePolygon,
     /// Moves, inserts and deletes the vertices of the selected features.
     EditVertices,
+    /// Draws a line across the selected polygons to cut them (`edit.cutPolygon`).
+    CutPolygon,
+    /// Draws a line across the selected feature's boundary to reshape it (`edit.reshape`).
+    Reshape,
     /// Draws a graphic: the shape is one of [`GRAPHIC_TOOLS`]' shapes.
     Graphic(&'static str),
 }
@@ -325,6 +329,8 @@ impl Tool {
             Tool::CreateLine => "createLine",
             Tool::CreatePolygon => "createPolygon",
             Tool::EditVertices => "editVertices",
+            Tool::CutPolygon => "cutPolygon",
+            Tool::Reshape => "reshape",
             Tool::Graphic(shape) => GRAPHIC_TOOLS.iter().find(|g| g.0 == shape).map_or("graphicPoint", |g| g.1),
         }
     }
@@ -345,6 +351,8 @@ impl Tool {
             Tool::CreateLine,
             Tool::CreatePolygon,
             Tool::EditVertices,
+            Tool::CutPolygon,
+            Tool::Reshape,
         ]
         .into_iter()
         .find(|t| t.code().eq_ignore_ascii_case(s.trim()))
@@ -363,11 +371,18 @@ impl Tool {
             Tool::CreateLine => "Create Line",
             Tool::CreatePolygon => "Create Polygon",
             Tool::EditVertices => "Edit Vertices",
+            Tool::CutPolygon => "Cut Polygon",
+            Tool::Reshape => "Reshape",
             Tool::Graphic(shape) => GRAPHIC_TOOLS.iter().find(|g| g.0 == shape).map_or("Point", |g| g.2),
         }
     }
     pub fn creates(self) -> bool {
         matches!(self, Tool::CreatePoint | Tool::CreateLine | Tool::CreatePolygon)
+    }
+    /// Whether the tool draws a line or polygon that edits features: vertices snap, and can
+    /// follow an edge with Trace.
+    pub fn draws_edit(self) -> bool {
+        matches!(self, Tool::CreateLine | Tool::CreatePolygon | Tool::CutPolygon | Tool::Reshape)
     }
 }
 

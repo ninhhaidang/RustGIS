@@ -61,6 +61,8 @@ pub const MAP_TOOLS: &[(&str, &str)] = &[
     ("createLine", "Create Line"),
     ("createPolygon", "Create Polygon"),
     ("editVertices", "Edit Vertices"),
+    ("cutPolygon", "Cut Polygon"),
+    ("reshape", "Reshape"),
 ];
 
 /// Labels of the `ui.*` commands that have a shortcut but no entry in Command Search.
