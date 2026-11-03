@@ -4501,6 +4501,11 @@ fn shared_point(a: &Geometry, a_geo: &geo::Geometry<f64>, b: &Geometry, b_geo: &
 /// when one is given; features with nothing that near, or without geometry, get empty values.
 /// With one layer as both, a feature's nearest is another feature.
 fn near(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
+    near_on(inp, p, None)
+}
+
+/// [`near`] on `threads` threads (none: as many as pay off).
+fn near_on(inp: &dyn Inputs, p: &Json, threads: Option<usize>) -> Result<ToolResult, String> {
     let ds = input(inp, p, "input")?;
     let near_ds = input(inp, p, "near")?;
     if ds.geometry_type == GeometryType::None || near_ds.geometry_type == GeometryType::None {
@@ -4544,22 +4549,35 @@ fn near(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
         out.fields.push(Field::new(name, ty));
     }
     let (mut found, mut total) = (0usize, 0usize);
-    for r in rows(inp, p, "input", ds) {
+    // Each feature's nearest one is found on its own, on several threads when there are many
+    // (#1252); the rows are then made in input order.
+    let targets = rows(inp, p, "input", ds);
+    crate::control::begin(targets.len());
+    let threads = threads.unwrap_or_else(|| crate::parallel::threads_for(targets.len(), PARALLEL_FEATURES));
+    let hits = crate::parallel::try_map_on(
+        &targets,
+        threads,
+        || (),
+        |_, _, &r| {
+            let hit = ds.features.get(r).and_then(|f| f.geometry.as_ref()).and_then(|g| {
+                let (t_ext, t_geo) = (g.extent(), to_geo(g));
+                let (idx, d) = nearby.closest(g, &t_ext, &t_geo, limit, same.then_some(r))?;
+                let j = feats.get(idx)?;
+                // Where they touch, a point they share; else, or when none is found in the map's plane (the
+                // same place at −180° and 180°), the nearest points' pair.
+                let shared = if d > 0.0 { None } else { shared_point(g, &t_geo, j.geom, &j.geo) };
+                let at = shared.or_else(|| crate::join::nearest_points(g, j.geom).map(|(_, q)| q));
+                // The plane's longitudes run on past ±180°, and so can a shared point's: back within
+                // [−180°, 180°).
+                let at = at.map(|c| Coord::new((c.x + 180.0).rem_euclid(360.0) - 180.0, c.y));
+                Some((near_ds.features.get(j.row)?.id, d, at))
+            });
+            Ok::<_, String>(hit)
+        },
+    )?;
+    for (&r, hit) in targets.iter().zip(hits) {
         let Some(f) = ds.features.get(r) else { continue };
         total += 1;
-        let hit = f.geometry.as_ref().and_then(|g| {
-            let (t_ext, t_geo) = (g.extent(), to_geo(g));
-            let (idx, d) = nearby.closest(g, &t_ext, &t_geo, limit, same.then_some(r))?;
-            let j = feats.get(idx)?;
-            // Where they touch, a point they share; else, or when none is found in the map's plane (the
-            // same place at −180° and 180°), the nearest points' pair.
-            let shared = if d > 0.0 { None } else { shared_point(g, &t_geo, j.geom, &j.geo) };
-            let at = shared.or_else(|| crate::join::nearest_points(g, j.geom).map(|(_, q)| q));
-            // The plane's longitudes run on past ±180°, and so can a shared point's: back within
-            // [−180°, 180°).
-            let at = at.map(|c| Coord::new((c.x + 180.0).rem_euclid(360.0) - 180.0, c.y));
-            Some((near_ds.features.get(j.row)?.id, d, at))
-        });
         let mut attrs: Vec<Value> = (0..ds.fields.len()).map(|i| f.attrs.get(i).cloned().unwrap_or(Value::Null)).collect();
         match hit {
             Some((fid, d, at)) => {
@@ -8368,6 +8386,37 @@ mod tests {
         let want = rustgis_geom::wgs84_distance_m(Coord::new(50.0, 50.0), Coord::new(11.0, 11.0));
         assert!((d.unwrap() - want).abs() < 1e-4 * want, "{d:?} vs {want}");
         assert!((x.unwrap() - 11.0).abs() < 1e-7 && (y.unwrap() - 11.0).abs() < 1e-7, "{x:?} {y:?}");
+    }
+
+    /// Features searched on several threads find the same nearest features, distances and points
+    /// as on one thread, in input order (#1252), the same layer as both included.
+    #[test]
+    fn near_on_several_threads_is_near_on_one() {
+        let mut targets = Dataset::new("targets", GeometryType::Point, vec![Field::new("v", FieldType::Integer)]);
+        let mut near = Dataset::new("near", GeometryType::Polygon, vec![Field::new("k", FieldType::Integer)]);
+        for i in 0..1500i64 {
+            let (x, y) = ((i * 37 % 359) as f64 - 179.0, (i * 53 % 160) as f64 - 80.0);
+            targets.push(if i % 97 == 0 { None } else { Some(Geometry::Point(Coord::new(x, y))) }, vec![Value::Int(i)]);
+        }
+        for i in 0..300i64 {
+            near.push(Some(sq((i * 71 % 350) as f64 - 175.0, (i * 29 % 150) as f64 - 75.0, 0.5)), vec![Value::Int(i)]);
+        }
+        let m = Map(HashMap::from([("targets".to_string(), targets), ("near".to_string(), near)]));
+        for p in [
+            serde_json::json!({"input": "targets", "near": "near", "units": "Meters"}),
+            serde_json::json!({"input": "targets", "near": "near", "distance": 500, "units": "Kilometers"}),
+            serde_json::json!({"input": "targets", "near": "targets"}),
+        ] {
+            let one = layer(near_on(&m, &p, Some(1)).unwrap());
+            assert!(one.features.iter().any(|f| f.attrs[1] != Value::Null), "{p}");
+            for threads in [2, 7, 16] {
+                let many = layer(near_on(&m, &p, Some(threads)).unwrap());
+                assert_eq!(many.features.len(), one.features.len());
+                for (a, b) in one.features.iter().zip(&many.features) {
+                    assert_eq!(format!("{:?}", a.attrs), format!("{:?}", b.attrs), "{threads} threads, {p}");
+                }
+            }
+        }
     }
 
     #[test]
