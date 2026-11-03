@@ -66,7 +66,13 @@ fn per_cell(r: &Raster, f: impl Fn(i64, i64) -> Option<f64>) -> Result<Vec<f32>,
 }
 
 /// Draw the interior from three borrowed rows; edges and no-data keep the scalar path.
-fn terrain(r: &Raster, data: &[f32], zf: f64, f: impl Fn(f64, f64) -> f64) -> Result<Vec<f32>, String> {
+fn terrain(r: &Raster, data: &[f32], zf: f64, f: impl Fn(f64, f64) -> f64 + Sync) -> Result<Vec<f32>, String> {
+    terrain_on(None, r, data, zf, f)
+}
+
+/// [`terrain`] on `threads` threads (none: as many as pay off). Each output row is made from the
+/// three input rows around it and written where it lies, so rows go on several threads (#1252).
+fn terrain_on(threads: Option<usize>, r: &Raster, data: &[f32], zf: f64, f: impl Fn(f64, f64) -> f64 + Sync) -> Result<Vec<f32>, String> {
     let (w, h) = (r.width as usize, r.height as usize);
     let cell = r.cell_size_m();
     let scalar = |c, row| {
@@ -79,28 +85,48 @@ fn terrain(r: &Raster, data: &[f32], zf: f64, f: impl Fn(f64, f64) -> f64) -> Re
         return per_cell(r, scalar);
     }
     let value = |v: Option<f64>| v.filter(|v| v.is_finite()).map(|v| v as f32).unwrap_or(NODATA);
-    let mut out = grid(w, h)?;
-    out.extend((0..w).map(|c| value(scalar(c as i64, 0))));
-    for (row, ((top, mid), bottom)) in data.chunks_exact(w).zip(data.chunks_exact(w).skip(1)).zip(data.chunks_exact(w).skip(2)).enumerate()
-    {
-        let row = row + 1;
-        out.push(value(scalar(0, row as i64)));
-        for (col, ((a, b), c)) in top.windows(3).zip(mid.windows(3)).zip(bottom.windows(3)).enumerate() {
-            let ([a, b, c], [d, center, f0], [g, h, i]) = (a, b, c) else { continue };
-            if !r.is_valid(*center) {
-                out.push(NODATA);
-            } else if [*a, *b, *c, *d, *f0, *g, *h, *i].iter().all(|v| r.is_valid(*v)) {
-                let [a, b, c, d, f0, g, h, i] = [*a, *b, *c, *d, *f0, *g, *h, *i].map(|v| f64::from(v) * zf);
-                let x = ((c + 2.0 * f0 + i) - (a + 2.0 * d + g)) / (8.0 * cell.0) * r.transform.pixel_width.signum();
-                let y = ((a + 2.0 * b + c) - (g + 2.0 * h + i)) / (8.0 * cell.1) * -r.transform.pixel_height.signum();
-                out.push(value(Some(f(x, y))));
-            } else {
-                out.push(value(scalar((col + 1) as i64, row as i64)));
+    let mut out = new_band(w, h, NODATA)?;
+    // A cell's gradient and its function cost about one unit of the threshold's (some 30 ns).
+    let threads = threads.unwrap_or_else(|| crate::parallel::threads_for_rows(h, len, 0));
+    crate::control::begin(h);
+    crate::parallel::for_each_row(
+        out.chunks_mut(w),
+        threads,
+        || (),
+        |_, row, line: &mut [f32]| {
+            // The first and last rows, and each row's first and last cells, take the edge path.
+            let edge = |col: usize| value(scalar(col as i64, row as i64));
+            let (Some(top), Some(mid), Some(bottom)) = (
+                row.checked_sub(1).and_then(|t| data.get(t * w..(t + 1) * w)),
+                data.get(row * w..(row + 1) * w),
+                data.get((row + 1) * w..(row + 2) * w),
+            ) else {
+                for (col, o) in line.iter_mut().enumerate() {
+                    *o = edge(col);
+                }
+                return;
+            };
+            for (col, o) in line.iter_mut().enumerate() {
+                *o = if col == 0 || col + 1 == w {
+                    edge(col)
+                } else {
+                    let at = |s: &[f32], dc: usize| s.get(col + dc - 1).copied().unwrap_or(f32::NAN);
+                    let ([a, b, c], [d, center, f0], [g, hh, i]) =
+                        ([0, 1, 2].map(|k| at(top, k)), [0, 1, 2].map(|k| at(mid, k)), [0, 1, 2].map(|k| at(bottom, k)));
+                    if !r.is_valid(center) {
+                        NODATA
+                    } else if [a, b, c, d, f0, g, hh, i].iter().all(|v| r.is_valid(*v)) {
+                        let [a, b, c, d, f0, g, hh, i] = [a, b, c, d, f0, g, hh, i].map(|v| f64::from(v) * zf);
+                        let x = ((c + 2.0 * f0 + i) - (a + 2.0 * d + g)) / (8.0 * cell.0) * r.transform.pixel_width.signum();
+                        let y = ((a + 2.0 * b + c) - (g + 2.0 * hh + i)) / (8.0 * cell.1) * -r.transform.pixel_height.signum();
+                        value(Some(f(x, y)))
+                    } else {
+                        edge(col)
+                    }
+                };
             }
-        }
-        out.push(value(scalar((w - 1) as i64, row as i64)));
-    }
-    out.extend((0..w).map(|c| value(scalar(c as i64, (h - 1) as i64))));
+        },
+    )?;
     Ok(out)
 }
 
@@ -1199,7 +1225,7 @@ mod tests {
 
     #[test]
     fn terrain_rows_match_scalar_edges_nodata_and_orientations() {
-        for (w, h) in [(1, 1), (1, 5), (2, 3), (3, 2), (3, 3), (9, 7)] {
+        for (w, h) in [(1, 1), (1, 5), (2, 3), (3, 2), (3, 3), (9, 7), (60, 41)] {
             for (pixel_width, pixel_height) in [(0.01, -0.01), (0.01, 0.01), (-0.01, -0.01), (-0.01, 0.01)] {
                 for with_holes in [false, true] {
                     let values = (0..w * h)
@@ -1229,6 +1255,15 @@ mod tests {
                             expected,
                             "{w}x{h}, {pixel_width}, {pixel_height}, holes={with_holes}, zf={zf}"
                         );
+                        // Rows made on several threads give the same, bit for bit (#1252).
+                        let bits = |v: Result<Vec<f32>, String>| v.map(|v| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>());
+                        for threads in [1, 2, 7, 16] {
+                            assert_eq!(
+                                bits(terrain_on(Some(threads), &r, data, zf, f)),
+                                bits(expected.clone()),
+                                "{w}x{h}, {threads} threads"
+                            );
+                        }
                     }
                 }
             }
