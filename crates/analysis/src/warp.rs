@@ -127,10 +127,12 @@ impl Sampler<'_> {
     fn sample(&self, c: f64, row: f64, out: &mut [f32]) {
         let (w, h) = (i64::from(self.r.width), i64::from(self.r.height));
         let index = |i: i64, j: i64| (j.clamp(0, h - 1) * w + i.clamp(0, w - 1)) as usize;
+        // The pixel under the position. The 1e-10 (as in GDAL) keeps a position a rounding error
+        // below a pixel's edge in the pixel after it.
+        let centre = index((c + 1e-10).floor() as i64, (row + 1e-10).floor() as i64);
         if self.method == Resampling::Nearest {
-            let idx = index(c.floor() as i64, row.floor() as i64);
             for (b, o) in out.iter_mut().enumerate() {
-                *o = self.at(b, idx).unwrap_or(f32::NAN);
+                *o = self.at(b, centre).unwrap_or(f32::NAN);
             }
             return;
         }
@@ -138,6 +140,17 @@ impl Sampler<'_> {
         let (u, v) = (c - 0.5, row - 0.5);
         let (i0, j0) = (u.floor() as i64, v.floor() as i64);
         let (fu, fv) = (u - i0 as f64, v - j0 as f64);
+        // A position on a pixel with no value has none either, as in GDAL, rather than the mean of
+        // the neighbours that have one (#973). That includes NaN in a raster without a no-data
+        // value (gdalwarp with `-srcnodata nan`). The pixel has no value only where every band
+        // but alpha is no-data, as gdalwarp's default (`UNIFIED_SRC_NODATA=PARTIAL`) has it: a
+        // colour pixel with one channel at the no-data value keeps its value, and that channel
+        // blends from the neighbours. At the pixel's exact centre only that pixel weighs, so the
+        // channel has no value there, as in gdalwarp.
+        if (0..out.len()).all(|b| Some(b) == self.alpha || self.at(b, centre).is_none()) {
+            out.fill(f32::NAN);
+            return;
+        }
         for (b, o) in out.iter_mut().enumerate() {
             let cubic = (self.method == Resampling::Cubic).then(|| self.cubic(b, &index, i0, j0, fu, fv)).flatten();
             *o = cubic.unwrap_or_else(|| self.bilinear(b, &index, i0, j0, fu, fv));
@@ -508,8 +521,8 @@ impl Canvas {
         Canvas { nb, alpha_src, add_alpha, out_bands: nb + usize::from(add_alpha), clear, outside, color }
     }
 
-    /// Cell `at` of `bands` set to `values` (no value where NaN), and opaque when an alpha band
-    /// was added.
+    /// Cell `at` of `bands` set to `values` (no value where NaN), and, when an alpha band was
+    /// added, opaque unless no band has a value.
     fn set(&self, bands: &mut [Vec<f32>], at: usize, values: &[f32]) {
         for (band, v) in bands.iter_mut().zip(values) {
             if let Some(o) = band.get_mut(at) {
@@ -517,11 +530,13 @@ impl Canvas {
                 *o = if v.is_nan() { if self.clear { 0.0 } else { self.outside } } else { *v };
             }
         }
-        // Alpha is read as 0–255 whatever the pixel type.
+        // Alpha is read as 0–255 whatever the pixel type. A cell with no value in any band (a
+        // NaN pixel under its centre in a float image without no-data) is see-through like one
+        // outside, not opaque black.
         if self.add_alpha
             && let Some(o) = bands.get_mut(self.nb).and_then(|b| b.get_mut(at))
         {
-            *o = 255.0;
+            *o = if values.iter().take(self.nb).all(|v| v.is_nan()) { 0.0 } else { 255.0 };
         }
     }
 
@@ -937,6 +952,31 @@ mod tests {
         assert!(out.bands[0].data.iter().all(|v| *v == 10.0 || *v == -9999.0));
     }
 
+    /// The control-point warp shares the no-data rule of #973: a cell whose centre falls on a
+    /// no-data pixel has no value, even with valid pixels around it.
+    #[test]
+    fn warp_leaves_a_cell_over_no_data_without_a_value() {
+        // 6 × 6 pixels of 10 with a 2 × 2 no-data hole at columns and rows 2–3, 1 m square and
+        // unrotated; half-metre cells, centred a quarter pixel from the pixel edges.
+        let gt = GeoTransform { origin_x: 0.0, origin_y: 6.0, pixel_width: 1.0, pixel_height: -1.0 };
+        let mut data = vec![10.0f32; 36];
+        for idx in [14, 15, 20, 21] {
+            data[idx] = -9999.0;
+        }
+        let r = Raster::new("nd", 6, 6, vec![data], gt, Crs::LonLat, Some(-9999.0), ColorHint::Gray, "Float32").unwrap();
+        let fit = georef::fit(Kind::Similarity, &gcps(6.0, 6.0, |c, rw| (500_000.0 + c, 4_000_000.0 - rw))).unwrap();
+        let out = warp(&r, &fit, &opts(Some(0.5), Resampling::Bilinear)).unwrap();
+        // 12 × 12 cells over the image (one more column or row if the fit rounds the footprint up).
+        assert!(out.width >= 12 && out.height >= 12);
+        // The 4 × 4 cells over the hole have no value; before, the outer ring of them took the mean
+        // of the valid neighbours and only the middle 2 × 2 were no-data.
+        let empty: Vec<(i64, i64)> =
+            (0..12).flat_map(|row| (0..12).map(move |c| (c, row))).filter(|&(c, row)| out.value(0, c, row).is_none()).collect();
+        let hole: Vec<(i64, i64)> = (4..8).flat_map(|row| (4..8).map(move |c| (c, row))).collect();
+        assert_eq!(empty, hole);
+        assert!(out.bands[0].data.iter().all(|v| *v == 10.0 || *v == -9999.0));
+    }
+
     #[test]
     fn hostile_fits_and_options_are_refused() {
         let r = scan(4, 4, vec![vec![1.0; 16]], ColorHint::Gray, "Float32");
@@ -979,6 +1019,106 @@ mod tests {
 
     fn values(r: &Raster) -> Vec<Option<f32>> {
         (0..i64::from(r.height)).flat_map(|row| (0..i64::from(r.width)).map(move |c| (c, row))).map(|(c, row)| r.value(0, c, row)).collect()
+    }
+
+    /// Bilinear and cubic leave a cell no-data where the pixel under its centre is no-data, and
+    /// otherwise average the valid neighbours, as gdalwarp does (#973).
+    #[test]
+    fn bilinear_and_cubic_leave_a_cell_over_no_data_without_a_value() {
+        // 6 × 6 pixels, value = column + 10 · row, with a 2 × 2 no-data hole at columns and rows
+        // 2–3; cells shifted a quarter pixel, so cell (k, r) is centred in pixel (k, r + 1).
+        let mut v: Vec<f32> = (0..36).map(|i| (i % 6 + 10 * (i / 6)) as f32).collect();
+        for idx in [14, 15, 20, 21] {
+            v[idx] = -1.0;
+        }
+        // The hole as the no-data value, and as NaN in a raster without one.
+        let nan: Vec<f32> = v.iter().map(|&x| if x < 0.0 { f32::NAN } else { x }).collect();
+        let r = utm(6, 6, v, "Float32");
+        let mut no_nodata = utm(6, 6, nan, "Float32");
+        no_nodata.nodata = None;
+        let g = Grid::snapped(r.crs, [0.25, 0.25, 5.25, 5.25], (1.0, 1.0), (0.25, 0.25)).unwrap();
+        assert_eq!((g.width, g.height), (5, 5));
+        // gdalwarp -r bilinear and -r cubic (GDAL 3.12.2 and 3.13.1) on the same grid; the NaN
+        // raster with `-srcnodata nan` gives the same values.
+        let n = None;
+        let gdal = [
+            [Some(7.75), Some(8.75), Some(9.75), Some(10.75), Some(11.75)],
+            [Some(17.75), Some(18.0), n, n, Some(21.75)],
+            [Some(27.75), Some(28.5), n, n, Some(31.75)],
+            [Some(37.75), Some(39.2), Some(42.25), Some(42.538_46), Some(41.75)],
+            [Some(47.75), Some(48.75), Some(49.75), Some(50.75), Some(51.75)],
+        ];
+        for src in [&r, &no_nodata] {
+            let out = values(&project(src, &g, Method::Sample(Resampling::Bilinear), "b".into()).unwrap());
+            for (got, want) in out.iter().zip(gdal.iter().flatten()) {
+                assert_eq!(got.is_some(), want.is_some(), "{out:?}");
+                if let (Some(a), Some(b)) = (got, want) {
+                    assert!((a - b).abs() < 1e-4, "{out:?}");
+                }
+            }
+            // Cubic: the cells over the hole have no value either. The others in columns 1–4 of
+            // rows 1–3 have a hole pixel among their sixteen, so they fall back to bilinear, as in
+            // GDAL; this test doesn't reach the cubic kernel itself.
+            let out = values(&project(src, &g, Method::Sample(Resampling::Cubic), "c".into()).unwrap());
+            for (i, (got, want)) in out.iter().zip(gdal.iter().flatten()).enumerate() {
+                assert_eq!(got.is_some(), want.is_some(), "{out:?}");
+                let (row, col) = (i / 5, i % 5);
+                if (1..=3).contains(&row)
+                    && (1..=4).contains(&col)
+                    && let (Some(a), Some(b)) = (got, want)
+                {
+                    assert!((a - b).abs() < 1e-4, "cell ({col}, {row}): {out:?}");
+                }
+            }
+        }
+    }
+
+    /// A colour pixel has no value only where every channel is no-data: one channel at the
+    /// no-data value blends from the neighbours, as in gdalwarp (`UNIFIED_SRC_NODATA=PARTIAL`).
+    #[test]
+    fn a_colour_cell_needs_every_channel_no_data_to_have_no_value() {
+        // 6 × 6 pixels of (100, 150, 200), no-data 0: pixel (2, 2) has red 0, pixel (4, 4) is 0 in
+        // every channel. Cells shifted a quarter pixel, so cell (k, r) is centred in pixel (k, r + 1).
+        let mut bands = vec![vec![100.0f32; 36], vec![150.0; 36], vec![200.0; 36]];
+        bands[0][14] = 0.0;
+        for band in &mut bands {
+            band[28] = 0.0;
+        }
+        let gt = GeoTransform { origin_x: 0.0, origin_y: 6.0, pixel_width: 1.0, pixel_height: -1.0 };
+        let crs = Crs::from_epsg(32613).unwrap();
+        let r = Raster::new("rgb", 6, 6, bands, gt, crs, Some(0.0), ColorHint::Rgb { alpha: false }, "UInt8").unwrap();
+        let g = Grid::snapped(r.crs, [0.25, 0.25, 5.25, 5.25], (1.0, 1.0), (0.25, 0.25)).unwrap();
+        // gdalwarp -r bilinear and -r cubic (GDAL 3.12.2 and 3.13.1): (100, 150, 200) over the
+        // pixel with red 0, and no value over the one that is 0 in every channel.
+        for method in [Resampling::Bilinear, Resampling::Cubic] {
+            let out = project(&r, &g, Method::Sample(method), "o".into()).unwrap();
+            let cell = |c, row| (0..3).map(|b| out.value(b, c, row)).collect::<Vec<_>>();
+            assert_eq!(cell(2, 1), [Some(100.0), Some(150.0), Some(200.0)], "{method:?}");
+            assert_eq!(cell(4, 3), [None, None, None], "{method:?}");
+        }
+    }
+
+    /// A colour image without no-data gains an alpha band; a cell over a pixel with no value in
+    /// any band (NaN in a float image) is see-through there, not opaque black.
+    #[test]
+    fn an_added_alpha_is_clear_over_a_pixel_with_no_value() {
+        // 6 × 6 pixels of (100, 150, 200), Float32 without no-data, pixel (2, 2) NaN in every
+        // band. Cells shifted a quarter pixel, so cell (k, r) is centred in pixel (k, r + 1).
+        let mut bands = vec![vec![100.0f32; 36], vec![150.0; 36], vec![200.0; 36]];
+        for band in &mut bands {
+            band[14] = f32::NAN;
+        }
+        let gt = GeoTransform { origin_x: 0.0, origin_y: 6.0, pixel_width: 1.0, pixel_height: -1.0 };
+        let crs = Crs::from_epsg(32613).unwrap();
+        let r = Raster::new("rgb", 6, 6, bands, gt, crs, None, ColorHint::Rgb { alpha: false }, "Float32").unwrap();
+        let g = Grid::snapped(r.crs, [0.25, 0.25, 5.25, 5.25], (1.0, 1.0), (0.25, 0.25)).unwrap();
+        for method in [Resampling::Nearest, Resampling::Bilinear, Resampling::Cubic] {
+            let out = project(&r, &g, Method::Sample(method), "o".into()).unwrap();
+            assert_eq!(out.bands.len(), 4, "{method:?}: an alpha band is added");
+            let alpha = |c: usize, row: usize| out.bands[3].data[row * 5 + c];
+            assert_eq!(alpha(2, 1), 0.0, "{method:?}: over the NaN pixel");
+            assert_eq!(alpha(1, 1), 255.0, "{method:?}: next to it");
+        }
     }
 
     /// Average and mode take every pixel whose centre falls in a cell, no-data skipped; mode's
