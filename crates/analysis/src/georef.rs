@@ -171,6 +171,11 @@ pub fn fit(kind: Kind, points: &[Gcp]) -> Result<Fit, String> {
 
 /// Fits a transform and works out its residuals, errors and (when asked) leave-one-out errors.
 pub fn assess(kind: Kind, points: &[Gcp], leave_one_out: bool) -> Result<Report, String> {
+    assess_on(None, kind, points, leave_one_out)
+}
+
+/// [`assess`] on `threads` threads (none: as many as pay off).
+fn assess_on(threads: Option<usize>, kind: Kind, points: &[Gcp], leave_one_out: bool) -> Result<Report, String> {
     let fit = fit(kind, points)?;
     let residuals: Vec<Option<Residual>> = points.iter().map(|g| residual(&fit, g)).collect();
     let used = points.iter().filter(|g| g.on).count();
@@ -200,22 +205,31 @@ pub fn assess(kind: Kind, points: &[Gcp], leave_one_out: bool) -> Result<Report,
             Some(format!("the spline's leave-one-out error is worked out for up to {MAX_SPLINE_LEAVE_ONE_OUT} points switched on"));
         return Ok(report);
     }
-    let mut errors = Vec::with_capacity(points.len());
-    let mut rest: Vec<Gcp> = points.to_vec();
-    for i in 0..points.len() {
-        let Some(g) = points.get(i).copied().filter(|g| g.on) else {
-            errors.push(None);
-            continue;
-        };
-        if let Some(r) = rest.get_mut(i) {
-            r.on = false;
-        }
-        let e = fit_loose(kind, &rest).and_then(|f| residual(&f, &g)).map(|r| (r.pixels.0.hypot(r.pixels.1), r.map.0.hypot(r.map.1)));
-        if let Some(r) = rest.get_mut(i) {
-            r.on = true;
-        }
-        errors.push(e);
-    }
+    // One refit a point left out, each on its own, so they go on several threads when the work is
+    // large (#1252), each thread switching points off in its own copy. A fit weighs every point,
+    // and the spline solves a system of them (n³).
+    let n = points.len();
+    let per_fit = if kind == Kind::Spline { n.saturating_mul(n).saturating_mul(n) / 4 } else { n.saturating_mul(16) };
+    let threads = threads
+        .unwrap_or_else(|| crate::parallel::threads_for_rows(n, n.saturating_mul(per_fit), n.saturating_mul(std::mem::size_of::<Gcp>())));
+    let indices: Vec<usize> = (0..n).collect();
+    crate::control::begin(n);
+    let errors = crate::parallel::try_map_on(
+        &indices,
+        threads,
+        || points.to_vec(),
+        |rest, _, &i| {
+            let Some(g) = points.get(i).copied().filter(|g| g.on) else { return Ok::<_, String>(None) };
+            if let Some(r) = rest.get_mut(i) {
+                r.on = false;
+            }
+            let e = fit_loose(kind, rest).and_then(|f| residual(&f, &g)).map(|r| (r.pixels.0.hypot(r.pixels.1), r.map.0.hypot(r.map.1)));
+            if let Some(r) = rest.get_mut(i) {
+                r.on = true;
+            }
+            Ok(e)
+        },
+    )?;
     // A point the fit can't do without is the one that says most about it: when leaving any
     // point out breaks the fit, there is no overall error, rather than one over the easy points.
     let missing: Vec<String> =
@@ -619,6 +633,26 @@ mod tests {
             }
         }
         out
+    }
+
+    /// Leave-one-out refits made on several threads give the same report, bit for bit, as on one
+    /// (#1252), for every model, with points switched off among them.
+    #[test]
+    fn assess_on_several_threads_is_assess_on_one() {
+        let points: Vec<Gcp> = (0..80)
+            .map(|i| {
+                let (col, row) = (f64::from(i % 10) * 3000.0 + 200.0, f64::from(i / 10) * 2400.0 + 150.0);
+                let (x, y) = (2_600_000.0 + col * 0.5 + wobble(i as usize) * 3.0, 1_200_000.0 - row * 0.5 + wobble(i as usize + 99) * 3.0);
+                Gcp { col, row, x, y, on: i % 5 != 2 }
+            })
+            .collect();
+        for kind in [Kind::Similarity, Kind::Affine, Kind::Projective, Kind::Polynomial2, Kind::Polynomial3, Kind::Spline] {
+            let one = assess_on(Some(1), kind, &points, true).unwrap();
+            assert!(one.leave_one_out.as_ref().is_some_and(|e| e.iter().any(Option::is_some)), "{kind:?}");
+            for threads in [2, 7, 16] {
+                assert_eq!(assess_on(Some(threads), kind, &points, true).unwrap(), one, "{kind:?}, {threads} threads");
+            }
+        }
     }
 
     /// A small, repeatable wobble in [−1, 1].

@@ -31,14 +31,14 @@ pub(crate) fn threads_for(items: usize, min_items: usize) -> usize {
 }
 
 /// [`threads_for`], each thread holding up to `scratch_bytes` at its peak (a feature's raster
-/// masks, say): no more than [`SCRATCH_BUDGET`] holds.
+/// masks, say): beyond one thread's, no more than [`SCRATCH_BUDGET`] holds.
 pub(crate) fn threads_for_scratch(items: usize, min_items: usize, scratch_bytes: usize) -> usize {
     threads_for(items, min_items).min(1 + SCRATCH_BUDGET / scratch_bytes.max(1))
 }
 
 /// How many threads to make `rows` raster rows on, `work` in all, each thread taking
 /// `scratch_bytes` of scratch: one below [`MIN_ROW_WORK`] and in the browser, no more than there
-/// are rows, and no more than [`SCRATCH_BUDGET`] holds (a scratch per point, for millions of
+/// are rows, and, beyond one thread's scratch, no more than [`SCRATCH_BUDGET`] holds (a scratch per point, for millions of
 /// points, is large).
 pub(crate) fn threads_for_rows(rows: usize, work: usize, scratch_bytes: usize) -> usize {
     if cfg!(target_arch = "wasm32") || work < MIN_ROW_WORK {
