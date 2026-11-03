@@ -12048,6 +12048,14 @@ fn exports_say_what_import_said_about_positions() {
         s.run(cmd, &params).unwrap();
         assert!(said(&s, mark, NOT_LONLAT), "{cmd}: {:?}", s.notices_since(mark));
     }
+    for (layer, expected) in [("nad27", APPROXIMATE), ("utm", NOT_LONLAT)] {
+        let mut dataset = s.map().layer_by_name(layer).unwrap().dataset.clone();
+        dataset.name = format!("table-{layer}");
+        s.project.add_table(dataset);
+        let mark = s.notice_mark();
+        s.run("share.exportTable", &json!({"table":format!("table-{layer}"),"path":dir.join(format!("table-{layer}.geojson"))})).unwrap();
+        assert!(said(&s, mark, expected), "{layer}: {:?}", s.notices_since(mark));
+    }
     let mark = s.notice_mark();
     s.run("share.webMap", &json!({"path": dir.join("map.html")})).unwrap();
     let notes: Vec<_> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
@@ -24189,6 +24197,70 @@ fn merge_distinguishes_case_sensitive_file_paths() {
         })
         .collect();
     assert_eq!(coordinates, [1.0, 2.0]);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// Text and numeric dBase losses are counted only in rows the exported file holds.
+#[test]
+fn shapefile_value_losses_reach_export_notices() {
+    use rustgis_data::{Dataset, Field, FieldType, Geometry, GeometryType, Value as Attr};
+    let dir = std::env::temp_dir().join(format!("rustgis-shp-value-notices-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut ds = Dataset::new(
+        "Values",
+        GeometryType::Point,
+        vec![Field::new("description", FieldType::Text), Field::new("id", FieldType::Integer), Field::new("number", FieldType::Double)],
+    );
+    ds.push(
+        Some(Geometry::Point(rustgis_geom::Coord::new(1.0, 2.0))),
+        vec![Attr::Text("é".repeat(150)), Attr::Int(9_007_199_254_740_993), Attr::Float(1.5e30)],
+    );
+    ds.push(Some(Geometry::Point(rustgis_geom::Coord::new(3.0, 4.0))), vec![Attr::Text("fits".into()), Attr::Int(1), Attr::Float(1e-30)]);
+    ds.push(None, vec![Attr::Text("x".repeat(300)), Attr::Int(i64::MAX), Attr::Float(1e-30)]);
+    let mut s = Session::new(Project::default());
+    let id = s.map_mut().add_dataset(ds.clone());
+    s.project.add_table(ds);
+    for command in ["share.exportLayer", "share.exportTable"] {
+        for ext in ["shp", "zip"] {
+            let path = dir.join(format!("{command}.{ext}"));
+            let mark = s.notice_mark();
+            let params =
+                if command == "share.exportLayer" { json!({"layer":id,"path":path}) } else { json!({"table":"Values","path":path}) };
+            s.run(command, &params).unwrap();
+            let (back, _) = rustgis_data::io::read_path(&path).unwrap();
+            assert_eq!(back.features.len(), 2);
+            let field = |name: &str| back.fields.iter().position(|f| f.name == name).unwrap();
+            assert_eq!(back.features[0].attrs[field("descriptio")], Attr::Text("é".repeat(127)));
+            assert_eq!(back.features[0].attrs[field("id")], Attr::Null);
+            assert_eq!(back.features[0].attrs[field("number")], Attr::Null);
+            assert_eq!(back.features[1].attrs[field("number")], Attr::Null);
+            let notices: Vec<_> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+            assert!(
+                notices.iter().any(|n| n.contains("1 text value") && n.contains("254 bytes") && n.contains("description")),
+                "{command}: {notices:?}"
+            );
+            assert!(
+                notices.iter().any(|n| n.contains("3 values") && n.contains("id") && n.contains("number") && n.contains("left empty")),
+                "{command}: {notices:?}"
+            );
+            assert!(notices.iter().any(|n| n.contains("1 features without drawable geometry were left out")), "{command}: {notices:?}");
+        }
+    }
+    // A clean table gives neither loss notice; other formats keep the lossy attributes.
+    let mut clean = s.project.tables[0].dataset.clone();
+    clean.name = "Fits".into();
+    clean.features.truncate(1);
+    clean.features[0].attrs = vec![Attr::Text("fits".into()), Attr::Int(1), Attr::Float(1.25)];
+    s.project.add_table(clean);
+    for (table, ext) in [("Fits", "shp"), ("Fits", "zip"), ("Values", "geojson")] {
+        let mark = s.notice_mark();
+        s.run("share.exportTable", &json!({"table":table,"path":dir.join(format!("{table}.{ext}"))})).unwrap();
+        assert!(
+            !s.notices_since(mark).iter().any(|n| n.text.contains("254 bytes") || n.text.contains("left empty")),
+            "{:?}",
+            s.notices_since(mark)
+        );
+    }
     std::fs::remove_dir_all(dir).unwrap();
 }
 
