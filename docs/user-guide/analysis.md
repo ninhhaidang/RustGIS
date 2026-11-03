@@ -250,7 +250,8 @@ to 0.031 % of the distance inside the true curve in the projection plane, and up
 polygon corners and line joins, in addition to the projection error. Negative Buffer
 distances shrink polygons. Buffer and Select Layer By Location limit distances to 5,000 km.
 Ordinary Buffer limits each feature to 2,000,000 outline vertices. Its retained output has a
-separate memory budget: 512 MiB on desktop, 128 MiB in the browser, including geometry
+separate memory budget: on the desktop a quarter of the computer's memory, from 512 MiB up to 8 GiB
+(`bufferBytes` in `gp.env`), and 128 MiB in the browser, including geometry
 allocations, copied attributes and spare row capacity. Features are processed in bounded
 batches, in input order. Many small buffers can therefore exceed 2,000,000 vertices together.
 Dissolve All retains the shared 2,000,000-vertex limit before union and checks the dissolved
@@ -875,6 +876,9 @@ below the web app's fixed limits and never above a ceiling.
 | `rasterSamples`: samples a raster read holds (cells times bands) | 120 million (32 million in the web app) | 8 bytes a sample | 1 billion |
 | `outputPixels`: pixels of a raster a tool makes | 64 million | 16 bytes a pixel | 512 million |
 | `pagedFeatures`: features read from a service page by page | 100,000 | 20 KB a feature (about 100,000 for every 8 GB) | 1 million |
+| `densityCells`: cells of a Kernel Density raster | 16 million | 16 bytes a cell | 512 million |
+| `bufferBytes`: memory for Buffer's output and Select Layer By Location's buffered selectors | 512 MiB (128 MiB in the web app) | the bytes themselves | 8 GiB |
+| `threadScratchBytes`: working memory a tool's threads take together, beyond one thread's | 256 MiB | a sixteenth of memory, on top of the quarter | 4 GiB |
 
 So a computer with 16 GB reads rasters of up to about 500 million samples. A run that passes on one
 computer can be refused on a smaller one; the error names the limit there. Project Raster (`raster.project`) puts a raster

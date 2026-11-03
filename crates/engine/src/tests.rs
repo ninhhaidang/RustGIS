@@ -6617,6 +6617,8 @@ fn analysis_workflows_models_scripts_and_raster_functions() {
     assert!(limit("rasterSamples") >= rustgis_data::raster::SAMPLES_FLOOR, "{env}");
     assert!(limit("outputPixels") >= rustgis_analysis::rasterops::PIXELS_FLOOR, "{env}");
     assert!(limit("pagedFeatures") >= rustgis_data::ogc::PAGED_FEATURES_FLOOR, "{env}");
+    assert!(limit("densityCells") >= rustgis_analysis::DENSITY_CELLS_FLOOR, "{env}");
+    assert!(limit("bufferBytes") >= 512 << 20 && limit("threadScratchBytes") >= 256 << 20, "{env}");
     // Network route along the rivers: two points on the same river.
     let rivers = s.map().layer_by_name("Rivers").unwrap();
     let (a, b2) = match rivers.dataset.features.iter().filter_map(|f| f.geometry.as_ref()).find_map(|g| match g {

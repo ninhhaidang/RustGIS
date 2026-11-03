@@ -18,8 +18,18 @@ const STACK_BYTES: usize = 8 << 20;
 /// cell-point pairs for IDW (about 30 ns each, so some 5 ms of it), the same plus each cell's
 /// system for kriging, ray steps for a viewshed. Starting a thread costs tens of microseconds.
 pub(crate) const MIN_ROW_WORK: usize = 200_000;
-/// The scratch memory a raster tool's threads may take together, beyond one thread's.
-const SCRATCH_BUDGET: usize = 256 << 20;
+/// The scratch memory a tool's threads may take together beyond one thread's, in the browser and
+/// at least on the desktop ([`scratch_budget`]).
+const SCRATCH_FLOOR: usize = 256 << 20;
+/// The most [`scratch_budget`] allows, however much memory the computer has.
+const SCRATCH_CEILING: usize = 4 << 30;
+
+/// The scratch memory a tool's threads may take together beyond one thread's: on the desktop a
+/// sixteenth of the computer's memory, on top of the quarter its input and output limits plan for,
+/// from [`SCRATCH_FLOOR`] up to [`SCRATCH_CEILING`] (#1291 step 2).
+pub fn scratch_budget() -> usize {
+    rustgis_data::memory::scaled(rustgis_data::memory::physical().map(|m| m / 4), SCRATCH_FLOOR, SCRATCH_CEILING, 1)
+}
 
 /// How many threads to make `items` items on: one below `min_items`, always one in the browser,
 /// and no more than there are batches.
@@ -31,20 +41,20 @@ pub(crate) fn threads_for(items: usize, min_items: usize) -> usize {
 }
 
 /// [`threads_for`], each thread holding up to `scratch_bytes` at its peak (a feature's raster
-/// masks, say): beyond one thread's, no more than [`SCRATCH_BUDGET`] holds.
+/// masks, say): beyond one thread's, no more than [`scratch_budget`] holds.
 pub(crate) fn threads_for_scratch(items: usize, min_items: usize, scratch_bytes: usize) -> usize {
-    threads_for(items, min_items).min(1 + SCRATCH_BUDGET / scratch_bytes.max(1))
+    threads_for(items, min_items).min(1 + scratch_budget() / scratch_bytes.max(1))
 }
 
 /// How many threads to make `rows` raster rows on, `work` in all, each thread taking
 /// `scratch_bytes` of scratch: one below [`MIN_ROW_WORK`] and in the browser, no more than there
-/// are rows, and, beyond one thread's scratch, no more than [`SCRATCH_BUDGET`] holds (a scratch per point, for millions of
+/// are rows, and, beyond one thread's scratch, no more than [`scratch_budget`] holds (a scratch per point, for millions of
 /// points, is large).
 pub(crate) fn threads_for_rows(rows: usize, work: usize, scratch_bytes: usize) -> usize {
     if cfg!(target_arch = "wasm32") || work < MIN_ROW_WORK {
         return 1;
     }
-    let affordable = 1 + SCRATCH_BUDGET / scratch_bytes.max(1);
+    let affordable = 1 + scratch_budget() / scratch_bytes.max(1);
     cores().min(rows).min(affordable).max(1)
 }
 
@@ -389,7 +399,7 @@ mod tests {
         assert_eq!(threads_for_rows(100, MIN_ROW_WORK - 1, 0), 1);
         assert!(threads_for_rows(3, usize::MAX, 0) <= 3);
         // Scratch larger than the budget: one thread more than it holds, none beyond.
-        assert!(threads_for_rows(100, usize::MAX, SCRATCH_BUDGET) <= 2);
+        assert!(threads_for_rows(100, usize::MAX, scratch_budget()) <= 2);
         assert_eq!(threads_for_rows(100, usize::MAX, usize::MAX), 1);
     }
 

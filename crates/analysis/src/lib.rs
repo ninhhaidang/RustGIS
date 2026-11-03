@@ -36,11 +36,12 @@ pub mod warp;
 
 pub use attribute_join::{DuplicateStrategy, JoinFieldOptions, JoinFieldReport, join_field};
 pub use density::{
-    KernelType, MAX_DENSITY_CELLS, MAX_DENSITY_WORK, auto_cell_size, kernel_density, points_extent, resolve_grid_extent,
-    silverman_bandwidth,
+    DENSITY_CELLS_FLOOR, KernelType, MAX_DENSITY_WORK, auto_cell_size, kernel_density, max_density_cells, points_extent,
+    resolve_grid_extent, silverman_bandwidth,
 };
+pub use parallel::scratch_budget;
 pub use parameters::StatisticList;
-pub use tools::{TOOLS, find_field_case_insensitive, holds_coordinates, param_applies, simplify_geometry, zonal_bands};
+pub use tools::{TOOLS, find_field_case_insensitive, holds_coordinates, max_buffer_bytes, param_applies, simplify_geometry, zonal_bands};
 
 use rustgis_data::Dataset;
 use serde_json::Value;

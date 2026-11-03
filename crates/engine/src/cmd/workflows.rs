@@ -180,6 +180,9 @@ fn environments(s: &mut Session, p: &Value) -> CmdResult {
         "rasterSamples": rustgis_data::raster::max_samples(),
         "outputPixels": rasterops::max_pixels(),
         "pagedFeatures": rustgis_data::ogc::max_paged_features(),
+        "densityCells": rustgis_analysis::max_density_cells(),
+        "bufferBytes": rustgis_analysis::max_buffer_bytes(),
+        "threadScratchBytes": rustgis_analysis::scratch_budget(),
     });
     Ok(json!({"extent": env.extent.map(|e| [e.min_x, e.min_y, e.max_x, e.max_y]), "cellSize": env.cell_size, "limits": limits}))
 }

@@ -1245,14 +1245,29 @@ fn union_all<'a>(polys: impl IntoIterator<Item = &'a geo::Polygon<f64>>) -> Mult
 /// Two million coordinates occupy roughly 32 MB before containers and overlay scratch.
 const MAX_BUFFER_VERTICES: usize = 2_000_000;
 /// Retained ordinary output/selector storage, separate from overlay complexity. Temporary
-/// geometry on each worker and the already loaded input are additional to this allowance.
+/// geometry on each worker and the already loaded input are additional to this allowance. The
+/// browser's budget, and the fewest bytes [`max_buffer_bytes`] allows on the desktop.
 const MAX_BUFFER_BYTES: usize = if cfg!(target_arch = "wasm32") { 128 << 20 } else { 512 << 20 };
+/// The most bytes [`max_buffer_bytes`] allows, however much memory the computer has.
+const BUFFER_BYTES_CEILING: usize = 8 << 30;
 /// Drain results regularly instead of keeping a second whole-layer result array.
 const BUFFER_BATCH: usize = 256;
 /// Bound actual candidate checks across all targets for large distance-selector sets, with
 /// or without a grid. Small sets keep their bounded-width linear scan.
 const MAX_SELECTOR_CHECKS: usize = 50_000_000;
 const BUFFER_STORAGE_ERROR: &str = "Buffer output or distance selectors exceed their memory budget; select fewer features";
+
+/// Buffer's retained-storage budget on this computer: on the desktop a quarter of its memory, from
+/// [`MAX_BUFFER_BYTES`] up to [`BUFFER_BYTES_CEILING`] (#1291 step 2); fixed in the browser.
+pub fn max_buffer_bytes() -> usize {
+    rustgis_data::memory::scaled(rustgis_data::memory::physical(), MAX_BUFFER_BYTES, BUFFER_BYTES_CEILING, 1)
+}
+
+/// [`BUFFER_STORAGE_ERROR`] with the budget it ran out of, so a run refused here but not on a
+/// larger computer says why.
+fn with_budget(e: String, bytes: usize) -> String {
+    if e == BUFFER_STORAGE_ERROR { format!("{e} (this computer's budget is {} MiB)", bytes >> 20) } else { e }
+}
 
 /// Shared retained-storage accounting; workers charge payloads before handing them back.
 struct BufferStorage(std::sync::atomic::AtomicUsize);
@@ -1346,7 +1361,8 @@ fn buffer_rows(
 
 /// Buffer with the output budget shared by all selected input features.
 fn buffer(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
-    buffer_with_limits(inp, p, MAX_BUFFER_VERTICES, MAX_BUFFER_BYTES)
+    let bytes = max_buffer_bytes();
+    buffer_with_limits(inp, p, MAX_BUFFER_VERTICES, bytes).map_err(|e| with_budget(e, bytes))
 }
 
 /// Independent complexity and retained-output budgets; injectable for small boundary tests.
@@ -2451,7 +2467,8 @@ fn selector_heap_bytes(g: &geo::Geometry<f64>) -> usize {
 /// Select against nearby selectors, indexed in the projection used by the predicate and after
 /// any distance buffer. Inversion and input row order keep the exhaustive selection's semantics.
 fn select_by_location(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
-    select_by_location_with_limits(inp, p, MAX_BUFFER_VERTICES, MAX_BUFFER_BYTES)
+    let bytes = max_buffer_bytes();
+    select_by_location_with_limits(inp, p, MAX_BUFFER_VERTICES, bytes).map_err(|e| with_budget(e, bytes))
 }
 
 /// Bounds each distance-buffered selector's complexity and their combined retained storage.
@@ -6630,6 +6647,16 @@ mod tests {
             _ => panic!("expected raster"),
         };
         assert!((pred_inter.bands[0].data[0] - 20.0).abs() < 1e-4, "expected 20.0 at (0.5, 0.5), got {}", pred_inter.bands[0].data[0]);
+    }
+
+    /// A Buffer refused for memory names the budget on this computer (#1291 step 2), which on the
+    /// desktop follows its memory and is never below the fixed one; other errors are left as they are.
+    #[test]
+    fn buffer_budget_follows_the_computer_and_is_named() {
+        assert!(max_buffer_bytes() >= MAX_BUFFER_BYTES && max_buffer_bytes() <= BUFFER_BYTES_CEILING.max(MAX_BUFFER_BYTES));
+        let e = with_budget(BUFFER_STORAGE_ERROR.to_string(), 512 << 20);
+        assert!(e.starts_with(BUFFER_STORAGE_ERROR) && e.contains("512 MiB"), "{e}");
+        assert_eq!(with_budget("Distance must be a number".into(), 512 << 20), "Distance must be a number");
     }
 
     #[test]

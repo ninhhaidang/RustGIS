@@ -35,8 +35,16 @@ impl KernelType {
     }
 }
 
-/// Upper limit on total output raster cells to prevent memory exhaustion (64 MB for f32).
-pub const MAX_DENSITY_CELLS: usize = 16_000_000;
+/// The fewest output cells [`max_density_cells`] allows, and its limit in the browser.
+pub const DENSITY_CELLS_FLOOR: usize = 16_000_000;
+
+/// Upper limit on total output raster cells, to prevent memory exhaustion: on the desktop as many as
+/// a quarter of the computer's memory holds at 16 bytes a cell (the sums, the output and the
+/// GeoTIFF written from it), from [`DENSITY_CELLS_FLOOR`] up to the most any tool's output raster
+/// takes ([`crate::rasterops::PIXELS_CEILING`]) (#1291 step 2).
+pub fn max_density_cells() -> usize {
+    rustgis_data::memory::scaled(rustgis_data::memory::physical(), DENSITY_CELLS_FLOOR, crate::rasterops::PIXELS_CEILING, 16)
+}
 
 /// Upper limit on aggregate cell visits across all points on one thread, to prevent CPU
 /// exhaustion; a run on several threads may take as many times more
@@ -308,8 +316,9 @@ fn kernel_density_on(
     let h_rows = snap_cells(base_extent.height());
 
     let total_cells = w.checked_mul(h_rows).ok_or("grid dimensions overflow")?;
-    if total_cells > MAX_DENSITY_CELLS {
-        return Err(format!("{w} × {h_rows} cells is too large; choose a larger pixel size"));
+    let max_cells = max_density_cells();
+    if total_cells > max_cells {
+        return Err(format!("{w} × {h_rows} cells is too large, more than this computer's {max_cells} cells; choose a larger pixel size"));
     }
 
     // Estimate total cell visits bounded by the point kernel window and output grid
@@ -534,7 +543,7 @@ mod tests {
 
     #[test]
     fn excessive_workload_is_rejected() {
-        // 50,000 points in a 100x100 grid (10,000 cells <= MAX_DENSITY_CELLS) with large radius:
+        // 50,000 points in a 100x100 grid (10,000 cells <= DENSITY_CELLS_FLOOR) with large radius:
         // 500 million cell visits, more than one thread takes (several may take them).
         let pts: Vec<(Coord, f64)> = (0..50_000).map(|_| (Coord::new(500.0, 500.0), 1.0)).collect();
         let ext = Extent::new(0.0, 0.0, 1000.0, 1000.0);
