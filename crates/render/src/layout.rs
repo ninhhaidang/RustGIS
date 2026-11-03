@@ -1550,6 +1550,7 @@ pub fn frame_coverage(map: &mut Map, center: Coord, scale: f64, w_mm: f64, h_mm:
         tiles: Vec<rustgis_map::TileLayer>,
         graticule: bool,
         lock: Option<Vec<(rustgis_map::LabelKey, u8)>>,
+        anchors: std::collections::HashMap<rustgis_map::LabelKey, Coord>,
         map: &'a mut Map,
     }
     impl Drop for Aside<'_> {
@@ -1558,6 +1559,7 @@ pub fn frame_coverage(map: &mut Map, center: Coord, scale: f64, w_mm: f64, h_mm:
             self.map.tiles = std::mem::take(&mut self.tiles);
             self.map.graticule = self.graticule;
             self.map.label_lock = self.lock.take();
+            self.map.label_lock_line_anchors = std::mem::take(&mut self.anchors);
         }
     }
     let aside = Aside {
@@ -1565,6 +1567,7 @@ pub fn frame_coverage(map: &mut Map, center: Coord, scale: f64, w_mm: f64, h_mm:
         tiles: std::mem::take(&mut map.tiles),
         graticule: std::mem::replace(&mut map.graticule, false),
         lock: map.label_lock.take(),
+        anchors: std::mem::take(&mut map.label_lock_line_anchors),
         map,
     };
     let pm = crate::render(&mut *aside.map, &view)?.pixmap;

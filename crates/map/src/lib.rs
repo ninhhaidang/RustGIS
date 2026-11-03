@@ -1230,6 +1230,9 @@ pub struct Map {
     /// the map moves. Filled by the renderer.
     #[serde(skip)]
     pub label_lock: Option<Vec<(LabelKey, u8)>>,
+    /// Geographic anchors of locked non-repeated line labels. Render cache only, never saved.
+    #[serde(skip)]
+    pub label_lock_line_anchors: std::collections::HashMap<LabelKey, Coord>,
     /// Relationships, snapping, topology rules and edit settings.
     #[serde(default)]
     pub editing: design::MapEditing,
@@ -1355,6 +1358,7 @@ impl Map {
             popup_mode: PopupMode::Topmost,
             label_display: LabelDisplay::default(),
             label_lock: None,
+            label_lock_line_anchors: Default::default(),
             editing: design::MapEditing::default(),
             swipe: None,
             view: view::ViewSettings::default(),

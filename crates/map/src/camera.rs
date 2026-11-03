@@ -360,10 +360,10 @@ impl Camera {
         let z_far = self.unproject(w / 2.0, 0.0, w, h).map_or(t.d * FAR, |(_, v)| z_of(v)).min(t.d * FAR);
         let mut bands = Vec::new();
         let mut z0 = z_near;
-        while z0 < z_far * 0.999 && bands.len() < MAX_BANDS {
+        while z0 < z_far * 0.999 && bands.len() < MAX_TILT_BANDS {
             let mut z1 = (z0 * 2.0).min(z_far);
             // The last band reaches the view's far end, whatever is left.
-            if z_far / z1 < 1.25 || bands.len() + 1 == MAX_BANDS {
+            if z_far / z1 < 1.25 || bands.len() + 1 == MAX_TILT_BANDS {
                 z1 = z_far;
             }
             // Ground px per band px: the scale at the band's near edge.
@@ -485,8 +485,8 @@ impl GroundLookup {
     }
 }
 
-/// The most bands a tilted view is cut into.
-const MAX_BANDS: usize = 8;
+/// The most flat bands a tilted view is cut into.
+pub const MAX_TILT_BANDS: usize = 8;
 
 /// The most area a band of a tilted view is drawn with, as a multiple of the screen area it
 /// covers.
@@ -712,7 +712,7 @@ mod tests {
         c.set_pitch(70.0);
         for (w, h) in [(1.0, 1.0), (0.0, 0.0), (3.0, 1e-9), (800.0, 2.0)] {
             let bands = c.tilt_bands(w, h);
-            assert!(!bands.is_empty() && bands.len() <= MAX_BANDS, "{w}x{h}");
+            assert!(!bands.is_empty() && bands.len() <= MAX_TILT_BANDS, "{w}x{h}");
         }
         // A flat view is one band: itself.
         c.set_pitch(0.0);

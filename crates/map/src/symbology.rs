@@ -2108,8 +2108,9 @@ pub struct LabelClass {
     /// Where a label sits relative to its feature.
     #[serde(default)]
     pub placement: LabelPlacement,
-    /// A point's label taken by another tries the other places round the point
-    /// ([`LabelPlacement::alternatives`]) before it is left out (#1011). Off by default: placed
+    /// A label taken by another tries nearby positions before it is left out (#1011):
+    /// round a point ([`LabelPlacement::alternatives`]), or along a non-repeated line.
+    /// Off by default: placed
     /// elsewhere, a label may take the place another has today.
     #[serde(default, deserialize_with = "de_flag", skip_serializing_if = "std::ops::Not::not")]
     pub other_positions: bool,
@@ -2534,7 +2535,7 @@ impl LabelPlacement {
 
     /// The places round a point a label tries after this one, when [`LabelClass::other_positions`]
     /// is on: in QGIS's cartographic order (its `DEFAULT_PLACEMENT_ORDER`), corners first, this
-    /// one left out.
+    /// one left out. Line alternatives are generated along their geometry by the renderer.
     pub fn alternatives(self) -> impl Iterator<Item = LabelPlacement> {
         [
             LabelPlacement::AboveRight,

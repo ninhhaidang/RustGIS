@@ -109,6 +109,7 @@ pub fn commands() -> Vec<C> {
             l.transparency = st.transparency;
             if relock {
                 s.map_mut().label_lock = None;
+                s.map_mut().label_lock_line_anchors.clear();
             }
             Ok(Value::Null)
         })

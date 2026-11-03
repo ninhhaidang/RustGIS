@@ -336,6 +336,7 @@ pub(crate) fn with_labels(s: &mut Session, p: &Value, f: impl FnOnce(&mut Labeli
     l.labels = labels;
     if relock {
         s.map_mut().label_lock = None;
+        s.map_mut().label_lock_line_anchors.clear();
     }
     Ok(Value::Null)
 }
@@ -358,7 +359,9 @@ pub(crate) fn lock_holds(a: &Labeling, b: &Labeling) -> bool {
 /// so another position, or trying the others turned on or off, locks the labels again; with no
 /// class trying them a new position keeps the lock, as before.
 fn same_places(a: &Labeling, b: &Labeling) -> bool {
-    let classes = |l: &Labeling| l.classes.iter().chain([&l.default]).map(|c| (c.placement, c.other_positions)).collect::<Vec<_>>();
+    let classes = |l: &Labeling| {
+        l.classes.iter().chain([&l.default]).map(|c| (c.placement, c.other_positions, c.repeat.is_some())).collect::<Vec<_>>()
+    };
     classes(a).into_iter().zip(classes(b)).all(|(x, y)| x == y || !(x.1 || y.1))
 }
 

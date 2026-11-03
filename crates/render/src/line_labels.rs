@@ -10,7 +10,14 @@ pub(super) const MAX_TURN: f32 = 0.436;
 /// attribute value on many lines doesn't lay out, and draw, character by character.
 pub(super) const MAX_CURVED_CHARS: usize = 200;
 
+/// Length of curved text including spacing, with no trailing gap or backward character step.
+pub(super) fn curved_len(advances: &[f32], gap: f32) -> f32 {
+    let step = |adv: f32| (adv + gap).max(0.0);
+    advances.iter().map(|a| step(*a)).sum::<f32>() - advances.last().map_or(0.0, |a| step(*a) - a)
+}
+
 /// A line in screen points, with how far along it each vertex is.
+#[derive(Debug)]
 struct Path {
     pts: Vec<(f32, f32)>,
     along: Vec<f32>,
@@ -128,6 +135,7 @@ fn angle(a: (f32, f32), b: (f32, f32)) -> f32 {
 
 /// A line in screen points as labels go along it: its path each way, built once for all the
 /// labels (and repeats) placed along it.
+#[derive(Debug)]
 pub(super) struct Line {
     fwd: Path,
     rev: Path,
@@ -137,6 +145,12 @@ impl Line {
     /// `None` for a line of fewer than two distinct points.
     pub(super) fn new(line: &[(f32, f32)]) -> Option<Line> {
         Some(Line { fwd: Path::new(line, false)?, rev: Path::new(line, true)? })
+    }
+
+    /// Upright local direction at a preview anchor, even when the text cannot fit there.
+    pub(super) fn direction(&self, at: f32) -> Option<f32> {
+        let (a, b) = (self.fwd.at(at - 0.5)?, self.fwd.at(at + 0.5)?);
+        Some(rustgis_tiles::symbols::upright(angle(a, b)))
     }
 
     /// Its length in screen points.
@@ -168,6 +182,37 @@ impl Line {
         if flipped { Some((&self.rev, total - d)) } else { Some((&self.fwd, d)) }
     }
 
+    /// Squared screen distance and distance along the path of its nearest point.
+    pub(super) fn nearest(&self, point: (f32, f32), overrun: f32) -> Option<(f32, f32)> {
+        let mut best = None;
+        let mut distance = f32::INFINITY;
+        for (i, edge) in self.fwd.pts.windows(2).enumerate() {
+            let (a, b) = (edge.first()?, edge.get(1)?);
+            let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+            let len = dx.hypot(dy);
+            if !len.is_finite() || len <= 0.0 {
+                continue;
+            }
+            let t = ((point.0 - a.0) * (dx / len) + (point.1 - a.1) * (dy / len)) / len;
+            // Locked overrun placements may lie beyond an end; carry the end segment on.
+            let reach = overrun.max(0.0) / len;
+            let low = if i == 0 { -reach } else { 0.0 };
+            let high = if i + 2 == self.fwd.pts.len() { 1.0 + reach } else { 1.0 };
+            let t = t.clamp(low, high);
+            let d = (point.0 - a.0 - t * dx).powi(2) + (point.1 - a.1 - t * dy).powi(2);
+            if d < distance {
+                distance = d;
+                best = Some((d, *self.fwd.along.get(i)? + t * len));
+            }
+        }
+        best
+    }
+
+    /// A placement's centre on the path, without laying out its characters.
+    pub(super) fn anchor(&self, at: f32) -> Option<(f32, f32)> {
+        self.fwd.at(at)
+    }
+
     /// Text `len` points long straight along the line, centred `at` points along it (its middle when
     /// `None`): its centre and angle (radians, clockwise, upright). `None` when the line (with
     /// `overrun` past each end) is shorter, or the text there runs past an end by more than that.
@@ -187,7 +232,7 @@ impl Line {
     pub(super) fn curved(&self, advances: &[f32], gap: f32, overrun: f32, at: Option<f32>) -> Option<((f32, f32), Vec<(f32, f32, f32)>)> {
         // Each step from a character to the next: its advance and the letter spacing (never back).
         let step = |adv: f32| (adv + gap).max(0.0);
-        let len: f32 = advances.iter().map(|a| step(*a)).sum::<f32>() - advances.last().map_or(0.0, |a| step(*a) - a);
+        let len = curved_len(advances, gap);
         let (path, mid) = self.upright(len, overrun, at)?;
         let centre = path.at(mid)?;
         let mut d = mid - len / 2.0;
@@ -215,6 +260,31 @@ impl Line {
         }
         Some((centre, out))
     }
+}
+
+/// Middle first, then the nearest places either side, at most eight places in all.
+/// The ends allow the same overrun as ordinary line labels; no alternative is past that range.
+pub(super) fn positions(total: f32, width: f32, overrun: f32) -> Vec<f32> {
+    let mid = total / 2.0;
+    // Keep endpoints a few ULPs inside upright's strict fit bounds.
+    let room = (mid - width / 2.0 + overrun.max(0.0)) * (1.0 - 8.0 * f32::EPSILON);
+    let mut out = vec![mid];
+    if !room.is_finite() || room <= 0.0 || !width.is_finite() || width <= 0.0 {
+        return out;
+    }
+    let step = (width * 0.75).max(room / 4.0).max(1.0).min(room);
+    for k in 1..=4 {
+        let d = step * k as f32;
+        if d > room {
+            break;
+        }
+        for side in [-1.0, 1.0] {
+            if out.len() < 8 {
+                out.push(mid + side * d);
+            }
+        }
+    }
+    out
 }
 
 /// The most labels a line repeats a label in (the one at its middle among them).

@@ -3367,6 +3367,16 @@ fn a_change_to_where_point_labels_go_locks_them_again() {
     assert!(s.map().label_lock.is_none(), "a style putting the labels elsewhere: locked again");
 }
 
+#[test]
+fn changing_line_repeat_relocks_alternative_positions() {
+    let mut s = world();
+    let id = s.map().layer_by_name("Rivers").unwrap().id;
+    s.map_mut().layer_mut(id).unwrap().labels.default.other_positions = true;
+    s.map_mut().label_lock = Some(vec![((id, 0, 0, 0), 1)]);
+    s.run("labels.placement", &json!({"layer": "Rivers", "repeat": 144})).unwrap();
+    assert!(s.map().label_lock.is_none());
+}
+
 /// A lock names each label by its feature's id, not its row: deleting a feature (the rows after
 /// it move up) neither shows a label left out when the lock was taken nor hides one placed (#1046).
 #[test]
