@@ -25517,4 +25517,32 @@ fn layer_invert_ramp_reverses_the_class_colors() {
     reversed.reverse();
     assert_eq!(colors(&s), reversed);
     assert!(s.run("layer.invertRamp", &json!({"layer": "Nope"})).is_err());
+
+    // A colour set by hand travels with the reversal, and each polygon fill keeps its own opacity.
+    s.run("layer.symbology", &json!({"layer": "Countries", "type": "graduated", "field": "pop_est", "classes": 5})).unwrap();
+    s.run("layer.classStyle", &json!({"layer": "Countries", "index": 0, "color": "#11223344"})).unwrap();
+    let before = colors(&s);
+    s.run("layer.invertRamp", &json!({"layer": "Countries"})).unwrap();
+    let after = colors(&s);
+    assert_eq!(after.len(), 5);
+    assert_eq!(after[4].with_alpha(0), before[0].with_alpha(0), "the edited colour moved to the other end");
+    assert_eq!(after[4].a(), before[4].a(), "a fill keeps its own opacity");
+    assert_eq!(after[0].a(), before[0].a());
+    assert_eq!(before[0].a(), 0x44);
+
+    // A class drawn with a stack of fills of its own is drawn instead of its symbol, so the
+    // reversal can't reach it: it keeps its fills, and the command says so.
+    s.run("layer.symbology", &json!({"layer": "Countries", "type": "graduated", "field": "pop_est", "classes": 5})).unwrap();
+    s.run("layer.fillLayers", &json!({"layer": "Countries", "index": 0, "fills": [{"color": "#FF0000", "pattern": "solid"}]})).unwrap();
+    let own = |s: &Session| match &s.map().layer_by_name("Countries").unwrap().renderer {
+        rustgis_map::Renderer::Graduated { class_fills, .. } => class_fills.keys().copied().collect::<Vec<_>>(),
+        _ => vec![],
+    };
+    let mark = s.notice_mark();
+    let before = colors(&s);
+    s.run("layer.invertRamp", &json!({"layer": "Countries"})).unwrap();
+    assert_eq!(own(&s), vec![0], "the class keeps its own fills");
+    assert!(colors(&s) != before);
+    let notices = s.notices_since(mark);
+    assert!(notices.iter().any(|n| n.text.starts_with("1 class(es) drawn with fills or strokes of their own")), "{notices:?}");
 }

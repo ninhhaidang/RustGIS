@@ -157,15 +157,24 @@ pub fn commands() -> Vec<C> {
         C::new("layer.invertRamp", "Invert Color Ramp", "Style › Drawing", |s, p| {
             let id = s.layer_id(p)?;
             let l = s.map_mut().layer_mut(id).ok_or("no such layer")?;
+            let mut kept = 0;
             let done = match &mut l.raster {
                 Some(rl) => rl.style.invert_ramp(),
                 None => {
                     let g = l.geometry_type();
+                    kept = l.renderer.classes_with_own_stacks();
                     l.renderer.reverse_ramp(g)
                 }
             };
             if !done {
                 return Err("the layer has no color scheme to invert: use Graduated or Unique Values (or a Stretch raster)".into());
+            }
+            if kept > 0 {
+                // Their own stacks are drawn instead of the symbol, so the reversal can't reach them.
+                s.notify(
+                    format!("{kept} class(es) drawn with fills or strokes of their own kept their colors: edit those with Class Style or the stroke and fill editors"),
+                    false,
+                );
             }
             Ok(Value::Null)
         }).params(r#"{"layer"?}"#)

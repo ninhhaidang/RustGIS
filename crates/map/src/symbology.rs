@@ -1558,10 +1558,29 @@ impl Renderer {
         }
     }
 
+    /// How many classes are drawn with a stack of fills or strokes of their own (`class_fills`,
+    /// `class_strokes`, and `<all other values>`'s), which [`Renderer::reverse_ramp`] leaves as
+    /// they are: the stack is drawn instead of the class's symbol.
+    pub fn classes_with_own_stacks(&self) -> usize {
+        match self {
+            Renderer::Unique { class_fills, class_strokes, other_fills, other_strokes, .. } => {
+                let keys: std::collections::BTreeSet<&String> = class_fills.keys().chain(class_strokes.keys()).collect();
+                keys.len() + usize::from(!other_fills.is_empty() || !other_strokes.is_empty())
+            }
+            Renderer::Graduated { class_fills, class_strokes, .. } => {
+                let keys: std::collections::BTreeSet<&usize> = class_fills.keys().chain(class_strokes.keys()).collect();
+                keys.len()
+            }
+            _ => 0,
+        }
+    }
+
     /// Reverses the colours of the classes (#1355): the first class takes the last one's colour, and
     /// so on. Colours edited by hand travel with their class's old position, and a polygon fill
-    /// keeps its own opacity. Applied twice it gives the original back. Returns false for a
-    /// renderer without classes coloured from a ramp.
+    /// keeps its own opacity. Applied twice it gives the original back. A class with a stack of
+    /// fills or strokes of its own keeps it, as the stack is drawn instead of the symbol
+    /// ([`Renderer::classes_with_own_stacks`]). Returns false for a renderer without classes
+    /// coloured from a ramp.
     pub fn reverse_ramp(&mut self, g: GeometryType) -> bool {
         fn reversed(symbols: &mut [&mut Symbol], g: GeometryType) {
             let old: Vec<Symbol> = symbols.iter().map(|s| **s).collect();
