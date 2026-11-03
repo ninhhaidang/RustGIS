@@ -278,9 +278,12 @@ def linear(g):
 
 
 def write_expected(name, rows):
+    """Writes full-precision reference geometry, compactly with one feature per line."""
     feats = [{"type": "Feature", "properties": {"id": i}, "geometry": mapping(g)} for i, g in rows]
     (OUT / "expected").mkdir(exist_ok=True)
-    text = json.dumps({"type": "FeatureCollection", "features": feats}, indent=1)
+    text = '{"type":"FeatureCollection","features":[\n' + ",\n".join(
+        json.dumps(f, separators=(",", ":")) for f in feats
+    ) + "\n]}"
     (OUT / "expected" / f"{name}.geojson").write_text(text + "\n")
     return f"expected/{name}.geojson"
 
