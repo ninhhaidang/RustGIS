@@ -126,6 +126,7 @@ fn remote_reader(file: &Arc<Remote>) -> Result<Arc<RemoteFile>> {
     let end = tail.len().saturating_sub(8);
     let start = end.saturating_sub(usize::try_from(meta_len).unwrap_or(usize::MAX));
     let md = parquet::file::metadata::ParquetMetaDataReader::decode_metadata(tail.get(start..end).unwrap_or_default()).map_err(err)?;
+    validate_chunks(&md)?;
     let props = Arc::new(parquet::file::properties::ReaderProperties::builder().build());
     Ok(Arc::new(RemoteFile { chunks: Arc::new(Chunks(file.clone())), metadata: Arc::new(md), props }))
 }
@@ -135,6 +136,7 @@ impl ParquetSource {
     /// system, noting Z or M values (which reading drops).
     fn new(reader: Arc<dyn FileReader>, name: &str, remote: Option<Arc<Remote>>) -> Result<Self> {
         let md = reader.metadata();
+        validate_chunks(md)?;
         let schema = md.file_metadata().schema_descr();
         let kv = md.file_metadata().key_value_metadata();
         let geo: Option<serde_json::Value> = kv
@@ -558,6 +560,23 @@ fn footer_length(tail: &[u8]) -> Result<u64> {
     }
     let len = tail.get(n - 8..n - 4).and_then(|b| b.try_into().ok()).map(u32::from_le_bytes).unwrap_or(0);
     Ok(u64::from(len))
+}
+
+/// Rejects invalid ranges before any column reader can reach `ColumnChunkMetaData::byte_range`,
+/// which asserts on negative offsets and lengths. Also covers geometry probing and vector reads.
+fn validate_chunks(md: &ParquetMetaData) -> Result<()> {
+    for (g, group) in md.row_groups().iter().enumerate() {
+        for (col, chunk) in group.columns().iter().enumerate() {
+            let data = chunk.data_page_offset();
+            let start = chunk.dictionary_page_offset().unwrap_or(data);
+            let size = chunk.compressed_size();
+            // A dictionary page precedes the data pages; reading from a later one would skip data.
+            if data < 0 || start < 0 || start > data || size < 0 || start.checked_add(size).is_none() {
+                return Err(DataError::Format(format!("GeoParquet: row group {g}, column {col} has an invalid column chunk range")));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// A column chunk's bytes: (start, length), from its offsets (checked, never negative).

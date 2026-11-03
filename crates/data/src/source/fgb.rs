@@ -12,11 +12,13 @@ use super::{Batch, FeatureSource, Reproject, Request, Sampler, SourceInfo, clamp
 use crate::raster::Crs;
 use crate::{DataError, Feature, Field, FieldType, GeometryType, Result, Value, wkb};
 use flatgeobuf::geozero::{ColumnValue, CoordDimensions, PropertyProcessor, ToWkb};
-use flatgeobuf::{ColumnType, FallibleStreamingIterator, FeatureProperties, FgbReader};
+use flatgeobuf::{ColumnType, FeatureProperties};
 use rustgis_geom::Extent;
 use std::io::{BufReader, Cursor, Read, Seek};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+mod checked;
 
 /// A file or an upload, read and seeked.
 trait ReadSeek: Read + Seek {}
@@ -574,19 +576,9 @@ impl FeatureSource for FgbSource {
     }
 }
 
-/// FlatBuffers verifies the header's layout, not the index arithmetic it advertises.
-fn open_reader<R: Read>(r: R) -> Result<FgbReader<R>> {
-    let reader = FgbReader::open(r).map_err(err)?;
-    let h = reader.header();
-    if h.index_node_size() > 0 && h.features_count() > 0 {
-        let bytes = level_bounds(h.features_count(), u64::from(h.index_node_size()))
-            // The dependency includes a root even when there is just one leaf.
-            .and_then(|levels| levels.first().and_then(|(_, end)| (*end).max(2).checked_mul(NODE)));
-        if bytes.and_then(|n| usize::try_from(n).ok()).is_none() {
-            return Err(DataError::Format("FlatGeobuf: an impossible spatial index size".into()));
-        }
-    }
-    Ok(reader)
+/// Every local and remote selection checks feature prefixes before allocating their bodies.
+fn open_reader<R: Read + Seek>(r: R) -> Result<checked::Reader<R>> {
+    checked::Reader::open(r)
 }
 
 fn err(e: flatgeobuf::Error) -> DataError {
