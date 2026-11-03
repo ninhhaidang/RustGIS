@@ -36,6 +36,10 @@ impl<T: Copy + Default + PartialEq + Send + Sync + 'static> Dragged<T> {
     /// Whether the number is settled: let go after a drag (`value` is then the dragged one), typed
     /// in, or set by assistive technology. The caller still compares it with the saved one.
     pub(crate) fn settled(self, ui: &Ui, r: &Response, value: &mut T) -> bool {
+        if escaped(r) {
+            *value = self.saved;
+            return false;
+        }
         if r.dragged() {
             ui.data_mut(|d| d.insert_temp(self.key, (self.saved, *value)));
             return false;
@@ -51,12 +55,81 @@ impl<T: Copy + Default + PartialEq + Send + Sync + 'static> Dragged<T> {
 
 /// Makes the command the caller runs next, for a change of `r`, part of the undo step of the
 /// pointer press making it: a number dragged, or a colour picked in its picker, is one step to
-/// undo however many changes it makes (#1194). A change from the keyboard is a step of its own.
+/// undo however many changes it makes (#1194). A number typed into `r` is a step of its own, even
+/// while a button is held elsewhere; a key pressed during a drag elsewhere doesn't split the drag.
 /// Called just before the command runs, so the merge can't reach another command.
 pub(crate) fn one_step_per_press(app: &mut RustGisApp, r: &Response) {
-    if let Some(t) = r.ctx.input(|i| i.pointer.press_start_time()) {
+    let typed = r.has_focus() || r.lost_focus();
+    let press = r.ctx.input(|i| i.pointer.press_start_time()).filter(|_| !typed);
+    if let Some(t) = press {
         app.session.merge_undo(format!("press {:?} {t}", r.id));
     }
+}
+
+/// Makes a field being typed into let go of its focus, and so set what was typed, when the pointer
+/// is pressed on a panel outside it, not when it is let go: the Layers pane is drawn before the
+/// panes, so a click there would pick another layer before the field set a number typed for the
+/// one it was typed for (#1194). A press on a popup, a menu or a list over the map (the search
+/// box's) is left to egui, which lets go on the release, after the list took the click. Called
+/// each frame before the panes are drawn.
+pub(crate) fn let_go_on_panel_press(ctx: &egui::Context) {
+    let Some(at) = ctx.input(|i| i.pointer.any_pressed().then(|| i.pointer.interact_pos()).flatten()) else { return };
+    let Some(id) = ctx.memory(|m| m.focused()) else { return };
+    // A field that keeps its focus on a press elsewhere (`fieldmenu`) keeps it.
+    let kept = ctx.options(|o| o.input_options.surrender_focus_on == egui::SurrenderFocusOn::Never);
+    let on_field = ctx.read_response(id).is_some_and(|r| r.rect.contains(at));
+    let on_panel = ctx.layer_id_at(at).is_some_and(|l| l.order == egui::Order::Background);
+    if ctx.text_edit_focused() && !kept && !on_field && on_panel {
+        ctx.memory_mut(|m| m.surrender_focus(id));
+    }
+}
+
+/// What [`note_escape`] keeps: the widget that had the focus, and the field Escape took it from
+/// with the pass it did.
+type EscapeNote = (Option<egui::Id>, Option<(egui::Id, u64)>);
+
+/// Where [`note_escape`] keeps its [`EscapeNote`].
+fn escape_key() -> egui::Id {
+    egui::Id::unique("escaped_field")
+}
+
+/// Notes the field Escape takes the focus from, for [`escaped`]. Called each frame before the
+/// panes are drawn.
+pub(crate) fn note_escape(ctx: &egui::Context) {
+    let now = ctx.memory(|m| m.focused());
+    let pass = ctx.cumulative_pass_nr();
+    let escape = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+    ctx.data_mut(|d| {
+        let (before, escaped) = d.get_temp::<EscapeNote>(escape_key()).unwrap_or_default();
+        let escaped = match before {
+            Some(id) if escape && now != Some(id) => Some((id, pass)),
+            // The field taken back: what it sets from here on is not what Escape dropped.
+            _ => escaped.filter(|(id, _)| now != Some(*id)),
+        };
+        d.insert_temp(escape_key(), (now, escaped));
+    });
+}
+
+/// The widget that had the focus when the pass began, as [`note_escape`] noted it: egui may have
+/// taken the focus from a field drawn earlier in the pass, which sets its number only in the next.
+pub(crate) fn focused_at_pass_start(ctx: &egui::Context) -> Option<egui::Id> {
+    ctx.data(|d| d.get_temp::<EscapeNote>(escape_key())).and_then(|(now, _)| now)
+}
+
+/// Whether a change of `r` is egui setting the text typed into it before Escape. egui sets it on a
+/// lost focus unless it sees the Escape: a shortcut drawn before the field can take the key on the
+/// Escape's own frame, and egui 0.37 tells a field it lost the focus for two frames, the second
+/// without the Escape. The caller drops the change, so Escape brings back the value from before
+/// (#1194).
+pub(crate) fn escaped(r: &Response) -> bool {
+    let escaped = r.ctx.data(|d| d.get_temp::<EscapeNote>(escape_key())).and_then(|(_, e)| e);
+    // The Escape's pass or one of the two after it.
+    escaped.is_some_and(|(id, pass)| id == r.id && (pass..=pass + 2).contains(&r.ctx.cumulative_pass_nr()))
+}
+
+/// Whether `r` changed to a value to keep: not one Escape dropped ([`escaped`]).
+pub(crate) fn changed(r: &Response) -> bool {
+    r.changed() && !escaped(r)
 }
 
 pub fn text_w(ui: &Ui, s: &str, font: egui::FontId) -> f32 {
@@ -618,6 +691,45 @@ mod tests {
         assert!(!offers_additive(|ui, c| {
             super::color_button(ui, c);
         }));
+    }
+
+    /// A field being typed into lets go of its focus on a press on the panel outside it, but keeps
+    /// it through a press on a list over it until the release, as the search box's list needs to
+    /// take the click (#1194).
+    #[test]
+    fn a_press_on_a_panel_lets_go_of_a_field_and_one_on_a_list_waits_for_the_release() {
+        use egui::accesskit::Role;
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(600.0, 400.0)).build_ui_state(
+            |ui, text: &mut String| {
+                super::let_go_on_panel_press(ui.ctx());
+                let label = ui.label("Name");
+                ui.add(egui::TextEdit::singleline(text)).labelled_by(label.id);
+                let _ = ui.button("Panel");
+                egui::Area::new(egui::Id::unique("list")).order(egui::Order::Foreground).fixed_pos(egui::pos2(300.0, 200.0)).show(
+                    ui.ctx(),
+                    |ui| {
+                        let _ = ui.button("Listed");
+                    },
+                );
+            },
+            String::new(),
+        );
+        h.run();
+        let focused = |h: &egui_kittest::Harness<'_, String>| h.query_all_by_role(Role::TextInput).any(|n| n.is_focused());
+        for (button, kept) in [("Listed", true), ("Panel", false)] {
+            h.get_by_role(Role::TextInput).focus();
+            h.run();
+            assert!(focused(&h));
+            let at = h.get_by_label(button).rect().center();
+            h.hover_at(at);
+            h.drag_at(at);
+            h.step();
+            h.step();
+            assert_eq!(focused(&h), kept, "{button}: pressed");
+            h.drop_at(at);
+            h.run();
+            assert!(!focused(&h), "{button}: let go");
+        }
     }
 
     /// A number dragged and let go keeps the dragged value (#607), a decimal and a whole one

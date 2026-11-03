@@ -41,6 +41,8 @@ pub struct State {
     places: Places,
     pending: Option<(Geocoder, Answer)>,
     open: bool,
+    /// The row picked, waiting a pass for the field that had the focus to set its number.
+    held_pick: Option<Row>,
     /// The row the arrow keys are on, and whether the list scrolls to it.
     active: usize,
     scroll: bool,
@@ -228,8 +230,17 @@ fn boxed(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
     if show_list && let Some(r) = list_area(app, ui, frame_r, &list, t) {
         picked = Some(r);
     }
-    if let Some(r) = picked {
-        pick(app, r);
+    if let Some(r) = picked.or(app.ui.search.held_pick.take()) {
+        // A number being typed elsewhere is set on its own layer before a pick can change the
+        // active one: the field lets go now and the pick waits for the next pass (#1194).
+        match crate::widgets::focused_at_pass_start(ui.ctx()).filter(|field| *field != id) {
+            Some(field) => {
+                ui.memory_mut(|m| m.surrender_focus(field));
+                app.ui.search.held_pick = Some(r);
+                ui.ctx().request_repaint();
+            }
+            None => pick(app, r),
+        }
     }
 }
 
@@ -380,6 +391,10 @@ fn row_button(ui: &mut Ui, active: bool, icon: &str, label: &str, detail: Option
     let g = ui.painter().layout(label.to_string(), regular(12.5), t.text, w - 44.0);
     let h = g.size().y + if detail.is_some() { 20.0 } else { 8.0 };
     let (r, resp) = ui.allocate_exact_size(vec2(w, h.max(26.0)), Sense::click());
+    // Named for screen readers (and scripted clicks), as the box is: with the line under it, which
+    // tells apart rows of the same text.
+    let name = detail.map_or_else(|| label.to_string(), |d| format!("{label}, {d}"));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &name));
     let p = ui.painter();
     if active || resp.hovered() {
         p.rect_filled(r.shrink2(vec2(4.0, 0.0)), CornerRadius::same(4), if active { t.selection } else { t.hover });
@@ -483,5 +498,86 @@ pub fn paint_marker(p: &egui::Painter, at: egui::Pos2, name: &str, t: &Tokens) {
         p.rect_filled(bg, CornerRadius::same(4), t.ribbon.gamma_multiply(0.92));
         p.rect_stroke(bg, CornerRadius::same(4), Stroke::new(1.0, t.border_strong), egui::StrokeKind::Inside);
         p.galley(bg.min + vec2(5.0, 3.0), g, t.text);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::Queryable;
+
+    use super::*;
+
+    /// A row's name carries the line under it, which tells apart rows of the same text.
+    #[test]
+    fn a_row_is_named_with_the_line_under_it() {
+        let h = egui_kittest::Harness::new_ui(|ui| {
+            let t = Tokens::get(ui.ctx());
+            row_button(ui, false, "table", "Bogota", Some("name"), &t);
+            row_button(ui, false, "contents", "Cities", None, &t);
+        });
+        assert!(h.query_by_role_and_label(Role::Button, "Bogota, name").is_some());
+        assert!(h.query_by_role_and_label(Role::Button, "Cities").is_some());
+    }
+
+    /// A number typed for one layer, then another layer picked in a list a places search left
+    /// open: the number is set on the layer it was typed for, even when the other had the same
+    /// value (#1194). The field is drawn after the box, as the right pane is.
+    #[test]
+    fn a_number_typed_is_set_on_its_own_layer_when_the_list_picks_another() {
+        let mut app = RustGisApp::with_sample();
+        let width = |app: &RustGisApp, name: &str| {
+            let l = app.session.map().layers.iter().find(|l| l.name == name).unwrap();
+            l.renderer.base_symbol().stroke_width
+        };
+        for name in ["Countries", "Cities"] {
+            app.session.run("layer.select", &json!({"layer": name})).unwrap();
+            app.session.run("layer.outline", &json!({"width": 1.0})).unwrap();
+        }
+        let results = search::search(&app.session, "Countries", search::LIMIT);
+        let st = &mut app.ui.search;
+        st.query = "Countries".into();
+        st.searched = "Countries".into();
+        st.results = results;
+        st.places = Places::Found(Vec::new());
+        st.open = true;
+        let mut fonts = false;
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(800.0, 800.0)).build_ui_state(
+            move |ui, app: &mut RustGisApp| {
+                if !fonts {
+                    crate::theme::install_fonts(ui.ctx(), &[], None);
+                    fonts = true;
+                    return;
+                }
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                show(app, ui, &Tokens::get(&ctx));
+                if let Some(layer) = app.session.active_layer.and_then(|id| app.session.map().layer(id)).cloned() {
+                    let mut w = layer.renderer.base_symbol().stroke_width;
+                    let label = ui.label("Width");
+                    let r = ui.add(egui::DragValue::new(&mut w).update_while_editing(false)).labelled_by(label.id);
+                    if crate::widgets::changed(&r) {
+                        let _ = app.run("layer.outline", json!({"width": w}));
+                    }
+                }
+            },
+            app,
+        );
+        h.run();
+        h.get_by_role(Role::SpinButton).focus();
+        h.run();
+        h.event(egui::Event::Text("3".into()));
+        h.run();
+        let at = h.get_by_role_and_label(Role::Button, "Countries").rect().center();
+        h.hover_at(at);
+        h.drag_at(at);
+        h.step();
+        h.drop_at(at);
+        h.run();
+        let countries = h.state().session.map().layers.iter().find(|l| l.name == "Countries").map(|l| l.id);
+        assert_eq!(h.state().session.active_layer, countries, "the list picked Countries");
+        assert_eq!(width(h.state(), "Cities"), 3.0);
+        assert_eq!(width(h.state(), "Countries"), 1.0);
     }
 }

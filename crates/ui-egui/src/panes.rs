@@ -1322,8 +1322,10 @@ fn layer_group_row(
             let mut tr = group.transparency;
             ui.horizontal(|ui| {
                 let input_label = ui.label(tl!("Transparency"));
-                let r = ui.add(egui::Slider::new(&mut tr, 0.0..=100.0).suffix(" %").integer()).labelled_by(input_label.id);
-                if r.drag_stopped() || (r.changed() && !r.dragged()) {
+                let r = ui
+                    .add(egui::Slider::new(&mut tr, 0.0..=100.0).update_while_editing(false).suffix(" %").integer())
+                    .labelled_by(input_label.id);
+                if r.drag_stopped() || (crate::widgets::changed(&r) && !r.dragged()) {
                     let _ = app.run("group.set", json!({"group": group.id, "transparency": tr}));
                 }
             });
@@ -1684,8 +1686,8 @@ fn tile_row(app: &mut RustGisApp, ui: &mut Ui, i: usize, moves: [bool; 2], reord
         ui.horizontal(|ui| {
             let input_label = ui.label(tl!("Opacity"));
             let mut o = tile.opacity * 100.0;
-            let slider = ui.add(egui::Slider::new(&mut o, 0.0..=100.0).suffix("%")).labelled_by(input_label.id);
-            if slider.drag_stopped() || (slider.changed() && !slider.dragged()) {
+            let slider = ui.add(egui::Slider::new(&mut o, 0.0..=100.0).update_while_editing(false).suffix("%")).labelled_by(input_label.id);
+            if slider.drag_stopped() || (crate::widgets::changed(&slider) && !slider.dragged()) {
                 action = Some(("map.setTiles", json!({"index": i, "opacity": o / 100.0})));
             }
         });
@@ -4239,8 +4241,8 @@ fn symbology(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
                 ui.horizontal(|ui| {
                     let input_label = ui.label(tl!("Classes"));
                     let mut k = asked;
-                    let resp = ui.add(egui::DragValue::new(&mut k).range(1..=12)).labelled_by(input_label.id);
-                    if resp.changed() {
+                    let resp = ui.add(egui::DragValue::new(&mut k).update_while_editing(false).range(1..=12)).labelled_by(input_label.id);
+                    if crate::widgets::changed(&resp) {
                         crate::widgets::one_step_per_press(app, &resp);
                         let _ = app.run(
                             "layer.symbology",
@@ -4282,7 +4284,8 @@ fn symbology(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
     ui.horizontal(|ui| {
         let input_label = ui.label(tl!("Transparency"));
         ui.spacing_mut().slider_width = 150.0;
-        let r = ui.add(egui::Slider::new(&mut tr, 0.0..=100.0).suffix(" %").integer()).labelled_by(input_label.id);
+        let r =
+            ui.add(egui::Slider::new(&mut tr, 0.0..=100.0).update_while_editing(false).suffix(" %").integer()).labelled_by(input_label.id);
         transparency_drag(app, ui, &r, &l, tr);
     });
     if !l.graphics {
@@ -4697,8 +4700,8 @@ fn manual_breaks(app: &mut RustGisApp, ui: &mut Ui, field: &str, breaks: &[f64],
                 *v = held;
             }
             let input_label = ui.label(crate::i18n::fmt("Class {n} up to", &[("n", &(i + 1).to_string())]));
-            let r = ui.add(egui::DragValue::new(v).speed(speed)).labelled_by(input_label.id);
-            if r.changed() {
+            let r = ui.add(egui::DragValue::new(v).update_while_editing(false).speed(speed)).labelled_by(input_label.id);
+            if crate::widgets::changed(&r) {
                 ui.data_mut(|d| d.insert_temp(id, *v));
             }
             if (r.drag_stopped() || r.lost_focus()) && ui.data(|d| d.get_temp::<f64>(id)).is_some() {
@@ -4762,8 +4765,10 @@ fn symbol_editor(app: &mut RustGisApp, ui: &mut Ui, s: Symbol, g: GeometryType, 
             ui.end_row();
             let input_label = ui.label(tl!(if g == GeometryType::Polyline { "Line width" } else { "Outline width" }));
             let mut w = s.stroke_width;
-            let resp = ui.add(egui::DragValue::new(&mut w).range(0.0..=12.0).speed(0.05).suffix(" pt")).labelled_by(input_label.id);
-            if resp.changed() {
+            let resp = ui
+                .add(egui::DragValue::new(&mut w).update_while_editing(false).range(0.0..=12.0).speed(0.05).suffix(" pt"))
+                .labelled_by(input_label.id);
+            if crate::widgets::changed(&resp) {
                 crate::widgets::one_step_per_press(app, &resp);
                 let _ = app.run("layer.outline", json!({"width": w}));
             }
@@ -4771,8 +4776,10 @@ fn symbol_editor(app: &mut RustGisApp, ui: &mut Ui, s: Symbol, g: GeometryType, 
             if g == GeometryType::Point {
                 let input_label = ui.label(tl!("Size"));
                 let mut sz = s.size;
-                let resp = ui.add(egui::DragValue::new(&mut sz).range(1.0..=60.0).speed(0.1).suffix(" pt")).labelled_by(input_label.id);
-                if resp.changed() {
+                let resp = ui
+                    .add(egui::DragValue::new(&mut sz).update_while_editing(false).range(1.0..=60.0).speed(0.1).suffix(" pt"))
+                    .labelled_by(input_label.id);
+                if crate::widgets::changed(&resp) {
                     crate::widgets::one_step_per_press(app, &resp);
                     let _ = app.run("layer.marker", json!({"size": sz}));
                 }
@@ -5045,9 +5052,10 @@ fn marker_rows(
     }
     let input_label = ui.label(if m.mark == LineMark::Hash { tl!("Length") } else { tl!("Size") });
     let mut size = m.size;
-    let resp =
-        ui.add(egui::DragValue::new(&mut size).range(0.0..=MAX_LINE_MARKER_SIZE).speed(0.1).suffix(" pt")).labelled_by(input_label.id);
-    if resp.changed() {
+    let resp = ui
+        .add(egui::DragValue::new(&mut size).update_while_editing(false).range(0.0..=MAX_LINE_MARKER_SIZE).speed(0.1).suffix(" pt"))
+        .labelled_by(input_label.id);
+    if crate::widgets::changed(&resp) {
         crate::widgets::one_step_per_press(app, &resp);
         set(app, with(LineMarkers { size, ..m }));
     }
@@ -5056,9 +5064,13 @@ fn marker_rows(
     if points {
         let input_label = ui.label(tl!("Offset right"));
         let mut along = m.offset_along;
-        let drag = egui::DragValue::new(&mut along).range(-MAX_STROKE_OFFSET..=MAX_STROKE_OFFSET).speed(0.05).suffix(" pt");
+        let drag = egui::DragValue::new(&mut along)
+            .update_while_editing(false)
+            .range(-MAX_STROKE_OFFSET..=MAX_STROKE_OFFSET)
+            .speed(0.05)
+            .suffix(" pt");
         let resp = ui.add(drag).on_hover_text(tl!("Shifts the mark right of the point (left when negative)")).labelled_by(input_label.id);
-        if resp.changed() {
+        if crate::widgets::changed(&resp) {
             crate::widgets::one_step_per_press(app, &resp);
             set(app, with(LineMarkers { offset_along: along, ..m }));
         }
@@ -5083,9 +5095,13 @@ fn marker_rows(
         if m.at.has(Placements::INTERVAL) {
             let input_label = ui.label(tl!("Interval"));
             let mut interval = m.interval;
-            let drag = egui::DragValue::new(&mut interval).range(MIN_MARKER_INTERVAL..=MAX_MARKER_INTERVAL).speed(0.2).suffix(" pt");
+            let drag = egui::DragValue::new(&mut interval)
+                .update_while_editing(false)
+                .range(MIN_MARKER_INTERVAL..=MAX_MARKER_INTERVAL)
+                .speed(0.2)
+                .suffix(" pt");
             let resp = ui.add(drag).on_hover_text(tl!("The distance between two marks along the line")).labelled_by(input_label.id);
-            if resp.changed() {
+            if crate::widgets::changed(&resp) {
                 crate::widgets::one_step_per_press(app, &resp);
                 set(app, with(LineMarkers { interval, ..m }));
             }
@@ -5095,10 +5111,10 @@ fn marker_rows(
     ui.label(tl!("Angle"));
     ui.horizontal(|ui| {
         let mut angle = m.angle;
-        let drag = egui::DragValue::new(&mut angle).range(0.0..=359.9).speed(1.0).suffix("°");
+        let drag = egui::DragValue::new(&mut angle).update_while_editing(false).range(0.0..=359.9).speed(1.0).suffix("°");
         let tip = if m.mark == LineMark::Hash { tl!("0° crosses the line square") } else { tl!("Turned further, clockwise") };
         let resp = ui.add(drag).on_hover_text(tip);
-        if resp.changed() {
+        if crate::widgets::changed(&resp) {
             crate::widgets::one_step_per_press(app, &resp);
             set(app, with(LineMarkers { angle, ..m }));
         }
@@ -5546,9 +5562,10 @@ fn line_strokes_editor(app: &mut RustGisApp, ui: &mut Ui, l: &rustgis_engine::ma
                 ui.label(tl!("Width"));
                 ui.horizontal(|ui| {
                     let mut ww = w;
-                    let drag = egui::DragValue::new(&mut ww).range(0.0..=MAX_STROKE_WIDTH).speed(0.05).suffix(" pt");
+                    let drag =
+                        egui::DragValue::new(&mut ww).update_while_editing(false).range(0.0..=MAX_STROKE_WIDTH).speed(0.05).suffix(" pt");
                     let resp = ui.add_enabled(st.width.is_some(), drag).on_hover_text(tl!("Width"));
-                    if resp.changed() {
+                    if crate::widgets::changed(&resp) {
                         crate::widgets::one_step_per_press(app, &resp);
                         set(app, LineStroke { width: Some(ww), ..st });
                     }
@@ -5560,14 +5577,18 @@ fn line_strokes_editor(app: &mut RustGisApp, ui: &mut Ui, l: &rustgis_engine::ma
                 ui.end_row();
                 ui.label(if points { tl!("Offset down") } else { tl!("Offset") });
                 let mut off = st.offset;
-                let drag = egui::DragValue::new(&mut off).range(-MAX_STROKE_OFFSET..=MAX_STROKE_OFFSET).speed(0.05).suffix(" pt");
+                let drag = egui::DragValue::new(&mut off)
+                    .update_while_editing(false)
+                    .range(-MAX_STROKE_OFFSET..=MAX_STROKE_OFFSET)
+                    .speed(0.05)
+                    .suffix(" pt");
                 let tip = if points {
                     tl!("Shifts the mark below the point (above when negative)")
                 } else {
                     tl!("Shifts the stroke sideways: positive to the right of the line's direction, negative to the left")
                 };
                 let resp = ui.add(drag).on_hover_text(tip);
-                if resp.changed() {
+                if crate::widgets::changed(&resp) {
                     crate::widgets::one_step_per_press(app, &resp);
                     set(app, LineStroke { offset: off, ..st });
                 }
@@ -5657,9 +5678,12 @@ fn line_strokes_editor(app: &mut RustGisApp, ui: &mut Ui, l: &rustgis_engine::ma
                     ui.horizontal(|ui| {
                         let mut lv = st.level_at(i);
                         let resp = ui
-                            .add_enabled(st.level.is_some(), egui::DragValue::new(&mut lv).range(0..=255).speed(0.1))
+                            .add_enabled(
+                                st.level.is_some(),
+                                egui::DragValue::new(&mut lv).update_while_editing(false).range(0..=255).speed(0.1),
+                            )
                             .on_hover_text(tl!("Level"));
-                        if resp.changed() {
+                        if crate::widgets::changed(&resp) {
                             crate::widgets::one_step_per_press(app, &resp);
                             set(app, LineStroke { level: Some(lv), ..st });
                         }
@@ -5972,14 +5996,24 @@ fn rgb_stretch_bounds(app: &mut RustGisApp, ui: &mut Ui, layer: impl std::hash::
     for (name, pair) in [tl!("Red"), tl!("Green"), tl!("Blue")].into_iter().zip(edit.iter_mut()) {
         let [mut lo, mut hi] = *pair;
         let speed = ((hi - lo).abs() / 200.0).clamp(1e-6, 1e6);
+        let typed_from = [lo, hi];
         ui.horizontal(|ui| {
             ui.add_sized([44.0, 18.0], egui::Label::new(name));
             let input_label = ui.label(tl!("Min"));
-            let a = ui.add(egui::DragValue::new(&mut lo).speed(speed)).labelled_by(input_label.id);
+            let a = ui.add(egui::DragValue::new(&mut lo).update_while_editing(false).speed(speed)).labelled_by(input_label.id);
             let input_label = ui.label(tl!("Max"));
-            let b = ui.add(egui::DragValue::new(&mut hi).speed(speed)).labelled_by(input_label.id);
-            done |= a.drag_stopped() || b.drag_stopped() || ((a.changed() || b.changed()) && !a.dragged() && !b.dragged());
-            changed |= a.changed() || b.changed();
+            let b = ui.add(egui::DragValue::new(&mut hi).update_while_editing(false).speed(speed)).labelled_by(input_label.id);
+            // Escape drops a number typed (`widgets::escaped`).
+            if crate::widgets::escaped(&a) {
+                lo = typed_from[0];
+            }
+            if crate::widgets::escaped(&b) {
+                hi = typed_from[1];
+            }
+            done |= a.drag_stopped()
+                || b.drag_stopped()
+                || ((crate::widgets::changed(&a) || crate::widgets::changed(&b)) && !a.dragged() && !b.dragged());
+            changed |= crate::widgets::changed(&a) || crate::widgets::changed(&b);
         });
         if !(lo.is_finite() && hi.is_finite() && lo < hi) {
             ui.label(egui::RichText::new(tl!("Min must be less than Max")).size(11.5).color(t.red));
@@ -6119,8 +6153,8 @@ fn raster_symbology(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, t: &Tokens) {
             ui.horizontal(|ui| {
                 let input_label = ui.label(tl!("Classes"));
                 let mut kk = k;
-                let resp = ui.add(egui::DragValue::new(&mut kk).range(1..=32)).labelled_by(input_label.id);
-                if resp.changed() {
+                let resp = ui.add(egui::DragValue::new(&mut kk).update_while_editing(false).range(1..=32)).labelled_by(input_label.id);
+                if crate::widgets::changed(&resp) {
                     crate::widgets::one_step_per_press(app, &resp);
                     let _ = app.run("raster.symbology", json!({"type": "classify", "method": format!("{m:?}"), "classes": kk, "ramp": r}));
                 }
@@ -6156,7 +6190,9 @@ fn raster_symbology(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, t: &Tokens) {
                     let mut x = v;
                     // Kept across a drag until it is let go (#607).
                     let drag = Dragged::lend(ui, egui::Id::unique(("relief_drag", l.id, which)), &mut x);
-                    let r = ui.add(egui::DragValue::new(&mut x).range(range).speed(speed).max_decimals(3)).labelled_by(input_label.id);
+                    let r = ui
+                        .add(egui::DragValue::new(&mut x).update_while_editing(false).range(range).speed(speed).max_decimals(3))
+                        .labelled_by(input_label.id);
                     if drag.settled(ui, &r, &mut x) && x != v {
                         let (a, b, c) = match which {
                             0 => (x, alt, zf),
@@ -6208,11 +6244,15 @@ fn raster_symbology(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, t: &Tokens) {
                     // Each kept across a drag until it is let go (#607); both are sent together.
                     let input_label = ui.label(tl!("Min %"));
                     let drag = Dragged::lend(ui, egui::Id::unique(("percent_clip_drag", l.id, "low")), &mut lo);
-                    let a = ui.add(egui::DragValue::new(&mut lo).range(0.0..=49.0).speed(0.1).max_decimals(2)).labelled_by(input_label.id);
+                    let a = ui
+                        .add(egui::DragValue::new(&mut lo).update_while_editing(false).range(0.0..=49.0).speed(0.1).max_decimals(2))
+                        .labelled_by(input_label.id);
                     let low_settled = drag.settled(ui, &a, &mut lo);
                     let input_label = ui.label(tl!("Max %"));
                     let drag = Dragged::lend(ui, egui::Id::unique(("percent_clip_drag", l.id, "high")), &mut hi);
-                    let b = ui.add(egui::DragValue::new(&mut hi).range(0.0..=49.0).speed(0.1).max_decimals(2)).labelled_by(input_label.id);
+                    let b = ui
+                        .add(egui::DragValue::new(&mut hi).update_while_editing(false).range(0.0..=49.0).speed(0.1).max_decimals(2))
+                        .labelled_by(input_label.id);
                     let high_settled = drag.settled(ui, &b, &mut hi);
                     if (low_settled || high_settled) && (lo != low || hi != high) {
                         let _ = app.run("raster.stretch", json!({"type": "percentClip", "low": lo, "high": hi}));
@@ -6238,16 +6278,26 @@ fn raster_symbology(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, t: &Tokens) {
                 let pending = ui.data(|d| d.get_temp::<([f64; 2], [f64; 2])>(key)).filter(|(base, _)| *base == [min, max]);
                 let [mut lo, mut hi] = pending.map_or([min, max], |(_, edit)| edit);
                 let speed = ((max - min).abs() / 200.0).clamp(1e-6, 1e6);
+                let typed_from = [lo, hi];
                 ui.horizontal(|ui| {
                     let input_label = ui.label(tl!("Min"));
-                    let a = ui.add(egui::DragValue::new(&mut lo).speed(speed)).labelled_by(input_label.id);
+                    let a = ui.add(egui::DragValue::new(&mut lo).update_while_editing(false).speed(speed)).labelled_by(input_label.id);
                     let input_label = ui.label(tl!("Max"));
-                    let b = ui.add(egui::DragValue::new(&mut hi).speed(speed)).labelled_by(input_label.id);
-                    let done = a.drag_stopped() || b.drag_stopped() || ((a.changed() || b.changed()) && !a.dragged() && !b.dragged());
+                    let b = ui.add(egui::DragValue::new(&mut hi).update_while_editing(false).speed(speed)).labelled_by(input_label.id);
+                    // Escape drops a number typed (`widgets::escaped`).
+                    if crate::widgets::escaped(&a) {
+                        lo = typed_from[0];
+                    }
+                    if crate::widgets::escaped(&b) {
+                        hi = typed_from[1];
+                    }
+                    let done = a.drag_stopped()
+                        || b.drag_stopped()
+                        || ((crate::widgets::changed(&a) || crate::widgets::changed(&b)) && !a.dragged() && !b.dragged());
                     if lo.is_finite() && hi.is_finite() && lo < hi && done {
                         ui.data_mut(|d| d.remove::<([f64; 2], [f64; 2])>(key));
                         let _ = app.run("raster.stretch", json!({"type": "custom", "min": lo, "max": hi}));
-                    } else if a.changed() || b.changed() {
+                    } else if crate::widgets::changed(&a) || crate::widgets::changed(&b) {
                         ui.data_mut(|d| d.insert_temp(key, ([min, max], [lo, hi])));
                     }
                 });
@@ -6261,7 +6311,9 @@ fn raster_symbology(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, t: &Tokens) {
                     let input_label = ui.label(tl!("Deviations"));
                     // Kept across a drag until it is let go (#607).
                     let drag = Dragged::lend(ui, egui::Id::unique(("deviations_drag", l.id)), &mut nn);
-                    let a = ui.add(egui::DragValue::new(&mut nn).range(0.1..=10.0).speed(0.05).max_decimals(2)).labelled_by(input_label.id);
+                    let a = ui
+                        .add(egui::DragValue::new(&mut nn).update_while_editing(false).range(0.1..=10.0).speed(0.05).max_decimals(2))
+                        .labelled_by(input_label.id);
                     if drag.settled(ui, &a, &mut nn) && nn != n {
                         let _ = app.run("raster.stretch", json!({"type": "standardDeviation", "n": nn}));
                     }
@@ -6308,7 +6360,8 @@ fn raster_symbology(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, t: &Tokens) {
     ui.horizontal(|ui| {
         let input_label = ui.label(tl!("Transparency"));
         ui.spacing_mut().slider_width = 150.0;
-        let r = ui.add(egui::Slider::new(&mut tr, 0.0..=100.0).suffix(" %").integer()).labelled_by(input_label.id);
+        let r =
+            ui.add(egui::Slider::new(&mut tr, 0.0..=100.0).update_while_editing(false).suffix(" %").integer()).labelled_by(input_label.id);
         transparency_drag(app, ui, &r, l, tr);
     });
 }
@@ -6390,17 +6443,27 @@ fn raster_masking(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, d: &rustgis_engi
                 let [mut lo, mut hi] = pending.map_or([min, max], |(_, edit)| edit);
                 let span = if min.is_finite() && max.is_finite() { (max - min).abs() } else { 100.0 };
                 let speed = (span / 200.0).clamp(1e-6, 1e6);
+                let typed_from = [lo, hi];
                 ui.horizontal(|ui| {
                     let input_label = ui.label(tl!("Min"));
-                    let a = ui.add(egui::DragValue::new(&mut lo).speed(speed)).labelled_by(input_label.id);
+                    let a = ui.add(egui::DragValue::new(&mut lo).update_while_editing(false).speed(speed)).labelled_by(input_label.id);
                     let input_label = ui.label(tl!("Max"));
-                    let b = ui.add(egui::DragValue::new(&mut hi).speed(speed)).labelled_by(input_label.id);
-                    let done = a.drag_stopped() || b.drag_stopped() || ((a.changed() || b.changed()) && !a.dragged() && !b.dragged());
+                    let b = ui.add(egui::DragValue::new(&mut hi).update_while_editing(false).speed(speed)).labelled_by(input_label.id);
+                    // Escape drops a number typed (`widgets::escaped`).
+                    if crate::widgets::escaped(&a) {
+                        lo = typed_from[0];
+                    }
+                    if crate::widgets::escaped(&b) {
+                        hi = typed_from[1];
+                    }
+                    let done = a.drag_stopped()
+                        || b.drag_stopped()
+                        || ((crate::widgets::changed(&a) || crate::widgets::changed(&b)) && !a.dragged() && !b.dragged());
                     if lo <= hi && done {
                         ui.data_mut(|d| d.remove::<([f64; 2], [f64; 2])>(key));
                         let bound = |v: f64| if v.is_finite() { json!(v) } else { Value::Null };
                         let _ = app.run("raster.mask", json!({"min": bound(lo), "max": bound(hi)}));
-                    } else if a.changed() || b.changed() {
+                    } else if crate::widgets::changed(&a) || crate::widgets::changed(&b) {
                         ui.data_mut(|d| d.insert_temp(key, ([min, max], [lo, hi])));
                     }
                 });

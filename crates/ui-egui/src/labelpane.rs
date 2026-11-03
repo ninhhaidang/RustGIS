@@ -556,7 +556,9 @@ fn text_symbol(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, c: &Class) {
         // The whole range `labels.style` accepts (#457); the map follows a drag and letting
         // go runs the command once, so a drag is one undo step.
         let mut size = f64::from(c.it.size);
-        let r = ui.add(egui::DragValue::new(&mut size).range(LABEL_SIZE).speed(0.1).suffix(" pt")).labelled_by(input_label.id);
+        let r = ui
+            .add(egui::DragValue::new(&mut size).update_while_editing(false).range(LABEL_SIZE).speed(0.1).suffix(" pt"))
+            .labelled_by(input_label.id);
         let id = l.id;
         crate::ribbon::live_drag(
             app,
@@ -645,7 +647,9 @@ fn background(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, c: &Class) {
     let number = |app: &mut RustGisApp, ui: &mut Ui, label: &str, cur: f32, range: std::ops::RangeInclusive<f64>, key: &'static str| {
         let input_label = ui.label(tl!(label));
         let mut v = f64::from(cur);
-        let r = ui.add(egui::DragValue::new(&mut v).range(range.clone()).speed(0.05).suffix(" pt")).labelled_by(input_label.id);
+        let r = ui
+            .add(egui::DragValue::new(&mut v).update_while_editing(false).range(range.clone()).speed(0.05).suffix(" pt"))
+            .labelled_by(input_label.id);
         crate::ribbon::live_drag(
             app,
             ui,
@@ -710,9 +714,16 @@ fn wrapping(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, c: &Class) {
     let input_label = ui.label(tl!("Wrap length"));
     let mut n = f64::from(c.it.wrap_length);
     let r = ui
-        .add(egui::DragValue::new(&mut n).range(0..=MAX_WRAP_LENGTH).speed(0.2).max_decimals(0).custom_formatter(|v, _| {
-            if v <= 0.0 { tl!("Off").to_string() } else { crate::i18n::fmt("{n} characters", &[("n", &v.to_string())]) }
-        }))
+        .add(
+            egui::DragValue::new(&mut n)
+                .update_while_editing(false)
+                .range(0..=MAX_WRAP_LENGTH)
+                .speed(0.2)
+                .max_decimals(0)
+                .custom_formatter(|v, _| {
+                    if v <= 0.0 { tl!("Off").to_string() } else { crate::i18n::fmt("{n} characters", &[("n", &v.to_string())]) }
+                }),
+        )
         .labelled_by(input_label.id)
         .on_hover_text(tl!("Lines longer than this are broken between their words."));
     let id = l.id;
@@ -748,7 +759,9 @@ fn letter_spacing(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, c: &Class) {
     let input_label = ui.label(tl!("Letter spacing"));
     let (lo, hi) = (rustgis_engine::map::layout::MIN_LETTER_SPACING, rustgis_engine::map::layout::MAX_LETTER_SPACING);
     let mut spacing = f64::from(c.it.spacing);
-    let r = ui.add(egui::DragValue::new(&mut spacing).range(lo..=hi).speed(0.05).suffix(" pt")).labelled_by(input_label.id);
+    let r = ui
+        .add(egui::DragValue::new(&mut spacing).update_while_editing(false).range(lo..=hi).speed(0.05).suffix(" pt"))
+        .labelled_by(input_label.id);
     let id = l.id;
     crate::ribbon::live_drag(
         app,
@@ -794,7 +807,9 @@ fn halo_style(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, c: &Class) {
         }
         let Some(width) = c.it.halo_width else { return };
         let mut w = f64::from(width);
-        let r = ui.add(egui::DragValue::new(&mut w).range(HALO_WIDTH).speed(0.05).suffix(" pt")).labelled_by(input_label.id);
+        let r = ui
+            .add(egui::DragValue::new(&mut w).update_while_editing(false).range(HALO_WIDTH).speed(0.05).suffix(" pt"))
+            .labelled_by(input_label.id);
         let id = l.id;
         crate::ribbon::live_drag(
             app,
@@ -949,6 +964,7 @@ fn repeat(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, c: &Class) {
             let r = ui
                 .add(
                     egui::DragValue::new(&mut v)
+                        .update_while_editing(false)
                         .range(LABEL_REPEAT)
                         .speed(1.0)
                         .max_decimals(1)
@@ -987,7 +1003,7 @@ fn offset(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, c: &Class) {
             let input_label = ui.label(tl!(label));
             let mut v = f64::from(cur.get(i).copied().unwrap_or(0.0));
             let r = ui
-                .add(egui::DragValue::new(&mut v).range(LABEL_OFFSET).speed(0.1).suffix(" pt"))
+                .add(egui::DragValue::new(&mut v).update_while_editing(false).range(LABEL_OFFSET).speed(0.1).suffix(" pt"))
                 .labelled_by(input_label.id)
                 .on_hover_text(tl!("A label along a line isn't moved."));
             crate::ribbon::live_drag(

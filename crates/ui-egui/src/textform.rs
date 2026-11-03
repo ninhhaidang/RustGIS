@@ -45,7 +45,7 @@ pub struct Settled {
     pub text: bool,
     /// The size changed and was let go (a drag ended, a value typed in).
     pub size: bool,
-    /// The colour changed: its button, for the caller to make a pick one undo step
+    /// The colour changed: its button, for the caller to make the pick one undo step
     /// ([`crate::widgets::one_step_per_press`]).
     pub color: Option<egui::Response>,
     pub bold: bool,
@@ -111,7 +111,13 @@ pub fn show(ui: &mut Ui, id: impl std::hash::Hash + std::fmt::Debug, tokens: &[&
         let saved = *f.size;
         let drag = Dragged::lend(ui, id.with("size"), f.size);
         let r = ui
-            .add(egui::DragValue::new(f.size).range(rustgis_engine::map::graphics::FONT_SIZE).speed(0.2).suffix(" pt"))
+            .add(
+                egui::DragValue::new(f.size)
+                    .update_while_editing(false)
+                    .range(rustgis_engine::map::graphics::FONT_SIZE)
+                    .speed(0.2)
+                    .suffix(" pt"),
+            )
             .labelled_by(input_label.id);
         // Named for assistive technology, as its label sits in the other column.
         let size = *f.size;
@@ -162,7 +168,14 @@ pub fn show(ui: &mut Ui, id: impl std::hash::Hash + std::fmt::Debug, tokens: &[&
             let saved = *ls;
             let drag = Dragged::lend(ui, id.with("letter_spacing"), ls);
             let r = ui
-                .add(egui::DragValue::new(ls).range(MIN_LETTER_SPACING..=MAX_LETTER_SPACING).speed(0.1).max_decimals(1).suffix(" pt"))
+                .add(
+                    egui::DragValue::new(ls)
+                        .update_while_editing(false)
+                        .range(MIN_LETTER_SPACING..=MAX_LETTER_SPACING)
+                        .speed(0.1)
+                        .max_decimals(1)
+                        .suffix(" pt"),
+                )
                 .labelled_by(input_label.id);
             let now = *ls;
             r.widget_info(|| egui::WidgetInfo {

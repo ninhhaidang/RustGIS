@@ -200,8 +200,10 @@ pub fn presentation(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
         }
         ui.horizontal(|ui| {
             let input_label = ui.label(tl!("Seconds"));
-            let resp = ui.add(egui::DragValue::new(&mut app.docs.seconds).range(0.5..=3600.0).speed(0.5)).labelled_by(input_label.id);
-            if (resp.drag_stopped() || resp.lost_focus()) && app.docs.seconds != page.seconds {
+            let resp = ui
+                .add(egui::DragValue::new(&mut app.docs.seconds).update_while_editing(false).range(0.5..=3600.0).speed(0.5))
+                .labelled_by(input_label.id);
+            if (resp.drag_stopped() || resp.lost_focus()) && !crate::widgets::escaped(&resp) && app.docs.seconds != page.seconds {
                 let secs = app.docs.seconds;
                 run(app, "presentation.updatePage", json!({"presentation": i, "page": k, "seconds": secs}));
             } else if !resp.dragged() && !resp.has_focus() {

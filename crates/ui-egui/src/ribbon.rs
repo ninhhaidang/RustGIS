@@ -1906,8 +1906,8 @@ fn view_tab(app: &mut RustGisApp, ui: &mut Ui) {
                     ] {
                         ui.horizontal(|ui| {
                             let input_label = ui.label(tl!(label));
-                            let r = ui.add(egui::Slider::new(&mut val, lo..=100.0)).labelled_by(input_label.id);
-                            if r.drag_stopped() || (r.changed() && !r.dragged()) {
+                            let r = ui.add(egui::Slider::new(&mut val, lo..=100.0).update_while_editing(false)).labelled_by(input_label.id);
+                            if r.drag_stopped() || (crate::widgets::changed(&r) && !r.dragged()) {
                                 let _ = app.run("map.effects", json!({key: val}));
                             }
                         });
@@ -3804,7 +3804,12 @@ fn effects_groups(app: &mut RustGisApp, ui: &mut Ui, layer: &rustgis_engine::map
                         // Kept across a drag until it is let go (#607).
                         let drag = Dragged::lend(ui, egui::Id::unique(("extrusion_factor", layer.id)), &mut k);
                         let r = ui
-                            .add(egui::DragValue::new(&mut k).range(0.0..=1e6).speed(xx.factor.max(0.0001) * 0.02))
+                            .add(
+                                egui::DragValue::new(&mut k)
+                                    .update_while_editing(false)
+                                    .range(0.0..=1e6)
+                                    .speed(xx.factor.max(0.0001) * 0.02),
+                            )
                             .labelled_by(input_label.id);
                         if drag.settled(ui, &r, &mut k) && k != xx.factor {
                             let t = if xx.field.is_some() { "field" } else { "height" };
@@ -4053,7 +4058,9 @@ fn visibility_and_effects(app: &mut RustGisApp, ui: &mut Ui, layer: &rustgis_eng
             });
             let mut v = layer.transparency;
             ui.spacing_mut().slider_width = 130.0;
-            let r = ui.add(egui::Slider::new(&mut v, 0.0..=100.0).suffix(" %").integer()).on_hover_text(tl!("Transparency"));
+            let r = ui
+                .add(egui::Slider::new(&mut v, 0.0..=100.0).update_while_editing(false).suffix(" %").integer())
+                .on_hover_text(tl!("Transparency"));
             live_drag(
                 app,
                 ui,
@@ -4089,7 +4096,7 @@ pub(crate) fn live_drag(
     if resp.drag_started() {
         ui.data_mut(|d| d.insert_temp(key, before));
     }
-    if resp.drag_stopped() || (resp.changed() && !resp.dragged()) {
+    if resp.drag_stopped() || (crate::widgets::changed(resp) && !resp.dragged()) {
         if let Some(original) = ui.data_mut(|d| d.remove_temp::<f64>(key)) {
             set(app, original);
         }
@@ -4161,8 +4168,8 @@ fn drawing_group(app: &mut RustGisApp, ui: &mut Ui, layer: &rustgis_engine::map:
             });
             let mut w = layer.renderer.base_symbol().stroke_width;
             ui.horizontal(|ui| {
-                let resp = ui.add(egui::DragValue::new(&mut w).range(0.0..=10.0).speed(0.05).suffix(" pt"));
-                if resp.changed() {
+                let resp = ui.add(egui::DragValue::new(&mut w).update_while_editing(false).range(0.0..=10.0).speed(0.05).suffix(" pt"));
+                if crate::widgets::changed(&resp) {
                     crate::widgets::one_step_per_press(app, &resp);
                     let _ = app.run("layer.outline", json!({"width": w}));
                 }
@@ -4171,8 +4178,8 @@ fn drawing_group(app: &mut RustGisApp, ui: &mut Ui, layer: &rustgis_engine::map:
             if layer.geometry_type() == GeometryType::Point {
                 let mut s = layer.renderer.base_symbol().size;
                 ui.horizontal(|ui| {
-                    let resp = ui.add(egui::DragValue::new(&mut s).range(1.0..=60.0).speed(0.1).suffix(" pt"));
-                    if resp.changed() {
+                    let resp = ui.add(egui::DragValue::new(&mut s).update_while_editing(false).range(1.0..=60.0).speed(0.1).suffix(" pt"));
+                    if crate::widgets::changed(&resp) {
                         crate::widgets::one_step_per_press(app, &resp);
                         let _ = app.run("layer.marker", json!({"size": s}));
                     }
@@ -4271,7 +4278,7 @@ fn raster_style_groups(app: &mut RustGisApp, ui: &mut Ui) {
             ui.horizontal(|ui| {
                 // Kept across a drag until it is let go (#607).
                 let drag = Dragged::lend(ui, egui::Id::unique(("raster_rotation", layer.id)), &mut a);
-                let r = ui.add(egui::DragValue::new(&mut a).range(0.0..=359.0).speed(1.0).suffix("°"));
+                let r = ui.add(egui::DragValue::new(&mut a).update_while_editing(false).range(0.0..=359.0).speed(1.0).suffix("°"));
                 if drag.settled(ui, &r, &mut a) && a != style.rotation {
                     let _ = app.run("raster.rotation", json!({"angle": a}));
                 }
@@ -4386,7 +4393,9 @@ fn raster_style_groups(app: &mut RustGisApp, ui: &mut Ui) {
                     let input_label = ui.label(egui::RichText::new(tl!(label)).size(11.5));
                     ui.add_space((70.0 - text_w(ui, tl!(label), regular(11.5))).max(0.0));
                     let mut v = value;
-                    let resp = ui.add(egui::DragValue::new(&mut v).range(range).speed(speed).max_decimals(2)).labelled_by(input_label.id);
+                    let resp = ui
+                        .add(egui::DragValue::new(&mut v).update_while_editing(false).range(range).speed(speed).max_decimals(2))
+                        .labelled_by(input_label.id);
                     live_drag(
                         app,
                         ui,
@@ -4564,7 +4573,10 @@ fn label_groups(app: &mut RustGisApp, ui: &mut Ui) {
                 let range = rustgis_engine::map::symbology::LABEL_SIZE;
                 // Another layer or class gets a distinct widget, so an in-flight drag cannot move to it.
                 ui.push_id(("label_size", layer.id, c.name), |ui| {
-                    if ui.add(egui::DragValue::new(&mut size).range(range).speed(0.1).suffix(" pt")).labelled_by(input_label.id).changed() {
+                    let r = ui
+                        .add(egui::DragValue::new(&mut size).update_while_editing(false).range(range).speed(0.1).suffix(" pt"))
+                        .labelled_by(input_label.id);
+                    if crate::widgets::changed(&r) {
                         label_size_drag(app, ui, &layer, &c, size);
                     }
                 });
@@ -4883,6 +4895,9 @@ mod tests {
                     fonts = true;
                     return;
                 }
+                // As the app does each frame: Escape noted, then the shortcuts, which take it.
+                crate::widgets::note_escape(ui.ctx());
+                crate::chrome::shortcuts(app, &ui.ctx().clone());
                 if let Some(layer) = app.session.active_layer.and_then(|id| app.session.map().layer(id)).cloned() {
                     ui.horizontal(|ui| drawing_group(app, ui, &layer));
                 }
@@ -4937,6 +4952,31 @@ mod tests {
         assert_eq!(size(h.state()), first);
     }
 
+    /// A key pressed during a drag, in the frames the number changes, leaves the drag one undo
+    /// step (#1194).
+    #[test]
+    fn a_key_pressed_during_a_drag_leaves_it_one_undo_step() {
+        let mut h = drawing_harness();
+        let id = h.state().session.active_layer.unwrap();
+        let size = |app: &RustGisApp| app.session.map().layer(id).unwrap().renderer.base_symbol().size;
+        let before = size(h.state());
+        let undo = h.state().session.undo_depth();
+        // Outline, then Size.
+        let at = h.query_all_by_role(egui::accesskit::Role::SpinButton).nth(1).unwrap().rect().center();
+        h.hover_at(at);
+        h.drag_at(at);
+        h.step();
+        for dx in [16.0, 32.0, 48.0] {
+            h.hover_at(at + vec2(dx, 0.0));
+            h.key_press(egui::Key::F20);
+            h.step();
+        }
+        h.drop_at(at + vec2(48.0, 0.0));
+        h.run();
+        assert!(size(h.state()) > before);
+        assert_eq!(h.state().session.undo_depth(), undo + 1);
+    }
+
     /// A drag in the colour picker is one undo step back to the colour from before it (#1194).
     #[test]
     fn ribbon_colour_drag_is_one_undo_step() {
@@ -4958,6 +4998,133 @@ mod tests {
         assert_eq!(color(h.state()), before);
         h.state_mut().run("edit.redo", json!(null)).unwrap();
         assert_eq!(color(h.state()), after);
+    }
+
+    /// Focuses the harness's `nth` number to type into it, and types `text` over its value.
+    fn type_into(h: &mut egui_kittest::Harness<'static, RustGisApp>, nth: usize, text: &str) {
+        h.query_all_by_role(egui::accesskit::Role::SpinButton).nth(nth).unwrap().focus();
+        h.run();
+        h.event(egui::Event::Text(text.into()));
+        h.run();
+    }
+
+    /// A number typed is set once, on Enter, as one undo step; Escape brings back the value from
+    /// before (#1194).
+    #[test]
+    fn a_typed_number_is_one_undo_step_and_escape_brings_back_the_value() {
+        let mut h = drawing_harness();
+        let id = h.state().session.active_layer.unwrap();
+        let size = |app: &RustGisApp| app.session.map().layer(id).unwrap().renderer.base_symbol().size;
+        let before = size(h.state());
+        let undo = h.state().session.undo_depth();
+        // Outline, then Size.
+        type_into(&mut h, 1, "12.5");
+        assert_eq!(size(h.state()), before, "nothing is set while typing");
+        assert_eq!(h.state().session.undo_depth(), undo);
+        h.key_press(egui::Key::Enter);
+        h.run();
+        assert_eq!(size(h.state()), 12.5);
+        assert_eq!(h.state().session.undo_depth(), undo + 1);
+        type_into(&mut h, 1, "30");
+        h.key_press(egui::Key::Escape);
+        h.run();
+        assert_eq!(size(h.state()), 12.5, "Escape brings back the value from before");
+        assert_eq!(h.state().session.undo_depth(), undo + 1);
+        h.state_mut().run("edit.undo", json!(null)).unwrap();
+        assert_eq!(size(h.state()), before);
+    }
+
+    /// Two numbers typed while a button is held elsewhere are two undo steps: a change made with
+    /// the keyboard is never merged into a press (#1194).
+    #[test]
+    fn numbers_typed_while_a_button_is_held_are_steps_of_their_own() {
+        let mut h = drawing_harness();
+        let id = h.state().session.active_layer.unwrap();
+        let size = |app: &RustGisApp| app.session.map().layer(id).unwrap().renderer.base_symbol().size;
+        let undo = h.state().session.undo_depth();
+        let away = egui::pos2(1100.0, 700.0);
+        h.hover_at(away);
+        h.drag_at(away);
+        h.step();
+        for text in ["12", "14"] {
+            // Focused from the keyboard: a click would need the pointer held down.
+            type_into(&mut h, 1, text);
+            h.key_press(egui::Key::Enter);
+            h.run();
+        }
+        assert_eq!(size(h.state()), 14.0);
+        assert_eq!(h.state().session.undo_depth(), undo + 2);
+        h.drop_at(away);
+        h.run();
+    }
+
+    /// A number typed right after an Escape, the field taken back at once, is kept: the Escape
+    /// drops only what it cancelled (#1194).
+    #[test]
+    fn a_number_typed_straight_after_an_escape_is_kept() {
+        let mut h = drawing_harness();
+        let id = h.state().session.active_layer.unwrap();
+        let size = |app: &RustGisApp| app.session.map().layer(id).unwrap().renderer.base_symbol().size;
+        let before = size(h.state());
+        type_into(&mut h, 1, "30");
+        h.key_press(egui::Key::Escape);
+        h.step();
+        assert_eq!(size(h.state()), before, "Escape dropped it");
+        // The two passes after the Escape's: the field back, then a number and Enter together.
+        h.query_all_by_role(egui::accesskit::Role::SpinButton).nth(1).unwrap().focus();
+        h.step();
+        h.event(egui::Event::Text("12.5".into()));
+        h.key_press(egui::Key::Enter);
+        h.step();
+        h.run();
+        assert_eq!(size(h.state()), 12.5);
+    }
+
+    /// A number typed for one layer, then a click on another layer drawn before the Style tab (as
+    /// the Layers pane is): the number is set on the layer it was typed for, never on the other,
+    /// even when the other had the same value (#1194).
+    #[test]
+    fn a_number_typed_is_set_on_its_own_layer_when_another_is_clicked() {
+        let mut app = cities();
+        let width = |app: &RustGisApp, name: &str| {
+            let l = app.session.map().layers.iter().find(|l| l.name == name).unwrap();
+            l.renderer.base_symbol().stroke_width
+        };
+        for name in ["Countries", "Cities"] {
+            app.session.run("layer.select", &json!({"layer": name})).unwrap();
+            app.session.run("layer.outline", &json!({"width": 1.0})).unwrap();
+        }
+        let mut fonts = false;
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(1200.0, 800.0)).build_ui_state(
+            move |ui, app: &mut RustGisApp| {
+                if !fonts {
+                    crate::theme::install_fonts(ui.ctx(), &[], None);
+                    fonts = true;
+                    return;
+                }
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                if ui.button("Countries").clicked() {
+                    let _ = app.run("layer.select", json!({"layer": "Countries"}));
+                }
+                if let Some(layer) = app.session.active_layer.and_then(|id| app.session.map().layer(id)).cloned() {
+                    ui.horizontal(|ui| drawing_group(app, ui, &layer));
+                }
+            },
+            app,
+        );
+        h.run();
+        type_into(&mut h, 0, "3");
+        let at = h.get_by_label("Countries").rect().center();
+        h.hover_at(at);
+        h.drag_at(at);
+        h.step();
+        h.drop_at(at);
+        h.run();
+        let countries = h.state().session.map().layers.iter().find(|l| l.name == "Countries").map(|l| l.id);
+        assert_eq!(h.state().session.active_layer, countries, "the click picked Countries");
+        assert_eq!(width(h.state(), "Cities"), 3.0);
+        assert_eq!(width(h.state(), "Countries"), 1.0);
     }
 
     /// Isolates the label controls; the interrupted-gesture test below checks full-frame wiring.

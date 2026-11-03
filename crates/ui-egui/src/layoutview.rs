@@ -1236,16 +1236,23 @@ fn grid_properties(app: &mut RustGisApp, ui: &mut Ui, grid: Option<&Grid>, id: u
             (rustgis_engine::map::layout::MAX_GRATICULE_STEP, 0.05)
         };
         let r = ui
-            .add(egui::DragValue::new(&mut step).range(0.0..=most).speed(speed).max_decimals(4).custom_formatter(|v, _| {
-                if v <= 0.0 {
-                    tl!("Auto").to_string()
-                } else if measured {
-                    // (The system's units: metres for UTM.)
-                    format!("{v}")
-                } else {
-                    format!("{v}°")
-                }
-            }))
+            .add(
+                egui::DragValue::new(&mut step)
+                    .update_while_editing(false)
+                    .range(0.0..=most)
+                    .speed(speed)
+                    .max_decimals(4)
+                    .custom_formatter(|v, _| {
+                        if v <= 0.0 {
+                            tl!("Auto").to_string()
+                        } else if measured {
+                            // (The system's units: metres for UTM.)
+                            format!("{v}")
+                        } else {
+                            format!("{v}°")
+                        }
+                    }),
+            )
             .on_hover_text(if measured { tl!("In the coordinate system's units: metres for UTM.") } else { tl!("In degrees.") })
             .labelled_by(input_label.id);
         if drag.settled(ui, &r, &mut step) && (step - g.step).abs() > 1e-9 {
@@ -1277,7 +1284,14 @@ fn grid_properties(app: &mut RustGisApp, ui: &mut Ui, grid: Option<&Grid>, id: u
         let mut w = g.width;
         let drag = Dragged::lend(ui, key("width"), &mut w);
         let r = ui
-            .add(egui::DragValue::new(&mut w).range(0.0..=MAX_GRID_WIDTH).speed(0.05).max_decimals(2).suffix(" pt"))
+            .add(
+                egui::DragValue::new(&mut w)
+                    .update_while_editing(false)
+                    .range(0.0..=MAX_GRID_WIDTH)
+                    .speed(0.05)
+                    .max_decimals(2)
+                    .suffix(" pt"),
+            )
             .labelled_by(input_label.id);
         if drag.settled(ui, &r, &mut w) && (w - g.width).abs() > 1e-9 {
             set(app, json!({"width": w}));
@@ -1288,7 +1302,14 @@ fn grid_properties(app: &mut RustGisApp, ui: &mut Ui, grid: Option<&Grid>, id: u
             let mut t = g.tick_length;
             let drag = Dragged::lend(ui, key("tickLength"), &mut t);
             let r = ui
-                .add(egui::DragValue::new(&mut t).range(0.0..=MAX_TICK_MM).speed(0.1).max_decimals(1).suffix(" mm"))
+                .add(
+                    egui::DragValue::new(&mut t)
+                        .update_while_editing(false)
+                        .range(0.0..=MAX_TICK_MM)
+                        .speed(0.1)
+                        .max_decimals(1)
+                        .suffix(" mm"),
+                )
                 .labelled_by(input_label.id);
             if drag.settled(ui, &r, &mut t) && (t - g.tick_length).abs() > 1e-9 {
                 set(app, json!({"tickLength": t}));
@@ -1451,7 +1472,9 @@ fn properties(app: &mut RustGisApp, ui: &mut Ui, layout: &Layout, li: usize) {
                     let input_label = ui.label(tl!(label));
                     let mut val = v;
                     let drag = Dragged::lend(ui, drag_key(key), &mut val);
-                    let r = ui.add(egui::DragValue::new(&mut val).speed(0.5).max_decimals(1)).labelled_by(input_label.id);
+                    let r = ui
+                        .add(egui::DragValue::new(&mut val).update_while_editing(false).speed(0.5).max_decimals(1))
+                        .labelled_by(input_label.id);
                     if drag.settled(ui, &r, &mut val) && (val - v).abs() > 1e-6 {
                         update(app, json!({key: val}));
                     }
@@ -1545,7 +1568,9 @@ fn properties(app: &mut RustGisApp, ui: &mut Ui, layout: &Layout, li: usize) {
                         let input_label = ui.label(tl!("Ticks"));
                         let mut n = *ticks as u64;
                         let drag = Dragged::lend(ui, drag_key("ticks"), &mut n);
-                        let r = ui.add(egui::DragValue::new(&mut n).range(2..=MAX_COLORBAR_TICKS as u64)).labelled_by(input_label.id);
+                        let r = ui
+                            .add(egui::DragValue::new(&mut n).update_while_editing(false).range(2..=MAX_COLORBAR_TICKS as u64))
+                            .labelled_by(input_label.id);
                         if drag.settled(ui, &r, &mut n) && n as usize != *ticks {
                             update(app, json!({"ticks": n}));
                         }
@@ -1579,7 +1604,13 @@ fn properties(app: &mut RustGisApp, ui: &mut Ui, layout: &Layout, li: usize) {
                         let decimals = if sc < 10.0 { 1 } else { 0 };
                         let drag = Dragged::lend(ui, drag_key("scale"), &mut sc);
                         let r = ui
-                            .add(egui::DragValue::new(&mut sc).range(MIN_FRAME_SCALE..=MAX_FRAME_SCALE).speed(speed).max_decimals(decimals))
+                            .add(
+                                egui::DragValue::new(&mut sc)
+                                    .update_while_editing(false)
+                                    .range(MIN_FRAME_SCALE..=MAX_FRAME_SCALE)
+                                    .speed(speed)
+                                    .max_decimals(decimals),
+                            )
                             .labelled_by(input_label.id);
                         if drag.settled(ui, &r, &mut sc) && (sc / scale - 1.0).abs() > 1e-3 {
                             update(app, json!({"scale": sc}));
@@ -1593,7 +1624,14 @@ fn properties(app: &mut RustGisApp, ui: &mut Ui, layout: &Layout, li: usize) {
                             let mut v = current;
                             let drag = Dragged::lend(ui, drag_key(key), &mut v);
                             let r = ui
-                                .add(egui::DragValue::new(&mut v).range(range).speed(0.5).max_decimals(1).suffix("°"))
+                                .add(
+                                    egui::DragValue::new(&mut v)
+                                        .update_while_editing(false)
+                                        .range(range)
+                                        .speed(0.5)
+                                        .max_decimals(1)
+                                        .suffix("°"),
+                                )
                                 .labelled_by(input_label.id);
                             if drag.settled(ui, &r, &mut v) && (v - current).abs() > 1e-6 {
                                 update(app, json!({key: v}));
@@ -1656,7 +1694,9 @@ fn properties(app: &mut RustGisApp, ui: &mut Ui, layout: &Layout, li: usize) {
                         let input_label = ui.label(tl!("Divisions"));
                         let mut n = *divisions as u64;
                         let drag = Dragged::lend(ui, drag_key("divisions"), &mut n);
-                        let r = ui.add(egui::DragValue::new(&mut n).range(1..=MAX_SCALE_DIVISIONS as u64)).labelled_by(input_label.id);
+                        let r = ui
+                            .add(egui::DragValue::new(&mut n).update_while_editing(false).range(1..=MAX_SCALE_DIVISIONS as u64))
+                            .labelled_by(input_label.id);
                         if drag.settled(ui, &r, &mut n) && n as usize != *divisions {
                             update(app, json!({"divisions": n}));
                         }
@@ -1666,7 +1706,7 @@ fn properties(app: &mut RustGisApp, ui: &mut Ui, layout: &Layout, li: usize) {
                         let input_label = ui.label(tl!("Rows"));
                         let mut n = *rows as u64;
                         let drag = Dragged::lend(ui, drag_key("rows"), &mut n);
-                        let r = ui.add(egui::DragValue::new(&mut n).range(1..=500)).labelled_by(input_label.id);
+                        let r = ui.add(egui::DragValue::new(&mut n).update_while_editing(false).range(1..=500)).labelled_by(input_label.id);
                         if drag.settled(ui, &r, &mut n) && n as usize != *rows {
                             update(app, json!({"rows": n}));
                         }
@@ -1688,7 +1728,14 @@ fn properties(app: &mut RustGisApp, ui: &mut Ui, layout: &Layout, li: usize) {
                         let mut wd = *width;
                         let drag = Dragged::lend(ui, drag_key("width"), &mut wd);
                         let r = ui
-                            .add(egui::DragValue::new(&mut wd).range(0.0..=50.0).speed(0.1).max_decimals(1).suffix(" pt"))
+                            .add(
+                                egui::DragValue::new(&mut wd)
+                                    .update_while_editing(false)
+                                    .range(0.0..=50.0)
+                                    .speed(0.1)
+                                    .max_decimals(1)
+                                    .suffix(" pt"),
+                            )
                             .labelled_by(input_label.id);
                         if drag.settled(ui, &r, &mut wd) && (wd - width).abs() > 1e-6 {
                             update(app, json!({"width": wd}));
@@ -1708,7 +1755,14 @@ fn properties(app: &mut RustGisApp, ui: &mut Ui, layout: &Layout, li: usize) {
                         let mut wd = *width;
                         let drag = Dragged::lend(ui, drag_key("width"), &mut wd);
                         let r = ui
-                            .add(egui::DragValue::new(&mut wd).range(0.1..=50.0).speed(0.1).max_decimals(1).suffix(" pt"))
+                            .add(
+                                egui::DragValue::new(&mut wd)
+                                    .update_while_editing(false)
+                                    .range(0.1..=50.0)
+                                    .speed(0.1)
+                                    .max_decimals(1)
+                                    .suffix(" pt"),
+                            )
                             .labelled_by(input_label.id);
                         if drag.settled(ui, &r, &mut wd) && (wd - width).abs() > 1e-6 {
                             update(app, json!({"width": wd}));
@@ -1733,7 +1787,14 @@ fn properties(app: &mut RustGisApp, ui: &mut Ui, layout: &Layout, li: usize) {
                         let mut a = current;
                         let drag = Dragged::lend(ui, drag_key("angle"), &mut a);
                         let r = ui
-                            .add(egui::DragValue::new(&mut a).range(-180.0..=180.0).speed(1.0).max_decimals(1).suffix("°"))
+                            .add(
+                                egui::DragValue::new(&mut a)
+                                    .update_while_editing(false)
+                                    .range(-180.0..=180.0)
+                                    .speed(1.0)
+                                    .max_decimals(1)
+                                    .suffix("°"),
+                            )
                             .labelled_by(input_label.id);
                         if drag.settled(ui, &r, &mut a) && (a - current).abs() > 1e-6 {
                             update(app, json!({"angle": a}));
@@ -1875,6 +1936,7 @@ fn properties(app: &mut RustGisApp, ui: &mut Ui, layout: &Layout, li: usize) {
                 let r = ui
                     .add(
                         egui::DragValue::new(&mut w)
+                            .update_while_editing(false)
                             .range(rustgis_engine::map::layout::MIN_INDICATOR_WIDTH..=rustgis_engine::map::layout::MAX_INDICATOR_WIDTH)
                             .speed(0.05)
                             .max_decimals(2)
@@ -2687,6 +2749,59 @@ mod tests {
         let a = line_angle((e.x, e.y, e.w, e.h), dir, head);
         assert!(a > 10.0, "turned to {a}°");
         assert_eq!(h.state().session.undo_depth(), undo + 1, "one undo step");
+    }
+
+    /// A text size typed in the Format pane is set once, on Enter; Escape brings back the size
+    /// from before, without a step (#1194).
+    #[test]
+    fn a_size_typed_in_the_format_pane_is_one_undo_step_and_escape_brings_it_back() {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        use rustgis_engine::map::layout::ElementKind;
+        let mut app = RustGisApp::with_sample();
+        app.run("layout.new", json!({"name": "Sizes"})).unwrap();
+        let li = app.session.active_layout.unwrap();
+        let title = app.session.project.layouts[li].elements.iter().find(|e| e.name == "Title").unwrap().id;
+        app.layout.selected = Some(title);
+        let mut fonts = false;
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(1200.0, 900.0)).build_ui_state(
+            move |ui, app: &mut RustGisApp| {
+                if !fonts {
+                    crate::theme::install_fonts(ui.ctx(), &[], None);
+                    fonts = true;
+                    return;
+                }
+                // As the app does each frame: Escape noted, then the shortcuts, which take it.
+                crate::widgets::note_escape(ui.ctx());
+                crate::chrome::shortcuts(app, &ui.ctx().clone());
+                with_format(app, ui);
+            },
+            app,
+        );
+        h.run_steps(3);
+        let size = |app: &RustGisApp| match &app.session.project.layouts[li].element(title).unwrap().kind {
+            ElementKind::Text { size, .. } => *size,
+            kind => panic!("{kind:?}"),
+        };
+        let before = size(h.state());
+        let undo = h.state().session.undo_depth();
+        let type_size = |h: &mut egui_kittest::Harness<'_, RustGisApp>, text: &str, key: egui::Key, steps: usize| {
+            h.get_by_role_and_label(Role::SpinButton, "Size").focus();
+            h.run();
+            h.event(egui::Event::Text(text.into()));
+            h.run();
+            assert_eq!(h.state().session.undo_depth(), steps, "nothing is set while typing");
+            h.key_press(key);
+            h.run();
+        };
+        type_size(&mut h, "23", egui::Key::Enter, undo);
+        assert_eq!(size(h.state()), 23.0);
+        assert_eq!(h.state().session.undo_depth(), undo + 1);
+        type_size(&mut h, "30", egui::Key::Escape, undo + 1);
+        assert_eq!(size(h.state()), 23.0, "Escape brings back the size from before");
+        assert_eq!(h.state().session.undo_depth(), undo + 1);
+        h.state_mut().run("edit.undo", json!(null)).unwrap();
+        assert_eq!(size(h.state()), before);
     }
 
     /// A drag in the picker of a text's colour, in the shared text form, is one undo step (#1194).

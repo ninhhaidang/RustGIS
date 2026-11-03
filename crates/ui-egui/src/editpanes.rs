@@ -271,8 +271,8 @@ pub fn editing(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
             }
         }
         let mut tol = sn.tolerance_px;
-        let resp = ui.add(egui::DragValue::new(&mut tol).range(1.0..=100.0).suffix(" px"));
-        if resp.changed() {
+        let resp = ui.add(egui::DragValue::new(&mut tol).update_while_editing(false).range(1.0..=100.0).suffix(" px"));
+        if crate::widgets::changed(&resp) {
             crate::widgets::one_step_per_press(app, &resp);
             run(app, "edit.snapping", json!({"on": sn.enabled, "tolerancePx": tol}));
         }

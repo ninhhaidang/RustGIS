@@ -196,6 +196,10 @@ other files RustGIS reads and writes.
 
 Changes to the project are commands, and each can be undone (++ctrl+z++) and redone
 (++ctrl+y++). Undo keeps the last 40 changes; starting or opening another project clears it.
+A number dragged or a colour picked in a picker is one change, however far it moves. A number
+typed into a control that changes the map or a layout right away is one change too: it is set
+when you press ++enter++ or click elsewhere, and ++esc++ brings back the value from before. A value
+with its own button, such as the Editing pane's elevation, waits for that button.
 The desktop app also keeps a copy of unsaved work and offers it back after a crash: see
 [Autosave and recovery](workspace.md#autosave-and-recovery).
 Exports and other files already written are not undone.

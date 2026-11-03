@@ -285,13 +285,13 @@ fn header(app: &mut RustGisApp, ui: &mut Ui, t: &TimeSlider, steps: &[f64], tk: 
         // Applied when the drag or the typing ends: one undo step, not one a frame.
         let mut every = app.time.interval.unwrap_or(t.interval);
         let r = ui
-            .add(egui::DragValue::new(&mut every).range(1..=1000).speed(0.1))
+            .add(egui::DragValue::new(&mut every).update_while_editing(false).range(1..=1000).speed(0.1))
             .labelled_by(input_label.id)
             .on_hover_text(tl!("Units per step"));
-        if r.changed() {
+        if crate::widgets::changed(&r) {
             app.time.interval = Some(every);
         }
-        let done = r.drag_stopped() || r.lost_focus() || (r.changed() && !r.dragged() && !r.has_focus());
+        let done = r.drag_stopped() || r.lost_focus() || (crate::widgets::changed(&r) && !r.dragged() && !r.has_focus());
         if done && let Some(n) = app.time.interval.take() {
             let _ = app.run("time.set", json!({"interval": n}));
         }

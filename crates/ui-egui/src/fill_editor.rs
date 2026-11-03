@@ -288,9 +288,11 @@ pub(crate) fn fills_editor(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, t: &Tok
                     |app: &mut RustGisApp, ui: &mut Ui, label: &str, v: f32, range: std::ops::RangeInclusive<f32>, suffix: &str| {
                         let input_label = ui.label(tl!(label));
                         let mut x = v;
-                        let resp = ui.add(egui::DragValue::new(&mut x).range(range).speed(0.1).suffix(suffix)).labelled_by(input_label.id);
+                        let resp = ui
+                            .add(egui::DragValue::new(&mut x).update_while_editing(false).range(range).speed(0.1).suffix(suffix))
+                            .labelled_by(input_label.id);
                         ui.end_row();
-                        let changed = resp.changed() && x != v;
+                        let changed = crate::widgets::changed(&resp) && x != v;
                         if changed {
                             crate::widgets::one_step_per_press(app, &resp);
                         }
