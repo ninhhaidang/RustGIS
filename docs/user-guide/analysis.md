@@ -70,6 +70,15 @@ switching to another map, a result that adds to or changes the map is refused (o
 tables or a file is still made). Opening another project drops the run. Scripts, models, the AI
 Assistant, the command line and the web app wait for each tool to finish.
 
+**Viewshed**, **IDW Interpolation** and **Kriging** refuse a run that would take more than a second
+or two of work on one thread (a ray step, a cell-point pair). On the desktop they run on several
+cores (up to 16), and they take as many times more work as the threads they run on. Threads share
+cores and memory, so a run at that limit can take up to about twice as long as a one-thread run at
+its own; in the web app, on one thread, the limits stay as they are. The error names the
+limit on this computer and the threads it counted. A tool's own default cell size still follows the
+one-thread limit, so it makes the same grid on any computer; a finer cell size given is what the
+larger limit lets through.
+
 From the command line or a script (`gp.run`), a built-in tool's parameter with a list of choices, such as Buffer's
 units, takes one of them in any letter case (`"meters"` for `Meters`); any other value is an error
 that names the choices (Buffer's units no longer take the abbreviations `m`, `mi` or `metres`).

@@ -42,6 +42,13 @@ pub(crate) fn threads_for_rows(rows: usize, work: usize, scratch_bytes: usize) -
     cores().min(rows).min(affordable).max(1)
 }
 
+/// A work cap tuned for one thread (a second or two of its work) for a run on `threads` threads:
+/// as many times larger, since the threads share the work and the run takes about as long
+/// (#1291 step 2). On one thread, and so in the browser, the cap as it is.
+pub(crate) fn work_cap(one_thread: usize, threads: usize) -> usize {
+    one_thread.saturating_mul(threads.max(1))
+}
+
 /// The cores to use, at most [`MAX_THREADS`].
 fn cores() -> usize {
     std::thread::available_parallelism().map_or(1, |n| n.get()).min(MAX_THREADS)
@@ -224,6 +231,14 @@ impl Drop for StopOnPanic<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_work_cap_grows_with_the_threads_a_run_takes() {
+        assert_eq!(work_cap(400, 1), 400);
+        assert_eq!(work_cap(400, 16), 6400);
+        assert_eq!(work_cap(400, 0), 400, "no threads counts as one");
+        assert_eq!(work_cap(usize::MAX, 2), usize::MAX, "no overflow");
+    }
 
     /// The infallible case, for the tests.
     fn map_on<T: Sync, S, R: Send>(

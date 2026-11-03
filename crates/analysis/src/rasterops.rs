@@ -350,9 +350,10 @@ pub fn line_of_sight(
     Some((target_visible, out))
 }
 
-/// Most ray steps a viewshed takes, and cell-point pairs an interpolation weighs (each about a
-/// second or two).
-const MAX_VIEWSHED_WORK: i64 = 400_000_000;
+/// Most ray steps a viewshed takes, and cell-point pairs an interpolation weighs, on one thread
+/// (each about a second or two); a run on several threads may take as many times more
+/// ([`crate::parallel::work_cap`]).
+const MAX_VIEWSHED_WORK: usize = 400_000_000;
 pub(crate) const MAX_IDW_WORK: usize = 400_000_000;
 
 /// Cells visible from an observer (1) or not (0) within `radius_m`; outside the radius no-data.
@@ -376,18 +377,24 @@ fn viewshed_on(threads: Option<usize>, r: &Raster, b: usize, observer: Coord, he
     let rad_r = (radius_m / cy).ceil() as i64;
     // Each cell walks a ray back to the observer: bound cells × ray length, not just cells.
     let cells = (2 * rad_c + 1).saturating_mul(2 * rad_r + 1);
-    let ray_work = cells.saturating_mul(rad_c.max(rad_r) / 2 + 1);
-    if cells > 25_000_000 || ray_work > MAX_VIEWSHED_WORK {
+    let ray_work = usize::try_from(cells.saturating_mul(rad_c.max(rad_r) / 2 + 1)).unwrap_or(usize::MAX);
+    if cells > 25_000_000 {
         return Err("the radius covers too many cells; use a smaller radius".into());
+    }
+    // Each cell walks its own ray and writes only itself, so the rows within the radius are made
+    // on several threads when the work is large (#1252), and may take as many times the work.
+    let (first, last) = ((or - rad_r).max(0), (or + rad_r).min(r.height as i64 - 1));
+    let rows = usize::try_from(last - first + 1).unwrap_or(0);
+    let threads = threads.unwrap_or_else(|| crate::parallel::threads_for_rows(rows, ray_work, 0));
+    let cap = crate::parallel::work_cap(MAX_VIEWSHED_WORK, threads);
+    if ray_work > cap {
+        return Err(format!(
+            "the radius takes {ray_work} ray steps, more than the {cap} this computer takes on {threads} thread(s); use a smaller radius"
+        ));
     }
     let w = r.width as usize;
     let mut out = new_band(w, r.height as usize, NODATA)?;
     const R: f64 = 6_371_000.0 * 4.0 / 3.0;
-    // Each cell walks its own ray and writes only itself, so the rows within the radius are made
-    // on several threads when the work is large (#1252).
-    let (first, last) = ((or - rad_r).max(0), (or + rad_r).min(r.height as i64 - 1));
-    let rows = usize::try_from(last - first + 1).unwrap_or(0);
-    let threads = threads.unwrap_or_else(|| crate::parallel::threads_for_rows(rows, usize::try_from(ray_work).unwrap_or(usize::MAX), 0));
     let window = out.chunks_mut(w).skip(usize::try_from(first).unwrap_or(0)).take(rows);
     crate::control::begin(rows);
     crate::parallel::for_each_row(
@@ -461,10 +468,6 @@ fn idw_on(
     if w.saturating_mul(h) > max_pixels() / 4 {
         return Err(format!("{w} × {h} cells is too many, more than this computer's {}; use a larger cell size", max_pixels() / 4));
     }
-    // Every cell weighs every point.
-    if w.saturating_mul(h).saturating_mul(points.len()) > MAX_IDW_WORK {
-        return Err(format!("{w} × {h} cells from {} points is too much work; use a larger cell size", points.len()));
-    }
     if !(power.is_finite() && power >= 0.0) {
         return Err("the distance coefficient must be zero or more".into());
     }
@@ -472,8 +475,16 @@ fn idw_on(
     // Each row on its own, on several threads when the work is large (#1252); a thread's
     // distances go into its own buffer.
     let scratch_bytes = points.len().saturating_mul(std::mem::size_of::<(f64, f64)>());
-    let threads =
-        threads.unwrap_or_else(|| crate::parallel::threads_for_rows(h, w.saturating_mul(h).saturating_mul(points.len()), scratch_bytes));
+    // Every cell weighs every point: as many times the work as there are threads (#1291).
+    let work = w.saturating_mul(h).saturating_mul(points.len());
+    let threads = threads.unwrap_or_else(|| crate::parallel::threads_for_rows(h, work, scratch_bytes));
+    let cap = crate::parallel::work_cap(MAX_IDW_WORK, threads);
+    if work > cap {
+        return Err(format!(
+            "{w} × {h} cells from {} points is too much work, more than the {cap} cell-point pairs this computer takes on {threads} thread(s); use a larger cell size",
+            points.len()
+        ));
+    }
     let mut data = new_band(w, h, NODATA)?;
     crate::control::begin(h);
     crate::parallel::for_each_row(
@@ -1210,6 +1221,19 @@ mod tests {
                 assert!(one.iter().map(|v| v.to_bits()).eq(many.iter().map(|v| v.to_bits())), "{threads} threads, radius {radius}");
             }
         }
+    }
+
+    /// A run past one thread's work, on one thread, is refused, naming the cap and the threads.
+    #[test]
+    fn idw_past_one_threads_work_is_refused_on_one_naming_the_cap() {
+        // 1000 × 1000 cells from 500 points: 500 million pairs, past one thread's 400 million.
+        let pts: Vec<(Coord, f64)> = (0..500).map(|i| (Coord::new((i % 25) as f64 / 2.5, (i / 25) as f64 / 2.0), i as f64)).collect();
+        let extent = Extent::new(0.0, 0.0, 10.0, 10.0);
+        let e = idw_on(Some(1), &pts, &extent, 0.01, 2.0, 0, "idw").unwrap_err();
+        assert!(
+            e.contains("too much work") && e.contains(&format!("{MAX_IDW_WORK} cell-point pairs")) && e.contains("on 1 thread(s)"),
+            "{e}"
+        );
     }
 
     /// Rows made on several threads give the same surface, bit for bit, as one thread (#1252),

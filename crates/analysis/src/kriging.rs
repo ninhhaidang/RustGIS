@@ -14,7 +14,8 @@ use rustgis_geom::{Coord, Extent};
 
 use crate::rasterops::{NODATA, max_pixels};
 
-/// Maximum cell-point pairs Kriging computes (about a second's work).
+/// Maximum cell-point pairs Kriging computes on one thread (about a second's work); a run on several
+/// threads may take as many times more ([`crate::parallel::work_cap`]).
 pub const MAX_KRIGING_WORK: usize = 40_000_000;
 
 /// Theoretical semivariogram models for spatial autocorrelation.
@@ -343,15 +344,19 @@ fn kriging_on(
     let k = if neighbours == 0 { 12.min(points.len()) } else { neighbours.clamp(2, points.len().min(32)) };
     let k3 = (k * k * k) / 3;
     let work_per_cell = points.len().saturating_add(k3);
-    if w.saturating_mul(h).saturating_mul(work_per_cell) > MAX_KRIGING_WORK {
-        return Err(format!("{w} × {h} cells from {} points is too much work; use a larger cell size", points.len()));
-    }
+    let work = w.saturating_mul(h).saturating_mul(work_per_cell);
 
-    // Each row on its own, on several threads when the work is large (#1252); a thread has its
-    // own distances and system buffers.
+    // Each row on its own, on several threads when the work is large (#1252), and as many times
+    // the work (#1291); a thread has its own distances and system buffers.
     let scratch_bytes = points.len().saturating_mul(std::mem::size_of::<(f64, f64, Coord)>());
-    let threads =
-        threads.unwrap_or_else(|| crate::parallel::threads_for_rows(h, w.saturating_mul(h).saturating_mul(work_per_cell), scratch_bytes));
+    let threads = threads.unwrap_or_else(|| crate::parallel::threads_for_rows(h, work, scratch_bytes));
+    let cap = crate::parallel::work_cap(MAX_KRIGING_WORK, threads);
+    if work > cap {
+        return Err(format!(
+            "{w} × {h} cells from {} points is too much work, more than the {cap} this computer takes on {threads} thread(s); use a larger cell size",
+            points.len()
+        ));
+    }
     let scratch = || (Vec::<(f64, f64, Coord)>::with_capacity(points.len()), KrigingBuffers::new());
     let (mut pred_data, mut var_data) = (crate::rasterops::new_band(w, h, NODATA)?, crate::rasterops::new_band(w, h, NODATA)?);
     let rows = pred_data.chunks_mut(w).zip(var_data.chunks_mut(w));
