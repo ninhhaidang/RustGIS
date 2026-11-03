@@ -212,8 +212,10 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
   damaged) is drawn in the fallback too, and the command that names it says so. The fallback
   starts as the family's own class (a serif's is Serif).
   Scripts give the family's name: `"font": "Garamond"`, with `"fallback": "serif"` if wanted;
-  `labels.fonts` lists the installed families. The project keeps the name, never a file, and no
-  font goes into a PNG or PDF export (their pages are pictures). **Picture** places a PNG or JPEG.
+  `labels.fonts` lists the installed families. The project keeps the name, never a file. A PDF
+  sets its text in the letters' own outlines, so it shows the family wherever it is opened, and
+  the text can still be searched and copied; no font file goes into it. **Picture** places a PNG
+  or JPEG.
 - **Map Series**: one page per feature of an index layer, with the frame zoomed to each feature;
   step through pages, refresh, and export every page into one PDF.
 - Click an element to select it, drag to move, drag its handles to resize, and edit it in the
@@ -242,6 +244,15 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
   the other elements' edges and centres, and the line it snapped to is highlighted. Hold Alt to
   place an element freely, or turn **Snap** off in the Page group.
 - **Export** writes PDF (every map series page by default, up to 500), or PNG or SVG of the current page.
+  A PDF keeps the page as vectors: text, shapes, surrounds and map frames (their features, labels
+  and grids, turned with the frame) stay sharp at any zoom or print size, and linear and radial
+  gradient fills are PDF gradients. What is pixels by nature is a picture in it at the export's
+  `dpi`, keeping its layer's opacity and blend mode: rasters, web tile layers, pictures, legend
+  images from map services, a masked layer, and a frame that is tilted, on the globe or with view
+  effects. Hatch and dot fills, shapeburst fills, and sweeping, repeating or reflected gradients
+  are pictures cut to their shape. The `dpi` also sets how fine the vectors' detail is kept, as a
+  PNG at that resolution would show it. A frame or page whose vectors would pass 256 MB (64 MB
+  in the browser) is drawn as a picture instead, and the export says which.
   In SVG each element is a group (an Inkscape layer) named after it: text stays text and rectangles,
   ellipses and lines stay shapes, while map frames and the other surrounds are pictures at the export
   resolution, so the page can be finished in a vector editor. SVG text uses the viewer's
@@ -269,7 +280,8 @@ previews it and sets it up.
   relationship, listed beneath it).
 - A where clause or the layer's selection limits the records; a sort field orders them within
   their groups.
-- **Publish › Report**: **Export Report** writes a PDF (or the first page as PNG); **Save As Report
+- **Publish › Report**: **Export Report** writes a PDF, kept as vectors as a layout's is (or
+  the first page as PNG); **Save As Report
   File** keeps the report, and **Report Template** its design without the data source, to start
   reports on other layers (**Publish › Import Report**).
 
@@ -283,7 +295,8 @@ previews, edits and plays it.
   URL with an optional poster picture.
 - Each page has a title, speaker notes and a duration (for **Play**), and can move up or down.
 - **Publish › Output › Presentation › Export Presentation** writes an HTML slideshow (arrow
-  keys, `N` for notes, `P` to play; videos play in place), a PDF, or the first page as PNG.
+  keys, `N` for notes, `P` to play; videos play in place), a PDF (kept as vectors as a layout's
+  is), or the first page as PNG.
   Video sources remain file paths or URLs, so keep them accessible beside the exported slideshow.
   **Save As Presentation File** in the same menu keeps it to import into other projects (`.rgispres`).
 

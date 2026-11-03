@@ -275,14 +275,44 @@ pub fn draw_page(doc: &Doc, pages: &[Page], n: usize, dpi: f64, layouts: &[Layou
         let info = crate::layout::PageInfo { page: n + 1, pages: pages.len(), page_name: String::new() };
         return crate::layout::render(l, maps, dpi, &info).map(|pm| (pm, l.width, l.height));
     }
-    let Page::Flow(items) = page else { return None };
+    flow_canvas(doc, pages, n, dpi, false).map(|(pm, w, h)| (pm.into_pixmap(), w, h))
+}
+
+/// Page `n` as a vector PDF page: a layout's as [`crate::layout::render_drawing`] keeps it, a
+/// flowing page's text, bands and charts as vectors and its pictures as pictures at `dpi`; with
+/// the names of a layout's frames drawn as pictures (see `render_drawing`).
+pub fn pdf_page(
+    doc: &Doc,
+    pages: &[Page],
+    n: usize,
+    dpi: f64,
+    layouts: &[Layout],
+    maps: &mut [Map],
+) -> Option<(crate::pdf::Page, Vec<String>)> {
+    let page = pages.get(n)?;
+    let dpi = if dpi.is_finite() { dpi.clamp(24.0, 600.0) } else { 96.0 };
+    if let Page::Layout(li) = page {
+        let l = layouts.get(*li)?;
+        let info = crate::layout::PageInfo { page: n + 1, pages: pages.len(), page_name: String::new() };
+        return crate::layout::render_drawing(l, maps, dpi, &info)
+            .map(|(d, pictured)| (crate::pdf::Page::drawing(d, l.width, l.height), pictured));
+    }
+    let (pm, w, h) = flow_canvas(doc, pages, n, dpi, true)?;
+    pm.into_drawing().map(|d| (crate::pdf::Page::drawing(d, w, h), Vec::new()))
+}
+
+/// Flowing page `n` on a canvas `dpi` dots an inch (recording when `record`), and its size in
+/// millimetres; `None` for a layout's page.
+fn flow_canvas(doc: &Doc, pages: &[Page], n: usize, dpi: f64, record: bool) -> Option<(crate::Canvas, f64, f64)> {
+    let Some(Page::Flow(items)) = pages.get(n) else { return None };
     let (wmm, hmm) = (doc.width.clamp(10.0, 5000.0), doc.height.clamp(10.0, 5000.0));
     let mut k = dpi / 25.4; // pixels per millimetre
     let px = wmm * k * hmm * k;
     if px > MAX_PIXELS {
         k *= (MAX_PIXELS / px).sqrt();
     }
-    let mut pm = crate::Canvas::new((wmm * k).round().max(1.0) as u32, (hmm * k).round().max(1.0) as u32)?;
+    let (pw, ph) = ((wmm * k).round().max(1.0) as u32, (hmm * k).round().max(1.0) as u32);
+    let mut pm = if record { crate::Canvas::recording(pw, ph)? } else { crate::Canvas::new(pw, ph)? };
     pm.fill(tiny_skia::Color::WHITE);
     let content_w = (wmm - 2.0 * MARGIN).max(10.0);
     let content_h = ((hmm - MARGIN - FOOTER).max(MARGIN + 20.0)) - MARGIN;
@@ -448,7 +478,7 @@ pub fn draw_page(doc: &Doc, pages: &[Page], n: usize, dpi: f64, layouts: &[Layou
     let num = format!("Page {} of {}", n + 1, pages.len());
     let nw = width_mm(&num, 7.5, false);
     text::text_at(&mut pm, &num, at(MARGIN + content_w - nw), fy, pt_px(7.5), DIM, false, text::Align::Left, false);
-    Some((pm.into_pixmap(), wmm, hmm))
+    Some((pm, wmm, hmm))
 }
 
 #[cfg(test)]

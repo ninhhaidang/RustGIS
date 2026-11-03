@@ -34,6 +34,7 @@ pub mod terrain;
 mod text;
 pub mod tile_mesh;
 mod tiles;
+pub mod vector;
 pub use tiles::{Live, live as live_tiles};
 
 pub use rustgis_tiles;
@@ -258,6 +259,7 @@ pub struct PlacedIcon {
 }
 
 pub struct Rendered {
+    /// The frame's pixels; 1 × 1 and empty when it was kept as vectors (`recorded`).
     pub pixmap: Pixmap,
     pub labels: Vec<PlacedLabel>,
     /// Labels that didn't fit, when the map shows unplaced labels (drawn in red).
@@ -270,6 +272,8 @@ pub struct Rendered {
     pub data_pending: bool,
     /// Tile layers that couldn't be drawn, and why.
     pub tile_errors: Vec<String>,
+    /// The frame kept as vectors, when it was recorded ([`render_complete_recorded`]).
+    pub(crate) recorded: Option<Canvas>,
 }
 
 /// Which rasteriser [`render_backend`] targets: the tiny-skia CPU pixmap (the default, and the
@@ -865,6 +869,11 @@ impl Ctx<'_> {
         if ix < -reach || iy < -reach || ix > pm.width() as i64 + reach || iy > pm.height() as i64 + reach {
             return;
         }
+        // A recording keeps the marker itself, not a sprite's pixels.
+        if pm.is_recording() {
+            draw_marker(pm, x, y, s, 1.0, None, self.ppp);
+            return;
+        }
         let key = (s.fill, s.stroke, s.stroke_width.to_bits(), s.size.to_bits(), s.marker, qx, qy);
         let mut sprites = self.sprites.borrow_mut();
         if !sprites.contains_key(&key) {
@@ -913,6 +922,10 @@ impl Ctx<'_> {
     /// outline would have, spread over the pixels around its centre. `false` (nothing drawn) for
     /// a bigger feature or a point.
     fn splat(&self, pm: &mut Canvas, e: &Extent, g: &Geometry, s: &Symbol) -> bool {
+        // A recording keeps even the smallest feature as its shape.
+        if pm.is_recording() {
+            return false;
+        }
         let k = self.view.pixels_per_point / self.view.camera.res.max(1e-12);
         let (sx, sy) = ((e.width() * k) as f32, (e.height() * k) as f32);
         if !(sx.is_finite() && sy.is_finite()) || sx > 1.0 || sy > 1.0 || e.is_empty() {
@@ -955,7 +968,8 @@ impl Ctx<'_> {
     /// Other shapes keep their paths: an extent is not a substitute for a hole or an inset.
     fn small_polygon(&self, pm: &mut Canvas, e: &Extent, g: &Geometry, s: &Symbol) -> bool {
         let Geometry::Polygon(polys) = g else { return false };
-        if self.wireframe
+        if pm.is_recording()
+            || self.wireframe
             || self.globe.is_some()
             || self.view.camera.bearing != 0.0
             || self.view.camera.pitch != 0.0
@@ -1595,8 +1609,15 @@ pub fn render(map: &mut Map, view: &View) -> Option<Rendered> {
     render_with(map, view, false)
 }
 
+/// [`render_with_backend`] on the CPU, as pixels.
 fn render_with(map: &mut Map, view: &View, full_res_rasters: bool) -> Option<Rendered> {
-    match render_with_backend(map, view, full_res_rasters, Backend::Cpu) {
+    render_cpu(map, view, full_res_rasters, false)
+}
+
+/// [`render_with`] on the CPU, kept as vectors where it can be (`record`, see
+/// [`render_frame`]).
+fn render_cpu(map: &mut Map, view: &View, full_res_rasters: bool, record: bool) -> Option<Rendered> {
+    match render_any(map, view, full_res_rasters, Backend::Cpu, record) {
         Some(RenderOutput::Cpu(r)) => Some(r),
         // The Cpu backend never produces RenderOutput::Gpu.
         Some(RenderOutput::Gpu(_)) | None => None,
@@ -1621,6 +1642,12 @@ pub(crate) fn flush_acc(pm: &mut Pixmap, cmds: &mut Vec<gpu_scene::DrawCmd>, dir
 /// `full_res_rasters` renders rasters at full resolution (exports); `backend` selects the CPU
 /// pixmap or a GPU scene (see [`Backend`]).
 fn render_with_backend(map: &mut Map, view: &View, full_res_rasters: bool, backend: Backend) -> Option<RenderOutput> {
+    render_any(map, view, full_res_rasters, backend, false)
+}
+
+/// [`render_with_backend`], `record` keeping a flat, north-up frame as vectors where it can
+/// ([`render_frame`]).
+fn render_any(map: &mut Map, view: &View, full_res_rasters: bool, backend: Backend, record: bool) -> Option<RenderOutput> {
     // A bearing or pitch set directly on the camera may be unnormalised (or no number, which
     // faces north and looks straight down).
     let mut camera = view.camera;
@@ -1734,7 +1761,7 @@ fn render_with_backend(map: &mut Map, view: &View, full_res_rasters: bool, backe
     // The globe turns and tilts itself (`Globe`): one frame.
     if map.projection.is_globe() {
         let view = View { camera, ..*view };
-        return render_frame(map, &view, full_res_rasters, backend, Labels::Own);
+        return render_frame(map, &view, full_res_rasters, backend, Labels::Own, false);
     }
     {
         let view = View { camera, ..*view };
@@ -1748,10 +1775,10 @@ fn render_with_backend(map: &mut Map, view: &View, full_res_rasters: bool, backe
             return render_tilted(map, &view, full_res_rasters, false).map(RenderOutput::Cpu);
         }
         if camera.bearing != 0.0 {
-            return render_turned(map, &view, full_res_rasters).map(RenderOutput::Cpu);
+            return render_turned(map, &view, full_res_rasters, record).map(RenderOutput::Cpu);
         }
     }
-    render_frame(map, view, full_res_rasters, backend, Labels::Own)
+    render_frame(map, view, full_res_rasters, backend, Labels::Own, record)
 }
 
 /// Persisted local Shapefiles can require complete traversal before a handle is opened.
@@ -1916,7 +1943,8 @@ fn render_tilted(map: &mut Map, view: &View, full_res_rasters: bool, sources_rea
     let (mut attribution, mut tiles_pending, mut tile_errors) = (Vec::<String>::new(), false, Vec::<String>::new());
     for (i, b) in bands_of.into_iter().enumerate() {
         let v = band_view(view, &b);
-        let Some(RenderOutput::Cpu(r)) = render_frame(map, &v, full_res_rasters, Backend::Cpu, Labels::Tilted(view, &mut candidates))
+        let Some(RenderOutput::Cpu(r)) =
+            render_frame(map, &v, full_res_rasters, Backend::Cpu, Labels::Tilted(view, &mut candidates), false)
         else {
             let scale = map.ground_res_at(&v.camera) / rustgis_geom::PIXEL_M;
             let complete = sources_ready
@@ -1976,7 +2004,16 @@ fn render_tilted(map: &mut Map, view: &View, full_res_rasters: bool, sources_rea
         }
     }
     let unplaced = if map.label_display.show_unplaced { placed.unplaced } else { Vec::new() };
-    Some(Rendered { pixmap: pm.into_pixmap(), labels: placed.labels, unplaced, attribution, tiles_pending, data_pending, tile_errors })
+    Some(Rendered {
+        pixmap: pm.into_pixmap(),
+        labels: placed.labels,
+        unplaced,
+        attribution,
+        tiles_pending,
+        data_pending,
+        tile_errors,
+        recorded: None,
+    })
 }
 
 /// Lays a tilted view's bands, drawn flat, over the ground's relief: each band as a grid of
@@ -2136,7 +2173,7 @@ fn gpu_turned(map: &mut Map, view: &View, full_res_rasters: bool, sources_ready:
     if view.camera.pitch == 0.0 {
         let (bw, bh) = view.camera.rotated_size(view.width, view.height);
         let north = View { width: bw.ceil() + 2.0, height: bh.ceil() + 2.0, camera: Camera { bearing: 0.0, ..view.camera }, ..*view };
-        let Some(RenderOutput::Gpu(scene)) = render_frame(map, &north, full_res_rasters, Backend::Gpu, Labels::Turned(view)) else {
+        let Some(RenderOutput::Gpu(scene)) = render_frame(map, &north, full_res_rasters, Backend::Gpu, Labels::Turned(view), false) else {
             return None;
         };
         if pictures(&scene.cmds) || scene.labels.iter().any(|l| l.icon.is_some()) {
@@ -2154,7 +2191,8 @@ fn gpu_turned(map: &mut Map, view: &View, full_res_rasters: bool, sources_ready:
     let last = bands.len().saturating_sub(1);
     for (i, b) in bands.iter().enumerate() {
         let v = band_view(view, b);
-        let Some(RenderOutput::Gpu(scene)) = render_frame(map, &v, full_res_rasters, Backend::Gpu, Labels::Tilted(view, &mut candidates))
+        let Some(RenderOutput::Gpu(scene)) =
+            render_frame(map, &v, full_res_rasters, Backend::Gpu, Labels::Tilted(view, &mut candidates), false)
         else {
             plain = false;
             break;
@@ -2886,28 +2924,41 @@ fn sample_band(v: &View, pm: &Pixmap, m: Coord) -> Option<[f32; 4]> {
 /// A view turned to a bearing, on the CPU: the map is drawn facing north over the box around
 /// the turned view, then turned into place. Labels are placed in the turned view and drawn
 /// upright, as MapLibre keeps them.
-fn render_turned(map: &mut Map, view: &View, full_res_rasters: bool) -> Option<Rendered> {
+fn render_turned(map: &mut Map, view: &View, full_res_rasters: bool, record: bool) -> Option<Rendered> {
     let (bw, bh) = view.camera.rotated_size(view.width, view.height);
     let north = View { width: bw.ceil() + 2.0, height: bh.ceil() + 2.0, camera: Camera { bearing: 0.0, ..view.camera }, ..*view };
-    let Some(RenderOutput::Cpu(r)) = render_frame(map, &north, full_res_rasters, Backend::Cpu, Labels::Turned(view)) else { return None };
+    let Some(RenderOutput::Cpu(mut r)) = render_frame(map, &north, full_res_rasters, Backend::Cpu, Labels::Turned(view), record) else {
+        return None;
+    };
+    // A recorded north-up frame is placed turned as it is: its vectors turn with it.
+    let recorded = r.recorded.take();
+    let (pw, ph) = recorded.as_ref().map_or((r.pixmap.width(), r.pixmap.height()), |c| (c.width(), c.height()));
     let (w, h) = view.pixel_size();
-    let mut pm = Canvas::new(w, h)?;
+    let mut pm = if recorded.is_some() { Canvas::recording(w, h)? } else { Canvas::new(w, h)? };
     // Physical pixels per logical point of each frame (the north-up one may have been capped
     // at MAX_SIDE).
     let k_out = w as f64 / view.width.max(1e-9);
-    let k_in = r.pixmap.width() as f64 / north.width.max(1e-9);
+    let k_in = pw as f64 / north.width.max(1e-9);
     let s = k_out / k_in.max(1e-9);
     let b = view.camera.bearing.to_radians();
     let (c, n) = (b.cos() * s, b.sin() * s);
-    let (iw, ih) = (r.pixmap.width() as f64 / 2.0, r.pixmap.height() as f64 / 2.0);
+    let (iw, ih) = (pw as f64 / 2.0, ph as f64 / 2.0);
     let (tx, ty) = (w as f64 / 2.0 - (c * iw + n * ih), h as f64 / 2.0 - (c * ih - n * iw));
     let t = Transform::from_row(c as f32, -n as f32, n as f32, c as f32, tx as f32, ty as f32);
-    let paint = PixmapPaint { quality: tiny_skia::FilterQuality::Bilinear, ..PixmapPaint::default() };
-    pm.draw_pixmap(0, 0, r.pixmap.as_ref(), &paint, t, None);
+    match recorded {
+        Some(child) => pm.place(child, t, 1.0, rustgis_map::effects::Blend::Normal, None),
+        None => {
+            let paint = PixmapPaint { quality: tiny_skia::FilterQuality::Bilinear, ..PixmapPaint::default() };
+            pm.draw_pixmap(0, 0, r.pixmap.as_ref(), &paint, t, None);
+        }
+    }
     for l in &r.labels {
         if let Some(icon) = &l.icon {
             draw_icon(&mut pm, icon, view.pixels_per_point as f32);
         }
+    }
+    if pm.is_recording() {
+        return Some(Rendered { pixmap: Pixmap::new(1, 1)?, recorded: Some(pm), ..r });
     }
     Some(Rendered { pixmap: pm.into_pixmap(), ..r })
 }
@@ -2917,9 +2968,19 @@ fn render_turned(map: &mut Map, view: &View, full_res_rasters: bool) -> Option<R
 /// export, which draws everything as it will stay: rasters at full resolution, and labels in
 /// their installed font families, waiting for those to be indexed (`families::find`). A frame on
 /// screen passes `false`, and never waits for the index (`families::find_ready`).
-fn render_frame(map: &mut Map, view: &View, full_res_rasters: bool, backend: Backend, mut labels_to: Labels<'_>) -> Option<RenderOutput> {
+fn render_frame(
+    map: &mut Map,
+    view: &View,
+    full_res_rasters: bool,
+    backend: Backend,
+    mut labels_to: Labels<'_>,
+    record: bool,
+) -> Option<RenderOutput> {
     let (w, h) = view.pixel_size();
-    let mut pm = Canvas::new(w, h)?;
+    // Kept as vectors (`record`) on the CPU, for a flat frame without view effects (a pixel
+    // filter over the whole frame); anything else draws its pixels.
+    let record = record && !backend.is_gpu() && !map.projection.is_globe() && map.view.effects.is_none();
+    let mut pm = if record { Canvas::recording(w, h)? } else { Canvas::new(w, h)? };
     // Streamed layers read the view: in the background for the screen, in place for an export
     // (the full-resolution render), which waits for them; only the layers drawn at the view's
     // scale read. A tilted view's bands share its read.
@@ -3093,7 +3154,32 @@ fn render_frame(map: &mut Map, view: &View, full_res_rasters: bool, backend: Bac
                     // Only a frame for the view itself (not a turned or tilted view's north-up stand-in).
                     live: backend == Backend::GpuLive && matches!(labels_to, Labels::Own),
                 });
-                tile_out.add(tiles::draw(pm.pixels(), map, &which, view, tile_place, tile_labels, tile_gpu));
+                let blended = |i: &usize| map.tiles.get(*i).is_some_and(|t| t.blend != rustgis_map::effects::Blend::Normal);
+                if pm.is_recording() && which.iter().any(blended) {
+                    // A recording's pixels hold nothing of the vectors under them, so a blended
+                    // tile layer is drawn alone (over nothing its blend leaves it as it is) and
+                    // placed with its blend; the others go on the pixels, each in its turn.
+                    for i in which.iter().rev() {
+                        let one = std::slice::from_ref(i);
+                        if blended(i) {
+                            let Some(mut own) = Pixmap::new(w, h) else { continue };
+                            tile_out.add(tiles::draw(&mut own, map, one, view, tile_place, tile_labels, None));
+                            let blend = map.tiles.get(*i).map_or(tiny_skia::BlendMode::SourceOver, |t| blend_mode(t.blend));
+                            pm.draw_pixmap(
+                                0,
+                                0,
+                                own.as_ref(),
+                                &PixmapPaint { blend_mode: blend, ..PixmapPaint::default() },
+                                Transform::identity(),
+                                None,
+                            );
+                        } else {
+                            tile_out.add(tiles::draw(pm.pixels(), map, one, view, tile_place, tile_labels, None));
+                        }
+                    }
+                } else {
+                    tile_out.add(tiles::draw(pm.pixels(), map, &which, view, tile_place, tile_labels, tile_gpu));
+                }
                 if !gpu {
                     cpu_dirty |= which.iter().filter_map(|i| map.tiles.get(*i)).any(|t| t.draws());
                 }
@@ -3148,10 +3234,21 @@ fn render_frame(map: &mut Map, view: &View, full_res_rasters: bool, backend: Bac
         }
         let opacity = layer.opacity() * group_opacity.get(&layer.id).copied().unwrap_or(1.0);
         let mask = masks.iter().find(|(id, _)| *id == layer.id).map(|(_, m)| m);
-        let blend = blend_mode(layer.blend);
+        let (blend, layer_blend) = (blend_mode(layer.blend), layer.blend);
         // Drawn on its own and composited when it is see-through, masked or blended.
         let offscreen = opacity < 0.999 || mask.is_some() || layer.blend != rustgis_map::effects::Blend::Normal;
         let composite = |pm: &mut Canvas, target: &Pixmap| {
+            // A recording keeps the masked layer as a picture cut by its mask, placed with its
+            // opacity and blend over the vectors beneath.
+            if pm.is_recording()
+                && let Some(m) = mask
+            {
+                let mut cut = target.clone();
+                cut.apply_mask(m);
+                let paint = PixmapPaint { opacity, blend_mode: blend, ..PixmapPaint::default() };
+                pm.draw_pixmap(0, 0, cut.as_ref(), &paint, Transform::identity(), None);
+                return;
+            }
             pm.draw_pixmap(
                 0,
                 0,
@@ -3224,7 +3321,13 @@ fn render_frame(map: &mut Map, view: &View, full_res_rasters: bool, backend: Bac
             }
         }
 
-        let mut target = if offscreen { Canvas::new(w, h)? } else { Canvas::new(1, 1)? };
+        // A recording keeps a see-through or blended layer as a group of its own; a masked one
+        // (its mask is pixels) is drawn as pixels and composited as a picture.
+        let mut target = match (offscreen, pm.is_recording() && mask.is_none()) {
+            (true, true) => pm.sub(w, h)?,
+            (true, false) => Canvas::new(w, h)?,
+            (false, _) => Canvas::new(1, 1)?,
+        };
         let direct = !offscreen;
         let mut bins = effects::AggregationBins::default();
         let mut aggregate_symbol = None;
@@ -3534,7 +3637,13 @@ fn render_frame(map: &mut Map, view: &View, full_res_rasters: bool, backend: Bac
                     bins.draw(if direct { &mut pm } else { &mut target }, ctx, a, &base);
                 }
                 if !direct {
-                    composite(&mut pm, target.pixmap());
+                    if target.is_recording() {
+                        if let Some(empty) = Canvas::new(1, 1) {
+                            pm.place(std::mem::replace(&mut target, empty), Transform::identity(), opacity, layer_blend, None);
+                        }
+                    } else {
+                        composite(&mut pm, target.pixmap());
+                    }
                 }
             }
             // An upright marker shows its own selection.
@@ -3885,7 +3994,11 @@ fn render_frame(map: &mut Map, view: &View, full_res_rasters: bool, backend: Bac
                 bins.draw(if direct { &mut pm } else { &mut target }, ctx, a, &base);
             }
             if !direct {
-                composite(&mut pm, target.pixmap());
+                if target.is_recording() {
+                    pm.place(target, Transform::identity(), opacity, layer_blend, None);
+                } else {
+                    composite(&mut pm, target.pixmap());
+                }
             }
         }
         highlights.sort_by_key(|(rank, ..)| *rank);
@@ -3982,22 +4095,17 @@ fn render_frame(map: &mut Map, view: &View, full_res_rasters: bool, backend: Bac
     let tiles_pending = tile_out.pending;
     let tile_errors = tile_out.errors;
     match backend {
-        Backend::Cpu => Some(RenderOutput::Cpu(Rendered {
-            pixmap: pm.into_pixmap(),
-            labels,
-            unplaced,
-            attribution,
-            tiles_pending,
-            data_pending,
-            tile_errors,
-        })),
+        Backend::Cpu => {
+            let (pixmap, recorded) = if pm.is_recording() { (Pixmap::new(1, 1)?, Some(pm)) } else { (pm.into_pixmap(), None) };
+            Some(RenderOutput::Cpu(Rendered { pixmap, labels, unplaced, attribution, tiles_pending, data_pending, tile_errors, recorded }))
+        }
         Backend::Gpu | Backend::GpuLive => {
             flush_acc(pm.pixels(), &mut cmds, &mut cpu_dirty)?;
             // Pathological CPU/GPU alternation (rasters, masks, blends between every vector
             // layer) costs more full-screen uploads than a plain CPU rasterization.
             let images = cmds.iter().filter(|c| matches!(c, gpu_scene::DrawCmd::Image { .. })).count();
             if images > 4 {
-                return render_frame(map, view, full_res_rasters, Backend::Cpu, labels_to);
+                return render_frame(map, view, full_res_rasters, Backend::Cpu, labels_to, record);
             }
             Some(RenderOutput::Gpu(gpu_scene::GpuScene {
                 clear: mesh::premul(water),
@@ -4477,7 +4585,7 @@ pub fn render_tilt_drape(map: &mut Map, view: &View, margin: f64, max_side: u32)
         (w, h) = (fw, fh);
         let v = View { width: w, height: h, pixels_per_point: ppp, camera, sky: false };
         // The bands share the read above.
-        if let Some(RenderOutput::Cpu(r)) = render_frame(map, &v, false, Backend::Cpu, Labels::Shared) {
+        if let Some(RenderOutput::Cpu(r)) = render_frame(map, &v, false, Backend::Cpu, Labels::Shared, false) {
             out.push(TiltPatch { pixmap: r.pixmap, band: rustgis_map::camera::Band { camera, width: w, height: h, depth: b.depth } });
         }
     }
@@ -4833,9 +4941,20 @@ const IDLE_PASSES: usize = 6;
 /// failed) and waits for news of it, at most a minute in all. In the browser, which can't wait,
 /// it draws what has arrived.
 pub(crate) fn render_complete(map: &mut Map, view: &View) -> Option<Rendered> {
+    complete(map, view, false)
+}
+
+/// [`render_complete`] kept as vectors where the frame can be (flat, north up, without view
+/// effects): its `recorded` canvas; anything else as pixels.
+pub(crate) fn render_complete_recorded(map: &mut Map, view: &View) -> Option<Rendered> {
+    complete(map, view, true)
+}
+
+/// [`render_complete`]'s passes, each recorded when `record`.
+fn complete(map: &mut Map, view: &View, record: bool) -> Option<Rendered> {
     // What had come when it drew: what lands meanwhile is news to the wait.
     let mut drawn_at = rustgis_tiles::cache::generation();
-    let mut r = render_with(map, view, true)?;
+    let mut r = render_cpu(map, view, true, record)?;
     let start = web_time::Instant::now();
     let budget = web_time::Duration::from_secs(60);
     let mut idle = 0;
@@ -4849,9 +4968,30 @@ pub(crate) fn render_complete(map: &mut Map, view: &View) -> Option<Rendered> {
             idle += 1;
         }
         drawn_at = now;
-        r = render_with(map, view, true)?;
+        r = render_cpu(map, view, true, record)?;
     }
     Some(r)
+}
+
+/// [`render_png`]'s map kept as vectors (for a vector PDF) where it can be: flat, north up,
+/// without view effects; anything else, and what is pixels by nature, as pictures.
+pub fn render_drawing(map: &mut Map, view: &View) -> Option<vector::Drawing> {
+    let r = render_complete_recorded(map, view)?;
+    let mut pm = match r.recorded {
+        Some(c) => c,
+        None => {
+            // Not recorded: its pixels, placed on a recording.
+            let mut c = Canvas::recording(r.pixmap.width(), r.pixmap.height())?;
+            c.draw_pixmap(0, 0, r.pixmap.as_ref(), &PixmapPaint::default(), Transform::identity(), None);
+            c
+        }
+    };
+    for l in r.unplaced.iter().chain(&r.labels) {
+        text::draw(&mut pm, l, view.pixels_per_point as f32);
+    }
+    text::scale_bar(&mut pm, view, map.ground_res_at(&view.camera));
+    draw_attribution(&mut pm, &r.attribution, view.pixels_per_point as f32);
+    pm.into_drawing()
 }
 
 /// Renders a map with its labels, a scale bar and a north arrow to PNG bytes.

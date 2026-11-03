@@ -55,7 +55,21 @@ pub(crate) fn frame_requires_complete(map: &Map, view: &View) -> bool {
 pub fn render(layout: &Layout, maps: &mut [Map], dpi: f64, info: &PageInfo) -> Option<Pixmap> {
     let (w, h, k) = page_geometry(layout, dpi);
     let bounds = tiny_skia::IntRect::from_xywh(0, 0, w, h)?;
-    draw_page(layout, maps, info, k, bounds, None)
+    draw_page(layout, maps, info, k, bounds, None, None).map(Canvas::into_pixmap)
+}
+
+/// [`render`] kept as vectors (for a vector PDF): text, shapes, surrounds and flat, north-up map
+/// frames as paths and glyphs, what is pixels by nature (rasters, tiles, pictures, a tilted or
+/// globe frame) as pictures drawn at `dpi`, in the drawing's pixels at that resolution. With it,
+/// the names of the frames drawn as pictures because their vectors passed
+/// [`crate::vector::MAX_COST`]. A drawing that overflowed all the same (its surrounds) is
+/// incomplete: [`crate::vector::Drawing::overflowed`] says so.
+pub fn render_drawing(layout: &Layout, maps: &mut [Map], dpi: f64, info: &PageInfo) -> Option<(crate::vector::Drawing, Vec<String>)> {
+    let (w, h, k) = page_geometry(layout, dpi);
+    let bounds = tiny_skia::IntRect::from_xywh(0, 0, w, h)?;
+    let mut pictured = Vec::new();
+    let drawing = draw_page(layout, maps, info, k, bounds, None, Some(&mut pictured))?.into_drawing()?;
+    Some((drawing, pictured))
 }
 
 /// Page pixel dimensions and the shared millimetre scale, capped to the renderer's budget.
@@ -79,11 +93,13 @@ pub(crate) fn render_element(layout: &Layout, id: u32, maps: &mut [Map], dpi: f6
     let Some(bounds) = tiny_skia::IntRect::from_xywh(x0 as i32, y0 as i32, (x1 - x0) as u32, (y1 - y0) as u32) else {
         return Some(None);
     };
-    let pm = draw_page(layout, maps, info, k, bounds, Some(id))?;
+    let pm = draw_page(layout, maps, info, k, bounds, Some(id), None)?.into_pixmap();
     Some(Some((pm, [x0 / k, y0 / k, (x1 - x0) / k, (y1 - y0) / k])))
 }
 
-/// Draws the selected region with the full layout's frame and dynamic-text context.
+/// Draws the selected region with the full layout's frame and dynamic-text context, recorded
+/// when `record` holds a list (see [`render_drawing`]), which gets the names of the frames
+/// drawn as pictures.
 fn draw_page(
     layout: &Layout,
     maps: &mut [Map],
@@ -91,9 +107,11 @@ fn draw_page(
     k: f64,
     bounds: tiny_skia::IntRect,
     element: Option<u32>,
-) -> Option<Pixmap> {
+    mut record: Option<&mut Vec<String>>,
+) -> Option<Canvas> {
     let ppp = k / PT_PER_MM;
-    let mut pm = Canvas::new(bounds.width(), bounds.height())?;
+    let mut pm =
+        if record.is_some() { Canvas::recording(bounds.width(), bounds.height())? } else { Canvas::new(bounds.width(), bounds.height())? };
     if element.is_none() {
         pm.fill(tiny_skia::Color::WHITE);
     }
@@ -143,14 +161,26 @@ fn draw_page(
                 // A frame larger than the page budget is drawn at a lower resolution and scaled up.
                 let fppp = ppp.min((MAX_PIXELS / (fw * fh).max(1.0)).sqrt()).max(0.01);
                 let view = View { width: fw, height: fh, pixels_per_point: fppp, camera: cam, sky: false };
-                let Some(frame_pm) = frame_map(map, cam, fw, fh, fppp) else {
+                let Some(mut frame_pm) = frame_canvas(map, cam, fw, fh, fppp, pm.is_recording()) else {
                     if frame_requires_complete(map, &view) {
                         return None;
                     }
                     // Preserve upstream's best-effort page export for ordinary maps.
                     continue;
                 };
-                let mut frame_pm = Canvas::from_pixmap(frame_pm);
+                // A frame whose vectors grew past the budget, or would take the page past it, is
+                // drawn as a picture instead.
+                let too_large =
+                    frame_pm.overflowed() || pm.recorded_cost().saturating_add(frame_pm.recorded_cost()) > crate::vector::max_cost();
+                if frame_pm.is_recording()
+                    && too_large
+                    && let Some(pixels) = frame_canvas(map, cam, fw, fh, fppp, false)
+                {
+                    frame_pm = pixels;
+                    if let Some(list) = record.as_deref_mut() {
+                        list.push(e.name.clone());
+                    }
+                }
                 if let Some(g) = grid {
                     draw_grid(&mut frame_pm, map, &view, g, layout.decimal_comma);
                 }
@@ -169,6 +199,7 @@ fn draw_page(
                 let up = (ppp / fppp) as f32;
                 // Shaped frames are clipped by a mask of the frame's own size.
                 if !matches!(shape, FrameShape::Rectangle)
+                    && !frame_pm.is_recording()
                     && let Some(p) =
                         path.as_ref().and_then(|p| p.clone().transform(Transform::from_translate(-x0, -y0).post_scale(1.0 / up, 1.0 / up)))
                     && let Some(mut m) = Mask::new(frame_pm.width(), frame_pm.height())
@@ -177,14 +208,21 @@ fn draw_page(
                     frame_pm.pixels().apply_mask(&m);
                 }
                 let place = Transform::from_row(up, 0.0, 0.0, up, x0, y0);
-                pm.draw_pixmap(
-                    0,
-                    0,
-                    frame_pm.pixmap().as_ref(),
-                    &PixmapPaint { quality: tiny_skia::FilterQuality::Bilinear, ..PixmapPaint::default() },
-                    place,
-                    None,
-                );
+                if frame_pm.is_recording() {
+                    // Kept as vectors, cut to the frame (its paths reach past it).
+                    let clip =
+                        path.clone().map(|p| crate::vector::Clip { path: p, rule: FillRule::Winding, transform: Transform::identity() });
+                    pm.place(frame_pm, place, 1.0, rustgis_map::effects::Blend::Normal, clip);
+                } else {
+                    pm.draw_pixmap(
+                        0,
+                        0,
+                        frame_pm.pixmap().as_ref(),
+                        &PixmapPaint { quality: tiny_skia::FilterQuality::Bilinear, ..PixmapPaint::default() },
+                        place,
+                        None,
+                    );
+                }
                 if let Some(p) = &path {
                     pm.stroke_path(
                         p,
@@ -354,15 +392,22 @@ fn draw_page(
             }
         }
     }
-    Some(pm.into_pixmap())
+    Some(pm)
 }
 
 /// A map frame's map, `w` × `h` points at `ppp` pixels a point, labels and attribution included:
 /// what a frame shows before its grid, indicator and outline. It waits for the map's tiles, as a
 /// page needs them all.
 pub fn frame_map(map: &mut Map, camera: rustgis_map::Camera, w: f64, h: f64, ppp: f64) -> Option<Pixmap> {
+    frame_canvas(map, camera, w, h, ppp, false).map(Canvas::into_pixmap)
+}
+
+/// [`frame_map`] on a canvas: one that records (see [`crate::canvas`]) when `record` and the
+/// frame can be kept as vectors (flat, north up, without view effects), else its pixels.
+fn frame_canvas(map: &mut Map, camera: rustgis_map::Camera, w: f64, h: f64, ppp: f64, record: bool) -> Option<Canvas> {
     let view = View { width: w, height: h, pixels_per_point: ppp, camera, sky: false };
-    crate::render_complete(map, &view).map(|img| finish_frame_map(img, ppp))
+    let img = if record { crate::render_complete_recorded(map, &view) } else { crate::render_complete(map, &view) };
+    img.map(|img| finish_frame(img, ppp))
 }
 
 /// [`frame_map`] without waiting for tiles still on their way, for a preview drawn while the
@@ -370,17 +415,18 @@ pub fn frame_map(map: &mut Map, camera: rustgis_map::Camera, w: f64, h: f64, ppp
 /// under the pointer.
 pub fn frame_map_preview(map: &mut Map, camera: rustgis_map::Camera, w: f64, h: f64, ppp: f64) -> Option<Pixmap> {
     let view = View { width: w, height: h, pixels_per_point: ppp, camera, sky: false };
-    crate::render(map, &view).map(|img| finish_frame_map(img, ppp))
+    crate::render(map, &view).map(|img| finish_frame(img, ppp).into_pixmap())
 }
 
-/// A rendered frame map with its labels and attribution drawn on it.
-fn finish_frame_map(img: crate::Rendered, ppp: f64) -> Pixmap {
-    let mut pm = Canvas::from_pixmap(img.pixmap);
+/// A rendered frame map with its labels and attribution drawn on it: on its recording when it
+/// was recorded, else on its pixels.
+fn finish_frame(img: crate::Rendered, ppp: f64) -> Canvas {
+    let mut pm = img.recorded.unwrap_or_else(|| Canvas::from_pixmap(img.pixmap));
     for l in img.unplaced.iter().chain(&img.labels) {
         text::draw(&mut pm, l, ppp as f32);
     }
     crate::draw_attribution(&mut pm, &img.attribution, ppp as f32);
-    pm.into_pixmap()
+    pm
 }
 
 /// Expands layout text tokens: the page ones here, the map ones from the first frame.
@@ -854,10 +900,14 @@ fn rotated_text(pm: &mut Canvas, s: &str, cx: f32, cy: f32, px: f32, color: Rgba
     // Whole pixels throughout, so the quarter turn moves pixels without resampling them.
     let tw = (text::measure(s, px / 1.33, false) + px * 0.4).ceil().max(1.0);
     let th = (px * 1.6).ceil().max(1.0);
-    let Some(mut tmp) = Canvas::new(tw as u32, th as u32) else { return };
-    text::text_at(&mut tmp, s, tw / 2.0, th / 2.0, px, color, false, text::Align::Center, true);
     let (x, y) = ((cx - th / 2.0).round(), (cy + tw / 2.0).round());
     let t = Transform::from_row(0.0, -1.0, 1.0, 0.0, x, y);
+    if pm.is_recording() {
+        pm.with_transform(t, |c| text::text_at(c, s, tw / 2.0, th / 2.0, px, color, false, text::Align::Center, true));
+        return;
+    }
+    let Some(mut tmp) = Canvas::new(tw as u32, th as u32) else { return };
+    text::text_at(&mut tmp, s, tw / 2.0, th / 2.0, px, color, false, text::Align::Center, true);
     pm.draw_pixmap(
         0,
         0,
@@ -1849,6 +1899,97 @@ fn chart(pm: &mut Canvas, r: Rect, ds: &rustgis_data::Dataset, field: &str, labe
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A page with a frame of the built-in world and a title.
+    fn vector_page() -> (Layout, Vec<Map>) {
+        let mut layout = Layout::new("Vectors", 120.0, 90.0);
+        let kind = serde_json::from_value(serde_json::json!({"MapFrame": {
+            "map": "Map", "center": {"x": 0, "y": 0}, "scale": 150000000
+        }}))
+        .unwrap();
+        layout.add("World", (10.0, 20.0, 100.0, 60.0), kind);
+        let title = ElementKind::text("Shelby County", 18.0, Rgba::rgb(20, 20, 20), true);
+        layout.add("Title", (10.0, 4.0, 100.0, 12.0), title);
+        (layout, vec![Map::new("Map")])
+    }
+
+    #[test]
+    fn a_recorded_page_keeps_its_text_and_frame_as_vectors() {
+        use crate::vector::Item;
+        let (layout, mut maps) = vector_page();
+        let (drawing, pictured) = render_drawing(&layout, &mut maps, 150.0, &PageInfo::default()).unwrap();
+        assert!(pictured.is_empty() && !drawing.overflowed());
+        let (_, _, items) = drawing.finish();
+        let text: String = items
+            .iter()
+            .filter_map(|i| if let Item::Glyphs(r) = i { Some(r) } else { None })
+            .flat_map(|r| r.glyphs.iter().map(|g| g.ch))
+            .collect();
+        assert_eq!(text, "Shelby County", "the title, its space kept for copying");
+        // The frame: a group cut to its box, its land as paths, not a picture of it.
+        let frame = items.iter().find_map(|i| if let Item::Group(g) = i { Some(g) } else { None }).expect("the frame's group");
+        assert!(frame.clip.is_some());
+        assert!(frame.items.iter().filter(|i| matches!(i, Item::Fill { .. })).count() > 50);
+        assert!(!frame.items.iter().any(|i| matches!(i, Item::Image(_))));
+    }
+
+    #[test]
+    fn a_recorded_page_draws_what_the_picture_of_it_shows() {
+        let (layout, mut maps) = vector_page();
+        let info = PageInfo::default();
+        let png = render(&layout, &mut maps, 96.0, &info).unwrap();
+        let (drawing, _) = render_drawing(&layout, &mut maps, 96.0, &info).unwrap();
+        let (_, _, items) = drawing.finish();
+        let mut replayed = Pixmap::new(png.width(), png.height()).unwrap();
+        crate::vector::replay(&items, &mut replayed, Transform::identity());
+        // The same paths through the same rasteriser: only glyph edges (coverage against filled
+        // outlines) may differ.
+        let differ = png.pixels().iter().zip(replayed.pixels()).filter(|(a, b)| {
+            let (a, b) = (a.demultiply(), b.demultiply());
+            a.red().abs_diff(b.red()).max(a.green().abs_diff(b.green())).max(a.blue().abs_diff(b.blue())) > 48
+        });
+        let share = differ.count() as f64 / png.pixels().len() as f64;
+        assert!(share < 0.005, "{:.3}% of pixels differ", share * 100.0);
+    }
+
+    #[test]
+    fn a_huge_page_records_within_its_bounds() {
+        let mut layout = Layout::new("Huge", 5000.0, 5000.0);
+        layout.add("Title", (10.0, 10.0, 4000.0, 400.0), ElementKind::text("Shelby County", 300.0, Rgba::rgb(0, 0, 0), true));
+        let (drawing, _) = render_drawing(&layout, &mut [], 600.0, &PageInfo::default()).unwrap();
+        // Held to the page budget's size, as the picture of it is.
+        assert!(drawing.width as f64 <= MAX_SIDE && drawing.height as f64 <= MAX_SIDE);
+        assert!(!drawing.overflowed());
+    }
+
+    #[test]
+    fn a_turned_frame_stays_vectors() {
+        use crate::vector::Item;
+        let (mut layout, mut maps) = vector_page();
+        if let Some(ElementKind::MapFrame { bearing, .. }) = layout.elements.first_mut().map(|e| &mut e.kind) {
+            *bearing = 30.0;
+        }
+        let (drawing, _) = render_drawing(&layout, &mut maps, 96.0, &PageInfo::default()).unwrap();
+        let (_, _, items) = drawing.finish();
+        let frame = items.iter().find_map(|i| if let Item::Group(g) = i { Some(g) } else { None }).expect("the frame's group");
+        // The turned view holds the north-up frame, turned.
+        let Some(Item::Group(north)) = frame.items.first() else { panic!("the north-up frame inside") };
+        assert!(north.transform.ky.abs() > 0.3, "turned: {:?}", north.transform);
+        assert!(north.items.iter().filter(|i| matches!(i, Item::Fill { .. })).count() > 50);
+    }
+
+    #[test]
+    fn a_frame_too_large_for_vectors_is_drawn_as_a_picture_and_named() {
+        use crate::vector::{Item, TEST_MAX_COST};
+        let (layout, mut maps) = vector_page();
+        TEST_MAX_COST.with(|l| l.set(Some(20_000)));
+        let result = render_drawing(&layout, &mut maps, 72.0, &PageInfo::default());
+        TEST_MAX_COST.with(|l| l.set(None));
+        let (drawing, pictured) = result.unwrap();
+        assert_eq!(pictured, ["World"]);
+        let (_, _, items) = drawing.finish();
+        assert!(items.iter().any(|i| matches!(i, Item::Image(_))), "the frame as a picture");
+    }
 
     /// Every token the Format pane offers a layout's text is one the page expands (#516).
     #[test]

@@ -66,16 +66,25 @@ pub fn map_png(s: &mut Session, width: Option<f64>, height: Option<f64>, dpi: Op
 }
 
 /// The map view on one PDF page (for printing): the page is the view's shape at 96 points per
-/// inch of screen, rendered at `dpi`.
+/// inch of screen, kept as vectors with what is pixels by nature drawn at `dpi`.
 pub fn map_pdf(s: &mut Session, dpi: f64) -> Result<Vec<u8>, String> {
     let (vw, vh) = s.view_size;
     let ppp = (dpi / 96.0).clamp(0.5, 6.0);
     let view =
         View { width: vw.clamp(16.0, 8000.0), height: vh.clamp(16.0, 8000.0), pixels_per_point: ppp, camera: s.map().camera, sky: false };
-    let png = rustgis_render::render_png(s.map_mut(), &view)?;
-    let pm = rustgis_render::decode_png(&png).ok_or("could not draw the map")?;
+    let drawing = rustgis_render::render_drawing(s.map_mut(), &view).ok_or("could not draw the map")?;
     let mm = |pt: f64| pt * 25.4 / 96.0;
-    Ok(rustgis_render::pdf::write(&[rustgis_render::pdf::Page::new(&pm, mm(view.width), mm(view.height))], &s.map().name))
+    let (w, h) = (mm(view.width), mm(view.height));
+    let page = if drawing.overflowed() {
+        // Too large for vectors: the map as one picture, as it is drawn on screen.
+        super::layout::pictured_notices(s, &[], &[1]);
+        let png = rustgis_render::render_png(s.map_mut(), &view)?;
+        let pm = rustgis_render::decode_png(&png).ok_or("could not draw the map")?;
+        rustgis_render::pdf::Page::new(&pm, w, h)
+    } else {
+        rustgis_render::pdf::Page::drawing(drawing, w, h)
+    };
+    Ok(rustgis_render::pdf::write(&[page], &s.map().name))
 }
 
 fn export_map(s: &mut Session, p: &Value) -> CmdResult {

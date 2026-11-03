@@ -912,17 +912,30 @@ pub fn report_bytes(s: &mut Session, i: usize, dpi: f64, pdf: bool) -> Result<(V
     let n = if pdf { pages.len() } else { 1 };
     let mut out = Vec::new();
     let mut held = 0usize;
+    let (mut frames_pictured, mut pages_pictured) = (Vec::new(), Vec::new());
     for k in 0..n {
-        let (img, w, h) = rustgis_render::report::draw_page(&doc, &pages, k, dpi, &s.project.layouts, &mut s.project.maps)
-            .ok_or("the page is too large to draw")?;
         if !pdf {
+            let (img, ..) = rustgis_render::report::draw_page(&doc, &pages, k, dpi, &s.project.layouts, &mut s.project.maps)
+                .ok_or("the page is too large to draw")?;
             return Ok((img.encode_png().map_err(|e| e.to_string())?, pages.len()));
         }
-        out.push(rustgis_render::pdf::Page::new(&img, w, h));
+        let (page, pictured) = rustgis_render::report::pdf_page(&doc, &pages, k, dpi, &s.project.layouts, &mut s.project.maps)
+            .ok_or("the page is too large to draw")?;
+        if page.overflowed() {
+            // Too large for vectors all the same: the page as one picture.
+            pages_pictured.push(k + 1);
+            let (img, w, h) = rustgis_render::report::draw_page(&doc, &pages, k, dpi, &s.project.layouts, &mut s.project.maps)
+                .ok_or("the page is too large to draw")?;
+            out.push(rustgis_render::pdf::Page::new(&img, w, h));
+        } else {
+            frames_pictured.extend(pictured);
+            out.push(page);
+        }
         held += out.last().map_or(0, rustgis_render::pdf::Page::len);
         if held > PDF_BUDGET {
             return Err(format!("the PDF passed {} MB at page {}; export at a lower dpi", PDF_BUDGET >> 20, k + 1));
         }
     }
+    super::layout::pictured_notices(s, &frames_pictured, &pages_pictured);
     Ok((rustgis_render::pdf::write(&out, &doc.title), pages.len()))
 }

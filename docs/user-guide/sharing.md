@@ -4,9 +4,10 @@
 
 **Publish › Output › Export Map** writes the map view as a PNG with labels, the scale bar and
 tile credits. The ribbon exports at 192 DPI; `share.exportMap` accepts `width` and `height`
-in pixels and a `dpi` value (96 by default). **Print Map** opens a PDF in the system viewer
-on desktop; **Capture To Clipboard** copies a map image. **Export To 3D** writes a layer as a
-Wavefront OBJ model with polygons extruded by a field.
+in pixels and a `dpi` value (96 by default). **Print Map** opens a PDF of the map view, kept as
+vectors as a layout's PDF is (see Layouts), in the system viewer on desktop; **Capture To
+Clipboard** copies a map image. **Export To 3D** writes a layer as a Wavefront OBJ model with
+polygons extruded by a field.
 
 **Data › Export** (or `share.exportLayer`, **Export Features**) writes a layer to GeoJSON, CSV,
 GeoPackage, GeoParquet, Shapefile (including a zip), FlatGeobuf, KML, KMZ or GPX (see

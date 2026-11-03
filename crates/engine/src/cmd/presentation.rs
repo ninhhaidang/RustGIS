@@ -379,6 +379,25 @@ pub fn draw_page(s: &mut Session, i: usize, k: usize, dpi: f64) -> Result<rustgi
     rustgis_render::layout::render(&layout, &mut s.project.maps, dpi, &info).ok_or_else(|| "the page is too large to draw".to_string())
 }
 
+/// Page `k` of presentation `i` as a vector PDF page at `dpi` (see
+/// [`rustgis_render::layout::render_drawing`]), and the frames on it drawn as pictures.
+fn pdf_page(
+    s: &mut Session,
+    i: usize,
+    k: usize,
+    dpi: f64,
+    (width, height): (f64, f64),
+) -> Result<(rustgis_render::pdf::Page, Vec<String>), String> {
+    let pres = s.project.presentations.get(i).ok_or("no presentation")?;
+    let n = pres.pages.len();
+    let page = pres.pages.get(k).ok_or_else(|| format!("no page {k}"))?;
+    let layout = page_layout(s, pres, page);
+    let info = rustgis_render::layout::PageInfo { page: k + 1, pages: n, page_name: page.title.clone() };
+    let (drawing, pictured) =
+        rustgis_render::layout::render_drawing(&layout, &mut s.project.maps, dpi, &info).ok_or("the page is too large to draw")?;
+    Ok((rustgis_render::pdf::Page::drawing(drawing, width, height), pictured))
+}
+
 fn html_escape(t: &str) -> String {
     t.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
 }
@@ -412,12 +431,21 @@ pub fn export_bytes(s: &mut Session, i: usize, format: &str, dpi: f64) -> Result
     let mut pdf_pages = Vec::new();
     let mut slides = String::new();
     let mut held = 0usize;
+    let (mut frames_pictured, mut pages_pictured) = (Vec::new(), Vec::new());
     for k in 0..n {
-        let img = draw_page(s, i, k, dpi)?;
         if format == "pdf" {
-            pdf_pages.push(rustgis_render::pdf::Page::new(&img, width, height));
+            let (page, pictured) = pdf_page(s, i, k, dpi, (width, height))?;
+            if page.overflowed() {
+                // Too large for vectors all the same: the page as one picture.
+                pages_pictured.push(k + 1);
+                pdf_pages.push(rustgis_render::pdf::Page::new(&draw_page(s, i, k, dpi)?, width, height));
+            } else {
+                frames_pictured.extend(pictured);
+                pdf_pages.push(page);
+            }
             held += pdf_pages.last().map_or(0, rustgis_render::pdf::Page::len);
         } else {
+            let img = draw_page(s, i, k, dpi)?;
             let page = s.project.presentations.get(i).and_then(|p| p.pages.get(k)).ok_or("no page")?;
             let png = base64::engine::general_purpose::STANDARD.encode(img.encode_png().map_err(|e| e.to_string())?);
             held += png.len();
@@ -439,6 +467,7 @@ pub fn export_bytes(s: &mut Session, i: usize, format: &str, dpi: f64) -> Result
         }
     }
     if format == "pdf" {
+        super::layout::pictured_notices(s, &frames_pictured, &pages_pictured);
         return Ok((rustgis_render::pdf::write(&pdf_pages, &name), n));
     }
     let html = format!(

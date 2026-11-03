@@ -443,7 +443,7 @@ were rounded, and Export Raster, which writes the rounded values, says so again.
 | GeoJSON, KML, GPX, CSV, CSV with WKT | Analyze › Workflows › Data Interop (`data.convert`; `"format": "geojson"`, `"kml"`, `"gpx"`, `"csv"` or `"wkt"`) | Returns text when `"path"` is omitted; writes a file on desktop when it is given. |
 | GeoTIFF / Cloud-optimised GeoTIFF | Data › Export Raster (`share.exportRaster`) | Untiled GeoTIFF by default; `"cog": true` writes 512-pixel tiles, Deflate compression and overviews. Writes the loaded raster's resolution (an overview when that is what was opened), the selected band or its colour bands. The web app's Export Raster downloads an ordinary GeoTIFF. |
 | PNG | Publish › Export Map (`share.exportMap`) | Configurable DPI, with labels, scale bar and tile credits. |
-| PDF | Layouts, reports and presentations | |
+| PDF | Layouts, reports, presentations and the map view (Print Map), as vectors | |
 | Wavefront OBJ, glTF | Publish › Export To 3D, Share As › Web Scene | Polygons extruded by a field. |
 | Web map, OGC API Features, MapLibre style | Publish › Share As | Open-format files that need no server: see [Sharing](sharing.md). |
 | Raster tiles | `imagery.hostedImagery` | A zip of `tiles/z/x/y.png` tiles, `tiles.json` and a viewer page; at most 5,000 tiles and 256 MiB of tile data. |

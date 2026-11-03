@@ -47,7 +47,7 @@ The bugs users hit, the docs and a few quick wins: good first pull requests.
   ([#707](https://github.com/opengeos/RustGIS/issues/707)), Load Off-Map Data
   ([#661](https://github.com/opengeos/RustGIS/issues/661)).
 - A pass over the user guide, the comparison pages and the README against what the app does
-  today (no page says layout PDFs are pictures of each page), and short
+  today, and short
   task tutorials for newcomers: buffer, select and export a list; edit a layer and save the
   result; a print layout _(open)_.
 
@@ -79,8 +79,6 @@ And alongside it:
 - SVG and PNG markers, image fill patterns and a symbol library.
 - A legend and colour bar on the map. In layouts, legend entries reordered, renamed and set in
   columns; several values grouped into one unique-value class.
-- Layouts and reports exported as vector PDF, with text and map frames as vectors (each page is
-  one picture today).
 - Map series at a fixed scale, with the current feature highlighted and its attributes in the
   page's text.
 - Extend QGIS QML style import beyond the supported renderers; add SLD styles.
@@ -230,9 +228,8 @@ Open questions rather than plans; discuss before building.
   path, suitability); ModelBuilder on a node canvas, scripts with command, parameter and value completion,
   and history copied as code; the GeoLibre and Whitebox suite (1,000+ tools) natively and in the browser.
 - Layouts (map frames, surrounds, map series, publication sheets and figures in one command,
-  format panes, guides, snapping, element locking and order, measured grids and PDF), reports,
-  presentations and
-  notebooks; the web app embeddable in a page (`?embed`).
+  format panes, guides, snapping, element locking and order, measured grids and vector PDF),
+  reports, presentations and notebooks; the web app embeddable in a page (`?embed`).
 - Sharing as open formats (web maps, OGC API Features collections, MapLibre styles, glTF
   scenes, locators), offline areas with sync, deep learning pixel classification, hosted
   imagery tiles.

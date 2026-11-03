@@ -86,9 +86,17 @@ pub(crate) fn draw(
         FillPattern::Gradient { shape, color2, ref stops, discrete, from, to, spread, angle, in_view } => {
             let view = Rect::from_xywh(0.0, 0.0, pm.width() as f32, pm.height() as f32);
             let bounds = if in_view { view } else { Some(part.whole.unwrap_or(b)) };
+            let g = Gradient { shape, ramp: fills::ramp(color, color2, stops, discrete), spread, angle };
+            // A recording keeps a gradient a PDF shades as that shading.
+            if pm.is_recording()
+                && let Some(brush) = bounds.and_then(|b| brush(&g, b, part.centroid.unwrap_or_else(|| centre(b)), from, to))
+            {
+                pm.fill_brush(path, brush, FillRule::EvenOdd);
+                return true;
+            }
             let shader = bounds.and_then(|b| {
                 let centroid = part.centroid.unwrap_or_else(|| centre(b));
-                gradient(Gradient { shape, ramp: fills::ramp(color, color2, stops, discrete), spread, angle }, b, centroid, from, to)
+                gradient(g, b, centroid, from, to)
             });
             let shader = shader.unwrap_or(Shader::SolidColor(color_of(color)));
             let paint = Paint { shader, anti_alias: crate::antialiased(), ..Paint::default() };
@@ -122,20 +130,13 @@ fn color_of(c: Rgba) -> Color {
 /// The shader of `g` from `from` to `to` in `bounds` (device pixels, as `centroid`); `None` for
 /// one of no length.
 fn gradient(g: Gradient, bounds: Rect, centroid: Point, from: GradientPoint, to: GradientPoint) -> Option<Shader<'static>> {
-    let place = |p: GradientPoint| match p {
-        GradientPoint::At([u, v]) => Point::from_xy(bounds.left() + u * bounds.width(), bounds.top() + v * bounds.height()),
-        GradientPoint::Centroid(_) => centroid,
-    };
-    let (a, b) = (place(from), place(to));
+    let (a, b, turn) = ends(&g, bounds, centroid, from, to);
     let stops: Vec<GradientStop> = g.ramp.iter().map(|s| GradientStop::new(s.at, color_of(s.color))).collect();
     let mode = match g.spread {
         Spread::Pad => SpreadMode::Pad,
         Spread::Reflect => SpreadMode::Reflect,
         Spread::Repeat => SpreadMode::Repeat,
     };
-    // Turned anticlockwise on screen round the box's middle (tiny-skia turns clockwise: y runs down).
-    let c = centre(bounds);
-    let turn = Transform::from_rotate_at(-g.angle, c.x, c.y);
     match g.shape {
         GradientShape::Linear => LinearGradient::new(a, b, stops, mode, turn),
         GradientShape::Radial => {
@@ -154,6 +155,36 @@ fn gradient(g: Gradient, bounds: Rect, centroid: Point, from: GradientPoint, to:
             let t = t.post_concat(turn);
             SweepGradient::new(a, 0.0, 360.0, stops, mode, t)
         }
+    }
+}
+
+/// Where `g` runs from and to in `bounds` (device pixels, as `centroid`), and how it is turned:
+/// anticlockwise on screen round the box's middle (tiny-skia turns clockwise: y runs down).
+fn ends(g: &Gradient, bounds: Rect, centroid: Point, from: GradientPoint, to: GradientPoint) -> (Point, Point, Transform) {
+    let place = |p: GradientPoint| match p {
+        GradientPoint::At([u, v]) => Point::from_xy(bounds.left() + u * bounds.width(), bounds.top() + v * bounds.height()),
+        GradientPoint::Centroid(_) => centroid,
+    };
+    let c = centre(bounds);
+    (place(from), place(to), Transform::from_rotate_at(-g.angle, c.x, c.y))
+}
+
+/// `g` as a recording keeps it, a gradient a PDF shades: a linear or radial one that pads past its
+/// ends; `None` for a sweep, a repeating or reflected one, or one of no length, kept as a picture.
+fn brush(g: &Gradient, bounds: Rect, centroid: Point, from: GradientPoint, to: GradientPoint) -> Option<crate::vector::Brush> {
+    use crate::vector::Brush;
+    if g.spread != Spread::Pad {
+        return None;
+    }
+    let (a, b, transform) = ends(g, bounds, centroid, from, to);
+    let stops: Vec<(f32, Color)> = g.ramp.iter().map(|s| (s.at, color_of(s.color))).collect();
+    match g.shape {
+        GradientShape::Linear => (a.distance(b) > 0.0).then_some(Brush::Linear { start: (a.x, a.y), end: (b.x, b.y), stops, transform }),
+        GradientShape::Radial => {
+            let r = a.distance(b);
+            (r > 0.0).then_some(Brush::Radial { start: (a.x, a.y), r0: 0.0, end: (a.x, a.y), r1: r, stops, transform })
+        }
+        GradientShape::Conical => None,
     }
 }
 
@@ -570,6 +601,46 @@ mod tests {
                 let b = ((6 - x as isize).pow(2) + (2 - y as isize).pow(2)) as f32;
                 assert_eq!(d[y * w + x], a.min(b), "({x}, {y})");
             }
+        }
+    }
+
+    /// A recording keeps a linear or radial gradient that pads as a PDF gradient, drawing back as
+    /// the raster gradient does; a repeating one stays a picture of it, cut to its shape.
+    #[test]
+    fn a_recording_keeps_padded_gradients_as_gradients() {
+        use crate::vector::{Brush, Item};
+        let path = tiny_skia::PathBuilder::from_rect(Rect::from_ltrb(20.0, 30.0, 180.0, 150.0).unwrap());
+        let budget = Cell::new(0.0);
+        let none = |_: bool| None;
+        let part = Part { path: &path, whole: None, centroid: None, clip: None, whole_depth: &none, budget: &budget };
+        let (red, blue) = (Rgba::rgb(255, 0, 0), Rgba::rgb(0, 0, 255));
+        for (shape, spread, kept) in [
+            (GradientShape::Linear, Spread::Pad, true),
+            (GradientShape::Radial, Spread::Pad, true),
+            (GradientShape::Linear, Spread::Repeat, false),
+        ] {
+            let pattern = FillPattern::Gradient {
+                shape,
+                color2: blue,
+                stops: Stops::default(),
+                discrete: false,
+                from: GradientPoint::At([0.2, 0.3]),
+                to: GradientPoint::At([0.8, 0.6]),
+                spread,
+                angle: 30.0,
+                in_view: false,
+            };
+            let mut raster = Pixmap::new(200, 180).unwrap();
+            assert!(crate::canvas::with_canvas(&mut raster, |c| draw(c, &part, || None, &pattern, red, 1.0)));
+            let mut rec = crate::Canvas::recording(200, 180).unwrap();
+            assert!(draw(&mut rec, &part, || None, &pattern, red, 1.0));
+            let (_, _, items) = rec.into_drawing().unwrap().finish();
+            let shaded = matches!(items.as_slice(), [Item::Fill { brush: Brush::Linear { .. } | Brush::Radial { .. }, .. }]);
+            assert_eq!(shaded, kept, "{shape:?} {spread:?}");
+            let mut replayed = Pixmap::new(200, 180).unwrap();
+            crate::vector::replay(&items, &mut replayed, tiny_skia::Transform::identity());
+            let worst = raster.data().iter().zip(replayed.data()).map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
+            assert!(worst <= 3, "{shape:?} {spread:?} draws back within rounding: {worst}");
         }
     }
 

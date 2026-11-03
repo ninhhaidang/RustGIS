@@ -5784,10 +5784,16 @@ fn layouts_compose_export_and_round_trip() {
     let bytes = std::fs::read(&png_path).unwrap();
     assert!(bytes.starts_with(b"\x89PNG"));
     let pdf_path = dir.join("europe.pdf");
+    let mark = s.notice_mark();
     s.run("layout.export", &json!({"path": pdf_path.display().to_string(), "dpi": 36})).unwrap();
     let pdf = std::fs::read(&pdf_path).unwrap();
     let count = format!("/Count {pages}");
     assert!(pdf.windows(count.len()).any(|w| w == count.as_bytes()), "one PDF page per series page");
+    // Kept as vectors: its text in outline fonts, no page a picture, and nothing too large.
+    let has = |needle: &[u8]| pdf.windows(needle.len()).any(|w| w == needle);
+    assert!(has(b"/Subtype /Type3") && has(b"/ToUnicode") && has(b"/Contents"));
+    assert!(!has(b"/Im0 Do"), "no page is one picture");
+    assert!(!s.notices_since(mark).iter().any(|n| n.text.contains("as pictures, not vectors")));
     assert_eq!(s.project.layouts[0].series.as_ref().unwrap().page, 1, "the shown page is restored");
     assert_eq!(scale_of(&s), 3_000_000.0, "and so is the frame's zoom");
     // A format the export has no writer for is refused.
@@ -24654,4 +24660,24 @@ fn background_runs_follow_a_renamed_map_a_moved_window_and_a_loaded_layer() {
     assert!(e.contains("loaded whole or replaced while"), "{e}");
     assert!(s.map().layers[0].dataset.features.iter().any(|f| f.attrs.first().and_then(|v| v.as_f64()) == Some(-1.0)));
     let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn a_pdf_says_which_frames_and_pages_it_draws_as_pictures() {
+    let mut s = Session::new(Project::default());
+    let mark = s.notice_mark();
+    crate::cmd::layout::pictured_notices(&mut s, &[], &[]);
+    assert!(s.notices_since(mark).is_empty(), "nothing drawn as a picture, nothing said");
+    let frames = ["Inset".to_string(), "Main".to_string(), "Main".to_string()];
+    crate::cmd::layout::pictured_notices(&mut s, &frames, &[2, 5]);
+    let said: Vec<&str> = s.notices_since(mark).iter().map(|n| n.text.as_str()).collect();
+    assert_eq!(said.len(), 2, "one notice for each kind: {said:?}");
+    // Each frame once, however many pages it was pictured on.
+    assert!(said[0].starts_with("The PDF draws 2 map frames as pictures") && said[0].ends_with("(Inset, Main)"), "{}", said[0]);
+    assert!(said[1].starts_with("The PDF draws 2 pages as pictures") && said[1].ends_with("(page 2, 5)"), "{}", said[1]);
+    let mark = s.notice_mark();
+    crate::cmd::layout::pictured_notices(&mut s, &[], &(1..=25).collect::<Vec<_>>());
+    assert!(
+        s.notices_since(mark)[0].text.ends_with("(page 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20 and 5 more)")
+    );
 }
