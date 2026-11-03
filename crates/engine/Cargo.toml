@@ -45,3 +45,4 @@ image = { workspace = true, features = ["gif"] }
 # The live PostGIS tests make their own tables, and change rows as someone else would.
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 postgres = { workspace = true }
+rustls = { workspace = true }

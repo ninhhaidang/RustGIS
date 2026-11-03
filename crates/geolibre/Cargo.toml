@@ -17,7 +17,7 @@ log = { workspace = true }
 # One-click install of the runner: download the release archive over HTTPS (pure-Rust TLS),
 # check its SHA-256 and unpack it. Native only: the browser uses the WASI runner instead.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-ureq = { version = "3", default-features = false, features = ["rustls", "gzip"] }
+ureq = { version = "3", default-features = false, features = ["rustls", "platform-verifier", "gzip"] }
 sha2 = { workspace = true }
 flate2 = "1"
 tar = "0.4"

@@ -220,6 +220,7 @@ pub fn fetch(url: &str, limit: usize) -> Result<Vec<u8>, String> {
         .timeout_global(Some(std::time::Duration::from_secs(120)))
         .https_only(!is_local(url))
         .max_redirects(if is_local(url) { 0 } else { 5 })
+        .tls_config(rustgis_data::http::tls_config())
         .build()
         .into();
     let mut resp =

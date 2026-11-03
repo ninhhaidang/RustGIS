@@ -740,7 +740,7 @@ mod native {
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Mutex, OnceLock};
     use std::time::{Duration, Instant};
 
     use super::{Info, Revocation};
@@ -795,24 +795,31 @@ mod native {
         Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes))
     }
 
-    fn agent() -> ureq::Agent {
-        // A token request is never redirected: a redirect would replay the code or the refresh token.
-        ureq::Agent::config_builder()
-            .timeout_global(Some(REQUEST_TIMEOUT))
-            .user_agent(concat!("RustGIS/", env!("CARGO_PKG_VERSION"), " (+https://rustgis.app)"))
-            .max_redirects(0)
-            .build()
-            .into()
+    /// The agent for token requests (`forms`: an error status is answered, for the caller to
+    /// read) or portal reads (an error status fails). Each is made once, so its TLS setup (the
+    /// system's certificates, read from disk on Linux) is too; connections aren't kept, as before.
+    fn agent(forms: bool) -> &'static ureq::Agent {
+        static FORMS: OnceLock<ureq::Agent> = OnceLock::new();
+        static READS: OnceLock<ureq::Agent> = OnceLock::new();
+        (if forms { &FORMS } else { &READS }).get_or_init(|| {
+            // A token request is never redirected: a redirect would replay the code or the refresh token.
+            ureq::Agent::config_builder()
+                .tls_config(rustgis_data::http::tls_config())
+                .http_status_as_error(!forms)
+                .timeout_global(Some(REQUEST_TIMEOUT))
+                .user_agent(concat!("RustGIS/", env!("CARGO_PKG_VERSION"), " (+https://rustgis.app)"))
+                .max_redirects(0)
+                .max_idle_connections(0)
+                .build()
+                .into()
+        })
     }
 
     /// POSTs a form; a refusal's answer (an OAuth `error`, often with HTTP 400) is returned for
     /// the caller to read, while a server error (5xx) counts as the portal not being reached.
     fn post_form(url: &str, body: &str) -> Result<Vec<u8>, String> {
-        let resp = agent()
+        let resp = agent(true)
             .post(url)
-            .config()
-            .http_status_as_error(false)
-            .build()
             .header("Content-Type", "application/x-www-form-urlencoded")
             .header("Accept", "application/json")
             .send(body)
@@ -825,7 +832,7 @@ mod native {
     }
 
     fn get_json(url: &str, token: &str) -> Result<Vec<u8>, String> {
-        let resp = agent()
+        let resp = agent(false)
             .get(url)
             .header("X-Esri-Authorization", &format!("Bearer {token}"))
             .header("Accept", "application/json")

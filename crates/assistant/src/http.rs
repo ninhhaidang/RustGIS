@@ -31,6 +31,7 @@ fn send_with(req: &HttpRequest, timeout: std::time::Duration, mut on_chunk: Opti
         .http_status_as_error(false)
         // An API key is never sent on to another address.
         .max_redirects(0)
+        .tls_config(rustgis_engine::data::http::tls_config())
         .build()
         .into();
     let ua = concat!("RustGIS/", env!("CARGO_PKG_VERSION"));

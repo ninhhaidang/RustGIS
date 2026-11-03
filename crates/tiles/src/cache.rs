@@ -1218,12 +1218,21 @@ mod native {
         }
     }
 
-    pub(super) fn agent() -> ureq::Agent {
+    /// The settings every agent here starts from. An error status is answered, not failed (its
+    /// headers and body say who refused), set here rather than on each request: a request's own
+    /// settings would make the agent set up TLS again, reading the system's certificates.
+    fn config_builder(timeout: std::time::Duration) -> ureq::config::ConfigBuilder<ureq::typestate::AgentScope> {
         ureq::Agent::config_builder()
-            .timeout_global(Some(std::time::Duration::from_secs(30)))
+            .tls_config(rustgis_data::http::tls_config())
+            .http_status_as_error(false)
+            .timeout_global(Some(timeout))
             .user_agent(USER_AGENT)
             // Redirects are followed by `get`, which checks where each one leads.
             .max_redirects(0)
+    }
+
+    pub(super) fn agent() -> ureq::Agent {
+        config_builder(std::time::Duration::from_secs(30))
             // The workers share the agent: keep a connection open for each fetch a server
             // may have under way, so the next tile doesn't connect again.
             .max_idle_connections_per_host(PER_HOST)
@@ -1240,7 +1249,7 @@ mod native {
 
     /// An agent for downloads, which may take minutes.
     pub(super) fn download_agent(timeout: std::time::Duration) -> ureq::Agent {
-        ureq::Agent::config_builder().timeout_global(Some(timeout)).user_agent(USER_AGENT).max_redirects(0).build().into()
+        config_builder(timeout).build().into()
     }
 
     /// Resolves names as ureq does, keeping only the internet addresses (checked where the
@@ -1271,10 +1280,7 @@ mod native {
 
     /// A download agent that connects only to internet addresses.
     pub(super) fn public_agent(timeout: std::time::Duration) -> ureq::Agent {
-        let config = ureq::Agent::config_builder()
-            .timeout_global(Some(timeout))
-            .user_agent(USER_AGENT)
-            .max_redirects(0)
+        let config = config_builder(timeout)
             // A proxy would resolve the address itself, past `PublicOnly`.
             .proxy(None)
             .build();
@@ -1321,7 +1327,7 @@ mod native {
                     }
                 }
                 diagnostics.sending();
-                let resp = req.config().http_status_as_error(false).build().call().map_err(unanswered)?;
+                let resp = req.call().map_err(unanswered)?;
                 diagnostics.answered(resp.status().as_u16());
                 let header = |k: &str| resp.headers().get(k).and_then(|v| v.to_str().ok());
                 if resp.status().is_redirection() {
@@ -1375,9 +1381,6 @@ mod native {
                 .post(url)
                 .header("Content-Type", "application/json")
                 .header("Accept", "application/json")
-                .config()
-                .http_status_as_error(false)
-                .build()
                 .send(body)
                 .map_err(unanswered)?;
             let status = resp.status().as_u16();
@@ -1555,9 +1558,8 @@ mod native {
                 {
                     req = req.header("X-Esri-Authorization", &auth);
                 }
-                // An error status is answered, not failed: its headers and body say who refused.
                 diagnostics.sending();
-                let mut resp = req.config().http_status_as_error(false).build().call().map_err(unanswered)?;
+                let mut resp = req.call().map_err(unanswered)?;
                 let status = resp.status().as_u16();
                 diagnostics.answered(status);
                 // A data host refusing the request (or the token): say what to do.

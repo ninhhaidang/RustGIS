@@ -20,7 +20,7 @@ web-time = { workspace = true }
 # Calling the model on the desktop and the command line. The browser calls it with its own fetch
 # (the web app's `Services::http`).
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-ureq = { version = "3", default-features = false, features = ["rustls", "gzip"] }
+ureq = { version = "3", default-features = false, features = ["rustls", "platform-verifier", "gzip"] }
 # Random bytes for the sign-in's PKCE verifier and state.
 getrandom = "0.4"
 # Atomic owner-only credential writes on desktop platforms.
