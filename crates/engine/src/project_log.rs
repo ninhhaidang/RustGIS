@@ -342,6 +342,14 @@ pub struct LogEntry {
     pub millis: u64,
 }
 
+impl LogEntry {
+    /// When it started, as `2026-10-30 14:05:09` (UTC).
+    pub fn time_utc(&self) -> String {
+        let (date, time) = rustgis_map::graphics::civil(self.at / 1000);
+        format!("{date} {time}:{:02}", (self.at / 1000) % 60)
+    }
+}
+
 /// The session's log (#797): one entry for each command run in the session, from any front end
 /// and in whatever project was open, oldest first. It sits outside the project and its undo
 /// history: undoing a command doesn't take its entry back, and saving, sharing or packaging a
@@ -355,6 +363,14 @@ pub struct SessionLog {
     /// How many of `entries` are plugins' commands', kept in step with them so a push doesn't
     /// count them.
     plugin_entries: usize,
+    /// Counts each change to `entries` (an entry added, the log cleared), so a view of it knows
+    /// when to read it again ([`SessionLog::changes`]).
+    changes: u64,
+    /// How many entries were dropped since the log was last cleared, so a view or a saved file
+    /// can say so ([`SessionLog::dropped_said`]): the oldest, past [`LOG_LIMIT`], and older plugin
+    /// commands' (newer than some of the user's still kept), past [`LOG_PLUGIN_LIMIT`].
+    dropped: u64,
+    dropped_plugin: u64,
 }
 
 impl SessionLog {
@@ -381,15 +397,18 @@ impl SessionLog {
         {
             self.entries.remove(oldest);
             self.plugin_entries = self.plugin_entries.saturating_sub(1);
+            self.dropped_plugin = self.dropped_plugin.saturating_add(1);
         }
         if plugin(&e) {
             self.plugin_entries += 1;
         }
+        self.changes = self.changes.wrapping_add(1);
         self.entries.push_back(e);
         while self.entries.len() > LOG_LIMIT {
             if self.entries.pop_front().is_some_and(|x| plugin(&x)) {
                 self.plugin_entries = self.plugin_entries.saturating_sub(1);
             }
+            self.dropped = self.dropped.saturating_add(1);
         }
     }
 
@@ -401,6 +420,8 @@ impl SessionLog {
             e.at = last.at;
             e.millis = last.millis.saturating_add(e.millis);
             *last = e;
+            // The newest entry changed: a view of the log reads it again.
+            self.changes = self.changes.wrapping_add(1);
             return;
         }
         self.push(e);
@@ -423,13 +444,80 @@ impl SessionLog {
         self.entries.len()
     }
 
+    /// How many times the entries have changed (one added, the log cleared): the same number
+    /// means the same entries.
+    pub fn changes(&self) -> u64 {
+        self.changes
+    }
+
+    /// How many entries were dropped past the log's limits since it was last cleared.
+    pub fn dropped(&self) -> u64 {
+        self.dropped.saturating_add(self.dropped_plugin)
+    }
+
+    /// What was dropped past the log's limits since it was last cleared, by kind, as the pane, an
+    /// export and a download say it; `None` when nothing was.
+    pub fn dropped_said(&self) -> Option<String> {
+        let mut said = Vec::new();
+        if self.dropped > 0 {
+            said.push(format!("{} oldest entries were dropped past the log's limit of {LOG_LIMIT}", self.dropped));
+        }
+        if self.dropped_plugin > 0 {
+            said.push(format!(
+                "{} older plugin command entries were dropped past the {LOG_PLUGIN_LIMIT} kept for plugins",
+                self.dropped_plugin
+            ));
+        }
+        (!said.is_empty()).then(|| said.join("; "))
+    }
+
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+
+    /// Writes the log to `w`, oldest first: as CSV (`csv`: a header, then one row an entry, a
+    /// readable UTC time first and the parameters as a JSON column) or as JSON Lines (one entry a
+    /// line). Entry by entry, so a long log isn't held as text first.
+    pub fn write(&self, w: &mut dyn std::io::Write, csv: bool) -> std::io::Result<()> {
+        if csv {
+            w.write_all(b"time_utc,at,command,ok,millis,error,params\n")?;
+        }
+        self.entries.iter().try_for_each(|e| write_entry(w, e, csv))
     }
 
     /// Empties the log; how many entries it had.
     pub fn clear(&mut self) -> usize {
         self.plugin_entries = 0;
+        self.dropped = 0;
+        self.dropped_plugin = 0;
+        self.changes = self.changes.wrapping_add(1);
         std::mem::take(&mut self.entries).len()
+    }
+}
+
+/// A CSV cell: quoted, and kept from being read as a formula where it starts as one does (`=`,
+/// `+`, `-`, `@`, or a tab or carriage return before them), as spreadsheets would.
+fn csv_cell(t: &str) -> String {
+    let lead = if t.starts_with(['=', '+', '-', '@', '\t', '\r']) { "'" } else { "" };
+    format!("\"{lead}{}\"", t.replace('"', "\"\""))
+}
+
+/// Entry `e` as a CSV row (`csv`) or a JSON line, written to `w`.
+fn write_entry(w: &mut dyn std::io::Write, e: &LogEntry, csv: bool) -> std::io::Result<()> {
+    if csv {
+        writeln!(
+            w,
+            "{},{},{},{},{},{},{}",
+            e.time_utc(),
+            e.at,
+            csv_cell(&e.command),
+            e.ok,
+            e.millis,
+            csv_cell(e.error.as_deref().unwrap_or("")),
+            csv_cell(&e.params.to_string())
+        )
+    } else {
+        serde_json::to_writer(&mut *w, e).map_err(std::io::Error::other)?;
+        w.write_all(b"\n")
     }
 }

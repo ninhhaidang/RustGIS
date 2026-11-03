@@ -73,6 +73,7 @@ mod scriptcolor;
 mod scriptcomplete;
 mod searchbox;
 mod serviceui;
+mod sessionlog;
 mod shortcutfile;
 mod shortcutui;
 mod showme;
@@ -696,6 +697,8 @@ pub struct UiState {
     pub embeddings: embeddingsui::State,
     /// Data Cubes: the filters, the period, and what the last action said.
     pub cubes: cubesui::State,
+    /// The History pane: the tools run or the session log, and the log's filters (#797).
+    pub session_log: sessionlog::State,
     /// NASA Earthaccess: the dataset, the granules found and the request under way.
     pub earthaccess: earthaccessui::State,
     /// Add From Service › Sign in to ArcGIS.
@@ -845,6 +848,7 @@ impl Default for UiState {
             opendata: Default::default(),
             embeddings: Default::default(),
             cubes: Default::default(),
+            session_log: Default::default(),
             earthaccess: Default::default(),
             arcgis: Default::default(),
             nldi: Default::default(),
@@ -1524,9 +1528,10 @@ impl RustGisApp {
         Ok(())
     }
 
-    /// Offers bytes as a download (web).
-    pub(crate) fn download_bytes(&mut self, name: &str, bytes: Vec<u8>) {
-        self.download(name, bytes);
+    /// Offers bytes as a download (web), and says whether it was delivered (a failure is
+    /// notified).
+    pub(crate) fn download_bytes(&mut self, name: &str, bytes: Vec<u8>) -> bool {
+        self.download(name, bytes)
     }
 
     /// Offers bytes as a download (web) and reports whether a download hook exists.

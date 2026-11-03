@@ -23723,6 +23723,13 @@ fn the_session_log_records_each_command_run_in_the_session() {
     let _ = s.run("project.importQgis", &json!({"text": qgs}));
     let doc = last(&s);
     assert_eq!(doc.params["text"], json!(format!("(a document of {} characters)", qgs.chars().count())), "{doc:?}");
+    // A step joined to the newest entry (a held key's nudges) is a change too, so a view of the
+    // log reads it again.
+    let nudge = |millis| LogEntry { at: 1, command: "layout.nudge".into(), params: json!({"dx": 1}), ok: true, error: None, millis };
+    s.log.push(nudge(2));
+    let before = s.log.changes();
+    s.log.join_last(nudge(3));
+    assert!(s.log.changes() != before && last(&s).millis == 5, "{:?}", last(&s));
     // So is one after a byte-order mark (a QGIS project read from a file that has one).
     let marked = format!("\u{feff}{qgs}");
     let _ = s.run("project.importQgis", &json!({"text": marked}));
@@ -23833,6 +23840,26 @@ fn the_session_log_records_each_command_run_in_the_session() {
     }
     assert_eq!(s.log.len(), LOG_LIMIT);
     assert_eq!(s.log.entries().next().unwrap().at, 5);
+    // What was dropped is counted, and an export says so; a clear starts the count again.
+    assert!(s.log.dropped() >= 5, "{}", s.log.dropped());
+    let out = std::env::temp_dir().join(format!("rustgis-log-dropped-{}.csv", std::process::id()));
+    let mark = s.notice_mark();
+    s.run("project.exportLog", &json!({"path": out.display().to_string()})).unwrap();
+    assert!(
+        s.notices_since(mark)
+            .iter()
+            .any(|n| n.text.contains("; not in it: ") && n.text.contains("oldest entries were dropped past the log's limit of 10000")),
+        "{:?}",
+        s.notices_since(mark)
+    );
+    let _ = std::fs::remove_file(&out);
+    s.log.clear();
+    assert_eq!(s.log.dropped(), 0);
+    // A clean export says nothing of it.
+    let mark = s.notice_mark();
+    s.run("project.exportLog", &json!({"path": out.display().to_string()})).unwrap();
+    assert!(!s.notices_since(mark).iter().any(|n| n.text.contains("were dropped past")), "{:?}", s.notices_since(mark));
+    let _ = std::fs::remove_file(&out);
     // Undo or redo with nothing to take back changes nothing, and isn't logged.
     s.clear_history();
     let n = s.log.len();

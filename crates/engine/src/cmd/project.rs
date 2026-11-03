@@ -85,13 +85,6 @@ fn log(s: &mut Session, p: &Value) -> CmdResult {
     Ok(json!({"entries": shown, "count": count, "total": total, "on": s.log.on()}))
 }
 
-/// A CSV cell: quoted, and kept from being read as a formula where it starts as one does (`=`,
-/// `+`, `-`, `@`, or a tab or carriage return before them), as spreadsheets would.
-fn csv_cell(t: &str) -> String {
-    let lead = if t.starts_with(['=', '+', '-', '@', '\t', '\r']) { "'" } else { "" };
-    format!("\"{lead}{}\"", t.replace('"', "\"\""))
-}
-
 /// `project.exportLog`: the log written out, as CSV (one row an entry, the parameters as a JSON
 /// column) or JSON Lines (one entry a line).
 fn export_log(s: &mut Session, p: &Value) -> CmdResult {
@@ -126,37 +119,11 @@ fn export_log(s: &mut Session, p: &Value) -> CmdResult {
     // Written entry by entry, so a long log isn't held as text first; a failure part way leaves
     // an existing file as it was.
     let n = s.log.len();
-    rustgis_data::io::write_atomic_with(&path, |w| {
-        use std::io::Write;
-        if format == "csv" {
-            w.write_all(b"time_utc,at,command,ok,millis,error,params\n")?;
-        }
-        s.log.entries().try_for_each(|e| write_entry(w, e, format))
-    })
-    .map_err(|e| format!("{}: {e}", path.display()))?;
-    s.notify(format!("Exported the session log ({n} entries) to {}", path.display()), false);
+    rustgis_data::io::write_atomic_with(&path, |w| s.log.write(w, format == "csv")).map_err(|e| format!("{}: {e}", path.display()))?;
+    // Entries dropped past the log's limits aren't in the file: said.
+    let dropped = s.log.dropped_said().map(|d| format!("; not in it: {d}")).unwrap_or_default();
+    s.notify(format!("Exported the session log ({n} entries) to {}{dropped}", path.display()), false);
     Ok(json!({"path": path.display().to_string(), "entries": n, "format": format}))
-}
-
-/// Entry `e` as a CSV row or a JSON line, written to `w`.
-fn write_entry(w: &mut dyn std::io::Write, e: &crate::project_log::LogEntry, format: &str) -> std::io::Result<()> {
-    if format == "csv" {
-        let (date, time) = rustgis_map::graphics::civil(e.at / 1000);
-        writeln!(
-            w,
-            "{date} {time}:{:02},{},{},{},{},{},{}",
-            (e.at / 1000) % 60,
-            e.at,
-            csv_cell(&e.command),
-            e.ok,
-            e.millis,
-            csv_cell(e.error.as_deref().unwrap_or("")),
-            csv_cell(&e.params.to_string())
-        )
-    } else {
-        serde_json::to_writer(&mut *w, e).map_err(std::io::Error::other)?;
-        w.write_all(b"\n")
-    }
 }
 
 /// `project.clearLog`: empties the log, which then holds this command's own entry, so a cleared
