@@ -24359,6 +24359,9 @@ fn geolibre_remote_plain_tiff_folder_opacity_is_not_baked_twice() {
                 }
                 Err(_) => break,
             };
+            // Windows hands out accepted sockets in the listener's nonblocking mode: the read
+            // would come back at once, and closing on the unread request resets the connection.
+            stream.set_nonblocking(false).unwrap();
             stream.set_read_timeout(Some(std::time::Duration::from_secs(2))).unwrap();
             let mut input = [0; 8192];
             let n = stream.read(&mut input).unwrap_or(0);
