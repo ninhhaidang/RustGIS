@@ -499,6 +499,8 @@ struct PutAside {
     #[cfg(not(target_arch = "wasm32"))]
     sql_results: Vec<(u64, String, Option<String>, rustgis_data::source::duckdb::Output)>,
     trend_results: Vec<(u64, Vec<rustgis_data::raster::Raster>, usize)>,
+    raster_results: Vec<(u64, cmd::workflows::Made)>,
+    raster_runs: Vec<u64>,
     edit_counts: std::collections::HashMap<u32, cmd::design::EditCounts>,
 }
 
@@ -692,6 +694,12 @@ pub struct Session {
     /// Trends the app worked out on a thread, waiting for `cube.trend {"ran"}`: the id, the
     /// layers and how many dates (see [`cmd::cube::land`]).
     pub(crate) trend_results: Vec<(u64, Vec<rustgis_data::raster::Raster>, usize)>,
+    /// Rasters the app made on a thread for an Analysis workflow, waiting for its command with
+    /// `{"ran"}` (see [`cmd::workflows::raster_land`]).
+    pub(crate) raster_results: Vec<(u64, cmd::workflows::Made)>,
+    /// The ids of the Analysis workflows running on a thread (see
+    /// [`cmd::workflows::raster_start`]), apart from the downloads'.
+    pub(crate) raster_runs: Vec<u64>,
     /// Set where nothing waits on a command but a shell (`rustgis-cli run`): long runs a command
     /// works out where it's called (a trend over a state from a data cube) take the app's larger
     /// bounds, as its panes do on a thread, and tell their progress (a share, 0 to 1, and 1 when
@@ -929,6 +937,8 @@ impl Session {
             #[cfg(not(target_arch = "wasm32"))]
             sql_results: Vec::new(),
             trend_results: Vec::new(),
+            raster_results: Vec::new(),
+            raster_runs: Vec::new(),
             long_runs: None,
         }
     }
@@ -1427,6 +1437,8 @@ impl Session {
             #[cfg(not(target_arch = "wasm32"))]
             sql_results: take(&mut self.sql_results),
             trend_results: take(&mut self.trend_results),
+            raster_results: take(&mut self.raster_results),
+            raster_runs: take(&mut self.raster_runs),
             edit_counts: take(&mut self.edit_counts),
         }
     }
@@ -1475,6 +1487,8 @@ impl Session {
             #[cfg(not(target_arch = "wasm32"))]
             sql_results,
             trend_results,
+            raster_results,
+            raster_runs,
             edit_counts,
         } = *a;
         (self.undo, self.redo, self.back, self.forward, self.last_camera) = (undo, redo, back, forward, last_camera);
@@ -1491,7 +1505,7 @@ impl Session {
         (self.pending, self.plugin_runs, self.plugin_retries) = (pending, plugin_runs, plugin_retries);
         self.file_outputs = file_outputs;
         (self.downloading, self.downloaded, self.url_requests) = (downloading, downloaded, url_requests);
-        self.trend_results = trend_results;
+        (self.trend_results, self.raster_results, self.raster_runs) = (trend_results, raster_results, raster_runs);
         #[cfg(feature = "geolibre")]
         {
             self.started = started;

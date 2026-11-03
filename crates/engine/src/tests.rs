@@ -25541,3 +25541,80 @@ fn a_pdf_says_which_frames_and_pages_it_draws_as_pictures() {
         s.notices_since(mark)[0].text.ends_with("(page 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20 and 5 more)")
     );
 }
+
+/// Viewshed and Interpolate made on another thread, as the Analysis pane runs them (#1291 step 3):
+/// the raster handed over (`ran`) is the one the command makes here, a cancelled run is an error
+/// saying so, and a run whose project was closed meanwhile adds nothing.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn analysis_workflows_run_on_another_thread() {
+    use crate::cmd::workflows::{raster_land, raster_start};
+    use rustgis_analysis::control::Control;
+    let mut s = world();
+    s.run("layer.addDataBytes", &json!({"fileName": "dem.tif", "data": dem_b64()})).unwrap();
+    let dem = s.map().layers.iter().find(|l| l.is_raster()).unwrap().name.clone();
+    let with_ran = |p: &Value, id: u64| {
+        let mut q = p.clone();
+        q["ran"] = json!(id);
+        q
+    };
+    let pixels = |s: &Session, v: &Value| -> Vec<u32> {
+        let l = s.map().layer(v["layer"].as_u64().unwrap() as u32).unwrap();
+        l.raster.as_ref().unwrap().data.as_ref().unwrap().bands[0].data.iter().map(|x| x.to_bits()).collect()
+    };
+    for (command, p) in [
+        ("analysis.viewshed", json!({"layer": dem, "lon": 10.0055, "lat": 45.0395, "height": 2})),
+        ("analysis.interpolate", json!({"layer": "Cities", "field": "pop_max", "cellSize": 2})),
+    ] {
+        let here = s.run(command, &p).unwrap();
+        let run = raster_start(&mut s, command, &p).unwrap();
+        let id = run.id;
+        let control = Control::new();
+        let made = std::thread::spawn(move || run.run(&control)).join().unwrap().unwrap();
+        assert_eq!(raster_land(&mut s, id, made), Ok(true));
+        let mut with = p.clone();
+        with["ran"] = json!(id);
+        let there = s.run(command, &with).unwrap();
+        assert_eq!(pixels(&s, &here), pixels(&s, &there), "{command}");
+        assert_eq!(here["visibleCells"], there["visibleCells"], "{command}");
+        // Used up: a second hand-over is refused, not worked out again.
+        assert!(s.run(command, &with).unwrap_err().contains("no longer kept"), "{command}");
+        // Another command's raster isn't taken, and stays for its own.
+        let run = raster_start(&mut s, command, &p).unwrap();
+        let id = run.id;
+        assert_eq!(raster_land(&mut s, id, run.run(&Control::new()).unwrap()), Ok(true));
+        let other = if command == "analysis.viewshed" { "analysis.interpolate" } else { "analysis.viewshed" };
+        assert!(s.run(other, &with_ran(&p, id)).unwrap_err().contains("another command"), "{command}");
+        s.run(command, &with_ran(&p, id)).unwrap();
+        // Downloads meanwhile, however many, don't push a run out.
+        let run = raster_start(&mut s, command, &p).unwrap();
+        let id = run.id;
+        for _ in 0..100 {
+            s.download_started();
+        }
+        assert_eq!(raster_land(&mut s, id, run.run(&Control::new()).unwrap()), Ok(true), "{command}");
+        s.run(command, &with_ran(&p, id)).unwrap();
+        // Cancelled: an error saying so, and nothing kept.
+        let run = raster_start(&mut s, command, &p).unwrap();
+        let control = Control::new();
+        control.cancel();
+        let e = run.run(&control).err().unwrap();
+        assert!(e.contains("was cancelled"), "{e}");
+    }
+    // A run whose map is no longer the active one isn't added, and one whose project was closed
+    // meanwhile is dropped.
+    let p = json!({"layer": dem, "lon": 10.0055, "lat": 45.0395});
+    let start = |s: &mut Session| {
+        let run = raster_start(s, "analysis.viewshed", &p).unwrap();
+        (run.id, run.run(&Control::new()).unwrap())
+    };
+    let first = s.map().name.clone();
+    let (id, made) = start(&mut s);
+    s.run("map.new", &json!({"name": "Other"})).unwrap();
+    assert!(raster_land(&mut s, id, made).unwrap_err().contains("another map"));
+    s.run("map.activate", &json!({"name": first})).unwrap();
+    let (id, made) = start(&mut s);
+    s.run("project.new", &Value::Null).unwrap();
+    assert_eq!(raster_land(&mut s, id, made), Ok(false));
+    assert!(raster_start(&mut s, "analysis.lineOfSight", &p).is_err());
+}

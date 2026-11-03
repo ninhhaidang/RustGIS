@@ -54,12 +54,12 @@ pub fn commands() -> Vec<C> {
             r#"{"criteria": [{"layer": raster, "band"?: 1-based, "ranges": [[lo, hi, score]], "weight": number}], "name"?: output}"#,
         ),
         C::new("analysis.viewshed", "Visibility Analysis", "Analyze › Workflows", viewshed)
-            .params(r#"{"layer": elevation raster, "lon", "lat", "band"?: 1-based, "height"?: observer metres, "radius"?: metres, "name"?: output}"#),
+            .params(r#"{"layer": elevation raster, "lon", "lat", "band"?: 1-based, "height"?: observer metres, "radius"?: metres, "name"?: output, "ran"?: (internal: a viewshed the app has worked out)}"#),
         C::new("analysis.lineOfSight", "Line Of Sight", "Analyze › Workflows", line_of_sight).params(
             r#"{"layer": elevation raster, "from": [lon, lat], "to": [lon, lat], "band"?: 1-based, "observerHeight"?: m, "targetHeight"?: m, "name"?: output}"#,
         ),
         C::new("analysis.interpolate", "Geostatistical Wizard", "Analyze › Workflows", interpolate).params(
-            r#"{"layer": points, "field": numeric field, "cellSize"?: degrees, "power"?: 2, "neighbors"?: 12, "name"?: output}"#,
+            r#"{"layer": points, "field": numeric field, "cellSize"?: degrees, "power"?: 2, "neighbors"?: 12, "name"?: output, "ran"?: (internal: a surface the app has worked out)}"#,
         ),
         C::new("analysis.route", "Network Analysis", "Analyze › Workflows", route).params(
             r#"{"layer": line network, "from": [lon, lat], "to": [lon, lat], "costField"?: field, "snapDistance"?: metres, "name"?: output}"#,
@@ -121,10 +121,143 @@ fn point(p: &Value, k: &str) -> Result<Coord, String> {
 
 /// Adds a computed raster as a layer (embedded as a GeoTIFF, so it saves with the project).
 fn add_raster(s: &mut Session, r: Raster) -> CmdResult {
-    let name = r.name.clone();
-    let bytes = rustgis_data::raster::geotiff::write(&r, 0).map_err(|e| e.to_string())?;
-    let layer = rustgis_map::RasterLayer::from_bytes(r, format!("{name}.tif"), bytes);
-    super::raster::add_raster(s, &name, layer)
+    add_made(s, made(r, None)?)
+}
+
+/// A raster a workflow made, with its GeoTIFF (so it saves with the project) and what the command
+/// says of it besides its layer: made on any thread, added by [`add_made`].
+pub struct Made {
+    raster: Raster,
+    bytes: Vec<u8>,
+    extra: Option<Value>,
+    /// Made on another thread: the command's name and the map it was started on.
+    ran: Option<(&'static str, u64)>,
+}
+
+/// A workflow's work once its inputs are read: it reads nothing more of the session, so it runs on
+/// any thread.
+type Work = Box<dyn FnOnce() -> Result<Made, String> + Send>;
+
+fn made(raster: Raster, extra: Option<Value>) -> Result<Made, String> {
+    let bytes = rustgis_data::raster::geotiff::write(&raster, 0).map_err(|e| e.to_string())?;
+    Ok(Made { raster, bytes, extra, ran: None })
+}
+
+/// Adds a made raster as a layer: the command's answer is the layer, or the layer and what the
+/// command says besides (`extra`).
+fn add_made(s: &mut Session, m: Made) -> CmdResult {
+    let Made { raster, bytes, extra, .. } = m;
+    let name = raster.name.clone();
+    let layer = rustgis_map::RasterLayer::from_bytes(raster, format!("{name}.tif"), bytes);
+    let v = super::raster::add_raster(s, &name, layer)?;
+    Ok(match extra {
+        Some(Value::Object(mut more)) => {
+            more.insert("layer".into(), v["layer"].clone());
+            Value::Object(more)
+        }
+        _ => v,
+    })
+}
+
+/// A workflow's raster made here, or the one the app made on a thread ([`raster_start`]) and
+/// handed over as `ran`.
+/// `name` is the command's, as [`raster_start`] gives it: a raster another command made isn't
+/// taken.
+fn made_or_ran(s: &mut Session, p: &Value, name: &str, work: fn(&Session, &Value) -> Result<Work, String>) -> CmdResult {
+    if let Some(ran) = p.get("ran").filter(|v| !v.is_null()) {
+        let id = ran.as_u64().ok_or("ran is the number of a run the app worked out")?;
+        let at = s.raster_results.iter().position(|(k, _)| *k == id).ok_or("that run is no longer kept: run it again")?;
+        if s.raster_results[at].1.ran.is_some_and(|(made_by, _)| made_by != name) {
+            return Err(format!("that run made another command's raster, not {name}'s"));
+        }
+        let (_, m) = s.raster_results.remove(at);
+        return add_made(s, m);
+    }
+    add_made(s, work(s, p)?()?)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// A workflow that makes a raster (`analysis.viewshed`, `analysis.interpolate`), started to make it
+/// on another thread ([`RasterRun::run`]) while the session goes on: its inputs are read now
+/// (cheaply: the pixels are shared), and [`raster_land`] hands the raster to the command, which
+/// adds it with undo and history when run again with `ran` (#1291 step 3).
+pub struct RasterRun {
+    pub id: u64,
+    /// What the command is called, for a cancelled run's error.
+    pub name: &'static str,
+    work: Work,
+    /// The map it started on, the one its raster is added to.
+    map: u64,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl RasterRun {
+    /// Makes the raster, blocking until it's made; `control` stops it and counts its progress (see
+    /// [`rustgis_analysis::control`]).
+    pub fn run(self, control: &std::sync::Arc<rustgis_analysis::control::Control>) -> Result<Made, String> {
+        let RasterRun { name, work, map, .. } = self;
+        // A bug in the work, as one in a tool, must not take the app down.
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| rustgis_analysis::run_under(name, control, work)))
+            .unwrap_or_else(|_| Err(format!("{name} failed unexpectedly")))
+            .map(|m| Made { ran: Some((name, map)), ..m })
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// Starts `command` (`analysis.viewshed` or `analysis.interpolate`) with `p` on the active map, as
+/// it would run, to make its raster on another thread: its parameters checked and its inputs read
+/// now. The run belongs to this project: [`raster_land`] refuses it once another project is open.
+pub fn raster_start(s: &mut Session, command: &str, p: &Value) -> Result<RasterRun, String> {
+    let (name, work): (&'static str, Work) = match command {
+        "analysis.viewshed" => (VIEWSHED, viewshed_work(s, p)?),
+        "analysis.interpolate" => (INTERPOLATE, interpolate_work(s, p)?),
+        _ => return Err(format!("{command} doesn't run in the background")),
+    };
+    s.next_pending = s.next_pending.wrapping_add(1);
+    let id = s.next_pending;
+    // One runs at a time from the app; a few are kept, apart from the downloads' list, so no
+    // number of downloads meanwhile pushes a run out.
+    if s.raster_runs.len() >= 8 {
+        s.raster_runs.remove(0);
+    }
+    s.raster_runs.push(id);
+    Ok(RasterRun { id, name, work, map: s.map().instance_id() })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// Whether a run from [`raster_start`] still waits for its raster: opening or creating a project
+/// drops the runs of the previous one.
+pub fn raster_waiting(s: &Session, id: u64) -> bool {
+    s.raster_runs.contains(&id)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// Forgets a run from [`raster_start`] that won't land (it failed, or its thread couldn't start).
+pub fn raster_abandon(s: &mut Session, id: u64) {
+    s.raster_runs.retain(|r| *r != id);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// Hands over a raster [`RasterRun::run`] made, for its command run again with `{"ran": id}`:
+/// `Ok(false)` when the run was dropped (another project is open), and an error when another map
+/// is active than the one it started on, as for a tool run in the background. A run that failed
+/// is forgotten with [`raster_abandon`].
+pub fn raster_land(s: &mut Session, id: u64, m: Made) -> Result<bool, String> {
+    if !raster_waiting(s, id) {
+        return Ok(false);
+    }
+    raster_abandon(s, id);
+    if let Some((name, map)) = m.ran
+        && map != s.map().instance_id()
+    {
+        return Err(format!("{name} wasn't added: another map was opened while it ran"));
+    }
+    // The last two are kept (each a full raster and its GeoTIFF).
+    if s.raster_results.len() >= 2 {
+        s.raster_results.remove(0);
+    }
+    s.raster_results.push((id, m));
+    Ok(true)
 }
 
 fn out_name(p: &Value, default: String) -> String {
@@ -611,18 +744,30 @@ fn suitability(s: &mut Session, p: &Value) -> CmdResult {
     add_raster(s, r)
 }
 
+/// What a viewshed and an IDW surface are called, in a cancelled run's error and to tell their
+/// rasters apart.
+const VIEWSHED: &str = "Viewshed";
+const INTERPOLATE: &str = "Interpolate (IDW)";
+
 fn viewshed(s: &mut Session, p: &Value) -> CmdResult {
+    made_or_ran(s, p, VIEWSHED, viewshed_work)
+}
+
+/// What a viewshed reads of the session, and the work that makes it.
+fn viewshed_work(s: &Session, p: &Value) -> Result<Work, String> {
     let dem = raster_of(s, ps(p, "layer").ok_or("layer is required")?)?;
     let at = Coord::new(f(p, "lon").ok_or("lon is required")?, f(p, "lat").ok_or("lat is required")?);
     let band = band_of(p, &dem)?;
     let (cx, cy) = dem.cell_size_m();
     // The whole raster by default: its diagonal reaches every cell from any observer.
     let radius = f(p, "radius").unwrap_or((cx * dem.width as f64).hypot(cy * dem.height as f64)).clamp(1.0, 500_000.0);
-    let vs = rasterops::viewshed(&dem, band, at, f(p, "height").unwrap_or(1.7).clamp(0.0, 10_000.0), radius)?;
-    let seen = vs.iter().filter(|v| **v == 1.0).count();
-    let r = rasterops::derive(&dem, &out_name(p, format!("{}_viewshed", dem.name)), vec![vs])?;
-    let v = add_raster(s, r)?;
-    Ok(json!({"layer": v["layer"], "visibleCells": seen}))
+    let height = f(p, "height").unwrap_or(1.7).clamp(0.0, 10_000.0);
+    let name = out_name(p, format!("{}_viewshed", dem.name));
+    Ok(Box::new(move || {
+        let vs = rasterops::viewshed(&dem, band, at, height, radius)?;
+        let seen = vs.iter().filter(|v| **v == 1.0).count();
+        made(rasterops::derive(&dem, &name, vec![vs])?, Some(json!({"visibleCells": seen})))
+    }))
 }
 
 fn line_of_sight(s: &mut Session, p: &Value) -> CmdResult {
@@ -662,6 +807,11 @@ fn line_of_sight(s: &mut Session, p: &Value) -> CmdResult {
 }
 
 fn interpolate(s: &mut Session, p: &Value) -> CmdResult {
+    made_or_ran(s, p, INTERPOLATE, interpolate_work)
+}
+
+/// What an IDW surface reads of the session, and the work that makes it.
+fn interpolate_work(s: &Session, p: &Value) -> Result<Work, String> {
     let ds = feature_ds(s, p)?;
     let field = ps(p, "field").ok_or("field is required")?;
     let fi = ds.field_index(field).ok_or_else(|| format!("no field named '{field}'"))?;
@@ -678,15 +828,9 @@ fn interpolate(s: &mut Session, p: &Value) -> CmdResult {
     });
     let cell = f(p, "cellSize").or(s.project.gp_env.cell_size).unwrap_or((e.width().max(e.height()) / 300.0).max(1e-5));
     let name = out_name(p, format!("{}_{field}_idw", ds.name));
-    let r = rasterops::idw(
-        &pts,
-        &e,
-        cell,
-        f(p, "power").unwrap_or(2.0).clamp(0.5, 10.0),
-        p.get("neighbors").and_then(Value::as_u64).unwrap_or(12).max(1) as usize,
-        &name,
-    )?;
-    add_raster(s, r)
+    let power = f(p, "power").unwrap_or(2.0).clamp(0.5, 10.0);
+    let neighbors = p.get("neighbors").and_then(Value::as_u64).unwrap_or(12).max(1) as usize;
+    Ok(Box::new(move || made(rasterops::idw(&pts, &e, cell, power, neighbors, &name)?, None)))
 }
 
 /// Creates a route layer and reports invalid source segments omitted from its network.

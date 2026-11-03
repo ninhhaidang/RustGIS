@@ -38,6 +38,28 @@ pub struct Workflow {
     pub trend: TrendForm,
     pub selected_only: Option<bool>,
     pub zonal_stats: ZonalStatsForm,
+    /// A workflow running on a thread of its own: its progress and Cancel show, and what it made
+    /// lands through [`land_job`].
+    #[cfg(not(target_arch = "wasm32"))]
+    pub job: Option<Job>,
+}
+
+/// A workflow running on a thread of its own, so the window goes on while it works (#1291 step 3).
+#[cfg(not(target_arch = "wasm32"))]
+pub struct Job {
+    /// What it is called, for its progress line.
+    name: &'static str,
+    /// Stops it, and counts its progress.
+    control: std::sync::Arc<rustgis_engine::analysis::control::Control>,
+    kind: JobKind,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+enum JobKind {
+    /// A built-in tool (Zonal Statistics), applied by `gp.finish` as a Tools pane run is.
+    Tool { id: u64, slot: crate::Slot<rustgis_engine::cmd::gp::ToolDone> },
+    /// A command that makes a raster, run again with what it made (`ran`).
+    Raster { id: u64, command: &'static str, params: Value, slot: crate::Slot<Result<rustgis_engine::cmd::workflows::Made, String>> },
 }
 
 /// The Zonal Statistics section's inputs.
@@ -117,8 +139,46 @@ fn combo(ui: &mut Ui, id: &str, name: &str, value: &mut String, options: &[Strin
         .on_hover_text(tl!(name));
 }
 
+/// Runs a workflow's command: on the desktop the slow ones on a thread of their own
+/// ([`background`]), the rest here.
 fn run(app: &mut RustGisApp, id: &str, p: Value) {
-    match app.run(id, p) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some((command, name)) = background(id) {
+        start(app, command, name, p);
+        return;
+    }
+    run_now(app, id, p);
+}
+
+/// Runs a workflow's command from outside the pane (the map's menu). On the desktop a slow one runs
+/// in the background, the pane opened at `section` to show its progress, Cancel and result; one
+/// that can't start (another is under way) is said in the status bar too. The rest run here, a
+/// failure said in the status bar.
+#[cfg_attr(target_arch = "wasm32", allow(unused_variables))]
+pub fn run_elsewhere(app: &mut RustGisApp, section: &str, id: &str, p: Value) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some((command, name)) = background(id) {
+        // Opened first: opening a section clears its last result and error.
+        let _ = app.run("ui.pane.workflows", json!({"section": section}));
+        start(app, command, name, p);
+        if let Some(e) = app.workflow.error.clone() {
+            app.session.notify(e, true);
+        }
+        return;
+    }
+    if let Err(e) = app.run(id, p) {
+        app.session.notify(e, true);
+    }
+}
+
+fn run_now(app: &mut RustGisApp, id: &str, p: Value) {
+    let r = app.run(id, p);
+    show(app, r);
+}
+
+/// Shows how a workflow's command went, and redraws the map it may have changed.
+fn show(app: &mut RustGisApp, r: Result<Value, String>) {
+    match r {
         Ok(v) => {
             app.workflow.result = Some(v);
             app.workflow.error = None;
@@ -129,6 +189,169 @@ fn run(app: &mut RustGisApp, id: &str, p: Value) {
         }
     }
     app.map.invalidate();
+}
+
+/// The workflows that run on a thread of their own on the desktop, as their command and name:
+/// their work grows with the raster and the points, and the parallel helpers spread it over the
+/// cores from that thread.
+#[cfg(not(target_arch = "wasm32"))]
+fn background(id: &str) -> Option<(&'static str, &'static str)> {
+    match id {
+        "gp.zonalStats" => Some(("gp.zonalStats", "Zonal Statistics")),
+        "analysis.viewshed" => Some(("analysis.viewshed", "Viewshed")),
+        "analysis.interpolate" => Some(("analysis.interpolate", "Interpolate (IDW)")),
+        _ => None,
+    }
+}
+
+/// Starts `command` on a thread of its own; [`land_job`] applies what it made. One at a time: a
+/// second waits for the first to finish or be cancelled.
+#[cfg(not(target_arch = "wasm32"))]
+fn start(app: &mut RustGisApp, command: &'static str, name: &'static str, p: Value) {
+    use rustgis_engine::cmd::{gp, workflows};
+    if let Some(job) = &app.workflow.job {
+        app.workflow.error = Some(crate::i18n::fmt("{tool} is still running: wait for it, or cancel it.", &[("tool", tl_raw!(job.name))]));
+        return;
+    }
+    let control = rustgis_engine::analysis::control::Control::new();
+    let ctl = control.clone();
+    let kind = if command == "gp.zonalStats" {
+        gp::tool_start(&mut app.session, "zonalStats", &p).and_then(|run| {
+            let (id, slot) = (run.id, crate::Slot::default());
+            let out = slot.clone();
+            spawn(name, move || fill(&out, run.run(&ctl)))
+                .map(|()| JobKind::Tool { id, slot })
+                .inspect_err(|_| gp::tool_abandon(&mut app.session, id))
+        })
+    } else {
+        workflows::raster_start(&mut app.session, command, &p).and_then(|run| {
+            let (id, slot) = (run.id, crate::Slot::default());
+            let out = slot.clone();
+            spawn(name, move || fill(&out, run.run(&ctl)))
+                .map(|()| JobKind::Raster { id, command, params: p, slot })
+                .inspect_err(|_| workflows::raster_abandon(&mut app.session, id))
+        })
+    };
+    match kind {
+        Ok(kind) => {
+            app.workflow.job = Some(Job { name, control, kind });
+            (app.workflow.result, app.workflow.error) = (None, None);
+        }
+        Err(e) => show(app, Err(e)),
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn spawn(name: &str, work: impl FnOnce() + Send + 'static) -> Result<(), String> {
+    std::thread::Builder::new().name(name.into()).spawn(work).map(|_| ()).map_err(|e| e.to_string())
+}
+
+/// Fills a job's slot: even when its lock is poisoned, or the pane would wait for it forever.
+#[cfg(not(target_arch = "wasm32"))]
+fn fill<T>(slot: &crate::Slot<T>, v: T) {
+    *slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(v);
+}
+
+/// A workflow that has finished on its thread, applied (so it's in the History and can be undone):
+/// called every frame, whatever pane is in view, so a run lands though the pane closed. `true`
+/// while one is still running.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn land_job(app: &mut RustGisApp) -> bool {
+    use rustgis_engine::cmd::{gp, workflows};
+    let Some(job) = &app.workflow.job else { return false };
+    let ready = match &job.kind {
+        JobKind::Tool { id, slot } => {
+            // Its project was closed: stop it, as its result has nowhere to go, and say so.
+            if !gp::tool_waiting(&app.session, *id) {
+                job.control.cancel();
+                let name = job.name;
+                app.workflow.job = None;
+                dropped(app, name);
+                return false;
+            }
+            filled(slot)
+        }
+        JobKind::Raster { id, slot, .. } => {
+            // Likewise: its project was closed, so the raster it is making has nowhere to go.
+            if !workflows::raster_waiting(&app.session, *id) {
+                job.control.cancel();
+                let name = job.name;
+                app.workflow.job = None;
+                dropped(app, name);
+                return false;
+            }
+            filled(slot)
+        }
+    };
+    if !ready {
+        return true;
+    }
+    let Some(job) = app.workflow.job.take() else { return false };
+    match job.kind {
+        JobKind::Tool { id, slot } => {
+            let Some(done) = take(&slot) else { return false };
+            let r = gp::tool_complete(&mut app.session, id, done).and_then(|_| app.run("gp.finish", json!({"id": id})));
+            show(app, r);
+        }
+        JobKind::Raster { id, command, mut params, slot } => match take(&slot) {
+            // Added by its command, as if it had run here.
+            Some(Ok(made)) => match workflows::raster_land(&mut app.session, id, made) {
+                Ok(true) => {
+                    params["ran"] = json!(id);
+                    run_now(app, command, params);
+                }
+                Ok(false) => dropped(app, job.name),
+                Err(e) => show(app, Err(e)),
+            },
+            Some(Err(e)) => {
+                workflows::raster_abandon(&mut app.session, id);
+                show(app, Err(e));
+            }
+            None => {}
+        },
+    }
+    false
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn filled<T>(slot: &crate::Slot<T>) -> bool {
+    slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_some()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn take<T>(slot: &crate::Slot<T>) -> Option<T> {
+    slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take()
+}
+
+/// Says that a workflow's run was dropped: its project closed while it ran.
+#[cfg(not(target_arch = "wasm32"))]
+fn dropped(app: &mut RustGisApp, name: &'static str) {
+    app.workflow.error = Some(crate::i18n::fmt("{tool} was stopped: its project was closed while it ran.", &[("tool", tl_raw!(name))]));
+    app.workflow.result = None;
+}
+
+/// A workflow under way: its name, progress and Cancel.
+#[cfg(not(target_arch = "wasm32"))]
+fn job_running(app: &RustGisApp, ui: &mut Ui) {
+    let Some(job) = &app.workflow.job else { return };
+    ui.add_space(8.0);
+    let mut cancel = false;
+    ui.horizontal(|ui| {
+        ui.spinner();
+        // Two labels, not one sentence put together from translated pieces.
+        ui.label(egui::RichText::new(tl!("Running…")).size(12.0));
+        ui.label(egui::RichText::new(tl!(job.name)).size(12.0).strong());
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            cancel = ui.add_enabled(!job.control.is_cancelled(), egui::Button::new(tl!("Cancel"))).clicked();
+        });
+    });
+    // How far its current step has come, when it counts its work.
+    if let Some((done, total)) = job.control.progress() {
+        ui.add(egui::ProgressBar::new(done as f32 / total.max(1) as f32).show_percentage().desired_height(14.0));
+    }
+    if cancel {
+        job.control.cancel();
+    }
 }
 
 fn num(s: &str, d: f64) -> f64 {
@@ -914,6 +1137,8 @@ pub fn workflows(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
             .color(t.accent),
         );
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    job_running(app, ui);
     if let Some(e) = &app.workflow.error {
         ui.label(egui::RichText::new(e.as_str()).color(egui::Color32::from_rgb(0xC0, 0x30, 0x30)).small());
     }
@@ -1425,6 +1650,53 @@ fn script(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens, fit: bool) {
 mod tests {
     use super::*;
     use egui_kittest::kittest::Queryable;
+
+    /// Interpolate runs on a thread of its own from the pane (#1291 step 3): the pane goes on while
+    /// it works, a second run waits for the first, and its layer lands through its command, which
+    /// Record Task takes without the raster it handed over (a replay works it out again).
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_slow_workflow_runs_on_a_thread_and_lands() {
+        let mut app = RustGisApp::with_sample();
+        app.ws.recording = Some(Vec::new());
+        let layers = app.session.map().layers.len();
+        let p = json!({"layer": "Cities", "field": "pop_max", "cellSize": 2});
+        run(&mut app, "analysis.interpolate", p.clone());
+        assert!(app.workflow.job.is_some() && app.workflow.error.is_none(), "{:?}", app.workflow.error);
+        run(&mut app, "analysis.interpolate", p.clone());
+        assert!(app.workflow.error.as_deref().is_some_and(|e| e.contains("still running")), "{:?}", app.workflow.error);
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while land_job(&mut app) {
+            assert!(std::time::Instant::now() < end, "the run never landed");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(app.workflow.job.is_none() && app.workflow.error.is_none(), "{:?}", app.workflow.error);
+        assert!(app.workflow.result.as_ref().is_some_and(|r| r["layer"].is_u64()), "{:?}", app.workflow.result);
+        assert_eq!(app.session.map().layers.len(), layers + 1);
+        let steps = app.ws.recording.as_deref().unwrap_or_default();
+        let step = steps.last().expect("recorded");
+        assert_eq!(step.command, "analysis.interpolate");
+        assert!(step.params.get("ran").is_none() && step.params["field"] == "pop_max", "{:?}", step.params);
+        // Opening another project stops a run at once, and says so: the pane is free again.
+        run(&mut app, "analysis.interpolate", p.clone());
+        let control = app.workflow.job.as_ref().map(|j| j.control.clone()).expect("started");
+        app.session.run("project.new", &Value::Null).unwrap();
+        assert!(!land_job(&mut app));
+        assert!(app.workflow.job.is_none() && control.is_cancelled());
+        assert!(app.workflow.error.as_deref().is_some_and(|e| e.contains("project was closed")), "{:?}", app.workflow.error);
+        // From the map's menu: the pane opens at the section to show it, and a second run, which
+        // must wait, is said in the status bar too.
+        app.session.run("project.sample", &Value::Null).unwrap();
+        run_elsewhere(&mut app, "interpolate", "analysis.interpolate", p.clone());
+        assert!(app.workflow.job.is_some() && app.workflow.section == "interpolate");
+        assert_eq!(app.ui.right, Some(crate::RightPane::Workflows));
+        run_elsewhere(&mut app, "interpolate", "analysis.interpolate", p);
+        assert!(app.session.notices.iter().any(|n| n.text.contains("still running")));
+        while land_job(&mut app) {
+            assert!(std::time::Instant::now() < end, "the run never landed");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
 
     /// Every workflow has named inputs, including both weights sharing a row (#790).
     #[test]

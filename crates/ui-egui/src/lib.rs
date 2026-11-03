@@ -1940,6 +1940,15 @@ impl RustGisApp {
             let Some(h) = self.session.project.gp_history.last().filter(|h| !h.id.is_empty()) else { return };
             finished = json!({"tool": h.id, "params": h.params});
             ("gp.run", &finished)
+        } else if matches!(id, "analysis.viewshed" | "analysis.interpolate") && params.get("ran").is_some() {
+            // A raster an Analysis workflow made on a thread (`ran`): the step is the command
+            // itself, which a replay runs again from its parameters.
+            let mut again = params.clone();
+            if let Some(o) = again.as_object_mut() {
+                o.remove("ran");
+            }
+            finished = again;
+            (id, &finished)
         } else {
             (id, params)
         };
@@ -4064,6 +4073,13 @@ impl RustGisApp {
         fieldmenu::play(self, &ctx);
         chrome::shortcuts(self, &ctx);
         panes::follow_layer_filter(self);
+        // A Zarr summary, a trend or a workflow running on its thread lands whatever is in view,
+        // the File menu's backstage too, so a project saved there holds it (all are looked at: `|`,
+        // not `||`), and the frames go on while one runs so it's taken when it ends.
+        #[cfg(not(target_arch = "wasm32"))]
+        if workspacepanes::land_summary(self) | analysispane::land_trend(self) | analysispane::land_job(self) {
+            ctx.request_repaint_after(std::time::Duration::from_millis(200));
+        }
         if self.ui.backstage {
             backstage::show(self, ui);
         } else {
