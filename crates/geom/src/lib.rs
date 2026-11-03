@@ -341,7 +341,8 @@ pub fn wgs84_length_m(pts: &[Coord]) -> f64 {
 /// WGS 84 ellipsoid. The ring is closed along a geodesic to its first point, whatever its winding,
 /// so the perimeter and area come from one pass over the ring, not two. A ring gives the
 /// region it traces (so polar rings and globe-wide bands follow their own edges, as the sphere's
-/// [`geodesic_ring_area_m2`] does); reversing the ring gives the same magnitude.
+/// [`geodesic_ring_area_m2`] does; a ring with a 360° edge is measured on the ellipsoid by its
+/// edges' paths in longitude and latitude); reversing the ring gives the same magnitude.
 pub fn wgs84_ring_perimeter_area_m2(ring: &[Coord]) -> (f64, f64) {
     // A broken vertex is no place: NaN, never a plausible number (see [`haversine_m`]).
     if !ring.iter().all(|c| c.is_finite()) {
@@ -354,14 +355,15 @@ pub fn wgs84_ring_perimeter_area_m2(ring: &[Coord]) -> (f64, f64) {
     if let [a, b] = ring {
         return (2.0 * wgs84_distance_m(*a, *b), 0.0);
     }
-    // An edge of a full turn of longitude (-180° to 180°, as a globe-wide band has) joins two
-    // coordinates that name the same place, which a geodesic cannot tell from no edge at all: such
-    // a ring is measured on the sphere, as it always was.
+    // An edge of a full turn of longitude (-180° to 180°, as a globe-wide band or a cap closed along
+    // the pole has) joins two coordinates that name the same place, which a geodesic cannot tell
+    // from no edge at all: such a ring is measured by its edges' paths in longitude and latitude, on
+    // the ellipsoid (see [`authalic_ring_area_m2`]). Its perimeter is still the sphere's.
     let full_turn = ring.iter().zip(ring.iter().cycle().skip(1)).any(|(a, b)| (b.x - a.x).abs() >= 360.0);
     if full_turn {
         let mut closed = ring.to_vec();
         closed.extend(ring.first().copied());
-        return (geodesic_length_m(&closed), geodesic_ring_area_m2(ring));
+        return (geodesic_length_m(&closed), authalic_ring_area_m2(ring));
     }
     let mut polygon = PolygonArea::new(&WGS84, Winding::Clockwise);
     for c in ring {
@@ -376,6 +378,54 @@ pub fn wgs84_ring_perimeter_area_m2(ring: &[Coord]) -> (f64, f64) {
     // Compare a sphere area with its own hemisphere; the ellipsoid's hemisphere differs.
     let hemisphere = 2.0 * std::f64::consts::PI * EARTH_RADIUS_M * EARTH_RADIUS_M;
     (perimeter, if sphere > hemisphere { WGS84_AREA_M2 - area } else { area })
+}
+
+/// The WGS 84 ellipsoid's equatorial radius (metres).
+const WGS84_A: f64 = 6_378_137.0;
+
+/// The WGS 84 ellipsoid's first eccentricity squared, e² = f(2 − f).
+const WGS84_E2: f64 = 0.006_694_379_990_141_316;
+
+/// q(φ) = (1 − e²) [sin φ / (1 − e² sin² φ) + atanh(e sin φ) / e], Snyder (1987), *Map Projections:
+/// A Working Manual*, USGS Professional Paper 1395, eq. 3-12. The authalic latitude ξ has
+/// sin ξ = q(φ) / q(90°) (eq. 3-11).
+fn authalic_q(lat_deg: f64) -> f64 {
+    let e = WGS84_E2.sqrt();
+    let s = lat_deg.clamp(-90.0, 90.0).to_radians().sin();
+    (1.0 - WGS84_E2) * (s / (1.0 - WGS84_E2 * s * s) + (e * s).atanh() / e)
+}
+
+/// The area (square metres, unsigned) of a lon/lat ring on the WGS 84 ellipsoid, for rings whose
+/// edges are paths in longitude and latitude. The area between a ring and the equator is
+/// R_q² ∮ sin ξ dλ, with ξ the authalic latitude and R_q = a √(q(90°) / 2) the authalic radius
+/// (Snyder 1987, eqs. 3-11 to 3-13), which is Green's theorem on the equal-area sphere. Along a
+/// parallel (no change of latitude) the integral is sin ξ × Δλ, in closed form; an edge that
+/// changes latitude is straight in longitude and latitude, integrated by Simpson's rule. Steps of
+/// longitude are taken the short way, except a full turn (360° or more), which is kept as written.
+fn authalic_ring_area_m2(ring: &[Coord]) -> f64 {
+    let a = WGS84_A;
+    let q_pole = authalic_q(90.0);
+    let rq2 = a * a * q_pole / 2.0;
+    let sin_xi = |lat: f64| authalic_q(lat) / q_pole;
+    let mut total = 0.0;
+    for (p, r) in ring.iter().zip(ring.iter().cycle().skip(1)) {
+        let dlon = r.x - p.x;
+        let dlon = if dlon.abs() > 180.0 && dlon.abs() < 360.0 { wrap_lon(dlon) } else { dlon };
+        let dlat = r.y - p.y;
+        let mean = if dlat.abs() < 1e-12 {
+            sin_xi(p.y)
+        } else {
+            const N: usize = 32;
+            let mut sum = sin_xi(p.y) + sin_xi(r.y);
+            for i in 1..N {
+                let w = if i % 2 == 1 { 4.0 } else { 2.0 };
+                sum += w * sin_xi(p.y + dlat * i as f64 / N as f64);
+            }
+            sum / (3.0 * N as f64)
+        };
+        total += dlon.to_radians() * mean;
+    }
+    (total * rq2).abs()
 }
 
 /// Surface area 2πa²(1 + (1 − e²) atanh(e) / e) for WGS 84 (square metres).
@@ -575,6 +625,54 @@ mod tests {
         // A broken latitude is no pole.
         assert!(wgs84_length_m(&[c(0.0, 0.0), c(0.0, f64::INFINITY)]).is_nan());
         assert!(wgs84_distance_m(c(0.0, f64::NEG_INFINITY), c(0.0, 0.0)).is_nan());
+    }
+
+    /// The WGS 84 zone between latitude 80° N and the pole, 2π R_q² (1 − sin ξ) in square metres
+    /// (Snyder 1987, eqs. 3-11 to 3-13), worked out apart from the code: 3,908,572.76 km².
+    const CAP_80N_M2: f64 = 3.908_572_761_8e12;
+
+    #[test]
+    fn a_cap_closed_along_the_pole_is_measured_on_the_ellipsoid() {
+        let c = Coord::new;
+        // Cut at ±180° and closed along the pole: one edge along 80° N, one along the pole. The
+        // sphere's area for it is 3.875 M km², 0.9% low.
+        let cap = [c(-180.0, 80.0), c(180.0, 80.0), c(180.0, 90.0), c(-180.0, 90.0), c(-180.0, 80.0)];
+        // A vertex every degree along 80° N, then up the meridian and back along the pole.
+        let mut dense: Vec<Coord> = (-180..=180).map(|x| c(f64::from(x), 80.0)).collect();
+        dense.extend([c(180.0, 90.0), c(-180.0, 90.0)]);
+        for ring in [cap.to_vec(), dense] {
+            for reverse in [false, true] {
+                let mut ring = ring.clone();
+                if reverse {
+                    ring.reverse();
+                }
+                let (_, area) = wgs84_ring_perimeter_area_m2(&ring);
+                assert!((area / CAP_80N_M2 - 1.0).abs() < 1e-9, "reverse={reverse}: {area}");
+                assert!((geodesic_ring_area_m2(&ring) / CAP_80N_M2 - 1.0).abs() > 0.005, "the sphere is the 0.9% low one");
+            }
+        }
+    }
+
+    #[test]
+    fn rings_without_a_full_turn_edge_keep_geographiclib_areas() {
+        let c = Coord::new;
+        let ring = [c(10.0, 50.0), c(12.0, 50.0), c(12.0, 52.0), c(10.0, 52.0)];
+        let mut polygon = PolygonArea::new(&WGS84, Winding::Clockwise);
+        for p in &ring {
+            polygon.add_point(p.y, p.x);
+        }
+        let (perimeter, area, _) = polygon.compute(true);
+        let measured = wgs84_ring_perimeter_area_m2(&ring);
+        assert_eq!(measured, (perimeter, area.abs()));
+    }
+
+    #[test]
+    fn the_authalic_area_of_the_whole_globe_is_the_ellipsoids() {
+        // Two hemispheres' worth of band: a ring with 360° edges at the poles, -90° to 90°.
+        let c = Coord::new;
+        let globe = [c(-180.0, -90.0), c(180.0, -90.0), c(180.0, 90.0), c(-180.0, 90.0)];
+        let area = authalic_ring_area_m2(&globe);
+        assert!((area / WGS84_AREA_M2 - 1.0).abs() < 1e-9, "{area}");
     }
 
     #[test]
