@@ -155,21 +155,26 @@ pub fn commands() -> Vec<C> {
         }).params(r#"{"layer"?, "ramp": colour ramp name}"#)
         .when(need_layer),
         C::new("layer.invertRamp", "Invert Color Ramp", "Style › Drawing", |s, p| {
+            use rustgis_map::symbology::RampReversal;
             let id = s.layer_id(p)?;
             let l = s.map_mut().layer_mut(id).ok_or("no such layer")?;
-            let (kept, layer_stack) = match &mut l.raster {
-                Some(rl) => (rl.style.invert_ramp().then_some(0), None),
+            if l.graphics && l.raster.is_none() {
+                return Err("a graphics layer draws each feature in its own style, so it has no color scheme to invert".into());
+            }
+            let (done, layer_stack) = match &mut l.raster {
+                Some(rl) => (rl.style.invert_ramp().then_some(RampReversal { reversed: 0, kept: 0 }), None),
                 None => {
                     let g = l.geometry_type();
                     let stack = layer_stack_hiding_symbol(l, g);
                     (l.renderer.reverse_ramp(g), stack)
                 }
             };
-            let Some(kept) = kept else {
+            let Some(done) = done else {
                 return Err("the layer has no color scheme to invert: use Graduated or Unique Values (or a Stretch raster)".into());
             };
-            if kept > 0 {
+            if done.kept > 0 {
                 // Their own stacks are drawn instead of the symbol, so the reversal can't reach them.
+                let kept = done.kept;
                 s.notify(
                     format!(
                         "{kept} class(es) drawn with fills or strokes of their own were left as they are: \
@@ -178,7 +183,7 @@ pub fn commands() -> Vec<C> {
                     false,
                 );
             }
-            if let Some(what) = layer_stack {
+            if let Some(what) = layer_stack.filter(|_| done.reversed > 0) {
                 // The classes without a stack of their own are drawn from the layer's, in colors of its own.
                 s.notify(
                     format!(
@@ -789,18 +794,14 @@ fn show_fill(sym: &mut rustgis_map::Symbol) {
 }
 
 /// "fills" or "strokes" when the layer's own stack (`fill_layers` of a polygon layer, `line_strokes` of a
-/// line or point layer) is drawn for the classes that have none of their own and every layer of it sets its
-/// own color, so the symbol's colors, which a color scheme sets, show in none of them.
+/// line or point layer), which the classes without a stack of their own are drawn from, hides the
+/// symbol's colors, which a color scheme sets ([`rustgis_map::symbology::stack_hides_symbol`]).
 fn layer_stack_hiding_symbol(l: &rustgis_map::Layer, g: GeometryType) -> Option<&'static str> {
-    if l.graphics {
-        return None;
-    }
-    match g {
-        GeometryType::Polygon if !l.fill_layers.is_empty() && l.fill_layers.iter().all(|f| f.color.is_some()) => Some("fills"),
-        GeometryType::Polygon => None,
-        _ if !l.line_strokes.is_empty() && l.line_strokes.iter().all(|s| s.color.is_some()) => Some("strokes"),
-        _ => None,
-    }
+    rustgis_map::symbology::stack_hides_symbol(g, &l.fill_layers, &l.line_strokes).then_some(if g == GeometryType::Polygon {
+        "fills"
+    } else {
+        "strokes"
+    })
 }
 
 /// `layer.fillLayers`: a polygon layer's stacked fills (or a class's own, with `value`, `index`

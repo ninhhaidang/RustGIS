@@ -25607,4 +25607,27 @@ fn layer_invert_ramp_says_when_the_layers_own_stack_hides_the_colors() {
     assert!(said[0].starts_with("The layer's stacked fills set their own colors"), "{said:?}");
     s.run("layer.fillLayers", &json!({"layer": "Countries", "fills": [{"pattern": "solid"}]})).unwrap();
     assert!(notices(&mut s, "Countries").is_empty(), "a fill that follows the class shows the scheme");
+
+    // The notice about the layer's stack comes only when some classes changed places: with every
+    // class drawn from a stack of its own, none did, and the layer's stack is not what shows.
+    s.run("layer.symbology", &json!({"layer": "Countries", "type": "graduated", "field": "pop_est", "classes": 2})).unwrap();
+    s.run("layer.fillLayers", &json!({"layer": "Countries", "fills": [{"color": "#00AA00", "pattern": "solid"}]})).unwrap();
+    for index in 0..2 {
+        s.run("layer.fillLayers", &json!({"layer": "Countries", "index": index, "fills": [{"color": "#AA0000", "pattern": "solid"}]}))
+            .unwrap();
+    }
+    let said = notices(&mut s, "Countries");
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(said[0].starts_with("2 class(es) drawn with fills or strokes of their own"), "{said:?}");
+}
+
+#[test]
+fn layer_invert_ramp_refuses_a_graphics_layer() {
+    // #1355: a graphics layer draws each feature in its own style, whatever its renderer holds, so
+    // reversing the renderer's colors would change nothing and say nothing.
+    let mut s = world();
+    s.run("graphics.add", &json!({"shape": "rectangle", "points": [[0, 45], [10, 55]], "fill": "#FF000040"})).unwrap();
+    let id = s.map().layers.iter().find(|l| l.graphics).map(|l| l.id).unwrap();
+    let err = s.run("layer.invertRamp", &json!({"layer": id})).unwrap_err();
+    assert!(err.contains("graphics layer"), "{err}");
 }

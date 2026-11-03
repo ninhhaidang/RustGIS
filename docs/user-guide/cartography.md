@@ -203,7 +203,9 @@ the reversal treats every class as the layer's main kind, as choosing a colour s
 
 Choosing a colour scheme again starts from the scheme's own order, but classing the layer again
 on the same field, ranges and scheme keeps the reversed colours, as it keeps other colours edited
-by hand. On a Stretch raster the command switches the existing "Invert color scheme" option.
+by hand. On a Stretch raster the command switches the existing "Invert color scheme" option. A
+graphics layer draws each feature in its own style, so it has no colour scheme to invert and the
+command says so.
 
 ### Line strokes
 
