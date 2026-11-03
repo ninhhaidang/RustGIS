@@ -184,8 +184,10 @@ Layer/group transparency still applies on top of the symbol's opacity in maps an
 
 **Invert Color Ramp** (Symbology pane, or `layer.invertRamp`) reverses the colours of a Graduated
 Colors or Unique Values layer's classes along the legend's order, so the highest class takes the
-lowest class's colour. Colours edited by hand travel with the reversal, a polygon fill keeps its
-opacity, and applying it twice gives the original back. A class drawn with fills or strokes of its
+lowest class's colour. Colours edited by hand travel with the reversal, but a polygon fill's
+opacity stays with its position in the legend, as it does when a colour scheme is applied: a
+semi-transparent fill picked for the first class is still the first class's opacity afterwards.
+Applying it twice gives the original back. A class drawn with fills or strokes of its
 own (stacked fills, line strokes) keeps them, since they are drawn instead of the class's symbol,
 and the others reverse among themselves; a notice says how many classes were left as they are.
 Choosing a colour scheme again starts from the scheme's own order, but classing the layer again
