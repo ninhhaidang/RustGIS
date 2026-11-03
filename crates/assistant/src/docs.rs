@@ -23,6 +23,7 @@ pub const PAGES: &[Page] = pages![
     "index.md",
     "installation.md",
     "getting-started.md",
+    "videos.md",
     "user-guide/index.md",
     "user-guide/data.md",
     "user-guide/web-data.md",

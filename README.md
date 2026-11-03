@@ -24,6 +24,7 @@
   <a href="https://web.rustgis.app"><img alt="Launch the RustGIS web app" src="https://img.shields.io/badge/Launch-web%20app-b84a2c?style=for-the-badge&logo=webassembly&logoColor=white" height="36"></a>
   <a href="https://github.com/opengeos/RustGIS/releases/latest"><img alt="Download the desktop app" src="https://img.shields.io/badge/Download-desktop%20app-2563eb?style=for-the-badge&logo=github&logoColor=white" height="36"></a>
   <a href="https://rustgis.app"><img alt="Read the documentation" src="https://img.shields.io/badge/Read-the%20docs-0e9384?style=for-the-badge&logo=materialformkdocs&logoColor=white" height="36"></a>
+  <a href="https://rustgis.app/videos/"><img alt="Watch the video tutorials" src="https://img.shields.io/badge/Watch-video%20tutorials-dc2626?style=for-the-badge&logo=youtube&logoColor=white" height="36"></a>
   <a href="https://apps.microsoft.com/detail/9ppjw8h561lq?mode=direct"><img alt="Get it from Microsoft" src="https://get.microsoft.com/images/en-us%20dark.svg" height="36"></a>
 </p>
 
@@ -50,6 +51,11 @@
   sandboxed WebAssembly [plugins](docs/plugins.md) that add commands, tools and ribbon tabs.
 
 ## A tour
+
+Prefer a video? [RustGIS: A Fast, Free GIS That Runs on Your Desktop and in Your
+Browser](https://youtu.be/XFhqlSiKn6U) walks through the main features, and the
+[Video Tutorials](https://rustgis.app/videos/) page collects the rest of the
+[playlist](https://www.youtube.com/playlist?list=PLBQuwPke8dNI).
 
 <table>
 <tr>

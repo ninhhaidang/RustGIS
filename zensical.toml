@@ -12,6 +12,7 @@ nav = [
   { "Home" = "index.md" },
   { "Installation" = "installation.md" },
   { "Getting Started" = "getting-started.md" },
+  { "Video Tutorials" = "videos.md" },
   { "Web App" = "https://web.rustgis.app" },
   { "User Guide" = [
     "user-guide/index.md",

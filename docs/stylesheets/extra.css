@@ -32,3 +32,18 @@
   max-width: none;
   margin: 0.4em auto 0;
 }
+
+/* Video Tutorials: responsive 16:9 YouTube embeds. */
+.video-embed {
+  border-radius: 0.5rem;
+  margin: 1.2rem 0 1rem;
+  overflow: hidden;
+}
+
+.video-embed iframe {
+  aspect-ratio: 16 / 9;
+  border: 0;
+  display: block;
+  height: auto;
+  width: 100%;
+}
