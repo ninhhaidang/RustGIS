@@ -25574,3 +25574,37 @@ fn layer_invert_ramp_reverses_the_class_colors() {
     s.run("raster.symbology", &json!({"layer": "dem", "type": "classify", "classes": 2, "method": "equalInterval"})).unwrap();
     assert!(s.run("layer.invertRamp", &json!({"layer": "dem"})).is_err(), "a classified raster has no invert option");
 }
+
+#[test]
+fn layer_invert_ramp_says_when_the_layers_own_stack_hides_the_colors() {
+    // #1355: classes without a stack of their own are drawn from the layer's `line_strokes` or
+    // `fill_layers`; when every layer of it sets its own color, the color scheme shows in none of
+    // them, and the command says so (the colors are reversed all the same).
+    let notices = |s: &mut Session, layer: &str| -> Vec<String> {
+        let mark = s.notice_mark();
+        s.run("layer.invertRamp", &json!({"layer": layer})).unwrap();
+        s.notices_since(mark).iter().map(|n| n.text.clone()).collect()
+    };
+    let mut s = world();
+    // A line layer: strokes that all set a color hide the symbol; a core that follows the class doesn't.
+    s.run("layer.symbology", &json!({"layer": "Rivers", "type": "graduated", "field": "scalerank", "classes": 4})).unwrap();
+    assert!(notices(&mut s, "Rivers").is_empty(), "no stack, nothing to say");
+    let own = json!([{"color": "#000000", "width": 5}, {"color": "#FFFFFF", "width": 2}]);
+    s.run("layer.lineStrokes", &json!({"layer": "Rivers", "strokes": own})).unwrap();
+    let said = notices(&mut s, "Rivers");
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(said[0].starts_with("The layer's stacked strokes set their own colors"), "{said:?}");
+    let casing_and_core = json!([{"color": "#000000", "width": 5}, {"width": 2}]);
+    s.run("layer.lineStrokes", &json!({"layer": "Rivers", "strokes": casing_and_core})).unwrap();
+    assert!(notices(&mut s, "Rivers").is_empty(), "the core follows the class, so the scheme shows");
+    s.run("layer.lineStrokes", &json!({"layer": "Rivers", "strokes": []})).unwrap();
+    assert!(notices(&mut s, "Rivers").is_empty());
+    // A polygon layer: its stacked fills.
+    s.run("layer.symbology", &json!({"layer": "Countries", "type": "graduated", "field": "pop_est", "classes": 4})).unwrap();
+    s.run("layer.fillLayers", &json!({"layer": "Countries", "fills": [{"color": "#00AA00", "pattern": "solid"}]})).unwrap();
+    let said = notices(&mut s, "Countries");
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(said[0].starts_with("The layer's stacked fills set their own colors"), "{said:?}");
+    s.run("layer.fillLayers", &json!({"layer": "Countries", "fills": [{"pattern": "solid"}]})).unwrap();
+    assert!(notices(&mut s, "Countries").is_empty(), "a fill that follows the class shows the scheme");
+}

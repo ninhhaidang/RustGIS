@@ -1616,10 +1616,11 @@ impl Renderer {
     /// Reverses the colours of the classes (#1355), in the order the legend lists them: the first
     /// class takes the last one's colour, and so on. Colours edited by hand travel with their
     /// class's old position, and a polygon fill keeps its own opacity. Applied twice it gives the
-    /// original back. A class whose own stack hides its symbol (every layer of its fills, for a polygon, or
-    /// strokes, for a line or a point, sets a color of its own), and a repeat of a Unique Values value (which no feature draws), keep theirs and take no part in the reversal.
-    /// Returns how many classes were kept for their own stacks, or `None` for a renderer without
-    /// classes coloured from a ramp.
+    /// original back. A class whose own stack hides its symbol (every layer of its fills, for a
+    /// polygon, or strokes, for a line or a point, sets a color of its own), and a repeat of a Unique
+    /// Values value (which no feature draws), keep theirs and take no part in the reversal. The
+    /// `<all other values>` symbol is no ramp color and stays. Returns how many classes were kept for
+    /// their own stacks, or `None` for a renderer without classes coloured from a ramp.
     pub fn reverse_ramp(&mut self, g: GeometryType) -> Option<usize> {
         let (slots, kept) = self.ramp_slots(g)?;
         let old: Vec<Symbol> = slots.iter().filter_map(|&i| self.class_symbol_mut(i).map(|s| *s)).collect();
@@ -4082,6 +4083,7 @@ mod tests {
         let mut r = unique_with(&[("10", 1), ("100", 2), ("9", 3)]);
         assert_eq!(r.reverse_ramp(g), Some(0));
         assert_eq!(reds(&r), vec![("10".into(), 1), ("100".into(), 3), ("9".into(), 2)]);
+        assert!(matches!(&r, Renderer::Unique { other, .. } if other.fill.r() == 0), "<all other values> is no ramp color");
         r.reverse_ramp(g);
         assert_eq!(reds(&r), vec![("10".into(), 1), ("100".into(), 2), ("9".into(), 3)], "twice is the original");
         // A repeat of a value is not drawn: it stays, and the drawn entries reverse among themselves.
