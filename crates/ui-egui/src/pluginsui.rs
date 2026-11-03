@@ -52,7 +52,7 @@ enum Job {
     Registry { url: String, slot: Download },
     Blocklist { registry: String, slot: Download },
     Download { entry: Box<Entry>, slot: Download },
-    Restore { saved: Saved, slot: Download },
+    Restore { saved: Saved, slot: Download, retry: bool }, // `retry`: from the Retry button, not at start
 }
 
 /// A package waiting for the user to accept what it may do.
@@ -60,6 +60,13 @@ pub struct Confirm {
     manifest: Manifest,
     bytes: Vec<u8>,
     from: Option<Box<Entry>>,
+}
+
+/// A plugin the web app saved but couldn't load at start (or on Retry): listed on the
+/// Installed tab with why, until it loads or the user removes it.
+struct Unloaded {
+    saved: Saved,
+    reason: String,
 }
 
 #[derive(Default)]
@@ -82,6 +89,11 @@ pub struct PluginsState {
     pub message: Option<(bool, String)>,
     /// Python environments being made for plugins (desktop), by plugin id.
     envs: std::collections::HashMap<String, Arc<Mutex<EnvJob>>>,
+    /// Saved plugins (web app) that weren't loaded, by id (one entry each).
+    unloaded: Vec<Unloaded>,
+    /// Ids of plugins that failed to load at start, not yet told (one notice for all, once every
+    /// start download is done).
+    start_failures: Vec<String>,
 }
 
 /// A plugin's Python environment being made on a background thread.
@@ -294,40 +306,110 @@ pub fn restore(app: &mut RustGisApp) {
     if let Some(u) = app.services.load_pref.as_ref().and_then(|l| l("plugin_registry")) {
         app.plugins.url = u;
     }
-    for s in saved(app) {
-        if let Some(data) = &s.data {
-            use base64::Engine;
-            let bytes = base64::engine::general_purpose::STANDARD.decode(data).unwrap_or_default();
-            finish_restore(app, &s, Ok(bytes));
-        } else if let Some(url) = s.url.clone() {
-            let slot = fetch(app, &url, rp::package::MAX_PACKAGE, None);
-            app.plugins.jobs.push(Job::Restore { saved: s, slot });
-        }
-    }
+    restore_list(app, saved(app));
     // The blocklist, so a pulled plugin isn't loaded again.
     let registry = app.plugins.registry_url();
     let slot = fetch(app, &rp::registry::blocklist_url(&registry), 4 << 20, None);
     app.plugins.jobs.push(Job::Blocklist { registry, slot });
 }
 
-fn finish_restore(app: &mut RustGisApp, s: &Saved, got: Result<Vec<u8>, String>) {
+/// Starts loading each saved plugin; the ones that can't be loaded are listed on the Installed
+/// tab and told once (see [`tell_unloaded`]).
+fn restore_list(app: &mut RustGisApp, list: Vec<Saved>) {
+    for s in list {
+        start_restore(app, s, None, false);
+    }
+    // Every one may have failed at once, with nothing left to download.
+    tell_unloaded(app);
+}
+
+/// Loads a saved plugin from the copy kept in the browser, or starts downloading it again.
+/// `retry`: started from its Retry button, not at start.
+fn start_restore(app: &mut RustGisApp, s: Saved, ctx: Option<egui::Context>, retry: bool) {
+    if let Some(data) = &s.data {
+        use base64::Engine;
+        let got = base64::engine::general_purpose::STANDARD
+            .decode(data)
+            .map_err(|e| crate::i18n::fmt("its copy kept in the browser is damaged: {error}", &[("error", &e.to_string())]));
+        finish_restore(app, s, got, retry);
+    } else if let Some(url) = s.url.clone() {
+        let slot = fetch(app, &url, rp::package::MAX_PACKAGE, ctx);
+        app.plugins.jobs.push(Job::Restore { saved: s, slot, retry });
+    } else {
+        // Not made by an install: a record edited by hand.
+        let reason = tl!("the browser kept neither a copy of it nor where to download it").to_string();
+        finish_restore(app, s, Err(reason), retry);
+    }
+}
+
+/// Loads a saved plugin from what was downloaded. A failure is listed (never forgotten: offline
+/// and a missing file look the same on the web), the saved record stays.
+fn finish_restore(app: &mut RustGisApp, s: Saved, got: Result<Vec<u8>, String>, retry: bool) {
     let r = got.and_then(|bytes| {
         let sha = rp::package::sha256_hex(&bytes);
         if !sha.eq_ignore_ascii_case(&s.sha256) {
-            return Err(crate::i18n::fmt(
-                "{id} changed since it was installed; install it again from the Plugin Manager.",
-                &[("id", &s.id)],
-            ));
+            return Err(tl!("it changed since it was installed: install it again from the Plugin Manager").to_string());
         }
         rustgis_engine::cmd::plugins::install_bytes(&bytes)
     });
     match r {
-        Ok(p) if !s.enabled => {
-            let _ = rp::set_enabled(&p.manifest.id, false);
+        Ok(p) => {
+            if !s.enabled {
+                let _ = rp::set_enabled(&p.manifest.id, false);
+            }
+            app.plugins.unloaded.retain(|u| u.saved.id != s.id);
+            if retry {
+                app.plugins.message = Some((true, crate::i18n::fmt("Loaded {id}.", &[("id", &s.id)])));
+                app.session.revision = app.session.revision.wrapping_add(1);
+            }
         }
-        Ok(_) => {}
-        Err(e) => app.session.notify(e, true),
+        Err(reason) => {
+            if retry {
+                app.plugins.message = Some((false, crate::i18n::fmt("{id} wasn't loaded: {error}", &[("id", &s.id), ("error", &reason)])));
+            } else {
+                app.plugins.start_failures.push(s.id.clone());
+            }
+            let entry = Unloaded { saved: s, reason };
+            match app.plugins.unloaded.iter_mut().find(|u| u.saved.id == entry.saved.id) {
+                Some(u) => *u = entry,
+                None => app.plugins.unloaded.push(entry),
+            }
+        }
     }
+}
+
+/// Tells, in one notice, which plugins failed to load at start, once every start download is
+/// done. The Plugin Manager lists them, with Remove (and Retry for those it can download again).
+fn tell_unloaded(app: &mut RustGisApp) {
+    if app.plugins.start_failures.is_empty() || app.plugins.jobs.iter().any(|j| matches!(j, Job::Restore { retry: false, .. })) {
+        return;
+    }
+    let ids = std::mem::take(&mut app.plugins.start_failures);
+    // One each, leaving out any the user has already retried successfully or removed.
+    let mut failed: Vec<(String, String)> = Vec::new();
+    for id in ids {
+        if failed.iter().any(|(f, _)| *f == id) {
+            continue;
+        }
+        if let Some(u) = app.plugins.unloaded.iter().find(|u| u.saved.id == id) {
+            failed.push((id, u.reason.clone()));
+        }
+    }
+    let text = match failed.as_slice() {
+        [] => return,
+        [(id, reason)] => crate::i18n::fmt(
+            "The plugin {id} wasn't loaded. Open Plugins › Plugin Manager to see it. {reason}",
+            &[("id", id), ("reason", reason)],
+        ),
+        _ => {
+            let ids: Vec<&str> = failed.iter().map(|(id, _)| id.as_str()).collect();
+            crate::i18n::fmt(
+                "{n} plugins weren't loaded: {ids}. Open Plugins › Plugin Manager to see them.",
+                &[("n", &failed.len().to_string()), ("ids", &ids.join(", "))],
+            )
+        }
+    };
+    app.session.notify(text, true);
 }
 
 /// Checks a package that arrived (a file, a download) and asks the user to accept it.
@@ -380,6 +462,11 @@ fn install_confirmed(app: &mut RustGisApp) {
     let Some(c) = app.plugins.confirm.take() else { return };
     match rustgis_engine::cmd::plugins::install_bytes(&c.bytes) {
         Ok(p) => {
+            app.plugins.unloaded.retain(|u| u.saved.id != p.manifest.id);
+            // A start-up download of the same plugin still running would bring the old record back.
+            app.plugins.jobs.retain(|j| !matches!(j, Job::Restore { saved, .. } if saved.id == p.manifest.id));
+            // That download may have been the last one the start-up notice was waiting for.
+            tell_unloaded(app);
             let entry = Saved {
                 id: p.manifest.id.clone(),
                 sha256: p.sha256.clone(),
@@ -424,6 +511,24 @@ fn uninstall(app: &mut RustGisApp, id: &str) {
         }
         Err(e) => app.plugins.message = Some((false, e)),
     }
+}
+
+/// Downloads an unloaded plugin again and loads it; the outcome is the message on the Installed
+/// tab.
+fn retry(app: &mut RustGisApp, id: &str, ctx: &egui::Context) {
+    let Some(saved) = app.plugins.unloaded.iter().find(|u| u.saved.id == id).map(|u| u.saved.clone()) else { return };
+    if app.plugins.jobs.iter().any(|j| matches!(j, Job::Restore { saved, .. } if saved.id == id)) {
+        return;
+    }
+    app.plugins.message = None;
+    start_restore(app, saved, Some(ctx.clone()), true);
+}
+
+/// Forgets an unloaded plugin: the app stops trying to load it at start.
+fn remove_unloaded(app: &mut RustGisApp, id: &str) {
+    app.plugins.unloaded.retain(|u| u.saved.id != id);
+    update_saved(app, |list| list.retain(|s| s.id != id));
+    app.plugins.message = Some((true, crate::i18n::fmt("Removed {id}.", &[("id", id)])));
 }
 
 fn set_enabled(app: &mut RustGisApp, id: &str, on: bool) {
@@ -528,15 +633,16 @@ pub fn poll(app: &mut RustGisApp, ctx: &egui::Context) {
                 Some(Ok(bytes)) => received(app, bytes, Some(entry)),
                 Some(Err(e)) => app.plugins.message = Some((false, format!("{}: {e}", entry.name))),
             },
-            Job::Restore { saved, slot } => match take(&slot) {
-                None => waiting.push(Job::Restore { saved, slot }),
-                Some(r) => finish_restore(app, &saved, r),
+            Job::Restore { saved, slot, retry } => match take(&slot) {
+                None => waiting.push(Job::Restore { saved, slot, retry }),
+                Some(r) => finish_restore(app, saved, r, retry),
             },
         }
     }
     // Jobs added while applying (the blocklist) come after the ones still waiting.
     waiting.append(&mut app.plugins.jobs);
     app.plugins.jobs = waiting;
+    tell_unloaded(app);
     if !app.plugins.jobs.is_empty() {
         ctx.request_repaint_after(std::time::Duration::from_millis(100));
     }
@@ -595,7 +701,7 @@ fn card(ui: &mut egui::Ui, t: &Tokens, add: impl FnOnce(&mut egui::Ui)) {
 
 fn installed_tab(app: &mut RustGisApp, ui: &mut egui::Ui, t: &Tokens) {
     let plugins = rp::list();
-    if plugins.is_empty() {
+    if plugins.is_empty() && app.plugins.unloaded.is_empty() {
         ui.add_space(12.0);
         ui.label(tl!("No plugins are installed. Browse the plugin registry, or install a .rgplugin file."));
         ui.add_space(8.0);
@@ -603,6 +709,52 @@ fn installed_tab(app: &mut RustGisApp, ui: &mut egui::Ui, t: &Tokens) {
             app.plugins.tab = Tab::Browse;
         }
         return;
+    }
+    // The plugins that weren't loaded come first: (id, why, whether Retry is running, whether
+    // Retry can download it: a copy kept in the browser would only fail the same way again).
+    let unloaded: Vec<(String, String, bool, bool)> = app
+        .plugins
+        .unloaded
+        .iter()
+        .map(|u| {
+            let id = &u.saved.id;
+            let trying = app.plugins.jobs.iter().any(|j| matches!(j, Job::Restore { saved, .. } if saved.id == *id));
+            let downloads = u.saved.data.is_none() && u.saved.url.is_some();
+            (id.clone(), u.reason.clone(), trying, downloads)
+        })
+        .collect();
+    // What was clicked: (id, true for Retry, false for Remove).
+    let mut act: Option<(String, bool)> = None;
+    for (id, reason, trying, downloads) in &unloaded {
+        card(ui, t, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(id).font(semibold(13.5)));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if *trying {
+                        ui.spinner();
+                        ui.label(egui::RichText::new(tl!("Trying again…")).size(11.5));
+                    } else {
+                        if ui
+                            .small_button(tl!("Remove"))
+                            .on_hover_text(tl!("Forget this plugin: the app stops trying to load it at start."))
+                            .clicked()
+                        {
+                            act = Some((id.clone(), false));
+                        }
+                        if *downloads && ui.small_button(tl!("Retry")).on_hover_text(tl!("Download it again and load it.")).clicked() {
+                            act = Some((id.clone(), true));
+                        }
+                    }
+                });
+            });
+            chip(ui, t, tl!("Not loaded"), t.red);
+            ui.label(egui::RichText::new(reason).size(11.5).color(t.text_dim));
+        });
+    }
+    match act {
+        Some((id, true)) => retry(app, &id, ui.ctx()),
+        Some((id, false)) => remove_unloaded(app, &id),
+        None => {}
     }
     let lang = app.lang().code();
     let newer: Vec<(String, String)> = match &app.plugins.registry {
@@ -1047,5 +1199,169 @@ mod tests {
         }
         assert!(runs_here(rp::Runtime::Wasm, true) && runs_here(rp::Runtime::Skills, true));
         assert!(!runs_here(rp::Runtime::Process, true));
+    }
+
+    /// A saved registry install.
+    fn record(id: &str, sha256: &str) -> Saved {
+        Saved {
+            id: id.into(),
+            sha256: sha256.into(),
+            url: Some(format!("https://example.invalid/{id}.rgplugin")),
+            data: None,
+            enabled: true,
+        }
+    }
+
+    /// An app whose downloads all end the way `answer` says, at once.
+    fn app_fetching(answer: impl Fn(&str) -> Result<Vec<u8>, String> + 'static) -> RustGisApp {
+        let mut app = RustGisApp::with_sample();
+        app.services.fetch = Some(Box::new(move |url: &str, slot: Slot<Result<Vec<u8>, String>>| {
+            if let Ok(mut s) = slot.lock() {
+                *s = Some(answer(url));
+            }
+        }));
+        app
+    }
+
+    /// What `restore_list` and `poll` told for `list`: the notices given, as (text, error).
+    fn start(app: &mut RustGisApp, list: Vec<Saved>) -> Vec<(String, bool)> {
+        let mark = app.session.notice_mark();
+        restore_list(app, list);
+        poll(app, &egui::Context::default());
+        app.session.notices_since(mark).iter().map(|n| (n.text.clone(), n.error)).collect()
+    }
+
+    /// Plugins the web app couldn't load at start are listed, kept, and told once (#1352).
+    #[test]
+    fn plugins_that_fail_at_start_are_listed_and_told_once() {
+        // Two that can't be downloaded: one notice naming both, a count, and where to go.
+        let mut app = app_fetching(|_| Err("unreachable".into()));
+        let told = start(&mut app, vec![record("demo", "0"), record("gone", "0")]);
+        assert_eq!(told.len(), 1, "{told:?}");
+        assert!(told[0].1, "an error: {told:?}");
+        assert!(told[0].0.starts_with("2 plugins weren't loaded: demo, gone."), "{told:?}");
+        assert!(told[0].0.contains("Plugin Manager"), "{told:?}");
+        let listed: Vec<(&str, &str)> = app.plugins.unloaded.iter().map(|u| (u.saved.id.as_str(), u.reason.as_str())).collect();
+        assert_eq!(listed, [("demo", "unreachable"), ("gone", "unreachable")]);
+        assert!(app.plugins.start_failures.is_empty() && app.plugins.jobs.is_empty());
+
+        // One: its id first, then why.
+        let mut app = app_fetching(|_| Err("unreachable".into()));
+        let told = start(&mut app, vec![record("demo", "0")]);
+        assert_eq!(told.len(), 1, "{told:?}");
+        assert!(told[0].0.starts_with("The plugin demo wasn't loaded."), "{told:?}");
+        assert!(told[0].0.ends_with("unreachable"), "{told:?}");
+
+        // A download that isn't the one installed.
+        let mut app = app_fetching(|_| Ok(b"x".to_vec()));
+        start(&mut app, vec![record("demo", "0")]);
+        let why = app.plugins.unloaded.first().map(|u| u.reason.clone()).unwrap_or_default();
+        assert!(why.contains("changed since it was installed"), "{why}");
+
+        // A copy kept in the browser that can't be read, with nothing to download: told at once.
+        let mut app = app_fetching(|_| Err("unreachable".into()));
+        let damaged = Saved { data: Some("!not base64!".into()), url: None, ..record("damaged", "0") };
+        let told = start(&mut app, vec![damaged]);
+        assert_eq!(told.len(), 1, "{told:?}");
+        assert!(told[0].0.starts_with("The plugin damaged wasn't loaded.") && told[0].0.contains("damaged:"), "{told:?}");
+
+        // Loaded: nothing to tell, nothing listed.
+        struct Cleanup(#[allow(dead_code)] tempfile::TempDir);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = rustgis_plugins::store::uninstall("restore-ok");
+                let _ = rustgis_plugins::store::uninstall("restore-new");
+                rustgis_plugins::store::set_dir(None);
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        rustgis_plugins::store::set_dir(Some(dir.path().to_path_buf()));
+        let _cleanup = Cleanup(dir);
+        let package = rustgis_plugins::testing::skills_package("restore-ok", &["s"]);
+        let sha = rp::package::sha256_hex(&package);
+        let mut app = app_fetching(move |_| Ok(package.clone()));
+        let told = start(&mut app, vec![record("restore-ok", &sha)]);
+        assert!(told.is_empty(), "{told:?}");
+        assert!(app.plugins.unloaded.is_empty() && app.plugins.start_failures.is_empty());
+        assert!(rp::get("restore-ok").is_some());
+
+        // Installed again while its start-up download still runs: that download is dropped, so it
+        // can't list the plugin as not loaded afterwards, and the start-up notice it held back
+        // (here for a damaged copy) is given.
+        let package = rustgis_plugins::testing::skills_package("restore-new", &["s"]);
+        let mut app = RustGisApp::with_sample();
+        app.services.fetch = Some(Box::new(|_: &str, _: Slot<Result<Vec<u8>, String>>| {}));
+        let mark = app.session.notice_mark();
+        let damaged = Saved { data: Some("!not base64!".into()), url: None, ..record("damaged", "0") };
+        restore_list(&mut app, vec![damaged, record("restore-new", "0")]);
+        assert_eq!(app.plugins.jobs.len(), 1);
+        assert!(app.session.notices_since(mark).is_empty());
+        let manifest = Package::from_zip(&package).unwrap().manifest;
+        app.plugins.confirm = Some(Confirm { manifest, bytes: package, from: None });
+        install_confirmed(&mut app);
+        assert!(app.plugins.jobs.is_empty());
+        let listed: Vec<&str> = app.plugins.unloaded.iter().map(|u| u.saved.id.as_str()).collect();
+        assert_eq!(listed, ["damaged"]);
+        let told: Vec<&str> = app.session.notices_since(mark).iter().map(|n| n.text.as_str()).collect();
+        assert!(told.len() == 1 && told[0].starts_with("The plugin damaged wasn't loaded."), "{told:?}");
+        assert!(rp::get("restore-new").is_some());
+    }
+
+    /// A plugin that wasn't loaded is listed on the Installed tab, with Retry and Remove (#1352).
+    #[test]
+    fn unloaded_plugins_offer_retry_and_remove() {
+        use egui_kittest::kittest::Queryable;
+        let mut app = app_fetching(|_| Err("still unreachable".into()));
+        app.plugins.unloaded.push(Unloaded { saved: record("demo", "0"), reason: "unreachable".into() });
+        let mut fonts = false;
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(560.0, 600.0)).build_ui_state(
+            move |ui, app: &mut RustGisApp| {
+                if !fonts {
+                    crate::theme::install_fonts(ui.ctx(), &[], None);
+                    fonts = true;
+                    return;
+                }
+                installed_tab(app, ui, &Tokens::light());
+            },
+            app,
+        );
+        h.run();
+        for label in ["demo", "Not loaded", "Retry", "Remove", "unreachable"] {
+            assert!(h.query_by_label(label).is_some(), "{label}");
+        }
+        assert!(h.query_by_label_contains("No plugins are installed").is_none());
+
+        // Retry downloads again; while it runs the buttons give way to a spinner.
+        let mark = h.state().session.notice_mark();
+        h.get_by_label("Retry").click();
+        h.step();
+        h.step();
+        assert!(h.query_by_label("Trying again…").is_some());
+        assert!(h.query_by_label("Retry").is_none() && h.query_by_label("Remove").is_none());
+        poll(h.state_mut(), &egui::Context::default());
+        h.run();
+        let app = h.state();
+        assert_eq!(app.plugins.unloaded.first().map(|u| u.reason.as_str()), Some("still unreachable"));
+        assert_eq!(app.plugins.message, Some((false, "demo wasn't loaded: still unreachable".to_string())));
+        // Said on the tab, not as a notice.
+        assert!(app.session.notices_since(mark).is_empty());
+        assert!(h.query_by_label("Retry").is_some() && h.query_by_label("still unreachable").is_some());
+
+        // Remove forgets it.
+        h.get_by_label("Remove").click();
+        h.run();
+        let app = h.state();
+        assert!(app.plugins.unloaded.is_empty());
+        assert_eq!(app.plugins.message, Some((true, "Removed demo.".to_string())));
+        assert!(h.query_by_label("Not loaded").is_none());
+
+        // A copy kept in the browser can't be downloaded again: Remove only.
+        h.state_mut()
+            .plugins
+            .unloaded
+            .push(Unloaded { saved: Saved { url: None, data: Some("AA==".into()), ..record("copy", "0") }, reason: "damaged".into() });
+        h.run();
+        assert!(h.query_by_label("Remove").is_some());
+        assert!(h.query_by_label("Retry").is_none());
     }
 }

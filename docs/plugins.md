@@ -36,7 +36,10 @@ The desktop app keeps installed packages in `plugins/` in its data folder (overr
 `$RUSTGIS_PLUGINS_DIR`) and loads them at startup. The web app remembers the
 plugins you installed from the registry and downloads them again on your next visit. Packages
 installed from files are remembered when they are at most 1.5 MiB; larger ones last for the
-current session only.
+current session only. When one of them can't be loaded on a visit (you're offline, the download
+is gone or has changed), the web app says so once and lists it on the **Installed** tab as *Not
+loaded*, with why. **Retry** downloads a plugin from the registry again; **Remove** forgets it, so
+the web app stops trying at start. A plugin that fails to load is never forgotten on its own.
 
 On the command line:
 
