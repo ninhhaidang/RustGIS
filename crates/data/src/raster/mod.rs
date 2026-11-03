@@ -43,8 +43,20 @@ pub fn filled<T: Clone>(w: usize, h: usize, fill: T) -> Result<Vec<T>> {
     Ok(v)
 }
 
+/// A `w × h` band of `values`, its memory reserved first ([`grid`]). More than `w × h` values are
+/// an error, not cut off.
+pub fn collected<T>(w: usize, h: usize, values: impl IntoIterator<Item = T>) -> Result<Vec<T>> {
+    let mut v = grid(w, h)?;
+    let mut values = values.into_iter();
+    v.extend(values.by_ref().take(w * h));
+    if values.next().is_some() {
+        return Err(DataError::Format(format!("more values than a {w} × {h} raster holds")));
+    }
+    Ok(v)
+}
+
 /// Room for `n` samples of a `w × h` band (fewer than all of them, when fewer can come).
-pub(crate) fn room<T>(n: usize, w: usize, h: usize) -> Result<Vec<T>> {
+pub fn room<T>(n: usize, w: usize, h: usize) -> Result<Vec<T>> {
     let mut v = Vec::new();
     v.try_reserve_exact(n).map_err(|_| no_memory(w, h))?;
     Ok(v)
@@ -1135,6 +1147,10 @@ pub(crate) mod tests {
         assert!(room::<f64>(usize::MAX / 2, 1, 1).is_err(), "too many bytes to ask for");
         assert_eq!(filled(3, 2, f32::NAN).map(|v| v.len()).ok(), Some(6));
         assert!(grid::<u16>(4, 5).is_ok_and(|g| g.is_empty() && g.capacity() >= 20));
+        assert!(collected(huge, huge, std::iter::repeat(0.0f32)).is_err());
+        assert!(collected(3, 2, 0..7).is_err(), "more than w × h values");
+        assert_eq!(collected(3, 2, 0..6).ok(), Some(vec![0, 1, 2, 3, 4, 5]));
+        assert_eq!(collected(3, 2, 0..4).ok(), Some(vec![0, 1, 2, 3]));
     }
 
     /// A PNG of `w`×`h` pixels, red in its top half and blue below.

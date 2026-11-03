@@ -7,7 +7,7 @@ use std::sync::Arc;
 use rustgis_analysis::georef::{self, Gcp, Kind};
 use rustgis_analysis::rasterops::{self, NODATA};
 use rustgis_analysis::warp;
-use rustgis_data::raster::{ColorHint, Crs, GeoTransform, Raster};
+use rustgis_data::raster::{self, ColorHint, Crs, GeoTransform, Raster};
 use rustgis_data::{Geometry, GeometryType};
 use rustgis_geom::{Coord, Extent};
 use rustgis_map::RasterLayer;
@@ -174,6 +174,22 @@ fn replace_layer(s: &mut Session, layer: &str, mut new: rustgis_map::RasterLayer
     Ok(json!({"layer": id}))
 }
 
+/// A copy of `r`'s bands, whole, their memory reserved first: a raster the machine can't hold
+/// twice is an error, not a crash (#1291). A band of the wrong length is copied as it is, for
+/// `Raster::new` to refuse.
+fn copied(r: &Raster) -> Result<Vec<Vec<f32>>, String> {
+    let (w, h) = (r.width as usize, r.height as usize);
+    r.bands
+        .iter()
+        .map(|b| {
+            let mut copy = raster::room(b.data.len(), w, h)?;
+            copy.extend_from_slice(&b.data);
+            Ok(copy)
+        })
+        .collect::<Result<_, rustgis_data::DataError>>()
+        .map_err(|e| e.to_string())
+}
+
 fn rebuild(r: &Raster, transform: GeoTransform, crs: Crs, bands: Vec<Vec<f32>>) -> Result<Raster, String> {
     let mut out = Raster::new(r.name.clone(), r.width, r.height, bands, transform, crs, r.nodata, r.color.clone(), r.data_type.clone())
         .map_err(|e| e.to_string())?;
@@ -238,7 +254,7 @@ fn georeference(s: &mut Session, p: &Value) -> CmdResult {
         }
         GeoTransform { origin_x: bx, origin_y: by, pixel_width: ax, pixel_height: ay }
     };
-    let mut out = rebuild(&r, gt, Crs::LonLat, r.bands.iter().map(|b| b.data.clone()).collect())?;
+    let mut out = rebuild(&r, gt, Crs::LonLat, copied(&r)?)?;
     // The same pixels, so the same values rounded when the file was read.
     out.rounded = r.rounded.clone();
     let e = out.extent();
@@ -545,24 +561,21 @@ fn change(s: &mut Session, p: &Value) -> CmdResult {
         return Err(format!("unknown method '{method}'"));
     }
     let band = uint(p, "band").unwrap_or(1).saturating_sub(1) as usize;
-    let av: Vec<f32> = a.bands.get(band).ok_or("no such band")?.data.clone();
+    let av = &a.bands.get(band).ok_or("no such band")?.data;
     let bv = rasterops::resample_to(&bfr, band, &a)?;
-    let out: Vec<f32> = av
-        .iter()
-        .zip(&bv)
-        .map(|(x, y)| {
-            if !a.is_valid(*x) || *y == NODATA {
-                return NODATA;
-            }
-            let v = match method {
-                "ratio" if *x != 0.0 => y / x,
-                "percent" if *x != 0.0 => (y - x) / x * 100.0,
-                "difference" => y - x,
-                _ => f32::NAN,
-            };
-            if v.is_finite() { v } else { NODATA }
-        })
-        .collect();
+    let values = av.iter().zip(&bv).map(|(x, y)| {
+        if !a.is_valid(*x) || *y == NODATA {
+            return NODATA;
+        }
+        let v = match method {
+            "ratio" if *x != 0.0 => y / x,
+            "percent" if *x != 0.0 => (y - x) / x * 100.0,
+            "difference" => y - x,
+            _ => f32::NAN,
+        };
+        if v.is_finite() { v } else { NODATA }
+    });
+    let out = raster::collected(a.width as usize, a.height as usize, values).map_err(|e| e.to_string())?;
     add(s, rasterops::derive(&a, &name(p, format!("{}_change", a.name)), vec![out])?, false)
 }
 
@@ -798,13 +811,15 @@ fn process(s: &mut Session, p: &Value) -> CmdResult {
             let k = (uint(p, "factor").unwrap_or(2).clamp(2, 64) as u32).min(r.width.min(r.height)).max(1);
             let (w, h) = ((r.width / k).max(1), (r.height / k).max(1));
             // Each output pixel is the mean of the valid pixels it covers.
-            let bands: Vec<Vec<f32>> = r
+            let bands = r
                 .bands
                 .iter()
                 .map(|b| {
-                    (0..h)
-                        .flat_map(|row| (0..w).map(move |col| (row, col)))
-                        .map(|(row, col)| {
+                    let cells = (0..h).flat_map(|row| (0..w).map(move |col| (row, col)));
+                    raster::collected(
+                        w as usize,
+                        h as usize,
+                        cells.map(|(row, col)| {
                             let (mut sum, mut n) = (0.0f64, 0u32);
                             for dy in 0..k {
                                 for dx in 0..k {
@@ -819,10 +834,11 @@ fn process(s: &mut Session, p: &Value) -> CmdResult {
                                 }
                             }
                             if n > 0 { (sum / n as f64) as f32 } else { NODATA }
-                        })
-                        .collect()
+                        }),
+                    )
                 })
-                .collect();
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
             let gt = GeoTransform {
                 pixel_width: r.transform.pixel_width * k as f64,
                 pixel_height: r.transform.pixel_height * k as f64,
@@ -940,7 +956,10 @@ fn raster_mosaic(s: &mut Session, p: &Value) -> CmdResult {
     let (w, h) = (w as u32, h as u32);
     let nodata = first.nodata.or(Some(NODATA as f64));
     let fill = nodata.map(|v| v as f32).unwrap_or(NODATA);
-    let mut bands: Vec<Vec<f32>> = vec![vec![fill; w as usize * h as usize]; first.band_count()];
+    let mut bands = (0..first.band_count())
+        .map(|_| raster::filled(w as usize, h as usize, fill))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
     for (r, (pc, pr)) in rs.iter().zip(&places) {
         let (dc, dr) = ((pc - c0) as usize, (pr - r0) as usize);
         for (out, b) in bands.iter_mut().zip(&r.bands) {
@@ -1046,20 +1065,22 @@ fn clip_window(
     let (w, h) = (cols.end.saturating_sub(cols.start), rows.end.saturating_sub(rows.start));
     let nodata = if mask.is_some() { r.nodata.or(Some(NODATA as f64)) } else { r.nodata };
     let fill = nodata.map(|v| v as f32).unwrap_or(NODATA);
-    let bands: Vec<Vec<f32>> = r
+    let bands = r
         .bands
         .iter()
         .map(|b| {
-            rows.clone()
-                .flat_map(|row| cols.clone().map(move |col| (row, col)))
-                .enumerate()
-                .map(|(i, (row, col))| match mask.map(|m| m.get(i).copied().unwrap_or(false)) {
+            let cells = rows.clone().flat_map(|row| cols.clone().map(move |col| (row, col))).enumerate();
+            raster::collected(
+                w as usize,
+                h as usize,
+                cells.map(|(i, (row, col))| match mask.map(|m| m.get(i).copied().unwrap_or(false)) {
                     Some(false) => fill,
                     _ => b.data.get((row * r.width + col) as usize).copied().unwrap_or(fill),
-                })
-                .collect()
+                }),
+            )
         })
-        .collect();
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
     let o = r.transform.to_world(f64::from(cols.start), f64::from(rows.start));
     let gt = GeoTransform { origin_x: o.x, origin_y: o.y, ..r.transform };
     let mut out = Raster::new(name, w, h, bands, gt, r.crs, nodata, r.color.clone(), r.data_type.clone()).map_err(|e| e.to_string())?;
@@ -1125,7 +1146,7 @@ fn edit_pixels(s: &mut Session, p: &Value) -> CmdResult {
                 - 1,
         ),
     };
-    let mut bands: Vec<Vec<f32>> = r.bands.iter().map(|b| b.data.clone()).collect();
+    let mut bands = copied(&r)?;
     let mut n = 0usize;
     // Only the pixels under the polygon's box are visited.
     let (cols, rows) = pixel_window(&r, &e).ok_or("the polygon is outside the raster")?;
@@ -1340,7 +1361,7 @@ fn mosaic(s: &mut Session, p: &Value) -> CmdResult {
         return Err(format!("the mosaic would be {cols} × {rows} cells; set a larger cell size in the workspace options"));
     }
     let nb = imgs.iter().map(|r| r.band_count()).min().unwrap_or(1).min(if w.kind == "reality" { 1 } else { 4 });
-    let mut bands = vec![vec![NODATA; cols * rows]; nb];
+    let mut bands = (0..nb).map(|_| raster::filled(cols, rows, NODATA)).collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
     for row in 0..rows {
         for col in 0..cols {
             let c = Coord::new(e.min_x + (col as f64 + 0.5) * cell, e.max_y - (row as f64 + 0.5) * cell);
