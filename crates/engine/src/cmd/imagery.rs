@@ -888,11 +888,14 @@ fn raster_mosaic(s: &mut Session, p: &Value) -> CmdResult {
     let mut places: Vec<(i64, i64)> = Vec::with_capacity(inputs.len());
     let (mut c0, mut r0, mut c1, mut r1) = (0i64, 0i64, 0i64, 0i64);
     // Each input is checked as it is read, so a mismatched or oversized set fails before the
-    // rest are loaded.
+    // rest are loaded. What reading a file left out is said once they are all read.
+    let mut lost: Vec<(String, String)> = Vec::new();
     for v in inputs {
         let n = mosaic_name(v)?;
         let r = if mosaic_reads_file(s, v) {
-            Arc::new(rustgis_data::raster::read_path(std::path::Path::new(n)).map_err(|e| format!("{n}: {e}"))?)
+            let r = rustgis_data::raster::read_path(std::path::Path::new(n)).map_err(|e| format!("{n}: {e}"))?;
+            lost.extend(r.lost.iter().map(|l| (n.to_string(), l.clone())));
+            Arc::new(r)
         } else {
             mosaic_layer(s, v)?
         };
@@ -928,6 +931,7 @@ fn raster_mosaic(s: &mut Session, p: &Value) -> CmdResult {
         places.push((pc, pr));
         rs.push(r);
     }
+    super::raster::say_losses(s, lost);
     let first = rs.first().ok_or("a mosaic needs two or more rasters")?;
     let (w, h) = (c1 - c0, r1 - r0);
     if w <= 0 || h <= 0 {
@@ -970,7 +974,21 @@ fn raster_mosaic(s: &mut Session, p: &Value) -> CmdResult {
         first.data_type.clone(),
     )
     .map_err(|e| e.to_string())?;
-    out.bands.iter_mut().zip(&first.bands).for_each(|(o, i)| o.name = i.name.clone());
+    // Band and class names are the first input's, as its cells are where they overlap; an input
+    // naming its bands or classes otherwise is said.
+    out.bands.iter_mut().zip(&first.bands).for_each(|(o, i)| {
+        o.name = i.name.clone();
+        o.classes = i.classes.clone();
+    });
+    let other: Vec<&str> = rs
+        .iter()
+        .skip(1)
+        .filter(|r| r.bands.iter().zip(&first.bands).any(|(b, f)| b.name != f.name || b.classes != f.classes))
+        .map(|r| r.name.as_str())
+        .collect();
+    if !other.is_empty() {
+        s.notify(format!("{}: band or class names other than {}'s, which the mosaic keeps", other.join(", "), first.name), false);
+    }
     let path = ps(p, "path").map(str::trim).filter(|p| !p.is_empty()).map(str::to_string);
     if let Some(path) = &path {
         let bytes = rustgis_data::raster::geotiff::write(&out, 0).map_err(|e| e.to_string())?;

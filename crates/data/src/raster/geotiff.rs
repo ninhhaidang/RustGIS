@@ -145,7 +145,7 @@ fn geo_tags<R: Read + Seek>(dec: &mut Decoder<R>) -> Result<Geo> {
 /// A cloud-optimised GeoTIFF's coordinate system, georeferencing and no-data value, from its first
 /// image (as [`read`] finds them); `None` for a rotated or skewed image, or one with no GeoTIFF
 /// tags (a scan), which is read whole.
-pub(crate) fn cog_geo<R: Read + Seek>(dec: &mut Decoder<R>) -> Result<Option<(Crs, GeoTransform, Option<f64>)>> {
+pub(crate) fn cog_geo<R: Read + Seek>(dec: &mut Decoder<R>) -> Result<Option<(Crs, GeoTransform, Option<Exact>)>> {
     let geo = geo_tags(dec)?;
     if geo.affine.is_some() || !geo.referenced {
         return Ok(None);
@@ -163,7 +163,7 @@ pub(crate) fn cog_geo<R: Read + Seek>(dec: &mut Decoder<R>) -> Result<Option<(Cr
             }
         },
     };
-    Ok(Some((crs, geo.transform, geo.nodata)))
+    Ok(Some((crs, geo.transform, geo.nodata_exact)))
 }
 
 #[cfg(test)]
@@ -485,7 +485,7 @@ fn can_round(buf: &DecodingResult) -> bool {
 
 /// The samples of `buf` that `f32` doesn't hold (see [`held_exactly`]), a bit each: `None` for a type
 /// that holds every value, or when none changed.
-fn rounded_bits(buf: &DecodingResult, nodata: Uncounted) -> Option<Vec<u64>> {
+pub(crate) fn rounded_bits(buf: &DecodingResult, nodata: Uncounted) -> Option<Vec<u64>> {
     if !can_round(buf) {
         return None;
     }
@@ -566,6 +566,8 @@ pub(crate) struct Unpaletted<R> {
     inner: R,
     /// Where each palette image's PhotometricInterpretation value is, and what to show there.
     patches: Vec<(u64, [u8; 2])>,
+    /// Whether the first image (the full one) is a palette image.
+    first_palette: bool,
     pos: u64,
 }
 
@@ -575,9 +577,11 @@ const MAX_ENTRIES: u64 = 4096;
 
 /// Where the palette images' PhotometricInterpretation values are, walking the IFD chain
 /// (classic and BigTIFF). A file it can't walk has none: the decoder reports what's wrong.
-fn palette_patches<R: Read + Seek>(r: &mut R) -> Vec<(u64, [u8; 2])> {
+fn palette_patches<R: Read + Seek>(r: &mut R) -> (Vec<(u64, [u8; 2])>, bool) {
     use std::io::SeekFrom;
     let mut patches = Vec::new();
+    // Whether the first image is one of them.
+    let mut first = false;
     let mut walk = || -> Option<()> {
         let mut head = [0u8; 16];
         r.seek(SeekFrom::Start(0)).ok()?;
@@ -611,7 +615,7 @@ fn palette_patches<R: Read + Seek>(r: &mut R) -> Vec<(u64, [u8; 2])> {
             u64::from(u32_(head.get(4..)?)?)
         };
         let (count_len, entry_len, next_len) = if big { (8u64, 20u64, 8usize) } else { (2, 12, 4) };
-        for _ in 0..MAX_IFDS {
+        for k in 0..MAX_IFDS {
             if ifd == 0 {
                 break;
             }
@@ -631,6 +635,7 @@ fn palette_patches<R: Read + Seek>(r: &mut R) -> Vec<(u64, [u8; 2])> {
                     if u16_(e.get(value_at..)?)? == 3 {
                         let at = ifd + count_len + i as u64 * entry_len + value_at as u64;
                         patches.push((at, if little { [1, 0] } else { [0, 1] }));
+                        first |= k == 0;
                     }
                 }
             }
@@ -641,7 +646,7 @@ fn palette_patches<R: Read + Seek>(r: &mut R) -> Vec<(u64, [u8; 2])> {
         Some(())
     };
     let _ = walk();
-    patches
+    (patches, first)
 }
 
 /// Any reader, boxed: the decoder is compiled once for every kind of source (a file, bytes in
@@ -657,11 +662,19 @@ pub(crate) fn reader<'a>(r: impl Read + Seek + 'a) -> std::io::Result<Reader<'a>
     Unpaletted::new(Box::new(r))
 }
 
+impl<R> Unpaletted<R> {
+    /// Whether the file's first image (the full one) is a palette image (PhotometricInterpretation
+    /// 3), shown as grey.
+    pub(crate) fn first_is_palette(&self) -> bool {
+        self.first_palette
+    }
+}
+
 impl<R: Read + Seek> Unpaletted<R> {
     fn new(mut inner: R) -> std::io::Result<Self> {
-        let patches = palette_patches(&mut inner);
+        let (patches, first_palette) = palette_patches(&mut inner);
         inner.seek(std::io::SeekFrom::Start(0))?;
-        Ok(Unpaletted { inner, patches, pos: 0 })
+        Ok(Unpaletted { inner, patches, first_palette, pos: 0 })
     }
 }
 
@@ -991,7 +1004,10 @@ pub(super) fn read_limited_with_nodata(
     open: Option<Opener<'_>>,
     sidecar_nodata: Option<f64>,
 ) -> Result<Raster> {
-    let palette = !r.patches.is_empty();
+    // The full image says whether it is read as a palette image, whichever image is read, as a
+    // COG window has it: a grey full image's stray colour table colours nothing, nor do palette
+    // overviews of it.
+    let palette = r.first_is_palette();
     let limits = {
         let mut l = Limits::default();
         l.decoding_buffer_size = MAX_SAMPLES.saturating_mul(4);
@@ -1005,12 +1021,15 @@ pub(super) fn read_limited_with_nodata(
     // The no-data value whose pixels aren't counted as rounded.
     let uncounted = Uncounted::new(geo.nodata_exact, sidecar_nodata);
     // The bands' descriptions GDAL keeps in the file (an `.aux.xml` sidecar's are applied after).
-    let described = dec
-        .find_tag(Tag::Unknown(42112))
-        .ok()
-        .flatten()
-        .and_then(|v| v.into_string().ok())
-        .and_then(|t| super::pam::parse_gdal_metadata(&t));
+    // A tag that doesn't decode is left out, and said (`Raster::lost`).
+    let described = match dec.find_tag(Tag::Unknown(42112)) {
+        Ok(None) => None,
+        Ok(Some(v)) => match v.into_string() {
+            Ok(t) => super::pam::parse_gdal_metadata(&t),
+            Err(e) => Some(super::pam::Pam::losing(format!("it isn't text ({e}): band and class names are left out"))),
+        },
+        Err(e) => Some(super::pam::Pam::losing(format!("it doesn't decode ({e}): band and class names are left out"))),
+    };
     let spp = samples(&mut dec);
     let bytes = sample_bytes(&mut dec);
     // The decoded image is held at its own pixel size before conversion to f32, so bound bytes
@@ -1079,9 +1098,21 @@ pub(super) fn read_limited_with_nodata(
     let ct = dec.colortype().map_err(err)?;
     // JPEG-compressed YCbCr, the only YCbCr read (the colour match below rejects the rest).
     let ycbcr = matches!(ct, ColorType::YCbCr(_)) && dec.find_tag_unsigned::<u16>(Tag::Compression).ok().flatten() == Some(7);
-    // A palette image (shown to the decoder as grey) is coloured by its table.
+    // A palette image (shown to the decoder as grey) is coloured by its table. One whose table
+    // doesn't decode, or is too short, is drawn grey, and says so (`Raster::lost`).
+    let (colour_map, map_why) = if palette {
+        match dec.find_tag(Tag::ColorMap) {
+            Ok(Some(v)) => (Some(v), None),
+            Ok(None) => (None, Some("it is a palette image with no colour table: drawn grey".to_string())),
+            Err(e) => (None, Some(format!("its colour table doesn't decode ({e}): it is left out"))),
+        }
+    } else {
+        (None, None)
+    };
+    // Said for a grey image, which a table would colour (an RGB overview of a palette file isn't).
+    let mut table_lost = map_why.filter(|_| matches!(ct, ColorType::Gray(_)));
     let ct = match ct {
-        ColorType::Gray(bits) if palette && dec.find_tag(Tag::ColorMap).ok().flatten().is_some() => ColorType::Palette(bits),
+        ColorType::Gray(bits) if colour_map.is_some() => ColorType::Palette(bits),
         other => other,
     };
     let (nbands, color) = match ct {
@@ -1093,11 +1124,25 @@ pub(super) fn read_limited_with_nodata(
         ColorType::YCbCr(_) if ycbcr => (3, ColorHint::Rgb { alpha: false }),
         ColorType::RGBA(_) => (4, ColorHint::Rgb { alpha: true }),
         ColorType::Palette(bits) => {
-            let map: Vec<u16> = dec.find_tag(Tag::ColorMap).ok().flatten().and_then(|v| v.into_u16_vec().ok()).unwrap_or_default();
-            let n = 1usize << bits.min(16);
-            let c = |i: usize| (map.get(i).copied().unwrap_or(0) / 257) as u8;
-            let table = if map.len() >= 3 * n { (0..n).map(|i| [c(i), c(n + i), c(2 * n + i), 255]).collect() } else { Vec::new() };
-            (1, if table.is_empty() { ColorHint::Gray } else { ColorHint::Palette(table) })
+            let table = match colour_map.map(|v| v.into_u16_vec()) {
+                Some(Ok(map)) => {
+                    let table = super::cog::colour_table(&map, u16::from(bits));
+                    if table.is_none() {
+                        table_lost = Some(format!(
+                            "its colour table has {} entries, short of the {} a palette of {bits}-bit pixels needs: it is left out",
+                            map.len(),
+                            3usize << bits.min(16)
+                        ));
+                    }
+                    table
+                }
+                Some(Err(e)) => {
+                    table_lost = Some(format!("its colour table doesn't decode ({e}): it is left out"));
+                    None
+                }
+                None => None,
+            };
+            (1, table.map_or(ColorHint::Gray, ColorHint::Palette))
         }
         ColorType::Multiband { num_samples, .. } => (num_samples.max(1) as usize, multiband_color(&mut dec, num_samples)),
         other => return Err(err(format!("{other:?} images aren't supported"))),
@@ -1188,8 +1233,9 @@ pub(super) fn read_limited_with_nodata(
         r.georeferenced = false;
         r.overview = overview;
         r.rounded = rounded;
+        r.lost.extend(table_lost);
         if let Some(p) = &described {
-            r.apply_pam(p);
+            r.apply_pam(p, super::pam::GDAL_METADATA);
         }
         return Ok(r);
     }
@@ -1238,8 +1284,9 @@ pub(super) fn read_limited_with_nodata(
     let mut r = Raster::new(name, w, h, bands, transform, crs, geo.nodata, color, data_type)?;
     r.overview = overview;
     r.rounded = rounded;
+    r.lost.extend(table_lost);
     if let Some(p) = &described {
-        r.apply_pam(p);
+        r.apply_pam(p, super::pam::GDAL_METADATA);
     }
     Ok(r)
 }
@@ -1343,8 +1390,12 @@ pub fn write(r: &Raster, band: usize) -> Result<Vec<u8>> {
             .then(|| band.data.iter().map(|v| if r.is_valid(*v) { v.clamp(0.0, 255.0) as u8 } else { nodata.unwrap_or(0) }).collect())
     };
     let rgb = matches!(r.color, ColorHint::Rgb { .. }) && r.bands.len() >= 3;
+    // Each branch below names the bands it writes as samples (`$written`): their names, and the
+    // first one's class names (the red band's, for a colour file), go to GDAL's metadata tag,
+    // read back on open.
     macro_rules! tags {
-        ($img:expr) => {{
+        ($img:expr, $written:expr) => {{
+            let classes = super::gdal_metadata_of(r, $written);
             let e = $img.encoder();
             e.write_tag(Tag::ModelPixelScaleTag, &scale[..]).map_err(err)?;
             e.write_tag(Tag::ModelTiepointTag, &tie[..]).map_err(err)?;
@@ -1356,6 +1407,9 @@ pub fn write(r: &Raster, band: usize) -> Result<Vec<u8>> {
                 if !d.ascii.is_empty() {
                     e.write_tag(Tag::Unknown(34737), d.ascii.as_str()).map_err(err)?;
                 }
+            }
+            if let Some(xml) = &classes {
+                e.write_tag(Tag::Unknown(42112), xml.as_str()).map_err(err)?;
             }
             if let Some(nd) = r.nodata {
                 e.write_tag(Tag::GdalNodata, nd.to_string().as_str()).map_err(err)?;
@@ -1371,7 +1425,7 @@ pub fn write(r: &Raster, band: usize) -> Result<Vec<u8>> {
                 data.extend([red.get(i), green.get(i), blue.get(i), a.get(i)].map(|v| v.copied().unwrap_or(0)));
             }
             let mut img = enc.new_image::<colortype::RGBA8>(w, h).map_err(err)?;
-            tags!(img);
+            tags!(img, &[0, 1, 2, 3]);
             img.write_data(&data).map_err(err)?;
         } else {
             let mut data = Vec::with_capacity(n * 3);
@@ -1379,7 +1433,7 @@ pub fn write(r: &Raster, band: usize) -> Result<Vec<u8>> {
                 data.extend([red.get(i), green.get(i), blue.get(i)].map(|v| v.copied().unwrap_or(0)));
             }
             let mut img = enc.new_image::<colortype::RGB8>(w, h).map_err(err)?;
-            tags!(img);
+            tags!(img, &[0, 1, 2]);
             img.write_data(&data).map_err(err)?;
         }
     } else if rgb && let (Some(red), Some(green), Some(blue)) = (r.bands.first(), r.bands.get(1), r.bands.get(2)) {
@@ -1394,7 +1448,7 @@ pub fn write(r: &Raster, band: usize) -> Result<Vec<u8>> {
                     data.extend([at(red, i), at(green, i), at(blue, i), at(alpha, i)]);
                 }
                 let mut img = enc.new_image::<colortype::RGBA32Float>(w, h).map_err(err)?;
-                tags!(img);
+                tags!(img, &[0, 1, 2, 3]);
                 img.write_data(&data).map_err(err)?;
             }
             None => {
@@ -1403,14 +1457,14 @@ pub fn write(r: &Raster, band: usize) -> Result<Vec<u8>> {
                     data.extend([at(red, i), at(green, i), at(blue, i)]);
                 }
                 let mut img = enc.new_image::<colortype::RGB32Float>(w, h).map_err(err)?;
-                tags!(img);
+                tags!(img, &[0, 1, 2]);
                 img.write_data(&data).map_err(err)?;
             }
         }
     } else {
         let b = r.bands.get(band).ok_or_else(|| err(format!("the raster has no band {}", band + 1)))?;
         let mut img = enc.new_image::<colortype::Gray32Float>(w, h).map_err(err)?;
-        tags!(img);
+        tags!(img, &[band]);
         img.write_data(&b.data).map_err(err)?;
     }
     Ok(out.into_inner())
@@ -1808,6 +1862,18 @@ mod tests {
         }
         assert_eq!(r.value(0, 1, 0), Some(1.0));
         assert_eq!(r.value(0, 2, 0), Some(2.0));
+        assert!(r.lost.is_empty(), "{:?}", r.lost);
+        // A table too short for its bytes: drawn grey, and said.
+        let mut short = grey8(8, 8, &data, Some(&map[..384]));
+        set_photometric(&mut short, 3);
+        let grey = read(std::io::Cursor::new(&short), "short").unwrap();
+        assert!(matches!(grey.color, ColorHint::Gray), "{:?}", grey.color);
+        assert_eq!(grey.lost, ["its colour table has 384 entries, short of the 768 a palette of 8-bit pixels needs: it is left out"]);
+        let mut none = grey8(8, 8, &data, None);
+        set_photometric(&mut none, 3);
+        let none = read(std::io::Cursor::new(&none), "none").unwrap();
+        assert_eq!(none.lost, ["it is a palette image with no colour table: drawn grey"]);
+        assert!(matches!(none.color, ColorHint::Gray), "{:?}", none.color);
         // Every truncation of a palette file is an error, not a panic.
         for n in (0..bytes.len()).step_by(11) {
             let _ = read(std::io::Cursor::new(&bytes[..n]), "x");
@@ -2096,6 +2162,38 @@ mod tests {
         // Without the tag, the band keeps its number.
         let plain = read(std::io::Cursor::new(grey8(2, 2, &[1, 2, 3, 4], None)), "plain").unwrap();
         assert_ne!(plain.bands[0].name, "NDVI 2024-06-01");
+    }
+
+    #[test]
+    fn what_a_files_metadata_leaves_out_is_kept_to_be_said() {
+        use crate::raster::cog::{Example, example_with};
+        // Read whole, a file with a class item past a band's values says so; a clean one doesn't.
+        let lossy = read(
+            std::io::Cursor::new(example_with(&Example { size: 256, tile: 256, classes: true, lossy: true, ..Example::default() })),
+            "lossy",
+        )
+        .unwrap();
+        assert!(lossy.lost.iter().any(|l| l.starts_with("its GDAL metadata: 1 CLASS_ item(s)")), "{:?}", lossy.lost);
+        let clean =
+            read(std::io::Cursor::new(example_with(&Example { size: 256, tile: 256, classes: true, ..Example::default() })), "clean")
+                .unwrap();
+        assert!(clean.lost.is_empty(), "{:?}", clean.lost);
+    }
+
+    #[test]
+    fn class_names_are_written_back() {
+        // In GDAL's metadata tag, as a window of MapBiomas keeps its classes in a saved project.
+        let mut r = read(std::io::Cursor::new(grey8(2, 2, &[3, 15, 3, 0], None)), "cover").unwrap();
+        r.bands[0].classes = vec![String::new(); 16];
+        r.bands[0].classes[3] = "Formação Florestal".into();
+        r.bands[0].classes[15] = "Pastagem".into();
+        r.bands[0].name = "classe_mapbiomas".into();
+        let back = read(std::io::Cursor::new(write(&r, 0).unwrap()), "back").unwrap();
+        assert_eq!((back.bands[0].class_name(3.0), back.bands[0].class_name(15.0)), (Some("Formação Florestal"), Some("Pastagem")));
+        assert_eq!(back.bands[0].name, "classe_mapbiomas");
+        // The same through the cloud-optimised writer.
+        let cog = read(std::io::Cursor::new(super::super::cogwrite::write(&r, 0).unwrap()), "cog").unwrap();
+        assert_eq!((cog.bands[0].name.as_str(), cog.bands[0].class_name(3.0)), ("classe_mapbiomas", Some("Formação Florestal")));
     }
 
     #[test]
@@ -2621,6 +2719,15 @@ mod tests {
         std::fs::write(&tif, typed::<Gray64Float>(2, 2, &px, Some("nan"))).unwrap();
         let nan = crate::raster::read_path(&tif).unwrap();
         assert_eq!((nan.nodata, nan.rounded.as_slice()), (Some(0.1), &[2u64][..]));
+        // A record for a band the file lacks, with another no-data value, doesn't stop band 1's
+        // from applying, nor from being left out of the count: 0.1 isn't counted, 0.1234… is.
+        let px = [0.1, 0.5, 0.123_456_789_012_345, 2.0];
+        std::fs::write(&tif, typed::<Gray64Float>(2, 2, &px, None)).unwrap();
+        let xml = r#"<PAMDataset><PAMRasterBand band="1"><NoDataValue>0.1</NoDataValue></PAMRasterBand>
+            <PAMRasterBand band="2"><NoDataValue>5</NoDataValue></PAMRasterBand></PAMDataset>"#;
+        std::fs::write(dir.path().join("s.tif.aux.xml"), xml).unwrap();
+        let other = crate::raster::read_path(&tif).unwrap();
+        assert_eq!((other.nodata, other.rounded.as_slice()), (Some(0.1), &[1u64][..]), "{:?}", other.lost);
         // 64-bit whole numbers are compared as integers: 2^60 + 1 changes, 2^60 doesn't.
         let big = read(std::io::Cursor::new(typed::<GrayI64>(2, 1, &[(1 << 60) + 1, 1 << 60], None)), "i64").unwrap();
         assert_eq!(big.rounded, vec![1]);

@@ -410,6 +410,10 @@ pub struct Raster {
     /// `false` for a scan (a TIFF with no GeoTIFF tags, a PNG, a JPEG): `transform` is then only
     /// a stand-in until the picture is placed or georeferenced, and says nothing about the ground.
     pub georeferenced: bool,
+    /// What reading it left out or cut (a colour table, names), one line a kind with a count,
+    /// for whoever adds it to the map to say (AGENTS.md, Never silent). Empty when nothing was
+    /// left out.
+    pub lost: Vec<String>,
     /// How many values of each band changed when read as `f32` (Int32 IDs past 16,777,216, Float64
     /// values with more digits than `f32` holds), by band; empty when none did. NaN and no-data
     /// values aren't counted.
@@ -427,6 +431,27 @@ impl std::fmt::Debug for Raster {
             .field("transform", &self.transform)
             .finish_non_exhaustive()
     }
+}
+
+/// A band's own name, for a file's metadata: `None` while it keeps its number (`Band 3`).
+pub(crate) fn band_name_of(r: &Raster, band: usize) -> Option<&str> {
+    r.bands.get(band).map(|b| b.name.as_str()).filter(|n| !n.trim().is_empty() && *n != format!("Band {}", band + 1))
+}
+
+/// GDAL's metadata tag (42112) for the bands `bands` of `r`, written as samples in that order:
+/// their names, and the first one's class names. Both GeoTIFF writers take it from here.
+pub(crate) fn gdal_metadata_of(r: &Raster, bands: &[usize]) -> Option<String> {
+    let names: Vec<Option<&str>> = bands.iter().map(|b| band_name_of(r, *b)).collect();
+    let first = bands.first().and_then(|b| r.bands.get(*b)).map_or(&[][..], |b| &b.classes[..]);
+    pam::gdal_metadata(&names, first)
+}
+
+/// How many of the names [`gdal_metadata_of`] writes for `bands` hold a character XML can't (a
+/// control character), which is written as a space: for a writer to say.
+pub fn gdal_metadata_changed(r: &Raster, bands: &[usize]) -> usize {
+    let names = bands.iter().filter_map(|b| band_name_of(r, *b));
+    let first = bands.first().and_then(|b| r.bands.get(*b)).map_or(&[][..], |b| &b.classes[..]);
+    names.chain(first.iter().map(String::as_str)).filter(|n| n.chars().any(pam::xml_cannot_hold)).count()
 }
 
 impl Raster {
@@ -474,6 +499,7 @@ impl Raster {
             source: None,
             overview: None,
             georeferenced: true,
+            lost: Vec::new(),
             rounded: Vec::new(),
             transformer,
             extent: Extent::EMPTY,
@@ -486,14 +512,60 @@ impl Raster {
     }
 
     /// Applies what GDAL's `.aux.xml` sidecar says about the bands: their descriptions name them,
-    /// their category names name their classes, its no-data value applies when the file has none,
-    /// and its statistics stand in for those of a reduced overview (the whole band's, where the
-    /// overview's only approximate them).
-    pub fn apply_pam(&mut self, pam: &pam::Pam) {
+    /// their category names name their classes, its no-data value applies when the file has none
+    /// (the file's own is kept, as GDAL keeps it, and one it gives otherwise said), and its statistics stand in for those of a reduced overview (the whole band's, where the
+    /// overview's only approximate them). What it left out is said as `from`'s ("its GDAL
+    /// metadata", "its .aux.xml sidecar").
+    pub fn apply_pam(&mut self, pam: &pam::Pam, from: &str) {
+        self.lost.extend(pam.lost.iter().map(|l| format!("{from}: {l}")));
+        // Names for bands the raster doesn't have have nowhere to go.
+        let beyond = pam
+            .bands
+            .iter()
+            .filter(|b| (b.band == 0 || b.band > self.bands.len()) && (b.description.is_some() || !b.categories.is_empty()))
+            .count();
+        if beyond > 0 {
+            self.lost.push(format!("{from}: names for {beyond} band(s) it doesn't have (it has {}) left out", self.bands.len()));
+        }
+        // So is a no-data value: it isn't the raster's.
+        let outside = pam.bands.iter().filter(|b| (b.band == 0 || b.band > self.bands.len()) && b.nodata.is_some()).count();
+        if outside > 0 {
+            self.lost.push(format!("{from}: a no-data value for {outside} band(s) it doesn't have (it has {}) left out", self.bands.len()));
+        }
         let mut recompute = false;
         if self.nodata.is_none() {
-            self.nodata = pam.nodata();
+            self.nodata = pam.nodata_within(self.bands.len());
             recompute = self.nodata.is_some();
+            // Bands that disagree give none: their no-data pixels are read as values, and said.
+            let mut given: Vec<f64> =
+                pam.bands.iter().filter(|b| (1..=self.bands.len()).contains(&b.band)).filter_map(|b| b.nodata).collect();
+            given.sort_by(f64::total_cmp);
+            given.dedup();
+            if self.nodata.is_none() && given.len() > 1 {
+                let values: Vec<String> = given.iter().take(4).map(|v| v.to_string()).collect();
+                let more = if given.len() > 4 { ", …" } else { "" };
+                self.lost.push(format!(
+                    "{from}: its bands give different no-data values ({}{more}): none is applied, so those pixels are read as values",
+                    values.join(", ")
+                ));
+            }
+        } else if let Some(own) = self.nodata {
+            // The file's own no-data value is kept; a sidecar's other one for its bands is said.
+            let mut other: Vec<f64> = pam
+                .bands
+                .iter()
+                .filter(|b| (1..=self.bands.len()).contains(&b.band))
+                .filter_map(|b| b.nodata)
+                .filter(|v| !(v == &own || (v.is_nan() && own.is_nan())))
+                .collect();
+            other.sort_by(f64::total_cmp);
+            other.dedup();
+            if !other.is_empty() {
+                let values: Vec<String> = other.iter().take(4).map(|v| v.to_string()).collect();
+                let more = if other.len() > 4 { ", …" } else { "" };
+                self.lost
+                    .push(format!("{from}: its no-data value ({}{more}) isn't the file's own ({own}), which is kept", values.join(", ")));
+            }
         }
         let nd = self.nodata.map(|v| v as f32);
         let valid = move |v: f32| v.is_finite() && nd.is_none_or(|d| v != d);
@@ -709,8 +781,33 @@ pub fn read_path(path: &Path) -> Result<Raster> {
         }
         other => return Err(DataError::Unsupported(format!(".{other}"))),
     };
+    // `apply_pam` takes the no-data of the bands the raster has, which the decoder may not have
+    // left out of the rounded count: it left out the sidecar's no-data for all bands. When the two
+    // differ (a record for a band the raster lacks, or one only some bands give), the file is read
+    // again with the one applied (none, when the bands it has give none), so the rounded count
+    // leaves out just its pixels. Only an ASCII grid, or a GeoTIFF of a type `f32` can round, is read again.
+    let applied = pam.as_ref().map(|p| p.nodata_within(r.bands.len()));
+    if let Some(nd) = applied
+        && nd != sidecar_nodata
+        && r.nodata.is_none()
+        && (ext == "asc"
+            || (matches!(ext.as_str(), "tif" | "tiff")
+                && matches!(r.data_type.as_str(), "UInt32" | "Int32" | "UInt64" | "Int64" | "Float64")))
+    {
+        // The second read gives all the first did: the first goes before it, so two aren't held.
+        drop(r);
+        r = if ext == "asc" {
+            ascii::read_with_nodata(&std::fs::read_to_string(path)?, &name, sidecar_crs(path), nd)?
+        } else {
+            #[cfg(not(target_arch = "wasm32"))]
+            let again = geotiff::read_file_with_nodata(path, &name, nd)?;
+            #[cfg(target_arch = "wasm32")]
+            let again = geotiff::read_with_nodata(std::io::BufReader::new(std::fs::File::open(path)?), &name, nd)?;
+            again
+        };
+    }
     if let Some(p) = &pam {
-        r.apply_pam(p);
+        r.apply_pam(p, pam::SIDECAR);
     }
     r.source = Some(path.display().to_string());
     Ok(r)
@@ -1121,6 +1218,66 @@ pub(crate) mod tests {
             assert_eq!(b.class_name(v), None, "{v}");
         }
         assert!(small().bands[0].classes.is_empty(), "no sidecar, no names");
+        // Names for a band the raster doesn't have are said, not dropped.
+        let mut one = small();
+        one.apply_pam(
+            &pam::Pam {
+                bands: vec![pam::PamBand { band: 2, description: Some("NIR".into()), ..Default::default() }],
+                lost: vec!["1 band record(s) for no band from 1 to 65536 left out".into()],
+            },
+            pam::SIDECAR,
+        );
+        assert!(
+            one.lost.iter().any(|l| l == "its .aux.xml sidecar: names for 1 band(s) it doesn't have (it has 1) left out"),
+            "{:?}",
+            one.lost
+        );
+        // A no-data value for a band it doesn't have isn't its own, and is said.
+        let mut zero = small();
+        zero.nodata = None;
+        zero.apply_pam(
+            &pam::Pam { bands: vec![pam::PamBand { band: 2, nodata: Some(0.0), ..Default::default() }], lost: Vec::new() },
+            pam::SIDECAR,
+        );
+        assert_eq!(zero.nodata, None);
+        // Bands that disagree give none, and say so; bands that agree give theirs.
+        let mut two = small();
+        two.nodata = None;
+        let both = |a: f64, b: f64| pam::Pam {
+            bands: vec![
+                pam::PamBand { band: 1, nodata: Some(a), ..Default::default() },
+                pam::PamBand { band: 1, nodata: Some(b), ..Default::default() },
+            ],
+            lost: Vec::new(),
+        };
+        two.apply_pam(&both(0.0, 255.0), pam::SIDECAR);
+        assert_eq!(two.nodata, None);
+        assert_eq!(
+            two.lost,
+            ["its .aux.xml sidecar: its bands give different no-data values (0, 255): none is applied, so those pixels are read as values"]
+        );
+        let mut same = small();
+        same.nodata = None;
+        same.apply_pam(&both(0.0, 0.0), pam::SIDECAR);
+        assert!(same.nodata == Some(0.0) && same.lost.is_empty(), "{:?}", same.lost);
+        // A file with its own no-data value keeps it; a sidecar giving another says so, one giving
+        // the same says nothing.
+        let mut own = small();
+        own.nodata = Some(-9999.0);
+        own.apply_pam(&both(0.0, -9999.0), pam::SIDECAR);
+        assert_eq!(own.nodata, Some(-9999.0));
+        assert_eq!(own.lost, ["its .aux.xml sidecar: its no-data value (0) isn't the file's own (-9999), which is kept"]);
+        let mut agreed = small();
+        agreed.nodata = Some(-9999.0);
+        agreed.apply_pam(&both(-9999.0, -9999.0), pam::SIDECAR);
+        assert!(agreed.lost.is_empty(), "{:?}", agreed.lost);
+        assert_eq!(zero.lost, ["its .aux.xml sidecar: a no-data value for 1 band(s) it doesn't have (it has 1) left out"]);
+        // What the document left out is said as the sidecar's, not the GDAL tag's.
+        assert!(
+            one.lost.iter().any(|l| l == "its .aux.xml sidecar: 1 band record(s) for no band from 1 to 65536 left out"),
+            "{:?}",
+            one.lost
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1132,13 +1289,14 @@ pub(crate) mod tests {
                 stats: Some(pam::Stats { min: -50.0, max: 900.0, mean: Some(300.0), std_dev: Some(40.0) }),
                 ..Default::default()
             }],
+            ..Default::default()
         };
         let mut full = small();
-        full.apply_pam(&pam);
+        full.apply_pam(&pam, pam::SIDECAR);
         assert_eq!((full.bands[0].stats.min, full.bands[0].stats.max), (1.0, 12.0), "the whole band's own statistics are exact");
         let mut ov = small();
         ov.overview = Some((400, 300));
-        ov.apply_pam(&pam);
+        ov.apply_pam(&pam, pam::SIDECAR);
         let s = &ov.bands[0].stats;
         assert_eq!((s.min, s.max, s.mean, s.std_dev, s.count), (-50.0, 900.0, 300.0, 40.0, 11));
         assert_eq!(s.histogram.iter().sum::<u64>(), 11);

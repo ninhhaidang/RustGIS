@@ -209,7 +209,7 @@ fn infos() -> &'static Mutex<HashMap<String, State>> {
     I.get_or_init(Mutex::default)
 }
 
-type Bands = Arc<Vec<Vec<f32>>>;
+type Bands = Arc<cog::Tile>;
 
 enum TileState {
     Ready(Bands, usize),
@@ -403,7 +403,11 @@ fn step(url: String, have: Sparse, rounds: usize, done: Box<dyn FnOnce(Result<Ar
                 a,
                 len,
                 Box::new(move |r| match r {
-                    // Nothing more to read: the file ends before what its header points at.
+                    // Nothing more to read: the file ends at or before `a`. Read again knowing so, a
+                    // tag that points past the end (an optional one, GDAL's metadata or a colour
+                    // table) is left out and said, as the whole-file read does; one the image needs
+                    // fails to decode. Once only: a file whose length is known isn't asked past it.
+                    Ok(more) if more.is_empty() && !have.len_known() => step(u, have.with_len(a), rounds + 1, done),
                     Ok(more) if more.is_empty() => done(Err(format!("{u}: the GeoTIFF is cut short"))),
                     Ok(more) => step(u, have.with(a, more), rounds + 1, done),
                     Err(e) => done(Err(format!("{u}: {e}"))),
@@ -774,7 +778,7 @@ fn get_tile(info: Arc<Info>, url: String, level: usize, idx: u32, then: Box<dyn 
     let samples = per_band * nb;
     // A tile the file leaves out (GDAL's sparse files: no bytes) is empty.
     if len == 0 {
-        then(Ok(Arc::new(vec![vec![f32::NAN; per_band]; nb])));
+        then(Ok(Arc::new(vec![vec![f32::NAN; per_band]; nb].into())));
         return;
     }
     // Bytes at offset 0 would be the file's header: a broken index, said rather than drawn blank.
@@ -806,7 +810,9 @@ fn get_tile(info: Arc<Info>, url: String, level: usize, idx: u32, then: Box<dyn 
         at,
         len,
         Box::new(move |r| {
-            let r = r.and_then(|b| cog::decode_tile(&info.header, &info.layout, level, idx, b).map_err(|e| e.to_string())).map(Arc::new);
+            let r = r
+                .and_then(|b| cog::decode_tile_counted(&info.header, &info.layout, level, idx, b).map_err(|e| e.to_string()))
+                .map(Arc::new);
             let waiting = {
                 let mut t = tiles().lock().unwrap_or_else(|e| e.into_inner());
                 let old = match &r {
@@ -1156,6 +1162,21 @@ pub fn read_values_blocking(
     cols: (u32, u32),
     rows: (u32, u32),
 ) -> Result<Vec<f32>, String> {
+    read_values_counted_blocking(info, url, level, band, cols, rows).map(|(values, _, _)| values)
+}
+
+/// [`read_values_blocking`], with how many of the window's values `f32` rounded (32- and 64-bit
+/// whole numbers and 64-bit floats it doesn't hold exactly; no-data isn't counted), and how many
+/// it can't hold at all (past its range: left out, NaN).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn read_values_counted_blocking(
+    info: &Arc<Info>,
+    url: &str,
+    level: usize,
+    band: usize,
+    cols: (u32, u32),
+    rows: (u32, u32),
+) -> Result<(Vec<f32>, u64, u64), String> {
     let url = split(url).0.to_string();
     let l = info.layout.levels.get(level).ok_or("no such overview")?;
     if band >= info.layout.bands.max(1) {
@@ -1171,7 +1192,7 @@ pub fn read_values_blocking(
     let (x0, x1) = (cols.0.min(l.width), cols.1.min(l.width));
     let (y0, y1) = (rows.0.min(l.height), rows.1.min(l.height));
     if x1 <= x0 || y1 <= y0 {
-        return Ok(vec![f32::NAN; n as usize]);
+        return Ok((vec![f32::NAN; n as usize], 0, 0));
     }
     let (tw, th, across) = (l.tile_width.max(1), l.tile_height.max(1), l.across().max(1));
     // The tiles the window takes, counted before they are listed, in checked arithmetic: a
@@ -1183,17 +1204,24 @@ pub fn read_values_blocking(
     }
     let tiles: Vec<u32> =
         (r0..=r1).flat_map(|ty| (c0..=c1).filter_map(move |tx| ty.checked_mul(across).and_then(|t| t.checked_add(tx)))).collect();
-    let mut out = vec![f32::NAN; n as usize];
+    let (mut out, mut rounded, mut overflowed) = (vec![f32::NAN; n as usize], 0u64, 0u64);
     let (tx, rx) = std::sync::mpsc::channel();
     fetch_bands(info.clone(), url.clone(), level, tiles.clone(), vec![band], Box::new(move |r| tx.send(r).unwrap_or_default()));
     let picked = rx.recv_timeout(Duration::from_secs(120)).map_err(|_| format!("{url}: tiles not read in two minutes"))??;
     let nodata = info.layout.nodata.map(|v| v as f32);
     for (&t, p) in tiles.iter().zip(&picked) {
-        let Some(values) = p.first().and_then(|(chunk, i)| chunk.get(*i)) else { continue };
+        let Some((chunk, b)) = p.first() else { continue };
+        let Some(values) = chunk.get(*b) else { continue };
         let (tx0, ty0) = ((t % across).saturating_mul(tw), (t / across).saturating_mul(th));
         for py in ty0.max(y0)..ty0.saturating_add(th).min(y1) {
             for px in tx0.max(x0)..tx0.saturating_add(tw).min(x1) {
-                let Some(&v) = values.get((py - ty0) as usize * tw as usize + (px - tx0) as usize) else { continue };
+                let i = (py - ty0) as usize * tw as usize + (px - tx0) as usize;
+                let Some(&v) = values.get(i) else { continue };
+                // A marked value past `f32`'s range is infinite: left out as no value, and
+                // counted apart from those rounded. No-data isn't marked.
+                if chunk.rounded_at(*b, i) {
+                    if v.is_infinite() { overflowed += 1 } else { rounded += 1 }
+                }
                 if v.is_finite()
                     && Some(v) != nodata
                     && let Some(slot) = out.get_mut((py - rows.0) as usize * w + (px - cols.0) as usize)
@@ -1203,7 +1231,7 @@ pub fn read_values_blocking(
             }
         }
     }
-    Ok(out)
+    Ok((out, rounded, overflowed))
 }
 
 #[cfg(test)]
@@ -1253,12 +1281,31 @@ mod tests {
                 Ok(Parse::Done(layout)) => return Ok((layout, rounds, have.held())),
                 Ok(Parse::Need(a, b)) => {
                     let len = header_read(&have, a, b, rounds).ok_or(rounds)?;
-                    have = have.with(a, part(a, len));
+                    let more = part(a, len);
+                    // An empty read past the end of a file whose length isn't known: read again
+                    // knowing it, as `step` does (once).
+                    have = if more.is_empty() && !have.len_known() { have.with_len(a) } else { have.with(a, more) };
                     rounds += 1;
                 }
                 other => panic!("{other:?}"),
             }
         }
+    }
+
+    /// GDAL's metadata tag pointing past the end of a file whose length isn't known: the empty
+    /// read that comes back gives the length, as in [`step`], and the layout is read with the tag
+    /// left out and said.
+    #[test]
+    fn a_tag_past_the_end_of_a_file_of_unknown_length_is_left_out() {
+        use rustgis_data::raster::cog::{Example, example_with};
+        let mut bad = example_with(&Example { size: 512, tile: 256, classes: true, ..Example::default() });
+        let n = usize::from(u16::from_le_bytes([bad[8], bad[9]]));
+        let len = u32::try_from(bad.len()).unwrap();
+        let entry = (0..n).map(|k| 10 + k * 12).find(|&e| bad[e..e + 2] == [0x80, 0xA4]).unwrap();
+        bad[entry + 8..entry + 12].copy_from_slice(&(len + 1000).to_le_bytes());
+        let (l, ..) = layout_by_ranges(&bad).expect("read");
+        let said: Vec<&String> = l.lost.iter().chain(l.described.iter().flat_map(|d| d.lost.iter())).collect();
+        assert!(said.iter().any(|x| x.contains("band and class names are left out")), "{said:?}");
     }
 
     /// The header alone of a tiled GeoTIFF, `side` pixels a side in 256-pixel tiles, laid out as
@@ -1350,11 +1397,11 @@ mod tests {
 
     #[test]
     fn paints_the_bands_shown() {
-        let chunk = |v: f32| -> Bands { Arc::new(vec![vec![v; 4]]) };
+        let chunk = |v: f32| -> Bands { Arc::new(vec![vec![v; 4]].into()) };
         // One tile, its three bands from three chunks (stored apart); pixel 1 has no data.
         let mut red = vec![10.0; 4];
         red[1] = f32::NAN;
-        let tile: Picked = vec![(Arc::new(vec![red]), 0), (chunk(20.0), 0), (chunk(30.0), 0)];
+        let tile: Picked = vec![(Arc::new(vec![red].into()), 0), (chunk(20.0), 0), (chunk(30.0), 0)];
         let spots: Vec<Option<(u32, usize)>> = (0..(SIZE * SIZE) as usize).map(|k| if k < 2 { Some((7, k)) } else { None }).collect();
         let pen = Pen { rgb: true, alpha: false, aef: false, stretch: vec![(0.0, 40.0); 3] };
         let out = paint(&pen, &spots, &[7], &[tile]).unwrap();

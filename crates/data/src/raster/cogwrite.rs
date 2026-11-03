@@ -200,6 +200,12 @@ fn plan(r: &Raster, band: usize) -> Result<Plan> {
     })
 }
 
+/// The bands [`write`] keeps of `r` with `band` asked for, 0-based: the colour bands, grey and
+/// alpha, or `band` alone; an error when it can't write `r`.
+pub fn bands_written(r: &Raster, band: usize) -> Result<Vec<usize>> {
+    plan(r, band).map(|p| p.bands)
+}
+
 /// One image of the file: the full one (factor 1) or an overview.
 struct Level {
     w: u32,
@@ -414,6 +420,11 @@ fn entries(r: &Raster, plan: &Plan, lv: &Level, first: bool, geo: &GeoKeys, big:
                 plan.bands.iter().any(|b| r.bands.get(*b).is_some_and(|b| b.stats.count < n)).then(|| "nan".to_string())
             }
         };
+        // The written bands' names and the first one's class names, so a reopened window keeps
+        // them (a band keeping its number has no name to write).
+        if let Some(xml) = super::gdal_metadata_of(r, &plan.bands) {
+            e.push(ascii(42112, &xml));
+        }
         if let Some(nd) = nodata {
             e.push(ascii(42113, &nd));
         }

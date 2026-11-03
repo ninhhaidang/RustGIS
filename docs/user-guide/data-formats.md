@@ -111,6 +111,44 @@ A GeoTIFF in strips, a rotated image or an unsupported tiled image downloads who
 GeoTIFF added with `"whole": true` (for raster tools and symbology). The web app needs the server
 to allow range requests (CORS with the `Range` header).
 
+On the desktop and the command line, `"bbox"` reads just an area of a cloud-optimised GeoTIFF as
+a raster layer, for files too large to download whole (a national land-cover map, a 1° elevation
+tile), without a STAC catalogue:
+
+```json
+{"url": "https://…/mapbiomas_brazil_2024.tif", "bbox": [-42.971, -5.587, -42.599, -4.786], "name": "MapBiomas 2024"}
+```
+
+- The box is `[west, south, east, north]` in degrees, or `"view"` (refused when the view reaches
+  past 180°). It is turned into the file's coordinate system and snapped outwards onto its pixels,
+  within the file; the raster stays in the file's coordinate system.
+- Only the tiles the window crosses are read, at full resolution. `"cellSize"` reads the coarsest
+  overview whose cells are no larger, in the file's units (metres for a longitude/latitude file, a
+  degree taken as 111.32 km); one finer than the full image's cells reads the full image, with a
+  notice. Without it the window takes no overview's values. Reading the header still reads up to
+  16 tiles of the coarsest overview at least 256 pixels a side (the full image when none is), for
+  the stretch it is drawn with, as for any GeoTIFF drawn in place. An 8-bit colour file skips it,
+  and so does one whose level has more than 16 tiles: it is drawn with its value type's full range.
+- A window holds 64 million values at most, all bands together (256 MB), and 4,096 of the file's
+  tiles a band. A window over the first limit is refused, naming the cell size that fits when an
+  overview does, or asking for a smaller box; one over the second asks for a coarser level or a
+  smaller box. The header and then each band's tiles are waited for up to two minutes each. No
+  band is started after five minutes in all, the header's read counted (the last one started
+  may take two minutes more): past that the window is given up, saying how many bands were read.
+  A window reads 256 bands at most. A window near the limit takes several hundred MB of memory
+  while it is read and kept.
+- The file's no-data, colour table (a palette file draws in its colours) and band names come
+  with it, and class names given as `CLASS_<value>` items in GDAL's metadata tag, as the MapBiomas
+  files on Source Cooperative give theirs. These come from the file's own tags: an `.aux.xml`
+  sidecar beside the address isn't read, so a no-data value set only there (as `gdal_edit` may
+  set it) doesn't apply; give the file one, or a local copy with its sidecar.
+- The window is kept in the project as a GeoTIFF, with its colour table and class names, not
+  read again from the address. A window of several bands that aren't colour (or grey and alpha)
+  keeps only its first band once the project is reopened, with a notice. Files stored bottom up
+  aren't read this way yet. In the web app, `"bbox"` is refused for now: the file is drawn in
+  place without it. An address that names another kind of file (`.geojson`, `.fgb`) is refused
+  with `"bbox"` before anything is read; `"cog": true` takes a GeoTIFF by another name.
+
 A GeoParquet or FlatGeobuf file by its address is read in place too, a view at a time, however
 large: the layer is streamed like a large local file, and the view's features are fetched in the
 background by HTTP range requests and drawn as they land. A FlatGeobuf's header and packed R-tree

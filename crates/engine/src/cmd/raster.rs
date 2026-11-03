@@ -347,12 +347,17 @@ pub fn add_raster(s: &mut Session, name: &str, mut layer: RasterLayer) -> CmdRes
         unique = format!("{name} ({i})");
     }
     let (w, h, n, overview) = layer.data.as_ref().map(|d| (d.width, d.height, d.band_count(), d.overview)).unwrap_or_default();
+    // What reading it left out (a colour table, names), said once the layer has its name.
+    let lost = layer.data.as_ref().map(|d| d.lost.clone()).unwrap_or_default();
     let rounded = layer.data.as_deref().and_then(rounded_count);
     let empty_before = s.map().layers.is_empty();
     let id = s.map_mut().add_raster(unique.clone(), layer);
     s.active_layer = Some(id);
     if let Some((fw, fh)) = overview {
         s.notify(format!("{unique}: showing a {w} × {h} overview of the {fw} × {fh} raster"), false);
+    }
+    for l in lost {
+        s.notify(format!("{unique}: {l}"), false);
     }
     if let Some(count) = rounded {
         let held = "pixels are held as 32-bit floats, exact for whole numbers up to 16,777,216 and to about 7 significant digits";
@@ -430,6 +435,93 @@ pub(crate) fn as_scan(p: &Value) -> Result<bool, String> {
         None | Some(Value::Null) => Ok(false),
         Some(Value::String(s)) if s == "scan" => Ok(true),
         Some(other) => Err(format!("unknown \"as\": {other} (\"scan\")")),
+    }
+}
+
+/// Says what reading several rasters left out, each `(raster, line)`: one notice a kind (the same
+/// line), naming the rasters that share it (three, then a count), as AGENTS.md's Never silent asks.
+///
+/// Lines that differ only in their numbers ("1 scale…", "2 scale…") are one kind. When the
+/// numbers are the same for every raster the kind is said once; when they differ, each raster's
+/// own line is said (three rasters or fewer), or the range they give, for each of them ("4
+/// rasters (a, b, c, …), each: 1–2 scale…"): never summed, since a size limit isn't a count.
+pub(crate) fn say_losses(s: &mut Session, losses: Vec<(String, String)>) {
+    // A line's kind: its text with each number taken out, and those numbers. A number is a run of
+    // digits standing as a word of its own: one inside a name (`scene2024.tif`) stays text.
+    fn kind_of(line: &str) -> (Vec<&str>, Vec<u64>) {
+        let apart = |c: Option<char>| c.is_none_or(|c| c.is_whitespace() || matches!(c, '(' | ')' | ',' | ';' | ':'));
+        let (mut parts, mut numbers, mut from) = (Vec::new(), Vec::new(), 0);
+        let bytes = line.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i].is_ascii_digit() {
+                let start = i;
+                while i < bytes.len() && bytes[i].is_ascii_digit() {
+                    i += 1;
+                }
+                let before = line[..start].chars().next_back();
+                let after = line[i..].chars().next();
+                if !(apart(before) && apart(after)) {
+                    continue;
+                }
+                match line[start..i].parse::<u64>() {
+                    Ok(n) => {
+                        parts.push(&line[from..start]);
+                        numbers.push(n);
+                        from = i;
+                    }
+                    Err(_) => continue,
+                }
+            } else {
+                i += 1;
+            }
+        }
+        parts.push(&line[from..]);
+        (parts, numbers)
+    }
+    // Each kind: its text parts, each number's lowest and highest, and the rasters with their
+    // own lines.
+    type Kind = (Vec<String>, Vec<(u64, u64)>, Vec<(String, String)>);
+    let mut kinds: Vec<Kind> = Vec::new();
+    for (name, line) in losses {
+        let (parts, numbers) = kind_of(&line);
+        let parts_owned: Vec<String> = parts.iter().map(|p| p.to_string()).collect();
+        match kinds.iter_mut().find(|(p, n, _)| *p == parts_owned && n.len() == numbers.len()) {
+            Some((_, ranges, named)) => {
+                for (r, n) in ranges.iter_mut().zip(&numbers) {
+                    *r = (r.0.min(*n), r.1.max(*n));
+                }
+                named.push((name, line));
+            }
+            None => kinds.push((parts_owned, numbers.iter().map(|n| (*n, *n)).collect(), vec![(name, line)])),
+        }
+    }
+    for (parts, ranges, named) in kinds {
+        let differ = ranges.iter().any(|(lo, hi)| lo != hi);
+        // A few rasters whose numbers differ: each its own, so none is lost in a range.
+        if differ && named.len() <= 3 {
+            for (name, line) in named {
+                s.notify(format!("{name}: {line}"), false);
+            }
+            continue;
+        }
+        let names: Vec<String> = named.into_iter().map(|(name, _)| name).collect();
+        let mut line = String::new();
+        for (i, part) in parts.iter().enumerate() {
+            line.push_str(part);
+            if let Some((lo, hi)) = ranges.get(i) {
+                line.push_str(&if lo == hi { lo.to_string() } else { format!("{lo}–{hi}") });
+            }
+        }
+        let who = match names.as_slice() {
+            [one] => one.clone(),
+            _ => {
+                let more = if names.len() > 3 { ", …" } else { "" };
+                format!("{} rasters ({}{more})", names.len(), names[..names.len().min(3)].join(", "))
+            }
+        };
+        let each = if differ { ", each" } else { "" };
+        s.notify(format!("{who}{each}: {line}"), false);
     }
 }
 
@@ -828,6 +920,22 @@ fn export(s: &mut Session, p: &Value) -> CmdResult {
         let (values, verb) = values_were(written);
         note.push_str(&format!("; {values} in it {verb} rounded to 32-bit floats when {} was read", r.name));
     }
+    // The bands the writer leaves out (it writes `band`, or a colour raster's colour bands, which
+    // `band` doesn't change) are said, names and all.
+    if bands.len() < r.bands.len() {
+        let which = if bands == [bi] { "give \"band\" for another" } else { "its colour bands" };
+        note.push_str(&format!("; {} of its {} bands written ({which})", bands.len(), r.bands.len()));
+    }
+    // The file keeps the first written band's class names only (as dataset `CLASS_` items).
+    let unnamed: Vec<String> =
+        bands.iter().skip(1).filter(|b| r.bands.get(**b).is_some_and(|b| !b.classes.is_empty())).map(|b| (b + 1).to_string()).collect();
+    if !unnamed.is_empty() {
+        note.push_str(&format!("; the class names of band(s) {} aren't written: a GeoTIFF keeps the first band's", unnamed.join(", ")));
+    }
+    let spaced = raster::gdal_metadata_changed(&r, &bands);
+    if spaced > 0 {
+        note.push_str(&format!("; {spaced} band or class name(s) held control characters, written as spaces"));
+    }
     s.notify(format!("Exported {path}{note}"), false);
     let mut v = match r.overview {
         Some((fw, fh)) => json!({"path": path, "width": r.width, "height": r.height, "overviewOf": [fw, fh]}),
@@ -857,4 +965,29 @@ pub fn identify(s: &Session, lon: f64, lat: f64) -> Option<Value> {
         attrs.insert("Pixel".into(), json!(format!("{col}, {row}")));
         Some(json!({"layer": l.name, "layerId": l.id, "raster": true, "attributes": attrs}))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Rasters that leave out the same thing are said together; when their numbers differ, each
+    /// is said with its own (a few) or the range is said for each of them (many), never a sum.
+    #[test]
+    fn losses_are_said_by_kind_and_per_raster_when_they_differ() {
+        let said = |losses: &[(&str, &str)]| {
+            let mut s = Session::new(crate::Project::default());
+            let mark = s.notice_mark();
+            say_losses(&mut s, losses.iter().map(|(n, l)| (n.to_string(), l.to_string())).collect());
+            s.notices_since(mark).iter().map(|n| n.text.clone()).collect::<Vec<_>>()
+        };
+        let cut = |n: u32| format!("{n} band or class name(s) cut to 256 characters");
+        let (one, two, three) = (cut(1), cut(2), cut(3));
+        assert_eq!(said(&[("a", &two), ("b", &two)]), [format!("2 rasters (a, b): {two}")]);
+        assert_eq!(said(&[("a", &one), ("b", &three)]), [format!("a: {one}"), format!("b: {three}")]);
+        assert_eq!(
+            said(&[("a", &one), ("b", &three), ("c", &two), ("d", &one)]),
+            ["4 rasters (a, b, c, …), each: 1–3 band or class name(s) cut to 256 characters"]
+        );
+    }
 }
