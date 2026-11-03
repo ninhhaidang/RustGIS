@@ -38,6 +38,7 @@ nav = [
   { "Python" = "python.md" },
   { "MCP Server" = "mcp.md" },
   { "Plugins" = "plugins.md" },
+  { "30DayMapChallenge" = "https://jgregoriorincon.github.io/30DayMapChallenge-2026/" },
   { "Languages" = "i18n.md" },
   { "Architecture" = "architecture.md" },
   { "Contributing" = "contributing.md" },
