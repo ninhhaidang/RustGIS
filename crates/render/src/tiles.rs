@@ -716,10 +716,6 @@ pub(crate) mod tests {
 
     use crate::View;
 
-    /// The warp interpolating across cells puts every pixel where working it out pixel by pixel
-    /// does: on a globe zoomed in, on a whole one with its edge in view, across the antimeridian
-    /// (where the mosaic's longitudes jump from one side to the other), and with a pole in sight
-    /// (where latitudes are clamped to Web Mercator's limit).
     /// A tile layer's opacity fades its labels' text, halo and icon with the rest of the layer
     /// (#1358), and leaves them as they are at full opacity.
     #[test]
@@ -753,6 +749,55 @@ pub(crate) mod tests {
         assert_eq!(fade(label.clone(), f32::NAN), label);
     }
 
+    /// `collect` applies the layer's opacity to what the layer drew (the one place every way of
+    /// drawing a tile layer passes through), not only `fade` on its own.
+    #[test]
+    fn collecting_a_tile_layers_labels_applies_its_opacity() {
+        let label = || rustgis_tiles::Label {
+            text: "Hoek".into(),
+            x: 20.0,
+            y: 20.0,
+            size: 12.0,
+            color: [10, 20, 30, 255],
+            halo: Some([255, 255, 255, 200]),
+            bold: false,
+            italic: false,
+            letter_spacing: 0.0,
+            max_width: 0.0,
+            justify: 0.0,
+            priority: 0.0,
+            anchor: [0.0, 0.0],
+            offset: [0.0, 0.0],
+            angle: None,
+            icon: Some(rustgis_tiles::LabelIcon {
+                image: std::sync::Arc::new(tiny_skia::Pixmap::new(2, 2).unwrap()),
+                width: 8.0,
+                height: 8.0,
+                dx: 0.0,
+                dy: 0.0,
+                angle: None,
+            }),
+            collide: Default::default(),
+        };
+        let collected = |opacity: f32| {
+            let mut t = TileLayer::new("Seamap", TileKind::Style, "https://tiles.test/style.json");
+            t.opacity = opacity;
+            let mut out = super::TileOutput::default();
+            let drawn = rustgis_tiles::Drawn { labels: vec![label()], ..Default::default() };
+            super::collect(drawn, &t, &mut out);
+            assert_eq!(out.labels.len(), 1);
+            out.labels.remove(0).0
+        };
+        let full = collected(1.0);
+        assert_eq!((full.color.0[3], full.halo.map(|h| h.0[3]), full.icon.as_ref().map(|i| i.alpha)), (255, Some(200), Some(1.0)));
+        let faint = collected(0.5);
+        assert_eq!((faint.color.0[3], faint.halo.map(|h| h.0[3]), faint.icon.as_ref().map(|i| i.alpha)), (128, Some(100), Some(0.5)));
+    }
+
+    /// The warp interpolating across cells puts every pixel where working it out pixel by pixel
+    /// does: on a globe zoomed in, on a whole one with its edge in view, across the antimeridian
+    /// (where the mosaic's longitudes jump from one side to the other), and with a pole in sight
+    /// (where latitudes are clamped to Web Mercator's limit).
     #[test]
     fn the_warp_matches_the_exact_projection() {
         use rustgis_geom::MERCATOR_R;
