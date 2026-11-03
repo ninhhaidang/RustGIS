@@ -568,6 +568,13 @@ fn idw_on(
 
 /// Unsupervised k-means classes (1..=k) of the pixels over the given bands.
 pub fn kmeans(r: &Raster, bands: &[usize], k: usize, iterations: usize) -> Result<Vec<f32>, String> {
+    kmeans_on(None, r, bands, k, iterations)
+}
+
+/// [`kmeans`] on `threads` threads (none: as many as pay off). The centres are found on a sample
+/// of the pixels; then each pixel takes its nearest, on its own, so rows go on several threads
+/// (#1252).
+fn kmeans_on(threads: Option<usize>, r: &Raster, bands: &[usize], k: usize, iterations: usize) -> Result<Vec<f32>, String> {
     let k = k.clamp(2, 50);
     let data: Vec<&[f32]> = bands.iter().map(|b| band(r, *b)).collect::<Result<_, _>>()?;
     if data.is_empty() {
@@ -632,11 +639,28 @@ pub fn kmeans(r: &Raster, bands: &[usize], k: usize, iterations: usize) -> Resul
         centres.get(*a).and_then(|c| c.first()).partial_cmp(&centres.get(*b).and_then(|c| c.first())).unwrap_or(std::cmp::Ordering::Equal)
     });
     let rank: Vec<usize> = (0..centres.len()).map(|c| order.iter().position(|o| *o == c).unwrap_or(0)).collect();
-    let mut p = Vec::with_capacity(data.len());
-    let mut out = grid(r.width as usize, r.height as usize)?;
-    out.extend(
-        (0..n).map(|i| if pixel_into(i, &mut p) { (rank.get(nearest(&p, &centres)).copied().unwrap_or(0) + 1) as f32 } else { NODATA }),
-    );
+    let (w, h) = (r.width as usize, r.height as usize);
+    let mut out = new_band(w, h, NODATA)?;
+    if w == 0 {
+        return Ok(out);
+    }
+    // A pixel's distance to every centre over every band, a few nanoseconds per pair: in
+    // `MIN_ROW_WORK`'s units (some 30 ns), about one per eight pairs.
+    let work = n.saturating_mul(centres.len().saturating_mul(data.len()) / 8 + 1);
+    let threads = threads.unwrap_or_else(|| crate::parallel::threads_for_rows(h, work, 0));
+    crate::control::begin(h);
+    crate::parallel::for_each_row(
+        out.chunks_mut(w),
+        threads,
+        || Vec::with_capacity(data.len()),
+        |p, row, line: &mut [f32]| {
+            for (col, o) in line.iter_mut().enumerate() {
+                if pixel_into(row * w + col, p) {
+                    *o = (rank.get(nearest(p, &centres)).copied().unwrap_or(0) + 1) as f32;
+                }
+            }
+        },
+    )?;
     Ok(out)
 }
 
@@ -1261,6 +1285,27 @@ mod tests {
                 assert!(one.iter().map(|v| v.to_bits()).eq(many.iter().map(|v| v.to_bits())), "{threads} threads, radius {radius}");
             }
         }
+    }
+
+    /// k-means classes made on several threads are those made on one (#1252), no-data pixels
+    /// included.
+    #[test]
+    fn kmeans_on_several_threads_is_kmeans_on_one() {
+        let (w, h) = (240u32, 180u32);
+        let n = (w * h) as usize;
+        let band = |k: usize| (0..n).map(|i| if i % 97 == 0 { -9999.0 } else { ((i * (5 + k) + i / 240 * 11) % 200) as f32 }).collect();
+        let gt = GeoTransform { origin_x: 0.0, origin_y: 180.0, pixel_width: 1.0, pixel_height: -1.0 };
+        let r =
+            Raster::new("k", w, h, vec![band(0), band(1), band(2)], gt, Crs::LonLat, Some(-9999.0), ColorHint::Gray, "Float32").unwrap();
+        let bits = |v: Vec<f32>| v.into_iter().map(f32::to_bits).collect::<Vec<_>>();
+        let one = bits(kmeans_on(Some(1), &r, &[0, 1, 2], 7, 10).unwrap());
+        assert_eq!(one, bits(kmeans_on(Some(4), &r, &[0, 1, 2], 7, 10).unwrap()));
+        assert!(one.contains(&NODATA.to_bits()) && one.contains(&7.0f32.to_bits()));
+        // A cancelled run gives no classes.
+        let run = crate::control::Control::new();
+        run.cancel();
+        let _installed = crate::control::install(Some(run));
+        assert_eq!(kmeans_on(Some(4), &r, &[0, 1, 2], 7, 10).unwrap_err(), crate::control::CANCELLED);
     }
 
     /// Band math and per-cell rows made on several threads give the same cells, bit for bit, as
