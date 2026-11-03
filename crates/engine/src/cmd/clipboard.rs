@@ -174,5 +174,7 @@ fn copy_path(s: &mut Session, p: &Value) -> CmdResult {
     let l = s.map().layer(id).ok_or("no such layer")?;
     let path = l.raster.as_ref().and_then(|r| r.path.clone()).or_else(|| l.dataset.source.clone());
     let path = path.ok_or_else(|| format!("{} isn't stored in a file", l.name))?;
-    Ok(json!({"text": path}))
+    // A service layer's address is its source: copied without keys, tokens or its password, as
+    // the details pane shows it and a saved project keeps a web address.
+    Ok(json!({"text": crate::sources::redact(&path)}))
 }

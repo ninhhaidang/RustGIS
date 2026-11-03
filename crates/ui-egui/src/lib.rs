@@ -96,6 +96,7 @@ mod widgets;
 mod workspacepanes;
 mod zarrui;
 
+use rustgis_engine::cmd::service_added::Removal;
 use rustgis_engine::render::rustgis_tiles::failure::Failure;
 use rustgis_engine::{Project, Session};
 use serde_json::{Value, json};
@@ -362,9 +363,29 @@ pub struct ServiceConn {
     pub pending: Option<String>,
     /// What `service.layers` made of it.
     pub listing: Option<Value>,
+    /// The listing as Add From Service shows it, worked out when the session revision, the map or
+    /// the filter changed (see `dialogs::refresh_added`).
+    pub added: Option<ServiceAdded>,
     pub error: Option<String>,
     /// A capabilities request that failed, with what the server said (#509).
     pub failure: Option<Failure>,
+}
+
+/// Add From Service's rows: the layers of a listing that match the filter, and for each the
+/// command that removes it when it is on the map.
+pub struct ServiceAdded {
+    /// The session revision this was worked out for.
+    pub revision: u64,
+    /// A fingerprint of the map's layers and tile layers this was worked out for
+    /// (`dialogs::map_stamp`), which the UI can change without a new revision.
+    pub map: u64,
+    /// The listing filter this was worked out with.
+    pub filter: String,
+    /// How many layers match the filter (the first `dialogs::SHOWN_LAYERS` are shown).
+    pub matched: usize,
+    /// Each shown row: its place in the listing, and the command that removes it when it is on
+    /// the map (`None`: the row says Add).
+    pub rows: Vec<(usize, Option<Removal>)>,
 }
 
 /// How Add From Service's list is browsed.
@@ -2672,6 +2693,7 @@ impl RustGisApp {
                     documents: Vec::new(),
                     pending: Some(caps),
                     listing: None,
+                    added: None,
                     error: None,
                     failure: None,
                 });
@@ -3761,6 +3783,7 @@ impl RustGisApp {
                             conn.slot = fetch_detailed_into(next);
                         }
                         conn.listing = Some(v);
+                        conn.added = None;
                     }
                     Err(e) => conn.error = Some(e),
                 }

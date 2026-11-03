@@ -10531,6 +10531,21 @@ fn a_failed_command_takes_its_request_back() {
     assert_eq!(left[0]["url"], "https://x.org/kept.geojson");
 }
 
+/// A service's features keep the address they came from, and Copy Path gives it without its key.
+#[test]
+fn a_service_layers_address_is_copied_without_its_key() {
+    let mut s = Session::new(Project::default());
+    let id = s.download_started();
+    assert!(s.download_landed(id, br#"{"type": "Point", "coordinates": [1, 2]}"#.to_vec()));
+    let url = "https://x.org/collections/a/items?f=json&api_key=SECRET";
+    let r = s.run("layer.addDownload", &json!({"id": id, "url": url, "name": "Api", "service": true})).unwrap();
+    let layer = r["layer"].as_u64().or_else(|| r["layers"][0].as_u64()).unwrap() as u32;
+    assert_eq!(s.map().layer(layer).and_then(|l| l.dataset.source.as_deref()), Some(url));
+    let copied = s.run("layer.copyPath", &json!({"layer": layer})).unwrap();
+    let text = copied["text"].as_str().unwrap();
+    assert!(text.starts_with("https://x.org/collections/a/items?") && !text.contains("SECRET"), "{text}");
+}
+
 /// The app's downloads land in the project they were started for, as bytes (no base64); one
 /// whose project was closed meanwhile is dropped.
 #[test]
@@ -11741,6 +11756,16 @@ fn service_features_asked_for_over_an_area() {
     let r = add(&mut s, "1.1.0", Some(piaui.clone()));
     assert_eq!(r["features"], 1);
     assert_eq!(r["area"], piaui);
+    // The layer keeps the service address it came from, not its download's file name: its
+    // GetFeature request for this type, with the area's box added.
+    let source = s.map().layer_by_name("M0").and_then(|l| l.dataset.source.clone()).unwrap();
+    let requested = url::Url::parse(&source).unwrap();
+    let query: std::collections::HashMap<String, String> = requested.query_pairs().into_owned().collect();
+    assert_eq!(query.get("SERVICE").map(String::as_str), Some("WFS"), "{source}");
+    assert_eq!(query.get("VERSION").map(String::as_str), Some("1.1.0"), "{source}");
+    assert_eq!(query.get("REQUEST").map(String::as_str), Some("GetFeature"), "{source}");
+    assert_eq!(query.get("TYPENAME").map(String::as_str), Some("CGMAT:munic"), "{source}");
+    assert_eq!(query.get("BBOX").map(String::as_str), Some("-10.93,-45.99,-2.74,-40.37,urn:ogc:def:crs:EPSG::4326"), "{source}");
     let r = add(&mut s, "2.0.0", Some(json!("view")));
     assert!(r["area"].is_array(), "{r}");
     let r = add(&mut s, "2.0.0", None);
@@ -11826,6 +11851,33 @@ fn wfs_axes_judged_against_the_type_bounds() {
     s.run("layer.addDownload", &json!({"id": id, "url": "https://x.org/wfs", "name": "B4", "service": true})).unwrap();
 }
 
+/// Rejecting a service download without its source address leaves its bytes available for retry.
+#[test]
+fn service_downloads_require_a_url_before_consuming_bytes() {
+    for coverage in [false, true] {
+        let mut s = Session::new(Project::default());
+        let bytes = if coverage {
+            multiband_tiff(1, 1, &[vec![1.0]], (0.0, 0.0), 1.0, None)
+        } else {
+            br#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":[0,0]}}]}"#.to_vec()
+        };
+        let id = s.download_started();
+        assert!(s.download_landed(id, bytes));
+        let mut params = json!({"id": id, "service": !coverage, "coverage": coverage, "name": "Downloaded"});
+        for url in [None, Some(json!(null)), Some(json!("")), Some(json!("  "))] {
+            if let Some(url) = url {
+                params["url"] = url;
+            }
+            assert!(s.run("layer.addDownload", &params).unwrap_err().contains("url is required"));
+            assert!(s.map().layers.is_empty());
+        }
+        params["url"] = json!("https://example.org/service");
+        let result = s.run("layer.addDownload", &params).unwrap();
+        let layer = s.map().layer(result["layer"].as_u64().unwrap() as u32).unwrap();
+        assert_eq!(layer.dataset.source.as_deref(), Some("https://example.org/service"));
+    }
+}
+
 /// A WCS coverage (from a local server) becomes a raster of the view, asked for in EPSG:4326 within
 /// its bounds; an error answer is refused. A catalogue's records come with the links RustGIS can
 /// follow, those pointing inward left out.
@@ -11870,6 +11922,9 @@ fn wcs_coverages_and_catalogue_records() {
     let r = s.run("service.add", &p).unwrap();
     let id = r["layer"].as_u64().unwrap() as u32;
     assert!(s.map().layer(id).is_some_and(|l| l.is_raster() && l.name == "Soil carbon"), "{r}");
+    // The raster keeps its GetCoverage request, so Add From Service knows it as added.
+    let source = s.map().layer(id).and_then(|l| l.dataset.source.clone());
+    assert!(source.as_deref().is_some_and(|src| src.contains("REQUEST=GetCoverage") && src.contains("=soc")), "{source:?}");
     assert!(
         s.run("service.coverage", &json!({"url": url, "layer": "soc", "text": caps, "describe": describe, "bbox": [10, 10, 11, 11]}))
             .is_err()
@@ -14248,7 +14303,7 @@ fn a_trend_over_a_data_cube() {
 /// A multi-band Float32 GeoTIFF in longitude/latitude, its bands' values interleaved, as GDAL
 /// writes it: `descriptions` in its GDAL_METADATA tag when given, and -9999 for no-data.
 #[cfg(not(target_arch = "wasm32"))]
-fn multiband_tiff(w: u32, h: u32, bands: &[Vec<f32>], origin: (f64, f64), px: f64, descriptions: Option<&[String]>) -> Vec<u8> {
+pub(crate) fn multiband_tiff(w: u32, h: u32, bands: &[Vec<f32>], origin: (f64, f64), px: f64, descriptions: Option<&[String]>) -> Vec<u8> {
     let n = bands.len() as u16;
     let mut out = vec![b'I', b'I', 42, 0, 0, 0, 0, 0];
     for p in 0..(w * h) as usize {

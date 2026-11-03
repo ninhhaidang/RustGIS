@@ -35,6 +35,8 @@ geolibre = ["dep:rustgis-geolibre"]
 rusqlite = { workspace = true }
 rustgis-plugins = { workspace = true, features = ["testing"] }
 tiny-skia = { workspace = true }
+# Parsing the addresses commands ask for in tests.
+url = { workspace = true }
 
 # Time slider animations as GIFs (exported by the desktop app only).
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

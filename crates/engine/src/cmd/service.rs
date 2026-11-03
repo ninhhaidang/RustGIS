@@ -228,6 +228,26 @@ pub fn features_answer(s: &mut Session, name: &str, bytes: Vec<u8>, bounds: Opti
     rustgis_data::ogc::fix_axes(&bytes, bounds).unwrap_or(bytes)
 }
 
+/// The layers an add's result `r` names (`layer`, `layers`) marked as read from the service
+/// address `url`, not the file name their download was read under: Add From Service then knows
+/// them as added, to remove.
+pub(crate) fn mark_service_source(s: &mut Session, r: &Value, url: &str) {
+    let ids: Vec<u32> = r
+        .get("layers")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .chain(r.get("layer"))
+        .filter_map(Value::as_u64)
+        .filter_map(|i| u32::try_from(i).ok())
+        .collect();
+    for id in ids {
+        if let Some(l) = s.map_mut().layer_mut(id) {
+            l.dataset.source = Some(url.to_string());
+        }
+    }
+}
+
 /// A layer's longitude/latitude bounds as a listing or a parameter gives them (`[west, south,
 /// east, north]`), for [`features_answer`]: none when absent or null.
 pub(crate) fn bounds_of(v: Option<&Value>) -> Result<Option<[f64; 4]>, String> {
@@ -540,7 +560,9 @@ pub(crate) fn add(s: &mut Session, p: &Value) -> CmdResult {
             {
                 let bytes = crate::render::rustgis_tiles::cache::download_blocking(&get).map_err(|e| format!("{name}: {e}"))?;
                 coverage_check(&name, &bytes)?;
-                super::raster::add_named_bytes(s, &json!({"name": name}), format!("{name}.tif"), bytes)
+                let r = super::raster::add_named_bytes(s, &json!({"name": name}), format!("{name}.tif"), bytes)?;
+                mark_service_source(s, &r, &get);
+                Ok(r)
             }
         }
         Offer::Features { url: items } => {
@@ -561,9 +583,11 @@ pub(crate) fn add(s: &mut Session, p: &Value) -> CmdResult {
                     s.notify(format!("{name}: {why}, so the whole layer is asked for"), false);
                 }
                 let max = crate::render::rustgis_tiles::cache::MAX_DOWNLOAD;
-                let bytes = download_features(s, &name, asked.as_deref().unwrap_or(items), max).map_err(|e| slow_whole_layer(e, given))?;
+                let from = asked.as_deref().unwrap_or(items);
+                let bytes = download_features(s, &name, from, max).map_err(|e| slow_whole_layer(e, given))?;
                 let bytes = features_answer(s, &name, bytes, layer.bbox);
                 let mut r = super::raster::add_named_bytes(s, &json!({"name": name}), format!("{name}.geojson"), bytes)?;
+                mark_service_source(s, &r, from);
                 // Over an area, the features crossing it: the view stays, or goes to a box given
                 // (the whole layer's bounds would show a country to fill one state).
                 match (asked.is_some(), area, p.get("bbox")) {

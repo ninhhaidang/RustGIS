@@ -177,8 +177,20 @@ FlatGeobuf whose header hasn't been fetched yet, use the From URL… dialog or a
 **Home › Add › Add Data › From Service…** connects to a service by its address, lists what it offers from
 its capabilities. For OGC API feature collections, enter a group name (initially **My OGC Layer**)
 and choose **Import All**. The group expands into ordinary point, line and polygon layers with
-the same legends, styling and attribute tables as file imports. Other offerings have individual
-**Add** buttons (`service.layers` and `service.add` from scripts, the command line and MCP).
+the same legends, styling and attribute tables as file imports. A collection already imported
+shows **On the map** in the listing; its layer is removed or refreshed from the group in the
+Layers pane. Other offerings have individual **Add** buttons (`service.layers` and `service.add`
+from scripts, the command line and MCP).
+A layer already on the active map shows **Remove** instead: the row removes it with
+`layer.remove` (`map.removeTiles` for a tile layer), so the removal is undone like any other edit.
+A layer is known by the address it was added from (a tile layer's template), never by its title,
+so one of yours or of another service with the same name is left alone. The same service added
+under another key counts as the same layer, and so does a project reopened from disk, whose saved
+address carries no keys: the row shows **Remove** rather than an **Add** that would duplicate it.
+A layer saved by an older version, which kept the file name it was downloaded under rather than
+the service's address, shows **Add**; RustGIS won't guess by name. A service's downloaded layers
+are grouped under the service's host in the Layers pane's **Data Source** view, and **Copy Path**
+gives that address without its keys or tokens.
 An OGC API landing page works directly: RustGIS follows its advertised
 JSON collections link, so you don't need to append `/collections`. If the landing page also
 offers map tiles, they remain listed alongside the collections. A failed collections request
