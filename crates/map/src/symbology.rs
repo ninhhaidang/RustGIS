@@ -1558,42 +1558,68 @@ impl Renderer {
         }
     }
 
-    /// How many classes are drawn with a stack of fills or strokes of their own (`class_fills`,
-    /// `class_strokes`, and `<all other values>`'s), which [`Renderer::reverse_ramp`] leaves as
-    /// they are: the stack is drawn instead of the class's symbol.
-    pub fn classes_with_own_stacks(&self) -> usize {
+    /// The classes whose colors a ramp gives, in the order the legend lists them, and how many
+    /// more the ramp can't recolor: a class with a stack of fills or strokes of its own
+    /// (`class_fills`, `class_strokes`) is drawn from the stack instead of its symbol. Only the
+    /// first entry of a Unique Values value is drawn, so a repeated value counts once. They are
+    /// indices into `classes` (Unique Values) or `symbols` (Graduated Colors). `None` for the
+    /// other renderers.
+    fn ramp_slots(&self) -> Option<(Vec<usize>, usize)> {
+        let (mut slots, mut kept) = (Vec::new(), 0);
         match self {
-            Renderer::Unique { class_fills, class_strokes, other_fills, other_strokes, .. } => {
-                let keys: std::collections::BTreeSet<&String> = class_fills.keys().chain(class_strokes.keys()).collect();
-                keys.len() + usize::from(!other_fills.is_empty() || !other_strokes.is_empty())
+            Renderer::Unique { classes, class_fills, class_strokes, .. } => {
+                let mut seen = std::collections::HashSet::new();
+                for i in self.class_order() {
+                    let Some((value, _)) = classes.get(i) else { continue };
+                    if !seen.insert(value.as_str()) {
+                        continue;
+                    }
+                    if class_fills.contains_key(value) || class_strokes.contains_key(value) {
+                        kept += 1;
+                    } else {
+                        slots.push(i);
+                    }
+                }
             }
-            Renderer::Graduated { class_fills, class_strokes, .. } => {
-                let keys: std::collections::BTreeSet<&usize> = class_fills.keys().chain(class_strokes.keys()).collect();
-                keys.len()
+            Renderer::Graduated { symbols, class_fills, class_strokes, .. } => {
+                for i in 0..symbols.len() {
+                    if class_fills.contains_key(&i) || class_strokes.contains_key(&i) {
+                        kept += 1;
+                    } else {
+                        slots.push(i);
+                    }
+                }
             }
-            _ => 0,
+            _ => return None,
+        }
+        Some((slots, kept))
+    }
+
+    fn class_symbol_mut(&mut self, i: usize) -> Option<&mut Symbol> {
+        match self {
+            Renderer::Unique { classes, .. } => classes.get_mut(i).map(|c| &mut c.1),
+            Renderer::Graduated { symbols, .. } => symbols.get_mut(i),
+            _ => None,
         }
     }
 
-    /// Reverses the colours of the classes (#1355): the first class takes the last one's colour, and
-    /// so on. Colours edited by hand travel with their class's old position, and a polygon fill
-    /// keeps its own opacity. Applied twice it gives the original back. A class with a stack of
-    /// fills or strokes of its own keeps it, as the stack is drawn instead of the symbol
-    /// ([`Renderer::classes_with_own_stacks`]). Returns false for a renderer without classes
-    /// coloured from a ramp.
-    pub fn reverse_ramp(&mut self, g: GeometryType) -> bool {
-        fn reversed(symbols: &mut [&mut Symbol], g: GeometryType) {
-            let old: Vec<Symbol> = symbols.iter().map(|s| **s).collect();
-            for (s, from) in symbols.iter_mut().zip(old.iter().rev()) {
-                **s = s.with_colors_of(from, g);
+    /// Reverses the colours of the classes (#1355), in the order the legend lists them: the first
+    /// class takes the last one's colour, and so on. Colours edited by hand travel with their
+    /// class's old position, and a polygon fill keeps its own opacity. Applied twice it gives the
+    /// original back. A class drawn from a stack of fills or strokes of its own, and a repeat of a
+    /// Unique Values value (which no feature draws), keep theirs and take no part in the reversal.
+    /// Returns how many classes were kept for their own stacks, or `None` for a renderer without
+    /// classes coloured from a ramp.
+    pub fn reverse_ramp(&mut self, g: GeometryType) -> Option<usize> {
+        let (slots, kept) = self.ramp_slots()?;
+        let old: Vec<Symbol> = slots.iter().filter_map(|&i| self.class_symbol_mut(i).map(|s| *s)).collect();
+        for (pos, &i) in slots.iter().enumerate() {
+            let from = old.len().checked_sub(1 + pos).and_then(|k| old.get(k));
+            if let (Some(sym), Some(from)) = (self.class_symbol_mut(i), from) {
+                *sym = sym.with_colors_of(from, g);
             }
         }
-        match self {
-            Renderer::Unique { classes, .. } => reversed(&mut classes.iter_mut().map(|c| &mut c.1).collect::<Vec<_>>(), g),
-            Renderer::Graduated { symbols, .. } => reversed(&mut symbols.iter_mut().collect::<Vec<_>>(), g),
-            _ => return false,
-        }
-        true
+        Some(kept)
     }
 
     /// Recolours every class from a ramp, preserving each polygon fill's opacity.
@@ -4013,5 +4039,53 @@ mod tests {
         let mut more = fresh.clone();
         more.carry_edits_from(&gold, g);
         assert_eq!(more, fresh, "another number of classes starts fresh");
+    }
+
+    fn unique_with(values: &[(&str, u8)]) -> Renderer {
+        let sym = |v: u8| Symbol { fill: Rgba::rgb(v, 0, 0), ..Symbol::default_for(GeometryType::Point, 0) };
+        Renderer::Unique {
+            field: "f".into(),
+            classes: values.iter().map(|(k, v)| (k.to_string(), sym(*v))).collect(),
+            other: sym(0),
+            ramp: Ramp::Greys,
+            class_labels: BTreeMap::new(),
+            other_label: None,
+            class_strokes: BTreeMap::new(),
+            other_strokes: Vec::new(),
+            class_fills: Default::default(),
+            other_fills: Vec::new(),
+            expression: None,
+        }
+    }
+
+    /// #1355: Invert Color Ramp reverses the colours along the legend's order, which is not the
+    /// order the classes are stored in; a value repeated in the classes isn't drawn, so it takes
+    /// no part; and a class with a stack of its own keeps its colours without shifting the rest.
+    #[test]
+    fn reverse_ramp_follows_the_legend_and_skips_what_is_not_drawn() {
+        let reds = |r: &Renderer| match r {
+            Renderer::Unique { classes, .. } => classes.iter().map(|c| (c.0.clone(), c.1.fill.r())).collect::<Vec<_>>(),
+            _ => vec![],
+        };
+        let g = GeometryType::Point;
+        // Stored 10, 100, 9: the legend lists 9, 10, 100 (numbers), so 9 and 100 swap colours.
+        let mut r = unique_with(&[("10", 1), ("100", 2), ("9", 3)]);
+        assert_eq!(r.reverse_ramp(g), Some(0));
+        assert_eq!(reds(&r), vec![("10".into(), 1), ("100".into(), 3), ("9".into(), 2)]);
+        r.reverse_ramp(g);
+        assert_eq!(reds(&r), vec![("10".into(), 1), ("100".into(), 2), ("9".into(), 3)], "twice is the original");
+        // A repeat of a value is not drawn: it stays, and the drawn entries reverse among themselves.
+        let mut r = unique_with(&[("a", 1), ("b", 2), ("a", 9), ("c", 3)]);
+        r.reverse_ramp(g);
+        assert_eq!(reds(&r), vec![("a".into(), 3), ("b".into(), 2), ("a".into(), 9), ("c".into(), 1)]);
+        // A class with a stack of its own is kept, counted, and the others reverse among themselves.
+        let mut r = unique_with(&[("a", 1), ("b", 2), ("c", 3), ("d", 4)]);
+        if let Renderer::Unique { class_strokes, .. } = &mut r {
+            class_strokes.insert("a".into(), Vec::new());
+        }
+        assert_eq!(r.reverse_ramp(g), Some(1));
+        assert_eq!(reds(&r), vec![("a".into(), 1), ("b".into(), 4), ("c".into(), 3), ("d".into(), 2)]);
+        // Nothing to reverse for a single symbol.
+        assert_eq!(Renderer::Single(Symbol::default_for(g, 0)).reverse_ramp(g), None);
     }
 }

@@ -182,14 +182,15 @@ As with other class colour edits, changing the field or graduated ranges starts 
 a different scheme through `layer.symbology` resets polygon opacity to its default.
 Layer/group transparency still applies on top of the symbol's opacity in maps and exports.
 
-**Invert Color Ramp** (Symbology pane, or `layer.invertRamp`) reverses the order of the colours of
-a Graduated Colors or Unique Values layer's classes, so the highest class takes the lowest
-class's colour. Colours edited by hand travel with the reversal, a polygon fill keeps its opacity,
-and applying it twice gives the original back. A class drawn with fills or strokes of its own
-(stacked fills, line strokes) keeps them, since they are drawn instead of the class's symbol; a
-notice says how many classes were left as they are. Choosing a colour scheme again, or classing the
-layer again, starts from the scheme's own order. On a Stretch raster it switches the existing
-"Invert color scheme" option.
+**Invert Color Ramp** (Symbology pane, or `layer.invertRamp`) reverses the colours of a Graduated
+Colors or Unique Values layer's classes along the legend's order, so the highest class takes the
+lowest class's colour. Colours edited by hand travel with the reversal, a polygon fill keeps its
+opacity, and applying it twice gives the original back. A class drawn with fills or strokes of its
+own (stacked fills, line strokes) keeps them, since they are drawn instead of the class's symbol,
+and the others reverse among themselves; a notice says how many classes were left as they are.
+Choosing a colour scheme again starts from the scheme's own order, but classing the layer again
+on the same field, ranges and scheme keeps the reversed colours, as it keeps other colours edited
+by hand. On a Stretch raster the command switches the existing "Invert color scheme" option.
 
 ### Line strokes
 

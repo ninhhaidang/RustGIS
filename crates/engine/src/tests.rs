@@ -25542,7 +25542,31 @@ fn layer_invert_ramp_reverses_the_class_colors() {
     let before = colors(&s);
     s.run("layer.invertRamp", &json!({"layer": "Countries"})).unwrap();
     assert_eq!(own(&s), vec![0], "the class keeps its own fills");
-    assert!(colors(&s) != before);
+    // Class 0 keeps its colour, and the others reverse among themselves.
+    let after = colors(&s);
+    assert_eq!(after[0], before[0]);
+    assert_eq!(after[1..], [before[4], before[3], before[2], before[1]]);
     let notices = s.notices_since(mark);
-    assert!(notices.iter().any(|n| n.text.starts_with("1 class(es) drawn with fills or strokes of their own")), "{notices:?}");
+    assert!(
+        notices.iter().any(|n| n.text.starts_with("1 class(es) drawn with fills or strokes of their own were left as they are")),
+        "{notices:?}"
+    );
+
+    // A Stretch raster switches its invert option, and other rasters are refused.
+    use rustgis_data::raster::{ColorHint, Crs, GeoTransform, Raster};
+    let gt = GeoTransform { origin_x: 0.0, origin_y: 2.0, pixel_width: 1.0, pixel_height: -1.0 };
+    let r = Raster::new("dem", 2, 2, vec![vec![1.0, 2.0, 3.0, 4.0]], gt, Crs::LonLat, None, ColorHint::Gray, "Float32").unwrap();
+    s.map_mut().add_raster("dem", rustgis_map::RasterLayer::from_path(r, "dem.tif"));
+    s.run("raster.symbology", &json!({"layer": "dem", "type": "stretch", "ramp": "Terrain"})).unwrap();
+    let inverted = |s: &Session| match s.map().layer_by_name("dem").and_then(|l| l.raster.as_ref()).map(|r| r.style.renderer.clone()) {
+        Some(rustgis_map::RasterRenderer::Stretch { invert, .. }) => Some(invert),
+        _ => None,
+    };
+    assert_eq!(inverted(&s), Some(false));
+    s.run("layer.invertRamp", &json!({"layer": "dem"})).unwrap();
+    assert_eq!(inverted(&s), Some(true));
+    s.run("layer.invertRamp", &json!({"layer": "dem"})).unwrap();
+    assert_eq!(inverted(&s), Some(false));
+    s.run("raster.symbology", &json!({"layer": "dem", "type": "classify", "classes": 2, "method": "equalInterval"})).unwrap();
+    assert!(s.run("layer.invertRamp", &json!({"layer": "dem"})).is_err(), "a classified raster has no invert option");
 }
