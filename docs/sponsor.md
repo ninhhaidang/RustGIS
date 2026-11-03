@@ -54,7 +54,7 @@ Sponsorship is not the only currency, and none of these cost anything:
   worth a great deal.
 - **Contribute code or plugins**: see [Contributing](contributing.md) and
   [Plugins](plugins.md#writing-a-plugin).
-- **Translate the interface**: RustGIS ships in 19 languages; see [Languages](i18n.md) to add or
+- **Translate the interface**: RustGIS ships in 20 languages; see [Languages](i18n.md) to add or
   improve one.
 
 ## Thank you

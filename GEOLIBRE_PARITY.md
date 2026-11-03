@@ -301,7 +301,7 @@ _GeoLibre: docs/user-guide/ai-assistant.md, docs/features.md › AI, Python, and
 _GeoLibre: docs/features.md › Platforms and interface; docs/i18n.md_
 
 - [ ] **More languages and right-to-left layout**: GeoLibre has 20 languages including Arabic,
-  Persian and Hebrew. Partial: 19 languages; Persian text is drawn right to left, while the panes
+  Persian and Hebrew. Partial: 20 languages; Persian text is drawn right to left, while the panes
   keep their left-to-right layout.
 - [ ] **Translated geoprocessing tool names**. Missing (possibly deliberate).
 - [ ] **Keyboard-shortcut cheat sheet**. Partial: Command Search; rebindable shortcuts are on the

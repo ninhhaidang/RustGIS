@@ -83,7 +83,7 @@ macro_rules! lang {
 }
 
 /// The registry. English first: it is the source language and the fallback.
-pub static LANGUAGES: [LangInfo; 19] = [
+pub static LANGUAGES: [LangInfo; 20] = [
     LangInfo {
         code: "en",
         name: "English",
@@ -111,6 +111,7 @@ pub static LANGUAGES: [LangInfo; 19] = [
     lang!("ko", "한국어", "Korean", Script::Cjk(CjkFont::Korean), "ko.tsv"),
     lang!("ka", "ქართული", "Georgian", Script::Alphabetic, "ka.tsv"),
     lang!("bn", "বাংলা", "Bengali", Script::Bengali, "bn.tsv"),
+    lang!("el", "Ελληνικά", "Greek", Script::Alphabetic, "el.tsv"),
 ];
 
 fn unescape(s: &str) -> String {

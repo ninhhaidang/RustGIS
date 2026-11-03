@@ -32,6 +32,8 @@ fn lookup_fallback_and_tags() {
     assert_eq!(lang_from_tag("pt-BR").map(Lang::code), Some("pt"));
     assert_eq!(lang_from_tag("bn-BD").map(Lang::code), Some("bn"));
     assert_eq!(lang_from_tag("pl_PL.UTF-8").map(Lang::code), Some("pl"));
+    assert_eq!(lang_from_tag("el_GR.UTF-8").map(Lang::code), Some("el"));
+    assert_eq!(lang_from_tag("el-CY").map(Lang::code), Some("el"));
     assert_eq!(lang_from_tag("zh-Hans-CN").map(Lang::code), Some("zh"));
     assert_eq!(lang_from_tag("zh_CN.UTF-8").map(Lang::code), Some("zh"));
     assert_eq!(lang_from_tag("zh-TW"), None);
@@ -60,6 +62,16 @@ fn polish_registration_and_fallback() {
     assert_eq!(pl.script(), Script::Alphabetic);
     assert_eq!(tr(pl, "Open"), "Otwórz");
     assert_eq!(tr(pl, "A string not in the Polish catalog"), "A string not in the Polish catalog");
+}
+
+#[test]
+fn greek_registration_and_fallback() {
+    let el = Lang::from_code("el").unwrap_or(Lang::EN);
+    assert_eq!(el.name(), "Ελληνικά");
+    assert_eq!(el.english(), "Greek");
+    assert_eq!(el.script(), Script::Alphabetic);
+    assert_eq!(tr(el, "Open"), "Άνοιγμα");
+    assert_eq!(tr(el, "A string not in the Greek catalog"), "A string not in the Greek catalog");
 }
 
 #[test]
