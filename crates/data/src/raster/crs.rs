@@ -327,6 +327,38 @@ impl Crs {
         }
     }
 
+    /// Whether its coordinates are geocentric (X, Y and Z from the Earth's centre), not a map's.
+    pub(crate) fn is_geocentric(self) -> bool {
+        match self {
+            Crs::LonLat | Crs::WebMercator => false,
+            Crs::Epsg(c) => epsg_proj4(c).is_some_and(|d| d.contains("+proj=geocent")),
+            Crs::Custom(_) => self.custom_def().is_some_and(|d| d.proj4.contains("+proj=geocent")),
+        }
+    }
+
+    /// The unit its heights are in, when that isn't metres (`us-ft`, `0.3048 m`): its vertical unit,
+    /// else a projected system's linear unit, the only sign of its heights' unit a definition may
+    /// give. A geographic system with no vertical unit says nothing of its heights. A name goes
+    /// before a factor, as proj4rs reads them.
+    pub(crate) fn height_unit_not_metre(self) -> Option<String> {
+        let custom;
+        let definition = match self {
+            Crs::LonLat | Crs::WebMercator => return None,
+            Crs::Epsg(c) => epsg_proj4(c)?,
+            Crs::Custom(_) => {
+                custom = self.custom_def()?;
+                custom.proj4.as_str()
+            }
+        };
+        let member = |key: &str| definition.split_whitespace().find_map(|t| t.strip_prefix(key));
+        let stated = |units: &str, factor: &str| {
+            let named = member(units).map(|u| (u != "m").then(|| u.to_string()));
+            named.or_else(|| member(factor).map(|f| (f.parse::<f64>().ok() != Some(1.0)).then(|| format!("{f} m"))))
+        };
+        let geographic = definition.contains("+proj=longlat") || definition.contains("+proj=latlong");
+        stated("+vunits=", "+vto_meter=").or_else(|| if geographic { None } else { stated("+units=", "+to_meter=") }).flatten()
+    }
+
     /// Whether converting to WGS 84 leaves out a datum shift, so positions in longitude/latitude
     /// may be off by up to a few hundred metres: a custom system with an ellipsoid (`+ellps`, `+a`
     /// or `+R`) but no `+towgs84`, `+datum` or `+nadgrids`. That is what reading a WKT datum with

@@ -442,6 +442,17 @@ fn a_small_ring_far_from_the_origin_has_an_area() {
     assert_eq!(signed_area(&ring), -2.0, "clockwise, twice its area");
 }
 
+/// A height that isn't a finite number can't say which way a face looks: the hull stands in, rather
+/// than that face going without a word.
+#[test]
+fn a_multipatch_with_an_infinite_height_is_its_hull() {
+    let roof = vec![[0.0, 0.0, 5.0], [10.0, 0.0, f64::INFINITY], [10.0, 10.0, 5.0], [0.0, 10.0, 5.0], [0.0, 0.0, 5.0]];
+    let mut budget = 10;
+    let (shape, hull) = footprint(std::slice::from_ref(&roof), &[2], &mut budget);
+    assert_eq!((hull, budget), (Some(Hull::Unmerged), 10));
+    assert!(shape.is_some());
+}
+
 /// A table's multipatches merge no more faces than its budget: past it, they are hulls.
 #[test]
 fn the_face_budget_bounds_a_tables_unions() {

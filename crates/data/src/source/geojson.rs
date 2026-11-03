@@ -142,6 +142,10 @@ impl GeoJsonSource {
         let mut scan = Scan::default();
         let rest = if std::fs::metadata(path)?.len() <= in_memory {
             let text = std::fs::read_to_string(path)?;
+            // Its objects and vertices would all become a JSON tree, only to be refused below.
+            if crate::cityjson::looks_like_cityjson(&text) {
+                return Err(DataError::Unsupported("only GeoJSON FeatureCollections are read in place".into()));
+            }
             crate::io::stream_features(&text, &mut InText { scan: &mut scan, start: text.as_ptr() as usize }).map_err(bad)?
         } else {
             let read = std::rc::Rc::new(std::cell::Cell::new(0u64));
@@ -385,8 +389,12 @@ impl<'de> serde::de::Visitor<'de> for Top<'_> {
                 // The last of repeated members wins, as when read whole.
                 *self.scan = Scan::default();
                 map.next_value_seed(Elements { scan: &mut *self.scan, read: self.read.clone() })?;
-            } else {
+            } else if key == "type" || key == "crs" {
                 rest.insert(key, map.next_value()?);
+            } else {
+                // All that's looked at above: another document's members, such as a CityJSON
+                // model's objects and vertices, mustn't become a JSON tree only to be refused.
+                map.next_value::<serde::de::IgnoredAny>()?;
             }
         }
         Ok(rest)

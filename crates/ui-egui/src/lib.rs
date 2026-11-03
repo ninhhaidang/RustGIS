@@ -4257,6 +4257,7 @@ mod record_tests {
             "layer.addUrl",
             "layer.addDownload",
             "layer.addDataBytes",
+            "layer.addDataText",
             "portal.add",
             "graphics.add",
             "layout.addElement",

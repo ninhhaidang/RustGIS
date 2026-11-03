@@ -628,7 +628,7 @@ pub(crate) fn add_named_bytes(s: &mut Session, p: &Value, name: String, bytes: V
     if rustgis_data::sheets::is_sheet_name(&name) {
         return super::layer::add_sheet(s, p, &name, &bytes);
     }
-    // Files of several layers: zipped Shapefiles, KML/KMZ, GPX, GeoRSS, LandXML.
+    // Files of several layers: zipped Shapefiles, KML/KMZ, GPX, GeoRSS, LandXML, CityJSON.
     if rustgis_data::io::is_multi_layer_name(&name) {
         return super::layer::add_layers(s, p, &name, &bytes);
     }
@@ -639,7 +639,7 @@ pub(crate) fn add_named_bytes(s: &mut Session, p: &Value, name: String, bytes: V
     let text = String::from_utf8(bytes).map_err(|_| format!("{name} is not a text file"))?;
     // The delimited-text and naming parameters carry over (not the data, already decoded).
     let mut q = json!({"fileName": name, "text": text});
-    for k in ["name", "x", "y", "wkt", "crs", "delimiter"] {
+    for k in ["name", "x", "y", "wkt", "crs", "delimiter", "layer", "paperSpace"] {
         if let Some(v) = p.get(k) {
             q[k] = v.clone();
         }

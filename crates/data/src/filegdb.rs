@@ -395,7 +395,7 @@ fn read_table(name: &str, t: &[u8], x: &[u8], wkid: Option<u32>) -> Result<Optio
         report.messages.push(if cfg!(target_arch = "wasm32") {
             format!("{unmerged} multipatches are drawn as the outline of their points (the desktop app draws their footprints)")
         } else {
-            format!("{unmerged} multipatches with too many faces to merge are drawn as the outline of their points")
+            format!("{unmerged} multipatches whose faces couldn't be merged are drawn as the outline of their points")
         });
     }
     Ok(Some((ds, report)))

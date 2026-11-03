@@ -4,6 +4,7 @@
 //! bad features are skipped and counted in [`ReadReport`].
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+pub mod cityjson;
 pub mod color;
 mod dbf;
 pub mod diagnostics;
