@@ -671,7 +671,8 @@ Without `statistic`, each row and pivot value can have one record at most; the t
 first pair with more, and the cells keep the value field's type. Give a `statistic` to combine the
 records instead, such as the mean income by county and year from a table of households. It
 takes any statistic from Summary Statistics (above), with the same rules for text fields, empty
-values and output types; `separator` joins `CONCATENATE`'s values. A cell with no records is
+values, output types and whole numbers past 2^53: the tool says how many cells were rounded and in
+which pivot fields. `separator` joins `CONCATENATE`'s values. A cell with no records is
 empty even for `COUNT`, which tells it apart from records that have no value (a `COUNT` of 0):
 
 ```text

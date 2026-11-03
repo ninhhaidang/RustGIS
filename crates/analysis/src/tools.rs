@@ -3955,7 +3955,8 @@ fn statistic_fields(ds: &Dataset, requests: &[crate::stats::Request], as_numbers
     Ok(out)
 }
 
-/// What a statistics list lost to decimals, counted over every group for [`rounded_notice`].
+/// What a statistics list lost to decimals, counted over every group for [`rounded_notice`]. Pivot
+/// Table counts its statistic's results by pivot field, as one request each.
 struct Rounded {
     /// For each request, how many of its results came out rounded from a whole number past 2^53.
     results: Vec<usize>,
@@ -4151,9 +4152,10 @@ const MAX_PIVOT_NAME: usize = 64;
 /// a field for each value of the pivot field, sorted by value, holding the value field's values in
 /// that row. Without a statistic, a row and column can hold one record at most, and its value is
 /// copied with the value field's type; with one, the statistic combines that cell's records, as in
-/// Summary Statistics. A cell with no records is null. A record without a pivot value is an error.
+/// Summary Statistics, which says how many cells came out rounded from whole numbers past 2^53. A
+/// cell with no records is null. A record without a pivot value is an error.
 fn pivot_table(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
-    use crate::stats::{self, Stat};
+    use crate::stats::{self, Request, Stat};
     let ds = input(inp, p, "input")?;
     let keys = key_fields(ds, p.get("fields"), "Row Field")?;
     let named = |k: &str, label: &str| -> Result<usize, String> {
@@ -4213,7 +4215,14 @@ fn pivot_table(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
     let ty = stat.map_or(value_type, |st| st.output_type(value_type.is_numeric()));
     let values = columns.iter().map(|c| c.key.first().unwrap_or(&Value::Null));
     let names = pivot_field_names(field_name(pivot), values, &fields);
+    let first_pivot_field = fields.len();
     fields.extend(names.into_iter().map(|name| Field::new(name, ty)));
+    // Cells rounded from whole numbers past 2^53, counted for each pivot field, and the whole
+    // numbers written as text past the i64 range that a statistic read as decimals, each once.
+    let mut rounded = Rounded::new(columns.len());
+    if let Some(stat) = stat {
+        rounded.count_texts(ds, &rs, &[Request { field: value, stat }], false);
+    }
     let mut column_of: HashMap<usize, usize> = HashMap::with_capacity(rs.len());
     for (c, column) in columns.iter().enumerate() {
         column_of.extend(column.rows.iter().map(|&r| (r, c)));
@@ -4241,7 +4250,14 @@ fn pivot_table(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
                 None => ds.value(r, value).clone(),
                 Some(st) => {
                     let records: Vec<usize> = cell.iter().map(|&(_, r)| r).collect();
-                    stats::compute(st, &stats::column(ds, &records, value, false), separator)
+                    let column = stats::column(ds, &records, value, false);
+                    let v = stats::compute(st, &column, separator);
+                    if stats::rounded(st, &column, &v)
+                        && let Some(n) = rounded.results.get_mut(c)
+                    {
+                        *n += 1;
+                    }
+                    v
                 }
             };
             row.resize(pivot_start + c, Value::Null);
@@ -4252,7 +4268,9 @@ fn pivot_table(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
         out.push_next(None, row);
     }
     let n = out.features.len();
-    Ok(ToolResult { output: Output::Table(out), messages: vec![format!("Pivot Table: {n} rows, {} pivot fields", columns.len())] })
+    let mut messages = vec![format!("Pivot Table: {n} rows, {} pivot fields", columns.len())];
+    messages.extend(rounded_notice(&rounded, out.fields.get(first_pivot_field..).unwrap_or_default()));
+    Ok(ToolResult { output: Output::Table(out), messages })
 }
 
 /// Whether a pivot value is missing: null, or a number that isn't one.
