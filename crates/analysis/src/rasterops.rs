@@ -64,13 +64,32 @@ fn gradient(r: &Raster, data: &[f32], col: i64, row: i64, zf: f64, (cx, cy): (f6
     Some((dzdx * r.transform.pixel_width.signum(), dzdy * -r.transform.pixel_height.signum()))
 }
 
-fn per_cell(r: &Raster, f: impl Fn(i64, i64) -> Option<f64>) -> Result<Vec<f32>, String> {
-    let mut out = grid(r.width as usize, r.height as usize)?;
-    for row in 0..r.height as i64 {
-        for col in 0..r.width as i64 {
-            out.push(f(col, row).filter(|v| v.is_finite()).map(|v| v as f32).unwrap_or(NODATA));
-        }
+/// `f` of each of `r`'s cells, no-data where it gives none. `cost` is a cell's work in
+/// [`crate::parallel::MIN_ROW_WORK`]'s units (some 30 ns each).
+fn per_cell(r: &Raster, cost: usize, f: impl Fn(i64, i64) -> Option<f64> + Sync) -> Result<Vec<f32>, String> {
+    per_cell_on(None, r, cost, f)
+}
+
+/// [`per_cell`] on `threads` threads (none: as many as pay off). Each cell writes only itself, so
+/// rows go on several threads (#1252).
+fn per_cell_on(threads: Option<usize>, r: &Raster, cost: usize, f: impl Fn(i64, i64) -> Option<f64> + Sync) -> Result<Vec<f32>, String> {
+    let (w, h) = (r.width as usize, r.height as usize);
+    let mut out = new_band(w, h, NODATA)?;
+    if w == 0 {
+        return Ok(out);
     }
+    let threads = threads.unwrap_or_else(|| crate::parallel::threads_for_rows(h, w.saturating_mul(h).saturating_mul(cost), 0));
+    crate::control::begin(h);
+    crate::parallel::for_each_row(
+        out.chunks_mut(w),
+        threads,
+        || (),
+        |_, row, line: &mut [f32]| {
+            for (col, slot) in line.iter_mut().enumerate() {
+                *slot = f(col as i64, row as i64).filter(|v| v.is_finite()).map(|v| v as f32).unwrap_or(NODATA);
+            }
+        },
+    )?;
     Ok(out)
 }
 
@@ -89,9 +108,9 @@ fn terrain_on(threads: Option<usize>, r: &Raster, data: &[f32], zf: f64, f: impl
         let (x, y) = gradient(r, data, c, row, zf, cell)?;
         Some(f(x, y))
     };
-    let Some(len) = w.checked_mul(h) else { return per_cell(r, scalar) };
+    let Some(len) = w.checked_mul(h) else { return per_cell(r, 1, scalar) };
     if w < 3 || h < 3 || data.len() != len {
-        return per_cell(r, scalar);
+        return per_cell(r, 1, scalar);
     }
     let value = |v: Option<f64>| v.filter(|v| v.is_finite()).map(|v| v as f32).unwrap_or(NODATA);
     let mut out = new_band(w, h, NODATA)?;
@@ -166,25 +185,45 @@ pub fn hillshade(r: &Raster, b: usize, azimuth: f64, altitude: f64, zf: f64) -> 
 
 /// A band arithmetic expression over `b1`, `b2`… (+ - * / and parentheses, numbers).
 pub fn band_math(r: &Raster, expr: &str) -> Result<Vec<f32>, String> {
+    band_math_on(None, r, expr)
+}
+
+/// [`band_math`] on `threads` threads (none: as many as pay off): each cell on its own, so rows go
+/// on several threads (#1252), each with its own band values.
+fn band_math_on(threads: Option<usize>, r: &Raster, expr: &str) -> Result<Vec<f32>, String> {
     let e = Expr::parse(expr, r.band_count())?;
-    let n = r.width as usize * r.height as usize;
-    let mut vals = vec![0.0f64; r.band_count()];
-    let mut out = grid(r.width as usize, r.height as usize)?;
-    for i in 0..n {
-        let mut ok = true;
-        for (bi, b) in r.bands.iter().enumerate() {
-            let v = b.data.get(i).copied().unwrap_or(NODATA);
-            if !r.is_valid(v) {
-                ok = false;
-                break;
-            }
-            if let Some(slot) = vals.get_mut(bi) {
-                *slot = v as f64;
-            }
-        }
-        let v = if ok { e.eval(&vals) } else { f64::NAN };
-        out.push(if v.is_finite() { v as f32 } else { NODATA });
+    let (w, h) = (r.width as usize, r.height as usize);
+    let mut out = new_band(w, h, NODATA)?;
+    if w == 0 {
+        return Ok(out);
     }
+    // A cell reads every band and evaluates the expression: about a unit a band.
+    let work = w.saturating_mul(h).saturating_mul(r.band_count().max(1));
+    let threads = threads.unwrap_or_else(|| crate::parallel::threads_for_rows(h, work, 0));
+    crate::control::begin(h);
+    crate::parallel::for_each_row(
+        out.chunks_mut(w),
+        threads,
+        || vec![0.0f64; r.band_count()],
+        |vals, row, line: &mut [f32]| {
+            for (col, slot) in line.iter_mut().enumerate() {
+                let i = row * w + col;
+                let mut ok = true;
+                for (bi, b) in r.bands.iter().enumerate() {
+                    let v = b.data.get(i).copied().unwrap_or(NODATA);
+                    if !r.is_valid(v) {
+                        ok = false;
+                        break;
+                    }
+                    if let Some(slot) = vals.get_mut(bi) {
+                        *slot = v as f64;
+                    }
+                }
+                let v = if ok { e.eval(vals) } else { f64::NAN };
+                *slot = if v.is_finite() { v as f32 } else { NODATA };
+            }
+        },
+    )?;
     Ok(out)
 }
 
@@ -217,7 +256,8 @@ pub fn resample_to(src: &Raster, b: usize, target: &Raster) -> Result<Vec<f32>, 
         out.extend(d.iter().map(|v| if src.is_valid(*v) { *v } else { NODATA }));
         return Ok(out);
     }
-    per_cell(target, |c, row| {
+    // A cell goes to longitude/latitude and back onto the source: some ten units.
+    per_cell(target, 10, |c, row| {
         let w = target.transform.to_world(c as f64 + 0.5, row as f64 + 0.5);
         let ll = target.transformer().to_lonlat(w)?;
         let (sc, sr) = src.pixel_at(ll)?;
@@ -1223,6 +1263,39 @@ mod tests {
         }
     }
 
+    /// Band math and per-cell rows made on several threads give the same cells, bit for bit, as
+    /// one thread (#1252): no-data, NaN and values that come out non-finite included.
+    #[test]
+    fn band_math_and_per_cell_on_several_threads_are_on_one() {
+        let (w, h) = (173u32, 61u32);
+        let band = |k: f32| -> Vec<f32> {
+            (0..w * h)
+                .map(|i| match i % 97 {
+                    0 => NODATA,
+                    1 => f32::NAN,
+                    _ => ((i % w) as f32 * 0.31 + (i / w) as f32 * 0.7 + k).sin() * 50.0,
+                })
+                .collect()
+        };
+        let gt = GeoTransform { origin_x: 7.0, origin_y: 47.0, pixel_width: 0.001, pixel_height: -0.001 };
+        let r =
+            Raster::new("m", w, h, vec![band(0.0), band(1.5), band(3.0)], gt, Crs::LonLat, Some(NODATA as f64), ColorHint::Gray, "Float32")
+                .unwrap();
+        let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+        for expr in ["(b1 - b2) / (b1 + b2)", "b3 * 2 + 1 / b1"] {
+            let one = band_math_on(Some(1), &r, expr).unwrap();
+            for threads in [2, 7, 16] {
+                assert_eq!(bits(&band_math_on(Some(threads), &r, expr).unwrap()), bits(&one), "{expr}, {threads} threads");
+            }
+        }
+        let f = |c: i64, row: i64| (c % 5 != 0).then(|| r.value(1, c, row).map(|v| f64::from(v) / ((c - row) as f64))).flatten();
+        let one = per_cell_on(Some(1), &r, 1, f).unwrap();
+        assert!(one.contains(&NODATA) && one.iter().any(|v| *v != NODATA));
+        for threads in [2, 7, 16] {
+            assert_eq!(bits(&per_cell_on(Some(threads), &r, 1, f).unwrap()), bits(&one), "{threads} threads");
+        }
+    }
+
     /// A run past one thread's work, on one thread, is refused, naming the cap and the threads.
     #[test]
     fn idw_past_one_threads_work_is_refused_on_one_naming_the_cap() {
@@ -1279,7 +1352,7 @@ mod tests {
                     let data = band(&r, 0).unwrap_or_default();
                     for zf in [0.0, 1.0, 2.5] {
                         let f = |x: f64, y: f64| x.hypot(y).atan().to_degrees();
-                        let expected = per_cell(&r, |col, row| {
+                        let expected = per_cell(&r, 1, |col, row| {
                             z(&r, data, col, row)?;
                             let (x, y) = gradient(&r, data, col, row, zf, r.cell_size_m())?;
                             Some(f(x, y))
