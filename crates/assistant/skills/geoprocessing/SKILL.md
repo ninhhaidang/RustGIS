@@ -21,7 +21,8 @@ Based on the RustGIS user guide, Analysis › Geoprocessing tools
      or field value)
    - generalization: `dissolve` (`input`, `field`, `statistics`: summary fields over each
      group's records, as in `summaryStatistics`), `simplify` (`input`, `tolerance`)
-   - geometry: `convexHull`, `featureToPoint`, `featureVerticesToPoints`, `xyTableToPoint`
+   - geometry: `convexHull`, `featureToPoint`, `featureVerticesToPoints`, `pointsAlongLines`
+     (`input`, `distance`, `units`, `startOffset`, `endOffset`, `includeEnd`), `xyTableToPoint`
      (`input`, `x`, `y`, `crs`), `calculateGeometry`; `polygonToLine`, `splitLineAtVertices`,
      `featureEnvelopeToPolygon`, `unsplitLine` (`input`, optional `output`; see the user guide
      for envelope axes and endpoint-joining rules)

@@ -127,6 +127,7 @@ Use these ids in `gp.run`'s `tool` parameter (`gp.tools` lists the available too
 | Feature To Point | `featureToPoint` | Data Management › Features |
 | Merge | `merge` | Data Management › General |
 | Feature Vertices To Points | `featureVerticesToPoints` | Data Management › Features |
+| Points Along Lines | `pointsAlongLines` | Data Management › Features |
 | Polygon To Line | `polygonToLine` | Data Management › Features |
 | Split Line At Vertices | `splitLineAtVertices` | Data Management › Features |
 | Feature Envelope To Polygon | `featureEnvelopeToPolygon` | Data Management › Features |
@@ -321,6 +322,65 @@ fewer features, or simplify ones with many vertices.
 
 ```text
 gp.run={"tool":"featureVerticesToPoints","params":{"input":"Rivers","output":"river_vertices"}}
+```
+
+**Points Along Lines** (`pointsAlongLines`) writes points at a set `distance` along each part of
+the `input` layer's lines, or each ring of its polygons (holes too), measured on the WGS 84
+ellipsoid as Buffer's distances are, in `units` (Kilometers by default): a point at `startOffset`
+(0 by default), then one every `distance`, stopping `endOffset` before the part's end.
+`includeEnd` adds a point where they stop when the distance doesn't land there (the first is
+always at the start offset). Each part and ring is walked on its own from its first vertex, so the
+gap between two parts never counts; a line's parts that cross the antimeridian, one ending on it
+where the next begins on its other side, as a GeoJSON file splits a line that crosses it, are one
+line. A ring ends where it starts, so a point there is made once, and a line that ends where it
+starts (a contour) is walked as a ring too; a part shorter than its offsets gets none. A line that
+passes through one place twice gets a point there each time the distance lands on it. Each point
+has its feature's attributes and three fields: `orig_fid`, the feature's OID, as Feature Vertices
+To Points writes it, and, named as in QGIS's Points along geometry, `distance` (how far along its
+part, in `units`, the start offset included) and `angle` (the line's direction there, in degrees
+clockwise from north; on a vertex, halfway between the segments either side). A new field whose
+name the input already has gets a suffix (`distance_2`). QGIS's tool works differently: it
+measures `distance` along the whole feature (a polygon's rings as one, its end offset left out) in
+the layer's units, and walks a closed line as an open one, which gets a point at its end, on its
+start again, when the distance lands there. Here each part and ring starts again from 0, and the
+distance is on the ground in any coordinate system. Missing geometry, point features, and line
+or polygon features with no measurable segments (including empty geometries) are skipped with
+separate counted notices. A valid part that produces no points because of the offsets is not
+reported as unusable geometry.
+
+Each edge is the shortest path between its vertices on the ellipsoid, as Calculate Geometry
+Attributes measures it and the globe draws it. A flat map draws an edge straight in its own
+projection instead (in Web Mercator, along a constant bearing), so a point on a long edge can sit
+off the drawn line: on an east–west edge 100 km long, by about 200 m at 45° of latitude, 340 m at
+60° and 1.1 km at 80° (on one 10 km long, a hundredth of that; on the equator or along a meridian,
+not at all). Add vertices to long edges first if the points must follow the drawn line. An edge
+spanning more than 180° of longitude is taken the short way round, and one from −180° to 180° at
+one latitude has no length; a polygon cut at the antimeridian is walked as it is stored, so it gets
+points along the cut too (a polar cap whose parallel is one edge from −180° to 180°, only along the
+cut). An edge between opposite sides of the Earth has no single shortest path, and the tool takes
+the one GeographicLib does (over a pole for two points on the equator).
+
+The angle is the bearing from true north, which near a pole turns quickly along even a straight
+line (by 33° in 30 m, 11 m from the North Pole); at a pole itself, where every direction is south,
+it follows GeographicLib's convention, from the meridian of the longitude the vertex is written
+with. On a map in another projection than Web Mercator, north isn't straight up everywhere, so
+there the angle differs from the line's direction on the map. In Web Mercator it differs from a long
+edge's drawn direction by about half the edge's span of longitude times the sine of the latitude:
+at the ends of an east–west edge 100 km long, 0.45° at 45° and 2.5° at 80°; and, as Web Mercator
+isn't conformal on the ellipsoid, from a diagonal edge's by up to about 0.19° at the equator (0.1°
+at 45°, less toward the poles). A vertex less than a millimeter from the one before is passed over,
+so a near-duplicate doesn't turn a point's angle; a vertex past a pole (bad data) is taken as the
+pole, and the tool says how many it took so; and a vertex with a coordinate missing or infinite is passed over (its neighbors joined, or a
+line's end trimmed back to the last vertex it has), and the tool says how many it passed over. The output keeps what the input lost on reading, if
+anything (features, or Z and M values), as its layer's notes say. The points
+keep the input's coordinate system, with longitudes between -180 and 180, so a point past the
+antimeridian is on the far side of the map. The points are counted first and may take up to about
+4 GiB (some 20 million points with a few fields): a distance that would make more, or more than
+the browser can give in the web app, stops the tool with a message before anything is built. Use a
+larger distance, simplify lines with very many vertices, or select fewer features.
+
+```text
+gp.run={"tool":"pointsAlongLines","params":{"input":"Rivers","distance":500,"units":"Meters","includeEnd":true}}
 ```
 
 **IDW Interpolation** works like the QGIS tool of the same name: every point weighs on every

@@ -177,8 +177,9 @@ model-builder.md, segmentation.md, obia.md_
   spatial join, clip, erase, split, intersect, identity, union, symmetrical difference, update
   and near are built in.
 - [ ] **More built-in vector tools**: attribute join, extract vertices, points along lines,
-  fix/check geometry, random extract, buffer options. Partial: Merge (append layers) and extract vertices are built in,
-  as Merge and Feature Vertices To Points (_Roadmap: solid ground_).
+  fix/check geometry, random extract, buffer options. Partial: Merge (append layers), extract
+  vertices and points along lines are built in, as Merge, Feature Vertices To Points and Points
+  Along Lines (_Roadmap: solid ground_).
 - [ ] **Routing services**: isochrones, service areas, OD matrix, multi-stop routing,
   turn-by-turn (Valhalla/OSRM). Partial: shortest path over a line layer (_Roadmap: analysis_).
 - [ ] **Geocoding**: forward, batch and reverse, with multiple providers and a place search box.
