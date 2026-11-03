@@ -24,6 +24,7 @@ pub mod landxml;
 pub mod lidar;
 pub mod mapinfo;
 pub mod mbtiles;
+pub mod memory;
 pub mod ogc;
 pub mod osm;
 pub mod photo;

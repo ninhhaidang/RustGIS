@@ -14,7 +14,7 @@ use tiff::tags::Tag;
 
 use super::cog::Sparse;
 use super::crs::CustomCrs;
-use super::{ColorHint, Crs, Exact, GeoTransform, MAX_SAMPLES, Raster, Uncounted};
+use super::{ColorHint, Crs, Exact, GeoTransform, Raster, Uncounted, max_samples};
 use crate::{DataError, Result};
 
 fn err(e: impl std::fmt::Display) -> DataError {
@@ -948,7 +948,7 @@ fn decimate_parallel(
     out.into_inner().map_err(|_| err("a chunk couldn't be decoded"))
 }
 
-/// Reads a GeoTIFF. Images too large for [`MAX_SAMPLES`] are read from their largest overview that
+/// Reads a GeoTIFF. Images too large for [`max_samples`] are read from their largest overview that
 /// fits, when the file has overviews; otherwise an overview is made as the image is read, a strip
 /// or tile at a time (a regular, not cloud-optimised, file).
 pub fn read<R: Read + Seek>(r: R, name: &str) -> Result<Raster> {
@@ -957,7 +957,7 @@ pub fn read<R: Read + Seek>(r: R, name: &str) -> Result<Raster> {
 
 /// [`read`], with the no-data value a sidecar gives (see [`read_limited_with_nodata`]).
 pub(super) fn read_with_nodata<R: Read + Seek>(r: R, name: &str, sidecar_nodata: Option<f64>) -> Result<Raster> {
-    read_limited_with_nodata(reader(r).map_err(err)?, name, MAX_SAMPLES, None, sidecar_nodata)
+    read_limited_with_nodata(reader(r).map_err(err)?, name, max_samples(), None, sidecar_nodata)
 }
 
 /// What reading a GeoTIFF from the parts of it read so far came to.
@@ -972,7 +972,14 @@ pub enum Partial {
 /// to read next. The web app reads a large file so, a part at a time, keeping only its header and
 /// the overview it opens from (or the strips or tiles an overview made as it is read needs).
 pub fn read_sparse(parts: &Sparse, name: &str) -> Result<Partial> {
-    read_sparse_limited(parts, name, MAX_SAMPLES)
+    read_sparse_limited(parts, name, max_samples())
+}
+
+/// [`read_sparse`] of the parts the web app saved, with its limit ([`super::BROWSER_SAMPLES`]): it
+/// kept the overview it chose with that, which a larger limit could pass over for a finer one the
+/// parts don't hold.
+pub fn read_saved_parts(parts: &Sparse, name: &str) -> Result<Partial> {
+    read_sparse_limited(parts, name, super::BROWSER_SAMPLES)
 }
 
 fn read_sparse_limited(parts: &Sparse, name: &str, max: usize) -> Result<Partial> {
@@ -997,7 +1004,7 @@ pub fn read_file(path: &std::path::Path, name: &str) -> Result<Raster> {
 pub(super) fn read_file_with_nodata(path: &std::path::Path, name: &str, sidecar_nodata: Option<f64>) -> Result<Raster> {
     let path = path.to_path_buf();
     let open = move || -> std::io::Result<Reader<'static>> { reader(std::io::BufReader::new(std::fs::File::open(&path)?)) };
-    read_limited_with_nodata(open().map_err(err)?, name, MAX_SAMPLES, Some(&open), sidecar_nodata)
+    read_limited_with_nodata(open().map_err(err)?, name, max_samples(), Some(&open), sidecar_nodata)
 }
 
 /// [`read`], holding at most `max` samples (the tests' small limit exercises the overviews), with
@@ -1021,7 +1028,7 @@ pub(super) fn read_limited_with_nodata(
     let palette = r.first_is_palette();
     let limits = {
         let mut l = Limits::default();
-        l.decoding_buffer_size = MAX_SAMPLES.saturating_mul(4);
+        l.decoding_buffer_size = max_samples().saturating_mul(4);
         l.intermediate_buffer_size = 256 << 20;
         l.ifd_value_size = 64 << 20;
         l
@@ -1821,7 +1828,8 @@ mod tests {
     #[test]
     fn a_part_container_opens_as_a_tif() {
         let file = super::super::cog::example(512, 256);
-        let (r, parts) = read_in_parts(&file, 4096, MAX_SAMPLES);
+        // Read as the web app reads, with its limit, as the saved parts are read back anywhere.
+        let (r, parts) = read_in_parts(&file, 4096, super::super::BROWSER_SAMPLES);
         let back = super::super::read_bytes("parts.tif", &parts.container()).unwrap();
         assert_eq!((back.width, back.height, back.value(0, 300, 200)), (r.width, r.height, r.value(0, 300, 200)));
     }
@@ -1829,7 +1837,7 @@ mod tests {
     #[test]
     fn damaged_part_containers_never_panic() {
         let file = super::super::cog::example(512, 256);
-        let (_, parts) = read_in_parts(&file, 4096, MAX_SAMPLES);
+        let (_, parts) = read_in_parts(&file, 4096, max_samples());
         let good = parts.container();
         for cut in (0..good.len()).step_by(97) {
             let _ = super::super::read_bytes("x.tif", &good[..cut]);
@@ -1930,7 +1938,7 @@ mod tests {
         let data: Vec<u8> = (0..w * h).map(|i| ((i % w * 7 + i / w * 3) % 253) as u8).collect();
         let bytes = grey8(w, h, &data, None);
         let one = read(std::io::Cursor::new(&bytes), "one").unwrap();
-        let many = read_threaded(&bytes, MAX_SAMPLES).unwrap();
+        let many = read_threaded(&bytes, max_samples()).unwrap();
         assert_eq!((many.width, many.height), (w, h));
         assert!(many.bands.iter().zip(&one.bands).all(|(a, b)| a.data == b.data) && many.bands.len() == one.bands.len());
         assert_eq!(many.data_type, one.data_type);
@@ -1949,7 +1957,7 @@ mod tests {
         // Cut off partway: the strips past the end can't be read.
         let bytes = grey8(w, h, &data, None);
         let cut = &bytes[..bytes.len() / 2];
-        assert!(read_threaded(cut, MAX_SAMPLES).is_err());
+        assert!(read_threaded(cut, max_samples()).is_err());
         assert!(read_threaded(cut, 100_000).is_err());
     }
 
@@ -2129,7 +2137,7 @@ mod tests {
         for (w, h, tile) in [(40, 24, (16, 16)), (32, 32, (16, 16)), (17, 9, (16, 16)), (24, 40, (16, 16)), (40, 20, (16, 8))] {
             let bytes = planar_tiled(w, h, tile, 8, pixel);
             // The whole image, and every 2nd pixel of it (a limit it doesn't fit).
-            for (k, max) in [(1, MAX_SAMPLES), (2, (w * h) as usize)] {
+            for (k, max) in [(1, max_samples()), (2, (w * h) as usize)] {
                 let r = read_limited(reader(std::io::Cursor::new(&bytes)).unwrap(), "planar", max, None).unwrap();
                 assert_eq!((r.width, r.height, r.band_count()), (w.div_ceil(k), h.div_ceil(k), 3));
                 for y in 0..r.height {
@@ -2424,8 +2432,8 @@ mod tests {
         };
         check(&read(std::io::Cursor::new(&bytes), "dtm").unwrap());
         // From a file, a chunk at a time; and in the browser, in parts.
-        check(&read_threaded(&bytes, MAX_SAMPLES).unwrap());
-        check(&read_in_parts(&bytes, 512, MAX_SAMPLES).0);
+        check(&read_threaded(&bytes, max_samples()).unwrap());
+        check(&read_in_parts(&bytes, 512, max_samples()).0);
         // The same tile of a larger image, as one of the tiles a COG is shown with.
         let wide = lzw_tiled(232, 200, 128, 1, |x, y| if x < 128 && y < 128 { pixel(x, y) } else { (x + y) as f32 });
         let r = read(std::io::Cursor::new(&wide), "wide").unwrap();
@@ -2570,7 +2578,7 @@ mod tests {
         check(&scan, 32, 32);
         // A million pixels in 16 strips, read a chunk at a time on several threads.
         let big = ycbcr_jpeg_tiff(&[(1024, 1024, 64)], colors, true);
-        check(&read_threaded(&big, MAX_SAMPLES).unwrap(), 1024, 1024);
+        check(&read_threaded(&big, max_samples()).unwrap(), 1024, 1024);
         // An image too large for the limit is shown by its overview, a JPEG of its own.
         let cog = ycbcr_jpeg_tiff(&[(64, 64, 64), (32, 32, 32)], colors, true);
         let r = read_limited(reader(std::io::Cursor::new(&cog)).unwrap(), "cog", 4_000, None).unwrap();

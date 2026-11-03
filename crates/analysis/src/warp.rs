@@ -13,7 +13,7 @@
 
 use std::collections::HashMap;
 
-use rustgis_data::raster::{ColorHint, Crs, GeoTransform, MAX_SAMPLES, Raster, Transformer};
+use rustgis_data::raster::{ColorHint, Crs, GeoTransform, Raster, Transformer, max_samples};
 use rustgis_geom::Coord;
 
 use crate::georef::Fit;
@@ -237,12 +237,15 @@ pub fn warp(r: &Raster, fit: &Fit, o: &Options) -> Result<Raster, String> {
     let cells = |cell: f64| -> (f64, f64) { (((max_x - min_x) / cell).ceil().max(1.0), ((max_y - min_y) / cell).ceil().max(1.0)) };
     // The samples held, and the buffers a row needs (they add up on a long thin grid).
     let load = |(ow, oh): (f64, f64)| ow * (oh * out_bands as f64 + COLUMN_COST);
-    let too_many = |n: (f64, f64)| load(n) > MAX_SAMPLES as f64;
+    let max = max_samples();
+    let too_many = |n: (f64, f64)| load(n) > max as f64;
     let cell = match o.cell {
         Some(c) if !(c.is_finite() && c > 0.0) => return Err("cellSize must be a positive number".into()),
         Some(c) => {
             if too_many(cells(c)) {
-                return Err(format!("a cell size of {c} makes a grid of more than {MAX_SAMPLES} samples: give a larger cellSize"));
+                return Err(format!(
+                    "a cell size of {c} makes a grid of more than {max} samples, this computer's limit: give a larger cellSize"
+                ));
             }
             c
         }
@@ -254,7 +257,7 @@ pub fn warp(r: &Raster, fit: &Fit, o: &Options) -> Result<Raster, String> {
                 if !too_many(n) {
                     break;
                 }
-                cell *= (load(n) / MAX_SAMPLES as f64).sqrt().max(1.01);
+                cell *= (load(n) / max as f64).sqrt().max(1.01);
             }
             if too_many(cells(cell)) {
                 return Err("the warped image is too large to hold: give a cellSize".into());
@@ -361,9 +364,10 @@ impl Grid {
             return Err("the origin and cellSize can't make a grid over this area".into());
         }
         let (w, h) = (((max_x - min_x) / cx).round().max(1.0), ((max_y - min_y) / cy).round().max(1.0));
-        if w * h > MAX_SAMPLES as f64 {
+        let max = max_samples();
+        if w * h > max as f64 {
             return Err(format!(
-                "a cell size of {cx} makes a grid of {} × {} cells, more than {MAX_SAMPLES}: give a larger cellSize or a smaller extent",
+                "a cell size of {cx} makes a grid of {} × {} cells, more than this computer's {max}: give a larger cellSize or a smaller extent",
                 w as u64, h as u64
             ));
         }
@@ -452,9 +456,10 @@ pub fn project(r: &Raster, g: &Grid, method: Method, name: String) -> Result<Ras
     let canvas = Canvas::of(r, false);
     let out_bands = canvas.out_bands;
     // The samples held, and the buffers a row needs.
-    if g.width as f64 * (g.height as f64 * out_bands as f64 + COLUMN_COST) > MAX_SAMPLES as f64 {
+    let max = max_samples();
+    if g.width as f64 * (g.height as f64 * out_bands as f64 + COLUMN_COST) > max as f64 {
         return Err(format!(
-            "{} × {} cells of {} band(s) are more than {MAX_SAMPLES} samples: give a larger cellSize or a smaller extent",
+            "{} × {} cells of {} band(s) are more than this computer's {max} samples: give a larger cellSize or a smaller extent",
             g.width, g.height, out_bands
         ));
     }

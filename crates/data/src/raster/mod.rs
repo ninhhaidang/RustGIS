@@ -3,7 +3,7 @@
 //! Pixels are held as `f32` per band: whole numbers are exact up to ±16,777,216 and decimals to
 //! about 7 significant digits. Readers count the values that change on the way in
 //! ([`Raster::rounded`]). Readers never panic on malformed input and refuse rasters
-//! larger than [`MAX_SAMPLES`]; cloud-optimised GeoTIFFs fall back to their largest overview that
+//! larger than [`max_samples`]; cloud-optimised GeoTIFFs fall back to their largest overview that
 //! fits.
 
 pub mod ascii;
@@ -66,12 +66,25 @@ fn no_memory(w: usize, h: usize) -> DataError {
     DataError::Format(format!("not enough memory for a {w} × {h} raster"))
 }
 
-/// Most samples (pixels × bands) held in memory: 120 million (480 MB), or 32 million in the
-/// browser, whose memory is much tighter. Reading briefly needs about twice this.
+/// Most samples (pixels × bands) held in memory in the browser, whose memory is much tighter: 32
+/// million. The parts of a GeoTIFF the web app saves are read with it anywhere, so that the same
+/// overview is chosen.
+pub const BROWSER_SAMPLES: usize = 32_000_000;
+/// The fewest samples [`max_samples`] allows: 120 million (480 MB) on the desktop, and
+/// [`BROWSER_SAMPLES`] (its limit) in the browser.
 #[cfg(not(target_arch = "wasm32"))]
-pub const MAX_SAMPLES: usize = 120_000_000;
+pub const SAMPLES_FLOOR: usize = 120_000_000;
 #[cfg(target_arch = "wasm32")]
-pub const MAX_SAMPLES: usize = 32_000_000;
+pub const SAMPLES_FLOOR: usize = BROWSER_SAMPLES;
+/// The most [`max_samples`] allows, however much memory the computer has: a billion (4 GB).
+pub const SAMPLES_CEILING: usize = 1_000_000_000;
+
+/// Most samples (pixels × bands) held in memory: on the desktop, as many as a quarter of the
+/// computer's memory holds at 8 bytes each (a sample takes 4, and reading briefly needs about
+/// twice that), from [`SAMPLES_FLOOR`] up to [`SAMPLES_CEILING`] (#1291 step 2, #1318).
+pub fn max_samples() -> usize {
+    crate::memory::scaled(crate::memory::physical(), SAMPLES_FLOOR, SAMPLES_CEILING, 8)
+}
 /// Largest ASCII grid file read (1 GiB).
 pub const MAX_ASCII_BYTES: u64 = 1 << 30;
 /// File extensions read as rasters.
@@ -884,10 +897,10 @@ fn deinterleave<T: Copy + Into<f32>>(raw: &[T], w: u32, h: u32, ch: usize, k: u3
 
 /// Reads a PNG or JPEG as a raster with no coordinates (`georeferenced` is false): its bands as
 /// they are (grey, grey and alpha, RGB, RGBA; 8 or 16 bits). A picture is decoded whole, so one
-/// whose decoded size passes four times [`MAX_SAMPLES`] bytes is refused (save it as a TIFF); one
-/// with more than [`MAX_SAMPLES`] samples is read at every second pixel, with its `overview` set.
+/// whose decoded size passes four times [`max_samples`] bytes is refused (save it as a TIFF); one
+/// with more than [`max_samples`] samples is read at every second pixel, with its `overview` set.
 pub fn read_scan<R: std::io::BufRead + std::io::Seek>(name: &str, source: R) -> Result<Raster> {
-    read_scan_limited(name, source, MAX_SAMPLES)
+    read_scan_limited(name, source, max_samples())
 }
 
 /// [`read_scan`], holding at most `max` samples (the tests' small limit exercises the reduction).
@@ -1101,7 +1114,7 @@ pub fn read_bytes(file_name: &str, bytes: &[u8]) -> Result<Raster> {
         // The parts of a large GeoTIFF the web app read (see `geotiff::read_sparse`).
         "tif" | "tiff" if cog::Sparse::is_container(bytes) => {
             let parts = cog::Sparse::from_container(bytes).ok_or_else(|| DataError::Format("a damaged GeoTIFF part file".into()))?;
-            match geotiff::read_sparse(&parts, &name)? {
+            match geotiff::read_saved_parts(&parts, &name)? {
                 geotiff::Partial::Done(r) => Ok(*r),
                 geotiff::Partial::Need(..) => Err(DataError::Format("the parts of the GeoTIFF kept don't hold the whole overview".into())),
             }

@@ -57,6 +57,8 @@ rustls = { workspace = true }
 webpki-roots = { workspace = true }
 # Private temporary workspaces for downloaded JPEG 2000 conversion through GDAL.
 tempfile = "3"
+# The computer's physical memory, for the limits that scale with it (`memory`, #1291 step 2).
+sysinfo = { version = "0.40", default-features = false, features = ["system"] }
 
 [target.'cfg(all(unix, not(target_arch = "wasm32")))'.dependencies]
 # Safe effective-UID and no-follow operations for private Shapefile index caches.

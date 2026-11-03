@@ -249,7 +249,7 @@ pub(crate) fn download_features(s: &mut Session, name: &str, url: &str, max: usi
     let until = std::time::Instant::now() + cache::BLOCKING_TIMEOUT;
     let first = cache::download_blocking_limited(url, max).map_err(|e| format!("{url}: {e}"))?;
     let mut left = max.saturating_sub(first.len());
-    let mut step = rustgis_data::ogc::read_pages(url, first, rustgis_data::ogc::MAX_PAGED_FEATURES);
+    let mut step = rustgis_data::ogc::read_pages(url, first, rustgis_data::ogc::max_paged_features());
     let (bytes, note) = loop {
         let pages = match step {
             rustgis_data::ogc::Step::Done(bytes, note) => break (bytes, note),

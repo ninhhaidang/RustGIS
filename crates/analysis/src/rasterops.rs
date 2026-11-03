@@ -9,8 +9,17 @@ use rustgis_geom::{Coord, Extent};
 
 /// The no-data value written by these operations.
 pub const NODATA: f32 = -3.4e38;
-/// Largest output raster built (pixels).
-pub const MAX_PIXELS: usize = 64_000_000;
+/// The fewest pixels [`max_pixels`] allows, and its limit in the browser.
+pub const PIXELS_FLOOR: usize = 64_000_000;
+/// The most [`max_pixels`] allows, however much memory the computer has (2 GB a band).
+pub const PIXELS_CEILING: usize = 512_000_000;
+
+/// Largest output raster built (pixels): on the desktop, as many as a quarter of the computer's
+/// memory holds at 16 bytes each (a tool holds its input, its output and a working grid or two),
+/// from [`PIXELS_FLOOR`] up to [`PIXELS_CEILING`] (#1291 step 2).
+pub fn max_pixels() -> usize {
+    rustgis_data::memory::scaled(rustgis_data::memory::physical(), PIXELS_FLOOR, PIXELS_CEILING, 16)
+}
 
 /// Room for a grid of `w × h` cells of `T` (an output band, or a working grid of one), empty: a
 /// grid the machine can't hold is an error saying so, instead of ending the program
@@ -449,8 +458,8 @@ fn idw_on(
         return Err("the area to interpolate over is empty".into());
     }
     let (w, h) = ((extent.width() / cell_deg).ceil().max(1.0) as usize, (extent.height() / cell_deg).ceil().max(1.0) as usize);
-    if w.saturating_mul(h) > MAX_PIXELS / 4 {
-        return Err(format!("{w} × {h} cells is too many; use a larger cell size"));
+    if w.saturating_mul(h) > max_pixels() / 4 {
+        return Err(format!("{w} × {h} cells is too many, more than this computer's {}; use a larger cell size", max_pixels() / 4));
     }
     // Every cell weighs every point.
     if w.saturating_mul(h).saturating_mul(points.len()) > MAX_IDW_WORK {

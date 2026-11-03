@@ -21,10 +21,10 @@ flatbuffers, flate2, form_urlencoded, futures-lite, futures-timer, geo, geo-trai
 geozero, gif, half, hash32, hashbrown, hashlink, heapless, heck, hkdf, hmac, httparse, hybrid-array,
 i_overlay, idna, idna_adapter, image, image-webp, indexmap, inout, io-enum, itoa, jobserver, js-sys,
 laz, lazy_static, libc, linux-raw-sys, lock_api, log, lyon, lyon_algorithms, lyon_geom, lyon_path,
-lyon_tessellation, md-5, md5, miniz_oxide, multiversion_no_op, mysql, mysql_common, named_pipe, num,
-num-bigint, num-complex, num-conv, num-integer, num-iter, num-rational, num-traits,
-objc2-core-foundation, objc2-system-configuration, once_cell, openssl-probe, ordered-stream,
-owned_ttf_parser, parking, parking_lot, parking_lot_core, parquet, percent-encoding,
+lyon_tessellation, md-5, md5, miniz_oxide, multiversion_no_op, mysql, mysql_common, named_pipe,
+ntapi, num, num-bigint, num-complex, num-conv, num-integer, num-iter, num-rational, num-traits,
+objc2-core-foundation, objc2-io-kit, objc2-system-configuration, once_cell, openssl-probe,
+ordered-stream, owned_ttf_parser, parking, parking_lot, parking_lot_core, parquet, percent-encoding,
 pin-project-lite, piper, pkg-config, png, polling, postgres, postgres-protocol, postgres-types,
 proc-macro2, proj4rs, proj4rs-geodesic, pyo3, pyo3-build-config, pyo3-ffi, pyo3-macros,
 pyo3-macros-backend, quote, rand, rayon, rayon-core, regex, regex-automata, regex-syntax, ring,
@@ -5669,8 +5669,9 @@ Used by: web-time
 
 ====================================================================================================
 Apache License 2.0
-Used by: windows-core, windows-implement, windows-interface, windows-link, windows-result, windows-strings,
-windows-sys, windows-targets, windows_aarch64_msvc, windows_x86_64_gnu, windows_x86_64_msvc
+Used by: windows, windows-collections, windows-core, windows-future, windows-implement, windows-interface,
+windows-link, windows-numerics, windows-result, windows-strings, windows-sys, windows-targets,
+windows-threading, windows_aarch64_msvc, windows_x86_64_gnu, windows_x86_64_msvc
 ====================================================================================================
 
                                  Apache License
@@ -8486,6 +8487,33 @@ Permission is hereby granted, free of charge, to any person obtaining a copy of 
 The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+====================================================================================================
+MIT License
+Used by: sysinfo
+====================================================================================================
+
+The MIT License (MIT)
+
+Copyright (c) 2015 Guillaume Gomez
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
 ====================================================================================================
 MIT License

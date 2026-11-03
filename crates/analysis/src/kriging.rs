@@ -12,7 +12,7 @@
 use rustgis_data::raster::{ColorHint, Crs, GeoTransform, Raster};
 use rustgis_geom::{Coord, Extent};
 
-use crate::rasterops::{MAX_PIXELS, NODATA};
+use crate::rasterops::{NODATA, max_pixels};
 
 /// Maximum cell-point pairs Kriging computes (about a second's work).
 pub const MAX_KRIGING_WORK: usize = 40_000_000;
@@ -337,8 +337,8 @@ fn kriging_on(
         return Err("the area to interpolate over is empty".into());
     }
     let (w, h) = ((extent.width() / cell_deg).ceil().max(1.0) as usize, (extent.height() / cell_deg).ceil().max(1.0) as usize);
-    if w.saturating_mul(h) > MAX_PIXELS / 4 {
-        return Err(format!("{w} × {h} cells is too many; use a larger cell size"));
+    if w.saturating_mul(h) > max_pixels() / 4 {
+        return Err(format!("{w} × {h} cells is too many, more than this computer's {}; use a larger cell size", max_pixels() / 4));
     }
     let k = if neighbours == 0 { 12.min(points.len()) } else { neighbours.clamp(2, points.len().min(32)) };
     let k3 = (k * k * k) / 3;

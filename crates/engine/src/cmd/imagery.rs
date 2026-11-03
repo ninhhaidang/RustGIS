@@ -898,7 +898,7 @@ fn raster_mosaic(s: &mut Session, p: &Value) -> CmdResult {
     if inputs.len() > MAX_MOSAIC_INPUTS {
         return Err(format!("a mosaic takes at most {MAX_MOSAIC_INPUTS} inputs"));
     }
-    let max = rustgis_data::raster::MAX_SAMPLES as i64;
+    let max = rustgis_data::raster::max_samples() as i64;
     let mut rs: Vec<Arc<Raster>> = Vec::with_capacity(inputs.len());
     // Each input's place on the first one's grid, and the bounds of them all so far.
     let mut places: Vec<(i64, i64)> = Vec::with_capacity(inputs.len());
@@ -1357,7 +1357,7 @@ fn mosaic(s: &mut Session, p: &Value) -> CmdResult {
         .fold(f64::INFINITY, f64::min);
     let cell = w.cell_size.unwrap_or(finest).max(1e-7);
     let (cols, rows) = ((e.width() / cell).ceil().max(1.0) as usize, (e.height() / cell).ceil().max(1.0) as usize);
-    if cols.saturating_mul(rows) > rasterops::MAX_PIXELS / 2 {
+    if cols.saturating_mul(rows) > rasterops::max_pixels() / 2 {
         return Err(format!("the mosaic would be {cols} × {rows} cells; set a larger cell size in the workspace options"));
     }
     let nb = imgs.iter().map(|r| r.band_count()).min().unwrap_or(1).min(if w.kind == "reality" { 1 } else { 4 });

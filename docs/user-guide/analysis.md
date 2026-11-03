@@ -853,7 +853,20 @@ honour it, this restricts an unselected main feature input by bounding-box inter
 clipping its geometry; an existing selection takes precedence and overlay inputs stay whole.
 The Geostatistical Wizard uses the environment's extent and raster cell size (degrees).
 IDW Interpolation and Ordinary Kriging instead use their own `extent` and `pixelSize` parameters;
-the environment does not set their output grids. Project Raster (`raster.project`) puts a raster
+the environment does not set their output grids.
+
+`gp.env` also returns the memory limits on this computer (`limits`). On the desktop they follow the
+computer's memory, or a container's limit when it is lower: each plans for a quarter of it, never
+below the web app's fixed limits and never above a ceiling.
+
+| Limit | Fixed (web app, smallest) | Desktop: a quarter of memory at | Ceiling |
+|---|---|---|---|
+| `rasterSamples`: samples a raster read holds (cells times bands) | 120 million (32 million in the web app) | 8 bytes a sample | 1 billion |
+| `outputPixels`: pixels of a raster a tool makes | 64 million | 16 bytes a pixel | 512 million |
+| `pagedFeatures`: features read from a service page by page | 100,000 | 20 KB a feature (about 100,000 for every 8 GB) | 1 million |
+
+So a computer with 16 GB reads rasters of up to about 500 million samples. A run that passes on one
+computer can be refused on a smaller one; the error names the limit there. Project Raster (`raster.project`) puts a raster
 on a grid of any coordinate system, cell size and extent; Raster Functions › Resample matches a target
 raster's grid.
 
@@ -990,7 +1003,7 @@ The Analyze tab's imagery groups open their tools in the Workflows pane:
   are layers or file paths; where they overlap, the first one with data wins. Tiles in different
   coordinate systems or cell sizes, or opened from an overview, are refused rather than quietly
   resampled, as are tiles whose cells don't line up; the mosaic has to fit in memory (120 million
-  values: cells times bands).
+  values, cells times bands, or more on a computer with more memory: see Environments).
 - **Project Raster** (`raster.project`) puts a raster on a grid of your choosing, so rasters from
   different sources line up cell for cell (for map algebra, the Suitability Modeler, a series for
   Trend Analysis, or the inputs of a model): `{"layer": "ndvi", "crs": 31983, "cellSize": 100,
@@ -1025,8 +1038,8 @@ The Analyze tab's imagery groups open their tools in the Workflows pane:
     colour image gains an alpha band instead, so they are see-through.
   - Datums are shifted as everywhere in RustGIS, through each system's transformation to WGS 84
     (a Helmert step for SAD69 or Córrego Alegre, a few metres from the IBGE's grid shifts).
-  - The result has to fit in memory (120 million values, cells times bands; 32 million in the
-    web app): a grid past that is refused, naming the limit. A raster read from its overview is
+  - The result has to fit in memory (120 million values, cells times bands, or more on a computer
+    with more memory; 32 million in the web app): a grid past that is refused, naming the limit. A raster read from its overview is
     projected at that resolution, and the result says so.
 - **Classification Wizard** (unsupervised k-means) and **Classification Tools** (minimum distance
   from training polygons).

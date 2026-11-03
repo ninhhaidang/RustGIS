@@ -173,7 +173,15 @@ fn environments(s: &mut Session, p: &Value) -> CmdResult {
         };
     }
     let env = &s.project.gp_env;
-    Ok(json!({"extent": env.extent.map(|e| [e.min_x, e.min_y, e.max_x, e.max_y]), "cellSize": env.cell_size}))
+    // The memory limits on this computer (#1291 step 2), so a script or model can see why a run
+    // that passes elsewhere is refused here.
+    let limits = json!({
+        "memory": rustgis_data::memory::physical(),
+        "rasterSamples": rustgis_data::raster::max_samples(),
+        "outputPixels": rasterops::max_pixels(),
+        "pagedFeatures": rustgis_data::ogc::max_paged_features(),
+    });
+    Ok(json!({"extent": env.extent.map(|e| [e.min_x, e.min_y, e.max_x, e.max_y]), "cellSize": env.cell_size, "limits": limits}))
 }
 
 /// Curated tool lists: everyday tools, feature analysis and raster analysis.
@@ -524,8 +532,8 @@ fn apply_function(s: &Session, r: &Raster, p: &Value) -> Result<Vec<f32>, String
         }
         "resample" => {
             let t = raster_of(s, ps(p, "target").ok_or("target (a raster to match) is required")?)?;
-            if t.width as usize * t.height as usize > rasterops::MAX_PIXELS {
-                return Err("the target grid is too large".into());
+            if t.width as usize * t.height as usize > rasterops::max_pixels() {
+                return Err(format!("the target grid is larger than this computer's {} cells", rasterops::max_pixels()));
             }
             rasterops::resample_to(r, band, &t)
         }

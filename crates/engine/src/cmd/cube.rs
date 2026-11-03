@@ -1968,6 +1968,21 @@ mod tests {
         assert_eq!(one, vec![(None, vec![1.0, 2.0, 3.0])]);
     }
 
+    /// Totals and columns the machine can't hold are errors, not crashes (#1291); small ones are
+    /// made as before.
+    #[test]
+    fn totals_and_columns_too_large_to_hold_are_errors() {
+        for stat in [super::Stat::Min, super::Stat::Std, super::Stat::Count] {
+            let e = super::Totals::new(stat, usize::MAX / 2).err().unwrap_or_default();
+            assert!(e.contains("not enough memory"), "{e}");
+            assert!(super::Totals::new(stat, 4).is_ok());
+        }
+        let mut outs = Vec::new();
+        let e = super::stack_columns(&mut outs, &[], vec![(Some(1.0), vec![2.0])], &[], Some(usize::MAX / 2)).unwrap_err();
+        assert!(e.contains("not enough memory"), "{e}");
+        assert!(super::stack_columns(&mut outs, &[], vec![(Some(1.0), vec![2.0])], &[], Some(3)).is_ok());
+    }
+
     /// The class counts of the groups being read share one cap: two groups each within it can be
     /// over it together.
     #[test]

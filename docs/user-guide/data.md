@@ -913,8 +913,9 @@ as RGB; other YCbCr and CMYK images aren't read. A rotated or skewed image is re
 north-up grid as it is read. The coordinate system is an EPSG code,
 or the file's own projection described in its GeoKeys (Albers, Lambert conformal conic, transverse
 Mercator, Mercator, Lambert azimuthal, stereographic, equirectangular, sinusoidal and others), which an
-exported GeoTIFF keeps. A raster too large to hold in memory (more than 120 million samples, 32
-million in the web app) opens from its largest overview that fits; one without overviews opens as
+exported GeoTIFF keeps. A raster too large to hold in memory (more than 120 million samples, or
+more on a computer with more memory, see Environments in the analysis guide; 32 million in the
+web app) opens from its largest overview that fits; one without overviews opens as
 an overview made as it is read, a strip or tile at a time (every second, fourth… pixel each way),
 so reading it takes as long as decoding the whole file once. A cloud-optimised GeoTIFF added by its
 web address is read in place instead, a tile at a time (see [Files on the

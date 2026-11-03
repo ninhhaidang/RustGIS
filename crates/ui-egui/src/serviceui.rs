@@ -297,7 +297,7 @@ pub struct PageRead {
 /// leads nowhere, else read on in the background ([`poll_pages`]).
 pub(crate) fn read_pages(app: &mut RustGisApp, landed: Landed, first: Vec<u8>) {
     let left = rustgis_engine::render::rustgis_tiles::cache::MAX_DOWNLOAD.saturating_sub(first.len());
-    let step = ogc::read_pages(&landed.url, first, ogc::MAX_PAGED_FEATURES);
+    let step = ogc::read_pages(&landed.url, first, ogc::max_paged_features());
     if matches!(step, Step::Fetch(_)) {
         app.session.notify(i18n::fmt("Reading {url} page by page…", &[("url", &landed.url)]), false);
     }

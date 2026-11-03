@@ -6439,7 +6439,12 @@ fn analysis_workflows_models_scripts_and_raster_functions() {
     let europe = s.map().layer_by_name("Europe buffers").unwrap().dataset.features.len();
     let all = s.map().layer_by_name("Cities").unwrap().dataset.features.len();
     assert!(europe > 10 && europe < all / 2, "{europe} of {all}");
-    s.run("gp.env", &json!({"extent": null, "cellSize": null})).unwrap();
+    let env = s.run("gp.env", &json!({"extent": null, "cellSize": null})).unwrap();
+    // This computer's memory limits are said, never below the browser's fixed ones (#1291 step 2).
+    let limit = |k: &str| env["limits"][k].as_u64().unwrap_or(0) as usize;
+    assert!(limit("rasterSamples") >= rustgis_data::raster::SAMPLES_FLOOR, "{env}");
+    assert!(limit("outputPixels") >= rustgis_analysis::rasterops::PIXELS_FLOOR, "{env}");
+    assert!(limit("pagedFeatures") >= rustgis_data::ogc::PAGED_FEATURES_FLOOR, "{env}");
     // Network route along the rivers: two points on the same river.
     let rivers = s.map().layer_by_name("Rivers").unwrap();
     let (a, b2) = match rivers.dataset.features.iter().filter_map(|f| f.geometry.as_ref()).find_map(|g| match g {
@@ -6772,8 +6777,9 @@ fn a_warp_refuses_a_globe_in_degrees_and_bounds_its_memory() {
     assert!(e.contains("projected crs"), "{e}");
     // In Web Mercator it is placed (to its latitude limit), with the pole inside it.
     assert!(warp::warp(&r, &fit, &o(Crs::WebMercator, polar, Some(100_000.0))).is_ok());
-    // A strip a hundred million metres long and a metre tall, from hostile points.
-    let strip = georef::fit(Kind::Affine, &gcps(&|c, r| (500_000.0 + c * 2.5e6, 4_000_000.0 - r * 0.025))).unwrap();
+    // A strip a billion metres long and a metre tall, from hostile points: past the most samples
+    // any computer is allowed (rustgis_data::raster::SAMPLES_CEILING), its row buffers counted.
+    let strip = georef::fit(Kind::Affine, &gcps(&|c, r| (500_000.0 + c * 2.5e7, 4_000_000.0 - r * 0.025))).unwrap();
     let utm13 = Crs::from_epsg(32613).unwrap();
     let e = warp::warp(&r, &strip, &o(utm13, utm13, Some(1.0))).unwrap_err();
     assert!(e.contains("cellSize"), "{e}");

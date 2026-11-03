@@ -2201,7 +2201,8 @@ fn arcgis(url: &str, v: &serde_json::Value) -> Result<Service, String> {
         && service.layers.iter().any(|l| matches!(l.offer, Offer::Features { .. }))
     {
         service.notes.push(format!(
-            "a feature layer is read up to {MAX_PAGED_FEATURES} features, {max} per request, where the server pages its layers"
+            "a feature layer is read up to {} features on this computer, {max} per request, where the server pages its layers",
+            max_paged_features()
         ));
     }
     // A secured service's token goes with every request.
@@ -2484,7 +2485,7 @@ fn ogc_api(url: &str, v: &serde_json::Value) -> Result<Service, String> {
     }
     service.incomplete = unreadable > 0 || collections.len() > MAX_LAYERS;
     if service.layers.iter().any(|l| matches!(l.offer, Offer::Features { .. })) {
-        service.notes.push(format!("a collection is read up to {MAX_PAGED_FEATURES} features, page by page"));
+        service.notes.push(format!("a collection is read up to {} features on this computer, page by page", max_paged_features()));
     }
     if tiled > 0 {
         service.kind = if service.layers.iter().any(|l| matches!(l.offer, Offer::Features { .. })) {
@@ -2681,8 +2682,17 @@ pub fn partial_note(bytes: &[u8]) -> Option<String> {
     (next(&head) || next(&tail)).then(|| "the server sent one page of its features; the rest aren't read".into())
 }
 
-/// Most features read from a collection that comes in pages.
-pub const MAX_PAGED_FEATURES: usize = 100_000;
+/// The fewest features [`max_paged_features`] allows, and its limit in the browser.
+pub const PAGED_FEATURES_FLOOR: usize = 100_000;
+/// The most [`max_paged_features`] allows, however much memory the computer has.
+pub const PAGED_FEATURES_CEILING: usize = 1_000_000;
+
+/// Most features read from a collection that comes in pages: on the desktop, as many as a quarter
+/// of the computer's memory holds at 20 KB each (about 100,000 for every 8 GB, the pages read
+/// included), from [`PAGED_FEATURES_FLOOR`] up to [`PAGED_FEATURES_CEILING`] (#1318).
+pub fn max_paged_features() -> usize {
+    crate::memory::scaled(crate::memory::physical(), PAGED_FEATURES_FLOOR, PAGED_FEATURES_CEILING, 20 << 10)
+}
 
 /// A feature collection page's JSON `next` link, resolved against the page's address.
 fn next_page(url: &str, page: &serde_json::Value) -> Option<String> {
@@ -2726,7 +2736,7 @@ fn arcgis_paging(layer: &serde_json::Value) -> Option<ArcgisPaging> {
         .get("maxRecordCount")
         .and_then(|m| m.as_u64())
         .and_then(|m| usize::try_from(m).ok())
-        .filter(|m| (1..=MAX_PAGED_FEATURES).contains(m));
+        .filter(|m| (1..=max_paged_features()).contains(m));
     let oid_field = || {
         layer
             .get("fields")?
