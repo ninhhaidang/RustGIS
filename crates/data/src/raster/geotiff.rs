@@ -441,20 +441,28 @@ fn keys_from_proj4(proj4: &str, label: &str) -> Option<(Vec<u16>, Vec<f64>, Stri
     same_projection(proj4, &back).then_some((keys, doubles, ascii))
 }
 
-fn to_f32(buf: DecodingResult) -> (Vec<f32>, &'static str) {
-    match buf {
-        DecodingResult::U8(v) => (v.into_iter().map(f32::from).collect(), "UInt8"),
-        DecodingResult::I8(v) => (v.into_iter().map(f32::from).collect(), "Int8"),
-        DecodingResult::U16(v) => (v.into_iter().map(f32::from).collect(), "UInt16"),
-        DecodingResult::I16(v) => (v.into_iter().map(f32::from).collect(), "Int16"),
-        DecodingResult::U32(v) => (v.into_iter().map(|x| x as f32).collect(), "UInt32"),
-        DecodingResult::I32(v) => (v.into_iter().map(|x| x as f32).collect(), "Int32"),
-        DecodingResult::U64(v) => (v.into_iter().map(|x| x as f32).collect(), "UInt64"),
-        DecodingResult::I64(v) => (v.into_iter().map(|x| x as f32).collect(), "Int64"),
-        DecodingResult::F16(v) => (v.into_iter().map(f32::from).collect(), "Float16"),
-        DecodingResult::F32(v) => (v, "Float32"),
-        DecodingResult::F64(v) => (v.into_iter().map(|x| x as f32).collect(), "Float64"),
+/// The samples as `f32`, with their type's name. Their memory is reserved first: when it can't be
+/// had, the error names the `w × h` raster being made (a decimated read's, smaller than the file).
+fn to_f32(buf: DecodingResult, (w, h): (usize, usize)) -> Result<(Vec<f32>, &'static str)> {
+    fn held<T>(v: Vec<T>, f: impl Fn(T) -> f32, (w, h): (usize, usize)) -> Result<Vec<f32>> {
+        let mut out = super::room(v.len(), w, h)?;
+        out.extend(v.into_iter().map(f));
+        Ok(out)
     }
+    let at = (w, h);
+    Ok(match buf {
+        DecodingResult::U8(v) => (held(v, f32::from, at)?, "UInt8"),
+        DecodingResult::I8(v) => (held(v, f32::from, at)?, "Int8"),
+        DecodingResult::U16(v) => (held(v, f32::from, at)?, "UInt16"),
+        DecodingResult::I16(v) => (held(v, f32::from, at)?, "Int16"),
+        DecodingResult::U32(v) => (held(v, |x| x as f32, at)?, "UInt32"),
+        DecodingResult::I32(v) => (held(v, |x| x as f32, at)?, "Int32"),
+        DecodingResult::U64(v) => (held(v, |x| x as f32, at)?, "UInt64"),
+        DecodingResult::I64(v) => (held(v, |x| x as f32, at)?, "Int64"),
+        DecodingResult::F16(v) => (held(v, f32::from, at)?, "Float16"),
+        DecodingResult::F32(v) => (v, "Float32"),
+        DecodingResult::F64(v) => (held(v, |x| x as f32, at)?, "Float64"),
+    })
 }
 
 /// How many samples were decoded.
@@ -845,7 +853,7 @@ fn decimate<R: Read + Seek>(
 ) -> Result<(Vec<Vec<f32>>, &'static str, Vec<u64>)> {
     let k = k.max(1);
     let (ow, oh) = (w.div_ceil(k) as usize, h.div_ceil(k) as usize);
-    let mut bands = vec![vec![f32::NAN; ow * oh]; nbands];
+    let mut bands = (0..nbands).map(|_| super::filled(ow, oh, f32::NAN)).collect::<Result<Vec<_>>>()?;
     let chunks = Chunks::new(dec, w, h, nbands, planar);
     #[cfg(not(target_arch = "wasm32"))]
     if let Some((open, image, limits)) = open
@@ -853,7 +861,7 @@ fn decimate<R: Read + Seek>(
     {
         let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).min(16);
         if threads > 1 {
-            return decimate_parallel(chunks, bands, k, ow, nodata, threads, open, image, limits);
+            return decimate_parallel(chunks, bands, k, (ow, oh), nodata, threads, open, image, limits);
         }
     }
     let _ = open;
@@ -863,7 +871,7 @@ fn decimate<R: Read + Seek>(
         let Some((plane, index)) = chunks.wanted(i, k) else { continue };
         let buf = read_chunk(dec, index)?;
         let changed = rounded_bits(&buf, nodata);
-        let (values, dt) = to_f32(buf);
+        let (values, dt) = to_f32(buf, (ow, oh))?;
         data_type = dt;
         chunks.place(&mut bands, &values, changed.as_deref(), &mut rounded, plane, index, k, ow);
     }
@@ -877,7 +885,7 @@ fn decimate_parallel(
     chunks: Chunks,
     bands: Vec<Vec<f32>>,
     k: u32,
-    ow: usize,
+    (ow, oh): (usize, usize),
     nodata: Uncounted,
     threads: usize,
     open: Opener<'_>,
@@ -912,7 +920,10 @@ fn decimate_parallel(
             match read_chunk(&mut dec, index) {
                 Ok(buf) => {
                     let changed = rounded_bits(&buf, nodata);
-                    let (values, dt) = to_f32(buf);
+                    let (values, dt) = match to_f32(buf, (ow, oh)) {
+                        Ok(v) => v,
+                        Err(e) => return fail(e),
+                    };
                     if let Ok(mut o) = out.lock() {
                         let (bands, data_type, rounded) = &mut *o;
                         *data_type = dt;
@@ -1194,7 +1205,7 @@ pub(super) fn read_limited_with_nodata(
                 }
             }
         }
-        let (values, dt) = to_f32(buf);
+        let (values, dt) = to_f32(buf, (w as usize, h as usize))?;
         if values.len() < n.saturating_mul(nbands) {
             return Err(err("couldn't read every band"));
         }
@@ -1203,10 +1214,16 @@ pub(super) fn read_limited_with_nodata(
             v.truncate(n);
             vec![v]
         } else if planar {
-            values.chunks(n).take(nbands).map(<[f32]>::to_vec).collect()
+            let mut bands = Vec::new();
+            for plane in values.chunks(n).take(nbands) {
+                let mut band = super::room(n, w as usize, h as usize)?;
+                band.extend_from_slice(plane);
+                bands.push(band);
+            }
+            bands
         } else {
             // One pass over the interleaved pixels.
-            let mut bands: Vec<Vec<f32>> = (0..nbands).map(|_| Vec::with_capacity(n)).collect();
+            let mut bands = (0..nbands).map(|_| super::room(n, w as usize, h as usize)).collect::<Result<Vec<Vec<f32>>>>()?;
             for px in values.chunks(nbands).take(n) {
                 for (band, v) in bands.iter_mut().zip(px) {
                     band.push(*v);
@@ -2600,7 +2617,7 @@ mod tests {
             dec.seek_to_image(image).unwrap();
             for i in 0..dec.strip_count().unwrap() {
                 let (theirs, ours) = (dec.read_chunk(i).unwrap(), super::super::lzw::chunk(&mut dec, i).unwrap());
-                assert_eq!(to_f32(ours), to_f32(theirs), "image {image}, strip {i}");
+                assert_eq!(to_f32(ours, (1, 1)).unwrap(), to_f32(theirs, (1, 1)).unwrap(), "image {image}, strip {i}");
             }
         }
     }

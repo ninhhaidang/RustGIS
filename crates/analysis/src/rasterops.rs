@@ -827,7 +827,8 @@ fn project_ring(r: &Raster, ring: &[Coord]) -> Option<Vec<(f64, f64)>> {
 
 /// The cells of `r` whose centres fall inside any of `polygons` (each an exterior ring and its
 /// holes, in longitude/latitude): the column and row window around the polygons, clamped to the
-/// raster, and a row-major mask over it. `None` when no cell centre falls inside.
+/// raster, and a row-major mask over it. `None` when no cell centre falls inside; an error when
+/// the mask's memory can't be had ("not enough memory for a W × H raster").
 ///
 /// The rings are projected onto the raster's own grid once and filled by scanline, so a large
 /// raster costs a pass over the polygon edges per row rather than a point test per cell.

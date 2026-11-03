@@ -976,7 +976,7 @@ fn rotate(r: &Raster, degrees: f64) -> Result<Raster> {
     if n > 32 << 20 {
         return Err(DataError::Format(format!("{}: the turned picture is too large ({ow} × {oh} pixels)", r.name)));
     }
-    let mut bands: Vec<Vec<f32>> = vec![vec![0.0; n]; r.bands.len()];
+    let mut bands = (0..r.bands.len()).map(|_| filled(ow as usize, oh as usize, 0.0f32)).collect::<Result<Vec<_>>>()?;
     for row in 0..oh {
         for col in 0..ow {
             // The output pixel's centre, turned back into the picture.
@@ -1032,8 +1032,7 @@ fn north_up(bands: Vec<Vec<f32>>, w: u32, h: u32, affine: [f64; 6], max: usize) 
         return Err(DataError::Format(format!("{w} × {h} pixels turned is too large to open")));
     }
     let (ow, oh) = (ow as u32, oh as u32);
-    let n = ow as usize * oh as usize;
-    let mut out: Vec<Vec<f32>> = vec![vec![f32::NAN; n]; bands.len()];
+    let mut out = (0..bands.len()).map(|_| filled(ow as usize, oh as usize, f32::NAN)).collect::<Result<Vec<_>>>()?;
     for row in 0..oh {
         let y = max_y - (f64::from(row) + 0.5) * cell - y0;
         for col in 0..ow {

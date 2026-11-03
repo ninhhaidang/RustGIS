@@ -1192,7 +1192,7 @@ pub fn read_values_counted_blocking(
     let (x0, x1) = (cols.0.min(l.width), cols.1.min(l.width));
     let (y0, y1) = (rows.0.min(l.height), rows.1.min(l.height));
     if x1 <= x0 || y1 <= y0 {
-        return Ok((vec![f32::NAN; n as usize], 0, 0));
+        return Ok((rustgis_data::raster::filled(w, h, f32::NAN).map_err(|e| e.to_string())?, 0, 0));
     }
     let (tw, th, across) = (l.tile_width.max(1), l.tile_height.max(1), l.across().max(1));
     // The tiles the window takes, counted before they are listed, in checked arithmetic: a
@@ -1204,7 +1204,8 @@ pub fn read_values_counted_blocking(
     }
     let tiles: Vec<u32> =
         (r0..=r1).flat_map(|ty| (c0..=c1).filter_map(move |tx| ty.checked_mul(across).and_then(|t| t.checked_add(tx)))).collect();
-    let (mut out, mut rounded, mut overflowed) = (vec![f32::NAN; n as usize], 0u64, 0u64);
+    // Reserved first: a window the machine can't hold is an error, not a crash (#1291).
+    let (mut out, mut rounded, mut overflowed) = (rustgis_data::raster::filled(w, h, f32::NAN).map_err(|e| e.to_string())?, 0u64, 0u64);
     let (tx, rx) = std::sync::mpsc::channel();
     fetch_bands(info.clone(), url.clone(), level, tiles.clone(), vec![band], Box::new(move |r| tx.send(r).unwrap_or_default()));
     let picked = rx.recv_timeout(Duration::from_secs(120)).map_err(|_| format!("{url}: tiles not read in two minutes"))??;
