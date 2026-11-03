@@ -20616,11 +20616,11 @@ fn text_elements_take_an_installed_font_family_by_name() {
     assert!(back.element(id).is_some_and(|e| matches!(&e.kind, ElementKind::Text { font_name: None, .. })));
     // The page draws in the fallback, and the SVG names the family first.
     assert!(!crate::cmd::layout::layout_bytes(&mut s, 0, false, 72.0, false).unwrap().is_empty());
-    let svg = rustgis_render::svg::layout_svg(&s.project.layouts[0], &mut s.project.maps, 72.0, &Default::default()).unwrap();
+    let svg = rustgis_render::svg::layout_svg(&s.project.layouts[0], &mut s.project.maps, 72.0, &Default::default()).unwrap().0;
     assert!(svg.contains(r#"font-family="&apos;No Such Family 762&apos;, serif""#), "{svg}");
     // A name's own quote and backslash are escaped for CSS, not dropped.
     s.run("layout.update", &json!({"element": id, "font": r"O'Brien\Sans", "fallback": "sans"})).unwrap();
-    let svg = rustgis_render::svg::layout_svg(&s.project.layouts[0], &mut s.project.maps, 72.0, &Default::default()).unwrap();
+    let svg = rustgis_render::svg::layout_svg(&s.project.layouts[0], &mut s.project.maps, 72.0, &Default::default()).unwrap().0;
     assert!(svg.contains(r#"font-family="&apos;O\&apos;Brien\\Sans&apos;, sans-serif""#), "{svg}");
     // A generic name with control characters around it is still the generic family.
     s.run("layout.update", &json!({"element": id, "font": "serif\u{0}"})).unwrap();
@@ -23172,7 +23172,9 @@ fn a_layout_exports_to_svg_with_each_element_its_own_group() {
         .unwrap();
     s.run("layout.addElement", &json!({"kind": "rectangle", "x": 5, "y": 5, "w": 40, "h": 20})).unwrap();
     let out = std::env::temp_dir().join(format!("rustgis-layout-{}.svg", std::process::id()));
+    let mark = s.notice_mark();
     let r = s.run("layout.export", &json!({"path": out.to_string_lossy(), "dpi": 72})).unwrap();
+    assert!(!s.notices_since(mark).iter().any(|n| n.text.contains("as pictures, not vectors")), "nothing too large for vectors");
     let svg = std::fs::read_to_string(&out).unwrap();
     let _ = std::fs::remove_file(&out);
     assert_eq!(r["bytes"].as_u64(), Some(svg.len() as u64));
@@ -23186,11 +23188,12 @@ fn a_layout_exports_to_svg_with_each_element_its_own_group() {
     for e in layout.elements.iter().filter(|e| e.visible) {
         assert!(svg.contains(&format!(r#"<g id="element-{}""#, e.id)), "element {} ({}) has a group", e.id, e.name);
     }
-    // Text stays text, escaped; shapes stay shapes; what has no vector form yet is a picture in its place.
+    // Text stays text, escaped; shapes stay shapes; map frames and surrounds are vectors.
     assert!(svg.contains("Cities &amp; rivers &lt;2026&gt;</text>"), "the title is text");
     assert!(svg.contains(&format!(r#"<g id="element-{title}""#)));
     assert!(svg.contains("<rect"), "the rectangle is a shape");
-    assert!(svg.contains(r#"<image"#) && svg.contains("data:image/png;base64,"), "the map frame is a picture");
+    assert!(svg.contains(r#"<g clip-path="url(#clip"#) && svg.matches("<path ").count() > 50, "the map frame is vectors, cut to the frame");
+    assert!(svg.contains("<use xlink:href=\"#glyph"), "its labels and the surrounds' text are glyphs");
     assert!(svg.trim_end().ends_with("</svg>"));
     // SVG exports only the current series page, even when allPages is supplied.
     s.run("layout.series", &json!({"layer": "Lakes", "nameField": "name"})).unwrap();
@@ -25123,13 +25126,18 @@ fn a_pdf_says_which_frames_and_pages_it_draws_as_pictures() {
     let mark = s.notice_mark();
     crate::cmd::layout::pictured_notices(&mut s, &[], &[]);
     assert!(s.notices_since(mark).is_empty(), "nothing drawn as a picture, nothing said");
-    let frames = ["Inset".to_string(), "Main".to_string(), "Main".to_string()];
+    // "Main" pictured on two pages is one element; another element named "Main" is a second.
+    let frames = [(3, "Inset".to_string()), (1, "Main".to_string()), (1, "Main".to_string()), (7, "Main".to_string())];
     crate::cmd::layout::pictured_notices(&mut s, &frames, &[2, 5]);
     let said: Vec<&str> = s.notices_since(mark).iter().map(|n| n.text.as_str()).collect();
     assert_eq!(said.len(), 2, "one notice for each kind: {said:?}");
     // Each frame once, however many pages it was pictured on.
-    assert!(said[0].starts_with("The PDF draws 2 map frames as pictures") && said[0].ends_with("(Inset, Main)"), "{}", said[0]);
-    assert!(said[1].starts_with("The PDF draws 2 pages as pictures") && said[1].ends_with("(page 2, 5)"), "{}", said[1]);
+    assert!(
+        said[0].starts_with("The export draws 3 layout elements as pictures") && said[0].ends_with("(Main, Inset, Main)"),
+        "{}",
+        said[0]
+    );
+    assert!(said[1].starts_with("The export draws 2 pages as pictures") && said[1].ends_with("(page 2, 5)"), "{}", said[1]);
     let mark = s.notice_mark();
     crate::cmd::layout::pictured_notices(&mut s, &[], &(1..=25).collect::<Vec<_>>());
     assert!(

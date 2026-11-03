@@ -288,7 +288,7 @@ pub fn pdf_page(
     dpi: f64,
     layouts: &[Layout],
     maps: &mut [Map],
-) -> Option<(crate::pdf::Page, Vec<String>)> {
+) -> Option<(crate::pdf::Page, Vec<(u32, String)>)> {
     let page = pages.get(n)?;
     let dpi = if dpi.is_finite() { dpi.clamp(24.0, 600.0) } else { 96.0 };
     if let Page::Layout(li) = page {

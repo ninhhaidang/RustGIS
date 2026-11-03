@@ -387,7 +387,7 @@ fn pdf_page(
     k: usize,
     dpi: f64,
     (width, height): (f64, f64),
-) -> Result<(rustgis_render::pdf::Page, Vec<String>), String> {
+) -> Result<(rustgis_render::pdf::Page, Vec<(u32, String)>), String> {
     let pres = s.project.presentations.get(i).ok_or("no presentation")?;
     let n = pres.pages.len();
     let page = pres.pages.get(k).ok_or_else(|| format!("no page {k}"))?;

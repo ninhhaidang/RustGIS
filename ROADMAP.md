@@ -126,8 +126,7 @@ And alongside it:
 Built in means no runner download, the selection honoured, geodesic distances and attributes
 kept. Before adding a tool, check whether the GeoLibre suite already has it (`gp.tools`); a
 built-in version must justify itself on one of those.
-- SVG layout export with map frames and surrounds as vectors (they are pictures in it today); STL
-  export; copy a layout to the clipboard.
+- STL export; copy a layout to the clipboard.
 - UTM and MGRS grids and coordinate readouts.
 - H3 grids built in, next to the A5 grids (the GeoLibre suite has H3 tools only when its runner
   is installed).
@@ -230,7 +229,7 @@ Open questions rather than plans; discuss before building.
   path, suitability); ModelBuilder on a node canvas, scripts with command, parameter and value completion,
   and history copied as code; the GeoLibre and Whitebox suite (1,000+ tools) natively and in the browser.
 - Layouts (map frames, surrounds, map series, publication sheets and figures in one command,
-  format panes, guides, snapping, element locking and order, measured grids and vector PDF),
+  format panes, guides, snapping, element locking and order, measured grids, vector PDF and SVG),
   reports, presentations and notebooks; the web app embeddable in a page (`?embed`).
 - Sharing as open formats (web maps, OGC API Features collections, MapLibre styles, glTF
   scenes, locators), offline areas with sync, deep learning pixel classification, hosted

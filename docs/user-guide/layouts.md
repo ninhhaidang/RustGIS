@@ -254,11 +254,14 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
   PNG at that resolution would show it. A frame or page whose vectors would pass 256 MB (64 MB
   in the browser) is drawn as a picture instead, and the export says which.
   In SVG each element is a group (an Inkscape layer) named after it: text stays text and rectangles,
-  ellipses and lines stay shapes, while map frames and the other surrounds are pictures at the export
-  resolution, so the page can be finished in a vector editor. SVG text uses the viewer's
+  ellipses and lines stay shapes, and map frames and the other surrounds are kept as vectors as in a
+  PDF (their labels as the letters' shapes, each run labelled with its text), so the page can be
+  finished in a vector editor. What a PDF keeps as pictures is a picture in the SVG too, at the
+  export's `dpi`, and a frame whose vectors would pass the budget is drawn as a picture, with a
+  notice. A text element uses the viewer's
   font (a named family where the viewer has it, else its serif or sans-serif), so its alignment
   and line widths can differ from PNG/PDF and can
-  change when edited. Embedded pictures are clipped to their element boxes;
+  change when edited. A picture standing for a whole element is clipped to its box;
   `layout.export` accepts `dpi` and `"allPages": false` for just the current PDF
   page. **Print** opens the PDF in the system viewer on desktop; **Save Layout File** and
   **Import Layout** move layouts between projects (`.rgislayout`).

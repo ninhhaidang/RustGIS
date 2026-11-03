@@ -1,7 +1,12 @@
 //! A layout as SVG: the page in millimetres, each element in a group of its own, named after it.
 //! Text, rectangles, ellipses and lines are SVG text and shapes, placed and styled as
-//! [`crate::layout::render`] draws them; the elements with no vector form yet (map frames and the
-//! surrounds) are each a picture of that element alone, in its place.
+//! [`crate::layout::render`] draws them. Map frames and the surrounds are recorded as the PDF
+//! records them ([`crate::layout::render_drawing`]) and written as SVG ([`vectors`]): paths,
+//! glyph outlines, gradients and groups, with what is pixels by nature (rasters, tiles, a tilted
+//! or globe frame) as pictures in them. A frame whose vectors would pass the budget is a picture
+//! of that element alone, in its place.
+
+mod vectors;
 
 use std::fmt::Write as _;
 
@@ -9,13 +14,17 @@ use base64::Engine;
 use rustgis_map::Map;
 use rustgis_map::layout::{ElementKind, FontFamily, Layout, LineHead, PT_PER_MM, TextAlign, frame_camera};
 
-use crate::layout::{MAX_PIXELS, PageInfo, expand, page_geometry, render_element};
+use crate::layout::{MAX_PIXELS, PageInfo, expand, page_geometry, record_element, render_element};
 
-/// Writes `layout` as an SVG document, pictures drawn at `dpi`; `None` when the page can't be drawn.
-pub fn layout_svg(layout: &Layout, maps: &mut [Map], dpi: f64, info: &PageInfo) -> Option<String> {
+/// Writes `layout` as an SVG document, pictures drawn at `dpi`, and the elements (id and name)
+/// drawn as pictures because their vectors would pass the budget; `None` when the page can't be drawn.
+pub fn layout_svg(layout: &Layout, maps: &mut [Map], dpi: f64, info: &PageInfo) -> Option<(String, Vec<(u32, String)>)> {
+    let mut defs = vectors::Defs::default();
+    let mut pictured = Vec::new();
+    let mut body = elements(layout, maps, dpi, info, &mut defs, &mut pictured)?;
     let (pw, ph) = (layout.width, layout.height);
-    let ppp = page_geometry(layout, dpi).2 / PT_PER_MM;
-    let picture_dpi = picture_dpi(layout, dpi);
+    // The head (with the defs the body refers to) goes in front of the body in place: a large
+    // export's pictures are never held twice.
     let mut s = String::new();
     let _ = write!(
         s,
@@ -26,12 +35,36 @@ pub fn layout_svg(layout: &Layout, maps: &mut [Map], dpi: f64, info: &PageInfo) 
             r#"xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" "#,
             r#"width="{w}mm" height="{h}mm" viewBox="0 0 {w} {h}">"#,
             "\n",
-            r##"<rect width="{w}" height="{h}" fill="#ffffff"/>"##,
-            "\n"
         ),
         w = num(pw),
         h = num(ph)
     );
+    if !defs.text.is_empty() {
+        let _ = write!(s, "<defs>\n{}</defs>\n", defs.text);
+    }
+    let _ = writeln!(s, r##"<rect width="{}" height="{}" fill="#ffffff"/>"##, num(pw), num(ph));
+    body.insert_str(0, &s);
+    body.push_str("</svg>\n");
+    Some((body, pictured))
+}
+
+/// Each visible element of `layout` as an SVG group (see the module), what they refer to added to
+/// `defs`; `None` when one can't be drawn.
+fn elements(
+    layout: &Layout,
+    maps: &mut [Map],
+    dpi: f64,
+    info: &PageInfo,
+    defs: &mut vectors::Defs,
+    pictured: &mut Vec<(u32, String)>,
+) -> Option<String> {
+    let ppp = page_geometry(layout, dpi).2 / PT_PER_MM;
+    let mut s = String::new();
+    // The elements drawn as pictures (past the budget): their places, filled in at the end at
+    // the resolution they share.
+    let mut as_pictures: Vec<u32> = Vec::new();
+    // What the elements kept as vectors come to: held to one page's budget, as a PDF page is.
+    let mut written = 0usize;
     for e in layout.elements.iter().filter(|e| e.visible) {
         let _ = writeln!(s, r#"<g id="element-{}" inkscape:label="{}" inkscape:groupmode="layer">"#, e.id, esc(&e.name));
         let (x, y, w, h) = (e.x, e.y, e.w, e.h);
@@ -117,41 +150,77 @@ pub fn layout_svg(layout: &Layout, maps: &mut [Map], dpi: f64, info: &PageInfo) 
             }
             ElementKind::Line { color, width, dir, head } => line(&mut s, dir.ends((x, y, w, h)), *color, *width, *head, ppp),
             _ => {
-                if let Some((image, [ix, iy, iw, ih])) = render_element(layout, e.id, maps, picture_dpi, info)? {
-                    let png = image.encode_png().ok()?;
-                    let _ = writeln!(
-                        s,
-                        r#"<image x="{}" y="{}" width="{}" height="{}" preserveAspectRatio="none" xlink:href="data:image/png;base64,{}"/>"#,
-                        num(ix),
-                        num(iy),
-                        num(iw),
-                        num(ih),
-                        base64::engine::general_purpose::STANDARD.encode(png)
-                    );
+                // Recorded at the export's dpi and written as vectors, placed by its pixel
+                // bounds; past the budget (its own, or the page's with the elements before it), a
+                // picture of it at the pictures' resolution.
+                let mut frames = Vec::new();
+                if let Some((drawing, [ix, iy, ..], k)) = record_element(layout, e.id, maps, dpi, info, &mut frames)? {
+                    let total = written.saturating_add(drawing.cost());
+                    if !drawing.overflowed() && total <= crate::vector::max_cost() {
+                        written = total;
+                        pictured.append(&mut frames);
+                        let _ =
+                            writeln!(s, r#"<g transform="translate({} {}) scale({})">"#, num(ix), num(iy), vectors::fine((1.0 / k) as f32));
+                        let (_, _, items) = drawing.finish();
+                        vectors::items(&mut s, defs, &items)?;
+                        s.push_str("</g>\n");
+                        s.push_str("</g>\n");
+                        continue;
+                    }
+                    pictured.push((e.id, e.name.clone()));
                 }
+                s.push_str(&picture_place(e.id));
+                as_pictures.push(e.id);
             }
         }
         s.push_str("</g>\n");
     }
-    s.push_str("</svg>\n");
+    // The pictures, at the resolution only they share (the elements kept as vectors take none).
+    let picture_dpi = picture_dpi(layout, dpi, |e| as_pictures.contains(&e.id));
+    for id in as_pictures {
+        let mut image_tag = String::new();
+        if let Some((image, [ix, iy, iw, ih])) = render_element(layout, id, maps, picture_dpi, info)? {
+            let png = image.encode_png().ok()?;
+            let _ = writeln!(
+                image_tag,
+                r#"<image x="{}" y="{}" width="{}" height="{}" preserveAspectRatio="none" xlink:href="data:image/png;base64,{}"/>"#,
+                num(ix),
+                num(iy),
+                num(iw),
+                num(ih),
+                base64::engine::general_purpose::STANDARD.encode(png)
+            );
+        }
+        let place = picture_place(id);
+        if let Some(at) = s.find(&place) {
+            s.replace_range(at..at + place.len(), &image_tag);
+        }
+    }
     Some(s)
 }
 
-/// The resolution the pictures are drawn at: `dpi`, unless together they would take more than
-/// twice the pixels of the page (surrounds usually sit on a map frame), in which case all of them
-/// are drawn at the resolution that fits, so many large frames don't grow the SVG without bound.
-fn picture_dpi(layout: &Layout, dpi: f64) -> f64 {
+/// Where element `id`'s picture goes until it is drawn: a mark no SVG text holds (text is
+/// escaped, which drops control characters).
+fn picture_place(id: u32) -> String {
+    format!("\u{0}picture-{id}\u{0}")
+}
+
+/// Whether an element is drawn as an SVG element of its own (text and shapes), not recorded.
+#[cfg(test)]
+fn written_as_svg(e: &rustgis_map::layout::Element) -> bool {
+    matches!(e.kind, ElementKind::Text { .. } | ElementKind::Rectangle { .. } | ElementKind::Ellipse { .. } | ElementKind::Line { .. })
+}
+
+/// The resolution the pictures of the elements `drawn` (as pictures) are drawn at: `dpi`, unless
+/// together they would take more than twice the pixels of the page (surrounds usually sit on a map
+/// frame), in which case all of them are drawn at the resolution that fits, so many large frames
+/// don't grow the SVG without bound.
+fn picture_dpi(layout: &Layout, dpi: f64, drawn: impl Fn(&rustgis_map::layout::Element) -> bool) -> f64 {
     let on_page = |start: f64, len: f64, page: f64| ((start + len).min(page) - start.max(0.0)).max(0.0);
     let area: f64 = layout
         .elements
         .iter()
-        .filter(|e| e.visible)
-        .filter(|e| {
-            !matches!(
-                e.kind,
-                ElementKind::Text { .. } | ElementKind::Rectangle { .. } | ElementKind::Ellipse { .. } | ElementKind::Line { .. }
-            )
-        })
+        .filter(|e| e.visible && drawn(e))
         .map(|e| on_page(e.x, e.w, layout.width) * on_page(e.y, e.h, layout.height))
         .sum();
     let k = page_geometry(layout, dpi).2;
@@ -273,16 +342,16 @@ mod tests {
             (10.0, 10.0, 40.0, 30.0),
             ElementKind::Legend { frame, title: "Map legend".into(), all_classes: true, hide_other: false, exclude: vec![] },
         );
-        assert_eq!(picture_dpi(&layout, 600.0), 600.0);
+        assert_eq!(picture_dpi(&layout, 600.0, |e| !written_as_svg(e)), 600.0);
         // A frame and an inset filling an A0 page that is already drawn at its pixel limit.
         let layout = stacked_frames(2);
-        assert_eq!(picture_dpi(&layout, 600.0), 600.0);
+        assert_eq!(picture_dpi(&layout, 600.0, |e| !written_as_svg(e)), 600.0);
     }
 
     #[test]
     fn stacked_frames_share_the_picture_budget() {
         let layout = stacked_frames(8);
-        let dpi = picture_dpi(&layout, 600.0);
+        let dpi = picture_dpi(&layout, 600.0, |e| !written_as_svg(e));
         assert!(dpi < 600.0);
         let k = page_geometry(&layout, dpi).2;
         let pixels = 8.0 * 841.0 * 1189.0 * k * k;
@@ -293,11 +362,11 @@ mod tests {
         for e in layout.elements.iter_mut().skip(1) {
             e.x = 900.0;
         }
-        assert_eq!(picture_dpi(&layout, 600.0), 600.0);
+        assert_eq!(picture_dpi(&layout, 600.0, |e| !written_as_svg(e)), 600.0);
     }
 
     #[test]
-    fn embedded_surrounds_preserve_transparency_and_page_context() {
+    fn frames_and_surrounds_are_vectors_and_a_surrounds_picture_keeps_its_page_context() {
         let (mut layout, mut maps, frame) = page();
         let legend = layout.add(
             "Legend",
@@ -305,11 +374,18 @@ mod tests {
             ElementKind::Legend { frame, title: "Map legend".into(), all_classes: true, hide_other: false, exclude: vec![] },
         );
         let info = PageInfo::default();
-        let svg = layout_svg(&layout, &mut maps, 72.0, &info).unwrap();
-        let group = svg.split(&format!("<g id=\"element-{legend}\"")).nth(1).unwrap();
-        let encoded = group.split("data:image/png;base64,").nth(1).unwrap().split('"').next().unwrap();
-        let bytes = base64::engine::general_purpose::STANDARD.decode(encoded).unwrap();
-        let pm = tiny_skia::Pixmap::decode_png(&bytes).unwrap();
+        let (svg, pictured) = layout_svg(&layout, &mut maps, 72.0, &info).unwrap();
+        assert!(pictured.is_empty());
+        // The frame: its land as paths, cut to the frame; the legend: its title as glyphs, no picture.
+        let element =
+            |id: u32| svg.split(&format!("<g id=\"element-{id}\"")).nth(1).unwrap().split("<g id=\"element-").next().unwrap().to_string();
+        let (map, key) = (element(frame), element(legend));
+        assert!(map.contains("clip-path=\"url(#clip") && map.matches("<path ").count() > 50, "{}", &map[..400.min(map.len())]);
+        assert!(!map.contains("data:image") && !key.contains("data:image"));
+        assert!(key.contains(r#"aria-label="Map legend""#) && key.contains("<use xlink:href=\"#glyph"));
+        assert!(svg.contains("<defs>") && svg.find("<defs>") < svg.find("<g id=\"element-"));
+        // A surround drawn as a picture (past the budget) keeps its page context and transparency.
+        let (pm, _) = render_element(&layout, legend, &mut maps, 72.0, &info).unwrap().unwrap();
         assert!(pm.pixels().iter().any(|p| p.alpha() == 0), "no opaque page behind the legend");
         assert!(pm.pixels().iter().any(|p| p.alpha() > 0), "the title still uses the frame context");
         let (mut base, mut maps, _) = page();
@@ -333,6 +409,19 @@ mod tests {
     }
 
     #[test]
+    fn an_element_too_large_for_vectors_is_a_picture_and_named() {
+        use crate::vector::TEST_MAX_COST;
+        let (layout, mut maps, frame) = page();
+        TEST_MAX_COST.with(|l| l.set(Some(20_000)));
+        let result = layout_svg(&layout, &mut maps, 72.0, &PageInfo::default());
+        TEST_MAX_COST.with(|l| l.set(None));
+        let (svg, pictured) = result.unwrap();
+        assert_eq!(pictured, [(frame, "Map".to_string())]);
+        let group = svg.split(&format!("<g id=\"element-{frame}\"")).nth(1).unwrap();
+        assert!(group.contains("data:image/png;base64,"), "the frame as a picture");
+    }
+
+    #[test]
     fn cropped_images_use_their_actual_pixel_bounds() {
         let (mut layout, mut maps, _) = page();
         let id = layout.add("Picture", (-5.3, 70.2, 20.7, 20.0), ElementKind::Picture { image: String::new() });
@@ -344,8 +433,9 @@ mod tests {
         assert!((y * k - (70.2 * k).floor()).abs() < 1e-9);
         assert!((w * k - f64::from(pm.width())).abs() < 1e-9);
         assert!((h * k - f64::from(pm.height())).abs() < 1e-9);
-        let svg = layout_svg(&layout, &mut maps, 36.0, &info).unwrap();
-        assert!(svg.contains(&format!(r#"<image x="{}" y="{}" width="{}" height="{}""#, num(x), num(y), num(w), num(h))));
+        let (svg, _) = layout_svg(&layout, &mut maps, 36.0, &info).unwrap();
+        // Placed at its pixel bounds, as its picture would be.
+        assert!(svg.contains(&format!(r#"<g transform="translate({} {}) scale("#, num(x), num(y))), "{svg}");
         layout.element_mut(id).unwrap().x = 110.0;
         assert!(render_element(&layout, id, &mut maps, 36.0, &info).unwrap().is_none());
         assert!(layout_svg(&layout, &mut maps, 36.0, &info).is_some(), "an off-page image is harmless");
@@ -374,7 +464,7 @@ mod tests {
             }}))
             .unwrap(),
         );
-        let svg = layout_svg(&layout, &mut [], 72.0, &PageInfo::default()).unwrap();
+        let (svg, _) = layout_svg(&layout, &mut [], 72.0, &PageInfo::default()).unwrap();
         assert_eq!(svg.matches("<path ").count(), 3, "shaft and two arrowheads");
         assert!(!svg.contains("<image"));
     }
@@ -391,7 +481,7 @@ mod tests {
             .unwrap(),
         );
         for (dpi, stroke_width) in [(36.0, "0.353"), (600.0, "0.026")] {
-            let svg = layout_svg(&layout, &mut [], dpi, &PageInfo::default()).unwrap();
+            let (svg, _) = layout_svg(&layout, &mut [], dpi, &PageInfo::default()).unwrap();
             assert!(svg.contains(&format!(r#"stroke-width="{stroke_width}""#)), "{dpi} DPI: {svg}");
         }
     }

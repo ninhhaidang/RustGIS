@@ -208,7 +208,7 @@ model-builder.md, segmentation.md, obia.md_
 ## Layouts & printing
 _GeoLibre: docs/features.md › Map tools, printing, and media; docs/user-guide/print-layout.md_
 
-- [ ] **SVG layout export**. Partial: PDF and PNG (_Roadmap: any time_).
+- [x] **SVG layout export**: each element a named group, map frames and surrounds as vectors.
 - [ ] **Atlas along a line, page-filtered tables and charts, copy to clipboard**. Partial:
   per-feature map series (_Roadmap: any time_ for the clipboard).
 - [ ] **Map and video recording**: canvas recording, a marker along a line to MP4, camera tours.

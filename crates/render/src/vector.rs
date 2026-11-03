@@ -319,6 +319,24 @@ impl Image {
     }
 }
 
+impl Image {
+    /// The picture's pixels, decompressed (its alpha where it keeps one).
+    pub(crate) fn pixmap(&self) -> Option<tiny_skia::Pixmap> {
+        let rgb = miniz_oxide::inflate::decompress_to_vec_zlib(&self.rgb_z).ok()?;
+        let alpha = match &self.alpha_z {
+            Some(a) => Some(miniz_oxide::inflate::decompress_to_vec_zlib(a).ok()?),
+            None => None,
+        };
+        let mut pm = tiny_skia::Pixmap::new(self.width, self.height)?;
+        for (i, px) in pm.pixels_mut().iter_mut().enumerate() {
+            let a = alpha.as_ref().map_or(Some(255), |a| a.get(i).copied())?;
+            let c = |k: usize| rgb.get(i * 3 + k).copied();
+            *px = tiny_skia::ColorU8::from_rgba(c(0)?, c(1)?, c(2)?, a).premultiply();
+        }
+        Some(pm)
+    }
+}
+
 /// `pm`'s colours (unpremultiplied) as zlib RGB, a row at a time so a large picture never holds
 /// a second full-size copy, and its alpha as zlib grey where any pixel isn't opaque; `None` if a
 /// picture with no pixel showing, or if compressing fails.
@@ -460,14 +478,7 @@ pub(crate) fn replay(items: &[Item], pm: &mut Pixmap, base: Transform) {
                 }
             }
             Item::Image(image) => {
-                let rgb = miniz_oxide::inflate::decompress_to_vec_zlib(&image.rgb_z).unwrap_or_default();
-                let alpha = image.alpha_z.as_ref().map(|a| miniz_oxide::inflate::decompress_to_vec_zlib(a).unwrap_or_default());
-                let Some(mut pic) = Pixmap::new(image.width, image.height) else { continue };
-                for (i, px) in pic.pixels_mut().iter_mut().enumerate() {
-                    let a = alpha.as_ref().and_then(|a| a.get(i).copied()).unwrap_or(255);
-                    let c = |k: usize| rgb.get(i * 3 + k).copied().unwrap_or(0);
-                    *px = tiny_skia::ColorU8::from_rgba(c(0), c(1), c(2), a).premultiply();
-                }
+                let Some(pic) = image.pixmap() else { continue };
                 let pp = PixmapPaint { opacity: image.opacity, quality: tiny_skia::FilterQuality::Bilinear, ..PixmapPaint::default() };
                 pm.draw_pixmap(0, 0, pic.as_ref(), &pp, base.pre_concat(image.transform), None);
             }
