@@ -347,8 +347,14 @@ pub fn train(
 }
 
 /// Classifies every pixel: class numbers (1-based, `nodata` where a band has no data) and each
-/// pixel's probability of that class.
+/// pixel's probability of that class. Rows go on several threads when the work is large, except in
+/// the browser, which uses one (#1252).
 pub fn classify(r: &Raster, model: &Mlp, nodata: f32) -> Result<(Vec<f32>, Vec<f32>), String> {
+    classify_on(r, model, nodata, None)
+}
+
+/// [`classify`] on `threads` threads (none: as many as pay off).
+fn classify_on(r: &Raster, model: &Mlp, nodata: f32, threads: Option<usize>) -> Result<(Vec<f32>, Vec<f32>), String> {
     model.validate()?;
     // A large model on a large raster is refused rather than run for minutes.
     let weights: usize = model.layers.iter().map(|l| l.w.len() + l.b.len()).sum();
@@ -358,38 +364,80 @@ pub fn classify(r: &Raster, model: &Mlp, nodata: f32) -> Result<(Vec<f32>, Vec<f
     if let Some(b) = model.bands.iter().find(|b| **b >= r.bands.len()) {
         return Err(format!("{} has no band {}", r.name, b + 1));
     }
-    let (w, h) = (r.width as i64, r.height as i64);
-    let (mut class, mut prob) = (crate::rasterops::grid(w as usize, h as usize)?, crate::rasterops::grid(w as usize, h as usize)?);
-    let mut x = vec![0.0f32; model.bands.len()];
-    crate::control::begin(h as usize);
-    for row in 0..h {
-        crate::control::check()?;
-        crate::control::reached(row as usize);
-        for col in 0..w {
-            // A non-finite value is treated as no data.
-            let ok = model.bands.iter().zip(x.iter_mut()).all(|(b, xv)| match r.value(*b, col, row).filter(|v| v.is_finite()) {
-                Some(v) => {
-                    *xv = v;
-                    true
+    let (w, h) = (r.width as usize, r.height as usize);
+    let (mut class, mut prob) = (crate::rasterops::new_band(w, h, nodata)?, crate::rasterops::new_band(w, h, nodata)?);
+    // In [`crate::parallel::MIN_ROW_WORK`]'s units (about 30 ns each): a weight of a pixel costs
+    // about 1 ns.
+    let work = w.saturating_mul(h).saturating_mul(weights) / 30;
+    let threads = threads.unwrap_or_else(|| crate::parallel::threads_for_rows(h, work, model.bands.len() * 4));
+    crate::control::begin(h);
+    // Each row writes only its own pixels of both bands; each thread reads into its own buffer.
+    crate::parallel::for_each_row(
+        class.chunks_mut(w.max(1)).zip(prob.chunks_mut(w.max(1))),
+        threads,
+        || vec![0.0f32; model.bands.len()],
+        |x: &mut Vec<f32>, row, (class, prob): (&mut [f32], &mut [f32])| {
+            for (col, (c_out, p_out)) in class.iter_mut().zip(prob.iter_mut()).enumerate() {
+                // A non-finite value is treated as no data.
+                let ok = model.bands.iter().zip(x.iter_mut()).all(|(b, xv)| {
+                    match r.value(*b, col as i64, row as i64).filter(|v| v.is_finite()) {
+                        Some(v) => {
+                            *xv = v;
+                            true
+                        }
+                        None => false,
+                    }
+                });
+                if ok {
+                    let (c, p) = model.predict(x);
+                    (*c_out, *p_out) = ((c + 1) as f32, p);
                 }
-                None => false,
-            });
-            if ok {
-                let (c, p) = model.predict(&x);
-                class.push((c + 1) as f32);
-                prob.push(p);
-            } else {
-                class.push(nodata);
-                prob.push(nodata);
             }
-        }
-    }
+        },
+    )?;
     Ok((class, prob))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Rows classified on several threads give the same classes and probabilities, bit for bit,
+    /// as one thread (#1252), no-data pixels included.
+    #[test]
+    fn classify_on_several_threads_is_classify_on_one() {
+        use rustgis_data::raster::{ColorHint, Crs, GeoTransform};
+        let mut samples = Vec::new();
+        let mut rng = Rng(11);
+        for _ in 0..600 {
+            let (x, y) = (rng.sym() * 2.0, rng.sym() * 2.0);
+            samples.push((vec![x * 100.0 + 500.0, y * 50.0], usize::from((x * x + y * y).sqrt() < 1.0)));
+        }
+        let model = train(&[0, 1], vec!["out".into(), "in".into()], &samples, &[8], 40).unwrap().model;
+        let (w, h) = (90u32, 70u32);
+        let band = |f: &dyn Fn(f32, f32) -> f32| {
+            (0..w * h).map(|i| f((i % w) as f32 / w as f32 * 4.0 - 2.0, (i / w) as f32 / h as f32 * 4.0 - 2.0)).collect()
+        };
+        let a: Vec<f32> = band(&|x, _| x * 100.0 + 500.0);
+        let mut b: Vec<f32> = band(&|_, y| y * 50.0);
+        for v in b.iter_mut().step_by(53) {
+            *v = f32::NAN;
+        }
+        let transform = GeoTransform { origin_x: 0.0, origin_y: 45.0, pixel_width: 0.001, pixel_height: -0.001 };
+        let r = Raster::new("img", w, h, vec![a, b], transform, Crs::LonLat, None, ColorHint::Gray, "Float32").unwrap();
+        let (c1, p1) = classify_on(&r, &model, -1.0, Some(1)).unwrap();
+        assert!(c1.contains(&1.0) && c1.contains(&2.0) && c1.contains(&-1.0), "both classes and no data");
+        // A classified pixel has its class's probability; one with no data has none.
+        assert!(c1.iter().zip(&p1).all(|(c, p)| if *c == -1.0 { *p == -1.0 } else { (0.0..=1.0).contains(p) && *p >= 0.5 }));
+        for threads in [2, 7, 16] {
+            let (c, p) = classify_on(&r, &model, -1.0, Some(threads)).unwrap();
+            let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+            assert_eq!((bits(&c), bits(&p)), (bits(&c1), bits(&p1)), "{threads} threads");
+        }
+        // As many threads as pay off, which `classify` picks, give the same.
+        let (c, p) = classify(&r, &model, -1.0).unwrap();
+        assert_eq!((c, p), (c1, p1));
+    }
 
     #[test]
     fn learns_a_nonlinear_boundary_and_validates() {
