@@ -233,8 +233,8 @@ fn resolve_anew(spec: &Spec, key: String) -> Resolve {
             Ok(None) => return Resolve::Pending,
             Err(e) => return Resolve::Failed(e),
         },
-        Kind::MbTiles => match mbtiles::info(&spec.url) {
-            Ok(info) => {
+        Kind::MbTiles => match mbtiles::info_ready(&spec.url, web_time::Duration::ZERO) {
+            Ok(Some(info)) => {
                 let archive = Archive {
                     tiles: mbtiles::template(&spec.url),
                     vector: info.format.is_vector(),
@@ -248,6 +248,7 @@ fn resolve_anew(spec: &Spec, key: String) -> Resolve {
                     None => return Resolve::Failed("the built-in vector style could not be read".into()),
                 }
             }
+            Ok(None) => return Resolve::Pending,
             Err(e) => return Resolve::Failed(e),
         },
     };
@@ -446,7 +447,11 @@ fn resolve_source(src: &mut Source, spec: &Spec, base: &str) -> Result<bool, Str
 pub fn source_layers(kind: Kind, url: &str) -> Option<Vec<String>> {
     match kind {
         Kind::PmTiles => pmtiles::info(url).ok().flatten().filter(|i| i.tile_type.is_vector()).map(|i| i.vector_layers().to_vec()),
-        Kind::MbTiles => mbtiles::info(url).ok().filter(|i| i.format.is_vector()).map(|i| i.vector_layers().to_vec()),
+        Kind::MbTiles => mbtiles::info_ready(url, web_time::Duration::ZERO)
+            .ok()
+            .flatten()
+            .filter(|i| i.format.is_vector())
+            .map(|i| i.vector_layers().to_vec()),
         _ => None,
     }
 }

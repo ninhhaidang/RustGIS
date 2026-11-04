@@ -499,7 +499,7 @@ struct PutAside {
     url_requests: Vec<serde_json::Value>,
     plugin_retries: Vec<cmd::plugins::fetch::Retry>,
     /// A style of the project still loading, which mustn't move the next one's view.
-    style_view: Option<(String, Camera)>,
+    style_view: Option<(rustgis_map::TileLayer, Camera, u64)>,
     #[cfg(not(target_arch = "wasm32"))]
     sql_results: Vec<(u64, String, Option<String>, rustgis_data::source::duckdb::Output)>,
     trend_results: Vec<(u64, Vec<rustgis_data::raster::Raster>, usize)>,
@@ -566,10 +566,10 @@ pub struct Session {
     layer_selection_of: Option<u32>,
     /// Map view size in logical points (set by the UI each frame).
     pub view_size: (f64, f64),
-    /// A MapLibre style tile layer (by its address) whose own view the map goes to once it loads
-    /// (`map.addTiles` with `"view": true`), or a PMTiles archive whose bounds it goes to, and the
-    /// camera then: moved since, the map stays.
-    pub style_view: Option<(String, Camera)>,
+    /// A MapLibre style tile layer (the added layer snapshot) whose own view the map goes to once it loads
+    /// (`map.addTiles` with `"view": true`), or a PMTiles/MBTiles archive whose bounds it goes to, and the
+    /// camera and owning map instance then: moved or switched since, the map stays.
+    pub style_view: Option<(rustgis_map::TileLayer, Camera, u64)>,
     pub notices: Vec<Notice>,
     /// Troubleshooting history, independent of the active pane, project files and undo.
     pub diagnostics: rustgis_data::diagnostics::History,

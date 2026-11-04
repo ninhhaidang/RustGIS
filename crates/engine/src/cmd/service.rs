@@ -492,8 +492,11 @@ pub(crate) fn add(s: &mut Session, p: &Value) -> CmdResult {
         _ => layer.title.clone(),
     };
     let name = ps(p, "name").map(str::trim).filter(|n| !n.is_empty()).unwrap_or(&title).to_string();
+    // The first layer added to an empty map is framed; a later one leaves the view where it is,
+    // as removing a layer does (an area asked for has its own rule, below).
+    let empty_before = super::map_is_empty(s);
     let zoom = |s: &mut Session| {
-        if let Some([w, so, e, n]) = layer.bbox {
+        if empty_before && let Some([w, so, e, n]) = layer.bbox {
             s.zoom_to(&rustgis_geom::Extent::new(w, so, e, n));
         }
     };
@@ -583,6 +586,9 @@ pub(crate) fn add(s: &mut Session, p: &Value) -> CmdResult {
             zoom(s);
             Ok(r)
         }
+        // A style draws the whole look of the map, so it goes in as a basemap, under the layers,
+        // and does not count as content (see `super::map_is_empty`): adding a layer after it frames
+        // the map again. Documented in docs/user-guide/data-formats.md.
         Offer::Style { url: style } => {
             let r = super::tiles::add(s, &json!({"url": style, "kind": "style", "name": name, "bounds": layer.bbox}))?;
             zoom(s);
@@ -602,7 +608,7 @@ pub(crate) fn add(s: &mut Session, p: &Value) -> CmdResult {
             {
                 let bytes = crate::render::rustgis_tiles::cache::download_blocking(&get).map_err(|e| format!("{name}: {e}"))?;
                 coverage_check(&name, &bytes)?;
-                let r = super::raster::add_named_bytes(s, &json!({"name": name}), format!("{name}.tif"), bytes)?;
+                let r = super::raster::add_named_bytes(s, &json!({"name": name}), format!("{name}.tif"), bytes, None)?;
                 mark_service_source(s, &r, &get);
                 Ok(r)
             }
@@ -626,14 +632,16 @@ pub(crate) fn add(s: &mut Session, p: &Value) -> CmdResult {
                 }
                 let max = crate::render::rustgis_tiles::cache::MAX_DOWNLOAD;
                 let from = asked.as_deref().unwrap_or(items);
+                // An area request keeps the view until the requested box is applied below.
+                let keep_view = asked.is_some().then_some(false);
                 let mut r = match download_layer(s, &name, from, max, true).map_err(|e| slow_whole_layer(e, given))? {
                     Downloaded::Bytes(bytes) => {
                         let bytes = features_answer(s, &name, bytes, layer.bbox);
-                        super::raster::add_named_bytes(s, &json!({"name": name}), format!("{name}.geojson"), bytes)?
+                        super::raster::add_named_bytes(s, &json!({"name": name}), format!("{name}.geojson"), bytes, keep_view)?
                     }
                     // Read in protocol buffer pages: their positions as the service's system
                     // places them, so there are no axes to check.
-                    Downloaded::Read(read) => super::layer::add_read(s, &json!({"name": name}), *read)?,
+                    Downloaded::Read(read) => super::layer::add_read(s, &json!({"name": name}), *read, keep_view)?,
                 };
                 mark_service_source(s, &r, from);
                 // Over an area, the features crossing it: the view stays, or goes to a box given

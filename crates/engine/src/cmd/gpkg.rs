@@ -41,6 +41,8 @@ fn pending_edits(s: &mut Session, p: &Value) -> CmdResult {
         "inserts": c.inserts.len(), "updates": c.updates.len(), "deletes": c.deletes.len(), "writable": edit.writable}))
 }
 
+/// Adds one feature table of a GeoPackage as an editable layer, framed on a map that shows nothing
+/// yet.
 fn add_layer(s: &mut Session, p: &Value) -> CmdResult {
     #[cfg(target_arch = "wasm32")]
     {
@@ -106,7 +108,7 @@ fn add_layer(s: &mut Session, p: &Value) -> CmdResult {
         if !editable.writable {
             s.notify(format!("{name}: the file is read-only, so edits can't be saved to it"), false);
         }
-        let empty_before = s.map().layers.is_empty();
+        let empty_before = super::map_is_empty(s);
         let id = super::layer::add_dataset(s, ds);
         if let Some(l) = s.map_mut().layer_mut(id) {
             let (geometry_type, z, m) = src.declaration();

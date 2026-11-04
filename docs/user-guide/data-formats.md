@@ -200,6 +200,23 @@ A layer saved by an older version, which kept the file name it was downloaded un
 the service's address, shows **Add**; RustGIS won't guess by name. A service's downloaded layers
 are grouped under the service's host in the Layers pane's **Data Source** view, and **Copy Path**
 gives that address without its keys or tokens.
+
+Adding a layer or importing a group leaves the view where it is: only the first content added to an
+empty map (beyond its basemap) is framed. A map holds content once it has a layer (hidden or not), a
+tile overlay, or a cloud-optimised GeoTIFF, PMTiles or MBTiles tile layer (hidden, or drawn as a
+basemap, included). A plain basemap does not count, and neither does a map style a service offers:
+it draws as a basemap, under the layers.
+
+A PMTiles or MBTiles archive added as a file is the exception: it is framed on its bounds whatever
+the map holds, unless it covers the whole world. Features asked for over an area keep the view, or
+go to the box given. Layer files (`.rgislyr`) retain the current view even on an empty map.
+STAC searches frame their result footprints, in the browser and the commands, so the searched
+area is visible. Adding administrative boundaries follows the ordinary first-content rule.
+If several archives or styles request a view while their metadata loads, the latest request
+supersedes earlier pending requests. Panning or navigating elsewhere cancels pending framing.
+MBTiles metadata normally loads in the background. A read still pending after 30 seconds, or
+a worker pool saturated by stalled storage, reports an error; retry once the storage responds.
+
 An OGC API landing page works directly: RustGIS follows its advertised
 JSON collections link, so you don't need to append `/collections`. If the landing page also
 offers map tiles, they remain listed alongside the collections. A failed collections request

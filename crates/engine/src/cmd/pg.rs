@@ -333,6 +333,8 @@ fn tables(s: &mut Session, p: &Value) -> CmdResult {
     }
 }
 
+/// Adds a PostGIS table as a layer (one per geometry family when it mixes them), framed on a map
+/// that shows nothing yet.
 fn add_layer(s: &mut Session, p: &Value) -> CmdResult {
     #[cfg(target_arch = "wasm32")]
     {
@@ -358,7 +360,7 @@ fn add_layer(s: &mut Session, p: &Value) -> CmdResult {
             return Err(format!("{label}: {}: the table has no rows with a geometry", table.label()));
         }
         let mixed = families.len() > 1;
-        let empty_before = s.map().layers.is_empty();
+        let empty_before = super::map_is_empty(s);
         let (mut ids, mut loaded, mut matched, mut writable) = (Vec::new(), 0u64, 0u64, true);
         for family in families {
             let src = postgis::PostgisSource::open(conn.clone(), table.clone(), Some(family), crs).map_err(err)?;

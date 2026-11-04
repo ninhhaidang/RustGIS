@@ -1913,7 +1913,7 @@ fn data_from_a_web_address_lands_later() {
     let before = h.state().session.map().layers.len();
     h.state_mut().run("ui.addUrl", json!(null)).unwrap();
     h.step();
-    h.state_mut().run("ui.addUrl", json!({"url": format!("http://{addr}/pin"), "name": "Pin"})).unwrap();
+    h.state_mut().run("ui.addUrl", json!({"url": format!("http://{addr}/pin"), "name": "Pin", "zoom": "on"})).unwrap();
     h.state_mut().run("ui.addUrl", json!({"url": "http://169.254.169.254/x.geojson"})).unwrap();
     for _ in 0..100 {
         h.step();
@@ -1924,6 +1924,8 @@ fn data_from_a_web_address_lands_later() {
     }
     assert_eq!(h.state().session.map().layers.len(), before + 1);
     assert!(h.state().session.map().layer_by_name("Pin").is_some());
+    let center = h.state().session.map().center_lonlat();
+    assert!((center.x - 1.0).abs() < 0.01 && (center.y - 2.0).abs() < 0.01, "string zoom survives the queued download: {center:?}");
     assert!(h.state().session.notices.iter().any(|n| n.error && n.text.contains("never fetched")));
     assert!(h.state().ui.downloads.is_empty());
 }

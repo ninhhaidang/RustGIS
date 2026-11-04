@@ -34,7 +34,7 @@ pub(crate) fn need_raster(s: &Session) -> Option<&'static str> {
 pub fn commands() -> Vec<C> {
     vec![
         C::new("layer.addDataBytes", "Add Data (from file contents)", "Home › Add", add_bytes)
-            .params(r#"{"fileName": "name.tif|.tiff|.asc|.geojson|.csv|.zip|.kml|.kmz|.gpx|.parquet|.fgb|.gpkg|.mbtiles|.jp2|.j2k (JPEG 2000: desktop, through GDAL)", "data": base64, "layer"?: "one layer of a zip, KML or GPX by name", "name"?: text, "x"?, "y"?, "wkt"?, "crs"?, "delimiter"?, "paperSpace"?, "stream"?, "as"? (as layer.addData)}"#),
+            .params(r#"{"fileName": "name.tif|.tiff|.asc|.geojson|.csv|.zip|.kml|.kmz|.gpx|.parquet|.fgb|.gpkg|.mbtiles|.jp2|.j2k (JPEG 2000: desktop, through GDAL)", "data": base64, "zoom"?: bool, "layer"?: "one layer of a zip, KML or GPX by name", "name"?: text, "x"?, "y"?, "wkt"?, "crs"?, "delimiter"?, "paperSpace"?, "stream"?, "as"? (as layer.addData)}"#),
         C::new("raster.symbology", "Symbology", "Style › Rendering", symbology).when(need_raster).params(
             r#"{"layer"?, "type": "stretch"|"rgb"|"classify"|"unique"|"colormap"|"shadedRelief", "band"?: 1.., "ramp"?, "invert"?: bool, "classes"?: 1..32, "method"?, "azimuth"?, "altitude"?, "zFactor"?, "grey"?: bool (shadedRelief without its colour ramp)}"#,
         ),
@@ -265,9 +265,10 @@ fn band(p: &Value, k: &str, r: &Raster) -> Result<Option<usize>, String> {
 }
 
 /// Adds a picture laid over the map (a KML ground overlay), kept in the project as a GeoTIFF.
-pub(crate) fn add_overlay(s: &mut Session, name: &str, r: raster::Raster) -> CmdResult {
+/// `zoom` is the adding command's `"zoom"`, as for the layers beside it.
+pub(crate) fn add_overlay(s: &mut Session, name: &str, r: raster::Raster, zoom: Option<bool>) -> CmdResult {
     let tif = raster::geotiff::write(&r, 0).map_err(|e| e.to_string())?;
-    add_raster(s, name, RasterLayer::from_bytes(r, format!("{name}.tif"), tif))
+    add_raster_after(s, name, RasterLayer::from_bytes(r, format!("{name}.tif"), tif), zoom)
 }
 
 /// Sets how rasters added from now on are drawn when they hold a single band of continuous values
@@ -325,7 +326,13 @@ pub fn default_style_json(d: &RasterDefaults) -> Value {
 /// Adds a raster as a new layer, selects it and returns its id. A raster drawn the built-in way
 /// for a single band of continuous values takes the session's default raster style instead:
 /// opened files and analysis results (a slope, an NDVI) alike, since every producer adds here.
-pub fn add_raster(s: &mut Session, name: &str, mut layer: RasterLayer) -> CmdResult {
+pub fn add_raster(s: &mut Session, name: &str, layer: RasterLayer) -> CmdResult {
+    add_raster_after(s, name, layer, None)
+}
+
+/// [`add_raster`], with the adding command's `"zoom"`: `Some(true)` frames what was added,
+/// `Some(false)` keeps the view, and `None` frames only the first content on an empty map.
+pub(crate) fn add_raster_after(s: &mut Session, name: &str, mut layer: RasterLayer, zoom: Option<bool>) -> CmdResult {
     // A scan has no coordinates: it is laid over what the view shows, and says so.
     let mut laid = None;
     if let Some(d) = layer.data.as_mut().filter(|d| !d.georeferenced) {
@@ -350,7 +357,7 @@ pub fn add_raster(s: &mut Session, name: &str, mut layer: RasterLayer) -> CmdRes
     // What reading it left out (a colour table, names), said once the layer has its name.
     let lost = layer.data.as_ref().map(|d| d.lost.clone()).unwrap_or_default();
     let rounded = layer.data.as_deref().and_then(rounded_count);
-    let empty_before = s.map().layers.is_empty();
+    let empty_before = super::map_is_empty(s);
     let id = s.map_mut().add_raster(unique.clone(), layer);
     s.active_layer = Some(id);
     if let Some((fw, fh)) = overview {
@@ -363,7 +370,9 @@ pub fn add_raster(s: &mut Session, name: &str, mut layer: RasterLayer) -> CmdRes
         let held = "pixels are held as 32-bit floats, exact for whole numbers up to 16,777,216 and to about 7 significant digits";
         s.notify(format!("{unique}: {count} rounded as the file was read: {held}, so an export writes the rounded values"), false);
     }
-    if empty_before && let Some(e) = s.map().layer(id).map(|l| l.extent()) {
+    if zoom.unwrap_or(empty_before)
+        && let Some(e) = s.map().layer(id).map(|l| l.extent())
+    {
         s.zoom_to(&e);
     }
     let mut v = json!({"layer": id, "width": w, "height": h, "bands": n});
@@ -566,7 +575,7 @@ pub(crate) fn add_gdal_path(s: &mut Session, p: &Value, path: &str) -> CmdResult
 /// Adds an uploaded or downloaded JPEG 2000 raster, converted by GDAL to a GeoTIFF that the project
 /// keeps (it opens again without GDAL or the source file, as an uploaded GeoTIFF does).
 #[cfg(not(target_arch = "wasm32"))]
-fn add_jpeg2000_bytes(s: &mut Session, p: &Value, name: &str, bytes: Vec<u8>) -> CmdResult {
+fn add_jpeg2000_bytes(s: &mut Session, p: &Value, name: &str, bytes: Vec<u8>, zoom: Option<bool>) -> CmdResult {
     let crs = ps(p, "crs").map(str::trim).filter(|c| !c.is_empty());
     let c = raster::gdal::convert_jpeg2000(bytes, crs, MAX_UPLOAD_BYTES as u64).map_err(|e| format!("{name}: {e}"))?;
     let stem = Path::new(name).file_stem().and_then(|s| s.to_str()).unwrap_or("raster");
@@ -576,7 +585,7 @@ fn add_jpeg2000_bytes(s: &mut Session, p: &Value, name: &str, bytes: Vec<u8>) ->
         s.notify(format!("{name} doesn't say its coordinate system; its coordinates look like longitude/latitude, so it's read as WGS 84 (give \"crs\" if not)"), false);
     }
     let title = ps(p, "name").map(str::trim).filter(|n| !n.is_empty()).map(str::to_string).unwrap_or_else(|| r.name.clone());
-    add_raster(s, &title, RasterLayer::from_bytes(r, file_name, c.tif))
+    add_raster_after(s, &title, RasterLayer::from_bytes(r, file_name, c.tif), zoom)
 }
 
 fn add_bytes(s: &mut Session, p: &Value) -> CmdResult {
@@ -588,22 +597,22 @@ fn add_bytes(s: &mut Session, p: &Value) -> CmdResult {
         return Err(format!("{name} is too large to open"));
     }
     let bytes = base64::engine::general_purpose::STANDARD.decode(data.as_bytes()).map_err(|e| format!("data: {e}"))?;
-    add_named_bytes(s, p, name, bytes)
+    add_named_bytes(s, p, name, bytes, b(p, "zoom"))
 }
 
 /// Adds a file's contents (an upload, a download) as its name's extension says.
-pub(crate) fn add_named_bytes(s: &mut Session, p: &Value, name: String, bytes: Vec<u8>) -> CmdResult {
+pub(crate) fn add_named_bytes(s: &mut Session, p: &Value, name: String, bytes: Vec<u8>, zoom: Option<bool>) -> CmdResult {
     // A geotagged photo (an upload, a drop): a point in the photo layer, so several uploads
     // gather in one.
     let scan = wants_scan(p, &name)?;
     if !scan && rustgis_data::photo::is_photo_name(&name) {
         let layer = ps(p, "name").map(str::trim).filter(|n| !n.is_empty()).unwrap_or(super::layer::PHOTOS).to_string();
-        return super::layer::add_photos_to(s, &layer, |reader| reader.add(&name, &bytes));
+        return super::layer::add_photos_to(s, &layer, zoom, |reader| reader.add(&name, &bytes));
     }
     // JPEG 2000 (an upload or a download): through GDAL, on the desktop.
     if raster::is_jpeg2000_name(&name) {
         #[cfg(not(target_arch = "wasm32"))]
-        return add_jpeg2000_bytes(s, p, &name, bytes);
+        return add_jpeg2000_bytes(s, p, &name, bytes, zoom);
         #[cfg(target_arch = "wasm32")]
         return Err(JPEG2000_WEB_LIMITATION.into());
     }
@@ -613,7 +622,7 @@ pub(crate) fn add_named_bytes(s: &mut Session, p: &Value, name: String, bytes: V
             r = r.into_scan().map_err(|e| format!("{name}: {e}"))?;
         }
         let title = ps(p, "name").map(str::trim).filter(|n| !n.is_empty()).map(str::to_string).unwrap_or_else(|| r.name.clone());
-        return add_raster(s, &title, RasterLayer::from_bytes(r, name, bytes));
+        return add_raster_after(s, &title, RasterLayer::from_bytes(r, name, bytes), zoom);
     }
     // An MBTiles archive: held in memory and drawn as a tile layer.
     if rustgis_data::mbtiles::is_mbtiles_name(&name) {
@@ -626,15 +635,15 @@ pub(crate) fn add_named_bytes(s: &mut Session, p: &Value, name: String, bytes: V
     }
     // A spreadsheet's sheet.
     if rustgis_data::sheets::is_sheet_name(&name) {
-        return super::layer::add_sheet(s, p, &name, &bytes);
+        return super::layer::add_sheet(s, p, &name, &bytes, zoom);
     }
     // Files of several layers: zipped Shapefiles, KML/KMZ, GPX, GeoRSS, LandXML, CityJSON.
     if rustgis_data::io::is_multi_layer_name(&name) {
-        return super::layer::add_layers(s, p, &name, &bytes);
+        return super::layer::add_layers(s, p, &name, &bytes, zoom);
     }
     // GeoParquet and FlatGeobuf uploads (binary vector files).
     if rustgis_data::source::is_source_name(&name) {
-        return super::layer::add_source(s, p, super::layer::Origin::Bytes(&name, std::sync::Arc::new(bytes)));
+        return super::layer::add_source(s, p, super::layer::Origin::Bytes(&name, std::sync::Arc::new(bytes)), zoom);
     }
     let text = String::from_utf8(bytes).map_err(|_| format!("{name} is not a text file"))?;
     // The delimited-text and naming parameters carry over (not the data, already decoded).
@@ -644,7 +653,7 @@ pub(crate) fn add_named_bytes(s: &mut Session, p: &Value, name: String, bytes: V
             q[k] = v.clone();
         }
     }
-    super::layer::add_data_text(s, &q)
+    super::layer::add_data_text_after(s, &q, zoom)
 }
 
 fn symbology(s: &mut Session, p: &Value) -> CmdResult {

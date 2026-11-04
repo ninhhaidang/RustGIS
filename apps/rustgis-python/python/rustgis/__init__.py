@@ -612,7 +612,8 @@ class _Api:
             **params: More ``map.addTiles`` parameters, e.g. ``opacity`` or ``attribution``.
 
         Returns:
-            The tile layer's position, kind and name, as for :meth:`add_tiles`.
+            The tile layer's position, kind and name, as for :meth:`add_tiles`. Without
+            an ``id``, also ``zoomed``, indicating whether its bounds framed the map immediately.
         """
         params["kind"] = "pmtiles"
         if source_layers is not None:
