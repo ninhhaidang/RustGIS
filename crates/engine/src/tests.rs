@@ -25691,7 +25691,12 @@ fn geolibre_local_source_kinds_and_archives() {
     assert_eq!(s.map().tiles.len(), 2);
     let raster = s.map().layer_by_name("zarr").unwrap().raster.as_ref().unwrap().data.as_ref().unwrap();
     assert!(raster.bands[0].data.iter().all(|v| *v >= 101.0 && *v <= 104.0), "saved time slice must survive native import");
-    std::fs::remove_dir_all(dir).unwrap();
+    // The archives stay open while the session draws them (MBTiles metadata is read on a
+    // background thread), and Windows refuses to delete an open file: release them, and treat
+    // the cleanup as best effort like the other tests do.
+    drop(s);
+    rustgis_data::mbtiles::close(&dir.join("tiles.mbtiles"));
+    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
