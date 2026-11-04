@@ -100,6 +100,68 @@ pub struct Page {
     /// The field holding the features' object ids (`esriFieldTypeOID`), by its place in
     /// `dataset.fields`.
     pub object_id_field: Option<usize>,
+    /// What its features lost, counted (also said in `report`): a reader joining pages sums them
+    /// and says each once ([`Losses::messages`]).
+    pub losses: Losses,
+}
+
+/// What a page's features lost or had assumed, counted.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Losses {
+    /// Features with a geometry, in an answer naming no coordinate system.
+    pub no_crs: bool,
+    /// Values that don't fit their field's type.
+    pub unreadable: usize,
+    /// Values or field names that aren't valid UTF-8.
+    pub not_utf8: usize,
+    /// Polygon rings without area.
+    pub flat_rings: usize,
+    /// Features whose coordinates are outside their coordinate system.
+    pub unprojected: usize,
+    /// Features with Z or M values, dropped.
+    pub with_zm: usize,
+}
+
+impl Losses {
+    /// Adds another page's.
+    pub fn add(&mut self, other: &Losses) {
+        self.no_crs |= other.no_crs;
+        self.unreadable = self.unreadable.saturating_add(other.unreadable);
+        self.not_utf8 = self.not_utf8.saturating_add(other.not_utf8);
+        self.flat_rings = self.flat_rings.saturating_add(other.flat_rings);
+        self.unprojected = self.unprojected.saturating_add(other.unprojected);
+        self.with_zm = self.with_zm.saturating_add(other.with_zm);
+    }
+
+    /// What they say, one message per kind (as [`read_page`] says them).
+    pub fn messages(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if self.no_crs {
+            out.push("the answer names no coordinate system; coordinates are read as longitude/latitude".into());
+        }
+        if self.unreadable > 0 {
+            out.push(format!("{} values don't fit their field's type and are left empty", self.unreadable));
+        }
+        if self.not_utf8 > 0 {
+            out.push(format!(
+                "{} values or field names aren't valid UTF-8; the bytes that can't be read are replaced with U+FFFD",
+                self.not_utf8
+            ));
+        }
+        if self.flat_rings > 0 {
+            out.push(format!("{} polygon rings have no area and are left out", self.flat_rings));
+        }
+        if self.unprojected > 0 {
+            out.push(format!(
+                "{} features have coordinates outside their coordinate system: they are kept without geometry",
+                self.unprojected
+            ));
+        }
+        if self.with_zm > 0 {
+            out.push(crate::zm_note(Some(self.with_zm as u64)));
+        }
+        out
+    }
 }
 
 /// Reads an answer as a layer named `name`, saying when the service held more features than it sent.
@@ -260,29 +322,18 @@ pub fn read_page(bytes: &[u8], name: &str) -> Result<Page> {
     ds.crs = crs;
     // What couldn't be converted can't come back by defining the projection again.
     ds.crs_incomplete = unprojected > 0;
-    // Assumed, so said: an answer that names no coordinate system.
-    if any_geometry && code.is_none() && wkt.is_none() {
-        report.messages.push("the answer names no coordinate system; coordinates are read as longitude/latitude".into());
-    }
-    if tally.unreadable > 0 {
-        report.messages.push(format!("{} values don't fit their field's type and are left empty", tally.unreadable));
-    }
-    if tally.not_utf8 > 0 {
-        report.messages.push(format!(
-            "{} values or field names aren't valid UTF-8; the bytes that can't be read are replaced with U+FFFD",
-            tally.not_utf8
-        ));
-    }
-    if tally.flat_rings > 0 {
-        report.messages.push(format!("{} polygon rings have no area and are left out", tally.flat_rings));
-    }
-    if unprojected > 0 {
-        report
-            .messages
-            .push(format!("{unprojected} features have coordinates outside their coordinate system: they are kept without geometry"));
-    }
-    ds.drop_zm(&mut report, with_zm);
-    Ok(Page { dataset: ds, report, exceeded_transfer_limit: more, object_id_field })
+    let losses = Losses {
+        // Assumed, so said: an answer that names no coordinate system.
+        no_crs: any_geometry && code.is_none() && wkt.is_none(),
+        unreadable: tally.unreadable,
+        not_utf8: tally.not_utf8,
+        flat_rings: tally.flat_rings,
+        unprojected,
+        with_zm,
+    };
+    report.messages.extend(losses.messages());
+    ds.zm_dropped = with_zm > 0;
+    Ok(Page { dataset: ds, report, exceeded_transfer_limit: more, object_id_field, losses })
 }
 
 /// A reader of protocol buffer fields, which refuses what runs past its bytes.
@@ -968,4 +1019,4 @@ fn put_varint(out: &mut Vec<u8>, mut v: u64) {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

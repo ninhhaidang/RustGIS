@@ -276,6 +276,8 @@ pub(crate) fn download_features(s: &mut Session, name: &str, url: &str, max: usi
     let (bytes, note) = loop {
         let pages = match step {
             Step::Done(bytes, note) => break (bytes, note),
+            // Not given by `begin`, which reads in GeoJSON.
+            Step::Decoded(..) => return Err(format!("{url}: the pages were read as protocol buffers")),
             // A first answer that timed out says how to add a large layer instead.
             Step::Failed(e) => return Err(format!("{url}: {}", cache::large_file_hint(e))),
             Step::Fetch(pages) => pages,

@@ -357,6 +357,8 @@ pub fn poll_pages(app: &mut RustGisApp, ctx: &egui::Context) {
 /// unread), or why it couldn't be fetched said.
 fn go_on(app: &mut RustGisApp, landed: Landed, left: usize, step: Step) {
     match step {
+        // Not given by `ogc::begin`, which reads in GeoJSON.
+        Step::Decoded(..) => go_on(app, landed, left, Step::Failed("the pages were read as protocol buffers".into())),
         Step::Failed(e) => {
             app.session.download_failed(landed.id);
             let url = &landed.url;
