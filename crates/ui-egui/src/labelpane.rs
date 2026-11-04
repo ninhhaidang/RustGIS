@@ -939,6 +939,16 @@ fn position(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, c: &Class) {
         });
         if cur.along_line() {
             repeat(app, ui, l, c);
+            // One label a line: other places along it, tried when its own won't do (#1187). Each
+            // repeat is already a place of its own.
+            if c.it.repeat.is_none() {
+                ui.add_space(4.0);
+                let mut on = c.it.other_positions;
+                let help = tl!("If its place is taken or (curved) the line bends too much, the label tries other places along the line.");
+                if ui.checkbox(&mut on, tl!("Try other places along the line")).on_hover_text(help).changed() {
+                    run(app, "labels.placement", c.params(json!({"otherPositions": on})));
+                }
+            }
         }
     }
     ui.add_space(6.0);
@@ -1381,6 +1391,64 @@ mod tests {
         h.state_mut().session.run("layer.select", &json!({"layer": countries})).unwrap();
         h.run();
         assert!(h.query_by_role_and_label(Role::CheckBox, BOX).is_none(), "not for polygons");
+    }
+
+    /// A line layer's labels can try other places along the line (#1187): the box is there for a
+    /// placement along the line without a repeat, and hiding it leaves what it was set to.
+    #[test]
+    fn other_positions_are_set_in_the_pane_along_lines() {
+        use egui::accesskit::Role;
+        const BOX: &str = "Try other places along the line";
+        let mut h = harness(with_cities());
+        h.run();
+        let rivers = layer_id(h.state(), "Rivers");
+        h.state_mut().session.run("layer.select", &json!({"layer": rivers})).unwrap();
+        h.run();
+        open_tab(&mut h, "Position");
+        let on = |h: &egui_kittest::Harness<'_, RustGisApp>| {
+            h.state().session.map().layer_by_name("Rivers").unwrap().labels.default.other_positions
+        };
+        assert!(h.query_by_role_and_label(Role::CheckBox, BOX).is_none(), "not off the line");
+        for position in ["parallel", "curved"] {
+            h.state_mut().session.run("labels.placement", &json!({"layer": rivers, "position": position})).unwrap();
+            h.run();
+            assert!(h.query_by_role_and_label(Role::CheckBox, BOX).is_some(), "{position}");
+        }
+        h.get_by_role_and_label(Role::CheckBox, BOX).click();
+        h.run();
+        assert!(on(&h));
+        h.state_mut().session.run("labels.placement", &json!({"layer": rivers, "repeat": 144})).unwrap();
+        h.run();
+        assert!(h.query_by_role_and_label(Role::CheckBox, BOX).is_none(), "not with a repeat");
+        assert!(on(&h), "hidden, it's kept");
+        h.state_mut().session.run("labels.placement", &json!({"layer": rivers, "repeat": null})).unwrap();
+        h.run();
+        h.get_by_role_and_label(Role::CheckBox, BOX).click();
+        h.run();
+        assert!(!on(&h));
+        let countries = layer_id(h.state(), "Countries");
+        h.state_mut().session.run("layer.select", &json!({"layer": countries})).unwrap();
+        h.run();
+        assert!(h.query_by_role_and_label(Role::CheckBox, BOX).is_none(), "not for polygons");
+    }
+
+    /// The box along the line sets the class chosen, not Default (#1187).
+    #[test]
+    fn other_positions_along_lines_set_the_chosen_class() {
+        let mut app = with_cities();
+        let rivers = layer_id(&app, "Rivers");
+        app.session.run("layer.select", &json!({"layer": rivers})).unwrap();
+        app.run("labels.class.add", json!({"name": "Named"})).unwrap();
+        app.run("labels.placement", json!({"class": "Named", "position": "curved"})).unwrap();
+        let mut h = harness(app);
+        h.run();
+        pick_class(&mut h, "Default", "Named");
+        open_tab(&mut h, "Position");
+        h.get_by_role_and_label(egui::accesskit::Role::CheckBox, "Try other places along the line").click();
+        h.run();
+        let l = labels(h.state());
+        assert!(l.class("Named").unwrap().other_positions);
+        assert!(!l.default.other_positions);
     }
 
     #[test]

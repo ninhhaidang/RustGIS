@@ -99,7 +99,7 @@ pub fn commands() -> Vec<C> {
             }
             l.renderer = st.renderer;
             let field = l.labels.default.field.clone();
-            let relock = !super::labels::lock_holds(&l.labels, &st.labels);
+            let relock = !super::labels::lock_holds(l, &st.labels);
             l.labels = st.labels;
             // The label field stays if the style's isn't in this layer.
             if l.dataset.field_index(&l.labels.default.field).is_none() {
