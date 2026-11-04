@@ -83,12 +83,136 @@ pub(crate) fn validate(g: &Geometry) -> Result<(), String> {
     }
 }
 
+/// `v` as a value of a `ty` field. A number goes into a number field as it is, not through the
+/// text it shows (which rounds a decimal to six places); a decimal, or text written as one, into a
+/// whole-number field loses its fraction (toward zero); a whole number past 2^53 into a decimal
+/// field is the nearest decimal. Not a number is null. Other values go through their text (a
+/// decimal into a text field as it's shown, to six places), and what the field can't hold is
+/// null. A number past the 64-bit range is held at the range's end, as it was; [`coerce_cut`], for
+/// callers that say what was cut, makes it null instead.
 pub(crate) fn coerce(v: Value, ty: FieldType) -> Value {
-    match v {
-        Value::Null => Value::Null,
-        Value::Text(t) => Value::parse(&t, ty),
-        other => Value::parse(&other.to_string(), ty),
+    match convert(v, ty) {
+        (_, Cut::Range, Some(f)) => Value::Int(f as i64),
+        (v, _, _) => v,
     }
+}
+
+/// What [`coerce_cut`] took from a number to put it in a whole-number field.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Cut {
+    /// Nothing.
+    None,
+    /// Its fraction: 2.7 is 2, −2.7 is −2.
+    Fraction,
+    /// All of it: a number past the 64-bit range is null.
+    Range,
+    /// All of it: not a number (NaN) is null.
+    NotANumber,
+}
+
+/// How many of a field's results [`coerce_cut`] cut, of each kind, for one notice per kind.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Cuts {
+    fractions: usize,
+    past: usize,
+    not_numbers: usize,
+}
+
+impl Cuts {
+    pub(crate) fn add(&mut self, cut: Cut) {
+        match cut {
+            Cut::None => {}
+            Cut::Fraction => self.fractions += 1,
+            Cut::Range => self.past += 1,
+            Cut::NotANumber => self.not_numbers += 1,
+        }
+    }
+
+    /// The notices for what writing the whole-number field `field` cut, each starting with `by`
+    /// (the command or rule that wrote it). Empty when nothing was cut.
+    pub(crate) fn notices(&self, by: &str, field: &str) -> Vec<String> {
+        let results = |n: usize| if n == 1 { "1 result".to_string() } else { format!("{n} results") };
+        let mut out = Vec::new();
+        if self.fractions > 0 {
+            let their = if self.fractions == 1 { "its" } else { "their" };
+            out.push(format!("{by}: '{field}' holds whole numbers, so {} lost {their} fraction", results(self.fractions)));
+        }
+        if self.past > 0 {
+            out.push(format!("{by}: '{field}' is null for {} past the 64-bit integer range", results(self.past)));
+        }
+        if self.not_numbers > 0 {
+            let are = if self.not_numbers == 1 { "isn't a number" } else { "aren't numbers" };
+            out.push(format!("{by}: '{field}' is null for {} that {are}", results(self.not_numbers)));
+        }
+        out
+    }
+}
+
+/// [`coerce`], with a number past the 64-bit range null, and what it took from a number to put it
+/// in a whole-number field.
+pub(crate) fn coerce_cut(v: Value, ty: FieldType) -> (Value, Cut) {
+    let (v, cut, _) = convert(v, ty);
+    (v, cut)
+}
+
+/// [`coerce_cut`], and for a number past the range the decimal it was read as.
+fn convert(v: Value, ty: FieldType) -> (Value, Cut, Option<f64>) {
+    match (v, ty) {
+        (Value::Null, _) => (Value::Null, Cut::None, None),
+        (Value::Int(i), FieldType::Integer) => (Value::Int(i), Cut::None, None),
+        (Value::Float(f), FieldType::Integer) => whole(f),
+        (Value::Float(f), FieldType::Double) => (Value::Float(f), Cut::None, None),
+        (Value::Int(i), FieldType::Double) => (Value::Float(i as f64), Cut::None, None),
+        // Text written as a whole number, or as a decimal without an exponent, is read from its
+        // digits; any other number written as text, as a decimal.
+        (Value::Text(t), FieldType::Integer) => match t.trim().parse::<i64>() {
+            Ok(i) => (Value::Int(i), Cut::None, None),
+            Err(_) => match (decimal_text(t.trim()), t.trim().parse::<f64>()) {
+                (Some((v, cut)), Ok(f)) => (v, cut, Some(f)),
+                // A word the decimal reader takes ("inf", "NaN") isn't a number written as text:
+                // null, and said so, as not a number.
+                (None, Ok(f)) if f.is_finite() || t.bytes().any(|b| b.is_ascii_digit()) => whole(f),
+                (None, Ok(_)) => (Value::Null, Cut::NotANumber, None),
+                _ => (Value::parse(&t, ty), Cut::None, None),
+            },
+        },
+        (Value::Text(t), _) => (Value::parse(&t, ty), Cut::None, None),
+        (other, _) => (Value::parse(&other.to_string(), ty), Cut::None, None),
+    }
+}
+
+/// A decimal as a whole number, toward zero, and what that took: null past the 64-bit range.
+fn whole(f: f64) -> (Value, Cut, Option<f64>) {
+    // 2^63: i64::MIN is exactly a decimal; i64::MAX rounds up to 2^63, which is past the range.
+    const TWO_63: f64 = 9_223_372_036_854_775_808.0;
+    // Not a number is no whole number, nor one past the range: null, and said so.
+    if f.is_nan() {
+        return (Value::Null, Cut::NotANumber, None);
+    }
+    let t = f.trunc();
+    if !(-TWO_63..TWO_63).contains(&t) {
+        return (Value::Null, Cut::Range, Some(f));
+    }
+    (Value::Int(t as i64), if t == f { Cut::None } else { Cut::Fraction }, None)
+}
+
+/// Text written as a whole number or as a decimal without an exponent ("-12.50", ".5"), as a
+/// whole number toward zero read from its digits, exactly up to the 64-bit range's ends, and what
+/// that took. None for other text. A whole number just past i64::MIN is past the range here, where
+/// read as a decimal it would round to -2^63, which is i64::MIN.
+fn decimal_text(t: &str) -> Option<(Value, Cut)> {
+    let (int, frac) = t.split_once('.').unwrap_or((t, ""));
+    let digits = int.strip_prefix(['-', '+']).unwrap_or(int);
+    if !digits.bytes().all(|b| b.is_ascii_digit()) || !frac.bytes().all(|b| b.is_ascii_digit()) || digits.len() + frac.len() == 0 {
+        return None;
+    }
+    let cut = if frac.bytes().any(|b| b != b'0') { Cut::Fraction } else { Cut::None };
+    // "-.5" and ".5" are 0 and a fraction; the sign stays with the digits for i64::MIN.
+    let whole = if digits.is_empty() { Ok(0) } else { int.parse::<i64>() };
+    Some(match whole {
+        Ok(i) => (Value::Int(i), cut),
+        Err(_) => (Value::Null, Cut::Range),
+    })
 }
 
 fn delete(s: &mut Session, _: &Json) -> CmdResult {
@@ -238,8 +362,14 @@ fn calculate_field(s: &mut Session, p: &Json) -> CmdResult {
     let calc = Calculation::parse(&expr, &l.dataset)?;
     let rows: Vec<usize> = if l.selection.is_empty() { (0..l.dataset.features.len()).collect() } else { l.selection.clone() };
     let mut out = Vec::new();
+    // The results a whole-number field cut (their fraction, or whole: past its range, or not a
+    // number), said even when a calculation rule writes the field afterwards: the rule may read
+    // the cut value, and says what it cuts itself.
+    let mut cuts = Cuts::default();
     for r in &rows {
-        out.push((*r, coerce(calc.eval(&l.dataset, *r), ty)));
+        let (v, cut) = coerce_cut(calc.eval(&l.dataset, *r), ty);
+        cuts.add(cut);
+        out.push((*r, v));
     }
     let mut changes = Vec::new();
     for (r, v) in out {
@@ -252,6 +382,10 @@ fn calculate_field(s: &mut Session, p: &Json) -> CmdResult {
         }
     }
     super::design::apply(s, id, changes)?;
+    let field = s.map().layer(id).and_then(|l| l.dataset.fields.get(fi)).map(|f| f.name.clone()).unwrap_or_default();
+    for notice in cuts.notices("Calculate Field", &field) {
+        s.notify(notice, false);
+    }
     Ok(json!({"rows": rows.len()}))
 }
 
@@ -374,6 +508,40 @@ fn split_op(e: &str) -> (&str, Option<char>, Option<&str>) {
 mod tests {
     use super::*;
     use rustgis_data::{Dataset, Field};
+
+    /// Not a number is null in a whole-number field, said as such, not past its range; a number
+    /// past the range is null where it's said, and at the range's end elsewhere, as before.
+    #[test]
+    fn coerce_takes_not_a_number_as_null() {
+        assert_eq!(coerce_cut(Value::Float(f64::NAN), FieldType::Integer), (Value::Null, Cut::NotANumber));
+        assert_eq!(coerce(Value::Float(f64::NAN), FieldType::Integer), Value::Null);
+        assert_eq!(coerce_cut(Value::Float(f64::INFINITY), FieldType::Integer), (Value::Null, Cut::Range));
+        assert_eq!(coerce(Value::Float(-1e30), FieldType::Integer), Value::Int(i64::MIN));
+        assert_eq!(coerce(Value::Float(0.1 + 0.2), FieldType::Double), Value::Float(0.1 + 0.2));
+        // Text past the range, whole or decimal: null where it's said, at the range's end elsewhere.
+        let text = |t: &str| Value::Text(t.into());
+        assert_eq!(coerce_cut(text("-9223372036854775809"), FieldType::Integer), (Value::Null, Cut::Range));
+        assert_eq!(coerce(text("-9223372036854775809"), FieldType::Integer), Value::Int(i64::MIN));
+        assert_eq!(coerce(text("9223372036854775808"), FieldType::Integer), Value::Int(i64::MAX));
+        assert_eq!(coerce(text("9223372036854775808.0"), FieldType::Integer), Value::Int(i64::MAX));
+        // One notice per kind, singular or plural.
+        let mut cuts = Cuts::default();
+        assert!(cuts.notices("Calculate Field", "n").is_empty());
+        for cut in [Cut::None, Cut::Fraction, Cut::Range, Cut::NotANumber, Cut::NotANumber] {
+            cuts.add(cut);
+        }
+        assert_eq!(
+            cuts.notices("Calculate Field", "n"),
+            [
+                "Calculate Field: 'n' holds whole numbers, so 1 result lost its fraction",
+                "Calculate Field: 'n' is null for 1 result past the 64-bit integer range",
+                "Calculate Field: 'n' is null for 2 results that aren't numbers",
+            ]
+        );
+        cuts = Cuts::default();
+        cuts.add(Cut::NotANumber);
+        assert_eq!(cuts.notices("Rule", "n"), ["Rule: 'n' is null for 1 result that isn't a number"]);
+    }
 
     /// Every form the earlier calculator read gives the same stored values through the
     /// expression language, whatever the field's type (but for the two forms whose quotes now

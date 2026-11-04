@@ -161,6 +161,15 @@ text against a pattern of many `%`s) is unknown.
 
 ## Calculate Field
 
+A number goes into a number field as it is: a decimal field keeps every digit of `1 / 3` (a
+whole number past 2^53 becomes the nearest decimal, as a decimal field holds it). A whole-number
+field holds whole numbers, so a decimal result, or text written as one, loses its fraction toward
+zero (`2.7` is 2, `-2.7` is -2), and one past the 64-bit integer range, or not a number (NaN), is
+left empty. Calculate Field, and a calculation attribute rule on each edit it applies to, says how
+many results lost their fraction, how many were past the range and how many weren't numbers. Text
+that doesn't read as a number at all (`n/a`) is left empty too, for now without a notice. A
+number into a text field is written as RustGIS shows it, to six decimal places.
+
 Calculate Field also takes the forms its earlier calculator took: a field name with spaces
 written bare (`Pop Est * 2`) still works when the text isn't a valid expression, and on a layer
 with a field named `true`, `false` or `null` such forms keep reading it as the field (in other

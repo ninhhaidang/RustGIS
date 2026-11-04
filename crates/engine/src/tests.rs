@@ -26207,6 +26207,140 @@ fn a_pdf_says_which_frames_and_pages_it_draws_as_pictures() {
     );
 }
 
+/// Calculate Field keeps a decimal result as it is in a decimal field, rather than rounding it to
+/// the six places its text shows, and says what a whole-number field cuts: a fraction, or a number
+/// past the 64-bit range (null). Results the field holds give no notice.
+#[test]
+fn calculate_field_keeps_decimals_and_says_what_whole_numbers_cut() {
+    use rustgis_data::Value as V;
+    let mut s = Session::new(Project::default());
+    let points = json!({"type": "FeatureCollection", "features": [
+        {"type": "Feature", "properties": {"y": 2020, "t": "2.7"}, "geometry": {"type": "Point", "coordinates": [0, 0]}},
+        {"type": "Feature", "properties": {"y": 14, "t": "12"}, "geometry": {"type": "Point", "coordinates": [1, 0]}},
+        {"type": "Feature", "properties": {"y": -15, "t": "n/a"}, "geometry": {"type": "Point", "coordinates": [2, 0]}}]});
+    s.run("layer.addDataText", &json!({"fileName": "calc.geojson", "text": points.to_string()})).unwrap();
+    s.run("edit.addField", &json!({"layer": "calc", "name": "d", "type": "double"})).unwrap();
+    s.run("edit.addField", &json!({"layer": "calc", "name": "i", "type": "long"})).unwrap();
+    // Each run's notices, and the field's values after it.
+    fn calc(s: &mut Session, field: &str, expression: &str) -> (Vec<String>, Vec<V>) {
+        let mark = s.notice_mark();
+        s.run("edit.calculateField", &json!({"layer": "calc", "field": field, "expression": expression})).unwrap();
+        let notices: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+        let ds = &s.map().layer_by_name("calc").unwrap().dataset;
+        let fi = ds.field_index(field).unwrap();
+        (notices, (0..3).map(|r| ds.value(r, fi).clone()).collect::<Vec<V>>())
+    }
+    let none: Vec<String> = Vec::new();
+    // Decimals as they are: a third, a billionth, and one past what six places times a million hold.
+    let third = 1.0 / 3.0;
+    assert_eq!(calc(&mut s, "d", "1 / 3"), (none.clone(), vec![V::Float(third); 3]));
+    let billionths = [2020.0, 14.0, -15.0].map(|y: f64| V::Float(y * 0.000000001)).to_vec();
+    assert_eq!(calc(&mut s, "d", "y * 0.000000001"), (none.clone(), billionths));
+    assert_eq!(calc(&mut s, "d", "y * 1e300").1[0], V::Float(2020.0 * 1e300), "not infinite");
+    assert_eq!(calc(&mut s, "d", "y / 2"), (none.clone(), vec![V::Float(1010.0), V::Float(7.0), V::Float(-7.5)]));
+    // A whole-number field: 2020 / 7 and -15 / 7 lose their fraction (toward zero); 14 / 7 is 2.
+    let cut = |n: &str| {
+        let their = if n.starts_with("1 ") { "its" } else { "their" };
+        format!("Calculate Field: 'i' holds whole numbers, so {n} lost {their} fraction")
+    };
+    assert_eq!(calc(&mut s, "i", "y / 7"), (vec![cut("2 results")], vec![V::Int(288), V::Int(2), V::Int(-2)]));
+    assert_eq!(calc(&mut s, "i", "y * 2"), (none.clone(), vec![V::Int(4040), V::Int(28), V::Int(-30)]));
+    // Past the 64-bit range: null, and said; 14e17 and -15e17 fit, exactly.
+    let past = |n: &str| format!("Calculate Field: 'i' is null for {n} past the 64-bit integer range");
+    let (notices, values) = calc(&mut s, "i", "y * 1e17");
+    assert_eq!(notices, [past("1 result")]);
+    assert_eq!(values, [V::Null, V::Int(1_400_000_000_000_000_000), V::Int(-1_500_000_000_000_000_000)]);
+    assert_eq!(calc(&mut s, "i", "y * 1e18").0, [past("3 results")]);
+    // The range's ends: -2^63 is i64::MIN; 2^63 is one past i64::MAX.
+    assert_eq!(calc(&mut s, "i", "y * 0 - 9223372036854775808"), (none.clone(), vec![V::Int(i64::MIN); 3]));
+    assert_eq!(calc(&mut s, "i", "y * 0 + 9223372036854775808"), (vec![past("3 results")], vec![V::Null; 3]));
+    // Text written as a number: a decimal loses its fraction, a whole number is exact; text that
+    // isn't a number is null, as before.
+    assert_eq!(calc(&mut s, "i", "t"), (vec![cut("1 result")], vec![V::Int(2), V::Int(12), V::Null]));
+    // Decimal text at the range's ends is read from its digits: i64::MAX written with ".0" fits,
+    // and a fraction on i64::MIN is cut, not taken as one past the range.
+    s.run("edit.addField", &json!({"layer": "calc", "name": "t2", "type": "text"})).unwrap();
+    let texts = |s: &mut Session, values: [&str; 3]| {
+        for (row, v) in values.iter().enumerate() {
+            s.run("edit.setValue", &json!({"layer": "calc", "row": row, "field": "t2", "value": v})).unwrap();
+        }
+    };
+    texts(&mut s, ["9223372036854775807.0", "-9223372036854775808.9", "-.5"]);
+    assert_eq!(calc(&mut s, "i", "t2"), (vec![cut("2 results")], vec![V::Int(i64::MAX), V::Int(i64::MIN), V::Int(0)]));
+    texts(&mut s, ["9223372036854775808.0", "12.000", "1.5e3"]);
+    assert_eq!(calc(&mut s, "i", "t2"), (vec![past("1 result")], vec![V::Null, V::Int(12), V::Int(1500)]));
+    // Whole-number text past the range is read from its digits too: just below i64::MIN is past
+    // it, though as a decimal it rounds to -2^63, which is i64::MIN.
+    texts(&mut s, ["-9223372036854775809", "-9223372036854775900", "+9223372036854775808"]);
+    assert_eq!(calc(&mut s, "i", "t2"), (vec![past("3 results")], vec![V::Null; 3]));
+    // Words the decimal reader takes aren't numbers written as text: null, said as not numbers,
+    // not as past the range; a number too large for a decimal is past it.
+    texts(&mut s, ["NaN", "inf", "1e400"]);
+    let not_numbers = "Calculate Field: 'i' is null for 2 results that aren't numbers".to_string();
+    assert_eq!(calc(&mut s, "i", "t2"), (vec![past("1 result"), not_numbers], vec![V::Null; 3]));
+    // With an exponent, text is read as a decimal: 0.25 loses its fraction, 3 is whole.
+    texts(&mut s, ["2.5e-1", "3e0", "-"]);
+    assert_eq!(calc(&mut s, "i", "t2"), (vec![cut("1 result")], vec![V::Int(0), V::Int(3), V::Null]));
+    // Other commands that write a number into a whole-number field keep their earlier conversion
+    // past the range (the range's end): only Calculate Field and calculation rules say what they
+    // cut, and make such a result null.
+    s.run("edit.setValue", &json!({"layer": "calc", "row": 2, "field": "i", "value": 1e30})).unwrap();
+    s.run("edit.setValue", &json!({"layer": "calc", "row": 1, "field": "d", "value": third})).unwrap();
+    let ds = &s.map().layer_by_name("calc").unwrap().dataset;
+    assert_eq!(ds.value(2, ds.field_index("i").unwrap()), &V::Int(i64::MAX));
+    assert_eq!(ds.value(1, ds.field_index("d").unwrap()), &V::Float(third), "a decimal set as it is");
+    // One fraction: the singular.
+    s.run("select.byAttributes", &json!({"layer": "calc", "where": "y = 2020"})).unwrap();
+    let mark = s.notice_mark();
+    s.run("edit.calculateField", &json!({"layer": "calc", "field": "i", "expression": "y / 7"})).unwrap();
+    let notices: Vec<&str> = s.notices_since(mark).iter().map(|n| n.text.as_str()).collect();
+    assert_eq!(notices, ["Calculate Field: 'i' holds whole numbers, so 1 result lost its fraction"]);
+
+    // A data-design calculation rule writes through the same conversion, and says so on each edit
+    // it cuts, once the edit is kept.
+    s.run("select.clear", &json!({})).unwrap();
+    let rule = json!({"layer": "calc", "name": "Seventh", "kind": "calculation", "field": "i", "expression": "y / 7"});
+    s.run("data.attributeRule", &rule).unwrap();
+    let edit = |s: &mut Session, y: i64| {
+        let mark = s.notice_mark();
+        s.run("edit.setValue", &json!({"layer": "calc", "row": 1, "field": "y", "value": y})).map(|_| ())?;
+        let ds = &s.map().layer_by_name("calc").unwrap().dataset;
+        let notices: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+        Ok::<_, String>((notices, ds.value(1, ds.field_index("i").unwrap()).clone()))
+    };
+    let rule_cut = "Attribute rule Seventh: 'i' holds whole numbers, so 1 result lost its fraction".to_string();
+    assert_eq!(edit(&mut s, 15), Ok((vec![rule_cut], V::Int(2))));
+    assert_eq!(edit(&mut s, 21), Ok((none.clone(), V::Int(3))));
+    let rule = json!({"layer": "calc", "name": "Huge", "kind": "calculation", "field": "d", "expression": "y / 3"});
+    s.run("data.attributeRule", &rule).unwrap();
+    let d = |s: &Session| {
+        let ds = &s.map().layer_by_name("calc").unwrap().dataset;
+        ds.value(1, ds.field_index("d").unwrap()).clone()
+    };
+    edit(&mut s, 22).unwrap();
+    assert_eq!(d(&s), V::Float(22.0 / 3.0), "a decimal rule's result as it is");
+    // Each step says what it cut, even when a later rule writes the same field: the later rule may
+    // read the cut value (here `i * 2` reads Seventh's 2, from 15 / 7).
+    let rule = json!({"layer": "calc", "name": "Double", "kind": "calculation", "field": "i", "expression": "i * 2"});
+    s.run("data.attributeRule", &rule).unwrap();
+    let seventh = |n: &str| {
+        let their = if n.starts_with("1 ") { "its" } else { "their" };
+        format!("Attribute rule Seventh: 'i' holds whole numbers, so {n} lost {their} fraction")
+    };
+    assert_eq!(edit(&mut s, 15), Ok((vec![seventh("1 result")], V::Int(4))));
+    // Calculate Field says what it cut too, after the rules that ran in its edit.
+    let (notices, values) = calc(&mut s, "i", "y / 7");
+    assert_eq!((notices, values[1].clone()), (vec![seventh("3 results"), cut("3 results")], V::Int(4)));
+    s.run("data.attributeRule", &json!({"layer": "calc", "name": "Double", "remove": true})).unwrap();
+    s.run("data.attributeRule", &json!({"layer": "calc", "name": "Seventh", "remove": true})).unwrap();
+    // A rejected edit changes nothing, and says nothing of the rule.
+    let limit = json!({"layer": "calc", "name": "Small", "kind": "constraint", "expression": "y < 100"});
+    s.run("data.attributeRule", &limit).unwrap();
+    let mark = s.notice_mark();
+    assert!(s.run("edit.setValue", &json!({"layer": "calc", "row": 1, "field": "y", "value": 101})).is_err());
+    assert!(s.notices_since(mark).iter().all(|n| !n.text.starts_with("Attribute rule")), "{:?}", s.notices_since(mark));
+}
+
 /// Viewshed and Interpolate made on another thread, as the Analysis pane runs them (#1291 step 3):
 /// the raster handed over (`ran`) is the one the command makes here, a cancelled run is an error
 /// saying so, and a run whose project was closed meanwhile adds nothing.
