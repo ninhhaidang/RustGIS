@@ -278,13 +278,15 @@ pub fn run_with_budget(s: &mut Session, call: &ToolCall, tokens: usize) -> Resul
                 return Err(format!("unknown command '{id}'; find ids with search_commands"));
             }
             let (before, mark) = (layer_snap(s), s.notice_mark());
-            let r = s.run(&id, &params_arg(a)?).map_err(|e| error_with_notices(e, s, mark))?;
+            let r = s.run(&id, &params_arg(a)?).map_err(|e| public_text(error_with_notices(e, s, mark)))?;
             with_notices(with_new_layers(r, s, &before), s, mark)
         }
         "run_tool" => {
             let tool = str_arg(a, "tool").ok_or("tool is required")?;
             let (before, mark) = (layer_snap(s), s.notice_mark());
-            let r = s.run("gp.run", &json!({"tool": tool, "params": params_arg(a)?})).map_err(|e| error_with_notices(e, s, mark))?;
+            let r = s
+                .run("gp.run", &json!({"tool": tool, "params": params_arg(a)?}))
+                .map_err(|e| public_text(error_with_notices(e, s, mark)))?;
             with_notices(with_new_layers(r, s, &before), s, mark)
         }
         "read_features" => read_features(s, a)?,
@@ -310,7 +312,52 @@ pub fn run_with_budget(s: &mut Session, call: &ToolCall, tokens: usize) -> Resul
         "test_panic" => panic!("a test tool panicked"),
         other => return Err(format!("unknown tool '{other}'")),
     };
-    Ok(bounded_json(&v, tokens))
+    Ok(public_result(s, v, tokens))
+}
+
+/// How deep a result is searched for runtime login addresses; what is deeper is withheld.
+const MAX_DEPTH: usize = 16;
+
+/// `text` with every runtime login wrapper (`rustgis-login:…`, alone or after a prefix such as
+/// `pmtiles:…@`) replaced by its plain address. Commands return the bound addresses the app needs
+/// to use a connection's login; the model and MCP clients get only the public ones.
+fn public_text(text: String) -> String {
+    if text.contains(rustgis_engine::data::login_address::PREFIX) {
+        rustgis_engine::render::rustgis_tiles::logins::scrub(&text)
+    } else {
+        text
+    }
+}
+
+fn public_result(s: &mut Session, value: Value, tokens: usize) -> String {
+    let mut withheld = 0usize;
+    let mut value = public_addresses(value, 0, &mut withheld);
+    if withheld > 0 {
+        let mark = s.notice_mark();
+        s.notify(format!("Tool result: {withheld} subtrees at nesting depth {MAX_DEPTH} were withheld."), false);
+        if let Some(notices) = value.get_mut("notices").and_then(Value::as_array_mut) {
+            notices.extend(s.notices_since(mark).iter().map(|n| json!(n.text)));
+        } else {
+            value = with_notices(value, s, mark);
+        }
+    }
+    bounded_json(&value, tokens)
+}
+
+/// `v` with its strings made public ([`public_text`]), to a depth of [`MAX_DEPTH`].
+fn public_addresses(v: Value, depth: usize, withheld: &mut usize) -> Value {
+    match v {
+        Value::String(s) => Value::String(public_text(s)),
+        Value::Array(a) if depth < MAX_DEPTH => Value::Array(a.into_iter().map(|x| public_addresses(x, depth + 1, withheld)).collect()),
+        Value::Object(o) if depth < MAX_DEPTH => {
+            Value::Object(o.into_iter().map(|(k, x)| (k, public_addresses(x, depth + 1, withheld))).collect())
+        }
+        Value::Array(_) | Value::Object(_) => {
+            *withheld = withheld.saturating_add(1);
+            json!("[too deep]")
+        }
+        other => other,
+    }
 }
 
 /// Serialize complete JSON. Oversized results become an explicit text preview envelope;
@@ -463,7 +510,7 @@ fn run_script(s: &mut Session, a: &Value, tokens: usize) -> Result<String, Strin
             let added = with_new_layers(json!({}), s, &before).get("layersAdded").cloned().unwrap_or_else(|| json!([]));
             let out = json!({"success": true, "result": last, "lines": ran.map_or(0, Vec::len), "layersAdded": added,
                 "notices": notices, "error": null, "duration_s": secs});
-            Ok(bounded_json(&out, tokens))
+            Ok(public_result(s, out, tokens))
         }
         Err(e) => {
             // Nothing was kept, so no line ran and no layer was added.
@@ -472,7 +519,7 @@ fn run_script(s: &mut Session, a: &Value, tokens: usize) -> Result<String, Strin
             let said: Vec<&&str> = notices.iter().filter(|t| **t != e && **t != told).collect();
             let out = json!({"success": false, "result": null, "lines": 0, "layersAdded": [], "notices": said,
                 "error": clip(&e, 8000), "duration_s": secs});
-            Err(bounded_json(&out, tokens))
+            Err(public_result(s, out, tokens))
         }
     }
 }
@@ -812,4 +859,75 @@ pub fn context(s: &Session) -> String {
         out.push_str(&line);
     }
     out
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use rustgis_engine::render::rustgis_tiles::logins;
+
+    #[test]
+    fn results_carry_plain_addresses_not_login_wrappers() {
+        let mut s = Session::new(rustgis_engine::Project::default());
+        let origin = "https://assistant-login757.example.org";
+        let definition = json!({"kind":"wmts", "address": format!("{origin}/tiles"), "auth":"header", "keyName":"X-Key"});
+        let id = s.run("connection.new", &definition).unwrap()["id"].as_str().unwrap().to_string();
+        s.run("connection.login", &json!({"id": id, "apiKey": "assistant-secret-757"})).unwrap();
+        let plain = format!("{origin}/tiles/{{z}}/{{x}}/{{y}}.png");
+        let tile = rustgis_engine::service_logins::request(&mut s, Some(&id), &plain).unwrap();
+        assert!(tile.starts_with(rustgis_engine::data::login_address::PREFIX));
+        // The app's command result keeps the bound address it reads through; the model's doesn't.
+        let call = |command: &str, params: Value| ToolCall {
+            id: String::new(),
+            name: "run_command".into(),
+            args: json!({"command": command, "params": params}),
+        };
+        let added = run_with_budget(&mut s, &call("map.addTiles", json!({"url": tile, "name": "T"})), DEFAULT_OUTPUT_TOKENS).unwrap();
+        let listed = run_with_budget(&mut s, &call("map.tiles", json!({})), DEFAULT_OUTPUT_TOKENS).unwrap();
+        assert!(s.map().tiles[0].url.starts_with("rustgis-login:"));
+        for text in [&added, &listed] {
+            assert!(!text.contains("rustgis-login:") && !text.contains("assistant-secret-757"), "{text}");
+        }
+        assert!(listed.contains(&plain), "the model still learns the layer's address: {listed}");
+    }
+
+    #[test]
+    fn wrappers_after_a_prefix_are_made_plain_too() {
+        let origin = "https://assistant-login.example";
+        let binding = logins::activate(origin, "assistant", logins::Method::Header("X-Key".into()), "assistant-secret", false).unwrap();
+        let archive = logins::bind(&binding, &format!("{origin}/a.pmtiles")).unwrap();
+        let result = json!({"layers": [{"next": {"request": {"url": format!("pmtiles:x@{archive}")}}}], "count": 2});
+        let v = public_addresses(result, 0, &mut 0);
+        assert_eq!(v["layers"][0]["next"]["request"]["url"], format!("pmtiles:x@{origin}/a.pmtiles"));
+        assert_eq!(v["count"], 2);
+        assert!(logins::deactivate(&binding));
+    }
+
+    #[test]
+    fn too_deep_results_report_each_withheld_subtree_without_losing_success() {
+        let mut s = Session::new(rustgis_engine::Project::default());
+        let mut deep = json!({"value": "rustgis-login:leak"});
+        for _ in 0..MAX_DEPTH {
+            deep = json!([deep]);
+        }
+        let result = json!({"success": true, "left": deep.clone(), "right": deep, "notices": ["existing warning"]});
+        let out: Value = serde_json::from_str(&public_result(&mut s, result, DEFAULT_OUTPUT_TOKENS)).unwrap();
+        assert_eq!(out["success"], true, "withholding output must not report an executed command as failed");
+        assert!(!out.to_string().contains("rustgis-login:"));
+        assert_eq!(out["notices"][0], "existing warning");
+        let notice = out["notices"][1].as_str().unwrap();
+        let counts: Vec<usize> = notice.split_whitespace().filter_map(|word| word.parse().ok()).collect();
+        assert_eq!(counts, [2, MAX_DEPTH], "the notice reports truncated subtrees, not an unbounded count of their contents");
+        assert_eq!(s.notices_since(0).len(), 1, "the app also receives one aggregate loss notice");
+    }
+
+    #[test]
+    fn clean_nested_results_need_no_withholding_notice() {
+        let mut s = Session::new(rustgis_engine::Project::default());
+        let result = json!({"result": {"nested": [{"value": "complete"}]}, "success": true});
+        let out: Value = serde_json::from_str(&public_result(&mut s, result.clone(), DEFAULT_OUTPUT_TOKENS)).unwrap();
+        assert_eq!(out, result);
+        assert!(s.notices_since(0).is_empty());
+    }
 }

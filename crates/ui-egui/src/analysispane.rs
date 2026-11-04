@@ -1355,7 +1355,7 @@ fn trend(app: &mut RustGisApp, ui: &mut Ui, rasters: &[String]) {
     #[cfg(target_arch = "wasm32")]
     run(app, "cube.trend", p);
     #[cfg(not(target_arch = "wasm32"))]
-    match rustgis_engine::cmd::cube::trend_start(&app.session, &p) {
+    match rustgis_engine::cmd::cube::trend_start(&mut app.session, &p) {
         Ok(job) => {
             let id = app.session.download_started();
             let r = Trending {

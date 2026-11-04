@@ -1680,6 +1680,7 @@ fn tile_row(app: &mut RustGisApp, ui: &mut Ui, i: usize, moves: [bool; 2], reord
     }
     let resp = resp.on_hover_text(hover);
     resp.context_menu(|ui| {
+        service_login_menu(app, ui, &tile.connection);
         // Stored bounds, an archive or GeoTIFF say what the layer covers.
         if tile.bounds.is_some() || matches!(tile.kind, TileKind::PmTiles | TileKind::Cog) {
             if ui.button(tl!("Zoom To Layer")).clicked() {
@@ -2126,6 +2127,19 @@ fn layers_menu(app: &mut RustGisApp, ui: &mut Ui, picked: &[u32], reorder: bool)
     }
 }
 
+/// Reopens the login of the saved service a layer records, without guessing from its address.
+fn service_login_menu(app: &mut RustGisApp, ui: &mut Ui, connection: &str) {
+    let Some(c) = app.session.connections.find(connection).filter(|c| rustgis_engine::service_logins::is_service(c) && !c.auth.is_empty())
+    else {
+        return;
+    };
+    if ui.button(crate::i18n::fmt("Log In to {name}…", &[("name", &c.name)])).clicked() {
+        let id = c.id.clone();
+        crate::connectionui::log_in(app, &id);
+        ui.close();
+    }
+}
+
 /// A layer's right-click menu (its row in any Layers view). Move Up and Move Down only with
 /// `reorder` (the drawing order view, unfiltered).
 fn layer_menu(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, reorder: bool) {
@@ -2145,6 +2159,7 @@ fn layer_menu(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, reorder: bool) {
         let _ = app.run("ui.refreshService", json!({"layer":l.id}));
         ui.close();
     }
+    service_login_menu(app, ui, &l.connection);
     let login = l.source.as_ref().and_then(|s| {
         let (kind, database) = rustgis_engine::connections::layer_database(s)?;
         let connections: Vec<_> = app.session.connections.matching_database(kind, database).into_iter().cloned().collect();
@@ -2171,6 +2186,7 @@ fn layer_menu(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, reorder: bool) {
                     key,
                     connections: connections.iter().map(|c| c.id.clone()).collect(),
                     layers: vec![l.id],
+                    tiles: 0,
                     opened,
                     prompted: true,
                 },

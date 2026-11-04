@@ -73,6 +73,7 @@ impl TileKind {
     }
     /// The kind an address most likely is, from how it looks.
     pub fn guess(url: &str) -> TileKind {
+        let url = rustgis_data::login_address::inner(url);
         let path = url.split(['?', '#']).next().unwrap_or(url).to_ascii_lowercase();
         if path.ends_with(".pmtiles") {
             TileKind::PmTiles
@@ -178,6 +179,15 @@ pub struct TileLayer {
     /// Expanded in the Layers pane, its legend and source layers showing.
     #[serde(default, skip_serializing_if = "is_false")]
     pub expanded: bool,
+    /// The saved connection it was added from (its id, in the app's preferences), so a project
+    /// reopened later logs in with that connection's login and never needs a token in its
+    /// address. Empty for a layer that came from no connection. Never a secret.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub connection: String,
+    /// Added by an anonymous plugin command: none of its addresses may acquire a saved
+    /// web-service login, including after saving and reopening the project.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub anonymous: bool,
     /// Picked in the Layers pane (`map.selectTiles`), for the session only: it holds while no
     /// map layer is active (the engine's `Session::selected_tile`).
     #[serde(skip)]
@@ -200,7 +210,7 @@ pub fn checked_legends(legends: impl IntoIterator<Item = rustgis_data::ogc::Lege
     legends
         .into_iter()
         .map(|l| rustgis_data::ogc::Legend { url: l.url.trim().to_string(), min_scale: scale(l.min_scale), max_scale: scale(l.max_scale) })
-        .filter(|l| is_web(&l.url) && l.url.len() <= MAX_LEGEND_URL)
+        .filter(|l| is_web(&l.url) && rustgis_data::login_address::inner(&l.url).len() <= MAX_LEGEND_URL)
         .take(rustgis_data::ogc::MAX_LEGENDS)
         .collect()
 }
@@ -227,6 +237,7 @@ pub const MAX_TIME_URLS: usize = crate::time::MAX_STEPS;
 
 /// Whether an address is on the web (`http://` or `https://`, in any case).
 pub fn is_web(url: &str) -> bool {
+    let url = rustgis_data::login_address::inner(url);
     let scheme = url.get(..8).unwrap_or(url).to_ascii_lowercase();
     scheme.starts_with("https://") || scheme.starts_with("http://")
 }
@@ -370,6 +381,8 @@ impl TileLayer {
             error: None,
             feature_info: None,
             legends: Vec::new(),
+            connection: String::new(),
+            anonymous: false,
             expanded: false,
             selected: false,
             single_image: false,
@@ -423,11 +436,11 @@ impl TileLayer {
     pub fn repair(&mut self) -> Result<(), String> {
         self.url = self.url.trim().to_string();
         // A dated address is a web address whose date is filled in after the scheme and host.
-        if self.time_url.as_ref().is_some_and(|u| !is_web(u) || u.len() > 4096) {
+        if self.time_url.as_ref().is_some_and(|u| !is_web(u) || rustgis_data::login_address::inner(u).len() > 4096) {
             self.time_url = None;
         }
         // A file per date: web addresses, finite dates, in order.
-        self.time_urls.retain(|(d, u)| d.is_finite() && is_web(u) && u.len() <= 4096);
+        self.time_urls.retain(|(d, u)| d.is_finite() && is_web(u) && rustgis_data::login_address::inner(u).len() <= 4096);
         // Sorted before the cap, so a list out of order keeps its first dates, not any.
         self.time_urls.sort_by(|a, b| a.0.total_cmp(&b.0));
         self.time_urls.dedup_by(|a, b| a.0 == b.0);
@@ -488,9 +501,9 @@ impl TileLayer {
 pub const UPLOAD: &str = "upload:";
 
 /// Whether a PMTiles or MBTiles archive address is a file rather than a web address. An address
-/// read through a saved S3 connection is never a file, well formed or not.
+/// wrapped for an S3 connection or service login is never a file, well formed or not.
 pub fn is_local_archive(url: &str) -> bool {
-    if rustgis_data::s3_address::is_wrapper(url) {
+    if rustgis_data::s3_address::is_wrapper(url) || rustgis_data::login_address::is_wrapper(url) {
         return false;
     }
     let lower = url.to_ascii_lowercase();
@@ -517,10 +530,15 @@ pub fn check_path(path: &str, ext: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Whether `url` may be fetched: HTTP or HTTPS, with a host, and no longer than 4096 bytes. An
-/// address read through a saved S3 connection is judged by the address it wraps (still bounded
-/// by 4096 bytes), and itself by the wrapper's own bound; it needs no login to be kept.
+/// Whether `url` may be fetched: HTTP, HTTPS or S3, with a host, and no longer than 4096 bytes.
+/// Connection and service-login wrappers are judged by their inner address and their own bound;
+/// no live login is needed to keep a saved address.
 pub fn check_url(url: &str) -> Result<(), String> {
+    let url = match rustgis_data::login_address::parse(url) {
+        Ok(Some(b)) => b.url,
+        Ok(None) => url,
+        Err(e) => return Err(e.to_string()),
+    };
     let url = match rustgis_data::s3_address::parse(url) {
         Ok(Some(b)) => b.url,
         Ok(None) => url,
@@ -542,9 +560,9 @@ pub fn check_url(url: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The host part of an HTTP(S) address (of the address an address read through a saved S3
-/// connection wraps).
+/// The host part of an HTTP(S) address, inspecting the address inside a connection or login wrapper.
 pub fn host_of(url: &str) -> Option<&str> {
+    let url = rustgis_data::login_address::parse(url).ok()?.map_or(url, |b| b.url);
     let url = rustgis_data::s3_address::inner(url);
     let rest = url.split_once("://")?.1;
     let host = rest.split(['/', '?', '#']).next()?;
@@ -555,6 +573,19 @@ pub fn host_of(url: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runtime_bound_tile_and_legend_addresses_are_web_addresses() {
+        let bound = rustgis_data::login_address::bind("0123456789abcdef", "https://maps.test", "https://maps.test/style.json").unwrap();
+        assert!(is_web(&bound));
+        assert!(check_url(&bound).is_ok());
+        assert_eq!(host_of(&bound), Some("maps.test"));
+        assert_eq!(TileKind::guess(&bound), TileKind::Style);
+        let legend = rustgis_data::ogc::Legend { url: bound.clone(), ..Default::default() };
+        assert_eq!(checked_legends([legend]).first().unwrap().url, bound);
+        assert!(check_url("rustgis-login:broken").is_err());
+        assert!(!is_web("rustgis-login:broken"));
+    }
 
     #[test]
     fn style_layers_are_checked() {

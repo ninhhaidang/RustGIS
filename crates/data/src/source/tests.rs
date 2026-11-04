@@ -1214,6 +1214,24 @@ fn flatgeobuf_and_geoparquet_by_address() {
 }
 
 #[test]
+fn login_bound_remote_files_keep_their_request_address() {
+    crate::login_address::set_validator(remote::testing::validate_login);
+    for (name, parquet) in [("bound-grid.fgb", false), ("bound-grid.geoparquet", true)] {
+        let inner = format!("https://test.example/{name}?signature=a%2Fb#view");
+        let address = crate::login_address::bind("0123456789abcdef", "https://test.example", &inner).unwrap();
+        assert!(is_remote_name(&address));
+        assert_eq!(url_name(&address), "bound-grid");
+        remote::testing::serve(&address, big(4, parquet));
+        let file = remote::file(&address);
+        assert_eq!(file.url(), address);
+        let source = open_driven(&address);
+        assert_eq!(source.info().count, Some(16));
+    }
+    let image = crate::login_address::bind("0123456789abcdef", "https://test.example", "https://test.example/a.tif").unwrap();
+    assert!(!is_remote_name(&image));
+}
+
+#[test]
 fn flatgeobuf_stand_in_is_a_feature() {
     // The stand-in a sample passes over must pass the flatbuffers verifier, as real features do.
     let body = &fgb::STAND_IN_FOR_TESTS[4..];

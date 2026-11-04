@@ -54,6 +54,19 @@ pub fn search(app: &mut RustGisApp, start: u64) {
     } else {
         st.asked.clone()
     };
+    if start <= 1 {
+        let url = p.get("url").and_then(Value::as_str).unwrap_or("");
+        if let Some(id) = crate::serviceui::connection_for(app, app.dialogs.connection.as_deref(), url) {
+            p["connection"] = json!(id);
+        }
+    }
+    match rustgis_engine::service_logins::request_params(&mut app.session, &p) {
+        Ok(bound) => p = bound.into_owned(),
+        Err(e) => {
+            app.ui.csw.error = Some(crate::connectionui::translated(&e));
+            return;
+        }
+    }
     let asked = p.clone();
     p["start"] = json!(start);
     match rustgis_engine::cmd::service::records_request(&app.session, &p) {
@@ -146,7 +159,8 @@ fn records(app: &mut RustGisApp, ui: &mut egui::Ui) {
         return;
     }
     ui.separator();
-    let url = st.asked["url"].as_str().unwrap_or("").to_string();
+    // The address as typed: one read through a login is matched and kept without its binding.
+    let url = rustgis_engine::data::login_address::inner(st.asked["url"].as_str().unwrap_or("")).to_string();
     let keepable = !url.is_empty() && crate::connectionui::picked(&list, app.dialogs.connection.as_deref(), &url).is_none();
     let mut keep = false;
     ui.horizontal(|ui| {

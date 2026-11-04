@@ -13,19 +13,25 @@ pub fn commands() -> Vec<C> {
     vec![
         C::new("stac.collections", "List STAC Collections", "Home › Add › Web Data › STAC Search", collections)
             .view()
-            .params(r#"{"url"?: "a STAC API (default: Earth Search, https://earth-search.aws.element84.com/v1; Planetary Computer: https://planetarycomputer.microsoft.com/api/stac/v1), or a static catalog's catalog.json or collection.json (its child catalogs and collections are listed)"}"#),
+            .params(r#"{"url"?: "a STAC API (default: Earth Search, https://earth-search.aws.element84.com/v1; Planetary Computer: https://planetarycomputer.microsoft.com/api/stac/v1), or a static catalog's catalog.json or collection.json (its child catalogs and collections are listed)", "connection"?: "as service.add: the saved web-service connection whose login the request uses"}"#),
         C::new("stac.search", "STAC Search", "Home › Add › Web Data › STAC Search", search).params(
-            r#"{"url"?: "a STAC API (default: Earth Search), or a static catalog's catalog.json or collection.json (walked from there, at most 400 documents)", "collections"?: id | [ids] (APIs), "bbox"?: [west, south, east, north] | "view" (the map's extent), "datetime"?: "2024-06-01" | "2024-06-01/2024-06-30", "limit"?: 1–200 (default 10), "maxCloud"?: percent, "sortby"?: "eo:cloud_cover" | "-datetime" (APIs that sort), "phase"?: "pre" | "post" (static catalogs of events), "properties"?: bool (every property of each item, not only its date and cloud cover; default false), "footprints"?: bool (adds the items' footprints as a layer, default true)}"#,
+            r#"{"url"?: "a STAC API (default: Earth Search), or a static catalog's catalog.json or collection.json (walked from there, at most 400 documents)", "collections"?: id | [ids] (APIs), "bbox"?: [west, south, east, north] | "view" (the map's extent), "datetime"?: "2024-06-01" | "2024-06-01/2024-06-30", "limit"?: 1–200 (default 10), "maxCloud"?: percent, "sortby"?: "eo:cloud_cover" | "-datetime" (APIs that sort), "phase"?: "pre" | "post" (static catalogs of events), "properties"?: bool (every property of each item, not only its date and cloud cover; default false), "footprints"?: bool (adds the items' footprints as a layer, default true), "connection"?: "as service.add: the saved web-service connection whose login the request uses"}"#,
         ),
         C::new("stac.addFootprints", "Add STAC Footprints", "Home › Add › Web Data › STAC Search", add_footprints_cmd)
             .params(r#"{"footprints": GeoJSON FeatureCollection (items' footprints, as STAC Search finds them), "name"?: text}"#),
         C::new("stac.addCube", "Add STAC Data Cube", "Home › Add › Web Data › STAC Search", add_cube).params(
-            r#"{"url"?: a STAC API (default: Earth Search), "collection": id, "asset": key (a band, such as NDVI), "bbox"?: [west, south, east, north] | "view" (default: the map's extent), "start", "end": dates, "maxCloud"?: percent, "range"?: [low, high] (the values shown from black to white, in the asset's own units after its raster:bands scale and offset, the same for every date and tile; default: each file's 2nd–98th percentile), "name"?: text} → a tile layer per tile of the grid the items cover, each a file per date following the time slider, which turns on over their dates when it is off (desktop)"#,
+            r#"{"url"?: a STAC API (default: Earth Search), "collection": id, "asset": key (a band, such as NDVI), "bbox"?: [west, south, east, north] | "view" (default: the map's extent), "start", "end": dates, "maxCloud"?: percent, "range"?: [low, high] (the values shown from black to white, in the asset's own units after its raster:bands scale and offset, the same for every date and tile; default: each file's 2nd–98th percentile), "name"?: text, "connection"?: "as service.add: the saved web-service connection whose login the request uses"} → a tile layer per tile of the grid the items cover, each a file per date following the time slider, which turns on over their dates when it is off (desktop)"#,
         ),
         C::new("stac.addAsset", "Add STAC Asset", "Home › Add › Web Data › STAC Search", add_asset).params(
-            r#"{"item": a STAC item (as stac.search returns it) | "url": an item's address (Planetary Computer assets are signed), "asset"?: key (default: visual, else the first GeoTIFF, else the first data asset), "name"?: text}"#,
+            r#"{"item": a STAC item (as stac.search returns it) | "url": an item's address (Planetary Computer assets are signed), "asset"?: key (default: visual, else the first GeoTIFF, else the first data asset), "name"?: text, "connection"?: "as service.add"}"#,
         ),
     ]
+}
+
+fn request_api(s: &mut Session, p: &Value) -> Result<String, String> {
+    let bound = crate::service_logins::request_params(s, p)?;
+    let api = stac::api(ps(bound.as_ref(), "url"))?;
+    crate::service_logins::request(s, ps(bound.as_ref(), "connection"), &api)
 }
 
 /// The search a command describes (`view` is the map's current extent).
@@ -107,8 +113,8 @@ pub(crate) fn add_collection(s: &mut Session, fc: &Value, name: &str) -> Result<
     Ok(Some(id))
 }
 
-pub(super) fn collections(_s: &mut Session, p: &Value) -> CmdResult {
-    let api = stac::api(ps(p, "url"))?;
+pub(super) fn collections(s: &mut Session, p: &Value) -> CmdResult {
+    let api = request_api(s, p)?;
     #[cfg(target_arch = "wasm32")]
     {
         let _ = api;
@@ -139,7 +145,7 @@ pub(super) fn collections_json(api: &str, bytes: &[u8]) -> CmdResult {
 }
 
 fn search(s: &mut Session, p: &Value) -> CmdResult {
-    let api = stac::api(ps(p, "url"))?;
+    let api = request_api(s, p)?;
     if stac::catalog::is_static(&api) {
         return search_static(s, p, &api);
     }
@@ -240,13 +246,19 @@ fn item(p: &Value) -> Result<Item, String> {
 }
 
 fn add_asset(s: &mut Session, p: &Value) -> CmdResult {
+    let bound = crate::service_logins::request_params(s, p)?;
+    let p = bound.as_ref();
     let i = item(p)?;
     let (key, href) = i.asset_href(ps(p, "asset"))?;
     let name = ps(p, "name").map(str::trim).filter(|n| !n.is_empty()).map(str::to_string).unwrap_or_else(|| format!("{} {key}", i.id));
     // A Planetary Computer asset is read with its storage container's token.
     #[cfg(not(target_arch = "wasm32"))]
     let href = stac::sign_blocking(&href)?;
-    super::layer::add_url(s, &json!({"url": href, "name": name}))
+    let mut add = json!({"url": href, "name": name});
+    if let Some(connection) = p.get("connection") {
+        add["connection"] = connection.clone();
+    }
+    super::layer::add_url(s, &add)
 }
 
 /// The most items a data cube on the time slider takes (its search is paged up to this).
@@ -308,8 +320,8 @@ pub(crate) fn period_after(v: &Value) -> Option<f64> {
 /// groups the items' asset by tile and day: `{"url"?, "collection", "asset", "bbox"? | "view",
 /// "start", "end", "maxCloud"?}`.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn cube_files(s: &Session, p: &Value, max_items: usize) -> Result<CubeFiles, String> {
-    let api = stac::api(ps(p, "url"))?;
+pub fn cube_files(s: &mut Session, p: &Value, max_items: usize) -> Result<CubeFiles, String> {
+    let api = request_api(s, p)?;
     if stac::catalog::is_static(&api) {
         return Err("a data cube needs a STAC API's search; a static catalog can't be searched".into());
     }
@@ -348,6 +360,7 @@ pub fn cube_files(s: &Session, p: &Value, max_items: usize) -> Result<CubeFiles,
     // Pages are read from the API's own host: a next link elsewhere ends the search.
     // Scheme, user part, host and port compared: `https://host:443`, never another host or http.
     let host = |u: &str| {
+        let u = crate::render::rustgis_tiles::logins::inner(u);
         u.split_once("://").map(|(scheme, r)| {
             let authority = r.split(['/', '?', '#']).next().unwrap_or("");
             let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h).to_ascii_lowercase();
@@ -412,7 +425,7 @@ pub fn cube_files(s: &Session, p: &Value, max_items: usize) -> Result<CubeFiles,
             continue;
         }
         // The file's address without a fragment of its own, so the range look is the only one.
-        let href = a.href.split('#').next().unwrap_or(&a.href).to_string();
+        let href = crate::render::rustgis_tiles::logins::inherit(&api, a.href.split('#').next().unwrap_or(&a.href));
         // A public bucket's `s3://` file (Digital Earth Australia's, the Copernicus DEM's) is read
         // anonymously at its web address, as a cube's files are kept.
         let href = if s3::is_s3(&href) { public_web(&href, &mut regions)? } else { href };
@@ -577,7 +590,7 @@ pub fn piece_rows(width: u32, height: u32, dates: usize, tile_height: u32, max: 
 /// Prepares a STAC collection's band as a cube: the search (as `stac.addCube` makes it), the
 /// overview level for `cellSize`, the area's grid, and the pieces it is read in.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn stac_cube(s: &Session, p: &Value) -> Result<StacCube, String> {
+pub fn stac_cube(s: &mut Session, p: &Value) -> Result<StacCube, String> {
     use crate::render::rustgis_tiles::cog;
     // The parameters read here, before the search and the first header are waited for.
     let size = match p.get("cellSize").filter(|v| !v.is_null()) {
@@ -618,8 +631,8 @@ pub fn stac_cube(s: &Session, p: &Value) -> Result<StacCube, String> {
     if let Some(o) = searched.as_object_mut() {
         o.insert("bbox".into(), json!(bbox));
     }
-    let CubeFiles { tiles, scales, nodata, collection, asset, .. } =
-        cube_files(s, &searched, if s.long_runs.is_some() { MAX_SERIES_ITEMS } else { MAX_CUBE_ITEMS })?;
+    let max_items = if s.long_runs.is_some() { MAX_SERIES_ITEMS } else { MAX_CUBE_ITEMS };
+    let CubeFiles { tiles, scales, nodata, collection, asset, .. } = cube_files(s, &searched, max_items)?;
     // Every tile's file for a date, by day.
     let mut by_day: std::collections::BTreeMap<i64, Vec<(String, (f64, f64), Option<f64>)>> = Default::default();
     for days in tiles.values() {
@@ -876,6 +889,8 @@ fn add_cube(s: &mut Session, p: &Value) -> CmdResult {
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
+        let bound = crate::service_logins::request_params(s, p)?;
+        let p = bound.as_ref();
         let range = match p.get("range").filter(|v| !v.is_null()) {
             None => None,
             Some(v) => {
@@ -945,8 +960,9 @@ fn add_cube(s: &mut Session, p: &Value) -> CmdResult {
         // Every file a web address of sane length, as a project keeps them (TileLayer::repair),
         // so the cube reopens as it was made.
         if let Some(bad) = tiles.values().flat_map(|by_day| by_day.values()).find(|h| {
-            let lower = h.to_ascii_lowercase();
-            !(lower.starts_with("https://") || lower.starts_with("http://")) || h.len() > 4000
+            let plain = crate::render::rustgis_tiles::logins::inner(h);
+            let lower = plain.to_ascii_lowercase();
+            !(lower.starts_with("https://") || lower.starts_with("http://")) || plain.len() > 4000
         }) {
             return Err(format!(
                 "{}: a data cube's files are read in place from web addresses (http, https)",
@@ -958,7 +974,7 @@ fn add_cube(s: &mut Session, p: &Value) -> CmdResult {
             dates.extend(urls.iter().map(|(d, _)| *d));
             let Some((_, first)) = urls.first() else { continue };
             let name = if many { format!("{base} {tile}") } else { base.clone() };
-            let r = match super::layer::add_url(s, &json!({"url": first, "name": name})) {
+            let r = match super::layer::add_url(s, &json!({"url": first, "name": name, "connection":p.get("connection")})) {
                 Ok(r) => r,
                 Err(e) => {
                     undo(s);
@@ -1065,5 +1081,67 @@ mod tests {
         assert_eq!(super::offset_in(&above, &file), Some((10, -2)), "a grid above the file starts before its first row");
         assert_eq!(super::offset_in(&GeoTransform { origin_x: grid.origin_x + 400.0, ..grid }, &file), None);
         assert_eq!(super::offset_in(&GeoTransform { pixel_width: 463.3, ..grid }, &file), None);
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[allow(clippy::unwrap_used)]
+mod deferred_asset_tests {
+    use super::*;
+
+    #[test]
+    fn a_deferred_asset_download_keeps_its_connection_on_the_finished_layer() {
+        let mut s = Session::new(crate::Project::default());
+        let connection = s
+            .run(
+                "connection.new",
+                &json!({
+                    "kind": "stac", "name": "Public catalog", "auth": "none",
+                    "address": "https://deferred757.example.org/stac"
+                }),
+            )
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let pending = s
+            .run_leaving_downloads(
+                "stac.addAsset",
+                &json!({
+                    "connection": connection, "asset": "data", "name": "Downloaded asset", "as": "not-forwarded",
+                    "item": {"type": "Feature", "stac_version": "1.0.0", "id": "scene",
+                        "geometry": {"type": "Point", "coordinates": [1, 2]},
+                        "properties": {"datetime": "2025-01-01T00:00:00Z"},
+                        "links": [], "assets": {"data": {
+                            "href": "https://deferred757.example.org/data.geojson",
+                            "type": "application/geo+json", "roles": ["data"]
+                        }}}
+                }),
+            )
+            .unwrap();
+        assert_eq!(pending["pending"], true);
+        let mut requests = s.take_url_requests();
+        assert_eq!(requests.len(), 1);
+        let mut request = requests.remove(0);
+        let download = s.download_started();
+        assert!(
+            s.download_landed(
+                download,
+                json!({
+                    "type": "FeatureCollection", "features": [{
+                        "type": "Feature", "geometry": {"type": "Point", "coordinates": [1, 2]},
+                        "properties": {"name": "landed"}
+                    }]
+                })
+                .to_string()
+                .into_bytes()
+            )
+        );
+        request["id"] = json!(download);
+        let added = s.run("layer.addDownload", &request).unwrap();
+        let layer = s.map().layer(added["layer"].as_u64().unwrap() as u32).unwrap();
+        assert_eq!(layer.connection, connection);
+        assert_eq!(layer.name, "Downloaded asset");
+        assert_eq!(layer.dataset.features.len(), 1);
     }
 }

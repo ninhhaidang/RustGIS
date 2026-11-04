@@ -205,6 +205,10 @@ pub(super) fn browse(s: &mut Session, p: &Value) -> CmdResult {
     let level = level(&c, node)?;
     let conn = s3_login(s, &c, &level)?;
     let url = fetch_url(s, &c, &level, conn.as_ref())?;
+    let url = match url {
+        Some(url) if crate::service_logins::is_service(&c) => Some(crate::service_logins::request(s, Some(&c.id), &url)?),
+        other => other,
+    };
     let mut out = json!({"connection": c.id, "node": node});
     if b(p, "probe").unwrap_or(false) {
         out["fetch"] = json!(url);
@@ -213,7 +217,7 @@ pub(super) fn browse(s: &mut Session, p: &Value) -> CmdResult {
     let found = match &level {
         Level::Database => database_schemas(s, &c)?,
         Level::DatabaseSchema { schema } => database_schema(s, &c, schema)?,
-        Level::Service { url, kind } => service(s, p, &mut out, url, kind.as_deref())?,
+        Level::Service { url, kind } => service(s, p, &mut out, &c, url, kind.as_deref())?,
         Level::S3Root if url.is_none() => {
             buckets(c.options.get("buckets").map(String::as_str).unwrap_or("").split(',').map(str::to_string))
         }
@@ -240,7 +244,16 @@ pub(super) fn browse(s: &mut Session, p: &Value) -> CmdResult {
             }
         }
     };
-    out["children"] = json!(found.children);
+    let mut children = found.children;
+    for child in &mut children {
+        public_addresses(child);
+    }
+    if crate::service_logins::is_service(&c) {
+        for child in &mut children {
+            name_connection(child, &c.id, 0);
+        }
+    }
+    out["children"] = json!(children);
     if found.truncated {
         out["truncated"] = json!(true);
     }
@@ -248,6 +261,42 @@ pub(super) fn browse(s: &mut Session, p: &Value) -> CmdResult {
         out["matched"] = json!(m);
     }
     Ok(out)
+}
+
+/// Browse candidates persist public addresses plus a connection id, not a live capability.
+fn public_addresses(value: &mut Value) {
+    match value {
+        Value::String(text) => {
+            if let Some((prefix, tail)) = text.split_once(rustgis_data::login_address::PREFIX) {
+                let wrapped = format!("{}{tail}", rustgis_data::login_address::PREFIX);
+                if let Ok(Some(bound)) = rustgis_data::login_address::parse(&wrapped) {
+                    *text = format!("{prefix}{}", bound.url);
+                }
+            }
+        }
+        Value::Array(values) => values.iter_mut().for_each(public_addresses),
+        Value::Object(values) => values.values_mut().for_each(public_addresses),
+        _ => {}
+    }
+}
+
+/// Names the connection in the add commands a listed child (and its children) offers, so the
+/// layers they add record it and are read with its login.
+fn name_connection(child: &mut Value, id: &str, depth: usize) {
+    if depth > 4 {
+        return;
+    }
+    let command = child.get("add").and_then(|a| a.get("command")).and_then(Value::as_str).unwrap_or("");
+    if crate::service_logins::ADD_COMMANDS.contains(&command)
+        && let Some(params) = child.get_mut("add").and_then(|a| a.get_mut("params")).and_then(Value::as_object_mut)
+    {
+        params.insert("connection".into(), json!(id));
+    }
+    if let Some(list) = child.get_mut("children").and_then(Value::as_array_mut) {
+        for c in list {
+            name_connection(c, id, depth + 1);
+        }
+    }
 }
 
 /// A live database's schemas, each browsed separately so one large schema cannot hide later ones.
@@ -305,8 +354,8 @@ fn schema_tables(tables: &[Value], schema: &str, address: &str) -> Found {
 }
 
 /// A service's layers (capabilities read here, or the app's `answer` and `documents`).
-fn service(s: &mut Session, p: &Value, out: &mut Value, url: &str, kind: Option<&str>) -> Result<Found, String> {
-    let mut q = json!({"url": url});
+fn service(s: &mut Session, p: &Value, out: &mut Value, c: &Connection, url: &str, kind: Option<&str>) -> Result<Found, String> {
+    let mut q = json!({"url": crate::service_logins::request(s, Some(&c.id), url)?, "connection": c.id});
     if let Some(k) = kind {
         q["type"] = json!(k);
     }
@@ -382,7 +431,8 @@ fn service(s: &mut Session, p: &Value, out: &mut Value, url: &str, kind: Option<
 
 /// A catalogue's records, each with the services and files it links to.
 fn catalogue(s: &mut Session, c: &Connection, text: &str, out: &mut Value) -> Result<Found, String> {
-    let r = super::super::service::catalog_search(s, &json!({"url": c.address, "text": text}))?;
+    let url = crate::service_logins::request(s, Some(&c.id), &c.address)?;
+    let r = super::super::service::catalog_search(s, &json!({"url": url, "connection": c.id, "text": text}))?;
     if let Some(n) = r.get("notes") {
         out["notes"] = n.clone();
     }

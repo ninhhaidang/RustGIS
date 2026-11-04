@@ -357,6 +357,8 @@ fn open_with_system(_: &std::path::Path) -> Result<(), String> {
 /// background, then its layers are listed.
 pub struct ServiceConn {
     pub url: String,
+    /// The saved connection captured when browsing began, never the current dialog selection.
+    pub connection: Option<String>,
     /// `wms`, `wmts`, `wfs`, `ogcapi`, `arcgis`, or `auto`.
     pub kind: &'static str,
     pub slot: Slot<Result<Vec<u8>, Failure>>,
@@ -1876,7 +1878,7 @@ impl RustGisApp {
         if let Err(e) = &r {
             log::info!("{id}: {e}");
             // UI-only failures can return before an engine command emits a notice.
-            let text = rustgis_engine::data::diagnostics::Redacted::new(e);
+            let text = rustgis_engine::Session::redacted(e);
             if !self.session.notices_since(notice_mark).iter().any(|notice| notice.error && notice.text == text.as_str()) {
                 self.session.notify_redacted(text, true);
             }
@@ -2607,6 +2609,8 @@ impl RustGisApp {
             }
             // Data by its web address: the dialog, then (with an address) the download, off the
             // frame; it's added when it lands. A PMTiles archive is a tile layer, never downloaded.
+            // Optional `connection`: the saved web-service id forwarded to layer.addUrl or
+            // layer.addDownload, including probes, whole-file fallbacks and paged features.
             "ui.addUrl" => {
                 if p.get("geolibreZarr").and_then(Value::as_bool) == Some(true) {
                     if let Err(e) = geolibreui::start(self, p) {
@@ -2617,12 +2621,23 @@ impl RustGisApp {
                 }
                 // The connection a Connections tree add is for (named in Recent once it is added).
                 let origin = connectiontree::take_origin(self);
-                let Some(url) = p.get("url").and_then(Value::as_str).map(str::trim).filter(|u| !u.is_empty()) else {
+                let Some(raw_url) = p.get("url").and_then(Value::as_str).filter(|u| !u.trim().is_empty()) else {
                     return self.run("ui.dialog", json!({"name": "addUrl"}));
                 };
+                let url = raw_url.trim();
+                // Bind the same normalized address that every deferred consumer receives.
+                let mut normalized = std::borrow::Cow::Borrowed(p);
+                if url.len() != raw_url.len() {
+                    normalized.to_mut()["url"] = json!(url);
+                }
+                let bound = rustgis_engine::service_logins::request_params(&mut self.session, normalized.as_ref())
+                    .map_err(|e| connectionui::translated(&e))?;
+                let p = bound.as_ref();
+                let url = rustgis_engine::data::login_address::inner(p.get("url").and_then(Value::as_str).unwrap_or(url));
                 if url.to_ascii_lowercase().split(['?', '#']).next().is_some_and(|u| u.ends_with(".pmtiles")) {
                     return connectiontree::run_named(self, "layer.addUrl", p.clone(), origin.as_deref());
                 }
+                let address = p.get("url").and_then(Value::as_str).unwrap_or(url).to_string();
                 // A GeoTIFF, FlatGeobuf or GeoParquet: its header (or footer) first, off the
                 // frame; one that can be read in place is, another is downloaded (see
                 // `poll_downloads`). An address without a file name (an API answering with a
@@ -2642,7 +2657,7 @@ impl RustGisApp {
                     let land = slot.clone();
                     if remote {
                         rustgis_engine::data::source::open_url(
-                            url,
+                            &address,
                             Box::new(move |r| {
                                 let r = match r {
                                     Ok(_) => Ok(true),
@@ -2654,7 +2669,7 @@ impl RustGisApp {
                         );
                     } else {
                         rustgis_engine::render::rustgis_tiles::cog::probe(
-                            url,
+                            &address,
                             Box::new(move |r| {
                                 let r = if unnamed { Ok(r.unwrap_or(false)) } else { r };
                                 *land.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
@@ -2665,6 +2680,7 @@ impl RustGisApp {
                     let shown = rustgis_engine::data::s3_address::inner(url);
                     self.session.notify(i18n::fmt("Reading {url}…", &[("url", shown)]), false);
                     let mut probe = p.clone();
+                    probe["url"] = json!(address);
                     if let Some(o) = probe.as_object_mut() {
                         o.remove(connectiontree::ORIGIN);
                         if let Some(origin) = &origin {
@@ -2674,9 +2690,9 @@ impl RustGisApp {
                     self.ui.cog_probes.push((probe, slot));
                     return Ok(Value::Null);
                 }
-                let url = url.to_string();
+                let url = address;
                 let mut q = json!({});
-                for k in ["name", "layer", "crs"] {
+                for k in ["name", "layer", "crs", "connection"] {
                     if let Some(v) = p.get(k).filter(|v| v.as_str().is_some_and(|s| !s.trim().is_empty())) {
                         q[k] = v.clone();
                     }
@@ -2693,7 +2709,7 @@ impl RustGisApp {
                 {
                     q["zoom"] = json!(zoom);
                 }
-                for k in ["service", "coverage"] {
+                for k in ["service", "coverage", "anonymous"] {
                     if p.get(k).and_then(Value::as_bool) == Some(true) {
                         q[k] = json!(true);
                     }
@@ -2755,12 +2771,18 @@ impl RustGisApp {
                 let Some(url) = p.get("url").and_then(Value::as_str).map(str::trim).filter(|u| !u.is_empty()) else {
                     return self.run("ui.dialog", json!({"name": "addService"}));
                 };
+                let connection = p
+                    .get("connection")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .or_else(|| serviceui::connection_for(self, self.dialogs.connection.as_deref(), url).map(str::to_string));
                 // A catalogue: the dialog's search, run for the words given.
                 if p.get("type").and_then(Value::as_str) == Some("csw") {
                     if self.dialogs.open != Some("addService") {
                         self.run("ui.dialog", json!({"name": "addService"}))?;
                     }
                     self.dialogs.mode = "csw";
+                    self.dialogs.connection = connection;
                     self.ui.csw.url = url.to_string();
                     self.ui.csw.query = p.get("query").and_then(Value::as_str).unwrap_or("").to_string();
                     self.ui.csw.use_view = p.get("bbox").and_then(Value::as_str) == Some("view");
@@ -2785,13 +2807,23 @@ impl RustGisApp {
                 // Another service: its own list, unfiltered (Open keeps the way back).
                 self.ui.service_browse.filter.clear();
                 self.ui.service_browse.back.clear();
+                let mut source = json!({"url":url});
+                if let Some(connection) = &connection {
+                    source["connection"] = json!(connection);
+                }
+                let bound =
+                    rustgis_engine::service_logins::request_params(&mut self.session, &source).map_err(|e| connectionui::translated(&e))?;
+                let resolved_connection = bound.get("connection").and_then(Value::as_str).map(str::to_string);
+                let url = bound.get("url").and_then(Value::as_str).unwrap_or(url);
                 let caps = rustgis_engine::data::ogc::capabilities_url(url, (kind != "auto").then_some(kind));
                 // A refusal is told with what the server said (#509).
                 let slot = fetch_detailed_into(&caps);
                 // The dialog shows the address connected to, however the connection was asked for.
-                self.dialogs.text = url.to_string();
+                self.dialogs.text = rustgis_engine::data::login_address::inner(url).to_string();
+                self.dialogs.connection = connection;
                 self.ui.service = Some(ServiceConn {
                     url: url.to_string(),
+                    connection: resolved_connection,
                     kind,
                     slot,
                     text: None,
@@ -3841,9 +3873,9 @@ impl RustGisApp {
     fn report_step(&mut self, dialog: bool, r: Result<String, String>) {
         match (dialog, r) {
             (true, Ok(m)) => self.dialogs.info = Some(m),
-            (true, Err(e)) => self.dialogs.error = Some(e),
+            (true, Err(e)) => self.dialogs.error = Some(connectionui::translated(&e)),
             (false, Ok(m)) => self.session.notify(m, false),
-            (false, Err(e)) => self.session.notify(e, true),
+            (false, Err(e)) => self.session.notify(connectionui::translated(&e), true),
         }
     }
 
@@ -3865,7 +3897,18 @@ impl RustGisApp {
                         Some(TilesStep::Next(next)) if resolve.read < 2 => {
                             resolve.read += 1;
                             resolve.doc = next.clone();
-                            resolve.slot = fetch_into(&next);
+                            match serviceui::request_from(
+                                self,
+                                resolve.params.get("connection").and_then(Value::as_str),
+                                resolve.params.get("url").and_then(Value::as_str).unwrap_or(""),
+                                &next,
+                            ) {
+                                Ok(url) => resolve.slot = fetch_into(&url),
+                                Err(e) => {
+                                    self.report_step(dialog, Err(e));
+                                    continue;
+                                }
+                            }
                             self.ui.service_steps.push(ServiceStep::Tiles { resolve, dialog, origin });
                             continue;
                         }
@@ -3890,8 +3933,13 @@ impl RustGisApp {
                         params["describe"] = json!(String::from_utf8_lossy(&bytes));
                         // Not `self.run`: an error belongs where the step reports, not the notices.
                         let c = self.session.run("service.coverage", &params)?;
+                        let connection = params.as_object_mut().and_then(|p| p.remove("connection"));
                         let get = c.get("url").and_then(Value::as_str).unwrap_or("").to_string();
-                        connectiontree::run_add_url(self, json!({"url": get, "name": title, "coverage": true}), origin.as_deref())
+                        let mut p = json!({"url": get, "name": title, "coverage": true});
+                        if let Some(connection) = connection {
+                            p["connection"] = connection;
+                        }
+                        connectiontree::run_add_url(self, p, origin.as_deref())
                     });
                     self.report_step(dialog, r.map(|_| format!("{} {title}", tl!("Downloading…"))));
                 }
@@ -3922,6 +3970,9 @@ impl RustGisApp {
                 let mut p = json!({"url": conn.url, "text": conn.text, "documents": conn.documents});
                 if conn.kind != "auto" {
                     p["type"] = json!(conn.kind);
+                }
+                if let Some(connection) = &conn.connection {
+                    p["connection"] = json!(connection);
                 }
                 // Not `self.run`: an error belongs in the dialog, not the notices.
                 match self.session.run("service.layers", &p) {
@@ -4626,6 +4677,114 @@ mod record_tests {
         assert!(app.session.notices.iter().any(|n| n.text.contains("session only")));
         app.record_step("layer.color", &json!({"layer": "Lakes", "color": "#123456"}), None);
         assert_eq!(app.ws.recording.as_ref().map(Vec::len), Some(1));
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn an_anonymous_download_never_acquires_a_saved_login() {
+        use rustgis_engine::render::rustgis_tiles::{cache, logins};
+        use std::io::{Read, Write};
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", server.local_addr().unwrap());
+        let reply = std::thread::spawn(move || {
+            let (mut stream, _) = server.accept().unwrap();
+            stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let count = stream.read(&mut chunk).unwrap();
+                if count == 0 {
+                    break;
+                }
+                request.extend_from_slice(&chunk[..count]);
+            }
+            let body = br#"{"type":"FeatureCollection","features":[{"type":"Feature","geometry":{"type":"Point","coordinates":[1,2]},"properties":{}}]}"#;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/geo+json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .unwrap();
+            stream.write_all(body).unwrap();
+            String::from_utf8(request).unwrap()
+        });
+        let mut app = RustGisApp::with_sample();
+        let id = app
+            .run("connection.new", json!({"kind":"wms","address":format!("{origin}/wms"),"auth":"header","keyName":"X-Ui-Key"}))
+            .unwrap()["id"]
+            .clone();
+        app.run("connection.login", json!({"id":id,"apiKey":"ui-sentinel-757","allowInsecure":true})).unwrap();
+        app.run("ui.addUrl", json!({"url":format!("{origin}/roads.geojson"),"name":"Anonymous download","service":true,"anonymous":true}))
+            .unwrap();
+        cache::wait(std::time::Duration::from_secs(5));
+        app.poll_data_downloads();
+        crate::serviceui::poll_pages(&mut app, &egui::Context::default());
+        assert!(!reply.join().unwrap().to_ascii_lowercase().contains("x-ui-key:"));
+        app.run("connection.login", json!({"id":id,"apiKey":"ui-sentinel-757","allowInsecure":true})).unwrap();
+        let layer = app.session.map().layers.iter().find(|layer| layer.name == "Anonymous download").unwrap();
+        assert!(layer.connection.is_empty());
+        assert!(logins::apply(layer.dataset.source.as_deref().unwrap()).unwrap().is_none());
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn whitespace_downloads_keep_their_login_choice_and_read_options() {
+        use rustgis_engine::render::rustgis_tiles::{cache, logins};
+        use std::io::{Read, Write};
+        for anonymous in [false, true] {
+            let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let origin = format!("http://{}", server.local_addr().unwrap());
+            let reply = std::thread::spawn(move || {
+                let (mut stream, _) = server.accept().unwrap();
+                stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+                let mut request = Vec::new();
+                let mut chunk = [0; 1024];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let count = stream.read(&mut chunk).unwrap();
+                    if count == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&chunk[..count]);
+                }
+                let body = b"name;east;north\nCentral Park;992000;220000\n";
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/csv\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len())
+                    .unwrap();
+                stream.write_all(body).unwrap();
+                String::from_utf8(request).unwrap()
+            });
+            let mut app = RustGisApp::with_sample();
+            let id = app
+                .run("connection.new", json!({"kind":"wms","address":format!("{origin}/wms"),"auth":"header","keyName":"X-Ui-Key"}))
+                .unwrap()["id"]
+                .clone();
+            app.run("connection.login", json!({"id":id,"apiKey":"ui-whitespace-757","allowInsecure":true})).unwrap();
+            let mut params = json!({
+                "url":format!(" \t{origin}/parks.csv \r\n"), "name":"Downloaded parks",
+                "anonymous":anonymous, "x":"east", "y":"north", "delimiter":";", "crs":"EPSG:2263", "zoom":false
+            });
+            if !anonymous {
+                params["connection"] = id.clone();
+            }
+            app.run("ui.addUrl", params).unwrap();
+            cache::wait(std::time::Duration::from_secs(5));
+            app.poll_data_downloads();
+            let request = reply.join().unwrap().to_ascii_lowercase();
+            assert!(request.starts_with("get /parks.csv http/1.1\r\n"), "{request}");
+            assert_eq!(request.contains("\r\nx-ui-key: ui-whitespace-757\r\n"), !anonymous, "{request}");
+            // Reacquiring the same saved login must not authenticate an anonymous layer.
+            app.run("connection.login", json!({"id":id,"apiKey":"ui-whitespace-757","allowInsecure":true})).unwrap();
+            let layer = app.session.map().layer_by_name("Downloaded parks").unwrap();
+            assert_eq!(layer.dataset.features.len(), 1);
+            let extent = layer.extent();
+            assert!((extent.min_x + 73.96).abs() < 0.05 && (extent.min_y - 40.78).abs() < 0.05, "{extent:?}");
+            if anonymous {
+                assert!(layer.anonymous);
+                assert!(layer.connection.is_empty());
+                assert!(layer.dataset.source.as_deref().is_none_or(|source| logins::apply(source).unwrap().is_none()));
+            } else {
+                assert_eq!(layer.connection, id.as_str().unwrap());
+            }
+        }
     }
 }
 

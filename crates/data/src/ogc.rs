@@ -454,7 +454,11 @@ pub const OGC_API_LIMIT: usize = 10_000;
 
 /// The address to fetch a service's capabilities from: OGC API landing pages and collection lists
 /// are JSON; WMS, WMTS and WFS addresses get a GetCapabilities request unless they have one.
+/// A runtime service-login binding stays attached only to same-origin derived requests.
 pub fn capabilities_url(url: &str, kind: Option<&str>) -> String {
+    if let Ok(Some(bound)) = crate::login_address::parse(url) {
+        return crate::login_address::inherit(url, &capabilities_url(bound.url, kind));
+    }
     // ArcGIS REST: the service's JSON description.
     if kind.is_some_and(|k| k.eq_ignore_ascii_case("arcgis")) || (kind.is_none() && is_arcgis(url)) {
         return if query_value(url, "f").is_some_and(|f| f.eq_ignore_ascii_case("json") || f.eq_ignore_ascii_case("pjson")) {
@@ -491,6 +495,9 @@ pub fn capabilities_url(url: &str, kind: Option<&str>) -> String {
 
 /// Requests JSON once, retaining the address's other query parameters.
 pub fn json_url(address: &str) -> String {
+    if let Ok(Some(bound)) = crate::login_address::parse(address) {
+        return crate::login_address::inherit(address, &json_url(bound.url));
+    }
     let Ok(mut url) = url::Url::parse(address) else { return with_query(address, "f=json") };
     // Authentication and signed query values can depend on their original byte encoding.
     let mut format_seen = false;
@@ -525,7 +532,7 @@ fn is_data_link(link: &serde_json::Value) -> bool {
 
 /// Chooses JSON before an untyped data link, without guessing an endpoint or copying credentials.
 fn collections_link(address: &str, links: &[serde_json::Value]) -> Option<String> {
-    let base = url::Url::parse(address).ok()?;
+    let base = url::Url::parse(crate::login_address::inner(address)).ok()?;
     links
         .iter()
         .filter(|l| is_data_link(l))
@@ -545,8 +552,8 @@ fn collections_link(address: &str, links: &[serde_json::Value]) -> Option<String
             }
             next.set_fragment(None);
             // A typed JSON link already selects its representation; its query is authoritative.
-            let next = if priority == 0 { next.into() } else { json_url(next.as_str()) };
-            Some((priority, next))
+            let next: String = if priority == 0 { next.into() } else { json_url(next.as_str()) };
+            Some((priority, crate::login_address::inherit(address, &next)))
         })
         .min_by_key(|(priority, _)| *priority)
         .map(|(_, url)| url)
@@ -564,6 +571,7 @@ fn is_arcgis(url: &str) -> bool {
 
 /// The part of an address after its host: the path, query and fragment.
 fn after_host(url: &str) -> &str {
+    let url = crate::login_address::inner(url);
     let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
     rest.find(['/', '?', '#']).and_then(|i| rest.get(i..)).unwrap_or("")
 }
@@ -577,6 +585,7 @@ fn origin(url: &str) -> &str {
 
 /// The value of a query parameter, by its whole name (any case).
 fn query_value<'a>(url: &'a str, key: &str) -> Option<&'a str> {
+    let url = crate::login_address::inner(url);
     let q = url.split('#').next()?.split_once('?')?.1;
     q.split('&').find_map(|kv| {
         let (k, v) = kv.split_once('=').unwrap_or((kv, ""));
@@ -587,13 +596,22 @@ fn query_value<'a>(url: &'a str, key: &str) -> Option<&'a str> {
 /// Whether an address is a web address (`http://` or `https://`), not another scheme that only
 /// starts with those letters.
 fn is_web(url: &str) -> bool {
+    let url = crate::login_address::inner(url);
     let l = url.get(..8).unwrap_or(url).to_ascii_lowercase();
     l.starts_with("http://") || l.starts_with("https://")
 }
 
 /// A link from a document at `from`, resolved: absolute, scheme-relative (`//host/…`),
 /// host-relative (`/…`) or relative to the document's folder. `None` for other schemes.
+/// Only links at the bound document's canonical origin retain its runtime login binding.
 fn resolve(from: &str, href: &str) -> Option<String> {
+    crate::login_address::parse(from).ok()?;
+    crate::login_address::parse(href.trim()).ok()?;
+    let url = resolve_inner(crate::login_address::inner(from), crate::login_address::inner(href.trim()))?;
+    Some(crate::login_address::inherit(from, &url))
+}
+
+fn resolve_inner(from: &str, href: &str) -> Option<String> {
     let href = href.trim();
     if is_web(href) {
         return Some(href.to_string());
@@ -640,6 +658,9 @@ fn items_3d(from: &str, link: &serde_json::Value) -> Option<&'static str> {
 }
 
 fn with_query(url: &str, q: &str) -> String {
+    if let Ok(Some(bound)) = crate::login_address::parse(url) {
+        return crate::login_address::inherit(url, &with_query(bound.url, q));
+    }
     let (base, frag) = url.split_once('#').map(|(b, f)| (b, Some(f))).unwrap_or((url, None));
     let sep = if base.contains('?') { if base.ends_with('?') || base.ends_with('&') { "" } else { "&" } } else { "?" };
     match frag {
@@ -651,6 +672,9 @@ fn with_query(url: &str, q: &str) -> String {
 /// A service's address for its requests when its document names none: the address without the
 /// OGC request parameters, keeping the others (MapServer's `map=`, a token).
 fn endpoint(url: &str) -> String {
+    if let Ok(Some(bound)) = crate::login_address::parse(url) {
+        return crate::login_address::inherit(url, &endpoint(bound.url));
+    }
     let b = base(url);
     let kept: Vec<&str> = url
         .split('#')
@@ -2773,6 +2797,9 @@ fn with_format(query: &str, format: &str) -> String {
 /// The description of the layer an ArcGIS query reads (`…/FeatureServer/0?f=json`), with the
 /// query's token.
 fn arcgis_layer_url(query: &str) -> String {
+    if let Ok(Some(bound)) = crate::login_address::parse(query) {
+        return crate::login_address::inherit(query, &arcgis_layer_url(bound.url));
+    }
     let b = base(query).trim_end_matches('/');
     let layer = b.get(..b.len().saturating_sub("/query".len())).unwrap_or(b);
     match query_value(query, "token").filter(|t| !t.is_empty()) {
@@ -3789,6 +3816,74 @@ mod fixtures;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capabilities_and_collections_preserve_only_the_explicit_login() {
+        let binding = "0123456789abcdef";
+        let origin = "https://maps.example.org";
+        for (url, kind) in [
+            ("https://MAPS.example.org:443/wms?map=x", None),
+            ("https://maps.example.org/ogc/features?f=html&key=a%2Fb", Some("ogcapi")),
+            ("https://maps.example.org/rest/services/P/FeatureServer", Some("arcgis")),
+            ("https://maps.example.org/capabilities.xml", None),
+        ] {
+            let address = crate::login_address::bind(binding, origin, url).unwrap();
+            let requested = capabilities_url(&address, kind);
+            let bound = crate::login_address::parse(&requested).unwrap().unwrap();
+            assert_eq!((bound.binding, bound.origin), (binding, origin));
+            assert_eq!(bound.url, capabilities_url(url, kind));
+            assert_eq!(capabilities_url(&requested, kind), requested);
+            assert!(crate::login_address::parse(&capabilities_url(url, kind)).unwrap().is_none());
+        }
+        let address = crate::login_address::bind(binding, origin, "https://maps.example.org/api?key=a%2Fb").unwrap();
+        for href in ["/collections", "https://MAPS.example.org:443/collections"] {
+            let links = serde_json::json!([{"rel":"data","type":"application/json","href":href}]);
+            let next = collections_link(&address, links.as_array().unwrap()).unwrap();
+            assert_eq!(crate::login_address::parse(&next).unwrap().unwrap().binding, binding);
+        }
+        let links = serde_json::json!([{"rel":"data","type":"application/json","href":"https://other.example.org/collections"}]);
+        assert_eq!(collections_link(&address, links.as_array().unwrap()).unwrap(), "https://other.example.org/collections");
+    }
+
+    #[test]
+    fn linked_pages_drop_the_login_after_leaving_its_origin() {
+        let first_url =
+            crate::login_address::bind("0123456789abcdef", "https://maps.example.org", "https://maps.example.org/api/items").unwrap();
+        let page = |id, href| {
+            serde_json::to_vec(&serde_json::json!({
+                "type":"FeatureCollection", "features":[{"id":id}],
+                "links":[{"rel":"next","type":"application/geo+json","href":href}]
+            }))
+            .unwrap()
+        };
+        let Step::Fetch(start) = begin(&first_url, 100) else {
+            panic!("the first page must be fetched");
+        };
+        let Step::Fetch(pages) = start.land(Ok(page(1, "https://MAPS.example.org:443/api/items?page=2"))) else {
+            panic!("the second page must be fetched");
+        };
+        assert_eq!(pages.referrer(), first_url);
+        let second_url = pages.next_url().to_string();
+        let bound = crate::login_address::parse(&second_url).unwrap().unwrap();
+        assert_eq!(bound.binding, "0123456789abcdef");
+        assert_eq!(bound.url, "https://MAPS.example.org:443/api/items?page=2");
+        let Step::Fetch(pages) = pages.land(Ok(page(2, "https://other.example.org/items?page=3"))) else {
+            panic!("the foreign page must be fetched anonymously");
+        };
+        assert_eq!(pages.referrer(), second_url);
+        assert_eq!(pages.next_url(), "https://other.example.org/items?page=3");
+        let Step::Fetch(pages) = pages.land(Ok(page(3, "https://maps.example.org/api/items?page=4"))) else {
+            panic!("the returning page must remain anonymous");
+        };
+        assert_eq!(pages.next_url(), "https://maps.example.org/api/items?page=4");
+        assert!(crate::login_address::parse(pages.next_url()).unwrap().is_none());
+        assert_eq!(
+            resolve(&first_url, "/api/items?page=2").unwrap(),
+            crate::login_address::bind("0123456789abcdef", "https://maps.example.org", "https://maps.example.org/api/items?page=2")
+                .unwrap()
+        );
+        assert_eq!(resolve("https://maps.example.org/api", &first_url).unwrap(), "https://maps.example.org/api/items");
+    }
 
     /// Reads as [`super::join_pages`] does, the address asked for answered with `first` (once) and
     /// every other with `get`.

@@ -211,6 +211,16 @@ pub struct Layer {
     /// The GeoPackage table this layer's edits save to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gpkg: Option<source::GpkgEdit>,
+    /// The saved connection it was added from (its id, in the app's preferences): a layer whose
+    /// source is read again logs in with that connection's login, and a project opened where
+    /// the connection or its login is missing asks for one. Empty for a layer that came from no
+    /// connection. Never a secret.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub connection: String,
+    /// Added by an anonymous plugin command: never adopt a saved web-service login, including
+    /// after saving and reopening the project.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub anonymous: bool,
     /// Process-local identity, preserved by snapshots but never stored in a project.
     #[serde(skip, default = "next_layer_instance")]
     instance_id: u64,
@@ -403,6 +413,8 @@ impl Layer {
             source: None,
             postgis: None,
             gpkg: None,
+            connection: String::new(),
+            anonymous: false,
             projected: Default::default(),
             display: None,
             display_rejected: Vec::new(),
@@ -1104,6 +1116,9 @@ pub struct ServiceGroup {
     pub name: String,
     pub url: String,
     pub kind: String,
+    /// Plugin-selected service: never adopt a saved login, even without children or after reopen.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub anonymous: bool,
     #[serde(default = "yes")]
     pub expanded: bool,
     pub children: Vec<ServiceChild>,
@@ -1382,8 +1397,8 @@ impl Map {
     }
 
     /// Every address the map keeps to read its data again (service groups and their layers'
-    /// sources, tile layers and their dated addresses, terrain tiles, layers' dataset, streamed and
-    /// raster sources, time-following Zarr stores). Local paths come too: callers judge each one.
+    /// sources, tile layers and their dated, feature-info and legend addresses, terrain tiles,
+    /// layers' dataset, streamed and raster sources, time-following Zarr stores). Local paths come too.
     pub fn addresses_mut(&mut self) -> Vec<&mut String> {
         let mut addresses = Vec::new();
         for group in &mut self.service_groups {
@@ -1399,6 +1414,9 @@ impl Map {
             }
             for (_, url) in &mut tile.time_urls {
                 addresses.push(url);
+            }
+            if let Some(info) = &mut tile.feature_info {
+                addresses.push(&mut info.url);
             }
             // (A legend's address is built from the service's, its key or password included.)
             for legend in &mut tile.legends {
@@ -2946,7 +2964,15 @@ mod tests {
     fn ids_stay_unique_when_a_project_reaches_the_largest_id() {
         let mut m = Map::new("m");
         m.layers.push(Layer::new(u32::MAX, points()));
-        let group = ServiceGroup { id: 0, name: "g".into(), url: String::new(), kind: String::new(), expanded: true, children: vec![] };
+        let group = ServiceGroup {
+            id: 0,
+            name: "g".into(),
+            url: String::new(),
+            kind: String::new(),
+            anonymous: false,
+            expanded: true,
+            children: vec![],
+        };
         let a = m.add_dataset(points());
         let b = m.add_service_group(group);
         let c = m.add_dataset(points());

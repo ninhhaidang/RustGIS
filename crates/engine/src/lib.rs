@@ -18,6 +18,7 @@ pub mod s3_keys;
 #[cfg(test)]
 mod s3_saved_tests;
 pub mod sample;
+pub mod service_logins;
 pub mod sources;
 #[cfg(test)]
 mod tests;
@@ -414,6 +415,17 @@ pub struct GpRecord {
     pub outputs: Vec<String>,
 }
 
+impl GpRecord {
+    /// The record with its messages scrubbed of login bindings and secrets: a tool's error can
+    /// quote a bound address, and history rows are saved with the project and exported.
+    pub(crate) fn scrubbed(mut self) -> Self {
+        for message in &mut self.messages {
+            *message = render::rustgis_tiles::logins::scrub(message);
+        }
+        self
+    }
+}
+
 fn is_zero(v: &u64) -> bool {
     *v == 0
 }
@@ -542,6 +554,9 @@ pub struct Session {
     /// and login requests. S3 uses the same store through `DatabaseLogins::secret_store`.
     /// Never saved; see [`connections::DatabaseLogins`].
     pub database_logins: connections::DatabaseLogins,
+    /// The web-service logins this session made the ones sent to an origin, which the process's
+    /// fetches share: they end with it (see [`service_logins`]).
+    pub(crate) web_logins: service_logins::SessionLogins,
     /// How rasters added from now on are drawn (`raster.setDefaultStyle`; kept with the app's
     /// preferences, not the project).
     pub raster_defaults: rustgis_map::RasterDefaults,
@@ -883,6 +898,7 @@ impl Session {
             s3_bindings: std::collections::BTreeMap::new(),
             s3_pending: Vec::new(),
             database_logins: connections::DatabaseLogins::default(),
+            web_logins: service_logins::SessionLogins::new(),
             raster_defaults: rustgis_map::RasterDefaults::default(),
             layout_favourite: serde_json::Value::String("classic".into()),
             registry: Registry { commands: cmd::all() },
@@ -1037,11 +1053,17 @@ impl Session {
     /// requests the next is refused rather than silently dropping one already promised.
     pub fn request_url(&mut self, p: &serde_json::Value) -> Result<serde_json::Value, String> {
         let url = p.get("url").and_then(serde_json::Value::as_str).unwrap_or("").to_string();
-        if !self.url_requests.iter().any(|q| q == p) {
+        // The front end runs the queued request after the plugin's anonymous scope has ended.
+        // Keep its opt-out through probes, whole-file fallbacks and the eventual addDownload.
+        let mut p = std::borrow::Cow::Borrowed(p);
+        if self.web_logins.is_anonymous() {
+            p.to_mut().as_object_mut().ok_or("download parameters must be an object")?.insert("anonymous".into(), serde_json::json!(true));
+        }
+        if !self.url_requests.iter().any(|q| q == p.as_ref()) {
             if self.url_requests.len() >= MAX_URL_REQUESTS {
                 return Err(format!("{url}: {MAX_URL_REQUESTS} downloads are already waiting; try again when they have landed"));
             }
-            self.url_requests.push(p.clone());
+            self.url_requests.push(p.into_owned());
         }
         self.request_only = true;
         Ok(serde_json::json!({"pending": true, "url": url}))
@@ -1155,7 +1177,7 @@ impl Session {
             }
             // A refused command is said once, without secrets, as the front ends show it.
             if let Err(error) = &res {
-                let text = rustgis_data::diagnostics::Redacted::new(error);
+                let text = Session::redacted(error);
                 if !self.notices_since(notice_mark).iter().any(|notice| notice.error && notice.text == text.as_str()) {
                     self.notify_redacted(text, true);
                 }
@@ -1220,7 +1242,22 @@ impl Session {
             return Err(e);
         }
         self.merge = merge;
-        let res = self.guarded(label, mutates, |s| run(s, params));
+        // A layer added from a saved web-service connection records it, inside the command's step.
+        let res = self.guarded(label, mutates, |s| {
+            let add = |s: &mut Session| {
+                let before = service_logins::before(s, id, params)?;
+                let out = run(s, params)?;
+                if let Some(before) = before {
+                    service_logins::tag(s, params, before, &out)?;
+                }
+                Ok(out)
+            };
+            if matches!(id, "layer.addUrl" | "layer.addDownload") && params.get("anonymous").and_then(Value::as_bool) == Some(true) {
+                service_logins::anonymously(s, true, add).unwrap_or_else(|_| Err(format!("{label} failed unexpectedly")))
+            } else {
+                add(s)
+            }
+        });
         if id == "layer.addDownload"
             && res.is_ok()
             && let Some(token) = params.get("geolibreLayer").and_then(|v| v.get("token")).and_then(serde_json::Value::as_str)
@@ -1233,7 +1270,8 @@ impl Session {
         {
             self.sources.note(src);
         }
-        res
+        // An error never quotes a web-service connection's password or key.
+        res.map_err(|e| render::rustgis_tiles::logins::scrub(&e))
     }
 
     /// Retires only this consumed reservation, preserving unrelated pending imports in history.
@@ -1385,7 +1423,7 @@ impl Session {
                     .skip(history_from)
                     .filter(|record| !record.ok && rustgis_analysis::tool(&record.id).is_some_and(cmd::gp::writes_files))
                 {
-                    self.project.gp_history.push(record);
+                    self.project.gp_history.push(record.scrubbed());
                     recorded_failure = true;
                 }
                 if recorded_failure {
@@ -1569,14 +1607,24 @@ impl Session {
     }
 
     fn notice(&mut self, text: String, severity: rustgis_data::diagnostics::Severity) {
-        // Redacted for the status bar and the history alike. `redact` bounds the notice to 8 KiB
-        // (an ellipsis marks the cut) and omits one over 16 KiB whole, so a clipped credential
-        // can't survive; the history's copy is bounded further, to a record's 2 KiB.
-        self.notice_redacted(rustgis_data::diagnostics::Redacted::new(&text), severity);
+        // A web-service connection's password or key never shows, whatever quoted it: scrubbed
+        // first, as its login values are known only here, then redacted for the status bar and
+        // the history alike. `redact` bounds the notice to 8 KiB (an ellipsis marks the cut) and
+        // omits one over 16 KiB whole, so a clipped credential can't survive; the history's copy
+        // is bounded further, to a record's 2 KiB.
+        self.notice_redacted(Self::redacted(&text), severity);
     }
 
-    /// [`Session::notify`] for text already redacted (a failure the caller redacted to compare it
-    /// with the notices): the type says so, so it isn't redacted again.
+    /// `text` scrubbed of every active web-service login (and any login capability), then
+    /// redacted: what a notice or history record may show. Login values are known only here, so
+    /// a failure redacted by [`Session::notify_redacted`]'s callers goes through this first.
+    pub fn redacted(text: &str) -> rustgis_data::diagnostics::Redacted {
+        rustgis_data::diagnostics::Redacted::new(&render::rustgis_tiles::logins::scrub(text))
+    }
+
+    /// [`Session::notify`] for text already scrubbed and redacted by [`Session::redacted`] (a
+    /// failure the caller redacted to compare it with the notices): the type says so, so it isn't
+    /// redacted again.
     pub fn notify_redacted(&mut self, text: rustgis_data::diagnostics::Redacted, error: bool) {
         use rustgis_data::diagnostics::Severity;
         self.notice_redacted(text, if error { Severity::Error } else { Severity::Info });

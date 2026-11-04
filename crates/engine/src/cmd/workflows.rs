@@ -539,7 +539,16 @@ fn save_model(s: &mut Session, p: &Value) -> CmdResult {
 
 /// A model as a `*.model.json` file: written to `path`, or its text returned.
 fn export_model(s: &mut Session, p: &Value) -> CmdResult {
-    let (name, g, _) = model_graph(s, p)?;
+    let (name, mut g, _) = model_graph(s, p)?;
+    // A file outlives the session: its steps keep their addresses, not this session's logins.
+    let mut addresses = Vec::new();
+    for node in &mut g.nodes {
+        crate::project::recorded_addresses(&mut node.params, &mut addresses);
+        if let Some(layer) = &mut node.layer {
+            addresses.push(layer);
+        }
+    }
+    crate::project::clear_login_bindings(addresses);
     let text = serde_json::to_string_pretty(&crate::model::to_file(&name, &g)).map_err(|e| e.to_string())?;
     let file: String = name.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
     match ps(p, "path") {

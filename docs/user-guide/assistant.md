@@ -126,6 +126,10 @@ returning bare `null`; extremely small budgets can only retain an abbreviated ma
 Reading a section avoids loading an entire page. A single line that cannot fit produces an
 explicit error rather than silently skipping text.
 
+Nested tool results are checked for runtime login bindings through 16 levels. Deeper containers
+are withheld, with one notice reporting their count and the depth limit to the assistant and
+the app. This does not turn a successfully executed command into a failure.
+
 ## Skills
 
 Skills are instructions for a kind of task. The assistant sees only each skill's name and a

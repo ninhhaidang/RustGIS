@@ -5,6 +5,7 @@
 //! cloud cover and phase. Like the rest of [`super`], this is sans I/O: [`Walk`] says what to
 //! read next and takes the answers. Documents are hostile input: the walk is bounded in documents
 //! read, depth, links followed and items kept.
+//! A fetched document's login binding follows only links on its canonical origin.
 
 use std::collections::{HashSet, VecDeque};
 
@@ -27,6 +28,7 @@ const MAX_CHILDREN: usize = 2000;
 
 /// Whether an address names a static catalog's document (a `.json` file) rather than a STAC API.
 pub fn is_static(url: &str) -> bool {
+    let url = crate::logins::inner(url);
     let path = url.split(['?', '#']).next().unwrap_or(url).trim_end_matches('/').to_ascii_lowercase();
     path.ends_with(".json")
 }
@@ -41,6 +43,7 @@ pub struct Child {
 /// A label for a document without a title: its folder's name for a `catalog.json` or
 /// `collection.json`, else its file's name without `.json`.
 pub fn label_of(url: &str) -> String {
+    let url = crate::logins::inner(url);
     let path = url.split(['?', '#']).next().unwrap_or(url).trim_end_matches('/');
     let mut parts = path.rsplit('/');
     let file = parts.next().unwrap_or("");
@@ -396,7 +399,7 @@ fn collection_item(v: &Value, from: &str) -> Option<Value> {
         let roles: Vec<&str> = a.get("roles").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).collect();
         let t = a.get("type").and_then(Value::as_str).unwrap_or("").to_ascii_lowercase();
         let href = a.get("href").and_then(Value::as_str).unwrap_or("");
-        let path = href.split(['?', '#']).next().unwrap_or("").to_ascii_lowercase();
+        let path = crate::logins::inner(href).split(['?', '#']).next().unwrap_or("").to_ascii_lowercase();
         // Data RustGIS can add (by its media type or extension), or an asset that says it is data.
         const TYPES: [&str; 9] = ["geotiff", "image/tiff", "parquet", "pmtiles", "flatgeobuf", "geo+json", "vnd.las", "laszip", "zarr"];
         const EXTENSIONS: [&str; 11] =

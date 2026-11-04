@@ -65,7 +65,7 @@ pub const NETWORK: &[&str] = &[
 pub fn commands() -> Vec<C> {
     vec![
         C::new("map.addTiles", "Add Tile Layer", "Home › Add", add).params(
-            r#"{"url": "https://…/{z}/{x}/{y}.png" | vector tiles ".pbf" or TileJSON | MapLibre style.json | a PMTiles archive (web address or file path) | an MBTiles file path, "kind"?: "raster"|"vector"|"style"|"pmtiles"|"mbtiles" (guessed from the url), "name"?: text, "bounds"?: [west, south, east, north] (longitude/latitude coverage, when known), "attribution"?: text, "minZoom"?: number, "maxZoom"?: number, "tileSize"?: 256|512 (1024 too for a WMS or map service asked for in Web Mercator by its tiles' box: their pictures are asked for that size), "singleImage"?: bool (a WMS or map service: one picture of the view instead of tiles, so symbols and labels aren't cut at tile edges; tiles on the globe, a tilted map or a projection the service doesn't offer; by default on for one, unless tileSize is given), "tms"?: bool, "subdomains"?: [text], "layers"?: [vector tile layer names, drawn in colours of their own], "styleLayers"?: [MapLibre style layers drawing vector tiles instead (their source is the tiles')], "opacity"?: 0–1, "blend"?: "normal"|"multiply"|"screen"|"overlay"|"darken"|"lighten"|"difference" (how it combines with what is beneath), "overlay"?: bool (on top of the map's layers, as every new layer goes; without it a basemap, under them; one with the same address and role is replaced when it has the same name or the same look), "top"?: bool (on top of the map's layers, as a layer added as data goes; by default an overlay's place), "replace"?: bool (removes the other tile basemaps, not overlays), "id"?: catalog id, "view"?: bool (a MapLibre style: go to the place, zoom, bearing and pitch its root properties give, once it loads), "start"?, "end"?: dates a url with date placeholders ({date:YYYY-MM-DD}, {YYYY}) spans, turning the time slider on (or, when it is on, setting its span), "unit"?, "interval"?, "dates"?: its steps (as in time.set), "legend"?: "the web address of its legend picture (PNG or JPEG)" | [address | {"url": address, "minScale"?: scale denominator, "maxScale"?: one (the scales it is for, from minScale up to below maxScale)}] (at most 16; the Layers pane shows the one for the map's scale under the layer; service.add gives a WMS or WMTS layer its service's)}"#,
+            r#"{"url": "https://…/{z}/{x}/{y}.png" | vector tiles ".pbf" or TileJSON | MapLibre style.json | a PMTiles archive (web address or file path) | an MBTiles file path, "kind"?: "raster"|"vector"|"style"|"pmtiles"|"mbtiles" (guessed from the url), "name"?: text, "bounds"?: [west, south, east, north] (longitude/latitude coverage, when known), "attribution"?: text, "minZoom"?: number, "maxZoom"?: number, "tileSize"?: 256|512 (1024 too for a WMS or map service asked for in Web Mercator by its tiles' box: their pictures are asked for that size), "singleImage"?: bool (a WMS or map service: one picture of the view instead of tiles, so symbols and labels aren't cut at tile edges; tiles on the globe, a tilted map or a projection the service doesn't offer; by default on for one, unless tileSize is given), "tms"?: bool, "subdomains"?: [text], "layers"?: [vector tile layer names, drawn in colours of their own], "styleLayers"?: [MapLibre style layers drawing vector tiles instead (their source is the tiles')], "opacity"?: 0–1, "blend"?: "normal"|"multiply"|"screen"|"overlay"|"darken"|"lighten"|"difference" (how it combines with what is beneath), "overlay"?: bool (on top of the map's layers, as every new layer goes; without it a basemap, under them; one with the same address and role is replaced when it has the same name or the same look), "top"?: bool (on top of the map's layers, as a layer added as data goes; by default an overlay's place), "replace"?: bool (removes the other tile basemaps, not overlays), "id"?: catalog id, "view"?: bool (a MapLibre style: go to the place, zoom, bearing and pitch its root properties give, once it loads), "start"?, "end"?: dates a url with date placeholders ({date:YYYY-MM-DD}, {YYYY}) spans, turning the time slider on (or, when it is on, setting its span), "unit"?, "interval"?, "dates"?: its steps (as in time.set), "legend"?: "the web address of its legend picture (PNG or JPEG)" | [address | {"url": address, "minScale"?: scale denominator, "maxScale"?: one (the scales it is for, from minScale up to below maxScale)}] (at most 16; the Layers pane shows the one for the map's scale under the layer; service.add gives a WMS or WMTS layer its service's), "connection"?: "the id of the saved web-service connection it comes from (as service.add): the tile layer records it, and its tiles are read with its login"}"#,
         ),
         C::new("map.removeTiles", "Remove Tile Layer", "Home › Add", remove)
             .params(r#"{"name"?: text, "index"?: number, "id"?: catalog id} (removes every tile layer when none is given)"#),
@@ -206,6 +206,8 @@ pub(crate) fn add(s: &mut Session, p: &Value) -> CmdResult {
 
 /// Adds after a caller's header check; a zero wait avoids spending that caller's budget twice.
 pub(crate) fn add_with_metadata_wait(s: &mut Session, p: &Value, metadata_wait: web_time::Duration) -> CmdResult {
+    let bound = crate::service_logins::request_params(s, p)?;
+    let p = bound.as_ref();
     let url = ps(p, "url").map(str::trim).filter(|u| !u.is_empty()).ok_or("url is required")?;
     let kind = match ps(p, "kind") {
         Some(k) => TileKind::from_code(k).ok_or_else(|| format!("unknown kind '{k}' (raster, vector, style, pmtiles or mbtiles)"))?,
@@ -278,7 +280,7 @@ pub(crate) fn add_with_metadata_wait(s: &mut Session, p: &Value, metadata_wait: 
         t.id = id.to_string();
     }
     if let Some(v) = p.get("legend").filter(|v| !v.is_null()) {
-        t.legends = legends(v)?;
+        t.legends = legends(s, ps(p, "connection"), v)?;
     }
     t.repair()?;
     // A layer its service draws on request: one picture of the view, or tiles of the size given
@@ -606,12 +608,13 @@ fn cog_look(p: &Value) -> Result<Option<Box<dyn Fn(Look) -> Look>>, String> {
 
 /// A legend given to `map.addTiles` or `map.setTiles`: an address, or a list of addresses and
 /// `{url, minScale?, maxScale?}` (the scales each is for). Each must be a web address; a scale
-/// that isn't a positive number is none.
-fn legends(v: &Value) -> Result<Vec<rustgis_data::ogc::Legend>, String> {
+/// that isn't a positive number is none. A login wrapper in it must be this session's own (or is
+/// bound to `connection`): another session's token never gives this one its credential.
+fn legends(s: &mut Session, connection: Option<&str>, v: &Value) -> Result<Vec<rustgis_data::ogc::Legend>, String> {
     use rustgis_data::ogc::{Legend, MAX_LEGENDS};
     let bad = || "legend must be a web address, or a list of addresses and {url, minScale?, maxScale?}".to_string();
-    let one = |v: &Value| -> Result<Legend, String> {
-        let legend = match v {
+    let mut one = |v: &Value| -> Result<Legend, String> {
+        let mut legend = match v {
             Value::String(url) => Legend { url: url.clone(), ..Legend::default() },
             Value::Object(o) => {
                 let url = o.get("url").and_then(Value::as_str).ok_or_else(bad)?;
@@ -620,6 +623,11 @@ fn legends(v: &Value) -> Result<Vec<rustgis_data::ogc::Legend>, String> {
             }
             _ => return Err(bad()),
         };
+        // A wrapper must be this session's own (checked on the trimmed text the layer keeps).
+        legend.url = legend.url.trim().to_string();
+        if rustgis_data::login_address::is_wrapper(&legend.url) {
+            legend.url = crate::service_logins::request(s, connection.filter(|c| !c.trim().is_empty()), &legend.url)?;
+        }
         // Kept as a tile layer keeps it, or refused: an address the layer wouldn't keep.
         rustgis_map::tiles::checked_legends([legend.clone()]).pop().ok_or_else(|| {
             let url: String = legend.url.chars().take(200).collect();
@@ -654,11 +662,18 @@ fn set(s: &mut Session, p: &Value) -> CmdResult {
     let i = find(s, p)?.ok_or("name or index is required")?;
     let mode = blend(p)?;
     let look = cog_look(p)?;
-    let new_legends = match p.get("legend") {
+    let mut new_legends = match p.get("legend") {
         None => None,
         Some(Value::Null) => Some(Vec::new()),
-        Some(v) => Some(legends(v)?),
+        Some(v) => Some(legends(s, None, v)?),
     };
+    // A plain legend address of a layer that recorded a logged-in connection reads through it,
+    // as the layer's own address does.
+    if let Some(connection) = s.map().tiles.get(i).map(|t| t.connection.clone()).filter(|c| !c.is_empty()) {
+        for legend in new_legends.iter_mut().flatten() {
+            legend.url = crate::service_logins::bind_logged_in(s, &connection, &legend.url)?;
+        }
+    }
     let hidden = hidden_layers(p)?;
     let old_name = s.map().tiles.get(i).map(|t| t.name.clone());
     let m = s.map_mut();
@@ -818,5 +833,54 @@ mod tests {
         let p = Project::from_json(&text).unwrap();
         assert_eq!(p.map().tiles[0].blend, Blend::Multiply);
         assert_eq!(text.matches("\"blend\"").count(), 1, "{text}");
+    }
+
+    /// A login wrapper given as a legend or a download's address is that session's own, or refused.
+    #[test]
+    fn another_sessions_login_address_is_refused_in_legends_and_downloads() {
+        use crate::{render::rustgis_tiles::logins, service_logins::NOT_THIS_SESSION};
+        let origin = "https://legend-owner757.example.org";
+        let definition = json!({"kind": "wms", "address": format!("{origin}/wms"), "auth": "header", "keyName": "X-Key"});
+        let fresh = || {
+            let mut s = Session::new(Project::default());
+            s.database_logins.set_store(None);
+            s
+        };
+        let id_of = |s: &mut Session| s.run("connection.new", &definition).unwrap()["id"].as_str().unwrap().to_string();
+        let (mut a, mut b) = (fresh(), fresh());
+        let (ida, idb) = (id_of(&mut a), id_of(&mut b));
+        a.run("connection.login", &json!({"id": ida, "apiKey": "owner-a-757"})).unwrap();
+        let theirs = crate::service_logins::request(&mut a, Some(&ida), &format!("{origin}/legend.png")).unwrap();
+        let key = |address: &str| logins::apply(address).unwrap().and_then(|x| x.header).map(|(_, v)| v);
+        assert_eq!(key(&theirs).as_deref(), Some("owner-a-757"));
+        // The tile layer itself is on another origin, so only the legend carries a wrapper.
+        let tiles =
+            |legend: serde_json::Value| json!({"url": "https://basemap757.example.org/{z}/{x}/{y}.png", "name": "T", "legend": legend});
+        for legend in [json!(theirs), json!(format!("  {theirs}")), json!({"url": theirs}), json!([theirs])] {
+            assert_eq!(b.run("map.addTiles", &tiles(legend)).unwrap_err(), NOT_THIS_SESSION);
+        }
+        assert!(b.map().tiles.is_empty());
+        // The owner keeps its own wrapper.
+        a.run("map.addTiles", &tiles(json!(theirs))).unwrap();
+        assert_eq!(a.map().tiles[0].legends[0].url, theirs);
+        // Set on an existing layer: refused and left as it was.
+        b.run("map.addTiles", &json!({"url": "https://basemap757.example.org/{z}/{x}/{y}.png", "name": "T"})).unwrap();
+        assert_eq!(b.run("map.setTiles", &json!({"name": "T", "legend": theirs})).unwrap_err(), NOT_THIS_SESSION);
+        assert!(b.map().tiles[0].legends.is_empty());
+        // Given with its own connection, the wrapper's plain address is bound to that login.
+        b.run("connection.login", &json!({"id": idb, "apiKey": "owner-b-757"})).unwrap();
+        let mut add = tiles(json!(theirs));
+        add["connection"] = json!(idb);
+        add["replace"] = json!(true);
+        b.run("map.addTiles", &add).unwrap();
+        let mine = b.map().tiles[0].legends[0].url.clone();
+        assert_ne!(mine, theirs);
+        assert_eq!(key(&mine).as_deref(), Some("owner-b-757"));
+        // A downloaded file's address: refused before the download is taken.
+        let id = b.download_started();
+        assert!(b.download_landed(id, b"{}".to_vec()));
+        let err = b.run("layer.addDownload", &json!({"id": id, "url": theirs})).unwrap_err();
+        assert_eq!(err, NOT_THIS_SESSION);
+        assert!(b.downloaded.iter().any(|(d, _)| *d == id));
     }
 }

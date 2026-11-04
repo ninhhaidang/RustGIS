@@ -832,7 +832,8 @@ fn add_csv(app: &mut RustGisApp, ui: &mut egui::Ui) -> bool {
 /// becomes `way` once connected, and stays `before` when connecting fails.
 fn go_to(app: &mut RustGisApp, url: &str, kind: &str, way: Vec<(String, &'static str)>, before: Vec<(String, &'static str)>) {
     app.dialogs.info = None;
-    match app.run("ui.addService", json!({"url": url, "type": kind})) {
+    let connection = app.ui.service.as_ref().and_then(|source| source.connection.clone());
+    match app.run("ui.addService", json!({"url": url, "type": kind, "connection": connection})) {
         Ok(_) => app.ui.service_browse.back = way,
         Err(e) => {
             app.ui.service_browse.back = before;
@@ -979,6 +980,8 @@ fn add_service(app: &mut RustGisApp, ui: &mut egui::Ui) -> bool {
     let mut back = false;
     let keepable = app.ui.service.as_ref().and_then(|conn| {
         let (url, kind) = app.ui.service_browse.back.first().map(|(u, k)| (u.as_str(), *k)).unwrap_or((&conn.url, conn.kind));
+        // The address as typed: one read through a login is matched and kept without its binding.
+        let url = rustgis_engine::data::login_address::inner(url);
         crate::connectionui::picked(&list, app.dialogs.connection.as_deref(), url).is_none().then(|| (url.to_string(), kind))
     });
     let mut keep_root = false;
@@ -1193,14 +1196,24 @@ fn add_service(app: &mut RustGisApp, ui: &mut egui::Ui) -> bool {
     if keep_root && let Some((url, kind)) = keepable {
         // "auto" is the dialog's detection mode; saved connections call that kind "service".
         match crate::connectionui::keep(app, json!({"kind": if kind == "auto" { "service" } else { kind }, "address": url})) {
-            Ok(id) => app.dialogs.connection = Some(id),
+            Ok(id) => {
+                app.dialogs.connection = Some(id.clone());
+                if let Some(source) = &mut app.ui.service {
+                    source.connection = Some(id);
+                }
+            }
             Err(e) => app.dialogs.error = Some(e),
         }
     }
-    if let Some(p) = import
-        && let Err(e) = app.run("ui.importService", p)
-    {
-        app.dialogs.error = Some(e);
+    if let Some(mut p) = import {
+        let connection = app.ui.service.as_ref().and_then(|source| source.connection.clone());
+        let url = p.get("url").and_then(Value::as_str).unwrap_or("");
+        if let Some(id) = crate::serviceui::connection_for(app, connection.as_deref(), url) {
+            p["connection"] = json!(id);
+        }
+        if let Err(e) = app.run("ui.importService", p) {
+            app.dialogs.error = Some(e);
+        }
     }
     if let Some(((command, params), title)) = remove {
         match app.run(command, params) {
@@ -2426,6 +2439,7 @@ mod tests {
         app.run("map.addTiles", json!({"url": url, "name": "Service Roads", "overlay": true})).unwrap();
         app.ui.service = Some(crate::ServiceConn {
             url: "https://example.com/service".into(),
+            connection: None,
             kind: "wms",
             slot: Default::default(),
             text: None,
@@ -2476,6 +2490,7 @@ mod tests {
         let layer = app.session.map().layer_by_name("Places copy").unwrap().id;
         app.ui.service = Some(crate::ServiceConn {
             url: "https://example.com/collections".into(),
+            connection: None,
             kind: "wfs",
             slot: Default::default(),
             text: None,
@@ -2531,6 +2546,7 @@ mod tests {
         app.session.map_mut().layer_mut(layer).unwrap().dataset.source = Some(get.into());
         app.ui.service = Some(crate::ServiceConn {
             url: wcs.into(),
+            connection: None,
             kind: "wcs",
             slot: Default::default(),
             text: None,
@@ -2589,6 +2605,7 @@ mod tests {
         app.session.map_mut().layer_mut(layer).unwrap().dataset.source = Some(url.into());
         app.ui.service = Some(crate::ServiceConn {
             url: "https://example.com/collections".into(),
+            connection: None,
             kind: "ogcapi",
             slot: Default::default(),
             text: None,

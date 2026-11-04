@@ -105,13 +105,15 @@ pub struct Search {
 pub fn api(url: Option<&str>) -> Result<String, String> {
     let Some(u) = url.map(str::trim).filter(|u| !u.is_empty()) else { return Ok(EARTH_SEARCH.to_string()) };
     crate::address::check(u, None)?;
-    let u = u.split(['?', '#']).next().unwrap_or(u).trim_end_matches('/');
-    Ok(u.strip_suffix("/search").or_else(|| u.strip_suffix("/collections")).unwrap_or(u).to_string())
+    let inner = crate::logins::inner(u);
+    let inner = inner.split(['?', '#']).next().unwrap_or(inner).trim_end_matches('/');
+    let inner = inner.strip_suffix("/search").or_else(|| inner.strip_suffix("/collections")).unwrap_or(inner);
+    Ok(crate::logins::inherit(u, inner))
 }
 
 /// The request for an API's collections.
 pub fn collections_url(api: &str) -> String {
-    format!("{api}/collections")
+    crate::template::join(api, &format!("{}/collections", crate::logins::inner(api)))
 }
 
 /// The request for a search (STAC API's `GET /search`).
@@ -147,11 +149,12 @@ pub fn search_url(api: &str, s: &Search) -> Result<String, String> {
         };
         q.push(format!("sortby={}", encode(&format!("{sign}{field}"))));
     }
-    Ok(format!("{api}/search?{}", q.join("&")))
+    Ok(crate::template::join(api, &format!("{}/search?{}", crate::logins::inner(api), q.join("&"))))
 }
 
 /// Whether an address is a web address.
 fn is_web(u: &str) -> bool {
+    let u = crate::logins::inner(u);
     let l = u.get(..8).unwrap_or(u).to_ascii_lowercase();
     l.starts_with("https://") || l.starts_with("http://")
 }
@@ -256,15 +259,16 @@ pub fn parse_matched(bytes: &[u8]) -> Option<u64> {
 /// `/collections/`, else its `root` link's (a static catalog's `….json` root is no API), else the
 /// collection its `parent` link names. `None` when nothing says.
 pub fn api_of(bytes: &[u8], from: &str) -> Option<String> {
-    let before = |u: &str| u.split_once("/collections/").map(|(a, _)| a.to_string());
+    let before = |u: &str| crate::logins::inner(u).split_once("/collections/").map(|(a, _)| crate::logins::inherit(u, a));
     if let Some(a) = before(from) {
         return Some(a);
     }
     let v = json(bytes).ok()?;
     if let Some(root) = link(&v, "root", from) {
-        let r = root.split(['?', '#']).next().unwrap_or(&root).trim_end_matches('/').to_string();
-        if !r.to_ascii_lowercase().ends_with(".json") && is_web(&r) {
-            return Some(r);
+        let inner = crate::logins::inner(&root);
+        let r = inner.split(['?', '#']).next().unwrap_or(inner).trim_end_matches('/');
+        if !r.to_ascii_lowercase().ends_with(".json") && is_web(r) {
+            return Some(crate::logins::inherit(&root, r));
         }
     }
     link(&v, "parent", from).and_then(|p| before(&p))
@@ -437,6 +441,14 @@ fn footprint_size(g: &Value) -> usize {
 /// An address relative to another, as a browser would resolve it (`s3://` and others are kept
 /// as they are, so they can be refused by name).
 pub fn resolve(base: &str, href: &str) -> Option<String> {
+    // A login binding rides along only to an address on the base's own origin (`inherit`).
+    let plain_base = rustgis_data::login_address::parse(base).ok()?.map_or(base, |b| b.url);
+    rustgis_data::login_address::parse(href).ok()?;
+    let resolved = resolve_plain(plain_base, crate::logins::inner(href))?;
+    Some(crate::logins::inherit(base, &resolved))
+}
+
+fn resolve_plain(base: &str, href: &str) -> Option<String> {
     let href = href.trim();
     if href.is_empty() || href.len() > MAX_TEXT || href.chars().any(char::is_control) {
         return None;
@@ -475,14 +487,14 @@ impl Asset {
     /// Whether it is a GeoTIFF (cloud-optimised or not).
     pub fn is_geotiff(&self) -> bool {
         let t = self.media_type.to_ascii_lowercase();
-        let path = self.href.split(['?', '#']).next().unwrap_or("").to_ascii_lowercase();
+        let path = crate::logins::inner(&self.href).split(['?', '#']).next().unwrap_or("").to_ascii_lowercase();
         t.contains("geotiff") || t.starts_with("image/tiff") || path.ends_with(".tif") || path.ends_with(".tiff")
     }
 
     /// Whether it is a LiDAR point cloud (LAS, LAZ or COPC).
     pub fn is_point_cloud(&self) -> bool {
         let t = self.media_type.to_ascii_lowercase();
-        let path = self.href.split(['?', '#']).next().unwrap_or("").to_ascii_lowercase();
+        let path = crate::logins::inner(&self.href).split(['?', '#']).next().unwrap_or("").to_ascii_lowercase();
         t.contains("vnd.las") || t.contains("laszip") || path.ends_with(".laz") || path.ends_with(".las")
     }
 }
@@ -498,7 +510,7 @@ impl Item {
             });
         }
         // Among those on the web first (others are refused by name when nothing else is there).
-        let web = |a: &&Asset| a.href.to_ascii_lowercase().starts_with("http");
+        let web = |a: &&Asset| is_web(&a.href);
         let choose = |only_web: bool| {
             let ok = |a: &&Asset| !only_web || web(a);
             self.assets
@@ -517,7 +529,7 @@ impl Item {
     pub fn thumbnail(&self) -> Option<&Asset> {
         let picture = |a: &&Asset| {
             let t = a.media_type.to_ascii_lowercase();
-            let path = a.href.split(['?', '#']).next().unwrap_or("").to_ascii_lowercase();
+            let path = crate::logins::inner(&a.href).split(['?', '#']).next().unwrap_or("").to_ascii_lowercase();
             is_web(&a.href)
                 && (t.starts_with("image/png")
                     || t.starts_with("image/jpeg")
@@ -535,7 +547,7 @@ impl Item {
     /// may point to, not one that needs signing or a cloud store's own protocol.
     pub fn asset_href(&self, key: Option<&str>) -> Result<(String, String), String> {
         let a = self.pick(key)?;
-        let lower = a.href.to_ascii_lowercase();
+        let lower = crate::logins::inner(&a.href).to_ascii_lowercase();
         if !(lower.starts_with("https://") || lower.starts_with("http://") || crate::s3::is_s3(&lower)) {
             let scheme = lower.split("://").next().unwrap_or("");
             return Err(format!(
@@ -553,6 +565,7 @@ impl Item {
 
 /// The host of a web address, lower-cased.
 fn host_of(url: &str) -> String {
+    let url = crate::logins::inner(url);
     let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
     let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
     let host = authority.rsplit_once('@').map(|(_, h)| h).unwrap_or(authority);
@@ -562,7 +575,7 @@ fn host_of(url: &str) -> String {
 /// Whether an asset's address is in Azure Blob Storage without a signature: a Microsoft
 /// Planetary Computer asset, read with a token from its token service ([`sas_token_url`]).
 pub fn needs_signing(href: &str) -> bool {
-    let lower = href.to_ascii_lowercase();
+    let lower = crate::logins::inner(href).to_ascii_lowercase();
     if !lower.starts_with("https://") || !host_of(&lower).ends_with(".blob.core.windows.net") {
         return false;
     }
@@ -573,7 +586,7 @@ pub fn needs_signing(href: &str) -> bool {
 /// The request for a token that reads `href`'s storage container (the Planetary Computer's
 /// `token/{account}/{container}`).
 pub fn sas_token_url(href: &str) -> Result<String, String> {
-    let lower = href.to_ascii_lowercase();
+    let lower = crate::logins::inner(href).to_ascii_lowercase();
     let host = host_of(&lower);
     let account = host.strip_suffix(".blob.core.windows.net").unwrap_or("");
     let path = lower.split_once("://").map(|(_, r)| r).unwrap_or("");
@@ -603,12 +616,14 @@ pub fn parse_sas(bytes: &[u8]) -> Result<String, String> {
 
 /// An address with a token's query added.
 pub fn sign(href: &str, token: &str) -> String {
-    let (base, frag) = href.split_once('#').map(|(b, f)| (b, Some(f))).unwrap_or((href, None));
+    let inner = crate::logins::inner(href);
+    let (base, frag) = inner.split_once('#').map(|(b, f)| (b, Some(f))).unwrap_or((inner, None));
     let sep = if base.contains('?') { "&" } else { "?" };
-    match frag {
+    let signed = match frag {
         Some(f) => format!("{base}{sep}{token}#{f}"),
         None => format!("{base}{sep}{token}"),
-    }
+    };
+    crate::logins::inherit(href, &signed)
 }
 
 fn tokens() -> &'static std::sync::Mutex<std::collections::HashMap<String, (String, web_time::Instant)>> {
@@ -708,6 +723,33 @@ pub fn footprints_geojson(items: &[Item]) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bound_stac_api_catalog_and_assets_follow_only_same_origin_links() {
+        let origin = "https://stac-bound.test";
+        // A binding is authority only while its runtime owns it, so install a live one.
+        let token = crate::logins::activate(origin, "test-owner", crate::logins::Method::Header("X-Key".into()), "secret", false).unwrap();
+        let base = rustgis_data::login_address::bind(&token, origin, "https://stac-bound.test/catalog.json").unwrap();
+        let document = br#"{"type":"Catalog","links":[
+            {"rel":"child","href":"collection.json"},
+            {"rel":"child","href":"https://other.test/collection.json"}]}"#;
+        let children = catalog::parse_children(document, &base).unwrap();
+        assert!(children.iter().any(|c| rustgis_data::login_address::parse(&c.url).unwrap().is_some()));
+        assert!(children.iter().any(|c| c.url == "https://other.test/collection.json"));
+        let item = br#"{"type":"Feature","id":"x","properties":{},"geometry":null,
+            "assets":{"data":{"href":"data.tif","type":"image/tiff"}},
+            "links":[{"rel":"self","href":"items/x.json"}]}"#;
+        let item = parse_item(item, &base).unwrap();
+        assert_eq!(rustgis_data::login_address::parse(&item.assets[0].href).unwrap().unwrap().binding, token);
+        let api = api(Some(&rustgis_data::login_address::bind(&token, origin, "https://stac-bound.test/v1/search").unwrap())).unwrap();
+        for url in [collections_url(&api), search_url(&api, &Search::default()).unwrap()] {
+            assert_eq!(rustgis_data::login_address::parse(&url).unwrap().unwrap().binding, token);
+        }
+        for foreign in ["http://stac-bound.test/tile", "https://stac-bound.test:444/tile", "https://other.test/tile"] {
+            assert_eq!(resolve(&base, foreign).as_deref(), Some(foreign));
+        }
+        crate::logins::deactivate(&token);
+    }
 
     #[test]
     fn api_of_a_linked_document() {

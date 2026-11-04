@@ -12,6 +12,8 @@ mod remembered_database;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "tests/remembered_database_packets.rs"]
 mod remembered_database_packets;
+#[path = "tests/service_logins.rs"]
+mod service_logins;
 
 /// Keeps tests away from the user's installed plugins.
 fn isolate_plugins() {
@@ -2920,6 +2922,9 @@ fn hostile_params_never_panic(shard: usize) {
         // A categorical summary: countIn's classes, and a mode by groups with a share out of range.
         json!({"stat": "countIn", "classes": [1e308, -1, "x", null, 3.5, {"a": 1}]}),
         json!({"stat": "countIn", "classes": "all", "by": "year"}),
+        // A web-service connection's login method and secret, and the connection an add records.
+        json!({"id": "c1", "kind": "wms", "auth": "query", "keyName": "\u{0}", "user": ":", "apiKey": "\n", "password": [], "allowInsecure": "yes", "connection": 7}),
+        json!({"id": "c1", "auth": "basic", "user": 7, "keyName": {"a": 1}, "apiKey": "k".repeat(9000), "remember": "yes", "connection": "c999999"}),
         json!({"stat": "mode", "by": "month", "minValid": 2, "months": []}),
         json!({"stat": "frequency", "by": "year", "minValid": -1, "name": []}),
         // MySQL addresses that can't be read, so nothing connects.
@@ -14836,7 +14841,7 @@ fn a_trend_over_a_stac_collection() {
     }
     // Cancelled, the readers stop early and the run says so, rather than work out a block only
     // partly read.
-    let job = crate::cmd::cube::trend_start(&s, &params).unwrap();
+    let job = crate::cmd::cube::trend_start(&mut s, &params).unwrap();
     let e = job.run(&std::sync::atomic::AtomicBool::new(true), &std::sync::atomic::AtomicUsize::new(0)).unwrap_err();
     assert_eq!(e, "cancelled");
     // A row too wide for a piece is said.
@@ -16106,7 +16111,7 @@ fn a_data_cube_summarised_over_time() {
     let again = t.map().layer_by_name("anos 2020").and_then(|l| l.raster.as_ref()).and_then(|r| r.data.clone()).unwrap();
     assert_eq!(again.bands[0].data[0], 2.0);
     // Cancelled, it says so.
-    let job = crate::cmd::cube::reduce_start(&s, &json!({"layers": names, "stat": "mean"})).unwrap();
+    let job = crate::cmd::cube::reduce_start(&mut s, &json!({"layers": names, "stat": "mean"})).unwrap();
     let e = job.run(&std::sync::atomic::AtomicBool::new(true), &std::sync::atomic::AtomicUsize::new(0)).unwrap_err();
     assert_eq!(e, "cancelled");
     // Refused, nothing added.
@@ -17104,6 +17109,7 @@ fn saved_projects_keep_no_layer_tokens() {
         name: "Protected service".into(),
         url: "https://gis.example/wfs?key=k3y&map=m".into(),
         kind: "wfs".into(),
+        anonymous: false,
         expanded: true,
         children: vec![rustgis_map::ServiceChild {
             layer,
@@ -17214,7 +17220,9 @@ fn connections_commands() {
     assert!(s3::connection("conn-test-s3").is_none());
     s.run("connection.new", &json!({"kind":"wms","name":"Closed","address":"http://127.0.0.1:9/wms"})).unwrap();
     assert!(s.run("connection.test", &json!({"id":"Closed"})).unwrap_err().contains("127.0.0.1:9"));
-    assert!(s.run("connection.login", &json!({"id":"Closed"})).unwrap_err().contains("don't log in"));
+    // A service without a login method logs in to nothing: it is only chosen for its address.
+    assert_eq!(s.run("connection.login", &json!({"id":"Closed"})).unwrap()["loggedIn"], false);
+    assert!(s.run("connection.login", &json!({"id":"Closed","apiKey":"k"})).unwrap_err().contains("no login method"));
     s.run("connection.edit", &json!({"id":"Closed","kind":" wms "})).unwrap();
     let default = s.run("connection.new", &json!({"kind":"wms","address":"https://a.example/wms"})).unwrap();
     let renamed = s.run("connection.edit", &json!({"id":"B","name":""})).unwrap();
@@ -17418,7 +17426,7 @@ fn connection_browse_levels_and_adds() {
     assert_eq!(v["children"][0]["what"], "item");
     assert_eq!(
         v["children"][0]["children"][0]["add"],
-        json!({"command": "stac.addAsset", "params": {"url": self_link, "asset": "visual", "name": "i1 visual"}})
+        json!({"command": "stac.addAsset", "params": {"url": self_link, "asset": "visual", "name": "i1 visual", "connection": v["connection"]}})
     );
     assert!(v.get("truncated").is_none());
 
@@ -17448,7 +17456,7 @@ fn connection_browse_levels_and_adds() {
     let v = s.run("connection.browse", &json!({"id": "Static", "node": item_node, "answer": item.to_string()})).unwrap();
     assert_eq!(
         v["children"][0]["add"],
-        json!({"command": "stac.addAsset", "params": {"url": "https://s.example/static/c1/i1/i1.json", "asset": "visual", "name": "i1 visual"}})
+        json!({"command": "stac.addAsset", "params": {"url": "https://s.example/static/c1/i1/i1.json", "asset": "visual", "name": "i1 visual", "connection": v["connection"]}})
     );
     // An asset's key names its item, so the same file under two items is two rows.
     assert_eq!(v["children"][0]["key"], "https://s.example/static/c1/i1/i1.json#visual");

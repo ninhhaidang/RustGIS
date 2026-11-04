@@ -152,8 +152,9 @@ impl RasterLayer {
         }
     }
 
-    /// Reads the pixels again from the path or the embedded file (after a project opens). A
-    /// layer that follows the time slider is left to the engine, which reads the step shown.
+    /// Reads the pixels again from the path or the embedded file (after a project opens). An S3
+    /// or login-wrapped address is downloaded whole, keeping its wrapper. A layer that follows the
+    /// time slider is left to the engine, which reads the step shown.
     pub fn reload(&mut self) -> Result<(), String> {
         if self.time_zarr.is_some() {
             return Ok(());
@@ -161,12 +162,17 @@ impl RasterLayer {
         self.opening = None;
         self.error = None;
         if self.embedded.is_none()
-            && let Some(path) = self
-                .path
-                .as_deref()
-                .filter(|p| rustgis_data::s3_address::is_wrapper(p) || p.get(..5).is_some_and(|s| s.eq_ignore_ascii_case("s3://")))
+            && let Some(path) = self.path.as_deref().filter(|p| {
+                rustgis_data::login_address::is_wrapper(p)
+                    || rustgis_data::s3_address::is_wrapper(p)
+                    || p.get(..5).is_some_and(|s| s.eq_ignore_ascii_case("s3://"))
+            })
         {
-            let name = rustgis_data::s3_address::inner(path).split(['?', '#']).next().unwrap_or("raster.tif").to_string();
+            let name = rustgis_data::login_address::inner(rustgis_data::s3_address::inner(path))
+                .split(['?', '#'])
+                .next()
+                .unwrap_or("raster.tif")
+                .to_string();
             let placement = self.placement;
             let slot = Arc::new(Mutex::new(None));
             let land = slot.clone();
@@ -1328,5 +1334,16 @@ mod tests {
         let mut missing = RasterLayer { path: Some("/nonexistent/x.tif".into()), embedded: None, ..back };
         assert!(missing.reload().is_err());
         assert!(missing.data.is_none());
+    }
+
+    /// A plain web address is read as it was before logins: never downloaded whole on reload.
+    #[test]
+    fn reload_downloads_only_s3_and_login_wrapped_addresses() {
+        let gt = GeoTransform { origin_x: 0.0, origin_y: 1.0, pixel_width: 1.0, pixel_height: -1.0 };
+        let r = Raster::new("web", 1, 1, vec![vec![1.0]], gt, Crs::LonLat, None, ColorHint::Gray, "UInt8").unwrap();
+        let mut plain = RasterLayer::from_path(r, "https://anon757.invalid/x.tif");
+        plain.data = None;
+        assert!(plain.reload().is_err());
+        assert!(plain.opening.is_none(), "an anonymous web raster is not fetched whole");
     }
 }

@@ -192,8 +192,12 @@ const GET_MAP_KEYS: [&str; 16] = [
 const INFO_KEYS: [&str; 7] = ["query_layers", "info_format", "feature_count", "i", "j", "x", "y"];
 
 /// An address without the WMS request parameters it carries (GetMap's and GetFeatureInfo's),
-/// keeping the others (MapServer's `map=`, a token); as it is when it carries none.
+/// keeping the others (MapServer's `map=`, a token); as it is when it carries none. Runtime
+/// service-login bindings remain attached to the cleaned same-origin request address.
 pub(super) fn without_wms_keys(url: &str) -> String {
+    if let Ok(Some(bound)) = crate::login_address::parse(url) {
+        return crate::login_address::inherit(url, &without_wms_keys(bound.url));
+    }
     let pairs: Vec<&str> = url
         .split('#')
         .next()
@@ -591,6 +595,38 @@ mod tests {
     fn info_of(caps: &str, layer: &str) -> FeatureInfo {
         let service = crate::ogc::parse("https://maps.example.org/wms?SERVICE=WMS&REQUEST=GetCapabilities", caps.as_bytes()).unwrap();
         service.layers.into_iter().find(|l| l.name == layer).and_then(|l| l.feature_info).unwrap()
+    }
+
+    #[test]
+    fn bound_feature_info_requests_and_service_discovery_preserve_authority() {
+        let address = crate::login_address::bind(
+            "0123456789abcdef",
+            "https://maps.example.org",
+            "https://maps.example.org/wms?map=x&SERVICE=WMS&REQUEST=GetMap&LAYERS=roads",
+        )
+        .unwrap();
+        let info = FeatureInfo {
+            url: without_wms_keys(&address),
+            version: "1.3.0".into(),
+            layer: "roads".into(),
+            formats: vec!["application/json".into()],
+            ..FeatureInfo::default()
+        };
+        assert!(info.queryable());
+        let request = info.request(0.0, 0.0, 10.0).unwrap();
+        let bound = crate::login_address::parse(&request).unwrap().unwrap();
+        assert_eq!(bound.binding, "0123456789abcdef");
+        assert!(bound.url.contains("map=x&SERVICE=WMS") && bound.url.contains("REQUEST=GetFeatureInfo"));
+        let (caps, layer) = wms_layer_of(&address).unwrap();
+        assert_eq!(layer, "roads");
+        assert_eq!(crate::login_address::parse(&caps).unwrap().unwrap().binding, bound.binding);
+        let same_origin = CAPS_13.replace("https://info.example.org", "https://maps.example.org");
+        let service = crate::ogc::parse(&address, same_origin.as_bytes()).unwrap();
+        let roads = service.layers.iter().find(|l| l.name == "roads").unwrap().feature_info.as_ref().unwrap();
+        assert_eq!(crate::login_address::parse(&roads.url).unwrap().unwrap().binding, bound.binding);
+        let service = crate::ogc::parse(&address, CAPS_13.as_bytes()).unwrap();
+        let roads = service.layers.iter().find(|l| l.name == "roads").unwrap().feature_info.as_ref().unwrap();
+        assert_eq!(roads.url, "https://info.example.org/wms?");
     }
 
     #[test]

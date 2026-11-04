@@ -385,11 +385,11 @@ pub fn open_shared(file_name: &str, bytes: std::sync::Arc<Vec<u8>>, layer: Optio
     }
 }
 
-/// Whether a web address names a file read in place by range: a FlatGeobuf or a GeoParquet. An
-/// address read through a saved S3 connection ([`crate::s3_address`]) is judged by the address it
-/// wraps.
+/// Whether a web address names a file read in place by range: a FlatGeobuf or a GeoParquet.
+/// Saved S3 connection and runtime service-login addresses are judged by the URL they wrap;
+/// the original address remains the range reader's identity.
 pub fn is_remote_name(url: &str) -> bool {
-    let lower = crate::s3_address::inner(url).to_ascii_lowercase();
+    let lower = crate::login_address::inner(crate::s3_address::inner(url)).to_ascii_lowercase();
     let path = lower.split(['?', '#']).next().unwrap_or(&lower);
     // `s3://` too: the app's fetchers check it and read it from its bucket's web address (signed
     // only for a connection that serves the bucket, see rustgis_tiles::s3).
@@ -399,6 +399,7 @@ pub fn is_remote_name(url: &str) -> bool {
 
 /// A layer name from a web address: its file name without the extension.
 fn url_name(url: &str) -> String {
+    let url = crate::login_address::inner(crate::s3_address::inner(url));
     let path = url.split(['?', '#']).next().unwrap_or(url);
     let file = path.rsplit('/').next().unwrap_or(path);
     let stem = file.rsplit_once('.').map(|(a, _)| a).unwrap_or(file);
@@ -414,8 +415,8 @@ pub fn open_url_now(url: &str) -> Result<Box<dyn FeatureSource>> {
 /// [`open_url_now`] from `file`: a drive's reads note what they miss on the file it fetches for,
 /// even after other files pushed it out of those kept.
 fn open_file_now(file: std::sync::Arc<remote::Remote>) -> Result<Box<dyn FeatureSource>> {
-    let url = file.url().to_string();
-    let name = url_name(&url);
+    let url = crate::login_address::inner(crate::s3_address::inner(file.url()));
+    let name = url_name(url);
     let lower = url.to_ascii_lowercase();
     let path = lower.split(['?', '#']).next().unwrap_or(&lower);
     if path.ends_with(".fgb") {
