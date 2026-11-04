@@ -130,6 +130,18 @@ pub const PRESETS: &[Preset] = &[
         key_url: "",
         login: false,
     },
+    Preset {
+        id: "requesty",
+        label: "Requesty",
+        api: Api::OpenAi,
+        base_url: "https://router.requesty.ai/v1",
+        model: "anthropic/claude-sonnet-5-5",
+        key_env: &["REQUESTY_API_KEY"],
+        url_env: "",
+        keyless: false,
+        key_url: "https://app.requesty.ai/api-keys",
+        login: false,
+    },
 ];
 
 /// The preset with this id.
@@ -1633,6 +1645,8 @@ pub fn parse_models(api: Api, resp: &HttpResponse) -> Result<Vec<String>, String
             .map(|n| n.trim_start_matches("models/").to_string())
             .collect(),
     };
+    // An id with control characters could not be sent back, and would garble a terminal.
+    ids.retain(|id| !id.chars().any(char::is_control));
     // The ChatGPT catalog comes in its own order (the first is the one to suggest).
     if api != Api::Responses {
         ids.sort();

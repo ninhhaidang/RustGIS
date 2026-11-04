@@ -83,6 +83,10 @@ fn first_keyed_provider_is_the_first_key_provider_and_never_a_sign_in() {
     };
     assert_eq!(first_keyed(keyed(&["gemini", "openai"])), Some("openai"));
     assert_eq!(first_keyed(keyed(&["chatgpt"])), None, "a sign-in is chosen, not assumed");
+    // Requesty comes last, so its key never takes the place of another provider's.
+    assert_eq!(first_keyed(keyed(&["requesty", "openrouter", "custom"])), Some("openrouter"));
+    assert_eq!(first_keyed(keyed(&["requesty", "custom"])), Some("custom"));
+    assert_eq!(first_keyed(keyed(&["requesty"])), Some("requesty"));
     assert_eq!(first_keyed(keyed(&[])), None);
 }
 
@@ -841,14 +845,27 @@ fn missing_settings_are_reported() {
 fn model_lists() {
     let r = |v: Value| HttpResponse { status: 200, body: v.to_string().into_bytes(), headers: vec![] };
     assert_eq!(parse_models(Api::OpenAi, &r(json!({"data": [{"id": "b"}, {"id": "a"}]}))), Ok(vec!["a".to_string(), "b".to_string()]));
+    let garbled = json!({"data": [{"id": "openai/gpt-4o-mini", "api": "chat"}, {"id": "bad\u{1b}[31m"}]});
+    assert_eq!(parse_models(Api::OpenAi, &r(garbled)), Ok(vec!["openai/gpt-4o-mini".to_string()]));
     let g = json!({"models": [
         {"name": "models/gemini-x", "supportedGenerationMethods": ["generateContent"]},
-        {"name": "models/embed", "supportedGenerationMethods": ["embedContent"]}
+        {"name": "models/embed", "supportedGenerationMethods": ["embedContent"]},
+        {"name": "models/bad\u{1b}[31m", "supportedGenerationMethods": ["generateContent"]}
     ]});
     assert_eq!(parse_models(Api::Gemini, &r(g)), Ok(vec!["gemini-x".to_string()]));
     let req = models_request(&cfg("anthropic"));
     assert_eq!(req.method, "GET");
     assert!(req.url.starts_with("https://api.anthropic.com/v1/models"));
+}
+
+#[test]
+fn requesty_lists_its_models_with_a_bearer_key() {
+    let p = preset("requesty").expect("Requesty preset");
+    assert_eq!((p.api, p.keyless, p.login), (Api::OpenAi, false, false));
+    assert_eq!(p.key_env, &["REQUESTY_API_KEY"]);
+    let req = models_request(&cfg("requesty"));
+    assert_eq!(req.url, "https://router.requesty.ai/v1/models");
+    assert!(req.headers.iter().any(|(k, v)| k == "Authorization" && v == "Bearer k"));
 }
 
 #[test]
