@@ -236,7 +236,8 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
 - Click an element to select it, drag to move, drag its handles to resize, and edit it in the
   **Format** pane, which opens as a tab beside the other right-hand panes. Closing the pane keeps
   the element selected; selecting an element, or clicking the selected one, opens it again. The
-  wheel zooms the page. **Delete** (or **Backspace**, the delete key on a
+  wheel zooms the page, and each layout keeps its own zoom and pan while the project is open.
+  **Delete** (or **Backspace**, the delete key on a
   Mac) deletes the selected element, and **Ctrl+D** (**⌘D** on a Mac) duplicates it: the copy is
   placed 5 mm down and to the right, on top, and selected. The **arrow keys** nudge it 1 mm, or
   10 mm with **Shift**, and keep it moving while held; a run of nudges is one step to undo.

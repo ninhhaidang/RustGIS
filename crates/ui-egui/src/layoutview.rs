@@ -57,9 +57,14 @@ pub struct LayoutView {
     /// still on its way (in the browser, which doesn't wait for them): drawn again once a fetch
     /// lands.
     legends_wait: Option<u64>,
-    /// Page zoom (1 = fit) and pan, in screen points.
+    /// Page zoom (0 or 1 = fit) and pan, in screen points, of the layout `viewed` names.
     zoom: f32,
     pan: egui::Vec2,
+    /// The layout `zoom` and `pan` are for, by name (unique, unlike an index, which shifts when
+    /// layouts are removed).
+    viewed: Option<String>,
+    /// The zoom and pan of the project's other layouts opened so far, by name.
+    views: std::collections::HashMap<String, (f32, egui::Vec2)>,
     pub selected: Option<u32>,
     /// The selection the Format pane last opened for, by layout and element (ids are per layout):
     /// a new one opens it again, so closing the pane keeps the selection without the pane coming
@@ -68,7 +73,7 @@ pub struct LayoutView {
     /// The element whose fields the Format pane drew this frame, by layout and element: text
     /// typed into any other is saved at the end of the frame (`save_drafts`).
     drawn: Option<(usize, u32)>,
-    /// The project (`Session::opened`) the selection and the text being typed are for.
+    /// The project (`Session::opened`) the selection, the text being typed and the page views are for.
     project: Option<u64>,
     drag: Option<Drag>,
     /// The page rectangle and points per millimetre the drag last saw.
@@ -126,9 +131,9 @@ impl LayoutView {
     }
 }
 
-/// Forgets the selection and the text typed into its fields once another project has replaced
-/// the one they were for: its elements may have the same ids. Run after every command, after
-/// what agents and scripts sent, and before drafts are saved.
+/// Forgets the selection, the text typed into its fields and the layouts' page views once another
+/// project has replaced the one they were for: its elements and layouts may have the same ids and
+/// names. Run after every command, after what agents and scripts sent, and before drafts are saved.
 pub(crate) fn follow_project(app: &mut RustGisApp) {
     let opened = app.session.opened;
     if app.layout.project.is_some_and(|p| p != opened) {
@@ -136,8 +141,18 @@ pub(crate) fn follow_project(app: &mut RustGisApp) {
         app.layout.formatted = None;
         app.layout.drawn = None;
         app.layout.typing.clear();
+        app.layout.viewed = None;
+        app.layout.views.clear();
     }
     app.layout.project = Some(opened);
+    // A page view stays with its layout: one removed or renamed leaves none for a new layout
+    // given that name, and comes back fitted to the page if that's undone.
+    let layouts = &app.session.project.layouts;
+    let named = |name: &str| layouts.iter().any(|l| l.name == name);
+    app.layout.views.retain(|name, _| named(name));
+    if app.layout.viewed.as_deref().is_some_and(|name| !named(name)) {
+        app.layout.viewed = None;
+    }
 }
 
 /// How much map a pan's preview draws past each side of the frame, in frame widths and heights.
@@ -180,6 +195,18 @@ impl LayoutView {
     /// fonts a text names have just been indexed).
     pub fn redraw(&mut self) {
         self.key = None;
+    }
+
+    /// Makes `zoom` and `pan` those of the layout named `name`: each layout keeps its own view of
+    /// the page, and one not opened yet fits the page.
+    fn view_layout(&mut self, name: &str) {
+        if self.viewed.as_deref() == Some(name) {
+            return;
+        }
+        if let Some(old) = self.viewed.replace(name.to_string()) {
+            self.views.insert(old, (self.zoom, self.pan));
+        }
+        (self.zoom, self.pan) = self.views.remove(name).unwrap_or_default();
     }
 
     /// Stops drawing a polygon or lasso frame, or navigating map frames (Esc).
@@ -549,6 +576,7 @@ fn shown_layout(app: &mut RustGisApp, li: usize) -> Option<std::rc::Rc<Layout>> 
 pub fn show(app: &mut RustGisApp, ui: &mut Ui) {
     let Some(li) = app.session.active_layout else { return };
     let Some(layout) = shown_layout(app, li) else { return };
+    app.layout.view_layout(&layout.name);
     let t = Tokens::get(ui.ctx());
     if app.layout.selected.is_some_and(|id| layout.element(id).is_none()) {
         app.layout.selected = None;
@@ -3255,6 +3283,74 @@ mod tests {
         assert!((y[0] - 40.0).abs() < 0.5, "at about 40 mm: {y:?}");
         drag(&mut h, Pos2::new(page.center().x, to_screen(page, s, (0.0, y[0])).y), ruler);
         assert!(h.state().session.project.layouts[li].guides.y.is_empty(), "dropped on the ruler, it's gone");
+    }
+
+    /// Each layout keeps its own zoom and pan of the page. One not opened yet fits the page, and
+    /// so does a new layout given the name of one renamed, removed or of another project.
+    #[test]
+    fn each_layout_keeps_its_page_view() {
+        type H<'a> = egui_kittest::Harness<'a, RustGisApp>;
+        type View = (f32, egui::Vec2);
+        const FIT: View = (0.0, egui::Vec2::ZERO);
+        fn run(h: &mut H<'_>, id: &str, params: serde_json::Value) -> View {
+            h.state_mut().run(id, params).unwrap();
+            h.run_steps(2);
+            (h.state().layout.zoom, h.state().layout.pan)
+        }
+        fn set(h: &mut H<'_>, view: View) {
+            let layout = &mut h.state_mut().layout;
+            (layout.zoom, layout.pan) = view;
+            h.run_steps(2);
+        }
+        let (a, b): (View, View) = ((2.0, vec2(30.0, -20.0)), (3.0, vec2(-40.0, 10.0)));
+        let open = |name: &str| json!({"name": name});
+
+        let mut app = RustGisApp::with_sample();
+        app.run("layout.new", json!({"name": "A", "template": "blank"})).unwrap();
+        app.run("layout.new", json!({"name": "B", "template": "blank"})).unwrap();
+        let text = serde_json::to_string(&app.session.project).unwrap();
+        let mut fonts = false;
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(1000.0, 760.0)).build_ui_state(
+            move |ui, app: &mut RustGisApp| {
+                if !fonts {
+                    crate::theme::install_fonts(ui.ctx(), &[], None);
+                    fonts = true;
+                    return;
+                }
+                with_format(app, ui);
+            },
+            app,
+        );
+        h.run_steps(3);
+
+        set(&mut h, b);
+        assert_eq!(run(&mut h, "layout.activate", open("A")), FIT, "not opened yet: fits the page");
+        set(&mut h, a);
+        assert_eq!(run(&mut h, "layout.activate", open("B")), b, "back as it was left");
+        assert_eq!(run(&mut h, "layout.activate", open("A")), a);
+
+        // Showing the map and coming back keeps it; a copy starts with its own.
+        run(&mut h, "layout.close", json!({}));
+        assert_eq!(run(&mut h, "layout.activate", open("A")), a, "closed and opened again");
+        assert_eq!(run(&mut h, "layout.duplicate", json!({"name": "A", "newName": "A2"})), FIT, "a copy fits the page");
+        assert_eq!(run(&mut h, "layout.activate", open("A")), a, "the copy didn't change it");
+
+        // B's name freed by renaming it: a new B doesn't get its view.
+        run(&mut h, "layout.activate", open("B"));
+        assert_eq!(run(&mut h, "layout.rename", json!({"name": "B", "newName": "C"})), FIT, "renamed: fits the page");
+        run(&mut h, "layout.activate", open("A"));
+        assert_eq!(run(&mut h, "layout.new", json!({"name": "B", "template": "blank"})), FIT, "a new layout with a used name");
+
+        // A's name freed by removing it while open.
+        run(&mut h, "layout.activate", open("A"));
+        set(&mut h, a);
+        run(&mut h, "layout.remove", open("A"));
+        assert_eq!(run(&mut h, "layout.new", json!({"name": "A", "template": "blank"})), FIT, "a new layout after the removal");
+
+        // Another project with a layout of the same name.
+        set(&mut h, a);
+        run(&mut h, "project.openText", json!({"text": text}));
+        assert_eq!(run(&mut h, "layout.activate", open("A")), FIT, "another project's layout");
     }
 
     #[test]
