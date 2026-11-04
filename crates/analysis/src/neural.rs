@@ -124,9 +124,39 @@ fn softmax(a: &mut [f32]) {
     }
 }
 
+/// The samples of a model's classes under its training polygons, each polygon's outline given
+/// with its class and its share of the class's samples, and each class taking up to
+/// `max_per_class`: the samples, and how many each class got. The polygons are counted for the
+/// run's progress, and a cancelled run stops between rows of a polygon (see [`crate::control`]).
+#[allow(clippy::type_complexity)]
+pub fn training_samples(
+    r: &Raster,
+    bands: &[usize],
+    polygons: &[(Vec<Vec<Coord>>, usize, usize)],
+    classes: usize,
+    max_per_class: usize,
+) -> Result<(Vec<(Vec<f32>, usize)>, Vec<usize>), String> {
+    crate::control::begin(polygons.len());
+    let mut samples: Vec<(Vec<f32>, usize)> = Vec::new();
+    let mut per_class = vec![0usize; classes];
+    for (rings, ci, share) in polygons {
+        let room = max_per_class.saturating_sub(per_class.get(*ci).copied().unwrap_or(0)).min(*share);
+        let got = polygon_samples(r, bands, rings, room);
+        // Stopped part of the way through the polygon: what it got isn't its share.
+        crate::control::check()?;
+        if let Some(n) = per_class.get_mut(*ci) {
+            *n += got.len();
+        }
+        samples.extend(got.into_iter().map(|x| (x, *ci)));
+        crate::control::advance(1);
+    }
+    Ok((samples, per_class))
+}
+
 /// Band values of the pixels inside a polygon (`rings`, longitude/latitude), up to `max`. Only
 /// the pixels under the polygon's outline are visited, every `step`-th one in each direction when
-/// there are many more than `max`, so the samples spread across the polygon.
+/// there are many more than `max`, so the samples spread across the polygon. A cancelled run
+/// stops between rows, with the pixels found so far.
 pub fn polygon_samples(r: &Raster, bands: &[usize], rings: &[Vec<Coord>], max: usize) -> Vec<Vec<f32>> {
     let mut out = Vec::new();
     let tr = r.transformer();
@@ -155,6 +185,9 @@ pub fn polygon_samples(r: &Raster, bands: &[usize], rings: &[Vec<Coord>], max: u
         out.clear();
         let mut row = r0;
         'scan: while row < r1 {
+            if crate::control::cancelled() {
+                return out;
+            }
             let mut col = c0;
             while col < c1 {
                 if out.len() >= max {

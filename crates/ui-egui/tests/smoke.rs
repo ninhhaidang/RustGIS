@@ -2009,10 +2009,10 @@ fn an_unnamed_cog_address_is_read_in_place() {
     assert!(!h.state().session.map().tiles.iter().any(|t| t.name == "Late"));
 }
 
-/// A service layer added from the app (Add From Service, the Connections tree) is read past its
-/// first page off the frame (#764): an ArcGIS layer again from the start in pages ordered by its
-/// object ids, an OGC API collection by its `next` links; the layer is added once the pages are
-/// in, with no note.
+/// A service layer added from the app (Add From Service, the Connections tree) is read page by
+/// page off the frame (#764): an ArcGIS layer, its description first (#1326), in pages ordered by
+/// its object ids from the start, its query as it is never fetched; an OGC API collection by its
+/// `next` links. The layer is added once the pages are in, with no note.
 #[test]
 fn service_features_are_read_page_by_page_off_the_frame() {
     use ogc_server::{Route, Server, arcgis_layer, arcgis_page};
@@ -2055,7 +2055,30 @@ fn service_features_are_read_page_by_page_off_the_frame() {
         .filter(|r| r.path.ends_with("/0/query"))
         .map(|r| r.query.into_iter().find(|(k, _)| k == "resultOffset").map(|(_, v)| v))
         .collect();
-    assert_eq!(offsets, [None, Some("0".into()), Some("2".into()), Some("4".into())]);
+    assert_eq!(offsets, [Some("0".into()), Some("2".into()), Some("4".into())]);
+    assert!(server.requests().iter().any(|r| r.path.ends_with("/MapServer/0")), "the layer's description is read");
+}
+
+/// A service layer whose features can't be fetched at all is said as an error, and its download
+/// is forgotten: no layer is added and nothing is left waiting.
+#[test]
+fn service_features_that_cant_be_fetched_are_said() {
+    use ogc_server::{Route, Server};
+    let server = Server::new(vec![Route::new("/collections/wells", "{}")]);
+    let mut h = harness();
+    h.step();
+    let url = format!("{}/collections/missing/items", server.base);
+    let before = h.state().session.map().layers.len();
+    // Downloads are numbered in turn: the next one is the service's.
+    let probe = h.state_mut().session.download_started();
+    h.state_mut().session.download_failed(probe);
+    h.state_mut().run("ui.addUrl", json!({"url": url, "name": "Missing", "service": true})).unwrap();
+    assert!(h.state().session.download_is_pending(probe + 1));
+    wait_for_ogc(&mut h, |app| app.ui.service_pages.is_empty());
+    let app = h.state();
+    assert!(app.session.notices.iter().any(|n| n.error && n.text.starts_with(&url)), "{:?}", app.session.notices);
+    assert_eq!(app.session.map().layers.len(), before);
+    assert!(!app.session.download_is_pending(probe + 1), "the failed download is forgotten");
 }
 
 /// A project by its web address (a `?project=` link) downloads off the frame and replaces the

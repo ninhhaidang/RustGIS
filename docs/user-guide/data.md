@@ -585,6 +585,45 @@ database is kept without its password. The commands `sources.list`, `sources.sav
 `sources.favourite` and `sources.remove` read and change the lists, for the command line and the
 [AI Assistant](assistant.md). On the command line they last for the run.
 
+### HTTPS certificates
+
+On desktop and the command line, RustGIS's HTTPS clients use platform certificate verification:
+OGC services (WMS, WMTS, WFS and WCS), web tiles and downloads, ArcGIS portal sign-in's token
+requests, the AI Assistant's model requests, the plugin registry, the uv download that makes
+Python environments, and the GeoLibre runner installer. A private or enterprise CA (or a TLS
+inspection proxy's) must be trusted by the operating system for the account running RustGIS:
+
+- **Windows:** install the CA in the appropriate Windows Trusted Root Certification
+  Authorities store. Windows evaluates the certificate chain and its trust/distrust policies.
+- **macOS:** install and trust the CA for SSL in Keychain Access.
+- **Linux and the BSDs:** install the CA in the system CA bundle, or set `SSL_CERT_FILE` to a PEM
+  CA bundle and/or `SSL_CERT_DIR` to CA certificate directories before starting RustGIS. These
+  variables select the trust sources instead of the default system locations (an empty
+  `SSL_CERT_DIR` counts as unset).
+  If no default system roots are found and neither variable is set, this client falls back to
+  its bundled Mozilla roots, so public HTTPS still works in minimal containers. It does not
+  add Mozilla roots to an existing CA store (even one it can't read) or an explicitly configured one.
+
+`SSL_CERT_FILE` and `SSL_CERT_DIR` do **not** override Windows or macOS trust for this client.
+Restart RustGIS after changing certificate trust. The service must still send a valid chain,
+use a certificate matching its hostname, and have unexpired certificates; there is no option
+to skip verification. Database connections (PostgreSQL/PostGIS, MySQL, SQL Server) have their
+own TLS settings; PostGIS with verification on and no root certificate given still trusts only
+the bundled roots.
+
+Two steps use other trust:
+
+- **ArcGIS sign-in** opens the portal's page in your browser, which checks the portal's
+  certificate with its own trust (some browsers keep their own certificate store). If it doesn't
+  trust the CA, sign-in stops before RustGIS gets a token.
+- **uv**, making a plugin's Python environment, downloads Python and packages with its bundled
+  Mozilla roots. To have it use the operating system's trust, set `UV_SYSTEM_CERTS=true` in the
+  environment (or `system-certs = true` in a `uv.toml`) before starting RustGIS. A non-empty
+  `SSL_CERT_FILE` or `SSL_CERT_DIR` replaces uv's roots on every platform.
+
+The web app continues to use the browser's certificate verification and fetch behavior; its
+server must also allow browser requests (CORS).
+
 ### Named connections
 
 In the pane, **New Connection ▾** and **Edit…** let you set the name, group and address;

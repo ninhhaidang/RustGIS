@@ -114,7 +114,11 @@ pub fn status(id: &str) -> Option<bool> {
 }
 
 fn agent() -> ureq::Agent {
-    ureq::Agent::config_builder().timeout_global(Some(std::time::Duration::from_secs(600))).build().into()
+    ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(600)))
+        .tls_config(rustgis_data::http::tls_config())
+        .build()
+        .into()
 }
 
 fn get(agent: &ureq::Agent, url: &str) -> Result<ureq::http::Response<ureq::Body>, String> {

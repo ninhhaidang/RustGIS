@@ -67,14 +67,21 @@ made to its input layers while it runs are kept: a selection it makes selects th
 where they now are (and says how many are gone), and a result that would replace an edited
 layer, or one loaded whole meanwhile, is refused. Renaming the map while it runs is fine; after
 switching to another map, a result that adds to or changes the map is refused (one made only of
-tables or a file is still made). Opening another project drops the run. Scripts, models, the AI
+tables or a file is still made). Opening another project drops the run. The Analysis pane's
+**Zonal Statistics**, **Viewshed**, **Interpolate (IDW)**, **Classification Wizard** (k-means) and
+**Deep Learning** (training and classifying) run in the background the same way, with their
+progress and **Cancel** under the pane's inputs, one at a time; so does the map's right-click
+**Viewshed … Here**, which opens the pane to show it. A model trained there is kept once its classes
+are added: a cancelled run keeps none. Scripts, models, the AI
 Assistant, the command line and the web app wait for each tool to finish.
 
 **Viewshed**, **IDW Interpolation** and **Kriging** refuse a run that would take more than a second
-or two of work on one thread (a ray step, a cell-point pair). On the desktop they run on several
+or two of work on one thread (a ray step, a cell-point pair), and **Kernel Density** one whose
+points' search windows (the square around each point's radius) cover more than 50 million cells. On the desktop they run on several
 cores (up to 16), and they take as many times more work as the threads they run on. Threads share
 cores and memory, so a run at that limit can take up to about twice as long as a one-thread run at
-its own; in the web app, on one thread, the limits stay as they are. The error names the
+its own (measured on one machine, a Xeon Silver 4114; it can be longer on others); in the web app,
+on one thread, the limits stay as they are. The error names the
 limit on this computer and the threads it counted. A tool's own default cell size still follows the
 one-thread limit, so it makes the same grid on any computer; a finer cell size given is what the
 larger limit lets through.
@@ -125,6 +132,7 @@ Use these ids in `gp.run`'s `tool` parameter (`gp.tools` lists the available too
 | Feature To Point | `featureToPoint` | Data Management › Features |
 | Merge | `merge` | Data Management › General |
 | Feature Vertices To Points | `featureVerticesToPoints` | Data Management › Features |
+| Points Along Lines | `pointsAlongLines` | Data Management › Features |
 | Polygon To Line | `polygonToLine` | Data Management › Features |
 | Split Line At Vertices | `splitLineAtVertices` | Data Management › Features |
 | Feature Envelope To Polygon | `featureEnvelopeToPolygon` | Data Management › Features |
@@ -248,7 +256,8 @@ to 0.031 % of the distance inside the true curve in the projection plane, and up
 polygon corners and line joins, in addition to the projection error. Negative Buffer
 distances shrink polygons. Buffer and Select Layer By Location limit distances to 5,000 km.
 Ordinary Buffer limits each feature to 2,000,000 outline vertices. Its retained output has a
-separate memory budget: 512 MiB on desktop, 128 MiB in the browser, including geometry
+separate memory budget: on the desktop a quarter of the computer's memory, from 512 MiB up to 8 GiB
+(`bufferBytes` in `gp.env`), and 128 MiB in the browser, including geometry
 allocations, copied attributes and spare row capacity. Features are processed in bounded
 batches, in input order. Many small buffers can therefore exceed 2,000,000 vertices together.
 Dissolve All retains the shared 2,000,000-vertex limit before union and checks the dissolved
@@ -318,6 +327,65 @@ fewer features, or simplify ones with many vertices.
 
 ```text
 gp.run={"tool":"featureVerticesToPoints","params":{"input":"Rivers","output":"river_vertices"}}
+```
+
+**Points Along Lines** (`pointsAlongLines`) writes points at a set `distance` along each part of
+the `input` layer's lines, or each ring of its polygons (holes too), measured on the WGS 84
+ellipsoid as Buffer's distances are, in `units` (Kilometers by default): a point at `startOffset`
+(0 by default), then one every `distance`, stopping `endOffset` before the part's end.
+`includeEnd` adds a point where they stop when the distance doesn't land there (the first is
+always at the start offset). Each part and ring is walked on its own from its first vertex, so the
+gap between two parts never counts; a line's parts that cross the antimeridian, one ending on it
+where the next begins on its other side, as a GeoJSON file splits a line that crosses it, are one
+line. A ring ends where it starts, so a point there is made once, and a line that ends where it
+starts (a contour) is walked as a ring too; a part shorter than its offsets gets none. A line that
+passes through one place twice gets a point there each time the distance lands on it. Each point
+has its feature's attributes and three fields: `orig_fid`, the feature's OID, as Feature Vertices
+To Points writes it, and, named as in QGIS's Points along geometry, `distance` (how far along its
+part, in `units`, the start offset included) and `angle` (the line's direction there, in degrees
+clockwise from north; on a vertex, halfway between the segments either side). A new field whose
+name the input already has gets a suffix (`distance_2`). QGIS's tool works differently: it
+measures `distance` along the whole feature (a polygon's rings as one, its end offset left out) in
+the layer's units, and walks a closed line as an open one, which gets a point at its end, on its
+start again, when the distance lands there. Here each part and ring starts again from 0, and the
+distance is on the ground in any coordinate system. Missing geometry, point features, and line
+or polygon features with no measurable segments (including empty geometries) are skipped with
+separate counted notices. A valid part that produces no points because of the offsets is not
+reported as unusable geometry.
+
+Each edge is the shortest path between its vertices on the ellipsoid, as Calculate Geometry
+Attributes measures it and the globe draws it. A flat map draws an edge straight in its own
+projection instead (in Web Mercator, along a constant bearing), so a point on a long edge can sit
+off the drawn line: on an east–west edge 100 km long, by about 200 m at 45° of latitude, 340 m at
+60° and 1.1 km at 80° (on one 10 km long, a hundredth of that; on the equator or along a meridian,
+not at all). Add vertices to long edges first if the points must follow the drawn line. An edge
+spanning more than 180° of longitude is taken the short way round, and one from −180° to 180° at
+one latitude has no length; a polygon cut at the antimeridian is walked as it is stored, so it gets
+points along the cut too (a polar cap whose parallel is one edge from −180° to 180°, only along the
+cut). An edge between opposite sides of the Earth has no single shortest path, and the tool takes
+the one GeographicLib does (over a pole for two points on the equator).
+
+The angle is the bearing from true north, which near a pole turns quickly along even a straight
+line (by 33° in 30 m, 11 m from the North Pole); at a pole itself, where every direction is south,
+it follows GeographicLib's convention, from the meridian of the longitude the vertex is written
+with. On a map in another projection than Web Mercator, north isn't straight up everywhere, so
+there the angle differs from the line's direction on the map. In Web Mercator it differs from a long
+edge's drawn direction by about half the edge's span of longitude times the sine of the latitude:
+at the ends of an east–west edge 100 km long, 0.45° at 45° and 2.5° at 80°; and, as Web Mercator
+isn't conformal on the ellipsoid, from a diagonal edge's by up to about 0.19° at the equator (0.1°
+at 45°, less toward the poles). A vertex less than a millimeter from the one before is passed over,
+so a near-duplicate doesn't turn a point's angle; a vertex past a pole (bad data) is taken as the
+pole, and the tool says how many it took so; and a vertex with a coordinate missing or infinite is passed over (its neighbors joined, or a
+line's end trimmed back to the last vertex it has), and the tool says how many it passed over. The output keeps what the input lost on reading, if
+anything (features, or Z and M values), as its layer's notes say. The points
+keep the input's coordinate system, with longitudes between -180 and 180, so a point past the
+antimeridian is on the far side of the map. The points are counted first and may take up to about
+4 GiB (some 20 million points with a few fields): a distance that would make more, or more than
+the browser can give in the web app, stops the tool with a message before anything is built. Use a
+larger distance, simplify lines with very many vertices, or select fewer features.
+
+```text
+gp.run={"tool":"pointsAlongLines","params":{"input":"Rivers","distance":500,"units":"Meters","includeEnd":true}}
 ```
 
 **IDW Interpolation** works like the QGIS tool of the same name: every point weighs on every
@@ -456,8 +524,16 @@ rule), `last`, `sum` and `mean` (numeric fields), `min` and `max` (numbers or te
 matches with a value) and `join` (the values as text, separated by `delimiter`, `, ` by default).
 Every rule but `first` and `last` skips empty values. A target without matches gets empty
 values, except a `count` of 0. `mean` writes a decimal field, `count` a whole number and `join`
-text. The `sum` of a whole-number field adds its whole numbers, and is empty when too large to
-hold. For example, the total units permitted in each district:
+text. The `sum` of a whole-number field adds its whole numbers exactly, and is empty when too
+large for a 64-bit integer; the tool says how many sums were left empty, and in which fields. A
+decimal with a fraction, or a number past that range, isn't a whole number the field holds: the sum
+leaves it out. The other numeric rules leave out a number too large for a decimal (text such as
+`1e309`). The tool says how many matched numbers were left out, and in which fields. Whole numbers written as text count as the
+numbers they are, however they are written (`12`, `12.0`, `1.2e1`). `min`
+and `max` compare whole numbers exactly, past 2^53 (9,007,199,254,740,992) too, where their decimals
+can be equal. The `mean` of whole numbers comes from their exact sum; a mean that is a whole number
+past 2^53, which a decimal can't hold, is rounded, and the tool says how many were. For example, the
+total units permitted in each district:
 
 ```text
 gp.run={"tool":"spatialJoin","params":{"target":"districts","join":"permits","merge":[{"field":"units","rule":"sum"}]}}
@@ -608,7 +684,8 @@ Without `statistic`, each row and pivot value can have one record at most; the t
 first pair with more, and the cells keep the value field's type. Give a `statistic` to combine the
 records instead, such as the mean income by county and year from a table of households. It
 takes any statistic from Summary Statistics (above), with the same rules for text fields, empty
-values and output types; `separator` joins `CONCATENATE`'s values. A cell with no records is
+values, output types and whole numbers past 2^53: the tool says how many cells were rounded and in
+which pivot fields. `separator` joins `CONCATENATE`'s values. A cell with no records is
 empty even for `COUNT`, which tells it apart from records that have no value (a `COUNT` of 0):
 
 ```text
@@ -841,8 +918,8 @@ click them on the map:
 | Raster Functions | Slope, aspect, hillshade, NDVI, band math (`(b4-b3)/(b4+b3)`), remapping, thresholds, resampling |
 | Function Editor | Chains raster functions, each on the previous output |
 | Suitability Modeler | Scores rasters 1–10 and adds them with weights |
-| Visibility Analysis | A viewshed from a point on an elevation raster |
-| Exploratory 3D Analysis | A line of sight between two points, split into seen and hidden parts |
+| Visibility Analysis | A viewshed from a point on an elevation raster, with the Earth's curvature and the refraction of visible light (1/7, as `gdal_viewshed`) |
+| Exploratory 3D Analysis | A line of sight between two points, split into seen and hidden parts, with the same curvature and refraction |
 | Geostatistical Wizard | An IDW surface from feature values, using 12 nearest neighbours by default |
 | Network Analysis | The shortest (or cheapest, by a cost field) route over a line layer |
 | Neighborhood Explorer | What lies within a distance of a point, with sums of numeric fields |
@@ -873,6 +950,9 @@ below the web app's fixed limits and never above a ceiling.
 | `rasterSamples`: samples a raster read holds (cells times bands) | 120 million (32 million in the web app) | 8 bytes a sample | 1 billion |
 | `outputPixels`: pixels of a raster a tool makes | 64 million | 16 bytes a pixel | 512 million |
 | `pagedFeatures`: features read from a service page by page | 100,000 | 20 KB a feature (about 100,000 for every 8 GB) | 1 million |
+| `densityCells`: cells of a Kernel Density raster | 16 million | 16 bytes a cell | 512 million |
+| `bufferBytes`: memory for Buffer's output and Select Layer By Location's buffered selectors | 512 MiB (128 MiB in the web app) | the bytes themselves | 8 GiB |
+| `threadScratchBytes`: working memory a tool's threads take together, beyond one thread's | 256 MiB | a sixteenth of memory, on top of the quarter | 4 GiB |
 
 So a computer with 16 GB reads rasters of up to about 500 million samples. A run that passes on one
 computer can be refused on a smaller one; the error names the limit there. Project Raster (`raster.project`) puts a raster

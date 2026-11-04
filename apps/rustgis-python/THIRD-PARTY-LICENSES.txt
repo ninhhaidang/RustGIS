@@ -29,15 +29,15 @@ pin-project-lite, piper, pkg-config, png, polling, postgres, postgres-protocol, 
 proc-macro2, proj4rs, proj4rs-geodesic, pyo3, pyo3-build-config, pyo3-ffi, pyo3-macros,
 pyo3-macros-backend, quote, rand, rayon, rayon-core, regex, regex-automata, regex-syntax, ring,
 robust, roxmltree, rstar, rustc_version, rustix, rustls, rustls-native-certs, rustls-pemfile,
-rustversion, ryu, scopeguard, secrecy, secret-service, security-framework, security-framework-sys,
-semver, seq-macro, serde, serde_core, serde_derive, serde_json, serde_repr, sha1, sha2, shlex,
-sif-itree, signal-hook-registry, simdutf8, siphasher, smallvec, socket2, spade, spki,
-stable_deref_trait, syn, sys-locale, tar, tempfile, thiserror, thiserror-impl, tiberius-macros,
-time, time-core, tinyvec, tokio-postgres, ttf-parser, typed-path, unicode-bidi, unicode-ident,
-unicode-normalization, unicode-properties, unicode-segmentation, ureq, ureq-proto, url, utf8-zero,
-utf8_iter, uuid, vcpkg, version_check, wasm-bindgen, wasm-bindgen-macro, wasm-bindgen-macro-support,
-wasm-bindgen-shared, wasmi, wasmi_collections, wasmi_core, wasmi_ir, wasmparser, web-sys, weezl,
-whoami, winauth, wkt, x509-cert, xattr, zeroize, zune-core, zune-jpeg
+rustls-platform-verifier, rustversion, ryu, scopeguard, secrecy, secret-service, security-framework,
+security-framework-sys, semver, seq-macro, serde, serde_core, serde_derive, serde_json, serde_repr,
+sha1, sha2, shlex, sif-itree, signal-hook-registry, simdutf8, siphasher, smallvec, socket2, spade,
+spki, stable_deref_trait, syn, sys-locale, tar, tempfile, thiserror, thiserror-impl,
+tiberius-macros, time, time-core, tinyvec, tokio-postgres, ttf-parser, typed-path, unicode-bidi,
+unicode-ident, unicode-normalization, unicode-properties, unicode-segmentation, ureq, ureq-proto,
+url, utf8-zero, utf8_iter, uuid, vcpkg, version_check, wasm-bindgen, wasm-bindgen-macro,
+wasm-bindgen-macro-support, wasm-bindgen-shared, wasmi, wasmi_collections, wasmi_core, wasmi_ir,
+wasmparser, web-sys, weezl, whoami, winauth, wkt, x509-cert, xattr, zeroize, zune-core, zune-jpeg
 ====================================================================================================
 
                                  Apache License
@@ -6696,7 +6696,7 @@ OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 ====================================================================================================
 Community Data License Agreement Permissive 2.0
-Used by: webpki-roots
+Used by: webpki-root-certs, webpki-roots
 ====================================================================================================
 
 # Community Data License Agreement - Permissive - Version 2.0

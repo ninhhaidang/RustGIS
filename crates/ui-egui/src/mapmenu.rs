@@ -182,7 +182,9 @@ fn quick_analysis(app: &mut RustGisApp, ui: &mut Ui, c: Coord) {
             && let Some(dem) = &dem
         {
             let name = i18n::fmt("Viewshed {radius}", &[("radius", &radius)]);
-            run(app, "analysis.viewshed", json!({"layer": dem, "lon": c.x, "lat": c.y, "radius": r, "name": name}));
+            // In the background on the desktop, its progress and Cancel in the Workflows pane.
+            let p = json!({"layer": dem, "lon": c.x, "lat": c.y, "radius": r, "name": name});
+            crate::analysispane::run_elsewhere(app, "visibility", "analysis.viewshed", p);
             ui.close();
         }
         resp.on_disabled_hover_text(why);

@@ -106,11 +106,8 @@ fn size_segments<'a>(
         if parts.is_empty() {
             skipped += 1;
         }
-        let per_segment = if estimate {
-            vertex_point_bytes(f.attrs.get(..width).unwrap_or(&f.attrs), width).saturating_add(SEGMENT_EXTRA_BYTES)
-        } else {
-            0
-        };
+        let per_segment =
+            if estimate { point_bytes(f.attrs.get(..width).unwrap_or(&f.attrs), width).saturating_add(SEGMENT_EXTRA_BYTES) } else { 0 };
         for part in parts {
             if part.len() < 2 {
                 skipped += 1;

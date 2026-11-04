@@ -63,12 +63,6 @@ pub fn show(app: &mut RustGisApp, ui: &mut Ui) {
     } else {
         clear_pending_symbology(ui.ctx());
     }
-    // A Zarr summary or a trend running on its thread lands whatever pane is in view (both are
-    // looked at: `|`, not `||`), and the frames go on while one runs so it's taken when it ends.
-    #[cfg(not(target_arch = "wasm32"))]
-    if crate::workspacepanes::land_summary(app) | crate::analysispane::land_trend(app) {
-        ui.ctx().request_repaint_after(std::time::Duration::from_millis(200));
-    }
     // The pane in view always has its tab, however it was set.
     if let Some(right) = app.ui.right
         && !app.ui.right_open.contains(&right)
@@ -991,8 +985,19 @@ fn path_name(path: &str) -> SourceName {
 /// The source a layer was read from (a raster's file, or the dataset's file, address or
 /// database), if any: layers made in the app (samples, drawings, tool outputs) have none.
 fn layer_source(l: &Layer) -> Option<SourceName> {
-    let raster = l.raster.as_ref().and_then(|r| r.path.as_ref().or(r.file_name.as_ref()));
-    raster.or(l.dataset.source.as_ref()).filter(|s| !s.trim().is_empty()).map(|s| source_name(s.as_str()))
+    // A service's downloaded raster keeps the address it came from as its dataset source, not
+    // the file name it was read under: group it by that address, as a feature layer is. A layer
+    // with no raster keeps its dataset source as it is (a database's name, say), and a raster
+    // read from an address is grouped by that address rather than by a dataset's other one.
+    let source = l.dataset.source.as_deref();
+    let raster = l.raster.as_ref().and_then(|r| r.path.as_deref().or(r.file_name.as_deref()));
+    let address = source.filter(|s| is_address(s) && !raster.is_some_and(is_address));
+    address.or(raster).or(source).filter(|s| !s.trim().is_empty()).map(source_name)
+}
+
+/// Whether a source names a web address (`file://` paths are files, not addresses).
+fn is_address(s: &str) -> bool {
+    s.split_once("://").is_some_and(|(scheme, _)| !scheme.eq_ignore_ascii_case("file"))
 }
 
 /// A group's heading in a Layers view, with optional hover text.
@@ -5868,7 +5873,8 @@ fn details(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
             ("Fields", l.dataset.fields.len().to_string()),
             ("Selected", l.selection.len().to_string()),
             ("Symbology", tl!(l.renderer.kind_label()).to_string()),
-            ("Source", l.dataset.source.clone().unwrap_or_else(|| tl!("In project").into())),
+            // A web or database address without its keys, tokens or password.
+            ("Source", l.dataset.source.as_deref().map_or_else(|| tl!("In project").into(), rustgis_engine::sources::redact)),
             ("Source coordinate system", l.dataset.crs.map(|c| c.label()).unwrap_or_else(|| "EPSG:4326".into())),
             ("West", format!("{:.4}°", e.min_x)),
             ("East", format!("{:.4}°", e.max_x)),
@@ -7146,6 +7152,39 @@ mod tests {
         assert_eq!(source_name("file:///data/My%20Data.gpkg").label, "My Data.gpkg");
         assert_eq!(source_name("file:///data/100%+x%2.gpkg").label, "100%+x%2.gpkg");
         assert_eq!(source_name("file://user@localhost/x.gpkg").label, "x.gpkg");
+    }
+
+    /// A service's downloaded raster groups under the address it came from, not the file name its
+    /// download was read under; a local raster still groups by its file.
+    #[test]
+    fn a_service_rasters_source_is_its_address() {
+        use rustgis_engine::data::raster::{ColorHint, Crs, GeoTransform, Raster};
+        let raster = || {
+            let gt = GeoTransform { origin_x: 0.0, origin_y: 1.0, pixel_width: 1.0, pixel_height: -1.0 };
+            Raster::new("soil", 1, 1, vec![vec![1.0]], gt, Crs::LonLat, None, ColorHint::Gray, "Float32").unwrap()
+        };
+        let mut ds = rustgis_engine::data::Dataset::new("Soil carbon", rustgis_engine::data::GeometryType::None, Vec::new());
+        ds.source = Some("https://user:secret@h/wcs?SERVICE=WCS&COVERAGEID=soc&token=K".into());
+        let mut l = Layer::new(7, ds);
+        l.raster = Some(rustgis_engine::map::RasterLayer::from_bytes(raster(), "coverage.tif", Vec::new()));
+        let src = layer_source(&l).unwrap();
+        assert_eq!(src.label, "h");
+        assert!(!src.key.contains("secret") && !src.hover.contains("secret"));
+        // A local file is grouped by its path, as before.
+        let mut local = Layer::new(8, rustgis_engine::data::Dataset::new("Local", rustgis_engine::data::GeometryType::None, Vec::new()));
+        local.raster = Some(rustgis_engine::map::RasterLayer::from_path(raster(), r"C:\GIS\soil.tif"));
+        assert_eq!(layer_source(&local).unwrap().label, "soil.tif");
+        // A raster read from an address is grouped by that address, not by another address its
+        // dataset names.
+        let mut remote = Layer::new(10, rustgis_engine::data::Dataset::new("Hill", rustgis_engine::data::GeometryType::None, Vec::new()));
+        remote.dataset.source = Some("https://catalog.example/items?f=json".into());
+        remote.raster = Some(rustgis_engine::map::RasterLayer::from_path(raster(), "https://files.example/hill.tif"));
+        assert_eq!(layer_source(&remote).unwrap().label, "files.example");
+        // A layer with no raster keeps its dataset source, even one that names no address scheme
+        // (a database connection kept by name).
+        let mut db = rustgis_engine::data::Dataset::new("Roads", rustgis_engine::data::GeometryType::Polyline, Vec::new());
+        db.source = Some("osm".into());
+        assert_eq!(layer_source(&Layer::new(9, db)).unwrap().label, "osm");
     }
 
     /// #353: a row wider than the left pane (a long folder path in the Browser, a long favourite in

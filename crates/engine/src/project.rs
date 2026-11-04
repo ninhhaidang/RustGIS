@@ -913,15 +913,37 @@ impl Project {
         Ok(p)
     }
 
+    /// Opens a project file (a regular file within [`MAX_BYTES`]; see `read_file`), resolving
+    /// its relative paths against its folder.
     pub fn load(path: &Path) -> Result<Project, String> {
-        let len = std::fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?.len();
-        if len > MAX_BYTES {
-            return Err("the project file is too large".into());
-        }
-        let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let bytes = read_file(path, MAX_BYTES)?;
+        let text = String::from_utf8(bytes).map_err(|_| format!("{} isn't a RustGIS project", path.display()))?;
         let dir = std::path::absolute(path).ok().and_then(|p| p.parent().map(Path::to_path_buf));
         Self::read_json(&text, true, dir.as_deref())
     }
+}
+
+/// A local file's bytes, refused past `max`. Only a regular file is opened: a device such as
+/// `/dev/zero` reports no size and never ends, and opening a named pipe waits for a writer.
+/// Reading stops a byte past `max`, so a file growing as it is read can't exhaust memory either.
+pub(crate) fn read_file(path: &Path, max: u64) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let meta = std::fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    if !meta.is_file() {
+        return Err(format!("{} isn't a file", path.display()));
+    }
+    let too_large = || format!("{} is too large (maximum {} MiB)", path.display(), max >> 20);
+    if meta.len() > max {
+        return Err(too_large());
+    }
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .and_then(|f| f.take(max.saturating_add(1)).read_to_end(&mut bytes))
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    if bytes.len() as u64 > max {
+        return Err(too_large());
+    }
+    Ok(bytes)
 }
 
 fn empty_map() -> &'static Map {

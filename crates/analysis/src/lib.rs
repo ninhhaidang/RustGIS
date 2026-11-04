@@ -36,11 +36,12 @@ pub mod warp;
 
 pub use attribute_join::{DuplicateStrategy, JoinFieldOptions, JoinFieldReport, join_field};
 pub use density::{
-    KernelType, MAX_DENSITY_CELLS, MAX_DENSITY_WORK, auto_cell_size, kernel_density, points_extent, resolve_grid_extent,
-    silverman_bandwidth,
+    DENSITY_CELLS_FLOOR, KernelType, MAX_DENSITY_WORK, auto_cell_size, kernel_density, max_density_cells, points_extent,
+    resolve_grid_extent, silverman_bandwidth,
 };
+pub use parallel::scratch_budget;
 pub use parameters::StatisticList;
-pub use tools::{TOOLS, find_field_case_insensitive, holds_coordinates, param_applies, simplify_geometry, zonal_bands};
+pub use tools::{TOOLS, find_field_case_insensitive, holds_coordinates, max_buffer_bytes, param_applies, simplify_geometry, zonal_bands};
 
 use rustgis_data::Dataset;
 use serde_json::Value;
@@ -368,25 +369,69 @@ pub fn resolve_params(spec: &ToolSpec, params: &Value) -> Result<Value, String> 
         {
             *v = choice(spec, ps, choices, v)?;
         }
+        if ps.kind == ParamKind::Bool
+            && built_in
+            && let Some(v) = p.get_mut(ps.name)
+        {
+            *v = boolean(spec, ps, v)?;
+        }
     }
     Ok(Value::Object(p))
+}
+
+/// A built-in tool's on-off parameter as `true` or `false` (text saying so counts). Anything else is
+/// an error, never a guess at what `"yes"` or `1` meant (#406). A blank value, or null, is the
+/// default.
+fn boolean(spec: &ToolSpec, ps: &ParamSpec, v: &Value) -> Result<Value, String> {
+    let default = || serde_json::from_str(ps.default).unwrap_or(Value::Null);
+    match v {
+        Value::Bool(_) => Ok(v.clone()),
+        Value::Null => Ok(default()),
+        Value::String(s) if s.trim().is_empty() => Ok(default()),
+        Value::String(s) if s.trim().eq_ignore_ascii_case("true") => Ok(Value::Bool(true)),
+        Value::String(s) if s.trim().eq_ignore_ascii_case("false") => Ok(Value::Bool(false)),
+        _ => Err(format!("{}: '{}' must be true or false (not {})", spec.name, ps.label, shown(v))),
+    }
+}
+
+/// A refused value as JSON for its message: up to 80 characters, then "…". A value can be huge,
+/// and is written out only that far (serde_json stops when its writer does).
+fn shown(v: &Value) -> String {
+    struct Upto(String, usize);
+    impl std::fmt::Write for Upto {
+        fn write_str(&mut self, s: &str) -> std::fmt::Result {
+            for c in s.chars() {
+                if self.1 == 0 {
+                    return Err(std::fmt::Error);
+                }
+                self.0.push(c);
+                self.1 -= 1;
+            }
+            Ok(())
+        }
+    }
+    let mut out = Upto(String::new(), 80);
+    if std::fmt::write(&mut out, format_args!("{v}")).is_err() {
+        out.0.push('…');
+    }
+    out.0
 }
 
 /// A built-in tool's choice parameter as one of its choices, spelled as declared (`"meters"` is
 /// `"Meters"`). Any other value is an error naming the choices: a tool never guesses what an
 /// unknown one meant (#406). A blank value is the declared default.
 fn choice(spec: &ToolSpec, ps: &ParamSpec, choices: &[&str], v: &Value) -> Result<Value, String> {
-    let given = match v {
+    let given: std::borrow::Cow<'_, str> = match v {
         Value::Null => return Ok(Value::Null),
         // Blank: the declared default, as when it's left out.
         Value::String(s) if s.trim().is_empty() => return Ok(serde_json::from_str(ps.default).unwrap_or_else(|_| v.clone())),
-        Value::String(s) => s.trim().to_string(),
-        Value::Number(_) | Value::Bool(_) => v.to_string(),
-        _ => String::new(),
+        Value::String(s) => s.trim().into(),
+        Value::Number(_) | Value::Bool(_) => v.to_string().into(),
+        _ => "".into(),
     };
     match choices.iter().find(|c| c.eq_ignore_ascii_case(&given)) {
         Some(c) => Ok(Value::String((*c).to_string())),
-        None => Err(format!("{}: '{}' must be one of {} (not {v})", spec.name, ps.label, choices.join(", "))),
+        None => Err(format!("{}: '{}' must be one of {} (not {})", spec.name, ps.label, choices.join(", "), shown(v))),
     }
 }
 
@@ -424,13 +469,21 @@ pub fn run(id: &str, inputs: &dyn Inputs, params: &Value) -> Result<ToolResult, 
 /// and what it made by then is never taken for its result. One cancelled before it starts doesn't
 /// start.
 pub fn run_with(id: &str, inputs: &dyn Inputs, params: &Value, control: &std::sync::Arc<control::Control>) -> Result<ToolResult, String> {
+    run_under(tool(id).map_or(id, |t| t.name), control, || run(id, inputs, params))
+}
+
+/// `work` on this thread under `control`, as [`run_with`] runs a tool, for work that isn't one (an
+/// engine command's raster): setting `control`'s flag from another thread stops it at its next
+/// check, its count follows the work's progress, and a cancelled run's error says how far `name`
+/// came.
+pub fn run_under<T>(name: &str, control: &std::sync::Arc<control::Control>, work: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
     if control.is_cancelled() {
-        return Err(format!("{} was cancelled before it started", tool(id).map_or(id, |t| t.name)));
+        return Err(format!("{name} was cancelled before it started"));
     }
     let _current = control::install(Some(control.clone()));
-    // No count until the tool starts one: a control used before doesn't show that run's.
+    // No count until the work starts one: a control used before doesn't show that run's.
     control::begin(0);
-    let res = run(id, inputs, params);
+    let res = work();
     if !control.is_cancelled() {
         // Finished: its last step is all done, however it counted. A failed one stays where it
         // stopped.
@@ -439,7 +492,6 @@ pub fn run_with(id: &str, inputs: &dyn Inputs, params: &Value, control: &std::sy
         }
         return res;
     }
-    let name = tool(id).map_or(id, |t| t.name);
     Err(match control.progress() {
         Some((done, total)) => {
             format!("{name} was cancelled {}% of the way through its current step", done.saturating_mul(100) / total.max(1))

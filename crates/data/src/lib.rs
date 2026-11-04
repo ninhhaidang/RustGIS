@@ -18,6 +18,8 @@ pub mod geometry;
 pub mod georss;
 pub mod gml;
 pub mod gpx;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod http;
 pub mod interop;
 pub mod io;
 pub mod kml;

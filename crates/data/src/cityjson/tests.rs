@@ -981,3 +981,110 @@ fn a_system_given_over_the_one_named_is_said() {
     let e = read("m.city.json", root.to_string().as_bytes(), None).unwrap_err().to_string();
     assert!(e.contains("it names a coordinate system RustGIS doesn't know"), "{e}");
 }
+
+/// One building whose LoD 2 geometry passes the face cap: a face with a courtyard first (marked
+/// `GroundSurface` when `ground_first`), then walls, past the cap by one, then (`late_ground`) a
+/// ground face beside it, 10 wide, left out. `lower_ground`: a 1-wide ground at LoD 1 too.
+fn courtyard_past_the_cap(ground_first: bool, late_ground: bool, lower_ground: bool) -> Vec<u8> {
+    let mut boundaries = String::from("[[[0,1,2,3],[4,7,6,5]]");
+    let mut values = String::from(if ground_first { "[0" } else { "[null" });
+    for _ in 0..MAX_FACES {
+        boundaries.push_str(",[[0,1,9,8]]");
+        values.push_str(",null");
+    }
+    if late_ground {
+        boundaries.push_str(",[[1,10,11,2]]");
+        values.push_str(",0");
+    }
+    boundaries.push(']');
+    values.push(']');
+    let lower = if lower_ground {
+        r#",{"type":"MultiSurface","lod":"1","boundaries":[[[12,13,14,15]]],"semantics":{"surfaces":[{"type":"GroundSurface"}],"values":[0]}}"#
+    } else {
+        ""
+    };
+    format!(
+        r#"{{"type":"CityJSON","version":"2.0","transform":{{"scale":[1,1,1],"translate":[0,0,0]}},
+        "metadata":{{"referenceSystem":"https://www.opengis.net/def/crs/EPSG/0/4326"}},
+        "vertices":[[0,0,0],[10,0,0],[10,10,0],[0,10,0],[3,3,0],[7,3,0],[7,7,0],[3,7,0],[0,0,5],[10,0,5],
+            [20,0,0],[20,10,0],[0,0,0],[1,0,0],[1,1,0],[0,1,0]],
+        "CityObjects":{{"b":{{"type":"Building","geometry":[{{"type":"MultiSurface","lod":"2","boundaries":{boundaries},
+        "semantics":{{"surfaces":[{{"type":"GroundSurface"}}],"values":{values}}}}}{lower}]}}}}}}"#
+    )
+    .into_bytes()
+}
+
+/// Past the face cap, a ground footprint keeps its courtyard when only walls were left out (#1374).
+/// A ground face left out makes it the outline of the ground's points, those left out included,
+/// said; so does a highest LoD whose ground was all left out, over a lower LoD's ground.
+#[test]
+fn walls_past_the_face_cap_leave_the_ground_whole() {
+    let polygon = |out: &[(Dataset, ReadReport)]| match geometry(&out[0].0, 0) {
+        Some(Geometry::Polygon(p)) => p.clone(),
+        other => panic!("{other:?}"),
+    };
+    let out = read("m.city.json", &courtyard_past_the_cap(true, false, false), None).unwrap();
+    let p = polygon(&out);
+    assert_eq!((p.len(), p[0].len()), (1, 2), "the ground with its courtyard: {p:?}");
+    assert!(!says(&out, "outline of their points"), "{:?}", messages_of(&out));
+    // Faces past the cap, said as such: not as faces that couldn't be merged.
+    let capped = |out: &[(Dataset, ReadReport)]| {
+        says(out, "1 city objects have a geometry of more than 200000 faces") && !says(out, "couldn't be merged")
+    };
+
+    let out = read("m.city.json", &courtyard_past_the_cap(true, true, false), None).unwrap();
+    let p = polygon(&out);
+    assert_eq!((p.len(), p[0].len()), (1, 1), "the outline, without the courtyard: {p:?}");
+    assert!((area(geometry(&out[0].0, 0)) - 200.0).abs() < 1e-6, "over the ground left out too: {p:?}");
+    assert!(capped(&out), "{:?}", messages_of(&out));
+
+    let out = read("m.city.json", &courtyard_past_the_cap(false, true, true), None).unwrap();
+    assert!((area(geometry(&out[0].0, 0)) - 100.0).abs() < 1e-6, "LoD 2's ground left out: {:?}", geometry(&out[0].0, 0));
+    assert_eq!(value(&out[0].0, 0, "lod"), crate::Value::Text("2".into()));
+    assert!(capped(&out), "{:?}", messages_of(&out));
+}
+
+/// Types that read the same once cut, the same but for case, or a type named as another's lines,
+/// still give layers of their own names (#1375); the rest keep theirs, and a name a type already
+/// has isn't given again.
+#[test]
+fn layers_of_types_cut_to_one_name_are_told_apart() {
+    let long = "+".to_string() + &"A".repeat(MAX_TYPE_IN_NAME);
+    let cut: String = long.chars().take(MAX_TYPE_IN_NAME).collect();
+    let face = json!([{"type": "MultiSurface", "lod": "1", "boundaries": [[[0, 1, 2, 3]]]}]);
+    let bytes = doc(
+        box_vertices(),
+        json!({
+            "a": {"type": format!("{long}x"), "geometry": face},
+            "b": {"type": format!("{long}y"), "geometry": face},
+            "c": {"type": "+Road", "geometry": [
+                {"type": "MultiSurface", "lod": "1", "boundaries": [[[0, 1, 2, 3]]]},
+                {"type": "MultiLineString", "lod": "0", "boundaries": [[0, 1]]},
+            ]},
+            "d": {"type": "+Road lines", "geometry": face},
+            "e": {"type": "+Shed", "geometry": face},
+            "f": {"type": "+shed", "geometry": face},
+            "g": {"type": "+shed (2)", "geometry": face},
+            "h": {"type": "Building", "geometry": face},
+        }),
+    );
+    let out = read("m.city.json", &bytes, None).unwrap();
+    let names: Vec<&str> = out.iter().map(|(d, _)| d.name.as_str()).collect();
+    let (one, two) = (format!("m {cut}"), format!("m {cut} (2)"));
+    assert_eq!(
+        names,
+        [
+            one.as_str(),
+            two.as_str(),
+            "m +Road",
+            "m +Road lines",
+            "m +Road lines (2)",
+            "m +Shed",
+            "m +shed (3)",
+            "m +shed (2)",
+            "m Building"
+        ]
+    );
+    assert!(out.iter().all(|(d, _)| d.features.len() == 1));
+    assert_eq!(unique_names(vec!["x".into(), "y".into()]), ["x", "y"], "names that differ are kept");
+}

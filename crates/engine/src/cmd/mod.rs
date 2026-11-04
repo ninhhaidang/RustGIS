@@ -42,6 +42,7 @@ pub mod s3;
 pub mod search;
 pub mod select;
 pub mod service;
+pub mod service_added;
 pub mod share;
 pub mod sharing;
 pub mod sources;

@@ -126,6 +126,17 @@ fn err(bytes: &[u8]) -> String {
     }
 }
 
+/// A page of a points layer, for paging tests: its object ids `ids` in a field named `oid`, each a
+/// point at (id, 1), and whether the service says it holds more (`exceededTransferLimit`).
+pub(crate) fn page(ids: &[u64], more: bool, oid: &str) -> Vec<u8> {
+    let mut parts = vec![number(7, POINT), lonlat(), transform(false, 1.0, 0.0, 0.0), field(oid, OID)];
+    if more {
+        parts.push(number(9, 1));
+    }
+    parts.extend(ids.iter().map(|&id| feature(&[uint(id), geometry(&[], &[i64::try_from(id).unwrap_or(0), 1])])));
+    answer(&parts)
+}
+
 /// Two points with every kind of field, as the services of the date test answered (2026-11-02):
 /// dates as `sint64` milliseconds, object ids as `uint` or `uint64`, date-only values as text.
 fn points() -> Vec<u8> {

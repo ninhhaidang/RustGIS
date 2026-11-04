@@ -29,7 +29,10 @@ pub fn commands() -> Vec<C> {
             r#"{"name"?: string, "page"?: "letter"|"legal"|"tabloid"|"a5"|"a4"|"a3"|"a2"|"a1"|"a0", "orientation"?: "landscape"|"portrait", "width"?: mm, "height"?: mm, "template"?: "map" (frame, title, legend, north arrow, scale bar; the default)|"blank"}"#,
         ),
         C::new("layout.publication", "New Publication Layout", "Publish › Layout", publication).params(
-            r#"{"profile"?: "a4" (the default) | "a3" | "a2" (a sheet turned to portrait or landscape, whichever the area's map comes out larger on: its extent east to west against north to south, on the map's projection) | "a4-portrait"|"a4-landscape"|"a3-portrait"|"a3-landscape"|"a2-portrait"|"a2-landscape" (a sheet: frame, title, subtitle, the map, a boxed footer)|"figure-1col" (90 mm)|"figure-1.5col" (140 mm)|"figure-2col" (190 mm)|"thesis-full" (160 × 225 mm)|"thesis-half" (160 × 110 mm) (a figure: the map edge to edge, its title and sources left to the caption), "extent"?: [west, south, east, north] in degrees that must fit (default: the map view), "name"?: string, "title"?: text, "subtitle"?: text, "sources"?: text | [texts], "reference"?: text | [texts] (default: the projection, datum and graticule), "note"?: text, "author"?: text (default: "Made with RustGIS · {date}"; "" or [] for none), "headings"?: [the sources' heading, the reference's heading, an editorial column's heading], "locator"?: "globe" (a globe with the area outlined; the default on sheets) | "inset" (the surrounding region, the area outlined) | "none" (the default on figures), "decimal"?: "." (the default) | "," (graticule, scale bar and colorbar numbers and {scale} with a decimal comma: 0,05 and 1:6.300.000), "style"?: "classic" (the default: the title over the map, the footer under it) | "banner" (the title and subtitle in a band of the accent colour across the top) | "panel" (the map at the left, a panel at the right with the title, locator, legend, sources and reference) | "editorial" (the title large in serif, a column at the right with the note, the locator and the legend) | "modular" (cards on a light page: the map, the locator and the legend each in one, the sources and reference in tinted ones) | "poster" (the page in the accent colour, the title in light text, the map in a light card, the footer in darker blocks) (a sheet's arrangement; figures leave it to the caption), "accent"?: a colour as #RRGGBB (the style's colour: its band, panel tint, headings and rules, a poster's page)} → a new layout of the active map at a round scale, its texts wrapped to their boxes; {projection}, {datum} and {grid} in the texts are filled from the map"#,
+            r#"{"profile"?: "a4" (the default) | "a3" | "a2" (a sheet turned to portrait or landscape, whichever the area's map comes out larger on: its extent east to west against north to south, on the map's projection) | "a4-portrait"|"a4-landscape"|"a3-portrait"|"a3-landscape"|"a2-portrait"|"a2-landscape" (a sheet: frame, title, subtitle, the map, a boxed footer)|"figure-1col" (90 mm)|"figure-1.5col" (140 mm)|"figure-2col" (190 mm)|"thesis-full" (160 × 225 mm)|"thesis-half" (160 × 110 mm) (a figure: the map edge to edge, its title and sources left to the caption), "extent"?: [west, south, east, north] in degrees that must fit (default: the map view), "name"?: string, "title"?: text, "subtitle"?: text, "sources"?: text | [texts], "reference"?: text | [texts] (default: the projection, datum and graticule), "note"?: text, "author"?: text (default: "Made with RustGIS · {date}"; "" or [] for none), "headings"?: [the sources' heading, the reference's heading, an editorial column's heading], "locator"?: "globe" (a globe with the area outlined; the default on sheets) | "inset" (the surrounding region, the area outlined) | "none" (the default on figures), "decimal"?: "." (the default) | "," (graticule, scale bar and colorbar numbers and {scale} with a decimal comma: 0,05 and 1:6.300.000), "style"?: "classic" (the default: the title over the map, the footer under it) | "banner" (the title and subtitle in a band of the accent colour across the top) | "panel" (the map at the left, a panel at the right with the title, locator, legend, sources and reference) | "editorial" (the title large in serif, a column at the right with the note, the locator and the legend) | "modular" (cards on a light page: the map, the locator and the legend each in one, the sources and reference in tinted ones) | "poster" (the page in the accent colour, the title in light text, the map in a light card, the footer in darker blocks) (a sheet's arrangement; figures leave it to the caption), "accent"?: a colour as #RRGGBB (the style's colour: its band, panel tint, headings and rules, a poster's page), "arrangement"?: "best" (the default: the favourite and each arrangement by name laid out, the one moving the least area off its corners kept, then the one leaving the least over the data, the favourite on a tie) | "favourite" (layout.arrangement's) | an arrangement by name or corner by corner, as layout.arrangement takes (the corners the locator, north arrow, legend and scale bar are at home in; one covering what the map draws there still moves)} → a new layout of the active map at a round scale, its texts wrapped to their boxes; {projection}, {datum} and {grid} in the texts are filled from the map"#,
+        ),
+        C::new("layout.arrangement", "Favourite Arrangement", "Publish › Layout", arrangement).view().params(
+            r#"{"favourite"?: "classic" (the locator top left, the north arrow top right, the legend bottom left, the scale bar bottom right) | "mirrored" | "legendRight" | "legendTop" | {"locator", "northArrow", "legend", "scaleBar": "top-left"|"top-right"|"bottom-left"|"bottom-right", each a corner of its own}} → the favourite arrangement of publication layouts (kept with the app's preferences), its corners and the arrangements by name; with no favourite given, it is only shown"#,
         ),
         C::new("layout.activate", "Open Layout", "Browser", |s, p| {
             let i = index(s, &by_name(p))?;
@@ -134,16 +137,8 @@ pub fn commands() -> Vec<C> {
             let text = match (ps(p, "text"), ps(p, "path")) {
                 (Some(t), _) => t.to_string(),
                 (None, Some(path)) => {
-                    use std::io::Read;
-                    // Read at most one byte past the limit, so a file growing meanwhile is still refused.
-                    let mut text = String::new();
-                    std::fs::File::open(path)
-                        .and_then(|f| f.take(MAX_LAYOUT + 1).read_to_string(&mut text))
-                        .map_err(|e| format!("{path}: {e}"))?;
-                    if text.len() as u64 > MAX_LAYOUT {
-                        return Err("the layout file is too large".into());
-                    }
-                    text
+                    let bytes = crate::project::read_file(std::path::Path::new(path), MAX_LAYOUT)?;
+                    String::from_utf8(bytes).map_err(|_| format!("{path} isn't a RustGIS layout"))?
                 }
                 (None, None) => return Err("path or text is required".into()),
             };
@@ -630,6 +625,180 @@ const COLORBAR_MM: f64 = 15.0;
 /// corner freer by at least as much went to another surround.
 const OVER_DATA: f64 = 0.25;
 
+/// The share of what the map draws a surround may cover in the corner it was given before it
+/// leaves the corner for the freest place in the frame ([`free_spot`], #1379).
+const LEAK: f64 = 0.005;
+
+/// The step of the search for a place off the corners, in mm.
+const STEP_MM: f64 = 1.0;
+
+/// The room kept between surrounds placed off the corners, in mm.
+const CLEAR_MM: f64 = 2.0;
+
+/// A rectangle (x, y, w, h) in page millimetres.
+type Rect = (f64, f64, f64, f64);
+
+/// Where a surround that covers what the map draws in its corner goes instead (#1379): the place
+/// in `area` (x0, y0, x1, y1: the frame inside the graticule labels' margins) at least
+/// [`CLEAR_MM`] from each of `others`, on a [`STEP_MM`] step and on the lines through the area's
+/// edges and centre and the others' edges, costing least: what it covers of the drawing (a share,
+/// from `covered`) times 1000, plus its distance from `home` times 0.05, plus its distance from the
+/// nearest of those lines, up to 4 mm each way, times 0.25. So it goes where the map is free, near
+/// its corner, and in line with the frame or another surround (the scale bar under the locator's
+/// left edge, the legend on the scale bar's baseline). The first of the cheapest, scanning row by
+/// row, so a frame always gives the same place; `None` when nothing fits clear of the others.
+pub(crate) fn free_spot(home: Rect, area: (f64, f64, f64, f64), others: &[Rect], covered: impl Fn(Rect) -> f64) -> Option<Rect> {
+    let (hx, hy, w, h) = home;
+    let (x0, y0, x1, y1) = area;
+    let (xmax, ymax) = (x1 - w, y1 - h);
+    if xmax < x0 || ymax < y0 {
+        return None;
+    }
+    let mut gx = vec![x0, x1, (x0 + x1) / 2.0];
+    let mut gy = vec![y0, y1, (y0 + y1) / 2.0];
+    for o in others {
+        gx.extend([o.0, o.0 + o.2]);
+        gy.extend([o.1, o.1 + o.3]);
+    }
+    // Every step, then where an edge or the centre falls on a line.
+    let along = |lo: f64, hi: f64, size: f64, lines: &[f64]| -> Vec<f64> {
+        let steps = ((hi - lo) / STEP_MM).floor() as usize;
+        let mut v: Vec<f64> = (0..=steps).map(|i| lo + i as f64 * STEP_MM).collect();
+        v.extend(lines.iter().flat_map(|g| [*g, g - size, g - size / 2.0]).filter(|p| (lo..=hi).contains(p)));
+        v
+    };
+    let off = |p: f64, size: f64, lines: &[f64]| {
+        lines.iter().map(|g| (p - g).abs().min((p + size - g).abs()).min((p + size / 2.0 - g).abs())).fold(4.0_f64, f64::min)
+    };
+    let clear = |r: Rect| {
+        others.iter().all(|o| {
+            r.0 >= o.0 + o.2 + CLEAR_MM || o.0 >= r.0 + r.2 + CLEAR_MM || r.1 >= o.1 + o.3 + CLEAR_MM || o.1 >= r.1 + r.3 + CLEAR_MM
+        })
+    };
+    // Each place along an axis with how far it is off the nearest line, worked out once per axis.
+    let xs: Vec<(f64, f64)> = along(x0, xmax, w, &gx).into_iter().map(|x| (x, off(x, w, &gx))).collect();
+    let ys: Vec<(f64, f64)> = along(y0, ymax, h, &gy).into_iter().map(|y| (y, off(y, h, &gy))).collect();
+    let mut best: Option<(f64, Rect)> = None;
+    for &(y, off_y) in &ys {
+        for &(x, off_x) in &xs {
+            let r = (x, y, w, h);
+            if !clear(r) {
+                continue;
+            }
+            let cost = 1000.0 * covered(r) + 0.05 * (x - hx).hypot(y - hy) + 0.25 * (off_x + off_y);
+            if best.is_none_or(|(c, _)| cost < c - 1e-9) {
+                best = Some((cost, r));
+            }
+        }
+    }
+    best.map(|(_, r)| r)
+}
+
+/// Where an arrangement puts each surround of a publication layout: the corner the locator, the
+/// north arrow, the legend and the scale bar are each at home in (0 top left, 1 top right, 2 bottom
+/// left, 3 bottom right), all four different (#1379).
+pub type Homes = [usize; 4];
+
+/// The arrangements by name. `classic` is the one layouts had before there was a choice.
+pub const ARRANGEMENTS: [(&str, Homes); 4] =
+    [("classic", [0, 1, 2, 3]), ("mirrored", [1, 0, 3, 2]), ("legendRight", [0, 1, 3, 2]), ("legendTop", [2, 1, 0, 3])];
+
+/// The keys of an arrangement given surround by surround, in [`Homes`]'s order.
+const ARRANGEMENT_KEYS: [&str; 4] = ["locator", "northArrow", "legend", "scaleBar"];
+
+/// The corners by name, in [`Homes`]'s numbering.
+const CORNER_NAMES: [&str; 4] = ["top-left", "top-right", "bottom-left", "bottom-right"];
+
+/// A surround's place in [`Homes`].
+fn home_slot(kind: Surround) -> usize {
+    match kind {
+        Surround::Locator => 0,
+        Surround::Arrow => 1,
+        Surround::Legend => 2,
+        Surround::Scale => 3,
+    }
+}
+
+/// An arrangement: one of [`ARRANGEMENTS`] by name, or a corner for each surround
+/// (`{"locator": "top-left", "northArrow": "top-right", "legend": "bottom-left", "scaleBar":
+/// "bottom-right"}`, every corner once). `Value::Null` (none given) is `classic`.
+pub fn parse_arrangement(v: &Value) -> Result<Homes, String> {
+    let names = || ARRANGEMENTS.iter().map(|(n, _)| format!("\"{n}\"")).collect::<Vec<_>>().join(", ");
+    match v {
+        Value::Null => Ok(ARRANGEMENTS[0].1),
+        Value::String(name) => ARRANGEMENTS
+            .iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case(name.trim()))
+            .map(|(_, h)| *h)
+            .ok_or_else(|| format!("arrangement is {}, or a corner for each surround, not \"{name}\"", names())),
+        Value::Object(o) => {
+            if let Some(k) = o.keys().find(|k| !ARRANGEMENT_KEYS.contains(&k.as_str())) {
+                return Err(format!(
+                    "an arrangement gives \"locator\", \"northArrow\", \"legend\" and \"scaleBar\" a corner each, not \"{k}\""
+                ));
+            }
+            let mut homes = [0usize; 4];
+            for (i, key) in ARRANGEMENT_KEYS.iter().enumerate() {
+                let corner = o.get(*key).and_then(Value::as_str).map(str::trim).unwrap_or("");
+                homes[i] = CORNER_NAMES
+                    .iter()
+                    .position(|c| *c == corner)
+                    .ok_or_else(|| format!("arrangement: \"{key}\" is \"top-left\", \"top-right\", \"bottom-left\" or \"bottom-right\""))?;
+            }
+            if (0..4).any(|i| homes[..i].contains(&homes[i])) {
+                return Err("an arrangement puts each surround in a corner of its own".into());
+            }
+            Ok(homes)
+        }
+        _ => Err(format!("arrangement is {}, or a corner for each surround", names())),
+    }
+}
+
+/// The area (mm²) the rectangles cover twice, pair by pair.
+pub(crate) fn overlap_area(rects: &[Rect]) -> f64 {
+    let mut total = 0.0;
+    for (i, a) in rects.iter().enumerate() {
+        for b in &rects[i + 1..] {
+            let (w, h) = ((a.0 + a.2).min(b.0 + b.2) - a.0.max(b.0), (a.1 + a.3).min(b.1 + b.3) - a.1.max(b.1));
+            total += w.max(0.0) * h.max(0.0);
+        }
+    }
+    total
+}
+
+/// Which arrangement `best` takes, from each one's (area moved, area left over the data) in mm², in
+/// the order tried (#1379): of those moving within a square millimetre of the least, the one
+/// leaving the least over the data by more than a square millimetre, the first tried on a tie.
+/// Both bands are measured from the best value, so they don't add up across tries. `None` when no
+/// score is a number.
+pub(crate) fn pick_arrangement(scores: &[(f64, f64)]) -> Option<usize> {
+    let least = scores.iter().map(|s| s.0).fold(f64::INFINITY, f64::min);
+    let near: Vec<usize> = (0..scores.len()).filter(|&i| scores[i].0 <= least + 1.0).collect();
+    let fewest = near.iter().map(|&i| scores[i].1).fold(f64::INFINITY, f64::min);
+    near.into_iter().find(|&i| scores[i].1 <= fewest + 1.0)
+}
+
+/// The name of an arrangement, or `"custom"` for one given corner by corner.
+fn arrangement_name(homes: Homes) -> &'static str {
+    ARRANGEMENTS.iter().find(|(_, h)| *h == homes).map_or("custom", |(n, _)| n)
+}
+
+/// Sets or shows the favourite arrangement of publication layouts (#1379): the one
+/// `"arrangement": "favourite"` asks for, and the first `"best"` tries (it wins a tie). Kept with
+/// the app's preferences, not the project.
+fn arrangement(s: &mut Session, p: &Value) -> CmdResult {
+    if let Some(v) = p.get("favourite").filter(|v| !v.is_null()) {
+        parse_arrangement(v)?;
+        s.layout_favourite = v.clone();
+    }
+    let homes = parse_arrangement(&s.layout_favourite)?;
+    let corners: serde_json::Map<String, Value> =
+        ARRANGEMENT_KEYS.iter().zip(homes).map(|(k, h)| ((*k).to_string(), json!(CORNER_NAMES[h]))).collect();
+    Ok(
+        json!({"favourite": s.layout_favourite, "corners": corners, "arrangements": ARRANGEMENTS.iter().map(|(n, _)| *n).collect::<Vec<_>>()}),
+    )
+}
+
 /// A `"decimal"` parameter: `","` for a decimal comma, `"."` for a point; `None` when not given.
 fn decimal_mark(p: &Value) -> Result<Option<bool>, String> {
     match p.get("decimal").filter(|v| !v.is_null()) {
@@ -770,6 +939,16 @@ fn publication(s: &mut Session, p: &Value) -> CmdResult {
         }
     };
     let accent = color(p, "accent", style.accent())?;
+    // The arrangements to try (#1379): the favourite first, so it wins a tie.
+    let favourite = parse_arrangement(&s.layout_favourite).unwrap_or(ARRANGEMENTS[0].1);
+    let tries: Vec<Homes> = match p.get("arrangement").filter(|v| !v.is_null()) {
+        None => std::iter::once(favourite).chain(ARRANGEMENTS.iter().map(|(_, h)| *h).filter(|h| *h != favourite)).collect(),
+        Some(Value::String(a)) if a.trim().eq_ignore_ascii_case("best") => {
+            std::iter::once(favourite).chain(ARRANGEMENTS.iter().map(|(_, h)| *h).filter(|h| *h != favourite)).collect()
+        }
+        Some(Value::String(a)) if a.trim().eq_ignore_ascii_case("favourite") => vec![favourite],
+        Some(v) => vec![parse_arrangement(v)?],
+    };
     // A translucent accent would leave a band, a poster's page or the headings faint or unseen.
     if accent.a() != 255 {
         return Err("accent is an opaque colour as #RRGGBB".into());
@@ -1566,36 +1745,43 @@ fn publication(s: &mut Session, p: &Value) -> CmdResult {
     }
     let (sw, sh, nh) = ((fw * 0.3).max(25.0), if sheet { 8.0 * k } else { 6.0 }, pitch(small_pt) + 0.5);
     let pad = 2.0;
-    // What the map draws where, on a coarse grid of the frame (its basemap left out). The map
-    // itself is drawn for it, on purpose, as the screen draws it: a grid of 96 cells, a small part
+    // What the map draws where, on a grid of the frame (its basemap left out). The map
+    // itself is drawn for it, on purpose, as the screen draws it: a grid of 384 cells, a small part
     // of what exporting the sheet draws; a streamed layer draws what it holds and starts reading
     // the frame's area in the background (which the export reads anyway); web tiles aren't fetched.
-    let coverage = crate::render::layout::frame_coverage(s.map_mut(), center, scale, fw, fh, 96);
-    // The share of a rectangle (in page mm) over the frame's drawn cells.
-    let covered = |(x, y, w, h): (f64, f64, f64, f64)| -> f64 {
-        let Some((gw, gh, cells)) = &coverage else { return 0.0 };
-        let (gw, gh) = (f64::from(*gw), f64::from(*gh));
-        let col = |v: f64| (((v - fx) / fw * gw).floor().clamp(0.0, gw)) as usize;
-        let row = |v: f64| (((v - fy) / fh * gh).floor().clamp(0.0, gh)) as usize;
-        let (c0, c1, r0, r1) = (col(x), col(x + w).max(col(x) + 1), row(y), row(y + h).max(row(y) + 1));
-        let (mut n, mut drawn) = (0usize, 0usize);
-        for r in r0..r1.min(gh as usize) {
-            for c in c0..c1.min(gw as usize) {
-                n += 1;
-                if cells.get(r * gw as usize + c).copied().unwrap_or(false) {
-                    drawn += 1;
-                }
+    let coverage = crate::render::layout::frame_coverage(s.map_mut(), center, scale, fw, fh, 384);
+    // Its cells summed from the top left (a summed-area table), so a rectangle's count is four
+    // lookups, however large: the search off the corners tries thousands.
+    let sums: Option<(usize, usize, Vec<u32>)> = coverage.as_ref().map(|(gw, gh, cells)| {
+        let (gw, gh) = (*gw as usize, *gh as usize);
+        let mut t = vec![0u32; (gw + 1) * (gh + 1)];
+        for r in 0..gh {
+            for c in 0..gw {
+                let v = u32::from(cells.get(r * gw + c).copied().unwrap_or(false));
+                t[(r + 1) * (gw + 1) + c + 1] = v + t[r * (gw + 1) + c + 1] + t[(r + 1) * (gw + 1) + c] - t[r * (gw + 1) + c];
             }
         }
-        if n == 0 { 0.0 } else { drawn as f64 / n as f64 }
+        (gw, gh, t)
+    });
+    // The share of a rectangle (in page mm) over the frame's drawn cells.
+    let covered = |(x, y, w, h): (f64, f64, f64, f64)| -> f64 {
+        let Some((gw, gh, t)) = &sums else { return 0.0 };
+        let (gw, gh) = (*gw, *gh);
+        let col = |v: f64| ((v - fx) / fw * gw as f64).floor().clamp(0.0, gw as f64) as usize;
+        let row = |v: f64| ((v - fy) / fh * gh as f64).floor().clamp(0.0, gh as f64) as usize;
+        let (c0, r0) = (col(x).min(gw.saturating_sub(1)), row(y).min(gh.saturating_sub(1)));
+        let (c1, r1) = (col(x + w).max(c0 + 1).min(gw), row(y + h).max(r0 + 1).min(gh));
+        let n = (c1 - c0) * (r1 - r0);
+        let at = |r: usize, c: usize| f64::from(t[r * (gw + 1) + c]);
+        let drawn = at(r1, c1) - at(r0, c1) - at(r1, c0) + at(r0, c0);
+        if n == 0 { 0.0 } else { drawn / n as f64 }
     };
-    // The surrounds to place: what each is, its size and its corner by default (0 top left,
-    // 1 top right, 2 bottom left, 3 bottom right).
-    let mut surrounds: Vec<(Surround, f64, f64, usize)> = Vec::new();
+    // The surrounds to place: what each is and its size (the arrangement gives its corner).
+    let mut surrounds: Vec<(Surround, f64, f64)> = Vec::new();
     if locator_map.is_some() && column.is_none() {
-        surrounds.push((Surround::Locator, side, side, 0));
+        surrounds.push((Surround::Locator, side, side));
     }
-    surrounds.push((Surround::Arrow, aw, ah, 1));
+    surrounds.push((Surround::Arrow, aw, ah));
     // The topmost visible raster drawn on a ramp gets a colorbar, under the legend in its box (a
     // map whose theme is a raster has its key there, which the legend's rows don't give).
     let bar = rustgis_map::layout::colorbar_layer(s.map(), None)
@@ -1606,76 +1792,101 @@ fn publication(s: &mut Session, p: &Value) -> CmdResult {
     let (content_w, content_h) = (if bar.is_some() { cw.max(bar_w) } else { cw }, ch + bar_part);
     let legend_in_column = column.is_some();
     if content_h > 0.0 && !legend_in_column {
-        surrounds.push((Surround::Legend, (content_w + 2.0 * pad).min(fw * 0.45), (content_h + 2.0 * pad).min(fh * 0.6), 2));
+        surrounds.push((Surround::Legend, (content_w + 2.0 * pad).min(fw * 0.45), (content_h + 2.0 * pad).min(fh * 0.6)));
     }
-    surrounds.push((Surround::Scale, sw, sh + nh, 3));
+    surrounds.push((Surround::Scale, sw, sh + nh));
     // A corner's rectangle for a surround `w` × `h`.
     let at = |corner: usize, w: f64, h: f64| {
         let x = if corner.is_multiple_of(2) { fx + left } else { fx + fw - right - w };
         let y = if corner < 2 { fy + top } else { fy + fh - bottom - h };
         (x, y, w, h)
     };
-    // Every way of giving the surrounds a corner each, each tried once (a corner for each of
-    // them, the first one's changing slowest; two in one corner passed over): the one covering the
-    // least of the map's drawing (its area in mm²) with no surround over another, a surround off
-    // its own corner costing a hundredth of its area so that, all else equal, they stay where they
-    // belong. There are four surrounds at most (locator, arrow, legend, scale), so 4⁴ = 256 picks.
-    let n = surrounds.len();
-    let mut corners: Vec<usize> = surrounds.iter().map(|x| x.3).collect();
-    let mut best = f64::INFINITY;
-    for code in 0..4usize.pow(n as u32) {
-        let pick: Vec<usize> = (0..n).map(|i| code / 4usize.pow((n - 1 - i) as u32) % 4).collect();
-        if pick.iter().enumerate().any(|(i, c)| pick.iter().take(i).any(|d| d == c)) {
-            continue;
-        }
-        // Each as it will be laid out: the legend short of the surrounds beside and above or
-        // below it in this pick (down to 10 mm), so it isn't moved for an overlap its shortening
-        // avoids.
-        let other = |c: usize| surrounds.iter().zip(&pick).find(|(_, k)| **k == c).map(|(&(_, w, h, _), _)| (w, h));
-        let rects: Vec<(f64, f64, f64, f64)> = surrounds
-            .iter()
-            .zip(&pick)
-            .map(|(&(kind, w, h, _), &corner)| {
-                if kind != Surround::Legend {
-                    return at(corner, w, h);
-                }
-                let room_w = other(corner ^ 1).map_or(f64::INFINITY, |(ow, _)| fw - left - right - ow - 2.0);
-                let room_h = other(corner ^ 2).map_or(f64::INFINITY, |(_, oh)| fh - top - bottom - oh - e);
-                at(corner, w.min(room_w.max(MIN_LEGEND_MM)), h.min(room_h.max(MIN_LEGEND_MM)))
+    // What each surround is called in the answer and in warnings.
+    let named = |kind: Surround| match kind {
+        Surround::Locator => "locator",
+        Surround::Arrow => "north arrow",
+        Surround::Legend => "legend",
+        Surround::Scale => "scale bar",
+    };
+    let area = (fx + left, fy + top, fx + fw - right, fy + fh - bottom);
+    // An arrangement laid out (#1379): each surround over the map in its own corner, the legend
+    // short of the surrounds beside and above or below it (`None` when the locator leaves it too
+    // small, so it is left out); then, the largest first, each one covering what the map draws there
+    // leaves it for the freest place in the frame, clear of those placed before it ([`free_spot`]),
+    // when that covers less, and one whose corner a larger one took leaves it in any case. Data
+    // everywhere alike leaves nowhere better: it stays. Gives the legend's corner and size, each
+    // surround's place, the ones moved, and the area (mm²) of those moved and of what still covers
+    // the drawing.
+    type Laid = (Option<(usize, f64, f64)>, Vec<(Surround, Rect)>, Vec<&'static str>, (f64, f64));
+    let lay_out = |homes: Homes| -> Laid {
+        let corner_of =
+            |what: Surround| surrounds.iter().find(|(kind, ..)| *kind == what).map(|&(kind, w, h)| (homes[home_slot(kind)], w, h));
+        let legend_at = corner_of(Surround::Legend).and_then(|(corner, w, h)| {
+            let other = |c: usize| surrounds.iter().find(|&&(kind, ..)| homes[home_slot(kind)] == c).copied();
+            let beside = other(corner ^ 1).map(|(kind, ow, _)| (kind, ow));
+            let over = other(corner ^ 2).map(|(kind, _, oh)| (kind, oh));
+            legend_room(w, h, fw - left - right - 2.0, fh - top - bottom - e, beside, over).map(|(lw, lh)| (corner, lw, lh))
+        });
+        let mut spots: Vec<(Surround, Rect)> = [Surround::Locator, Surround::Arrow, Surround::Legend, Surround::Scale]
+            .into_iter()
+            .filter_map(|kind| match kind {
+                Surround::Legend => legend_at.map(|(c, lw, lh)| (kind, at(c, lw, lh))),
+                _ => corner_of(kind).map(|(c, w, h)| (kind, at(c, w, h))),
             })
             .collect();
-        let mut cost: f64 = surrounds
-            .iter()
-            .zip(&pick)
-            .zip(&rects)
-            .map(|((&(.., home), &corner), &r)| (covered(r) + if corner == home { 0.0 } else { 0.01 }) * r.2 * r.3)
-            .sum();
-        // Two surrounds over each other cost ten times their overlap, more than any data under
-        // them: in a frame too small for them all, the corners that keep them apart win.
-        for (i, a) in rects.iter().enumerate() {
-            for b in rects.iter().skip(i + 1) {
-                let (ow, oh) = ((a.0 + a.2).min(b.0 + b.2) - a.0.max(b.0), (a.1 + a.3).min(b.1 + b.3) - a.1.max(b.1));
-                cost += 10.0 * ow.max(0.0) * oh.max(0.0);
+        // The largest first, the legend as a rule: it has the most to lose, so it takes the freest
+        // place, and a smaller surround whose corner it took moves out of its way.
+        let mut order: Vec<usize> = (0..spots.len()).collect();
+        order.sort_by(|&a, &b| (spots[b].1.2 * spots[b].1.3).total_cmp(&(spots[a].1.2 * spots[a].1.3)));
+        let mut moved: Vec<&'static str> = Vec::new();
+        let mut settled: Vec<Rect> = Vec::new();
+        for i in order {
+            let (kind, home) = spots[i];
+            let here = covered(home);
+            let overlaps = |r: Rect| settled.iter().any(|o| r.0 < o.0 + o.2 && o.0 < r.0 + r.2 && r.1 < o.1 + o.3 && o.1 < r.1 + r.3);
+            let taken = overlaps(home);
+            if here > LEAK || taken {
+                // Out of a corner taken by a larger one whatever it covers; off the data only when
+                // that covers less.
+                if let Some(r) = free_spot(home, area, &settled, covered).filter(|r| taken || covered(*r) < here - LEAK) {
+                    spots[i].1 = r;
+                    moved.push(named(kind));
+                }
             }
+            settled.push(spots[i].1);
         }
-        // A cost that isn't a number never wins, so with no pick costing a number the surrounds keep
-        // their own corners: the layout without the search, never a pick made of NaNs.
-        if cost < best - 1e-9 {
-            (best, corners) = (cost, pick);
-        }
+        // Named in the order the surrounds are listed, whatever order they were placed in.
+        moved.sort_by_key(|m| spots.iter().position(|(kind, _)| named(*kind) == *m));
+        let shifted: f64 = spots.iter().filter(|(kind, _)| moved.contains(&named(*kind))).map(|(_, r)| r.2 * r.3).sum();
+        let over: f64 = spots.iter().map(|(_, r)| covered(*r) * r.2 * r.3).sum();
+        // A legend left out costs the whole frame, more than any move, so an arrangement that keeps
+        // it always wins over one that drops it.
+        let dropped = if surrounds.iter().any(|x| x.0 == Surround::Legend) && legend_at.is_none() { fw * fh } else { 0.0 };
+        // Surrounds left over each other (nowhere clear for one a larger one's corner took) cost ten
+        // times their overlap, so an arrangement that keeps them apart wins.
+        let clash = 10.0 * overlap_area(&spots.iter().map(|(_, r)| *r).collect::<Vec<_>>());
+        (legend_at, spots, moved, (shifted + dropped + clash, over))
+    };
+    // Each arrangement tried laid out, and one picked ([`pick_arrangement`]): the least area moved
+    // off its corners (so a north arrow moved costs less than a legend), then the least left over
+    // the drawing, the first tried (the favourite) on a tie. Every arrangement fills the same four
+    // corners, so it is what goes where that differs. A single arrangement asked for is the one
+    // laid out.
+    let mut laid: Vec<(Homes, Laid)> = tries.iter().map(|h| (*h, lay_out(*h))).collect();
+    let chosen = pick_arrangement(&laid.iter().map(|(_, l)| l.3).collect::<Vec<_>>()).map(|i| laid.swap_remove(i));
+    let (homes, (legend_at, spots, moved, _)) = chosen.unwrap_or_else(|| (ARRANGEMENTS[0].1, lay_out(ARRANGEMENTS[0].1)));
+    if surrounds.iter().any(|x| x.0 == Surround::Legend) && legend_at.is_none() {
+        warnings.push(
+            "the frame leaves the legend no room beside the locator, so it is left out: give the map more room, or set \"locator\": \"none\""
+                .into(),
+        );
     }
-    // Each surround in its corner; the legend stops short of the others beside and above it.
-    let corner_of =
-        |what: Surround| surrounds.iter().zip(&corners).find(|((kind, ..), _)| *kind == what).map(|(&(_, w, h, _), &c)| (c, w, h));
     let mut placed: Vec<(&'static str, (f64, f64, f64, f64))> = Vec::new();
+    let spot_of = |what: Surround| spots.iter().find(|(kind, _)| *kind == what).map(|(_, r)| *r);
     // In a column, at its top, centred across it; otherwise in its corner over the map.
     let locator_rect = match column {
         Some(c) => Some((c.x + (c.w - side) / 2.0, c.y, side, side)),
-        None => corner_of(Surround::Locator).map(|(corner, w, h)| {
-            let r = at(corner, w, h);
-            placed.push(("locator", r));
-            r
-        }),
+        None => spot_of(Surround::Locator).inspect(|&r| placed.push(("locator", r))),
     };
     // A page of cards gives the locator in its column a card of the column's width.
     let card = style == Style::Modular && column.is_some();
@@ -1706,26 +1917,10 @@ fn publication(s: &mut Session, p: &Value) -> CmdResult {
             },
         );
     }
-    if let Some((corner, w, h)) = corner_of(Surround::Arrow) {
-        let r = at(corner, w, h);
+    if let Some(r) = spot_of(Surround::Arrow) {
         placed.push(("north arrow", r));
         l.add("North Arrow", r, ElementKind::north_arrow(frame));
     }
-    // The legend's corner, short of the surrounds beside and above or below it: one the locator
-    // leaves too small for a legend leaves it out, said, rather than drawing it over the locator.
-    let legend_at = corner_of(Surround::Legend).and_then(|(corner, w, h)| {
-        let other = |c: usize| surrounds.iter().zip(&corners).find(|(_, k)| **k == c).map(|(&(kind, w, h, _), _)| (kind, w, h));
-        let beside = other(corner ^ 1).map(|(kind, ow, _)| (kind, ow));
-        let over = other(corner ^ 2).map(|(kind, _, oh)| (kind, oh));
-        let fit = legend_room(w, h, fw - left - right - 2.0, fh - top - bottom - e, beside, over);
-        if fit.is_none() {
-            warnings.push(
-                "the frame leaves the legend no room beside the locator, so it is left out: give the map more room, or set \"locator\": \"none\""
-                    .into(),
-            );
-        }
-        fit.map(|(lw, lh)| (corner, lw, lh))
-    });
     // In a panel, the legend under the locator, as tall as it needs within what is left.
     let legend_rect = match column {
         Some(c) if content_h > 0.0 => {
@@ -1741,11 +1936,7 @@ fn publication(s: &mut Session, p: &Value) -> CmdResult {
             }
         }
         Some(_) => None,
-        None => legend_at.map(|(corner, lw, lh)| {
-            let r = at(corner, lw, lh);
-            placed.push(("legend", r));
-            r
-        }),
+        None => spot_of(Surround::Legend).inspect(|&r| placed.push(("legend", r))),
     };
     if let Some(r) = legend_rect {
         let (lw, lh) = (r.2, r.3);
@@ -1792,8 +1983,7 @@ fn publication(s: &mut Session, p: &Value) -> CmdResult {
             );
         }
     }
-    if let Some((corner, w, h)) = corner_of(Surround::Scale) {
-        let (sx, sy, ..) = at(corner, w, h);
+    if let Some((sx, sy, w, h)) = spot_of(Surround::Scale) {
         placed.push(("scale bar", (sx, sy, w, h)));
         l.add("Scale Box", (sx, sy, sw, sh + nh), surround_box(paper));
         l.add("Scale Bar", (sx, sy, sw, sh), ElementKind::scale_bar(frame));
@@ -1840,7 +2030,7 @@ fn publication(s: &mut Session, p: &Value) -> CmdResult {
     s.active_layout = Some(i);
     let locator = locator_map.map(|(map, ..)| map);
     Ok(
-        json!({"layout": i, "name": name, "profile": profile.id, "page": [w, h], "scale": scale, "grid": step, "locator": locator, "style": style.code(), "elements": elements, "warnings": warnings}),
+        json!({"layout": i, "name": name, "profile": profile.id, "page": [w, h], "scale": scale, "grid": step, "locator": locator, "style": style.code(), "arrangement": arrangement_name(homes), "elements": elements, "moved": moved, "warnings": warnings}),
     )
 }
 

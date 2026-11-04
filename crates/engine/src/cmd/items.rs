@@ -99,7 +99,7 @@ pub fn commands() -> Vec<C> {
             }
             l.renderer = st.renderer;
             let field = l.labels.default.field.clone();
-            let relock = !super::labels::lock_holds(&l.labels, &st.labels);
+            let relock = !super::labels::lock_holds(l, &st.labels);
             l.labels = st.labels;
             // The label field stays if the style's isn't in this layer.
             if l.dataset.field_index(&l.labels.default.field).is_none() {
@@ -372,11 +372,7 @@ pub(crate) fn read_text(p: &Value) -> Result<String, String> {
         (Some(t), _) if t.len() as u64 <= MAX_FILE => Ok(t.to_string()),
         (Some(_), _) => Err("the file is too large".into()),
         (None, Some(path)) => {
-            let len = std::fs::metadata(path).map_err(|e| format!("{path}: {e}"))?.len();
-            if len > MAX_FILE {
-                return Err("the file is too large".into());
-            }
-            let bytes = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+            let bytes = crate::project::read_file(Path::new(path), MAX_FILE)?;
             // Packages are zip archives holding the project.
             if bytes.starts_with(b"PK") {
                 return package_text(&bytes);
@@ -408,9 +404,7 @@ fn embed_layer(mut l: Layer, budget: &mut u64) -> Layer {
     if let Some(rl) = &mut l.raster
         && rl.embedded.is_none()
         && let Some(path) = rl.path.clone()
-        && std::fs::metadata(&path).is_ok_and(|m| m.len() <= *budget)
-        && let Ok(bytes) = std::fs::read(&path)
-        && bytes.len() as u64 <= *budget
+        && let Ok(bytes) = crate::project::read_file(Path::new(&path), *budget)
     {
         *budget -= bytes.len() as u64;
         rl.file_name = Path::new(&path).file_name().map(|n| n.to_string_lossy().to_string());

@@ -221,6 +221,9 @@ Ocean, Atlas, Blank), which need no network, and web tile layers over them:
   A style's root `center`, `zoom`, `bearing` and `pitch` say where it opens: `map.addTiles` with
   `"view": true` takes the map there once the style has loaded.
 
+HTTPS tiles use [platform certificate trust](data.md#https-certificates) on desktop and the
+command line, including private CAs trusted by the operating system. The web app uses the browser.
+
 The gallery's **Web Basemaps** need no API key: the OpenFreeMap vector maps (Liberty, Bright,
 Positron, Dark, Fiord) and USGS Imagery. Choosing one replaces the other web basemaps; tick
 **Stack on the current basemaps** above them to add it over the others instead (clicking one

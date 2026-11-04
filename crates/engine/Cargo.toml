@@ -35,6 +35,8 @@ geolibre = ["dep:rustgis-geolibre"]
 rusqlite = { workspace = true }
 rustgis-plugins = { workspace = true, features = ["testing"] }
 tiny-skia = { workspace = true }
+# Parsing the addresses commands ask for in tests.
+url = { workspace = true }
 
 # Time slider animations as GIFs (exported by the desktop app only).
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
@@ -43,3 +45,4 @@ image = { workspace = true, features = ["gif"] }
 # The live PostGIS tests make their own tables, and change rows as someone else would.
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 postgres = { workspace = true }
+rustls = { workspace = true }

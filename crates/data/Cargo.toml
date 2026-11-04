@@ -55,10 +55,17 @@ tokio = { workspace = true }
 tokio-util = { workspace = true }
 rustls = { workspace = true }
 webpki-roots = { workspace = true }
+# Native web clients verify servers with the system's trust (see `http`).
+ureq = { version = "3", default-features = false, features = ["rustls", "gzip", "platform-verifier"] }
 # Private temporary workspaces for downloaded JPEG 2000 conversion through GDAL.
 tempfile = "3"
 # The computer's physical memory, for the limits that scale with it (`memory`, #1291 step 2).
 sysinfo = { version = "0.40", default-features = false, features = ["system"] }
+
+# Whether a Linux or BSD system has any CA certificates (see `http`); the platform verifier reads
+# the same.
+[target.'cfg(all(unix, not(target_vendor = "apple"), not(target_os = "android")))'.dependencies]
+rustls-native-certs = "0.8"
 
 [target.'cfg(all(unix, not(target_arch = "wasm32")))'.dependencies]
 # Safe effective-UID and no-follow operations for private Shapefile index caches.

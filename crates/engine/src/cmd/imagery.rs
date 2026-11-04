@@ -54,19 +54,9 @@ pub fn commands() -> Vec<C> {
             .view()
             .params(r#"{"layer": raster, "lon"?, "lat"?, "zone"?: polygon layer (the selected or first polygon)}"#),
         C::new("raster.classify", "Classification Wizard", "Analyze › Image Classification", |s, p| {
-            let r = raster(s, p)?;
-            let bands = bands_param(p, &r)?;
-            if bands.is_empty() {
-                return Err("give at least one band".into());
-            }
-            let k = match p.get("classes") {
-                None => 5,
-                Some(_) => uint(p, "classes").filter(|k| (2..=50).contains(k)).ok_or("classes is 2 to 50")? as usize,
-            };
-            let classes = rasterops::kmeans(&r, &bands, k, 20)?;
-            add(s, rasterops::derive(&r, &name(p, format!("{}_classes", r.name)), vec![classes])?, true)
+            super::workflows::made_or_ran(s, p, super::workflows::CLASSIFY, classify_work)
         })
-        .params(r#"{"layer": raster, "classes"?: 2..50, "bands"?: [1-based], "name"?: output}"#),
+        .params(r#"{"layer": raster, "classes"?: 2..50, "bands"?: [1-based], "name"?: output, "ran"?: (internal: classes the app has worked out)}"#),
         C::new("raster.classifySupervised", "Classification Tools", "Analyze › Image Classification", supervised)
             .params(r#"{"layer": raster, "training": polygon layer, "classField": field, "bands"?: [1-based], "name"?: output}"#),
         C::new("raster.index", "Indices", "Analyze › Imagery Tools", index).params(
@@ -151,11 +141,37 @@ fn layer_of(r: Raster) -> Result<rustgis_map::RasterLayer, String> {
 /// Adds a raster layer; classes get unique-value colours.
 pub(crate) fn add(s: &mut Session, r: Raster, classes: bool) -> CmdResult {
     let n = r.name.clone();
+    let layer = if classes { class_layer(r)? } else { layer_of(r)? };
+    super::raster::add_raster(s, &n, layer)
+}
+
+/// A raster of classes as a layer, each class a colour of its own.
+pub(crate) fn class_layer(r: Raster) -> Result<rustgis_map::RasterLayer, String> {
     let mut layer = layer_of(r)?;
-    if classes && let Some(d) = layer.data.clone() {
+    if let Some(d) = layer.data.clone() {
         layer.style.renderer = rustgis_map::raster::unique_values(&d, 0, rustgis_map::Ramp::Harbour);
     }
-    super::raster::add_raster(s, &n, layer)
+    Ok(layer)
+}
+
+/// What the Classification Wizard (k-means) reads of the session, and the work that makes its
+/// classes.
+pub(crate) fn classify_work(s: &Session, p: &Value) -> Result<super::workflows::Work, String> {
+    let r = raster(s, p)?;
+    let bands = bands_param(p, &r)?;
+    if bands.is_empty() {
+        return Err("give at least one band".into());
+    }
+    let k = match p.get("classes") {
+        None => 5,
+        Some(_) => uint(p, "classes").filter(|k| (2..=50).contains(k)).ok_or("classes is 2 to 50")? as usize,
+    };
+    let out = name(p, format!("{}_classes", r.name));
+    Ok(Box::new(move || {
+        let classes = rasterops::kmeans(&r, &bands, k, 20)?;
+        let layer = class_layer(rasterops::derive(&r, &out, vec![classes])?)?;
+        Ok(super::workflows::made_layer(out, layer, None, None))
+    }))
 }
 
 /// Replaces a raster layer's pixels, keeping its look.

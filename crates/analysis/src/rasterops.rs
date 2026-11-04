@@ -348,8 +348,13 @@ pub fn profile(r: &Raster, b: usize, path: &[Coord], samples: usize) -> Vec<(f64
     out
 }
 
+/// Earth's radius as visible light sees it, bent by the standard atmospheric refraction of 1/7:
+/// `gdal_viewshed`'s default curvature coefficient of 6/7. The 4/3 Earth is for radio waves.
+const SIGHT_RADIUS_M: f64 = 6_371_000.0 * 7.0 / 6.0;
+
 /// Whether `b` is visible from `a` (observer and target heights above the ground, in metres),
-/// and each profile sample with whether it can be seen. Earth curvature is included.
+/// and each profile sample with whether it can be seen. Earth curvature is included, with the
+/// refraction of visible light (see `SIGHT_RADIUS_M`), not the 4/3 Earth of radio links.
 pub fn line_of_sight(
     r: &Raster,
     band: usize,
@@ -362,8 +367,7 @@ pub fn line_of_sight(
     let prof = profile(r, band, &[a, b], samples);
     let (_, _, za) = *prof.first()?;
     let eye = za? + ha;
-    const R: f64 = 6_371_000.0 * 4.0 / 3.0; // refraction-adjusted Earth radius
-    let drop = |d: f64| d * d / (2.0 * R);
+    let drop = |d: f64| d * d / (2.0 * SIGHT_RADIUS_M);
     let mut max_angle = f64::NEG_INFINITY;
     let mut out = Vec::with_capacity(prof.len());
     let mut target_visible = false;
@@ -397,6 +401,7 @@ const MAX_VIEWSHED_WORK: usize = 400_000_000;
 pub(crate) const MAX_IDW_WORK: usize = 400_000_000;
 
 /// Cells visible from an observer (1) or not (0) within `radius_m`; outside the radius no-data.
+/// The Earth curves as visible light sees it (`SIGHT_RADIUS_M`).
 pub fn viewshed(r: &Raster, b: usize, observer: Coord, height: f64, radius_m: f64) -> Result<Vec<f32>, String> {
     viewshed_on(None, r, b, observer, height, radius_m)
 }
@@ -434,7 +439,6 @@ fn viewshed_on(threads: Option<usize>, r: &Raster, b: usize, observer: Coord, he
     }
     let w = r.width as usize;
     let mut out = new_band(w, r.height as usize, NODATA)?;
-    const R: f64 = 6_371_000.0 * 4.0 / 3.0;
     let window = out.chunks_mut(w).skip(usize::try_from(first).unwrap_or(0)).take(rows);
     crate::control::begin(rows);
     crate::parallel::for_each_row(
@@ -456,7 +460,7 @@ fn viewshed_on(threads: Option<usize>, r: &Raster, b: usize, observer: Coord, he
                     }
                     continue;
                 }
-                let target = (zt as f64 - dist * dist / (2.0 * R) - z0) / dist;
+                let target = (zt as f64 - dist * dist / (2.0 * SIGHT_RADIUS_M) - z0) / dist;
                 // Walk the ray from the observer; any cell higher than the line hides the target.
                 let steps = ((col - oc).abs().max((row - or).abs())) as usize;
                 let mut visible = true;
@@ -465,7 +469,7 @@ fn viewshed_on(threads: Option<usize>, r: &Raster, b: usize, observer: Coord, he
                     let (c, rr) = ((oc as f64 + (col - oc) as f64 * t).round() as i64, (or as f64 + (row - or) as f64 * t).round() as i64);
                     let Some(zi) = r.value(b, c, rr) else { continue };
                     let di = dist * t;
-                    if (zi as f64 - di * di / (2.0 * R) - z0) / di > target {
+                    if (zi as f64 - di * di / (2.0 * SIGHT_RADIUS_M) - z0) / di > target {
                         visible = false;
                         break;
                     }
@@ -568,6 +572,13 @@ fn idw_on(
 
 /// Unsupervised k-means classes (1..=k) of the pixels over the given bands.
 pub fn kmeans(r: &Raster, bands: &[usize], k: usize, iterations: usize) -> Result<Vec<f32>, String> {
+    kmeans_on(None, r, bands, k, iterations)
+}
+
+/// [`kmeans`] on `threads` threads (none: as many as pay off). The centres are found on a sample
+/// of the pixels; then each pixel takes its nearest, on its own, so rows go on several threads
+/// (#1252).
+fn kmeans_on(threads: Option<usize>, r: &Raster, bands: &[usize], k: usize, iterations: usize) -> Result<Vec<f32>, String> {
     let k = k.clamp(2, 50);
     let data: Vec<&[f32]> = bands.iter().map(|b| band(r, *b)).collect::<Result<_, _>>()?;
     if data.is_empty() {
@@ -632,11 +643,28 @@ pub fn kmeans(r: &Raster, bands: &[usize], k: usize, iterations: usize) -> Resul
         centres.get(*a).and_then(|c| c.first()).partial_cmp(&centres.get(*b).and_then(|c| c.first())).unwrap_or(std::cmp::Ordering::Equal)
     });
     let rank: Vec<usize> = (0..centres.len()).map(|c| order.iter().position(|o| *o == c).unwrap_or(0)).collect();
-    let mut p = Vec::with_capacity(data.len());
-    let mut out = grid(r.width as usize, r.height as usize)?;
-    out.extend(
-        (0..n).map(|i| if pixel_into(i, &mut p) { (rank.get(nearest(&p, &centres)).copied().unwrap_or(0) + 1) as f32 } else { NODATA }),
-    );
+    let (w, h) = (r.width as usize, r.height as usize);
+    let mut out = new_band(w, h, NODATA)?;
+    if w == 0 {
+        return Ok(out);
+    }
+    // A pixel's distance to every centre over every band, a few nanoseconds per pair: in
+    // `MIN_ROW_WORK`'s units (some 30 ns), about one per eight pairs.
+    let work = n.saturating_mul(centres.len().saturating_mul(data.len()) / 8 + 1);
+    let threads = threads.unwrap_or_else(|| crate::parallel::threads_for_rows(h, work, 0));
+    crate::control::begin(h);
+    crate::parallel::for_each_row(
+        out.chunks_mut(w),
+        threads,
+        || Vec::with_capacity(data.len()),
+        |p, row, line: &mut [f32]| {
+            for (col, o) in line.iter_mut().enumerate() {
+                if pixel_into(row * w + col, p) {
+                    *o = (rank.get(nearest(p, &centres)).copied().unwrap_or(0) + 1) as f32;
+                }
+            }
+        },
+    )?;
     Ok(out)
 }
 
@@ -1263,6 +1291,27 @@ mod tests {
         }
     }
 
+    /// k-means classes made on several threads are those made on one (#1252), no-data pixels
+    /// included.
+    #[test]
+    fn kmeans_on_several_threads_is_kmeans_on_one() {
+        let (w, h) = (240u32, 180u32);
+        let n = (w * h) as usize;
+        let band = |k: usize| (0..n).map(|i| if i % 97 == 0 { -9999.0 } else { ((i * (5 + k) + i / 240 * 11) % 200) as f32 }).collect();
+        let gt = GeoTransform { origin_x: 0.0, origin_y: 180.0, pixel_width: 1.0, pixel_height: -1.0 };
+        let r =
+            Raster::new("k", w, h, vec![band(0), band(1), band(2)], gt, Crs::LonLat, Some(-9999.0), ColorHint::Gray, "Float32").unwrap();
+        let bits = |v: Vec<f32>| v.into_iter().map(f32::to_bits).collect::<Vec<_>>();
+        let one = bits(kmeans_on(Some(1), &r, &[0, 1, 2], 7, 10).unwrap());
+        assert_eq!(one, bits(kmeans_on(Some(4), &r, &[0, 1, 2], 7, 10).unwrap()));
+        assert!(one.contains(&NODATA.to_bits()) && one.contains(&7.0f32.to_bits()));
+        // A cancelled run gives no classes.
+        let run = crate::control::Control::new();
+        run.cancel();
+        let _installed = crate::control::install(Some(run));
+        assert_eq!(kmeans_on(Some(4), &r, &[0, 1, 2], 7, 10).unwrap_err(), crate::control::CANCELLED);
+    }
+
     /// Band math and per-cell rows made on several threads give the same cells, bit for bit, as
     /// one thread (#1252): no-data, NaN and values that come out non-finite included.
     #[test]
@@ -1294,6 +1343,30 @@ mod tests {
         for threads in [2, 7, 16] {
             assert_eq!(bits(&per_cell_on(Some(threads), &r, 1, f).unwrap()), bits(&one), "{threads} threads");
         }
+    }
+
+    /// Over flat ground the horizon is where visible light puts it: √(2 · 7/6 R · h), 12.2 km
+    /// for an eye 10 m up, as `gdal_viewshed` sees it. The radio waves' 4/3 Earth puts it at 13.0 km.
+    #[test]
+    fn viewshed_and_line_of_sight_see_the_horizon_of_visible_light() {
+        // Sea level on the equator: three rows of 140 cells, 111 m wide.
+        let (w, h) = (140u32, 3u32);
+        let transform = GeoTransform { origin_x: 0.0, origin_y: 0.0015, pixel_width: 0.001, pixel_height: -0.001 };
+        let flat = Raster::new("flat", w, h, vec![vec![0.0; (w * h) as usize]], transform, Crs::LonLat, None, ColorHint::Gray, "Float32")
+            .unwrap_or_else(|e| panic!("{e}"));
+        let eye = Coord::new(0.0005, 0.0);
+        // √(2 · 7/6 · 6,371 km · 10 m), written out so that the test pins the radius.
+        let horizon = 12_192.0;
+        let vs = viewshed(&flat, 0, eye, 10.0, 20_000.0).unwrap_or_else(|e| panic!("{e}"));
+        let row = &vs[w as usize..2 * w as usize];
+        let last = row.iter().rposition(|v| *v == 1.0).unwrap_or(0);
+        let (cx, _) = flat.cell_size_m();
+        assert!((last as f64 * cx - horizon).abs() < cx, "last visible cell {last}, horizon {horizon} m");
+        assert!(row[..=last].iter().all(|v| *v == 1.0) && row[last + 1..].iter().all(|v| *v == 0.0), "{row:?}");
+        // The ground 11.5 km away is in view; 12.8 km away it is past the horizon.
+        let seen = |lon: f64| line_of_sight(&flat, 0, eye, Coord::new(lon, 0.0), 10.0, 0.0, 200).map(|(v, _)| v);
+        assert_eq!(seen(0.1035), Some(true));
+        assert_eq!(seen(0.1155), Some(false));
     }
 
     /// A run past one thread's work, on one thread, is refused, naming the cap and the threads.

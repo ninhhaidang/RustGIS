@@ -35,11 +35,27 @@ impl KernelType {
     }
 }
 
-/// Upper limit on total output raster cells to prevent memory exhaustion (64 MB for f32).
-pub const MAX_DENSITY_CELLS: usize = 16_000_000;
+/// The fewest output cells [`max_density_cells`] allows, and its limit in the browser.
+pub const DENSITY_CELLS_FLOOR: usize = 16_000_000;
 
-/// Upper limit on aggregate cell visits across all points to prevent CPU exhaustion.
+/// Upper limit on total output raster cells, to prevent memory exhaustion: on the desktop as many as
+/// a quarter of the computer's memory holds at 16 bytes a cell (the sums, the output and the
+/// GeoTIFF written from it), from [`DENSITY_CELLS_FLOOR`] up to the most any tool's output raster
+/// takes ([`crate::rasterops::PIXELS_CEILING`]) (#1291 step 2).
+pub fn max_density_cells() -> usize {
+    rustgis_data::memory::scaled(rustgis_data::memory::physical(), DENSITY_CELLS_FLOOR, crate::rasterops::PIXELS_CEILING, 16)
+}
+
+/// Upper limit on aggregate cell visits across all points on one thread, to prevent CPU
+/// exhaustion; a run on several threads may take as many times more
+/// ([`crate::parallel::work_cap`]).
 pub const MAX_DENSITY_WORK: usize = 50_000_000;
+
+/// The points between two counts of a strip's progress and checks for a cancel.
+const PROGRESS_POINTS: usize = 4096;
+/// The cells the points' kernels reach (a few milliseconds of them) after which a strip counts its
+/// progress and checks for a cancel sooner: a few points with large kernels.
+const PROGRESS_CELLS: usize = 1 << 20;
 
 /// Default target grid resolution along the longer side of the extent when pixel size is not specified.
 const DEFAULT_GRID_STEPS: f64 = 250.0;
@@ -153,7 +169,12 @@ pub fn resolve_grid_extent(pt_extent: &Extent, bandwidth: f64, custom_extent: Op
     Ok(base_extent)
 }
 
+/// Adds each point's kernel (`eval`) to the cells of `grid` it reaches, on `threads` threads. The
+/// rows are cut into strips, a few per thread so that strips that cost more are shared out; each
+/// strip takes the points that reach it in their order, so every cell adds them up as one thread
+/// does (#1252). Progress counts each strip's points.
 fn accumulate_density<F>(
+    threads: usize,
     points: &[(Coord, f64)],
     grid: &mut [f64],
     w: usize,
@@ -164,56 +185,94 @@ fn accumulate_density<F>(
     bandwidth: f64,
     h_sq: f64,
     eval: F,
-) where
-    F: Fn(f64, f64) -> f64,
+) -> Result<(), crate::control::Cancelled>
+where
+    F: Fn(f64, f64) -> f64 + Sync,
 {
-    crate::control::begin(points.len());
-    for (i, &(p, wgt)) in points.iter().enumerate() {
-        if crate::control::cancelled() {
-            return;
-        }
-        crate::control::reached(i);
-        if wgt <= 0.0 || !wgt.is_finite() || !p.is_finite() {
-            continue;
-        }
-
-        let col_min = (((p.x - bandwidth - origin_x) / cell_size).floor() as isize).clamp(0, (w - 1) as isize) as usize;
-        let col_max = (((p.x + bandwidth - origin_x) / cell_size).ceil() as isize).clamp(0, (w - 1) as isize) as usize;
-
-        let row_min = (((origin_y - (p.y + bandwidth)) / cell_size).floor() as isize).clamp(0, (h_rows - 1) as isize) as usize;
-        let row_max = (((origin_y - (p.y - bandwidth)) / cell_size).ceil() as isize).clamp(0, (h_rows - 1) as isize) as usize;
-
-        for row in row_min..=row_max {
-            let y_cell = origin_y - (row as f64 + 0.5) * cell_size;
-            let dy = p.y - y_cell;
-            let dy_sq = dy * dy;
-            if dy_sq >= h_sq {
-                continue;
-            }
-            let rem_sq = h_sq - dy_sq;
-            let row_offset = row * w;
-
-            for col in col_min..=col_max {
-                let x_cell = origin_x + (col as f64 + 0.5) * cell_size;
-                let dx = p.x - x_cell;
-                let dx_sq = dx * dx;
-                if dx_sq >= rem_sq {
+    let strips = if threads <= 1 { 1 } else { h_rows.min(threads.saturating_mul(4)) };
+    let strip_rows = h_rows.div_ceil(strips.max(1)).max(1);
+    // The strips the rows make (fewer than asked for when they don't divide evenly).
+    let strips = h_rows.div_ceil(strip_rows);
+    // Each strip counts its points as it goes; `for_each_row` counts the strip itself once more.
+    crate::control::begin(strips.saturating_mul(points.len().saturating_add(1)));
+    crate::parallel::for_each_row(
+        grid.chunks_mut(w * strip_rows),
+        threads,
+        || (),
+        |_, s, strip: &mut [f64]| {
+            let first = s * strip_rows;
+            let last = first + strip.len() / w - 1;
+            let (mut counted, mut cells) = (0, 0usize);
+            for (i, &(p, wgt)) in points.iter().enumerate() {
+                if i - counted == PROGRESS_POINTS || cells >= PROGRESS_CELLS {
+                    if crate::control::cancelled() {
+                        return;
+                    }
+                    crate::control::advance(i - counted);
+                    (counted, cells) = (i, 0);
+                }
+                if wgt <= 0.0 || !wgt.is_finite() || !p.is_finite() {
                     continue;
                 }
 
-                let d_sq = dx_sq + dy_sq;
-                let contrib = eval(d_sq, wgt);
+                let col_min = (((p.x - bandwidth - origin_x) / cell_size).floor() as isize).clamp(0, (w - 1) as isize) as usize;
+                let col_max = (((p.x + bandwidth - origin_x) / cell_size).ceil() as isize).clamp(0, (w - 1) as isize) as usize;
 
-                if let Some(cell) = grid.get_mut(row_offset + col) {
-                    *cell += contrib;
+                let row_min = (((origin_y - (p.y + bandwidth)) / cell_size).floor() as isize).clamp(0, (h_rows - 1) as isize) as usize;
+                let row_max = (((origin_y - (p.y - bandwidth)) / cell_size).ceil() as isize).clamp(0, (h_rows - 1) as isize) as usize;
+
+                let (top, bottom) = (row_min.max(first), row_max.min(last));
+                cells = cells.saturating_add((bottom + 1).saturating_sub(top).saturating_mul((col_max + 1).saturating_sub(col_min)));
+                for row in top..=bottom {
+                    let y_cell = origin_y - (row as f64 + 0.5) * cell_size;
+                    let dy = p.y - y_cell;
+                    let dy_sq = dy * dy;
+                    if dy_sq >= h_sq {
+                        continue;
+                    }
+                    let rem_sq = h_sq - dy_sq;
+                    let row_offset = (row - first) * w;
+
+                    for col in col_min..=col_max {
+                        let x_cell = origin_x + (col as f64 + 0.5) * cell_size;
+                        let dx = p.x - x_cell;
+                        let dx_sq = dx * dx;
+                        if dx_sq >= rem_sq {
+                            continue;
+                        }
+
+                        let d_sq = dx_sq + dy_sq;
+                        let contrib = eval(d_sq, wgt);
+
+                        if let Some(cell) = strip.get_mut(row_offset + col) {
+                            *cell += contrib;
+                        }
+                    }
                 }
             }
-        }
-    }
+            crate::control::advance(points.len() - counted);
+        },
+    )?;
+    // A strip stopped part of the way leaves the grid unfinished: it is not the result.
+    crate::control::check()
 }
 
 /// Generates a continuous kernel density raster from weighted points in a projected CRS.
 pub fn kernel_density(
+    points: &[(Coord, f64)],
+    custom_extent: Option<&Extent>,
+    cell_size: f64,
+    bandwidth: f64,
+    kernel: KernelType,
+    name: &str,
+    crs: Crs,
+) -> Result<Raster, String> {
+    kernel_density_on(None, points, custom_extent, cell_size, bandwidth, kernel, name, crs)
+}
+
+/// [`kernel_density`] on `threads` threads (none: as many as pay off).
+fn kernel_density_on(
+    threads: Option<usize>,
     points: &[(Coord, f64)],
     custom_extent: Option<&Extent>,
     cell_size: f64,
@@ -257,8 +316,9 @@ pub fn kernel_density(
     let h_rows = snap_cells(base_extent.height());
 
     let total_cells = w.checked_mul(h_rows).ok_or("grid dimensions overflow")?;
-    if total_cells > MAX_DENSITY_CELLS {
-        return Err(format!("{w} × {h_rows} cells is too large; choose a larger pixel size"));
+    let max_cells = max_density_cells();
+    if total_cells > max_cells {
+        return Err(format!("{w} × {h_rows} cells is too large, more than this computer's {max_cells} cells; choose a larger pixel size"));
     }
 
     // Estimate total cell visits bounded by the point kernel window and output grid
@@ -270,9 +330,12 @@ pub fn kernel_density(
         total_cells
     };
     let total_work = points.len().saturating_mul(cells_per_point);
-    if total_work > MAX_DENSITY_WORK {
+    // A cell visit is some 5 ns, a sixth of `MIN_ROW_WORK`'s unit.
+    let threads = threads.unwrap_or_else(|| crate::parallel::threads_for_rows(h_rows, total_work / 6, 0));
+    let cap = crate::parallel::work_cap(MAX_DENSITY_WORK, threads);
+    if total_work > cap {
         return Err(format!(
-            "{w} × {h_rows} cells from {} points is too much work; choose a larger pixel size or a smaller search radius",
+            "{w} × {h_rows} cells from {} points is too much work, more than the {cap} cell visits this computer takes on {threads} thread(s); choose a larger pixel size or a smaller search radius",
             points.len()
         ));
     }
@@ -292,10 +355,10 @@ pub fn kernel_density(
             if !factor.is_normal() {
                 return Err("search radius is out of range".into());
             }
-            accumulate_density(points, &mut grid, w, h_rows, origin_x, origin_y, cell_size, bandwidth, h_sq, |d_sq, wgt| {
+            accumulate_density(threads, points, &mut grid, w, h_rows, origin_x, origin_y, cell_size, bandwidth, h_sq, |d_sq, wgt| {
                 let val = 1.0 - d_sq / h_sq;
                 wgt * factor * val * val
-            });
+            })?;
         }
         KernelType::Gaussian => {
             // Truncate at 3σ = bandwidth and renormalise so the kernel integrates to 1 over the disk.
@@ -309,9 +372,9 @@ pub fn kernel_density(
             if !factor.is_normal() {
                 return Err("search radius is out of range".into());
             }
-            accumulate_density(points, &mut grid, w, h_rows, origin_x, origin_y, cell_size, bandwidth, h_sq, |d_sq, wgt| {
+            accumulate_density(threads, points, &mut grid, w, h_rows, origin_x, origin_y, cell_size, bandwidth, h_sq, |d_sq, wgt| {
                 wgt * factor * (-d_sq / two_sigma_sq).exp()
-            });
+            })?;
         }
     }
 
@@ -480,11 +543,15 @@ mod tests {
 
     #[test]
     fn excessive_workload_is_rejected() {
-        // 50,000 points in a 100x100 grid (10,000 cells <= MAX_DENSITY_CELLS) with large radius
+        // 50,000 points in a 100x100 grid (10,000 cells <= DENSITY_CELLS_FLOOR) with large radius:
+        // 500 million cell visits, more than one thread takes (several may take them).
         let pts: Vec<(Coord, f64)> = (0..50_000).map(|_| (Coord::new(500.0, 500.0), 1.0)).collect();
         let ext = Extent::new(0.0, 0.0, 1000.0, 1000.0);
-        let err = kernel_density(&pts, Some(&ext), 10.0, 1000.0, KernelType::Quartic, "huge", Crs::WebMercator).unwrap_err();
-        assert!(err.contains("too much work"), "{err}");
+        let err = kernel_density_on(Some(1), &pts, Some(&ext), 10.0, 1000.0, KernelType::Quartic, "huge", Crs::WebMercator).unwrap_err();
+        assert!(
+            err.contains("too much work") && err.contains(&format!("the {MAX_DENSITY_WORK} cell visits")) && err.contains("1 thread(s)"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -557,5 +624,57 @@ mod tests {
         let pt = Coord::new(100.0, 100.0);
         let err = kernel_density(&[(pt, 1e42)], None, 5.0, 50.0, KernelType::Quartic, "huge_weight", Crs::WebMercator).unwrap_err();
         assert!(err.contains("calculated density values produced non-finite numbers"), "{err}");
+    }
+
+    /// A density made on several threads is the one made on one, bit for bit (#1252): each strip
+    /// of rows adds the points that reach it in their order, as one thread adds them to a cell.
+    #[test]
+    fn kernel_density_on_several_threads_is_on_one() {
+        // 3,000 points, weighed, clustered and spread, so kernels cross the strips' edges.
+        let mut x = 12_345u64;
+        let mut next = || {
+            x = x.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+            (x >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let points: Vec<(Coord, f64)> = (0..3000)
+            .map(|i| {
+                let (cx, cy) = if i % 3 == 0 { (2_000.0, 3_000.0) } else { (0.0, 0.0) };
+                (Coord::new(cx + next() * 5_000.0, cy + next() * 4_000.0), 0.5 + next() * 3.0)
+            })
+            .collect();
+        for kernel in [KernelType::Quartic, KernelType::Gaussian] {
+            let make = |threads| kernel_density_on(Some(threads), &points, None, 20.0, 300.0, kernel, "d", Crs::WebMercator).unwrap();
+            let (one, many) = (make(1), make(4));
+            assert!(one.height > 100, "{}", one.height);
+            let bits = |r: &Raster| r.bands[0].data.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+            assert_eq!(bits(&one), bits(&many), "{kernel:?}");
+        }
+    }
+
+    /// Progress counts every strip's points to the end, also when the rows don't cut into as many
+    /// strips as asked for (101 rows on 16 threads make 51 strips of 2, not 64).
+    #[test]
+    fn kernel_density_progress_ends_at_its_total() {
+        let points: Vec<(Coord, f64)> = (0..5000).map(|i| (Coord::new(f64::from(i % 100) * 10.0, f64::from(i / 50) * 10.0), 1.0)).collect();
+        let ext = Extent::new(0.0, 0.0, 1000.0, 1010.0);
+        let run = crate::control::Control::new();
+        let _installed = crate::control::install(Some(run.clone()));
+        let r = kernel_density_on(Some(16), &points, Some(&ext), 10.0, 30.0, KernelType::Quartic, "p", Crs::WebMercator).unwrap();
+        assert_eq!(r.height, 101);
+        let (done, total) = run.progress().unwrap();
+        assert_eq!((done, total), (total, 51 * 5001));
+    }
+
+    /// A cancelled run comes back as cancelled, on one thread and on several, not as a grid.
+    #[test]
+    fn a_cancelled_kernel_density_is_no_grid() {
+        let points: Vec<(Coord, f64)> = (0..200).map(|i| (Coord::new(f64::from(i) * 5.0, f64::from(i % 20) * 5.0), 1.0)).collect();
+        for threads in [1, 4] {
+            let run = crate::control::Control::new();
+            run.cancel();
+            let _installed = crate::control::install(Some(run));
+            let e = kernel_density_on(Some(threads), &points, None, 5.0, 50.0, KernelType::Quartic, "c", Crs::WebMercator).unwrap_err();
+            assert_eq!(e, crate::control::CANCELLED, "{threads}");
+        }
     }
 }

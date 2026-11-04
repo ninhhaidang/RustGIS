@@ -63,7 +63,7 @@ Correct, robust and recoverable, with the foundations other themes stand on.
   administrator can fix for a managed install (no AI Assistant, plugins or web services).
 - Extend the OS keychain secret store to service connections (database passwords, S3 keys,
   AI provider keys and the ChatGPT sign-in's tokens are already kept there).
-- Vector tools, each writing a new layer: points along lines, check and fix geometry _(open)_.
+- Vector tools, each writing a new layer: check and fix geometry _(open)_.
 - Batch runs: one tool over many layers or a folder of files.
 
 ### Expressions and cartography
@@ -223,11 +223,12 @@ Open questions rather than plans; discuss before building.
   (buffer, near) and summary tools, pivot tables, tabulate intersection (class areas and totals
   shared out to zones by overlap), spatial join by intersection, centre, largest
   overlap, closest and distance with merge rules, join field (non-spatial attribute join), feature
-  vertices to points, zonal statistics, kernel density, A5 grids, kriging, Calculate Field with an
-  expression language, Calculate Geometry with metric or imperial units, Project Raster, and
-  vector and raster PMTiles export (#557); guided workflows (viewshed, line of sight, IDW, shortest
-  path, suitability); ModelBuilder on a node canvas, scripts with command, parameter and value completion,
-  and history copied as code; the GeoLibre and Whitebox suite (1,000+ tools) natively and in the browser.
+  vertices to points, points along lines, zonal statistics, kernel density, A5 grids, kriging,
+  Calculate Field with an expression language, Calculate Geometry with metric or imperial units,
+  Project Raster, and vector and raster PMTiles export (#557); guided workflows (viewshed, line of
+  sight, IDW, shortest path, suitability); ModelBuilder on a node canvas, scripts with command,
+  parameter and value completion, and history copied as code; the GeoLibre and Whitebox suite
+  (1,000+ tools) natively and in the browser.
 - Layouts (map frames, surrounds, map series, publication sheets and figures in one command,
   format panes, guides, snapping, element locking and order, measured grids, vector PDF and SVG),
   reports, presentations and notebooks; the web app embeddable in a page (`?embed`).

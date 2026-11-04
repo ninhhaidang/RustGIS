@@ -177,8 +177,9 @@ model-builder.md, segmentation.md, obia.md_
   spatial join, clip, erase, split, intersect, identity, union, symmetrical difference, update
   and near are built in.
 - [ ] **More built-in vector tools**: attribute join, extract vertices, points along lines,
-  fix/check geometry, random extract, buffer options. Partial: Merge (append layers) and extract vertices are built in,
-  as Merge and Feature Vertices To Points (_Roadmap: solid ground_).
+  fix/check geometry, random extract, buffer options. Partial: Merge (append layers), extract
+  vertices and points along lines are built in, as Merge, Feature Vertices To Points and Points
+  Along Lines (_Roadmap: solid ground_).
 - [ ] **Routing services**: isochrones, service areas, OD matrix, multi-stop routing,
   turn-by-turn (Valhalla/OSRM). Partial: shortest path over a line layer (_Roadmap: analysis_).
 - [ ] **Geocoding**: forward, batch and reverse, with multiple providers and a place search box.
@@ -300,7 +301,7 @@ _GeoLibre: docs/user-guide/ai-assistant.md, docs/features.md › AI, Python, and
 _GeoLibre: docs/features.md › Platforms and interface; docs/i18n.md_
 
 - [ ] **More languages and right-to-left layout**: GeoLibre has 20 languages including Arabic,
-  Persian and Hebrew. Partial: 19 languages; Persian text is drawn right to left, while the panes
+  Persian and Hebrew. Partial: 20 languages; Persian text is drawn right to left, while the panes
   keep their left-to-right layout.
 - [ ] **Translated geoprocessing tool names**. Missing (possibly deliberate).
 - [ ] **Keyboard-shortcut cheat sheet**. Partial: Command Search; rebindable shortcuts are on the

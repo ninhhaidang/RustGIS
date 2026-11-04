@@ -282,26 +282,39 @@ pub(crate) struct Landed {
     pub origin: Option<String>,
 }
 
-/// A service layer's features read page by page off the frame, after its first page landed (#764):
-/// each further answer [`Pages`] asks for is fetched in the background and handed to it, until
-/// the collection is read; then it is added as the download it began as.
+/// A service layer's features read page by page off the frame (#764), from the start (#1326): each
+/// answer [`Pages`] asks for is fetched in the background and handed to it, until the collection
+/// is read; then it is added as the download it began as.
 pub struct PageRead {
     landed: Landed,
     pages: Box<Pages>,
-    /// The bytes the answers still to come may take (the download's budget, less those read).
+    /// The bytes the answers still to come may take (the download's budget, less the features
+    /// read).
     left: usize,
     slot: Slot<Result<Vec<u8>, String>>,
+    /// When the answer was asked for: a layer's description that hangs is given up on.
+    asked: web_time::Instant,
 }
 
-/// Starts reading a service's features past their first page (`first`, landed): added now when it
-/// leads nowhere, else read on in the background ([`poll_pages`]).
-pub(crate) fn read_pages(app: &mut RustGisApp, landed: Landed, first: Vec<u8>) {
-    let left = rustgis_engine::render::rustgis_tiles::cache::MAX_DOWNLOAD.saturating_sub(first.len());
-    let step = ogc::read_pages(&landed.url, first, ogc::max_paged_features());
-    if matches!(step, Step::Fetch(_)) {
-        app.session.notify(i18n::fmt("Reading {url} page by page…", &[("url", &landed.url)]), false);
-    }
-    go_on(app, landed, left, step);
+/// Starts reading a service's features (`landed`, its download started but nothing fetched yet)
+/// in the background ([`poll_pages`]).
+pub(crate) fn read_pages(app: &mut RustGisApp, landed: Landed) {
+    let step = ogc::begin(&landed.url, ogc::max_paged_features());
+    go_on(app, landed, rustgis_engine::render::rustgis_tiles::cache::MAX_DOWNLOAD, step);
+}
+
+/// An ArcGIS layer's description fetched in the background: at most `max` bytes, its download
+/// given up on natively after [`ogc::DESCRIPTION_TIMEOUT`].
+fn fetch_description(url: &str, max: usize) -> Slot<Result<Vec<u8>, String>> {
+    let slot: Slot<Result<Vec<u8>, String>> = Slot::default();
+    let land = slot.clone();
+    rustgis_engine::render::rustgis_tiles::cache::download_within(
+        url,
+        max,
+        ogc::DESCRIPTION_TIMEOUT,
+        Box::new(move |r| *land.lock().unwrap_or_else(|e| e.into_inner()) = Some(r)),
+    );
+    slot
 }
 
 /// Hands each page that landed to its read, and adds the layers whose features are all read. A
@@ -317,9 +330,18 @@ pub fn poll_pages(app: &mut RustGisApp, ctx: &egui::Context) {
             continue;
         }
         let answer = read.slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+        // A layer's description that doesn't come in time is given up on, and the layer's query
+        // fetched as it is (natively its download ends then too; the browser's fetch keeps its
+        // own time, and what it brings is dropped).
+        let describing = read.pages.describing();
+        let answer = answer.or_else(|| {
+            (describing && read.asked.elapsed() >= ogc::DESCRIPTION_TIMEOUT)
+                .then(|| Err("the layer's description took too long".to_string()))
+        });
         match answer {
             Some(answer) => {
-                let left = read.left.saturating_sub(answer.as_ref().map_or(0, Vec::len));
+                // The description isn't the features: it leaves them the whole budget.
+                let left = if describing { read.left } else { read.left.saturating_sub(answer.as_ref().map_or(0, Vec::len)) };
                 let step = (*read.pages).land(answer);
                 go_on(app, read.landed, left, step);
             }
@@ -332,15 +354,24 @@ pub fn poll_pages(app: &mut RustGisApp, ctx: &egui::Context) {
 }
 
 /// The next answer fetched, or the collection added (with a note when some features were left
-/// unread).
+/// unread), or why it couldn't be fetched said.
 fn go_on(app: &mut RustGisApp, landed: Landed, left: usize, step: Step) {
     match step {
+        // Not given by `ogc::begin`, which reads in GeoJSON.
+        Step::Decoded(..) => go_on(app, landed, left, Step::Failed("the pages were read as protocol buffers".into())),
+        Step::Failed(e) => {
+            app.session.download_failed(landed.id);
+            let url = &landed.url;
+            app.session.notify(if e.starts_with(url.as_str()) { e } else { format!("{url}: {e}") }, true);
+        }
         Step::Fetch(pages) => {
             let slot = match rustgis_engine::render::rustgis_tiles::address::check(pages.next_url(), Some(pages.referrer())) {
+                // A layer's description: small, and soon given up on.
+                Ok(()) if pages.describing() => fetch_description(pages.next_url(), left.min(ogc::DESCRIPTION_MAX)),
                 Ok(()) => fetch_into_limited(pages.next_url(), left),
                 Err(e) => Slot::new(std::sync::Mutex::new(Some(Err(e)))),
             };
-            app.ui.service_pages.push(PageRead { landed, pages, left, slot });
+            app.ui.service_pages.push(PageRead { landed, pages, left, slot, asked: web_time::Instant::now() });
         }
         Step::Done(bytes, note) => {
             if let Some(note) = note {

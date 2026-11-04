@@ -546,8 +546,15 @@ fn tilted_icons_turn_once_for_both_ready_and_deferred_labels() {
         if !deferred {
             c.curves = None;
         }
-        c.label.icon =
-            Some(PlacedIcon { image: Arc::new(Pixmap::new(2, 2).unwrap()), x: 200.0, y: 100.0, w: 2.0, h: 2.0, angle: Some(0.0) });
+        c.label.icon = Some(PlacedIcon {
+            image: Arc::new(Pixmap::new(2, 2).unwrap()),
+            x: 200.0,
+            y: 100.0,
+            w: 2.0,
+            h: 2.0,
+            angle: Some(0.0),
+            alpha: 1.0,
+        });
         let c = tilt_candidate(c, &at).unwrap();
         let icon = c.label.icon.unwrap();
         assert!((icon.angle.unwrap() - std::f32::consts::FRAC_PI_2).abs() < 1e-4);

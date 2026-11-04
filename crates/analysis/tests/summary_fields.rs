@@ -1,6 +1,7 @@
 //! Summary fields on Dissolve and Summarize Within: the statistics of Summary Statistics, computed
 //! over each dissolved group's records and over the points in each polygon, through the tools on
-//! layers read by the real GeoJSON reader.
+//! layers read by the real GeoJSON reader; and the notice of statistics rounded past 2^53, which
+//! Summary Statistics and Pivot Table give as well.
 use rustgis_analysis::{Inputs, Output, ToolResult};
 use rustgis_data::io::{read_csv, read_geojson};
 use rustgis_data::{Dataset, FieldType, Value};
@@ -956,4 +957,78 @@ fn whole_numbers_written_as_text_are_counted_and_joined_exactly() {
     // MODE, 2^53 + 1, comes out rounded, and the tool says so; MINORITY, 2^53, fits.
     assert_eq!(res.messages.len(), 2, "{:?}", res.messages);
     assert!(res.messages[1].starts_with("1 result rounded in MODE_n:"), "{:?}", res.messages);
+}
+
+/// Pivot Table's statistics, rounded from whole numbers past 2^53, are reported as Summary
+/// Statistics reports them, naming the pivot fields that hold them; exact statistics, and values
+/// placed without a statistic, get no notice.
+#[test]
+fn pivot_table_reports_rounded_cells() {
+    const BIG: i64 = (1 << 53) + 1;
+    let note = |n: &str, fields: &str| {
+        format!("{n} rounded in {fields}: a decimal field holds whole numbers exactly only up to 2^53 (9007199254740992)")
+    };
+    let table = |res: ToolResult| match res.output {
+        Output::Table(d) => d,
+        _ => panic!("a table"),
+    };
+    let layers = Layers::default().with(large_numbers());
+    let pivot = |p: Json| rustgis_analysis::run("pivotTable", &layers, &p).unwrap_or_else(|e| panic!("{p}: {e}"));
+    let by_zone = |value: &str, stat: &str| pivot(json!({"input": "large", "pivot": "zone", "value": value, "statistic": stat}));
+    let clean = ["Pivot Table: 1 rows, 2 pivot fields"];
+    // Zone A's SUM of n, 2^53 + 1 + 2, comes out 2^53 + 2 (2^53, then 2 added); zone B's, 3 + 4, is
+    // exact.
+    let res = by_zone("n", "SUM");
+    assert_eq!(res.messages, [clean[0].to_string(), note("1 result", "A")]);
+    let out = table(res);
+    assert_eq!((column(&out, "A"), column(&out, "B")), (vec![&float(9_007_199_254_740_994.0)], vec![&float(7.0)]));
+    assert_eq!(by_zone("n", "MAX").messages, [clean[0].to_string(), note("1 result", "A")]);
+    // Zone B's SUM of m, 1 + 2^53, is rounded; its MAX, 2^53, fits.
+    assert_eq!(by_zone("m", "SUM").messages, [clean[0].to_string(), note("1 result", "B")]);
+    // Statistics within 2^53, and CONCATENATE, which writes whole numbers as they are: no notice.
+    for (value, stat) in [("m", "MAX"), ("small", "SUM"), ("small", "MEAN"), ("n", "MIN"), ("n", "COUNT"), ("n", "CONCATENATE")] {
+        assert_eq!(by_zone(value, stat).messages, clean, "{value} {stat}");
+    }
+
+    // Rounded cells counted in each pivot field, over every row, and named in field order.
+    let geojson = collection(vec![
+        (point(0.0, 0.0), json!({"r": "a", "y": 2020, "v": BIG})),
+        (point(1.0, 0.0), json!({"r": "b", "y": 2020, "v": BIG})),
+        (point(2.0, 0.0), json!({"r": "a", "y": 2021, "v": BIG})),
+        (point(3.0, 0.0), json!({"r": "b", "y": 2021, "v": 1})),
+        (point(4.0, 0.0), json!({"r": "a", "y": 2022, "v": 1})),
+    ]);
+    let (ds, _) = read_geojson(&geojson, "years").unwrap();
+    assert_eq!(field_ty(&ds, "v"), FieldType::Integer, "premise");
+    let layers = Layers::default().with(ds.clone());
+    let pivot = |p: Json| rustgis_analysis::run("pivotTable", &layers, &p).unwrap_or_else(|e| panic!("{p}: {e}"));
+    let res = pivot(json!({"input": "years", "fields": "r", "pivot": "y", "value": "v", "statistic": "SUM"}));
+    assert_eq!(res.messages, ["Pivot Table: 2 rows, 3 pivot fields".to_string(), note("3 results", "y2020, y2021")]);
+    // Without a statistic each value is placed as it is, an Integer, exactly.
+    let res = pivot(json!({"input": "years", "fields": "r", "pivot": "y", "value": "v"}));
+    assert_eq!(res.messages, ["Pivot Table: 2 rows, 3 pivot fields"]);
+    let out = table(res);
+    assert_eq!(field_ty(&out, "y2020"), FieldType::Integer);
+    assert_eq!(column(&out, "y2020"), [&int(BIG), &int(BIG)]);
+
+    // A whole number written as text past the i64 range in the Integer field is read as a decimal:
+    // the statistic says so once, the placed value is kept as it is.
+    let mut ds = ds;
+    let v = ds.fields.iter().position(|f| f.name == "v").unwrap();
+    ds.features[4].attrs[v] = text("123456789012345678901");
+    let layers = Layers::default().with(ds);
+    let pivot = |p: Json| rustgis_analysis::run("pivotTable", &layers, &p).unwrap_or_else(|e| panic!("{p}: {e}"));
+    let res = pivot(json!({"input": "years", "fields": "r", "pivot": "y", "value": "v", "statistic": "MIN"}));
+    assert_eq!(
+        res.messages,
+        [
+            "Pivot Table: 2 rows, 3 pivot fields".to_string(),
+            note("3 results", "y2020, y2021"),
+            "1 whole number written as text in v is past the 64-bit integer range and was read as a decimal, so statistics of it may be rounded"
+                .to_string()
+        ]
+    );
+    let res = pivot(json!({"input": "years", "fields": "r", "pivot": "y", "value": "v"}));
+    assert_eq!(res.messages, ["Pivot Table: 2 rows, 3 pivot fields"]);
+    assert_eq!(column(&table(res), "y2022"), [&text("123456789012345678901"), &Value::Null]);
 }

@@ -228,6 +228,26 @@ pub fn features_answer(s: &mut Session, name: &str, bytes: Vec<u8>, bounds: Opti
     rustgis_data::ogc::fix_axes(&bytes, bounds).unwrap_or(bytes)
 }
 
+/// The layers an add's result `r` names (`layer`, `layers`) marked as read from the service
+/// address `url`, not the file name their download was read under: Add From Service then knows
+/// them as added, to remove.
+pub(crate) fn mark_service_source(s: &mut Session, r: &Value, url: &str) {
+    let ids: Vec<u32> = r
+        .get("layers")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .chain(r.get("layer"))
+        .filter_map(Value::as_u64)
+        .filter_map(|i| u32::try_from(i).ok())
+        .collect();
+    for id in ids {
+        if let Some(l) = s.map_mut().layer_mut(id) {
+            l.dataset.source = Some(url.to_string());
+        }
+    }
+}
+
 /// A layer's longitude/latitude bounds as a listing or a parameter gives them (`[west, south,
 /// east, north]`), for [`features_answer`]: none when absent or null.
 pub(crate) fn bounds_of(v: Option<&Value>) -> Result<Option<[f64; 4]>, String> {
@@ -240,34 +260,55 @@ pub(crate) fn bounds_of(v: Option<&Value>) -> Result<Option<[f64; 4]>, String> {
 }
 
 /// A service's features at `url`, with the pages that follow (its `next` links, or an ArcGIS
-/// layer's pages past its record limit, see [`read_pages`](rustgis_data::ogc::read_pages)): at
-/// most `max` bytes and [`BLOCKING_TIMEOUT`](crate::render::rustgis_tiles::cache::BLOCKING_TIMEOUT)
-/// in all. A page is fetched only where the page before it may point.
+/// layer's pages, its description read first, see [`begin`](rustgis_data::ogc::begin)): at most
+/// `max` bytes of features. The description waits at most
+/// [`DESCRIPTION_TIMEOUT`](rustgis_data::ogc::DESCRIPTION_TIMEOUT) and takes at most
+/// [`DESCRIPTION_MAX`](rustgis_data::ogc::DESCRIPTION_MAX) bytes, apart; the features
+/// [`BLOCKING_TIMEOUT`](crate::render::rustgis_tiles::cache::BLOCKING_TIMEOUT) in all after it
+/// (75 s at most). A page is fetched only where the page before it may point.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn download_features(s: &mut Session, name: &str, url: &str, max: usize) -> Result<Vec<u8>, String> {
     use crate::render::rustgis_tiles::{address, cache};
-    let until = std::time::Instant::now() + cache::BLOCKING_TIMEOUT;
-    let first = cache::download_blocking_limited(url, max).map_err(|e| format!("{url}: {e}"))?;
-    let mut left = max.saturating_sub(first.len());
-    let mut step = rustgis_data::ogc::read_pages(url, first, rustgis_data::ogc::max_paged_features());
+    use rustgis_data::ogc::{DESCRIPTION_MAX, DESCRIPTION_TIMEOUT, Step, begin, max_paged_features};
+    let mut until = std::time::Instant::now() + cache::BLOCKING_TIMEOUT;
+    let mut left = max;
+    let mut step = begin(url, max_paged_features());
     let (bytes, note) = loop {
         let pages = match step {
-            rustgis_data::ogc::Step::Done(bytes, note) => break (bytes, note),
-            rustgis_data::ogc::Step::Fetch(pages) => pages,
+            Step::Done(bytes, note) => break (bytes, note),
+            // Not given by `begin`, which reads in GeoJSON.
+            Step::Decoded(..) => return Err(format!("{url}: the pages were read as protocol buffers")),
+            // A first answer that timed out says how to add a large layer instead.
+            Step::Failed(e) => return Err(format!("{url}: {}", cache::large_file_hint(e))),
+            Step::Fetch(pages) => pages,
         };
+        let describing = pages.describing();
         let answer = address::check(pages.next_url(), Some(pages.referrer())).and_then(|()| {
             let wait = until.saturating_duration_since(std::time::Instant::now());
+            // A layer's description is small: one that hangs is given up on, and its features
+            // asked for as they are.
+            let wait = if describing { wait.min(DESCRIPTION_TIMEOUT) } else { wait };
+            // Said as a timeout, so its error says how to add the layer instead.
             if wait.is_zero() {
-                return Err("the pages took too long".to_string());
+                return Err("the pages timed out".to_string());
             }
-            let page = cache::download_blocking_within(pages.next_url(), left, wait)?;
+            // A description has a small budget of its own.
+            let budget = if describing { left.min(DESCRIPTION_MAX) } else { left };
+            let page = cache::download_blocking_within(pages.next_url(), budget, wait)?;
             if page.len() > left {
                 return Err("the pages are larger than RustGIS downloads".into());
             }
-            left -= page.len();
+            // The description isn't the features: it leaves them the whole budget.
+            if !describing {
+                left -= page.len();
+            }
             Ok(page)
         });
         step = (*pages).land(answer);
+        // Nor their time: the features have all of it from when the description is in.
+        if describing {
+            until = std::time::Instant::now() + cache::BLOCKING_TIMEOUT;
+        }
     };
     if let Some(note) = note {
         s.notify(format!("{name}: {note}"), false);
@@ -540,7 +581,9 @@ pub(crate) fn add(s: &mut Session, p: &Value) -> CmdResult {
             {
                 let bytes = crate::render::rustgis_tiles::cache::download_blocking(&get).map_err(|e| format!("{name}: {e}"))?;
                 coverage_check(&name, &bytes)?;
-                super::raster::add_named_bytes(s, &json!({"name": name}), format!("{name}.tif"), bytes)
+                let r = super::raster::add_named_bytes(s, &json!({"name": name}), format!("{name}.tif"), bytes)?;
+                mark_service_source(s, &r, &get);
+                Ok(r)
             }
         }
         Offer::Features { url: items } => {
@@ -561,9 +604,11 @@ pub(crate) fn add(s: &mut Session, p: &Value) -> CmdResult {
                     s.notify(format!("{name}: {why}, so the whole layer is asked for"), false);
                 }
                 let max = crate::render::rustgis_tiles::cache::MAX_DOWNLOAD;
-                let bytes = download_features(s, &name, asked.as_deref().unwrap_or(items), max).map_err(|e| slow_whole_layer(e, given))?;
+                let from = asked.as_deref().unwrap_or(items);
+                let bytes = download_features(s, &name, from, max).map_err(|e| slow_whole_layer(e, given))?;
                 let bytes = features_answer(s, &name, bytes, layer.bbox);
                 let mut r = super::raster::add_named_bytes(s, &json!({"name": name}), format!("{name}.geojson"), bytes)?;
+                mark_service_source(s, &r, from);
                 // Over an area, the features crossing it: the view stays, or goes to a box given
                 // (the whole layer's bounds would show a country to fill one state).
                 match (asked.is_some(), area, p.get("bbox")) {
