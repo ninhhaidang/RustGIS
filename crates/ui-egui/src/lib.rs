@@ -1941,7 +1941,9 @@ impl RustGisApp {
             let Some(h) = self.session.project.gp_history.last().filter(|h| !h.id.is_empty()) else { return };
             finished = json!({"tool": h.id, "params": h.params});
             ("gp.run", &finished)
-        } else if matches!(id, "analysis.viewshed" | "analysis.interpolate") && params.get("ran").is_some() {
+        } else if matches!(id, "analysis.viewshed" | "analysis.interpolate" | "raster.classify" | "dl.classify")
+            && params.get("ran").is_some()
+        {
             // A raster an Analysis workflow made on a thread (`ran`): the step is the command
             // itself, which a replay runs again from its parameters.
             let mut again = params.clone();
@@ -4374,6 +4376,22 @@ mod record_tests {
         assert!(app.session.notices.iter().any(|n| n.text.contains("over 4 MB")));
         app.record_step("layer.addDataBytes", &json!({"fileName": "small.geojson", "data": "AAAA"}), None);
         assert_eq!(app.ws.recording.as_ref().map(Vec::len), Some(1));
+    }
+
+    /// A raster a workflow made on a thread is recorded as its command without `ran`, so a replay
+    /// works it out again (#1291 step 3).
+    #[test]
+    fn a_raster_made_on_a_thread_is_recorded_as_its_command() {
+        let mut app = RustGisApp::with_sample();
+        for id in ["analysis.viewshed", "analysis.interpolate", "raster.classify", "dl.classify"] {
+            app.ws.recording = Some(Vec::new());
+            app.record_step(id, &json!({"layer": "Cities", "ran": 7}), None);
+            let steps = app.ws.recording.as_deref().unwrap_or_default();
+            assert_eq!(
+                steps.iter().map(|s| (s.command.as_str(), s.params.clone())).collect::<Vec<_>>(),
+                [(id, json!({"layer": "Cities"}))]
+            );
+        }
     }
 
     /// A background run's `gp.finish` is recorded as the `gp.run` it finished.

@@ -25805,3 +25805,87 @@ fn analysis_workflows_run_on_another_thread() {
     assert_eq!(raster_land(&mut s, id, made), Ok(false));
     assert!(raster_start(&mut s, "analysis.lineOfSight", &p).is_err());
 }
+
+/// k-means classes and a deep learning classification made on another thread, as the Analysis pane
+/// runs them (#1291 step 3): the classes handed over (`ran`) are the ones the command makes here, a
+/// model trained on the thread is kept in the project only once its classes are added, and a raster
+/// handed to the other command isn't taken.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn raster_classes_run_on_another_thread() {
+    use crate::cmd::workflows::{raster_land, raster_start};
+    use rustgis_analysis::control::Control;
+    let mut s = world();
+    s.run("layer.addDataBytes", &json!({"fileName": "scene.tif", "data": two_class_b64()})).unwrap();
+    let training = json!({"type": "FeatureCollection", "features": [
+        {"type": "Feature", "properties": {"class": "water"}, "geometry": {"type": "Polygon", "coordinates": [[[10.002, 45.002], [10.015, 45.002], [10.015, 45.035], [10.002, 45.035], [10.002, 45.002]]]}},
+        {"type": "Feature", "properties": {"class": "field"}, "geometry": {"type": "Polygon", "coordinates": [[[10.025, 45.002], [10.038, 45.002], [10.038, 45.035], [10.025, 45.035], [10.025, 45.002]]]}}]});
+    s.run("layer.addDataText", &json!({"fileName": "training.geojson", "text": training.to_string()})).unwrap();
+    let pixels = |s: &Session, v: &Value| -> Vec<u32> {
+        let l = s.map().layer(v["layer"].as_u64().unwrap() as u32).unwrap();
+        l.raster.as_ref().unwrap().data.as_ref().unwrap().bands.iter().flat_map(|b| b.data.iter().map(|x| x.to_bits())).collect()
+    };
+    let dl = json!({"layer": "scene", "training": "training", "classField": "class", "bands": [1, 2], "epochs": 20, "model": "landcover"});
+    for (command, p) in [("raster.classify", json!({"layer": "scene", "classes": 3})), ("dl.classify", dl)] {
+        let here = s.run(command, &p).unwrap();
+        s.project.dl_models.clear();
+        let run = raster_start(&mut s, command, &p).unwrap();
+        let id = run.id;
+        let made = std::thread::spawn(move || run.run(&Control::new())).join().unwrap().unwrap();
+        assert_eq!(raster_land(&mut s, id, made), Ok(true));
+        // Trained on the thread, kept only when its classes are added.
+        assert!(s.project.dl_models.is_empty(), "{command}");
+        let other = if command == "raster.classify" { "dl.classify" } else { "raster.classify" };
+        let mut with = p.clone();
+        with["ran"] = json!(id);
+        assert!(s.run(other, &with).unwrap_err().contains("another command"), "{command}");
+        let there = s.run(command, &with).unwrap();
+        assert_eq!(pixels(&s, &here), pixels(&s, &there), "{command}");
+        let class_style = |v: &Value| {
+            format!("{:?}", s.map().layer(v["layer"].as_u64().unwrap() as u32).unwrap().raster.as_ref().unwrap().style.renderer)
+        };
+        assert_eq!(class_style(&here), class_style(&there), "{command}");
+        if command == "dl.classify" {
+            assert_eq!((&here["classes"], &here["accuracy"], &here["model"]), (&there["classes"], &there["accuracy"], &there["model"]));
+            assert_eq!(there["replaced"], false);
+            assert_eq!(s.project.dl_models.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), ["landcover"]);
+        }
+    }
+    // A training cancelled once under way keeps no model, and says how far it came.
+    s.project.dl_models.clear();
+    let p = json!({"layer": "scene", "training": "training", "classField": "class", "epochs": 500, "hidden": [64, 64]});
+    let run = raster_start(&mut s, "dl.classify", &p).unwrap();
+    let control = Control::new();
+    let ctl = control.clone();
+    let worker = std::thread::spawn(move || run.run(&ctl));
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while control.progress().is_none() {
+        assert!(std::time::Instant::now() < end, "the run never counted its work");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    control.cancel();
+    let e = worker.join().unwrap().err().unwrap_or_default();
+    assert!(e.contains("was cancelled") && !e.contains("before it started"), "{e}");
+    assert!(s.project.dl_models.is_empty());
+    // Sampling the training polygons is part of the work: a class whose polygons miss the raster
+    // is said when the run ends, not when it starts.
+    let lost = json!({"type": "FeatureCollection", "features": [
+        {"type": "Feature", "properties": {"class": "water"}, "geometry": {"type": "Polygon", "coordinates": [[[10.002, 45.002], [10.015, 45.002], [10.015, 45.035], [10.002, 45.035], [10.002, 45.002]]]}},
+        {"type": "Feature", "properties": {"class": "lost"}, "geometry": {"type": "Polygon", "coordinates": [[[-60.0, -10.0], [-59.0, -10.0], [-59.0, -9.0], [-60.0, -9.0], [-60.0, -10.0]]]}}]});
+    s.run("layer.addDataText", &json!({"fileName": "lost.geojson", "text": lost.to_string()})).unwrap();
+    let run = raster_start(&mut s, "dl.classify", &json!({"layer": "scene", "training": "lost", "classField": "class"})).unwrap();
+    assert!(run.run(&Control::new()).err().is_some_and(|e| e.contains("'lost'")));
+    // A model given no name doesn't replace one kept while it trained: it's named when it is kept.
+    s.project.dl_models.clear();
+    let p = json!({"layer": "scene", "training": "training", "classField": "class", "bands": [1, 2], "epochs": 5});
+    let run = raster_start(&mut s, "dl.classify", &p).unwrap();
+    let id = run.id;
+    assert_eq!(raster_land(&mut s, id, run.run(&Control::new()).unwrap()), Ok(true));
+    let trained = s.run("dl.train", &json!({"layer": "scene", "training": "training", "classField": "class", "epochs": 5})).unwrap();
+    assert_eq!(trained["model"], "scene_model");
+    let mut with = p.clone();
+    with["ran"] = json!(id);
+    let r = s.run("dl.classify", &with).unwrap();
+    assert_eq!((&r["model"], &r["replaced"]), (&json!("scene_model 2"), &json!(false)), "{r}");
+    assert_eq!(s.project.dl_models.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), ["scene_model", "scene_model 2"]);
+}

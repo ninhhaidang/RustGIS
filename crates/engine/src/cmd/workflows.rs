@@ -124,46 +124,62 @@ fn add_raster(s: &mut Session, r: Raster) -> CmdResult {
     add_made(s, made(r, None)?)
 }
 
-/// A raster a workflow made, with its GeoTIFF (so it saves with the project) and what the command
-/// says of it besides its layer: made on any thread, added by [`add_made`].
+/// A raster a command made, as the layer it adds (its GeoTIFF embedded, so it saves with the
+/// project), what the command says of it besides its layer, and what else the command does once
+/// it is added: made on any thread, added by [`add_made`].
 pub struct Made {
-    raster: Raster,
-    bytes: Vec<u8>,
+    name: String,
+    layer: rustgis_map::RasterLayer,
     extra: Option<Value>,
+    then: Option<Then>,
     /// Made on another thread: the command's name and the map it was started on.
     ran: Option<(&'static str, u64)>,
 }
 
 /// A workflow's work once its inputs are read: it reads nothing more of the session, so it runs on
 /// any thread.
-type Work = Box<dyn FnOnce() -> Result<Made, String> + Send>;
+pub(crate) type Work = Box<dyn FnOnce() -> Result<Made, String> + Send>;
 
-fn made(raster: Raster, extra: Option<Value>) -> Result<Made, String> {
+/// What a command does to the session once its raster is added (a trained model kept), and what it
+/// adds to its answer.
+pub(crate) type Then = Box<dyn FnOnce(&mut Session, &mut Value) + Send>;
+
+/// A raster embedded as a GeoTIFF, as a layer of its own.
+pub(crate) fn made(raster: Raster, extra: Option<Value>) -> Result<Made, String> {
     let bytes = rustgis_data::raster::geotiff::write(&raster, 0).map_err(|e| e.to_string())?;
-    Ok(Made { raster, bytes, extra, ran: None })
+    let name = raster.name.clone();
+    let layer = rustgis_map::RasterLayer::from_bytes(raster, format!("{name}.tif"), bytes);
+    Ok(made_layer(name, layer, extra, None))
+}
+
+/// A layer made (styled, say), to be added as `name`.
+pub(crate) fn made_layer(name: String, layer: rustgis_map::RasterLayer, extra: Option<Value>, then: Option<Then>) -> Made {
+    Made { name, layer, extra, then, ran: None }
 }
 
 /// Adds a made raster as a layer: the command's answer is the layer, or the layer and what the
-/// command says besides (`extra`).
+/// command says besides (`extra`), and what it does then.
 fn add_made(s: &mut Session, m: Made) -> CmdResult {
-    let Made { raster, bytes, extra, .. } = m;
-    let name = raster.name.clone();
-    let layer = rustgis_map::RasterLayer::from_bytes(raster, format!("{name}.tif"), bytes);
+    let Made { name, layer, extra, then, .. } = m;
     let v = super::raster::add_raster(s, &name, layer)?;
-    Ok(match extra {
+    let mut v = match extra {
         Some(Value::Object(mut more)) => {
             more.insert("layer".into(), v["layer"].clone());
             Value::Object(more)
         }
         _ => v,
-    })
+    };
+    if let Some(then) = then {
+        then(s, &mut v);
+    }
+    Ok(v)
 }
 
 /// A workflow's raster made here, or the one the app made on a thread ([`raster_start`]) and
 /// handed over as `ran`.
 /// `name` is the command's, as [`raster_start`] gives it: a raster another command made isn't
 /// taken.
-fn made_or_ran(s: &mut Session, p: &Value, name: &str, work: fn(&Session, &Value) -> Result<Work, String>) -> CmdResult {
+pub(crate) fn made_or_ran(s: &mut Session, p: &Value, name: &str, work: fn(&Session, &Value) -> Result<Work, String>) -> CmdResult {
     if let Some(ran) = p.get("ran").filter(|v| !v.is_null()) {
         let id = ran.as_u64().ok_or("ran is the number of a run the app worked out")?;
         let at = s.raster_results.iter().position(|(k, _)| *k == id).ok_or("that run is no longer kept: run it again")?;
@@ -177,10 +193,11 @@ fn made_or_ran(s: &mut Session, p: &Value, name: &str, work: fn(&Session, &Value
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-/// A workflow that makes a raster (`analysis.viewshed`, `analysis.interpolate`), started to make it
-/// on another thread ([`RasterRun::run`]) while the session goes on: its inputs are read now
-/// (cheaply: the pixels are shared), and [`raster_land`] hands the raster to the command, which
-/// adds it with undo and history when run again with `ran` (#1291 step 3).
+/// A command that makes a raster (`analysis.viewshed`, `analysis.interpolate`, `raster.classify`,
+/// `dl.classify`), started to make it on another thread ([`RasterRun::run`]) while the session
+/// goes on: its inputs are read now (cheaply: the pixels are shared), and [`raster_land`] hands
+/// the raster to the command, which adds it with undo and history when run again with `ran`
+/// (#1291 step 3).
 pub struct RasterRun {
     pub id: u64,
     /// What the command is called, for a cancelled run's error.
@@ -204,13 +221,15 @@ impl RasterRun {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-/// Starts `command` (`analysis.viewshed` or `analysis.interpolate`) with `p` on the active map, as
+/// Starts `command` (one of [`RasterRun`]'s) with `p` on the active map, as
 /// it would run, to make its raster on another thread: its parameters checked and its inputs read
 /// now. The run belongs to this project: [`raster_land`] refuses it once another project is open.
 pub fn raster_start(s: &mut Session, command: &str, p: &Value) -> Result<RasterRun, String> {
     let (name, work): (&'static str, Work) = match command {
         "analysis.viewshed" => (VIEWSHED, viewshed_work(s, p)?),
         "analysis.interpolate" => (INTERPOLATE, interpolate_work(s, p)?),
+        "raster.classify" => (CLASSIFY, super::imagery::classify_work(s, p)?),
+        "dl.classify" => (DEEP_LEARNING, super::deeplearning::classify_work(s, p)?),
         _ => return Err(format!("{command} doesn't run in the background")),
     };
     s.next_pending = s.next_pending.wrapping_add(1);
@@ -748,6 +767,9 @@ fn suitability(s: &mut Session, p: &Value) -> CmdResult {
 /// rasters apart.
 const VIEWSHED: &str = "Viewshed";
 const INTERPOLATE: &str = "Interpolate (IDW)";
+/// And the k-means classes and a deep learning classification.
+pub(crate) const CLASSIFY: &str = "Classification Wizard";
+pub(crate) const DEEP_LEARNING: &str = "Deep Learning";
 
 fn viewshed(s: &mut Session, p: &Value) -> CmdResult {
     made_or_ran(s, p, VIEWSHED, viewshed_work)

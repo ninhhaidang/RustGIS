@@ -200,6 +200,8 @@ fn background(id: &str) -> Option<(&'static str, &'static str)> {
         "gp.zonalStats" => Some(("gp.zonalStats", "Zonal Statistics")),
         "analysis.viewshed" => Some(("analysis.viewshed", "Viewshed")),
         "analysis.interpolate" => Some(("analysis.interpolate", "Interpolate (IDW)")),
+        "raster.classify" => Some(("raster.classify", "Classification Wizard")),
+        "dl.classify" => Some(("dl.classify", "Deep Learning")),
         _ => None,
     }
 }

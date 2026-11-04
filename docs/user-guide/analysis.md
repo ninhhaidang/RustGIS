@@ -68,9 +68,11 @@ where they now are (and says how many are gone), and a result that would replace
 layer, or one loaded whole meanwhile, is refused. Renaming the map while it runs is fine; after
 switching to another map, a result that adds to or changes the map is refused (one made only of
 tables or a file is still made). Opening another project drops the run. The Analysis pane's
-**Zonal Statistics**, **Viewshed** and **Interpolate (IDW)** run in the background the same way,
-with their progress and **Cancel** under the pane's inputs, one at a time; so does the map's
-right-click **Viewshed … Here**, which opens the pane to show it. Scripts, models, the AI
+**Zonal Statistics**, **Viewshed**, **Interpolate (IDW)**, **Classification Wizard** (k-means) and
+**Deep Learning** (training and classifying) run in the background the same way, with their
+progress and **Cancel** under the pane's inputs, one at a time; so does the map's right-click
+**Viewshed … Here**, which opens the pane to show it. A model trained there is kept once its classes
+are added: a cancelled run keeps none. Scripts, models, the AI
 Assistant, the command line and the web app wait for each tool to finish.
 
 **Viewshed**, **IDW Interpolation** and **Kriging** refuse a run that would take more than a second
