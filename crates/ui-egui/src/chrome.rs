@@ -427,7 +427,9 @@ pub fn status_bar(app: &mut RustGisApp, ui: &mut Ui) {
                     }
                     // Cut to the room left (the whole notice on hover), so it doesn't run
                     // over the selection count and coordinates. A click opens its history.
-                    if let Some(n) = app.session.notices.last()
+                    if let Some(running) = crate::pluginstart::running(app) {
+                        ui.add(egui::Label::new(egui::RichText::new(running).size(11.5).color(t.accent)).truncate());
+                    } else if let Some(n) = app.session.notices.last()
                         && ui.add(
                             egui::Button::new(egui::RichText::new(&n.text).size(11.5).color(if n.error { t.red } else { t.text_dim }))
                                 .frame(false)

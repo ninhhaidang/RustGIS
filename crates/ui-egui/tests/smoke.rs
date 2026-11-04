@@ -1131,16 +1131,16 @@ fn plugin_small_ribbon_columns_and_nested_menus_preserve_actions() {
 
     let mark = h.state().session.notice_mark();
     h.get_by_label("Compact Error").click();
-    h.run_steps(2);
+    h.run_steps(3);
     assert!(h.state().session.notices_since(mark).iter().any(|n| n.error && n.text.contains("nope")));
     h.get_by_label("Compact Points").click();
-    h.run_steps(2);
+    h.run_steps(3);
     assert_eq!(h.state().gp.tool, Some("plugin:ui-small/m"));
     h.get_by_label("Compact Select").click();
-    h.run_steps(2);
+    h.run_steps(3);
     assert_eq!(h.state().gp.tool, Some("plugin:ui-small/x"));
     h.get_by_label("Compact Points").click();
-    h.run_steps(2);
+    h.run_steps(3);
     assert_eq!(h.state().gp.tool, Some("plugin:ui-small/m"));
     h.get_by_label("Inherited Menu").click();
     h.run_steps(4);
@@ -1153,7 +1153,7 @@ fn plugin_small_ribbon_columns_and_nested_menus_preserve_actions() {
     assert!(nested_select.rect().height() < large.height(), "nested entries remain ordinary menu rows");
     assert!((submenu_height - nested_select.rect().height()).abs() < 1.0, "translated submenu labels must stay on one standard-height row");
     nested_select.click();
-    h.run_steps(2);
+    h.run_steps(3);
     assert_eq!(h.state().gp.tool, Some("plugin:ui-small/x"), "the nested leaf must activate its tool");
     h.get_by_label("Small Override").click();
     h.run_steps(4);
@@ -1161,17 +1161,46 @@ fn plugin_small_ribbon_columns_and_nested_menus_preserve_actions() {
     h.run_steps(4);
     let mark = h.state().session.notice_mark();
     h.query_all_by_label("Compact Error").find(|n| n.rect().top() > small_override.bottom()).unwrap().click();
-    h.run_steps(2);
+    h.run_steps(3);
     assert!(h.state().session.notices_since(mark).iter().any(|n| n.error && n.text.contains("nope")), "the nested command must run");
     h.get_by_label("Compact Panel").click();
-    h.run_steps(2);
+    h.run_steps(3);
     assert_eq!(h.state().ui.right, Some(rustgis_ui_egui::RightPane::Plugin));
     h.get_by_label("Panel is open");
     h.query_all_by_label("Compact Panel").find(|n| n.rect().top() < panel.bottom()).unwrap().click();
-    h.run_steps(2);
+    h.run_steps(3);
     assert_ne!(h.state().ui.right, Some(rustgis_ui_egui::RightPane::Plugin));
     assert!(h.query_by_label("Panel is open").is_none(), "the compact panel button still toggles its pane");
     rp::unload("ui-small");
+}
+
+/// A second click begun while the first waits to start: the command waits for its release, and
+/// that click finds it still waiting, so it runs once.
+#[test]
+fn a_second_click_on_a_plugin_command_about_to_start_runs_it_once() {
+    let _turn = PLUGINS.lock().unwrap_or_else(|e| e.into_inner());
+    use rustgis_ui_egui::rustgis_engine::plugins as rp;
+    let mut m: serde_json::Value = serde_json::from_str(&rp::testing::manifest("ui-again", &[])).unwrap();
+    m["commands"] = json!([{"id": "e", "label": "Again Error"}]);
+    m["tab"] = json!({"label": "Again Tab", "groups": [{"label": "Again", "items": ["e"]}]});
+    let pkg = rp::testing::zip_of(&[("plugin.json", m.to_string().as_bytes()), ("plugin.wasm", &rp::testing::wasm())]);
+    rp::load(rp::Package::from_zip(&pkg).unwrap(), "test").unwrap();
+    let mut h = harness();
+    h.state_mut().ui.tab = "plugin:ui-again".into();
+    h.run_steps(4);
+    let mark = h.state().session.notice_mark();
+    let at = h.get_by_label("Again Error").rect().center();
+    let button =
+        |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+    h.get_by_label("Again Error").click();
+    h.step();
+    h.event(button(true));
+    // Two frames are 0.5 s here (`step_dt`), so it is still a click (`max_click_duration`).
+    h.run_steps(2);
+    h.event(button(false));
+    h.run_steps(4);
+    assert_eq!(h.state().session.notices_since(mark).iter().filter(|n| n.error && n.text.contains("nope")).count(), 1);
+    rp::unload("ui-again");
 }
 
 #[test]
@@ -3392,18 +3421,15 @@ fn plugin_panels_run_their_commands_when_a_slider_is_let_go() {
     }
     assert_eq!(release(&h), 12, "nothing sent while dragging");
     h.event(egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
-    h.step();
-    h.step();
+    h.run_steps(3);
     let moved = release(&h);
     assert!((1..12).contains(&moved), "sent when let go: {moved}");
     // The step buttons and the checkbox run the widgets' command too.
     h.get_by_label("Step back").click();
-    h.step();
-    h.step();
+    h.run_steps(3);
     assert_eq!(release(&h), moved - 1);
     h.get_by_label("Only versions with local changes").click();
-    h.step();
-    h.step();
+    h.run_steps(3);
     assert!(h.state().session.plugin_panels["ui-panel"].checked("local"));
     // Its button closes it again; a disabled plugin's panel closes.
     h.state_mut().run("ui.pane.plugin", json!({"id": "ui-panel"})).unwrap();
@@ -3412,8 +3438,7 @@ fn plugin_panels_run_their_commands_when_a_slider_is_let_go() {
     h.state_mut().run("ui.pane.plugin", json!({"id": "ui-panel"})).unwrap();
     h.step();
     rp::set_enabled("ui-panel", false).unwrap();
-    h.step();
-    h.step();
+    h.run_steps(3);
     assert_eq!(h.state().ui.right, None);
     assert!(h.state_mut().run("ui.pane.plugin", json!({"id": "ui-panel"})).is_err());
     assert!(h.state_mut().run("ui.pane.plugin", json!({"id": 7})).is_err());

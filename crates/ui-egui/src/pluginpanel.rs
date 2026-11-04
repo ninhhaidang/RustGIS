@@ -75,7 +75,7 @@ pub fn open(app: &mut RustGisApp, p: &Value) -> Result<Value, String> {
 }
 
 fn run(app: &mut RustGisApp, id: &str, p: Value) {
-    if let Err(e) = app.run(id, p) {
+    if let Err(e) = app.run_by_user(id, p) {
         app.session.notify(e, true);
     }
 }

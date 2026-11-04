@@ -62,6 +62,7 @@ mod nldiui;
 mod opendataui;
 mod panes;
 mod pluginpanel;
+mod pluginstart;
 mod pluginsui;
 mod portalsui;
 #[cfg(not(target_arch = "wasm32"))]
@@ -739,6 +740,8 @@ pub struct UiState {
     pub bookmarks: bookmarkpane::State,
     /// The plugin panel pane: whose panel it shows, and a slider being dragged.
     pub plugin_panel: pluginpanel::State,
+    /// Plugin commands the user asked for, waiting for the window to show they started.
+    plugin_start: pluginstart::State,
     /// The search box at the foot of the left pane.
     pub search: searchbox::State,
     /// The Data Sources pane's boxes, and the sources' generation last kept in the preferences.
@@ -884,6 +887,7 @@ impl Default for UiState {
             nav: Default::default(),
             bookmarks: Default::default(),
             plugin_panel: Default::default(),
+            plugin_start: Default::default(),
             search: Default::default(),
             sources: Default::default(),
             sources_saved: 0,
@@ -1823,6 +1827,11 @@ impl RustGisApp {
     pub fn run_by_user(&mut self, id: &str, params: Value) -> Result<Value, String> {
         if saveprompt::asks(self, id) {
             saveprompt::ask(self, saveprompt::Discard::Replace(id.to_string(), params));
+            return Ok(Value::Null);
+        }
+        // A plugin's may wait for a server: the window says so first (#1319).
+        if id.starts_with(rustgis_engine::plugins::PREFIX) {
+            pluginstart::ask(self, id, params);
             return Ok(Value::Null);
         }
         self.run(id, params)
@@ -3993,6 +4002,7 @@ impl RustGisApp {
         if self.session.tool != rustgis_engine::Tool::Graphic("text") {
             self.ui.dynamic_text = None;
         }
+        pluginstart::run_next(self, ctx);
         // Addresses commands asked for where they couldn't download themselves (the browser):
         // fetched off the frame and added when they land, as Home › Add › Add Data › From URL does.
         for p in self.session.take_url_requests() {
@@ -4262,6 +4272,7 @@ impl RustGisApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.sent_title = title;
         }
+        pluginstart::frame_drawn(self, &ctx);
         // egui times clicks by the frame they arrive in: at a slow frame rate the two clicks of a
         // double-click land too far apart for its default delay (#1321). It reads the delay when
         // the next frame begins, before that frame's `logic`, so it's set here, from this frame's

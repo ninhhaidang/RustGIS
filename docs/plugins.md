@@ -448,6 +448,11 @@ downloads wait at a time: a request past 16 fails, and if the command then fails
 downloads start. Run by
 `rustgis-cli`, a script or a task, the command waits and answers what was added.
 
+Other commands that wait for a server (`service.add`, say) still wait with the window held. A
+command the user starts from the ribbon, command search or a panel first shows "Running …" in the
+status bar with a busy cursor, and clicks made during a long run are dropped, so they don't run it
+again.
+
 `rustgis-cli commands` lists every command id and its parameters.
 
 #### Fetching a document
