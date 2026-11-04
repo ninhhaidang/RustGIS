@@ -106,6 +106,7 @@ pub fn commands() -> Vec<C> {
     ]
 }
 
+/// A deep learning package's bytes: `data` (base64) or the regular file at `path`, within 256 MiB.
 fn read_bytes(p: &Value) -> Result<Vec<u8>, String> {
     use base64::Engine;
     const MAX: u64 = 256 << 20;
@@ -116,13 +117,7 @@ fn read_bytes(p: &Value) -> Result<Vec<u8>, String> {
         return base64::engine::general_purpose::STANDARD.decode(d.trim()).map_err(|_| "data must be base64".to_string());
     }
     let path = ps(p, "path").ok_or("path or data is required")?;
-    use std::io::Read;
-    let mut bytes = Vec::new();
-    std::fs::File::open(path).and_then(|f| f.take(MAX + 1).read_to_end(&mut bytes)).map_err(|e| format!("{path}: {e}"))?;
-    if bytes.len() as u64 > MAX {
-        return Err("the file is too large".into());
-    }
-    Ok(bytes)
+    crate::project::read_file(std::path::Path::new(path), MAX)
 }
 
 /// Adds a model, or replaces the one of the same name (retraining): true when it replaced one.

@@ -1870,6 +1870,38 @@ fn project_save_and_open_roundtrip() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// RustGIS files are read only from regular files: a device that reports no size and never ends
+/// (`/dev/zero`) would exhaust memory, and a named pipe without a writer would hang the reader.
+#[cfg(unix)]
+#[test]
+fn item_files_refuse_devices_and_pipes() {
+    let dir = std::env::temp_dir().join(format!("rustgis-item-pipe-{}", std::process::id()));
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut s = world();
+    for (id, name) in [
+        ("style.add", "styles.rgisstyle"),
+        ("report.open", "report.rgisreport"),
+        ("project.open", "p.rgis"),
+        ("project.open", "p.rgispkg"),
+        ("project.importQgis", "q.qgz"),
+        ("layout.import", "l.rgislayout"),
+        ("dl.import", "m.rgisdlpk"),
+        ("layer.addData", "l.rgislyr"),
+    ] {
+        let fifo = dir.join(name);
+        assert!(std::process::Command::new("mkfifo").arg(&fifo).status().unwrap().success());
+        for path in [std::path::Path::new("/dev/zero"), fifo.as_path()] {
+            if id == "layer.addData" && path == std::path::Path::new("/dev/zero") {
+                continue; // Without its extension it isn't read as a layer file.
+            }
+            let error = s.run(id, &json!({"path": path})).unwrap_err();
+            assert!(error.contains("isn't a file"), "{id} {}: {error}", path.display());
+        }
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// Save As and packaging must not replace readable files with a project above the opening limit.
 #[test]
 fn oversized_project_save_preserves_file_and_live_state() {

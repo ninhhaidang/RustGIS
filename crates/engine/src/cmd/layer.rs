@@ -1583,7 +1583,7 @@ fn ground_overlays(s: &mut Session, file_name: &str, bytes: &[u8]) -> Vec<(Strin
                 return None;
             }
             let p = dir?.join(rel);
-            (std::fs::metadata(&p).ok()?.len() < 256 << 20).then(|| std::fs::read(p).ok()).flatten()
+            crate::project::read_file(&p, (256 << 20) - 1).ok()
         });
         let Some(picture) = picture else {
             notes.push(format!("{} (its picture {href} isn't in the file or beside it)", g.name));
@@ -2624,11 +2624,8 @@ fn load_all(s: &mut Session, p: &Value) -> CmdResult {
 
 /// Adds a layer file: a layer with its data, symbology and labels.
 fn add_layer_file(s: &mut Session, path: &str) -> CmdResult {
-    let len = std::fs::metadata(path).map_err(|e| format!("{path}: {e}"))?.len();
-    if len > 512 << 20 {
-        return Err("the layer file is too large".into());
-    }
-    let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
+    let bytes = crate::project::read_file(Path::new(path), 512 << 20)?;
+    let text = String::from_utf8(bytes).map_err(|_| format!("{path} isn't a RustGIS layer file"))?;
     add_layer_text(s, &text)
 }
 

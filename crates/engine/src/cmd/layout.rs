@@ -134,16 +134,8 @@ pub fn commands() -> Vec<C> {
             let text = match (ps(p, "text"), ps(p, "path")) {
                 (Some(t), _) => t.to_string(),
                 (None, Some(path)) => {
-                    use std::io::Read;
-                    // Read at most one byte past the limit, so a file growing meanwhile is still refused.
-                    let mut text = String::new();
-                    std::fs::File::open(path)
-                        .and_then(|f| f.take(MAX_LAYOUT + 1).read_to_string(&mut text))
-                        .map_err(|e| format!("{path}: {e}"))?;
-                    if text.len() as u64 > MAX_LAYOUT {
-                        return Err("the layout file is too large".into());
-                    }
-                    text
+                    let bytes = crate::project::read_file(std::path::Path::new(path), MAX_LAYOUT)?;
+                    String::from_utf8(bytes).map_err(|_| format!("{path} isn't a RustGIS layout"))?
                 }
                 (None, None) => return Err("path or text is required".into()),
             };

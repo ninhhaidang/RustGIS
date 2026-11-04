@@ -56,13 +56,7 @@ const MAX_XML: usize = 64 << 20;
 
 /// Reads at most [`MAX_FILE`] bytes of `path` (natively: the web app passes `text` or `data`).
 fn read_file(path: &str) -> Result<Vec<u8>, String> {
-    use std::io::Read;
-    let mut bytes = Vec::new();
-    std::fs::File::open(path).and_then(|f| f.take(MAX_FILE + 1).read_to_end(&mut bytes)).map_err(|e| format!("{path}: {e}"))?;
-    if bytes.len() as u64 > MAX_FILE {
-        return Err(format!("{path} is too large for a QGIS project"));
-    }
-    Ok(bytes)
+    crate::project::read_file(std::path::Path::new(path), MAX_FILE)
 }
 
 fn import_project(s: &mut Session, p: &Value) -> CmdResult {
