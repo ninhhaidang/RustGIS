@@ -161,6 +161,7 @@ pub fn commands() -> Vec<C> {
             if l.graphics && l.raster.is_none() {
                 return Err("a graphics layer draws each feature in its own style, so it has no color scheme to invert".into());
             }
+            let raster = l.raster.is_some();
             let (done, layer_stack) = match &mut l.raster {
                 Some(rl) => (rl.style.invert_ramp().then_some(RampReversal { reversed: 0, kept: 0 }), None),
                 None => {
@@ -172,6 +173,11 @@ pub fn commands() -> Vec<C> {
             let Some(done) = done else {
                 return Err("the layer has no color scheme to invert: use Graduated or Unique Values (or a Stretch raster)".into());
             };
+            // A raster's Invert is a switch, so it has no classes to count. Classes with fewer than two
+            // to change places, and none left for their own stacks (which say so below), change nothing.
+            if !raster && done.reversed == 0 && done.kept == 0 {
+                return Err("the layer has fewer than two classes showing the color scheme, so there is nothing to invert".into());
+            }
             if done.kept > 0 {
                 // Their own stacks are drawn instead of the symbol, so the reversal can't reach them.
                 let kept = done.kept;

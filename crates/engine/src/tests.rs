@@ -26106,6 +26106,27 @@ fn layer_invert_ramp_says_when_the_layers_own_stack_hides_the_colors() {
 }
 
 #[test]
+fn layer_invert_ramp_says_when_there_is_nothing_to_invert() {
+    // #1355: with fewer than two classes showing the scheme, an inversion would change nothing, so
+    // the command refuses rather than succeed silently. A raster's Invert is a switch and is no
+    // class count, and a class kept for its own stack has its own notice.
+    let mut s = world();
+    s.run("layer.symbology", &json!({"layer": "Countries", "type": "graduated", "field": "pop_est", "classes": 1})).unwrap();
+    let classes = |s: &Session| match &s.map().layer_by_name("Countries").unwrap().renderer {
+        rustgis_map::Renderer::Graduated { symbols, .. } => symbols.len(),
+        _ => 0,
+    };
+    assert_eq!(classes(&s), 1, "one class to invert");
+    let err = s.run("layer.invertRamp", &json!({"layer": "Countries"})).unwrap_err();
+    assert!(err.contains("nothing to invert"), "{err}");
+    // Two classes reverse, with no notice.
+    s.run("layer.symbology", &json!({"layer": "Countries", "type": "graduated", "field": "pop_est", "classes": 2})).unwrap();
+    let mark = s.notice_mark();
+    s.run("layer.invertRamp", &json!({"layer": "Countries"})).unwrap();
+    assert!(s.notices_since(mark).is_empty());
+}
+
+#[test]
 fn layer_invert_ramp_refuses_a_graphics_layer() {
     // #1355: a graphics layer draws each feature in its own style, whatever its renderer holds, so
     // reversing the renderer's colors would change nothing and say nothing.

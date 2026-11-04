@@ -188,7 +188,8 @@ lowest class's colour. Colours edited by hand travel with the reversal, but a po
 opacity stays with its position in the legend, as it does when a colour scheme is applied: a
 semi-transparent fill picked for the first class is still the first class's opacity afterwards.
 Applying it twice gives the original back. The `<all other values>` swatch is no colour of the
-scheme and stays as it is.
+scheme and stays as it is. With fewer than two classes showing the scheme there is nothing to
+reverse, and the command says so instead of succeeding.
 
 A class whose own stack hides its symbol keeps it, and the others reverse among themselves; a
 notice says how many classes with a stack of their own were left as they are. A stack hides the
