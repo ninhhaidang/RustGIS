@@ -32,6 +32,7 @@ pub mod tissot;
 mod tools;
 pub mod topology;
 pub mod trend;
+mod validity;
 pub mod warp;
 
 pub use attribute_join::{DuplicateStrategy, JoinFieldOptions, JoinFieldReport, join_field};

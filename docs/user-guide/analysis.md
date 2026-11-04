@@ -151,6 +151,7 @@ Use these ids in `gp.run`'s `tool` parameter (`gp.tools` lists the available too
 | Split Line At Vertices | `splitLineAtVertices` | Data Management › Features |
 | Feature Envelope To Polygon | `featureEnvelopeToPolygon` | Data Management › Features |
 | Unsplit Line | `unsplitLine` | Data Management › Features |
+| Check Geometry | `checkGeometry` | Data Management › Features |
 | XY Table To Point | `xyTableToPoint` | Data Management › Features |
 | Calculate Geometry Attributes | `calculateGeometry` | Data Management › Features |
 | Simplify | `simplify` | Cartography › Generalization |
@@ -839,6 +840,52 @@ gp.run={"tool":"polygonToLine","params":{"input":"Regions","output":"Boundaries"
 gp.run={"tool":"splitLineAtVertices","params":{"input":"Rivers"}}
 gp.run={"tool":"featureEnvelopeToPolygon","params":{"input":"Regions"}}
 gp.run={"tool":"unsplitLine","params":{"input":"Rivers"}}
+```
+
+### Checking geometry
+
+**Check Geometry** (`checkGeometry`) finds the features whose geometry breaks the OGC Simple
+Features rules and writes them to a new layer, `<input>_check` unless you name it. Only the
+selected features are checked when some are selected. Each output row is its input feature as
+stored, with the same feature id, fields, attributes and CRS, plus two text fields: `problem`,
+the codes of what is wrong separated by `, `, and `detail`, a short description of each problem
+separated by `; ` that names the part and ring (counted from 1; ring 1 is the exterior ring),
+such as `exterior ring of part 1 crosses itself; 3 repeated vertices in ring 2 of part 1`. A
+feature with more than 20 problems lists the first 20 and counts the rest. If the input already
+has a `problem` or `detail` field, the new one gets the next free name (`problem_2`) and the
+tool says so. When nothing is wrong, the output layer is empty and the message says how many
+features were checked.
+
+| Code | What is wrong |
+| --- | --- |
+| `null_geometry` | No geometry, or one without coordinates |
+| `non_finite_coordinate` | A coordinate is not a number or infinite. The row is written without geometry, so it can't spoil the layer's extent |
+| `too_few_points` | A line part with fewer than 2 distinct points, a ring with fewer than 3, or a polygon part without rings |
+| `ring_not_closed` | A ring's last point is not its first |
+| `repeated_vertex` | The same vertex twice in a row (a closed ring's last point doesn't count) |
+| `self_intersection` | A ring crosses itself, touches itself, or runs back over itself |
+| `hole_outside_shell` | An interior ring (hole) is not inside its exterior ring |
+| `rings_intersect` | Two rings of one polygon overlap or touch along a line |
+| `disconnected_interior` | Rings of one polygon touch at points so that they cut its interior into pieces, such as a hole touching the exterior ring at two points, or three holes each touching the next |
+| `parts_overlap` | Two polygons of one multipart feature overlap or touch along a line |
+| `too_complex` | Some of the feature's checks were left out: it needs more work than the tool spends on one feature, there wasn't enough memory to check it, or the geo library's relate operation failed on some of its rings or parts (`detail` says which of the three, not which rings or parts). The checks of each ring's points still run. The tool says how many features each reason left out |
+
+Codes are listed in this order, and are never translated. The checks work in stored
+coordinates, without projection. Lines may cross themselves, so only polygon rings are checked
+for self-intersection; points are checked for missing and non-finite coordinates only. Rings may
+touch each other at single points, as long as the polygon's interior stays in one piece (checked
+once its rings have no other problem with each other); any number of rings may meet at the same
+point. An unclosed ring is reported, then checked as if it
+were closed. Ring orientation is not checked, since GeoJSON and Shapefiles wind rings in
+opposite directions. The rings of a polygon are only checked against each other when each of them is
+usable (enough points, finite coordinates, and not crossing, touching or running back over
+itself), and the parts of a feature only when each part's rings are usable and have no problem
+with each other; the tool says how many features were not fully checked this way, because some
+of their rings or parts already have problems of their own. Rings and parts that touch are compared with the
+[geo](https://github.com/georust/geo) library's relate operation.
+
+```text
+gp.run={"tool":"checkGeometry","params":{"input":"Parcels"}}
 ```
 
 ## GeoLibre tools

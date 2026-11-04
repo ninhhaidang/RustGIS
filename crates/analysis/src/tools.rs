@@ -1,5 +1,6 @@
 //! The tools.
 
+mod check_geometry;
 mod geometry;
 
 use geo::{
@@ -80,6 +81,17 @@ pub static TOOLS: &[ToolSpec] = &[
             P { name: "output", label: "Output Name", kind: K::Text, required: false, default: "", help: "" },
         ],
         run: geometry::unsplit,
+    },
+    ToolSpec {
+        id: "checkGeometry",
+        name: "Check Geometry",
+        toolbox: "Data Management › Features",
+        summary: "Writes the features with invalid geometry, such as self-intersecting or unclosed rings, holes outside their shell or overlapping parts, and says what is wrong with each.",
+        params: &[
+            P { name: "input", label: "Input Features", kind: K::VectorLayer, required: true, default: "", help: "" },
+            P { name: "output", label: "Output Name", kind: K::Text, required: false, default: "", help: "" },
+        ],
+        run: check_geometry::run,
     },
     ToolSpec {
         id: "buffer",
