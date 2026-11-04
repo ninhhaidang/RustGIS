@@ -15,11 +15,13 @@
 //! as numbers. Logic is SQL's three-valued: a comparison with a null is unknown. One exception,
 //! kept from the WHERE language this replaced so saved clauses keep their rows: a NULL in an `IN`
 //! list matches nothing, so `2 NOT IN (1, NULL)` is true where SQL makes it unknown. A `LIKE`
-//! too costly to match ([`MAX_LIKE_STEPS`]) is unknown. Arithmetic on a
+//! too costly to match ([`MAX_LIKE_STEPS`]) is unknown, as is any that would take an expression's
+//! `LIKE`s past what they may take for one row together ([`MAX_ROW_LIKE_STEPS`]). Arithmetic on a
 //! null, a division by zero or an overflow gives null; `+` joins text that isn't a number.
 
 use crate::{Dataset, Measure, Value};
 use std::borrow::Cow;
+use std::cell::Cell;
 
 #[cfg(test)]
 mod legacy;
@@ -807,29 +809,46 @@ fn compare(a: &Value, op: Op, b: &Value) -> Option<bool> {
 
 /// The most steps one `LIKE` takes to match. A long text against a pattern of many `%`s costs
 /// up to text × pattern steps (64 KiB of text and a 10,000-character pattern, 6.5 × 10⁸); past
-/// this (a tenth of a second or so), the match is unknown rather than holding up the map.
+/// this (some 15 ms), the match is unknown rather than holding up the map.
 pub const MAX_LIKE_STEPS: usize = 1 << 24;
+
+/// The most steps all of an expression's `LIKE`s take together for one row: four at their cap. A
+/// clause can hold hundreds of `LIKE`s, each up to [`MAX_LIKE_STEPS`]; once they've spent this, the
+/// rest are unknown. A single costly `LIKE` doesn't affect the others.
+pub const MAX_ROW_LIKE_STEPS: usize = 4 * MAX_LIKE_STEPS;
 
 /// SQL LIKE with `%` and `_`, case-insensitive; no match when it would take more than
 /// [`MAX_LIKE_STEPS`].
 pub fn like(text: &str, pat: &str) -> bool {
-    like_within(text, pat).unwrap_or(false)
+    like_within(text, pat, &Cell::new(MAX_LIKE_STEPS)).unwrap_or(false)
 }
 
-/// SQL LIKE with `%` and `_`, case-insensitive: `None` when it would take more than
-/// [`MAX_LIKE_STEPS`].
-fn like_within(text: &str, pat: &str) -> Option<bool> {
+/// SQL LIKE with `%` and `_`, case-insensitive, taking up to [`MAX_LIKE_STEPS`] from `budget`:
+/// `None` when it would take more than that or than `budget` holds, at once when it's empty.
+fn like_within(text: &str, pat: &str, budget: &Cell<usize>) -> Option<bool> {
+    let had = budget.get();
+    if had == 0 {
+        return None;
+    }
+    let mut left = had.min(MAX_LIKE_STEPS);
+    let start = left;
+    let m = like_steps(text, pat, &mut left);
+    budget.set(had - (start - left));
+    m
+}
+
+/// [`like_within`], counting its steps down in `left`.
+fn like_steps(text: &str, pat: &str, left: &mut usize) -> Option<bool> {
     let t: Vec<char> = text.to_lowercase().chars().collect();
     let p: Vec<char> = pat.to_lowercase().chars().collect();
     // Iterative wildcard matching with backtracking on the last '%'.
     let (mut ti, mut pi) = (0usize, 0usize);
     let (mut star, mut mark) = (None::<usize>, 0usize);
-    let mut steps = 0usize;
     while ti < t.len() {
-        steps += 1;
-        if steps > MAX_LIKE_STEPS {
+        if *left == 0 {
             return None;
         }
+        *left -= 1;
         match p.get(pi) {
             Some('%') => {
                 star = Some(pi);
@@ -860,12 +879,12 @@ pub fn eval(e: &Expr, ds: &Dataset, row: usize) -> bool {
 
 /// Whether the row matches, with variables from `env`.
 pub fn matches(e: &Expr, ds: &Dataset, row: usize, env: &Env) -> bool {
-    Eval { ds, row, env }.cond(e) == Some(true)
+    Eval::new(ds, row, env).cond(e) == Some(true)
 }
 
 /// The expression's value for one row.
 pub fn value(e: &Expr, ds: &Dataset, row: usize, env: &Env) -> Value {
-    Eval { ds, row, env }.value(e).into_owned()
+    Eval::new(ds, row, env).value(e).into_owned()
 }
 
 /// Whether a value counts as true: a non-zero number, non-empty text; null is unknown.
@@ -959,9 +978,15 @@ struct Eval<'a> {
     ds: &'a Dataset,
     row: usize,
     env: &'a Env,
+    /// The steps left for the expression's `LIKE`s on this row ([`MAX_ROW_LIKE_STEPS`] in all).
+    like_steps: Cell<usize>,
 }
 
 impl<'a> Eval<'a> {
+    fn new(ds: &'a Dataset, row: usize, env: &'a Env) -> Self {
+        Eval { ds, row, env, like_steps: Cell::new(MAX_ROW_LIKE_STEPS) }
+    }
+
     /// SQL's three-valued logic: `None` is "unknown", what a comparison with a null gives. `NOT`
     /// leaves it unknown, so `NOT (pop > 100)` doesn't match a row whose `pop` is null.
     fn cond(&self, e: &'a Expr) -> Option<bool> {
@@ -993,10 +1018,11 @@ impl<'a> Eval<'a> {
             Expr::IsNull { field, negate } => Some(ds.value(row, *field).is_null() != *negate),
             Expr::Like { field, pattern, negate } => {
                 let v = ds.value(row, *field);
-                if v.is_null() {
+                // Out of steps for this row: unknown, without copying the text.
+                if v.is_null() || self.like_steps.get() == 0 {
                     return None;
                 }
-                like_within(&v.to_string(), pattern).map(|m| m != *negate)
+                like_within(&v.to_string(), pattern, &self.like_steps).map(|m| m != *negate)
             }
             Expr::In { field, values, negate } => {
                 let v = ds.value(row, *field);
@@ -1006,6 +1032,10 @@ impl<'a> Eval<'a> {
             Expr::Compare(op, l, r) => compare(&self.value(l), *op, &self.value(r)),
             Expr::IsNullExpr { e, negate } => Some(self.value(e).is_null() != *negate),
             Expr::LikeExpr { e, pattern, negate } => {
+                // Out of steps for this row: unknown, without building the text or the pattern.
+                if self.like_steps.get() == 0 {
+                    return None;
+                }
                 let (v, p) = (self.value(e), self.value(pattern));
                 // A pattern no longer than a clause, as a written one is: matching costs text × pattern.
                 if v.is_null() || p.is_null() {
@@ -1016,7 +1046,7 @@ impl<'a> Eval<'a> {
                 if p.chars().count() > MAX_LEN {
                     return Some(*negate);
                 }
-                like_within(&v.to_string(), &p).map(|m| m != *negate)
+                like_within(&v.to_string(), &p, &self.like_steps).map(|m| m != *negate)
             }
             Expr::InExpr { e, list, negate } => {
                 let v = self.value(e);

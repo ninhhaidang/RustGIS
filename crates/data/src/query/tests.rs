@@ -472,6 +472,14 @@ fn a_computed_in_list_skips_nulls_and_a_long_pattern_matches_nothing() {
     assert_eq!(rows(&costly), Vec::<usize>::new());
     assert_eq!(rows(&costly.replace(" LIKE ", " NOT LIKE ")), Vec::<usize>::new());
     assert!(!like(&"a".repeat(65536), &format!("%{}b", "a".repeat(1000))));
+    // A costly LIKE leaves the others in its clause theirs: a cheap one after it (every name is
+    // like itself) still matches. But four at their cap spend what a clause's LIKEs may take for
+    // one row together (#1398), so one after them is unknown: on Paris's row only, as each row
+    // has a budget of its own.
+    let cheap = "name LIKE name";
+    assert_eq!(rows(&format!("{costly} OR {cheap}")), vec![0, 1, 2, 3]);
+    let four = [costly.as_str(); 4].join(" OR ");
+    assert_eq!(rows(&format!("(name = 'Paris' AND ({four})) OR {cheap}")), vec![1, 2, 3]);
 }
 
 #[test]
