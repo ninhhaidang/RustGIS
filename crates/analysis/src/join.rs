@@ -261,40 +261,82 @@ impl Merge {
         }
     }
 
-    /// The matches' values (in match order) merged into one. Every rule but `first` and `last`
-    /// skips nulls; with nothing left a numeric rule gives null, `count` zero and `join` "".
-    /// An integer field's sum adds its whole numbers (one too large for 64 bits is null).
-    pub fn apply(&self, ty: FieldType, values: &[&Value]) -> Value {
+    /// The matches' values (in match order) merged into one, and what merging them lost. Every
+    /// rule but `first` and `last` skips nulls; with nothing left a numeric rule gives null,
+    /// `count` zero and `join` "". An integer field's sum adds its whole numbers exactly: a total
+    /// too large for 64 bits is null, and said so, as is each number it leaves out (a decimal with
+    /// a fraction, or one past the range). The other numeric rules leave out, and count, a number
+    /// too large for a decimal (text such as "1e309", or an infinite decimal). `min` and `max`
+    /// compare whole numbers exactly, past 2^53 too, where their decimals
+    /// can be equal; a `mean` of whole numbers is worked out from their exact sum, and said to be
+    /// rounded when it is a whole number a decimal can't hold.
+    pub fn apply(&self, ty: FieldType, values: &[&Value]) -> (Value, Lost) {
         let present = || values.iter().copied().filter(|v| !matches!(v, Value::Null));
         let numbers: Vec<f64> = present().filter_map(Value::as_f64).collect();
-        match self.rule {
+        // The numbers no decimal holds, which `numbers` leaves out.
+        let unread = present().filter(|v| is_number(v)).count().saturating_sub(numbers.len());
+        let mut lost = Lost::default();
+        let value = match self.rule {
             Rule::First => values.first().map(|v| (*v).clone()).unwrap_or(Value::Null),
             Rule::Last => values.last().map(|v| (*v).clone()).unwrap_or(Value::Null),
             Rule::Count => Value::Int(i64::try_from(present().count()).unwrap_or(i64::MAX)),
             Rule::Join => Value::Text(present().map(ToString::to_string).collect::<Vec<_>>().join(&self.delimiter)),
             Rule::Sum if ty == FieldType::Integer => {
-                // Whole numbers, however they are held (a whole decimal counts; 2.5 can't be one).
-                let whole = |v: &Value| match v {
-                    Value::Int(i) => Some(*i),
-                    // i64::MIN is exactly a float; i64::MAX rounds up to 2^63, which is out of range.
-                    v => v.as_f64().filter(|f| f.fract() == 0.0 && *f >= i64::MIN as f64 && *f < -(i64::MIN as f64)).map(|f| f as i64),
-                };
-                let ints: Vec<i64> = present().filter_map(whole).collect();
-                if ints.is_empty() {
-                    return Value::Null;
+                // A number that isn't a whole number within the 64-bit range can't be added to the
+                // field's sum: it is left out, and counted. Text that isn't a number is no value.
+                let numeric = || present().filter(|v| is_number(v));
+                let ints: Vec<i64> = numeric().filter_map(whole_number).collect();
+                lost.left_out = numeric().count().saturating_sub(ints.len());
+                // The exact total, checked once: a running total may pass the range and come back.
+                let total = ints.iter().try_fold(0i128, |s, i| s.checked_add(i128::from(*i)));
+                match total.map(i64::try_from) {
+                    _ if ints.is_empty() => Value::Null,
+                    Some(Ok(sum)) => Value::Int(sum),
+                    _ => {
+                        lost.overflowed = true;
+                        Value::Null
+                    }
                 }
-                ints.iter().try_fold(0i64, |s, i| s.checked_add(*i)).map(Value::Int).unwrap_or(Value::Null)
             }
-            Rule::Sum if numbers.is_empty() => Value::Null,
-            Rule::Sum => Value::Float(numbers.iter().sum()),
-            Rule::Mean if numbers.is_empty() => Value::Null,
-            Rule::Mean => Value::Float(numbers.iter().sum::<f64>() / numbers.len() as f64),
+            Rule::Sum | Rule::Mean if numbers.is_empty() => {
+                lost.left_out = unread;
+                Value::Null
+            }
+            Rule::Sum => {
+                lost.left_out = unread;
+                Value::Float(numbers.iter().sum())
+            }
+            Rule::Mean => {
+                lost.left_out = unread;
+                // An integer field's values, when every one is a whole number, are summed exactly:
+                // their decimals can't be, past 2^53. A decimal field's are decimals already.
+                // Only the numbers a decimal holds count, as in `numbers`: text that isn't a number
+                // is no value, and a number too large for a decimal is left out (counted above).
+                let wholes: Option<Vec<i64>> =
+                    (ty == FieldType::Integer).then(|| present().filter(|v| v.as_f64().is_some()).map(whole_number).collect()).flatten();
+                match wholes {
+                    Some(w) => {
+                        let (sum, n) = (w.iter().map(|i| i128::from(*i)).sum::<i128>(), w.len() as i128);
+                        // An evenly dividing mean is a whole number, rounded once to its decimal,
+                        // and said to be rounded when the decimal isn't it.
+                        let whole = sum % n == 0;
+                        let mean = if whole { (sum / n) as f64 } else { sum as f64 / n as f64 };
+                        lost.rounded = whole && mean as i128 != sum / n;
+                        Value::Float(mean)
+                    }
+                    None => Value::Float(numbers.iter().sum::<f64>() / numbers.len() as f64),
+                }
+            }
             Rule::Min | Rule::Max => {
-                // Numbers by value, text by its characters.
-                let cmp = |a: &Value, b: &Value| match (a.as_f64(), b.as_f64()) {
-                    (Some(x), Some(y)) if ty.is_numeric() => x.total_cmp(&y),
+                // Numbers by value, exactly, text by its characters.
+                let cmp = |a: &Value, b: &Value| match (number(a), number(b)) {
+                    (Some(x), Some(y)) if ty.is_numeric() => crate::stats::cmp_number(&x, &y),
                     _ => a.to_string().cmp(&b.to_string()),
                 };
+                // A number no decimal holds is left out, and counted, as by `mean`.
+                if ty.is_numeric() {
+                    lost.left_out = unread;
+                }
                 let candidates = present().filter(|v| !ty.is_numeric() || v.as_f64().is_some());
                 let best = if self.rule == Rule::Max {
                     // The first of equal values, as `min_by` keeps.
@@ -307,7 +349,54 @@ impl Merge {
                 };
                 best.cloned().unwrap_or(Value::Null)
             }
-        }
+        };
+        (value, lost)
+    }
+}
+
+/// What merging one target's matches with a rule lost, for Spatial Join's notices.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Lost {
+    /// An integer field's sum went past the 64-bit range, and is null.
+    pub overflowed: bool,
+    /// How many numbers the rule left out: for an integer field's sum, decimals with a fraction and
+    /// numbers past the 64-bit range, which no whole number of the field holds; for the other
+    /// numeric rules, numbers too large for a decimal.
+    pub left_out: usize,
+    /// A mean of whole numbers is a whole number past 2^53, which its decimal rounds.
+    pub rounded: bool,
+}
+
+/// A value as the whole number it holds exactly: an integer, true or false, a decimal with no
+/// fraction within the i64 range, or text written as one in any form a number is ("12", "12.0",
+/// "1.2e1"), read from its digits. A number past the i64 range isn't one.
+fn whole_number(v: &Value) -> Option<i64> {
+    // 2^63: i64::MIN is exactly a float; i64::MAX rounds up to 2^63, which is out of range.
+    const TWO_63: f64 = 9_223_372_036_854_775_808.0;
+    match v {
+        Value::Int(i) => Some(*i),
+        Value::Text(t) => crate::stats::text_i64(t),
+        _ => v.as_f64().filter(|f| f.fract() == 0.0 && (-TWO_63..TWO_63).contains(f)).map(|f| f as i64),
+    }
+}
+
+/// Whether a value is a number: one a decimal holds, an infinite decimal, or text written as a
+/// number too large for any ("1e309"). Not a number (NaN), and text that isn't one, "inf" included,
+/// aren't.
+fn is_number(v: &Value) -> bool {
+    v.as_f64().is_some()
+        || matches!(v, Value::Float(f) if f.is_infinite())
+        || matches!(v, Value::Text(t) if t.bytes().any(|b| b.is_ascii_digit()) && t.trim().parse::<f64>().is_ok_and(f64::is_infinite))
+}
+
+/// A value as a number to compare exactly: a whole number as an integer (text written as one too,
+/// read from its digits), any other number as a decimal. None for a value that isn't a number.
+fn number(v: &Value) -> Option<Value> {
+    match v {
+        Value::Int(_) | Value::Float(_) => Some(v.clone()),
+        Value::Bool(b) => Some(Value::Int(i64::from(*b))),
+        Value::Text(t) => crate::stats::text_i64(t).map(Value::Int).or_else(|| v.as_f64().map(Value::Float)),
+        Value::Null => None,
     }
 }
 
@@ -392,10 +481,42 @@ mod tests {
     fn an_integer_sum_takes_decimals_over_the_whole_i64_range() {
         let sum = Merge { field: 0, rule: Rule::Sum, delimiter: String::new() };
         let (min, past_max) = (Value::Float(i64::MIN as f64), Value::Float(9_223_372_036_854_775_808.0));
-        assert_eq!(sum.apply(FieldType::Integer, &[&min]), Value::Int(i64::MIN));
+        assert_eq!(sum.apply(FieldType::Integer, &[&min]).0, Value::Int(i64::MIN));
         // 2^63 is one past i64::MAX: not a whole number the field holds, so it's left out.
-        assert_eq!(sum.apply(FieldType::Integer, &[&past_max, &Value::Int(3)]), Value::Int(3));
-        assert_eq!(sum.apply(FieldType::Integer, &[&Value::Float(2.5)]), Value::Null);
+        assert_eq!(sum.apply(FieldType::Integer, &[&past_max, &Value::Int(3)]).0, Value::Int(3));
+        assert_eq!(sum.apply(FieldType::Integer, &[&Value::Float(2.5)]).0, Value::Null);
+        // What a sum leaves out is counted: 2^63 and 2.5, not text that isn't a number.
+        let skipped = sum.apply(FieldType::Integer, &[&past_max, &Value::Float(2.5), &Value::Text("n/a".into()), &Value::Int(3)]);
+        assert_eq!(skipped, (Value::Int(3), Lost { left_out: 2, ..Lost::default() }));
+        // Text written as a number too large for a decimal is a number left out too; "inf" isn't one.
+        let huge = [Value::Text("1e309".into()), Value::Text("-1E400".into()), Value::Text("inf".into()), Value::Int(3)];
+        let huge: Vec<&Value> = huge.iter().collect();
+        assert_eq!(sum.apply(FieldType::Integer, &huge), (Value::Int(3), Lost { left_out: 2, ..Lost::default() }));
+        // The other numeric rules leave out what no decimal holds, and count it.
+        let mean = Merge { field: 0, rule: Rule::Mean, delimiter: String::new() };
+        let left_out = |n| Lost { left_out: n, ..Lost::default() };
+        assert_eq!(mean.apply(FieldType::Integer, &huge), (Value::Float(3.0), left_out(2)));
+        assert_eq!(mean.apply(FieldType::Double, &huge), (Value::Float(3.0), left_out(2)));
+        assert_eq!(sum.apply(FieldType::Double, &huge), (Value::Float(3.0), left_out(2)));
+        assert_eq!(mean.apply(FieldType::Integer, &huge[..1]), (Value::Null, left_out(1)));
+        let infinite = Value::Float(f64::INFINITY);
+        // What is left out doesn't stop the exact mean of the rest: 2^53 + 1 twice is rounded.
+        let big = Value::Int((1 << 53) + 1);
+        let rounded = Lost { left_out: 1, rounded: true, ..Lost::default() };
+        assert_eq!(mean.apply(FieldType::Integer, &[&infinite, &big, &big]), (Value::Float(9_007_199_254_740_992.0), rounded));
+        assert_eq!(mean.apply(FieldType::Integer, &[&big, huge[0], &big]), (Value::Float(9_007_199_254_740_992.0), rounded));
+        assert_eq!(sum.apply(FieldType::Integer, &[&infinite, &Value::Float(f64::NAN), &Value::Int(3)]), (Value::Int(3), left_out(1)));
+        let max = Merge { field: 0, rule: Rule::Max, delimiter: String::new() };
+        let min = Merge { field: 0, rule: Rule::Min, delimiter: String::new() };
+        assert_eq!(max.apply(FieldType::Integer, &huge), (Value::Int(3), left_out(2)));
+        assert_eq!(min.apply(FieldType::Integer, &huge), (Value::Int(3), left_out(2)));
+        assert_eq!(max.apply(FieldType::Double, &[&Value::Int(3), &infinite]), (Value::Int(3), left_out(1)));
+        // A text field's min and max take every value, as text.
+        assert_eq!(max.apply(FieldType::Text, &huge), (Value::Text("inf".into()), Lost::default()));
+        // The total is checked once: i64::MAX + 1 - 1 is i64::MAX; i64::MAX + 1 isn't a sum.
+        let (max, one, minus) = (Value::Int(i64::MAX), Value::Int(1), Value::Int(-1));
+        assert_eq!(sum.apply(FieldType::Integer, &[&max, &one, &minus]), (max.clone(), Lost::default()));
+        assert_eq!(sum.apply(FieldType::Integer, &[&max, &one]), (Value::Null, Lost { overflowed: true, ..Lost::default() }));
     }
 
     #[test]

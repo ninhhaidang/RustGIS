@@ -273,7 +273,7 @@ fn cmp_key(x: &Value, y: &Value) -> Ordering {
 
 /// Orders two numbers (true and false as 1 and 0) by value, exactly: a whole number against a
 /// decimal without rounding it to f64. Every NaN is one value, above all others; −0 is 0.
-fn cmp_number(x: &Value, y: &Value) -> Ordering {
+pub(crate) fn cmp_number(x: &Value, y: &Value) -> Ordering {
     /// A number as a whole number or a decimal.
     enum N {
         I(i64),
@@ -669,6 +669,12 @@ fn whole_text(t: &str) -> Option<WholeText> {
     };
     // Never empty: the digits start with one that isn't 0, which the fraction test keeps.
     Some(WholeText { digits: if negative { format!("-{whole}") } else { whole }, plain })
+}
+
+/// The whole number text stands for, exactly, when it is one within the i64 range, in any of the
+/// forms [`whole_text`] reads ("12", "12.0", "1.2e1").
+pub(crate) fn text_i64(t: &str) -> Option<i64> {
+    whole_text(t).and_then(|w| w.to_i64())
 }
 
 /// How many distinct values sorted `s` holds.
