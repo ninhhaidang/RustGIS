@@ -222,7 +222,8 @@ fn ensure_download_capacity(s: &Session, layers: &[Value]) -> Result<(), String>
         .count();
     // Once the UI drains url_requests, each Zarr reader (including a queued reader)
     // owns a session download id. Count all stages so a second import sees those slots.
-    let occupied = s.url_requests.len().saturating_add(s.downloading.len()).saturating_add(s.downloaded.len());
+    let occupied =
+        s.url_requests.len().saturating_add(s.downloading.len()).saturating_add(s.downloaded.len()).saturating_add(s.landed_reads.len());
     let available = crate::MAX_URL_REQUESTS.saturating_sub(occupied);
     if count > available {
         return Err(format!(

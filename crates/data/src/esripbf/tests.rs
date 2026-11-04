@@ -1,119 +1,15 @@
 use super::*;
 use crate::raster::Crs;
 
-// Encoding, as `FeatureCollection.proto` lays answers out.
-
-fn varint(out: &mut Vec<u8>, mut v: u64) {
-    while v >= 0x80 {
-        out.push((v as u8 & 0x7f) | 0x80);
-        v >>= 7;
-    }
-    out.push(v as u8);
-}
-
-fn zz(v: i64) -> u64 {
-    ((v << 1) ^ (v >> 63)) as u64
-}
-
-fn number(field: u64, v: u64) -> Vec<u8> {
-    let mut out = Vec::new();
-    varint(&mut out, field << 3);
-    varint(&mut out, v);
-    out
-}
-
-fn message(field: u64, bytes: &[u8]) -> Vec<u8> {
-    let mut out = Vec::new();
-    varint(&mut out, (field << 3) | 2);
-    varint(&mut out, bytes.len() as u64);
-    out.extend_from_slice(bytes);
-    out
-}
-
-fn double(field: u64, v: f64) -> Vec<u8> {
-    let mut out = Vec::new();
-    varint(&mut out, (field << 3) | 1);
-    out.extend_from_slice(&v.to_le_bytes());
-    out
-}
-
-fn float(field: u64, v: f32) -> Vec<u8> {
-    let mut out = Vec::new();
-    varint(&mut out, (field << 3) | 5);
-    out.extend_from_slice(&v.to_le_bytes());
-    out
-}
-
-fn packed(values: impl IntoIterator<Item = u64>) -> Vec<u8> {
-    let mut out = Vec::new();
-    for v in values {
-        varint(&mut out, v);
-    }
-    out
-}
-
-/// An answer: a version, then a query result holding `result`'s fields as its feature result.
-fn answer(result: &[Vec<u8>]) -> Vec<u8> {
-    [message(1, b"10.0"), message(2, &message(1, &result.concat()))].concat()
-}
-
-/// A spatial reference of longitude/latitude (WKID 4326), as services send with `outSR=4326`.
-fn lonlat() -> Vec<u8> {
-    message(8, &number(1, 4326))
-}
-
-fn field(name: &str, ty: u64) -> Vec<u8> {
-    message(13, &[message(1, name.as_bytes()), number(2, ty)].concat())
-}
-
-/// A transform: lower-left or upper-left origin, X and Y scale and translate.
-fn transform(upper_left: bool, scale: f64, x0: f64, y0: f64) -> Vec<u8> {
-    message(
-        12,
-        &[
-            number(1, if upper_left { 0 } else { 1 }),
-            message(2, &[double(1, scale), double(2, scale)].concat()),
-            message(3, &[double(1, x0), double(2, y0)].concat()),
-        ]
-        .concat(),
-    )
-}
-
-fn text(s: &str) -> Vec<u8> {
-    message(1, &message(1, s.as_bytes()))
-}
-fn sint64(v: i64) -> Vec<u8> {
-    message(1, &number(8, zz(v)))
-}
-fn uint(v: u64) -> Vec<u8> {
-    message(1, &number(5, v))
-}
-fn uint64(v: u64) -> Vec<u8> {
-    message(1, &number(7, v))
-}
-fn single(v: f32) -> Vec<u8> {
-    message(1, &float(2, v))
-}
-fn real(v: f64) -> Vec<u8> {
-    message(1, &double(3, v))
-}
-fn null() -> Vec<u8> {
-    message(1, &number(10, 1))
-}
-
-/// A geometry of parts `lengths` (none: one part) and coordinates, X and Y as differences.
-fn geometry(lengths: &[u64], coords: &[i64]) -> Vec<u8> {
-    let mut g = Vec::new();
-    if !lengths.is_empty() {
-        g.extend(message(2, &packed(lengths.iter().copied())));
-    }
-    g.extend(message(3, &packed(coords.iter().map(|&c| zz(c)))));
-    message(2, &g)
-}
-
-fn feature(parts: &[Vec<u8>]) -> Vec<u8> {
-    message(15, &parts.concat())
-}
+// Encoding, as `FeatureCollection.proto` lays answers out: shared with the engine's tests.
+#[path = "../../../../tests/support/esripbf.rs"]
+mod encode;
+pub(crate) use encode::page;
+// Named, so they come before the reader's own functions of the same names (`field`, `feature`).
+use encode::{
+    answer, double, feature, field, geometry, lonlat, message, null, number, packed, real, single, sint64, text, transform, uint, uint64,
+    varint, zz,
+};
 
 fn c(x: f64, y: f64) -> Coord {
     Coord::new(x, y)
@@ -124,17 +20,6 @@ fn err(bytes: &[u8]) -> String {
         Ok(_) => panic!("read an answer that should be refused"),
         Err(e) => e.to_string(),
     }
-}
-
-/// A page of a points layer, for paging tests: its object ids `ids` in a field named `oid`, each a
-/// point at (id, 1), and whether the service says it holds more (`exceededTransferLimit`).
-pub(crate) fn page(ids: &[u64], more: bool, oid: &str) -> Vec<u8> {
-    let mut parts = vec![number(7, POINT), lonlat(), transform(false, 1.0, 0.0, 0.0), field(oid, OID)];
-    if more {
-        parts.push(number(9, 1));
-    }
-    parts.extend(ids.iter().map(|&id| feature(&[uint(id), geometry(&[], &[i64::try_from(id).unwrap_or(0), 1])])));
-    answer(&parts)
 }
 
 /// Two points with every kind of field, as the services of the date test answered (2026-11-02):

@@ -3724,8 +3724,26 @@ impl RustGisApp {
     /// Adds a download that landed (`layer.addDownload`), named in Recent after the connection it
     /// came from; one whose project was closed meanwhile is said and dropped.
     pub(crate) fn add_landed(&mut self, landed: serviceui::Landed, bytes: Vec<u8>) {
+        let current = self.session.download_landed(landed.id, bytes);
+        self.add_download(landed, current);
+    }
+
+    /// Adds a service layer's features that landed read already (its protocol buffer pages,
+    /// joined), as [`Self::add_landed`] adds a download.
+    pub(crate) fn add_landed_read(
+        &mut self,
+        landed: serviceui::Landed,
+        dataset: rustgis_engine::data::Dataset,
+        report: rustgis_engine::data::ReadReport,
+    ) {
+        let current = self.session.download_landed_read(landed.id, dataset, report);
+        self.add_download(landed, current);
+    }
+
+    /// Adds a download handed to the session (`current`: it still belongs to this project).
+    fn add_download(&mut self, landed: serviceui::Landed, current: bool) {
         let serviceui::Landed { id, url, params: mut p, origin } = landed;
-        if !self.session.download_landed(id, bytes) {
+        if !current {
             self.session.notify(i18n::fmt("{url}: downloaded after its project was closed, so it wasn't added", &[("url", &url)]), false);
             return;
         }

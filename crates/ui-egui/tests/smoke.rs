@@ -2059,6 +2059,41 @@ fn service_features_are_read_page_by_page_off_the_frame() {
     assert!(server.requests().iter().any(|r| r.path.ends_with("/MapServer/0")), "the layer's description is read");
 }
 
+/// An ArcGIS layer whose description lists protocol buffers is read from the app in `f=pbf` pages,
+/// off the frame, and added as one layer known by its address (#1326).
+#[test]
+fn service_features_are_read_in_protocol_buffer_pages() {
+    use ogc_server::{Route, Server};
+    let layer = "/arcgis/rest/services/P/FeatureServer/0";
+    let page = |offset: u32| {
+        format!("{layer}/query?where=1%3D1&outFields=*&resultOffset={offset}&resultRecordCount=2&orderByFields=OBJECTID&f=pbf")
+    };
+    let described = json!({"currentVersion": 11.5, "maxRecordCount": 2, "supportedQueryFormats": "JSON, geoJSON, PBF",
+        "advancedQueryCapabilities": {"supportsPagination": true}, "fields": [{"name": "OBJECTID", "type": "esriFieldTypeOID"}]})
+    .to_string();
+    let server = Server::new(vec![
+        Route::new(layer, &described),
+        Route::bytes(&page(0), esripbf_answers::page(&[0, 1], true, "OBJECTID")),
+        Route::bytes(&page(2), esripbf_answers::page(&[2], false, "OBJECTID")),
+    ]);
+    let mut h = harness();
+    h.step();
+    let url = format!("{}{layer}/query?where=1%3D1&outFields=*&f=geojson", server.base);
+    h.state_mut().run("ui.addUrl", json!({"url": url, "name": "Parcels", "service": true})).unwrap();
+    wait_for_ogc(&mut h, |app| app.session.map().layer_by_name("Parcels").is_some());
+    let app = h.state();
+    let notes: Vec<_> = app.session.notices.iter().map(|n| n.text.clone()).collect();
+    let parcels = app.session.map().layer_by_name("Parcels").unwrap();
+    let ids: Vec<_> = parcels.dataset.features.iter().map(|f| f.attrs[0].as_f64()).collect();
+    assert_eq!(ids, [Some(0.0), Some(1.0), Some(2.0)], "{notes:?}");
+    assert_eq!(parcels.dataset.source.as_deref(), Some(url.as_str()));
+    assert!(!notes.iter().any(|n| n.contains("aren't read") || n.contains("protocol buffers")), "{notes:?}");
+    assert!(app.ui.service_pages.is_empty() && app.ui.downloads.is_empty());
+    let formats: Vec<_> =
+        server.requests().into_iter().map(|r| r.query.into_iter().find(|(k, _)| k == "f").map(|(_, v)| v).unwrap_or_default()).collect();
+    assert_eq!(formats, ["json", "pbf", "pbf"]);
+}
+
 /// A service layer whose features can't be fetched at all is said as an error, and its download
 /// is forgotten: no layer is added and nothing is left waiting.
 #[test]
@@ -3055,6 +3090,9 @@ fn agents_on_this_computer_switches_tick_and_stick() {
 
 #[path = "../../../tests/support/ogc_server.rs"]
 mod ogc_server;
+
+#[path = "../../../tests/support/esripbf.rs"]
+mod esripbf_answers;
 
 fn wait_for_ogc(h: &mut egui_kittest::Harness<'static, RustGisApp>, ready: impl Fn(&RustGisApp) -> bool) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);

@@ -1,7 +1,8 @@
 //! Web map and feature services: connect to a WMS, WMTS, WFS, WCS, OGC API Features or ArcGIS
 //! REST service, list what it offers (from its capabilities), and add a layer — map layers as
-//! tile layers, feature types and collections as data downloaded as GeoJSON (the whole layer, or
-//! the features crossing an area), coverages as rasters
+//! tile layers, feature types and collections as data downloaded as GeoJSON (an ArcGIS layer in
+//! protocol buffer pages when it lists them; the whole layer, or the features crossing an area),
+//! coverages as rasters
 //! (a GeoTIFF of the view from GetCoverage). And search a catalogue (CSW) for records and the
 //! services and files they link to.
 //!
@@ -268,16 +269,36 @@ pub(crate) fn bounds_of(v: Option<&Value>) -> Result<Option<[f64; 4]>, String> {
 /// (75 s at most). A page is fetched only where the page before it may point.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn download_features(s: &mut Session, name: &str, url: &str, max: usize) -> Result<Vec<u8>, String> {
+    match download_layer(s, name, url, max, false)? {
+        Downloaded::Bytes(bytes) => Ok(bytes),
+        // Not given without protocol buffer pages.
+        Downloaded::Read(..) => Err(format!("{url}: the pages were read as protocol buffers")),
+    }
+}
+
+/// A service's features as [`download_features`] downloads them.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) enum Downloaded {
+    /// Its answer, as it came (or its pages joined).
+    Bytes(Vec<u8>),
+    /// An ArcGIS layer's protocol buffer pages, read and joined (see
+    /// [`begin_with_pbf`](rustgis_data::ogc::begin_with_pbf)).
+    Read(crate::LandedRead),
+}
+
+/// A service's features at `url`, as [`download_features`] downloads them; with `pbf`, an ArcGIS
+/// layer whose description lists protocol buffers is read in them, in pages.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn download_layer(s: &mut Session, name: &str, url: &str, max: usize, pbf: bool) -> Result<Downloaded, String> {
     use crate::render::rustgis_tiles::{address, cache};
-    use rustgis_data::ogc::{DESCRIPTION_MAX, DESCRIPTION_TIMEOUT, Step, begin, max_paged_features};
+    use rustgis_data::ogc::{DESCRIPTION_MAX, DESCRIPTION_TIMEOUT, Step, begin, begin_with_pbf, max_paged_features};
     let mut until = std::time::Instant::now() + cache::BLOCKING_TIMEOUT;
     let mut left = max;
-    let mut step = begin(url, max_paged_features());
-    let (bytes, note) = loop {
+    let mut step = if pbf { begin_with_pbf(url, max_paged_features()) } else { begin(url, max_paged_features()) };
+    let (downloaded, note) = loop {
         let pages = match step {
-            Step::Done(bytes, note) => break (bytes, note),
-            // Not given by `begin`, which reads in GeoJSON.
-            Step::Decoded(..) => return Err(format!("{url}: the pages were read as protocol buffers")),
+            Step::Done(bytes, note) => break (Downloaded::Bytes(bytes), note),
+            Step::Decoded(dataset, report, note) => break (Downloaded::Read(Box::new((*dataset, report))), note),
             // A first answer that timed out says how to add a large layer instead.
             Step::Failed(e) => return Err(format!("{url}: {}", cache::large_file_hint(e))),
             Step::Fetch(pages) => pages,
@@ -313,7 +334,7 @@ pub(crate) fn download_features(s: &mut Session, name: &str, url: &str, max: usi
     if let Some(note) = note {
         s.notify(format!("{name}: {note}"), false);
     }
-    Ok(bytes)
+    Ok(downloaded)
 }
 
 /// A tile template given for a service's layer: a web address with `{z}`, `{x}` and `{y}`, that
@@ -605,9 +626,15 @@ pub(crate) fn add(s: &mut Session, p: &Value) -> CmdResult {
                 }
                 let max = crate::render::rustgis_tiles::cache::MAX_DOWNLOAD;
                 let from = asked.as_deref().unwrap_or(items);
-                let bytes = download_features(s, &name, from, max).map_err(|e| slow_whole_layer(e, given))?;
-                let bytes = features_answer(s, &name, bytes, layer.bbox);
-                let mut r = super::raster::add_named_bytes(s, &json!({"name": name}), format!("{name}.geojson"), bytes)?;
+                let mut r = match download_layer(s, &name, from, max, true).map_err(|e| slow_whole_layer(e, given))? {
+                    Downloaded::Bytes(bytes) => {
+                        let bytes = features_answer(s, &name, bytes, layer.bbox);
+                        super::raster::add_named_bytes(s, &json!({"name": name}), format!("{name}.geojson"), bytes)?
+                    }
+                    // Read in protocol buffer pages: their positions as the service's system
+                    // places them, so there are no axes to check.
+                    Downloaded::Read(read) => super::layer::add_read(s, &json!({"name": name}), *read)?,
+                };
                 mark_service_source(s, &r, from);
                 // Over an area, the features crossing it: the view stays, or goes to a box given
                 // (the whole layer's bounds would show a country to fill one state).

@@ -12315,6 +12315,72 @@ fn arcgis_features_read_past_the_record_limit() {
     );
 }
 
+/// An ArcGIS layer whose description lists protocol buffers is read through service.add in `f=pbf`
+/// pages into one layer, known by its address; one whose first such page can't be read is read in
+/// GeoJSON pages instead (#1326).
+#[test]
+fn arcgis_layer_read_in_protocol_buffer_pages() {
+    use ogc_server::{Route, Server, arcgis_page};
+    let q = "where=1%3D1&outFields=*&returnGeometry=true&outSR=4326";
+    let layer = |id: u32| format!("/arcgis/rest/services/P/MapServer/{id}");
+    let pbf =
+        |id: u32, offset: u32| format!("{}/query?{q}&resultOffset={offset}&resultRecordCount=2&orderByFields=OBJECTID&f=pbf", layer(id));
+    let geojson = |id: u32, offset: u32| {
+        format!("{}/query?{q}&f=geojson&resultOffset={offset}&resultRecordCount=2&orderByFields=OBJECTID", layer(id))
+    };
+    let described = json!({"currentVersion": 11.5, "maxRecordCount": 2, "supportedQueryFormats": "JSON, geoJSON, PBF",
+        "advancedQueryCapabilities": {"supportsPagination": true}, "fields": [{"name": "OBJECTID", "type": "esriFieldTypeOID"}]})
+    .to_string();
+    let server = Server::new(vec![
+        Route::new(&layer(0), &described),
+        Route::bytes(&pbf(0, 0), esripbf_answers::page(&[0, 1], true, "OBJECTID")),
+        Route::bytes(&pbf(0, 2), esripbf_answers::page(&[2, 3], true, "OBJECTID")),
+        Route::bytes(&pbf(0, 4), esripbf_answers::page(&[4], false, "OBJECTID")),
+        // A layer that lists protocol buffers, but answers its first such page with an error.
+        Route::new(&layer(1), &described),
+        Route::new(&pbf(1, 0), r#"{"error": {"code": 400, "message": "Invalid query"}}"#),
+        Route::new(&geojson(1, 0), &arcgis_page(&[0, 1], true)),
+        Route::new(&geojson(1, 2), &arcgis_page(&[2], false)),
+    ]);
+    let service = r#"{"currentVersion": 11.5, "maxRecordCount": 2, "layers": [{"id": 0, "name": "Parcels"}, {"id": 1, "name": "Zoning"}]}"#;
+    let url = format!("{}/arcgis/rest/services/P/MapServer", server.base);
+    let mut s = Session::new(Project::default());
+    let r = s.run("service.add", &json!({"url": url, "layer": "Parcels", "text": service})).unwrap();
+    assert_eq!(r["features"], 5);
+    let parcels = s.map().layer_by_name("Parcels").unwrap();
+    let ids: Vec<_> = parcels.dataset.features.iter().map(|f| f.attrs[0].as_f64()).collect();
+    assert_eq!(ids, [Some(0.0), Some(1.0), Some(2.0), Some(3.0), Some(4.0)]);
+    assert!(parcels.dataset.source.as_deref().is_some_and(|u| u.contains("/MapServer/0/query?")), "{:?}", parcels.dataset.source);
+    let r = s.run("service.add", &json!({"url": url, "layer": "Zoning", "text": service})).unwrap();
+    assert_eq!(r["features"], 3);
+    assert!(s.map().layer_by_name("Zoning").is_some());
+    let texts: Vec<_> = s.notices.iter().map(|n| n.text.as_str()).collect();
+    assert!(!texts.iter().any(|t| t.contains("aren't read") || t.contains("protocol buffers")), "{texts:?}");
+    // Each layer's description, then its pages: in protocol buffers, or in GeoJSON after the one
+    // refused.
+    let asked: Vec<_> = server
+        .requests()
+        .iter()
+        .map(|r| {
+            let at = |k: &str| r.query.iter().find(|(key, _)| key == k).map(|(_, v)| v.clone()).unwrap_or_default();
+            format!("{} {} {}", r.path.trim_start_matches("/arcgis/rest/services/P/MapServer"), at("f"), at("resultOffset"))
+        })
+        .collect();
+    assert_eq!(
+        asked,
+        [
+            "/0 json ",
+            "/0/query pbf 0",
+            "/0/query pbf 2",
+            "/0/query pbf 4",
+            "/1 json ",
+            "/1/query pbf 0",
+            "/1/query geojson 0",
+            "/1/query geojson 2"
+        ]
+    );
+}
+
 /// An ArcGIS layer's description, read before its features, doesn't count against their budget:
 /// features that fit it alone are read whole (#1326).
 #[test]
@@ -19173,6 +19239,9 @@ fn secrets_in_a_query_or_a_run_s_error_stay_out_of_copied_code() {
 
 #[path = "../../../tests/support/ogc_server.rs"]
 mod ogc_server;
+
+#[path = "../../../tests/support/esripbf.rs"]
+mod esripbf_answers;
 
 #[test]
 fn ogc_landing_fixture_lists_and_loads_features() {

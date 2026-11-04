@@ -37,6 +37,9 @@ use serde_json::Value;
 
 pub type CmdResult = Result<Value, String>;
 
+/// A download that landed read already: its layer, and what reading it skipped or noticed.
+pub(crate) type LandedRead = Box<(rustgis_data::Dataset, rustgis_data::ReadReport)>;
+
 /// A command.
 #[derive(Clone, Copy)]
 pub struct CommandSpec {
@@ -492,6 +495,7 @@ struct PutAside {
     plugin_runs: Vec<cmd::gp::StartedRun>,
     downloading: Vec<u64>,
     downloaded: Vec<(u64, Vec<u8>)>,
+    landed_reads: Vec<(u64, LandedRead)>,
     url_requests: Vec<serde_json::Value>,
     plugin_retries: Vec<cmd::plugins::fetch::Retry>,
     /// A style of the project still loading, which mustn't move the next one's view.
@@ -674,6 +678,9 @@ pub struct Session {
     downloading: Vec<u64>,
     /// Downloads that landed, waiting for `layer.addDownload`.
     pub(crate) downloaded: Vec<(u64, Vec<u8>)>,
+    /// Downloads that landed already read (an ArcGIS layer's protocol buffer pages, joined),
+    /// waiting for `layer.addDownload` too.
+    pub(crate) landed_reads: Vec<(u64, LandedRead)>,
     /// Downloads a command asked for where nothing may wait (the browser): the parameters of
     /// `layer.addUrl` calls, for the front end to fetch and add (see [`Session::take_url_requests`]).
     pub(crate) url_requests: Vec<serde_json::Value>,
@@ -934,6 +941,7 @@ impl Session {
             plugin_panels: std::collections::BTreeMap::new(),
             downloading: Vec::new(),
             downloaded: Vec::new(),
+            landed_reads: Vec::new(),
             url_requests: Vec::new(),
             file_outputs: Vec::new(),
             #[cfg(test)]
@@ -983,9 +991,29 @@ impl Session {
     /// Hands over a download's bytes, for `layer.addDownload {"id"}`; `false` when it was dropped
     /// (another project was opened meanwhile).
     pub fn download_landed(&mut self, id: u64, bytes: Vec<u8>) -> bool {
+        let landed = self.landed(id);
+        if landed {
+            self.downloaded.push((id, bytes));
+        }
+        landed
+    }
+
+    /// Hands over a download read already (an ArcGIS layer's protocol buffer pages, joined, see
+    /// [`ogc::Step::Decoded`](rustgis_data::ogc::Step::Decoded)), for `layer.addDownload {"id"}`
+    /// as [`Session::download_landed`] does.
+    pub fn download_landed_read(&mut self, id: u64, dataset: rustgis_data::Dataset, report: rustgis_data::ReadReport) -> bool {
+        let landed = self.landed(id);
+        if landed {
+            self.landed_reads.push((id, Box::new((dataset, report))));
+        }
+        landed
+    }
+
+    /// Takes a download off those under way: `false` when it isn't one of them (another project
+    /// was opened meanwhile).
+    fn landed(&mut self, id: u64) -> bool {
         let Some(i) = self.downloading.iter().position(|d| *d == id) else { return false };
         self.downloading.remove(i);
-        self.downloaded.push((id, bytes));
         true
     }
 
@@ -1441,6 +1469,7 @@ impl Session {
             plugin_runs: take(&mut self.plugin_runs),
             downloading: take(&mut self.downloading),
             downloaded: take(&mut self.downloaded),
+            landed_reads: take(&mut self.landed_reads),
             url_requests: take(&mut self.url_requests),
             plugin_retries: take(&mut self.plugin_retries),
             style_view: self.style_view.take(),
@@ -1491,6 +1520,7 @@ impl Session {
             plugin_runs,
             downloading,
             downloaded,
+            landed_reads,
             url_requests,
             plugin_retries,
             style_view,
@@ -1515,6 +1545,7 @@ impl Session {
         (self.pending, self.plugin_runs, self.plugin_retries) = (pending, plugin_runs, plugin_retries);
         self.file_outputs = file_outputs;
         (self.downloading, self.downloaded, self.url_requests) = (downloading, downloaded, url_requests);
+        self.landed_reads = landed_reads;
         (self.trend_results, self.raster_results, self.raster_runs) = (trend_results, raster_results, raster_runs);
         #[cfg(feature = "geolibre")]
         {
