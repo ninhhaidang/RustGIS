@@ -51,6 +51,21 @@ impl Control {
     }
 }
 
+/// The same flag and count reach the data crate's writers (an export run under the control):
+/// their steps count here, and they stop when the run is cancelled.
+impl rustgis_data::progress::Probe for Control {
+    fn cancelled(&self) -> bool {
+        self.is_cancelled()
+    }
+    fn begin(&self, total: u64) {
+        self.done.store(0, Ordering::Relaxed);
+        self.total.store(total, Ordering::Relaxed);
+    }
+    fn advance(&self, n: u64) {
+        self.done.fetch_add(n, Ordering::Relaxed);
+    }
+}
+
 /// A tool stopped because it was asked to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Cancelled;

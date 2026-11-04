@@ -33,6 +33,8 @@ mod docpanes;
 mod earthaccessui;
 mod editpanes;
 mod embeddingsui;
+#[cfg(not(target_arch = "wasm32"))]
+mod exportjob;
 mod failureui;
 mod fieldlists;
 mod fieldmenu;
@@ -921,6 +923,9 @@ pub struct RustGisApp {
     pub(crate) graphic_format: graphicformat::GraphicFormat,
     pub forms: editpanes::Forms,
     pub workflow: analysispane::Workflow,
+    /// An export writing its file on its own thread (see [`exportjob`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    export_job: Option<exportjob::ExportJob>,
     /// ModelBuilder's view: the model on its canvas.
     pub mb: modelbuilder::ModelBuilder,
     pub ws: workspacepanes::WorkspaceState,
@@ -1104,6 +1109,8 @@ impl RustGisApp {
             graphic_format: graphicformat::GraphicFormat::default(),
             forms: editpanes::Forms { distance_units: "Meters".into(), ..editpanes::Forms::default() },
             workflow: analysispane::Workflow::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            export_job: None,
             mb: modelbuilder::ModelBuilder::default(),
             ws: workspacepanes::WorkspaceState::default(),
             time: timebar::TimeBarState::default(),
@@ -1758,6 +1765,13 @@ impl RustGisApp {
     /// is removed, as recovery is for a run that didn't close. Call it once, as the app closes.
     pub fn end_autosave(&mut self) {
         autosave::end(self);
+    }
+
+    /// The app closing (the desktop app's `on_exit`): an export still writing is cancelled and
+    /// given a moment to stop, so it leaves no temporary file beside its destination.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn end_exports(&mut self) {
+        exportjob::stop(self, std::time::Duration::from_secs(5));
     }
 
     /// Whether this shell opens files by path (the desktop app; the web app picks them in the
@@ -3422,6 +3436,10 @@ impl RustGisApp {
                     .map(|l| format!("{}.tif", l.name))
                     .unwrap_or_default();
                 if let Some(path) = dialogs::pick_save(&name, &["tif", "tiff"], tl!("GeoTIFF")) {
+                    // Written on a thread of its own, with progress and Cancel in the status bar.
+                    #[cfg(not(target_arch = "wasm32"))]
+                    return exportjob::start(self, "share.exportRaster", json!({"path": path}));
+                    #[cfg(target_arch = "wasm32")]
                     return self.run("share.exportRaster", json!({"path": path}));
                 }
             }
@@ -3449,6 +3467,10 @@ impl RustGisApp {
                     // in the name, as in "U.S. Cities", isn't taken for one).
                     let typed = std::path::Path::new(&path).extension().is_some_and(|e| e.eq_ignore_ascii_case(&ext));
                     let path = if typed { path } else { format!("{path}.{ext}") };
+                    // Written on a thread of its own, with progress and Cancel in the status bar.
+                    #[cfg(not(target_arch = "wasm32"))]
+                    return exportjob::start(self, "share.exportLayer", json!({"path": path}));
+                    #[cfg(target_arch = "wasm32")]
                     return self.run("share.exportLayer", json!({"path": path}));
                 }
             }
@@ -4149,11 +4171,11 @@ impl RustGisApp {
         fieldmenu::play(self, &ctx);
         chrome::shortcuts(self, &ctx);
         panes::follow_layer_filter(self);
-        // A Zarr summary, a trend or a workflow running on its thread lands whatever is in view,
-        // the File menu's backstage too, so a project saved there holds it (all are looked at: `|`,
-        // not `||`), and the frames go on while one runs so it's taken when it ends.
+        // A Zarr summary, a trend, a workflow or an export running on its thread lands whatever is
+        // in view, the File menu's backstage too, so a project saved there holds it (all are looked
+        // at: `|`, not `||`), and the frames go on while one runs so it's taken when it ends.
         #[cfg(not(target_arch = "wasm32"))]
-        if workspacepanes::land_summary(self) | analysispane::land_trend(self) | analysispane::land_job(self) {
+        if workspacepanes::land_summary(self) | analysispane::land_trend(self) | analysispane::land_job(self) | exportjob::land(self) {
             ctx.request_repaint_after(std::time::Duration::from_millis(200));
         }
         if self.ui.backstage {

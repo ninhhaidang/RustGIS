@@ -7,6 +7,7 @@ use rustgis_data::raster::Crs;
 use rustgis_render::View;
 use serde_json::{Value, json};
 
+use super::exports::{Work, Wrote};
 use super::{f, need_layer, ps};
 use crate::{CmdResult, CommandSpec as C, Session};
 
@@ -15,7 +16,7 @@ pub fn commands() -> Vec<C> {
         C::new("share.exportMap", "Export Map", "Publish › Output", export_map)
             .view()
             .params(r#"{"path": "*.png", "width"?: px, "height"?: px, "dpi"?: 96..600}"#),
-        C::new("share.exportLayer", "Export Features", "Publish › Output", export_layer)
+        C::new("share.exportLayer", "Export Features", "Publish › Output", |s, p| super::exports::write_here(s, p, "share.exportLayer"))
             .view()
             .when(need_layer)
             .params(r#"{"layer"?, "path": "*.geojson|*.csv|*.fgb|*.gpkg|*.parquet|*.shp|*.zip|*.kml|*.kmz|*.gpx", "crs"?: "EPSG:… (or WKT) for a GeoPackage, Shapefile or FlatGeobuf (default: the system the layer was read in, else EPSG:4326)"}"#),
@@ -102,10 +103,18 @@ fn export_map(s: &mut Session, p: &Value) -> CmdResult {
 /// what the file couldn't hold: features without drawable geometry, a missing `.prj`, Z or M
 /// values dropped on import, positions that are approximate or aren't longitude/latitude, field
 /// names a Shapefile cuts.
-fn export_layer(s: &mut Session, p: &Value) -> CmdResult {
+pub(crate) fn layer_work(s: &Session, p: &Value) -> Result<Work, String> {
     let id = s.layer_id(p)?;
     let path = ps(p, "path").ok_or("path is required")?.to_string();
-    let l = s.map().layer(id).ok_or("no layer")?;
+    // The layer as it is now: its features are shared, and a streamed one's source is read on the
+    // export's thread.
+    let l = s.map().layer(id).ok_or("no layer")?.clone();
+    let asked = ps(p, "crs").map(str::trim).filter(|c| !c.is_empty()).map(Crs::parse).transpose()?;
+    Ok(Box::new(move || write_layer(&l, &path, asked)))
+}
+
+/// Writes layer `l` to `path`, in `asked` or the system the format defaults to.
+fn write_layer(l: &rustgis_map::Layer, path: &str, asked: Option<Crs>) -> Result<Wrote, String> {
     let ext = Path::new(&path).extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
     // A streamed layer exports its whole source, not the features read for the view: a chunk at
     // a time where the source and format allow, so its size isn't limited by memory.
@@ -114,10 +123,7 @@ fn export_layer(s: &mut Session, p: &Value) -> CmdResult {
     let ds = chunks.as_ref().map(|(_, layer)| layer).or(whole.as_ref()).unwrap_or(&l.dataset);
     // GeoJSON, KML and GPX are longitude/latitude; the others keep the layer's own system unless
     // told another.
-    let crs = match ps(p, "crs").map(str::trim).filter(|c| !c.is_empty()) {
-        Some(text) => Crs::parse(text)?,
-        None => rustgis_data::io::default_export_crs(ds, &ext),
-    };
+    let crs = asked.unwrap_or_else(|| rustgis_data::io::default_export_crs(ds, &ext));
     let (written, left_out, skipped) = match &chunks {
         Some((src, layer)) => {
             let e = rustgis_data::export::write_source_in(src.as_ref(), layer, Path::new(&path), crs).map_err(|e| e.to_string())?;
@@ -129,31 +135,28 @@ fn export_layer(s: &mut Session, p: &Value) -> CmdResult {
         }
     };
     // A streamed layer's extent is its whole source's.
-    let notes = rustgis_data::export_notes([(ds, l.extent())], &path, crs);
+    let notes = rustgis_data::export_notes([(ds, l.extent())], path, crs);
     // A Shapefile (`.shp`, or zipped to `.zip`) cuts field names to dBase's.
     let shapefile = matches!(ext.as_str(), "shp" | "zip");
     let mut dbf_notes = Vec::new();
     if shapefile {
-        dbf_notes.extend(rustgis_data::io::shapefile_names_note(&ds.fields, &path));
-        dbf_notes.extend(rustgis_data::io::shapefile_values_notes(ds, &path));
+        dbf_notes.extend(rustgis_data::io::shapefile_names_note(&ds.fields, path));
+        dbf_notes.extend(rustgis_data::io::shapefile_values_notes(ds, path));
     }
     // FlatGeobuf, KML, GPX and Shapefile hold features with geometry only (a Shapefile, only
     // geometry it can draw).
+    let mut said = Vec::new();
     if left_out > 0 {
-        s.notify(format!("{path}: {left_out} features without drawable geometry were left out"), false);
+        said.push(format!("{path}: {left_out} features without drawable geometry were left out"));
     }
     if skipped > 0 {
-        s.notify(format!("{path}: {skipped} rows couldn't be read and were left out"), false);
+        said.push(format!("{path}: {skipped} rows couldn't be read and were left out"));
     }
-    for note in notes {
-        s.notify(note, false);
-    }
-    for note in dbf_notes {
-        s.notify(note, false);
-    }
+    said.extend(notes);
+    said.extend(dbf_notes);
     if shapefile && rustgis_data::raster::wkt::to_wkt(crs).is_none() {
-        s.notify(format!("{path}: no .prj written, as {} has no WKT form", crs.label()), false);
+        said.push(format!("{path}: no .prj written, as {} has no WKT form", crs.label()));
     }
-    s.notify(format!("Exported {path}"), false);
-    Ok(json!({"path": path, "features": written, "leftOut": left_out, "crs": crs.label()}))
+    said.push(format!("Exported {path}"));
+    Ok(Wrote { answer: json!({"path": path, "features": written, "leftOut": left_out, "crs": crs.label()}), notes: said })
 }

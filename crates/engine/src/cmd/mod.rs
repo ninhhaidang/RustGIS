@@ -13,6 +13,7 @@ pub mod earthdata;
 pub mod edit;
 pub mod effects;
 pub mod embeddings;
+pub mod exports;
 pub mod geocode;
 pub mod geolibre;
 pub mod gp;

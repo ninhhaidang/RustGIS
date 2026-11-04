@@ -325,6 +325,7 @@ impl eframe::App for App {
     /// Every way eframe closes the app comes here, Cmd+Q on macOS included, which may not
     /// return from `run_native`: the run ended cleanly.
     fn on_exit(&mut self) {
+        self.0.end_exports();
         self.0.end_autosave();
         running::close(&self.1);
     }

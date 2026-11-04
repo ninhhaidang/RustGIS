@@ -339,6 +339,12 @@ pub fn status_bar(app: &mut RustGisApp, ui: &mut Ui) {
                         let _ = app.run("select.clear", Value::Null);
                     }
                 }
+                // An export writing its file: its progress and Cancel.
+                #[cfg(not(target_arch = "wasm32"))]
+                if app.export_job.is_some() {
+                    sep(ui, &t);
+                    crate::exportjob::status(app, ui, &t);
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     // The CPU/GPU backend toggle, then the frame rate (live while the map moves,
                     // "— fps" when idle), then the last render's cost.

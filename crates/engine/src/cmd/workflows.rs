@@ -1110,8 +1110,8 @@ fn convert(s: &mut Session, p: &Value) -> CmdResult {
     let text = match ps(p, "format").ok_or("format is required")? {
         "geojson" => rustgis_data::io::to_geojson(ds).to_string(),
         "csv" => rustgis_data::io::to_csv(ds).map_err(|e| e.to_string())?,
-        "kml" => rustgis_data::interop::to_kml(ds, name_field),
-        "gpx" => rustgis_data::interop::to_gpx(ds, name_field),
+        "kml" => rustgis_data::interop::to_kml(ds, name_field).map_err(|e| e.to_string())?,
+        "gpx" => rustgis_data::interop::to_gpx(ds, name_field).map_err(|e| e.to_string())?,
         "wkt" => rustgis_data::interop::to_wkt_csv(ds),
         f => return Err(format!("unknown format '{f}'")),
     };

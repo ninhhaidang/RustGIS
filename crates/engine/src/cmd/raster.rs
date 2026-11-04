@@ -87,7 +87,7 @@ pub fn commands() -> Vec<C> {
             r#"{"fromLayer"?: bool (the active or named layer's colour ramp stretch; the settings apply to every raster added later that would be a grey stretch, opened files and analysis results alike), "layer"?, "ramp"?, "invert"?: bool, "stretch"?: "none"|"minMax"|"percentClip"|"standardDeviation"|"histogramEqualize", "low"?, "high"?: %, "n"?: deviations, "resampling"?: "nearest"|"bilinear", "reset"?: bool (back to the black-to-white grey stretch)}"#,
         ),
         C::new("raster.info", "Raster Information", "Data › Information", info).view().when(need_raster).params(r#"{"layer"?}"#),
-        C::new("share.exportRaster", "Export Raster", "Data › Information", export).view().when(need_raster).params(
+        C::new("share.exportRaster", "Export Raster", "Data › Information", |s, p| super::exports::write_here(s, p, "share.exportRaster")).view().when(need_raster).params(
             r#"{"layer"?, "path": "*.tif", "band"?: 1.. (rasters that aren't colour ones; a colour raster writes its colour bands), "cog"?: bool (a cloud-optimised GeoTIFF: 512 px tiles, Deflate, overviews; default false, an untiled GeoTIFF)}"#,
         ),
     ]
@@ -900,29 +900,36 @@ pub fn geotiff_bytes(s: &Session, p: &Value) -> Result<(String, Vec<u8>), String
     Ok((r.name.clone(), bytes.map_err(|e| e.to_string())?))
 }
 
-fn export(s: &mut Session, p: &Value) -> CmdResult {
+/// `share.exportRaster`'s inputs, and the work that writes the raster as a GeoTIFF (a
+/// cloud-optimised one with `cog`).
+pub(crate) fn export_work(s: &Session, p: &Value) -> Result<super::exports::Work, String> {
     let path = ps(p, "path").ok_or("path is required")?.to_string();
     let (_, r) = get(s, p)?;
-    let mut cog = None;
-    if b(p, "cog") == Some(true) {
+    let bi = band(p, "band", &r)?.unwrap_or(0);
+    let cog = b(p, "cog") == Some(true);
+    Ok(Box::new(move || write_geotiff(&r, bi, cog, &path)))
+}
+
+/// Writes raster `r` (band `bi`, or its colour bands) to `path`, and says what the file holds.
+fn write_geotiff(r: &Raster, bi: usize, cog: bool, path: &str) -> Result<super::exports::Wrote, String> {
+    let cog = if cog {
         // Tiles go to the file as they are made: the whole file is never held in memory.
-        let bi = band(p, "band", &r)?.unwrap_or(0);
-        cog = Some(raster::cogwrite::write_file(&r, bi, Path::new(&path)).map_err(|e| format!("{path}: {e}"))?);
+        Some(raster::cogwrite::write_file(r, bi, Path::new(path)).map_err(|e| format!("{path}: {e}"))?)
     } else {
-        let (_, bytes) = geotiff_bytes(s, p)?;
-        rustgis_data::io::write_atomic(Path::new(&path), &bytes).map_err(|e| format!("{path}: {e}"))?;
-    }
+        let bytes = raster::geotiff::write(r, bi).map_err(|e| e.to_string())?;
+        rustgis_data::io::write_atomic(Path::new(path), &bytes).map_err(|e| format!("{path}: {e}"))?;
+        None
+    };
     let mut note = match r.overview {
         Some((fw, fh)) => format!(" (the {} × {} overview of the {fw} × {fh} raster)", r.width, r.height),
         None => String::new(),
     };
     // Values changed when the file was read are written as they are held: those of the bands the
     // writer writes, as it chooses them.
-    let bi = band(p, "band", &r)?.unwrap_or(0);
     let bands = if cog.is_some() {
-        raster::cogwrite::written_bands(&r, bi).map_err(|e| e.to_string())?
+        raster::cogwrite::written_bands(r, bi).map_err(|e| e.to_string())?
     } else {
-        raster::geotiff::written_bands(&r, bi)
+        raster::geotiff::written_bands(r, bi)
     };
     let written: u64 = bands.iter().filter_map(|b| r.rounded.get(*b)).sum();
     if written > 0 {
@@ -941,11 +948,10 @@ fn export(s: &mut Session, p: &Value) -> CmdResult {
     if !unnamed.is_empty() {
         note.push_str(&format!("; the class names of band(s) {} aren't written: a GeoTIFF keeps the first band's", unnamed.join(", ")));
     }
-    let spaced = raster::gdal_metadata_changed(&r, &bands);
+    let spaced = raster::gdal_metadata_changed(r, &bands);
     if spaced > 0 {
         note.push_str(&format!("; {spaced} band or class name(s) held control characters, written as spaces"));
     }
-    s.notify(format!("Exported {path}{note}"), false);
     let mut v = match r.overview {
         Some((fw, fh)) => json!({"path": path, "width": r.width, "height": r.height, "overviewOf": [fw, fh]}),
         None => json!({"path": path}),
@@ -953,7 +959,7 @@ fn export(s: &mut Session, p: &Value) -> CmdResult {
     if let (Some(o), Some(c)) = (v.as_object_mut(), cog) {
         o.insert("cog".into(), json!({"overviews": c.levels.len().saturating_sub(1), "bigTiff": c.big, "bytes": c.bytes}));
     }
-    Ok(v)
+    Ok(super::exports::Wrote { answer: v, notes: vec![format!("Exported {path}{note}")] })
 }
 
 /// Pixel values of the topmost visible raster under a longitude/latitude point.

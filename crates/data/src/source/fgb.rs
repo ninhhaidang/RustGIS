@@ -707,6 +707,7 @@ pub(crate) fn write_features(
     let mut left_out = 0;
     feed(&mut |features| {
         for feat in features {
+            crate::progress::step(1)?;
             let Some(g) = &feat.geometry else {
                 left_out += 1;
                 continue;

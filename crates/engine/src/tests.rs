@@ -27209,6 +27209,71 @@ fn raster_tools_run_on_another_thread() {
     assert!(runs_in_background("raster.editPixels").is_none());
 }
 
+/// Export Features and Export Raster written on another thread, as the app writes them (#1291
+/// step 3): the file, the answer and what the export says are those of one written here, nothing
+/// is said until it lands, and one cancelled before it starts writes nothing (a cancel in the
+/// middle of a write is the data crate's test).
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn exports_run_on_another_thread() {
+    use crate::cmd::exports::{export_land, export_start, runs_in_background};
+    use rustgis_analysis::control::Control;
+    let mut s = world();
+    s.run("layer.addDataBytes", &json!({"fileName": "dem.tif", "data": dem_b64()})).unwrap();
+    let dem = s.map().layers.iter().find(|l| l.is_raster()).unwrap().name.clone();
+    let dir = std::env::temp_dir().join(format!("rustgis-exports-thread-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let at = |name: &str| dir.join(name).display().to_string();
+    for (command, file, p) in [
+        ("share.exportLayer", "countries.geojson", json!({"layer": "Countries"})),
+        ("share.exportLayer", "countries.shp", json!({"layer": "Countries"})),
+        ("share.exportLayer", "countries.gpkg", json!({"layer": "Countries", "crs": "EPSG:3857"})),
+        ("share.exportRaster", "dem.tif", json!({"layer": dem})),
+        ("share.exportRaster", "dem_cog.tif", json!({"layer": dem, "cog": true})),
+    ] {
+        assert!(runs_in_background(command).is_some(), "{command}");
+        let (here, there, cancelled) = (at(&format!("here_{file}")), at(&format!("there_{file}")), at(&format!("cancelled_{file}")));
+        let with = |path: &str| {
+            let mut q = p.clone();
+            q["path"] = json!(path);
+            q
+        };
+        let said = |s: &Session, mark: u64, path: &str| -> Vec<String> {
+            s.notices_since(mark).iter().map(|n| n.text.replace(path, "PATH")).collect()
+        };
+        let mark = s.notice_mark();
+        let answer_here = s.run(command, &with(&here)).unwrap();
+        let said_here = said(&s, mark, &here);
+        let run = export_start(&mut s, command, &with(&there)).unwrap();
+        let mark = s.notice_mark();
+        let wrote = std::thread::spawn(move || run.run(&Control::new())).join().unwrap().unwrap();
+        assert!(s.notices_since(mark).is_empty(), "{command}: nothing is said before it lands");
+        let answer_there = export_land(&mut s, wrote);
+        assert_eq!(said(&s, mark, &there), said_here, "{command} {file}");
+        let unpathed = |v: &Value, path: &str| v.to_string().replace(path, "PATH");
+        assert_eq!(unpathed(&answer_there, &there), unpathed(&answer_here, &here), "{command} {file}");
+        // A GeoPackage holds the time it was written: its features are compared instead.
+        if file.ends_with(".gpkg") {
+            let read = |path: &str| rustgis_data::io::read_path(std::path::Path::new(path)).unwrap().0.features.len();
+            assert_eq!(read(&there), read(&here), "{file}");
+        } else {
+            assert_eq!(std::fs::read(&there).unwrap(), std::fs::read(&here).unwrap(), "{file}");
+        }
+        let run = export_start(&mut s, command, &with(&cancelled)).unwrap();
+        let control = Control::new();
+        control.cancel();
+        assert!(run.run(&control).err().unwrap().contains("was cancelled"), "{command}");
+        assert!(!std::path::Path::new(&cancelled).exists(), "{file}: a cancelled export writes nothing");
+    }
+    // Their inputs are read when they start: a missing layer or a bad system is refused then.
+    assert!(export_start(&mut s, "share.exportLayer", &json!({"layer": "nowhere", "path": at("x.geojson")})).is_err());
+    assert!(export_start(&mut s, "share.exportLayer", &json!({"layer": "Countries", "path": at("x.gpkg"), "crs": "EPSG:nope"})).is_err());
+    assert!(export_start(&mut s, "share.exportRaster", &json!({"layer": dem, "path": at("x.tif"), "band": 99})).is_err());
+    // Map and layout exports draw the map: they still run where they're called.
+    assert!(runs_in_background("share.exportMap").is_none() && runs_in_background("layout.export").is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// k-means classes and a deep learning classification made on another thread, as the Analysis pane
 /// runs them (#1291 step 3): the classes handed over (`ran`) are the ones the command makes here, a
 /// model trained on the thread is kept in the project only once its classes are added, and a raster

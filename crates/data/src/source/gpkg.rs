@@ -615,6 +615,9 @@ fn install(conn: Connection, tmp: tempfile::TempPath, path: &Path) -> Result<()>
     conn.close().map_err(|(_, e)| err(e))?;
     // Built without syncing (fast); synced once before installation. Windows needs a write handle.
     std::fs::OpenOptions::new().write(true).open(&tmp)?.sync_all()?;
+    // A cancel that came while it was built leaves no file (the temporary one is removed). This
+    // is the last look: persisting commits the file, and a Cancel after it finds it written.
+    crate::progress::check()?;
     // Refuse journals that appeared during the build; persistence also closes the file race.
     check_new_destination(path)?;
     tmp.persist_noclobber(path).map_err(|e| destination_error(path, e.error))?;
@@ -825,6 +828,7 @@ fn insert(conn: &Connection, layout: &Layout, features: &[crate::Feature], keep_
     let mut index =
         if has_geom { Some(conn.prepare_cached(&format!("INSERT INTO {rt} VALUES (?1, ?2, ?3, ?4, ?5)")).map_err(err)?) } else { None };
     for f in features {
+        crate::progress::step(1)?;
         if has_geom && !multi_points && matches!(f.geometry, Some(crate::Geometry::MultiPoint(_))) && layout.geom_type == "POINT" {
             return Ok(Some(Redo::MultiPoints));
         }
