@@ -2196,7 +2196,7 @@ fn arcgis(url: &str, v: &serde_json::Value) -> Result<Service, String> {
         return Err("an ArcGIS address, but not a FeatureServer, MapServer, ImageServer or VectorTileServer".into());
     }
     // A feature layer is read past the server's record limit, page by page, where the layer
-    // supports it ([`read_pages`]). A cut-off answer is pointed out when it lands.
+    // supports it ([`begin`]). A cut-off answer is pointed out when it lands.
     if let Some(max) = v.get("maxRecordCount").and_then(|m| m.as_i64())
         && service.layers.iter().any(|l| matches!(l.offer, Offer::Features { .. }))
     {
@@ -2857,20 +2857,20 @@ fn unidentified_hash(feature: &RawValue) -> Option<u64> {
     Some(hash.finish())
 }
 
-/// A feature collection read page by page: `first` (from `url`), then each page `get` returns, up
-/// to `max` features, as [`read_pages`] leads (the blocking way to drive it). The pages' features
-/// in one collection, and a note when some features were left unread; a first page that leads
-/// nowhere comes back unchanged.
+/// A service's features at `url` read page by page, each answer `get` returns, up to `max`
+/// features, as [`begin`] leads (the blocking way to drive it). The pages' features in one
+/// collection, and a note when some features were left unread; a first page that leads nowhere
+/// comes back unchanged. An error when the features couldn't be fetched at all.
 pub fn join_pages(
     url: &str,
-    first: Vec<u8>,
     max: usize,
     mut get: impl FnMut(&str) -> Result<Vec<u8>, String>,
-) -> (Vec<u8>, Option<String>) {
-    let mut step = read_pages(url, first, max);
+) -> Result<(Vec<u8>, Option<String>), String> {
+    let mut step = begin(url, max);
     loop {
         match step {
-            Step::Done(bytes, note) => return (bytes, note),
+            Step::Done(bytes, note) => return Ok((bytes, note)),
+            Step::Failed(e) => return Err(e),
             Step::Fetch(pages) => {
                 let answer = get(pages.next_url());
                 step = (*pages).land(answer);
@@ -2879,7 +2879,7 @@ pub fn join_pages(
     }
 }
 
-/// Where reading a collection page by page has got to ([`read_pages`]).
+/// Where reading a collection page by page has got to ([`begin`]).
 #[derive(Debug)]
 pub enum Step {
     /// The next answer to fetch ([`Pages::next_url`]), to hand to [`Pages::land`].
@@ -2887,6 +2887,8 @@ pub enum Step {
     /// The collection as read (the pages joined, or the first page as it came) and a note when
     /// some features were left unread.
     Done(Vec<u8>, Option<String>),
+    /// The features couldn't be fetched at all: why.
+    Failed(String),
 }
 
 /// A feature collection being read page by page, sans I/O: it says which address to fetch next
@@ -2896,7 +2898,7 @@ pub enum Step {
 pub struct Pages {
     /// The first page's address.
     url: String,
-    /// The first page, without its features.
+    /// The first page, without its features (null until a page is read).
     doc: serde_json::Value,
     /// The features read, each its JSON text as the server wrote it: read into values, a
     /// feature's every coordinate would be one, several times the text's size (#830).
@@ -2912,9 +2914,13 @@ pub struct Pages {
 /// What the answer being fetched is.
 #[derive(Debug)]
 enum Phase {
-    /// An ArcGIS layer's description, which says whether it can be read in pages; `first` is the
-    /// first page as it came, kept for when it can't.
-    Describe { first: Vec<u8> },
+    /// An ArcGIS layer's description, fetched before its first page: it says whether the layer
+    /// can be read in pages, and how long they may be.
+    Describe,
+    /// The address asked for, as it is: the first page. `paging`: how the ArcGIS layer it queries
+    /// is read in pages when this one is cut off (its description named no page size RustGIS
+    /// asks for, so the pages are as long as this one).
+    First { paging: Option<ArcgisPaging> },
     /// A WFS hits response, used when its GeoJSON gives no next link.
     WfsHits,
     /// WFS offsets count returned rows, while ids prevent overlapping pages adding duplicates.
@@ -2931,7 +2937,8 @@ enum Phase {
     Linked { total: Option<u64> },
     /// An ArcGIS page, `size` long from an offset, in `order`. `start` is the first such page's
     /// first feature (a server that ignores the offset sends it again), once it is read; until
-    /// then `first` keeps the first page as it came, to fall back on.
+    /// then `first` keeps the first page as it came, to fall back on (none: the address asked
+    /// for is fetched as it is instead).
     Offsets { size: usize, order: Option<String>, start: Option<serde_json::Value>, first: Option<Vec<u8>> },
 }
 
@@ -2993,33 +3000,67 @@ fn first_value(features: &[Box<RawValue>]) -> Option<serde_json::Value> {
     serde_json::from_str(features.first()?.get()).ok()
 }
 
-/// Starts reading a feature collection page by page from its first page (`first`, from `url`), up
-/// to `max` features. An OGC API or WFS page leads to the next by its `next` link. A WFS
-/// request without a next link uses a hits count and STARTINDEX pages (WFS 2.0). An ArcGIS
-/// query that stopped at the server's record limit (`exceededTransferLimit`) is read again in
-/// pages (`resultOffset`, `resultRecordCount`, in the order of its object ids) when the layer's
-/// description says it can be (fetched first: `advancedQueryCapabilities.supportsPagination`):
-/// from the start, since the first page, asked for in no order, may not be the paged order's. The pages' features end up in one collection,
-/// with the first page's other members and without its paging ones. A first page that leads
-/// nowhere is done at once, unchanged (and [`partial_note`] says what it holds). Legacy WFS
-/// without links warns when its requested MAXFEATURES limit is reached.
-pub fn read_pages(url: &str, first: Vec<u8>, max: usize) -> Step {
+/// Starts reading a service's features at `url`, up to `max`, before anything is fetched.
+///
+/// An ArcGIS layer's query (one that doesn't ask for a window of its own: `resultOffset`,
+/// `resultRecordCount`) fetches the layer's description first. When it says the layer can be read
+/// in pages (`advancedQueryCapabilities.supportsPagination`) of a size it names
+/// (`maxRecordCount`), the layer is read in pages (`resultOffset`, `resultRecordCount`) in the
+/// order of its object ids from the start, so a layer past its record limit isn't read once in no
+/// order and again in pages. Otherwise, or when the paging fails before a page is read, the query
+/// is fetched as it is; a description naming no page size pages it, when it is cut off
+/// (`exceededTransferLimit`), in pages as long as its answer.
+///
+/// Any other address is fetched as it is. An OGC API or WFS page leads to the next by its `next`
+/// link. A WFS request without a next link uses a hits count and STARTINDEX pages (WFS 2.0).
+/// Legacy WFS without links warns when its requested MAXFEATURES limit is reached.
+///
+/// The pages' features end up in one collection, with the first page's other members and
+/// without its paging ones. A first page that leads nowhere is done at once, unchanged (and
+/// [`partial_note`] says what it holds).
+pub fn begin(url: &str, max: usize) -> Step {
+    // A query that asks for a window of its own is read as asked.
+    let paged = is_arcgis_query(url) && ["resultOffset", "resultRecordCount"].iter().all(|k| query_value(url, k).is_none());
+    let (next, phase) = if paged { (arcgis_layer_url(url), Phase::Describe) } else { (url.to_string(), Phase::First { paging: None }) };
+    Step::Fetch(Box::new(Pages {
+        url: url.to_string(),
+        doc: serde_json::Value::Null,
+        features: Vec::new(),
+        max,
+        seen: std::collections::HashSet::new(),
+        next,
+        from: url.to_string(),
+        phase,
+    }))
+}
+
+/// Reads on from the first page (`first`, the answer to `url` as it is), as [`begin`] says;
+/// `paging`, how the ArcGIS layer it queries is read in pages when it is cut off.
+fn read_first(url: &str, first: Vec<u8>, max: usize, paging: Option<ArcgisPaging>) -> Step {
     let (head, tail) = edges(&first);
     let linked = head.contains("\"next\"") || tail.contains("\"next\"");
-    // A query that asks for a window of its own (`resultOffset`, `resultRecordCount`) is read as asked.
-    let limited = is_arcgis_query(url)
-        && ["resultOffset", "resultRecordCount"].iter().all(|k| query_value(url, k).is_none())
-        && (is_true(&head, "exceededTransferLimit") || is_true(&tail, "exceededTransferLimit"));
+    let limited = paging.is_some() && (is_true(&head, "exceededTransferLimit") || is_true(&tail, "exceededTransferLimit"));
     let wfs = is_wfs_query(url);
     let legacy_wfs = is_legacy_wfs_query(url);
     if !(linked || limited || wfs || legacy_wfs) {
         return Step::Done(first, None);
     }
-    let Ok(Some((doc, features))) = split_page(&first) else { return Step::Done(first, None) };
+    let Ok(Some((doc, mut features))) = split_page(&first) else { return Step::Done(first, None) };
     let (next, phase) = if linked && let Some(next) = next_page(url, &doc) {
         (next, Phase::Linked { total: doc.get("totalFeatures").and_then(serde_json::Value::as_u64) })
-    } else if limited && exceeded(&doc) {
-        (arcgis_layer_url(url), Phase::Describe { first })
+    } else if limited
+        && exceeded(&doc)
+        && let Some(paging) = paging
+        && (paging.size.is_some() || !features.is_empty())
+    {
+        // Offsets count in one order: this page, asked for in none, may hold other features than
+        // the paged order's first, so the layer is read again from the start.
+        let size = paging.size.unwrap_or(features.len());
+        features.clear();
+        (
+            arcgis_page_url(url, 0, size, paging.order.as_deref()),
+            Phase::Offsets { size, order: paging.order, start: None, first: Some(first) },
+        )
     } else if wfs {
         (wfs_page_url(url, None, 0), Phase::WfsHits)
     } else {
@@ -3052,13 +3093,25 @@ pub fn read_pages(url: &str, first: Vec<u8>, max: usize) -> Step {
         from: url.to_string(),
         phase,
     };
-    match pages.phase {
-        Phase::Linked { .. } | Phase::WfsHits => pages.advance(),
-        _ => Step::Fetch(Box::new(pages)),
-    }
+    pages.advance()
 }
 
+/// Longest a reader of [`Pages`] waits for an ArcGIS layer's description, read before its
+/// features ([`Pages::describing`]): one that hangs is given up on, and the layer's query is
+/// fetched as it is.
+pub const DESCRIPTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Most bytes a reader of [`Pages`] takes for an ArcGIS layer's description, which doesn't count
+/// against the features' budget: a few kilobytes as a rule, so one larger than this is given up
+/// on, and the layer's query fetched as it is.
+pub const DESCRIPTION_MAX: usize = 4 << 20;
+
 impl Pages {
+    /// Whether the answer to fetch now is an ArcGIS layer's description, read before its features.
+    pub fn describing(&self) -> bool {
+        matches!(self.phase, Phase::Describe)
+    }
+
     /// The address to fetch now.
     pub fn next_url(&self) -> &str {
         &self.next
@@ -3111,21 +3164,23 @@ impl Pages {
             };
             return self.advance();
         }
-        if let Phase::Describe { first } = &mut self.phase {
-            let first = std::mem::take(first);
+        if matches!(self.phase, Phase::Describe) {
             let paging = answer.ok().and_then(|b| serde_json::from_slice(&b).ok()).and_then(|l| arcgis_paging(&l));
-            let Some(paging) = paging else { return Step::Done(first, None) };
-            let size = paging.size.unwrap_or(self.features.len());
-            if size == 0 {
-                return Step::Done(first, None);
-            }
-            // Offsets count in one order: the first page, asked for in none, may hold other
-            // features than the paged order's first, so the layer is read again from the start.
-            self.features.clear();
-            self.next = arcgis_page_url(&self.url, 0, size, paging.order.as_deref());
-            self.from = self.url.clone();
-            self.phase = Phase::Offsets { size, order: paging.order, start: None, first: Some(first) };
-            return self.advance();
+            return match paging {
+                Some(ArcgisPaging { size: Some(size), order }) => {
+                    self.next = arcgis_page_url(&self.url, 0, size, order.as_deref());
+                    self.phase = Phase::Offsets { size, order, start: None, first: None };
+                    self.advance()
+                }
+                paging => self.ask_as_it_is(paging),
+            };
+        }
+        if let Phase::First { paging } = &mut self.phase {
+            let paging = paging.take();
+            return match answer {
+                Ok(first) => read_first(&self.url, first, self.max, paging),
+                Err(e) => Step::Failed(e),
+            };
         }
         let read = self.features.len();
         let (page, mut more) = match answer.and_then(|b| split_page(&b)) {
@@ -3190,6 +3245,11 @@ impl Pages {
             }
             _ => next_page(&self.next, &page),
         };
+        // An ArcGIS layer read in pages from its description: the first page read gives the
+        // collection's other members.
+        if self.doc.is_null() {
+            self.doc = page;
+        }
         self.features.extend(more);
         if self.features.len() > self.max {
             return self.finish_at_max();
@@ -3220,17 +3280,32 @@ impl Pages {
     }
 
     /// Done early, with a note; or, when an ArcGIS layer's paged reading stops before any of its
-    /// features are read, with the first page as it came (which says it was cut off).
+    /// features are read, with the first page as it came (which says it was cut off), or the
+    /// query fetched as it is when none was.
     fn stop(mut self, note: String) -> Step {
         let note = match self.phase {
             Phase::WfsOffsets { matched, .. } => format!("{} of {matched} WFS features read: {note}", self.features.len()),
             Phase::WfsHits => format!("{} WFS features read: {note}", self.features.len()),
             _ => note,
         };
-        if let Phase::Offsets { first: Some(first), .. } = &mut self.phase {
-            return Step::Done(std::mem::take(first), None);
+        if let Phase::Offsets { first, start: None, .. } = &mut self.phase {
+            return match first.take() {
+                Some(first) => Step::Done(first, None),
+                None => self.ask_as_it_is(None),
+            };
         }
         self.finish(Some(note))
+    }
+
+    /// The query fetched as it is, from nothing read: an ArcGIS layer that can't be read in pages
+    /// from its description (`paging`: in pages as long as its answer, when it is cut off).
+    fn ask_as_it_is(mut self, paging: Option<ArcgisPaging>) -> Step {
+        self.features.clear();
+        self.doc = serde_json::Value::Null;
+        self.next = self.url.clone();
+        self.from = self.url.clone();
+        self.phase = Phase::First { paging };
+        Step::Fetch(Box::new(self))
     }
 
     /// The next page fetched, unless the features are all read that may be or the pages lead
@@ -3266,6 +3341,10 @@ impl Pages {
         } else {
             note
         };
+        // Done before a page was read (a limit of none).
+        if self.doc.is_null() {
+            self.doc = serde_json::json!({"type": "FeatureCollection"});
+        }
         if let Some(members) = self.doc.as_object_mut() {
             for paging in ["links", "numberMatched", "numberReturned", "exceededTransferLimit"] {
                 members.remove(paging);
@@ -3550,6 +3629,22 @@ mod fixtures;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Reads as [`super::join_pages`] does, the address asked for answered with `first` (once) and
+    /// every other with `get`.
+    fn join_pages(
+        url: &str,
+        first: Vec<u8>,
+        max: usize,
+        mut get: impl FnMut(&str) -> Result<Vec<u8>, String>,
+    ) -> (Vec<u8>, Option<String>) {
+        let mut first = Some(first);
+        super::join_pages(url, max, |u| match first.take_if(|_| u == url) {
+            Some(first) => Ok(first),
+            None => get(u),
+        })
+        .unwrap()
+    }
 
     /// A layer's box names its system otherwise than its list (`EPSG:3035` for the URN): found by
     /// code, it still says the service writes LAEA Europe north first.
@@ -4431,11 +4526,13 @@ mod tests {
         }
     }
 
-    /// An ArcGIS layer past its record limit: read again from the start in pages of the layer's
-    /// `maxRecordCount` ordered by its object ids (its first page, asked for in no order, may hold
-    /// other features than the ordered first: Hawaii's zoning did), each from where the last
-    /// stopped, until a page no longer says it was cut off. A layer that can't be paged, or whose
-    /// paging fails before a page is read, comes back as it was (with its note).
+    /// An ArcGIS layer's description first: a layer that pages is read from the start in pages of
+    /// its `maxRecordCount` ordered by its object ids (a page asked for in no order may hold other
+    /// features than the ordered first: Hawaii's zoning did), each from where the last stopped,
+    /// until a page no longer says it was cut off; its query as it is is never fetched. A layer
+    /// naming no page size is fetched as it is, then read again in pages as long as its answer
+    /// when it was cut off. A layer that can't be paged, or whose paging fails before a page is
+    /// read, comes back as it was (with its note).
     #[test]
     fn arcgis_pages_joined_from_offsets() {
         let query = "https://x.org/arcgis/rest/services/P/FeatureServer/0/query?where=1%3D1&outFields=*&f=geojson&token=t";
@@ -4470,18 +4567,42 @@ mod tests {
                 }
             }
         };
-        // The first page in the server's own order: two of the five, not the ordered first two.
-        let unordered = br#"{"type":"FeatureCollection","features":[{"id":3},{"id":0}],"properties":{"exceededTransferLimit":true}}"#;
+        // The description, then the pages: the query as it is (whose first page, in the server's
+        // own order, would be read and thrown away) isn't fetched.
         let mut asked = Vec::new();
         let answer = server(layer(r#", "maxRecordCount": 2"#));
-        let (joined, note) = join_pages(query, unordered.to_vec(), 100, |u| answer(&mut asked, u));
+        let (joined, note) = super::join_pages(query, 100, |u| {
+            assert_ne!(u, query, "the query isn't fetched as it is");
+            answer(&mut asked, u)
+        })
+        .unwrap();
         assert_eq!((ids(&joined), note), (vec![0, 1, 2, 3, 4], None));
+        assert_eq!(asked[0], "https://x.org/arcgis/rest/services/P/FeatureServer/0?f=json&token=t");
         assert_eq!(asked[1], format!("{query}&resultOffset=0&resultRecordCount=2&orderByFields=OBJECTID"));
         assert!(asked[2].contains("resultOffset=2&resultRecordCount=2") && asked[3].contains("resultOffset=4&resultRecordCount=2"));
         assert_eq!(asked.len(), 4);
         let v: serde_json::Value = serde_json::from_slice(&joined).unwrap();
+        assert_eq!(v["type"], "FeatureCollection");
         assert!(v.pointer("/properties/exceededTransferLimit").is_none());
         assert!(partial_note(&joined).is_none());
+        // A layer under its record limit: its description and one page.
+        let mut asked = Vec::new();
+        let answer = server(layer(r#", "maxRecordCount": 5"#));
+        let (joined, note) = super::join_pages(query, 100, |u| answer(&mut asked, u)).unwrap();
+        assert_eq!((ids(&joined), note, asked.len()), (vec![0, 1, 2, 3, 4], None, 2));
+        // Pages that fail before one is read: the query as it is, as it came; an error when that
+        // can't be fetched either.
+        let mut asked = Vec::new();
+        let answer = server(layer(r#", "maxRecordCount": 2"#));
+        let (joined, note) = join_pages(query, page(0, 2), 100, |u| {
+            if u.contains("resultOffset") { Err("http status: 500".into()) } else { answer(&mut asked, u) }
+        });
+        assert_eq!((joined, note, asked.len()), (page(0, 2), None, 1));
+        let answer = server(layer(r#", "maxRecordCount": 2"#));
+        let failed = super::join_pages(query, 100, |u| {
+            if u.contains("resultOffset") || u == query { Err("http status: 500".into()) } else { answer(&mut Vec::new(), u) }
+        });
+        assert_eq!(failed, Err("http status: 500".into()));
         // The limit cuts it short, with a note.
         let answer = server(layer(r#", "maxRecordCount": 2"#));
         let (joined, note) = join_pages(query, page(0, 2), 3, |u| answer(&mut Vec::new(), u));
@@ -4534,14 +4655,25 @@ mod tests {
         });
         assert_eq!(ids(&joined), [0, 1]);
         assert!(note.is_some_and(|n| n.contains("after feature 2 couldn't be read (http status: 500)")));
-        // Only an ArcGIS query is asked again, only one that was cut off, and not one that asks
-        // for a window of its own.
+        // Only an ArcGIS query is described and paged, and not one that asks for a window of its
+        // own; one whose layer names no page size, only when it was cut off.
         let unasked = |_: &str| -> Result<Vec<u8>, String> { panic!("no page is asked for") };
         let elsewhere = "https://x.org/collections/a/items?f=json";
         assert_eq!(join_pages(elsewhere, page(0, 2), 100, unasked), (page(0, 2), None));
-        assert_eq!(join_pages(query, page(0, 5), 100, unasked), (page(0, 5), None));
         let window = format!("{query}&resultRecordCount=2");
         assert_eq!(join_pages(&window, page(0, 2), 100, unasked), (page(0, 2), None));
+        let mut asked = Vec::new();
+        let answer = server(layer(""));
+        assert_eq!(join_pages(query, page(0, 5), 100, |u| answer(&mut asked, u)), (page(0, 5), None));
+        assert_eq!(asked.len(), 1);
+        // A limit of none: an empty collection, said.
+        let answer = server(layer(r#", "maxRecordCount": 2"#));
+        let (joined, note) = super::join_pages(query, 0, |u| answer(&mut Vec::new(), u)).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&joined).unwrap(),
+            serde_json::json!({"type": "FeatureCollection", "features": []})
+        );
+        assert!(note.is_some_and(|n| n.contains("first 0 features")));
     }
 
     /// The addresses an ArcGIS layer is paged with: its description's (with the token), each page's

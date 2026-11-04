@@ -231,7 +231,7 @@ Scripts use `service.import {"url":"…","name":"My OGC Layer"}` and
 | OGC API Features | Collections | Their items downloaded as GeoJSON, following the service's `next` pages up to 100,000 features, or more on a computer with more memory (see Environments in the analysis guide; a command such as `service.add` waits a minute at most) |
 | OGC API Tiles | Collections' map and vector tiles; a landing page's dataset map tiles | A tile layer in WebMercatorQuad, from the tile template the tileset advertises (its `item` link; `…/tiles/WebMercatorQuad/{z}/{y}/{x}`, the usual path, when that can't be read), keeping the tiles link's query (a token), map tiles in the server's image format, vector tiles drawn layer by layer in colours of their own |
 | WCS 1.0 / 2.0 (a 1.1 service is asked in 1.0) | Coverages, with their bounds | A raster: GetCoverage of the map's view within the coverage's bounds (or its whole extent: `"bbox": "full"`), as a GeoTIFF in EPSG:4326, at most 2048 pixels on a side |
-| ArcGIS REST | FeatureServer and MapServer layers; a MapServer's map; an ImageServer; a VectorTileServer | Layers queried as GeoJSON, page by page past the server's record limit (`resultOffset`) up to 100,000 features or more on a computer with more memory (a command such as `service.add` waits a minute at most), where the layer supports paging (ArcGIS Server 10.3 and later; otherwise up to the record limit); a map as its tile cache when it is Web Mercator's pyramid, else exported images; an ImageServer as exported images; a VectorTileServer as its MapLibre style |
+| ArcGIS REST | FeatureServer and MapServer layers; a MapServer's map; an ImageServer; a VectorTileServer | Layers queried as GeoJSON (the layer's description read first, or given up on after 15 seconds), page by page past the server's record limit (`resultOffset`) up to 100,000 features or more on a computer with more memory (a command such as `service.add` waits a minute at most for the features), where the layer supports paging (ArcGIS Server 10.3 and later; otherwise up to the record limit); a map as its tile cache when it is Web Mercator's pyramid, else exported images; an ImageServer as exported images; a VectorTileServer as its MapLibre style |
 
 A WMS or WMTS layer's tiles are asked for down to the detail its service gives, and stretched
 only past it: a WMTS layer's over the zooms of its tile matrix set (or those its
@@ -278,7 +278,7 @@ each service's own terms:
 
 A WFS 1.0 service reads its box in the feature type's own coordinate system, so it is asked for
 the whole layer, as is an area across the antimeridian; a note says so. When a whole layer takes
-longer than `service.add` waits (a minute), the error suggests `"bbox"`:
+longer than `service.add` waits (a minute for its features), the error suggests `"bbox"`:
 
 ```sh
 rustgis-cli run --cmd 'service.add={"url":"https://geoservicos.ibge.gov.br/geoserver/wfs","layer":"CGMAT:qg_2024_030_munic","bbox":[-45.99,-10.93,-40.37,-2.74]}'

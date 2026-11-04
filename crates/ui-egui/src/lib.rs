@@ -673,7 +673,8 @@ pub struct UiState {
     /// that can be read in place are added so, others downloaded (the `ui.addUrl` parameters,
     /// and the answer).
     pub cog_probes: Vec<(Value, Slot<Result<bool, String>>)>,
-    /// Service layers whose features are being read page by page, after their first page landed.
+    /// Service layers whose features are being read page by page (an ArcGIS layer's description
+    /// first).
     pub service_pages: Vec<serviceui::PageRead>,
     /// A link's data (`?data=`) has zoomed the map: the first of its files to land with something
     /// to show does, whichever it is.
@@ -2589,17 +2590,6 @@ impl RustGisApp {
                     return Ok(Value::Null);
                 }
                 let url = url.to_string();
-                let slot: Slot<Result<Vec<u8>, String>> = Slot::default();
-                let land = slot.clone();
-                rustgis_engine::render::rustgis_tiles::cache::download_limited(
-                    &url,
-                    if p.get("geolibreProject").and_then(Value::as_bool) == Some(true) {
-                        rustgis_engine::map::geolibre::MAX_TEXT
-                    } else {
-                        rustgis_engine::render::rustgis_tiles::cache::MAX_DOWNLOAD
-                    },
-                    Box::new(move |r| *land.lock().unwrap_or_else(|e| e.into_inner()) = Some(r)),
-                );
                 let mut q = json!({});
                 for k in ["name", "layer", "crs"] {
                     if let Some(v) = p.get(k).filter(|v| v.as_str().is_some_and(|s| !s.trim().is_empty())) {
@@ -2636,6 +2626,24 @@ impl RustGisApp {
                 let shown = rustgis_engine::data::s3_address::inner(&url);
                 self.session.notify(i18n::fmt("Downloading {url}…", &[("url", shown)]), false);
                 let id = self.session.download_started();
+                // A service's features: read page by page from the start, off the frame (an ArcGIS
+                // layer's description first).
+                if q.get("service").and_then(Value::as_bool) == Some(true) {
+                    let origin = connectiontree::take_origin_key(&mut q);
+                    serviceui::read_pages(self, serviceui::Landed { id, url, params: q, origin });
+                    return Ok(Value::Null);
+                }
+                let slot: Slot<Result<Vec<u8>, String>> = Slot::default();
+                let land = slot.clone();
+                rustgis_engine::render::rustgis_tiles::cache::download_limited(
+                    &url,
+                    if q.get("geolibreProject").and_then(Value::as_bool) == Some(true) {
+                        rustgis_engine::map::geolibre::MAX_TEXT
+                    } else {
+                        rustgis_engine::render::rustgis_tiles::cache::MAX_DOWNLOAD
+                    },
+                    Box::new(move |r| *land.lock().unwrap_or_else(|e| e.into_inner()) = Some(r)),
+                );
                 self.ui.downloads.push((id, url, q, slot));
             }
             "ui.connection" => {
@@ -3652,10 +3660,6 @@ impl RustGisApp {
         for (id, url, mut p, r) in landed {
             let origin = connectiontree::take_origin_key(&mut p);
             match r {
-                // A service's features: the pages after the first are read, off the frame, first.
-                Ok(bytes) if p.get("service").and_then(Value::as_bool) == Some(true) => {
-                    serviceui::read_pages(self, serviceui::Landed { id, url, params: p, origin }, bytes);
-                }
                 Ok(bytes) => self.add_landed(serviceui::Landed { id, url, params: p, origin }, bytes),
                 Err(e) => {
                     self.session.download_failed(id);
