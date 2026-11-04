@@ -40,7 +40,7 @@ pub fn commands() -> Vec<C> {
             .params(r#"{"layer"?: name|id, "crs": "EPSG:… or WKT; reinterpret native coordinates, without rewriting the source file"}"#),
         C::new("layer.loadAll", "Load All Features", "Layers", load_all).when(need_streamed).params(r#"{"layer"?: name|id}"#),
         C::new("layer.addUrl", "Add Data From URL", "Home › Add › Add Data", add_url).params(
-            r#"{"url": "https://…/data.geojson|.csv|.parquet|.fgb|.gpkg|.zip|.kml|.kmz|.gpx|.tif|.jp2 (JPEG 2000: desktop, through GDAL) (the format from the address, else the contents) | a .pmtiles archive", "name"?: text, "layer"?: "one layer of a zip, KML or GPX", "zoom"?: "bool: true zooms to what was added; false keeps the view of a GeoParquet or FlatGeobuf read in place (zoomed to only when the map was empty)", "x"?, "y"?, "wkt"?, "crs"?, "delimiter"?, "paperSpace"?, "stream"?, "as"? (as layer.addData), "whole"?: "bool: download a cloud-optimised GeoTIFF whole (as a raster layer) instead of reading it in place (an address without a file name is read in place when its first bytes are a cloud-optimised GeoTIFF)", "cog"?: "bool: the address is a cloud-optimised GeoTIFF whatever its name says (the app's probe found it so)", "bbox"?: "[west, south, east, north] in degrees | "view": a cloud-optimised GeoTIFF's window as a raster layer (desktop and command line), read by range at full resolution, in the file's coordinate system, with its colour table and class names; at most 64 million values (all bands)", "cellSize"?: "with bbox: the coarsest overview whose cells are at most this size is read (the file's units; metres for longitude/latitude, a degree taken as 111.32 km)", "start"?, "end"?, "unit"?, "interval"?, "dates"?: "a GeoTIFF address with date placeholders ({date:YYYY}, {YYYY}{MM}{DD}), one file per date: the dates it spans and steps through (as time.set), turning the time slider on"}"#,
+            r#"{"url": "https://…/data.geojson|.csv|.parquet|.fgb|.gpkg|.zip|.shp (its .dbf fetched beside it, and its .shx, .prj and .cpg when there)|.kml|.kmz|.gpx|.tif|.jp2 (JPEG 2000: desktop, through GDAL) (the format from the address, else the contents) | a .pmtiles archive", "name"?: text, "layer"?: "one layer of a zip, KML or GPX", "zoom"?: "bool: true zooms to what was added; false keeps the view of a GeoParquet or FlatGeobuf read in place (zoomed to only when the map was empty)", "x"?, "y"?, "wkt"?, "crs"?, "delimiter"?, "paperSpace"?, "stream"?, "as"? (as layer.addData), "whole"?: "bool: download a cloud-optimised GeoTIFF whole (as a raster layer) instead of reading it in place (an address without a file name is read in place when its first bytes are a cloud-optimised GeoTIFF)", "cog"?: "bool: the address is a cloud-optimised GeoTIFF whatever its name says (the app's probe found it so)", "bbox"?: "[west, south, east, north] in degrees | "view": a cloud-optimised GeoTIFF's window as a raster layer (desktop and command line), read by range at full resolution, in the file's coordinate system, with its colour table and class names; at most 64 million values (all bands)", "cellSize"?: "with bbox: the coarsest overview whose cells are at most this size is read (the file's units; metres for longitude/latitude, a degree taken as 111.32 km)", "start"?, "end"?, "unit"?, "interval"?, "dates"?: "a GeoTIFF address with date placeholders ({date:YYYY}, {YYYY}{MM}{DD}), one file per date: the dates it spans and steps through (as time.set), turning the time slider on"}"#,
         ),
         C::new("layer.addDownload", "Add Downloaded Data", "Home › Add", add_download)
             .params(r#"{"id": a download the app finished (Home › Add › Add Data › From URL), "url": its address, "name"?: text, "layer"?: text, "zoom"?: bool, "x"?, "y"?, "wkt"?, "crs"?, "delimiter"?, "paperSpace"?, "stream"?, "as"? (as layer.addData), "service"?: bool (a service's features: their axes and paging are checked, and the address is kept as the layer's source), "bounds"?: [west, south, east, north] (with service: the layer's longitude/latitude bounds from its capabilities, which its axes are checked against; without bounds they are left as they come; ignored without service), "coverage"?: bool (a WCS coverage: a GeoTIFF, else the service's error, and its request kept as the layer's source), "geolibreProject"?: bool (internal: downloaded project JSON), "geolibreLayer"?: {"token", "record"} (internal: reserved imported layer and its saved style), "geolibreZarr"?: bool (internal: an imported Zarr slice as GeoTIFF)}"#),
@@ -2828,26 +2828,33 @@ fn read_delimited(
 
 /// The file name for data downloaded from `url`: its last path segment when that has an extension
 /// RustGIS reads, else `<segment or "data">.<ext>` with the extension its contents suggest
-/// (an error when they suggest none). JPEG 2000 named or recognised by its contents is refused
-/// where GDAL can't run (the browser).
+/// (an error when they suggest none). The name is cut to 120 characters, keeping an extension
+/// shorter than 60; a `.shp` address whose download is a zip of its parts is named `<stem>.zip`.
+/// JPEG 2000 named or recognised by its contents is refused where GDAL can't run (the browser).
 pub fn url_file_name(url: &str, bytes: &[u8]) -> Result<String, String> {
     let path = url.split(['?', '#']).next().unwrap_or(url);
     let path = path.split_once("://").map_or(path, |(_, rest)| rest.split_once('/').map_or("", |(_, p)| p));
-    let last: String = path
-        .rsplit('/')
-        .find(|p| !p.is_empty())
-        .unwrap_or("")
-        .chars()
-        .filter(|c| !c.is_control() && !matches!(c, '\\' | ':'))
-        .take(120)
-        .collect();
-    let ext = Path::new(&last).extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).unwrap_or_default();
+    let full: String =
+        path.rsplit('/').find(|p| !p.is_empty()).unwrap_or("").chars().filter(|c| !c.is_control() && !matches!(c, '\\' | ':')).collect();
+    let raw_ext = Path::new(&full).extension().and_then(|e| e.to_str());
+    let ext = raw_ext.map(str::to_ascii_lowercase).unwrap_or_default();
+    // At most 120 characters, keeping an extension shorter than 60 (a long `.shp` name is still one).
+    let last: String = match raw_ext {
+        Some(e) if full.chars().count() > 120 && e.chars().count() < 60 => {
+            format!("{}.{e}", full.chars().take(119 - e.chars().count()).collect::<String>())
+        }
+        _ => full.chars().take(120).collect(),
+    };
     // JPEG 2000 (Sentinel-2's imagery) is read through GDAL, which the browser can't run.
     let jpeg2000_only_on_desktop = |name: String| {
         if cfg!(target_arch = "wasm32") { Err(super::raster::JPEG2000_WEB_LIMITATION.to_string()) } else { Ok(name) }
     };
     if rustgis_data::raster::is_jpeg2000_name(&last) {
         return jpeg2000_only_on_desktop(last);
+    }
+    // A `.shp` address comes with its files fetched beside it, zipped ([`download_data`]).
+    if ext == "shp" && is_zip(bytes) {
+        return Ok(format!("{}.zip", Path::new(&last).file_stem().and_then(|s| s.to_str()).unwrap_or("layer")));
     }
     let known = rustgis_data::io::READ_EXTENSIONS.contains(&ext.as_str()) || rustgis_data::raster::is_raster_name(&last) || ext == "tsv";
     if (known && ext != "json") || rustgis_data::cityjson::is_cityjson_name(&last) {
@@ -2874,7 +2881,13 @@ pub fn url_file_name(url: &str, bytes: &[u8]) -> Result<String, String> {
 /// app downloads off the frame and adds the bytes). In the browser, where nothing may wait, the
 /// request is kept for the app ([`Session::request_url`]), which downloads and adds it as its own
 /// Home › Add › Add Data › From URL does, so a plugin, a script or the assistant can add data by address too.
+/// Its errors quote addresses without their keys: the assistant's and MCP's tools return them as
+/// they are.
 pub(crate) fn add_url(s: &mut Session, p: &Value) -> CmdResult {
+    add_url_as_given(s, p).map_err(|e| crate::sources::redact_text(&e))
+}
+
+fn add_url_as_given(s: &mut Session, p: &Value) -> CmdResult {
     if ["geolibreProject", "geolibreLayer", "geolibreZarr"].iter().any(|key| p.get(key).is_some()) {
         return Err("GeoLibre download state is internal; use project.importGeolibre".into());
     }
@@ -2991,8 +3004,13 @@ pub(crate) fn add_url(s: &mut Session, p: &Value) -> CmdResult {
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
-        // Errors about the address itself name it already.
-        let named = |e: String| if e.starts_with(url) { e } else { format!("{url}: {e}") };
+        // Errors name the address without its keys, and any address they quote (a redirect's)
+        // without its keys too; those about the address itself name it already.
+        let shown = crate::sources::redact(url);
+        let named = |e: String| match e.strip_prefix(url).or_else(|| e.strip_prefix(shown.as_str())) {
+            Some(rest) => format!("{shown}{}", crate::sources::redact_text(rest)),
+            None => format!("{shown}: {}", crate::sources::redact_text(&e)),
+        };
         // An address without a file name may be a GeoTIFF too: its first bytes are read to see,
         // and anything that doesn't answer as one is downloaded whole, as before.
         let unnamed = !tiff && is_unnamed_url(url);
@@ -3006,10 +3024,257 @@ pub(crate) fn add_url(s: &mut Session, p: &Value) -> CmdResult {
                 return add_cog(s, p, url);
             }
         }
-        let bytes = crate::render::rustgis_tiles::cache::download_blocking(url).map_err(named)?;
+        let bytes = if rustgis_data::io::shapefile_part_urls(url).is_some() {
+            download_shapefile_blocking(url)?
+        } else {
+            crate::render::rustgis_tiles::cache::download_blocking(url).map_err(named)?
+        };
         let name = url_file_name(url, &bytes).map_err(named)?;
-        super::raster::add_named_bytes(s, p, name, bytes).map_err(named)
+        let left_out = parts_left_out(url, &bytes, p);
+        let r = super::raster::add_named_bytes(s, p, name, bytes).map_err(named)?;
+        if let Some(n) = left_out {
+            s.notify(n, false);
+        }
+        Ok(r)
     }
+}
+
+/// Whether a Shapefile's part other than its `.dbf` can be done without: it isn't there (404 or
+/// 410, or 403, which S3 answers for a missing object to those who can't list the bucket). A 403
+/// to an address read with keys ([`keyed`]) fails instead, as they may not cover the part.
+fn part_not_there(ext: &str, url: &str, e: &str) -> bool {
+    ext != "dbf"
+        && match crate::render::rustgis_tiles::cache::http_status(e) {
+            Some(404 | 410) => true,
+            Some(403) => !keyed(url),
+            _ => false,
+        }
+}
+
+/// The statuses a Shapefile's part answers when it isn't there ([`part_not_there`]): expected, so
+/// they are noted once per server rather than recorded as failed requests.
+fn part_absences(ext: &str, url: &str) -> &'static [u16] {
+    match ext {
+        "dbf" => &[],
+        _ if keyed(url) => &[404, 410],
+        _ => &[404, 410, 403],
+    }
+}
+
+/// Whether an address is read with keys: one with a user and password, or whose query holds a key,
+/// token or signature (what `sources::redact` takes out), or a saved S3 connection.
+fn keyed(url: &str) -> bool {
+    // A user and password, or a key, token or signature in the query, is what redaction takes out;
+    // a query like `?v=2` carries none.
+    // (Redaction drops a fragment too, which carries no key.)
+    // (A trailing `?` or `&`, which redaction drops too, carries none either.)
+    let bare = url.split('#').next().unwrap_or(url).trim_end_matches(['?', '&']);
+    crate::sources::redact(bare) != bare || rustgis_data::s3_address::is_wrapper(url)
+}
+
+/// A part that arrived: itself, or `None` for an optional one that a web page answered for (an
+/// error for the `.dbf`, which can't be done without).
+fn page_part(ext: &str, b: Vec<u8>) -> Result<Option<Vec<u8>>, String> {
+    match (is_web_page(&b), ext) {
+        (false, _) => Ok(Some(b)),
+        (true, "dbf") => Err("a web page answered, not a .dbf".into()),
+        (true, _) => Ok(None),
+    }
+}
+
+/// Whether downloaded bytes are a web page, not a Shapefile's part: a site that serves its page for
+/// any address it doesn't have. A required part (`.shp`, `.dbf`) answered so fails; an optional
+/// one is done without, as one that isn't there.
+fn is_web_page(b: &[u8]) -> bool {
+    b.iter().find(|c| !c.is_ascii_whitespace()) == Some(&b'<')
+}
+
+/// Whether downloaded bytes are a zip archive (its first local file header).
+fn is_zip(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"PK\x03\x04")
+}
+
+/// A Shapefile's `.shp` or part that failed, named by its address without its keys or signature
+/// (the `.shp`'s query, which the parts carry too).
+fn part_failed(url: &str, e: String) -> String {
+    let e = e.strip_prefix(url).map(|r| r.trim_start_matches(": ").to_string()).unwrap_or(e);
+    format!("{}: {}{}", crate::sources::redact(url), crate::sources::redact_text(&e), status_hint(url, &e))
+}
+
+/// What a Shapefile's 403 may mean: S3 answers a signed request for a file that isn't there as it
+/// answers a signature that doesn't cover it, and an unsigned one for a missing file so too.
+fn status_hint(url: &str, e: &str) -> &'static str {
+    match crate::render::rustgis_tiles::cache::http_status(e) {
+        Some(403) if keyed(url) => {
+            " (to an address read with keys, this may also mean the file isn't there, or that the keys or signature don't cover it: a presigned address signs one file, so a Shapefile's parts need addresses of their own; zip them and add the zip)"
+        }
+        Some(403) => " (S3 also answers this for a file that isn't there, to those who can't list its bucket)",
+        _ => "",
+    }
+}
+
+/// A part's download error, saying that a size limit is what was left of the one the Shapefile's
+/// files share (a part is fetched within what the `.shp` and the parts before it left).
+fn over_shared_limit(e: String) -> String {
+    if e.starts_with("larger than ") { format!("{e}, what the .shp and the parts before it left of the download limit") } else { e }
+}
+
+/// What a Shapefile added by its `.shp` address (#1238) was read without, said: its `.shx`, `.prj`
+/// or `.cpg` when they weren't found beside it. The address is said without its keys or signature;
+/// a `crs` given (`p`) stands for the `.prj`.
+fn parts_left_out(url: &str, bytes: &[u8], p: &Value) -> Option<String> {
+    rustgis_data::io::shapefile_part_urls(url)?;
+    let given_crs = ps(p, "crs").is_some_and(|c| !c.trim().is_empty());
+    // Each Shapefile by its name: a zip the address answered with may hold several (the first
+    // few named, the rest counted).
+    const NAMED: usize = 5;
+    // With `layer`, only the Shapefile added is said, picked as the read layers are (by its name
+    // or its last word).
+    let want = ps(p, "layer").map(str::trim).filter(|w| !w.is_empty());
+    let picked = |shp: &str| {
+        let stem = Path::new(shp).file_stem().and_then(|s| s.to_str()).unwrap_or(shp);
+        want.is_none_or(|w| stem.eq_ignore_ascii_case(w) || stem.rsplit(' ').next().is_some_and(|l| l.eq_ignore_ascii_case(w)))
+    };
+    let lacking: Vec<_> = rustgis_data::io::shapefile_zip_lacks(bytes).into_iter().filter(|(shp, _)| picked(shp)).collect();
+    let more = lacking.len().saturating_sub(NAMED);
+    let mut said: Vec<String> = lacking
+        .into_iter()
+        .take(NAMED)
+        // A name from the archive, without control characters and at most 80 characters.
+        .map(|(shp, lacks)| {
+            let shp: String = shp.chars().filter(|c| !c.is_control()).collect();
+            (if shp.chars().count() > 80 { format!("{}…", shp.chars().take(79).collect::<String>()) } else { shp }, lacks)
+        })
+        .map(|(shp, lacks)| {
+            let names = lacks.iter().map(|e| format!(".{e}")).collect::<Vec<_>>().join(", ");
+            let crs = if lacks.contains(&"prj") && !given_crs { "; its coordinates are read as longitude/latitude" } else { "" };
+            let them = if lacks.len() == 1 { "it" } else { "them" };
+            format!(
+                "{shp}: no {names} found or readable beside it ({} of 3 optional files missing), so it was read without {them}{crs}",
+                lacks.len()
+            )
+        })
+        .collect();
+    if more > 0 {
+        said.push(format!("and {more} more Shapefiles without some of theirs"));
+    }
+    (!said.is_empty()).then(|| format!("{}: {}", crate::sources::redact(url), said.join("; ")))
+}
+
+/// A Shapefile by its `.shp` address, waited for (#1238): the `.shp`, then its `.dbf`, `.shx`,
+/// `.prj` and `.cpg` beside it (each but the `.dbf` only when it is there), zipped, within one
+/// download's budget together.
+#[cfg(not(target_arch = "wasm32"))]
+fn download_shapefile_blocking(url: &str) -> Result<Vec<u8>, String> {
+    use crate::render::rustgis_tiles::cache;
+    let parts = rustgis_data::io::shapefile_part_urls(url).unwrap_or_default();
+    // One wait for all the parts together, as for one download.
+    let until = std::time::Instant::now() + cache::BLOCKING_TIMEOUT;
+    // Past it, a part isn't asked for at all (a zero timeout may mean none), and a timeout says
+    // where a large file goes instead.
+    let within = |u: &str, max: usize, omit: &'static [u16]| match until.saturating_duration_since(std::time::Instant::now()) {
+        w if w.is_zero() => Err(cache::large_file_hint("timed out".into())),
+        w => cache::download_blocking_omitting_within(u, max, w, omit).map_err(cache::large_file_hint),
+    };
+    let shp = within(url, cache::MAX_DOWNLOAD, &[]).map_err(|e| part_failed(url, e))?;
+    // Already zipped (a server answering the address with its parts): read as it is.
+    if is_zip(&shp) {
+        return Ok(shp);
+    }
+    if is_web_page(&shp) {
+        return Err(part_failed(url, "a web page answered, not a .shp".into()));
+    }
+    let name = url_file_name(url, &shp).map_err(|e| part_failed(url, e))?;
+    let mut left = cache::MAX_DOWNLOAD.saturating_sub(shp.len());
+    let mut got = Vec::new();
+    for (ext, u) in parts {
+        match within(&u, left, part_absences(ext, &u)).and_then(|b| page_part(ext, b)) {
+            Ok(None) => {}
+            Ok(Some(b)) => {
+                left = left.saturating_sub(b.len());
+                got.push((ext, b));
+            }
+            Err(e) if part_not_there(ext, &u, &e) => {}
+            Err(e) => return Err(part_failed(&u, over_shared_limit(e))),
+        }
+    }
+    zipped_within(&name, shp, got, left).map_err(|e| part_failed(url, e))
+}
+
+/// Downloads a file the user named by its address off the frame, as `cache::download_limited`
+/// does, for the app to add when it lands: a Shapefile's `.shp` address brings its `.dbf`, `.shx`,
+/// `.prj` and `.cpg` too, one after another, and `done` gets them zipped (#1238), within `max`
+/// bytes together.
+pub fn download_data(url: &str, max: usize, done: crate::render::rustgis_tiles::cache::Done) {
+    use crate::render::rustgis_tiles::cache;
+    let Some(parts) = rustgis_data::io::shapefile_part_urls(url) else {
+        return cache::download_limited(url, max, done);
+    };
+    let shp_url = url.to_string();
+    cache::download_limited(
+        url,
+        max,
+        Box::new(move |r| match r.and_then(|shp| url_file_name(&shp_url, &shp).map(|name| (name, shp))) {
+            // Already zipped: as it is.
+            Ok((_, shp)) if is_zip(&shp) => done(Ok(shp)),
+            Ok((_, shp)) if is_web_page(&shp) => done(Err("a web page answered, not a .shp".into())),
+            Ok((name, shp)) => {
+                let left = max.saturating_sub(shp.len());
+                download_parts(name, shp, parts.into_iter(), Vec::new(), left, done);
+            }
+            // The app names the address it asked for (redacted), as for any download.
+            Err(e) => {
+                let why = status_hint(&shp_url, &e);
+                done(Err(format!("{}{why}", crate::sources::redact_text(&e))))
+            }
+        }),
+    );
+}
+
+/// A Shapefile's parts zipped, within the budget they were downloaded in (`left` being what is
+/// still free): the archive's own records count too. It runs where the last part lands: on the
+/// download thread natively, on the page's event loop in the web app (as the web app's loose
+/// Shapefiles picked or dropped are zipped, #426).
+fn zipped_within(name: &str, shp: Vec<u8>, got: Vec<(&'static str, Vec<u8>)>, left: usize) -> Result<Vec<u8>, String> {
+    let max = got.iter().fold(shp.len().saturating_add(left), |n, (_, b)| n.saturating_add(b.len()));
+    let zip = rustgis_data::io::zip_shapefile_parts(name, shp, got)?;
+    if zip.len() > max {
+        return Err(format!("larger than {max} bytes, zipped"));
+    }
+    Ok(zip)
+}
+
+/// The next of a Shapefile's parts for [`download_data`], then the zip once they are all in: the
+/// steps of `download_shapefile_blocking` as callbacks, sharing its rules (`part_not_there`,
+/// `part_failed`, `zipped_within`), so a change to one goes in both.
+fn download_parts(
+    name: String,
+    shp: Vec<u8>,
+    mut parts: std::vec::IntoIter<(&'static str, String)>,
+    mut got: Vec<(&'static str, Vec<u8>)>,
+    left: usize,
+    done: crate::render::rustgis_tiles::cache::Done,
+) {
+    let Some((ext, url)) = parts.next() else {
+        done(zipped_within(&name, shp, got, left));
+        return;
+    };
+    let next = url.clone();
+    crate::render::rustgis_tiles::cache::download_limited_omitting(
+        &next,
+        left,
+        part_absences(ext, &url),
+        Box::new(move |r| match r.and_then(|b| page_part(ext, b)) {
+            Ok(None) => download_parts(name, shp, parts, got, left, done),
+            Ok(Some(b)) => {
+                let left = left.saturating_sub(b.len());
+                got.push((ext, b));
+                download_parts(name, shp, parts, got, left, done);
+            }
+            Err(e) if part_not_there(ext, &url, &e) => download_parts(name, shp, parts, got, left, done),
+            Err(e) => done(Err(part_failed(&url, over_shared_limit(e)))),
+        }),
+    );
 }
 
 /// Adds a FlatGeobuf or GeoParquet by its address as a layer read in place: a view's features at
@@ -3580,7 +3845,11 @@ fn add_download(s: &mut Session, p: &Value) -> CmdResult {
     } else {
         url_file_name(&url, &bytes).map_err(|e| format!("{url}: {e}"))?
     };
+    let left_out = parts_left_out(&url, &bytes, p);
     let mut r = super::raster::add_named_bytes(s, p, name, bytes)?;
+    if let Some(n) = left_out {
+        s.notify(n, false);
+    }
     // A service's features or coverage: known by the address it came from (Add From Service).
     if service || coverage {
         super::service::mark_service_source(s, &r, &url);

@@ -2680,7 +2680,8 @@ impl RustGisApp {
                 }
                 let slot: Slot<Result<Vec<u8>, String>> = Slot::default();
                 let land = slot.clone();
-                rustgis_engine::render::rustgis_tiles::cache::download_limited(
+                // A Shapefile's `.shp` address brings its `.dbf`, `.shx`, `.prj` and `.cpg` too.
+                rustgis_engine::cmd::layer::download_data(
                     &url,
                     if q.get("geolibreProject").and_then(Value::as_bool) == Some(true) {
                         rustgis_engine::map::geolibre::MAX_TEXT
@@ -3709,7 +3710,12 @@ impl RustGisApp {
                 Err(e) => {
                     self.session.download_failed(id);
                     rustgis_engine::cmd::geolibre::discard_pending(&mut self.session, &p);
-                    self.session.notify(if e.starts_with(&url) { e } else { format!("{url}: {e}") }, true);
+                    // Named without the address's keys, token or signature.
+                    let e = e.strip_prefix(url.as_str()).map(|r| r.trim_start_matches(": ").to_string()).unwrap_or(e);
+                    let why = rustgis_engine::sources::redact_text(&e);
+                    // An error that names its own address (a Shapefile's part) isn't named again.
+                    let named = why.split_once(": ").is_some_and(|(head, _)| head.contains("://") && !head.contains(' '));
+                    self.session.notify(if named { why } else { format!("{}: {why}", rustgis_engine::sources::redact(&url)) }, true);
                 }
             }
         }
