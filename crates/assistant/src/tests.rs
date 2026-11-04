@@ -368,6 +368,17 @@ fn gate_rules() {
     let mut file = project.clone();
     file["path"] = json!("/tmp/x.tif");
     assert!(g("run_command", json!({"command": "raster.project", "params": file})).is_some());
+    // And rasterizing polygons.
+    let burn = json!({"layer": "Countries", "crs": 31983, "cellSize": 100});
+    assert!(g("run_command", json!({"command": "raster.rasterize", "params": burn})).is_none());
+    let mut file = burn.clone();
+    file["path"] = json!("/tmp/x.tif");
+    assert!(g("run_command", json!({"command": "raster.rasterize", "params": file})).is_some());
+    // A null `path` is no path: no file is written.
+    for (command, mut params) in [("raster.georeference", pts), ("raster.project", project), ("raster.rasterize", burn)] {
+        params["path"] = Value::Null;
+        assert!(g("run_command", json!({"command": command, "params": params})).is_none(), "{command}");
+    }
 }
 
 /// What a command says beside its result reaches the model (issue #85).

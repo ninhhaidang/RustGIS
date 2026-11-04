@@ -1030,17 +1030,16 @@ pub fn parse_bands_str(s: &str, total_bands: usize) -> Result<Vec<usize>, String
 }
 
 /// Projects a complete ring to the raster grid without dropping failed vertices.
-fn project_ring(r: &Raster, ring: &[Coord]) -> Option<Vec<(f64, f64)>> {
+fn project_ring(tr: &Transformer, t: &GeoTransform, ring: &[Coord]) -> Option<Vec<(f64, f64)>> {
     if ring.len() < 3 {
         return None;
     }
-    let tr = r.transformer();
     ring.iter()
         .map(|&c| {
             if !c.is_finite() {
                 return None;
             }
-            let pt = r.transform.to_pixel(tr.from_lonlat(c)?);
+            let pt = t.to_pixel(tr.from_lonlat(c)?);
             (pt.0.is_finite() && pt.1.is_finite()).then_some(pt)
         })
         .collect()
@@ -1065,76 +1064,159 @@ pub fn polygon_mask_with_failures(
     polygons: &[Vec<Vec<Coord>>],
     failed_parts: &mut Vec<usize>,
 ) -> Result<Option<(Range<u32>, Range<u32>, Vec<bool>)>, String> {
-    let projected: Vec<Vec<Vec<(f64, f64)>>> = polygons
-        .iter()
-        .enumerate()
-        .filter_map(|(index, rings)| {
-            // Reject a complete part if any ring fails, so a lost hole cannot enlarge it.
-            let part = if rings.is_empty() { None } else { rings.iter().map(|ring| project_ring(r, ring)).collect::<Option<Vec<_>>>() };
-            if part.is_none() {
-                failed_parts.push(index);
-            }
-            part
-        })
-        .collect();
-    let (mut c0, mut r0, mut c1, mut r1) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
-    for &(x, y) in projected.iter().flatten().flatten() {
-        (c0, r0, c1, r1) = (c0.min(x), r0.min(y), c1.max(x), r1.max(y));
-    }
-    if !(c0.is_finite() && r0.is_finite() && c1.is_finite() && r1.is_finite()) {
+    polygon_mask_on(r.transformer(), &r.transform, (r.width, r.height), polygons, failed_parts)
+}
+
+/// [`polygon_mask_with_failures`] on a grid of `size` (columns, rows) cells placed by `t` in the
+/// coordinate system of `tr`, with no raster on it yet.
+pub(crate) fn polygon_mask_on(
+    tr: &Transformer,
+    t: &GeoTransform,
+    size: (u32, u32),
+    polygons: &[Vec<Vec<Coord>>],
+    failed_parts: &mut Vec<usize>,
+) -> Result<Option<(Range<u32>, Range<u32>, Vec<bool>)>, String> {
+    let Some(placed) = Placed::new(tr, t, size, polygons, failed_parts) else { return Ok(None) };
+    let (cols, rows) = (placed.cols.clone(), placed.rows.clone());
+    let (w, h) = ((cols.end - cols.start) as usize, (rows.end - rows.start) as usize);
+    let mut mask = new_band(w, h, false)?;
+    // Trimmed to the cells inside: reprojected vertices on cell edges land a hair either side.
+    let (mut tc0, mut tr0, mut tc1, mut tr1) = (usize::MAX, usize::MAX, 0, 0);
+    placed.spans(|row, span| {
+        let rr = (row - rows.start) as usize;
+        let (c0, c1) = ((span.start - cols.start) as usize, (span.end - cols.start) as usize);
+        if let Some(cells) = mask.get_mut(rr * w + c0..rr * w + c1) {
+            cells.fill(true);
+        }
+        (tc0, tr0, tc1, tr1) = (tc0.min(c0), tr0.min(rr), tc1.max(c1), tr1.max(rr + 1));
+    });
+    if tc0 >= tc1 || tr0 >= tr1 {
         return Ok(None);
     }
-    let clamp = |v: f64, n: u32| v.clamp(0.0, f64::from(n)) as u32;
-    let cols = clamp(c0.floor(), r.width)..clamp(c1.ceil(), r.width);
-    let rows = clamp(r0.floor(), r.height)..clamp(r1.ceil(), r.height);
-    if cols.is_empty() || rows.is_empty() {
-        return Ok(None);
+    if (tc0, tr0, tc1, tr1) == (0, 0, w, h) {
+        return Ok(Some((cols, rows, mask)));
     }
-    let w = (cols.end - cols.start) as usize;
-    let mut mask = new_band(w, (rows.end - rows.start) as usize, false)?;
-    let mut xs: Vec<f64> = Vec::new();
-    for (ri, row) in rows.clone().enumerate() {
-        let y = f64::from(row) + 0.5;
-        let line = mask.get_mut(ri * w..(ri + 1) * w).unwrap_or_default();
-        // Even-odd within each polygon (holes cut out), any polygon over the others.
-        for rings in &projected {
-            xs.clear();
+    let mut trimmed = grid(tc1 - tc0, tr1 - tr0)?;
+    for rr in tr0..tr1 {
+        trimmed.extend_from_slice(mask.get(rr * w + tc0..rr * w + tc1).unwrap_or_default());
+    }
+    let cols = cols.start + tc0 as u32..cols.start + tc1 as u32;
+    let rows = rows.start + tr0 as u32..rows.start + tr1 as u32;
+    Ok(Some((cols, rows, trimmed)))
+}
+
+/// Polygons (each an exterior ring and its holes, in longitude/latitude) projected to a grid's
+/// pixels, with the window of the grid around them.
+pub(crate) struct Placed {
+    parts: Vec<Vec<Vec<(f64, f64)>>>,
+    width: u32,
+    cols: Range<u32>,
+    rows: Range<u32>,
+}
+
+/// An edge of a ring, from `a` to `b` in pixels, crossing the centres of rows `first..end`.
+#[derive(Clone, Copy)]
+struct Edge {
+    first: u32,
+    end: u32,
+    a: (f64, f64),
+    b: (f64, f64),
+}
+
+impl Placed {
+    /// `None` when no polygon can be placed or none reaches the grid of `size` (columns, rows).
+    /// The zero-based indices of the rejected parts are appended to `failed_parts`.
+    pub(crate) fn new(
+        tr: &Transformer,
+        t: &GeoTransform,
+        size: (u32, u32),
+        polygons: &[Vec<Vec<Coord>>],
+        failed_parts: &mut Vec<usize>,
+    ) -> Option<Self> {
+        let (width, height) = size;
+        let parts: Vec<Vec<Vec<(f64, f64)>>> = polygons
+            .iter()
+            .enumerate()
+            .filter_map(|(index, rings)| {
+                // Reject a complete part if any ring fails, so a lost hole cannot enlarge it.
+                let part =
+                    if rings.is_empty() { None } else { rings.iter().map(|ring| project_ring(tr, t, ring)).collect::<Option<Vec<_>>>() };
+                if part.is_none() {
+                    failed_parts.push(index);
+                }
+                part
+            })
+            .collect();
+        let (mut c0, mut r0, mut c1, mut r1) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+        for &(x, y) in parts.iter().flatten().flatten() {
+            (c0, r0, c1, r1) = (c0.min(x), r0.min(y), c1.max(x), r1.max(y));
+        }
+        if !(c0.is_finite() && r0.is_finite() && c1.is_finite() && r1.is_finite()) {
+            return None;
+        }
+        let clamp = |v: f64, n: u32| v.clamp(0.0, f64::from(n)) as u32;
+        let cols = clamp(c0.floor(), width)..clamp(c1.ceil(), width);
+        let rows = clamp(r0.floor(), height)..clamp(r1.ceil(), height);
+        (!cols.is_empty() && !rows.is_empty()).then_some(Self { parts, width, cols, rows })
+    }
+
+    /// Calls `span` with each row's runs of cells whose centres lie inside a polygon: even-odd
+    /// within each polygon (holes cut out), so polygons that overlap may give a cell twice. Each
+    /// edge is visited only on the rows it crosses, so a polygon's edges cost by their length
+    /// on the grid, not by the rows times all the edges.
+    pub(crate) fn spans(&self, mut span: impl FnMut(u32, Range<u32>)) {
+        let clamp = |v: f64| v.clamp(0.0, f64::from(self.width)) as u32;
+        let (mut edges, mut active, mut xs) = (Vec::new(), Vec::new(), Vec::new());
+        for rings in &self.parts {
+            edges.clear();
             for ring in rings {
-                for (i, &(ax, ay)) in ring.iter().enumerate() {
-                    let (bx, by) = ring.get(i + 1).or(ring.first()).copied().unwrap_or((ax, ay));
-                    if (ay <= y) != (by <= y) {
-                        xs.push(ax + (y - ay) * (bx - ax) / (by - ay));
+                for (i, &a) in ring.iter().enumerate() {
+                    let b = ring.get(i + 1).or(ring.first()).copied().unwrap_or(a);
+                    let (first, end) = (first_row_from(a.1.min(b.1), &self.rows), first_row_from(a.1.max(b.1), &self.rows));
+                    if first < end {
+                        edges.push(Edge { first, end, a, b });
                     }
                 }
             }
-            xs.sort_by(f64::total_cmp);
-            for &[x0, x1] in xs.as_chunks::<2>().0 {
-                // Cells whose centre (col + 0.5) lies in [x0, x1).
-                let a = clamp((x0 - 0.5).ceil(), r.width).max(cols.start);
-                let b = clamp((x1 - 0.5).ceil(), r.width).min(cols.end);
-                for col in a..b {
-                    if let Some(m) = line.get_mut((col - cols.start) as usize) {
-                        *m = true;
+            edges.sort_unstable_by_key(|e: &Edge| e.first);
+            let (Some(start), Some(stop)) = (edges.first().map(|e| e.first), edges.iter().map(|e| e.end).max()) else { continue };
+            let mut waiting = edges.iter().copied().peekable();
+            active.clear();
+            for row in start..stop {
+                while let Some(e) = waiting.next_if(|e| e.first == row) {
+                    active.push(e);
+                }
+                active.retain(|e: &Edge| e.end > row);
+                let y = f64::from(row) + 0.5;
+                xs.clear();
+                xs.extend(active.iter().map(|e| e.a.0 + (y - e.a.1) * (e.b.0 - e.a.0) / (e.b.1 - e.a.1)));
+                xs.sort_by(f64::total_cmp);
+                for &[x0, x1] in xs.as_chunks::<2>().0 {
+                    // Cells whose centre (col + 0.5) lies in [x0, x1).
+                    let a = clamp((x0 - 0.5).ceil()).max(self.cols.start);
+                    let b = clamp((x1 - 0.5).ceil()).min(self.cols.end);
+                    if a < b {
+                        span(row, a..b);
                     }
                 }
             }
         }
     }
-    // Trimmed to the cells inside: reprojected vertices on cell edges land a hair either side.
-    let (mut tc0, mut tr0, mut tc1, mut tr1) = (usize::MAX, usize::MAX, 0, 0);
-    for (i, _) in mask.iter().enumerate().filter(|(_, m)| **m) {
-        let (c, rr) = (i % w, i / w);
-        (tc0, tr0, tc1, tr1) = (tc0.min(c), tr0.min(rr), tc1.max(c + 1), tr1.max(rr + 1));
+}
+
+/// The first of `rows` whose centre (row + 0.5) is at or past `v`, or the end of them. An edge
+/// crosses a row's centre when its lower end is at or before it and its upper end past it.
+fn first_row_from(v: f64, rows: &Range<u32>) -> u32 {
+    let centre = |r: u32| f64::from(r) + 0.5;
+    let mut r = (v - 0.5).ceil().clamp(f64::from(rows.start), f64::from(rows.end)) as u32;
+    // `v - 0.5` can round far from zero.
+    while r > rows.start && centre(r - 1) >= v {
+        r -= 1;
     }
-    if tc0 >= tc1 || tr0 >= tr1 {
-        return Ok(None);
+    while r < rows.end && centre(r) < v {
+        r += 1;
     }
-    let mut trimmed = grid(tc1 - tc0, tr1 - tr0)?;
-    trimmed
-        .extend((tr0..tr1).flat_map(|rr| (tc0..tc1).map(move |c| (rr, c))).map(|(rr, c)| mask.get(rr * w + c).copied().unwrap_or(false)));
-    let cols = cols.start + tc0 as u32..cols.start + tc1 as u32;
-    let rows = rows.start + tr0 as u32..rows.start + tr1 as u32;
-    Ok(Some((cols, rows, trimmed)))
+    r
 }
 
 /// Summary statistics of raster cells within a zone.
@@ -1681,6 +1763,85 @@ mod tests {
         // Outside the raster, or too small to hold a cell centre: nothing.
         assert!(polygon_mask(&r, &[vec![sq(1.0, 1.0, 2.0, 2.0)]]).unwrap().is_none());
         assert!(polygon_mask(&r, &[vec![sq(0.0051, 0.0051, 0.0052, 0.0052)]]).unwrap().is_none());
+    }
+
+    /// The mask equals one found the plain way, every edge on every row, for polygons of many
+    /// shapes: holes, several parts, edges on cell edges, crossing themselves, past the grid.
+    #[test]
+    fn polygon_mask_matches_a_scan_of_every_edge_on_every_row() {
+        let plain = |parts: &[Vec<Vec<(f64, f64)>>], width: u32, height: u32| {
+            let mut mask = vec![false; (width * height) as usize];
+            for row in 0..height {
+                let y = f64::from(row) + 0.5;
+                for rings in parts {
+                    let mut xs = Vec::new();
+                    for ring in rings {
+                        for (i, &(ax, ay)) in ring.iter().enumerate() {
+                            let (bx, by) = ring.get(i + 1).or(ring.first()).copied().unwrap_or((ax, ay));
+                            if (ay <= y) != (by <= y) {
+                                xs.push(ax + (y - ay) * (bx - ax) / (by - ay));
+                            }
+                        }
+                    }
+                    xs.sort_by(f64::total_cmp);
+                    for &[x0, x1] in xs.as_chunks::<2>().0 {
+                        let at = |x: f64| (x - 0.5).ceil().clamp(0.0, f64::from(width)) as u32;
+                        for col in at(x0)..at(x1) {
+                            mask[(row * width + col) as usize] = true;
+                        }
+                    }
+                }
+            }
+            mask
+        };
+        let (width, height) = (60u32, 40u32);
+        let g = crate::warp::Grid { crs: Crs::LonLat, min_x: 0.0, max_y: 40.0, cell_x: 1.0, cell_y: 1.0, width: 60, height: 40 };
+        let t = g.transform();
+        let tr = Crs::LonLat.transformer().unwrap();
+        let mut state = 0x2545_F491_4F6C_DD1D_u64;
+        let mut next = move |n: f64| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 11) as f64 / (1u64 << 53) as f64 * n
+        };
+        for case in 0..400 {
+            let mut polygons = Vec::new();
+            for _ in 0..1 + case % 3 {
+                let mut rings = Vec::new();
+                for _ in 0..1 + case % 2 {
+                    let mut ring: Vec<Coord> = (0..3 + case % 9)
+                        .map(|_| {
+                            // Whole numbers land on cell edges, halves on cell centres; the range
+                            // goes past the grid.
+                            let (x, y) = (next(80.0) - 10.0, next(60.0) - 10.0);
+                            match case % 4 {
+                                0 => Coord::new(x.floor(), y.floor()),
+                                1 => Coord::new(x.floor() + 0.5, y.floor() + 0.5),
+                                _ => Coord::new(x, y),
+                            }
+                        })
+                        .collect();
+                    ring.push(ring[0]);
+                    rings.push(ring);
+                }
+                polygons.push(rings);
+            }
+            let found = polygon_mask_on(&tr, &t, (width, height), &polygons, &mut Vec::new()).unwrap();
+            let parts: Vec<Vec<Vec<(f64, f64)>>> =
+                polygons.iter().map(|rings| rings.iter().map(|ring| project_ring(&tr, &t, ring).unwrap()).collect()).collect();
+            let want = plain(&parts, width, height);
+            let mut got = vec![false; want.len()];
+            if let Some((cols, rows, mask)) = found {
+                let w = (cols.end - cols.start) as usize;
+                assert_eq!(mask.len(), w * (rows.end - rows.start) as usize);
+                for (i, inside) in mask.iter().enumerate() {
+                    let (c, r) = (cols.start as usize + i % w, rows.start as usize + i / w);
+                    got[r * width as usize + c] = *inside;
+                }
+            }
+            assert_eq!(got, want, "case {case}");
+        }
     }
 
     /// A failed hole drops only its containing part and reports that part, even with no mask.

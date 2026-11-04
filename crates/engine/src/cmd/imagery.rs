@@ -8,7 +8,7 @@ use rustgis_analysis::georef::{self, Gcp, Kind};
 use rustgis_analysis::rasterops::{self, NODATA};
 use rustgis_analysis::warp;
 use rustgis_data::raster::{self, ColorHint, Crs, GeoTransform, Raster};
-use rustgis_data::{Geometry, GeometryType};
+use rustgis_data::{FieldType, Geometry, GeometryType};
 use rustgis_geom::{Coord, Extent};
 use rustgis_map::RasterLayer;
 use serde::{Deserialize, Serialize};
@@ -43,6 +43,9 @@ pub fn commands() -> Vec<C> {
         ),
         C::new("raster.project", "Project Raster", "Analyze › Alignment", project_raster).params(
             r#"{"layer": raster, "crs"?: EPSG code or "EPSG:n" of the output (default the layer's), "cellSize"?: number or [x, y] in the output's units (default about the layer's pixel there), "origin"?: [x, y] a cell corner falls on (default [0, 0], so grids of the same cellSize line up), "extent"?: polygon layer (its selected or all features' bounds) | [west, south, east, north] in degrees | "view" (default the layer's footprint), "grid"?: raster layer whose coordinate system, cells and extent are taken exactly (instead of crs, cellSize, origin and extent), "resampling"?: "nearest" (default) | "bilinear" | "cubic" | "average" (the mean of the pixels whose centres fall in a cell) | "mode" (their most frequent value, the least of those tied), "name"?: new layer (default "<layer> projected"), "path"?: GeoTIFF to write it to}"#,
+        ),
+        C::new("raster.rasterize", "Polygons to Raster", "Analyze › Alignment", rasterize).params(
+            r#"{"layer": polygon layer (its selected or all features; a later one over an earlier), "field"?: numeric field (its values) or text field (codes 1 to n in sorted order of its values, listed in a table named after the result with classes), "value"?: number every polygon gives when there is no field (default 1), "nodata"?: number of the cells under no polygon (default 0), "crs"?: EPSG code or "EPSG:n" of the output (default the layer's), "cellSize"?: number or [x, y] in the output's units (required without grid), "origin"?: [x, y] a cell corner falls on (default [0, 0], so grids of the same cellSize line up), "extent"?: polygon layer (its selected or all features' bounds) | [west, south, east, north] in degrees | "view" (default the polygons' bounds), "grid"?: raster layer whose coordinate system, cells and extent are taken exactly (instead of crs, cellSize, origin and extent), "name"?: new layer (default "<layer> raster"), "path"?: GeoTIFF to write it to}"#,
         ),
         // A fit is a measurement of the points, not a project change: no undo step.
         C::new("raster.gcpFit", "Control Point Fit", "Analyze › Alignment", gcp_fit).view().params(
@@ -371,12 +374,272 @@ fn project_raster(s: &mut Session, p: &Value) -> CmdResult {
         None | Some(Value::Null) => warp::Method::Sample(warp::Resampling::Nearest),
         Some(v) => v.as_str().and_then(warp::Method::parse).ok_or("resampling is nearest, bilinear, cubic, average or mode")?,
     };
+    let grid = grid_param(s, p, r.crs, |crs| warp::footprint_in(&r, crs).map(|(bounds, pixel)| (bounds, Some(pixel))))?;
+    let path = tif_path(p)?;
+    let out_name = name(p, format!("{} projected", r.name));
+    let out = warp::project(&r, &grid, method, out_name.clone())?;
+    let mut info = json!({
+        "name": out_name, "crs": grid.crs.label(), "resampling": method.used_on(&r).id(), "width": out.width, "height": out.height, "bands": out.band_count(),
+        "cellSize": [grid.cell_x, grid.cell_y], "corner": [grid.min_x, grid.max_y],
+    });
+    if let Some((fw, fh)) = r.overview {
+        let note =
+            format!("{}: projected at reduced resolution, from its {} × {} overview of the {fw} × {fh} raster", r.name, r.width, r.height);
+        s.notify(note, false);
+        info["projectedFromOverview"] = json!({"width": r.width, "height": r.height, "of": [fw, fh]});
+    }
+    add_output(s, out, path, false, info)
+}
+
+/// The largest whole number a raster's 32-bit float pixels hold exactly.
+const EXACT_WHOLE: f64 = 16_777_216.0;
+
+/// `raster.rasterize`: a polygon layer's selected (or all) features burned onto a grid given as
+/// `raster.project`'s is, each cell whose centre falls in a polygon taking its field's value, a
+/// text field's code or one `value` (see `rustgis_analysis::warp::rasterize`). A new layer, and
+/// for a text field a table of its codes.
+fn rasterize(s: &mut Session, p: &Value) -> CmdResult {
+    let ln = ps(p, "layer").ok_or("layer is required: a polygon layer")?;
+    let l = s.map().layer_by_name(ln).filter(|l| l.raster.is_none()).ok_or_else(|| format!("no vector layer '{ln}'"))?;
+    let ds = &l.dataset;
+    if ds.geometry_type != GeometryType::Polygon {
+        return Err(format!("{ln} is not a polygon layer"));
+    }
+    if ds.windowed {
+        return Err(format!("{ln}: load all its features first (Layers › Load All Features)"));
+    }
+    // What a polygon gives: a field's value (the field and its type), or one value.
+    let (field, value) = match (p.get("field").filter(|v| !v.is_null()), p.get("value").filter(|v| !v.is_null())) {
+        (Some(_), Some(_)) => return Err("give a field or a value, not both".into()),
+        (Some(f), None) => {
+            let f = f.as_str().ok_or("field is a field's name")?;
+            let i = ds.field_index(f).ok_or_else(|| format!("{ln}: no field '{f}'"))?;
+            let ty = ds.fields.get(i).map(|f| f.ty).ok_or_else(|| format!("{ln}: no field '{f}'"))?;
+            (Some((i, ty)), 1.0)
+        }
+        (None, Some(v)) => (None, v.as_f64().filter(|v| v.is_finite() && v.abs() <= f64::from(f32::MAX)).ok_or("value is a number")?),
+        (None, None) => (None, 1.0),
+    };
+    let nodata = match p.get("nodata") {
+        None | Some(Value::Null) => 0.0,
+        Some(v) => v.as_f64().filter(|v| v.is_finite() && v.abs() <= f64::from(f32::MAX)).ok_or("nodata is a number")?,
+    };
+    let path = tif_path(p)?;
+    let out_name = name(p, format!("{ln} raster"));
+    // The features burned: the selection, else all, in the layer's order (a later one wins).
+    let mut rows: Vec<usize> = if l.selection.is_empty() { (0..ds.features.len()).collect() } else { l.selection.clone() };
+    rows.sort_unstable();
+    rows.dedup();
+    let (mut no_value, mut no_polygon) = (0, 0);
+    let mut burns: Vec<(Vec<Vec<Vec<Coord>>>, rustgis_data::Value)> = Vec::new();
+    for row in rows {
+        let Some(feature) = ds.features.get(row) else { continue };
+        let parts = match &feature.geometry {
+            Some(Geometry::Polygon(polys)) => rasterops::transform_feature_polygons_to_lonlat(polys, None).ok(),
+            _ => None,
+        };
+        let Some(parts) = parts else {
+            no_polygon += 1;
+            continue;
+        };
+        let v = match field {
+            Some((i, _)) => ds.value(row, i).clone(),
+            None => rustgis_data::Value::Float(value),
+        };
+        burns.push((parts, v));
+    }
+    // A text field's values become codes 1 to n, in sorted order.
+    let text = field.is_some_and(|(_, ty)| ty == FieldType::Text);
+    let classes: Vec<String> = if text {
+        let set: std::collections::BTreeSet<String> = burns.iter().filter_map(|(_, v)| text_of(v)).collect();
+        set.into_iter().collect()
+    } else {
+        Vec::new()
+    };
+    // Whole numbers: codes, one value, or a field that isn't a floating-point one.
+    let whole_field = field.is_none_or(|(_, ty)| ty != FieldType::Double);
+    let what = field.and_then(|(i, _)| ds.fields.get(i)).map_or("value", |f| f.name.as_str()).to_string();
+    let mut shapes = Vec::with_capacity(burns.len());
+    let mut rounded = 0;
+    for (parts, v) in burns {
+        let x = if text { text_of(&v).and_then(|t| classes.binary_search(&t).ok()).map(|i| i as f64 + 1.0) } else { v.as_f64() };
+        let Some(x) = x else {
+            no_value += 1;
+            continue;
+        };
+        if x.abs() > f64::from(f32::MAX) {
+            return Err(format!("{ln}: {what} {x} is past the range of a raster's 32-bit pixels"));
+        }
+        if whole_field && x.fract() == 0.0 && x.abs() > EXACT_WHOLE {
+            // Only a numeric field's numbers can be given as text instead.
+            let hint = if field.is_some() && !text { "; a text field gives codes instead" } else { "" };
+            return Err(format!("{ln}: {what} {x} is more than a raster's pixels hold exactly ({EXACT_WHOLE}){hint}"));
+        }
+        // As a pixel holds them: a value that rounds to the no-data value would be lost.
+        if x as f32 == nodata as f32 {
+            let of = if text { format!(", the code of {:?},", text_of(&v).unwrap_or_default()) } else { String::new() };
+            return Err(format!("{ln}: {what} {x}{of} is the no-data value: give another nodata"));
+        }
+        rounded += usize::from(f64::from(x as f32) != x);
+        shapes.push(warp::Shape { parts, value: x as f32 });
+    }
+    if shapes.is_empty() {
+        return Err(format!("{ln} has no polygons with a value to burn"));
+    }
+    // By default, the layer's coordinate system and the polygons' bounds.
+    let lonlat = shapes.iter().flat_map(|s| s.parts.iter().flatten().flatten()).fold(Extent::EMPTY, |mut e, c| {
+        e.expand(*c);
+        e
+    });
+    let crs = ds.crs.unwrap_or(Crs::LonLat);
+    let grid = grid_param(s, p, crs, |crs| Ok((warp::bounds_in([lonlat.min_x, lonlat.min_y, lonlat.max_x, lonlat.max_y], crs)?, None)))?;
+    // The smallest pixel type the GeoTIFF writer keeps that holds every value and the no-data.
+    let whole = |max: f64| shapes.iter().map(|s| f64::from(s.value)).chain([nodata]).all(|v| v.fract() == 0.0 && (0.0..=max).contains(&v));
+    let data_type = if whole(255.0) {
+        "UInt8"
+    } else if whole(65_535.0) {
+        "UInt16"
+    } else {
+        "Float32"
+    };
+    let burned = warp::rasterize(&grid, &shapes, nodata as f32)?;
+    if burned.cells == 0 {
+        return Err(format!("no cell centre of the grid falls inside {ln}'s polygons: give a smaller cellSize, or a grid over them"));
+    }
+    let (w, h) = (u32::try_from(grid.width).map_err(|e| e.to_string())?, u32::try_from(grid.height).map_err(|e| e.to_string())?);
+    let out = Raster::new(&out_name, w, h, vec![burned.data], grid.transform(), grid.crs, Some(nodata), ColorHint::Gray, data_type)
+        .map_err(|e| e.to_string())?;
+    let mut info = json!({
+        "name": out_name, "crs": grid.crs.label(), "width": out.width, "height": out.height, "dataType": data_type, "nodata": nodata,
+        "cellSize": [grid.cell_x, grid.cell_y], "corner": [grid.min_x, grid.max_y], "features": burned.burned, "cells": burned.cells,
+    });
+    if rounded > 0 {
+        s.notify(format!("{ln}: {rounded} value(s) of {what} rounded to the raster's 32-bit pixels"), false);
+    }
+    let skipped = [("noValue", no_value), ("noPolygon", no_polygon), ("unplaced", burned.unplaced.len()), ("noCell", burned.missed)];
+    if skipped.iter().any(|(_, n)| *n > 0) {
+        info["skipped"] =
+            skipped.iter().filter(|(_, n)| *n > 0).map(|(k, n)| (k.to_string(), json!(n))).collect::<serde_json::Map<_, _>>().into();
+        let mut why = Vec::new();
+        if no_value > 0 {
+            why.push(format!("{no_value} with no value"));
+        }
+        if no_polygon > 0 {
+            why.push(format!("{no_polygon} with no valid polygon"));
+        }
+        if !burned.unplaced.is_empty() {
+            why.push(format!("{} with a part that can't be placed on the grid (any other parts were burned)", burned.unplaced.len()));
+        }
+        if burned.missed > 0 {
+            why.push(format!("{} that hold no cell centre (narrower than a cell, or off the grid)", burned.missed));
+        }
+        s.notify(format!("{ln}: features skipped: {}", why.join(", ")), false);
+    }
+    // Whole numbers few enough to list are classes, drawn with unique values.
+    let distinct = out.bands.first().is_some_and(|b| b.stats.categories.is_some());
+    let mut info = add_output(s, out, path, whole_field && distinct, info)?;
+    if text {
+        let layer = info.get("name").and_then(Value::as_str).unwrap_or(&out_name).to_string();
+        let mut table = rustgis_data::Dataset::new(
+            free_table_name(s, &format!("{layer} classes")),
+            GeometryType::None,
+            vec![rustgis_data::Field::new("code", FieldType::Integer), rustgis_data::Field::new("value", FieldType::Text)],
+        );
+        for (i, c) in classes.iter().enumerate() {
+            table.push_next(None, vec![rustgis_data::Value::Int(i as i64 + 1), rustgis_data::Value::Text(c.clone())]);
+        }
+        info["classTable"] = json!(table.name);
+        s.project.add_table(table);
+        info["classCount"] = json!(classes.len());
+        // All the codes are in the table; here, as many as a unique-value legend shows.
+        info["classes"] = classes.iter().take(256).enumerate().map(|(i, c)| json!({"code": i + 1, "value": c})).collect();
+    }
+    Ok(info)
+}
+
+/// `base`, or `base (2)`, `base (3)`… : the first no table of the project has (whatever its case).
+fn free_table_name(s: &Session, base: &str) -> String {
+    let taken = |n: &str| s.project.tables.iter().any(|t| t.name.eq_ignore_ascii_case(n));
+    let mut name = base.to_string();
+    let mut i = 1;
+    while taken(&name) {
+        i += 1;
+        name = format!("{base} ({i})");
+    }
+    name
+}
+
+/// A text field's value, `None` for null or blank.
+fn text_of(v: &rustgis_data::Value) -> Option<String> {
+    let t = match v {
+        rustgis_data::Value::Null => return None,
+        rustgis_data::Value::Text(t) => t.clone(),
+        rustgis_data::Value::Int(i) => i.to_string(),
+        rustgis_data::Value::Float(f) => f.to_string(),
+        rustgis_data::Value::Bool(b) => b.to_string(),
+    };
+    (!t.trim().is_empty()).then_some(t)
+}
+
+/// A `path` to write a GeoTIFF to, if one is given.
+fn tif_path(p: &Value) -> Result<Option<String>, String> {
+    match p.get("path") {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => Ok(Some(v.as_str().filter(|t| is_tif(t)).ok_or("path is a *.tif or *.tiff file")?.to_string())),
+    }
+}
+
+/// Adds `out` as a new layer, its classes drawn with unique values when `classes`; with a `path`,
+/// written there first as a cloud-optimised GeoTIFF, which becomes the layer's source. `info`,
+/// with the extent, the file and the name the layer got, is the result.
+fn add_output(s: &mut Session, out: Raster, path: Option<String>, classes: bool, mut info: Value) -> CmdResult {
+    let out_name = out.name.clone();
+    let e = out.extent();
+    info["extent"] = json!([e.min_x, e.min_y, e.max_x, e.max_y]);
+    // A file written is the layer's source; without one the pixels are kept in the project.
+    let mut rl = match &path {
+        Some(path) => {
+            let cog =
+                rustgis_data::raster::cogwrite::write_file(&out, 0, std::path::Path::new(path)).map_err(|e| format!("{path}: {e}"))?;
+            info["path"] = json!(path);
+            info["cog"] = json!({"overviews": cog.levels.len().saturating_sub(1), "bigTiff": cog.big, "bytes": cog.bytes});
+            RasterLayer::from_path(out, path.clone())
+        }
+        None => layer_of(out)?,
+    };
+    if classes && let Some(d) = rl.data.clone() {
+        rl.style.renderer = rustgis_map::raster::unique_values(&d, 0, rustgis_map::Ramp::Harbour);
+    }
+    let v = super::raster::add_raster(s, &out_name, rl)?;
+    if let (Some(o), Some(i)) = (info.as_object_mut(), v.as_object()) {
+        for (k, val) in i {
+            o.entry(k.clone()).or_insert_with(|| val.clone());
+        }
+    }
+    // The name the layer got (another may hold the one asked for: "… projected (2)").
+    let id = v.get("layer").and_then(Value::as_u64).and_then(|id| u32::try_from(id).ok());
+    if let Some(name) = id.and_then(|id| s.map().layer(id)).map(|l| l.name.clone()) {
+        info["name"] = json!(name);
+    }
+    Ok(info)
+}
+
+/// The grid of `raster.project` and `raster.rasterize`: another raster's (`grid`), taken exactly,
+/// or one of `crs` (by default `crs`), `cellSize`, `origin` and `extent`. `natural` gives, in the
+/// grid's system, the bounds taken without an extent and the cell size taken without a cellSize
+/// (`None`: a cellSize is required).
+fn grid_param(
+    s: &mut Session,
+    p: &Value,
+    crs: Crs,
+    natural: impl FnOnce(Crs) -> Result<([f64; 4], Option<f64>), String>,
+) -> Result<warp::Grid, String> {
     // A grid named as anything but a raster layer's name is refused rather than ignored.
     let template = match p.get("grid") {
         None | Some(Value::Null) => None,
         Some(v) => Some(v.as_str().ok_or("grid is a raster layer's name")?),
     };
-    let grid = match template {
+    Ok(match template {
         Some(template) => {
             if ["crs", "cellSize", "origin", "extent"].iter().any(|k| p.get(*k).is_some_and(|v| !v.is_null())) {
                 return Err(
@@ -385,15 +648,20 @@ fn project_raster(s: &mut Session, p: &Value) -> CmdResult {
             }
             let t = raster_named(s, template)?;
             t.require_coordinates()?;
+            if let Some((fw, fh)) = t.overview {
+                s.notify(format!("{template}: the grid is its {} × {} overview's, of the {fw} × {fh} raster", t.width, t.height), false);
+            }
             warp::Grid::of(&t)
         }
         None => {
-            let crs = crs_param(p, "crs")?.unwrap_or(r.crs);
-            let (footprint, pixel) = warp::footprint_in(&r, crs)?;
+            let crs = crs_param(p, "crs")?.unwrap_or(crs);
+            let (footprint, pixel) = natural(crs)?;
             let positive = |v: &Value| v.as_f64().filter(|c| c.is_finite() && *c > 0.0);
             let bad_cell = "cellSize is a positive number, or [x, y], in the output's units";
             let cell = match p.get("cellSize") {
-                None | Some(Value::Null) => (pixel, pixel),
+                None | Some(Value::Null) => {
+                    pixel.map(|c| (c, c)).ok_or("cellSize is required: a number, or [x, y], in the output's units, or a grid")?
+                }
                 Some(Value::Array(a)) => match a.as_slice() {
                     [x, y] => (positive(x).ok_or(bad_cell)?, positive(y).ok_or(bad_cell)?),
                     _ => return Err(bad_cell.into()),
@@ -438,48 +706,7 @@ fn project_raster(s: &mut Session, p: &Value) -> CmdResult {
             };
             warp::Grid::snapped(crs, bounds, cell, origin)?
         }
-    };
-    let path = match p.get("path") {
-        None | Some(Value::Null) => None,
-        Some(v) => Some(v.as_str().filter(|t| is_tif(t)).ok_or("path is a *.tif or *.tiff file")?.to_string()),
-    };
-    let out_name = name(p, format!("{} projected", r.name));
-    let out = warp::project(&r, &grid, method, out_name.clone())?;
-    let mut info = json!({
-        "name": out_name, "crs": grid.crs.label(), "resampling": method.used_on(&r).id(), "width": out.width, "height": out.height, "bands": out.band_count(),
-        "cellSize": [grid.cell_x, grid.cell_y], "corner": [grid.min_x, grid.max_y],
-    });
-    if let Some((fw, fh)) = r.overview {
-        let note =
-            format!("{}: projected at reduced resolution, from its {} × {} overview of the {fw} × {fh} raster", r.name, r.width, r.height);
-        s.notify(note, false);
-        info["projectedFromOverview"] = json!({"width": r.width, "height": r.height, "of": [fw, fh]});
-    }
-    let e = out.extent();
-    info["extent"] = json!([e.min_x, e.min_y, e.max_x, e.max_y]);
-    // A file written is the layer's source; without one the pixels are kept in the project.
-    let rl = match &path {
-        Some(path) => {
-            let cog =
-                rustgis_data::raster::cogwrite::write_file(&out, 0, std::path::Path::new(path)).map_err(|e| format!("{path}: {e}"))?;
-            info["path"] = json!(path);
-            info["cog"] = json!({"overviews": cog.levels.len().saturating_sub(1), "bigTiff": cog.big, "bytes": cog.bytes});
-            RasterLayer::from_path(out, path.clone())
-        }
-        None => layer_of(out)?,
-    };
-    let v = super::raster::add_raster(s, &out_name, rl)?;
-    if let (Some(o), Some(i)) = (info.as_object_mut(), v.as_object()) {
-        for (k, val) in i {
-            o.entry(k.clone()).or_insert_with(|| val.clone());
-        }
-    }
-    // The name the layer got (another may hold the one asked for: "… projected (2)").
-    let id = v.get("layer").and_then(Value::as_u64).and_then(|id| u32::try_from(id).ok());
-    if let Some(name) = id.and_then(|id| s.map().layer(id)).map(|l| l.name.clone()) {
-        info["name"] = json!(name);
-    }
-    Ok(info)
+    })
 }
 
 fn is_tif(path: &str) -> bool {

@@ -1017,8 +1017,9 @@ below the web app's fixed limits and never above a ceiling.
 
 So a computer with 16 GB reads rasters of up to about 500 million samples. A run that passes on one
 computer can be refused on a smaller one; the error names the limit there. Project Raster (`raster.project`) puts a raster
-on a grid of any coordinate system, cell size and extent; Raster Functions › Resample matches a target
-raster's grid.
+on a grid of any coordinate system, cell size and extent, and Polygons to Raster
+(`raster.rasterize`) burns polygons onto the same grids; Raster Functions › Resample matches a
+target raster's grid.
 
 The **Script** pane runs commands from text, one per line (`id {json}`); its box grows with the script down to the bottom of the pane,
 short of the buttons, and then scrolls, so **Run** stays in view; Ctrl+Enter (⌘+Enter on macOS)
@@ -1191,6 +1192,41 @@ The Analyze tab's imagery groups open their tools in the Workflows pane:
   - The result has to fit in memory (120 million values, cells times bands, or more on a computer
     with more memory; 32 million in the web app): a grid past that is refused, naming the limit. A raster read from its overview is
     projected at that resolution, and the result says so.
+- **Polygons to Raster** (`raster.rasterize`) burns a polygon layer onto a grid, so soil,
+  geology or land-use units line up cell for cell with rasters put on that grid by Project Raster:
+  `{"layer": "Soils", "field": "unit", "grid": "ndvi_100m", "path": "soils_100m.tif"}`. It has no
+  pane yet: run it from the Script pane, the AI Assistant, the command line or Python. The result
+  is a new layer (`name`, by default the layer's name with "raster"), and with `path` a
+  cloud-optimised GeoTIFF too.
+  - **The grid** is given as for Project Raster: `"grid"`, another raster's grid taken exactly, or
+    `crs` (by default the layer's), `cellSize` (required), `origin` (`[0, 0]` by default, so the
+    result lines up with any raster projected with the same `crs` and `cellSize`) and `extent` (by
+    default the polygons' bounds).
+  - **What a cell takes:** a cell takes a polygon's value when its centre falls inside it, holes
+    cut out. A numeric `field` gives its values; a text `field` gives codes 1 to n, in sorted order
+    of its values. A table named after the result with "classes" (`code`, `value`), numbered if
+    the project has a table of that name, holds every code; the result's `classTable` names it,
+    its `classes` lists the first 256, and `classCount` gives the total. With no field, every
+    polygon gives `value` (1 by default), a mask.
+  - Where polygons overlap, the later feature wins, as GDAL burns. With a selection, only the
+    selected features are burned. Features with no value in the field, with no valid polygon, or
+    holding no cell centre are skipped, and the result and a notice count them.
+  - Cells under no polygon take `nodata` (0 by default). A polygon whose value is the no-data
+    value is refused, so give another `nodata`, such as 255, when 0 is a class.
+  - **Pixel type:** bytes when every value and the no-data value are whole numbers from 0 to 255,
+    16-bit when they are up to 65,535, and 32-bit floating point otherwise. Past 16,777,216, 32 bits
+    no longer hold every whole number, so a whole number past it is refused, from an Integer field,
+    a text field's codes or `value`; for an Integer field, a text field gives codes instead. Any
+    other value that 32 bits can't hold exactly, a Double field's included, is rounded, and a notice
+    counts them. Up to 256 whole-number values are drawn with unique values.
+  - **Limits:** a polygon narrower than a cell can hold no cell centre and be missed; there is no
+    "all touched" rule, and lines and points aren't burned. The grid has to fit in memory (120
+    million cells, or more on a computer with more memory; 32 million in the web app): a grid past
+    that is refused before anything is burned. A layer read in place (only the part in view loaded)
+    is refused until all its features are loaded. Taken from a raster read from its overview, the
+    grid is the overview's, and a notice says so. The command runs where it is called, with no Cancel
+    yet and no cap on its work: each polygon fills the cells it covers, so many large polygons on a
+    fine grid take time in proportion.
 - **Classification Wizard** (unsupervised k-means) and **Classification Tools** (minimum distance
   from training polygons).
 - **Mensuration**: distances along the surface, heights between two points, areas, and volumes
