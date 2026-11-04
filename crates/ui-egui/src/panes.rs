@@ -4214,7 +4214,7 @@ fn symbology(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
                 let e = if text.is_empty() { Value::Null } else { json!(text) };
                 let _ = app.run("layer.symbology", json!({"type": "unique", "expression": e, "ramp": ramp.name()}));
             }
-            ramp_picker_with(app, ui, ramp, t, true);
+            ramp_picker_with(app, ui, ramp, t, !l.graphics);
             ui.add_space(6.0);
             ui.label(
                 egui::RichText::new(crate::i18n::fmt("{n} classes", &[("n", &classes.len().to_string())])).size(11.5).color(t.text_dim),
@@ -4251,7 +4251,7 @@ fn symbology(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
                     }
                 });
             }
-            ramp_picker_with(app, ui, ramp, t, true);
+            ramp_picker_with(app, ui, ramp, t, !l.graphics);
             ui.add_space(6.0);
             legend_list(app, ui, &l, t);
         }
