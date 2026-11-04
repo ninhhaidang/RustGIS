@@ -134,6 +134,52 @@ fn add_layer(s: &mut Session, p: &Value) -> CmdResult {
     }
 }
 
+/// Makes every layer read in place from `table` of the GeoPackage at `path` (or from that file
+/// with no table named) read it again, in every map: its rows were written, or (with `reopen`)
+/// the table was made anew, so its fields and system are read again too. Returns how many read
+/// it again, and the layers that couldn't reopen it with why (each also keeps its error).
+pub(crate) fn reset_sources(s: &mut Session, path: &std::path::Path, table: &str, reopen: bool) -> (usize, Vec<String>) {
+    let (mut n, mut failed) = (0, Vec::new());
+    let canonical = std::fs::canonicalize(path).ok();
+    for map in &mut s.project.maps {
+        for l in map.layers.iter_mut() {
+            if let Some(source) = &mut l.source
+                && source.table.as_deref().is_none_or(|t| t.eq_ignore_ascii_case(table))
+                && source.path.as_deref().is_some_and(|p| match (canonical.as_ref(), std::fs::canonicalize(p).ok()) {
+                    (Some(a), Some(b)) => *a == b,
+                    _ => std::path::Path::new(p) == path,
+                })
+            {
+                if !reopen {
+                    source.reset();
+                    n += 1;
+                } else {
+                    match source.reopen() {
+                        Ok(()) => n += 1,
+                        Err(e) => failed.push(format!("{} ({e})", l.name)),
+                    }
+                }
+            }
+        }
+    }
+    (n, failed)
+}
+
+/// The layers loaded for editing from `table` of the GeoPackage at `path`, by name, in every map:
+/// after the table is replaced they still hold its old rows (with their unsaved edits).
+pub(crate) fn editing(s: &Session, path: &std::path::Path, table: &str) -> Vec<String> {
+    let canonical = std::fs::canonicalize(path).ok();
+    let same = |p: &str| match (canonical.as_ref(), std::fs::canonicalize(p).ok()) {
+        (Some(a), Some(b)) => *a == b,
+        _ => std::path::Path::new(p) == path,
+    };
+    let layers = s.project.maps.iter().flat_map(|m| m.layers.iter());
+    layers
+        .filter(|l| l.gpkg.as_ref().is_some_and(|g| g.table.eq_ignore_ascii_case(table) && same(&g.path)))
+        .map(|l| l.name.clone())
+        .collect()
+}
+
 fn save_edits(s: &mut Session, p: &Value) -> CmdResult {
     #[cfg(target_arch = "wasm32")]
     {
@@ -244,20 +290,7 @@ fn save_edits(s: &mut Session, p: &Value) -> CmdResult {
         }
         s.saved_over.retain(rustgis_map::source::Versions::held_elsewhere);
         s.saved_over.push(edit.versions);
-        let canonical = std::fs::canonicalize(path).ok();
-        for map in &mut s.project.maps {
-            for l in map.layers.iter_mut() {
-                if let Some(source) = &mut l.source
-                    && source.table.as_deref().is_none_or(|t| t.eq_ignore_ascii_case(table))
-                    && source.path.as_deref().is_some_and(|p| match (canonical.as_ref(), std::fs::canonicalize(p).ok()) {
-                        (Some(a), Some(b)) => *a == b,
-                        _ => p == edit.path,
-                    })
-                {
-                    source.reset();
-                }
-            }
-        }
+        reset_sources(s, path, table, false);
         s.notify(
             format!(
                 "{name}: saved to {table} in {}: {} new, {} changed, {} deleted",

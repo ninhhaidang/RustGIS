@@ -13619,6 +13619,96 @@ fn exporting_features_refuses_to_replace_an_existing_geopackage() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// Export Features adds a layer to an existing GeoPackage as one more table, or replaces one of
+/// its tables, saying which; a layer read in place from that GeoPackage can go back into it (its
+/// filtered copy as another table). `mode` and `tableName` are for GeoPackages only.
+#[test]
+fn exporting_features_adds_or_replaces_a_table_in_an_existing_geopackage() {
+    let dir = std::env::temp_dir().join(format!("rustgis-engine-gpkg-add-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("county.gpkg");
+    let mut s = world();
+    s.run("share.exportLayer", &json!({"layer": "Cities", "path": path})).unwrap();
+    let mark = s.notice_mark();
+    let out = s.run("share.exportLayer", &json!({"layer": "Countries", "path": path, "mode": "addTable"})).unwrap();
+    assert_eq!((out["table"].as_str(), out["replaced"].as_bool()), (Some("Countries"), Some(false)));
+    let texts: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+    assert!(texts.iter().any(|t| t.ends_with("added the table Countries")), "{texts:?}");
+    let tables = rustgis_data::source::layers(&path).unwrap();
+    assert_eq!(tables, ["Cities", "Countries"]);
+    // Taken: refused, unless replacing.
+    let e = s.run("share.exportLayer", &json!({"layer": "Cities", "path": path, "mode": "addTable"})).unwrap_err();
+    assert!(e.to_string().contains("already has a table Cities"), "{e}");
+    let cities = s.map().layer_by_name("Cities").map(|l| l.dataset.features.len()).unwrap();
+    let mark = s.notice_mark();
+    let out =
+        s.run("share.exportLayer", &json!({"layer": "Countries", "path": path, "mode": "replaceTable", "tableName": "Cities"})).unwrap();
+    assert_eq!(out["replaced"].as_bool(), Some(true));
+    assert!(s.notices_since(mark).iter().any(|n| n.text.contains("replaced its table Cities, dropping")));
+    let countries = s.map().layer_by_name("Countries").map(|l| l.dataset.features.len()).unwrap();
+    let count = |t: &str| rustgis_data::source::open_path(&path, Some(t)).unwrap().info().count;
+    assert_eq!(count("Cities"), Some(countries as u64));
+    assert_ne!(cities, countries);
+    // Read in place from the GeoPackage, then exported back into it.
+    s.run("layer.addData", &json!({"path": path.display().to_string(), "layer": "Countries", "stream": true, "name": "InPlace"})).unwrap();
+    s.run("share.exportLayer", &json!({"layer": "InPlace", "path": path, "mode": "addTable", "tableName": "copy"})).unwrap();
+    assert_eq!(count("copy"), Some(countries as u64));
+    // Replacing the table a layer reads in place makes it read the new table, and says so.
+    let kind =
+        |s: &Session| s.map().layer_by_name("InPlace").and_then(|l| l.source.as_ref()).and_then(|src| src.info()).map(|i| i.geometry_type);
+    s.map_mut().layers.iter_mut().for_each(|l| {
+        l.sync_source(&rustgis_geom::Extent::new(-20.0, -20.0, 20.0, 20.0), true);
+    });
+    assert_eq!(kind(&s), Some(rustgis_data::GeometryType::Polygon));
+    let mark = s.notice_mark();
+    s.run("share.exportLayer", &json!({"layer": "Cities", "path": path, "mode": "replaceTable", "tableName": "Countries"})).unwrap();
+    assert_eq!(kind(&s), Some(rustgis_data::GeometryType::Point), "the new table's");
+    let read = s.map().layer_by_name("InPlace").map(|l| l.load_all().map(|ds| ds.features.len()));
+    assert_eq!(read, Some(Ok(cities)), "its features are the new table's");
+    assert!(s.notices_since(mark).iter().any(|n| n.text.ends_with("1 layer reads Countries in place, now the new table")));
+    // A layer loaded for editing from a replaced table keeps its rows and edits, and is named.
+    s.run("gpkg.addLayer", &json!({"path": path, "table": "Cities", "name": "Editing"})).unwrap();
+    let mark = s.notice_mark();
+    s.run("share.exportLayer", &json!({"layer": "Countries", "path": path, "mode": "replaceTable", "tableName": "Cities"})).unwrap();
+    assert!(
+        s.notices_since(mark)
+            .iter()
+            .any(|n| n.text.contains("1 layer loaded for editing from Cities still shows") && n.text.ends_with(": Editing")),
+        "{:?}",
+        s.notices_since(mark)
+    );
+    // A standalone table goes in as an attribute table.
+    s.run("layer.addDataText", &json!({"fileName": "owners.csv", "text": "name,n\nShelby,1\n"})).unwrap();
+    let table = s.project.tables.last().map(|t| t.id).unwrap();
+    let out = s.run("share.exportTable", &json!({"table": table, "path": path, "mode": "addTable"})).unwrap();
+    assert_eq!(out["table"].as_str(), Some("owners"));
+    let c = rusqlite::Connection::open(&path).unwrap();
+    assert_eq!(
+        c.query_row("SELECT data_type FROM gpkg_contents WHERE table_name = 'owners'", [], |r| r.get::<_, String>(0)).unwrap(),
+        "attributes"
+    );
+    drop(c);
+    // Other formats take neither; a mode not known is refused.
+    let geojson = dir.join("x.geojson");
+    for p in [json!({"mode": "addTable"}), json!({"tableName": "x"})] {
+        let mut p = p;
+        p["path"] = json!(geojson);
+        assert!(s.run("share.exportLayer", &p).unwrap_err().to_string().contains("GeoPackage"), "{p}");
+    }
+    assert!(s.run("share.exportLayer", &json!({"path": path, "mode": "append"})).is_err());
+    // Not strings: refused, not taken for the default.
+    for p in [json!({"mode": 1}), json!({"mode": "addTable", "tableName": ["x"]})] {
+        let mut p = p;
+        p["path"] = json!(path);
+        assert!(s.run("share.exportLayer", &p).unwrap_err().to_string().contains("must be a string"), "{p}");
+    }
+    assert!(!geojson.exists());
+    // The layer read in place holds the file open, which Windows won't remove.
+    drop(s);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// A layer whose Z values were dropped on import says so when added, read whole or in place, and
 /// again when exported or converted; a 2D layer's export says nothing of it.
 #[test]

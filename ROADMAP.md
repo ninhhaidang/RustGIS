@@ -92,8 +92,6 @@ And alongside it:
   ([#853](https://github.com/opengeos/RustGIS/issues/853)). _Coordinate first_ (it changes
   `FieldType`).
 - Editable standalone tables (they are read-only today).
-- Export into an existing GeoPackage as an added or replaced table, leaving its other tables
-  ([#852](https://github.com/opengeos/RustGIS/issues/852); export refuses an existing file today).
 - Polygon editing: shared edges, where moving one boundary moves its neighbour's too.
   Coincident polygon vertices can already move together with Shared Vertices
   (`edit.moveSharedVertex`); different vertex densities and linked insertion/deletion remain
@@ -149,6 +147,9 @@ Open questions rather than plans; discuss before building.
 
 ## Done
 
+- Export into an existing GeoPackage on desktop: a layer or table added as one more table, or
+  replacing one of its tables, leaving the others as they were (`mode` on `share.exportLayer` and
+  `share.exportTable`).
 - Polygon editing: Cut Polygon, Reshape (polygons and lines) and Trace along an edge while
   drawing, on the map and through `edit.cutPolygon`, `edit.reshape` and `edit.trace`.
 - Geometry conversions: Polygon To Line, Split Line At Vertices, Feature Envelope To Polygon

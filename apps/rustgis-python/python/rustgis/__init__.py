@@ -268,7 +268,14 @@ class Layer:
         collection = self.to_geojson(selected)
         return gpd.GeoDataFrame.from_features(collection["features"], crs="EPSG:4326")
 
-    def to_file(self, path: PathLike, crs: Optional[str] = None) -> Any:
+    def to_file(
+        self,
+        path: PathLike,
+        crs: Optional[str] = None,
+        *,
+        mode: Optional[str] = None,
+        table_name: Optional[str] = None,
+    ) -> Any:
         """Writes the layer's features to a file (``share.exportLayer``).
 
         Args:
@@ -276,10 +283,19 @@ class Layer:
                 ``.gpkg``, ``.parquet``, ``.shp``, ``.zip``, ``.kml``, ``.kmz`` or ``.gpx``.
             crs: The coordinate system of a GeoPackage, Shapefile or FlatGeobuf, e.g.
                 ``"EPSG:3857"`` (the one the layer was read in when left out).
+            mode: For a GeoPackage: ``"newFile"`` (the default; an existing file is refused),
+                ``"addTable"`` (one more table in an existing GeoPackage, or a new file when
+                there is none) or ``"replaceTable"`` (replacing its table of that name, which
+                must be there).
+            table_name: The GeoPackage table (the layer's name when left out).
         """
         params: Dict[str, Any] = {"layer": self.id, "path": os.fspath(path)}
         if crs is not None:
             params["crs"] = crs
+        if mode is not None:
+            params["mode"] = mode
+        if table_name is not None:
+            params["tableName"] = table_name
         return self.session.run("share.exportLayer", params)
 
     def __eq__(self, other: object) -> bool:

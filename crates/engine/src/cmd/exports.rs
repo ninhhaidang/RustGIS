@@ -14,7 +14,13 @@ use crate::{CmdResult, Session};
 pub struct Wrote {
     pub(crate) answer: Value,
     pub(crate) notes: Vec<String>,
+    /// What it does to the session once written, after its notes, and adds to its answer (a
+    /// GeoPackage table replaced: the layers reading it read it again).
+    pub(crate) then: Option<Then>,
 }
+
+/// What an export does to the session once its file is written, and adds to its answer.
+pub(crate) type Then = Box<dyn FnOnce(&mut Session, &mut Value) + Send>;
 
 /// The writing of an export, its inputs read: it needs no session.
 pub(crate) type Work = Box<dyn FnOnce() -> Result<Wrote, String> + Send>;
@@ -57,10 +63,14 @@ fn written_under(name: &str, control: &std::sync::Arc<rustgis_analysis::control:
 
 /// Says what an export wrote, and gives its answer.
 fn said(s: &mut Session, wrote: Wrote) -> Value {
-    for note in wrote.notes {
+    let Wrote { mut answer, notes, then } = wrote;
+    for note in notes {
         s.notify(note, false);
     }
-    wrote.answer
+    if let Some(then) = then {
+        then(s, &mut answer);
+    }
+    answer
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -115,7 +125,7 @@ mod tests {
         // The work places its file, then Cancel comes before the run returns.
         let work: Work = Box::new(move || {
             late.cancel();
-            Ok(Wrote { answer: serde_json::json!({"path": "x"}), notes: vec!["Exported x".into()] })
+            Ok(Wrote { answer: serde_json::json!({"path": "x"}), notes: vec!["Exported x".into()], then: None })
         });
         let wrote = written_under("Export Raster", &control, work).unwrap();
         assert_eq!(wrote.notes, ["Exported x"]);
