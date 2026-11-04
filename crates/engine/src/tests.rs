@@ -5849,10 +5849,214 @@ fn publication_layouts_locate_their_area() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Arrangements of a publication layout's surrounds (#1379): by name, corner by corner, the
+/// favourite (`layout.arrangement`, kept by the app) and `best`, the default, which keeps the
+/// favourite unless another keeps more surrounds in their own corners. Bad ones are refused before
+/// anything changes.
+#[test]
+fn publication_arrangements_and_the_favourite() {
+    let dir = std::env::temp_dir().join(format!("rustgis-arrangement-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let square = |name: &str, (w, so, e, n): (f64, f64, f64, f64)| {
+        let path = dir.join(format!("{name}.geojson"));
+        let ring = format!("[[{w},{so}],[{e},{so}],[{e},{n}],[{w},{n}],[{w},{so}]]");
+        std::fs::write(
+            &path,
+            format!(r#"{{"type": "FeatureCollection", "features": [{{"type": "Feature", "properties": {{"name": "{name}"}}, "geometry": {{"type": "Polygon", "coordinates": [{ring}]}}}}]}}"#),
+        )
+        .unwrap();
+        path.display().to_string()
+    };
+    let corner_of = |s: &Session, name: &str| {
+        let l = s.project.layouts.last().unwrap();
+        let frame = l.elements.iter().find(|e| e.name == "Map Frame").unwrap();
+        let e = l.elements.iter().find(|e| e.name == name).unwrap_or_else(|| panic!("no {name}"));
+        let (right, low) = (e.x + e.w / 2.0 > frame.x + frame.w / 2.0, e.y + e.h / 2.0 > frame.y + frame.h / 2.0);
+        match (low, right) {
+            (false, false) => "top left",
+            (false, true) => "top right",
+            (true, false) => "bottom left",
+            (true, true) => "bottom right",
+        }
+    };
+    let corners = |s: &Session| ["Locator", "North Arrow", "Legend Box", "Scale Box"].map(|n| corner_of(s, n));
+    let extent = json!([0, 0, 10, 10]);
+    let mut s = Session::new(Project::default());
+    s.run("layer.addData", &json!({"path": square("middle", (4.0, 4.0, 6.0, 6.0))})).unwrap();
+    // Nothing asked: classic, as before there was a choice.
+    let r = s.run("layout.publication", &json!({"extent": extent, "author": ""})).unwrap();
+    assert_eq!(
+        (r["arrangement"].as_str(), corners(&s)),
+        (Some("classic"), ["top left", "top right", "bottom left", "bottom right"]),
+        "{r}"
+    );
+    // By name, and corner by corner.
+    let r = s.run("layout.publication", &json!({"extent": extent, "author": "", "arrangement": "legendRight"})).unwrap();
+    assert_eq!(corners(&s), ["top left", "top right", "bottom right", "bottom left"], "{r}");
+    let custom = json!({"locator": "bottom-left", "northArrow": "top-left", "legend": "top-right", "scaleBar": "bottom-right"});
+    let r = s.run("layout.publication", &json!({"extent": extent, "author": "", "arrangement": custom})).unwrap();
+    assert_eq!((r["arrangement"].as_str(), corners(&s)), (Some("custom"), ["bottom left", "top left", "top right", "bottom right"]), "{r}");
+    // The favourite: shown, set, then the one the default and "favourite" take.
+    let shown = s.run("layout.arrangement", &json!({})).unwrap();
+    assert_eq!((shown["favourite"].as_str(), shown["corners"]["legend"].as_str()), (Some("classic"), Some("bottom-left")));
+    let set = s.run("layout.arrangement", &json!({"favourite": "mirrored"})).unwrap();
+    assert_eq!(set["favourite"], "mirrored");
+    for p in [json!({"extent": extent, "author": ""}), json!({"extent": extent, "author": "", "arrangement": "favourite"})] {
+        let r = s.run("layout.publication", &p).unwrap();
+        assert_eq!(
+            (r["arrangement"].as_str(), corners(&s)),
+            (Some("mirrored"), ["top right", "top left", "bottom right", "bottom left"]),
+            "{r}"
+        );
+    }
+    // Refused, naming what is wrong, with nothing changed.
+    let layouts = s.project.layouts.len();
+    for (bad, why) in [
+        (json!("tidy"), "arrangement is \"classic\""),
+        (
+            json!({"locator": "top-left", "northArrow": "top-left", "legend": "bottom-left", "scaleBar": "bottom-right"}),
+            "a corner of its own",
+        ),
+        (json!({"locator": "top-left", "arrow": "top-right", "legend": "bottom-left", "scaleBar": "bottom-right"}), "not \"arrow\""),
+        (json!({"locator": "top-left", "northArrow": "middle", "legend": "bottom-left", "scaleBar": "bottom-right"}), "\"northArrow\" is"),
+        (json!(3), "arrangement is"),
+    ] {
+        let e = s.run("layout.publication", &json!({"extent": extent, "arrangement": bad})).unwrap_err();
+        assert!(e.contains(why), "{bad}: {e}");
+        let e = s.run("layout.arrangement", &json!({"favourite": bad})).unwrap_err();
+        assert!(e.contains(why), "{bad}: {e}");
+    }
+    assert_eq!((s.project.layouts.len(), s.layout_favourite.as_str()), (layouts, Some("mirrored")));
+    // Best: data filling the top right, where the favourite (mirrored) has the locator at home;
+    // classic has its small north arrow there and moves only that, less than mirrored's locator, so
+    // it wins. "favourite" keeps mirrored, the locator off the data.
+    let mut s = Session::new(Project::default());
+    s.run("layer.addData", &json!({"path": square("corner", (5.0, 5.0, 30.0, 30.0))})).unwrap();
+    s.run("layout.arrangement", &json!({"favourite": "mirrored"})).unwrap();
+    let best = s.run("layout.publication", &json!({"extent": extent, "author": ""})).unwrap();
+    assert_eq!(best["arrangement"], "classic", "{best}");
+    assert_eq!(corner_of(&s, "Locator"), "top left", "{best}");
+    let fav = s.run("layout.publication", &json!({"extent": extent, "author": "", "arrangement": "favourite"})).unwrap();
+    assert_eq!(fav["arrangement"], "mirrored", "{fav}");
+    assert_ne!(corner_of(&s, "Locator"), "top right", "{fav}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `best` never wins by leaving the legend out (#1379): on sheets ever smaller, once classic's
+/// locator leaves the legend under it no room, the default still keeps a legend, in an arrangement
+/// that has room for it.
+#[test]
+fn best_keeps_the_legend_an_arrangement_would_leave_out() {
+    let mut s = world();
+    let piaui = json!([-46.8, -11.6, -38.5, -2.2]);
+    let dropped = "the frame leaves the legend no room beside the locator";
+    let mut checked = false;
+    for n in 1..80 {
+        let sources: Vec<String> = (0..n).map(|i| format!("Source {i}: a line long enough to take a line of its own")).collect();
+        let p = json!({"profile": "a4-landscape", "extent": piaui, "sources": sources, "arrangement": "classic"});
+        let Ok(r) = s.run("layout.publication", &p) else { break };
+        if !r["warnings"].to_string().contains(dropped) {
+            continue;
+        }
+        let best = s.run("layout.publication", &json!({"profile": "a4-landscape", "extent": piaui, "sources": sources})).unwrap();
+        let l = s.project.layouts.last().unwrap();
+        assert!(l.elements.iter().any(|e| e.name == "Legend Box"), "{n} lines: {best}");
+        assert!(!best["warnings"].to_string().contains(dropped), "{n} lines: {best}");
+        checked = true;
+        break;
+    }
+    assert!(checked, "no sheet left classic's legend out");
+}
+
+/// How `best` picks among the arrangements tried (#1379): the least area moved, within a square
+/// millimetre, then the least left over the data, within one, the first tried on a tie; the bands
+/// are measured from the best value, so they don't add up from one try to the next.
+#[test]
+fn best_picks_by_area_moved_then_area_over_the_data() {
+    use crate::cmd::layout::pick_arrangement;
+    // Each moves under a millimetre more than the one before, and leaves less over the data: the
+    // third moves 1.8 mm² more than the first, out of the band, so the second wins.
+    assert_eq!(pick_arrangement(&[(10.0, 50.0), (10.9, 40.0), (11.8, 30.0)]), Some(1));
+    // Clearly less moved wins whatever it leaves over the data.
+    assert_eq!(pick_arrangement(&[(100.0, 0.0), (20.0, 90.0)]), Some(1));
+    // Ties go to the first tried (the favourite), within a millimetre either way.
+    assert_eq!(pick_arrangement(&[(10.0, 20.0), (10.5, 19.5), (9.8, 20.4)]), Some(0));
+    assert_eq!(pick_arrangement(&[(f64::NAN, 1.0), (5.0, 5.0)]), Some(1));
+    assert_eq!(pick_arrangement(&[(f64::NAN, f64::NAN)]), None);
+    assert_eq!(pick_arrangement(&[]), None);
+    // Surrounds left over each other count ten times their overlap in the area moved.
+    use crate::cmd::layout::overlap_area;
+    assert_eq!(overlap_area(&[(0.0, 0.0, 10.0, 10.0), (5.0, 5.0, 10.0, 10.0), (30.0, 0.0, 5.0, 5.0)]), 25.0);
+    assert_eq!(overlap_area(&[(0.0, 0.0, 10.0, 10.0), (10.0, 0.0, 10.0, 10.0)]), 0.0);
+}
+
+/// The legend is placed first (#1379): with data everywhere but the top right, it leaves its own
+/// covered corner for the free quarter, the north arrow's, and the two don't overlap.
+#[test]
+fn the_legend_is_placed_before_the_smaller_surrounds() {
+    let dir = std::env::temp_dir().join(format!("rustgis-legend-first-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("l.geojson");
+    let square = |(w, so, e, n): (f64, f64, f64, f64)| format!("[[[{w},{so}],[{e},{so}],[{e},{n}],[{w},{n}],[{w},{so}]]]");
+    std::fs::write(
+        &path,
+        format!(
+            r#"{{"type": "FeatureCollection", "features": [{{"type": "Feature", "properties": {{}}, "geometry": {{"type": "MultiPolygon", "coordinates": [{}, {}]}}}}]}}"#,
+            square((-20.0, -20.0, 30.0, 5.0)),
+            square((-20.0, 5.0, 5.0, 30.0))
+        ),
+    )
+    .unwrap();
+    let mut s = Session::new(Project::default());
+    s.run("layer.addData", &json!({"path": path.display().to_string()})).unwrap();
+    let r =
+        s.run("layout.publication", &json!({"extent": [0, 0, 10, 10], "author": "", "arrangement": "classic", "locator": "none"})).unwrap();
+    let l = s.project.layouts.last().unwrap();
+    let rect = |name: &str| l.elements.iter().find(|e| e.name == name).map(|e| (e.x, e.y, e.w, e.h)).unwrap();
+    let (frame, legend, arrow) = (rect("Map Frame"), rect("Legend Box"), rect("North Arrow"));
+    let moved = r["moved"].as_array().unwrap();
+    assert!(moved.contains(&json!("legend")), "{r}");
+    assert!(!r["warnings"].to_string().contains("overlap"), "{r}");
+    // The legend in the free quarter, the top right.
+    assert!(legend.0 + legend.2 / 2.0 > frame.0 + frame.2 / 2.0 && legend.1 + legend.3 / 2.0 < frame.1 + frame.3 / 2.0, "{r}");
+    // The arrow off it.
+    let apart =
+        legend.0 + legend.2 <= arrow.0 || arrow.0 + arrow.2 <= legend.0 || legend.1 + legend.3 <= arrow.1 || arrow.1 + arrow.3 <= legend.1;
+    assert!(apart, "{r} {legend:?} {arrow:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Where a surround that leaks off its corner goes (#1379): the free part of the frame, clear of
+/// the other surrounds, in line with them, near its corner; nowhere when it can't fit.
+#[test]
+fn a_leaking_surround_finds_the_free_part_of_the_frame() {
+    use crate::cmd::layout::free_spot;
+    let area = (0.0, 0.0, 100.0, 100.0);
+    // Data over the left half (a continent), the frame's right half free (an ocean).
+    let left_half = |(x, _, w, _): (f64, f64, f64, f64)| ((50.0 - x).clamp(0.0, w)) / w;
+    let home = (2.0, 70.0, 20.0, 20.0);
+    let r = free_spot(home, area, &[], left_half).unwrap();
+    assert!(left_half(r) == 0.0 && r.0 >= 50.0, "{r:?}");
+    // Near its corner: at the data's edge, and 10 mm lower, its bottom on the frame's (in line
+    // with it costs less than the 10 mm away).
+    assert_eq!(r, (50.0, 80.0, 20.0, 20.0));
+    // Another surround there: it keeps 2 mm clear of it, and lines up with its edge.
+    let legend = (50.0, 60.0, 40.0, 38.0);
+    let r = free_spot(home, area, &[legend], left_half).unwrap();
+    let clear = r.1 + r.3 + 2.0 <= legend.1 || r.0 >= legend.0 + legend.2 + 2.0;
+    assert!(clear && left_half(r) == 0.0, "{r:?}");
+    assert!([legend.0, legend.0 + legend.2].contains(&r.0) || [legend.0, legend.0 + legend.2].contains(&(r.0 + r.2)), "in line: {r:?}");
+    // The same frame, the same place.
+    assert_eq!(free_spot(home, area, &[legend], left_half), Some(r));
+    // Too big for the frame, or nowhere clear: none.
+    assert_eq!(free_spot((0.0, 0.0, 120.0, 10.0), area, &[], left_half), None);
+    assert_eq!(free_spot(home, area, &[(0.0, 0.0, 100.0, 100.0)], left_half), None);
+}
+
 /// A publication layout's surrounds keep off the map's data (#682, part 3): with a polygon filling
-/// the bottom left of the frame, the legend leaves that corner and the smallest surround, the
-/// north arrow, takes it; with data everywhere, each surround says it covers some; with none, they
-/// stay in their own corners. `"decimal": ","` gives the layout a decimal comma, which
+/// the bottom left of the frame, the surround each arrangement puts there leaves it for a free place
+/// in the frame, the smallest to move winning: here the classic legend of one row (#1379); with
+/// data everywhere, nothing moves and nothing is said; with none, they stay in their own corners. `"decimal": ","` gives the layout a decimal comma, which
 /// `layout.page` also sets.
 #[test]
 fn publication_surrounds_keep_off_the_data() {
@@ -5887,8 +6091,8 @@ fn publication_surrounds_keep_off_the_data() {
     let r = s.run("layout.publication", &json!({"extent": extent, "author": ""})).unwrap();
     let corners: Vec<_> = ["Locator", "North Arrow", "Legend Box", "Scale Box"].iter().map(|n| corner_of(&s, n)).collect();
     assert_eq!(corners, ["top left", "top right", "bottom left", "bottom right"], "{r}");
-    assert!(r["warnings"].as_array().unwrap().is_empty(), "{r}");
-    // A polygon filling the bottom left: the legend leaves it, the arrow (smallest) takes it.
+    assert!(r["warnings"].as_array().unwrap().is_empty() && r["moved"] == json!([]), "{r}");
+    // A polygon filling the bottom left: the legend keeps out of it.
     let mut s = Session::new(Project::default());
     s.run("layer.addData", &json!({"path": square("corner", (-20.0, -20.0, 5.0, 5.0))})).unwrap();
     // The coverage is drawn on the map itself, its basemap set aside meanwhile and put back.
@@ -5900,7 +6104,11 @@ fn publication_surrounds_keep_off_the_data() {
     assert!(s.map().basemap == rustgis_map::Basemap::Ocean && s.map().label_lock.is_none() && s.map().tiles.len() == 1);
     assert_ne!(corner_of(&s, "Legend Box"), "bottom left", "{r}");
     s.map_mut().tiles.clear();
-    assert_eq!(corner_of(&s, "North Arrow"), "bottom left", "{r}");
+    // Four surrounds, three free corners: the legend of one row is smaller to move than the scale
+    // bar or the locator other arrangements put there, so classic wins; its legend leaves the
+    // covered corner for a free place, out of the data's quarter, and nothing is left to say (#1379).
+    assert_eq!((r["arrangement"].as_str(), &r["moved"]), (Some("classic"), &json!(["legend"])), "{r}");
+    assert!(!r["warnings"].to_string().contains("on what the map shows"), "{r}");
     // A pale fill with no outline counts as data too: the legend leaves it the same way.
     let mut pale = Session::new(Project::default());
     pale.run("layer.addData", &json!({"path": square("pale", (-20.0, -20.0, 5.0, 5.0))})).unwrap();
@@ -5908,16 +6116,13 @@ fn publication_surrounds_keep_off_the_data() {
     pale.run("layer.outline", &json!({"layer": "pale", "color": "#00000000", "width": 0})).unwrap();
     let rp = pale.run("layout.publication", &json!({"extent": extent, "author": ""})).unwrap();
     assert_ne!(corner_of(&pale, "Legend Box"), "bottom left", "{rp}");
-    // Four surrounds, three free corners: the arrow says it covers data a freer corner was free of.
-    let said = r["warnings"].to_string();
-    assert!(said.contains("the north arrow sits on what the map shows"), "{said}");
     s.run("layout.export", &json!({"path": dir.join("corner.png").display().to_string(), "dpi": 72})).unwrap();
     // Data everywhere (a context layer filling the frame): nowhere better, so nothing said and each
     // in its own corner.
     let mut s = Session::new(Project::default());
     s.run("layer.addData", &json!({"path": square("all", (-30.0, -30.0, 40.0, 40.0))})).unwrap();
     let r = s.run("layout.publication", &json!({"extent": extent, "author": "", "decimal": ","})).unwrap();
-    assert!(!r["warnings"].to_string().contains("on what the map shows"), "{r}");
+    assert!(!r["warnings"].to_string().contains("on what the map shows") && r["moved"] == json!([]), "{r}");
     assert_eq!(corner_of(&s, "Legend Box"), "bottom left");
     // A decimal comma, set by the command and by layout.page; anything else refused.
     assert!(s.project.layouts.last().unwrap().decimal_comma);

@@ -33,13 +33,28 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
     with labels on every edge of a sheet.
     The north arrow, the legend (sized to what it lists), the scale bar with the numeric scale
     under it and the locator sit in the frame's corners, clear of the graticule's
-    labels. Each takes the corner where it covers the least of what the map draws (its layers and
-    labels, not the basemap), so a legend leaves a corner the data fills; when it makes no
-    difference they keep theirs: the locator at the top left, the arrow at the top right, the
-    legend at the bottom left and the scale at the bottom right. With more surrounds than free
-    corners, one warning names those left on the data, to move by hand if that matters (data
-    under every corner alike, such as a context layer filling the frame, isn't worth a warning);
-    two that overlap (a frame too small) are said too.
+    labels. The **arrangement** says which corner is each one's. `classic` (the default favourite) puts the
+    locator at the top left, the arrow at the top right, the legend at the bottom left and the
+    scale at the bottom right. `mirrored` swaps left and right, `legendRight` swaps the legend and
+    the scale, and `legendTop` swaps the legend and the locator. `"arrangement"` also takes a
+    corner for each (`{"locator": "top-left", "northArrow": "top-right", "legend": "bottom-left",
+    "scaleBar": "bottom-right"}`).
+    A surround over what the map draws in its corner (its layers and labels, not the basemap; more
+    than 0.5 % of the surround) moves off the corner, to the freest place in the frame. It keeps
+    2 mm clear of the others, stays near its corner, and lines up with the frame's edges or centre or
+    with another surround. The largest is placed first (the legend, as a rule), so it takes the
+    freest place, and a smaller one whose corner it took moves out of its way.
+    Your favourite arrangement, set with **`layout.arrangement {"favourite": …}`** and kept with
+    the app's preferences, is the one tried first. `"arrangement": "best"`, the default, lays out
+    the favourite and every arrangement by name, and keeps the one that moves the least
+    (by area, so moving the north arrow costs less than moving the legend), then the one leaving
+    the least over the data; the favourite wins a tie. `"favourite"` always takes the favourite.
+    The answer names the arrangement taken (`"arrangement"`) and the surrounds
+    moved off their corners (`"moved"`). Where nowhere is freer, a surround stays. One warning
+    names those left with more than a quarter of their area on the data while a corner of their
+    size had more than a quarter less, to move by hand if that matters (data under every corner
+    alike, such as a context layer filling the frame, isn't worth a warning); two that overlap (a
+    frame too small) are said too.
     The top visible raster gets a colorbar beneath the vector legend if its renderer has a colour
     scale; RGB and untinted hillshade do not. If the legend or colorbar cannot fit, the result
     warns about clipping or resizing. A streamed layer still loading gets a fixed-size legend
