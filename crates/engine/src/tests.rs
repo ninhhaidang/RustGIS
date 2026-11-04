@@ -27345,7 +27345,11 @@ fn exports_run_on_another_thread() {
         assert!(s.notices_since(mark).is_empty(), "{command}: nothing is said before it lands");
         let answer_there = export_land(&mut s, wrote);
         assert_eq!(said(&s, mark, &there), said_here, "{command} {file}");
-        let unpathed = |v: &Value, path: &str| v.to_string().replace(path, "PATH");
+        // The path as it appears in JSON: on Windows its backslashes are escaped there.
+        let unpathed = |v: &Value, path: &str| {
+            let escaped = json!(path).to_string();
+            v.to_string().replace(escaped.trim_matches('"'), "PATH")
+        };
         assert_eq!(unpathed(&answer_there, &there), unpathed(&answer_here, &here), "{command} {file}");
         // A GeoPackage holds the time it was written: its features are compared instead.
         if file.ends_with(".gpkg") {
