@@ -10694,6 +10694,43 @@ fn gdal_rasters_reopen_with_their_choices() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// Two CityJSON types that read the same once cut to a layer name are listed under distinct names,
+/// and picking either adds only its own layer (#1375).
+#[test]
+fn cityjson_types_cut_to_one_name_are_picked_apart() {
+    // 64: the characters of a type a layer name keeps (`cityjson::MAX_TYPE_IN_NAME`).
+    let long = "+".to_string() + &"A".repeat(64);
+    let object = |ty: String| json!({"type": ty, "geometry": [{"type": "MultiSurface", "lod": "1", "boundaries": [[[0, 1, 2]]]}]});
+    let model = json!({
+        "type": "CityJSON",
+        "version": "2.0",
+        "transform": {"scale": [1.0, 1.0, 1.0], "translate": [0.0, 0.0, 0.0]},
+        "metadata": {"referenceSystem": "https://www.opengis.net/def/crs/EPSG/0/4326"},
+        "vertices": [[0, 0, 0], [1, 0, 0], [1, 1, 0]],
+        "CityObjects": {"a": object(format!("{long}x")), "b": object(format!("{long}y"))},
+    })
+    .to_string();
+    let cut: String = long.chars().take(64).collect();
+    let dir = std::env::temp_dir().join(format!("rustgis-cityjson-names-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("m.city.json");
+    std::fs::write(&path, &model).unwrap();
+    let mut s = Session::new(Project::default());
+    let listed = s.run("info.fileLayers", &json!({"path": path.display().to_string()})).unwrap();
+    let (first, second) = (format!("m {cut}"), format!("m {cut} (2)"));
+    assert_eq!(listed["layers"], json!([first, second]));
+    for (want, ty) in [(&first, format!("{long}x")), (&second, format!("{long}y"))] {
+        let mut s = Session::new(Project::default());
+        s.run("layer.addDataText", &json!({"fileName": "m.city.json", "text": model, "layer": want})).unwrap();
+        let added: Vec<_> = s.map().layers.iter().map(|l| l.name.clone()).collect();
+        assert_eq!(added, [want.as_str()]);
+        let layer = s.map().layer_by_name(want).unwrap();
+        let at = layer.dataset.field_index("type").unwrap();
+        assert_eq!(layer.dataset.features[0].attrs[at], rustgis_data::Value::Text(ty));
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A CityJSON model through Add Data: a `.city.json` adds every layer, with the coordinate system
 /// given when it names none; a `.json` adds its first and says what else it holds. Asked to stream,
 /// neither is taken for GeoJSON.
