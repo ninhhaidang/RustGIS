@@ -217,7 +217,7 @@ fn add_layer(s: &mut Session, layer: &qgis::ProjectLayer, has_dir: bool, report:
             Err(e) => report.skipped(name, format!("its filter `{q}` ({e})")),
         }
     }
-    check_fields(l, name, &layer.style.rules, report);
+    check_fields(l, name, &layer.style.rules, layer.style.categories_by.as_ref(), &layer.style.bool_classes, report);
     Ok(Some(added_name))
 }
 
@@ -231,9 +231,16 @@ fn parse_imported(text: &str, ds: &rustgis_data::Dataset) -> Result<rustgis_data
 }
 
 /// Checks what a style names against the layer's fields: its label classes' clauses and fields
-/// (a class that can't label is switched off) and the field a Unique Values or Graduated Colors
-/// renderer classes by.
-fn check_fields(l: &mut rustgis_map::Layer, name: &str, rules: &[qgis::RuleFilter], report: &mut Report) {
+/// (a class that can't label is switched off), the field a Unique Values or Graduated Colors
+/// renderer classes by, and the expression its classes (rules or categories, `by`) are picked by.
+fn check_fields(
+    l: &mut rustgis_map::Layer,
+    name: &str,
+    rules: &[qgis::RuleFilter],
+    by: Option<&qgis::CategoriesBy>,
+    bool_classes: &[String],
+    report: &mut Report,
+) {
     for c in std::iter::once(&mut l.labels.default).chain(l.labels.classes.iter_mut()) {
         if let Some(w) = c.where_.clone()
             && let Err(e) = parse_imported(&w, &l.dataset)
@@ -260,9 +267,90 @@ fn check_fields(l: &mut rustgis_map::Layer, name: &str, rules: &[qgis::RuleFilte
     }
     // Classes by expression (the style's rule-based renderer's): a rule whose filter doesn't read
     // here is left out, the rest kept.
+    // (Whether the categories were set aside for one symbol, or nothing, below.)
+    let mut fell_back = false;
     if l.renderer.expression().is_some() && !rules.is_empty() {
         let kept = fit_rules(l, name, rules, report);
         note_overlapping_rules(l, name, &kept, report);
+    } else if let Some(by) = by
+        && l.renderer.expression().is_some()
+        && let Some(fi) = l.dataset.field_index(&by.qgis)
+    {
+        // QGIS classes by a field when its attribute names one, as it writes a name with spaces
+        // or other characters (unquoted): classed by that field.
+        if let Some(field) = l.dataset.fields.get(fi)
+            && let rustgis_map::Renderer::Unique { field: f, expression, .. } = &mut l.renderer
+        {
+            *f = field.name.clone();
+            *expression = None;
+        }
+    } else if let Some(by) = by
+        && let Some(e) = l.renderer.expression().map(str::to_string)
+        && let Err(why) = parse_imported(&e, &l.dataset)
+    {
+        // The style's categorized renderer by an expression that doesn't read here: every
+        // feature drawn with its first drawn category's symbol, as before such renderers were
+        // classed (none: as the rest).
+        fell_back = true;
+        let mut drawn = "as the rest, which draws nothing: no category is drawn";
+        if let Some((symbol, strokes, fills)) = &by.first {
+            l.renderer = rustgis_map::Renderer::Single(*symbol);
+            l.line_strokes.clone_from(strokes);
+            // (Only a polygon layer's fills draw, as `Style::apply` sets them.)
+            if l.geometry_type() == rustgis_data::GeometryType::Polygon {
+                l.fill_layers.clone_from(fills);
+            }
+            drawn = "with its first category's symbol (of those switched on)";
+        }
+        report.approximated(
+            name,
+            format!("its classes by the expression `{}`, which doesn't fit the layer ({why}): every feature drawn {drawn}", by.qgis),
+        );
+    }
+    // The style's boolean categories, matching values as they print: by an expression, a
+    // boolean's (`True`); by a field, its own (a boolean field's `True`, a text field's `true`).
+    // A value another category already has, or two categories share, stays as written.
+    if let rustgis_map::Renderer::Unique { field, expression, .. } = &l.renderer
+        && !fell_back
+        && !bool_classes.is_empty()
+        && let Some(printed) = match expression {
+            Some(_) => Some(true),
+            None => l.dataset.field_index(field).and_then(|i| l.dataset.fields.get(i)).map(|f| f.ty == rustgis_data::FieldType::Boolean),
+        }
+    {
+        let (mut taken, mut shared): (Vec<&str>, Vec<&str>) = (Vec::new(), Vec::new());
+        for k in bool_classes {
+            let Some(to) = qgis::bool_key(k, printed) else { continue };
+            if to == k {
+                continue;
+            }
+            let twice =
+                matches!(&l.renderer, rustgis_map::Renderer::Unique { classes, .. } if classes.iter().filter(|c| c.0 == *k).count() > 1);
+            if twice {
+                shared.push(k);
+            } else if !qgis::rename_class(&mut l.renderer, k, to) {
+                taken.push(k);
+            }
+        }
+        let count = |n: usize| if n == 1 { "1 boolean category".to_string() } else { format!("{n} boolean categories") };
+        if let Some(first) = taken.first() {
+            report.approximated(
+                name,
+                format!(
+                    "{} kept as written (the first: {first}), as another category has the value it would match: its features take that category's symbol",
+                    count(taken.len())
+                ),
+            );
+        }
+        if let Some(first) = shared.first() {
+            report.approximated(
+                name,
+                format!(
+                    "{} kept as written (the first: {first}), its value listed by more than one category: its features drawn as the rest",
+                    count(shared.len())
+                ),
+            );
+        }
     }
     let field = match &l.renderer {
         rustgis_map::Renderer::Unique { expression: Some(_), .. } => None,
@@ -540,7 +628,7 @@ fn import_style(s: &mut Session, p: &Value) -> CmdResult {
             report.skipped(&name, "a raster's colouring, which a feature layer hasn't (only its opacity and scale range are taken)");
         }
         style.apply(l);
-        check_fields(l, &name, &style.rules, &mut report);
+        check_fields(l, &name, &style.rules, style.categories_by.as_ref(), &style.bool_classes, &mut report);
     }
     Ok(json!({"notes": report.notes.iter().map(note_json).collect::<Vec<_>>()}))
 }

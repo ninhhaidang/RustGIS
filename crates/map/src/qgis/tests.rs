@@ -1463,6 +1463,133 @@ fn a_rule_based_renderer_classes_each_feature_by_the_first_rule_it_meets() {
     assert_eq!(at(None), named(&[Some("a"), Some("big"), Some("fn"), Some("inner"), None]));
 }
 
+/// A categorized renderer by an expression is Unique Values by that expression (as RustGIS reads
+/// it), each category a class; graduated ranges by an expression are still left out, noted.
+#[test]
+fn a_categorized_renderer_by_an_expression_classes_by_it() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/qgis/generated/qml");
+    let mut report = Report::default();
+    let qml = std::fs::read_to_string(dir.join("renderer-categorizedSymbol-expression.qml")).unwrap();
+    let s = read_style(&qml, "points", &mut report).unwrap();
+    let Some(Renderer::Unique { field, classes, expression: Some(e), .. }) = &s.renderer else { panic!("{:?}", s.renderer) };
+    assert!(field.is_empty(), "by expression, not a field");
+    assert_eq!(e, "upper(\"kind\")");
+    assert_eq!(classes.iter().map(|c| c.0.as_str()).collect::<Vec<_>>(), ["A"]);
+    assert!(!report.notes.iter().any(|n| n.text.contains("expression")), "{:?}", report.notes);
+    let mut l = rule_points(&[("a", 1, "x"), ("b", 2, "y"), ("A", 3, "z")]);
+    s.apply(&mut l);
+    let named = |v: &[Option<&str>]| v.iter().map(|k| k.map(str::to_string)).collect::<Vec<_>>();
+    assert_eq!(rule_classes(&l, None), named(&[Some("A"), None, Some("A")]));
+
+    // The map's scale reads as RustGIS's; a field alone (quoted or not) is still a field.
+    let by = |attr: &str| {
+        let qml = format!(
+            r#"<qgis version="3.40.0"><renderer-v2 type="categorizedSymbol" attr="{attr}"><categories><category value="1" symbol="0" label="One"/></categories>
+            <symbols><symbol type="marker" name="0"><layer class="SimpleMarker" enabled="1"><prop k="color" v="255,0,0,255"/></layer></symbol></symbols></renderer-v2></qgis>"#
+        );
+        let mut report = Report::default();
+        (read_style(&qml, "points", &mut report).unwrap().renderer, report)
+    };
+    let (r, _) = by("if(@map_scale &lt; 10000, 1, 2)");
+    assert_eq!(r.as_ref().and_then(|r| r.expression()), Some(format!("if((@map_scale / {QGIS_SCALE}) < 10000, 1, 2)").as_str()));
+    for attr in ["kind", "&quot;kind&quot;"] {
+        let (r, _) = by(attr);
+        assert!(matches!(&r, Some(Renderer::Unique { field, expression: None, .. }) if field == "kind"), "{r:?}");
+    }
+    // Too long to read: drawn with the first category's symbol, noted.
+    let (r, report) = by(&format!("{}1", "1 + ".repeat(5000)));
+    assert!(matches!(r, Some(Renderer::Single(_))), "{r:?}");
+    assert!(report.notes.iter().any(|n| n.text.contains("too long to read") && n.text.len() < 300), "{:?}", report.notes);
+    // ... passing over a switched-off category.
+    let qml = format!(
+        r#"<qgis version="3.10"><renderer-v2 type="categorizedSymbol" attr="{}1"><categories><category value="1" symbol="0" render="false"/><category value="2" symbol="1"/></categories>
+        <symbols><symbol type="marker" name="0"><layer class="SimpleMarker" enabled="1"><prop k="color" v="255,0,0,255"/></layer></symbol>
+        <symbol type="marker" name="1"><layer class="SimpleMarker" enabled="1"><prop k="color" v="0,0,255,255"/></layer></symbol></symbols></renderer-v2></qgis>"#,
+        "1 + ".repeat(5000)
+    );
+    let s = read_style(&qml, "points", &mut Report::default()).unwrap();
+    assert!(matches!(s.renderer, Some(Renderer::Single(sym)) if sym.fill == Rgba::rgb(0, 0, 255)), "{:?}", s.renderer);
+    // ... nothing, with no category to draw (rather than the layer's own look).
+    let qml = format!(
+        r#"<qgis version="3.10"><renderer-v2 type="categorizedSymbol" attr="{}1"><categories><category value="1" symbol="0" render="false"/></categories>
+        <symbols><symbol type="marker" name="0"><layer class="SimpleMarker" enabled="1"/></symbol></symbols></renderer-v2></qgis>"#,
+        "1 + ".repeat(5000)
+    );
+    let s = read_style(&qml, "points", &mut Report::default()).unwrap();
+    assert!(matches!(s.renderer, Some(Renderer::Single(sym)) if sym.fill.0[3] == 0 && sym.stroke.0[3] == 0), "{:?}", s.renderer);
+    assert_eq!((s.line_strokes.as_deref(), s.fill_layers.as_deref()), (Some(&[][..]), Some(&[][..])));
+    // ... a line category of stacked strokes with them.
+    let long = format!("{}1", "1 + ".repeat(5000));
+    let qml = format!(
+        r#"<qgis version="3.10"><renderer-v2 type="categorizedSymbol" attr="{long}"><categories><category value="1" symbol="0"/></categories>
+        <symbols><symbol type="line" name="0" alpha="1"><layer class="SimpleLine" enabled="1" pass="0"><prop k="line_color" v="90,40,20,255"/><prop k="line_width" v="1.2"/></layer>
+        <layer class="SimpleLine" enabled="1" pass="0"><prop k="line_color" v="240,140,40,255"/><prop k="line_width" v="0.8"/></layer></symbol></symbols></renderer-v2></qgis>"#
+    );
+    let s = read_style(&qml, "roads", &mut Report::default()).unwrap();
+    assert!(matches!(s.renderer, Some(Renderer::Single(_))), "{:?}", s.renderer);
+    assert_eq!(s.line_strokes.as_ref().map(Vec::len), Some(2), "{:?}", s.line_strokes);
+
+    // Boolean categories are recorded, each value once, to be matched where the layer is added;
+    // their classes keep QGIS's values until then.
+    let qml = r#"<qgis version="3.40.0"><renderer-v2 type="categorizedSymbol" attr="&quot;value&quot; &gt; 50"><categories>
+        <category value="true" type="bool" symbol="0"/><category value="false" type="bool" symbol="0"/><category value="true" type="string" symbol="0"/>
+        <category type="bool" symbol="0"><val value="true"/><val value="false"/></category></categories>
+        <symbols><symbol type="marker" name="0"><layer class="SimpleMarker" enabled="1"/></symbol></symbols></renderer-v2></qgis>"#;
+    let s = read_style(qml, "points", &mut Report::default()).unwrap();
+    let Some(Renderer::Unique { classes, .. }) = &s.renderer else { panic!("{:?}", s.renderer) };
+    assert_eq!(classes.iter().map(|c| c.0.as_str()).collect::<Vec<_>>(), ["true", "false", "true", "true", "false"]);
+    assert_eq!(s.bool_classes, ["true", "false"]);
+    // A boolean category past the class limit isn't recorded: a text class of its value stays text.
+    let many: String = (0..renderer::MAX_CLASSES).map(|i| format!(r#"<category value="v{i}" type="string" symbol="0"/>"#)).collect();
+    let qml = format!(
+        r#"<qgis version="3.40.0"><renderer-v2 type="categorizedSymbol" attr="&quot;value&quot; &gt; 50"><categories>
+        <category value="true" type="string" symbol="0"/>{many}<category value="true" type="bool" symbol="0"/></categories>
+        <symbols><symbol type="marker" name="0"><layer class="SimpleMarker" enabled="1"/></symbol></symbols></renderer-v2></qgis>"#
+    );
+    let s = read_style(&qml, "points", &mut Report::default()).unwrap();
+    assert!(s.bool_classes.is_empty(), "{:?}", s.bool_classes);
+
+    // Renaming a class takes its label, strokes and fills along, and never onto another class.
+    let mut r = Renderer::Unique {
+        field: String::new(),
+        classes: vec![("true".into(), symbol::hidden()), ("x".into(), symbol::hidden())],
+        other: symbol::hidden(),
+        ramp: crate::color::Ramp::default(),
+        class_labels: [("true".to_string(), "Yes".to_string())].into(),
+        other_label: None,
+        class_strokes: [("true".to_string(), Vec::new())].into(),
+        other_strokes: Vec::new(),
+        class_fills: [("true".to_string(), Vec::new())].into(),
+        other_fills: Vec::new(),
+        expression: None,
+    };
+    assert!(!rename_class(&mut r, "true", "x") && !rename_class(&mut r, "nosuch", "y"));
+    assert!(rename_class(&mut r, "true", "True"));
+    let Renderer::Unique { classes, class_labels, class_strokes, class_fills, .. } = &r else { panic!("{r:?}") };
+    assert_eq!(classes.iter().map(|c| c.0.as_str()).collect::<Vec<_>>(), ["True", "x"]);
+    assert_eq!((class_labels.get("True").map(String::as_str), class_strokes.contains_key("True")), (Some("Yes"), true));
+    assert!(!class_labels.contains_key("true"));
+    assert!(class_fills.contains_key("True") && !class_fills.contains_key("true") && !class_strokes.contains_key("true"));
+    assert_eq!((bool_key("TRUE", true), bool_key("false", false), bool_key("yes", true)), (Some("True"), Some("false"), None));
+
+    // By a field, a boolean category matches the field's text as it is.
+    let qml = r#"<qgis version="3.40.0"><renderer-v2 type="categorizedSymbol" attr="kind"><categories>
+        <category value="true" type="bool" symbol="0"/></categories>
+        <symbols><symbol type="marker" name="0"><layer class="SimpleMarker" enabled="1"/></symbol></symbols></renderer-v2></qgis>"#;
+    let s = read_style(qml, "points", &mut Report::default()).unwrap();
+    assert!(
+        matches!(&s.renderer, Some(Renderer::Unique { classes, .. }) if classes.first().is_some_and(|c| c.0 == "true")),
+        "{:?}",
+        s.renderer
+    );
+    assert_eq!(s.bool_classes, ["true"]);
+
+    let mut report = Report::default();
+    let qml = std::fs::read_to_string(dir.join("renderer-graduatedSymbol-size-expression.qml")).unwrap();
+    read_style(&qml, "points", &mut report).unwrap();
+    assert!(report.notes.iter().any(|n| n.text.contains("ranges by the expression `value * 2` (only by a field)")), "{:?}", report.notes);
+}
+
 /// A renderer whose only rule is an else rule draws every feature with its symbol: one symbol,
 /// nothing approximated.
 #[test]
