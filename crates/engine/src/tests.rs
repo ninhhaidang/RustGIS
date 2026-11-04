@@ -15579,7 +15579,13 @@ fn flatgeobuf_and_geoparquet_by_address_are_read_in_place() {
     assert!(r.get("inPlace").is_none(), "{r}");
     // A server that ignores ranges answers the footer's request with the whole, longer file:
     // downloaded whole instead, not an error.
-    let pq = rustgis_data::source::parquet::write(&ds).unwrap();
+    let mut pq = rustgis_data::source::parquet::write(&ds).unwrap();
+    // Pad before the footer so compression cannot shrink this oversized-response fixture below
+    // the initial footer request. Column offsets and the footer's metadata length stay valid.
+    let footer_len = 8 + u32::from_le_bytes(pq[pq.len() - 8..pq.len() - 4].try_into().unwrap()) as usize;
+    let footer = pq.split_off(pq.len() - footer_len);
+    pq.resize(pq.len().max(256 << 10), 0);
+    pq.extend(footer);
     assert!(pq.len() > 256 << 10);
     let (base, _) = serve_file(pq, false);
     let r = s.run("layer.addUrl", &json!({"url": format!("{base}/grid.parquet"), "name": "NoRanges"})).unwrap();

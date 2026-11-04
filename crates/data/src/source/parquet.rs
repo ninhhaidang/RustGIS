@@ -43,6 +43,8 @@ pub struct ParquetSource {
     field_cols: Vec<usize>,
     /// Leaf column indices of the bbox covering's xmin, ymin, xmax, ymax.
     covering: Option<[usize; 4]>,
+    /// The metadata declares the covering, whose null boxes then imply null geometry.
+    declared_covering: bool,
     reproject: Reproject,
     /// The file, when it is read by its web address.
     remote: Option<Arc<Remote>>,
@@ -177,6 +179,7 @@ impl ParquetSource {
         }
         let reproject = Reproject::from_epsg(code, &mut notes);
         let covering = find_covering(md, col_meta, &primary);
+        let declared_covering = col_meta.and_then(|c| c.get("covering")).and_then(|c| c.get("bbox")).is_some();
 
         let mut fields = Vec::new();
         let mut field_cols = Vec::new();
@@ -270,8 +273,18 @@ impl ParquetSource {
             info.drop_zm(if all_zm { count } else { None });
         }
         let untyped = types.is_empty() && !zm;
-        let mut src =
-            ParquetSource { info, reader, geom_col, field_cols, covering, reproject, remote, exact: false, group_rows: MAX_GROUP_ROWS };
+        let mut src = ParquetSource {
+            info,
+            reader,
+            geom_col,
+            field_cols,
+            covering,
+            declared_covering,
+            reproject,
+            remote,
+            exact: false,
+            group_rows: MAX_GROUP_ROWS,
+        };
         if untyped {
             match src.peek_zm() {
                 Some(true) => src.info.drop_zm(None),
@@ -321,16 +334,34 @@ impl ParquetSource {
         rows.min(values).min(self.group_rows)
     }
 
+    /// Whether inferred bounds may omit or count rows that only their geometry can test.
+    /// Unknown null counts require the same fallback as known nulls; declared coverings promise
+    /// that a box is present if and only if geometry is present.
+    fn needs_geometry_filter(&self, md: &ParquetMetaData, g: usize) -> bool {
+        let Some(c) = self.covering else { return true };
+        !self.declared_covering
+            && c.into_iter()
+                .chain([self.geom_col])
+                .any(|i| md.row_group(g).columns().get(i).and_then(|col| col.statistics()).and_then(|s| s.null_count_opt()) != Some(0))
+    }
+
     /// Which rows of row group `g` have a bounding box meeting the native extent `e`, read from
-    /// the covering columns `c` alone. A row without a box is kept, for its geometry to decide.
+    /// the covering columns `c` alone. Null boxes cannot match a declared covering; inferred
+    /// bounds leave them for the geometry to decide.
     fn covered_rows(&self, md: &ParquetMetaData, g: usize, e: &Extent, c: [usize; 4]) -> Result<Vec<bool>> {
         let rg = self.reader.get_row_group(g).map_err(err)?;
         let n = self.rows_in(md, g);
         let cols: Vec<Vec<Option<f64>>> = c.iter().map(|&i| read_f64(rg.as_ref(), i, n)).collect::<Result<_>>()?;
-        let v = |k: usize, r: usize| cols.get(k).and_then(|c| c.get(r).copied().flatten()).unwrap_or(f64::NAN);
+        if cols.iter().any(|col| col.len() != n) {
+            return Err(DataError::Format(format!("GeoParquet: row group {g} has covering columns shorter than its rows")));
+        }
+        let v = |k: usize, r: usize| cols.get(k).and_then(|c| c.get(r).copied().flatten());
         Ok((0..n)
             .map(|r| {
-                let be = Extent::new(v(0, r), v(1, r), v(2, r), v(3, r));
+                let [Some(min_x), Some(min_y), Some(max_x), Some(max_y)] = [v(0, r), v(1, r), v(2, r), v(3, r)] else {
+                    return !self.declared_covering;
+                };
+                let be = Extent::new(min_x, min_y, max_x, max_y);
                 be.is_empty() || be.intersects(e)
             })
             .collect())
@@ -342,6 +373,7 @@ impl FeatureSource for ParquetSource {
         &self.info
     }
 
+    /// Keeps rows with null geometry in whole reads; they have no location to match an extent.
     fn read(&self, req: &Request) -> Result<Batch> {
         let limit = clamp_limit(req.limit);
         let md = self.reader.metadata();
@@ -350,15 +382,21 @@ impl FeatureSource for ParquetSource {
         // Row groups whose bounding box meets the extent.
         let mut groups: Vec<usize> = (0..md.num_row_groups())
             .filter(|&g| match (native, self.covering) {
-                (Some(e), Some(c)) => group_extent(md, g, c).is_none_or(|ge| ge.intersects(&e)),
+                (Some(e), Some(c)) => self.needs_geometry_filter(md, g) || group_extent(md, g, c).is_none_or(|ge| ge.intersects(&e)),
                 _ => true,
             })
             .collect();
         // Read by address: no more row groups than a read may fetch (an evenly spread part of them,
         // a sample), and the covering's chunks of those asked for together.
-        // A row group wholly inside the extent: every row matches, its covering unread.
+        // A row group wholly inside the extent with no null boxes: every row matches,
+        // its covering unread. Unknown null counts must be checked in the covering.
         let inside = |g: usize| match (native, self.covering) {
-            (Some(e), Some(c)) => group_extent(md, g, c).is_some_and(|ge| contains(&e, &ge)),
+            (Some(e), Some(c)) => {
+                let all_boxes = c.iter().all(|&i| {
+                    md.row_group(g).columns().get(i).and_then(|col| col.statistics()).and_then(|s| s.null_count_opt()) == Some(0)
+                });
+                all_boxes && group_extent(md, g, c).is_some_and(|ge| contains(&e, &ge))
+            }
             _ => true,
         };
         let mut thinned = 1usize;
@@ -403,9 +441,9 @@ impl FeatureSource for ParquetSource {
         }
         let matched: u64 =
             groups.iter().zip(&keep).map(|(&g, k)| k.as_ref().map(|k| k.iter().filter(|&&b| b).count()).unwrap_or(rows_in(g)) as u64).sum();
-        // An extent without a covering is tested on the decoded geometry: the matches are sampled
-        // as they come. Otherwise the match count is known, and every `step`-th is read.
-        let late = native.is_some() && self.covering.is_none();
+        // Without a covering, or with nullable inferred bounds, test geometry before sampling
+        // for the whole request. Otherwise the match count is known, and every `step`-th is read.
+        let late = native.is_some() && groups.iter().any(|&g| self.needs_geometry_filter(md, g));
         let mut sample = if late { Sampler::new(limit) } else { Sampler::with_total(limit, matched) };
         // The rows of each group the sample takes, decided before anything else is read.
         let takes: Vec<Vec<bool>> = groups
@@ -447,20 +485,26 @@ impl FeatureSource for ParquetSource {
             let base = starts.get(g).copied().unwrap_or(0);
             // The columns hold the taken rows only, in order: the k-th is row `r`.
             for (k, (r, _)) in take.iter().enumerate().filter(|(_, t)| **t).enumerate() {
-                // A row without a geometry is left out; one that can't be read is skipped and counted.
-                let Some(bytes) = geoms.get(k).and_then(|b| b.as_deref()) else { continue };
-                let Some(geometry) = wkb::decode(bytes).and_then(|g| self.reproject.geometry(g)) else {
-                    skipped += 1;
-                    continue;
+                // Null geometry is valid; malformed non-null WKB is skipped and counted.
+                let geometry = match geoms.get(k).and_then(|b| b.as_deref()) {
+                    Some(bytes) => {
+                        let Some(geometry) = wkb::decode(bytes).and_then(|g| self.reproject.geometry(g)) else {
+                            skipped += 1;
+                            continue;
+                        };
+                        Some(geometry)
+                    }
+                    None => None,
                 };
-                if !in_request(&geometry, req) || (late && !sample.wants()) {
+                let matches_extent = geometry.as_ref().map_or(req.extent.is_none(), |g| in_request(g, req));
+                if !matches_extent || (late && !sample.wants()) {
                     continue;
                 }
                 let values = attrs.iter().map(|col| col.get(k).cloned().unwrap_or(Value::Null)).collect();
-                sample.keep(Feature { id: base.saturating_add(r as u64 + 1), geometry: Some(geometry), attrs: values });
+                sample.keep(Feature { id: base.saturating_add(r as u64 + 1), geometry, attrs: values });
             }
         }
-        let matched = if late { sample.seen() } else { matched.saturating_mul(thinned as u64) };
+        let matched = (if late { sample.seen() } else { matched }).saturating_mul(thinned as u64);
         Ok(Batch { matched, complete: sample.complete() && thinned == 1, skipped, features: sample.items })
     }
 
@@ -475,7 +519,8 @@ impl FeatureSource for ParquetSource {
 
     /// A row group at a time, in file order: the features, ids and skipped rows of a complete
     /// read of the same extent. The taken rows of one row group are decoded together before
-    /// they are chunked, so the peak is a row group's columns plus a chunk.
+    /// they are chunked, so the peak is a row group's columns plus a chunk. Null geometry is
+    /// retained without an extent filter, keeping its row and attributes in whole exports.
     fn visit_chunks(&self, extent: Option<Extent>, bytes: usize, visit: &mut dyn FnMut(Vec<Feature>) -> Result<()>) -> Result<Batch> {
         let mut chunks = super::chunk_memory::Chunker::new(bytes, visit)?;
         if self.remote.is_some() {
@@ -496,6 +541,7 @@ impl FeatureSource for ParquetSource {
                 _ => None,
             };
             if let Some((e, _, Some(ge))) = area
+                && !self.needs_geometry_filter(md, g)
                 && !ge.intersects(&e)
             {
                 continue;
@@ -528,18 +574,22 @@ impl FeatureSource for ParquetSource {
                 return Err(DataError::Format(format!("GeoParquet: row group {g} has columns shorter than its rows")));
             }
             for (k, (r, _)) in take.iter().enumerate().filter(|(_, t)| **t).enumerate() {
-                // A row without a geometry is left out; one that can't be read is skipped and counted.
-                let Some(bytes) = geoms.get(k).and_then(|b| b.as_deref()) else { continue };
-                let Some(geometry) = wkb::decode(bytes).and_then(|geom| self.reproject.geometry(geom)) else {
-                    out.skipped += 1;
-                    continue;
+                let geometry = match geoms.get(k).and_then(|b| b.as_deref()) {
+                    Some(bytes) => {
+                        let Some(geometry) = wkb::decode(bytes).and_then(|geom| self.reproject.geometry(geom)) else {
+                            out.skipped += 1;
+                            continue;
+                        };
+                        Some(geometry)
+                    }
+                    None => None,
                 };
-                if !in_request(&geometry, &req) {
+                if !geometry.as_ref().map_or(req.extent.is_none(), |g| in_request(g, &req)) {
                     continue;
                 }
                 let values = attrs.iter().map(|col| col.get(k).cloned().unwrap_or(Value::Null)).collect();
                 out.matched += 1;
-                chunks.push(Feature { id: start.saturating_add(r as u64 + 1), geometry: Some(geometry), attrs: values })?;
+                chunks.push(Feature { id: start.saturating_add(r as u64 + 1), geometry, attrs: values })?;
             }
         }
         chunks.flush()?;
@@ -1108,7 +1158,7 @@ fn wkb_type_name(g: &crate::Geometry) -> &'static str {
     }
 }
 
-/// Writes a dataset as GeoParquet 1.1 (WGS 84 longitude/latitude, WKB geometry, Snappy), with a
+/// Writes a dataset as GeoParquet 1.1 (WGS 84 longitude/latitude, WKB geometry, Zstd level 9), with a
 /// `bbox` covering column so readers can skip rows and row groups by extent. A table without
 /// geometry is written as plain Parquet.
 pub fn write(ds: &crate::Dataset) -> Result<Vec<u8>> {
@@ -1126,12 +1176,12 @@ pub(crate) fn write_features<W: std::io::Write + Send>(
     out: W,
     feed: &mut dyn FnMut(&mut dyn FnMut(&[Feature]) -> Result<()>) -> Result<()>,
 ) -> Result<W> {
-    use parquet::basic::{Compression, Repetition};
+    use parquet::basic::{Compression, Encoding, Repetition, ZstdLevel};
     use parquet::data_type::{BoolType, ByteArray, ByteArrayType, DoubleType, Int64Type};
     use parquet::file::metadata::KeyValue;
     use parquet::file::properties::WriterProperties;
     use parquet::file::writer::SerializedFileWriter;
-    use parquet::schema::types::Type;
+    use parquet::schema::types::{ColumnPath, Type};
 
     let has_geom = geometry_type != GeometryType::None;
     let geom_name = free_name(fields, "geometry");
@@ -1160,8 +1210,18 @@ pub(crate) fn write_features<W: std::io::Write + Send>(
     }
     let schema = Arc::new(Type::group_type_builder("schema").with_fields(cols).build().map_err(err)?);
 
-    let props = WriterProperties::builder().set_compression(Compression::SNAPPY).set_created_by("RustGIS".to_string()).build();
-    let mut w = SerializedFileWriter::new(out, schema, Arc::new(props)).map_err(err)?;
+    let mut props = WriterProperties::builder()
+        .set_compression(Compression::ZSTD(ZstdLevel::try_new(9).map_err(err)?))
+        .set_created_by("RustGIS".to_string());
+    if has_geom {
+        // Keep the covering for range reads; split its doubles into byte streams so Zstd can
+        // compress their shared exponent bytes without rounding any coordinate values.
+        for corner in ["xmin", "ymin", "xmax", "ymax"] {
+            let path = ColumnPath::new(vec![bbox_name.clone(), corner.to_string()]);
+            props = props.set_column_dictionary_enabled(path.clone(), false).set_column_encoding(path, Encoding::BYTE_STREAM_SPLIT);
+        }
+    }
+    let mut w = SerializedFileWriter::new(out, schema, Arc::new(props.build())).map_err(err)?;
 
     /// The row group's next column writer; an error should the schema end first.
     fn next_column<'a, W: std::io::Write + Send>(

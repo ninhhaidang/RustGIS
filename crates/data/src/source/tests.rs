@@ -688,8 +688,8 @@ fn writes_geopackage_geoparquet_and_shapefile() {
         let holds_all = matches!(ext, "gpkg" | "parquet");
         assert_eq!(left_out, if holds_all { 0 } else { 1 }, "{ext}");
         let (back, _) = crate::io::read_path(&p).unwrap();
-        // Readers skip rows without geometry (the GeoPackage still holds three, below).
-        assert_eq!(back.features.len(), 2, "{ext}");
+        // GeoParquet retains nullable geometry; the other readers omit rows without a shape.
+        assert_eq!(back.features.len(), if ext == "parquet" { 3 } else { 2 }, "{ext}");
         assert_eq!(back.geometry_type, GeometryType::Polygon, "{ext}");
         let e = back.extent();
         assert_eq!((e.min_x, e.min_y, e.max_x, e.max_y), (-30.0, -40.0, 21.0, 21.0), "{ext}");
@@ -730,6 +730,109 @@ fn writes_geopackage_geoparquet_and_shapefile() {
         let p = d.join(format!("parcels.{ext}"));
         crate::io::write_path(&fewer, &p).unwrap();
         assert_eq!(crate::io::read_path(&p).unwrap().0.features.len(), 1, "{ext}");
+    }
+}
+
+/// Whole reads retain null geometry and its attributes; spatial queries require a location.
+#[test]
+fn geoparquet_exports_keep_exact_values_and_remote_extent_reads() {
+    let mut ds =
+        Dataset::new("points", GeometryType::Point, vec![Field::new("bbox", FieldType::Text), Field::new("value", FieldType::Double)]);
+    ds.push(None, vec![Value::Text("no shape".into()), Value::Float(-0.25)]);
+    ds.push(
+        Some(Geometry::Point(Coord::new(-89.12345678901234, 36.181582500000005))),
+        vec![Value::Text("東京".into()), Value::Float(0.12345678901234568)],
+    );
+    ds.push(Some(Geometry::Point(Coord::new(1.2345678901234567, -12.345678901234567))), vec![Value::Null, Value::Null]);
+    let bytes = parquet::write(&ds).unwrap();
+    let local = open_bytes("exact.parquet", bytes.clone(), None).unwrap();
+    assert_eq!(local.info().count, Some(3));
+    assert_eq!(local.info().fields, ds.fields);
+    assert!(local.info().notes.is_empty());
+    let back = local.read(&Request::all()).unwrap();
+    assert_eq!(back.features.len(), 3);
+    assert!(back.complete && back.skipped == 0);
+    for (got, original) in back.features.iter().zip(&ds.features) {
+        // Comparing WKB bytes also checks the coordinate bits, rather than numeric equality.
+        assert_eq!(got.geometry.as_ref().map(wkb::encode), original.geometry.as_ref().map(wkb::encode));
+        assert_eq!(got.attrs, original.attrs);
+    }
+    assert_eq!(back.features.iter().map(|f| f.id).collect::<Vec<_>>(), [1, 2, 3]);
+    let (rows, summary, _) = visit_all(local.as_ref(), None, 256);
+    assert_eq!(rows, back.features);
+    assert_eq!((summary.matched, summary.skipped), (3, 0));
+    let (whole, report) = materialize(local.as_ref()).unwrap();
+    assert_eq!(whole.features.to_vec(), back.features);
+    assert!(report.skipped == 0 && report.messages.is_empty());
+    let url = "https://test.example/exact-export.parquet";
+    remote::testing::serve(url, bytes);
+    let source = open_driven(url);
+    assert!(source.info().indexed);
+    assert_eq!(source.read(&Request::all()).unwrap().features, back.features);
+    // Null rows must not consume a sample slot, whether the group is partly or wholly inside.
+    for (extent, matched) in [(Extent::new(-90.0, 36.0, -89.0, 37.0), 1), (Extent::new(-180.0, -90.0, 180.0, 90.0), 2)] {
+        for limit in [1, 10] {
+            let req = Request { extent: Some(extent), limit };
+            let remote = source.read(&req).unwrap();
+            let local_batch = local.read(&req).unwrap();
+            assert_eq!(remote.features.len(), matched.min(limit));
+            assert_eq!((remote.matched, local_batch.matched), (matched as u64, matched as u64));
+            assert_eq!(remote.features, local_batch.features);
+            assert_eq!(remote.complete, matched <= limit);
+            if remote.complete {
+                let (rows, summary, _) = visit_all(local.as_ref(), req.extent, 256);
+                assert_eq!(rows, remote.features);
+                assert_eq!(summary.matched, remote.matched);
+            }
+        }
+    }
+}
+
+/// Inferred pre-1.1 boxes may be absent independently of geometry; sample actual spatial matches.
+#[test]
+fn geoparquet_inferred_covering_nulls_fall_back_to_geometry() {
+    use arrow_array::{BinaryArray, Float64Array, RecordBatch, StructArray};
+    use arrow_schema::{DataType, Field as AField, Schema};
+    let point = Coord::new(-89.5, 36.5);
+    let wkb = wkb::encode(&Geometry::Point(point));
+    let bbox_fields = ["xmin", "ymin", "xmax", "ymax"].map(|name| Arc::new(AField::new(name, DataType::Float64, true)));
+    let coords: Vec<arrow_array::ArrayRef> = [0.0, 0.0, 0.0, 0.0]
+        .into_iter()
+        .map(|value| Arc::new(Float64Array::from(vec![Some(value), None])) as arrow_array::ArrayRef)
+        .collect();
+    let bbox = StructArray::new(bbox_fields.iter().cloned().collect(), coords, None);
+    let schema = Arc::new(Schema::new(vec![
+        AField::new("geometry", DataType::Binary, true),
+        AField::new("bbox", DataType::Struct(bbox_fields.iter().cloned().collect()), false),
+    ]));
+    // This is an ordinary struct column in 1.0, with no declared covering/null-presence contract.
+    let geo = r#"{"version":"1.0.0","primary_column":"geometry","columns":{"geometry":{"encoding":"WKB","geometry_types":["Point"]}}}"#;
+    let props = ::parquet::file::properties::WriterProperties::builder()
+        .set_key_value_metadata(Some(vec![::parquet::file::metadata::KeyValue::new("geo".to_string(), geo.to_string())]))
+        .build();
+    let cols: Vec<arrow_array::ArrayRef> = vec![Arc::new(BinaryArray::from(vec![None, Some(wkb.as_slice())])), Arc::new(bbox)];
+    let batch = RecordBatch::try_new(schema.clone(), cols).unwrap();
+    let mut writer = ::parquet::arrow::ArrowWriter::try_new(Vec::new(), schema, Some(props)).unwrap();
+    writer.write(&batch).unwrap();
+    let bytes = writer.into_inner().unwrap();
+    let local = open_bytes("inferred.parquet", bytes.clone(), None).unwrap();
+    assert!(local.info().indexed);
+    assert_eq!(local.read(&Request::all()).unwrap().features.len(), 2);
+    let url = "https://test.example/inferred-covering.parquet";
+    remote::testing::serve(url, bytes);
+    let remote = open_driven(url);
+    for extent in [Extent::new(-90.0, 36.0, -89.0, 37.0), Extent::new(-180.0, -90.0, 180.0, 90.0)] {
+        for limit in [1, 10] {
+            let req = Request { extent: Some(extent), limit };
+            let expected = local.read(&req).unwrap();
+            assert_eq!(expected.features.len(), 1);
+            assert_eq!((expected.matched, expected.complete, expected.skipped), (1, true, 0));
+            assert_eq!(expected.features[0].id, 2);
+            let by_address = remote.read(&req).unwrap();
+            assert_eq!(by_address.features, expected.features);
+            assert_eq!((by_address.matched, by_address.complete, by_address.skipped), (1, true, 0));
+            assert_eq!(visit_all(local.as_ref(), req.extent, 256).0, expected.features);
+        }
     }
 }
 
