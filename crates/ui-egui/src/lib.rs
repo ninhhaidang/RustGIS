@@ -943,6 +943,8 @@ pub struct RustGisApp {
     #[cfg(not(target_arch = "wasm32"))]
     pub connect: connectui::ConnectState,
     fonts_frames: u32,
+    /// When this frame's `logic` began, for the double-click delay `ui` sets when it ends.
+    frame_start: Option<web_time::Instant>,
     applied_dark: Option<bool>,
     sent_title: String,
     pub quit_requested: bool,
@@ -1120,6 +1122,7 @@ impl RustGisApp {
             docs: docpanes::DocState::default(),
             assistant: assistantpane::AssistantState::default(),
             fonts_frames: 0,
+            frame_start: None,
             applied_dark: None,
             sent_title: String::new(),
             quit_requested: false,
@@ -3901,6 +3904,10 @@ impl RustGisApp {
     /// Per-frame work that doesn't draw (theme, fonts, files that arrived).
     pub fn logic(&mut self, ctx: &egui::Context) {
         let _diagnostics = self.session.diagnostics.enter();
+        // A pass egui asks to repeat is the same frame: `ui` sets the delay once, from the first pass.
+        if ctx.current_pass_index() == 0 {
+            self.frame_start = Some(web_time::Instant::now());
+        }
         // The MCP relay: what attached agents sent runs here, on this session, before the frame
         // draws (Session lives on this thread; the listener only queues messages).
         #[cfg(not(target_arch = "wasm32"))]
@@ -4225,6 +4232,15 @@ impl RustGisApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.sent_title = title;
         }
+        // egui times clicks by the frame they arrive in: at a slow frame rate the two clicks of a
+        // double-click land too far apart for its default delay (#1321). It reads the delay when
+        // the next frame begins, before that frame's `logic`, so it's set here, from this frame's
+        // work so far (a map drawn on the CPU) and from the last frame's length, painting included
+        // (`stable_dt` leaves out the time spent idle between frames).
+        if let Some(start) = self.frame_start.take() {
+            let dt = ctx.input(|i| i.stable_dt).max(start.elapsed().as_secs_f32());
+            ctx.options_mut(|o| o.input_options.max_double_click_delay = double_click_delay(dt));
+        }
     }
 }
 
@@ -4234,6 +4250,28 @@ fn project_file_name(url: &str) -> Option<&str> {
     let path = url.split(['?', '#']).next().unwrap_or("");
     let last = path.rsplit('/').next().unwrap_or("");
     (rustgis_engine::project::opens_as_project(last) || rustgis_engine::map::geolibre::is_project_file(last)).then_some(last)
+}
+
+/// The longest gap between the two clicks of a double-click, in seconds, for frames `dt` seconds
+/// long. egui times a click by the frame it arrives in, so a gap of 0.3 s can be measured as up to
+/// two frames more. At least 0.5 s, the Windows default; at most 1.2 s, so two separate clicks
+/// still read as two.
+fn double_click_delay(dt: f32) -> f64 {
+    (0.3 + 2.0 * f64::from(dt)).clamp(0.5, 1.2)
+}
+
+/// A test's click whose press and release arrive in one frame, as they do inside a slow one, `gap`
+/// seconds on egui's clock after the frame before.
+#[cfg(test)]
+pub(crate) fn click_in_one_frame(h: &mut egui_kittest::Harness<'_, RustGisApp>, at: egui::Pos2, gap: f64) {
+    let time = h.ctx.input(|i| i.time) + gap;
+    let button =
+        |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+    let input = h.input_mut();
+    input.time = Some(time);
+    input.events.extend([egui::Event::PointerMoved(at), button(true), button(false)]);
+    h.step();
+    h.input_mut().time = None;
 }
 
 /// Tests that fetch through the tile cache take turns: it has one fetcher for the whole process,

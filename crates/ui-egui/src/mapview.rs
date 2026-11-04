@@ -4327,6 +4327,29 @@ mod tests {
         h.state().session.map().layer_by_name("Points").unwrap().selection.clone()
     }
 
+    /// #1321: the double-click delay applies to the map too, and its 1.2 s ceiling holds however
+    /// slow the frames: two clicks 1.5 s apart at 0.75 s a frame stay two, and don't zoom.
+    #[test]
+    fn map_clicks_past_the_double_click_ceiling_do_not_zoom() {
+        let app = RustGisApp::new(rustgis_engine::Session::new(rustgis_engine::Project::default()));
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(1400.0, 860.0)).with_step_dt(0.75).build_ui_state(
+            |ui, app: &mut RustGisApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            app,
+        );
+        h.run_steps(6);
+        let at = h.state().map.view_rect.unwrap().0.center();
+        let res = h.state().session.map().camera.res;
+        crate::click_in_one_frame(&mut h, at, 0.75);
+        crate::click_in_one_frame(&mut h, at, 1.5);
+        assert_eq!(h.state().session.map().camera.res, res, "two separate clicks");
+        crate::click_in_one_frame(&mut h, at, 1.0);
+        assert_eq!(h.state().session.map().camera.res, res / 2.0, "a double-click inside the ceiling zooms in");
+    }
+
     #[test]
     fn selection_tools_polygon_menu_repeat_and_fixed_default() {
         use egui_kittest::kittest::Queryable;
