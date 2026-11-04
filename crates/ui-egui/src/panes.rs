@@ -2709,7 +2709,8 @@ fn start_tool_run(app: &mut RustGisApp, tool: &'static str, params: &Value, ctx:
     match rustgis_engine::cmd::gp::tool_start(&mut app.session, tool, params) {
         Ok(run) => {
             let slot = crate::Slot::default();
-            let control = rustgis_engine::analysis::control::Control::new();
+            // Cancel stops it, so it takes no work cap.
+            let control = rustgis_engine::analysis::control::Control::stoppable();
             let (out, ctl, ctx) = (slot.clone(), control.clone(), ctx.clone());
             let id = run.id;
             let spawned = std::thread::Builder::new().name(tool.into()).spawn(move || {

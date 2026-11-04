@@ -429,8 +429,8 @@ pub fn line_of_sight(
 }
 
 /// Most ray steps a viewshed takes, and cell-point pairs an interpolation weighs, on one thread
-/// (each about a second or two); a run on several threads may take as many times more
-/// ([`crate::parallel::work_cap`]).
+/// (each about a second or two); a run on several threads may take as many times more, and one
+/// that can be cancelled any amount ([`crate::parallel::work_cap`]).
 const MAX_VIEWSHED_WORK: usize = 400_000_000;
 pub(crate) const MAX_IDW_WORK: usize = 400_000_000;
 
@@ -468,52 +468,52 @@ fn viewshed_on(threads: Option<usize>, r: &Raster, b: usize, observer: Coord, he
     let cap = crate::parallel::work_cap(MAX_VIEWSHED_WORK, threads);
     if ray_work > cap {
         return Err(format!(
-            "the radius takes {ray_work} ray steps, more than the {cap} this computer takes on {threads} thread(s); use a smaller radius"
+            "the radius takes {ray_work} ray steps, more than the {cap} this computer takes on {threads} thread(s); use a smaller radius{}",
+            crate::parallel::UNCAPPED_HINT
         ));
     }
     let w = r.width as usize;
     let mut out = new_band(w, r.height as usize, NODATA)?;
     let window = out.chunks_mut(w).skip(usize::try_from(first).unwrap_or(0)).take(rows);
     crate::control::begin(rows);
-    crate::parallel::for_each_row(
-        window,
-        threads,
-        || (),
-        |_, i, line: &mut [f32]| {
-            let row = first + i as i64;
-            for col in (oc - rad_c).max(0)..=(oc + rad_c).min(r.width as i64 - 1) {
-                let (dx, dy) = ((col - oc) as f64 * cx, (row - or) as f64 * cy);
-                let dist = dx.hypot(dy);
-                if dist > radius_m {
-                    continue;
-                }
-                let Some(zt) = r.value(b, col, row) else { continue };
-                if dist == 0.0 {
-                    if let Some(o) = line.get_mut(col as usize) {
-                        *o = 1.0;
-                    }
-                    continue;
-                }
-                let target = (zt as f64 - dist * dist / (2.0 * SIGHT_RADIUS_M) - z0) / dist;
-                // Walk the ray from the observer; any cell higher than the line hides the target.
-                let steps = ((col - oc).abs().max((row - or).abs())) as usize;
-                let mut visible = true;
-                for s in 1..steps {
-                    let t = s as f64 / steps as f64;
-                    let (c, rr) = ((oc as f64 + (col - oc) as f64 * t).round() as i64, (or as f64 + (row - or) as f64 * t).round() as i64);
-                    let Some(zi) = r.value(b, c, rr) else { continue };
-                    let di = dist * t;
-                    if (zi as f64 - di * di / (2.0 * SIGHT_RADIUS_M) - z0) / di > target {
-                        visible = false;
-                        break;
-                    }
-                }
+    crate::parallel::for_each_row(window, threads, crate::control::Pace::default, |pace, i, line: &mut [f32]| {
+        let row = first + i as i64;
+        for col in (oc - rad_c).max(0)..=(oc + rad_c).min(r.width as i64 - 1) {
+            let (dx, dy) = ((col - oc) as f64 * cx, (row - or) as f64 * cy);
+            let dist = dx.hypot(dy);
+            if dist > radius_m {
+                continue;
+            }
+            let Some(zt) = r.value(b, col, row) else { continue };
+            if dist == 0.0 {
                 if let Some(o) = line.get_mut(col as usize) {
-                    *o = if visible { 1.0 } else { 0.0 };
+                    *o = 1.0;
+                }
+                continue;
+            }
+            let target = (zt as f64 - dist * dist / (2.0 * SIGHT_RADIUS_M) - z0) / dist;
+            // Walk the ray from the observer; any cell higher than the line hides the target.
+            let steps = ((col - oc).abs().max((row - or).abs())) as usize;
+            // A wide window's row takes long without a cap: Cancel is looked at within it.
+            if pace.stop(steps) {
+                return;
+            }
+            let mut visible = true;
+            for s in 1..steps {
+                let t = s as f64 / steps as f64;
+                let (c, rr) = ((oc as f64 + (col - oc) as f64 * t).round() as i64, (or as f64 + (row - or) as f64 * t).round() as i64);
+                let Some(zi) = r.value(b, c, rr) else { continue };
+                let di = dist * t;
+                if (zi as f64 - di * di / (2.0 * SIGHT_RADIUS_M) - z0) / di > target {
+                    visible = false;
+                    break;
                 }
             }
-        },
-    )?;
+            if let Some(o) = line.get_mut(col as usize) {
+                *o = if visible { 1.0 } else { 0.0 };
+            }
+        }
+    })?;
     Ok(out)
 }
 
@@ -559,8 +559,9 @@ fn idw_on(
     let cap = crate::parallel::work_cap(MAX_IDW_WORK, threads);
     if work > cap {
         return Err(format!(
-            "{w} × {h} cells from {} points is too much work, more than the {cap} cell-point pairs this computer takes on {threads} thread(s); use a larger cell size",
-            points.len()
+            "{w} × {h} cells from {} points is too much work, more than the {cap} cell-point pairs this computer takes on {threads} thread(s); use a larger cell size{}",
+            points.len(),
+            crate::parallel::UNCAPPED_HINT
         ));
     }
     let mut data = new_band(w, h, NODATA)?;
@@ -568,11 +569,16 @@ fn idw_on(
     crate::parallel::for_each_row(
         data.chunks_mut(w),
         threads,
-        || Vec::with_capacity(points.len()),
-        |near: &mut Vec<(f64, f64)>, row, out: &mut [f32]| {
+        || (Vec::with_capacity(points.len()), crate::control::Pace::default()),
+        |(near, pace): &mut (Vec<(f64, f64)>, crate::control::Pace), row, out: &mut [f32]| {
             // East-west degrees shrink with latitude, which only changes by row.
             let kx = (extent.max_y - (row as f64 + 0.5) * cell_deg).to_radians().cos();
             for (col, o) in out.iter_mut().enumerate() {
+                // Each cell weighs every point, so a wide row of many points takes long without a
+                // cap: Cancel is looked at within it.
+                if pace.stop(points.len()) {
+                    return;
+                }
                 let c = Coord::new(extent.min_x + (col as f64 + 0.5) * cell_deg, extent.max_y - (row as f64 + 0.5) * cell_deg);
                 near.clear();
                 near.extend(points.iter().map(|(p, v)| {
@@ -1548,6 +1554,11 @@ mod tests {
             e.contains("too much work") && e.contains(&format!("{MAX_IDW_WORK} cell-point pairs")) && e.contains("on 1 thread(s)"),
             "{e}"
         );
+        // A run that can be cancelled takes it on: cancelled before its first row, it says so.
+        let run = crate::control::Control::stoppable();
+        run.cancel();
+        let _installed = crate::control::install(Some(run));
+        assert_eq!(idw_on(Some(1), &pts, &extent, 0.01, 2.0, 0, "idw").unwrap_err(), crate::control::CANCELLED);
     }
 
     /// Rows made on several threads give the same surface, bit for bit, as one thread (#1252),

@@ -849,8 +849,11 @@ fn main() -> ExitCode {
         }
         "run" => {
             // Nothing waits on `run` but the shell (an assistant or an MCP client does, and has a
-            // timeout): long runs take the app's bounds, their progress on stderr.
+            // timeout): long runs take the app's bounds, their progress on stderr. A person at the
+            // terminal can stop a run with Ctrl-C, so there tools take no work cap; a program
+            // calling it may have a timeout, and keeps the caps.
             s.long_runs = Some(progress);
+            s.stoppable = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
             open_inputs(&mut s, &args)?;
             for (i, a) in args.iter().enumerate() {
                 if a == "--cmd"

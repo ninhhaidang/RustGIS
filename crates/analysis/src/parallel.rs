@@ -60,10 +60,19 @@ pub(crate) fn threads_for_rows(rows: usize, work: usize, scratch_bytes: usize) -
 
 /// A work cap tuned for one thread (a second or two of its work) for a run on `threads` threads:
 /// as many times larger, since the threads share the work and the run takes about as long
-/// (#1291 step 2). On one thread, and so in the browser, the cap as it is.
+/// (#1291 step 2). On one thread, and so in the browser, the cap as it is. None for a run that
+/// can be stopped while it goes ([`crate::control::uncapped`]): its progress shows, and Cancel
+/// stops it.
 pub(crate) fn work_cap(one_thread: usize, threads: usize) -> usize {
-    one_thread.saturating_mul(threads.max(1))
+    if crate::control::uncapped() { usize::MAX } else { one_thread.saturating_mul(threads.max(1)) }
 }
+
+/// What a refusal past [`work_cap`] adds: where the work isn't capped. Nothing in the browser.
+pub(crate) const UNCAPPED_HINT: &str = if cfg!(target_arch = "wasm32") {
+    ""
+} else {
+    " (or run it from its pane in the desktop app, which takes any amount of work and can be cancelled)"
+};
 
 /// The cores to use, at most [`MAX_THREADS`].
 fn cores() -> usize {

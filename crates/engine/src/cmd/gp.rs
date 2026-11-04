@@ -1006,9 +1006,13 @@ fn zonal_stats(s: &mut Session, p: &Value) -> CmdResult {
     run_tool(s, "zonalStats", p)
 }
 
-/// Runs a (built-in) tool and applies its result, as `gp.run` does.
+/// Runs a (built-in) tool and applies its result, as `gp.run` does. Where a person at a terminal
+/// can stop it with Ctrl-C ([`Session::stoppable`](crate::Session::stoppable)), it takes no work
+/// cap ([`rustgis_analysis::control::Control::stoppable`]).
 pub fn run_tool(s: &mut Session, tool: &str, params: &Value) -> CmdResult {
-    run_tool_with(s, tool, params, &rustgis_analysis::control::Control::new())
+    use rustgis_analysis::control::Control;
+    let control = if s.stoppable { Control::stoppable() } else { Control::new() };
+    run_tool_with(s, tool, params, &control)
 }
 
 /// [`run_tool`] under `control`: setting its flag from another thread stops the tool at its next

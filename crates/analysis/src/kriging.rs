@@ -15,7 +15,8 @@ use rustgis_geom::{Coord, Extent};
 use crate::rasterops::{NODATA, max_pixels};
 
 /// Maximum cell-point pairs Kriging computes on one thread (about a second's work); a run on several
-/// threads may take as many times more ([`crate::parallel::work_cap`]).
+/// threads may take as many times more, and one that can be cancelled any amount
+/// ([`crate::parallel::work_cap`]).
 pub const MAX_KRIGING_WORK: usize = 40_000_000;
 
 /// Theoretical semivariogram models for spatial autocorrelation.
@@ -353,17 +354,22 @@ fn kriging_on(
     let cap = crate::parallel::work_cap(MAX_KRIGING_WORK, threads);
     if work > cap {
         return Err(format!(
-            "{w} × {h} cells from {} points is too much work, more than the {cap} this computer takes on {threads} thread(s); use a larger cell size",
-            points.len()
+            "{w} × {h} cells from {} points is too much work, more than the {cap} this computer takes on {threads} thread(s); use a larger cell size{}",
+            points.len(),
+            crate::parallel::UNCAPPED_HINT
         ));
     }
-    let scratch = || (Vec::<(f64, f64, Coord)>::with_capacity(points.len()), KrigingBuffers::new());
+    let scratch = || (Vec::<(f64, f64, Coord)>::with_capacity(points.len()), KrigingBuffers::new(), crate::control::Pace::default());
     let (mut pred_data, mut var_data) = (crate::rasterops::new_band(w, h, NODATA)?, crate::rasterops::new_band(w, h, NODATA)?);
     let rows = pred_data.chunks_mut(w).zip(var_data.chunks_mut(w));
     crate::control::begin(h);
-    crate::parallel::for_each_row(rows, threads, scratch, |(near, buffers), row, (pred, var): (&mut [f32], &mut [f32])| {
+    crate::parallel::for_each_row(rows, threads, scratch, |(near, buffers, pace), row, (pred, var): (&mut [f32], &mut [f32])| {
         let kx = (extent.max_y - (row as f64 + 0.5) * cell_deg).to_radians().cos().abs().max(1e-6);
         for (col, (pred, var)) in pred.iter_mut().zip(var.iter_mut()).enumerate() {
+            // A wide row of many points takes long without a cap: Cancel is looked at within it.
+            if pace.stop(work_per_cell) {
+                return;
+            }
             let c = Coord::new(extent.min_x + (col as f64 + 0.5) * cell_deg, extent.max_y - (row as f64 + 0.5) * cell_deg);
             near.clear();
             near.extend(points.iter().map(|(p, v)| {
@@ -392,6 +398,24 @@ fn kriging_on(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A run past one thread's work is refused where nothing can stop it, and taken on by a run
+    /// that can be cancelled (#1291 step 2).
+    #[test]
+    fn kriging_past_the_cap_runs_only_when_it_can_be_cancelled() {
+        // 500 × 500 cells from 300 points (and 12 neighbours): about 220 million units, past one
+        // thread's 40 million.
+        let pts: Vec<(Coord, f64)> =
+            (0..300).map(|i| (Coord::new((i % 20) as f64 / 2.0, 40.0 + (i / 20) as f64 / 1.5), i as f64)).collect();
+        let extent = Extent::new(0.0, 40.0, 10.0, 50.0);
+        let params = auto_variogram(&pts, &extent, VariogramModel::Spherical);
+        let e = kriging_on(Some(1), &pts, &extent, 0.02, &params, 12, "k").unwrap_err();
+        assert!(e.contains("too much work") && e.contains("on 1 thread(s)"), "{e}");
+        let run = crate::control::Control::stoppable();
+        run.cancel();
+        let _installed = crate::control::install(Some(run));
+        assert_eq!(kriging_on(Some(1), &pts, &extent, 0.02, &params, 12, "k").unwrap_err(), crate::control::CANCELLED);
+    }
 
     #[test]
     fn test_exact_interpolation_at_sample_points() {

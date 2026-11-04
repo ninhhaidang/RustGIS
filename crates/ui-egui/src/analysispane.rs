@@ -212,7 +212,8 @@ fn start(app: &mut RustGisApp, command: &'static str, name: &'static str, p: Val
         app.workflow.error = Some(crate::i18n::fmt("{tool} is still running: wait for it, or cancel it.", &[("tool", tl_raw!(job.name))]));
         return;
     }
-    let control = rustgis_engine::analysis::control::Control::new();
+    // Cancel stops it, so it takes no work cap.
+    let control = rustgis_engine::analysis::control::Control::stoppable();
     let ctl = control.clone();
     let kind = if command == "gp.zonalStats" {
         gp::tool_start(&mut app.session, "zonalStats", &p).and_then(|run| {
