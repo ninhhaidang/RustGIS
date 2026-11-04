@@ -2504,6 +2504,13 @@ impl Map {
         (grey, grey, Rgba::new(0, 0, 0, 0), grat)
     }
 
+    /// Whether the built-in world outline is drawn: where the palette's land and water differ, so
+    /// not on the blank basemap or another body.
+    pub fn draws_world_outline(&self) -> bool {
+        let (water, land, ..) = self.palette();
+        land != water
+    }
+
     /// Ground metres on the map's body per map unit at a point in map coordinates.
     pub fn ground_per_unit(&self, at: Coord) -> f64 {
         self.flat().ground_per_unit(at) * self.body().ratio()

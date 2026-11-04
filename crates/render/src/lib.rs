@@ -3170,7 +3170,7 @@ fn render_frame(
     }
     // Set when tiny-skia actually rasterizes into the accumulator.
     let mut cpu_dirty = false;
-    if land != water {
+    if map.draws_world_outline() {
         let fill = paint(land, 1.0);
         let stroke = (outline.a() > 0).then(|| (paint(outline, 1.0), 0.6));
         let custom_world = custom.then(|| world_in(&flat, &key));
