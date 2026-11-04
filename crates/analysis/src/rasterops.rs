@@ -93,6 +93,32 @@ fn per_cell_on(threads: Option<usize>, r: &Raster, cost: usize, f: impl Fn(i64, 
     Ok(out)
 }
 
+/// `f` of each of `n` cells by index, `chunk` cells at a time on as many threads as pay off, each
+/// with its own `scratch()`: a cell writes only itself. `cost` is a cell's work as in
+/// [`per_cell`]; the chunks count toward the run's progress, and a cancelled run stops (#1291).
+pub fn per_index<S>(
+    n: usize,
+    chunk: usize,
+    cost: usize,
+    scratch: impl Fn() -> S + Sync,
+    f: impl Fn(&mut S, usize) -> f32 + Sync,
+) -> Result<Vec<f32>, String> {
+    let mut out = new_band(n, 1, NODATA)?;
+    let chunk = chunk.max(1);
+    let lines = n.div_ceil(chunk);
+    let threads = crate::parallel::threads_for_rows(lines, n.saturating_mul(cost), 0);
+    crate::control::begin(lines);
+    crate::parallel::for_each_row(out.chunks_mut(chunk), threads, scratch, |s, line, cells: &mut [f32]| {
+        for (k, slot) in cells.iter_mut().enumerate() {
+            *slot = f(s, line * chunk + k);
+        }
+    })?;
+    Ok(out)
+}
+
+/// The cells [`weighted_overlay`] makes at a time: its criteria carry no grid, so no rows.
+const OVERLAY_CHUNK: usize = 1 << 14;
+
 /// Draw the interior from three borrowed rows; edges and no-data keep the scalar path.
 fn terrain(r: &Raster, data: &[f32], zf: f64, f: impl Fn(f64, f64) -> f64 + Sync) -> Result<Vec<f32>, String> {
     terrain_on(None, r, data, zf, f)
@@ -230,19 +256,23 @@ fn band_math_on(threads: Option<usize>, r: &Raster, expr: &str) -> Result<Vec<f3
 /// Remaps value ranges `[lo, hi)` to new values; other values become no-data unless `keep`.
 pub fn remap(r: &Raster, b: usize, ranges: &[(f64, f64, f64)], keep: bool) -> Result<Vec<f32>, String> {
     let d = band(r, b)?;
-    let mut out = grid(r.width as usize, r.height as usize)?;
-    out.extend(d.iter().map(|v| {
-        if !r.is_valid(*v) {
-            return NODATA;
-        }
-        let x = *v as f64;
-        match ranges.iter().find(|(lo, hi, _)| x >= *lo && x < *hi) {
-            Some((_, _, new)) => *new as f32,
-            None if keep => *v,
-            None => NODATA,
-        }
-    }));
-    Ok(out)
+    let n = r.width as usize * r.height as usize;
+    // A lookup in the ranges: about a unit a cell.
+    per_index(
+        n,
+        r.width as usize,
+        1,
+        || (),
+        |_, i| {
+            let Some(v) = d.get(i).copied().filter(|v| r.is_valid(*v)) else { return NODATA };
+            let x = v as f64;
+            match ranges.iter().find(|(lo, hi, _)| x >= *lo && x < *hi) {
+                Some((_, _, new)) => *new as f32,
+                None if keep => v,
+                None => NODATA,
+            }
+        },
+    )
 }
 
 /// `band`'s values resampled (nearest neighbour) onto `target`'s grid, through longitude/latitude.
@@ -277,19 +307,23 @@ pub fn weighted_overlay(criteria: &[(Vec<f32>, f64)]) -> Result<Vec<f32>, String
     if total <= 0.0 {
         return Err("the weights must add up to more than zero".into());
     }
-    let mut out = grid(n, 1)?;
-    out.extend((0..n).map(|i| {
-        let mut s = 0.0;
-        for (vals, w) in criteria {
-            let v = vals.get(i).copied().unwrap_or(NODATA);
-            if v == NODATA || !v.is_finite() {
-                return NODATA;
+    per_index(
+        n,
+        OVERLAY_CHUNK,
+        criteria.len(),
+        || (),
+        |_, i| {
+            let mut s = 0.0;
+            for (vals, w) in criteria {
+                let v = vals.get(i).copied().unwrap_or(NODATA);
+                if v == NODATA || !v.is_finite() {
+                    return NODATA;
+                }
+                s += v as f64 * w.max(0.0) / total;
             }
-            s += v as f64 * w.max(0.0) / total;
-        }
-        s as f32
-    }));
-    Ok(out)
+            s as f32
+        },
+    )
 }
 
 /// Metres between two longitude/latitude points.
@@ -675,27 +709,42 @@ pub fn classify_min_distance(r: &Raster, bands: &[usize], means: &[(f32, Vec<f64
         return Err("no training classes".into());
     }
     let n = r.width as usize * r.height as usize;
-    let mut p: Vec<f64> = Vec::with_capacity(data.len());
-    let mut out = grid(r.width as usize, r.height as usize)?;
-    out.extend((0..n).map(|i| {
-        p.clear();
-        for d in &data {
-            match d.get(i).copied().filter(|v| r.is_valid(*v)) {
-                Some(v) => p.push(f64::from(v)),
-                None => return NODATA,
+    // A distance to each class's mean in each band.
+    let cost = means.len().saturating_mul(data.len()).max(1);
+    per_index(
+        n,
+        r.width as usize,
+        cost,
+        || Vec::with_capacity(data.len()),
+        |p: &mut Vec<f64>, i| {
+            p.clear();
+            for d in &data {
+                match d.get(i).copied().filter(|v| r.is_valid(*v)) {
+                    Some(v) => p.push(f64::from(v)),
+                    None => return NODATA,
+                }
             }
-        }
-        means
-            .iter()
-            .map(|(c, m)| (*c, m.iter().zip(&p).map(|(a, b)| (a - b).powi(2)).sum::<f64>()))
-            .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
-            .map_or(NODATA, |x| x.0)
-    }));
-    Ok(out)
+            means
+                .iter()
+                .map(|(c, m)| (*c, m.iter().zip(p.iter()).map(|(a, b)| (a - b).powi(2)).sum::<f64>()))
+                .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+                .map_or(NODATA, |x| x.0)
+        },
+    )
 }
 
 /// The mean of each band over the pixels whose centres fall in a polygon (lon/lat rings).
 pub fn zonal_means(r: &Raster, bands: &[usize], rings: &[Vec<Coord>]) -> Option<(Vec<f64>, usize)> {
+    means_under(r, bands, rings, || Ok(())).unwrap_or(None)
+}
+
+/// [`zonal_means`], `each_row()` asked before each of the raster's rows: an error stops it.
+fn means_under(
+    r: &Raster,
+    bands: &[usize],
+    rings: &[Vec<Coord>],
+    mut each_row: impl FnMut() -> Result<(), crate::control::Cancelled>,
+) -> Result<Option<(Vec<f64>, usize)>, crate::control::Cancelled> {
     let mut e = Extent::EMPTY;
     for ring in rings {
         for c in ring {
@@ -705,6 +754,7 @@ pub fn zonal_means(r: &Raster, bands: &[usize], rings: &[Vec<Coord>]) -> Option<
     let mut sums = vec![0.0; bands.len()];
     let mut n = 0usize;
     for row in 0..r.height as i64 {
+        each_row()?;
         for col in 0..r.width as i64 {
             let w = r.transform.to_world(col as f64 + 0.5, row as f64 + 0.5);
             let Some(ll) = r.transformer().to_lonlat(w) else { continue };
@@ -718,7 +768,84 @@ pub fn zonal_means(r: &Raster, bands: &[usize], rings: &[Vec<Coord>]) -> Option<
             }
         }
     }
-    (n > 0).then(|| (sums.into_iter().map(|s| s / n as f64).collect(), n))
+    Ok((n > 0).then(|| (sums.into_iter().map(|s| s / n as f64).collect(), n)))
+}
+
+/// Each class's mean of `bands` over the pixels under its training polygons (lon/lat rings, each
+/// with its class), and how many pixels: the classes in the order first met, one with no pixel
+/// under its polygons left out. Each polygon's rows count toward the run's progress, and a
+/// cancelled run stops (#1291).
+pub fn class_means(r: &Raster, bands: &[usize], polygons: &[(String, Vec<Vec<Coord>>)]) -> Result<Vec<(String, Vec<f64>, usize)>, String> {
+    crate::control::begin(polygons.len().saturating_mul(r.height as usize));
+    let mut classes: Vec<(String, Vec<f64>, usize)> = Vec::new();
+    for (key, rings) in polygons {
+        let counted = || {
+            crate::control::check()?;
+            crate::control::advance(1);
+            Ok(())
+        };
+        let Some((m, n)) = means_under(r, bands, rings, counted)? else { continue };
+        match classes.iter_mut().find(|c| c.0 == *key) {
+            Some(c) => {
+                let total = c.2 + n;
+                c.1 = c.1.iter().zip(&m).map(|(a, b)| (a * c.2 as f64 + b * n as f64) / total as f64).collect();
+                c.2 = total;
+            }
+            None => classes.push((key.clone(), m, n)),
+        }
+    }
+    Ok(classes)
+}
+
+/// `bands` bands of `images` laid onto a north-up longitude/latitude grid of `cols` × `rows` cells
+/// of `cell` degrees from `extent`'s north-west corner: a cell takes the first image's value under
+/// its centre, or with `mean` the mean of all of theirs; no-data where none has one. Rows go on
+/// several threads and count toward the run's progress, and a cancelled run stops (#1291).
+pub fn mosaic(
+    images: &[&Raster],
+    extent: &Extent,
+    cell: f64,
+    (cols, rows): (usize, usize),
+    bands: usize,
+    mean: bool,
+) -> Result<Vec<Vec<f32>>, String> {
+    let mut out = (0..bands).map(|_| new_band(cols, rows, NODATA)).collect::<Result<Vec<_>, _>>()?;
+    if cols == 0 {
+        return Ok(out);
+    }
+    // Each row as a slice of every band, for one thread to fill.
+    let mut by_band: Vec<_> = out.iter_mut().map(|b| b.chunks_mut(cols)).collect();
+    let lines: Vec<Vec<&mut [f32]>> = (0..rows).map(|_| by_band.iter_mut().filter_map(Iterator::next).collect()).collect();
+    // A cell is placed in each image (some ten units) and read in each band.
+    let work = cols.saturating_mul(rows).saturating_mul(images.len().max(1)).saturating_mul(10 + bands);
+    let threads = crate::parallel::threads_for_rows(rows, work, 0);
+    crate::control::begin(rows);
+    crate::parallel::for_each_row(
+        lines.into_iter(),
+        threads,
+        || Vec::with_capacity(images.len()),
+        |at: &mut Vec<Option<(i64, i64)>>, row, mut line: Vec<&mut [f32]>| {
+            for col in 0..cols {
+                let c = Coord::new(extent.min_x + (col as f64 + 0.5) * cell, extent.max_y - (row as f64 + 0.5) * cell);
+                // Where the cell falls in each image, once for all bands.
+                at.clear();
+                at.extend(images.iter().map(|r| r.pixel_at(c)));
+                for (bi, band) in line.iter_mut().enumerate() {
+                    let vals = images.iter().zip(at.iter()).filter_map(|(r, a)| a.and_then(|(cc, rr)| r.value(bi, cc, rr)));
+                    let v = if mean {
+                        let (sum, k) = vals.fold((0.0f64, 0usize), |(s, k), v| (s + v as f64, k + 1));
+                        (k > 0).then(|| (sum / k as f64) as f32)
+                    } else {
+                        vals.into_iter().next()
+                    };
+                    if let (Some(v), Some(slot)) = (v, band.get_mut(col)) {
+                        *slot = v;
+                    }
+                }
+            }
+        },
+    )?;
+    Ok(out)
 }
 
 /// An error encountered while validating or transforming a polygon geometry.
@@ -1310,6 +1437,47 @@ mod tests {
         run.cancel();
         let _installed = crate::control::install(Some(run));
         assert_eq!(kmeans_on(Some(4), &r, &[0, 1, 2], 7, 10).unwrap_err(), crate::control::CANCELLED);
+    }
+
+    /// The single passes the Analysis pane runs on a thread stop when their run is cancelled
+    /// (#1291 step 3), and count their progress otherwise.
+    #[test]
+    fn single_passes_stop_when_cancelled() {
+        let (w, h) = (300u32, 200u32);
+        let data: Vec<f32> = (0..w * h).map(|i| (i % 97) as f32).collect();
+        let gt = GeoTransform { origin_x: 10.0, origin_y: 46.0, pixel_width: 0.001, pixel_height: -0.001 };
+        let r = Raster::new("r", w, h, vec![data.clone(), data], gt, Crs::LonLat, None, ColorHint::Gray, "Float32").unwrap();
+        let square = vec![vec![Coord::new(10.01, 45.9), Coord::new(10.05, 45.9), Coord::new(10.05, 45.95), Coord::new(10.01, 45.95)]];
+        let polygons = vec![("a".to_string(), square.clone()), ("b".to_string(), square)];
+        let means = [(1.0, vec![10.0, 10.0]), (2.0, vec![60.0, 60.0])];
+        let ranges = [(0.0, 50.0, 1.0), (50.0, 100.0, 2.0)];
+        let passes = |r: &Raster| -> Vec<Result<usize, String>> {
+            vec![
+                remap(r, 0, &ranges, false).map(|v| v.len()),
+                weighted_overlay(&[(r.bands[0].data.clone(), 1.0)]).map(|v| v.len()),
+                classify_min_distance(r, &[0, 1], &means).map(|v| v.len()),
+                class_means(r, &[0, 1], &polygons).map(|c| c.len()),
+                mosaic(&[r], &r.extent(), 0.001, (w as usize, h as usize), 2, true).map(|b| b.len()),
+            ]
+        };
+        let run = crate::control::Control::new();
+        {
+            let _installed = crate::control::install(Some(run.clone()));
+            for (i, done) in passes(&r).into_iter().enumerate() {
+                assert!(done.is_ok(), "pass {i}: {done:?}");
+                let (n, total) = run.progress().unwrap();
+                assert!(total > 0 && n == total, "pass {i}: {n} of {total}");
+            }
+        }
+        run.cancel();
+        let _installed = crate::control::install(Some(run));
+        for (i, done) in passes(&r).into_iter().enumerate() {
+            assert_eq!(done, Err(crate::control::CANCELLED.to_string()), "pass {i}");
+        }
+        // The class means equal the zonal means they are made of.
+        let _none = crate::control::install(None);
+        let c = class_means(&r, &[0, 1], &polygons[..1]).unwrap();
+        assert_eq!(Some((c[0].1.clone(), c[0].2)), zonal_means(&r, &[0, 1], &polygons[0].1));
     }
 
     /// Band math and per-cell rows made on several threads give the same cells, bit for bit, as

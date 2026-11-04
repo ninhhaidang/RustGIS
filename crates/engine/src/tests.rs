@@ -26043,6 +26043,76 @@ fn analysis_workflows_run_on_another_thread() {
     assert!(raster_start(&mut s, "analysis.lineOfSight", &p).is_err());
 }
 
+/// The Analysis pane's single-pass raster tools made on another thread (#1291 step 3): each raster
+/// handed over (`ran`) is the one its command makes here, bit for bit and with what the command
+/// says of it besides, and a cancelled run is an error saying so.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn raster_tools_run_on_another_thread() {
+    use crate::cmd::workflows::{raster_land, raster_start, runs_in_background};
+    use rustgis_analysis::control::Control;
+    let mut s = world();
+    s.run("layer.addDataBytes", &json!({"fileName": "dem.tif", "data": dem_b64()})).unwrap();
+    let dem = s.map().layers.iter().find(|l| l.is_raster()).unwrap().name.clone();
+    s.run("raster.function", &json!({"layer": dem, "function": "bandMath", "expression": "b1 + 10", "name": "dem_later"})).unwrap();
+    s.run("layer.template", &json!({"template": "polygons", "name": "Training"})).unwrap();
+    for (name, x) in [("low", 10.002), ("high", 10.018)] {
+        s.run("edit.addFeature", &json!({"layer": "Training", "geometry": {"type": "Polygon", "coordinates": [[[x, 45.018], [x + 0.004, 45.018], [x + 0.004, 45.022], [x, 45.022], [x, 45.018]]]}, "attributes": {"name": name}})).unwrap();
+    }
+    s.run("imagery.workspace", &json!({"kind": "ortho", "name": "Valley", "images": [dem, "dem_later"], "cellSize": 0.002})).unwrap();
+    let pixels = |s: &Session, v: &Value| -> Vec<u32> {
+        let l = s.map().layer(v["layer"].as_u64().unwrap() as u32).unwrap();
+        l.raster.as_ref().unwrap().data.as_ref().unwrap().bands.iter().flat_map(|b| b.data.iter().map(|x| x.to_bits())).collect()
+    };
+    let ranges = json!([[f64::MIN, 300.0, 1], [300.0, f64::MAX, 10]]);
+    for (command, p) in [
+        ("raster.function", json!({"layer": dem, "function": "hillshade"})),
+        ("raster.function", json!({"layer": dem, "function": "resample", "target": "dem_later"})),
+        ("raster.functionChain", json!({"layer": dem, "steps": [{"function": "slope"}, {"function": "threshold", "value": 5}]})),
+        (
+            "analysis.suitability",
+            json!({"criteria": [{"layer": dem, "ranges": ranges, "weight": 2}, {"layer": "dem_later", "ranges": ranges}]}),
+        ),
+        ("raster.change", json!({"before": dem, "after": "dem_later", "method": "percent"})),
+        ("raster.classifySupervised", json!({"layer": dem, "training": "Training", "classField": "name"})),
+        ("raster.index", json!({"layer": dem, "index": "ndvi", "nir": 1, "red": 1})),
+        ("raster.process", json!({"layer": dem, "operation": "clip", "polygon": "Training"})),
+        ("raster.process", json!({"layer": dem, "operation": "clip", "extent": [10.005, 45.005, 10.02, 45.02]})),
+        ("raster.process", json!({"layer": dem, "operation": "resample", "factor": 4})),
+        ("imagery.mosaic", json!({"name": "Valley"})),
+    ] {
+        assert!(runs_in_background(command).is_some(), "{command}");
+        let here = s.run(command, &p).unwrap();
+        let run = raster_start(&mut s, command, &p).unwrap();
+        let id = run.id;
+        let made = std::thread::spawn(move || run.run(&Control::new())).join().unwrap().unwrap();
+        assert_eq!(raster_land(&mut s, id, made), Ok(true));
+        let mut with = p.clone();
+        with["ran"] = json!(id);
+        let there = s.run(command, &with).unwrap();
+        assert_eq!(pixels(&s, &here), pixels(&s, &there), "{command} {p}");
+        let besides = |v: &Value| {
+            v.as_object().map(|o| o.iter().filter(|(k, _)| *k != "layer").map(|(k, v)| (k.clone(), v.clone())).collect::<Vec<_>>())
+        };
+        assert_eq!(besides(&here), besides(&there), "{command} {p}");
+        // The answer is the added layer's, whatever else the command says.
+        assert!(there["width"].is_u64() && there["bands"].is_u64(), "{command}: {there}");
+        let run = raster_start(&mut s, command, &p).unwrap();
+        let control = Control::new();
+        control.cancel();
+        let e = run.run(&control).err().unwrap();
+        assert!(e.contains("was cancelled"), "{command}: {e}");
+    }
+    // Their inputs are read when they start: a missing one is refused then.
+    assert!(raster_start(&mut s, "raster.change", &json!({"before": dem, "after": "nowhere"})).err().unwrap().contains("nowhere"));
+    assert!(raster_start(&mut s, "imagery.mosaic", &json!({"name": "Hill"})).err().unwrap().contains("Hill"));
+    assert!(raster_start(&mut s, "raster.change", &json!({"before": dem, "after": "dem_later", "band": 2})).is_err());
+    let none = json!({"layer": dem, "training": "Training", "classField": "name", "bands": []});
+    assert!(raster_start(&mut s, "raster.classifySupervised", &none).err().unwrap().contains("at least one band"));
+    // Pixels edited by hand stay immediate.
+    assert!(runs_in_background("raster.editPixels").is_none());
+}
+
 /// k-means classes and a deep learning classification made on another thread, as the Analysis pane
 /// runs them (#1291 step 3): the classes handed over (`ran`) are the ones the command makes here, a
 /// model trained on the thread is kept in the project only once its classes are added, and a raster

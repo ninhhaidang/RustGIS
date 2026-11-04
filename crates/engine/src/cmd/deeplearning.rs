@@ -247,7 +247,7 @@ fn free_name(s: &Session, base: &str) -> String {
 }
 
 fn classify(s: &mut Session, p: &Value) -> CmdResult {
-    super::workflows::made_or_ran(s, p, super::workflows::DEEP_LEARNING, classify_work)
+    super::workflows::made_or_ran(s, p, "dl.classify")
 }
 
 /// The model a classification uses: one of the project's, or one it trains first.

@@ -192,17 +192,14 @@ fn show(app: &mut RustGisApp, r: Result<Value, String>) {
 }
 
 /// The workflows that run on a thread of their own on the desktop, as their command and name:
-/// their work grows with the raster and the points, and the parallel helpers spread it over the
-/// cores from that thread.
+/// Zonal Statistics, and those that make a raster
+/// ([`rustgis_engine::cmd::workflows::runs_in_background`]). Their work grows with the raster and
+/// the points, and the parallel helpers spread it over the cores from that thread.
 #[cfg(not(target_arch = "wasm32"))]
 fn background(id: &str) -> Option<(&'static str, &'static str)> {
     match id {
         "gp.zonalStats" => Some(("gp.zonalStats", "Zonal Statistics")),
-        "analysis.viewshed" => Some(("analysis.viewshed", "Viewshed")),
-        "analysis.interpolate" => Some(("analysis.interpolate", "Interpolate (IDW)")),
-        "raster.classify" => Some(("raster.classify", "Classification Wizard")),
-        "dl.classify" => Some(("dl.classify", "Deep Learning")),
-        _ => None,
+        _ => rustgis_engine::cmd::workflows::runs_in_background(id),
     }
 }
 

@@ -49,21 +49,21 @@ pub fn commands() -> Vec<C> {
             r#"{"points": [[column, row, x, y, on?], …] (on: 1/0 or true/false, default on), "transform"?: "similarity"|"affine"|"projective"|"polynomial2"|"polynomial3"|"spline" (default: similarity under 3 points, else affine), "compare"?: bool (fit every transform and recommend one; transform and leaveOneOut are then ignored), "leaveOneOut"?: bool (default true)}"#,
         ),
         C::new("raster.change", "Change Detection", "Analyze › Image Analysis", change)
-            .params(r#"{"before": raster, "after": raster, "band"?: 1-based, "method"?: "difference"|"ratio"|"percent", "name"?}"#),
+            .params(r#"{"before": raster, "after": raster, "band"?: 1-based, "method"?: "difference"|"ratio"|"percent", "name"?, "ran"?: (internal: a raster the app has worked out)}"#),
         C::new("raster.spectral", "Spectral Analysis", "Analyze › Image Analysis", spectral)
             .view()
             .params(r#"{"layer": raster, "lon"?, "lat"?, "zone"?: polygon layer (the selected or first polygon)}"#),
         C::new("raster.classify", "Classification Wizard", "Analyze › Image Classification", |s, p| {
-            super::workflows::made_or_ran(s, p, super::workflows::CLASSIFY, classify_work)
+            super::workflows::made_or_ran(s, p, "raster.classify")
         })
         .params(r#"{"layer": raster, "classes"?: 2..50, "bands"?: [1-based], "name"?: output, "ran"?: (internal: classes the app has worked out)}"#),
         C::new("raster.classifySupervised", "Classification Tools", "Analyze › Image Classification", supervised)
-            .params(r#"{"layer": raster, "training": polygon layer, "classField": field, "bands"?: [1-based], "name"?: output}"#),
+            .params(r#"{"layer": raster, "training": polygon layer, "classField": field, "bands"?: [1-based], "name"?: output, "ran"?: (internal: a raster the app has worked out)}"#),
         C::new("raster.index", "Indices", "Analyze › Imagery Tools", index).params(
-            r#"{"layer": raster, "index": "ndvi"|"ndwi"|"savi"|"nbr"|"ndbi"|"evi", "red"?, "green"?, "blue"?, "nir"?, "swir"?: band numbers, "name"?: output}"#,
+            r#"{"layer": raster, "index": "ndvi"|"ndwi"|"savi"|"nbr"|"ndbi"|"evi", "red"?, "green"?, "blue"?, "nir"?, "swir"?: band numbers, "name"?: output, "ran"?: (internal: a raster the app has worked out)}"#,
         ),
         C::new("raster.process", "Process", "Analyze › Imagery Tools", process)
-            .params(r#"{"layer": raster, "operation": "clip"|"resample", "extent"?: [minLon, minLat, maxLon, maxLat] (clip; the view when omitted), "polygon"?: polygon layer (clip to its selected or all polygons; cells outside become no-data), "selectedOnly"?: bool (clip to selected polygons when true, all when false), "factor"?: n (resample: n×n pixels become one), "name"?: output}"#),
+            .params(r#"{"layer": raster, "operation": "clip"|"resample", "extent"?: [minLon, minLat, maxLon, maxLat] (clip; the view when omitted), "polygon"?: polygon layer (clip to its selected or all polygons; cells outside become no-data), "selectedOnly"?: bool (clip to selected polygons when true, all when false), "factor"?: n (resample: n×n pixels become one), "name"?: output, "ran"?: (internal: a raster the app has worked out)}"#),
         C::new("raster.mosaic", "Mosaic Rasters", "Analyze › Imagery Tools", raster_mosaic).params(
             r#"{"inputs": [raster layer or file path, …] (two or more, in one coordinate system and cell size; where they overlap the first wins), "name"?: output, "path"?: GeoTIFF to write the mosaic to}"#,
         ),
@@ -96,7 +96,7 @@ pub fn commands() -> Vec<C> {
             serde_json::to_value(&*w).map_err(|e| e.to_string())
         })
         .params(r#"{"name": workspace, "cellSize"?: degrees|null, "method"?: "first"|"mean"}"#),
-        C::new("imagery.mosaic", "Build Mosaic", "Analyze › Ortho Mapping", mosaic).params(r#"{"name": workspace}"#),
+        C::new("imagery.mosaic", "Build Mosaic", "Analyze › Ortho Mapping", mosaic).params(r#"{"name": workspace, "ran"?: (internal: a raster the app has worked out)}"#),
         C::new("imagery.mesh", "Export Mesh", "Analyze › Reality Mapping", mesh)
             .view()
             .params(r#"{"layer": elevation raster, "path"?: "*.obj" (the text is returned without one), "step"?: pixels between vertices}"#),
@@ -569,30 +569,47 @@ fn gcp_fit(_: &mut Session, p: &Value) -> CmdResult {
 }
 
 fn change(s: &mut Session, p: &Value) -> CmdResult {
+    super::workflows::made_or_ran(s, p, "raster.change")
+}
+
+/// What a change detection reads of the session, and the work that compares the rasters.
+pub(crate) fn change_work(s: &Session, p: &Value) -> Result<super::workflows::Work, String> {
     let a = raster_named(s, ps(p, "before").ok_or("before is required")?)?;
     let bfr = raster_named(s, ps(p, "after").ok_or("after is required")?)?;
     // The method is checked before any pixels are resampled.
-    let method = ps(p, "method").unwrap_or("difference");
-    if !matches!(method, "difference" | "ratio" | "percent") {
+    let method = ps(p, "method").unwrap_or("difference").to_string();
+    if !matches!(method.as_str(), "difference" | "ratio" | "percent") {
         return Err(format!("unknown method '{method}'"));
     }
     let band = uint(p, "band").unwrap_or(1).saturating_sub(1) as usize;
-    let av = &a.bands.get(band).ok_or("no such band")?.data;
-    let bv = rasterops::resample_to(&bfr, band, &a)?;
-    let values = av.iter().zip(&bv).map(|(x, y)| {
-        if !a.is_valid(*x) || *y == NODATA {
-            return NODATA;
-        }
-        let v = match method {
-            "ratio" if *x != 0.0 => y / x,
-            "percent" if *x != 0.0 => (y - x) / x * 100.0,
-            "difference" => y - x,
-            _ => f32::NAN,
-        };
-        if v.is_finite() { v } else { NODATA }
-    });
-    let out = raster::collected(a.width as usize, a.height as usize, values).map_err(|e| e.to_string())?;
-    add(s, rasterops::derive(&a, &name(p, format!("{}_change", a.name)), vec![out])?, false)
+    a.bands.get(band).ok_or("no such band")?;
+    bfr.bands.get(band).ok_or_else(|| format!("{} has no band {}", bfr.name, band + 1))?;
+    let out_name = name(p, format!("{}_change", a.name));
+    Ok(Box::new(move || {
+        let av = &a.bands.get(band).ok_or("no such band")?.data;
+        let bv = rasterops::resample_to(&bfr, band, &a)?;
+        let n = a.width as usize * a.height as usize;
+        let out = rasterops::per_index(
+            n,
+            a.width as usize,
+            1,
+            || (),
+            |_, i| {
+                let (Some(x), Some(y)) = (av.get(i).copied(), bv.get(i).copied()) else { return NODATA };
+                if !a.is_valid(x) || y == NODATA {
+                    return NODATA;
+                }
+                let v = match method.as_str() {
+                    "ratio" if x != 0.0 => y / x,
+                    "percent" if x != 0.0 => (y - x) / x * 100.0,
+                    "difference" => y - x,
+                    _ => f32::NAN,
+                };
+                if v.is_finite() { v } else { NODATA }
+            },
+        )?;
+        super::workflows::made(rasterops::derive(&a, &out_name, vec![out])?, None)
+    }))
 }
 
 fn spectral(s: &mut Session, p: &Value) -> CmdResult {
@@ -620,10 +637,20 @@ fn spectral(s: &mut Session, p: &Value) -> CmdResult {
 }
 
 fn supervised(s: &mut Session, p: &Value) -> CmdResult {
+    super::workflows::made_or_ran(s, p, "raster.classifySupervised")
+}
+
+/// What a classification from training polygons reads of the session (the raster, and each
+/// polygon with its class), and the work that classifies it.
+pub(crate) fn supervised_work(s: &Session, p: &Value) -> Result<super::workflows::Work, String> {
     let r = raster(s, p)?;
     // Training polygons on the map mean nothing on a scan laid there to look at.
     r.require_coordinates()?;
     let bands = bands_param(p, &r)?;
+    // With none, every pixel would be equally near every class.
+    if bands.is_empty() {
+        return Err("give at least one band".into());
+    }
     let tl = ps(p, "training").ok_or("training (a polygon layer) is required")?;
     let l = s
         .map()
@@ -631,35 +658,33 @@ fn supervised(s: &mut Session, p: &Value) -> CmdResult {
         .filter(|l| l.geometry_type() == GeometryType::Polygon)
         .ok_or_else(|| format!("no polygon layer '{tl}'"))?;
     let fi = l.dataset.field_index(ps(p, "classField").ok_or("classField is required")?).ok_or("no such class field")?;
-    // Mean of each class's training pixels.
-    let mut classes: Vec<(String, Vec<f64>, usize)> = Vec::new();
+    let mut polygons = Vec::new();
     for (row, ft) in l.dataset.features.iter().enumerate() {
         let Some(Geometry::Polygon(polys)) = &ft.geometry else { continue };
         let key = l.dataset.value(row, fi).to_string();
-        for rings in polys {
-            if let Some((m, n)) = rasterops::zonal_means(&r, &bands, rings) {
-                match classes.iter_mut().find(|c| c.0 == key) {
-                    Some(c) => {
-                        let total = c.2 + n;
-                        c.1 = c.1.iter().zip(&m).map(|(a, b)| (a * c.2 as f64 + b * n as f64) / total as f64).collect();
-                        c.2 = total;
-                    }
-                    None => classes.push((key.clone(), m, n)),
-                }
-            }
+        polygons.extend(polys.iter().map(|rings| (key.clone(), rings.clone())));
+    }
+    let out = name(p, format!("{}_classified", r.name));
+    Ok(Box::new(move || {
+        // Mean of each class's training pixels.
+        let classes = rasterops::class_means(&r, &bands, &polygons)?;
+        if classes.len() < 2 {
+            return Err("the training polygons need at least two classes with pixels under them".into());
         }
-    }
-    if classes.len() < 2 {
-        return Err("the training polygons need at least two classes with pixels under them".into());
-    }
-    let means: Vec<(f32, Vec<f64>)> = classes.iter().enumerate().map(|(i, c)| ((i + 1) as f32, c.1.clone())).collect();
-    let out = rasterops::classify_min_distance(&r, &bands, &means)?;
-    let v = add(s, rasterops::derive(&r, &name(p, format!("{}_classified", r.name)), vec![out])?, true)?;
-    let legend: Vec<Value> = classes.iter().enumerate().map(|(i, c)| json!({"value": i + 1, "class": c.0, "pixels": c.2})).collect();
-    Ok(json!({"layer": v["layer"], "classes": legend}))
+        let means: Vec<(f32, Vec<f64>)> = classes.iter().enumerate().map(|(i, c)| ((i + 1) as f32, c.1.clone())).collect();
+        let pixels = rasterops::classify_min_distance(&r, &bands, &means)?;
+        let layer = class_layer(rasterops::derive(&r, &out, vec![pixels])?)?;
+        let legend: Vec<Value> = classes.iter().enumerate().map(|(i, c)| json!({"value": i + 1, "class": c.0, "pixels": c.2})).collect();
+        Ok(super::workflows::made_layer(out, layer, Some(json!({"classes": legend})), None))
+    }))
 }
 
 fn index(s: &mut Session, p: &Value) -> CmdResult {
+    super::workflows::made_or_ran(s, p, "raster.index")
+}
+
+/// What a spectral index reads of the session, and the work that makes it.
+pub(crate) fn index_work(s: &Session, p: &Value) -> Result<super::workflows::Work, String> {
     let r = raster(s, p)?;
     let bn = |k: &str, d: u64| uint(p, k).unwrap_or(d);
     let (blue, green, red, nir, swir) = (bn("blue", 1), bn("green", 2), bn("red", 3), bn("nir", 4), bn("swir", 5));
@@ -673,8 +698,8 @@ fn index(s: &mut Session, p: &Value) -> CmdResult {
         "evi" => format!("2.5 * (b{nir} - b{red}) / (b{nir} + 6 * b{red} - 7.5 * b{blue} + 1)"),
         o => return Err(format!("unknown index '{o}'")),
     };
-    let out = rasterops::band_math(&r, &expr)?;
-    add(s, rasterops::derive(&r, &name(p, format!("{}_{idx}", r.name)), vec![out])?, false)
+    let out = name(p, format!("{}_{idx}", r.name));
+    Ok(Box::new(move || super::workflows::made(rasterops::derive(&r, &out, vec![rasterops::band_math(&r, &expr)?])?, None)))
 }
 
 /// Processes a raster via clipping or resampling.
@@ -701,6 +726,12 @@ fn index(s: &mut Session, p: &Value) -> CmdResult {
 ///   - Polygon parts that cannot be projected onto the raster grid are reported separately.
 ///   - If all features fail, the operation fails and reports the specific failure cause of the first feature.
 fn process(s: &mut Session, p: &Value) -> CmdResult {
+    super::workflows::made_or_ran(s, p, "raster.process")
+}
+
+/// What a clip or resample reads of the session (the raster, and the polygons or extent it is
+/// clipped to), and the work that makes it.
+pub(crate) fn process_work(s: &Session, p: &Value) -> Result<super::workflows::Work, String> {
     let r = raster(s, p)?;
     match ps(p, "operation").ok_or("operation is required")? {
         "clip" if p.get("polygon").is_some_and(|v| !v.is_null()) => {
@@ -759,26 +790,25 @@ fn process(s: &mut Session, p: &Value) -> CmdResult {
             if !failed_features.is_empty() {
                 log::warn!("{pl}: {} feature(s) failed polygon validation during clipping", failed_features.len());
             }
-            let mut failed_parts = Vec::new();
-            let (cols, rows, mask) = rasterops::polygon_mask_with_failures(&r, &polygons, &mut failed_parts)?.ok_or_else(|| {
-                format!("no cell of {} falls inside {pl} ({} polygon part(s) failed raster projection)", r.name, failed_parts.len())
-            })?;
-            let out = clip_window(&r, cols, rows, Some(&mask), name(p, format!("{}_clip", r.name)))?;
-            let mut result = add(s, out, false)?;
-            let mut messages = Vec::new();
-            if !failed_features.is_empty() {
-                messages.push(format!("{pl}: skipped {} feature(s) with invalid polygon geometry", failed_features.len()));
-            }
-            if !failed_parts.is_empty() {
-                messages.push(format!(
-                    "{pl}: skipped {} polygon part(s) that could not be projected onto the raster grid; valid parts were retained",
-                    failed_parts.len()
-                ));
-            }
-            if !messages.is_empty() {
-                result["messages"] = json!(messages);
-            }
-            Ok(result)
+            let (out, pl, skipped) = (name(p, format!("{}_clip", r.name)), pl.to_string(), failed_features.len());
+            Ok(Box::new(move || {
+                let mut failed_parts = Vec::new();
+                let (cols, rows, mask) = rasterops::polygon_mask_with_failures(&r, &polygons, &mut failed_parts)?.ok_or_else(|| {
+                    format!("no cell of {} falls inside {pl} ({} polygon part(s) failed raster projection)", r.name, failed_parts.len())
+                })?;
+                let clipped = clip_window(&r, cols, rows, Some(&mask), out)?;
+                let mut messages = Vec::new();
+                if skipped > 0 {
+                    messages.push(format!("{pl}: skipped {skipped} feature(s) with invalid polygon geometry"));
+                }
+                if !failed_parts.is_empty() {
+                    messages.push(format!(
+                        "{pl}: skipped {} polygon part(s) that could not be projected onto the raster grid; valid parts were retained",
+                        failed_parts.len()
+                    ));
+                }
+                super::workflows::made(clipped, (!messages.is_empty()).then(|| json!({"messages": messages})))
+            }))
         }
         "clip" => {
             // Before the extent is placed on the raster's coordinates.
@@ -817,8 +847,8 @@ fn process(s: &mut Session, p: &Value) -> CmdResult {
             if c1 <= c0 || r1 <= r0 {
                 return Err("the extent doesn't overlap the raster".into());
             }
-            let out = clip_window(&r, c0..c1, r0..r1, None, name(p, format!("{}_clip", r.name)))?;
-            add(s, out, false)
+            let out = name(p, format!("{}_clip", r.name));
+            Ok(Box::new(move || super::workflows::made(clip_window(&r, c0..c1, r0..r1, None, out)?, None)))
         }
         "resample" => {
             // Never coarser than the raster itself; trailing columns and rows short of a full
@@ -826,45 +856,50 @@ fn process(s: &mut Session, p: &Value) -> CmdResult {
             r.require_coordinates()?;
             let k = (uint(p, "factor").unwrap_or(2).clamp(2, 64) as u32).min(r.width.min(r.height)).max(1);
             let (w, h) = ((r.width / k).max(1), (r.height / k).max(1));
-            // Each output pixel is the mean of the valid pixels it covers.
-            let bands = r
-                .bands
-                .iter()
-                .map(|b| {
-                    let cells = (0..h).flat_map(|row| (0..w).map(move |col| (row, col)));
-                    raster::collected(
-                        w as usize,
-                        h as usize,
-                        cells.map(|(row, col)| {
-                            let (mut sum, mut n) = (0.0f64, 0u32);
-                            for dy in 0..k {
-                                for dx in 0..k {
-                                    let (x, y) = (col * k + dx, row * k + dy);
-                                    if x >= r.width || y >= r.height {
-                                        continue;
-                                    }
-                                    if let Some(v) = b.data.get((y * r.width + x) as usize).copied().filter(|v| r.is_valid(*v)) {
-                                        sum += v as f64;
-                                        n += 1;
+            let out = name(p, format!("{}_resampled", r.name));
+            Ok(Box::new(move || {
+                // Each output pixel is the mean of the valid pixels it covers.
+                let bands = r
+                    .bands
+                    .iter()
+                    .map(|b| {
+                        // A cell reads its k × k block; the cells are counted and cancellable.
+                        let cost = (k * k) as usize;
+                        rasterops::per_index(
+                            w as usize * h as usize,
+                            w as usize,
+                            cost,
+                            || (),
+                            |_, i| {
+                                let (row, col) = ((i / w as usize) as u32, (i % w as usize) as u32);
+                                let (mut sum, mut n) = (0.0f64, 0u32);
+                                for dy in 0..k {
+                                    for dx in 0..k {
+                                        let (x, y) = (col * k + dx, row * k + dy);
+                                        if x >= r.width || y >= r.height {
+                                            continue;
+                                        }
+                                        if let Some(v) = b.data.get((y * r.width + x) as usize).copied().filter(|v| r.is_valid(*v)) {
+                                            sum += v as f64;
+                                            n += 1;
+                                        }
                                     }
                                 }
-                            }
-                            if n > 0 { (sum / n as f64) as f32 } else { NODATA }
-                        }),
-                    )
-                })
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| e.to_string())?;
-            let gt = GeoTransform {
-                pixel_width: r.transform.pixel_width * k as f64,
-                pixel_height: r.transform.pixel_height * k as f64,
-                ..r.transform
-            };
-            let nodata = r.nodata.or(Some(NODATA as f64));
-            let color = if matches!(r.color, ColorHint::Palette(_)) { ColorHint::Gray } else { r.color.clone() };
-            let out = Raster::new(name(p, format!("{}_resampled", r.name)), w, h, bands, gt, r.crs, nodata, color, r.data_type.clone())
-                .map_err(|e| e.to_string())?;
-            add(s, out, false)
+                                if n > 0 { (sum / n as f64) as f32 } else { NODATA }
+                            },
+                        )
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                let gt = GeoTransform {
+                    pixel_width: r.transform.pixel_width * k as f64,
+                    pixel_height: r.transform.pixel_height * k as f64,
+                    ..r.transform
+                };
+                let nodata = r.nodata.or(Some(NODATA as f64));
+                let color = if matches!(r.color, ColorHint::Palette(_)) { ColorHint::Gray } else { r.color.clone() };
+                let out = Raster::new(out, w, h, bands, gt, r.crs, nodata, color, r.data_type.clone()).map_err(|e| e.to_string())?;
+                super::workflows::made(out, None)
+            }))
         }
         o => Err(format!("unknown operation '{o}'")),
     }
@@ -1081,22 +1116,27 @@ fn clip_window(
     let (w, h) = (cols.end.saturating_sub(cols.start), rows.end.saturating_sub(rows.start));
     let nodata = if mask.is_some() { r.nodata.or(Some(NODATA as f64)) } else { r.nodata };
     let fill = nodata.map(|v| v as f32).unwrap_or(NODATA);
+    // Each band's cells counted and cancellable, as in a run on another thread.
+    let (wu, width) = (w as usize, r.width as usize);
     let bands = r
         .bands
         .iter()
         .map(|b| {
-            let cells = rows.clone().flat_map(|row| cols.clone().map(move |col| (row, col))).enumerate();
-            raster::collected(
-                w as usize,
-                h as usize,
-                cells.map(|(i, (row, col))| match mask.map(|m| m.get(i).copied().unwrap_or(false)) {
+            rasterops::per_index(
+                wu * h as usize,
+                wu,
+                1,
+                || (),
+                |_, i| match mask.map(|m| m.get(i).copied().unwrap_or(false)) {
                     Some(false) => fill,
-                    _ => b.data.get((row * r.width + col) as usize).copied().unwrap_or(fill),
-                }),
+                    _ => {
+                        let (row, col) = (rows.start as usize + i / wu.max(1), cols.start as usize + i % wu.max(1));
+                        b.data.get(row * width + col).copied().unwrap_or(fill)
+                    }
+                },
             )
         })
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())?;
+        .collect::<Result<Vec<_>, _>>()?;
     let o = r.transform.to_world(f64::from(cols.start), f64::from(rows.start));
     let gt = GeoTransform { origin_x: o.x, origin_y: o.y, ..r.transform };
     let mut out = Raster::new(name, w, h, bands, gt, r.crs, nodata, r.color.clone(), r.data_type.clone()).map_err(|e| e.to_string())?;
@@ -1356,6 +1396,12 @@ fn new_workspace(s: &mut Session, p: &Value) -> CmdResult {
 
 /// Mosaics a workspace's images onto one longitude/latitude grid.
 fn mosaic(s: &mut Session, p: &Value) -> CmdResult {
+    super::workflows::made_or_ran(s, p, "imagery.mosaic")
+}
+
+/// What a workspace's mosaic reads of the session (its images and options), and the work that
+/// lays them on one grid.
+pub(crate) fn mosaic_work(s: &Session, p: &Value) -> Result<super::workflows::Work, String> {
     let n = ps(p, "name").ok_or("name is required")?;
     let w = s.project.workspaces.iter().find(|w| w.name.eq_ignore_ascii_case(n)).cloned().ok_or_else(|| format!("no workspace '{n}'"))?;
     let imgs: Vec<Arc<Raster>> = w.images.iter().map(|i| raster_named(s, i)).collect::<Result<_, _>>()?;
@@ -1377,42 +1423,27 @@ fn mosaic(s: &mut Session, p: &Value) -> CmdResult {
         return Err(format!("the mosaic would be {cols} × {rows} cells; set a larger cell size in the workspace options"));
     }
     let nb = imgs.iter().map(|r| r.band_count()).min().unwrap_or(1).min(if w.kind == "reality" { 1 } else { 4 });
-    let mut bands = (0..nb).map(|_| raster::filled(cols, rows, NODATA)).collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
-    for row in 0..rows {
-        for col in 0..cols {
-            let c = Coord::new(e.min_x + (col as f64 + 0.5) * cell, e.max_y - (row as f64 + 0.5) * cell);
-            // Where the cell falls in each image, once for all bands.
-            let at: Vec<Option<(i64, i64)>> = imgs.iter().map(|r| r.pixel_at(c)).collect();
-            for (bi, band) in bands.iter_mut().enumerate() {
-                let vals = imgs.iter().zip(&at).filter_map(|(r, a)| a.and_then(|(cc, rr)| r.value(bi, cc, rr)));
-                let v = if w.method == "mean" {
-                    let (sum, k) = vals.fold((0.0f64, 0usize), |(s, k), v| (s + v as f64, k + 1));
-                    (k > 0).then(|| (sum / k as f64) as f32)
-                } else {
-                    vals.into_iter().next()
-                };
-                if let (Some(v), Some(slot)) = (v, band.get_mut(row * cols + col)) {
-                    *slot = v;
-                }
+    Ok(Box::new(move || {
+        let refs: Vec<&Raster> = imgs.iter().map(|r| &**r).collect();
+        let mut bands = rasterops::mosaic(&refs, &e, cell, (cols, rows), nb, w.method == "mean")?;
+        // Colour only when every image is colour. A mosaic of 8-bit images stays 8-bit (means
+        // rounded), so it displays as they do; anything else is Float32.
+        let all_rgb = imgs.iter().all(|r| matches!(r.color, ColorHint::Rgb { .. }));
+        let color = if matches!(nb, 3 | 4) && all_rgb { ColorHint::Rgb { alpha: nb == 4 } } else { ColorHint::Gray };
+        let all_u8 = imgs.iter().all(|r| r.data_type == "UInt8");
+        let dt = if matches!(color, ColorHint::Rgb { .. }) && all_u8 { "UInt8" } else { "Float32" };
+        if dt == "UInt8" {
+            for v in bands.iter_mut().flatten().filter(|v| **v != NODATA) {
+                *v = v.round().clamp(0.0, 255.0);
             }
         }
-    }
-    // Colour only when every image is colour. A mosaic of 8-bit images stays 8-bit (means
-    // rounded), so it displays as they do; anything else is Float32.
-    let all_rgb = imgs.iter().all(|r| matches!(r.color, ColorHint::Rgb { .. }));
-    let color = if matches!(nb, 3 | 4) && all_rgb { ColorHint::Rgb { alpha: nb == 4 } } else { ColorHint::Gray };
-    let all_u8 = imgs.iter().all(|r| r.data_type == "UInt8");
-    let dt = if matches!(color, ColorHint::Rgb { .. }) && all_u8 { "UInt8" } else { "Float32" };
-    if dt == "UInt8" {
-        for v in bands.iter_mut().flatten().filter(|v| **v != NODATA) {
-            *v = v.round().clamp(0.0, 255.0);
-        }
-    }
-    let gt = GeoTransform { origin_x: e.min_x, origin_y: e.max_y, pixel_width: cell, pixel_height: -cell };
-    let suffix = if w.kind == "reality" { "DSM" } else { "Orthomosaic" };
-    let out = Raster::new(format!("{} {suffix}", w.name), cols as u32, rows as u32, bands, gt, Crs::LonLat, Some(NODATA as f64), color, dt)
-        .map_err(|e| e.to_string())?;
-    add(s, out, false)
+        let gt = GeoTransform { origin_x: e.min_x, origin_y: e.max_y, pixel_width: cell, pixel_height: -cell };
+        let suffix = if w.kind == "reality" { "DSM" } else { "Orthomosaic" };
+        let out =
+            Raster::new(format!("{} {suffix}", w.name), cols as u32, rows as u32, bands, gt, Crs::LonLat, Some(NODATA as f64), color, dt)
+                .map_err(|e| e.to_string())?;
+        super::workflows::made(out, None)
+    }))
 }
 
 /// A surface model as a triangle mesh (Wavefront OBJ), in metres from its south-west corner.
