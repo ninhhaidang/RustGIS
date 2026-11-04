@@ -348,8 +348,13 @@ pub fn profile(r: &Raster, b: usize, path: &[Coord], samples: usize) -> Vec<(f64
     out
 }
 
+/// Earth's radius as visible light sees it, bent by the standard atmospheric refraction of 1/7:
+/// `gdal_viewshed`'s default curvature coefficient of 6/7. The 4/3 Earth is for radio waves.
+const SIGHT_RADIUS_M: f64 = 6_371_000.0 * 7.0 / 6.0;
+
 /// Whether `b` is visible from `a` (observer and target heights above the ground, in metres),
-/// and each profile sample with whether it can be seen. Earth curvature is included.
+/// and each profile sample with whether it can be seen. Earth curvature is included, with the
+/// refraction of visible light (see `SIGHT_RADIUS_M`), not the 4/3 Earth of radio links.
 pub fn line_of_sight(
     r: &Raster,
     band: usize,
@@ -362,8 +367,7 @@ pub fn line_of_sight(
     let prof = profile(r, band, &[a, b], samples);
     let (_, _, za) = *prof.first()?;
     let eye = za? + ha;
-    const R: f64 = 6_371_000.0 * 4.0 / 3.0; // refraction-adjusted Earth radius
-    let drop = |d: f64| d * d / (2.0 * R);
+    let drop = |d: f64| d * d / (2.0 * SIGHT_RADIUS_M);
     let mut max_angle = f64::NEG_INFINITY;
     let mut out = Vec::with_capacity(prof.len());
     let mut target_visible = false;
@@ -397,6 +401,7 @@ const MAX_VIEWSHED_WORK: usize = 400_000_000;
 pub(crate) const MAX_IDW_WORK: usize = 400_000_000;
 
 /// Cells visible from an observer (1) or not (0) within `radius_m`; outside the radius no-data.
+/// The Earth curves as visible light sees it (`SIGHT_RADIUS_M`).
 pub fn viewshed(r: &Raster, b: usize, observer: Coord, height: f64, radius_m: f64) -> Result<Vec<f32>, String> {
     viewshed_on(None, r, b, observer, height, radius_m)
 }
@@ -434,7 +439,6 @@ fn viewshed_on(threads: Option<usize>, r: &Raster, b: usize, observer: Coord, he
     }
     let w = r.width as usize;
     let mut out = new_band(w, r.height as usize, NODATA)?;
-    const R: f64 = 6_371_000.0 * 4.0 / 3.0;
     let window = out.chunks_mut(w).skip(usize::try_from(first).unwrap_or(0)).take(rows);
     crate::control::begin(rows);
     crate::parallel::for_each_row(
@@ -456,7 +460,7 @@ fn viewshed_on(threads: Option<usize>, r: &Raster, b: usize, observer: Coord, he
                     }
                     continue;
                 }
-                let target = (zt as f64 - dist * dist / (2.0 * R) - z0) / dist;
+                let target = (zt as f64 - dist * dist / (2.0 * SIGHT_RADIUS_M) - z0) / dist;
                 // Walk the ray from the observer; any cell higher than the line hides the target.
                 let steps = ((col - oc).abs().max((row - or).abs())) as usize;
                 let mut visible = true;
@@ -465,7 +469,7 @@ fn viewshed_on(threads: Option<usize>, r: &Raster, b: usize, observer: Coord, he
                     let (c, rr) = ((oc as f64 + (col - oc) as f64 * t).round() as i64, (or as f64 + (row - or) as f64 * t).round() as i64);
                     let Some(zi) = r.value(b, c, rr) else { continue };
                     let di = dist * t;
-                    if (zi as f64 - di * di / (2.0 * R) - z0) / di > target {
+                    if (zi as f64 - di * di / (2.0 * SIGHT_RADIUS_M) - z0) / di > target {
                         visible = false;
                         break;
                     }
@@ -1339,6 +1343,30 @@ mod tests {
         for threads in [2, 7, 16] {
             assert_eq!(bits(&per_cell_on(Some(threads), &r, 1, f).unwrap()), bits(&one), "{threads} threads");
         }
+    }
+
+    /// Over flat ground the horizon is where visible light puts it: √(2 · 7/6 R · h), 12.2 km
+    /// for an eye 10 m up, as `gdal_viewshed` sees it. The radio waves' 4/3 Earth puts it at 13.0 km.
+    #[test]
+    fn viewshed_and_line_of_sight_see_the_horizon_of_visible_light() {
+        // Sea level on the equator: three rows of 140 cells, 111 m wide.
+        let (w, h) = (140u32, 3u32);
+        let transform = GeoTransform { origin_x: 0.0, origin_y: 0.0015, pixel_width: 0.001, pixel_height: -0.001 };
+        let flat = Raster::new("flat", w, h, vec![vec![0.0; (w * h) as usize]], transform, Crs::LonLat, None, ColorHint::Gray, "Float32")
+            .unwrap_or_else(|e| panic!("{e}"));
+        let eye = Coord::new(0.0005, 0.0);
+        // √(2 · 7/6 · 6,371 km · 10 m), written out so that the test pins the radius.
+        let horizon = 12_192.0;
+        let vs = viewshed(&flat, 0, eye, 10.0, 20_000.0).unwrap_or_else(|e| panic!("{e}"));
+        let row = &vs[w as usize..2 * w as usize];
+        let last = row.iter().rposition(|v| *v == 1.0).unwrap_or(0);
+        let (cx, _) = flat.cell_size_m();
+        assert!((last as f64 * cx - horizon).abs() < cx, "last visible cell {last}, horizon {horizon} m");
+        assert!(row[..=last].iter().all(|v| *v == 1.0) && row[last + 1..].iter().all(|v| *v == 0.0), "{row:?}");
+        // The ground 11.5 km away is in view; 12.8 km away it is past the horizon.
+        let seen = |lon: f64| line_of_sight(&flat, 0, eye, Coord::new(lon, 0.0), 10.0, 0.0, 200).map(|(v, _)| v);
+        assert_eq!(seen(0.1035), Some(true));
+        assert_eq!(seen(0.1155), Some(false));
     }
 
     /// A run past one thread's work, on one thread, is refused, naming the cap and the threads.
