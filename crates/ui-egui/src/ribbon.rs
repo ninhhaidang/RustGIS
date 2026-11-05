@@ -1765,8 +1765,6 @@ fn view_tab(app: &mut RustGisApp, ui: &mut Ui) {
     group(ui, "Display", |ui| {
         let g = app.session.map().graticule;
         big(ui, app, "graticule", "Graticule", "Show latitude/longitude lines on the basemap.", "map.graticule", Value::Null, g, false);
-        let dark = app.ui.dark;
-        big(ui, app, "dark", "Dark\nMode", "Switch between light and dark themes.", "ui.theme", Value::Null, dark, false);
         let gpu = app.map.gpu_enabled;
         big(
             ui,
@@ -3440,8 +3438,12 @@ fn plugin_tab(app: &mut RustGisApp, ui: &mut Ui, plugin: &str) {
     }
 }
 
-/// The Settings tab: ribbon customization, language, start-up and (on the desktop) autosave.
+/// The Settings tab: theme, scale, customization, language, start-up and autosave.
 fn settings_tab(app: &mut RustGisApp, ui: &mut Ui) {
+    group(ui, "Theme", |ui| {
+        theme_menu(app, ui);
+        scale_menu(app, ui);
+    });
     group(ui, "Customize", |ui| {
         let hidden = app.ui.hidden_tabs.clone();
         // RustGIS's tabs and plugins' tabs.
@@ -3492,6 +3494,92 @@ fn autosave_menu(app: &mut RustGisApp, ui: &mut Ui) {
         for m in crate::autosave::CHOICES {
             if ui.add(egui::Button::selectable(minutes == m, autosave_interval(m))).clicked() {
                 let _ = app.run("ui.autosave", json!({"minutes": m}));
+                ui.close();
+            }
+        }
+    });
+}
+
+/// Shows the actual drawn theme, including built-in fallback, and file-loading diagnostics.
+fn theme_menu(app: &mut RustGisApp, ui: &mut Ui) {
+    // The browser reports prefers-color-scheme; winit reports nothing on Linux.
+    let system = ui.ctx().system_theme().is_some();
+    let (follows, current) = app.theme_shown(system);
+    let label = format!("{}\n{current}", tl!("Theme"));
+    let themes: Vec<String> = app.themes.iter().map(|t| t.name.clone()).collect();
+    // The drawn theme is marked: a saved name whose file stopped loading is not drawn.
+    let drawn = app.drawn().map(|t| t.name.clone());
+    let fallback = drawn.is_none().then(|| app.current_theme().name);
+    let errors = app.theme_errors.clone();
+    let notes = app.theme_notes.clone();
+    // The browser has no settings folder to read theme files from or write one to.
+    let folder = crate::theme::Theme::user_dir().is_some();
+    big_menu(
+        ui,
+        app,
+        "dark",
+        &label,
+        "The interface colours, spacing and text sizes: a built-in theme or a file from the themes folder.",
+        move |ui, app| {
+            let mut follow = ui.add_enabled(system, egui::Button::selectable(follows, tl!("Follow the System")));
+            if !system {
+                follow = follow.on_disabled_hover_text(tl!("This platform does not report the system theme"));
+            }
+            if follow.clicked() {
+                run_notified(app, "ui.themeFile", Value::Null);
+                ui.close();
+            }
+            if let Some(name) = &fallback {
+                let label = crate::i18n::fmt("{name} (built-in fallback)", &[("name", &crate::theme::label(name))]);
+                ui.add_enabled(false, egui::Button::selectable(!follows, label));
+            }
+            for name in &themes {
+                let picked = !follows && drawn.as_deref() == Some(name.as_str());
+                if ui.add(egui::Button::selectable(picked, crate::theme::label(name))).clicked() {
+                    run_notified(app, "ui.themeFile", json!({ "name": name }));
+                    ui.close();
+                }
+            }
+            if folder {
+                ui.separator();
+                if ui.add(egui::Button::selectable(false, tl!("Load a Theme from File…"))).clicked() {
+                    run_notified(app, "ui.themeLoad", Value::Null);
+                    ui.close();
+                }
+                if ui.add(egui::Button::selectable(false, tl!("Reload Themes"))).clicked() {
+                    run_notified(app, "ui.themeReload", Value::Null);
+                    ui.close();
+                }
+            }
+            if !errors.is_empty() || !notes.is_empty() {
+                ui.separator();
+                let tokens = Tokens::get(ui.ctx());
+                for error in &errors {
+                    ui.label(egui::RichText::new(error).color(tokens.red).small());
+                }
+                for note in &notes {
+                    ui.label(egui::RichText::new(note).color(tokens.text_dim).small());
+                }
+            }
+        },
+    );
+}
+
+/// Runs a UI command; `run` reports a failure itself.
+fn run_notified(app: &mut RustGisApp, id: &str, params: Value) {
+    let _ = app.run(id, params);
+}
+
+/// Interface scale, as egui's zoom factor.
+fn scale_menu(app: &mut RustGisApp, ui: &mut Ui) {
+    let current = format!("{}%", (app.ui.interface_scale * 100.0).round() as i32);
+    let label = format!("{}\n{current}", tl!("Interface Scale"));
+    big_menu(ui, app, "zoom_full", &label, "The size of the menu, the panes and the text drawn in them.", move |ui, app| {
+        for percent in [80, 90, 100, 110, 125, 150, 175, 200] {
+            let factor = percent as f32 / 100.0;
+            let picked = (app.ui.interface_scale - factor).abs() < 0.001;
+            if ui.add(egui::Button::selectable(picked, format!("{percent}%"))).clicked() {
+                run_notified(app, "ui.scale", json!({ "factor": factor }));
                 ui.close();
             }
         }

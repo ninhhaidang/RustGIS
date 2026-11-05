@@ -462,6 +462,10 @@ duplication and nudging have their own [layout shortcuts](layouts.md#layouts).
 - **Language**: **Settings › Language** switches the interface among
   [20 languages](../i18n.md) and chooses the [worldview](maps.md#worldview) of the built-in
   borders.
+- **Theme**: **Settings › Theme** picks the interface colours, spacing and text sizes, from the
+  built-in Light and Dark themes, a theme [file](../themes.md) in the desktop app’s themes folder, or
+  **Follow the System** where the platform reports its own theme. **Interface Scale** beside it
+  sets the whole interface from 80% to 200%.
 - **Autosave**: **Settings › Autosave** sets how often the desktop app keeps a
   [recovery copy](#autosave-and-recovery) of unsaved work, or turns it off.
 - **Start-up**: **Settings › Start-up** sets what RustGIS opens with: **Start With** the World Atlas

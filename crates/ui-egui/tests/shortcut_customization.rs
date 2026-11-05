@@ -36,7 +36,7 @@ fn assigns_a_key_confirms_conflicts_and_restores_saved_preferences() {
     h.state_mut().run("ui.customizeShortcuts", Value::Null).unwrap();
     h.run_steps(3);
     h.get_by_role_and_label(egui::accesskit::Role::TextInput, "Search commands").focus();
-    h.event(egui::Event::Text("ui.theme".into()));
+    h.event(egui::Event::Text("Toggle Dark Mode".into()));
     h.run_steps(3);
     h.get_by_role_and_label(egui::accesskit::Role::Button, "Add…").click();
     h.step();
@@ -66,7 +66,7 @@ fn tab_and_arrow_keys_can_be_captured() {
     h.state_mut().run("ui.customizeShortcuts", Value::Null).unwrap();
     h.run_steps(3);
     h.get_by_role_and_label(egui::accesskit::Role::TextInput, "Search commands").focus();
-    h.event(egui::Event::Text("ui.theme".into()));
+    h.event(egui::Event::Text("Toggle Dark Mode".into()));
     h.run_steps(3);
     for key in [egui::Key::Tab, egui::Key::ArrowLeft] {
         h.get_by_role_and_label(egui::accesskit::Role::Button, "Add…").click();
@@ -84,7 +84,7 @@ fn escape_cancels_capture_but_can_be_assigned_explicitly_and_reset() {
     h.state_mut().run("ui.customizeShortcuts", Value::Null).unwrap();
     h.run_steps(3);
     h.get_by_role_and_label(egui::accesskit::Role::TextInput, "Search commands").focus();
-    h.event(egui::Event::Text("ui.theme".into()));
+    h.event(egui::Event::Text("Toggle Dark Mode".into()));
     h.run_steps(3);
     h.get_by_role_and_label(egui::accesskit::Role::Button, "Add…").focus();
     h.run_steps(3);
@@ -115,9 +115,14 @@ fn command_search_context_menu_opens_matching_editor_row() {
     h.run_steps(3);
     h.event(egui::Event::Text("Toggle Dark Mode".into()));
     h.run_steps(3);
-    h.get_by_role_and_label(egui::accesskit::Role::Button, "Toggle Dark Mode View").click_secondary();
+    h.get_by_role_and_label(egui::accesskit::Role::Button, "Toggle Dark Mode Settings › Theme").click_secondary();
     h.run_steps(3);
     h.get_by_role_and_label(egui::accesskit::Role::Button, "Keyboard Shortcuts").click();
+    h.run_steps(3);
+    // The command-id prefix also matches Choose Theme and Reload Themes; filter the intended row.
+    h.get_by_role_and_label(egui::accesskit::Role::TextInput, "Search commands").focus();
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.event(egui::Event::Text("Toggle Dark Mode".into()));
     h.run_steps(3);
     h.get_by_role_and_label(egui::accesskit::Role::Button, "Add…").click();
     h.step();
@@ -136,7 +141,7 @@ fn unreadable_preferences_survive_edits_until_an_explicit_reset() {
         h.run_steps(3);
         assert!(h.query_by_label("Saved shortcuts are unreadable or exceed the limit. Changes apply only to this session; Reset All replaces the saved shortcuts.").is_some());
         h.get_by_role_and_label(egui::accesskit::Role::TextInput, "Search commands").focus();
-        h.event(egui::Event::Text("ui.theme".into()));
+        h.event(egui::Event::Text("Toggle Dark Mode".into()));
         h.run_steps(3);
         h.get_by_role_and_label(egui::accesskit::Role::Button, "Add…").click();
         h.step();

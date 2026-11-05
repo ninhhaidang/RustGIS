@@ -46,7 +46,7 @@ struct RibbonSplitShowcase {
     disable_enclosing_ui: bool,
     long_labels: bool,
     fonts_installed: bool,
-    applied_dark: Option<bool>,
+    applied_look: Option<(String, bool, u64)>,
 }
 
 fn split_tool_menu(ui: &mut egui::Ui, app: &mut RustGisApp) {
@@ -66,10 +66,12 @@ impl RibbonSplitShowcase {
             theme::install_fonts(ui.ctx(), &[], None);
             self.fonts_installed = true;
         }
-        if self.applied_dark != Some(app.ui.dark) {
-            let tokens = if app.ui.dark { theme::Tokens::dark() } else { theme::Tokens::light() };
-            theme::apply(ui.ctx(), &tokens);
-            self.applied_dark = Some(app.ui.dark);
+        // The revision is part of the key: a reload with the same name still reapplies the look.
+        let look = (app.ui.theme_name.clone(), app.ui.dark, app.theme_revision());
+        if self.applied_look.as_ref() != Some(&look) {
+            let chosen = app.current_theme();
+            theme::apply(ui.ctx(), &chosen.tokens, &chosen.metrics);
+            self.applied_look = Some(look);
         }
         i18n::set_current(app.chosen_lang());
         ui.heading("Ribbon split buttons");
@@ -182,6 +184,10 @@ fn main() {
         .build_ui_state(
             move |ui, app: &mut RustGisApp| {
                 if ribbon_split {
+                    // The split showcase skips `logic`, the only place the scale reaches egui.
+                    if (ui.ctx().zoom_factor() - app.ui.interface_scale).abs() > 0.001 {
+                        ui.ctx().set_zoom_factor(app.ui.interface_scale);
+                    }
                     split_showcase.show(ui, app);
                 } else {
                     let ctx = ui.ctx().clone();
@@ -193,6 +199,10 @@ fn main() {
         );
     for _ in 0..6 {
         harness.step();
+    }
+    // The split showcase skips frame logic, so load user themes before scripted selection.
+    if ribbon_split && let Err(error) = harness.state_mut().run("ui.themeReload", Value::Null) {
+        eprintln!("ui.themeReload: {error}");
     }
     // The button the last drag holds down.
     let mut held = egui::PointerButton::Primary;

@@ -346,7 +346,7 @@ mod tests {
     #[test]
     fn web_rows_exclude_desktop_commands_even_with_existing_bindings() {
         let mut app = RustGisApp::new(Session::new(Project::default()));
-        for id in ["ui.checkUpdate", "ui.mcpRelay"] {
+        for id in ["ui.checkUpdate", "ui.mcpRelay", "ui.themeLoad", "ui.themeReload"] {
             app.ui.keymap.assign(Chord::parse("F8").unwrap(), id, Value::Null);
             assert!(!crate::chrome::command_available(id, true));
             assert!(!rows(&app, true).iter().any(|(command, _, _)| command == id));

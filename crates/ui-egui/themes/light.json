@@ -1,0 +1,55 @@
+{
+  "schema": 1,
+  "name": "Light",
+  "dark": false,
+  "colours": {
+    "header": "#EEF1F5",
+    "ribbon": "#FFFFFF",
+    "tab_strip": "#EEF1F5",
+    "canvas": "#E4E8EE",
+    "pane": "#FBFCFD",
+    "pane_header": "#F3F5F8",
+    "border": "#DDE2E9",
+    "border_strong": "#C3CAD4",
+    "text": "#1F2630",
+    "text_dim": "#5E6977",
+    "text_disabled": "#A9B1BC",
+    "icon": "#3A4554",
+    "hover": "#E9F0FB",
+    "pressed": "#D4E2F8",
+    "checked": "#DCE8FA",
+    "accent": "#2563EB",
+    "accent_text": "#1D4EC4",
+    "on_accent": "#FFFFFF",
+    "input": "#FFFFFF",
+    "input_border": "#C6CDD7",
+    "group_label": "#707A88",
+    "status_bar": "#F3F5F8",
+    "selection": "#CFE0FC",
+    "menu": "#FFFFFF",
+    "shadow": "#0000001C",
+    "green": "#169A5A",
+    "red": "#D13C3C",
+    "amber": "#E59E1A",
+    "context": "#0E9384",
+    "context_tint": "#E3F5F2",
+    "control": "#DDE3EA"
+  },
+  "metrics": {
+    "item_spacing": [
+      6.0,
+      5.0
+    ],
+    "button_padding": [
+      8.0,
+      3.0
+    ],
+    "row_height": 22.0,
+    "corner_radius": 5,
+    "body": 12.5,
+    "button_text": 12.5,
+    "small": 10.5,
+    "heading": 17.0,
+    "mono": 12.0
+  }
+}

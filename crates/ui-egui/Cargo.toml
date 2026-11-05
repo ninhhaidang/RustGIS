@@ -37,7 +37,7 @@ rfd = { workspace = true }
 # Stopping an agent on this computer with every process it started: its process group, by the
 # system call (as the plugins crate does).
 [target.'cfg(unix)'.dependencies]
-rustix = { version = "1.1", features = ["process"] }
+rustix = { version = "1.1", features = ["process", "fs"] }
 
 [dev-dependencies]
 tempfile = "3"

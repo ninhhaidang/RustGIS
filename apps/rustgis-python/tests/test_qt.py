@@ -138,7 +138,7 @@ def test_a_reload_holds_messages_until_the_page_starts_again(widget):
     from_page(widget, {"type": "host"})
     widget.scripts.clear()
     widget._unready()  # what loadStarted calls
-    widget.run_in_app("ui.theme", theme="dark")
+    widget.run_in_app("ui.theme", dark=True)
     widget.add_geojson(POINT, name="Sites")
     assert widget.scripts == []
     from_page(widget, {"type": "host"})
