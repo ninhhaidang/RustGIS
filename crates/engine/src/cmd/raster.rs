@@ -536,7 +536,10 @@ pub(crate) fn say_losses(s: &mut Session, losses: Vec<(String, String)>) {
 
 /// Opens a raster file by path.
 pub fn add_path(s: &mut Session, path: &str, name: Option<&str>, scan: bool) -> CmdResult {
-    let mut r = raster::read_path(Path::new(path)).map_err(|e| format!("{path}: {e}"))?;
+    let mut r = match super::reads::take(s, &read_key(path)) {
+        Some(r) => r,
+        None => read_raster(path),
+    }?;
     if scan {
         r = r.into_scan().map_err(|e| format!("{path}: {e}"))?;
     }
@@ -547,14 +550,45 @@ pub fn add_path(s: &mut Session, path: &str, name: Option<&str>, scan: bool) -> 
     add_raster(s, &name, RasterLayer::from_path(r, full))
 }
 
+/// The raster at `path`, read whole.
+pub(crate) fn read_raster(path: &str) -> Result<Raster, String> {
+    raster::read_path(Path::new(path)).map_err(|e| format!("{path}: {e}"))
+}
+
+/// The key [`add_path`]'s read of `path` is taken by (see [`super::reads`]).
+pub(crate) fn read_key(path: &str) -> String {
+    format!("raster:{path}")
+}
+
+/// A raster GDAL converts and the conversion it read.
+#[cfg(not(target_arch = "wasm32"))]
+type GdalRead = Result<(rustgis_data::raster::gdal::Converted, Raster), String>;
+
+/// The raster GDAL converts from `path` (`layer` its subdataset, `crs` a coordinate system the
+/// file doesn't say), with the conversion.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn read_gdal(path: &str, layer: Option<&str>, crs: Option<&str>) -> GdalRead {
+    use rustgis_data::raster::gdal;
+    let c = gdal::convert(Path::new(path), layer, crs).map_err(|e| format!("{path}: {e}"))?;
+    let r = raster::read_converted(Path::new(path), &c).map_err(|e| format!("{path}: {e}"))?;
+    Ok((c, r))
+}
+
+/// The key [`add_gdal_path`]'s read of `path` is taken by (see [`super::reads`]).
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn gdal_key(path: &str) -> String {
+    format!("gdal:{path}")
+}
+
 /// Adds a raster GDAL reads (converted once to a GeoTIFF in the cache): `"layer"` picks a
 /// subdataset (a NetCDF variable) and `"crs"` gives a coordinate system the file doesn't say.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn add_gdal_path(s: &mut Session, p: &Value, path: &str) -> CmdResult {
-    use rustgis_data::raster::gdal;
     let text = |k: &str| ps(p, k).map(str::trim).filter(|v| !v.is_empty());
-    let c = gdal::convert(Path::new(path), text("layer"), text("crs")).map_err(|e| format!("{path}: {e}"))?;
-    let r = raster::read_converted(Path::new(path), &c).map_err(|e| format!("{path}: {e}"))?;
+    let (c, r) = match super::reads::take::<GdalRead>(s, &gdal_key(path)) {
+        Some(read) => read,
+        None => read_gdal(path, text("layer"), text("crs")),
+    }?;
     if c.assumed_lonlat {
         s.notify(format!("{path} doesn't say its coordinate system; its coordinates look like longitude/latitude, so it's read as WGS 84 (give \"crs\" if not)"), false);
     }

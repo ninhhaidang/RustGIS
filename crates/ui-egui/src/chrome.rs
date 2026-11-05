@@ -345,6 +345,12 @@ pub fn status_bar(app: &mut RustGisApp, ui: &mut Ui) {
                     sep(ui, &t);
                     crate::exportjob::status(app, ui, &t);
                 }
+                // A file read for Add Data, or a layer's features for Load All.
+                #[cfg(not(target_arch = "wasm32"))]
+                if crate::readjob::showing(app) {
+                    sep(ui, &t);
+                    crate::readjob::status(app, ui, &t);
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     // The CPU/GPU backend toggle, then the frame rate (live while the map moves,
                     // "— fps" when idle), then the last render's cost.

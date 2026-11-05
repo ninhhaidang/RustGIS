@@ -1,0 +1,380 @@
+//! Add Data's whole-file reads and Load All Features on the desktop read on a thread of their own
+//! (#1291 step 3), so a large raster, GeoJSON or table, or a streamed layer loaded whole, doesn't
+//! hold the window: the status bar shows the read under way, how far it has come and Cancel, and
+//! [`land`] then runs the command, which takes what was read ([`reads`]) and adds it as it does
+//! when it reads here. Reads go one at a time, in the order asked for: files dropped together
+//! wait for the one before, and so does a file added while one is read, so the layers come in
+//! that order.
+
+use std::collections::VecDeque;
+use std::sync::Arc;
+
+use egui::Ui;
+use rustgis_engine::analysis::control::Control;
+use rustgis_engine::cmd::reads;
+use serde_json::{Value, json};
+
+use crate::RustGisApp;
+use crate::theme::Tokens;
+
+/// The reads under way and waiting.
+#[derive(Default)]
+pub struct Reads {
+    job: Option<ReadJob>,
+    /// The commands waiting for the read before, in order.
+    waiting: VecDeque<Asked>,
+}
+
+/// A command asked for, with where it was asked: the project and map then open and, for Load All,
+/// the layer. Another project or map open by the time it runs, or the layer gone, leaves it.
+struct Asked {
+    command: &'static str,
+    params: Value,
+    /// What it reads, as its notices name it: the file, or the layer.
+    what: String,
+    opened: u64,
+    map: u64,
+    layer: Option<u64>,
+}
+
+/// A read under way: what it is for, its Cancel and progress, and what it read once done.
+struct ReadJob {
+    asked: Asked,
+    /// What it was for went while it read: cancelled, it keeps its place until its thread ends
+    /// (a reader that doesn't stop for Cancel still runs), so reads still go one at a time.
+    gone: Option<Gone>,
+    name: &'static str,
+    control: Arc<Control>,
+    slot: crate::Slot<Result<reads::Read, String>>,
+}
+
+/// Runs `command` (`layer.addData` or `layer.loadAll`) with `p`: its read on a thread of its own
+/// when the desktop app makes it so ([`reads::read_ahead`]), after any read under way; here and
+/// now otherwise, as the command does. While one is under way or waiting it answers that, not
+/// what the command adds, which comes as it lands.
+pub fn run(app: &mut RustGisApp, command: &'static str, p: Value) -> Result<Value, String> {
+    if !app.reads_off_frame {
+        return app.run(command, p);
+    }
+    let layer = (command == "layer.loadAll")
+        .then(|| app.session.layer_id(&p).ok().and_then(|id| app.session.map().layer(id)).map(|l| (l.instance_id(), l.name.clone())))
+        .flatten();
+    // Load All asked again for a layer it is reading already.
+    if let Some((instance, _)) = &layer
+        // (One whose map or project went never loads it: a new request waits behind it.)
+        && app.reads.job.iter().filter(|j| j.gone.is_none()).map(|j| &j.asked).chain(&app.reads.waiting).any(|a| a.layer == Some(*instance))
+    {
+        return Ok(json!({"reading": instance}));
+    }
+    let what = match &layer {
+        Some((_, name)) => name.clone(),
+        None => p.get("path").and_then(Value::as_str).map(|path| file_name(path).to_string()).unwrap_or_default(),
+    };
+    let asked = Asked {
+        command,
+        params: p,
+        what,
+        opened: app.session.opened,
+        map: app.session.map().instance_id(),
+        layer: layer.map(|(instance, _)| instance),
+    };
+    if busy(app) {
+        app.reads.waiting.push_back(asked);
+        return Ok(json!({"waiting": app.reads.waiting.len()}));
+    }
+    match placed(app, &asked) {
+        Ok(p) => start(app, asked, p),
+        Err(why) => Err(why.to_string()),
+    }
+}
+
+/// A path's last part, as a notice names the file.
+fn file_name(path: &str) -> &str {
+    std::path::Path::new(path).file_name().and_then(|n| n.to_str()).unwrap_or(path)
+}
+
+/// Whether a read is under way or waiting.
+fn busy(app: &RustGisApp) -> bool {
+    app.reads.job.is_some() || !app.reads.waiting.is_empty()
+}
+
+/// Why a command asked for can't run now: what was open when it was asked isn't any more.
+#[derive(Clone, Copy, PartialEq)]
+enum Gone {
+    Project,
+    Map,
+    Layer,
+}
+
+impl std::fmt::Display for Gone {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            // Filled into a notice's template: in logical order (`tl_raw!`).
+            Gone::Project => tl_raw!("another project was opened"),
+            Gone::Map => tl_raw!("the map it was asked for isn't open"),
+            Gone::Layer => tl_raw!("its layer was removed"),
+        })
+    }
+}
+
+/// `asked`'s parameters for the command now (Load All's layer by its id in the open map), or why
+/// it can't run.
+fn placed(app: &RustGisApp, asked: &Asked) -> Result<Value, Gone> {
+    if app.session.opened != asked.opened {
+        return Err(Gone::Project);
+    }
+    if app.session.map().instance_id() != asked.map {
+        return Err(Gone::Map);
+    }
+    let Some(instance) = asked.layer else { return Ok(asked.params.clone()) };
+    let l = app.session.map().layers.iter().find(|l| l.instance_id() == instance).ok_or(Gone::Layer)?;
+    let mut p = asked.params.clone();
+    p["layer"] = json!(l.id);
+    Ok(p)
+}
+
+/// Starts `asked`'s read with `p`, or runs it here when it reads nothing ahead (or its thread
+/// can't start).
+fn start(app: &mut RustGisApp, asked: Asked, p: Value) -> Result<Value, String> {
+    // Picked on this thread, so a bug in the picking must not take the app down: it reads here.
+    let picked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| reads::read_ahead(&app.session, asked.command, &p)));
+    let Ok(Some(ahead)) = picked else { return app.run(asked.command, p) };
+    let name = ahead.name;
+    let control = Control::stoppable();
+    let (ctl, slot) = (control.clone(), crate::Slot::default());
+    let out = slot.clone();
+    // A streamed layer's source read on the thread keeps its requests in the session's diagnostics.
+    let diagnostics = app.session.diagnostics.capture();
+    let spawned = std::thread::Builder::new().name(name.into()).spawn(move || {
+        let _diagnostics = diagnostics.enter();
+        let read = ahead.run(&ctl);
+        // Filled even when its lock is poisoned, or the read would show as running forever.
+        *out.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(read);
+    });
+    if let Err(e) = spawned {
+        log::warn!("{name} reads here: its thread didn't start: {e}");
+        return app.run(asked.command, p);
+    }
+    app.reads.job = Some(ReadJob { asked, gone: None, name, control, slot });
+    Ok(json!({"started": name}))
+}
+
+/// Runs the command a read was for once it's done (or says why it wasn't), then starts the next
+/// waiting: called every frame. `true` while one is under way or waiting.
+pub fn land(app: &mut RustGisApp) -> bool {
+    if !busy(app) {
+        return false;
+    }
+    let mut left: Vec<(String, Gone)> = Vec::new();
+    // What it was for is gone: it is cancelled, and said with the rest below once it stops.
+    let gone = app.reads.job.as_ref().filter(|j| j.gone.is_none()).and_then(|j| placed(app, &j.asked).err());
+    if let (Some(why), Some(job)) = (gone, app.reads.job.as_mut()) {
+        job.control.cancel();
+        job.gone = Some(why);
+    }
+    if let Some(job) = &app.reads.job {
+        let done = job.slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+        let Some(done) = done else { return true };
+        let Some(job) = app.reads.job.take() else { return false };
+        match (job.gone, placed(app, &job.asked)) {
+            (Some(why), _) | (None, Err(why)) => left.push((job.asked.what, why)),
+            (None, Ok(p)) => {
+                if job.control.is_cancelled() {
+                    // Cancelled (once it had read too): it adds nothing, and nor does what waits.
+                    app.session.notify(
+                        crate::i18n::fmt("{tool} of {what} was cancelled", &[("tool", tl_raw!(job.name)), ("what", &job.asked.what)]),
+                        false,
+                    );
+                    let n = std::mem::take(&mut app.reads.waiting).len();
+                    if n == 1 {
+                        app.session.notify(tl!("The one waiting after it was left too").to_string(), false);
+                    } else if n > 1 {
+                        app.session.notify(crate::i18n::fmt("The {n} waiting after it were left too", &[("n", &n.to_string())]), false);
+                    }
+                } else {
+                    match done {
+                        Ok(read) => {
+                            read.placed(&mut app.session);
+                            // A failure is said by the command.
+                            let _ = app.run(job.asked.command, p);
+                            app.session.drop_read();
+                            app.map.invalidate();
+                        }
+                        // A bug in a reader: said, and the next goes on.
+                        Err(e) => app.session.notify(crate::i18n::fmt("{what}: {e}", &[("what", &job.asked.what), ("e", &e)]), true),
+                    }
+                }
+            }
+        }
+    }
+    // The next waiting, until one reads on its thread.
+    while app.reads.job.is_none() {
+        let Some(asked) = app.reads.waiting.pop_front() else { break };
+        match placed(app, &asked) {
+            // A failure is said by the command.
+            Ok(p) => {
+                let _ = start(app, asked, p);
+                app.map.invalidate();
+            }
+            Err(why) => left.push((asked.what, why)),
+        }
+    }
+    // Those left, one notice for each reason, with a count, naming the first.
+    for why in [Gone::Project, Gone::Map, Gone::Layer] {
+        let of: Vec<&String> = left.iter().filter(|(_, w)| *w == why).map(|(what, _)| what).collect();
+        let reason = why.to_string();
+        match of.as_slice() {
+            [] => {}
+            [what] => app.session.notify(crate::i18n::fmt("{what} was left: {why}", &[("what", what), ("why", &reason)]), false),
+            [first, ..] => app.session.notify(
+                crate::i18n::fmt(
+                    "{n} files or layers were left, the first {what}: {why}",
+                    &[("n", &of.len().to_string()), ("what", first), ("why", &reason)],
+                ),
+                false,
+            ),
+        }
+    }
+    busy(app)
+}
+
+/// Cancels the read under way, and what waits, and waits up to `wait` for its thread to stop.
+pub fn stop(app: &mut RustGisApp, wait: std::time::Duration) {
+    app.reads.waiting.clear();
+    let Some(job) = app.reads.job.take() else { return };
+    job.control.cancel();
+    let end = std::time::Instant::now() + wait;
+    while job.slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none() && std::time::Instant::now() < end {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+/// Whether the status bar shows a read.
+pub fn showing(app: &RustGisApp) -> bool {
+    app.reads.job.is_some()
+}
+
+/// The read under way in the status bar: its name, progress, how many wait, and Cancel.
+pub fn status(app: &RustGisApp, ui: &mut Ui, t: &Tokens) {
+    let Some(job) = &app.reads.job else { return };
+    ui.spinner();
+    // Two labels, not one sentence put together from translated pieces.
+    ui.label(egui::RichText::new(tl!("Running…")).size(11.5).color(t.text_dim));
+    ui.label(egui::RichText::new(tl!(job.name)).size(11.5).strong());
+    // How far its current step has come, when its reader counts.
+    if let Some((done, total)) = job.control.progress() {
+        ui.add(egui::ProgressBar::new(done as f32 / total.max(1) as f32).show_percentage().desired_width(120.0).desired_height(12.0));
+    }
+    let n = app.reads.waiting.len();
+    if n > 0 {
+        ui.label(egui::RichText::new(crate::i18n::fmt("{n} waiting", &[("n", &n.to_string())])).size(11.5).color(t.text_dim));
+    }
+    if ui.add_enabled(!job.control.is_cancelled(), egui::Button::new(tl!("Cancel")).small()).clicked() {
+        job.control.cancel();
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    /// Lands every read under way and waiting, failing past `secs`.
+    fn landed(app: &mut RustGisApp, secs: u64) {
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+        while land(app) {
+            assert!(std::time::Instant::now() < end, "the reads never landed");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn files_added_read_on_a_thread_and_land_in_order() {
+        let mut app = RustGisApp::new(rustgis_engine::Session::new(rustgis_engine::Project::default()));
+        app.reads_off_frame = true;
+        let dir = std::env::temp_dir().join(format!("rustgis-read-job-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = |name: &str| {
+            let path = dir.join(name);
+            std::fs::write(&path, "name,x,y\nA,8,47\nB,9,46\n").unwrap();
+            path.display().to_string()
+        };
+        let (first, second, third) = (file("first.csv"), file("second.csv"), file("third.csv"));
+        assert_eq!(crate::layerchooser::add_file(&mut app, &first).unwrap()["started"], "Add Data");
+        // One at a time: the next waits for it, and lands after it.
+        assert_eq!(crate::layerchooser::add_file(&mut app, &second).unwrap()["waiting"], 1);
+        assert_eq!(crate::layerchooser::add_file(&mut app, &third).unwrap()["waiting"], 2);
+        assert!(app.session.map().layers.is_empty(), "nothing is added before its read lands");
+        landed(&mut app, 60);
+        let names: Vec<&str> = app.session.map().layers.iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(names.len(), 3, "{names:?}");
+        assert!(names.iter().all(|n| ["first", "second", "third"].contains(n)), "{names:?}");
+        // The layer list's order: the last added on top, as when each reads as it's added.
+        let mut again = RustGisApp::new(rustgis_engine::Session::new(rustgis_engine::Project::default()));
+        for path in [&first, &second, &third] {
+            crate::layerchooser::add_file(&mut again, path).unwrap();
+        }
+        let order: Vec<&str> = again.session.map().layers.iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(names, order);
+        // Undo takes the last back, as for one added here.
+        app.run("edit.undo", Value::Null).unwrap();
+        assert_eq!(app.session.map().layers.len(), 2);
+
+        // Cancel leaves the one under way and what waits, and says so.
+        let before = app.session.map().layers.len();
+        crate::layerchooser::add_file(&mut app, &first).unwrap();
+        crate::layerchooser::add_file(&mut app, &second).unwrap();
+        app.reads.job.as_ref().unwrap().control.cancel();
+        landed(&mut app, 60);
+        assert_eq!(app.session.map().layers.len(), before);
+        assert!(app.session.notices.iter().any(|n| n.text == "Add Data of first.csv was cancelled"), "{:?}", app.session.notices.last());
+        assert!(app.session.notices.iter().any(|n| n.text == "The one waiting after it was left too"), "{:?}", app.session.notices.last());
+
+        // Another project opened meanwhile: they aren't added to it.
+        crate::layerchooser::add_file(&mut app, &first).unwrap();
+        crate::layerchooser::add_file(&mut app, &second).unwrap();
+        app.run("project.new", Value::Null).unwrap();
+        landed(&mut app, 60);
+        assert!(app.session.map().layers.is_empty());
+        assert!(
+            app.session.notices.iter().any(|n| n.text == "2 files or layers were left, the first first.csv: another project was opened")
+        );
+
+        // Closing the app cancels a read under way and waits for it.
+        crate::layerchooser::add_file(&mut app, &first).unwrap();
+        stop(&mut app, std::time::Duration::from_secs(60));
+        assert!(!busy(&app));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_all_reads_on_a_thread() {
+        let mut app = RustGisApp::new(rustgis_engine::Session::new(rustgis_engine::Project::default()));
+        app.reads_off_frame = true;
+        let dir = std::env::temp_dir().join(format!("rustgis-read-job-all-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("streamed.geojson");
+        std::fs::write(&path, r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":[8,47]}}]}"#)
+            .unwrap();
+        let id = app.run("layer.addData", json!({"path": path.display().to_string(), "stream": true})).unwrap()["layer"].as_u64().unwrap()
+            as u32;
+        assert_eq!(run(&mut app, "layer.loadAll", json!({"layer": id})).unwrap()["started"], "Load All Features");
+        assert!(app.session.map().layer(id).unwrap().is_streamed());
+        landed(&mut app, 60);
+        let l = app.session.map().layer(id).unwrap();
+        assert!(!l.is_streamed() && l.dataset.features.len() == 1);
+
+        // Asked twice, it reads once; another map open when it lands leaves it, and says so.
+        let id = app.run("layer.addData", json!({"path": path.display().to_string(), "stream": true})).unwrap()["layer"].as_u64().unwrap()
+            as u32;
+        run(&mut app, "layer.loadAll", json!({"layer": id})).unwrap();
+        assert!(run(&mut app, "layer.loadAll", json!({"layer": id})).unwrap().get("reading").is_some());
+        assert_eq!(app.reads.waiting.len(), 0);
+        app.run("map.new", json!({"name": "Other"})).unwrap();
+        landed(&mut app, 60);
+        let notice = format!("{} was left: the map it was asked for isn't open", app.session.project.maps[0].layer(id).unwrap().name);
+        assert!(app.session.notices.iter().any(|n| n.text == notice), "{:?}", app.session.notices.last());
+        assert!(app.session.project.maps[0].layer(id).unwrap().is_streamed());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

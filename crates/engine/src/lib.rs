@@ -750,6 +750,9 @@ pub struct Session {
     pub zarr_off_frame: bool,
     /// The Zarr steps landed that [`Session::follow_time_landed`] has seen.
     zarr_seen: u64,
+    /// A read the app made on a thread of its own for the command it runs next, which takes it
+    /// instead of reading again ([`cmd::reads`]).
+    pub(crate) read_ahead: Option<cmd::reads::Read>,
     /// Set where a person at a terminal waits on a command (`rustgis-cli run` with stdin and
     /// stderr a terminal), who can stop it with Ctrl-C: tools and rasters take no work cap
     /// ([`rustgis_analysis::control::Control::stoppable`]). A program that calls it (an agent, a
@@ -1011,6 +1014,7 @@ impl Session {
             long_runs: None,
             zarr_off_frame: false,
             zarr_seen: 0,
+            read_ahead: None,
             stoppable: false,
         };
         for text in label_notices {
@@ -1149,6 +1153,12 @@ impl Session {
     /// step to be read off the frame ([`Session::zarr_off_frame`]): playing holds its next step.
     pub fn zarr_waiting(&self) -> bool {
         self.zarr_off_frame && cmd::zarr::waiting(self)
+    }
+
+    /// Drops a read placed for a command ([`cmd::reads::Read::placed`]) that the command didn't
+    /// take: one refused before it read, or that read another way.
+    pub fn drop_read(&mut self) {
+        self.read_ahead = None;
     }
 
     /// Shows the Zarr steps read off the frame ([`Session::zarr_off_frame`]) once they land: the

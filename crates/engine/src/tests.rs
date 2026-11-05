@@ -28543,3 +28543,91 @@ fn raster_classes_run_on_another_thread() {
     assert_eq!((&r["model"], &r["replaced"]), (&json!("scene_model 2"), &json!(false)), "{r}");
     assert_eq!(s.project.dl_models.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), ["scene_model", "scene_model 2"]);
 }
+
+/// Add Data's and Load All's reads made before the command runs (the desktop app's, on a thread
+/// of their own) are the ones the command takes: it adds what they read, without reading again.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn reads_made_ahead_are_taken_by_the_command() {
+    use base64::Engine;
+    use rustgis_analysis::control::Control;
+    let dir = std::env::temp_dir().join(format!("rustgis-reads-ahead-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let points = r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"n":1},"geometry":{"type":"Point","coordinates":[8,47]}},{"type":"Feature","properties":{"n":2},"geometry":{"type":"Point","coordinates":[9,46]}}]}"#;
+    let files = [
+        ("points.geojson", points.as_bytes().to_vec()),
+        ("places.csv", b"name,x,y\nA,8,47\nB,9,46\nC,10,45\n".to_vec()),
+        ("places.xlsx", rustgis_data::sheets::xlsx(&[("Places", &[&["name", "longitude", "latitude"], &["A", "10", "20"]])])),
+        ("utm.tif", base64::engine::general_purpose::STANDARD.decode(utm_tiff_b64()).unwrap()),
+    ];
+    let mut s = Session::new(Project::default());
+    for (name, bytes) in files {
+        let path = dir.join(name);
+        std::fs::write(&path, bytes).unwrap();
+        let p = json!({"path": path.display().to_string(), "zoom": false});
+        let ahead = crate::cmd::reads::read_ahead(&s, "layer.addData", &p).unwrap_or_else(|| panic!("{name} is read ahead"));
+        let read = ahead.run(&Control::new()).unwrap();
+        // The file gone: what the command adds can only come from the read.
+        std::fs::remove_file(&path).unwrap();
+        read.placed(&mut s);
+        let r = s.run("layer.addData", &p).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert!(s.read_ahead.is_none(), "{name}: the read was taken");
+        assert!(r.get("layer").is_some() || r.get("layers").is_some(), "{name}: {r}");
+    }
+    assert_eq!(s.map().layers.len(), 4, "{:?}", s.map().layers.iter().map(|l| &l.name).collect::<Vec<_>>());
+    // A file read in place (and any the command reads differently) reads as it runs.
+    let gpkg = json!({"path": dir.join("table.gpkg").display().to_string()});
+    assert!(crate::cmd::reads::read_ahead(&s, "layer.addData", &gpkg).is_none());
+
+    // Load All's read, on a copy of the streamed layer.
+    let path = dir.join("streamed.geojson");
+    std::fs::write(&path, points).unwrap();
+    let id = s.run("layer.addData", &json!({"path": path.display().to_string(), "stream": true})).unwrap()["layer"].as_u64().unwrap();
+    assert!(s.map().layer(id as u32).unwrap().is_streamed());
+    let p = json!({"layer": id});
+    let read = crate::cmd::reads::read_ahead(&s, "layer.loadAll", &p).unwrap().run(&Control::new()).unwrap();
+    read.placed(&mut s);
+    assert_eq!(s.run("layer.loadAll", &p).unwrap()["features"], 2);
+    assert!(s.read_ahead.is_none());
+    assert!(!s.map().layer(id as u32).unwrap().is_streamed());
+    let unread = |s: &Session| s.notices.iter().filter(|n| n.text.contains("couldn't be read and were left out")).count();
+    assert_eq!(unread(&s), 0, "every row read: nothing said");
+
+    // A row that can't be read is left out and said, once, read ahead or here.
+    let bad = r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":[8,47]}},{"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":"x"}}]}"#;
+    let path = dir.join("bad.geojson");
+    std::fs::write(&path, bad).unwrap();
+    for ahead in [true, false] {
+        let mut s = Session::new(Project::default());
+        let id = s.run("layer.addData", &json!({"path": path.display().to_string(), "stream": true})).unwrap()["layer"].as_u64().unwrap();
+        let p = json!({"layer": id});
+        if ahead {
+            crate::cmd::reads::read_ahead(&s, "layer.loadAll", &p).unwrap().run(&Control::new()).unwrap().placed(&mut s);
+        }
+        let before = unread(&s);
+        assert_eq!(s.run("layer.loadAll", &p).unwrap()["features"], 1);
+        assert_eq!(unread(&s), before + 1, "{:?}", s.notices.iter().map(|n| &n.text).collect::<Vec<_>>());
+    }
+
+    // A field added while the read ran: it is read again, with that field kept.
+    let path = dir.join("fields.geojson");
+    std::fs::write(&path, points).unwrap();
+    let id = s.run("layer.addData", &json!({"path": path.display().to_string(), "stream": true})).unwrap()["layer"].as_u64().unwrap();
+    let p = json!({"layer": id});
+    let read = crate::cmd::reads::read_ahead(&s, "layer.loadAll", &p).unwrap().run(&Control::new()).unwrap();
+    let mut extra = s.map().layer(id as u32).unwrap().dataset.fields[0].clone();
+    extra.name = "added".into();
+    s.map_mut().layer_mut(id as u32).unwrap().dataset.fields.push(extra);
+    read.placed(&mut s);
+    s.run("layer.loadAll", &p).unwrap();
+    assert!(s.map().layer(id as u32).unwrap().dataset.fields.iter().any(|f| f.name == "added"));
+
+    // A cancelled read gives nothing to add, and says so.
+    let path = dir.join("again.csv");
+    std::fs::write(&path, "name,x,y\nA,8,47\n").unwrap();
+    let ahead = crate::cmd::reads::read_ahead(&s, "layer.addData", &json!({"path": path.display().to_string()})).unwrap();
+    let control = Control::new();
+    control.cancel();
+    assert!(ahead.run(&control).err().unwrap().contains("cancelled"));
+    let _ = std::fs::remove_dir_all(&dir);
+}

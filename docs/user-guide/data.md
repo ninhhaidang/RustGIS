@@ -46,6 +46,16 @@ menu to add every layer, as before. Scripts pick one with `layer.addData`'s `"la
 `info.fileLayers` lists them.
 On the desktop, **Home › Add › Add Data › Add Folder…** connects a folder to the Browser; the web
 app does not offer folder connections.
+On the desktop, a file Add Data reads whole (a GeoTIFF or another raster, one GDAL converts, a
+GeoJSON of up to 32 MB, delimited text or a spreadsheet) is read in the background, so the map
+and the rest of the window stay in use: the status bar shows **Add Data**, how many files wait
+after it, and **Cancel**. Files dropped or added together are read one at a time and added in
+that order; one that asks which layers to add joins them once you choose. Cancel leaves the file being read and those waiting; opening another project, or
+switching to another map, leaves them too, and a message says which. A file read in place, a web
+service or a database adds as before, and scripts read the file where the command runs. So does
+**Delimited Text…**: it reads the file with the columns picked as you press **Add**, so a read
+that fails (a column that isn't in the file, a coordinate system it doesn't know) keeps the
+dialog open for another try.
 **Home › Add › Add Data › Delimited Text…** asks for a CSV or a spreadsheet first, then lists its columns to pick the x and y (or WKT)
 ones from, with the coordinate system (such as `EPSG:2263`) and the separator (changing it reads
 the columns again); `info.fileColumns` lists them for scripts. Add Data finds them itself
@@ -879,6 +889,9 @@ local file's view holds more than 250,000 features (100,000 in the web app), the
 evenly spread sample of them and its tooltip in Layers says so: zoom in to see them all. Remote files have lower limits (see
 [Data formats](data-formats.md)). Smaller files load
 whole; `layer.addData` with `"stream": true` or `false` overrides the choice.
+
+On the desktop, **Load All Features** from the layer's menu in Layers reads its features in the
+background, with **Cancel** in the status bar; the layer stays streamed until they are all read.
 
 On the desktop, opening a large Shapefile for the first time scans its record headers to build
 a disposable SQLite index outside the dataset directory. Reopening an unchanged file reuses

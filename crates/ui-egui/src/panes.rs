@@ -2230,6 +2230,10 @@ fn layer_menu(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, reorder: bool) {
         ui.close();
     }
     if l.is_streamed() && ui.button(tl!("Load All Features")).clicked() {
+        // Read on a thread of its own in the desktop app (see `readjob`).
+        #[cfg(not(target_arch = "wasm32"))]
+        let _ = crate::readjob::run(app, "layer.loadAll", json!({"layer": l.id}));
+        #[cfg(target_arch = "wasm32")]
         let _ = app.run("layer.loadAll", json!({"layer": l.id}));
         ui.close();
     }

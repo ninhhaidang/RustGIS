@@ -38,6 +38,7 @@ pub mod presentation;
 pub mod project;
 pub mod qgis;
 pub mod raster;
+pub mod reads;
 pub mod repair;
 pub mod report;
 pub mod s3;
