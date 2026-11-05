@@ -216,6 +216,10 @@ impl Crs {
     fn register(def: CustomCrs, typed: bool) -> Result<Crs, String> {
         let checked = match rustgis_geom::Sinusoidal::from_proj4(&def.proj4) {
             Some(sinu) => sinu.map(|_| ()),
+            // As for an EPSG code ([`unusable_epsg`]): say where it can be used.
+            None if def.proj4.contains("+proj=aeqd") && !aeqd_supported() => {
+                Err("azimuthal equidistant can't be used in the web app: open the file in the desktop app".to_string())
+            }
             None => proj4rs::Proj::from_proj_string(&def.proj4).map(|_| ()).map_err(|e| e.to_string()),
         };
         checked.map_err(|e| format!("{}: {e}", def.proj4))?;

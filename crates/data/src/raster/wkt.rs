@@ -798,6 +798,16 @@ fn wgs84_like(datum: Option<&Node>) -> Option<&'static str> {
         | "SIRGAS_2000"
         | "SIRGAS2000"
         | "SISTEMA_DE_REFERENCIA_GEOCENTRICO_PARA_LAS_AMERICAS_2000" => Some("+ellps=GRS80 +towgs84=0,0,0"),
+        // MAGNA-SIRGAS, Colombia's densification of SIRGAS (EPSG:4686, and its 2018 realization):
+        // null too, as the bundled EPSG:9377 (GRS 1980, no shift) has it (#1476), on that
+        // ellipsoid only, so a definition naming another one keeps it.
+        "MARCO_GEOCENTRICO_NACIONAL_DE_REFERENCIA"
+        | "MARCO_GEOCENTRICO_NACIONAL_DE_REFERENCIA_2018"
+        | "MAGNA"
+        | "MAGNA_SIRGAS"
+        | "MAGNA_SIRGAS_2018" => datum
+            .filter(|d| ellipsoid_matches(d, "+proj=longlat +ellps=GRS80"))
+            .map(|_| "+ellps=GRS80 +towgs84=0,0,0"),
         _ => None,
     }
 }

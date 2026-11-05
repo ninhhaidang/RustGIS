@@ -534,6 +534,181 @@ fn an_unknown_coordinate_system_is_reported() {
     assert!(report.messages.iter().any(|m| m.contains("read as longitude/latitude")), "{:?}", report.messages);
 }
 
+/// MAGNA-SIRGAS / Origen-Nacional (EPSG:9377) as a GeoPackage writer may define it: no authority.
+const ORIGEN_NACIONAL: &str = r#"PROJCS["MAGNA-SIRGAS / Origen-Nacional",GEOGCS["MAGNA-SIRGAS",DATUM["Marco_Geocentrico_Nacional_de_Referencia",SPHEROID["GRS 1980",6378137.0,298.257222101]],PRIMEM["Greenwich",0.0],UNIT["degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],PARAMETER["false_easting",5000000.0],PARAMETER["false_northing",2000000.0],PARAMETER["central_meridian",-73.0],PARAMETER["scale_factor",0.9992],PARAMETER["latitude_of_origin",4.0],UNIT["Metre",1.0]]"#;
+
+/// A GeoPackage with one point in srs_id 300001, defined by `organization`, `code` and
+/// `definition`, at Origen-Nacional metres (4 874 000, 2 580 000).
+fn write_custom_srs_gpkg(path: &Path, organization: &str, code: i64, definition: &str) {
+    let _ = std::fs::remove_file(path);
+    let c = rusqlite::Connection::open(path).unwrap();
+    c.execute_batch(
+        "CREATE TABLE gpkg_spatial_ref_sys (srs_name TEXT, srs_id INTEGER PRIMARY KEY, organization TEXT, organization_coordsys_id INTEGER, definition TEXT, description TEXT);
+         CREATE TABLE gpkg_contents (table_name TEXT PRIMARY KEY, data_type TEXT, identifier TEXT, description TEXT, last_change TEXT, min_x DOUBLE, min_y DOUBLE, max_x DOUBLE, max_y DOUBLE, srs_id INTEGER);
+         CREATE TABLE gpkg_geometry_columns (table_name TEXT, column_name TEXT, geometry_type_name TEXT, srs_id INTEGER, z TINYINT, m TINYINT);
+         INSERT INTO gpkg_contents (table_name, data_type, srs_id) VALUES ('via', 'features', 300001);
+         INSERT INTO gpkg_geometry_columns VALUES ('via', 'geom', 'POINT', 300001, 0, 0);
+         CREATE TABLE via (fid INTEGER PRIMARY KEY AUTOINCREMENT, geom BLOB);",
+    )
+    .unwrap();
+    c.execute(
+        "INSERT INTO gpkg_spatial_ref_sys VALUES ('Custom', 300001, ?1, ?2, ?3, '')",
+        rusqlite::params![organization, code, definition],
+    )
+    .unwrap();
+    let p = Coord::new(4_874_000.0, 2_580_000.0);
+    let mut blob = b"GP\x00\x01".to_vec();
+    blob.extend_from_slice(&300_001i32.to_le_bytes());
+    blob.extend(wkb::encode(&Geometry::Point(p)));
+    c.execute("INSERT INTO via (geom) VALUES (?1)", [blob]).unwrap();
+}
+
+/// The point of [`write_custom_srs_gpkg`] and the notes, from the desktop and the browser readers.
+fn custom_srs_reads(path: &Path) -> Vec<(Option<Geometry>, Vec<String>)> {
+    let desktop = open_path(path, None).unwrap();
+    let browser = gpkg_mem::GpkgMemSource::open_shared(Shared(Arc::new(std::fs::read(path).unwrap())), None).unwrap();
+    [desktop.as_ref(), &browser as &dyn FeatureSource]
+        .into_iter()
+        .map(|src| {
+            let batch = src.read(&Request::all()).unwrap();
+            (batch.features.first().and_then(|f| f.geometry.clone()), src.info().notes.clone())
+        })
+        .collect()
+}
+
+#[test]
+fn a_gpkg_system_without_an_epsg_code_is_read_from_its_definition() {
+    // #1476: a custom row (organization CUSTOM, code 0) with the WKT of Origen-Nacional.
+    let p = dir().join("origen_nacional.gpkg");
+    write_custom_srs_gpkg(&p, "CUSTOM", 0, ORIGEN_NACIONAL);
+    for (geometry, notes) in custom_srs_reads(&p) {
+        let Some(Geometry::Point(c)) = geometry else { panic!("{geometry:?}") };
+        // Northern Colombia, where EPSG:9377 puts those metres.
+        let expected =
+            crate::raster::Crs::from_epsg(9377).unwrap().transformer().unwrap().to_lonlat(Coord::new(4_874_000.0, 2_580_000.0)).unwrap();
+        assert!((c.x - expected.x).abs() < 1e-6 && (c.y - expected.y).abs() < 1e-6, "{c:?} vs {expected:?}");
+        assert!((-74.3..-74.0).contains(&c.x) && (9.1..9.4).contains(&c.y), "{c:?}");
+        // Nothing to say: MAGNA-SIRGAS needs no datum shift.
+        assert!(notes.is_empty(), "{notes:?}");
+    }
+    // The layer keeps that system as its own (Layer Properties, Define Projection, exports), in a
+    // whole read too, on both readers.
+    let desktop = open_path(&p, None).unwrap();
+    let browser = gpkg_mem::GpkgMemSource::open_shared(Shared(Arc::new(std::fs::read(&p).unwrap())), None).unwrap();
+    for src in [desktop.as_ref(), &browser as &dyn FeatureSource] {
+        let crs = src.info().coordinate_system();
+        assert!(crs.is_some_and(|c| c.custom_def().is_some_and(|d| d.proj4.contains("+proj=tmerc"))), "{:?}", src.info().crs);
+        assert_eq!(materialize(src).unwrap().0.crs, crs);
+    }
+    drop((desktop, browser));
+    // A row without a definition is still said to be read as longitude/latitude.
+    write_custom_srs_gpkg(&p, "NONE", 300001, "undefined");
+    for (_, notes) in custom_srs_reads(&p) {
+        assert!(notes.iter().any(|n| n.contains("srs_id 300001") && n.contains("has no EPSG code")), "{notes:?}");
+    }
+    // No row for the id at all: said too.
+    rusqlite::Connection::open(&p).unwrap().execute("DELETE FROM gpkg_spatial_ref_sys WHERE srs_id = 300001", []).unwrap();
+    for (_, notes) in custom_srs_reads(&p) {
+        assert!(notes.iter().any(|n| n.contains("srs_id 300001") && n.contains("has no EPSG code")), "{notes:?}");
+    }
+    // A writer's "undefined …" text defines nothing: the same note, not a parse failure.
+    write_custom_srs_gpkg(&p, "NONE", 300001, "undefined geographic coordinate system");
+    for (_, notes) in custom_srs_reads(&p) {
+        assert!(notes.iter().any(|n| n.contains("has no EPSG code")) && !notes.iter().any(|n| n.contains("can't be read")), "{notes:?}");
+    }
+    // A definition that can't be read says so, and why.
+    write_custom_srs_gpkg(&p, "CUSTOM", 0, "PROJCS[");
+    for (_, notes) in custom_srs_reads(&p) {
+        assert!(notes.iter().any(|n| n.contains("srs_id 300001") && n.contains("can't be read")), "{notes:?}");
+    }
+    // The spec's undefined ids: -1 (cartesian) is assumed longitude/latitude, said; 0
+    // (geographic) is longitude/latitude, nothing to say.
+    for (id, said) in [(-1, true), (0, false)] {
+        write_custom_srs_gpkg(&p, "NONE", 300001, "undefined");
+        rusqlite::Connection::open(&p)
+            .unwrap()
+            .execute_batch(&format!(
+                "UPDATE gpkg_spatial_ref_sys SET srs_id = {id}, organization_coordsys_id = {id};
+                 UPDATE gpkg_contents SET srs_id = {id};
+                 UPDATE gpkg_geometry_columns SET srs_id = {id};"
+            ))
+            .unwrap();
+        for (_, notes) in custom_srs_reads(&p) {
+            assert_eq!(
+                notes.iter().any(|n| n.contains(&format!("srs_id {id})")) && n.contains("has no EPSG code")),
+                said,
+                "{id}: {notes:?}"
+            );
+        }
+    }
+    // A row naming neither organization nor code but defining the system is read by its
+    // definition, not as the system its id happens to be.
+    write_custom_srs_gpkg(&p, "NONE", 0, ORIGEN_NACIONAL);
+    rusqlite::Connection::open(&p)
+        .unwrap()
+        .execute_batch(
+            "UPDATE gpkg_spatial_ref_sys SET srs_id = 3857, organization = NULL, organization_coordsys_id = NULL;
+             UPDATE gpkg_contents SET srs_id = 3857;
+             UPDATE gpkg_geometry_columns SET srs_id = 3857;",
+        )
+        .unwrap();
+    for (geometry, notes) in custom_srs_reads(&p) {
+        assert!(matches!(geometry, Some(Geometry::Point(c)) if (-74.3..-74.0).contains(&c.x)), "{geometry:?}");
+        assert!(notes.is_empty(), "{notes:?}");
+    }
+    // MAGNA-SIRGAS on an ellipsoid other than its own isn't taken for it: the datum note stays.
+    write_custom_srs_gpkg(
+        &p,
+        "CUSTOM",
+        0,
+        &ORIGEN_NACIONAL.replace(r#"SPHEROID["GRS 1980",6378137.0,298.257222101]"#, r#"SPHEROID["International 1924",6378388.0,297.0]"#),
+    );
+    for (_, notes) in custom_srs_reads(&p) {
+        assert!(notes.iter().any(|n| n.contains("srs_id 300001") && n.contains("few hundred metres")), "{notes:?}");
+    }
+    // EPSG code 0 is no code: said, not read as longitude/latitude in silence.
+    write_custom_srs_gpkg(&p, "EPSG", 0, "undefined");
+    for (_, notes) in custom_srs_reads(&p) {
+        assert!(notes.iter().any(|n| n.contains("srs_id 300001") && n.contains("has no EPSG code")), "{notes:?}");
+    }
+    // A row naming neither organization nor code leaves Web Mercator to its id, as a missing row.
+    write_custom_srs_gpkg(&p, "NONE", 0, "undefined");
+    rusqlite::Connection::open(&p)
+        .unwrap()
+        .execute_batch(
+            "UPDATE gpkg_spatial_ref_sys SET srs_id = 3857, organization = NULL, organization_coordsys_id = NULL;
+             UPDATE gpkg_contents SET srs_id = 3857;
+             UPDATE gpkg_geometry_columns SET srs_id = 3857;",
+        )
+        .unwrap();
+    for (geometry, notes) in custom_srs_reads(&p) {
+        // Those metres in Web Mercator: about 43.8° E, 22.6° N.
+        assert!(matches!(geometry, Some(Geometry::Point(c)) if (43.0..45.0).contains(&c.x) && (22.0..23.0).contains(&c.y)), "{geometry:?}");
+        assert!(notes.is_empty(), "{notes:?}");
+    }
+    // An EPSG code stored as a REAL (9377.0, in a column a writer declared DOUBLE) is that code on
+    // both readers, with no definition.
+    write_custom_srs_gpkg(&p, "EPSG", 0, "undefined");
+    rusqlite::Connection::open(&p)
+        .unwrap()
+        .execute_batch(
+            "DROP TABLE gpkg_spatial_ref_sys;
+             CREATE TABLE gpkg_spatial_ref_sys (srs_name TEXT, srs_id INTEGER PRIMARY KEY, organization TEXT, organization_coordsys_id DOUBLE, definition TEXT, description TEXT);
+             INSERT INTO gpkg_spatial_ref_sys VALUES ('Origen-Nacional', 300001, 'EPSG', 9377.0, 'undefined', '');",
+        )
+        .unwrap();
+    for (geometry, notes) in custom_srs_reads(&p) {
+        assert!(matches!(geometry, Some(Geometry::Point(c)) if (-74.3..-74.0).contains(&c.x)), "{geometry:?}");
+        assert!(notes.is_empty(), "{notes:?}");
+    }
+    // An EPSG code this build doesn't know falls back to the definition.
+    write_custom_srs_gpkg(&p, "EPSG", 9_999_999, ORIGEN_NACIONAL);
+    for (geometry, notes) in custom_srs_reads(&p) {
+        assert!(matches!(geometry, Some(Geometry::Point(c)) if (-74.3..-74.0).contains(&c.x)), "{geometry:?}");
+        assert!(notes.is_empty(), "{notes:?}");
+    }
+}
+
 #[test]
 fn flatgeobuf_round_trips_a_dataset() {
     let mut ds = Dataset::new("mixed", GeometryType::Polygon, vec![Field::new("n", FieldType::Integer), Field::new("s", FieldType::Text)]);

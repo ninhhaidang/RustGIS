@@ -666,7 +666,9 @@ impl Reproject {
             Some(c) => match Crs::from_epsg(c) {
                 Some(crs) => crs,
                 None => {
-                    notes.push(format!("unknown coordinate system EPSG:{c}; read as longitude/latitude"));
+                    // Unknown, or one only the desktop app can use (an azimuthal equidistant one in
+                    // the web app), which it says.
+                    notes.push(format!("{}; read as longitude/latitude", crate::raster::crs::unusable_epsg(c)));
                     Crs::LonLat
                 }
             },
@@ -755,6 +757,63 @@ impl Reproject {
             }
         }
     }
+}
+
+/// A GeoPackage table's `gpkg_spatial_ref_sys` row: organization, its code, and the definition.
+pub(crate) struct GpkgSrs {
+    pub(crate) organization: Option<String>,
+    pub(crate) code: Option<i64>,
+    pub(crate) definition: Option<String>,
+}
+
+/// A GeoPackage table's coordinate system, decided the same way on the desktop and in the browser
+/// (#1476): by its EPSG code when its organization is EPSG and the code is known, else by its WKT
+/// definition, else longitude/latitude, with a note. With no row for `srs_id`, it is taken as an
+/// EPSG code only for WGS 84 and Web Mercator, the ids writers commonly use without defining.
+pub(crate) fn gpkg_reproject(srs_id: i64, row: Option<GpkgSrs>, notes: &mut Vec<String>) -> Reproject {
+    // The WKT the row defines the system with, if any. ("undefined", or a writer's "undefined
+    // geographic …", defines nothing.)
+    let definition = row
+        .as_ref()
+        .and_then(|r| r.definition.as_deref())
+        .map(str::trim)
+        .filter(|d| !d.is_empty() && !d.get(..9).is_some_and(|p| p.eq_ignore_ascii_case("undefined")));
+    // An EPSG code: the row's when its organization is EPSG (a table-local id such as 100001
+    // isn't one, nor is 0); with no row, or a row naming neither organization nor code nor a
+    // definition, the id itself for WGS 84 and Web Mercator only.
+    let epsg = match &row {
+        Some(GpkgSrs { organization: Some(org), code: Some(code), .. }) if org.eq_ignore_ascii_case("epsg") => {
+            u32::try_from(*code).ok().filter(|c| *c != 0)
+        }
+        Some(GpkgSrs { organization: None, code: None, .. }) if definition.is_none() => {
+            u32::try_from(srs_id).ok().filter(|c| matches!(c, 4326 | 3857))
+        }
+        None => u32::try_from(srs_id).ok().filter(|c| matches!(c, 4326 | 3857)),
+        Some(_) => None,
+    };
+    if let Some(crs) = epsg.and_then(Crs::from_epsg) {
+        return Reproject::from_crs(crs, notes);
+    }
+    // Else the WKT the row defines it with: a custom system, or a code this build doesn't know.
+    if let Some(definition) = definition {
+        let (crs, note) = crate::raster::wkt::read_wkt(definition)
+            .map(|(crs, note)| (crs, note.map(|n| format!("its coordinate system (srs_id {srs_id}): {n}"))))
+            .unwrap_or_else(|e| {
+                (Crs::LonLat, Some(format!("its coordinate system (srs_id {srs_id}) can't be read ({e}); read as longitude/latitude")))
+            });
+        notes.extend(note);
+        return Reproject::from_crs(crs, notes);
+    }
+    if epsg.is_some() {
+        // A code this build doesn't know, and no definition to fall back on: said by its code.
+        return Reproject::from_epsg(epsg, notes);
+    }
+    // Longitude/latitude is what WGS 84 and the spec's "undefined geographic" id 0 mean; any other
+    // id, the "undefined cartesian" -1 too, is assumed to be it.
+    if srs_id != 0 && srs_id != 4326 {
+        notes.push(format!("its coordinate system (srs_id {srs_id}) has no EPSG code; read as longitude/latitude"));
+    }
+    Reproject::from_crs(Crs::LonLat, notes)
 }
 
 /// The extent of an extent's edges (sampled, since edges curve when reprojected) through `f`.

@@ -141,23 +141,24 @@ impl GpkgSource {
                 Ok((r.get(0)?, r.get(1)?, r.get(2)?))
             })
             .map_err(err)?;
-        let epsg: Option<u32> = conn
-            .query_row("SELECT organization, organization_coordsys_id FROM gpkg_spatial_ref_sys WHERE srs_id = ?1", [srs_id], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+        // Its row, read cell by cell as the browser reader reads it: a code stored as a whole REAL
+        // (9377.0) is that code, and a column a writer left out (the definition) or a value of
+        // another type is that cell missing, never the whole row.
+        let row = conn
+            .query_row("SELECT * FROM gpkg_spatial_ref_sys WHERE srs_id = ?1", [srs_id], |r| {
+                let text = |col: &str| match r.get_ref(col) {
+                    Ok(ValueRef::Text(t)) => Some(String::from_utf8_lossy(t).into_owned()),
+                    _ => None,
+                };
+                let code = match r.get_ref("organization_coordsys_id") {
+                    Ok(ValueRef::Integer(i)) => Some(i),
+                    Ok(ValueRef::Real(x)) if x.fract() == 0.0 && x.abs() < 9e15 => Some(x as i64),
+                    _ => None,
+                };
+                Ok(super::GpkgSrs { organization: text("organization"), code, definition: text("definition") })
             })
-            .ok()
-            .map_or_else(
-                // No row for it: the srs_id is taken as an EPSG code only for WGS 84 and Web
-                // Mercator, the ids writers commonly use without defining.
-                || u32::try_from(srs_id).ok().filter(|c| matches!(c, 4326 | 3857)),
-                // A row: an EPSG code only when the organization is EPSG (a table-local id such as
-                // 100001 isn't one).
-                |(org, id)| if org.eq_ignore_ascii_case("epsg") { u32::try_from(id).ok() } else { None },
-            );
-        if epsg.is_none() && srs_id > 0 && srs_id != 4326 {
-            notes.push(format!("its coordinate system (srs_id {srs_id}) has no EPSG code; read as longitude/latitude"));
-        }
-        let reproject = Reproject::from_epsg(epsg, &mut notes);
+            .ok();
+        let reproject = super::gpkg_reproject(srs_id, row, &mut notes);
 
         // Columns: the primary key, the geometry and the attribute fields.
         let mut pk = None;
@@ -234,7 +235,9 @@ impl GpkgSource {
             fields,
             extent,
             count,
-            crs: reproject.label(),
+            // A system the definition gives, by its PROJ definition, so the layer keeps it
+            // (`SourceInfo::coordinate_system`), as a Shapefile's .prj does (#1476).
+            crs: reproject.crs.custom_def().map(|d| d.proj4.clone()).unwrap_or_else(|| reproject.label()),
             indexed: rtree.is_some(),
             notes,
             zm_dropped: false,
