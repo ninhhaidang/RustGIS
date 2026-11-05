@@ -14694,6 +14694,106 @@ fn geocoding_places_and_addresses() {
     assert!(crate::cmd::geocode::check_batch(&g, 101).unwrap_err().contains("100"));
 }
 
+/// PDOK's Locatieserver as the geocoder (a local server answering as it does): places found by
+/// name, a table's Dutch addresses turned into points, and the answers' entries without a usable
+/// point counted in a notice (and no notice when every entry has one).
+#[test]
+fn geocoding_with_the_locatieserver() {
+    use crate::render::rustgis_tiles::geocode::Geocoder;
+    let clean = br#"{"response":{"numFound":2,"start":0,"docs":[
+        {"weergavenaam":"Damrak 1, 1012LG Amsterdam","centroide_ll":"POINT(4.89803846 52.37714446)"},
+        {"weergavenaam":"Damrak, Amsterdam","centroide_ll":"POINT(4.89580599 52.37513402)"}]}}"#;
+    let lossy = br#"{"response":{"numFound":2,"start":0,"docs":[
+        {"weergavenaam":"Coolsingel, Rotterdam","centroide_ll":"POINT(4.4795)"},
+        {"weergavenaam":"Coolsingel 40, 3011AD Rotterdam","centroide_ll":"POINT(4.47920127 51.92272076)"}]}}"#;
+    let nothing = br#"{"response":{"numFound":0,"start":0,"docs":[]}}"#;
+    // Each request's path and query exactly as the Locatieserver kind builds them.
+    let path = |q: &str, limit: usize| {
+        let g = Geocoder::new(Some("locatieserver"), Some("http://127.0.0.1")).unwrap();
+        g.url(q, limit).trim_start_matches("http://127.0.0.1").to_string()
+    };
+    let (base, asked) = serve_files(vec![
+        (path("Damrak 1, Amsterdam", 5), clean.to_vec()),
+        (path("Damrak 1, Amsterdam", 1), clean.to_vec()),
+        (path("Coolsingel 40, Rotterdam", 1), lossy.to_vec()),
+        (path("Nergensstraat 9, Nergenshuizen", 1), nothing.to_vec()),
+        (path("Kapot", 5), br#"{"response":{"docs":[{"weergavenaam":"x","centroide_ll":"POINT(x y)"}]}}"#.to_vec()),
+    ]);
+    let url = format!("{base}/free");
+    let left_out =
+        |s: &Session| s.notices.iter().filter(|n| n.text.contains("no usable position")).map(|n| n.text.clone()).collect::<Vec<_>>();
+    let mut s = Session::new(Project::default());
+    let r = s.run("map.findPlace", &json!({"query": "Damrak 1, Amsterdam", "provider": "locatieserver", "url": url})).unwrap();
+    assert_eq!(r["count"], 2, "{r}");
+    assert_eq!(r["places"][0]["name"], "Damrak 1, 1012LG Amsterdam");
+    assert_eq!((r["places"][0]["lon"].as_f64(), r["places"][0]["lat"].as_f64()), (Some(4.89803846), Some(52.37714446)));
+    // The camera went to the first place, longitude and latitude the right way round.
+    let c = s.map().to_lonlat(s.map().camera.center).unwrap();
+    assert!((c.x - 4.898).abs() < 0.01 && (c.y - 52.377).abs() < 0.01, "{c:?}");
+    assert!(left_out(&s).is_empty(), "a clean answer leaves nothing out: {:?}", left_out(&s));
+    // A table of Dutch addresses: one found, one found after an entry without a usable point
+    // (counted), one not found.
+    let csv = "id,street,city\n1,Damrak 1,Amsterdam\n2,Coolsingel 40,Rotterdam\n3,Nergensstraat 9,Nergenshuizen\n";
+    s.run("layer.addDataText", &json!({"fileName": "adressen.csv", "text": csv})).unwrap();
+    let r = s
+        .run("layer.geocode", &json!({"table": "adressen", "address": ["street", "city"], "provider": "locatieserver", "url": url}))
+        .unwrap();
+    assert_eq!((r["matched"].as_u64(), r["unmatched"].as_u64()), (Some(2), Some(1)), "{r}");
+    let l = s.map().layer_by_name("adressen (geocoded)").unwrap();
+    let points: Vec<_> = l.dataset.features.iter().map(|f| f.geometry.clone()).collect();
+    assert_eq!(points[0], Some(rustgis_data::Geometry::Point(rustgis_geom::Coord::new(4.89803846, 52.37714446))));
+    assert_eq!(points[1], Some(rustgis_data::Geometry::Point(rustgis_geom::Coord::new(4.47920127, 51.92272076))));
+    assert_eq!(points[2], None);
+    let geocoded = l.dataset.fields.len() - 1;
+    assert_eq!(l.dataset.value(1, geocoded).to_string(), "Coolsingel 40, 3011AD Rotterdam");
+    assert_eq!(left_out(&s).len(), 1, "one notice for the run: {:?}", left_out(&s));
+    assert!(left_out(&s)[0].starts_with("1 of the geocoder's places"), "{:?}", left_out(&s));
+    // An answer whose every place is unusable is an error, not "nothing found"; a query longer
+    // than the Locatieserver takes isn't sent cut short.
+    let e = s.run("map.findPlace", &json!({"query": "Kapot", "provider": "locatieserver", "url": url})).unwrap_err();
+    assert!(e.contains("none with a usable position"), "{e}");
+    let e = s.run("map.findPlace", &json!({"query": "a".repeat(401), "provider": "locatieserver", "url": url})).unwrap_err();
+    assert!(e.contains("up to 400"), "{e}");
+    // Every request asked the Locatieserver's search, for the kinds of place it is given.
+    let asked = asked.lock().unwrap().clone();
+    assert_eq!(asked.len(), 5, "{asked:?}");
+    assert!(asked.iter().all(|p| p.starts_with("/free?q=") && p.contains("&fq=type%3A%28provincie%20OR")), "{asked:?}");
+    // The public server takes a whole table, a few requests a second.
+    let g = Geocoder::new(Some("locatieserver"), None).unwrap();
+    assert!(crate::cmd::geocode::check_batch(&g, 5000).is_ok());
+    assert!(crate::cmd::geocode::check_batch(&g, 10_001).unwrap_err().contains("10000"));
+    assert!(g.spacing_ms() > 0);
+}
+
+/// Addresses longer than the Locatieserver takes, ahead of one it finds: each fails on its own
+/// (counted in the run's notice) and isn't sent, rather than counting as the server refusing
+/// requests, which would stop the run before the address it finds.
+#[test]
+fn geocoding_skips_addresses_too_long_for_the_server() {
+    use crate::render::rustgis_tiles::geocode::Geocoder;
+    let clean = br#"{"response":{"numFound":1,"start":0,"docs":[
+        {"weergavenaam":"Damrak 1, 1012LG Amsterdam","centroide_ll":"POINT(4.89803846 52.37714446)"}]}}"#;
+    let g = Geocoder::new(Some("locatieserver"), Some("http://127.0.0.1")).unwrap();
+    let path = g.url("Damrak 1, Amsterdam", 1).trim_start_matches("http://127.0.0.1").to_string();
+    let (base, asked) = serve_files(vec![(path, clean.to_vec())]);
+    let mut csv = "id,address\n".to_string();
+    for (i, c) in ["a", "b", "c", "d", "e", "f"].iter().enumerate() {
+        csv.push_str(&format!("{i},{}\n", c.repeat(401)));
+    }
+    csv.push_str("9,\"Damrak 1, Amsterdam\"\n");
+    let mut s = Session::new(Project::default());
+    s.run("layer.addDataText", &json!({"fileName": "lang.csv", "text": csv})).unwrap();
+    let r = s
+        .run("layer.geocode", &json!({"table": "lang", "address": "address", "provider": "locatieserver", "url": format!("{base}/free")}))
+        .unwrap();
+    assert_eq!((r["matched"].as_u64(), r["unmatched"].as_u64()), (Some(1), Some(6)), "{r}");
+    let failed: Vec<_> = s.notices.iter().filter(|n| n.text.contains("couldn't be looked up")).map(|n| n.text.clone()).collect();
+    assert_eq!(failed.len(), 1, "{failed:?}");
+    assert!(failed[0].starts_with("6 addresses") && failed[0].contains("401 characters"), "{failed:?}");
+    // Only the address that fits was sent.
+    assert_eq!(asked.lock().unwrap().len(), 1);
+}
+
 /// The SQL workspace's commands: a query's first rows without a layer, and a database's columns
 /// (through DuckDB when it is installed; without it, they say how to get it).
 #[cfg(not(target_arch = "wasm32"))]

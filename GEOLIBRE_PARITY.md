@@ -185,7 +185,7 @@ model-builder.md, segmentation.md, obia.md_
 - [ ] **Routing services**: isochrones, service areas, OD matrix, multi-stop routing,
   turn-by-turn (Valhalla/OSRM). Partial: shortest path over a line layer (_Roadmap: analysis_).
 - [ ] **Geocoding**: forward, batch and reverse, with multiple providers and a place search box.
-  Partial: place search and address tables (Nominatim, Photon or your own server), a local locator,
+  Partial: place search and address tables (Nominatim, Photon, PDOK's Locatieserver or your own server), a local locator,
   a search box. Missing: reverse geocoding (_Roadmap: analysis_).
 - [ ] **Spatial statistics**: Emerging Hot Spot (Getis-Ord Gi\*), composite score builder.
   Partial: Suitability Modeler (_Roadmap: analysis_ for hot spots).

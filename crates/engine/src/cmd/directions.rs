@@ -57,7 +57,7 @@ fn look_up(_s: &Session, name: &str, wait: bool) -> Result<Coord, String> {
             std::thread::sleep(std::time::Duration::from_millis(g.spacing_ms()));
         }
         let found = crate::render::rustgis_tiles::geocode::search_blocking(&g, name, 1)?;
-        found.first().map(|p| Coord::new(p.lon, p.lat)).ok_or_else(|| format!("no place found for '{name}'"))
+        found.places.first().map(|p| Coord::new(p.lon, p.lat)).ok_or_else(|| format!("no place found for '{name}'"))
     }
 }
 

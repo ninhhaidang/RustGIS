@@ -452,7 +452,22 @@ The geocoder is OpenStreetMap's public [Nominatim](https://nominatim.org) by def
 [Photon](https://photon.komoot.io) (`"provider": "photon"`). Their usage policies allow light
 use, so RustGIS sends them at most one request a second and 100 addresses a run; give `"url"` of
 a Nominatim or Photon server of your own for more (up to 10,000, with no wait between requests).
-In the app the requests go out in the background, one at a time, and the layer is added when the
+
+For addresses in the Netherlands, `"provider": "locatieserver"` (**Locatieserver (the
+Netherlands)** in the dialog) uses PDOK's
+[Locatieserver](https://www.pdok.nl/introductie/-/article/pdok-locatieserver-1), the free
+geocoder built on the Dutch government's address and place registers (BAG and others): it finds
+addresses, postcodes, streets, towns, municipalities and provinces. Its answers are open data from
+those registers; Find Place credits PDOK Locatieserver (Kadaster) under the results. PDOK
+publishes no request limit for it, so RustGIS sends it four requests a second and up to 10,000
+addresses a run. An address is matched to the house before its street (`Damrak 1, Amsterdam` is
+the building, not the middle of Damrak). Its places have a point but no extent, so Find Place
+zooms in close around them.
+
+An answer's places without a usable position (no coordinate, or one that can't be read) are left
+out, and a notice says how many; an answer with places but none usable counts as a failed
+request, not as "not found". An address longer than the geocoder takes (400 characters for the
+Locatieserver, 500 for the others) isn't sent cut short: its request fails. In the app the requests go out in the background, one at a time, and the layer is added when the
 last answer lands; `layer.geocode` on the command line waits for them.
 
 ```sh
