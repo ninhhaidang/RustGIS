@@ -1,6 +1,6 @@
 //! Geometry validity in stored coordinates, after the OGC Simple Features rules (OGC 06-103r4,
 //! ISO 19125-1: 6.1.11.1 Polygon, 6.1.12 MultiPolygon): what is wrong with one geometry, as a list
-//! of [`Problem`]s. Check Geometry reports them; a repair can start from the same list.
+//! of [`Problem`]s. Check Geometry reports them; Repair Geometry starts from them ([`crate::repair`]).
 //!
 //! - Rings are read as stored: an unclosed ring is reported, and then checked as if it were closed.
 //!   Repeated vertices are reported, and then left out of the other checks.
@@ -273,6 +273,10 @@ pub(crate) struct Checked {
     /// Some rings or parts weren't checked against each other: one of them has too few points,
     /// non-finite coordinates or crosses itself, or (for parts) has a ring problem of its own.
     pub unrelated: bool,
+    /// The pairs of ring segments the sweep found meeting, apart from neighbours at their shared
+    /// vertex: each adds at most two vertices where an overlay cuts the rings (see
+    /// [`crate::repair`]).
+    pub contacts: u64,
 }
 
 impl Checked {
@@ -374,7 +378,7 @@ fn vertex_checks(problems: &mut Vec<Problem>, at: At, pts: &[Coord], ring: bool)
 }
 
 /// How many distinct points `pts` has, counting up to `limit`.
-fn distinct_up_to(pts: &[Coord], limit: usize) -> usize {
+pub(crate) fn distinct_up_to(pts: &[Coord], limit: usize) -> usize {
     let mut seen: Vec<Coord> = Vec::with_capacity(limit);
     for c in pts {
         if seen.len() >= limit {
@@ -394,11 +398,11 @@ fn repeated_vertices(pts: &[Coord]) -> usize {
 
 /// Reserves a feature's buffers fallibly, asking first whether to try (see [`check_with`]).
 #[derive(Clone, Copy)]
-struct Room<'a>(&'a dyn Fn(usize) -> bool);
+pub(crate) struct Room<'a>(pub(crate) &'a dyn Fn(usize) -> bool);
 
 impl Room<'_> {
     /// An empty vector with room for `n` elements.
-    fn vec<T>(self, n: usize) -> Result<Vec<T>, Limit> {
+    pub(crate) fn vec<T>(self, n: usize) -> Result<Vec<T>, Limit> {
         let mut v = Vec::new();
         if !(self.0)(n) {
             return Err(Limit::Memory);
@@ -408,7 +412,7 @@ impl Room<'_> {
     }
 
     /// At most `n` of `items`, in a vector reserved for `n`, so collecting them allocates nothing more.
-    fn collect<T>(self, n: usize, items: impl Iterator<Item = T>) -> Result<Vec<T>, Limit> {
+    pub(crate) fn collect<T>(self, n: usize, items: impl Iterator<Item = T>) -> Result<Vec<T>, Limit> {
         let mut v = self.vec(n)?;
         v.extend(items.take(n));
         Ok(v)
@@ -437,7 +441,7 @@ impl Room<'_> {
     }
 
     /// Room for one more element in `v`, growing it as `push` would.
-    fn grow<T>(self, v: &mut Vec<T>) -> Result<(), Limit> {
+    pub(crate) fn grow<T>(self, v: &mut Vec<T>) -> Result<(), Limit> {
         if v.len() < v.capacity() {
             return Ok(());
         }
@@ -650,6 +654,7 @@ fn polygon(out: &mut Checked, polys: &[Vec<Vec<Coord>>], work: &mut Work) {
                 if contact == Contact::Touch && s.next_to(t) {
                     continue;
                 }
+                out.contacts = out.contacts.saturating_add(1);
                 if !selfx.contains_key(&(s.part, s.ring)) && room.map(&mut selfx).is_err() {
                     out.problems.push(Problem::TooComplex { limit: Limit::Memory });
                     return;
@@ -660,6 +665,7 @@ fn polygon(out: &mut Checked, polys: &[Vec<Vec<Coord>>], work: &mut Work) {
                 *worst = (*worst).max(contact);
                 new
             } else {
+                out.contacts = out.contacts.saturating_add(1);
                 let meet = if s.part == t.part {
                     let key = (s.part, s.ring.min(t.ring), s.ring.max(t.ring));
                     if !rings_meet.contains_key(&key) && room.map(&mut rings_meet).is_err() {

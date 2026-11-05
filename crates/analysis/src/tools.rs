@@ -2,6 +2,7 @@
 
 mod check_geometry;
 mod geometry;
+mod repair_geometry;
 
 use geo::{
     BooleanOps, Contains, ConvexHull, CoordsIter, InteriorPoint, Intersects, MultiPolygon, Orient, Relate, Simplify, orient::Direction,
@@ -92,6 +93,17 @@ pub static TOOLS: &[ToolSpec] = &[
             P { name: "output", label: "Output Name", kind: K::Text, required: false, default: "", help: "" },
         ],
         run: check_geometry::run,
+    },
+    ToolSpec {
+        id: "repairGeometry",
+        name: "Repair Geometry",
+        toolbox: "Data Management › Features",
+        summary: "Writes every feature with its geometry made valid: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved. Says what was repaired in each.",
+        params: &[
+            P { name: "input", label: "Input Features", kind: K::VectorLayer, required: true, default: "", help: "" },
+            P { name: "output", label: "Output Name", kind: K::Text, required: false, default: "", help: "" },
+        ],
+        run: repair_geometry::run,
     },
     ToolSpec {
         id: "buffer",

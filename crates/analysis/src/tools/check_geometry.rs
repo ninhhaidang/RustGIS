@@ -118,7 +118,11 @@ fn run_with_room(
     if n > 0 {
         let need = found
             .iter()
-            .filter_map(|item| ds.features.get(item.row).map(|f| row_bytes(f, width, out.fields.len(), item)))
+            .filter_map(|item| {
+                let f = ds.features.get(item.row)?;
+                let geometry = f.geometry.as_ref().filter(|_| !item.non_finite);
+                Some(row_bytes(&f.attrs, width, out.fields.len(), &[&item.problem, &item.detail], geometry))
+            })
             .fold(0u64, u64::saturating_add);
         if !has_room(need) {
             return Err(format!(
@@ -155,15 +159,15 @@ fn run_with_room(
     Ok(ToolResult { output: Output::Layer(out), messages })
 }
 
-/// The memory an output row copying `f` (with `width` of its values, of `out_width` in the
-/// output) takes: what [`point_bytes`] counts for a row, the two text fields, and the geometry,
-/// held twice (the layer's copy and the map's projected one for drawing), each allocation with its
-/// overhead.
-fn row_bytes(f: &Feature, width: usize, out_width: usize, item: &Found) -> u64 {
+/// The memory an output row copying `attrs` (`width` of them, of `out_width` values in the
+/// output) takes, with the text fields `texts` added and `geometry`: what [`point_bytes`] counts for
+/// a row, the texts, and the geometry, held twice (the layer's copy and the map's projected one for
+/// drawing), each allocation with its overhead.
+pub(super) fn row_bytes(attrs: &[Value], width: usize, out_width: usize, texts: &[&str], geometry: Option<&Geometry>) -> u64 {
     let u = |x: usize| u64::try_from(x).unwrap_or(u64::MAX);
-    let own = f.attrs.get(..width).unwrap_or(&f.attrs);
-    let text = u(item.problem.len()).saturating_add(u(item.detail.len())).saturating_add(2 * ALLOCATION_OVERHEAD);
-    let geometry = match f.geometry.as_ref().filter(|_| !item.non_finite) {
+    let own = attrs.get(..width).unwrap_or(attrs);
+    let text = texts.iter().fold(0u64, |n, t| n.saturating_add(u(t.len())).saturating_add(ALLOCATION_OVERHEAD));
+    let geometry = match geometry {
         None => 0,
         Some(g) => {
             let lists = match g {
@@ -229,7 +233,7 @@ fn notices(t: &Tally, problem: &str) -> Vec<String> {
 }
 
 /// "1 feature", "2 features".
-fn features(n: usize) -> String {
+pub(super) fn features(n: usize) -> String {
     format!("{n} feature{}", if n == 1 { "" } else { "s" })
 }
 
@@ -258,7 +262,7 @@ fn details(problems: &[validity::Problem]) -> Result<String, TryReserveError> {
 
 /// `parts` joined with `sep`, in a string allocated fallibly at its exact length: it is kept until
 /// the output is copied.
-fn joined<S: AsRef<str>>(parts: &[S], sep: &str) -> Result<String, TryReserveError> {
+pub(super) fn joined<S: AsRef<str>>(parts: &[S], sep: &str) -> Result<String, TryReserveError> {
     let seps = sep.len().saturating_mul(parts.len().saturating_sub(1));
     let len = parts.iter().map(|p| p.as_ref().len()).fold(seps, usize::saturating_add);
     let mut s = String::new();

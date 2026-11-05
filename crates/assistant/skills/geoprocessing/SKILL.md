@@ -26,7 +26,8 @@ Based on the RustGIS user guide, Analysis › Geoprocessing tools
      (`input`, `x`, `y`, `crs`), `calculateGeometry`; `polygonToLine`, `splitLineAtVertices`,
      `featureEnvelopeToPolygon`, `unsplitLine` (`input`, optional `output`; see the user guide
      for envelope axes and endpoint-joining rules); `checkGeometry` (`input`: a layer of the
-     features with invalid geometry, saying what is wrong with each)
+     features with invalid geometry, saying what is wrong with each); `repairGeometry` (`input`:
+     every feature with its geometry made valid, and a field saying what was repaired)
    - selection: `selectByLocation` (`input`, `select`, `distance`, `invert`), `selectByAttributes`
      (`input`, `where`)
    - statistics: `countPoints` (Summarize Within: `polygons`, `points`, `statistics`: summary

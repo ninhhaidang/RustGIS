@@ -25,6 +25,7 @@ pub mod neural;
 mod parallel;
 mod parameters;
 pub mod rasterops;
+mod repair;
 pub mod selection;
 pub mod sketch_edit;
 mod stats;
