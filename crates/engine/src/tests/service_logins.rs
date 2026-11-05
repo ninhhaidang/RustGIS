@@ -1278,3 +1278,126 @@ fn notebook_output_keeps_no_login_binding() {
     let (saved, _) = s.project.clone().saved_text(None).unwrap();
     assert!(!saved.contains(rustgis_data::login_address::PREFIX), "the saved project keeps a binding: {saved}");
 }
+
+/// The server has the credential before the lifecycle action, but its refusal arrives after it.
+/// Exercise the public HEAD transport and the real session commands, without a credential store.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn delayed_head_refusal_keeps_secrets_out_of_history_across_login_lifecycle() {
+    use rustgis_data::diagnostics::{Filter, History};
+    use std::io::{Read, Write};
+    use std::sync::mpsc::channel;
+    use std::time::Duration;
+
+    if std::env::var_os("RUSTGIS_TEST_SERVICE_HEAD_DIAGNOSTICS").is_none() {
+        // Other engine tests can fill the native HEAD admission limit and skip this probe.
+        // Isolate the scenario so every iteration exercises the real public HEAD transport.
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::service_logins::delayed_head_refusal_keeps_secrets_out_of_history_across_login_lifecycle",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("RUSTGIS_TEST_SERVICE_HEAD_DIAGNOSTICS", "1")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "{stdout}\n{}", String::from_utf8_lossy(&output.stderr));
+        assert!(stdout.contains("1 passed; 0 failed"), "the child must run the delayed-HEAD test: {stdout}");
+        return;
+    }
+
+    for action in ["active", "logout", "replace", "drop", "anonymous"] {
+        for basic in [false, true] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let secret = "delayed-head/sentinel+757";
+            let value = if basic { logins::basic("head-user", secret) } else { secret.to_string() };
+            let encoded = value.bytes().map(|b| format!("%{b:02X}")).collect::<String>();
+            let payload = value.strip_prefix("Basic ").unwrap_or(&value).to_string();
+            let echo = format!("{value} {payload} {encoded}");
+            let (received_tx, received_rx) = channel();
+            let (release_tx, release_rx) = channel();
+            let expected = value.clone();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+                let mut request = Vec::new();
+                let mut buf = [0u8; 2048];
+                while request.len() < 32768 && !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                    let n = stream.read(&mut buf).unwrap();
+                    assert_ne!(n, 0);
+                    request.extend_from_slice(&buf[..n]);
+                }
+                assert!(request.ends_with(b"\r\n\r\n"));
+                let request = String::from_utf8(request).unwrap();
+                assert!(request.starts_with("HEAD /probe HTTP/1.1\r\n"));
+                if action == "anonymous" {
+                    assert!(!request.to_ascii_lowercase().contains("x-key:") && !request.to_ascii_lowercase().contains("authorization:"));
+                } else {
+                    let name = if basic { "authorization" } else { "x-key" };
+                    assert!(request.lines().any(|line| {
+                        line.split_once(':').is_some_and(|(n, v)| n.eq_ignore_ascii_case(name) && v.trim_start() == expected)
+                    }));
+                }
+                received_tx.send(()).unwrap();
+                release_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+                let id = if action == "anonymous" { "anonymous-request-id" } else { &echo };
+                write!(stream, "HTTP/1.1 403 Forbidden\r\nx-request-id: {id}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+            });
+            let mut s = session(None);
+            let id = new(
+                &mut s,
+                json!({"kind":"service", "address":base, "auth":if basic {"basic"} else {"header"}, "user":"head-user", "keyName":"X-Key"}),
+            );
+            let credential = if basic { "password" } else { "apiKey" };
+            let login = json!({"id":id, credential:secret, "allowInsecure":true});
+            let plain = format!("{base}/probe");
+            let url = if action == "anonymous" {
+                plain.clone()
+            } else {
+                s.run("connection.login", &login).unwrap();
+                bound(&mut s, &id, &plain)
+            };
+            let history = History::default();
+            let _scope = history.enter();
+            let (done_tx, done_rx) = channel();
+            crate::render::rustgis_tiles::cache::head(&url, Box::new(move |r| done_tx.send(r).unwrap()));
+            received_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+            match action {
+                "logout" => {
+                    s.run("connection.logout", &json!({"id":id})).unwrap();
+                }
+                "replace" => {
+                    s.run("connection.login", &json!({"id":id,credential:"replacement-head-secret","allowInsecure":true})).unwrap();
+                }
+                "drop" => drop(s),
+                _ => {}
+            }
+            if matches!(action, "logout" | "replace" | "drop") {
+                assert!(logins::apply(&url).is_err(), "{action} must revoke the old generation");
+            }
+            release_tx.send(()).unwrap();
+            assert!(done_rx.recv_timeout(Duration::from_secs(10)).unwrap().is_err());
+            server.join().unwrap();
+            let records = history.records();
+            assert_eq!(records.len(), 1, "{action}: {records:?}");
+            let network = records[0].network.as_ref().unwrap();
+            assert_eq!(network.status, Some(403));
+            assert_eq!(network.method, "HEAD");
+            assert_eq!(network.url, plain);
+            let text = format!("{records:?}\n{}", history.report(Filter::All));
+            assert!(text.contains("403"), "{action}: {text}");
+            assert!(text.contains(&plain), "{action}: {text}");
+            for private in [secret, &value, &payload, &encoded] {
+                assert!(!text.contains(private), "{action}: credential reached History or copied report");
+            }
+            if action == "anonymous" {
+                assert!(text.contains("x-request-id: anonymous-request-id"), "{text}");
+            } else {
+                assert!(!text.contains("x-request-id"), "{action}: {text}");
+            }
+        }
+    }
+}

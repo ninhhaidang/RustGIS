@@ -1413,8 +1413,14 @@ mod native {
                     continue;
                 }
                 if resp.status().as_u16() >= 400 {
-                    // The selected headers say who refused and what it wants: kept, as a GET's
-                    // refusal keeps them, so the history's details aren't only a status.
+                    // A server can echo credentials in retained headers, even after logout has
+                    // removed their redaction patterns. Remember every hop, including before a
+                    // cross-origin redirect: HEAD refusals keep only the status after any login hop.
+                    if carried_login {
+                        let status = resp.status().as_u16();
+                        return Err(Failure::without_answer("", format!("http status: {status}"), Reason::Status(status)));
+                    }
+                    // Anonymous refusals retain the selected diagnostic headers.
                     let headers: Vec<(String, String)> = resp
                         .headers()
                         .iter()
@@ -2445,6 +2451,70 @@ mod tests {
         }
         assert!(everything.contains(&plain));
         assert!(logins::deactivate(&binding));
+    }
+
+    /// Once any hop carried a login, a later anonymous hop must not regain response details.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn delayed_head_refusal_after_cross_origin_redirect_is_status_only() {
+        use crate::logins::{self, Method};
+        use rustgis_data::diagnostics::{Capture, Filter, History};
+        use std::io::{Read, Write};
+        use std::sync::mpsc::channel;
+        use std::time::Duration;
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let other = format!("http://{}", listener.local_addr().unwrap());
+        let secret = "redirect-head-sentinel-757";
+        let (received_tx, received_rx) = channel();
+        let (release_tx, release_rx) = channel();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            let mut request = Vec::new();
+            let mut buf = [0u8; 2048];
+            while request.len() < 32768 && !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = stream.read(&mut buf).unwrap();
+                assert_ne!(n, 0);
+                request.extend_from_slice(&buf[..n]);
+            }
+            assert!(request.ends_with(b"\r\n\r\n"));
+            let request = String::from_utf8(request).unwrap();
+            assert!(request.starts_with("HEAD /refused HTTP/1.1\r\n"));
+            assert!(!request.to_ascii_lowercase().contains("x-key:") && !request.contains(secret));
+            received_tx.send(()).unwrap();
+            release_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+            write!(stream, "HTTP/1.1 403 Forbidden\r\nx-request-id: {secret}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+        });
+        let (base, asked) = serve_recorded(vec![
+            format!("HTTP/1.1 302 Found\r\nLocation: {other}/refused\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").into_bytes(),
+        ]);
+        let binding = logins::activate(&base, "redirect-head", Method::Header("X-Key".into()), secret, true).unwrap();
+        let foreign = logins::activate(&other, "foreign-head", Method::Header("X-Key".into()), "foreign-head-secret", true).unwrap();
+        let url = logins::bind(&binding, &format!("{base}/start")).unwrap();
+        let history = History::default();
+        let _scope = history.enter();
+        let capture = Capture::current();
+        let worker = std::thread::spawn(move || {
+            let _scope = capture.enter();
+            native::head_with(&native::agent(), &url)
+        });
+        let request = asked.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(request.to_ascii_lowercase().contains(&format!("x-key: {secret}\r\n")));
+        received_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(logins::deactivate(&binding));
+        release_tx.send(()).unwrap();
+        // Other parallel tests can register short credentials that scrub ordinary message
+        // words. Check the failure status here and its structured diagnostic status below.
+        assert!(worker.join().unwrap().unwrap_err().contains("403"));
+        server.join().unwrap();
+        let records = history.records();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].network.as_ref().unwrap().status, Some(403));
+        let text = format!("{records:?}\n{}", history.report(Filter::All));
+        assert!(text.contains("403"));
+        assert!(!text.contains(secret) && !text.contains("x-request-id") && !text.contains("foreign-head-secret"));
+        assert!(logins::deactivate(&foreign));
     }
 
     #[cfg(not(target_arch = "wasm32"))]
