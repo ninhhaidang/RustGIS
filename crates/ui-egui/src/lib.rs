@@ -4302,7 +4302,11 @@ impl RustGisApp {
                 }
                 // A snapshot can capture the screen while the map is on it.
                 relay.set_screen(relayshot::map_shown(self, ctx));
-                relay.poll(&mut self.session);
+                // Only a request that changed the project ends a label move: a read-only one leaves it.
+                let state = self.session.state();
+                if relay.poll(&mut self.session) > 0 && self.session.state() != state {
+                    self.map.cancel_label_drag();
+                }
             }
             relayshot::drive(self, ctx);
             // A script an agent wrote to the file bridge.
@@ -4311,7 +4315,12 @@ impl RustGisApp {
                     let ctx = ctx.clone();
                     bridge.set_wake(Box::new(move || ctx.request_repaint()));
                 }
-                match bridge.poll(&mut self.session) {
+                // A script may replace the features a label move is for: it ends the move.
+                let ran = bridge.poll(&mut self.session);
+                if ran.is_some() {
+                    self.map.cancel_label_drag();
+                }
+                match ran {
                     Some(o) if o.success => self.session.notify(tl!("File bridge: the script ran").to_string(), false),
                     Some(o) => {
                         let text = i18n::fmt("File bridge: {error}", &[("error", o.error.as_deref().unwrap_or(""))]);

@@ -4703,6 +4703,24 @@ fn label_groups(app: &mut RustGisApp, ui: &mut Ui) {
                 }
             }
         });
+        // Labels put by hand: the Move Label tool (on and off; Esc leaves it too), and putting the
+        // layer's moved labels back.
+        col(ui, |ui| {
+            let moving = app.session.tool == Tool::MoveLabel;
+            let to = if moving { Tool::Explore } else { Tool::MoveLabel };
+            let desc = "Drag a label to where it should be; its callout's line follows. Shift-click a moved label to put it back.";
+            small(ui, app, "label", "Move Label", desc, "tool.set", json!({"tool": to.code()}), moving);
+            small(
+                ui,
+                app,
+                "undo",
+                "Reset Moved",
+                "Put this layer's moved labels back where their classes place them.",
+                "labels.resetMoved",
+                json!({"all": true}),
+                false,
+            );
+        });
     });
     group(ui, "Label Range", |ui| {
         ui.vertical(|ui| {

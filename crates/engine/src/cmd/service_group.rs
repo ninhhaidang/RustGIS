@@ -331,6 +331,7 @@ fn refresh(s: &mut Session, p: &Value) -> CmdResult {
     // whose classes no longer read, drawn with a single symbol.
     let mut notes = Vec::new();
     let mut singled = Vec::new();
+    let mut moved = 0;
     for ((mut child, mut dataset), existing) in reads.into_iter().zip(matches) {
         let existing = existing.and_then(|id| s.map_mut().layer_mut(id));
         if let Some(layer) = existing {
@@ -341,6 +342,9 @@ fn refresh(s: &mut Session, p: &Value) -> CmdResult {
             dataset.name = layer.name.clone();
             layer.dataset = dataset;
             layer.selection.clear();
+            moved += layer.labels.in_order().map(|class| class.moved.len()).sum::<usize>();
+            layer.labels.default.moved.clear();
+            layer.labels.classes.iter_mut().for_each(|class| class.moved.clear());
             let invalid_renderer = match &layer.renderer {
                 rustgis_map::Renderer::Single(_) => false,
                 rustgis_map::Renderer::Unique { expression: Some(e), .. } => rustgis_data::query::parse(e, &layer.dataset).is_err(),
@@ -412,6 +416,9 @@ fn refresh(s: &mut Session, p: &Value) -> CmdResult {
         }
         children.push(child);
     }
+    if moved > 0 {
+        s.notify(format!("{moved} saved label move(s) reset in refreshed service layers"), false);
+    }
     if !notes.is_empty() {
         let lost: usize = notes.iter().map(|(_, n)| n).sum();
         let names: Vec<&str> = notes.iter().map(|(name, _)| name.as_str()).collect();
@@ -436,7 +443,14 @@ fn refresh(s: &mut Session, p: &Value) -> CmdResult {
     let ids: Vec<u32> = children.iter().map(|c| c.layer).collect();
     if child_id.is_none() {
         let gone: Vec<u32> = old.children.iter().map(|c| c.layer).filter(|id| !ids.contains(id)).collect();
+        let mut gone_moved = 0;
+        for l in s.map().layers.iter().filter(|l| gone.contains(&l.id)) {
+            gone_moved += l.labels.in_order().map(|class| class.moved.len()).sum::<usize>();
+        }
         crate::cmd::layer::drop_layers(s, &gone);
+        if gone_moved > 0 {
+            s.notify(format!("{gone_moved} saved label move(s) dropped with layers the refreshed service no longer offers"), false);
+        }
         if let Some(lock) = &mut s.map_mut().label_lock {
             lock.retain(|((id, _, _, _), _)| !gone.contains(id));
         }

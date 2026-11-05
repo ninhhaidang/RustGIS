@@ -259,3 +259,32 @@ fn compatible_raster_repair_keeps_nondefault_display_settings() {
     assert_eq!(raster.data.as_ref().unwrap().band_count(), 3);
     assert!(raster.error.is_none());
 }
+
+/// Replacing data must not transfer a saved label move to a different feature with the same id.
+#[test]
+fn replacing_source_resets_saved_label_moves_with_notice_and_undo() {
+    let f = Fixture::new("repair-label-moves");
+    let original = f.file("original.fgb");
+    let replacement = f.file("replacement.fgb");
+    sample_file(&original, "Cities");
+    sample_file(&replacement, "Cities");
+    let mut s = session();
+    let id = add_stream(&mut s, &original, None);
+    let fid = 1;
+    let l = s.map_mut().layer_mut(id).unwrap();
+    l.labels.default.moved.push(rustgis_engine::map::symbology::MovedLabel { id: fid, at: [12.0, 34.0] });
+    s.map_mut().label_lock = Some(vec![((id, fid, 0, 0), rustgis_engine::map::LockedPlace { place: 0, callout: Some([20.0, 10.0]) })]);
+    let mark = s.notice_mark();
+    s.run("layer.repairSource", &json!({"layer": id, "path": replacement})).unwrap();
+    assert!(s.map().layer(id).unwrap().labels.default.moved.is_empty());
+    assert!(s.map().label_lock.is_none(), "old callout locks must not attach to replacement ids");
+    let notices = s.notices_since(mark);
+    assert_eq!(notices.len(), 1);
+    assert!(notices[0].text.contains("1 saved label move(s) reset"));
+    s.run("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.map().layer(id).unwrap().labels.default.moved[0].at, [12.0, 34.0]);
+    s.run("edit.redo", &json!({})).unwrap();
+    let mark = s.notice_mark();
+    s.run("layer.repairSource", &json!({"layer": id, "path": original})).unwrap();
+    assert!(s.notices_since(mark).is_empty(), "no moves means no loss notice");
+}

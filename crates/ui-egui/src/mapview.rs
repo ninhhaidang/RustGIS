@@ -54,6 +54,11 @@ enum DragKind {
         row: usize,
         origin: Pos2,
     },
+    /// Moving a layer's label with the Move Label tool: where the press was. The label, and what
+    /// it labels, are in `MapView::moving_label`.
+    Label {
+        origin: Pos2,
+    },
 }
 
 /// Graphic shapes drawn by dragging rather than clicking.
@@ -251,6 +256,10 @@ pub struct MapView {
     /// Where on a tilted map's ground each label is (the camera's coordinates), so it stays there
     /// while the map moves.
     label_map: Vec<Option<Coord>>,
+    /// Where each label's callout starts (its feature), as `label_lonlat` and `label_map` keep the
+    /// labels: its line stays on its feature while the map moves.
+    callout_lonlat: Vec<Option<Coord>>,
+    callout_map: Vec<Option<Coord>>,
     /// The camera the labels were placed for.
     label_camera: Camera,
     /// The map revision whose GPU scene had only live tile layers (#635): tiles arriving draw
@@ -262,6 +271,8 @@ pub struct MapView {
     view_px: [usize; 2],
     resized_at: f64,
     drag: Option<(Pos2, DragKind)>,
+    /// The label being moved with the Move Label tool.
+    moving_label: Option<MovingLabel>,
     sketch: Vec<Coord>,
     selection_gesture: Option<SelectionGesture>,
     radius_preview: Option<(Coord, f64, Vec<Option<Pos2>>)>,
@@ -366,12 +377,15 @@ impl Default for MapView {
             motion_cost: 0.0,
             labels: Vec::new(),
             label_lonlat: Vec::new(),
+            callout_lonlat: Vec::new(),
+            callout_map: Vec::new(),
             label_camera: Camera::world(),
             live_rev: None,
             last_interaction: -10.0,
             view_px: [0, 0],
             resized_at: -10.0,
             drag: None,
+            moving_label: None,
             sketch: Vec::new(),
             selection_gesture: None,
             radius_preview: None,
@@ -494,6 +508,15 @@ impl MapView {
         self.selection_gesture = None;
         self.radius_preview = None;
         self.cancel_vertex_drag();
+        self.cancel_label_drag();
+    }
+
+    /// Drops a label being moved with the Move Label tool, leaving it where it was.
+    pub(crate) fn cancel_label_drag(&mut self) {
+        self.moving_label = None;
+        if self.drag.is_some_and(|(_, kind)| matches!(kind, DragKind::Label { .. })) {
+            self.drag = None;
+        }
     }
 
     /// Cancels a vertex preview and its pending release together, leaving other map gestures
@@ -833,6 +856,8 @@ fn main_view(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
         app.map.labels.clear();
         app.map.label_lonlat.clear();
         app.map.label_map.clear();
+        app.map.callout_lonlat.clear();
+        app.map.callout_map.clear();
     }
     let settling = (tilted || globe_view || tiled_flat) && !moving && app.ws.playing.is_none() && !hold;
     let mut tilt_draped = tilt_draped;
@@ -1195,9 +1220,11 @@ fn main_view(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
     let placed = app.map.label_camera;
     if globe_view && (placed.center != cam.center || placed.res != cam.res) {
         let g = Globe::new(&cam, w, h);
-        for (l, c) in app.map.labels.iter().zip(&app.map.label_lonlat) {
-            if let Some((x, y)) = c.and_then(|c| g.forward(c)) {
-                draw_label(&painter, l, rect.min + vec2(x as f32, y as f32));
+        let screen = |c: &Option<Coord>| c.and_then(|c| g.forward(c)).map(|(x, y)| rect.min + vec2(x as f32, y as f32));
+        for (i, (l, c)) in app.map.labels.iter().zip(&app.map.label_lonlat).enumerate() {
+            if let Some(at) = screen(c) {
+                let feature = app.map.callout_lonlat.get(i).and_then(screen);
+                draw_label(&painter, &callout_from(l, at, feature), at);
             }
         }
     } else if (tilt_draped || (app.map.gpu_frame.is_some() && !app.map.label_map.is_empty())) && placed != cam {
@@ -1210,20 +1237,25 @@ fn main_view(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
             cam.try_to_screen(m, w, h).map(|(x, y)| (x as f32, y as f32))
         };
         let turns = placed.bearing != cam.bearing || placed.pitch != cam.pitch;
-        for (l, m) in app.map.labels.iter().zip(&app.map.label_map) {
-            if let Some((x, y)) = m.and_then(|m| cam.try_to_screen(m, w, h)).filter(|s| sky.is_none_or(|sky| s.1 > sky)) {
+        let screen = |m: &Option<Coord>| m.and_then(|m| cam.try_to_screen(m, w, h)).map(|(x, y)| rect.min + vec2(x as f32, y as f32));
+        for (i, (l, m)) in app.map.labels.iter().zip(&app.map.label_map).enumerate() {
+            if let Some(pos) = screen(m).filter(|p| sky.is_none_or(|sky| f64::from(p.y - rect.min.y) > sky)) {
                 let moved = turns.then(|| {
                     let mut l = l.clone();
                     rustgis_engine::render::turn_label(&mut l, &at);
                     l
                 });
-                draw_label(&painter, moved.as_ref().unwrap_or(l), rect.min + vec2(x as f32, y as f32));
+                let feature = app.map.callout_map.get(i).and_then(screen);
+                draw_label(&painter, &callout_from(moved.as_ref().unwrap_or(l), pos, feature), pos);
             }
         }
     } else {
         let s = if globe_view { 1.0 } else { (old.res / cam.res) as f32 };
         for l in &app.map.labels {
-            draw_label(&painter, l, tex_rect.min + vec2(l.x, l.y) * s);
+            let at = tex_rect.min + vec2(l.x, l.y) * s;
+            // A callout's feature moves with the map, its text's end with the text.
+            let feature = l.collide.callout.filter(|_| s != 1.0).map(|c| tex_rect.min + vec2(l.x + c[0], l.y + c[1]) * s);
+            draw_label(&painter, &callout_from(l, at, feature), at);
         }
     }
     if app.map.hide_overlays {
@@ -1271,7 +1303,10 @@ fn show_gpu_frame(app: &mut RustGisApp, scene: rustgis_engine::render::gpu_scene
     app.map.label_lonlat.clear();
     // Where its labels stand: a turn starting from a north-up frame is draped too (on the CPU,
     // when the GPU doesn't turn the map), and they stay on their ground through it.
-    app.map.label_map = app.map.labels.iter().map(|l| cam.try_to_map(l.x as f64, l.y as f64, view.width, view.height)).collect();
+    app.map.callout_lonlat.clear();
+    let to_map = |x: f32, y: f32| cam.try_to_map(x as f64, y as f64, view.width, view.height);
+    app.map.label_map = app.map.labels.iter().map(|l| to_map(l.x, l.y)).collect();
+    app.map.callout_map = app.map.labels.iter().map(|l| l.collide.callout.and_then(|c| to_map(l.x + c[0], l.y + c[1]))).collect();
     app.map.label_camera = cam;
     app.map.attribution = scene.attribution;
     app.map.last_render = time;
@@ -1311,18 +1346,28 @@ fn show_frame(
     if !(globe_view && key.draft) {
         app.map.labels = r.labels;
         app.map.labels.splice(0..0, r.unplaced);
-        app.map.label_lonlat = match globe_view {
+        (app.map.label_lonlat, app.map.callout_lonlat) = match globe_view {
             true => {
                 let g = Globe::new(&cam, w, h);
-                app.map.labels.iter().map(|l| g.inverse(l.x as f64, l.y as f64)).collect()
+                let at = |x: f32, y: f32| g.inverse(x as f64, y as f64);
+                (
+                    app.map.labels.iter().map(|l| at(l.x, l.y)).collect(),
+                    app.map.labels.iter().map(|l| l.collide.callout.and_then(|c| at(l.x + c[0], l.y + c[1]))).collect(),
+                )
             }
-            false => Vec::new(),
+            false => (Vec::new(), Vec::new()),
         };
         // Where its labels stand while its drape moves (a north-up frame's too: a turn starting
         // from it is draped).
-        app.map.label_map = match !globe_view {
-            true => app.map.labels.iter().map(|l| cam.try_to_map(l.x as f64, l.y as f64, view.width, view.height)).collect(),
-            false => Vec::new(),
+        (app.map.label_map, app.map.callout_map) = match !globe_view {
+            true => {
+                let to_map = |x: f32, y: f32| cam.try_to_map(x as f64, y as f64, view.width, view.height);
+                (
+                    app.map.labels.iter().map(|l| to_map(l.x, l.y)).collect(),
+                    app.map.labels.iter().map(|l| l.collide.callout.and_then(|c| to_map(l.x + c[0], l.y + c[1]))).collect(),
+                )
+            }
+            false => (Vec::new(), Vec::new()),
         };
         app.map.label_camera = cam;
     }
@@ -1445,7 +1490,95 @@ fn place_galley(anchor: Align2, at: Pos2, g: &egui::Galley) -> (Pos2, Rect) {
     (r.min - g.rect.min.to_vec2(), r)
 }
 
+/// A label being moved with the Move Label tool: as it was drawn when grabbed (in the view's
+/// points), what it labels, and the map and label class it is of, named then (so it lands in
+/// those, whatever is reordered or shown while it moves).
+struct MovingLabel {
+    label: PlacedLabel,
+    layer: u32,
+    feature: u64,
+    class: String,
+    project: u64,
+    map: usize,
+}
+
+/// The layer's label drawn at a point of the map view (relative to it as `rect` is), topmost first:
+/// what the Move Label tool grabs, as it is drawn now. Labels not of a layer's features aren't;
+/// nor any while a moving globe or tilted map draws them from where they were placed.
+fn label_at(app: &RustGisApp, rect: Rect, p: Pos2) -> Option<PlacedLabel> {
+    if app.map.key.is_none_or(|key| key.rev != app.session.revision || key.sources != rustgis_engine::map::source::generation()) {
+        return None;
+    }
+    let cam = app.session.map().camera;
+    let placed = app.map.label_camera;
+    // A flat map moving draws the labels placed last with its frame: shifted, and spread apart
+    // or closed up as it zooms (as `main_view` does).
+    let (shift, s) = if placed == cam {
+        (app.map.tex_rect.min - rect.min, 1.0)
+    } else if app.session.map().projection != Projection::Globe && placed.pitch == 0.0 && cam.pitch == 0.0 && placed.bearing == cam.bearing
+    {
+        (app.map.tex_rect.min - rect.min, (app.map.tex_camera.res / cam.res) as f32)
+    } else {
+        return None;
+    };
+    if !(s.is_finite() && s > 0.0) {
+        return None;
+    }
+    let at = p - rect.min;
+    app.map.labels.iter().rev().filter(|l| l.collide.source.is_some() && !l.text.is_empty()).find_map(|l| {
+        let mut l = l.clone();
+        // Where it is drawn now: its text at its own size, its callout's feature where it is.
+        (l.x, l.y) = (shift.x + l.x * s, shift.y + l.y * s);
+        l.collide.callout_anchor = l.collide.callout_anchor.map(|[ax, ay]| [ax * s, ay * s]);
+        l.collide.callout = l.collide.callout.map(|[x0, y0, x1, y1]| [x0 * s, y0 * s, x1, y1]);
+        let e = rustgis_engine::render::label_extent(&l)?;
+        let r = Rect::from_min_max(pos2(e[0], e[1]), pos2(e[2], e[3])).expand(3.0);
+        r.contains(pos2(at.x, at.y)).then_some(l)
+    })
+}
+
+/// A label drawn at `at` while the map moves, its callout's line starting at its feature where
+/// that now is (none: as it was placed).
+fn callout_from(l: &PlacedLabel, at: Pos2, feature: Option<Pos2>) -> std::borrow::Cow<'_, PlacedLabel> {
+    match (l.collide.callout, feature) {
+        (Some([_, _, x1, y1]), Some(f)) => {
+            let mut l = l.clone();
+            l.collide.callout = Some([f.x - at.x, f.y - at.y, x1, y1]);
+            std::borrow::Cow::Owned(l)
+        }
+        _ => std::borrow::Cow::Borrowed(l),
+    }
+}
+
+/// A label moved by `d` (points): its text there, its feature where it was, and its callout's line
+/// from the feature to the text when its class has callouts.
+fn moved_label(l: &PlacedLabel, d: egui::Vec2) -> PlacedLabel {
+    let mut m = l.clone();
+    m.x += d.x;
+    m.y += d.y;
+    m.collide.callout_anchor = l.collide.callout_anchor.map(|[ax, ay]| [ax - d.x, ay - d.y]);
+    m.collide.callout = rustgis_engine::render::callout_to(&m);
+    m
+}
+
+/// The name of a layer's label class by its place in the labeling order.
+fn label_class_name(app: &RustGisApp, layer: u32, class: u32) -> Option<String> {
+    app.session.map().layer(layer)?.labels.in_order().nth(class as usize).map(|c| c.name.clone())
+}
+
+/// Paints a label (on the map, or a moved one's preview), keeping callouts below text and curved
+/// glyph halos below ink.
 fn draw_label(p: &egui::Painter, l: &PlacedLabel, at: Pos2) {
+    // A callout's line, from its feature to the edge of the text, under the text (its halo
+    // under the line, so it shows over the map).
+    if let Some([x0, y0, x1, y1]) = l.collide.callout {
+        let ends = [at + vec2(x0, y0), at + vec2(x1, y1)];
+        let width = rustgis_engine::render::CALLOUT_WIDTH;
+        if let Some(h) = l.halo {
+            p.line_segment(ends, Stroke::new(width + 2.0, crate::theme::c32(h)));
+        }
+        p.line_segment(ends, Stroke::new(width, crate::theme::c32(l.color)));
+    }
     // Curved along a line: each character turned into its place, every character's halo first,
     // so none covers the letter before it.
     if !l.glyphs.is_empty() {
@@ -2256,8 +2389,17 @@ fn interact(app: &mut RustGisApp, ui: &mut Ui, resp: &egui::Response, rect: Rect
             .then(|| text_graphic_at(app, ui.ctx(), rect, origin))
             .flatten()
             .filter(|hit| crate::graphicformat::selected(app) == Some(*hit));
+        // With the Move Label tool, a layer's label grabbed by its text moves; elsewhere the map pans.
+        let label = (tool == Tool::MoveLabel && !middle).then(|| label_at(app, rect, origin)).flatten();
         let kind = if let Some((layer, row)) = grabbed {
             DragKind::Text { layer, row, origin }
+        } else if let Some(l) = label
+            && let Some((layer, feature, class)) = l.collide.source
+            && let Some(class) = label_class_name(app, layer, class)
+        {
+            let (project, map) = (app.session.opened, app.session.project.active_map);
+            app.map.moving_label = Some(MovingLabel { label: l, layer, feature, class, project, map });
+            DragKind::Label { origin }
         } else if middle {
             DragKind::Pan
         } else if tool == Tool::EditVertices && crate::vertexedit::drag_start(app, rect, origin) {
@@ -2297,6 +2439,47 @@ fn interact(app: &mut RustGisApp, ui: &mut Ui, resp: &egui::Response, rect: Rect
         } else {
             app.map.sketch.truncate(1);
             app.map.sketch.push(c);
+        }
+    }
+    // A label being moved shows where it will land, its callout's line following it; it is kept
+    // there, as one undo step, on release.
+    // Esc, another tool, or another map or project shown drops it where it was.
+    if let Some((_, DragKind::Label { origin })) = app.map.drag {
+        let same = app.map.moving_label.as_ref().is_some_and(|m| {
+            m.project == app.session.opened && m.map == app.session.project.active_map && app.session.tool == Tool::MoveLabel
+        });
+        if !same || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            app.map.cancel_label_drag();
+            return;
+        }
+        let end = resp.interact_pointer_pos().or_else(|| ui.input(|i| i.pointer.latest_pos()));
+        let moved = app.map.moving_label.as_ref().zip(end).map(|(m, end)| moved_label(&m.label, end - origin));
+        if resp.drag_stopped() {
+            app.map.drag = None;
+            let to = moved.as_ref().and_then(|l| screen_to_lonlat(app, rect, rect.min + vec2(l.x, l.y)));
+            // Over a tilted map's sky or past the globe's edge there is no place to keep it at.
+            if moved.is_some() && to.is_none() {
+                app.session.notify(tl!("No place there to move the label to; it stays where it was."), true);
+            }
+            if let (Some(c), Some(m)) = (to, app.map.moving_label.take())
+                && let Err(e) = app.run("labels.move", json!({"layer": m.layer, "class": m.class, "feature": m.feature, "to": [c.x, c.y]}))
+            {
+                app.session.notify(e, true);
+            }
+            app.map.moving_label = None;
+            return;
+        }
+        if let Some(l) = moved {
+            let t = Tokens::get(ui.ctx());
+            let painter =
+                ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, ui.scope_id().with("label_drag"))).with_clip_rect(rect);
+            draw_label(&painter, &l, rect.min + vec2(l.x, l.y));
+            if let Some(e) = rustgis_engine::render::label_extent(&l) {
+                let r = Rect::from_min_max(rect.min + vec2(e[0], e[1]), rect.min + vec2(e[2], e[3]));
+                painter.rect_stroke(r, 2.0, egui::Stroke::new(1.0, t.accent), egui::StrokeKind::Outside);
+            }
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+            ui.ctx().request_repaint();
         }
     }
     // A dragged text shows where it will land; it is placed there, as one undo step, on release.
@@ -2504,6 +2687,17 @@ fn interact(app: &mut RustGisApp, ui: &mut Ui, resp: &egui::Response, rect: Rect
             c
         };
         match tool {
+            // Labels move by dragging them; Shift-clicking a moved one puts it back.
+            Tool::MoveLabel => {
+                if shift
+                    && let Some((layer, feature, class)) =
+                        label_at(app, rect, p).filter(|l| l.collide.pinned).and_then(|l| l.collide.source)
+                    && let Some(name) = label_class_name(app, layer, class)
+                    && let Err(error) = app.run("labels.move", json!({"layer": layer, "class": name, "feature": feature, "to": null}))
+                {
+                    app.session.notify(error, true);
+                }
+            }
             Tool::Explore => {
                 let r = app.session.run("identify", &json!({"lon": c.x, "lat": c.y, "tolerancePx": 5}));
                 app.map.popup = match r {
@@ -2984,6 +3178,7 @@ fn overlays(app: &mut RustGisApp, ui: &mut Ui, p: &egui::Painter, rect: Rect, t:
         }
         Tool::EditVertices => Some("Click a feature, then drag its vertices · click an edge to add one"),
         Tool::ZoomIn => Some("Drag a box or click to zoom in"),
+        Tool::MoveLabel => Some("Drag a label to where it should be · drag the map to pan · Esc to stop"),
         Tool::Graphic("point") => Some("Click the map to place a point"),
         Tool::Graphic("text") => Some("Click the map to place text"),
         Tool::Graphic("line" | "curve") => Some("Click to add vertices · double-click to finish"),
@@ -4325,6 +4520,96 @@ mod tests {
 
     fn selection_rows(h: &egui_kittest::Harness<'_, RustGisApp>) -> Vec<usize> {
         h.state().session.map().layer_by_name("Points").unwrap().selection.clone()
+    }
+
+    /// The Move Label tool: a label dragged and let go is kept where it was put, as one undo
+    /// step; Esc while dragging, or another tool, drops it where it was; Shift-click puts a moved
+    /// label back and leaves one never moved (no undo step).
+    #[test]
+    fn move_label_drags_cancels_and_puts_back() {
+        let mut h = selection_harness();
+        for (i, point) in [[0.5, 0.5], [3.5, 2.0], [2.5, 0.5], [1.0, 4.0]].into_iter().enumerate() {
+            let p = json!({"layer": "Labelled", "geometry": {"type": "Point", "coordinates": point}, "attributes": {"name": format!("Place {i}")}});
+            if i == 0 {
+                h.state_mut().run("layer.template", json!({"template": "points", "name": "Labelled"})).unwrap();
+            }
+            h.state_mut().run("edit.addFeature", p).unwrap();
+        }
+        let id = h.state().session.map().layer_by_name("Labelled").unwrap().id;
+        if let Some(l) = h.state_mut().session.map_mut().layer_mut(id) {
+            l.labels.enabled = true;
+            l.labels.default.field = "name".into();
+        }
+        h.state_mut().run("tool.set", json!({"tool": "moveLabel"})).unwrap();
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !h.state().map.labels.iter().any(|l| l.text == "Place 3") || h.state().map.drawing() {
+            assert!(std::time::Instant::now() < end, "labels never drawn");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            h.step();
+        }
+        let rect = h.state().map.view_rect.unwrap().0;
+        let grab = |h: &egui_kittest::Harness<'_, RustGisApp>| {
+            let l = h.state().map.labels.iter().find(|l| l.text == "Place 3").unwrap();
+            rect.min + vec2(l.x, l.y)
+        };
+        // Hit testing follows a retained frame's origin and refuses its old source window.
+        let at = grab(&h);
+        let retained = h.state().map.tex_rect;
+        let shift = vec2(80.0, 80.0);
+        h.state_mut().map.tex_rect = retained.translate(shift);
+        assert_eq!(label_at(h.state(), rect, at + shift).unwrap().text, "Place 3");
+        h.state_mut().map.tex_rect = retained;
+        let key = h.state().map.key;
+        h.state_mut().map.key.as_mut().unwrap().sources = rustgis_engine::map::source::generation().wrapping_add(1);
+        assert!(label_at(h.state(), rect, at).is_none());
+        h.state_mut().map.key = key;
+        let moved = |h: &egui_kittest::Harness<'_, RustGisApp>| h.state().session.map().layer(id).unwrap().labels.default.moved.clone();
+        let none = egui::Modifiers::NONE;
+        let drag = |h: &mut egui_kittest::Harness<'_, RustGisApp>, escape: bool| {
+            let at = grab(h);
+            selection_pointer(h, at, None, none);
+            selection_pointer(h, at, Some(true), none);
+            for i in 1..=6 {
+                selection_pointer(h, at + vec2(0.0, -8.0 * i as f32), None, none);
+            }
+            if escape {
+                h.event(egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: none });
+                h.step();
+            }
+            selection_pointer(h, at + vec2(0.0, -48.0), Some(false), none);
+        };
+        // Esc mid-drag: nothing saved.
+        drag(&mut h, true);
+        assert!(moved(&h).is_empty(), "Esc cancels the move");
+        assert!(h.state().map.moving_label.is_none());
+        // Dragged and let go: kept.
+        h.state_mut().run("tool.set", json!({"tool": "moveLabel"})).unwrap();
+        h.step();
+        drag(&mut h, false);
+        assert_eq!(moved(&h).len(), 1, "the move is kept");
+        // Shift-click on the moved one: put back, and moved again by undo.
+        let pinned = h.state().map.labels.iter().find(|l| l.collide.pinned).map(|l| rect.min + vec2(l.x, l.y));
+        let shift = egui::Modifiers { shift: true, ..none };
+        let at = pinned.expect("the moved label drawn");
+        selection_pointer(&mut h, at, None, shift);
+        selection_pointer(&mut h, at, Some(true), shift);
+        selection_pointer(&mut h, at, Some(false), shift);
+        assert!(moved(&h).is_empty(), "put back");
+        h.state_mut().run("edit.undo", json!({})).unwrap();
+        assert_eq!(moved(&h).len(), 1, "undone");
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !h.state().map.labels.iter().any(|l| l.collide.pinned) || h.state().map.drawing() {
+            assert!(std::time::Instant::now() < end, "labels never drawn again");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            h.step();
+        }
+        // Shift-click on a label never moved: no undo step, so undo takes back the move.
+        let other = h.state().map.labels.iter().find(|l| l.text == "Place 1" && !l.collide.pinned).map(|l| rect.min + vec2(l.x, l.y));
+        let at = other.expect("another label drawn");
+        selection_pointer(&mut h, at, Some(true), shift);
+        selection_pointer(&mut h, at, Some(false), shift);
+        h.state_mut().run("edit.undo", json!({})).unwrap();
+        assert!(moved(&h).is_empty(), "the Shift-click left no step of its own");
     }
 
     /// #1321: the double-click delay applies to the map too, and its 1.2 s ceiling holds however

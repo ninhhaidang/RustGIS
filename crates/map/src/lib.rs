@@ -43,6 +43,15 @@ pub use symbology::{
 };
 pub use tiles::{TileKind, TileLayer};
 
+/// Where a locked label stays.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct LockedPlace {
+    /// The place it took: 0 its own, else one of its alternatives (#1011), numbered from 1.
+    pub place: u8,
+    /// How far a callout moved it from there (points, right and down), if one did.
+    pub callout: Option<[f32; 2]>,
+}
+
 use rustgis_data::{Dataset, Geometry, GeometryType};
 use rustgis_geom::{Coord, Extent};
 use serde::{Deserialize, Serialize};
@@ -360,9 +369,13 @@ impl Layer {
         })
     }
 
-    /// Installs a fresh source without changing the layer's identity or configuration.
-    pub fn replace_source(&mut self, src: source::SourceLayer) {
+    /// Installs a fresh source, retaining styling but clearing feature-specific state whose ids
+    /// may identify different features. Returns the number of saved label moves reset for a notice.
+    pub fn replace_source(&mut self, src: source::SourceLayer) -> usize {
         self.selection.clear();
+        let moved = self.labels.in_order().map(|class| class.moved.len()).sum();
+        self.labels.default.moved.clear();
+        self.labels.classes.iter_mut().for_each(|class| class.moved.clear());
         if let Some(info) = src.info() {
             self.dataset.fields = info.fields.clone();
             self.dataset.crs = info.coordinate_system();
@@ -372,6 +385,7 @@ impl Layer {
         self.dataset.source = src.linked_file().map(String::from);
         self.source = Some(src);
         self.install(Vec::new());
+        moved
     }
 
     /// The dataset, streamed, raster and time-following Zarr addresses used to read this layer
@@ -1247,11 +1261,10 @@ pub struct Map {
     /// Map-wide label display switches.
     #[serde(default)]
     pub label_display: LabelDisplay,
-    /// The labels placed when labels were locked, each with the place it took (0 its own, else
-    /// one of its alternatives, #1011): only they are drawn while the lock holds, there, wherever
-    /// the map moves. Filled by the renderer.
+    /// The labels placed when labels were locked, each with the place it took: only they are
+    /// drawn while the lock holds, there, wherever the map moves. Filled by the renderer.
     #[serde(skip)]
-    pub label_lock: Option<Vec<(LabelKey, u8)>>,
+    pub label_lock: Option<Vec<(LabelKey, LockedPlace)>>,
     /// Geographic anchors of locked non-repeated line labels. Render cache only, never saved.
     #[serde(skip)]
     pub label_lock_line_anchors: std::collections::HashMap<LabelKey, Coord>,

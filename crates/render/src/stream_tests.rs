@@ -1001,7 +1001,7 @@ fn pitched_plain_chunks_bypass_depth_budget_alone_and_with_upright_markers() {
                 for layer in &mut failed.layers {
                     *layer = streamed(layer, if layer.id == ground { 0 } else { 1 });
                 }
-                let lock = Some(vec![((ground, 0, 0, 0), 0)]);
+                let lock = Some(vec![((ground, 0, 0, 0), rustgis_map::LockedPlace::default())]);
                 failed.label_lock = lock.clone();
                 assert!(render_with_backend(&mut failed, &view, true, backend).is_none());
                 assert_eq!(failed.label_lock, lock);

@@ -155,6 +155,9 @@ fn reset(s: &mut Session, p: Project) {
     // Kept until the command ends: a failure gives the project back with its history.
     s.put_aside();
     s.project = p;
+    for text in std::mem::take(&mut s.project.label_read_notices) {
+        s.notify(text, false);
+    }
     s.opened_package = None;
     s.opened = s.opened.wrapping_add(1);
     s.active_layer = s.map().layers.first().map(|l| l.id);

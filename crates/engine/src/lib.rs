@@ -295,6 +295,9 @@ pub enum Tool {
     CreatePolygon,
     /// Moves, inserts and deletes the vertices of the selected features.
     EditVertices,
+    /// Drags a layer's label to where it should be (`labels.move`), as QGIS's Move Label tool;
+    /// dragging anything else pans the map.
+    MoveLabel,
     /// Draws a line across the selected polygons to cut them (`edit.cutPolygon`).
     CutPolygon,
     /// Draws a line across the selected feature's boundary to reshape it (`edit.reshape`).
@@ -333,6 +336,7 @@ impl Tool {
             Tool::CreateLine => "createLine",
             Tool::CreatePolygon => "createPolygon",
             Tool::EditVertices => "editVertices",
+            Tool::MoveLabel => "moveLabel",
             Tool::CutPolygon => "cutPolygon",
             Tool::Reshape => "reshape",
             Tool::Graphic(shape) => GRAPHIC_TOOLS.iter().find(|g| g.0 == shape).map_or("graphicPoint", |g| g.1),
@@ -355,6 +359,7 @@ impl Tool {
             Tool::CreateLine,
             Tool::CreatePolygon,
             Tool::EditVertices,
+            Tool::MoveLabel,
             Tool::CutPolygon,
             Tool::Reshape,
         ]
@@ -375,6 +380,7 @@ impl Tool {
             Tool::CreateLine => "Create Line",
             Tool::CreatePolygon => "Create Polygon",
             Tool::EditVertices => "Edit Vertices",
+            Tool::MoveLabel => "Move Label",
             Tool::CutPolygon => "Cut Polygon",
             Tool::Reshape => "Reshape",
             Tool::Graphic(shape) => GRAPHIC_TOOLS.iter().find(|g| g.0 == shape).map_or("Point", |g| g.2),
@@ -828,21 +834,23 @@ fn fresh_source_ids(before: &Project, after: &mut Project) {
 
 /// A lock names each label by its feature's id, and [`rustgis_data::Dataset::push`] hands the
 /// largest id out again once its feature is deleted: the new feature would take the lock's place
-/// without having been placed (#1135). So a command that removes features removes their entries,
+/// without having been placed (#1135). Saved moved-label positions have the same identity rule.
+/// So a command that removes features removes their locks and saved moves,
 /// whichever way it removes them. Undo brings them back with the rest of the project. A streamed
 /// layer holds only the window in view, so its other features aren't gone. It compares ids, so an
 /// id a single command both removes and hands out stays locked: only restoring from an archive can.
-fn forget_locks_of_removed_features(before: &Project, after: &mut Project) {
+fn forget_label_state_of_removed_features(before: &Project, after: &mut Project) {
     for (i, m) in after.maps.iter_mut().enumerate() {
         let was = before.maps.get(i).filter(|o| o.name == m.name);
-        let Some(lock) = m.label_lock.as_mut() else { continue };
-        for l in m.layers.iter().filter(|l| !l.is_streamed()) {
+        for l in m.layers.iter_mut().filter(|l| !l.is_streamed()) {
             if was.and_then(|o| o.layers.iter().find(|o| o.id == l.id)).is_some_and(|o| o.dataset.features.shares(&l.dataset.features)) {
                 continue;
             }
-            // The lock's ids for this layer, less those it still has: sized by the lock, not the layer.
-            let mut gone: std::collections::HashSet<u64> =
-                lock.iter().filter(|((layer, ..), _)| *layer == l.id).map(|((_, id, ..), _)| *id).collect();
+            // Bound the lookup by saved label state, not the feature count. Off-window ids stay put.
+            let mut gone: std::collections::HashSet<u64> = l.labels.in_order().flat_map(|c| c.moved.iter().map(|m| m.id)).collect();
+            if let Some(lock) = &m.label_lock {
+                gone.extend(lock.iter().filter(|((layer, ..), _)| *layer == l.id).map(|((_, id, ..), _)| *id));
+            }
             if gone.is_empty() {
                 continue;
             }
@@ -852,7 +860,12 @@ fn forget_locks_of_removed_features(before: &Project, after: &mut Project) {
                     break;
                 }
             }
-            lock.retain(|((layer, id, ..), _)| *layer != l.id || !gone.contains(id));
+            for c in std::iter::once(&mut l.labels.default).chain(l.labels.classes.iter_mut()) {
+                c.moved.retain(|entry| !gone.contains(&entry.id));
+            }
+            if let Some(lock) = &mut m.label_lock {
+                lock.retain(|((layer, id, ..), _)| *layer != l.id || !gone.contains(id));
+            }
         }
     }
 }
@@ -871,7 +884,7 @@ fn edits_features(id: &str) -> bool {
 }
 
 impl Session {
-    pub fn new(project: Project) -> Self {
+    pub fn new(mut project: Project) -> Self {
         // The engine's tests never add Shapefile indexes to the user's cache (#1230).
         #[cfg(all(test, not(target_arch = "wasm32")))]
         rustgis_data::source::shp::use_temporary_index_dir();
@@ -884,7 +897,8 @@ impl Session {
         rustgis_data::diagnostics::set_clock(|| {
             web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
         });
-        Session {
+        let label_notices = std::mem::take(&mut project.label_read_notices);
+        let mut session = Session {
             project,
             path: None,
             log: project_log::SessionLog::default(),
@@ -974,7 +988,11 @@ impl Session {
             raster_runs: Vec::new(),
             long_runs: None,
             stoppable: false,
+        };
+        for text in label_notices {
+            session.notify(text, false);
         }
+        session
     }
 
     /// Keeps a query's result the app ran off the frame, for `layer.addSql {"ran": id}`, with the
@@ -1341,7 +1359,7 @@ impl Session {
             (Ok(_), Some(_)) if std::mem::take(&mut self.request_only) => {}
             (Ok(_), Some(mut snap)) => {
                 fresh_source_ids(&snap, &mut self.project);
-                forget_locks_of_removed_features(&snap, &mut self.project);
+                forget_label_state_of_removed_features(&snap, &mut self.project);
                 // An edit may change the dates the time slider's window filters on: bound layers
                 // whose features or fields the command changed (features are shared with the
                 // snapshot until written) take the window again.

@@ -11,6 +11,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::GpRecord;
 
+#[path = "project_label_losses.rs"]
+pub(crate) mod label_losses;
+
 /// A map export cannot keep runtime-only download reservations, even in a larger project.
 pub(crate) fn ensure_map_imports_complete(map: &Map) -> Result<(), String> {
     if map.layers.iter().any(|layer| layer.dataset.source.as_deref().is_some_and(|source| source.starts_with("geolibre-pending:")))
@@ -258,6 +261,9 @@ fn identity(text: &str) -> (usize, u64) {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Project {
+    /// Read-time label adjustments, consumed by the session and never saved.
+    #[serde(skip)]
+    pub(crate) label_read_notices: Vec<String>,
     #[serde(default = "format")]
     pub format: u32,
     pub name: String,
@@ -605,6 +611,7 @@ impl Project {
 
     pub fn new(name: impl Into<String>) -> Self {
         Project {
+            label_read_notices: Vec::new(),
             format: FORMAT,
             name: name.into(),
             maps: vec![Map::new("Map")],
@@ -1102,6 +1109,7 @@ impl Project {
             p.resolve_paths(d);
         }
         p.normalize();
+        p.label_read_notices = label_losses::notices(text, &p)?;
         Ok(p)
     }
 

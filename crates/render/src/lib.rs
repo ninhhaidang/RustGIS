@@ -34,6 +34,7 @@ mod stroke_paths;
 pub mod svg;
 pub mod terrain;
 mod text;
+pub use text::CALLOUT_WIDTH;
 pub mod tile_mesh;
 mod tiles;
 pub mod vector;
@@ -2226,6 +2227,12 @@ fn lift_labels(view: &View, ground: &terrain::Ground, candidates: &mut [Candidat
         (dx.is_finite() && dy.is_finite()).then_some((dx, dy))
     };
     for c in candidates.iter_mut() {
+        if let Some([ax, ay]) = c.label.collide.callout_anchor {
+            let (fx, fy) = (c.label.x + ax, c.label.y + ay);
+            if let (Some((fdx, fdy)), Some((dx, dy))) = (offset(fx, fy), offset(c.label.x, c.label.y)) {
+                c.label.collide.callout_anchor = Some([ax + fdx - dx, ay + fdy - dy]);
+            }
+        }
         if let Some((dx, dy)) = offset(c.label.x, c.label.y) {
             c.label.x += dx;
             c.label.y += dy;
@@ -2485,6 +2492,12 @@ fn raise_labels(map: &Map, view: &View, candidates: &mut [Candidate]) {
             let delta = (sx as f32 - x, sy as f32 - y);
             (delta.0.is_finite() && delta.1.is_finite()).then_some(delta)
         };
+        if let Some([ax, ay]) = l.collide.callout_anchor {
+            let (fx, fy) = (l.x + ax, l.y + ay);
+            if let (Some((fdx, fdy)), Some((dx, dy))) = (offset(fx, fy), offset(l.x, l.y)) {
+                l.collide.callout_anchor = Some([ax + fdx - dx, ay + fdy - dy]);
+            }
+        }
         if let Some((dx, dy)) = offset(l.x, l.y) {
             l.x += dx;
             l.y += dy;
@@ -3321,7 +3334,8 @@ fn render_frame(
         map.label_lock = None;
         map.label_lock_line_anchors.clear();
     }
-    let lock: Option<std::collections::HashMap<rustgis_map::LabelKey, u8>> = map.label_lock.as_ref().map(|v| v.iter().copied().collect());
+    let lock: Option<std::collections::HashMap<rustgis_map::LabelKey, rustgis_map::LockedPlace>> =
+        map.label_lock.as_ref().map(|v| v.iter().copied().collect());
     // The classes of features with a label locked (any of its repeats), to pass the rest over early.
     let locked_classes: Option<std::collections::HashSet<(u32, u64, usize)>> =
         lock.as_ref().map(|k| k.keys().map(|&(l, r, c, _)| (l, r, c)).collect());
@@ -3901,8 +3915,28 @@ fn render_frame(
                     .map(|(c, _)| c.offset[0].abs().max(c.offset[1].abs()) * 1.33 * label_factor)
                     .filter(|r| r.is_finite())
                     .fold(0.0, f32::max);
-                let offset_reach = f64::from(offset_reach);
+                let locked_reach = lock
+                    .as_ref()
+                    .into_iter()
+                    .flat_map(|locks| locks.iter())
+                    .filter(|((layer, ..), _)| *layer == lid)
+                    .filter_map(|(_, place)| place.callout)
+                    .map(|[x, y]| x.abs().max(y.abs()))
+                    .filter(|r| r.is_finite())
+                    .fold(0.0, f32::max);
+                let offset_reach = f64::from(offset_reach.max(locked_reach));
                 let (vw, vh) = (ctx.view.width, ctx.view.height);
+                // Labels moved by hand (the Move Label tool): any class's, its feature known by
+                // its id. Where one was put is in view or not whatever its feature's place.
+                let any_moved = labels.in_order().zip(&label_fields).any(|(c, f)| f.is_some() && !c.moved.is_empty());
+                // (Kept as longitude and latitude: the flat map draws its projection's coordinates,
+                // as its features' `geoms` are; the globe draws longitude and latitude.)
+                let moved_to = |class: &rustgis_map::LabelClass, fid: Option<u64>| {
+                    fid.and_then(|id| class.moved_to(id))
+                        .map(|[x, y]| Coord::new(x, y))
+                        .and_then(|c| if globe.is_some() { Some(c) } else { flat.forward_checked(c) })
+                        .and_then(|c| ctx.screen(c))
+                };
                 for (row, g) in geoms.iter().enumerate() {
                     let Some(g) = g else { continue };
                     if rows.get(row) != Some(&true) {
@@ -3921,7 +3955,14 @@ fn render_frame(
                         None
                     };
                     let line_in_view = || globe.is_some() || ctx.cull.intersects(&extents.get(row).copied().unwrap_or_else(|| g.extent()));
-                    if point.is_none() && !(any_along && matches!(g, Geometry::Line(_)) && line_in_view()) {
+                    let fid = layer.dataset.features.get(row).map(|f| f.id);
+                    // (Its class's clause read only for a feature with a label moved.)
+                    let moved_here = || {
+                        any_moved
+                            && fid.is_some_and(|id| labels.in_order().any(|c| c.moved_to(id).is_some()))
+                            && classes.classes_of(ds_ptr, row).any(|(_, c)| moved_to(c, fid).is_some())
+                    };
+                    if point.is_none() && !(any_along && matches!(g, Geometry::Line(_)) && line_in_view()) && !moved_here() {
                         continue;
                     }
                     let is_point = g.kind() == GeometryType::Point;
@@ -3946,9 +3987,14 @@ fn render_frame(
                         if locked_classes.as_ref().is_some_and(|k| !k.contains(&(lid, label_id(row), ci))) {
                             continue;
                         }
-                        if point.is_none() && !along_line(class.placement, g) {
+                        // Moved by hand: one label, upright, where it was put.
+                        let moved = if any_moved { moved_to(class, fid) } else { None };
+                        if point.is_none() && moved.is_none() && !along_line(class.placement, g) {
                             continue;
                         }
+                        // Its feature's place, for a callout's line back to it: off the screen too
+                        // when the label was moved into view.
+                        let anchor = point.or_else(|| moved.and_then(|_| ctx.screen(c)));
                         // (Along a line, the label is put on its stretch in view below.)
                         let (x, y) = point.unwrap_or_default();
                         let Some(fi) = label_fields.get(ci).copied().flatten() else { continue };
@@ -3993,7 +4039,9 @@ fn render_frame(
                         let mut curves = None;
                         let mut line_alternatives = Vec::new();
                         let mut line_places = None;
-                        if let (LabelPlacement::Parallel | LabelPlacement::Curved, Geometry::Line(parts)) = (class.placement, g) {
+                        if let Some((mx, my)) = moved {
+                            places.push((0, mx as f32, my as f32, None, Vec::new()));
+                        } else if let (LabelPlacement::Parallel | LabelPlacement::Curved, Geometry::Line(parts)) = (class.placement, g) {
                             let key = (lid, label_id(row), ci, 0);
                             let repeat = class.repeat.map(|r| r * 1.33 * label_factor);
                             let try_others = class.other_positions && repeat.is_none();
@@ -4021,7 +4069,7 @@ fn render_frame(
                             let overrun = size;
                             let positions = |width| match locked_at {
                                 Some(at) => {
-                                    let won = lock.as_ref().and_then(|keys| keys.get(&key)).copied().unwrap_or(0);
+                                    let won = lock.as_ref().and_then(|keys| keys.get(&key)).map_or(0, |won| won.place);
                                     vec![at; (usize::from(won) + 1).min(8)]
                                 }
                                 None => line_labels::positions(line.length(), width, overrun),
@@ -4050,7 +4098,8 @@ fn render_frame(
                                     let positions = positions(width);
                                     // A saved slot the curve cannot take has no truthful preview either (as for a
                                     // straight line): never draw one at the anchor or the middle.
-                                    if lock.as_ref().and_then(|k| k.get(&key)).is_some_and(|won| usize::from(*won) >= positions.len()) {
+                                    if lock.as_ref().and_then(|k| k.get(&key)).is_some_and(|won| usize::from(won.place) >= positions.len())
+                                    {
                                         continue;
                                     }
                                     line_places = Some(LinePlaces { anchors: anchors(&positions), ..Default::default() });
@@ -4058,7 +4107,7 @@ fn render_frame(
                                     let angle = line.parallel(width, overrun, locked_at).map(|(_, _, a)| a);
                                     // The preview is also View Unplaced's middle when every curve fails.
                                     places.push((0, cx, cy, angle, Vec::new()));
-                                    let locked = lock.as_ref().and_then(|k| k.get(&key)).map(|won| usize::from(*won));
+                                    let locked = lock.as_ref().and_then(|k| k.get(&key)).map(|won| usize::from(won.place));
                                     curves = Some(label_places::Curves::new(
                                         std::sync::Arc::new(label_places::CurveSpec {
                                             line: line.clone(),
@@ -4123,8 +4172,9 @@ fn render_frame(
                         // Layers above first, then the classes listed first (#732), then bigger
                         // polygons: a class (ci ≤ MAX_LABEL_CLASSES, 1e9 each) never outweighs a
                         // layer (1e12), nor an area (≤ 1e8) a class. A line's repeats come after
-                        // its label at the middle, nearest first (lines have no area).
-                        let pri = (n_layers - li) as f64 * 1e12 - ci as f64 * 1e9 + area;
+                        // its label at the middle, nearest first (lines have no area). Labels moved
+                        // by hand come before all of them (1e15), so the others keep off them.
+                        let pri = (n_layers - li) as f64 * 1e12 - ci as f64 * 1e9 + area + if moved.is_some() { 1e15 } else { 0.0 };
                         let last = places.len().saturating_sub(1);
                         for (n, (i, mut lx, mut ly, mut angle, mut glyphs)) in places.into_iter().enumerate() {
                             let key = (lid, label_id(row), ci, i);
@@ -4139,7 +4189,7 @@ fn render_frame(
                                     class
                                         .placement
                                         .alternatives()
-                                        .filter(|_| class.other_positions)
+                                        .filter(|_| class.other_positions && moved.is_none())
                                         .map(place)
                                         .map(LabelPlace::from)
                                         .collect::<Vec<_>>()
@@ -4149,9 +4199,9 @@ fn render_frame(
                             };
                             let alternatives = match lock.as_ref().and_then(|k| k.get(&key)) {
                                 Some(&won) => {
-                                    if let Some(at) = usize::from(won).checked_sub(1).and_then(|i| others().into_iter().nth(i)) {
+                                    if let Some(at) = usize::from(won.place).checked_sub(1).and_then(|i| others().into_iter().nth(i)) {
                                         (lx, ly, angle, glyphs) = (at.x, at.y, at.angle, at.glyphs);
-                                    } else if won > 0 && !is_point && curves.is_none() {
+                                    } else if won.place > 0 && !is_point && curves.is_none() {
                                         // Do not slide a locked line to its middle when its saved place
                                         // cannot be represented. Without a valid saved place there is also
                                         // no truthful View Unplaced preview; never invent one at the middle.
@@ -4182,7 +4232,23 @@ fn render_frame(
                                     font,
                                     line_align: class.line_align,
                                     angle,
-                                    collide: Default::default(),
+                                    collide: rustgis_tiles::Collide {
+                                        // Shown all: over the other labels where they crowd.
+                                        text_allow_overlap: class.show_all,
+                                        // Callouts: a label set by its feature (not along a line,
+                                        // rotated or not) may move off a crowded spot, a line drawn
+                                        // back to it; one moved by hand, a line's too, keeps its line.
+                                        callout_reach: if moved.is_some() || (!along_line(class.placement, g) && glyphs.is_empty()) {
+                                            class.callout.unwrap_or(0.0)
+                                        } else {
+                                            0.0
+                                        },
+                                        callout_anchor: anchor.map(|(ax, ay)| [ax as f32 - lx, ay as f32 - ly]),
+                                        callout_offset: lock.as_ref().and_then(|k| k.get(&key)).and_then(|won| won.callout),
+                                        pinned: moved.is_some(),
+                                        source: fid.map(|id| (lid, id, ci as u32)),
+                                        ..Default::default()
+                                    },
                                     // (Not behind characters curved one by one.)
                                     background: class
                                         .background
@@ -4908,6 +4974,7 @@ fn line_near_anchor(ctx: &Ctx<'_>, parts: &[Vec<Coord>], anchor: (f32, f32), ove
 /// own place, or else the first of its alternatives in sight, is where it goes; the rest in sight
 /// are left to try. Left out with none in sight, or its icon out of sight.
 fn tilt_candidate(mut c: Candidate, at: &(impl Fn(f32, f32) -> Option<(f32, f32)> + Clone + Send + Sync + 'static)) -> Option<Candidate> {
+    let feature = c.label.collide.callout_anchor.and_then(|[ax, ay]| at(c.label.x + ax, c.label.y + ay));
     if let Some(curves) = &mut c.curves {
         let mut preview = curves.preview_in(&mut c.label, at)?;
         preview.swap(&mut c.label);
@@ -4933,6 +5000,7 @@ fn tilt_candidate(mut c: Candidate, at: &(impl Fn(f32, f32) -> Option<(f32, f32)
         }
         (i.x, i.y) = at(i.x, i.y)?;
     }
+    c.label.collide.callout_anchor = feature.map(|(x, y)| [x - c.label.x, y - c.label.y]);
     Some(c)
 }
 
@@ -4940,6 +5008,7 @@ fn tilt_candidate(mut c: Candidate, at: &(impl Fn(f32, f32) -> Option<(f32, f32)
 /// `at` must succeed for the main label and its icon (the turned-view caller is infallible).
 /// Alternative glyph positions may fail; their slots stay invalid rather than being renumbered.
 fn turn_candidate(c: &mut Candidate, at: impl Fn(f32, f32) -> Option<(f32, f32)> + Clone + Send + Sync + 'static) {
+    let feature = c.label.collide.callout_anchor.and_then(|[ax, ay]| at(c.label.x + ax, c.label.y + ay));
     turn_with(&mut c.label, &at);
     if let Some((x, y)) = at(c.label.x, c.label.y) {
         (c.label.x, c.label.y) = (x, y);
@@ -4949,6 +5018,7 @@ fn turn_candidate(c: &mut Candidate, at: impl Fn(f32, f32) -> Option<(f32, f32)>
     {
         (i.x, i.y) = (x, y);
     }
+    c.label.collide.callout_anchor = feature.map(|(x, y)| [x - c.label.x, y - c.label.y]);
     for p in &mut c.alternatives {
         if !p.transform(&mut c.label, &at) {
             // Preserve the slot number for locks, but never place source-view geometry.
@@ -5050,10 +5120,107 @@ fn halo_for(text: Rgba) -> Rgba {
 struct Placement {
     labels: Vec<PlacedLabel>,
     unplaced: Vec<PlacedLabel>,
-    /// The key of each placed label, and the place it took (0 its own, else its alternative's
-    /// number from 1).
-    keys: Vec<(rustgis_map::LabelKey, u8)>,
+    /// The key of each placed label, and the place it took.
+    keys: Vec<(rustgis_map::LabelKey, rustgis_map::LockedPlace)>,
     line_anchors: Vec<(rustgis_map::LabelKey, Coord)>,
+}
+
+/// Labels a placement looks for a callout's spot for, at most (each looks at up to a few thousand
+/// spots).
+const MAX_CALLOUT_SEARCHES: usize = 500;
+
+/// Spots a placement tries for its callouts at most, all its searches together.
+const MAX_CALLOUT_SPOTS: usize = 200_000;
+
+/// A label's text's extent (points, `[x0, y0, x1, y1]`), as placement keeps it clear of the
+/// others: what the Move Label tool picks it by.
+pub fn label_extent(l: &PlacedLabel) -> Option<[f32; 4]> {
+    boxes_extent(&label_boxes(l).0)
+}
+
+/// The extent of boxes (`[x0, y0, x1, y1]` each); none for none.
+fn boxes_extent(boxes: &[[f32; 4]]) -> Option<[f32; 4]> {
+    let e = boxes
+        .iter()
+        .fold([f32::MAX, f32::MAX, f32::MIN, f32::MIN], |e, b| [e[0].min(b[0]), e[1].min(b[1]), e[2].max(b[2]), e[3].max(b[3])]);
+    (e[0] <= e[2] && e[1] <= e[3]).then_some(e)
+}
+
+/// The callout's line a label would have where it is now, as offsets from its `x`, `y`: from its
+/// feature (`collide.callout_anchor`) to its text's nearest edge, when its class has callouts.
+/// For showing a label being moved by hand.
+pub fn callout_to(l: &PlacedLabel) -> Option<[f32; 4]> {
+    let [ax, ay] = l.collide.callout_anchor.filter(|_| l.collide.callout_reach > 0.0)?;
+    let line = callout_line(&label_boxes(l).0, [l.x + ax, l.y + ay])?;
+    Some([line[0] - l.x, line[1] - l.y, line[2] - l.x, line[3] - l.y])
+}
+
+/// A callout's line, from its feature at `anchor` to the nearest edge of the text's boxes; none
+/// when the text covers the feature.
+fn callout_line(text: &[[f32; 4]], anchor: [f32; 2]) -> Option<[f32; 4]> {
+    let e = boxes_extent(text)?;
+    if !anchor.iter().all(|v| v.is_finite()) {
+        return None;
+    }
+    let to = [anchor[0].clamp(e[0], e[2]), anchor[1].clamp(e[1], e[3])];
+    ((to[0] - anchor[0]).hypot(to[1] - anchor[1]) >= 1.0).then_some([anchor[0], anchor[1], to[0], to[1]])
+}
+
+/// Where a crowded label with a callout goes: the nearest free spot for its text's boxes, inside
+/// the view, whose line from its feature at `anchor` to the nearest edge of its text is at most
+/// `reach` long (points), and which doesn't cover the feature. The offset that moves it there and
+/// that line (from, to), or none.
+fn callout_spot(
+    text: &[[f32; 4]],
+    anchor: [f32; 2],
+    reach: f32,
+    free: impl Fn(&[f32; 4]) -> bool,
+    w: f32,
+    h: f32,
+    spots: &mut usize,
+) -> Option<(f32, f32, [f32; 4])> {
+    let ext = boxes_extent(text)?;
+    if !(anchor[0].is_finite() && anchor[1].is_finite() && reach.is_finite()) {
+        return None;
+    }
+    // Out in rings half the text's height apart, as far as its line may reach past its size: at
+    // most 60 of them, farther apart for a long reach, so the last still gets that far.
+    let far = reach + (ext[2] - ext[0]).max(ext[3] - ext[1]);
+    let step = ((ext[3] - ext[1]) * 0.5).clamp(2.0, 20.0).max(far / 60.0);
+    let rings = ((far / step).ceil() as usize).clamp(1, 60);
+    for ring in 1..=rings {
+        let d = ring as f32 * step;
+        // More directions farther out, so the spots stay about as close together.
+        let n = ((d * 0.75) as usize).clamp(8, 64);
+        let mut best: Option<(f32, f32, f32, [f32; 4])> = None;
+        for k in 0..n {
+            let a = k as f32 / n as f32 * std::f32::consts::TAU;
+            let (dx, dy) = (d * a.cos(), d * a.sin());
+            let moved = |b: &[f32; 4]| [b[0] + dx, b[1] + dy, b[2] + dx, b[3] + dy];
+            let e = moved(&ext);
+            if e[0] < 0.0 || e[1] < 0.0 || e[2] > w || e[3] > h {
+                continue;
+            }
+            // The line ends at the text's nearest edge; text over the feature hides it.
+            let to = [anchor[0].clamp(e[0], e[2]), anchor[1].clamp(e[1], e[3])];
+            let len = (to[0] - anchor[0]).hypot(to[1] - anchor[1]);
+            if len > reach || len < 1.0 || best.is_some_and(|b| len >= b.0) {
+                continue;
+            }
+            if *spots == 0 {
+                return best.map(|(_, dx, dy, line)| (dx, dy, line));
+            }
+            *spots -= 1;
+            if !text.iter().all(|b| free(&moved(b))) {
+                continue;
+            }
+            best = Some((len, dx, dy, [anchor[0], anchor[1], to[0], to[1]]));
+        }
+        if let Some((_, dx, dy, line)) = best {
+            return Some((dx, dy, line));
+        }
+    }
+    None
 }
 
 /// Greedy collision-free placement, highest priority first. Locked labels are all placed (they
@@ -5093,6 +5260,7 @@ fn place_labels_with_previews(
     }
     let mut out = Placement { labels: fixed, unplaced: Vec::new(), keys: Vec::new(), line_anchors: Vec::new() };
     let outside = |b: &[f32; 4]| b[2] < 0.0 || b[3] < 0.0 || b[0] > w || b[1] > h;
+    let (mut searches, mut spots) = (MAX_CALLOUT_SEARCHES, MAX_CALLOUT_SPOTS);
     // Same work bound as 20,000 heads with eight positions, shared across all bands.
     let mut layouts_left: usize = 20_000 * 8;
     let mut placed_groups = std::collections::HashSet::new();
@@ -5102,6 +5270,8 @@ fn place_labels_with_previews(
         // Siblings are contiguous: hold just one temporary preview until the group finishes.
         let mut pending = None;
         for Candidate { label: mut l, key, alternatives, curves, line, .. } in std::iter::once(head).chain(fallbacks) {
+            let c = l.collide;
+            let feature = c.callout_anchor.map(|[ax, ay]| [l.x + ax, l.y + ay]);
             let grouped = line.as_ref().is_some_and(|line| line.deduplicate);
             if grouped && placed_groups.contains(&key) {
                 continue;
@@ -5147,6 +5317,13 @@ fn place_labels_with_previews(
                     continue;
                 }
                 place.swap(&mut l);
+                if locked
+                    && !l.collide.pinned
+                    && let Some([dx, dy]) = l.collide.callout_offset
+                {
+                    l.x += dx;
+                    l.y += dy;
+                }
                 let (text, icon) = label_boxes(&l);
                 if text.iter().chain(&icon).all(outside) {
                     continue;
@@ -5160,8 +5337,50 @@ fn place_labels_with_previews(
                     break;
                 }
             }
-            let Some((i, mut place, text, icon, show_text, show_icon)) = at else { continue };
+            let Some((i, mut place, mut text, icon, mut show_text, show_icon)) = at else { continue };
             place.swap(&mut l);
+            l.collide.callout = None;
+            let relative = |l: &PlacedLabel, line: [f32; 4]| [line[0] - l.x, line[1] - l.y, line[2] - l.x, line[3] - l.y];
+            let mut moved_by = None;
+            if let (true, Some([dx, dy])) = (locked && !collide.pinned, collide.callout_offset) {
+                // Locked after a callout moved it: there again, with its line.
+                moved_by = Some([dx, dy]);
+                if let Some(f) = feature.filter(|_| collide.callout_reach > 0.0)
+                    && let Some(line) = callout_line(&text, f)
+                {
+                    l.collide.callout = Some(relative(&l, line));
+                }
+            } else if collide.pinned {
+                // Moved by hand: where it was put, a callout's line back to its feature when its class
+                // has callouts (however long: it was put there).
+                if let Some(f) = feature.filter(|_| collide.callout_reach > 0.0)
+                    && let Some(line) = callout_line(&text, f)
+                {
+                    l.collide.callout = Some(relative(&l, line));
+                }
+            } else if let Some(f) = feature
+                && collide.callout_reach > 0.0
+                && !locked
+                && !has_icon
+                && has_text
+                && text.iter().any(|b| grid.hits(b))
+                && searches > 0
+            {
+                // A callout: crowded where it is and at its alternatives, the label moves to the
+                // nearest free spot within its reach, a line drawn back to its feature. With no such
+                // spot it stays, and is left out, or shown over the others when its class shows all.
+                searches -= 1;
+                if let Some((dx, dy, line)) = callout_spot(&text, f, collide.callout_reach, |b| !grid.hits(b), w, h, &mut spots) {
+                    moved_by = Some([dx, dy]);
+                    l.x += dx;
+                    l.y += dy;
+                    for b in &mut text {
+                        *b = [b[0] + dx, b[1] + dy, b[2] + dx, b[3] + dy];
+                    }
+                    show_text = true;
+                    l.collide.callout = Some(relative(&l, line));
+                }
+            }
             if !show_text && !show_icon {
                 if show_unplaced && has_text && unplaced.len() < 2000 && pending.is_none() {
                     pending =
@@ -5187,8 +5406,13 @@ fn place_labels_with_previews(
             if let Some(anchor) = line.as_ref().and_then(|line| line.anchors.get(i)).copied().flatten() {
                 out.line_anchors.push((key, anchor));
             }
+            // Its feature stays where it is: the anchor is its offset from the label as placed
+            // (an alternative place, a callout or a lock may have moved it).
+            if let Some(f) = feature {
+                l.collide.callout_anchor = Some([f[0] - l.x, f[1] - l.y]);
+            }
             out.labels.push(l);
-            out.keys.push((key, u8::try_from(i).unwrap_or(u8::MAX)));
+            out.keys.push((key, rustgis_map::LockedPlace { place: u8::try_from(i).unwrap_or(u8::MAX), callout: moved_by }));
         }
         if let Some((key, preview)) = pending
             && key.is_none_or(|k| !placed_groups.contains(&k))
@@ -5206,7 +5430,8 @@ fn place_labels_with_previews(
 fn shows(l: &PlacedLabel, text: &[[f32; 4]], icon: &[[f32; 4]], grid: &LabelGrid, locked: bool) -> (bool, bool) {
     let c = l.collide;
     let (has_text, has_icon) = (!text.is_empty(), !icon.is_empty());
-    let fits = |boxes: &[[f32; 4]], overlap: bool| locked || overlap || !boxes.iter().any(|b| grid.hits(b));
+    // A label moved by hand shows where it was put, whatever is under it.
+    let fits = |boxes: &[[f32; 4]], overlap: bool| locked || overlap || c.pinned || !boxes.iter().any(|b| grid.hits(b));
     let mut show_text = has_text && fits(text, c.text_allow_overlap);
     let mut show_icon = has_icon && fits(icon, c.icon_allow_overlap);
     // Which part may show without the other (MapLibre's rules).
@@ -5472,6 +5697,132 @@ mod tests {
         }
     }
 
+    /// While a label is dragged, its callout's line is worked out where it is: from its feature,
+    /// which stays put, to its text's nearest edge; none when its class has no callouts, or its
+    /// text covers its feature. Its extent is what picks it.
+    #[test]
+    fn a_dragged_label_s_callout_follows_it() {
+        use rustgis_tiles::Collide;
+        let l = PlacedLabel {
+            y: 50.0,
+            collide: Collide { callout_reach: 40.0, callout_anchor: Some([-60.0, 30.0]), ..Default::default() },
+            ..label("Moved", 150.0, None, 0.0)
+        };
+        let e = label_extent(&l).unwrap();
+        assert!(e[0] < 150.0 && 150.0 < e[2] && e[1] < 50.0 && 50.0 < e[3], "{e:?}");
+        let [x0, y0, x1, y1] = callout_to(&l).expect("a line");
+        assert_eq!((x0, y0), (-60.0, 30.0), "from the feature");
+        // To the text's bottom-left corner: the feature is below and to the left of it.
+        assert!(((l.x + x1) - e[0]).abs() < 1e-3 && ((l.y + y1) - e[3]).abs() < 1e-3);
+        let none = PlacedLabel { collide: Collide { callout_reach: 0.0, ..l.collide }, ..l.clone() };
+        assert!(callout_to(&none).is_none(), "no callouts");
+        let over = PlacedLabel { collide: Collide { callout_anchor: Some([0.0, 0.0]), ..l.collide }, ..l.clone() };
+        assert!(callout_to(&over).is_none(), "the text over its feature");
+    }
+
+    /// A label moved by hand is placed where it was put, over another and first, so the others keep
+    /// off it; with callouts its line reaches back to its feature, however far it went.
+    #[test]
+    fn labels_moved_by_hand_are_placed_where_they_were_put() {
+        use rustgis_tiles::Collide;
+        // Its feature 80 points left of where it was put.
+        let pinned = |callout: f32| PlacedLabel {
+            y: 50.0,
+            collide: Collide { pinned: true, callout_reach: callout, callout_anchor: Some([-80.0, 0.0]), ..Default::default() },
+            ..label("Moved", 150.0, None, 0.0)
+        };
+        let other = PlacedLabel { y: 50.0, ..label("Other", 150.0, None, 0.0) };
+        // The other first by priority, the moved one placed first anyway: it keeps its spot.
+        let p = place_labels(
+            vec![(other.clone(), 9.0, (u32::MAX, 0, 0, 0)), (pinned(0.0), 1e15, (u32::MAX, 1, 0, 0))],
+            Vec::new(),
+            300.0,
+            120.0,
+            false,
+        );
+        assert_eq!(p.labels.first().map(|l| (l.text.as_str(), l.x, l.y)), Some(("Moved", 150.0, 50.0)));
+        assert_eq!(p.labels.len(), 1, "the other keeps off it");
+        assert!(p.labels[0].collide.callout.is_none(), "no callouts: no line");
+        // With callouts: a line from the feature to its text, past any callout's usual reach.
+        let p = place_labels(vec![(pinned(5.0), 1e15, (u32::MAX, 1, 0, 0))], Vec::new(), 300.0, 120.0, false);
+        let l = &p.labels[0];
+        let [x0, y0, x1, y1] = l.collide.callout.expect("a line back to its feature");
+        assert!(((l.x + x0) - 70.0).abs() < 1e-3 && ((l.y + y0) - 50.0).abs() < 1e-3);
+        assert!((x1 - x0).hypot(y1 - y0) > 5.0);
+        // And over whatever is there when it's placed after: a fixed label under it stays too.
+        let fixed = vec![other];
+        let p = place_labels(vec![(pinned(0.0), 1e15, (u32::MAX, 1, 0, 0))], fixed, 300.0, 120.0, false);
+        assert_eq!(p.labels.len(), 2);
+    }
+
+    /// A label crowded off its spot moves, with a callout, to the nearest free spot whose line back
+    /// to its feature is no longer than its reach, and keeps that line; with every label shown it
+    /// stays, over the other; with neither it's left out.
+    #[test]
+    fn callouts_move_crowded_labels_and_show_all_overlaps_them() {
+        use rustgis_tiles::Collide;
+        // Two labels on one spot, each by its feature 10 points below the text's centre.
+        let at = |text: &str, collide: Collide| PlacedLabel {
+            y: 50.0,
+            collide: Collide { callout_anchor: Some([0.0, 10.0]), ..collide },
+            ..label(text, 100.0, None, 0.0)
+        };
+        let place = |second: Collide| {
+            let cands = vec![(at("First", Collide::default()), 2.0, (u32::MAX, 0, 0, 0)), (at("Second", second), 1.0, (u32::MAX, 1, 0, 0))];
+            place_labels(cands, Vec::new(), 300.0, 120.0, false)
+        };
+        let overlap = |a: &[f32; 4], b: &[f32; 4]| a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3];
+        // Neither: the second is left out.
+        let p = place(Collide::default());
+        assert_eq!((p.labels.len(), p.unplaced.len()), (1, 1));
+        // A callout: moved clear of the first, a line from its feature to its text's edge.
+        let p = place(Collide { callout_reach: 40.0, ..Default::default() });
+        assert_eq!(p.labels.len(), 2);
+        let (first, second) = (&p.labels[0], &p.labels[1]);
+        assert!(first.collide.callout.is_none(), "in its own spot, no line");
+        let [x0, y0, x1, y1] = second.collide.callout.expect("a callout's line");
+        assert!(((second.x + x0) - 100.0).abs() < 1e-3 && ((second.y + y0) - 60.0).abs() < 1e-3, "it starts at the feature");
+        // Its anchor names the feature from where it was moved to, as a drag's preview reads it.
+        let [ax, ay] = second.collide.callout_anchor.expect("an anchor");
+        assert!(((second.x + ax) - 100.0).abs() < 1e-3 && ((second.y + ay) - 60.0).abs() < 1e-3, "anchor follows the move");
+        assert_eq!(callout_to(second), second.collide.callout, "the preview's line is the placed one");
+        let len = (x1 - x0).hypot(y1 - y0);
+        assert!((1.0..=40.0).contains(&len), "{len} points");
+        let (a, b) = (label_boxes(first).0, label_boxes(second).0);
+        assert!(!a.iter().any(|x| b.iter().any(|y| overlap(x, y))), "clear of the first");
+        // No free spot within so short a reach: left out, as without one.
+        let p = place(Collide { callout_reach: 1.0, ..Default::default() });
+        assert_eq!(p.labels.len(), 1);
+        // Every label shown: the second stays in its spot, over the first, with no line.
+        let p = place(Collide { text_allow_overlap: true, ..Default::default() });
+        assert_eq!(p.labels.len(), 2);
+        assert_eq!((p.labels[1].x, p.labels[1].y), (100.0, 50.0));
+        assert!(p.labels[1].collide.callout.is_none());
+        // Both: a free spot nearby comes before overlapping.
+        let p = place(Collide { callout_reach: 40.0, text_allow_overlap: true, ..Default::default() });
+        assert!(p.labels[1].collide.callout.is_some());
+    }
+
+    /// A callout's line is drawn from its feature to the text, in the label's colour.
+    #[test]
+    fn a_callout_line_is_drawn() {
+        use rustgis_tiles::Collide;
+        let mut pm = Canvas::new(200, 100).unwrap();
+        pm.fill(tiny_skia::Color::WHITE);
+        let l = PlacedLabel {
+            y: 20.0,
+            color: Rgba::rgb(200, 0, 0),
+            collide: Collide { callout: Some([-60.0, 60.0, -10.0, 10.0]), ..Default::default() },
+            ..label("Callout", 150.0, None, 0.0)
+        };
+        text::draw(&mut pm, &l, 1.0);
+        // Halfway along the line (x + y = 170), well clear of the text: red. (The pixel whose
+        // centre is on it: the line passes through (115, 55)'s corner.)
+        let mid = pm.pixels().pixel(115, 54).unwrap();
+        assert!(mid.red() > 120 && mid.green() < 80 && mid.blue() < 80, "{mid:?}");
+        assert!(pm.pixels().pixel(115, 20).is_some_and(|p| p.green() > 200), "nothing above the line");
+    }
+
     /// A halo of its own width reaches past the letters, so its label's collision box grows by it:
     /// another label's text never falls under it. The thin halo and none leave the box as it was.
     #[test]
@@ -5670,7 +6021,8 @@ mod tests {
         // The first free one, past one that is taken too.
         let p = place_labels(vec![blocker(), taken(vec![(104.0, 20.0), (300.0, 20.0), (300.0, 100.0)])], Vec::new(), 400.0, 200.0, false);
         assert_eq!(at(&p)[1], ("Taken".to_string(), 300.0, 20.0));
-        assert_eq!(p.keys, [((u32::MAX, 0, 0, 0), 0), ((1, 0, 0, 0), 2)], "the place it took, for a lock");
+        let place = |place| rustgis_map::LockedPlace { place, callout: None };
+        assert_eq!(p.keys, [((u32::MAX, 0, 0, 0), place(0)), ((1, 0, 0, 0), place(2))], "the place it took, for a lock");
         assert!(p.unplaced.is_empty());
         // All taken: unplaced once, where it would have gone.
         let p = place_labels(vec![blocker(), taken(vec![(104.0, 20.0), (96.0, 22.0)])], Vec::new(), 400.0, 200.0, false);
@@ -5706,7 +6058,7 @@ mod tests {
         let blocker = label("Blocker", 100.0, None, 0.0);
         let p = place_labels(vec![candidate.clone()], vec![blocker], 400.0, 200.0, false);
         assert_eq!(LabelPlace::of(&p.labels[1]), other);
-        assert_eq!(p.keys, [((1, 0, 0, 0), 1)]);
+        assert_eq!(p.keys, [((1, 0, 0, 0), rustgis_map::LockedPlace { place: 1, callout: None })]);
         // If every place collides, View Unplaced retains the original geometry, once.
         let p = place_labels(
             vec![candidate],
@@ -6057,6 +6409,185 @@ mod tests {
         assert!(starfield(1e9).is_some_and(|t| t.width() == 2048));
     }
 
+    /// A label moved by hand is drawn where it was put, on the flat map: its place is kept as
+    /// longitude and latitude, and drawn through the map's projection as its feature is.
+    /// (Taken for the projection's own coordinates, it was drawn off by Null Island instead.)
+    #[test]
+    fn a_label_moved_by_hand_is_drawn_where_it_was_put() {
+        let mut m = Map::new("Map");
+        let mut d = Dataset::new("pts", GeometryType::Point, vec![Field::new("name", FieldType::Text)]);
+        d.push(Some(Geometry::Point(Coord::new(2.35, 48.85))), vec![Value::Text("Paris".into())]);
+        d.push(Some(Geometry::Point(Coord::new(4.83, 45.76))), vec![Value::Text("Lyon".into())]);
+        let id = m.add_dataset(d);
+        let paris = m.layer(id).unwrap().dataset.features.first().unwrap().id;
+        if let Some(l) = m.layer_mut(id) {
+            l.labels.enabled = true;
+            l.labels.default.callout = Some(40.0);
+            assert!(l.labels.default.move_label(paris, Some([5.0, 49.5])));
+        }
+        let camera = Camera { center: lonlat_to_merc(Coord::new(3.6, 47.3)), res: 5000.0, bearing: 0.0, pitch: 0.0 };
+        let view = View { width: 800.0, height: 600.0, pixels_per_point: 1.0, camera, sky: false };
+        let on_screen = |m: &Map, lon: f64, lat: f64| view.to_screen(m.to_map(Coord::new(lon, lat)).unwrap());
+        let labels = render(&mut m, &view).unwrap().labels;
+        let l = labels.iter().find(|l| l.text == "Paris").expect("Paris's label is drawn");
+        let (ex, ey) = on_screen(&m, 5.0, 49.5);
+        assert!((f64::from(l.x) - ex).abs() < 0.5 && (f64::from(l.y) - ey).abs() < 0.5, "at ({}, {}), not ({ex}, {ey})", l.x, l.y);
+        assert!(l.collide.pinned);
+        assert_eq!(l.collide.source, Some((id, paris, 0)), "what the Move Label tool grabs it by");
+        // Its callout's line starts at Paris.
+        let [x0, y0, ..] = l.collide.callout.expect("a line back to Paris");
+        let (px, py) = on_screen(&m, 2.35, 48.85);
+        assert!((f64::from(l.x + x0) - px).abs() < 0.5 && (f64::from(l.y + y0) - py).abs() < 0.5);
+        // Lyon's, not moved, is where its class puts it, with no line.
+        let lyon = labels.iter().find(|l| l.text == "Lyon").unwrap();
+        assert!(!lyon.collide.pinned && lyon.collide.callout.is_none());
+    }
+
+    /// A label moved by hand into view is drawn whatever its feature's place: a point's, or a
+    /// line's labelled along it, out of view, its callout's line reaching back off the screen.
+    #[test]
+    fn a_label_moved_into_view_is_drawn_with_its_feature_out_of_it() {
+        let mut m = Map::new("Map");
+        let mut d = Dataset::new("pts", GeometryType::Point, vec![Field::new("name", FieldType::Text)]);
+        d.push(Some(Geometry::Point(Coord::new(2.35, 48.85))), vec![Value::Text("Paris".into())]);
+        let pts = m.add_dataset(d);
+        let mut d = Dataset::new("lines", GeometryType::Polyline, vec![Field::new("name", FieldType::Text)]);
+        d.push(Some(Geometry::Line(vec![vec![Coord::new(1.0, 44.0), Coord::new(3.0, 44.0)]])), vec![Value::Text("Garonne".into())]);
+        let lines = m.add_dataset(d);
+        for (id, to) in [(pts, [20.0, 50.0]), (lines, [20.0, 47.0])] {
+            let fid = m.layer(id).unwrap().dataset.features.first().unwrap().id;
+            let l = m.layer_mut(id).unwrap();
+            l.labels.enabled = true;
+            l.labels.default.callout = Some(40.0);
+            if id == lines {
+                l.labels.default.placement = LabelPlacement::Parallel;
+            }
+            assert!(l.labels.default.move_label(fid, Some(to)));
+        }
+        // Over Central Europe: France is off the left of the view.
+        let camera = Camera { center: lonlat_to_merc(Coord::new(20.0, 48.5)), res: 2000.0, bearing: 0.0, pitch: 0.0 };
+        let view = View { width: 800.0, height: 600.0, pixels_per_point: 1.0, camera, sky: false };
+        let on_screen = |m: &Map, lon: f64, lat: f64| view.to_screen(m.to_map(Coord::new(lon, lat)).unwrap());
+        assert!(on_screen(&m, 2.35, 48.85).0 < 0.0 && on_screen(&m, 3.0, 44.0).0 < 0.0, "the features are out of view");
+        let labels = render(&mut m, &view).unwrap().labels;
+        for (text, at) in [("Paris", (20.0, 50.0)), ("Garonne", (20.0, 47.0))] {
+            let l = labels.iter().find(|l| l.text == text).unwrap_or_else(|| panic!("{text}'s label is drawn"));
+            let (ex, ey) = on_screen(&m, at.0, at.1);
+            assert!((f64::from(l.x) - ex).abs() < 0.5 && (f64::from(l.y) - ey).abs() < 0.5, "{text}");
+            assert!(l.collide.pinned && l.angle.is_none() && l.glyphs.is_empty(), "{text}: upright where it was put");
+            let [x0, ..] = l.collide.callout.unwrap_or_else(|| panic!("{text}: a line back to its feature"));
+            assert!(l.x + x0 < 0.0, "{text}: its line starts off the screen");
+        }
+    }
+
+    /// A long callout is looked for as far as it may reach (the search's rings spaced out to get
+    /// there), not only near the label.
+    #[test]
+    fn a_long_callout_reaches_a_far_free_spot() {
+        // A small text by its feature at (100, 100); only spots 200 points right of it are free.
+        let text = [[95.0, 98.0, 105.0, 102.0]];
+        let free = |b: &[f32; 4]| b[0] > 300.0;
+        let (dx, _, [x0, y0, x1, y1]) = callout_spot(&text, [100.0, 100.0], 300.0, free, 1000.0, 200.0, &mut 100_000).expect("a spot");
+        assert!(dx > 195.0);
+        let len = (x1 - x0).hypot(y1 - y0);
+        assert!((150.0..=300.0).contains(&len), "{len} points");
+        // Beyond its reach, none.
+        assert!(callout_spot(&text, [100.0, 100.0], 100.0, free, 1000.0, 200.0, &mut 100_000).is_none());
+        // The placement's spots used up: it stops looking, and says how many it tried.
+        let mut spots = 5;
+        assert!(callout_spot(&text, [100.0, 100.0], 300.0, free, 1000.0, 200.0, &mut spots).is_none());
+        assert_eq!(spots, 0);
+    }
+
+    /// A point label turned by its angle expression may still move off by a callout: only labels
+    /// along lines are left out of callouts (it was left out, silently, for any angle).
+    #[test]
+    fn a_rotated_point_label_moves_off_by_a_callout() {
+        let mut m = Map::new("Map");
+        let mut d = Dataset::new("pts", GeometryType::Point, vec![Field::new("name", FieldType::Text)]);
+        d.push(Some(Geometry::Point(Coord::new(0.0, 0.0))), vec![Value::Text("First place".into())]);
+        d.push(Some(Geometry::Point(Coord::new(0.01, 0.0))), vec![Value::Text("Second place".into())]);
+        let id = m.add_dataset(d);
+        let l = m.layer_mut(id).unwrap();
+        l.labels.enabled = true;
+        l.labels.default.callout = Some(60.0);
+        l.labels.default.by.angle = Some("30".into());
+        let camera = Camera { center: lonlat_to_merc(Coord::new(0.0, 0.0)), res: 500.0, bearing: 0.0, pitch: 0.0 };
+        let view = View { width: 800.0, height: 600.0, pixels_per_point: 1.0, camera, sky: false };
+        let labels = render(&mut m, &view).unwrap().labels;
+        assert_eq!(labels.len(), 2, "both drawn");
+        assert!(labels.iter().all(|l| l.angle.is_some()), "turned");
+        assert!(labels.iter().any(|l| l.collide.callout.is_some()), "one moved off by a callout");
+    }
+
+    /// Two points close together: the second label moves off by a callout. Locked, it keeps that
+    /// place and its line, as the map moves too (it went back onto the first, without its line).
+    #[test]
+    fn a_lock_keeps_a_label_where_its_callout_moved_it() {
+        let mut m = Map::new("Map");
+        let mut d = Dataset::new("pts", GeometryType::Point, vec![Field::new("name", FieldType::Text)]);
+        d.push(Some(Geometry::Point(Coord::new(0.0, 0.0))), vec![Value::Text("First place".into())]);
+        d.push(Some(Geometry::Point(Coord::new(0.01, 0.0))), vec![Value::Text("Second place".into())]);
+        let id = m.add_dataset(d);
+        let l = m.layer_mut(id).unwrap();
+        l.labels.enabled = true;
+        l.labels.default.callout = Some(60.0);
+        let at = |x: f64| {
+            let camera = Camera { center: lonlat_to_merc(Coord::new(x, 0.0)), res: 500.0, bearing: 0.0, pitch: 0.0 };
+            View { width: 800.0, height: 600.0, pixels_per_point: 1.0, camera, sky: false }
+        };
+        let placed = |m: &mut Map, view: &View| {
+            let mut labels = render(m, view).unwrap().labels;
+            labels.sort_by(|a, b| a.text.cmp(&b.text));
+            labels
+        };
+        let free = placed(&mut m, &at(0.0));
+        assert_eq!(free.len(), 2);
+        let line = free.iter().filter_map(|l| l.collide.callout).next().expect("one moved off by a callout");
+        // Locked: the same places and line, frame after frame.
+        m.label_display.locked = true;
+        for _ in 0..2 {
+            let locked = placed(&mut m, &at(0.0));
+            assert_eq!(locked.len(), 2);
+            for (a, b) in free.iter().zip(&locked) {
+                assert!((a.x - b.x).abs() < 0.01 && (a.y - b.y).abs() < 0.01, "{}: ({}, {}) to ({}, {})", a.text, a.x, a.y, b.x, b.y);
+            }
+            assert_eq!(locked.iter().filter_map(|l| l.collide.callout).next(), Some(line));
+        }
+        // The map panned: the two labels stay as far apart, the line the same.
+        let panned = placed(&mut m, &at(0.02));
+        assert_eq!(panned.len(), 2);
+        let apart = |l: &[PlacedLabel]| (l[1].x - l[0].x, l[1].y - l[0].y);
+        let (a, b) = (apart(&free), apart(&panned));
+        assert!((a.0 - b.0).abs() < 0.5 && (a.1 - b.1).abs() < 0.5, "{a:?} {b:?}");
+        assert_eq!(panned.iter().filter_map(|l| l.collide.callout).next(), Some(line));
+    }
+
+    /// On a turned or tilted map a callout's line starts at its feature there too, not where the
+    /// north-up frame had it.
+    #[test]
+    fn a_callout_starts_at_its_feature_on_a_turned_map() {
+        let mut m = Map::new("Map");
+        let mut d = Dataset::new("pts", GeometryType::Point, vec![Field::new("name", FieldType::Text)]);
+        d.push(Some(Geometry::Point(Coord::new(2.35, 48.85))), vec![Value::Text("Paris".into())]);
+        let id = m.add_dataset(d);
+        let fid = m.layer(id).unwrap().dataset.features.first().unwrap().id;
+        let l = m.layer_mut(id).unwrap();
+        l.labels.enabled = true;
+        l.labels.default.callout = Some(40.0);
+        assert!(l.labels.default.move_label(fid, Some([3.5, 49.5])));
+        for (bearing, pitch) in [(40.0, 0.0), (0.0, 40.0), (40.0, 30.0)] {
+            let camera = Camera { center: lonlat_to_merc(Coord::new(2.9, 49.1)), res: 1000.0, bearing, pitch };
+            let view = View { width: 800.0, height: 600.0, pixels_per_point: 1.0, camera, sky: false };
+            let labels = render(&mut m, &view).unwrap().labels;
+            let l = labels.iter().find(|l| l.text == "Paris").expect("drawn");
+            let [x0, y0, ..] = l.collide.callout.expect("a line back to Paris");
+            let (px, py) = view.to_screen(m.to_map(Coord::new(2.35, 48.85)).unwrap());
+            let off = (f64::from(l.x + x0) - px).hypot(f64::from(l.y + y0) - py);
+            assert!(off < 1.0, "bearing {bearing}, pitch {pitch}: {off} points off");
+        }
+    }
+
     /// Each label class labels every feature its clause takes, as in ArcGIS Pro (#732): a feature
     /// two classes take gets a label from each, the class listed first placed first. A hidden
     /// class labels none, and a clause that no longer reads takes none (#618).
@@ -6237,7 +6768,7 @@ mod tests {
         // Locked, it stays there as the map moves.
         m.label_display.locked = true;
         assert_eq!(labels(&mut m, &flat), placed);
-        assert!(m.label_lock.as_ref().is_some_and(|k| k.iter().any(|(_, i)| *i > 0)), "{:?}", m.label_lock);
+        assert!(m.label_lock.as_ref().is_some_and(|k| k.iter().any(|(_, i)| i.place > 0)), "{:?}", m.label_lock);
         let moved = labels(&mut m, &view(0.0, 0.0, Coord::new(2.6, 48.85)));
         let apart = |l: &[(f32, f32, f32)]| (l[1].1 - l[0].1, l[1].2 - l[0].2);
         assert_eq!(moved.len(), 2);

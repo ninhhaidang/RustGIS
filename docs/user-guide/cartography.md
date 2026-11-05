@@ -481,6 +481,31 @@ Turn labels on per layer (Labeling › Labels › **Label**), then:
   Lock keeps the ones placed. The distance grows with the labels at a reference scale
   (`labels.placement={"layer": "Rivers", "position": "curved", "repeat": 144}`; `null` or `0` is
   the one at the middle).
+- **Show all labels** (Labeling pane › Position): labels among the view's 20,000 highest-priority
+  candidates are drawn, over the others where
+  they crowd, rather than some left out (`labels.placement={"layer": "Cities", "showAll": true}`).
+- **Callouts** (Labeling pane › Position): a label crowded off its spot moves to the nearest free
+  spot nearby, and a line is drawn from its feature to the text, as QGIS's callouts. **at most**
+  sets how long the line may be (5 to 500 points, 40 to start with): a label with no free spot
+  that close is left out, or drawn over the others with Show all labels. The line takes the
+  label's colour, over its halo. Labels along lines and labels with an icon aren't moved
+  (`labels.placement={"layer": "Cities", "callout": 60}`; `true` keeps the length, `false` turns
+  them off).
+- **Move Label** (Labeling tab › Label Placement): drag a label to where it should be, as with
+  QGIS's Move Label tool. It stays there as the map moves (kept by its feature, in longitude and
+  latitude, and saved with the project), is drawn whatever is under it, and the other labels keep
+  off it; with Callouts on, its line follows it back to its feature, however far it went.
+  Shift-click a moved label to put it back, or **Reset Moved** for all of the layer's. Dragging
+  anything else pans the map; Esc leaves the tool
+  (`labels.move={"layer": "Cities", "feature": 12, "to": [2.5, 49.1]}`; `"to": null` puts it back;
+  `labels.resetMoved={"layer": "Cities", "all": true}`).
+  Deleting a feature removes its saved move; Undo restores it. Service refresh and Repair Data Source reset saved
+  moves and old label locks because replacement data can reuse feature ids, with a counted notice
+  and undo restoration. Opening a project, importing a map or styles, or adding a layer file
+  reports invalid, duplicate or excess moved-label entries that were ignored, callout lengths that
+  were adjusted, and Show all labels settings that were not true or false. A callout length given
+  to `labels.placement` outside 5 to 500 points is brought within range with a notice. Clean
+  settings give no such notice.
 - **Font**: the labels' font family, any installed on the computer (Labeling pane › Symbol
   › **Font**; type part of a name to find it), or the label font the interface uses. Bold and
   italic take the family's own bold and italic faces where it has them. The family is saved by
