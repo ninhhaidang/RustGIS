@@ -8,6 +8,7 @@ pub mod cube;
 pub mod cube_catalog;
 pub mod deeplearning;
 pub mod design;
+pub mod diagram;
 pub mod directions;
 pub mod earthdata;
 pub mod edit;
@@ -77,6 +78,7 @@ pub fn all() -> Vec<CommandSpec> {
     v.extend(sources::commands());
     v.extend(connections::commands());
     v.extend(layer::commands());
+    v.extend(diagram::commands());
     v.extend(group::commands());
     v.extend(layer_copy::commands());
     v.extend(raster::commands());

@@ -1378,10 +1378,15 @@ fn legend_rows<'a>(map: &'a Map, drawn: Option<&[(u32, Vec<LegendEntry>)]>, opts
         // The fallback row only (a class that happens to bear its name stays).
         if opts.hide_other && entries.iter().any(|e| e.fallback) {
             entries.retain(|e| !e.fallback);
-            // Nothing left to show for this layer: leave it out rather than draw its plain swatch.
-            if entries.is_empty() {
+            // Nothing left to show for this layer: leave it out rather than draw its plain swatch
+            // (unless a diagram lists its categories below).
+            if entries.is_empty() && l.diagram.is_none() {
                 continue;
             }
+        }
+        // A layer with a diagram lists its categories under its classes.
+        if let Some(d) = &l.diagram {
+            entries.extend(d.legend(l.geometry_type() == GeometryType::Polyline));
         }
         if entries.is_empty() {
             // A Unique Values layer that lists nothing draws nothing visible (#207).

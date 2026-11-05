@@ -997,6 +997,7 @@ pub fn scale_bar(pm: &mut Canvas, view: &View, ground_per_pt: f64) {
 pub enum Align {
     Left,
     Center,
+    Right,
 }
 
 /// Draws one line of text at pixel position (`x`, `y`) (`y` is the line's middle), `px_size`
@@ -1008,6 +1009,7 @@ pub fn text_at(pm: &mut Canvas, text: &str, x: f32, y: f32, px_size: f32, color:
     let cx = match align {
         Align::Center => x,
         Align::Left => x + measure(text, px_size / 1.33, bold) / 2.0,
+        Align::Right => x - measure(text, px_size / 1.33, bold) / 2.0,
     };
     if halo && pm.is_recording() {
         keep_halo(pm, plain_outline(text, cx, y, px_size, bold), (px_size * 0.09).max(1.0), Rgba::new(255, 255, 255, 230));

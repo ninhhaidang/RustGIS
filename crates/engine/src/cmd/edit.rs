@@ -346,6 +346,27 @@ fn delete_field(s: &mut Session, p: &Json) -> CmdResult {
             }
     });
     let removed_rules = before - d.rules.len();
+    // Nor its diagram: the field's slice or bar goes, the range of sums a scaled size grows over is
+    // measured again without it, and a diagram left with no field goes too. Said once.
+    let mut diagram_note = None;
+    if let Some(dg) = &mut l.diagram
+        && dg.categories.iter().any(|c| c.field.eq_ignore_ascii_case(&removed))
+    {
+        dg.categories.retain(|c| !c.field.eq_ignore_ascii_case(&removed));
+        if dg.categories.is_empty() {
+            l.diagram = None;
+            diagram_note = Some(format!("{}: its diagram drew only the deleted field {removed}, so it is removed", l.name));
+        } else {
+            if let rustgis_map::DiagramSize::Scaled { min_size, max_size, .. } = dg.size {
+                let (min, max) = super::diagram::sum_range(dg, &l.dataset);
+                dg.size = rustgis_map::DiagramSize::Scaled { min_size, max_size, min, max };
+            }
+            diagram_note = Some(format!("{}: its diagram drew the deleted field {removed}, so that slice or bar is removed", l.name));
+        }
+    }
+    if let Some(note) = diagram_note {
+        s.notify(note, false);
+    }
     if let Some(name) = single {
         s.notify(format!("{name}: its classes read the deleted field {removed}, so it is drawn with a single symbol"), false);
     }

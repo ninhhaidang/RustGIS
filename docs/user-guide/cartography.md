@@ -378,6 +378,34 @@ its own copy of the ramp it uses, so layer files, map files and packages keep th
 projects that don't have the ramp, and deleting a ramp from the project leaves layers that use
 it unchanged.
 
+## Diagrams
+
+A diagram draws a small chart on each feature from **several numeric fields**, over the renderer's
+own symbol, as ArcGIS Pro's Chart symbology and QGIS's Diagrams draw: a polygon layer of
+administrative units can keep a Graduated Colors fill underneath while a pie on each feature shows
+its split of, say, male and female population. The categories take colours in turn from the palette
+new layers take; a feature where every category is null or zero draws nothing. A pie's slice
+angles are each category's share of the total; a bar chart's bars rise from a baseline, one per
+category. The size is a fixed radius or height in points, the same for every feature, or one grown
+with the categories' sum: from the smallest size to the largest, by the square root of the total's
+share of the range, as Proportional Symbols grow. By command:
+
+```text
+layer.diagram={"layer":"Regions","kind":"pie","fields":["pop_male","pop_female"]}
+layer.diagram={"kind":"bar","fields":[{"field":"under18","color":"#4A90D9"},{"field":"over65","color":"#E07B39"}],"size":{"from":6,"to":40},"labels":"both","background":"#FFFFFFCC","outline":{"color":"#4D4D4D","width":0.75}}
+layer.diagramInfo={"layer":"Regions"}
+layer.clearDiagram={"layer":"Regions"}
+```
+
+Each slice or bar can say something beside it (`"labels"`): `"none"` (the default), `"value"` (the
+feature's number, in the legend's number format — 52K, 1.2M), `"percent"` (its share of the
+feature's total, a whole percent or one decimal below ten), or `"both"` (`52K (52%)`). The label
+draws just past a pie's crust on the slice's mid-angle, or above a bar's top, in a small haloed
+dark text; culling makes room for it, so labelled charts stay visible to their last letter.
+
+The categories list under the layer's classes in layout legends — the printed map's legend lists
+them the same way. Clearing the diagram leaves the renderer as it is.
+
 ## Labeling
 
 The **Labeling pane** brings together the label classes and the chosen class's field, SQL
