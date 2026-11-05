@@ -451,6 +451,8 @@ pub struct TopologyIssue {
 pub struct Notice {
     pub text: String,
     pub error: bool,
+    /// How the troubleshooting history files it (an error, a warning or information).
+    pub(crate) severity: rustgis_data::diagnostics::Severity,
 }
 
 const UNDO_LIMIT: usize = 40;
@@ -665,7 +667,7 @@ pub struct Session {
     put_aside: Option<Box<PutAside>>,
     depth: u32,
     /// Only the command's registered id, never its parameters. Nested commands restore this.
-    diagnostic_source: Option<&'static str>,
+    pub(crate) diagnostic_source: Option<&'static str>,
     /// How many of the commands running now restore the project if they fail: a replacement is
     /// put aside only under one of them, as only then can it be rolled back.
     restorable: u32,
@@ -1650,11 +1652,16 @@ impl Session {
 
     fn notice_redacted(&mut self, text: rustgis_data::diagnostics::Redacted, severity: rustgis_data::diagnostics::Severity) {
         self.diagnostics.push_redacted(severity, self.diagnostic_source.unwrap_or("Application"), &text);
-        self.notices.push(Notice { text: text.into_string(), error: severity == rustgis_data::diagnostics::Severity::Error });
+        self.notices.push(Notice { text: text.into_string(), error: severity == rustgis_data::diagnostics::Severity::Error, severity });
         self.notices_given += 1;
         if self.notices.len() > 200 {
             self.notices.remove(0);
         }
+    }
+
+    /// How many notices were given in this session, including ones no longer kept.
+    pub(crate) fn notices_given(&self) -> u64 {
+        self.notices_given
     }
 
     /// A mark to pass to [`Session::notices_since`].

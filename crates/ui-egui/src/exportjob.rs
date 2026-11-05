@@ -1,7 +1,7 @@
-//! Export Features and Export Raster on the desktop write their file on a thread of their own
-//! (#1291 step 3), so a large layer or raster doesn't hold the window: the status bar shows the
-//! export under way, how far it has come and Cancel, and [`land`] says what it wrote, as the
-//! command says when it runs here.
+//! Export Features, Export Raster, Export Map and Export Layout on the desktop write their file
+//! on a thread of their own (#1291 step 3), so a large layer, raster or map doesn't hold the
+//! window: the status bar shows the export under way, how far it has come and Cancel, and
+//! [`land`] says what it wrote, as the command says when it runs here.
 
 use std::sync::Arc;
 
@@ -15,19 +15,26 @@ use crate::theme::Tokens;
 
 /// An export under way: what it is called, its Cancel and progress, and what it wrote once done.
 pub struct ExportJob {
+    started: exports::Started,
     name: &'static str,
     control: Arc<Control>,
     slot: crate::Slot<Result<Wrote, String>>,
 }
 
+/// Refuses another export while one runs, whichever way it would run (one at a time).
+pub fn idle(app: &RustGisApp) -> Result<(), String> {
+    match &app.export_job {
+        Some(job) => Err(crate::i18n::fmt("{tool} is still running: wait for it, or cancel it.", &[("tool", tl_raw!(job.name))])),
+        None => Ok(()),
+    }
+}
+
 /// Starts `command` ([`exports::runs_in_background`]) with `p` on a thread of its own. One at a
 /// time: a second is refused while the first runs.
 pub fn start(app: &mut RustGisApp, command: &'static str, p: Value) -> Result<Value, String> {
-    if let Some(job) = &app.export_job {
-        return Err(crate::i18n::fmt("{tool} is still running: wait for it, or cancel it.", &[("tool", tl_raw!(job.name))]));
-    }
+    idle(app)?;
     let run = exports::export_start(&mut app.session, command, &p)?;
-    let name = run.name;
+    let (started, name) = (run.started(), run.name);
     // Cancel stops it.
     let control = Control::stoppable();
     let (ctl, slot) = (control.clone(), crate::Slot::default());
@@ -43,7 +50,7 @@ pub fn start(app: &mut RustGisApp, command: &'static str, p: Value) -> Result<Va
             *out.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(wrote);
         })
         .map_err(|e| e.to_string())?;
-    app.export_job = Some(ExportJob { name, control, slot });
+    app.export_job = Some(ExportJob { started, name, control, slot });
     Ok(json!({"started": name}))
 }
 
@@ -53,14 +60,11 @@ pub fn land(app: &mut RustGisApp) -> bool {
     let Some(job) = &app.export_job else { return false };
     let done = job.slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
     let Some(done) = done else { return true };
+    let started = job.started.clone();
     app.export_job = None;
-    match done {
-        // Its notices are the command's; the answer was for a script, which waits for its own.
-        Ok(wrote) => {
-            exports::export_land(&mut app.session, wrote);
-        }
-        Err(e) => app.session.notify(e, true),
-    }
+    // Its notices (a failure among them) are the command's; the answer was for a script, which
+    // waits for its own.
+    let _ = exports::export_land(&mut app.session, started, done);
     false
 }
 
@@ -130,6 +134,28 @@ mod tests {
         assert!(app.export_job.is_none());
         let left: Vec<_> = std::fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name()).collect();
         assert!(left.iter().all(|n| !n.to_string_lossy().ends_with(".tmp")), "{left:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn export_map_and_export_layout_draw_on_a_thread() {
+        let mut app = RustGisApp::with_sample();
+        app.run("layout.new", json!({"page": "a4", "template": "map"})).unwrap();
+        let dir = std::env::temp_dir().join(format!("rustgis-export-drawn-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (command, name, file) in [("ui.exportMap", "Export Map", "map.png"), ("ui.exportLayout", "Export Layout", "layout.png")] {
+            let path = dir.join(file);
+            crate::dialogs::PICKED.with(|c| *c.borrow_mut() = Some(path.display().to_string()));
+            assert_eq!(app.run(command, Value::Null).unwrap()["started"], name);
+            let end = std::time::Instant::now() + std::time::Duration::from_secs(120);
+            while land(&mut app) {
+                assert!(std::time::Instant::now() < end, "{name} never landed");
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            let exported = format!("Exported {}", path.display());
+            assert!(app.session.notices.iter().any(|n| n.text == exported && !n.error), "{:?}", app.session.notices.last());
+            assert!(std::fs::metadata(&path).is_ok_and(|m| m.len() > 100), "{file}");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

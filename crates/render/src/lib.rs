@@ -5589,11 +5589,16 @@ fn complete(map: &mut Map, view: &View, record: bool) -> Option<Rendered> {
     let start = web_time::Instant::now();
     let budget = web_time::Duration::from_secs(60);
     let mut idle = 0;
-    while r.tiles_pending && idle < IDLE_PASSES && start.elapsed() < budget && cfg!(not(target_arch = "wasm32")) {
+    // An export cancelled meanwhile (see `rustgis_data::progress`) stops waiting: it writes nothing.
+    let cancelled = || rustgis_data::progress::check().is_err();
+    while r.tiles_pending && idle < IDLE_PASSES && start.elapsed() < budget && cfg!(not(target_arch = "wasm32")) && !cancelled() {
         // Each wait within what is left of the minute, until something has come: a fetch of
         // another's (a map open beside it, a slow server) doesn't hold it up.
         let left = budget.saturating_sub(start.elapsed());
-        rustgis_tiles::cache::wait_for_news(drawn_at, left.min(web_time::Duration::from_secs(30)));
+        rustgis_tiles::cache::wait_for_news_unless(drawn_at, left.min(web_time::Duration::from_secs(30)), cancelled);
+        if cancelled() {
+            break;
+        }
         let now = rustgis_tiles::cache::generation();
         if now == drawn_at {
             idle += 1;

@@ -1,7 +1,8 @@
 //! Cancelling a long read or write and following its progress (#1291 step 3). Whoever runs it
 //! (the app's export on a thread of its own) installs a [`Probe`] on that thread; the writers'
-//! loops say how far they have come with [`begin`] and [`step`], and `step` stops them once the
-//! probe was cancelled. With none installed, as for a script or the web app, they only run.
+//! loops (and a layout export's pages) say how far they have come with [`begin`] and [`step`],
+//! and `step` stops them once the probe was cancelled; [`check`] only stops (the map's wait for
+//! its tiles). With none installed, as for a script or the web app, they only run.
 //!
 //! The analysis crate's run control is a probe, so the same Cancel and progress reach a tool and
 //! an export.
@@ -43,7 +44,7 @@ impl Drop for Installed {
 }
 
 /// Starts counting a step of `total` items for the progress.
-pub(crate) fn begin(total: usize) {
+pub fn begin(total: usize) {
     CURRENT.with(|c| {
         if let Some(p) = c.borrow().as_ref() {
             p.begin(total as u64);
@@ -53,7 +54,7 @@ pub(crate) fn begin(total: usize) {
 
 /// Counts `n` more items done, and stops the write once its run was asked to: call it for each
 /// feature, row or tile of a long loop.
-pub(crate) fn step(n: usize) -> Result<()> {
+pub fn step(n: usize) -> Result<()> {
     CURRENT.with(|c| match c.borrow().as_ref() {
         Some(p) if p.cancelled() => Err(DataError::Cancelled),
         Some(p) => {
@@ -66,7 +67,7 @@ pub(crate) fn step(n: usize) -> Result<()> {
 
 /// Stops the write once its run was asked to, counting nothing: for a check after a loop that
 /// can't stop by itself.
-pub(crate) fn check() -> Result<()> {
+pub fn check() -> Result<()> {
     CURRENT.with(|c| match c.borrow().as_ref() {
         Some(p) if p.cancelled() => Err(DataError::Cancelled),
         _ => Ok(()),

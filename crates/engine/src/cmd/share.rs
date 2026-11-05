@@ -10,12 +10,17 @@ use serde_json::{Value, json};
 
 use super::exports::{Work, Wrote};
 use super::{f, need_layer, ps};
-use crate::{CmdResult, CommandSpec as C, Session};
+use crate::{CommandSpec as C, Session};
 
 pub fn commands() -> Vec<C> {
     vec![
-        C::new("share.exportMap", "Export Map", "Publish › Output", export_map)
-            .view()
+        C::new("share.exportMap", "Export Map", "Publish › Output", |s, p| {
+            // A style added with its own view: the export waits for it to load, as it does for
+            // tiles. The app runs it here, not on a thread, while one loads.
+            super::tiles::follow_style_view(s, web_time::Duration::from_secs(30));
+            super::exports::write_here(s, p, "share.exportMap")
+        })
+        .view()
             .params(r#"{"path": "*.png", "width"?: px, "height"?: px, "dpi"?: 96..600}"#),
         C::new("share.exportLayer", "Export Features", "Publish › Output", |s, p| super::exports::write_here(s, p, "share.exportLayer"))
             .view()
@@ -136,21 +141,32 @@ fn report_table(s: &mut Session, path: &str, gpkg: &GpkgTable, table: Option<Gpk
 
 /// Renders the active map at the current view (or a requested size) to PNG bytes.
 pub fn map_png(s: &mut Session, width: Option<f64>, height: Option<f64>, dpi: Option<f64>) -> Result<Vec<u8>, String> {
-    let (vw, vh) = s.view_size;
+    let view_size = s.view_size;
+    png_of(s.map_mut(), view_size, width, height, dpi)
+}
+
+/// Renders `map` at its camera in a view of `(vw, vh)` points (or a requested size) to PNG bytes.
+fn png_of(
+    map: &mut rustgis_map::Map,
+    (vw, vh): (f64, f64),
+    width: Option<f64>,
+    height: Option<f64>,
+    dpi: Option<f64>,
+) -> Result<Vec<u8>, String> {
     // NaN would pass through `clamp`; non-finite values fall back to the defaults.
     let fin = |v: Option<f64>| v.filter(|x| x.is_finite());
     let (width, height, dpi) = (fin(width), fin(height), fin(dpi));
     let w = width.unwrap_or(vw).clamp(16.0, 8000.0);
     let h = height.unwrap_or(vh).clamp(16.0, 8000.0);
     let ppp = (dpi.unwrap_or(96.0) / 96.0).clamp(0.5, 6.0);
-    let mut camera = s.map().camera;
+    let mut camera = map.camera;
     // Keep the same ground extent when the size differs from the view.
     if width.is_some() || height.is_some() {
         camera.res *= (vw / w).max(vh / h);
         camera.clamp();
     }
     let view = View { width: w, height: h, pixels_per_point: ppp, camera, sky: false };
-    rustgis_render::render_png(s.map_mut(), &view)
+    rustgis_render::render_png(map, &view)
 }
 
 /// The map view on one PDF page (for printing): the page is the view's shape at 96 points per
@@ -175,14 +191,21 @@ pub fn map_pdf(s: &mut Session, dpi: f64) -> Result<Vec<u8>, String> {
     Ok(rustgis_render::pdf::write(&[page], &s.map().name))
 }
 
-fn export_map(s: &mut Session, p: &Value) -> CmdResult {
+/// `share.exportMap`: draws the active map as it is now to a PNG. It draws a copy of the map, so
+/// the map can move meanwhile; a cancelled export stops waiting for tiles and writes nothing.
+pub(crate) fn map_work(s: &Session, p: &Value) -> Result<Work, String> {
     let path = ps(p, "path").ok_or("path is required")?.to_string();
-    // A style added with its own view: the export waits for it to load, as it does for tiles.
-    super::tiles::follow_style_view(s, web_time::Duration::from_secs(30));
-    let png = map_png(s, f(p, "width"), f(p, "height"), f(p, "dpi"))?;
-    rustgis_data::io::write_atomic(std::path::Path::new(&path), &png).map_err(|e| format!("{path}: {e}"))?;
-    s.notify(format!("Exported {path}"), false);
-    Ok(json!({"path": path, "bytes": png.len()}))
+    let (width, height, dpi) = (f(p, "width"), f(p, "height"), f(p, "dpi"));
+    let (mut map, view_size) = (s.map().detached(), s.view_size);
+    Ok(Box::new(move || {
+        let written = (|| {
+            let png = png_of(&mut map, view_size, width, height, dpi)?;
+            rustgis_data::progress::check().map_err(|e| e.to_string())?;
+            rustgis_data::io::write_atomic(Path::new(&path), &png).map_err(|e| format!("{path}: {e}"))?;
+            Ok(json!({"path": path, "bytes": png.len()}))
+        })();
+        super::exports::drawn(std::slice::from_ref(&map), Vec::new(), written, path)
+    }))
 }
 
 /// `share.exportLayer`: writes a layer to a file by its extension. A streamed layer exports its
@@ -258,8 +281,12 @@ fn write_layer(l: &rustgis_map::Layer, path: &str, asked: Option<Crs>, gpkg: Gpk
     // The table written, said and put in the answer once the export lands, where the session
     // (layers reading a replaced table) is at hand.
     let path = path.to_string();
-    let then: Option<super::exports::Then> = table
-        .map(|t| Box::new(move |s: &mut Session, out: &mut Value| report_table(s, &path, &gpkg, Some(t), out)) as super::exports::Then);
+    let then: Option<super::exports::Then> = table.map(|t| {
+        Box::new(move |s: &mut Session, out: &mut Value| {
+            report_table(s, &path, &gpkg, Some(t), out);
+            Ok(())
+        }) as super::exports::Then
+    });
     Ok(Wrote { answer, notes: said, then })
 }
 

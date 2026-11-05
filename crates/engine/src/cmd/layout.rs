@@ -121,7 +121,7 @@ pub fn commands() -> Vec<C> {
         C::new("layout.seriesPage", "Map Series Page", "Publish › Map Frames", series_page).params(r#"{"layout"?, "page": number|"next"|"previous"}"#),
         C::new("layout.seriesRefresh", "Refresh Map Series", "Publish › Map Frames", |s, p| series_page(s, &json!({"layout": p.get("layout"), "page": "current"})))
             .params(r#"{"layout"?}"#),
-        C::new("layout.export", "Export Layout", "Publish › Output", export)
+        C::new("layout.export", "Export Layout", "Publish › Output", |s, p| super::exports::write_here(s, p, "layout.export"))
             .view()
             .params(r#"{"layout"?, "path": "*.png|*.pdf|*.svg" (PNG/SVG: current page; SVG: each element a group of its own; text and shapes as SVG, map frames and surrounds as vectors, rasters and tiles in them as pictures at dpi), "dpi"?: 72..600, "allPages"?: bool (PDF only; default true: every map series page, up to 500; false: the current page)}"#),
         C::new("layout.save", "Save Layout File", "Publish › Save As", |s, p| {
@@ -3343,8 +3343,8 @@ fn series_page(s: &mut Session, p: &Value) -> CmdResult {
 
 /// Renders a layout to PNG or PDF bytes. `all` renders every map series page (PDF only).
 /// What an export of a layout whose texts name installed families is told while the app is still
-/// indexing the fonts (its first seconds; an export runs on its interface thread, which mustn't
-/// wait): those texts are drawn in their fallbacks. A script or the command line indexes them at
+/// indexing the fonts (its first seconds; the app's exports don't wait for them): those texts
+/// are drawn in their fallbacks. A script or the command line indexes them at
 /// once.
 fn named_fonts_unread(layout: &Layout) -> Option<&'static str> {
     let named = layout.elements.iter().any(|e| matches!(&e.kind, ElementKind::Text { font_name: Some(_), .. }));
@@ -3384,6 +3384,10 @@ pub fn layout_bytes(s: &mut Session, li: usize, pdf: bool, dpi: f64, all: bool) 
         let mut out = Vec::new();
         let mut png = None;
         let mut held = 0usize;
+        // How far a series' pages have come, when the export runs with progress.
+        if pages.len() > 1 {
+            rustgis_data::progress::begin(pages.len());
+        }
         for page in &pages {
             if stepping {
                 series_page(s, &json!({"layout": li, "page": page}))?;
@@ -3425,6 +3429,8 @@ pub fn layout_bytes(s: &mut Session, li: usize, pdf: bool, dpi: f64, all: bool) 
                 let img = rustgis_render::layout::render(layout, &mut s.project.maps, dpi, &info).ok_or("the page is too large to draw")?;
                 png = Some(img.encode_png().map_err(|e| e.to_string())?);
             }
+            // A cancelled export stops here, its layout put back below.
+            rustgis_data::progress::step(1).map_err(|e| e.to_string())?;
         }
         Ok((out, png))
     };
@@ -3476,24 +3482,44 @@ pub(crate) fn pictured_notices(s: &mut Session, frames: &[(u32, String)], pages:
     }
 }
 
-fn export(s: &mut Session, p: &Value) -> CmdResult {
+/// `layout.export`: a layout to a PNG, PDF or SVG. It draws a copy of the project, so the project
+/// can change meanwhile (a map series steps through its pages on the copy); a cancelled export
+/// stops at the next page, or its map's wait for tiles, and writes nothing.
+pub(crate) fn export_work(s: &Session, p: &Value) -> Result<super::exports::Work, String> {
     let path = ps(p, "path").ok_or("path is required")?.to_string();
     let li = index(s, p)?;
     let lower = path.to_ascii_lowercase();
-    let pdf = lower.ends_with(".pdf");
-    if lower.ends_with(".svg") {
-        let text = layout_svg(s, li, f(p, "dpi").unwrap_or(150.0))?;
-        rustgis_data::io::write_atomic(Path::new(&path), text.as_bytes()).map_err(|e| format!("{path}: {e}"))?;
-        s.notify(format!("Exported {path}"), false);
-        return Ok(json!({"path": path, "bytes": text.len()}));
-    }
-    if !pdf && !lower.ends_with(".png") {
+    let (pdf, svg) = (lower.ends_with(".pdf"), lower.ends_with(".svg"));
+    if !pdf && !svg && !lower.ends_with(".png") {
         return Err("export to a .png, .pdf or .svg file".into());
     }
-    let bytes = layout_bytes(s, li, pdf, f(p, "dpi").unwrap_or(150.0), b(p, "allPages").unwrap_or(true))?;
-    rustgis_data::io::write_atomic(Path::new(&path), &bytes).map_err(|e| format!("{path}: {e}"))?;
-    s.notify(format!("Exported {path}"), false);
-    Ok(json!({"path": path, "bytes": bytes.len()}))
+    let (dpi, all) = (f(p, "dpi").unwrap_or(150.0), b(p, "allPages").unwrap_or(true));
+    let mut project = s.project.clone();
+    for m in &mut project.maps {
+        m.detach_reads();
+    }
+    Ok(Box::new(move || {
+        let mut copy = Session::new(project);
+        let written = (|| {
+            let bytes = if svg { layout_svg(&mut copy, li, dpi)?.into_bytes() } else { layout_bytes(&mut copy, li, pdf, dpi, all)? };
+            rustgis_data::progress::check().map_err(|e| e.to_string())?;
+            rustgis_data::io::write_atomic(Path::new(&path), &bytes).map_err(|e| format!("{path}: {e}"))?;
+            Ok(json!({"path": path, "bytes": bytes.len()}))
+        })();
+        // What drawing it said (frames drawn as pictures, fonts it lacks), as the command says it
+        // here; past the notices a session keeps, how many earlier ones there were.
+        let kept = std::mem::take(&mut copy.notices);
+        let earlier = copy.notices_given().saturating_sub(kept.len() as u64);
+        let mut said: Vec<_> = Vec::new();
+        if earlier > 0 {
+            said.push((
+                rustgis_data::diagnostics::Severity::Warning,
+                format!("{path}: {earlier} earlier notices from drawing it aren't shown"),
+            ));
+        }
+        said.extend(kept.into_iter().map(|n| (n.severity, n.text)));
+        super::exports::drawn(&copy.project.maps, said, written, path)
+    }))
 }
 
 /// The layout `li` as it is now (a map series at its current page) as SVG, kept as vectors with

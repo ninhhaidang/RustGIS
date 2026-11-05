@@ -349,11 +349,16 @@ const SETTLE: Duration = Duration::from_secs(1);
 /// a moment, or for a second at most: one drawing again with what came needn't wait for every
 /// fetch in the process (another map's, a slow server's, one never answered). Native only.
 pub fn wait_for_news(since: u64, timeout: Duration) {
+    wait_for_news_unless(since, timeout, || false);
+}
+
+/// [`wait_for_news`], given up as soon as `stop` says so (an export cancelled meanwhile).
+pub fn wait_for_news_unless(since: u64, timeout: Duration, stop: impl Fn() -> bool) {
     #[cfg(not(target_arch = "wasm32"))]
     {
         let start = Instant::now();
         let (mut seen, mut changed, mut news) = (since, Instant::now(), None);
-        while in_flight() > 0 && start.elapsed() < timeout {
+        while in_flight() > 0 && start.elapsed() < timeout && !stop() {
             let now = generation();
             if now != seen {
                 (seen, changed) = (now, Instant::now());
@@ -366,7 +371,7 @@ pub fn wait_for_news(since: u64, timeout: Duration) {
         }
     }
     #[cfg(target_arch = "wasm32")]
-    let _ = (since, timeout);
+    let _ = (since, timeout, stop);
 }
 
 /// A waiting fetch: what to decode it as, whose diagnostics it goes to, and its expected statuses.
