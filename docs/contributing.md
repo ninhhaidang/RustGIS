@@ -54,6 +54,26 @@ Interface strings must be translatable: use `tl!("…")` for literals and
 `i18n::fmt("… {name} …", &[("name", value)])` for messages with values. New strings can fall back
 to English until the catalogs are updated; see [Languages](i18n.md).
 
+### Saved-file compatibility
+
+`crates/engine/src/project.rs::FORMAT` is the saved-document compatibility version, separate
+from the application release version. Project, map, layer and style imports check a top-level
+`format` before interpreting their payloads. Missing metadata remains supported legacy content;
+style files currently remain arrays. Current companion writers keep their existing output.
+Every project serialization, including templates and packages, writes the current `FORMAT`,
+even when the project was loaded from an older supported file.
+These reader checks prepare for future writers; they do not protect already released readers
+or detect new information in files that omit the required version.
+
+When a future change would cause an older reader to misinterpret or lose meaningful saved
+information on resaving, advance `FORMAT` and declare it in each affected document's top-level
+`format`. This includes additive fields that parse successfully but disappear when an older
+writer saves. For a style file that needs metadata, the future writer must use an object rather
+than the legacy array; readers with this guard refuse its newer format before interpreting it.
+A payload or wrapper for such a new format belongs in that future change. Keep existing legacy
+readers and test that unsupported versions fail before typed deserialization, normalization or
+source reopening, including alternate import and package paths.
+
 ### Faster local builds and test runs
 
 All of this is optional and on your side: the repository's profiles stay as they are, and

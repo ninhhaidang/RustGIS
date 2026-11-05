@@ -79,6 +79,7 @@ pub fn commands() -> Vec<C> {
         .params(r#"{"layer"?, "name"?: string}"#),
         C::new("style.add", "Add Style", "Style › Styles", |s, p| {
             let text = read_text(p)?;
+            crate::project::check_format(&text, "style file")?;
             let items: Vec<StyleItem> = serde_json::from_str(&text).map_err(|e| format!("not a RustGIS style file: {e}"))?;
             let mut n = 0;
             for it in items.into_iter().take(1000) {
@@ -434,6 +435,7 @@ fn embedded_map(m: &Map, budget: &mut u64) -> Map {
 /// Adds maps from a map file, project or package.
 fn import_maps(s: &mut Session, p: &Value) -> CmdResult {
     let text = read_text(p)?;
+    crate::project::check_format(&text, "map file or project")?;
     let dir = ps(p, "path").and_then(|path| std::path::absolute(path).ok()).and_then(|p| p.parent().map(Path::to_path_buf));
     super::connections::clear_active();
     let maps: Vec<Map> = match serde_json::from_str::<Map>(&text) {
@@ -457,9 +459,9 @@ fn import_maps(s: &mut Session, p: &Value) -> CmdResult {
                 }
                 project.maps
             }
-            Err(_) => {
+            Err(error) => {
                 super::connections::restore_active(s);
-                return Err("not a RustGIS map file, project or package".into());
+                return Err(error);
             }
         },
     };
@@ -506,6 +508,7 @@ fn add_style(s: &mut Session, mut item: StyleItem) {
 /// Styles from every feature layer of a layer file, map file or project.
 fn import_styles(s: &mut Session, p: &Value) -> CmdResult {
     let text = read_text(p)?;
+    crate::project::check_format(&text, "layer file, map file or project")?;
     let layers: Vec<Layer> = if let Ok(l) = serde_json::from_str::<Layer>(&text) {
         for notice in crate::project::label_losses::layer_notices(&text, &l) {
             s.notify(notice, false);
@@ -521,7 +524,7 @@ fn import_styles(s: &mut Session, p: &Value) -> CmdResult {
         super::connections::clear_active();
         let project = Project::from_import_json(&text, None);
         super::connections::restore_active(s);
-        let mut project = project.map_err(|_| "not a RustGIS layer file, map file or project".to_string())?;
+        let mut project = project?;
         for notice in std::mem::take(&mut project.label_read_notices) {
             s.notify(notice, false);
         }
