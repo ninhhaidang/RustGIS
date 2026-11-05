@@ -74,7 +74,9 @@ Desktop process plugins are not sandboxed and can access files and the network a
 programs. Review the permissions and publisher before installing; see [Plugins](plugins.md).
 
 On the desktop, **Help › Check for Updates** contacts GitHub's latest-release API only when
-you ask. It does not upload your project. The web app checks its own site for service-worker
+you ask. It does not upload your project. On Windows, **Download and Install** then downloads
+the release's installer and its `SHA256SUMS` from GitHub's release downloads, only when you
+choose it. The web app checks its own site for service-worker
 updates when it loads and returns to view, and fetches app icons from `assets.rustgis.app`.
 It downloads language fonts from that asset server when needed. The web GeoLibre tools
 download their runner from jsDelivr when needed; the tool list is cached between visits.

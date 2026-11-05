@@ -33,6 +33,8 @@ image = { workspace = true, features = ["jpeg"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rfd = { workspace = true }
+# Help › Check for Updates checks a downloaded installer against the release's SHA256SUMS.
+sha2 = { workspace = true }
 
 # Stopping an agent on this computer with every process it started: its process group, by the
 # system call (as the plugins crate does).

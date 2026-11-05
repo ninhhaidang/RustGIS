@@ -59,8 +59,11 @@ Correct, robust and recoverable, with the foundations other themes stand on.
 - Reloading files changed on disk.
 - Autosave and crash recovery in the browser: reopen unsaved work after a crash. The desktop app
   has them ([#873](https://github.com/opengeos/RustGIS/issues/873)).
-- Signed Windows builds (no SmartScreen warning), then in-place updates; settings an
-  administrator can fix for a managed install (no AI Assistant, plugins or web services).
+- Signed Windows builds (no SmartScreen warning), then a signature check, by publisher name, in
+  Check for Updates' Download and Install, which updates a `setup.exe` install in place
+  ([#1290](https://github.com/opengeos/RustGIS/issues/1290)); in-place updates for the macOS app;
+  settings an administrator can fix for a managed install (no AI Assistant, plugins or web
+  services).
 - Extend the OS keychain secret store to service connections (database passwords, S3 keys,
   AI provider keys and the ChatGPT sign-in's tokens are already kept there).
 - Vector tools, each writing a new layer: check and fix geometry _(open)_.
