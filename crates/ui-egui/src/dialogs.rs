@@ -1248,8 +1248,6 @@ fn add_service(app: &mut RustGisApp, ui: &mut egui::Ui) -> bool {
             text: conn.text.clone().unwrap_or_default(),
             documents: conn.documents.clone(),
         };
-        let name = l.get("name").and_then(Value::as_str).unwrap_or("");
-        let title = l.get("title").and_then(Value::as_str).unwrap_or(name).to_string();
         // Features are downloaded in the background, as From URL… does; map layers are added now.
         let time = crate::webdataui::fixed_or_slider(app.ui.service_browse.fixed, &app.ui.service_browse.time);
         // The view's area, for a feature layer only: a map layer never asks for one, so an
@@ -1257,8 +1255,12 @@ fn add_service(app: &mut RustGisApp, ui: &mut egui::Ui) -> bool {
         let features = l["offer"]["type"] == "features";
         let area =
             (features && app.ui.service_browse.area).then(|| rustgis_engine::cmd::catalogs::area(&app.session, &Value::Null)).transpose();
+        // A new add's line replaces the last one's, error included (#1453): a download still on its
+        // way then lands without it, so it can't hide this add's error.
+        app.dialogs.info = None;
+        app.dialogs.error = None;
         match area.and_then(|area| crate::serviceui::add_layer(app, &src, &l, &time, area, true)) {
-            Ok(m) => app.dialogs.info = Some(format!("{m} {title}")),
+            Ok(line) => app.dialogs.info = Some(line),
             Err(e) => app.dialogs.error = Some(e),
         }
         app.map.invalidate();

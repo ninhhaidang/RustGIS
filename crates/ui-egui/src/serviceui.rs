@@ -80,7 +80,7 @@ pub(crate) fn add_layer(
     time: &str,
     area: Option<[f64; 4]>,
     dialog: bool,
-) -> Result<&'static str, String> {
+) -> Result<String, String> {
     let connection = dialog.then(|| app.ui.service.as_ref().and_then(|source| source.connection.clone())).flatten();
     add_layer_from(app, src, l, time, area, dialog, None, connection.as_deref())
 }
@@ -97,7 +97,7 @@ pub(crate) fn add_layer_from(
     dialog: bool,
     origin: Option<&str>,
     connection: Option<&str>,
-) -> Result<&'static str, String> {
+) -> Result<String, String> {
     let connection = connection_for(app, connection, &src.url);
     let name = l.get("name").and_then(Value::as_str).unwrap_or("").to_string();
     let title = l.get("title").and_then(Value::as_str).unwrap_or(&name).to_string();
@@ -124,7 +124,7 @@ pub(crate) fn add_layer_from(
         if asked.is_some() {
             params["zoom"] = json!(false);
         }
-        return crate::connectiontree::run_add_url(app, params, origin).map(|_| tl!("Downloading…"));
+        return crate::connectiontree::run_add_url(app, params, origin).map(|_| downloading(&title));
     }
     let origin = origin.map(str::to_string);
     if offer.get("type").and_then(Value::as_str) == Some("coverage") {
@@ -140,7 +140,7 @@ pub(crate) fn add_layer_from(
         let describe = request_from(app, connection, &src.url, &describe)?;
         let slot = crate::fetch_into(&describe);
         app.ui.service_steps.push(crate::ServiceStep::Coverage { params: p, slot, dialog, origin });
-        return Ok(tl!("Describing"));
+        return Ok(i18n::fmt("Describing {name}", &[("name", &title)]));
     }
     let mut p = json!({"url": src.url, "layer": name, "text": src.text, "documents": src.documents, "source_url": l.get("source_url")});
     if src.kind != "auto" {
@@ -163,9 +163,9 @@ pub(crate) fn add_layer_from(
             let slot = crate::fetch_into(&list);
             let resolve = crate::TilesResolve { params: p, list: list.clone(), doc: list, read: 0, vector, fallback, slot };
             app.ui.service_steps.push(crate::ServiceStep::Tiles { resolve, dialog, origin });
-            Ok(tl!("Reading the tileset of"))
+            Ok(i18n::fmt("Reading the tileset of {name}", &[("name", &title)]))
         }
-        None => crate::connectiontree::run_named(app, "service.add", p, origin.as_deref()).map(|_| tl!("Added")),
+        None => crate::connectiontree::run_named(app, "service.add", p, origin.as_deref()).map(|_| added(&title)),
     }
 }
 
@@ -352,6 +352,23 @@ pub fn poll(app: &mut RustGisApp, ctx: &egui::Context) {
     }
 }
 
+/// An address as a message names it: redacted on its own first, so a query naming a secret takes
+/// only itself away when the whole message is redacted, not the reason that follows it.
+pub(crate) fn address_in_message(url: &str) -> String {
+    rustgis_engine::Session::redacted(url).as_str().to_string()
+}
+
+/// The add-service dialog's line for a layer on its way: what the dialog shows when a layer's
+/// download starts, and what [`RustGisApp::landed_in_dialog`] looks for when it lands (#1453).
+pub(crate) fn downloading(name: &str) -> String {
+    i18n::fmt("Downloading… {name}", &[("name", name)])
+}
+
+/// The add-service dialog's line for a layer added, at once or when its download lands.
+pub(crate) fn added(name: &str) -> String {
+    i18n::fmt("Added {name}", &[("name", name)])
+}
+
 /// A download that landed, with what it is added with: its id, address and `layer.addDownload`
 /// parameters, and the connection it came from (named in Recent).
 pub(crate) struct Landed {
@@ -405,8 +422,10 @@ pub fn poll_pages(app: &mut RustGisApp, ctx: &egui::Context) {
     }
     for read in std::mem::take(&mut app.ui.service_pages) {
         if !app.session.download_is_pending(read.landed.id) {
-            let url = &read.landed.url;
-            app.session.notify(i18n::fmt("{url}: downloaded after its project was closed, so it wasn't added", &[("url", url)]), false);
+            let url = &address_in_message(&read.landed.url);
+            let why = i18n::fmt("{url}: downloaded after its project was closed, so it wasn't added", &[("url", url)]);
+            app.landed_in_dialog(&read.landed.params, Err(&why));
+            app.session.notify(why, false);
             continue;
         }
         let answer = read.slot.lock().unwrap_or_else(|e| e.into_inner()).take();
@@ -455,7 +474,9 @@ fn go_on(app: &mut RustGisApp, landed: Landed, left: usize, step: Step) {
         Step::Failed(e) => {
             app.session.download_failed(landed.id);
             let url = &landed.url;
-            app.session.notify(if e.starts_with(url.as_str()) { e } else { format!("{url}: {e}") }, true);
+            let e = if e.starts_with(url.as_str()) { e } else { format!("{url}: {e}") };
+            app.landed_in_dialog(&landed.params, Err(&e));
+            app.session.notify(e, true);
         }
         Step::Fetch(pages) => {
             let next = next_request(app, &landed.params, &pages);

@@ -2126,8 +2126,14 @@ impl RustGisApp {
                 self.session.notify(text, true);
             }
             // A probe still under way is for an address added to the old project: dropped, so
-            // its layer never lands in the new one.
-            self.ui.cog_probes.clear();
+            // its layer never lands in the new one, and said, as a download landing late is.
+            for (p, _) in std::mem::take(&mut self.ui.cog_probes) {
+                let url = p.get("url").and_then(Value::as_str).unwrap_or("");
+                let url = serviceui::address_in_message(rustgis_engine::data::s3_address::inner(url));
+                let why = i18n::fmt("{url}: its project was closed while it was read, so it wasn't added", &[("url", &url)]);
+                self.landed_in_dialog(&p, Err(&why));
+                self.session.notify(why, false);
+            }
         }
         // Undo and redo can move vertices: an index chosen before may now name another vertex.
         // A step moved or deleted, from the pane, Command Search, the assistant or a script: the
@@ -4129,16 +4135,29 @@ impl RustGisApp {
                         p["cog"] = json!(true);
                     }
                     let before = self.session.sources.generation;
-                    if self.run("layer.addUrl", p).is_ok() {
-                        connectiontree::name_recent(self, before, origin.as_deref());
-                        self.map.invalidate();
+                    let pending = p.clone();
+                    match self.run("layer.addUrl", p) {
+                        Ok(_) => {
+                            connectiontree::name_recent(self, before, origin.as_deref());
+                            self.map.invalidate();
+                            self.landed_in_dialog(&pending, Ok(()));
+                        }
+                        Err(e) => self.landed_in_dialog(&pending, Err(&e)),
                     }
                 }
                 Ok(false) => {
                     p["whole"] = json!(true);
-                    let _ = connectiontree::run_add_url(self, p, origin.as_deref());
+                    let pending = p.clone();
+                    // Downloaded whole: the line waits for the download (`add_download`).
+                    if let Err(e) = connectiontree::run_add_url(self, p, origin.as_deref()) {
+                        self.landed_in_dialog(&pending, Err(&e));
+                    }
                 }
-                Err(e) => self.session.notify(if e.starts_with(&url) { e } else { format!("{url}: {e}") }, true),
+                Err(e) => {
+                    let e = if e.starts_with(&url) { e } else { format!("{url}: {e}") };
+                    self.landed_in_dialog(&p, Err(&e));
+                    self.session.notify(e, true);
+                }
             }
         }
         let mut landed = Vec::new();
@@ -4161,7 +4180,9 @@ impl RustGisApp {
                     let why = rustgis_engine::sources::redact_text(&e);
                     // An error that names its own address (a Shapefile's part) isn't named again.
                     let named = why.split_once(": ").is_some_and(|(head, _)| head.contains("://") && !head.contains(' '));
-                    self.session.notify(if named { why } else { format!("{}: {why}", rustgis_engine::sources::redact(&url)) }, true);
+                    let why = if named { why } else { format!("{}: {why}", rustgis_engine::sources::redact(&url)) };
+                    self.landed_in_dialog(&p, Err(&why));
+                    self.session.notify(why, true);
                 }
             }
         }
@@ -4190,7 +4211,10 @@ impl RustGisApp {
     fn add_download(&mut self, landed: serviceui::Landed, current: bool) {
         let serviceui::Landed { id, url, params: mut p, origin } = landed;
         if !current {
-            self.session.notify(i18n::fmt("{url}: downloaded after its project was closed, so it wasn't added", &[("url", &url)]), false);
+            let shown = serviceui::address_in_message(&url);
+            let why = i18n::fmt("{url}: downloaded after its project was closed, so it wasn't added", &[("url", &shown)]);
+            self.landed_in_dialog(&p, Err(&why));
+            self.session.notify(why, false);
             return;
         }
         p["id"] = json!(id);
@@ -4208,10 +4232,38 @@ impl RustGisApp {
                     self.ui.link_zoomed = true;
                 }
                 self.map.invalidate();
+                self.landed_in_dialog(&pending, Ok(()));
             }
             Err(e) => {
                 rustgis_engine::cmd::geolibre::discard_pending(&mut self.session, &pending);
-                self.session.notify(if e.starts_with(&url) { e } else { format!("{url}: {e}") }, true);
+                let e = if e.starts_with(&url) { e } else { format!("{url}: {e}") };
+                self.landed_in_dialog(&pending, Err(&e));
+                self.session.notify(e, true);
+            }
+        }
+    }
+
+    /// Says in the add-service dialog's line how a download it showed on its way went (#1453):
+    /// the layer added, or why not, scrubbed and redacted as the notices are (a login's address or
+    /// a token in the URL never shows). Only while the line still says that layer is downloading,
+    /// so a line another dialog or a later add has taken over is left alone; the notices say it
+    /// either way.
+    pub(crate) fn landed_in_dialog(&mut self, params: &Value, r: Result<(), &str>) {
+        let Some(name) = params.get("name").and_then(Value::as_str).filter(|n| !n.is_empty()) else {
+            return;
+        };
+        if self.dialogs.info.as_deref() != Some(serviceui::downloading(name).as_str()) {
+            return;
+        }
+        match r {
+            // As a layer added at once says it.
+            Ok(()) => {
+                self.dialogs.info = Some(serviceui::added(name));
+                self.dialogs.error = None;
+            }
+            Err(e) => {
+                self.dialogs.info = None;
+                self.dialogs.error = Some(connectionui::translated(rustgis_engine::Session::redacted(e).as_str()));
             }
         }
     }
@@ -4266,8 +4318,7 @@ impl RustGisApp {
                     let mut p = resolve.params;
                     p["tiles"] = json!(template);
                     let title = p["name"].as_str().unwrap_or("").to_string();
-                    let r =
-                        connectiontree::run_named(self, "service.add", p, origin.as_deref()).map(|_| format!("{} {title}", tl!("Added")));
+                    let r = connectiontree::run_named(self, "service.add", p, origin.as_deref()).map(|_| serviceui::added(&title));
                     self.report_step(dialog, r);
                     self.map.invalidate();
                 }
@@ -4289,7 +4340,7 @@ impl RustGisApp {
                         }
                         connectiontree::run_add_url(self, p, origin.as_deref())
                     });
-                    self.report_step(dialog, r.map(|_| format!("{} {title}", tl!("Downloading…"))));
+                    self.report_step(dialog, r.map(|_| serviceui::downloading(&title)));
                 }
             }
         }
@@ -5116,6 +5167,103 @@ mod record_tests {
         let layer = app.session.map().layers.iter().find(|layer| layer.name == "Anonymous download").unwrap();
         assert!(layer.connection.is_empty());
         assert!(logins::apply(layer.dataset.source.as_deref().unwrap()).unwrap().is_none());
+    }
+
+    /// The add-service dialog's "Downloading… {layer}" line says how the download went when it
+    /// lands (#1453): the layer added, or why not in the error line; a line no longer about that
+    /// layer is left alone.
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn a_landed_download_says_how_it_went_in_the_dialog() {
+        use rustgis_engine::render::rustgis_tiles::cache;
+        use std::io::{Read, Write};
+        // A server answering one request with `status` and a point's GeoJSON.
+        let serve = |status: &'static str| {
+            let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let origin = format!("http://{}", server.local_addr().unwrap());
+            let reply = std::thread::spawn(move || {
+                // A request that never comes fails the test instead of hanging it.
+                server.set_nonblocking(true).unwrap();
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+                let mut stream = loop {
+                    match server.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock && std::time::Instant::now() < deadline => {
+                            std::thread::sleep(std::time::Duration::from_millis(10));
+                        }
+                        Err(e) => panic!("no request reached the test server: {e}"),
+                    }
+                };
+                stream.set_nonblocking(false).unwrap();
+                stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+                let mut request = Vec::new();
+                let mut chunk = [0; 1024];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let count = stream.read(&mut chunk).unwrap();
+                    if count == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&chunk[..count]);
+                }
+                let body = br#"{"type":"FeatureCollection","features":[{"type":"Feature","geometry":{"type":"Point","coordinates":[1,2]},"properties":{}}]}"#;
+                write!(
+                    stream,
+                    "HTTP/1.1 {status}\r\nContent-Type: application/geo+json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+                .unwrap();
+                stream.write_all(body).unwrap();
+            });
+            (origin, reply)
+        };
+        // Adds "Roads" from a server answering `status`, with `line` in the dialog meanwhile.
+        let add = |status: &'static str, line: String| {
+            let (origin, reply) = serve(status);
+            let mut app = RustGisApp::with_sample();
+            let url = format!("{origin}/roads.geojson?token=hidden-757");
+            app.run("ui.addUrl", json!({"url": url, "name": "Roads", "service": true})).unwrap();
+            app.dialogs.info = Some(line);
+            cache::wait(std::time::Duration::from_secs(5));
+            app.poll_data_downloads();
+            crate::serviceui::poll_pages(&mut app, &egui::Context::default());
+            reply.join().unwrap();
+            app
+        };
+        let added = add("200 OK", crate::serviceui::downloading("Roads"));
+        assert!(added.session.map().layers.iter().any(|l| l.name == "Roads"));
+        assert_eq!(added.dialogs.info, Some(crate::serviceui::added("Roads")));
+        assert_eq!(added.dialogs.error, None);
+        let failed = add("404 Not Found", crate::serviceui::downloading("Roads"));
+        assert!(!failed.session.map().layers.iter().any(|l| l.name == "Roads"));
+        assert_eq!(failed.dialogs.info, None);
+        // Why, redacted as the notice is: the address, not its token.
+        let why = failed.dialogs.error.as_deref().unwrap_or("");
+        assert!(why.contains("roads.geojson") && !why.contains("hidden-757"), "{why}");
+        // The line has moved on to another layer (or another dialog): it stays as it is.
+        let other = add("200 OK", crate::serviceui::downloading("Rivers"));
+        assert_eq!(other.dialogs.info, Some(crate::serviceui::downloading("Rivers")));
+        assert_eq!(other.dialogs.error, None);
+    }
+
+    #[test]
+    fn a_probe_dropped_by_another_project_says_so() {
+        let mut app = RustGisApp::with_sample();
+        let url = "https://example.com/elevation.tif?token=hidden-758";
+        app.ui.cog_probes.push((json!({"url": url, "name": "Elevation"}), Default::default()));
+        app.ui.cog_probes.push((json!({"url": "https://example.com/slope.tif", "name": "Slope"}), Default::default()));
+        app.dialogs.info = Some(crate::serviceui::downloading("Elevation"));
+        app.run("project.new", json!({})).unwrap();
+        assert!(app.ui.cog_probes.is_empty());
+        assert_eq!(app.dialogs.info, None);
+        let why = app.dialogs.error.as_deref().unwrap_or("");
+        // The reason stays, though the address's query names a secret.
+        assert!(why.contains("elevation.tif") && why.contains("project was closed") && !why.contains("hidden-758"), "{why}");
+        // The new project's notices: the one for each dropped probe comes after it opened.
+        for file in ["elevation.tif", "slope.tif"] {
+            let said = |n: &rustgis_engine::Notice| n.text.contains(file) && n.text.contains("project was closed");
+            assert!(app.session.notices.iter().any(said), "{file}: {:?}", app.session.notices);
+        }
+        assert!(app.session.notices.iter().all(|n| !n.text.contains("hidden-758")));
     }
 
     #[test]
