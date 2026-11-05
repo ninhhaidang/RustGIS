@@ -493,7 +493,10 @@ fn model_graph(s: &Session, p: &Value) -> Result<(String, crate::project::ModelG
         Some(n) => s.project.models.iter().find(|m| m.name.eq_ignore_ascii_case(n)).ok_or_else(|| format!("no model '{n}'"))?,
         None => s.project.models.last().ok_or("the project has no models")?,
     };
-    let g = model.graph.clone().unwrap_or_else(|| crate::model::steps_to_graph(&model.steps));
+    let g = match &model.graph {
+        Some(graph) => graph.clone(),
+        None => crate::model::checked_steps_to_graph(&model.steps)?,
+    };
     Ok((model.name.clone(), g, s.trusted_models.contains(&model.name.to_ascii_lowercase())))
 }
 

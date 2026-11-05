@@ -317,12 +317,12 @@ pub fn open(app: &mut RustGisApp, name: Option<&str>) -> Result<(), String> {
     forget_old_project(app);
     if let Some(n) = name {
         if !app.session.project.models.iter().any(|m| m.name.eq_ignore_ascii_case(n)) {
-            return Err(format!("no model '{n}'"));
+            return Err(crate::i18n::fmt("no model '{name}'", &[("name", n)]));
         }
         if app.mb.open && app.mb.dirty() && !app.mb.saved_as.as_deref().is_some_and(|s| s.eq_ignore_ascii_case(n)) {
             app.mb.confirm = Some(Pending::Open(n.to_string()));
         } else if !(app.mb.open && app.mb.saved_as.as_deref().is_some_and(|s| s.eq_ignore_ascii_case(n))) {
-            load_saved(app, n);
+            load_saved(app, n)?;
         }
     } else if !app.mb.open {
         let name = untitled(app);
@@ -352,12 +352,19 @@ fn untitled(app: &RustGisApp) -> String {
     name
 }
 
-fn load_saved(app: &mut RustGisApp, name: &str) {
-    let Some(m) = app.session.project.models.iter().find(|m| m.name.eq_ignore_ascii_case(name)) else { return };
-    let graph = m.graph.clone().unwrap_or_else(|| model::steps_to_graph(&m.steps));
+/// Loads a saved model only when its graph can be shown without truncating its steps.
+fn load_saved(app: &mut RustGisApp, name: &str) -> Result<(), String> {
+    let Some(m) = app.session.project.models.iter().find(|m| m.name.eq_ignore_ascii_case(name)) else {
+        return Err(crate::i18n::fmt("no model '{name}'", &[("name", name)]));
+    };
+    let graph = match &m.graph {
+        Some(graph) => graph.clone(),
+        None => model::checked_steps_to_graph(&m.steps)?,
+    };
     let imported = !app.session.trusted_models.contains(&m.name.to_ascii_lowercase());
     let n = m.name.clone();
     app.mb.load(&n, Some(n.clone()), graph, imported);
+    Ok(())
 }
 
 /// Saves the canvas as a project model.
@@ -474,7 +481,10 @@ pub(crate) fn import(app: &mut RustGisApp) {
 /// Opens a model `model.import` just added.
 pub fn imported(app: &mut RustGisApp, v: &Value) {
     if let Some(name) = v["model"].as_str() {
-        load_saved(app, name);
+        if let Err(error) = load_saved(app, name) {
+            app.session.notify(error, true);
+            return;
+        }
         app.mb.open = true;
         show_view(app);
     }
@@ -487,7 +497,11 @@ fn proceed(app: &mut RustGisApp, p: Pending) {
             let name = untitled(app);
             app.mb.load(&name, None, ModelGraph::default(), false);
         }
-        Pending::Open(n) => load_saved(app, &n),
+        Pending::Open(n) => {
+            if let Err(error) = load_saved(app, &n) {
+                app.session.notify(error, true);
+            }
+        }
         Pending::Close => {
             app.mb.open = false;
             app.mb.active = false;
@@ -1896,5 +1910,33 @@ mod tests {
         assert_eq!(app.mb.graph.nodes.len(), 3);
         assert_eq!(app.mb.graph.edges.len(), 2);
         assert!(!app.mb.imported);
+    }
+
+    /// A step model beyond the conversion limit keeps its steps and the current canvas on
+    /// every open route, including import and an accepted discard prompt.
+    #[test]
+    fn oversized_step_models_do_not_replace_the_canvas() {
+        let mut app = RustGisApp::with_sample();
+        app.run("model.new", json!({"name": "Keep", "steps": [{"tool": "buffer", "params": {"input": "Cities"}}]})).unwrap();
+        app.run("ui.modelBuilder", json!({"name": "Keep"})).unwrap();
+        let graph = app.mb.graph.clone();
+        let steps = vec![json!({"tool": "buffer", "params": {}}); 1001];
+        app.run("model.new", json!({"name": "Large", "steps": steps})).unwrap();
+        let models = app.session.project.models.clone();
+
+        let error = app.run("ui.modelBuilder", json!({"name": "Large"})).unwrap_err();
+        assert!(error.contains("1001 steps") && error.contains("at most 1000"), "{error}");
+        for route in 0..2 {
+            app.session.notices.clear();
+            if route == 0 {
+                imported(&mut app, &json!({"model": "Large"}));
+            } else {
+                proceed(&mut app, Pending::Open("Large".into()));
+            }
+            assert!(app.session.notices.iter().any(|notice| notice.error && notice.text.contains("1001 steps")));
+            assert_eq!(app.mb.graph, graph);
+            assert_eq!(app.mb.saved_as.as_deref(), Some("Keep"));
+            assert_eq!(app.session.project.models, models);
+        }
     }
 }
