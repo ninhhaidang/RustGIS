@@ -151,8 +151,10 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
   properties pick its **Style** (classic arrow, compass rose, triangle or star) and its **Fill**
   and **Outline** colours (`"style":"compass","fill":"#B91C1C"`). A scale bar's pick its
   **Style** (alternating bar, stepped line or single line), its **Units** (metres or kilometres
-  to suit the scale, or kilometres, metres, miles or feet) and its **Divisions** (1 to 10), each
-  labelled where there is room (`"style":"line","units":"miles","divisions":2`). A legend's
+  to suit the scale, or kilometres, metres, miles or feet), its **Divisions** (1 to 10), each
+  labelled where there is room, its **Color** (the lines, the dark divisions and the labels) and
+  its **Fill** (the alternating bar's light divisions)
+  (`"style":"line","units":"miles","divisions":2,"color":"#1F4E79"`). A legend's
   parts:
   - **What a legend lists**: what its frame draws: only layers with a feature at the frame's
     scale (through their definition query, display filters and scale range) and, for Unique

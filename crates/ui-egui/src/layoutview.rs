@@ -1692,7 +1692,7 @@ fn properties(app: &mut RustGisApp, ui: &mut Ui, layout: &Layout, li: usize) {
                             ui.end_row();
                         }
                     }
-                    ElementKind::ScaleBar { units, divisions, style, .. } => {
+                    ElementKind::ScaleBar { units, divisions, style, color, fill, .. } => {
                         let input_label = ui.label(tl!("Style"));
                         egui::ComboBox::from_id_salt(("scale_style", id))
                             .selected_text(tl!(style.label()))
@@ -1729,6 +1729,19 @@ fn properties(app: &mut RustGisApp, ui: &mut Ui, layout: &Layout, li: usize) {
                             update(app, json!({"divisions": n}));
                         }
                         ui.end_row();
+                        // The fill is the alternating bar's light divisions: the other styles draw none.
+                        let colors = [("Color", "color", *color), ("Fill", "fill", *fill)];
+                        let shown = if *style == ScaleBarStyle::Alternating { 2 } else { 1 };
+                        for (label, key, current) in colors.into_iter().take(shown) {
+                            ui.label(tl!(label));
+                            let mut c = crate::theme::c32(current);
+                            let resp = crate::widgets::color_button(ui, &mut c);
+                            if resp.changed() {
+                                crate::widgets::one_step_per_press(app, &resp);
+                                update(app, json!({key: crate::theme::rgba(c).hex()}));
+                            }
+                            ui.end_row();
+                        }
                     }
                     ElementKind::Table { rows, .. } => {
                         let input_label = ui.label(tl!("Rows"));

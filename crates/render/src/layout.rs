@@ -264,11 +264,12 @@ fn draw_page(
                 let bearing = frame(*f).map_or(0.0, |fr| fr.2.bearing);
                 north_arrow(&mut pm, r, *style, *fill, *outline, ppp, bearing)
             }
-            ElementKind::ScaleBar { frame: f, units, divisions, style } => {
+            ElementKind::ScaleBar { frame: f, units, divisions, style, color, fill } => {
                 if let Some(&(_, mi, cam, _, _)) = frame(*f)
                     && let Some(map) = maps.get(mi)
                 {
-                    scale_bar(&mut pm, r, map.ground_res_at(&cam), (*units, *divisions, *style), ppp, layout.decimal_comma);
+                    let bar = (*units, *divisions, *style);
+                    scale_bar(&mut pm, r, map.ground_res_at(&cam), bar, (*color, *fill), ppp, layout.decimal_comma);
                 }
             }
             ElementKind::Legend { frame: f, title, all_classes, hide_other, exclude } => {
@@ -1056,9 +1057,19 @@ fn scale_number(v: f64, step: f64) -> String {
 }
 
 /// A scale bar filling most of the element's width, in `units`, with `divisions` labelled steps.
-/// `ground_per_pt` is ground metres per logical point of paper.
-fn scale_bar(pm: &mut Canvas, r: Rect, ground_per_pt: f64, bar: (ScaleUnits, usize, ScaleBarStyle), ppp: f64, comma: bool) {
+/// `ground_per_pt` is ground metres per logical point of paper; `colors` are its lines, dark
+/// divisions and labels, then the alternating bar's light divisions.
+fn scale_bar(
+    pm: &mut Canvas,
+    r: Rect,
+    ground_per_pt: f64,
+    bar: (ScaleUnits, usize, ScaleBarStyle),
+    colors: (Rgba, Rgba),
+    ppp: f64,
+    comma: bool,
+) {
     let (units, divisions, style) = bar;
+    let (dark, light) = colors;
     if !(ground_per_pt.is_finite() && ground_per_pt > 0.0) {
         return;
     }
@@ -1072,7 +1083,6 @@ fn scale_bar(pm: &mut Canvas, r: Rect, ground_per_pt: f64, bar: (ScaleUnits, usi
     let len = (total * unit_m / ground_per_pt * ppp) as f32;
     let bar_h = (r.height() * 0.28).min(6.0 * ppp as f32);
     let (x0, y0) = (r.x() + 2.0, r.y() + r.height() * 0.62 - bar_h / 2.0);
-    let dark = Rgba::rgb(0x22, 0x22, 0x22);
     let seg = len / divisions as f32;
     let line = Stroke { width: 0.6 * ppp as f32, ..Stroke::default() };
     let stroke = |pm: &mut Canvas, pts: &[(f32, f32)], w: &Stroke| {
@@ -1087,7 +1097,7 @@ fn scale_bar(pm: &mut Canvas, r: Rect, ground_per_pt: f64, bar: (ScaleUnits, usi
     match style {
         ScaleBarStyle::Alternating => {
             for i in 0..divisions {
-                let c = if i % 2 == 0 { dark } else { Rgba::rgb(0xFF, 0xFF, 0xFF) };
+                let c = if i % 2 == 0 { dark } else { light };
                 if let Some(b) = Rect::from_xywh(x0 + seg * i as f32, y0, seg, bar_h) {
                     pm.fill_rect(b, &paint(c, 1.0), Transform::identity(), None);
                 }
@@ -2953,13 +2963,15 @@ mod tests {
 
     #[test]
     fn scale_bars_count_in_their_units_and_divisions() {
-        let draw = |bar| {
+        let draw_in = |bar, colors| {
             let mut pm = Pixmap::new(300, 60).unwrap();
             pm.fill(tiny_skia::Color::WHITE);
             // 100 m of ground per point: about 25 km across the bar.
-            crate::canvas::with_canvas(&mut pm, |c| scale_bar(c, Rect::from_xywh(0.0, 0.0, 300.0, 60.0).unwrap(), 100.0, bar, 1.0, false));
+            let r = Rect::from_xywh(0.0, 0.0, 300.0, 60.0).unwrap();
+            crate::canvas::with_canvas(&mut pm, |c| scale_bar(c, r, 100.0, bar, colors, 1.0, false));
             pm
         };
+        let draw = |bar| draw_in(bar, (Rgba::rgb(0x22, 0x22, 0x22), Rgba::rgb(0xFF, 0xFF, 0xFF)));
         // Dark runs along the bar's middle row: one per dark division of an alternating bar.
         let runs = |pm: &Pixmap| {
             let y = (60.0 * 0.62) as u32;
@@ -2979,6 +2991,72 @@ mod tests {
             assert!(dark < 20, "{style:?}: {dark} dark pixels across the bar");
             assert_ne!(pm.data(), four.data());
         }
+    }
+
+    #[test]
+    fn scale_bars_draw_in_their_colours() {
+        let mut pm = Pixmap::new(300, 60).unwrap();
+        pm.fill(tiny_skia::Color::WHITE);
+        type Px = tiny_skia::PremultipliedColorU8;
+        // A red colour and a blue fill.
+        let colors = (Rgba::rgb(0xD0, 0x10, 0x10), Rgba::rgb(0x10, 0x10, 0xD0));
+        let bar = (ScaleUnits::Auto, 4, ScaleBarStyle::Alternating);
+        let r = Rect::from_xywh(0.0, 0.0, 300.0, 60.0).unwrap();
+        crate::canvas::with_canvas(&mut pm, |c| scale_bar(c, r, 100.0, bar, colors, 1.0, false));
+        let count = |hit: fn(Px) -> bool, y: u32| (0..300).filter(|&x| pm.pixel(x, y).is_some_and(hit)).count();
+        let y = (60.0 * 0.62) as u32;
+        // Along the bar: the dark divisions in the colour, the light ones in the fill, nothing in
+        // the old ink.
+        assert!(count(red, y) > 40, "red divisions");
+        assert!(count(|p| p.blue() > 180 && p.red() < 90 && p.green() < 90, y) > 40, "blue divisions");
+        assert_eq!(count(ink, y), 0, "no default ink left");
+        // The labels above the bar are in the colour too.
+        let labels = (0..y.saturating_sub(8)).map(|row| count(|p| p.red() > 120 && p.green() < 90 && p.blue() < 90, row)).sum::<usize>();
+        assert!(labels > 0, "red labels");
+        assert_eq!((0..y.saturating_sub(8)).map(|row| count(ink, row)).sum::<usize>(), 0, "no ink labels");
+    }
+
+    /// A page draws a scale bar in its own colour and fill: the element's, through `draw_page`.
+    #[test]
+    fn a_page_draws_its_scale_bar_in_its_colours() {
+        let mut maps = vec![Map::new("m")];
+        let mut l = Layout::new("Layout", 100.0, 60.0);
+        let frame = l.add(
+            "Map",
+            (5.0, 35.0, 90.0, 20.0),
+            ElementKind::MapFrame {
+                map: "m".into(),
+                center: Coord::new(0.0, 0.0),
+                scale: 10_000_000.0,
+                shape: FrameShape::Rectangle,
+                grid: None,
+                extent_of: None,
+                extent_color: rustgis_map::layout::INDICATOR_COLOR,
+                extent_width: rustgis_map::layout::INDICATOR_WIDTH,
+                bearing: 0.0,
+                pitch: 0.0,
+            },
+        );
+        let (crimson, navy) = (Rgba::rgb(0xD0, 0x10, 0x10), Rgba::rgb(0x10, 0x10, 0xD0));
+        let bar = ElementKind::ScaleBar {
+            frame,
+            units: ScaleUnits::Auto,
+            divisions: 4,
+            style: ScaleBarStyle::Alternating,
+            color: crimson,
+            fill: navy,
+        };
+        l.add("Scale Bar", (5.0, 5.0, 90.0, 20.0), bar);
+        let pm = render(&l, &mut maps, 96.0, &PageInfo::default()).unwrap();
+        // Above the frame (30 mm of the page's 60): the bar's divisions in its colour and fill, and
+        // nothing in the default ink.
+        let above = pm.height() / 2;
+        let count = |hit: fn(tiny_skia::PremultipliedColorU8) -> bool| {
+            (0..above).flat_map(|y| (0..pm.width()).map(move |x| (x, y))).filter(|&(x, y)| pm.pixel(x, y).is_some_and(hit)).count()
+        };
+        assert!(count(red) > 100, "red divisions and labels");
+        assert!(count(|p| p.blue() > 180 && p.red() < 90 && p.green() < 90) > 100, "blue divisions");
+        assert_eq!(count(ink), 0, "no default ink");
     }
 
     #[test]
