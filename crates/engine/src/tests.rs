@@ -4124,6 +4124,58 @@ fn map_and_layer_files_report_label_setting_losses() {
     }
 }
 
+/// Two layers whose only features have the same id, each with a locked label and a line anchor.
+fn two_locked_layers() -> (Session, u32, u32) {
+    use rustgis_data::{Dataset, Field, FieldType, Geometry, GeometryType, Value as V};
+    let mut s = Session::new(Project::default());
+    let mut layer = |name: &str| {
+        let mut d = Dataset::new(name, GeometryType::Point, vec![Field::new("name", FieldType::Text)]);
+        d.push(Some(Geometry::Point(rustgis_geom::Coord::new(0.0, 0.0))), vec![V::Text(name.into())]);
+        s.map_mut().add_dataset(d)
+    };
+    let (a, b) = (layer("A"), layer("B"));
+    let keys = [(a, 1, 0, 0), (b, 1, 0, 0)];
+    s.map_mut().label_lock = Some(keys.map(|k| (k, Default::default())).to_vec());
+    s.map_mut().label_lock_line_anchors = keys.map(|k| (k, Default::default())).into_iter().collect();
+    (s, a, b)
+}
+
+/// The layers a map's lock and line anchors name, each sorted.
+fn locked_layers(s: &Session) -> (Vec<u32>, Vec<u32>) {
+    let mut lock: Vec<u32> = s.map().label_lock.iter().flatten().map(|((l, ..), _)| *l).collect();
+    let mut anchors: Vec<u32> = s.map().label_lock_line_anchors.keys().map(|(l, ..)| *l).collect();
+    lock.sort_unstable();
+    anchors.sort_unstable();
+    (lock, anchors)
+}
+
+/// A removed layer's locked labels and line anchors go with it, and only its own; undo brings them
+/// back.
+#[test]
+fn a_removed_layers_locked_labels_go_with_it() {
+    let (mut s, a, b) = two_locked_layers();
+    s.run("layer.remove", &json!({"layer": a})).unwrap();
+    assert_eq!(locked_layers(&s), (vec![b], vec![b]));
+    s.run("edit.undo", &Value::Null).unwrap();
+    assert_eq!(locked_layers(&s), (vec![a, b], vec![a, b]));
+    s.run("edit.redo", &Value::Null).unwrap();
+    assert_eq!(locked_layers(&s), (vec![b], vec![b]));
+}
+
+/// A deleted feature's lock entry and line anchor go with it, not those of another layer's feature
+/// with the same id; undo brings them back.
+#[test]
+fn a_deleted_feature_leaves_another_layers_lock_alone() {
+    let (mut s, a, b) = two_locked_layers();
+    s.map_mut().layer_mut(a).unwrap().selection = vec![0];
+    s.run("edit.delete", &Value::Null).unwrap();
+    assert_eq!(locked_layers(&s), (vec![b], vec![b]));
+    s.run("edit.undo", &Value::Null).unwrap();
+    assert_eq!(locked_layers(&s), (vec![a, b], vec![a, b]));
+    s.run("edit.redo", &Value::Null).unwrap();
+    assert_eq!(locked_layers(&s), (vec![b], vec![b]));
+}
+
 /// A streamed layer holds only the window in view: a lock's entry for a feature outside it stays
 /// when the window changes (#1135).
 #[test]

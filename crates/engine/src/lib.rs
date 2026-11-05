@@ -848,10 +848,12 @@ fn fresh_source_ids(before: &Project, after: &mut Project) {
 /// A lock names each label by its feature's id, and [`rustgis_data::Dataset::push`] hands the
 /// largest id out again once its feature is deleted: the new feature would take the lock's place
 /// without having been placed (#1135). Saved moved-label positions have the same identity rule.
-/// So a command that removes features removes their locks and saved moves,
+/// So a command that removes features removes their locks, line anchors and saved moves,
 /// whichever way it removes them. Undo brings them back with the rest of the project. A streamed
 /// layer holds only the window in view, so its other features aren't gone. It compares ids, so an
 /// id a single command both removes and hands out stays locked: only restoring from an archive can.
+/// A command that removes a layer removes its locks and line anchors too, or each frame would read
+/// them for nothing.
 fn forget_label_state_of_removed_features(before: &Project, after: &mut Project) {
     for (i, m) in after.maps.iter_mut().enumerate() {
         let was = before.maps.get(i).filter(|o| o.name == m.name);
@@ -879,7 +881,13 @@ fn forget_label_state_of_removed_features(before: &Project, after: &mut Project)
             if let Some(lock) = &mut m.label_lock {
                 lock.retain(|((layer, id, ..), _)| *layer != l.id || !gone.contains(id));
             }
+            m.label_lock_line_anchors.retain(|(layer, id, ..), _| *layer != l.id || !gone.contains(id));
         }
+        let kept: std::collections::HashSet<u32> = m.layers.iter().map(|l| l.id).collect();
+        if let Some(lock) = &mut m.label_lock {
+            lock.retain(|((layer, ..), _)| kept.contains(layer));
+        }
+        m.label_lock_line_anchors.retain(|(layer, ..), _| kept.contains(layer));
     }
 }
 
