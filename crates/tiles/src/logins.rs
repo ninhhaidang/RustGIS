@@ -98,6 +98,17 @@ fn entries() -> MutexGuard<'static, BTreeMap<String, Entry>> {
 /// Installs a fresh session/connection login generation. Only addresses bound to the returned
 /// token can use it. Callers revoke their previous generation explicitly.
 pub fn activate(origin: &str, owner: &str, method: Method, value: &str, insecure: bool) -> Result<String, &'static str> {
+    activate_with_random(origin, owner, method, value, insecure, fill_random)
+}
+
+fn activate_with_random(
+    origin: &str,
+    owner: &str,
+    method: Method,
+    value: &str,
+    insecure: bool,
+    mut random: impl FnMut(&mut [u8; 16]) -> Result<(), &'static str>,
+) -> Result<String, &'static str> {
     rustgis_data::login_address::set_validator(check);
     if self::origin(origin).as_deref() != Some(origin) {
         return Err("A login requires a canonical HTTP or HTTPS origin.");
@@ -123,7 +134,7 @@ pub fn activate(origin: &str, owner: &str, method: Method, value: &str, insecure
     // A token is the only thing that scopes a bound address to its login, so it is random. A
     // collision (never expected at 128 bits) is retried rather than replacing a live login.
     for _ in 0..4 {
-        let binding = random_token()?;
+        let binding = random_token(&mut random)?;
         if !entries.contains_key(&binding) {
             entries.insert(
                 binding.clone(),
@@ -136,42 +147,16 @@ pub fn activate(origin: &str, owner: &str, method: Method, value: &str, insecure
 }
 
 /// 128 unpredictable bits as 32 lower-case hex digits.
-fn random_token() -> Result<String, &'static str> {
+fn random_token(random: &mut impl FnMut(&mut [u8; 16]) -> Result<(), &'static str>) -> Result<String, &'static str> {
     let mut bytes = [0u8; 16];
-    fill_random(&mut bytes)?;
+    random(&mut bytes)?;
     Ok(format!("{:032x}", u128::from_be_bytes(bytes)))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+// The browser backend calls globalThis.crypto.getRandomValues (windows and workers), catching
+// missing APIs and exceptions. No binding is installed if the secure source fails.
 fn fill_random(bytes: &mut [u8; 16]) -> Result<(), &'static str> {
     getrandom::fill(bytes).map_err(|_| "No random numbers are available for a login binding.")
-}
-
-/// The browser build has no operating-system generator here (`getrandom` is a native-only
-/// dependency of this crate). It mixes the per-process keys of `std`'s `RandomState`, a counter,
-/// the clock and a stack address. On `wasm32-unknown-unknown` those keys may be fixed, so this is
-/// unique but not unpredictable: the browser build has one session, with no other session to
-/// guess a token against.
-#[cfg(target_arch = "wasm32")]
-fn fill_random(bytes: &mut [u8; 16]) -> Result<(), &'static str> {
-    use std::{
-        hash::{BuildHasher, Hasher},
-        sync::atomic::{AtomicU64, Ordering},
-    };
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let count = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let nanos = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
-    let marker = 0u8;
-    let state = std::collections::hash_map::RandomState::new();
-    for (salt, half) in bytes.chunks_mut(8).enumerate() {
-        let mut hasher = state.build_hasher();
-        hasher.write_u64(count);
-        hasher.write_u128(nanos);
-        hasher.write_usize(std::ptr::addr_of!(marker) as usize);
-        hasher.write_usize(salt);
-        half.copy_from_slice(&hasher.finish().to_be_bytes());
-    }
-    Ok(())
 }
 
 fn add_redactions(redactions: &mut Vec<Redaction>, value: &str) {
@@ -465,21 +450,61 @@ mod tests {
     }
 
     #[test]
-    fn bindings_are_long_distinct_and_not_a_sequence() {
-        let target = "https://token-login.example";
-        let tokens: Vec<String> = (0..8).map(|_| activate(target, "token", Method::Header("X-Key".into()), "k", false).unwrap()).collect();
-        let distinct: std::collections::BTreeSet<_> = tokens.iter().collect();
-        assert_eq!(distinct.len(), tokens.len());
-        for t in &tokens {
-            assert_eq!(t.len(), 32);
-            assert!(t.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)));
-            assert!(bind(t, &format!("{target}/tile")).is_ok());
+    fn failed_random_source_installs_nothing_and_preserves_a_live_login() {
+        let target = "https://random-failure-login.example";
+        let old = activate(target, "random-replacement", Method::Header("X-Key".into()), "old-credential", false).unwrap();
+        let address = bind(&old, &format!("{target}/tile")).unwrap();
+        for owner in ["random-first-login", "random-replacement"] {
+            let mut attempts = 0;
+            let result = activate_with_random(target, owner, Method::Header("X-Key".into()), "failed-credential", false, |bytes| {
+                attempts += 1;
+                // Even a source that writes before failing must never activate those bytes.
+                bytes.fill(0x21);
+                Err("No random numbers are available for a login binding.")
+            });
+            assert!(result.is_err());
+            assert_eq!(attempts, 1);
+            let expected = usize::from(owner == "random-replacement");
+            assert_eq!(entries().values().filter(|entry| entry.owner == owner).count(), expected);
+            assert_eq!(apply(&address).unwrap().unwrap().header.unwrap().1, "old-credential");
         }
-        let value = |t: &String| u128::from_str_radix(t, 16).unwrap();
-        assert!(tokens.windows(2).all(|w| value(&w[1]).wrapping_sub(value(&w[0])) != 1));
-        for t in &tokens {
-            assert!(deactivate(t));
-        }
+        assert!(deactivate(&old));
+    }
+
+    #[test]
+    fn collisions_retry_without_overwriting_and_exhaust_after_four_attempts() {
+        let target = "https://collision-login.example";
+        let method = || Method::Header("X-Key".into());
+        let old = activate_with_random(target, "collision-old", method(), "old-key", false, |bytes| {
+            bytes.fill(0x3c);
+            Ok(())
+        })
+        .unwrap();
+        let old_address = bind(&old, &format!("{target}/tile")).unwrap();
+        let mut attempts = 0;
+        let next = activate_with_random(target, "collision-new", method(), "new-key", false, |bytes| {
+            attempts += 1;
+            bytes.fill(if attempts == 1 { 0x3c } else { 0x7a });
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(attempts, 2);
+        let next_address = bind(&next, &format!("{target}/tile")).unwrap();
+        assert_eq!(apply(&old_address).unwrap().unwrap().header.unwrap().1, "old-key");
+        assert_eq!(apply(&next_address).unwrap().unwrap().header.unwrap().1, "new-key");
+
+        attempts = 0;
+        let result = activate_with_random(target, "collision-exhausted", method(), "failed-key", false, |bytes| {
+            attempts += 1;
+            bytes.fill(0x3c);
+            Ok(())
+        });
+        assert_eq!(result.unwrap_err(), "The service login binding could not be created.");
+        assert_eq!(attempts, 4);
+        assert!(!entries().values().any(|entry| entry.owner == "collision-exhausted"));
+        assert_eq!(apply(&old_address).unwrap().unwrap().header.unwrap().1, "old-key");
+        assert!(deactivate(&old));
+        assert!(deactivate(&next));
     }
 
     #[test]

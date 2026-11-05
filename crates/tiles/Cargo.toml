@@ -35,6 +35,10 @@ base64 = { workspace = true }
 ureq = { version = "3", default-features = false, features = ["rustls", "gzip", "platform-verifier"] }
 getrandom = "0.4"
 
+# Browser and worker login bindings use Web Crypto, never a uniqueness-only fallback.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.4", features = ["wasm_js"] }
+
 [dev-dependencies]
 # Tests write Brotli-compressed PMTiles archives.
 brotli = { version = "~9.0.0", default-features = false, features = ["std"] }

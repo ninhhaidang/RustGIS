@@ -819,6 +819,11 @@ connection's kind doesn't change: make a new one); renaming the connection or ch
 at the same origin does not. **Log Out**
 (`connection.logout`) removes the session login. Log in again when a new session needs it.
 
+Creating a login requires secure random numbers: the operating system's generator on desktop,
+or the browser's `crypto.getRandomValues` in the web app. If that source is missing or fails,
+RustGIS refuses the login rather than using a predictable fallback. A failed replacement leaves
+the previous active login usable.
+
 A login is sent only to the connection's origin: the same scheme, host and port, for its
 capabilities, listings, tiles, feature pages and refreshes. On the desktop a redirect within that
 origin keeps the login, and a redirect to another origin is followed without it, never getting
