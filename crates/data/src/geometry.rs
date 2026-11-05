@@ -212,7 +212,9 @@ impl Geometry {
     }
 
     /// A point for a label or a pop-up: the point itself, the middle vertex of the longest line
-    /// part, or the centroid of the largest polygon (moved inside it if the centroid falls out).
+    /// part, or the centroid of the largest valid polygon (moved inside it if the centroid falls out).
+    ///
+    /// Returns `None` if the geometry is empty or if all polygon parts contain non-finite coordinates.
     pub fn label_point(&self) -> Option<Coord> {
         match self {
             Geometry::Point(c) => Some(*c),
@@ -222,11 +224,7 @@ impl Geometry {
                 part.get(part.len() / 2).copied()
             }
             Geometry::Polygon(polys) => {
-                let rings = polys.iter().max_by(|a, b| {
-                    let aa = a.first().map(|r| ring_area(r).abs()).unwrap_or(0.0);
-                    let bb = b.first().map(|r| ring_area(r).abs()).unwrap_or(0.0);
-                    aa.partial_cmp(&bb).unwrap_or(std::cmp::Ordering::Equal)
-                })?;
+                let rings = largest_part(polys)?;
                 let outer = rings.first()?;
                 let c = ring_centroid(outer)?;
                 if polygon_contains(rings, c) {
@@ -241,7 +239,7 @@ impl Geometry {
                 let steps = LABEL_GRID_STEPS;
                 let mut best: Option<(f64, Coord)> = None;
                 for i in 1..steps {
-                    let y = e.min_y + e.height() * i as f64 / steps as f64;
+                    let y = grid_coord(e.min_y, e.max_y, i);
                     // Evaluate the same 65 grid points together. Each crossing toggles a
                     // prefix of x samples, replacing 65 repeated edge walks per scanline.
                     let mut inside = rings.first().map_or(0, |ring| label_grid_ring(ring, y, &e));
@@ -250,13 +248,17 @@ impl Geometry {
                     }
                     let mut run_start: Option<f64> = None;
                     for j in 0..=steps {
-                        let x = e.min_x + e.width() * j as f64 / steps as f64;
+                        let x = grid_coord(e.min_x, e.max_x, j);
                         match (inside & (1u128 << j) != 0, run_start) {
                             (true, None) => run_start = Some(x),
                             (false, Some(s)) => {
-                                let w = x - s;
+                                // Half widths and a halved midpoint stay finite for spans past
+                                // f64::MAX; halving is exact, so ordinary runs rank the same.
+                                let w = x * 0.5 - s * 0.5;
                                 if best.is_none_or(|(bw, _)| w > bw) {
-                                    best = Some((w, Coord::new((s + x) / 2.0, y)));
+                                    let mid = (s + x) / 2.0;
+                                    let mid = if mid.is_finite() { mid } else { s * 0.5 + x * 0.5 };
+                                    best = Some((w, Coord::new(mid, y)));
                                 }
                                 run_start = None;
                             }
@@ -270,6 +272,18 @@ impl Geometry {
     }
 }
 
+/// The `k`th of the label grid's sample positions between `min` and `max`. A span whose samples
+/// would overflow `f64` is interpolated instead, so the samples stay finite; ordinary spans
+/// keep the original expression and its exact bits.
+fn grid_coord(min: f64, max: f64, k: usize) -> f64 {
+    let span = max - min;
+    if (span * LABEL_GRID_STEPS as f64).is_finite() {
+        return min + span * k as f64 / LABEL_GRID_STEPS as f64;
+    }
+    let t = k as f64 / LABEL_GRID_STEPS as f64;
+    min * (1.0 - t) + max * t
+}
+
 /// Exact even-odd results for the label algorithm's existing 0..=64 x samples.
 /// Search uses the original floating-point expression and strict comparison, preserving boundaries.
 fn label_grid_ring(ring: &[Coord], y: f64, extent: &Extent) -> u128 {
@@ -280,11 +294,11 @@ fn label_grid_ring(ring: &[Coord], y: f64, extent: &Extent) -> u128 {
     let Some(mut previous) = ring.last() else { return 0 };
     for point in ring {
         if (point.y > y) != (previous.y > y) {
-            let crossing = (previous.x - point.x) * (y - point.y) / (previous.y - point.y) + point.x;
+            let crossing = crossing_x(*point, *previous, y);
             let (mut lo, mut hi) = (0usize, LABEL_GRID_STEPS + 1);
             while lo < hi {
                 let mid = lo + (hi - lo) / 2;
-                let x = extent.min_x + extent.width() * mid as f64 / LABEL_GRID_STEPS as f64;
+                let x = grid_coord(extent.min_x, extent.max_x, mid);
                 if x < crossing {
                     lo = mid + 1;
                 } else {
@@ -494,9 +508,19 @@ pub fn seg_dist2(line: &[Coord], p: Coord) -> f64 {
 }
 
 /// Whether a line segment intersects an extent (including crossing through it or touching boundaries).
+///
+/// Returns `false` if `e` is empty, or if either coordinate is non-finite (`NaN` or `Infinity`)
+/// unless an endpoint is already contained within `e`. Non-finite endpoints outside the extent
+/// are treated as invalid and do not intersect.
 pub fn segment_intersects_extent(p1: Coord, p2: Coord, e: &Extent) -> bool {
+    if e.is_empty() {
+        return false;
+    }
     if e.contains(p1) || e.contains(p2) {
         return true;
+    }
+    if !p1.is_finite() || !p2.is_finite() {
+        return false;
     }
     let min_x = p1.x.min(p2.x);
     let max_x = p1.x.max(p2.x);
@@ -506,8 +530,14 @@ pub fn segment_intersects_extent(p1: Coord, p2: Coord, e: &Extent) -> bool {
         return false;
     }
 
-    let dx = p2.x - p1.x;
-    let dy = p2.y - p1.y;
+    let halve_axis = |v1: f64, v2: f64, min_e: f64, max_e: f64| {
+        if v1.abs().max(v2.abs()) > f64::MAX / 2.0 { (v1 * 0.5, v2 * 0.5, min_e * 0.5, max_e * 0.5) } else { (v1, v2, min_e, max_e) }
+    };
+    let (p1x, p2x, min_x, max_x) = halve_axis(p1.x, p2.x, e.min_x, e.max_x);
+    let (p1y, p2y, min_y, max_y) = halve_axis(p1.y, p2.y, e.min_y, e.max_y);
+
+    let dx = p2x - p1x;
+    let dy = p2y - p1y;
     let mut t0 = 0.0f64;
     let mut t1 = 1.0f64;
 
@@ -534,7 +564,7 @@ pub fn segment_intersects_extent(p1: Coord, p2: Coord, e: &Extent) -> bool {
         true
     };
 
-    clip(-dx, p1.x - e.min_x) && clip(dx, e.max_x - p1.x) && clip(-dy, p1.y - e.min_y) && clip(dy, e.max_y - p1.y) && t0 <= t1
+    clip(-dx, p1x - min_x) && clip(dx, max_x - p1x) && clip(-dy, p1y - min_y) && clip(dy, max_y - p1y) && t0 <= t1
 }
 
 /// Even-odd point-in-ring test.
@@ -547,12 +577,28 @@ pub fn ring_contains(ring: &[Coord], p: Coord) -> bool {
     let mut j = n - 1;
     for i in 0..n {
         let (Some(a), Some(b)) = (ring.get(i), ring.get(j)) else { break };
-        if (a.y > p.y) != (b.y > p.y) && p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x {
+        if (a.y > p.y) != (b.y > p.y) && p.x < crossing_x(*a, *b, p.y) {
             inside = !inside;
         }
         j = i;
     }
     inside
+}
+
+/// Where the edge `a`–`b` crosses the horizontal line at `y`. When the plain formula overflows
+/// (coordinates near `f64::MAX`), it is recomputed fraction first, halving only the axis whose
+/// differences overflow, so huge rings still give a finite crossing and subnormal values on the
+/// other axis keep their precision.
+fn crossing_x(a: Coord, b: Coord, y: f64) -> f64 {
+    let x = (b.x - a.x) * (y - a.y) / (b.y - a.y) + a.x;
+    // An overflowed denominator can still give a finite (wrong) quotient, so it is checked too.
+    if x.is_finite() && (b.y - a.y).is_finite() {
+        return x;
+    }
+    let (ny, dy) = (y - a.y, b.y - a.y);
+    let t = if ny.is_finite() && dy.is_finite() { ny / dy } else { (y * 0.5 - a.y * 0.5) / (b.y * 0.5 - a.y * 0.5) };
+    let dx = b.x - a.x;
+    if dx.is_finite() { dx * t + a.x } else { ((b.x * 0.5 - a.x * 0.5) * t + a.x * 0.5) * 2.0 }
 }
 
 /// Inside the exterior ring and outside every hole.
@@ -578,26 +624,122 @@ pub fn ring_area(ring: &[Coord]) -> f64 {
     s / 2.0
 }
 
-/// Planar centroid of a ring (vertex average when degenerate).
-pub fn ring_centroid(ring: &[Coord]) -> Option<Coord> {
-    let a = ring_area(ring);
-    if a.abs() < 1e-12 {
-        let n = ring.len() as f64;
-        if n == 0.0 {
-            return None;
+/// A frame for ring arithmetic that cannot overflow: an axis whose coordinates exceed 1e100 is
+/// scaled to about 1 and shifted so the first vertex sits at 0, keeping shoelace terms small.
+/// Ordinary axes are left as they are, so their results keep their exact bits.
+struct RingFrame {
+    sx: f64,
+    sy: f64,
+    ox: f64,
+    oy: f64,
+}
+
+impl RingFrame {
+    /// The frame for `ring`, or `None` when it is empty or has a non-finite coordinate.
+    fn new(ring: &[Coord]) -> Option<RingFrame> {
+        let first = ring.first()?;
+        let (mut max_x, mut max_y) = (0.0f64, 0.0f64);
+        for c in ring {
+            if !c.is_finite() {
+                return None;
+            }
+            max_x = max_x.max(c.x.abs());
+            max_y = max_y.max(c.y.abs());
         }
-        let (sx, sy) = ring.iter().fold((0.0, 0.0), |(x, y), c| (x + c.x, y + c.y));
-        return Some(Coord::new(sx / n, sy / n));
+        let sx = if max_x > 1e100 { 1.0 / max_x } else { 1.0 };
+        let sy = if max_y > 1e100 { 1.0 / max_y } else { 1.0 };
+        let ox = if sx < 1.0 { first.x * sx } else { 0.0 };
+        let oy = if sy < 1.0 { first.y * sy } else { 0.0 };
+        Some(RingFrame { sx, sy, ox, oy })
     }
+
+    /// `c` in frame units.
+    fn local(&self, c: &Coord) -> (f64, f64) {
+        (c.x * self.sx - self.ox, c.y * self.sy - self.oy)
+    }
+
+    /// A frame point back in coordinate units.
+    fn world(&self, x: f64, y: f64) -> Coord {
+        Coord::new((x + self.ox) / self.sx, (y + self.oy) / self.sy)
+    }
+
+    /// Signed unhalved shoelace sum of `ring` in frame units.
+    fn shoelace_sum(&self, ring: &[Coord]) -> f64 {
+        let n = ring.len();
+        let mut a = 0.0f64;
+        for i in 0..n {
+            let (Some(p), Some(q)) = (ring.get(i), ring.get((i + 1) % n)) else { break };
+            let ((px, py), (qx, qy)) = (self.local(p), self.local(q));
+            a += px * qy - qx * py;
+        }
+        a
+    }
+
+    /// Signed shoelace area of `ring` in frame units.
+    fn area(&self, ring: &[Coord]) -> f64 {
+        self.shoelace_sum(ring) / 2.0
+    }
+}
+
+/// The polygon part with the largest outer ring, skipping parts with no outer ring or with a
+/// non-finite coordinate in any ring. Each part's area is computed once in its [`RingFrame`]. When
+/// any part needs a scaled frame (coordinates above 1e100), parts are ranked by the logarithm of
+/// their area, so huge or far-offset rings rank by their true size rather than an overflowed or
+/// cancelled shoelace sum; otherwise by the plain shoelace area, bit for bit. Ties keep the last part.
+fn largest_part(polys: &[Vec<Vec<Coord>>]) -> Option<&Vec<Vec<Coord>>> {
+    let parts: Vec<(&Vec<Vec<Coord>>, RingFrame, f64, f64)> = polys
+        .iter()
+        .filter(|p| p.iter().all(|r| r.iter().all(|c| c.is_finite())))
+        .filter_map(|p| {
+            let outer = p.first()?;
+            let f = RingFrame::new(outer)?;
+            let sum = f.shoelace_sum(outer).abs();
+            let a = sum / 2.0;
+            Some((p, f, sum, a))
+        })
+        .collect();
+    let scaled = parts.iter().any(|(_, f, _, _)| f.sx != 1.0 || f.sy != 1.0);
+    let key = |(_, f, sum, a): &(&Vec<Vec<Coord>>, RingFrame, f64, f64)| {
+        if scaled { sum.ln() - 2.0f64.ln() - f.sx.ln() - f.sy.ln() } else { *a }
+    };
+    parts.iter().max_by(|x, y| key(x).partial_cmp(&key(y)).unwrap_or(std::cmp::Ordering::Equal)).map(|(p, _, _, _)| *p)
+}
+
+/// Planar centroid of a ring (vertex average when degenerate).
+///
+/// Returns `None` if the ring contains non-finite coordinates, has no vertices, or produces a non-finite centroid.
+/// Axes with coordinates above 1e100 are computed in a scaled frame centred on the first vertex,
+/// so they neither overflow nor lose a small ring to cancellation.
+/// For degenerate rings with zero or near-zero planar area, returns the unweighted average
+/// of vertices, excluding the duplicate closing vertex for closed rings.
+pub fn ring_centroid(ring: &[Coord]) -> Option<Coord> {
+    let frame = RingFrame::new(ring)?;
     let n = ring.len();
+    let pts = if n > 1 && ring.first() == ring.last() { ring.get(..n - 1).unwrap_or(ring) } else { ring };
+    let a = frame.area(ring);
+
+    // The plain 1e-12 threshold, in frame units. It may underflow to 0 for huge rings, which then
+    // count as degenerate only at an exact zero area.
+    if a == 0.0 || a.abs() < 1e-12 * frame.sx * frame.sy {
+        let count = pts.len() as f64;
+        let (sx, sy) = pts.iter().fold((0.0, 0.0), |(x, y), c| {
+            let (lx, ly) = frame.local(c);
+            (x + lx, y + ly)
+        });
+        let c = frame.world(sx / count, sy / count);
+        return c.is_finite().then_some(c);
+    }
+
     let (mut cx, mut cy) = (0.0, 0.0);
     for i in 0..n {
         let (Some(p), Some(q)) = (ring.get(i), ring.get((i + 1) % n)) else { break };
-        let f = p.x * q.y - q.x * p.y;
-        cx += (p.x + q.x) * f;
-        cy += (p.y + q.y) * f;
+        let ((px, py), (qx, qy)) = (frame.local(p), frame.local(q));
+        let f = px * qy - qx * py;
+        cx += (px + qx) * f;
+        cy += (py + qy) * f;
     }
-    Some(Coord::new(cx / (6.0 * a), cy / (6.0 * a)))
+    let c = frame.world(cx / (6.0 * a), cy / (6.0 * a));
+    c.is_finite().then_some(c)
 }
 
 #[cfg(test)]
@@ -642,6 +784,207 @@ mod tests {
         assert!(segment_intersects_extent(Coord::new(-5.0, 10.0), Coord::new(15.0, 10.0), &Extent::new(0.0, 0.0, 10.0, 10.0)));
         // Segment outside box
         assert!(!segment_intersects_extent(Coord::new(-5.0, 12.0), Coord::new(15.0, 12.0), &Extent::new(0.0, 0.0, 10.0, 10.0)));
+        // An endpoint inside the box intersects even if the other endpoint is non-finite
+        assert!(segment_intersects_extent(Coord::new(5.0, 5.0), Coord::new(f64::NAN, 5.0), &Extent::new(0.0, 0.0, 10.0, 10.0)));
+        assert!(segment_intersects_extent(Coord::new(f64::INFINITY, 0.0), Coord::new(5.0, 5.0), &Extent::new(0.0, 0.0, 10.0, 10.0)));
+        // Non-finite segment outside the box or empty extent never intersects
+        assert!(!segment_intersects_extent(Coord::new(f64::NAN, -1.0), Coord::new(5.0, 15.0), &Extent::new(0.0, 0.0, 10.0, 10.0)));
+        assert!(!segment_intersects_extent(Coord::new(-5.0, -5.0), Coord::new(f64::INFINITY, 15.0), &Extent::new(0.0, 0.0, 10.0, 10.0)));
+        assert!(!segment_intersects_extent(Coord::new(-5.0, 5.0), Coord::new(f64::INFINITY, 5.0), &Extent::new(0.0, 0.0, 10.0, 10.0)));
+        // Huge coordinates exceeding normal span: non-crossing returns false, crossing returns true
+        assert!(!segment_intersects_extent(Coord::new(-1.7e308, 20.0), Coord::new(1.7e308, 20.0), &Extent::new(0.0, 0.0, 10.0, 10.0)));
+        // Passes bounding-box check; dx = 3.4e308 would overflow without halving and wrongly report a hit
+        assert!(!segment_intersects_extent(Coord::new(-1.7e308, 5.0), Coord::new(1.7e308, 20.0), &Extent::new(0.0, 0.0, 10.0, 10.0)));
+        assert!(segment_intersects_extent(Coord::new(-1.7e308, 5.0), Coord::new(1.7e308, 5.0), &Extent::new(0.0, 0.0, 10.0, 10.0)));
+        // Subnormal values preserve precision without collapsing to zero
+        assert!(!segment_intersects_extent(Coord::new(0.0, 5e-324), Coord::new(5e-324, 0.0), &Extent::new(0.0, 0.0, 0.0, 0.0)));
+        assert!(segment_intersects_extent(Coord::new(1e301, 0.0), Coord::new(-1e301, 1e-323), &Extent::new(0.0, 0.0, 10.0, 5e-324)));
+        assert!(!segment_intersects_extent(Coord::new(1.7e308, 5e-324), Coord::new(-1.7e308, 5e-324), &Extent::new(0.0, 0.0, 0.0, 0.0)));
+        assert!(!segment_intersects_extent(Coord::new(0.0, 0.0), Coord::new(10.0, 10.0), &Extent::EMPTY));
+    }
+
+    #[test]
+    fn degenerate_ring_centroid_is_rotation_independent_and_ignores_duplicate_closing_vertex() {
+        let closed_a = vec![Coord::new(0.0, 0.0), Coord::new(10.0, 0.0), Coord::new(0.0, 0.0)];
+        let closed_b = vec![Coord::new(10.0, 0.0), Coord::new(0.0, 0.0), Coord::new(10.0, 0.0)];
+        assert_eq!(ring_centroid(&closed_a), Some(Coord::new(5.0, 0.0)));
+        assert_eq!(ring_centroid(&closed_b), Some(Coord::new(5.0, 0.0)));
+        let open = vec![Coord::new(0.0, 0.0), Coord::new(10.0, 0.0)];
+        assert_eq!(ring_centroid(&open), Some(Coord::new(5.0, 0.0)));
+        let non_finite = vec![Coord::new(f64::NAN, 0.0), Coord::new(10.0, 0.0), Coord::new(f64::NAN, 0.0)];
+        assert_eq!(ring_centroid(&non_finite), None);
+        assert_eq!(ring_centroid(&[]), None);
+        let huge_ring = vec![Coord::new(1e160, 0.0), Coord::new(0.0, 1e160), Coord::new(-1e160, 0.0), Coord::new(1e160, 0.0)];
+        let c = ring_centroid(&huge_ring).unwrap();
+        assert!(c.x.abs() < 1e145 && (c.y - 1e160 / 3.0).abs() / 1e160 < 1e-12);
+        let max_ring = vec![Coord::new(f64::MAX, 0.0), Coord::new(f64::MAX, 0.0), Coord::new(f64::MAX, 0.0)];
+        assert_eq!(ring_centroid(&max_ring), Some(Coord::new(f64::MAX, 0.0)));
+        let subnormal_ring = vec![Coord::new(5e-324, 0.0), Coord::new(0.0, 5e-324), Coord::new(-5e-324, 0.0), Coord::new(5e-324, 0.0)];
+        assert!(ring_centroid(&subnormal_ring).is_some());
+        let mixed_ring = vec![Coord::new(1e200, 1e-200), Coord::new(1e200, 2e-200), Coord::new(1e200, 3e-200), Coord::new(1e200, 1e-200)];
+        let c_mixed = ring_centroid(&mixed_ring).unwrap();
+        assert!((c_mixed.x - 1e200).abs() / 1e200 < 1e-12);
+        assert!((c_mixed.y - 2e-200).abs() / 2e-200 < 1e-12);
+    }
+
+    #[test]
+    fn ring_centroid_scale_threshold_continuity() {
+        let p_below =
+            vec![Coord::new(0.0, 0.0), Coord::new(1e99, 0.0), Coord::new(1e99, 1e99), Coord::new(0.0, 1e99), Coord::new(0.0, 0.0)];
+        let p_above =
+            vec![Coord::new(0.0, 0.0), Coord::new(1e101, 0.0), Coord::new(1e101, 1e101), Coord::new(0.0, 1e101), Coord::new(0.0, 0.0)];
+        let c_below = ring_centroid(&p_below).unwrap();
+        let c_above = ring_centroid(&p_above).unwrap();
+        assert!((c_below.x - 5e98).abs() / 5e98 < 1e-12);
+        assert!((c_above.x - 5e100).abs() / 5e100 < 1e-12);
+    }
+
+    #[test]
+    fn huge_rings_keep_precision_and_area_weighting() {
+        // A ring of size 1e90 sitting near 1e101: the scaled frame is centred on the first vertex,
+        // so the shoelace terms do not cancel to noise.
+        let c = ring_centroid(&square(1e101, 1e101, 1e90)).unwrap();
+        let want = 1e101 + 5e89;
+        assert!((c.x - want).abs() < 1e88 && (c.y - want).abs() < 1e88, "{c:?}");
+        // A tiny but nonzero scaled area is still area-weighted, not a vertex average.
+        let kite = vec![Coord::new(0.0, 0.0), Coord::new(1e-110, 0.0), Coord::new(1e200, 1e200), Coord::new(0.0, 1e-110)];
+        let c = ring_centroid(&kite).unwrap();
+        assert!((c.x / (1e200 / 3.0) - 1.0).abs() < 1e-3 && (c.y / (1e200 / 3.0) - 1.0).abs() < 1e-3, "{c:?}");
+    }
+
+    #[test]
+    fn ring_contains_handles_huge_coordinates() {
+        let ring = vec![Coord::new(1e200, 1e200), Coord::new(0.0, 0.0), Coord::new(0.0, 1e200), Coord::new(1e200, 1e200)];
+        assert!(!ring_contains(&ring, Coord::new(2e200, 5e199)));
+        assert!(ring_contains(&ring, Coord::new(1e199, 5e199)));
+        // Halving only the overflowing axis keeps a subnormal y fraction exact.
+        let (s, m) = (f64::from_bits(1), f64::MAX);
+        let mixed = vec![Coord::new(m, 4.0 * s), Coord::new(-m, 0.0), Coord::new(m, 0.0)];
+        assert!(!ring_contains(&mixed, Coord::new(-0.75 * m, s)));
+    }
+
+    #[test]
+    fn concave_huge_polygon_labels_inside() {
+        // A U shape near 1e200 whose centroid falls in the notch, so the scanline picks the label.
+        let u = [(0.0, 0.0), (3.0, 0.0), (3.0, 3.0), (2.0, 3.0), (2.0, 1.0), (1.0, 1.0), (1.0, 3.0), (0.0, 3.0), (0.0, 0.0)];
+        let ring: Vec<Coord> = u.iter().map(|&(x, y)| Coord::new(x * 1e200, y * 1e200)).collect();
+        assert!(!ring_contains(&ring, ring_centroid(&ring).unwrap()));
+        let c = Geometry::Polygon(vec![vec![ring.clone()]]).label_point().unwrap();
+        assert!(ring_contains(&ring, c), "{c:?}");
+    }
+
+    #[test]
+    fn far_offset_small_part_does_not_outrank_a_larger_one() {
+        // At 1e150 the plain shoelace terms are about 1e300, so its sum is rounding noise.
+        let far = vec![square(1e150, 1e150, 1.0)];
+        let near = vec![square(0.0, 0.0, 1e10)];
+        for parts in [vec![far.clone(), near.clone()], vec![near, far]] {
+            let c = Geometry::Polygon(parts).label_point().unwrap();
+            assert!(c.x < 1e11 && c.y < 1e11, "{c:?}");
+        }
+    }
+
+    #[test]
+    fn label_grid_spanning_beyond_f64_max_stays_inside() {
+        // A U shape spanning -1.5e308..1.5e308 on x: its width overflows f64, and its centroid falls in the notch.
+        let m = 1.5e308;
+        let u = [(-m, 0.0), (m, 0.0), (m, 3.0), (m / 3.0, 3.0), (m / 3.0, 1.0), (-m / 3.0, 1.0), (-m / 3.0, 3.0), (-m, 3.0), (-m, 0.0)];
+        let ring: Vec<Coord> = u.iter().map(|&(x, y)| Coord::new(x, y)).collect();
+        assert!(!ring_contains(&ring, ring_centroid(&ring).unwrap()));
+        let c = Geometry::Polygon(vec![vec![ring.clone()]]).label_point().unwrap();
+        assert!(ring_contains(&ring, c), "{c:?}");
+    }
+
+    #[test]
+    fn huge_label_grid_and_crossings_stay_finite_and_inside() {
+        // Span 2e307 is finite, but span * k overflows for later samples.
+        let m = 1e307;
+        let u = [(-m, 0.0), (m, 0.0), (m, 3.0), (m / 3.0, 3.0), (m / 3.0, 1.0), (-m / 3.0, 1.0), (-m / 3.0, 3.0), (-m, 3.0), (-m, 0.0)];
+        let ring: Vec<Coord> = u.iter().map(|&(x, y)| Coord::new(x, y)).collect();
+        let c = Geometry::Polygon(vec![vec![ring.clone()]]).label_point().unwrap();
+        assert!(c.is_finite() && ring_contains(&ring, c), "{c:?}");
+        // A hole leaves a run whose endpoints sum past f64::MAX.
+        let outer = vec![
+            Coord::new(-1.5e308, 0.0),
+            Coord::new(1.5e308, 0.0),
+            Coord::new(1.5e308, 3.0),
+            Coord::new(-1.5e308, 3.0),
+            Coord::new(-1.5e308, 0.0),
+        ];
+        let hole = vec![
+            Coord::new(-1.4e308, 0.01),
+            Coord::new(1e308, 0.01),
+            Coord::new(1e308, 2.99),
+            Coord::new(-1.4e308, 2.99),
+            Coord::new(-1.4e308, 0.01),
+        ];
+        let rings = vec![outer, hole];
+        let c = Geometry::Polygon(vec![rings.clone()]).label_point().unwrap();
+        assert!(c.is_finite() && polygon_contains(&rings, c), "{c:?}");
+        // An edge whose y difference overflows: the crossing at y = 0 is x = 0.5, not 0.
+        let tri = vec![Coord::new(0.0, -f64::MAX), Coord::new(1.0, f64::MAX), Coord::new(1.0, 0.0)];
+        assert!(!ring_contains(&tri, Coord::new(0.25, 0.0)));
+        assert!(ring_contains(&tri, Coord::new(0.75, 0.0)));
+    }
+
+    #[test]
+    fn ringless_part_does_not_shadow_a_valid_part() {
+        let flat = vec![vec![Coord::new(0.0, 0.0), Coord::new(10.0, 0.0), Coord::new(0.0, 0.0)]];
+        assert_eq!(Geometry::Polygon(vec![flat.clone(), vec![]]).label_point(), Some(Coord::new(5.0, 0.0)));
+        assert_eq!(Geometry::Polygon(vec![flat, vec![vec![]]]).label_point(), Some(Coord::new(5.0, 0.0)));
+    }
+
+    #[test]
+    fn largest_part_wins_when_its_plain_area_overflows() {
+        let small = vec![square(0.0, 0.0, 10.0)];
+        let huge = vec![square(1e160, 1e160, 1e160)];
+        assert!(!ring_area(&square(1e160, 1e160, 1e160)).is_finite());
+        for parts in [vec![small.clone(), huge.clone()], vec![huge, small]] {
+            let c = Geometry::Polygon(parts).label_point().unwrap();
+            assert!(c.x > 1e160 && c.y > 1e160, "{c:?}");
+        }
+    }
+
+    #[test]
+    fn largest_part_with_tiny_framed_shoelace_sum_does_not_underflow() {
+        let triangle = vec![vec![Coord::new(0.0, 0.0), Coord::new(1e308, 0.0), Coord::new(0.0, f64::from_bits(1)), Coord::new(0.0, 0.0)]];
+        let tiny_square = vec![square(0.0, 0.0, 1e-8)];
+        let polys = vec![tiny_square.clone(), triangle.clone()];
+        let best = largest_part(&polys);
+        assert_eq!(best, Some(&triangle));
+
+        let polys_rev = vec![triangle.clone(), tiny_square];
+        let best_rev = largest_part(&polys_rev);
+        assert_eq!(best_rev, Some(&triangle));
+    }
+
+    #[test]
+    fn polygon_with_non_finite_vertex_returns_none_label() {
+        // Polygons with non-finite vertices cannot compute a valid centroid or label point
+        let poly = Geometry::Polygon(vec![vec![vec![
+            Coord::new(0.0, 0.0),
+            Coord::new(10.0, 0.0),
+            Coord::new(f64::NAN, 5.0),
+            Coord::new(10.0, 10.0),
+            Coord::new(0.0, 10.0),
+            Coord::new(0.0, 0.0),
+        ]]]);
+        assert_eq!(poly.label_point(), None);
+    }
+
+    #[test]
+    fn multipolygon_with_one_corrupt_part_labels_valid_part() {
+        let valid_square = vec![square(0.0, 0.0, 10.0)];
+        let corrupt_poly = vec![vec![Coord::new(0.0, 0.0), Coord::new(f64::NAN, 0.0), Coord::new(10.0, 10.0), Coord::new(0.0, 0.0)]];
+        let mp1 = Geometry::Polygon(vec![valid_square.clone(), corrupt_poly.clone()]);
+        let mp2 = Geometry::Polygon(vec![corrupt_poly, valid_square.clone()]);
+        assert_eq!(mp1.label_point(), Some(Coord::new(5.0, 5.0)));
+        assert_eq!(mp2.label_point(), Some(Coord::new(5.0, 5.0)));
+
+        // A polygon with a corrupt hole is also rejected in favor of a valid polygon
+        let poly_corrupt_hole = vec![square(0.0, 0.0, 20.0), vec![Coord::new(5.0, 5.0), Coord::new(f64::NAN, 5.0), Coord::new(5.0, 5.0)]];
+        let mp_hole = Geometry::Polygon(vec![poly_corrupt_hole, valid_square]);
+        assert_eq!(mp_hole.label_point(), Some(Coord::new(5.0, 5.0)));
     }
 
     #[test]
