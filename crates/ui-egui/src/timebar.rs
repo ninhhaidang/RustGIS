@@ -125,6 +125,14 @@ fn advance(app: &mut RustGisApp, ui: &Ui) {
         return;
     };
     let elapsed = elapsed + f64::from(ui.input(|i| i.stable_dt).min(0.25)) * 1000.0;
+    // A Zarr step still being read holds the next one, and shows for a whole step once it lands:
+    // playing goes at the pace the steps are read, as it does where the read waits, and each
+    // step shows.
+    if app.session.zarr_waiting() {
+        app.time.playing = Some(0.0);
+        ui.ctx().request_repaint_after(web_time::Duration::from_millis(50));
+        return;
+    }
     if elapsed >= f64::from(t.speed_ms) {
         if t.at_end() && !t.looping {
             app.time.playing = None;

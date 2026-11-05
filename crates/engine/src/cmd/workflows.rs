@@ -636,10 +636,19 @@ pub(crate) fn run_script(s: &mut Session, p: &Value) -> CmdResult {
         if let Some(e) = s.streamed_edit(&id, mutates, label, s.active_layer) {
             return Err(format!("line {n}: {e}"));
         }
-        let r = run(s, &params).map_err(|e| format!("line {n}: {id}: {e}"))?;
+        let r = steps_of(s, |s| run(s, &params)).map_err(|e| format!("line {n}: {id}: {e}"))?;
         out.push(json!({"line": n, "command": id, "result": r}));
     }
     Ok(json!({"ran": out}))
+}
+
+/// `run` as a step of the command running now ([`Session::steps_running`] counts it, on every
+/// path, a panic included, which is raised again).
+pub(crate) fn steps_of<T>(s: &mut Session, run: impl FnOnce(&mut Session) -> T) -> T {
+    s.steps_running += 1;
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(s)));
+    s.steps_running = s.steps_running.saturating_sub(1);
+    r.unwrap_or_else(|p| std::panic::resume_unwind(p))
 }
 
 /// The most lines a script is read to: Run reads no further, and the Script pane colours no further.

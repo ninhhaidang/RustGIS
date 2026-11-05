@@ -1136,6 +1136,15 @@ fn waker() -> &'static Mutex<Option<Arc<dyn Fn() + Send + Sync>>> {
     W.get_or_init(|| Mutex::new(None))
 }
 
+/// Something read in the background (outside this module: a Zarr step) has landed: the map
+/// redraws ([`generation`]) and the UI is woken.
+pub fn wake() {
+    GENERATION.fetch_add(1, Ordering::Relaxed);
+    if let Some(w) = waker().lock().ok().and_then(|w| w.clone()) {
+        w();
+    }
+}
+
 /// Called whenever a background read finishes (the UI asks for a repaint).
 pub fn set_waker(f: impl Fn() + Send + Sync + 'static) {
     if let Ok(mut w) = waker().lock() {

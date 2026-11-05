@@ -566,7 +566,7 @@ impl Bridge<'_> {
         let anonymous = self.s.web_logins.set_anonymous(true);
         let mut res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let before = if mutates { crate::service_logins::before(self.s, id, params)? } else { None };
-            let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(self.s, params)))
+            let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| super::workflows::steps_of(self.s, |s| run(s, params))))
                 .unwrap_or_else(|_| Err(format!("{label} failed unexpectedly")));
             // Mark additions even when a command reports an error after changing the project.
             // Their addresses must remain anonymous at later logins and after saving/reopening.

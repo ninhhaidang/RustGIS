@@ -15885,6 +15885,14 @@ fn lidar_sample_refuses_exports_and_statistics() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// The Zarr tests that read steps share the process's slice cache: one at a time, so another's
+/// steps don't push out the one a test expects kept.
+#[cfg(not(target_arch = "wasm32"))]
+fn zarr_cache_lock() -> std::sync::MutexGuard<'static, ()> {
+    static L: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    L.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// A Zarr store in a temporary folder: `t` over three monthly steps (days since 2001-01-01: 0,
 /// 31, 59) on a 3 × 4 grid, step `k`'s values `100·k + i`.
 #[cfg(not(target_arch = "wasm32"))]
@@ -15939,6 +15947,7 @@ fn zarr_store_at(tag: &str, days: &[i32]) -> (std::path::PathBuf, String) {
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn a_zarr_series_at_a_point() {
+    let _cache = zarr_cache_lock();
     let (dir, path) = zarr_store_over_time("series");
     let mut s = Session::new(Project::default());
     // At 1°E 30°N: the stored row 2 (latitudes 10, 20, 30), column 0, so 100·k + 8 at step k.
@@ -15994,6 +16003,7 @@ fn a_zarr_series_at_a_point() {
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn a_zarr_variable_summarised_over_time() {
+    let _cache = zarr_cache_lock();
     let (dir, path) = zarr_store_over_time("reduce");
     let mut s = Session::new(Project::default());
     // The first pixel (north up) is the stored cell 8: 8, 108 and 208 at the three steps.
@@ -16966,6 +16976,7 @@ fn a_stac_collection_summarised_over_time() {
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn a_zarr_variable_follows_the_time_slider() {
+    let _cache = zarr_cache_lock();
     let (dir, path) = zarr_store_over_time("follow");
     let mut s = Session::new(Project::default());
     let id = s.run("layer.addZarr", &json!({"path": path, "variable": "t", "time": true})).unwrap()["layer"].as_u64().unwrap() as u32;
@@ -17045,6 +17056,78 @@ fn a_zarr_variable_follows_the_time_slider() {
     assert!(fresh.map().time.is_none(), "a store that can't be read leaves the slider as it was");
     let _ = std::fs::remove_dir_all(dir3);
     let _ = std::fs::remove_dir_all(dir2);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Step `k`'s cells of [`zarr_store_at`]'s variable (`100 k + cell`), as its chunk file holds them.
+#[cfg(not(target_arch = "wasm32"))]
+fn f32s_of(base: i32) -> Vec<u8> {
+    (0..12).flat_map(|i| ((base + i) as f32).to_le_bytes()).collect()
+}
+
+/// In the app a time slider move doesn't wait for a Zarr step (#1291 step 3): the step is read on
+/// a thread of its own, the layer showing the step before until it lands; one that fails says why
+/// once it lands. An animation's frames still read each step before they draw.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_zarr_step_is_read_off_the_frame_in_the_app() {
+    let _cache = zarr_cache_lock();
+    let (dir, path) = zarr_store_over_time("offframe");
+    let mut s = Session::new(Project::default());
+    s.zarr_off_frame = true;
+    let id = s.run("layer.addZarr", &json!({"path": path, "variable": "t", "time": true})).unwrap()["layer"].as_u64().unwrap() as u32;
+    let first = |s: &Session| s.map().layer(id).and_then(|l| l.raster.as_ref()).and_then(|r| r.data.as_ref()).map(|d| d.bands[0].data[0]);
+    assert_eq!(first(&s), Some(8.0));
+    let landed = |s: &mut Session, want: Option<f32>| {
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while first(s) != want {
+            assert!(std::time::Instant::now() < end, "the step never landed: {:?}", first(s));
+            s.follow_time_landed();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    };
+    // The move returns at once: the layer shows the step before, then step 2 once it lands;
+    // playing waits for it meanwhile.
+    s.run("time.goTo", &json!({"step": 2})).unwrap();
+    landed(&mut s, Some(208.0));
+    assert!(!s.zarr_waiting(), "the step shown is the slider's");
+    // A step read before shows at once.
+    s.run("time.goTo", &json!({"step": 0})).unwrap();
+    assert_eq!(first(&s), Some(8.0), "a kept step shows without waiting");
+    // A step that can't be read empties the layer and says why, once.
+    std::fs::write(std::path::Path::new(&path).join("t/1.0.0"), b"short").unwrap();
+    let mark = s.notice_mark();
+    s.run("time.goTo", &json!({"step": 1})).unwrap();
+    landed(&mut s, None);
+    let errors: Vec<_> = s.notices_since(mark).iter().filter(|n| n.error).map(|n| n.text.clone()).collect();
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    s.follow_time_landed();
+    assert_eq!(s.notices_since(mark).iter().filter(|n| n.error).count(), 1, "said once");
+    // Two layers on the failing step: one notice, with a count.
+    s.run("time.goTo", &json!({"step": 0})).unwrap();
+    s.run("layer.addZarr", &json!({"path": path, "variable": "t", "time": true, "name": "again"})).unwrap();
+    let mark = s.notice_mark();
+    s.run("time.goTo", &json!({"step": 1})).unwrap();
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while s.zarr_waiting() {
+        assert!(std::time::Instant::now() < end, "the failing step never landed");
+        s.follow_time_landed();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let errors: Vec<_> = s.notices_since(mark).iter().filter(|n| n.error).map(|n| n.text.clone()).collect();
+    assert!(errors.len() == 1 && errors[0].contains("and 1 more layer:"), "{errors:?}");
+    // A script's line waits for its step, so the next line reads it.
+    s.run("time.goTo", &json!({"step": 0})).unwrap();
+    std::fs::write(std::path::Path::new(&path).join("t/1.0.0"), f32s_of(100)).unwrap();
+    let ran = s.run("script.run", &json!({"script": "time.goTo {\"step\": 1}"})).unwrap();
+    assert!(ran["ran"].as_array().is_some_and(|r| r.len() == 1), "{ran}");
+    assert_eq!(first(&s), Some(108.0), "a script's move is read before its next line");
+    // The animation's frames draw their own steps: step 2 is read before its frame.
+    let zip = std::env::temp_dir().join(format!("rustgis-zarr-offframe-{}.zip", std::process::id()));
+    s.run("time.goTo", &json!({"step": 0})).unwrap();
+    let r = s.run("time.export", &json!({"path": zip.display().to_string(), "width": 64, "height": 48, "from": "2001-03-01"})).unwrap();
+    assert_eq!(r["frames"], 1, "{r}");
+    let _ = std::fs::remove_file(zip);
     let _ = std::fs::remove_dir_all(dir);
 }
 

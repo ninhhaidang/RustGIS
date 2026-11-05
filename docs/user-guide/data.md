@@ -1104,11 +1104,16 @@ rustgis-cli run --cmd 'layer.addZarr={"url":"https://storage.googleapis.com/gcp-
 layer whose step is the time slider's. The slider turns on over the variable's dates when it is
 off, and the layer shows the last of its steps in the slider's window, or nothing when none falls
 in it. Moving or playing the slider reads that step's slice (only its chunks), keeping the last
-eight read. A web store's next two steps are read ahead in the background. The stretch is fixed at
-the first slice's range, so a colour means the same value at every step, and **Export** writes an
-animation of it. An axis longer than the slider's 20,000 steps (hourly ERA5) takes a period with `"start"` and
-`"end"`; given neither (as the dialog adds it), the layer takes 20,000 steps from the one picked. The project keeps such a layer by its store (a folder or a web address)
-and selection, not as a slice, and reads the slider's step again when it opens.
+eight read. A web store's next two steps are read ahead in the background. In the desktop app the
+slider doesn't wait for a step not read yet: the layer shows the step before until the new one is
+read, and a step that can't be read empties the layer and says why. Playing waits for each step to
+be read before it moves on, so every step shows. Scripts, models, notebooks, AI agents, the command
+line and **Export** wait for each step. The stretch is fixed at the first slice's range, so a
+colour means the same value at every step, and **Export** writes an animation of it. An axis longer
+than the slider's 20,000 steps (hourly ERA5) takes a period with `"start"` and `"end"`; given
+neither (as the dialog adds it), the layer takes 20,000 steps from the one picked. The project
+keeps such a layer by its store (a folder or a web address) and selection, not as a slice, and
+reads the slider's step again when it opens.
 
 ```sh
 rustgis-cli run --cmd 'layer.addZarr={"path":"air.zarr","variable":"t","time":true}' --cmd 'time.export={"path":"t.gif"}'
