@@ -34,6 +34,52 @@ fn search_layer_command(h: &mut egui_kittest::Harness<'_, RustGisApp>, command: 
     assert!(h.state().ui.command_search.is_none());
 }
 
+/// French legitimately gives Analysis and Analyze the same label. Their Browser headers must
+/// toggle separately, and keep their open states when the interface language changes.
+#[test]
+fn browser_toolboxes_with_identical_translations_toggle_independently() {
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::NodeT;
+    use rustgis_ui_egui::i18n::{self, Lang};
+
+    let fr = Lang::from_code("fr").unwrap();
+    assert_eq!(i18n::tr(fr, "Analysis"), i18n::tr(fr, "Analyze"));
+    let label = i18n::tr(fr, "Analysis");
+    let mut h = harness();
+    // Keep the second header visible while the first toolbox's groups are expanded.
+    h.set_size(egui::vec2(1400.0, 2000.0));
+    h.state_mut().run("ui.pane.catalog", json!(null)).unwrap();
+    h.state_mut().run("ui.language", json!({"code": "fr"})).unwrap();
+    h.run();
+
+    let headers = |h: &egui_kittest::Harness<'_, RustGisApp>| {
+        h.query_all_by_role_and_label(Role::DisclosureTriangle, label)
+            .map(|n| (n.accesskit_node().id(), n.accesskit_node().data().is_expanded()))
+            .collect::<Vec<_>>()
+    };
+    let initial = headers(&h);
+    assert_eq!(initial.len(), 2, "both toolbox headers must be accessible");
+    assert_ne!(initial[0].0, initial[1].0);
+    assert_eq!((initial[0].1, initial[1].1), (Some(false), Some(false)));
+
+    for (index, expected) in [(0, [true, false]), (1, [true, true]), (0, [false, true])] {
+        h.query_all_by_role_and_label(Role::DisclosureTriangle, label).nth(index).unwrap().click();
+        h.run();
+        let actual = headers(&h);
+        assert_eq!(actual.len(), 2);
+        for i in 0..2 {
+            assert_eq!(actual[i], (initial[i].0, Some(expected[i])), "click {index}, header {i}");
+        }
+    }
+
+    h.state_mut().run("ui.language", json!({"code": "en"})).unwrap();
+    h.run();
+    for (index, name, expanded) in [(0, "Analysis", false), (1, "Analyze", true)] {
+        let header = h.get_by_role_and_label(Role::DisclosureTriangle, name).accesskit_node();
+        assert_eq!((header.id(), header.data().is_expanded()), (initial[index].0, Some(expanded)));
+    }
+}
+
 /// Duplicate names must not redirect a source write or discard to the first matching layer.
 #[cfg(not(target_arch = "wasm32"))]
 #[test]

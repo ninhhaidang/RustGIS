@@ -2348,6 +2348,7 @@ fn layer_menu(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, reorder: bool) {
 // ---------------------------------------------------------------------------------------------
 // Catalog
 
+/// Draws the Browser; toolbox identities use source names so translations can share labels.
 fn catalog(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         egui::Frame::NONE.inner_margin(egui::Margin::symmetric(10, 8)).show(ui, |ui| {
@@ -2366,7 +2367,9 @@ fn catalog(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
                     });
                 }
             });
-            egui::CollapsingHeader::new(egui::RichText::new(tl!("Toolboxes")).font(semibold(12.5))).default_open(true).show(ui, |ui| {
+            let toolboxes =
+                egui::CollapsingHeader::new(egui::RichText::new(tl!("Toolboxes")).font(semibold(12.5))).id_salt("browser_toolboxes");
+            toolboxes.default_open(true).show(ui, |ui| {
                 let mut boxes: Vec<&str> = tools().map(|t| t.toolbox.split(" › ").next().unwrap_or(t.toolbox)).collect();
                 boxes.sort();
                 boxes.dedup();
@@ -2380,7 +2383,7 @@ fn catalog(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
                     });
                 };
                 for b in boxes {
-                    egui::CollapsingHeader::new(crate::i18n::location(b)).default_open(false).show(ui, |ui| {
+                    egui::CollapsingHeader::new(crate::i18n::location(b)).id_salt(("toolbox", b)).default_open(false).show(ui, |ui| {
                         let in_box: Vec<&rustgis_engine::analysis::ToolSpec> =
                             tools().filter(|x| x.toolbox.split(" › ").next() == Some(b)).collect();
                         // A large toolbox (the GeoLibre suite) opens one level at a time:
