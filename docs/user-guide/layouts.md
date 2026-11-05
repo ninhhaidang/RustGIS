@@ -152,27 +152,38 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
   and **Outline** colours (`"style":"compass","fill":"#B91C1C"`). A scale bar's pick its
   **Style** (alternating bar, stepped line or single line), its **Units** (metres or kilometres
   to suit the scale, or kilometres, metres, miles or feet) and its **Divisions** (1 to 10), each
-  labelled where there is room (`"style":"line","units":"miles","divisions":2`). A legend shows what
-  its frame draws: only layers with a feature at the frame's scale (through their definition
-  query, display filters and scale range) and, for Unique Values, only the classes those features
-  have, with `<all other values>` only when some feature falls in it and its symbol is not fully
-  transparent. Graduated Colors and
-  Proportional Symbols list their classes as they are (they are taken from the kept features when
-  the symbology is applied). A layer that draws
-  nothing there, such as an empty one, is left out, in layouts saved before this too. Tick **All
-  classes** in its properties (`"allClasses": true`) to list every class of every visible layer
-  instead, and **Hide other values** (`"hideOther": true`) to leave `<all other values>` out of
-  the legend in either mode (the features it stands for are still drawn). A visible WMS or WMTS
-  layer with a legend is listed by its name over its service's legend picture, the one for the
-  frame's scale (as the Layers pane shows it), a pixel a point and narrowed to fit the legend's
-  width, in the order the map draws its layers (as the Layers pane lists them); one whose picture
-  can't be loaded (or is wider or taller than 2048 pixels) is left out. Exporting waits up to
-  half a minute for the pictures, as it waits for the map's tiles; in the browser the page is
-  drawn with those that have arrived, and again as the others arrive. Its **Layers** section
-  has a checkbox for each layer of the frame's map (and each WMS or WMTS layer with a legend): untick one to leave it out of the legend
-  while the map still draws it (a mask, a highlight, a basemap-like layer). Scripts give the same
-  with `"exclude": ["Graticule"]` on `layout.addElement` or `layout.update` (`[]` lists every
-  layer again); a renamed layer stays left out.
+  labelled where there is room (`"style":"line","units":"miles","divisions":2`). A legend's
+  parts:
+  - **What a legend lists**: what its frame draws: only layers with a feature at the frame's
+    scale (through their definition query, display filters and scale range) and, for Unique
+    Values, only the classes those features have, with `<all other values>` only when some
+    feature falls in it and its symbol is not fully transparent. Graduated Colors and
+    Proportional Symbols list their classes as they are (they are taken from the kept features
+    when the symbology is applied). A layer that draws nothing there, such as an empty one, is
+    left out, in layouts saved before this too. Tick **All classes** in its properties
+    (`"allClasses": true`) to list every class of every visible layer instead, and **Hide other
+    values** (`"hideOther": true`) to leave `<all other values>` out of the legend in either
+    mode (the features it stands for are still drawn).
+  - **Point symbols**: a point layer's symbol is drawn as the map draws it: its marker or the
+    stacked marks of its class or layer, its size and outline, the transparency of the layer and
+    its groups, and its reference scale at the frame's scale, unturned. A row has one symbol, so
+    it leaves out what changes from feature to feature (a symbol by expression, a marker's
+    rotation by a field), and it doesn't take the layer's blend mode. The row and the column of
+    symbols grow to hold a large one, up to 2048 points, past which the symbol is cut. A legend
+    already on the page keeps its size, so with a larger symbol its last rows may be cut and its
+    labels run past its right edge: make it larger to fit.
+  - **Web layers**: a visible WMS or WMTS layer with a legend is listed by its name over its
+    service's legend picture, the one for the frame's scale (as the Layers pane shows it), a
+    pixel a point and narrowed to fit the legend's width, in the order the map draws its layers
+    (as the Layers pane lists them); one whose picture can't be loaded (or is wider or taller
+    than 2048 pixels) is left out. Exporting waits up to half a minute for the pictures, as it
+    waits for the map's tiles; in the browser the page is drawn with those that have arrived,
+    and again as the others arrive.
+  - **Its Layers section**: a checkbox for each layer of the frame's map (and each WMS or WMTS
+    layer with a legend): untick one to leave it out of the legend while the map still draws it
+    (a mask, a highlight, a basemap-like layer). Scripts give the same with
+    `"exclude": ["Graticule"]` on `layout.addElement` or `layout.update` (`[]` lists every layer
+    again); a renamed layer stays left out.
 - **Colorbar**: the colour scale of a raster layer in the frame's map, as the map draws it (its
   stretch, colour ramp and enhancement): a gradient bar for a stretch or a tinted hillshade,
   steps labelled at their breaks for Classify, and a block per value for Unique Values and colour

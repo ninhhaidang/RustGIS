@@ -13,7 +13,7 @@ use rustgis_data::Dataset;
 use serde::{Deserialize, Serialize};
 
 use crate::color::Rgba;
-use crate::symbology::{LegendEntry, Marker, Symbol};
+use crate::symbology::{LegendEntry, LineMark, LineMarkers, LineStroke, Marker, Symbol};
 
 /// The most categories one diagram lists (each is a slice or a bar).
 pub const MAX_CATEGORIES: usize = 16;
@@ -106,6 +106,18 @@ impl DiagramLabel {
 pub struct DiagramCategory {
     pub field: String,
     pub colour: Rgba,
+}
+
+/// A category's mark in a point layer's legend: its own, or the row would take the layer's stacked
+/// marks and every category would look the same.
+fn category_mark(colour: Rgba) -> LineStroke {
+    let markers = LineMarkers {
+        mark: LineMark::Marker(Marker::Circle),
+        size: 7.0,
+        outline: Some(Rgba::rgb(0xFF, 0xFF, 0xFF)),
+        ..LineMarkers::default()
+    };
+    LineStroke { color: Some(colour), width: Some(1.0), markers: Some(markers), ..LineStroke::default() }
 }
 
 /// How big a diagram is: one size for every feature, or one grown with the categories' sum, as
@@ -258,6 +270,7 @@ impl DiagramSettings {
                     size: 7.0,
                     marker: Marker::Circle,
                 },
+                strokes: vec![category_mark(c.colour)],
                 fallback: false,
             })
             .collect()
@@ -432,6 +445,7 @@ mod tests {
         assert_eq!(l[0].symbol.fill, CATEGORY_COLORS[0]);
         assert_eq!(l[0].symbol.stroke, Rgba::rgb(0xFF, 0xFF, 0xFF), "a white outline on a polygon or point layer");
         assert!(l.iter().all(|e| !e.fallback));
+        assert_eq!(l[0].strokes[0].color, Some(CATEGORY_COLORS[0]), "its own mark, not the layer's stacked ones");
         let line = settings().legend(true);
         assert_eq!(line[0].symbol.stroke, CATEGORY_COLORS[0], "a line's swatch draws its stroke, so the colour is there");
     }
