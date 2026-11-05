@@ -4,7 +4,7 @@ use crate::raster::Crs;
 // Encoding, as `FeatureCollection.proto` lays answers out: shared with the engine's tests.
 #[path = "../../../../tests/support/esripbf.rs"]
 mod encode;
-pub(crate) use encode::page;
+pub(crate) use encode::{page, page_with_z};
 // Named, so they come before the reader's own functions of the same names (`field`, `feature`).
 use encode::{
     answer, double, feature, field, geometry, lonlat, message, null, number, packed, real, single, sint64, text, transform, uint, uint64,
@@ -164,6 +164,53 @@ fn z_and_m_are_dropped_and_said_even_when_they_are_all_alike() {
     assert_eq!(ds.features[0].geometry, Some(Geometry::Point(c(4.0, 6.0))));
     assert!(ds.zm_dropped);
     assert_eq!(report.messages, [crate::zm_note(Some(2))]);
+}
+
+#[test]
+fn field_aliases_are_kept_unless_empty_or_the_name() {
+    let declared =
+        |name: &str, alias: &str| message(13, &[message(1, name.as_bytes()), number(2, 4), message(3, alias.as_bytes())].concat());
+    let bytes = answer(&[
+        lonlat(),
+        transform(false, 1.0, 0.0, 0.0),
+        declared("POP_2020", "Population 2020"),
+        declared("NAME", "NAME"),
+        declared("CODE", ""),
+        field("PLAIN", 4),
+        feature(&[geometry(&[], &[1, 2])]),
+    ]);
+    let (ds, report) = read(&bytes, "t").unwrap();
+    let aliases: Vec<_> = ds.fields.iter().map(|f| f.alias.as_deref()).collect();
+    assert_eq!(aliases, [Some("Population 2020"), None, None, None]);
+    assert_eq!(ds.fields[0].display(), "Population 2020");
+    assert!(report.messages.is_empty(), "{:?}", report.messages);
+    // An alias that isn't UTF-8 is read as it can be, and said.
+    let bytes = answer(&[lonlat(), message(13, &[message(1, b"A"), number(2, 4), message(3, b"Pop\xff")].concat())]);
+    let (ds, report) = read(&bytes, "t").unwrap();
+    assert_eq!(ds.fields[0].alias.as_deref(), Some("Pop\u{fffd}"));
+    assert!(report.messages.iter().any(|m| m.contains("aren't valid UTF-8")), "{:?}", report.messages);
+}
+
+#[test]
+fn a_page_read_within_a_limit_counts_what_the_features_kept_lost() {
+    let bytes = answer(&[
+        number(10, 1),
+        lonlat(),
+        transform(false, 1.0, 0.0, 0.0),
+        feature(&[geometry(&[], &[4, 6, 100])]),
+        feature(&[geometry(&[], &[1, 1, 100])]),
+        feature(&[geometry(&[], &[2, 2, 100])]),
+    ]);
+    let page = read_page_within(&bytes, "t", 1).unwrap();
+    assert_eq!((page.dataset.features.len(), page.left_out, page.losses.with_zm), (1, 2, 1));
+    assert_eq!(page.losses.messages(), [crate::zm_note(Some(1))]);
+    assert!(page.report.messages.is_empty(), "the losses are said apart: {:?}", page.report.messages);
+    // Within a limit it doesn't reach, the whole page.
+    let page = read_page_within(&bytes, "t", 3).unwrap();
+    assert_eq!((page.dataset.features.len(), page.left_out, page.losses.with_zm), (3, 0, 3));
+    let all = read_page(&bytes, "t").unwrap();
+    assert_eq!((all.left_out, all.memory), (0, page.memory));
+    assert!(read_page_within(&bytes, "t", 1).unwrap().memory < all.memory);
 }
 
 #[test]

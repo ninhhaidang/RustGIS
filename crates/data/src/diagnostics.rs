@@ -450,7 +450,7 @@ fn bounded(text: &str, limit: usize) -> String {
 }
 
 /// `text` cut to `limit` bytes at a character, an ellipsis marking the cut.
-fn cut_with_ellipsis(text: &mut String, limit: usize) {
+pub(crate) fn cut_with_ellipsis(text: &mut String, limit: usize) {
     if text.len() > limit {
         let mut end = limit.saturating_sub(3);
         while !text.is_char_boundary(end) {

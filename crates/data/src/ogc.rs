@@ -2718,6 +2718,31 @@ pub fn max_paged_features() -> usize {
     crate::memory::scaled(crate::memory::physical(), PAGED_FEATURES_FLOOR, PAGED_FEATURES_CEILING, 20 << 10)
 }
 
+/// The most bytes of why a layer's protocol buffer pages couldn't be read that its note says.
+const MAX_REASON: usize = 200;
+
+/// The note of a layer read in GeoJSON because its protocol buffer pages couldn't be read (`why`),
+/// before the reading's own `note`.
+fn read_in_geojson(why: &str, note: Option<String>) -> String {
+    let said = format!("its protocol buffer pages couldn't be read ({why}), so it is read in GeoJSON");
+    match note {
+        Some(note) => format!("{said}; {note}"),
+        None => said,
+    }
+}
+
+/// The least memory [`max_decoded_bytes`] allows, and its limit in the browser.
+pub const DECODED_FLOOR: usize = 512 << 20;
+/// The most memory [`max_decoded_bytes`] allows, however much the computer has.
+pub const DECODED_CEILING: usize = 3 << 30;
+
+/// Most memory, in bytes, an ArcGIS layer's protocol buffer pages may take once read: on the
+/// desktop a quarter of the computer's memory, from [`DECODED_FLOOR`] up to [`DECODED_CEILING`].
+/// The download budget doesn't bound it: a vertex takes 1 to 3 bytes in a page and 16 read.
+pub fn max_decoded_bytes() -> usize {
+    crate::memory::scaled(crate::memory::physical(), DECODED_FLOOR, DECODED_CEILING, 1)
+}
+
 /// A feature collection page's JSON `next` link, resolved against the page's address.
 fn next_page(url: &str, page: &serde_json::Value) -> Option<String> {
     let link = page.get("links")?.as_array()?.iter().find(|l| {
@@ -2785,13 +2810,15 @@ fn supports_pbf(layer: &serde_json::Value) -> bool {
     layer.get("supportedQueryFormats").and_then(|f| f.as_str()).is_some_and(|f| f.split(',').any(|f| f.trim().eq_ignore_ascii_case("pbf")))
 }
 
-/// An ArcGIS query asking for its answer as `format` (`f`), in place of the format it named.
+/// An ArcGIS query asking for its answer as `format` (`f`, in any case), in place of the format
+/// it named; its fragment kept, as [`with_query`] keeps it.
 fn with_format(query: &str, format: &str) -> String {
-    let url = query.split('#').next().unwrap_or(query);
+    let (url, fragment) = query.split_once('#').map_or((query, None), |(u, f)| (u, Some(f)));
     let (base, q) = url.split_once('?').unwrap_or((url, ""));
     let kept: Vec<&str> =
         q.split('&').filter(|kv| !kv.is_empty() && !kv.split('=').next().is_some_and(|k| k.eq_ignore_ascii_case("f"))).collect();
-    with_query(&with_query(base, &kept.join("&")), &format!("f={format}"))
+    let asked = with_query(&with_query(base, &kept.join("&")), &format!("f={format}"));
+    if let Some(f) = fragment { format!("{asked}#{f}") } else { asked }
 }
 
 /// The description of the layer an ArcGIS query reads (`…/FeatureServer/0?f=json`), with the
@@ -2929,7 +2956,8 @@ pub enum Step {
     /// The next answer to fetch ([`Pages::next_url`]), to hand to [`Pages::land`].
     Fetch(Box<Pages>),
     /// The collection as read (the pages joined, or the first page as it came) and a note when
-    /// some features were left unread.
+    /// some features were left unread, or it was read in GeoJSON because its protocol buffer
+    /// pages couldn't be read.
     Done(Vec<u8>, Option<String>),
     /// An ArcGIS layer read in protocol buffer pages (`f=pbf`, see [`begin_with_pbf`]): its
     /// features, what reading them said, and a note when some were left unread.
@@ -2958,6 +2986,12 @@ pub struct Pages {
     phase: Phase,
     /// The protocol buffer pages read, as one layer, and what reading them said.
     decoded: Option<(crate::Dataset, crate::ReadReport, crate::esripbf::Losses)>,
+    /// The memory those pages take, in bytes, and the most they may ([`max_decoded_bytes`]).
+    decoded_bytes: usize,
+    decoded_budget: usize,
+    /// Why the layer's first protocol buffer page couldn't be read, when it is read in GeoJSON
+    /// pages instead: said in the note it ends with.
+    pbf_failed: Option<String>,
 }
 
 /// What the answer being fetched is.
@@ -3051,20 +3085,17 @@ fn first_value(features: &[Box<RawValue>]) -> Option<serde_json::Value> {
 }
 
 /// What tells a protocol buffer page from another, to find a page sent again: its first feature's
-/// object id, or else (no id, or an empty one) its length and its first and last features'
-/// geometries and values (ids are numbered within each page, and two pages may start with the same
-/// row).
+/// object id, or else (no id, or an empty one) its fingerprint, taken from the page as it was sent
+/// (ids are numbered within each page, two pages may start with the same row, and a page sent
+/// again may be cut shorter by the limit).
 fn first_mark(page: &crate::esripbf::Page) -> Option<serde_json::Value> {
-    let features = &page.dataset.features;
-    let (f, l) = (features.first()?, features.last()?);
+    let f = page.dataset.features.first()?;
     let id = page
         .object_id_field
         .and_then(|i| f.attrs.get(i))
         .filter(|id| **id != crate::Value::Null)
         .and_then(|id| serde_json::to_value(id).ok());
-    id.or_else(|| {
-        Some(serde_json::Value::String(format!("{} {:?} {:?} {:?} {:?}", features.len(), f.geometry, f.attrs, l.geometry, l.attrs)))
-    })
+    id.or_else(|| Some(serde_json::Value::String(format!("{:016x}", page.fingerprint))))
 }
 
 /// Starts reading a service's features at `url`, up to `max`, before anything is fetched.
@@ -3114,6 +3145,9 @@ fn start(url: &str, max: usize, pbf: bool) -> Step {
         from: url.to_string(),
         phase,
         decoded: None,
+        decoded_bytes: 0,
+        decoded_budget: max_decoded_bytes(),
+        pbf_failed: None,
     }))
 }
 
@@ -3176,6 +3210,9 @@ fn read_first(url: &str, first: Vec<u8>, max: usize, paging: Option<ArcgisPaging
         from: url.to_string(),
         phase,
         decoded: None,
+        decoded_bytes: 0,
+        decoded_budget: max_decoded_bytes(),
+        pbf_failed: None,
     };
     pages.advance()
 }
@@ -3213,8 +3250,23 @@ impl Pages {
     }
 
     /// Takes the answer to [`next_url`](Self::next_url) (or why it couldn't be fetched): the next
-    /// address to fetch, or the collection as read.
+    /// address to fetch, or the collection as read. A layer read in GeoJSON because its protocol
+    /// buffer pages couldn't be read says so in its note.
     pub fn land(mut self, answer: Result<Vec<u8>, String>) -> Step {
+        let Some(why) = self.pbf_failed.take() else { return self.land_page(answer) };
+        match self.land_page(answer) {
+            // Carried to the next page, whichever reading goes on with it.
+            Step::Fetch(mut pages) => {
+                pages.pbf_failed = Some(why);
+                Step::Fetch(pages)
+            }
+            Step::Done(bytes, note) => Step::Done(bytes, Some(read_in_geojson(&why, note))),
+            Step::Decoded(ds, report, note) => Step::Decoded(ds, report, Some(read_in_geojson(&why, note))),
+            step => step,
+        }
+    }
+
+    fn land_page(mut self, answer: Result<Vec<u8>, String>) -> Step {
         if matches!(self.phase, Phase::WfsHits) {
             let matched = answer.ok().and_then(|b| wfs_matched(&b));
             let Some(matched) = matched else {
@@ -3374,12 +3426,19 @@ impl Pages {
     /// with the pages read.
     fn land_pbf(mut self, answer: Result<Vec<u8>, String>) -> Step {
         let read = self.read();
+        // The features past the limit aren't read, so what they lost isn't counted.
+        let room = self.max.saturating_sub(read);
         let Phase::Offsets { size, order, pbf, .. } = &mut self.phase else { return self.finish(None) };
-        let page = answer.and_then(|bytes| crate::esripbf::read_page(&bytes, "query").map_err(|e| e.to_string()));
+        let page = answer.and_then(|bytes| crate::esripbf::read_page_within(&bytes, "query", room).map_err(|e| e.to_string()));
         let page = match page {
             Ok(page) => page,
-            Err(_) if self.decoded.is_none() => {
+            Err(e) if self.decoded.is_none() => {
                 *pbf = false;
+                // Said in a notice: without the credentials an address or a service's own error
+                // message may hold, and not all of a long one.
+                let mut why = crate::diagnostics::redact(&e);
+                crate::diagnostics::cut_with_ellipsis(&mut why, MAX_REASON);
+                self.pbf_failed = Some(why);
                 // A query that asked for protocol buffers itself is read in GeoJSON too.
                 if query_value(&self.url, "f").is_some_and(|f| f.eq_ignore_ascii_case("pbf")) {
                     self.url = with_format(&self.url, "geojson");
@@ -3404,18 +3463,27 @@ impl Pages {
         if start.is_none() {
             *start = mark;
         }
+        // The first page is kept whatever it takes (the reader bounds a page); a later one that
+        // would take the layer past its memory budget isn't joined.
+        let bytes = self.decoded_bytes.saturating_add(page.memory);
+        if self.decoded.is_some() && bytes > self.decoded_budget {
+            let mb = self.decoded_budget >> 20;
+            return self.stop(format!("the page after feature {read} would take the layer past {mb} MB of memory; the rest aren't read"));
+        }
+        self.decoded_bytes = bytes;
+        let cut = page.left_out > 0;
         let returned = page.dataset.features.len();
         let following =
             page.exceeded_transfer_limit.then(|| with_format(&arcgis_page_url(&self.url, read + returned, *size, order.as_deref()), "pbf"));
         // What the features lost is summed over the pages, and said once (in `finish`); the
         // page's other messages, about its fields and system, once each.
-        let counted = page.losses.messages();
-        let mut report = page.report;
-        report.messages.retain(|m| !counted.contains(m));
+        let report = page.report;
         match &mut self.decoded {
             None => self.decoded = Some((page.dataset, report, page.losses)),
             Some((ds, joined, losses)) => {
-                if ds.fields != page.dataset.fields {
+                // By name and type: the first page's aliases are kept.
+                let same = |a: &crate::Field, b: &crate::Field| a.name == b.name && a.ty == b.ty;
+                if ds.fields.len() != page.dataset.fields.len() || !ds.fields.iter().zip(&page.dataset.fields).all(|(a, b)| same(a, b)) {
                     return self.stop(format!("the page after feature {read} has other fields than the first; the rest aren't read"));
                 }
                 // Each page's positions are in its own system, and its geometries of its own type;
@@ -3446,7 +3514,7 @@ impl Pages {
                 losses.add(&page.losses);
             }
         }
-        if self.read() > self.max {
+        if cut || self.read() > self.max {
             return self.finish_at_max();
         }
         match following {
@@ -4789,7 +4857,7 @@ mod tests {
     /// the limit end the read with the pages read so far, and a note. What the pages' features lost is said once, summed.
     #[test]
     fn arcgis_pbf_pages_joined_when_the_layer_lists_them() {
-        use crate::esripbf::tests::page as pbf;
+        use crate::esripbf::tests::{page as pbf, page_with_z as pbf_z};
         let query = "https://x.org/arcgis/rest/services/P/FeatureServer/0/query?where=1%3D1&outFields=*&f=geojson&token=t";
         let description = "https://x.org/arcgis/rest/services/P/FeatureServer/0?f=json&token=t";
         let layer = br#"{"objectIdField": "OBJECTID", "maxRecordCount": 2, "supportedQueryFormats": "JSON, geoJSON, PBF",
@@ -4840,7 +4908,7 @@ mod tests {
 
         // `begin` reads the same layer in GeoJSON.
         let (step, asked) = run(false, 100, &|u: &str| json_page(u).ok_or_else(|| "404".to_string()));
-        assert!(matches!(step, Step::Done(..)), "{step:?}");
+        assert!(matches!(step, Step::Done(_, None)), "{step:?}");
         assert!(asked[1..].iter().all(|u| query_value(u, "f") == Some("geojson")), "{asked:?}");
 
         // A first page refused as a protocol buffer: GeoJSON pages from the start.
@@ -4851,7 +4919,8 @@ mod tests {
                 json_page(u).ok_or_else(|| "404".to_string())
             }
         });
-        let Step::Done(joined, None) = step else { panic!("{step:?}") };
+        let Step::Done(joined, Some(note)) = step else { panic!("{step:?}") };
+        assert!(note.starts_with("its protocol buffer pages couldn't be read (") && note.ends_with("so it is read in GeoJSON"), "{note}");
         let v: serde_json::Value = serde_json::from_slice(&joined).unwrap();
         assert_eq!(v["features"].as_array().map(Vec::len), Some(5));
         assert_eq!(asked.len(), 5, "the description, the refused page, then three in GeoJSON: {asked:?}");
@@ -4874,7 +4943,8 @@ mod tests {
             asked.push(u);
             step = (*pages).land(a);
         }
-        let Step::Done(joined, None) = step else { panic!("{step:?}") };
+        let Step::Done(joined, Some(note)) = step else { panic!("{step:?}") };
+        assert!(note.starts_with("its protocol buffer pages couldn't be read (") && note.ends_with("so it is read in GeoJSON"), "{note}");
         let v: serde_json::Value = serde_json::from_slice(&joined).unwrap();
         assert_eq!(v["features"].as_array().map(Vec::len), Some(5));
         assert!(asked.len() == 5 && asked[2..].iter().all(|u| query_value(u, "f") == Some("geojson")), "{asked:?}");
@@ -4884,11 +4954,29 @@ mod tests {
         let (step, asked) = run(true, 100, &|u: &str| {
             if query_value(u, "f") == Some("pbf") { Err("http status: 500".into()) } else { json_page(u).ok_or_else(|| "404".to_string()) }
         });
-        let Step::Done(joined, None) = step else { panic!("{step:?}") };
+        let Step::Done(joined, Some(note)) = step else { panic!("{step:?}") };
+        assert!(note.starts_with("its protocol buffer pages couldn't be read (") && note.ends_with("so it is read in GeoJSON"), "{note}");
         let v: serde_json::Value = serde_json::from_slice(&joined).unwrap();
         assert_eq!(v["features"].as_array().map(Vec::len), Some(5));
         assert!(asked.len() == 5 && asked[2..].iter().all(|u| query_value(u, "f") == Some("geojson")), "{asked:?}");
         assert!(!asked.iter().any(|u| u == query), "{asked:?}");
+        assert!(note.contains("(http status: 500)"), "{note}");
+        // A long reason is said cut.
+        let (step, _) = run(true, 100, &|u: &str| {
+            if query_value(u, "f") == Some("pbf") { Err("x".repeat(1000)) } else { json_page(u).ok_or_else(|| "404".to_string()) }
+        });
+        let Step::Done(_, Some(note)) = step else { panic!("{step:?}") };
+        assert!(note.len() < 300 && note.contains("x…)"), "{note}");
+        // A credential in the reason isn't said (an address's query isn't, nor what follows it).
+        let (step, _) = run(true, 100, &|u: &str| {
+            if query_value(u, "f") == Some("pbf") {
+                Err("timed out: https://x.org/q?token=hidden".into())
+            } else {
+                json_page(u).ok_or_else(|| "404".to_string())
+            }
+        });
+        let Step::Done(_, Some(note)) = step else { panic!("{step:?}") };
+        assert!(!note.contains("hidden") && note.contains("(timed out: https://x.org/q"), "{note}");
 
         // A later page that fails: the pages read, said.
         let (step, _) = run(true, 100, &|u: &str| if offset(u) == Some(2) { Err("http status: 500".into()) } else { pbf_server(u) });
@@ -4915,6 +5003,16 @@ mod tests {
         let Step::Decoded(ds, _, Some(note)) = step else { panic!("{step:?}") };
         assert_eq!(ids(&ds), [0.0, 1.0, 2.0]);
         assert!(note.contains("first 3 features"), "{note}");
+        // A page cut at the limit: what the features left out lost isn't counted.
+        let z_server = |u: &str| -> Result<Vec<u8>, String> {
+            let o = offset(u).ok_or_else(|| "404".to_string())?;
+            Ok(pbf_z(&(o..(o + 2).min(5)).collect::<Vec<_>>(), o + 2 < 5, "OBJECTID"))
+        };
+        let (step, _) = run(true, 3, &z_server);
+        let Step::Decoded(ds, report, Some(note)) = step else { panic!("{step:?}") };
+        assert_eq!(ids(&ds), [0.0, 1.0, 2.0]);
+        assert!(note.contains("first 3 features"), "{note}");
+        assert_eq!(report.messages, [crate::zm_note(Some(3))]);
 
         let fresh = || Pages {
             url: query.into(),
@@ -4926,6 +5024,9 @@ mod tests {
             from: String::new(),
             phase: Phase::Offsets { size: 2, order: None, start: None, first: None, pbf: true },
             decoded: None,
+            decoded_bytes: 0,
+            decoded_budget: max_decoded_bytes(),
+            pbf_failed: None,
         };
         // A page in another coordinate system, or of another geometry type, isn't joined; one
         // that doesn't say its system is.
@@ -4962,12 +5063,44 @@ mod tests {
         let Step::Fetch(first) = fresh().join_page(blank(&[0, 1])) else { panic!("the first page") };
         let Step::Fetch(p) = (*first).join_page(blank(&[2, 3])) else { panic!("an empty object id taken for a page sent again") };
         assert_eq!(p.read(), 4);
+        // A page without object ids sent again is told so, even cut shorter by the limit.
+        let idless = |limit: usize| {
+            let mut p = crate::esripbf::read_page_within(&pbf(&[0, 1], true, "OBJECTID"), "query", limit).unwrap();
+            p.object_id_field = None;
+            p
+        };
+        let Step::Fetch(first) = fresh().join_page(idless(usize::MAX)) else { panic!("the first page") };
+        let Step::Decoded(ds, _, Some(note)) = (*first).join_page(idless(1)) else { panic!("a page sent again, cut, joined") };
+        assert_eq!(ds.features.len(), 2);
+        assert!(note.contains("first features again"), "{note}");
+        // Pages are joined by their fields' names and types: another alias doesn't stop the read.
+        let Step::Fetch(first) = fresh().join_page(page(&[0, 1], lonlat, point)) else { panic!("the first page") };
+        let mut aliased = page(&[2, 3], lonlat, point);
+        aliased.dataset.fields[0].alias = Some("Object id".into());
+        let Step::Fetch(p) = (*first).join_page(aliased) else { panic!("another alias taken for other fields") };
+        assert_eq!(p.read(), 4);
+        // A page that would take the layer past its memory budget isn't joined, and says so; the
+        // first page is kept whatever it takes, and one within the budget is joined.
+        let first = page(&[0, 1], lonlat, point);
+        assert!(first.memory > 0);
+        let budget = first.memory * 3 / 2;
+        let Step::Fetch(mut p) = fresh().join_page(first) else { panic!("the first page") };
+        p.decoded_budget = budget;
+        let Step::Decoded(ds, _, Some(note)) = (*p).join_page(page(&[2, 3], lonlat, point)) else { panic!("past the budget") };
+        assert_eq!(ids(&ds), [0.0, 1.0]);
+        assert!(note.contains("after feature 2 would take the layer past 0 MB of memory"), "{note}");
+        let mut p = fresh();
+        p.decoded_budget = 0;
+        let Step::Fetch(mut p) = p.join_page(page(&[0, 1], lonlat, point)) else { panic!("the first page, over the budget") };
+        p.decoded_budget = usize::MAX;
+        let Step::Fetch(p) = (*p).join_page(page(&[2, 3], lonlat, point)) else { panic!("within the budget") };
+        assert_eq!(p.read(), 4);
+        assert!(p.decoded_bytes > 0);
         // What the features lost, summed over the pages and said once.
         let mut pages = fresh();
         for (ids, more, rings) in [(&[0, 1][..], true, 2), (&[2, 3][..], false, 3)] {
             let mut page = crate::esripbf::read_page(&pbf(ids, more, "OBJECTID"), "query").unwrap();
             page.losses.flat_rings = rings;
-            page.report.messages.extend(page.losses.messages());
             pages = match pages.join_page(page) {
                 Step::Fetch(p) => *p,
                 Step::Decoded(_, report, None) => {
@@ -4977,6 +5110,48 @@ mod tests {
                 other => panic!("{other:?}"),
             };
         }
+    }
+
+    /// Protocol buffer pages only when the layer's description lists them and names its page
+    /// size: a layer that names none, or doesn't list them, is read in GeoJSON as before.
+    #[test]
+    fn arcgis_pbf_pages_only_when_listed_with_a_page_size() {
+        let query = "https://x.org/arcgis/rest/services/P/FeatureServer/0/query?where=1%3D1&outFields=*&f=geojson";
+        let description = "https://x.org/arcgis/rest/services/P/FeatureServer/0?f=json";
+        // One page that holds the whole layer.
+        let page = br#"{"type": "FeatureCollection", "features": [{"type": "Feature", "id": 0, "properties": {}}]}"#;
+        for (layer, first) in [
+            // No page size: the query as it is first, in GeoJSON.
+            (r#"{"supportedQueryFormats": "JSON, geoJSON, PBF", "advancedQueryCapabilities": {"supportsPagination": true}}"#, Some(query)),
+            // Protocol buffers not listed: GeoJSON pages from the start.
+            (
+                r#"{"maxRecordCount": 1, "supportedQueryFormats": "JSON, geoJSON", "advancedQueryCapabilities": {"supportsPagination": true}}"#,
+                None,
+            ),
+        ] {
+            let mut asked = Vec::new();
+            let mut step = begin_with_pbf(query, 100);
+            while let Step::Fetch(pages) = step {
+                let u = pages.next_url().to_string();
+                let a = if u == description { Ok(layer.as_bytes().to_vec()) } else { Ok(page.to_vec()) };
+                asked.push(u);
+                step = (*pages).land(a);
+            }
+            assert!(matches!(step, Step::Done(_, None)), "{layer}: {step:?}");
+            assert!(asked.len() == 2 && asked[0] == description, "{layer}: {asked:?}");
+            assert!(query_value(&asked[1], "f") == Some("geojson"), "{layer}: {asked:?}");
+            if let Some(first) = first {
+                assert_eq!(asked[1], first);
+            }
+        }
+    }
+
+    #[test]
+    fn with_format_replaces_the_format_in_any_case_and_keeps_the_fragment() {
+        let q = "https://x.org/FeatureServer/0/query?F=geojson&where=1%3D1&f=json#part";
+        assert_eq!(with_format(q, "pbf"), "https://x.org/FeatureServer/0/query?where=1%3D1&f=pbf#part");
+        assert_eq!(with_format("https://x.org/FeatureServer/0/query", "pbf"), "https://x.org/FeatureServer/0/query?f=pbf");
+        assert_eq!(with_format("https://x.org/q?f=pbf", "geojson"), "https://x.org/q?f=geojson");
     }
 
     /// An ArcGIS layer's description first: a layer that pages is read from the start in pages of

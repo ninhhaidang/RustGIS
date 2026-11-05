@@ -131,3 +131,13 @@ pub fn page(ids: &[u64], more: bool, oid: &str) -> Vec<u8> {
     parts.extend(ids.iter().map(|&id| feature(&[uint(id), geometry(&[], &[i64::try_from(id).unwrap_or(0), 1])])));
     answer(&parts)
 }
+
+/// A [`page`] whose points have Z values (100), which the reader drops and says.
+pub fn page_with_z(ids: &[u64], more: bool, oid: &str) -> Vec<u8> {
+    let mut parts = vec![number(7, POINT), number(10, 1), lonlat(), transform(false, 1.0, 0.0, 0.0), field(oid, OID)];
+    if more {
+        parts.push(number(9, 1));
+    }
+    parts.extend(ids.iter().map(|&id| feature(&[uint(id), geometry(&[], &[i64::try_from(id).unwrap_or(0), 1, 100])])));
+    answer(&parts)
+}

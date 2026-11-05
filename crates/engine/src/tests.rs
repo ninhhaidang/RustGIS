@@ -12963,8 +12963,15 @@ fn arcgis_layer_read_in_protocol_buffer_pages() {
     let r = s.run("service.add", &json!({"url": url, "layer": "Zoning", "text": service})).unwrap();
     assert_eq!(r["features"], 3);
     assert!(s.map().layer_by_name("Zoning").is_some());
+    // The layer read in protocol buffers says nothing; the one read in GeoJSON says why.
     let texts: Vec<_> = s.notices.iter().map(|n| n.text.as_str()).collect();
-    assert!(!texts.iter().any(|t| t.contains("aren't read") || t.contains("protocol buffers")), "{texts:?}");
+    assert!(!texts.iter().any(|t| t.contains("aren't read") || t.starts_with("Parcels")), "{texts:?}");
+    assert!(
+        texts
+            .iter()
+            .any(|t| t.starts_with("Zoning: its protocol buffer pages couldn't be read (") && t.ends_with("so it is read in GeoJSON")),
+        "{texts:?}"
+    );
     // Each layer's description, then its pages: in protocol buffers, or in GeoJSON after the one
     // refused.
     let asked: Vec<_> = server
