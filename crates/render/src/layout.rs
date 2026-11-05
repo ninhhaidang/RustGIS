@@ -26,7 +26,7 @@ pub struct PageInfo {
 
 /// Largest page drawn, in pixels per side and in all (less in the browser, where memory is
 /// tighter): a larger page is drawn at a lower resolution.
-const MAX_SIDE: f64 = 12_000.0;
+pub const MAX_SIDE: f64 = 12_000.0;
 pub(crate) const MAX_PIXELS: f64 = if cfg!(target_arch = "wasm32") { 25_000_000.0 } else { 60_000_000.0 };
 
 /// Whether skipping a failed frame would omit required complete-source content.

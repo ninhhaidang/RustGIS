@@ -1201,6 +1201,13 @@ pub(crate) fn save_drafts(app: &mut RustGisApp) {
     }
 }
 
+/// Saves all text being typed, the field the Format pane shows included: for a command that
+/// draws the page before the pane runs this frame (the ribbon is drawn first).
+pub(crate) fn commit_drafts(app: &mut RustGisApp) {
+    app.layout.drawn = None;
+    save_drafts(app);
+}
+
 /// A text field whose typing is kept in the view's state while it has focus. Returns the new text
 /// when the field loses focus with a change.
 fn text_field(
@@ -3163,6 +3170,24 @@ mod tests {
         h.state_mut().layout.selected = ids.get(1).copied();
         h.run_steps(2);
         assert_eq!(h.state().ui.right, Some(Format));
+    }
+
+    /// Capture To Clipboard draws the text still being typed into the Format pane.
+    #[test]
+    fn a_capture_keeps_the_text_being_typed() {
+        let mut app = RustGisApp::new(rustgis_engine::Session::new(rustgis_engine::Project::default()));
+        app.run("layout.new", json!({"name": "Typing"})).unwrap();
+        let li = app.session.active_layout.unwrap();
+        let title = app.session.project.layouts[li].elements.iter().find(|e| e.name == "Title").unwrap().id;
+        app.layout.typing.insert((li, title, "text"), "Typed".into());
+        // The pane drew this field last frame and it still has focus.
+        app.layout.drawn = Some((li, title));
+        app.run("ui.captureLayout", json!(null)).unwrap();
+        let text = match &app.session.project.layouts[li].element(title).unwrap().kind {
+            super::ElementKind::Text { text, .. } => text.clone(),
+            _ => String::new(),
+        };
+        assert_eq!(text, "Typed");
     }
 
     /// Text being typed when another project opens is for the old one: it never reaches the

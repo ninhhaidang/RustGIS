@@ -923,6 +923,13 @@ impl Default for UiState {
     }
 }
 
+/// The resolution of a layout copied to the clipboard.
+const CAPTURE_DPI: f64 = 192.0;
+/// The most pixels a layout copied to the clipboard has (a page above it is copied at a lower dpi).
+const CAPTURE_PIXELS: f64 = 16_000_000.0;
+/// The lowest dpi a layout is copied at: a page that would need less is an error.
+const CAPTURE_MIN_DPI: f64 = 36.0;
+
 pub struct RustGisApp {
     pub session: Session,
     pub ui: UiState,
@@ -3423,6 +3430,45 @@ impl RustGisApp {
                 let size = [pm.width() as usize, pm.height() as usize];
                 self.ui.copy_image = Some(egui::ColorImage::from_rgba_premultiplied(size, pm.data()));
                 self.session.notify(tl!("Copied the map to the clipboard"), false);
+            }
+            // Copies the open layout's page as an image: at 192 dpi, lower for a page that would
+            // pass the app's own pixel budget or the renderer's largest side (and says so). A page
+            // that would be copied below 36 dpi is an error.
+            "ui.captureLayout" => {
+                let li = self.session.active_layout.ok_or("open a layout first")?;
+                // Text still being typed into the Format pane is part of the page.
+                layoutview::commit_drafts(self);
+                let (w_mm, h_mm) = self.session.project.layouts.get(li).map(|l| (l.width, l.height)).ok_or("open a layout first")?;
+                let area = (w_mm / 25.4) * (h_mm / 25.4);
+                let side = rustgis_engine::render::layout::MAX_SIDE * 25.4 / w_mm.max(h_mm);
+                let dpi = CAPTURE_DPI.min((CAPTURE_PIXELS / area).sqrt()).min(side);
+                if dpi < CAPTURE_MIN_DPI {
+                    return Err("the page is too large to copy to the clipboard: export it instead".into());
+                }
+                let session = &mut self.session;
+                let png = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    rustgis_engine::cmd::layout::layout_bytes(session, li, false, dpi, false)
+                }))
+                .unwrap_or_else(|_| Err("the capture failed unexpectedly".into()))?;
+                let pm = rustgis_engine::render::decode_png(&png).ok_or("could not draw the layout")?;
+                let size = [pm.width() as usize, pm.height() as usize];
+                self.ui.copy_image = Some(egui::ColorImage::from_rgba_premultiplied(size, pm.data()));
+                // The dpi reported is the one the image has, on its smaller scale (a whole pixel
+                // short is only rounding).
+                let (px_w, px_h) = (f64::from(pm.width()), f64::from(pm.height()));
+                let short = (w_mm / 25.4 * dpi).floor() - px_w > 1.0 || (h_mm / 25.4 * dpi).floor() - px_h > 1.0;
+                if dpi < CAPTURE_DPI || short {
+                    let got = (px_w * 25.4 / w_mm).min(px_h * 25.4 / h_mm).floor();
+                    self.session.notify(
+                        i18n::fmt(
+                            "Copied the layout to the clipboard at {dpi} dpi, not {wanted}: the page is too large for a larger image",
+                            &[("dpi", &format!("{got:.0}")), ("wanted", &format!("{CAPTURE_DPI:.0}"))],
+                        ),
+                        false,
+                    );
+                } else {
+                    self.session.notify(tl!("Copied the layout to the clipboard"), false);
+                }
             }
             "ui.printMap" => {
                 let session = &mut self.session;

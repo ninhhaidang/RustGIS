@@ -3192,6 +3192,16 @@ fn layout_groups(app: &mut RustGisApp, ui: &mut Ui) {
         big(ui, app, "export", "Export", "Export the layout as PDF or PNG.", "ui.exportLayout", Value::Null, false, false);
         big(ui, app, "print", "Print", "Print the layout.", "ui.printLayout", Value::Null, false, false);
         col(ui, |ui| {
+            small(
+                ui,
+                app,
+                "copy",
+                "Capture To Clipboard",
+                "Copy an image of the layout to the clipboard.",
+                "ui.captureLayout",
+                Value::Null,
+                false,
+            );
             small(ui, app, "save_as", "Save Layout File", "Save the layout as a layout file.", "ui.saveLayout", Value::Null, false);
             small(ui, app, "map", "Show Map", "Close the layout and show the map.", "layout.close", Value::Null, false);
         });

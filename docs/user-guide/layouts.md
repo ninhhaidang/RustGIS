@@ -294,6 +294,10 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
   `layout.export` accepts `dpi` and `"allPages": false` for just the current PDF
   page. **Print** opens the PDF in the system viewer on desktop; **Save Layout File** and
   **Import Layout** move layouts between projects (`.rgislayout`).
+- **Capture To Clipboard** copies an image of the current page at 192 dpi, with any text still being
+  typed. A page that would pass 16 million pixels, or 12,000 pixels on a side, is copied at a lower
+  dpi, and the notice says so; a page that would need less than 36 dpi is too large to copy, so
+  export it instead.
 
 ## Reports
 
