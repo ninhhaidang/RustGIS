@@ -14,6 +14,7 @@ allocations and hangs that hand-written hostile-input tests don't anticipate.
 | `mvt` | `rustgis_tiles::mvt::decode` | vector tiles |
 | `esripbf` | `esripbf::is_esripbf`, then `esripbf::read` | ArcGIS feature-service answers as protocol buffers (`f=pbf`) |
 | `project` | `Project::from_json` | `.rgis` projects |
+| `sheets` | `sheets::sheet_names`, `sheets::columns`, `sheets::read` | Excel and OpenDocument workbooks, calamine, the `.xls` sector-table check |
 
 This crate is its own workspace, outside RustGIS's: `cargo build`, `cargo xtask ci`, the wasm
 build and the workspace's `cargo deny` never build it. It needs nightly Rust and

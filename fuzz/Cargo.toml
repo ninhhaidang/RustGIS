@@ -81,6 +81,13 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "sheets"
+path = "fuzz_targets/sheets.rs"
+test = false
+doc = false
+bench = false
+
 # Writes the seed corpus: `cargo run --release --bin seeds` (see README.md).
 [[bin]]
 name = "seeds"

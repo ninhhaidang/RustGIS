@@ -8,7 +8,7 @@
 
 use rustgis_data::io::{READ_EXTENSIONS, write_bytes, write_path};
 use rustgis_data::raster::{ColorHint, Crs, GeoTransform, Raster, geotiff, wkt};
-use rustgis_data::{Dataset, wkb};
+use rustgis_data::{Dataset, sheets, wkb};
 use rustgis_engine::{Project, Session};
 use rustgis_tiles::mvt;
 use std::path::{Path, PathBuf};
@@ -138,6 +138,38 @@ fn esripbf(kind: u64, zm: bool, lengths: &[u64], coords: &[i64]) -> Vec<u8> {
     [message(1, b"10.0"), message(2, &message(1, &result))].concat()
 }
 
+/// A minimal compound file (`.xls` container): a header, a FAT in sector 0, a directory in sector 1
+/// (a root entry and an empty "Workbook" stream), a mini FAT in sector 2 and a mini stream in
+/// sector 3.
+fn compound() -> Vec<u8> {
+    const END: u32 = 0xFFFF_FFFE;
+    let words = |w: &[u32]| -> Vec<u8> {
+        let mut b: Vec<u8> = w.iter().flat_map(|v| v.to_le_bytes()).collect();
+        b.resize(512, 0xFF);
+        b
+    };
+    let entry = |name: &str, kind: u8, start: u32, len: u32| {
+        let mut e = vec![0u8; 128];
+        let utf16: Vec<u8> = name.encode_utf16().chain([0]).flat_map(u16::to_le_bytes).collect();
+        e.splice(..utf16.len(), utf16.iter().copied());
+        e.splice(64..66, (utf16.len() as u16).to_le_bytes());
+        e[66] = kind;
+        e.splice(116..124, [start.to_le_bytes(), len.to_le_bytes()].concat());
+        e
+    };
+    let mut header = vec![0u8; 76];
+    header.splice(..8, *b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1");
+    header.splice(24..34, [0x3E, 0, 3, 0, 0xFE, 0xFF, 9, 0, 6, 0]);
+    header.splice(44..52, [1u32.to_le_bytes(), 1u32.to_le_bytes()].concat());
+    header.splice(56..76, [4096u32, 2, 1, END, 0].iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>());
+    let mut difat = vec![0u32];
+    difat.resize(109, 0xFFFF_FFFF);
+    header.extend(difat.iter().flat_map(|v| v.to_le_bytes()));
+    let mut dir = [entry("Root Entry", 5, 3, 64), entry("Workbook", 2, 0, 0)].concat();
+    dir.resize(512, 0);
+    [header, words(&[0xFFFF_FFFD, END, END, END]), dir, words(&[END]), vec![0u8; 512]].concat()
+}
+
 fn main() -> Result<()> {
     let (project, layers) = layers()?;
 
@@ -216,6 +248,12 @@ fn main() -> Result<()> {
     }
     seed(&dir, &mut n, serde_json::to_string(&small).map_err(|e| e.to_string())?.as_bytes())?;
     seed(&dir, &mut n, serde_json::to_string(&Project::new("empty")).map_err(|e| e.to_string())?.as_bytes())?;
+
+    // Workbooks: an `.xlsx` from the crate's own builder, and a minimal `.xls` compound file
+    // (RustGIS writes neither), so the fuzzer starts inside both of calamine's containers.
+    let (dir, mut n) = (corpus("sheets")?, 0);
+    seed(&dir, &mut n, &sheets::xlsx(&[("Sheet1", &[&["name", "x", "y"], &["a", "1", "2"]]), ("Other", &[&["n"], &["1"]])]))?;
+    seed(&dir, &mut n, &compound())?;
 
     let _ = std::fs::remove_dir_all(&scratch);
     println!("seeds written: read_layers {nr}, sniff {ns}");
