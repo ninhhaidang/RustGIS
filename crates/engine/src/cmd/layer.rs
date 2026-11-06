@@ -162,6 +162,7 @@ pub fn commands() -> Vec<C> {
                 return Err("a graphics layer draws each feature in its own style, so it has no color scheme to invert".into());
             }
             let raster = l.raster.is_some();
+            let by_expression = !raster && (l.symbol_by.fill.is_some() || l.symbol_by.stroke.is_some());
             let (done, layer_stack) = match &mut l.raster {
                 Some(rl) => (rl.style.invert_ramp().then_some(RampReversal { reversed: 0, kept: 0, on_layer_stack: 0 }), None),
                 None => {
@@ -196,6 +197,13 @@ pub fn commands() -> Vec<C> {
                         "The layer's stacked {what} set their own colors, so the classes show those and little of the color \
                          scheme: the colors were reversed, but change the {what} to see them"
                     ),
+                    false,
+                );
+            }
+            if by_expression && done.reversed > 0 {
+                // Drawn over the class colors, wherever the expression gives a color.
+                s.notify(
+                    "The layer's Symbol by Expression sets some features' colors, so the reversed colors show only where it gives none",
                     false,
                 );
             }

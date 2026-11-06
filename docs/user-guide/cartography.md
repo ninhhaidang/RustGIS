@@ -201,6 +201,8 @@ When the layer's own stack (the one classes without a stack of their own are dra
 colour in every layer, the classes show those colours and little of the colour scheme: the colours
 are reversed all the same, and a notice says so. On a layer that holds several kinds of geometry,
 the reversal treats every class as the layer's main kind, as choosing a colour scheme does.
+A fill or stroke colour from **Symbol by Expression** is drawn over the classes' colours wherever
+the expression gives one, so the reversal shows only where it gives none, and a notice says so.
 
 Choosing a colour scheme again starts from the scheme's own order, but classing the layer again
 on the same field, ranges and scheme keeps the reversed colours, as it keeps other colours edited

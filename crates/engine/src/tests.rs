@@ -28130,6 +28130,28 @@ fn layer_invert_ramp_says_when_the_layers_own_stack_hides_the_colors() {
 }
 
 #[test]
+fn layer_invert_ramp_says_when_symbol_by_expression_sets_colors() {
+    // #1355: Symbol by Expression colors are drawn over the class colors, so the reversal shows only
+    // where the expression gives none; with no color expression (a size one doesn't set colors) it is quiet.
+    let notices = |s: &mut Session| -> Vec<String> {
+        let mark = s.notice_mark();
+        s.run("layer.invertRamp", &json!({"layer": "Countries"})).unwrap();
+        s.notices_since(mark).iter().map(|n| n.text.clone()).collect()
+    };
+    let mut s = world();
+    s.run("layer.symbology", &json!({"layer": "Countries", "type": "graduated", "field": "pop_est", "classes": 4})).unwrap();
+    assert!(notices(&mut s).is_empty());
+    s.run("layer.symbolBy", &json!({"layer": "Countries", "strokeWidth": "2"})).unwrap();
+    assert!(notices(&mut s).is_empty(), "a width is no color");
+    s.run("layer.symbolBy", &json!({"layer": "Countries", "fill": "if(pop_est > 1e8, '#ff0000', NULL)"})).unwrap();
+    let said = notices(&mut s);
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(said[0].starts_with("The layer's Symbol by Expression sets some features' colors"), "{said:?}");
+    s.run("layer.symbolBy", &json!({"layer": "Countries", "fill": null, "stroke": "'#00ff00'"})).unwrap();
+    assert_eq!(notices(&mut s).len(), 1, "a stroke color counts too");
+}
+
+#[test]
 fn layer_invert_ramp_says_when_there_is_nothing_to_invert() {
     // #1355: with fewer than two classes showing the scheme, an inversion would change nothing, so
     // the command refuses rather than succeed silently. A raster's Invert is a switch and is no
