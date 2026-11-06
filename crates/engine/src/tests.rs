@@ -28720,3 +28720,123 @@ fn reads_made_ahead_are_taken_by_the_command() {
     assert!(ahead.run(&control).err().unwrap().contains("cancelled"));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_models_tools_run_ahead_are_taken_by_its_run() {
+    use rustgis_analysis::control::Control;
+    let session = || {
+        let mut s = Session::new(Project::default());
+        let mut points = rustgis_data::Dataset::new("Points", rustgis_data::GeometryType::Point, Vec::new());
+        for (x, y) in [(8.0, 47.0), (9.0, 46.0), (10.0, 45.0)] {
+            points.push_next(Some(rustgis_data::Geometry::Point(rustgis_geom::Coord::new(x, y))), Vec::new());
+        }
+        s.map_mut().add_layer(rustgis_map::Layer::new(0, points));
+        s
+    };
+    let graph = json!({"nodes": [
+        {"id": "points", "kind": "input", "layer": "Points"},
+        {"id": "near", "kind": "tool", "tool": "buffer", "params": {"distance": 1000}},
+        {"id": "far", "kind": "tool", "tool": "buffer", "params": {"distance": 2000}},
+        {"id": "output", "kind": "output", "name": "Rings"}
+    ], "edges": [
+        {"from": "points", "fromPort": "out", "to": "near", "toPort": "input"},
+        {"from": "near", "fromPort": "out", "to": "far", "toPort": "input"},
+        {"from": "far", "fromPort": "out", "to": "output", "toPort": "in"}
+    ]});
+    let p = json!({"graph": graph.clone()});
+    let rings = |s: &Session| {
+        s.map().layer_by_name("Rings").map(|l| format!("{:?}", l.dataset.features.iter().map(|f| &f.geometry).collect::<Vec<_>>()))
+    };
+    let mut here = session();
+    here.run("model.run", &p).unwrap();
+
+    // Both tools are taken: what the run adds, keeps in history and puts in Undo is the same.
+    let mut s = session();
+    let depth = s.undo_depth();
+    crate::cmd::reads::read_ahead(&s, "model.run", &p).unwrap().run(&Control::stoppable()).unwrap().placed(&mut s);
+    let r = s.run("model.run", &p).unwrap();
+    assert_eq!(s.tools_taken, 2, "{r}");
+    assert!(s.read_ahead.is_none() && s.tools_ahead.is_none());
+    assert_eq!(rings(&s), rings(&here));
+    assert_eq!(s.map().layers.len(), here.map().layers.len());
+    assert_eq!(s.project.gp_history.len(), 2);
+    assert!(s.model_run.as_ref().unwrap().ok);
+    assert_eq!(s.undo_depth(), depth + 1);
+    assert!(s.undo());
+    assert_eq!(s.map().layers.len(), 1);
+
+    // A point added after the run ahead: the tools run here, on it too.
+    let add = |s: &mut Session| {
+        let p = Some(rustgis_data::Geometry::Point(rustgis_geom::Coord::new(11.0, 44.0)));
+        s.map_mut().layers[0].dataset.push_next(p, Vec::new());
+    };
+    let mut s = session();
+    crate::cmd::reads::read_ahead(&s, "model.run", &json!({"graph": graph})).unwrap().run(&Control::stoppable()).unwrap().placed(&mut s);
+    add(&mut s);
+    let mut here = session();
+    add(&mut here);
+    here.run("model.run", &p).unwrap();
+    s.run("model.run", &p).unwrap();
+    assert_eq!(s.tools_taken, 0);
+    assert!(s.tools_ahead.is_none());
+    assert_eq!(rings(&s), rings(&here));
+
+    // A run ahead that was cancelled is an error, and runs nothing.
+    let control = Control::stoppable();
+    control.cancel();
+    assert!(crate::cmd::reads::read_ahead(&session(), "model.run", &p).unwrap().run(&control).is_err());
+
+    // A model saved as steps takes them too, and so does one with a tool that fails.
+    let mut s = session();
+    s.run(
+        "model.new",
+        &json!({"name": "Steps", "steps": [
+            {"tool": "buffer", "params": {"input": "Points", "distance": 1000}},
+            {"tool": "buffer", "params": {"input": "%1", "distance": 2000}}
+        ]}),
+    )
+    .unwrap();
+    let p = json!({"name": "Steps"});
+    crate::cmd::reads::read_ahead(&s, "model.run", &p).unwrap().run(&Control::stoppable()).unwrap().placed(&mut s);
+    s.run("model.run", &p).unwrap();
+    assert_eq!(s.tools_taken, 2);
+    s.run("model.new", &json!({"name": "Fails", "steps": [{"tool": "buffer", "params": {"input": "Points", "distance": "x"}}]})).unwrap();
+    let p = json!({"name": "Fails"});
+    crate::cmd::reads::read_ahead(&s, "model.run", &p).unwrap().run(&Control::stoppable()).unwrap().placed(&mut s);
+    let e = s.run("model.run", &p).unwrap_err();
+    assert!(e.contains("step 1"), "{e}");
+    assert_eq!(s.tools_taken, 3, "the failure is taken too");
+
+    // A tool that writes a file stops the copy: it writes once, as the run here runs it and
+    // those after it.
+    let dir = std::env::temp_dir().join(format!("rustgis-model-ahead-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("points.pmtiles");
+    let mut s = session();
+    s.run(
+        "model.new",
+        &json!({"name": "Writes", "steps": [
+            {"tool": "buffer", "params": {"input": "Points", "distance": 1000}},
+            {"tool": "vectorToPmtiles", "params": {"input": "Points", "minZoom": 0, "maxZoom": 0, "output": file.display().to_string()}},
+            {"tool": "buffer", "params": {"input": "Points", "distance": 2000}}
+        ]}),
+    )
+    .unwrap();
+    let p = json!({"name": "Writes"});
+    crate::cmd::reads::read_ahead(&s, "model.run", &p).unwrap().run(&Control::stoppable()).unwrap().placed(&mut s);
+    assert!(!file.exists(), "the copy wrote nothing");
+    s.run("model.run", &p).unwrap();
+    assert_eq!(s.tools_taken, 1);
+    assert!(file.exists());
+    assert_eq!(s.project.gp_history.len(), 3);
+
+    // A selection made meanwhile is an input changed: the tools run here, on it.
+    let mut s = session();
+    crate::cmd::reads::read_ahead(&s, "model.run", &json!({"graph": graph})).unwrap().run(&Control::stoppable()).unwrap().placed(&mut s);
+    s.map_mut().layers[0].selection = vec![0];
+    s.run("model.run", &json!({"graph": graph})).unwrap();
+    assert_eq!(s.tools_taken, 0);
+    assert_eq!(s.map().layer_by_name("Rings").unwrap().dataset.features.len(), 1);
+    std::fs::remove_dir_all(&dir).ok();
+}

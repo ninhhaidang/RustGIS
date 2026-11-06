@@ -67,6 +67,14 @@ mod pluginsui;
 mod portalsui;
 #[cfg(not(target_arch = "wasm32"))]
 mod readjob;
+
+/// How a command asked for ended ([`readjob::run_then`] on the desktop; the browser runs it where
+/// it's asked): what it answered when it ran, or why it never ran (cancelled, or left), which is
+/// said already.
+pub enum Landed {
+    Ran(Result<Value, String>),
+    NotRun(String),
+}
 #[cfg(not(target_arch = "wasm32"))]
 mod relayshot;
 mod repairsource;

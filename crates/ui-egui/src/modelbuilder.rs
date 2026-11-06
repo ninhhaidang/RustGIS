@@ -85,6 +85,13 @@ pub struct ModelBuilder {
     pub search: String,
     pub log: Vec<(String, LogKind)>,
     pub status: HashMap<String, Status>,
+    /// The graphs of the runs under way and waiting, in the order asked, with the project each
+    /// was asked in, until each lands: another one on the canvas by then (edited, or another
+    /// model opened) isn't marked with what it did, and one from another project leaves it be.
+    running: std::collections::VecDeque<(u64, ModelGraph)>,
+    /// The log shows Running… for a run still to land: another graph's landing may say how it
+    /// ended in its place, but once a run's ending is shown it stays.
+    waiting: bool,
     /// What to do once the user agrees to drop unsaved changes.
     confirm: Option<Pending>,
     /// The problems of the graph, kept until it or the project changes (the project's
@@ -393,7 +400,8 @@ fn save(app: &mut RustGisApp) -> bool {
     }
 }
 
-/// Runs the model on the canvas, node statuses and messages from the engine's report.
+/// Runs the model on the canvas: on the desktop its tools on a thread of their own ([`readjob`]),
+/// the status bar showing it and Cancel; [`landed`] puts what it did in the canvas once it lands.
 fn run_model(app: &mut RustGisApp) {
     app.mb.status.clear();
     app.mb.log.clear();
@@ -407,8 +415,64 @@ fn run_model(app: &mut RustGisApp) {
         }
         p = json!({"name": saved});
     }
-    let res = app.run("model.run", p);
-    let report = app.session.model_run.clone().unwrap_or_default();
+    app.mb.running.push_back((app.session.project_starts, app.mb.graph.clone()));
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = crate::readjob::run_then(app, "model.run", p, Some(landed));
+        // Not landed yet: it says so until it does.
+        if app.mb.log.is_empty() {
+            app.mb.waiting = true;
+            app.mb.log(tl!("Running…").to_string(), LogKind::Info);
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let r = app.run("model.run", p);
+        landed(app, crate::Landed::Ran(r));
+    }
+}
+
+/// Whether `a` and `b` run alike: the same nodes and edges, wherever the nodes sit on the canvas
+/// (a node moved while its run is under way still gets its marks).
+fn same_run(a: &ModelGraph, b: &ModelGraph) -> bool {
+    let placed = |g: &ModelGraph| {
+        let mut g = g.clone();
+        for n in &mut g.nodes {
+            (n.x, n.y) = (0.0, 0.0);
+        }
+        g
+    };
+    placed(a) == placed(b)
+}
+
+/// A model's run in the canvas: node statuses and messages from the engine's report, when it ran
+/// on the graph still there; why it didn't run, when it didn't.
+fn landed(app: &mut RustGisApp, landed: crate::Landed) {
+    let Some((project, graph)) = app.mb.running.pop_front() else { return };
+    // Asked in a project closed since: this canvas isn't the one it ran from.
+    if project != app.session.project_starts {
+        return;
+    }
+    let same = same_run(&graph, &app.mb.graph);
+    // Another graph's run leaves the canvas as it is while a run of it is still to land (its
+    // Running… stays), or once a run's ending is shown there.
+    if !same && (!app.mb.running.is_empty() || !app.mb.waiting) {
+        return;
+    }
+    app.mb.waiting = false;
+    app.mb.status.clear();
+    app.mb.log.clear();
+    let res = match landed {
+        crate::Landed::Ran(res) => res,
+        crate::Landed::NotRun(why) => {
+            app.mb.log(crate::i18n::fmt("Run failed: {error}", &[("error", &why)]), LogKind::Error);
+            return;
+        }
+    };
+    // Its report, when the run made one (one refused before it ran, a model removed meanwhile,
+    // leaves the last run's); and only on the graph it ran: for another, only how it ended.
+    let report = app.session.model_run.clone().filter(|r| same && (res.is_ok() || r.error.as_ref() == res.as_ref().err()));
+    let report = report.unwrap_or_default();
     let titles: HashMap<String, String> = app.mb.graph.nodes.iter().map(|n| (n.id.clone(), model::title(n))).collect();
     for n in &report.nodes {
         let title = titles.get(&n.node).cloned().unwrap_or_default();
@@ -1758,7 +1822,13 @@ fn confirm(app: &mut RustGisApp, ctx: &egui::Context) {
 /// Drops the canvas of a project no longer open (its model would be saved into this one).
 fn forget_old_project(app: &mut RustGisApp) {
     if app.mb.project != app.session.project_starts {
-        app.mb = ModelBuilder { project: app.session.project_starts, search: std::mem::take(&mut app.mb.search), ..Default::default() };
+        // The runs still to land stay, so each one's landing is still matched with its own.
+        app.mb = ModelBuilder {
+            project: app.session.project_starts,
+            search: std::mem::take(&mut app.mb.search),
+            running: std::mem::take(&mut app.mb.running),
+            ..Default::default()
+        };
     }
 }
 
@@ -1819,6 +1889,49 @@ mod tests {
         assert!(app.session.map().layer_by_name("Dissolve").is_some(), "{:?}", app.mb.log);
         assert_eq!(app.session.map().layers.len(), layers + 1);
         assert!(app.mb.graph.nodes.iter().all(|n| app.mb.status.get(&n.id) == Some(&Status::Done)));
+
+        // On the desktop its tools run on a thread of their own: the canvas says so until it lands.
+        app.reads_off_frame = true;
+        run_model(&mut app);
+        assert_eq!(app.mb.log, vec![("Running…".to_string(), LogKind::Info)]);
+        assert!(app.mb.status.is_empty());
+        assert_eq!(app.session.map().layers.len(), layers + 1, "nothing added before it lands");
+        // A node moved meanwhile still gets its mark: the graph runs the same.
+        app.mb.graph.nodes[0].x += 40.0;
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while crate::readjob::land(&mut app) {
+            assert!(std::time::Instant::now() < end, "the model never landed");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(app.session.map().layers.len(), layers + 2);
+        assert!(app.mb.graph.nodes.iter().all(|n| app.mb.status.get(&n.id) == Some(&Status::Done)));
+        assert!(
+            app.mb.log.last().is_some_and(|(line, kind)| *kind == LogKind::Ok && line.starts_with("Run finished.")),
+            "{:?}",
+            app.mb.log
+        );
+        // Run pressed twice: the second waits for the first, and each marks the canvas as it lands.
+        run_model(&mut app);
+        run_model(&mut app);
+        while crate::readjob::land(&mut app) {
+            assert!(std::time::Instant::now() < end, "the models never landed");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(app.session.map().layers.len(), layers + 4);
+        assert!(app.mb.graph.nodes.iter().all(|n| app.mb.status.get(&n.id) == Some(&Status::Done)));
+        assert!(app.mb.log.iter().any(|(line, _)| line.starts_with("Buffer made")), "{:?}", app.mb.log);
+        assert!(app.mb.running.is_empty());
+        // Cancelled: nothing added, and the canvas says so without the last run's marks.
+        run_model(&mut app);
+        app.reads.cancel_for_tests();
+        while crate::readjob::land(&mut app) {
+            assert!(std::time::Instant::now() < end, "the model never landed");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(app.session.map().layers.len(), layers + 4);
+        assert!(app.mb.status.is_empty());
+        assert_eq!(app.mb.log, vec![("Run failed: Run Model of Model was cancelled".to_string(), LogKind::Error)]);
+        app.reads_off_frame = false;
 
         app.mb.name = "Dissolved cities".into();
         assert!(app.mb.dirty());
@@ -1891,9 +2004,33 @@ mod tests {
         app.run("ui.modelBuilder", Value::Null).unwrap();
         app.mb.add(&Add::Tool("buffer"), pos2(0.0, 0.0));
         app.mb.saved_as = Some("Old".into());
+        // A run under way when the project changes still lands after the reset.
+        app.mb.running.push_back((app.session.project_starts, app.mb.graph.clone()));
         app.run("project.new", Value::Null).unwrap();
         follow_view(&mut app);
         assert!(!app.mb.open && app.mb.graph.nodes.is_empty() && app.mb.saved_as.is_none());
+        // Its landing takes its own place, not that of a run asked in this project, and leaves
+        // this canvas as it is.
+        app.mb.running.push_back((app.session.project_starts, app.mb.graph.clone()));
+        app.mb.log("Running…", LogKind::Info);
+        landed(&mut app, crate::Landed::NotRun("another project was opened".into()));
+        assert_eq!(app.mb.log, vec![("Running…".to_string(), LogKind::Info)]);
+        assert_eq!(app.mb.running.len(), 1);
+        // Another model's run landing first, in this project, leaves it too.
+        let mut other = app.mb.graph.clone();
+        other.nodes.push(Default::default());
+        app.mb.running.push_front((app.session.project_starts, other.clone()));
+        landed(&mut app, crate::Landed::NotRun("cancelled".into()));
+        assert_eq!(app.mb.log, vec![("Running…".to_string(), LogKind::Info)]);
+        assert_eq!(app.mb.running.len(), 1);
+        // The canvas's own run lands; another graph's landing after it leaves its ending shown.
+        app.mb.waiting = true;
+        landed(&mut app, crate::Landed::NotRun("cancelled".into()));
+        let shown = app.mb.log.clone();
+        assert_eq!(shown, vec![("Run failed: cancelled".to_string(), LogKind::Error)]);
+        app.mb.running.push_back((app.session.project_starts, other));
+        landed(&mut app, crate::Landed::NotRun("cancelled".into()));
+        assert_eq!(app.mb.log, shown);
     }
 
     /// Old models (steps with `%n`) open on the canvas as graphs.

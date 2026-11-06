@@ -1,10 +1,10 @@
-//! Add Data's whole-file reads and Load All Features on the desktop read on a thread of their own
-//! (#1291 step 3), so a large raster, GeoJSON or table, or a streamed layer loaded whole, doesn't
-//! hold the window: the status bar shows the read under way, how far it has come and Cancel, and
-//! [`land`] then runs the command, which takes what was read ([`reads`]) and adds it as it does
-//! when it reads here. Reads go one at a time, in the order asked for: files dropped together
-//! wait for the one before, and so does a file added while one is read, so the layers come in
-//! that order.
+//! Add Data's whole-file reads, Load All Features and a model's tools on the desktop run on a
+//! thread of their own (#1291 step 3), so a large raster, GeoJSON or table, a streamed layer
+//! loaded whole, or a long model doesn't hold the window: the status bar shows the run under way,
+//! how far it has come and Cancel, and [`land`] then runs the command, which takes what was made
+//! ([`reads`]) and adds it as it does when it runs here. They go one at a time, in the order
+//! asked for: files dropped together wait for the one before, and so does a file added while one
+//! is read, so the layers come in that order.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -35,7 +35,14 @@ struct Asked {
     opened: u64,
     map: u64,
     layer: Option<u64>,
+    /// Given what the command answered when it runs, or why it didn't (cancelled, or left).
+    then: Option<Then>,
 }
+
+/// What a caller does once the command lands (ModelBuilder shows its run).
+pub type Then = fn(&mut RustGisApp, Landed);
+
+pub use crate::Landed;
 
 /// A read under way: what it is for, its Cancel and progress, and what it read once done.
 struct ReadJob {
@@ -48,13 +55,20 @@ struct ReadJob {
     slot: crate::Slot<Result<reads::Read, String>>,
 }
 
-/// Runs `command` (`layer.addData` or `layer.loadAll`) with `p`: its read on a thread of its own
-/// when the desktop app makes it so ([`reads::read_ahead`]), after any read under way; here and
-/// now otherwise, as the command does. While one is under way or waiting it answers that, not
-/// what the command adds, which comes as it lands.
+/// Runs `command` (`layer.addData`, `layer.loadAll` or `model.run`) with `p`: its read on a
+/// thread of its own when the desktop app makes it so ([`reads::read_ahead`]), after any under
+/// way; here and now otherwise, as the command does. While one is under way or waiting it answers
+/// that, not what the command adds, which comes as it lands.
 pub fn run(app: &mut RustGisApp, command: &'static str, p: Value) -> Result<Value, String> {
+    run_then(app, command, p, None)
+}
+
+/// [`run`], then `then` with what the command answered once it ran, here or as it lands, or why
+/// it never ran.
+pub fn run_then(app: &mut RustGisApp, command: &'static str, p: Value, then: Option<Then>) -> Result<Value, String> {
     if !app.reads_off_frame {
-        return app.run(command, p);
+        let r = app.run(command, p);
+        return answered(app, then, r);
     }
     let layer = (command == "layer.loadAll")
         .then(|| app.session.layer_id(&p).ok().and_then(|id| app.session.map().layer(id)).map(|l| (l.instance_id(), l.name.clone())))
@@ -68,6 +82,8 @@ pub fn run(app: &mut RustGisApp, command: &'static str, p: Value) -> Result<Valu
     }
     let what = match &layer {
         Some((_, name)) => name.clone(),
+        // A model by its name (one drawn but not yet named has none: see `called`).
+        None if command == "model.run" => p.get("name").and_then(Value::as_str).map(str::trim).unwrap_or_default().to_string(),
         None => p.get("path").and_then(Value::as_str).map(|path| file_name(path).to_string()).unwrap_or_default(),
     };
     let asked = Asked {
@@ -77,6 +93,7 @@ pub fn run(app: &mut RustGisApp, command: &'static str, p: Value) -> Result<Valu
         opened: app.session.opened,
         map: app.session.map().instance_id(),
         layer: layer.map(|(instance, _)| instance),
+        then,
     };
     if busy(app) {
         app.reads.waiting.push_back(asked);
@@ -84,8 +101,32 @@ pub fn run(app: &mut RustGisApp, command: &'static str, p: Value) -> Result<Valu
     }
     match placed(app, &asked) {
         Ok(p) => start(app, asked, p),
-        Err(why) => Err(why.to_string()),
+        Err(why) => {
+            let why = why.to_string();
+            not_run(app, then, why.clone());
+            Err(why)
+        }
     }
+}
+
+/// What the command answered, `r`, given to `then` first.
+fn answered(app: &mut RustGisApp, then: Option<Then>, r: Result<Value, String>) -> Result<Value, String> {
+    if let Some(then) = then {
+        then(app, Landed::Ran(r.clone()));
+    }
+    r
+}
+
+/// Why the command never ran, given to `then`.
+fn not_run(app: &mut RustGisApp, then: Option<Then>, why: String) {
+    if let Some(then) = then {
+        then(app, Landed::NotRun(why));
+    }
+}
+
+/// What a command asked for is called in a notice: an unnamed model by the command's name.
+fn called(what: &str) -> &str {
+    if what.is_empty() { tl_raw!("Run Model") } else { what }
 }
 
 /// A path's last part, as a notice names the file.
@@ -138,7 +179,10 @@ fn placed(app: &RustGisApp, asked: &Asked) -> Result<Value, Gone> {
 fn start(app: &mut RustGisApp, asked: Asked, p: Value) -> Result<Value, String> {
     // Picked on this thread, so a bug in the picking must not take the app down: it reads here.
     let picked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| reads::read_ahead(&app.session, asked.command, &p)));
-    let Ok(Some(ahead)) = picked else { return app.run(asked.command, p) };
+    let Ok(Some(ahead)) = picked else {
+        let r = app.run(asked.command, p);
+        return answered(app, asked.then, r);
+    };
     let name = ahead.name;
     let control = Control::stoppable();
     let (ctl, slot) = (control.clone(), crate::Slot::default());
@@ -153,7 +197,8 @@ fn start(app: &mut RustGisApp, asked: Asked, p: Value) -> Result<Value, String> 
     });
     if let Err(e) = spawned {
         log::warn!("{name} reads here: its thread didn't start: {e}");
-        return app.run(asked.command, p);
+        let r = app.run(asked.command, p);
+        return answered(app, asked.then, r);
     }
     app.reads.job = Some(ReadJob { asked, gone: None, name, control, slot });
     Ok(json!({"started": name}))
@@ -165,7 +210,7 @@ pub fn land(app: &mut RustGisApp) -> bool {
     if !busy(app) {
         return false;
     }
-    let mut left: Vec<(String, Gone)> = Vec::new();
+    let mut left: Vec<(String, Gone, Option<Then>)> = Vec::new();
     // What it was for is gone: it is cancelled, and said with the rest below once it stops.
     let gone = app.reads.job.as_ref().filter(|j| j.gone.is_none()).and_then(|j| placed(app, &j.asked).err());
     if let (Some(why), Some(job)) = (gone, app.reads.job.as_mut()) {
@@ -177,31 +222,59 @@ pub fn land(app: &mut RustGisApp) -> bool {
         let Some(done) = done else { return true };
         let Some(job) = app.reads.job.take() else { return false };
         match (job.gone, placed(app, &job.asked)) {
-            (Some(why), _) | (None, Err(why)) => left.push((job.asked.what, why)),
+            (Some(why), _) | (None, Err(why)) => left.push((job.asked.what, why, job.asked.then)),
             (None, Ok(p)) => {
                 if job.control.is_cancelled() {
                     // Cancelled (once it had read too): it adds nothing, and nor does what waits.
-                    app.session.notify(
-                        crate::i18n::fmt("{tool} of {what} was cancelled", &[("tool", tl_raw!(job.name)), ("what", &job.asked.what)]),
-                        false,
-                    );
-                    let n = std::mem::take(&mut app.reads.waiting).len();
-                    if n == 1 {
-                        app.session.notify(tl!("The one waiting after it was left too").to_string(), false);
-                    } else if n > 1 {
-                        app.session.notify(crate::i18n::fmt("The {n} waiting after it were left too", &[("n", &n.to_string())]), false);
+                    let said = if job.asked.what.is_empty() {
+                        crate::i18n::fmt("{tool} was cancelled", &[("tool", tl_raw!(job.name))])
+                    } else {
+                        crate::i18n::fmt("{tool} of {what} was cancelled", &[("tool", tl_raw!(job.name)), ("what", &job.asked.what)])
+                    };
+                    app.session.notify(said.clone(), false);
+                    not_run(app, job.asked.then, said);
+                    let waiting = std::mem::take(&mut app.reads.waiting);
+                    let n = waiting.len();
+                    let left_too = match n {
+                        1 => tl!("The one waiting after it was left too").to_string(),
+                        _ => crate::i18n::fmt("The {n} waiting after it were left too", &[("n", &n.to_string())]),
+                    };
+                    if n > 0 {
+                        app.session.notify(left_too.clone(), false);
+                    }
+                    for asked in waiting {
+                        not_run(app, asked.then, left_too.clone());
                     }
                 } else {
                     match done {
                         Ok(read) => {
                             read.placed(&mut app.session);
                             // A failure is said by the command.
-                            let _ = app.run(job.asked.command, p);
+                            let r = app.run(job.asked.command, p);
+                            let _ = answered(app, job.asked.then, r);
                             app.session.drop_read();
                             app.map.invalidate();
                         }
+                        // A bug in a model's run on a copy of the session: it runs here, as it would
+                        // have.
+                        Err(e) if job.asked.command == "model.run" => {
+                            app.session.notify(
+                                crate::i18n::fmt(
+                                    "{tool} couldn't work in the background ({e}): it ran here",
+                                    &[("tool", tl_raw!(job.name)), ("e", &e)],
+                                ),
+                                false,
+                            );
+                            let r = app.run(job.asked.command, p);
+                            let _ = answered(app, job.asked.then, r);
+                            app.map.invalidate();
+                        }
                         // A bug in a reader: said, and the next goes on.
-                        Err(e) => app.session.notify(crate::i18n::fmt("{what}: {e}", &[("what", &job.asked.what), ("e", &e)]), true),
+                        Err(e) => {
+                            let said = crate::i18n::fmt("{what}: {e}", &[("what", &job.asked.what), ("e", &e)]);
+                            app.session.notify(said.clone(), true);
+                            not_run(app, job.asked.then, said);
+                        }
                     }
                 }
             }
@@ -216,20 +289,23 @@ pub fn land(app: &mut RustGisApp) -> bool {
                 let _ = start(app, asked, p);
                 app.map.invalidate();
             }
-            Err(why) => left.push((asked.what, why)),
+            Err(why) => left.push((asked.what, why, asked.then)),
         }
     }
     // Those left, one notice for each reason, with a count, naming the first.
+    for (what, why, then) in &left {
+        not_run(app, *then, crate::i18n::fmt("{what} was left: {why}", &[("what", called(what)), ("why", &why.to_string())]));
+    }
     for why in [Gone::Project, Gone::Map, Gone::Layer] {
-        let of: Vec<&String> = left.iter().filter(|(_, w)| *w == why).map(|(what, _)| what).collect();
+        let of: Vec<&String> = left.iter().filter(|(_, w, _)| *w == why).map(|(what, ..)| what).collect();
         let reason = why.to_string();
         match of.as_slice() {
             [] => {}
-            [what] => app.session.notify(crate::i18n::fmt("{what} was left: {why}", &[("what", what), ("why", &reason)]), false),
+            [what] => app.session.notify(crate::i18n::fmt("{what} was left: {why}", &[("what", called(what)), ("why", &reason)]), false),
             [first, ..] => app.session.notify(
                 crate::i18n::fmt(
                     "{n} files or layers were left, the first {what}: {why}",
-                    &[("n", &of.len().to_string()), ("what", first), ("why", &reason)],
+                    &[("n", &of.len().to_string()), ("what", called(first)), ("why", &reason)],
                 ),
                 false,
             ),
@@ -246,6 +322,16 @@ pub fn stop(app: &mut RustGisApp, wait: std::time::Duration) {
     let end = std::time::Instant::now() + wait;
     while job.slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_none() && std::time::Instant::now() < end {
         std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+#[cfg(test)]
+impl Reads {
+    /// Presses Cancel on the run under way.
+    pub fn cancel_for_tests(&self) {
+        if let Some(job) = &self.job {
+            job.control.cancel();
+        }
     }
 }
 

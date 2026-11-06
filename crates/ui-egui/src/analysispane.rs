@@ -176,6 +176,21 @@ fn run_now(app: &mut RustGisApp, id: &str, p: Value) {
     show(app, r);
 }
 
+/// Shows how a model's run from the Models section went, or why it didn't run, while that
+/// section is open: in another, its result isn't that section's (a failure is said in the
+/// status bar either way).
+#[cfg(not(target_arch = "wasm32"))]
+fn model_ran(app: &mut RustGisApp, landed: crate::Landed) {
+    if app.workflow.section != "models" {
+        app.map.invalidate();
+        return;
+    }
+    match landed {
+        crate::Landed::Ran(r) => show(app, r),
+        crate::Landed::NotRun(why) => show(app, Err(why)),
+    }
+}
+
 /// Shows how a workflow's command went, and redraws the map it may have changed.
 fn show(app: &mut RustGisApp, r: Result<Value, String>) {
     match r {
@@ -1105,8 +1120,14 @@ pub fn workflows(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
                     if ui.small_button(tl!("Open")).on_hover_text(tl!("Open in ModelBuilder")).clicked() {
                         let _ = app.run("ui.modelBuilder", json!({"name": n}));
                     }
+                    // On the desktop its tools run on a thread of their own, the status bar
+                    // showing it and Cancel; its result shows here once it lands.
                     if ui.small_button(tl!("Run")).clicked() {
-                        run(app, "model.run", json!({"name": n}));
+                        (app.workflow.result, app.workflow.error) = (None, None);
+                        #[cfg(not(target_arch = "wasm32"))]
+                        let _ = crate::readjob::run_then(app, "model.run", json!({"name": n}), Some(model_ran));
+                        #[cfg(target_arch = "wasm32")]
+                        run_now(app, "model.run", json!({"name": n}));
                     }
                     if ui.small_button("×").clicked() {
                         run(app, "model.remove", json!({"name": n}));

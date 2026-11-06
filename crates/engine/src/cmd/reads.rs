@@ -1,6 +1,7 @@
 //! Reads the desktop app makes on a thread of its own before a command adds what they read
 //! (#1291 step 3): Add Data's whole-file reads (a raster, a raster GDAL converts, a GeoJSON,
-//! delimited text or spreadsheet read whole) and Load All Features. [`read_ahead`] takes what
+//! delimited text or spreadsheet read whole), Load All Features, and a model's tools, run on a
+//! copy of the session. [`read_ahead`] takes what
 //! the read needs of the session, [`ReadAhead::run`] reads on the thread, and the app then runs
 //! the command as it would have with the read [`Read::placed`] in the session: the command takes
 //! it instead of reading again, so what it adds, says, logs and puts in Undo is the same as when
@@ -62,6 +63,8 @@ pub fn read_ahead(s: &Session, command: &str, p: &Value) -> Option<ReadAhead> {
     match command {
         "layer.addData" => super::layer::add_data_ahead(p),
         "layer.loadAll" => super::layer::load_all_ahead(s, p),
+        #[cfg(not(target_arch = "wasm32"))]
+        "model.run" => Some(super::workflows::model_ahead(s, p)),
         _ => None,
     }
 }

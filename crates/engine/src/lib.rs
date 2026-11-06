@@ -753,6 +753,18 @@ pub struct Session {
     /// A read the app made on a thread of its own for the command it runs next, which takes it
     /// instead of reading again ([`cmd::reads`]).
     pub(crate) read_ahead: Option<cmd::reads::Read>,
+    /// A model's tools run ahead on a copy of the session, which a model's run here takes
+    /// ([`cmd::gp::Ahead::Taking`]), or which that copy records ([`cmd::gp::Ahead::Recording`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) tools_ahead: Option<cmd::gp::Ahead>,
+    /// Where the requests a copy of the session makes for a model's run ahead go
+    /// ([`cmd::workflows::model_ahead`]): the session's own Diagnostics, as when they're made
+    /// there. Its notices stay its own: the run there says them.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) requests_into: Option<rustgis_data::diagnostics::Capture>,
+    /// The tools run ahead that a model's run took, for the tests.
+    #[cfg(test)]
+    pub(crate) tools_taken: usize,
     /// Set where a person at a terminal waits on a command (`rustgis-cli run` with stdin and
     /// stderr a terminal), who can stop it with Ctrl-C: tools and rasters take no work cap
     /// ([`rustgis_analysis::control::Control::stoppable`]). A program that calls it (an agent, a
@@ -1015,6 +1027,12 @@ impl Session {
             zarr_off_frame: false,
             zarr_seen: 0,
             read_ahead: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            tools_ahead: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            requests_into: None,
+            #[cfg(test)]
+            tools_taken: 0,
             stoppable: false,
         };
         for text in label_notices {
@@ -1194,6 +1212,9 @@ impl Session {
     /// panic restores it. A command run by itself (not as a part of another) that changes the
     /// project, or reaches a file or a service, goes into the session's log (#797).
     pub fn run(&mut self, id: &str, params: &Value) -> CmdResult {
+        #[cfg(not(target_arch = "wasm32"))]
+        let _diagnostic_scope = self.requests_into.as_ref().map_or_else(|| self.diagnostics.enter(), |c| c.enter());
+        #[cfg(target_arch = "wasm32")]
         let _diagnostic_scope = self.diagnostics.enter();
         let source = self.registry.get(id).map(|spec| spec.id).or_else(|| id.starts_with(rustgis_plugins::PREFIX).then_some("Plugin"));
         // Restored on every path, including panics outside `guarded`, so a later notice is not
