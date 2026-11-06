@@ -44,6 +44,12 @@ double-clicked in the Browser: **Choose Layers** lists them, all ticked, with **
 **Select None** and a filter for a long list. Turn **Ask Which Layers to Add** off in the Add Data
 menu to add every layer, as before. Scripts pick one with `layer.addData`'s `"layer"`;
 `info.fileLayers` lists them.
+A KML, KMZ, GPX, OpenStreetMap, DXF, LandXML or GeoRSS file, a zip of Shapefiles or a File
+Geodatabase that RustGIS reads itself, with layers of several geometry types, adds its polygons
+first and its points last, so its points are drawn on top, and a KML's ground overlays go under
+them. A name given goes to the first map layer added, the bottom one (a standalone table only gets
+it when the file has no map layer). A GeoPackage adds its tables in name order, and a file read
+through GDAL keeps its layers in the file's order and orders only the types within each layer.
 On the desktop, **Home › Add › Add Data › Add Folder…** connects a folder to the Browser; the web
 app does not offer folder connections.
 On the desktop, a file Add Data reads whole (a GeoTIFF or another raster, one GDAL converts, a
@@ -121,11 +127,11 @@ FlatGeobuf with a spatial index in WGS 84 (GDAL reprojects it), kept in the cach
 (`~/.cache/rustgis/gdal` on Linux, `~/Library/Caches/RustGIS/gdal` on macOS,
 `%LOCALAPPDATA%\RustGIS\cache\gdal` on Windows, or `RUSTGIS_GDAL_CACHE`). Adding the file again
 reuses the conversion until the file changes, and large layers stream like any large FlatGeobuf
-(below). Every layer of the file is added; a layer mixing geometry types is
-added as one layer per type. Curves become straight segments, and 3D surfaces (an Esri
-multipatch, such as the buildings of swissBUILDINGS3D, is read as a TIN) become flat
-polygons, one part per face, without their heights. Projects remember the original file and
-convert it again if the cached copy is gone.
+(below). Every layer of the file is added; a layer mixing geometry types is added as one layer
+per type, its points on top and its polygons at the bottom. Curves become straight segments, and
+3D surfaces (an Esri multipatch, such as the buildings of swissBUILDINGS3D, is read as a TIN)
+become flat polygons, one part per face, without their heights. Projects remember the original
+file and convert it again if the cached copy is gone.
 
 ## SQL queries and DuckDB databases
 
@@ -161,7 +167,8 @@ WHERE bbox.xmin BETWEEN -83.95 AND -83.89 AND bbox.ymin BETWEEN 35.94 AND 35.98
 The first geometry column becomes the layer's geometry; other columns become its attributes (types
 RustGIS doesn't read, such as dates and lists, as text). A geometry that says its coordinate system
 is converted to longitude/latitude; give `"crs"` (such as `EPSG:2263`) for one that doesn't. A
-result mixing geometry types becomes a layer per type, and rows without a geometry are left out.
+result mixing geometry types becomes a layer per type (points on top, polygons at the bottom), and
+rows without a geometry are left out.
 `"database"` opens a DuckDB database (read only) so the query names its tables plainly; the
 database is trusted like the query, since its views run as part of it.
 
@@ -193,9 +200,10 @@ so only those cross the network. Smaller tables are loaded whole, so they can be
 server converts geometry to longitude/latitude (`ST_Transform`, so every coordinate system in its
 `spatial_ref_sys` works) and curves to lines; give `"crs"` (such as `EPSG:2263`) for a column whose
 geometry doesn't say its coordinate system. A column of mixed geometry types becomes a layer per
-type, and empty tables (such as the TIGER geocoder's) are left out. Features keep their ids between
-views: the table's integer primary key, else the row's place in the table (the rows of a view or
-a partitioned table without a key are numbered as read, so theirs can change between views).
+type, points on top, and empty tables (such as the TIGER geocoder's) are left out. Features keep
+their ids between views: the table's integer primary key, else the row's place in the table (the
+rows of a view or a partitioned table without a key are numbered as read, so theirs can change
+between views).
 
 Passwords are never written to the project. By default, an entered password lasts until
 RustGIS closes. For a named desktop connection, **Remember on this computer** is an unchecked
@@ -242,7 +250,7 @@ back to it. In **Home › Add › Add Data › Database…**, give a PostgreSQL 
   password, `PGPASSWORD` or libpq's password file serve.
 - The table (`pg.addLayer`; `pg.tables` lists those with a geometry or geography column) loads
   whole, up to 100,000 rows a layer, in the order of its key.
-  A table whose geometries are of several types loads each type as its own layer, each up to that many.
+  A table whose geometries are of several types loads each type as its own layer (points on top), each up to that many.
   A **condition** (an SQL expression on its columns, such as `population > 10000`) loads only the
   rows it keeps. The layer is an ordinary layer in memory, so every editing tool works on it.
 
@@ -382,8 +390,9 @@ a capped view is an evenly spread sample numbered on the server; smaller ones ar
 RustGIS converts the geometry to longitude/latitude itself (MariaDB has no `ST_Transform`), from
 the column's SRID (MySQL's per-column SRID, MariaDB's `REF_SYSTEM_ID`) or else its rows'; give
 `"crs"` (such as `EPSG:2263`) for a column whose SRID is 0. A `GEOMETRY` column of mixed types
-becomes a layer per type. Features keep their ids between views from the table's integer primary
-key; a table without one has its rows numbered as read, so theirs can change between views.
+becomes a layer per type, points on top. Features keep their ids between views from the table's
+integer primary key; a table without one has its rows numbered as read, so theirs can change
+between views.
 
 Passwords are never written to the project and last for the session unless you opt in with
 **Remember on this computer** for a named desktop connection. The same exact-address reconnect,

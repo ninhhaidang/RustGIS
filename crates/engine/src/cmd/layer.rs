@@ -1587,27 +1587,46 @@ pub(crate) fn add_layers(s: &mut Session, p: &Value, file_name: &str, bytes: &[u
 }
 
 /// Adds the layers a file gave and its ground overlays: a layer that can't be added is skipped
-/// and said, the others are still added. A name given goes to the first layer added.
+/// and said, the others are still added. A name given goes to the first layer added. The
+/// overlays go in first and the layers bottom first ([`stack_rank`]), so no image or polygon
+/// covers the file's points.
 fn add_reads(
     s: &mut Session,
     p: &Value,
     file_name: &str,
-    reads: Vec<rustgis_data::io::LayerRead>,
+    mut reads: Vec<rustgis_data::io::LayerRead>,
     overlays: Vec<(String, rustgis_data::raster::Raster)>,
     zoom: Option<bool>,
 ) -> CmdResult {
     let mut added = Vec::new();
     let mut failed = Vec::new();
+    // Listed after the layers in the result, as before they went in first. On an empty map the
+    // first layer added is what is framed, as before, not the first image.
+    let mut images = Vec::new();
+    let frame_first = zoom.is_none() && !reads.is_empty() && super::map_is_empty(s);
+    let image_zoom = if frame_first { Some(false) } else { zoom };
+    let mut read_zoom = if frame_first { Some(true) } else { zoom };
+    for (name, raster) in overlays {
+        match super::raster::add_overlay(s, &name, raster, image_zoom) {
+            Ok(r) => images.push(r),
+            Err(e) => failed.push(format!("{name}: {e}")),
+        }
+    }
+    reads.sort_by_key(|r| stack_rank(r.dataset.geometry_type));
     let mut q = p.clone();
     for read in reads {
         let name = read.dataset.name.clone();
         let styles = read.styles;
         // A layer that can't be added is skipped and said; the others are still added. A name
         // given goes to the first layer actually added.
-        match add_read(s, &q, (read.dataset, read.report), zoom) {
+        match add_read(s, &q, (read.dataset, read.report), read_zoom) {
             Ok(r) => {
                 if let Some(id) = r.get("layer").and_then(Value::as_u64).and_then(|i| u32::try_from(i).ok()) {
                     apply_styles(s, id, &styles);
+                }
+                // A standalone table isn't drawn, so it frames nothing.
+                if r.get("layer").is_some() {
+                    read_zoom = zoom;
                 }
                 added.push(r);
                 if let Some(o) = q.as_object_mut() {
@@ -1617,12 +1636,13 @@ fn add_reads(
             Err(e) => failed.push(format!("{name}: {e}")),
         }
     }
-    for (name, raster) in overlays {
-        match super::raster::add_overlay(s, &name, raster, zoom) {
-            Ok(r) => added.push(r),
-            Err(e) => failed.push(format!("{name}: {e}")),
-        }
+    // No layer was added to frame the empty map: the first image frames it, as it did before.
+    if read_zoom == Some(true)
+        && let Some(first) = images.first()
+    {
+        zoom_to_added(s, first);
     }
+    added.extend(images);
     if added.is_empty() {
         return Err(failed.join("; "));
     }
@@ -2121,21 +2141,57 @@ fn add_gdal(s: &mut Session, p: &Value, path: &str) -> CmdResult {
         s.notify(format!("{path}: {f}"), true);
     }
     let original = std::path::absolute(path).map(|p| p.display().to_string()).unwrap_or_else(|_| path.to_string());
-    let parts = converted
+    let parts = gdal_parts(converted, &original, crs);
+    add_converted(s, p, path, &original, parts)
+}
+
+/// GDAL's conversions of the file `original` as the layers to add: the layers in the file's order,
+/// each layer split by geometry type with its parts bottom first ([`bottom_first`]). A layer of
+/// one type (no family) is a part alone, so the sort leaves it as it is.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn gdal_parts(mut converted: Vec<rustgis_data::source::gdal::Converted>, original: &str, crs: Option<&str>) -> Vec<Converted> {
+    for layer in converted.chunk_by_mut(|a, b| a.layer == b.layer) {
+        layer.sort_by_key(|c| c.family.map(bottom_first));
+    }
+    converted
         .into_iter()
         .map(|c| Converted {
             path: c.path,
             name: c.name,
             unprojected: c.unprojected,
             origin: ConvertedOrigin::Gdal(rustgis_map::source::GdalOrigin {
-                path: original.clone(),
+                path: original.to_string(),
                 layer: c.layer,
                 family: c.family,
                 crs: crs.map(str::to_string),
             }),
         })
-        .collect();
-    add_converted(s, p, path, &original, parts)
+        .collect()
+}
+
+/// Where a layer of this geometry type goes among the layers one file or source gives: polygons
+/// first, then lines, then points, and standalone tables (which aren't drawn) last, so a name
+/// given goes to a map layer. Each new layer goes on top, so the points end on top and none of
+/// them hides under the source's own polygons. Every command that adds a source as several layers
+/// adds them in this order (#1488).
+pub(crate) fn stack_rank(geometry: GeometryType) -> u8 {
+    match geometry {
+        GeometryType::Polygon => 0,
+        GeometryType::Polyline => 1,
+        GeometryType::Point => 2,
+        GeometryType::None => 3,
+    }
+}
+
+/// [`stack_rank`] for one part of a source split by geometry type.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn bottom_first(family: rustgis_data::source::Family) -> u8 {
+    use rustgis_data::source::Family;
+    stack_rank(match family {
+        Family::Polygons => GeometryType::Polygon,
+        Family::Lines => GeometryType::Polyline,
+        Family::Points => GeometryType::Point,
+    })
 }
 
 /// The database a command names in `database`, with the `password` given remembered for the
@@ -2408,7 +2464,7 @@ fn add_live(s: &mut Session, p: &Value, db: &rustgis_data::source::duckdb::Datab
             s.notify(format!("{label}: {}: {e}", t.label()), true);
             Ok(())
         };
-        let families = match live.families(&t) {
+        let mut families = match live.families(&t) {
             Ok(f) => f,
             Err(e) => {
                 fail(s, e.to_string())?;
@@ -2416,6 +2472,7 @@ fn add_live(s: &mut Session, p: &Value, db: &rustgis_data::source::duckdb::Datab
             }
         };
         let mixed = families.len() > 1;
+        families.sort_by_key(|f| bottom_first(*f));
         // A table is empty when none of its families has rows, not when they failed.
         let (mut added, mut failed) = (false, false);
         for family in families {
@@ -2553,18 +2610,19 @@ fn add_sql(s: &mut Session, p: &Value) -> CmdResult {
 }
 
 /// The layers of a DuckDB result: named `name`, or `name (points)` and so on when it mixes
-/// geometry types.
+/// geometry types, then bottom first ([`bottom_first`]).
 #[cfg(not(target_arch = "wasm32"))]
-fn duckdb_parts(
+pub(crate) fn duckdb_parts(
     s: &mut Session,
     name: &str,
-    out: rustgis_data::source::duckdb::Output,
+    mut out: rustgis_data::source::duckdb::Output,
     origin: impl Fn(rustgis_data::source::Family) -> rustgis_map::source::DuckdbOrigin,
 ) -> Vec<Converted> {
     if out.skipped > 0 {
         s.notify(format!("{name}: {} rows without a geometry were left out", out.skipped), false);
     }
     let mixed = out.parts.len() > 1;
+    out.parts.sort_by_key(|p| bottom_first(p.family));
     out.parts
         .into_iter()
         .map(|part| Converted {
@@ -2580,7 +2638,7 @@ fn duckdb_parts(
 
 /// A layer another program (GDAL, DuckDB) converted into the cache.
 #[cfg(not(target_arch = "wasm32"))]
-struct Converted {
+pub(crate) struct Converted {
     path: std::path::PathBuf,
     name: String,
     /// Its coordinates are the source's own, in a coordinate system it doesn't say.
@@ -2598,7 +2656,7 @@ enum ConvertedOrigin {
 /// from so a project can convert them again. `label` names the source in messages, `original` is
 /// the layers' source.
 #[cfg(not(target_arch = "wasm32"))]
-fn add_converted(s: &mut Session, p: &Value, label: &str, original: &str, converted: Vec<Converted>) -> CmdResult {
+pub(crate) fn add_converted(s: &mut Session, p: &Value, label: &str, original: &str, converted: Vec<Converted>) -> CmdResult {
     let empty_before = super::map_is_empty(s);
     let single = converted.len() == 1;
     let (mut ids, mut features, mut streamed) = (Vec::new(), 0u64, false);

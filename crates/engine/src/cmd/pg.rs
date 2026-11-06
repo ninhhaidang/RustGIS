@@ -355,7 +355,8 @@ fn add_layer(s: &mut Session, p: &Value) -> CmdResult {
         let limit = f(p, "limit").map_or(postgis::MAX_EDITABLE, |n| n.clamp(1.0, postgis::MAX_EDITABLE as f64) as usize);
         let conn = postgis::connect(&dsn, true).map_err(err)?;
         let table = postgis::find_table(&conn, name).map_err(err)?;
-        let families = postgis::families(&conn, &table).map_err(err)?;
+        let mut families = postgis::families(&conn, &table).map_err(err)?;
+        families.sort_by_key(|f| super::layer::bottom_first(*f));
         if families.is_empty() {
             return Err(format!("{label}: {}: the table has no rows with a geometry", table.label()));
         }
