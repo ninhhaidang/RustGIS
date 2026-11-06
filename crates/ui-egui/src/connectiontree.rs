@@ -820,6 +820,7 @@ mod tests {
 
     #[test]
     fn a_service_dialog_download_keeps_the_browsed_connection_not_the_current_selection() {
+        let _turn = crate::fetching::turn();
         let base = serve(|_| (200, br#"{"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":[1,2]}}"#.to_vec()));
         let mut h = harness();
         let app = h.state_mut();
@@ -837,6 +838,7 @@ mod tests {
 
     #[test]
     fn url_downloads_use_the_explicit_basic_or_header_connection_and_record_it() {
+        let _turn = crate::fetching::turn();
         for basic in [false, true] {
             let base = serve(move |head| {
                 let head = head.to_ascii_lowercase();
@@ -1014,6 +1016,7 @@ mod tests {
 
     #[test]
     fn a_foreign_followup_does_not_adopt_that_origins_saved_login() {
+        let _turn = crate::fetching::turn();
         let mut app = RustGisApp::with_sample();
         let foreign = "https://foreign-ui-followup.invalid/points.geojson";
         let c = app

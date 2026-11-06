@@ -153,7 +153,8 @@ fn add(s: &mut Session, p: &Value) -> CmdResult {
             if !crate::render::rustgis_tiles::cog::probe_blocking(file)? {
                 return Err(format!("{file}: not a cloud-optimised GeoTIFF"));
             }
-            super::layer::add_cog(s, &json!({"name": name}), &crate::render::rustgis_tiles::cog::with_look(file, &look))
+            let look = crate::render::rustgis_tiles::cog::with_look(file, &look);
+            super::layer::add_cog(s, &json!({"name": name}), &look, cfg!(not(target_arch = "wasm32")))
         }
         "earth-index" => add_points(s, p, name),
         _ => add_tessera(s, p, d, name),

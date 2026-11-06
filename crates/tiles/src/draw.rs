@@ -1285,6 +1285,7 @@ pub(crate) mod tests {
 
     #[test]
     fn picks_the_vector_tile_features_under_a_point() {
+        let _turn = crate::cache::turn();
         let tile = crate::mvt::encode(&crate::mvt::Tile {
             layers: vec![
                 mvt_layer("parks", GeomKind::Polygon, &[[1024.0, 1024.0], [3072.0, 1024.0], [3072.0, 3072.0], [1024.0, 3072.0]], "Central"),
@@ -1413,6 +1414,7 @@ pub(crate) mod tests {
 
     #[test]
     fn picks_a_feature_across_a_tile_edge() {
+        let _turn = crate::cache::turn();
         // Zoom 1: a point at the right edge of the western tile (1/0/0); the click is just over
         // the edge, in the eastern one (1/1/0).
         let tile = crate::mvt::encode(&crate::mvt::Tile { layers: vec![mvt_layer("pois", GeomKind::Point, &[[4094.0, 2048.0]], "Edge")] });

@@ -1309,6 +1309,7 @@ mod tests {
 
     #[test]
     fn invalid_service_replacement_preserves_session_login_and_definition() {
+        let _turn = crate::fetching::turn();
         let mut app = RustGisApp::with_sample();
         let c = app
             .run(

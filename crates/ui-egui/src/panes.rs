@@ -7191,6 +7191,7 @@ mod tests {
     fn a_vector_archives_source_layers_open_under_it() {
         use egui_kittest::kittest::{NodeT, Queryable};
         use rustgis_engine::render::rustgis_tiles::{mvt, pmtiles};
+        let _turn = crate::fetching::turn();
         let new = pmtiles::NewArchive {
             tile_type: pmtiles::TileType::Mvt,
             gzipped_tiles: false,

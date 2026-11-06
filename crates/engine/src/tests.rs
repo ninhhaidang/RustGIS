@@ -4160,6 +4160,10 @@ fn a_removed_layers_locked_labels_go_with_it() {
     assert_eq!(locked_layers(&s), (vec![a, b], vec![a, b]));
     s.run("edit.redo", &Value::Null).unwrap();
     assert_eq!(locked_layers(&s), (vec![b], vec![b]));
+    // The last locked layer gone, the lock holds, with nothing in it.
+    s.run("layer.remove", &json!({"layer": b})).unwrap();
+    assert!(s.map().label_lock.as_ref().is_some_and(Vec::is_empty));
+    assert!(s.map().label_lock_line_anchors.is_empty());
 }
 
 /// A deleted feature's lock entry and line anchor go with it, not those of another layer's feature
@@ -4174,6 +4178,36 @@ fn a_deleted_feature_leaves_another_layers_lock_alone() {
     assert_eq!(locked_layers(&s), (vec![a, b], vec![a, b]));
     s.run("edit.redo", &Value::Null).unwrap();
     assert_eq!(locked_layers(&s), (vec![b], vec![b]));
+}
+
+/// Deleting one of a layer's locked features keeps the lock entry and line anchor of the other.
+#[test]
+fn a_deleted_feature_leaves_its_neighbours_lock_alone() {
+    use rustgis_data::{Dataset, Field, FieldType, Geometry, GeometryType, Value as V};
+    let mut s = Session::new(Project::default());
+    let mut d = Dataset::new("A", GeometryType::Point, vec![Field::new("name", FieldType::Text)]);
+    for name in ["one", "two"] {
+        d.push(Some(Geometry::Point(rustgis_geom::Coord::new(0.0, 0.0))), vec![V::Text(name.into())]);
+    }
+    let a = s.map_mut().add_dataset(d);
+    let keys = [(a, 1, 0, 0), (a, 2, 0, 0)];
+    s.map_mut().label_lock = Some(keys.map(|k| (k, Default::default())).to_vec());
+    s.map_mut().label_lock_line_anchors = keys.map(|k| (k, Default::default())).into_iter().collect();
+    // The feature ids the lock and the anchors name, each sorted.
+    let ids = |s: &Session| {
+        let mut lock: Vec<u64> = s.map().label_lock.iter().flatten().map(|((_, f, ..), _)| *f).collect();
+        let mut anchors: Vec<u64> = s.map().label_lock_line_anchors.keys().map(|(_, f, ..)| *f).collect();
+        lock.sort_unstable();
+        anchors.sort_unstable();
+        (lock, anchors)
+    };
+    s.map_mut().layer_mut(a).unwrap().selection = vec![0];
+    s.run("edit.delete", &Value::Null).unwrap();
+    assert_eq!(ids(&s), (vec![2], vec![2]));
+    s.run("edit.undo", &Value::Null).unwrap();
+    assert_eq!(ids(&s), (vec![1, 2], vec![1, 2]));
+    s.run("edit.redo", &Value::Null).unwrap();
+    assert_eq!(ids(&s), (vec![2], vec![2]));
 }
 
 /// A streamed layer holds only the window in view: a lock's entry for a feature outside it stays
@@ -15869,6 +15903,56 @@ fn a_trend_over_a_stac_collection() {
         assert!(e.contains(said), "{bad}: {e}");
     }
     assert_eq!(s.map().layers.len(), layers);
+}
+
+/// A plugin's command in the app (`leave_downloads`) runs on the frame: a dated GeoTIFF's first
+/// file isn't waited for, and the answer says the map wasn't moved to it.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_plugins_dated_cog_is_added_without_waiting() {
+    // A server that takes the connection and never answers: a probe would wait its minute.
+    let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", server.local_addr().unwrap());
+    let mut s = Session::new(Project::default());
+    let start = std::time::Instant::now();
+    let r =
+        s.run_leaving_downloads("layer.addUrl", &json!({"url": format!("{base}/{{date:YYYY}}.tif"), "start": 2020, "end": 2021})).unwrap();
+    assert!(start.elapsed() < std::time::Duration::from_secs(10), "waited {:?}", start.elapsed());
+    assert_eq!(r["inPlace"], true, "{r}");
+    assert!(r["warning"].as_str().is_some_and(|w| w.contains("wasn't moved")), "{r}");
+    drop(server);
+}
+
+/// A GeoTIFF whose header was just read is framed even if the cache forgot it since (a login
+/// ended), and one that can't be read again says why the map wasn't moved to it.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_probed_cog_is_framed_after_the_cache_forgets_it() {
+    use crate::render::rustgis_tiles::{cache, cog};
+    let (base, _) = serve_ranges(rustgis_data::raster::cog::example(512, 128));
+    let url = format!("{base}/scene.tif");
+    assert_eq!(cog::probe_blocking(&url), Ok(true));
+    cache::forget(&url);
+    let mut s = Session::new(Project::default());
+    let r = crate::cmd::layer::add_cog(&mut s, &json!({}), &url, true).unwrap();
+    assert!(r["bounds"].is_array(), "{r}");
+    assert!(r.get("warning").is_none(), "{r}");
+    // Nothing answers at this address any more.
+    let gone = {
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        format!("http://{}/gone.tif", server.local_addr().unwrap())
+    };
+    let r = crate::cmd::layer::add_cog(&mut s, &json!({}), &gone, true).unwrap();
+    let warning = r["warning"].as_str().unwrap_or_default();
+    assert!(warning.contains("couldn't be read (") && warning.contains("wasn't moved"), "{r}");
+    // Not waited for, its failure (recorded, not yet tried again) is said too. Another test's
+    // login ending forgets the record, so it is made again for each try.
+    let said = (0..3).any(|_| {
+        let _ = crate::cmd::layer::add_cog(&mut s, &json!({}), &gone, true);
+        let r = crate::cmd::layer::add_cog(&mut s, &json!({}), &gone, false).unwrap();
+        r["warning"].as_str().is_some_and(|w| w.contains("couldn't be read (") && w.contains("wasn't moved"))
+    });
+    assert!(said, "a recorded failure went unsaid");
 }
 
 /// A cloud-optimised GeoTIFF by its address is read in place: its header, then only the tiles a

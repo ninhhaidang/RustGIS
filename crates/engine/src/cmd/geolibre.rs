@@ -369,7 +369,7 @@ fn add_layer(s: &mut Session, r: &Value, dir: Option<&str>, report: &mut Report,
             return Ok(Added::Feature(id));
         }
         if kind == "cog" && remote {
-            super::layer::add_cog(s, &q, &address)?
+            super::layer::add_cog(s, &q, &address, false)?
         } else if kind == "zarr" {
             if let Some(v) = src.get("variable") {
                 q["variable"] = v.clone();

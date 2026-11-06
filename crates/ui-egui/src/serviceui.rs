@@ -549,6 +549,7 @@ mod tests {
     /// address comes bound to the connection its layers record).
     #[test]
     fn a_refresh_reads_through_the_connection_its_layers_record() {
+        let _turn = crate::fetching::turn();
         let mut app = RustGisApp::with_sample();
         let url = "https://127.0.0.1:9/collections";
         let new = |app: &mut RustGisApp, name: &str, key: &str| {
