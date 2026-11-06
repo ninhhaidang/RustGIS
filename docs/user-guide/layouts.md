@@ -205,6 +205,11 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
   rounded corners (`"radius"`, in mm), and a line's colour, width, arrowheads and angle. From a
   command:
   `layout.addElement={"kind":"line","dir":"falling","color":"#C0392B","width":2}`.
+  A colour goes only to the elements that draw it, and is refused for the others. `color` is a
+  text's, a line's, an arrow's or a scale bar's, and sets a shape's outline unless `outline` is
+  also given; when adding, it is also an extent indicator's or a grid's. `fill` is a north
+  arrow's, a shape's or a scale bar's, and `outline` a north arrow's or a shape's. A legend,
+  picture, table and the like take none.
 - **Arrows**: **Arrow** adds an arrow pointing right. Drag the round handle above a selected arrow
   or line to turn it about its centre: it snaps to level, upright and diagonal within 3°, and
   **Shift** turns it in 15° steps. **Angle** in its properties sets it exactly (0° points right,
