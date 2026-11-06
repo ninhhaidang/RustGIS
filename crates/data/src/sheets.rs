@@ -26,8 +26,20 @@ pub fn is_sheet_name(name: &str) -> bool {
 /// The sheets of a workbook, in order.
 pub fn sheet_names(bytes: &[u8]) -> Result<Vec<String>> {
     check_expansion(bytes)?;
-    let wb = open_workbook_auto_from_rs(Cursor::new(bytes)).map_err(|e| DataError::Format(format!("spreadsheet: {e}")))?;
-    Ok(wb.sheet_names())
+    check_compound(bytes)?;
+    guarded(|| {
+        let wb = open_workbook_auto_from_rs(Cursor::new(bytes)).map_err(|e| DataError::Format(format!("spreadsheet: {e}")))?;
+        Ok(wb.sheet_names())
+    })
+}
+
+/// Runs calamine on a workbook, turning a panic into an error. calamine indexes some of a file's
+/// tables without checking them (an `.xls` sector chain that points past its allocation table
+/// panics, even in 0.38), so a damaged file is refused rather than taking the app down. In the
+/// browser, where a panic can't be caught, this guards nothing.
+fn guarded<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f))
+        .unwrap_or_else(|_| Err(DataError::Format("spreadsheet: the file is damaged and can't be read".into())))
 }
 
 /// Reads one sheet of a workbook (`sheet` by name, without regard to case; the first when `None`),
@@ -61,6 +73,11 @@ struct Grid {
 
 fn grid(bytes: &[u8], sheet: Option<&str>) -> Result<Grid> {
     check_expansion(bytes)?;
+    check_compound(bytes)?;
+    guarded(|| grid_unguarded(bytes, sheet))
+}
+
+fn grid_unguarded(bytes: &[u8], sheet: Option<&str>) -> Result<Grid> {
     let mut wb = open_workbook_auto_from_rs(Cursor::new(bytes)).map_err(|e| DataError::Format(format!("spreadsheet: {e}")))?;
     let names = wb.sheet_names();
     let pick = match sheet.map(str::trim).filter(|s| !s.is_empty()) {
@@ -105,6 +122,191 @@ fn check_expansion(bytes: &[u8]) -> Result<()> {
     crate::zip::read_matching_within(bytes, |n| n.ends_with(".xml") || n.ends_with(".bin"), crate::zip::MAX_TOTAL)
         .map(|_| ())
         .map_err(|e| DataError::Format(format!("spreadsheet: {e}")))
+}
+
+/// The signature of a compound file (`.xls`).
+const COMPOUND: &[u8] = b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1";
+/// Sector ids from here up are markers, not sectors.
+const RESERVED_SECTORS: u32 = 0xFFFF_FFFA;
+const DIFAT_SECTOR: u32 = 0xFFFF_FFFC;
+const END_OF_CHAIN: u32 = 0xFFFF_FFFE;
+
+/// Refuses a compound file (`.xls`) whose sector tables calamine can't walk safely. calamine
+/// follows each chain of sectors through an allocation table without checking it: a chain that
+/// loops runs forever, growing memory as it goes, and a chain that starts or links past the table
+/// panics (still so in calamine 0.38). The tables are rebuilt here as calamine builds them (the
+/// FAT, the directory, the mini FAT), and every chain calamine can start must end without looping
+/// or leaving its table. Other files pass unchecked.
+fn check_compound(bytes: &[u8]) -> Result<()> {
+    if !bytes.starts_with(COMPOUND) {
+        return Ok(());
+    }
+    let u16_at = |at: usize| bytes.get(at..at + 2).map_or(0, |b| u16::from_le_bytes([b[0], b[1]]));
+    let u32_at = |at: usize| bytes.get(at..at + 4).map_or(END_OF_CHAIN, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+    let size: usize = match u16_at(30) {
+        0x09 => 512,
+        0x0C => 4096,
+        // calamine refuses the rest itself.
+        _ => return Ok(()),
+    };
+    // The sectors follow the header, which takes one sector; calamine reads a sector cut short by
+    // the end of the file as far as it goes.
+    let body = bytes.get(size..).unwrap_or(&[]);
+    let sector = |id: u32| -> &[u8] {
+        let start = (id as usize).saturating_mul(size);
+        body.get(start..start.saturating_add(size).min(body.len())).unwrap_or(&[])
+    };
+    let max_sector = body.len() / size;
+    // The FAT's sectors: 109 listed in the header, more in a chain of DIFAT sectors whose last
+    // entry links to the next (calamine takes the link off the end of the list it has gathered).
+    let mut difat = words(bytes.get(76..512).unwrap_or(&[]));
+    let mut next = u32_at(68);
+    let mut hops = 0usize;
+    while next < RESERVED_SECTORS {
+        hops += 1;
+        if hops > max_sector + 1 {
+            return damaged("its DIFAT chain loops");
+        }
+        let more = sector(next);
+        if more.is_empty() {
+            // calamine would take the last FAT sector gathered for the next link.
+            return damaged("a DIFAT sector is past the end of the file");
+        }
+        difat.extend(words(more));
+        next = difat.pop().unwrap_or(END_OF_CHAIN);
+    }
+    let fat_sectors: Vec<u32> = difat.into_iter().filter(|id| *id < DIFAT_SECTOR).collect();
+    // A file can't hold more FAT sectors than it has sectors.
+    if fat_sectors.len() > max_sector + 1 {
+        return damaged("its allocation table is larger than the file");
+    }
+    let fat: Vec<u32> = fat_sectors.iter().flat_map(|id| words(sector(*id))).collect();
+    // A chain may reach the sectors the file holds and the empty one just after them: calamine
+    // reads a sector into a buffer of whole sectors and slices it from the sector's start to what
+    // it could read, which panics for a sector two or more past the data.
+    let fat_limit = fat.len().min(body.len().div_ceil(size) + 1);
+    check_chains(&fat, fat_limit)?;
+    // The directory, one 128-byte entry per stream; its chain starts in the header.
+    let dir_start = u32_at(48);
+    check_head(dir_start, fat_limit)?;
+    let dir: Vec<u8> = chain(dir_start, &fat).flat_map(sector).copied().collect();
+    let (entries, _) = dir.as_chunks::<128>();
+    // Each stream's length: four bytes with 512-byte sectors, eight with 4096-byte ones, which
+    // calamine expects to fit a `usize` (it panics in the browser on one past 4 GiB).
+    let mut streams = Vec::new();
+    for e in entries {
+        let at = |i: usize| e.get(i..i + 4).map_or(0, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+        let len = if size == 512 { u64::from(at(120)) } else { u64::from(at(120)) | (u64::from(at(124)) << 32) };
+        let Ok(len) = usize::try_from(len) else {
+            return damaged("a stream is longer than this system can address");
+        };
+        // The name as calamine reads it: UTF-16 up to the first NUL.
+        let units: Vec<u16> = e.get(..64).unwrap_or(&[]).as_chunks::<2>().0.iter().map(|u| u16::from_le_bytes(*u)).collect();
+        let name: String = char::decode_utf16(units).map(|c| c.unwrap_or(char::REPLACEMENT_CHARACTER)).take_while(|c| *c != '\0').collect();
+        streams.push((name, at(116), len));
+    }
+    // Small streams sit in the mini stream (the root entry's chain), laid out by the mini FAT.
+    let mini_fat_len = u32_at(64);
+    let mini_limit = if mini_fat_len > 0 {
+        let mini_start = u32_at(60);
+        check_head(mini_start, fat_limit)?;
+        let mini_fat = words(
+            &chain(mini_start, &fat).flat_map(sector).copied().take((mini_fat_len as usize).saturating_mul(size)).collect::<Vec<u8>>(),
+        );
+        // The mini stream: the root entry's chain, as far as its length (or the file) goes, in
+        // 64-byte mini sectors. A mini sector must start within it, for the same reason.
+        let (root, root_len) = streams.first().map_or((END_OF_CHAIN, 0), |(_, s, l)| (*s, *l));
+        check_head(root, fat_limit)?;
+        let mut mini_len = 0usize;
+        for id in chain(root, &fat) {
+            if mini_len >= root_len {
+                break;
+            }
+            mini_len += sector(id).len();
+        }
+        let mini_len = mini_len.min(root_len);
+        let mini_limit = mini_fat.len().min(mini_len / 64 + 1);
+        check_chains(&mini_fat, mini_limit)?;
+        mini_limit
+    } else {
+        0
+    };
+    // calamine reads these streams, each the first entry by its name (without regard to case),
+    // through the mini FAT when it is shorter than 4096 bytes. Other entries, unused ones with
+    // junk in them among them, are never read.
+    for want in ["Workbook", "Book", "\u{5}SummaryInformation", "\u{5}DocumentSummaryInformation"] {
+        if let Some((_, start, len)) = streams.iter().find(|(name, ..)| name.eq_ignore_ascii_case(want))
+            && *len > 0
+        {
+            check_head(*start, if *len < 4096 { mini_limit } else { fat_limit })?;
+        }
+    }
+    Ok(())
+}
+
+/// A sector's (or a table's) little-endian 32-bit words; a partial word at the end is dropped, as
+/// calamine drops it.
+fn words(b: &[u8]) -> Vec<u32> {
+    b.as_chunks::<4>().0.iter().map(|w| u32::from_le_bytes(*w)).collect()
+}
+
+fn damaged<T>(what: &str) -> Result<T> {
+    Err(DataError::Format(format!("spreadsheet: the .xls file is damaged ({what})")))
+}
+
+/// The sectors of the chain from `start`, in a table [`check_chains`] has passed.
+fn chain(start: u32, table: &[u32]) -> impl Iterator<Item = u32> + '_ {
+    std::iter::successors(Some(start).filter(|s| *s != END_OF_CHAIN), move |at| {
+        table.get(*at as usize).copied().filter(|l| *l != END_OF_CHAIN && (*l as usize) < table.len())
+    })
+}
+
+/// A chain must start at an end of chain or below `limit` (inside its table and the data it lays
+/// out): calamine reads the first sector, then looks up its link without checking it.
+fn check_head(start: u32, limit: usize) -> Result<()> {
+    if start == END_OF_CHAIN || (start as usize) < limit { Ok(()) } else { damaged("a chain of sectors starts past its allocation table") }
+}
+
+/// Every link in an allocation table must lead, without looping, to an end of chain, through
+/// sectors below `limit` (the table's length, or what its data holds when less). Entries from
+/// `limit` on are for sectors that aren't there: no chain may reach them.
+fn check_chains(table: &[u32], limit: usize) -> Result<()> {
+    // 0: not seen, 1: on the chain being walked, 2: known to end well.
+    let mut state = vec![0u8; table.len()];
+    let mut path = Vec::new();
+    for start in 0..limit.min(table.len()) {
+        // A free or special sector isn't a link; a chain that reaches one fails below.
+        if table.get(start).is_some_and(|l| *l >= RESERVED_SECTORS && *l != END_OF_CHAIN) {
+            continue;
+        }
+        let mut at = start;
+        path.clear();
+        loop {
+            match state.get(at).copied() {
+                Some(2) => break,
+                Some(1) => return damaged("a chain of sectors loops"),
+                _ => {}
+            }
+            let link = table.get(at).copied().unwrap_or(END_OF_CHAIN);
+            if link == END_OF_CHAIN {
+                break;
+            }
+            if link as usize >= limit {
+                return damaged("a chain of sectors runs past its allocation table or the file");
+            }
+            if let Some(s) = state.get_mut(at) {
+                *s = 1;
+            }
+            path.push(at);
+            at = link as usize;
+        }
+        for i in path.iter().chain(std::iter::once(&start)) {
+            if let Some(s) = state.get_mut(*i) {
+                *s = 2;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Refuses a sheet whose cells span more than [`MAX_CELLS`] before calamine lays it out as a dense
@@ -376,6 +578,127 @@ mod tests {
         let far = xlsx(&[("Far", &[&[r#"<c r="A1"><v>1</v></c>"#], &[r#"<c r="XFD1048576"><v>2</v></c>"#]])]);
         let e = read(&far, "t", None, &CsvOptions::default()).unwrap_err().to_string();
         assert!(e.contains("too large") && e.contains("XFD"), "{e}");
+    }
+
+    /// A compound-file (`.xls`) header with the given fields, followed by `body`.
+    fn ole2(sector_shift: u16, fat_sectors: u32, first_dir: u32, difat_start: u32, difat_sectors: u32, body: &[u8]) -> Vec<u8> {
+        let mut b = vec![0u8; 512];
+        b[..8].copy_from_slice(&[0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]);
+        b[24..26].copy_from_slice(&0x3Eu16.to_le_bytes());
+        b[26..28].copy_from_slice(&3u16.to_le_bytes());
+        b[28..30].copy_from_slice(&0xFFFEu16.to_le_bytes());
+        b[30..32].copy_from_slice(&sector_shift.to_le_bytes());
+        b[32..34].copy_from_slice(&6u16.to_le_bytes());
+        b[44..48].copy_from_slice(&fat_sectors.to_le_bytes());
+        b[48..52].copy_from_slice(&first_dir.to_le_bytes());
+        b[56..60].copy_from_slice(&4096u32.to_le_bytes());
+        b[60..64].copy_from_slice(&0xFFFF_FFFEu32.to_le_bytes());
+        b[68..72].copy_from_slice(&difat_start.to_le_bytes());
+        b[72..76].copy_from_slice(&difat_sectors.to_le_bytes());
+        // The header's DIFAT points every FAT sector at sector 0.
+        for i in 0..109 {
+            let v: u32 = if i == 0 { 0 } else { 0xFFFF_FFFF };
+            b[76 + i * 4..80 + i * 4].copy_from_slice(&v.to_le_bytes());
+        }
+        b.extend_from_slice(body);
+        b
+    }
+
+    #[test]
+    fn hostile_xls_is_refused() {
+        // RUSTSEC-2026-0436: calamine before 0.38 panicked or allocated without bound on a
+        // malformed compound file, and 0.38 still panics on a sector chain past the allocation
+        // table. Each of these must be an error, not a crash.
+        let sector = [0xFFu8; 512];
+        let books = [
+            ole2(9, u32::MAX, 0, 0xFFFF_FFFE, 0, &sector),
+            ole2(9, 1, u32::MAX - 1, 0xFFFF_FFFE, 0, &sector),
+            ole2(9, 1, 0, 0, 0x7FFF_FFFF, &sector),
+            ole2(31, 1, 0, 0xFFFF_FFFE, 0, &sector),
+            ole2(0, 1, 0, 0xFFFF_FFFE, 0, &sector),
+            ole2(9, 1, 0, 0xFFFF_FFFE, 0, &[]),
+            ole2(9, 1, 0, 0xFFFF_FFFE, 0, &[0u8; 512]),
+        ];
+        for (i, book) in books.iter().enumerate() {
+            assert!(read(book, "t.xls", None, &CsvOptions::default()).is_err(), "book {i}");
+            // Some damaged headers still list no sheets; none may panic.
+            let _ = sheet_names(book);
+            assert!(columns(book, None).is_err(), "book {i}");
+        }
+    }
+
+    /// Little-endian words as bytes, padded with `fill` to whole 512-byte sectors.
+    fn sectors(words: &[u32], fill: u8) -> Vec<u8> {
+        let mut b: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+        b.resize(b.len().div_ceil(512).max(1) * 512, fill);
+        b
+    }
+
+    /// A small compound file: FAT in sector 0, directory in sector 1 (a root entry and a
+    /// "Workbook" stream of `stream_len` bytes starting at `stream_start`), mini FAT in sector 2
+    /// (`mini_fat`), mini stream in sector 3.
+    fn small_book(fat: &[u32], stream_start: u32, stream_len: u32, mini_fat: &[u32]) -> Vec<u8> {
+        let entry = |name: &str, kind: u8, start: u32, len: u32| {
+            let mut e = [0u8; 128];
+            let utf16: Vec<u8> = name.encode_utf16().chain([0]).flat_map(u16::to_le_bytes).collect();
+            e[..utf16.len()].copy_from_slice(&utf16);
+            e[64..66].copy_from_slice(&(utf16.len() as u16).to_le_bytes());
+            e[66] = kind;
+            e[116..120].copy_from_slice(&start.to_le_bytes());
+            e[120..124].copy_from_slice(&len.to_le_bytes());
+            e
+        };
+        let mut dir = Vec::new();
+        dir.extend(entry("Root Entry", 5, 3, 64));
+        dir.extend(entry("Workbook", 2, stream_start, stream_len));
+        dir.resize(512, 0);
+        let mut body = sectors(fat, 0xFF);
+        body.extend(dir);
+        body.extend(sectors(mini_fat, 0xFF));
+        body.extend([0u8; 512]);
+        let mut b = ole2(9, 1, 1, 0xFFFF_FFFE, 0, &body);
+        b[60..64].copy_from_slice(&2u32.to_le_bytes());
+        b[64..68].copy_from_slice(&1u32.to_le_bytes());
+        b
+    }
+
+    #[test]
+    fn xls_sector_tables_are_checked() {
+        const FAT: u32 = 0xFFFF_FFFD;
+        const END: u32 = 0xFFFF_FFFE;
+        let damaged = |book: &[u8], what: &str| {
+            let e = read(book, "t.xls", None, &CsvOptions::default()).unwrap_err().to_string();
+            assert!(e.contains("damaged") && e.contains(what), "{what}: {e}");
+            assert!(columns(book, None).is_err() && sheet_names(book).is_err(), "{what}");
+        };
+        // The tables are sound: the check passes it on, and calamine reads it (it has no sheets).
+        let sound = small_book(&[FAT, END, END, END], 0, 64, &[END]);
+        assert!(check_compound(&sound).is_ok());
+        // A FAT link past the table (128 entries).
+        damaged(&small_book(&[FAT, END, END, 0x100], 0, 64, &[END]), "runs past");
+        // A FAT chain that loops.
+        damaged(&small_book(&[FAT, END, END, 4, 3], 0, 64, &[END]), "loops");
+        // The directory's chain starts past the FAT, at a sector the file holds.
+        let mut far = ole2(9, 1, 128, 0xFFFF_FFFE, 0, &sectors(&[FAT, END], 0xFF));
+        far.resize(512 * 131, 0);
+        damaged(&far, "starts past");
+        // A small stream that starts past the mini FAT, and a mini FAT chain that loops.
+        damaged(&small_book(&[FAT, END, END, END], 200, 100, &[END]), "starts past");
+        damaged(&small_book(&[FAT, END, END, END], 0, 100, &[0]), "loops");
+        // A small stream whose chain runs past the mini stream (one 64-byte mini sector).
+        damaged(&small_book(&[FAT, END, END, END], 0, 100, &[2, END]), "runs past");
+        // A FAT link to a sector past the end of the file (it holds sectors 0 to 3).
+        damaged(&small_book(&[FAT, 5, END, END], 0, 64, &[END]), "runs past");
+        // The sector just past the end reads as empty in calamine, and passes.
+        assert!(check_compound(&small_book(&[FAT, END, END, END], 0, 100, &[1, END])).is_ok());
+        // A DIFAT chain whose next sector is past the end of the file.
+        damaged(&ole2(9, 1, 0, 50, 1, &sectors(&[FAT, END], 0xFF)), "past the end");
+    }
+
+    #[test]
+    fn a_panic_in_calamine_is_an_error() {
+        let e = guarded(|| -> Result<()> { panic!("calamine indexed past a table") }).unwrap_err();
+        assert!(e.to_string().contains("damaged"), "{e}");
     }
 
     #[test]
