@@ -2102,17 +2102,25 @@ fn dissolve(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
     let field = s(p, "field").trim();
     let fi = if field.is_empty() { None } else { Some(find_field_case_insensitive(ds, field)?) };
     let (requests, separator) = summary_requests(ds, p)?;
-    // Each group's key, polygons and records.
+    // Each group's key, polygons and records, in the order first met; found by its key's hash.
     let mut groups: Vec<(Value, Vec<MultiPolygon<f64>>, Vec<usize>)> = Vec::new();
+    let mut index: HashMap<crate::stats::KeyPart<'_>, usize> = HashMap::new();
     for r in each_once(rows(inp, p, "input", ds)) {
         let Some(mp) = ds.features.get(r).and_then(|f| f.geometry.as_ref()).and_then(to_multipolygon) else { continue };
-        let key = fi.map(|fi| ds.value(r, fi).clone()).unwrap_or(Value::Null);
-        match groups.iter_mut().find(|(k, _, _)| *k == key) {
+        let value = fi.map_or(&Value::Null, |fi| ds.value(r, fi));
+        // A NaN equals no value, so each one stays a group of its own; −0 is 0, as it compares.
+        let part = crate::stats::equal_key(value);
+        match part.as_ref().and_then(|k| index.get(k)).and_then(|&g| groups.get_mut(g)) {
             Some(g) => {
                 g.1.push(mp);
                 g.2.push(r);
             }
-            None => groups.push((key, vec![mp], vec![r])),
+            None => {
+                if let Some(k) = part {
+                    index.insert(k, groups.len());
+                }
+                groups.push((value.clone(), vec![mp], vec![r]));
+            }
         }
     }
     let mut fields = match fi.and_then(|i| ds.fields.get(i)) {
@@ -6150,6 +6158,46 @@ mod tests {
         assert_eq!(simplify_ring(&triangle, 1e6), triangle);
         let nonfinite = geo::LineString::from(vec![(0.0, 0.0), (f64::INFINITY, 0.0), (1.0, 1.0), (0.0, 1.0), (0.0, 0.0)]);
         assert_eq!(simplify_ring(&nonfinite, 1e6), nonfinite);
+    }
+
+    /// Dissolve's groups, found by their keys' hash: in the order first met, −0 with 0, each NaN
+    /// on its own (it equals no value), and a number apart from the same text and a whole number
+    /// apart from the same fraction.
+    #[test]
+    fn dissolve_groups_as_values_compare() {
+        let mut polys = Dataset::new("polys", GeometryType::Polygon, vec![Field::new("k", FieldType::Double)]);
+        let keys = [
+            Value::Float(1.0),
+            Value::Float(2.0),
+            Value::Float(1.0),
+            Value::Float(f64::NAN),
+            Value::Float(f64::NAN),
+            Value::Float(-0.0),
+            Value::Float(0.0),
+            Value::Text("1".into()),
+            Value::Int(1),
+            Value::Null,
+            Value::Null,
+        ];
+        for (i, k) in keys.into_iter().enumerate() {
+            polys.push(Some(sq(i as f64 * 3.0, 0.0, 1.0)), vec![k]);
+        }
+        let m = Map(HashMap::from([("polys".to_string(), polys)]));
+        let d = layer(crate::run("dissolve", &m, &serde_json::json!({"input": "polys", "field": "k"})).unwrap());
+        let got: Vec<String> = (0..d.features.len()).map(|r| format!("{:?}×{:?}", d.value(r, 0), d.value(r, 1))).collect();
+        assert_eq!(
+            got,
+            [
+                "Float(1.0)×Int(2)",
+                "Float(2.0)×Int(1)",
+                "Float(NaN)×Int(1)",
+                "Float(NaN)×Int(1)",
+                "Float(-0.0)×Int(2)",
+                "Text(\"1\")×Int(1)",
+                "Int(1)×Int(1)",
+                "Null×Int(2)"
+            ]
+        );
     }
 
     #[test]
