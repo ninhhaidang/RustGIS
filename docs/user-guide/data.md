@@ -849,6 +849,13 @@ origin keeps the login, and a redirect to another origin is followed without it,
 another connection's login either. In the web app a request carrying a login isn't redirected at
 all, since the browser can't take the login off on the way: a service that redirects (to
 `https://` or to another path) fails there, so save the connection with the address it ends at.
+Service documents cannot supply a login binding. While resolving their links, RustGIS inherits
+only the login used to read the document, and only at that same origin. A runtime wrapper in a
+document link contributes its ordinary URL, never its login.
+Relative links, including parent paths, resolve against the document's address without rewriting
+template placeholders or query values, including proxy parameters containing `https://` URLs.
+KVP requests replace capabilities operation parameters, keeping unrelated parameters such as
+MapServer's `map=`.
 If a service supplies a same-origin link too long to carry its login, the request is refused
 instead of being fetched anonymously. Addresses that cannot be rebound to a login are left
 unchanged and reported.

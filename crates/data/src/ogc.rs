@@ -603,7 +603,8 @@ fn is_web(url: &str) -> bool {
 
 /// A link from a document at `from`, resolved: absolute, scheme-relative (`//host/…`),
 /// host-relative (`/…`) or relative to the document's folder. `None` for other schemes.
-/// Only links at the bound document's canonical origin retain its runtime login binding.
+/// A supplied runtime wrapper contributes only its URL, never its authority: only the bound
+/// document's canonical origin retains that document's runtime login binding.
 fn resolve(from: &str, href: &str) -> Option<String> {
     crate::login_address::parse(from).ok()?;
     crate::login_address::parse(href.trim()).ok()?;
@@ -616,23 +617,65 @@ fn resolve_inner(from: &str, href: &str) -> Option<String> {
     if is_web(href) {
         return Some(href.to_string());
     }
-    if href.contains("://") || href.starts_with("data:") || href.starts_with("javascript:") || href.is_empty() {
+    if href.starts_with('?') {
+        return Some(format!("{}{href}", base(from)));
+    }
+    if href.starts_with('#') {
+        return Some(format!("{}{href}", from.split('#').next().unwrap_or(from)));
+    }
+    let has_scheme = href.split_once(':').is_some_and(|(scheme, _)| {
+        let mut bytes = scheme.bytes();
+        bytes.next().is_some_and(|b| b.is_ascii_alphabetic()) && bytes.all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'))
+    });
+    if has_scheme || href.is_empty() {
         return None;
     }
     if let Some(rest) = href.strip_prefix("//") {
         let scheme = from.split_once("://").map(|(s, _)| s).unwrap_or("https");
-        return Some(format!("{scheme}://{rest}"));
+        let host_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+        let mut url = String::with_capacity(scheme.len() + 3 + rest.len());
+        url.push_str(scheme);
+        url.push_str("://");
+        url.push_str(rest.get(..host_end)?);
+        let root = url.len();
+        push_resolved_path(&mut url, rest.get(host_end..)?, root);
+        return Some(url);
     }
-    if href.starts_with('/') {
-        return Some(format!("{}{href}", origin(from)));
-    }
+    let host = origin(from);
     let b = base(from);
-    let dir = if after_host(b).is_empty() {
-        format!("{b}/")
-    } else {
-        b.get(..b.rfind('/').map(|i| i + 1).unwrap_or(b.len())).unwrap_or(b).to_string()
-    };
-    Some(format!("{dir}{href}"))
+    let path = b.get(host.len()..).unwrap_or("");
+    let dir = if href.starts_with('/') { "" } else { path.rfind('/').and_then(|i| path.get(..=i)).unwrap_or("/") };
+    let mut url = String::with_capacity(host.len() + dir.len() + href.len());
+    url.push_str(host);
+    push_resolved_path(&mut url, dir, host.len());
+    push_resolved_path(&mut url, href, host.len());
+    Some(url)
+}
+
+/// Appends a relative URL's path with literal dot segments resolved (RFC 3986). Templates,
+/// percent escapes and the query/fragment tail stay byte-for-byte; parents stop at the root.
+fn push_resolved_path(out: &mut String, href: &str, root: usize) {
+    let tail_at = href.find(['?', '#']).unwrap_or(href.len());
+    let path = href.get(..tail_at).unwrap_or(href);
+    if !path.split('/').any(|segment| matches!(segment, "." | "..")) {
+        out.push_str(href);
+        return;
+    }
+    for segment in path.split_inclusive('/') {
+        match segment.strip_suffix('/').unwrap_or(segment) {
+            "." => {}
+            ".." => {
+                let end = out.len().saturating_sub(usize::from(out.ends_with('/')));
+                let parent = out.get(root..end).and_then(|path| path.rfind('/')).map(|i| root + i + 1).unwrap_or(root);
+                out.truncate(parent);
+                if out.len() == root {
+                    out.push('/');
+                }
+            }
+            _ => out.push_str(segment),
+        }
+    }
+    out.push_str(href.get(tail_at..).unwrap_or(""));
 }
 
 /// The words in the notes on OGC API collections left out as 3D content, by which
@@ -669,8 +712,8 @@ fn with_query(url: &str, q: &str) -> String {
     }
 }
 
-/// A service's address for its requests when its document names none: the address without the
-/// OGC request parameters, keeping the others (MapServer's `map=`, a token).
+/// A service request endpoint without OGC operation parameters, keeping unrelated query values
+/// (MapServer's `map=`, a token), whether advertised or used as a fallback.
 fn endpoint(url: &str) -> String {
     if let Ok(Some(bound)) = crate::login_address::parse(url) {
         return crate::login_address::inherit(url, &endpoint(bound.url));
@@ -831,7 +874,7 @@ fn wms(url: &str, root: &Node) -> Service {
         .and_then(|g| g.descendants().find(|n| n.is_element() && local(n) == "Get"))
         .and_then(|g| child(&g, "OnlineResource"))
         .and_then(|o| href(&o))
-        .filter(|h| is_web(h))
+        .and_then(|h| resolve(url, &h))
         // The request's own parameters replace any the advertised address carries (a `TIME`).
         .map(|h| info::without_wms_keys(&h))
         .unwrap_or_else(|| endpoint(url));
@@ -1309,7 +1352,8 @@ fn wmts(url: &str, root: &Node) -> Service {
         .find(|n| n.is_element() && local(n) == "GetTile")
         .and_then(|g| g.descendants().find(|n| n.is_element() && local(n) == "Get"))
         .and_then(|g| href(&g))
-        .filter(|h| is_web(h))
+        .and_then(|h| resolve(url, &h))
+        .map(|h| endpoint(&h))
         .unwrap_or_else(|| endpoint(url));
     let (mut skipped, mut too_long) = (0, 0);
     for layer in children(&contents, "Layer").take(MAX_LAYERS) {
@@ -1415,7 +1459,7 @@ fn wmts(url: &str, root: &Node) -> Service {
                 let f = r.attribute("format").unwrap_or("");
                 !f.contains("pbf") && !f.contains("mvt")
             })
-            .filter_map(|r| r.attribute("template").filter(|t| is_web(t)).map(str::to_string))
+            .filter_map(|r| r.attribute("template").and_then(|t| resolve(url, t)))
             .collect();
         let timed = |t: &&String| t.contains("{Time}");
         let resource =
@@ -1515,7 +1559,8 @@ fn wfs(url: &str, root: &Node) -> Service {
         })
         .and_then(|g| g.descendants().find(|n| n.is_element() && local(n) == "Get"))
         .and_then(|g| href(&g).or_else(|| g.attribute("onlineResource").map(str::to_string)))
-        .filter(|h| is_web(h))
+        .and_then(|h| resolve(url, &h))
+        .map(|h| endpoint(&h))
         .unwrap_or_else(|| endpoint(url));
     // The GeoJSON output format the server names (GetFeature's, else the service-wide list);
     // `application/json` when it lists none.
@@ -1692,7 +1737,8 @@ fn wcs(url: &str, root: &Node) -> Service {
         .and_then(|g| href(&g).or_else(|| g.descendants().find(|n| n.is_element() && local(n) == "OnlineResource").and_then(|o| href(&o))))
         // MapServer escapes its `&` twice: `&amp;` is still there after the XML is read.
         .map(|h| h.replace("&amp;", "&"))
-        .filter(|h| is_web(h))
+        .and_then(|h| resolve(url, &h))
+        .map(|h| endpoint(&h))
         .unwrap_or_else(|| endpoint(url));
     let formats: Vec<String> = root
         .descendants()
@@ -3882,6 +3928,10 @@ pub fn fix_axes(bytes: &[u8], bounds: Option<[f64; 4]>) -> Option<Vec<u8>> {
 mod fixtures;
 
 #[cfg(test)]
+#[path = "ogc_document_tests.rs"]
+mod document_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -4180,7 +4230,26 @@ mod tests {
         assert_eq!(resolve("https://x.org", "a/items").as_deref(), Some("https://x.org/a/items"));
         assert_eq!(resolve("http://x.org/c", "//y.org/a").as_deref(), Some("http://y.org/a"));
         assert_eq!(resolve("https://x.org/c", "https://y.org/a").as_deref(), Some("https://y.org/a"));
-        for bad in ["file:///etc/passwd", "httpfoo://x/a", "javascript:alert(1)", ""] {
+        assert_eq!(
+            resolve("https://x.org/cgi-bin/mapserv?SERVICE=WMS&REQUEST=GetCapabilities#old", "?map=advertised").as_deref(),
+            Some("https://x.org/cgi-bin/mapserv?map=advertised")
+        );
+        assert_eq!(resolve("https://x.org/folder/c", "path/part:detail").as_deref(), Some("https://x.org/folder/path/part:detail"));
+        assert_eq!(resolve("https://x.org/folder/c", "?key=value:detail").as_deref(), Some("https://x.org/folder/c?key=value:detail"));
+        for (from, href, expected) in [
+            ("https://x.org/cgi-bin/mapserv#old", "#frag", "https://x.org/cgi-bin/mapserv#frag"),
+            ("https://x.org/cgi-bin/mapserv?map=kept#old", "#frag", "https://x.org/cgi-bin/mapserv?map=kept#frag"),
+            ("https://x.org/cgi-bin/mapserv?map=kept#old", "#", "https://x.org/cgi-bin/mapserv?map=kept#"),
+            (
+                "https://x.org/cgi-bin/mapserv?old=discard#old",
+                "?upstream=https://data.example/tiles",
+                "https://x.org/cgi-bin/mapserv?upstream=https://data.example/tiles",
+            ),
+        ] {
+            assert_eq!(resolve(from, href).as_deref(), Some(expected), "{href}");
+        }
+        for bad in ["file:///etc/passwd", "file:/etc/passwd", "mailto:x", "CuStOm+v1.0:payload", "httpfoo://x/a", "javascript:alert(1)", ""]
+        {
             assert_eq!(resolve("https://x.org/c", bad), None, "{bad}");
         }
         assert!(is_web("HTTPS://x.org") && !is_web("httpfoo:x") && !is_web("http:/x"));
@@ -6360,7 +6429,6 @@ mod tests {
         assert_eq!((s.kind.as_str(), s.title.as_str()), ("WCS", "Soils"));
         assert_eq!(s.layers[0].bbox, Some([-180.0, -56.0, 180.0, 84.0]));
         let Offer::Coverage(c) = &s.layers[0].offer else { panic!("{:?}", s.layers[0].offer) };
-        assert_eq!(c.endpoint, "https://maps.example.org/mapserv?map=/m/soc.map&");
         assert_eq!((c.version.as_str(), c.id.as_str()), ("2.0.1", "soc_mean"));
         assert_eq!(
             describe_coverage_url(c),
