@@ -83,7 +83,7 @@ jobs:
     env:
       TAP_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         if: env.TAP_KEY != ''
         with:
           persist-credentials: false
@@ -122,7 +122,7 @@ jobs:
     env:
       AUR_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         if: env.AUR_KEY != ''
         with:
           persist-credentials: false
@@ -165,7 +165,7 @@ jobs:
     env:
       COPR_CONFIG: ${{ secrets.COPR_CONFIG }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         if: env.COPR_CONFIG != ''
         with:
           persist-credentials: false

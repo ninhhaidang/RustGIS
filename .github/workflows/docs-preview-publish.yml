@@ -63,7 +63,7 @@ jobs:
           echo "has_pr=$(jq 'index("preview-pr") != null' <<< "$names")" >> "$GITHUB_OUTPUT"
           echo "has_site=$(jq 'index("preview-site") != null' <<< "$names")" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         if: steps.artifacts.outputs.has_pr == 'true'
         with:
           name: preview-pr
@@ -144,7 +144,7 @@ jobs:
             echo "fork=${fork}"
           } >> "$GITHUB_OUTPUT"
 
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         if: steps.pr.outputs.mode == 'deploy'
         with:
           name: preview-site
@@ -240,7 +240,7 @@ jobs:
         if: >-
           (steps.deploy.outcome == 'success' && steps.pr.outputs.mode == 'deploy') ||
           steps.pr.outputs.mode == 'awaiting'
-        uses: actions/github-script@v9
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         env:
           PR: ${{ steps.pr.outputs.number }}
           MODE: ${{ steps.pr.outputs.mode }}

@@ -3,7 +3,7 @@
 
 [graph]
 all-features = false
-exclude-dev = true
+exclude-dev = false
 
 [licenses]
 confidence-threshold = 0.8
@@ -29,3 +29,12 @@ allow = [
 [licenses.private]
 # RustGIS's own apps and xtask (`publish = false`).
 ignore = true
+
+# Dependencies currently come only from crates.io. An intentional git or registry source must
+# be reviewed here too; git sources must name a revision rather than follow a branch or tag.
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
+required-git-spec = "rev"
