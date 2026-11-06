@@ -741,33 +741,38 @@ pub fn classify_min_distance(r: &Raster, bands: &[usize], means: &[(f32, Vec<f64
 
 /// The mean of each band over the pixels whose centres fall in a polygon (lon/lat rings).
 pub fn zonal_means(r: &Raster, bands: &[usize], rings: &[Vec<Coord>]) -> Option<(Vec<f64>, usize)> {
-    means_under(r, bands, rings, || Ok(())).unwrap_or(None)
+    means_under(r, bands, rings, |_| Ok(())).unwrap_or(None)
 }
 
-/// [`zonal_means`], `each_row()` asked before each of the raster's rows: an error stops it.
+/// [`zonal_means`], `each_rows(n)` asked as the raster's rows go by, `n` at a time (each row
+/// once, all of them): an error stops it.
+///
+/// A cell counts when its centre, in longitude/latitude, lies in the zone (inside the outer ring
+/// and in no hole). Only the cells in the zone's window are tested ([`zone_window`]), not every
+/// cell of the raster, in the same row-major order, so the sums are those of testing them all.
 fn means_under(
     r: &Raster,
     bands: &[usize],
     rings: &[Vec<Coord>],
-    mut each_row: impl FnMut() -> Result<(), crate::control::Cancelled>,
+    mut each_rows: impl FnMut(usize) -> Result<(), crate::control::Cancelled>,
 ) -> Result<Option<(Vec<f64>, usize)>, crate::control::Cancelled> {
     let mut e = Extent::EMPTY;
-    for ring in rings {
-        for c in ring {
-            e.expand(*c);
-        }
+    for c in rings.iter().flatten() {
+        e.expand(*c);
     }
     let mut sums = vec![0.0; bands.len()];
     let mut n = 0usize;
-    for row in 0..r.height as i64 {
-        each_row()?;
-        for col in 0..r.width as i64 {
-            let w = r.transform.to_world(col as f64 + 0.5, row as f64 + 0.5);
+    let (cols, rows) = zone_window(r, &e);
+    each_rows((r.height - (rows.end - rows.start)) as usize)?;
+    for row in rows {
+        each_rows(1)?;
+        for col in cols.clone() {
+            let w = r.transform.to_world(f64::from(col) + 0.5, f64::from(row) + 0.5);
             let Some(ll) = r.transformer().to_lonlat(w) else { continue };
             if !e.contains(ll) || !rustgis_data::geometry::polygon_contains(rings, ll) {
                 continue;
             }
-            let vals: Option<Vec<f64>> = bands.iter().map(|b| r.value(*b, col, row).map(f64::from)).collect();
+            let vals: Option<Vec<f64>> = bands.iter().map(|b| r.value(*b, i64::from(col), i64::from(row)).map(f64::from)).collect();
             if let Some(v) = vals {
                 sums.iter_mut().zip(&v).for_each(|(s, x)| *s += x);
                 n += 1;
@@ -775,6 +780,69 @@ fn means_under(
         }
     }
     Ok((n > 0).then(|| (sums.into_iter().map(|s| s / n as f64).collect(), n)))
+}
+
+/// The columns and rows of `r` whose cell centres can fall in the longitude/latitude extent `e`:
+/// its outline placed on the raster's grid, with two cells to spare. Each side is sampled, and
+/// each stretch between samples near the raster is halved until its ends are at most a cell
+/// apart, so a side that curves on the grid (a parallel on a polar raster) bows only a fraction
+/// of a cell between them, whatever the zone's size. A stretch whose ends are farther from the
+/// raster than the distance between them isn't halved: that takes the side not to fold back
+/// within one stretch (a sixty-fourth of the side at first), which a projection's smooth image of
+/// a parallel or meridian doesn't. The whole raster when a point can't be placed; none when `e` is
+/// empty.
+fn zone_window(r: &Raster, e: &Extent) -> (Range<u32>, Range<u32>) {
+    if e.is_empty() {
+        return (0..0, 0..0);
+    }
+    const SAMPLES: u32 = 64;
+    // Halvings of a stretch: past 2^-40 of a side it is far below a cell.
+    const DEPTH: u32 = 40;
+    let whole = (0..r.width, 0..r.height);
+    let (w, h) = (f64::from(r.width), f64::from(r.height));
+    let place = |ll: Coord| {
+        let (col, row) = r.transform.to_pixel(r.transformer().from_lonlat(ll)?);
+        (col.is_finite() && row.is_finite()).then_some((col, row))
+    };
+    let sides: [(Coord, Coord); 4] = [
+        (Coord::new(e.min_x, e.min_y), Coord::new(e.max_x, e.min_y)),
+        (Coord::new(e.max_x, e.min_y), Coord::new(e.max_x, e.max_y)),
+        (Coord::new(e.max_x, e.max_y), Coord::new(e.min_x, e.max_y)),
+        (Coord::new(e.min_x, e.max_y), Coord::new(e.min_x, e.min_y)),
+    ];
+    let (mut c0, mut r0, mut c1, mut r1) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+    let mut stretches = Vec::new();
+    for (a, b) in sides {
+        let at = |t: f64| Coord::new(a.x + t * (b.x - a.x), a.y + t * (b.y - a.y));
+        let mut last = None;
+        for i in 0..=SAMPLES {
+            let t = f64::from(i) / f64::from(SAMPLES);
+            let Some(p) = place(at(t)) else { return whole };
+            if let Some((t0, p0)) = last {
+                stretches.push((t0, p0, t, p, 0));
+            }
+            last = Some((t, p));
+        }
+        while let Some((t0, p0, t1, p1, depth)) = stretches.pop() {
+            for (col, row) in [p0, p1] {
+                (c0, r0, c1, r1) = (c0.min(col), r0.min(row), c1.max(col), r1.max(row));
+            }
+            let len = (p1.0 - p0.0).hypot(p1.1 - p0.1);
+            let far = p0.0.max(p1.0) + len < 0.0 || p0.0.min(p1.0) - len > w || p0.1.max(p1.1) + len < 0.0 || p0.1.min(p1.1) - len > h;
+            if len <= 1.0 || depth >= DEPTH || far {
+                continue;
+            }
+            let tm = (t0 + t1) / 2.0;
+            let Some(pm) = place(at(tm)) else { return whole };
+            stretches.push((t0, p0, tm, pm, depth + 1));
+            stretches.push((tm, pm, t1, p1, depth + 1));
+        }
+    }
+    let clamp = |v: f64, n: u32| v.clamp(0.0, f64::from(n)) as u32;
+    (
+        (clamp(c0.floor() - 2.0, r.width)..clamp(c1.ceil() + 2.0, r.width)),
+        (clamp(r0.floor() - 2.0, r.height)..clamp(r1.ceil() + 2.0, r.height)),
+    )
 }
 
 /// Each class's mean of `bands` over the pixels under its training polygons (lon/lat rings, each
@@ -785,9 +853,9 @@ pub fn class_means(r: &Raster, bands: &[usize], polygons: &[(String, Vec<Vec<Coo
     crate::control::begin(polygons.len().saturating_mul(r.height as usize));
     let mut classes: Vec<(String, Vec<f64>, usize)> = Vec::new();
     for (key, rings) in polygons {
-        let counted = || {
+        let counted = |rows: usize| {
             crate::control::check()?;
-            crate::control::advance(1);
+            crate::control::advance(rows);
             Ok(())
         };
         let Some((m, n)) = means_under(r, bands, rings, counted)? else { continue };
@@ -1525,6 +1593,78 @@ mod tests {
         run.cancel();
         let _installed = crate::control::install(Some(run));
         assert_eq!(kmeans_on(Some(4), &r, &[0, 1, 2], 7, 10).unwrap_err(), crate::control::CANCELLED);
+    }
+
+    /// Zonal means test only the cells in their zone's window (#1252), and give what testing
+    /// every cell gives, to the bit: on a longitude/latitude raster and a projected one, with a
+    /// hole cut out (and one reaching past its outer ring, which counts nowhere), slanted edges,
+    /// and edges through cell centres.
+    #[test]
+    fn zonal_means_are_those_of_testing_every_cell() {
+        // Every cell tested, its centre in longitude/latitude, as zonal means did.
+        let every_cell = |r: &Raster, rings: &[Vec<Coord>]| {
+            let (mut sums, mut n) = ([0.0f64; 2], 0usize);
+            for row in 0..r.height {
+                for col in 0..r.width {
+                    let Some(ll) = r.transformer().to_lonlat(r.transform.to_world(f64::from(col) + 0.5, f64::from(row) + 0.5)) else {
+                        continue;
+                    };
+                    if rustgis_data::geometry::polygon_contains(rings, ll) {
+                        for (b, s) in sums.iter_mut().enumerate() {
+                            *s += f64::from(r.value(b, i64::from(col), i64::from(row)).unwrap());
+                        }
+                        n += 1;
+                    }
+                }
+            }
+            (n > 0).then(|| (sums.iter().map(|s| (s / n as f64).to_bits()).collect::<Vec<_>>(), n))
+        };
+        let ring = |pts: &[(f64, f64)]| pts.iter().map(|&(x, y)| Coord::new(x, y)).collect::<Vec<_>>();
+        let (w, h) = (400u32, 300u32);
+        let band = |k: u32| (0..w * h).map(|i| ((i * (3 + k) + i / w * 7) % 251) as f32 + 0.25 * k as f32).collect::<Vec<f32>>();
+        let lonlat = GeoTransform { origin_x: 7.0, origin_y: 47.0, pixel_width: 0.0037, pixel_height: -0.0029 };
+        let merc = GeoTransform { origin_x: 780_000.0, origin_y: 5_950_000.0, pixel_width: 410.0, pixel_height: -390.0 };
+        let rasters = [
+            Raster::new("lonlat", w, h, vec![band(0), band(1)], lonlat, Crs::LonLat, None, ColorHint::Gray, "Float32").unwrap(),
+            Raster::new("merc", w, h, vec![band(0), band(1)], merc, Crs::WebMercator, None, ColorHint::Gray, "Float32").unwrap(),
+        ];
+        let zones = [
+            vec![
+                ring(&[(7.11, 46.31), (7.93, 46.45), (8.21, 46.88), (7.37, 46.97), (7.05, 46.62)]),
+                ring(&[(7.51, 46.61), (7.77, 46.63), (7.71, 46.79), (7.49, 46.74)]),
+            ],
+            // A hole reaching past its outer ring.
+            vec![ring(&[(7.2, 46.3), (7.8, 46.3), (7.8, 46.8), (7.2, 46.8)]), ring(&[(7.6, 46.6), (8.0, 46.6), (8.0, 46.9), (7.6, 46.9)])],
+            // Edges through rows' and columns' centres (on the longitude/latitude grid).
+            vec![ring(&[
+                (7.0 + 0.0037 * 20.5, 47.0 - 0.0029 * 30.5),
+                (7.0 + 0.0037 * 90.5, 47.0 - 0.0029 * 30.5),
+                (7.0 + 0.0037 * 90.5, 47.0 - 0.0029 * 80.5),
+                (7.0 + 0.0037 * 20.5, 47.0 - 0.0029 * 80.5),
+            ])],
+        ];
+        for r in &rasters {
+            for (z, rings) in zones.iter().enumerate() {
+                let got = zonal_means(r, &[0, 1], rings).map(|(m, n)| (m.iter().map(|v| v.to_bits()).collect::<Vec<_>>(), n));
+                let want = every_cell(r, rings);
+                assert!(want.as_ref().is_some_and(|(_, n)| *n > 100), "{} zone {z}: {want:?}", r.name);
+                assert_eq!(got, want, "{} zone {z}", r.name);
+            }
+        }
+        // A wide zone on a polar raster (EPSG:3031): its outer side, the parallel at 60° S, is
+        // a circle on the grid, and the raster's 100 m cells straddle it where it reaches
+        // furthest, between two of the side's first samples.
+        let polar = Crs::Epsg(3031);
+        let top = polar.transformer().unwrap().from_lonlat(Coord::new(-0.06, -60.0)).unwrap();
+        let gt = GeoTransform { origin_x: top.x - 20_000.0, origin_y: top.y + 15_000.0, pixel_width: 100.0, pixel_height: -100.0 };
+        let r = Raster::new("polar", w, h, vec![band(0), band(1)], gt, polar, None, ColorHint::Gray, "Float32").unwrap();
+        let wide = vec![ring(&[(-61.0, -70.0), (59.0, -70.0), (59.0, -60.0), (-61.0, -60.0)])];
+        let got = zonal_means(&r, &[0, 1], &wide).map(|(m, n)| (m.iter().map(|v| v.to_bits()).collect::<Vec<_>>(), n));
+        let want = every_cell(&r, &wide);
+        assert!(want.as_ref().is_some_and(|(_, n)| *n > 1000 && *n < (w * h) as usize), "{want:?}");
+        assert_eq!(got, want, "polar");
+        // A zone off the raster has none.
+        assert!(zonal_means(&rasters[0], &[0, 1], &[ring(&[(20.0, 10.0), (21.0, 10.0), (21.0, 11.0)])]).is_none());
     }
 
     /// The single passes the Analysis pane runs on a thread stop when their run is cancelled
