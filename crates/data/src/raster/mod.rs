@@ -166,27 +166,47 @@ impl BandStats {
         BandStats::compute(data, f32::is_finite)
     }
 
-    fn compute(data: &[f32], valid: impl Fn(f32) -> bool) -> BandStats {
+    fn compute(data: &[f32], valid: impl Fn(f32) -> bool + Sync) -> BandStats {
         BandStats::compute_with(data, valid, None)
     }
 
     /// [`BandStats::compute`], taking the range, mean and spread from `stored` (statistics of the
     /// whole band, when `data` is a reduced overview of it).
-    fn compute_with(data: &[f32], valid: impl Fn(f32) -> bool, stored: Option<pam::Stats>) -> BandStats {
-        let (mut n, mut min, mut max, mut sum, mut sum2) = (0usize, f64::INFINITY, f64::NEG_INFINITY, 0.0f64, 0.0f64);
-        let mut whole = true;
-        for &v in data {
-            if !valid(v) {
-                continue;
+    fn compute_with(data: &[f32], valid: impl Fn(f32) -> bool + Sync, stored: Option<pam::Stats>) -> BandStats {
+        BandStats::compute_on(data, valid, stored, threads_for(data.len()))
+    }
+
+    /// [`BandStats::compute_with`] on `threads` threads. On one, one pass makes the count, range,
+    /// sums and whether every value is whole, and a second the histogram and distinct values. On
+    /// several, the sums are made on this thread, in the band's order, so the mean and spread are
+    /// the same to the bit; what doesn't depend on the order is counted on the others
+    /// ([`on_runs`]), the range while this thread sums. The range keeps the first of equal values
+    /// (−0 or 0) in the band's order either way.
+    fn compute_on(data: &[f32], valid: impl Fn(f32) -> bool + Sync, stored: Option<pam::Stats>, threads: usize) -> BandStats {
+        let ranged = |run: &[f32], sum: bool| {
+            let (mut n, mut min, mut max, mut whole, mut sums) = (0usize, f64::INFINITY, f64::NEG_INFINITY, true, (0.0f64, 0.0f64));
+            for &v in run.iter().filter(|&&v| valid(v)) {
+                let x = v as f64;
+                n += 1;
+                (min, max) = (lower(min, x), higher(max, x));
+                whole &= x.fract() == 0.0;
+                if sum {
+                    sums = (sums.0 + x, sums.1 + x * x);
+                }
             }
-            let x = v as f64;
-            n += 1;
-            min = min.min(x);
-            max = max.max(x);
-            sum += x;
-            sum2 += x * x;
-            whole &= x.fract() == 0.0;
-        }
+            (n, min, max, whole, sums)
+        };
+        let (n, mut min, mut max, whole, (sum, sum2)) = if threads <= 1 {
+            ranged(data, true)
+        } else {
+            let sums = || ranged(data, true).4;
+            let (runs, sums) = on_runs_beside(data, threads, sums, |run| ranged(run, false));
+            let mut all = (0usize, f64::INFINITY, f64::NEG_INFINITY, true, sums);
+            for (rn, rmin, rmax, rwhole, _) in runs {
+                all = (all.0 + rn, lower(all.1, rmin), higher(all.2, rmax), all.3 && rwhole, all.4);
+            }
+            all
+        };
         if n == 0 {
             return BandStats::default();
         }
@@ -197,34 +217,24 @@ impl BandStats {
             mean = s.mean.unwrap_or(mean);
             std_dev = s.std_dev.unwrap_or(std_dev);
         }
-        let mut histogram = vec![0u64; HISTOGRAM_BINS];
         let span = max - min;
         // Whole numbers within 16 bits are tracked in a bit set (fast for byte imagery); others in
         // a small set that gives up past 256 values.
         let small_ints = whole && min >= 0.0 && max <= 65_535.0;
-        let mut bits = if small_ints { vec![0u64; 1024] } else { Vec::new() };
-        let mut distinct = std::collections::BTreeSet::new();
-        let mut track = whole;
         let k = (HISTOGRAM_BINS as f64 - 1.0) / if span > 0.0 { span } else { 1.0 };
-        for &v in data {
-            if !valid(v) {
-                continue;
-            }
-            let x = v as f64;
-            let bin = ((x - min) * k).round() as usize;
-            if let Some(h) = histogram.get_mut(bin.min(HISTOGRAM_BINS - 1)) {
-                *h += 1;
-            }
-            if small_ints {
-                let i = x as usize;
-                if let Some(w) = bits.get_mut(i / 64) {
-                    *w |= 1 << (i % 64);
-                }
-            } else if track {
-                distinct.insert(x as i64);
-                track = distinct.len() <= 256;
+        let b = Binning { min, k, small_ints, whole };
+        let mut runs = on_runs(data, threads, |run| Tally::run(run, &valid, b)).into_iter();
+        let mut tally = runs.next().unwrap_or_else(|| Tally::run(&[], &valid, b));
+        for t in runs {
+            tally.histogram.iter_mut().zip(&t.histogram).for_each(|(a, b)| *a += b);
+            tally.bits.iter_mut().zip(&t.bits).for_each(|(a, b)| *a |= b);
+            tally.track &= t.track;
+            if tally.track {
+                tally.distinct.extend(t.distinct);
+                tally.track = tally.distinct.len() <= 256;
             }
         }
+        let Tally { histogram, bits, distinct, track } = tally;
         let categories = if small_ints {
             let n: u32 = bits.iter().map(|w| w.count_ones()).sum();
             (n <= 256).then(|| {
@@ -255,6 +265,112 @@ impl BandStats {
             }
         }
         self.max
+    }
+}
+
+/// How [`Tally::run`] counts a band's values: its histogram's bins from `min`, `k` bins to a unit,
+/// and how its distinct values are kept (`small_ints`: in a bit set; else, when `whole`, in a
+/// set that gives up past 256 values).
+#[derive(Clone, Copy)]
+struct Binning {
+    min: f64,
+    k: f64,
+    small_ints: bool,
+    whole: bool,
+}
+
+/// A band's values counted: its histogram, and its distinct values (the bit set of whole
+/// numbers within 16 bits, or the set and whether it still keeps them).
+struct Tally {
+    histogram: Vec<u64>,
+    bits: Vec<u64>,
+    distinct: std::collections::BTreeSet<i64>,
+    track: bool,
+}
+
+/// Values below which a band is counted on one thread (#1252): threads pay off past about a
+/// million.
+const PARALLEL_VALUES: usize = 1 << 20;
+
+/// `x` when it is below `min`, else `min`: equal values (−0 and 0) keep the first.
+fn lower(min: f64, x: f64) -> f64 {
+    if x < min { x } else { min }
+}
+
+/// `x` when it is above `max`, else `max`: equal values (−0 and 0) keep the first.
+fn higher(max: f64, x: f64) -> f64 {
+    if x > max { x } else { max }
+}
+
+/// The threads to count a band of `len` values on: at most 16, one per 256 Ki values, and one
+/// below [`PARALLEL_VALUES`] or in the browser.
+fn threads_for(len: usize) -> usize {
+    if cfg!(target_arch = "wasm32") || len < PARALLEL_VALUES {
+        1
+    } else {
+        std::thread::available_parallelism().map_or(1, |n| n.get()).min(16).min(len / (PARALLEL_VALUES / 4))
+    }
+}
+
+/// `f` over `threads` runs of `data` that cover it in order, its results in that order, the
+/// calling thread taking the first. A worker's panic is raised again here; a run whose thread
+/// can't start is made on this one.
+fn on_runs<T: Send>(data: &[f32], threads: usize, f: impl Fn(&[f32]) -> T + Sync) -> Vec<T> {
+    on_runs_beside(data, threads, || (), f).0
+}
+
+/// [`on_runs`], the calling thread running `beside` first, while the other threads start on
+/// their runs.
+fn on_runs_beside<T: Send, U>(data: &[f32], threads: usize, beside: impl FnOnce() -> U, f: impl Fn(&[f32]) -> T + Sync) -> (Vec<T>, U) {
+    if threads <= 1 || data.is_empty() {
+        let beside = beside();
+        return (vec![f(data)], beside);
+    }
+    let mut runs = data.chunks(data.len().div_ceil(threads));
+    let first = runs.next().unwrap_or_default();
+    let f = &f;
+    std::thread::scope(|scope| {
+        let started: Vec<_> = runs.map(|run| std::thread::Builder::new().spawn_scoped(scope, move || f(run)).map_err(|_| run)).collect();
+        let beside = beside();
+        let mut out = vec![f(first)];
+        for run in started {
+            out.push(match run {
+                Ok(h) => h.join().unwrap_or_else(|p| std::panic::resume_unwind(p)),
+                // The OS refused a thread: made here.
+                Err(run) => f(run),
+            });
+        }
+        (out, beside)
+    })
+}
+
+impl Tally {
+    /// `data`'s valid values counted on this thread.
+    fn run(data: &[f32], valid: &impl Fn(f32) -> bool, b: Binning) -> Tally {
+        let mut histogram = vec![0u64; HISTOGRAM_BINS];
+        let mut bits = if b.small_ints { vec![0u64; 1024] } else { Vec::new() };
+        let mut distinct = std::collections::BTreeSet::new();
+        let mut track = b.whole;
+        for &v in data {
+            if !valid(v) {
+                continue;
+            }
+            let x = v as f64;
+            let bin = ((x - b.min) * b.k).round() as usize;
+            if let Some(h) = histogram.get_mut(bin.min(HISTOGRAM_BINS - 1)) {
+                *h += 1;
+            }
+            if b.small_ints {
+                let i = x as usize;
+                if let Some(w) = bits.get_mut(i / 64) {
+                    *w |= 1 << (i % 64);
+                }
+            } else if track {
+                distinct.insert(x as i64);
+                track = distinct.len() <= 256;
+            }
+        }
+        Tally { histogram, bits, distinct, track }
     }
 }
 
@@ -1147,6 +1263,82 @@ pub fn read_prj(path: &Path) -> Option<String> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// A large band's statistics, counted on any number of threads, are those of one pass on
+    /// one thread (#1252) to the bit: the sums in the band's order, the counts, range, histogram
+    /// and distinct values whatever the runs. No-data, NaN, −0 and 0 (the first kept), byte-like
+    /// values, 257 small whole values, more than 256 whole values, runs that each have at most
+    /// 256 but more together, and fractions. The thread count is forced, so the merge is tested on
+    /// a machine with one core too.
+    #[test]
+    fn band_stats_on_several_threads_are_one_threads() {
+        // The statistics as one pass on one thread made them before #1252 (the first of equal
+        // values kept in the range).
+        fn one_pass(data: &[f32], valid: impl Fn(f32) -> bool) -> BandStats {
+            let (mut n, mut min, mut max, mut sum, mut sum2) = (0usize, f64::INFINITY, f64::NEG_INFINITY, 0.0f64, 0.0f64);
+            let mut whole = true;
+            for &v in data.iter().filter(|&&v| valid(v)) {
+                let x = v as f64;
+                n += 1;
+                if x < min {
+                    min = x;
+                }
+                if x > max {
+                    max = x;
+                }
+                sum += x;
+                sum2 += x * x;
+                whole &= x.fract() == 0.0;
+            }
+            if n == 0 {
+                return BandStats::default();
+            }
+            let mean = sum / n as f64;
+            let std_dev = (sum2 / n as f64 - mean * mean).max(0.0).sqrt();
+            let span = max - min;
+            let k = (HISTOGRAM_BINS as f64 - 1.0) / if span > 0.0 { span } else { 1.0 };
+            let mut histogram = vec![0u64; HISTOGRAM_BINS];
+            let mut distinct = std::collections::BTreeSet::new();
+            for &v in data.iter().filter(|&&v| valid(v)) {
+                let x = v as f64;
+                histogram[(((x - min) * k).round() as usize).min(HISTOGRAM_BINS - 1)] += 1;
+                if whole {
+                    distinct.insert(x as i64);
+                }
+            }
+            let categories = (whole && distinct.len() <= 256).then(|| distinct.into_iter().map(|v| v as f64).collect());
+            BandStats { count: n, min, max, mean, std_dev, histogram, categories }
+        }
+        let n = 2_000_003usize;
+        let at = |i: usize| ((i as u64 * 7919 + i as u64 / 1013 * 31) % 100_003) as usize;
+        let bands: [(&str, Vec<f32>); 7] = [
+            ("bytes", (0..n).map(|i| (at(i) % 256) as f32).collect()),
+            ("257 small whole", (0..n).map(|i| (at(i) % 257) as f32).collect()),
+            ("few whole", (0..n).map(|i| (at(i) % 200) as f32 * 3.0 - 250.0).collect()),
+            // Each half has 200 values, together 400: two runs keep theirs, the merge gives up.
+            ("halves", (0..n).map(|i| -((at(i) % 200) as f32) - if i < n / 2 { 1.0 } else { 201.0 }).collect()),
+            ("wide whole", (0..n).map(|i| at(i) as f32 - 7.0).collect()),
+            ("fractions", (0..n).map(|i| at(i) as f32 * 0.013 - 400.0).collect()),
+            ("gaps", (0..n).map(|i| [f32::NAN, -0.0, 0.0, -9999.0, 17.5][at(i) % 5]).collect()),
+        ];
+        let bits = |s: &BandStats| (s.count, s.min.to_bits(), s.max.to_bits(), s.mean.to_bits(), s.std_dev.to_bits());
+        let valid = |v: f32| v.is_finite() && v != -9999.0;
+        for (name, data) in &bands {
+            let want = one_pass(data, valid);
+            for threads in [1, 2, 7, 16] {
+                let got = BandStats::compute_on(data, valid, None, threads);
+                assert_eq!(bits(&got), bits(&want), "{name} on {threads}");
+                assert_eq!(got.histogram, want.histogram, "{name} on {threads}");
+                assert_eq!(got.categories, want.categories, "{name} on {threads}");
+            }
+        }
+        assert!(BandStats::compute_on(&bands[1].1, valid, None, 2).categories.is_none(), "257 small whole values");
+        assert!(BandStats::compute_on(&bands[3].1, valid, None, 2).categories.is_none(), "400 in two runs of 200");
+        // A band too small for threads, and one with no valid value.
+        let small: Vec<f32> = (0..1000).map(|i| (i % 37) as f32).collect();
+        assert_eq!(BandStats::from_values(&small), one_pass(&small, f32::is_finite));
+        assert_eq!(BandStats::compute_on(&vec![f32::NAN; n], valid, None, 4), BandStats::default());
+    }
 
     /// A band the machine can't hold is an error naming its size, not the end of the program
     /// (#1291), on 64-bit (the reservation fails) and wasm32 (the size overflows) alike; one it can
