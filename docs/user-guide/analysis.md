@@ -1103,7 +1103,11 @@ The **Script** pane runs commands from text, one per line (`id {json}`); its box
 short of the buttons, and then scrolls, so **Run** stays in view; Ctrl+Enter (⌘+Enter on macOS)
 in the box runs the script too. Above a run's results, a line tells its number, how long it took
 and when it started (`Run #2 (0.84 s)`, and `14:04 UTC` on the right), so a run made again by
-mistake shows (Undo takes a whole run back). On the desktop, a script's tools and models, with
+mistake shows (Undo takes a whole run back). The results show each line's result cut to a line;
+**Details…** on the run's line opens them whole in a window, as View Details in ArcGIS Pro's
+Geoprocessing History: each line folded under its command, opening to its result laid out to
+read, **Copy** for one and **Copy All** for the run, and why it stopped, if it did. On the
+desktop, a script's tools and models, with
 selections, layer renames and definition queries, the environment and the projection between
 them, are worked out in the background first, so the map and the rest of the window stay in
 use: the status bar shows **Run Script** and **Cancel**, and the results say **Running…** until

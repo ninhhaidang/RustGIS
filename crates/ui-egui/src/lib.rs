@@ -4783,6 +4783,7 @@ impl RustGisApp {
         graphicformat::save_draft(self);
         dialogs::show(self, &ctx);
         layerchooser::show(self, &ctx);
+        analysispane::script_details(self, &ctx);
         mapview::confirm_delete(self, &ctx);
         autosave::offer(self, &ctx);
         saveprompt::show(self, &ctx);
