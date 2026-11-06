@@ -622,4 +622,89 @@ mod tests {
         assert_eq!(asked.load(Ordering::Relaxed), 1, "one download, no probe first");
         plugins::unload("ui-scan");
     }
+
+    /// A download that lands after its plugin command stopped waiting for it isn't added, and
+    /// that is said once, with its address, whether or not that holds a key (#1202).
+    #[test]
+    fn a_late_download_is_refused_in_one_notice() {
+        use rustgis_engine::plugins;
+        let pkg = plugins::Package::from_zip(&plugins::testing::package("ui-late-said", &["edit", "network"])).unwrap();
+        plugins::load(pkg, "test").unwrap();
+        for first in ["https://x.org/first.csv", "https://x.org/first.csv?token=hunter2"] {
+            let mut app = RustGisApp::with_sample();
+            app.run("plugin:ui-late-said/f", json!({"op": "layer.addUrl", "params": {"url": first}})).unwrap();
+            // The app takes it and starts downloading; the command is run again for another
+            // address, so nothing waits for the first now.
+            let taken = app.session.take_url_requests();
+            assert_eq!(taken.len(), 1, "{taken:?}");
+            app.run("plugin:ui-late-said/f", json!({"op": "layer.addUrl", "params": {"url": "https://x.org/second.csv"}})).unwrap();
+            let id = app.session.download_started();
+            let mark = app.session.notice_mark();
+            let layers = app.session.map().layers.len();
+            let landed = crate::serviceui::Landed { id, url: first.to_string(), params: taken[0].clone(), origin: None };
+            app.add_landed(landed, b"name,lon,lat\nA,10,50\n".to_vec());
+            assert_eq!(app.session.map().layers.len(), layers, "not added");
+            let said: Vec<String> = app.session.notices_since(mark).iter().filter(|n| n.error).map(|n| n.text.clone()).collect();
+            assert_eq!(said.len(), 1, "{said:?}");
+            assert!(said[0].starts_with("https://x.org/first.csv") && said[0].contains("stopped waiting"), "{said:?}");
+            assert!(!said[0].contains("hunter2"), "{said:?}");
+        }
+        plugins::unload("ui-late-said");
+    }
+
+    /// A download that fails answers the command waiting for it at once, not when the wait runs
+    /// out, from what the app keeps of the request: a file read whole, and a service's page (#1202).
+    #[test]
+    fn a_failed_download_answers_the_command_waiting_at_once() {
+        use rustgis_engine::plugins;
+        use rustgis_engine::render::rustgis_tiles::cache;
+        let _turn = crate::fetching::turn();
+        cache::set_fetcher(|_, done| done(Err("404 Not Found".into())));
+        let pkg = plugins::Package::from_zip(&plugins::testing::package("ui-fail", &["edit", "network"])).unwrap();
+        plugins::load(pkg, "test").unwrap();
+        for params in [json!({"url": "https://x.org/a.csv"}), json!({"url": "https://x.org/collections/a/items", "service": true})] {
+            let mut app = RustGisApp::with_sample();
+            app.run("plugin:ui-fail/f", json!({"op": "layer.addUrl", "params": params})).unwrap();
+            let taken = app.session.take_url_requests();
+            assert_eq!(taken.len(), 1, "{taken:?}");
+            app.run("ui.addUrl", taken[0].clone()).unwrap();
+            let ctx = egui::Context::default();
+            let mut ran = Vec::new();
+            for _ in 0..400 {
+                app.poll_data_downloads();
+                crate::serviceui::poll_pages(&mut app, &ctx);
+                ran = app.session.poll_plugin_retries();
+                if !ran.is_empty() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            assert_eq!(ran.len(), 1, "{params}: {ran:?}");
+            assert!(ran[0].1.as_ref().is_err_and(|e| e.contains("404")), "{params}: {ran:?}");
+            assert!(!app.session.plugin_retries_waiting(), "{params}");
+        }
+        plugins::unload("ui-fail");
+    }
+
+    /// A service's page that fails is what the plugin command that asked for it is answered, when
+    /// it fails, not the wait running out (#1202).
+    #[test]
+    fn a_failed_service_read_answers_the_command_waiting() {
+        use rustgis_engine::plugins;
+        let pkg = plugins::Package::from_zip(&plugins::testing::package("ui-pages", &["edit", "network"])).unwrap();
+        plugins::load(pkg, "test").unwrap();
+        let mut app = RustGisApp::with_sample();
+        let url = "https://x.org/collections/a/items";
+        app.run("plugin:ui-pages/f", json!({"op": "layer.addUrl", "params": {"url": url, "service": true}})).unwrap();
+        let taken = app.session.take_url_requests();
+        assert_eq!(taken.len(), 1, "{taken:?}");
+        let id = app.session.download_started();
+        let landed = crate::serviceui::Landed { id, url: url.to_string(), params: taken[0].clone(), origin: None };
+        crate::serviceui::go_on(&mut app, landed, 0, rustgis_engine::data::ogc::Step::Failed("its second page failed".into()));
+        let ran = app.session.poll_plugin_retries();
+        assert_eq!(ran.len(), 1, "{ran:?}");
+        assert!(ran[0].1.as_ref().is_err_and(|e| e.contains("its second page failed")), "{ran:?}");
+        assert!(!app.session.plugin_retries_waiting());
+        plugins::unload("ui-pages");
+    }
 }

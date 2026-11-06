@@ -248,6 +248,7 @@ pub fn process_manifest(id: &str, permissions: &[&str], run: &[String]) -> Strin
     if let Some(c) = m["commands"].as_array_mut() {
         c.push(serde_json::json!({"id": "n", "label": "Noisy"}));
         c.push(serde_json::json!({"id": "c", "label": "Crash"}));
+        c.push(serde_json::json!({"id": "d", "label": "Say, then forward"}));
     }
     if let Some(t) = m["tools"].as_array_mut() {
         t.push(serde_json::json!({"id": "w", "name": "Work Forever", "params": []}));
@@ -259,7 +260,7 @@ pub fn process_manifest(id: &str, permissions: &[&str], run: &[String]) -> Strin
 /// test module does, then exits. Elsewhere it returns at once.
 ///
 /// - `h` logs "hi" and returns `{"hello": "world"}`; `f` sends its params as a host request
-///   and returns the reply; `e` fails with "nope"; `n` prints a line that isn't JSON and a JSON object that isn't a message first;
+///   and returns the reply; `d` says an error first, then does what `f` does; `e` fails with "nope"; `n` prints a line that isn't JSON and a JSON object that isn't a message first;
 ///   `c` writes "boom" to its error output and exits without answering; `s` never answers;
 ///   `g` starts another copy of itself that never answers, logs its process id and never
 ///   answers either.
@@ -290,6 +291,19 @@ pub fn serve_if_child() {
             let _ = writeln!(out, "{}", json!({"call": {"op": params["op"], "params": params["params"]}}));
             let _ = out.flush();
             let mut answer = String::new();
+            let _ = input.read_line(&mut answer);
+            serde_json::from_str(&answer).unwrap_or_else(|_| json!({"error": "no answer"}))
+        }
+        // An error notice first, then what `f` does.
+        Some('d') => {
+            let said = json!({"call": {"op": "host.notify", "params": {"text": "said before the call", "error": true}}});
+            let _ = writeln!(out, "{said}");
+            let _ = out.flush();
+            let mut answer = String::new();
+            let _ = input.read_line(&mut answer);
+            let _ = writeln!(out, "{}", json!({"call": {"op": params["op"], "params": params["params"]}}));
+            let _ = out.flush();
+            answer.clear();
             let _ = input.read_line(&mut answer);
             serde_json::from_str(&answer).unwrap_or_else(|_| json!({"error": "no answer"}))
         }

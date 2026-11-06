@@ -83,6 +83,19 @@ pub(crate) fn run_next(app: &mut RustGisApp, ctx: &egui::Context) {
     app.ui.plugin_start.clicks_stale = !held && began.elapsed() >= STALE_AFTER;
 }
 
+/// Runs again the commands whose downloads have come in. A long run holds clicks too, and one of
+/// them could run the command once more, so they go as [`run_next`]'s do; nothing else may ask for
+/// the frame that drops them.
+pub(crate) fn run_again(app: &mut RustGisApp, ctx: &egui::Context) {
+    let held = ctx.input(|i| i.pointer.any_down());
+    let began = web_time::Instant::now();
+    let ran = !app.session.poll_plugin_retries().is_empty();
+    if ran && !held && began.elapsed() >= STALE_AFTER {
+        app.ui.plugin_start.clicks_stale = true;
+        ctx.request_repaint();
+    }
+}
+
 /// At the end of a frame: a command waiting has been shown once more, with a busy cursor, and
 /// another frame is wanted (nothing else may ask for one).
 pub(crate) fn frame_drawn(app: &mut RustGisApp, ctx: &egui::Context) {
@@ -299,6 +312,43 @@ mod tests {
         assert!(h.state().session.map().layer_by_name("Brooks").is_some());
         assert!(h.state().ui.plugin_start.clicks_stale);
         plugins::unload("ui-late");
+    }
+
+    /// A command run again when its download lands holds clicks as a first run does; the frames
+    /// before it, with nothing to run, drop none. With a button down, none either: its release has
+    /// to reach egui.
+    #[test]
+    fn clicks_held_for_a_command_run_again_are_dropped() {
+        let mut h = launch("ui-again");
+        let pkg = plugins::Package::from_zip(&plugins::testing::package("ui-again-net", &["edit", "network"])).unwrap();
+        plugins::load(pkg, "test").unwrap();
+        let at = pos2(700.0, 400.0);
+        let button = |pressed| Event::PointerButton { pos: at, button: PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
+        h.event(Event::PointerMoved(at));
+        for held in [false, true] {
+            let url = format!("https://x.org/{held}.csv");
+            let params = json!({"op": "layer.addUrl", "params": {"url": url}});
+            h.state_mut().run("plugin:ui-again-net/f", params).unwrap();
+            // Taken before a frame would: it would start the download.
+            let taken = h.state_mut().session.take_url_requests();
+            assert_eq!(taken.len(), 1, "{taken:?}");
+            let id = h.state_mut().session.download_started();
+            h.step();
+            assert!(!h.state().ui.plugin_start.clicks_stale, "nothing ran");
+            assert!(h.state().session.plugin_retries_waiting());
+            if held {
+                h.event(button(true));
+                h.step();
+            }
+            let landed = crate::serviceui::Landed { id, url, params: taken[0].clone(), origin: None };
+            h.state_mut().add_landed(landed, b"name,lon,lat\nA,10,50\n".to_vec());
+            h.step();
+            assert!(!h.state().session.plugin_retries_waiting(), "it ran again");
+            assert_eq!(h.state().ui.plugin_start.clicks_stale, !held);
+            h.state_mut().ui.plugin_start.clicks_stale = false;
+        }
+        plugins::unload("ui-again-net");
+        plugins::unload("ui-again");
     }
 
     /// The frame that runs a command drops the clicks held for it in the next one, which has to

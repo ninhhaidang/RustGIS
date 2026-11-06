@@ -424,6 +424,7 @@ pub fn poll_pages(app: &mut RustGisApp, ctx: &egui::Context) {
         if !app.session.download_is_pending(read.landed.id) {
             let url = &address_in_message(&read.landed.url);
             let why = i18n::fmt("{url}: downloaded after its project was closed, so it wasn't added", &[("url", url)]);
+            app.session.request_failed(&read.landed.params, &why);
             app.landed_in_dialog(&read.landed.params, Err(&why));
             app.session.notify(why, false);
             continue;
@@ -465,7 +466,7 @@ fn next_request(app: &mut RustGisApp, params: &Value, pages: &Pages) -> Result<S
 
 /// The next answer fetched, or the collection added (with a note when some features were left
 /// unread), or why it couldn't be fetched said.
-fn go_on(app: &mut RustGisApp, landed: Landed, left: usize, step: Step) {
+pub(crate) fn go_on(app: &mut RustGisApp, landed: Landed, left: usize, step: Step) {
     match step {
         Step::Decoded(dataset, report, note) => {
             noted(app, &landed, note);
@@ -473,6 +474,7 @@ fn go_on(app: &mut RustGisApp, landed: Landed, left: usize, step: Step) {
         }
         Step::Failed(e) => {
             app.session.download_failed(landed.id);
+            app.session.request_failed(&landed.params, &e);
             let url = &landed.url;
             let e = if e.starts_with(url.as_str()) { e } else { format!("{url}: {e}") };
             app.landed_in_dialog(&landed.params, Err(&e));
