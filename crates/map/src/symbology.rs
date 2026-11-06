@@ -163,8 +163,8 @@ impl Symbol {
         self
     }
 
-    /// The colours a ramp gives a class, taken from `src`: the fill, and a line's or polygon's
-    /// outline. A polygon keeps its own fill opacity.
+    /// The colours a ramp gives a class, taken from `src`: the fill and the outline (a point's too,
+    /// which a ramp never sets, so it is one picked by hand). A polygon keeps its own fill opacity.
     fn with_colors_of(mut self, src: &Symbol, g: GeometryType) -> Symbol {
         match g {
             GeometryType::Polyline => {
@@ -175,7 +175,10 @@ impl Symbol {
                 self.fill = src.fill.with_alpha(self.fill.a());
                 self.stroke = src.stroke;
             }
-            _ => self.fill = src.fill,
+            _ => {
+                self.fill = src.fill;
+                self.stroke = src.stroke;
+            }
         }
         self
     }
@@ -4389,6 +4392,21 @@ mod tests {
         }
         assert_eq!(r.reverse_ramp(g), Some(RampReversal { reversed: 3, kept: 1, on_layer_stack: 3 }));
         assert_eq!(reds(&r), vec![("a".into(), 1), ("b".into(), 4), ("c".into(), 3), ("d".into(), 2)]);
+        // A point's hand-picked outline travels with its fill.
+        let mut r = unique_with(&[("a", 1), ("b", 2)]);
+        if let Renderer::Unique { classes, .. } = &mut r
+            && let Some(c) = classes.first_mut()
+        {
+            c.1.stroke = Rgba::rgb(200, 0, 0);
+        }
+        r.reverse_ramp(g);
+        let strokes = |r: &Renderer| match r {
+            Renderer::Unique { classes, .. } => classes.iter().map(|c| (c.1.fill.r(), c.1.stroke.r())).collect::<Vec<_>>(),
+            _ => vec![],
+        };
+        assert_eq!(strokes(&r), vec![(2, 255), (1, 200)]);
+        r.reverse_ramp(g);
+        assert_eq!(strokes(&r), vec![(1, 200), (2, 255)], "twice is the original");
         // A lone class has no other to change places with.
         assert_eq!(unique_with(&[("a", 1)]).reverse_ramp(g), Some(RampReversal { reversed: 0, kept: 0, on_layer_stack: 0 }));
         // Nothing to reverse for a single symbol.
