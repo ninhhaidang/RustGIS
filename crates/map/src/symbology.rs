@@ -376,6 +376,8 @@ pub struct RampReversal {
     pub reversed: usize,
     /// How many classes were left as they were, their own stack hiding their symbol.
     pub kept: usize,
+    /// How many of the `reversed` classes have no stack of their own, so they are drawn from the layer's.
+    pub on_layer_stack: usize,
 }
 
 impl Default for LineStroke {
@@ -1591,12 +1593,16 @@ impl Renderer {
     /// first entry of a Unique Values value is drawn, so a repeated value counts once. They are
     /// indices into `classes` (Unique Values) or `symbols` (Graduated Colors). `None` for the
     /// other renderers.
-    fn ramp_slots(&self, g: GeometryType) -> Option<(Vec<usize>, usize)> {
+    fn ramp_slots(&self, g: GeometryType) -> Option<(Vec<usize>, usize, usize)> {
         // Whether a class's own stacks hide its symbol's colors, for the geometry the layer draws.
         let replaced = |fills: Option<&Vec<FillLayer>>, strokes: Option<&Vec<LineStroke>>| {
             stack_hides_symbol(g, fills.map_or(&[][..], Vec::as_slice), strokes.map_or(&[][..], Vec::as_slice))
         };
-        let (mut slots, mut kept) = (Vec::new(), 0);
+        // A class's own stack, of the kind the layer draws, replaces the layer's whenever it isn't empty.
+        let bare = |fills: Option<&Vec<FillLayer>>, strokes: Option<&Vec<LineStroke>>| {
+            if g == GeometryType::Polygon { fills.is_none_or(|f| f.is_empty()) } else { strokes.is_none_or(|s| s.is_empty()) }
+        };
+        let (mut slots, mut kept, mut on_layer) = (Vec::new(), 0, 0);
         match self {
             Renderer::Unique { classes, class_fills, class_strokes, .. } => {
                 let mut seen = std::collections::HashSet::new();
@@ -1609,6 +1615,7 @@ impl Renderer {
                         kept += 1;
                     } else {
                         slots.push(i);
+                        on_layer += usize::from(bare(class_fills.get(value), class_strokes.get(value)));
                     }
                 }
             }
@@ -1618,12 +1625,13 @@ impl Renderer {
                         kept += 1;
                     } else {
                         slots.push(i);
+                        on_layer += usize::from(bare(class_fills.get(&i), class_strokes.get(&i)));
                     }
                 }
             }
             _ => return None,
         }
-        Some((slots, kept))
+        Some((slots, kept, on_layer))
     }
 
     fn class_symbol_mut(&mut self, i: usize) -> Option<&mut Symbol> {
@@ -1644,7 +1652,7 @@ impl Renderer {
     /// and how many were kept for their own stacks, or `None` for a renderer without classes
     /// coloured from a ramp.
     pub fn reverse_ramp(&mut self, g: GeometryType) -> Option<RampReversal> {
-        let (slots, kept) = self.ramp_slots(g)?;
+        let (slots, kept, on_layer_stack) = self.ramp_slots(g)?;
         let old: Vec<Symbol> = slots.iter().filter_map(|&i| self.class_symbol_mut(i).map(|s| *s)).collect();
         for (pos, &i) in slots.iter().enumerate() {
             let from = old.len().checked_sub(1 + pos).and_then(|k| old.get(k));
@@ -1653,7 +1661,8 @@ impl Renderer {
             }
         }
         // One class, or none, has no other to change places with.
-        Some(RampReversal { reversed: if slots.len() > 1 { slots.len() } else { 0 }, kept })
+        let moved = slots.len() > 1;
+        Some(RampReversal { reversed: if moved { slots.len() } else { 0 }, kept, on_layer_stack: if moved { on_layer_stack } else { 0 } })
     }
 
     /// Recolours every class from a ramp, preserving each polygon fill's opacity.
@@ -4104,7 +4113,7 @@ mod tests {
         let g = GeometryType::Point;
         // Stored 10, 100, 9: the legend lists 9, 10, 100 (numbers), so 9 and 100 swap colours.
         let mut r = unique_with(&[("10", 1), ("100", 2), ("9", 3)]);
-        assert_eq!(r.reverse_ramp(g), Some(RampReversal { reversed: 3, kept: 0 }));
+        assert_eq!(r.reverse_ramp(g), Some(RampReversal { reversed: 3, kept: 0, on_layer_stack: 3 }));
         assert_eq!(reds(&r), vec![("10".into(), 1), ("100".into(), 3), ("9".into(), 2)]);
         assert!(matches!(&r, Renderer::Unique { other, .. } if other.fill.r() == 0), "<all other values> is no ramp color");
         r.reverse_ramp(g);
@@ -4118,10 +4127,10 @@ mod tests {
         if let Renderer::Unique { class_strokes, .. } = &mut r {
             class_strokes.insert("a".into(), vec![LineStroke { color: Some(Rgba::rgb(9, 9, 9)), ..LineStroke::default() }]);
         }
-        assert_eq!(r.reverse_ramp(g), Some(RampReversal { reversed: 3, kept: 1 }));
+        assert_eq!(r.reverse_ramp(g), Some(RampReversal { reversed: 3, kept: 1, on_layer_stack: 3 }));
         assert_eq!(reds(&r), vec![("a".into(), 1), ("b".into(), 4), ("c".into(), 3), ("d".into(), 2)]);
         // A lone class has no other to change places with.
-        assert_eq!(unique_with(&[("a", 1)]).reverse_ramp(g), Some(RampReversal { reversed: 0, kept: 0 }));
+        assert_eq!(unique_with(&[("a", 1)]).reverse_ramp(g), Some(RampReversal { reversed: 0, kept: 0, on_layer_stack: 0 }));
         // Nothing to reverse for a single symbol.
         assert_eq!(Renderer::Single(Symbol::default_for(g, 0)).reverse_ramp(g), None);
     }

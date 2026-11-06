@@ -163,7 +163,7 @@ pub fn commands() -> Vec<C> {
             }
             let raster = l.raster.is_some();
             let (done, layer_stack) = match &mut l.raster {
-                Some(rl) => (rl.style.invert_ramp().then_some(RampReversal { reversed: 0, kept: 0 }), None),
+                Some(rl) => (rl.style.invert_ramp().then_some(RampReversal { reversed: 0, kept: 0, on_layer_stack: 0 }), None),
                 None => {
                     let g = l.geometry_type();
                     let stack = layer_stack_hiding_symbol(l, g);
@@ -189,7 +189,7 @@ pub fn commands() -> Vec<C> {
                     false,
                 );
             }
-            if let Some(what) = layer_stack.filter(|_| done.reversed > 0) {
+            if let Some(what) = layer_stack.filter(|_| done.on_layer_stack > 0) {
                 // The classes without a stack of their own are drawn from the layer's, in colors of its own.
                 s.notify(
                     format!(

@@ -26103,6 +26103,20 @@ fn layer_invert_ramp_says_when_the_layers_own_stack_hides_the_colors() {
     let said = notices(&mut s, "Countries");
     assert_eq!(said.len(), 1, "{said:?}");
     assert!(said[0].starts_with("2 class(es) drawn with fills or strokes of their own"), "{said:?}");
+
+    // Their own stacks replace the layer's even where they follow the class, so the layer's stack
+    // is not what shows and the command says nothing of it.
+    for index in 0..2 {
+        s.run("layer.fillLayers", &json!({"layer": "Countries", "index": index, "fills": [{"pattern": "solid"}]})).unwrap();
+    }
+    assert!(notices(&mut s, "Countries").is_empty(), "every class has a stack of its own");
+    // One class left on the layer's stack is enough to say it.
+    s.run("layer.symbology", &json!({"layer": "Countries", "type": "graduated", "field": "pop_est", "classes": 3})).unwrap();
+    s.run("layer.fillLayers", &json!({"layer": "Countries", "fills": [{"color": "#00AA00", "pattern": "solid"}]})).unwrap();
+    s.run("layer.fillLayers", &json!({"layer": "Countries", "index": 0, "fills": [{"pattern": "solid"}]})).unwrap();
+    let said = notices(&mut s, "Countries");
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(said[0].starts_with("The layer's stacked fills set their own colors"), "{said:?}");
 }
 
 #[test]
