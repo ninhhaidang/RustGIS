@@ -511,9 +511,9 @@ pub fn tool_complete(s: &mut Session, id: u64, done: ToolDone) -> Result<(), Str
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-/// A tool's run made ahead on a copy of the session, for a model the app runs on a thread of its
-/// own ([`super::workflows::model_ahead`]): what it read and what it made, for the model's run
-/// here to take instead of running the tool again.
+/// A tool's run made ahead on a copy of the session, for a model or script the app runs on a
+/// thread of its own ([`super::workflows::ahead_on_copy`]): what it read and what it made, for
+/// the run here to take instead of running the tool again.
 pub(crate) struct RanAhead {
     tool: String,
     params: Value,
@@ -526,17 +526,18 @@ pub(crate) struct RanAhead {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-/// The tools of a model run ahead: recorded on the copy, then taken in order by the run here.
+/// The tools of a model or script run ahead: recorded on the copy, then taken in order by the run
+/// here.
 pub(crate) enum Ahead {
     Recording(Vec<RanAhead>),
     Taking(std::collections::VecDeque<RanAhead>),
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-/// What a model's run on a copy of the session stops at, as its run here does them: a tool that
-/// writes files (which would be written twice), and plugin and GeoLibre tools, which run as they
-/// always have.
-const NOT_AHEAD: &str = "runs where the model runs";
+/// What a model's or script's run on a copy of the session stops at, as its run here does them: a
+/// tool that writes files (which would be written twice), plugin and GeoLibre tools, which run as
+/// they always have, and a script's line that may reach outside the session.
+pub(crate) const NOT_AHEAD: &str = "runs where the model or script runs";
 
 #[cfg(not(target_arch = "wasm32"))]
 /// Runs `run` taking the tools `ran` ahead: each one whose inputs are still the same as the run
@@ -1167,7 +1168,7 @@ pub fn run_tool_with(
             #[cfg(not(target_arch = "wasm32"))]
             let view = inputs.view.get().copied();
             drop(inputs);
-            // A file made, with a SaveFile parameter or not, is written where the model runs.
+            // A file made, with a SaveFile parameter or not, is written where the model or script runs.
             #[cfg(not(target_arch = "wasm32"))]
             if recording && matches!(&res, Ok(r) if matches!(r.output, Output::File { .. })) {
                 return Err(NOT_AHEAD.into());

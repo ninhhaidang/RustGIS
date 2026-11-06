@@ -758,7 +758,7 @@ pub struct Session {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) tools_ahead: Option<cmd::gp::Ahead>,
     /// Where the requests a copy of the session makes for a model's run ahead go
-    /// ([`cmd::workflows::model_ahead`]): the session's own Diagnostics, as when they're made
+    /// ([`cmd::workflows::ahead_on_copy`]): the session's own Diagnostics, as when they're made
     /// there. Its notices stay its own: the run there says them.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) requests_into: Option<rustgis_data::diagnostics::Capture>,

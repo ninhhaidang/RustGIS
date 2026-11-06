@@ -35,6 +35,11 @@ pub struct Workflow {
     pub script_out: Vec<(String, bool)>,
     /// The Script pane's last run, shown above its results.
     pub script_last: Option<ScriptRun>,
+    /// When each Script pane run under way or waiting started (seconds since 1970, and the
+    /// instant), in the order asked, for [`script_ran`] to tell as each lands.
+    script_started: std::collections::VecDeque<(u64, web_time::Instant)>,
+    /// When the last Script pane run landed: one waiting behind it started then, not when asked.
+    script_landed: Option<web_time::Instant>,
     pub trend: TrendForm,
     pub selected_only: Option<bool>,
     pub zonal_stats: ZonalStatsForm,
@@ -1550,6 +1555,49 @@ fn script_below(app: &RustGisApp, ui: &Ui) -> f32 {
     ui.spacing().interact_size.y + gap * 3.0 + last + results
 }
 
+/// Runs the Script pane's `script`: on the desktop its tools on a thread of their own first, the
+/// status bar showing it and Cancel, the results saying so until it lands ([`script_ran`]).
+fn start_script(app: &mut RustGisApp, script: String) {
+    // When it started and how long it took: a tool run outside the app in the browser
+    // (`gp.finish`) ends later.
+    let at = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    app.workflow.script_started.push_back((at, web_time::Instant::now()));
+    app.workflow.script_out = vec![(tl!("Running…").to_string(), false)];
+    #[cfg(not(target_arch = "wasm32"))]
+    let _ = crate::readjob::run_then(app, "script.run", json!({"script": script}), Some(script_ran));
+    #[cfg(target_arch = "wasm32")]
+    {
+        let r = app.run("script.run", json!({"script": script}));
+        script_ran(app, crate::Landed::Ran(r));
+    }
+}
+
+/// A Script pane run as it lands, in the pane: its number, how long it took, and each line's
+/// result, or why it didn't run.
+fn script_ran(app: &mut RustGisApp, landed: crate::Landed) {
+    let now = web_time::Instant::now();
+    let (asked_at, asked) = app.workflow.script_started.pop_front().unwrap_or((0, now));
+    // One that waited for the run before it started as that one landed.
+    let started = app.workflow.script_landed.filter(|&l| l > asked).unwrap_or(asked);
+    let at = if asked_at == 0 { 0 } else { asked_at.saturating_add(started.duration_since(asked).as_secs()) };
+    app.workflow.script_landed = Some(now);
+    let n = app.workflow.script_last.as_ref().map_or(1, |r| r.n.saturating_add(1));
+    app.workflow.script_last = Some(ScriptRun { n, secs: now.duration_since(started).as_secs_f64(), at });
+    app.workflow.script_out = match landed {
+        crate::Landed::Ran(Ok(v)) => v["ran"]
+            .as_array()
+            .map(|a| a.iter().map(|r| (format!("{} → {}", r["command"].as_str().unwrap_or(""), r["result"]), false)).collect())
+            .unwrap_or_default(),
+        crate::Landed::Ran(Err(e)) | crate::Landed::NotRun(e) => vec![(e, true)],
+    };
+    // Another still to land: the results say so first, above this one's, where their scroll
+    // starts, however many lines it ran.
+    if !app.workflow.script_started.is_empty() {
+        app.workflow.script_out.insert(0, (tl!("Running…").to_string(), false));
+    }
+    app.map.invalidate();
+}
+
 /// The most height a run's results take.
 fn script_out_height(ui: &Ui) -> f32 {
     (ui.text_style_height(&egui::TextStyle::Small) + ui.spacing().item_spacing.y) * SCRIPT_OUT_ROWS
@@ -1623,21 +1671,7 @@ fn script(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens, fit: bool) {
         let run = ui.button(tl!("Run")).on_hover_text(crate::i18n::fmt("Run the script ({keys})", &[("keys", shortcut)])).clicked();
         if run || ctrl_enter {
             let script = app.workflow.script.clone();
-            // When it started and how long it took: a tool run outside the app in the browser
-            // (`gp.finish`) ends later.
-            let at = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-            let started = web_time::Instant::now();
-            let out = app.run("script.run", json!({"script": script}));
-            let n = app.workflow.script_last.as_ref().map_or(1, |r| r.n.saturating_add(1));
-            app.workflow.script_last = Some(ScriptRun { n, secs: started.elapsed().as_secs_f64(), at });
-            app.workflow.script_out = match out {
-                Ok(v) => v["ran"]
-                    .as_array()
-                    .map(|a| a.iter().map(|r| (format!("{} → {}", r["command"].as_str().unwrap_or(""), r["result"]), false)).collect())
-                    .unwrap_or_default(),
-                Err(e) => vec![(e, true)],
-            };
-            app.map.invalidate();
+            start_script(app, script);
         }
         if ui.button(tl!("Commands…")).on_hover_text(tl!("Search every command and its parameters")).clicked() {
             let _ = app.run("ui.commandSearch", Value::Null);
@@ -1671,6 +1705,75 @@ fn script(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens, fit: bool) {
 mod tests {
     use super::*;
     use egui_kittest::kittest::Queryable;
+
+    /// A Script pane run works its tools out on a thread of its own: the results say Running…
+    /// until it lands, runs land in the order asked, and one cancelled or left says so.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_scripts_tools_run_on_a_thread_and_land_in_the_pane() {
+        let mut app = RustGisApp::with_sample();
+        app.reads_off_frame = true;
+        let layers = app.session.map().layers.len();
+        let script = r#"gp.run {"tool": "buffer", "params": {"input": "Cities", "distance": 100}}"#.to_string();
+        let landed = |app: &mut RustGisApp| {
+            let end = std::time::Instant::now() + std::time::Duration::from_secs(60);
+            while crate::readjob::land(app) {
+                assert!(std::time::Instant::now() < end, "the script never landed");
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        };
+        // The results say Running… until it lands, then each line's result, as Run #1.
+        start_script(&mut app, script.clone());
+        assert_eq!(app.workflow.script_out, vec![("Running…".to_string(), false)]);
+        assert_eq!(app.session.map().layers.len(), layers, "nothing added before it lands");
+        landed(&mut app);
+        assert_eq!(app.session.map().layers.len(), layers + 1);
+        assert!(
+            app.workflow.script_out.first().is_some_and(|(l, err)| !err && l.starts_with("gp.run → ")),
+            "{:?}",
+            app.workflow.script_out
+        );
+        assert_eq!(app.workflow.script_last.as_ref().map(|r| r.n), Some(1));
+        // Run twice: the second waits for the first, and each lands as its own run.
+        start_script(&mut app, script.clone());
+        start_script(&mut app, script.clone());
+        landed(&mut app);
+        assert_eq!(app.session.map().layers.len(), layers + 3);
+        assert_eq!(app.workflow.script_last.as_ref().map(|r| r.n), Some(3));
+        assert!(app.workflow.script_started.is_empty());
+        // Cancelled: nothing added, and the results say so.
+        start_script(&mut app, script.clone());
+        app.reads.cancel_for_tests();
+        landed(&mut app);
+        assert_eq!(app.session.map().layers.len(), layers + 3);
+        assert_eq!(app.workflow.script_out, vec![("Run Script was cancelled".to_string(), true)]);
+        // Another project opened meanwhile: it is left, and the notice names it as a script.
+        start_script(&mut app, script);
+        app.session.run("project.new", &Value::Null).unwrap();
+        landed(&mut app);
+        assert_eq!(app.workflow.script_out, vec![("Run Script was left: another project was opened".to_string(), true)]);
+        assert!(app.session.notices.iter().any(|n| n.text == "Run Script was left: another project was opened"));
+    }
+
+    /// A Script pane run that waited for the one before it is timed from when that one landed,
+    /// and the results say Running… while another is still to land.
+    #[test]
+    fn a_queued_script_run_is_timed_from_its_start() {
+        let mut app = RustGisApp::with_sample();
+        let asked = web_time::Instant::now() - std::time::Duration::from_secs(10);
+        app.workflow.script_started.extend([(1_000, asked), (1_000, asked)]);
+        let ran: Vec<Value> = (1..=8).map(|n| json!({"line": n, "command": "select.all", "result": null})).collect();
+        script_ran(&mut app, crate::Landed::Ran(Ok(json!({"ran": ran}))));
+        let first = app.workflow.script_last.as_ref().map(|r| (r.secs, r.at)).unwrap();
+        assert!(first.0 >= 10.0 && first.1 == 1_000, "{first:?}");
+        // First, where the results' scroll starts, above its eight lines.
+        assert_eq!(app.workflow.script_out.len(), 9);
+        assert_eq!(app.workflow.script_out[0], ("Running…".to_string(), false));
+        script_ran(&mut app, crate::Landed::NotRun("cancelled".into()));
+        let second = app.workflow.script_last.as_ref().map(|r| (r.secs, r.at)).unwrap();
+        assert!(second.0 < 5.0 && second.1 >= 1_010, "{second:?}");
+        assert_eq!(app.workflow.script_out, vec![("cancelled".to_string(), true)]);
+    }
 
     /// Interpolate runs on a thread of its own from the pane (#1291 step 3): the pane goes on while
     /// it works, a second run waits for the first, and its layer lands through its command, which

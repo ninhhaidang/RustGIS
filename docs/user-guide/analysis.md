@@ -1103,7 +1103,14 @@ The **Script** pane runs commands from text, one per line (`id {json}`); its box
 short of the buttons, and then scrolls, so **Run** stays in view; Ctrl+Enter (⌘+Enter on macOS)
 in the box runs the script too. Above a run's results, a line tells its number, how long it took
 and when it started (`Run #2 (0.84 s)`, and `14:04 UTC` on the right), so a run made again by
-mistake shows (Undo takes a whole run back). It colours the commands as you type, in both
+mistake shows (Undo takes a whole run back). On the desktop, a script's tools and models, with
+selections, layer renames and definition queries, the environment and the projection between
+them, are worked out in the background first, so the map and the rest of the window stay in
+use: the status bar shows **Run Script** and **Cancel**, and the results say **Running…** until
+the run is added. From the first line of any other kind (an edit, Add Data, a save, an export,
+a style or a zoom, a plugin or GeoLibre tool, a tool that writes a file) the rest runs as a
+script always has, holding the window until it finishes. A tool whose inputs change meanwhile runs again as the
+results are added, as in a model's run. It colours the commands as you type, in both
 themes: `#` comments in green italics, the command id, and the JSON's strings, numbers and
 `true`/`false`/`null`; an id no command has, or one that can't run in a script (`ui.*`, `script.*`,
 `notebook.run`), and parameters that aren't valid JSON are red and underlined. A script is read to
@@ -1181,8 +1188,9 @@ their name.
   writes a file, a plugin tool or a GeoLibre tool, with those after it. Those run as a model
   always has, holding the window until they finish, with the work limits of a run that can't
   be cancelled. A file a tool reads by its path isn't compared: one changed during the run
-  gives the result from what was read. A model run from a script, the command line or the
-  assistant runs where the command runs.
+  gives the result from what was read. A model run from a script in the Script pane is worked
+  out in the background with the script; one run from the command line or the assistant runs
+  where the command runs.
 - **Save** keeps the model in the project; **Export** writes it as a `*.model.json` file, which
   **Import** (or dropping the file on the window) opens again. A model from a file may not read
   or write files. **Copy Command** copies a `model.run` command that runs the model from the

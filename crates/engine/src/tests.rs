@@ -28840,3 +28840,83 @@ fn a_models_tools_run_ahead_are_taken_by_its_run() {
     assert_eq!(s.map().layer_by_name("Rings").unwrap().dataset.features.len(), 1);
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_scripts_tools_run_ahead_are_taken_by_its_run() {
+    use rustgis_analysis::control::Control;
+    let session = || {
+        let mut s = Session::new(Project::default());
+        let mut points = rustgis_data::Dataset::new("Points", rustgis_data::GeometryType::Point, Vec::new());
+        for (x, y) in [(8.0, 47.0), (9.0, 46.0), (10.0, 45.0)] {
+            points.push_next(Some(rustgis_data::Geometry::Point(rustgis_geom::Coord::new(x, y))), Vec::new());
+        }
+        s.map_mut().add_layer(rustgis_map::Layer::new(0, points));
+        s.run("model.new", &json!({"name": "Steps", "steps": [{"tool": "buffer", "params": {"input": "Points", "distance": 1000}}]}))
+            .unwrap();
+        s
+    };
+    let tool = |d: u32| format!(r#"gp.run {{"tool": "buffer", "params": {{"input": "Points", "distance": {d}}}}}"#);
+    let layers = |s: &Session| {
+        s.map()
+            .layers
+            .iter()
+            .map(|l| (l.name.clone(), format!("{:?}", l.dataset.features.iter().map(|f| &f.geometry).collect::<Vec<_>>())))
+            .collect::<Vec<_>>()
+    };
+
+    // Its tools, a selection between them and a model it runs are taken: what the run adds and
+    // keeps in history is the same, as one step to undo.
+    let p = json!({"script": format!("{}\nselect.all {{\"layer\": \"Points\"}}\n{}\nmodel.run {{\"name\": \"Steps\"}}", tool(1000), tool(2000))});
+    let mut here = session();
+    here.run("script.run", &p).unwrap();
+    let mut s = session();
+    let depth = s.undo_depth();
+    crate::cmd::reads::read_ahead(&s, "script.run", &p).unwrap().run(&Control::stoppable()).unwrap().placed(&mut s);
+    let r = s.run("script.run", &p).unwrap();
+    assert_eq!(s.tools_taken, 3, "{r}");
+    assert!(s.read_ahead.is_none() && s.tools_ahead.is_none());
+    assert_eq!(layers(&s), layers(&here));
+    assert_eq!(s.project.gp_history.len(), here.project.gp_history.len());
+    assert_eq!(s.undo_depth(), depth + 1);
+
+    // A line that may reach outside the session stops the copy: the run here runs it and what
+    // follows, so the project is saved once.
+    let dir = std::env::temp_dir().join(format!("rustgis-script-ahead-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let saved = dir.join("saved.rgis");
+    let p = json!({"script": format!("{}\nproject.save {}\n{}", tool(1000), json!({"path": saved.display().to_string()}), tool(2000))});
+    let mut s = session();
+    crate::cmd::reads::read_ahead(&s, "script.run", &p).unwrap().run(&Control::stoppable()).unwrap().placed(&mut s);
+    assert!(!saved.exists(), "the copy saved nothing");
+    s.run("script.run", &p).unwrap();
+    assert_eq!(s.tools_taken, 1);
+    assert!(saved.exists());
+    assert_eq!(s.project.gp_history.len(), 2);
+    std::fs::remove_dir_all(&dir).ok();
+
+    // An edit stops the copy (the rows it makes there are never the run here's): the tool
+    // before it is taken, the one after it runs here.
+    let p = json!({"script": format!("{}\nedit.addField {{\"layer\": \"Points\", \"name\": \"n\", \"type\": \"long\"}}\n{}", tool(1000), tool(2000))});
+    let mut s = session();
+    crate::cmd::reads::read_ahead(&s, "script.run", &p).unwrap().run(&Control::stoppable()).unwrap().placed(&mut s);
+    s.run("script.run", &p).unwrap();
+    assert_eq!(s.tools_taken, 1);
+    assert!(s.map().layer_by_name("Points").unwrap().dataset.fields.iter().any(|f| f.name == "n"));
+
+    // A selection changed meanwhile: the tools after it run here, on it.
+    let p = json!({"script": tool(1000)});
+    let mut s = session();
+    crate::cmd::reads::read_ahead(&s, "script.run", &p).unwrap().run(&Control::stoppable()).unwrap().placed(&mut s);
+    s.map_mut().layers[0].selection = vec![0];
+    s.run("script.run", &p).unwrap();
+    assert_eq!(s.tools_taken, 0);
+    // A script whose first line would stop the copy runs here, with no copy made.
+    let p = json!({"script": format!("edit.addField {{\"layer\": \"Points\", \"name\": \"m\", \"type\": \"long\"}}\n{}", tool(1000))});
+    assert!(crate::cmd::reads::read_ahead(&s, "script.run", &p).is_none());
+    assert!(crate::cmd::reads::read_ahead(&s, "script.run", &json!({"script": "# nothing"})).is_none());
+    // Each command a line may run on the copy is one the session has.
+    for id in crate::cmd::workflows::ON_A_COPY {
+        assert!(s.registry.get(id).is_some(), "{id}");
+    }
+}

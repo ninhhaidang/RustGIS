@@ -1,11 +1,11 @@
 //! Reads the desktop app makes on a thread of its own before a command adds what they read
 //! (#1291 step 3): Add Data's whole-file reads (a raster, a raster GDAL converts, a GeoJSON,
-//! delimited text or spreadsheet read whole), Load All Features, and a model's tools, run on a
-//! copy of the session. [`read_ahead`] takes what
-//! the read needs of the session, [`ReadAhead::run`] reads on the thread, and the app then runs
-//! the command as it would have with the read [`Read::placed`] in the session: the command takes
-//! it instead of reading again, so what it adds, says, logs and puts in Undo is the same as when
-//! it reads here. A script or the command line reads where the command runs.
+//! delimited text or spreadsheet read whole), Load All Features, and a model's or a script's
+//! tools, run on a copy of the session. [`read_ahead`] takes what the read needs of the session,
+//! [`ReadAhead::run`] reads on the thread, and the app then runs the command as it would have
+//! with the read [`Read::placed`] in the session: the command takes it instead of reading again,
+//! so what it adds, says, logs and puts in Undo is the same as when it reads here. A script's own
+//! Add Data lines, and the command line, read where the command runs.
 
 use std::any::Any;
 
@@ -64,7 +64,9 @@ pub fn read_ahead(s: &Session, command: &str, p: &Value) -> Option<ReadAhead> {
         "layer.addData" => super::layer::add_data_ahead(p),
         "layer.loadAll" => super::layer::load_all_ahead(s, p),
         #[cfg(not(target_arch = "wasm32"))]
-        "model.run" => Some(super::workflows::model_ahead(s, p)),
+        "model.run" => Some(super::workflows::ahead_on_copy(s, "model.run", p)),
+        #[cfg(not(target_arch = "wasm32"))]
+        "script.run" => super::workflows::script_ahead(s, p),
         _ => None,
     }
 }
