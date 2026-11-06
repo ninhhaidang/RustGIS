@@ -86,6 +86,16 @@ pub fn can_fetch() -> bool {
 
 /// Fetches a whole file through the installed fetcher (a file that can't be read in place).
 pub fn fetch_whole(url: &str, done: Done) {
+    if let Err(error) = crate::login_address::check(url) {
+        done(Err(Failed::Other(error.into())));
+        return;
+    }
+    let done: Done = if crate::login_address::is_wrapper(url) {
+        let address = url.to_string();
+        Box::new(move |r| done(crate::login_address::check(&address).map_err(|e| Failed::Other(e.into())).and(r)))
+    } else {
+        done
+    };
     let f = fetcher().lock().unwrap_or_else(|e| e.into_inner()).clone();
     match f {
         Some(f) => f(url, Want::Whole, done),
@@ -148,7 +158,7 @@ pub struct Remote {
 
 impl std::fmt::Debug for Remote {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Remote").field("url", &self.url).finish_non_exhaustive()
+        f.debug_struct("Remote").field("url", &crate::login_address::inner(&self.url)).finish_non_exhaustive()
     }
 }
 
@@ -185,6 +195,7 @@ impl Remote {
     }
 
     fn get(&self, at: u64, len: u64, exact: bool) -> Option<bytes::Bytes> {
+        crate::login_address::check(&self.url).ok()?;
         let mut s = self.lock();
         let len = match s.end {
             Some(end) if at >= end => return Some(bytes::Bytes::new()),
@@ -216,6 +227,7 @@ impl Remote {
     /// Bytes from `at` to the end of the held piece that holds `at` (a column chunk read in
     /// pages), or `None` (noted as missing, `want` bytes from there).
     pub fn from(&self, at: u64, want: u64) -> Option<bytes::Bytes> {
+        crate::login_address::check(&self.url).ok()?;
         let mut s = self.lock();
         s.tick += 1;
         let tick = s.tick;
@@ -244,6 +256,7 @@ impl Remote {
     /// The file's last `n` bytes (all of it when it's shorter), and whether that is the whole
     /// file; `None` when they aren't held (noted as missing).
     pub fn tail(&self, n: u64) -> Option<(Arc<Vec<u8>>, bool)> {
+        crate::login_address::check(&self.url).ok()?;
         let mut s = self.lock();
         match &s.tail {
             Some((t, whole)) if *whole || t.len() as u64 >= n => Some((t.clone(), *whole)),
@@ -308,6 +321,9 @@ impl Remote {
     /// Keeps fetched bytes `at..`: merged with the parts they meet. A piece shorter than asked
     /// for (`asked`) ends the file.
     fn insert(&self, at: u64, asked: u64, bytes: Vec<u8>) {
+        if crate::login_address::check(&self.url).is_err() {
+            return;
+        }
         let mut s = self.lock();
         if (bytes.len() as u64) < asked {
             let end = at.saturating_add(bytes.len() as u64);
@@ -359,6 +375,9 @@ impl Remote {
 
     /// Keeps a file's last `asked` bytes: fewer is the whole file.
     fn insert_tail(&self, asked: u64, bytes: Vec<u8>) {
+        if crate::login_address::check(&self.url).is_err() {
+            return;
+        }
         let whole = (bytes.len() as u64) < asked;
         let bytes = Arc::new(bytes);
         {
@@ -429,10 +448,18 @@ fn step<T: Send + 'static>(
     drive: u64,
     rounds: usize,
 ) {
+    if let Err(error) = crate::login_address::check(remote.url()) {
+        done(Err(DataError::Format(error.into())));
+        return;
+    }
     let r = {
         let _running = Running::enter(drive);
         work()
     };
+    if let Err(error) = crate::login_address::check(remote.url()) {
+        done(Err(DataError::Format(error.into())));
+        return;
+    }
     let wants = remote.take_missing(drive);
     if wants.is_empty() {
         done(r);
@@ -598,6 +625,17 @@ pub(crate) mod testing {
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    pub(crate) static LOGIN_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+    pub(crate) fn validate_login(address: &str) -> std::result::Result<(), &'static str> {
+        let binding = crate::login_address::parse(address)?.map(|b| b.binding);
+        if binding == Some("ffffffffffffffff") && !LOGIN_ACTIVE.load(Ordering::Acquire) {
+            Err("The service login is no longer active.")
+        } else {
+            Ok(())
+        }
+    }
+
     fn served() -> &'static Mutex<HashMap<String, (Arc<Vec<u8>>, Arc<AtomicUsize>)>> {
         static S: OnceLock<Mutex<HashMap<String, (Arc<Vec<u8>>, Arc<AtomicUsize>)>>> = OnceLock::new();
         S.get_or_init(Mutex::default)
@@ -634,6 +672,28 @@ pub(crate) mod testing {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn held_ranges_and_late_publications_are_revoked() {
+        crate::login_address::set_validator(testing::validate_login);
+        let address = crate::login_address::bind("ffffffffffffffff", "https://revoked.test", "https://revoked.test/file.fgb").unwrap();
+        let remote = Remote::new(&address);
+        remote.insert(0, 4, b"body".to_vec());
+        remote.insert_tail(4, b"tail".to_vec());
+        assert_eq!(remote.bytes(0, 4).unwrap().as_ref(), b"body");
+        assert!(remote.tail(4).is_some());
+        testing::LOGIN_ACTIVE.store(false, Ordering::Release);
+        assert!(remote.bytes(0, 4).is_none());
+        assert!(remote.from(0, 4).is_none());
+        assert!(remote.tail(4).is_none());
+        remote.insert(4, 4, b"late".to_vec());
+        remote.insert_tail(4, b"late".to_vec());
+        assert_eq!(remote.lock().held, 4);
+        assert_eq!(remote.lock().tail.as_ref().unwrap().0.as_slice(), b"tail");
+        let replacement = crate::login_address::bind("eeeeeeeeeeeeeeee", "https://revoked.test", "https://revoked.test/file.fgb").unwrap();
+        assert!(file(&replacement).bytes(0, 4).is_none());
+        assert!(file("https://revoked.test/file.fgb").bytes(0, 4).is_none());
+    }
 
     #[test]
     fn holds_merges_and_notes_what_is_missing() {

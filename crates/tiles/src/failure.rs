@@ -68,8 +68,10 @@ impl Failure {
     /// the browser's `HTTP 403`).
     pub fn new(url: &str, message: impl Into<String>) -> Self {
         let message = message.into();
+        let message = if message.contains(rustgis_data::login_address::PREFIX) { crate::logins::scrub(&message) } else { message };
         let reason = crate::cache::http_status(&message).filter(|s| *s >= 400).map_or(Reason::Other, Reason::Status);
-        Failure { url: url.to_string(), message, reason, answer: None }
+        let url = if url.contains(rustgis_data::login_address::PREFIX) { crate::logins::scrub(url) } else { url.to_string() };
+        Failure { url, message, reason, answer: None }
     }
 
     /// A failure that never reached an answer.
@@ -87,7 +89,7 @@ impl Failure {
         }
         let html = kept.iter().any(|(k, v)| k == "content-type" && v.to_ascii_lowercase().contains("html"));
         Failure {
-            url: url.to_string(),
+            url: crate::logins::inner(url).to_string(),
             // As ureq has always said it, so text that reads the status back still finds it.
             message: format!("http status: {status}"),
             reason: Reason::Status(status),
@@ -296,6 +298,14 @@ fn entities(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inactive_runtime_bindings_are_removed_from_failure_fields() {
+        let bound = rustgis_data::login_address::bind("0123456789abcdef", "https://failure.test", "https://failure.test/tile").unwrap();
+        let failure = Failure::new(&bound, format!("failed to fetch {bound}"));
+        assert!(!failure.url.contains("rustgis-login:") && !failure.url.contains("0123456789abcdef"));
+        assert!(!failure.message.contains("rustgis-login:") && !failure.message.contains("0123456789abcdef"));
+    }
 
     fn h(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
         pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()

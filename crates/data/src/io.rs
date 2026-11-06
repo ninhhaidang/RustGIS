@@ -373,9 +373,22 @@ pub fn project(ds: &Dataset, crs: Crs) -> Result<Dataset> {
 }
 
 /// Converts features' longitude/latitude geometry in place to the coordinates of `crs`, through
-/// its transformer `t`. Fails on a coordinate the system can't hold, naming its feature.
+/// its transformer `t`, as a step of the progress. Fails on a coordinate the system can't hold,
+/// naming its feature.
 pub(crate) fn project_features(features: &mut [crate::Feature], t: &crate::raster::Transformer, crs: Crs) -> Result<()> {
+    crate::progress::begin(features.len());
+    project_each(features, t, crs, true)
+}
+
+/// [`project_features`] without a step of its own: it counts each feature in the step under way
+/// when `count` is set, and otherwise only stops once the run is cancelled.
+pub(crate) fn project_each(features: &mut [crate::Feature], t: &crate::raster::Transformer, crs: Crs, count: bool) -> Result<()> {
     for f in features {
+        if count {
+            crate::progress::step(1)?;
+        } else {
+            crate::progress::check()?;
+        }
         if let Some(g) = f.geometry.take() {
             let mut ok = true;
             let p = g.map_coords(&|c| t.from_lonlat(c).unwrap_or(Coord::new(f64::NAN, f64::NAN)));
@@ -445,6 +458,7 @@ pub fn write_bytes_in(ds: &Dataset, ext: &str, crs: Crs) -> Result<(Vec<u8>, usi
 
 /// [`write_bytes_in`] for a dataset already in `crs`'s coordinates.
 fn projected_bytes(ds: &Dataset, ext: &str, crs: Crs) -> Result<(Vec<u8>, usize)> {
+    crate::progress::begin(ds.features.len());
     Ok(match ext {
         "geojson" | "json" => {
             let mut w = GeoJsonWriter::new(Vec::new(), &ds.name, &ds.fields)?;
@@ -454,12 +468,12 @@ fn projected_bytes(ds: &Dataset, ext: &str, crs: Crs) -> Result<(Vec<u8>, usize)
         "csv" => (to_csv(ds)?.into_bytes(), 0),
         "fgb" => (crate::source::fgb::write_in(ds, crs)?, without_geometry(ds)),
         "parquet" | "geoparquet" => (crate::source::parquet::write(ds)?, 0),
-        "kml" => (crate::interop::to_kml(ds, name_field(ds)).into_bytes(), without_geometry(ds)),
+        "kml" => (crate::interop::to_kml(ds, name_field(ds))?.into_bytes(), without_geometry(ds)),
         "kmz" => {
-            let kml = crate::interop::to_kml(ds, name_field(ds)).into_bytes();
+            let kml = crate::interop::to_kml(ds, name_field(ds))?.into_bytes();
             (crate::zip::write(&[("doc.kml".to_string(), kml)]).map_err(DataError::Format)?, without_geometry(ds))
         }
-        "gpx" => (crate::interop::to_gpx(ds, name_field(ds)).into_bytes(), without_geometry(ds)),
+        "gpx" => (crate::interop::to_gpx(ds, name_field(ds))?.into_bytes(), without_geometry(ds)),
         "shp" | "zip" => {
             let (parts, left_out) = shapefile_parts_in(ds, crs)?;
             let base: String = ds.name.chars().map(|c| if c.is_alphanumeric() || matches!(c, '-' | '_' | ' ') { c } else { '_' }).collect();
@@ -480,9 +494,44 @@ pub fn write_path(ds: &Dataset, path: &Path) -> Result<usize> {
     write_path_in(ds, path, Crs::LonLat)
 }
 
+/// How a GeoPackage export treats a GeoPackage already at its path.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GpkgMode {
+    /// Writes a new file; an existing one is refused, as it may hold other tables.
+    #[default]
+    NewFile,
+    /// Adds the table to the GeoPackage (a new file when there is none); refuses a table of its
+    /// name.
+    AddTable,
+    /// Replaces the GeoPackage's feature or attribute table of its name, which must be there.
+    ReplaceTable,
+}
+
+/// Where a GeoPackage export puts its table: how, and under what name (default: the layer's).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GpkgTable {
+    pub mode: GpkgMode,
+    pub name: Option<String>,
+}
+
+/// The table a GeoPackage export wrote: its name in the file (a reserved name is prefixed),
+/// whether it replaced one, and the views and triggers on other tables that name a replaced one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GpkgWritten {
+    pub table: String,
+    pub replaced: bool,
+    pub dependents: Vec<String>,
+}
+
 /// As [`write_path`], in the coordinate system `crs` (a GeoPackage, Shapefile or FlatGeobuf; see
 /// [`write_bytes_in`]).
 pub fn write_path_in(ds: &Dataset, path: &Path, crs: Crs) -> Result<usize> {
+    write_path_to(ds, path, crs, &GpkgTable::default()).map(|(left_out, _)| left_out)
+}
+
+/// As [`write_path_in`], a GeoPackage's table placed as `gpkg` says (other formats ignore it):
+/// also returns the table written.
+pub fn write_path_to(ds: &Dataset, path: &Path, crs: Crs, gpkg: &GpkgTable) -> Result<(usize, Option<GpkgWritten>)> {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
     let projected;
     let ds = if crs == Crs::LonLat || !PROJECTED_FORMATS.contains(&ext.as_str()) {
@@ -496,13 +545,18 @@ pub fn write_path_in(ds: &Dataset, path: &Path, crs: Crs) -> Result<usize> {
         "gpkg" => {
             #[cfg(not(target_arch = "wasm32"))]
             {
-                crate::source::gpkg::write_in(ds, path, crs)?;
-                Ok(0)
+                crate::progress::begin(ds.features.len());
+                let table = crate::source::gpkg::write_table_in(ds, path, crs, gpkg)?;
+                Ok((0, Some(table)))
             }
             #[cfg(target_arch = "wasm32")]
-            Err(DataError::Unsupported("GeoPackage in the browser".into()))
+            {
+                let _ = gpkg;
+                Err(DataError::Unsupported("GeoPackage in the browser".into()))
+            }
         }
         "shp" => {
+            crate::progress::begin(ds.features.len());
             let (parts, left_out) = shapefile_parts_in(ds, crs)?;
             // Every part is written to a temporary file first and renamed into place only once all
             // are written, the .shp last, so a failed write leaves the old Shapefile whole.
@@ -517,11 +571,12 @@ pub fn write_path_in(ds: &Dataset, path: &Path, crs: Crs) -> Result<usize> {
                 }
                 result
             });
-            if let Err(e) = staged {
+            // A cancel before the parts land leaves the old Shapefile as it was.
+            if let Err(e) = staged.map_err(DataError::from).and_then(|()| crate::progress::check()) {
                 for (tmp, _) in &written {
                     let _ = std::fs::remove_file(tmp);
                 }
-                return Err(e.into());
+                return Err(e);
             }
             written.sort_by_key(|(_, target)| target == path);
             // The old parts are moved aside first and put back if any new part fails to land, so
@@ -530,6 +585,11 @@ pub fn write_path_in(ds: &Dataset, path: &Path, crs: Crs) -> Result<usize> {
             let mut placed: Vec<std::path::PathBuf> = Vec::new();
             let mut result = Ok(());
             for (tmp, target) in &written {
+                // A cancel before the last part lands rolls back like a failed rename.
+                if crate::progress::check().is_err() {
+                    result = Err(std::io::Error::other(DataError::Cancelled));
+                    break;
+                }
                 if target.exists() {
                     // Any failure here rolls back like a failed rename.
                     let bak = match temp_beside(target) {
@@ -570,7 +630,7 @@ pub fn write_path_in(ds: &Dataset, path: &Path, crs: Crs) -> Result<usize> {
             for stale in ["qix", "sbn", "sbx"] {
                 let _ = std::fs::remove_file(path.with_extension(stale));
             }
-            Ok(left_out)
+            Ok((left_out, None))
         }
         _ if crs != Crs::LonLat && !PROJECTED_FORMATS.contains(&ext.as_str()) => {
             Err(DataError::Unsupported(format!(".{ext} in {} (it holds longitude/latitude only)", crs.label())))
@@ -578,7 +638,7 @@ pub fn write_path_in(ds: &Dataset, path: &Path, crs: Crs) -> Result<usize> {
         _ => {
             let (bytes, left_out) = projected_bytes(ds, &ext, crs)?;
             write_atomic(path, &bytes)?;
-            Ok(left_out)
+            Ok((left_out, None))
         }
     }
 }
@@ -648,6 +708,11 @@ pub fn write_atomic_with<T, E: From<std::io::Error>>(
     out.get_ref().sync_all()?;
     // Closed before the rename, including on Windows.
     drop(out);
+    // A cancel that came while it was written leaves the file there before as it was. This is
+    // the last look: the rename commits the file, and a Cancel after it finds it written.
+    if crate::progress::check().is_err() {
+        return Err(std::io::Error::other(DataError::Cancelled).into());
+    }
     std::fs::rename(&tmp, path)?;
     std::mem::forget(staged);
     Ok(value)
@@ -1198,6 +1263,7 @@ impl<W: std::io::Write> GeoJsonWriter<W> {
     /// Writes the next features.
     pub(crate) fn write(&mut self, features: &[crate::Feature]) -> Result<()> {
         for f in features {
+            crate::progress::step(1)?;
             if !std::mem::take(&mut self.first) {
                 self.out.write_all(b",")?;
             }
@@ -1668,6 +1734,7 @@ impl<W: std::io::Write> CsvWriter<W> {
     /// Writes the next features, a row each.
     pub(crate) fn write(&mut self, features: &[crate::Feature]) -> Result<()> {
         for f in features {
+            crate::progress::step(1)?;
             let mut row: Vec<String> = f.attrs.iter().map(csv_cell).collect();
             if self.point {
                 let c = f.geometry.as_ref().and_then(|g| g.label_point());
@@ -1781,6 +1848,92 @@ pub fn gather_shapefiles(files: Vec<(String, Vec<u8>)>) -> (Vec<(String, Vec<u8>
     (out, problems)
 }
 
+/// The addresses of a Shapefile's files beside its `.shp`, by the `.shp`'s address (#1238): the
+/// address with each of [`SHAPEFILE_SIDECARS`] in place of `.shp`, its extension in upper case
+/// when the `.shp`'s is (`.SHP`), its query and fragment kept (a signed address stays signed).
+/// `None` for an address whose path doesn't end in a file named `.shp`, for one without a scheme
+/// (`rios.shp`, a file on this computer), and for one with no path after its host
+/// (`https://x.org.shp`, `s3://bucket.shp`).
+pub fn shapefile_part_urls(url: &str) -> Option<Vec<(&'static str, String)>> {
+    let (path, rest) = url.split_at(url.find(['?', '#']).unwrap_or(url.len()));
+    let stem = path.get(..path.len().checked_sub(4)?)?;
+    let ext = path.get(stem.len()..)?;
+    // A path after the host: `https://x.org.shp` names a host, whose parts would be other hosts.
+    // A saved S3 connection's endpoint has its own `://`, so the check looks inside the wrapper.
+    let has_path = crate::s3_address::inner(stem).split_once("://").is_some_and(|(_, rest)| rest.contains('/'));
+    if !ext.eq_ignore_ascii_case(".shp") || stem.ends_with('/') || !has_path {
+        return None;
+    }
+    let upper = ext == ".SHP";
+    Some(
+        SHAPEFILE_SIDECARS
+            .iter()
+            .map(|&e| (e, format!("{stem}.{}{rest}", if upper { e.to_ascii_uppercase() } else { e.to_string() })))
+            .collect(),
+    )
+}
+
+/// A Shapefile fetched by its files' addresses as one zipped Shapefile ([`gather_shapefiles`]):
+/// the `.shp` named `file_name`, and the parts that answered, by extension. An error when the
+/// `.dbf` isn't among them or they are too large to read together.
+pub fn zip_shapefile_parts(file_name: &str, shp: Vec<u8>, parts: Vec<(&str, Vec<u8>)>) -> std::result::Result<Vec<u8>, String> {
+    let stem = Path::new(file_name).file_stem().and_then(|s| s.to_str()).filter(|s| !s.is_empty()).unwrap_or("layer");
+    if !parts.iter().any(|(e, _)| e.eq_ignore_ascii_case("dbf")) {
+        return Err(format!("{stem}.shp: its .dbf isn't beside it"));
+    }
+    let mut files = vec![(format!("{stem}.shp"), shp)];
+    files.extend(parts.into_iter().map(|(e, b)| (format!("{stem}.{}", e.to_ascii_lowercase()), b)));
+    let (out, problems) = gather_shapefiles(files);
+    out.into_iter()
+        .find(|(n, _)| n.ends_with(".zip"))
+        .map(|(_, b)| b)
+        .ok_or_else(|| if problems.is_empty() { format!("{stem}.shp: its files couldn't be read together") } else { problems.join("; ") })
+}
+
+/// Whether a zip entry is a macOS resource fork (`__MACOSX/`, `._*`), which isn't read.
+fn is_resource_fork(name: &str) -> bool {
+    name.split('/').any(|part| part == "__MACOSX" || part.starts_with("._"))
+}
+
+/// Which of its optional parts (`.shx`, `.prj`, `.cpg`) each Shapefile in a zip lacks, beside it
+/// by its name: what a Shapefile added by its `.shp` address (#1238) was read without, to say so.
+/// One entry per `.shp` that lacks any, its name as in the zip, in name order. Only the `.shp`s
+/// [`read_zip`] reads count: those with their `.dbf`, not a macOS resource fork, the first
+/// [`MAX_ZIP_LAYERS`] in name order (the reader counts those it reads, so past a damaged one it
+/// reads one more than these). Empty for bytes that aren't a zip.
+pub fn shapefile_zip_lacks(bytes: &[u8]) -> Vec<(String, Vec<&'static str>)> {
+    // The entries' names only: `want` sees each, and none is inflated.
+    let names = std::cell::RefCell::new(Vec::new());
+    if crate::zip::read_matching(bytes, |n| {
+        if !is_resource_fork(n) {
+            names.borrow_mut().push(n.to_string());
+        }
+        false
+    })
+    .is_err()
+    {
+        return Vec::new();
+    }
+    let names = names.into_inner();
+    // A set: a served zip may hold up to 65,535 entries.
+    let lower: std::collections::HashSet<String> = names.iter().map(|n| n.to_ascii_lowercase()).collect();
+    // The Shapefiles the reader takes: in name order, with their `.dbf`, as many as it reads.
+    let mut shps: Vec<(&String, String)> = names
+        .iter()
+        .filter(|n| n.to_ascii_lowercase().ends_with(".shp"))
+        .filter_map(|n| Some((n, n.get(..n.len() - 4)?.to_ascii_lowercase())))
+        .filter(|(_, s)| lower.contains(&format!("{s}.dbf")))
+        .collect();
+    shps.sort();
+    shps.into_iter()
+        .take(MAX_ZIP_LAYERS)
+        .filter_map(|(n, s)| {
+            let lacks: Vec<&'static str> = ["shx", "prj", "cpg"].into_iter().filter(|e| !lower.contains(&format!("{s}.{e}"))).collect();
+            (!lacks.is_empty()).then(|| (n.clone(), lacks))
+        })
+        .collect()
+}
+
 /// Most layers read from one zip archive.
 pub const MAX_ZIP_LAYERS: usize = 32;
 
@@ -1804,13 +1957,12 @@ pub fn read_zip_in(file_name: &str, bytes: &[u8], crs: Option<Crs>) -> Result<Ve
         c.transformer().map_err(DataError::Format)?;
     }
     let lower = |n: &str| n.to_ascii_lowercase();
-    let is_fork = |n: &str| n.split('/').any(|part| part == "__MACOSX" || part.starts_with("._"));
     let ext_of = |n: &str| Path::new(n).extension().and_then(|e| e.to_str()).map(lower).unwrap_or_default();
     // A `.pbf` is read only as an OpenStreetMap extract (`.osm.pbf`): a vector tile set's
     // `z/x/y.pbf` files aren't extracted at all.
     let wanted = |n: &str| {
         let e = ext_of(n);
-        !is_fork(n)
+        !is_resource_fork(n)
             && (matches!(e.as_str(), "shp" | "shx" | "dbf" | "prj" | "cpg" | "mid")
                 || (e == "pbf" && lower(n).ends_with(".osm.pbf"))
                 || (!matches!(e.as_str(), "zip" | "txt" | "pbf") && READ_EXTENSIONS.contains(&e.as_str())))
@@ -2387,6 +2539,7 @@ pub fn shapefile_parts_in(ds: &Dataset, crs: Crs) -> Result<(Vec<(&'static str, 
         let mut w = shapefile::Writer::new(shapes, table.build_with_dest(&mut dbf));
         let multi_points = ds.features.iter().any(|f| matches!(f.geometry, Some(Geometry::MultiPoint(_))));
         for f in &ds.features {
+            crate::progress::step(1)?;
             let ok = match (&f.geometry, ds.geometry_type) {
                 (Some(Geometry::Point(c)), GeometryType::Point) if !multi_points && finite(&c) => {
                     w.write_shape_and_record(&pt(c), &record(f)).map_err(fmt)?;
@@ -3358,6 +3511,75 @@ mod tests {
         assert!(problems[0].starts_with("huge.shp:") && problems[0].contains("MB"), "{problems:?}");
     }
 
+    /// A Shapefile's parts by the address of its `.shp` (#1238): beside it, in its case, the query
+    /// kept; fetched, they zip into one that reads, and without the `.dbf` they don't.
+    #[test]
+    fn shapefile_parts_by_address() {
+        let urls = |u: &str| shapefile_part_urls(u).map(|v| v.into_iter().map(|(_, u)| u).collect::<Vec<_>>());
+        assert_eq!(
+            urls("https://geo.example.org/PI/TERESINA/HIDROGRAFIA/PI_2211001_RIOS_SIMPLES.shp").unwrap(),
+            ["dbf", "shx", "prj", "cpg"].map(|e| format!("https://geo.example.org/PI/TERESINA/HIDROGRAFIA/PI_2211001_RIOS_SIMPLES.{e}"))
+        );
+        assert_eq!(urls("https://x.org/a/RIOS.SHP?token=1#f").unwrap()[0], "https://x.org/a/RIOS.DBF?token=1#f");
+        assert_eq!(urls("s3://bucket/rios.shp").unwrap()[2], "s3://bucket/rios.prj");
+        let wrapped = "rustgis-s3:0123456789abcdef:18:https://minio.test:s3://bucket/rios.shp";
+        assert_eq!(urls(wrapped).unwrap()[0], "rustgis-s3:0123456789abcdef:18:https://minio.test:s3://bucket/rios.dbf");
+        for not_shp in [
+            "https://x.org/a.zip",
+            "https://x.org/a.shp.zip",
+            "https://x.org/.shp",
+            "https://x.org/a?f=x.shp",
+            "https://x.org.shp",
+            "s3://bucket.shp",
+            "rustgis-s3:0123456789abcdef:18:https://minio.test:s3://bucket.shp",
+            "rios.shp",
+            "",
+        ] {
+            assert!(urls(not_shp).is_none(), "{not_shp}");
+        }
+        let (ds, _) = read_geojson(
+            r#"{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"n":"a"},"geometry":{"type":"Point","coordinates":[1,2]}}]}"#,
+            "rios",
+        )
+        .unwrap();
+        let (parts, _) = shapefile_parts(&ds).unwrap();
+        let shp = parts.iter().find(|(e, _)| *e == "shp").unwrap().1.clone();
+        let others: Vec<(&str, Vec<u8>)> = parts.iter().filter(|(e, _)| *e != "shp").map(|(e, b)| (*e, b.clone())).collect();
+        let zip = zip_shapefile_parts("RIOS_SIMPLES.shp", shp.clone(), others.clone()).unwrap();
+        let (read, _) = read_bytes("RIOS_SIMPLES.zip", &zip).unwrap();
+        assert_eq!((read.name.as_str(), read.features.len()), ("RIOS_SIMPLES", 1));
+        assert!(shapefile_zip_lacks(&zip).is_empty());
+        let no_prj: Vec<_> = others.iter().filter(|(e, _)| !matches!(*e, "prj" | "cpg")).cloned().collect();
+        let lacks = |z: &[u8]| shapefile_zip_lacks(z).into_iter().map(|(n, e)| format!("{n}: {}", e.join(" "))).collect::<Vec<_>>();
+        assert_eq!(lacks(&zip_shapefile_parts("RIOS_SIMPLES.shp", shp.clone(), no_prj).unwrap()), ["RIOS_SIMPLES.shp: prj cpg"]);
+        assert!(shapefile_zip_lacks(&shp).is_empty(), "not a zip");
+        // Another file's .prj isn't this one's.
+        let mixed: Vec<(String, Vec<u8>)> =
+            [("roads.shp", &shp), ("roads.dbf", &shp), ("roads.shx", &shp), ("roads.cpg", &shp), ("other.prj", &shp)]
+                .map(|(n, b)| (n.to_string(), b.clone()))
+                .into();
+        assert_eq!(lacks(&crate::zip::write(&mixed).unwrap()), ["roads.shp: prj"]);
+        // A stray .shp without its .dbf, and a macOS resource fork, aren't read, so they lack nothing.
+        let mut whole: Vec<(String, Vec<u8>)> =
+            ["roads.shp", "roads.dbf", "roads.shx", "roads.prj", "roads.cpg", "stray.shp", "__MACOSX/._roads.shp"]
+                .map(|n| (n.to_string(), shp.clone()))
+                .into();
+        assert!(shapefile_zip_lacks(&crate::zip::write(&whole).unwrap()).is_empty());
+        whole.retain(|(n, _)| n != "roads.prj");
+        assert_eq!(lacks(&crate::zip::write(&whole).unwrap()), ["roads.shp: prj"]);
+        // Each Shapefile for itself: one with its .prj, one without.
+        let two: Vec<(String, Vec<u8>)> =
+            ["a.shp", "a.dbf", "a.shx", "a.prj", "a.cpg", "b.shp", "b.dbf", "b.shx", "b.cpg"].map(|n| (n.to_string(), shp.clone())).into();
+        assert_eq!(lacks(&crate::zip::write(&two).unwrap()), ["b.shp: prj"]);
+        // As many as the reader reads: of 40 without a .prj, the first 32 by name.
+        let many: Vec<(String, Vec<u8>)> =
+            (0..40).flat_map(|i| ["shp", "dbf", "shx", "cpg"].map(|e| (format!("s{i:02}.{e}"), shp.clone()))).collect();
+        let said = shapefile_zip_lacks(&crate::zip::write(&many).unwrap());
+        assert_eq!((said.len(), said[0].0.as_str(), said[31].0.as_str()), (MAX_ZIP_LAYERS, "s00.shp", "s31.shp"));
+        let no_dbf: Vec<_> = others.into_iter().filter(|(e, _)| *e != "dbf").collect();
+        assert!(zip_shapefile_parts("RIOS_SIMPLES.shp", shp, no_dbf).unwrap_err().contains(".dbf"));
+    }
+
     /// Typed datasets can retain incompatible cells or fractional values from dynamic sources.
     #[test]
     fn shapefile_notes_cover_incompatible_and_rounded_cells() {
@@ -3472,5 +3694,64 @@ mod tests {
         let huge = "x".repeat(5000);
         let note = shapefile_names_note(&layer(&[&huge]).fields, "h.shp").unwrap();
         assert!(note.len() < 200 && note.contains(&format!("'{}…' → 'xxxxxxxxxx'", "x".repeat(40))), "{note}");
+    }
+
+    /// A cancelled export stops with [`DataError::Cancelled`] and leaves nothing at (or beside)
+    /// its destination, in every format; without a probe the same exports are written.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_cancelled_export_leaves_no_file() {
+        use crate::progress::tests::Counted;
+        let fields = vec![Field::new("name", FieldType::Text), Field::new("n", FieldType::Integer)];
+        let mut ds = Dataset::new("points", GeometryType::Point, fields);
+        for i in 0..3000u64 {
+            let c = Coord::new(i as f64 / 100.0, (i % 80) as f64);
+            ds.features.push(crate::Feature {
+                id: i + 1,
+                geometry: Some(Geometry::Point(c)),
+                attrs: vec![Value::Text(format!("p{i}")), Value::Int(i as i64)],
+            });
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let exts = ["geojson", "csv", "fgb", "gpkg", "parquet", "shp", "kml", "gpx"];
+        for ext in exts {
+            let path = dir.path().join(format!("out.{ext}"));
+            let probe = Counted::cancelling_after(100);
+            let res = {
+                let _g = crate::progress::install(Some(probe.clone()));
+                write_path_in(&ds, &path, Crs::LonLat)
+            };
+            assert!(matches!(res, Err(DataError::Cancelled)), "{ext}: {res:?}");
+            let left: Vec<_> = std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name()).collect();
+            assert!(left.is_empty(), "{ext} left {left:?}");
+        }
+        // Cancelled once every feature is written, before the file is moved into place: a file
+        // there before stays as it was (a GeoPackage export never replaces one).
+        for ext in exts {
+            let path = dir.path().join(format!("old.{ext}"));
+            if ext != "gpkg" {
+                std::fs::write(&path, b"old").unwrap();
+            }
+            let probe = Counted::cancelling_after(ds.features.len() as u64);
+            let res = {
+                let _g = crate::progress::install(Some(probe.clone()));
+                write_path_in(&ds, &path, Crs::LonLat)
+            };
+            assert!(matches!(res, Err(DataError::Cancelled)), "{ext}: {res:?}");
+            if ext != "gpkg" {
+                assert_eq!(std::fs::read(&path).unwrap(), b"old", "{ext}");
+                std::fs::remove_file(&path).unwrap();
+            }
+            let left: Vec<_> = std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name()).collect();
+            assert!(left.is_empty(), "{ext} left {left:?}");
+        }
+        for ext in exts {
+            let path = dir.path().join(format!("out.{ext}"));
+            write_path_in(&ds, &path, Crs::LonLat).unwrap();
+            assert!(path.exists(), "{ext}");
+        }
+        for e in ["shp", "shx", "dbf"] {
+            assert!(dir.path().join(format!("out.{e}")).exists());
+        }
     }
 }

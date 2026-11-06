@@ -41,6 +41,11 @@ pub struct Dialogs {
     /// Add From Database: load the PostgreSQL table whole, to be edited and saved back.
     pub edit: bool,
     pub mode: &'static str,
+    /// Export Features' GeoPackage destination: one of [`GPKG_MODES`]' codes (empty: a new file).
+    pub gpkg_mode: &'static str,
+    /// The layer Export Features was opened on (its id and instance), exported whatever is
+    /// selected while the dialog stays open.
+    pub export_layer: Option<(u32, u64)>,
     pub flag: bool,
     pub error: Option<String>,
     pub info: Option<String>,
@@ -167,7 +172,13 @@ impl Dialogs {
             "renameLayer" => self.text = active.map(|l| l.name.clone()).unwrap_or_default(),
             // A file name can't hold a folder separator, which a project name may.
             "saveProject" => self.text = format!("{}.rgis", s.project.name.replace(['/', '\\'], "-")),
-            "exportLayer" => self.mode = "geojson",
+            "exportLayer" => {
+                self.mode = "geojson";
+                self.gpkg_mode = "newFile";
+                self.export_layer = active.map(|l| (l.id, l.instance_id()));
+                // The GeoPackage table's name.
+                self.text = active.map(|l| l.name.clone()).unwrap_or_default();
+            }
             // The active layer when it is from PostGIS, else the first that is.
             "pgSave" | "pgDiscard" => {
                 let pg = |l: &&rustgis_engine::map::Layer| l.postgis.is_some();
@@ -583,6 +594,10 @@ pub const EXPORT_FORMATS: &[(&str, &str)] = &[
     ("GPX", "gpx"),
 ];
 
+/// Where Export Features puts a GeoPackage's table: (`share.exportLayer` mode, label shown).
+pub const GPKG_MODES: &[(&str, &str)] =
+    &[("newFile", "A new GeoPackage"), ("addTable", "A new table in a GeoPackage"), ("replaceTable", "A table replaced in a GeoPackage")];
+
 /// The formats Export Features offers: all of [`EXPORT_FORMATS`] on the desktop. The web app
 /// leaves out GeoPackage, written with SQLite, and FlatGeobuf, whose writer needs a temporary
 /// file; the browser has neither.
@@ -611,12 +626,46 @@ fn export_layer(app: &mut RustGisApp, ui: &mut egui::Ui) -> bool {
             .response
             .labelled_by(input_label.id);
         ui.end_row();
+        // A GeoPackage can take the layer as one more table (desktop only: the browser offers none).
+        if app.dialogs.mode == "gpkg" && !web {
+            let into_label = ui.label(tl!("Into"));
+            let shown = GPKG_MODES.iter().find(|(m, _)| *m == app.dialogs.gpkg_mode).map_or(GPKG_MODES[0].1, |(_, l)| *l);
+            egui::ComboBox::from_id_salt("export_gpkg_mode")
+                .selected_text(tl!(shown))
+                .width(220.0)
+                .show_ui(ui, |ui| {
+                    for (mode, label) in GPKG_MODES {
+                        ui.selectable_value(&mut app.dialogs.gpkg_mode, *mode, tl!(*label));
+                    }
+                })
+                .response
+                .labelled_by(into_label.id);
+            ui.end_row();
+            if !matches!(app.dialogs.gpkg_mode, "" | "newFile") {
+                let table_label = ui.label(tl!("Table"));
+                ui.add(egui::TextEdit::singleline(&mut app.dialogs.text).desired_width(220.0)).labelled_by(table_label.id);
+                ui.end_row();
+            }
+        }
     });
     if app.dialogs.mode == "shp" && web {
         ui.label(egui::RichText::new(tl!("The Shapefile's files download as one zip.")).small().weak());
     }
+    let into_existing = app.dialogs.mode == "gpkg" && !web && !matches!(app.dialogs.gpkg_mode, "" | "newFile");
+    if into_existing {
+        ui.label(egui::RichText::new(tl!("Pick the GeoPackage next. Its other tables are kept.")).small().weak());
+    }
     buttons(app, ui, if web { "Download" } else { "Export…" }, |app| {
-        app.run("ui.exportLayer", json!({"format": app.dialogs.mode})).map(|_| ())
+        let mut p = json!({"format": app.dialogs.mode});
+        if let Some((layer, instance)) = app.dialogs.export_layer {
+            p["layer"] = json!(layer);
+            p["instance"] = json!(instance);
+        }
+        if into_existing {
+            p["mode"] = json!(app.dialogs.gpkg_mode);
+            p["tableName"] = json!(app.dialogs.text);
+        }
+        app.run("ui.exportLayer", p).map(|_| ())
     })
 }
 
@@ -783,7 +832,8 @@ fn add_csv(app: &mut RustGisApp, ui: &mut egui::Ui) -> bool {
 /// becomes `way` once connected, and stays `before` when connecting fails.
 fn go_to(app: &mut RustGisApp, url: &str, kind: &str, way: Vec<(String, &'static str)>, before: Vec<(String, &'static str)>) {
     app.dialogs.info = None;
-    match app.run("ui.addService", json!({"url": url, "type": kind})) {
+    let connection = app.ui.service.as_ref().and_then(|source| source.connection.clone());
+    match app.run("ui.addService", json!({"url": url, "type": kind, "connection": connection})) {
         Ok(_) => app.ui.service_browse.back = way,
         Err(e) => {
             app.ui.service_browse.back = before;
@@ -930,6 +980,8 @@ fn add_service(app: &mut RustGisApp, ui: &mut egui::Ui) -> bool {
     let mut back = false;
     let keepable = app.ui.service.as_ref().and_then(|conn| {
         let (url, kind) = app.ui.service_browse.back.first().map(|(u, k)| (u.as_str(), *k)).unwrap_or((&conn.url, conn.kind));
+        // The address as typed: one read through a login is matched and kept without its binding.
+        let url = rustgis_engine::data::login_address::inner(url);
         crate::connectionui::picked(&list, app.dialogs.connection.as_deref(), url).is_none().then(|| (url.to_string(), kind))
     });
     let mut keep_root = false;
@@ -1144,14 +1196,24 @@ fn add_service(app: &mut RustGisApp, ui: &mut egui::Ui) -> bool {
     if keep_root && let Some((url, kind)) = keepable {
         // "auto" is the dialog's detection mode; saved connections call that kind "service".
         match crate::connectionui::keep(app, json!({"kind": if kind == "auto" { "service" } else { kind }, "address": url})) {
-            Ok(id) => app.dialogs.connection = Some(id),
+            Ok(id) => {
+                app.dialogs.connection = Some(id.clone());
+                if let Some(source) = &mut app.ui.service {
+                    source.connection = Some(id);
+                }
+            }
             Err(e) => app.dialogs.error = Some(e),
         }
     }
-    if let Some(p) = import
-        && let Err(e) = app.run("ui.importService", p)
-    {
-        app.dialogs.error = Some(e);
+    if let Some(mut p) = import {
+        let connection = app.ui.service.as_ref().and_then(|source| source.connection.clone());
+        let url = p.get("url").and_then(Value::as_str).unwrap_or("");
+        if let Some(id) = crate::serviceui::connection_for(app, connection.as_deref(), url) {
+            p["connection"] = json!(id);
+        }
+        if let Err(e) = app.run("ui.importService", p) {
+            app.dialogs.error = Some(e);
+        }
     }
     if let Some(((command, params), title)) = remove {
         match app.run(command, params) {
@@ -1186,8 +1248,6 @@ fn add_service(app: &mut RustGisApp, ui: &mut egui::Ui) -> bool {
             text: conn.text.clone().unwrap_or_default(),
             documents: conn.documents.clone(),
         };
-        let name = l.get("name").and_then(Value::as_str).unwrap_or("");
-        let title = l.get("title").and_then(Value::as_str).unwrap_or(name).to_string();
         // Features are downloaded in the background, as From URL… does; map layers are added now.
         let time = crate::webdataui::fixed_or_slider(app.ui.service_browse.fixed, &app.ui.service_browse.time);
         // The view's area, for a feature layer only: a map layer never asks for one, so an
@@ -1195,8 +1255,12 @@ fn add_service(app: &mut RustGisApp, ui: &mut egui::Ui) -> bool {
         let features = l["offer"]["type"] == "features";
         let area =
             (features && app.ui.service_browse.area).then(|| rustgis_engine::cmd::catalogs::area(&app.session, &Value::Null)).transpose();
+        // A new add's line replaces the last one's, error included (#1453): a download still on its
+        // way then lands without it, so it can't hide this add's error.
+        app.dialogs.info = None;
+        app.dialogs.error = None;
         match area.and_then(|area| crate::serviceui::add_layer(app, &src, &l, &time, area, true)) {
-            Ok(m) => app.dialogs.info = Some(format!("{m} {title}")),
+            Ok(line) => app.dialogs.info = Some(line),
             Err(e) => app.dialogs.error = Some(e),
         }
         app.map.invalidate();
@@ -2377,6 +2441,7 @@ mod tests {
         app.run("map.addTiles", json!({"url": url, "name": "Service Roads", "overlay": true})).unwrap();
         app.ui.service = Some(crate::ServiceConn {
             url: "https://example.com/service".into(),
+            connection: None,
             kind: "wms",
             slot: Default::default(),
             text: None,
@@ -2427,6 +2492,7 @@ mod tests {
         let layer = app.session.map().layer_by_name("Places copy").unwrap().id;
         app.ui.service = Some(crate::ServiceConn {
             url: "https://example.com/collections".into(),
+            connection: None,
             kind: "wfs",
             slot: Default::default(),
             text: None,
@@ -2482,6 +2548,7 @@ mod tests {
         app.session.map_mut().layer_mut(layer).unwrap().dataset.source = Some(get.into());
         app.ui.service = Some(crate::ServiceConn {
             url: wcs.into(),
+            connection: None,
             kind: "wcs",
             slot: Default::default(),
             text: None,
@@ -2540,6 +2607,7 @@ mod tests {
         app.session.map_mut().layer_mut(layer).unwrap().dataset.source = Some(url.into());
         app.ui.service = Some(crate::ServiceConn {
             url: "https://example.com/collections".into(),
+            connection: None,
             kind: "ogcapi",
             slot: Default::default(),
             text: None,

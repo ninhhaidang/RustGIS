@@ -126,6 +126,59 @@ pub struct Style {
     /// Not a setting: what the importer checks the layer's features against (the features
     /// several rules pick).
     pub rules: Vec<RuleFilter>,
+    /// A categorized renderer classed by expression: the expression as QGIS wrote it, and what
+    /// the layer is drawn with where it doesn't read on the layer's fields. Not a setting.
+    pub categories_by: Option<CategoriesBy>,
+    /// A categorized renderer's classes from boolean categories (`type="bool"`), by their keys:
+    /// matched to the layer's field where it is added (a boolean field prints `True`, text reads
+    /// `true` as it is). Not a setting.
+    pub bool_classes: Vec<String>,
+}
+
+/// A categorized renderer by an expression, for where the expression doesn't read on the layer
+/// (checked where the layer is added, as rules and filters are, not by [`Style::apply`]): every
+/// feature is drawn with its first switched-on category's symbol, strokes and fills (`first`;
+/// none: nothing drawn), noted with the expression as QGIS wrote it (`qgis`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct CategoriesBy {
+    pub qgis: String,
+    pub first: Option<(crate::symbology::Symbol, Vec<LineStroke>, Vec<crate::fills::FillLayer>)>,
+}
+
+/// Renames the Unique Values class `from` of `r` to `to`, with its label, strokes and fills;
+/// `false` (nothing renamed) when there is no such class or another class is already `to`.
+pub fn rename_class(r: &mut Renderer, from: &str, to: &str) -> bool {
+    let Renderer::Unique { classes, class_labels, class_strokes, class_fills, .. } = r else { return false };
+    if from == to {
+        return true;
+    }
+    if classes.iter().any(|c| c.0 == to) {
+        return false;
+    }
+    let Some(c) = classes.iter_mut().find(|c| c.0 == from) else { return false };
+    c.0 = to.to_string();
+    if let Some(v) = class_labels.remove(from) {
+        class_labels.insert(to.to_string(), v);
+    }
+    if let Some(v) = class_strokes.remove(from) {
+        class_strokes.insert(to.to_string(), v);
+    }
+    if let Some(v) = class_fills.remove(from) {
+        class_fills.insert(to.to_string(), v);
+    }
+    true
+}
+
+/// A boolean category's value as RustGIS prints a boolean (`True`, `False`) when `printed`, else
+/// as QGIS writes it (`true`, `false`); `None` for any other value.
+pub fn bool_key(v: &str, printed: bool) -> Option<&'static str> {
+    match (v.eq_ignore_ascii_case("true"), v.eq_ignore_ascii_case("false"), printed) {
+        (true, _, true) => Some("True"),
+        (true, _, false) => Some("true"),
+        (_, true, true) => Some("False"),
+        (_, true, false) => Some("false"),
+        _ => None,
+    }
 }
 
 /// One rule of a rule-based renderer classed by expression: its class (`key`), the condition it

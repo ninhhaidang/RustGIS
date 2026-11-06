@@ -173,24 +173,34 @@ mod running {
         locked: bool,
     }
 
+    /// Why a run has no marker: shown as it starts without autosave.
+    #[derive(Debug)]
+    pub struct NoMarker {
+        pub why: String,
+        /// Another copy holds it, as opposed to a settings folder that can't be written.
+        pub other_copy: bool,
+    }
+
     /// Takes `<dir>/running` for this run: the marker, or why there is none (another copy holds
     /// it, or the folder can't be written), and whether the previous run didn't close cleanly.
-    pub fn start(dir: Option<&Path>) -> (Result<Marker, String>, bool) {
-        let Some(dir) = dir else { return (Err("this computer has no settings folder for RustGIS".into()), false) };
+    pub fn start(dir: Option<&Path>) -> (Result<Marker, NoMarker>, bool) {
+        let none = |why: String| Err(NoMarker { why, other_copy: false });
+        let Some(dir) = dir else { return (none("this computer has no settings folder for RustGIS".into()), false) };
         let file = std::fs::create_dir_all(dir)
             .and_then(|_| OpenOptions::new().read(true).write(true).create(true).truncate(false).open(dir.join("running")));
         let mut file = match file {
             Ok(f) => f,
             Err(e) => {
                 log::warn!("no run marker in {} ({e}): an unclean exit won't be noticed", dir.display());
-                return (Err(format!("the settings folder {} can't be written ({e})", dir.display())), false);
+                return (none(format!("the settings folder {} can't be written ({e})", dir.display())), false);
             }
         };
         let locked = match file.try_lock() {
             Ok(()) => true,
             Err(std::fs::TryLockError::WouldBlock) => {
                 log::info!("the run marker is held: another copy of RustGIS is running");
-                return (Err("another copy of RustGIS is running, and only the first keeps a recovery copy".into()), false);
+                let why = "another copy of RustGIS is running, and only the first keeps a recovery copy".into();
+                return (Err(NoMarker { why, other_copy: true }), false);
             }
             // The folder can't lock files (some network or FUSE folders): keep the marker unlocked,
             // so unclean exits are still noticed. Without a lock, copies running side by side share
@@ -276,11 +286,16 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.0.ui(ui);
     }
+    #[cfg(not(target_os = "macos"))]
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        self.0.drop_stale_clicks(raw_input);
+    }
     /// macOS: the Edit items arrive as clipboard events and keys (Undo and Redo in a focused text
     /// field), so the app reads them as it reads typed ones; the others wait for `logic`. While
     /// the shortcut editor is recording, the menu takes the keys it shows first: they go to it.
     #[cfg(target_os = "macos")]
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        self.0.drop_stale_clicks(raw_input);
         let Some(bar) = &self.2.bar else { return };
         let capturing = self.0.capturing_shortcut();
         let press = |events: &mut Vec<egui::Event>, k: egui::KeyboardShortcut| {
@@ -325,7 +340,12 @@ impl eframe::App for App {
     /// Every way eframe closes the app comes here, Cmd+Q on macOS included, which may not
     /// return from `run_native`: the run ended cleanly.
     fn on_exit(&mut self) {
+        self.0.end_exports();
         self.0.end_autosave();
+        // The installer starts before the marker goes, so a RustGIS started meanwhile finds this
+        // one still running.
+        #[cfg(windows)]
+        run_installer(&self.0);
         running::close(&self.1);
     }
 }
@@ -426,6 +446,23 @@ fn backends(flag: Option<&str>, env: Option<&str>, windows: bool) -> wgpu::Backe
     chosen.unwrap_or(if windows { wgpu::Backends::DX12 | wgpu::Backends::GL } else { wgpu::Backends::PRIMARY | wgpu::Backends::GL })
 }
 
+/// Help › Check for Updates › Install and Restart: the downloaded, checked installer runs as
+/// RustGIS closes, silently, and opens RustGIS again when done (#1290). It waits for this
+/// process to end before replacing its files (`packaging/windows/rustgis.nsi`).
+///
+/// Nothing can be shown here, as RustGIS closes: the next start says whether the update arrived
+/// (`UpdateState::last_install_notice`), a failure to run the installer included.
+#[cfg(windows)]
+fn run_installer(app: &RustGisApp) {
+    use std::os::windows::process::CommandExt;
+    let Some(i) = app.update.installer_at_exit() else { return };
+    // NSIS reads `/D=` last and unquoted, spaces and all: raw, not quoted as an argument.
+    match std::process::Command::new(&i.installer).args(&i.args).raw_arg(&i.folder).spawn() {
+        Ok(_) => log::info!("running {} to update RustGIS", i.installer.display()),
+        Err(e) => log::warn!("could not run the installer {} ({e}): RustGIS stays as it is", i.installer.display()),
+    }
+}
+
 fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--version" || a == "-V") {
@@ -467,7 +504,7 @@ fn main() -> eframe::Result {
             Err(e) => Some(e),
         },
         Ok(_) => Some("the settings folder can't lock files, so a second copy of RustGIS couldn't be told apart".into()),
-        Err(why) => Some(why.clone()),
+        Err(no) => Some(no.why.clone()),
     };
     // The keys the macOS menu bar keeps, before the stored shortcuts load: the keymap leaves them
     // out and the shortcut editor refuses them.
@@ -478,6 +515,8 @@ fn main() -> eframe::Result {
         app
     };
     let mut app = app.with_services(services);
+    // Add Data and Load All read on a thread of their own, so a large file doesn't hold the window.
+    app.reads_off_frame = true;
     // Settings › Start-up; `--sample` still opens the sample.
     let blank = if args.iter().any(|a| a == "--sample") { Some(false) } else { (!files.is_empty()).then_some(true) };
     if let Err(e) = app.start(&rustgis_ui_egui::Start { blank, after_crash: unclean, ..Default::default() }) {
@@ -501,6 +540,19 @@ fn main() -> eframe::Result {
     for e in plugin_errors {
         log::warn!("{e}");
         app.session.notify(e, true);
+    }
+    // Help › Check for Updates' Install and Restart, last time: did the update arrive? Not asked
+    // by a second copy, started while the first is still open: it would take the note of an
+    // update that hasn't run yet. A settings folder that can't lock, or can't be written, can't
+    // tell a second copy apart, and is asked anyway: a note the installer may still be at work on
+    // is left alone, and asked about again once it can't be, and the notice isn't put off for good.
+    if !marker.as_ref().is_err_and(|no| no.other_copy)
+        && let Some((text, error)) = {
+            rustgis_ui_egui::i18n::set_current(app.chosen_lang());
+            app.update.last_install_notice()
+        }
+    {
+        app.session.notify(text, error);
     }
     for e in open_files(&mut app, &files) {
         eprintln!("rustgis: {e}");
@@ -599,7 +651,9 @@ mod tests {
         // Another copy running alongside can't take it, and doesn't count as a crash.
         let (second, unclean) = running::start(Some(&dir));
         // It says why, which the app shows as it starts without autosave.
-        assert!(second.as_ref().err().is_some_and(|why| why.contains("another copy")) && !unclean);
+        assert!(second.as_ref().err().is_some_and(|no| no.other_copy && no.why.contains("another copy")) && !unclean);
+        // A folder that can't be written isn't another copy.
+        assert!(running::start(None).0.err().is_some_and(|no| !no.other_copy));
         // This run ends without closing (a crash): the next one notices, once it closes cleanly.
         drop(first);
         let (after_crash, unclean) = running::start(Some(&dir));

@@ -29,7 +29,8 @@ still identify private data, so review copied diagnostics before sharing them.
 ## Online services
 
 - **Locate › By Place or Address** and place search send your query to OpenStreetMap's Nominatim by default.
-  **By Place or Address** and **Geocode Addresses** can also use Komoot's Photon or a server you specify;
+  **By Place or Address** and **Geocode Addresses** can also use Komoot's Photon, PDOK's Locatieserver (the
+  Netherlands) or a server you specify;
   geocoding sends the address values you choose from your table or layer.
 - **Directions** sends the route's start, stops and destination to FOSSGIS's public Valhalla
   server by default. The Directions pane asks for consent before sending places and remembers
@@ -74,7 +75,9 @@ Desktop process plugins are not sandboxed and can access files and the network a
 programs. Review the permissions and publisher before installing; see [Plugins](plugins.md).
 
 On the desktop, **Help › Check for Updates** contacts GitHub's latest-release API only when
-you ask. It does not upload your project. The web app checks its own site for service-worker
+you ask. It does not upload your project. On Windows, **Download and Install** then downloads
+the release's installer and its `SHA256SUMS` from GitHub's release downloads, only when you
+choose it. The web app checks its own site for service-worker
 updates when it loads and returns to view, and fetches app icons from `assets.rustgis.app`.
 It downloads language fonts from that asset server when needed. The web GeoLibre tools
 download their runner from jsDelivr when needed; the tool list is cached between visits.

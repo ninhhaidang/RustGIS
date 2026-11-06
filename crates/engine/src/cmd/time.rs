@@ -282,7 +282,8 @@ fn export(s: &mut Session, p: &Value) -> CmdResult {
     let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| frames(s, &steps, w, h, gif.then_some(speed))));
     s.map_mut().time = Some(saved);
     s.map_mut().apply_time();
-    super::zarr::follow_time(s);
+    // The step it is back at, read here: a command after the export may read the layer.
+    super::zarr::follow_time_now(s);
     let bytes = made.map_err(|_| "exporting the time steps failed unexpectedly".to_string())??;
     rustgis_data::io::write_atomic(std::path::Path::new(&path), &bytes).map_err(|e| format!("{path}: {e}"))?;
     Ok(json!({"path": path, "frames": steps.len(), "bytes": bytes.len()}))
@@ -316,8 +317,9 @@ fn frames(s: &mut Session, steps: &[f64], w: f64, h: f64, gif: Option<u32>) -> R
                 sl.current = *t;
             }
             s.map_mut().apply_time();
-            // Zarr layers that follow the slider read this step's slice.
-            super::zarr::follow_time(s);
+            // Zarr layers that follow the slider read this step's slice, here: each frame draws
+            // its own step.
+            super::zarr::follow_time_now(s);
             // Dated tile layers have this step's address now: natively, map_png (through
             // rustgis_render::render_complete) fetches the tiles it lacks and waits for them
             // before it draws, so each frame shows its own date's imagery.

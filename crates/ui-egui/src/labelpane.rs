@@ -903,6 +903,7 @@ pub(crate) fn family_picker(ui: &mut Ui, salt: impl std::hash::Hash + std::fmt::
     Picked { response, chosen }
 }
 
+/// Edits this label class's placement, including overlap and callout options, through commands.
 fn position(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, c: &Class) {
     let cur = c.it.placement;
     let pick = |app: &mut RustGisApp, ui: &mut Ui, pl: LabelPlacement| {
@@ -953,6 +954,73 @@ fn position(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, c: &Class) {
     }
     ui.add_space(6.0);
     offset(app, ui, l, c);
+    ui.add_space(6.0);
+    crowding(app, ui, l, c);
+}
+
+/// Where labels crowd: every one shown, over the others, rather than some left out; and
+/// callouts, which move a crowded label to a free spot nearby with a line back to its feature,
+/// no longer than so far.
+fn crowding(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, c: &Class) {
+    use rustgis_engine::map::symbology::{CALLOUT_REACH, callout_reach};
+    let id = l.id;
+    grid(ui, "crowding", |ui| {
+        let input_label = ui.label(tl!("Show all labels"));
+        let mut all = c.it.show_all;
+        if ui
+            .checkbox(&mut all, "")
+            .labelled_by(input_label.id)
+            .on_hover_text(tl!("Draw every label, over the others where they crowd, rather than leaving some out."))
+            .changed()
+        {
+            run(app, "labels.placement", c.params(json!({"showAll": all})));
+        }
+        ui.end_row();
+        let input_label = ui.label(tl!("Callouts"));
+        ui.horizontal(|ui| {
+            let mut on = c.it.callout.is_some();
+            if ui
+                .checkbox(&mut on, "")
+                .labelled_by(input_label.id)
+                .on_hover_text(tl!(
+                    "Move a label crowded off its spot to a free one nearby, with a line back to its feature. Labels along lines stay."
+                ))
+                .changed()
+            {
+                run(app, "labels.placement", c.params(json!({"callout": on})));
+            }
+            let Some(reach) = c.it.callout else { return };
+            let mut v = f64::from(reach);
+            let r = ui
+                .add(
+                    egui::DragValue::new(&mut v)
+                        .update_while_editing(false)
+                        .range(CALLOUT_REACH)
+                        .speed(1.0)
+                        .max_decimals(0)
+                        .prefix(tl!("at most "))
+                        .suffix(" pt"),
+                )
+                .labelled_by(input_label.id)
+                .on_hover_text(tl!("The longest a callout's line may be."));
+            crate::ribbon::live_drag(
+                app,
+                ui,
+                &r,
+                f64::from(reach),
+                v,
+                |app, x| {
+                    if let Some(k) = app.session.map_mut().layer_mut(id).and_then(|l| class_mut(&mut l.labels, c.name)) {
+                        k.callout = callout_reach(x);
+                    }
+                },
+                |app, x| {
+                    run(app, "labels.placement", c.params(json!({"callout": x})));
+                },
+            );
+        });
+        ui.end_row();
+    });
 }
 
 /// Along a line, a label every so many points, spaced out from the one at its middle; off, the one

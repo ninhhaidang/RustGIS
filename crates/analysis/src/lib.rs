@@ -25,6 +25,7 @@ pub mod neural;
 mod parallel;
 mod parameters;
 pub mod rasterops;
+mod repair;
 pub mod selection;
 pub mod sketch_edit;
 mod stats;
@@ -32,6 +33,7 @@ pub mod tissot;
 mod tools;
 pub mod topology;
 pub mod trend;
+mod validity;
 pub mod warp;
 
 pub use attribute_join::{DuplicateStrategy, JoinFieldOptions, JoinFieldReport, join_field};
@@ -481,6 +483,8 @@ pub fn run_under<T>(name: &str, control: &std::sync::Arc<control::Control>, work
         return Err(format!("{name} was cancelled before it started"));
     }
     let _current = control::install(Some(control.clone()));
+    // A file the work writes or reads counts and stops with it too.
+    let _data = rustgis_data::progress::install(Some(control.clone()));
     // No count until the work starts one: a control used before doesn't show that run's.
     control::begin(0);
     let res = work();

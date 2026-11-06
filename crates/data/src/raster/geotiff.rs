@@ -1391,12 +1391,43 @@ pub fn written_bands(r: &Raster, band: usize) -> Vec<usize> {
 /// Writes a raster as a Deflate-compressed GeoTIFF: a colour raster's colour bands (RGB(A) bytes
 /// when they are 8-bit, else 32-bit floats, alpha kept), so it reads back in colour; otherwise
 /// `band` (0-based) as 32-bit floats. `band` is for rasters that aren't colour ones: a colour
-/// raster always writes its colour bands, as its 8-bit form did before.
+/// raster always writes its colour bands, as its 8-bit form did before. A cancelled run stops
+/// it (with [`DataError::Cancelled`]) within a strip.
 pub fn write(r: &Raster, band: usize) -> Result<Vec<u8>> {
+    match encode(r, band) {
+        Ok(bytes) => Ok(bytes),
+        // The encoder's error for a cancel only says the write stopped.
+        Err(e) => crate::progress::check().and(Err(e)),
+    }
+}
+
+/// The file's bytes, written by the encoder a strip's compressed output at a time: each write
+/// fails once the run was cancelled. It counts no progress: the encoder doesn't say where a
+/// strip ends.
+struct Probed<W>(W);
+
+impl<W: std::io::Write> std::io::Write for Probed<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        crate::progress::check().map_err(std::io::Error::other)?;
+        self.0.write(buf)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.0.flush()
+    }
+}
+
+impl<W: Seek> Seek for Probed<W> {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.0.seek(pos)
+    }
+}
+
+/// [`write`], a cancel failing as any write error does.
+fn encode(r: &Raster, band: usize) -> Result<Vec<u8>> {
     use tiff::encoder::{Compression, DeflateLevel, TiffEncoder, colortype};
     // A scan's place is only where it was laid on the view: not coordinates to write into a file.
     r.require_coordinates().map_err(err)?;
-    let mut out = std::io::Cursor::new(Vec::new());
+    let mut out = Probed(std::io::Cursor::new(Vec::new()));
     let mut enc = TiffEncoder::new(&mut out).map_err(err)?.with_compression(Compression::Deflate(DeflateLevel::Balanced));
     let gt = r.transform;
     if gt.pixel_height > 0.0 || gt.pixel_width < 0.0 {
@@ -1491,7 +1522,7 @@ pub fn write(r: &Raster, band: usize) -> Result<Vec<u8>> {
         tags!(img, &[band]);
         img.write_data(&b.data).map_err(err)?;
     }
-    Ok(out.into_inner())
+    Ok(out.0.into_inner())
 }
 
 #[cfg(test)]

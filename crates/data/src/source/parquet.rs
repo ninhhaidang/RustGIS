@@ -1242,6 +1242,7 @@ pub(crate) fn write_features<W: std::io::Write + Send>(
     let mut extent = Extent::EMPTY;
     feed(&mut |features| {
         for rows in features.chunks(WRITE_GROUP_ROWS) {
+            crate::progress::step(rows.len())?;
             for g in rows.iter().filter_map(|f| f.geometry.as_ref()) {
                 let t = wkb_type_name(g);
                 if !types.contains(&t) {
@@ -1313,6 +1314,8 @@ pub(crate) fn write_features<W: std::io::Write + Send>(
         }
         Ok(())
     })?;
+    // A run cancelled during the last row group gets no footer either.
+    crate::progress::check()?;
     if has_geom {
         types.sort_unstable();
         let e = extent;

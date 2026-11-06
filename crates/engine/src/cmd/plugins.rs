@@ -283,6 +283,7 @@ const NEVER: &[&str] = &[
     "connection.login",
     "connection.forgetPassword",
     "connection.forgetSavedKeys",
+    "connection.logout",
     "connection.resolveS3",
     "connection.test",
     "connection.browse",
@@ -382,10 +383,14 @@ pub fn reaches(spec: &C, params: &Value) -> Option<Reach> {
     if DATABASES.contains(&spec.id) {
         return Some(Reach::Files);
     }
-    // Georeferencing and projecting write a file only when given a `path`; the rest of them stays
-    // in the project.
-    if spec.id == "raster.georeference" || spec.id == "raster.project" {
-        return super::items::names_place(params, PLACE_KEYS, 0).then_some(Reach::Files);
+    // Georeferencing, projecting and rasterizing write a file only when given a `path` (they read
+    // a null one as none); the rest of them stays in the project.
+    if ["raster.georeference", "raster.project", "raster.rasterize"].contains(&spec.id) {
+        let mut given = params.clone();
+        if let Some(o) = given.as_object_mut() {
+            o.retain(|_, v| !v.is_null());
+        }
+        return super::items::names_place(&given, PLACE_KEYS, 0).then_some(Reach::Files);
     }
     // A built-in tool's output layer name stays in the session, as it does in a task.
     let params = super::items::layer_name_left_out(spec.id, params);
@@ -402,6 +407,13 @@ fn refused(s: &Session, plugin: &Plugin, spec: &C, params: &Value) -> Option<Str
     let m = &plugin.manifest;
     if user_only(spec.id) {
         return Some(format!("plugins can't run '{}'", spec.id));
+    }
+    // A saved web-service connection's login goes where the user chose it: a plugin never picks
+    // which login a request carries, as it never logs in or out.
+    if let Some(id) = params.get("connection").and_then(Value::as_str).map(str::trim)
+        && s.connections.connections.iter().any(|c| c.id == id && crate::service_logins::is_service(c))
+    {
+        return Some(format!("plugins can't use a saved web-service connection's login ('{}')", spec.id));
     }
     // An SQL query reads files and web addresses alike, and a database is a file or a server.
     let database = DATABASES.contains(&spec.id) || (spec.id == "cube.open" && super::cube_catalog::opens_zarr(params));
@@ -522,6 +534,16 @@ impl Bridge<'_> {
         if id.starts_with(rustgis_plugins::PREFIX) {
             return Err("plugins can't run other plugins' commands".into());
         }
+        // A download's number (`"request"`) is the app's own: a plugin's is taken out, so it can't
+        // land another command's wait, or share one it didn't ask for. (Other commands' `request`
+        // is theirs: `identify.featureInfo`'s asks for the request instead of the answer.)
+        let unnumbered;
+        let params = if matches!(id, "layer.addUrl" | "layer.addDownload") && params.get("request").is_some() {
+            unnumbered = fetch::without_request(params);
+            &unnumbered
+        } else {
+            params
+        };
         let spec = self.s.registry.get(id).ok_or_else(|| format!("unknown command '{id}'"))?;
         if let Some(why) = refused(self.s, &self.plugin, spec, params) {
             return Err(why);
@@ -550,8 +572,21 @@ impl Bridge<'_> {
         // command that only left a request for the front end ([`Session::request_url`]) changed
         // nothing; a later one must not erase the undo step for an earlier edit.
         self.s.request_only = false;
-        let mut res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(self.s, params)))
-            .unwrap_or_else(|_| Err(format!("{label} failed unexpectedly")));
+        // No saved web-service login goes with what a plugin asks for: the user chooses where it is sent.
+        let anonymous = self.s.web_logins.set_anonymous(true);
+        let mut res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let before = if mutates { crate::service_logins::before(self.s, id, params)? } else { None };
+            let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| super::workflows::steps_of(self.s, |s| run(s, params))))
+                .unwrap_or_else(|_| Err(format!("{label} failed unexpectedly")));
+            // Mark additions even when a command reports an error after changing the project.
+            // Their addresses must remain anonymous at later logins and after saving/reopening.
+            if let Some(before) = before {
+                crate::service_logins::tag(self.s, params, before, out.as_ref().unwrap_or(&Value::Null))?;
+            }
+            out
+        }))
+        .unwrap_or_else(|_| Err(format!("{label} failed unexpectedly")));
+        self.s.web_logins.set_anonymous(anonymous);
         let requested = std::mem::take(&mut self.s.request_only);
         self.requested |= requested;
         self.changed |= mutates && !requested;
@@ -646,14 +681,21 @@ impl Session {
         // could change the project, it is no undo step. Other commands keep theirs.
         let state_command = panel.as_ref().is_some_and(|d| !d.state.is_empty() && d.state == cmd.decl.id);
         let mut pending = Vec::new();
+        let mut requested = Vec::new();
+        // The downloads this call leaves to the app: its own, apart from a calling command's.
+        let outer = self.call_requests.replace(Vec::new());
+        let mark = self.notice_mark();
         let res = self.guarded(label, mutates, |s| {
             let fetches = fetch::Calls::for_plugin(&plugin.manifest.id);
             let mut bridge = Bridge { s, plugin, fetches, changed: false, requested: false };
             let res = rustgis_plugins::run_command_with_panel(&cmd, &mut bridge, params, request);
-            if !bridge.fetches.pending.is_empty() {
-                // Waiting for a fetch (the browser): whatever the call did is undone, quietly,
-                // and the command runs again from the start once the answers are in.
+            let asked = bridge.s.call_requests.as_mut().map(std::mem::take).unwrap_or_default();
+            if !bridge.fetches.pending.is_empty() || !asked.is_empty() {
+                // Waiting for a fetch (the browser) or a download left to the app: whatever the
+                // call did is undone, quietly, and the command runs again from the start once
+                // the answers are in and the downloads added (#1202).
                 pending = std::mem::take(&mut bridge.fetches.pending);
+                requested = asked;
                 bridge.s.quiet_failure = true;
                 return Err(String::new());
             }
@@ -677,11 +719,29 @@ impl Session {
                 _ => {}
             }
         }
-        if pending.is_empty() {
+        self.call_requests = outer;
+        if pending.is_empty() && requested.is_empty() {
             return res;
         }
+        // The undone call took its download requests with it: they go to the app still, once,
+        // unless the command gives up now (it has run again too often): then nothing waits for them.
+        let giving_up = self.retry_tries >= fetch::MAX_RETRIES;
+        for (n, asked) in requested.iter().filter(|_| !giving_up) {
+            // Queued already: this number for this address (another caller may give the number).
+            let taken = self.url_requests.iter().any(|q| q["request"].as_u64() == Some(*n) && fetch::same_request(q, asked));
+            if !taken && !self.url_waits.has(*n) {
+                let mut q = asked.clone();
+                q["request"] = json!(n);
+                self.url_requests.push(q);
+            }
+        }
+        // The errors this run said stay: the next run, doing the same again, doesn't repeat them.
+        let earlier = self.rerun_said.len();
+        let said: Vec<String> = self.notices_since(mark).iter().filter(|n| n.error).map(|n| n.text.clone()).collect();
+        self.rerun_said.extend(said);
         // The panel's values went back with the failed call: the run again sets them again.
-        let res = self.retry_plugin(id, given, pending);
+        let res = self.retry_plugin(id, given, pending, requested);
+        self.rerun_said.truncate(earlier);
         if let Err(e) = &res {
             self.notify(e.clone(), true);
         }
@@ -733,5 +793,45 @@ mod tests {
         assert!(!bridge.s.request_only, "the bridge took the flag");
         assert_eq!(s.take_url_requests().len(), 2);
         rustgis_plugins::unload("eng-bridge");
+    }
+
+    /// A plugin can't choose a download's number: the app gives it, so one plugin can't land or
+    /// share another command's wait (#1202).
+    #[test]
+    fn a_plugin_cant_choose_a_downloads_number() {
+        let pkg = rustgis_plugins::Package::from_zip(&rustgis_plugins::testing::package("eng-number", &["edit", "network"])).unwrap();
+        rustgis_plugins::load(pkg, "test").unwrap();
+        let plugin = rustgis_plugins::get("eng-number").unwrap();
+        let mut s = Session::new(crate::Project::default());
+        s.leave_downloads = true;
+        let fetches = fetch::Calls::for_plugin("eng-number");
+        let mut bridge = Bridge { s: &mut s, plugin, fetches, changed: false, requested: false };
+        bridge.call("layer.addUrl", &json!({"url": "https://x.org/a.geojson", "request": 99})).unwrap();
+        let taken = s.take_url_requests();
+        assert!(taken.len() == 1 && taken[0]["request"] != json!(99), "{taken:?}");
+        rustgis_plugins::unload("eng-number");
+    }
+
+    /// A command run again answers one landed download as often as it asks for it in that run:
+    /// the same address asked twice isn't downloaded again (#1202).
+    #[test]
+    fn a_rerun_answers_a_download_asked_twice() {
+        let mut s = Session::new(crate::sample::world_project());
+        let l7 = u64::from(s.map().layers[0].id);
+        s.leave_downloads = true;
+        let asked = json!({"url": "https://x.org/a.geojson"});
+        s.rerun_landed = vec![(asked.clone(), Ok(json!({"layer": l7})), Default::default())];
+        for _ in 0..2 {
+            assert_eq!(s.run("layer.addUrl", &asked).unwrap(), json!({"layer": l7}));
+        }
+        assert!(s.take_url_requests().is_empty(), "nothing asked again");
+        // Asked with spaces around the address (kept trimmed): the same answer.
+        let padded = json!({"url": "  https://x.org/a.geojson "});
+        assert_eq!(s.run("layer.addUrl", &padded).unwrap(), json!({"layer": l7}));
+        assert!(s.take_url_requests().is_empty(), "nothing asked again");
+        // A layer undone while the command waited: said, not named.
+        s.rerun_landed = vec![(asked.clone(), Ok(json!({"layer": 4_000_000})), Default::default())];
+        let e = s.run("layer.addUrl", &asked).unwrap_err();
+        assert!(e.contains("taken away (undone)"), "{e}");
     }
 }

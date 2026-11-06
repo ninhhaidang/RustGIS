@@ -1,10 +1,10 @@
-# cargo-deny for the fuzz crate (`cargo deny --manifest-path fuzz/Cargo.toml check licenses`, run by
+# cargo-deny for the fuzz crate (`cargo deny --manifest-path fuzz/Cargo.toml check licenses sources`, run by
 # the fuzz workflow): the workspace's deny.toml, plus NCSA for libFuzzer, which `libfuzzer-sys`
 # compiles. Nothing here is shipped; keep the rest in step with ../deny.toml.
 
 [graph]
 all-features = false
-exclude-dev = true
+exclude-dev = false
 
 [licenses]
 confidence-threshold = 0.8
@@ -31,3 +31,11 @@ allow = [
 [licenses.private]
 # RustGIS's own crates and this one (`publish = false`).
 ignore = true
+
+# Apply the workspace source policy here too; fuzz dependencies are built by CI.
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
+required-git-spec = "rev"

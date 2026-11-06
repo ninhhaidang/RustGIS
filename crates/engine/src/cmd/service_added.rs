@@ -677,7 +677,7 @@ mod tests {
         use crate::{Project, Session};
         let mut s = Session::new(Project::default());
         let bytes = crate::tests::multiband_tiff(1, 1, &[vec![0.0]], (0.0, 0.0), 1.0, None);
-        let r = crate::cmd::raster::add_named_bytes(&mut s, &json!({"name": "Soil carbon"}), "soil.tif".into(), bytes).unwrap();
+        let r = crate::cmd::raster::add_named_bytes(&mut s, &json!({"name": "Soil carbon"}), "soil.tif".into(), bytes, None).unwrap();
         let id = r["layer"].as_u64().unwrap() as u32;
         let get = "https://h/wcs?SERVICE=WCS&VERSION=2.0.1&REQUEST=GetCoverage&COVERAGEID=soc&FORMAT=image%2Ftiff";
         crate::cmd::service::mark_service_source(&mut s, &r, get);

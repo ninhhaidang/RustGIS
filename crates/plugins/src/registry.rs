@@ -211,13 +211,29 @@ pub fn blocked<'a>(list: &'a [Blocked], id: &str, sha256: &str) -> Option<&'a Bl
 /// Downloads `url` (at most `limit` bytes). Native only: the browser fetches with its own API.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn fetch(url: &str, limit: usize) -> Result<Vec<u8>, String> {
+    fetch_with_progress(url, limit, std::time::Duration::from_secs(120), &mut |_, _| true)
+}
+
+/// Downloads `url` as [`fetch`] does, within `timeout` in all, telling `progress` the bytes read
+/// so far and the size the server gave, if it did, after each piece; the download stops, as an
+/// error, when `progress` answers `false` (the user cancelled). For large files: an installer.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn fetch_with_progress(
+    url: &str,
+    limit: usize,
+    timeout: std::time::Duration,
+    progress: &mut dyn FnMut(u64, Option<u64>) -> bool,
+) -> Result<Vec<u8>, String> {
     use std::io::Read;
     if !allowed_url(url) {
         return Err(format!("{url}: only HTTPS addresses are allowed"));
     }
-    // Redirects stay on HTTPS (a local test registry may use plain HTTP, and only locally).
+    // Redirects stay on HTTPS (a local test registry may use plain HTTP, and only locally). A
+    // server that stops sending ends the download after a minute, not at `timeout`: until a read
+    // returns, a cancel isn't seen.
     let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_secs(120)))
+        .timeout_global(Some(timeout))
+        .timeout_per_read(Some(std::time::Duration::from_secs(60)))
         .https_only(!is_local(url))
         .max_redirects(if is_local(url) { 0 } else { 5 })
         .tls_config(rustgis_data::http::tls_config())
@@ -225,10 +241,78 @@ pub fn fetch(url: &str, limit: usize) -> Result<Vec<u8>, String> {
         .into();
     let mut resp =
         agent.get(url).header("User-Agent", concat!("RustGIS/", env!("CARGO_PKG_VERSION"))).call().map_err(|e| format!("{url}: {e}"))?;
+    let total = resp.headers().get("content-length").and_then(|v| v.to_str().ok()).and_then(|v| v.trim().parse::<u64>().ok());
+    let mut reader = resp.body_mut().with_config().limit(limit as u64 + 1).reader();
     let mut buf = Vec::new();
-    resp.body_mut().with_config().limit(limit as u64 + 1).reader().read_to_end(&mut buf).map_err(|e| format!("{url}: {e}"))?;
-    if buf.len() > limit {
-        return Err(format!("{url} is larger than {} MB", limit / (1024 * 1024)));
+    let mut piece = vec![0u8; 64 * 1024];
+    loop {
+        let n = match reader.read(&mut piece) {
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(format!("{url}: {e}")),
+        };
+        if n == 0 {
+            break;
+        }
+        buf.extend_from_slice(piece.get(..n).unwrap_or_default());
+        if buf.len() > limit {
+            return Err(format!("{url} is larger than {} MB", limit / (1024 * 1024)));
+        }
+        if !progress(buf.len() as u64, total) {
+            return Err(format!("{url}: cancelled"));
+        }
     }
     Ok(buf)
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod fetch_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::time::Duration;
+
+    /// Serves `body` once on this computer, as an HTTP answer that gives its length.
+    fn serve(body: Vec<u8>) -> std::io::Result<String> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let port = listener.local_addr()?.port();
+        std::thread::spawn(move || {
+            if let Ok((mut s, _)) = listener.accept() {
+                let mut request = [0u8; 4096];
+                let _ = s.read(&mut request);
+                let _ = write!(s, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+                let _ = s.write_all(&body);
+            }
+        });
+        Ok(format!("http://127.0.0.1:{port}/installer.exe"))
+    }
+
+    #[test]
+    fn a_download_reports_its_progress() {
+        let url = serve(vec![7u8; 300_000]).unwrap();
+        let mut seen = Vec::new();
+        let got = fetch_with_progress(&url, 1 << 20, Duration::from_secs(30), &mut |done, total| {
+            seen.push((done, total));
+            true
+        })
+        .unwrap();
+        assert_eq!(got.len(), 300_000);
+        // Piece by piece, always more, ending with all of it and the size the server gave.
+        assert!(seen.len() > 1 && seen.windows(2).all(|w| w[0].0 < w[1].0), "{seen:?}");
+        assert_eq!(seen.last(), Some(&(300_000, Some(300_000))));
+    }
+
+    #[test]
+    fn a_download_stops_when_cancelled() {
+        let url = serve(vec![7u8; 300_000]).unwrap();
+        let err = fetch_with_progress(&url, 1 << 20, Duration::from_secs(30), &mut |_, _| false).unwrap_err();
+        assert!(err.ends_with("cancelled"), "{err}");
+    }
+
+    #[test]
+    fn a_download_over_its_limit_is_refused() {
+        let url = serve(vec![7u8; 300_000]).unwrap();
+        let err = fetch_with_progress(&url, 100_000, Duration::from_secs(30), &mut |_, _| true).unwrap_err();
+        assert!(err.contains("is larger than"), "{err}");
+    }
 }

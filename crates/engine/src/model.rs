@@ -10,7 +10,7 @@
 use std::collections::{HashMap, HashSet};
 
 use rustgis_analysis::{ParamKind, ToolSpec};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::Session;
@@ -19,6 +19,9 @@ use crate::project::{ModelEdge, ModelGraph, ModelNode, ModelNodeKind, ModelStep}
 /// The most nodes and edges a graph may have (files and parameters are hostile).
 pub const MAX_NODES: usize = 2000;
 pub const MAX_EDGES: usize = 4000;
+/// Identifier length and canvas coordinate limits used by graph commands and file checks.
+const MAX_NODE_ID: usize = 100;
+const MAX_NODE_POSITION: f32 = 1e6;
 /// The output port of input and tool nodes.
 pub const OUT: &str = "out";
 /// The input port of output nodes.
@@ -377,6 +380,64 @@ pub fn steps_to_graph(steps: &[ModelStep]) -> ModelGraph {
     g
 }
 
+/// Converts steps within the graph's supported limits, returning an error instead of truncating.
+/// Referenced steps must be earlier and have a layer output.
+pub fn checked_steps_to_graph(steps: &[ModelStep]) -> Result<ModelGraph, String> {
+    let limit = MAX_NODES / 2;
+    if steps.len() > limit {
+        return Err(format!(
+            "this model has {} steps; graph conversion supports at most {limit}. The original steps have not been changed.",
+            steps.len()
+        ));
+    }
+    let mut inputs = HashSet::new();
+    let mut edges = 0;
+    for (index, step) in steps.iter().enumerate() {
+        if !step.params.is_null() && !step.params.is_object() {
+            return Err(format!("model step {} needs an object for its parameters", index + 1));
+        }
+        let node = ModelNode { tool: Some(step.tool.clone()), kind: ModelNodeKind::Tool, ..Default::default() };
+        for port in input_ports(&node) {
+            let Some(value) = step.params.get(port.id).and_then(Value::as_str) else { continue };
+            for part in value.split(|c| port.many && c == ';').map(str::trim) {
+                if port.many && part.is_empty() {
+                    continue;
+                }
+                match part.strip_prefix('%').and_then(|n| n.parse::<usize>().ok()) {
+                    Some(n) if !(1..=index).contains(&n) => {
+                        return Err(format!(
+                            "model step {} uses %{n}, which is not an earlier step. The original steps have not been changed.",
+                            index + 1
+                        ));
+                    }
+                    Some(n) => {
+                        let has_no_output = steps.get(n.saturating_sub(1)).is_some_and(|previous| {
+                            let node = ModelNode { tool: Some(previous.tool.clone()), kind: ModelNodeKind::Tool, ..Default::default() };
+                            output_ports(&node).is_empty()
+                        });
+                        if has_no_output {
+                            return Err(format!(
+                                "model step {} uses %{n}, but step {n} has no layer output. The original steps have not been changed.",
+                                index + 1
+                            ));
+                        }
+                    }
+                    None => {
+                        inputs.insert(part.to_ascii_lowercase());
+                    }
+                }
+                edges += 1;
+                if steps.len() + inputs.len() > MAX_NODES || edges > MAX_EDGES {
+                    return Err(format!(
+                        "this model exceeds the graph limits of {MAX_NODES} nodes and {MAX_EDGES} connections. The original steps have not been changed."
+                    ));
+                }
+            }
+        }
+    }
+    Ok(steps_to_graph(steps))
+}
+
 /// The graph's tools as steps in run order, edges as layer names (from inputs) and `%n` (from
 /// step n); empty when the graph has a loop.
 pub fn graph_to_steps(g: &ModelGraph) -> Vec<ModelStep> {
@@ -414,6 +475,7 @@ pub fn graph_to_steps(g: &ModelGraph) -> Vec<ModelStep> {
 
 /// Reads a graph from JSON, dropping what can't be used: nodes without an id, repeated ids,
 /// edges to missing nodes or to themselves. Bounded in size.
+/// Repeated connections into many-valued input ports retain their multiplicity.
 pub fn graph_from_json(v: &Value) -> Result<ModelGraph, String> {
     let nodes = v.get("nodes").and_then(Value::as_array).ok_or("a model graph needs \"nodes\"")?;
     if nodes.len() > MAX_NODES {
@@ -426,7 +488,7 @@ pub fn graph_from_json(v: &Value) -> Result<ModelGraph, String> {
     let mut g = ModelGraph::default();
     for n in nodes {
         let Ok(mut node) = serde_json::from_value::<ModelNode>(n.clone()) else { continue };
-        node.id = node.id.trim().chars().take(100).collect();
+        node.id = node.id.trim().chars().take(MAX_NODE_ID).collect();
         if node.id.is_empty() || g.nodes.iter().any(|m| m.id == node.id) {
             continue;
         }
@@ -434,8 +496,8 @@ pub fn graph_from_json(v: &Value) -> Result<ModelGraph, String> {
             node.x = 0.0;
             node.y = 0.0;
         }
-        node.x = node.x.clamp(-1e6, 1e6);
-        node.y = node.y.clamp(-1e6, 1e6);
+        node.x = node.x.clamp(-MAX_NODE_POSITION, MAX_NODE_POSITION);
+        node.y = node.y.clamp(-MAX_NODE_POSITION, MAX_NODE_POSITION);
         if !node.params.is_object() {
             node.params = Value::Null;
         }
@@ -444,7 +506,9 @@ pub fn graph_from_json(v: &Value) -> Result<ModelGraph, String> {
     for e in edges {
         let Ok(e) = serde_json::from_value::<ModelEdge>(e.clone()) else { continue };
         let has = |id: &str| g.nodes.iter().any(|n| n.id == id);
-        if e.from != e.to && has(&e.from) && has(&e.to) && !e.to_port.is_empty() && !g.edges.contains(&e) {
+        let repeated_input =
+            g.nodes.iter().find(|n| n.id == e.to).is_some_and(|n| input_ports(n).iter().any(|p| p.id == e.to_port && p.many));
+        if e.from != e.to && has(&e.from) && has(&e.to) && !e.to_port.is_empty() && (repeated_input || !g.edges.contains(&e)) {
             g.edges.push(e);
         }
     }
@@ -685,8 +749,152 @@ fn rename(s: &mut Session, id: u32, wanted: &str) -> Option<String> {
 /// The JSON a model file holds (`*.model.json`).
 pub const SCHEMA: &str = "https://rustgis.app/schemas/model-graph-v1.json";
 
+/// The model-file version understood by this reader and emitted by this writer.
+pub(crate) const FILE_VERSION: &str = "1.0.0";
+/// Web tools store steps under a separate, integer version marker.
+pub(crate) const WEB_TOOL_VERSION: u64 = 1;
+
+/// Keep unknown fields visible at the file boundary without changing the command data types.
+#[derive(Deserialize)]
+struct ImportItem<T> {
+    #[serde(flatten)]
+    known: T,
+    #[serde(flatten)]
+    extra: HashMap<String, Value>,
+}
+
+/// Check declared versions and model contents before import can discard data.
+/// Missing versions are legacy files. The stricter field checks apply only to file import.
+pub(crate) fn check_file(v: &Value) -> Result<(), String> {
+    let graph = v.get("graph");
+    if let Some(version) = v.get("version") {
+        let supported = if graph.is_some() { version.as_str() == Some(FILE_VERSION) } else { version.as_u64() == Some(WEB_TOOL_VERSION) };
+        if !supported {
+            return Err("this model or web tool has an unsupported version. Update RustGIS to import it.".into());
+        }
+    }
+    if graph.is_some() && v.get("steps").is_some() {
+        return Err("a model file cannot contain both a graph and steps. Choose one representation before importing it.".into());
+    }
+    let fields: &[&str] =
+        if graph.is_some() { &["$schema", "version", "name", "graph"] } else { &["format", "version", "name", "steps", "parameters"] };
+    if v.as_object().is_some_and(|file| file.keys().any(|key| !fields.contains(&key.as_str()))) {
+        return Err("model file has unsupported fields. Update RustGIS to import this model.".into());
+    }
+    if let Some(graph) = graph {
+        let nodes = graph.get("nodes").and_then(Value::as_array).ok_or("a model graph needs \"nodes\"")?;
+        if nodes.len() > MAX_NODES {
+            return Err(format!("a model can have at most {MAX_NODES} nodes"));
+        }
+        if graph.as_object().is_some_and(|g| g.keys().any(|k| !matches!(k.as_str(), "nodes" | "edges"))) {
+            return Err("model graph has unsupported fields. Update RustGIS to import this model.".into());
+        }
+        for (index, node) in nodes.iter().enumerate() {
+            let node = ImportItem::<ModelNode>::deserialize(node)
+                .map_err(|_| format!("model node {} is unsupported or malformed. Update RustGIS to import this model.", index + 1))?;
+            if !node.extra.is_empty() {
+                return Err(format!("model node {} has unsupported fields. Update RustGIS to import this model.", index + 1));
+            }
+            if node.known.id.trim() != node.known.id || node.known.id.chars().nth(MAX_NODE_ID).is_some() {
+                return Err(format!(
+                    "model node {} has an ID that would be trimmed or truncated. Use at most {MAX_NODE_ID} characters without surrounding whitespace.",
+                    index + 1
+                ));
+            }
+            if !(-MAX_NODE_POSITION..=MAX_NODE_POSITION).contains(&node.known.x)
+                || !(-MAX_NODE_POSITION..=MAX_NODE_POSITION).contains(&node.known.y)
+            {
+                return Err(format!(
+                    "model node {} has a position outside the supported canvas bounds (-{MAX_NODE_POSITION} to {MAX_NODE_POSITION})",
+                    index + 1
+                ));
+            }
+            if !node.known.params.is_null() && !node.known.params.is_object() {
+                return Err(format!("model node {} needs an object for its parameters", index + 1));
+            }
+        }
+        let edges = match graph.get("edges") {
+            None => &[][..],
+            Some(edges) => edges.as_array().map(Vec::as_slice).ok_or("a model graph's connections must be an array")?,
+        };
+        if edges.len() > MAX_EDGES {
+            return Err(format!("a model can have at most {MAX_EDGES} connections"));
+        }
+        for (index, edge) in edges.iter().enumerate() {
+            let edge = ImportItem::<ModelEdge>::deserialize(edge).map_err(|_| format!("model connection {} is malformed", index + 1))?;
+            if !edge.extra.is_empty() {
+                return Err(format!("model connection {} has unsupported fields. Update RustGIS to import this model.", index + 1));
+            }
+        }
+        let normalized = graph_from_json(graph)?;
+        let lost_nodes = nodes.len().saturating_sub(normalized.nodes.len());
+        let lost_edges = edges.len().saturating_sub(normalized.edges.len());
+        if lost_nodes > 0 || lost_edges > 0 {
+            return Err(format!(
+                "this model would discard {lost_nodes} node(s) and {lost_edges} connection(s). Fix empty or duplicate node IDs and invalid connections before importing it."
+            ));
+        }
+        let by_id: HashMap<&str, &ModelNode> = normalized.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+        let mut single_inputs = HashSet::new();
+        for (index, edge) in normalized.edges.iter().enumerate() {
+            let from_known = by_id.get(edge.from.as_str()).is_some_and(|n| output_ports(n).iter().any(|p| p.id == edge.from_port));
+            let to_port = by_id.get(edge.to.as_str()).and_then(|n| input_ports(n).into_iter().find(|p| p.id == edge.to_port));
+            if !from_known || to_port.is_none() {
+                return Err(format!(
+                    "model connection {} refers to an unsupported port. Update RustGIS or fix the connection before importing this model.",
+                    index + 1
+                ));
+            }
+            if let Some(input) = by_id.get(edge.from.as_str()).filter(|n| n.kind == ModelNodeKind::Input) {
+                let layer = input.layer.as_deref().filter(|layer| !layer.trim().is_empty()).ok_or_else(|| {
+                    format!(
+                        "model connection {} has an input without a layer. Choose a layer for this input before importing this model.",
+                        index + 1
+                    )
+                })?;
+                if by_id.get(edge.to.as_str()).is_some_and(|n| n.kind == ModelNodeKind::Tool)
+                    && (layer.trim() != layer
+                        || to_port.as_ref().is_some_and(|port| port.many && layer.contains(';'))
+                        || layer.strip_prefix('%').and_then(|n| n.parse::<usize>().ok()).is_some())
+                {
+                    return Err(format!(
+                        "model connection {} has an input layer name that cannot be represented in steps. Rename the layer to avoid surrounding whitespace, numeric %n references, or semicolons on multi-input ports before importing this model.",
+                        index + 1
+                    ));
+                }
+            }
+            if to_port.is_some_and(|p| !p.many) && !single_inputs.insert((edge.to.as_str(), edge.to_port.as_str())) {
+                return Err(format!(
+                    "model connection {} duplicates a single-valued input port. Keep one connection to this port before importing this model.",
+                    index + 1
+                ));
+            }
+        }
+        if topological_order(&normalized).is_none() {
+            return Err("this model contains a loop and cannot be converted to steps. Fix the loop before importing it.".into());
+        }
+    } else if let Some(steps) = v.get("steps") {
+        let steps = steps.as_array().ok_or("model steps must be an array")?;
+        if steps.len() > MAX_NODES {
+            return Err(format!("a model can have at most {MAX_NODES} steps"));
+        }
+        for (index, step) in steps.iter().enumerate() {
+            let step = ImportItem::<ModelStep>::deserialize(step)
+                .map_err(|_| format!("model step {} is unsupported or malformed. Update RustGIS to import this model.", index + 1))?;
+            if !step.extra.is_empty() {
+                return Err(format!("model step {} has unsupported fields. Update RustGIS to import this model.", index + 1));
+            }
+            if !step.known.params.is_null() && !step.known.params.is_object() {
+                return Err(format!("model step {} needs an object for its parameters", index + 1));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A graph's current file envelope; imports also accept legacy envelopes without a version.
 pub fn to_file(name: &str, g: &ModelGraph) -> Value {
-    json!({"$schema": SCHEMA, "version": "1.0.0", "name": name, "graph": g})
+    json!({"$schema": SCHEMA, "version": FILE_VERSION, "name": name, "graph": g})
 }
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]

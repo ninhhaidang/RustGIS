@@ -337,6 +337,8 @@ fn run_cells(s: &mut Session, p: &Value) -> CmdResult {
             nb.cells.get_mut(at)
         });
         if let Some(c) = ran_cell {
+            // Scrubbed before the cut, so no part of a login binding a result quoted is kept.
+            let text = crate::render::rustgis_tiles::logins::scrub(&text);
             c.output = Some(text.chars().take(MAX_OUTPUT).collect());
             c.error = failed;
             // The Jupyter outputs are from an earlier run; this one's output replaces them.

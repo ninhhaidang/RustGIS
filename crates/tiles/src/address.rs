@@ -113,6 +113,11 @@ fn inet_aton(h: &str) -> Option<Ipv4Addr> {
 /// Whether `url` may be fetched. `from` is where it was found (a document, or the address that
 /// redirected to it), or `None` when the user gave it.
 pub fn check(url: &str, from: Option<&str>) -> Result<(), String> {
+    crate::logins::check(url).map_err(str::to_string)?;
+    if let Some(bound) = rustgis_data::login_address::parse(url).map_err(str::to_string)? {
+        return check(bound.url, from.map(crate::logins::inner));
+    }
+    let from = from.map(crate::logins::inner);
     // An address read through a saved S3 connection is judged by where it is fetched, which its
     // own endpoint decides (no login is needed to keep it).
     if let Some(destination) = crate::s3::bound_destination(url)? {

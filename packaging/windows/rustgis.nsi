@@ -28,6 +28,7 @@ VIAddVersionKey "LegalCopyright" "Copyright the RustGIS contributors. Apache-2.0
 
 !include "MUI2.nsh"
 !include "WinMessages.nsh"
+!include "FileFunc.nsh"
 
 !define MUI_ICON "${ICON}"
 !define MUI_UNICON "${ICON}"
@@ -58,8 +59,40 @@ VIAddVersionKey "LegalCopyright" "Copyright the RustGIS contributors. Apache-2.0
   SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
 !macroend
 
+; RustGIS's Download and Install (Help › Check for Updates) runs this installer as RustGIS
+; closes: `/S /RELAUNCH /D=<its folder>`, and winget runs it silently too. A program can't be
+; replaced while it runs, so a silent install waits for each one it replaces (rustgis.exe, and
+; rustgis-cli.exe a terminal may be running) to be released, for up to 30 seconds each. Still
+; running then, nothing is installed (exit code 2): a silent install would skip the locked files
+; and still record the new version. RustGIS's next start says the update didn't arrive. Run by
+; hand, the installer doesn't wait: replacing a running program asks to retry, as before.
+; `ID` makes the labels of each insertion unique.
+!macro WaitForFree FILE ID
+  IfSilent 0 free_${ID}
+  IfFileExists "$INSTDIR\${FILE}" 0 free_${ID}
+  StrCpy $1 0
+  wait_${ID}:
+    ClearErrors
+    FileOpen $0 "$INSTDIR\${FILE}" a
+    IfErrors 0 open_${ID}
+    IntOp $1 $1 + 1
+    ; Equal (60 tries, 30 s) or more: still running; less: 0, the next line, waits again.
+    IntCmp $1 60 busy_${ID} 0 busy_${ID}
+    Sleep 500
+    Goto wait_${ID}
+  busy_${ID}:
+    SetErrorLevel 2
+    Quit
+  open_${ID}:
+    FileClose $0
+  free_${ID}:
+!macroend
+
 Section "Install"
   SetOutPath "$INSTDIR"
+  ; Both before any file is written: either one still running installs nothing.
+  !insertmacro WaitForFree "rustgis.exe" app
+  !insertmacro WaitForFree "rustgis-cli.exe" cli
   File "${STAGE}\rustgis.exe"
   File "${STAGE}\rustgis-cli.exe"
   File /oname=LICENSE.txt "${STAGE}\LICENSE"
@@ -100,6 +133,14 @@ Section "Install"
   WriteRegDWORD HKCU "${UNINST_KEY}" "NoRepair" 1
   SectionGetSize 0 $0
   WriteRegDWORD HKCU "${UNINST_KEY}" "EstimatedSize" $0
+
+  ; Run by Download and Install: open the updated RustGIS again (the finish page's Start
+  ; RustGIS does it when installing by hand).
+  ${GetParameters} $R0
+  ClearErrors
+  ${GetOptions} $R0 "/RELAUNCH" $R1
+  IfErrors +2
+    Exec '"$INSTDIR\rustgis.exe"'
 SectionEnd
 
 Section "Uninstall"

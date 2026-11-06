@@ -93,7 +93,7 @@ tokio = { version = "1", default-features = false, features = ["rt", "net", "tim
 tokio-util = { version = "0.7", default-features = false, features = ["compat"] }
 webpki-roots = "1"
 # Excel and OpenDocument spreadsheets, in pure Rust (the browser too).
-calamine = { version = "0.37", default-features = false }
+calamine = { version = "0.38", default-features = false }
 laz = { version = "0.13", default-features = false }
 # Zarr chunk codecs, in pure Rust (the browser too): LZ4 (blosc's usual codec; already in the
 # build through parquet) and a zstd decoder.

@@ -1,6 +1,6 @@
-//! QGIS renderers (`<renderer-v2>`) as RustGIS ones: single symbol, categorized (Unique Values),
-//! graduated (Graduated Colors), rule-based (Unique Values where every rule picks values of one
-//! field), the null renderer, and the renderers that wrap another (point cluster and
+//! QGIS renderers (`<renderer-v2>`) as RustGIS ones: single symbol, categorized (Unique Values, by
+//! a field or an expression), graduated (Graduated Colors), rule-based (Unique Values on one field
+//! or by an expression), the null renderer, and the renderers that wrap another (point cluster and
 //! displacement, inverted polygons, merged features) by the one inside.
 
 use std::collections::BTreeMap;
@@ -14,7 +14,7 @@ use crate::symbol_by::SymbolBy;
 use crate::symbology::{ClassMethod, LineStroke, Renderer, Symbol};
 
 /// The most classes a renderer is imported with: every feature is matched against them.
-const MAX_CLASSES: usize = 4096;
+pub(super) const MAX_CLASSES: usize = 4096;
 
 /// Reads the renderer `r` into `style`: its renderer, a line layer's strokes, and its reference
 /// scale and symbol levels.
@@ -121,15 +121,20 @@ fn read_depth(r: Node, layer: &str, style: &mut Style, report: &mut Report, dept
 }
 
 /// A renderer's classifying attribute as a field: `name` or `"name"`; `None` for an expression.
-fn field_of(attr: &str, layer: &str, report: &mut Report) -> Option<String> {
+fn field_name(attr: &str) -> Option<String> {
     let a = attr.trim();
     let unquoted = a.strip_prefix('"').and_then(|s| s.strip_suffix('"')).unwrap_or(a);
-    if !unquoted.is_empty() && !unquoted.contains('"') && (a.starts_with('"') || unquoted.chars().all(|c| c.is_alphanumeric() || c == '_'))
-    {
-        return Some(unquoted.to_string());
+    (!unquoted.is_empty() && !unquoted.contains('"') && (a.starts_with('"') || unquoted.chars().all(|c| c.is_alphanumeric() || c == '_')))
+        .then(|| unquoted.to_string())
+}
+
+/// [`field_name`], an expression noted as skipped: Graduated Colors classes only by a field.
+fn field_of(attr: &str, layer: &str, report: &mut Report) -> Option<String> {
+    let f = field_name(attr);
+    if f.is_none() {
+        report.skipped(layer, format!("ranges by the expression `{}` (only by a field)", attr.trim()));
     }
-    report.skipped(layer, format!("classes by the expression `{a}` (only by a field)"));
-    None
+    f
 }
 
 /// A switched-off class (`render="false"`): it draws nothing.
@@ -141,25 +146,53 @@ type SymbolOf<'a> = dyn Fn(Option<&str>, &mut Report) -> Option<Converted> + 'a;
 
 fn categorized(r: Node, layer: &str, style: &mut Style, report: &mut Report, sym: &SymbolOf) {
     let cats: Vec<Node> = child(r, "categories").map(|c| c.children().filter(|n| n.has_tag_name("category")).collect()).unwrap_or_default();
-    let Some(field) = field_of(r.attribute("attr").unwrap_or_default(), layer, report) else {
-        // Drawn as one: the first category's symbol.
-        if let Some(c) = cats.first().and_then(|c| sym(c.attribute("symbol"), report)) {
-            style.fill_layers = Some(c.fills.clone());
-            style.renderer = Some(Renderer::Single(c.symbol));
+    // By a field, or by an expression (as RustGIS reads it; whether it reads on the layer's
+    // fields is checked where the layer is added, and a field's name with spaces or other
+    // characters, which QGIS writes unquoted, is taken as that field there).
+    let attr = r.attribute("attr").unwrap_or_default();
+    let (field, expression) = match field_name(attr) {
+        Some(f) => (f, None),
+        None => {
+            let Some(e) = expr::to_sql(attr) else {
+                // Drawn as one: the first switched-on category's symbol (none: nothing drawn, as
+                // where a readable expression has none).
+                let c = cats.iter().filter(|c| c.attribute("render") != Some("false")).find_map(|c| sym(c.attribute("symbol"), report));
+                let drawn = if c.is_some() {
+                    "with its first category's symbol (of those switched on)"
+                } else {
+                    "as nothing: no category is drawn"
+                };
+                // (Quoted up to 80 characters: one too long to read is longer than `expr::MAX_LEN`.)
+                let a = attr.trim();
+                let shown: String = a.chars().take(80).collect();
+                let shown = if shown.len() < a.len() { format!("{shown}…") } else { shown };
+                report.approximated(
+                    layer,
+                    format!("its classes by the expression `{shown}`, empty or too long to read: every feature drawn {drawn}"),
+                );
+                single(style, &c.unwrap_or_else(switched_off));
+                return;
+            };
+            // Its first drawn category is taken below, for where the expression can't be read.
+            style.categories_by = Some(super::CategoriesBy { qgis: attr.trim().to_string(), first: None });
+            (String::new(), Some(e))
         }
-        return;
     };
     let mut classes: Vec<(String, Symbol)> = Vec::new();
     let (mut class_labels, mut class_strokes) = (BTreeMap::new(), BTreeMap::new());
     let mut other = symbol::hidden();
     let mut other_strokes = Vec::new();
     let (mut class_fills, mut other_fills) = (BTreeMap::new(), Vec::new());
+    let mut bools: Vec<String> = Vec::new();
     for cat in &cats {
         // A switched-off class draws nothing; its symbol isn't read (its field would turn the rest).
         let c = if cat.attribute("render") == Some("false") {
             switched_off()
         } else {
             let Some(c) = sym(cat.attribute("symbol"), report) else { continue };
+            if let Some(by) = style.categories_by.as_mut().filter(|b| b.first.is_none()) {
+                by.first = Some((c.symbol, if c.stacked() { c.strokes.clone() } else { Vec::new() }, c.fills.clone()));
+            }
             c
         };
         // A category of several values (QGIS's merged categories) lists them as <val>s, or as a
@@ -172,6 +205,9 @@ fn categorized(r: Node, layer: &str, style: &mut Style, report: &mut Report, sym
         if values.is_empty() {
             values.push(cat.attribute("value").unwrap_or_default().to_string());
         }
+        // A boolean category's values (`true`, `false`) are matched to the layer's field or the
+        // expression's value where the layer is added: recorded for each class it makes.
+        let boolean = cat.attribute("type") == Some("bool");
         for v in values {
             // An empty value is QGIS's "all other values".
             if v.is_empty() || v == "NULL" {
@@ -193,6 +229,9 @@ fn categorized(r: Node, layer: &str, style: &mut Style, report: &mut Report, sym
             if !c.fills.is_empty() {
                 class_fills.insert(v.clone(), c.fills.clone());
             }
+            if boolean && super::bool_key(&v, false).is_some() {
+                bools.push(v.clone());
+            }
             classes.push((v, c.symbol));
         }
     }
@@ -209,8 +248,13 @@ fn categorized(r: Node, layer: &str, style: &mut Style, report: &mut Report, sym
         other_strokes,
         class_fills,
         other_fills,
-        expression: None,
+        expression,
     });
+    // Its boolean categories, matched to the layer's field or the expression's value where the
+    // layer is added (each value once).
+    let mut seen = std::collections::BTreeSet::new();
+    bools.retain(|k| seen.insert(k.clone()));
+    style.bool_classes = bools;
 }
 
 fn graduated(r: Node, layer: &str, style: &mut Style, report: &mut Report, sym: &SymbolOf) {

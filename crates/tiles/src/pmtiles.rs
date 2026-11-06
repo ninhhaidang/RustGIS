@@ -171,6 +171,9 @@ pub fn is_tile(url: &str) -> bool {
 /// (As `rustgis_map::tiles::is_local_archive` decides it, which a layer's address went through.)
 /// An address read through a saved S3 connection is never a file, well formed or not.
 pub fn is_local(archive: &str) -> bool {
+    if rustgis_data::login_address::is_wrapper(archive) {
+        return false;
+    }
     if rustgis_data::s3_address::is_wrapper(archive) {
         return false;
     }
@@ -410,6 +413,7 @@ pub(crate) fn forget_archive(archive: &str) {
 /// An archive's header and metadata: `Ok(None)` while they are read (the map draws again once
 /// they arrive).
 pub fn info(archive: &str) -> Result<Option<Arc<Info>>, String> {
+    crate::logins::check(archive).map_err(str::to_string)?;
     let mut all = archives().lock().unwrap_or_else(|e| e.into_inner());
     match all.get(archive) {
         Some(State::Ready(i)) => return Ok(Some(i.clone())),
@@ -434,6 +438,10 @@ pub fn info_blocking(archive: &str, timeout: std::time::Duration) -> Result<Arc<
 
 /// Calls `f` with the archive's info, once it is read.
 fn with_info(archive: &str, f: Box<dyn FnOnce(Result<Arc<Info>, String>) + Send>) {
+    if let Err(e) = crate::logins::check(archive) {
+        f(Err(e.to_string()));
+        return;
+    }
     let mut all = archives().lock().unwrap_or_else(|e| e.into_inner());
     match all.get_mut(archive) {
         Some(State::Ready(i)) => {
@@ -492,7 +500,11 @@ fn load(archive: String) {
 }
 
 fn finish(archive: &str, r: Result<Info, String>) {
-    let r = r.map(Arc::new);
+    let r = crate::logins::check(archive)
+        .map_err(str::to_string)
+        .and(r)
+        .map(Arc::new)
+        .map_err(|e| if rustgis_data::login_address::is_wrapper(archive) { crate::logins::scrub(&e) } else { e });
     let waiting = {
         let mut all = archives().lock().unwrap_or_else(|e| e.into_inner());
         let old = match &r {

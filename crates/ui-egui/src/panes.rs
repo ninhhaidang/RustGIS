@@ -1680,6 +1680,7 @@ fn tile_row(app: &mut RustGisApp, ui: &mut Ui, i: usize, moves: [bool; 2], reord
     }
     let resp = resp.on_hover_text(hover);
     resp.context_menu(|ui| {
+        service_login_menu(app, ui, &tile.connection);
         // Stored bounds, an archive or GeoTIFF say what the layer covers.
         if tile.bounds.is_some() || matches!(tile.kind, TileKind::PmTiles | TileKind::Cog) {
             if ui.button(tl!("Zoom To Layer")).clicked() {
@@ -2126,6 +2127,19 @@ fn layers_menu(app: &mut RustGisApp, ui: &mut Ui, picked: &[u32], reorder: bool)
     }
 }
 
+/// Reopens the login of the saved service a layer records, without guessing from its address.
+fn service_login_menu(app: &mut RustGisApp, ui: &mut Ui, connection: &str) {
+    let Some(c) = app.session.connections.find(connection).filter(|c| rustgis_engine::service_logins::is_service(c) && !c.auth.is_empty())
+    else {
+        return;
+    };
+    if ui.button(crate::i18n::fmt("Log In to {name}…", &[("name", &c.name)])).clicked() {
+        let id = c.id.clone();
+        crate::connectionui::log_in(app, &id);
+        ui.close();
+    }
+}
+
 /// A layer's right-click menu (its row in any Layers view). Move Up and Move Down only with
 /// `reorder` (the drawing order view, unfiltered).
 fn layer_menu(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, reorder: bool) {
@@ -2145,6 +2159,7 @@ fn layer_menu(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, reorder: bool) {
         let _ = app.run("ui.refreshService", json!({"layer":l.id}));
         ui.close();
     }
+    service_login_menu(app, ui, &l.connection);
     let login = l.source.as_ref().and_then(|s| {
         let (kind, database) = rustgis_engine::connections::layer_database(s)?;
         let connections: Vec<_> = app.session.connections.matching_database(kind, database).into_iter().cloned().collect();
@@ -2171,6 +2186,7 @@ fn layer_menu(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, reorder: bool) {
                     key,
                     connections: connections.iter().map(|c| c.id.clone()).collect(),
                     layers: vec![l.id],
+                    tiles: 0,
                     opened,
                     prompted: true,
                 },
@@ -2214,6 +2230,10 @@ fn layer_menu(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, reorder: bool) {
         ui.close();
     }
     if l.is_streamed() && ui.button(tl!("Load All Features")).clicked() {
+        // Read on a thread of its own in the desktop app (see `readjob`).
+        #[cfg(not(target_arch = "wasm32"))]
+        let _ = crate::readjob::run(app, "layer.loadAll", json!({"layer": l.id}));
+        #[cfg(target_arch = "wasm32")]
         let _ = app.run("layer.loadAll", json!({"layer": l.id}));
         ui.close();
     }
@@ -2332,6 +2352,7 @@ fn layer_menu(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, reorder: bool) {
 // ---------------------------------------------------------------------------------------------
 // Catalog
 
+/// Draws the Browser; toolbox identities use source names so translations can share labels.
 fn catalog(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         egui::Frame::NONE.inner_margin(egui::Margin::symmetric(10, 8)).show(ui, |ui| {
@@ -2350,7 +2371,9 @@ fn catalog(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
                     });
                 }
             });
-            egui::CollapsingHeader::new(egui::RichText::new(tl!("Toolboxes")).font(semibold(12.5))).default_open(true).show(ui, |ui| {
+            let toolboxes =
+                egui::CollapsingHeader::new(egui::RichText::new(tl!("Toolboxes")).font(semibold(12.5))).id_salt("browser_toolboxes");
+            toolboxes.default_open(true).show(ui, |ui| {
                 let mut boxes: Vec<&str> = tools().map(|t| t.toolbox.split(" › ").next().unwrap_or(t.toolbox)).collect();
                 boxes.sort();
                 boxes.dedup();
@@ -2364,7 +2387,7 @@ fn catalog(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
                     });
                 };
                 for b in boxes {
-                    egui::CollapsingHeader::new(crate::i18n::location(b)).default_open(false).show(ui, |ui| {
+                    egui::CollapsingHeader::new(crate::i18n::location(b)).id_salt(("toolbox", b)).default_open(false).show(ui, |ui| {
                         let in_box: Vec<&rustgis_engine::analysis::ToolSpec> =
                             tools().filter(|x| x.toolbox.split(" › ").next() == Some(b)).collect();
                         // A large toolbox (the GeoLibre suite) opens one level at a time:
@@ -2709,7 +2732,8 @@ fn start_tool_run(app: &mut RustGisApp, tool: &'static str, params: &Value, ctx:
     match rustgis_engine::cmd::gp::tool_start(&mut app.session, tool, params) {
         Ok(run) => {
             let slot = crate::Slot::default();
-            let control = rustgis_engine::analysis::control::Control::new();
+            // Cancel stops it, so it takes no work cap.
+            let control = rustgis_engine::analysis::control::Control::stoppable();
             let (out, ctl, ctx) = (slot.clone(), control.clone(), ctx.clone());
             let id = run.id;
             let spawned = std::thread::Builder::new().name(tool.into()).spawn(move || {
@@ -4279,6 +4303,9 @@ fn symbology(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
         crate::fill_editor::fills_editor(app, ui, &l, t);
     }
     if !l.graphics {
+        ui.add_space(10.0);
+        ui.separator();
+        diagram_section(app, ui, &l, &numeric, t);
         ui.add_space(8.0);
         symbol_by_editor(app, ui, &l, t);
     }
@@ -4300,6 +4327,296 @@ fn symbology(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
     if ui.button(tl!("Import QGIS Style…")).on_hover_text(tl!("Style this layer as a QGIS layer style file (.qml) does")).clicked() {
         let _ = app.run("ui.openItem", json!({"kind": "qgisStyle"}));
     }
+}
+
+/// The Symbology pane's Diagram section (#976): a pie or bar chart of several numeric fields
+/// drawn on each feature over its symbol, as ArcGIS Pro's Chart symbology and QGIS's Diagrams
+/// draw. Every change re-runs `layer.diagram` with the whole setting — one undo step, and the
+/// scaled size range is recomputed from the data; `layer.clearDiagram` removes the diagram.
+fn diagram_section(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, numeric: &[String], t: &Tokens) {
+    use rustgis_engine::map::diagram::{CATEGORY_COLORS, MAX_CATEGORIES};
+    use rustgis_engine::map::{DiagramKind, DiagramLabel, DiagramSize};
+
+    // A table has no features to draw a chart on.
+    if l.geometry_type() == GeometryType::None {
+        return;
+    }
+    // The layer.diagram call for `cats` with the rest of `d`'s own settings.
+    let apply = |app: &mut RustGisApp, d: &rustgis_engine::map::DiagramSettings, cats: Vec<Value>| {
+        let fields: Vec<Value> = cats.into_iter().map(|c| json!({"field": c["field"], "color": c["color"]})).collect();
+        let params = json!({
+            "kind": if d.kind == DiagramKind::Pie { "pie" } else { "bar" },
+            "fields": fields,
+            "size": match d.size {
+                DiagramSize::Fixed(s) => json!(s),
+                DiagramSize::Scaled { min_size, max_size, .. } => json!({"from": min_size, "to": max_size}),
+            },
+            "startAngle": d.start_angle,
+            "labels": d.labels.code(),
+            "background": d.background.as_ref().map(|c| json!(c.hex())).unwrap_or(Value::Null),
+            "outline": {"color": d.stroke.hex(), "width": d.stroke_width},
+        });
+        if let Err(error) = app.run("layer.diagram", params) {
+            app.session.notify(error, true);
+        }
+    };
+    // The held drafts are kept per layer of this map of this project: a layer id repeats across maps.
+    let key = crate::labelpane::layer_key(app, l);
+
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(tl!("Diagram")).size(11.5).color(t.text_dim))
+            .on_hover_text(tl!("A small chart of several numeric fields, drawn on each feature over its symbol"));
+        if l.diagram.is_some()
+            && ui.small_button(tl!("Remove")).clicked()
+            && let Err(error) = app.run("layer.clearDiagram", json!({}))
+        {
+            app.session.notify(error, true);
+        }
+    });
+    let Some(mut d) = l.diagram.clone() else {
+        if numeric.len() < 2 {
+            ui.label(egui::RichText::new(tl!("Needs two or more numeric fields.")).color(t.text_dim));
+            return;
+        }
+        ui.horizontal(|ui| {
+            // A streamed layer's sums are its view's, so a scaled size is refused: it starts fixed.
+            let size = if l.is_streamed() { json!(12.0) } else { Value::Null };
+            if ui.button(tl!("Pie Chart")).clicked()
+                && let Err(error) = app.run("layer.diagram", json!({"kind": "pie", "fields": [numeric[0], numeric[1]], "size": size}))
+            {
+                app.session.notify(error, true);
+            }
+            if ui.button(tl!("Bar Chart")).clicked()
+                && let Err(error) = app.run("layer.diagram", json!({"kind": "bar", "fields": [numeric[0], numeric[1]], "size": size}))
+            {
+                app.session.notify(error, true);
+            }
+        });
+        return;
+    };
+
+    // The chart kind.
+    ui.horizontal(|ui| {
+        ui.label(tl!("Kind"));
+        for (kind, label) in [(DiagramKind::Pie, "Pie"), (DiagramKind::Bar, "Bar")] {
+            if ui.selectable_label(d.kind == kind, tl!(label)).clicked() && d.kind != kind {
+                d.kind = kind;
+                apply(app, &d, d.categories.iter().map(|c| json!({"field": c.field, "color": c.colour.hex()})).collect());
+            }
+        }
+    });
+
+    // The categories: a field and its colour each, in draw order.
+    ui.add_space(4.0);
+    ui.label(egui::RichText::new(tl!("Fields")).size(11.5).color(t.text_dim));
+    // The categories as edited, and the colour button's response when a colour picker made the
+    // edit (its drag is one undo step).
+    let mut edited: Option<(Vec<Value>, Option<egui::Response>)> = None;
+    for (i, c) in d.categories.iter().enumerate() {
+        ui.horizontal(|ui| {
+            let mut field = c.field.clone();
+            egui::ComboBox::from_id_salt(("diagram_field", i)).selected_text(&field).width(140.0).show_ui(ui, |ui| {
+                for f in numeric {
+                    // A field another row draws is not offered twice (the command refuses it).
+                    let taken = d.categories.iter().enumerate().any(|(j, o)| j != i && o.field.eq_ignore_ascii_case(f));
+                    if ui.add_enabled(!taken, egui::Button::selectable(*f == field, f.as_str())).clicked() {
+                        field = f.clone();
+                    }
+                }
+            });
+            let mut cats: Vec<Value> = d.categories.iter().map(|c| json!({"field": c.field, "color": c.colour.hex()})).collect();
+            let mut changed = false;
+            let (resp, picked) = diagram_colour(ui, c.colour);
+            let mut press = None;
+            if let Some(picked) = picked {
+                cats[i]["color"] = json!(picked.hex());
+                changed = true;
+                press = Some(resp);
+            }
+            if field != c.field {
+                cats[i]["field"] = json!(field);
+                changed = true;
+            }
+            if d.categories.len() > 1 && ui.small_button("✕").on_hover_text(tl!("Drop this field")).clicked() {
+                cats.remove(i);
+                changed = true;
+            }
+            if changed {
+                edited = Some((cats, press));
+            }
+        });
+    }
+    if let Some((cats, press)) = edited {
+        if let Some(resp) = press {
+            crate::widgets::one_step_per_press(app, &resp);
+        }
+        apply(app, &d, cats);
+    }
+    if d.categories.len() < MAX_CATEGORIES.min(numeric.len()) && ui.small_button(tl!("＋ Add field")).clicked() {
+        let taken: Vec<&str> = d.categories.iter().map(|c| c.field.as_str()).collect();
+        if let Some(next) = numeric.iter().find(|f| !taken.iter().any(|t| t.eq_ignore_ascii_case(f))) {
+            let i = d.categories.len();
+            let mut cats: Vec<Value> = d.categories.iter().map(|c| json!({"field": c.field, "color": c.colour.hex()})).collect();
+            cats.push(json!({"field": next, "color": CATEGORY_COLORS[i % CATEGORY_COLORS.len()].hex()}));
+            apply(app, &d, cats);
+        }
+    }
+
+    // The size: one for every feature, or grown with the categories' sum.
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.label(tl!("Size"));
+        let scaled = !matches!(d.size, DiagramSize::Fixed(_));
+        egui::ComboBox::from_id_salt("diagram_size_kind")
+            .selected_text(if scaled { tl!("Scaled by sum") } else { tl!("Fixed") })
+            .width(120.0)
+            .show_ui(ui, |ui| {
+                if ui.selectable_label(!scaled, tl!("Fixed")).clicked() && scaled {
+                    let mut d2 = d.clone();
+                    d2.size = DiagramSize::Fixed(12.0);
+                    apply(app, &d2, d2.categories.iter().map(|c| json!({"field": c.field, "color": c.colour.hex()})).collect());
+                }
+                // A streamed layer holds the view's features only, so its range of sums is unknown.
+                let streamed = l.is_streamed();
+                let scaled_option = ui
+                    .add_enabled(!streamed, egui::Button::selectable(scaled, tl!("Scaled by sum")))
+                    .on_disabled_hover_text(tl!("A streamed layer needs Load All Features first"));
+                if scaled_option.clicked() && !scaled {
+                    let mut d2 = d.clone();
+                    d2.size = DiagramSize::Scaled { min_size: 6.0, max_size: 40.0, min: 0.0, max: 0.0 };
+                    apply(app, &d2, d2.categories.iter().map(|c| json!({"field": c.field, "color": c.colour.hex()})).collect());
+                }
+            });
+        let mut changed = false;
+        match d.size {
+            DiagramSize::Fixed(mut s) => {
+                if held_drag(ui, ui.make_persistent_id(("diagram-size", key)), &mut s, 1.0..=200.0, " pt", None) {
+                    d.size = DiagramSize::Fixed(s);
+                    changed = true;
+                }
+            }
+            DiagramSize::Scaled { ref mut min_size, ref mut max_size, .. } => {
+                // Each bound stops at the other, so the pair never crosses (the command refuses that).
+                let (from, to) = (*min_size, *max_size);
+                let lo = held_drag(ui, ui.make_persistent_id(("diagram-size-min", key)), min_size, 1.0..=to, " pt", None);
+                let hi = held_drag(ui, ui.make_persistent_id(("diagram-size-max", key)), max_size, from..=200.0, " pt", None);
+                changed = lo || hi;
+            }
+        }
+        if changed {
+            apply(app, &d, d.categories.iter().map(|c| json!({"field": c.field, "color": c.colour.hex()})).collect());
+        }
+    });
+
+    // A pie's first slice can start anywhere on the turn.
+    if d.kind == DiagramKind::Pie {
+        ui.horizontal(|ui| {
+            let mut a = d.start_angle;
+            let input_label = ui.label(tl!("Start angle"));
+            if held_drag(ui, ui.make_persistent_id(("diagram-start-angle", key)), &mut a, 0.0..=360.0, "°", Some(input_label.id)) {
+                d.start_angle = a;
+                apply(app, &d, d.categories.iter().map(|c| json!({"field": c.field, "color": c.colour.hex()})).collect());
+            }
+        });
+    }
+
+    // What each slice or bar says beside it: nothing, its value, its percent, or both.
+    ui.horizontal(|ui| {
+        let input_label = ui.label(tl!("Labels"));
+        let cur = d.labels;
+        egui::ComboBox::from_id_salt("diagram_labels")
+            .selected_text(tl!(cur.label()))
+            .width(120.0)
+            .show_ui(ui, |ui| {
+                for mode in DiagramLabel::ALL {
+                    if ui.selectable_label(cur == mode, tl!(mode.label())).clicked() && cur != mode {
+                        let mut d2 = d.clone();
+                        d2.labels = mode;
+                        apply(app, &d2, d2.categories.iter().map(|c| json!({"field": c.field, "color": c.colour.hex()})).collect());
+                    }
+                }
+            })
+            .response
+            .labelled_by(input_label.id)
+            .on_hover_text(tl!("What each slice or bar says beside it: its value, its share in percent, or both"));
+    });
+
+    // The disc or box behind the chart, and the outline around it all.
+    ui.horizontal(|ui| {
+        let mut on = d.background.is_some();
+        if ui.checkbox(&mut on, tl!("Background")).changed() {
+            d.background = on.then(|| rustgis_engine::map::Rgba::new(255, 255, 255, 204));
+            apply(app, &d, d.categories.iter().map(|c| json!({"field": c.field, "color": c.colour.hex()})).collect());
+        } else if let Some(bg) = d.background {
+            let (resp, picked) = diagram_colour(ui, bg);
+            if let Some(picked) = picked {
+                d.background = Some(picked);
+                crate::widgets::one_step_per_press(app, &resp);
+                apply(app, &d, d.categories.iter().map(|c| json!({"field": c.field, "color": c.colour.hex()})).collect());
+            }
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.label(tl!("Outline"));
+        let (resp, picked) = diagram_colour(ui, d.stroke);
+        let mut changed = false;
+        if let Some(picked) = picked {
+            d.stroke = picked;
+            changed = true;
+            crate::widgets::one_step_per_press(app, &resp);
+        }
+        let mut w = d.stroke_width;
+        if held_drag(ui, ui.make_persistent_id(("diagram-outline-width", key)), &mut w, 0.0..=8.0, " pt", None) {
+            d.stroke_width = w;
+            changed = true;
+        }
+        if changed {
+            apply(app, &d, d.categories.iter().map(|c| json!({"field": c.field, "color": c.colour.hex()})).collect());
+        }
+    });
+}
+
+/// A colour button in the Diagram section for the stored colour `old`, and the colour picked when
+/// it changed. The picker is built from `old`'s own channels, not a premultiplied Color32, so a
+/// fully transparent colour keeps its colour through an edit; and an opacity-only edit keeps
+/// `old`'s channels, which the picker's rounding would change.
+fn diagram_colour(ui: &mut Ui, old: rustgis_engine::map::Rgba) -> (egui::Response, Option<rustgis_engine::map::Rgba>) {
+    let mut hsva = egui::ecolor::Hsva::from_srgb([old.r(), old.g(), old.b()]);
+    hsva.a = f32::from(old.a()) / 255.0;
+    let alpha = hsva.a;
+    let resp = egui::color_picker::color_edit_button_hsva(ui, &mut hsva, egui::color_picker::Alpha::OnlyBlend);
+    let picked = resp.changed().then(|| picked_colour(hsva, alpha, old));
+    (resp, picked)
+}
+
+/// The colour a picker left at `hsva` for `old`, whose opacity was `alpha` when it opened: an
+/// opacity-only edit keeps `old`'s own channels; any other is the picker's colour, unpremultiplied.
+fn picked_colour(hsva: egui::ecolor::Hsva, alpha: f32, old: rustgis_engine::map::Rgba) -> rustgis_engine::map::Rgba {
+    let rgb = rustgis_engine::map::Rgba(hsva.to_srgba_unmultiplied());
+    if hsva.a != alpha { old.with_alpha(rgb.a()) } else { rgb }
+}
+
+/// A number dragged or typed in the Diagram section. It is held in the UI's memory while the drag
+/// goes on, and `true` once the drag stops or the field is left, when the number is applied: so a
+/// drag is one undo step, as [`manual_breaks`] holds its bounds. `v` shows the held number.
+fn held_drag(ui: &mut Ui, id: egui::Id, v: &mut f32, range: std::ops::RangeInclusive<f32>, suffix: &str, label: Option<egui::Id>) -> bool {
+    if let Some(held) = ui.data(|d| d.get_temp::<f32>(id)) {
+        *v = held;
+    }
+    let mut r = ui.add(egui::DragValue::new(v).range(range).suffix(suffix));
+    if let Some(label) = label {
+        r = r.labelled_by(label);
+    }
+    if r.changed() {
+        ui.data_mut(|d| d.insert_temp(id, *v));
+    }
+    let done = (r.drag_stopped() || r.lost_focus()) && ui.data(|d| d.get_temp::<f32>(id)).is_some();
+    // A number held from an edit the widget left mid-way (its layer switched away while typing) is
+    // dropped once the widget is drawn again unedited, so the diagram's own number shows.
+    if done || (!r.dragged() && !r.has_focus() && !r.changed()) {
+        ui.data_mut(|d| d.remove_temp::<f32>(id));
+    }
+    done
 }
 
 /// The scales the Reference scale picker offers, besides none and the map's own.
@@ -6778,6 +7095,67 @@ mod tests {
         h.step();
     }
 
+    /// #1321: double-clicking a layer opens its Symbology pane even at 4 frames a second (CPU
+    /// rendering of a large map), where egui's default 0.3 s missed the second click.
+    #[test]
+    fn double_clicking_a_layer_opens_symbology_at_a_slow_frame_rate() {
+        use egui_kittest::kittest::Queryable;
+        let mut app = RustGisApp::with_sample();
+        app.ui.right_open.clear();
+        app.ui.right = None;
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(1200.0, 900.0)).with_max_steps(64).with_step_dt(0.25).build_ui_state(
+            |ui, app: &mut RustGisApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            app,
+        );
+        h.run_steps(6);
+        h.get_by_label("Rivers").click();
+        h.step();
+        h.get_by_label("Rivers").click();
+        h.run_steps(3);
+        assert_eq!(h.state().session.active_layer, h.state().session.map().layer_by_name("Rivers").map(|l| l.id));
+        assert_eq!(h.state().ui.right, Some(RightPane::Symbology));
+        // The delay follows the frames: the Windows default when they are fast, up to 1.2 s.
+        assert_eq!(crate::double_click_delay(1.0 / 60.0), 0.5);
+        assert!((crate::double_click_delay(0.33) - 0.96).abs() < 1e-6);
+        assert_eq!(crate::double_click_delay(2.0), 1.2);
+    }
+
+    /// #1321: the frame that takes the first click can be the first slow one. egui reads the delay
+    /// when the next frame begins, so the delay has to follow the frame that just ended: 0.3 s of
+    /// work gives at least 0.9 s, where the fast frames before it gave 0.5 s.
+    #[test]
+    fn a_double_click_counts_across_the_first_slow_frame() {
+        use egui_kittest::kittest::Queryable;
+        let mut app = RustGisApp::with_sample();
+        app.ui.right_open.clear();
+        app.ui.right = None;
+        let slow = std::rc::Rc::new(std::cell::Cell::new(false));
+        let frame = slow.clone();
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(1200.0, 900.0)).with_step_dt(1.0 / 60.0).build_ui_state(
+            move |ui, app: &mut RustGisApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                if frame.get() {
+                    std::thread::sleep(std::time::Duration::from_millis(300));
+                }
+                app.ui(ui);
+            },
+            app,
+        );
+        h.run_steps(6);
+        let at = h.get_by_label("Rivers").rect().center();
+        slow.set(true);
+        crate::click_in_one_frame(&mut h, at, 1.0 / 60.0);
+        slow.set(false);
+        crate::click_in_one_frame(&mut h, at, 0.7);
+        h.run_steps(3);
+        assert_eq!(h.state().ui.right, Some(RightPane::Symbology));
+    }
+
     /// #808: a web tile layer is listed at its place among the map's layers, moves past them
     /// from its menu, and is dragged to another place.
     #[test]
@@ -7511,7 +7889,8 @@ mod tests {
         let id = layer(&app, "Countries");
         app.session.active_layer = Some(id);
         app.ui.open_right(RightPane::Symbology);
-        let mut h = egui_kittest::Harness::builder().with_size(vec2(1400.0, 1400.0)).with_max_steps(64).build_ui_state(
+        // Tall enough for the whole Symbology pane, its Diagram section included.
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(1400.0, 2200.0)).with_max_steps(64).build_ui_state(
             |ui, app: &mut RustGisApp| {
                 let ctx = ui.ctx().clone();
                 app.logic(&ctx);
@@ -7541,6 +7920,21 @@ mod tests {
         assert_eq!(transparency(&h), mid, "letting go keeps the value");
         h.state_mut().run("edit.undo", Value::Null).unwrap();
         assert_eq!(transparency(&h), start, "one undo takes the whole drag back");
+    }
+
+    /// A diagram outline or background at zero opacity keeps a colour picked for it: raising the
+    /// opacity later shows that colour, not black. An opacity-only edit keeps the stored channels.
+    #[test]
+    fn a_transparent_diagram_colour_keeps_its_picked_rgb() {
+        use rustgis_engine::map::Rgba;
+        let old = Rgba::new(0x4D, 0x4D, 0x4D, 0);
+        let mut hsva = egui::ecolor::Hsva::from_srgb([200, 30, 40]);
+        hsva.a = 0.0;
+        let picked = picked_colour(hsva, 0.0, old);
+        assert_eq!((picked.r(), picked.g(), picked.b(), picked.a()), (200, 30, 40, 0), "the RGB picked at zero opacity is kept");
+        let mut raised = egui::ecolor::Hsva::from_srgb([200, 30, 40]);
+        raised.a = 1.0;
+        assert_eq!(picked_colour(raised, 0.0, picked), picked.with_alpha(255), "raising the opacity shows it");
     }
 
     /// Editing opacity must not turn a transparent red or a near-transparent colour into black.

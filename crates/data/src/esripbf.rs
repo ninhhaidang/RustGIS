@@ -63,7 +63,7 @@ const MAX_TEXT_BYTES: usize = 512 << 20;
 fn row_bytes(features: usize, fields: usize) -> usize {
     use std::mem::size_of;
     // Declared, kept or not, as a column, a field and a name to tell repeats by.
-    let field = size_of::<(String, u64, bool)>() + size_of::<Option<(usize, Kind)>>() + size_of::<Field>() + size_of::<String>();
+    let field = size_of::<Declared>() + size_of::<Option<(usize, Kind)>>() + size_of::<Field>() + size_of::<String>();
     let row = size_of::<crate::Feature>().saturating_add(fields.saturating_mul(size_of::<Value>()));
     features.saturating_mul(row).saturating_add(fields.saturating_mul(field))
 }
@@ -92,7 +92,8 @@ const LAST_FIELD_TYPE: u64 = 16;
 pub struct Page {
     /// Its features, in longitude/latitude.
     pub dataset: Dataset,
-    /// What was left out or assumed while reading it.
+    /// What was left out or assumed while reading it, but for what its features lost
+    /// ([`losses`](Self::losses)).
     pub report: ReadReport,
     /// The service holds more features than it sent (`exceededTransferLimit`): the next page
     /// starts after these.
@@ -100,9 +101,20 @@ pub struct Page {
     /// The field holding the features' object ids (`esriFieldTypeOID`), by its place in
     /// `dataset.fields`.
     pub object_id_field: Option<usize>,
-    /// What its features lost, counted (also said in `report`): a reader joining pages sums them
-    /// and says each once ([`Losses::messages`]).
+    /// What its features lost, counted: a reader joining pages sums them and says each once
+    /// ([`Losses::messages`]), as [`read`] says a single page's.
     pub losses: Losses,
+    /// About the memory its fields, rows, text values and geometries take, in bytes, as counted
+    /// against [`MAX_ROW_BYTES`], [`MAX_TEXT_BYTES`] and [`MAX_GEOMETRY_BYTES`]: a reader joining
+    /// pages sums them against a budget of its own.
+    pub memory: usize,
+    /// Features it holds past the limit it was read within ([`read_page_within`]), not read: what
+    /// they lost isn't counted.
+    pub left_out: usize,
+    /// A hash of how many features it holds and of its first and last features as they were sent,
+    /// taken before any limit: a reader of pages tells a page sent again by it when the features
+    /// have no object id.
+    pub fingerprint: u64,
 }
 
 /// What a page's features lost or had assumed, counted.
@@ -133,7 +145,7 @@ impl Losses {
         self.with_zm = self.with_zm.saturating_add(other.with_zm);
     }
 
-    /// What they say, one message per kind (as [`read_page`] says them).
+    /// What they say, one message per kind (as [`read`] says them).
     pub fn messages(&self) -> Vec<String> {
         let mut out = Vec::new();
         if self.no_crs {
@@ -167,6 +179,7 @@ impl Losses {
 /// Reads an answer as a layer named `name`, saying when the service held more features than it sent.
 pub fn read(bytes: &[u8], name: &str) -> Result<(Dataset, ReadReport)> {
     let mut page = read_page(bytes, name)?;
+    page.report.messages.extend(page.losses.messages());
     if page.exceeded_transfer_limit {
         page.report.messages.push(format!(
             "the service sent {} features only (its record limit); the rest aren't in this answer",
@@ -186,6 +199,13 @@ pub fn is_esripbf(bytes: &[u8]) -> bool {
 
 /// Reads one page of an answer as a layer named `name`.
 pub fn read_page(bytes: &[u8], name: &str) -> Result<Page> {
+    read_page_within(bytes, name, usize::MAX)
+}
+
+/// Reads one page of an answer as a layer named `name`, its first `limit` features only (the
+/// rest are counted in [`Page::left_out`]): a reader joining pages up to a number of features
+/// counts what those it keeps lost, and no others.
+pub fn read_page_within(bytes: &[u8], name: &str, limit: usize) -> Result<Page> {
     if bytes.is_empty() {
         return Err(invalid("the answer is empty: the service refused the query (ask for it with f=json to see why)"));
     }
@@ -227,6 +247,18 @@ pub fn read_page(bytes: &[u8], name: &str) -> Result<Page> {
             return Err(too_many_rows(features.len(), declared.len()));
         }
     }
+    let fingerprint = {
+        use std::hash::Hasher as _;
+        let mut hash = std::collections::hash_map::DefaultHasher::new();
+        hash.write_usize(features.len());
+        for f in [features.first(), features.last()].into_iter().flatten() {
+            hash.write(f);
+        }
+        hash.finish()
+    };
+    let left_out = features.len().saturating_sub(limit);
+    features.truncate(limit);
+    let rows = row_bytes(features.len(), declared.len());
     // A point layer's type is the format's default, which an answer leaves out.
     let shape_kind = geometry_type.unwrap_or(POINT);
     // Refused whether or not a feature has coordinates, so such a layer isn't read as empty.
@@ -243,7 +275,7 @@ pub fn read_page(bytes: &[u8], name: &str) -> Result<Page> {
     let mut names = std::collections::HashSet::new();
     let (mut repeated, mut not_read, mut unknown) = (0usize, 0usize, 0usize);
     let mut object_id_field = None;
-    for (name, number, utf8) in declared {
+    for Declared { name, number, utf8, alias } in declared {
         tally.not_utf8 += usize::from(!utf8);
         let Some(read_as) = kind(number) else {
             not_read += 1;
@@ -261,7 +293,7 @@ pub fn read_page(bytes: &[u8], name: &str) -> Result<Page> {
             object_id_field = Some(fields.len());
         }
         columns.push(Some((fields.len(), read_as)));
-        fields.push(Field::new(name, read_as.field_type()));
+        fields.push(Field { name, ty: read_as.field_type(), alias });
     }
     if repeated > 0 {
         report.messages.push(format!("{repeated} fields repeat an earlier field's name and are left out"));
@@ -331,9 +363,11 @@ pub fn read_page(bytes: &[u8], name: &str) -> Result<Page> {
         unprojected,
         with_zm,
     };
-    report.messages.extend(losses.messages());
     ds.zm_dropped = with_zm > 0;
-    Ok(Page { dataset: ds, report, exceeded_transfer_limit: more, object_id_field, losses })
+    let memory = rows
+        .saturating_add(MAX_GEOMETRY_BYTES.saturating_sub(tally.geometry_room))
+        .saturating_add(MAX_TEXT_BYTES.saturating_sub(tally.text_room));
+    Ok(Page { dataset: ds, report, exceeded_transfer_limit: more, object_id_field, losses, memory, left_out, fingerprint })
 }
 
 /// A reader of protocol buffer fields, which refuses what runs past its bytes.
@@ -575,10 +609,22 @@ fn read_transform(bytes: &[u8]) -> Result<Transform> {
     Ok(t)
 }
 
-/// A field's name, its type's number (`FieldType`) and whether the name was valid UTF-8.
-/// The name is taken from `tally`'s text room before it's made, twice: it's kept lowercase too.
-fn field(bytes: &[u8], tally: &mut Tally) -> Result<(String, u64, bool)> {
+/// A field as an answer declares it.
+struct Declared {
+    name: String,
+    /// Its type's number (`FieldType`).
+    number: u64,
+    /// Whether its name and alias were valid UTF-8.
+    utf8: bool,
+    /// None when empty or the name itself.
+    alias: Option<String>,
+}
+
+/// A field as declared. The name is taken from `tally`'s text room before it's made, twice: it's
+/// kept lowercase too; the alias once.
+fn field(bytes: &[u8], tally: &mut Tally) -> Result<Declared> {
     let (mut name, mut number, mut utf8) = (String::new(), 0, true);
+    let (mut alias, mut alias_utf8) = (String::new(), true);
     let mut r = Reader::new(bytes);
     while !r.done() {
         match r.key()? {
@@ -589,10 +635,17 @@ fn field(bytes: &[u8], tally: &mut Tally) -> Result<(String, u64, bool)> {
                 name = String::from_utf8_lossy(raw).into_owned();
             }
             (2, 0) => number = r.varint()?,
+            (3, 2) => {
+                let raw = r.message()?;
+                tally.spend_text(lossy_len(raw))?;
+                alias_utf8 = std::str::from_utf8(raw).is_ok();
+                alias = String::from_utf8_lossy(raw).into_owned();
+            }
             (_, wire) => r.skip(wire)?,
         }
     }
-    Ok((name, number, utf8))
+    let alias = Some(alias).filter(|a| !a.is_empty() && *a != name);
+    Ok(Declared { name, number, utf8: utf8 && alias_utf8, alias })
 }
 
 /// The code of an answer's coordinate system (its `latestWkid` when RustGIS knows it, else its

@@ -1,7 +1,8 @@
 //! The datasets a saved connection offers, listed under it in Data Sources › Connections: one
 //! level at a time as it is expanded (`connection.browse` names what each level reads, the app
 //! fetches it off the frame and asks again with the answer), with the selection that
-//! Add Selected (in a dataset's menu) adds. Each dataset added is its own undo step.
+//! Add Selected (in a dataset's menu) adds. Each dataset added is its own undo step and retains
+//! its saved web-service connection id, separately from its display name in Recent.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -40,6 +41,7 @@ struct Signing {
     href: String,
     name: String,
     origin: Option<String>,
+    connection: Option<String>,
     slot: Slot<Result<Vec<u8>, String>>,
 }
 
@@ -234,9 +236,12 @@ pub fn poll(app: &mut RustGisApp, ctx: &egui::Context) {
         match r.and_then(|b| stac::parse_sas(&b)) {
             Ok(token) => {
                 stac::remember_token(&signing.token_url, &token);
-                let p = json!({"url": stac::sign(&signing.href, &token), "name": signing.name, "zoom": true});
+                let mut p = json!({"url": stac::sign(&signing.href, &token), "name": signing.name, "zoom": true});
+                if let Some(connection) = signing.connection {
+                    p["connection"] = json!(connection);
+                }
                 if let Err(e) = run_add_url(app, p, signing.origin.as_deref()) {
-                    app.session.notify(e, true);
+                    app.session.notify(crate::connectionui::translated(&e), true);
                 }
                 app.map.invalidate();
             }
@@ -250,21 +255,38 @@ pub fn poll(app: &mut RustGisApp, ctx: &egui::Context) {
 }
 
 /// Adds one dataset a listing offers. Each branch is one command, so each is one undo step.
-/// `origin` is the connection it is for: Recent then shows the dataset's source (as added, its
-/// address and options unchanged) under that name, once it is added.
-fn add_from(app: &mut RustGisApp, child: &Value, source: Option<&ServiceSource>, origin: Option<&str>) -> Result<(), String> {
+/// `origin` names the connection in Recent; `connection` is its saved web-service id, kept
+/// through asynchronous discovery, signing and downloads so the resulting layer records it.
+fn add_from(
+    app: &mut RustGisApp,
+    child: &Value,
+    source: Option<&ServiceSource>,
+    origin: Option<&str>,
+    connection: Option<&str>,
+) -> Result<(), String> {
     let add = child.get("add").filter(|a| a.is_object()).ok_or_else(|| tl!("Nothing to add here").to_string())?;
     let command = add["command"].as_str().unwrap_or("");
-    let params = add["params"].clone();
+    let mut params = add["params"].clone();
+    if let Some(connection) = connection {
+        if params.is_null() {
+            params = json!({});
+        }
+        // Params that aren't an object are the command's to refuse.
+        if let Some(object) = params.as_object_mut() {
+            object.insert("connection".into(), json!(connection));
+        }
+    }
     match (source, child.get("layer").filter(|l| l.is_object())) {
         (Some(source), Some(layer)) => {
-            serviceui::add_layer_from(app, source, layer, "", None, false, origin)?;
+            serviceui::add_layer_from(app, source, layer, "", None, false, origin, connection)?;
         }
         _ => match command {
             "layer.addUrl" => {
                 run_add_url(app, params, origin)?;
             }
-            "stac.addAsset" => add_asset(app, child["href"].as_str().unwrap_or(""), params["name"].as_str().unwrap_or(""), origin)?,
+            "stac.addAsset" => {
+                add_asset(app, child["href"].as_str().unwrap_or(""), params["name"].as_str().unwrap_or(""), origin, connection)?;
+            }
             _ => {
                 run_named(app, command, params, origin)?;
             }
@@ -276,18 +298,24 @@ fn add_from(app: &mut RustGisApp, child: &Value, source: Option<&ServiceSource>,
 
 /// A STAC asset by its address, signed first when it needs a token (one in hand is used; one to
 /// fetch is fetched off the frame and the asset added when it lands).
-fn add_asset(app: &mut RustGisApp, href: &str, name: &str, origin: Option<&str>) -> Result<(), String> {
+fn add_asset(app: &mut RustGisApp, href: &str, name: &str, origin: Option<&str>, connection: Option<&str>) -> Result<(), String> {
+    let mut p = json!({"url": href, "name": name, "zoom": true});
+    if let Some(connection) = connection {
+        p["connection"] = json!(connection);
+    }
     if !stac::needs_signing(href) {
-        run_add_url(app, json!({"url": href, "name": name, "zoom": true}), origin)?;
+        run_add_url(app, p, origin)?;
         return Ok(());
     }
     let token_url = stac::sas_token_url(href)?;
     if let Some(token) = stac::cached_token(&token_url) {
-        run_add_url(app, json!({"url": stac::sign(href, &token), "name": name, "zoom": true}), origin)?;
+        p["url"] = json!(stac::sign(href, &token));
+        run_add_url(app, p, origin)?;
     } else {
         let slot = crate::fetch_into(&token_url);
         let (href, name, origin) = (href.to_string(), name.to_string(), origin.map(str::to_string));
-        app.ui.connection_tree.tokens.push(Signing { token_url, href, name, origin, slot });
+        let connection = connection.map(str::to_string);
+        app.ui.connection_tree.tokens.push(Signing { token_url, href, name, origin, connection, slot });
     }
     Ok(())
 }
@@ -320,7 +348,7 @@ fn add_with_options(app: &mut RustGisApp, c: &Connection, child: &Value, source:
         }
         _ => match (source, child.get("layer").filter(|l| l.is_object())) {
             (Some(source), Some(layer)) => {
-                app.run("ui.addService", json!({"url": source.url, "type": source.kind}))?;
+                app.run("ui.addService", json!({"url": source.url, "type": source.kind, "connection": c.id}))?;
                 app.dialogs.connection = Some(c.id.clone());
                 app.ui.service_browse.filter = layer["name"].as_str().unwrap_or("").to_string();
                 Ok(())
@@ -404,9 +432,11 @@ fn add_picks(app: &mut RustGisApp) {
     prune(app);
     for pick in std::mem::take(&mut app.ui.connection_tree.picks) {
         // The name as it is now, for the whole add (pruned above: the connection is there).
-        let origin = app.session.connections.find(&pick.conn).map(|c| c.name.clone());
-        if let Err(e) = add_from(app, &pick.child, pick.source.as_deref(), origin.as_deref()) {
-            app.session.notify(e, true);
+        let connection = app.session.connections.find(&pick.conn);
+        let origin = connection.map(|c| c.name.clone());
+        let service = connection.filter(|c| rustgis_engine::service_logins::is_service(c)).map(|c| c.id.clone());
+        if let Err(e) = add_from(app, &pick.child, pick.source.as_deref(), origin.as_deref(), service.as_deref()) {
+            app.session.notify(crate::connectionui::translated(&e), true);
         }
     }
 }
@@ -448,7 +478,8 @@ fn level(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens, c: &Connection, node: &s
                     app.ui.connection_tree.entries.remove(&key);
                 }
                 let keys = c.kind == "s3" && c.options.get("credentials").is_some_and(|v| v == "keys");
-                if (DATABASE_KINDS.contains(&c.kind.as_str()) || keys) && ui.small_button(tl!("Log In…")).clicked() {
+                let service_login = rustgis_engine::service_logins::is_service(c) && !c.auth.is_empty();
+                if (DATABASE_KINDS.contains(&c.kind.as_str()) || keys || service_login) && ui.small_button(tl!("Log In…")).clicked() {
                     crate::connectionui::log_in(app, &c.id);
                 }
             });
@@ -590,7 +621,8 @@ fn dataset(app: &mut RustGisApp, ui: &mut Ui, c: &Connection, listing: &Listing,
     let result = if with_options {
         add_with_options(app, c, child, listing.source.as_deref())
     } else if add_now {
-        add_from(app, child, listing.source.as_deref(), Some(c.name.as_str()))
+        let connection = rustgis_engine::service_logins::is_service(c).then_some(c.id.as_str());
+        add_from(app, child, listing.source.as_deref(), Some(c.name.as_str()), connection)
     } else {
         Ok(())
     };
@@ -650,7 +682,8 @@ mod tests {
     const WMS: &str = r#"<WMS_Capabilities version="1.3.0" xmlns="http://www.opengis.net/wms" xmlns:xlink="http://www.w3.org/1999/xlink"><Service><Title>Local</Title></Service><Capability><Request><GetMap><Format>image/png</Format><DCPType><HTTP><Get><OnlineResource xlink:href="http://127.0.0.1:9/wms?"/></Get></HTTP></DCPType></GetMap></Request><Layer><CRS>EPSG:3857</CRS><Layer><Name>a</Name><Title>A</Title></Layer><Layer><Name>b</Name><Title>B</Title></Layer></Layer></Capability></WMS_Capabilities>"#;
 
     fn wms(url: &str) -> ServiceSource {
-        ServiceSource { url: url.into(), kind: "wms", text: WMS.into(), documents: Vec::new() }
+        let endpoint = format!("{}?", url.split('?').next().unwrap_or(url));
+        ServiceSource { url: url.into(), kind: "wms", text: WMS.replace("http://127.0.0.1:9/wms?", &endpoint), documents: Vec::new() }
     }
 
     /// A listed WMS layer, as the tree adds it.
@@ -672,7 +705,7 @@ mod tests {
         let app = h.state_mut();
         let url = "http://127.0.0.1:9/wms";
         let layers = app.session.map().tiles.len();
-        add_from(app, &layer("a"), Some(&wms(url)), Some("Local")).unwrap();
+        add_from(app, &layer("a"), Some(&wms(url)), Some("Local"), None).unwrap();
         assert_eq!(app.session.map().tiles.len(), layers + 1);
         assert_eq!(app.session.sources.recent.first(), Some(&expected(url, "a", "Local")));
         assert_eq!(app.session.sources.recent[0].extra, json!({"layer": "a", "type": "wms"}));
@@ -687,19 +720,20 @@ mod tests {
         app.session.run("connection.edit", &json!({"id": id, "name": "Renamed"})).unwrap();
         assert_eq!(app.session.sources.recent[0].name, "Local");
         let name = app.session.connections.find(&id).unwrap().name.clone();
-        add_from(app, &layer("b"), Some(&wms(url)), Some(&name)).unwrap();
+        add_from(app, &layer("b"), Some(&wms(url)), Some(&name), Some(&id)).unwrap();
         // One entry per kind and address: the re-add takes the current name and layer.
+        assert_eq!(app.session.map().tiles.last().unwrap().connection, id);
         assert_eq!(app.session.sources.recent.iter().filter(|s| s.address == url).count(), 1);
         assert_eq!(app.session.sources.recent.first(), Some(&expected(url, "b", "Renamed")));
 
         // Another connection to the same address shares the entry.
-        add_from(app, &layer("a"), Some(&wms(url)), Some("Twin")).unwrap();
+        add_from(app, &layer("a"), Some(&wms(url)), Some("Twin"), None).unwrap();
         assert_eq!(app.session.sources.recent.iter().filter(|s| s.address == url).count(), 1);
         assert_eq!(app.session.sources.recent.first(), Some(&expected(url, "a", "Twin")));
 
         // An address with a secret is redacted exactly as a plain add redacts it.
         let secret = "http://127.0.0.1:9/wms?token=SECRET&access_token=SECRET";
-        add_from(app, &layer("a"), Some(&wms(secret)), Some("Local")).unwrap();
+        add_from(app, &layer("a"), Some(&wms(secret)), Some("Local"), None).unwrap();
         let noted = app.session.sources.recent.first().unwrap();
         assert!(!noted.address.contains("SECRET"), "{}", noted.address);
         assert_eq!(noted.name, "Local");
@@ -710,9 +744,9 @@ mod tests {
         let mut h = harness();
         let app = h.state_mut();
         let before = app.session.sources.recent.clone();
-        assert!(add_from(app, &layer("nope"), Some(&wms("http://127.0.0.1:9/wms")), Some("Local")).is_err());
+        assert!(add_from(app, &layer("nope"), Some(&wms("http://127.0.0.1:9/wms")), Some("Local"), None).is_err());
         let missing = json!({"add": {"command": "layer.addData", "params": {"path": "/no/such/file.geojson"}}});
-        assert!(add_from(app, &missing, None, Some("Local")).is_err());
+        assert!(add_from(app, &missing, None, Some("Local"), None).is_err());
         assert_eq!(app.session.sources.recent, before);
     }
 
@@ -739,6 +773,11 @@ mod tests {
         assert!(app.ui.connection_tree.picks.is_empty());
         assert_eq!(app.session.sources.recent.first(), Some(&expected(two, "a", "Two")));
         assert_eq!(app.session.sources.recent.get(1), Some(&expected(one, "a", "One")));
+        let added = &app.session.map().tiles;
+        for (id, url) in ids.iter().zip([one, two]) {
+            let tile = added.iter().find(|tile| tile.url.starts_with(url)).unwrap();
+            assert_eq!(&tile.connection, id);
+        }
     }
 
     /// A download lands after the add returned: its entry is named for the connection it came
@@ -757,14 +796,14 @@ mod tests {
         let (good, bad) = (format!("{base}/points.geojson"), format!("{base}/missing.geojson"));
         let url_add = |address: &str| json!({"add": {"command": "layer.addUrl", "params": {"url": address, "name": "Points"}}});
         let app = h.state_mut();
-        let id = app.session.run("connection.new", &json!({"kind": "wms", "address": "http://127.0.0.1:9/wms", "name": "Local"})).unwrap()
-            ["id"]
-            .as_str()
-            .unwrap()
-            .to_string();
+        let id =
+            app.session.run("connection.new", &json!({"kind": "wms", "address": format!("{base}/wms"), "name": "Local"})).unwrap()["id"]
+                .as_str()
+                .unwrap()
+                .to_string();
         let before = app.session.sources.recent.clone();
-        add_from(app, &url_add(&good), None, Some("Local")).unwrap();
-        add_from(app, &url_add(&bad), None, Some("Local")).unwrap();
+        add_from(app, &url_add(&good), None, Some("Local"), Some(&id)).unwrap();
+        add_from(app, &url_add(&bad), None, Some("Local"), Some(&id)).unwrap();
         assert_eq!(app.session.sources.recent, before, "nothing is recorded before the data lands");
         // The connection is renamed and the selection changes before it lands.
         app.session.run("connection.edit", &json!({"id": id, "name": "Renamed"})).unwrap();
@@ -776,6 +815,219 @@ mod tests {
         let landed = recent.iter().find(|s| s.address == good).unwrap();
         assert_eq!((landed.kind.as_str(), landed.name.as_str()), ("url", "Local"));
         assert!(recent.iter().all(|s| s.address != bad), "a failed download isn't recorded");
+        assert_eq!(h.state().session.map().layer_by_name("Points").unwrap().connection, id);
+    }
+
+    #[test]
+    fn a_service_dialog_download_keeps_the_browsed_connection_not_the_current_selection() {
+        let base = serve(|_| (200, br#"{"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":[1,2]}}"#.to_vec()));
+        let mut h = harness();
+        let app = h.state_mut();
+        let url = format!("{base}/wms");
+        let one = app.run("connection.new", json!({"kind":"wms", "name":"One", "address":url})).unwrap();
+        let two = app.run("connection.new", json!({"kind":"wms", "name":"Two", "address":url})).unwrap();
+        app.run("ui.addService", json!({"url":url, "type":"wms", "connection":one["id"]})).unwrap();
+        app.dialogs.connection = two["id"].as_str().map(str::to_string);
+        let src = wms(&url);
+        let feature = json!({"name":"points", "offer":{"type":"features", "url":format!("{base}/points.geojson")}});
+        serviceui::add_layer(app, &src, &feature, "", None, true).unwrap();
+        until(&mut h, |app| app.session.map().layer_by_name("points").is_some());
+        assert_eq!(h.state().session.map().layer_by_name("points").unwrap().connection, one["id"].as_str().unwrap());
+    }
+
+    #[test]
+    fn url_downloads_use_the_explicit_basic_or_header_connection_and_record_it() {
+        for basic in [false, true] {
+            let base = serve(move |head| {
+                let head = head.to_ascii_lowercase();
+                let authorized = if basic {
+                    head.contains("authorization: basic cmvhzgvyonbhc3n3b3jk")
+                } else {
+                    head.contains("x-api-key: ui-download-key")
+                };
+                if authorized {
+                    (200, br#"{"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":[1,2]}}"#.to_vec())
+                } else {
+                    (401, b"Login required".to_vec())
+                }
+            });
+            let mut h = harness();
+            let app = h.state_mut();
+            let c = app
+                .run(
+                    "connection.new",
+                    json!({
+                        "kind":"service", "address":base, "auth":if basic { "basic" } else { "header" },
+                        "user":if basic { "reader" } else { "" }, "keyName":if basic { "" } else { "X-Api-Key" }
+                    }),
+                )
+                .unwrap();
+            let mut login = json!({"id":c["id"], "allowInsecure":true});
+            login[if basic { "password" } else { "apiKey" }] = json!(if basic { "password" } else { "ui-download-key" });
+            app.run("connection.login", login).unwrap();
+            app.run("ui.addUrl", json!({"url":format!("{base}/points.geojson"), "name":"Private points", "connection":c["id"]})).unwrap();
+            until(&mut h, |app| app.ui.downloads.is_empty());
+            let layer = h.state().session.map().layer_by_name("Private points").unwrap();
+            assert_eq!(layer.connection, c["id"].as_str().unwrap());
+        }
+    }
+
+    #[test]
+    fn a_listing_whose_params_are_not_an_object_cannot_panic_the_add() {
+        let mut h = harness();
+        let app = h.state_mut();
+        for params in [json!("text"), json!(7), json!([1]), Value::Null] {
+            let child = json!({"add": {"command": "map.zoomIn", "params": params}});
+            let _ = add_from(app, &child, None, Some("Local"), Some("c1"));
+        }
+    }
+
+    /// A plugin's anonymous group remains anonymous when the user refreshes it, including new
+    /// children and every discovery/download phase after saving and reopening the project.
+    #[test]
+    fn anonymous_service_groups_refresh_without_logins_before_and_after_reopen() {
+        use rustgis_engine::render::rustgis_tiles::logins;
+        use std::sync::{
+            Mutex,
+            atomic::{AtomicUsize, Ordering},
+        };
+        let _turn = crate::fetching::turn();
+        for basic in [false, true] {
+            let revision = Arc::new(AtomicUsize::new(0));
+            let requests = Arc::new(Mutex::new(Vec::<String>::new()));
+            let (served_revision, seen) = (revision.clone(), requests.clone());
+            let base = serve(move |head| {
+                seen.lock().unwrap().push(head.to_string());
+                let path = head.split_whitespace().nth(1).unwrap_or("").split('?').next().unwrap_or("");
+                let revision = served_revision.load(Ordering::SeqCst);
+                let body = match path {
+                    "/api" => json!({"links":[{"rel":"data","type":"application/json","href":"/collections"}]}),
+                    "/collections" => {
+                        let collections = ["roads", "buildings"]
+                            .into_iter()
+                            .take(if revision == 0 { 1 } else { 2 })
+                            .map(|id| {
+                                json!({"id":id,"title":id,"links":[
+                                    {"rel":"items","type":"application/geo+json","href":format!("/{id}/items")}
+                                ]})
+                            })
+                            .collect::<Vec<_>>();
+                        json!({"collections":collections})
+                    }
+                    "/roads/items" | "/buildings/items" => json!({
+                        "type":"FeatureCollection",
+                        "features":(0..=revision).map(|id| json!({
+                            "type":"Feature","id":id,
+                            "geometry":{"type":"Point","coordinates":[1,2]},
+                            "properties":{"revision":revision}
+                        })).collect::<Vec<_>>()
+                    }),
+                    _ => return (404, b"Unknown test path".to_vec()),
+                };
+                (200, serde_json::to_vec(&body).unwrap())
+            });
+            let url = format!("{base}/api");
+            let mut h = harness();
+            let app = h.state_mut();
+            app.run("ui.language", json!({"code":"en"})).unwrap();
+            app.run("project.new", json!(null)).unwrap();
+            let connection = app
+                .run(
+                    "connection.new",
+                    json!({
+                        "kind":"ogcapi","address":url,"auth":if basic { "basic" } else { "header" },
+                        "user":if basic { "reader" } else { "" },"keyName":if basic { "" } else { "X-Api-Key" }
+                    }),
+                )
+                .unwrap();
+            let mut login = json!({"id":connection["id"],"allowInsecure":true});
+            login[if basic { "password" } else { "apiKey" }] = json!("anonymous-group-secret-757");
+            app.run("connection.login", login.clone()).unwrap();
+            let authenticated = rustgis_engine::service_logins::request(&mut app.session, None, &url).unwrap();
+            assert!(logins::apply(&authenticated).unwrap().is_some(), "the same origin has a selected session login");
+            // This is the persisted marker produced for a plugin-selected service, without
+            // keeping an anonymous engine context active while the GUI downloads its documents.
+            app.run("ui.importService", json!({"url":url,"type":"ogcapi","name":"Anonymous plugin group","anonymous":true})).unwrap();
+            until(&mut h, |app| app.ui.service_import.is_none());
+            assert!(h.state().dialogs.error.is_none(), "{:?}", h.state().dialogs.error);
+            let group = h.state().session.map().service_groups[0].id;
+            assert!(h.state().session.map().service_groups[0].anonymous);
+            let roads = h.state().session.map().layer_by_name("roads").unwrap().id;
+            assert_eq!(h.state().session.map().layer(roads).unwrap().dataset.features.len(), 1);
+            let dir = tempfile::tempdir().unwrap();
+            let project = dir.path().join("anonymous-service.rgis");
+            for step in 1..=3 {
+                if step == 2 {
+                    h.state_mut().run("project.saveAs", json!({"path":project.display().to_string()})).unwrap();
+                    h.state_mut().run("project.open", json!({"path":project.display().to_string()})).unwrap();
+                    h.state_mut().run("connection.login", login.clone()).unwrap();
+                    assert!(h.state().session.map().service_groups[0].anonymous);
+                }
+                revision.store(step, Ordering::SeqCst);
+                let before = requests.lock().unwrap().len();
+                for _ in 0..4 {
+                    h.step();
+                }
+                // Refresh the newly discovered child on its own too: it cannot silently adopt
+                // the selected connection when it later becomes the user's refresh target.
+                h.get_by_label(if step == 3 { "buildings" } else { "Anonymous plugin group" }).click_secondary();
+                h.step();
+                h.step();
+                h.get_by_label("Refresh").click();
+                h.step();
+                until(&mut h, |app| app.ui.service_import.is_none());
+                assert!(h.state().dialogs.error.is_none(), "{:?}", h.state().dialogs.error);
+                let app = h.state();
+                let saved = &app.session.map().service_groups[0];
+                assert_eq!(saved.id, group);
+                assert!(saved.anonymous);
+                assert_eq!(saved.children.len(), 2, "refresh discovers a new anonymous child");
+                assert_eq!(app.session.map().layer_by_name("roads").unwrap().id, roads);
+                for name in ["roads", "buildings"] {
+                    let layer = app.session.map().layer_by_name(name).unwrap();
+                    assert!(layer.anonymous, "{name} must keep anonymous provenance");
+                    assert!(layer.connection.is_empty(), "{name} cannot record the user's connection");
+                    let expected = if step == 3 && name == "roads" { 3 } else { step + 1 };
+                    assert_eq!(layer.dataset.features.len(), expected, "{name} data is updated");
+                    assert!(logins::apply(layer.dataset.source.as_deref().unwrap()).unwrap().is_none());
+                }
+                let requests = requests.lock().unwrap();
+                let paths = requests[before..]
+                    .iter()
+                    .map(|head| head.split_whitespace().nth(1).unwrap().split('?').next().unwrap())
+                    .collect::<Vec<_>>();
+                let mut expected = vec!["/api", "/collections"];
+                if step != 3 {
+                    expected.push("/roads/items");
+                }
+                expected.push("/buildings/items");
+                assert_eq!(paths, expected, "capabilities, linked collections and all features are fetched");
+            }
+            for head in requests.lock().unwrap().iter() {
+                let lower = head.to_ascii_lowercase();
+                assert!(!lower.contains("authorization:"), "Basic login leaked: {head}");
+                assert!(!lower.contains("x-api-key:"), "header login leaked: {head}");
+                assert!(!head.contains("anonymous-group-secret-757"));
+            }
+        }
+    }
+
+    #[test]
+    fn a_foreign_followup_does_not_adopt_that_origins_saved_login() {
+        let mut app = RustGisApp::with_sample();
+        let foreign = "https://foreign-ui-followup.invalid/points.geojson";
+        let c = app
+            .run(
+                "connection.new",
+                json!({
+                    "kind":"service", "address":foreign, "auth":"header", "keyName":"X-Api-Key"
+                }),
+            )
+            .unwrap();
+        app.run("connection.login", json!({"id":c["id"], "apiKey":"foreign-followup-key"})).unwrap();
+        let address = serviceui::request_from(&mut app, None, "https://original-ui-followup.invalid/service", foreign).unwrap();
+        assert_eq!(address, foreign);
+        assert!(rustgis_engine::render::rustgis_tiles::logins::apply(&address).unwrap().is_none());
     }
 
     #[test]
@@ -843,13 +1095,15 @@ mod tests {
         });
         let url = format!("{base}/wcs");
         let mut h = harness();
+        let connection = h.state_mut().run("connection.new", json!({"kind":"wcs", "address":url, "name":"Soils"})).unwrap();
+        let id = connection["id"].as_str().unwrap().to_string();
         let app = h.state_mut();
         app.run("map.zoomToExtent", json!({"extent": [5.0, 49.2, 5.8, 50.0]})).unwrap();
         let listed = app.session.run("service.layers", &json!({"url": url, "text": caps})).unwrap();
         let source = ServiceSource { url: url.clone(), kind: "wcs", text: caps.into(), documents: Vec::new() };
         let child = json!({"add": {"command": "service.add", "params": {}}, "layer": listed["layers"][0].clone()});
         let before = app.session.sources.recent.clone();
-        add_from(app, &child, Some(&source), Some("Soils")).unwrap();
+        add_from(app, &child, Some(&source), Some("Soils"), Some(&id)).unwrap();
         assert_eq!(app.session.sources.recent, before, "nothing is recorded while the description is read");
         until(&mut h, |app| {
             app.ui.service_steps.is_empty()
@@ -860,6 +1114,7 @@ mod tests {
         let noted = h.state().session.sources.recent.first().unwrap();
         assert_eq!(noted.kind, "url");
         assert!(noted.address.starts_with(&url) && noted.address.contains("GetCoverage"), "{}", noted.address);
+        assert_eq!(h.state().session.map().layer_by_name("Soil carbon").unwrap().connection, id);
     }
 
     /// The whole path on screen: open a connection in the Data Sources pane and double-click a

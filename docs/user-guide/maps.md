@@ -104,8 +104,9 @@ down, or delete it. Bookmark edits run `bookmark.*` commands and undo with ++ctr
 
 **Home › Navigate › Locate › By Place or Address…** (`map.findPlace`) looks up a place or an
 address by name with OpenStreetMap's [Nominatim](https://nominatim.org) (or a
-[Photon](https://photon.komoot.io) server, or a geocoder of your own given by its address) and
-zooms to the one picked. The search goes to that server over the network; see
+[Photon](https://photon.komoot.io) server, PDOK's
+[Locatieserver](data.md#geocoding-addresses) for Dutch addresses and places, or a geocoder of your
+own given by its address) and zooms to the one picked. The search goes to that server over the network; see
 [Geocoding addresses](data.md#geocoding-addresses) for whole tables.
 
 The **search box** at the foot of the left pane searches the map as you type: a latitude and

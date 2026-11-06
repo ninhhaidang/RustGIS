@@ -269,7 +269,7 @@ pub const TREND: Needs = Needs { what: "trend", min_dates: trend::MIN_VALUES, or
 pub const SUMMARY: Needs = Needs { what: "summary", min_dates: 2, ordered: false };
 
 /// The cube a command's parameters name: a stack of layers, a Zarr variable, or a raster's bands.
-pub fn cube_from(s: &Session, p: &Value, needs: Needs) -> Result<Box<dyn TimeCube>, String> {
+pub fn cube_from(s: &mut Session, p: &Value, needs: Needs) -> Result<Box<dyn TimeCube>, String> {
     let dates = date_list(p)?;
     let what = needs.what;
     if let Some(list) = p.get("layers").filter(|v| !v.is_null()) {
@@ -921,7 +921,7 @@ impl Stitch {
 }
 
 /// Prepares `cube.trend`: the cube, the dates, the test and its options checked.
-pub fn trend_start(s: &Session, p: &Value) -> Result<TrendRun, String> {
+pub fn trend_start(s: &mut Session, p: &Value) -> Result<TrendRun, String> {
     let merged = super::cube_catalog::with_entry(p)?;
     let p: &Value = &merged;
     // Read for the seasonal test only: another test leaves it alone, whatever it holds.
@@ -1757,7 +1757,7 @@ fn reserve<T>(v: &mut Vec<T>, cells: usize) -> Result<(), String> {
 
 /// Prepares `cube.reduce`: the cube, the statistic, and the dates of the period (and months)
 /// asked for, in their groups.
-pub fn reduce_start(s: &Session, p: &Value) -> Result<ReduceRun, String> {
+pub fn reduce_start(s: &mut Session, p: &Value) -> Result<ReduceRun, String> {
     let merged = super::cube_catalog::with_entry(p)?;
     let p: &Value = &merged;
     let stat = Stat::parse(p)?;

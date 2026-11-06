@@ -183,7 +183,12 @@ file sources cannot be resolved and are listed in the import notes.
 Each layer keeps its look:
 
 - **Renderers**: single symbol, categorized (as Unique Values, a category's merged values each a
-  class, its "all other values" category the rest), graduated (as Graduated Colors), and
+  class, its "all other values" category the rest; by a field, or by an expression as Unique
+  Values by that [expression](cartography.md), its boolean categories matching true and false;
+  one that can't be read on the layer draws every feature with the first category's symbol
+  that's switched on, or nothing when no category is, noted),
+  graduated (as Graduated Colors, by a field: ranges by an expression are noted and drawn with
+  the first range's symbol), and
   rule-based: as Unique Values on a field where every rule picks values of that field at every
   scale (an else rule the rest), else as Unique Values by an
   [expression](cartography.md) that gives each feature the first rule it meets, each rule a class
@@ -457,6 +462,10 @@ duplication and nudging have their own [layout shortcuts](layouts.md#layouts).
 - **Language**: **Settings › Language** switches the interface among
   [20 languages](../i18n.md) and chooses the [worldview](maps.md#worldview) of the built-in
   borders.
+- **Theme**: **Settings › Theme** picks the interface colours, spacing and text sizes, from the
+  built-in Light and Dark themes, a theme [file](../themes.md) in the desktop app’s themes folder, or
+  **Follow the System** where the platform reports its own theme. **Interface Scale** beside it
+  sets the whole interface from 80% to 200%.
 - **Autosave**: **Settings › Autosave** sets how often the desktop app keeps a
   [recovery copy](#autosave-and-recovery) of unsaved work, or turns it off.
 - **Start-up**: **Settings › Start-up** sets what RustGIS opens with: **Start With** the World Atlas

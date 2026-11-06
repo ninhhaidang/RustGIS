@@ -364,7 +364,7 @@ fn read_ahead(zt: ZarrTime, i: usize) {
     let keys: Vec<(usize, String)> = (i + 1..zt.dates.len())
         .take(2)
         .map(|j| (j, slice_key(&zt, j)))
-        .filter(|(_, k)| !is_kept(k) && reading_ahead().lock().is_ok_and(|mut r| r.insert(k.clone())))
+        .filter(|(_, k)| !is_kept(k) && !ahead_failed(k) && reading_ahead().lock().is_ok_and(|mut r| r.insert(k.clone())))
         .collect();
     if keys.is_empty() {
         return;
@@ -392,6 +392,9 @@ fn read_ahead(zt: ZarrTime, i: usize) {
                 }
             }
             READ_AHEAD_THREADS.fetch_sub(1, Ordering::SeqCst);
+            // A step given back unread (a read before it failed, or panicked) is read off the
+            // frame by the next follow, which this wakes.
+            landed();
         }
     }
     let ids: Vec<String> = keys.iter().map(|(_, k)| k.clone()).collect();
@@ -401,7 +404,17 @@ fn read_ahead(zt: ZarrTime, i: usize) {
         let _done = Done(keys.iter().map(|(_, k)| k.clone()).collect());
         for (n, (j, k)) in keys.iter().enumerate() {
             let ok = read_step(&zt, *j, k.clone()).is_ok();
+            // Not read ahead again (each follow would): the slider reaching it reads it off the
+            // frame, and says why it fails.
+            if !ok && let Ok(mut f) = failed_ahead().lock() {
+                f.retain(|x| x != k);
+                f.push(k.clone());
+                let excess = f.len().saturating_sub(FAILED_KEPT);
+                f.drain(..excess);
+            }
             release(&keys[n..=n]);
+            // A layer waiting for this step off the frame takes it now.
+            landed();
             if !ok {
                 break;
             }
@@ -411,6 +424,18 @@ fn read_ahead(zt: ZarrTime, i: usize) {
     if spawned.is_err() {
         drop(Done(ids));
     }
+}
+
+/// Steps whose read ahead failed, the last few: not read ahead again until one is read.
+#[cfg(not(target_arch = "wasm32"))]
+fn failed_ahead() -> &'static std::sync::Mutex<Vec<String>> {
+    static F: std::sync::OnceLock<std::sync::Mutex<Vec<String>>> = std::sync::OnceLock::new();
+    F.get_or_init(Default::default)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn ahead_failed(key: &str) -> bool {
+    failed_ahead().lock().is_ok_and(|f| f.iter().any(|k| k == key))
 }
 
 /// Waits (up to 15 s) for a step being read ahead, so it isn't fetched twice; after that it is
@@ -440,6 +465,16 @@ pub(crate) fn read_step(zt: &ZarrTime, i: usize, key: String) -> Result<std::syn
         return Ok(r);
     }
     let r = std::sync::Arc::new(read_slice(zt, i)?.ok_or_else(|| format!("{}: step {i} has no data written", zt.store))?);
+    // Read now: a failure kept for it from before is stale.
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if let Ok(mut f) = failed_reads().lock() {
+            f.retain(|(k, _)| *k != key);
+        }
+        if let Ok(mut f) = failed_ahead().lock() {
+            f.retain(|k| *k != key);
+        }
+    }
     if let Ok(mut c) = slices().lock() {
         c.retain(|(k, _)| *k != key);
         c.push((key, r.clone()));
@@ -508,15 +543,139 @@ pub(crate) fn relink_following(s: &Session, rl: &RasterLayer, full: &str) -> Res
     Ok(new)
 }
 
+/// Steps read off the frame (see [`follow_time`]) whose read failed, by key, with why: said by
+/// the next [`follow_time`], once.
+#[cfg(not(target_arch = "wasm32"))]
+fn failed_reads() -> &'static std::sync::Mutex<Vec<(String, String)>> {
+    static F: std::sync::OnceLock<std::sync::Mutex<Vec<(String, String)>>> = std::sync::OnceLock::new();
+    F.get_or_init(Default::default)
+}
+
+/// Failed reads kept to be said (see [`failed_reads`]).
+#[cfg(not(target_arch = "wasm32"))]
+const FAILED_KEPT: usize = 16;
+
+/// The most threads reading steps off the frame at once: a step past them is started by the
+/// next follow, which a read landing wakes.
+#[cfg(not(target_arch = "wasm32"))]
+const MAX_OFF_FRAME: usize = 2;
+
+#[cfg(not(target_arch = "wasm32"))]
+static OFF_FRAME_THREADS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Bumped each time a step read off the frame (or ahead) lands, so the app follows again.
+#[cfg(not(target_arch = "wasm32"))]
+static LANDED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A step read in the background has landed: the app looks again ([`landed_since`]) and draws it.
+#[cfg(not(target_arch = "wasm32"))]
+fn landed() {
+    LANDED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    rustgis_map::source::wake();
+}
+
+/// Whether a layer of the active map that follows the time slider waits for its step to be read
+/// off the frame: playing waits for it, as it waits for the step to be read where scripts run.
+pub(crate) fn waiting(s: &Session) -> bool {
+    let m = s.map();
+    let window = m.time.as_ref().map(rustgis_map::time::TimeSlider::window);
+    m.layers.iter().filter_map(|l| l.raster.as_ref()?.time_zarr.as_ref()).any(|zt| zt.step_for(window) != zt.shown)
+}
+
+/// Whether a step read in the background has landed since `seen`, which it moves on.
+pub(crate) fn landed_since(seen: &mut u64) -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let now = LANDED.load(std::sync::atomic::Ordering::SeqCst);
+        std::mem::replace(seen, now) != now
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = seen;
+        false
+    }
+}
+
+/// Starts reading step `i` (kept as `key`) on a thread of its own, unless it is being read
+/// already (ahead, or for another layer) or [`MAX_OFF_FRAME`] are under way: when one lands,
+/// [`follow_time`] shows it or starts the next. A read that fails is kept to be said; no thread
+/// to be had reads it here.
+#[cfg(not(target_arch = "wasm32"))]
+fn read_off_frame(zt: &ZarrTime, i: usize, key: String) -> Result<(), String> {
+    use std::sync::atomic::Ordering;
+    if OFF_FRAME_THREADS.fetch_add(1, Ordering::SeqCst) >= MAX_OFF_FRAME {
+        OFF_FRAME_THREADS.fetch_sub(1, Ordering::SeqCst);
+        return Ok(());
+    }
+    if !reading_ahead().lock().is_ok_and(|mut r| r.insert(key.clone())) {
+        OFF_FRAME_THREADS.fetch_sub(1, Ordering::SeqCst);
+        return Ok(());
+    }
+    // Whatever ends the read, a panic on a hostile store included, its key and its place among
+    // the threads are given back, and the app looks again.
+    struct Done(String);
+    impl Drop for Done {
+        fn drop(&mut self) {
+            if let Ok(mut r) = reading_ahead().lock() {
+                r.remove(&self.0);
+            }
+            OFF_FRAME_THREADS.fetch_sub(1, Ordering::SeqCst);
+            landed();
+        }
+    }
+    let (zt, done) = (zt.clone(), Done(key.clone()));
+    let capture = rustgis_data::diagnostics::Capture::current();
+    let spawned = std::thread::Builder::new().name("zarr-step".into()).spawn(move || {
+        let _diagnostic_scope = capture.enter();
+        let _done = done;
+        let read = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| read_step(&zt, i, key.clone())))
+            .unwrap_or_else(|_| Err(format!("{}: reading step {i} failed unexpectedly", zt.store)));
+        if let Err(e) = read
+            && let Ok(mut f) = failed_reads().lock()
+        {
+            f.retain(|(k, _)| *k != key);
+            f.push((key, e));
+            // The last few, while a layer still waits for the step (`follow` drops the rest).
+            let excess = f.len().saturating_sub(FAILED_KEPT);
+            f.drain(..excess);
+        }
+    });
+    // No thread: its key was given back with the closure; the step is read here instead.
+    spawned.map(|_| ()).map_err(|e| e.to_string())
+}
+
 /// Layers that follow the time slider read the step it shows, in every map: the last of their
 /// steps in the slider's window, or none (the layer draws nothing) when no step falls in it. A
 /// web store's next steps are then read ahead in the background, so playing doesn't wait for
 /// each. A slice that can't be read leaves its layer empty, and says why.
+///
+/// In the app (`Session::zarr_off_frame`, #1291 step 3) a step not read yet is read on a thread
+/// of its own, the layer showing the step before until it lands; the app then follows again
+/// ([`Session::follow_time_landed`]). Scripts and the command line wait for it here.
 pub(crate) fn follow_time(s: &mut Session) {
+    // Only the user's own move, a command of its own: an agent, a model's or a task's step, a
+    // notebook, a script's line and a plugin's call wait for the step, as their next command may
+    // read it.
+    let wait = !s.zarr_off_frame || s.actor.is_some() || s.depth > 1 || s.task_running || s.notebook_running || s.steps_running > 0;
+    follow(s, wait);
+}
+
+/// [`follow_time`], waiting for each step here wherever it runs: for an animation's frames,
+/// each of which draws its own step, and the step the slider comes back to after them.
+pub(crate) fn follow_time_now(s: &mut Session) {
+    follow(s, true);
+}
+
+#[cfg_attr(target_arch = "wasm32", allow(unused_variables))]
+fn follow(s: &mut Session, wait: bool) {
     #[cfg(not(target_arch = "wasm32"))]
     {
         let mut errors = Vec::new();
         let mut ahead: Vec<(ZarrTime, usize)> = Vec::new();
+        let mut said_failed: Vec<String> = Vec::new();
+        // The steps layers wait for off the frame: a failure kept for any other is dropped, so
+        // the slider coming back to its step reads it again.
+        let mut waiting: Vec<String> = Vec::new();
         for m in &mut s.project.maps {
             let window = m.time.as_ref().map(rustgis_map::time::TimeSlider::window);
             for l in &mut m.layers {
@@ -534,6 +693,54 @@ pub(crate) fn follow_time(s: &mut Session) {
                         rl.data = None;
                         zt.shown = None;
                     }
+                    // Off the frame: a step kept is shown now (looked up once), one that failed says
+                    // why, and any other is read on a thread of its own while the layer shows the
+                    // step before.
+                    Some(i) if !wait => {
+                        let key = slice_key(zt, i);
+                        if let Some(r) = kept_slice(&key) {
+                            rl.data = Some(r);
+                            zt.shown = Some(i);
+                            if is_web(&zt.store) {
+                                ahead.push((zt.clone(), i));
+                            }
+                            continue;
+                        }
+                        // Said for every layer on that step, then dropped (below).
+                        let failed = failed_reads().lock().ok().and_then(|f| f.iter().find(|(k, _)| *k == key).map(|(_, e)| e.clone()));
+                        if failed.is_some() {
+                            said_failed.push(key.clone());
+                        }
+                        match failed {
+                            Some(e) => {
+                                rl.data = None;
+                                zt.shown = Some(i);
+                                errors.push((name, e));
+                            }
+                            None => {
+                                waiting.push(key.clone());
+                                // A web store's next steps too, as when the step is read here.
+                                if is_web(&zt.store) {
+                                    ahead.push((zt.clone(), i));
+                                }
+                                if let Err(e) = read_off_frame(zt, i, key) {
+                                    // No thread to read it on: read here, as a script does.
+                                    log::warn!("{name}: reading step {i} here: {e}");
+                                    match read_waiting(zt, i) {
+                                        Ok(r) => {
+                                            rl.data = Some(r);
+                                            zt.shown = Some(i);
+                                        }
+                                        Err(e) => {
+                                            rl.data = None;
+                                            zt.shown = Some(i);
+                                            errors.push((name, e));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     Some(i) => match read_waiting(zt, i) {
                         Ok(r) => {
                             rl.data = Some(r);
@@ -545,14 +752,30 @@ pub(crate) fn follow_time(s: &mut Session) {
                         Err(e) => {
                             rl.data = None;
                             zt.shown = Some(i);
-                            errors.push(format!("{name}: {e}"));
+                            errors.push((name, e));
                         }
                     },
                 }
             }
         }
-        for e in errors {
-            s.notify(e, true);
+        if !wait && let Ok(mut f) = failed_reads().lock() {
+            f.retain(|(k, _)| waiting.contains(k) && !said_failed.contains(k));
+        }
+        // One notice for each cause, naming the layers it emptied (with a count past one).
+        let mut causes: Vec<(String, Vec<String>)> = Vec::new();
+        for (name, e) in errors {
+            match causes.iter_mut().find(|(c, _)| *c == e) {
+                Some((_, names)) => names.push(name),
+                None => causes.push((e, vec![name])),
+            }
+        }
+        for (e, names) in causes {
+            let text = match names.as_slice() {
+                [one] => format!("{one}: {e}"),
+                [first, rest @ ..] => format!("{first} and {} more layer{}: {e}", rest.len(), if rest.len() == 1 { "" } else { "s" }),
+                [] => e,
+            };
+            s.notify(text, true);
         }
         for (zt, i) in ahead {
             read_ahead(zt, i);

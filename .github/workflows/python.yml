@@ -41,7 +41,7 @@ jobs:
     outputs:
       os: ${{ steps.os.outputs.os }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           sparse-checkout: .github/scripts
       - id: os
@@ -72,17 +72,17 @@ jobs:
           - { name: windows-x86_64, runner: windows-latest, target: x64 }
           - { name: windows-aarch64, runner: windows-11-arm, target: aarch64 }
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       # The Windows ARM64 image ships no Rust toolchain; maturin-action needs rustup.
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         if: runner.os == 'Windows' && runner.arch == 'ARM64'
-      - uses: PyO3/maturin-action@v1
+      - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
         with:
           working-directory: apps/rustgis-python
           target: ${{ matrix.platform.target }}
           manylinux: ${{ matrix.platform.manylinux || 'auto' }}
           args: --release --locked --out dist
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.14"
       # Each runner builds for its own architecture, so the wheel installs and runs here.
@@ -91,7 +91,7 @@ jobs:
         run: |
           python -m pip install --no-index --find-links apps/rustgis-python/dist rustgis
           python -c "import rustgis; s = rustgis.Session(sample=True); assert s.layers() and s.to_png(width=64, height=32)"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: wheels-${{ matrix.platform.name }}
           path: apps/rustgis-python/dist
@@ -102,9 +102,9 @@ jobs:
     name: Source distribution
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           # Only main saves the cache (see test-rust.yml).
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -112,12 +112,12 @@ jobs:
       # reach the repository root).
       - name: The license copy matches LICENSE
         run: cmp LICENSE apps/rustgis-python/LICENSE || { echo "::error::apps/rustgis-python/LICENSE differs from LICENSE."; exit 1; }
-      - uses: PyO3/maturin-action@v1
+      - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
         with:
           working-directory: apps/rustgis-python
           command: sdist
           args: --out dist
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.14"
       - name: Build and test from the sdist alone
@@ -132,7 +132,7 @@ jobs:
           tar tzf ./*.tar.gz | grep -E '^[^/]+/THIRD-PARTY-LICENSES.txt$' || { echo "::error::The sdist has no THIRD-PARTY-LICENSES.txt at its root."; exit 1; }
           python -m pip install ./*.tar.gz pytest
           python -m pytest -q test_session.py
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: wheels-sdist
           path: apps/rustgis-python/dist
@@ -146,7 +146,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: wheels-*
           merge-multiple: true
@@ -166,11 +166,11 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: wheels-*
           merge-multiple: true
           path: dist
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # release/v1
         with:
           packages-dir: dist

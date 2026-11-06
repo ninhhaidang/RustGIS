@@ -143,7 +143,10 @@ impl Engine {
     /// `dpi` (96 when left out).
     #[pyo3(signature = (width=None, height=None, dpi=None))]
     fn render_png<'py>(&self, py: Python<'py>, width: Option<f64>, height: Option<f64>, dpi: Option<f64>) -> PyResult<Bound<'py, PyBytes>> {
-        let result = self.with_session(py, |session| rustgis_engine::cmd::share::map_png(session, width, height, dpi));
+        let result = self.with_session(py, |session| {
+            session.follow_style_view();
+            rustgis_engine::cmd::share::map_png(session, width, height, dpi)
+        });
         self.flush(py);
         result.map(|png| PyBytes::new(py, &png)).map_err(RustGISError::new_err)
     }

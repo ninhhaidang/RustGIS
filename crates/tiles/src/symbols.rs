@@ -88,6 +88,24 @@ pub struct Collide {
     /// Others may be placed over it.
     pub text_ignore_placement: bool,
     pub icon_ignore_placement: bool,
+    /// With a callout (a vector layer's label class): crowded where it is, the label may move to
+    /// a free spot whose line back to its feature is at most this long (points); 0 stays put.
+    pub callout_reach: f32,
+    /// Its feature's place, where a callout's line starts: an offset (points) from where the
+    /// label is drawn (`x`, `y`), so it moves with the label until it's placed.
+    pub callout_anchor: Option<[f32; 2]>,
+    /// Once moved off its spot, its callout's line: from its feature to the edge of its text, as
+    /// offsets (points) from where the label is drawn (`x`, `y`), so it moves with the label.
+    pub callout: Option<[f32; 4]>,
+    /// Locked after a callout moved it: how far (points) it stays moved from its place, its line
+    /// drawn back to its feature.
+    pub callout_offset: Option<[f32; 2]>,
+    /// Moved by hand (the Move Label tool): placed where it was put, whatever is under it, and
+    /// placed first, so the others keep off it.
+    pub pinned: bool,
+    /// What it labels, for moving it by hand: its layer's id, its feature's id and its label
+    /// class (in the layer's labeling order). None for labels not of a layer's features.
+    pub source: Option<(u32, u64, u32)>,
 }
 
 impl Default for Collide {
@@ -101,6 +119,12 @@ impl Default for Collide {
             icon_allow_overlap: false,
             text_ignore_placement: false,
             icon_ignore_placement: false,
+            callout_reach: 0.0,
+            callout_anchor: None,
+            callout: None,
+            callout_offset: None,
+            pinned: false,
+            source: None,
         }
     }
 }
@@ -268,6 +292,7 @@ fn label_of(layer: &StyleLayer, ctx: &FeatureCtx, sheet: Option<&Sprite>, layer_
         icon_allow_overlap: flag(layer, "icon-allow-overlap", ctx),
         text_ignore_placement: flag(layer, "text-ignore-placement", ctx),
         icon_ignore_placement: flag(layer, "icon-ignore-placement", ctx),
+        ..Collide::default()
     };
     Some(Label {
         text,

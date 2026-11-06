@@ -15,7 +15,8 @@ pub const MAX_EPOCHS: usize = 500;
 /// Most classes and input bands.
 pub const MAX_CLASSES: usize = 64;
 pub const MAX_INPUTS: usize = 64;
-/// Most multiply-adds one training may do (seconds, not minutes): epochs are reduced to fit.
+/// Most multiply-adds one training may do (seconds, not minutes): epochs are reduced to fit. A
+/// run that can be cancelled takes any amount ([`crate::control::uncapped`]).
 pub const MAX_WORK: f64 = 5e9;
 
 /// One dense layer: `out × inp` weights (row per output) and `out` biases.
@@ -217,7 +218,8 @@ pub struct Trained {
     pub model: Mlp,
     pub accuracy: f64,
     pub samples: usize,
-    /// The epochs run (fewer than asked when the work would pass [`MAX_WORK`]).
+    /// The epochs run (fewer than asked when the work would pass [`MAX_WORK`] in a run that can't
+    /// be cancelled).
     pub epochs: usize,
 }
 
@@ -285,25 +287,28 @@ pub fn train(
     let inputs: Vec<Vec<f32>> = samples.iter().map(|(x, _)| scaled(x)).collect();
     // Mini-batch gradient descent with momentum.
     // Each sample costs about three passes over the weights (forward, backward, update).
-    // Too many samples for even one epoch: a random subset (they're shuffled) is fitted.
+    // Too many samples for even one epoch: a random subset (they're shuffled) is fitted. A run
+    // that can be cancelled fits them all, for every epoch asked.
     let per_sample = 3.0 * layers.iter().map(|l| l.w.len() + l.b.len()).sum::<usize>() as f64;
+    let max_work = if crate::control::uncapped() { f64::INFINITY } else { MAX_WORK };
     let mut fit = fit;
-    fit.truncate(((MAX_WORK / per_sample) as usize).max(1));
+    fit.truncate(((max_work / per_sample).min(usize::MAX as f64) as usize).max(1));
     let per_epoch = per_sample * fit.len().max(1) as f64;
-    let epochs = epochs.clamp(1, MAX_EPOCHS).min(((MAX_WORK / per_epoch) as usize).max(1));
+    let epochs = epochs.clamp(1, MAX_EPOCHS).min(((max_work / per_epoch).min(usize::MAX as f64) as usize).max(1));
     let (lr, momentum, batch) = (0.05f32, 0.9f32, 32usize);
     let mut vel: Vec<(Vec<f32>, Vec<f32>)> = layers.iter().map(|l| (vec![0.0; l.w.len()], vec![0.0; l.b.len()])).collect();
     crate::control::begin(epochs);
-    for epoch in 0..epochs {
-        if crate::control::cancelled() {
-            break;
-        }
+    'epochs: for epoch in 0..epochs {
         crate::control::reached(epoch);
         for i in (1..fit.len()).rev() {
             let j = rng.below(i + 1);
             fit.swap(i, j);
         }
         for chunk in fit.chunks(batch) {
+            // An epoch of every sample takes long without a cap: Cancel is looked at each batch.
+            if crate::control::cancelled() {
+                break 'epochs;
+            }
             let mut grads: Vec<(Vec<f32>, Vec<f32>)> = layers.iter().map(|l| (vec![0.0; l.w.len()], vec![0.0; l.b.len()])).collect();
             for &si in chunk {
                 let (Some(x), Some((_, class))) = (inputs.get(si), samples.get(si)) else { continue };
@@ -370,6 +375,8 @@ pub fn train(
             }
         }
     }
+    // A cancelled run makes no model: the accuracy check on held-back samples can take long too.
+    crate::control::check()?;
     if !layers.iter().all(|l| l.w.iter().chain(&l.b).all(|v| v.is_finite())) {
         return Err("training diverged; try fewer epochs or smaller layers".into());
     }
@@ -389,10 +396,14 @@ pub fn classify(r: &Raster, model: &Mlp, nodata: f32) -> Result<(Vec<f32>, Vec<f
 /// [`classify`] on `threads` threads (none: as many as pay off).
 fn classify_on(r: &Raster, model: &Mlp, nodata: f32, threads: Option<usize>) -> Result<(Vec<f32>, Vec<f32>), String> {
     model.validate()?;
-    // A large model on a large raster is refused rather than run for minutes.
+    // A large model on a large raster is refused rather than run for minutes, unless the run can
+    // be cancelled.
     let weights: usize = model.layers.iter().map(|l| l.w.len() + l.b.len()).sum();
-    if f64::from(r.width) * f64::from(r.height) * weights as f64 > 4.0 * MAX_WORK {
-        return Err("that model is too large for this raster; use a smaller model or clip the raster first".into());
+    if !crate::control::uncapped() && f64::from(r.width) * f64::from(r.height) * weights as f64 > 4.0 * MAX_WORK {
+        return Err(format!(
+            "that model is too large for this raster; use a smaller model or clip the raster first{}",
+            crate::parallel::UNCAPPED_HINT
+        ));
     }
     if let Some(b) = model.bands.iter().find(|b| **b >= r.bands.len()) {
         return Err(format!("{} has no band {}", r.name, b + 1));
@@ -408,9 +419,14 @@ fn classify_on(r: &Raster, model: &Mlp, nodata: f32, threads: Option<usize>) -> 
     crate::parallel::for_each_row(
         class.chunks_mut(w.max(1)).zip(prob.chunks_mut(w.max(1))),
         threads,
-        || vec![0.0f32; model.bands.len()],
-        |x: &mut Vec<f32>, row, (class, prob): (&mut [f32], &mut [f32])| {
+        || (vec![0.0f32; model.bands.len()], crate::control::Pace::default()),
+        |(x, pace): &mut (Vec<f32>, crate::control::Pace), row, (class, prob): (&mut [f32], &mut [f32])| {
             for (col, (c_out, p_out)) in class.iter_mut().zip(prob.iter_mut()).enumerate() {
+                // A large model on a wide row takes long without a cap: Cancel is looked at
+                // within it.
+                if pace.stop(weights) {
+                    return;
+                }
                 // A non-finite value is treated as no data.
                 let ok = model.bands.iter().zip(x.iter_mut()).all(|(b, xv)| {
                     match r.value(*b, col as i64, row as i64).filter(|v| v.is_finite()) {
@@ -470,6 +486,26 @@ mod tests {
         // As many threads as pay off, which `classify` picks, give the same.
         let (c, p) = classify(&r, &model, -1.0).unwrap();
         assert_eq!((c, p), (c1, p1));
+    }
+
+    /// A model too large for a raster is refused where nothing can stop the run, and taken on by
+    /// a run that can be cancelled (#1291 step 2).
+    #[test]
+    fn a_large_model_on_a_large_raster_runs_only_when_it_can_be_cancelled() {
+        use rustgis_data::raster::{ColorHint, Crs, GeoTransform};
+        let samples: Vec<(Vec<f32>, usize)> = (0..40).map(|i| (vec![i as f32], usize::from(i >= 20))).collect();
+        // About 5,500 weights on 2000 × 2000 pixels: past four times MAX_WORK.
+        let model = train(&[0], vec!["a".into(), "b".into()], &samples, &[80, 64], 1).unwrap().model;
+        let (w, h) = (2000u32, 2000u32);
+        let transform = GeoTransform { origin_x: 0.0, origin_y: 45.0, pixel_width: 0.001, pixel_height: -0.001 };
+        let r =
+            Raster::new("img", w, h, vec![vec![1.0; (w * h) as usize]], transform, Crs::LonLat, None, ColorHint::Gray, "Float32").unwrap();
+        let e = classify_on(&r, &model, -1.0, Some(1)).unwrap_err();
+        assert!(e.starts_with("that model is too large for this raster"), "{e}");
+        let run = crate::control::Control::stoppable();
+        run.cancel();
+        let _installed = crate::control::install(Some(run));
+        assert_eq!(classify_on(&r, &model, -1.0, Some(1)).unwrap_err(), crate::control::CANCELLED);
     }
 
     #[test]

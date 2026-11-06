@@ -56,12 +56,14 @@ fn kml_geometry(g: &Geometry) -> String {
 }
 
 /// A KML document, one placemark per feature, named by `name_field` and with every attribute.
-pub fn to_kml(ds: &Dataset, name_field: Option<usize>) -> String {
+/// A cancelled run ([`crate::progress`]) stops it with [`crate::DataError::Cancelled`].
+pub fn to_kml(ds: &Dataset, name_field: Option<usize>) -> crate::Result<String> {
     let mut out = format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<kml xmlns=\"http://www.opengis.net/kml/2.2\"><Document><name>{}</name>\n",
         xml(&ds.name)
     );
     for (r, f) in ds.features.iter().enumerate() {
+        crate::progress::step(1)?;
         let Some(g) = &f.geometry else { continue };
         let name = name_field.map(|fi| ds.value(r, fi).to_string()).unwrap_or_else(|| f.id.to_string());
         let data: String = ds
@@ -78,17 +80,19 @@ pub fn to_kml(ds: &Dataset, name_field: Option<usize>) -> String {
         ));
     }
     out.push_str("</Document></kml>\n");
-    out
+    Ok(out)
 }
 
 /// A GPX file: points become waypoints, lines tracks (polygon outlines too).
-pub fn to_gpx(ds: &Dataset, name_field: Option<usize>) -> String {
+/// A cancelled run ([`crate::progress`]) stops it with [`crate::DataError::Cancelled`].
+pub fn to_gpx(ds: &Dataset, name_field: Option<usize>) -> crate::Result<String> {
     let mut out = String::from(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<gpx version=\"1.1\" creator=\"RustGIS\" xmlns=\"http://www.topografix.com/GPX/1/1\">\n",
     );
     let pt = |c: &Coord| format!("lat=\"{}\" lon=\"{}\"", c.y, c.x);
     let mut tracks = String::new();
     for (r, f) in ds.features.iter().enumerate() {
+        crate::progress::step(1)?;
         let Some(g) = &f.geometry else { continue };
         let name = xml(&name_field.map(|fi| ds.value(r, fi).to_string()).unwrap_or_else(|| f.id.to_string()));
         match g {
@@ -113,7 +117,7 @@ pub fn to_gpx(ds: &Dataset, name_field: Option<usize>) -> String {
     }
     out.push_str(&tracks);
     out.push_str("</gpx>\n");
-    out
+    Ok(out)
 }
 
 /// Well-known text for a geometry.
@@ -515,9 +519,9 @@ mod tests {
     fn writes_kml_gpx_wkt() {
         let mut ds = Dataset::new("t", GeometryType::Point, vec![Field::new("name", FieldType::Text)]);
         ds.push(Some(Geometry::Point(Coord::new(2.35, 48.85))), vec![Value::Text("Paris & co".into())]);
-        let k = to_kml(&ds, Some(0));
+        let k = to_kml(&ds, Some(0)).unwrap();
         assert!(k.contains("<name>Paris &amp; co</name>") && k.contains("<coordinates>2.35,48.85</coordinates>"));
-        let g = to_gpx(&ds, Some(0));
+        let g = to_gpx(&ds, Some(0)).unwrap();
         assert!(g.contains("<wpt lat=\"48.85\" lon=\"2.35\">"));
         assert_eq!(wkt(&Geometry::Line(vec![vec![Coord::new(0.0, 0.0), Coord::new(1.0, 1.0)]])), "LINESTRING (0 0, 1 1)");
         assert!(to_wkt_csv(&ds).starts_with("wkt,name\nPOINT (2.35 48.85),Paris & co"));

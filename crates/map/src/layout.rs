@@ -797,6 +797,10 @@ fn ink() -> Rgba {
     Rgba::rgb(0x22, 0x22, 0x22)
 }
 
+fn white() -> Rgba {
+    Rgba::rgb(0xFF, 0xFF, 0xFF)
+}
+
 fn yes() -> bool {
     true
 }
@@ -885,6 +889,12 @@ pub enum ElementKind {
         divisions: usize,
         #[serde(default)]
         style: ScaleBarStyle,
+        /// The lines, the alternating bar's dark divisions and the labels.
+        #[serde(default = "ink")]
+        color: Rgba,
+        /// The alternating bar's light divisions.
+        #[serde(default = "white")]
+        fill: Rgba,
     },
     Legend {
         frame: u32,
@@ -1023,7 +1033,14 @@ impl ElementKind {
 
     /// A scale bar for `frame`, in the default style.
     pub fn scale_bar(frame: u32) -> ElementKind {
-        ElementKind::ScaleBar { frame, units: ScaleUnits::default(), divisions: divisions(), style: ScaleBarStyle::default() }
+        ElementKind::ScaleBar {
+            frame,
+            units: ScaleUnits::default(),
+            divisions: divisions(),
+            style: ScaleBarStyle::default(),
+            color: ink(),
+            fill: white(),
+        }
     }
 
     pub fn code(&self) -> &'static str {
@@ -1798,6 +1815,7 @@ mod tests {
         let bar: ElementKind = serde_json::from_str(r#"{"ScaleBar":{"frame":3}}"#).unwrap();
         assert_eq!(bar, ElementKind::scale_bar(3));
         assert!(matches!(bar, ElementKind::ScaleBar { units: ScaleUnits::Auto, divisions: 4, style: ScaleBarStyle::Alternating, .. }));
+        assert!(matches!(bar, ElementKind::ScaleBar { color, fill, .. } if color == ink() && fill == white()));
         let grid: Grid = serde_json::from_str(r#"{"step":10,"color":[64,72,85,150],"labels":true}"#).unwrap();
         assert_eq!(grid, Grid { step: 10.0, ..Grid::default() });
         assert_eq!(grid.edges, GridEdges { top: false, bottom: true, left: true, right: false });

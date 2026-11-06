@@ -619,6 +619,7 @@ fn slanted_glyph(pm: &mut Canvas, og: &ab_glyph::OutlinedGlyph, base: f32, color
 /// Draws a placed label (logical coordinates) with its halo. A label turned with the map (one
 /// along a street) is drawn upright into a picture of its own, which is turned into place.
 pub fn draw(pm: &mut Canvas, l: &PlacedLabel, ppp: f32) {
+    draw_callout(pm, l, ppp);
     // Curved along a line: each character turned into its place, every character's halo
     // first, so none covers the letter before it.
     if !l.glyphs.is_empty() {
@@ -638,6 +639,28 @@ pub fn draw(pm: &mut Canvas, l: &PlacedLabel, ppp: f32) {
         _ => draw_upright(pm, l, ppp, Ink::Both),
     }
 }
+
+/// A label's callout line, from its feature to the edge of its text, under the text (and its
+/// halo under the line, so it shows over the map).
+fn draw_callout(pm: &mut Canvas, l: &PlacedLabel, ppp: f32) {
+    let Some([x0, y0, x1, y1]) = l.collide.callout else { return };
+    let mut pb = tiny_skia::PathBuilder::new();
+    pb.move_to((l.x + x0) * ppp, (l.y + y0) * ppp);
+    pb.line_to((l.x + x1) * ppp, (l.y + y1) * ppp);
+    let Some(path) = pb.finish() else { return };
+    let width = (CALLOUT_WIDTH * ppp).max(0.5);
+    let inks = l.halo.map(|h| (h, width + 2.0 * ppp)).into_iter().chain([(l.color, width)]);
+    for (c, w) in inks {
+        let mut paint = Paint::default();
+        paint.set_color_rgba8(c.r(), c.g(), c.b(), c.a());
+        paint.anti_alias = true;
+        let stroke = tiny_skia::Stroke { width: w, line_cap: tiny_skia::LineCap::Round, ..Default::default() };
+        pm.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
+    }
+}
+
+/// How wide a callout's line is (points).
+pub const CALLOUT_WIDTH: f32 = 0.9;
 
 /// What of a label to draw: its halo, its text, or both (the halo under the text).
 #[derive(Clone, Copy, PartialEq)]
@@ -997,6 +1020,7 @@ pub fn scale_bar(pm: &mut Canvas, view: &View, ground_per_pt: f64) {
 pub enum Align {
     Left,
     Center,
+    Right,
 }
 
 /// Draws one line of text at pixel position (`x`, `y`) (`y` is the line's middle), `px_size`
@@ -1008,6 +1032,7 @@ pub fn text_at(pm: &mut Canvas, text: &str, x: f32, y: f32, px_size: f32, color:
     let cx = match align {
         Align::Center => x,
         Align::Left => x + measure(text, px_size / 1.33, bold) / 2.0,
+        Align::Right => x - measure(text, px_size / 1.33, bold) / 2.0,
     };
     if halo && pm.is_recording() {
         keep_halo(pm, plain_outline(text, cx, y, px_size, bold), (px_size * 0.09).max(1.0), Rgba::new(255, 255, 255, 230));

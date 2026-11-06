@@ -222,7 +222,8 @@ fn ensure_download_capacity(s: &Session, layers: &[Value]) -> Result<(), String>
         .count();
     // Once the UI drains url_requests, each Zarr reader (including a queued reader)
     // owns a session download id. Count all stages so a second import sees those slots.
-    let occupied = s.url_requests.len().saturating_add(s.downloading.len()).saturating_add(s.downloaded.len());
+    let occupied =
+        s.url_requests.len().saturating_add(s.downloading.len()).saturating_add(s.downloaded.len()).saturating_add(s.landed_reads.len());
     let available = crate::MAX_URL_REQUESTS.saturating_sub(occupied);
     if count > available {
         return Err(format!(
@@ -269,7 +270,7 @@ fn add_layer(s: &mut Session, r: &Value, dir: Option<&str>, report: &mut Report,
             #[cfg(not(target_arch = "wasm32"))]
             {
                 let bytes = crate::render::rustgis_tiles::cache::download_blocking(&address)?;
-                let out = super::raster::add_named_bytes(s, &json!({"name":name}), format!("{}.mbtiles", pending_token()), bytes)?;
+                let out = super::raster::add_named_bytes(s, &json!({"name":name}), format!("{}.mbtiles", pending_token()), bytes, None)?;
                 index =
                     out.get("index").and_then(Value::as_u64).and_then(|i| usize::try_from(i).ok()).ok_or("archive added no tile layer")?;
                 if let Some(t) = s.map_mut().tiles.get_mut(index) {
@@ -337,6 +338,7 @@ fn add_layer(s: &mut Session, r: &Value, dir: Option<&str>, report: &mut Report,
             return Err(format!("unsupported {kind} layer"));
         }
         let remote = rustgis_map::tiles::is_web(&address);
+        // The project's saved camera is restored after the import, so each added layer keeps the view.
         let mut q = json!({"name":name,"zoom":false});
         q[if remote { "url" } else { "path" }] = json!(address);
         #[cfg(target_arch = "wasm32")]
@@ -453,7 +455,7 @@ pub(crate) fn finish_layer(s: &mut Session, p: &Value, name: String, bytes: Vec<
     let camera = s.map().camera;
     let result = (|| {
         let before: std::collections::HashSet<_> = s.map().layers.iter().map(|l| l.id).collect();
-        super::raster::add_named_bytes(s, p, name, bytes)?;
+        super::raster::add_named_bytes(s, p, name, bytes, None)?;
         let ids: Vec<_> = s.map().layers.iter().filter(|l| !before.contains(&l.id)).map(|l| l.id).collect();
         if ids.len() != 1 {
             return Err("GeoLibre URL must contain one map layer".into());
@@ -507,7 +509,7 @@ fn finish_archive(s: &mut Session, p: &Value, bytes: Vec<u8>) -> CmdResult {
     let result = (|| {
         // A unique upload key keeps two archives with equal filenames independent.
         let filename = format!("{token}.mbtiles");
-        let out = super::raster::add_named_bytes(s, p, filename, bytes)?;
+        let out = super::raster::add_named_bytes(s, p, filename, bytes, None)?;
         let index =
             out.get("index").and_then(Value::as_u64).and_then(|i| usize::try_from(i).ok()).ok_or("download added no tile archive")?;
         if index >= s.map().tiles.len() {

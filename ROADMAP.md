@@ -59,8 +59,11 @@ Correct, robust and recoverable, with the foundations other themes stand on.
 - Reloading files changed on disk.
 - Autosave and crash recovery in the browser: reopen unsaved work after a crash. The desktop app
   has them ([#873](https://github.com/opengeos/RustGIS/issues/873)).
-- Signed Windows builds (no SmartScreen warning), then in-place updates; settings an
-  administrator can fix for a managed install (no AI Assistant, plugins or web services).
+- Signed Windows builds (no SmartScreen warning), then a signature check, by publisher name, in
+  Check for Updates' Download and Install, which updates a `setup.exe` install in place
+  ([#1290](https://github.com/opengeos/RustGIS/issues/1290)); in-place updates for the macOS app;
+  settings an administrator can fix for a managed install (no AI Assistant, plugins or web
+  services).
 - Extend the OS keychain secret store to service connections (database passwords, S3 keys,
   AI provider keys and the ChatGPT sign-in's tokens are already kept there).
 - Vector tools, each writing a new layer: check and fix geometry _(open)_.
@@ -92,8 +95,6 @@ And alongside it:
   ([#853](https://github.com/opengeos/RustGIS/issues/853)). _Coordinate first_ (it changes
   `FieldType`).
 - Editable standalone tables (they are read-only today).
-- Export into an existing GeoPackage as an added or replaced table, leaving its other tables
-  ([#852](https://github.com/opengeos/RustGIS/issues/852); export refuses an existing file today).
 - Polygon editing: shared edges, where moving one boundary moves its neighbour's too.
   Coincident polygon vertices can already move together with Shared Vertices
   (`edit.moveSharedVertex`); different vertex densities and linked insertion/deletion remain
@@ -149,6 +150,9 @@ Open questions rather than plans; discuss before building.
 
 ## Done
 
+- Export into an existing GeoPackage on desktop: a layer or table added as one more table, or
+  replacing one of its tables, leaving the others as they were (`mode` on `share.exportLayer` and
+  `share.exportTable`).
 - Polygon editing: Cut Polygon, Reshape (polygons and lines) and Trace along an edge while
   drawing, on the map and through `edit.cutPolygon`, `edit.reshape` and `edit.trace`.
 - Geometry conversions: Polygon To Line, Split Line At Vertices, Feature Envelope To Polygon

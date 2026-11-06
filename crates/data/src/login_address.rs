@@ -1,0 +1,188 @@
+//! Secret-free runtime addresses bound to one web-service connection login.
+//! Saved runtime tokens must be discarded and rebound by the owning session on project open.
+
+use std::net::Ipv6Addr;
+
+/// Canonical HTTP(S) origin: lowercase scheme and host, without a trailing host dot or
+/// the scheme's default port. Paths, queries and fragments do not form part of the origin.
+/// User information, whitespace, controls, backslashes and malformed authorities are refused.
+fn raw_origin(url: &str) -> Option<String> {
+    if url.chars().any(|c| c.is_whitespace() || c.is_control() || c == '\\') {
+        return None;
+    }
+    let (scheme, rest) = url.split_once("://")?;
+    let scheme = if scheme.eq_ignore_ascii_case("https") {
+        "https"
+    } else if scheme.eq_ignore_ascii_case("http") {
+        "http"
+    } else {
+        return None;
+    };
+    let authority = rest.split(['/', '?', '#']).next()?;
+    if authority.is_empty() || authority.contains('@') {
+        return None;
+    }
+    let (host, port) = if let Some(ip) = authority.strip_prefix('[') {
+        let (ip, tail) = ip.split_once(']')?;
+        let host = format!("[{}]", ip.parse::<Ipv6Addr>().ok()?);
+        let port = if tail.is_empty() { None } else { Some(tail.strip_prefix(':')?) };
+        (host, port)
+    } else {
+        let (host, port) = authority.split_once(':').map_or((authority, None), |(h, p)| (h, Some(p)));
+        let host = host.strip_suffix('.').unwrap_or(host);
+        if host.is_empty() || host.contains(['[', ']', '%', '<', '>', '"', '^', '`', '{', '}', '|']) || host.split('.').any(str::is_empty) {
+            return None;
+        }
+        (host.to_lowercase(), port)
+    };
+    let port = match port {
+        Some(port) => {
+            if port.is_empty() || !port.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            Some(port.parse::<u16>().ok()?)
+        }
+        None => None,
+    };
+    match port.filter(|p| *p != if scheme == "https" { 443 } else { 80 }) {
+        Some(port) => Some(format!("{scheme}://{host}:{port}")),
+        None => Some(format!("{scheme}://{host}")),
+    }
+}
+pub const PREFIX: &str = "rustgis-login:";
+const BAD: &str = "not a bound service login address";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BoundLogin<'a> {
+    pub binding: &'a str,
+    pub origin: &'a str,
+    pub url: &'a str,
+}
+
+pub fn is_wrapper(address: &str) -> bool {
+    address.starts_with(PREFIX)
+}
+
+pub fn parse(address: &str) -> Result<Option<BoundLogin<'_>>, &'static str> {
+    let Some(rest) = address.strip_prefix(PREFIX) else { return Ok(None) };
+    if address.len() > 16384 || address.chars().any(char::is_control) {
+        return Err(BAD);
+    }
+    let (binding, rest) = rest.split_once(':').ok_or(BAD)?;
+    if !(16..=64).contains(&binding.len()) || !binding.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+        return Err(BAD);
+    }
+    let (len, rest) = rest.split_once(':').ok_or(BAD)?;
+    if len.len() > 4 || len.is_empty() || !len.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(BAD);
+    }
+    let len: usize = len.parse().map_err(|_| BAD)?;
+    let origin = rest.get(..len).ok_or(BAD)?;
+    let url = rest.get(len..).and_then(|s| s.strip_prefix(':')).ok_or(BAD)?;
+    if raw_origin(origin).as_deref() != Some(origin) || raw_origin(url).as_deref() != Some(origin) {
+        return Err(BAD);
+    }
+    Ok(Some(BoundLogin { binding, origin, url }))
+}
+
+pub fn bind(binding: &str, origin: &str, url: &str) -> Result<String, &'static str> {
+    let address = format!("{PREFIX}{binding}:{}:{origin}:{url}", origin.len());
+    parse(&address)?;
+    Ok(address)
+}
+
+pub fn inner(address: &str) -> &str {
+    parse(address).ok().flatten().map_or(address, |b| b.url)
+}
+
+/// Canonical origin of a plain URL or a well-formed bound URL.
+pub fn origin(address: &str) -> Option<String> {
+    raw_origin(inner(address))
+}
+
+pub fn rebound(address: &str, binding: &str) -> Option<String> {
+    let b = parse(address).ok().flatten()?;
+    bind(binding, b.origin, b.url).ok()
+}
+
+pub fn reached(address: &str) -> &str {
+    if is_wrapper(address) {
+        inner(address)
+    } else {
+        address.split_once('@').filter(|(_, a)| is_wrapper(a)).map_or(address, |(_, a)| inner(a))
+    }
+}
+
+/// Retains a document's binding for same-origin derived addresses only.
+pub fn inherit(base: &str, url: &str) -> String {
+    let url = inner(url);
+    let Ok(Some(b)) = parse(base) else { return url.to_string() };
+    if origin(url).as_deref() == Some(b.origin) {
+        // Keep the actual derived binding even when its size exceeds the parser's bound.
+        // Request validation then refuses it instead of sending an anonymous request.
+        format!("{PREFIX}{}:{}:{}:{url}", b.binding, b.origin.len(), b.origin)
+    } else {
+        url.to_string()
+    }
+}
+
+type Validator = fn(&str) -> Result<(), &'static str>;
+static VALIDATOR: std::sync::OnceLock<Validator> = std::sync::OnceLock::new();
+
+/// Installs the runtime authority check supplied by the networking crate.
+pub fn set_validator(validator: Validator) {
+    let _ = VALIDATOR.set(validator);
+}
+
+/// Bound cached data is unreadable unless its owning runtime still authorizes the binding.
+pub fn check(address: &str) -> Result<(), &'static str> {
+    if !is_wrapper(address) {
+        return Ok(());
+    }
+    parse(address)?;
+    VALIDATOR.get().ok_or("The service login is no longer active. Sign in to this connection again.")?(address)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn binding_length_and_alphabet_are_checked() {
+        let wrapped = |b: &str| format!("{PREFIX}{b}:14:https://a.test:https://a.test/x");
+        assert!(parse(&wrapped(&"ab12".repeat(8))).unwrap().is_some());
+        assert!(parse(&wrapped(&"a".repeat(15))).is_err());
+        assert!(parse(&wrapped(&"a".repeat(65))).is_err());
+        assert!(parse(&wrapped(&format!("{}g", "a".repeat(31)))).is_err());
+        assert!(parse(&wrapped(&"A".repeat(32))).is_err());
+    }
+
+    #[test]
+    fn oversized_same_origin_inheritance_is_refused_not_anonymous() {
+        let base = bind("0123456789abcdef", "https://a.test", "https://a.test/collections").unwrap();
+        let derived = format!("https://a.test/items?filter={}", "a".repeat(17000));
+        let inherited = inherit(&base, &derived);
+        assert!(is_wrapper(&inherited));
+        assert!(inherited.ends_with(&derived), "keep the derived target, not the base document");
+        assert_eq!(parse(&inherited).unwrap_err(), BAD);
+        assert_eq!(check(&inherited).unwrap_err(), BAD);
+        let valid = inherit(&base, "https://a.test/items");
+        assert_eq!(parse(&valid).unwrap().unwrap().url, "https://a.test/items");
+        let foreign = format!("https://b.test/items?filter={}", "a".repeat(17000));
+        assert_eq!(inherit(&base, &foreign), foreign);
+    }
+
+    #[test]
+    fn round_trip_and_fixed_errors() {
+        let b = bind("0123456789abcdef", "https://a.test", "https://a.test/x?y=1").unwrap();
+        let p = parse(&b).unwrap().unwrap();
+        assert_eq!((p.binding, p.origin, p.url), ("0123456789abcdef", "https://a.test", "https://a.test/x?y=1"));
+        assert_eq!(inner(&b), p.url);
+        for bad in
+            ["rustgis-login:secret", "rustgis-login:0123456789abcdef:1:é:https://a.test", "rustgis-login:0123456789abcdef:0::/etc/passwd"]
+        {
+            assert_eq!(parse(bad).unwrap_err(), BAD);
+        }
+    }
+}

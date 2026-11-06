@@ -34,12 +34,12 @@ fn curves_are_laid_out_only_until_a_place_fits() {
     let c = curved(&[(20.0, 100.0), (380.0, 100.0)]);
     label_places::LAYOUTS.with(|n| n.set(0));
     let p = place_labels(vec![c.clone()], Vec::new(), 400.0, 200.0, false);
-    assert_eq!(p.keys[0].1, 0);
+    assert_eq!(p.keys[0].1.place, 0);
     label_places::LAYOUTS.with(|n| assert_eq!(n.get(), 1));
     let blocker = PlacedLabel { y: 100.0, ..label("BLOCKER", 200.0, None, 0.0) };
     label_places::LAYOUTS.with(|n| n.set(0));
     let p = place_labels(vec![c], vec![blocker], 400.0, 200.0, false);
-    let won = p.keys[0].1;
+    let won = p.keys[0].1.place;
     assert!(won > 0 && won < 8);
     label_places::LAYOUTS.with(|n| assert_eq!(n.get(), usize::from(won) + 1));
     assert_eq!(p.labels[1].glyphs.len(), 4);
@@ -50,7 +50,7 @@ fn a_sharp_middle_tries_a_straight_stretch_and_a_lock_replays_that_index() {
     let c = curved(&[(0.0, 100.0), (200.0, 100.0), (200.0, 300.0)]);
     assert!(c.curves.as_ref().unwrap().place(0, &mut c.label.clone()).is_none());
     let p = place_labels(vec![c.clone()], Vec::new(), 400.0, 400.0, false);
-    let won = usize::from(p.keys[0].1);
+    let won = usize::from(p.keys[0].1.place);
     assert!(won > 0);
     let mut locked = c;
     locked.curves.as_mut().unwrap().locked = Some(won);
@@ -58,7 +58,7 @@ fn a_sharp_middle_tries_a_straight_stretch_and_a_lock_replays_that_index() {
     turn_candidate(&mut locked, |x, y| Some((x + 12.0, y + 7.0)));
     label_places::LAYOUTS.with(|n| n.set(0));
     let q = place_labels(vec![locked], Vec::new(), 450.0, 450.0, true);
-    assert_eq!(usize::from(q.keys[0].1), won);
+    assert_eq!(usize::from(q.keys[0].1.place), won);
     assert!((q.labels[0].x - p.labels[0].x - 12.0).abs() < 1e-4);
     assert!((q.labels[0].y - p.labels[0].y - 7.0).abs() < 1e-4);
     assert_eq!(q.labels[0].glyphs, p.labels[0].glyphs);
@@ -143,7 +143,7 @@ fn rendering_retries_only_opted_in_nonrepeated_line_labels() {
         map.label_display.locked = true;
         let first = render(&mut map, &view).unwrap();
         let key = map.label_lock.as_ref().unwrap().iter().find(|(k, _)| k.0 == id).copied().unwrap();
-        assert!(key.1 > 0);
+        assert!(key.1.place > 0);
         let panned = View { camera: Camera { center: Coord::new(7500.0, 0.0), ..view.camera }, ..view };
         let next = render(&mut map, &panned).unwrap();
         let x = |r: &Rendered| r.labels.iter().find(|l| l.text == "road").unwrap().x;
@@ -289,7 +289,7 @@ fn a_projected_anchor_does_not_keep_unprojectable_characters() {
     let c = curved(&[(20.0, 100.0), (380.0, 100.0)]);
     let c = tilt_candidate(c, &|x, y| (x > 195.0).then_some((x, y))).unwrap();
     let p = place_labels(vec![c], Vec::new(), 400.0, 200.0, false);
-    assert_eq!(p.keys[0].1, 2, "middle anchor is visible, but its leftmost glyphs are not");
+    assert_eq!(p.keys[0].1.place, 2, "middle anchor is visible, but its leftmost glyphs are not");
     assert!(p.labels[0].glyphs.iter().all(|g| p.labels[0].x + g.dx > 195.0));
 }
 
@@ -381,7 +381,7 @@ fn turned_candidates_skip_failed_alternatives_without_renumbering_slots() {
     c.alternatives = vec![(200.0, 20.0).into(), (300.0, 20.0).into()];
     turn_candidate(&mut c, |x, y| (x != 200.0).then_some((x + 50.0, y)));
     let p = place_labels(vec![c], vec![label("BLOCKER", 150.0, None, 0.0)], 400.0, 200.0, false);
-    assert_eq!(p.keys[0].1, 2);
+    assert_eq!(p.keys[0].1.place, 2);
     assert_eq!(p.labels[1].x, 350.0);
 }
 
@@ -519,7 +519,7 @@ fn a_place_without_a_back_projected_anchor_is_never_locked() {
     c.alternatives = vec![LabelPlace::from((300.0, 100.0))];
     c.line = Some(LinePlaces { anchors: vec![None, Some(Coord::new(2.0, 0.0))], ..Default::default() });
     let placed = place_labels(vec![c.clone()], Vec::new(), 400.0, 200.0, false);
-    assert_eq!(placed.keys, vec![((1, 0, 0, 0), 1)]);
+    assert_eq!(placed.keys, vec![((1, 0, 0, 0), rustgis_map::LockedPlace { place: 1, callout: None })]);
     assert_eq!(placed.line_anchors, vec![((1, 0, 0, 0), Coord::new(2.0, 0.0))]);
     c.alternatives.clear();
     c.line.as_mut().unwrap().anchors = vec![None];
@@ -534,7 +534,7 @@ fn invalid_straight_slots_keep_their_matching_anchor() {
     c.line = Some(LinePlaces { anchors: vec![Some(Coord::new(0.0, 0.0)), None, Some(Coord::new(2.0, 0.0))], ..Default::default() });
     let blocker = PlacedLabel { y: 100.0, ..label("BLOCKER", 100.0, None, 0.0) };
     let placed = place_labels(vec![c], vec![blocker], 400.0, 200.0, false);
-    assert_eq!(placed.keys, vec![((1, 0, 0, 0), 2)]);
+    assert_eq!(placed.keys, vec![((1, 0, 0, 0), rustgis_map::LockedPlace { place: 2, callout: None })]);
     assert_eq!(placed.line_anchors, vec![((1, 0, 0, 0), Coord::new(2.0, 0.0))]);
 }
 
@@ -593,7 +593,7 @@ fn an_invalid_locked_straight_slot_never_invents_a_middle_preview() {
     assert!(!anchors.is_empty());
     // A stale or malformed lock cannot name a real place. There is no accurate preview
     // to draw, even when View Unplaced is on; the valid lock's geographic anchor stays put.
-    map.label_lock.as_mut().unwrap()[0].1 = u8::MAX;
+    map.label_lock.as_mut().unwrap()[0].1.place = u8::MAX;
     let r = render(&mut map, &view).unwrap();
     assert!(r.labels.is_empty());
     assert!(r.unplaced.is_empty());
@@ -625,7 +625,7 @@ fn an_invalid_locked_curved_slot_never_invents_a_middle_preview() {
     render(&mut map, &view).unwrap();
     assert!(!map.label_lock.as_ref().unwrap().is_empty());
     let anchors = map.label_lock_line_anchors.clone();
-    map.label_lock.as_mut().unwrap()[0].1 = u8::MAX;
+    map.label_lock.as_mut().unwrap()[0].1.place = u8::MAX;
     let r = render(&mut map, &view).unwrap();
     assert!(r.labels.is_empty());
     assert!(r.unplaced.is_empty());

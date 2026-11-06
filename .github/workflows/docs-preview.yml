@@ -34,10 +34,10 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
         with:
           enable-cache: false
       - name: Build docs with Zensical
@@ -49,10 +49,10 @@ jobs:
           rm -f site/CNAME
       # Production serves the app from web.rustgis.app (web-deploy.yml); previews include it
       # at /app/ so a pull request's web build can be tried before merging.
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: Build the web app
         run: |
           # Pinned Trunk release, checksum-verified, installed outside root-owned directories.
@@ -67,7 +67,7 @@ jobs:
           mkdir -p ../../site/app
           cp -r ../../dist/web/. ../../site/app/
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: preview-site
           path: site
@@ -85,7 +85,7 @@ jobs:
         run: |
           mkdir -p preview-pr
           printf '%s\n' "$PR" > preview-pr/pr.txt
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: preview-pr
           path: preview-pr

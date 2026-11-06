@@ -13,7 +13,10 @@ use rustgis_geom::Extent;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+mod add;
 pub mod edit;
+
+pub use crate::io::{GpkgMode, GpkgTable, GpkgWritten};
 
 /// Rows fetched by id per query.
 const CHUNK: usize = 500;
@@ -138,23 +141,24 @@ impl GpkgSource {
                 Ok((r.get(0)?, r.get(1)?, r.get(2)?))
             })
             .map_err(err)?;
-        let epsg: Option<u32> = conn
-            .query_row("SELECT organization, organization_coordsys_id FROM gpkg_spatial_ref_sys WHERE srs_id = ?1", [srs_id], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+        // Its row, read cell by cell as the browser reader reads it: a code stored as a whole REAL
+        // (9377.0) is that code, and a column a writer left out (the definition) or a value of
+        // another type is that cell missing, never the whole row.
+        let row = conn
+            .query_row("SELECT * FROM gpkg_spatial_ref_sys WHERE srs_id = ?1", [srs_id], |r| {
+                let text = |col: &str| match r.get_ref(col) {
+                    Ok(ValueRef::Text(t)) => Some(String::from_utf8_lossy(t).into_owned()),
+                    _ => None,
+                };
+                let code = match r.get_ref("organization_coordsys_id") {
+                    Ok(ValueRef::Integer(i)) => Some(i),
+                    Ok(ValueRef::Real(x)) if x.fract() == 0.0 && x.abs() < 9e15 => Some(x as i64),
+                    _ => None,
+                };
+                Ok(super::GpkgSrs { organization: text("organization"), code, definition: text("definition") })
             })
-            .ok()
-            .map_or_else(
-                // No row for it: the srs_id is taken as an EPSG code only for WGS 84 and Web
-                // Mercator, the ids writers commonly use without defining.
-                || u32::try_from(srs_id).ok().filter(|c| matches!(c, 4326 | 3857)),
-                // A row: an EPSG code only when the organization is EPSG (a table-local id such as
-                // 100001 isn't one).
-                |(org, id)| if org.eq_ignore_ascii_case("epsg") { u32::try_from(id).ok() } else { None },
-            );
-        if epsg.is_none() && srs_id > 0 && srs_id != 4326 {
-            notes.push(format!("its coordinate system (srs_id {srs_id}) has no EPSG code; read as longitude/latitude"));
-        }
-        let reproject = Reproject::from_epsg(epsg, &mut notes);
+            .ok();
+        let reproject = super::gpkg_reproject(srs_id, row, &mut notes);
 
         // Columns: the primary key, the geometry and the attribute fields.
         let mut pk = None;
@@ -231,7 +235,9 @@ impl GpkgSource {
             fields,
             extent,
             count,
-            crs: reproject.label(),
+            // A system the definition gives, by its PROJ definition, so the layer keeps it
+            // (`SourceInfo::coordinate_system`), as a Shapefile's .prj does (#1476).
+            crs: reproject.crs.custom_def().map(|d| d.proj4.clone()).unwrap_or_else(|| reproject.label()),
             indexed: rtree.is_some(),
             notes,
             zm_dropped: false,
@@ -533,14 +539,38 @@ pub fn write(ds: &crate::Dataset, path: &Path) -> Result<()> {
 /// Writes a dataset whose geometry is in `crs`'s coordinates as a new GeoPackage in that system.
 /// Existing destinations are refused, as with [`write`].
 pub fn write_in(ds: &crate::Dataset, path: &Path, crs: Crs) -> Result<()> {
+    write_table_in(ds, path, crs, &GpkgTable::default()).map(|_| ())
+}
+
+/// As [`write_in`], the table placed as `target` says: in a new file, or added to (or replacing
+/// a table of) the GeoPackage at `path` when it exists, its other tables left as they were.
+pub fn write_table_in(ds: &crate::Dataset, path: &Path, crs: Crs, target: &GpkgTable) -> Result<GpkgWritten> {
+    let name = target.name.as_deref().unwrap_or(&ds.name);
+    if let Some(replace) = into_existing(path, target)? {
+        return add::write_features(path, name, ds.geometry_type, &ds.fields, crs, replace, &mut |put| put(&ds.features));
+    }
     check_new_destination(path)?;
     let tmp = temp_database_beside(path)?;
     let conn = Connection::open(&tmp).map_err(err)?;
-    build(&conn, ds, crs)?;
-    install(conn, tmp, path)
+    let table = build(&conn, ds, name, crs)?;
+    install(conn, tmp, path)?;
+    Ok(GpkgWritten { table, replaced: false, dependents: Vec::new() })
 }
 
-/// As [`write_in`], for a layer `name` of `geometry_type` with `fields`: the features `feed`
+/// Whether an export goes into the existing GeoPackage at `path` (anything there, which opening
+/// it as one then checks) and, if so, whether it replaces a table: `None` for a new file. A
+/// table is added to a new file when there is none; one can't be replaced in a file not there.
+fn into_existing(path: &Path, target: &GpkgTable) -> Result<Option<bool>> {
+    let exists = std::fs::symlink_metadata(path).is_ok();
+    match target.mode {
+        GpkgMode::NewFile => Ok(None),
+        GpkgMode::AddTable => Ok(exists.then_some(false)),
+        GpkgMode::ReplaceTable if exists => Ok(Some(true)),
+        GpkgMode::ReplaceTable => Err(DataError::Format(format!("{}: no GeoPackage there to replace a table in", path.display()))),
+    }
+}
+
+/// As [`write_table_in`], for a layer `name` of `geometry_type` with `fields`: the features `feed`
 /// hands to the function it is given, a run at a time, already in `crs`'s coordinates, so a
 /// whole layer needn't be held. A point layer's table type and whether ids are kept are chosen
 /// from the features so far; should a later one contradict that choice, the export starts
@@ -551,47 +581,72 @@ pub(crate) fn write_features_in(
     fields: &[Field],
     path: &Path,
     crs: Crs,
+    target: &GpkgTable,
     feed: &mut dyn FnMut(&mut dyn FnMut(&[crate::Feature]) -> Result<()>) -> Result<()>,
-) -> Result<()> {
+) -> Result<GpkgWritten> {
+    let name = target.name.as_deref().unwrap_or(name);
+    if let Some(replace) = into_existing(path, target)? {
+        return add::write_features(path, name, geometry_type, fields, crs, replace, feed);
+    }
     check_new_destination(path)?;
     let (mut multi_points, mut keep_ids) = (None, true);
     // Each choice changes at most once.
     for _ in 0..3 {
         let tmp = temp_database_beside(path)?;
         let conn = Connection::open(&tmp).map_err(err)?;
-        let (mut layout, mut extent, mut redo) = (None, Extent::EMPTY, None);
-        let fed = feed(&mut |features| {
-            if layout.is_none() {
-                let multi =
-                    multi_points.unwrap_or_else(|| features.iter().any(|f| matches!(f.geometry, Some(crate::Geometry::MultiPoint(_)))));
-                layout = Some(create(&conn, name, geometry_type, fields, crs, multi)?);
-            }
-            let Some(l) = layout.as_ref() else { return Err(DataError::Format("GeoPackage: no table to write".into())) };
-            for g in features.iter().filter_map(|f| f.geometry.as_ref()) {
-                extent = extent.union(&g.extent());
-            }
-            redo = insert(&conn, l, features, keep_ids)?;
-            match redo {
-                // Stops the traversal; the export starts again below.
-                Some(_) => Err(DataError::Format("GeoPackage: starting again".into())),
-                None => Ok(()),
-            }
-        });
-        match (fed, redo) {
-            (_, Some(Redo::MultiPoints)) => multi_points = Some(true),
-            (_, Some(Redo::Renumber)) => keep_ids = false,
-            (Err(e), None) => return Err(e),
-            (Ok(()), None) => {
-                let layout = match layout {
-                    Some(l) => l,
-                    None => create(&conn, name, geometry_type, fields, crs, multi_points.unwrap_or(false))?,
-                };
+        let mut make = |multi| create(&conn, name, geometry_type, fields, crs, multi);
+        match fill(&conn, multi_points, keep_ids, &mut make, feed)? {
+            Err(Redo::MultiPoints) => multi_points = Some(true),
+            Err(Redo::Renumber) => keep_ids = false,
+            Ok((layout, extent)) => {
                 finish(&conn, &layout, extent)?;
-                return install(conn, tmp, path);
+                install(conn, tmp, path)?;
+                return Ok(GpkgWritten { table: layout.table, replaced: false, dependents: Vec::new() });
             }
         }
     }
     Err(DataError::Format("GeoPackage: the export didn't settle on a table".into()))
+}
+
+/// Feeds the features into the table `make` creates on `conn`, made once the first run shows
+/// whether a point layer holds multipoints (unless `multi_points` already says): the table and
+/// the extent of what went in, or what the export must start again for. With `keep_ids` each
+/// feature keeps its id.
+fn fill(
+    conn: &Connection,
+    multi_points: Option<bool>,
+    keep_ids: bool,
+    make: &mut dyn FnMut(bool) -> Result<Layout>,
+    feed: &mut dyn FnMut(&mut dyn FnMut(&[crate::Feature]) -> Result<()>) -> Result<()>,
+) -> Result<std::result::Result<(Layout, Extent), Redo>> {
+    let (mut layout, mut extent, mut redo) = (None, Extent::EMPTY, None);
+    let fed = feed(&mut |features| {
+        if layout.is_none() {
+            let multi = multi_points.unwrap_or_else(|| features.iter().any(|f| matches!(f.geometry, Some(crate::Geometry::MultiPoint(_)))));
+            layout = Some(make(multi)?);
+        }
+        let Some(l) = layout.as_ref() else { return Err(DataError::Format("GeoPackage: no table to write".into())) };
+        for g in features.iter().filter_map(|f| f.geometry.as_ref()) {
+            extent = extent.union(&g.extent());
+        }
+        redo = insert(conn, l, features, keep_ids)?;
+        match redo {
+            // Stops the traversal; the export starts again.
+            Some(_) => Err(DataError::Format("GeoPackage: starting again".into())),
+            None => Ok(()),
+        }
+    });
+    match (fed, redo) {
+        (_, Some(r)) => Ok(Err(r)),
+        (Err(e), None) => Err(e),
+        (Ok(()), None) => {
+            let layout = match layout {
+                Some(l) => l,
+                None => make(multi_points.unwrap_or(false))?,
+            };
+            Ok(Ok((layout, extent)))
+        }
+    }
 }
 
 /// A new temporary file beside `path`, removed unless [`install`]ed.
@@ -615,6 +670,9 @@ fn install(conn: Connection, tmp: tempfile::TempPath, path: &Path) -> Result<()>
     conn.close().map_err(|(_, e)| err(e))?;
     // Built without syncing (fast); synced once before installation. Windows needs a write handle.
     std::fs::OpenOptions::new().write(true).open(&tmp)?.sync_all()?;
+    // A cancel that came while it was built leaves no file (the temporary one is removed). This
+    // is the last look: persisting commits the file, and a Cancel after it finds it written.
+    crate::progress::check()?;
     // Refuse journals that appeared during the build; persistence also closes the file race.
     check_new_destination(path)?;
     tmp.persist_noclobber(path).map_err(|e| destination_error(path, e.error))?;
@@ -650,10 +708,11 @@ fn destination_error(path: &Path, error: std::io::Error) -> DataError {
     }
 }
 
-/// Builds a whole layer's GeoPackage on `conn`, its table chosen from all its features.
-fn build(conn: &Connection, ds: &crate::Dataset, crs: Crs) -> Result<()> {
+/// Builds a whole layer's GeoPackage on `conn`, its table `name` chosen from all its features;
+/// returns the table's name as written.
+fn build(conn: &Connection, ds: &crate::Dataset, name: &str, crs: Crs) -> Result<String> {
     let multi_points = ds.features.iter().any(|f| matches!(f.geometry, Some(crate::Geometry::MultiPoint(_))));
-    let layout = create(conn, &ds.name, ds.geometry_type, &ds.fields, crs, multi_points)?;
+    let layout = create(conn, name, ds.geometry_type, &ds.fields, crs, multi_points)?;
     // Feature ids are kept when they are unique and fit; otherwise SQLite numbers the rows.
     let mut seen = std::collections::HashSet::new();
     let keep_ids = ds.features.iter().all(|f| i64::try_from(f.id).is_ok() && seen.insert(f.id));
@@ -662,7 +721,8 @@ fn build(conn: &Connection, ds: &crate::Dataset, crs: Crs) -> Result<()> {
     if insert(conn, &layout, &ds.features, keep_ids)?.is_some() {
         return Err(DataError::Format("GeoPackage: a feature doesn't fit the table chosen for the layer".into()));
     }
-    finish(conn, &layout, ds.extent())
+    finish(conn, &layout, ds.extent())?;
+    Ok(layout.table)
 }
 
 /// A feature table being written: its names, and what its rows hold.
@@ -682,6 +742,25 @@ struct Layout {
     rtree_q: String,
 }
 
+/// The GeoPackage's own tables, as a new file has them.
+const METADATA: &str = "CREATE TABLE gpkg_spatial_ref_sys (srs_name TEXT NOT NULL, srs_id INTEGER PRIMARY KEY, organization TEXT NOT NULL,
+        organization_coordsys_id INTEGER NOT NULL, definition TEXT NOT NULL, description TEXT);
+    CREATE TABLE gpkg_contents (table_name TEXT NOT NULL PRIMARY KEY, data_type TEXT NOT NULL, identifier TEXT UNIQUE,
+        description TEXT DEFAULT '', last_change DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+        min_x DOUBLE, min_y DOUBLE, max_x DOUBLE, max_y DOUBLE, srs_id INTEGER,
+        CONSTRAINT fk_gc_r_srs_id FOREIGN KEY (srs_id) REFERENCES gpkg_spatial_ref_sys(srs_id));";
+
+/// The tables a GeoPackage holding a feature table with a spatial index needs beyond
+/// [`METADATA`], made where missing (an existing GeoPackage may have only attribute tables).
+const FEATURE_METADATA: &str = "CREATE TABLE IF NOT EXISTS gpkg_geometry_columns (table_name TEXT NOT NULL, column_name TEXT NOT NULL,
+        geometry_type_name TEXT NOT NULL, srs_id INTEGER NOT NULL, z TINYINT NOT NULL, m TINYINT NOT NULL,
+        CONSTRAINT pk_geom_cols PRIMARY KEY (table_name, column_name),
+        CONSTRAINT uk_gc_table_name UNIQUE (table_name),
+        CONSTRAINT fk_gc_tn FOREIGN KEY (table_name) REFERENCES gpkg_contents(table_name),
+        CONSTRAINT fk_gc_srs FOREIGN KEY (srs_id) REFERENCES gpkg_spatial_ref_sys (srs_id));
+    CREATE TABLE IF NOT EXISTS gpkg_extensions (table_name TEXT, column_name TEXT, extension_name TEXT NOT NULL,
+        definition TEXT NOT NULL, scope TEXT NOT NULL, CONSTRAINT ge_tce UNIQUE (table_name, column_name, extension_name));";
+
 /// Creates the GeoPackage's tables and the empty feature table (and its spatial index) for a
 /// layer, in a transaction [`finish`] commits. A point layer holding any multipoint is a
 /// MULTIPOINT table, whose single points [`insert`] writes as one-point multipoints.
@@ -691,7 +770,40 @@ fn create(conn: &Connection, name: &str, geometry_type: GeometryType, fields: &[
         0 => 100_000,
         c => i32::from(c),
     };
-    // Not a reserved name, and never empty.
+    let layout = plan(name, geometry_type, fields, multi_points, srs_id);
+    conn.execute_batch(&format!(
+        "PRAGMA journal_mode = OFF; PRAGMA synchronous = OFF;
+        PRAGMA application_id = 1196444487; PRAGMA user_version = 10400;
+        {METADATA} {FEATURE_METADATA} BEGIN;"
+    ))
+    .map_err(err)?;
+    create_table(conn, &layout)?;
+    conn.execute(
+        "INSERT INTO gpkg_spatial_ref_sys VALUES
+            ('Undefined cartesian SRS', -1, 'NONE', -1, 'undefined', 'undefined cartesian coordinate reference system'),
+            ('Undefined geographic SRS', 0, 'NONE', 0, 'undefined', 'undefined geographic coordinate reference system'),
+            ('WGS 84 geodetic', 4326, 'EPSG', 4326, ?1, 'longitude/latitude coordinates in decimal degrees on the WGS 84 spheroid')",
+        [WGS84_WKT],
+    )
+    .map_err(err)?;
+    if srs_id != 4326 {
+        // GeoPackage readers take an EPSG system by its code; a custom one has only its WKT
+        // (`undefined` when it has none).
+        let org = if crs.epsg() > 0 { "EPSG" } else { "NONE" };
+        let wkt = crate::raster::wkt::to_wkt(crs);
+        conn.execute(
+            "INSERT INTO gpkg_spatial_ref_sys VALUES (?1, ?2, ?3, ?2, ?4, '')",
+            rusqlite::params![crs.label(), srs_id, org, wkt.as_deref().unwrap_or("undefined")],
+        )
+        .map_err(err)?;
+    }
+    Ok(layout)
+}
+
+/// The names a layer's feature table is written with, in spatial reference system `srs_id`: the
+/// table named for the layer (not a reserved name, never empty), its id and geometry columns
+/// clear of its fields, and its fields' columns unique without regard to case.
+fn plan(name: &str, geometry_type: GeometryType, fields: &[Field], multi_points: bool, srs_id: i32) -> Layout {
     let mut table: String = name.chars().filter(|c| !c.is_control()).collect::<String>().trim().to_string();
     if table.is_empty() {
         table = "layer".into();
@@ -725,65 +837,8 @@ fn create(conn: &Connection, name: &str, geometry_type: GeometryType, fields: &[
         GeometryType::None => "",
     };
     let (t, g, i) = (quote(&table), quote(&geom), quote(&fid));
-    let mut sql = String::from(
-        "PRAGMA journal_mode = OFF; PRAGMA synchronous = OFF;
-        PRAGMA application_id = 1196444487; PRAGMA user_version = 10400;
-        CREATE TABLE gpkg_spatial_ref_sys (srs_name TEXT NOT NULL, srs_id INTEGER PRIMARY KEY, organization TEXT NOT NULL,
-            organization_coordsys_id INTEGER NOT NULL, definition TEXT NOT NULL, description TEXT);
-        CREATE TABLE gpkg_contents (table_name TEXT NOT NULL PRIMARY KEY, data_type TEXT NOT NULL, identifier TEXT UNIQUE,
-            description TEXT DEFAULT '', last_change DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-            min_x DOUBLE, min_y DOUBLE, max_x DOUBLE, max_y DOUBLE, srs_id INTEGER,
-            CONSTRAINT fk_gc_r_srs_id FOREIGN KEY (srs_id) REFERENCES gpkg_spatial_ref_sys(srs_id));
-        CREATE TABLE gpkg_geometry_columns (table_name TEXT NOT NULL, column_name TEXT NOT NULL, geometry_type_name TEXT NOT NULL,
-            srs_id INTEGER NOT NULL, z TINYINT NOT NULL, m TINYINT NOT NULL,
-            CONSTRAINT pk_geom_cols PRIMARY KEY (table_name, column_name),
-            CONSTRAINT uk_gc_table_name UNIQUE (table_name),
-            CONSTRAINT fk_gc_tn FOREIGN KEY (table_name) REFERENCES gpkg_contents(table_name),
-            CONSTRAINT fk_gc_srs FOREIGN KEY (srs_id) REFERENCES gpkg_spatial_ref_sys (srs_id));
-        CREATE TABLE gpkg_extensions (table_name TEXT, column_name TEXT, extension_name TEXT NOT NULL, definition TEXT NOT NULL,
-            scope TEXT NOT NULL, CONSTRAINT ge_tce UNIQUE (table_name, column_name, extension_name));
-        BEGIN;",
-    );
-    let mut cols = vec![format!("{i} INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL")];
-    if has_geom {
-        cols.push(format!("{g} {geom_type}"));
-    }
-    for (f, col) in fields.iter().zip(&columns) {
-        let ty = match f.ty {
-            FieldType::Integer => "INTEGER",
-            FieldType::Double => "REAL",
-            FieldType::Boolean => "BOOLEAN",
-            FieldType::Text => "TEXT",
-        };
-        cols.push(format!("{} {ty}", quote(col)));
-    }
-    sql.push_str(&format!("CREATE TABLE {t} ({});", cols.join(", ")));
     let rt = quote(&format!("rtree_{table}_{geom}"));
-    if has_geom {
-        sql.push_str(&format!("CREATE VIRTUAL TABLE {rt} USING rtree(id, minx, maxx, miny, maxy);"));
-    }
-    conn.execute_batch(&sql).map_err(err)?;
-    conn.execute(
-        "INSERT INTO gpkg_spatial_ref_sys VALUES
-            ('Undefined cartesian SRS', -1, 'NONE', -1, 'undefined', 'undefined cartesian coordinate reference system'),
-            ('Undefined geographic SRS', 0, 'NONE', 0, 'undefined', 'undefined geographic coordinate reference system'),
-            ('WGS 84 geodetic', 4326, 'EPSG', 4326, ?1, 'longitude/latitude coordinates in decimal degrees on the WGS 84 spheroid')",
-        [WGS84_WKT],
-    )
-    .map_err(err)?;
-    if srs_id != 4326 {
-        // GeoPackage readers take an EPSG system by its code; a custom one has only its WKT
-        // (`undefined` when it has none).
-        let org = if crs.epsg() > 0 { "EPSG" } else { "NONE" };
-        let wkt = crate::raster::wkt::to_wkt(crs);
-        conn.execute(
-            "INSERT INTO gpkg_spatial_ref_sys VALUES (?1, ?2, ?3, ?2, ?4, '')",
-            rusqlite::params![crs.label(), srs_id, org, wkt.as_deref().unwrap_or("undefined")],
-        )
-        .map_err(err)?;
-    }
-
-    Ok(Layout {
+    Layout {
         table,
         geom,
         columns,
@@ -796,7 +851,30 @@ fn create(conn: &Connection, name: &str, geometry_type: GeometryType, fields: &[
         geom_q: g,
         fid_q: i,
         rtree_q: rt,
-    })
+    }
+}
+
+/// Creates the empty feature table [`plan`] named, and its spatial index.
+fn create_table(conn: &Connection, layout: &Layout) -> Result<()> {
+    let Layout { columns, fields, has_geom, geom_type, table_q: t, geom_q: g, fid_q: i, rtree_q: rt, .. } = layout;
+    let mut cols = vec![format!("{i} INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL")];
+    if *has_geom {
+        cols.push(format!("{g} {geom_type}"));
+    }
+    for (f, col) in fields.iter().zip(columns) {
+        let ty = match f.ty {
+            FieldType::Integer => "INTEGER",
+            FieldType::Double => "REAL",
+            FieldType::Boolean => "BOOLEAN",
+            FieldType::Text => "TEXT",
+        };
+        cols.push(format!("{} {ty}", quote(col)));
+    }
+    let mut sql = format!("CREATE TABLE {t} ({});", cols.join(", "));
+    if *has_geom {
+        sql.push_str(&format!("CREATE VIRTUAL TABLE {rt} USING rtree(id, minx, maxx, miny, maxy);"));
+    }
+    conn.execute_batch(&sql).map_err(err)
 }
 
 /// What a streamed export found it must start again for, having chosen from the features so far.
@@ -825,6 +903,7 @@ fn insert(conn: &Connection, layout: &Layout, features: &[crate::Feature], keep_
     let mut index =
         if has_geom { Some(conn.prepare_cached(&format!("INSERT INTO {rt} VALUES (?1, ?2, ?3, ?4, ?5)")).map_err(err)?) } else { None };
     for f in features {
+        crate::progress::step(1)?;
         if has_geom && !multi_points && matches!(f.geometry, Some(crate::Geometry::MultiPoint(_))) && layout.geom_type == "POINT" {
             return Ok(Some(Redo::MultiPoints));
         }
@@ -860,22 +939,54 @@ fn insert(conn: &Connection, layout: &Layout, features: &[crate::Feature], keep_
     Ok(None)
 }
 
-/// Records the table in the GeoPackage's contents with its `extent`, adds the triggers that keep
-/// its spatial index in step with edits, and commits.
+/// [`register`]s the table and commits.
 fn finish(conn: &Connection, layout: &Layout, extent: Extent) -> Result<()> {
+    register(conn, layout, extent)?;
+    conn.execute_batch("COMMIT;").map_err(err)
+}
+
+/// Records the table in the GeoPackage's contents with its `extent` (identified by its table
+/// name, numbered if another table already has that identifier) and adds the triggers that keep its
+/// spatial index in step with edits.
+fn register(conn: &Connection, layout: &Layout, extent: Extent) -> Result<()> {
     let Layout { table, geom, has_geom, geom_type, srs_id, table_q: t, geom_q: g, fid_q: i, rtree_q: rt, .. } = layout;
     let (has_geom, srs_id) = (*has_geom, *srs_id);
     let e = extent;
     let bounds: [Option<f64>; 4] = if e.is_empty() { [None; 4] } else { [Some(e.min_x), Some(e.min_y), Some(e.max_x), Some(e.max_y)] };
     let srs: Option<i64> = has_geom.then_some(i64::from(srs_id));
+    // The table's name, numbered when another table of an existing GeoPackage has it as its
+    // (unique) identifier.
+    let mut identifier = table.clone();
+    for i in 2.. {
+        let taken: bool = conn
+            .query_row("SELECT EXISTS (SELECT 1 FROM gpkg_contents WHERE identifier = ?1)", [&identifier], |r| r.get(0))
+            .map_err(err)?;
+        if !taken {
+            break;
+        }
+        identifier = format!("{table}_{i}");
+    }
     conn.execute(
-        "INSERT INTO gpkg_contents (table_name, data_type, identifier, min_x, min_y, max_x, max_y, srs_id) VALUES (?1, ?2, ?1, ?3, ?4, ?5, ?6, ?7)",
-        rusqlite::params![table, if has_geom { "features" } else { "attributes" }, bounds[0], bounds[1], bounds[2], bounds[3], srs],
+        "INSERT INTO gpkg_contents (table_name, data_type, identifier, last_change, min_x, min_y, max_x, max_y, srs_id)
+            VALUES (?1, ?2, ?3, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?4, ?5, ?6, ?7, ?8)",
+        rusqlite::params![
+            table,
+            if has_geom { "features" } else { "attributes" },
+            identifier,
+            bounds[0],
+            bounds[1],
+            bounds[2],
+            bounds[3],
+            srs
+        ],
     )
     .map_err(err)?;
     if has_geom {
-        conn.execute("INSERT INTO gpkg_geometry_columns VALUES (?1, ?2, ?3, ?4, 0, 0)", rusqlite::params![table, geom, geom_type, srs_id])
-            .map_err(err)?;
+        conn.execute(
+            "INSERT INTO gpkg_geometry_columns (table_name, column_name, geometry_type_name, srs_id, z, m) VALUES (?1, ?2, ?3, ?4, 0, 0)",
+            rusqlite::params![table, geom, geom_type, srs_id],
+        )
+        .map_err(err)?;
         // The GeoPackage 1.4 triggers that keep the index in step with edits.
         let trig = |s: &str| quote(&format!("rtree_{table}_{geom}_{s}"));
         conn.execute_batch(&format!(
@@ -907,12 +1018,12 @@ fn finish(conn: &Connection, layout: &Layout, extent: Extent) -> Result<()> {
         ))
         .map_err(err)?;
         conn.execute(
-            "INSERT INTO gpkg_extensions VALUES (?1, ?2, 'gpkg_rtree_index', 'http://www.geopackage.org/spec120/#extension_rtree', 'write-only')",
+            "INSERT INTO gpkg_extensions (table_name, column_name, extension_name, definition, scope)
+                VALUES (?1, ?2, 'gpkg_rtree_index', 'http://www.geopackage.org/spec120/#extension_rtree', 'write-only')",
             rusqlite::params![table, geom],
         )
         .map_err(err)?;
     }
-    conn.execute_batch("COMMIT;").map_err(err)?;
     Ok(())
 }
 

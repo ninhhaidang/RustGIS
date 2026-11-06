@@ -9,6 +9,329 @@ use rustgis_engine::{Project, Session};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
+/// Declared versions are checked before payloads, and unreadable nodes cannot disappear on import.
+#[test]
+fn model_import_refuses_unsupported_files_without_changing_session() {
+    use base64::Engine;
+    let scratch = Scratch::new("model-compatibility");
+    let mut s = Session::new(Project::new("Original"));
+    s.run("model.new", &json!({"name": "Keep", "steps": []})).unwrap();
+    s.run("project.rename", &json!({"name": "Redo"})).unwrap();
+    s.run("edit.undo", &Value::Null).unwrap();
+    s.path = Some(scratch.path("original.rgis"));
+    s.mark_saved();
+    let before = serde_json::to_value(&s.project).unwrap();
+    let history = (s.undo_depth(), s.undo_label(), s.redo_label());
+    let graph = json!({"nodes": [
+        {"id": "i", "kind": "input", "layer": "Points"},
+        {"id": "future", "kind": "branch"},
+        {"id": "o", "kind": "output", "name": "Result"}
+    ], "edges": [
+        {"from": "i", "fromPort": "out", "to": "future", "toPort": "input"},
+        {"from": "future", "fromPort": "out", "to": "o", "toPort": "in"}
+    ]});
+    for (file, message) in [
+        (json!({"version": "2.0.0", "graph": "unreadable future graph"}), "unsupported version"),
+        (json!({"version": 2, "steps": "unreadable future steps"}), "unsupported version"),
+        (json!({"version": null, "graph": {"nodes": []}}), "unsupported version"),
+        (json!({"version": "1", "steps": []}), "unsupported version"),
+        (json!({"graph": {"nodes": []}, "description": "Keep this"}), "file has unsupported fields"),
+        (json!({"steps": [], "future": true}), "file has unsupported fields"),
+        (json!({"graph": {"nodes": []}, "steps": [{"tool": "buffer", "params": {}}]}), "both a graph and steps"),
+        (json!({"steps": [{"tool": "buffer", "params": {}, "when": {"enabled": true}}]}), "step 1 has unsupported fields"),
+        (json!({"steps": [{"tool": "buffer", "params": ["input"]}]}), "step 1 needs an object"),
+        (json!({"steps": vec![json!({"tool": "buffer", "params": {}}); 2001]}), "at most 2000 steps"),
+        (json!({"graph": {"nodes": [], "edges": [], "future": {"enabled": true}}}), "graph has unsupported fields"),
+        (json!({"version": "1.0.0", "graph": graph}), "node 2"),
+        (json!({"graph": {"nodes": [{"id": "t", "kind": "tool", "tool": {}}]}}), "node 1"),
+        (json!({"graph": {"nodes": [{"id": "", "kind": "input"}]}}), "discard 1 node(s)"),
+        (json!({"graph": {"nodes": [{"id": " padded ", "kind": "input"}]}}), "would be trimmed or truncated"),
+        (json!({"graph": {"nodes": [{"id": "a".repeat(101), "kind": "input"}]}}), "would be trimmed or truncated"),
+        (json!({"graph": {"nodes": [{"id": "a", "kind": "input", "x": 1000001}]}}), "outside the supported canvas bounds"),
+        (json!({"graph": {"nodes": [{"id": "a", "kind": "input", "y": 1e300}]}}), "outside the supported canvas bounds"),
+        (json!({"graph": {"nodes": [{"id": "t", "kind": "tool"}, {"id": "t", "kind": "output"}]}}), "discard 1 node(s)"),
+        (json!({"graph": {"nodes": [{"id": "t", "kind": "tool", "parms": {"distance": 37}}]}}), "unsupported fields"),
+        (json!({"graph": {"nodes": [{"id": "t", "kind": "tool", "params": [37]}]}}), "needs an object"),
+        (json!({"graph": {"nodes": [], "edges": {}}}), "connections must be an array"),
+        (json!({"graph": {"nodes": [], "edges": ["bad edge"]}}), "connection 1 is malformed"),
+        (
+            json!({"graph": {"nodes": [{"id": "a", "kind": "input"}, {"id": "b", "kind": "output"}],
+            "edges": [{"from": "a", "to": "b"}]}}),
+            "1 connection(s)",
+        ),
+        (
+            json!({"graph": {"nodes": [{"id": "a", "kind": "input"}],
+            "edges": [{"from": "a", "to": "missing", "toPort": "input"}]}}),
+            "1 connection(s)",
+        ),
+        (
+            json!({"graph": {"nodes": [{"id": "a", "kind": "input"}, {"id": "b", "kind": "output"}],
+            "edges": [{"from": "a", "to": "b", "toPort": "in"}, {"from": "a", "to": "b", "toPort": "in"}]}}),
+            "1 connection(s)",
+        ),
+        (
+            json!({"graph": {"nodes": [{"id": "a", "kind": "input"}, {"id": "b", "kind": "output"}],
+            "edges": [{"from": "a", "to": "b", "toPort": "in", "future": true}]}}),
+            "unsupported fields",
+        ),
+        (
+            json!({"graph": {"nodes": [{"id": "a", "kind": "input", "layer": "Points"},
+            {"id": "b", "kind": "tool", "tool": "buffer"}],
+            "edges": [{"from": "a", "fromPort": "out", "to": "b", "toPort": "future"}]}}),
+            "connection 1 refers to an unsupported port",
+        ),
+        (
+            json!({"graph": {"nodes": [{"id": "a", "kind": "input"}, {"id": "b", "kind": "output"}],
+            "edges": [{"from": "a", "fromPort": "out", "to": "b", "toPort": "future"}]}}),
+            "connection 1 refers to an unsupported port",
+        ),
+        (
+            json!({"graph": {"nodes": [{"id": "a", "kind": "input"}, {"id": "b", "kind": "output"}],
+            "edges": [{"from": "a", "fromPort": "future", "to": "b", "toPort": "in"}]}}),
+            "connection 1 refers to an unsupported port",
+        ),
+        (
+            json!({"graph": {"nodes": [{"id": "a", "kind": "input", "layer": "A"},
+            {"id": "b", "kind": "input", "layer": "B"}, {"id": "t", "kind": "tool", "tool": "buffer"}], "edges": [
+                {"from": "a", "fromPort": "out", "to": "t", "toPort": "input"},
+                {"from": "b", "fromPort": "out", "to": "t", "toPort": "input"}
+            ]}}),
+            "connection 2 duplicates a single-valued input port",
+        ),
+        (
+            json!({"graph": {"nodes": [{"id": "a", "kind": "input"}, {"id": "t", "kind": "tool", "tool": "buffer"}],
+            "edges": [{"from": "a", "fromPort": "out", "to": "t", "toPort": "input"}]}}),
+            "connection 1 has an input without a layer",
+        ),
+        (
+            json!({"graph": {"nodes": [{"id": "a", "kind": "input", "layer": ""}, {"id": "t", "kind": "tool", "tool": "buffer"}],
+            "edges": [{"from": "a", "fromPort": "out", "to": "t", "toPort": "input"}]}}),
+            "connection 1 has an input without a layer",
+        ),
+        (
+            json!({"graph": {"nodes": [{"id": "a", "kind": "input", "layer": "East;West"}, {"id": "t", "kind": "tool", "tool": "merge"}],
+            "edges": [{"from": "a", "fromPort": "out", "to": "t", "toPort": "inputs"}]}}),
+            "connection 1 has an input layer name that cannot be represented in steps",
+        ),
+        (
+            json!({"graph": {"nodes": [{"id": "a", "kind": "input", "layer": "%1"}, {"id": "t", "kind": "tool", "tool": "buffer"}],
+            "edges": [{"from": "a", "fromPort": "out", "to": "t", "toPort": "input"}]}}),
+            "connection 1 has an input layer name that cannot be represented in steps",
+        ),
+        (
+            json!({"graph": {"nodes": [{"id": "a", "kind": "input", "layer": " Points "}, {"id": "t", "kind": "tool", "tool": "buffer"}],
+            "edges": [{"from": "a", "fromPort": "out", "to": "t", "toPort": "input"}]}}),
+            "connection 1 has an input layer name that cannot be represented in steps",
+        ),
+        (
+            json!({"graph": {"nodes": [{"id": "a", "kind": "tool", "tool": "buffer"},
+            {"id": "b", "kind": "tool", "tool": "buffer"}], "edges": [
+                {"from": "a", "fromPort": "out", "to": "b", "toPort": "input"},
+                {"from": "b", "fromPort": "out", "to": "a", "toPort": "input"}
+            ]}}),
+            "contains a loop",
+        ),
+    ] {
+        let text = file.to_string();
+        let path = scratch.path("unsupported.model.json");
+        std::fs::write(&path, &text).unwrap();
+        for params in
+            [json!({"text": text}), json!({"data": base64::engine::general_purpose::STANDARD.encode(&text)}), json!({"path": path})]
+        {
+            let error = s.run("model.import", &params).unwrap_err();
+            assert!(error.contains(message), "{error}");
+            if message == "unsupported version" || message.starts_with("node ") || message.contains("unsupported fields") {
+                assert!(error.contains("Update RustGIS"), "{error}");
+            }
+            assert_eq!(serde_json::to_value(&s.project).unwrap(), before);
+            assert_eq!((s.undo_depth(), s.undo_label(), s.redo_label()), history);
+            assert!(s.can_undo() && s.can_redo());
+            assert_eq!(s.path.as_ref(), Some(&scratch.path("original.rgis")));
+            assert!(!s.dirty());
+        }
+    }
+}
+
+/// Actual graph and web-tool writers still round-trip, with or without their legacy version marker.
+#[test]
+fn model_import_preserves_supported_and_legacy_files() {
+    use base64::Engine;
+    let scratch = Scratch::new("model-roundtrip");
+    let mut original = Session::new(Project::new("Original"));
+    original
+        .run(
+            "model.new",
+            &json!({"name": "Graph", "graph": {"nodes": [
+                {"id": "i", "kind": "input", "layer": "Points"},
+                {"id": "t", "kind": "tool", "tool": "buffer", "params": {"distance": 37}},
+                {"id": "o", "kind": "output", "name": "Near points"}
+            ], "edges": [
+                {"from": "i", "fromPort": "out", "to": "t", "toPort": "input"},
+                {"from": "t", "fromPort": "out", "to": "o", "toPort": "in"}
+            ]}}),
+        )
+        .unwrap();
+    original
+        .run(
+            "model.new",
+            &json!({"name": "Steps", "steps": [
+                {"tool": "buffer", "params": {"input": "Points", "distance": 37}},
+                {"tool": "buffer", "params": {"input": "%1", "distance": 74}}
+            ]}),
+        )
+        .unwrap();
+    let graph = original.run("model.export", &json!({"name": "Graph"})).unwrap();
+    let (_, web, _) = rustgis_engine::cmd::sharing::share_bytes(&mut original, "webTool", &json!({"model": "Steps"})).unwrap();
+    original.run("model.new", &json!({"name": "Long Steps", "steps": vec![json!({"tool": "buffer", "params": {}}); 1001]})).unwrap();
+    let (_, long, _) = rustgis_engine::cmd::sharing::share_bytes(&mut original, "webTool", &json!({"model": "Long Steps"})).unwrap();
+    for (index, text) in [graph["text"].as_str().unwrap().to_string(), String::from_utf8(web).unwrap(), String::from_utf8(long).unwrap()]
+        .into_iter()
+        .enumerate()
+    {
+        let file: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(file["version"], if index == 0 { json!("1.0.0") } else { json!(1) });
+        for legacy in [false, true] {
+            let mut file = file.clone();
+            if legacy {
+                file.as_object_mut().unwrap().remove("version");
+            }
+            let text = file.to_string();
+            let path = scratch.path(if index == 0 { "graph.model.json" } else { "steps.rgistool" });
+            std::fs::write(&path, &text).unwrap();
+            for params in
+                [json!({"text": text}), json!({"data": base64::engine::general_purpose::STANDARD.encode(&text)}), json!({"path": path})]
+            {
+                let mut loaded = Session::new(Project::new("Loaded"));
+                loaded.run("model.import", &params).unwrap();
+                assert_eq!(loaded.project.models[0], original.project.models[index]);
+                assert!(loaded.notices.is_empty(), "supported files need no warning");
+                if index == 1 {
+                    let graph = loaded.run("model.export", &json!({})).unwrap();
+                    let mut reopened = Session::new(Project::new("Graph"));
+                    reopened.run("model.import", &json!({"text": graph["text"]})).unwrap();
+                    assert_eq!(reopened.project.models[0].steps, original.project.models[index].steps);
+                    assert!(reopened.notices.is_empty(), "supported references need no warning");
+                }
+                if index == 2 {
+                    let output = scratch.path("keep.model.json");
+                    std::fs::write(&output, "keep").unwrap();
+                    let error = loaded.run("model.export", &json!({"path": output})).unwrap_err();
+                    assert!(error.contains("1001 steps") && error.contains("at most 1000"), "{error}");
+                    assert_eq!(std::fs::read_to_string(output).unwrap(), "keep");
+                    assert_eq!(loaded.project.models[0], original.project.models[index]);
+                }
+            }
+        }
+    }
+    // Step syntax stays literal for semicolons on single-input ports and nonnumeric percent names.
+    for (layer, tool, port) in [("East;West", "buffer", "input"), ("%north", "merge", "inputs")] {
+        let graph = json!({"nodes": [{"id": "i", "kind": "input", "layer": layer}, {"id": "t", "kind": "tool", "tool": tool}],
+            "edges": [{"from": "i", "fromPort": "out", "to": "t", "toPort": port}]});
+        let mut loaded = Session::new(Project::default());
+        loaded.run("model.import", &json!({"text": json!({"graph": graph}).to_string()})).unwrap();
+        assert_eq!(loaded.project.models[0].steps[0].params[port], layer);
+        let (_, web, _) = rustgis_engine::cmd::sharing::share_bytes(&mut loaded, "webTool", &json!({})).unwrap();
+        let mut reopened = Session::new(Project::default());
+        reopened.run("model.import", &json!({"text": String::from_utf8(web).unwrap()})).unwrap();
+        let exported = reopened.run("model.export", &json!({})).unwrap();
+        let file: Value = serde_json::from_str(exported["text"].as_str().unwrap()).unwrap();
+        assert!(file["graph"]["nodes"].as_array().unwrap().iter().any(|node| node["layer"] == layer));
+        assert!(loaded.notices.is_empty() && reopened.notices.is_empty());
+    }
+    // Graph capacity is checked before building or laying out a large multi-input step.
+    for (name, inputs) in
+        [("Connections", "A;".repeat(4001)), ("Nodes", (0..2001).map(|i| format!("Layer{i}")).collect::<Vec<_>>().join(";"))]
+    {
+        original.run("model.new", &json!({"name": name, "steps": [{"tool": "merge", "params": {"inputs": inputs}}]})).unwrap();
+        let before = original.project.models.clone();
+        let error = original.run("model.export", &json!({"name": name})).unwrap_err();
+        assert!(error.contains("graph limits"), "{error}");
+        assert_eq!(original.project.models, before);
+    }
+    for (steps, reference, message) in [
+        (json!([{"tool": "buffer", "params": {"input": "%0"}}]), "%0", "not an earlier step"),
+        (json!([{"tool": "buffer", "params": {"input": "%2"}}]), "%2", "not an earlier step"),
+        (
+            json!([{"tool": "vectorToPmtiles", "params": {"input": "Points"}}, {"tool": "buffer", "params": {"input": "%1"}}]),
+            "%1",
+            "has no layer output",
+        ),
+    ] {
+        let mut loaded = Session::new(Project::new("Invalid reference"));
+        let file = json!({"steps": steps});
+        loaded.run("model.import", &json!({"text": file.to_string()})).unwrap();
+        let before = loaded.project.models.clone();
+        let output = scratch.path("keep-reference.model.json");
+        std::fs::write(&output, "keep").unwrap();
+        let error = loaded.run("model.export", &json!({"path": output})).unwrap_err();
+        assert!(error.contains(reference) && error.contains(message), "{error}");
+        assert_eq!(std::fs::read_to_string(output).unwrap(), "keep");
+        assert_eq!(loaded.project.models, before);
+    }
+}
+
+/// Even a name emitted by the writer can exceed the import naming limit after disambiguation.
+#[test]
+fn model_import_reports_changed_names() {
+    let mut original = Session::new(Project::new("Original"));
+    for _ in 0..2 {
+        original.run("model.new", &json!({"name": "N".repeat(200), "steps": [{"tool": "buffer", "params": {"input": "Cities"}}]})).unwrap();
+    }
+    let name = original.project.models[1].name.clone();
+    assert!(name.chars().count() > 200);
+    let exported = original.run("model.export", &json!({"name": name})).unwrap();
+    let mut file: Value = serde_json::from_str(exported["text"].as_str().unwrap()).unwrap();
+    for name in [file["name"].clone(), json!(" Padded "), json!(17)] {
+        file["name"] = name.clone();
+        let mut loaded = Session::new(Project::new("Loaded"));
+        loaded.run("model.import", &json!({"text": file.to_string()})).unwrap();
+        assert_ne!(Some(loaded.project.models[0].name.as_str()), name.as_str());
+        assert_eq!(loaded.notices.len(), 1);
+        assert!(!loaded.notices[0].error && loaded.notices[0].text.contains("1 model name"));
+        assert_eq!(serde_json::to_value(loaded.project.models[0].graph.as_ref().unwrap()).unwrap(), file["graph"]);
+    }
+    file.as_object_mut().unwrap().remove("name");
+    let mut loaded = Session::new(Project::new("Loaded"));
+    loaded.run("model.import", &json!({"text": file.to_string()})).unwrap();
+    assert_eq!(loaded.project.models[0].name, "Tool");
+    assert!(loaded.notices.is_empty(), "a missing name alone needs no warning");
+    loaded.run("model.import", &json!({"text": file.to_string()})).unwrap();
+    assert_eq!(loaded.project.models[1].name, "Tool 2");
+    assert_eq!(loaded.notices.len(), 1);
+    assert!(!loaded.notices[0].error && loaded.notices[0].text.contains("1 model name"));
+    assert_eq!(serde_json::to_value(loaded.project.models[1].graph.as_ref().unwrap()).unwrap(), file["graph"]);
+}
+
+/// Repeated merge inputs survive import, saving under a new name and re-export.
+#[test]
+fn model_import_round_trips_repeated_step_inputs() {
+    let mut original = Session::new(Project::new("Original"));
+    let steps = json!([{"tool": "merge", "params": {"inputs": "A;A"}}]);
+    original.run("model.new", &json!({"name": "Repeated", "steps": steps})).unwrap();
+    let exported = original.run("model.export", &json!({"name": "Repeated"})).unwrap();
+    let mut file: Value = serde_json::from_str(exported["text"].as_str().unwrap()).unwrap();
+    assert_eq!(file["graph"]["edges"].as_array().unwrap().len(), 2);
+    for legacy in [false, true] {
+        if legacy {
+            file.as_object_mut().unwrap().remove("version");
+        }
+        let mut loaded = Session::new(Project::new("Loaded"));
+        loaded.run("model.import", &json!({"text": file.to_string()})).unwrap();
+        let model = &loaded.project.models[0];
+        assert_eq!(serde_json::to_value(&model.steps).unwrap(), steps);
+        assert_eq!(serde_json::to_value(model.graph.as_ref().unwrap()).unwrap(), file["graph"]);
+        loaded.run("model.save", &json!({"name": "Repeated", "rename": "Resaved", "graph": file["graph"]})).unwrap();
+        assert_eq!(serde_json::to_value(&loaded.project.models[0].steps).unwrap(), steps);
+        assert_eq!(serde_json::to_value(loaded.project.models[0].graph.as_ref().unwrap()).unwrap(), file["graph"]);
+        assert!(loaded.notices.is_empty(), "supported files need no warning");
+        for params in [json!({"name": "Resaved"}), json!({"name": "Resaved", "graph": file["graph"]})] {
+            let reexported = loaded.run("model.export", &params).unwrap();
+            let reexported: Value = serde_json::from_str(reexported["text"].as_str().unwrap()).unwrap();
+            assert_eq!(reexported["graph"], file["graph"]);
+        }
+    }
+}
+
 /// The parcels' south-west corner, in Memphis, and their size in degrees: 4 columns by 3 rows.
 const WEST: f64 = -90.05;
 const SOUTH: f64 = 35.10;

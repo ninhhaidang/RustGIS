@@ -75,15 +75,15 @@ jobs:
       packages: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
-      - uses: docker/setup-buildx-action@v4
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
       - name: Image tags and labels
         id: meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
         env:
           # The registry shows the index's annotations for a multi-platform image.
           DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
@@ -103,7 +103,7 @@ jobs:
 
       # The image for the runner's platform, loaded into Docker to check that it serves the app.
       - name: Build for the smoke test
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: .
           platforms: linux/amd64
@@ -132,7 +132,7 @@ jobs:
 
       - name: Sign in to the GitHub Container Registry
         if: env.PUBLISH == 'true'
-        uses: docker/login-action@v4
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -141,7 +141,7 @@ jobs:
       # Both platforms; the build stage is the smoke test's, from the builder's cache.
       - name: Publish
         if: env.PUBLISH == 'true'
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -169,15 +169,15 @@ jobs:
             runner: ubuntu-24.04-arm
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
-      - uses: docker/setup-buildx-action@v4
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
       - name: Image labels
         id: meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
         with:
           images: ${{ env.CLI_IMAGE }}
           flavor: latest=false
@@ -189,7 +189,7 @@ jobs:
             org.opencontainers.image.url=https://rustgis.app
 
       - name: Build for the smoke test
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: .
           file: packaging/docker/cli.Dockerfile
@@ -214,7 +214,7 @@ jobs:
 
       - name: Sign in to the GitHub Container Registry
         if: env.PUBLISH == 'true'
-        uses: docker/login-action@v4
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -224,7 +224,7 @@ jobs:
       - name: Publish by digest
         id: push
         if: env.PUBLISH == 'true'
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: .
           file: packaging/docker/cli.Dockerfile
@@ -244,7 +244,7 @@ jobs:
 
       - name: Upload the digest
         if: env.PUBLISH == 'true'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: cli-digest-${{ matrix.arch }}
           path: ${{ runner.temp }}/digests/*
@@ -262,24 +262,24 @@ jobs:
       packages: write
     steps:
       - name: Download the digests
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           path: ${{ runner.temp }}/digests
           pattern: cli-digest-*
           merge-multiple: true
 
-      - uses: docker/setup-buildx-action@v4
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
       - name: Image tags
         id: meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
         with:
           images: ${{ env.CLI_IMAGE }}
           flavor: latest=false
           tags: ${{ env.TAGS }}
 
       - name: Sign in to the GitHub Container Registry
-        uses: docker/login-action@v4
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}

@@ -68,23 +68,37 @@ where they now are (and says how many are gone), and a result that would replace
 layer, or one loaded whole meanwhile, is refused. Renaming the map while it runs is fine; after
 switching to another map, a result that adds to or changes the map is refused (one made only of
 tables or a file is still made). Opening another project drops the run. The Analysis pane's
-**Zonal Statistics**, **Viewshed**, **Interpolate (IDW)**, **Classification Wizard** (k-means) and
-**Deep Learning** (training and classifying) run in the background the same way, with their
-progress and **Cancel** under the pane's inputs, one at a time; so does the map's right-click
+**Zonal Statistics**, **Viewshed**, **Interpolate (IDW)**, **Suitability Modeler**, **Raster
+Functions** and the **Function Editor**'s chains, **Change Detection**, **Classification Wizard**
+(k-means), **Classification Tools** (from training polygons), **Indices**, **Process** (clip and resample), an ortho or
+reality workspace's **Build** (its mosaic) and **Deep Learning** (training and classifying) run in
+the background the same way, with their progress and **Cancel** under the pane's inputs, one at a
+time; so does the map's right-click
 **Viewshed … Here**, which opens the pane to show it. A model trained there is kept once its classes
 are added: a cancelled run keeps none. Scripts, models, the AI
 Assistant, the command line and the web app wait for each tool to finish.
 
-**Viewshed**, **IDW Interpolation** and **Kriging** refuse a run that would take more than a second
-or two of work on one thread (a ray step, a cell-point pair), and **Kernel Density** one whose
-points' search windows (the square around each point's radius) cover more than 50 million cells. On the desktop they run on several
-cores (up to 16), and they take as many times more work as the threads they run on. Threads share
-cores and memory, so a run at that limit can take up to about twice as long as a one-thread run at
-its own (measured on one machine, a Xeon Silver 4114; it can be longer on others); in the web app,
-on one thread, the limits stay as they are. The error names the
-limit on this computer and the threads it counted. A tool's own default cell size still follows the
-one-thread limit, so it makes the same grid on any computer; a finer cell size given is what the
-larger limit lets through.
+**Viewshed**, **IDW Interpolation** and **Kriging** have no work limit when you run them from their
+pane in the desktop app (the Tools or Analysis pane), nor does **Kernel Density** or **Deep
+Learning**: a large run shows its progress, and **Cancel** stops it within a moment, however wide
+its rows. Neither does `rustgis-cli run` typed at a terminal, which Ctrl-C stops. Where a run can't
+be stopped while it goes (a script, a model, the AI Assistant, Python, the web app, and `rustgis-cli
+run` called from another program, such as an agent or a CI job, which may wait with a timeout),
+Viewshed, IDW Interpolation and Kriging refuse a run that would take more than a second or two of
+work on one thread (a ray step, a cell-point pair), Kernel Density one whose points' search windows
+(the square around each point's radius) cover more than 50 million cells, and Deep Learning a model
+too large for its raster; its training fits a share of the sampled pixels, or fewer epochs, instead
+(`dl.train` reports the epochs it ran). A task or model recorded from a pane run keeps these limits
+when it runs again in the app, so a step the pane took on can be refused there, and a model trained
+again can differ. On the desktop these limits grow with the cores the run takes (up to 16), as many
+times more work as the threads it runs on. Threads share cores and memory, so a run at that limit
+can take up to about twice as long as a one-thread run at its own (measured on one machine, a Xeon
+Silver 4114; it can be longer on others); in the web app, on one thread, the limits stay as they
+are. The error names the limit on this computer and the threads it counted. The limits on memory
+(the cells a grid may have, and those on the following pages) hold everywhere, as does Viewshed's on
+its window: a radius covering more than 25 million cells, or 100,000 cells across, is refused. A
+tool's own default cell size still follows the one-thread limit, so it makes the same grid on any
+computer and from any caller; a finer cell size given is what a larger limit, or none, lets through.
 
 From the command line or a script (`gp.run`), a built-in tool's parameter with a list of choices, such as Buffer's
 units, takes one of them in any letter case (`"meters"` for `Meters`); any other value is an error
@@ -137,6 +151,8 @@ Use these ids in `gp.run`'s `tool` parameter (`gp.tools` lists the available too
 | Split Line At Vertices | `splitLineAtVertices` | Data Management › Features |
 | Feature Envelope To Polygon | `featureEnvelopeToPolygon` | Data Management › Features |
 | Unsplit Line | `unsplitLine` | Data Management › Features |
+| Check Geometry | `checkGeometry` | Data Management › Features |
+| Repair Geometry | `repairGeometry` | Data Management › Features |
 | XY Table To Point | `xyTableToPoint` | Data Management › Features |
 | Calculate Geometry Attributes | `calculateGeometry` | Data Management › Features |
 | Simplify | `simplify` | Cartography › Generalization |
@@ -827,6 +843,129 @@ gp.run={"tool":"featureEnvelopeToPolygon","params":{"input":"Regions"}}
 gp.run={"tool":"unsplitLine","params":{"input":"Rivers"}}
 ```
 
+### Checking geometry
+
+**Check Geometry** (`checkGeometry`) finds the features whose geometry breaks the OGC Simple
+Features rules and writes them to a new layer, `<input>_check` unless you name it. Only the
+selected features are checked when some are selected. Each output row is its input feature as
+stored, with the same feature id, fields, attributes and CRS, plus two text fields: `problem`,
+the codes of what is wrong separated by `, `, and `detail`, a short description of each problem
+separated by `; ` that names the part and ring (counted from 1; ring 1 is the exterior ring),
+such as `exterior ring of part 1 crosses itself; 3 repeated vertices in ring 2 of part 1`. A
+feature with more than 20 problems lists the first 20 and counts the rest. If the input already
+has a `problem` or `detail` field, the new one gets the next free name (`problem_2`) and the
+tool says so. When nothing is wrong, the output layer is empty and the message says how many
+features were checked.
+
+| Code | What is wrong |
+| --- | --- |
+| `null_geometry` | No geometry, or one without coordinates |
+| `non_finite_coordinate` | A coordinate is not a number or infinite. The row is written without geometry, so it can't spoil the layer's extent |
+| `too_few_points` | A line part with fewer than 2 distinct points, a ring with fewer than 3, or a polygon part without rings |
+| `ring_not_closed` | A ring's last point is not its first |
+| `repeated_vertex` | The same vertex twice in a row (a closed ring's last point doesn't count) |
+| `self_intersection` | A ring crosses itself, touches itself, or runs back over itself |
+| `hole_outside_shell` | An interior ring (hole) is not inside its exterior ring |
+| `rings_intersect` | Two rings of one polygon overlap or touch along a line |
+| `disconnected_interior` | Rings of one polygon touch at points so that they cut its interior into pieces, such as a hole touching the exterior ring at two points, or three holes each touching the next |
+| `parts_overlap` | Two polygons of one multipart feature overlap or touch along a line |
+| `too_complex` | Some of the feature's checks were left out: it needs more work than the tool spends on one feature, there wasn't enough memory to check it, or the geo library's relate operation failed on some of its rings or parts (`detail` says which of the three, not which rings or parts). The checks of each ring's points still run. The tool says how many features each reason left out |
+
+Codes are listed in this order, and are never translated. The checks work in stored
+coordinates, without projection. Lines may cross themselves, so only polygon rings are checked
+for self-intersection; points are checked for missing and non-finite coordinates only. Rings may
+touch each other at single points, as long as the polygon's interior stays in one piece (checked
+once its rings have no other problem with each other); any number of rings may meet at the same
+point. An unclosed ring is reported, then checked as if it
+were closed. Ring orientation is not checked, since GeoJSON and Shapefiles wind rings in
+opposite directions. The rings of a polygon are only checked against each other when each of them is
+usable (enough points, finite coordinates, and not crossing, touching or running back over
+itself), and the parts of a feature only when each part's rings are usable and have no problem
+with each other; the tool says how many features were not fully checked this way, because some
+of their rings or parts already have problems of their own. Rings and parts that touch are compared with the
+[geo](https://github.com/georust/geo) library's relate operation.
+
+```text
+gp.run={"tool":"checkGeometry","params":{"input":"Parcels"}}
+```
+
+### Repairing geometry
+
+**Repair Geometry** (`repairGeometry`) writes every feature to a new layer, `<input>_repaired`
+unless you name it, with its geometry made valid by the rules Check Geometry checks. Only the
+selected features are processed when some are selected. Each output row keeps its feature id,
+fields, attributes and CRS, and adds a text field `repairs`: the codes of what was repaired,
+separated by `, ` and in the order of the table above, or empty for a feature that needed
+nothing. Features with nothing wrong are copied exactly as stored. If the input already has a
+`repairs` field, the new one gets the next free name (`repairs_2`) and the tool says so.
+
+How each problem is repaired:
+
+- `ring_not_closed`: the ring is closed with its first point. `repeated_vertex`: the repeats are
+  dropped. `too_few_points`: the ring or line part is dropped; an exterior ring takes its part's
+  holes with it, and a polygon part without rings is dropped too. These fixes move no coordinate:
+  a feature with only these problems keeps every other vertex exactly.
+- `self_intersection`, `hole_outside_shell`, `rings_intersect`, `disconnected_interior` and
+  `parts_overlap`: the polygon is rebuilt from its area, as the "structure" method of make-valid
+  tools does. Each ring stands for the area it winds around, so a bowtie keeps both of its
+  triangles and the direction rings are wound in doesn't matter: GeoJSON and Shapefiles, which
+  wind them in opposite directions, give the same result. Each part is its exterior ring's area
+  less the union of its holes' areas, and the feature is the union of its parts. So overlapping
+  parts merge into one, overlapping holes merge, a hole outside its exterior ring disappears (what
+  of a hole lies inside it stays a hole), and an interior cut into pieces by rings touching at
+  points becomes one part per piece. A stretch of ring that runs back over itself, with no area,
+  is left out. Rebuilt exterior rings wind counter-clockwise, holes clockwise.
+- Lines may cross themselves, so only their repeated vertices and their parts with fewer than 2
+  distinct points are repaired. Points have nothing to repair but non-finite coordinates.
+
+When a ring of a part crosses itself, Check Geometry doesn't check that part against its other
+rings or the other parts; Repair Geometry checks the feature again after the fixes that move no
+coordinate, and adds `hole_outside_shell`, `rings_intersect` and `parts_overlap` when the rebuild
+finds a hole outside, merges holes or merges parts.
+
+The rebuild uses the [geo](https://github.com/georust/geo) library's boolean overlay, which works on
+an integer grid: half the larger side of the feature's extent spans about 2<sup>29</sup> steps.
+Coordinates are stored in degrees of longitude and latitude, so a step is about
+0.000 000 000 12° (0.013 mm) for a feature 10 km across, and about 0.000 000 24° (2.6 cm at the
+equator) for one spanning the world. Rebuilt coordinates may move by up to five steps from the
+input's rings; in the tests they moved at most two thirds of a step. The overlay also leaves out
+vertices in the middle of straight edges. The tool says how many features were rebuilt and the
+farthest, in degrees, their coordinates may have moved. Every rebuilt geometry is checked again and
+written only when it is valid.
+
+A hole or part narrower than one step of that grid in any direction can be rounded onto a single
+line of it and lose its area, depending on where it lies between the grid's lines. Rounding moves a
+point by up to half a step on each axis, so across a diagonal a piece needs to be wider, up to √2
+steps at 45°. The grid follows the extent of all the rings of a part, or of all the parts of a
+feature, so this happens to a tiny or thin hole or part far from the others, such as a long sliver
+at an angle. So before the overlay takes out a part's holes or merges the parts, a hole or part
+that narrow in any direction is dropped: `no_area` is added after the other codes in `repairs`, and
+the tool says how many holes and parts were dropped this way, from how many features.
+
+A feature that can't be repaired stays in the output without geometry, with its attributes, and
+`repairs` says why. One the tool couldn't repair is written unchanged, never dropped:
+
+| Code | Written | Why |
+| --- | --- | --- |
+| `null_geometry` | without geometry | No geometry, or one without coordinates |
+| `non_finite_coordinate` | without geometry | A coordinate is not a number or infinite |
+| `too_few_points` | without geometry | Every part has too few distinct points |
+| `no_area` | without geometry | Nothing with an area is left once repaired: a ring whose points all lie on one line, or holes covering their whole part |
+| `too_complex` | unchanged | Checking or rebuilding it needs more work than the tool spends on one feature (for the rebuild, about 2 million vertices, counting those it adds where rings cross), or there wasn't enough memory for it |
+| `repair_failed` | unchanged | The geo library failed on it: its relate operation while checking, the overlay, coordinates too large or too small for the overlay's grid, or a rebuilt geometry that isn't valid |
+
+The messages say how many features were repaired, with each code; how many were written without
+geometry and why; how many were left unchanged for each reason; how many rings or parts were
+dropped, and how many holes or parts narrower than the overlay's grid; from how many features holes
+were taken out; in how many parts were merged or pieces written as parts of their own; and how far
+rebuilt coordinates may have moved. On the desktop and the command line a failure of the overlay is
+caught and the feature written unchanged; in the browser it can't be caught, so the rebuild runs only on finite coordinates the grid can hold, with
+its work bounded and its memory asked of the browser first, as in Clip and Dissolve.
+
+```text
+gp.run={"tool":"repairGeometry","params":{"input":"Parcels"}}
+```
+
 ## GeoLibre tools
 
 The desktop app and the command line can also run the
@@ -956,14 +1095,22 @@ below the web app's fixed limits and never above a ceiling.
 
 So a computer with 16 GB reads rasters of up to about 500 million samples. A run that passes on one
 computer can be refused on a smaller one; the error names the limit there. Project Raster (`raster.project`) puts a raster
-on a grid of any coordinate system, cell size and extent; Raster Functions › Resample matches a target
-raster's grid.
+on a grid of any coordinate system, cell size and extent, and Polygons to Raster
+(`raster.rasterize`) burns polygons onto the same grids; Raster Functions › Resample matches a
+target raster's grid.
 
 The **Script** pane runs commands from text, one per line (`id {json}`); its box grows with the script down to the bottom of the pane,
 short of the buttons, and then scrolls, so **Run** stays in view; Ctrl+Enter (⌘+Enter on macOS)
 in the box runs the script too. Above a run's results, a line tells its number, how long it took
 and when it started (`Run #2 (0.84 s)`, and `14:04 UTC` on the right), so a run made again by
-mistake shows (Undo takes a whole run back). It colours the commands as you type, in both
+mistake shows (Undo takes a whole run back). On the desktop, a script's tools and models, with
+selections, layer renames and definition queries, the environment and the projection between
+them, are worked out in the background first, so the map and the rest of the window stay in
+use: the status bar shows **Run Script** and **Cancel**, and the results say **Running…** until
+the run is added. From the first line of any other kind (an edit, Add Data, a save, an export,
+a style or a zoom, a plugin or GeoLibre tool, a tool that writes a file) the rest runs as a
+script always has, holding the window until it finishes. A tool whose inputs change meanwhile runs again as the
+results are added, as in a model's run. It colours the commands as you type, in both
 themes: `#` comments in green italics, the command id, and the JSON's strings, numbers and
 `true`/`false`/`null`; an id no command has, or one that can't run in a script (`ui.*`, `script.*`,
 `notebook.run`), and parameters that aren't valid JSON are red and underlined. A script is read to
@@ -1032,10 +1179,45 @@ their name.
   are none. The tools then run in flow order, and each node shows how it fared. A result that
   only feeds other tools is removed once the model has run; the outputs, and tools at the end
   of the flow, stay on the map. A run that fails is undone as a whole.
+- On the desktop, **Run** (here or in the Workflows pane's Models section) works out the tools
+  in the background, so the map and the rest of the window stay in use: the status bar shows
+  **Run Model**, how far its current tool has come, and **Cancel**, and the canvas says
+  **Running…** until the results are added, as one step to undo. What a tool reads that changes
+  meanwhile (an edit, a selection, a layer added or reordered, the environment, the projection)
+  has that tool and those after it run again as the results are added, and so does a tool that
+  writes a file, a plugin tool or a GeoLibre tool, with those after it. Those run as a model
+  always has, holding the window until they finish, with the work limits of a run that can't
+  be cancelled. A file a tool reads by its path isn't compared: one changed during the run
+  gives the result from what was read. A model run from a script in the Script pane is worked
+  out in the background with the script; one run from the command line or the assistant runs
+  where the command runs.
 - **Save** keeps the model in the project; **Export** writes it as a `*.model.json` file, which
   **Import** (or dropping the file on the window) opens again. A model from a file may not read
   or write files. **Copy Command** copies a `model.run` command that runs the model from the
   Script pane, the command line or Python.
+
+Import checks declared model and web-tool versions before interpreting their contents. Unsupported
+versions, unreadable nodes, connections or steps, and unknown file, graph, node, connection or step
+fields are refused. A file containing both a graph and steps is refused rather than choosing one.
+Connections using unknown ports or feeding multiple sources into a single-valued port are refused.
+Connections from inputs with missing or blank layer names are also refused. For connections to tools,
+layer names must have no surrounding whitespace, must not look like numeric step references (`%1`),
+and must not contain semicolons on multi-input ports; these names cannot be preserved in steps.
+Graphs that would lose nodes or connections during import are refused with a count and
+advice to fix the file, leaving the current project unchanged. Supported files and legacy files
+without a version marker continue to import, including repeated sources in multi-input tools such
+as Merge. Graphs containing a loop are refused rather than becoming empty steps. IDs that need
+trimming or exceed 100 characters, and positions outside the supported
+canvas bounds, are refused before they can be changed. Repeated inputs stay intact when an imported
+model is saved or renamed. If import must trim, shorten or replace a model name, or make it unique,
+it reports the change with a notice.
+
+Step files keep the existing 2,000-step limit. Converting steps to a ModelBuilder graph has a
+1,000-step limit: opening, exporting or checking (`model.validate`) a larger model as a graph
+gives an error and leaves the
+original steps intact. References to a step that is not earlier in the model, or has no layer
+output, also stop graph conversion before data can be dropped. Larger models can still run as
+steps or be shared as a web tool.
 
 The Workflows pane's Models section lists the project's models, and New Model From History turns
 the geoprocessing you've run into one. Models made as steps (`model.new` with `steps`, where `%1`
@@ -1130,6 +1312,41 @@ The Analyze tab's imagery groups open their tools in the Workflows pane:
   - The result has to fit in memory (120 million values, cells times bands, or more on a computer
     with more memory; 32 million in the web app): a grid past that is refused, naming the limit. A raster read from its overview is
     projected at that resolution, and the result says so.
+- **Polygons to Raster** (`raster.rasterize`) burns a polygon layer onto a grid, so soil,
+  geology or land-use units line up cell for cell with rasters put on that grid by Project Raster:
+  `{"layer": "Soils", "field": "unit", "grid": "ndvi_100m", "path": "soils_100m.tif"}`. It has no
+  pane yet: run it from the Script pane, the AI Assistant, the command line or Python. The result
+  is a new layer (`name`, by default the layer's name with "raster"), and with `path` a
+  cloud-optimised GeoTIFF too.
+  - **The grid** is given as for Project Raster: `"grid"`, another raster's grid taken exactly, or
+    `crs` (by default the layer's), `cellSize` (required), `origin` (`[0, 0]` by default, so the
+    result lines up with any raster projected with the same `crs` and `cellSize`) and `extent` (by
+    default the polygons' bounds).
+  - **What a cell takes:** a cell takes a polygon's value when its centre falls inside it, holes
+    cut out. A numeric `field` gives its values; a text `field` gives codes 1 to n, in sorted order
+    of its values. A table named after the result with "classes" (`code`, `value`), numbered if
+    the project has a table of that name, holds every code; the result's `classTable` names it,
+    its `classes` lists the first 256, and `classCount` gives the total. With no field, every
+    polygon gives `value` (1 by default), a mask.
+  - Where polygons overlap, the later feature wins, as GDAL burns. With a selection, only the
+    selected features are burned. Features with no value in the field, with no valid polygon, or
+    holding no cell centre are skipped, and the result and a notice count them.
+  - Cells under no polygon take `nodata` (0 by default). A polygon whose value is the no-data
+    value is refused, so give another `nodata`, such as 255, when 0 is a class.
+  - **Pixel type:** bytes when every value and the no-data value are whole numbers from 0 to 255,
+    16-bit when they are up to 65,535, and 32-bit floating point otherwise. Past 16,777,216, 32 bits
+    no longer hold every whole number, so a whole number past it is refused, from an Integer field,
+    a text field's codes or `value`; for an Integer field, a text field gives codes instead. Any
+    other value that 32 bits can't hold exactly, a Double field's included, is rounded, and a notice
+    counts them. Up to 256 whole-number values are drawn with unique values.
+  - **Limits:** a polygon narrower than a cell can hold no cell centre and be missed; there is no
+    "all touched" rule, and lines and points aren't burned. The grid has to fit in memory (120
+    million cells, or more on a computer with more memory; 32 million in the web app): a grid past
+    that is refused before anything is burned. A layer read in place (only the part in view loaded)
+    is refused until all its features are loaded. Taken from a raster read from its overview, the
+    grid is the overview's, and a notice says so. The command runs where it is called, with no Cancel
+    yet and no cap on its work: each polygon fills the cells it covers, so many large polygons on a
+    fine grid take time in proportion.
 - **Classification Wizard** (unsupervised k-means) and **Classification Tools** (minimum distance
   from training polygons).
 - **Mensuration**: distances along the surface, heights between two points, areas, and volumes
@@ -1319,7 +1536,9 @@ the wrong field.
 
 **Analyze › Deep Learning Tools** trains a neural network (a multilayer perceptron) on the pixels
 under training polygons and classifies every pixel, adding a class raster with a confidence band
-and reporting the accuracy on held-back pixels. Trained models stay in the project; **Publish ›
+and reporting the accuracy on held-back pixels. Run from its pane in the desktop app, it trains
+on every sampled pixel for all the epochs asked, however long that takes, and can be cancelled;
+elsewhere it keeps to a few seconds of work (see the limits above). Trained models stay in the project; **Publish ›
 Share As › Deep Learning** saves one as a package to apply in other projects. **Analyze › Create
 Hosted Imagery** cuts a raster into XYZ web map tiles (PNG, transparent outside the raster) with
 a TileJSON file and a viewer page.

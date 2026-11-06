@@ -302,6 +302,10 @@ fn keep(all: &mut HashMap<String, Arc<Sheet>>, key: String, sheet: Arc<Sheet>, b
 }
 
 fn load_sheet(base: &str, hi_dpi: bool) -> SheetLoad {
+    // A login revoked or not covering this address: before any cached sheet is served.
+    if crate::logins::check(base).is_err() {
+        return SheetLoad::Failed;
+    }
     if hi_dpi {
         match load_one(base, "@2x") {
             SheetLoad::Failed => {}
@@ -321,6 +325,9 @@ fn load_one(base: &str, density: &str) -> SheetLoad {
     match (index, sheet) {
         (State::Ready(i), State::Ready(p)) => match (&*i, &*p) {
             (Payload::Json(index), Payload::Image(sheet)) => {
+                if crate::logins::check(base).is_err() {
+                    return SheetLoad::Failed;
+                }
                 let s = Arc::new(Sheet::new(index, sheet.clone()));
                 keep(&mut sprites().lock().unwrap_or_else(|p| p.into_inner()), key, s.clone(), MAX_SHEET_BYTES);
                 SheetLoad::Ready(s)

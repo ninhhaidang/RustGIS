@@ -41,18 +41,19 @@ pub(super) fn request_password(s: &mut Session, c: &Connection) {
             key,
             connections: vec![c.id.clone()],
             layers,
+            tiles: 0,
             opened: s.opened,
             prompted: false,
         });
     }
 }
 
-/// Resolves every unopened database of the project: a project was opened or imported.
+/// Resolves every unopened database of the project, and the web-service logins its layers read
+/// with: a project was opened or imported.
 pub(crate) fn resolve_project(s: &mut Session) {
-    #[cfg(target_arch = "wasm32")]
-    let _ = s;
     #[cfg(not(target_arch = "wasm32"))]
     resolve(s, None);
+    crate::service_logins::resolve(s, None);
 }
 
 /// Resolves only the databases `keys` names: a saved definition or a single layer change can only
@@ -100,6 +101,7 @@ fn resolve(s: &mut Session, only: Option<&[(&'static str, String)]>) {
                     key: key.clone(),
                     connections: ids,
                     layers: layers.clone(),
+                    tiles: 0,
                     opened: s.opened,
                     prompted: false,
                 });

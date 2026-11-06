@@ -534,6 +534,181 @@ fn an_unknown_coordinate_system_is_reported() {
     assert!(report.messages.iter().any(|m| m.contains("read as longitude/latitude")), "{:?}", report.messages);
 }
 
+/// MAGNA-SIRGAS / Origen-Nacional (EPSG:9377) as a GeoPackage writer may define it: no authority.
+const ORIGEN_NACIONAL: &str = r#"PROJCS["MAGNA-SIRGAS / Origen-Nacional",GEOGCS["MAGNA-SIRGAS",DATUM["Marco_Geocentrico_Nacional_de_Referencia",SPHEROID["GRS 1980",6378137.0,298.257222101]],PRIMEM["Greenwich",0.0],UNIT["degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],PARAMETER["false_easting",5000000.0],PARAMETER["false_northing",2000000.0],PARAMETER["central_meridian",-73.0],PARAMETER["scale_factor",0.9992],PARAMETER["latitude_of_origin",4.0],UNIT["Metre",1.0]]"#;
+
+/// A GeoPackage with one point in srs_id 300001, defined by `organization`, `code` and
+/// `definition`, at Origen-Nacional metres (4 874 000, 2 580 000).
+fn write_custom_srs_gpkg(path: &Path, organization: &str, code: i64, definition: &str) {
+    let _ = std::fs::remove_file(path);
+    let c = rusqlite::Connection::open(path).unwrap();
+    c.execute_batch(
+        "CREATE TABLE gpkg_spatial_ref_sys (srs_name TEXT, srs_id INTEGER PRIMARY KEY, organization TEXT, organization_coordsys_id INTEGER, definition TEXT, description TEXT);
+         CREATE TABLE gpkg_contents (table_name TEXT PRIMARY KEY, data_type TEXT, identifier TEXT, description TEXT, last_change TEXT, min_x DOUBLE, min_y DOUBLE, max_x DOUBLE, max_y DOUBLE, srs_id INTEGER);
+         CREATE TABLE gpkg_geometry_columns (table_name TEXT, column_name TEXT, geometry_type_name TEXT, srs_id INTEGER, z TINYINT, m TINYINT);
+         INSERT INTO gpkg_contents (table_name, data_type, srs_id) VALUES ('via', 'features', 300001);
+         INSERT INTO gpkg_geometry_columns VALUES ('via', 'geom', 'POINT', 300001, 0, 0);
+         CREATE TABLE via (fid INTEGER PRIMARY KEY AUTOINCREMENT, geom BLOB);",
+    )
+    .unwrap();
+    c.execute(
+        "INSERT INTO gpkg_spatial_ref_sys VALUES ('Custom', 300001, ?1, ?2, ?3, '')",
+        rusqlite::params![organization, code, definition],
+    )
+    .unwrap();
+    let p = Coord::new(4_874_000.0, 2_580_000.0);
+    let mut blob = b"GP\x00\x01".to_vec();
+    blob.extend_from_slice(&300_001i32.to_le_bytes());
+    blob.extend(wkb::encode(&Geometry::Point(p)));
+    c.execute("INSERT INTO via (geom) VALUES (?1)", [blob]).unwrap();
+}
+
+/// The point of [`write_custom_srs_gpkg`] and the notes, from the desktop and the browser readers.
+fn custom_srs_reads(path: &Path) -> Vec<(Option<Geometry>, Vec<String>)> {
+    let desktop = open_path(path, None).unwrap();
+    let browser = gpkg_mem::GpkgMemSource::open_shared(Shared(Arc::new(std::fs::read(path).unwrap())), None).unwrap();
+    [desktop.as_ref(), &browser as &dyn FeatureSource]
+        .into_iter()
+        .map(|src| {
+            let batch = src.read(&Request::all()).unwrap();
+            (batch.features.first().and_then(|f| f.geometry.clone()), src.info().notes.clone())
+        })
+        .collect()
+}
+
+#[test]
+fn a_gpkg_system_without_an_epsg_code_is_read_from_its_definition() {
+    // #1476: a custom row (organization CUSTOM, code 0) with the WKT of Origen-Nacional.
+    let p = dir().join("origen_nacional.gpkg");
+    write_custom_srs_gpkg(&p, "CUSTOM", 0, ORIGEN_NACIONAL);
+    for (geometry, notes) in custom_srs_reads(&p) {
+        let Some(Geometry::Point(c)) = geometry else { panic!("{geometry:?}") };
+        // Northern Colombia, where EPSG:9377 puts those metres.
+        let expected =
+            crate::raster::Crs::from_epsg(9377).unwrap().transformer().unwrap().to_lonlat(Coord::new(4_874_000.0, 2_580_000.0)).unwrap();
+        assert!((c.x - expected.x).abs() < 1e-6 && (c.y - expected.y).abs() < 1e-6, "{c:?} vs {expected:?}");
+        assert!((-74.3..-74.0).contains(&c.x) && (9.1..9.4).contains(&c.y), "{c:?}");
+        // Nothing to say: MAGNA-SIRGAS needs no datum shift.
+        assert!(notes.is_empty(), "{notes:?}");
+    }
+    // The layer keeps that system as its own (Layer Properties, Define Projection, exports), in a
+    // whole read too, on both readers.
+    let desktop = open_path(&p, None).unwrap();
+    let browser = gpkg_mem::GpkgMemSource::open_shared(Shared(Arc::new(std::fs::read(&p).unwrap())), None).unwrap();
+    for src in [desktop.as_ref(), &browser as &dyn FeatureSource] {
+        let crs = src.info().coordinate_system();
+        assert!(crs.is_some_and(|c| c.custom_def().is_some_and(|d| d.proj4.contains("+proj=tmerc"))), "{:?}", src.info().crs);
+        assert_eq!(materialize(src).unwrap().0.crs, crs);
+    }
+    drop((desktop, browser));
+    // A row without a definition is still said to be read as longitude/latitude.
+    write_custom_srs_gpkg(&p, "NONE", 300001, "undefined");
+    for (_, notes) in custom_srs_reads(&p) {
+        assert!(notes.iter().any(|n| n.contains("srs_id 300001") && n.contains("has no EPSG code")), "{notes:?}");
+    }
+    // No row for the id at all: said too.
+    rusqlite::Connection::open(&p).unwrap().execute("DELETE FROM gpkg_spatial_ref_sys WHERE srs_id = 300001", []).unwrap();
+    for (_, notes) in custom_srs_reads(&p) {
+        assert!(notes.iter().any(|n| n.contains("srs_id 300001") && n.contains("has no EPSG code")), "{notes:?}");
+    }
+    // A writer's "undefined …" text defines nothing: the same note, not a parse failure.
+    write_custom_srs_gpkg(&p, "NONE", 300001, "undefined geographic coordinate system");
+    for (_, notes) in custom_srs_reads(&p) {
+        assert!(notes.iter().any(|n| n.contains("has no EPSG code")) && !notes.iter().any(|n| n.contains("can't be read")), "{notes:?}");
+    }
+    // A definition that can't be read says so, and why.
+    write_custom_srs_gpkg(&p, "CUSTOM", 0, "PROJCS[");
+    for (_, notes) in custom_srs_reads(&p) {
+        assert!(notes.iter().any(|n| n.contains("srs_id 300001") && n.contains("can't be read")), "{notes:?}");
+    }
+    // The spec's undefined ids: -1 (cartesian) is assumed longitude/latitude, said; 0
+    // (geographic) is longitude/latitude, nothing to say.
+    for (id, said) in [(-1, true), (0, false)] {
+        write_custom_srs_gpkg(&p, "NONE", 300001, "undefined");
+        rusqlite::Connection::open(&p)
+            .unwrap()
+            .execute_batch(&format!(
+                "UPDATE gpkg_spatial_ref_sys SET srs_id = {id}, organization_coordsys_id = {id};
+                 UPDATE gpkg_contents SET srs_id = {id};
+                 UPDATE gpkg_geometry_columns SET srs_id = {id};"
+            ))
+            .unwrap();
+        for (_, notes) in custom_srs_reads(&p) {
+            assert_eq!(
+                notes.iter().any(|n| n.contains(&format!("srs_id {id})")) && n.contains("has no EPSG code")),
+                said,
+                "{id}: {notes:?}"
+            );
+        }
+    }
+    // A row naming neither organization nor code but defining the system is read by its
+    // definition, not as the system its id happens to be.
+    write_custom_srs_gpkg(&p, "NONE", 0, ORIGEN_NACIONAL);
+    rusqlite::Connection::open(&p)
+        .unwrap()
+        .execute_batch(
+            "UPDATE gpkg_spatial_ref_sys SET srs_id = 3857, organization = NULL, organization_coordsys_id = NULL;
+             UPDATE gpkg_contents SET srs_id = 3857;
+             UPDATE gpkg_geometry_columns SET srs_id = 3857;",
+        )
+        .unwrap();
+    for (geometry, notes) in custom_srs_reads(&p) {
+        assert!(matches!(geometry, Some(Geometry::Point(c)) if (-74.3..-74.0).contains(&c.x)), "{geometry:?}");
+        assert!(notes.is_empty(), "{notes:?}");
+    }
+    // MAGNA-SIRGAS on an ellipsoid other than its own isn't taken for it: the datum note stays.
+    write_custom_srs_gpkg(
+        &p,
+        "CUSTOM",
+        0,
+        &ORIGEN_NACIONAL.replace(r#"SPHEROID["GRS 1980",6378137.0,298.257222101]"#, r#"SPHEROID["International 1924",6378388.0,297.0]"#),
+    );
+    for (_, notes) in custom_srs_reads(&p) {
+        assert!(notes.iter().any(|n| n.contains("srs_id 300001") && n.contains("few hundred metres")), "{notes:?}");
+    }
+    // EPSG code 0 is no code: said, not read as longitude/latitude in silence.
+    write_custom_srs_gpkg(&p, "EPSG", 0, "undefined");
+    for (_, notes) in custom_srs_reads(&p) {
+        assert!(notes.iter().any(|n| n.contains("srs_id 300001") && n.contains("has no EPSG code")), "{notes:?}");
+    }
+    // A row naming neither organization nor code leaves Web Mercator to its id, as a missing row.
+    write_custom_srs_gpkg(&p, "NONE", 0, "undefined");
+    rusqlite::Connection::open(&p)
+        .unwrap()
+        .execute_batch(
+            "UPDATE gpkg_spatial_ref_sys SET srs_id = 3857, organization = NULL, organization_coordsys_id = NULL;
+             UPDATE gpkg_contents SET srs_id = 3857;
+             UPDATE gpkg_geometry_columns SET srs_id = 3857;",
+        )
+        .unwrap();
+    for (geometry, notes) in custom_srs_reads(&p) {
+        // Those metres in Web Mercator: about 43.8° E, 22.6° N.
+        assert!(matches!(geometry, Some(Geometry::Point(c)) if (43.0..45.0).contains(&c.x) && (22.0..23.0).contains(&c.y)), "{geometry:?}");
+        assert!(notes.is_empty(), "{notes:?}");
+    }
+    // An EPSG code stored as a REAL (9377.0, in a column a writer declared DOUBLE) is that code on
+    // both readers, with no definition.
+    write_custom_srs_gpkg(&p, "EPSG", 0, "undefined");
+    rusqlite::Connection::open(&p)
+        .unwrap()
+        .execute_batch(
+            "DROP TABLE gpkg_spatial_ref_sys;
+             CREATE TABLE gpkg_spatial_ref_sys (srs_name TEXT, srs_id INTEGER PRIMARY KEY, organization TEXT, organization_coordsys_id DOUBLE, definition TEXT, description TEXT);
+             INSERT INTO gpkg_spatial_ref_sys VALUES ('Origen-Nacional', 300001, 'EPSG', 9377.0, 'undefined', '');",
+        )
+        .unwrap();
+    for (geometry, notes) in custom_srs_reads(&p) {
+        assert!(matches!(geometry, Some(Geometry::Point(c)) if (-74.3..-74.0).contains(&c.x)), "{geometry:?}");
+        assert!(notes.is_empty(), "{notes:?}");
+    }
+    // An EPSG code this build doesn't know falls back to the definition.
+    write_custom_srs_gpkg(&p, "EPSG", 9_999_999, ORIGEN_NACIONAL);
+    for (geometry, notes) in custom_srs_reads(&p) {
+        assert!(matches!(geometry, Some(Geometry::Point(c)) if (-74.3..-74.0).contains(&c.x)), "{geometry:?}");
+        assert!(notes.is_empty(), "{notes:?}");
+    }
+}
+
 #[test]
 fn flatgeobuf_round_trips_a_dataset() {
     let mut ds = Dataset::new("mixed", GeometryType::Polygon, vec![Field::new("n", FieldType::Integer), Field::new("s", FieldType::Text)]);
@@ -1211,6 +1386,24 @@ fn flatgeobuf_and_geoparquet_by_address() {
     assert!(open_url_blocking("https://test.example/missing.fgb").is_err());
     assert!(is_remote_name("https://x.org/a/b.fgb?sig=1") && is_remote_name("http://x.org/b.geoparquet") && !is_remote_name("/tmp/a.fgb"));
     assert!(is_remote_name("s3://bucket/a/b.parquet") && !is_remote_name("s3://bucket/a/b.tif") && !is_remote_name("ftp://x.org/a.fgb"));
+}
+
+#[test]
+fn login_bound_remote_files_keep_their_request_address() {
+    crate::login_address::set_validator(remote::testing::validate_login);
+    for (name, parquet) in [("bound-grid.fgb", false), ("bound-grid.geoparquet", true)] {
+        let inner = format!("https://test.example/{name}?signature=a%2Fb#view");
+        let address = crate::login_address::bind("0123456789abcdef", "https://test.example", &inner).unwrap();
+        assert!(is_remote_name(&address));
+        assert_eq!(url_name(&address), "bound-grid");
+        remote::testing::serve(&address, big(4, parquet));
+        let file = remote::file(&address);
+        assert_eq!(file.url(), address);
+        let source = open_driven(&address);
+        assert_eq!(source.info().count, Some(16));
+    }
+    let image = crate::login_address::bind("0123456789abcdef", "https://test.example", "https://test.example/a.tif").unwrap();
+    assert!(!is_remote_name(&image));
 }
 
 #[test]
@@ -2333,4 +2526,226 @@ fn flatgeobuf_binary_columns_are_said_and_left_out() {
     write_fgb(&clean);
     let src = open_path(&clean, None).unwrap();
     assert!(src.info().notes.is_empty(), "{:?}", src.info().notes);
+}
+
+/// The tables of a GeoPackage, by name.
+fn gpkg_tables(path: &Path) -> Vec<String> {
+    let c = rusqlite::Connection::open(path).unwrap();
+    let mut st = c.prepare("SELECT table_name FROM gpkg_contents ORDER BY table_name").unwrap();
+    st.query_map([], |r| r.get(0)).unwrap().collect::<std::result::Result<_, _>>().unwrap()
+}
+
+/// An export into an existing GeoPackage adds a table beside the others, refuses one whose name
+/// is taken, and replaces a feature or attribute table (its spatial index too) when asked; the
+/// other tables, an attribute table among them, are as they were.
+#[test]
+fn geopackage_export_adds_and_replaces_tables_and_keeps_the_others() {
+    use crate::io::{GpkgMode, GpkgTable, GpkgWritten, write_path_to};
+    let workspace = tempfile::tempdir().unwrap();
+    let path = workspace.path().join("county.gpkg");
+    let mut parcels = Dataset::new("parcels", GeometryType::Point, vec![Field::new("apn", FieldType::Text)]);
+    parcels.push(Some(Geometry::Point(Coord::new(1.0, 2.0))), vec![Value::Text("001".into())]);
+    crate::io::write_path(&parcels, &path).unwrap();
+    // An attribute table, and the feature counts GDAL keeps.
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            "CREATE TABLE owners (name TEXT); INSERT INTO owners VALUES ('Shelby');
+             INSERT INTO gpkg_contents (table_name, data_type, identifier) VALUES ('owners', 'attributes', 'owners');
+             CREATE TABLE gpkg_ogr_contents (table_name TEXT NOT NULL PRIMARY KEY, feature_count INTEGER DEFAULT NULL);
+             INSERT INTO gpkg_ogr_contents VALUES ('parcels', 1);
+             CREATE TRIGGER wipe AFTER INSERT ON gpkg_contents BEGIN DELETE FROM owners; END;",
+        )
+        .unwrap();
+    let mut permits = Dataset::new("permits", GeometryType::Point, vec![Field::new("n", FieldType::Integer)]);
+    for i in 0..3 {
+        permits.push(Some(Geometry::Point(Coord::new(10.0 + i as f64, 20.0))), vec![Value::Int(i)]);
+    }
+    let to = |mode, name: Option<&str>| GpkgTable { mode, name: name.map(String::from) };
+    let written = write_path_to(&permits, &path, Crs::LonLat, &to(GpkgMode::AddTable, None)).unwrap();
+    assert_eq!(written, (0, Some(GpkgWritten { table: "permits".into(), replaced: false, dependents: vec![] })));
+    rusqlite::Connection::open(&path).unwrap().execute_batch("INSERT INTO gpkg_ogr_contents VALUES ('permits', 3)").unwrap();
+    assert_eq!(gpkg_tables(&path), ["owners", "parcels", "permits"]);
+    // The file's own trigger on its contents didn't run.
+    let owners =
+        |p: &Path| rusqlite::Connection::open(p).unwrap().query_row("SELECT count(*) FROM owners", [], |r| r.get::<_, i64>(0)).unwrap();
+    assert_eq!(owners(&path), 1);
+    let read = |t: &str, extent| open_path(&path, Some(t)).unwrap().read(&Request { extent, limit: 100 }).unwrap().features;
+    assert_eq!(read("permits", None).len(), 3);
+    // Its spatial index answers an extent query.
+    assert_eq!(read("permits", Some(Extent::new(10.5, 19.0, 11.5, 21.0))).len(), 1);
+    assert_eq!(read("parcels", None)[0].attrs, [Value::Text("001".into())]);
+
+    // A name taken (whatever its case) is refused unless replacing, and the file is unchanged.
+    let before = std::fs::read(&path).unwrap();
+    let mut before_index = before.clone();
+    for name in [None, Some("PERMITS"), Some("owners_idx")] {
+        if name == Some("owners_idx") {
+            assert_eq!(std::fs::read(&path).unwrap(), before, "the refusals changed nothing");
+            rusqlite::Connection::open(&path).unwrap().execute_batch("CREATE INDEX owners_idx ON owners (name)").unwrap();
+            before_index = std::fs::read(&path).unwrap();
+        }
+        let e = write_path_to(&permits, &path, Crs::LonLat, &to(GpkgMode::AddTable, name)).unwrap_err().to_string();
+        assert!(e.contains("already has"), "{name:?}: {e}");
+    }
+    assert_eq!(std::fs::read(&path).unwrap(), before_index, "the index refusal changed nothing");
+    assert_ne!(before, before_index, "the index was added");
+
+    // Replacing: fewer features, in another system, and its old spatial index gone. A view on the
+    // table is named, as it reads the new one.
+    rusqlite::Connection::open(&path).unwrap().execute_batch("CREATE VIEW recent_permits AS SELECT * FROM permits").unwrap();
+    let mut fewer = permits.clone();
+    fewer.features.truncate(1);
+    let replaced = write_path_to(&fewer, &path, Crs::WebMercator, &to(GpkgMode::ReplaceTable, None)).unwrap();
+    assert_eq!(replaced.1, Some(GpkgWritten { table: "permits".into(), replaced: true, dependents: vec!["recent_permits".into()] }));
+    assert_eq!(gpkg_tables(&path), ["owners", "parcels", "permits"]);
+    let s = open_path(&path, Some("permits")).unwrap();
+    assert_eq!(s.info().count, Some(1));
+    assert_eq!(s.info().coordinate_system(), Some(Crs::WebMercator));
+    let c = rusqlite::Connection::open(&path).unwrap();
+    let count = |sql: &str| c.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
+    assert_eq!(count("SELECT count(*) FROM rtree_permits_geom"), 1);
+    assert_eq!(count("SELECT count(*) FROM gpkg_geometry_columns WHERE table_name = 'permits'"), 1);
+    assert_eq!(count("SELECT count(*) FROM gpkg_extensions WHERE table_name = 'permits'"), 1);
+    assert_eq!(count("SELECT count(*) FROM gpkg_spatial_ref_sys WHERE srs_id = 3857"), 1);
+    // The old table's cached count is gone with it; the others' are kept.
+    assert_eq!(count("SELECT count(*) FROM gpkg_ogr_contents WHERE table_name = 'permits'"), 0);
+    assert_eq!(count("SELECT count(*) FROM gpkg_ogr_contents WHERE table_name = 'parcels'"), 1);
+    assert_eq!(c.query_row("SELECT name FROM owners", [], |r| r.get::<_, String>(0)).unwrap(), "Shelby");
+    drop(c);
+    // A second table in that system reuses its entry.
+    let more = write_path_to(&fewer, &path, Crs::WebMercator, &to(GpkgMode::AddTable, Some("permits_2027"))).unwrap();
+    assert_eq!(more.1, Some(GpkgWritten { table: "permits_2027".into(), replaced: false, dependents: vec![] }));
+    // Replacing a table not there (a misspelt name) is refused rather than adding one.
+    let e = write_path_to(&fewer, &path, Crs::LonLat, &to(GpkgMode::ReplaceTable, Some("permit"))).unwrap_err().to_string();
+    assert!(e.contains("no table permit to replace"), "{e}");
+    let c = rusqlite::Connection::open(&path).unwrap();
+    assert_eq!(c.query_row("SELECT count(*) FROM gpkg_spatial_ref_sys WHERE srs_id = 3857", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+    // A table without geometry replaces an attribute table, adding no spatial reference system.
+    let systems = || {
+        let c = rusqlite::Connection::open(&path).unwrap();
+        c.query_row("SELECT count(*) FROM gpkg_spatial_ref_sys", [], |r| r.get::<_, i64>(0)).unwrap()
+    };
+    let before_systems = systems();
+    let mut owners = Dataset::new("owners", GeometryType::None, vec![Field::new("name", FieldType::Text)]);
+    owners.push(None, vec![Value::Text("Memphis".into())]);
+    owners.push(None, vec![Value::Text("Germantown".into())]);
+    drop(c);
+    write_path_to(&owners, &path, Crs::from_epsg(32616).unwrap(), &to(GpkgMode::ReplaceTable, None)).unwrap();
+    assert_eq!(systems(), before_systems);
+    let c = rusqlite::Connection::open(&path).unwrap();
+    assert_eq!(c.query_row("SELECT count(*) FROM owners", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
+    drop(c);
+    assert_eq!(read("parcels", None).len(), 1, "untouched throughout");
+}
+
+/// An export into an existing GeoPackage never replaces what isn't a feature or attribute table
+/// (a tile table, a view, an unregistered table) or a file that isn't there, and refuses a file
+/// that isn't a GeoPackage; adding a table where there is no file makes a new one.
+#[test]
+fn geopackage_export_into_a_file_refuses_what_it_cannot_replace() {
+    use crate::io::{GpkgMode, GpkgTable, write_path_to};
+    let workspace = tempfile::tempdir().unwrap();
+    let path = workspace.path().join("county.gpkg");
+    let replace = |name: &str| GpkgTable { mode: GpkgMode::ReplaceTable, name: Some(name.into()) };
+    let mut ds = Dataset::new("permits", GeometryType::Point, vec![]);
+    ds.push(Some(Geometry::Point(Coord::new(1.0, 2.0))), vec![]);
+    // No file: nothing to replace in, but a table can be added to a new GeoPackage.
+    assert!(write_path_to(&ds, &path, Crs::LonLat, &replace("permits")).unwrap_err().to_string().contains("no GeoPackage there"));
+    assert!(!path.exists());
+    let add = GpkgTable { mode: GpkgMode::AddTable, name: None };
+    assert!(write_path_to(&ds, &path, Crs::LonLat, &add).unwrap().1.is_some_and(|t| !t.replaced));
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            "CREATE TABLE ortho (id INTEGER PRIMARY KEY, tile_data BLOB);
+             INSERT INTO gpkg_contents (table_name, data_type, identifier) VALUES ('ortho', 'tiles', 'ortho');
+             CREATE VIEW recent AS SELECT * FROM permits; CREATE TABLE scratch (x);",
+        )
+        .unwrap();
+    let before = std::fs::read(&path).unwrap();
+    for name in ["ortho", "recent", "scratch"] {
+        let e = write_path_to(&ds, &path, Crs::LonLat, &replace(name)).unwrap_err().to_string();
+        assert!(e.contains("doesn't replace"), "{name}: {e}");
+        assert_eq!(std::fs::read(&path).unwrap(), before, "{name}");
+    }
+    // A related-tables relation's table isn't replaced; another application's database isn't
+    // written to.
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            "CREATE TABLE gpkgext_relations (id INTEGER PRIMARY KEY, base_table_name TEXT, base_primary_column TEXT,
+                related_table_name TEXT, related_primary_column TEXT, relation_name TEXT, mapping_table_name TEXT);
+             INSERT INTO gpkgext_relations VALUES (1, 'permits', 'fid', 'owners', 'id', 'attributes', 'permits_owners');",
+        )
+        .unwrap();
+    let e = write_path_to(&ds, &path, Crs::LonLat, &replace("permits")).unwrap_err().to_string();
+    assert!(e.contains("related-tables relation"), "{e}");
+    // Nor is a table others refer to by foreign key: their rows would be deleted with it.
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            "DELETE FROM gpkgext_relations;
+             CREATE TABLE inspections (id INTEGER PRIMARY KEY, permit INTEGER REFERENCES permits (fid) ON DELETE CASCADE);
+             INSERT INTO inspections VALUES (1, 1);",
+        )
+        .unwrap();
+    let e = write_path_to(&ds, &path, Crs::LonLat, &replace("permits")).unwrap_err().to_string();
+    assert!(e.contains("inspections refer to permits"), "{e}");
+    let kept: i64 = rusqlite::Connection::open(&path).unwrap().query_row("SELECT count(*) FROM inspections", [], |r| r.get(0)).unwrap();
+    assert_eq!(kept, 1);
+    // A table referring to the GeoPackage's own records keeps its rows when a replace deletes them.
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            "DROP TABLE inspections;
+             CREATE TABLE notes (layer TEXT REFERENCES gpkg_contents (table_name) ON DELETE CASCADE);
+             INSERT INTO notes VALUES ('permits');",
+        )
+        .unwrap();
+    write_path_to(&ds, &path, Crs::LonLat, &replace("permits")).unwrap();
+    let notes: i64 = rusqlite::Connection::open(&path).unwrap().query_row("SELECT count(*) FROM notes", [], |r| r.get(0)).unwrap();
+    assert_eq!(notes, 1);
+    // An ordinary table named as the spatial index is kept, and the replace refused.
+    let squatted = workspace.path().join("squatted.gpkg");
+    write_path_to(&ds, &squatted, Crs::LonLat, &GpkgTable { mode: GpkgMode::AddTable, name: Some("sites".into()) }).unwrap();
+    rusqlite::Connection::open(&squatted)
+        .unwrap()
+        .execute_batch(
+            "DROP TABLE rtree_sites_geom; CREATE TABLE rtree_sites_geom (note TEXT); INSERT INTO rtree_sites_geom VALUES ('keep');",
+        )
+        .unwrap();
+    let before = std::fs::read(&squatted).unwrap();
+    let e = write_path_to(&ds, &squatted, Crs::LonLat, &replace("sites")).unwrap_err().to_string();
+    assert!(e.contains("rtree_sites_geom"), "{e}");
+    assert_eq!(std::fs::read(&squatted).unwrap(), before, "the failed replace changed nothing");
+    let kept: String =
+        rusqlite::Connection::open(&squatted).unwrap().query_row("SELECT note FROM rtree_sites_geom", [], |r| r.get(0)).unwrap();
+    assert_eq!(kept, "keep");
+    // A spatial index declared over lines, with the module quoted, is still the index; an
+    // `rtree_i32` table of that name isn't.
+    for (module, replaced) in [("\n  \"rtree\" (", true), ("[rtree](", true), ("rtree_i32(", false)] {
+        let file = workspace.path().join(format!("index-{}.gpkg", module.len()));
+        write_path_to(&ds, &file, Crs::LonLat, &GpkgTable { mode: GpkgMode::AddTable, name: Some("sites".into()) }).unwrap();
+        rusqlite::Connection::open(&file)
+            .unwrap()
+            .execute_batch(&format!(
+                "DROP TABLE rtree_sites_geom; CREATE VIRTUAL TABLE rtree_sites_geom USING {module}id, minx, maxx, miny, maxy);"
+            ))
+            .unwrap();
+        assert_eq!(write_path_to(&ds, &file, Crs::LonLat, &replace("sites")).is_ok(), replaced, "{module:?}");
+    }
+    let other = workspace.path().join("other.gpkg");
+    std::fs::copy(&path, &other).unwrap();
+    rusqlite::Connection::open(&other).unwrap().execute_batch("PRAGMA application_id = 1297105496").unwrap();
+    let add = GpkgTable { mode: GpkgMode::AddTable, name: Some("more".into()) };
+    assert!(write_path_to(&ds, &other, Crs::LonLat, &add).unwrap_err().to_string().contains("application id"));
+    let plain = workspace.path().join("plain.gpkg");
+    rusqlite::Connection::open(&plain).unwrap().execute_batch("CREATE TABLE t (x)").unwrap();
+    let e = write_path_to(&ds, &plain, Crs::LonLat, &replace("permits")).unwrap_err().to_string();
+    assert!(e.contains("not a GeoPackage"), "{e}");
+    let text = workspace.path().join("text.gpkg");
+    std::fs::write(&text, b"not a database").unwrap();
+    assert!(write_path_to(&ds, &text, Crs::LonLat, &replace("permits")).is_err());
+    assert_eq!(std::fs::read(&text).unwrap(), b"not a database");
 }

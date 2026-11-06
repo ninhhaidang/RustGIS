@@ -151,28 +151,41 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
   properties pick its **Style** (classic arrow, compass rose, triangle or star) and its **Fill**
   and **Outline** colours (`"style":"compass","fill":"#B91C1C"`). A scale bar's pick its
   **Style** (alternating bar, stepped line or single line), its **Units** (metres or kilometres
-  to suit the scale, or kilometres, metres, miles or feet) and its **Divisions** (1 to 10), each
-  labelled where there is room (`"style":"line","units":"miles","divisions":2`). A legend shows what
-  its frame draws: only layers with a feature at the frame's scale (through their definition
-  query, display filters and scale range) and, for Unique Values, only the classes those features
-  have, with `<all other values>` only when some feature falls in it and its symbol is not fully
-  transparent. Graduated Colors and
-  Proportional Symbols list their classes as they are (they are taken from the kept features when
-  the symbology is applied). A layer that draws
-  nothing there, such as an empty one, is left out, in layouts saved before this too. Tick **All
-  classes** in its properties (`"allClasses": true`) to list every class of every visible layer
-  instead, and **Hide other values** (`"hideOther": true`) to leave `<all other values>` out of
-  the legend in either mode (the features it stands for are still drawn). A visible WMS or WMTS
-  layer with a legend is listed by its name over its service's legend picture, the one for the
-  frame's scale (as the Layers pane shows it), a pixel a point and narrowed to fit the legend's
-  width, in the order the map draws its layers (as the Layers pane lists them); one whose picture
-  can't be loaded (or is wider or taller than 2048 pixels) is left out. Exporting waits up to
-  half a minute for the pictures, as it waits for the map's tiles; in the browser the page is
-  drawn with those that have arrived, and again as the others arrive. Its **Layers** section
-  has a checkbox for each layer of the frame's map (and each WMS or WMTS layer with a legend): untick one to leave it out of the legend
-  while the map still draws it (a mask, a highlight, a basemap-like layer). Scripts give the same
-  with `"exclude": ["Graticule"]` on `layout.addElement` or `layout.update` (`[]` lists every
-  layer again); a renamed layer stays left out.
+  to suit the scale, or kilometres, metres, miles or feet), its **Divisions** (1 to 10), each
+  labelled where there is room, its **Color** (the lines, the dark divisions and the labels) and
+  its **Fill** (the alternating bar's light divisions)
+  (`"style":"line","units":"miles","divisions":2,"color":"#1F4E79"`). A legend's
+  parts:
+  - **What a legend lists**: what its frame draws: only layers with a feature at the frame's
+    scale (through their definition query, display filters and scale range) and, for Unique
+    Values, only the classes those features have, with `<all other values>` only when some
+    feature falls in it and its symbol is not fully transparent. Graduated Colors and
+    Proportional Symbols list their classes as they are (they are taken from the kept features
+    when the symbology is applied). A layer that draws nothing there, such as an empty one, is
+    left out, in layouts saved before this too. Tick **All classes** in its properties
+    (`"allClasses": true`) to list every class of every visible layer instead, and **Hide other
+    values** (`"hideOther": true`) to leave `<all other values>` out of the legend in either
+    mode (the features it stands for are still drawn).
+  - **Point symbols**: a point layer's symbol is drawn as the map draws it: its marker or the
+    stacked marks of its class or layer, its size and outline, the transparency of the layer and
+    its groups, and its reference scale at the frame's scale, unturned. A row has one symbol, so
+    it leaves out what changes from feature to feature (a symbol by expression, a marker's
+    rotation by a field), and it doesn't take the layer's blend mode. The row and the column of
+    symbols grow to hold a large one, up to 2048 points, past which the symbol is cut. A legend
+    already on the page keeps its size, so with a larger symbol its last rows may be cut and its
+    labels run past its right edge: make it larger to fit.
+  - **Web layers**: a visible WMS or WMTS layer with a legend is listed by its name over its
+    service's legend picture, the one for the frame's scale (as the Layers pane shows it), a
+    pixel a point and narrowed to fit the legend's width, in the order the map draws its layers
+    (as the Layers pane lists them); one whose picture can't be loaded (or is wider or taller
+    than 2048 pixels) is left out. Exporting waits up to half a minute for the pictures, as it
+    waits for the map's tiles; in the browser the page is drawn with those that have arrived,
+    and again as the others arrive.
+  - **Its Layers section**: a checkbox for each layer of the frame's map (and each WMS or WMTS
+    layer with a legend): untick one to leave it out of the legend while the map still draws it
+    (a mask, a highlight, a basemap-like layer). Scripts give the same with
+    `"exclude": ["Graticule"]` on `layout.addElement` or `layout.update` (`[]` lists every layer
+    again); a renamed layer stays left out.
 - **Colorbar**: the colour scale of a raster layer in the frame's map, as the map draws it (its
   stretch, colour ramp and enhancement): a gradient bar for a stretch or a tinted hillshade,
   steps labelled at their breaks for Classify, and a block per value for Unique Values and colour
@@ -236,7 +249,8 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
 - Click an element to select it, drag to move, drag its handles to resize, and edit it in the
   **Format** pane, which opens as a tab beside the other right-hand panes. Closing the pane keeps
   the element selected; selecting an element, or clicking the selected one, opens it again. The
-  wheel zooms the page. **Delete** (or **Backspace**, the delete key on a
+  wheel zooms the page, and each layout keeps its own zoom and pan while the project is open.
+  **Delete** (or **Backspace**, the delete key on a
   Mac) deletes the selected element, and **Ctrl+D** (**⌘D** on a Mac) duplicates it: the copy is
   placed 5 mm down and to the right, on top, and selected. The **arrow keys** nudge it 1 mm, or
   10 mm with **Shift**, and keep it moving while held; a run of nudges is one step to undo.
@@ -280,6 +294,10 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
   `layout.export` accepts `dpi` and `"allPages": false` for just the current PDF
   page. **Print** opens the PDF in the system viewer on desktop; **Save Layout File** and
   **Import Layout** move layouts between projects (`.rgislayout`).
+- **Capture To Clipboard** copies an image of the current page at 192 dpi, with any text still being
+  typed. A page that would pass 16 million pixels, or 12,000 pixels on a side, is copied at a lower
+  dpi, and the notice says so; a page that would need less than 36 dpi is too large to copy, so
+  export it instead.
 
 ## Reports
 

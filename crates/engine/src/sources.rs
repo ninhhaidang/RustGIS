@@ -342,12 +342,14 @@ pub(crate) fn template_archive(address: &str) -> Option<(&str, &str)> {
 /// S3 presigned URL), and a PostgreSQL connection string's password. A MySQL, MariaDB or SQL Server
 /// address keeps its user (the one to connect as), never its password. An address read through a
 /// saved S3 connection is redacted inside (its inner address), and its length-prefixed form
-/// rebuilt; a tile template, in its archive.
+/// rebuilt; a tile template, in its archive. Web-login runtime bindings are never published.
 pub fn redact(address: &str) -> String {
-    if let Some((head, archive)) = template_archive(address)
-        && rustgis_data::s3_address::is_wrapper(archive)
-    {
+    if let Some((head, archive)) = template_archive(address) {
         return format!("{head}{}", redact(archive));
+    }
+    let inner = crate::render::rustgis_tiles::logins::inner(address);
+    if inner != address {
+        return redact(inner);
     }
     if let Ok(Some(b)) = rustgis_data::s3_address::parse(address)
         && let Ok(rebuilt) = rustgis_data::s3_address::bind(b.binding, b.endpoint, &redact(b.url))

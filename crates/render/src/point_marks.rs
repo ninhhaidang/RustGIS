@@ -114,13 +114,24 @@ pub(crate) fn draw(pm: &mut Canvas, x: f32, y: f32, sym: &Symbol, strokes: &[Lin
     }
 }
 
+/// How far from its centre, in its sizes, a shape reaches at an angle: a square's and a triangle's
+/// corners lie past the 0.6 that holds them upright.
+fn turned_reach(shape: rustgis_map::Marker) -> f32 {
+    match shape {
+        rustgis_map::Marker::Square => 0.9 * std::f32::consts::FRAC_1_SQRT_2,
+        rustgis_map::Marker::Triangle => 0.625,
+        _ => 0.6,
+    }
+}
+
 /// How far from the point (points) any of the marks reaches, for culling: a mark's offset and its
-/// size (a character as far as its outline).
+/// size (a character as far as its outline; a mark with an angle of its own as far as its corners).
 pub(crate) fn reach(sym: &Symbol, strokes: &[LineStroke]) -> f32 {
     marks(sym, strokes)
         .iter()
         .map(|m| {
             let extent = match m.shape {
+                LineMark::Marker(shape) if m.angle % 90.0 != 0.0 => crate::marker_reach(shape).max(turned_reach(shape)),
                 LineMark::Marker(shape) => crate::marker_reach(shape).max(0.6),
                 LineMark::Hash => 0.5,
             };
@@ -193,5 +204,18 @@ mod tests {
         crate::canvas::with_canvas(&mut pm, |c| draw(c, 50.0, 50.0, &sym, &chr, 0.0, None, 1.0));
         assert!(pm.pixels().iter().any(|p| p.alpha() > 200));
         assert!(reach(&sym, &strokes) >= 23.0 && plain(&[], 0.0) && !plain(&strokes, 0.0) && !plain(&[], 1.0));
+    }
+
+    #[test]
+    fn a_mark_with_its_own_angle_reaches_its_corners() {
+        let sym = Symbol { size: 6.0, ..Symbol::default_for(GeometryType::Point, 0) };
+        let at = |shape, angle| reach(&sym, &[mark(shape, Rgba::rgb(0, 0, 0), 40.0, (0.0, 0.0), angle)]);
+        for angle in [0.0, 90.0, 180.0] {
+            assert!((at(Marker::Square, angle) - 24.0).abs() < 0.01, "upright at {angle}");
+        }
+        assert!((at(Marker::Square, 45.0) - 25.456).abs() < 0.01);
+        assert!((at(Marker::Triangle, 45.0) - 25.0).abs() < 0.01);
+        // A shape that a circle of 0.6 holds whatever its angle.
+        assert!((at(Marker::Diamond, 45.0) - 24.0).abs() < 0.01);
     }
 }

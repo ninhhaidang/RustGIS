@@ -4,7 +4,7 @@
 use egui::vec2;
 use rustgis_engine::render::rustgis_tiles::{
     cache,
-    geocode::{Geocoder, Place},
+    geocode::{Geocoder, Kind, Place},
 };
 use serde_json::{Map, Value, json};
 use web_time::Instant;
@@ -20,6 +20,8 @@ pub struct State {
     search: Option<(Geocoder, Answer)>,
     /// The places the last search found.
     pub places: Vec<Place>,
+    /// The kind of geocoder that found them (its credit is shown under them).
+    pub found_by: Option<Kind>,
     /// Whether a search is under way.
     pub searching: bool,
     job: Option<Job>,
@@ -39,6 +41,8 @@ struct Job {
     failed: usize,
     in_a_row: usize,
     error: Option<String>,
+    /// Places the answers gave without a usable position.
+    skipped: usize,
 }
 
 fn fetch(url: &str) -> Answer {
@@ -58,14 +62,21 @@ pub fn poll(app: &mut RustGisApp, ctx: &egui::Context) {
     if let Some((g, slot)) = &st.search {
         match take(slot) {
             Some(r) => {
-                let r = r.and_then(|b| g.parse(&b));
+                let r = r.and_then(|b| g.read(&b));
+                let kind = g.kind;
                 st.search = None;
                 st.searching = false;
+                if let Ok(found) = &r
+                    && found.skipped > 0
+                {
+                    app.session.warn(skipped(found.skipped));
+                }
                 match r {
-                    Ok(p) if p.is_empty() => app.dialogs.error = Some(tl!("No place found").to_string()),
-                    Ok(p) => {
+                    Ok(f) if f.places.is_empty() => app.dialogs.error = Some(tl!("No place found").to_string()),
+                    Ok(f) => {
                         app.dialogs.error = None;
-                        st.places = p;
+                        st.places = f.places;
+                        st.found_by = Some(kind);
                     }
                     Err(e) => app.dialogs.error = Some(e),
                 }
@@ -79,9 +90,10 @@ pub fn poll(app: &mut RustGisApp, ctx: &egui::Context) {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
             return;
         };
-        match r.and_then(|b| job.g.parse(&b)) {
-            Ok(places) => {
-                let place = places.into_iter().next();
+        match r.and_then(|b| job.g.read(&b)) {
+            Ok(found) => {
+                job.skipped += found.skipped;
+                let place = found.places.into_iter().next();
                 job.found.insert(q.clone(), place.map(|p| json!({"lon": p.lon, "lat": p.lat, "name": p.name})).unwrap_or(Value::Null));
                 job.in_a_row = 0;
             }
@@ -101,6 +113,14 @@ pub fn poll(app: &mut RustGisApp, ctx: &egui::Context) {
         job.waiting = None;
     }
     if let Some(q) = job.queue.get(job.next) {
+        // An address longer than the server takes isn't sent cut short: it fails.
+        if let Err(e) = job.g.check_query(q) {
+            job.failed += 1;
+            job.error = Some(e);
+            job.next += 1;
+            ctx.request_repaint();
+            return;
+        }
         let due = job.sent.is_none_or(|t| t.elapsed().as_millis() as u64 >= job.g.spacing_ms());
         if due {
             job.waiting = Some((q.clone(), fetch(&job.g.url(q, 1))));
@@ -112,6 +132,9 @@ pub fn poll(app: &mut RustGisApp, ctx: &egui::Context) {
     }
     // Every answer is in: the layer.
     let Some(job) = app.ui.geocode.job.take() else { return };
+    if job.skipped > 0 {
+        app.session.warn(skipped(job.skipped));
+    }
     if job.failed > 0 {
         let why = job.error.unwrap_or_default();
         app.session.notify(
@@ -132,6 +155,14 @@ pub fn poll(app: &mut RustGisApp, ctx: &egui::Context) {
     }
 }
 
+/// What a search or a run says of the places the geocoder gave without a usable position.
+fn skipped(n: usize) -> String {
+    i18n::fmt(
+        "{n} of the geocoder's places had no usable position (no coordinate, or an unreadable one) and were left out",
+        &[("n", &n.to_string())],
+    )
+}
+
 /// Find Place: a search box, then the places found; one picked is zoomed to.
 pub fn find_place(app: &mut RustGisApp, ui: &mut egui::Ui) -> bool {
     let mut go = false;
@@ -148,7 +179,7 @@ pub fn find_place(app: &mut RustGisApp, ui: &mut egui::Ui) -> bool {
     });
     provider(app, ui);
     if go && !app.dialogs.a.trim().is_empty() {
-        match Geocoder::new(Some(app.dialogs.mode), Some(app.dialogs.b.as_str())) {
+        match Geocoder::new(Some(app.dialogs.mode), Some(app.dialogs.b.as_str())).and_then(|g| g.check_query(&app.dialogs.a).map(|_| g)) {
             Ok(g) => {
                 let slot = fetch(&g.url(&app.dialogs.a, 8));
                 app.ui.geocode.search = Some((g, slot));
@@ -173,7 +204,7 @@ pub fn find_place(app: &mut RustGisApp, ui: &mut egui::Ui) -> bool {
             }
         }
     });
-    let attribution = egui::RichText::new(tl!("Search results © OpenStreetMap contributors")).small().weak();
+    let attribution = egui::RichText::new(attribution(&app.ui.geocode, app.dialogs.mode)).small().weak();
     ui.label(attribution);
     if let Some(p) = picked.and_then(|i| app.ui.geocode.places.get(i)).cloned() {
         rustgis_engine::cmd::geocode::go_to_place(&mut app.session, &p);
@@ -183,27 +214,43 @@ pub fn find_place(app: &mut RustGisApp, ui: &mut egui::Ui) -> bool {
     false
 }
 
-/// The geocoder choice shared by both dialogs: OpenStreetMap's Nominatim, Photon, or a server of
-/// one's own.
+/// The credit for the places shown: those of the geocoder that found them (another may have been
+/// picked since), or of the one picked when none are shown.
+fn attribution(st: &State, mode: &str) -> &'static str {
+    let pdok = match st.found_by.filter(|_| !st.places.is_empty()) {
+        Some(kind) => kind == Kind::Locatieserver,
+        None => mode == "locatieserver",
+    };
+    if pdok { tl!("Search results: PDOK Locatieserver (Kadaster)") } else { tl!("Search results © OpenStreetMap contributors") }
+}
+
+/// The geocoder choice shared by both dialogs: OpenStreetMap's Nominatim, Photon, PDOK's
+/// Locatieserver (the Netherlands), or a server of one's own.
 fn provider(app: &mut RustGisApp, ui: &mut egui::Ui) {
-    if !matches!(app.dialogs.mode, "nominatim" | "photon") {
+    if !matches!(app.dialogs.mode, "nominatim" | "photon" | "locatieserver") {
         app.dialogs.mode = "nominatim";
     }
+    let locatieserver = tl!("Locatieserver (the Netherlands)");
     egui::Grid::new("geocoder").num_columns(2).spacing(vec2(10.0, 8.0)).show(ui, |ui| {
         let input_label = ui.label(tl!("Geocoder"));
         egui::ComboBox::from_id_salt("geocoder_kind")
-            .selected_text(if app.dialogs.mode == "photon" { "Photon" } else { "Nominatim" })
+            .selected_text(match app.dialogs.mode {
+                "photon" => "Photon",
+                "locatieserver" => locatieserver,
+                _ => "Nominatim",
+            })
             .width(200.0)
             .show_ui(ui, |ui| {
                 ui.selectable_value(&mut app.dialogs.mode, "nominatim", "Nominatim");
                 ui.selectable_value(&mut app.dialogs.mode, "photon", "Photon");
+                ui.selectable_value(&mut app.dialogs.mode, "locatieserver", locatieserver);
             })
             .response
             .labelled_by(input_label.id);
         ui.end_row();
         let input_label = ui.label(tl!("Server"));
-        ui.add(egui::TextEdit::singleline(&mut app.dialogs.b).hint_text(tl!("OpenStreetMap's public server")).desired_width(280.0))
-            .labelled_by(input_label.id);
+        let hint = if app.dialogs.mode == "locatieserver" { tl!("PDOK's public server") } else { tl!("OpenStreetMap's public server") };
+        ui.add(egui::TextEdit::singleline(&mut app.dialogs.b).hint_text(hint).desired_width(280.0)).labelled_by(input_label.id);
         ui.end_row();
     });
 }
@@ -211,7 +258,7 @@ fn provider(app: &mut RustGisApp, ui: &mut egui::Ui) {
 /// Geocode Addresses: a table or layer, its address fields and the geocoder; the run goes on
 /// after the dialog closes, a request at a time.
 pub fn geocode(app: &mut RustGisApp, ui: &mut egui::Ui) -> bool {
-    ui.label(egui::RichText::new(tl!("Turns a table's addresses into points: each row's address fields are joined with commas (such as street, city, country) and looked up. The public servers take up to 100 addresses a run, one a second; a server of your own takes more.")).weak());
+    ui.label(egui::RichText::new(tl!("Turns a table's addresses into points: each row's address fields are joined with commas (such as street, city, country) and looked up. OpenStreetMap's public Nominatim and Photon take up to 100 addresses a run, one a second; PDOK's Locatieserver (Dutch addresses) and a server of your own take more.")).weak());
     // A table is picked by its id, since names can repeat: `dialogs.flag` says the choice is a
     // table, and `dialogs.layer` then holds its id.
     let tables: Vec<(u32, String)> = app.session.project.tables.iter().map(|t| (t.id, t.name.clone())).collect();
@@ -275,8 +322,56 @@ pub fn geocode(app: &mut RustGisApp, ui: &mut egui::Ui) -> bool {
         }
         rustgis_engine::cmd::geocode::check_batch(&g, queue.len())?;
         app.session.notify(i18n::fmt("Geocoding {n} addresses…", &[("n", &queue.len().to_string())]), false);
-        app.ui.geocode.job =
-            Some(Job { g, params, queue, next: 0, found: Map::new(), waiting: None, sent: None, failed: 0, in_a_row: 0, error: None });
+        app.ui.geocode.job = Some(Job {
+            g,
+            params,
+            queue,
+            next: 0,
+            found: Map::new(),
+            waiting: None,
+            sent: None,
+            failed: 0,
+            in_a_row: 0,
+            error: None,
+            skipped: 0,
+        });
         Ok(())
     })
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    /// The credit under the places is the geocoder's that found them, not the one picked since.
+    #[test]
+    fn the_credit_follows_the_places_not_the_picked_geocoder() {
+        let place = Place { name: "Damrak 1".into(), lon: 4.9, lat: 52.4, bbox: None };
+        let osm = tl!("Search results © OpenStreetMap contributors");
+        let pdok = tl!("Search results: PDOK Locatieserver (Kadaster)");
+        let mut st = State { places: vec![place], found_by: Some(Kind::Nominatim), ..State::default() };
+        assert_eq!(attribution(&st, "locatieserver"), osm);
+        st.found_by = Some(Kind::Locatieserver);
+        assert_eq!(attribution(&st, "nominatim"), pdok);
+        assert_eq!(attribution(&st, "locatieserver"), pdok);
+        // No places shown: the picked geocoder's.
+        st.places.clear();
+        assert_eq!(attribution(&st, "nominatim"), osm);
+        assert_eq!(attribution(&st, "locatieserver"), pdok);
+    }
+
+    /// A search's places land with the kind of geocoder that found them.
+    #[test]
+    fn a_search_records_the_geocoder_that_found_its_places() {
+        let mut app = RustGisApp::with_sample();
+        let slot: Answer = Slot::default();
+        *slot.lock().unwrap() = Some(Ok(br#"[{"display_name":"Damrak, Amsterdam","lat":"52.37","lon":"4.89"}]"#.to_vec()));
+        app.ui.geocode.search = Some((Geocoder::new(Some("nominatim"), None).unwrap(), slot));
+        app.dialogs.mode = "locatieserver";
+        poll(&mut app, &egui::Context::default());
+        assert_eq!(app.ui.geocode.places.len(), 1);
+        assert_eq!(app.ui.geocode.found_by, Some(Kind::Nominatim));
+        assert_eq!(attribution(&app.ui.geocode, app.dialogs.mode), tl!("Search results © OpenStreetMap contributors"));
+    }
 }

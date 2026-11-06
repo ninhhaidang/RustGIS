@@ -36,7 +36,9 @@ pub(crate) fn host(url: &str) -> String {
     if crate::mbtiles::is_tile(url) {
         return String::new();
     }
-    let Some((_, rest)) = rustgis_data::s3_address::reached(url).split_once("://") else { return String::new() };
+    let Some((_, rest)) = rustgis_data::login_address::reached(rustgis_data::s3_address::reached(url)).split_once("://") else {
+        return String::new();
+    };
     let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
     let authority = rest.get(..end).unwrap_or(rest);
     // Credentials in the address aren't part of the server.

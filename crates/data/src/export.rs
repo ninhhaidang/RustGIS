@@ -6,7 +6,7 @@
 
 use std::path::Path;
 
-use crate::io::{CsvWriter, GeoJsonWriter, PROJECTED_FORMATS, check_projected, project_features, write_atomic_with};
+use crate::io::{CsvWriter, GeoJsonWriter, GpkgTable, GpkgWritten, PROJECTED_FORMATS, check_projected, project_each, write_atomic_with};
 use crate::raster::Crs;
 use crate::source::FeatureSource;
 use crate::{DataError, Dataset, Feature, GeometryType, Result};
@@ -43,8 +43,32 @@ pub fn write_source_in(src: &dyn FeatureSource, layer: &Dataset, path: &Path, cr
     write_chunks_in(src, layer, path, crs, CHUNK_BYTES)
 }
 
+/// As [`write_source_in`], a GeoPackage's table placed as `gpkg` says (see
+/// [`crate::io::write_path_to`]): also returns the table written.
+pub fn write_source_to(
+    src: &dyn FeatureSource,
+    layer: &Dataset,
+    path: &Path,
+    crs: Crs,
+    gpkg: &GpkgTable,
+) -> Result<(Exported, Option<GpkgWritten>)> {
+    write_chunks_to(src, layer, path, crs, gpkg, CHUNK_BYTES)
+}
+
 /// [`write_source_in`], `bytes` of features a chunk.
 fn write_chunks_in(src: &dyn FeatureSource, layer: &Dataset, path: &Path, crs: Crs, bytes: usize) -> Result<Exported> {
+    write_chunks_to(src, layer, path, crs, &GpkgTable::default(), bytes).map(|(e, _)| e)
+}
+
+/// [`write_source_to`], `bytes` of features a chunk.
+fn write_chunks_to(
+    src: &dyn FeatureSource,
+    layer: &Dataset,
+    path: &Path,
+    crs: Crs,
+    gpkg: &GpkgTable,
+    bytes: usize,
+) -> Result<(Exported, Option<GpkgWritten>)> {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
     if !streams(&ext) {
         return Err(DataError::Unsupported(format!(".{ext} written a chunk at a time")));
@@ -68,11 +92,14 @@ fn write_chunks_in(src: &dyn FeatureSource, layer: &Dataset, path: &Path, crs: C
     let mut total = 0usize;
     let mut skipped = 0usize;
     let mut feed = |add: &mut dyn FnMut(&[Feature]) -> Result<()>| -> Result<()> {
-        // A GeoPackage export that starts again feeds the features again.
+        // A GeoPackage export that starts again feeds the features again, and counts them again.
         total = 0;
+        // The writers count the features; a source that doesn't know how many leaves the total at 0.
+        crate::progress::begin(src.info().count.map_or(0, |n| usize::try_from(n).unwrap_or(usize::MAX)));
         let batch = src.visit_chunks(None, bytes, &mut |mut chunk| {
             if let Some(t) = &t {
-                project_features(&mut chunk, t, crs)?;
+                // Counted as the writer writes them, so only stopped on a cancel here.
+                project_each(&mut chunk, t, crs, false)?;
             }
             total = total.saturating_add(chunk.len());
             add(&chunk)
@@ -80,14 +107,18 @@ fn write_chunks_in(src: &dyn FeatureSource, layer: &Dataset, path: &Path, crs: C
         skipped = batch.skipped;
         Ok(())
     };
+    let mut table = None;
     let left_out = match ext.as_str() {
         #[cfg(not(target_arch = "wasm32"))]
         "gpkg" => {
-            crate::source::gpkg::write_features_in(&layer.name, geometry_type, &layer.fields, path, crs, &mut feed)?;
+            table = Some(crate::source::gpkg::write_features_in(&layer.name, geometry_type, &layer.fields, path, crs, gpkg, &mut feed)?);
             0
         }
         #[cfg(target_arch = "wasm32")]
-        "gpkg" => return Err(DataError::Unsupported("GeoPackage in the browser".into())),
+        "gpkg" => {
+            let _ = (gpkg, &mut table);
+            return Err(DataError::Unsupported("GeoPackage in the browser".into()));
+        }
         "geojson" | "json" => write_atomic_with(path, |out| {
             let mut w = GeoJsonWriter::new(out, &layer.name, &layer.fields)?;
             feed(&mut |features| w.write(features))?;
@@ -108,7 +139,7 @@ fn write_chunks_in(src: &dyn FeatureSource, layer: &Dataset, path: &Path, crs: C
             Ok::<_, DataError>(0)
         })?,
     };
-    Ok(Exported { written: total.saturating_sub(left_out), left_out, skipped })
+    Ok((Exported { written: total.saturating_sub(left_out), left_out, skipped }, table))
 }
 
 /// The kind of a source's first geometry, read up to it; `None` for a source without any (read

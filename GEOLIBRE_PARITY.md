@@ -123,8 +123,10 @@ _GeoLibre: docs/features.md › Layers, styling, and labels; docs/user-guide/sty
 - [ ] **More classification methods**: standard deviation, geometric interval, manual breaks.
   Partial: Jenks, equal interval, quantile (_Roadmap: fixes and quick wins_).
 - [ ] **Symbol library**: a marker library, custom SVG/PNG markers, fill patterns, pie/donut/bar
-  diagrams, arrow lines, inverted-polygon masks, geometry generators. Partial: 5 marker shapes
-  (_Roadmap: expressions and cartography_ for markers, patterns and a library).
+  diagrams, arrow lines, inverted-polygon masks, geometry generators. Partial: 5 marker shapes,
+  pie/bar diagrams on features from several fields (`layer.diagram`), each slice or bar labelled
+  with its value, percent or both, and the categories listed in layout legends (_Roadmap:
+  expressions and cartography_ for markers, patterns and a library).
 - [ ] **Style interchange**: import/export SLD, QGIS QML, Mapbox GL JSON. Partial: MapLibre style
   export and `.rgisstyle` (_Roadmap: expressions and cartography_ for QML and SLD import).
 - [ ] **Smart styling**: automatic palette on add, one-click style suggestions. Missing.
@@ -183,7 +185,7 @@ model-builder.md, segmentation.md, obia.md_
 - [ ] **Routing services**: isochrones, service areas, OD matrix, multi-stop routing,
   turn-by-turn (Valhalla/OSRM). Partial: shortest path over a line layer (_Roadmap: analysis_).
 - [ ] **Geocoding**: forward, batch and reverse, with multiple providers and a place search box.
-  Partial: place search and address tables (Nominatim, Photon or your own server), a local locator,
+  Partial: place search and address tables (Nominatim, Photon, PDOK's Locatieserver or your own server), a local locator,
   a search box. Missing: reverse geocoding (_Roadmap: analysis_).
 - [ ] **Spatial statistics**: Emerging Hot Spot (Getis-Ord Gi\*), composite score builder.
   Partial: Suitability Modeler (_Roadmap: analysis_ for hot spots).

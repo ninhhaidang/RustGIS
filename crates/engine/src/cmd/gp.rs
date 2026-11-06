@@ -510,6 +510,118 @@ pub fn tool_complete(s: &mut Session, id: u64, done: ToolDone) -> Result<(), Str
     complete(s, id, done.result, Some(done.full_ids))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+/// A tool's run made ahead on a copy of the session, for a model or script the app runs on a
+/// thread of its own ([`super::workflows::ahead_on_copy`]): what it read and what it made, for
+/// the run here to take instead of running the tool again.
+pub(crate) struct RanAhead {
+    tool: String,
+    params: Value,
+    read: Snapshot<'static>,
+    /// The view's extent, when the tool asked for it.
+    view: Option<Option<rustgis_geom::Extent>>,
+    result: Result<rustgis_analysis::ToolResult, String>,
+    full_ids: FullIds,
+    millis: u64,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// The tools of a model or script run ahead: recorded on the copy, then taken in order by the run
+/// here.
+pub(crate) enum Ahead {
+    Recording(Vec<RanAhead>),
+    Taking(std::collections::VecDeque<RanAhead>),
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// What a model's or script's run on a copy of the session stops at, as its run here does them: a
+/// tool that writes files (which would be written twice), plugin and GeoLibre tools, which run as
+/// they always have, and a script's line that may reach outside the session.
+pub(crate) const NOT_AHEAD: &str = "runs where the model or script runs";
+
+#[cfg(not(target_arch = "wasm32"))]
+/// Runs `run` taking the tools `ran` ahead: each one whose inputs are still the same as the run
+/// ahead read them is taken; from the first that isn't, the tools run here. Restored on every
+/// path, a panic included (raised again), so no later run takes them.
+pub(crate) fn taking<T>(s: &mut Session, ran: Vec<RanAhead>, run: impl FnOnce(&mut Session) -> T) -> T {
+    s.tools_ahead = Some(Ahead::Taking(ran.into()));
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(s)));
+    s.tools_ahead = None;
+    r.unwrap_or_else(|p| std::panic::resume_unwind(p))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// The tools a copy of the session recorded ([`Ahead::Recording`]), taken.
+pub(crate) fn ran_ahead(s: &mut Session) -> Vec<RanAhead> {
+    match s.tools_ahead.take() {
+        Some(Ahead::Recording(ran)) => ran,
+        _ => Vec::new(),
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// The next tool run ahead, if it is this one on the same inputs: its result, the streamed rows
+/// it read whole and how long it took. Any other drops the rest, which came after it.
+fn take_ahead(s: &mut Session, tool: &str, params: &Value) -> Option<(Result<rustgis_analysis::ToolResult, String>, FullIds, u64)> {
+    let Some(Ahead::Taking(ran)) = &mut s.tools_ahead else { return None };
+    let next = ran.pop_front()?;
+    let now = Snapshot::of(s);
+    let view = next.view.is_none_or(|v| v == view_extent(&now));
+    if next.tool == tool && next.params == *params && view && same_read(&next.read, &now) {
+        #[cfg(test)]
+        {
+            s.tools_taken += 1;
+        }
+        return Some((next.result, next.full_ids, next.millis));
+    }
+    s.tools_ahead = None;
+    None
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// Whether a tool reading `now` reads what it read in `was`: the same layers with the same rows
+/// (for a streamed layer read whole, the same source), selections, rasters and projection, the
+/// same tables and environment.
+fn same_read(was: &Snapshot, now: &Snapshot) -> bool {
+    let layer = |a: &rustgis_map::Layer, b: &rustgis_map::Layer| {
+        let rows = match (&a.source, &b.source) {
+            // Read whole from its source, unless it has a selection (rows of the window).
+            (Some(x), Some(y)) if a.selection.is_empty() => x.same_opening(y) && a.dataset.fields == b.dataset.fields,
+            (None, None) => Read::unchanged(&a.dataset, &b.dataset),
+            _ => false,
+        } && a.selection == b.selection;
+        let raster = match (&a.raster, &b.raster) {
+            (Some(x), Some(y)) => {
+                x.path == y.path
+                    && match (&x.data, &y.data) {
+                        (Some(p), Some(q)) => std::sync::Arc::ptr_eq(p, q),
+                        (None, None) => true,
+                        _ => false,
+                    }
+            }
+            (None, None) => true,
+            _ => false,
+        };
+        a.id == b.id && a.name == b.name && a.definition_query == b.definition_query && rows && raster
+    };
+    let (m, n) = (&was.map, &now.map);
+    m.layers.len() == n.layers.len()
+        && m.layers.iter().zip(&n.layers).all(|(a, b)| layer(a, b))
+        && m.projection == n.projection
+        && was.tables.len() == now.tables.len()
+        && was.tables.iter().zip(now.tables.iter()).all(|(a, b)| a.id == b.id && Read::unchanged(&a.dataset, &b.dataset))
+        && was.env == now.env
+}
+
+/// The view's longitude/latitude extent, as a tool asks for it ([`Inputs::view_extent`]): the
+/// globe shows the whole Earth (the camera's flat extent means nothing there).
+fn view_extent(snap: &Snapshot) -> Option<rustgis_geom::Extent> {
+    if snap.map.projection.is_globe() {
+        return Some(rustgis_geom::Extent::new(-180.0, -90.0, 180.0, 90.0));
+    }
+    Some(super::workspace::view_extent_of(&snap.map, snap.view_size)).filter(|e| !e.is_empty())
+}
+
 /// Fits a background run's result to edits made while it ran: its layer is the one it read,
 /// whatever its name now; a selection of a layer that changed, or of a streamed layer whose
 /// window moved, selects the same features (by id) where they now are; and an update of a layer
@@ -925,13 +1037,7 @@ impl Inputs for MapInputs<'_> {
         flat.forward(c).map(|m| rustgis_geom::Coord::new(m.x * to_meter, m.y * to_meter))
     }
     fn view_extent(&self) -> Option<rustgis_geom::Extent> {
-        *self.view.get_or_init(|| {
-            // The globe shows the whole Earth (the camera's flat extent means nothing there).
-            if self.snap.map.projection.is_globe() {
-                return Some(rustgis_geom::Extent::new(-180.0, -90.0, 180.0, 90.0));
-            }
-            Some(super::workspace::view_extent_of(&self.snap.map, self.snap.view_size)).filter(|e| !e.is_empty())
-        })
+        *self.view.get_or_init(|| view_extent(&self.snap))
     }
     fn raster(&self, layer: &str) -> Option<RasterInput<'_>> {
         let rl = self.snap.map.layer_by_name(layer)?.raster.as_ref()?;
@@ -1006,9 +1112,13 @@ fn zonal_stats(s: &mut Session, p: &Value) -> CmdResult {
     run_tool(s, "zonalStats", p)
 }
 
-/// Runs a (built-in) tool and applies its result, as `gp.run` does.
+/// Runs a (built-in) tool and applies its result, as `gp.run` does. Where a person at a terminal
+/// can stop it with Ctrl-C ([`Session::stoppable`](crate::Session::stoppable)), it takes no work
+/// cap ([`rustgis_analysis::control::Control::stoppable`]).
 pub fn run_tool(s: &mut Session, tool: &str, params: &Value) -> CmdResult {
-    run_tool_with(s, tool, params, &rustgis_analysis::control::Control::new())
+    use rustgis_analysis::control::Control;
+    let control = if s.stoppable { Control::stoppable() } else { Control::new() };
+    run_tool_with(s, tool, params, &control)
 }
 
 /// [`run_tool`] under `control`: setting its flag from another thread stops the tool at its next
@@ -1029,15 +1139,50 @@ pub fn run_tool_with(
         let e = format!("{name} was cancelled before it started");
         return apply(s, Ran { name, id: tool, command: None, started: t0 }, recorded(spec, params), Err(e), 0);
     }
-    let inputs = map_inputs(s, rustgis_analysis::tool(&tool), &params)?;
-    let mut res = rustgis_analysis::run_with(&tool, &inputs, &params, control);
-    if let Ok(result) = &mut res {
-        result.messages.extend(inputs.messages.iter().cloned());
-    }
-    let ids = full_ids(&inputs.loaded);
-    drop(inputs);
+    #[cfg(not(target_arch = "wasm32"))]
+    let ran = take_ahead(s, &tool, &params);
+    #[cfg(target_arch = "wasm32")]
+    let ran = None;
+    let (mut res, ids, millis) = match ran {
+        Some(ran) => ran,
+        None => {
+            #[cfg(not(target_arch = "wasm32"))]
+            let recording = matches!(s.tools_ahead, Some(Ahead::Recording(_)));
+            #[cfg(not(target_arch = "wasm32"))]
+            if recording && !rustgis_analysis::tool(&tool).is_some_and(|t| !rustgis_analysis::is_external(t) && !writes_files(t)) {
+                return Err(NOT_AHEAD.into());
+            }
+            // A copy of the session runs under the control of the thread it runs on, which Cancel stops.
+            #[cfg(not(target_arch = "wasm32"))]
+            let current = rustgis_analysis::control::current().filter(|_| recording);
+            #[cfg(not(target_arch = "wasm32"))]
+            let control = current.as_ref().unwrap_or(control);
+            #[cfg(not(target_arch = "wasm32"))]
+            let read = recording.then(|| Snapshot::owned(s));
+            let inputs = map_inputs(s, rustgis_analysis::tool(&tool), &params)?;
+            let mut res = rustgis_analysis::run_with(&tool, &inputs, &params, control);
+            if let Ok(result) = &mut res {
+                result.messages.extend(inputs.messages.iter().cloned());
+            }
+            let ids = full_ids(&inputs.loaded);
+            #[cfg(not(target_arch = "wasm32"))]
+            let view = inputs.view.get().copied();
+            drop(inputs);
+            // A file made, with a SaveFile parameter or not, is written where the model or script runs.
+            #[cfg(not(target_arch = "wasm32"))]
+            if recording && matches!(&res, Ok(r) if matches!(r.output, Output::File { .. })) {
+                return Err(NOT_AHEAD.into());
+            }
+            let millis = now_ms().saturating_sub(t0);
+            #[cfg(not(target_arch = "wasm32"))]
+            if let (Some(read), Some(Ahead::Recording(ran))) = (read, &mut s.tools_ahead) {
+                let (result, full_ids) = (res.clone(), ids.clone());
+                ran.push(RanAhead { tool: tool.clone(), params: params.clone(), read, view, result, full_ids, millis });
+            }
+            (res, ids, millis)
+        }
+    };
     fit_to_windows(s, &mut res, &ids);
-    let millis = now_ms().saturating_sub(t0);
     let spec = rustgis_analysis::tool(&tool);
     let name = spec.map(|t| t.name).unwrap_or("Tool").to_string();
     apply(s, Ran { name, id: tool, command: None, started: t0 }, recorded(spec, params), res, millis)
@@ -1099,7 +1244,7 @@ fn file_delivered(s: &mut Session, p: &Value) -> CmdResult {
         s.notify(message.clone(), !file.record.ok);
     }
     let out = json!({"file": file.file_name, "delivered": file.record.ok, "messages": file.record.messages});
-    s.project.gp_history.push(file.record);
+    s.project.gp_history.push(file.record.scrubbed());
     if s.project.gp_history.len() > 500 {
         s.project.gp_history.remove(0);
     }
@@ -1191,17 +1336,10 @@ fn apply(s: &mut Session, ran: Ran, params: Value, res: Result<rustgis_analysis:
     let at = started / 1000;
     let mut result = match res {
         Err(e) => {
-            s.project.gp_history.push(GpRecord {
-                tool: name,
-                id,
-                params,
-                command,
-                at,
-                ok: false,
-                messages: vec![e.clone()],
-                millis,
-                outputs: Vec::new(),
-            });
+            s.project.gp_history.push(
+                GpRecord { tool: name, id, params, command, at, ok: false, messages: vec![e.clone()], millis, outputs: Vec::new() }
+                    .scrubbed(),
+            );
             return Err(e);
         }
         Ok(r) => r,
@@ -1223,17 +1361,10 @@ fn apply(s: &mut Session, ran: Ran, params: Value, res: Result<rustgis_analysis:
                 if let Err(error) = write_file_output(s, std::path::Path::new(path), &bytes) {
                     let error = format!("{path}: {error}");
                     result.messages.push(error.clone());
-                    s.project.gp_history.push(GpRecord {
-                        tool: name,
-                        id,
-                        params,
-                        command,
-                        at,
-                        ok: false,
-                        messages: result.messages,
-                        millis,
-                        outputs: Vec::new(),
-                    });
+                    s.project.gp_history.push(
+                        GpRecord { tool: name, id, params, command, at, ok: false, messages: result.messages, millis, outputs: Vec::new() }
+                            .scrubbed(),
+                    );
                     return Err(error);
                 }
                 json!({"file": path, "bytes": bytes.len()})
@@ -1314,7 +1445,9 @@ fn apply(s: &mut Session, ran: Ran, params: Value, res: Result<rustgis_analysis:
         _ => Vec::new(),
     };
     let outputs = ids.iter().filter_map(|id| s.map().layer(*id).map(|l| l.name.clone())).collect();
-    s.project.gp_history.push(GpRecord { tool: name, id, params, command, at, ok: true, messages: result.messages, millis, outputs });
+    s.project
+        .gp_history
+        .push(GpRecord { tool: name, id, params, command, at, ok: true, messages: result.messages, millis, outputs }.scrubbed());
     if s.project.gp_history.len() > 500 {
         s.project.gp_history.remove(0);
     }

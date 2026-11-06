@@ -800,9 +800,18 @@ pub const MAX_LEGEND_STEPS: usize = 2_000_000;
 pub struct LegendEntry {
     pub label: String,
     pub symbol: Symbol,
+    /// The stacked strokes its class has of its own; empty, it takes the layer's `line_strokes`.
+    pub strokes: Vec<LineStroke>,
     /// The Unique Values fallback row (`<all other values>`), told apart from a class whatever
     /// its label: a legend can leave it out without touching a class that bears the same name.
     pub fallback: bool,
+}
+
+impl LegendEntry {
+    /// A class's row, with the stacked strokes it has of its own, if any.
+    fn class(label: String, symbol: Symbol, strokes: Option<&Vec<LineStroke>>) -> Self {
+        LegendEntry { label, symbol, strokes: strokes.cloned().unwrap_or_default(), fallback: false }
+    }
 }
 
 /// Most unique-value classes created automatically.
@@ -1449,7 +1458,19 @@ impl Renderer {
     /// Values by an expression reading `@map_scale` class by. One whose expression would take
     /// more than [`MAX_LEGEND_STEPS`] to class every kept feature lists all its classes.
     pub fn legend_at(&self, ds: &Dataset, rows: &[bool], map_scale: Option<f64>) -> Vec<LegendEntry> {
-        let Renderer::Unique { field, classes, other, class_labels, other_label, expression, other_fills, other_strokes, .. } = self else {
+        let Renderer::Unique {
+            field,
+            classes,
+            other,
+            class_labels,
+            other_label,
+            expression,
+            other_fills,
+            other_strokes,
+            class_strokes,
+            ..
+        } = self
+        else {
             return self.legend();
         };
         // A fallback that draws nothing has nothing to stand for in a legend: its own symbol as
@@ -1510,10 +1531,15 @@ impl Renderer {
             .into_iter()
             .filter(|i| used.get(*i).copied().unwrap_or(false))
             .filter_map(|i| classes.get(i))
-            .map(|(k, s)| LegendEntry { label: unique_label(class_labels, k), symbol: *s, fallback: false })
+            .map(|(k, s)| LegendEntry::class(unique_label(class_labels, k), *s, class_strokes.get(k)))
             .collect();
         if other_used && visible {
-            v.push(LegendEntry { label: other_label.clone().unwrap_or_else(|| OTHER_VALUES.into()), symbol: *other, fallback: true });
+            v.push(LegendEntry {
+                label: other_label.clone().unwrap_or_else(|| OTHER_VALUES.into()),
+                symbol: *other,
+                strokes: other_strokes.clone(),
+                fallback: true,
+            });
         }
         v
     }
@@ -1543,21 +1569,28 @@ impl Renderer {
         rustgis_data::value::numeric_classes(classes.iter().map(|(k, _)| k.as_str()))
     }
 
+    /// Every row of its legend, whatever the features: the classes, then a Unique Values'
+    /// `<all other values>`; none for a single symbol.
     pub fn legend(&self) -> Vec<LegendEntry> {
         match self {
             Renderer::Single(_) => Vec::new(),
-            Renderer::Unique { classes, other, class_labels, other_label, .. } => {
+            Renderer::Unique { classes, other, class_labels, other_label, class_strokes, other_strokes, .. } => {
                 // Keep symbols attached to their classes in `class_order` and the fallback at the end.
                 let mut v: Vec<LegendEntry> = self
                     .class_order()
                     .into_iter()
                     .filter_map(|i| classes.get(i))
-                    .map(|(k, s)| LegendEntry { label: unique_label(class_labels, k), symbol: *s, fallback: false })
+                    .map(|(k, s)| LegendEntry::class(unique_label(class_labels, k), *s, class_strokes.get(k)))
                     .collect();
-                v.push(LegendEntry { label: other_label.clone().unwrap_or_else(|| OTHER_VALUES.into()), symbol: *other, fallback: true });
+                v.push(LegendEntry {
+                    label: other_label.clone().unwrap_or_else(|| OTHER_VALUES.into()),
+                    symbol: *other,
+                    strokes: other_strokes.clone(),
+                    fallback: true,
+                });
                 v
             }
-            Renderer::Graduated { breaks, symbols, min, class_labels, .. } => {
+            Renderer::Graduated { breaks, symbols, min, class_labels, class_strokes, .. } => {
                 let mut lo = *min;
                 breaks
                     .iter()
@@ -1566,18 +1599,19 @@ impl Renderer {
                     .map(|(i, (b, s))| {
                         let label = class_labels.get(&i).cloned().unwrap_or_else(|| range_label(lo, *b));
                         lo = *b;
-                        LegendEntry { label, symbol: *s, fallback: false }
+                        LegendEntry::class(label, *s, class_strokes.get(&i))
                     })
                     .collect()
             }
             Renderer::Proportional { base, min_size, max_size, min, max, .. } => vec![
-                LegendEntry { label: fmt_num(*min), symbol: Symbol { size: *min_size, ..*base }, fallback: false },
+                LegendEntry { label: fmt_num(*min), symbol: Symbol { size: *min_size, ..*base }, strokes: Vec::new(), fallback: false },
                 LegendEntry {
                     label: fmt_num((min + max) / 2.0),
                     symbol: Symbol { size: min_size + (max_size - min_size) * 0.707, ..*base },
+                    strokes: Vec::new(),
                     fallback: false,
                 },
-                LegendEntry { label: fmt_num(*max), symbol: Symbol { size: *max_size, ..*base }, fallback: false },
+                LegendEntry { label: fmt_num(*max), symbol: Symbol { size: *max_size, ..*base }, strokes: Vec::new(), fallback: false },
             ],
         }
     }
@@ -1706,7 +1740,7 @@ impl Renderer {
         // The class's row in `legend()`, which lists the classes and then `other`. Unique Values
         // rows are sorted by label, so that class's row is built here rather than looked up.
         let row = match (&mut *self, class) {
-            (Renderer::Unique { classes, class_labels, .. }, ClassRef::Value(v)) => {
+            (Renderer::Unique { classes, class_labels, class_strokes, .. }, ClassRef::Value(v)) => {
                 let i = classes.iter().position(|(k, _)| k == v).ok_or_else(|| format!("no class with the value '{v}'"))?;
                 if let Some((k, s)) = classes.get_mut(i) {
                     restyle(s);
@@ -1723,7 +1757,7 @@ impl Renderer {
                 }
                 return classes
                     .get(i)
-                    .map(|(k, s)| LegendEntry { label: unique_label(class_labels, k), symbol: *s, fallback: false })
+                    .map(|(k, s)| LegendEntry::class(unique_label(class_labels, k), *s, class_strokes.get(k)))
                     .ok_or_else(|| "the class has no legend row".into());
             }
             (Renderer::Unique { classes, other, other_label, .. }, ClassRef::Other) => {
@@ -2280,10 +2314,144 @@ pub struct LabelClass {
     /// the one at its middle, as QGIS's repeat distance; none is the one at its middle.
     #[serde(default, deserialize_with = "de_repeat", skip_serializing_if = "Option::is_none")]
     pub repeat: Option<f32>,
+    /// Every label drawn, over the others where they crowd, rather than some left out.
+    #[serde(default, deserialize_with = "de_flag", skip_serializing_if = "std::ops::Not::not")]
+    pub show_all: bool,
+    /// Callouts: a label crowded off its spot moves to a free one nearby, a line drawn from its
+    /// feature to it at most this long (points, within [`CALLOUT_REACH`]), as QGIS's callouts;
+    /// none keeps every label in its spot. Labels along lines aren't moved.
+    #[serde(default, deserialize_with = "de_callout", skip_serializing_if = "Option::is_none")]
+    pub callout: Option<f32>,
+    /// Labels moved by hand (the Move Label tool, as QGIS's): each feature's, by its id, drawn
+    /// where it was put, a callout's line back to the feature when the class has callouts. At
+    /// most [`MAX_MOVED_LABELS`], kept in order of id (so a label's is found without a scan).
+    #[serde(default, deserialize_with = "de_moved", skip_serializing_if = "Vec::is_empty")]
+    pub moved: Vec<MovedLabel>,
     /// Its text, size, colour and angle per feature, each by an expression (none set: the field,
     /// size and colour above alone).
     #[serde(default, skip_serializing_if = "crate::label_by::LabelBy::is_empty", deserialize_with = "crate::label_by::de_label_by")]
     pub by: crate::label_by::LabelBy,
+}
+
+/// A label moved by hand: its feature's id, and where its text is centred, in the layer's
+/// coordinates (longitude and latitude), so it stays put on the map as the view moves.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MovedLabel {
+    pub id: u64,
+    pub at: [f64; 2],
+}
+
+/// Most labels a class keeps moved by hand.
+pub const MAX_MOVED_LABELS: usize = 10_000;
+
+/// Whether `at` is a place a label can be moved to: a longitude within ±540° (a view's worth
+/// past the antimeridian either way) and a latitude within ±90°.
+pub fn is_label_place(at: [f64; 2]) -> bool {
+    let [x, y] = at;
+    x.is_finite() && y.is_finite() && x.abs() <= 540.0 && y.abs() <= 90.0
+}
+
+/// A project file's moved labels: those with a place ([`is_label_place`]), one a feature (the
+/// last wins), at most [`MAX_MOVED_LABELS`], in order of id.
+fn de_moved<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<MovedLabel>, D::Error> {
+    /// Reads one entry at a time, retaining only the capped map of valid label positions.
+    struct Moves;
+    impl<'de> serde::de::Visitor<'de> for Moves {
+        type Value = Vec<MovedLabel>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("an array of moved labels")
+        }
+
+        /// Buffers only one entry and the capped, deduplicated set of valid positions.
+        fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            let mut by_id = std::collections::BTreeMap::new();
+            while let Some(value) = seq.next_element::<serde_json::Value>()? {
+                if let Ok(m) = serde_json::from_value::<MovedLabel>(value)
+                    && is_label_place(m.at)
+                    && (by_id.len() < MAX_MOVED_LABELS || by_id.contains_key(&m.id))
+                {
+                    by_id.insert(m.id, m.at);
+                }
+            }
+            Ok(by_id.into_iter().map(|(id, at)| MovedLabel { id, at }).collect())
+        }
+
+        /// Skips a damaged object without allocating it or rejecting the surrounding class.
+        fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+            while map.next_entry::<serde::de::IgnoredAny, serde::de::IgnoredAny>()?.is_some() {}
+            Ok(Vec::new())
+        }
+
+        fn visit_bool<E: serde::de::Error>(self, _: bool) -> Result<Self::Value, E> {
+            Ok(Vec::new())
+        }
+        fn visit_i64<E: serde::de::Error>(self, _: i64) -> Result<Self::Value, E> {
+            Ok(Vec::new())
+        }
+        fn visit_u64<E: serde::de::Error>(self, _: u64) -> Result<Self::Value, E> {
+            Ok(Vec::new())
+        }
+        fn visit_f64<E: serde::de::Error>(self, _: f64) -> Result<Self::Value, E> {
+            Ok(Vec::new())
+        }
+        fn visit_str<E: serde::de::Error>(self, _: &str) -> Result<Self::Value, E> {
+            Ok(Vec::new())
+        }
+        fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+            Ok(Vec::new())
+        }
+    }
+    d.deserialize_any(Moves)
+}
+
+impl LabelClass {
+    /// Where feature `id`'s label was moved to by hand, if it was.
+    pub fn moved_to(&self, id: u64) -> Option<[f64; 2]> {
+        self.moved.binary_search_by_key(&id, |m| m.id).ok().and_then(|i| self.moved.get(i)).map(|m| m.at)
+    }
+
+    /// Keeps feature `id`'s label at `at` (longitude, latitude), or where its class puts it
+    /// again with none. False when `at` isn't a place ([`is_label_place`]), or the class already
+    /// keeps the most.
+    pub fn move_label(&mut self, id: u64, at: Option<[f64; 2]>) -> bool {
+        let found = self.moved.binary_search_by_key(&id, |m| m.id);
+        match (at, found) {
+            (None, Ok(i)) => {
+                self.moved.remove(i);
+                true
+            }
+            (None, Err(_)) => true,
+            (Some(at), _) if !is_label_place(at) => false,
+            (Some(at), Ok(i)) => {
+                if let Some(m) = self.moved.get_mut(i) {
+                    m.at = at;
+                }
+                true
+            }
+            (Some(at), Err(i)) if self.moved.len() < MAX_MOVED_LABELS => {
+                self.moved.insert(i, MovedLabel { id, at });
+                true
+            }
+            (Some(_), Err(_)) => false,
+        }
+    }
+}
+
+/// How long a callout's line may be (points): from about a letter to a few centimetres of paper.
+pub const CALLOUT_REACH: std::ops::RangeInclusive<f64> = 5.0..=500.0;
+/// A callout's longest line when none is given (points).
+pub const DEFAULT_CALLOUT: f32 = 40.0;
+
+/// A callout's longest line as a class keeps it, within [`CALLOUT_REACH`]; none for no number.
+pub fn callout_reach(v: f64) -> Option<f32> {
+    v.is_finite().then(|| v.clamp(*CALLOUT_REACH.start(), *CALLOUT_REACH.end()) as f32)
+}
+
+/// Reads positive finite lengths within the supported range; damaged and disabled values stay off.
+fn de_callout<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<f32>, D::Error> {
+    // (0 turns callouts off, as the command has it; a negative isn't a length either.)
+    Ok(lenient::<D, f64>(d)?.filter(|v| *v > 0.0).and_then(callout_reach))
 }
 
 /// The longest wrap character kept (characters).
@@ -2713,6 +2881,9 @@ impl LabelClass {
             wrap_length: 0,
             line_align: crate::layout::TextAlign::Left,
             repeat: None,
+            show_all: false,
+            callout: None,
+            moved: Vec::new(),
             by: Default::default(),
         }
     }
@@ -3383,6 +3554,54 @@ mod tests {
         assert_eq!(r.legend().len(), 2);
     }
 
+    /// Each row keeps its class's strokes, its class stored in either order, in both renderers
+    /// with classes.
+    #[test]
+    fn a_legend_row_has_its_class_own_strokes() {
+        let mut d = Dataset::new("t", GeometryType::Point, vec![Field::new("g", FieldType::Text)]);
+        for g in ["a", "b", "z"] {
+            d.push(None, vec![Value::Text(g.into())]);
+        }
+        let s = |c| Symbol::default_for(GeometryType::Point, c);
+        let stroke = |width| LineStroke { width: Some(width), ..LineStroke::default() };
+        // Stored in either order, the rows come by label and each keeps its class's strokes.
+        let (a, b) = (("a".to_string(), s(0)), ("b".to_string(), s(1)));
+        for classes in [vec![a.clone(), b.clone()], vec![b, a]] {
+            let r = Renderer::Unique {
+                field: "g".into(),
+                classes,
+                other: s(2),
+                ramp: Ramp::Ember,
+                class_labels: Default::default(),
+                other_label: None,
+                class_strokes: [("a".to_string(), vec![stroke(1.0)])].into_iter().collect(),
+                other_strokes: vec![stroke(2.0)],
+                class_fills: Default::default(),
+                other_fills: Vec::new(),
+                expression: None,
+            };
+            // The whole list and the classes of the features kept.
+            for rows in [r.legend(), r.legend_for(&d, &[])] {
+                let strokes: Vec<_> = rows.iter().map(|e| e.strokes.clone()).collect();
+                assert_eq!(strokes, [vec![stroke(1.0)], vec![], vec![stroke(2.0)]]);
+            }
+        }
+        let g = Renderer::Graduated {
+            field: "v".into(),
+            breaks: vec![1.0, 2.0],
+            symbols: vec![s(0), s(1)],
+            ramp: Ramp::Ember,
+            method: ClassMethod::Quantile,
+            min: 0.0,
+            classes: 2,
+            class_labels: Default::default(),
+            class_strokes: [(1, vec![stroke(1.0)])].into_iter().collect(),
+            class_fills: Default::default(),
+        };
+        let strokes: Vec<_> = g.legend().into_iter().map(|e| e.strokes).collect();
+        assert_eq!(strokes, [vec![], vec![stroke(1.0)]]);
+    }
+
     #[test]
     fn categorical_children_sort_case_insensitively_without_changing_symbols() {
         let names = ["Zulu", "alpha", "Bravo", "ALPHA", "éclair", "École"];
@@ -3977,6 +4196,47 @@ mod tests {
         let long = format!("{} {}", "x".repeat(MAX_LABEL - 1), "y".repeat(10));
         let e = gr.set_class_style(&ClassRef::Index(0), &style(None, None, Some(&long)), g).unwrap();
         assert_eq!(e.label, "x".repeat(MAX_LABEL - 1));
+    }
+
+    #[test]
+    fn labels_are_moved_by_hand_and_put_back() {
+        let ds = rustgis_data::Dataset::new(
+            "d",
+            rustgis_data::GeometryType::Point,
+            vec![rustgis_data::Field::new("name", rustgis_data::FieldType::Text)],
+        );
+        let mut c = LabelClass::default_for(&ds);
+        assert!(c.move_label(7, Some([10.0, 20.0])) && c.move_label(8, Some([1.0, 2.0])));
+        assert!(c.move_label(7, Some([11.0, 21.0])), "moved again, the same feature's");
+        assert_eq!((c.moved_to(7), c.moved_to(8), c.moved.len()), (Some([11.0, 21.0]), Some([1.0, 2.0]), 2));
+        assert!(!c.move_label(9, Some([f64::NAN, 0.0])), "not a place");
+        assert!(!c.move_label(9, Some([1000.0, 0.0])) && !c.move_label(9, Some([0.0, 95.0])), "off the map");
+        assert!(c.move_label(2, Some([0.0, 0.0])) && c.moved.windows(2).all(|w| w[0].id < w[1].id), "kept in order of id");
+        assert!(c.move_label(2, None) && c.move_label(2, None), "putting back one not moved is fine");
+        assert!(c.move_label(8, None) && c.moved_to(8).is_none(), "put back");
+        // Read from a file: bad entries dropped, the rest kept, a feature's last place wins.
+        let mut v = serde_json::to_value(&c).unwrap();
+        v["moved"] = serde_json::json!([{"id": 1, "at": [1, 1]}, {"id": "x"}, 7, {"id": 1, "at": [2, 2]}, {"id": 3, "at": [3, 3]}, {"id": 0, "at": [1000, 95]}]);
+        let read: LabelClass = serde_json::from_value(v.clone()).unwrap();
+        assert_eq!(read.moved, vec![MovedLabel { id: 1, at: [2.0, 2.0] }, MovedLabel { id: 3, at: [3.0, 3.0] }]);
+        // Out of order in the file: put in order, so each is still found.
+        v["moved"] = serde_json::json!([{"id": 9, "at": [9, 9]}, {"id": 4, "at": [4, 4]}]);
+        let read: LabelClass = serde_json::from_value(v.clone()).unwrap();
+        assert_eq!((read.moved_to(4), read.moved_to(9)), (Some([4.0, 4.0]), Some([9.0, 9.0])));
+        // A huge list reads quickly, and keeps the first the file lists, up to the most kept.
+        let many: Vec<_> = (0..50_000u64).rev().map(|i| serde_json::json!({"id": i, "at": [0, 0]})).collect();
+        v["moved"] = serde_json::Value::Array(many);
+        let read: LabelClass = serde_json::from_value(v.clone()).unwrap();
+        assert_eq!(read.moved.len(), MAX_MOVED_LABELS);
+        v["moved"] = serde_json::json!("nonsense");
+        assert!(serde_json::from_value::<LabelClass>(v.clone()).unwrap().moved.is_empty(), "the rest still reads");
+        v["show_all"] = serde_json::json!("yes");
+        v["moved"] = serde_json::json!({"damaged": [1, 2, 3]});
+        let read: LabelClass = serde_json::from_str(&v.to_string()).unwrap();
+        assert!(!read.show_all && read.moved.is_empty(), "damaged optional fields leave the class usable");
+        // None moved: none saved.
+        let none = serde_json::to_value(LabelClass::default_for(&ds)).unwrap();
+        assert!(none.get("moved").is_none());
     }
 
     #[test]

@@ -79,6 +79,7 @@ pub fn commands() -> Vec<C> {
         .params(r#"{"layer"?, "name"?: string}"#),
         C::new("style.add", "Add Style", "Style › Styles", |s, p| {
             let text = read_text(p)?;
+            crate::project::check_format(&text, "style file")?;
             let items: Vec<StyleItem> = serde_json::from_str(&text).map_err(|e| format!("not a RustGIS style file: {e}"))?;
             let mut n = 0;
             for it in items.into_iter().take(1000) {
@@ -99,8 +100,13 @@ pub fn commands() -> Vec<C> {
             }
             l.renderer = st.renderer;
             let field = l.labels.default.field.clone();
-            let relock = !super::labels::lock_holds(l, &st.labels);
-            l.labels = st.labels;
+            // Saved moves name features by id: the style's belong to the layer it was made from,
+            // so this layer keeps its own, in the class of the same name (Default in Default).
+            let mut labels = st.labels;
+            let (foreign, lost) = carry_moves(&l.labels, &mut labels);
+            // Compared with the layer as it stands, its moves still in it.
+            let relock = !super::labels::lock_holds(l, &labels);
+            l.labels = labels;
             // The label field stays if the style's isn't in this layer.
             if l.dataset.field_index(&l.labels.default.field).is_none() {
                 l.labels.default.field = field;
@@ -110,6 +116,12 @@ pub fn commands() -> Vec<C> {
             if relock {
                 s.map_mut().label_lock = None;
                 s.map_mut().label_lock_line_anchors.clear();
+            }
+            if foreign > 0 {
+                s.notify(format!("{foreign} saved label move(s) in style {name} not applied: they name the features of the layer the style was made from"), false);
+            }
+            if lost > 0 {
+                s.notify(format!("{lost} saved label move(s) dropped with label classes style {name} doesn't have"), false);
             }
             Ok(Value::Null)
         })
@@ -423,6 +435,7 @@ fn embedded_map(m: &Map, budget: &mut u64) -> Map {
 /// Adds maps from a map file, project or package.
 fn import_maps(s: &mut Session, p: &Value) -> CmdResult {
     let text = read_text(p)?;
+    crate::project::check_format(&text, "map file or project")?;
     let dir = ps(p, "path").and_then(|path| std::path::absolute(path).ok()).and_then(|p| p.parent().map(Path::to_path_buf));
     super::connections::clear_active();
     let maps: Vec<Map> = match serde_json::from_str::<Map>(&text) {
@@ -434,13 +447,21 @@ fn import_maps(s: &mut Session, p: &Value) -> CmdResult {
             if let Some(d) = dir.as_deref().and_then(Path::to_str) {
                 crate::project::resolve_file_paths(d, m.file_paths_mut());
             }
+            for notice in crate::project::label_losses::map_notices(&text, &m) {
+                s.notify(notice, false);
+            }
             vec![m]
         }
         Err(_) => match Project::from_import_json(&text, dir.as_deref()) {
-            Ok(project) => project.maps,
-            Err(_) => {
+            Ok(mut project) => {
+                for notice in std::mem::take(&mut project.label_read_notices) {
+                    s.notify(notice, false);
+                }
+                project.maps
+            }
+            Err(error) => {
                 super::connections::restore_active(s);
-                return Err("not a RustGIS map file, project or package".into());
+                return Err(error);
             }
         },
     };
@@ -448,6 +469,7 @@ fn import_maps(s: &mut Session, p: &Value) -> CmdResult {
     for mut m in maps.into_iter().take(100) {
         // A binding in a file is no authority to use a login here.
         crate::s3_connections::clear_bindings(m.addresses_mut());
+        crate::project::clear_login_bindings(m.addresses_mut());
         let base = m.name.clone();
         let mut i = 1;
         while s.project.maps.iter().any(|o| o.name.eq_ignore_ascii_case(&m.name)) {
@@ -486,16 +508,27 @@ fn add_style(s: &mut Session, mut item: StyleItem) {
 /// Styles from every feature layer of a layer file, map file or project.
 fn import_styles(s: &mut Session, p: &Value) -> CmdResult {
     let text = read_text(p)?;
+    crate::project::check_format(&text, "layer file, map file or project")?;
     let layers: Vec<Layer> = if let Ok(l) = serde_json::from_str::<Layer>(&text) {
+        for notice in crate::project::label_losses::layer_notices(&text, &l) {
+            s.notify(notice, false);
+        }
         vec![l]
     } else if let Ok(m) = serde_json::from_str::<Map>(&text) {
+        for notice in crate::project::label_losses::map_notices(&text, &m) {
+            s.notify(notice, false);
+        }
         m.layers
     } else {
         // A project parse opens sources even though this import only takes their styles.
         super::connections::clear_active();
         let project = Project::from_import_json(&text, None);
         super::connections::restore_active(s);
-        project.map_err(|_| "not a RustGIS layer file, map file or project".to_string())?.maps.into_iter().flat_map(|m| m.layers).collect()
+        let mut project = project?;
+        for notice in std::mem::take(&mut project.label_read_notices) {
+            s.notify(notice, false);
+        }
+        project.maps.into_iter().flat_map(|m| m.layers).collect()
     };
     let mut n = 0;
     for l in layers.into_iter().filter(|l| !l.is_raster() && l.geometry_type() != GeometryType::None).take(1000) {
@@ -517,10 +550,46 @@ fn import_styles(s: &mut Session, p: &Value) -> CmdResult {
     Ok(json!({"imported": n}))
 }
 
-/// The project without its features (layer schemas, symbology, layouts and styles stay).
-fn template(p: &Project) -> Project {
+/// Copies `old`'s saved label moves into the class of the same name in `new` (Default into
+/// Default), after dropping `new`'s own; returns how many of `new`'s were dropped, and how many
+/// of `old`'s had no class to go to.
+fn carry_moves(old: &rustgis_map::symbology::Labeling, new: &mut rustgis_map::symbology::Labeling) -> (usize, usize) {
+    let mut foreign = 0usize;
+    for c in new.classes.iter_mut().chain(std::iter::once(&mut new.default)) {
+        foreign = foreign.saturating_add(c.moved.len());
+        c.moved.clear();
+    }
+    new.default.moved.clone_from(&old.default.moved);
+    let mut lost = 0usize;
+    for c in old.classes.iter().filter(|c| !c.moved.is_empty()) {
+        match new.classes.iter_mut().find(|n| n.name.eq_ignore_ascii_case(&c.name) && n.moved.is_empty()) {
+            Some(n) => n.moved.clone_from(&c.moved),
+            None => lost = lost.saturating_add(c.moved.len()),
+        }
+    }
+    (foreign, lost)
+}
+
+/// The project without its features (layer schemas, symbology, layouts and styles stay), and how
+/// many saved label moves went with them.
+fn template(p: &Project) -> (Project, usize) {
     let mut t = p.clone();
     t.gp_history.clear();
+    // Saved label moves name features, and a template has none: the layers', the saved styles'
+    // and the offline snapshots' all go.
+    let mut moves = 0usize;
+    let labels = t
+        .maps
+        .iter_mut()
+        .chain(t.offline_areas.iter_mut().map(|a| &mut a.data))
+        .flat_map(|m| m.layers.iter_mut().map(|l| &mut l.labels))
+        .chain(t.styles.iter_mut().map(|s| &mut s.labels));
+    for labels in labels {
+        for c in labels.classes.iter_mut().chain(std::iter::once(&mut labels.default)) {
+            moves = moves.saturating_add(c.moved.len());
+            c.moved.clear();
+        }
+    }
     for m in &mut t.maps {
         for l in &mut m.layers {
             l.dataset.features.clear();
@@ -541,7 +610,7 @@ fn template(p: &Project) -> Project {
     for t in &mut t.tables {
         t.features.clear();
     }
-    t
+    (t, moves)
 }
 
 /// Packages only completed imports; runtime download reservations cannot be reopened.
@@ -554,6 +623,8 @@ fn package_project(s: &Session) -> Result<Vec<u8>, String> {
         *m = embedded_map(m, &mut budget);
     }
     crate::project::strip_addresses(p.addresses_mut());
+    // Recorded parameters (history, tasks, models) lose only their login bindings, as when saving.
+    crate::project::clear_login_bindings(p.recorded_mut());
     let text = serde_json::to_string(&p).map_err(|e| e.to_string())?;
     let limit = crate::project::MAX_BYTES.min(rustgis_data::zip::MAX_TOTAL as u64);
     if text.len() as u64 > limit {
@@ -612,7 +683,16 @@ fn package_gp(s: &Session) -> Result<Vec<u8>, String> {
     if s.project.gp_history.is_empty() {
         return Err("no geoprocessing has been run yet".into());
     }
-    let mut entries = vec![("history.json".to_string(), serde_json::to_vec_pretty(&s.project.gp_history).map_err(|e| e.to_string())?)];
+    let mut history = s.project.gp_history.clone();
+    let mut addresses = Vec::new();
+    for record in &mut history {
+        crate::project::recorded_addresses(&mut record.params, &mut addresses);
+        if let Some((_, params)) = &mut record.command {
+            crate::project::recorded_addresses(params, &mut addresses);
+        }
+    }
+    crate::project::clear_login_bindings(addresses);
+    let mut entries = vec![("history.json".to_string(), serde_json::to_vec_pretty(&history).map_err(|e| e.to_string())?)];
     let mut layers = std::collections::HashSet::new();
     let mut files = std::collections::HashSet::new();
     for rec in s.project.gp_history.iter().filter(|r| r.ok) {
@@ -1047,7 +1127,13 @@ pub fn item_bytes(s: &mut Session, kind: &str, p: &Value) -> Result<(String, Vec
         }
         "template" => {
             s.project.ensure_imports_complete()?;
-            let mut t = template(&s.project);
+            let (mut t, moves) = template(&s.project);
+            if moves > 0 {
+                s.notify(format!("{moves} saved label move(s) left out of the template, which keeps no features"), false);
+            }
+            // As a package: what it reads keeps its plain address, what it records no binding.
+            crate::project::strip_addresses(t.addresses_mut());
+            crate::project::clear_login_bindings(t.recorded_mut());
             if let Some(n) = ps(p, "name").map(str::trim).filter(|n| !n.is_empty()) {
                 t.name = n.chars().take(200).collect();
             }
@@ -1061,8 +1147,13 @@ pub fn item_bytes(s: &mut Session, kind: &str, p: &Value) -> Result<(String, Vec
         "gpPackage" => ("results".to_string(), package_gp(s)?),
         "bookmarks" => (format!("{} bookmarks", s.map().name), super::navigate::bookmarks_file(s.map())?),
         "task" => {
-            let t = task_ref(s, p)?;
-            (t.name.clone(), to_json(t)?)
+            let mut t = task_ref(s, p)?.clone();
+            let mut addresses = Vec::new();
+            for step in &mut t.steps {
+                crate::project::recorded_addresses(&mut step.params, &mut addresses);
+            }
+            crate::project::clear_login_bindings(addresses);
+            (t.name.clone(), to_json(&t)?)
         }
         "obj" => {
             let id = s.layer_id(p)?;

@@ -104,8 +104,9 @@ fn boundaries_add(s: &mut Session, p: &Value) -> CmdResult {
         .unwrap_or_else(|| format!("{} {level}", title.unwrap_or_else(|| country.clone())));
     let (ds, _) = rustgis_data::io::read_geojson(&text, &name).map_err(|e| format!("{name}: {e}"))?;
     let n = ds.features.len();
+    let empty_before = super::map_is_empty(s);
     let id = super::layer::add_dataset(s, ds);
-    if let Some(e) = s.map().layer(id).map(|l| l.extent()) {
+    if empty_before && let Some(e) = s.map().layer(id).map(|l| l.extent()) {
         s.zoom_to(&e);
     }
     Ok(json!({"layer": id, "features": n}))

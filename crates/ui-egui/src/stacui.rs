@@ -30,8 +30,8 @@ enum Asked {
     /// A search, by its address (which the answer's links are resolved against).
     Search(String),
     /// A token for an asset that needs signing: the token service's address, the asset's and the
-    /// layer's name.
-    Token { token_url: String, href: String, name: String },
+    /// layer's name and saved connection, captured when Add was requested.
+    Token { token_url: String, href: String, name: String, connection: Option<String> },
     /// An item's or a collection's document (a `?stac=` link), by its address.
     Link(String),
     /// A static catalog's document, for its children, by its address.
@@ -219,6 +219,16 @@ fn fetch(url: &str) -> Answer {
     slot
 }
 
+/// Reads with the selected API's login only; a catalog's foreign links stay anonymous.
+fn fetch_service(app: &mut RustGisApp, url: &str) -> Answer {
+    let connection = selected_connection(app);
+    let base = app.ui.stac.api.clone();
+    match crate::serviceui::request_from(app, connection.as_deref(), &base, url) {
+        Ok(url) => fetch(&url),
+        Err(e) => Slot::new(std::sync::Mutex::new(Some(Err(crate::connectionui::translated(&e))))),
+    }
+}
+
 /// An item's preview picture: being fetched, shown, or not to be had.
 enum Thumb {
     Loading(Answer),
@@ -269,7 +279,10 @@ fn poll_thumbs(app: &mut RustGisApp, ctx: &egui::Context) {
 
 /// Starts fetching the preview pictures of the items found (those on the web an item may point
 /// to, not ones that need signing).
-fn want_thumbs(st: &mut State) {
+fn want_thumbs(app: &mut RustGisApp) {
+    let connection = selected_connection(app);
+    let base = app.ui.stac.api.clone();
+    let (session, st) = (&mut app.session, &mut app.ui.stac);
     if st.thumbs.len() > MAX_THUMBS {
         st.thumbs.clear();
     }
@@ -284,13 +297,23 @@ fn want_thumbs(st: &mut State) {
                 Some(item.origin.as_deref().unwrap_or("https://item.invalid/")),
             )
             .is_ok();
-        let picture = || {
+        let address = if ok {
+            use rustgis_engine::render::rustgis_tiles::logins;
+            if logins::origin(&base).is_some_and(|origin| logins::origin(&a.href).as_deref() == Some(origin.as_str())) {
+                rustgis_engine::service_logins::request(session, connection.as_deref(), &a.href).ok()
+            } else {
+                Some(logins::inner(&a.href).to_string())
+            }
+        } else {
+            None
+        };
+        let picture = address.map(|address| {
             let slot: Answer = Slot::default();
             let land = slot.clone();
-            cache::download_limited(&a.href, THUMB_BYTES, Box::new(move |r| *land.lock().unwrap_or_else(|e| e.into_inner()) = Some(r)));
-            slot
-        };
-        st.thumbs.insert(a.href.clone(), if ok { Thumb::Loading(picture()) } else { Thumb::Failed });
+            cache::download_limited(&address, THUMB_BYTES, Box::new(move |r| *land.lock().unwrap_or_else(|e| e.into_inner()) = Some(r)));
+            Thumb::Loading(slot)
+        });
+        st.thumbs.insert(a.href.clone(), picture.unwrap_or(Thumb::Failed));
     }
 }
 
@@ -333,10 +356,10 @@ pub fn poll(app: &mut RustGisApp, ctx: &egui::Context) {
             }
             Err(e) => st.error = Some(e),
         },
-        Asked::Token { token_url, href, name } => match r.and_then(|b| stac::parse_sas(&b)) {
+        Asked::Token { token_url, href, name, connection } => match r.and_then(|b| stac::parse_sas(&b)) {
             Ok(token) => {
                 stac::remember_token(&token_url, &token);
-                add_url(app, &stac::sign(&href, &token), &name);
+                add_url_from(app, &stac::sign(&href, &token), &name, connection.as_deref());
             }
             Err(e) => st.error = Some(e),
         },
@@ -372,7 +395,7 @@ pub fn poll(app: &mut RustGisApp, ctx: &egui::Context) {
 /// Drives a static catalog's walk: lands the documents fetched, asks for the next ones (a few at
 /// a time) and, once it is over, shows the items found.
 fn poll_walk(app: &mut RustGisApp, ctx: &egui::Context) {
-    let Some((walk, fetching)) = &mut app.ui.stac.walk else { return };
+    let Some((mut walk, mut fetching)) = app.ui.stac.walk.take() else { return };
     let mut i = 0;
     while let Some((url, slot)) = fetching.get(i) {
         let landed = slot.lock().unwrap_or_else(|e| e.into_inner()).take();
@@ -386,7 +409,7 @@ fn poll_walk(app: &mut RustGisApp, ctx: &egui::Context) {
     }
     while fetching.len() < catalog::AT_ONCE {
         let Some(url) = walk.next_url() else { break };
-        let slot = fetch(&url);
+        let slot = fetch_service(app, &url);
         fetching.push((url, slot));
     }
     if !walk.finished() {
@@ -395,9 +418,9 @@ fn poll_walk(app: &mut RustGisApp, ctx: &egui::Context) {
             &[("n", &walk.reads.to_string()), ("m", &walk.items().len().to_string())],
         ));
         ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        app.ui.stac.walk = Some((walk, fetching));
         return;
     }
-    let Some((walk, _)) = app.ui.stac.walk.take() else { return };
     let st = &mut app.ui.stac;
     let n = walk.items().len().to_string();
     st.info = Some(if walk.complete() {
@@ -506,7 +529,8 @@ fn add_signed(app: &mut RustGisApp, href: &str, name: &str) {
             None => {
                 let slot = fetch(&token_url);
                 app.ui.stac.info = Some(tl!("Signing the asset (Planetary Computer)…").to_string());
-                app.ui.stac.waiting = Some((Asked::Token { token_url, href: href.to_string(), name: name.to_string() }, slot));
+                let connection = selected_connection(app);
+                app.ui.stac.waiting = Some((Asked::Token { token_url, href: href.to_string(), name: name.to_string(), connection }, slot));
             }
         },
         Err(e) => app.ui.stac.error = Some(e),
@@ -514,7 +538,21 @@ fn add_signed(app: &mut RustGisApp, href: &str, name: &str) {
 }
 
 fn add_url(app: &mut RustGisApp, href: &str, name: &str) {
-    if let Err(e) = app.run("ui.addUrl", json!({"url": href, "name": name, "zoom": true})) {
+    let connection = selected_connection(app);
+    add_url_from(app, href, name, connection.as_deref());
+}
+
+fn selected_connection(app: &RustGisApp) -> Option<String> {
+    crate::connectionui::picked(&app.session.connections.connections, app.ui.stac.connection.as_deref(), &app.ui.stac.api)
+        .map(|c| c.id.clone())
+}
+
+fn add_url_from(app: &mut RustGisApp, href: &str, name: &str, connection: Option<&str>) {
+    let mut p = json!({"url": href, "name": name, "zoom": true});
+    if let Some(connection) = connection {
+        p["connection"] = json!(connection);
+    }
+    if let Err(e) = app.run("ui.addUrl", p) {
         app.ui.stac.error = Some(e);
     }
 }
@@ -533,7 +571,8 @@ pub fn open_link(app: &mut RustGisApp, url: &str) -> Result<(), String> {
     let url = url.trim();
     rustgis_engine::render::rustgis_tiles::address::check(url, None)?;
     app.run("ui.dialog", serde_json::json!({"name": "stac"}))?;
-    let slot = fetch(url);
+    let address = rustgis_engine::service_logins::request(&mut app.session, None, url)?;
+    let slot = fetch(&address);
     app.ui.stac.error = None;
     app.ui.stac.info = Some(i18n::fmt("Opening {url}…", &[("url", url)]));
     app.ui.stac.waiting = Some((Asked::Link(url.to_string()), slot));
@@ -660,7 +699,8 @@ fn fetch_children(app: &mut RustGisApp) {
     }
     st.info = Some(tl!("Reading the catalog…").to_string());
     st.counted = false;
-    st.waiting = Some((Asked::Children(url.clone()), fetch(&url)));
+    let slot = fetch_service(app, &url);
+    app.ui.stac.waiting = Some((Asked::Children(url), slot));
 }
 
 /// The preset the dialog is showing, if it is still on its API or catalog.
@@ -673,7 +713,9 @@ pub fn title(app: &RustGisApp) -> &'static str {
     shown_preset(&app.ui.stac).map(Preset::title).unwrap_or("STAC Search")
 }
 
-fn switch_api(st: &mut State, url: &str) {
+/// Points the panel at another API, dropping what the last one listed and what is still on its
+/// way from it (a catalog walk among them), wherever the switch comes from.
+pub(crate) fn switch_api(st: &mut State, url: &str) {
     st.api = url.to_string();
     drop_listing(st);
 }
@@ -694,6 +736,8 @@ fn drop_listing(st: &mut State) {
         st.waiting = None;
     }
     st.walk = None;
+    // Previews are read through the last API's login: another one shows its own, read afresh.
+    st.thumbs.clear();
     // The last listing's status ("Showing 10 items") isn't the new API's; an asset being signed
     // or a link being opened keeps its own.
     if st.waiting.is_none() {
@@ -871,7 +915,8 @@ pub fn dialog(app: &mut RustGisApp, ui: &mut egui::Ui) {
         match stac::api(Some(app.ui.stac.api.as_str())) {
             Ok(api) => {
                 let typed = app.ui.stac.api.trim().to_string();
-                app.ui.stac.waiting = Some((Asked::Collections(typed), fetch(&stac::collections_url(&api))));
+                let slot = fetch_service(app, &stac::collections_url(&api));
+                app.ui.stac.waiting = Some((Asked::Collections(typed), slot));
             }
             Err(e) => app.ui.stac.error = Some(e),
         }
@@ -922,6 +967,7 @@ fn cube_row(app: &mut RustGisApp, ui: &mut egui::Ui, busy: bool) {
     if keys.is_empty() {
         return;
     }
+    let connection = selected_connection(app);
     let st = &mut app.ui.stac;
     if !keys.contains(&st.cube_asset) {
         st.cube_asset = keys.first().cloned().unwrap_or_default();
@@ -949,11 +995,40 @@ fn cube_row(app: &mut RustGisApp, ui: &mut egui::Ui, busy: bool) {
     if !add {
         return;
     }
+    let p = match cube_params(st, first, last, connection) {
+        Ok(p) => p,
+        Err(e) => {
+            st.error = Some(e);
+            return;
+        }
+    };
+    match app.run("stac.addCube", p) {
+        Ok(r) => {
+            app.ui.stac.error = None;
+            app.ui.stac.info = Some(i18n::fmt(
+                "{layers} tiles, {dates} dates: the time slider steps through them",
+                &[("layers", &r["layers"].to_string()), ("dates", &r["dates"].to_string())],
+            ));
+            app.map.invalidate();
+        }
+        Err(e) => app.ui.stac.error = Some(e),
+    }
+}
+
+/// The `stac.addCube` parameters for the dialog as it stands: its API, collection, band, dates,
+/// area, cloud limit and display range, and the connection picked for the API (so the cube's
+/// requests use that login, not the origin's last-selected one). `first` and `last` are the
+/// dates the items span, used where no date is typed.
+#[cfg(not(target_arch = "wasm32"))]
+fn cube_params(st: &State, first: String, last: String, connection: Option<String>) -> Result<serde_json::Value, String> {
     let mut p = json!({
         "url": st.api, "collection": st.collection.trim(), "asset": st.cube_asset,
         "start": if st.from.trim().is_empty() { first } else { st.from.trim().to_string() },
         "end": if st.to.trim().is_empty() { last } else { st.to.trim().to_string() },
     });
+    if let Some(connection) = connection {
+        p["connection"] = json!(connection);
+    }
     // The area the search asked for, so the cube covers what it found (every page of it), not the
     // view now; a search anywhere, the area of the items listed.
     let area = st.searched_area.or_else(|| {
@@ -972,22 +1047,9 @@ fn cube_row(app: &mut RustGisApp, ui: &mut egui::Ui, busy: bool) {
     match (typed.len(), range.len()) {
         (0, _) => {}
         (2, 2) => p["range"] = json!(range),
-        _ => {
-            st.error = Some(tl!("The range is two numbers, low and high (0, 0.9)").to_string());
-            return;
-        }
+        _ => return Err(tl!("The range is two numbers, low and high (0, 0.9)").to_string()),
     }
-    match app.run("stac.addCube", p) {
-        Ok(r) => {
-            app.ui.stac.error = None;
-            app.ui.stac.info = Some(i18n::fmt(
-                "{layers} tiles, {dates} dates: the time slider steps through them",
-                &[("layers", &r["layers"].to_string()), ("dates", &r["dates"].to_string())],
-            ));
-            app.map.invalidate();
-        }
-        Err(e) => app.ui.stac.error = Some(e),
-    }
+    Ok(p)
 }
 
 /// Finds items: an API's search, or a walk of a static catalog from the node picked.
@@ -1043,7 +1105,7 @@ fn find_items(app: &mut RustGisApp) {
     let url = stac::api(Some(app.ui.stac.api.as_str())).and_then(|api| search.and_then(|s| stac::search_url(&api, &s)));
     match url {
         Ok(url) => {
-            let slot = fetch(&url);
+            let slot = fetch_service(app, &url);
             app.ui.stac.waiting = Some((Asked::Search(url), slot));
         }
         Err(e) => app.ui.stac.error = Some(e),
@@ -1056,7 +1118,7 @@ fn results(app: &mut RustGisApp, ui: &mut egui::Ui) {
     if app.ui.stac.items.is_empty() {
         return;
     }
-    want_thumbs(&mut app.ui.stac);
+    want_thumbs(app);
     let (mut zoom, mut add, mut details) = (None, None, None);
     // A window starts from its last size: without a floor the list would get egui's 64 px back.
     let tall = (app.ui.stac.items.len() as f32 * 96.0 + if app.ui.stac.details.is_some() { 200.0 } else { 0.0 }).min(440.0);
@@ -1159,6 +1221,59 @@ fn properties(ui: &mut egui::Ui, i: usize, item: &Item) {
 mod tests {
     use super::*;
     use crate::RustGisApp;
+
+    #[test]
+    fn opening_a_stac_api_from_the_tree_drops_the_last_apis_catalog_walk() {
+        let mut app = RustGisApp::with_sample();
+        let old = "https://old-walk757.example.org/catalog.json";
+        app.ui.stac.api = old.into();
+        app.ui.stac.walk = Some((Walk::new(old, catalog::Filter::default(), 10), Vec::new()));
+        app.ui.stac.thumbs.insert("https://new-walk757.example.org/preview.png".into(), Thumb::Failed);
+        let source = rustgis_engine::sources::Source {
+            kind: "stac".into(),
+            name: "New API".into(),
+            address: "https://new-walk757.example.org/stac".into(),
+            extra: json!({"api": "https://new-walk757.example.org/stac"}),
+        };
+        crate::sourcespane::open(&mut app, &source).unwrap();
+        assert!(app.ui.stac.walk.is_none(), "the old catalog's documents must not land in the new listing");
+        assert_eq!(app.ui.stac.api, "https://new-walk757.example.org/stac");
+        assert!(app.ui.stac.thumbs.is_empty(), "a preview read through the last API's login isn't shown for the next");
+    }
+
+    #[test]
+    fn a_deferred_token_add_keeps_its_original_connection_when_selection_changes() {
+        let mut app = RustGisApp::with_sample();
+        let api = "http://127.0.0.1:9/stac";
+        let one = app.run("connection.new", json!({"kind":"stac", "name":"One", "address":api})).unwrap();
+        let two = app.run("connection.new", json!({"kind":"stac", "name":"Two", "address":api})).unwrap();
+        app.ui.stac.api = api.into();
+        app.ui.stac.connection = one["id"].as_str().map(str::to_string);
+        let asked = Asked::Token {
+            token_url: "https://snapshot-token.invalid/token".into(),
+            href: "http://127.0.0.1:9/points.geojson".into(),
+            name: "Original asset".into(),
+            connection: selected_connection(&app),
+        };
+        let slot = Slot::default();
+        *slot.lock().unwrap() = Some(Ok(br#"{"token":"sig=snapshot"}"#.to_vec()));
+        app.ui.stac.waiting = Some((asked, slot));
+        app.ui.stac.connection = two["id"].as_str().map(str::to_string);
+        poll(&mut app, &egui::Context::default());
+        let (_, _, params, _) = app.ui.downloads.last().unwrap();
+        assert_eq!(params["connection"], one["id"], "token completion must not re-read the picker");
+        assert_ne!(params["connection"], two["id"]);
+    }
+
+    /// The cube's request names the connection picked for the API, so it never falls back to the
+    /// origin's last-selected login (possibly another connection's).
+    #[test]
+    fn the_time_series_request_names_the_picked_connection() {
+        let st = State { api: "https://stac.example.org".into(), collection: "c".into(), ..State::default() };
+        let p = cube_params(&st, "2024-01-01".into(), "2024-02-01".into(), Some("picked".into())).unwrap();
+        assert_eq!(p["connection"], "picked");
+        assert!(cube_params(&st, "a".into(), "b".into(), None).unwrap().get("connection").is_none());
+    }
 
     #[test]
     fn presets_open_the_dialog_set_up() {

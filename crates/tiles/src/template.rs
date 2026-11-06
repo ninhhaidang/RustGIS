@@ -200,6 +200,12 @@ pub fn expand(template: &str, t: TileId, tile_size: u32, tms: bool, subdomains: 
 
 /// Resolves `href` against the document at `base` (for addresses inside a style or TileJSON).
 pub fn join(base: &str, href: &str) -> String {
+    let href = crate::logins::inner(href);
+    match rustgis_data::login_address::parse(base) {
+        Ok(Some(bound)) => return crate::logins::inherit(base, &join(bound.url, href)),
+        Err(_) => return base.to_string(),
+        Ok(None) => {}
+    }
     if href.contains("://") {
         return href.to_string();
     }
@@ -249,6 +255,22 @@ fn remove_dots(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn derived_links_keep_only_the_document_binding() {
+        let base = rustgis_data::login_address::bind("0123456789abcdef", "https://a.test", "https://a.test/style.json").unwrap();
+        for href in ["tiles/{z}/{x}/{y}.pbf", "/sprite", "https://A.test:443/info"] {
+            let next = join(&base, href);
+            assert_eq!(rustgis_data::login_address::parse(&next).unwrap().unwrap().binding, "0123456789abcdef");
+        }
+        for href in ["http://a.test/tile", "https://a.test:444/tile", "https://other.test/tile"] {
+            assert_eq!(join(&base, href), href);
+        }
+        let supplied = rustgis_data::login_address::bind("fedcba9876543210", "https://a.test", "https://a.test/tile").unwrap();
+        assert_eq!(join("https://a.test/style.json", &supplied), "https://a.test/tile");
+        assert_eq!(rustgis_data::login_address::parse(&join(&base, &supplied)).unwrap().unwrap().binding, "0123456789abcdef");
+        assert_eq!(join("rustgis-login:broken", "/tile"), "rustgis-login:broken");
+    }
 
     #[test]
     fn joins_relative_addresses() {

@@ -313,6 +313,9 @@ fn class(
         wrap_length,
         line_align,
         repeat,
+        show_all: false,
+        callout: None,
+        moved: Vec::new(),
         by,
     })
 }

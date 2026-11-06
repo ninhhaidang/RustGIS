@@ -4,6 +4,10 @@
 //! the tool has come. The run's control is the current one of the thread the tool runs on, so a
 //! tool asks [`check`] in its long loops without passing it along; the threads of
 //! [`crate::parallel`] take it over from the thread that starts them.
+//!
+//! A run someone can stop while it goes ([`Control::stoppable`]: the app's panes, `rustgis-cli
+//! run`) takes no work cap ([`uncapped`]): the caps, a second or two of work, are for the calls
+//! that wait on a tool with no way to stop it (a script, the assistant, the web app).
 
 use std::cell::RefCell;
 use std::sync::Arc;
@@ -15,11 +19,19 @@ pub struct Control {
     cancel: AtomicBool,
     done: AtomicU64,
     total: AtomicU64,
+    /// Someone can stop the run while it goes ([`Control::stoppable`]).
+    stoppable: bool,
 }
 
 impl Control {
     pub fn new() -> Arc<Control> {
         Arc::new(Control::default())
+    }
+
+    /// A control for a run someone can stop while it goes, with a Cancel button or Ctrl-C: its
+    /// tools take no work cap ([`uncapped`]). Not in the browser, whose one thread a run holds.
+    pub fn stoppable() -> Arc<Control> {
+        Arc::new(Control { stoppable: !cfg!(target_arch = "wasm32"), ..Control::default() })
     }
 
     /// Asks the tool to stop at its next check.
@@ -36,6 +48,21 @@ impl Control {
     pub fn progress(&self) -> Option<(u64, u64)> {
         let total = self.total.load(Ordering::Relaxed);
         (total > 0).then(|| (self.done.load(Ordering::Relaxed).min(total), total))
+    }
+}
+
+/// The same flag and count reach the data crate's writers (an export run under the control):
+/// their steps count here, and they stop when the run is cancelled.
+impl rustgis_data::progress::Probe for Control {
+    fn cancelled(&self) -> bool {
+        self.is_cancelled()
+    }
+    fn begin(&self, total: u64) {
+        self.done.store(0, Ordering::Relaxed);
+        self.total.store(total, Ordering::Relaxed);
+    }
+    fn advance(&self, n: u64) {
+        self.done.fetch_add(n, Ordering::Relaxed);
     }
 }
 
@@ -64,7 +91,7 @@ thread_local! {
 }
 
 /// The control of the run on this thread, if any.
-pub(crate) fn current() -> Option<Arc<Control>> {
+pub fn current() -> Option<Arc<Control>> {
     CURRENT.with(|c| c.borrow().clone())
 }
 
@@ -87,6 +114,33 @@ impl Drop for Installed {
 /// Whether the run on this thread was asked to stop.
 pub(crate) fn cancelled() -> bool {
     CURRENT.with(|c| c.borrow().as_ref().is_some_and(|c| c.is_cancelled()))
+}
+
+/// Whether the run on this thread can be stopped while it goes ([`Control::stoppable`]), and so
+/// takes no work cap.
+pub(crate) fn uncapped() -> bool {
+    CURRENT.with(|c| c.borrow().as_ref().is_some_and(|c| c.stoppable))
+}
+
+/// The work units (a distance, a ray step, a multiply-add) between two looks at the cancel flag
+/// inside an item of a loop ([`Pace`]): a few milliseconds.
+const PACE_WORK: usize = 1 << 22;
+
+/// Looks at the cancel flag about every [`PACE_WORK`] units of work, within an item that may
+/// take long on its own (a row of a wide grid without a work cap), so Cancel stops the run soon.
+#[derive(Default)]
+pub(crate) struct Pace(usize);
+
+impl Pace {
+    /// Whether to stop after `work` more units: once the run was asked to.
+    pub(crate) fn stop(&mut self, work: usize) -> bool {
+        self.0 = self.0.saturating_add(work);
+        if self.0 < PACE_WORK {
+            return false;
+        }
+        self.0 = 0;
+        cancelled()
+    }
 }
 
 /// Stops the tool when its run was asked to: call it between rows or features of a long loop.
@@ -157,6 +211,23 @@ mod tests {
             assert!(cancelled());
         }
         assert!(current().is_none() && check().is_ok());
+    }
+
+    #[test]
+    fn only_a_stoppable_run_is_uncapped_and_pace_sees_its_cancel() {
+        assert!(!uncapped(), "no run");
+        {
+            let _g = install(Some(Control::new()));
+            assert!(!uncapped(), "a run nobody can stop keeps its caps");
+        }
+        let c = Control::stoppable();
+        let _g = install(Some(c.clone()));
+        assert!(uncapped());
+        let mut pace = Pace::default();
+        assert!(!pace.stop(PACE_WORK), "not cancelled");
+        c.cancel();
+        assert!(!pace.stop(1), "not looked at again before PACE_WORK more");
+        assert!(pace.stop(PACE_WORK));
     }
 
     #[test]

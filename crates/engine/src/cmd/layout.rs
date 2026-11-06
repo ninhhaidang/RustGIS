@@ -88,10 +88,10 @@ pub fn commands() -> Vec<C> {
             r#"{"layout"?, "shape"?: "rectangle"|"circle"|"ellipse"|"polygon"|"lasso", "points"?: [[u, v], …] (polygon/lasso, 0..1 across the frame), "map"?: name, "x"?, "y"?, "w"?, "h"?: mm}"#,
         ),
         C::new("layout.addElement", "Add Element", "Publish › Map Surrounds", add_element).params(
-            r##"{"layout"?, "kind": "northArrow"|"scaleBar"|"legend"|"colorbar"|"text"|"dynamicText"|"picture"|"table"|"chart"|"rectangle" (a neatline framing the page unless any of x, y, w, h is given)|"ellipse"|"circle"|"line"|"arrow"|"extentIndicator"|"grid", "frame"?: element id (default: the first map frame), "of"?: frame id (extentIndicator, which also takes "color" and "width" in points, default red and 2), "text"?, "size"?, "color"?: "#RRGGBB"|"#RRGGBBAA", "bold"?: bool (text), "italic"?: bool, "align"?: "left"|"center"|"right", "letterSpacing"?: points, -5 to 50 (text, dynamicText), "font"?: "sans"|"serif"|an installed font family's name, as labels.fonts lists them (text, dynamicText; a family not installed here is drawn in its fallback, and a serif where none is installed in the sans, with a warning; refused for other kinds), "fallback"?: "sans"|"serif" (a named font's, where it isn't installed; default its own class, else sans), "title"?: legend title (default "Legend"), "allClasses"?: bool (legend: every class, not only those the frame draws), "hideOther"?: bool (legend: leave out <all other values>), "exclude"?: [layer names] (legend: layers it leaves out though the map draws them), "orientation"?: "horizontal"|"vertical" (colorbar), "ticks"?: 2..21 (colorbar: labelled values, ends included), "tickSide"?: "below"|"above"|"right"|"left" (colorbar), "reverse"?: bool (colorbar: high values first), "fill"?: "#RRGGBBAA" (rectangle, ellipse, circle, northArrow), "width"?: outline width in points (rectangle, ellipse, circle; 0 for none) or line width in points (line, grid), "radius"?: mm, 0 to 50 (rectangle: rounded corners), "dir"?: "horizontal"|"vertical"|"falling"|"rising" (line), "head"?: "none"|"end"|"start"|"both" (line; default "end" for an arrow), "angle"?: degrees anticlockwise from pointing right, centred on the page unless x or y is given (line, arrow; it sets the box and the direction, so w, h and dir are not used with it), "length"?: mm (line, arrow), "image"?: base64, "path"?: picture file, "layer"?: (table, chart; colorbar: a raster layer, default the top visible one), "field"?, "label"?, "rows"?, "step"?: degrees, or a measured grid's units (metres) (0 picks one), "type"?: "graticule" (latitudes and longitudes, default) | "measured" (eastings and northings in a projected system, as ArcGIS Pro's measured grid), "crs"?: a measured grid's coordinate system: EPSG:25832, WKT or a PROJ string ("" or none: the map's when projected, else the UTM zone at the frame's centre), "short"?: bool (a measured grid's labels as their kilometres' last two digits, 43 for 543000), "labels"?: bool, "style"?: "lines"|"ticks"|"linesAndTicks" (grid) or "classic"|"compass"|"triangle"|"star" (northArrow) or "alternating"|"stepped"|"line" (scaleBar), "tickLength"?: mm, "format"?: "decimal"|"dms", "hemisphere"?: bool (N/S/E/W rather than a sign), "edges"?: ["top","bottom","left","right"] (labelled edges), "labelOrientation"?: "horizontal"|"vertical", "off"?: bool (grid; options not given keep the grid's), "outline"?: "#RRGGBB" (northArrow), "units"?: "auto"|"kilometers"|"meters"|"miles"|"feet", "divisions"?: 1..10 (scaleBar), "x"?, "y"?, "w"?, "h"?: mm}"##,
+            r##"{"layout"?, "kind": "northArrow"|"scaleBar"|"legend"|"colorbar"|"text"|"dynamicText"|"picture"|"table"|"chart"|"rectangle" (a neatline framing the page unless any of x, y, w, h is given)|"ellipse"|"circle"|"line"|"arrow"|"extentIndicator"|"grid", "frame"?: element id (default: the first map frame), "of"?: frame id (extentIndicator, which also takes "color" and "width" in points, default red and 2), "text"?, "size"?, "color"?: "#RRGGBB"|"#RRGGBBAA", "bold"?: bool (text), "italic"?: bool, "align"?: "left"|"center"|"right", "letterSpacing"?: points, -5 to 50 (text, dynamicText), "font"?: "sans"|"serif"|an installed font family's name, as labels.fonts lists them (text, dynamicText; a family not installed here is drawn in its fallback, and a serif where none is installed in the sans, with a warning; refused for other kinds), "fallback"?: "sans"|"serif" (a named font's, where it isn't installed; default its own class, else sans), "title"?: legend title (default "Legend"), "allClasses"?: bool (legend: every class, not only those the frame draws), "hideOther"?: bool (legend: leave out <all other values>), "exclude"?: [layer names] (legend: layers it leaves out though the map draws them), "orientation"?: "horizontal"|"vertical" (colorbar), "ticks"?: 2..21 (colorbar: labelled values, ends included), "tickSide"?: "below"|"above"|"right"|"left" (colorbar), "reverse"?: bool (colorbar: high values first), "fill"?: "#RRGGBBAA" (rectangle, ellipse, circle, northArrow; scaleBar: the alternating bar's light divisions, default white), "width"?: outline width in points (rectangle, ellipse, circle; 0 for none) or line width in points (line, grid), "radius"?: mm, 0 to 50 (rectangle: rounded corners), "dir"?: "horizontal"|"vertical"|"falling"|"rising" (line), "head"?: "none"|"end"|"start"|"both" (line; default "end" for an arrow), "angle"?: degrees anticlockwise from pointing right, centred on the page unless x or y is given (line, arrow; it sets the box and the direction, so w, h and dir are not used with it), "length"?: mm (line, arrow), "image"?: base64, "path"?: picture file, "layer"?: (table, chart; colorbar: a raster layer, default the top visible one), "field"?, "label"?, "rows"?, "step"?: degrees, or a measured grid's units (metres) (0 picks one), "type"?: "graticule" (latitudes and longitudes, default) | "measured" (eastings and northings in a projected system, as ArcGIS Pro's measured grid), "crs"?: a measured grid's coordinate system: EPSG:25832, WKT or a PROJ string ("" or none: the map's when projected, else the UTM zone at the frame's centre), "short"?: bool (a measured grid's labels as their kilometres' last two digits, 43 for 543000), "labels"?: bool, "style"?: "lines"|"ticks"|"linesAndTicks" (grid) or "classic"|"compass"|"triangle"|"star" (northArrow) or "alternating"|"stepped"|"line" (scaleBar), "tickLength"?: mm, "format"?: "decimal"|"dms", "hemisphere"?: bool (N/S/E/W rather than a sign), "edges"?: ["top","bottom","left","right"] (labelled edges), "labelOrientation"?: "horizontal"|"vertical", "off"?: bool (grid; options not given keep the grid's), "outline"?: "#RRGGBB" (northArrow), "units"?: "auto"|"kilometers"|"meters"|"miles"|"feet", "divisions"?: 1..10 (scaleBar, whose "color" is its lines, dark divisions and labels, default #222222), "x"?, "y"?, "w"?, "h"?: mm}"##,
         ),
         C::new("layout.update", "Element Properties", "Publish › Element", update).params(
-            r##"{"layout"?, "element": id, "x"?, "y"?, "w"?, "h"?: mm, "name"?, "visible"?, "locked"?: bool (a locked element takes no other change until unlocked; "locked": false unlocks it and may come with changes), "text"?, "size"?, "color"? (text, line), "bold"?, "italic"?, "align"?, "letterSpacing"?, "font"?: "sans"|"serif"|an installed font family's name, "fallback"?: "sans"|"serif" (text, as in layout.addElement; refused for other elements), "title"?, "allClasses"?: bool (legend), "hideOther"?: bool (legend), "exclude"?: [layer names] (legend; [] lists every layer again), "orientation"?, "ticks"?, "tickSide"?, "reverse"?: (colorbar), "style"?: (northArrow, scaleBar), "fill"?, "outline"? (northArrow, rectangle, ellipse; for a rectangle or ellipse, color sets it when outline is not given), "radius"?: mm (rectangle: rounded corners), "width"?: points (rectangle, ellipse, line), "dir"?, "head"?, "angle"?, "length"? (line: turned or sized about its centre, then moved by any x or y; dir does not come with angle or length), "units"?, "divisions"? (scaleBar), "map"?, "scale"?, "center"?: [lon, lat], "bearing"?: degrees clockwise from north, "pitch"?: degrees of tilt (0 to 85), "grid"?: {grid options as in layout.addElement} | false (map frame), "extentIndicator"?: {"color"?, "width"?: points} | false (map frame: its extent indicator's style, or removes it), "layer"?: (colorbar: "" for the top visible raster), "field"?, "rows"?}"##,
+            r##"{"layout"?, "element": id, "x"?, "y"?, "w"?, "h"?: mm, "name"?, "visible"?, "locked"?: bool (a locked element takes no other change until unlocked; "locked": false unlocks it and may come with changes), "text"?, "size"?, "color"? (text, line; scaleBar: its lines, dark divisions and labels), "bold"?, "italic"?, "align"?, "letterSpacing"?, "font"?: "sans"|"serif"|an installed font family's name, "fallback"?: "sans"|"serif" (text, as in layout.addElement; refused for other elements), "title"?, "allClasses"?: bool (legend), "hideOther"?: bool (legend), "exclude"?: [layer names] (legend; [] lists every layer again), "orientation"?, "ticks"?, "tickSide"?, "reverse"?: (colorbar), "style"?: (northArrow, scaleBar), "fill"?, "outline"? (northArrow, rectangle, ellipse; for a rectangle or ellipse, color sets it when outline is not given; a scaleBar's fill is the alternating bar's light divisions), "radius"?: mm (rectangle: rounded corners), "width"?: points (rectangle, ellipse, line), "dir"?, "head"?, "angle"?, "length"? (line: turned or sized about its centre, then moved by any x or y; dir does not come with angle or length), "units"?, "divisions"? (scaleBar), "map"?, "scale"?, "center"?: [lon, lat], "bearing"?: degrees clockwise from north, "pitch"?: degrees of tilt (0 to 85), "grid"?: {grid options as in layout.addElement} | false (map frame), "extentIndicator"?: {"color"?, "width"?: points} | false (map frame: its extent indicator's style, or removes it), "layer"?: (colorbar: "" for the top visible raster), "field"?, "rows"?}"##,
         ),
         C::new("layout.guides", "Guides", "Publish › Page Setup", guides).params(
             r#"{"layout"?, "x"?: [mm] (vertical guides, from the page's left edge), "y"?: [mm] (horizontal guides, from its top edge), "clear"?: bool (remove every guide first)}"#,
@@ -121,7 +121,7 @@ pub fn commands() -> Vec<C> {
         C::new("layout.seriesPage", "Map Series Page", "Publish › Map Frames", series_page).params(r#"{"layout"?, "page": number|"next"|"previous"}"#),
         C::new("layout.seriesRefresh", "Refresh Map Series", "Publish › Map Frames", |s, p| series_page(s, &json!({"layout": p.get("layout"), "page": "current"})))
             .params(r#"{"layout"?}"#),
-        C::new("layout.export", "Export Layout", "Publish › Output", export)
+        C::new("layout.export", "Export Layout", "Publish › Output", |s, p| super::exports::write_here(s, p, "layout.export"))
             .view()
             .params(r#"{"layout"?, "path": "*.png|*.pdf|*.svg" (PNG/SVG: current page; SVG: each element a group of its own; text and shapes as SVG, map frames and surrounds as vectors, rasters and tiles in them as pictures at dpi), "dpi"?: 72..600, "allPages"?: bool (PDF only; default true: every map series page, up to 500; false: the current page)}"#),
         C::new("layout.save", "Save Layout File", "Publish › Save As", |s, p| {
@@ -2207,9 +2207,12 @@ fn corner_radius(p: &Value, d: f64) -> Result<f64, String> {
     }
 }
 
+/// The colour `p` gives as `k`, or `d` when it gives none (absent or null). Any other value is
+/// refused rather than ignored.
 pub(crate) fn color(p: &Value, k: &str, d: Rgba) -> Result<Rgba, String> {
-    match ps(p, k) {
-        Some(c) => Rgba::from_hex(c).ok_or_else(|| format!("{k} must be #RRGGBB or #RRGGBBAA")),
+    let bad = || format!("{k} must be #RRGGBB or #RRGGBBAA");
+    match p.get(k).filter(|v| !v.is_null()) {
+        Some(v) => v.as_str().and_then(Rgba::from_hex).ok_or_else(bad),
         None => Ok(d),
     }
 }
@@ -2779,8 +2782,8 @@ fn restyle(kind: &ElementKind, p: &Value) -> Result<Option<ElementKind>, String>
                 outline: color(p, "outline", *outline)?,
             }))
         }
-        ElementKind::ScaleBar { frame, units, divisions, style } => {
-            if ["style", "units", "divisions"].iter().all(|k| p.get(k).is_none()) {
+        ElementKind::ScaleBar { frame, units, divisions, style, color: c, fill } => {
+            if ["style", "units", "divisions", "color", "fill"].iter().all(|k| p.get(k).is_none()) {
                 return Ok(None);
             }
             let style = match ps(p, "style") {
@@ -2799,7 +2802,8 @@ fn restyle(kind: &ElementKind, p: &Value) -> Result<Option<ElementKind>, String>
                 Some(_) => f(p, "divisions").ok_or("divisions is a number")?.round().clamp(1.0, MAX_SCALE_DIVISIONS as f64) as usize,
                 None => *divisions,
             };
-            Ok(Some(ElementKind::ScaleBar { frame: *frame, units, divisions, style }))
+            let (color, fill) = (color(p, "color", *c)?, color(p, "fill", *fill)?);
+            Ok(Some(ElementKind::ScaleBar { frame: *frame, units, divisions, style, color, fill }))
         }
         ElementKind::Rectangle { fill, outline, width, .. } | ElementKind::Ellipse { fill, outline, width } => {
             if ["fill", "outline", "color", "width", "radius"].iter().all(|k| p.get(k).is_none()) {
@@ -2981,8 +2985,9 @@ fn update(s: &mut Session, p: &Value) -> CmdResult {
         ),
         None => None,
     };
-    let col = match ps(p, "color") {
-        Some(c) => Some(Rgba::from_hex(c).ok_or("color must be #RRGGBB or #RRGGBBAA")?),
+    // A colour that isn't text is refused, as `color` does when adding (the default is unused).
+    let col = match p.get("color").filter(|v| !v.is_null()) {
+        Some(_) => Some(color(p, "color", Rgba::rgb(0, 0, 0))?),
         None => None,
     };
     // A text element's italic, alignment and spacing, checked before anything changes.
@@ -3338,8 +3343,8 @@ fn series_page(s: &mut Session, p: &Value) -> CmdResult {
 
 /// Renders a layout to PNG or PDF bytes. `all` renders every map series page (PDF only).
 /// What an export of a layout whose texts name installed families is told while the app is still
-/// indexing the fonts (its first seconds; an export runs on its interface thread, which mustn't
-/// wait): those texts are drawn in their fallbacks. A script or the command line indexes them at
+/// indexing the fonts (its first seconds; the app's exports don't wait for them): those texts
+/// are drawn in their fallbacks. A script or the command line indexes them at
 /// once.
 fn named_fonts_unread(layout: &Layout) -> Option<&'static str> {
     let named = layout.elements.iter().any(|e| matches!(&e.kind, ElementKind::Text { font_name: Some(_), .. }));
@@ -3379,6 +3384,10 @@ pub fn layout_bytes(s: &mut Session, li: usize, pdf: bool, dpi: f64, all: bool) 
         let mut out = Vec::new();
         let mut png = None;
         let mut held = 0usize;
+        // How far a series' pages have come, when the export runs with progress.
+        if pages.len() > 1 {
+            rustgis_data::progress::begin(pages.len());
+        }
         for page in &pages {
             if stepping {
                 series_page(s, &json!({"layout": li, "page": page}))?;
@@ -3420,6 +3429,8 @@ pub fn layout_bytes(s: &mut Session, li: usize, pdf: bool, dpi: f64, all: bool) 
                 let img = rustgis_render::layout::render(layout, &mut s.project.maps, dpi, &info).ok_or("the page is too large to draw")?;
                 png = Some(img.encode_png().map_err(|e| e.to_string())?);
             }
+            // A cancelled export stops here, its layout put back below.
+            rustgis_data::progress::step(1).map_err(|e| e.to_string())?;
         }
         Ok((out, png))
     };
@@ -3471,24 +3482,44 @@ pub(crate) fn pictured_notices(s: &mut Session, frames: &[(u32, String)], pages:
     }
 }
 
-fn export(s: &mut Session, p: &Value) -> CmdResult {
+/// `layout.export`: a layout to a PNG, PDF or SVG. It draws a copy of the project, so the project
+/// can change meanwhile (a map series steps through its pages on the copy); a cancelled export
+/// stops at the next page, or its map's wait for tiles, and writes nothing.
+pub(crate) fn export_work(s: &Session, p: &Value) -> Result<super::exports::Work, String> {
     let path = ps(p, "path").ok_or("path is required")?.to_string();
     let li = index(s, p)?;
     let lower = path.to_ascii_lowercase();
-    let pdf = lower.ends_with(".pdf");
-    if lower.ends_with(".svg") {
-        let text = layout_svg(s, li, f(p, "dpi").unwrap_or(150.0))?;
-        rustgis_data::io::write_atomic(Path::new(&path), text.as_bytes()).map_err(|e| format!("{path}: {e}"))?;
-        s.notify(format!("Exported {path}"), false);
-        return Ok(json!({"path": path, "bytes": text.len()}));
-    }
-    if !pdf && !lower.ends_with(".png") {
+    let (pdf, svg) = (lower.ends_with(".pdf"), lower.ends_with(".svg"));
+    if !pdf && !svg && !lower.ends_with(".png") {
         return Err("export to a .png, .pdf or .svg file".into());
     }
-    let bytes = layout_bytes(s, li, pdf, f(p, "dpi").unwrap_or(150.0), b(p, "allPages").unwrap_or(true))?;
-    rustgis_data::io::write_atomic(Path::new(&path), &bytes).map_err(|e| format!("{path}: {e}"))?;
-    s.notify(format!("Exported {path}"), false);
-    Ok(json!({"path": path, "bytes": bytes.len()}))
+    let (dpi, all) = (f(p, "dpi").unwrap_or(150.0), b(p, "allPages").unwrap_or(true));
+    let mut project = s.project.clone();
+    for m in &mut project.maps {
+        m.detach_reads();
+    }
+    Ok(Box::new(move || {
+        let mut copy = Session::new(project);
+        let written = (|| {
+            let bytes = if svg { layout_svg(&mut copy, li, dpi)?.into_bytes() } else { layout_bytes(&mut copy, li, pdf, dpi, all)? };
+            rustgis_data::progress::check().map_err(|e| e.to_string())?;
+            rustgis_data::io::write_atomic(Path::new(&path), &bytes).map_err(|e| format!("{path}: {e}"))?;
+            Ok(json!({"path": path, "bytes": bytes.len()}))
+        })();
+        // What drawing it said (frames drawn as pictures, fonts it lacks), as the command says it
+        // here; past the notices a session keeps, how many earlier ones there were.
+        let kept = std::mem::take(&mut copy.notices);
+        let earlier = copy.notices_given().saturating_sub(kept.len() as u64);
+        let mut said: Vec<_> = Vec::new();
+        if earlier > 0 {
+            said.push((
+                rustgis_data::diagnostics::Severity::Warning,
+                format!("{path}: {earlier} earlier notices from drawing it aren't shown"),
+            ));
+        }
+        said.extend(kept.into_iter().map(|n| (n.severity, n.text)));
+        super::exports::drawn(&copy.project.maps, said, written, path)
+    }))
 }
 
 /// The layout `li` as it is now (a map series at its current page) as SVG, kept as vectors with

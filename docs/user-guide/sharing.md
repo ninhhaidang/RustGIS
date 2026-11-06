@@ -19,9 +19,43 @@ table. **Data › Export** also writes rasters to GeoTIFF, and **Data Interop** 
 KML, GPX or CSV with WKT. Layouts, reports and presentations export from their own tabs and panes
 (see [Layouts and Reports](layouts.md)).
 
-GeoPackage exports require a new filename. Exporting to an existing `.gpkg` is refused to
-protect its tables and data, even if the save dialog offers to replace the file. Export does
-not append a table to an existing GeoPackage or replace one of its tables.
+On the desktop, Export Features, Export Raster, Export Map and Export Layout write their file in
+the background, so the map and the rest of the window stay in use. While one runs, the status bar
+shows its name, a progress bar (Export Raster's untiled GeoTIFF, Export Map and a one-page layout
+show none) and **Cancel**; when it ends its messages appear as before. One export runs at a time.
+Export Map and Export Layout draw the map and layout as they were when the export started, so
+moving the map or editing the layout meanwhile doesn't change the file. A cancelled export writes
+nothing, and a file it was to replace stays as it was. Scripts, models, the AI Assistant and the
+command line still wait for the file. Printing a layout, and the exports of reports, presentations
+and animations, still run before the window goes on. So does Export Map while a style added with
+its own view is still loading: it waits for the map to move there, without progress or **Cancel**.
+
+A GeoPackage export writes a new file by default, and refuses an existing `.gpkg` to protect its
+tables, even if the save dialog offers to replace the file. To put the layer into an existing
+GeoPackage instead, choose GeoPackage in **Export Features**, then under **Into** either
+**A new table in a GeoPackage** or **A table replaced in a GeoPackage**, name the table, and
+pick the file (on the desktop). The GeoPackage's other tables stay as they were: one table is
+added, or one feature or attribute table of that name is replaced (a feature table with its
+spatial index; an attribute table has none), in a single transaction, so a failed export changes
+nothing. A name already used is refused when
+adding (with no file there, adding makes a new GeoPackage). Replacing needs a feature or
+attribute table of that name, so a misspelt name changes nothing; tiles, views and other tables
+are never replaced, nor is a table in a related-tables relation. A replaced table's own indexes,
+triggers and column descriptions go with it, and the export names any views or triggers elsewhere
+that use it. The GeoPackage's own triggers don't run while the export writes. A layer read in
+place from the GeoPackage it is exported into is read whole first, rather than a chunk at a
+time, as SQLite can't read and write one file in the same export.
+From the command line, `share.exportLayer` and `share.exportTable` take `"mode": "addTable"` or
+`"replaceTable"` and an optional `"tableName"` (default: the layer's or table's name). The name is
+written as a GeoPackage allows: control characters are removed, surrounding spaces trimmed, an
+empty name becomes `layer`, and one starting with `gpkg_`, `sqlite_` or `rtree_` (reserved for the
+GeoPackage's own tables) gets `layer_` in front. Adding and replacing look for that name, and the
+command's result gives it as `table`:
+
+```sh
+rustgis-cli run --data permits.geojson \
+  --cmd 'share.exportLayer={"layer":"permits","path":"county.gpkg","mode":"addTable"}'
+```
 
 Packages and project item files are described under [Project items](data.md#project-items).
 

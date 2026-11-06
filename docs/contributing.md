@@ -39,7 +39,20 @@ breaks of the rules in AGENTS.md are fixed in the pull request.
 `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace -q` and
 `cargo xtask layers`. The pre-commit hooks also check TOML, YAML, JSON, whitespace and large files.
 CI separately builds `rustgis-web` for `wasm32-unknown-unknown` and runs
-`cargo deny --locked check licenses` against `deny.toml`.
+`cargo deny --locked check licenses sources` against `deny.toml`, including development
+dependencies. The fuzz workflow applies the same source policy using `fuzz/deny.toml`, which
+also permits NCSA for libFuzzer. Sources are limited to crates.io; an intentional git source needs an explicit
+allowlist entry and a pinned revision. CI also runs `python3 .github/scripts/check-cargo-sources.py`
+to reject repository Cargo configuration with `source`, `paths` or `patch` overrides, including
+case variants of `.cargo/config` and `.cargo/config.toml` used on case-insensitive filesystems.
+Tracked `.cargo` directories must be real directories.
+Config `include` directives are also rejected so those checks cannot be bypassed by loading
+another file; put intentional dependency patches in `Cargo.toml` for review.
+User-level Cargo mirrors are outside this repository check.
+
+Workflow actions are pinned to full commit SHAs with the previous version or branch in a comment.
+Dependabot's existing GitHub Actions updates keep these pins current. When changing an action,
+resolve the commit in that action's own repository and keep the version comment in step.
 
 Other workspace tasks:
 
@@ -53,6 +66,26 @@ Other workspace tasks:
 Interface strings must be translatable: use `tl!("…")` for literals and
 `i18n::fmt("… {name} …", &[("name", value)])` for messages with values. New strings can fall back
 to English until the catalogs are updated; see [Languages](i18n.md).
+
+### Saved-file compatibility
+
+`crates/engine/src/project.rs::FORMAT` is the saved-document compatibility version, separate
+from the application release version. Project, map, layer and style imports check a top-level
+`format` before interpreting their payloads. Missing metadata remains supported legacy content;
+style files currently remain arrays. Current companion writers keep their existing output.
+Every project serialization, including templates and packages, writes the current `FORMAT`,
+even when the project was loaded from an older supported file.
+These reader checks prepare for future writers; they do not protect already released readers
+or detect new information in files that omit the required version.
+
+When a future change would cause an older reader to misinterpret or lose meaningful saved
+information on resaving, advance `FORMAT` and declare it in each affected document's top-level
+`format`. This includes additive fields that parse successfully but disappear when an older
+writer saves. For a style file that needs metadata, the future writer must use an object rather
+than the legacy array; readers with this guard refuse its newer format before interpreting it.
+A payload or wrapper for such a new format belongs in that future change. Keep existing legacy
+readers and test that unsupported versions fail before typed deserialization, normalization or
+source reopening, including alternate import and package paths.
 
 ### Faster local builds and test runs
 

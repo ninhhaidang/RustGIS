@@ -11,10 +11,10 @@ use crate::{CmdResult, CommandSpec as C, Session};
 pub fn commands() -> Vec<C> {
     vec![
         C::new("map.findPlace", "By Place or Address…", "Home › Navigate › Locate", find_place).params(
-            r#"{"query": "a place or an address", "provider"?: "nominatim" (OpenStreetMap, default) | "photon", "url"?: "a geocoding server of your own", "limit"?: 1–20, "go"?: bool (zooms to the first, default true)}"#,
+            r#"{"query": "a place or an address", "provider"?: "nominatim" (OpenStreetMap, default) | "photon" | "locatieserver" (PDOK, the Netherlands' addresses and places), "url"?: "a geocoding server of your own", "limit"?: 1–20, "go"?: bool (zooms to the first, default true)}"#,
         ),
         C::new("layer.geocode", "Geocode Addresses", "Home › Add › Add Data", geocode).params(
-            r#"{"table"?: name|id (a standalone table, such as a CSV of addresses), "layer"?: name|id (or the active layer), "address": field | [fields] (joined with commas, such as street, city, country), "provider"?: "nominatim" | "photon", "url"?: "a geocoding server of your own (more than 100 addresses)", "name"?: text, "places"?: "answers already looked up, {address: {lon, lat, name} | null} (the app's background run; nothing is fetched)"}"#,
+            r#"{"table"?: name|id (a standalone table, such as a CSV of addresses), "layer"?: name|id (or the active layer), "address": field | [fields] (joined with commas, such as street, city, country), "provider"?: "nominatim" | "photon" | "locatieserver" (PDOK, Dutch addresses; up to 10,000 a run), "url"?: "a geocoding server of your own (more than 100 addresses with nominatim or photon)", "name"?: text, "places"?: "answers already looked up, {address: {lon, lat, name} | null} (the app's background run; nothing is fetched)"}"#,
         ),
     ]
 }
@@ -50,7 +50,11 @@ fn find_place(s: &mut Session, p: &Value) -> CmdResult {
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let places = crate::render::rustgis_tiles::geocode::search_blocking(&g, query, limit)?;
+        let found = crate::render::rustgis_tiles::geocode::search_blocking(&g, query, limit)?;
+        if found.skipped > 0 {
+            s.warn(skipped_notice(found.skipped));
+        }
+        let places = found.places;
         if super::b(p, "go").unwrap_or(true)
             && let Some(first) = places.first()
         {
@@ -126,10 +130,16 @@ pub fn addresses(s: &Session, p: &Value) -> Result<(Vec<String>, Vec<String>), S
     Ok((rows, distinct))
 }
 
+/// What a run says of the places the geocoder answered with but gave no usable position for
+/// (they are left out, so an address may be "not found" because of them).
+pub fn skipped_notice(n: usize) -> String {
+    format!("{n} of the geocoder's places had no usable position (no coordinate, or an unreadable one) and were left out")
+}
+
 /// The addresses past what a run may send.
 pub fn check_batch(g: &Geocoder, distinct: usize) -> Result<(), String> {
     if distinct > g.batch_limit() {
-        return Err(if g.is_public() {
+        return Err(if g.asks_light_use() {
             format!(
                 "{distinct} addresses: a public geocoder takes {} per run (its usage policy); give \"url\" of a Nominatim or Photon server of your own for more",
                 g.batch_limit()
@@ -179,6 +189,9 @@ fn geocode(s: &mut Session, p: &Value) -> CmdResult {
         None => {
             check_batch(&g, distinct.len())?;
             let l = lookup(&g, &distinct)?;
+            if l.skipped > 0 {
+                s.warn(skipped_notice(l.skipped));
+            }
             if l.failed > 0 {
                 s.notify(
                     format!(
@@ -233,6 +246,8 @@ struct Lookup {
     found: std::collections::HashMap<String, Option<Place>>,
     failed: usize,
     error: Option<String>,
+    /// Places the answers gave without a usable position.
+    skipped: usize,
 }
 
 /// Geocodes each address, waiting between requests as the server asks.
@@ -240,15 +255,25 @@ struct Lookup {
 fn lookup(g: &Geocoder, distinct: &[String]) -> Result<Lookup, String> {
     let mut out = Lookup::default();
     let (mut succeeded, mut in_a_row) = (0usize, 0usize);
+    let mut sent = false;
     for (i, a) in distinct.iter().enumerate() {
-        if i > 0 {
+        // An address longer than the server takes isn't sent cut short: it fails on its own, and
+        // isn't a refusal by the server (which would stop the run).
+        if let Err(e) = g.check_query(a) {
+            out.failed += 1;
+            out.error = Some(e);
+            continue;
+        }
+        if sent {
             std::thread::sleep(std::time::Duration::from_millis(g.spacing_ms()));
         }
+        sent = true;
         match crate::render::rustgis_tiles::geocode::search_blocking(g, a, 1) {
-            Ok(places) => {
+            Ok(found) => {
                 succeeded += 1;
                 in_a_row = 0;
-                out.found.insert(a.clone(), places.into_iter().next());
+                out.skipped += found.skipped;
+                out.found.insert(a.clone(), found.places.into_iter().next());
             }
             // A failed request isn't "not found": it is counted apart, and a server that refuses
             // every request (or starts to, as a rate limit does) stops the run.

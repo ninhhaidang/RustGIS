@@ -10,7 +10,7 @@
 //!     --cmd 'share.exportMap={"path":"out.png"}' [--save out.rgis]
 //! rustgis-cli run … --use-saved-secrets            # use what the desktop app saved in the system keychain
 //! rustgis-cli ask [--sample | --project p.rgis | --data f.geojson …] "Which cities have over 10 million people?" \
-//!     [--provider anthropic|openai|chatgpt|gemini|openrouter|ollama|custom] [--model M] [--base-url URL] [--yes] [--save out.rgis] [--trace log.txt]
+//!     [--provider anthropic|openai|chatgpt|gemini|openrouter|ollama|custom|requesty] [--model M] [--base-url URL] [--yes] [--save out.rgis] [--trace log.txt]
 //! rustgis-cli ask --models [--provider P]                # list the provider's models
 //! rustgis-cli ask --accounts | --account CLIENT_ID       # list or select a saved registration
 //! rustgis-cli ask --remove-account CLIENT_ID             # sign out and forget a saved registration
@@ -849,8 +849,11 @@ fn main() -> ExitCode {
         }
         "run" => {
             // Nothing waits on `run` but the shell (an assistant or an MCP client does, and has a
-            // timeout): long runs take the app's bounds, their progress on stderr.
+            // timeout): long runs take the app's bounds, their progress on stderr. A person at the
+            // terminal can stop a run with Ctrl-C, so there tools take no work cap; a program
+            // calling it may have a timeout, and keeps the caps.
             s.long_runs = Some(progress);
+            s.stoppable = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
             open_inputs(&mut s, &args)?;
             for (i, a) in args.iter().enumerate() {
                 if a == "--cmd"

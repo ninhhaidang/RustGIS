@@ -8,11 +8,13 @@ pub mod cube;
 pub mod cube_catalog;
 pub mod deeplearning;
 pub mod design;
+pub mod diagram;
 pub mod directions;
 pub mod earthdata;
 pub mod edit;
 pub mod effects;
 pub mod embeddings;
+pub mod exports;
 pub mod geocode;
 pub mod geolibre;
 pub mod gp;
@@ -36,6 +38,7 @@ pub mod presentation;
 pub mod project;
 pub mod qgis;
 pub mod raster;
+pub mod reads;
 pub mod repair;
 pub mod report;
 pub mod s3;
@@ -76,6 +79,7 @@ pub fn all() -> Vec<CommandSpec> {
     v.extend(sources::commands());
     v.extend(connections::commands());
     v.extend(layer::commands());
+    v.extend(diagram::commands());
     v.extend(group::commands());
     v.extend(layer_copy::commands());
     v.extend(raster::commands());
@@ -189,6 +193,22 @@ pub(crate) fn need_feature_layer(s: &Session) -> Option<&'static str> {
 
 pub(crate) fn need_layers(s: &Session) -> Option<&'static str> {
     if s.map().layers.is_empty() { Some("the map has no layers") } else { None }
+}
+
+/// Whether the map holds nothing but its basemap: no layer and no data tile layer (a cloud-optimised
+/// GeoTIFF, a PMTiles or MBTiles archive, or an overlay). `layers` is the source of truth: a group only
+/// holds ids of layers in `layers`, so a group with no live layers (an empty one, or one whose layers
+/// were removed) does not count as content. Hidden content counts, a layer or a tile layer the
+/// user hid alike: the map holds data and a view the user chose, so adding a layer leaves that view
+/// alone. A data archive counts even when it draws as a basemap: it carries no overlay flag, so it
+/// cannot be told from a basemap archive (a deliberate choice). The first content added to such a map
+/// is framed; adding to a map that holds something leaves the view where the user put it.
+pub(crate) fn map_is_empty(s: &Session) -> bool {
+    let m = s.map();
+    m.layers.is_empty()
+        && !m.tiles.iter().any(|t| {
+            t.overlay || matches!(t.kind, rustgis_map::TileKind::Cog | rustgis_map::TileKind::PmTiles | rustgis_map::TileKind::MbTiles)
+        })
 }
 
 pub(crate) fn need_selection(s: &Session) -> Option<&'static str> {

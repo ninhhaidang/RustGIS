@@ -278,3 +278,51 @@ fn a_panicking_writer_leaves_nothing_behind() {
     assert!(r.is_err());
     assert_eq!(std::fs::read_dir(&d).unwrap().count(), 0);
 }
+
+/// Streamed into an existing GeoPackage, an export that starts again (a multipoint, then a
+/// repeated id) rolls back what it wrote and writes the table once, as a whole export would; one
+/// whose source fails leaves the file's bytes as they were.
+#[test]
+fn a_streamed_export_into_an_existing_geopackage_starts_again_inside_its_transaction() {
+    let d = folder("redo-existing");
+    let county = d.join("county.gpkg");
+    let mut parcels = Dataset::new("parcels", GeometryType::Point, vec![]);
+    parcels.push_next(Some(Geometry::Point(Coord::new(5.0, 5.0))), vec![]);
+    crate::io::write_path(&parcels, &county).unwrap();
+    let fields = vec![Field::new("n", FieldType::Integer)];
+    let mut both = Dataset::new("both", GeometryType::Point, fields.clone());
+    for i in 0..20 {
+        let c = Coord::new(i as f64, 1.0);
+        let g = if i == 15 { Geometry::MultiPoint(vec![c, Coord::new(i as f64, 2.0)]) } else { Geometry::Point(c) };
+        both.push_next(Some(g), vec![Value::Int(i)]);
+    }
+    let first = both.features.first().map(|f| f.id).unwrap();
+    if let Some(f) = both.features.get_mut(18) {
+        f.id = first;
+    }
+    let layer = Dataset::new("both", GeometryType::Point, fields);
+    let add = GpkgTable { mode: crate::io::GpkgMode::AddTable, name: None };
+    let src = Runs::new(&both, 4);
+    let (e, table) = write_chunks_to(&src, &layer, &county, Crs::LonLat, &add, 1).unwrap();
+    assert_eq!(src.passes.load(std::sync::atomic::Ordering::Relaxed), 3, "written three times");
+    assert_eq!((e.written, table), (20, Some(GpkgWritten { table: "both".into(), replaced: false, dependents: vec![] })));
+    let whole = d.join("whole.gpkg");
+    crate::io::write_path(&both, &whole).unwrap();
+    let read =
+        |p: &Path, t: &str| crate::source::open_path(p, Some(t)).unwrap().read(&Request { extent: None, limit: 100 }).unwrap().features;
+    assert_eq!(read(&county, "both"), read(&whole, "both"));
+    assert_eq!(read(&county, "parcels").len(), 1);
+    let c = rusqlite::Connection::open(&county).unwrap();
+    let kind: String =
+        c.query_row("SELECT geometry_type_name FROM gpkg_geometry_columns WHERE table_name = 'both'", [], |r| r.get(0)).unwrap();
+    assert_eq!(kind, "MULTIPOINT");
+    drop(c);
+    // A source failing on the second pass: nothing of the table is left.
+    let before = std::fs::read(&county).unwrap();
+    let mut layer2 = layer.clone();
+    layer2.name = "again".into();
+    let mut failing = Runs::new(&both, 4);
+    (failing.fail_after, failing.fail_pass) = (Some(2), Some(1));
+    assert!(write_chunks_to(&failing, &layer2, &county, Crs::LonLat, &add, 1).is_err());
+    assert_eq!(std::fs::read(&county).unwrap(), before);
+}

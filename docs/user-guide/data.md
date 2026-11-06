@@ -44,8 +44,24 @@ double-clicked in the Browser: **Choose Layers** lists them, all ticked, with **
 **Select None** and a filter for a long list. Turn **Ask Which Layers to Add** off in the Add Data
 menu to add every layer, as before. Scripts pick one with `layer.addData`'s `"layer"`;
 `info.fileLayers` lists them.
+A KML, KMZ, GPX, OpenStreetMap, DXF, LandXML or GeoRSS file, a zip of Shapefiles or a File
+Geodatabase that RustGIS reads itself, with layers of several geometry types, adds its polygons
+first and its points last, so its points are drawn on top, and a KML's ground overlays go under
+them. A name given goes to the first map layer added, the bottom one (a standalone table only gets
+it when the file has no map layer). A GeoPackage adds its tables in name order, and a file read
+through GDAL keeps its layers in the file's order and orders only the types within each layer.
 On the desktop, **Home › Add › Add Data › Add Folder…** connects a folder to the Browser; the web
 app does not offer folder connections.
+On the desktop, a file Add Data reads whole (a GeoTIFF or another raster, one GDAL converts, a
+GeoJSON of up to 32 MB, delimited text or a spreadsheet) is read in the background, so the map
+and the rest of the window stay in use: the status bar shows **Add Data**, how many files wait
+after it, and **Cancel**. Files dropped or added together are read one at a time and added in
+that order; one that asks which layers to add joins them once you choose. Cancel leaves the file being read and those waiting; opening another project, or
+switching to another map, leaves them too, and a message says which. A file read in place, a web
+service or a database adds as before, and scripts read the file where the command runs. So does
+**Delimited Text…**: it reads the file with the columns picked as you press **Add**, so a read
+that fails (a column that isn't in the file, a coordinate system it doesn't know) keeps the
+dialog open for another try.
 **Home › Add › Add Data › Delimited Text…** asks for a CSV or a spreadsheet first, then lists its columns to pick the x and y (or WKT)
 ones from, with the coordinate system (such as `EPSG:2263`) and the separator (changing it reads
 the columns again); `info.fileColumns` lists them for scripts. Add Data finds them itself
@@ -111,11 +127,11 @@ FlatGeobuf with a spatial index in WGS 84 (GDAL reprojects it), kept in the cach
 (`~/.cache/rustgis/gdal` on Linux, `~/Library/Caches/RustGIS/gdal` on macOS,
 `%LOCALAPPDATA%\RustGIS\cache\gdal` on Windows, or `RUSTGIS_GDAL_CACHE`). Adding the file again
 reuses the conversion until the file changes, and large layers stream like any large FlatGeobuf
-(below). Every layer of the file is added; a layer mixing geometry types is
-added as one layer per type. Curves become straight segments, and 3D surfaces (an Esri
-multipatch, such as the buildings of swissBUILDINGS3D, is read as a TIN) become flat
-polygons, one part per face, without their heights. Projects remember the original file and
-convert it again if the cached copy is gone.
+(below). Every layer of the file is added; a layer mixing geometry types is added as one layer
+per type, its points on top and its polygons at the bottom. Curves become straight segments, and
+3D surfaces (an Esri multipatch, such as the buildings of swissBUILDINGS3D, is read as a TIN)
+become flat polygons, one part per face, without their heights. Projects remember the original
+file and convert it again if the cached copy is gone.
 
 ## SQL queries and DuckDB databases
 
@@ -151,7 +167,8 @@ WHERE bbox.xmin BETWEEN -83.95 AND -83.89 AND bbox.ymin BETWEEN 35.94 AND 35.98
 The first geometry column becomes the layer's geometry; other columns become its attributes (types
 RustGIS doesn't read, such as dates and lists, as text). A geometry that says its coordinate system
 is converted to longitude/latitude; give `"crs"` (such as `EPSG:2263`) for one that doesn't. A
-result mixing geometry types becomes a layer per type, and rows without a geometry are left out.
+result mixing geometry types becomes a layer per type (points on top, polygons at the bottom), and
+rows without a geometry are left out.
 `"database"` opens a DuckDB database (read only) so the query names its tables plainly; the
 database is trusted like the query, since its views run as part of it.
 
@@ -183,9 +200,10 @@ so only those cross the network. Smaller tables are loaded whole, so they can be
 server converts geometry to longitude/latitude (`ST_Transform`, so every coordinate system in its
 `spatial_ref_sys` works) and curves to lines; give `"crs"` (such as `EPSG:2263`) for a column whose
 geometry doesn't say its coordinate system. A column of mixed geometry types becomes a layer per
-type, and empty tables (such as the TIGER geocoder's) are left out. Features keep their ids between
-views: the table's integer primary key, else the row's place in the table (the rows of a view or
-a partitioned table without a key are numbered as read, so theirs can change between views).
+type, points on top, and empty tables (such as the TIGER geocoder's) are left out. Features keep
+their ids between views: the table's integer primary key, else the row's place in the table (the
+rows of a view or a partitioned table without a key are numbered as read, so theirs can change
+between views).
 
 Passwords are never written to the project. By default, an entered password lasts until
 RustGIS closes. For a named desktop connection, **Remember on this computer** is an unchecked
@@ -232,7 +250,7 @@ back to it. In **Home › Add › Add Data › Database…**, give a PostgreSQL 
   password, `PGPASSWORD` or libpq's password file serve.
 - The table (`pg.addLayer`; `pg.tables` lists those with a geometry or geography column) loads
   whole, up to 100,000 rows a layer, in the order of its key.
-  A table whose geometries are of several types loads each type as its own layer, each up to that many.
+  A table whose geometries are of several types loads each type as its own layer (points on top), each up to that many.
   A **condition** (an SQL expression on its columns, such as `population > 10000`) loads only the
   rows it keeps. The layer is an ordinary layer in memory, so every editing tool works on it.
 
@@ -372,8 +390,9 @@ a capped view is an evenly spread sample numbered on the server; smaller ones ar
 RustGIS converts the geometry to longitude/latitude itself (MariaDB has no `ST_Transform`), from
 the column's SRID (MySQL's per-column SRID, MariaDB's `REF_SYSTEM_ID`) or else its rows'; give
 `"crs"` (such as `EPSG:2263`) for a column whose SRID is 0. A `GEOMETRY` column of mixed types
-becomes a layer per type. Features keep their ids between views from the table's integer primary
-key; a table without one has its rows numbered as read, so theirs can change between views.
+becomes a layer per type, points on top. Features keep their ids between views from the table's
+integer primary key; a table without one has its rows numbered as read, so theirs can change
+between views.
 
 Passwords are never written to the project and last for the session unless you opt in with
 **Remember on this computer** for a named desktop connection. The same exact-address reconnect,
@@ -452,7 +471,22 @@ The geocoder is OpenStreetMap's public [Nominatim](https://nominatim.org) by def
 [Photon](https://photon.komoot.io) (`"provider": "photon"`). Their usage policies allow light
 use, so RustGIS sends them at most one request a second and 100 addresses a run; give `"url"` of
 a Nominatim or Photon server of your own for more (up to 10,000, with no wait between requests).
-In the app the requests go out in the background, one at a time, and the layer is added when the
+
+For addresses in the Netherlands, `"provider": "locatieserver"` (**Locatieserver (the
+Netherlands)** in the dialog) uses PDOK's
+[Locatieserver](https://www.pdok.nl/introductie/-/article/pdok-locatieserver-1), the free
+geocoder built on the Dutch government's address and place registers (BAG and others): it finds
+addresses, postcodes, streets, towns, municipalities and provinces. Its answers are open data from
+those registers; Find Place credits PDOK Locatieserver (Kadaster) under the results. PDOK
+publishes no request limit for it, so RustGIS sends it four requests a second and up to 10,000
+addresses a run. An address is matched to the house before its street (`Damrak 1, Amsterdam` is
+the building, not the middle of Damrak). Its places have a point but no extent, so Find Place
+zooms in close around them.
+
+An answer's places without a usable position (no coordinate, or one that can't be read) are left
+out, and a notice says how many; an answer with places but none usable counts as a failed
+request, not as "not found". An address longer than the geocoder takes (400 characters for the
+Locatieserver, 500 for the others) isn't sent cut short: its request fails. In the app the requests go out in the background, one at a time, and the layer is added when the
 last answer lands; `layer.geocode` on the command line waits for them.
 
 ```sh
@@ -776,8 +810,8 @@ session registry used by the S3 dialog and `s3.connect`, so editing or removing 
 connection also affects a session entry of the same name created there.
 Renaming clears runtime entries under both the old and new names, so the renamed
 connection cannot inherit an unrelated login at its destination name.
-Web-service logins are not supported. Plugins may list connections but cannot manage, log in
-to, forget passwords or S3 keys for, choose an S3 connection for, test or browse them. The in-app
+Plugins may list connections but cannot manage, log in to, log out of, forget passwords, logins
+or S3 keys for, choose an S3 connection for, test or browse them. The in-app
 assistant asks for fresh approval each time for those operations, including Forget, S3 source
 selection and scripted calls; external assistants using MCP cannot run them. Even `probe: true`
 needs approval: connection operations cannot be approved for the whole conversation.
@@ -791,6 +825,75 @@ session endpoint and credentials under the form's connection name, including a s
 session created in the S3 dialog. Cancel does not disconnect that login or restore the
 previous one. CLI and Python connections last only for the run.
 
+#### Web-service logins
+
+A WMS, WMTS, WFS, WCS, OGC API, ArcGIS REST, CSW or STAC connection can log in: its form's
+**Login** picks **None**, **Basic authentication** (a user name and a password) or **API key in a
+header** (the header's name, such as `X-API-Key`, and the key). The connection keeps only the method,
+the user name and the header name, never the password or key.
+The password or key goes to `connection.login {"id":"c1","password":"…"}` (basic) or
+`{"id":"c1","apiKey":"…"}` and lasts only for this session. Web-service logins never access the
+computer's credential store. Editing the origin, method, user or header name ends the login (a
+connection's kind doesn't change: make a new one); renaming the connection or changing its path
+at the same origin does not. **Log Out**
+(`connection.logout`) removes the session login. Log in again when a new session needs it.
+
+Creating a login requires secure random numbers: the operating system's generator on desktop,
+or the browser's `crypto.getRandomValues` in the web app. If that source is missing or fails,
+RustGIS refuses the login rather than using a predictable fallback. A failed replacement leaves
+the previous active login usable.
+
+A login is sent only to the connection's origin: the same scheme, host and port, for its
+capabilities, listings, tiles, feature pages and refreshes. On the desktop a redirect within that
+origin keeps the login, and a redirect to another origin is followed without it, never getting
+another connection's login either. In the web app a request carrying a login isn't redirected at
+all, since the browser can't take the login off on the way: a service that redirects (to
+`https://` or to another path) fails there, so save the connection with the address it ends at.
+Service documents cannot supply a login binding. While resolving their links, RustGIS inherits
+only the login used to read the document, and only at that same origin. A runtime wrapper in a
+document link contributes its ordinary URL, never its login.
+Relative links, including parent paths, resolve against the document's address without rewriting
+template placeholders or query values, including proxy parameters containing `https://` URLs.
+KVP requests replace capabilities operation parameters, keeping unrelated parameters such as
+MapServer's `map=`.
+If a service supplies a same-origin link too long to carry its login, the request is refused
+instead of being fetched anonymously. Addresses that cannot be rebound to a login are left
+unchanged and reported.
+A plain `http://` address sends the login unencrypted, so the form asks for confirmation
+and the command needs `"allowInsecure": true`. Error messages, notices, the preferences,
+projects, History and what the [AI Assistant](assistant.md) sees never hold the password or key.
+On the desktop, a failed HEAD request that carried a web-service login records the HTTP status
+without response headers, including after logout or a redirect to another origin: a server could
+echo credentials in those headers. HEAD requests that never carried a login keep their selected
+diagnostic headers on refusal.
+Runtime login bindings are also removed from recorded command parameters, including addresses
+embedded in text, when saving, recovering or exporting them. The live session keeps its originals.
+
+A project's layers use the connection they record; layers recording none use an explicit session
+choice or the only saved connection for their origin. Different connections and sessions can use
+different logins at the same origin without sharing credentials or authenticated cached responses.
+When several saved connections match the address, RustGIS asks which one to use (**Choose
+Connection…**, `connection.login {id}` for the one chosen) and never picks one itself.
+When an origin has exactly one saved connection and it has a login method, an address at that
+origin is read through that connection, so it needs that login: log in, or save a public
+connection for the address too.
+A layer that has no login yet asks for one, and a layer whose recorded connection isn't on this computer offers
+to make one for its address. `connection.list` reports these as `loginRequests` with the `origin`.
+Logging in retries waiting remote rasters without changing their style. A dated layer also asks
+for the login covering dates at its recorded connection's origin, even when it reopens on a date
+hosted elsewhere. Those foreign-origin dates stay anonymous.
+CLI and Python use the same session-only `connection.login` commands. ArcGIS sign-in and tokens
+keep their own [ArcGIS sign-in](#web-data). A login ends with the session that made it.
+Unbound fetches never adopt another session's service login.
+Layers added by plugins stay anonymous, including after saving and reopening a project or adding
+a saved connection later. To use a connection's login, add the layer yourself through that connection.
+A plugin cannot set a same-origin legend on a layer tied to a saved connection, even when that
+connection is currently public. If it changes the legends of an unconnected tile layer, that
+layer stays anonymous too.
+Refreshing a plugin-added service group also stays anonymous: its capabilities, linked documents,
+feature downloads and newly discovered collections do not borrow a saved login. The group keeps
+that provenance after saving and reopening, even if a refresh temporarily leaves it empty.
+
 ## Large files
 
 GeoPackage, GeoParquet, FlatGeobuf and (on the desktop) Shapefile files with more than 100,000
@@ -802,6 +905,9 @@ local file's view holds more than 250,000 features (100,000 in the web app), the
 evenly spread sample of them and its tooltip in Layers says so: zoom in to see them all. Remote files have lower limits (see
 [Data formats](data-formats.md)). Smaller files load
 whole; `layer.addData` with `"stream": true` or `false` overrides the choice.
+
+On the desktop, **Load All Features** from the layer's menu in Layers reads its features in the
+background, with **Cancel** in the status bar; the layer stays streamed until they are all read.
 
 On the desktop, opening a large Shapefile for the first time scans its record headers to build
 a disposable SQLite index outside the dataset directory. Reopening an unchanged file reuses
@@ -1036,11 +1142,16 @@ rustgis-cli run --cmd 'layer.addZarr={"url":"https://storage.googleapis.com/gcp-
 layer whose step is the time slider's. The slider turns on over the variable's dates when it is
 off, and the layer shows the last of its steps in the slider's window, or nothing when none falls
 in it. Moving or playing the slider reads that step's slice (only its chunks), keeping the last
-eight read. A web store's next two steps are read ahead in the background. The stretch is fixed at
-the first slice's range, so a colour means the same value at every step, and **Export** writes an
-animation of it. An axis longer than the slider's 20,000 steps (hourly ERA5) takes a period with `"start"` and
-`"end"`; given neither (as the dialog adds it), the layer takes 20,000 steps from the one picked. The project keeps such a layer by its store (a folder or a web address)
-and selection, not as a slice, and reads the slider's step again when it opens.
+eight read. A web store's next two steps are read ahead in the background. In the desktop app the
+slider doesn't wait for a step not read yet: the layer shows the step before until the new one is
+read, and a step that can't be read empties the layer and says why. Playing waits for each step to
+be read before it moves on, so every step shows. Scripts, models, notebooks, AI agents, the command
+line and **Export** wait for each step. The stretch is fixed at the first slice's range, so a
+colour means the same value at every step, and **Export** writes an animation of it. An axis longer
+than the slider's 20,000 steps (hourly ERA5) takes a period with `"start"` and `"end"`; given
+neither (as the dialog adds it), the layer takes 20,000 steps from the one picked. The project
+keeps such a layer by its store (a folder or a web address) and selection, not as a slice, and
+reads the slider's step again when it opens.
 
 ```sh
 rustgis-cli run --cmd 'layer.addZarr={"path":"air.zarr","variable":"t","time":true}' --cmd 'time.export={"path":"t.gif"}'
@@ -1115,6 +1226,10 @@ whose bytes exactly match one of those snapshots restores its secrets; saving mo
 snapshots evicts the oldest. Changed files, packages, imports and files saved by another process
 never restore secrets. After a snapshot is evicted or RustGIS closes, add those layers again with
 their credentials.
+A layer added from a saved web-service connection records the connection's id (`"connection"`
+in the `.rgis` file; never its login), so the project needs no token in its addresses. See
+[Web-service logins](#web-service-logins) for what happens when it opens where that connection or
+its login is missing.
 
 ### Complete streamed Shapefile rendering
 
