@@ -5840,6 +5840,124 @@ fn layout_surrounds_take_cartographic_options() {
     assert_eq!(back, s.project.layouts[0]);
 }
 
+/// A layout element refuses a colour, fill or outline its kind doesn't draw, before anything
+/// changes: added and edited through commands, with the layouts unchanged after a refusal.
+#[test]
+fn layout_colours_are_refused_for_elements_without_them() {
+    use rustgis_map::Rgba;
+    use rustgis_map::layout::ElementKind;
+    let mut s = world();
+    s.run("layout.new", &json!({"page": "a4", "orientation": "landscape", "template": "map"})).unwrap();
+    let layouts = |s: &Session| serde_json::to_string(&s.project.layouts).unwrap();
+    let find = |s: &Session, code: &str| s.project.layouts[0].elements.iter().find(|e| e.kind.code() == code).unwrap().id;
+    let frame = find(&s, "mapFrame");
+    let red = "#B91C1C";
+    // Added: a kind without the colour is refused, nothing added; with it, it is applied.
+    let refused = [
+        ("legend", "color", "only text, lines"),
+        ("table", "color", "only text, lines"),
+        ("colorbar", "color", "only text, lines"),
+        ("northArrow", "color", "only text, lines"),
+        ("legend", "fill", "take a fill"),
+        ("table", "fill", "take a fill"),
+        ("text", "fill", "take a fill"),
+        ("line", "fill", "take a fill"),
+        ("grid", "fill", "take a fill"),
+        ("legend", "outline", "take an outline"),
+        ("scaleBar", "outline", "take an outline"),
+        ("text", "outline", "take an outline"),
+        ("line", "outline", "take an outline"),
+        ("extentIndicator", "outline", "take an outline"),
+    ];
+    for (kind, key, said) in refused {
+        let before = layouts(&s);
+        let e = s.run("layout.addElement", &json!({"kind": kind, key: red})).unwrap_err();
+        assert!(e.contains(said) && layouts(&s) == before, "{kind} {key}: {e}");
+        // null is not given.
+        let mut p = json!({"kind": kind});
+        p[key] = Value::Null;
+        let after = s.run("layout.addElement", &p);
+        assert!(after.as_ref().err().is_none_or(|e| !e.contains("take a")), "{kind} {key} null: {after:?}");
+    }
+    let before = layouts(&s);
+    let e = s.run("layout.addElement", &json!({"kind": "picture", "color": red})).unwrap_err();
+    assert!(e.contains("take a color") && layouts(&s) == before, "{e}");
+    for (kind, key) in [
+        ("text", "color"),
+        ("dynamicText", "color"),
+        ("line", "color"),
+        ("arrow", "color"),
+        ("rectangle", "color"),
+        ("ellipse", "color"),
+        ("circle", "color"),
+        ("grid", "color"),
+        ("scaleBar", "color"),
+        ("scaleBar", "fill"),
+        ("northArrow", "fill"),
+        ("northArrow", "outline"),
+        ("rectangle", "fill"),
+        ("rectangle", "outline"),
+        ("ellipse", "fill"),
+        ("circle", "outline"),
+    ] {
+        s.run("layout.addElement", &json!({"kind": kind, key: red})).unwrap_or_else(|e| panic!("{kind} {key}: {e}"));
+    }
+    // An extent indicator's colour is its frame's: the template has one map frame, so add another.
+    let inset = s.run("layout.addFrame", &json!({"x": 150, "y": 150, "w": 40, "h": 40})).unwrap()["element"].as_u64().unwrap();
+    s.run("layout.addElement", &json!({"kind": "extentIndicator", "frame": inset, "of": frame, "color": red})).unwrap();
+    let Some(ElementKind::MapFrame { extent_of, extent_color, .. }) = s.project.layouts[0].element(inset as u32).map(|e| &e.kind) else {
+        panic!("the inset is a map frame")
+    };
+    assert_eq!((*extent_of, extent_color.hex()), (Some(frame), red.to_string()));
+    // A rectangle's outline is its "outline", else its "color".
+    let r =
+        s.run("layout.addElement", &json!({"kind": "rectangle", "outline": "#112233", "color": red})).unwrap()["element"].as_u64().unwrap();
+    let outline = |s: &Session, id: u64| match &s.project.layouts[0].element(id as u32).unwrap().kind {
+        ElementKind::Rectangle { outline, .. } | ElementKind::Ellipse { outline, .. } => *outline,
+        k => panic!("{k:?}"),
+    };
+    assert_eq!(outline(&s, r), Rgba::rgb(0x11, 0x22, 0x33));
+    // Updated: the same, the element unchanged when refused.
+    let legend = s.run("layout.addElement", &json!({"kind": "legend"})).unwrap()["element"].as_u64().unwrap();
+    let scale = find(&s, "scaleBar");
+    let table = s.run("layout.addElement", &json!({"kind": "table"})).unwrap()["element"].as_u64().unwrap();
+    for (el, key, said) in [
+        (legend, "color", "take a color"),
+        (u64::from(frame), "color", "take a color"),
+        (table, "color", "take a color"),
+        (legend, "fill", "take a fill"),
+        (table, "fill", "take a fill"),
+        (legend, "outline", "take an outline"),
+        (u64::from(frame), "outline", "take an outline"),
+    ] {
+        let before = layouts(&s);
+        let e = s.run("layout.update", &json!({"element": el, key: red, "name": "Renamed"})).unwrap_err();
+        assert!(e.contains(said) && layouts(&s) == before, "{el} {key}: {e}");
+        s.run("layout.update", &json!({"element": el, key: null})).unwrap();
+    }
+    let arrow = find(&s, "northArrow");
+    let e = s.run("layout.update", &json!({"element": arrow, "color": red})).unwrap_err();
+    assert!(e.contains("take a color"), "{e}");
+    let scale = u64::from(scale);
+    for (el, key) in [
+        (u64::from(arrow), "fill"),
+        (u64::from(arrow), "outline"),
+        (r, "fill"),
+        (r, "outline"),
+        (r, "color"),
+        (scale, "color"),
+        (scale, "fill"),
+    ] {
+        s.run("layout.update", &json!({"element": el, key: red})).unwrap_or_else(|e| panic!("{el} {key}: {e}"));
+    }
+    let text = find(&s, "text");
+    s.run("layout.update", &json!({"element": text, "color": red})).unwrap();
+    let ElementKind::Text { color, .. } = &s.project.layouts[0].element(text).unwrap().kind else { panic!() };
+    assert_eq!(*color, Rgba::rgb(0xB9, 0x1C, 0x1C));
+    let e = s.run("layout.update", &json!({"element": text, "fill": red})).unwrap_err();
+    assert!(e.contains("take a fill"), "{e}");
+}
+
 /// A colorbar shows a raster's colour scale on a layout (#326): added and edited through
 /// commands, checked against the frame's map, and saved with the layout.
 #[test]
