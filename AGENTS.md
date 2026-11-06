@@ -21,6 +21,9 @@ Before picking work, read [ROADMAP.md](ROADMAP.md) (check Underway) and
 - Report through `Session::notify` (app, CLI, Python `take_notices`) or `ToolResult::messages`,
   one notice per kind with a count; `eprintln!` alone doesn't count. Unusable results are errors.
 - Test both ways: lossy input gives the notice, clean input none. Existing silent losses are bugs.
+- A file or setting from a newer RustGIS is refused or kept unchanged, never saved again without
+  what this version couldn't read; a reader checks the version it is given
+  ([saved files](docs/maintaining.md#saved-files-and-settings)).
 
 ## Architecture
 | Layer | Crate | Job |

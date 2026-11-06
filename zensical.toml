@@ -44,6 +44,7 @@ nav = [
   { "Languages" = "i18n.md" },
   { "Architecture" = "architecture.md" },
   { "Contributing" = "contributing.md" },
+  { "Maintaining" = "maintaining.md" },
   { "Acknowledgements" = "acknowledgements.md" },
   { "How to Cite" = "citation.md" },
   { "Sponsor" = "sponsor.md" },
