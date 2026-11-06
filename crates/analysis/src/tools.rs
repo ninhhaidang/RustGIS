@@ -2158,20 +2158,33 @@ fn convex_hull(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
     } else {
         Dataset::new(out_name(p, format!("{}_Hull", ds.name)), GeometryType::Polygon, vec![Field::new("count", FieldType::Integer)])
     };
-    let mut pts: Vec<geo::Point<f64>> = Vec::new();
-    for r in rows(inp, p, "input", ds) {
-        let Some(f) = ds.features.get(r) else { continue };
-        let Some(g) = &f.geometry else { continue };
+    let points = |g: &Geometry| {
         let mut these = Vec::new();
         g.for_each_coord(|c| {
             let m = rustgis_geom::lonlat_to_merc(c);
             these.push(geo::Point::new(m.x, m.y));
         });
-        if each {
-            let hull = geo::MultiPoint::new(these).convex_hull();
+        these
+    };
+    // The features with a geometry, each with it.
+    let features: Vec<(&Feature, &Geometry)> =
+        rows(inp, p, "input", ds).into_iter().filter_map(|r| ds.features.get(r)).filter_map(|f| Some((f, f.geometry.as_ref()?))).collect();
+    let mut pts: Vec<geo::Point<f64>> = Vec::new();
+    if each {
+        // Each feature's hull made on several cores for many (#1252), placed in their order.
+        crate::control::begin(features.len());
+        let hulls = crate::parallel::try_map(
+            &features,
+            PARALLEL_FEATURES,
+            || (),
+            |_, _, (_, g)| Ok::<_, String>(geo::MultiPoint::new(points(g)).convex_hull()),
+        )?;
+        for ((f, _), hull) in features.iter().zip(hulls) {
             out.push(from_multipolygon(&MultiPolygon::new(vec![hull])), f.attrs.clone());
-        } else {
-            pts.extend(these);
+        }
+    } else {
+        for (_, g) in &features {
+            pts.extend(points(g));
         }
     }
     if !each {
@@ -2194,9 +2207,17 @@ fn interior_point(g: &Geometry) -> Option<Geometry> {
 fn feature_to_point(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
     let ds = input(inp, p, "input")?;
     let mut out = copy_schema(ds, out_name(p, format!("{}_Points", ds.name)), GeometryType::Point);
-    for r in rows(inp, p, "input", ds) {
-        let Some(f) = ds.features.get(r) else { continue };
-        out.push(f.geometry.as_ref().and_then(interior_point), f.attrs.clone());
+    let features: Vec<&Feature> = rows(inp, p, "input", ds).into_iter().filter_map(|r| ds.features.get(r)).collect();
+    // Each feature's point made on several cores for many (#1252), placed in their order.
+    crate::control::begin(features.len());
+    let points = crate::parallel::try_map(
+        &features,
+        PARALLEL_FEATURES,
+        || (),
+        |_, _, f| Ok::<_, String>(f.geometry.as_ref().and_then(interior_point)),
+    )?;
+    for (f, point) in features.iter().zip(points) {
+        out.push(point, f.attrs.clone());
     }
     let n = out.features.len();
     result(out, format!("Feature To Point: {n} points"))
@@ -3891,8 +3912,15 @@ fn calculate_geometry(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> 
         GeometryType::Polygon => {
             let fa = out.ensure_field("area_km2", FieldType::Double);
             let fp = out.ensure_field("perimeter_km", FieldType::Double);
-            for f in &mut out.features {
-                let (a, per) = f.geometry.as_ref().map_or((0.0, 0.0), ground_area_perimeter);
+            // Each feature's measures made on several cores for many (#1252), placed in their order.
+            crate::control::begin(ds.features.len());
+            let measured = crate::parallel::try_map(
+                &ds.features,
+                PARALLEL_FEATURES,
+                || (),
+                |_, _, f| Ok::<_, String>(f.geometry.as_ref().map_or((0.0, 0.0), ground_area_perimeter)),
+            )?;
+            for (f, (a, per)) in out.features.iter_mut().zip(measured) {
                 if let Some(v) = f.attrs.get_mut(fa) {
                     *v = Value::Float(a / 1e6);
                 }
@@ -3903,11 +3931,19 @@ fn calculate_geometry(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> 
         }
         GeometryType::Polyline => {
             let fl = out.ensure_field("length_km", FieldType::Double);
-            for f in &mut out.features {
-                let len: f64 = match &f.geometry {
-                    Some(Geometry::Line(parts)) => parts.iter().map(|p| Geodesic.length(&lonlat_line(p))).sum(),
-                    _ => 0.0,
-                };
+            crate::control::begin(ds.features.len());
+            let lengths = crate::parallel::try_map(
+                &ds.features,
+                PARALLEL_FEATURES,
+                || (),
+                |_, _, f| {
+                    Ok::<_, String>(match &f.geometry {
+                        Some(Geometry::Line(parts)) => parts.iter().map(|p| Geodesic.length(&lonlat_line(p))).sum::<f64>(),
+                        _ => 0.0,
+                    })
+                },
+            )?;
+            for (f, len) in out.features.iter_mut().zip(lengths) {
                 if let Some(v) = f.attrs.get_mut(fl) {
                     *v = Value::Float(len / 1e3);
                 }
@@ -6158,6 +6194,70 @@ mod tests {
         assert_eq!(simplify_ring(&triangle, 1e6), triangle);
         let nonfinite = geo::LineString::from(vec![(0.0, 0.0), (f64::INFINITY, 0.0), (1.0, 1.0), (0.0, 1.0), (0.0, 0.0)]);
         assert_eq!(simplify_ring(&nonfinite, 1e6), nonfinite);
+    }
+
+    /// Feature To Point, Minimum Bounding Geometry without grouping and Calculate Geometry make
+    /// each feature's result on several cores for many features (#1252): what each feature gets
+    /// is what it gets on its own, in the input's order, to the bit.
+    #[test]
+    fn per_feature_tools_on_several_cores_keep_each_features_result() {
+        use geo::{Geodesic, Length};
+        let n = PARALLEL_FEATURES * 3 + 7;
+        let ring = |i: usize| {
+            let (x, y, r) = (-170.0 + (i % 340) as f64, -60.0 + (i % 121) as f64, 0.2 + (i % 7) as f64 * 0.05);
+            (0..=24)
+                .map(|k| {
+                    let a = (k % 24) as f64 * std::f64::consts::TAU / 24.0;
+                    Coord::new(x + r * (1.0 + 0.3 * (3.0 * a).sin()) * a.cos(), y + r * a.sin())
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut polys = Dataset::new("polys", GeometryType::Polygon, vec![Field::new("i", FieldType::Integer)]);
+        let mut lines = Dataset::new("lines", GeometryType::Polyline, vec![Field::new("i", FieldType::Integer)]);
+        for i in 0..n {
+            // One feature with no geometry, as a layer may have.
+            let g = (i != 5).then(|| Geometry::Polygon(vec![vec![ring(i)]]));
+            polys.push(g, vec![Value::Int(i as i64)]);
+            lines.push(Some(Geometry::Line(vec![ring(i)])), vec![Value::Int(i as i64)]);
+        }
+        let m = Map(HashMap::from([("polys".to_string(), polys.clone()), ("lines".to_string(), lines.clone())]));
+        let bits = |v: &Value| match v {
+            Value::Float(f) => format!("{}", f.to_bits()),
+            v => format!("{v:?}"),
+        };
+        // Feature To Point.
+        let pts = layer(crate::run("featureToPoint", &m, &serde_json::json!({"input": "polys"})).unwrap());
+        let want: Vec<Option<Geometry>> = polys.features.iter().map(|f| f.geometry.as_ref().and_then(interior_point)).collect();
+        assert_eq!(pts.features.iter().map(|f| f.geometry.clone()).collect::<Vec<_>>(), want);
+        assert_eq!(
+            pts.features.iter().map(|f| f.attrs.clone()).collect::<Vec<_>>(),
+            polys.features.iter().map(|f| f.attrs.clone()).collect::<Vec<_>>()
+        );
+        // Minimum Bounding Geometry, each feature's own hull; the one with no geometry has none.
+        let hulls = layer(crate::run("convexHull", &m, &serde_json::json!({"input": "polys", "group": "None"})).unwrap());
+        assert_eq!(hulls.features.len(), n - 1);
+        for (f, h) in polys.features.iter().filter(|f| f.geometry.is_some()).zip(&hulls.features) {
+            let mut these = Vec::new();
+            f.geometry.as_ref().unwrap().for_each_coord(|c| {
+                let m = rustgis_geom::lonlat_to_merc(c);
+                these.push(geo::Point::new(m.x, m.y));
+            });
+            let hull = from_multipolygon(&MultiPolygon::new(vec![geo::MultiPoint::new(these).convex_hull()]));
+            assert_eq!(h.geometry.as_ref(), hull.as_ref());
+            assert_eq!(h.attrs, f.attrs);
+        }
+        // Calculate Geometry, polygons and lines.
+        let areas = layer(crate::run("calculateGeometry", &m, &serde_json::json!({"input": "polys"})).unwrap());
+        for (f, out) in polys.features.iter().zip(&areas.features) {
+            let (a, per) = f.geometry.as_ref().map_or((0.0, 0.0), ground_area_perimeter);
+            assert_eq!(out.attrs[1..].iter().map(bits).collect::<Vec<_>>(), [bits(&Value::Float(a / 1e6)), bits(&Value::Float(per / 1e3))]);
+        }
+        let lengths = layer(crate::run("calculateGeometry", &m, &serde_json::json!({"input": "lines"})).unwrap());
+        for (f, out) in lines.features.iter().zip(&lengths.features) {
+            let Some(Geometry::Line(parts)) = &f.geometry else { panic!("a line") };
+            let len: f64 = parts.iter().map(|p| Geodesic.length(&lonlat_line(p))).sum();
+            assert_eq!(bits(&out.attrs[1]), bits(&Value::Float(len / 1e3)));
+        }
     }
 
     /// Dissolve's groups, found by their keys' hash: in the order first met, −0 with 0, each NaN
