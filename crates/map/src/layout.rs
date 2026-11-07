@@ -793,6 +793,17 @@ fn divisions() -> usize {
     4
 }
 
+/// The most columns a legend lays its rows in.
+pub const MAX_LEGEND_COLUMNS: usize = 3;
+
+fn one_column() -> usize {
+    1
+}
+
+fn is_one_column(columns: &usize) -> bool {
+    *columns == 1
+}
+
 fn ink() -> Rgba {
     Rgba::rgb(0x22, 0x22, 0x22)
 }
@@ -912,6 +923,10 @@ pub enum ElementKind {
         /// highlight, a basemap-like layer. Empty, it lists every layer it would otherwise.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         exclude: Vec<String>,
+        /// The columns its rows are laid in, 1 to [`MAX_LEGEND_COLUMNS`], under its title: as even
+        /// as they can be, a layer's name staying with the row under it.
+        #[serde(default = "one_column", skip_serializing_if = "is_one_column")]
+        columns: usize,
     },
     /// The colour scale of a raster layer in a frame's map: a gradient bar for a stretch, steps
     /// for classes, a block per value for unique values and colour tables (#326).
@@ -1318,10 +1333,11 @@ impl Layout {
                         g.width = finite_or(g.width, grid_width()).clamp(0.0, MAX_GRID_WIDTH);
                     }
                 }
-                ElementKind::Legend { exclude, .. } => {
+                ElementKind::Legend { exclude, columns, .. } => {
                     // Names stay whole: a layer's own name isn't cut, and a cut one would no
                     // longer match it.
                     exclude.truncate(MAX_LEGEND_EXCLUDED);
+                    *columns = (*columns).clamp(1, MAX_LEGEND_COLUMNS);
                 }
                 ElementKind::Text { text, size, letter_spacing, .. } => {
                     *size = finite_or(*size, 12.0).clamp(*crate::graphics::FONT_SIZE.start(), *crate::graphics::FONT_SIZE.end());

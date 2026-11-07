@@ -10,7 +10,7 @@ description: Make a printable page layout — map frame, title, legend, north ar
    (`"a4"`, `"a3"` or `"a2"` for a sheet turned to the area's shape, or `"a4-portrait"`, `"a3-landscape"`, … to choose; `"figure-1col"`, `"thesis-full"`, … for a figure), the `"extent"`
    to fit, and the texts: `"title"`, `"subtitle"`, `"sources"`, `"note"`, a `"locator"` (`"globe"`: the visible polygon layers held in the project, not streamed ones, over the basemap; `"inset"` or `"none"`; when omitted, `"globe"` on a sheet and `"none"` on a figure), and `"decimal": ","` for a map in a language with a decimal comma. A sheet's `"style"` arranges it: `"classic"` (the default), `"banner"`, `"panel"`, `"editorial"`, `"modular"` or `"poster"` (for a poster-like sheet), with an `"accent"` colour as `"#RRGGBB"`. Its
    surrounds (locator, north arrow, legend, scale bar) start from an `"arrangement"` (`"classic"`, `"mirrored"`, `"legendRight"`, `"legendTop"`, or a corner for each; `"best"`, the default, tries the user's favourite, set with `layout.arrangement`, and the others), and one over the data moves to the freest place in the frame, the largest first (the legend, as a rule); read its `"arrangement"`, `"moved"` and `"warnings"`. It places the frame at a round scale, the
-   graticule, legend, scale bar and north arrow, and wraps the footer. Its result lists every element's id and name
+   graticule, legend (a long one in up to three columns), scale bar and north arrow, and wraps the footer. Its result lists every element's id and name
    (`"elements"`), so skip to step 5 to adjust them. Otherwise,
    `layout.new` `{"name": N, "page": "letter"|"a4"|…, "orientation": "landscape"|"portrait"}` creates the layout and
    opens it.

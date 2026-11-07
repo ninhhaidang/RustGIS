@@ -7,8 +7,8 @@
 use egui::{Align2, Color32, CornerRadius, CursorIcon, Pos2, Rect, Sense, Stroke, Ui, pos2, vec2};
 use rustgis_engine::map::layout::{
     Arrange, ArrowStyle, CoordFormat, ElementKind, Grid, GridKind, GridStyle, Layout, LineHead, MAX_COLORBAR_TICKS, MAX_FRAME_SCALE,
-    MAX_GRID_WIDTH, MAX_SCALE_DIVISIONS, MAX_TICK_MM, MIN_FRAME_SCALE, Orientation, PT_PER_MM, ScaleBarStyle, ScaleUnits, TickSide,
-    frame_camera, line_angle, line_length,
+    MAX_GRID_WIDTH, MAX_LEGEND_COLUMNS, MAX_SCALE_DIVISIONS, MAX_TICK_MM, MIN_FRAME_SCALE, Orientation, PT_PER_MM, ScaleBarStyle,
+    ScaleUnits, TickSide, frame_camera, line_angle, line_length,
 };
 use serde_json::{Value, json};
 
@@ -1564,7 +1564,7 @@ fn properties(app: &mut RustGisApp, ui: &mut Ui, layout: &Layout, li: usize) {
                 match &e.kind {
                     // Its text, size, colour and boldness: the shared form, below the grid.
                     ElementKind::Text { .. } => {}
-                    ElementKind::Legend { title, all_classes, hide_other, .. } => {
+                    ElementKind::Legend { title, all_classes, hide_other, columns, .. } => {
                         let input_label = ui.label(tl!("Title"));
                         if let Some(tt) = text_field(app, ui, (li, id, "title"), title, false, input_label.id) {
                             update(app, json!({"title": tt}));
@@ -1581,6 +1581,16 @@ fn properties(app: &mut RustGisApp, ui: &mut Ui, layout: &Layout, li: usize) {
                         let mut hide = *hide_other;
                         if ui.checkbox(&mut hide, "").labelled_by(input_label.id).changed() {
                             update(app, json!({"hideOther": hide}));
+                        }
+                        ui.end_row();
+                        let input_label = ui.label(tl!("Columns"));
+                        let mut n = *columns as u64;
+                        let drag = Dragged::lend(ui, drag_key("columns"), &mut n);
+                        let r = ui
+                            .add(egui::DragValue::new(&mut n).update_while_editing(false).range(1..=MAX_LEGEND_COLUMNS as u64))
+                            .labelled_by(input_label.id);
+                        if drag.settled(ui, &r, &mut n) && n as usize != *columns {
+                            update(app, json!({"columns": n}));
                         }
                         ui.end_row();
                     }

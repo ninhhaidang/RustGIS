@@ -56,9 +56,13 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
     alike, such as a context layer filling the frame, isn't worth a warning); two that overlap (a
     frame too small) are said too.
     The top visible raster gets a colorbar beneath the vector legend if its renderer has a colour
-    scale; RGB and untinted hillshade do not. If the legend or colorbar cannot fit, the result
-    warns about clipping or resizing. A streamed layer still loading gets a fixed-size legend
-    to adjust by hand.
+    scale; RGB and untinted hillshade do not. The legend takes the fewest columns, up to three,
+    that fit the largest rectangle the map leaves free; when none fits, a long one is laid in more
+    when that shows more of it, or as much while covering at least a quarter less of what the map
+    draws (the answer's `legendColumns`); in a side column it stays in one. Polygon layers with no
+    fill and no labels, such as neighbouring borders, don't count as what the map draws here, unless
+    nothing else is shown. If the legend or colorbar cannot fit, the result warns about clipping or
+    resizing. A streamed layer still loading gets a fixed-size legend to adjust by hand.
   - **Decimal comma**: `"decimal": ","` prints the graticule, scale bar and colorbar numbers and
     `{scale}` with a decimal comma and points between thousands (`0,05`, `1:6.300.000`).
     `layout.page={"decimal": ","}` sets it on any layout; `"."` restores decimal points.
@@ -166,6 +170,14 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
     (`"allClasses": true`) to list every class of every visible layer instead, and **Hide other
     values** (`"hideOther": true`) to leave `<all other values>` out of the legend in either
     mode (the features it stands for are still drawn).
+  - **Columns** (`"columns"`, 1 to 3): its rows side by side under its title, as even as they go,
+    each column as wide as its widest row, with its own column of symbols, and a layer's name
+    staying with the row under it. The box keeps its size, so widen it for the columns: in a box
+    too narrow they close up and long labels run into the next or past the box, and a box too
+    short fills each column in turn and leaves out the last rows.
+    Giving `"columns"`, or changing the box or what a legend in columns lists, says when its box
+    loses rows or closes the columns up. A legend in one column is told so only when given
+    `"columns"`.
   - **Point symbols**: a point layer's symbol is drawn as the map draws it: its marker or the
     stacked marks of its class or layer, its size and outline, the transparency of the layer and
     its groups, and its reference scale at the frame's scale, unturned. A row has one symbol, so
