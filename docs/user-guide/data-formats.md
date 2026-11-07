@@ -189,6 +189,13 @@ tile), without a STAC catalogue:
   may take two minutes more): past that the window is given up, saying how many bands were read.
   A window reads 256 bands at most. A window near the limit takes several hundred MB of memory
   while it is read and kept.
+- The Add Data From URL dialog has no box to fill in, so a window is asked for by a command. On
+  the command line and in a script, `layer.addUrl` waits for it and answers what was added. In the
+  desktop app, `ui.addUrl` with `"bbox"` reads it off the frame: the map stays in use, and the
+  layer is added when the read lands. These are read one at a time, with 16 under way at most,
+  and the next starts once the app has taken the last. If another project is opened meanwhile, one
+  still waiting isn't read, and one being read can't be cancelled yet: it runs to its end and
+  isn't added. Each is said in a notice.
 - The file's no-data, colour table (a palette file draws in its colours) and band names come
   with it, and class names given as `CLASS_<value>` items in GDAL's metadata tag, as the MapBiomas
   files on Source Cooperative give theirs. These come from the file's own tags: an `.aux.xml`
@@ -199,7 +206,9 @@ tile), without a STAC catalogue:
   keeps only its first band once the project is reopened, with a notice. Files stored bottom up
   aren't read this way yet. In the web app, `"bbox"` is refused for now: the file is drawn in
   place without it. An address that names another kind of file (`.geojson`, `.fgb`) is refused
-  with `"bbox"` before anything is read; `"cog": true` takes a GeoTIFF by another name.
+  with `"bbox"` before anything is read; `"cog": true` takes a GeoTIFF by another name. A
+  window is a raster layer that the time slider doesn't step through, so `"cube": true` is
+  refused with it.
 
 A GeoParquet or FlatGeobuf file by its address is read in place too, a view at a time, however
 large: the layer is streamed like a large local file, and the view's features are fetched in the

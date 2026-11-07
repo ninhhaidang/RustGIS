@@ -29763,6 +29763,77 @@ fn a_windows_bands_are_started_within_its_wait() {
     assert_eq!(e, "2 of 4 bands read in 5 minutes, so the window is given up: take a smaller box or a larger cellSize");
 }
 
+/// A window's read needs no session: on a thread, as the app reads it, then added when it lands
+/// (#1330). What can't be a window is refused before the read starts, and an error names the
+/// address without its keys.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_cog_windows_read_is_apart_from_adding_it() {
+    use crate::cmd::layer::{read_cog_window, window_asked};
+    use rustgis_data::raster::cog::example;
+    let (base, _) = serve_ranges(example(1024, 256));
+    let mut s = world();
+    let url = format!("{base}/scene.tif?token=hidden-1330");
+    let p = json!({"url": url, "bbox": [10.25, 45.5, 10.5, 45.75], "name": "Window"});
+    let asked = window_asked(&s, &p).unwrap();
+    let layers = s.map().layers.len();
+    let read = std::thread::spawn(move || read_cog_window(&asked)).join().unwrap().unwrap();
+    assert_eq!(s.map().layers.len(), layers, "nothing added yet");
+    let id = s.download_started();
+    assert!(s.download_landed_window(id, read));
+    let mark = s.notice_mark();
+    let r = s.run("layer.addDownload", &json!({"id": id, "url": url, "name": "Window"})).unwrap();
+    assert_eq!(r["window"], json!({"columns": [256, 512], "rows": [256, 512], "level": 0, "cellSize": 111_320.0 / 1024.0}));
+    assert!(s.landed_windows.is_empty());
+    let said: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+    assert!(said.iter().any(|n| n.starts_with("Window: a 256 × 256 window of the full image")), "{said:?}");
+    let w = s.map().layer_by_name("Window").and_then(|l| l.raster.as_ref()?.data.clone()).unwrap();
+    assert_eq!((w.value(0, 0, 0), w.value(0, 10, 5)), (Some(0.0), Some(15.0)));
+    assert_eq!(s.map().layer(r["layer"].as_u64().unwrap() as u32).map(|l| l.name.as_str()), Some("Window"));
+    // A download that isn't a window isn't added as one.
+    let id = s.download_started();
+    assert!(s.download_landed(id, b"{}".to_vec()));
+    let e = s.run("layer.addDownload", &json!({"id": id, "url": url, "window": {"bbox": [1, 2, 3, 4]}})).unwrap_err();
+    assert!(e.contains("\"window\" is for") && !e.contains("hidden-1330"), "{e}");
+    // A project opened while it was read: it isn't kept to be added.
+    let read = read_cog_window(&window_asked(&s, &p).unwrap()).unwrap();
+    let id = s.download_started();
+    s.run("project.new", &json!({})).unwrap();
+    assert!(!s.download_landed_window(id, read));
+    assert!(s.landed_windows.is_empty());
+    // Refused as the command refuses them, without the address's keys.
+    let bad = |more: Value| {
+        let mut q = json!({"url": "https://x.org/a.tif?token=hidden-1330", "bbox": [1, 2, 3, 4]});
+        q.as_object_mut().unwrap().extend(more.as_object().unwrap().clone());
+        window_asked(&s, &q).err().unwrap()
+    };
+    for (more, why) in [
+        (json!({"bbox": "here"}), "bbox is"),
+        (json!({"cellSize": -1}), "cellSize is"),
+        (json!({"whole": true}), "leave out"),
+        (json!({"crs": "EPSG:4326"}), "doesn't read crs"),
+        (json!({"url": "https://x.org/a.geojson?token=hidden-1330"}), "names a .geojson file"),
+        (json!({"url": "C:/data/a.tif"}), "address (Add Data opens files)"),
+        (json!({"geolibreProject": true}), "GeoLibre download state"),
+        (json!({"geolibreLayer": 1}), "GeoLibre download state"),
+        (json!({"geolibreZarr": false}), "GeoLibre download state"),
+        (json!({"service": true}), "doesn't read service"),
+        (json!({"coverage": true}), "doesn't read coverage"),
+        (json!({"bounds": [1, 2, 3, 4]}), "doesn't read bounds"),
+        (json!({"cube": true}), "doesn't read cube"),
+    ] {
+        let e = bad(more);
+        assert!(e.contains(why) && !e.contains("hidden-1330"), "{why}: {e}");
+    }
+    // `"cube": false` asks for nothing.
+    assert!(window_asked(&s, &json!({"url": "https://x.org/a.tif", "bbox": [1, 2, 3, 4], "cube": false})).is_ok());
+    // A file that can't be read: said by the read, without the address's keys.
+    let (gone, _) = serve_ranges(b"not a tiff at all".to_vec());
+    let asked = window_asked(&s, &json!({"url": format!("{gone}/a.tif?token=hidden-1330"), "bbox": [1, 2, 3, 4]})).unwrap();
+    let e = read_cog_window(&asked).err().unwrap();
+    assert!(e.contains("/a.tif") && !e.contains("hidden-1330"), "{e}");
+}
+
 /// `layer.addUrl` with `"bbox"` (#1204): a window of a cloud-optimised GeoTIFF, read by range as a
 /// raster layer, at full resolution or at the overview a cell size asks for; a palette file's
 /// colours and class names come with it; the window is kept in a saved project, class names too.

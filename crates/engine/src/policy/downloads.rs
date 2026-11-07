@@ -143,6 +143,8 @@ impl Session {
         }
         self.downloaded.retain(|(k, _)| *k != id);
         self.landed_reads.retain(|(k, _)| *k != id);
+        #[cfg(not(target_arch = "wasm32"))]
+        self.landed_windows.retain(|(k, _)| *k != id);
         let url = crate::sources::redact_text(p.get("url").and_then(Value::as_str).unwrap_or("download"));
         if added {
             Ok(Some(format!("{url}: it was added already for its plugin command, so it wasn't added again")))
@@ -357,6 +359,7 @@ impl Session {
         if !self.download_is_pending(id)
             && !self.downloaded.iter().any(|(n, _)| *n == id)
             && !self.landed_reads.iter().any(|(n, _)| *n == id)
+            && !self.landed_window(id)
         {
             return Err("this download belongs to a replaced project or was dropped".into());
         }
@@ -372,9 +375,21 @@ impl Session {
             self.downloading.retain(|n| *n != id);
             self.downloaded.retain(|(n, _)| *n != id);
             self.landed_reads.retain(|(n, _)| *n != id);
+            #[cfg(not(target_arch = "wasm32"))]
+            self.landed_windows.retain(|(n, _)| *n != id);
             return Err(e);
         }
         Ok(())
+    }
+    /// Whether a window read off the frame landed for download `id` (#1330).
+    fn landed_window(&self, id: u64) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        return self.landed_windows.iter().any(|(n, _)| *n == id);
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = id;
+            false
+        }
     }
     /// Owns a principal-free predicate that survives queues and browser awaits.
     pub fn download_still(&self, id: u64) -> Option<crate::render::rustgis_tiles::cache::Still> {

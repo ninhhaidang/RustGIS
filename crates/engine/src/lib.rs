@@ -607,6 +607,8 @@ struct PutAside {
     url_requests: Vec<UrlRequest>,
     policy_work: policy::downloads::Work,
     landed_reads: Vec<(u64, LandedRead)>,
+    #[cfg(not(target_arch = "wasm32"))]
+    landed_windows: Vec<(u64, cmd::layer::CogWindow)>,
     plugin_retries: Vec<cmd::plugins::fetch::Retry>,
     url_waits: cmd::plugins::fetch::UrlWaits,
     /// A style of the project still loading, which mustn't move the next one's view.
@@ -812,6 +814,10 @@ pub struct Session {
     /// Downloads that landed already read (an ArcGIS layer's protocol buffer pages, joined),
     /// waiting for `layer.addDownload` too.
     pub(crate) landed_reads: Vec<(u64, LandedRead)>,
+    /// Windows of cloud-optimised GeoTIFFs the app read off the frame, waiting for
+    /// `layer.addDownload` too.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) landed_windows: Vec<(u64, cmd::layer::CogWindow)>,
     /// Downloads a command asked for where nothing may wait (the browser): the parameters of
     /// `layer.addUrl` calls, for the front end to fetch and add (see [`Session::take_url_requests`]).
     pub(crate) url_requests: Vec<UrlRequest>,
@@ -1142,6 +1148,8 @@ impl Session {
             downloading: Vec::new(),
             downloaded: Vec::new(),
             landed_reads: Vec::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            landed_windows: Vec::new(),
             url_requests: Vec::new(),
             file_outputs: Vec::new(),
             #[cfg(test)]
@@ -1232,6 +1240,18 @@ impl Session {
         landed
     }
 
+    /// Hands over a window of a cloud-optimised GeoTIFF read off the frame
+    /// ([`cmd::layer::read_cog_window`]), for `layer.addDownload {"id"}` as
+    /// [`Session::download_landed`] does.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn download_landed_window(&mut self, id: u64, window: cmd::layer::CogWindow) -> bool {
+        let landed = self.landed(id);
+        if landed {
+            self.landed_windows.push((id, window));
+        }
+        landed
+    }
+
     /// Takes a download off those under way: `false` when it isn't one of them (another project
     /// was opened meanwhile).
     fn landed(&mut self, id: u64) -> bool {
@@ -1248,6 +1268,12 @@ impl Session {
         let Some(i) = self.downloading.iter().position(|d| *d == id) else { return false };
         self.downloading.remove(i);
         true
+    }
+
+    /// Whether a download is still under way for this project: `false` once another project was
+    /// opened.
+    pub fn download_under_way(&self, id: u64) -> bool {
+        self.downloading.contains(&id)
     }
 
     /// Forgets a download that failed.
@@ -1816,6 +1842,8 @@ impl Session {
             downloading: take(&mut self.downloading),
             downloaded: take(&mut self.downloaded),
             landed_reads: take(&mut self.landed_reads),
+            #[cfg(not(target_arch = "wasm32"))]
+            landed_windows: take(&mut self.landed_windows),
             url_requests: take(&mut self.url_requests),
             policy_work: self.take_policy_work(),
             plugin_retries: take(&mut self.plugin_retries),
@@ -1869,6 +1897,8 @@ impl Session {
             downloading,
             downloaded,
             landed_reads,
+            #[cfg(not(target_arch = "wasm32"))]
+            landed_windows,
             url_requests,
             policy_work,
             plugin_retries,
@@ -1897,6 +1927,10 @@ impl Session {
         (self.downloading, self.downloaded, self.url_requests) = (downloading, downloaded, url_requests);
         self.restore_policy_work(policy_work);
         self.landed_reads = landed_reads;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.landed_windows = landed_windows;
+        }
         (self.trend_results, self.raster_results, self.raster_runs) = (trend_results, raster_results, raster_runs);
         #[cfg(feature = "geolibre")]
         {
