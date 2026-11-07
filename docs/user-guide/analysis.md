@@ -1106,14 +1106,17 @@ and when it started (`Run #2 (0.84 s)`, and `14:04 UTC` on the right), so a run 
 mistake shows (Undo takes a whole run back). The results show each line's result cut to a line;
 **Details…** on the run's line opens them whole in a window, as View Details in ArcGIS Pro's
 Geoprocessing History: each line folded under its command, opening to its result laid out to
-read, **Copy** for one and **Copy All** for the run, and why it stopped, if it did. On the
-desktop, a script's tools and models, with
-selections, layer renames and definition queries, the environment and the projection between
-them, are worked out in the background first, so the map and the rest of the window stay in
-use: the status bar shows **Run Script** and **Cancel**, and the results say **Running…** until
-the run is added. From the first line of any other kind (an edit, Add Data, a save, an export,
-a style or a zoom, a plugin or GeoLibre tool, a tool that writes a file) the rest runs as a
-script always has, holding the window until it finishes. A tool whose inputs change meanwhile runs again as the
+read, **Copy** for one and **Copy All** for the run, and why it stopped, if it did. Opening a
+project (New, Open, the sample, a template, or the same one again), from the app, a script, the
+assistant or an agent, starts the pane blank: the script, its results, the count and the Details
+window go with the old project. A script that opens a project itself stays, with its results, as
+the new project's Run #1. On the desktop, a script's tools and models, with selections, layer
+renames and definition queries, the environment and the projection between them, are worked out
+in the background first, so the map and the rest of the window stay in use: the status bar shows
+**Run Script** and **Cancel**, and the results say **Running…** until the run is added. From the
+first line of any other kind (an edit, Add Data, a save, an export, a style or a zoom, a plugin
+or GeoLibre tool, a tool that writes a file) the rest runs as a script always has, holding the
+window until it finishes. A tool whose inputs change meanwhile runs again as the
 results are added, as in a model's run. It colours the commands as you type, in both
 themes: `#` comments in green italics, the command id, and the JSON's strings, numbers and
 `true`/`false`/`null`; an id no command has, or one that can't run in a script (`ui.*`, `script.*`,
