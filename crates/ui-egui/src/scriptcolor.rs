@@ -114,6 +114,11 @@ fn line_spans(script: &str, range: Range<usize>, unknown: &[String], out: &mut V
 fn json_spans(text: &str, at: usize, broken: bool, out: &mut Vec<Span>) {
     let b = text.as_bytes();
     let mut i = 0;
+    // Whether the next token is a value: after a colon, until a comma or a bracket.
+    let mut value = false;
+    // Where the last chain of `|` alternatives read ends, and whether a key's colon ends it: the
+    // chain's other strings take the same answer, so a long chain is read once.
+    let mut chain = (0, false);
     let push = |r: Range<usize>, kind: Kind, out: &mut Vec<Span>| {
         if !r.is_empty() {
             out.push(Span { range: at + r.start..at + r.end, kind, broken });
@@ -126,11 +131,21 @@ fn json_spans(text: &str, at: usize, broken: bool, out: &mut Vec<Span>) {
                 // Past its closing quote, or to the end when nothing closes it.
                 i = text.get(i + 1..).and_then(string_end).map_or(text.len(), |n| i + n + 2);
                 // A key is a string with a colon after it.
-                let after = text.get(i..).map(str::trim_start);
+                let after = text.get(i..).map(str::trim_start).unwrap_or_default();
                 // (A command's parameter description marks a key that may be left out with `?`:
-                // `"size"?: number`, `"layer"?,`. A script's JSON never has one there.)
-                let kind = if after.is_some_and(|a| a.starts_with(':') || a.starts_with('?')) { Kind::Key } else { Kind::Str };
-                push(s..i, kind, out);
+                // `"size"?: number`, `"layer"?,`, and alternative keys with `|`: `"lon" | "x":
+                // number`. A script's JSON never has either there. Values have alternatives too,
+                // `"path": "*.gif" | "*.zip"`, so `|` makes a key only where no value is due.)
+                let mut key = after.starts_with(':') || after.starts_with('?');
+                if !key && !value {
+                    if s >= chain.0 {
+                        let (end, keys) = alternatives(after);
+                        // `end` is the tail of `text` past the chain: where it starts is the chain's end.
+                        chain = (text.len() - end.len(), keys);
+                    }
+                    key = chain.1;
+                }
+                push(s..i, if key { Kind::Key } else { Kind::Str }, out);
             }
             b'-' | b'0'..=b'9' => {
                 i += 1;
@@ -141,6 +156,7 @@ fn json_spans(text: &str, at: usize, broken: bool, out: &mut Vec<Span>) {
             }
             b'{' | b'}' | b'[' | b']' | b':' | b',' => {
                 i += 1;
+                value = c == b':';
                 push(s..i, Kind::Punct, out);
             }
             c if c.is_ascii_alphabetic() => {
@@ -165,10 +181,45 @@ fn json_spans(text: &str, at: usize, broken: bool, out: &mut Vec<Span>) {
     }
 }
 
+/// The spans of a help's signature keys (` {layer?, size?}`), `text` starting at byte `at`: each
+/// name a key, as the same key is in the script; brackets and commas punctuation; spaces and the
+/// `?` that marks a key optional plain. That `?` ends a name (`signature` writes `name?`), so a
+/// `?` inside one (a plugin's `{"a?b": text}`) stays part of the key.
+fn signature_spans(text: &str, at: usize, out: &mut Vec<Span>) {
+    let kind = |c: char, next: Option<char>| match c {
+        '{' | '}' | '[' | ']' | ',' => Kind::Punct,
+        '?' if matches!(next, Some(',' | '}') | None) => Kind::Plain,
+        c if c.is_whitespace() => Kind::Plain,
+        _ => Kind::Key,
+    };
+    let mut chars = text.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        let (range, k) = (at + i..at + i + c.len_utf8(), kind(c, chars.peek().map(|&(_, n)| n)));
+        match out.last_mut() {
+            // A run of one kind is one span.
+            Some(last) if last.kind == k && last.range.end == range.start => last.range.end = range.end,
+            _ => out.push(Span { range, kind: k, broken: false }),
+        }
+    }
+}
+
+/// Reads the `| "…"` alternatives at the start of `after` (the text after a string). Returns the
+/// text past them, and whether a key's colon (or `?`) follows them: true for ` | "x": number`
+/// after `"lon"`, false for ` | "*.zip" (PNG frames)`.
+fn alternatives(mut after: &str) -> (&str, bool) {
+    while let Some(rest) = after.strip_prefix('|').map(str::trim_start) {
+        // Past the next string's closing quote; a string nothing closes ends them.
+        let Some(next) = rest.strip_prefix('"').and_then(|r| r.get(string_end(r)? + 1..)) else { return (after, false) };
+        after = next.trim_start();
+    }
+    (after, after.starts_with(':') || after.starts_with('?'))
+}
+
 /// The colours of a script, one per kind. The theme's text, dimmed text and accent, and colours
 /// of the script's own for the rest: the theme's green and amber are made for icons and marks and
 /// read poorly as small text on the light theme's white, and comments are a colour of their own,
-/// not the dimmed one that reads as disabled. Every one is at least 4.5:1 on the box (WCAG AA).
+/// not the dimmed one that reads as disabled. Keys take a teal of their own, apart from the
+/// strings they are written as. Every one is at least 4.5:1 on the box (WCAG AA).
 #[derive(Clone, Copy, Hash)]
 pub struct Palette {
     pub text: Color32,
@@ -177,6 +228,7 @@ pub struct Palette {
     pub comment: Color32,
     pub id: Color32,
     pub bad: Color32,
+    pub key: Color32,
     pub string: Color32,
     pub number: Color32,
 }
@@ -184,12 +236,12 @@ pub struct Palette {
 impl Palette {
     pub fn of(t: &crate::theme::Tokens) -> Self {
         let rgb = Color32::from_rgb;
-        let (comment, bad, string, number) = if t.dark {
-            (rgb(0x7F, 0xBF, 0x8F), rgb(0xF0, 0x6A, 0x6A), rgb(0xE0, 0xA0, 0x60), rgb(0xC6, 0xA0, 0xF6))
+        let (comment, bad, key, string, number) = if t.dark {
+            (rgb(0x7F, 0xBF, 0x8F), rgb(0xF0, 0x6A, 0x6A), rgb(0x5E, 0xD3, 0xE6), rgb(0xE0, 0xA0, 0x60), rgb(0xC6, 0xA0, 0xF6))
         } else {
-            (rgb(0x2E, 0x7D, 0x4F), rgb(0xC6, 0x28, 0x28), rgb(0x8A, 0x4B, 0x08), rgb(0x7B, 0x3F, 0xB5))
+            (rgb(0x2E, 0x7D, 0x4F), rgb(0xC6, 0x28, 0x28), rgb(0x0F, 0x76, 0x6E), rgb(0x8A, 0x4B, 0x08), rgb(0x7B, 0x3F, 0xB5))
         };
-        Palette { text: t.text, dim: t.text_dim, comment, id: t.accent_text, bad, string, number }
+        Palette { text: t.text, dim: t.text_dim, comment, id: t.accent_text, bad, key, string, number }
     }
 }
 
@@ -204,7 +256,8 @@ pub fn job(script: &str, unknown: &[String], palette: Palette, font: &FontId) ->
 
 /// A command's signature or one of its parameters, for the Script suggestions' help (#662),
 /// coloured as the script colours a command and its JSON, so the help reads as what's typed.
-/// `id` leads, in the id's colour, when given.
+/// `id` leads, in the id's colour, when given, and `text` is then the signature's keys
+/// (` {layer?, size?}`); otherwise a parameter's description.
 pub fn help_job(id: Option<&str>, text: &str, palette: Palette, font: &FontId) -> LayoutJob {
     let full = format!("{}{text}", id.unwrap_or_default());
     let at = full.len() - text.len();
@@ -212,7 +265,11 @@ pub fn help_job(id: Option<&str>, text: &str, palette: Palette, font: &FontId) -
     if at > 0 {
         spans.push(Span { range: 0..at, kind: Kind::Id, broken: false });
     }
-    json_spans(text, at, false, &mut spans);
+    if id.is_some() {
+        signature_spans(text, at, &mut spans);
+    } else {
+        json_spans(text, at, false, &mut spans);
+    }
     let mut job = LayoutJob::default();
     for s in &spans {
         append(&mut job, &full, s, palette, font);
@@ -223,7 +280,8 @@ pub fn help_job(id: Option<&str>, text: &str, palette: Palette, font: &FontId) -
 /// `s` of `text` appended to `job` in its colour.
 fn append(job: &mut LayoutJob, text: &str, s: &Span, palette: Palette, font: &FontId) {
     let color = match s.kind {
-        Kind::Plain | Kind::Key => palette.text,
+        Kind::Plain => palette.text,
+        Kind::Key => palette.key,
         Kind::Comment => palette.comment,
         Kind::Punct | Kind::Unread => palette.dim,
         Kind::Id => palette.id,
@@ -465,6 +523,7 @@ mod tests {
                 ("comment", p.comment),
                 ("id", p.id),
                 ("bad", p.bad),
+                ("key", p.key),
                 ("string", p.string),
                 ("number", p.number),
             ] {
@@ -638,8 +697,83 @@ mod tests {
         };
         let sig = super::help_job(Some("map.body"), " {name?, basemap?}", palette, &font);
         assert_eq!(colour(&sig, "map.body"), Some(palette.id));
+        assert_eq!(colour(&sig, "name"), Some(palette.key), "the signature's keys are keys");
+        assert_eq!(colour(&sig, "basemap"), Some(palette.key));
+        assert_eq!(colour(&sig, "?"), Some(palette.text));
+        assert_eq!(colour(&sig, "{"), Some(palette.dim));
+        assert_eq!(colour(&sig, ","), Some(palette.dim));
+        // A `?` inside a name (a plugin's key) is part of the key; the one after it marks it optional.
+        let odd = super::help_job(Some("plugin:x/y"), " {a?b, c?}", palette, &font);
+        assert_eq!(colour(&odd, "?b"), Some(palette.key));
+        assert_eq!(colour(&odd, "?}"), Some(palette.text));
         let p = super::help_job(None, r#""name"?: "earth"|"moon" (map.bodies lists them)"#, palette, &font);
-        assert_eq!(colour(&p, r#""name""#), Some(palette.text), "a key, `?` and all");
+        assert_eq!(colour(&p, r#""name""#), Some(palette.key), "a key, `?` and all");
         assert_eq!(colour(&p, r#""moon""#), Some(palette.string));
+        assert_eq!(colour(&p, "lists"), Some(palette.text), "a description's words stay text");
+    }
+
+    /// Keys have a colour of their own, apart from strings and plain text, in both themes.
+    #[test]
+    fn keys_have_their_own_colour() {
+        for t in [crate::theme::Tokens::light(), crate::theme::Tokens::dark()] {
+            let p = super::Palette::of(&t);
+            assert!(p.key != p.text && p.key != p.string && p.key != p.comment && p.key != p.id);
+        }
+        let font = egui::FontId::monospace(12.0);
+        let palette = super::Palette::of(&crate::theme::Tokens::light());
+        let script = r#"labels.style {"size": 12, "halo": {"width": 1}}"#;
+        let job = super::job(script, &[], palette, &font);
+        let colour = |piece: &str| {
+            let at = script.find(piece)?;
+            job.sections.iter().find(|s| (s.byte_range.start.0..s.byte_range.end.0).contains(&at)).map(|s| s.format.color)
+        };
+        assert_eq!(colour(r#""size""#), Some(palette.key));
+        assert_eq!(colour(r#""width""#), Some(palette.key), "a nested key too");
+    }
+
+    /// A description's alternatives: keys (`"lon" | "x": number`) are keys, each of them, and
+    /// values (`"path": "*.gif" | "*.zip"`) stay strings, even when a key follows them.
+    #[test]
+    fn alternative_keys_are_keys_and_alternative_values_strings() {
+        // The quoted pieces of `desc` and whether each reads as a key.
+        let keys = |desc: &str| {
+            let mut sp = Vec::new();
+            super::json_spans(desc, 0, false, &mut sp);
+            sp.into_iter()
+                .filter(|s| matches!(s.kind, Kind::Key | Kind::Str))
+                .map(|s| (desc[s.range].to_string(), s.kind == Kind::Key))
+                .collect::<Vec<_>>()
+        };
+        let q = |pieces: &[(&str, bool)]| pieces.iter().map(|&(p, k)| (format!("\"{p}\""), k)).collect::<Vec<_>>();
+        // map.goToXY
+        assert_eq!(
+            keys(r#"{"lon" | "x": number, "lat" | "y": number, "scale"?: number}"#),
+            q(&[("lon", true), ("x", true), ("lat", true), ("y", true), ("scale", true)])
+        );
+        // map.save, time.export: the values' alternatives.
+        assert_eq!(
+            keys(r#"{"path"?: "*.model.json" | "*.rgistool", "text"?: file JSON}"#),
+            q(&[("path", true), ("*.model.json", false), ("*.rgistool", false), ("text", true)])
+        );
+        assert_eq!(
+            keys(r#"{"path": "*.gif" | "*.zip" (PNG frames), "width"?}"#),
+            q(&[("path", true), ("*.gif", false), ("*.zip", false), ("width", true)])
+        );
+        // raster.zarrInfo, map.import: a value, then a key as the other choice.
+        assert_eq!(
+            keys(r#"{"path": "a Zarr store's folder" | "url": "https://…"}"#),
+            q(&[("path", true), ("a Zarr store's folder", false), ("url", true), ("https://…", false)])
+        );
+        assert_eq!(
+            keys(r#"{"path": "*.rgismap|*.rgis" | "text": map file JSON | "data": base64 file}"#),
+            q(&[("path", true), ("*.rgismap|*.rgis", false), ("text", true), ("data", true)])
+        );
+        // Three choices, and a chain that ends at a comma before one that ends at a key.
+        assert_eq!(
+            keys(r#"{"a" | "b" | "c": number, "d" | "e", "f" | "g": number}"#),
+            q(&[("a", true), ("b", true), ("c", true), ("d", false), ("e", false), ("f", true), ("g", true)])
+        );
+        // Unclosed: no key out of a string nothing closes.
+        assert_eq!(keys(r#""a" | "b"#), [(r#""a""#.to_string(), false), (r#""b"#.to_string(), false)]);
     }
 }
