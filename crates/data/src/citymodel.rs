@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use serde_json::Value as Json;
 
-use crate::footprint::{Hull, P3, footprint};
+use crate::footprint::{Hull, P3, footprint, usable_xy};
 use crate::raster::{Crs, Transformer};
 use crate::{Coord, DataError, Dataset, Field, Geometry, GeometryType, ReadReport, Result, Value};
 
@@ -63,6 +63,8 @@ pub(crate) struct Row {
     pub(crate) z_dropped: bool,
     /// Its geometry couldn't be converted to longitude/latitude.
     pub(crate) unconverted: bool,
+    /// It draws something: a geometry, and for lines one of two different points.
+    pub(crate) draws: bool,
 }
 
 /// An object's values, one per object whatever rows it makes.
@@ -101,6 +103,10 @@ pub(crate) struct Counts {
     pub(crate) parent_rounds: usize,
     pub(crate) unknown: BTreeSet<String>,
     pub(crate) renamed: BTreeSet<String>,
+    /// Objects drawn from another geometry or level of detail than one whose X or Y can't be drawn.
+    pub(crate) unusable_passed: usize,
+    /// Attributes renamed because another of their layer has the same name in another case.
+    pub(crate) cased: BTreeSet<String>,
 }
 
 /// One surface geometry's faces, each its outer ring and then its holes.
@@ -180,9 +186,10 @@ impl Faces {
 }
 
 /// A face that is already its footprint: it needs no union, so the browser keeps its shape too. Not
-/// one that shows nothing from above, by the rule [`footprint`] measures a face with.
+/// one that shows nothing from above, by the rule [`footprint`] measures a face with, nor one past
+/// the coordinates it takes.
 fn lone_face(face: &[Vec<P3>]) -> Option<Geometry> {
-    if !face.iter().flatten().all(|p| p[0].is_finite() && p[1].is_finite()) {
+    if !face.iter().flatten().all(usable_xy) {
         return None;
     }
     let rings: Vec<Vec<Coord>> = face
@@ -207,51 +214,84 @@ fn lone_face(face: &[Vec<P3>]) -> Option<Geometry> {
 /// An object's footprint and the level of detail it came from: the first of its LoD 0, the
 /// `GroundSurface` of the highest LoD with one (ground faces past the face cap included, which
 /// make it the outline of the ground's points), and the union of its highest LoD's faces, those of
-/// all its geometries at that level. Failing all, the outline of the highest LoD's points.
-fn object_footprint(surfaces: Vec<Surface>, counts: &mut Counts, budget: &mut usize) -> (Option<Geometry>, Option<String>) {
+/// all its geometries at that level, that gives one. Failing all, the outline of the highest LoD's
+/// points, and failing that, none, from the first. Gives too whether a source passed over for the
+/// one drawn had X or Y a footprint can't take, for a notice.
+fn object_footprint(surfaces: Vec<Surface>, counts: &mut Counts, budget: &mut usize) -> (Option<Geometry>, Option<String>, bool) {
     let highest = |keep: fn(&Surface) -> bool| surfaces.iter().filter(|s| keep(s)).map(|s| s.rank).max_by(f64::total_cmp);
     let lod0 = surfaces.iter().any(|s| s.rank == 0.0 && !s.faces.faces.is_empty());
-    let (rank, ground_only) = match (lod0, highest(|s| s.faces.ground.contains(&true) || !s.faces.ground_left_out.is_empty())) {
-        (true, _) => (Some(0.0), false),
-        (false, Some(rank)) => (Some(rank), true),
-        (false, None) => (highest(|s| !s.faces.faces.is_empty()).or_else(|| highest(|s| !s.faces.left_out.is_empty())), false),
-    };
-    let Some(rank) = rank else { return (None, None) };
-    let (mut faces, mut left_out): (Vec<Vec<Vec<P3>>>, Vec<Vec<P3>>) = (Vec::new(), Vec::new());
+    let ground = highest(|s| s.faces.ground.contains(&true) || !s.faces.ground_left_out.is_empty());
+    let all = highest(|s| !s.faces.faces.is_empty()).or_else(|| highest(|s| !s.faces.left_out.is_empty()));
+    // LoD 0 tried whole is the union of its faces too: not tried twice. Its ground alone is, as a
+    // wall past the coordinate limit fails the whole and not the ground.
+    let all = all.filter(|rank| !(lod0 && *rank == 0.0));
+    let sources = [lod0.then_some((0.0, false, true)), ground.map(|rank| (rank, true, true)), all.map(|rank| (rank, false, false))];
+    let (mut first_lod, mut passed_unusable) = (None, false);
+    for (i, (rank, ground_only, lone)) in sources.into_iter().flatten().enumerate() {
+        let attempt = footprint_from(&surfaces, rank, ground_only, lone, budget);
+        if i == 0 {
+            first_lod = attempt.lod.clone();
+        }
+        let Some(geometry) = attempt.geometry else {
+            passed_unusable |= attempt.unusable;
+            continue;
+        };
+        counts.wall_hulls += usize::from(attempt.hull == Some(Hull::NoFaces));
+        // Faces left out past the cap are why it is a hull: said as such, not as faces that
+        // couldn't be merged.
+        let unmerged = attempt.hull == Some(Hull::Unmerged);
+        counts.capped += usize::from(unmerged && attempt.truncated);
+        counts.unmerged += usize::from(unmerged && !attempt.truncated);
+        return (Some(geometry), attempt.lod, passed_unusable);
+    }
+    (None, first_lod, false)
+}
+
+/// One source's try at a footprint.
+struct Attempt {
+    geometry: Option<Geometry>,
+    lod: Option<String>,
+    /// Why it is a hull, if it is.
+    hull: Option<Hull>,
+    /// Faces past the cap were left out.
+    truncated: bool,
+    /// Some X or Y is one a footprint can't take.
+    unusable: bool,
+}
+
+/// The footprint from one source: the faces of the surfaces at `rank`, only those marked
+/// `GroundSurface` when `ground_only`. With `lone`, a single face is the footprint as it stands.
+fn footprint_from(surfaces: &[Surface], rank: f64, ground_only: bool, lone: bool, budget: &mut usize) -> Attempt {
+    let (mut faces, mut left_out): (Vec<&Vec<Vec<P3>>>, Vec<&Vec<P3>>) = (Vec::new(), Vec::new());
     let (mut truncated, mut lod) = (false, None);
-    for s in surfaces.into_iter().filter(|s| s.rank == rank) {
-        lod = lod.or(s.lod);
+    for s in surfaces.iter().filter(|s| s.rank == rank) {
+        lod = lod.or_else(|| s.lod.clone());
         if ground_only {
             // The ground's footprint is whole unless ground faces were left out: walls and roofs
             // past the cap don't change it (their points still count for the heights), so they
             // need no notice.
             truncated |= !s.faces.ground_left_out.is_empty();
-            faces.extend(s.faces.faces.into_iter().zip(s.faces.ground).filter(|(_, ground)| *ground).map(|(face, _)| face));
-            left_out.extend(s.faces.ground_left_out);
+            faces.extend(s.faces.faces.iter().zip(&s.faces.ground).filter(|(_, ground)| **ground).map(|(face, _)| face));
+            left_out.extend(&s.faces.ground_left_out);
         } else {
             truncated |= s.faces.truncated;
-            faces.extend(s.faces.faces);
-            left_out.extend(s.faces.left_out);
-            left_out.extend(s.faces.ground_left_out);
+            faces.extend(&s.faces.faces);
+            left_out.extend(&s.faces.left_out);
+            left_out.extend(&s.faces.ground_left_out);
         }
     }
     // From LoD 0 or the ground, one face is the footprint as it stands.
-    if (lod0 || ground_only)
+    if lone
         && !truncated
         && let [face] = faces.as_slice()
         && let Some(geometry) = lone_face(face)
     {
-        return (Some(geometry), lod);
+        return Attempt { geometry: Some(geometry), lod, hull: None, truncated: false, unusable: false };
     }
-    let points: Vec<P3> = faces.iter().flatten().chain(&left_out).flatten().copied().collect();
+    let points: Vec<P3> = faces.iter().flat_map(|f| f.iter()).chain(left_out.iter().copied()).flatten().copied().collect();
+    let unusable = !points.iter().all(usable_xy);
     let (geometry, hull) = footprint(&faces, truncated, std::slice::from_ref(&points), budget);
-    counts.wall_hulls += usize::from(hull == Some(Hull::NoFaces));
-    // Faces left out past the cap are why it is a hull: said as such, not as faces that couldn't
-    // be merged.
-    let unmerged = hull == Some(Hull::Unmerged);
-    counts.capped += usize::from(unmerged && truncated);
-    counts.unmerged += usize::from(unmerged && !truncated);
-    (geometry, lod)
+    Attempt { geometry, lod, hull, truncated, unusable }
 }
 
 /// The horizontal part of the compound (and 3D) systems city models name, some of whose definitions
@@ -339,30 +379,46 @@ pub(crate) fn coordinate_system(
     Ok(crs)
 }
 
-/// An object's attributes, apart from the fields every row has, and from each other.
-pub(crate) fn attribute_names(attributes: serde_json::Map<String, Json>, counts: &mut Counts) -> Vec<(String, Json)> {
-    let mut used: BTreeSet<String> = attributes.keys().map(|k| k.to_ascii_lowercase()).collect();
-    // The number each reserved name goes on from, whatever its case: `used` is finite, so one is
-    // always free, and the spellings of a name don't each search again past the same numbers.
-    let mut next: HashMap<String, usize> = HashMap::new();
-    attributes
-        .into_iter()
-        .map(|(name, value)| {
-            if !is_reserved(&name) {
-                return (name, value);
+/// The names a layer's attributes go by, as the file spells them, decided from all its objects so a
+/// column holds one source attribute: one named as a field every row has, or the same as another
+/// of the layer but for case, takes the first number that leaves it apart from every other.
+fn attribute_names<'a>(objects: impl Iterator<Item = &'a Built>, counts: &mut Counts) -> HashMap<String, String> {
+    let mut spellings: Vec<&str> = Vec::new();
+    let mut seen: HashSet<&str> = HashSet::new();
+    for b in objects {
+        for (name, _) in &b.attributes {
+            if seen.insert(name.as_str()) {
+                spellings.push(name.as_str());
             }
+        }
+    }
+    let mut used: HashSet<String> = spellings.iter().map(|n| n.to_ascii_lowercase()).collect();
+    // The first spelling of each name not a field's keeps it.
+    let mut first: HashMap<String, &str> = HashMap::new();
+    // The number each name goes on from, whatever its case: `used` is finite, so one is always
+    // free, and the spellings of a name don't each search again past the same numbers.
+    let mut next: HashMap<String, usize> = HashMap::new();
+    let mut names = HashMap::new();
+    for name in spellings {
+        let lower = name.to_ascii_lowercase();
+        if is_reserved(name) {
             counts.renamed.insert(name.chars().take(64).collect());
-            let k = next.entry(name.to_ascii_lowercase()).or_insert(1);
-            let free = loop {
-                let candidate = format!("{name}_{k}");
-                *k += 1;
-                if used.insert(candidate.to_ascii_lowercase()) {
-                    break candidate;
-                }
-            };
-            (free, value)
-        })
-        .collect()
+        } else if *first.entry(lower.clone()).or_insert(name) != name {
+            counts.cased.insert(name.chars().take(64).collect());
+        } else {
+            continue;
+        }
+        let k = next.entry(lower).or_insert(1);
+        let free = loop {
+            let candidate = format!("{name}_{k}");
+            *k += 1;
+            if used.insert(candidate.to_ascii_lowercase()) {
+                break candidate;
+            }
+        };
+        names.insert(name.to_string(), free);
+    }
+    names
 }
 
 /// The rows, heights and solids of a file's objects as layers, with the file's notes and one notice
@@ -391,7 +447,7 @@ pub(crate) fn finish(
         )));
     }
 
-    let mut out = layers(stem, rows, &built, crs)?;
+    let mut out = layers(stem, rows, &built, crs, &mut counts)?;
     if out.is_empty() {
         let mut why = String::new();
         if counts.tin_reliefs > 0 {
@@ -419,31 +475,62 @@ pub(crate) struct ObjectRows {
 
 /// A family's parts at the highest level of detail an object has: its other levels are other
 /// pictures of it, not more of it, as for its surfaces. Parts that draw something go before any
-/// level: a line of one point at LoD 2 doesn't take the place of a road drawn at LoD 1.
+/// level: a line of one point at LoD 2 doesn't take the place of a road drawn at LoD 1, nor do
+/// points that a transform took past the numbers [`usable_xy`] takes take the place of good ones.
 pub(crate) struct Highest<T> {
     drawable: bool,
     rank: f64,
     lod: Option<String>,
     parts: Vec<T>,
+    /// The highest level of detail with a geometry whose X or Y can't be drawn ([`usable_xy`]).
+    unusable: Option<f64>,
 }
 
 impl<T> Default for Highest<T> {
     fn default() -> Self {
-        Highest { drawable: false, rank: f64::NEG_INFINITY, lod: None, parts: Vec::new() }
+        Highest { drawable: false, rank: f64::NEG_INFINITY, lod: None, parts: Vec::new(), unusable: None }
     }
 }
 
 impl<T> Highest<T> {
-    /// Adds a geometry's parts, which the caller has found aren't empty, at the level of detail
-    /// `rank` (a number to compare), written `lod`.
-    pub(crate) fn add(&mut self, rank: f64, lod: impl FnOnce() -> Option<String>, parts: impl IntoIterator<Item = T>, drawable: bool) {
+    /// Adds a geometry's parts at the level of detail `rank` (a number to compare), written `lod`.
+    fn add(&mut self, rank: f64, lod: impl FnOnce() -> Option<String>, parts: Vec<T>, usable: bool, drawable: bool) {
+        if !usable {
+            self.unusable = Some(self.unusable.map_or(rank, |r| r.max(rank)));
+        }
+        let drawable = usable && drawable;
         let key = |d: bool, r: f64| (d, r);
         if key(drawable, rank) > key(self.drawable, self.rank) {
-            *self = Highest { drawable, rank, lod: lod(), parts: Vec::new() };
+            *self = Highest { drawable, rank, lod: lod(), parts: Vec::new(), unusable: self.unusable };
         }
         if drawable == self.drawable && rank == self.rank {
             self.parts.extend(parts);
         }
+    }
+
+    /// A geometry whose X or Y can't be drawn was left out, at this level or above, though
+    /// the family draws: no notice says so otherwise.
+    fn left_unusable(&self) -> bool {
+        self.drawable && self.unusable.is_some_and(|r| r >= self.rank)
+    }
+}
+
+impl Highest<Vec<P3>> {
+    /// Adds a geometry's lines, which the caller has found aren't empty. They draw when one has two
+    /// different points.
+    pub(crate) fn add_lines(&mut self, rank: f64, lod: impl FnOnce() -> Option<String>, lines: Vec<Vec<P3>>) {
+        let usable = lines.iter().flatten().all(usable_xy);
+        let drawable = lines.iter().any(|p| p.iter().any(|q| p.first().is_some_and(|f| f[..2] != q[..2])));
+        self.add(rank, lod, lines, usable, drawable);
+    }
+}
+
+impl Highest<(P3, bool)> {
+    /// Adds a geometry's points, which the caller has found aren't empty, each with whether it is
+    /// a geometry instance's.
+    pub(crate) fn add_points(&mut self, rank: f64, lod: impl FnOnce() -> Option<String>, points: Vec<(P3, bool)>) {
+        let usable = points.iter().all(|(p, _)| usable_xy(p));
+        self.add(rank, lod, points, usable, true);
     }
 }
 
@@ -499,7 +586,9 @@ pub(crate) fn object_rows(
     let mut rows = Vec::new();
     // Counted once for the object, whichever of its families are lost.
     let mut shapeless = false;
-    let mut push = |family: Family, lod: Option<String>, geometry: Option<Geometry>, z_dropped: bool| {
+    // A geometry with X or Y that can't be drawn was passed over for another: counted once too.
+    let mut unusable = lines.left_unusable() || points.left_unusable();
+    let mut push = |family: Family, lod: Option<String>, geometry: Option<Geometry>, z_dropped: bool, drawable: bool| {
         shapeless |= geometry.is_none();
         let (geometry, unconverted) = match (geometry, to_lonlat) {
             (Some(g), Some(t)) => {
@@ -509,30 +598,32 @@ pub(crate) fn object_rows(
             }
             (g, _) => (g, false),
         };
-        rows.push(Row { family, geometry, object, lod, z_dropped, unconverted });
+        let draws = drawable && geometry.is_some();
+        rows.push(Row { family, geometry, object, lod, z_dropped, unconverted, draws });
     };
     if !surfaces.is_empty() {
-        let (geometry, lod) = object_footprint(surfaces, counts, budget);
-        push(Family::Polygon, lod, geometry, false);
+        let (geometry, lod, passed_unusable) = object_footprint(surfaces, counts, budget);
+        unusable |= passed_unusable;
+        push(Family::Polygon, lod, geometry, false, true);
     }
     let coords = |p: &[P3]| p.iter().map(|p| Coord::new(p[0], p[1])).collect::<Vec<_>>();
-    let finite = |p: &P3| p[0].is_finite() && p[1].is_finite();
-    let Highest { lod: line_lod, parts: lines, .. } = lines;
+    let Highest { lod: line_lod, parts: lines, drawable: lines_draw, .. } = lines;
     if !lines.is_empty() {
-        let geometry = lines.iter().flatten().all(finite).then(|| Geometry::Line(lines.iter().map(|l| coords(l)).collect()));
-        push(Family::Line, line_lod, geometry, heights_differ(lines.iter().flatten()));
+        let geometry = lines.iter().flatten().all(usable_xy).then(|| Geometry::Line(lines.iter().map(|l| coords(l)).collect()));
+        push(Family::Line, line_lod, geometry, heights_differ(lines.iter().flatten()), lines_draw);
     }
     let Highest { lod: point_lod, parts: points, .. } = points;
     counts.instances += points.iter().filter(|(_, instance)| *instance).count();
     let points: Vec<P3> = points.into_iter().map(|(p, _)| p).collect();
     if !points.is_empty() {
-        let geometry = points.iter().all(finite).then(|| match points.as_slice() {
+        let geometry = points.iter().all(usable_xy).then(|| match points.as_slice() {
             [p] => Geometry::Point(Coord::new(p[0], p[1])),
             many => Geometry::MultiPoint(coords(many)),
         });
-        push(Family::Point, point_lod, geometry, heights_differ(points.iter()));
+        push(Family::Point, point_lod, geometry, heights_differ(points.iter()), true);
     }
     counts.no_footprint += usize::from(shapeless);
+    counts.unusable_passed += usize::from(unusable);
     counts.unconverted += usize::from(rows.iter().any(|r| r.unconverted));
     ObjectRows { rows, z: heights.z, solid }
 }
@@ -569,8 +660,9 @@ pub(crate) fn raise_parents(built: &mut [Built], visits: usize) -> Option<usize>
     Some(rounds)
 }
 
-/// A row's properties as a GeoJSON feature with no geometry.
-fn feature_text(b: &Built, lod: Option<&str>) -> String {
+/// A row's properties as a GeoJSON feature with no geometry, its attributes under their layer's
+/// `names`.
+fn feature_text(b: &Built, lod: Option<&str>, names: &HashMap<String, String>) -> String {
     let (lo, hi) = (b.z.map(|z| z.0), b.z.map(|z| z.1));
     let parent = (!b.parent_ids.is_empty()).then(|| b.parent_ids.join(", "));
     let fixed = [
@@ -579,7 +671,7 @@ fn feature_text(b: &Built, lod: Option<&str>) -> String {
         ("parent", parent.map_or(Json::Null, Json::from)),
         ("lod", lod.map_or(Json::Null, Json::from)),
     ];
-    let own = b.attributes.iter().map(|(k, v)| (k.as_str(), v.clone()));
+    let own = b.attributes.iter().map(|(k, v)| (names.get(k).map_or(k.as_str(), String::as_str), v.clone()));
     let heights = [("z_min", number(lo)), ("z_max", number(hi)), ("height", number(lo.zip(hi).map(|(l, h)| h - l)))];
     let fields: Vec<String> = fixed.into_iter().chain(own).chain(heights).map(|(k, v)| format!("{}:{v}", Json::from(k))).collect();
     format!("{{\"type\":\"Feature\",\"geometry\":null,\"properties\":{{{}}}}}", fields.join(","))
@@ -625,9 +717,9 @@ pub(crate) fn unique_names(names: Vec<String>) -> Vec<String> {
 }
 
 /// The rows as layers: their fields found as GeoJSON's are, so a city model's attribute reads like
-/// any. Those with something to draw come first: a file named `.json` adds only the first layer, and
+/// any. Those that draw something come first: a file named `.json` adds only the first layer, and
 /// the cap leaves out the last.
-fn layers(stem: &str, rows: Vec<Row>, built: &[Built], crs: Crs) -> Result<Vec<(Dataset, ReadReport)>> {
+fn layers(stem: &str, rows: Vec<Row>, built: &[Built], crs: Crs, counts: &mut Counts) -> Result<Vec<(Dataset, ReadReport)>> {
     let mut groups: BTreeMap<(String, Family), Vec<Row>> = BTreeMap::new();
     for row in rows {
         let Some(b) = built.get(row.object) else { continue };
@@ -639,7 +731,8 @@ fn layers(stem: &str, rows: Vec<Row>, built: &[Built], crs: Crs) -> Result<Vec<(
         *families.entry(ty.clone()).or_default() += 1;
     }
     let mut sorted: Vec<_> = groups.into_iter().collect();
-    sorted.sort_by_key(|(_, rows)| !rows.iter().any(|r| r.geometry.is_some()));
+    // Layers that draw go first, and then those with some geometry: a `.json` file adds the first.
+    sorted.sort_by_cached_key(|(_, rows)| (!rows.iter().any(|r| r.draws), !rows.iter().any(|r| r.geometry.is_some())));
     sorted.truncate(MAX_LAYERS);
     let names = unique_names(
         sorted
@@ -657,7 +750,9 @@ fn layers(stem: &str, rows: Vec<Row>, built: &[Built], crs: Crs) -> Result<Vec<(
     );
     let mut out = Vec::with_capacity(total.min(MAX_LAYERS));
     for (((_, family), rows), name) in sorted.into_iter().zip(names) {
-        let features: Vec<String> = rows.iter().filter_map(|r| built.get(r.object).map(|b| feature_text(b, r.lod.as_deref()))).collect();
+        let renames = attribute_names(rows.iter().filter_map(|r| built.get(r.object)), counts);
+        let features: Vec<String> =
+            rows.iter().filter_map(|r| built.get(r.object).map(|b| feature_text(b, r.lod.as_deref(), &renames))).collect();
         let text = format!("{{\"type\":\"FeatureCollection\",\"features\":[{}]}}", features.join(","));
         let (table, mut report) = crate::io::read_geojson(&text, &name)?;
         let any = rows.iter().any(|r| r.geometry.is_some());
@@ -735,8 +830,15 @@ fn messages(c: &Counts) -> Vec<String> {
     say(
         c.no_footprint,
         format!(
-            "{} city objects have a shape that can't be drawn (a footprint whose points don't outline an area, fewer than three or all on one line, or points that aren't finite numbers): the shape is kept without geometry",
+            "{} city objects have a shape that can't be drawn (a footprint whose points don't outline an area, fewer than three or all on one line, or points whose X or Y isn't a finite number or is too large): the shape is kept without geometry",
             c.no_footprint
+        ),
+    );
+    say(
+        c.unusable_passed,
+        format!(
+            "{} city objects have a geometry whose X or Y can't be drawn (not a finite number, or too large), left out: they are drawn from another of their geometries or levels of detail",
+            c.unusable_passed
         ),
     );
     say(c.no_geometry, format!("{} city objects have no geometry of their own: they are kept without geometry", c.no_geometry));
@@ -776,6 +878,12 @@ fn messages(c: &Counts) -> Vec<String> {
     }
     if !c.renamed.is_empty() {
         out.push(format!("attributes renamed with a number, as these fields are the reader's own: {}", listed(&c.renamed)));
+    }
+    if !c.cased.is_empty() {
+        out.push(format!(
+            "attributes renamed with a number, as another of their layer has the same name in another case: {}",
+            listed(&c.cased)
+        ));
     }
     out
 }

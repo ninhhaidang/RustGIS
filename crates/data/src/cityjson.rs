@@ -133,9 +133,9 @@ fn lod_text(lod: Option<&Json>) -> Option<String> {
     }
 }
 
-/// Adds a geometry's parts, which the caller has found aren't empty, at its level of detail.
-fn add_geometry<T>(highest: &mut Highest<T>, g: &RawGeometry, parts: impl IntoIterator<Item = T>, drawable: bool) {
-    highest.add(lod_number(g.lod.as_ref()), || lod_text(g.lod.as_ref()), parts, drawable);
+/// A geometry's level of detail, as a number to compare and as written.
+fn level(g: &RawGeometry) -> (f64, impl FnOnce() -> Option<String> + '_) {
+    (lod_number(g.lod.as_ref()), move || lod_text(g.lod.as_ref()))
 }
 
 /// The system a file's metadata names, if it names one.
@@ -232,7 +232,7 @@ fn read_with(file_name: &str, bytes: &[u8], given: Option<Crs>, keep_named: bool
         let at_row = built.len();
         counts.addresses += usize::from(object.address.is_some());
         let attributes = match object.attributes {
-            Some(Json::Object(m)) => attribute_names(m, &mut counts),
+            Some(Json::Object(m)) => m.into_iter().collect(),
             None | Some(Json::Null) => Vec::new(),
             Some(_) => {
                 counts.bad_attributes += 1;
@@ -244,7 +244,15 @@ fn read_with(file_name: &str, bytes: &[u8], given: Option<Crs>, keep_named: bool
         if made.rows.is_empty() {
             // Its attributes stay: its children, in their own rows, are where it is drawn.
             counts.no_geometry += 1;
-            rows.push(Row { family: Family::Polygon, geometry: None, object: at_row, lod: None, z_dropped: false, unconverted: false });
+            rows.push(Row {
+                family: Family::Polygon,
+                geometry: None,
+                object: at_row,
+                lod: None,
+                z_dropped: false,
+                unconverted: false,
+                draws: false,
+            });
         }
         rows.extend(made.rows);
         built.push(Built {
@@ -273,7 +281,8 @@ fn object_parts(geometries: &[RawGeometry], vertices: &[P3], counts: &mut Counts
                     Some(p) if p.is_empty() => {}
                     Some(p) => {
                         parts.heights.add(&p);
-                        add_geometry(&mut parts.points, g, p.into_iter().map(|p| (p, false)), true);
+                        let (rank, lod) = level(g);
+                        parts.points.add_points(rank, lod, p.into_iter().map(|p| (p, false)).collect());
                     }
                     None => counts.bad_geometries += 1,
                 }
@@ -283,7 +292,8 @@ fn object_parts(geometries: &[RawGeometry], vertices: &[P3], counts: &mut Counts
                 // Its template isn't placed: it is drawn at its reference point.
                 match at(&g.boundaries, vertices).as_deref() {
                     Some([p, ..]) => {
-                        add_geometry(&mut parts.points, g, [(*p, true)], true);
+                        let (rank, lod) = level(g);
+                        parts.points.add_points(rank, lod, vec![(*p, true)]);
                     }
                     _ => counts.bad_geometries += 1,
                 }
@@ -296,8 +306,8 @@ fn object_parts(geometries: &[RawGeometry], vertices: &[P3], counts: &mut Counts
                         let lines: Vec<Vec<P3>> = lines.into_iter().filter(|p| !p.is_empty()).collect();
                         lines.iter().for_each(|p| parts.heights.add(p));
                         if !lines.is_empty() {
-                            let drawable = lines.iter().any(|p| p.iter().any(|q| p.first().is_some_and(|f| f[..2] != q[..2])));
-                            add_geometry(&mut parts.lines, g, lines, drawable);
+                            let (rank, lod) = level(g);
+                            parts.lines.add_lines(rank, lod, lines);
                         }
                     }
                     None => counts.bad_geometries += 1,
