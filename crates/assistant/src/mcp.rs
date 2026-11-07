@@ -503,7 +503,9 @@ pub fn expects_reply(message: &str) -> bool {
     }
 }
 
+/// Projects generated RPC error text while retaining the exact correlation id and code.
 fn error_value(id: &Value, code: i64, message: &str) -> Value {
+    let message = rustgis_engine::render::rustgis_tiles::logins::scrub_error(message);
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
 }
 

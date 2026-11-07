@@ -22,21 +22,21 @@ pub fn commands() -> Vec<C> {
             let name = ps(p, "name").map(str::trim).filter(|n| !n.is_empty()).unwrap_or("Graphics");
             let id = new_layer(s, name);
             Ok(json!({"layer": id}))
-        })
+        }).roles(&[])
         .params(r#"{"name"?: string}"#),
-        C::new("graphics.add", "Add Graphic", "Edit › Graphics", add).params(
+        C::new("graphics.add", "Add Graphic", "Edit › Graphics", add).roles(&[]).params(
             r##"{"shape": "point"|"text"|"line"|"curve"|"freehand"|"polygon"|"lasso"|"rectangle"|"circle"|"ellipse"|"picture", "points": [[lon, lat], …] (rectangle, ellipse, picture: two corners; circle: centre and a point on the edge), "layer"?: graphics layer, "text"?: string (dynamic tokens: {map} {scale} {date} {time} {crs} {layers} {center}), "fill"?: "#RRGGBBAA", "outline"?: "#RRGGBBAA", "width"?: number, "size"?: number, "fontSize"?: number, "bold"?: bool, "italic"?: bool, "align"?: "left"|"center"|"right" (a text's lines in their block, which stays centred on its point), "letterSpacing"?: points, -5 to 50, "image"?: base64 PNG/JPEG, "path"?: picture file}"##,
         ),
-        C::new("graphics.style", "Graphic Style", "Edit › Graphics", style)
+        C::new("graphics.style", "Graphic Style", "Edit › Graphics", style).roles(&[])
             .when(super::need_selection)
             .params(r##"{"fill"?: "#RRGGBBAA", "outline"?: "#RRGGBBAA", "width"?: number, "size"?: number, "fontSize"?: number, "bold"?: bool, "italic"?: bool, "align"?: "left"|"center"|"right", "letterSpacing"?: points, -5 to 50, "text"?: string}"##),
-        C::new("graphics.edit", "Edit Graphic", "Edit › Graphics", edit).params(
+        C::new("graphics.edit", "Edit Graphic", "Edit › Graphics", edit).roles(&[]).params(
             r##"{"layer": graphics layer, "row": number, "points"?: [[lon, lat]] (a point or a text: where it sits), "text"?: string, "fontSize"?: number, "bold"?: bool, "italic"?: bool, "align"?: "left"|"center"|"right", "letterSpacing"?: points, -5 to 50, "fill"?: "#RRGGBBAA", "outline"?: "#RRGGBBAA", "width"?: number, "size"?: number}"##,
         ),
         C::new("graphics.keepTool", "Keep the last tool active", "Edit › Graphics", |s, p| {
             s.keep_tool = b(p, "on").unwrap_or(!s.keep_tool);
             Ok(json!({"keepTool": s.keep_tool}))
-        })
+        }).roles(&[])
         .view()
         .params(r#"{"on"?: bool}"#),
     ]

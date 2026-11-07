@@ -259,6 +259,15 @@ pub fn run(s: &mut Session, call: &ToolCall) -> Result<String, String> {
 
 /// Runs a call with a per-result token estimate, capped by the absolute ceiling.
 pub fn run_with_budget(s: &mut Session, call: &ToolCall, tokens: usize) -> Result<String, String> {
+    // Script failures are structured JSON: clean their error field before serialization.
+    if call.name == "run" {
+        return run_script(s, &call.args, tokens);
+    }
+    run_with_budget_inner(s, call, tokens).map_err(|e| public_error(&e))
+}
+
+/// Assembles ordinary tool results; the public boundary cleans every early error too.
+fn run_with_budget_inner(s: &mut Session, call: &ToolCall, tokens: usize) -> Result<String, String> {
     let max_bytes = output_bytes(tokens);
     let a = &call.args;
     let v = match call.name.as_str() {
@@ -278,20 +287,18 @@ pub fn run_with_budget(s: &mut Session, call: &ToolCall, tokens: usize) -> Resul
                 return Err(format!("unknown command '{id}'; find ids with search_commands"));
             }
             let (before, mark) = (layer_snap(s), s.notice_mark());
-            let r = s.run(&id, &params_arg(a)?).map_err(|e| public_text(error_with_notices(e, s, mark)))?;
-            with_notices(with_new_layers(r, s, &before), s, mark)
+            let r = s.run(&id, &params_arg(a)?).map_err(|e| error_with_notices(e, s, mark))?;
+            return Ok(command_result(s, r, &before, mark, tokens));
         }
         "run_tool" => {
             let tool = str_arg(a, "tool").ok_or("tool is required")?;
             let (before, mark) = (layer_snap(s), s.notice_mark());
             let r = s
                 .run("gp.run", &json!({"tool": tool, "params": params_arg(a)?}))
-                .map_err(|e| public_text(error_with_notices(e, s, mark)))?;
-            with_notices(with_new_layers(r, s, &before), s, mark)
+                .map_err(|e| error_with_notices(e, s, mark))?;
+            return Ok(command_result(s, r, &before, mark, tokens));
         }
         "read_features" => read_features(s, a)?,
-        // MCP's `run` (not offered to the in-app assistant): a script in one call.
-        "run" => return run_script(s, a, tokens),
         "search_docs" => crate::docs::search(&str_arg(a, "query").unwrap_or_default(), limit_arg(a, 8, 30))?,
         "read_doc" => {
             return crate::docs::read_with_budget(
@@ -312,7 +319,13 @@ pub fn run_with_budget(s: &mut Session, call: &ToolCall, tokens: usize) -> Resul
         "test_panic" => panic!("a test tool panicked"),
         other => return Err(format!("unknown tool '{other}'")),
     };
-    Ok(public_result(s, v, tokens))
+    if call.name == "read_features" {
+        Ok(public_envelope(s, v, tokens))
+    } else {
+        let mut withheld = Withheld::default();
+        let v = public_metadata(v, 0, &mut withheld);
+        Ok(finish_result(s, v, tokens, withheld))
+    }
 }
 
 /// How deep a result is searched for runtime login addresses; what is deeper is withheld.
@@ -322,19 +335,68 @@ const MAX_DEPTH: usize = 16;
 /// `pmtiles:…@`) replaced by its plain address. Commands return the bound addresses the app needs
 /// to use a connection's login; the model and MCP clients get only the public ones.
 fn public_text(text: String) -> String {
-    if text.contains(rustgis_engine::data::login_address::PREFIX) {
-        rustgis_engine::render::rustgis_tiles::logins::scrub(&text)
-    } else {
-        text
+    rustgis_engine::render::rustgis_tiles::logins::scrub(&text)
+}
+
+/// Generated errors may quote arbitrary addresses; successful values remain data.
+fn public_error(text: &str) -> String {
+    rustgis_engine::render::rustgis_tiles::logins::scrub_error(text)
+}
+
+/// Publishes a completed result, reporting withheld subtrees before enforcing the response budget.
+#[cfg(test)]
+fn public_result(s: &mut Session, value: Value, tokens: usize) -> String {
+    let mut withheld = Withheld::default();
+    let value = public_addresses(value, 0, &mut withheld);
+    finish_result(s, value, tokens, withheld)
+}
+
+/// These fields belong to the adapter's response schema; only their values contain data.
+fn public_envelope(s: &mut Session, value: Value, tokens: usize) -> String {
+    let mut withheld = Withheld::default();
+    let value = match value {
+        Value::Object(o) => Value::Object(o.into_iter().map(|(key, value)| (key, public_addresses(value, 1, &mut withheld))).collect()),
+        value => public_addresses(value, 0, &mut withheld),
+    };
+    finish_result(s, value, tokens, withheld)
+}
+
+/// Generated search, tool and project metadata has a fixed schema at every level. Its
+/// strings may hold private data, but its keys cannot be login values. Row/property maps
+/// and arbitrary command results use `public_addresses` instead.
+fn public_metadata(value: Value, depth: usize, withheld: &mut Withheld) -> Value {
+    match value {
+        Value::String(text) => Value::String(public_text(text)),
+        Value::Array(a) if depth < MAX_DEPTH => Value::Array(a.into_iter().map(|v| public_metadata(v, depth + 1, withheld)).collect()),
+        Value::Object(o) if depth < MAX_DEPTH => {
+            Value::Object(o.into_iter().map(|(key, v)| (key, public_metadata(v, depth + 1, withheld))).collect())
+        }
+        Value::Array(_) | Value::Object(_) => {
+            withheld.depth = withheld.depth.saturating_add(1);
+            json!("[too deep]")
+        }
+        other => other,
     }
 }
 
-fn public_result(s: &mut Session, value: Value, tokens: usize) -> String {
-    let mut withheld = 0usize;
-    let mut value = public_addresses(value, 0, &mut withheld);
-    if withheld > 0 {
+/// Cleans the arbitrary command payload before adding adapter-owned notices/layer metadata.
+fn command_result(s: &mut Session, value: Value, before: &[(String, Vec<u32>)], mark: u64, tokens: usize) -> String {
+    let mut withheld = Withheld::default();
+    let value = public_addresses(value, 0, &mut withheld);
+    let value = with_notices(with_new_layers(value, s, before), s, mark);
+    finish_result(s, value, tokens, withheld)
+}
+
+/// Publishes counted projection losses without sending the completed envelope through a second redactor.
+fn finish_result(s: &mut Session, mut value: Value, tokens: usize, withheld: Withheld) -> String {
+    if withheld.depth > 0 || withheld.keys > 0 {
         let mark = s.notice_mark();
-        s.notify(format!("Tool result: {withheld} subtrees at nesting depth {MAX_DEPTH} were withheld."), false);
+        if withheld.depth > 0 {
+            s.notify(format!("Tool result: {} subtrees at nesting depth {MAX_DEPTH} were withheld.", withheld.depth), false);
+        }
+        if withheld.keys > 0 {
+            s.notify(format!("Tool result: {} object(s) were withheld because redacted field names coincide.", withheld.keys), false);
+        }
         if let Some(notices) = value.get_mut("notices").and_then(Value::as_array_mut) {
             notices.extend(s.notices_since(mark).iter().map(|n| json!(n.text)));
         } else {
@@ -344,16 +406,33 @@ fn public_result(s: &mut Session, value: Value, tokens: usize) -> String {
     bounded_json(&value, tokens)
 }
 
-/// `v` with its strings made public ([`public_text`]), to a depth of [`MAX_DEPTH`].
-fn public_addresses(v: Value, depth: usize, withheld: &mut usize) -> Value {
+/// Counts output withheld for depth limits or field names that collide after redaction.
+#[derive(Default)]
+struct Withheld {
+    depth: usize,
+    keys: usize,
+}
+
+/// Projects keys and values through active-login redaction; ambiguous objects and deep subtrees
+/// are withheld and counted without changing the completed command's success.
+fn public_addresses(v: Value, depth: usize, withheld: &mut Withheld) -> Value {
     match v {
         Value::String(s) => Value::String(public_text(s)),
         Value::Array(a) if depth < MAX_DEPTH => Value::Array(a.into_iter().map(|x| public_addresses(x, depth + 1, withheld)).collect()),
         Value::Object(o) if depth < MAX_DEPTH => {
-            Value::Object(o.into_iter().map(|(k, x)| (k, public_addresses(x, depth + 1, withheld))).collect())
+            let mut public = serde_json::Map::new();
+            for (key, value) in o {
+                let key = public_text(key);
+                if public.contains_key(&key) {
+                    withheld.keys = withheld.keys.saturating_add(1);
+                    return json!("[redacted field names coincide]");
+                }
+                public.insert(key, value);
+            }
+            Value::Object(public.into_iter().map(|(key, value)| (key, public_addresses(value, depth + 1, withheld))).collect())
         }
         Value::Array(_) | Value::Object(_) => {
-            *withheld = withheld.saturating_add(1);
+            withheld.depth = withheld.depth.saturating_add(1);
             json!("[too deep]")
         }
         other => other,
@@ -434,20 +513,10 @@ fn str_arg(a: &Value, k: &str) -> Option<String> {
 /// The `params` a command or tool runs with: an object, or JSON text of one (some models send
 /// that). Anything else is an error: running with defaults instead could act on the wrong layer.
 fn params_arg(a: &Value) -> Result<Value, String> {
-    match a.get("params") {
-        None | Some(Value::Null) => Ok(json!({})),
-        Some(v @ Value::Object(_)) => Ok(v.clone()),
-        Some(Value::String(t)) if t.trim().is_empty() => Ok(json!({})),
-        Some(Value::String(t)) => match serde_json::from_str::<Value>(t) {
-            Ok(v @ Value::Object(_)) => Ok(v),
-            Ok(_) => Err("params must be a JSON object".into()),
-            Err(e) => Err(format!("params is not valid JSON: {e}")),
-        },
-        Some(_) => Err("params must be a JSON object".into()),
-    }
+    rustgis_engine::params_envelope(a.get("params"))
 }
 
-/// An object parameter, which some models send as JSON text (leniently, for display and approval).
+/// An object parameter, which some models send as JSON text (leniently, for display only).
 fn obj_arg(a: &Value, k: &str) -> Value {
     match a.get(k) {
         Some(Value::String(t)) if !t.trim().is_empty() => serde_json::from_str(t).unwrap_or(Value::Null),
@@ -479,7 +548,7 @@ fn with_new_layers(r: Value, s: &Session, before: &[(String, Vec<u32>)]) -> Valu
     let same =
         before.iter().find(|(name, _)| name.eq_ignore_ascii_case(&m.name)).or_else(|| if renamed { before.get(active) } else { None });
     let had = same.map_or(&[][..], |(_, ids)| ids.as_slice());
-    let added: Vec<String> = m.layers.iter().filter(|l| !had.contains(&l.id)).map(|l| l.name.clone()).collect();
+    let added: Vec<String> = m.layers.iter().filter(|l| !had.contains(&l.id)).map(|l| public_text(l.name.clone())).collect();
     if added.is_empty() {
         return if r.is_null() { json!({"ok": true}) } else { r };
     }
@@ -510,16 +579,17 @@ fn run_script(s: &mut Session, a: &Value, tokens: usize) -> Result<String, Strin
             let added = with_new_layers(json!({}), s, &before).get("layersAdded").cloned().unwrap_or_else(|| json!([]));
             let out = json!({"success": true, "result": last, "lines": ran.map_or(0, Vec::len), "layersAdded": added,
                 "notices": notices, "error": null, "duration_s": secs});
-            Ok(public_result(s, out, tokens))
+            Ok(public_envelope(s, out, tokens))
         }
         Err(e) => {
+            let e = public_error(&e);
             // Nothing was kept, so no line ran and no layer was added.
             // The notice of the failure is the error redacted: compared as such, it isn't repeated.
             let told = rustgis_engine::data::diagnostics::redact(&e);
             let said: Vec<&&str> = notices.iter().filter(|t| **t != e && **t != told).collect();
             let out = json!({"success": false, "result": null, "lines": 0, "layersAdded": [], "notices": said,
                 "error": clip(&e, 8000), "duration_s": secs});
-            Err(public_result(s, out, tokens))
+            Err(public_envelope(s, out, tokens))
         }
     }
 }
@@ -527,7 +597,7 @@ fn run_script(s: &mut Session, a: &Value, tokens: usize) -> Result<String, Strin
 /// A run's result with what it said beside it (a notice that only the first tables of a GeoPackage
 /// were added, a file's warnings), which the status bar shows in the app.
 fn with_notices(r: Value, s: &Session, mark: u64) -> Value {
-    let said: Vec<&str> = s.notices_since(mark).iter().map(|n| n.text.as_str()).collect();
+    let said: Vec<String> = s.notices_since(mark).iter().map(|n| public_text(n.text.clone())).collect();
     if said.is_empty() {
         return r;
     }
@@ -864,6 +934,69 @@ pub fn context(s: &Session) -> String {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
+    /// Returned tool and fetch errors are cleaned before active patterns can damage URLs;
+    /// successful values and the original call remain outside the generated-error projection.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn generated_tool_and_fetch_errors_clean_addresses_before_active_patterns() {
+        const TEST: &str = "tools::tests::generated_tool_and_fetch_errors_clean_addresses_before_active_patterns";
+        if std::env::var("RUSTGIS_ISOLATED_TOOL_ERRORS").as_deref() != Ok(TEST) {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", TEST])
+                .env("RUSTGIS_ISOLATED_TOOL_ERRORS", TEST)
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success() && stdout.contains("1 passed; 0 failed"),
+                "{stdout}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        use rustgis_engine::render::rustgis_tiles::{failure::Failure, logins};
+        let mut s = Session::new(rustgis_engine::Project::default());
+        let url = "https://returned-error.invalid/a?token=RGSYNTH_returned_error&layer=roads";
+        for active in [false, true] {
+            let binding = active.then(|| {
+                logins::activate(
+                    "https://returned-error.invalid",
+                    "synthetic-returned-error",
+                    logins::Method::Header("X-Key".into()),
+                    "https",
+                    false,
+                )
+                .unwrap()
+            });
+            for (name, args) in [
+                ("read_features", json!({"layer":url})),
+                ("describe_tool", json!({"tool":url})),
+                (url, json!({})),
+                ("run", json!({"script":url})),
+            ] {
+                let call = ToolCall { id: "error".into(), name: name.into(), args };
+                let original = call.clone();
+                let error = run_with_budget(&mut s, &call, DEFAULT_OUTPUT_TOKENS).unwrap_err();
+                assert!(!error.contains("RGSYNTH_returned_error"), "{name}, active={active}: {error}");
+                assert_eq!(call, original);
+                if name == "run" {
+                    let reply: Value = serde_json::from_str(&error).unwrap();
+                    assert_eq!(reply["success"], false);
+                    assert!(reply["error"].as_str().is_some());
+                }
+            }
+            let address = binding.as_ref().map_or_else(|| url.to_string(), |binding| logins::bind(binding, url).unwrap());
+            let failure = Failure::new(&address, format!("failed to fetch {address}"));
+            assert!(!failure.message.contains("RGSYNTH_returned_error"));
+            if let Some(binding) = binding {
+                assert!(logins::deactivate(&binding));
+            }
+        }
+        let clean = ToolCall { id: "clean".into(), name: "read_features".into(), args: json!({"layer":"ordinary missing layer"}) };
+        assert!(run_with_budget(&mut s, &clean, DEFAULT_OUTPUT_TOKENS).unwrap_err().contains("ordinary missing layer"));
+        assert_eq!(Failure::new("https://clean.invalid/a?layer=roads", "HTTP 403").message, "HTTP 403");
+        assert_eq!(logins::scrub_error("failed https://clean.invalid/a?layer=roads"), "failed https://clean.invalid/a?layer=roads");
+    }
     use super::*;
     use rustgis_engine::render::rustgis_tiles::logins;
 
@@ -892,13 +1025,61 @@ mod tests {
         assert!(listed.contains(&plain), "the model still learns the layer's address: {listed}");
     }
 
+    /// The known response schema survives a secret that happens to name one of its fields.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn run_envelope_keys_are_not_data_derived_login_values() {
+        if std::env::var_os("RUSTGIS_TEST_RUN_ENVELOPE").is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "tools::tests::run_envelope_keys_are_not_data_derived_login_values"])
+                .env("RUSTGIS_TEST_RUN_ENVELOPE", "1")
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success() && stdout.contains("1 passed; 0 failed"),
+                "{stdout}\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let mut s = Session::new(rustgis_engine::Project::default());
+        let id = s
+            .run("connection.new", &json!({"kind":"wms", "address":"https://envelope.invalid/wms", "auth":"basic", "user":"reader"}))
+            .unwrap()["id"]
+            .clone();
+        s.run("connection.login", &json!({"id":id, "password":"success"})).unwrap();
+        for (script, success) in [("map.zoomIn {}", true), ("not.a.command {}", false)] {
+            let call = ToolCall { id: "envelope".into(), name: "run".into(), args: json!({"script":script}) };
+            let text = run(&mut s, &call).unwrap_or_else(|e| e);
+            let out: Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(out.get("success"), Some(&json!(success)), "{text}");
+            assert!(out.get("result").is_some() && out.get("notices").is_some() && out.get("duration_s").is_some());
+        }
+        let data = public_addresses(json!({"success":"private field"}), 0, &mut Withheld::default());
+        assert_eq!(data["[redacted]"], "private field", "the same spelling in dynamic data is still scrubbed");
+        s.run("connection.login", &json!({"id":id, "password":"id"})).unwrap();
+        for (name, args, array) in
+            [("search_commands", json!({"query":"zoom"}), "commands"), ("search_tools", json!({"query":"buffer"}), "tools")]
+        {
+            let call = ToolCall { id: "metadata".into(), name: name.into(), args };
+            let text = run(&mut s, &call).unwrap();
+            let out: Value = serde_json::from_str(&text).unwrap();
+            let entries = out.get(array).and_then(Value::as_array).unwrap();
+            assert!(!entries.is_empty(), "{text}");
+            assert!(entries.iter().all(|entry| entry.get("id").is_some()), "fixed nested schema keys survive: {text}");
+        }
+        let data = public_addresses(json!({"id":"private field"}), 0, &mut Withheld::default());
+        assert_eq!(data["[redacted]"], "private field");
+    }
+
     #[test]
     fn wrappers_after_a_prefix_are_made_plain_too() {
         let origin = "https://assistant-login.example";
         let binding = logins::activate(origin, "assistant", logins::Method::Header("X-Key".into()), "assistant-secret", false).unwrap();
         let archive = logins::bind(&binding, &format!("{origin}/a.pmtiles")).unwrap();
         let result = json!({"layers": [{"next": {"request": {"url": format!("pmtiles:x@{archive}")}}}], "count": 2});
-        let v = public_addresses(result, 0, &mut 0);
+        let v = public_addresses(result, 0, &mut Withheld::default());
         assert_eq!(v["layers"][0]["next"]["request"]["url"], format!("pmtiles:x@{origin}/a.pmtiles"));
         assert_eq!(v["count"], 2);
         assert!(logins::deactivate(&binding));
@@ -929,5 +1110,53 @@ mod tests {
         let out: Value = serde_json::from_str(&public_result(&mut s, result.clone(), DEFAULT_OUTPUT_TOKENS)).unwrap();
         assert_eq!(out, result);
         assert!(s.notices_since(0).is_empty());
+    }
+
+    #[test]
+    fn successful_results_scrub_active_raw_service_keys_without_a_wrapper() {
+        let mut s = Session::new(rustgis_engine::Project::default());
+        let id = s
+            .run(
+                "connection.new",
+                &json!({"kind":"wms","address":"https://echo-r15.example.invalid/wms","auth":"header","keyName":"X-Key"}),
+            )
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        s.run("connection.login", &json!({"id":id,"apiKey":"fake001"})).unwrap();
+        let result = json!({"success":true,"echo":"server said fake001","clean":"ordinary café text"});
+        let out: Value = serde_json::from_str(&public_result(&mut s, result, DEFAULT_OUTPUT_TOKENS)).unwrap();
+        assert_eq!(out["success"], true);
+        assert_eq!(out["echo"], "server said [redacted]");
+        assert_eq!(out["clean"], "ordinary café text");
+        assert!(s.notices_since(0).is_empty());
+        // A generated row uses imported field names as object keys. Keep the stored data,
+        // but never send a field repeating an active key to the model in plain text.
+        let source = json!({"type":"FeatureCollection","features":[{
+            "type":"Feature","geometry":{"type":"Point","coordinates":[1,2]},
+            "properties":{"fake001":"retained value","clean":"ordinary café text"}
+        }]});
+        s.run("layer.addDataText", &json!({"fileName":"echo-fields.geojson","text":source.to_string()})).unwrap();
+        let name = s.map().layers.last().unwrap().name.clone();
+        let call = ToolCall { id: "echo-fields".into(), name: "read_features".into(), args: json!({"layer":name,"limit":1}) };
+        let mark = s.notice_mark();
+        let text = run_with_budget(&mut s, &call, DEFAULT_OUTPUT_TOKENS).unwrap();
+        assert!(!text.contains("fake001"), "generated object keys must be scrubbed too: {text}");
+        let out: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(out["rows"][0]["[redacted]"], "retained value");
+        assert_eq!(out["rows"][0]["clean"], "ordinary café text");
+        assert!(s.map().layers.last().unwrap().dataset.fields.iter().any(|f| f.name == "fake001"), "stored data stays unchanged");
+        assert!(s.notices_since(mark).is_empty());
+        // Two keys that become equal must not silently overwrite one value with the other.
+        let mark = s.notice_mark();
+        let collision = json!({"success":true,"result":{"fake001":"first value","[redacted]":"second value"}});
+        let text = public_result(&mut s, collision, DEFAULT_OUTPUT_TOKENS);
+        assert!(!text.contains("fake001"));
+        let out: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(out["success"], true);
+        assert!(out["result"].is_string(), "ambiguous redacted objects are explicitly withheld");
+        assert_eq!(s.notices_since(mark).len(), 1);
+        assert!(s.notices_since(mark)[0].text.contains("field names"));
     }
 }

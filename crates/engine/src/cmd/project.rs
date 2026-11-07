@@ -11,36 +11,36 @@ pub fn commands() -> Vec<C> {
     vec![
         // Replacing or saving the project isn't an undoable edit: these are `.view()` commands
         // that manage `dirty` and the history themselves.
-        C::new("project.new", "New Project", "Project", new).key("Mod+N").view().params(r#"{"name"?: string}"#),
-        C::new("project.sample", "World Atlas Sample", "Project", sample).view(),
-        C::new("project.open", "Open Project", "Project", open).key("Mod+O").view().params(r#"{"path": string}"#),
-        C::new("project.openText", "Open Project (from text)", "Project", open_text).view().params(r#"{"text": project JSON, "fileName"?: string, "package"?: "true for package contents: never restore saved layer secrets"}"#),
-        C::new("project.save", "Save Project", "Project", save).key("Mod+S").view().params(r#"{"path"?: string}"#),
-        C::new("project.saveAs", "Save Project As", "Project", save_as).key("Mod+Shift+S").view().params(r#"{"path": string}"#),
-        C::new("project.rename", "Rename Project", "Project", rename).params(r#"{"name": string}"#),
-        C::new("edit.undo", "Undo", "Quick Access Toolbar", |s, _| if s.undo() { Ok(Value::Null) } else { Err("nothing to undo".into()) })
+        C::new("project.new", "New Project", "Project", new).roles(&[]).key("Mod+N").view().params(r#"{"name"?: string}"#),
+        C::new("project.sample", "World Atlas Sample", "Project", sample).roles(&[]).view(),
+        C::new("project.open", "Open Project", "Project", open).roles(&[]).key("Mod+O").view().params(r#"{"path": string}"#),
+        C::new("project.openText", "Open Project (from text)", "Project", open_text).roles(&[crate::ParamRole { key: "text", role: crate::Role::Document(crate::Document::Project) }]).view().params(r#"{"text": project JSON, "fileName"?: string, "package"?: "true for package contents: never restore saved layer secrets"}"#),
+        C::new("project.save", "Save Project", "Project", save).roles(&[]).key("Mod+S").view().params(r#"{"path"?: string}"#),
+        C::new("project.saveAs", "Save Project As", "Project", save_as).roles(&[]).key("Mod+Shift+S").view().params(r#"{"path": string}"#),
+        C::new("project.rename", "Rename Project", "Project", rename).roles(&[]).params(r#"{"name": string}"#),
+        C::new("edit.undo", "Undo", "Quick Access Toolbar", |s, _| if s.undo() { Ok(Value::Null) } else { Err("nothing to undo".into()) }).roles(&[])
             .key("Mod+Z")
             .view()
             .when(|s| if s.can_undo() { None } else { Some("nothing to undo") }),
-        C::new("edit.redo", "Redo", "Quick Access Toolbar", |s, _| if s.redo() { Ok(Value::Null) } else { Err("nothing to redo".into()) })
+        C::new("edit.redo", "Redo", "Quick Access Toolbar", |s, _| if s.redo() { Ok(Value::Null) } else { Err("nothing to redo".into()) }).roles(&[])
             .key("Mod+Y")
             .view()
             .when(|s| if s.can_redo() { None } else { Some("nothing to redo") }),
-        C::new("tool.set", "Set Map Tool", "Home › Navigate", set_tool)
+        C::new("tool.set", "Set Map Tool", "Home › Navigate", set_tool).roles(&[])
             .view()
             .params(r#"{"tool": "explore"|"select"|"selectPolygon"|"selectLasso"|"selectRadius"|"zoomIn"|"measure"|"measureArea"|"createPoint"|"createLine"|"createPolygon"|"editVertices"|"cutPolygon"|"reshape"|"graphicPoint"|"graphicText"|"graphicLine"|"graphicCurve"|"graphicFreehand"|"graphicPolygon"|"graphicLasso"|"graphicRectangle"|"graphicCircle"|"graphicEllipse"|"graphicPicture"}"#),
-        C::new("info.project", "Project Info", "Project", info).view().params(r#"{"nameFilter"?: string, "includeFields"?: bool}"#),
-        C::new("info.commands", "List Commands", "Help", list).view(),
+        C::new("info.project", "Project Info", "Project", info).roles(&[]).view().params(r#"{"nameFilter"?: string, "includeFields"?: bool}"#),
+        C::new("info.commands", "List Commands", "Help", list).roles(&[]).view(),
         // The session log (#797): read, written out, emptied, turned on or off. It sits outside
         // the project, so none of these changes the project or takes an undo step.
-        C::new("project.log", "Session Log", "Project", log).view().params(
+        C::new("project.log", "Session Log", "Project", log).roles(&[]).view().params(
             r#"{"since"?: milliseconds since 1970 (UTC), "until"?: milliseconds, "command"?: "a command id, or the start of one (layer.)", "failed"?: bool (true: only those that failed; false: only those that succeeded), "limit"?: entries, a whole number (default 100, the newest; 1 to 1000)} → {"entries": [{"at", "command", "params", "ok", "error"?, "millis"}], "count": matching, "total": in the log, "on": bool}"#,
         ),
-        C::new("project.exportLog", "Export Session Log", "Project", export_log)
+        C::new("project.exportLog", "Export Session Log", "Project", export_log).roles(&[])
             .view()
             .params(r#"{"path": ".csv, .jsonl or .ndjson file", "format"?: "csv"|"jsonl" (for a path with no extension; one given must match the extension)}"#),
-        C::new("project.clearLog", "Clear Session Log", "Project", clear_log).view(),
-        C::new("project.logCommands", "Log Commands", "Project", log_commands).view().params(r#"{"on"?: bool (default: turn it the other way)}"#),
+        C::new("project.clearLog", "Clear Session Log", "Project", clear_log).roles(&[]).view(),
+        C::new("project.logCommands", "Log Commands", "Project", log_commands).roles(&[]).view().params(r#"{"on"?: bool (default: turn it the other way)}"#),
     ]
 }
 
@@ -148,7 +148,9 @@ pub(crate) fn reset_to(s: &mut Session, p: Project) {
     reset(s, p);
 }
 
+/// Replaces project authority, clearing the exchange record, item trust and active connections.
 fn reset(s: &mut Session, p: Project) {
+    s.exchange = None;
     super::connections::clear_active();
     s.database_logins.clear_activations();
     s.database_logins.clear_requests();
@@ -306,13 +308,12 @@ fn open_text(s: &mut Session, p: &Value) -> CmdResult {
 fn write(s: &mut Session, path: PathBuf) -> CmdResult {
     let path = if path.extension().is_none() { path.with_extension(crate::project::EXTENSION) } else { path };
     let destination = std::path::absolute(&path).map_err(|error| format!("{}: {error}", path.display()))?;
-    let stripped = s.project.save(&destination)?;
+    let report = s.project.save(&destination)?;
+    let stripped = report.layer_addresses();
     s.mark_saved();
     s.edit_counts.clear();
     s.notify(format!("Saved {}", path.display()), false);
-    if stripped > 0 {
-        s.notify(format!("{stripped} layer address(es) were saved without their keys, tokens or passwords: after RustGIS closes, add those layers again to give them"), false);
-    }
+    crate::durable::notify(s, &report);
     s.path = Some(destination);
     Ok(json!({"path": path.display().to_string(), "stripped": stripped}))
 }

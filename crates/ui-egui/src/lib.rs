@@ -426,11 +426,16 @@ pub struct ServiceBrowse {
 pub struct TilesResolve {
     /// `service.add`'s parameters, given the template as `"tiles"` once read.
     pub params: Value,
-    /// The tileset list, whose query the template keeps; the document being read; how many have
+    /// The tileset list, whose safe query options the template may inherit; the document being read; how many have
     /// been.
     pub list: String,
     pub doc: String,
+    /// Runtime discovery lineage: once a document or template crosses origins, later hops
+    /// stay anonymous even if they return to a saved connection's origin.
+    pub crossed_origin: bool,
     pub read: u8,
+    /// Destinations that lost inherited query settings across both document reads.
+    pub withheld_addresses: u32,
     pub vector: bool,
     /// The usual-path template, when the advertised one can't be read.
     pub fallback: String,
@@ -442,10 +447,10 @@ pub struct TilesResolve {
 /// `origin` is the connection a tree add is for, named in Recent once the layer is added.
 pub enum ServiceStep {
     /// An OGC API layer whose advertised tile template is being read.
-    Tiles { resolve: TilesResolve, dialog: bool, origin: Option<String> },
+    Tiles { resolve: TilesResolve, dialog: bool, origin: Option<String>, opened: u64 },
     /// A WCS coverage whose description is being read before it is asked for: `service.coverage`'s
     /// parameters and the description on its way.
-    Coverage { params: Value, slot: Slot<Result<Vec<u8>, String>>, dialog: bool, origin: Option<String> },
+    Coverage { params: Value, slot: Slot<Result<Vec<u8>, String>>, dialog: bool, origin: Option<String>, opened: u64 },
 }
 
 /// Fetches an address into a slot, off the frame.
@@ -1643,7 +1648,7 @@ impl RustGisApp {
         // Not an undoable edit: saving names the project, as `project.saveAs` does, once the
         // file is written.
         let old = std::mem::replace(&mut self.session.project.name, stem.clone());
-        let (text, stripped) = match self.session.project.saved_text(None) {
+        let (text, report) = match self.session.project.saved_text(None) {
             Ok(saved) => saved,
             Err(e) => {
                 self.session.project.name = old;
@@ -1656,14 +1661,8 @@ impl RustGisApp {
             return Err(e);
         }
         self.session.notify(crate::i18n::fmt("Downloaded {name}", &[("name", &file)]), false);
-        if stripped > 0 {
-            self.session.notify(
-                crate::i18n::fmt(
-                    "{n} layer address(es) were saved without their keys, tokens or passwords: after RustGIS closes, add those layers again to give them",
-                    &[("n", &stripped.to_string())],
-                ),
-                false,
-            );
+        for notice in report.notices() {
+            self.session.notify(notice, false);
         }
         self.session.mark_saved();
         self.ui.web_file = Some(file);
@@ -2081,8 +2080,56 @@ impl RustGisApp {
         self.run(id, params)
     }
 
+    /// Imports a peer's project without going through User command dispatch or restore memory.
+    pub fn open_peer_text(&mut self, text: &str) -> Result<(), String> {
+        let report = self.session.open_peer_text(rustgis_engine::Peer::Embedder, text)?;
+        assistantpane::peer_replaced(self);
+        self.ui.web_file = None;
+        self.map.deleting = None;
+        self.retire_cog_probes();
+        if let Some(steps) = self.ws.recording.take() {
+            self.session.notify(
+                crate::i18n::fmt(
+                    "Recording stopped: another project opened, and its {n} steps were for the previous one.",
+                    &[("n", &steps.len().to_string())],
+                ),
+                true,
+            );
+        }
+        layoutview::follow_project(self);
+        for notice in report.notices() {
+            self.session.notify(notice, false);
+        }
+        Ok(())
+    }
+
+    /// Reports pending header reads retired by either ordinary or peer project replacement.
+    fn retire_cog_probes(&mut self) {
+        for (p, _) in std::mem::take(&mut self.ui.cog_probes) {
+            let url = p.get("url").and_then(Value::as_str).unwrap_or("");
+            let url = serviceui::address_in_message(rustgis_engine::data::s3_address::inner(url));
+            let why = i18n::fmt("{url}: its project was closed while it was read, so it wasn't added", &[("url", &url)]);
+            self.landed_in_dialog(&p, Err(&why));
+            self.session.notify(why, false);
+        }
+    }
+
     /// Runs a command by id: `ui.*` here, everything else in the engine.
     pub fn run(&mut self, id: &str, params: Value) -> Result<Value, String> {
+        self.run_with_prepared(id, params, AppDispatch::Direct)
+    }
+
+    /// Reports a command failure once through the normal diagnostics and notice path.
+    fn command_failed(&mut self, id: &str, error: &str, notice_mark: u64) {
+        let text = rustgis_engine::Session::redacted(error);
+        log::info!("{id}: {}", text.as_str());
+        if !self.session.notices_since(notice_mark).iter().any(|notice| notice.error && notice.text == text.as_str()) {
+            self.session.notify_redacted(text, true);
+        }
+    }
+
+    /// Runs direct and resolved-service commands with the same app lifecycle.
+    fn run_with_prepared(&mut self, id: &str, params: Value, dispatch: AppDispatch) -> Result<Value, String> {
         let _diagnostics = self.session.diagnostics.enter();
         if !matches!(id, "ui.menu" | "ui.ribbon" | "ui.language" | "ui.worldview") {
             self.ui.ribbon_peek = false;
@@ -2106,24 +2153,24 @@ impl RustGisApp {
         let notice_mark = self.session.notice_mark();
         // A plugin's command that adds data by address doesn't freeze the app: the download is
         // left for the frame loop (`ui.addUrl`), as in the browser.
-        let mut r = if id.starts_with("ui.") {
-            self.run_ui(id, &params)
-        } else if id.starts_with(rustgis_engine::plugins::PREFIX) {
-            self.session.run_leaving_downloads(id, &params)
-        } else {
-            self.session.run(id, &params)
+        let resolved_lineage = match &dispatch {
+            AppDispatch::ResolvedTiles { crossed_origin, .. } => Some(*crossed_origin),
+            _ => None,
+        };
+        let mut r = match dispatch {
+            AppDispatch::ResolvedTiles { template, crossed_origin } => {
+                rustgis_engine::cmd::service::add_resolved_tiles(&mut self.session, &params, &template, crossed_origin)
+            }
+            AppDispatch::Direct if id.starts_with("ui.") => self.run_ui(id, &params),
+            AppDispatch::Direct if id.starts_with(rustgis_engine::plugins::PREFIX) => self.session.run_leaving_downloads(id, &params),
+            AppDispatch::Direct => self.session.run(id, &params),
         };
         r = self.deliver_gp_files(r);
         if r.is_ok() && id == "tool.set" {
             self.map.cancel_sketch();
         }
         if let Err(e) = &r {
-            log::info!("{id}: {e}");
-            // UI-only failures can return before an engine command emits a notice.
-            let text = rustgis_engine::Session::redacted(e);
-            if !self.session.notices_since(notice_mark).iter().any(|notice| notice.error && notice.text == text.as_str()) {
-                self.session.notify_redacted(text, true);
-            }
+            self.command_failed(id, e, notice_mark);
         }
         // Commands can replace the project, switch maps or change the renderer while the pane
         // is closed. A field picked for the old context must not overwrite the new renderer.
@@ -2146,15 +2193,9 @@ impl RustGisApp {
                 self.session.notify(text, true);
             }
             // A probe still under way is for an address added to the old project: dropped, so
-            // its layer never lands in the new one, and said, as a download landing late is. (A plugin
-            // command waiting for it went with the old project's waits.)
-            for (p, _) in std::mem::take(&mut self.ui.cog_probes) {
-                let url = p.get("url").and_then(Value::as_str).unwrap_or("");
-                let url = serviceui::address_in_message(rustgis_engine::data::s3_address::inner(url));
-                let why = i18n::fmt("{url}: its project was closed while it was read, so it wasn't added", &[("url", &url)]);
-                self.landed_in_dialog(&p, Err(&why));
-                self.session.notify(why, false);
-            }
+            // its layer never lands in the new one, and said, as a download landing late is. A plugin
+            // command waiting for it went with the old project's waits.
+            self.retire_cog_probes();
         }
         // Undo and redo can move vertices: an index chosen before may now name another vertex.
         // A step moved or deleted, from the pane, Command Search, the assistant or a script: the
@@ -2200,7 +2241,30 @@ impl RustGisApp {
             self.ui.dynamic_text = None;
         }
         if r.is_ok() {
-            self.record_step(id, &params, active);
+            if resolved_lineage == Some(true) {
+                if self.ws.recording.is_some() {
+                    self.session.notify(
+                        tl!(
+                            "This service layer isn't recorded: its tile discovery crossed origins, and a task could use a different login."
+                        ),
+                        false,
+                    );
+                }
+            } else if resolved_lineage == Some(false) {
+                // A saved connection can replay its same-origin discovery with its current login;
+                // runtime bearer wrappers themselves must never become recorded parameters.
+                let mut replay = params.clone();
+                if params.get("connection").and_then(Value::as_str).is_some_and(|id| !id.is_empty()) {
+                    for key in ["url", "source_url", "tiles"] {
+                        if let Some(url) = params.get(key).and_then(Value::as_str) {
+                            replay[key] = json!(rustgis_engine::render::rustgis_tiles::logins::inner(url));
+                        }
+                    }
+                }
+                self.record_step(id, &replay, active);
+            } else {
+                self.record_step(id, &params, active);
+            }
         }
         self.note_last_project();
         // Sources added, saved or made favourites are kept with the preferences.
@@ -4307,6 +4371,13 @@ impl RustGisApp {
         }
     }
 
+    /// Reports query losses once when discovery finishes, including a refused next document.
+    fn notice_service_query_loss(&mut self, count: u32) {
+        if count > 0 {
+            self.session.notify(i18n::fmt(rustgis_engine::data::ogc::QUERY_WITHHELD_NOTICE, &[("n", &count.to_string())]), false);
+        }
+    }
+
     /// Tells how a service layer added outside the add-service dialog (or in it) went: in the
     /// dialog's own line, or as a notice for the Connections tree.
     fn report_step(&mut self, dialog: bool, r: Result<String, String>) {
@@ -4318,52 +4389,121 @@ impl RustGisApp {
         }
     }
 
+    /// Refuses answers from a replaced project and reports the retired read without starting follow-up work.
+    fn service_read_current(&mut self, opened: u64, address: &str, pending: Option<&str>) -> bool {
+        if opened == self.session.opened {
+            return true;
+        }
+        let url = serviceui::address_in_message(address);
+        let why = i18n::fmt("{url}: its project was closed while it was read, so it wasn't added", &[("url", &url)]);
+        if pending.is_some() && self.dialogs.info.as_deref() == pending {
+            self.dialogs.info = None;
+        }
+        self.session.notify(why, false);
+        false
+    }
+
     /// Moves the service layers waiting on a document along: an OGC API layer's tile template
     /// (read from its tileset list, then the tileset when the list doesn't carry it; the layer is
     /// added with the template read, or the usual path) and a WCS coverage's description (the
     /// coverage is then asked for the view and downloaded as From URL… does).
     fn poll_service_steps(&mut self) {
         use rustgis_engine::data::ogc::{TilesStep, resolve_tiles};
-        for step in std::mem::take(&mut self.ui.service_steps) {
+        let steps = std::mem::take(&mut self.ui.service_steps);
+        // A read in the new project can display the same title as a retired read. Preserve
+        // progress belonging to that live generation, even before its answer has landed.
+        let current: std::collections::HashSet<String> = steps
+            .iter()
+            .filter_map(|step| {
+                let (params, dialog, opened, message) = match step {
+                    ServiceStep::Tiles { resolve, dialog, opened, .. } => {
+                        (&resolve.params, *dialog, *opened, "Reading the tileset of {name}")
+                    }
+                    ServiceStep::Coverage { params, dialog, opened, .. } => (params, *dialog, *opened, "Describing {name}"),
+                };
+                (dialog && opened == self.session.opened)
+                    .then(|| i18n::fmt(message, &[("name", params.get("name").and_then(Value::as_str).unwrap_or(""))]))
+            })
+            .collect();
+        for step in steps {
             match step {
-                ServiceStep::Tiles { mut resolve, dialog, origin } => {
+                ServiceStep::Tiles { mut resolve, dialog, origin, opened } => {
+                    let pending = dialog.then(|| {
+                        i18n::fmt(
+                            "Reading the tileset of {name}",
+                            &[("name", resolve.params.get("name").and_then(Value::as_str).unwrap_or(""))],
+                        )
+                    });
+                    if !self.service_read_current(opened, &resolve.doc, pending.as_deref().filter(|message| !current.contains(*message))) {
+                        continue;
+                    }
                     let Some(r) = resolve.slot.lock().unwrap_or_else(|e| e.into_inner()).take() else {
-                        self.ui.service_steps.push(ServiceStep::Tiles { resolve, dialog, origin });
+                        self.ui.service_steps.push(ServiceStep::Tiles { resolve, dialog, origin, opened });
                         continue;
                     };
                     let next = r.ok().and_then(|body| resolve_tiles(&resolve.list, &resolve.doc, &body, resolve.vector));
+                    let next = next.map(|resolved| {
+                        resolve.withheld_addresses = resolve.withheld_addresses.saturating_add(resolved.withheld_addresses);
+                        resolved.step
+                    });
                     let template = match next {
                         Some(TilesStep::Next(next)) if resolve.read < 2 => {
                             resolve.read += 1;
-                            resolve.doc = next.clone();
-                            match serviceui::request_from(
-                                self,
-                                resolve.params.get("connection").and_then(Value::as_str),
-                                resolve.params.get("url").and_then(Value::as_str).unwrap_or(""),
-                                &next,
-                            ) {
-                                Ok(url) => resolve.slot = fetch_into(&url),
+                            // The resolver already carried the current document's binding, or
+                            // its absence. A saved connection must not restore it after a hop.
+                            match rustgis_engine::render::rustgis_tiles::address::check(&next, Some(&resolve.doc)) {
+                                Ok(()) => {
+                                    resolve.crossed_origin |= rustgis_engine::render::rustgis_tiles::logins::origin(&resolve.doc)
+                                        != rustgis_engine::render::rustgis_tiles::logins::origin(&next);
+                                    resolve.doc = next;
+                                    resolve.slot = fetch_into(&resolve.doc);
+                                }
                                 Err(e) => {
+                                    self.notice_service_query_loss(resolve.withheld_addresses);
                                     self.report_step(dialog, Err(e));
                                     continue;
                                 }
                             }
-                            self.ui.service_steps.push(ServiceStep::Tiles { resolve, dialog, origin });
+                            self.ui.service_steps.push(ServiceStep::Tiles { resolve, dialog, origin, opened });
                             continue;
                         }
                         Some(TilesStep::Template(t)) => t,
-                        _ => resolve.fallback.clone(),
+                        _ => rustgis_engine::render::rustgis_tiles::logins::inherit(
+                            &resolve.doc,
+                            rustgis_engine::render::rustgis_tiles::logins::inner(&resolve.fallback),
+                        ),
                     };
+                    resolve.crossed_origin |= rustgis_engine::render::rustgis_tiles::logins::origin(&resolve.doc)
+                        != rustgis_engine::render::rustgis_tiles::logins::origin(&template);
+                    self.notice_service_query_loss(resolve.withheld_addresses);
                     let mut p = resolve.params;
                     p["tiles"] = json!(template);
                     let title = p["name"].as_str().unwrap_or("").to_string();
-                    let r = connectiontree::run_named(self, "service.add", p, origin.as_deref()).map(|_| serviceui::added(&title));
+                    let before = self.session.sources.generation;
+                    let r = self.run_with_prepared(
+                        "service.add",
+                        p,
+                        AppDispatch::ResolvedTiles { template, crossed_origin: resolve.crossed_origin },
+                    );
+                    if r.is_ok() {
+                        connectiontree::name_recent(self, before, origin.as_deref());
+                    }
+                    let r = r.map(|_| serviceui::added(&title));
                     self.report_step(dialog, r);
                     self.map.invalidate();
                 }
-                ServiceStep::Coverage { mut params, slot, dialog, origin } => {
+                ServiceStep::Coverage { mut params, slot, dialog, origin, opened } => {
+                    let pending = dialog
+                        .then(|| i18n::fmt("Describing {name}", &[("name", params.get("name").and_then(Value::as_str).unwrap_or(""))]));
+                    if !self.service_read_current(
+                        opened,
+                        params.get("url").and_then(Value::as_str).unwrap_or(""),
+                        pending.as_deref().filter(|message| !current.contains(*message)),
+                    ) {
+                        continue;
+                    }
                     let Some(r) = slot.lock().unwrap_or_else(|e| e.into_inner()).take() else {
-                        self.ui.service_steps.push(ServiceStep::Coverage { params, slot, dialog, origin });
+                        self.ui.service_steps.push(ServiceStep::Coverage { params, slot, dialog, origin, opened });
                         continue;
                     };
                     let title = params["name"].as_str().unwrap_or("").to_string();
@@ -4374,7 +4514,11 @@ impl RustGisApp {
                         let connection = params.as_object_mut().and_then(|p| p.remove("connection"));
                         let get = c.get("url").and_then(Value::as_str).unwrap_or("").to_string();
                         let mut p = json!({"url": get, "name": title, "coverage": true});
-                        if let Some(connection) = connection {
+                        if params.get("anonymous").and_then(Value::as_bool) == Some(true)
+                            || c.get("anonymous").and_then(Value::as_bool) == Some(true)
+                        {
+                            p["anonymous"] = json!(true);
+                        } else if let Some(connection) = connection {
                             p["connection"] = connection;
                         }
                         connectiontree::run_add_url(self, p, origin.as_deref())
@@ -5450,6 +5594,93 @@ mod download_service_tests {
     use super::{RustGisApp, Services, complete_gp_file};
     use serde_json::json;
 
+    /// The real asynchronous completion receiver owns the forwarding notice, even when the
+    /// layer is added successfully. Input is already downloaded into the usual completion slot.
+    #[test]
+    fn tile_resolver_completion_reports_query_settings_it_withheld() {
+        for (query, count) in [("collections=roads", 0), ("token=RGSYNTH_ui_20261103&collections=roads", 1)] {
+            let mut app = RustGisApp::new(rustgis_engine::Session::new(rustgis_engine::Project::default()));
+            let list = format!("https://h.invalid/svc/tiles?{query}");
+            let capabilities = json!({"title":"roads", "links":[{"rel":"tilesets-map", "href":list}]}).to_string();
+            let body =
+                br#"{"links":[{"rel":"item", "type":"image/png", "href":"https://elsewhere.invalid/{tileMatrix}/{tileRow}/{tileCol}"}]}"#
+                    .to_vec();
+            let resolve = super::TilesResolve {
+                params: json!({"url":"https://h.invalid/svc", "type":"ogcapi", "layer":"map", "text":capabilities}),
+                list: list.clone(),
+                doc: list,
+                crossed_origin: false,
+                read: 0,
+                withheld_addresses: 0,
+                vector: false,
+                fallback: "https://h.invalid/svc/tiles/{z}/{y}/{x}".into(),
+                slot: std::sync::Arc::new(std::sync::Mutex::new(Some(Ok(body)))),
+            };
+            app.ui.service_steps.push(super::ServiceStep::Tiles { resolve, dialog: true, origin: None, opened: app.session.opened });
+            app.poll_service_steps();
+            assert!(app.ui.service_steps.is_empty());
+            let notices = app.session.notices.iter().filter(|n| n.text.contains("address(es) the service listed")).count();
+            assert_eq!(notices, count);
+            assert_eq!(app.session.map().tiles.len(), 1);
+            assert_eq!(app.session.map().tiles[0].url, "https://elsewhere.invalid/{z}/{y}/{x}?collections=roads");
+            assert!(app.dialogs.error.is_none(), "{:?}", app.dialogs.error);
+        }
+    }
+
+    #[test]
+    fn retired_service_steps_clear_only_their_own_pending_dialog() {
+        for coverage in [false, true] {
+            for newer in 0..3 {
+                let mut app = RustGisApp::new(rustgis_engine::Session::new(rustgis_engine::Project::default()));
+                let opened = app.session.opened;
+                let params = json!({"url":"https://retired.invalid/service", "name":"Old read"});
+                let slot = std::sync::Arc::new(std::sync::Mutex::new(None));
+                let step = |opened, slot: std::sync::Arc<std::sync::Mutex<Option<Result<Vec<u8>, String>>>>| {
+                    if coverage {
+                        super::ServiceStep::Coverage { params: params.clone(), slot, dialog: true, origin: None, opened }
+                    } else {
+                        super::ServiceStep::Tiles {
+                            resolve: super::TilesResolve {
+                                params: params.clone(),
+                                list: "https://retired.invalid/list".into(),
+                                doc: "https://retired.invalid/list".into(),
+                                crossed_origin: false,
+                                read: 0,
+                                withheld_addresses: 0,
+                                vector: false,
+                                fallback: "https://retired.invalid/{z}/{y}/{x}".into(),
+                                slot: slot.clone(),
+                            },
+                            dialog: true,
+                            origin: None,
+                            opened,
+                        }
+                    }
+                };
+                app.ui.service_steps.push(step(opened, slot.clone()));
+                app.session.run("project.new", &json!({})).unwrap();
+                let pending = if coverage { "Describing Old read" } else { "Reading the tileset of Old read" };
+                if newer == 2 {
+                    app.ui.service_steps.push(step(app.session.opened, Default::default()));
+                }
+                app.dialogs.info = Some(if newer == 1 { "New operation" } else { pending }.into());
+                *slot.lock().unwrap() = Some(Ok(b"late completion".to_vec()));
+                app.poll_service_steps();
+                assert_eq!(app.ui.service_steps.len(), usize::from(newer == 2));
+                assert!(app.session.map().tiles.is_empty() && app.session.map().layers.is_empty());
+                assert!(app.session.notices.iter().any(|n| n.text.contains("its project was closed while it was read")));
+                assert_eq!(
+                    app.dialogs.info.as_deref(),
+                    match newer {
+                        1 => Some("New operation"),
+                        2 => Some(pending),
+                        _ => None,
+                    }
+                );
+            }
+        }
+    }
+
     #[test]
     fn rejected_download_does_not_announce_success_or_rename_project() {
         let mut app = RustGisApp::with_sample()
@@ -6033,4 +6264,54 @@ mod look_tests {
         assert!(written.contains(&("dark".to_string(), "true".to_string())), "{written:?}");
         assert!(app.use_theme("Gone").is_err(), "a name the list does not hold");
     }
+}
+
+#[cfg(test)]
+mod peer_output_tests {
+    use super::*;
+
+    /// Drives the actual receiving wrapper, including the UI state a direct Session call misses.
+    #[test]
+    fn peer_project_uses_import_authority_and_resets_old_ui_work() {
+        let mut app = RustGisApp::with_sample();
+        app.session.project.maps[0].layers[0].dataset.source = Some("https://h.invalid/?token=RGSYNTH_4".into());
+        let (text, _) = app.session.project.saved_text(None).unwrap();
+        app.session.trusted_tasks.insert("prior".into());
+        app.assistant.queued = Some("old project action".into());
+        app.ui.web_file = Some("prior.rgis".into());
+        let generation = app.session.opened;
+        app.ui.cog_probes.push((
+            json!({"url":"https://peer-probe.invalid/elevation.tif?token=RGSYNTH_peer_probe","name":"Elevation"}),
+            Default::default(),
+        ));
+        app.dialogs.info = Some(crate::serviceui::downloading("Elevation"));
+        let probe_mark = app.session.notice_mark();
+        app.open_peer_text(&text).unwrap();
+        assert_ne!(app.session.opened, generation);
+        assert!(app.ui.cog_probes.is_empty());
+        assert!(app.dialogs.info.is_none(), "a retired peer probe cannot keep the reading message open");
+        let retired = app
+            .session
+            .notices_since(probe_mark)
+            .iter()
+            .filter(|n| n.text.contains("peer-probe.invalid/elevation.tif") && n.text.contains("project was closed"))
+            .count();
+        assert_eq!(retired, 1, "the peer replacement must say which pending read was omitted");
+        assert!(app.session.notices_since(probe_mark).iter().all(|n| !n.text.contains("RGSYNTH_peer_probe")));
+        let clean_mark = app.session.notice_mark();
+        app.open_peer_text(&text).unwrap();
+        assert!(
+            app.session.notices_since(clean_mark).iter().all(|n| !n.text.contains("project was closed")),
+            "a clean peer replacement does not replay a retired read"
+        );
+        assert!(app.session.trusted_tasks.is_empty());
+        assert!(app.ui.web_file.is_none() && app.assistant.queued.is_none());
+        assert!(!serde_json::to_string(&app.session.project).unwrap().contains("RGSYNTH_4"));
+    }
+}
+
+/// Resolved tile discovery shares the normal command bookkeeping.
+enum AppDispatch {
+    Direct,
+    ResolvedTiles { template: String, crossed_origin: bool },
 }

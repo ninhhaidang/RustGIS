@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use egui::accesskit::Role;
 use egui_kittest::kittest::Queryable;
+use rustgis_engine::project::{Task, TaskStep};
 use rustgis_ui_egui::{FolderStore, RecoveryStore, RustGisApp, Services};
 use serde_json::json;
 
@@ -138,12 +139,53 @@ fn unsaved_work_is_kept_and_offered_back_after_a_crash() {
     assert!(app.session.map().layer_by_name("Inspections").is_some());
     assert_eq!(app.session.path.as_deref(), Some(std::path::absolute(&project).unwrap().as_path()), "Save writes back to its file");
     assert!(app.session.dirty(), "recovered work is unsaved");
+    assert!(
+        !app.session.notices.iter().any(|n| n.text.contains("without credentials or URL fragments")),
+        "a clean recovery reports no credential loss"
+    );
     // The copy is this run's now, unchanged, until the work is saved.
     assert!(!file(&dir.0, PENDING).exists() && file(&dir.0, LIVE).is_file());
     h.state_mut().run("project.save", json!({})).unwrap();
     settle(&mut h);
     assert!(!file(&dir.0, LIVE).exists(), "saved work needs no copy");
     assert!(std::fs::read_to_string(&project).unwrap().contains("Inspections"));
+    drop(h);
+
+    // This task is stored, never run: recovering its credential needs no network request.
+    // Nothing in this scenario is explicitly saved, so the saved-text cache cannot restore it.
+    let dir = TempDir::new("crash-credentials");
+    let mut h = launch(&dir.0, &prefs);
+    let secret = "RGSYNTH_autosave_20261105";
+    h.state_mut().session.project.tasks.push(Task {
+        name: "Credential recovery".into(),
+        description: String::new(),
+        steps: vec![TaskStep {
+            title: "Log in".into(),
+            instructions: String::new(),
+            command: "connection.login".into(),
+            params: json!({"id": "autosave-unused", "apiKey": secret}),
+        }],
+    });
+    edit(&mut h, "Credential recovery");
+    settle(&mut h);
+    assert!(!std::fs::read_to_string(file(&dir.0, LIVE)).unwrap().contains(secret), "the recovery file contains no token");
+    assert_eq!(h.state().session.project.tasks.last().unwrap().steps[0].params["apiKey"], secret, "autosave preserves the live token");
+    drop(h);
+
+    let mut h = launch(&dir.0, &prefs);
+    h.step();
+    h.get_by_role_and_label(Role::Button, "Recover").click();
+    settle(&mut h);
+    let app = h.state();
+    assert!(app.session.map().layer_by_name("Credential recovery").is_some());
+    assert!(!serde_json::to_string(&app.session.project).unwrap().contains(secret), "the recovered state contains no token");
+    let losses: Vec<_> = app.session.notices.iter().filter(|n| n.text.contains("without credentials or URL fragments")).collect();
+    assert_eq!(losses.len(), 1, "recovery reports the credential loss once");
+    assert_eq!(
+        losses[0].text,
+        "1 executable step(s) were written without credentials or URL fragments; supply missing values again before replay"
+    );
+    assert!(!losses[0].error);
 }
 
 #[test]

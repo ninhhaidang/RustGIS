@@ -5,6 +5,9 @@ use crate::{Project, Session, sample};
 #[path = "tests/task_reentry.rs"]
 mod task_reentry;
 
+#[path = "tests/credential_output.rs"]
+mod credential_output;
+
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "tests/remembered_database.rs"]
 mod remembered_database;
@@ -10130,7 +10133,7 @@ fn jupyter_python_notebooks_survive_open_and_save() {
             let nb = s.project.notebooks.last().unwrap();
             let _ = (nb.language_label(), nb.cells.iter().map(crate::cmd::notebook::Cell::images).count());
             let i = s.project.notebooks.len() - 1;
-            assert!(crate::cmd::notebook::notebook_file(&s, i, true).is_ok(), "{junk}");
+            assert!(crate::cmd::notebook::notebook_file(&mut s, i, true).is_ok(), "{junk}");
             s.run("notebook.remove", &json!({"notebook": i})).unwrap();
         }
     }
@@ -10141,7 +10144,7 @@ fn jupyter_python_notebooks_survive_open_and_save() {
     s.run("notebook.open", &json!({"text": cmds.to_string()})).unwrap();
     s.run("notebook.run", &json!({"cell": 0})).unwrap();
     let i = s.project.notebooks.len() - 1;
-    let saved: Value = serde_json::from_slice(&crate::cmd::notebook::notebook_file(&s, i, true).unwrap()).unwrap();
+    let saved: Value = serde_json::from_slice(&crate::cmd::notebook::notebook_file(&mut s, i, true).unwrap()).unwrap();
     let cell = &saved["cells"][0];
     assert_eq!(cell["id"], "go");
     assert_eq!(cell["execution_count"], Value::Null);
@@ -12954,35 +12957,31 @@ fn adding_a_collection_of_3d_tiles_says_why_it_is_left_out() {
 fn an_arcgis_token_in_a_service_address_reaches_its_layers() {
     use crate::render::rustgis_tiles::arcgis_auth;
     let mut s = Session::new(Project::default());
-    let base = "https://secure914.example.org/server/rest/services/Roads/MapServer";
+    let base = "https://secure914.invalid/server/rest/services/Roads/MapServer";
     let doc = r#"{"currentVersion": 11, "mapName": "Roads", "capabilities": "Map,Query,Data", "singleFusedMapCache": true,
         "tileInfo": {"rows": 256, "spatialReference": {"wkid": 102100}, "lods": [{"level": 0, "resolution": 156543.033928041}]},
         "layers": [{"id": 0, "name": "Highways"}]}"#;
-    let v = s.run("service.layers", &json!({"url": format!("{base}?f=json&token=secret.Token-914"), "text": doc})).unwrap();
-    assert!(!v.to_string().contains("secret.Token-914"), "{v}");
+    let v = s.run("service.layers", &json!({"url": format!("{base}?f=json&%2574oken=RGSYNTH_3"), "text": doc})).unwrap();
+    assert!(!v.to_string().contains("RGSYNTH_3"), "{v}");
     let tiles = format!("{base}/tile/0/0/0");
     let query = format!("{base}/0/query?where=1%3D1&f=geojson");
-    assert_eq!(arcgis_auth::authorization(&tiles).as_deref(), Some("Bearer secret.Token-914"));
-    assert_eq!(arcgis_auth::authorization(&query).as_deref(), Some("Bearer secret.Token-914"));
+    assert_eq!(arcgis_auth::authorization(&tiles).as_deref(), Some("Bearer RGSYNTH_3"));
+    assert_eq!(arcgis_auth::authorization(&query).as_deref(), Some("Bearer RGSYNTH_3"));
     // Another server never gets it.
-    assert_eq!(arcgis_auth::authorization("https://other914.example.org/server/rest/services/Roads/MapServer/tile/0/0/0"), None);
+    assert_eq!(arcgis_auth::authorization("https://other914.invalid/server/rest/services/Roads/MapServer/tile/0/0/0"), None);
     // Added, the tile layer keeps the address without the token.
     let layer =
         v["layers"].as_array().unwrap().iter().find(|l| l["offer"]["type"] == "tiles").unwrap()["name"].as_str().unwrap().to_string();
-    s.run("service.add", &json!({"url": format!("{base}?token=secret.Token-914"), "layer": layer, "text": doc})).unwrap();
+    s.run("service.add", &json!({"url": format!("{base}?token=RGSYNTH_3"), "layer": layer, "text": doc})).unwrap();
     let project = format!("{:?}", s.project);
-    assert!(project.contains("secure914.example.org") && !project.contains("secret.Token-914"));
+    assert!(project.contains("secure914.invalid") && !project.contains("RGSYNTH_3"));
     // Listed and forgotten by arcgis.status and arcgis.signOut.
     let status = s.run("arcgis.status", &json!({})).unwrap();
     assert!(
-        status["sessions"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|x| x["portal"] == "https://secure914.example.org/server" && x["kind"] == "token")
+        status["sessions"].as_array().unwrap().iter().any(|x| x["portal"] == "https://secure914.invalid/server" && x["kind"] == "token")
     );
-    assert!(!status.to_string().contains("secret.Token-914"));
-    s.run("arcgis.signOut", &json!({"portal": "https://secure914.example.org/server/"})).unwrap();
+    assert!(!status.to_string().contains("RGSYNTH_3"));
+    s.run("arcgis.signOut", &json!({"portal": "https://secure914.invalid/server/"})).unwrap();
     assert_eq!(arcgis_auth::authorization(&tiles), None);
     // Junk is refused rather than taken for "every session".
     for junk in [json!({"portal": 7}), json!({"portal": [true]}), json!({"portal": {"a": 1}})] {
@@ -13213,6 +13212,12 @@ fn wms_layers_with_time() {
     let mut s = Session::new(Project::default());
     let added = s.run("service.add", &json!({"url": url, "layer": "population", "text": WMS, "time": "slider"})).unwrap();
     assert!(added["url"].as_str().is_some_and(|u| u.ends_with("&TIME=2025")), "{added}");
+    let mut keyed = Session::new(Project::default());
+    let capabilities = WMS.replace("https://maps.example.com/wms?", "https://maps.example.com/wms?token=RGSYNTH_service&amp;");
+    let public = keyed.run("service.add", &json!({"url":url,"layer":"population","text":capabilities,"time":"slider"})).unwrap();
+    let live = &keyed.map().tiles[public["index"].as_u64().unwrap() as usize];
+    assert!(live.url.contains("RGSYNTH_service") && live.url.ends_with("TIME=2025"));
+    assert!(!public["url"].as_str().unwrap().contains("RGSYNTH_service"), "moving to the default time cannot expose the live address");
     let year = |y: i32| rustgis_data::time::parse_text(&format!("{y}-01-01")).unwrap();
     let slider = s.map().time.clone().unwrap();
     assert_eq!((slider.steps(), slider.current), (vec![year(1990), year(2000), year(2025)], year(2025)));
@@ -13290,6 +13295,8 @@ fn wms_layers_with_time() {
     // A layer without times has none to follow it with.
     let e = s.run("service.add", &json!({"url": url, "layer": "roads", "text": WMS, "time": "slider"})).unwrap_err();
     assert!(e.contains("no time to follow"), "{e}");
+    let foreign = WMS.replace("https://maps.example.com/wms?", "https://fallback-b.invalid/wms?");
+    service_logins::foreign_service_fallback_stays_anonymous("wms", url, "population", WMS, &foreign);
 }
 
 /// Identify asks a WMS layer what is at the point (GetFeatureInfo): the request from the
@@ -15966,11 +15973,22 @@ fn a_plugins_dated_cog_is_added_without_waiting() {
     let base = format!("http://{}", server.local_addr().unwrap());
     let mut s = Session::new(Project::default());
     let start = std::time::Instant::now();
-    let r =
-        s.run_leaving_downloads("layer.addUrl", &json!({"url": format!("{base}/{{date:YYYY}}.tif"), "start": 2020, "end": 2021})).unwrap();
+    let r = s
+        .run_leaving_downloads(
+            "layer.addUrl",
+            &json!({"url": format!("{base}/{{date:YYYY}}.tif?token=RGSYNTH_dated_cog"), "start": 2020, "end": 2021}),
+        )
+        .unwrap();
     assert!(start.elapsed() < std::time::Duration::from_secs(10), "waited {:?}", start.elapsed());
     assert_eq!(r["inPlace"], true, "{r}");
     assert!(r["warning"].as_str().is_some_and(|w| w.contains("wasn't moved")), "{r}");
+    let tile = &s.map().tiles[r["index"].as_u64().unwrap() as usize];
+    assert!(
+        tile.url.contains(".tif?token=RGSYNTH_dated_cog") && !tile.url.contains("{date"),
+        "the live tile keeps the effective private address"
+    );
+    let clean = ["warning", "url"].map(|key| r[key].as_str().is_some_and(|text| !text.contains("RGSYNTH_dated_cog")));
+    assert_eq!(clean, [true, true], "both public warning and URL must omit credentials");
     drop(server);
 }
 
@@ -16481,6 +16499,10 @@ fn a_look_naming_bands_the_file_hasnt_is_said() {
 /// the queue dropped is asked for again, so the layer lands rather than failing with "dropped".
 #[test]
 fn an_overview_of_more_tiles_than_the_fetch_queue_holds_lands() {
+    // This fixture fills the shared native queue; other tests must keep their own requests.
+    if isolate_process_test("tests::an_overview_of_more_tiles_than_the_fetch_queue_holds_lands") {
+        return;
+    }
     use rustgis_data::raster::cog::{Example, example_with};
     let (base, _) = serve_ranges(example_with(&Example { size: 1024, tile: 32, no_overviews: true, ..Example::default() }));
     let mut s = Session::new(Project::default());
@@ -16497,10 +16519,14 @@ fn an_overview_of_more_tiles_than_the_fetch_queue_holds_lands() {
 /// A window over more tiles than the fetch queue holds (small tiles) asks for them a batch at a
 /// time, the next as the map draws again, rather than all at once (which would push its own first
 /// requests out of the queue, to ask for them all again at the next draw), and is pending until
-/// the last lands. (The tile cache is one for the process: other tests' reads may evict some of
-/// these tiles meanwhile, so how many are fetched in all isn't checked.)
+/// the last lands. The batch bound and final pixels are checked; the total fetch count may vary
+/// because dropped requests can be tried again.
 #[test]
 fn a_window_of_more_tiles_than_the_fetch_queue_holds_asks_for_them_in_batches() {
+    // This fixture fills the shared native queue; other tests must keep their own requests.
+    if isolate_process_test("tests::a_window_of_more_tiles_than_the_fetch_queue_holds_asks_for_them_in_batches") {
+        return;
+    }
     use crate::render::rustgis_tiles::{cache, cog};
     use rustgis_data::raster::ColorHint;
     use rustgis_data::raster::cog::{Example, example_with};
@@ -19126,14 +19152,20 @@ fn layer_address_redaction_preserves_templates_and_local_paths() {
         ("upload:map?token=local", "upload:map?token=local"),
         ("postgres:host=localhost dbname=gis", "postgres:host=localhost dbname=gis"),
     ];
-    let mut addresses: Vec<String> = cases.iter().map(|(a, _)| a.to_string()).collect();
-    crate::project::strip_addresses(addresses.iter_mut().collect());
-    for (address, (_, expected)) in addresses.iter().zip(cases) {
+    for (original, expected) in cases {
+        let address = match crate::durable::public_address(original) {
+            crate::durable::Kept::Unchanged => original.to_owned(),
+            crate::durable::Kept::Changed(address) => address,
+            crate::durable::Kept::Withheld(_) => panic!("valid address was withheld: {original}"),
+        };
         assert_eq!(address, expected);
     }
     let prefix = crate::render::rustgis_tiles::s3::ANONYMOUS;
-    let mut anonymous = format!("{prefix}https://bucket.example/a?token=secret");
-    crate::project::strip_addresses(vec![&mut anonymous]);
+    let crate::durable::Kept::Changed(anonymous) =
+        crate::durable::public_address(&format!("{prefix}https://bucket.example/a?token=secret"))
+    else {
+        panic!("anonymous address was not redacted")
+    };
     assert_eq!(anonymous, format!("{prefix}https://bucket.example/a"));
 }
 
@@ -19309,41 +19341,75 @@ fn recovery_copies_keep_no_layer_tokens_and_restore_none() {
 #[test]
 fn saved_projects_keep_no_layer_tokens() {
     let mut s = world();
-    let url = "https://gis.example/arcgis/rest/services/a/MapServer/tile/{z}/{y}/{x}?token=s3cret";
+    let url = "https://gis.example/arcgis/rest/services/a/MapServer/tile/{z}/{y}/{x}?token=s3cret-tile";
     // Its legend, built from the service's address, with the key in it too.
-    let legend = "https://gis.example/wms?key=l3g&SERVICE=WMS&REQUEST=GetLegendGraphic&LAYER=a";
+    let legend = "https://gis.example/wms?key=l3g-secret&SERVICE=WMS&REQUEST=GetLegendGraphic&LAYER=a";
     s.run("map.addTiles", &json!({"url":url,"name":"Secured","legend":legend})).unwrap();
     let layer = s.map().layers[0].id;
-    s.map_mut().layers[0].dataset.source = Some("https://u:pw@gis.example/f?f=json&access_token=tok2".into());
+    s.map_mut().layers[0].dataset.source = Some("https://u:pw-secret@gis.example/f?f=json&access_token=tok2-secret".into());
     s.map_mut().service_groups.push(rustgis_map::ServiceGroup {
         id: 123,
         name: "Protected service".into(),
-        url: "https://gis.example/wfs?key=k3y&map=m".into(),
+        url: "https://gis.example/wfs?key=k3y-secret&map=m".into(),
         kind: "wfs".into(),
         anonymous: false,
         expanded: true,
         children: vec![rustgis_map::ServiceChild {
             layer,
             collection: "roads".into(),
-            source_url: "https://gis.example/roads?sig=x&sv=1".into(),
+            source_url: "https://gis.example/roads?sig=x-secret&sv=1".into(),
         }],
     });
     let path = std::env::temp_dir().join(format!("rustgis-token-audit-{}.rgis", std::process::id()));
     let result = s.run("project.saveAs", &json!({"path":path})).unwrap();
     let text = std::fs::read_to_string(&path).unwrap();
-    for secret in ["s3cret", "pw@", "tok2", "k3y", "sig=x", "l3g"] {
+    for secret in ["s3cret-tile", "pw-secret@", "tok2-secret", "k3y-secret", "sig=x-secret", "l3g-secret"] {
         assert!(!text.contains(secret), "{secret} leaked into the file");
     }
     assert!(text.contains("MapServer/tile/{z}/{y}/{x}") && text.contains("map=m") && text.contains("REQUEST=GetLegendGraphic"));
     assert!(result["stripped"].as_u64().unwrap() >= 4);
     assert!(s.notices.iter().any(|n| n.text.contains("saved without their keys")));
     assert!(s.map().tiles.iter().any(|t| t.url == url));
-    for kind in ["map", "projectPackage", "mapPackage", "mobilePackage"] {
-        let (_, bytes) = crate::cmd::items::item_bytes(&mut s, kind, &Value::Null).unwrap();
-        let packaged =
-            if kind == "map" { String::from_utf8(bytes.clone()).unwrap() } else { crate::cmd::items::package_text(&bytes).unwrap() };
-        for secret in ["s3cret", "pw@", "tok2", "k3y", "sig=x", "l3g"] {
-            assert!(!packaged.contains(secret), "{kind} leaked {secret}");
+    // Every kind of item file, each with something in the project to write.
+    s.run("style.new", &json!({"layer": "Cities", "name": "Cities"})).unwrap();
+    s.run("gp.run", &json!({"tool": "buffer", "params": {"input": "Cities", "distance": 100}})).unwrap();
+    s.run("task.new", &Value::Null).unwrap();
+    s.run("model.new", &json!({"fromHistory": true})).unwrap();
+    s.run("report.new", &json!({"layer": "Cities"})).unwrap();
+    s.run("presentation.new", &Value::Null).unwrap();
+    s.run("notebook.new", &Value::Null).unwrap();
+    // Kinds that hold no layer addresses, or need more than the sample gives.
+    let exempt = [
+        ("ramps", "colour ramps hold no addresses"),
+        ("dlPackage", "a trained model holds no addresses"),
+        ("hostedImagery", "tiles rendered from a raster layer: pictures, not addresses"),
+        ("linkChart", "needs relationships the sample lacks"),
+    ];
+    let mut report = Vec::new();
+    for &(kind, _, _) in crate::cmd::items::ITEMS {
+        if exempt.iter().any(|(k, _)| *k == kind) {
+            continue;
+        }
+        let bytes = match crate::cmd::items::item_bytes(&mut s, kind, &Value::Null) {
+            Ok((_, bytes)) => bytes,
+            Err(e) => {
+                report.push(format!("{kind}: {e}"));
+                continue;
+            }
+        };
+        let packaged = if bytes.starts_with(b"PK") {
+            rustgis_data::zip::read_matching(&bytes, |_| true)
+                .unwrap()
+                .into_iter()
+                .map(|(_, b)| String::from_utf8_lossy(&b).into_owned())
+                .collect::<String>()
+        } else {
+            String::from_utf8_lossy(&bytes).into_owned()
+        };
+        for secret in ["s3cret-tile", "pw-secret@", "tok2-secret", "k3y-secret", "sig=x-secret", "l3g-secret"] {
+            if packaged.contains(secret) {
+                report.push(format!("{kind}: leaked {secret}"));
+            }
         }
         if kind == "projectPackage" {
             // Even a hostile archive carrying the exact registered JSON must not restore it.
@@ -19352,21 +19418,22 @@ fn saved_projects_keep_no_layer_tokens() {
             std::fs::write(&package_path, hostile).unwrap();
             let mut opened = Session::new(Project::default());
             opened.run("project.open", &json!({"path":package_path})).unwrap();
-            assert!(!serde_json::to_string(&opened.project).unwrap().contains("s3cret"));
+            assert!(!serde_json::to_string(&opened.project).unwrap().contains("s3cret-tile"));
             opened.run("project.openText", &json!({"text":text,"package":true})).unwrap();
-            assert!(!serde_json::to_string(&opened.project).unwrap().contains("s3cret"));
+            assert!(!serde_json::to_string(&opened.project).unwrap().contains("s3cret-tile"));
             std::fs::remove_file(package_path).unwrap();
         }
     }
+    assert!(report.is_empty(), "{report:#?}");
     let mut t = Session::new(Project::default());
     t.run("project.open", &json!({"path":path})).unwrap();
     assert!(t.map().tiles.iter().any(|t| t.url == url));
-    assert!(t.map().layers[0].dataset.source.as_deref().unwrap().contains("tok2"));
+    assert!(t.map().layers[0].dataset.source.as_deref().unwrap().contains("tok2-secret"));
     let modified = text.replace("\"name\":\"Secured\"", "\"name\":\"Secures\"");
     assert_ne!(text, modified);
     t.run("project.openText", &json!({"text":modified})).unwrap();
     let live = serde_json::to_string(&t.project).unwrap();
-    for secret in ["s3cret", "pw@", "tok2", "k3y", "sig=x"] {
+    for secret in ["s3cret-tile", "pw-secret@", "tok2-secret", "k3y-secret", "sig=x-secret"] {
         assert!(!live.contains(secret), "{secret} restored into a modified hostile file");
     }
     let public = url.split('?').next().unwrap();
@@ -19374,7 +19441,7 @@ fn saved_projects_keep_no_layer_tokens() {
     hand.run("map.addTiles", &json!({"url":public,"name":"Hand made"})).unwrap();
     t.run("project.openText", &json!({"text":serde_json::to_string(&hand.project).unwrap()})).unwrap();
     assert!(t.map().tiles.iter().any(|t| t.url == public));
-    assert!(!serde_json::to_string(&t.project).unwrap().contains("s3cret"));
+    assert!(!serde_json::to_string(&t.project).unwrap().contains("s3cret-tile"));
     std::fs::remove_file(path).unwrap();
 }
 
@@ -22043,6 +22110,11 @@ fn a_run_is_copied_from_the_history_as_code() {
     assert_eq!((tool_of(&runs[0]).as_deref(), tool_of(&runs[1]), tool_of(&runs[2]).as_deref()), (Some("buffer"), None, Some("buffer")));
     let py = code(&mut s, 2, "python").unwrap();
     assert!(py.contains("tool=\"buffer\"") && py.contains("https://h.example/a") && !py.contains("s3cr3t"), "{py}");
+    // Replay keeps opaque text and unknown nested content, with an honest warning. The log's
+    // separate, stricter projection still exercises the legacy connection/text cases below.
+    assert!(py.contains("odbcpw") && py.contains("libpqpw") && py.contains("shortk"), "{py}");
+    assert!(s.notices.iter().any(|n| n.text.contains("opaque parameters")));
+    let py = serde_json::to_string_pretty(&crate::cmd::history::redacted(&old.params)).unwrap();
     // A libpq connection keeps its words but its password, though spaces part them.
     assert!(py.contains("host=db") && !py.contains("hunter2"), "{py}");
     // A connection with no prefix `redact` knows keeps its words but its secret-named values.
@@ -22143,6 +22215,9 @@ fn secrets_in_a_query_or_a_run_s_error_stay_out_of_copied_code() {
         outputs: Vec::new(),
     });
     let py = s.run("gp.historyCode", &json!({"run": 0})).unwrap()["code"].as_str().unwrap().to_string();
+    assert!(py.contains("password=qp"), "opaque query text stays replayable: {py}");
+    assert!(s.notices.iter().any(|n| n.text.contains("opaque parameters")));
+    let py = serde_json::to_string_pretty(&crate::cmd::history::redacted(&s.project.gp_history[0].params)).unwrap();
     assert!(py.contains("a=1&password=&b=2") && !py.contains("qp"), "{py}");
     // An `&` in a value, or in quotes, isn't another pair: the whole value goes. So does an ODBC
     // braced value with an escaped `}}` in it.
@@ -25097,6 +25172,10 @@ fn time_slider_fills_dated_tile_addresses_and_exports_its_steps() {
         )
         .unwrap();
     assert_eq!(r["url"], "https://example.com/2023-08-01/{z}/{x}/{y}.png");
+    let mut keyed_session = timed_events();
+    let keyed = keyed_session.run("map.addTiles", &json!({"url":"https://example.com/{date:YYYY-MM-DD}/{z}/{x}/{y}.png?token=RGSYNTH_dated_tiles","start":"2023-08-01","end":"2023-08-31"})).unwrap();
+    assert!(!keyed["url"].as_str().unwrap().contains("RGSYNTH_dated_tiles"));
+    assert!(keyed_session.map().tiles[keyed["index"].as_u64().unwrap() as usize].url.contains("RGSYNTH_dated_tiles"));
     let i = s.run("time.info", &Value::Null).unwrap();
     assert_eq!((i["unit"].as_str(), i["steps"].as_u64()), (Some("day"), Some(31)), "{i}");
     // Only tile kinds that fill dates take a dated address.
@@ -26239,6 +26318,41 @@ fn geopackage_trigger_rebuild_rejects_a_valid_envelope_with_unreadable_wkb() {
     assert_eq!(db.query_row("SELECT lanes FROM roads WHERE fid=2", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
     assert_eq!(db.query_row("SELECT geom FROM roads WHERE fid=3", [], |r| r.get::<_, Vec<u8>>(0)).unwrap(), bad);
     assert_eq!(s.run("gpkg.pendingEdits", &json!({"layer":"R"})).unwrap()["updates"], 1);
+}
+
+/// A template keeps no copies of the data: offline snapshots, archived edits and a streamed
+/// layer's file would each bring features back when it opens.
+#[test]
+fn project_template_carries_no_data() {
+    let path = grid_fgb("template-streamed", 20);
+    let mut s = with_streamed(&path);
+    s.run("offline.download", &json!({"name": "Paris", "extent": [1.0, 48.0, 4.0, 50.0]})).unwrap();
+    s.run("data.archive", &json!({"layer": "Cities"})).unwrap();
+    s.run("edit.setValue", &json!({"layer": "Cities", "row": 0, "field": "name", "value": "Renamed"})).unwrap();
+    s.run("graphics.add", &json!({"shape": "rectangle", "points": [[0, 45], [10, 55]]})).unwrap();
+    let mut table = rustgis_data::Dataset::new(
+        "Visits",
+        rustgis_data::GeometryType::None,
+        vec![rustgis_data::Field::new("n", rustgis_data::FieldType::Integer)],
+    );
+    table.push(None, vec![rustgis_data::Value::Int(1)]);
+    table.source = Some(path.display().to_string());
+    s.project.add_table(table);
+    assert!(!s.project.offline_areas.is_empty());
+    let (_, bytes) = crate::cmd::items::item_bytes(&mut s, "template", &Value::Null).unwrap();
+    let text = String::from_utf8(bytes).unwrap();
+    assert!(!text.contains(path.to_str().unwrap()), "the streamed layer's file is in the template");
+    let t: Project = serde_json::from_str(&text).unwrap();
+    assert!(t.offline_areas.is_empty());
+    assert!(t.tables.iter().all(|t| t.dataset.features.is_empty() && t.dataset.source.is_none()));
+    assert!(t.maps.iter().flat_map(|m| &m.layers).all(|l| l.dataset.features.is_empty()), "graphics and features stay out");
+    let cities = t.maps[0].layer_by_name("Cities").unwrap();
+    assert_eq!(cities.design.archive.as_ref().map(Vec::len), Some(0), "archiving stays on, without its edits");
+    let streamed = t.maps[0].layer_by_name("Streamed").unwrap();
+    assert!(streamed.source.is_none() && streamed.dataset.features.is_empty());
+    let mut opened = Session::new(Project::default());
+    opened.run("project.fromTemplate", &json!({"text": text, "name": "Setup"})).unwrap();
+    assert!(opened.project.maps.iter().flat_map(|m| &m.layers).all(|l| l.dataset.features.is_empty()));
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -30378,6 +30492,28 @@ fn a_scripts_tools_run_ahead_are_taken_by_its_run() {
     for id in crate::cmd::workflows::ON_A_COPY {
         assert!(s.registry.get(id).is_some(), "{id}");
     }
+}
+
+/// Runs a test that owns process-wide state in a fresh instance of the test executable.
+pub(crate) fn isolate_process_test(name: &str) -> bool {
+    if std::env::var("RUSTGIS_ISOLATED_SCENARIO").as_deref() == Ok(name) {
+        return false;
+    }
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", name])
+        .env("RUSTGIS_ISOLATED_SCENARIO", name)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut summaries = stdout.lines().filter(|line| line.starts_with("test result:"));
+    let ran_one = summaries.next().is_some_and(|line| line.starts_with("test result: ok. 1 passed; 0 failed; 0 ignored;"))
+        && summaries.next().is_none();
+    assert!(
+        output.status.success() && ran_one,
+        "isolated process scenario failed or ran no test:\n{stdout}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    true
 }
 
 #[test]

@@ -160,7 +160,13 @@ pub fn clean(mut s: Source) -> Result<Source, String> {
     if !KINDS.contains(&s.kind.as_str()) {
         return Err(format!("unknown kind '{}' ({})", s.kind, KINDS.join(", ")));
     }
-    s.address = redact(s.address.trim());
+    let address = s.address.trim();
+    // A display-only prefix is safe to show, but cannot be used as a saved source.
+    s.address = match crate::durable::public_address(address) {
+        crate::durable::Kept::Withheld(_) => return Err("a source needs an address (a path, web address or connection)".into()),
+        crate::durable::Kept::Changed(public) => public,
+        crate::durable::Kept::Unchanged => redact(address),
+    };
     // Provenance has its own structural bound; it must not consume the destination's limit.
     let (head, archive) = template_archive(&s.address).unwrap_or(("", s.address.as_str()));
     let bounded = match rustgis_data::s3_address::parse(archive) {
@@ -344,30 +350,27 @@ pub(crate) fn template_archive(address: &str) -> Option<(&str, &str)> {
 /// saved S3 connection is redacted inside (its inner address), and its length-prefixed form
 /// rebuilt; a tile template, in its archive. Web-login runtime bindings are never published.
 pub fn redact(address: &str) -> String {
-    if let Some((head, archive)) = template_archive(address) {
-        return format!("{head}{}", redact(archive));
+    match crate::durable::public_address(address) {
+        crate::durable::Kept::Changed(s) => return s,
+        crate::durable::Kept::Withheld(prefix) => return prefix.into(),
+        crate::durable::Kept::Unchanged => {}
     }
-    let inner = crate::render::rustgis_tiles::logins::inner(address);
-    if inner != address {
-        return redact(inner);
-    }
-    if let Ok(Some(b)) = rustgis_data::s3_address::parse(address)
-        && let Ok(rebuilt) = rustgis_data::s3_address::bind(b.binding, b.endpoint, &redact(b.url))
+    // A clean recognized wrapper or database label already passed the shared owner. Keep its
+    // layout, including a COG look; the generic scheme fallback is for older connection forms.
+    if template_archive(address).is_some()
+        || rustgis_data::s3_address::is_wrapper(address)
+        || ["rustgis-anonymous:", "postgres:", "postgresql:", "pg:"]
+            .iter()
+            .any(|p| address.trim_start().get(..p.len()).is_some_and(|s| s.eq_ignore_ascii_case(p)))
     {
-        return rebuilt;
+        return address.to_string();
     }
-    if let Some((public, _)) = rustgis_data::source::myconn::split_password(address) {
+    if let Some((mut public, _)) = rustgis_data::source::myconn::split_password(address) {
+        rustgis_data::address::redact_query(&mut public);
         return public;
     }
     if let Some((public, _)) = rustgis_data::source::msconn::split_password(address) {
         return public;
-    }
-    let lower = address.to_ascii_lowercase();
-    // A PostgreSQL connection (`postgres:` or `postgresql:` keyword strings, GDAL's `PG:`, URIs):
-    // libpq's own rules (quoted values, escapes, `key = value`), without its secrets.
-    if ["postgres:", "postgresql:", "pg:"].iter().any(|p| lower.starts_with(p)) {
-        // One that can't be taken apart isn't kept (an empty address, refused by `clean`).
-        return rustgis_data::source::pgconn::public_label(address).unwrap_or_default();
     }
     let Some((scheme, rest)) = address.split_once("://") else { return address.to_string() };
     // The user and password go first, before anything splits the address: a password may hold
@@ -748,9 +751,15 @@ MIIE
         for f in ["#Access_Token=t", "#sig=s", "#password=p", "#id_token=i", "#map=4/1/2"] {
             assert_eq!(redact(&format!("https://h.example/x.fgb{f}")), "https://h.example/x.fgb", "{f}");
         }
-        // A connection with nothing to take apart isn't kept.
-        for bare in ["postgres:dbname", "PG:", "postgres:password='x"] {
-            assert!(clean(Source { kind: "database".into(), address: bare.into(), ..Source::default() }).is_err(), "{bare}");
+        // Unreadable connections, web addresses and wrappers cannot become saved sources.
+        for (kind, bare) in [
+            ("database", "postgres:dbname"),
+            ("database", "PG:"),
+            ("database", "postgres:password='x"),
+            ("url", "https:///path?token=RGSYNTH_unusable_source_20261104"),
+            ("tiles", "pmtiles:unreadable"),
+        ] {
+            assert!(clean(Source { kind: kind.into(), address: bare.into(), ..Source::default() }).is_err(), "{bare}");
         }
         assert_eq!(
             redact("https://acct.blob.core.windows.net/c/a.tif?se=2026&sp=r&sv=1&sig=zzz"),

@@ -19,10 +19,10 @@ pub fn commands() -> Vec<C> {
             // tiles. The app runs it here, not on a thread, while one loads.
             super::tiles::follow_style_view(s, web_time::Duration::from_secs(30));
             super::exports::write_here(s, p, "share.exportMap")
-        })
+        }).roles(&[])
         .view()
             .params(r#"{"path": "*.png", "width"?: px, "height"?: px, "dpi"?: 96..600}"#),
-        C::new("share.exportLayer", "Export Features", "Publish › Output", |s, p| super::exports::write_here(s, p, "share.exportLayer"))
+        C::new("share.exportLayer", "Export Features", "Publish › Output", |s, p| super::exports::write_here(s, p, "share.exportLayer")).roles(&[])
             .view()
             .when(need_layer)
             .params(r#"{"layer"?, "path": "*.geojson|*.csv|*.fgb|*.gpkg|*.parquet|*.shp|*.zip|*.kml|*.kmz|*.gpx", "crs"?: "EPSG:… (or WKT) for a GeoPackage, Shapefile or FlatGeobuf (default: the system the layer was read in, else EPSG:4326)", "mode"?: "newFile (default: refuses an existing file) | addTable | replaceTable, for a GeoPackage", "tableName"?: "the GeoPackage table (default: the layer's name)"}"#),
@@ -49,7 +49,7 @@ pub fn commands() -> Vec<C> {
             let mut out = json!({"path": path});
             report_table(s, path, &gpkg, table, &mut out);
             Ok(out)
-        })
+        }).roles(&[])
         .params(
             r#"{"table": name|id (a standalone table), "path": "*.geojson|*.csv|*.fgb|*.gpkg|*.parquet|*.shp|*.zip|*.kml|*.kmz|*.gpx", "mode"?: "newFile (default: refuses an existing file) | addTable | replaceTable, for a GeoPackage", "tableName"?: "the GeoPackage table (default: the table's name)"}"#,
         )

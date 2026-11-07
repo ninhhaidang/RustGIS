@@ -30,14 +30,14 @@ pub fn commands() -> Vec<C> {
                 s.project.folders.push(path.to_string());
             }
             Ok(json!({"folders": s.project.folders}))
-        })
+        }).roles(&[])
         .params(r#"{"path": folder}"#),
         C::new("project.removeFolder", "Remove Folder", "Browser", |s, p| {
             let path = ps(p, "path").ok_or("path is required")?;
             let before = s.project.folders.len();
             s.project.folders.retain(|f| f != path);
             if s.project.folders.len() == before { Err(format!("{path} isn't connected")) } else { Ok(Value::Null) }
-        })
+        }).roles(&[])
         .params(r#"{"path": folder}"#),
         C::new("project.connections", "Connections", "Browser", |s, _| {
             let folders: Vec<Value> = s.project.folders.iter().map(|f| json!({"path": f, "available": Path::new(f).is_dir()})).collect();
@@ -50,21 +50,21 @@ pub fn commands() -> Vec<C> {
                 "ramps": s.project.ramps.iter().map(|r| r.name().to_string()).collect::<Vec<_>>(),
                 "tasks": s.project.tasks.iter().map(|t| t.name.clone()).collect::<Vec<_>>(),
             }))
-        })
+        }).roles(&[])
         .view(),
         // Map and layer files.
-        C::new("map.save", "Save Map File", "Publish › Save As", |s, p| save_item(s, "map", p))
+        C::new("map.save", "Save Map File", "Publish › Save As", |s, p| save_item(s, "map", p)).roles(&[])
         .view()
         .params(r#"{"path": "*.rgismap", "map"?: name}"#),
-        C::new("map.import", "Import", "Command Search", import_maps).params(r#"{"path": "*.rgismap|*.rgis|*.rgispkg" | "text": map file JSON | "data": base64 file}"#),
-        C::new("layer.save", "Save Layer File", "Publish › Save As", |s, p| save_item(s, "layer", p))
+        C::new("map.import", "Import", "Command Search", import_maps).roles(&[crate::ParamRole { key: "text", role: crate::Role::Document(crate::Document::Map) }]).params(r#"{"path": "*.rgismap|*.rgis|*.rgispkg" | "text": map file JSON | "data": base64 file}"#),
+        C::new("layer.save", "Save Layer File", "Publish › Save As", |s, p| save_item(s, "layer", p)).roles(&[])
         .view()
         .when(need_layer)
         .params(r#"{"layer"?, "path": "*.rgislyr"}"#),
         C::new("layer.addLayerFile", "Add Layer File", "Home › Add", |s, p| {
             let text = read_text(p)?;
             super::layer::add_layer_text(s, &text)
-        })
+        }).roles(&[])
         .params(r#"{"path"?: "*.rgislyr", "text"?: layer file JSON, "data"?: base64 file}"#),
         // Styles.
         C::new("style.new", "New Style", "Style › Styles", |s, p| {
@@ -74,7 +74,7 @@ pub fn commands() -> Vec<C> {
             let item = StyleItem { name: name.clone(), geometry: l.geometry_type(), renderer: l.renderer.clone(), labels: l.labels.clone(), transparency: l.transparency };
             add_style(s, item);
             Ok(json!({"style": name}))
-        })
+        }).roles(&[])
         .when(need_feature_layer)
         .params(r#"{"layer"?, "name"?: string}"#),
         C::new("style.add", "Add Style", "Style › Styles", |s, p| {
@@ -87,9 +87,9 @@ pub fn commands() -> Vec<C> {
                 n += 1;
             }
             Ok(json!({"added": n}))
-        })
+        }).roles(&[])
         .params(r#"{"path"?: "*.rgisstyle", "text"?: style file JSON, "data"?: base64 file}"#),
-        C::new("style.import", "Import Styles", "Style › Styles", import_styles).params(r#"{"path"?: "*.rgislyr|*.rgismap|*.rgis", "text"?: JSON, "data"?: base64 file}"#),
+        C::new("style.import", "Import Styles", "Style › Styles", import_styles).roles(&[]).params(r#"{"path"?: "*.rgislyr|*.rgismap|*.rgis", "text"?: JSON, "data"?: base64 file}"#),
         C::new("style.apply", "Apply Style", "Style › Styles", |s, p| {
             let name = ps(p, "name").ok_or("name is required")?;
             let st = s.project.styles.iter().find(|t| t.name.eq_ignore_ascii_case(name)).cloned().ok_or_else(|| format!("no style '{name}'"))?;
@@ -124,7 +124,7 @@ pub fn commands() -> Vec<C> {
                 s.notify(format!("{lost} saved label move(s) dropped with label classes style {name} doesn't have"), false);
             }
             Ok(Value::Null)
-        })
+        }).roles(&[])
         .when(need_feature_layer)
         .params(r#"{"layer"?, "name": style}"#),
         C::new("style.remove", "Delete Style", "Browser", |s, p| {
@@ -132,9 +132,9 @@ pub fn commands() -> Vec<C> {
             let before = s.project.styles.len();
             s.project.styles.retain(|t| !t.name.eq_ignore_ascii_case(name));
             if s.project.styles.len() == before { Err(format!("no style '{name}'")) } else { Ok(Value::Null) }
-        })
+        }).roles(&[])
         .params(r#"{"name": style}"#),
-        C::new("style.save", "Save Style Items", "Publish › Save As", |s, p| save_item(s, "styles", p))
+        C::new("style.save", "Save Style Items", "Publish › Save As", |s, p| save_item(s, "styles", p)).roles(&[])
         .view()
         .params(r#"{"path": "*.rgisstyle"}"#),
         // Custom colour ramps.
@@ -167,7 +167,7 @@ pub fn commands() -> Vec<C> {
                 s.project.ramps.push(r);
             }
             Ok(json!({"added": names}))
-        })
+        }).roles(&[])
         .params(
             r#"{"path"?: "*.rgisramp|*.xml|*.qml|*.txt|*.cpt", "text"?: file contents, "data"?: base64 file, "file"?: file name for "text" or "data", "format"?: "rgisramp"|"qgis"|"gdal"|"cpt", "name"?: name for a single ramp, "kind"?: "sequential"|"diverging"|"qualitative"}"#,
         ),
@@ -176,16 +176,16 @@ pub fn commands() -> Vec<C> {
             let before = s.project.ramps.len();
             s.project.ramps.retain(|r| !r.name().eq_ignore_ascii_case(name.trim()));
             if s.project.ramps.len() == before { Err(format!("no colour ramp '{name}'")) } else { Ok(Value::Null) }
-        })
+        }).roles(&[])
         .params(r#"{"name": colour ramp}"#),
-        C::new("ramp.save", "Save Color Ramps", "Publish › Save As", |s, p| save_item(s, "ramps", p))
+        C::new("ramp.save", "Save Color Ramps", "Publish › Save As", |s, p| save_item(s, "ramps", p)).roles(&[])
         .view()
         .params(r#"{"path": "*.rgisramp"}"#),
         // Project templates.
-        C::new("project.saveTemplate", "Save Project Template", "Publish › Save As", |s, p| save_item(s, "template", p))
+        C::new("project.saveTemplate", "Save Project Template", "Publish › Save As", |s, p| save_item(s, "template", p)).roles(&[])
         .view()
         .params(r#"{"path": "*.rgistemplate", "name"?: template name}"#),
-        C::new("project.newTemplate", "New Custom Template", "Publish › Save As", |s, p| save_item(s, "template", p))
+        C::new("project.newTemplate", "New Custom Template", "Publish › Save As", |s, p| save_item(s, "template", p)).roles(&[])
         .view()
         .params(r#"{"path": "*.rgistemplate", "name"?: template name}"#),
         C::new("project.fromTemplate", "Open Custom Template", "Command Search", |s, p| {
@@ -204,21 +204,21 @@ pub fn commands() -> Vec<C> {
             super::connections::resolve_project(s);
             super::connections::note_waiting(s);
             Ok(Value::Null)
-        })
+        }).roles(&[])
         .view()
         .params(r#"{"path"?: "*.rgistemplate", "text"?: template JSON, "data"?: base64 file, "name"?: new project name}"#),
         // Packages.
-        C::new("project.package", "Package Project", "Publish › Package", |s, p| save_item(s, "projectPackage", p))
+        C::new("project.package", "Package Project", "Publish › Package", |s, p| save_item(s, "projectPackage", p)).roles(&[])
         .view()
         .params(r#"{"path": "*.rgispkg"}"#),
-        C::new("map.package", "Package Map", "Publish › Package", |s, p| save_item(s, if b(p, "mobile").unwrap_or(false) { "mobilePackage" } else { "mapPackage" }, p))
+        C::new("map.package", "Package Map", "Publish › Package", |s, p| save_item(s, if b(p, "mobile").unwrap_or(false) { "mobilePackage" } else { "mapPackage" }, p)).roles(&[])
         .view()
         .params(r#"{"path": "*.rgismpk", "mobile"?: bool (simplify geometry and drop hidden layers, for phones and tablets), "tolerance"?: degrees}"#),
-        C::new("gp.package", "Package Results", "Publish › Package", |s, p| save_item(s, "gpPackage", p))
+        C::new("gp.package", "Package Results", "Publish › Package", |s, p| save_item(s, "gpPackage", p)).roles(&[])
         .view()
         .params(r#"{"path": "*.rgisgpk"}"#),
         // Layer templates.
-        C::new("layer.template", "Layer Template", "Data › Layer Templates", layer_template)
+        C::new("layer.template", "Layer Template", "Data › Layer Templates", layer_template).roles(&[])
             .params(r#"{"template": "points"|"lines"|"polygons"|"places"|"routes"|"areas"|"observations", "name"?: string}"#),
         // Tasks.
         C::new("task.new", "New Task", "Analyze › Tasks", |s, p| {
@@ -257,7 +257,7 @@ pub fn commands() -> Vec<C> {
             }
             s.project.tasks.push(Task { name: name.clone(), description: ps(p, "description").unwrap_or("").chars().take(2000).collect(), steps: steps.into_iter().take(200).collect() });
             Ok(json!({"task": name}))
-        })
+        }).roles(&[crate::ParamRole { key: "steps", role: crate::Role::TaskSteps }])
         .params(r#"{"name"?: string, "description"?: string, "steps"?: [{"title", "instructions"?, "command": id, "params"?: {}}], "fromHistory"?: bool (one step per geoprocessing run), "imported"?: bool (from a file: its steps may not touch files)}"#),
         C::new("task.addStep", "Add Task Step", "Tasks", |s, p| {
             let step: TaskStep = serde_json::from_value(p.clone()).map_err(|e| format!("a step needs a title and a command: {e}"))?;
@@ -270,7 +270,7 @@ pub fn commands() -> Vec<C> {
             }
             t.steps.push(step);
             Ok(json!({"steps": t.steps.len()}))
-        })
+        }).roles(&[])
         .params(r#"{"task"?: name, "title": string, "instructions"?: string, "command": id, "params"?: {}}"#),
         // Editing a step's words, its place or the step itself. Its command and parameters stay
         // as they were, so a task from a file stays as untrusted as it came.
@@ -295,7 +295,7 @@ pub fn commands() -> Vec<C> {
             st.title = title;
             st.instructions = instructions;
             Ok(json!({"step": step}))
-        })
+        }).roles(&[])
         .params(r#"{"task"?: name, "step": number (from 0), "title"?: string, "instructions"?: string}"#),
         C::new("task.moveStep", "Move Task Step", "Tasks", |s, p| {
             let to = match p.get("to") {
@@ -313,7 +313,7 @@ pub fn commands() -> Vec<C> {
             let st = t.steps.remove(step);
             t.steps.insert(to, st);
             Ok(json!({"step": to}))
-        })
+        }).roles(&[])
         .params(r#"{"task"?: name, "step": number (from 0), "to": number (from 0)}"#),
         C::new("task.removeStep", "Delete Task Step", "Tasks", |s, p| {
             let step = step_index(p)?;
@@ -323,9 +323,9 @@ pub fn commands() -> Vec<C> {
             }
             t.steps.remove(step);
             Ok(json!({"steps": t.steps.len()}))
-        })
+        }).roles(&[])
         .params(r#"{"task"?: name, "step": number (from 0)}"#),
-        C::new("task.run", "Run Task", "Tasks", run_task).params(r#"{"task"?: name, "step"?: number (one step; all when omitted)}"#),
+        C::new("task.run", "Run Task", "Tasks", run_task).roles(&[]).params(r#"{"task"?: name, "step"?: number (one step; all when omitted)}"#),
         C::new("task.remove", "Delete Task", "Tasks", |s, p| {
             let name = ps(p, "task").ok_or("task is required")?;
             let before = s.project.tasks.len();
@@ -333,9 +333,9 @@ pub fn commands() -> Vec<C> {
             // A later task by this name isn't the user's just because of its name.
             s.trusted_tasks.remove(&name.to_ascii_lowercase());
             if s.project.tasks.len() == before { Err(format!("no task '{name}'")) } else { Ok(Value::Null) }
-        })
+        }).roles(&[])
         .params(r#"{"task": name}"#),
-        C::new("task.save", "Save Task Item", "Publish › Save As", |s, p| save_item(s, "task", p))
+        C::new("task.save", "Save Task Item", "Publish › Save As", |s, p| save_item(s, "task", p)).roles(&[])
         .view()
         .params(r#"{"task"?: name, "path": "*.rgistask"}"#),
         C::new("task.import", "Import Task", "Analyze › Tasks", |s, p| {
@@ -347,10 +347,10 @@ pub fn commands() -> Vec<C> {
             }
             let steps = serde_json::to_value(&t.steps).map_err(|e| e.to_string())?;
             s.run("task.new", &json!({"name": t.name, "description": t.description, "steps": steps, "imported": true}))
-        })
+        }).roles(&[crate::ParamRole { key: "text", role: crate::Role::Document(crate::Document::Task) }])
         .params(r#"{"path"?: "*.rgistask", "text"?: task JSON, "data"?: base64 file}"#),
         // 3D export.
-        C::new("share.export3d", "Export To 3D File", "Publish › Output", export_3d)
+        C::new("share.export3d", "Export To 3D File", "Publish › Output", export_3d).roles(&[])
             .view()
             .when(need_feature_layer)
             .params(r#"{"layer"?, "path": "*.obj", "heightField"?: field (extrusion height in metres), "height"?: metres, "zScale"?: number}"#),
@@ -576,7 +576,14 @@ fn carry_moves(old: &rustgis_map::symbology::Labeling, new: &mut rustgis_map::sy
 
 /// The project without its features (layer schemas, symbology, layouts and styles stay), and how
 /// many saved label moves went with them.
-fn template(p: &Project) -> (Project, usize) {
+struct TemplateLosses {
+    label_moves: usize,
+    offline_areas: usize,
+    archived_edits: usize,
+    source_references: usize,
+}
+
+fn template(p: &Project) -> (Project, TemplateLosses) {
     let mut t = p.clone();
     t.gp_history.clear();
     // Saved label moves name features, and a template has none: the layers', the saved styles'
@@ -594,11 +601,36 @@ fn template(p: &Project) -> (Project, usize) {
             c.moved.clear();
         }
     }
+    let offline_areas = t.offline_areas.len();
+    let archived_edits = t
+        .maps
+        .iter()
+        .chain(t.offline_areas.iter().map(|a| &a.data))
+        .flat_map(|m| &m.layers)
+        .filter_map(|l| l.design.archive.as_ref())
+        .fold(0usize, |count, archive| count.saturating_add(archive.len()));
+    t.offline_areas.clear();
+    let source_references = t
+        .maps
+        .iter()
+        .flat_map(|m| &m.layers)
+        .fold(0usize, |count, l| {
+            count
+                .saturating_add(usize::from(l.dataset.source.is_some()))
+                .saturating_add(usize::from(l.source.is_some()))
+                .saturating_add(usize::from(l.postgis.is_some()))
+                .saturating_add(usize::from(l.gpkg.is_some()))
+        })
+        .saturating_add(t.tables.iter().filter(|table| table.source.is_some()).count());
     for m in &mut t.maps {
         for l in &mut m.layers {
             l.dataset.features.clear();
             l.selection.clear();
             l.dataset.source = None;
+            l.source = None;
+            if let Some(archive) = &mut l.design.archive {
+                archive.clear();
+            }
             // A feature-less template has no loaded rows to save back to a source.
             l.postgis = None;
             l.gpkg = None;
@@ -613,31 +645,30 @@ fn template(p: &Project) -> (Project, usize) {
     }
     for t in &mut t.tables {
         t.features.clear();
+        t.source = None;
     }
-    (t, moves)
+    (t, TemplateLosses { label_moves: moves, offline_areas, archived_edits, source_references })
 }
 
 /// Packages only completed imports; runtime download reservations cannot be reopened.
 /// Refuses JSON beyond the project or ZIP inflation limit before creating the archive.
-fn package_project(s: &Session) -> Result<Vec<u8>, String> {
+fn package_project(s: &mut Session) -> Result<Vec<u8>, String> {
     s.project.ensure_imports_complete()?;
     let mut p = s.project.clone();
     let mut budget = MAX_EMBED;
     for m in &mut p.maps {
         *m = embedded_map(m, &mut budget);
     }
-    crate::project::strip_addresses(p.addresses_mut());
-    // Recorded parameters (history, tasks, models) lose only their login bindings, as when saving.
-    crate::project::clear_login_bindings(p.recorded_mut());
-    let text = serde_json::to_string(&p).map_err(|e| e.to_string())?;
+    let name = p.name.clone();
+    let (text, report) = crate::durable::output_owned(p, |p| serde_json::to_string(p).map_err(|e| e.to_string()))?;
+    crate::durable::notify(s, &report);
     let limit = crate::project::MAX_BYTES.min(rustgis_data::zip::MAX_TOTAL as u64);
     if text.len() as u64 > limit {
         return Err(format!("the project is too large to package (maximum {} MiB)", limit >> 20));
     }
-    let readme =
-        format!("{} — a RustGIS project package.\nOpen it with RustGIS (Project › Open), or unzip it for {}.rgis.\n", p.name, p.name);
+    let readme = format!("{} — a RustGIS project package.\nOpen it with RustGIS (Project › Open), or unzip it for {}.rgis.\n", name, name);
     rustgis_data::zip::write(&[
-        (format!("{}.{}", safe(&p.name), crate::project::EXTENSION), text.into_bytes()),
+        (format!("{}.{}", safe(&name), crate::project::EXTENSION), text.into_bytes()),
         ("README.txt".into(), readme.into_bytes()),
     ])
 }
@@ -648,7 +679,7 @@ fn safe(name: &str) -> String {
 }
 
 /// A package of the active map; `mobile` drops hidden layers and simplifies geometry.
-fn package_map(s: &Session, mobile: bool, tol: f64) -> Result<Vec<u8>, String> {
+fn package_map(s: &mut Session, mobile: bool, tol: f64) -> Result<Vec<u8>, String> {
     let mut m = embedded_map(s.map(), &mut MAX_EMBED.clone());
     if mobile {
         // Groups folded into their layers: a hidden group's layers are dropped with the others.
@@ -675,28 +706,23 @@ fn package_map(s: &Session, mobile: bool, tol: f64) -> Result<Vec<u8>, String> {
         }
     }
     crate::project::ensure_map_imports_complete(&m)?;
-    crate::project::strip_addresses(m.addresses_mut());
-    let text = serde_json::to_string(&m).map_err(|e| e.to_string())?;
+    let name = m.name.clone();
+    let (text, report) = crate::durable::output_owned(m, |m| serde_json::to_string(m).map_err(|e| e.to_string()))?;
+    crate::durable::notify(s, &report);
     let kind = if mobile { "mobile map package" } else { "map package" };
-    let readme = format!("{} — a RustGIS {kind}.\nAdd it to a project with Data › Import.\n", m.name);
-    rustgis_data::zip::write(&[(format!("{}.rgismap", safe(&m.name)), text.into_bytes()), ("README.txt".into(), readme.into_bytes())])
+    let readme = format!("{} — a RustGIS {kind}.\nAdd it to a project with Data › Import.\n", name);
+    rustgis_data::zip::write(&[(format!("{}.rgismap", safe(&name)), text.into_bytes()), ("README.txt".into(), readme.into_bytes())])
 }
 
 /// The geoprocessing history with the layers its runs made, as GeoJSON.
-fn package_gp(s: &Session) -> Result<Vec<u8>, String> {
+fn package_gp(s: &mut Session) -> Result<Vec<u8>, String> {
     if s.project.gp_history.is_empty() {
         return Err("no geoprocessing has been run yet".into());
     }
-    let mut history = s.project.gp_history.clone();
-    let mut addresses = Vec::new();
-    for record in &mut history {
-        crate::project::recorded_addresses(&mut record.params, &mut addresses);
-        if let Some((_, params)) = &mut record.command {
-            crate::project::recorded_addresses(params, &mut addresses);
-        }
-    }
-    crate::project::clear_login_bindings(addresses);
-    let mut entries = vec![("history.json".to_string(), serde_json::to_vec_pretty(&history).map_err(|e| e.to_string())?)];
+    let (history, report) =
+        crate::durable::output(&mut s.project.gp_history, None, |h| serde_json::to_vec_pretty(h).map_err(|e| e.to_string()))?;
+    crate::durable::notify(s, &report);
+    let mut entries = vec![("history.json".to_string(), history)];
     let mut layers = std::collections::HashSet::new();
     let mut files = std::collections::HashSet::new();
     for rec in s.project.gp_history.iter().filter(|r| r.ok) {
@@ -1098,14 +1124,11 @@ pub const ITEMS: &[(&str, &str, &str)] = &[
 pub fn item_bytes(s: &mut Session, kind: &str, p: &Value) -> Result<(String, Vec<u8>), String> {
     let (name, bytes) = match kind {
         "map" => {
-            let map = match ps(p, "map") {
-                Some(n) => s.project.maps.iter().find(|m| m.name.eq_ignore_ascii_case(n)).ok_or_else(|| format!("no map '{n}'"))?,
-                None => s.map(),
-            };
+            let map = saved_map(s, p)?;
             crate::project::ensure_map_imports_complete(map)?;
-            let mut map = embedded_map(map, &mut MAX_EMBED.clone());
-            crate::project::strip_addresses(map.addresses_mut());
-            (map.name.clone(), to_json(&map)?)
+            let map = embedded_map(map, &mut MAX_EMBED.clone());
+            let name = map.name.clone();
+            (name, durable_bytes(s, map)?)
         }
         "layer" => {
             let id = s.layer_id(p)?;
@@ -1113,9 +1136,9 @@ pub fn item_bytes(s: &mut Session, kind: &str, p: &Value) -> Result<(String, Vec
             if l.dataset.source.as_deref().is_some_and(|source| source.starts_with("geolibre-pending:")) {
                 return Err("this layer is still downloading; wait for it to finish before saving".into());
             }
-            let mut layer = embed_layer(l, &mut MAX_EMBED.clone());
-            crate::project::strip_addresses(layer.addresses_mut().collect());
-            (layer.name.clone(), to_json(&layer)?)
+            let layer = embed_layer(l, &mut MAX_EMBED.clone());
+            let name = layer.name.clone();
+            (name, durable_bytes(s, layer)?)
         }
         "styles" => {
             if s.project.styles.is_empty() {
@@ -1131,17 +1154,25 @@ pub fn item_bytes(s: &mut Session, kind: &str, p: &Value) -> Result<(String, Vec
         }
         "template" => {
             s.project.ensure_imports_complete()?;
-            let (mut t, moves) = template(&s.project);
-            if moves > 0 {
-                s.notify(format!("{moves} saved label move(s) left out of the template, which keeps no features"), false);
-            }
-            // As a package: what it reads keeps its plain address, what it records no binding.
-            crate::project::strip_addresses(t.addresses_mut());
-            crate::project::clear_login_bindings(t.recorded_mut());
+            let (mut t, TemplateLosses { label_moves, offline_areas, archived_edits, source_references }) = template(&s.project);
             if let Some(n) = ps(p, "name").map(str::trim).filter(|n| !n.is_empty()) {
                 t.name = n.chars().take(200).collect();
             }
-            (t.name.clone(), to_json(&t)?)
+            let name = t.name.clone();
+            let bytes = durable_bytes(s, t)?;
+            if source_references > 0 {
+                s.notify(format!("{source_references} data source reference(s) left out of the template, which keeps no features"), false);
+            }
+            if label_moves > 0 {
+                s.notify(format!("{label_moves} saved label move(s) left out of the template, which keeps no features"), false);
+            }
+            if offline_areas > 0 {
+                s.notify(format!("{offline_areas} offline area(s) left out of the template, which keeps no features"), false);
+            }
+            if archived_edits > 0 {
+                s.notify(format!("{archived_edits} archived edit record(s) left out of the template, which keeps no features"), false);
+            }
+            (name, bytes)
         }
         "projectPackage" => (s.project.name.clone(), package_project(s)?),
         "mapPackage" | "mobilePackage" => {
@@ -1151,13 +1182,11 @@ pub fn item_bytes(s: &mut Session, kind: &str, p: &Value) -> Result<(String, Vec
         "gpPackage" => ("results".to_string(), package_gp(s)?),
         "bookmarks" => (format!("{} bookmarks", s.map().name), super::navigate::bookmarks_file(s.map())?),
         "task" => {
-            let mut t = task_ref(s, p)?.clone();
-            let mut addresses = Vec::new();
-            for step in &mut t.steps {
-                crate::project::recorded_addresses(&mut step.params, &mut addresses);
-            }
-            crate::project::clear_login_bindings(addresses);
-            (t.name.clone(), to_json(&t)?)
+            let t = task_mut(s, p)?;
+            let name = t.name.clone();
+            let (bytes, report) = crate::durable::output(t, None, to_json)?;
+            crate::durable::notify(s, &report);
+            (name, bytes)
         }
         "obj" => {
             let id = s.layer_id(p)?;
@@ -1208,4 +1237,19 @@ pub(crate) fn save_item(s: &mut Session, kind: &str, p: &Value) -> CmdResult {
     let (_, bytes) = item_bytes(s, kind, p)?;
     rustgis_data::io::write_atomic(Path::new(&path), &bytes).map_err(|e| format!("{path}: {e}"))?;
     Ok(json!({"path": path, "bytes": bytes.len()}))
+}
+
+/// Consumes the existing item draft, emitting losses after serialization has completed.
+fn durable_bytes<T: crate::durable::Durable + serde::Serialize>(s: &mut Session, value: T) -> Result<Vec<u8>, String> {
+    let (bytes, report) = crate::durable::output_owned(value, to_json)?;
+    crate::durable::notify(s, &report);
+    Ok(bytes)
+}
+
+/// Chooses the saved map with the executor's existing name/default rule.
+fn saved_map<'a>(s: &'a Session, p: &Value) -> Result<&'a Map, String> {
+    match ps(p, "map") {
+        Some(n) => s.project.maps.iter().find(|m| m.name.eq_ignore_ascii_case(n)).ok_or_else(|| format!("no map '{n}'")),
+        None => Ok(s.map()),
+    }
 }

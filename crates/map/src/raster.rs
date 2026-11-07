@@ -1551,6 +1551,53 @@ impl RasterLayer {
     }
 }
 
+impl RasterLayer {
+    /// Only owning address/path strings are offered; embedded bytes and render state stay opaque.
+    pub(crate) fn output_slots(&self) -> Vec<(crate::LayerRole, &str, bool, bool)> {
+        let RasterLayer {
+            path,
+            file_name: _,
+            embedded,
+            subdataset: _,
+            crs: _,
+            time_zarr,
+            placement: _,
+            style: _,
+            data: _,
+            error: _,
+            masked: _,
+            opening: _,
+            in_place: _,
+            restyle: _,
+            look: _,
+            pixels_said: _,
+            error_said: _,
+            failed_at: _,
+            failures: _,
+            lost_said: _,
+            look_lost: _,
+            dropped: _,
+        } = self;
+        let mut out = Vec::new();
+        if let Some(p) = path {
+            out.push((crate::LayerRole::Raster, p.as_str(), true, embedded.is_none() && crate::paths::is_local(p)));
+        }
+        if let Some(ZarrTime { store, variable: _, index: _, dim: _, offset: _, dates: _, crs: _, shown: _ }) = time_zarr {
+            out.push((crate::LayerRole::ZarrStore, store.as_str(), true, crate::paths::is_local(store)));
+        }
+        out
+    }
+
+    /// Looks up a prepared address/path field without allocation.
+    pub(crate) fn output_slot_mut(&mut self, role: crate::LayerRole) -> Option<&mut String> {
+        match role {
+            crate::LayerRole::Raster => self.path.as_mut(),
+            crate::LayerRole::ZarrStore => Some(&mut self.time_zarr.as_mut()?.store),
+            _ => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use rustgis_data::raster::{Crs, GeoTransform};

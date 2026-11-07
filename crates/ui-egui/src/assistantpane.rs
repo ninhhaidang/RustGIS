@@ -1790,6 +1790,17 @@ fn inline(ui: &Ui, text: &str, t: &Tokens, size: f32, heading: bool) -> egui::te
     job
 }
 
+/// A peer's project cannot inherit a pending approval, provider reply or queued user action.
+pub(crate) fn peer_replaced(app: &mut RustGisApp) {
+    if let Some(agent) = &mut app.assistant.agent {
+        agent.project_replaced();
+    }
+    app.assistant.inflight = None;
+    app.assistant.chunks = None;
+    app.assistant.queued = None;
+    app.assistant.always = false;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

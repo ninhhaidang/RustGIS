@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 
 /// The importer reads files and URLs named inside the project, so callers require approval.
 pub fn commands() -> Vec<C> {
-    vec![C::new("project.importGeolibre", "Import GeoLibre Project", "Project › Import", import_project).params(
+    vec![C::new("project.importGeolibre", "Import GeoLibre Project", "Project › Import", import_project).roles(&[]).params(
         r#"{"path"?: "*.geolibre|*.geolibre.json", "url"?: "https://…", "text"?: "project JSON", "data"?: "base64 JSON", "dir"?: "folder for local data"} → {map, layers, notes}"#,
     )]
 }

@@ -256,6 +256,10 @@ fn bound(s: &Session, id: &str, url: &str) -> String {
 
 #[test]
 fn s3_saved_keys_are_remembered_only_on_request_and_reused_by_a_fresh_session() {
+    #[cfg(not(target_arch = "wasm32"))]
+    if crate::tests::isolate_process_test("s3_saved_tests::s3_saved_keys_are_remembered_only_on_request_and_reused_by_a_fresh_session") {
+        return;
+    }
     let srv = serve_bucket("sv-remember", vec![("grid.fgb", grid_fgb())], vec![]);
     let store = Arc::new(Spy::default());
     let mut a = session(Some(&store));
@@ -305,6 +309,10 @@ fn s3_saved_keys_are_remembered_only_on_request_and_reused_by_a_fresh_session() 
 
 #[test]
 fn s3_saved_login_rules_sources_temporary_credentials_and_bad_values() {
+    #[cfg(not(target_arch = "wasm32"))]
+    if crate::tests::isolate_process_test("s3_saved_tests::s3_saved_login_rules_sources_temporary_credentials_and_bad_values") {
+        return;
+    }
     let srv = serve_bucket("sv-rules", vec![], vec![]);
     let store = Arc::new(Spy::default());
     let mut s = session(Some(&store));
@@ -404,6 +412,10 @@ fn s3_saved_login_rules_sources_temporary_credentials_and_bad_values() {
 
 #[test]
 fn s3_saved_missing_or_refusing_stores_keep_the_session_login() {
+    #[cfg(not(target_arch = "wasm32"))]
+    if crate::tests::isolate_process_test("s3_saved_tests::s3_saved_missing_or_refusing_stores_keep_the_session_login") {
+        return;
+    }
     let srv = serve_bucket("sv-stores", vec![], vec![]);
     // No store at all (the browser, the command line).
     let mut s = session(None);
@@ -440,6 +452,10 @@ fn s3_saved_missing_or_refusing_stores_keep_the_session_login() {
 
 #[test]
 fn s3_saved_lifecycle_keeps_deletes_and_forgets_keys() {
+    #[cfg(not(target_arch = "wasm32"))]
+    if crate::tests::isolate_process_test("s3_saved_tests::s3_saved_lifecycle_keeps_deletes_and_forgets_keys") {
+        return;
+    }
     let srv = serve_bucket("sv-life", vec![], vec![]);
     let spy = Arc::new(Spy::default());
     let mut s = session(Some(&spy));
@@ -528,6 +544,11 @@ fn s3_saved_lifecycle_keeps_deletes_and_forgets_keys() {
 
 #[test]
 fn s3_saved_a_binding_signs_only_its_own_connection_and_errors_never_echo_the_key() {
+    #[cfg(not(target_arch = "wasm32"))]
+    if crate::tests::isolate_process_test("s3_saved_tests::s3_saved_a_binding_signs_only_its_own_connection_and_errors_never_echo_the_key")
+    {
+        return;
+    }
     let moved_to = serve_bucket("sv-bind", vec![("elsewhere.fgb", vec![1, 2, 3])], vec![]);
     let srv =
         serve_bucket("sv-bind", vec![("grid.fgb", grid_fgb())], vec![("moved.fgb", format!("{}/sv-bind/elsewhere.fgb", moved_to.base))]);
@@ -665,6 +686,10 @@ fn reopened(p: &Saved, store: &Arc<Spy>, keep: usize) -> Session {
 
 #[test]
 fn s3_saved_projects_hold_no_keys_and_reload_through_their_one_connection() {
+    #[cfg(not(target_arch = "wasm32"))]
+    if crate::tests::isolate_process_test("s3_saved_tests::s3_saved_projects_hold_no_keys_and_reload_through_their_one_connection") {
+        return;
+    }
     let p = saved_project("sv-proj-one");
     for secret in ["SAVEDKEYA", "SAVEDKEYB", "saved-secret"] {
         assert!(!p.text.contains(secret) && !p.prefs.contains(secret), "{secret}");
@@ -736,6 +761,10 @@ fn s3_saved_projects_hold_no_keys_and_reload_through_their_one_connection() {
 
 #[test]
 fn s3_saved_several_candidates_wait_for_a_choice_and_nothing_is_fetched_before() {
+    #[cfg(not(target_arch = "wasm32"))]
+    if crate::tests::isolate_process_test("s3_saved_tests::s3_saved_several_candidates_wait_for_a_choice_and_nothing_is_fetched_before") {
+        return;
+    }
     let p = saved_project("sv-proj-two");
     let store = p.store.clone();
     let (from, saves) = (p.srv.requests(), store.count("save"));
@@ -785,6 +814,12 @@ fn s3_saved_several_candidates_wait_for_a_choice_and_nothing_is_fetched_before()
 
 #[test]
 fn s3_saved_sources_without_keys_zero_matches_and_older_addresses_stay_blocked_or_as_they_were() {
+    #[cfg(not(target_arch = "wasm32"))]
+    if crate::tests::isolate_process_test(
+        "s3_saved_tests::s3_saved_sources_without_keys_zero_matches_and_older_addresses_stay_blocked_or_as_they_were",
+    ) {
+        return;
+    }
     let p = saved_project("sv-proj-edge");
     let from = p.srv.requests();
     // One candidate, whose keys are not in the store (another computer): blocked, pending for its
@@ -868,6 +903,10 @@ fn s3_saved_sources_without_keys_zero_matches_and_older_addresses_stay_blocked_o
 
 #[test]
 fn s3_saved_imported_maps_layers_and_packages_never_bring_their_own_login() {
+    #[cfg(not(target_arch = "wasm32"))]
+    if crate::tests::isolate_process_test("s3_saved_tests::s3_saved_imported_maps_layers_and_packages_never_bring_their_own_login") {
+        return;
+    }
     let p = saved_project("sv-proj-import");
     let token = rustgis_data::s3_address::parse(&p.fgb).unwrap().unwrap().binding.to_string();
     let from = p.srv.requests();
@@ -910,6 +949,10 @@ fn s3_saved_imported_maps_layers_and_packages_never_bring_their_own_login() {
 
 #[test]
 fn s3_saved_typed_keys_are_in_no_script_result_notice_or_list_the_app_shows() {
+    #[cfg(not(target_arch = "wasm32"))]
+    if crate::tests::isolate_process_test("s3_saved_tests::s3_saved_typed_keys_are_in_no_script_result_notice_or_list_the_app_shows") {
+        return;
+    }
     let srv = serve_bucket("sv-seen", vec![], vec![]);
     let store = Arc::new(Spy::default());
     let mut s = session(Some(&store));
@@ -973,6 +1016,12 @@ fn s3_saved_typed_keys_are_in_no_script_result_notice_or_list_the_app_shows() {
 
 #[test]
 fn s3_saved_database_and_s3_share_one_store_without_crossing_credentials_or_cleanup() {
+    #[cfg(not(target_arch = "wasm32"))]
+    if crate::tests::isolate_process_test(
+        "s3_saved_tests::s3_saved_database_and_s3_share_one_store_without_crossing_credentials_or_cleanup",
+    ) {
+        return;
+    }
     let store = Arc::new(Spy::default());
     let mut s = session(Some(&store));
     let db = s
@@ -1037,6 +1086,10 @@ fn s3_saved_database_and_s3_share_one_store_without_crossing_credentials_or_clea
 
 #[test]
 fn s3_saved_raster_pixels_wait_for_selection_then_reload_with_style_intact() {
+    #[cfg(not(target_arch = "wasm32"))]
+    if crate::tests::isolate_process_test("s3_saved_tests::s3_saved_raster_pixels_wait_for_selection_then_reload_with_style_intact") {
+        return;
+    }
     let bytes = rustgis_data::raster::cog::example(256, 256);
     let pixels = rustgis_data::raster::read_bytes("scene.tif", &bytes).unwrap();
     let srv = serve_bucket("sv-raster", vec![("scene.tif", bytes)], vec![]);
@@ -1085,6 +1138,10 @@ fn s3_saved_raster_pixels_wait_for_selection_then_reload_with_style_intact() {
 
 #[test]
 fn s3_saved_resolving_one_bucket_does_not_retry_another_buckets_failed_source() {
+    #[cfg(not(target_arch = "wasm32"))]
+    if crate::tests::isolate_process_test("s3_saved_tests::s3_saved_resolving_one_bucket_does_not_retry_another_buckets_failed_source") {
+        return;
+    }
     let srv = serve_bucket("sv-group-one", Vec::new(), Vec::new());
     let store = Arc::new(Spy::default());
     let mut seed = session(Some(&store));
@@ -1121,6 +1178,12 @@ fn s3_saved_resolving_one_bucket_does_not_retry_another_buckets_failed_source() 
 
 #[test]
 fn s3_saved_browse_reauthenticates_this_session_instead_of_reusing_a_foreign_namesake() {
+    #[cfg(not(target_arch = "wasm32"))]
+    if crate::tests::isolate_process_test(
+        "s3_saved_tests::s3_saved_browse_reauthenticates_this_session_instead_of_reusing_a_foreign_namesake",
+    ) {
+        return;
+    }
     let srv = serve_bucket("sv-session-owner", Vec::new(), Vec::new());
     let store_a = Arc::new(Spy::default());
     let store_b = Arc::new(Spy::default());
@@ -1155,6 +1218,12 @@ fn s3_saved_browse_reauthenticates_this_session_instead_of_reusing_a_foreign_nam
 
 #[test]
 fn s3_saved_favourites_keep_provenance_overhead_without_relaxing_destination_limits() {
+    #[cfg(not(target_arch = "wasm32"))]
+    if crate::tests::isolate_process_test(
+        "s3_saved_tests::s3_saved_favourites_keep_provenance_overhead_without_relaxing_destination_limits",
+    ) {
+        return;
+    }
     let endpoint = "https://s3.example.org";
     let inner = format!("{endpoint}/bucket/{}.fgb?versionId={}", "k".repeat(990), "v".repeat(1000));
     assert!(inner.len() <= 2048);
@@ -1174,6 +1243,11 @@ fn s3_saved_favourites_keep_provenance_overhead_without_relaxing_destination_lim
 
 #[test]
 fn s3_saved_legacy_choice_never_rebinds_an_explicit_aws_source_for_the_same_object() {
+    #[cfg(not(target_arch = "wasm32"))]
+    if crate::tests::isolate_process_test("s3_saved_tests::s3_saved_legacy_choice_never_rebinds_an_explicit_aws_source_for_the_same_object")
+    {
+        return;
+    }
     for aws_first in [false, true] {
         let bucket = format!("sv-mixed-{aws_first}");
         let srv = serve_bucket(&bucket, vec![("same.fgb", grid_fgb())], Vec::new());
@@ -1226,6 +1300,10 @@ fn s3_saved_legacy_choice_never_rebinds_an_explicit_aws_source_for_the_same_obje
 
 #[test]
 fn s3_saved_unscoped_connection_requires_a_choice_and_does_not_repeat_the_prompt() {
+    #[cfg(not(target_arch = "wasm32"))]
+    if crate::tests::isolate_process_test("s3_saved_tests::s3_saved_unscoped_connection_requires_a_choice_and_does_not_repeat_the_prompt") {
+        return;
+    }
     let p = saved_project("sv-unscoped");
     let mut s = reopened(&p, &p.store, 1);
     s.connections.connections[0].options.remove("buckets");
@@ -1242,6 +1320,10 @@ fn s3_saved_unscoped_connection_requires_a_choice_and_does_not_repeat_the_prompt
 
 #[test]
 fn s3_saved_stale_marker_cannot_skip_credential_deletion() {
+    #[cfg(not(target_arch = "wasm32"))]
+    if crate::tests::isolate_process_test("s3_saved_tests::s3_saved_stale_marker_cannot_skip_credential_deletion") {
+        return;
+    }
     for (index, command) in ["connection.forgetSavedKeys", "connection.remove", "connection.edit"].into_iter().enumerate() {
         let spy = Arc::new(Spy::default());
         let mut s = session(Some(&spy));
@@ -1278,6 +1360,10 @@ fn s3_saved_stale_marker_cannot_skip_credential_deletion() {
 
 #[test]
 fn s3_saved_changing_away_from_keys_forgets_the_pair() {
+    #[cfg(not(target_arch = "wasm32"))]
+    if crate::tests::isolate_process_test("s3_saved_tests::s3_saved_changing_away_from_keys_forgets_the_pair") {
+        return;
+    }
     let srv = serve_bucket("sv-mode-change", vec![], vec![]);
     let spy = Arc::new(Spy::default());
     let mut s = session(Some(&spy));

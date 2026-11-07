@@ -1038,13 +1038,23 @@ mod tests {
         let mut h = harness();
         let api = "https://x.org/collections";
         let tiled = r#"{"collections": [{"id": "relief", "links": [{"rel": "tilesets-map", "href": "https://x.org/relief/map/tiles"}]}]}"#;
+        let opened = h.state().session.opened;
         let step = |fallback: &str, origin: Option<&str>| {
             let slot = Slot::default();
             *slot.lock().unwrap() = Some(Err("unreachable".to_string()));
             let params = json!({"url": api, "layer": "relief (map tiles)", "text": tiled, "name": "Relief"});
-            let resolve =
-                crate::TilesResolve { params, list: "l".into(), doc: "l".into(), read: 0, vector: false, fallback: fallback.into(), slot };
-            crate::ServiceStep::Tiles { resolve, dialog: false, origin: origin.map(str::to_string) }
+            let resolve = crate::TilesResolve {
+                params,
+                list: "l".into(),
+                doc: "l".into(),
+                crossed_origin: false,
+                read: 0,
+                withheld_addresses: 0,
+                vector: false,
+                fallback: fallback.into(),
+                slot,
+            };
+            crate::ServiceStep::Tiles { resolve, dialog: false, origin: origin.map(str::to_string), opened }
         };
         let before = h.state().session.sources.recent.clone();
         h.state_mut().ui.service_steps.push(step("http://127.0.0.1/{z}/{x}/{y}", Some("Atlas")));

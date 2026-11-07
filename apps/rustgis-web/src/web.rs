@@ -395,7 +395,7 @@ impl Embed {
         let queued = std::mem::take(&mut *self.queue.borrow_mut());
         for value in queued {
             match parse(&value) {
-                Some(Msg::Project(text)) => match app.run("project.openText", serde_json::json!({"text": text})) {
+                Some(Msg::Project(text)) => match app.open_peer_text(&text) {
                     Ok(_) => self.changes.seen(key(&app.session)),
                     Err(e) => app.session.notify(e, true),
                 },
@@ -411,9 +411,14 @@ impl Embed {
             }
         }
         match self.changes.due(key(&app.session), web_time::Instant::now()) {
-            (true, _) => match serde_json::to_string(&app.session.project) {
-                Ok(text) => self.answer(&crate::embed::project(&text)),
-                Err(e) => log::error!("couldn't send the project: {e}"),
+            (true, _) => match app.session.peer_text(rustgis_engine::Peer::Embedder) {
+                Ok((text, report)) => {
+                    self.answer(&crate::embed::project(&text));
+                    for notice in report.notices() {
+                        app.session.notify(notice, false);
+                    }
+                }
+                Err(e) => app.session.notify(e, true),
             },
             (false, Some(wait)) => ctx.request_repaint_after(wait),
             (false, None) => {}
@@ -751,7 +756,7 @@ async fn fetch_bytes(url: &str, capture: Capture, omit: &'static [u16]) -> Resul
         }
         .await;
         logins::check(bound).map_err(str::to_string)?;
-        result.map_err(|error| if login.is_some() { logins::scrub(&format!("{url}: {error}")) } else { error })
+        result.map_err(|error| if login.is_some() { logins::scrub_error(&format!("{url}: {error}")) } else { error })
     }
     .await;
     diagnostics.record(answer.map_err(|e| Failure::new(url, e))).map_err(|failure| failure.message)
@@ -815,7 +820,7 @@ async fn post_json(url: &str, body: &str, capture: Capture) -> Result<Vec<u8>, S
         }
         .await;
         logins::check(url).map_err(str::to_string)?;
-        result.map_err(|error| if login.is_some() { logins::scrub(&format!("{url}: {error}")) } else { error })
+        result.map_err(|error| if login.is_some() { logins::scrub_error(&format!("{url}: {error}")) } else { error })
     }
     .await;
     diagnostics.record(answer.map_err(|e| Failure::new(url, e))).map_err(|failure| failure.message)
@@ -884,7 +889,7 @@ async fn head(url: &str, capture: Capture) -> Result<rustgis_ui_egui::rustgis_en
         }
         .await;
         logins::check(bound).map_err(str::to_string)?;
-        result.map_err(|error| if login.is_some() { logins::scrub(&format!("{url}: {error}")) } else { error })
+        result.map_err(|error| if login.is_some() { logins::scrub_error(&format!("{url}: {error}")) } else { error })
     }
     .await;
     diagnostics.record(answer.map_err(|e| Failure::new(url, e))).map_err(|failure| failure.message)

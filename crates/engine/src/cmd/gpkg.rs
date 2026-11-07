@@ -11,14 +11,14 @@ use serde_json::{Value, json};
 
 pub fn commands() -> Vec<C> {
     vec![
-        C::new("gpkg.addLayer", "Edit GeoPackage Table", "Home › Add › Add Data", add_layer).params(
+        C::new("gpkg.addLayer", "Edit GeoPackage Table", "Home › Add › Add Data", add_layer).roles(&[]).params(
             r#"{"path": "a GeoPackage file on this computer", "table"?: "its feature table (needed when it has several)", "limit"?: "the most rows (default and most: 100000)", "name"?: string}"#,
         ),
-        C::new("gpkg.pendingEdits", "GeoPackage Edits", "Edit › Manage Edits", pending_edits).view()
+        C::new("gpkg.pendingEdits", "GeoPackage Edits", "Edit › Manage Edits", pending_edits).roles(&[]).view()
             .params(r#"{"layer"?: "a layer added with gpkg.addLayer (default: the active one)"}"#),
-        C::new("gpkg.saveEdits", "Save to GeoPackage", "Edit › Manage Edits", save_edits)
+        C::new("gpkg.saveEdits", "Save to GeoPackage", "Edit › Manage Edits", save_edits).roles(&[])
             .params(r#"{"layer"?: "a layer added with gpkg.addLayer (default: the active one)"}"#),
-        C::new("gpkg.discardEdits", "Discard GeoPackage Edits", "Edit › Manage Edits", discard_edits)
+        C::new("gpkg.discardEdits", "Discard GeoPackage Edits", "Edit › Manage Edits", discard_edits).roles(&[])
             .params(r#"{"layer"?: "a layer added with gpkg.addLayer (default: the active one)"}"#),
     ]
 }

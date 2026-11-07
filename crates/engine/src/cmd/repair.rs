@@ -7,9 +7,9 @@ use serde_json::json;
 
 pub fn commands() -> Vec<C> {
     vec![
-        C::new("layer.repairSource", "Repair Data Source", "Data › Data Source", repair_source).params(
+        C::new("layer.repairSource", "Repair Data Source", "Data › Data Source", repair_source).roles(&[]).params(
             r#"{"layer"?: name|id (default: the active layer), "path": "the file or folder (a Zarr store, a File Geodatabase) the layer's data moved to", "table"?: "the dataset in a GeoPackage, GDAL or DuckDB file, or a raster's subdataset (default: the one the layer reads now)"}"#),
-        C::new("map.repairTiles", "Repair Tile Archive", "Layers", repair_tiles).params(
+        C::new("map.repairTiles", "Repair Tile Archive", "Layers", repair_tiles).roles(&[]).params(
             r#"{"name"?: text | "index"?: number (0 = top) | "id"?: catalog id, "path": "the .pmtiles or .mbtiles file the archive moved to"}"#),
     ]
 }

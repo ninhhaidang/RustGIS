@@ -93,21 +93,21 @@ pub fn commands() -> Vec<C> {
             let d = &mut s.map_mut().label_display;
             d.locked = b(p, "on").unwrap_or(!d.locked);
             Ok(json!({"locked": d.locked}))
-        })
+        }).roles(&[])
         .view()
         .params(r#"{"on"?: bool}"#),
         C::new("labels.pause", "Pause", "Labeling › Map Labeling", |s, p| {
             let d = &mut s.map_mut().label_display;
             d.paused = b(p, "on").unwrap_or(!d.paused);
             Ok(json!({"paused": d.paused}))
-        })
+        }).roles(&[])
         .view()
         .params(r#"{"on"?: bool}"#),
         C::new("labels.viewUnplaced", "View Unplaced", "Labeling › Map Labeling", |s, p| {
             let d = &mut s.map_mut().label_display;
             d.show_unplaced = b(p, "on").unwrap_or(!d.show_unplaced);
             Ok(json!({"showUnplaced": d.show_unplaced}))
-        })
+        }).roles(&[])
         .view()
         .params(r#"{"on"?: bool}"#),
         C::new("labels.fonts", "Label Fonts", "View › Windows › Labeling", |_, p| {
@@ -119,16 +119,16 @@ pub fn commands() -> Vec<C> {
             let fonts: Vec<&str> =
                 all.iter().filter(|f| f.listed && f.name.to_lowercase().contains(&search)).map(|f| f.name.as_str()).collect();
             Ok(json!({"fonts": fonts}))
-        })
+        }).roles(&[])
         .view()
         .params(r#"{"search"?: text in the family name} → {"fonts": [the installed font families, by name], "indexing"?: true (still being indexed: none listed yet)}"#),
-        C::new("labels.convert", "Convert To Annotation", "Labeling › Map Labeling", convert)
+        C::new("labels.convert", "Convert To Annotation", "Labeling › Map Labeling", convert).roles(&[])
             .when(need_feature_layer)
             .params(r#"{"layer"?, "name"?: string}"#),
-        C::new("labels.scaleRange", "Label Visibility Range", "Labeling › Label Range", scale_range)
+        C::new("labels.scaleRange", "Label Visibility Range", "Labeling › Label Range", scale_range).roles(&[])
             .when(need_feature_layer)
             .params(r#"{"layer"?, "class"?: name (none: the Default class, by whatever name it has), "min"?: scale|null (out beyond), "max"?: scale|null (in beyond), "clear"?: bool (clears the scale and distance limits, as Clear Limits does)}"#),
-        C::new("labels.distanceRange", "Label Distance Range", "Labeling › Label Range", distance_range)
+        C::new("labels.distanceRange", "Label Distance Range", "Labeling › Label Range", distance_range).roles(&[])
             .when(need_feature_layer)
             .params(r#"{"layer"?, "class"?: name (none: the Default class, by whatever name it has), "closest"?: metres|null, "farthest"?: metres|null, "clear"?: bool}"#),
         C::new("labels.placement", "Label Placement", "Labeling › Label Placement", |s, p| {
@@ -226,7 +226,7 @@ pub fn commands() -> Vec<C> {
                 s.notify(note, false);
             }
             Ok(done)
-        })
+        }).roles(&[])
         .when(need_feature_layer)
         .params(
             r#"{"layer"?, "class"?: name (none: the Default class, by whatever name it has), "position"?: "auto"|"center"|"above"|"below"|"left"|"right"|"aboveRight"|"aboveLeft"|"belowRight"|"belowLeft"|"parallel" (along a line, straight)|"curved" (along a line, following its bends) (required without offset, repeat, otherPositions, showAll or callout), "offset"?: [right, down] points (-200 to 200 each) the label moves from where its position puts it ([0, 0]: none; a label along a line isn't moved), "repeat"?: points (10 to 10000) between a line's labels, spaced out from the one at its middle, at most 32 a line (0 or null: the one at its middle; parallel and curved only), "otherPositions"?: bool (a label whose place is taken tries others: a point's round the point, corners first; a line's along the line, nearest its middle first, placed parallel or curved without a repeat; true is refused for any other line label and on polygons), "showAll"?: bool (every label drawn, over the others where they crowd), "callout"?: true|false|points (5 to 500: a label crowded off its spot moves to a free one nearby, a line drawn back to its feature at most this long; true keeps its length, or 40; false, 0 or null: none; not labels along a line or with an icon)}"#,
@@ -291,7 +291,7 @@ pub fn commands() -> Vec<C> {
             // Locked, the labels are locked again where they are placed next (`with_labels`: the
             // moves changed), as the one moved may not have been placed when the lock was taken.
             Ok(r)
-        })
+        }).roles(&[])
         .when(need_feature_layer)
         .params(r#"{"layer"?, "class"?: name (none: the Default class), "feature": the feature's id, "to": [x, y] (longitude, latitude: where the label's text is centred) | null (back where its class puts it)}"#),
         C::new("labels.resetMoved", "Reset Moved", "Labeling › Label Placement", |s, p| {
@@ -311,12 +311,12 @@ pub fn commands() -> Vec<C> {
             // As after a move, those put back are locked again where they are placed next; with
             // nothing moved, nothing changes and the lock holds (`with_labels`).
             Ok(r)
-        })
+        }).roles(&[])
         .when(need_feature_layer)
         .params(r#"{"layer"?, "class"?: name (none: the Default class), "all"?: bool (every class of the layer)}"#),
         // Label classes: each labels every feature its clause takes, as in ArcGIS Pro; the classes
         // listed first, Default last, are placed first (`Labeling`, #732).
-        C::new("labels.class.add", "Add Label Class", "View › Windows › Labeling", add_class)
+        C::new("labels.class.add", "Add Label Class", "View › Windows › Labeling", add_class).roles(&[])
             .when(need_feature_layer)
             .params(r#"{"layer"?, "name": string, "where"?: sql (a definition query's language; none takes every feature), "from"?: class (whose field and text symbol it starts with; none: the Default class)}"#),
         C::new("labels.class.remove", "Remove Label Class", "View › Windows › Labeling", |s, p| {
@@ -326,7 +326,7 @@ pub fn commands() -> Vec<C> {
                 labels.classes.remove(i);
                 Ok(())
             })
-        })
+        }).roles(&[])
         .when(need_feature_layer)
         .params(r#"{"layer"?, "class": name (not Default)}"#),
         // Every class but Default; none to remove is no error, so a script can start with it.
@@ -338,7 +338,7 @@ pub fn commands() -> Vec<C> {
                 Ok(())
             })?;
             Ok(json!({"removed": removed}))
-        })
+        }).roles(&[])
         .when(need_feature_layer)
         .params(r#"{"layer"?}"#),
         C::new("labels.class.rename", "Rename Label Class", "View › Windows › Labeling", |s, p| {
@@ -349,7 +349,7 @@ pub fn commands() -> Vec<C> {
                 labels.class_mut(&class).ok_or_else(|| format!("no label class named '{class}'"))?.name = name;
                 Ok(())
             })
-        })
+        }).roles(&[])
         .when(need_feature_layer)
         .params(r#"{"layer"?, "class": name, "name": string}"#),
         C::new("labels.class.update", "Update Label Class", "View › Windows › Labeling", |s, p| {
@@ -364,7 +364,7 @@ pub fn commands() -> Vec<C> {
                     c.visible = v;
                 }
             })
-        })
+        }).roles(&[])
         .when(need_feature_layer)
         .params(r#"{"layer"?, "class"?: name (none: the Default class, by whatever name it has), "where"?: sql|null, "visible"?: bool}"#),
         C::new("labels.class.move", "Move Label Class", "View › Windows › Labeling", |s, p| {
@@ -377,10 +377,10 @@ pub fn commands() -> Vec<C> {
                 labels.classes.insert(to, c);
                 Ok(())
             })
-        })
+        }).roles(&[])
         .when(need_feature_layer)
         .params(r#"{"layer"?, "class": name (not Default), "to": number (its place among the classes listed before Default, 0 first: placed first when labels compete for room)}"#),
-        C::new("labels.by", "Labels by Expression", "View › Windows › Labeling", labels_by)
+        C::new("labels.by", "Labels by Expression", "View › Windows › Labeling", labels_by).roles(&[])
             .when(need_feature_layer)
             .params(r#"{"layer"?, "class"?: name (none: the Default class, by whatever name it has), "text"?: expression|null (each label's text, in place of the class's field; a feature it gives null or blanks for isn't labelled), "size"?: expression|null (the text's size in points, 4 to 72), "color"?: expression|null (the text's colour: '#RRGGBB', a CSS colour name or 'r,g,b[,a]' as color_rgb gives it), "angle"?: expression|null (a point's or polygon's label turned by it, in degrees clockwise; labels along lines keep the line's)} (each expression in the language of queries, per feature, @map_scale the map's scale; a key left out keeps its expression, null or "" removes it; where a size, color or angle expression gives null the class's own setting is used)"#),
     ]

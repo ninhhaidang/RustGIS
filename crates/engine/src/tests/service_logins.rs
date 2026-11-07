@@ -73,6 +73,7 @@ impl LoginFile {
                     }
                     Err(_) => break,
                 };
+                stream.set_nonblocking(false).unwrap();
                 stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
                 let mut request = Vec::new();
                 let mut chunk = [0u8; 4096];
@@ -242,6 +243,7 @@ fn an_oversized_ogc_items_binding_is_refused_before_native_fetch() {
     use crate::render::rustgis_tiles::cache;
     let server = LoginFile::new(br#"{"type":"FeatureCollection","features":[]}"#.to_vec());
     let public = LoginFile::new(b"public".to_vec());
+    assert_ne!(server.base, public.base, "the fixtures need different origins");
     let mut s = session(None);
     let id = new(&mut s, json!({"kind":"ogcapi","address":format!("{}/collections",server.base),"auth":"header","keyName":"X-Key"}));
     s.run("connection.login", &json!({"id":id,"apiKey":"fixture-login-757","allowInsecure":true})).unwrap();
@@ -265,8 +267,38 @@ fn an_oversized_ogc_items_binding_is_refused_before_native_fetch() {
     assert!(server.requests.lock().unwrap().is_empty(), "an oversized binding must never fetch anonymously");
     assert!(cache::download_blocking(items("valid")).is_ok());
     assert!(server.requests.lock().unwrap()[0].to_ascii_lowercase().contains("\r\nx-key: fixture-login-757\r\n"));
-    assert!(!rustgis_data::login_address::is_wrapper(items("foreign")));
-    assert_eq!(cache::download_blocking(items("foreign")).unwrap(), b"public");
+    let foreign = items("foreign");
+    assert!(!rustgis_data::login_address::is_wrapper(foreign));
+    assert_eq!(foreign, format!("{}/public?limit=10", public.base));
+    let downloaded = cache::download_blocking(foreign).unwrap_or_else(|_| {
+        // Only request structure is diagnostic: never print headers, targets or error text.
+        let summarize = |request: &String| {
+            let mut words = request.split_whitespace();
+            let method = match words.next() {
+                Some("GET") => "GET",
+                Some("CONNECT") => "CONNECT",
+                Some(_) => "other",
+                None => "missing",
+            };
+            let target = words.next().unwrap_or("");
+            let form = match target {
+                "" => "missing",
+                t if t.starts_with('/') => "origin",
+                t if t.starts_with("http://") || t.starts_with("https://") => "absolute",
+                _ if method == "CONNECT" => "authority",
+                _ => "other",
+            };
+            json!({
+                "bytes": request.len(), "fullHeader": request.contains("\r\n\r\n"),
+                "method": method, "targetForm": form, "publicPrefix": target.starts_with("/public"),
+                "xKeyPresent": request.to_ascii_lowercase().contains("\r\nx-key:"),
+            })
+        };
+        let protected = server.requests.lock().unwrap().iter().map(&summarize).collect::<Vec<_>>();
+        let anonymous = public.requests.lock().unwrap().iter().map(&summarize).collect::<Vec<_>>();
+        panic!("foreign fixture download failed; protected={protected:?}; public={anonymous:?}");
+    });
+    assert_eq!(downloaded, b"public");
     assert!(!public.requests.lock().unwrap()[0].to_ascii_lowercase().contains("\r\nx-key:"));
 }
 
@@ -398,7 +430,7 @@ fn service_login_edit_and_remove_do_not_depend_on_a_credential_store() {
     assert_eq!(later.run("connection.login", &json!({"id":id})).unwrap_err(), web::REQUIRED);
     s.run("connection.edit", &json!({"id":id,"address":"https://changed-memory757.example.org/ogc"})).unwrap();
     assert!(logins::apply(&address).is_err());
-    s.run("connection.login", &json!({"id":id,"apiKey":"replacement-sentinel-757"})).unwrap();
+    s.run("connection.login", &json!({"id":id,"apiKey":"fake004"})).unwrap();
     let replacement = bound(&mut s, &id, "https://changed-memory757.example.org/features");
     s.run("connection.remove", &json!({"id":id})).unwrap();
     assert!(logins::apply(&replacement).is_err());
@@ -689,7 +721,7 @@ fn logins_drop_the_tile_cache_only_when_one_ends_or_is_replaced() {
     assert_eq!(bound(&mut s, &private, "https://cache-private757.example.org/wms"), first);
     assert_eq!(web::cache_clears(), start);
     // Replacing or ending a login leaves authenticated responses behind: those go.
-    s.run("connection.login", &json!({"id":private,"apiKey":"replacement-sentinel-757"})).unwrap();
+    s.run("connection.login", &json!({"id":private,"apiKey":"fake004"})).unwrap();
     assert_eq!(web::cache_clears(), start + 1);
     s.run("connection.logout", &json!({"id":private})).unwrap();
     assert_eq!(web::cache_clears(), start + 2);
@@ -742,11 +774,11 @@ fn an_unsaved_anonymous_test_never_carries_a_saved_login() {
     let mut s = session(None);
     let address = "https://probe757.example.org/wms";
     let id = new(&mut s, json!({"kind":"wms","address":address,"auth":"header","keyName":"X-Key"}));
-    s.run("connection.login", &json!({"id":id,"apiKey":"probe-sentinel-757"})).unwrap();
+    s.run("connection.login", &json!({"id":id,"apiKey":"fake005"})).unwrap();
     let unsaved = s.run("connection.test", &json!({"kind":"wms","address":address,"probe":true})).unwrap();
     assert!(header(unsaved["fetch"].as_str().unwrap()).is_none(), "{unsaved}");
     let saved = s.run("connection.test", &json!({"id":id,"probe":true})).unwrap();
-    assert_eq!(header(saved["fetch"].as_str().unwrap()).unwrap().1, "probe-sentinel-757");
+    assert_eq!(header(saved["fetch"].as_str().unwrap()).unwrap().1, "fake005");
     // The anonymous read ended with the test.
     assert!(header(&web::request(&mut s, None, address).unwrap()).is_some());
 }
@@ -1105,18 +1137,18 @@ fn plugin_downloads_stay_anonymous_after_the_front_end_adds_them() {
     s.run_leaving_downloads(
         "plugin:eng-deferred-login-757/f",
         &json!({
-            "op":"layer.addUrl","params":{"url":format!("{origin}/roads.geojson"),"name":"Deferred","anonymous":false}
+            "op":"layer.addUrl","params":{"url":format!("{origin}/roads.geojson"),"name":"Deferred","anonymous":false,"service":true}
         }),
     )
     .unwrap();
-    let mut pending = s.take_url_requests().pop().unwrap();
-    // ui.addUrl binds/probes after the plugin has returned. It must still fetch anonymously.
-    let prepared = web::request_params(&mut s, &pending).unwrap().into_owned();
-    assert!(header(prepared["url"].as_str().unwrap()).is_none());
+    let request = s.take_url_requests().pop().unwrap();
+    // The claimed UI path preserves the engine's bound parameters and anonymous provenance.
+    let mut pending = request.clone();
+    assert_eq!(pending["anonymous"], true);
+    assert!(header(pending["url"].as_str().unwrap()).is_none());
     let token = s.download_started();
     assert!(s.download_landed(token, br#"{"type":"FeatureCollection","features":[{"type":"Feature","geometry":{"type":"Point","coordinates":[1,2]},"properties":{}}]}"#.to_vec()));
     pending["id"] = json!(token);
-    pending["service"] = json!(true);
     s.run("layer.addDownload", &pending).unwrap();
     s.run("layer.addUrl", &json!({"url":format!("{origin}/deferred.pmtiles"),"anonymous":true,"name":"Archive"})).unwrap();
     s.run("connection.login", &json!({"id":id,"apiKey":"deferred-sentinel-757"})).unwrap();
@@ -1247,16 +1279,21 @@ fn templates_tasks_and_models_written_out_keep_no_login_binding() {
     let tile = bound(&mut s, &id, "https://export757.example.org/tiles/{z}/{x}/{y}.png");
     s.run("map.addTiles", &json!({"url": tile, "name": "Bound"})).unwrap();
     s.run("task.new", &json!({"name":"Fetch","steps":[{"title":"Add","command":"map.addTiles","params":{"url": tile}}]})).unwrap();
-    s.run("model.new", &json!({"name":"Tiles","steps":[{"tool":"buffer","params":{"input": tile, "distance": 1}}]})).unwrap();
-    // A model drawn as a graph keeps its input's address in the node itself.
-    let graph = json!({"nodes":[{"id":"in","kind":"input","layer": tile}], "edges": []});
+    // Keep the synthetic address in a tool's parameters, not a layer-name selector.
+    s.run("model.new", &json!({"name":"Tiles","graph":{"nodes":[{"id":"tool1","kind":"tool","tool":"buffer","params":{"input": tile,"distance":1}}],"edges":[]}})).unwrap();
+    // A graph input selects an existing layer by name; its actual source fields are cleaned.
+    let graph = json!({"nodes":[{"id":"in","kind":"input","layer": "Cities"}], "edges": []});
     s.run("model.new", &json!({"name":"Drawn","graph": graph})).unwrap();
     let dir = std::env::temp_dir().join(format!("export757-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let (template, task) = (dir.join("bound.rgistemplate"), dir.join("bound.rgistask"));
     s.run("project.saveTemplate", &json!({"path": template.to_string_lossy()})).unwrap();
     s.run("task.save", &json!({"task":"Fetch","path": task.to_string_lossy()})).unwrap();
-    let model = s.run("model.export", &json!({"model":"Tiles"})).unwrap()["text"].as_str().unwrap().to_string();
+    let model = s.run("model.export", &json!({"name":"Tiles"})).unwrap()["text"].as_str().unwrap().to_string();
+    let drawn = s.run("model.export", &json!({"name":"Drawn"})).unwrap()["text"].as_str().unwrap().to_string();
+    let graph: Value = serde_json::from_str(&drawn).unwrap();
+    assert_eq!(graph["graph"]["nodes"][0]["layer"], "Cities");
+    assert!(!drawn.contains(rustgis_data::login_address::PREFIX) && !drawn.contains("export-sentinel-757"));
     let written = [std::fs::read_to_string(&template).unwrap(), std::fs::read_to_string(&task).unwrap(), model];
     let _ = std::fs::remove_dir_all(&dir);
     for text in &written {
@@ -1282,7 +1319,7 @@ fn service_requests_take_a_connection_without_saying_they_ignore_it() {
     let url = "https://browse757.example.org/collections";
     let mut s = session(None);
     let id = new(&mut s, json!({"kind":"ogcapi","address":url,"auth":"header","keyName":"X-Key"}));
-    s.run("connection.login", &json!({"id":id,"apiKey":"browse-sentinel-757"})).unwrap();
+    s.run("connection.login", &json!({"id":id,"apiKey":"fake006"})).unwrap();
     let document = json!({"collections":[{"id":"roads","title":"roads",
         "links":[{"rel":"items","type":"application/geo+json","href":format!("{url}/roads/items")}]}]});
     let mark = s.notice_mark();
@@ -1293,7 +1330,42 @@ fn service_requests_take_a_connection_without_saying_they_ignore_it() {
 }
 
 #[test]
+fn resolved_same_origin_tiles_keep_authenticated_and_public_connection_provenance() {
+    use crate::cmd::service::add_resolved_tiles;
+    for auth in ["header", "none"] {
+        let origin = format!("https://resolved-{auth}-r16.example.invalid");
+        let url = format!("{origin}/collections");
+        let list = format!("{origin}/tiles");
+        let template = format!("{origin}/paint/{{z}}/{{x}}/{{y}}.png");
+        let document = json!({"collections":[{"id":"relief","links":[{"rel":"tilesets-map","href":list}]}]}).to_string();
+        let mut s = session(None);
+        let id = new(&mut s, json!({"kind":"ogcapi","address":url,"auth":auth,"keyName":"X-Key"}));
+        if auth == "header" {
+            s.run("connection.login", &json!({"id":id,"apiKey":"fake007"})).unwrap();
+        }
+        let template = bound(&mut s, &id, &template);
+        add_resolved_tiles(&mut s, &json!({"url":url,"text":document,"layer":"relief (map tiles)","connection":id}), &template, false)
+            .unwrap();
+        let tile = &s.map().tiles[0];
+        assert!(!tile.anonymous);
+        assert_eq!(tile.connection, id);
+        assert_eq!(header(&tile.url).is_some(), auth == "header");
+        if auth == "none" {
+            // No binding was present, but no foreign hop occurred: the saved connection is
+            // still the user's provenance when they later add a login to it.
+            s.run("connection.edit", &json!({"id":id,"auth":"header","keyName":"X-Key"})).unwrap();
+            s.run("connection.login", &json!({"id":id,"apiKey":"fake008"})).unwrap();
+            assert_eq!(header(&s.map().tiles[0].url).unwrap().1, "fake008");
+        }
+    }
+}
+
+#[test]
 fn notebook_output_keeps_no_login_binding() {
+    #[cfg(not(target_arch = "wasm32"))]
+    if super::isolate_process_test("tests::service_logins::notebook_output_keeps_no_login_binding") {
+        return;
+    }
     let origin = "https://notebook757.example.org";
     let mut s = session(None);
     let id = new(&mut s, json!({"kind":"wmts","address":format!("{origin}/tiles"),"auth":"header","keyName":"X-Key"}));
@@ -1307,6 +1379,33 @@ fn notebook_output_keeps_no_login_binding() {
     assert!(output.contains(&format!("{origin}/tiles/")), "the cell still shows the address: {output}");
     let (saved, _) = s.project.clone().saved_text(None).unwrap();
     assert!(!saved.contains(rustgis_data::login_address::PREFIX), "the saved project keeps a binding: {saved}");
+
+    // An active secret can also be ordinary address syntax. It must not hide the scheme
+    // from the separate URL-credential sanitizer before that sanitizer has run.
+    s.run("connection.login", &json!({"id":id,"apiKey":"https"})).unwrap();
+    let token = "RGSYNTH_notebook_collision_r18";
+    s.run(
+        "map.addTiles",
+        &json!({"url":format!("https://tiles-collision.invalid/{{z}}/{{x}}/{{y}}.png?token={token}"),"name":"Collision"}),
+    )
+    .unwrap();
+    s.run("notebook.run", &Value::Null).unwrap();
+    let output = s.project.notebooks[0].cells.last().unwrap().output.as_deref().unwrap();
+    assert!(!output.contains(token), "URL query secret survives a colliding active key");
+    assert!(output.contains("tiles-collision.invalid/"), "the useful address survives: {output}");
+    let (saved, _) = s.project.clone().saved_text(None).unwrap();
+    assert!(!saved.contains(token));
+    assert!(!saved.contains(rustgis_data::login_address::PREFIX));
+
+    // The durable generated-output boundary also receives raw command results, such as
+    // an imported notebook's display, independently of this notebook's run producer.
+    let raw = s.run("map.tiles", &Value::Null).unwrap().to_string();
+    assert!(raw.contains(token));
+    let mut project = s.project.clone();
+    project.notebooks[0].cells.last_mut().unwrap().output = Some(raw);
+    let (saved, _) = project.saved_text(None).unwrap();
+    assert!(!saved.contains(token), "durable generated text keeps a URL query secret");
+    assert!(!saved.contains(rustgis_data::login_address::PREFIX));
 }
 
 /// The server has the credential before the lifecycle action, but its refusal arrives after it.
@@ -1429,6 +1528,166 @@ fn delayed_head_refusal_keeps_secrets_out_of_history_across_login_lifecycle() {
                 assert!(!text.contains("x-request-id"), "{action}: {text}");
             }
         }
+    }
+}
+
+/// A foreign capability fallback cannot select a destination login now or after reopening.
+pub(super) fn foreign_service_fallback_stays_anonymous(kind: &str, source: &str, layer: &str, clean: &str, foreign: &str) {
+    let mut results = Vec::new();
+    for (crossed, text) in [(false, clean), (true, foreign)] {
+        let mut s = session(None);
+        let a = new(&mut s, json!({"kind":kind,"address":source,"auth":"header","keyName":"X-Key"}));
+        let b = new(&mut s, json!({"kind":kind,"address":"https://fallback-b.invalid","auth":"header","keyName":"X-Key"}));
+        s.run("connection.login", &json!({"id":a,"apiKey":"RGSYNTH_fallback_a"})).unwrap();
+        s.run("connection.login", &json!({"id":b,"apiKey":"RGSYNTH_fallback_b"})).unwrap();
+        s.run("service.add", &json!({"url":source,"layer":layer,"text":text,"connection":a,"time":"default"})).unwrap();
+        for reopened in [false, true] {
+            if reopened {
+                let saved = s.project.saved_text(None).unwrap().0;
+                s.run("project.openText", &json!({"text":saved})).unwrap();
+            }
+            s.run("connection.login", &json!({"id":b,"apiKey":"RGSYNTH_fallback_rotated"})).unwrap();
+            let tile = &s.map().tiles[0];
+            results.push((
+                crossed,
+                reopened,
+                if crossed {
+                    tile.anonymous && tile.connection.is_empty() && header(&tile.url).is_none()
+                } else {
+                    !tile.anonymous && tile.connection == a && header(&tile.url).is_some()
+                },
+            ));
+        }
+    }
+    assert!(results.iter().all(|(_, _, kept)| *kept), "foreign fallback adopted a login or same-origin binding changed: {results:?}");
+}
+
+/// A foreign capabilities document remains foreign even when it links back to the source origin.
+#[test]
+fn capabilities_round_trip_keeps_foreign_lineage() {
+    let mut results = Vec::new();
+    for crossed in [false, true] {
+        let mut s = session(None);
+        let a = "https://lineage-a.invalid";
+        let bridge = if crossed { "https://lineage-b.invalid/bridge" } else { "https://lineage-a.invalid/bridge" };
+        let id = new(&mut s, json!({"kind":"ogcapi","address":a,"auth":"header","keyName":"X-Key"}));
+        s.run("connection.login", &json!({"id":id,"apiKey":"RGSYNTH_capabilities_lineage"})).unwrap();
+        let link = |url: &str| json!({"links":[{"rel":"data","type":"application/json","href":url}]}).to_string();
+        s.run("service.add", &json!({
+            "url":format!("{a}/root"),"type":"ogcapi","connection":id,"layer":"relief (map tiles)",
+            "text":link(bridge),"documents":[
+                {"url":bridge,"text":link(&format!("{a}/returned"))},
+                {"url":format!("{a}/returned"),"text":json!({"collections":[{"id":"relief","links":[{"rel":"tilesets-map","href":format!("{a}/list")}]}]}).to_string()}
+            ],"tiles":format!("{a}/paint/{{z}}/{{x}}/{{y}}.png")
+        })).unwrap();
+        let tile = &s.map().tiles[0];
+        results.push((
+            crossed,
+            if crossed {
+                tile.anonymous && tile.connection.is_empty() && header(&tile.url).is_none()
+            } else {
+                !tile.anonymous && tile.connection == id && header(&tile.url).is_some()
+            },
+        ));
+    }
+    assert!(results.iter().all(|(_, kept)| *kept), "capabilities discovery forgot its foreign hop: {results:?}");
+}
+
+/// Styles reached through capabilities retain the same origin history as raster/vector tiles.
+#[test]
+fn capabilities_styles_keep_foreign_lineage() {
+    let mut results = Vec::new();
+    for crossed in [false, true] {
+        let mut s = session(None);
+        let a = "https://style-lineage-a.invalid";
+        let b = "https://style-lineage-b.invalid";
+        let source = if crossed { b } else { a };
+        let doc = format!("{source}/rest/services/X/VectorTileServer");
+        let login = new(&mut s, json!({"kind":"ogcapi","address":a,"auth":"header","keyName":"X-Key"}));
+        let other = new(&mut s, json!({"kind":"ogcapi","address":b,"auth":"header","keyName":"X-Key"}));
+        s.run("connection.login", &json!({"id":login,"apiKey":"RGSYNTH_style_a"})).unwrap();
+        s.run("connection.login", &json!({"id":other,"apiKey":"RGSYNTH_style_b"})).unwrap();
+        s.run(
+            "service.add",
+            &json!({
+                "url":format!("{a}/root"),"type":"ogcapi","connection":login,"layer":"style",
+                "text":json!({"links":[{"rel":"data","type":"application/json","href":doc}]}).to_string(),
+                "documents":[{"url":doc,"text":json!({"currentVersion":11,"name":"Private style"}).to_string()}]
+            }),
+        )
+        .unwrap();
+        for reopened in [false, true] {
+            if reopened {
+                let saved = s.project.saved_text(None).unwrap().0;
+                s.run("project.openText", &json!({"text":saved})).unwrap();
+            }
+            s.run("connection.login", &json!({"id":other,"apiKey":"RGSYNTH_style_rotated"})).unwrap();
+            let tile = &s.map().tiles[0];
+            results.push((
+                crossed,
+                reopened,
+                if crossed {
+                    tile.anonymous && tile.connection.is_empty() && header(&tile.url).is_none()
+                } else {
+                    !tile.anonymous && tile.connection == login && header(&tile.url).is_some()
+                },
+            ));
+        }
+    }
+    assert!(results.iter().all(|(_, _, kept)| *kept), "style discovery forgot its foreign hop: {results:?}");
+}
+
+/// Features reached through foreign capabilities keep the same opt-out as tile discovery.
+#[test]
+fn feature_group_plans_and_imports_keep_foreign_capabilities_anonymous() {
+    #[cfg(not(target_arch = "wasm32"))]
+    if super::isolate_process_test("tests::service_logins::feature_group_plans_and_imports_keep_foreign_capabilities_anonymous") {
+        return;
+    }
+    for (document_crossed, items_crossed, authenticated) in
+        [(false, false, false), (false, false, true), (true, false, true), (false, true, true)]
+    {
+        let crossed = document_crossed || items_crossed;
+        let mut s = session(None);
+        let a = "https://feature-lineage-a.invalid";
+        let b = "https://feature-lineage-b.invalid";
+        let bridge = if document_crossed { format!("{b}/bridge") } else { format!("{a}/bridge") };
+        let items = if items_crossed { format!("{b}/items") } else { format!("{a}/items") };
+        let login = new(&mut s, json!({"kind":"ogcapi", "address":a, "auth":if authenticated {"header"} else {"none"}, "keyName":"X-Key"}));
+        if authenticated {
+            s.run("connection.login", &json!({"id":login, "apiKey":"RGSYNTH_feature_lineage"})).unwrap();
+        }
+        let other = new(&mut s, json!({"kind":"ogcapi", "address":b, "auth":"header", "keyName":"X-Key"}));
+        s.run("connection.login", &json!({"id":other, "apiKey":"RGSYNTH_feature_destination"})).unwrap();
+        let link = |url: &str| json!({"links":[{"rel":"data", "type":"application/json", "href":url}]}).to_string();
+        let mut params = json!({"url":format!("{a}/root"), "type":"ogcapi", "connection":login,
+        "text":link(&bridge), "documents":[
+            {"url":bridge,"text":link(&format!("{a}/returned"))},
+            {"url":format!("{a}/returned"),"text":json!({"collections":[{"id":"roads", "links":[{"rel":"items", "type":"application/geo+json", "href":items}]}]}).to_string()}
+        ]});
+        let plan = s.run("service.groupPlan", &params).unwrap();
+        let feature = &plan["layers"][0];
+        assert_eq!(feature.get("anonymous").and_then(Value::as_bool).unwrap_or(false), crossed);
+        let listed = s.run("service.layers", &params).unwrap();
+        assert_eq!(listed["layers"][0].get("anonymous").and_then(Value::as_bool).unwrap_or(false), crossed);
+        params["responses"] = json!([{"url":feature["offer"]["url"], "text":r#"{"type":"FeatureCollection","features":[{"type":"Feature","geometry":{"type":"Point","coordinates":[1,2]},"properties":{}}]}"#}]);
+        s.run("service.import", &params).unwrap();
+        let layer = &s.map().layers[0];
+        assert_eq!(layer.anonymous, crossed);
+        assert_eq!(layer.connection.is_empty(), crossed);
+        assert_eq!(header(layer.dataset.source.as_deref().unwrap()).is_none(), crossed || !authenticated);
+        assert_eq!(layer.dataset.features.len(), 1);
+        params["group"] = json!(s.map().service_groups[0].id);
+        s.run("service.refresh", &params).unwrap();
+        let layer = &s.map().layers[0];
+        assert_eq!(layer.anonymous, crossed);
+        assert_eq!(layer.connection.is_empty(), crossed);
+        assert_eq!(header(layer.dataset.source.as_deref().unwrap()).is_none(), crossed || !authenticated);
+        let saved = s.project.saved_text(None).unwrap().0;
+        s.run("project.openText", &json!({"text":saved})).unwrap();
+        let layer = &s.map().layers[0];
+        assert_eq!(layer.anonymous, crossed);
+        assert_eq!(layer.connection.is_empty(), crossed);
     }
 }
 

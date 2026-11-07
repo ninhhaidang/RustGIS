@@ -131,6 +131,7 @@ pub fn commands() -> Vec<C> {
             s.trusted_notebooks.insert(name.to_ascii_lowercase());
             Ok(r)
         })
+        .roles(&[])
         .params(r#"{"name"?}"#),
         C::new("notebook.open", "Add and Open Notebook", "Analyze › Notebook", |s, p| {
             let text = super::items::read_text(p)?;
@@ -143,12 +144,14 @@ pub fn commands() -> Vec<C> {
             s.trusted_notebooks.remove(&nb.name.to_ascii_lowercase());
             push(s, nb)
         })
+        .roles(&[crate::ParamRole { key: "text", role: crate::Role::Document(crate::Document::Notebook) }])
         .params(r#"{"path"?: "*.rgisnb|*.ipynb", "text"?: notebook JSON, "data"?: base64 file}"#),
         C::new("notebook.activate", "Open Notebook", "Browser", |s, p| {
             let i = index(s, p)?;
             s.active_notebook = Some(i);
             Ok(json!({"notebook": i}))
         })
+        .roles(&[])
         .view()
         .when(need_notebook)
         .params(r#"{"notebook": name|index}"#),
@@ -159,6 +162,7 @@ pub fn commands() -> Vec<C> {
             s.active_notebook = None;
             Ok(Value::Null)
         })
+        .roles(&[])
         .when(need_notebook)
         .params(r#"{"notebook"?}"#),
         C::new("notebook.addCell", "Add Cell", "Notebook", |s, p| {
@@ -177,6 +181,7 @@ pub fn commands() -> Vec<C> {
             nb.cells.insert(at, Cell::new(kind, ps(p, "source").unwrap_or("")));
             Ok(json!({"cell": at, "cells": nb.cells.len()}))
         })
+        .roles(&[crate::ParamRole { key: "source", role: crate::Role::Opaque }])
         .when(need_notebook)
         .params(r#"{"notebook"?, "kind"?: "code"|"markdown", "source"?, "at"?: index}"#),
         C::new("notebook.editCell", "Edit Cell", "Notebook", |s, p| {
@@ -186,6 +191,7 @@ pub fn commands() -> Vec<C> {
             c.source = source.chars().take(MAX_SOURCE).collect();
             Ok(json!({"cell": k}))
         })
+        .roles(&[crate::ParamRole { key: "source", role: crate::Role::Opaque }])
         .when(need_notebook)
         .params(r#"{"notebook"?, "cell": index, "source": text}"#),
         C::new("notebook.removeCell", "Delete Cell", "Notebook", |s, p| {
@@ -194,9 +200,11 @@ pub fn commands() -> Vec<C> {
             nb.cells.remove(k);
             Ok(json!({"cells": nb.cells.len()}))
         })
+        .roles(&[])
         .when(need_notebook)
         .params(r#"{"notebook"?, "cell": index}"#),
         C::new("notebook.run", "Run Cells", "Notebook", run)
+            .roles(&[])
             .when(need_notebook)
             .params(r#"{"notebook"?, "cell"?: index (default: every command cell, stopping at an error)}"#),
         C::new("notebook.save", "Save Notebook", "Notebook", |s, p| {
@@ -206,6 +214,7 @@ pub fn commands() -> Vec<C> {
             rustgis_data::io::write_atomic(Path::new(path), &bytes).map_err(|e| format!("{path}: {e}"))?;
             Ok(json!({"path": path}))
         })
+        .roles(&[])
         .view()
         .when(need_notebook)
         .params(r#"{"notebook"?, "path": "*.rgisnb|*.ipynb"}"#),
@@ -278,6 +287,7 @@ fn run(s: &mut Session, p: &Value) -> CmdResult {
     r
 }
 
+/// Runs command cells and cleans generated output before applying its retained-size bound.
 fn run_cells(s: &mut Session, p: &Value) -> CmdResult {
     let i = index(s, p)?;
     let cells: Vec<usize> = match p.get("cell") {
@@ -328,8 +338,9 @@ fn run_cells(s: &mut Session, p: &Value) -> CmdResult {
                     .collect();
                 if lines.is_empty() { "(nothing to run)".to_string() } else { lines.join("\n") }
             }
-            Err(e) => e,
+            Err(e) => rustgis_data::diagnostics::Redacted::new(&e).into_string(),
         };
+        let text = rustgis_data::address::scrub_addresses(&text).0.into_owned();
         // Into the cell that ran, which a command removing or adding cells may have moved: the
         // cell with its source nearest to where it was.
         let ran_cell = find(s).and_then(|i| s.project.notebooks.get_mut(i)).and_then(|nb| {
@@ -580,8 +591,58 @@ fn jupyter_file(nb: &Notebook) -> Value {
 }
 
 /// The notebook as a RustGIS notebook or (nbformat 4) Jupyter notebook.
-pub fn notebook_file(s: &Session, i: usize, jupyter: bool) -> Result<Vec<u8>, String> {
-    let nb = s.project.notebooks.get(i).ok_or("no notebook")?;
-    let v = if jupyter { jupyter_file(nb) } else { serde_json::to_value(nb).map_err(|e| e.to_string())? };
-    serde_json::to_vec_pretty(&v).map_err(|e| e.to_string())
+pub fn notebook_file(s: &mut Session, i: usize, jupyter: bool) -> Result<Vec<u8>, String> {
+    let nb = s.project.notebooks.get_mut(i).ok_or("no notebook")?;
+    let (bytes, report) = crate::durable::output(nb, None, |nb| {
+        let v = if jupyter { jupyter_file(nb) } else { serde_json::to_value(nb).map_err(|e| e.to_string())? };
+        serde_json::to_vec_pretty(&v).map_err(|e| e.to_string())
+    })?;
+    crate::durable::notify(s, &report);
+    Ok(bytes)
+}
+
+impl crate::durable::Durable for Notebook {
+    /// Offers classified whole fields once, before any live mutation.
+    fn prepare(&self, p: &mut crate::durable::Prepare<'_>) {
+        use crate::durable::Leaf;
+        let Self { name: _, cells, jupyter: _ } = self;
+        let commands = self.language().is_none();
+        for (i, Cell { kind, source, output, error: _, jupyter: _ }) in cells.iter().enumerate() {
+            if commands && *kind == CellKind::Code {
+                p.script(Leaf::CellSource(i), source);
+            }
+            if let Some(output) = output {
+                p.generated(Leaf::CellOutput(i), output);
+            }
+        }
+    }
+
+    /// Resolves a prepared location through owned fields, without allocation or policy.
+    fn field_mut(&mut self, owners: &[crate::durable::Owner], leaf: &crate::durable::Leaf) -> Option<crate::durable::FieldMut<'_>> {
+        use crate::durable::{FieldMut, Leaf};
+        if !owners.is_empty() {
+            return None;
+        }
+        match leaf {
+            Leaf::CellSource(i) => Some(FieldMut::Text(&mut self.cells.get_mut(*i)?.source)),
+            Leaf::CellOutput(i) => self.cells.get_mut(*i)?.output.as_mut().map(FieldMut::Text),
+            _ => None,
+        }
+    }
+}
+
+/// Cleans a notebook document on its parsed copy, preserving foreign kernels and opaque metadata.
+pub(crate) fn durable_document(text: &str, depth: usize) -> Result<(String, crate::durable::Report), String> {
+    let nb = parse(text, "Notebook")?;
+    let jupyter = serde_json::from_str::<Value>(text).is_ok_and(|v| v.get("nbformat").is_some());
+    crate::durable::output_owned_changed(nb, depth, |nb, changed| {
+        if !changed {
+            return Ok(text.into());
+        }
+        if jupyter {
+            serde_json::to_string(&jupyter_file(nb)).map_err(|e| e.to_string())
+        } else {
+            serde_json::to_string(nb).map_err(|e| e.to_string())
+        }
+    })
 }

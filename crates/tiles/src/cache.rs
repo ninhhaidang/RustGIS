@@ -145,7 +145,8 @@ pub fn clear_fetcher() {
 /// on whichever thread is starting them already, so one test's fetch may run on another's thread,
 /// later. Tests that end a login take turns too, as that empties the cache ([`clear`]), and so do
 /// tests that wait for or plant what the cache holds (an archive read, a style resolved), which
-/// that would drop. The turn puts the native fetcher back when it ends.
+/// that would drop. Tests that inspect clean failure text also take turns: a concurrent login
+/// can redact even a single letter from that text. The turn puts the native fetcher back when it ends.
 #[cfg(test)]
 pub(crate) fn turn() -> Turn {
     static TURN: Mutex<()> = Mutex::new(());
@@ -267,18 +268,27 @@ pub fn generation() -> u64 {
     let now = alarm_at(Instant::now());
     let next = {
         let mut a = alarms().lock().unwrap_or_else(|e| e.into_inner());
-        if a.first().is_some_and(|at| *at <= now) {
+        let (over, next) = take_due(&mut a, now);
+        if over {
             // Every wait over is one draw: the generation goes up once for them all.
-            let later = a.split_off(&now.saturating_add(1));
-            *a = later;
             GENERATION.fetch_add(1, Ordering::Relaxed);
         }
-        a.first().copied()
+        next
     };
     if let Some(at) = next {
         ring(Duration::from_millis(at.saturating_sub(now)));
     }
     GENERATION.load(Ordering::Relaxed)
+}
+
+/// Consumes every elapsed deadline together and returns the next one to rearm. Keeping the
+/// clock as an input lets the ordering contract be tested without scheduler deadlines.
+fn take_due(alarms: &mut std::collections::BTreeSet<u64>, now: u64) -> (bool, Option<u64>) {
+    let over = alarms.first().is_some_and(|at| *at <= now);
+    if over {
+        *alarms = alarms.split_off(&now.saturating_add(1));
+    }
+    (over, alarms.first().copied())
 }
 
 /// How long until the earliest wait pending; none when there is none.
@@ -683,7 +693,7 @@ fn fetch_tile(url: String, host: String, want: Want, omit: &'static [u16]) {
                     Entry::Ready(Arc::new(p), size)
                 }
                 Err(e) => {
-                    log::debug!("{}", crate::logins::scrub(&format!("{}: {e}", answer.key)));
+                    log::debug!("{}", crate::logins::scrub_error(&format!("{}: {e}", answer.key)));
                     // Refused until a time its server gave: the map draws again then.
                     if let Some(wait) = retry_after(&e) {
                         notify_at(Instant::now() + wait);
@@ -867,7 +877,7 @@ impl<'a> RequestDiagnostics<'a> {
         let url = crate::logins::inner(url);
         let url = if rustgis_data::login_address::is_wrapper(url) { "[address omitted]" } else { url };
         let clean = |text: &str| {
-            if carried || text.contains(rustgis_data::login_address::PREFIX) { crate::logins::scrub(text) } else { text.to_string() }
+            if carried || text.contains(rustgis_data::login_address::PREFIX) { crate::logins::scrub_error(text) } else { text.to_string() }
         };
         // A status the caller expects is an answer, not a failure for the history; a caller
         // that treats the refusal as an error says so itself. One bounded record per server says
@@ -1617,7 +1627,9 @@ mod native {
             }
             Err("too many redirects".into())
         })();
-        diagnostics.record(answer).map_err(|failure| if carried_login { crate::logins::scrub(&failure.message) } else { failure.message })
+        diagnostics
+            .record(answer)
+            .map_err(|failure| if carried_login { crate::logins::scrub_error(&failure.message) } else { failure.message })
     }
 
     /// POSTs a JSON document on a thread of its own.
@@ -1673,7 +1685,9 @@ mod native {
             crate::logins::check(url).map_err(str::to_string)?;
             Ok(buf)
         })();
-        diagnostics.record(answer).map_err(|failure| if carried_login { crate::logins::scrub(&failure.message) } else { failure.message })
+        diagnostics
+            .record(answer)
+            .map_err(|failure| if carried_login { crate::logins::scrub_error(&failure.message) } else { failure.message })
     }
 
     /// Downloads on a thread of its own, so a large file doesn't hold up the tiles.
@@ -1776,7 +1790,7 @@ mod native {
     /// [`get_detailed`], a status in `omit` not recorded as a failure.
     pub(super) fn get_detailed_omitting(agent: &ureq::Agent, url: &str, omit: &'static [u16]) -> Result<Vec<u8>, Failure> {
         fetch_answer(agent, url, true, omit).map_err(|f| Failure {
-            url: if url.contains(rustgis_data::login_address::PREFIX) { crate::logins::scrub(url) } else { url.to_string() },
+            url: if url.contains(rustgis_data::login_address::PREFIX) { crate::logins::scrub_error(url) } else { url.to_string() },
             ..f
         })
     }
@@ -1995,8 +2009,8 @@ mod native {
         let result = crate::logins::check(super::resource_of(url)).map_err(Failure::from).and(result);
         result.map_err(|mut f| {
             if carried_login {
-                f.message = crate::logins::scrub(&f.message);
-                f.url = crate::logins::scrub(&f.url);
+                f.message = crate::logins::scrub_error(&f.message);
+                f.url = crate::logins::scrub_error(&f.url);
             }
             f
         })
@@ -2043,6 +2057,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn network_diagnostics_capture_background_failures_once() {
+        let _turn = turn();
         use rustgis_data::diagnostics::{History, NetworkKind};
         let history = History::default();
         let _scope = history.enter();
@@ -2063,6 +2078,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn network_diagnostics_interleaved_sessions_keep_their_requests_private() {
+        let _turn = turn();
         use rustgis_data::diagnostics::History;
         use std::io::{BufRead, BufReader, Write};
         let first = History::default();
@@ -2123,6 +2139,7 @@ mod tests {
 
     #[test]
     fn network_diagnostics_explicit_capture_outlives_dispatch_scope_not_owner() {
+        let _turn = turn();
         use rustgis_data::diagnostics::History;
         let first = History::default();
         let second = History::default();
@@ -2149,6 +2166,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn network_diagnostics_redact_downloads_without_retaining_bodies() {
+        let _turn = turn();
         use rustgis_data::diagnostics::History;
         let history = History::default();
         let _scope = history.enter();
@@ -2199,6 +2217,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn network_diagnostics_skip_gone_map_tiles_and_keep_server_errors() {
+        let _turn = turn();
         let history = rustgis_data::diagnostics::History::default();
         let _scope = history.enter();
         let answer = |status: &str| format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
@@ -2220,10 +2239,11 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn network_diagnostics_keep_headers_after_a_credential_header() {
+        let _turn = turn();
         let history = rustgis_data::diagnostics::History::default();
         let _scope = history.enter();
         let base = serve(vec![
-            "HTTP/1.1 403 Forbidden\r\nWWW-Authenticate: Basic realm=\"private-realm\"\r\nRetry-After: 30\r\ncf-ray: 8a1-BOG\r\nX-Amzn-RequestId: amzn-1155\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            "HTTP/1.1 403 Forbidden\r\nWWW-Authenticate: Basic realm=\"private-realm\"\r\nRetry-After: 30\r\ncf-ray: 8a1-BOG\r\nX-Amzn-RequestId: amzn-1155\r\nX-Amz-Cf-Id: trace-1155\r\nX-Amzn-Waf-Action: block\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                 .into(),
         ]);
         let url = format!("{base}/refused");
@@ -2231,7 +2251,9 @@ mod tests {
         let records = network_records(&history, &url);
         assert_eq!(records.len(), 1);
         let details = &records[0].details;
-        for kept in ["retry-after: 30", "cf-ray: 8a1-BOG", "x-amzn-requestid: amzn-1155"] {
+        for kept in
+            ["retry-after: 30", "cf-ray: 8a1-BOG", "x-amzn-requestid: amzn-1155", "x-amz-cf-id: trace-1155", "x-amzn-waf-action: block"]
+        {
             assert!(details.contains(kept), "{kept} in {details:?}");
         }
         assert!(!details.contains("private-realm"), "{details:?}");
@@ -2240,6 +2262,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn network_diagnostics_skip_routine_tile_404s_and_keep_other_statuses() {
+        let _turn = turn();
         use rustgis_data::diagnostics::{History, Severity};
         let history = History::default();
         let _scope = history.enter();
@@ -2298,6 +2321,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn network_diagnostics_keep_observed_status_on_blocking_body_failure() {
+        let _turn = turn();
         use rustgis_data::diagnostics::{History, NetworkKind};
         let history = History::default();
         let _scope = history.enter();
@@ -2315,6 +2339,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn network_diagnostics_preserve_connection_and_timeout_causes() {
+        let _turn = turn();
         use rustgis_data::diagnostics::{History, NetworkKind};
         let history = History::default();
         let _scope = history.enter();
@@ -2349,6 +2374,7 @@ mod tests {
     /// history keeps no record of it.
     #[test]
     fn network_diagnostics_skip_failed_local_reads() {
+        let _turn = turn();
         let history = rustgis_data::diagnostics::History::default();
         let _scope = history.enter();
         native::get(&native::agent(), "local-file:/nonexistent-1155.pmtiles", &[]).unwrap_err();
@@ -2357,6 +2383,7 @@ mod tests {
 
     #[test]
     fn network_diagnostics_ignore_cancellation_and_keep_browser_causes_truthful() {
+        let _turn = turn();
         use rustgis_data::diagnostics::{History, NetworkKind};
         let history = History::default();
         let _scope = history.enter();
@@ -2384,6 +2411,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn public_downloads_refuse_names_that_resolve_locally() {
+        let _turn = turn();
         let err = download_public_within("http://localhost:9/doc.json", 1024, std::time::Duration::from_secs(5)).unwrap_err();
         assert!(err.contains("resolves to this computer or the local network"), "{err}");
     }
@@ -2411,6 +2439,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn downloads_stop_at_the_callers_budget() {
+        let _turn = turn();
         for framing in ["Content-Length: 4\r\n", "", "Transfer-Encoding: chunked\r\n"] {
             let body = if framing.starts_with("Transfer") { "4\r\ntile\r\n0\r\n\r\n" } else { "tile" };
             for (limit, ok) in [(0, false), (3, false), (4, true), (5, true)] {
@@ -2431,6 +2460,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn download_budget_also_bounds_decompressed_bytes() {
+        let _turn = turn();
         let data = vec![b'x'; 4096];
         // The ZIP writer supplies the CRC-32 for a valid, generated gzip trailer.
         let zip = rustgis_data::zip::write(&[("body".into(), data.clone())]).unwrap();
@@ -2530,24 +2560,14 @@ mod tests {
     /// its elevation source waits), so the later is kept, and the app asked for it then.
     #[test]
     fn a_later_wait_isnt_lost_behind_an_earlier_one() {
-        let _alarm = super::alarm_turn();
-        let asked = std::sync::Arc::new(Mutex::new(Vec::new()));
-        let noted = asked.clone();
-        super::set_alarm(move |after| noted.lock().unwrap_or_else(|e| e.into_inner()).push(after));
-        super::clear_alarms();
-        let before = generation();
-        notify_at(Instant::now() + Duration::from_millis(20));
-        notify_at(Instant::now() + Duration::from_millis(150));
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        let earlier = generation();
-        assert!(earlier > before, "the earlier wait over");
-        // The later is still pending, and asked of the app as the earlier was over.
-        assert!(super::next_alarm().is_some_and(|d| d <= Duration::from_millis(150)), "{:?}", super::next_alarm());
-        let later = |asked: &Vec<Duration>| asked.iter().any(|d| (Duration::from_millis(30)..=Duration::from_millis(150)).contains(d));
-        assert!(later(&asked.lock().unwrap_or_else(|e| e.into_inner())), "{:?}", asked.lock().unwrap_or_else(|e| e.into_inner()));
-        std::thread::sleep(std::time::Duration::from_millis(150));
-        assert!(generation() > earlier, "the later wait over");
-        super::clear_alarm();
+        let mut alarms = std::collections::BTreeSet::from([20, 150]);
+        assert_eq!(super::take_due(&mut alarms, 10), (false, Some(20)));
+        assert_eq!(super::take_due(&mut alarms, 50), (true, Some(150)), "rearm the later wait after the first expires");
+        assert_eq!(super::take_due(&mut alarms, 100), (false, Some(150)));
+        assert_eq!(super::take_due(&mut alarms, 200), (true, None));
+        assert_eq!(super::take_due(&mut alarms, 300), (false, None), "expired deadlines are consumed once");
+        let mut delayed = std::collections::BTreeSet::from([20, 150]);
+        assert_eq!(super::take_due(&mut delayed, 200), (true, None), "a delayed poll correctly consumes both waits");
     }
 
     /// A draw before a wait is over asks the app for it again: the app's request lasts one frame,
@@ -3079,6 +3099,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn the_length_asked_for_follows_redirects_and_keeps_refusals() {
+        let _turn = turn();
         let no_suffix = "HTTP/1.1 501 Not Implemented\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string();
         let agent = native::agent();
         let base = serve(vec![
@@ -3113,6 +3134,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn a_refused_download_says_who_refused_it() {
+        let _turn = turn();
         let page = "<html><head><title>Attention Required! | Cloudflare</title></head><body>Sorry, you have been blocked</body></html>";
         let blocked = format!(
             "HTTP/1.1 403 Forbidden\r\nServer: cloudflare\r\nCF-RAY: a4c9-BOG\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{page}",
@@ -3134,6 +3156,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn follows_only_allowed_redirects() {
+        let _turn = turn();
         let redirect = |to: &str| format!("HTTP/1.1 302 Found\r\nLocation: {to}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
         let ok = "HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\ntile".to_string();
         let agent = native::agent();

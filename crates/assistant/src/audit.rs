@@ -89,7 +89,8 @@ pub fn entries(source: &str, request: &str, reply: Option<&str>, took: Duration,
         .filter(|m| m.get("method").and_then(Value::as_str) == Some("tools/call") && m.get("id").is_some())
         .map(|m| {
             let params = m.get("params").cloned().unwrap_or(Value::Null);
-            let args = redact(params.get("arguments").cloned().unwrap_or(Value::Null), 0);
+            let args =
+                normalized_args(params.get("name").and_then(Value::as_str).unwrap_or(""), params.get("arguments").unwrap_or(&Value::Null));
             let r = replies.iter().find(|r| r.get("id") == m.get("id"));
             let failed = r.is_none_or(|r| r.get("error").is_some() || r.pointer("/result/isError") == Some(&Value::Bool(true)));
             let error = failed.then(|| {
@@ -138,56 +139,28 @@ pub fn entries(source: &str, request: &str, reply: Option<&str>, took: Duration,
         .collect()
 }
 
-/// The words that name a secret in a key's name, whole words and their plurals.
-const SECRET_WORDS: &[&str] = &[
-    "passphrase",
-    "jwt",
-    "privatekey",
-    "password",
-    "passwd",
-    "pwd",
-    "secret",
-    "token",
-    "apikey",
-    "auth",
-    "authorization",
-    "bearer",
-    "credential",
-    "signature",
-    "cookie",
-    "sas",
-    "dsn",
-];
-/// Words before "key" that make it a secret key (`api_key`, `accessKey`), not a sort or join key.
-const KEY_KINDS: &[&str] = &["api", "access", "private", "secret", "account", "sas", "subscription", "client"];
-
-/// Whether a key's name names a secret: its words (split at `_`, `-`, `.` and camelCase), one of
-/// [`SECRET_WORDS`] or its plural, or "key" after one of [`KEY_KINDS`] (or alone).
-fn secret_key(name: &str) -> bool {
-    let mut words: Vec<String> = Vec::new();
-    let mut cur = String::new();
-    let mut prev_lower = false;
-    for c in name.chars() {
-        if c == '_' || c == '-' || c == '.' || c == ' ' {
-            words.push(std::mem::take(&mut cur));
-            prev_lower = false;
-            continue;
+/// Arguments as the executor reads them. Only this output copy is redacted; it is never
+/// supplied to the executor, the permission planner or approval equality.
+fn normalized_args(tool: &str, arguments: &Value) -> Value {
+    match tool {
+        "run_command" | "run_tool" => {
+            let params = match rustgis_engine::params_envelope(arguments.get("params")) {
+                Ok(params) => rustgis_engine::log_params(&params).into_log_value(),
+                Err(_) => json!("[parameters not JSON; withheld]"),
+            };
+            let key = if tool == "run_command" { "command" } else { "tool" };
+            let mut out = serde_json::Map::new();
+            let id = match arguments.get(key) {
+                Some(Value::String(id)) => json!(rustgis_engine::log_identifier(id)),
+                other => redact(other.cloned().unwrap_or(Value::Null), 0),
+            };
+            out.insert(key.into(), id);
+            out.insert("params".into(), params);
+            Value::Object(out)
         }
-        if c.is_ascii_uppercase() && prev_lower {
-            words.push(std::mem::take(&mut cur));
-        }
-        prev_lower = c.is_ascii_lowercase() || c.is_ascii_digit();
-        cur.push(c.to_ascii_lowercase());
+        "run" => json!({"script": redact_script(arguments.get("script").and_then(Value::as_str).unwrap_or(""))}),
+        _ => redact(arguments.clone(), 0),
     }
-    words.push(cur);
-    let words: Vec<&str> = words.iter().map(String::as_str).filter(|w| !w.is_empty()).collect();
-    let is = |w: &str, s: &str| w == s || w.strip_suffix('s') == Some(s);
-    words.iter().enumerate().any(|(i, w)| {
-        SECRET_WORDS.iter().any(|s| is(w, s))
-            // Run together without a separator (`accesstoken`, `clientsecret`, `dbpassword`).
-            || ["token", "secret", "password", "passphrase"].iter().any(|s| w.len() > s.len() && (w.ends_with(s) || w.ends_with(&format!("{s}s"))))
-            || (is(w, "key") && (words.len() == 1 || i.checked_sub(1).and_then(|j| words.get(j)).is_some_and(|p| KEY_KINDS.contains(p))))
-    })
 }
 
 /// A string argument without its secrets: an address (one word with a scheme, or a database
@@ -215,7 +188,15 @@ fn redact_string(s: &str) -> String {
     // Text with an address in it (a query, a description): each address word that carries
     // credentials (a user and password, or a key or token in its query) loses them; the rest,
     // and the spacing, stay as they were.
-    let carries = |w: &str| address(w) && (w.contains('@') || mentions_secret(w) || w.to_ascii_lowercase().contains("key="));
+    let carries = |w: &str| {
+        let q = w.split_once('?').map_or("", |(_, q)| q.split('#').next().unwrap_or(q));
+        let names = rustgis_engine::data::address::QueryNames::of(q);
+        let secret_pair = q.split(['&', ';']).any(|pair| {
+            let name = pair.split_once('=').map_or(pair, |(k, _)| k);
+            rustgis_engine::data::address::name_class(name, &names) != rustgis_engine::data::address::NameClass::Plain
+        });
+        address(w) && (w.contains('@') || mentions_secret(w) || secret_pair)
+    };
     if t.split_whitespace().any(carries) {
         let mut out = String::with_capacity(s.len());
         let mut word = String::new();
@@ -239,7 +220,7 @@ fn redact_string(s: &str) -> String {
     s.to_string()
 }
 
-/// Whether free text names a secret. Narrower than [`SECRET_WORDS`]: a plain "key" in an error
+/// Whether free text names a secret. Narrower than the structured-name list: a plain "key" in an error
 /// ("primary key") isn't one.
 fn mentions_secret(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
@@ -252,24 +233,31 @@ fn mentions_secret(text: &str) -> bool {
 /// a call's are, line by line, so one line that doesn't parse leaves the others redacted. A line
 /// whose parameters aren't JSON keeps only its command id.
 fn redact_script(script: &str) -> String {
-    script
+    let omitted = script.lines().skip(rustgis_engine::cmd::workflows::MAX_SCRIPT_LINES).count();
+    let output = script
         .lines()
+        .take(rustgis_engine::cmd::workflows::MAX_SCRIPT_LINES)
         .map(|line| {
             let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                return line.to_string();
-            }
-            let (id, rest) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
-            if rest.trim().is_empty() {
-                return id.to_string();
-            }
-            match serde_json::from_str::<Value>(rest.trim()) {
-                Ok(params) => format!("{id} {}", redact(params, 0)),
-                Err(_) => format!("{id} [parameters not JSON; withheld]"),
+            // Display only: a malformed identifier may carry JSON glued after `=`. It must
+            // not be copied as an id; execution still uses the shared parser unchanged.
+            let head = line.split(|c: char| c.is_whitespace() || c == '=').next().unwrap_or(line);
+            let glued = line
+                .get(head.len()..)
+                .and_then(|r| r.strip_prefix('='))
+                .is_some_and(|r| !r.is_empty() && !r.starts_with(char::is_whitespace));
+            match rustgis_engine::script_line(line) {
+                None => redact_string(line),
+                Some(Ok((id, params))) if !glued => {
+                    let id = rustgis_engine::log_identifier(&id);
+                    if params.is_null() { id } else { format!("{id} {}", rustgis_engine::log_params(&params).into_log_value()) }
+                }
+                Some(_) => format!("{} [parameters not JSON; withheld]", rustgis_engine::log_identifier(head)),
             }
         })
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("\n");
+    if omitted > 0 { format!("# [{omitted} further script line(s) not recorded]\n{output}") } else { output }
 }
 
 /// `v` without what would give someone else the user's access: values under keys that name a
@@ -283,7 +271,7 @@ fn redact(v: Value, depth: usize) -> Value {
         Value::Array(a) if depth < 16 => Value::Array(a.into_iter().map(|x| redact(x, depth + 1)).collect()),
         Value::Object(o) if depth < 16 => Value::Object(
             o.into_iter()
-                .map(|(k, x)| match (secret_key(&k), k.as_str(), x) {
+                .map(|(k, x)| match (rustgis_engine::data::address::log_sensitive(&k), k.as_str(), x) {
                     (true, _, _) => (k, json!("[redacted]")),
                     (false, "script", Value::String(s)) => (k, json!(redact_script(&s))),
                     (false, _, x) => (k, redact(x, depth + 1)),
@@ -328,6 +316,72 @@ fn prune(dir: &Path, secs: i64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn audit_logs_the_executed_envelope_and_shared_script_grammar() {
+        for line in [
+            "sql.connect={\"password\":\"RGSYNTH_glued_audit\"}",
+            "sql.connect={\"password\":\"RGSYNTH_glued_audit\"} junk",
+            "sql.connect={\"password\":\"RGSYNTH_glued_audit\"",
+        ] {
+            let output = redact_script(line);
+            assert!(!output.contains("RGSYNTH_glued_audit"), "{output}");
+        }
+        for id in [
+            "sql.connect={\"password\":\"RGSYNTH_glued_audit\"}",
+            "sql.connect {\"password\":\"RGSYNTH_glued_audit\"}",
+            "sql.connect:{\"password\":\"RGSYNTH_glued_audit\"}",
+            "sql.connect:password:RGSYNTH_glued_audit",
+            "sql.connect:token:RGSYNTH_glued_audit",
+            "password:RGSYNTH_glued_audit",
+        ] {
+            for tool in ["run_command", "run_tool"] {
+                let key = if tool == "run_command" { "command" } else { "tool" };
+                let mut args = json!({"params":null});
+                args[key] = json!(id);
+                let logged = normalized_args(tool, &args);
+                assert!(!logged.to_string().contains("RGSYNTH_glued_audit"), "{tool}: {logged}");
+            }
+        }
+        let params =
+            json!({"url": "https://h.invalid/a?%74oken=RGSYNTH_audit_20261103", "pass%77ord": "RGSYNTH_option_20261103", "layer": "roads"});
+        for tool in ["run_command", "run_tool"] {
+            let object = json!({"command": "layer.addUrl", "tool": "buffer", "params": params});
+            let mut string = object.clone();
+            string["params"] = json!(params.to_string());
+            let logged = normalized_args(tool, &object);
+            assert_eq!(logged, normalized_args(tool, &string));
+            assert_eq!(logged["params"], rustgis_engine::log_params(&params).into_log_value());
+            assert!(!logged.to_string().contains("RGSYNTH_"));
+            for bad in [json!("{broken RGSYNTH_bad_20261103"), json!("[1]"), json!(42)] {
+                let mut bad_args = object.clone();
+                bad_args["params"] = bad;
+                assert_eq!(normalized_args(tool, &bad_args)["params"], "[parameters not JSON; withheld]");
+            }
+        }
+        assert!(!redact_string("failed https://h.invalid/a?%74oken=RGSYNTH_error_20261103").contains("RGSYNTH_"));
+        let script = "map.zoomIn= {}\nlayer.addUrl {broken RGSYNTH_bad_20261103\nmap.zoomOut {}";
+        let logged = redact_script(script);
+        assert!(logged.starts_with("map.zoomIn {}\nlayer.addUrl [parameters not JSON; withheld]\nmap.zoomOut {}"));
+        assert!(!logged.contains("RGSYNTH_"));
+        let comments = "# clean comment\n# https://h.invalid/a?token=RGSYNTH_comment_20261106";
+        let args = normalized_args("run", &json!({"script": comments}));
+        assert!(!args.to_string().contains("RGSYNTH_comment"));
+        assert!(!redact_script(comments).contains("RGSYNTH_comment"));
+        assert!(redact_script(comments).starts_with("# clean comment\n"));
+        for url in
+            ["https://h.invalid/data", "pg:host=h dbname=gis", "mariadb://h/gis", "pmtiles:https://h.invalid/a", "cog:https://h.invalid/a"]
+        {
+            let nested = json!({"key":"abc", "source":{"url":url}});
+            assert_eq!(normalized_args("run_command", &json!({"command":"plugin.unknown", "params":nested}))["params"]["key"], "", "{url}");
+        }
+        let document =
+            json!({"type": "FeatureCollection", "features": [], "padding": "x".repeat(250), "token": "RGSYNTH_data_20261103"}).to_string();
+        let arguments = json!({"command": "layer.addDataText", "params": {"text": document}});
+        let logged = normalized_args("run_command", &arguments);
+        assert!(logged["params"]["text"].as_str().is_some_and(|s| s.starts_with("(a document of ")));
+        assert_eq!(arguments["params"]["text"], document, "the executed data document stays intact");
+    }
 
     /// A line for each tool call: what ran, whether it worked, how long it took; secrets in its
     /// arguments are not written.
@@ -389,10 +443,10 @@ mod tests {
             "passphrase",
             "jwt",
         ] {
-            assert!(secret_key(k), "{k}");
+            assert!(rustgis_engine::data::address::log_sensitive(k), "{k}");
         }
         for k in ["primary_key", "sort_key", "keys_column", "texas", "name"] {
-            assert!(!secret_key(k), "{k}");
+            assert!(!rustgis_engine::data::address::log_sensitive(k), "{k}");
         }
         // Free text keeps its shape; a keyword connection string loses its password.
         assert_eq!(redact_string("SELECT * FROM t WHERE url = 'http://x?a=1#b'"), "SELECT * FROM t WHERE url = 'http://x?a=1#b'");
@@ -445,5 +499,16 @@ mod tests {
         assert!(recent.exists() && dir.path().join("notes.txt").exists());
         assert!(dir.path().join("0000000000.jsonl").exists(), "only day files are pruned");
         assert!(is_day_file("2026-10-18.jsonl") && !is_day_file("2026-13-01.jsonl") && !is_day_file("2026-10-18.json"));
+    }
+
+    /// The bounded audit copy labels omitted lines before the display's byte clipping.
+    #[test]
+    fn audit_script_line_limit_counts_unrecorded_lines() {
+        let limit = rustgis_engine::cmd::workflows::MAX_SCRIPT_LINES;
+        let clean = "# safe\n".repeat(limit);
+        assert!(!redact_script(&clean).contains("not recorded"));
+        let output = redact_script(&(clean + "layer.rename {\"layer\":\"RGSYNTH_omitted_line\"}"));
+        assert!(output.starts_with("# [1 further script line(s) not recorded]\n"));
+        assert!(!output.contains("RGSYNTH_omitted_line"));
     }
 }

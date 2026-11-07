@@ -34,6 +34,8 @@ pub const VIEW_LIMIT: usize = if cfg!(target_arch = "wasm32") { 100_000 } else {
 /// The most features a view reads from a file by its web address (each one is fetched).
 pub const REMOTE_VIEW_LIMIT: usize = if cfg!(target_arch = "wasm32") { 30_000 } else { 60_000 };
 
+const RECONNECT_REQUIRED: &str = "this database source came from a peer; reconnect explicitly before reading it";
+
 /// A streamed layer's source.
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct SourceLayer {
@@ -93,6 +95,9 @@ pub struct SourceLayer {
     /// The last open failed because the server refused the login (no password given this session, or a wrong one).
     #[serde(skip)]
     pub login: bool,
+    /// Runtime-only: imported source selection awaits an explicit reconnect or exact peer retention.
+    #[serde(skip)]
+    reconnect_required: bool,
     /// The most features a view reads (0 = [`VIEW_LIMIT`]).
     #[serde(skip)]
     pub limit: usize,
@@ -688,6 +693,10 @@ impl SourceLayer {
     /// Opens the source again (after a project loads). A source by its web address is opened off
     /// the frame: `Ok` while it is (see [`SourceLayer::is_pending`]), open once it has landed.
     pub fn open(&mut self) -> Result<(), String> {
+        if self.reconnect_required {
+            self.error = Some(RECONNECT_REQUIRED.into());
+            return Err(RECONNECT_REQUIRED.into());
+        }
         if let Some(url) = self.path.clone().filter(|p| rustgis_data::source::is_remote_name(p)) {
             return self.open_remote(&url);
         }
@@ -925,6 +934,25 @@ impl SourceLayer {
 
     pub fn is_pending(&self) -> bool {
         self.pending.is_some() || self.opening.is_some()
+    }
+
+    /// Suspends automatic reads without changing the serialized source definition or any password.
+    pub fn require_reconnect(&mut self) {
+        self.reconnect_required = true;
+        self.handle = None;
+        self.opening = None;
+        self.pending = None;
+        self.error = Some(RECONNECT_REQUIRED.into());
+    }
+
+    /// Whether the source still needs its owner to authorize a reconnect.
+    pub fn reconnect_required(&self) -> bool {
+        self.reconnect_required
+    }
+
+    /// Releases a source after its owner explicitly reconnects or validates exact peer retention.
+    pub fn allow_reconnect(&mut self) {
+        self.reconnect_required = false;
     }
 
     /// Opens the source afresh, forgetting a failed or never-started open (and the window read
@@ -1209,6 +1237,89 @@ pub fn set_waker(f: impl Fn() + Send + Sync + 'static) {
 /// Bumped whenever a background read finishes, so a cached map image knows to redraw.
 pub fn generation() -> u64 {
     GENERATION.load(Ordering::Relaxed)
+}
+
+impl SourceLayer {
+    /// Persisted source address and local driver paths; handles and embedded data are opaque.
+    pub(crate) fn output_slots(&self) -> Vec<(crate::LayerRole, &str, bool, bool)> {
+        let SourceLayer {
+            path,
+            file_name: _,
+            table: _,
+            shapefile_crs: _,
+            embedded,
+            handle: _,
+            window: _,
+            render_lod: _,
+            pending: _,
+            projection: _,
+            ready_cache: _,
+            byte_budget: _,
+            estimated_row_bytes: _,
+            full_read: _,
+            saved_selection: _,
+            window_fields: _,
+            query: _,
+            opening: _,
+            error: _,
+            login: _,
+            reconnect_required: _,
+            limit: _,
+            reads: _,
+            gdal,
+            duckdb,
+            postgis,
+            mysql,
+            sqlserver,
+        } = self;
+        use crate::{LayerRole as R, paths};
+        let mut out = Vec::new();
+        if let Some(p) = path {
+            out.push((
+                R::Streamed,
+                p.as_str(),
+                true,
+                embedded.is_none()
+                    && gdal.is_none()
+                    && duckdb.is_none()
+                    && postgis.is_none()
+                    && mysql.is_none()
+                    && sqlserver.is_none()
+                    && paths::is_local(p),
+            ));
+        }
+        if let Some(g) = gdal {
+            out.push((R::GdalPath, g.path.as_str(), false, paths::is_local(&g.path)));
+        }
+        if let Some(d) = duckdb
+            && let Some(p) = &d.database
+        {
+            out.push((R::DuckDbDatabase, p.as_str(), true, paths::is_local(p)));
+        }
+        if let Some(pg) = postgis {
+            out.push((R::PostgisDatabase, pg.database.as_str(), true, false));
+        }
+        if let Some(my) = mysql {
+            out.push((R::MysqlDatabase, my.database.as_str(), true, false));
+        }
+        if let Some(ms) = sqlserver {
+            out.push((R::SqlServerDatabase, ms.database.as_str(), true, false));
+        }
+        out
+    }
+
+    /// Resolves a prepared field without examining its written contents.
+    pub(crate) fn output_slot_mut(&mut self, role: crate::LayerRole) -> Option<&mut String> {
+        match role {
+            crate::LayerRole::Streamed => self.path.as_mut(),
+            crate::LayerRole::GdalPath => Some(&mut self.gdal.as_mut()?.path),
+            crate::LayerRole::DuckDbDatabase => self.duckdb.as_mut()?.database.as_mut(),
+            crate::LayerRole::PostgisDatabase => Some(&mut self.postgis.as_mut()?.database),
+            crate::LayerRole::MysqlDatabase => Some(&mut self.mysql.as_mut()?.database),
+            crate::LayerRole::SqlServerDatabase => Some(&mut self.sqlserver.as_mut()?.database),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]

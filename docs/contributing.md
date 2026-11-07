@@ -33,6 +33,14 @@ them together. Reply on the comment that it's left for the release quality pass 
 reply with `<!-- quality-sweep -->`), so it can be found. Bugs, crashes, silent data loss and
 breaks of the rules in AGENTS.md are fixed in the pull request.
 
+Changes to saved or generated output must classify each new owning field: address, executable
+parameters, generated text or user data. Use the shared durable-output transaction and keep
+credential removal separate from execution and approval identity. Review every writer that
+consumes the owner, including packages and peer exchange. Reuse a focused regression that checks
+the written output, restoration of live fields on failure, counted notices and clean-input
+silence. Opaque data needs an explicit preservation policy; recursive removal by key name can
+destroy user data.
+
 ## Developer checks
 
 `cargo xtask ci` runs `cargo fmt --all --check`,

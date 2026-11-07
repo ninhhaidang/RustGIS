@@ -101,6 +101,8 @@ pub fn activate(origin: &str, owner: &str, method: Method, value: &str, insecure
     activate_with_random(origin, owner, method, value, insecure, fill_random)
 }
 
+/// Validates the login before requesting entropy, then installs a fresh binding and its active
+/// output redactions together; failed validation or entropy leaves the registry unchanged.
 fn activate_with_random(
     origin: &str,
     owner: &str,
@@ -129,6 +131,15 @@ fn activate_with_random(
         && !payload.is_empty()
     {
         add_redactions(&mut redactions, payload);
+        // A server may echo the raw Basic password rather than its wire encoding. The complete
+        // header was bounded above, so decoding cannot allocate beyond that input's size.
+        if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(payload)
+            && let Ok(decoded) = std::str::from_utf8(&decoded)
+            && let Some((_, password)) = decoded.split_once(':')
+            && !password.is_empty()
+        {
+            add_redactions(&mut redactions, password);
+        }
     }
     let mut entries = entries();
     // A token is the only thing that scopes a bound address to its login, so it is random. A
@@ -266,8 +277,24 @@ fn append_percent_encoded(result: &mut String, value: &str) {
 /// prevents overlapping values or a credential resembling `[redacted]` from leaking secrets.
 pub fn scrub(text: &str) -> String {
     let entries = entries();
+    if entries.is_empty() && !text.contains(rustgis_data::login_address::PREFIX) {
+        return text.to_string();
+    }
     let mut patterns: Vec<_> = entries.values().flat_map(|entry| &entry.redactions).collect();
     patterns.sort_unstable_by_key(|pattern| std::cmp::Reverse(pattern.value.expose().len()));
+    scrub_patterns(text, &patterns)
+}
+
+/// Cleans generated error text before active values can obscure its address syntax.
+/// Runtime request bindings and successful data values must not use this output projection.
+pub fn scrub_error(text: &str) -> String {
+    let unbound = scrub_patterns(text, &[]);
+    let (public, _) = rustgis_data::address::scrub_addresses(&unbound);
+    scrub(&public)
+}
+
+/// Removes runtime capability headers and the supplied active patterns in one pass.
+fn scrub_patterns(text: &str, patterns: &[&Redaction]) -> String {
     // Strip capabilities even after revocation, when there are no active credential patterns.
     let mut result = String::with_capacity(text.len());
     let mut rest = text;
@@ -526,10 +553,14 @@ mod tests {
     #[test]
     fn scrubs_header_and_basic_payload() {
         let _turn = crate::cache::turn();
-        let value = basic("scrub-user", "scrub-password");
+        let password = "scrub-password: /é";
+        let value = basic("scrub-user", password);
         let binding = activate("https://scrub-login.example", "scrub", Method::Header("Authorization".into()), &value, false).unwrap();
         let payload = value.strip_prefix("Basic ").unwrap();
         assert_eq!(scrub(&format!("{value} {payload} {}", percent_encode(&value))), "[redacted] [redacted] [redacted]");
+        assert_eq!(scrub(&format!("server echoed {password} {}", percent_encode(password))), "server echoed [redacted] [redacted]");
+        assert_eq!(scrub("scrub-user"), "scrub-user");
+        assert_eq!(scrub("a clean server message"), "a clean server message");
         let url = bind(&binding, "https://scrub-login.example/tile").unwrap();
         assert!(!scrub(&format!("failed: {url}")).contains(rustgis_data::login_address::PREFIX));
         assert_eq!(format!("{:?}", apply(&url).unwrap().unwrap()), "Applied(<redacted>)");

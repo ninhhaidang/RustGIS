@@ -14,25 +14,25 @@ use crate::{CmdResult, CommandSpec as C, Session};
 
 pub fn commands() -> Vec<C> {
     vec![
-        C::new("gp.env", "Environments", "Analyze › Geoprocessing", environments).params(
+        C::new("gp.env", "Environments", "Analyze › Geoprocessing", environments).roles(&[]).params(
             r#"{"extent"?: "view"|"full"|layer name|[minLon, minLat, maxLon, maxLat]|null, "cellSize"?: degrees|null}"#,
         ),
-        C::new("gp.gallery", "Tool Gallery", "Analyze › Portal", gallery).view().params(r#"{"kind": "ready"|"feature"|"raster"}"#),
-        C::new("model.new", "ModelBuilder", "Analyze › Geoprocessing", new_model).params(
+        C::new("gp.gallery", "Tool Gallery", "Analyze › Portal", gallery).roles(&[]).view().params(r#"{"kind": "ready"|"feature"|"raster"}"#),
+        C::new("model.new", "ModelBuilder", "Analyze › Geoprocessing", new_model).roles(&[crate::ParamRole { key: "steps", role: crate::Role::ModelSteps }, crate::ParamRole { key: "graph", role: crate::Role::ModelGraph }]).params(
             r#"{"name"?: string, "graph"?: {"nodes": [{"id", "kind": "input"|"tool"|"output", "x", "y" (optional), an input's "layer", a tool's "tool" and "params", an output's "name"}], "edges": [{"from", "fromPort": "out", "to", "toPort": a tool's layer parameter | "in" (output)}]}, "steps"?: [{"tool": id, "params": {…, "%1" for step 1's output}}], "fromHistory"?: bool, "imported"?: bool (from a file: its tools may not touch files)}"#,
         ),
-        C::new("model.save", "Save Model", "Analyze › Geoprocessing", save_model)
+        C::new("model.save", "Save Model", "Analyze › Geoprocessing", save_model).roles(&[crate::ParamRole { key: "graph", role: crate::Role::ModelGraph }])
             .params(r#"{"name": model (made if new), "graph": graph (as model.new), "rename"?: new name, "imported"?: bool (from a file: its tools may not touch files; a model from a file stays one)}"#),
-        C::new("model.run", "Run Model", "Analyze › Geoprocessing", run_model)
+        C::new("model.run", "Run Model", "Analyze › Geoprocessing", run_model).roles(&[crate::ParamRole { key: "graph", role: crate::Role::ModelGraph }])
             .params(r#"{"name"?: model (default: the last), "graph"?: run this graph instead (as model.new)}"#),
         C::new("model.validate", "Validate Model", "Analyze › Geoprocessing", |s, p| {
             let (_, g, _) = model_graph(s, p)?;
             let problems = crate::model::validate(s, &g);
             Ok(json!({"ok": problems.is_empty(), "problems": problems}))
-        })
+        }).roles(&[crate::ParamRole { key: "graph", role: crate::Role::ModelGraph }])
         .view()
         .params(r#"{"name"?: model (default: the last), "graph"?: graph}"#),
-        C::new("model.export", "Export Model", "Analyze › Geoprocessing", export_model)
+        C::new("model.export", "Export Model", "Analyze › Geoprocessing", export_model).roles(&[crate::ParamRole { key: "graph", role: crate::Role::ModelGraph }])
             .view()
             .params(r#"{"name"?: model (default: the last), "graph"?: export this graph instead, "path"?: "*.model.json" (else the file's text is returned)}"#),
         C::new("model.remove", "Delete Model", "Browser", |s, p| {
@@ -41,33 +41,33 @@ pub fn commands() -> Vec<C> {
             s.project.models.retain(|m| !m.name.eq_ignore_ascii_case(n));
             s.trusted_models.remove(&n.to_ascii_lowercase());
             if s.project.models.len() == before { Err(format!("no model '{n}'")) } else { Ok(Value::Null) }
-        })
+        }).roles(&[])
         .params(r#"{"name": model}"#),
-        C::new("script.run", "Run Script", "Analyze › Geoprocessing", run_script)
+        C::new("script.run", "Run Script", "Analyze › Geoprocessing", run_script).roles(&[crate::ParamRole { key: "script", role: crate::Role::Script }])
             .params(r#"{"script": "one command per line: id {json}; # comments"}"#),
-        C::new("raster.function", "Raster Functions", "Analyze › Raster", raster_function).params(
+        C::new("raster.function", "Raster Functions", "Analyze › Raster", raster_function).roles(&[]).params(
             r#"{"layer": raster, "function": "slope"|"aspect"|"hillshade"|"ndvi"|"bandMath"|"remap"|"threshold"|"resample", "band"?: 1-based, "expression"?: "(b4-b3)/(b4+b3)", "ranges"?: [[lo, hi, value]], "value"?: number, "keep"?: bool (remap: keep unmatched cells), "nir"?, "red"?: band numbers (ndvi; default 4 and 3), "azimuth"?, "altitude"?, "zFactor"?, "target"?: raster (resample onto its grid), "name"?: output, "ran"?: (internal: a raster the app has worked out)}"#,
         ),
-        C::new("raster.functionChain", "Function Editor", "Analyze › Raster", function_chain)
+        C::new("raster.functionChain", "Function Editor", "Analyze › Raster", function_chain).roles(&[])
             .params(r#"{"layer": raster, "steps": [{"function", …}], "name"?: output, "ran"?: (internal: a raster the app has worked out)}"#),
-        C::new("analysis.suitability", "Suitability Modeler", "Analyze › Workflows", suitability).params(
+        C::new("analysis.suitability", "Suitability Modeler", "Analyze › Workflows", suitability).roles(&[]).params(
             r#"{"criteria": [{"layer": raster, "band"?: 1-based, "ranges": [[lo, hi, score]], "weight": number}], "name"?: output, "ran"?: (internal: a raster the app has worked out)}"#,
         ),
-        C::new("analysis.viewshed", "Visibility Analysis", "Analyze › Workflows", viewshed)
+        C::new("analysis.viewshed", "Visibility Analysis", "Analyze › Workflows", viewshed).roles(&[])
             .params(r#"{"layer": elevation raster, "lon", "lat", "band"?: 1-based, "height"?: observer metres, "radius"?: metres, "name"?: output, "ran"?: (internal: a viewshed the app has worked out)}"#),
-        C::new("analysis.lineOfSight", "Line Of Sight", "Analyze › Workflows", line_of_sight).params(
+        C::new("analysis.lineOfSight", "Line Of Sight", "Analyze › Workflows", line_of_sight).roles(&[]).params(
             r#"{"layer": elevation raster, "from": [lon, lat], "to": [lon, lat], "band"?: 1-based, "observerHeight"?: m, "targetHeight"?: m, "name"?: output}"#,
         ),
-        C::new("analysis.interpolate", "Geostatistical Wizard", "Analyze › Workflows", interpolate).params(
+        C::new("analysis.interpolate", "Geostatistical Wizard", "Analyze › Workflows", interpolate).roles(&[]).params(
             r#"{"layer": points, "field": numeric field, "cellSize"?: degrees, "power"?: 2, "neighbors"?: 12, "name"?: output, "ran"?: (internal: a surface the app has worked out)}"#,
         ),
-        C::new("analysis.route", "Network Analysis", "Analyze › Workflows", route).params(
+        C::new("analysis.route", "Network Analysis", "Analyze › Workflows", route).roles(&[]).params(
             r#"{"layer": line network, "from": [lon, lat], "to": [lon, lat], "costField"?: field, "snapDistance"?: metres, "name"?: output}"#,
         ),
-        C::new("analysis.neighborhood", "Neighborhood Explorer", "Analyze › Workflows", neighborhood)
+        C::new("analysis.neighborhood", "Neighborhood Explorer", "Analyze › Workflows", neighborhood).roles(&[])
             .view()
             .params(r#"{"lon", "lat", "radius": metres, "layers"?: [names], "select"?: bool}"#),
-        C::new("analysis.simulate", "Simulation", "Analyze › Workflows", simulate).params(
+        C::new("analysis.simulate", "Simulation", "Analyze › Workflows", simulate).roles(&[]).params(
             r#"{"layer": polygons, "count"?: points per polygon, "seed"?: number, "field"?: numeric field (count per polygon from it, scaled by "rate"), "rate"?: number, "name"?: output}"#,
         ),
         C::new("data.profile", "Data Engineering", "Analyze › Workflows", |s, p| {
@@ -77,15 +77,15 @@ pub fn commands() -> Vec<C> {
                 .map(|f| json!({"field": f.name, "type": f.ty, "count": f.count, "nulls": f.nulls, "distinct": f.distinct, "truncated": f.truncated, "min": f.min, "max": f.max, "mean": f.mean, "top": f.top}))
                 .collect();
             Ok(json!({"layer": ds.name, "features": ds.features.len(), "fields": rows}))
-        })
+        }).roles(&[])
         .view()
         .params(r#"{"layer"?}"#),
-        C::new("data.explore", "Exploratory Analysis", "Analyze › Workflows", explore)
+        C::new("data.explore", "Exploratory Analysis", "Analyze › Workflows", explore).roles(&[])
             .view()
             .params(r#"{"layer"?, "fields"?: [numeric fields], "bins"?: number}"#),
-        C::new("data.similar", "Embeddings", "Analyze › Workflows", similar)
+        C::new("data.similar", "Embeddings", "Analyze › Workflows", similar).roles(&[])
             .params(r#"{"layer"?, "row"?: number (the selected feature when omitted), "fields"?: [numeric fields], "count"?: number, "select"?: bool}"#),
-        C::new("data.convert", "Data Interop", "Analyze › Workflows", convert)
+        C::new("data.convert", "Data Interop", "Analyze › Workflows", convert).roles(&[])
             .view()
             .params(r#"{"layer"?, "format": "geojson"|"csv"|"kml"|"gpx"|"wkt", "path"?: file (the text is returned without one), "nameField"?: field}"#),
     ]
@@ -632,17 +632,10 @@ fn save_model(s: &mut Session, p: &Value) -> CmdResult {
 
 /// A model as a `*.model.json` file: written to `path`, or its text returned.
 fn export_model(s: &mut Session, p: &Value) -> CmdResult {
-    let (name, mut g, _) = model_graph(s, p)?;
-    // A file outlives the session: its steps keep their addresses, not this session's logins.
-    let mut addresses = Vec::new();
-    for node in &mut g.nodes {
-        crate::project::recorded_addresses(&mut node.params, &mut addresses);
-        if let Some(layer) = &mut node.layer {
-            addresses.push(layer);
-        }
-    }
-    crate::project::clear_login_bindings(addresses);
-    let text = serde_json::to_string_pretty(&crate::model::to_file(&name, &g)).map_err(|e| e.to_string())?;
+    let (name, g, _) = model_graph(s, p)?;
+    let (text, report) =
+        crate::durable::output_owned(g, |g| serde_json::to_string_pretty(&crate::model::to_file(&name, g)).map_err(|e| e.to_string()))?;
+    crate::durable::notify(s, &report);
     let file: String = name.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
     match ps(p, "path") {
         Some(path) => {
@@ -774,21 +767,10 @@ pub fn refused_in_script(id: &str) -> bool {
 pub fn script_commands(script: &str) -> Result<Vec<(usize, String, Value)>, String> {
     let mut out = Vec::new();
     for (n, line) in script.lines().enumerate().take(MAX_SCRIPT_LINES) {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
+        if let Some(parsed) = crate::script_line(line) {
+            let (id, params) = parsed.map_err(|e| format!("line {}: {e}", n + 1))?;
+            out.push((n + 1, id, params));
         }
-        let (id, rest) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
-        let id = id.trim_end_matches('=');
-        let params: Value = if rest.trim().is_empty() {
-            Value::Null
-        } else {
-            serde_json::from_str(rest.trim()).map_err(|e| format!("line {}: {e}", n + 1))?
-        };
-        if refused_in_script(id) {
-            return Err(format!("line {}: '{id}' can't run in a script", n + 1));
-        }
-        out.push((n + 1, id.to_string(), params));
     }
     Ok(out)
 }

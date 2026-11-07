@@ -10,18 +10,18 @@ use crate::{CmdResult, CommandSpec as C, GpRecord, Session};
 
 pub fn commands() -> Vec<C> {
     vec![
-        C::new("gp.run", "Run Tool", "Analyze › Geoprocessing", run).when(need_layers).params(r#"{"tool": tool id, "params": {...} (a layer by name; a standalone table by name or id)}"#),
-        C::new("gp.spatialJoin", "Spatial Join", "Analyze › Overlay", spatial_join)
+        C::new("gp.run", "Run Tool", "Analyze › Geoprocessing", run).roles(&[crate::ParamRole { key: "params", role: crate::Role::ToolParams }]).when(need_layers).params(r#"{"tool": tool id, "params": {...} (a layer by name; a standalone table by name or id)}"#),
+        C::new("gp.spatialJoin", "Spatial Join", "Analyze › Overlay", spatial_join).roles(&[])
             .when(need_layers)
             .params(
                 r#"{"target": layer, "join": layer, "match"?: "Intersects" (default) | "Contains" | "Within", "operation"?: "Join one to one" (default) | "Join one to many", "keepAll"?: "Keep all" (default) | "Keep only matching", "prefix"?: "join_", "output"?: text}"#,
             ),
-        C::new("gp.zonalStats", "Zonal Statistics", "Analyze › Raster", zonal_stats)
+        C::new("gp.zonalStats", "Zonal Statistics", "Analyze › Raster", zonal_stats).roles(&[])
             .when(need_layers)
             .params(
                 r#"{"raster": raster, "polygons": polygon layer, "bands"?: [1-based band numbers] or single band (default 1), "stats"?: ["mean", "min", "max", "sum", "count", "stddev"] or "all" (default "all"), "prefix"?: text, "output"?: text}"#,
             ),
-        C::new("gp.bufferPoint", "Buffer A Point", "Analyze › Geoprocessing", buffer_point).params(
+        C::new("gp.bufferPoint", "Buffer A Point", "Analyze › Geoprocessing", buffer_point).roles(&[]).params(
             r#"{"lon": number, "lat": number, "distance": number, "units"?: "Kilometers" (default) | "Meters" | "Miles" | "Feet", "name"?: output}"#,
         ),
         C::new("gp.tools", "Tools", "Analyze › Geoprocessing", |_, _| {
@@ -33,28 +33,28 @@ pub fn commands() -> Vec<C> {
                     })
                     .collect(),
             ))
-        })
+        }).roles(&[])
         .view(),
-        C::new("gp.geolibre", "GeoLibre Tools", "Analyze › Geoprocessing", |_, _| Ok(geolibre_status())).view(),
+        C::new("gp.geolibre", "GeoLibre Tools", "Analyze › Geoprocessing", |_, _| Ok(geolibre_status())).roles(&[]).view(),
         C::new("gp.installGeolibre", "Install GeoLibre Tools", "Analyze › Geoprocessing", |_, _| {
             let path = install_geolibre(&|_, _| {})?;
             #[cfg(all(feature = "geolibre", not(target_arch = "wasm32")))]
             rustgis_geolibre::set_runner(Some(std::path::PathBuf::from(&path)))?;
             Ok(json!({"path": path, "status": geolibre_status()}))
-        })
+        }).roles(&[])
         .view(),
-        C::new("gp.uninstallGeolibre", "Uninstall GeoLibre Tools", "Analyze › Geoprocessing", |_, _| uninstall_geolibre()).view(),
-        C::new("gp.finish", "Finish Tool Run", "Analyze › Geoprocessing", finish)
+        C::new("gp.uninstallGeolibre", "Uninstall GeoLibre Tools", "Analyze › Geoprocessing", |_, _| uninstall_geolibre()).roles(&[]).view(),
+        C::new("gp.finish", "Finish Tool Run", "Analyze › Geoprocessing", finish).roles(&[])
             .params(r#"{"id": a finished run (the browser's GeoLibre tools run asynchronously)}"#),
-        C::new("gp.fileDelivered", "Finish File Export", "Analyze › Geoprocessing", file_delivered)
+        C::new("gp.fileDelivered", "Finish File Export", "Analyze › Geoprocessing", file_delivered).roles(&[])
             .params(r#"{"id": pending file id, "error"?: download failure message}"#),
-        C::new("gp.setGeolibre", "Locate GeoLibre Runner", "Analyze › Geoprocessing", set_geolibre)
+        C::new("gp.setGeolibre", "Locate GeoLibre Runner", "Analyze › Geoprocessing", set_geolibre).roles(&[])
             .view()
             .params(r#"{"path"?: "the geolibre executable (empty: look in the usual places)"}"#),
         C::new("gp.clearHistory", "Clear History", "Analyze › Geoprocessing › History", |s, _| {
             s.project.gp_history.clear();
             Ok(Value::Null)
-        }),
+        }).roles(&[]),
     ]
 }
 
@@ -1225,6 +1225,7 @@ fn queue_file(s: &mut Session, file_name: String, bytes: Vec<u8>, record: GpReco
     Ok(json!({"pending": true, "download": id, "file": file_name}))
 }
 
+/// Records a completed file delivery through the generated-message history seam.
 fn file_delivered(s: &mut Session, p: &Value) -> CmdResult {
     let id = p.get("id").and_then(Value::as_u64).ok_or("id is required")?;
     let i = s.file_outputs.iter().position(|f| f.id == id).ok_or("no pending file with that id")?;
@@ -1244,7 +1245,7 @@ fn file_delivered(s: &mut Session, p: &Value) -> CmdResult {
         s.notify(message.clone(), !file.record.ok);
     }
     let out = json!({"file": file.file_name, "delivered": file.record.ok, "messages": file.record.messages});
-    s.project.gp_history.push(file.record.scrubbed());
+    s.push_gp_record(file.record);
     if s.project.gp_history.len() > 500 {
         s.project.gp_history.remove(0);
     }
@@ -1336,10 +1337,17 @@ fn apply(s: &mut Session, ran: Ran, params: Value, res: Result<rustgis_analysis:
     let at = started / 1000;
     let mut result = match res {
         Err(e) => {
-            s.project.gp_history.push(
-                GpRecord { tool: name, id, params, command, at, ok: false, messages: vec![e.clone()], millis, outputs: Vec::new() }
-                    .scrubbed(),
-            );
+            s.push_gp_record(GpRecord {
+                tool: name,
+                id,
+                params,
+                command,
+                at,
+                ok: false,
+                messages: vec![e.clone()],
+                millis,
+                outputs: Vec::new(),
+            });
             return Err(e);
         }
         Ok(r) => r,
@@ -1361,10 +1369,17 @@ fn apply(s: &mut Session, ran: Ran, params: Value, res: Result<rustgis_analysis:
                 if let Err(error) = write_file_output(s, std::path::Path::new(path), &bytes) {
                     let error = format!("{path}: {error}");
                     result.messages.push(error.clone());
-                    s.project.gp_history.push(
-                        GpRecord { tool: name, id, params, command, at, ok: false, messages: result.messages, millis, outputs: Vec::new() }
-                            .scrubbed(),
-                    );
+                    s.push_gp_record(GpRecord {
+                        tool: name,
+                        id,
+                        params,
+                        command,
+                        at,
+                        ok: false,
+                        messages: result.messages,
+                        millis,
+                        outputs: Vec::new(),
+                    });
                     return Err(error);
                 }
                 json!({"file": path, "bytes": bytes.len()})
@@ -1445,9 +1460,7 @@ fn apply(s: &mut Session, ran: Ran, params: Value, res: Result<rustgis_analysis:
         _ => Vec::new(),
     };
     let outputs = ids.iter().filter_map(|id| s.map().layer(*id).map(|l| l.name.clone())).collect();
-    s.project
-        .gp_history
-        .push(GpRecord { tool: name, id, params, command, at, ok: true, messages: result.messages, millis, outputs }.scrubbed());
+    s.push_gp_record(GpRecord { tool: name, id, params, command, at, ok: true, messages: result.messages, millis, outputs });
     if s.project.gp_history.len() > 500 {
         s.project.gp_history.remove(0);
     }

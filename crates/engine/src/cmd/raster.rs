@@ -33,12 +33,12 @@ pub(crate) fn need_raster(s: &Session) -> Option<&'static str> {
 
 pub fn commands() -> Vec<C> {
     vec![
-        C::new("layer.addDataBytes", "Add Data (from file contents)", "Home › Add", add_bytes)
+        C::new("layer.addDataBytes", "Add Data (from file contents)", "Home › Add", add_bytes).roles(&[])
             .params(r#"{"fileName": "name.tif|.tiff|.asc|.geojson|.csv|.zip|.kml|.kmz|.gpx|.parquet|.fgb|.gpkg|.mbtiles|.jp2|.j2k (JPEG 2000: desktop, through GDAL)", "data": base64, "zoom"?: bool, "layer"?: "one layer of a zip, KML or GPX by name", "name"?: text, "x"?, "y"?, "wkt"?, "crs"?, "delimiter"?, "paperSpace"?, "stream"?, "as"? (as layer.addData)}"#),
-        C::new("raster.symbology", "Symbology", "Style › Rendering", symbology).when(need_raster).params(
+        C::new("raster.symbology", "Symbology", "Style › Rendering", symbology).roles(&[]).when(need_raster).params(
             r#"{"layer"?, "type": "stretch"|"rgb"|"classify"|"unique"|"colormap"|"shadedRelief", "band"?: 1.., "ramp"?, "invert"?: bool, "classes"?: 1..32, "method"?, "azimuth"?, "altitude"?, "zFactor"?, "grey"?: bool (shadedRelief without its colour ramp)}"#,
         ),
-        C::new("raster.stretch", "Stretch Type", "Style › Rendering", stretch)
+        C::new("raster.stretch", "Stretch Type", "Style › Rendering", stretch).roles(&[])
         .when(need_raster)
         .params(r#"{"layer"?, "type": "none"|"minMax"|"custom"|"percentClip"|"standardDeviation"|"histogramEqualize", "low"?: %, "high"?: %, "n"?: deviations, "min"?, "max"?: custom bounds in the data's units, a number for every band or [red, green, blue] on an RGB layer, null for a band's own (a missing one is the range now drawn; the layer's own on one band), "like"?: raster layer (instead of type: that layer's stretch as fixed bounds, so tiles match at their joins)}"#),
         C::new("raster.dra", "DRA", "Style › Rendering", |s, p| {
@@ -47,10 +47,10 @@ pub fn commands() -> Vec<C> {
                 rl.style.dra = on.unwrap_or(!rl.style.dra);
                 Ok(())
             })
-        })
+        }).roles(&[])
         .when(need_raster)
         .params(r#"{"layer"?, "on"?: bool}"#),
-        C::new("raster.mask", "Mask Values", "Style › Rendering", mask).when(need_raster).params(
+        C::new("raster.mask", "Mask Values", "Style › Rendering", mask).roles(&[]).when(need_raster).params(
             r#"{"layer"?, "values"?: [numbers] or "0, 254, 255" (drawn as no data; [] for none), "min"?, "max"?: hide values outside this range (null for no bound), "inside"?: bool (hide those inside it instead), "clear"?: bool}"#,
         ),
         C::new("raster.resampling", "Resampling Type", "Style › Rendering", |s, p| {
@@ -60,10 +60,10 @@ pub fn commands() -> Vec<C> {
                 rl.style.resampling = r;
                 Ok(())
             })
-        })
+        }).roles(&[])
         .when(need_raster)
         .params(r#"{"layer"?, "type": "nearest"|"bilinear"}"#),
-        C::new("raster.bands", "Band Combination", "Style › Rendering", bands)
+        C::new("raster.bands", "Band Combination", "Style › Rendering", bands).roles(&[])
             .when(need_raster)
             .params(r#"{"layer"?, "red"?: 1.., "green"?: 1.., "blue"?: 1.., "preset"?: "natural"|"colorInfrared"}"#),
         C::new("raster.enhance", "Enhancement", "Style › Enhancement", |s, p| {
@@ -80,14 +80,14 @@ pub fn commands() -> Vec<C> {
                 }
                 Ok(())
             })
-        })
+        }).roles(&[])
         .when(need_raster)
         .params(r#"{"layer"?, "brightness"?: -100..100, "contrast"?: -100..100, "gamma"?: 0.1..10}"#),
-        C::new("raster.setDefaultStyle", "Save as Default Raster Style", "Style › Rendering", set_default_style).view().params(
+        C::new("raster.setDefaultStyle", "Save as Default Raster Style", "Style › Rendering", set_default_style).roles(&[]).view().params(
             r#"{"fromLayer"?: bool (the active or named layer's colour ramp stretch; the settings apply to every raster added later that would be a grey stretch, opened files and analysis results alike), "layer"?, "ramp"?, "invert"?: bool, "stretch"?: "none"|"minMax"|"percentClip"|"standardDeviation"|"histogramEqualize", "low"?, "high"?: %, "n"?: deviations, "resampling"?: "nearest"|"bilinear", "reset"?: bool (back to the black-to-white grey stretch)}"#,
         ),
-        C::new("raster.info", "Raster Information", "Data › Information", info).view().when(need_raster).params(r#"{"layer"?}"#),
-        C::new("share.exportRaster", "Export Raster", "Data › Information", |s, p| super::exports::write_here(s, p, "share.exportRaster")).view().when(need_raster).params(
+        C::new("raster.info", "Raster Information", "Data › Information", info).roles(&[]).view().when(need_raster).params(r#"{"layer"?}"#),
+        C::new("share.exportRaster", "Export Raster", "Data › Information", |s, p| super::exports::write_here(s, p, "share.exportRaster")).roles(&[]).view().when(need_raster).params(
             r#"{"layer"?, "path": "*.tif", "band"?: 1.. (rasters that aren't colour ones; a colour raster writes its colour bands), "cog"?: bool (a cloud-optimised GeoTIFF: 512 px tiles, Deflate, overviews; default false, an untiled GeoTIFF)}"#,
         ),
     ]

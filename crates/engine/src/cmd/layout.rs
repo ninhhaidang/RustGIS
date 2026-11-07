@@ -25,26 +25,26 @@ const MAX_LAYOUT: u64 = 64 << 20;
 
 pub fn commands() -> Vec<C> {
     vec![
-        C::new("layout.new", "New Layout", "Home › Project", new_layout).params(
+        C::new("layout.new", "New Layout", "Home › Project", new_layout).roles(&[]).params(
             r#"{"name"?: string, "page"?: "letter"|"legal"|"tabloid"|"a5"|"a4"|"a3"|"a2"|"a1"|"a0", "orientation"?: "landscape"|"portrait", "width"?: mm, "height"?: mm, "template"?: "map" (frame, title, legend, north arrow, scale bar; the default)|"blank"}"#,
         ),
-        C::new("layout.publication", "New Publication Layout", "Publish › Layout", publication).params(
+        C::new("layout.publication", "New Publication Layout", "Publish › Layout", publication).roles(&[]).params(
             r#"{"profile"?: "a4" (the default) | "a3" | "a2" (a sheet turned to portrait or landscape, whichever the area's map comes out larger on: its extent east to west against north to south, on the map's projection) | "a4-portrait"|"a4-landscape"|"a3-portrait"|"a3-landscape"|"a2-portrait"|"a2-landscape" (a sheet: frame, title, subtitle, the map, a boxed footer)|"figure-1col" (90 mm)|"figure-1.5col" (140 mm)|"figure-2col" (190 mm)|"thesis-full" (160 × 225 mm)|"thesis-half" (160 × 110 mm) (a figure: the map edge to edge, its title and sources left to the caption), "extent"?: [west, south, east, north] in degrees that must fit (default: the map view), "name"?: string, "title"?: text, "subtitle"?: text, "sources"?: text | [texts], "reference"?: text | [texts] (default: the projection, datum and graticule), "note"?: text, "author"?: text (default: "Made with RustGIS · {date}"; "" or [] for none), "headings"?: [the sources' heading, the reference's heading, an editorial column's heading], "locator"?: "globe" (a globe with the area outlined; the default on sheets) | "inset" (the surrounding region, the area outlined) | "none" (the default on figures), "decimal"?: "." (the default) | "," (graticule, scale bar and colorbar numbers and {scale} with a decimal comma: 0,05 and 1:6.300.000), "style"?: "classic" (the default: the title over the map, the footer under it) | "banner" (the title and subtitle in a band of the accent colour across the top) | "panel" (the map at the left, a panel at the right with the title, locator, legend, sources and reference) | "editorial" (the title large in serif, a column at the right with the note, the locator and the legend) | "modular" (cards on a light page: the map, the locator and the legend each in one, the sources and reference in tinted ones) | "poster" (the page in the accent colour, the title in light text, the map in a light card, the footer in darker blocks) (a sheet's arrangement; figures leave it to the caption), "accent"?: a colour as #RRGGBB (the style's colour: its band, panel tint, headings and rules, a poster's page), "arrangement"?: "best" (the default: the favourite and each arrangement by name laid out, the one moving the least area off its corners kept, then the one leaving the least over the data, the favourite on a tie) | "favourite" (layout.arrangement's) | an arrangement by name or corner by corner, as layout.arrangement takes (the corners the locator, north arrow, legend and scale bar are at home in; one covering what the map draws there still moves)} → a new layout of the active map at a round scale, its texts wrapped to their boxes; {projection}, {datum} and {grid} in the texts are filled from the map"#,
         ),
-        C::new("layout.arrangement", "Favourite Arrangement", "Publish › Layout", arrangement).view().params(
+        C::new("layout.arrangement", "Favourite Arrangement", "Publish › Layout", arrangement).roles(&[]).view().params(
             r#"{"favourite"?: "classic" (the locator top left, the north arrow top right, the legend bottom left, the scale bar bottom right) | "mirrored" | "legendRight" | "legendTop" | {"locator", "northArrow", "legend", "scaleBar": "top-left"|"top-right"|"bottom-left"|"bottom-right", each a corner of its own}} → the favourite arrangement of publication layouts (kept with the app's preferences), its corners and the arrangements by name; with no favourite given, it is only shown"#,
         ),
         C::new("layout.activate", "Open Layout", "Browser", |s, p| {
             let i = index(s, &by_name(p))?;
             s.active_layout = Some(i);
             Ok(json!({"layout": i}))
-        })
+        }).roles(&[])
         .view()
         .params(r#"{"name": string | "layout": name|index}"#),
         C::new("layout.close", "Show Map", "Browser", |s, _| {
             s.active_layout = None;
             Ok(Value::Null)
-        })
+        }).roles(&[])
         .view(),
         C::new("layout.remove", "Delete Layout", "Browser", |s, p| {
             let i = index(s, &by_name(p))?;
@@ -56,7 +56,7 @@ pub fn commands() -> Vec<C> {
                 _ => None,
             };
             Ok(Value::Null)
-        })
+        }).roles(&[])
         .params(r#"{"name"?: string, "layout"?: name|index (instead of name; default: the open layout)}"#),
         C::new("layout.rename", "Rename Layout", "Browser", |s, p| {
             let name = ps(p, "newName").map(str::trim).filter(|n| !n.is_empty()).ok_or("newName is required")?;
@@ -67,7 +67,7 @@ pub fn commands() -> Vec<C> {
                 l.name = unique.clone();
             }
             Ok(json!({"name": unique}))
-        })
+        }).roles(&[])
         .params(r#"{"name"?: string, "layout"?: name|index (instead of name; default: the open layout), "newName": string}"#),
         // A copy of a layout with all its elements (#288), right after it and open. Element ids
         // are per layout, so legends and scale bars stay on their frames, which show the same maps.
@@ -79,27 +79,27 @@ pub fn commands() -> Vec<C> {
             s.project.layouts.insert(i + 1, l);
             s.active_layout = Some(i + 1);
             Ok(json!({"name": name, "layout": i + 1}))
-        })
+        }).roles(&[])
         .params(r#"{"name"?: string, "layout"?: name|index (instead of name; default: the open layout), "newName"?: string (default: "<layout> copy")}"#),
-        C::new("layout.page", "Page Size", "Publish › Page Setup", page).params(
+        C::new("layout.page", "Page Size", "Publish › Page Setup", page).roles(&[]).params(
             r#"{"layout"?, "page"?: page id, "orientation"?: "landscape"|"portrait", "width"?: mm, "height"?: mm, "decimal"?: "."|"," (the decimal mark of the numbers its surrounds print)}"#,
         ),
-        C::new("layout.addFrame", "Map Frame", "Publish › Map Frames", add_frame).params(
+        C::new("layout.addFrame", "Map Frame", "Publish › Map Frames", add_frame).roles(&[]).params(
             r#"{"layout"?, "shape"?: "rectangle"|"circle"|"ellipse"|"polygon"|"lasso", "points"?: [[u, v], …] (polygon/lasso, 0..1 across the frame), "map"?: name, "x"?, "y"?, "w"?, "h"?: mm}"#,
         ),
-        C::new("layout.addElement", "Add Element", "Publish › Map Surrounds", add_element).params(
+        C::new("layout.addElement", "Add Element", "Publish › Map Surrounds", add_element).roles(&[]).params(
             r##"{"layout"?, "kind": "northArrow"|"scaleBar"|"legend"|"colorbar"|"text"|"dynamicText"|"picture"|"table"|"chart"|"rectangle" (a neatline framing the page unless any of x, y, w, h is given)|"ellipse"|"circle"|"line"|"arrow"|"extentIndicator"|"grid", "frame"?: element id (default: the first map frame), "of"?: frame id (extentIndicator, which also takes "color" and "width" in points, default red and 2), "text"?, "size"?, "color"?: "#RRGGBB"|"#RRGGBBAA" (text, dynamicText, line, arrow, rectangle, ellipse, circle: its outline; extentIndicator; grid; scaleBar; refused for other kinds), "bold"?: bool (text), "italic"?: bool, "align"?: "left"|"center"|"right", "letterSpacing"?: points, -5 to 50 (text, dynamicText), "font"?: "sans"|"serif"|an installed font family's name, as labels.fonts lists them (text, dynamicText; a family not installed here is drawn in its fallback, and a serif where none is installed in the sans, with a warning; refused for other kinds), "fallback"?: "sans"|"serif" (a named font's, where it isn't installed; default its own class, else sans), "title"?: legend title (default "Legend"), "allClasses"?: bool (legend: every class, not only those the frame draws), "hideOther"?: bool (legend: leave out <all other values>), "exclude"?: [layer names] (legend: layers it leaves out though the map draws them), "orientation"?: "horizontal"|"vertical" (colorbar), "ticks"?: 2..21 (colorbar: labelled values, ends included), "tickSide"?: "below"|"above"|"right"|"left" (colorbar), "reverse"?: bool (colorbar: high values first), "fill"?: "#RRGGBBAA" (rectangle, ellipse, circle, northArrow; scaleBar: the alternating bar's light divisions, default white; refused for other kinds), "width"?: outline width in points (rectangle, ellipse, circle; 0 for none) or line width in points (line, grid), "radius"?: mm, 0 to 50 (rectangle: rounded corners), "dir"?: "horizontal"|"vertical"|"falling"|"rising" (line), "head"?: "none"|"end"|"start"|"both" (line; default "end" for an arrow), "angle"?: degrees anticlockwise from pointing right, centred on the page unless x or y is given (line, arrow; it sets the box and the direction, so w, h and dir are not used with it), "length"?: mm (line, arrow), "image"?: base64, "path"?: picture file, "layer"?: (table, chart; colorbar: a raster layer, default the top visible one), "field"?, "label"?, "rows"?, "step"?: degrees, or a measured grid's units (metres) (0 picks one), "type"?: "graticule" (latitudes and longitudes, default) | "measured" (eastings and northings in a projected system, as ArcGIS Pro's measured grid), "crs"?: a measured grid's coordinate system: EPSG:25832, WKT or a PROJ string ("" or none: the map's when projected, else the UTM zone at the frame's centre), "short"?: bool (a measured grid's labels as their kilometres' last two digits, 43 for 543000), "labels"?: bool, "style"?: "lines"|"ticks"|"linesAndTicks" (grid) or "classic"|"compass"|"triangle"|"star" (northArrow) or "alternating"|"stepped"|"line" (scaleBar), "tickLength"?: mm, "format"?: "decimal"|"dms", "hemisphere"?: bool (N/S/E/W rather than a sign), "edges"?: ["top","bottom","left","right"] (labelled edges), "labelOrientation"?: "horizontal"|"vertical", "off"?: bool (grid; options not given keep the grid's), "outline"?: "#RRGGBB" (northArrow, or a rectangle's, ellipse's or circle's outline instead of color; refused for other kinds), "units"?: "auto"|"kilometers"|"meters"|"miles"|"feet", "divisions"?: 1..10 (scaleBar, whose "color" is its lines, dark divisions and labels, default #222222), "x"?, "y"?, "w"?, "h"?: mm}"##,
         ),
-        C::new("layout.update", "Element Properties", "Publish › Element", update).params(
+        C::new("layout.update", "Element Properties", "Publish › Element", update).roles(&[]).params(
             r##"{"layout"?, "element": id, "x"?, "y"?, "w"?, "h"?: mm, "name"?, "visible"?, "locked"?: bool (a locked element takes no other change until unlocked; "locked": false unlocks it and may come with changes), "text"?, "size"?, "color"? (text, line, rectangle, ellipse: its outline; scaleBar: its lines, dark divisions and labels; refused for other elements), "bold"?, "italic"?, "align"?, "letterSpacing"?, "font"?: "sans"|"serif"|an installed font family's name, "fallback"?: "sans"|"serif" (text, as in layout.addElement; refused for other elements), "title"?, "allClasses"?: bool (legend), "hideOther"?: bool (legend), "exclude"?: [layer names] (legend; [] lists every layer again), "orientation"?, "ticks"?, "tickSide"?, "reverse"?: (colorbar), "style"?: (northArrow, scaleBar), "fill"?, "outline"? (northArrow, rectangle, ellipse, and a scaleBar's fill; refused for other elements; for a rectangle or ellipse, color sets it when outline is not given; a scaleBar's fill is the alternating bar's light divisions), "radius"?: mm (rectangle: rounded corners), "width"?: points (rectangle, ellipse, line), "dir"?, "head"?, "angle"?, "length"? (line: turned or sized about its centre, then moved by any x or y; dir does not come with angle or length), "units"?, "divisions"? (scaleBar), "map"?, "scale"?, "center"?: [lon, lat], "bearing"?: degrees clockwise from north, "pitch"?: degrees of tilt (0 to 85), "grid"?: {grid options as in layout.addElement} | false (map frame), "extentIndicator"?: {"color"?, "width"?: points} | false (map frame: its extent indicator's style, or removes it), "layer"?: (colorbar: "" for the top visible raster), "field"?, "rows"?}"##,
         ),
-        C::new("layout.guides", "Guides", "Publish › Page Setup", guides).params(
+        C::new("layout.guides", "Guides", "Publish › Page Setup", guides).roles(&[]).params(
             r#"{"layout"?, "x"?: [mm] (vertical guides, from the page's left edge), "y"?: [mm] (horizontal guides, from its top edge), "clear"?: bool (remove every guide first)}"#,
         ),
-        C::new("layout.duplicateElement", "Duplicate Element", "Publish › Element", duplicate_element).params(
+        C::new("layout.duplicateElement", "Duplicate Element", "Publish › Element", duplicate_element).roles(&[]).params(
             r#"{"layout"?, "element": id, "dx"?, "dy"?: mm (offset of the copy, default 5)}"#,
         ),
-        C::new("layout.arrange", "Arrange Element", "Publish › Element", arrange).params(
+        C::new("layout.arrange", "Arrange Element", "Publish › Element", arrange).roles(&[]).params(
             r#"{"layout"?, "element": id, "to": "front"|"forward"|"backward"|"back" (later elements are drawn over earlier ones: front puts it over every other, forward over the one above it, backward under the one below, back under every other)}"#,
         ),
         C::new("layout.removeElement", "Delete Element", "Publish › Element", |s, p| {
@@ -110,18 +110,18 @@ pub fn commands() -> Vec<C> {
                 unlocked(l, locked)?;
             }
             if l.remove(id) { Ok(Value::Null) } else { Err(format!("no element {id}")) }
-        })
+        }).roles(&[])
         .params(r#"{"layout"?, "element": id}"#),
-        C::new("layout.frameZoom", "Zoom Frame", "Publish › Map Frame", frame_zoom).params(
+        C::new("layout.frameZoom", "Zoom Frame", "Publish › Map Frame", frame_zoom).roles(&[]).params(
             r#"{"layout"?, "element"?: frame id, "frame"?: (as element), "to"?: "view" (the map view's extent, bearing and pitch; the default)|"full"|"selection"|"layer", "layer"?}"#,
         ),
-        C::new("layout.series", "Map Series", "Publish › Map Frames", series).params(
+        C::new("layout.series", "Map Series", "Publish › Map Frames", series).roles(&[]).params(
             r#"{"layout"?, "layer": index layer, "nameField"?: string, "frame"?: id, "margin"?: 0..1, "off"?: bool}"#,
         ),
-        C::new("layout.seriesPage", "Map Series Page", "Publish › Map Frames", series_page).params(r#"{"layout"?, "page": number|"next"|"previous"}"#),
-        C::new("layout.seriesRefresh", "Refresh Map Series", "Publish › Map Frames", |s, p| series_page(s, &json!({"layout": p.get("layout"), "page": "current"})))
+        C::new("layout.seriesPage", "Map Series Page", "Publish › Map Frames", series_page).roles(&[]).params(r#"{"layout"?, "page": number|"next"|"previous"}"#),
+        C::new("layout.seriesRefresh", "Refresh Map Series", "Publish › Map Frames", |s, p| series_page(s, &json!({"layout": p.get("layout"), "page": "current"}))).roles(&[])
             .params(r#"{"layout"?}"#),
-        C::new("layout.export", "Export Layout", "Publish › Output", |s, p| super::exports::write_here(s, p, "layout.export"))
+        C::new("layout.export", "Export Layout", "Publish › Output", |s, p| super::exports::write_here(s, p, "layout.export")).roles(&[])
             .view()
             .params(r#"{"layout"?, "path": "*.png|*.pdf|*.svg" (PNG/SVG: current page; SVG: each element a group of its own; text and shapes as SVG, map frames and surrounds as vectors, rasters and tiles in them as pictures at dpi), "dpi"?: 72..600, "allPages"?: bool (PDF only; default true: every map series page, up to 500; false: the current page)}"#),
         C::new("layout.save", "Save Layout File", "Publish › Save As", |s, p| {
@@ -130,7 +130,7 @@ pub fn commands() -> Vec<C> {
             let text = serde_json::to_string_pretty(&l).map_err(|e| e.to_string())?;
             rustgis_data::io::write_atomic(Path::new(path), text.as_bytes()).map_err(|e| format!("{path}: {e}"))?;
             Ok(json!({"path": path}))
-        })
+        }).roles(&[])
         .view()
         .params(r#"{"layout"?, "path": "*.rgislayout"}"#),
         C::new("layout.import", "Import Layout", "Home › Project", |s, p| {
@@ -143,7 +143,7 @@ pub fn commands() -> Vec<C> {
                 (None, None) => return Err("path or text is required".into()),
             };
             import(s, &text)
-        })
+        }).roles(&[])
         .params(r#"{"path"?: "*.rgislayout", "text"?: layout JSON}"#),
     ]
 }

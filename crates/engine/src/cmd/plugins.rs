@@ -19,22 +19,22 @@ pub mod fetch;
 
 pub fn commands() -> Vec<C> {
     vec![
-        C::new("plugin.list", "Plugins", "Plugins › Manage", list).view(),
-        C::new("plugin.install", "Install Plugin", "Plugins › Manage", install)
+        C::new("plugin.list", "Plugins", "Plugins › Manage", list).roles(&[]).view(),
+        C::new("plugin.install", "Install Plugin", "Plugins › Manage", install).roles(&[])
             .view()
             .params(r#"{"path": "a .rgplugin package, or a plugin folder (for development)"}"#),
-        C::new("plugin.uninstall", "Uninstall Plugin", "Plugins › Manage", uninstall).view().params(r#"{"id": plugin id}"#),
-        C::new("plugin.enable", "Enable Plugin", "Plugins › Manage", enable).view().params(r#"{"id": plugin id, "enabled"?: bool}"#),
-        C::new("plugin.registry", "Browse Plugins", "Plugins › Manage", browse)
+        C::new("plugin.uninstall", "Uninstall Plugin", "Plugins › Manage", uninstall).roles(&[]).view().params(r#"{"id": plugin id}"#),
+        C::new("plugin.enable", "Enable Plugin", "Plugins › Manage", enable).roles(&[]).view().params(r#"{"id": plugin id, "enabled"?: bool}"#),
+        C::new("plugin.registry", "Browse Plugins", "Plugins › Manage", browse).roles(&[])
             .view()
             .params(r#"{"url"?: "registry.json (default: https://plugins.rustgis.app/registry.json)"}"#),
-        C::new("plugin.installFromRegistry", "Install Plugin From Registry", "Plugins › Manage", install_from_registry)
+        C::new("plugin.installFromRegistry", "Install Plugin From Registry", "Plugins › Manage", install_from_registry).roles(&[])
             .view()
             .params(r#"{"id": plugin id, "url"?: registry.json}"#),
-        C::new("plugin.panel", "Plugin Panel State", "Plugins", panel).view().params(
+        C::new("plugin.panel", "Plugin Panel State", "Plugins", panel).roles(&[]).view().params(
             r#"{"id": plugin id, "values"?: {widget id: true/false, a whole number, or a tree node's id (null for none)}, "refresh"?: bool (run the panel's state command)}"#,
         ),
-        C::new("plugin.prepare", "Prepare Plugin Environment", "Plugins › Manage", prepare)
+        C::new("plugin.prepare", "Prepare Plugin Environment", "Plugins › Manage", prepare).roles(&[])
             .view()
             .params(r#"{"id": plugin id (a process plugin that declares "python": downloads its Python and packages)}"#),
     ]

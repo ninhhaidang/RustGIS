@@ -531,6 +531,7 @@ mod tests {
     /// the last `usize` is refused by number, not overflowed.
     #[test]
     fn a_window_of_the_band_past_the_last_usize_is_refused() {
+        let _turn = crate::cache::turn();
         let file = "test://past-last-band.tif";
         let info = info_of(example_with(&Example { size: 64, tile: 16, ..Example::default() }));
         super::super::infos().lock().unwrap().insert(file.to_string(), super::super::State::Ready(Arc::new(info)));
@@ -581,6 +582,8 @@ mod tests {
     /// asked for again when it is drawn next; one its server refused is, until its wait is over.
     #[test]
     fn a_dropped_tile_isnt_remembered_as_failed() {
+        let _turn = crate::cache::turn();
+        let _alarm = crate::cache::alarm_turn();
         let key = |c: u32| ("test://dropped.tif".to_string(), 0usize, c);
         tile_landed(key(1), &Err(crate::cache::DROPPED.to_string()));
         assert!(!failed().lock().unwrap().contains_key(&key(1)));

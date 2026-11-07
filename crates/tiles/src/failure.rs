@@ -68,9 +68,9 @@ impl Failure {
     /// the browser's `HTTP 403`).
     pub fn new(url: &str, message: impl Into<String>) -> Self {
         let message = message.into();
-        let message = if message.contains(rustgis_data::login_address::PREFIX) { crate::logins::scrub(&message) } else { message };
         let reason = crate::cache::http_status(&message).filter(|s| *s >= 400).map_or(Reason::Other, Reason::Status);
-        let url = if url.contains(rustgis_data::login_address::PREFIX) { crate::logins::scrub(url) } else { url.to_string() };
+        let message = crate::logins::scrub_error(&message);
+        let url = if url.contains(rustgis_data::login_address::PREFIX) { crate::logins::scrub_error(url) } else { url.to_string() };
         Failure { url, message, reason, answer: None }
     }
 
@@ -375,6 +375,7 @@ mod tests {
 
     #[test]
     fn a_cloudflare_block_is_named_with_its_page_title() {
+        let _turn = crate::cache::turn();
         let body = b"<!DOCTYPE html><html><head><title>Attention Required! | Cloudflare</title><style>x{}</style></head><body>Sorry, you have been blocked</body></html>";
         let f = Failure::answered(
             "https://example.org/MapServer?f=json",
@@ -462,6 +463,7 @@ mod tests {
     /// read, say nothing more.
     #[test]
     fn retry_after_on_429_and_503() {
+        let _turn = crate::cache::turn();
         let base = || "http status: 503".to_string();
         assert_eq!(with_retry_after(base(), 503, Some("30")), "http status: 503 (retry after 30 s)");
         assert_eq!(with_retry_after("HTTP 429".into(), 429, Some(" 2 ")), "HTTP 429 (retry after 2 s)");

@@ -52,10 +52,10 @@ pub fn commands() -> Vec<C> {
             let mut r = json!({"model": m.name, "accuracy": m.accuracy, "classes": m.model.classes, "epochs": m.epochs});
             r["replaced"] = json!(store(s, m));
             Ok(r)
-        })
+        }).roles(&[])
         .when(need_raster)
         .params(r#"{"layer": raster, "training": polygon layer, "classField": field naming each polygon's class, "bands"?: [1-based], "hidden"?: [units per hidden layer] (default [32, 16]), "epochs"?: 1..500 (default 60), "model"?: name}"#),
-        C::new("dl.classify", "Deep Learning Tools", "Analyze › Image Classification", classify).when(need_raster).params(
+        C::new("dl.classify", "Deep Learning Tools", "Analyze › Image Classification", classify).roles(&[]).when(need_raster).params(
             r#"{"layer": raster, "model"?: a trained model's name, "training"?: polygon layer, "classField"?: field, "bands"?: [1-based], "hidden"?: [units], "epochs"?: 1..500 (without a model: train one first, as dl.train), "name"?: output, "ran"?: (internal: classes the app has worked out)}"#,
         ),
         C::new("dl.package", "Deep Learning Package", "Publish › Package", |s, p| {
@@ -63,7 +63,7 @@ pub fn commands() -> Vec<C> {
             let bytes = package(s, p)?;
             rustgis_data::io::write_atomic(Path::new(path), &bytes).map_err(|e| format!("{path}: {e}"))?;
             Ok(json!({"path": path, "bytes": bytes.len()}))
-        })
+        }).roles(&[])
         .view()
         .when(need_model)
         .params(r#"{"model"?: name (default: the last trained), "path": "*.rgisdlpk"}"#),
@@ -91,16 +91,16 @@ pub fn commands() -> Vec<C> {
             let name = m.name.clone();
             store(s, m);
             Ok(json!({"model": name}))
-        })
+        }).roles(&[])
         .params(r#"{"path"?: "*.rgisdlpk", "data"?: base64}"#),
         C::new("dl.remove", "Delete Model", "Analyze › Image Classification", |s, p| {
             let i = model_index(s, p)?;
             s.project.dl_models.remove(i);
             Ok(Value::Null)
-        })
+        }).roles(&[])
         .when(need_model)
         .params(r#"{"model": name}"#),
-        C::new("imagery.hostedImagery", "Create Hosted Imagery", "Analyze › Imagery Sharing", hosted).view().when(need_raster).params(
+        C::new("imagery.hostedImagery", "Create Hosted Imagery", "Analyze › Imagery Sharing", hosted).roles(&[]).view().when(need_raster).params(
             r#"{"layer": raster, "path": "*.zip" (z/x/y.png tiles, tiles.json and a viewer page), "minZoom"?: 0..22, "maxZoom"?: 0..22 (default: the raster's resolution)}"#,
         ),
     ]

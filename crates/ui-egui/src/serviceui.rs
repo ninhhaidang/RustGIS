@@ -98,7 +98,8 @@ pub(crate) fn add_layer_from(
     origin: Option<&str>,
     connection: Option<&str>,
 ) -> Result<String, String> {
-    let connection = connection_for(app, connection, &src.url);
+    let anonymous = l.get("anonymous").and_then(Value::as_bool) == Some(true);
+    let connection = connection_for(app, connection, &src.url).filter(|_| !anonymous);
     let name = l.get("name").and_then(Value::as_str).unwrap_or("").to_string();
     let title = l.get("title").and_then(Value::as_str).unwrap_or(&name).to_string();
     let offer = l.get("offer").cloned().unwrap_or_default();
@@ -117,7 +118,13 @@ pub(crate) fn add_layer_from(
         // The layer's bounds go along, for its features' axes (#1053).
         let bounds = l.get("bbox").cloned().unwrap_or_default();
         let mut params = json!({"url": items, "name": title, "service": true, "bounds": bounds});
-        if let Some(connection) = connection {
+        let anonymous = l.get("anonymous").and_then(Value::as_bool) == Some(true)
+            || rustgis_engine::render::rustgis_tiles::logins::origin(&src.url)
+                != rustgis_engine::render::rustgis_tiles::logins::origin(items);
+        if anonymous {
+            params["url"] = json!(rustgis_engine::data::login_address::inner(items));
+            params["anonymous"] = json!(true);
+        } else if let Some(connection) = connection {
             params["connection"] = json!(connection);
         }
         // An area asked for keeps the view, even on an empty map, as `service.add` does.
@@ -137,9 +144,15 @@ pub(crate) fn add_layer_from(
         if let Some(connection) = connection {
             p["connection"] = json!(connection);
         }
-        let describe = request_from(app, connection, &src.url, &describe)?;
+        let describe = if anonymous {
+            p["anonymous"] = json!(true);
+            p["url"] = json!(rustgis_engine::data::login_address::inner(&src.url));
+            rustgis_engine::data::login_address::inner(&describe).to_string()
+        } else {
+            request_from(app, connection, &src.url, &describe)?
+        };
         let slot = crate::fetch_into(&describe);
-        app.ui.service_steps.push(crate::ServiceStep::Coverage { params: p, slot, dialog, origin });
+        app.ui.service_steps.push(crate::ServiceStep::Coverage { params: p, slot, dialog, origin, opened: app.session.opened });
         return Ok(i18n::fmt("Describing {name}", &[("name", &title)]));
     }
     let mut p = json!({"url": src.url, "layer": name, "text": src.text, "documents": src.documents, "source_url": l.get("source_url")});
@@ -148,6 +161,10 @@ pub(crate) fn add_layer_from(
     }
     if let Some(connection) = connection {
         p["connection"] = json!(connection);
+    }
+    if anonymous {
+        p["anonymous"] = json!(true);
+        p["url"] = json!(rustgis_engine::data::login_address::inner(&src.url));
     }
     if l.get("time").is_some() && !time.is_empty() {
         p["time"] = json!(time);
@@ -159,16 +176,33 @@ pub(crate) fn add_layer_from(
             p["name"] = json!(title);
             let fallback = offer.get("url").and_then(Value::as_str).unwrap_or("").to_string();
             let vector = offer.get("type").and_then(Value::as_str) == Some("vectorTiles");
-            let list = request_from(app, connection, &src.url, list)?;
+            let list = if anonymous {
+                rustgis_engine::data::login_address::inner(list).to_string()
+            } else {
+                request_from(app, connection, &src.url, list)?
+            };
             let slot = crate::fetch_into(&list);
-            let resolve = crate::TilesResolve { params: p, list: list.clone(), doc: list, read: 0, vector, fallback, slot };
-            app.ui.service_steps.push(crate::ServiceStep::Tiles { resolve, dialog, origin });
+            let resolve = crate::TilesResolve {
+                params: p,
+                list: list.clone(),
+                doc: list.clone(),
+                crossed_origin: anonymous
+                    || rustgis_engine::render::rustgis_tiles::logins::origin(&src.url)
+                        != rustgis_engine::render::rustgis_tiles::logins::origin(&list),
+                read: 0,
+                withheld_addresses: 0,
+                vector,
+                fallback,
+                slot,
+            };
+            app.ui.service_steps.push(crate::ServiceStep::Tiles { resolve, dialog, origin, opened: app.session.opened });
             Ok(i18n::fmt("Reading the tileset of {name}", &[("name", &title)]))
         }
         None => crate::connectiontree::run_named(app, "service.add", p, origin.as_deref()).map(|_| added(&title)),
     }
 }
 
+/// Starts grouped discovery under its original request, retaining the import target and byte budget.
 pub fn start(app: &mut RustGisApp, p: &Value, refresh: bool) -> Result<(), String> {
     if !p.is_object() {
         return Err(tl!("Give the service's web address").into());
@@ -219,7 +253,7 @@ pub fn start(app: &mut RustGisApp, p: &Value, refresh: bool) -> Result<(), Strin
         let url = task.params.get("url").and_then(Value::as_str).unwrap_or_default();
         let kind = task.params.get("type").and_then(Value::as_str);
         let caps = rustgis_engine::data::ogc::capabilities_url(url, kind);
-        let caps = match task.request(app, &caps) {
+        let caps = match task.request(&caps) {
             Ok(caps) => caps,
             Err(e) => {
                 app.session.download_failed(task.token);
@@ -236,14 +270,18 @@ pub fn start(app: &mut RustGisApp, p: &Value, refresh: bool) -> Result<(), Strin
 
 impl Import {
     /// Anonymous service provenance forbids selecting a login, including for same-origin links.
-    fn request(&self, app: &mut RustGisApp, url: &str) -> Result<String, String> {
+    fn request(&self, url: &str) -> Result<String, String> {
         if self.params.get("anonymous").and_then(Value::as_bool) == Some(true) {
             return Ok(rustgis_engine::data::login_address::inner(url).to_string());
         }
         let base = self.params.get("url").and_then(Value::as_str).unwrap_or_default();
-        request_from(app, self.connection.as_ref().and_then(Value::as_str), base, url)
+        // The plan already resolved this exact destination and its login (or absence).
+        // Re-selecting from the original saved connection would undo a foreign hop.
+        rustgis_engine::render::rustgis_tiles::address::check(url, Some(base)).map_err(|e| crate::connectionui::translated(&e))?;
+        Ok(url.to_string())
     }
 
+    /// Consumes the engine plan verbatim: foreign-hop anonymity cannot reselect a login.
     fn discover(&mut self, app: &mut RustGisApp) -> Result<(), String> {
         let listing = app.session.run("service.groupPlan", &self.params)?;
         if listing.get("request").and_then(|p| p.get("anonymous")).and_then(Value::as_bool) == Some(true) {
@@ -254,7 +292,7 @@ impl Import {
             self.connection = None;
         }
         if let Some(next) = listing.get("next").and_then(Value::as_str) {
-            let next = self.request(app, next)?;
+            let next = self.request(next)?;
             self.slot = fetch_into(&next);
             self.document = Some(next);
         } else {
@@ -265,20 +303,22 @@ impl Import {
                 .flatten()
                 .filter_map(|l| l.get("offer").and_then(|o| o.get("url")).and_then(Value::as_str).map(str::to_string))
                 .collect();
-            self.next(app)?;
+            self.next()?;
         }
         Ok(())
     }
 
-    fn next(&mut self, app: &mut RustGisApp) -> Result<(), String> {
+    /// Fetches one exact planned collection within the remaining shared byte budget.
+    fn next(&mut self) -> Result<(), String> {
         self.current = self.remaining.pop_front();
         if let Some(url) = &self.current {
-            let url = self.request(app, url)?;
+            let url = self.request(url)?;
             self.slot = fetch_into_limited(&url, rustgis_engine::cmd::service::MAX_GROUP_BYTES.saturating_sub(self.bytes));
         }
         Ok(())
     }
 
+    /// Accumulates supplied documents or feature responses before the engine import/refresh.
     fn landed(&mut self, app: &mut RustGisApp, bytes: Vec<u8>) -> Result<(), String> {
         if let Some(document) = self.document.take() {
             let text = crate::service_text(bytes).map_err(|_| tl!("The service's answer isn't UTF-8 text").to_string())?;
@@ -298,7 +338,7 @@ impl Import {
             }
             let text = String::from_utf8(bytes).map_err(|_| tl!("The service's answer isn't UTF-8 text").to_string())?;
             self.responses.push(json!({"url":self.current.take(),"text":text}));
-            self.next(app)?;
+            self.next()?;
             Ok(())
         }
     }
@@ -508,6 +548,83 @@ fn noted(app: &mut RustGisApp, landed: &Landed, note: Option<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Discovery's anonymous provenance survives both deferred protocols and their final params.
+    #[test]
+    fn anonymous_service_offers_keep_descriptions_and_tiles_unbound() {
+        use rustgis_engine::render::rustgis_tiles::{cache, logins};
+        let _turn = crate::fetching::turn();
+        let caps = r#"<wcs:Capabilities version="2.0.1" xmlns:wcs="http://www.opengis.net/wcs/2.0" xmlns:ows="http://www.opengis.net/ows/2.0">
+            <wcs:Contents><wcs:CoverageSummary><wcs:CoverageId>soc</wcs:CoverageId><ows:Title>Soil carbon</ows:Title>
+            <ows:WGS84BoundingBox><ows:LowerCorner>5 49.2</ows:LowerCorner><ows:UpperCorner>5.8 50</ows:UpperCorner></ows:WGS84BoundingBox>
+            </wcs:CoverageSummary></wcs:Contents></wcs:Capabilities>"#;
+        let describe = br#"<CoverageDescriptions><CoverageDescription><Envelope srsName="http://www.opengis.net/def/crs/EPSG/0/4326" axisLabels="Lat Long">
+            <lowerCorner>49.2 5</lowerCorner><upperCorner>50 5.8</upperCorner></Envelope></CoverageDescription></CoverageDescriptions>"#;
+        for coverage in [false, true] {
+            for anonymous in [true, false] {
+                let mut app = RustGisApp::new(rustgis_engine::Session::new(rustgis_engine::Project::default()));
+                let url = "https://anonymous-offer.invalid/collections";
+                let kind = if coverage { "wcs" } else { "ogcapi" };
+                let id = app.run("connection.new", json!({"kind":kind, "address":url, "auth":"header", "keyName":"X-Key"})).unwrap()["id"]
+                    .as_str()
+                    .unwrap()
+                    .to_string();
+                app.run("connection.login", json!({"id":id, "apiKey":"RGSYNTH_anonymous_offer"})).unwrap();
+                let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+                let capture = seen.clone();
+                cache::set_fetcher(move |url, done| {
+                    capture.lock().unwrap().push(cache::split_download_limit(&url).0.to_string());
+                    done(Err("held description".into()));
+                });
+                let text = if coverage {
+                    caps.to_string()
+                } else {
+                    json!({"collections":[{"id":"relief","links":[{"rel":"tilesets-map","href":"https://anonymous-offer.invalid/list"}]}]})
+                        .to_string()
+                };
+                let src = ServiceSource { url: url.into(), kind, text, documents: vec![] };
+                let listed = app.session.run("service.layers", &json!({"url":url,"type":kind,"text":src.text,"connection":id})).unwrap();
+                let mut layer = listed["layers"][0].clone();
+                layer["anonymous"] = json!(anonymous);
+                add_layer_from(&mut app, &src, &layer, "", None, false, None, Some(&id)).unwrap();
+                {
+                    let seen = seen.lock().unwrap();
+                    assert_eq!(seen.len(), 1);
+                    assert_eq!(logins::apply(&seen[0]).unwrap().is_some(), !anonymous, "coverage={coverage}, anonymous={anonymous}");
+                }
+                let params = match &app.ui.service_steps[0] {
+                    crate::ServiceStep::Coverage { params, slot, .. } => {
+                        *slot.lock().unwrap() = Some(Ok(describe.to_vec()));
+                        params
+                    }
+                    crate::ServiceStep::Tiles { resolve, .. } => {
+                        assert_eq!(resolve.crossed_origin, anonymous);
+                        *resolve.slot.lock().unwrap() = Some(Ok(br#"{"links":[{"rel":"item","type":"image/png","href":"https://anonymous-offer.invalid/{tileMatrix}/{tileRow}/{tileCol}"}]}"#.to_vec()));
+                        &resolve.params
+                    }
+                };
+                assert_eq!(params.get("connection").is_some(), !anonymous);
+                assert_eq!(params.get("anonymous").and_then(Value::as_bool).unwrap_or(false), anonymous);
+                // Deliver through the actual completion handler and its admitted final command.
+                app.poll_service_steps();
+                assert!(app.ui.service_steps.is_empty());
+                if coverage {
+                    let seen = seen.lock().unwrap();
+                    assert_eq!(seen.len(), 2, "{:?}", app.session.notices);
+                    assert!(seen[1].contains("REQUEST=GetCoverage"));
+                    assert_eq!(logins::apply(&seen[1]).unwrap().is_some(), !anonymous);
+                    let (_, _, params, _) = app.ui.downloads.first().expect("the coverage download was dispatched");
+                    assert_eq!(params.get("connection").and_then(Value::as_str), (!anonymous).then_some(id.as_str()));
+                    assert_eq!(params.get("anonymous").and_then(Value::as_bool).unwrap_or(false), anonymous);
+                } else {
+                    let tile = app.session.map().tiles.first().expect("the resolved tiles were added");
+                    assert_eq!(tile.anonymous, anonymous);
+                    assert_eq!(tile.connection, if anonymous { "" } else { id.as_str() });
+                    assert_eq!(logins::apply(&tile.url).unwrap().is_some(), !anonymous);
+                }
+            }
+        }
+    }
 
     /// A linked page reached through another origin is fetched anonymously even when it points
     /// back at the first page's origin: the login follows the referring page, not the first one.

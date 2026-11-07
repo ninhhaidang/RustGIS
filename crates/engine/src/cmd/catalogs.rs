@@ -10,13 +10,13 @@ use crate::{CmdResult, CommandSpec as C, Session};
 
 pub fn commands() -> Vec<C> {
     vec![
-        C::new("overture.add", "Add Overture Maps Data", "Home › Add › Web Data", overture_add).params(
+        C::new("overture.add", "Add Overture Maps Data", "Home › Add › Web Data", overture_add).roles(&[]).params(
             r#"{"theme": "buildings"|"places"|"transportation"|"divisions"|"base"|"addresses", "type"?: "the theme's type (building, building_part; place; segment, connector; division_area, division, division_boundary; land_use, land, land_cover, water, infrastructure, bathymetry; address)", "release"?: "such as 2026-09-23.1 (default: the latest)", "bbox"?: [west, south, east, north] | "view" (the map's extent, the default), "tiles"?: bool (the whole world as map tiles, from the theme's PMTiles archive, instead of the features in view), "files"?: [the files' GeoParquet addresses, when already found and opened (the app's background requests)]}"#,
         ),
-        C::new("sourcecoop.products", "List Source Cooperative Products", "Home › Add › Web Data", sourcecoop_products)
+        C::new("sourcecoop.products", "List Source Cooperative Products", "Home › Add › Web Data", sourcecoop_products).roles(&[])
             .view()
             .params(r#"{"account"?: "an account's products (default: the featured ones)"}"#),
-        C::new("sourcecoop.list", "List Source Cooperative Files", "Home › Add › Web Data", sourcecoop_list).view().params(
+        C::new("sourcecoop.list", "List Source Cooperative Files", "Home › Add › Web Data", sourcecoop_list).roles(&[]).view().params(
             r#"{"account": text, "product": text, "path"?: "a folder inside the product, ending in /", "token"?: "the next page's, from a listing"} (a file's "url" is added with layer.addUrl)"#,
         ),
     ]

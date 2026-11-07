@@ -34,17 +34,17 @@ fn need_report(s: &Session) -> Option<&'static str> {
 
 pub fn commands() -> Vec<C> {
     vec![
-        C::new("report.new", "New Report", "Publish › Report", new_report).params(
+        C::new("report.new", "New Report", "Publish › Report", new_report).roles(&[]).params(
             r#"{"layer"?: name (default: the selected layer), "name"?, "title"?, "fields"?: [names] (default: all), "where"?: SQL, "selectedOnly"?: bool, "groups"?: [fields], "sort"?: field, "descending"?: bool, "page"?: "letter"|"a4"|…, "orientation"?: "portrait"|"landscape"}"#,
         ),
-        C::new("report.update", "Report Properties", "Report", update).when(need_report).params(
+        C::new("report.update", "Report Properties", "Report", update).roles(&[]).when(need_report).params(
             r#"{"report"?: name|index, "name"?, "title"?, "layer"?, "where"?, "selectedOnly"?, "sort"?: field|null, "descending"?, "page"?, "orientation"?, "width"?, "height"?: mm}"#,
         ),
         C::new("report.activate", "Open Report", "Browser", |s, p| {
             let i = index(s, p)?;
             s.active_report = Some(i);
             Ok(json!({"report": i}))
-        })
+        }).roles(&[])
         .view()
         .when(need_report)
         .params(r#"{"report": name|index}"#),
@@ -57,7 +57,7 @@ pub fn commands() -> Vec<C> {
             }
             s.active_report = None;
             Ok(Value::Null)
-        })
+        }).roles(&[])
         .when(need_report)
         .params(r#"{"report"?}"#),
         // Report sections.
@@ -65,7 +65,7 @@ pub fn commands() -> Vec<C> {
             let title: String = ps(p, "title").unwrap_or("About this report").chars().take(500).collect();
             let text: String = ps(p, "text").unwrap_or("").chars().take(100_000).collect();
             add_section(s, p, Section::Page { title, text, end: b(p, "end").unwrap_or(false) })
-        })
+        }).roles(&[])
         .when(need_report)
         .params(r#"{"report"?, "title"?, "text"?, "end"?: bool (after the records; default before)}"#),
         C::new("report.newTemplate", "New Template", "Publish › Report", |s, p| {
@@ -79,7 +79,7 @@ pub fn commands() -> Vec<C> {
             s.active_layout = before;
             let layout = r["name"].as_str().unwrap_or_default().to_string();
             add_section(s, &json!({"report": i}), Section::Layout { layout, end: b(p, "end").unwrap_or(false) })
-        })
+        }).roles(&[])
         .when(need_report)
         .params(r#"{"report"?, "name"?, "page"?, "orientation"?, "template"?: "map"|"blank", "end"?: bool}"#),
         C::new("report.existingTemplate", "Existing Template", "Publish › Report", |s, p| {
@@ -94,7 +94,7 @@ pub fn commands() -> Vec<C> {
                 r["name"].as_str().unwrap_or_default().to_string()
             };
             add_section(s, &json!({"report": i}), Section::Layout { layout, end: b(p, "end").unwrap_or(false) })
-        })
+        }).roles(&[])
         .when(need_report)
         .params(r#"{"report"?, "layout"?: a layout's name, "path"?: "*.rgislayout", "text"?: layout JSON, "data"?: base64 file, "end"?: bool}"#),
         C::new("report.relatedReport", "Related Report", "Publish › Report", |s, p| {
@@ -106,10 +106,10 @@ pub fn commands() -> Vec<C> {
             }
             let report = s.project.reports.get(j).map(|r| r.name.clone()).unwrap_or_default();
             add_section(s, &json!({"report": i}), Section::Related { report })
-        })
+        }).roles(&[])
         .when(need_report)
         .params(r#"{"report"?, "related": report name}"#),
-        C::new("report.subreport", "Subreport", "Publish › Report", subreport)
+        C::new("report.subreport", "Subreport", "Publish › Report", subreport).roles(&[])
             .when(need_report)
             .params(r#"{"report"?, "relationship": name (Data Design › Relationships), "fields"?: [related fields]}"#),
         C::new("report.removeSection", "Remove Section", "Report", |s, p| {
@@ -121,7 +121,7 @@ pub fn commands() -> Vec<C> {
             }
             r.sections.remove(k);
             Ok(json!({"sections": r.sections.len()}))
-        })
+        }).roles(&[])
         .when(need_report)
         .params(r#"{"report"?, "index": section number}"#),
         // Data.
@@ -130,7 +130,7 @@ pub fn commands() -> Vec<C> {
             let r = s.project.reports.get_mut(i).ok_or("no report")?;
             toggle(&mut r.fields, field, b(p, "remove").unwrap_or(false));
             Ok(json!({"fields": r.fields}))
-        })
+        }).roles(&[])
         .when(need_report)
         .params(r#"{"report"?, "field": name, "remove"?: bool}"#),
         C::new("report.autofill", "Autofill Fields", "Data › Data Design", |s, p| {
@@ -139,7 +139,7 @@ pub fn commands() -> Vec<C> {
             let r = s.project.reports.get_mut(i).ok_or("no report")?;
             r.fields = names;
             Ok(json!({"fields": r.fields}))
-        })
+        }).roles(&[])
         .when(need_report)
         .params(r#"{"report"?}"#),
         C::new("report.statistics", "Statistics", "Data › Data Design", |s, p| {
@@ -157,7 +157,7 @@ pub fn commands() -> Vec<C> {
                 _ => {}
             }
             Ok(json!({"stats": r.stats.len()}))
-        })
+        }).roles(&[])
         .when(need_report)
         .params(r#"{"report"?, "field": name, "kind"?: "count"|"sum"|"mean"|"min"|"max", "remove"?: bool}"#),
         C::new("report.group", "Group", "Data › Data Design", |s, p| {
@@ -169,7 +169,7 @@ pub fn commands() -> Vec<C> {
             }
             toggle(&mut r.groups, field, remove);
             Ok(json!({"groups": r.groups}))
-        })
+        }).roles(&[])
         .when(need_report)
         .params(r#"{"report"?, "field": name, "remove"?: bool}"#),
         C::new("report.attachments", "Attachments", "Data › Data Design", |s, p| {
@@ -177,7 +177,7 @@ pub fn commands() -> Vec<C> {
             let r = s.project.reports.get_mut(i).ok_or("no report")?;
             r.attachments_field = field;
             Ok(json!({"field": r.attachments_field}))
-        })
+        }).roles(&[])
         .when(need_report)
         .params(r#"{"report"?, "field": name of a field listing each record's attachments (paths separated by ';')|null}"#),
         C::new("report.dynamicPicture", "Dynamic Picture", "Data › Data Design", |s, p| {
@@ -185,7 +185,7 @@ pub fn commands() -> Vec<C> {
             let r = s.project.reports.get_mut(i).ok_or("no report")?;
             r.picture_field = field;
             Ok(json!({"field": r.picture_field}))
-        })
+        }).roles(&[])
         .when(need_report)
         .params(r#"{"report"?, "field": name of a field holding a picture path or base64 PNG/JPEG|null}"#),
         C::new("report.chart", "Chart Frame", "Data › Data Design", |s, p| {
@@ -204,7 +204,7 @@ pub fn commands() -> Vec<C> {
             let r = s.project.reports.get_mut(i).ok_or("no report")?;
             r.chart = chart;
             Ok(json!({"chart": r.chart.is_some()}))
-        })
+        }).roles(&[])
         .when(need_report)
         .params(r#"{"report"?, "category": field|null (no chart), "value"?: field to sum (default: count records)}"#),
         // Output.
@@ -220,19 +220,19 @@ pub fn commands() -> Vec<C> {
             let (bytes, pages) = report_bytes(s, i, dpi, pdf)?;
             rustgis_data::io::write_atomic(Path::new(&path), &bytes).map_err(|e| format!("{path}: {e}"))?;
             Ok(json!({"path": path, "pages": pages, "bytes": bytes.len()}))
-        })
+        }).roles(&[])
         .view()
         .when(need_report)
         .params(r#"{"report"?, "path": "*.pdf|*.png" (PNG: the first page), "dpi"?: 72..600}"#),
-        C::new("report.save", "Report File", "Publish › Save As", |s, p| save(s, p, false))
+        C::new("report.save", "Report File", "Publish › Save As", |s, p| save(s, p, false)).roles(&[])
             .view()
             .when(need_report)
             .params(r#"{"report"?, "path": "*.rgisreport"}"#),
-        C::new("report.saveTemplate", "Report Template", "Publish › Save As", |s, p| save(s, p, true))
+        C::new("report.saveTemplate", "Report Template", "Publish › Save As", |s, p| save(s, p, true)).roles(&[])
             .view()
             .when(need_report)
             .params(r#"{"report"?, "path": "*.rgisrpttemplate"}"#),
-        C::new("report.open", "Import Report", "Publish › Report", open).params(
+        C::new("report.open", "Import Report", "Publish › Report", open).roles(&[]).params(
             r#"{"path"?: "*.rgisreport|*.rgisrpttemplate", "text"?: report JSON, "data"?: base64 file, "layer"?: the layer a template reports on (default: the selected layer)}"#,
         ),
     ]

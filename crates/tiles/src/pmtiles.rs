@@ -512,7 +512,7 @@ fn finish(archive: &str, r: Result<Info, String>) {
         .map_err(str::to_string)
         .and(r)
         .map(Arc::new)
-        .map_err(|e| if rustgis_data::login_address::is_wrapper(archive) { crate::logins::scrub(&e) } else { e });
+        .map_err(|e| if rustgis_data::login_address::is_wrapper(archive) { crate::logins::scrub_error(&e) } else { e });
     let waiting = {
         let mut all = archives().lock().unwrap_or_else(|e| e.into_inner());
         let old = match &r {

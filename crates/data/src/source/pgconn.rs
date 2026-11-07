@@ -14,21 +14,28 @@ pub fn public_label(s: &str) -> Option<String> {
     let t = s.trim();
     let lower = t.to_ascii_lowercase();
     if lower.starts_with("postgresql://") || lower.starts_with("postgres://") {
-        let (no_userinfo, _) = split_secrets(t, &["password"]);
-        // A secret in the query (`?password=…`) goes too.
-        return Some(match no_userinfo.split_once('?') {
-            Some((base, q)) => {
-                let kept: Vec<&str> = q
-                    .split('&')
-                    .filter(|kv| {
-                        let k = kv.split_once('=').map(|(k, _)| k).unwrap_or(kv);
-                        !kv.is_empty() && !SECRET_KEYS.iter().any(|s| k.eq_ignore_ascii_case(s))
-                    })
-                    .collect();
-                if kept.is_empty() { base.to_string() } else { format!("{base}?{}", kept.join("&")) }
-            }
-            None => no_userinfo,
-        });
+        let (_, raw) = t.split_once("://")?;
+        let authority = raw.split(['/', '?', '#']).next()?;
+        let path = raw.get(authority.len()..)?.split(['?', '#']).next()?;
+        // A path `@` after userinfo, or several path `@`s, can be a malformed password tail.
+        // Refuse ambiguous output rather than choosing another host; percent-encode a
+        // database name's `@` to keep it.
+        if (authority.contains('@') && path.contains('@')) || path.matches('@').nth(1).is_some() {
+            return None;
+        }
+        let public = split_secrets(t, SECRET_KEYS).0;
+        let (_, rest) = public.split_once("://")?;
+        let authority = rest.split(['/', '?', '#']).next()?;
+        let hosts = authority.rsplit_once('@').map_or(authority, |(_, hosts)| hosts);
+        // A non-numeric port with no delimited password is an unreadable authority. Multi-host
+        // URIs, IPv6 and empty hosts (the local socket) keep libpq's existing spelling.
+        if hosts.split(',').any(|host| {
+            let port = if host.starts_with('[') { host.split_once(']').map(|(_, rest)| rest) } else { Some(host) };
+            port.and_then(|h| h.split_once(':')).is_some_and(|(_, p)| !p.bytes().all(|b| b.is_ascii_digit()))
+        }) {
+            return None;
+        }
+        return Some(public);
     }
     let rest = ["postgresql:", "postgres:", "pg:"].iter().find(|p| lower.starts_with(**p)).and_then(|p| t.get(p.len()..))?;
     let (public, _) = split_secrets(rest.trim(), SECRET_KEYS);
@@ -122,13 +129,17 @@ fn query_secrets(s: &str, secrets: &[&str]) -> (String, Option<String>) {
     let mut kept = Vec::new();
     for kv in query.split('&').filter(|kv| !kv.is_empty()) {
         let (k, v) = kv.split_once('=').unwrap_or((kv, ""));
-        if k.eq_ignore_ascii_case("password") {
+        if crate::address::normalized_name(k).as_deref() == Some("password") {
+            // The URI driver decodes the name and password once; keyword strings below are
+            // intentionally not percent-decoded.
             password = Some(percent_decode(v));
-        } else if !secrets.iter().any(|s| k.eq_ignore_ascii_case(s)) {
+        } else if !secrets.iter().any(|s| crate::address::normalized_name(k).as_deref() == Some(s)) {
             kept.push(kv);
         }
     }
-    (if kept.is_empty() { base.to_string() } else { format!("{base}?{}", kept.join("&")) }, password)
+    let mut public = if kept.is_empty() { base.to_string() } else { format!("{base}?{}", kept.join("&")) };
+    crate::address::redact_query(&mut public);
+    (public, password)
 }
 
 /// A libpq keyword/value connection string's pairs (password included), in order; a value is a
@@ -221,5 +232,33 @@ mod tests {
         assert_eq!(pw.as_deref(), Some("s@c"));
         let (public, pw) = super::split_secrets("postgresql://h/g?password=x", &["password"]);
         assert_eq!((public.as_str(), pw.as_deref()), ("postgresql://h/g", Some("x")));
+        let uri = "postgresql://u@h.invalid/db?pass%77ord=RGSYNTH_pg_20261103&sslmode=require&pass%66ile=RGSYNTH_file_20261103";
+        assert_eq!(super::public_label(uri).as_deref(), Some("postgresql://u@h.invalid/db?sslmode=require"));
+        let (public, password) = super::query_secrets(uri, super::SECRET_KEYS);
+        assert_eq!(public, "postgresql://u@h.invalid/db?sslmode=require");
+        assert_eq!(password.as_deref(), Some("RGSYNTH_pg_20261103"));
+        let clean = "postgresql://u@h.invalid/db?sslmode=require";
+        assert_eq!(super::public_label(clean).as_deref(), Some(clean));
+        // A later path `@` could be a password tail, even after an earlier split removed its
+        // colon. Withhold the ambiguous label, including an intentional raw `@` database name;
+        // percent-encoding the database's `@` keeps that name unambiguous.
+        for ambiguous in [
+            "postgresql://user:p@ss/word@host.invalid/db",
+            "postgresql://user@ss/word@host.invalid/db",
+            "postgresql://user@host.invalid/db@tag",
+            "postgresql://user:pass/word@host.invalid/db@tag",
+            "postgresql://user:pass/word@host.invalid/db@tag@tail",
+        ] {
+            assert_eq!(super::public_label(ambiguous), None, "{ambiguous}");
+        }
+        let encoded = "postgresql://user:p%40ss%2Fword@host.invalid/db%40tag";
+        assert_eq!(super::public_label(encoded).as_deref(), Some("postgresql://user@host.invalid/db%40tag"));
+        let query_at = "postgresql://user@host.invalid/db?application_name=x@y";
+        assert_eq!(super::public_label(query_at).as_deref(), Some(query_at));
+        assert_eq!(super::public_label("postgresql://u:RGSYNTH_unreadable_20261103/path"), None);
+        let keyword = "host=h.invalid dbname='a%20b' user=u password='RGSYNTH_keyword_20261103'";
+        let (public, password) = super::split_secrets(keyword, super::SECRET_KEYS);
+        assert_eq!(public, "host=h.invalid dbname=a%20b user=u");
+        assert_eq!(password.as_deref(), Some("RGSYNTH_keyword_20261103"));
     }
 }

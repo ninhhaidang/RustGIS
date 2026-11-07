@@ -33,6 +33,7 @@ pub fn commands() -> Vec<C> {
             let mode = Blend::from_code(m).ok_or_else(|| format!("unknown blend mode '{m}'"))?;
             with(s, p, |l| l.blend = mode)
         })
+        .roles(&[])
         .when(need_layer)
         .params(r#"{"layer"?, "mode": "normal"|"multiply"|"screen"|"overlay"|"darken"|"lighten"|"difference"}"#),
         C::new("layer.mask", "Masking", "Style › Drawing", |s, p| {
@@ -55,6 +56,7 @@ pub fn commands() -> Vec<C> {
             };
             with(s, p, |l| l.mask = mask.clone())
         })
+        .roles(&[])
         .when(need_layer)
         .params(r#"{"layer"?, "mask": polygon layer|null}"#),
         C::new("layer.swipe", "Swipe", "Style › Compare", |s, p| {
@@ -70,6 +72,7 @@ pub fn commands() -> Vec<C> {
             };
             Ok(json!({"swipe": s.map().swipe.map(|(l, x)| json!({"layer": l, "position": x}))}))
         })
+        .roles(&[])
         .when(need_layer)
         .params(r#"{"layer"?, "position"?: 0..1, "off"?: bool}"#),
         C::new("raster.rotation", "Rotation Type", "Style › Rotation", |s, p| {
@@ -80,9 +83,11 @@ pub fn commands() -> Vec<C> {
             rl.style.rotation = a.rem_euclid(360.0);
             Ok(json!({"angle": rl.style.rotation}))
         })
+        .roles(&[])
         .when(need_raster)
         .params(r#"{"layer"?, "angle": degrees clockwise}"#),
         C::new("layer.displayFilters", "Display Filters", "Style › Drawing", display_filters)
+            .roles(&[])
             .when(need_feature_layer)
             .params(r#"{"layer"?, "filters": [{"name", "minScale"?, "maxScale"?, "where"}] (empty to clear)}"#),
         C::new("layer.aggregation", "Aggregation", "Style › Drawing", |s, p| {
@@ -99,9 +104,10 @@ pub fn commands() -> Vec<C> {
             };
             with(s, p, |l| l.aggregation = agg)
         })
+        .roles(&[])
         .when(need_feature_layer)
         .params(r#"{"layer"?, "shape": "hexagon"|"square"|"none", "size"?: points}"#),
-        C::new("layer.extrusion", "Layer Extrusion", "Style › Extrusion", extrusion).when(need_polygons).params(
+        C::new("layer.extrusion", "Layer Extrusion", "Style › Extrusion", extrusion).roles(&[]).when(need_polygons).params(
             r#"{"layer"?, "type": "none"|"height"|"field", "field"?: numeric field (metres), "height"?: metres, "factor"?: number}"#,
         ),
         C::new("layer.faces", "Faces", "Style › Faces", |s, p| {
@@ -115,6 +121,7 @@ pub fn commands() -> Vec<C> {
                 }
             })
         })
+        .roles(&[])
         .when(need_polygons)
         .params(r#"{"layer"?, "culling"?: bool, "lighting"?: bool}"#),
         C::new("layer.lightShadow", "Light and Shadow", "Style › Light and Shadow", |s, p| {
@@ -128,6 +135,7 @@ pub fn commands() -> Vec<C> {
                 }
             })
         })
+        .roles(&[])
         .when(need_polygons)
         .params(r#"{"layer"?, "lighting"?: bool, "shadows"?: bool}"#),
     ]

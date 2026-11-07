@@ -12,10 +12,10 @@ use crate::{CmdResult, CommandSpec as C, Session};
 
 pub fn commands() -> Vec<C> {
     vec![
-        C::new("sql.query", "Run SQL Query", "Analyze › SQL", query).view().params(
+        C::new("sql.query", "Run SQL Query", "Analyze › SQL", query).roles(&[crate::ParamRole { key: "sql", role: crate::Role::Sql }, crate::ParamRole { key: "query", role: crate::Role::Sql }]).view().params(
             r#"{"sql": "one DuckDB SELECT (DuckDB Spatial's ST_ functions, read_parquet('…'), web addresses)", "database"?: "a .duckdb file or a PostgreSQL connection (postgres:host=… dbname=…) whose tables the query names", "password"?: "the connection's, kept for this session only", "limit"?: "rows returned, up to 1000 (default 100)"}"#,
         ),
-        C::new("sql.schema", "List Database Columns", "Analyze › SQL", schema)
+        C::new("sql.schema", "List Database Columns", "Analyze › SQL", schema).roles(&[crate::ParamRole { key: "sql", role: crate::Role::Sql }, crate::ParamRole { key: "query", role: crate::Role::Sql }])
             .view()
             .params(r#"{"database": "a .duckdb file or a PostgreSQL connection", "password"?: string}"#),
     ]

@@ -404,7 +404,7 @@ fn with_info(url: &str, then: Box<dyn FnOnce(Result<Arc<Info>, String>) + Send>)
             let r = crate::logins::check(&key)
                 .map_err(str::to_string)
                 .and(r)
-                .map_err(|e| if rustgis_data::login_address::is_wrapper(&key) { crate::logins::scrub(&e) } else { e });
+                .map_err(|e| if rustgis_data::login_address::is_wrapper(&key) { crate::logins::scrub_error(&e) } else { e });
             let waiting = {
                 let mut i = infos().lock().unwrap_or_else(|e| e.into_inner());
                 let next = match &r {

@@ -64,15 +64,15 @@ pub const NETWORK: &[&str] = &[
 
 pub fn commands() -> Vec<C> {
     vec![
-        C::new("map.addTiles", "Add Tile Layer", "Home › Add", add).params(
+        C::new("map.addTiles", "Add Tile Layer", "Home › Add", add).roles(&[]).params(
             r#"{"url": "https://…/{z}/{x}/{y}.png" | vector tiles ".pbf" or TileJSON | MapLibre style.json | a PMTiles archive (web address or file path) | an MBTiles file path, "kind"?: "raster"|"vector"|"style"|"pmtiles"|"mbtiles" (guessed from the url), "name"?: text, "bounds"?: [west, south, east, north] (longitude/latitude coverage, when known), "attribution"?: text, "minZoom"?: number, "maxZoom"?: number, "tileSize"?: 256|512 (1024 too for a WMS or map service asked for in Web Mercator by its tiles' box: their pictures are asked for that size), "singleImage"?: bool (a WMS or map service: one picture of the view instead of tiles, so symbols and labels aren't cut at tile edges; tiles on the globe, a tilted map or a projection the service doesn't offer; by default on for one, unless tileSize is given), "tms"?: bool, "subdomains"?: [text], "layers"?: [vector tile layer names, drawn in colours of their own], "styleLayers"?: [MapLibre style layers drawing vector tiles instead (their source is the tiles')], "opacity"?: 0–1, "blend"?: "normal"|"multiply"|"screen"|"overlay"|"darken"|"lighten"|"difference" (how it combines with what is beneath), "overlay"?: bool (on top of the map's layers, as every new layer goes; without it a basemap, under them; one with the same address and role is replaced when it has the same name or the same look), "top"?: bool (on top of the map's layers, as a layer added as data goes; by default an overlay's place), "replace"?: bool (removes the other tile basemaps, not overlays), "id"?: catalog id, "view"?: bool (a MapLibre style: go to the place, zoom, bearing and pitch its root properties give, once it loads), "start"?, "end"?: dates a url with date placeholders ({date:YYYY-MM-DD}, {YYYY}) spans, turning the time slider on (or, when it is on, setting its span), "unit"?, "interval"?, "dates"?: its steps (as in time.set), "legend"?: "the web address of its legend picture (PNG or JPEG)" | [address | {"url": address, "minScale"?: scale denominator, "maxScale"?: one (the scales it is for, from minScale up to below maxScale)}] (at most 16; the Layers pane shows the one for the map's scale under the layer; service.add gives a WMS or WMTS layer its service's), "connection"?: "the id of the saved web-service connection it comes from (as service.add): the tile layer records it, and its tiles are read with its login"}"#,
         ),
-        C::new("map.removeTiles", "Remove Tile Layer", "Home › Add", remove)
+        C::new("map.removeTiles", "Remove Tile Layer", "Home › Add", remove).roles(&[])
             .params(r#"{"name"?: text, "index"?: number, "id"?: catalog id} (removes every tile layer when none is given)"#),
-        C::new("map.setTiles", "Tile Layer Properties", "Home › Add", set).params(
+        C::new("map.setTiles", "Tile Layer Properties", "Home › Add", set).roles(&[]).params(
             r#"{"name"?: text | "index"?: number (0 = top) | "id"?: catalog id, "visible"?: bool, "opacity"?: 0–1, "blend"?: "normal"|"multiply"|"screen"|"overlay"|"darken"|"lighten"|"difference", "move"?: "up"|"down"|"top"|"bottom" (past the next layer in the drawing order of all the map's layers, a feature or raster layer too), "to"?: number (its place in that order among the other layers, 0 = top; the Layers pane lists it), "rename"?: text, "bands"?: [red, green, blue] | [band] (a cloud-optimised GeoTIFF's bands shown, from 1; [] for its own), "range"?: [low, high] (the values shown from black to full colour; null: each band's 2nd–98th percentile), "dequantize"?: "aef" (AlphaEarth's quantised embeddings) | "none", "legend"?: as map.addTiles's, or null for none, "hiddenLayers"?: [source layer name] (vector tiles' source layers not drawn or identified, as map.tiles's sourceLayers names them; replaces the list, [] or null for none), "singleImage"?: bool (as map.addTiles's), "tileSize"?: 256|512|1024 (a WMS or map service asked for in Web Mercator: its tiles' size)}"#,
         ),
-        C::new("map.tiles", "Tile Layers", "Home › Add", |s, _| Ok(list(s, false))).view(),
+        C::new("map.tiles", "Tile Layers", "Home › Add", |s, _| Ok(list(s, false))).roles(&[]).view(),
         // As `layer.expand` for a layer's classes: what the pane shows, not an edit to undo.
         C::new("map.expandTiles", "Expand Tile Legend", "Layers", |s, p| {
             let i = find(s, p)?.ok_or("name or index is required")?;
@@ -80,20 +80,20 @@ pub fn commands() -> Vec<C> {
             let t = s.map_mut().tiles.get_mut(i).ok_or("no tile layer at that index")?;
             t.expanded = on.unwrap_or(!t.expanded);
             Ok(json!({"index": i, "expanded": t.expanded}))
-        })
+        }).roles(&[])
         .params(r#"{"name"?: text | "index"?: number (0 = top) | "id"?: catalog id, "on"?: bool (toggles when omitted)} — shows or hides a tile layer's legend and source layers under it in the Layers pane"#)
         .view(),
         // As `layer.select` for a map layer: what the pane shows, not an edit to undo.
-        C::new("map.selectTiles", "Select Tile Layer", "Layers", select_tiles)
+        C::new("map.selectTiles", "Select Tile Layer", "Layers", select_tiles).roles(&[])
             .params(r#"{"name"?: text | "index"?: number (0 = top) | "id"?: catalog id} — picks a tile layer in the Layers pane, leaving no map layer active (picking one ends it): the Selected in Layers pop-up mode identifies it"#)
             .view(),
-        C::new("map.zoomToTiles", "Zoom To Tile Layer", "Home › Add", zoom_to)
+        C::new("map.zoomToTiles", "Zoom To Tile Layer", "Home › Add", zoom_to).roles(&[])
             .params(r#"{"name"?: text | "index"?: number (0 = top) | "id"?: catalog id} (advertised service bounds, or the bounds in a PMTiles archive or cloud-optimised GeoTIFF header)"#)
             .view(),
-        C::new("map.body", "Celestial Body", "Home › Add", body).params(
+        C::new("map.body", "Celestial Body", "Home › Add", body).roles(&[]).params(
             r#"{"name"?: "earth"|"moon"|"mars"|"mercury"|"venus"|"io"|"europa"|"ganymede"|"callisto"|"titan"|"pluto"|"charon" (map.bodies lists them; default: the basemap's body), "basemap"?: a planetary basemap's id (default: the body's first; USGS Imagery on the Earth) | false (adds none, keeping the web basemaps but other bodies')}"#,
         ),
-        C::new("map.bodies", "Celestial Bodies", "Home › Add", |s, _| Ok(bodies(s))).view(),
+        C::new("map.bodies", "Celestial Bodies", "Home › Add", |s, _| Ok(bodies(s))).roles(&[]).view(),
     ]
 }
 
@@ -321,7 +321,7 @@ pub(crate) fn add_with_metadata_wait(s: &mut Session, p: &Value, metadata_wait: 
     let at = if top { 0 } else { m.tiles.iter().position(|o| !o.overlay && o.over.is_none()).unwrap_or(m.tiles.len()) };
     let mut out = json!({"name": t.name, "kind": t.kind.code(), "index": at});
     if t.time_url.is_some() {
-        out["url"] = json!(t.url);
+        out["url"] = json!(crate::sources::redact(&t.url));
         out["dated"] = json!(true);
     }
     // A file added as data (a catalog's archive, kept where the user put it, excepted) frames the
