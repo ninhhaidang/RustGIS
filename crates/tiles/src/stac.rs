@@ -726,6 +726,7 @@ mod tests {
 
     #[test]
     fn bound_stac_api_catalog_and_assets_follow_only_same_origin_links() {
+        let _turn = crate::cache::turn();
         let origin = "https://stac-bound.test";
         // A binding is authority only while its runtime owns it, so install a live one.
         let token = crate::logins::activate(origin, "test-owner", crate::logins::Method::Header("X-Key".into()), "secret", false).unwrap();

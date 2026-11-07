@@ -95,6 +95,8 @@ you edit the value or choose units; click **Apply elevation** to apply the new i
   (Move, and `edit.traverse`, which draws a line or polygon from distances and bearings).
 - **Topology**: rules (must not overlap, must not have gaps, must not self-intersect, must not
   have dangles, must be covered by); Validate lists the errors, and clicking one zooms to it.
+  Beyond 85.05° they follow the geometry tools (see
+  [Geoprocessing tools](analysis.md#geoprocessing-tools), **Near the poles**).
 - **Status**: features added, changed and deleted per layer since the last save.
 
 ### Moving shared polygon vertices

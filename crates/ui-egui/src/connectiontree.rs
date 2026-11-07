@@ -820,6 +820,7 @@ mod tests {
 
     #[test]
     fn a_service_dialog_download_keeps_the_browsed_connection_not_the_current_selection() {
+        let _turn = crate::fetching::turn();
         let base = serve(|_| (200, br#"{"type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":[1,2]}}"#.to_vec()));
         let mut h = harness();
         let app = h.state_mut();
@@ -837,6 +838,7 @@ mod tests {
 
     #[test]
     fn url_downloads_use_the_explicit_basic_or_header_connection_and_record_it() {
+        let _turn = crate::fetching::turn();
         for basic in [false, true] {
             let base = serve(move |head| {
                 let head = head.to_ascii_lowercase();
@@ -1014,6 +1016,7 @@ mod tests {
 
     #[test]
     fn a_foreign_followup_does_not_adopt_that_origins_saved_login() {
+        let _turn = crate::fetching::turn();
         let mut app = RustGisApp::with_sample();
         let foreign = "https://foreign-ui-followup.invalid/points.geojson";
         let c = app
@@ -1035,13 +1038,23 @@ mod tests {
         let mut h = harness();
         let api = "https://x.org/collections";
         let tiled = r#"{"collections": [{"id": "relief", "links": [{"rel": "tilesets-map", "href": "https://x.org/relief/map/tiles"}]}]}"#;
+        let opened = h.state().session.opened;
         let step = |fallback: &str, origin: Option<&str>| {
             let slot = Slot::default();
             *slot.lock().unwrap() = Some(Err("unreachable".to_string()));
             let params = json!({"url": api, "layer": "relief (map tiles)", "text": tiled, "name": "Relief"});
-            let resolve =
-                crate::TilesResolve { params, list: "l".into(), doc: "l".into(), read: 0, vector: false, fallback: fallback.into(), slot };
-            crate::ServiceStep::Tiles { resolve, dialog: false, origin: origin.map(str::to_string) }
+            let resolve = crate::TilesResolve {
+                params,
+                list: "l".into(),
+                doc: "l".into(),
+                crossed_origin: false,
+                read: 0,
+                withheld_addresses: 0,
+                vector: false,
+                fallback: fallback.into(),
+                slot,
+            };
+            crate::ServiceStep::Tiles { resolve, dialog: false, origin: origin.map(str::to_string), opened }
         };
         let before = h.state().session.sources.recent.clone();
         h.state_mut().ui.service_steps.push(step("http://127.0.0.1/{z}/{x}/{y}", Some("Atlas")));

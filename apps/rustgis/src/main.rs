@@ -485,11 +485,14 @@ fn main() -> eframe::Result {
         .collect();
     // Installed plugins, before the first session lists commands and tools.
     let plugin_errors = rustgis_engine::cmd::plugins::load_installed();
-    let app = if args.iter().any(|a| a == "--sample") || files.is_empty() {
+    let mut app = if args.iter().any(|a| a == "--sample") || files.is_empty() {
         RustGisApp::with_sample()
     } else {
         RustGisApp::new(Session::new(Project::default()))
     };
+    // Commands run on the window's own thread: a raster read in place lands as the map draws
+    // rather than holding the window for a slow host.
+    app.session.in_place_wait = false;
     let mut services = prefs::services();
     // Autosave, in a recovery folder only the copy holding the run marker uses: a second copy
     // running alongside would offer, or overwrite, the first one's unsaved work.

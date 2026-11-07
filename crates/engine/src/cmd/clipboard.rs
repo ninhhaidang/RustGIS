@@ -20,15 +20,17 @@ pub struct Clipboard {
 
 pub fn commands() -> Vec<C> {
     vec![
-        C::new("edit.copy", "Copy", "Edit › Clipboard", |s, _| copy(s)).view().key("Mod+C").when(need_selection),
-        C::new("edit.cut", "Cut", "Edit › Clipboard", cut).key("Mod+X").when(super::design::need_editable_selection),
+        C::new("edit.copy", "Copy", "Edit › Clipboard", |s, _| copy(s)).roles(&[]).view().key("Mod+C").when(need_selection),
+        C::new("edit.cut", "Cut", "Edit › Clipboard", cut).roles(&[]).key("Mod+X").when(super::design::need_editable_selection),
         C::new("edit.paste", "Paste", "Edit › Clipboard", paste)
+            .roles(&[])
             .key("Mod+V")
             .when(super::design::need_editable)
             .params(r#"{"layer"?, "text"?: GeoJSON text (the copied features when omitted)}"#),
         C::new("edit.pasteSpecial", "Paste Special", "Edit › Clipboard", paste_special)
+            .roles(&[])
             .params(r#"{"name"?: string, "text"?: GeoJSON text (the copied features when omitted)}"#),
-        C::new("layer.copyPath", "Copy Path", "Edit › Clipboard", copy_path).view().when(need_layer).params(r#"{"layer"?}"#),
+        C::new("layer.copyPath", "Copy Path", "Edit › Clipboard", copy_path).roles(&[]).view().when(need_layer).params(r#"{"layer"?}"#),
     ]
 }
 

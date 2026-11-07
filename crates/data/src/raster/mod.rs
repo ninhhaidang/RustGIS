@@ -517,6 +517,26 @@ impl Band {
     }
 }
 
+/// The longest a raster read in place is waited for natively: its overview as a layer opens, its
+/// tiles as it is exported.
+pub const IN_PLACE_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// An alpha band's opaque value for a pixel type (`UInt16`: 65535): the type's largest, 1 for
+/// floating point (as TIFF keeps it), 255 for bytes and anything else.
+pub fn alpha_max(data_type: &str) -> f32 {
+    match data_type {
+        "Int8" => 127.0,
+        "Int16" => 32767.0,
+        "UInt16" => 65535.0,
+        "Int32" => 2_147_483_647.0,
+        "UInt32" => 4_294_967_295.0,
+        "Int64" => 9.223_372e18,
+        "UInt64" => 1.844_674_4e19,
+        "Float16" | "Float32" | "Float64" => 1.0,
+        _ => 255.0,
+    }
+}
+
 /// How a raster's bands were meant to be shown, from the file.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub enum ColorHint {
@@ -609,6 +629,39 @@ impl Raster {
         color: ColorHint,
         data_type: impl Into<String>,
     ) -> Result<Raster> {
+        Raster::build(name, width, height, bands, transform, crs, nodata, color, data_type, true)
+    }
+
+    /// [`Raster::new`] without statistics (each band's are empty): a part of a larger raster,
+    /// drawn with the whole's (a cloud-optimised GeoTIFF's view, read in place).
+    #[allow(clippy::too_many_arguments)]
+    pub fn unmeasured(
+        name: impl Into<String>,
+        width: u32,
+        height: u32,
+        bands: Vec<Vec<f32>>,
+        transform: GeoTransform,
+        crs: Crs,
+        nodata: Option<f64>,
+        color: ColorHint,
+        data_type: impl Into<String>,
+    ) -> Result<Raster> {
+        Raster::build(name, width, height, bands, transform, crs, nodata, color, data_type, false)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build(
+        name: impl Into<String>,
+        width: u32,
+        height: u32,
+        bands: Vec<Vec<f32>>,
+        transform: GeoTransform,
+        crs: Crs,
+        nodata: Option<f64>,
+        color: ColorHint,
+        data_type: impl Into<String>,
+        measure: bool,
+    ) -> Result<Raster> {
         let n = (width as usize).checked_mul(height as usize).ok_or_else(|| DataError::Format("raster too large".into()))?;
         if n == 0 || bands.is_empty() {
             return Err(DataError::Format("the raster has no pixels".into()));
@@ -625,7 +678,12 @@ impl Raster {
         let bands = bands
             .into_iter()
             .enumerate()
-            .map(|(i, data)| Band { name: format!("Band {}", i + 1), stats: BandStats::compute(&data, valid), data, classes: Vec::new() })
+            .map(|(i, data)| Band {
+                name: format!("Band {}", i + 1),
+                stats: if measure { BandStats::compute(&data, valid) } else { BandStats::default() },
+                data,
+                classes: Vec::new(),
+            })
             .collect();
         let mut r = Raster {
             name: name.into(),

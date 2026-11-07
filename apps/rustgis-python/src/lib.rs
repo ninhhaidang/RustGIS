@@ -180,9 +180,41 @@ impl Engine {
     }
 
     /// The project as `.rgis` JSON text, as `project.saveAs` writes it (what `project.openText`
-    /// opens).
+    /// opens). This save-equivalent output retains a bounded same-process restore snapshot;
+    /// repeated identical text replaces that snapshot. Unfinished imports are refused.
     fn project_json(&self, py: Python<'_>) -> PyResult<String> {
-        let result = self.with_session(py, |session| serde_json::to_string(&session.project).map_err(|e| e.to_string()));
+        let result = self.with_session(py, |session| {
+            let (text, report) = session.project.saved_text(None)?;
+            for notice in report.notices() {
+                session.notify(notice, false);
+            }
+            Ok::<_, String>(text)
+        });
+        self.flush(py);
+        result.map_err(RustGISError::new_err)
+    }
+
+    /// Private bridge output: never remembered, and never includes keys in widget state.
+    fn _peer_text(&self, py: Python<'_>) -> PyResult<(String, u32, Vec<String>)> {
+        let result = self.with_session(py, |session| {
+            let (text, report) = session.peer_text(rustgis_engine::Peer::Bridge)?;
+            let addresses = report.layer_addresses();
+            let notices = report.notices_without_layer_addresses();
+            Ok::<_, String>((text, addresses, notices))
+        });
+        self.flush(py);
+        result.map_err(RustGISError::new_err)
+    }
+
+    /// Private bridge ingress bypasses the saved-text cache and creates no User authority.
+    fn _open_peer_text(&self, py: Python<'_>, text: String) -> PyResult<()> {
+        let result = self.with_session(py, |session| {
+            let report = session.open_peer_text(rustgis_engine::Peer::Bridge, &text)?;
+            for notice in report.notices() {
+                session.notify(notice, false);
+            }
+            Ok::<_, String>(())
+        });
         self.flush(py);
         result.map_err(RustGISError::new_err)
     }

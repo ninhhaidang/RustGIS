@@ -238,7 +238,7 @@ pub const MAX_TILES: usize = 60;
 /// stretched over [−stretch, stretch].
 pub fn aef_look(bands: [usize; 3], stretch: f32) -> Look {
     let s = if stretch.is_finite() && stretch > 0.0 { stretch.min(1.0) } else { AEF_DEFAULT_STRETCH };
-    Look { bands: bands.iter().map(|b| (*b).min(63)).collect(), range: Some((-s, s)), aef: true }
+    Look { bands: bands.iter().map(|b| (*b).min(63)).collect(), range: Some((-s, s)), aef: true, cube: false }
 }
 
 /// A file's web address from the index's `s3://` one.

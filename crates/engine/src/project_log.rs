@@ -6,6 +6,29 @@ use serde_json::Value;
 
 use crate::{CmdResult, Session};
 
+/// A redacted output projection. Never use it as executable parameters or approval identity.
+pub struct LogCopy(Value);
+
+impl LogCopy {
+    /// Consumes the output-only wrapper for serialization.
+    pub fn into_log_value(self) -> Value {
+        self.0
+    }
+}
+
+/// The session log's bounded, document-aware parameter policy, shared with the agent audit.
+/// The source value is never mutated and remains the only input to execution and planning.
+pub fn log_params(params: &Value) -> LogCopy {
+    LogCopy(kept_params(params))
+}
+
+/// Cleans a structural command/tool identifier for display and audit output only.
+/// The original identifier remains the sole input to lookup, execution and approval.
+pub fn log_identifier(id: &str) -> String {
+    let public = crate::roles::identifier(id, &mut crate::durable::Report::default());
+    crate::durable::generated_text(public.as_deref().unwrap_or(id))
+}
+
 /// Now, in milliseconds since 1970 (UTC).
 pub(crate) fn now_ms() -> u64 {
     web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
@@ -119,6 +142,41 @@ fn redacted(v: &Value) -> Value {
     crate::cmd::history::redacted(&embedded_redacted(v, 0))
 }
 
+/// A bounded log-only context check for a short key beside nested connection settings.
+/// User data/documents do not make an ordinary join or lookup key a credential.
+pub(crate) fn address_context(key: &str, v: &Value, depth: usize) -> bool {
+    if depth >= 8 || matches!(key, "data" | "text" | "values" | "attributes" | "properties" | "features" | "geometry") {
+        return false;
+    }
+    match v {
+        Value::String(s) => {
+            let s = s.trim_start();
+            [
+                "http://",
+                "https://",
+                "s3://",
+                "rustgis-login:",
+                "rustgis-anonymous:",
+                "rustgis-s3:",
+                "postgres:",
+                "postgresql:",
+                "pg:",
+                "mysql:",
+                "mariadb:",
+                "mssql:",
+                "pmtiles:",
+                "cog:",
+            ]
+            .iter()
+            .any(|prefix| s.get(..prefix.len()).is_some_and(|head| head.eq_ignore_ascii_case(prefix)))
+        }
+        Value::Array(values) => values.iter().take(LOG_LIST_ITEMS).any(|v| address_context("", v, depth + 1)),
+        Value::Object(values) => values.iter().any(|(key, v)| address_context(key, v, depth + 1)),
+        _ => false,
+    }
+}
+
+/// Scrubs bounded nested log parameters and JSON embedded in text before the log retains them.
 fn embedded_redacted(v: &Value, depth: usize) -> Value {
     match v {
         Value::String(t) => {
@@ -126,7 +184,17 @@ fn embedded_redacted(v: &Value, depth: usize) -> Value {
             Value::String(sql_secrets_removed(&t))
         }
         Value::Array(a) if depth < 8 => Value::Array(a.iter().map(|x| embedded_redacted(x, depth + 1)).collect()),
-        Value::Object(o) if depth < 8 => Value::Object(o.iter().map(|(k, x)| (k.clone(), embedded_redacted(x, depth + 1))).collect()),
+        Value::Object(o) if depth < 8 => Value::Object(
+            o.iter()
+                .map(|(k, x)| {
+                    // Preserve History's plain-key refinement; the log-only fields share diagnostics'
+                    // canonical list. Clipping already bounds recursion and text before this pass.
+                    let sensitive =
+                        rustgis_data::address::normalized_name(k).as_deref() != Some("key") && rustgis_data::address::log_sensitive(k);
+                    (k.clone(), if sensitive { Value::String(String::new()) } else { embedded_redacted(x, depth + 1) })
+                })
+                .collect(),
+        ),
         other => other.clone(),
     }
 }

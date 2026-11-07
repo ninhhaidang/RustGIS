@@ -15,7 +15,7 @@ use crate::{CmdResult, CommandSpec as C, Session};
 pub fn commands() -> Vec<C> {
     vec![
         // Not a view command: going to a feature selects it.
-        C::new("map.search", "Search", "Map", search_cmd).params(
+        C::new("map.search", "Search", "Map", search_cmd).roles(&[]).params(
             r#"{"query": "a latitude and longitude (40.7, -74.0; 40°42'N 74°0'W), a layer, a bookmark or a value in a layer's table", "limit"?: 1–50, "go"?: true (the first hit) | index}"#,
         ),
     ]

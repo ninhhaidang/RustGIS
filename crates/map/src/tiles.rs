@@ -570,6 +570,66 @@ pub fn host_of(url: &str) -> Option<&str> {
     Some(host.split(':').next().unwrap_or(host))
 }
 
+impl TileLayer {
+    /// All persisted tile addresses, with the archive URL also classified as a local path.
+    pub(crate) fn output_slots(&self) -> Vec<(crate::TileRole, &str, bool)> {
+        let TileLayer {
+            name: _,
+            kind: _,
+            url,
+            bounds: _,
+            subdomains: _,
+            min_zoom: _,
+            max_zoom: _,
+            tile_size: _,
+            tms: _,
+            attribution: _,
+            visible: _,
+            opacity: _,
+            overlay: _,
+            over: _,
+            blend: _,
+            id: _,
+            layers: _,
+            style_layers: _,
+            hidden_layers: _,
+            time_url,
+            time_at: _,
+            time_urls,
+            time_hidden: _,
+            error: _,
+            feature_info: _,
+            legends,
+            connection: _,
+            anonymous: _,
+            expanded: _,
+            selected: _,
+            single_image: _,
+        } = self;
+        use crate::TileRole as R;
+        let mut out = vec![(R::Url, url.as_str(), self.archive_file().is_some())];
+        if let Some(v) = time_url {
+            out.push((R::TimeUrl, v.as_str(), false));
+        }
+        out.extend(time_urls.iter().enumerate().map(|(i, (_, v))| (R::TimeAt(i), v.as_str(), false)));
+        out.extend(legends.iter().enumerate().map(|(i, v)| {
+            let rustgis_data::ogc::Legend { url, min_scale: _, max_scale: _ } = v;
+            (R::Legend(i), url.as_str(), false)
+        }));
+        out
+    }
+
+    /// Resolves a fixed location, independent of the address's current spelling.
+    pub(crate) fn output_slot_mut(&mut self, role: crate::TileRole) -> Option<&mut String> {
+        match role {
+            crate::TileRole::Url => Some(&mut self.url),
+            crate::TileRole::TimeUrl => self.time_url.as_mut(),
+            crate::TileRole::TimeAt(i) => Some(&mut self.time_urls.get_mut(i)?.1),
+            crate::TileRole::Legend(i) => Some(&mut self.legends.get_mut(i)?.url),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

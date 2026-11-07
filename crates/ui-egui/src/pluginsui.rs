@@ -1314,7 +1314,8 @@ mod tests {
         let mut app = app_fetching(|_| Err("still unreachable".into()));
         app.plugins.unloaded.push(Unloaded { saved: record("demo", "0"), reason: "unreachable".into() });
         let mut fonts = false;
-        let mut h = egui_kittest::Harness::builder().with_size(vec2(560.0, 600.0)).build_ui_state(
+        // A widget shown for the first time asks for one more pass to take its style.
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(560.0, 600.0)).with_max_steps(8).build_ui_state(
             move |ui, app: &mut RustGisApp| {
                 if !fonts {
                     crate::theme::install_fonts(ui.ctx(), &[], None);

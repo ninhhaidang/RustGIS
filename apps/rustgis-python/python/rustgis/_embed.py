@@ -67,6 +67,8 @@ class _Embedded(_Api):
         # Notices waiting to be read. The app's messages may arrive on another thread (Jupyter's).
         self._held: List[Tuple[str, bool]] = []
         self._held_lock = threading.Lock()
+        self._sent_keys = 0
+        self._sent_notices: List[str] = []
         if sample:
             self._session.run("project.sample")
         if data is not None:
@@ -201,7 +203,14 @@ class _Embedded(_Api):
     def _push(self) -> None:
         """Sends the session's project to the app, when it changed."""
         try:
-            text = self._session.project_json()
+            text, keys, notices = self._session._engine._peer_text()
+            # A new loss may leave the public project text unchanged.
+            if text != self._project or notices != self._sent_notices:
+                self._hold([(notice, False) for notice in notices])
+            self._sent_notices = notices
+            if keys and (text != self._project or keys > self._sent_keys):
+                self._hold([(f"{keys} layer address(es) went to the map widget without their keys, tokens, passwords or URL fragments; restore missing values if needed", False)])
+            self._sent_keys = keys
         except RustGISError as e:
             self._hold([(f"couldn't show the project in the app: {e}", True)])
             return
@@ -232,16 +241,15 @@ class _Embedded(_Api):
             text = content.get("text")
             if not isinstance(text, str) or text == self._project:
                 return
-            # Opening it reports "Opened ...": not news here, so it is dropped, and what was
-            # waiting to be read is kept.
+            # Peer input is an import: keep its containment notices and invalidate old trust.
             self._hold(self._session.notices())
             try:
-                self._session.run("project.openText", text=text)
+                self._session._engine._open_peer_text(text)
             except RustGISError as e:
                 self._hold([(f"the app's project couldn't be read: {e}", True)])
                 return
             finally:
-                self._session.notices()
+                self._hold(self._session.notices())
             # The app's own text, not the session's re-serialised copy: the app then sees its
             # project and doesn't open it again.
             self._project = text

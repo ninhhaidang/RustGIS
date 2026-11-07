@@ -780,6 +780,7 @@ mod tests {
     fn s3_saved_picker_and_connection_entry_reauthenticate_a_foreign_session_login() {
         use rustgis_engine::data::secrets::MemorySecrets;
         use std::sync::Arc;
+        let _turn = crate::fetching::turn();
         let app = || {
             RustGisApp::with_sample().with_services(crate::Services { secrets: Some(Arc::new(MemorySecrets::new())), ..Default::default() })
         };

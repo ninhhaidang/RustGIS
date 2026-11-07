@@ -1732,6 +1732,8 @@ mod tests {
             tiles_pending: false,
             data_pending: false,
             tile_errors: vec![],
+            partial: vec![],
+            pending_in_place: vec![],
             tilt: None,
             clips: vec![],
         };
@@ -2160,6 +2162,7 @@ mod tests {
         use rustgis_engine::map::{TileKind, TileLayer};
         use rustgis_engine::render::rustgis_tiles::mvt::{Feature, GeomKind, Layer, Tile, Value, encode};
         use rustgis_engine::render::rustgis_tiles::pmtiles::{NewArchive, TileType, write};
+        let _turn = crate::fetching::turn();
         // Zoom 1: each tile's park, see-through, reaching past the tile into its buffer (as real
         // tiles do; drawn twice where tiles overlap unless each is clipped to its square), a road
         // and a dashed path in it.
@@ -2346,6 +2349,8 @@ mod tests {
             tiles_pending: false,
             data_pending: false,
             tile_errors: vec![],
+            partial: vec![],
+            pending_in_place: vec![],
             tilt: None,
             clips: vec![],
         };

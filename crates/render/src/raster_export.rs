@@ -12,6 +12,8 @@ const MAX_TILES: u64 = 512;
 const MAX_BYTES: usize = 64 * 1024 * 1024;
 const TILE_SIZE: u32 = 256;
 const MAX_LAT: f64 = 85.051_128_779_806_6;
+/// Waits in a row that bring nothing new before an export stops waiting for them.
+const IDLE_WAITS: usize = 6;
 
 /// Half-open tile interval, retaining a tile for a zero-width extent.
 fn tile_range(start: f64, end: f64, n: u32) -> (u32, u32) {
@@ -57,6 +59,8 @@ pub fn export(layer: &RasterLayer, min_zoom: u8, max_zoom: u8, opacity: f32) -> 
         ranges.push((z, x0, x1, y0, y1));
     }
     let stats = layer.masked_stats();
+    // A raster read in place waits for its tiles natively, two minutes at most in all.
+    let deadline = web_time::Instant::now() + rustgis_data::raster::IN_PLACE_WAIT;
     let mut tiles = Vec::new();
     let mut bytes = 0usize;
     for (z, x0, x1, y0, y1) in ranges {
@@ -66,17 +70,44 @@ pub fn export(layer: &RasterLayer, min_zoom: u8, max_zoom: u8, opacity: f32) -> 
                 let center = Coord::new(-half + (f64::from(x) + 0.5) * size, half - (f64::from(y) + 0.5) * size);
                 let view =
                     View { width: 256.0, height: 256.0, pixels_per_point: 1.0, camera: Camera::new(center, size / 256.0), sky: false };
+                let place = raster::Place::Flat(&Flat::Mercator, "EPSG:3857");
+                let stats = stats.as_deref().map(Vec::as_slice);
                 let mut image = Pixmap::new(TILE_SIZE, TILE_SIZE).ok_or("couldn't allocate a raster tile")?;
-                raster::draw(
-                    &mut image,
-                    r,
-                    &layer.style,
-                    stats.as_deref().map(Vec::as_slice),
-                    &view,
-                    opacity,
-                    true,
-                    raster::Place::Flat(&Flat::Mercator, "EPSG:3857"),
-                );
+                match layer.path.as_deref().filter(|_| layer.in_place) {
+                    // Read in place: at the tile's level, once its parts have arrived (natively;
+                    // the browser draws what has).
+                    Some(address) => {
+                        let mut idle = 0;
+                        loop {
+                            let drawn_at = crate::rustgis_tiles::cache::generation();
+                            match raster::draw_in_place(&mut image, address, r, &layer.style, stats, &view, opacity, true, place) {
+                                Ok(false) => break,
+                                Ok(true) => {}
+                                // Drawn from less than the tile needs: not written in its place.
+                                Err(e) => return Err(format!("{}: {e}, so the archive isn't written", r.name)),
+                            }
+                            // An archive of the overview where the image is wanted isn't written.
+                            let left = deadline.saturating_duration_since(web_time::Instant::now());
+                            if cfg!(target_arch = "wasm32") {
+                                return Err(format!(
+                                    "{}: its tiles are still being read (this export asked for the rest): export again once they are in",
+                                    r.name
+                                ));
+                            }
+                            if left.is_zero() || idle >= IDLE_WAITS {
+                                return Err(format!("{}: its tiles didn't all arrive, so the archive isn't written", r.name));
+                            }
+                            crate::rustgis_tiles::cache::wait_for_news(drawn_at, left.min(web_time::Duration::from_secs(30)));
+                            if crate::rustgis_tiles::cache::generation() == drawn_at {
+                                idle += 1;
+                            } else {
+                                idle = 0;
+                            }
+                            image.fill(tiny_skia::Color::TRANSPARENT);
+                        }
+                    }
+                    None => raster::draw(&mut image, r, &layer.style, stats, &view, opacity, true, place),
+                }
                 if image.data().as_chunks::<4>().0.iter().all(|pixel| pixel[3] == 0) {
                     continue;
                 }
@@ -121,6 +152,28 @@ mod tests {
         assert_eq!(tile_range(start, start, n), (1000, 1000));
         let (first, last) = tile_range(start, end, n);
         assert_eq!((last - first + 1).pow(2), 484);
+    }
+
+    /// A raster read in place whose image can't be read isn't exported from its overview.
+    #[test]
+    #[allow(clippy::panic)]
+    fn an_in_place_raster_unread_is_not_exported_from_its_overview() {
+        let mut overview = Raster::new(
+            "gone",
+            4,
+            4,
+            vec![(0..16).map(|v| v as f32).collect()],
+            GeoTransform { origin_x: -180.0, origin_y: 80.0, pixel_width: 90.0, pixel_height: -40.0 },
+            Crs::LonLat,
+            None,
+            ColorHint::Gray,
+            "Float32",
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
+        overview.overview = Some((4096, 4096));
+        let layer = RasterLayer::in_place(overview, "http://127.0.0.1:9/gone.tif");
+        let e = export(&layer, 2, 2, 1.0).err().unwrap_or_else(|| panic!("an archive of the overview"));
+        assert!(e.contains("the archive isn't written"), "{e}");
     }
 
     #[test]

@@ -10,14 +10,14 @@ use crate::{CmdResult, CommandSpec as C, Session};
 
 pub fn commands() -> Vec<C> {
     vec![
-        C::new("sources.list", "List Data Sources", "Home › Add › Data Sources", list).view(),
-        C::new("sources.save", "Save Data Source", "Home › Add › Data Sources", |s, p| keep(s, p, "saved")).view().params(
+        C::new("sources.list", "List Data Sources", "Home › Add › Data Sources", list).roles(&[]).view(),
+        C::new("sources.save", "Save Data Source", "Home › Add › Data Sources", |s, p| keep(s, p, "saved")).roles(&[]).view().params(
             r#"{"kind": "service"|"database"|"stac"|"file"|"url"|"tiles"|"zarr"|"s3", "address": "its path, web address or connection (never with a password)", "name"?: text, "extra"?: {"type"?: service type, "layer"?: text}}"#,
         ),
-        C::new("sources.favourite", "Favourite Data Source", "Home › Add › Data Sources", favourite)
+        C::new("sources.favourite", "Favourite Data Source", "Home › Add › Data Sources", favourite).roles(&[])
             .view()
             .params(r#"{"kind": as sources.save, "address": text, "name"?: text, "extra"?: object, "on"?: bool (false: no longer a favourite)}"#),
-        C::new("sources.remove", "Remove Data Source", "Home › Add › Data Sources", remove)
+        C::new("sources.remove", "Remove Data Source", "Home › Add › Data Sources", remove).roles(&[])
             .view()
             .params(r#"{"list": "saved"|"favourites"|"recent", "kind": text, "address": text}"#),
     ]

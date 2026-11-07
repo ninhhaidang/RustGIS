@@ -28,10 +28,10 @@ pub struct LayerClip {
 
 pub fn commands() -> Vec<C> {
     vec![
-        C::new("layer.copy", "Copy Layers", "Layers", copy).view().params(
+        C::new("layer.copy", "Copy Layers", "Layers", copy).roles(&[]).view().params(
             r#"{"layer"?: name|id | [name|id, …] (default: the active layer, unless a group is given), "group"?: name|id | [name|id, …] (the group with all its layers and subgroups)}"#,
         ),
-        C::new("layer.paste", "Paste Layers", "Layers", paste).when(need_copied).params(
+        C::new("layer.paste", "Paste Layers", "Layers", paste).roles(&[]).when(need_copied).params(
             r#"{"map"?: name (default: the map in view), "group"?: name|id (into that group, at its top; copied groups go in it too), "to"?: position (0 = top, the default; never inside a group: above it)}"#,
         ),
     ]

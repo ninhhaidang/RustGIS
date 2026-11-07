@@ -1224,6 +1224,18 @@ fn mcp_protocol_errors() {
     assert_eq!(rpc(&server, &mut s, "tools/call", json!({"name": "no_such_tool"}))["error"]["code"], -32602);
     assert_eq!(rpc(&server, &mut s, "tools/call", json!({"name": "list_layers", "arguments": [1]}))["error"]["code"], -32602);
     assert_eq!(rpc(&server, &mut s, "resources/read", json!({"uri": "rustgis://docs/nope.md"}))["error"]["code"], -32002);
+    // Protocol validation fails before tool dispatch; its generated text is public too.
+    let private = "https://rpc-error.invalid/a?token=RGSYNTH_rpc_error&layer=roads";
+    for (method, params, code) in [
+        ("tools/call", json!({"name":private,"arguments":{}}), -32602),
+        ("resources/read", json!({"uri":private}), -32002),
+        (private, json!({}), -32601),
+    ] {
+        let reply = rpc(&server, &mut s, method, params);
+        assert_eq!(reply["error"]["code"], code);
+        assert!(!reply["error"]["message"].as_str().unwrap().contains("RGSYNTH_rpc_error"));
+    }
+    assert_eq!(rpc(&server, &mut s, "ping", json!({})), json!({}));
     // Batches: one reply per request, none for notifications only.
     let batch = r#"[{"jsonrpc":"2.0","id":1,"method":"ping"},{"jsonrpc":"2.0","method":"notifications/initialized"},{"jsonrpc":"2.0","id":2,"method":"nope"}]"#;
     let r: Value = serde_json::from_str(&server.handle(&mut s, batch).unwrap()).unwrap();
@@ -4327,4 +4339,29 @@ fn geolibre_download_callbacks_require_import_approval() {
         let call = ToolCall { id: key.into(), name: "run_command".into(), args: json!({"command":"ui.addUrl","params":params}) };
         assert!(tools::gate(&s, &call).is_some(), "{key}");
     }
+}
+
+/// A peer project invalidates queued work and replies while keeping the readable conversation.
+#[test]
+fn peer_replacement_cancels_approvals_and_stale_replies() {
+    let mut s = sample();
+    let mut agent = Agent::new(cfg("openai"), &s);
+    assert!(matches!(agent.ask("export the map", &s), Step::Send(_)));
+    let pending =
+        call("peer-old", "run_command", json!({"command":"share.exportMap", "params":{"path":"RGSYNTH_never_written_20261103.png"}}));
+    assert_eq!(agent.receive(agent.generation(), ok(pending), &mut s), Step::Confirm);
+    let generation = agent.generation();
+    let transcript = agent.transcript.len();
+    agent.project_replaced();
+    assert!(agent.generation() != generation && !agent.busy() && agent.pending(&s).is_none());
+    assert!(agent.transcript.len() >= transcript);
+    let _ = agent.receive(generation, ok(say("stale")), &mut s);
+    assert!(!agent.busy() && agent.pending(&s).is_none());
+    assert!(matches!(agent.ask("start a new request", &s), Step::Send(_)));
+    let current = agent.generation();
+    let transcript = agent.transcript.len();
+    let _ = agent.receive(generation, ok(say("stale while waiting")), &mut s);
+    assert_eq!(agent.generation(), current);
+    assert!(agent.waiting() && agent.pending(&s).is_none());
+    assert_eq!(agent.transcript.len(), transcript);
 }

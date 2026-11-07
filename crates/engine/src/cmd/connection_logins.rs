@@ -23,7 +23,7 @@ pub(crate) fn restore_active(s: &mut Session) {
 fn groups(s: &Session) -> std::collections::BTreeMap<(&'static str, String), Vec<u32>> {
     let mut groups = std::collections::BTreeMap::<_, Vec<_>>::new();
     for l in s.project.maps.iter().flat_map(|m| &m.layers) {
-        let Some(src) = l.source.as_ref().filter(|src| !src.is_open()) else { continue };
+        let Some(src) = l.source.as_ref().filter(|src| !src.is_open() && !src.reconnect_required()) else { continue };
         let Some((_, db)) = layer_database(src) else { continue };
         let Some(key) = database_key(&crate::sources::redact(db)) else { continue };
         groups.entry(key).or_default().push(l.id);
@@ -114,7 +114,7 @@ fn resolve(s: &mut Session, only: Option<&[(&'static str, String)]>) {
         match super::credential(s, &c) {
             Ok(Some((pw, saved))) => {
                 super::activate(s, &c, pw.expose());
-                super::reopen(s, &c, saved, !saved, true);
+                super::reopen(s, &c, saved, !saved, super::ReopenMode::Automatic);
             }
             Ok(None) => {
                 duckdb::set_connection_password(&key, &c.id, None);

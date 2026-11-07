@@ -442,6 +442,8 @@ pub struct Service {
     /// Some advertised collections were left out (past the listing limit, or with an items
     /// address RustGIS doesn't fetch): the listing isn't the whole service.
     pub incomplete: bool,
+    /// Destinations that did not inherit one or more query pairs; reported by the caller.
+    pub withheld_addresses: u32,
 }
 
 /// Most layers listed from one service.
@@ -531,7 +533,7 @@ fn is_data_link(link: &serde_json::Value) -> bool {
 }
 
 /// Chooses JSON before an untyped data link, without guessing an endpoint or copying credentials.
-fn collections_link(address: &str, links: &[serde_json::Value]) -> Option<String> {
+fn collections_link(address: &str, links: &[serde_json::Value]) -> Option<(String, bool)> {
     let base = url::Url::parse(crate::login_address::inner(address)).ok()?;
     links
         .iter()
@@ -553,7 +555,12 @@ fn collections_link(address: &str, links: &[serde_json::Value]) -> Option<String
             next.set_fragment(None);
             // A typed JSON link already selects its representation; its query is authoritative.
             let next: String = if priority == 0 { next.into() } else { json_url(next.as_str()) };
-            Some((priority, crate::login_address::inherit(address, &next)))
+            let inherited =
+                crate::address::inherit_query(crate::login_address::inner(address), &next, crate::address::Relation::Advertised, &["f"]);
+            // The chosen representation/link stays authoritative. Count settings it omits,
+            // including safe options we deliberately did not append to this advertised link.
+            let withheld = inherited.withheld || inherited.url != next;
+            Some((priority, (crate::login_address::inherit(address, &next), withheld)))
         })
         .min_by_key(|(priority, _)| *priority)
         .map(|(_, url)| url)
@@ -589,7 +596,8 @@ fn query_value<'a>(url: &'a str, key: &str) -> Option<&'a str> {
     let q = url.split('#').next()?.split_once('?')?.1;
     q.split('&').find_map(|kv| {
         let (k, v) = kv.split_once('=').unwrap_or((kv, ""));
-        k.eq_ignore_ascii_case(key).then_some(v)
+        (if key == "token" { crate::address::normalized_name(k).as_deref() == Some("token") } else { k.eq_ignore_ascii_case(key) })
+            .then_some(v)
     })
 }
 
@@ -2275,7 +2283,8 @@ fn arcgis(url: &str, v: &serde_json::Value) -> Result<Service, String> {
             max_paged_features()
         ));
     }
-    // A secured service's token goes with every request.
+    // Offers are constructed under the service. A suffix supplied by its document still has
+    // to pass the raw-path check before it may receive the service's token.
     if let Some(token) = query_value(url, "token").filter(|t| !t.is_empty()) {
         for l in &mut service.layers {
             match &mut l.offer {
@@ -2284,7 +2293,15 @@ fn arcgis(url: &str, v: &serde_json::Value) -> Result<Service, String> {
                 | Offer::Style { url: u }
                 | Offer::VectorTiles { template: u, .. }
                 | Offer::Service { url: u }
-                | Offer::Coverage(Coverage { endpoint: u, .. }) => *u = with_query(u, &format!("token={token}")),
+                | Offer::Coverage(Coverage { endpoint: u, .. }) => {
+                    if crate::address::Scope::of(crate::login_address::inner(url))
+                        .is_some_and(|scope| scope.covers_below(crate::login_address::inner(u)))
+                    {
+                        *u = with_query(u, &format!("token={token}"));
+                    } else {
+                        service.withheld_addresses = service.withheld_addresses.saturating_add(1);
+                    }
+                }
             }
         }
     }
@@ -2395,10 +2412,14 @@ fn ogc_api(url: &str, v: &serde_json::Value) -> Result<Service, String> {
         let title = v.get("title").and_then(|t| t.as_str()).unwrap_or_default().to_string();
         let mut service = Service { kind: "OGC API Tiles".into(), title: title.clone(), ..Service::default() };
         let links = v.get("links").and_then(|l| l.as_array()).cloned().unwrap_or_default();
-        service.collections_url = collections_link(url, &links);
+        if let Some((next, withheld)) = collections_link(url, &links) {
+            service.collections_url = Some(next);
+            service.withheld_addresses = u32::from(withheld);
+        }
         let name = if title.is_empty() { "tiles".to_string() } else { title };
         // The dataset's layers aren't listed here, so its vector tiles can't be styled: map tiles only.
-        if let Some((t, list)) = tileset(url, &links, TileRel::Map) {
+        if let Some((t, list, withheld)) = tileset(url, &links, TileRel::Map) {
+            service.withheld_addresses = service.withheld_addresses.saturating_add(u32::from(withheld));
             service.layers.push(ServiceLayer {
                 zooms: None,
                 name: "map".into(),
@@ -2452,7 +2473,8 @@ fn ogc_api(url: &str, v: &serde_json::Value) -> Result<Service, String> {
         // tiles' layer is named after the collection, as the standard has it.
         let map = tileset(url, &links, TileRel::Map);
         let vector = tileset(url, &links, TileRel::Vector);
-        if let Some((t, list)) = &map {
+        if let Some((t, list, withheld)) = &map {
+            service.withheld_addresses = service.withheld_addresses.saturating_add(u32::from(*withheld));
             service.layers.push(ServiceLayer {
                 zooms: None,
                 name: format!("{id} (map tiles)"),
@@ -2465,7 +2487,8 @@ fn ogc_api(url: &str, v: &serde_json::Value) -> Result<Service, String> {
                 legends: Vec::new(),
             });
         }
-        if let Some((t, list)) = &vector {
+        if let Some((t, list, withheld)) = &vector {
+            service.withheld_addresses = service.withheld_addresses.saturating_add(u32::from(*withheld));
             service.layers.push(ServiceLayer {
                 zooms: None,
                 name: format!("{id} (vector tiles)"),
@@ -2578,9 +2601,9 @@ enum TileRel {
 /// `tilesets-vector` link: the template at the usual path under the tileset list
 /// (`…/WebMercatorQuad/{tileMatrix}/{tileRow}/{tileCol}`), and the list's address (JSON), whose
 /// WebMercatorQuad tileset advertises the template [`resolve_tiles`] reads (the usual path is what
-/// is used when that can't be read). Both keep the link's query (a token, a collections choice),
-/// all but `f`.
-fn tileset(from: &str, links: &[serde_json::Value], which: TileRel) -> Option<(String, String)> {
+/// is used when that can't be read). The constructed template keeps the link's query except
+/// `f` only under its checked source path; the third result counts a withheld destination.
+fn tileset(from: &str, links: &[serde_json::Value], which: TileRel) -> Option<(String, String, bool)> {
     let suffix = match which {
         TileRel::Map => "tilesets-map",
         TileRel::Vector => "tilesets-vector",
@@ -2604,23 +2627,17 @@ fn tileset(from: &str, links: &[serde_json::Value], which: TileRel) -> Option<(S
         TileRel::Vector => format!("{at}/WebMercatorQuad/{{z}}/{{y}}/{{x}}?f=mvt"),
     };
     let list = if query_value(&href, "f").is_some() { href.clone() } else { with_query(&href, "f=json") };
-    Some((carry_query(&template, &href), list))
+    let inherited = crate::address::inherit_query(
+        crate::login_address::inner(&href),
+        crate::login_address::inner(&template),
+        crate::address::Relation::Constructed,
+        &["f"],
+    );
+    Some((crate::login_address::inherit(&template, &inherited.url), list, inherited.withheld))
 }
 
-/// `template` with the query parameters of `link` it doesn't have, but `f` (the representation
-/// the link was for).
-fn carry_query(template: &str, link: &str) -> String {
-    let q = link.split('#').next().and_then(|u| u.split_once('?')).map(|(_, q)| q).unwrap_or("");
-    let mut out = template.to_string();
-    for kv in q.split('&').take(32) {
-        let k = kv.split_once('=').map(|(k, _)| k).unwrap_or(kv);
-        if kv.is_empty() || k.eq_ignore_ascii_case("f") || query_value(&out, k).is_some() || kv.contains(['{', '}']) {
-            continue;
-        }
-        out = with_query(&out, kv);
-    }
-    out
-}
+/// Notice template shared by native discovery and the translated asynchronous UI resolver.
+pub const QUERY_WITHHELD_NOTICE: &str = "{n} address(es) the service listed didn't get its keys or other settings: RustGIS sends those only to addresses it builds itself from the one given; add such an address with its own key if it needs one";
 
 /// What an OGC API tiles document says on the way to a tile template: the template, or the
 /// address of the document to read next (a tileset list's WebMercatorQuad tileset).
@@ -2630,15 +2647,43 @@ pub enum TilesStep {
     Next(String),
 }
 
+/// One discovery result and the number of destinations that lost query settings. Callers must
+/// report this count, including when a later fetch fails and falls back to a constructed URL.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TilesResolution {
+    pub step: TilesStep,
+    pub withheld_addresses: u32,
+}
+
+/// Applies the advertised-link policy; the document cannot claim a constructed relationship.
+fn advertised_tiles(list: &str, to: &str, next: bool) -> TilesResolution {
+    let inherited = crate::address::inherit_query(
+        crate::login_address::inner(list),
+        crate::login_address::inner(to),
+        crate::address::Relation::Advertised,
+        &["f"],
+    );
+    // Preserve only the destination's binding: a foreign document cannot recover a login
+    // merely by linking back to the original query source's origin.
+    let url = crate::login_address::inherit(to, &inherited.url);
+    let step = if next {
+        TilesStep::Next(if query_value(&url, "f").is_some() { url } else { with_query(&url, "f=json") })
+    } else {
+        TilesStep::Template(url)
+    };
+    TilesResolution { step, withheld_addresses: u32::from(inherited.withheld) }
+}
+
 /// One step of reading an OGC API tile template: `body` is the tileset list (or a tileset)
-/// fetched from `doc`; `list` is the list's address, whose query the template keeps. `None` when
+/// fetched from `doc`; `list` is the query source. Advertised links receive SAFE_OPTIONS only;
+/// withheld settings are counted for the caller's notice. `None` when
 /// the document names no WebMercatorQuad tileset or tile template.
-pub fn resolve_tiles(list: &str, doc: &str, body: &[u8], vector: bool) -> Option<TilesStep> {
+pub fn resolve_tiles(list: &str, doc: &str, body: &[u8], vector: bool) -> Option<TilesResolution> {
     let v: serde_json::Value = serde_json::from_slice(body).ok()?;
     let links = |v: &serde_json::Value| v.get("links").and_then(|l| l.as_array()).cloned().unwrap_or_default();
     let Some(sets) = v.get("tilesets").and_then(|t| t.as_array()) else {
         // A tileset: its tile template.
-        return item_template(doc, &links(&v), vector).map(|t| TilesStep::Template(carry_query(&t, list)));
+        return item_template(doc, &links(&v), vector).map(|t| advertised_tiles(list, &t, false));
     };
     let mercator = |t: &serde_json::Value| {
         let tiling = links(t);
@@ -2662,14 +2707,13 @@ pub fn resolve_tiles(list: &str, doc: &str, body: &[u8], vector: bool) -> Option
     let t = sets.iter().take(200).find(|t| mercator(t) && kind_fits(t))?;
     let ls = links(t);
     if let Some(template) = item_template(doc, &ls, vector) {
-        return Some(TilesStep::Template(carry_query(&template, list)));
+        return Some(advertised_tiles(list, &template, false));
     }
     let next = ls
         .iter()
         .find(|l| l.get("rel").and_then(|r| r.as_str()).is_some_and(|r| r == "self" || r.ends_with("/tileset")))
         .and_then(|l| resolve(doc, l.get("href")?.as_str()?))?;
-    let next = carry_query(&next, list);
-    Some(TilesStep::Next(if query_value(&next, "f").is_some() { next } else { with_query(&next, "f=json") }))
+    Some(advertised_tiles(list, &next, true))
 }
 
 /// A tileset's advertised tile template (its `item` link, `{tileMatrix}/{tileRow}/{tileCol}`) as
@@ -3956,11 +4000,12 @@ mod tests {
         let address = crate::login_address::bind(binding, origin, "https://maps.example.org/api?key=a%2Fb").unwrap();
         for href in ["/collections", "https://MAPS.example.org:443/collections"] {
             let links = serde_json::json!([{"rel":"data","type":"application/json","href":href}]);
-            let next = collections_link(&address, links.as_array().unwrap()).unwrap();
+            let (next, withheld) = collections_link(&address, links.as_array().unwrap()).unwrap();
             assert_eq!(crate::login_address::parse(&next).unwrap().unwrap().binding, binding);
+            assert!(withheld, "the advertised destination omits the original key");
         }
         let links = serde_json::json!([{"rel":"data","type":"application/json","href":"https://other.example.org/collections"}]);
-        assert_eq!(collections_link(&address, links.as_array().unwrap()).unwrap(), "https://other.example.org/collections");
+        assert_eq!(collections_link(&address, links.as_array().unwrap()).unwrap(), ("https://other.example.org/collections".into(), true));
     }
 
     #[test]
@@ -6190,6 +6235,21 @@ mod tests {
         let s = parse("https://gis.example.org/arcgis/rest/services/P/FeatureServer?token=abc", fs).unwrap();
         let Offer::Features { url } = &s.layers[0].offer else { panic!() };
         assert!(url.ends_with("&token=abc"), "{url}");
+        // A bound service constructs the same requests while retaining only its own login.
+        for address in [
+            "https://gis.example.org/arcgis/rest/services/P/FeatureServer",
+            "https://gis.example.org/arcgis/rest/services/P/FeatureServer?token=abc",
+        ] {
+            let expected = parse(address, fs).unwrap();
+            let bound = crate::login_address::bind("0123456789abcdef", "https://gis.example.org", address).unwrap();
+            let service = parse(&bound, fs).unwrap();
+            let Offer::Features { url } = &service.layers[0].offer else { panic!("features expected") };
+            let offered = crate::login_address::parse(url).unwrap().unwrap();
+            assert_eq!((offered.binding, offered.origin), ("0123456789abcdef", "https://gis.example.org"));
+            let Offer::Features { url: expected } = &expected.layers[0].offer else { panic!("features expected") };
+            assert_eq!(offered.url, expected, "{address}");
+            assert_eq!(service.withheld_addresses, 0, "{address}");
+        }
     }
 
     #[test]
@@ -6248,6 +6308,18 @@ mod tests {
         )
         .unwrap();
         assert_eq!(chosen.collections_url.as_deref(), Some("https://example.org/json"));
+    }
+
+    #[test]
+    fn collections_links_count_only_settings_the_selected_link_omits() {
+        let body = br#"{"links":[{"rel":"data","type":"application/json","href":"/catalog?f=json"}]}"#;
+        for (from, count) in
+            [("https://collections.invalid/root?f=json", 0), ("https://collections.invalid/root?f=json&token=RGSYNTH_link", 1)]
+        {
+            let service = parse(from, body).unwrap();
+            assert_eq!(service.collections_url.as_deref(), Some("https://collections.invalid/catalog?f=json"));
+            assert_eq!(service.withheld_addresses, count);
+        }
     }
 
     #[test]
@@ -6328,6 +6400,25 @@ mod tests {
     }
 
     #[test]
+    fn bound_tiles_keep_query_rules_without_rebinding_after_a_foreign_hop() {
+        let origin = "https://x.org";
+        let bound = crate::login_address::bind("0123456789abcdef", origin, "https://x.org/c").unwrap();
+        let document = br#"{"collections":[{"id":"roads","links":[{"rel":"tilesets-map","href":"https://x.org/c/roads/tiles?token=RGSYNTH_tiles_r15&f=json"}]}]}"#;
+        let service = parse(&bound, document).unwrap();
+        let Offer::Tiles { template } = &service.layers[0].offer else { panic!("tiles expected") };
+        let template = crate::login_address::parse(template).unwrap().unwrap();
+        assert_eq!(template.url, "https://x.org/c/roads/tiles/WebMercatorQuad/{z}/{y}/{x}?token=RGSYNTH_tiles_r15");
+        assert_eq!(service.withheld_addresses, 0);
+        let list = service.layers[0].tilesets.as_deref().unwrap();
+        let foreign = br#"{"links":[{"rel":"item","type":"image/png","href":"https://x.org/back/{tileMatrix}/{tileRow}/{tileCol}.png"}]}"#;
+        let resolution = resolve_tiles(list, "https://foreign-r15.example.invalid/tiles", foreign, false).unwrap();
+        let TilesStep::Template(url) = resolution.step else { panic!("template expected") };
+        assert_eq!(url, "https://x.org/back/{z}/{y}/{x}.png");
+        assert!(crate::login_address::parse(&url).unwrap().is_none());
+        assert_eq!(resolution.withheld_addresses, 1);
+    }
+
+    #[test]
     fn ogc_api_advertised_tile_templates() {
         let list = "https://x.org/c/roads/tiles?token=abc&f=json";
         // A list whose WebMercatorQuad tileset (named otherwise, as CubeWerx's `smerc`) points to
@@ -6336,35 +6427,65 @@ mod tests {
             {"tileMatrixSetURI": "http://www.opengis.net/def/tilematrixset/OGC/1.0/WorldCRS84Quad", "links": [{"rel": "self", "href": "crs84"}]},
             {"dataType": "vector", "tileMatrixSetURI": "http://www.opengis.net/def/tilematrixset/OGC/1.0/WebMercatorQuad", "links": [{"rel": "self", "href": "https://x.org/c/roads/tiles/smerc"}]}]}"#;
         assert_eq!(
-            resolve_tiles(list, list, sets, true),
-            Some(TilesStep::Next("https://x.org/c/roads/tiles/smerc?token=abc&f=json".into()))
+            resolve_tiles(list, list, sets, true).map(|r| r.step),
+            Some(TilesStep::Next("https://x.org/c/roads/tiles/smerc?f=json".into()))
         );
-        assert_eq!(resolve_tiles(list, list, sets, false), None, "no map tileset in WebMercatorQuad");
-        // The tileset's item links: MVT for vector tiles, PNG first for map tiles, the token kept.
+        assert_eq!(resolve_tiles(list, list, sets, false).map(|r| r.step), None, "no map tileset in WebMercatorQuad");
+        // The tileset's item links: MVT for vector tiles, PNG first for map tiles, the list's token withheld under F3.
         let tileset = br#"{"links": [
             {"rel": "item", "type": "image/jpeg", "templated": true, "href": "https://x.org/c/roads/tiles/smerc/{tileMatrix}/{tileRow}/{tileCol}.jpg"},
             {"rel": "item", "type": "image/png", "templated": true, "href": "https://x.org/c/roads/tiles/smerc/{tileMatrix}/{tileRow}/{tileCol}.png"},
             {"rel": "item", "type": "application/vnd.mapbox-vector-tile", "templated": true, "href": "smerc/{tileMatrix}/{tileRow}/{tileCol}.mvt"}]}"#;
         let doc = "https://x.org/c/roads/tiles/smerc?token=abc&f=json";
         assert_eq!(
-            resolve_tiles(list, doc, tileset, true),
-            Some(TilesStep::Template("https://x.org/c/roads/tiles/smerc/{z}/{y}/{x}.mvt?token=abc".into()))
+            resolve_tiles(list, doc, tileset, true).map(|r| r.step),
+            Some(TilesStep::Template("https://x.org/c/roads/tiles/smerc/{z}/{y}/{x}.mvt".into()))
         );
         assert_eq!(
-            resolve_tiles(list, doc, tileset, false),
-            Some(TilesStep::Template("https://x.org/c/roads/tiles/smerc/{z}/{y}/{x}.png?token=abc".into()))
+            resolve_tiles(list, doc, tileset, false).map(|r| r.step),
+            Some(TilesStep::Template("https://x.org/c/roads/tiles/smerc/{z}/{y}/{x}.png".into()))
         );
         // A list that carries its tilesets' item links needs no second document.
         let inline = br#"{"tilesets": [{"tileMatrixSetId": "WebMercatorQuad", "links": [
             {"rel": "item", "type": "image/png", "href": "https://x.org/t/{tileMatrix}/{tileRow}/{tileCol}"}]}]}"#;
-        assert_eq!(resolve_tiles(list, list, inline, false), Some(TilesStep::Template("https://x.org/t/{z}/{y}/{x}?token=abc".into())));
+        assert_eq!(
+            resolve_tiles(list, list, inline, false).map(|r| r.step),
+            Some(TilesStep::Template("https://x.org/t/{z}/{y}/{x}".into()))
+        );
         // A template with other variables, or no web address, isn't taken.
         for bad in [
             br#"{"links": [{"rel": "item", "href": "https://x.org/{style}/{tileMatrix}/{tileRow}/{tileCol}"}]}"#.as_slice(),
             br#"{"links": [{"rel": "item", "href": "javascript:{tileMatrix}"}]}"#.as_slice(),
             b"not json",
         ] {
-            assert_eq!(resolve_tiles(list, doc, bad, false), None);
+            assert_eq!(resolve_tiles(list, doc, bad, false).map(|r| r.step), None);
+        }
+        // F3 is independent of origin and directory containment. Destination-owned keys stay;
+        // only the allowlisted collection choice may follow from the list.
+        let list = "https://h.invalid/svc?token=RGSYNTH_list_20261103&k=RGSYNTH_unknown_20261103&collections=roads";
+        for host in ["h.invalid", "elsewhere.invalid"] {
+            let doc = format!(
+                r#"{{"links":[{{"rel":"item","type":"image/png","href":"https://{host}/svc/{{tileMatrix}}/{{tileRow}}/{{tileCol}}?own=destination"}}]}}"#
+            );
+            let resolved = resolve_tiles(list, list, doc.as_bytes(), false).unwrap();
+            assert_eq!(resolved.withheld_addresses, 1);
+            let TilesStep::Template(template) = resolved.step else { panic!("expected template") };
+            assert_eq!(template, format!("https://{host}/svc/{{z}}/{{y}}/{{x}}?own=destination&collections=roads"));
+        }
+        let clean = "https://h.invalid/svc?collections=roads";
+        assert_eq!(resolve_tiles(clean, clean, tileset, false).unwrap().withheld_addresses, 0);
+        // Even a suffix appended by RustGIS must pass the raw-path check. The normal style
+        // stays under its service; an advertised '..' style does not inherit its token.
+        let address = "https://h.invalid/rest/services/a/VectorTileServer?token=RGSYNTH_style_20261103";
+        let bound = crate::login_address::bind("0123456789abcdef", "https://h.invalid", address).unwrap();
+        for (style, withheld) in [("resources/styles", 0), ("../other/styles", 1), ("%2e%2e/other/styles", 1)] {
+            let description = serde_json::json!({"defaultStyles": style});
+            for address in [address, bound.as_str()] {
+                let service = parse(address, description.to_string().as_bytes()).unwrap();
+                assert_eq!(service.withheld_addresses, withheld, "{address}: {style}");
+                let Offer::Style { url } = &service.layers[0].offer else { panic!("expected style") };
+                assert_eq!(url.contains("RGSYNTH_style_20261103"), withheld == 0, "{address}: {style}");
+            }
         }
     }
 

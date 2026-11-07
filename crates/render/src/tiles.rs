@@ -27,6 +27,11 @@ pub(crate) struct TileOutput {
     pub attribution: Vec<String>,
     pub pending: bool,
     pub errors: Vec<String>,
+    /// Raster layers read in place drawn from less than the view needs (a coarser level, tiles
+    /// they couldn't read), by id: shown, with the error among `errors`; an export refuses them.
+    pub partial: Vec<u32>,
+    /// Raster layers read in place whose tiles are still on their way, by id.
+    pub pending_in_place: Vec<u32>,
 }
 
 impl TileOutput {
@@ -858,6 +863,10 @@ pub(crate) mod tests {
     /// Fetches under `stuck.test/`, left unanswered until a test lets them go: another's fetch
     /// still under way.
     static STUCK: std::sync::Mutex<Vec<rustgis_tiles::cache::Done>> = std::sync::Mutex::new(Vec::new());
+    /// Fetches under `tiles.test/held/`, kept in [`HELD`] while `HOLD` is set (a layout page drawn
+    /// short of its frame's tiles), answered at once after.
+    static HOLD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    static HELD: std::sync::Mutex<Vec<rustgis_tiles::cache::Done>> = std::sync::Mutex::new(Vec::new());
 
     /// Serves tiles and documents for `https://tiles.test/…` without a network. Under `split/`,
     /// zoom 11 is red, zoom 13 blue, and zoom 12 never arrives.
@@ -876,6 +885,12 @@ pub(crate) mod tests {
                 PARKED.lock().unwrap().push(done);
             } else if url.starts_with("https://stuck.test/") {
                 STUCK.lock().unwrap().push(done);
+            } else if url.starts_with("https://tiles.test/held/") {
+                if HOLD.load(std::sync::atomic::Ordering::SeqCst) {
+                    HELD.lock().unwrap().push(done);
+                } else {
+                    done(Ok(color(220, 20, 20)));
+                }
             } else if url.starts_with("https://wms.test/") || url.starts_with("https://wmts.test/") {
                 // A service drawing in a system of its own (#769): green, and what it was asked.
                 ASKED.lock().unwrap().push(url.clone());
@@ -1384,5 +1399,63 @@ pub(crate) mod tests {
         m.projection = Projection::Globe;
         let p = pixel(&mut m);
         assert!(p[0] < 60 && p[1] < 40 && p[2] < 60, "{p:?}");
+    }
+
+    /// A layout page drawn while a map frame's tiles are still on their way says so, for the
+    /// browser's layout view to draw it again as they land (#1534); drawn once they have, it
+    /// doesn't. The browser doesn't wait for tiles: here the wait is cancelled, which skips it too.
+    #[test]
+    fn a_layout_page_drawn_short_of_its_frames_tiles_says_so() {
+        use rustgis_map::layout::{ElementKind, FrameShape, INDICATOR_COLOR, INDICATOR_WIDTH, Layout};
+        use std::sync::atomic::Ordering;
+        struct Cancelled;
+        impl rustgis_data::progress::Probe for Cancelled {
+            fn cancelled(&self) -> bool {
+                true
+            }
+            fn begin(&self, _: u64) {}
+            fn advance(&self, _: u64) {}
+        }
+        serve();
+        let mut m = Map::new("Map");
+        m.graticule = false;
+        m.basemap = rustgis_map::Basemap::Blank;
+        m.tiles.push(TileLayer::new("Held", TileKind::Raster, "https://tiles.test/held/{z}/{x}/{y}.png"));
+        let mut page = Layout::new("page", 100.0, 80.0);
+        page.add(
+            "map",
+            (5.0, 5.0, 90.0, 70.0),
+            ElementKind::MapFrame {
+                map: "Map".into(),
+                center: Coord::new(4.6, 4.7),
+                scale: 500_000.0,
+                shape: FrameShape::Rectangle,
+                grid: None,
+                extent_of: None,
+                extent_color: INDICATOR_COLOR,
+                extent_width: INDICATOR_WIDTH,
+                bearing: 0.0,
+                pitch: 0.0,
+            },
+        );
+        let info = crate::layout::PageInfo::default();
+        let mut maps = [m];
+        HOLD.store(true, Ordering::SeqCst);
+        let short = {
+            let _wait = rustgis_data::progress::install(Some(std::sync::Arc::new(Cancelled)));
+            crate::layout::render_pending(&page, &mut maps, 72.0, &info).map(|(_, pending)| pending)
+        };
+        // Answered now, and those asked for later at once: the next drawing waits for them.
+        HOLD.store(false, Ordering::SeqCst);
+        let start = std::time::Instant::now();
+        while HELD.lock().unwrap().is_empty() && start.elapsed() < std::time::Duration::from_secs(10) {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        for done in std::mem::take(&mut *HELD.lock().unwrap()) {
+            done(Ok(tiny_skia::Pixmap::new(256, 256).unwrap().encode_png().unwrap()));
+        }
+        assert_eq!(short, Some(true), "drawn before its tiles landed");
+        let whole = crate::layout::render_pending(&page, &mut maps, 72.0, &info).map(|(_, pending)| pending);
+        assert_eq!(whole, Some(false), "drawn once they have");
     }
 }

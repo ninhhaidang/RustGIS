@@ -942,6 +942,21 @@ impl Agent {
         self.drain(s)
     }
 
+    /// Peer replacement invalidates pending work and remembered approvals without deleting the
+    /// conversation. An outstanding provider reply belongs to the previous project generation.
+    pub fn project_replaced(&mut self) {
+        self.stop();
+        self.state = State::Idle;
+        self.always.clear();
+        self.last_context.clear();
+        self.preview = None;
+        self.retrying_summary = None;
+        self.child = None;
+        self.delegations.clear();
+        self.reports.clear();
+        self.generation = self.generation.wrapping_add(1);
+    }
+
     /// Stops the run: a request out is forgotten, calls not yet run are skipped.
     pub fn stop(&mut self) {
         if !self.busy() {

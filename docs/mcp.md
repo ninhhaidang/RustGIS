@@ -158,7 +158,11 @@ Passwords, keys and tokens in the arguments, a `run` script's lines included, ar
 they are written. On Linux and macOS the folder and files are readable by you only; on Windows they're protected by
 your user profile's permissions. A batch's calls share the batch's
 `duration_s` and are marked `"batch": true`. An error whose text mentions a credential (a token, a
-password, a bearer…) is logged as withheld rather than risk keeping the credential. Days older than 30 are removed.
+password, a bearer…) is logged as withheld rather than risk keeping the credential. Log days older
+than 30 days are pruned when a logged call creates a new day's file, not by a timer; older files
+can remain while logging is idle. You can remove unwanted day files from this folder yourself.
+Updating does not rewrite old logs. If an older log exposed a credential, rotate it with its
+service before sharing the log.
 
 ### MCP over HTTP
 

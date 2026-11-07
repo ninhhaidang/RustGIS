@@ -25,34 +25,34 @@ mod connection_use;
 
 pub fn commands() -> Vec<C> {
     vec![
-        C::new("connection.list", "List Connections", "Home › Add › Data Sources", list).view().params(
+        C::new("connection.list", "List Connections", "Home › Add › Data Sources", list).roles(&[]).view().params(
             r#"{"kind"?: "postgres"|"mysql"|"sqlserver"|"service"|"wms"|"wmts"|"wfs"|"wcs"|"ogcapi"|"arcgis"|"csw"|"stac"|"s3", "group"?: text}"#,
         ),
-        C::new("connection.new", "New Connection", "Home › Add › Data Sources", new).view().params(
+        C::new("connection.new", "New Connection", "Home › Add › Data Sources", new).roles(&[]).view().params(
             r#"{"kind": "postgres"|"mysql"|"sqlserver"|"service"|"wms"|"wmts"|"wfs"|"wcs"|"ogcapi"|"arcgis"|"csw"|"stac"|"s3", "address"?: "as the kind's add command takes it, without its password or token (postgres:host=… dbname=… user=…, mysql://user@host/db, mssql://user@host/db, a service's or STAC API's https:// address, an S3 endpoint: AWS when absent)", "name"?: "unique (default from the address)", "group"?: text, "options"?: {"region"?: text, "buckets"?: "a,b", "credentials"?: "keys"|"profile"|"environment"|"none", "profile"?: text} (S3 only), "auth"?: "none"|"basic"|"header": how a web-service connection logs in (basic authentication or an API key in a header; the password or key is given to connection.login, never kept here), "user"?: "the basic login's user name", "keyName"?: "the header the API key goes in, e.g. X-API-Key"}"#,
         ),
-        C::new("connection.edit", "Edit Connection", "Home › Add › Data Sources", edit).view().params(
+        C::new("connection.edit", "Edit Connection", "Home › Add › Data Sources", edit).roles(&[]).view().params(
             r#"{"id": "a connection's id or name", "name"?: text, "group"?: text, "address"?: text, "options"?: "as connection.new (replaces them)", "auth"?: "as connection.new", "user"?: text, "keyName"?: text, "kind"?: "its kind (unchanged)"} (another origin, login method, user or key name ends the web connection's session login)"#,
         ),
-        C::new("connection.duplicate", "Duplicate Connection", "Home › Add › Data Sources", duplicate).view().params(r#"{"id": "a connection's id or name", "name"?: text}"#),
-        C::new("connection.remove", "Remove Connection", "Home › Add › Data Sources", remove).view().params(r#"{"id": "a connection's id or name"} (deletes its saved database password or S3 keys; ends its web-service session login)"#),
-        C::new("connection.login", "Log In to Connection", "Home › Add › Data Sources", login_command).view().params(
+        C::new("connection.duplicate", "Duplicate Connection", "Home › Add › Data Sources", duplicate).roles(&[]).view().params(r#"{"id": "a connection's id or name", "name"?: text}"#),
+        C::new("connection.remove", "Remove Connection", "Home › Add › Data Sources", remove).roles(&[]).view().params(r#"{"id": "a connection's id or name"} (deletes its saved database password or S3 keys; ends its web-service session login)"#),
+        C::new("connection.login", "Log In to Connection", "Home › Add › Data Sources", login_command).roles(&[]).view().params(
             r#"{"id": "a connection's id or name; blank credentials explicitly use this ID's session credentials (or saved credentials for database/S3 connections)", "password"?: "a database password, or a web service's basic-authentication password", "apiKey"?: "a web service's API key (auth header)", "allowInsecure"?: "boolean, default false: confirms sending a web service's login to its plain http:// address, unencrypted", "accessKeyId"?: text, "secretAccessKey"?: text, "sessionToken"?: "temporary S3 credentials, never persisted", "remember"?: "boolean, default false: opt into this computer's credential store for a newly typed database password or complete S3 key pair (saved keys mode only). Web-service credentials are session-only and reject remember:true. No credentials are stored in connections or projects; a failed database/S3 save preserves the session login"} (a web service's login is sent only with this session's requests bound to that connection and only to its address's origin: the same scheme, host and port; logging in to one of several connections chooses it for unassigned requests to that address)"#,
         ),
-        C::new("connection.logout", "Log Out of Connection", "Home › Add › Data Sources", logout).view().params(
+        C::new("connection.logout", "Log Out of Connection", "Home › Add › Data Sources", logout).roles(&[]).view().params(
             r#"{"id": "a web-service connection's id or name"} (clears this session's login and its password or key, which is no longer sent)"#,
         ),
-        C::new("connection.forgetSavedKeys", "Forget Saved Keys", "Home › Add › Data Sources", forget_saved_keys).view().params(
+        C::new("connection.forgetSavedKeys", "Forget Saved Keys", "Home › Add › Data Sources", forget_saved_keys).roles(&[]).view().params(
             r#"{"id": "a saved S3 connection's id or name"} (deletes stored keys; a login in this session keeps working)"#,
         ),
-        C::new("connection.resolveS3", "Choose S3 Connection", "Home › Add › Data Sources", resolve_s3).view().params(
-            r#"{"source": "a pending project S3 source address", "id": "a candidate saved connection id"} → {id, reopened, failed}: explicitly grants this bucket and opens only its waiting sources"#,
+        C::new("connection.resolveS3", "Choose S3 Connection", "Home › Add › Data Sources", resolve_s3).roles(&[]).view().params(
+            r#"{"source": "a pending project S3 source address", "id": "a candidate saved connection id"} → {id, reopened, failed, reading}: explicitly grants this bucket and opens only its waiting sources; reading counts the rasters read in place whose overview is still being read (the desktop doesn't wait for it: it lands as the map draws, and one that fails is said then)"#,
         ),
-        C::new("connection.forgetPassword", "Forget Saved Password", "Home › Add › Data Sources", forget_password).view().params(r#"{"id": "a database connection's id or name"}"#),
-        C::new("connection.test", "Test Connection", "Home › Add › Data Sources", test).view().params(
+        C::new("connection.forgetPassword", "Forget Saved Password", "Home › Add › Data Sources", forget_password).roles(&[]).view().params(r#"{"id": "a database connection's id or name"}"#),
+        C::new("connection.test", "Test Connection", "Home › Add › Data Sources", test).roles(&[]).view().params(
             r#"{"id"?: "a connection's id or name", "kind"?: "postgres"|"mysql"|"sqlserver"|"service"|"wms"|"wmts"|"wfs"|"wcs"|"ogcapi"|"arcgis"|"csw"|"stac"|"s3", "name"?: text, "group"?: text, "address"?: text, "options"?: "an unsaved connection, as connection.new (when no id)", "auth"?: text, "user"?: text, "keyName"?: "as connection.new (when no id)", "password"?: "for a named database, authentication refusal restores prior session credentials; a later listing failure keeps the new password; never persisted. A saved web service's: as connection.login (logs in first)", "apiKey"?: "a saved web service's, as connection.login (logs in first)", "allowInsecure"?: "as connection.login", "accessKeyId"?: text, "secretAccessKey"?: text, "sessionToken"?: "as connection.login (logs in first)", "probe"?: "true: only the address the test reads, {fetch} (null for databases, which their driver tests)", "answer"?: "non-database kinds only: what that address returned, when the app fetched it (no network request then); databases ignore answer and test through their driver"}"#,
         ),
-        C::new("connection.browse", "Browse Connection", "Home › Add › Data Sources", browse::browse).view().params(
+        C::new("connection.browse", "Browse Connection", "Home › Add › Data Sources", browse::browse).roles(&[]).view().params(
             r#"{"id": "a connection's id or name", "node"?: "a child's node, as a listing gives it (the connection's top level when absent)", "probe"?: "true: only the address this level reads, {fetch} (null: read without a fetch, or by the database driver); an S3 connection logs in first, as connection.test does", "answer"?: "what that address returned, when the app fetched it", "documents"?: [{"url": "a further document a listing asked for (next)", "text": "its answer"}]} → {connection, node, children: [{key, name, what, detail?, node? (browse it), children? (listed already), add? {command, params}: the command that adds it}], truncated?, matched?, notes?, service? {url, type}, next? (fetch it, then ask again with answer and documents)}. Database roots list schemas; open a schema node to list its tables."#,
         ),
     ]
@@ -430,12 +430,26 @@ struct Reopened {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn reopen(s: &mut Session, c: &Connection, saved: bool, session: bool, all_unopened: bool) -> Reopened {
+#[derive(Clone, Copy)]
+enum ReopenMode {
+    Automatic,
+    Login { all_unopened: bool },
+}
+
+/// Reopens this connection's database sources and aggregates refusals. Automatic resolution
+/// preserves peer reconnect barriers; only an explicit matching login releases them.
+#[cfg(not(target_arch = "wasm32"))]
+fn reopen(s: &mut Session, c: &Connection, saved: bool, session: bool, mode: ReopenMode) -> Reopened {
     let Some(key) = crate::connections::database_key(&c.address) else { return Reopened::default() };
     let mut result = Reopened::default();
     let mut first_error = None;
     for layer in s.project.maps.iter_mut().flat_map(|m| m.layers.iter_mut()) {
-        let Some(src) = layer.source.as_mut().filter(|src| src.login || all_unopened && !src.is_open()) else { continue };
+        let Some(src) = layer.source.as_mut().filter(|src| match mode {
+            ReopenMode::Automatic => !src.reconnect_required() && !src.is_open(),
+            ReopenMode::Login { all_unopened } => src.login || src.reconnect_required() || all_unopened && !src.is_open(),
+        }) else {
+            continue;
+        };
         let Some((kind, database)) = crate::connections::layer_database(src) else { continue };
         if kind != key.0 || crate::connections::database_key(&crate::sources::redact(database)).as_ref() != Some(&key) {
             continue;
@@ -447,6 +461,9 @@ fn reopen(s: &mut Session, c: &Connection, saved: bool, session: bool, all_unope
             src.error = first_error.clone();
             result.failed += 1;
             continue;
+        }
+        if matches!(mode, ReopenMode::Login { .. }) {
+            src.allow_reconnect();
         }
         src.error = None;
         match src.open() {
@@ -606,7 +623,7 @@ fn login(s: &mut Session, c: &Connection, p: &Value) -> Result<Reopened, String>
                     &key.1,
                     &c.id,
                     pw,
-                    || reopen(s, c, false, false, all_unopened),
+                    || reopen(s, c, false, false, ReopenMode::Login { all_unopened }),
                     |result| result.refused,
                 )
             } else {
@@ -619,7 +636,7 @@ fn login(s: &mut Session, c: &Connection, p: &Value) -> Result<Reopened, String>
                     activate(s, c, password.expose());
                 }
                 let session = password.is_some() && !saved;
-                reopen(s, c, saved, session, all_unopened)
+                reopen(s, c, saved, session, ReopenMode::Login { all_unopened })
             };
             if let Some(pw) = &typed
                 && !result.refused

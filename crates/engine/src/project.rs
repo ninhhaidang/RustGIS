@@ -1,9 +1,6 @@
 //! The project: maps, standalone tables and geoprocessing history, saved as JSON (`.rgis`).
 
-use std::collections::hash_map::RandomState;
-use std::hash::BuildHasher;
 use std::path::Path;
-use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use rustgis_data::{Dataset, Feature, Field, GeometryType};
 use rustgis_map::Map;
@@ -62,74 +59,24 @@ pub const FORMAT: u32 = 1;
 /// Largest project file read or saved (512 MiB).
 pub const MAX_BYTES: u64 = 512 << 20;
 
-/// The address a saved file keeps. Only web addresses can contain layer credentials. A tile
-/// template (`pmtiles:…@archive`, `cog:…@archive`) is judged by its archive, and an address read
-/// through a saved S3 connection by the address it wraps, the wrapper rebuilt around it (its
-/// binding and endpoint are provenance, not secrets); a COG's look after either is kept.
-fn saved_address(address: &str) -> Option<String> {
-    if let Some(public) = without_login_binding(address) {
-        return Some(saved_address(&public).unwrap_or(public));
-    }
-    use rustgis_data::s3_address;
-    if let Some((head, archive)) = crate::sources::template_archive(address) {
-        let (file, look) = split_look(archive);
-        return saved_address(file).map(|saved| format!("{head}{saved}{look}"));
-    }
-    if s3_address::is_wrapper(address) {
-        let (file, look) = split_look(address);
-        // One that doesn't parse stays as it is (and blocked): it names no connection.
-        let b = s3_address::parse(file).ok().flatten()?;
-        let inner = saved_address(b.url)?;
-        return s3_address::bind(b.binding, b.endpoint, &inner).ok().map(|saved| format!("{saved}{look}"));
-    }
-    let inner = address.strip_prefix(crate::render::rustgis_tiles::s3::ANONYMOUS).unwrap_or(address);
-    let (protocol, _) = inner.split_once("://")?;
-    if !["http", "https", "s3"].iter().any(|s| protocol.eq_ignore_ascii_case(s)) {
-        return None;
-    }
-    let (scheme, mut rest) = address.split_once("://")?;
-    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
-    if let Some(at) = rest.get(..end).and_then(|authority| authority.rfind('@')) {
-        rest = rest.get(at + 1..)?;
-    }
-    let rest = rest.split('#').next().unwrap_or(rest);
-    let mut out = format!("{scheme}://{rest}");
-    rustgis_data::source::credentials::redact_query(&mut out);
-    (out != address).then_some(out)
-}
-
-/// A COG address without its look (`…#bands=…`), and the look as written.
-fn split_look(address: &str) -> (&str, &str) {
-    let file = crate::render::rustgis_tiles::cog::split(address).0;
-    (file, address.get(file.len()..).unwrap_or(""))
-}
-
-/// Strips layer credentials, keeping originals in the visitor's order for the caller to restore.
-/// Packaging calls this without registering the resulting text as a file this process wrote.
-pub(crate) fn strip_addresses(addresses: Vec<&mut String>) -> Vec<Option<String>> {
-    addresses.into_iter().map(|a| saved_address(a).map(|redacted| std::mem::replace(a, redacted))).collect()
-}
-
 /// Runtime capabilities never survive a project boundary, including an in-process save restore.
 /// `None` for an address that holds none, and for a wrapper that doesn't parse (kept as it is,
 /// never emptied: its layer then fails to read, saying why).
-fn without_login_binding(address: &str) -> Option<String> {
-    if rustgis_data::login_address::is_wrapper(address) {
-        return rustgis_data::login_address::parse(address).ok().flatten().map(|b| b.url.to_string());
+pub(crate) fn without_login_binding(address: &str) -> Option<String> {
+    // A shallow recorded string can contain arbitrarily many template prefixes. Walk its
+    // suffixes without recursion, then rebuild the unchanged prefix only once.
+    let mut inner = address;
+    while let Some((_, archive)) = crate::sources::template_archive(inner) {
+        inner = archive;
     }
-    if let Some((head, archive)) = crate::sources::template_archive(address) {
-        return without_login_binding(archive).map(|public| format!("{head}{public}"));
-    }
-    if let Ok(Some(bound)) = rustgis_data::s3_address::parse(address) {
-        return without_login_binding(bound.url)
-            .and_then(|public| rustgis_data::s3_address::bind(bound.binding, bound.endpoint, &public).ok());
-    }
-    None
+    let bound = rustgis_data::login_address::parse(inner).ok().flatten()?;
+    let prefix = address.get(..address.len() - inner.len())?;
+    Some(format!("{prefix}{}", bound.url))
 }
 
 /// A recorded value may contain several addresses inside ordinary text. Remove just each
 /// capability header, not URL queries or words that happen to match an active credential.
-fn without_recorded_login_bindings(text: &str) -> Option<String> {
+pub(crate) fn without_recorded_login_bindings(text: &str) -> Option<String> {
     let whole = without_login_binding(text);
     let text = whole.as_deref().unwrap_or(text);
     let mut rest = text;
@@ -205,13 +152,6 @@ fn recorded_login_url(text: &str) -> Option<&str> {
     Some(url)
 }
 
-/// Whether stripping `original` from a saved file lost a secret the user must give again: not
-/// when all it held was a login binding (the layer records its connection, and asks for its login
-/// when it opens), unless the address under the binding held one too.
-fn lost_secret(original: &str) -> bool {
-    without_login_binding(original).is_none_or(|public| saved_address(&public).is_some())
-}
-
 pub(crate) fn clear_login_bindings<'a>(addresses: impl IntoIterator<Item = &'a mut String>) {
     for address in addresses {
         if let Some(public) = without_recorded_login_bindings(address) {
@@ -220,44 +160,42 @@ pub(crate) fn clear_login_bindings<'a>(addresses: impl IntoIterator<Item = &'a m
     }
 }
 
-/// Clears login bindings, keeping the originals in the visitor's order for the caller to restore.
-fn take_login_bindings(addresses: Vec<&mut String>) -> Vec<Option<String>> {
-    addresses.into_iter().map(|a| without_recorded_login_bindings(a).map(|public| std::mem::replace(a, public))).collect()
-}
-
+/// Visits recorded strings without recursion; credential-named user data remains untouched.
 pub(crate) fn recorded_addresses<'a>(value: &'a mut serde_json::Value, addresses: &mut Vec<&'a mut String>) {
-    match value {
-        serde_json::Value::String(text) => addresses.push(text),
-        serde_json::Value::Array(values) => {
-            for value in values {
-                recorded_addresses(value, addresses);
-            }
+    let mut pending = vec![value];
+    while let Some(value) = pending.pop() {
+        match value {
+            serde_json::Value::String(text) => addresses.push(text),
+            serde_json::Value::Array(values) => pending.extend(values),
+            serde_json::Value::Object(values) => pending.extend(values.values_mut()),
+            _ => {}
         }
-        serde_json::Value::Object(values) => {
-            for value in values.values_mut() {
-                recorded_addresses(value, addresses);
-            }
-        }
-        _ => {}
     }
 }
 
-struct Written {
-    len: usize,
-    hash: u64,
-    was: Vec<Option<String>>,
-}
-
-const MAX_WRITTEN: usize = 32;
-
-fn kept() -> MutexGuard<'static, Vec<Written>> {
-    static KEPT: OnceLock<Mutex<Vec<Written>>> = OnceLock::new();
-    KEPT.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner())
-}
-
-fn identity(text: &str) -> (usize, u64) {
-    static KEY: OnceLock<RandomState> = OnceLock::new();
-    (text.len(), KEY.get_or_init(RandomState::new).hash_one(text.as_bytes()))
+/// A role-independent runtime capability is never part of a recorded parameter's public form.
+pub(crate) fn public_login_params(value: &serde_json::Value) -> Option<serde_json::Value> {
+    let mut pending = vec![value];
+    let mut found = false;
+    while let Some(value) = pending.pop() {
+        match value {
+            serde_json::Value::String(text) if text.contains(rustgis_data::login_address::PREFIX) => {
+                found = true;
+                break;
+            }
+            serde_json::Value::Array(values) => pending.extend(values),
+            serde_json::Value::Object(values) => pending.extend(values.values()),
+            _ => {}
+        }
+    }
+    if !found {
+        return None;
+    }
+    let mut public = value.clone();
+    let mut addresses = Vec::new();
+    recorded_addresses(&mut public, &mut addresses);
+    clear_login_bindings(addresses);
+    (public != *value).then_some(public)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -588,6 +526,13 @@ pub(crate) fn resolve_file_paths<'a>(dir: &str, paths: impl IntoIterator<Item = 
     }
 }
 
+/// Whether `path` is a plain `http://` or `https://` address: not a login or S3 wrapper, which a
+/// raster layer downloads whole.
+fn plain_web_address(path: &str) -> bool {
+    let scheme = path.get(..8).map(str::to_ascii_lowercase).unwrap_or_default();
+    scheme.starts_with("https://") || scheme.starts_with("http://")
+}
+
 /// Read only compatibility metadata before interpreting any saved payload.
 #[derive(Deserialize)]
 struct FileFormat {
@@ -705,29 +650,42 @@ impl Project {
             if let Some(graph) = &mut model.graph {
                 for node in &mut graph.nodes {
                     recorded_addresses(&mut node.params, &mut addresses);
-                    // A node's input may be an address rather than a layer's name.
-                    if let Some(layer) = &mut node.layer {
-                        addresses.push(layer);
-                    }
+                    // node.layer selects a name, including names that resemble runtime URLs.
                 }
             }
         }
         addresses
     }
 
-    /// How many layers and tile layers read through a login binding but record no connection:
-    /// nothing would tell the opened project which login they need. One whose address also holds
-    /// a token isn't counted here: [`lost_secret`] counts it already.
-    fn unrecorded_bound(&mut self) -> usize {
-        let only_bound = |a: &str| without_login_binding(a).is_some_and(|public| saved_address(&public).is_none());
-        let mut n = 0;
-        for map in self.maps.iter_mut().chain(self.offline_areas.iter_mut().map(|area| &mut area.data)) {
-            n += map.tiles.iter().filter(|t| t.connection.is_empty() && only_bound(&t.url)).count();
-            for layer in map.layers.iter_mut().filter(|l| l.connection.is_empty()) {
-                n += usize::from(layer.addresses_mut().any(|a| only_bound(a)));
+    /// Runtime bindings that this output cannot restore: peer receivers never share a login;
+    /// explicit files can resolve layers and tile owners with a recorded saved connection.
+    pub(crate) fn bound_address_losses(&self, include_recorded: bool) -> usize {
+        let only_bound = |a: &str| {
+            without_login_binding(a)
+                .is_some_and(|public| matches!(crate::durable::public_address(&public), crate::durable::Kept::Unchanged))
+        };
+        let mut n = 0usize;
+        for map in self.maps.iter().chain(self.offline_areas.iter().map(|area| &area.data)) {
+            let mut layers = std::collections::BTreeSet::new();
+            let mut tiles = std::collections::BTreeSet::new();
+            for slot in map.slots().into_iter().filter(|slot| slot.address && only_bound(slot.value)) {
+                match slot.at {
+                    rustgis_map::SlotPos::Layer { layer, .. } => {
+                        if map.layers.get(layer).is_some_and(|l| include_recorded || l.connection.is_empty()) {
+                            layers.insert(layer);
+                        }
+                    }
+                    rustgis_map::SlotPos::Tile { tile, .. } => {
+                        if map.tiles.get(tile).is_some_and(|t| include_recorded || t.connection.is_empty()) {
+                            tiles.insert(tile);
+                        }
+                    }
+                    rustgis_map::SlotPos::Group { .. } | rustgis_map::SlotPos::Terrain => n = n.saturating_add(1),
+                }
             }
+            n = n.saturating_add(layers.len()).saturating_add(tiles.len());
         }
-        n
+        n.saturating_add(self.tables.iter().filter(|table| table.source.as_deref().is_some_and(only_bound)).count())
     }
 
     /// The standalone table of an id.
@@ -772,6 +730,19 @@ impl Project {
 
     /// Repairs invariants after loading (at least one map; a valid active index).
     pub fn normalize(&mut self) {
+        self.repair(false);
+    }
+
+    /// [`Project::normalize`] for a project read from its file, which also opens its plain COG
+    /// tile layers (a project saved before GeoTIFFs read in place were raster layers, or with
+    /// those `map.addTiles` adds) as raster layers read in place: as the project opens only. A
+    /// later repair (a layer file added, maps imported) leaves a tile layer added this session
+    /// as it is.
+    pub(crate) fn normalize_opened(&mut self) {
+        self.repair(true);
+    }
+
+    fn repair(&mut self, opened: bool) {
         if self.maps.is_empty() {
             self.maps.push(Map::new("Map"));
         }
@@ -881,6 +852,28 @@ impl Project {
             }
             // Tile layers with an address that can't be fetched (a hand edit) are dropped.
             m.tiles.retain_mut(|t| t.repair().map_err(|e| log::warn!("{}: {e}", m.name)).is_ok());
+            // GeoTIFFs read in place are raster layers (a project from before saved tile layers),
+            // so they don't count toward the tile layers kept. As the project opens only: a tile
+            // layer added this session stays one until the project is opened again.
+            if opened {
+                crate::cmd::tiles::cog_tiles_to_rasters(m);
+                // A raster layer whose path is a plain web address, from no saved connection, is
+                // read in place, the one way such a path is read (a login or S3 wrapper is
+                // downloaded whole, as is a connection's address, plain here until its login is
+                // made again): one saved by an older RustGIS, which didn't know `in_place` (it
+                // showed the layer as missing and saved it again without the key), reads in
+                // place again here, losing a pending look at most.
+                for l in &mut m.layers {
+                    if l.connection.is_empty()
+                        && let Some(rl) = &mut l.raster
+                        && !rl.in_place
+                        && rl.embedded.is_none()
+                        && rl.path.as_deref().is_some_and(plain_web_address)
+                    {
+                        rl.in_place = true;
+                    }
+                }
+            }
             m.tiles.truncate(rustgis_map::tiles::MAX_TILE_LAYERS);
             #[cfg(not(target_arch = "wasm32"))]
             for t in &mut m.tiles {
@@ -910,8 +903,10 @@ impl Project {
                         src.error = Some(error);
                     }
                 }
+                // Read in place, read together below.
                 if let Some(rl) = &mut l.raster
                     && rl.data.is_none()
+                    && !rl.in_place
                     && !rl.path.as_deref().is_some_and(crate::s3_connections::is_s3_backed)
                     && unresolved.is_none()
                     && let Err(e) = rl.reload()
@@ -939,6 +934,7 @@ impl Project {
                 }
                 l.touch_geometry();
             }
+            read_in_place(m);
         }
     }
 
@@ -977,77 +973,8 @@ impl Project {
         Ok(())
     }
 
-    /// The file keeps no passwords, keys, tokens or signatures in layer addresses. The open project
-    /// keeps them. This process remembers the 32 most recent distinct saved snapshots with stripped
-    /// addresses: opening identical plain project text restores them until that snapshot is evicted
-    /// or RustGIS closes. Packages and imports never restore them.
-    /// Refuses text larger than the opening limit, restoring live paths and addresses on failure.
-    pub fn saved_text(&mut self, dir: Option<&Path>) -> Result<(String, usize), String> {
-        self.ensure_imports_complete()?;
-        let unrecorded = self.unrecorded_bound();
-        let was = strip_addresses(self.addresses_mut());
-        let recorded_was = take_login_bindings(self.recorded_mut());
-        let n = was.iter().flatten().filter(|original| lost_secret(original)).count() + unrecorded;
-        let originals: Vec<Option<String>> = if let Some(d) = dir.and_then(Path::to_str) {
-            self.file_paths_mut()
-                .into_iter()
-                .map(|(p, _)| {
-                    let relative = rustgis_map::paths::is_absolute_local(p)
-                        .then(|| rustgis_map::paths::relative_to(d, p))
-                        .flatten()
-                        // Keep the traversal stable during restoration, even for an unusually deep
-                        // destination whose relative spelling exceeds the local-path size bound.
-                        .filter(|r| rustgis_map::paths::is_local(r));
-                    relative.map(|r| std::mem::replace(p, r))
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
-        let text = serde_json::to_string(self).map_err(|e| e.to_string());
-        if !originals.is_empty() {
-            for ((p, _), original) in self.file_paths_mut().into_iter().zip(originals) {
-                if let Some(original) = original {
-                    *p = original;
-                }
-            }
-        }
-        // Serialization can fail: put the live addresses back before handling its result.
-        for (address, original) in self.addresses_mut().into_iter().zip(&was) {
-            if let Some(original) = original {
-                *address = original.clone();
-            }
-        }
-        for (address, original) in self.recorded_mut().into_iter().zip(&recorded_was) {
-            if let Some(original) = original {
-                *address = original.clone();
-            }
-        }
-        let text = text?;
-        if text.len() as u64 > MAX_BYTES {
-            return Err(format!("the project is too large to save (maximum {} MiB)", MAX_BYTES >> 20));
-        }
-        if n > 0 {
-            let (len, hash) = identity(&text);
-            let mut kept = kept();
-            kept.retain(|entry| (entry.len, entry.hash) != (len, hash));
-            if kept.len() >= MAX_WRITTEN {
-                kept.remove(0);
-            }
-            kept.push(Written { len, hash, was });
-        }
-        Ok((text, n))
-    }
-
-    /// The project as an autosaved recovery copy keeps it: its text without passwords, keys, tokens
-    /// or signatures in layer addresses, from a copy of the project (autosave writes it off the
-    /// interface thread). Unlike [`Self::saved_text`], local file paths stay as the open project
-    /// holds them, absolute: the copy lives in the app's recovery folder and is opened from there,
-    /// not from the project's folder. Nor is it remembered as a file this process wrote, so
-    /// frequent copies can't push the user's own saves out of the snapshots that restore secrets.
-    /// Runtime import reservations are omitted while completed work remains recoverable.
-    /// Text too large to open again is refused.
-    pub fn recovery_text(mut self) -> Result<String, String> {
+    /// Omits runtime-only reservations on an owned recovery or bridge draft.
+    pub(crate) fn omit_pending_imports(&mut self) {
         // A recovery copy preserves completed work without persisting runtime-only reservations.
         for map in self.maps.iter_mut().chain(self.offline_areas.iter_mut().map(|area| &mut area.data)) {
             let pending: std::collections::HashSet<_> = map
@@ -1062,29 +989,45 @@ impl Project {
             }
             map.tiles.retain(|tile| !tile.id.starts_with("geolibre-pending:"));
         }
-        strip_addresses(self.addresses_mut());
-        clear_login_bindings(self.recorded_mut());
-        let text = serde_json::to_string(&self).map_err(|e| e.to_string())?;
+    }
+
+    /// Writes controlled durable fields and relative paths in one guarded transaction. Live
+    /// fields are restored on every return and native unwind; only explicit saves are remembered.
+    pub fn saved_text(&mut self, dir: Option<&Path>) -> Result<(String, crate::durable::Report), String> {
+        self.ensure_imports_complete()?;
+        let unrecorded = self.bound_address_losses(false);
+        let (text, mut report) = crate::durable::output_remembered(self, dir.and_then(Path::to_str), project_text)?;
+        report.addresses = report.addresses.saturating_add(u32::try_from(unrecorded).unwrap_or(u32::MAX));
+        Ok((text, report))
+    }
+
+    /// The recovery text alone, without its counted loss report.
+    /// Recovery stores should use [`Self::recovery_text_with_report`] to retain its notices.
+    pub fn recovery_text(self) -> Result<String, String> {
+        self.recovery_text_with_report().map(|(text, _)| text)
+    }
+
+    /// The project as an autosaved recovery copy keeps it: its text without passwords, keys, tokens
+    /// or signatures in layer addresses, from a copy of the project (autosave writes it off the
+    /// interface thread). Unlike [`Self::saved_text`], local file paths stay as the open project
+    /// holds them, absolute: the copy lives in the app's recovery folder and is opened from there,
+    /// not from the project's folder. Nor is it remembered as a file this process wrote, so
+    /// frequent copies can't push the user's own saves out of the snapshots that restore secrets.
+    /// Runtime import reservations are omitted while completed work remains recoverable.
+    /// Text too large to open again is refused. Returns the text and its counted output notices.
+    pub fn recovery_text_with_report(mut self) -> Result<(String, crate::durable::Report), String> {
+        self.omit_pending_imports();
+        let unrecorded = self.bound_address_losses(false);
+        let (text, mut report) = crate::durable::output_owned(self, project_text)?;
+        report.addresses = report.addresses.saturating_add(u32::try_from(unrecorded).unwrap_or(u32::MAX));
         if text.len() as u64 > MAX_BYTES {
             return Err("the project is too large to keep a recovery copy".into());
         }
-        Ok(text)
+        Ok((text, report))
     }
 
-    fn restore_addresses(&mut self, text: &str) {
-        let id = identity(text);
-        let kept = kept();
-        let Some(entry) = kept.iter().find(|entry| (entry.len, entry.hash) == id) else { return };
-        for (address, original) in self.addresses_mut().into_iter().zip(&entry.was) {
-            if let Some(full) = original
-                && saved_address(full).as_deref() == Some(address.as_str())
-            {
-                *address = without_login_binding(full).unwrap_or_else(|| full.clone());
-            }
-        }
-    }
-
-    pub fn save(&mut self, path: &Path) -> Result<usize, String> {
+    /// Writes checked durable text atomically and returns counted losses from the guarded output.
+    pub fn save(&mut self, path: &Path) -> Result<crate::durable::Report, String> {
         let dir = std::path::absolute(path).ok().and_then(|p| p.parent().map(Path::to_path_buf));
         let (text, stripped) = self.saved_text(dir.as_deref())?;
         rustgis_data::io::write_atomic(path, text.as_bytes()).map_err(|e| format!("could not save {}: {e}", path.display()))?;
@@ -1093,17 +1036,23 @@ impl Project {
 
     /// Reads a project from its JSON text (a browser upload).
     pub fn from_json(text: &str) -> Result<Project, String> {
-        Self::read_json(text, true, None)
+        Self::read_json(text, true, None, true)
     }
 
     /// Reads imported JSON (including package contents) without restoring a saved file's secrets.
     pub(crate) fn from_import_json(text: &str, dir: Option<&Path>) -> Result<Project, String> {
-        Self::read_json(text, false, dir)
+        Self::read_json(text, false, dir, true)
     }
 
-    /// Validate compatibility, clear runtime bindings, resolve paths and normalize accepted
-    /// content; only ordinary project opens may restore this process's saved addresses.
-    fn read_json(text: &str, restore: bool, dir: Option<&Path>) -> Result<Project, String> {
+    /// Peer census must precede normalization: duplicate ids cannot become proof of a unique
+    /// matching slot after the normalizer renumbers or drops them. Saved-text restore is absent.
+    pub(crate) fn from_peer_raw(text: &str) -> Result<Project, String> {
+        Self::read_json(text, false, None, false)
+    }
+
+    /// Validates compatibility before typed decoding. Saved files may restore exact fields;
+    /// peer input stays unnormalized until its slot census has rejected ambiguous identities.
+    fn read_json(text: &str, restore: bool, dir: Option<&Path>, normalize: bool) -> Result<Project, String> {
         check_format(text, "project")?;
         let mut p: Project = serde_json::from_str(text).map_err(|e| {
             let msg = e.to_string();
@@ -1118,7 +1067,7 @@ impl Project {
             return Err(format!("this project was saved by a newer RustGIS (format {}). Update RustGIS to open it.", p.format));
         }
         if restore {
-            p.restore_addresses(text);
+            crate::durable::restore(&mut p, text);
         }
         // A binding is this computer's runtime token for a login: one in a file is no authority
         // to use any login here.
@@ -1128,7 +1077,9 @@ impl Project {
         if let Some(d) = dir.and_then(Path::to_str) {
             p.resolve_paths(d);
         }
-        p.normalize();
+        if normalize {
+            p.normalize_opened();
+        }
         p.label_read_notices = label_losses::notices(text, &p)?;
         Ok(p)
     }
@@ -1139,7 +1090,36 @@ impl Project {
         let bytes = read_file(path, MAX_BYTES)?;
         let text = String::from_utf8(bytes).map_err(|_| format!("{} isn't a RustGIS project", path.display()))?;
         let dir = std::path::absolute(path).ok().and_then(|p| p.parent().map(Path::to_path_buf));
-        Self::read_json(&text, true, dir.as_deref())
+        Self::read_json(&text, true, dir.as_deref(), true)
+    }
+}
+
+/// Starts reading the overviews of a map's raster layers read in place and not read yet, all at
+/// once (see [`rustgis_map::raster::read_together`]): a project or an import of several waits for
+/// the slowest, not for each in turn, where the session waits for them
+/// ([`crate::Session::wait_in_place_reads`]); elsewhere they land as the map draws. One read from
+/// an S3 bucket waits for its connection (see [`crate::s3_connections::resolve_project_s3`]). One
+/// that failed is left to [`crate::Session::read_in_place_again`], which reads it again once its
+/// wait is over, and one that couldn't start (an address the project keeps that can't be read)
+/// stays as it is, said once: a repair of the project (a layer file added, maps imported) doesn't
+/// start either over.
+pub(crate) fn read_in_place(m: &mut Map) {
+    let mut named: Vec<(String, &mut rustgis_map::raster::RasterLayer)> = m
+        .layers
+        .iter_mut()
+        .filter_map(|l| {
+            let name = l.name.clone();
+            let rl = l.raster.as_mut()?;
+            (rl.in_place && rl.error.is_none() && !rl.path.as_deref().is_some_and(crate::s3_connections::is_s3_backed))
+                .then_some((name, rl))
+        })
+        .collect();
+    let mut layers: Vec<&mut rustgis_map::raster::RasterLayer> = named.iter_mut().map(|(_, rl)| &mut **rl).collect();
+    let failed = rustgis_map::raster::read_together(&mut layers, false);
+    for (i, e) in failed {
+        if let Some((name, _)) = named.get(i) {
+            log::warn!("{name}: {e}");
+        }
     }
 }
 
@@ -1193,6 +1173,191 @@ fn unique_names<'a>(names: impl Iterator<Item = &'a mut String>) {
             }
         }
     }
+}
+
+// Durable ownership is classified here so private fields cannot disappear from the inventory.
+use crate::durable::{Durable, FieldMut, Leaf, Owner, Prepare};
+
+impl Durable for Project {
+    /// Offers classified whole fields once, before any live mutation.
+    fn prepare(&self, p: &mut Prepare<'_>) {
+        let Self {
+            label_read_notices: _,
+            format: _,
+            name: _,
+            maps,
+            active_map: _,
+            tables,
+            next_table_id: _,
+            gp_history,
+            layouts: _,
+            folders: _,
+            styles: _,
+            ramps: _,
+            tasks,
+            gp_env: _,
+            models,
+            workspaces: _,
+            link_views: _,
+            thumbnail: _,
+            jobs: _,
+            offline_areas,
+            reports: _,
+            presentations,
+            notebooks,
+            dl_models: _,
+            shared: _,
+            data_stores: _,
+        } = self;
+        for (i, v) in maps.iter().enumerate() {
+            p.child(Owner::Map(i), v);
+        }
+        for (i, v) in offline_areas.iter().enumerate() {
+            let OfflineArea { name: _, map: _, extent: _, created: _, synced: _, data } = v;
+            p.child(Owner::Area(i), data);
+        }
+        for (i, v) in tables.iter().enumerate() {
+            p.child(Owner::Table(i), v);
+        }
+        for (i, v) in tasks.iter().enumerate() {
+            p.child(Owner::Task(i), v);
+        }
+        for (i, v) in models.iter().enumerate() {
+            p.child(Owner::Model(i), v);
+        }
+        for (i, v) in gp_history.iter().enumerate() {
+            p.child(Owner::History(i), v);
+        }
+        for (i, v) in notebooks.iter().enumerate() {
+            p.child(Owner::Notebook(i), v);
+        }
+        for (i, v) in presentations.iter().enumerate() {
+            p.child(Owner::Presentation(i), v);
+        }
+    }
+
+    /// Resolves a prepared location through owned fields, without allocation or policy.
+    fn field_mut(&mut self, owners: &[Owner], leaf: &Leaf) -> Option<FieldMut<'_>> {
+        let (owner, rest) = owners.split_first()?;
+        match owner {
+            Owner::Map(i) => self.maps.get_mut(*i)?.field_mut(rest, leaf),
+            Owner::Area(i) => self.offline_areas.get_mut(*i)?.data.field_mut(rest, leaf),
+            Owner::Table(i) => self.tables.get_mut(*i)?.field_mut(rest, leaf),
+            Owner::Task(i) => self.tasks.get_mut(*i)?.field_mut(rest, leaf),
+            Owner::Model(i) => self.models.get_mut(*i)?.field_mut(rest, leaf),
+            Owner::History(i) => self.gp_history.get_mut(*i)?.field_mut(rest, leaf),
+            Owner::Notebook(i) => self.notebooks.get_mut(*i)?.field_mut(rest, leaf),
+            Owner::Presentation(i) => self.presentations.get_mut(*i)?.field_mut(rest, leaf),
+            Owner::Graph => None,
+        }
+    }
+}
+
+impl Durable for Table {
+    /// Offers classified whole fields once, before any live mutation.
+    fn prepare(&self, p: &mut Prepare<'_>) {
+        let Self { id: _, dataset } = self;
+        let Dataset {
+            name: _,
+            geometry_type: _,
+            fields: _,
+            features: _,
+            source: provenance,
+            crs: _,
+            crs_incomplete: _,
+            zm_dropped: _,
+            windowed: _,
+        } = dataset;
+        if let Some(v) = provenance {
+            p.string(Leaf::Table, v, true, rustgis_map::paths::is_local(v));
+        }
+    }
+
+    /// Resolves a prepared location through owned fields, without allocation or policy.
+    fn field_mut(&mut self, owners: &[Owner], leaf: &Leaf) -> Option<FieldMut<'_>> {
+        if owners.is_empty() && *leaf == Leaf::Table { self.dataset.source.as_mut().map(FieldMut::Text) } else { None }
+    }
+}
+
+impl Durable for Task {
+    /// Offers classified whole fields once, before any live mutation.
+    fn prepare(&self, p: &mut Prepare<'_>) {
+        let Self { name: _, description: _, steps } = self;
+        for (i, TaskStep { title: _, instructions: _, command, params }) in steps.iter().enumerate() {
+            p.command(Leaf::Task(i), Leaf::TaskCommand(i), command, params);
+        }
+    }
+
+    /// Resolves a prepared location through owned fields, without allocation or policy.
+    fn field_mut(&mut self, owners: &[Owner], leaf: &Leaf) -> Option<FieldMut<'_>> {
+        if !owners.is_empty() {
+            return None;
+        }
+        match leaf {
+            Leaf::Task(i) => Some(FieldMut::Json(&mut self.steps.get_mut(*i)?.params)),
+            Leaf::TaskCommand(i) => Some(FieldMut::Text(&mut self.steps.get_mut(*i)?.command)),
+            _ => None,
+        }
+    }
+}
+
+impl Durable for Model {
+    /// Offers classified whole fields once, before any live mutation.
+    fn prepare(&self, p: &mut Prepare<'_>) {
+        let Self { name: _, steps, graph } = self;
+        for (i, ModelStep { tool, params }) in steps.iter().enumerate() {
+            p.tool(Leaf::ModelStep(i), Leaf::ModelStepTool(i), tool, params);
+        }
+        if let Some(g) = graph {
+            p.child(Owner::Graph, g);
+        }
+    }
+
+    /// Resolves a prepared location through owned fields, without allocation or policy.
+    fn field_mut(&mut self, owners: &[Owner], leaf: &Leaf) -> Option<FieldMut<'_>> {
+        if let Some((Owner::Graph, rest)) = owners.split_first() {
+            return self.graph.as_mut()?.field_mut(rest, leaf);
+        }
+        if !owners.is_empty() {
+            return None;
+        }
+        match leaf {
+            Leaf::ModelStep(i) => Some(FieldMut::Json(&mut self.steps.get_mut(*i)?.params)),
+            Leaf::ModelStepTool(i) => Some(FieldMut::Text(&mut self.steps.get_mut(*i)?.tool)),
+            _ => None,
+        }
+    }
+}
+
+impl Durable for ModelGraph {
+    /// Offers classified whole fields once, before any live mutation.
+    fn prepare(&self, p: &mut Prepare<'_>) {
+        let Self { nodes, edges: _ } = self;
+        for (i, ModelNode { id: _, kind: _, x: _, y: _, layer: _, tool, params, name: _ }) in nodes.iter().enumerate() {
+            p.tool(Leaf::ModelNode(i), Leaf::ModelNodeTool(i), tool.as_deref().unwrap_or(""), params);
+        }
+    }
+
+    /// Resolves a prepared location through owned fields, without allocation or policy.
+    fn field_mut(&mut self, owners: &[Owner], leaf: &Leaf) -> Option<FieldMut<'_>> {
+        if !owners.is_empty() {
+            return None;
+        }
+        match leaf {
+            Leaf::ModelNode(i) => Some(FieldMut::Json(&mut self.nodes.get_mut(*i)?.params)),
+            Leaf::ModelNodeTool(i) => self.nodes.get_mut(*i)?.tool.as_mut().map(FieldMut::Text),
+            _ => None,
+        }
+    }
+}
+
+/// Enforces the opening bound inside the formatter, before any destination is replaced.
+fn project_text(p: &Project) -> Result<String, String> {
+    let text = serde_json::to_string(p).map_err(|e| e.to_string())?;
+    if text.len() as u64 > MAX_BYTES {
+        return Err(format!("the project is too large to save (maximum {} MiB)", MAX_BYTES >> 20));
+    }
+    Ok(text)
 }
 
 #[cfg(test)]
@@ -1260,8 +1425,31 @@ mod login_binding_tests {
         });
         assert!(project.addresses_mut().is_empty());
         let (saved, stripped) = project.saved_text(None).unwrap();
-        assert_eq!(stripped, 0);
+        assert_eq!(stripped.layer_addresses(), 0);
         assert_eq!(Project::from_json(&saved).unwrap().tasks[0].steps[0].params["url"], note);
+    }
+
+    /// String nesting is independent of JSON depth and must never consume the thread's stack.
+    #[test]
+    fn hostile_nested_templates_in_recorded_parameters_do_not_recurse() {
+        let prefix = "pmtiles:x@".repeat(16_384);
+        let plain = "https://project757.example.org/data.csv";
+        let clean = format!("{prefix}{plain}");
+        let mut project = Project::default();
+        project.tasks.push(Task {
+            name: "Nested".into(),
+            description: String::new(),
+            steps: vec![TaskStep {
+                title: "Read".into(),
+                instructions: String::new(),
+                command: "layer.addUrl".into(),
+                params: serde_json::json!({"url":format!("{prefix}{}", bound(plain)),"clean":clean}),
+            }],
+        });
+        let text = serde_json::to_string(&project).unwrap();
+        let opened = Project::from_json(&text).unwrap();
+        assert_eq!(opened.tasks[0].steps[0].params["url"], clean);
+        assert_eq!(opened.tasks[0].steps[0].params["clean"], clean);
     }
 
     #[test]
@@ -1293,7 +1481,7 @@ mod login_binding_tests {
         });
         let forged = serde_json::to_string(&session.project).unwrap();
         let (saved, stripped) = session.project.saved_text(None).unwrap();
-        assert_eq!(stripped, 0);
+        assert_eq!(stripped.layer_addresses(), 0);
         let recovery = session.project.clone().recovery_text().unwrap();
         for text in [&saved, &recovery] {
             assert!(!text.contains(rustgis_data::login_address::PREFIX));
@@ -1388,7 +1576,7 @@ mod login_binding_tests {
     }
 
     #[test]
-    fn a_malformed_wrapper_is_never_emptied() {
+    fn a_malformed_wrapper_is_withheld_at_durable_output() {
         let bad = "rustgis-login:nothex:5:https://project757.example.org/{z}/{x}/{y}.png";
         let mut project = Project::default();
         project.tasks.push(Task {
@@ -1401,9 +1589,14 @@ mod login_binding_tests {
                 params: serde_json::json!({"url": bad}),
             }],
         });
-        let (saved, _) = project.saved_text(None).unwrap();
-        let opened = Project::from_json(&saved).unwrap();
-        assert_eq!(opened.tasks[0].steps[0].params["url"], bad);
+        let (saved, report) = project.saved_text(None).unwrap();
+        // Inspect the durable bytes: from_json may restore a credential edit from this
+        // process's explicit-save cache, including an invalid address that still cannot run.
+        let written: serde_json::Value = serde_json::from_str(&saved).unwrap();
+        assert_eq!(written["tasks"][0]["steps"][0]["params"]["url"], rustgis_data::login_address::PREFIX);
+        assert_eq!((report.withheld, report.steps, report.layer_addresses()), (1, 1, 0));
+        assert_eq!(report.notices().len(), 2, "the withheld slot and affected executable step are distinct report dimensions");
+        assert_eq!(project.tasks[0].steps[0].params["url"], bad, "the live project is restored");
         let mut address = bad.to_string();
         clear_login_bindings([&mut address]);
         assert_eq!(address, bad);
@@ -1414,21 +1607,44 @@ mod login_binding_tests {
         let plain = "https://project757.example.org/{z}/{x}/{y}.png";
         let mut project = Project::default();
         project.map_mut().tiles.push(tiles("Recorded", &bound(plain), "saved-id"));
-        assert_eq!(project.saved_text(None).unwrap().1, 0, "a layer that records its connection asks for the login again");
+        assert_eq!(
+            project.saved_text(None).unwrap().1.layer_addresses(),
+            0,
+            "a layer that records its connection asks for the login again"
+        );
 
         project.map_mut().tiles.push(tiles("Unrecorded", &bound(plain), ""));
-        assert_eq!(project.saved_text(None).unwrap().1, 1, "a bound layer with no connection can't ask for one");
+        assert_eq!(project.saved_text(None).unwrap().1.layer_addresses(), 1, "a bound layer with no connection can't ask for one");
 
         project.map_mut().tiles.clear();
         project.map_mut().tiles.push(tiles("Token", &format!("{plain}?token=abc123"), ""));
-        assert_eq!(project.saved_text(None).unwrap().1, 1, "a real token is still lost");
+        assert_eq!(project.saved_text(None).unwrap().1.layer_addresses(), 1, "a real token is still lost");
 
         project.map_mut().tiles.clear();
         project.map_mut().tiles.push(tiles("Both", &bound(&format!("{plain}?token=abc123")), "saved-id"));
-        assert_eq!(project.saved_text(None).unwrap().1, 1, "the token under a binding is lost too");
+        assert_eq!(project.saved_text(None).unwrap().1.layer_addresses(), 1, "the token under a binding is lost too");
 
         project.map_mut().tiles.clear();
         project.map_mut().tiles.push(tiles("Unrecorded token", &bound(&format!("{plain}?token=abc123")), ""));
-        assert_eq!(project.saved_text(None).unwrap().1, 1, "a bound layer with no connection and a token is one layer");
+        assert_eq!(project.saved_text(None).unwrap().1.layer_addresses(), 1, "a bound layer with no connection and a token is one layer");
+
+        project.map_mut().tiles.clear();
+        let legend = "https://project757.example.org/legend.png";
+        let mut tile = tiles("Legend only", plain, "");
+        tile.legends = vec![rustgis_data::ogc::Legend { url: bound(legend), ..Default::default() }; 2];
+        project.map_mut().tiles.push(tile);
+        let (saved, report) = project.saved_text(None).unwrap();
+        assert_eq!(report.layer_addresses(), 1, "several lost legend logins count their tile once");
+        assert_eq!(project.map().tiles[0].legends[0].url, bound(legend), "the live login is restored");
+        assert_eq!(Project::from_json(&saved).unwrap().map().tiles[0].legends[0].url, legend, "a saved binding is never restored");
+
+        project.map_mut().tiles[0].legends.clear();
+        project.map_mut().tiles[0].time_url = Some(bound(plain));
+        assert_eq!(project.saved_text(None).unwrap().1.layer_addresses(), 1, "an unrecorded time URL loses its login too");
+        project.map_mut().tiles[0].time_url = None;
+        project.map_mut().tiles[0].time_urls = vec![(0.0, bound(plain)), (1.0, bound(plain))];
+        assert_eq!(project.saved_text(None).unwrap().1.layer_addresses(), 1, "dated URLs count their tile once");
+        project.map_mut().tiles[0].time_urls.clear();
+        assert_eq!(project.saved_text(None).unwrap().1.layer_addresses(), 0, "a clean tile loses no login");
     }
 }

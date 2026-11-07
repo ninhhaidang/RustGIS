@@ -43,6 +43,9 @@ pub struct Recovery {
     /// Copies written before it was known read as `false`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub quit: bool,
+    /// Counted output notices shown when this copy is recovered.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notices: Vec<String>,
 }
 
 /// Where a shell keeps the recovery copy. Writing and clearing may happen in the background, but
@@ -131,7 +134,7 @@ fn now_secs() -> u64 {
 /// a lossy spelling of the name.
 fn about(app: &RustGisApp) -> Recovery {
     let path = app.session.path.as_ref().and_then(|p| std::path::absolute(p).unwrap_or_else(|_| p.clone()).to_str().map(str::to_string));
-    Recovery { name: app.session.project.name.clone(), path, time: now_secs(), quit: false }
+    Recovery { name: app.session.project.name.clone(), path, time: now_secs(), quit: false, notices: Vec::new() }
 }
 
 /// Reads the interval preference and the copy an earlier run left (from [`RustGisApp::with_services`]).
@@ -290,6 +293,9 @@ pub(crate) fn recover(app: &mut RustGisApp, p: &Value) -> Result<Value, String> 
     next_offer(app);
     let text = crate::i18n::fmt("Recovered unsaved work in {name}. Save to keep it.", &[("name", &app.session.project.name)]);
     app.session.notify(text, false);
+    for notice in offered.notices {
+        app.session.notify(notice, false);
+    }
     // Other copies wait for the next start: recovering one now would replace this work.
     let waiting = waiting(app);
     if waiting > 0 {
@@ -667,8 +673,9 @@ mod folder {
     /// Writes this run's copy: the description line, then the project's text, in one atomic
     /// write, so a stop part way leaves the previous copy whole.
     fn write(dir: &Path, project: Project, about: &Recovery) -> Result<(), String> {
-        let text = project.recovery_text()?;
-        let header = serde_json::to_string(about).map_err(|e| e.to_string())?;
+        let (text, report) = project.recovery_text_with_report()?;
+        let about = Recovery { notices: report.notices(), ..about.clone() };
+        let header = serde_json::to_string(&about).map_err(|e| e.to_string())?;
         let mut bytes = Vec::with_capacity(header.len() + 1 + text.len());
         bytes.extend_from_slice(header.as_bytes());
         bytes.push(b'\n');

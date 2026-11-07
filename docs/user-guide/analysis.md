@@ -124,6 +124,25 @@ written some other way (a token typed into a SQL query, say) can still be there:
 before sharing it. A point buffered where the
 map was clicked is copied as the command that buffered it, with the point.
 
+**Near the poles.** The geometry tools and the topology checks work on Web Mercator's coordinates,
+carried on beyond 85.05°, where Web Mercator stops, to the poles instead of clamped there, so polar
+features keep their shape. An edge wholly beyond 85.05° is straight in longitude and latitude. One
+that crosses 85.05° is straight in the tools, but the Web Mercator map clamps its far end onto
+85.05° and draws it straight to there, so a cut along such an edge can fall well east or west of
+where that map shows it: about 48 km at 84.5°N for an edge from (0°, 80°N) to (10°E, 89°N). A
+pole is a line in these coordinates, not a point, so Minimum Bounding Geometry of points spread
+around a pole spans their longitudes (a flat polygon with no area, for points on one parallel,
+and the tool says how many hulls have no area), not the cap they enclose on the ground. The globe
+draws a long edge along the great circle between its ends, so near a pole it shows a little
+poleward of where the tools take it: about 850 m at the middle of a 10° edge along 88°N (as
+everywhere, the tools take an edge as straight on the map, not on the globe).
+Beyond 85.05°, the dangle check measures line ends about their pole (on WGS 84's curvature there,
+within 0.13% out to 85°), right up to the pole and across ±180°; an edge winding round a pole so
+many times that it can't be measured closely is measured coarsely, and the check says it's
+incomplete.
+Radius selections and the Neighborhood Explorer still measure in local Web Mercator, and the Cut
+Polygon, Reshape and Trace edits still work in it.
+
 These are the built-in tools; GeoLibre and plugin tools join them when available.
 Use these ids in `gp.run`'s `tool` parameter (`gp.tools` lists the available tools and their parameters):
 
@@ -179,7 +198,11 @@ bands, colors, mask and resampling. Set the minimum and maximum zoom from 0 to 1
 transparency are included. The raster must be georeferenced and fit
 within one world. Turn off dynamic range adjustment and display rotation first. The in-memory
 export is limited to 512 tiles and 64 MiB of compressed tile data; reduce the extent or zoom range
-if it exceeds a limit. Areas beyond the Web Mercator latitude limit are clipped.
+if it exceeds a limit. Areas beyond the Web Mercator latitude limit are clipped. A cloud-optimised
+GeoTIFF read in place is exported from its full-resolution tiles: the desktop waits for them (two
+minutes at most); the web app can't wait, so an export whose tiles aren't all in says so and asks
+for the rest: export again once they are in (a large export may take a few tries). Without them
+nothing is written.
 
 **Vector to PMTiles** (`vectorToPmtiles`) writes a single-layer MVT archive in standard Web
 Mercator. Choose `minZoom` and `maxZoom` from 0 to 16; `sourceLayer` defaults to the input
@@ -230,8 +253,14 @@ gp.run={"tool":"vectorToPmtiles","params":{"input":"Roads","minZoom":0,"maxZoom"
 least three different, non-collinear corners (plus the closing vertex), so a tolerance larger
 than a polygon produces a small ring instead of restoring its original vertices. Holes and
 multipart rings are retained. This is not a topology-preserving simplifier: check the result
-where holes or neighbouring polygons must stay aligned. The default tolerance remains 25 km;
-use a smaller value for local boundaries.
+where holes or neighboring polygons must stay aligned. The default tolerance remains 25 km;
+use a smaller value for local boundaries. A line or polygon has its tolerance taken east–west at
+the scale of its middle (its label point's latitude), at most 85°'s, so beyond 85.05°, where the
+ground is far narrower, less is simplified away than asked (a 3 km tolerance at 89.9°N takes out
+only what lies within about 60 m east–west). Parts farther equatorward than the label point can be
+simplified more than asked: the tolerance is applied at that one scale, so a polar cap from 60°N to
+the pole, at 3 km, can move its 60°N vertices about 17 km on the ground. The tool says how many
+features reach beyond 85.05° and so are affected.
 
 **Kernel Density** (`kernelDensity`) calculates a continuous magnitude-per-unit-area raster
 surface from point features using a Quartic (biweight, default) or Gaussian kernel (truncated at 3σ and
@@ -245,7 +274,8 @@ e.g. `EPSG:32618`).
 Because bandwidth and cell size are measured in coordinate-space linear units, global cylindrical
 projections such as Web Mercator (EPSG:3857) introduce scale distortion that increases with latitude;
 use a local projected coordinate system (such as UTM or State Plane) when accurate ground distances
-are required. Leaving `radius` empty or setting it to `0` automatically estimates the bandwidth
+are required. A point the system can't hold, such as one beyond 85.05° in Web Mercator, is left
+out, and the tool says how many were. Leaving `radius` empty or setting it to `0` automatically estimates the bandwidth
 using Silverman's rule of thumb based on the points' spatial distribution (falling back to extent span / 30,
 or 1000 coordinate-space linear units for a single point or coincident points). When `pixelSize` is
 omitted, an adaptive cell size is calculated to span approximately 250 cells along the longer side
@@ -266,8 +296,11 @@ projection. Each feature is buffered in an azimuthal equidistant projection on t
 centred on it, so distances from a point are true; long lines and large polygon outlines are
 buffered in stretches of a few hundred kilometres to limit projection error. Up to 85° of
 latitude, a buffer's sides are within 0.012 % of the distance (or 1 cm), and within 0.05 % along
-a winding line or outline buffered in stretches. Its curves are drawn with straight edges (128
-to a point's circle, 64 to a semicircular line end). Between vertices, those edges cut up
+a winding line or outline buffered in stretches. An outline's edges are split to keep to that,
+by at most 16,000 points a ring; a ring of thousands of long edges can use them up and keep some
+edges coarser, and the tool says how many features' buffers did. Its curves are drawn with
+straight edges (128 to a point's circle, 64 to a semicircular line end). Between vertices, those
+edges cut up
 to 0.031 % of the distance inside the true curve in the projection plane, and up to 0.125 % at
 polygon corners and line joins, in addition to the projection error. Negative Buffer
 distances shrink polygons. Buffer and Select Layer By Location limit distances to 5,000 km.
@@ -436,7 +469,8 @@ along it are kept, but polygons that only share an edge or a corner, and a line 
 one, give nothing. The input can be points, lines or polygons and keeps its geometry type; the
 overlay must be polygons. An overlay field whose name the input already has gets a suffix (`id_2`).
 Overlapping features within one layer are not split against each other. Like Clip and Erase, the
-overlay works on the map's Web Mercator coordinates, so the parts' edges are straight on the map.
+overlay works on the map's Web Mercator coordinates, so the parts' edges are straight on the map
+within ±85.05° (beyond it, see **Near the poles** above).
 Selections in both layers are honoured. To measure each part, run Calculate Geometry Attributes on
 the result:
 
@@ -756,16 +790,20 @@ billion), so a part that leaves nothing outside its zone wider than that grid is
 and only parts outside every zone wider than the grid are reported. A feature so narrow next to its
 zones that the rounding can move its area by more than 1% is measured only roughly, unless it lies
 wholly inside a zone, and the tool says how many there are. The percentages of classes that overlap
-each other can add up to more than 100. Like the other overlay tools, it works on the map, which
-ends at 85.05° north and south: parts of polygons beyond that are taken as lying along it, so
-overlaps there have no area ([#1033](https://github.com/opengeos/RustGIS/issues/1033)); the tool
-says how many features reach beyond it.
+each other can add up to more than 100. Like the other overlay tools, it works on the map's
+coordinates carried on past 85.05° to the poles (see **Near the poles** above), so polygons there
+keep their area. Near a pole an edge along a parallel runs far from the shortest way between its
+ends, which `area_km2` follows, so the two measures can differ widely: for a quarter cap from 88°N
+to the pole, written with one edge along 88°N, `area_km2` is about 64% of the area its
+percentage is taken from. Add vertices along such edges to bring them together.
 
 The tool says how many zone and class features have no polygon (no geometry, an empty one, a line or
 point, or a ring collapsed to no area; they are left out), how many cross the antimeridian without
 being split there (the map, and with it the percentages and shares, takes them the long way round,
-while area_km2 takes their ground shape), how many zones overlap no class feature and so have no
-rows, how many class features have no value in a sum field (they add nothing to its shares) and,
+while area_km2 takes their ground shape), how many have an edge beyond 85.05° running east or west
+(their percentages and shares follow the analysis plane, which takes such an edge straight in
+longitude and latitude, not clamped as the Web Mercator map draws it, so they and area_km2 can
+differ widely, as above), how many zones overlap no class feature and so have no rows, how many class features have no value in a sum field (they add nothing to its shares) and,
 with sum fields, how many class features lie partly or wholly outside the zones. Only selected
 features are used when a layer has a selection, and the table is named `<zones>_Tabulate` unless
 `output` names it.
@@ -1103,13 +1141,20 @@ The **Script** pane runs commands from text, one per line (`id {json}`); its box
 short of the buttons, and then scrolls, so **Run** stays in view; Ctrl+Enter (⌘+Enter on macOS)
 in the box runs the script too. Above a run's results, a line tells its number, how long it took
 and when it started (`Run #2 (0.84 s)`, and `14:04 UTC` on the right), so a run made again by
-mistake shows (Undo takes a whole run back). On the desktop, a script's tools and models, with
-selections, layer renames and definition queries, the environment and the projection between
-them, are worked out in the background first, so the map and the rest of the window stay in
-use: the status bar shows **Run Script** and **Cancel**, and the results say **Running…** until
-the run is added. From the first line of any other kind (an edit, Add Data, a save, an export,
-a style or a zoom, a plugin or GeoLibre tool, a tool that writes a file) the rest runs as a
-script always has, holding the window until it finishes. A tool whose inputs change meanwhile runs again as the
+mistake shows (Undo takes a whole run back). The results show each line's result cut to a line;
+**Details…** on the run's line opens them whole in a window, as View Details in ArcGIS Pro's
+Geoprocessing History: each line folded under its command, opening to its result laid out to
+read, **Copy** for one and **Copy All** for the run, and why it stopped, if it did. Opening a
+project (New, Open, the sample, a template, or the same one again), from the app, a script, the
+assistant or an agent, starts the pane blank: the script, its results, the count and the Details
+window go with the old project. A script that opens a project itself stays, with its results, as
+the new project's Run #1. On the desktop, a script's tools and models, with selections, layer
+renames and definition queries, the environment and the projection between them, are worked out
+in the background first, so the map and the rest of the window stay in use: the status bar shows
+**Run Script** and **Cancel**, and the results say **Running…** until the run is added. From the
+first line of any other kind (an edit, Add Data, a save, an export, a style or a zoom, a plugin
+or GeoLibre tool, a tool that writes a file) the rest runs as a script always has, holding the
+window until it finishes. A tool whose inputs change meanwhile runs again as the
 results are added, as in a model's run. It colours the commands as you type, in both
 themes: `#` comments in green italics, the command id, and the JSON's strings, numbers and
 `true`/`false`/`null`; an id no command has, or one that can't run in a script (`ui.*`, `script.*`,

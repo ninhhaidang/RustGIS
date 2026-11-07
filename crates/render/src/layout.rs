@@ -53,9 +53,18 @@ pub(crate) fn frame_requires_complete(map: &Map, view: &View) -> bool {
 
 /// Renders a layout at `dpi` (dots per inch). `maps` are the project's maps, found by name.
 pub fn render(layout: &Layout, maps: &mut [Map], dpi: f64, info: &PageInfo) -> Option<Pixmap> {
+    render_pending(layout, maps, dpi, info).map(|(pm, _)| pm)
+}
+
+/// [`render`], and whether a map frame on the page drew while some of its tiles, or a read of its
+/// streamed layers or rasters, were still on their way: in the browser, which doesn't wait for
+/// them, the page is drawn again once they land.
+pub fn render_pending(layout: &Layout, maps: &mut [Map], dpi: f64, info: &PageInfo) -> Option<(Pixmap, bool)> {
     let (w, h, k) = page_geometry(layout, dpi);
     let bounds = tiny_skia::IntRect::from_xywh(0, 0, w, h)?;
-    draw_page(layout, maps, info, k, bounds, None, None).map(Canvas::into_pixmap)
+    let mut pending = false;
+    let pm = draw_page(layout, maps, info, k, bounds, None, None, &mut pending)?.into_pixmap();
+    Some((pm, pending))
 }
 
 /// [`render`] kept as vectors (for a vector PDF): text, shapes, surrounds and flat, north-up map
@@ -73,7 +82,7 @@ pub fn render_drawing(
     let (w, h, k) = page_geometry(layout, dpi);
     let bounds = tiny_skia::IntRect::from_xywh(0, 0, w, h)?;
     let mut pictured = Vec::new();
-    let drawing = draw_page(layout, maps, info, k, bounds, None, Some(&mut pictured))?.into_drawing()?;
+    let drawing = draw_page(layout, maps, info, k, bounds, None, Some(&mut pictured), &mut false)?.into_drawing()?;
     Some((drawing, pictured))
 }
 
@@ -90,7 +99,7 @@ pub(crate) fn page_geometry(layout: &Layout, dpi: f64) -> (u32, u32, f64) {
 /// Outer `None` means rendering failed; inner `None` means the element is off-page.
 pub(crate) fn render_element(layout: &Layout, id: u32, maps: &mut [Map], dpi: f64, info: &PageInfo) -> Option<Option<(Pixmap, [f64; 4])>> {
     let Some((bounds, k, mm)) = element_bounds(layout, id, dpi)? else { return Some(None) };
-    let pm = draw_page(layout, maps, info, k, bounds, Some(id), None)?.into_pixmap();
+    let pm = draw_page(layout, maps, info, k, bounds, Some(id), None, &mut false)?.into_pixmap();
     Some(Some((pm, mm)))
 }
 
@@ -106,7 +115,7 @@ pub(crate) fn record_element(
     pictured: &mut Vec<(u32, String)>,
 ) -> Option<Option<(crate::vector::Drawing, [f64; 4], f64)>> {
     let Some((bounds, k, mm)) = element_bounds(layout, id, dpi)? else { return Some(None) };
-    let drawing = draw_page(layout, maps, info, k, bounds, Some(id), Some(pictured))?.into_drawing()?;
+    let drawing = draw_page(layout, maps, info, k, bounds, Some(id), Some(pictured), &mut false)?.into_drawing()?;
     Some(Some((drawing, mm, k)))
 }
 
@@ -125,7 +134,8 @@ fn element_bounds(layout: &Layout, id: u32, dpi: f64) -> Option<Option<(tiny_ski
 
 /// Draws the selected region with the full layout's frame and dynamic-text context, recorded
 /// when `record` holds a list (see [`render_drawing`]), which gets the names of the frames
-/// drawn as pictures.
+/// drawn as pictures. `pending` is set when a frame drew while some of what it shows was still on
+/// its way (see [`render_pending`]).
 fn draw_page(
     layout: &Layout,
     maps: &mut [Map],
@@ -134,6 +144,7 @@ fn draw_page(
     bounds: tiny_skia::IntRect,
     element: Option<u32>,
     mut record: Option<&mut Vec<(u32, String)>>,
+    pending: &mut bool,
 ) -> Option<Canvas> {
     let ppp = k / PT_PER_MM;
     let mut pm =
@@ -187,7 +198,7 @@ fn draw_page(
                 // A frame larger than the page budget is drawn at a lower resolution and scaled up.
                 let fppp = ppp.min((MAX_PIXELS / (fw * fh).max(1.0)).sqrt()).max(0.01);
                 let view = View { width: fw, height: fh, pixels_per_point: fppp, camera: cam, sky: false };
-                let Some(mut frame_pm) = frame_canvas(map, cam, fw, fh, fppp, pm.is_recording()) else {
+                let Some(mut frame_pm) = frame_canvas(map, cam, fw, fh, fppp, pm.is_recording(), pending) else {
                     if frame_requires_complete(map, &view) {
                         return None;
                     }
@@ -200,7 +211,7 @@ fn draw_page(
                     frame_pm.overflowed() || pm.recorded_cost().saturating_add(frame_pm.recorded_cost()) > crate::vector::max_cost();
                 if frame_pm.is_recording()
                     && too_large
-                    && let Some(pixels) = frame_canvas(map, cam, fw, fh, fppp, false)
+                    && let Some(pixels) = frame_canvas(map, cam, fw, fh, fppp, false, pending)
                 {
                     frame_pm = pixels;
                     if let Some(list) = record.as_deref_mut() {
@@ -426,15 +437,18 @@ fn draw_page(
 /// what a frame shows before its grid, indicator and outline. It waits for the map's tiles, as a
 /// page needs them all.
 pub fn frame_map(map: &mut Map, camera: rustgis_map::Camera, w: f64, h: f64, ppp: f64) -> Option<Pixmap> {
-    frame_canvas(map, camera, w, h, ppp, false).map(Canvas::into_pixmap)
+    frame_canvas(map, camera, w, h, ppp, false, &mut false).map(Canvas::into_pixmap)
 }
 
 /// [`frame_map`] on a canvas: one that records (see [`crate::canvas`]) when `record` and the
 /// frame can be kept as vectors (flat, north up, without view effects), else its pixels.
-fn frame_canvas(map: &mut Map, camera: rustgis_map::Camera, w: f64, h: f64, ppp: f64, record: bool) -> Option<Canvas> {
+/// `pending` is set when some of its tiles, or a read of its streamed layers or rasters, were
+/// still on their way (in the browser, which doesn't wait for them).
+fn frame_canvas(map: &mut Map, camera: rustgis_map::Camera, w: f64, h: f64, ppp: f64, record: bool, pending: &mut bool) -> Option<Canvas> {
     let view = View { width: w, height: h, pixels_per_point: ppp, camera, sky: false };
-    let img = if record { crate::render_complete_recorded(map, &view) } else { crate::render_complete(map, &view) };
-    img.map(|img| finish_frame(img, ppp))
+    let img = if record { crate::render_complete_recorded(map, &view) } else { crate::render_complete(map, &view) }?;
+    *pending |= img.tiles_pending || img.data_pending;
+    Some(finish_frame(img, ppp))
 }
 
 /// [`frame_map`] without waiting for tiles still on their way, for a preview drawn while the

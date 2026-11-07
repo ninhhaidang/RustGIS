@@ -1127,15 +1127,19 @@ fn resolve_waiting(app: &mut RustGisApp, id: &str) {
 fn choose_s3(app: &mut RustGisApp, source: &str, id: &str) -> Result<(), String> {
     let v = app.run("connection.resolveS3", json!({"source": source, "id": id}))?;
     let name = app.session.connections.find(id).map(|c| c.name.clone()).unwrap_or_else(|| id.to_string());
-    let opened = v["reopened"].as_u64().unwrap_or(0).to_string();
+    let opened = v["reopened"].as_u64().unwrap_or(0);
     let failed = v["failed"].as_u64().unwrap_or(0);
-    let text = if failed == 0 {
-        i18n::fmt("{name} now reads {n} project sources", &[("name", &name), ("n", &opened)])
-    } else {
-        i18n::fmt(
-            "{name} now reads {n} project sources; {failed} could not be read",
-            &[("name", &name), ("n", &opened), ("failed", &failed.to_string())],
-        )
+    // Rasters read in place whose overview is on its way: the connection reads them, but they
+    // aren't in yet (the desktop doesn't wait; they land as the map draws).
+    let reading = v["reading"].as_u64().unwrap_or(0);
+    let n = opened.saturating_add(reading).to_string();
+    let (failed_n, reading_n) = (failed.to_string(), reading.to_string());
+    let args: &[(&str, &str)] = &[("name", &name), ("n", &n), ("failed", &failed_n), ("reading", &reading_n)];
+    let text = match (failed, reading) {
+        (0, 0) => i18n::fmt("{name} now reads {n} project sources", args),
+        (0, _) => i18n::fmt("{name} now reads {n} project sources; {reading} still being read", args),
+        (_, 0) => i18n::fmt("{name} now reads {n} project sources; {failed} could not be read", args),
+        _ => i18n::fmt("{name} now reads {n} project sources; {reading} still being read and {failed} could not be read", args),
     };
     app.session.notify(text, failed > 0);
     Ok(())
@@ -1309,6 +1313,7 @@ mod tests {
 
     #[test]
     fn invalid_service_replacement_preserves_session_login_and_definition() {
+        let _turn = crate::fetching::turn();
         let mut app = RustGisApp::with_sample();
         let c = app
             .run(

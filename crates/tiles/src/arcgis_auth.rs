@@ -454,7 +454,7 @@ pub fn adopt_url_token(url: &str) -> Result<String, String> {
         .split('&')
         .filter(|p| {
             let (k, v) = p.split_once('=').unwrap_or((p, ""));
-            if k.eq_ignore_ascii_case("token") {
+            if rustgis_data::address::normalized_name(k).as_deref() == Some("token") {
                 // A token is pasted, not form-encoded: its `+` stays a `+`.
                 token = Some(decode_with(v, false));
                 false

@@ -104,7 +104,7 @@ fn polygons(gs: &[Geometry]) -> MultiPolygon<f64> {
     MultiPolygon::new(gs.iter().filter_map(to_multipolygon).flat_map(|m| m.0).collect())
 }
 
-/// The lines among `gs`, together, in Web Mercator metres.
+/// The lines among `gs`, together, in the analysis plane.
 fn lines(gs: &[Geometry]) -> MultiLineString<f64> {
     MultiLineString::new(gs.iter().filter_map(to_multiline).flat_map(|m| m.0).collect())
 }

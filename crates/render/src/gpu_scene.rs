@@ -57,6 +57,12 @@ pub struct GpuScene {
     pub data_pending: bool,
     /// Tile layers that couldn't be drawn, and why.
     pub tile_errors: Vec<String>,
+    /// Raster layers read in place drawn from less than the view needs (a coarser level, tiles
+    /// they couldn't read), by id, their errors among `tile_errors`: an export refuses them.
+    pub partial: Vec<u32>,
+    /// Raster layers read in place whose tiles are still on their way, by id: drawn again as
+    /// they land; an export that can't wait refuses them.
+    pub pending_in_place: Vec<u32>,
     /// A turned or tilted scene: the camera it was drawn for, which the vertex shader's full
     /// perspective takes, and a tilted one's sky and fog. `None` for a flat, north-up scene.
     pub tilt: Option<SceneTilt>,

@@ -11,23 +11,23 @@ use crate::{CmdResult, CommandSpec as C, Session};
 
 pub fn commands() -> Vec<C> {
     vec![
-        C::new("map.zoomFull", "Full Extent", "Home › Navigate", zoom_full).view(),
-        C::new("map.zoomIn", "Fixed Zoom In", "Home › Navigate", |s, _| zoom(s, 2.0)).view().key("Mod+="),
-        C::new("map.zoomOut", "Fixed Zoom Out", "Home › Navigate", |s, _| zoom(s, 0.5)).view().key("Mod+-"),
+        C::new("map.zoomFull", "Full Extent", "Home › Navigate", zoom_full).roles(&[]).view(),
+        C::new("map.zoomIn", "Fixed Zoom In", "Home › Navigate", |s, _| zoom(s, 2.0)).roles(&[]).view().key("Mod+="),
+        C::new("map.zoomOut", "Fixed Zoom Out", "Home › Navigate", |s, _| zoom(s, 0.5)).roles(&[]).view().key("Mod+-"),
         C::new("map.prevExtent", "Previous Extent", "Home › Navigate", |s, _| {
             if s.extent_back() { Ok(Value::Null) } else { Err("no previous extent".into()) }
-        })
+        }).roles(&[])
         .view()
         .when(|s| if s.can_extent_back() { None } else { Some("no previous extent") }),
         C::new("map.nextExtent", "Next Extent", "Home › Navigate", |s, _| {
             if s.extent_forward() { Ok(Value::Null) } else { Err("no next extent".into()) }
-        })
+        }).roles(&[])
         .view()
         .when(|s| if s.can_extent_forward() { None } else { Some("no next extent") }),
         C::new("map.zoomWorld", "Zoom To World", "Home › Navigate", |s, _| {
             s.zoom_to(&Extent::new(-170.0, -58.0, 180.0, 78.0));
             Ok(Value::Null)
-        })
+        }).roles(&[])
         .view(),
         C::new("map.extent", "View Extent", "Home › Navigate", |s, _| {
             let e = if s.map().projection.is_globe() { Extent::new(-180.0, -90.0, 180.0, 90.0) } else { super::workspace::view_extent(s) };
@@ -35,26 +35,26 @@ pub fn commands() -> Vec<C> {
                 return Err("the view shows no part of the Earth".into());
             }
             Ok(json!({"extent": [e.min_x, e.min_y, e.max_x, e.max_y]}))
-        })
+        }).roles(&[])
         .view(),
-        C::new("map.zoomToExtent", "Zoom To Extent", "Home › Navigate", zoom_to_extent)
+        C::new("map.zoomToExtent", "Zoom To Extent", "Home › Navigate", zoom_to_extent).roles(&[])
             .view()
             .params(r#"{"extent": [minLon, minLat, maxLon, maxLat]}"#),
-        C::new("map.goToXY", "By Coordinates…", "Home › Navigate › Locate", go_to_xy)
+        C::new("map.goToXY", "By Coordinates…", "Home › Navigate › Locate", go_to_xy).roles(&[])
             .view()
             .params(r#"{"lon" | "x": number, "lat" | "y": number, "scale"?: number, "bearing"?: degrees clockwise from north, "pitch"?: degrees of tilt (0 to 85)}"#),
-        C::new("map.goToLink", "Go To Map Link", "Home › Navigate", go_to_link)
+        C::new("map.goToLink", "Go To Map Link", "Home › Navigate", go_to_link).roles(&[])
             .view()
             .params(r#"{"url": a map link ending in #zoom/lat/lon[/bearing[/pitch]] (as MapLibre writes them; also #map=…), or just zoom/lat/lon[/bearing[/pitch]]}"#),
         C::new("map.link", "Map Link", "Home › Navigate", |s, _| {
             let hash = link_of(s.map()).ok_or("the view shows no part of the Earth")?;
             Ok(json!({"hash": hash}))
-        })
+        }).roles(&[])
         .view(),
-        C::new("map.setBearing", "Rotate Map", "Home › Navigate", set_bearing)
+        C::new("map.setBearing", "Rotate Map", "Home › Navigate", set_bearing).roles(&[])
             .view()
             .params(r#"{"bearing": degrees clockwise from north (the direction the top of the view faces) | "by": degrees to turn it further}"#),
-        C::new("map.setPitch", "Tilt Map", "Home › Navigate", set_pitch)
+        C::new("map.setPitch", "Tilt Map", "Home › Navigate", set_pitch).roles(&[])
             .view()
             .params(r#"{"pitch": degrees of tilt from looking straight down (0 to 85) | "by": degrees to tilt it further}"#),
         C::new("map.resetNorth", "Reset North", "Home › Navigate", |s, _| {
@@ -63,29 +63,29 @@ pub fn commands() -> Vec<C> {
             m.camera.set_pitch(0.0);
             s.record_extent();
             Ok(Value::Null)
-        })
+        }).roles(&[])
         .view(),
         C::new("map.setScale", "Set Scale", "Status Bar", |s, p| {
             let sc = f(p, "scale").ok_or("scale is required")?;
             s.map_mut().set_scale(sc);
             s.record_extent();
             Ok(Value::Null)
-        })
+        }).roles(&[])
         .view()
         .params(r#"{"scale": number}"#),
-        C::new("map.basemap", "Basemap", "Home › Add", basemap)
+        C::new("map.basemap", "Basemap", "Home › Add", basemap).roles(&[])
             .params(r#"{"name": "paper"|"midnight"|"ocean"|"atlas"|"blank", "keepTiles"?: bool (keeps the web tile basemaps over it)}"#),
         C::new("map.graticule", "Graticule", "View › Display", |s, p| {
             let m = s.map_mut();
             m.graticule = super::b(p, "on").unwrap_or(!m.graticule);
             Ok(Value::Null)
-        })
+        }).roles(&[])
         .params(r#"{"on"?: bool (toggles when omitted)}"#),
         C::new("map.reloadWebLayers", "Reload Web Layers", "View › Display", |_, _| {
             // The map view draws again when the tile cache's generation moves.
             crate::render::rustgis_tiles::cache::clear();
             Ok(json!({"generation": crate::render::rustgis_tiles::cache::generation()}))
-        })
+        }).roles(&[])
         .view(),
         C::new("map.projection", "Globe", "View › View", |s, p| {
             // A preset's parameters, over those of `type` or of the map's own preset.
@@ -111,18 +111,18 @@ pub fn commands() -> Vec<C> {
                 super::workspace::fill_cache(s);
             }
             Ok(out)
-        })
+        }).roles(&[])
         .params(r#"{"type"?: "mercator"|"globe"|preset id (with parameters: "robinson +lon_0=150")|"EPSG:<code>"|"ESRI:<code>" (toggles the globe when omitted), "lon_0"?: degrees (a preset's central meridian), "lat_1"?, "lat_2"?: degrees (a conic preset's standard parallels; these apply to the map's own preset when type is omitted)}"#),
         C::new("map.projections", "Projections", "View › View", |_, _| {
             let mut v = vec![json!({"id": "mercator", "label": "Web Mercator"}), json!({"id": "globe", "label": "Globe"})];
             v.extend(rustgis_map::projection::PRESETS.iter().map(|(id, label, _)| json!({"id": id, "label": label})));
             Ok(Value::Array(v))
-        })
+        }).roles(&[])
         .view(),
-        C::new("bookmark.add", "New Bookmark", "Home › Navigate › Bookmarks", add_bookmark).params(
+        C::new("bookmark.add", "New Bookmark", "Home › Navigate › Bookmarks", add_bookmark).roles(&[]).params(
             r#"{"name"?: string (a number is added when another bookmark has it), "description"?: string, "map"?: name (default: the active map; its current view)}"#,
         ),
-        C::new("bookmark.go", "Go To Bookmark", "Home › Navigate › Bookmarks", go_bookmark)
+        C::new("bookmark.go", "Go To Bookmark", "Home › Navigate › Bookmarks", go_bookmark).roles(&[])
             .view()
             .params(r#"{"name": string, "map"?: name (the bookmark's map), "pan"?: bool (keep the current scale)}"#),
         C::new("bookmark.remove", "Remove Bookmark", "Home › Navigate › Bookmarks", |s, p| {
@@ -131,7 +131,7 @@ pub fn commands() -> Vec<C> {
                 m.bookmarks.remove(bi);
             }
             Ok(Value::Null)
-        })
+        }).roles(&[])
         .params(r#"{"name": string, "map"?: name (default: the active map)}"#),
         C::new("bookmark.rename", "Rename Bookmark", "Bookmarks", |s, p| {
             let new = ps(p, "newName").map(str::trim).filter(|n| !n.is_empty()).ok_or("newName is required")?;
@@ -141,7 +141,7 @@ pub fn commands() -> Vec<C> {
                 b.name = name.clone();
             }
             Ok(json!({"name": name}))
-        })
+        }).roles(&[])
         .params(r#"{"name": string, "newName": string (a number is added when another bookmark has it), "map"?: name}"#),
         C::new("bookmark.update", "Update Bookmark", "Bookmarks", |s, p| {
             let (mi, bi) = bookmark_at(s, p)?;
@@ -156,7 +156,7 @@ pub fn commands() -> Vec<C> {
                 }
             }
             Ok(Value::Null)
-        })
+        }).roles(&[])
         .params(r#"{"name": string (it takes the current view; its map must be in view), "map"?: name}"#),
         C::new("bookmark.describe", "Bookmark Description", "Bookmarks", |s, p| {
             let text: String = ps(p, "description").ok_or("description is required")?.trim().chars().take(MAX_DESCRIPTION).collect();
@@ -165,7 +165,7 @@ pub fn commands() -> Vec<C> {
                 b.description = text;
             }
             Ok(Value::Null)
-        })
+        }).roles(&[])
         .params(r#"{"name": string, "description": string (empty clears it), "map"?: name}"#),
         C::new("bookmark.move", "Move Bookmark", "Bookmarks", |s, p| {
             let to = super::uint(p, "to").ok_or("to is required (an index)")?;
@@ -176,14 +176,14 @@ pub fn commands() -> Vec<C> {
                 m.bookmarks.insert(to, b);
             }
             Ok(Value::Null)
-        })
+        }).roles(&[])
         .params(r#"{"name": string, "to": index (0: first; past the end: last), "map"?: name}"#),
-        C::new("bookmark.save", "Export Bookmarks", "Home › Navigate › Bookmarks", |s, p| super::items::save_item(s, "bookmarks", p))
+        C::new("bookmark.save", "Export Bookmarks", "Home › Navigate › Bookmarks", |s, p| super::items::save_item(s, "bookmarks", p)).roles(&[])
             .view()
             .params(r#"{"path": "*.rgisbookmarks"}"#),
-        C::new("bookmark.import", "Import Bookmarks", "Home › Navigate › Bookmarks", import_bookmarks)
+        C::new("bookmark.import", "Import Bookmarks", "Home › Navigate › Bookmarks", import_bookmarks).roles(&[])
             .params(r#"{"path"?: "*.rgisbookmarks", "text"?: bookmarks JSON, "data"?: base64 file}"#),
-        C::new("map.new", "New Map", "Home › Project", new_map).params(r#"{"name"?: string}"#),
+        C::new("map.new", "New Map", "Home › Project", new_map).roles(&[]).params(r#"{"name"?: string}"#),
         C::new("map.activate", "Activate Map", "Browser", |s, p| {
             let n = s_name(p)?;
             let i = s.project.maps.iter().position(|m| m.name.eq_ignore_ascii_case(n)).ok_or_else(|| format!("no map '{n}'"))?;
@@ -191,7 +191,7 @@ pub fn commands() -> Vec<C> {
             s.active_layer = s.map().layers.first().map(|l| l.id);
             s.table_layer = None;
             Ok(Value::Null)
-        })
+        }).roles(&[])
         .params(r#"{"name": string}"#)
         .view(),
         C::new("map.rename", "Rename Map", "Layers", |s, p| {
@@ -208,9 +208,9 @@ pub fn commands() -> Vec<C> {
             }
             follow_renamed_map(s, &old, &name);
             Ok(json!({"name": name}))
-        })
+        }).roles(&[])
         .params(r#"{"name": string (the new name; a number is added when another map has it), "map"?: name (default: the active map)}"#),
-        C::new("map.duplicate", "Duplicate Map", "Browser", duplicate_map)
+        C::new("map.duplicate", "Duplicate Map", "Browser", duplicate_map).roles(&[])
             .params(r#"{"map"?: name (default: the active map), "name"?: string (default: "<map> copy"; a number is added when another map has it)}"#),
         C::new("map.remove", "Delete Map", "Browser", |s, p| {
             if s.project.maps.len() < 2 {
@@ -229,7 +229,7 @@ pub fn commands() -> Vec<C> {
                 s.table_layer = None;
             }
             Ok(Value::Null)
-        })
+        }).roles(&[])
         .params(r#"{"name": string}"#),
     ]
 }

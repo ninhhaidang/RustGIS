@@ -274,37 +274,76 @@ fn block(s: &mut Session, g: &Group) -> usize {
             src.error = Some(s3::UNRESOLVED.into());
         }
     }
+    // A raster read in place from the bucket waits for the connection too, and says so.
+    for rl in s.project.maps.iter_mut().flat_map(|m| m.layers.iter_mut()).filter_map(|l| l.raster.as_mut()) {
+        if rl.in_place && rl.data.is_none() && rl.path.as_deref().is_some_and(|p| g.has(p)) {
+            rl.fail(s3::UNRESOLVED);
+        }
+    }
     s.project.addresses_mut().into_iter().filter(|a| g.has(a)).count()
 }
 
-/// Opens (again) the streamed sources whose address `which` accepts; how many opened and how
-/// many failed.
-fn reopen_where(s: &mut Session, which: impl Fn(&str) -> bool) -> (usize, usize) {
-    let (mut opened, mut failed) = (0, 0);
+/// What opening a bind's sources did: how many opened, how many failed, and how many rasters read
+/// in place are still reading their overview. Where nothing waits for a read in place (the
+/// desktop, the browser), a raster whose overview was only asked for is reading, not opened: it
+/// lands as the map draws, and one that fails is said then.
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Counts {
+    pub(crate) opened: usize,
+    pub(crate) failed: usize,
+    pub(crate) reading: usize,
+}
+
+/// Opens (again) the streamed sources whose address `which` accepts: how many opened, failed, and
+/// are still reading. Rasters read in place read their overviews together (see
+/// [`rustgis_map::raster::read_together`]): a bucket of several waits for the slowest, not for
+/// each in turn, and on the desktop for none (they land as the map draws, and count as reading
+/// until then).
+fn reopen_where(s: &mut Session, which: impl Fn(&str) -> bool) -> Counts {
+    let mut n = Counts::default();
+    let wait = s.in_place_wait;
     for src in s.project.maps.iter_mut().flat_map(|m| m.layers.iter_mut()).filter_map(|l| l.source.as_mut()) {
         let Some(path) = src.path.clone() else { continue };
         if (!src.is_open() || src.error.is_some()) && which(&path) {
             match src.reopen() {
-                Ok(()) => opened += 1,
-                Err(_) => failed += 1,
+                Ok(()) => n.opened += 1,
+                Err(_) => n.failed += 1,
             }
         }
     }
+    let mut in_place = Vec::new();
     for raster in s.project.maps.iter_mut().flat_map(|m| m.layers.iter_mut()).filter_map(|l| l.raster.as_mut()) {
         if raster.data.is_none() && raster.time_zarr.is_none() && raster.path.as_deref().is_some_and(&which) {
+            if raster.in_place {
+                in_place.push(raster);
+                continue;
+            }
             match raster.reload() {
-                Ok(()) => opened += 1,
-                Err(_) => failed += 1,
+                Ok(()) => n.opened += 1,
+                Err(_) => n.failed += 1,
             }
         }
     }
-    (opened, failed)
+    let unread = rustgis_map::raster::read_together(&mut in_place, wait);
+    n.failed += unread.len();
+    // Counted by what is in, not by what was asked for: a read nobody waited for is still reading.
+    for (i, rl) in in_place.iter().enumerate() {
+        if unread.iter().any(|(j, _)| *j == i) {
+            continue;
+        }
+        if rl.data.is_some() {
+            n.opened += 1;
+        } else {
+            n.reading += 1;
+        }
+    }
+    n
 }
 
 /// Binds `g`'s sources to the saved connection `c`: logs it in if it isn't, lets its login read
 /// the bucket (the user's choice, or its only candidate's), rewrites the addresses to name it and
-/// reads them. How many sources opened and how many failed.
-fn bind_group(s: &mut Session, g: &Group, c: &Connection) -> Result<(usize, usize), String> {
+/// reads them. How many sources opened, failed, and are still reading.
+fn bind_group(s: &mut Session, g: &Group, c: &Connection) -> Result<Counts, String> {
     let endpoint = endpoint_of(c).ok_or_else(|| s3::MISMATCH.to_string())?;
     let binding = crate::cmd::connections::login_saved(s, c)?;
     s3::grant_saved(&binding, &g.bucket)?;
@@ -314,11 +353,11 @@ fn bind_group(s: &mut Session, g: &Group, c: &Connection) -> Result<(usize, usiz
         cache::forget(part(a));
     }
     let affected = |address: &str| addresses.iter().any(|a| a == address);
-    let (mut opened, failed) = reopen_where(s, affected);
+    let mut n = reopen_where(s, affected);
     // Tile resources fetch as they draw, by their new address.
-    opened +=
+    n.opened +=
         s.project.maps.iter().flat_map(|m| &m.tiles).filter(|t| affected(&t.url) || t.time_url.as_deref().is_some_and(affected)).count();
-    Ok((opened, failed))
+    Ok(n)
 }
 
 /// The user's choice of the saved connection `id` to read the sources of the pending resource
@@ -333,9 +372,9 @@ pub(crate) fn choose(s: &mut Session, source: &str, id: &str) -> crate::CmdResul
         s.s3_pending.remove(index);
         return Err(STALE.into());
     }
-    let (reopened, failed) = bind_group(s, &g, &c)?;
+    let n = bind_group(s, &g, &c)?;
     s.s3_pending.remove(index);
-    Ok(serde_json::json!({"id": c.id, "reopened": reopened, "failed": failed}))
+    Ok(serde_json::json!({"id": c.id, "reopened": n.opened, "failed": n.failed, "reading": n.reading}))
 }
 
 #[cfg(test)]

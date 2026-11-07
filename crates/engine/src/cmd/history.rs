@@ -14,70 +14,82 @@ use crate::{CmdResult, CommandSpec as C, GpRecord, Session};
 pub fn commands() -> Vec<C> {
     vec![
         C::new("gp.historyCode", "Copy Run As Code", "Analyze › Geoprocessing", code)
+            .roles(&[])
             .view()
             .params(r#"{"run": index in the history (0 = the first run), "as"?: "python" (default)|"command" (a Script pane line)|"cli"}"#),
-        C::new("gp.historyScript", "Save History As Python Script", "Analyze › Geoprocessing", script).view(),
+        C::new("gp.historyScript", "Save History As Python Script", "Analyze › Geoprocessing", script).roles(&[]).view(),
     ]
 }
 
+/// Formats a replayable code fragment inside the guarded history projection.
 fn code(s: &mut Session, p: &Value) -> CmdResult {
     let i = uint(p, "run").and_then(|i| usize::try_from(i).ok()).ok_or("run is required: a run's place in the history, from 0")?;
-    let r = s.project.gp_history.get(i).ok_or("no run there in the history")?;
-    let (cmd, params) = replay(r)?;
-    let text = match ps(p, "as").unwrap_or("python") {
-        "python" => python(&cmd, &params),
-        "command" => format!("{cmd} {params}"),
-        "cli" => format!("rustgis-cli run --project {} --cmd {}", shell(&project_file(s)), shell(&format!("{cmd}={params}"))),
-        other => return Err(format!("unknown kind '{other}': python, command or cli")),
-    };
+    let project = project_file(s);
+    let r = s.project.gp_history.get_mut(i).ok_or("no run there in the history")?;
+    let (text, report) = crate::durable::output(r, None, |r| {
+        let (cmd, params) = replay_written(r)?;
+        match ps(p, "as").unwrap_or("python") {
+            "python" => Ok(python(&cmd, &params)),
+            "command" => Ok(format!("{cmd} {params}")),
+            "cli" => Ok(format!("rustgis-cli run --project {} --cmd {}", shell(&project), shell(&format!("{cmd}={params}")))),
+            other => Err(format!("unknown kind '{other}': python, command or cli")),
+        }
+    })?;
+    crate::durable::notify(s, &report);
     Ok(json!({"code": text}))
 }
 
 /// The history as a Python script that opens the project and runs each tool again, in order. A
 /// run that failed, or can't be run again, is there as a comment.
 fn script(s: &mut Session, _: &Value) -> CmdResult {
-    let runs = &s.project.gp_history;
-    if runs.is_empty() {
+    if s.project.gp_history.is_empty() {
         return Err("the history is empty: run a tool first".into());
     }
-    let name = &s.project.name;
-    let mut text = format!(
-        "# The geoprocessing history of the RustGIS project {}, run again in order.\n\
+    let name = s.project.name.clone();
+    let project = project_file(s);
+    let unsaved = s.path.is_none();
+    let dirty = s.dirty();
+    let (result, report) = crate::durable::output(&mut s.project.gp_history, None, |runs| {
+        let mut text = format!(
+            "# The geoprocessing history of the RustGIS project {}, run again in order.\n\
          # Layers are named as they were then, so this opens the project they belong to.\n",
-        quoted(name)
-    );
-    // The script opens the saved file: a layer added since, which a run may have used, isn't
-    // there until the project is saved again.
-    if s.path.is_none() {
-        text.push_str("# The project hasn't been saved yet: save it as this file first.\n");
-    } else if s.dirty() {
-        text.push_str("# The project has changes that aren't saved: save it first, so its layers are there.\n");
-    }
-    text.push_str(&format!("import rustgis\n\ns = rustgis.Session({})\n", quoted(&project_file(s))));
-    for (n, r) in runs.iter().enumerate() {
-        let when = if r.at > 0 {
-            let (date, time) = rustgis_map::graphics::civil(r.at);
-            format!(" ({date} {time} UTC)")
-        } else {
-            String::new()
-        };
-        text.push_str(&format!("\n# {}. {}{when}", n + 1, line(&r.tool)));
-        match replay(r) {
-            Ok((cmd, params)) if r.ok => text.push_str(&format!("\n{}\n", python(&cmd, &params))),
-            Ok((cmd, params)) => {
-                // An error may quote a connection, password and all: redacted as a parameter's
-                // value is, not for its addresses only.
-                let why = r.messages.first().map(|m| line(&redacted_text(m))).unwrap_or_default();
-                text.push_str(&format!(": failed when it ran ({why})\n"));
-                for l in python(&cmd, &params).lines() {
-                    text.push_str(&format!("# {l}\n"));
-                }
-            }
-            Err(e) => text.push_str(&format!(": {}\n", line(&e))),
+            quoted(&name)
+        );
+        // The script opens the saved file: a layer added since, which a run may have used, isn't
+        // there until the project is saved again.
+        if unsaved {
+            text.push_str("# The project hasn't been saved yet: save it as this file first.\n");
+        } else if dirty {
+            text.push_str("# The project has changes that aren't saved: save it first, so its layers are there.\n");
         }
-    }
-    let file = format!("{}_history.py", file_stem(name));
-    Ok(json!({"fileName": file, "text": text}))
+        text.push_str(&format!("import rustgis\n\ns = rustgis.Session({})\n", quoted(&project)));
+        for (n, r) in runs.iter().enumerate() {
+            let when = if r.at > 0 {
+                let (date, time) = rustgis_map::graphics::civil(r.at);
+                format!(" ({date} {time} UTC)")
+            } else {
+                String::new()
+            };
+            text.push_str(&format!("\n# {}. {}{when}", n + 1, line(&r.tool)));
+            match replay_written(r) {
+                Ok((cmd, params)) if r.ok => text.push_str(&format!("\n{}\n", python(&cmd, &params))),
+                Ok((cmd, params)) => {
+                    // An error may quote a connection, password and all: redacted as a parameter's
+                    // value is, not for its addresses only.
+                    let why = r.messages.first().map(|m| line(&redacted_text(m))).unwrap_or_default();
+                    text.push_str(&format!(": failed when it ran ({why})\n"));
+                    for l in python(&cmd, &params).lines() {
+                        text.push_str(&format!("# {l}\n"));
+                    }
+                }
+                Err(e) => text.push_str(&format!(": {}\n", line(&e))),
+            }
+        }
+        let file = format!("{}_history.py", file_stem(&name));
+        Ok(json!({"fileName": file, "text": text}))
+    })?;
+    crate::durable::notify(s, &report);
+    Ok(result)
 }
 
 /// The commands other than `gp.run` a run is copied as. The history comes from the project file,
@@ -88,14 +100,21 @@ const REPLAYED: &[&str] = &["gp.bufferPoint"];
 /// The command that runs `r` again, with its parameters: `gp.run` with the tool, or the command
 /// that ran it (a point buffered where the map was clicked, `gp.bufferPoint`).
 pub fn replay(r: &GpRecord) -> Result<(String, Value), String> {
+    let (id, params) = replay_written(r)?;
+    let (clean, _) = crate::roles::command(&id, &params, 0);
+    Ok((id, clean.unwrap_or(params)))
+}
+
+/// Formats a record already inside the durable output transaction; data stays replayable.
+fn replay_written(r: &GpRecord) -> Result<(String, Value), String> {
     if let Some((cmd, params)) = &r.command {
         let Some(cmd) = REPLAYED.iter().find(|c| **c == cmd.as_str()) else {
             return Err(format!("{} can't be run again: the history names a command that isn't a geoprocessing one", r.tool));
         };
-        return Ok((cmd.to_string(), redacted(params)));
+        return Ok((cmd.to_string(), params.clone()));
     }
     let id = tool_of(r).ok_or_else(|| format!("{} can't be run again: the history doesn't say which tool it was", r.tool))?;
-    Ok(("gp.run".into(), json!({"tool": id, "params": redacted(&r.params)})))
+    Ok(("gp.run".into(), json!({"tool": id, "params": r.params})))
 }
 
 /// The id of the tool `r` ran with `gp.run`: kept with the run, or, in projects from before it
@@ -119,8 +138,7 @@ pub(crate) fn redacted(v: &Value) -> Value {
         Value::String(t) => Value::String(redacted_text(t)),
         Value::Array(a) => Value::Array(a.iter().map(redacted).collect()),
         Value::Object(o) => {
-            let web = |v: &Value| v.as_str().is_some_and(|t| t.trim_start().get(..4).is_some_and(|p| p.eq_ignore_ascii_case("http")));
-            let beside_address = |k: &str| o.iter().any(|(sibling, v)| sibling != k && web(v));
+            let beside_address = |k: &str| o.iter().any(|(sibling, v)| sibling != k && crate::project_log::address_context(sibling, v, 0));
             let secret = |k: &str, v: &Value| {
                 secret_key(k)
                     && !matches!(v, Value::Bool(_) | Value::Null)

@@ -19,15 +19,15 @@ enum Asked {
 
 pub fn commands() -> Vec<C> {
     vec![
-        C::new("layer.diagram", "Set Diagram", "Style › Drawing", set)
+        C::new("layer.diagram", "Set Diagram", "Style › Drawing", set).roles(&[])
             .when(need_feature_layer)
             .params(
                 r##"{"layer"?, "kind": "pie"|"bar", "fields": [numeric field names, or {"field": name, "color"?: "#RRGGBB"|"#RRGGBBAA"}] (a slice or bar each, in order; colours default to the palette new layers take), "size"?: points (fixed: a pie's radius or a bar chart's height, the same for every feature) | {"from"?: points (default 6), "to"?: points (default 40)} (grown with the categories' sum, square-root scaled as Proportional symbols are; the default), "startAngle"?: degrees clockwise from north (a pie's first slice; default 0), "labels"?: "none"|"value"|"percent"|"both" (what each slice or bar says beside it: its value in the legend's number format, its share of the total in percent, or both; default "none"), "background"?: "#RRGGBB"|"#RRGGBBAA"|null (the disc or box behind the chart; default none), "outline"?: {"color"?: "#RRGGBB"|"#RRGGBBAA" (default #4D4D4D), "width"?: points (default 0.75)}} (drawn on each feature over its symbol)"##,
             ),
-        C::new("layer.clearDiagram", "Clear Diagram", "Style › Drawing", |s, p| with(s, p, |l| l.diagram = None))
+        C::new("layer.clearDiagram", "Clear Diagram", "Style › Drawing", |s, p| with(s, p, |l| l.diagram = None)).roles(&[])
             .when(need_feature_layer)
             .params(r#"{"layer"?: name|id (removes the layer's diagram; the renderer is untouched)}"#),
-        C::new("layer.diagramInfo", "Diagram Settings", "Style › Drawing", info)
+        C::new("layer.diagramInfo", "Diagram Settings", "Style › Drawing", info).roles(&[])
             .view()
             .when(need_feature_layer)
             .params(r#"{"layer"?: name|id} → {"kind", "fields": [{"field", "color"}], "size": points (fixed) | {"from", "to", "min", "max"} (scaled; min and max are the range of sums it was measured over), "startAngle"?, "labels", "background"?, "outline"} or null without one (layer.diagram takes it back as it is)"#),

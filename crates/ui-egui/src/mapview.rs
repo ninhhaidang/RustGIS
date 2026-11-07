@@ -794,13 +794,21 @@ fn main_view(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
     WAKER.call_once(|| {
         let ctx = ui.ctx().clone();
         rustgis_engine::render::rustgis_tiles::cache::set_waker(move || ctx.request_repaint());
+        // A read that failed is tried again when its wait is over, though nothing else moves.
+        let ctx = ui.ctx().clone();
+        rustgis_engine::render::rustgis_tiles::cache::set_alarm(move |after| ctx.request_repaint_after(after));
         let ctx = ui.ctx().clone();
         rustgis_engine::map::source::set_waker(move || ctx.request_repaint());
     });
     let mut key = key;
     // A scene whose tile layers are all live places them for every frame: tiles arriving need no
     // new scene (#635).
-    if gpu_ok && cam.bearing == 0.0 && cam.pitch == 0.0 && app.map.live_rev == Some(app.session.revision) {
+    if gpu_ok
+        && cam.bearing == 0.0
+        && cam.pitch == 0.0
+        && app.map.live_rev == Some(app.session.revision)
+        && !reads_in_place(app.session.map())
+    {
         key.tiles = 0;
     } else if fetches_tiles(app.session.map()) {
         key.tiles = rustgis_engine::render::rustgis_tiles::cache::generation();
@@ -1278,6 +1286,13 @@ fn drape_state(app: &RustGisApp) -> (crate::globe_drape::DrapeKey, u64) {
 fn fetches_tiles(m: &rustgis_engine::map::Map) -> bool {
     !m.tiles.is_empty()
         || m.view.terrain.as_ref().is_some_and(|t| matches!(t.source, rustgis_engine::map::view::TerrainSource::Tiles { .. }))
+        || reads_in_place(m)
+}
+
+/// Whether the map has raster layers read in place: the part in view arrives a tile at a time,
+/// through the tile cache, and the map is drawn again as it does.
+fn reads_in_place(m: &rustgis_engine::map::Map) -> bool {
+    m.layers.iter().any(|l| l.raster.as_ref().is_some_and(|r| r.in_place))
 }
 
 /// Uploads a composed GPU scene, whether built in place or by the frame worker.

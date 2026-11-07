@@ -10,7 +10,7 @@
 //! map stopped asking for is dropped unfetched ([`crate::schedule`]). Natively they are fetched on
 //! worker threads; the browser app installs its own fetcher with [`set_fetcher`].
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -63,7 +63,7 @@ type ImageDecoder = Box<dyn Fn(Vec<u8>, Decoded) + Send + Sync>;
 /// Bytes the cache keeps before dropping the least recently used entries.
 const BUDGET: usize = if cfg!(target_arch = "wasm32") { 160 << 20 } else { 384 << 20 };
 /// A failed address is tried again after this long.
-pub(crate) const RETRY: Duration = Duration::from_secs(60);
+pub const RETRY: Duration = Duration::from_secs(60);
 /// The largest tile or document fetched.
 pub const MAX_BYTES: usize = 16 << 20;
 /// The error a fetcher gives a request it dropped unfetched (the view moved on): the address is
@@ -140,6 +140,32 @@ pub fn clear_fetcher() {
     *fetcher().lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
+/// Tests that fetch through the cache take turns. It has one fetcher for the whole process, so a
+/// test that replaces it ([`set_fetcher`]) would answer another's fetches. It also starts fetches
+/// on whichever thread is starting them already, so one test's fetch may run on another's thread,
+/// later. Tests that end a login take turns too, as that empties the cache ([`clear`]), and so do
+/// tests that wait for or plant what the cache holds (an archive read, a style resolved), which
+/// that would drop. Tests that inspect clean failure text also take turns: a concurrent login
+/// can redact even a single letter from that text. The turn puts the native fetcher back when it ends.
+#[cfg(test)]
+pub(crate) fn turn() -> Turn {
+    static TURN: Mutex<()> = Mutex::new(());
+    Turn { _held: TURN.lock().unwrap_or_else(|e| e.into_inner()) }
+}
+
+/// A test's turn at the cache ([`turn`]).
+#[cfg(test)]
+pub(crate) struct Turn {
+    _held: std::sync::MutexGuard<'static, ()>,
+}
+
+#[cfg(test)]
+impl Drop for Turn {
+    fn drop(&mut self) {
+        clear_fetcher();
+    }
+}
+
 /// Replaces how tile pictures (PNG, JPEG, WebP) are decoded: the browser's own decoder works
 /// off the page's thread, where decoding them here held up every frame tiles arrived in. `done`
 /// must be called once, with the picture as [`RAW`] pixels, or with the bytes given back.
@@ -166,9 +192,157 @@ pub fn set_waker(f: impl Fn() + Send + Sync + 'static) {
     *waker().lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(f));
 }
 
-/// Goes up each time a fetch finishes: a map drawn at an older generation may now draw more.
+/// When the map is next to draw again by itself (a failed read may be tried again then): each
+/// wait asked for ([`notify_at`]), in milliseconds after [`alarm_base`] plus one, the earliest
+/// first. Every wait is kept (the earliest [`MAX_ALARMS`]), not the earliest alone: the draw when
+/// it is over may not ask again for a later one (a style kept whole while its elevation source
+/// waits).
+fn alarms() -> &'static Mutex<BTreeSet<u64>> {
+    static A: OnceLock<Mutex<BTreeSet<u64>>> = OnceLock::new();
+    A.get_or_init(Mutex::default)
+}
+
+/// The most waits kept at once: a later one past them all is left to its read, which asks again
+/// on each draw while it waits.
+const MAX_ALARMS: usize = 1024;
+
+fn alarm_base() -> Instant {
+    static B: OnceLock<Instant> = OnceLock::new();
+    *B.get_or_init(Instant::now)
+}
+
+/// `when` as the alarms keep it.
+fn alarm_at(when: Instant) -> u64 {
+    (when.saturating_duration_since(alarm_base()).as_millis() as u64).saturating_add(1)
+}
+
+fn alarm_hook() -> &'static Mutex<Option<Arc<dyn Fn(Duration) + Send + Sync>>> {
+    static A: OnceLock<Mutex<Option<Arc<dyn Fn(Duration) + Send + Sync>>>> = OnceLock::new();
+    A.get_or_init(Mutex::default)
+}
+
+/// Sets how the app is asked to draw again after a while (a repaint after it): a read that failed
+/// is tried again once its wait is over, though nothing else draws the map. The request lasts
+/// one frame (egui's `request_repaint_after`): it is made again on each draw while the wait
+/// lasts (see [`generation`]).
+pub fn set_alarm(f: impl Fn(Duration) + Send + Sync + 'static) {
+    *alarm_hook().lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(f));
+}
+
+/// Asks the app to draw again after `after` (see [`set_alarm`]).
+fn ring(after: Duration) {
+    let hook = alarm_hook().lock().unwrap_or_else(|e| e.into_inner()).clone();
+    if let Some(hook) = hook {
+        hook(after);
+    }
+}
+
+/// Draws the map again at `when`: [`generation`] goes up then, so a map waiting on a failed read
+/// asks for it again. The app is asked for the earliest wait pending; each draw asks it again
+/// for the earliest left (see [`generation`]).
+pub fn notify_at(when: Instant) {
+    let at = alarm_at(when);
+    let earliest = {
+        let mut a = alarms().lock().unwrap_or_else(|e| e.into_inner());
+        if a.len() >= MAX_ALARMS {
+            // Full: a wait past every one kept is left to its read; an earlier one takes the
+            // latest's place.
+            if a.last().is_some_and(|last| at >= *last) {
+                return;
+            }
+            a.pop_last();
+        }
+        a.insert(at);
+        a.first() == Some(&at)
+    };
+    if earliest {
+        ring(when.saturating_duration_since(Instant::now()));
+    }
+}
+
+/// Goes up each time a fetch finishes, and once a wait asked for ([`notify_at`]) is over: a map
+/// drawn at an older generation may now draw more. Read as the map draws, it asks the app to draw
+/// again at the earliest wait still pending: the app's request lasts one frame (egui's
+/// `request_repaint_after`), and a draw before the wait was over (the pointer moved) used it up.
 pub fn generation() -> u64 {
+    let now = alarm_at(Instant::now());
+    let next = {
+        let mut a = alarms().lock().unwrap_or_else(|e| e.into_inner());
+        let (over, next) = take_due(&mut a, now);
+        if over {
+            // Every wait over is one draw: the generation goes up once for them all.
+            GENERATION.fetch_add(1, Ordering::Relaxed);
+        }
+        next
+    };
+    if let Some(at) = next {
+        ring(Duration::from_millis(at.saturating_sub(now)));
+    }
     GENERATION.load(Ordering::Relaxed)
+}
+
+/// Consumes every elapsed deadline together and returns the next one to rearm. Keeping the
+/// clock as an input lets the ordering contract be tested without scheduler deadlines.
+fn take_due(alarms: &mut std::collections::BTreeSet<u64>, now: u64) -> (bool, Option<u64>) {
+    let over = alarms.first().is_some_and(|at| *at <= now);
+    if over {
+        *alarms = alarms.split_off(&now.saturating_add(1));
+    }
+    (over, alarms.first().copied())
+}
+
+/// How long until the earliest wait pending; none when there is none.
+#[cfg(test)]
+pub(crate) fn next_alarm() -> Option<Duration> {
+    let at = alarms().lock().unwrap_or_else(|e| e.into_inner()).first().copied()?;
+    Some(Duration::from_millis(at.saturating_sub(alarm_at(Instant::now()))))
+}
+
+/// Forgets every wait pending.
+#[cfg(test)]
+pub(crate) fn clear_alarms() {
+    alarms().lock().unwrap_or_else(|e| e.into_inner()).clear();
+}
+
+/// Undoes [`set_alarm`]: a test done with its own.
+#[cfg(test)]
+pub(crate) fn clear_alarm() {
+    *alarm_hook().lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
+/// A test's turn at the process-wide alarms, held by the tests that arm, read or clear them, or
+/// set what rings: they run in parallel threads of one process, and one's clearing would erase
+/// another's.
+#[cfg(test)]
+pub(crate) fn alarm_turn() -> std::sync::MutexGuard<'static, ()> {
+    static L: Mutex<()> = Mutex::new(());
+    L.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// How long a server that refused with 429 or 503 asked to be left before it is asked again, as
+/// the error's text says it (`http status: 503 (retry after 30 s)`; see
+/// [`crate::failure::with_retry_after`]).
+pub fn retry_after(error: &str) -> Option<Duration> {
+    let (_, rest) = error.rsplit_once("(retry after ")?;
+    let secs: u64 = rest.strip_suffix(" s)")?.parse().ok()?;
+    // Bounded as when written: a text from elsewhere (an address echoed) can't ask for years.
+    Some(Duration::from_secs(secs.clamp(1, crate::failure::MAX_RETRY_AFTER)))
+}
+
+/// How long a failed read waits before it is tried again: what its server asked for (see
+/// [`retry_after`]), else `default`.
+pub fn retry_wait(error: &str, default: Duration) -> Duration {
+    retry_after(error).unwrap_or(default)
+}
+
+/// How long a read that has failed `failures` times in a row waits before the next try: `wait`,
+/// doubled for each failure past the first, within the hour (see [`retry_after`]'s bound), so a
+/// file that never reads isn't asked for every minute all session.
+pub fn backoff(wait: Duration, failures: u32) -> Duration {
+    let most = Duration::from_secs(crate::failure::MAX_RETRY_AFTER);
+    // Past twelve doublings the wait is over the hour whatever it was (it is a second at least).
+    let doublings = failures.saturating_sub(1).min(12);
+    wait.saturating_mul(1u32 << doublings).min(most)
 }
 
 /// How many fetches are under way. Once a fetch no longer counts, its [`generation`] shows.
@@ -217,7 +391,15 @@ fn request(url: &str, want: Want, omit: &'static [u16]) -> State {
         match &slot.entry {
             Entry::Ready(p, _) => return State::Ready(p.clone()),
             Entry::Pending => return State::Pending,
-            Entry::Failed(e, at) if at.elapsed() < RETRY => return State::Failed(e.clone()),
+            Entry::Failed(e, at) if at.elapsed() < retry_wait(e, RETRY) => {
+                // A server that said when to come back (429 or 503 with `Retry-After`) is asked
+                // again then: the map draws again at that time, though nothing else draws it.
+                // One that didn't is asked again by the next draw after a minute, as before.
+                if let Some(wait) = retry_after(e) {
+                    notify_at(*at + wait);
+                }
+                return State::Failed(e.clone());
+            }
             Entry::Failed(..) => {}
         }
     }
@@ -511,7 +693,11 @@ fn fetch_tile(url: String, host: String, want: Want, omit: &'static [u16]) {
                     Entry::Ready(Arc::new(p), size)
                 }
                 Err(e) => {
-                    log::debug!("{}", crate::logins::scrub(&format!("{}: {e}", answer.key)));
+                    log::debug!("{}", crate::logins::scrub_error(&format!("{}: {e}", answer.key)));
+                    // Refused until a time its server gave: the map draws again then.
+                    if let Some(wait) = retry_after(&e) {
+                        notify_at(Instant::now() + wait);
+                    }
                     Entry::Failed(e, Instant::now())
                 }
             });
@@ -691,7 +877,7 @@ impl<'a> RequestDiagnostics<'a> {
         let url = crate::logins::inner(url);
         let url = if rustgis_data::login_address::is_wrapper(url) { "[address omitted]" } else { url };
         let clean = |text: &str| {
-            if carried || text.contains(rustgis_data::login_address::PREFIX) { crate::logins::scrub(text) } else { text.to_string() }
+            if carried || text.contains(rustgis_data::login_address::PREFIX) { crate::logins::scrub_error(text) } else { text.to_string() }
         };
         // A status the caller expects is an answer, not a failure for the history; a caller
         // that treats the refusal as an error says so itself. One bounded record per server says
@@ -748,8 +934,11 @@ impl<'a> RequestDiagnostics<'a> {
 /// another message (an address can hold "404").
 pub fn http_status(error: &str) -> Option<u16> {
     let e = error.trim();
-    let code = e.strip_prefix("http status: ").or_else(|| e.strip_prefix("HTTP "))?;
-    (code.len() == 3 && code.bytes().all(|b| b.is_ascii_digit())).then(|| code.parse().ok()).flatten()
+    let rest = e.strip_prefix("http status: ").or_else(|| e.strip_prefix("HTTP "))?;
+    // The status, and nothing after it but how long to wait (see [`retry_after`]).
+    let (code, after) = rest.split_at_checked(3)?;
+    let known = after.is_empty() || (after.starts_with(" (retry after ") && retry_after(after).is_some());
+    (known && code.bytes().all(|b| b.is_ascii_digit())).then(|| code.parse().ok()).flatten()
 }
 
 /// Downloads a file the user named (data added by its web address): up to [`MAX_DOWNLOAD`]
@@ -1438,7 +1627,9 @@ mod native {
             }
             Err("too many redirects".into())
         })();
-        diagnostics.record(answer).map_err(|failure| if carried_login { crate::logins::scrub(&failure.message) } else { failure.message })
+        diagnostics
+            .record(answer)
+            .map_err(|failure| if carried_login { crate::logins::scrub_error(&failure.message) } else { failure.message })
     }
 
     /// POSTs a JSON document on a thread of its own.
@@ -1474,7 +1665,11 @@ mod native {
             let status = resp.status().as_u16();
             diagnostics.answered(status);
             if !(200..300).contains(&status) {
-                return Err(Failure::without_answer("", format!("http status: {status}"), Reason::Status(status)));
+                return Err(Failure::without_answer(
+                    "",
+                    crate::failure::with_retry_after(format!("http status: {status}"), status, retry_after_header(&resp)),
+                    Reason::Status(status),
+                ));
             }
             let mut buf = Vec::new();
             resp.body_mut()
@@ -1490,7 +1685,9 @@ mod native {
             crate::logins::check(url).map_err(str::to_string)?;
             Ok(buf)
         })();
-        diagnostics.record(answer).map_err(|failure| if carried_login { crate::logins::scrub(&failure.message) } else { failure.message })
+        diagnostics
+            .record(answer)
+            .map_err(|failure| if carried_login { crate::logins::scrub_error(&failure.message) } else { failure.message })
     }
 
     /// Downloads on a thread of its own, so a large file doesn't hold up the tiles.
@@ -1566,6 +1763,11 @@ mod native {
         Failure::without_answer("", e.to_string(), reason)
     }
 
+    /// An answer's `Retry-After` header, as sent.
+    fn retry_after_header(resp: &ureq::http::Response<ureq::Body>) -> Option<&str> {
+        resp.headers().get("retry-after").and_then(|v| v.to_str().ok())
+    }
+
     /// An answer with an error status (#509): its kept headers and the start of its body.
     fn refused(resp: &mut ureq::http::Response<ureq::Body>) -> Failure {
         use std::io::Read;
@@ -1588,7 +1790,7 @@ mod native {
     /// [`get_detailed`], a status in `omit` not recorded as a failure.
     pub(super) fn get_detailed_omitting(agent: &ureq::Agent, url: &str, omit: &'static [u16]) -> Result<Vec<u8>, Failure> {
         fetch_answer(agent, url, true, omit).map_err(|f| Failure {
-            url: if url.contains(rustgis_data::login_address::PREFIX) { crate::logins::scrub(url) } else { url.to_string() },
+            url: if url.contains(rustgis_data::login_address::PREFIX) { crate::logins::scrub_error(url) } else { url.to_string() },
             ..f
         })
     }
@@ -1710,7 +1912,11 @@ mod native {
                     return Err(if detail && !prepared.signed && login.is_none() {
                         refused(&mut resp)
                     } else {
-                        Failure::without_answer("", format!("http status: {status}"), Reason::Status(status))
+                        Failure::without_answer(
+                            "",
+                            crate::failure::with_retry_after(format!("http status: {status}"), status, retry_after_header(&resp)),
+                            Reason::Status(status),
+                        )
                     });
                 }
                 if !resp.status().is_redirection() {
@@ -1803,8 +2009,8 @@ mod native {
         let result = crate::logins::check(super::resource_of(url)).map_err(Failure::from).and(result);
         result.map_err(|mut f| {
             if carried_login {
-                f.message = crate::logins::scrub(&f.message);
-                f.url = crate::logins::scrub(&f.url);
+                f.message = crate::logins::scrub_error(&f.message);
+                f.url = crate::logins::scrub_error(&f.url);
             }
             f
         })
@@ -1851,6 +2057,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn network_diagnostics_capture_background_failures_once() {
+        let _turn = turn();
         use rustgis_data::diagnostics::{History, NetworkKind};
         let history = History::default();
         let _scope = history.enter();
@@ -1871,6 +2078,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn network_diagnostics_interleaved_sessions_keep_their_requests_private() {
+        let _turn = turn();
         use rustgis_data::diagnostics::History;
         use std::io::{BufRead, BufReader, Write};
         let first = History::default();
@@ -1931,6 +2139,7 @@ mod tests {
 
     #[test]
     fn network_diagnostics_explicit_capture_outlives_dispatch_scope_not_owner() {
+        let _turn = turn();
         use rustgis_data::diagnostics::History;
         let first = History::default();
         let second = History::default();
@@ -1957,6 +2166,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn network_diagnostics_redact_downloads_without_retaining_bodies() {
+        let _turn = turn();
         use rustgis_data::diagnostics::History;
         let history = History::default();
         let _scope = history.enter();
@@ -2007,6 +2217,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn network_diagnostics_skip_gone_map_tiles_and_keep_server_errors() {
+        let _turn = turn();
         let history = rustgis_data::diagnostics::History::default();
         let _scope = history.enter();
         let answer = |status: &str| format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
@@ -2028,10 +2239,11 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn network_diagnostics_keep_headers_after_a_credential_header() {
+        let _turn = turn();
         let history = rustgis_data::diagnostics::History::default();
         let _scope = history.enter();
         let base = serve(vec![
-            "HTTP/1.1 403 Forbidden\r\nWWW-Authenticate: Basic realm=\"private-realm\"\r\nRetry-After: 30\r\ncf-ray: 8a1-BOG\r\nX-Amzn-RequestId: amzn-1155\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            "HTTP/1.1 403 Forbidden\r\nWWW-Authenticate: Basic realm=\"private-realm\"\r\nRetry-After: 30\r\ncf-ray: 8a1-BOG\r\nX-Amzn-RequestId: amzn-1155\r\nX-Amz-Cf-Id: trace-1155\r\nX-Amzn-Waf-Action: block\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                 .into(),
         ]);
         let url = format!("{base}/refused");
@@ -2039,7 +2251,9 @@ mod tests {
         let records = network_records(&history, &url);
         assert_eq!(records.len(), 1);
         let details = &records[0].details;
-        for kept in ["retry-after: 30", "cf-ray: 8a1-BOG", "x-amzn-requestid: amzn-1155"] {
+        for kept in
+            ["retry-after: 30", "cf-ray: 8a1-BOG", "x-amzn-requestid: amzn-1155", "x-amz-cf-id: trace-1155", "x-amzn-waf-action: block"]
+        {
             assert!(details.contains(kept), "{kept} in {details:?}");
         }
         assert!(!details.contains("private-realm"), "{details:?}");
@@ -2048,6 +2262,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn network_diagnostics_skip_routine_tile_404s_and_keep_other_statuses() {
+        let _turn = turn();
         use rustgis_data::diagnostics::{History, Severity};
         let history = History::default();
         let _scope = history.enter();
@@ -2089,6 +2304,12 @@ mod tests {
         let records = network_records(&history, &url);
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].network.as_ref().unwrap().status, Some(503));
+        // One that says when to ask again: its wait goes with the status, read back as the wait.
+        let wait = "HTTP/1.1 503 Unavailable\r\nRetry-After: 30\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        let base = serve(vec![wait.into()]);
+        let e = native::get(&native::agent(), &format!("{base}/tiles/0/0/0.png"), &[404]).unwrap_err();
+        assert_eq!(e, "http status: 503 (retry after 30 s)");
+        assert_eq!((http_status(&e), retry_wait(&e, RETRY)), (Some(503), Duration::from_secs(30)));
         // A download's absence names the address asked for, not the module's markers.
         let base = serve(vec![not_found.into()]);
         let url = format!("{base}/data.zarr/zarr.json");
@@ -2100,6 +2321,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn network_diagnostics_keep_observed_status_on_blocking_body_failure() {
+        let _turn = turn();
         use rustgis_data::diagnostics::{History, NetworkKind};
         let history = History::default();
         let _scope = history.enter();
@@ -2117,6 +2339,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn network_diagnostics_preserve_connection_and_timeout_causes() {
+        let _turn = turn();
         use rustgis_data::diagnostics::{History, NetworkKind};
         let history = History::default();
         let _scope = history.enter();
@@ -2151,6 +2374,7 @@ mod tests {
     /// history keeps no record of it.
     #[test]
     fn network_diagnostics_skip_failed_local_reads() {
+        let _turn = turn();
         let history = rustgis_data::diagnostics::History::default();
         let _scope = history.enter();
         native::get(&native::agent(), "local-file:/nonexistent-1155.pmtiles", &[]).unwrap_err();
@@ -2159,6 +2383,7 @@ mod tests {
 
     #[test]
     fn network_diagnostics_ignore_cancellation_and_keep_browser_causes_truthful() {
+        let _turn = turn();
         use rustgis_data::diagnostics::{History, NetworkKind};
         let history = History::default();
         let _scope = history.enter();
@@ -2186,6 +2411,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn public_downloads_refuse_names_that_resolve_locally() {
+        let _turn = turn();
         let err = download_public_within("http://localhost:9/doc.json", 1024, std::time::Duration::from_secs(5)).unwrap_err();
         assert!(err.contains("resolves to this computer or the local network"), "{err}");
     }
@@ -2213,6 +2439,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn downloads_stop_at_the_callers_budget() {
+        let _turn = turn();
         for framing in ["Content-Length: 4\r\n", "", "Transfer-Encoding: chunked\r\n"] {
             let body = if framing.starts_with("Transfer") { "4\r\ntile\r\n0\r\n\r\n" } else { "tile" };
             for (limit, ok) in [(0, false), (3, false), (4, true), (5, true)] {
@@ -2233,6 +2460,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn download_budget_also_bounds_decompressed_bytes() {
+        let _turn = turn();
         let data = vec![b'x'; 4096];
         // The ZIP writer supplies the CRC-32 for a valid, generated gzip trailer.
         let zip = rustgis_data::zip::write(&[("body".into(), data.clone())]).unwrap();
@@ -2264,6 +2492,100 @@ mod tests {
         assert_eq!(http_status("https://x.org/404/a.zarr: timed out"), None);
         assert_eq!(http_status("HTTP 4040"), None);
         assert_eq!(http_status("io: connection reset (read 404 bytes)"), None);
+        // With how long the server asked to be left: the status, and the wait.
+        assert_eq!(http_status("http status: 503 (retry after 30 s)"), Some(503));
+        assert_eq!(http_status("HTTP 429 (retry after 2 s)"), Some(429));
+        assert_eq!(http_status("HTTP 429 (something else)"), None);
+        assert_eq!(retry_after("http status: 503 (retry after 30 s)"), Some(Duration::from_secs(30)));
+        assert_eq!(retry_after("http status: 503"), None);
+        assert_eq!(retry_after("x (retry after 18446744073709551615 s)"), Some(Duration::from_secs(3600)), "bounded, never overflowing");
+        assert_eq!(retry_after("x (retry after 0 s)"), Some(Duration::from_secs(1)));
+        assert_eq!(retry_wait("HTTP 429 (retry after 2 s)", RETRY), Duration::from_secs(2));
+        assert_eq!(retry_wait("http status: 500", RETRY), RETRY);
+    }
+
+    /// A read that fails again waits twice as long each time, within the hour: a file that never
+    /// reads isn't asked for every minute all session.
+    #[test]
+    fn a_read_that_fails_again_waits_longer_each_time() {
+        let minute = Duration::from_secs(60);
+        assert_eq!(backoff(minute, 0), minute);
+        assert_eq!(backoff(minute, 1), minute);
+        assert_eq!(backoff(minute, 2), Duration::from_secs(120));
+        assert_eq!(backoff(minute, 3), Duration::from_secs(240));
+        assert_eq!(backoff(minute, 7), Duration::from_secs(3600), "within the hour");
+        assert_eq!(backoff(minute, u32::MAX), Duration::from_secs(3600), "bounded, never overflowing");
+        // A server's own wait is doubled the same way, within the hour.
+        assert_eq!(backoff(Duration::from_secs(1), 2), Duration::from_secs(2));
+        assert_eq!(backoff(Duration::from_secs(3600), 2), Duration::from_secs(3600));
+    }
+
+    /// A tile its server refused saying when to come back (429 or 503 with `Retry-After`) has the
+    /// map asked to draw again then, from the gate, on each draw while it waits (the alarm is
+    /// one-shot, and another may have fired since; the failure arms it first). The alarm is the
+    /// earliest pending one, read here as the map reads it. The entry is stored as a failed fetch
+    /// stores it: the fetcher is one for the process, and another test's may be in.
+    #[test]
+    fn a_tile_refused_with_retry_after_has_the_map_drawn_again_then() {
+        // Its turn at the cache (the entry is planted in it, and another test's clearing would
+        // drop it) and at the alarms.
+        let _turn = super::turn();
+        let _alarm = super::alarm_turn();
+        let within = |secs: u64| super::next_alarm().is_some_and(|d| d <= Duration::from_secs(secs));
+        let url = "test://cache/busy.json";
+        store(url, Entry::Failed("http status: 503 (retry after 2 s)".into(), Instant::now()));
+        super::clear_alarms();
+        let State::Failed(e) = get(url, Want::Json) else { panic!("not failed") };
+        assert!(e.contains("retry after 2 s"), "{e}");
+        assert!(within(2), "no alarm on a draw while waiting: {:?}", super::next_alarm());
+        // Again on the next draw: the alarm fired (or was consumed) before the wait was over.
+        super::clear_alarms();
+        assert!(matches!(get(url, Want::Json), State::Failed(_)));
+        assert!(within(2), "not armed again: {:?}", super::next_alarm());
+    }
+
+    /// A read that failed asks the map to draw again when it may be tried: the generation goes up
+    /// once that time has come.
+    #[test]
+    fn the_map_draws_again_when_a_wait_is_over() {
+        let _alarm = super::alarm_turn();
+        let before = generation();
+        notify_at(Instant::now() + Duration::from_millis(20));
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        assert!(generation() > before);
+    }
+
+    /// Every wait asked for has the map drawn again when it is over, not the earliest alone: the
+    /// draw when the earlier is over may not ask for the later again (a style kept whole while
+    /// its elevation source waits), so the later is kept, and the app asked for it then.
+    #[test]
+    fn a_later_wait_isnt_lost_behind_an_earlier_one() {
+        let mut alarms = std::collections::BTreeSet::from([20, 150]);
+        assert_eq!(super::take_due(&mut alarms, 10), (false, Some(20)));
+        assert_eq!(super::take_due(&mut alarms, 50), (true, Some(150)), "rearm the later wait after the first expires");
+        assert_eq!(super::take_due(&mut alarms, 100), (false, Some(150)));
+        assert_eq!(super::take_due(&mut alarms, 200), (true, None));
+        assert_eq!(super::take_due(&mut alarms, 300), (false, None), "expired deadlines are consumed once");
+        let mut delayed = std::collections::BTreeSet::from([20, 150]);
+        assert_eq!(super::take_due(&mut delayed, 200), (true, None), "a delayed poll correctly consumes both waits");
+    }
+
+    /// A draw before a wait is over asks the app for it again: the app's request lasts one frame,
+    /// and a draw since (the pointer moved) used it up.
+    #[test]
+    fn a_draw_before_a_wait_is_over_asks_for_it_again() {
+        let _alarm = super::alarm_turn();
+        let asked = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let noted = asked.clone();
+        super::set_alarm(move |after| noted.lock().unwrap_or_else(|e| e.into_inner()).push(after));
+        super::clear_alarms();
+        notify_at(Instant::now() + Duration::from_millis(300));
+        asked.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        let _ = generation();
+        let again = asked.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|d| *d <= Duration::from_millis(300));
+        assert!(again, "{:?}", asked.lock().unwrap_or_else(|e| e.into_inner()));
+        super::clear_alarms();
+        super::clear_alarm();
     }
 
     #[test]
@@ -2396,6 +2718,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn logins_headers_follow_same_origin_redirects() {
+        let _turn = crate::cache::turn();
         use crate::logins::{self, Method};
         let (base, asked) = serve_recorded(
             [
@@ -2418,6 +2741,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn logins_redirects_never_pick_up_another_origins_login() {
+        let _turn = crate::cache::turn();
         use crate::logins::{self, Method};
         let (other, asked) = serve_recorded(vec![b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\ntile".to_vec()]);
         let base = serve(vec![format!("HTTP/1.1 302 Found\r\nLocation: {other}/tile\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")]);
@@ -2437,6 +2761,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn logins_diagnostics_never_record_the_binding_or_the_secret() {
+        let _turn = crate::cache::turn();
         use crate::failure::Reason;
         use crate::logins::{self, Method};
         use rustgis_data::diagnostics::{Filter, History};
@@ -2483,6 +2808,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn delayed_head_refusal_after_cross_origin_redirect_is_status_only() {
+        let _turn = crate::cache::turn();
         use crate::logins::{self, Method};
         use rustgis_data::diagnostics::{Capture, Filter, History};
         use std::io::{Read, Write};
@@ -2546,6 +2872,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn logins_head_and_post_carry_the_login() {
+        let _turn = crate::cache::turn();
         use crate::logins::{self, Method};
         let answer = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec();
         let (base, asked) = serve_recorded(vec![answer.clone(), answer]);
@@ -2564,6 +2891,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn live_connection_bindings_separate_requests_and_cache_entries() {
+        let _turn = crate::cache::turn();
         use crate::logins::{self, Method};
         let answer = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}".to_vec();
         let (base, asked) = serve_recorded(vec![answer.clone(), answer.clone(), answer]);
@@ -2595,6 +2923,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn logout_during_pending_download_discards_old_authenticated_body() {
+        let _turn = crate::cache::turn();
         use crate::logins::{self, Method};
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -2634,6 +2963,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn derived_style_tilejson_sprite_and_feature_requests_carry_the_binding() {
+        let _turn = crate::cache::turn();
         use crate::{
             logins::{self, Method},
             source,
@@ -2769,6 +3099,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn the_length_asked_for_follows_redirects_and_keeps_refusals() {
+        let _turn = turn();
         let no_suffix = "HTTP/1.1 501 Not Implemented\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_string();
         let agent = native::agent();
         let base = serve(vec![
@@ -2803,6 +3134,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn a_refused_download_says_who_refused_it() {
+        let _turn = turn();
         let page = "<html><head><title>Attention Required! | Cloudflare</title></head><body>Sorry, you have been blocked</body></html>";
         let blocked = format!(
             "HTTP/1.1 403 Forbidden\r\nServer: cloudflare\r\nCF-RAY: a4c9-BOG\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{page}",
@@ -2824,6 +3156,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn follows_only_allowed_redirects() {
+        let _turn = turn();
         let redirect = |to: &str| format!("HTTP/1.1 302 Found\r\nLocation: {to}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
         let ok = "HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\ntile".to_string();
         let agent = native::agent();
@@ -2903,6 +3236,7 @@ mod tests {
 
     #[test]
     fn fetches_through_the_fetcher_once() {
+        let _turn = crate::cache::turn();
         static CALLS: AtomicUsize = AtomicUsize::new(0);
         set_fetcher(|url, done| {
             CALLS.fetch_add(1, Ordering::Relaxed);

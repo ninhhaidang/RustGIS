@@ -68,9 +68,9 @@ impl Failure {
     /// the browser's `HTTP 403`).
     pub fn new(url: &str, message: impl Into<String>) -> Self {
         let message = message.into();
-        let message = if message.contains(rustgis_data::login_address::PREFIX) { crate::logins::scrub(&message) } else { message };
         let reason = crate::cache::http_status(&message).filter(|s| *s >= 400).map_or(Reason::Other, Reason::Status);
-        let url = if url.contains(rustgis_data::login_address::PREFIX) { crate::logins::scrub(url) } else { url.to_string() };
+        let message = crate::logins::scrub_error(&message);
+        let url = if url.contains(rustgis_data::login_address::PREFIX) { crate::logins::scrub_error(url) } else { url.to_string() };
         Failure { url, message, reason, answer: None }
     }
 
@@ -88,10 +88,11 @@ impl Failure {
             }
         }
         let html = kept.iter().any(|(k, v)| k == "content-type" && v.to_ascii_lowercase().contains("html"));
+        let wait = kept.iter().find(|(k, _)| k == "retry-after").map(|(_, v)| v.as_str());
         Failure {
             url: crate::logins::inner(url).to_string(),
             // As ureq has always said it, so text that reads the status back still finds it.
-            message: format!("http status: {status}"),
+            message: with_retry_after(format!("http status: {status}"), status, wait),
             reason: Reason::Status(status),
             answer: Some(Box::new(Answer { headers: kept, excerpt: excerpt(body, html), user_agent: None })),
         }
@@ -192,6 +193,67 @@ impl std::fmt::Display for Failure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.message)
     }
+}
+
+/// The longest a server's `Retry-After` is waited for: a longer wait (or a hostile one) is cut
+/// to it, so the read is tried again within the hour.
+pub(crate) const MAX_RETRY_AFTER: u64 = 3600;
+
+/// A refusal's text (`http status: 503`, or the browser's `HTTP 503`), with how long the server
+/// asked to be left (`… (retry after 30 s)`) when it refused with 429 or 503 and its `Retry-After`
+/// header (`retry_after`) says so, in seconds or as a date. Read back by
+/// [`crate::cache::retry_after`].
+pub fn with_retry_after(text: String, status: u16, retry_after: Option<&str>) -> String {
+    let now = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    match retry_after.filter(|_| matches!(status, 429 | 503)).and_then(|v| retry_after_secs(v, now)) {
+        Some(secs) => format!("{text} (retry after {secs} s)"),
+        None => text,
+    }
+}
+
+/// A `Retry-After` header's wait in seconds (at least one, at most [`MAX_RETRY_AFTER`]): a number
+/// of seconds, or an HTTP date (`Wed, 21 Oct 2015 07:28:00 GMT`) after `now` (seconds since 1970).
+fn retry_after_secs(value: &str, now: u64) -> Option<u64> {
+    let value = value.trim();
+    let secs = match value.parse::<u64>() {
+        Ok(secs) => secs,
+        Err(_) => http_date(value)?.saturating_sub(now),
+    };
+    Some(secs.clamp(1, MAX_RETRY_AFTER))
+}
+
+/// An HTTP date's seconds since 1970 (the IMF-fixdate form servers send: `Sun, 06 Nov 1994
+/// 08:49:37 GMT`).
+fn http_date(s: &str) -> Option<u64> {
+    let mut parts = s.split_whitespace();
+    let (_, day, month, year, time, zone) = (parts.next()?, parts.next()?, parts.next()?, parts.next()?, parts.next()?, parts.next()?);
+    if zone != "GMT" || parts.next().is_some() {
+        return None;
+    }
+    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let month = MONTHS.iter().position(|m| *m == month)? as i64 + 1;
+    let (day, year): (i64, i64) = (day.parse().ok()?, year.parse().ok()?);
+    // Each field unsigned: a sign isn't a time.
+    let mut hms = time.split(':').map(|p| p.parse::<u8>().ok().map(i64::from));
+    let (h, m, sec) = (hms.next()??, hms.next()??, hms.next()??);
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let days_in_month = match month {
+        2 if leap => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    };
+    if !(1..=days_in_month).contains(&day) || !(1970..=9999).contains(&year) || h > 23 || m > 59 || sec > 60 || hms.next().is_some() {
+        return None;
+    }
+    // Days since 1970 of a date in the proleptic Gregorian calendar (Howard Hinnant's algorithm).
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    u64::try_from(days * 86_400 + h * 3600 + m * 60 + sec).ok()
 }
 
 /// A status's usual name (`403` → `Forbidden`), for the common ones.
@@ -313,6 +375,7 @@ mod tests {
 
     #[test]
     fn a_cloudflare_block_is_named_with_its_page_title() {
+        let _turn = crate::cache::turn();
         let body = b"<!DOCTYPE html><html><head><title>Attention Required! | Cloudflare</title><style>x{}</style></head><body>Sorry, you have been blocked</body></html>";
         let f = Failure::answered(
             "https://example.org/MapServer?f=json",
@@ -393,5 +456,33 @@ mod tests {
         assert_eq!(Failure::new("u", "too many redirects").reason, Reason::Other);
         assert_eq!(Failure::without_answer("u", "timeout: global", Reason::Timeout).reason, Reason::Timeout);
         assert_eq!((status_name(403), status_name(299)), (Some("Forbidden"), None));
+    }
+
+    /// A 429 or 503 refusal says how long its server asked to be left, from its `Retry-After`
+    /// header in seconds or as a date, within an hour; other refusals, and a header that can't be
+    /// read, say nothing more.
+    #[test]
+    fn retry_after_on_429_and_503() {
+        let _turn = crate::cache::turn();
+        let base = || "http status: 503".to_string();
+        assert_eq!(with_retry_after(base(), 503, Some("30")), "http status: 503 (retry after 30 s)");
+        assert_eq!(with_retry_after("HTTP 429".into(), 429, Some(" 2 ")), "HTTP 429 (retry after 2 s)");
+        assert_eq!(with_retry_after(base(), 503, Some("0")), "http status: 503 (retry after 1 s)");
+        assert_eq!(with_retry_after(base(), 503, Some("86400")), "http status: 503 (retry after 3600 s)");
+        assert_eq!(with_retry_after(base(), 503, Some("soon")), "http status: 503");
+        assert_eq!(with_retry_after(base(), 503, None), "http status: 503");
+        assert_eq!(with_retry_after("http status: 500".into(), 500, Some("30")), "http status: 500");
+        // A date: the seconds until it (Sun, 06 Nov 1994 08:49:37 GMT is 784 111 777).
+        assert_eq!(http_date("Sun, 06 Nov 1994 08:49:37 GMT"), Some(784_111_777));
+        assert_eq!(retry_after_secs("Sun, 06 Nov 1994 08:50:37 GMT", 784_111_777), Some(60));
+        assert_eq!(retry_after_secs("Sun, 06 Nov 1994 08:49:37 GMT", 784_200_000), Some(1), "past: at once, after a second");
+        assert_eq!(http_date("Sun, 06 Nov 1994 08:49:37 PST"), None);
+        assert_eq!(http_date("Sun, 32 Nov 1994 08:49:37 GMT"), None);
+        assert_eq!(http_date("Wed, 31 Feb 2024 00:00:00 GMT"), None, "no 31 February");
+        assert_eq!(http_date("Sun, 06 Nov 1994 -8:49:37 GMT"), None, "no negative hour");
+        assert!(http_date("Thu, 29 Feb 2024 00:00:00 GMT").is_some() && http_date("Sat, 29 Feb 2025 00:00:00 GMT").is_none());
+        // A refused answer's own header.
+        let headers = vec![("Retry-After".to_string(), "12".to_string())];
+        assert_eq!(Failure::answered("u", 429, &headers, b"").message, "http status: 429 (retry after 12 s)");
     }
 }

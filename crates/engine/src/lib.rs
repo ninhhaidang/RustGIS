@@ -7,12 +7,20 @@
 
 pub mod cmd;
 pub mod connections;
+pub mod durable;
 pub mod geometry_calc;
 pub mod model;
+pub mod peer;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod prefs;
 pub mod project;
+mod roles;
+pub use peer::Peer;
+pub(crate) use roles::{Document, ParamRole, Role};
+mod parameters;
 pub mod project_log;
+pub use parameters::{params_envelope, script_line};
+pub use project_log::{LogCopy, log_identifier, log_params};
 pub mod s3_connections;
 pub mod s3_keys;
 #[cfg(test)]
@@ -58,6 +66,8 @@ pub struct CommandSpec {
     /// `None` = enabled; `Some(reason)` = disabled.
     pub enabled: fn(&Session) -> Option<&'static str>,
     pub run: fn(&mut Session, &Value) -> CmdResult,
+    /// Reviewed builtin durable-output roles. Extension parameters remain opaque.
+    pub(crate) roles: Option<&'static [ParamRole]>,
 }
 
 fn always(_: &Session) -> Option<&'static str> {
@@ -77,7 +87,12 @@ impl CommandSpec {
     }
 
     pub const fn new(id: &'static str, label: &'static str, location: &'static str, run: fn(&mut Session, &Value) -> CmdResult) -> Self {
-        CommandSpec { id, label, location, shortcut: "", params: "{}", mutates: true, enabled: always, run }
+        CommandSpec { id, label, location, shortcut: "", params: "{}", mutates: true, enabled: always, run, roles: None }
+    }
+    /// Declares builtin durable-output roles; an empty list uses reviewed common parameter rules.
+    pub(crate) const fn roles(mut self, roles: &'static [ParamRole]) -> Self {
+        self.roles = Some(roles);
+        self
     }
     pub const fn key(mut self, s: &'static str) -> Self {
         self.shortcut = s;
@@ -268,6 +283,29 @@ fn clip(s: &str, n: usize) -> String {
     if s.chars().count() > n { s.chars().take(n).chain(['…']).collect() } else { s.to_string() }
 }
 
+/// The most layer names a notice lists (the rest counted), each cut to 80 characters: the notice
+/// stays well within what a notice keeps.
+const NAMES_SAID: usize = 5;
+
+/// Layer names for a notice: the first [`NAMES_SAID`], each clipped, and how many more.
+fn names_said(names: &[String]) -> String {
+    let shown: Vec<String> = names.iter().take(NAMES_SAID).map(|n| clip(n, 80)).collect();
+    match names.len().saturating_sub(NAMES_SAID) {
+        0 => shown.join(", "),
+        more => format!("{} and {more} more", shown.join(", ")),
+    }
+}
+
+/// What a raster layer read in place holds for its statistics and tools, when it holds an
+/// overview of the image the map draws.
+pub(crate) fn in_place_overview(d: &rustgis_data::raster::Raster) -> Option<String> {
+    let (fw, fh) = d.overview?;
+    Some(format!(
+        "read in place: the map draws its {fw} × {fh} pixels as it needs them, while statistics, histograms and raster tools read a {} × {} overview",
+        d.width, d.height
+    ))
+}
+
 pub struct Registry {
     pub commands: Vec<CommandSpec>,
 }
@@ -421,17 +459,6 @@ pub struct GpRecord {
     pub outputs: Vec<String>,
 }
 
-impl GpRecord {
-    /// The record with its messages scrubbed of login bindings and secrets: a tool's error can
-    /// quote a bound address, and history rows are saved with the project and exported.
-    pub(crate) fn scrubbed(mut self) -> Self {
-        for message in &mut self.messages {
-            *message = render::rustgis_tiles::logins::scrub(message);
-        }
-        self
-    }
-}
-
 fn is_zero(v: &u64) -> bool {
     *v == 0
 }
@@ -454,6 +481,18 @@ pub struct Notice {
     /// How the troubleshooting history files it (an error, a warning or information).
     pub(crate) severity: rustgis_data::diagnostics::Severity,
 }
+
+/// One counted, already-redacted loss, independent of the changes a command can roll back.
+struct LossNotice {
+    template: &'static str,
+    count: u32,
+    text: rustgis_data::diagnostics::Redacted,
+    source: Option<&'static str>,
+}
+
+/// At most 256 KiB of redacted text per outer command (32 kinds, redaction's 8 KiB bound).
+/// Further losses are counted in one overflow notice rather than silently discarded.
+const MAX_LOSS_NOTICE_KINDS: usize = 32;
 
 const UNDO_LIMIT: usize = 40;
 
@@ -579,6 +618,8 @@ pub struct Session {
     /// the command came (the app, an agent, a script): the interface drops what it kept for the
     /// old one.
     pub opened: u64,
+    /// Session-local last bridge exchange; absent from project files and undo snapshots.
+    pub(crate) exchange: Option<peer::Exchange>,
     pub tool: Tool,
     /// The layer selected in the Layers pane (the one the Style and Data tabs act on).
     pub active_layer: Option<u32>,
@@ -594,7 +635,17 @@ pub struct Session {
     /// (`map.addTiles` with `"view": true`), or a PMTiles/MBTiles archive whose bounds it goes to, and the
     /// camera and owning map instance then: moved or switched since, the map stays.
     pub style_view: Option<(rustgis_map::TileLayer, Camera, u64)>,
+    /// Whether a command waits for the overview of a raster read in place (natively, at most two
+    /// minutes; the browser never waits): the command line, Python and tests do, so a result is
+    /// complete; the desktop app doesn't, as its commands run on the window's own thread, and the
+    /// layer lands as the map draws (failing is said then, and read again: see
+    /// [`Session::read_in_place_again`]).
+    pub in_place_wait: bool,
     pub notices: Vec<Notice>,
+    /// Counted losses await the outermost guard's cleanup, including failed nested commands.
+    /// Runtime-only: never in Project, undo or PutAside, so replacement cannot erase them.
+    loss_notices: Vec<LossNotice>,
+    loss_notice_overflow: u32,
     /// Troubleshooting history, independent of the active pane, project files and undo.
     pub diagnostics: rustgis_data::diagnostics::History,
     /// Notices given in this session, including ones no longer kept (see [`Session::notices_since`]),
@@ -885,7 +936,8 @@ fn fresh_source_ids(before: &Project, after: &mut Project) {
 /// layer holds only the window in view, so its other features aren't gone. It compares ids, so an
 /// id a single command both removes and hands out stays locked: only restoring from an archive can.
 /// A command that removes a layer removes its locks and line anchors too, or each frame would read
-/// them for nothing.
+/// them for nothing. It compares layer ids too: a layer id the map hands out again (after `u32::MAX`,
+/// or once a failed add rewinds the counter) keeps the old layer's entries.
 fn forget_label_state_of_removed_features(before: &Project, after: &mut Project) {
     for (i, m) in after.maps.iter_mut().enumerate() {
         let was = before.maps.get(i).filter(|o| o.name == m.name);
@@ -945,8 +997,10 @@ impl Session {
         #[cfg(feature = "geolibre")]
         rustgis_geolibre::register();
         rustgis_plugins::tools::register();
-        // FlatGeobuf and GeoParquet by their web address are read through the tile fetchers.
+        // FlatGeobuf and GeoParquet by their web address are read through the tile fetchers, and
+        // cloud-optimised GeoTIFFs' overviews for raster layers read in place.
         render::rustgis_tiles::remote::install();
+        map::raster::set_in_place_reader(render::rustgis_tiles::cog::raster::overview);
         rustgis_data::diagnostics::set_clock(|| {
             web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
         });
@@ -971,13 +1025,17 @@ impl Session {
             registry: Registry { commands: cmd::all() },
             revision: 1,
             opened: 0,
+            exchange: None,
             tool: Tool::Explore,
             active_layer: None,
             layer_selection: Vec::new(),
             layer_selection_of: None,
             view_size: (1200.0, 720.0),
             style_view: None,
+            in_place_wait: true,
             notices: Vec::new(),
+            loss_notices: Vec::new(),
+            loss_notice_overflow: 0,
             diagnostics: rustgis_data::diagnostics::History::default(),
             notices_given: 0,
             table_layer: None,
@@ -1356,6 +1414,14 @@ impl Session {
                 let added = cmd::plugins::fetch::Added::of(self.map(), &res);
                 self.url_waits.land(n, res.clone(), added);
             }
+            // A failed overview whose wait is over is read again (the app does this each frame;
+            // a session that doesn't draw, the command line or Python, as its next command runs),
+            // waited for where the session waits for reads in place.
+            if self.read_in_place_again() {
+                self.wait_in_place_reads();
+            }
+            // Pixels the command read in place (a project, an import) say what they lost.
+            self.notice_landed_rasters();
             // A plugin's command waiting for its fetches answers `pending` and runs again when they
             // land: logged then, once. (Another command's `pending`, a download the web app makes, is
             // logged as it is asked for: nothing runs it again.)
@@ -1400,7 +1466,12 @@ impl Session {
         }
     }
 
+    /// Cleans every returned error, including early refusal and plugin paths.
     fn run_command(&mut self, id: &str, params: &Value) -> CmdResult {
+        self.run_command_inner(id, params).map_err(|e| durable::generated_text(&e))
+    }
+
+    fn run_command_inner(&mut self, id: &str, params: &Value) -> CmdResult {
         // The merge key asked for ([`Session::merge_undo`]) goes to this command if it runs, and is
         // gone if it's refused first, so it can't merge a later command into the last step.
         let merge = if self.depth == 0 { self.merge.take() } else { None };
@@ -1412,7 +1483,7 @@ impl Session {
             self.merge = merge;
             return self.run_plugin(id, params);
         }
-        let Some(&spec) = self.registry.get(id) else { return Err(format!("unknown command '{id}'")) };
+        let Some(&spec) = self.registry.get(id) else { return Err(format!("unknown command '{}'", project_log::log_identifier(id))) };
         // Keys the command does not read: said, so a script or an agent can correct itself.
         if let (Value::Object(given), Some(known)) = (params, spec.param_keys()) {
             // Bounded: the keys come from the caller (the first few, each clipped).
@@ -1479,8 +1550,7 @@ impl Session {
         {
             self.sources.note(src);
         }
-        // An error never quotes a web-service connection's password or key.
-        res.map_err(|e| render::rustgis_tiles::logins::scrub(&e))
+        res
     }
 
     /// Retires only this consumed reservation, preserving unrelated pending imports in history.
@@ -1632,7 +1702,7 @@ impl Session {
                     .skip(history_from)
                     .filter(|record| !record.ok && rustgis_analysis::tool(&record.id).is_some_and(cmd::gp::writes_files))
                 {
-                    self.project.gp_history.push(record.scrubbed());
+                    self.push_gp_record(record);
                     recorded_failure = true;
                 }
                 if recorded_failure {
@@ -1661,6 +1731,11 @@ impl Session {
         }
         self.fix_active_layer();
         self.revision = self.revision.wrapping_add(1);
+        // Nested guards leave their losses pending: only after the outermost rollback has
+        // withdrawn completion notices may these go to ordinary notice consumers.
+        if self.depth == 0 {
+            self.flush_loss_notices();
+        }
         res
     }
 
@@ -1806,6 +1881,131 @@ impl Session {
         }
     }
 
+    /// Says what reading raster layers' pixels lost when it wasn't said as each was added (pixels
+    /// read in place land later: in the browser, a project, an import): what the file's header
+    /// left out (`Raster::lost`: a colour table missing or short, GDAL metadata that doesn't
+    /// decode), an overview statistics and tools read, a layer read in place that couldn't be
+    /// read, and why. Once for each layer's pixels or failure, one notice of each kind; the app
+    /// calls it each frame.
+    pub fn notice_landed_rasters(&mut self) {
+        let (mut lost, mut held, mut failed, mut dropped) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        for m in &mut self.project.maps {
+            for l in &mut m.layers {
+                let Some(rl) = &mut l.raster else { continue };
+                if let Some(e) = rl.error_unsaid() {
+                    failed.push((l.name.clone(), e));
+                }
+                let dropped_here = rl.dropped_unsaid();
+                if !dropped_here.is_empty() {
+                    dropped.push((l.name.clone(), dropped_here));
+                }
+                let in_place = rl.in_place;
+                lost.extend(rl.lost_unsaid().into_iter().map(|what| (l.name.clone(), what)));
+                let Some(d) = rl.pixels_unsaid() else { continue };
+                if let Some(what) = in_place.then(|| in_place_overview(&d)).flatten() {
+                    held.push((l.name.clone(), what));
+                }
+            }
+        }
+        // What a header left out, as adding the layer says it (one notice a kind, with counts).
+        cmd::raster::say_losses(self, lost);
+        if !dropped.is_empty() {
+            let mut kinds: Vec<&str> = dropped.iter().flat_map(|(_, k)| k.iter().copied()).collect();
+            kinds.sort_unstable();
+            kinds.dedup();
+            let names: Vec<String> = dropped.iter().map(|(n, _)| n.clone()).collect();
+            self.notify(
+                format!(
+                    "{} COG tile layer(s) opened as raster layers read in place, which have no {}: not kept for {}",
+                    dropped.len(),
+                    kinds.join(", "),
+                    names_said(&names)
+                ),
+                false,
+            );
+        }
+        match &failed[..] {
+            [] => {}
+            [(one, e)] => self.notify(format!("{}: couldn't be read in place: {e}", clip(one, 80)), true),
+            many => {
+                let names: Vec<String> = many.iter().map(|(n, _)| n.clone()).collect();
+                self.notify(format!("{} raster layers couldn't be read in place: {}", many.len(), names_said(&names)), true);
+            }
+        }
+        match &held[..] {
+            [] => {}
+            [(one, what)] => self.notify(format!("{}: {what}", clip(one, 80)), false),
+            many => {
+                let names: Vec<String> = many.iter().map(|(n, _)| n.clone()).collect();
+                self.notify(
+                    format!(
+                        "{} rasters are read in place: the map draws them at full resolution as it needs it, while statistics, histograms and raster tools read an overview of each: {}",
+                        many.len(),
+                        names_said(&names)
+                    ),
+                    false,
+                )
+            }
+        }
+    }
+
+    /// Waits for the overviews of the rasters read in place that a project, an import or a layer
+    /// file began reading together (see [`crate::project::read_in_place`]), where the session
+    /// waits for them ([`Session::in_place_wait`]: natively, two minutes at most for all); where
+    /// it doesn't, they land as the map draws. Failing is the layer's to say (see
+    /// [`Session::notice_landed_rasters`]).
+    pub(crate) fn wait_in_place_reads(&mut self) {
+        if !self.in_place_wait {
+            return;
+        }
+        // Every map's at once: one wait bounds them all, not each map's in turn.
+        let mut named: Vec<(String, &mut rustgis_map::raster::RasterLayer)> = self
+            .project
+            .maps
+            .iter_mut()
+            .flat_map(|m| m.layers.iter_mut())
+            .filter_map(|l| {
+                let name = l.name.clone();
+                let rl = l.raster.as_mut()?;
+                rl.in_place.then_some((name, rl))
+            })
+            .collect();
+        let mut layers: Vec<&mut rustgis_map::raster::RasterLayer> = named.iter_mut().map(|(_, rl)| &mut **rl).collect();
+        for (i, e) in rustgis_map::raster::wait_for_reads(&mut layers) {
+            if let Some((name, _)) = named.get(i) {
+                log::warn!("{name}: {e}");
+            }
+        }
+    }
+
+    /// Reads again the overview of a raster layer read in place whose read failed, once its wait
+    /// is over: a minute, or what its server's `Retry-After` said, as a tile or a file's header is
+    /// read again (see `rustgis_tiles::cache::retry_wait`), doubled each time it fails again,
+    /// within the hour (`cache::backoff`: a file that never reads isn't asked for every minute all
+    /// session); until then the map is asked to draw again when the wait is over. The app calls it
+    /// each frame, with [`Session::notice_landed_rasters`], and [`Session::run`] after each command
+    /// (a session that doesn't draw, the command line or Python, asks again that way); the pixels
+    /// land as the map draws, or are waited for where the session waits for reads in place
+    /// ([`Session::in_place_wait`]). Whether a read was started.
+    pub fn read_in_place_again(&mut self) -> bool {
+        use render::rustgis_tiles::cache;
+        let mut started = false;
+        for m in &mut self.project.maps {
+            for l in &mut m.layers {
+                let Some(rl) = &mut l.raster else { continue };
+                let Some((e, at, failures)) = rl.read_failure() else { continue };
+                let wait = cache::backoff(cache::retry_wait(e, cache::RETRY), failures);
+                if at.elapsed() < wait {
+                    cache::notify_at(at + wait);
+                } else {
+                    rl.read_again();
+                    started = true;
+                }
+            }
+        }
+        started
+    }
+
     pub fn notify(&mut self, text: impl Into<String>, error: bool) {
         use rustgis_data::diagnostics::Severity;
         self.notice(text.into(), if error { Severity::Error } else { Severity::Info });
@@ -1830,7 +2030,7 @@ impl Session {
     /// redacted: what a notice or history record may show. Login values are known only here, so
     /// a failure redacted by [`Session::notify_redacted`]'s callers goes through this first.
     pub fn redacted(text: &str) -> rustgis_data::diagnostics::Redacted {
-        rustgis_data::diagnostics::Redacted::new(&render::rustgis_tiles::logins::scrub(text))
+        rustgis_data::diagnostics::Redacted::new(&durable::generated_text(text))
     }
 
     /// [`Session::notify`] for text already scrubbed and redacted by [`Session::redacted`] (a
@@ -1841,11 +2041,64 @@ impl Session {
         self.notice_redacted(text, if error { Severity::Error } else { Severity::Info });
     }
 
+    /// A counted loss that remains true after rollback, unlike a completion such as "Deleted
+    /// 3 features". Only static engine templates with `{n}` and a count enter this channel.
+    /// Counts saturate and repeated templates aggregate once per outer command. Text is redacted
+    /// before retention; at most 32 kinds are held, with excess counts reported as one overflow.
+    /// Outside a guard it is published immediately. A native panic caught by `guarded` follows
+    /// the same outermost drain as an error; nothing is saved in project or undo state.
+    pub(crate) fn notify_loss(&mut self, template: &'static str, count: u32) {
+        use rustgis_data::diagnostics::{Redacted, Severity};
+        if count == 0 {
+            return;
+        }
+        if self.depth == 0 {
+            self.notice_redacted(Redacted::new(&template.replace("{n}", &count.to_string())), Severity::Info);
+        } else if let Some(loss) = self.loss_notices.iter_mut().find(|loss| loss.template == template) {
+            loss.count = loss.count.saturating_add(count);
+            loss.text = Redacted::new(&template.replace("{n}", &loss.count.to_string()));
+        } else if self.loss_notices.len() < MAX_LOSS_NOTICE_KINDS {
+            self.loss_notices.push(LossNotice {
+                template,
+                count,
+                text: Redacted::new(&template.replace("{n}", &count.to_string())),
+                source: self.diagnostic_source,
+            });
+        } else {
+            self.loss_notice_overflow = self.loss_notice_overflow.saturating_add(count);
+        }
+    }
+
+    /// Publishes and empties runtime losses only after outermost success/error/panic cleanup.
+    /// Stored attribution keeps nested command losses assigned to their original command.
+    fn flush_loss_notices(&mut self) {
+        use rustgis_data::diagnostics::Severity;
+        for loss in std::mem::take(&mut self.loss_notices) {
+            self.notice_redacted_from(loss.text, Severity::Info, loss.source);
+        }
+        let overflow = std::mem::take(&mut self.loss_notice_overflow);
+        if overflow > 0 {
+            self.notice(format!("{overflow} further loss(es) could not be described"), Severity::Info);
+        }
+    }
+
+    /// Uses current attribution for ordinary notices; delayed losses retain their own source.
     fn notice_redacted(&mut self, text: rustgis_data::diagnostics::Redacted, severity: rustgis_data::diagnostics::Severity) {
+        self.notice_redacted_from(text, severity, self.diagnostic_source);
+    }
+
+    /// The one publication path for the ordinary notice queue and diagnostics; called once per
+    /// loss at drain, so neither sink sees a duplicate from queuing and publication.
+    fn notice_redacted_from(
+        &mut self,
+        text: rustgis_data::diagnostics::Redacted,
+        severity: rustgis_data::diagnostics::Severity,
+        source: Option<&'static str>,
+    ) {
         if severity == rustgis_data::diagnostics::Severity::Error && self.rerun_said.iter().any(|said| said == text.as_str()) {
             return;
         }
-        self.diagnostics.push_redacted(severity, self.diagnostic_source.unwrap_or("Application"), &text);
+        self.diagnostics.push_redacted(severity, source.unwrap_or("Application"), &text);
         self.notices.push(Notice { text: text.into_string(), error: severity == rustgis_data::diagnostics::Severity::Error, severity });
         self.notices_given += 1;
         if self.notices.len() > 200 {
@@ -2264,5 +2517,44 @@ impl Session {
 
     pub fn title(&self) -> String {
         self.project.name.clone()
+    }
+}
+
+impl durable::Durable for GpRecord {
+    fn prepare(&self, p: &mut durable::Prepare<'_>) {
+        use durable::Leaf;
+        let Self { tool, id, params, command, at: _, ok: _, messages, millis: _, outputs: _ } = self;
+        let tool = if id.is_empty() { cmd::gp::tool_id(tool).unwrap_or("") } else { id };
+        p.tool(Leaf::HistoryParams, Leaf::HistoryId, tool, params);
+        if let Some((id, params)) = command {
+            p.command(Leaf::HistoryCommand, Leaf::HistoryCommandId, id, params);
+        }
+        for (i, message) in messages.iter().enumerate() {
+            p.generated(Leaf::Message(i), message);
+        }
+    }
+    fn field_mut(&mut self, owners: &[durable::Owner], leaf: &durable::Leaf) -> Option<durable::FieldMut<'_>> {
+        use durable::{FieldMut, Leaf};
+        if !owners.is_empty() {
+            return None;
+        }
+        match leaf {
+            Leaf::HistoryParams => Some(FieldMut::Json(&mut self.params)),
+            Leaf::HistoryId => Some(FieldMut::Text(&mut self.id)),
+            Leaf::HistoryCommand => Some(FieldMut::Json(&mut self.command.as_mut()?.1)),
+            Leaf::HistoryCommandId => Some(FieldMut::Text(&mut self.command.as_mut()?.0)),
+            Leaf::Message(i) => self.messages.get_mut(*i).map(FieldMut::Text),
+            _ => None,
+        }
+    }
+}
+
+impl Session {
+    /// The single history production seam: retained generated messages never keep address keys.
+    pub(crate) fn push_gp_record(&mut self, mut record: GpRecord) {
+        for message in &mut record.messages {
+            *message = durable::generated_text(message);
+        }
+        self.project.gp_history.push(record);
     }
 }

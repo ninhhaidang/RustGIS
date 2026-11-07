@@ -238,16 +238,16 @@ pub(crate) fn apply_with(s: &mut Session, id: u32, changes: Vec<Change>, new_def
 pub fn commands() -> Vec<C> {
     vec![
         // Data design.
-        C::new("data.domain", "Domains", "Data › Data Design", domain).when(need_feature_layer).params(
+        C::new("data.domain", "Domains", "Data › Data Design", domain).roles(&[]).when(need_feature_layer).params(
             r#"{"layer"?, "field": string, "coded"?: [[code, description], …], "min"?: number, "max"?: number, "clear"?: bool, "force"?: bool (set it even though existing values fall outside)}"#,
         ),
-        C::new("data.subtypes", "Subtypes", "Data › Data Design", subtypes).when(need_feature_layer).params(
+        C::new("data.subtypes", "Subtypes", "Data › Data Design", subtypes).roles(&[]).when(need_feature_layer).params(
             r#"{"layer"?, "field": integer field, "subtypes": [{"code": n, "name": string, "defaults"?: {field: value}}], "symbolize"?: bool, "clear"?: bool}"#,
         ),
-        C::new("data.attributeRule", "Attribute Rules", "Data › Data Design", attribute_rule).when(need_feature_layer).params(
+        C::new("data.attributeRule", "Attribute Rules", "Data › Data Design", attribute_rule).roles(&[]).when(need_feature_layer).params(
             r#"{"layer"?, "name": string, "kind": "calculation"|"constraint", "field"?: field set by a calculation, "expression": calculator expression or SQL where clause, "remove"?: bool}"#,
         ),
-        C::new("data.contingentValues", "Contingent Values", "Data › Data Design", contingent).when(need_feature_layer).params(
+        C::new("data.contingentValues", "Contingent Values", "Data › Data Design", contingent).roles(&[]).when(need_feature_layer).params(
             r#"{"layer"?, "name": string, "fields": [field, …], "combos": [[value, …], …], "remove"?: bool}"#,
         ),
         C::new("data.archive", "Add Archive", "Data › Archiving", |s, p| {
@@ -256,7 +256,7 @@ pub fn commands() -> Vec<C> {
             let l = s.map_mut().layer_mut(id).ok_or("no such layer")?;
             l.design.archive = if on { Some(l.design.archive.take().unwrap_or_default()) } else { None };
             Ok(json!({"archiving": on}))
-        })
+        }).roles(&[])
         .when(need_feature_layer)
         .params(r#"{"layer"?, "on"?: bool}"#),
         C::new("data.archiveHistory", "Archive History", "Data › Archiving", |s, p| {
@@ -270,23 +270,23 @@ pub fn commands() -> Vec<C> {
                 .map(|e| json!({"time": e.time, "feature": e.id, "action": match (&e.before, &e.after) { (None, _) => "insert", (_, None) => "delete", _ => "update" }}))
                 .collect();
             Ok(json!({"edits": a.len(), "recent": rows}))
-        }).params(r#"{"layer"?: name|id (default: the active layer)}"#)
+        }).roles(&[]).params(r#"{"layer"?: name|id (default: the active layer)}"#)
         .view()
         .when(need_feature_layer),
-        C::new("data.archiveRestore", "Restore From Archive", "Data › Archiving", archive_restore)
+        C::new("data.archiveRestore", "Restore From Archive", "Data › Archiving", archive_restore).roles(&[])
             .when(need_editable)
             .params(r#"{"layer"?, "time": seconds since 1970 (the layer as it was then)}"#),
-        C::new("data.relate", "Related Data", "Data › Relationship", relate).params(
+        C::new("data.relate", "Related Data", "Data › Relationship", relate).roles(&[]).params(
             r#"{"name": string, "origin": layer, "originKey": field, "destination": layer, "destinationKey": field, "remove"?: bool}"#,
         ),
-        C::new("data.related", "Select Related", "Data › Relationship", related)
+        C::new("data.related", "Select Related", "Data › Relationship", related).roles(&[])
             .params(r#"{"name"?: relationship (all when omitted), "select"?: bool (select the related rows; default true)}"#),
         // Manage edits.
         C::new("edit.enable", "Edit", "Edit › Manage Edits", |s, p| {
             let set = &mut s.map_mut().editing.settings;
             set.enabled = b(p, "on").unwrap_or(!set.enabled);
             Ok(json!({"enabled": set.enabled}))
-        })
+        }).roles(&[])
         .params(r#"{"on"?: bool}"#),
         C::new("edit.settings", "Editing Settings", "Edit › Manage Edits", |s, p| {
             let set = &mut s.map_mut().editing.settings;
@@ -294,7 +294,7 @@ pub fn commands() -> Vec<C> {
                 set.show_vertices = v;
             }
             Ok(json!({"enabled": set.enabled, "showVertices": set.show_vertices}))
-        })
+        }).roles(&[])
         .params(r#"{"showVertices"?: bool}"#),
         C::new("edit.status", "Edit Status", "Edit › Manage Edits", |s, _| {
             let rows: Vec<Json> = s
@@ -303,9 +303,9 @@ pub fn commands() -> Vec<C> {
                 .filter_map(|(id, c)| s.map().layer(*id).map(|l| json!({"layer": l.name, "added": c.added, "modified": c.modified, "deleted": c.deleted})))
                 .collect();
             Ok(json!({"unsaved": s.dirty(), "layers": rows}))
-        })
+        }).roles(&[])
         .view(),
-        C::new("edit.template", "Manage Templates", "Edit › Manage Edits", template).when(need_feature_layer).params(
+        C::new("edit.template", "Manage Templates", "Edit › Manage Edits", template).roles(&[]).when(need_feature_layer).params(
             r#"{"layer"?, "name": string, "defaults"?: {field: value}, "description"?: string, "remove"?: bool}"#,
         ),
         // Snapping.
@@ -321,9 +321,9 @@ pub fn commands() -> Vec<C> {
                 }
             }
             Ok(json!({"enabled": sn.enabled, "tolerancePx": sn.tolerance_px, "vertex": sn.vertex, "edge": sn.edge, "end": sn.end}))
-        })
+        }).roles(&[])
         .params(r#"{"on"?: bool, "tolerancePx"?: number, "vertex"?: bool, "edge"?: bool, "end"?: bool}"#),
-        C::new("edit.snap", "Snap Point", "Edit › Snapping", snap).view().params(r#"{"lon", "lat"}"#),
+        C::new("edit.snap", "Snap Point", "Edit › Snapping", snap).roles(&[]).view().params(r#"{"lon", "lat"}"#),
         // Modify features.
         C::new("edit.move", "Move", "Edit › Features › Modify", |s, p| {
             let unit = distance_unit_metres(p)?;
@@ -335,7 +335,7 @@ pub fn commands() -> Vec<C> {
                 return Err("dx and dy must be finite distances in the command's units (limit: 40,000 km per axis after ground-to-grid)".into());
             }
             modify(s, |g| Some(g.map_coords(&|c: Coord| shift(c, dx, dy))))
-        })
+        }).roles(&[])
         .when(need_editable_selection)
         .params(r#"{"dx": distance east, "dy": distance north, "units"?: "Meters" (default)|"Feet"|"Kilometers"|"Miles"}"#),
         C::new("edit.rotate", "Rotate", "Edit › Features › Modify", |s, p| {
@@ -355,7 +355,7 @@ pub fn commands() -> Vec<C> {
                     merc_to_lonlat(Coord::new(c.x + x * cos - y * sin, c.y + x * sin + y * cos))
                 }))
             })
-        })
+        }).roles(&[])
         .when(need_editable_selection)
         .params(r#"{"angle": degrees clockwise}"#),
         C::new("edit.scale", "Scale", "Edit › Features › Modify", |s, p| {
@@ -371,7 +371,7 @@ pub fn commands() -> Vec<C> {
                     merc_to_lonlat(Coord::new(c.x + (m.x - c.x) * k, c.y + (m.y - c.y) * k))
                 }))
             })
-        })
+        }).roles(&[])
         .when(need_editable_selection)
         .params(r#"{"factor": number}"#),
         C::new("edit.flip", "Flip Line", "Edit › Features › Modify", |s, _| {
@@ -379,36 +379,36 @@ pub fn commands() -> Vec<C> {
                 Geometry::Line(parts) => Some(Geometry::Line(parts.iter().rev().map(|p| p.iter().rev().copied().collect()).collect())),
                 _ => None,
             })
-        })
+        }).roles(&[])
         .when(need_editable_selection),
-        C::new("edit.setGeometry", "Set Geometry", "Edit › Features › Modify", set_geometry)
+        C::new("edit.setGeometry", "Set Geometry", "Edit › Features › Modify", set_geometry).roles(&[])
             .when(need_editable)
             .params(r#"{"layer"?, "row": number, "geometry": GeoJSON geometry}"#),
-        C::new("edit.vertex", "Edit Vertex", "Edit › Features › Modify", edit_vertex).when(need_editable).params(
+        C::new("edit.vertex", "Edit Vertex", "Edit › Features › Modify", edit_vertex).roles(&[]).when(need_editable).params(
             r#"{"layer"?, "row": number, "action": "move"|"insert"|"delete", "part"?: number, "ring"?: number, "index": number (insert: the vertex the new one follows), "lon"?, "lat"?}"#,
         ),
-        C::new("edit.merge", "Merge", "Edit › Features › Modify", merge).when(need_editable_selection),
-        C::new("edit.moveSharedVertex", "Move Shared Vertex", "Edit › Features › Modify", shared_vertex::run).when(need_editable).params(
+        C::new("edit.merge", "Merge", "Edit › Features › Modify", merge).roles(&[]).when(need_editable_selection),
+        C::new("edit.moveSharedVertex", "Move Shared Vertex", "Edit › Features › Modify", shared_vertex::run).roles(&[]).when(need_editable).params(
             r#"{"layer"?, "row": number, "part"?: number, "ring"?: number, "index": number, "lon": degrees, "lat": degrees}"#,
         ),
-        C::new("edit.explode", "Explode", "Edit › Features › Modify", explode).when(need_editable_selection),
-        C::new("edit.split", "Split", "Edit › Features › Modify", split).when(need_editable_selection).params(r#"{"lon", "lat"}"#),
-        C::new("edit.cutPolygon", "Cut Polygon", "Edit › Features › Modify", sketch::cut_polygon)
+        C::new("edit.explode", "Explode", "Edit › Features › Modify", explode).roles(&[]).when(need_editable_selection),
+        C::new("edit.split", "Split", "Edit › Features › Modify", split).roles(&[]).when(need_editable_selection).params(r#"{"lon", "lat"}"#),
+        C::new("edit.cutPolygon", "Cut Polygon", "Edit › Features › Modify", sketch::cut_polygon).roles(&[])
             .when(need_editable_selection)
             .params(r#"{"line": GeoJSON LineString (lon/lat) drawn across the selected polygons}"#),
-        C::new("edit.reshape", "Reshape", "Edit › Features › Modify", sketch::reshape)
+        C::new("edit.reshape", "Reshape", "Edit › Features › Modify", sketch::reshape).roles(&[])
             .when(need_editable_selection)
             .params(r#"{"line": GeoJSON LineString (lon/lat) drawn across the selected line or polygon's boundary}"#),
-        C::new("edit.trace", "Trace Edge Path", "Edit › Features", sketch::trace).view().params(
+        C::new("edit.trace", "Trace Edge Path", "Edit › Features", sketch::trace).roles(&[]).view().params(
             r#"{"from": [lon, lat], "to": [lon, lat], "layer"?, "row"?: number (else the nearest edge within the tolerance), "tolerancePx"?: number (default: the snapping tolerance)}"#,
         ),
-        C::new("edit.traverse", "Traverse", "Edit › Features › Modify", traverse).when(need_editable).params(
+        C::new("edit.traverse", "Traverse", "Edit › Features › Modify", traverse).roles(&[]).when(need_editable).params(
             r#"{"layer"?, "start": [lon, lat], "units"?: "Meters" (default)|"Feet"|"Kilometers"|"Miles", "legs": [{"distance": number, "bearing": degrees from north}]} (closed in a polygon layer, open in a line layer)"#,
         ),
         C::new("edit.tools", "Editor Tools", "Edit › Tools", |s, _| {
             let tools: Vec<Json> = s.registry.commands.iter().filter(|c| c.location.starts_with("Edit › Features")).map(|c| json!({"id": c.id, "label": c.label, "params": c.params})).collect();
             Ok(Json::Array(tools))
-        })
+        }).roles(&[])
         .view(),
         // Elevation and corrections.
         C::new("edit.elevation", "Elevation", "Edit › Elevation", |s, p| {
@@ -431,7 +431,7 @@ pub fn commands() -> Vec<C> {
             };
             s.map_mut().editing.settings.elevation = e;
             Ok(Json::Null)
-        })
+        }).roles(&[])
         .params(r#"{"mode": "none"|"constant"|"surface", "z"?: number, "units"?: "Meters" (default)|"Feet"|"Kilometers"|"Miles", "surface"?: raster layer}"#),
         C::new("edit.groundToGrid", "Ground To Grid", "Edit › Corrections", |s, p| {
             let on = b(p, "on").unwrap_or(true);
@@ -442,13 +442,13 @@ pub fn commands() -> Vec<C> {
             }
             s.map_mut().editing.settings.ground_to_grid = on.then_some((k, r.clamp(-360.0, 360.0)));
             Ok(json!({"on": on}))
-        })
+        }).roles(&[])
         .params(r#"{"on"?: bool, "scale"?: factor, "rotation"?: degrees}"#),
         // Topology.
-        C::new("topology.rules", "Topology Options", "Edit › Manage Edits", topology_rules).params(
+        C::new("topology.rules", "Topology Options", "Edit › Manage Edits", topology_rules).roles(&[]).params(
             r#"{"add"?: {"rule": "mustNotOverlap"|"mustNotHaveGaps"|"mustNotSelfIntersect"|"mustNotHaveDangles"|"mustBeCoveredBy", "layer": layer, "by"?: polygon layer}, "remove"?: index, "clear"?: bool}"#,
         ),
-        C::new("topology.validate", "Error Inspector", "Edit › Manage Edits", topology_validate).view().params(r#"{"toleranceM"?: metres (dangles)}"#),
+        C::new("topology.validate", "Error Inspector", "Edit › Manage Edits", topology_validate).roles(&[]).view().params(r#"{"toleranceM"?: metres (dangles)}"#),
     ]
 }
 
@@ -1302,7 +1302,8 @@ fn topology_validate(s: &mut Session, p: &Json) -> CmdResult {
     use rustgis_analysis::topology as t;
     let tol = f(p, "toleranceM").unwrap_or(1.0).clamp(0.0, 10_000.0);
     let mut errors = Vec::new();
-    // Rules whose check stopped early (an error or work limit): their counts are partial.
+    // Rules whose check stopped early (an error or work limit), or measured some part more coarsely
+    // than it's meant to (a line winding round a pole many times): their counts may be off.
     let mut incomplete = Vec::new();
     for rule in s.map().editing.topology.clone() {
         let Some(l) = s.map().layer_by_name(rule.layer()) else { continue };
@@ -1327,6 +1328,13 @@ fn topology_validate(s: &mut Session, p: &Json) -> CmdResult {
             lon: e.at.x,
             lat: e.at.y,
         }));
+    }
+    if !incomplete.is_empty() {
+        s.warn(format!(
+            "{} topology rule(s) weren't checked completely ({}): a check stopped early, or measured a line winding round a pole coarsely, so their counts may be off",
+            incomplete.len(),
+            incomplete.join(", ")
+        ));
     }
     let n = errors.len();
     let out: Vec<Json> =

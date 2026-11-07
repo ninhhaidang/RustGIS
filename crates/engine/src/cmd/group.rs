@@ -10,38 +10,38 @@ use crate::{CmdResult, CommandSpec as C, Session};
 
 pub fn commands() -> Vec<C> {
     vec![
-        C::new("group.add", "New Group", "Layers", add).params(
+        C::new("group.add", "New Group", "Layers", add).roles(&[]).params(
             r#"{"name"?: text (default New Group), "parent"?: name|id (the group it goes in), "layers"?: [name|id] (moved into it, out of any other group; together in the drawing order at the topmost)}"#,
         ),
-        C::new("group.set", "Group Properties", "Layers", set).params(
+        C::new("group.set", "Group Properties", "Layers", set).roles(&[]).params(
             r#"{"group": name|id, "name"?: text, "visible"?: bool (toggles when no other property is given), "transparency"?: 0-100 (on top of each layer's own)}"#,
         ),
-        C::new("group.expand", "Expand Group", "Layers", expand)
+        C::new("group.expand", "Expand Group", "Layers", expand).roles(&[])
             .params(r#"{"group": name|id, "on"?: bool (toggles when omitted)}"#)
             .view(),
-        C::new("group.scaleRange", "Group Visibility Range", "Layers", scale_range).params(
+        C::new("group.scaleRange", "Group Visibility Range", "Layers", scale_range).roles(&[]).params(
             r#"{"group": name|id, "min"?: scale (out beyond), "max"?: scale (in beyond); both set on each call, one left out is cleared; its layers draw only within it and their own}"#,
         ),
-        C::new("group.move", "Move Group", "Layers", move_group).params(
+        C::new("group.move", "Move Group", "Layers", move_group).roles(&[]).params(
             r#"{"group": name|id, "to": position among the other layers, counted in layers (0 = top; past the end, the bottom; never inside another group: above it; a group in another stays in it, at most at its top or bottom)}"#,
         ),
-        C::new("group.setParent", "Move Group To Group", "Layers", set_parent).params(
+        C::new("group.setParent", "Move Group To Group", "Layers", set_parent).roles(&[]).params(
             r#"{"group": name|id, "parent": name|id|null (the group it goes in; null: the top level), "before"?: name|id|null (a layer or group: places the group just above it; null puts it at the end of the parent, or the bottom at the top level; omitted: next to the parent's layers, or where it is at the top level)}"#,
         ),
-        C::new("group.indent", "Indent Group", "Layers", indent_group)
+        C::new("group.indent", "Indent Group", "Layers", indent_group).roles(&[])
             .params(r#"{"group": name|id} (into the group just above it in the Layers pane, as its last item)"#),
-        C::new("group.outdent", "Outdent Group", "Layers", outdent_group)
+        C::new("group.outdent", "Outdent Group", "Layers", outdent_group).roles(&[])
             .params(r#"{"group": name|id} (out of the group it is in, up one level, just below that group)"#),
-        C::new("group.ungroup", "Ungroup", "Layers", ungroup)
+        C::new("group.ungroup", "Ungroup", "Layers", ungroup).roles(&[])
             .params(r#"{"group": name|id} (its layers and subgroups stay, one level up)"#),
-        C::new("group.remove", "Remove Group", "Layers", remove).params(r#"{"group": name|id} (and its layers and subgroups)"#),
-        C::new("layer.group", "Move To Group", "Layers", move_to_group)
+        C::new("group.remove", "Remove Group", "Layers", remove).roles(&[]).params(r#"{"group": name|id} (and its layers and subgroups)"#),
+        C::new("layer.group", "Move To Group", "Layers", move_to_group).roles(&[])
             .when(super::need_layer)
             .params(r#"{"layer"?: name|id | [name|id] (default: the layer selection), "group": name|id|null (null takes it out of its group), "before"?: name|id|null (places a single layer just above this layer, one of the group's or its subgroups'; null puts it at the group's end, or the bottom out of a group; omitted: next to the group's layers, or where it is when taken out)}"#),
-        C::new("layer.indent", "Indent Layer", "Layers", indent_layer)
+        C::new("layer.indent", "Indent Layer", "Layers", indent_layer).roles(&[])
             .when(super::need_layer)
             .params(r#"{"layer"?: name|id (default: the active layer)} (into the group just above it in the Layers pane, as its last item)"#),
-        C::new("layer.outdent", "Outdent Layer", "Layers", outdent_layer)
+        C::new("layer.outdent", "Outdent Layer", "Layers", outdent_layer).roles(&[])
             .when(super::need_layer)
             .params(r#"{"layer"?: name|id (default: the active layer)} (out of its group, up one level, just below that group)"#),
     ]

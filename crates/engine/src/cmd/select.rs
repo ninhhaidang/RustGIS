@@ -16,16 +16,16 @@ mod info;
 
 pub fn commands() -> Vec<C> {
     let mut commands = vec![
-        C::new("select.byAttributes", "Select By Attributes", "Home › Selection", by_attributes)
+        C::new("select.byAttributes", "Select By Attributes", "Home › Selection", by_attributes).roles(&[])
             .when(need_layers)
             .params(r#"{"layer"?, "where": "SQL clause", "mode"?: "new"|"add"|"remove"|"subset"}"#),
-        C::new("select.byRect", "Select (rectangle)", "Home › Selection", by_rect)
+        C::new("select.byRect", "Select (rectangle)", "Home › Selection", by_rect).roles(&[])
             .params(r#"{"minLon", "minLat", "maxLon", "maxLat", "mode"?: "new"|"add"|"remove"}"#),
-        C::new("select.byPolygon", "Select by Polygon", "Home › Selection", by_polygon)
+        C::new("select.byPolygon", "Select by Polygon", "Home › Selection", by_polygon).roles(&[])
             .params(r#"{"points": [[lon,lat],...], "mode"?: "new"|"add"|"remove"}"#),
-        C::new("select.byRadius", "Select by Radius", "Home › Selection", by_radius)
+        C::new("select.byRadius", "Select by Radius", "Home › Selection", by_radius).roles(&[])
             .params(r#"{"lon", "lat", "radius": metres (0 < radius <= 5000000), "mode"?: "new"|"add"|"remove"}"#),
-        C::new("select.atPoint", "Select (click)", "Home › Selection", at_point).params(r#"{"lon", "lat", "tolerancePx"?, "mode"?}"#),
+        C::new("select.atPoint", "Select (click)", "Home › Selection", at_point).roles(&[]).params(r#"{"lon", "lat", "tolerancePx"?, "mode"?}"#),
         C::new("select.rows", "Select Rows", "Attribute Table", |s, p| {
             let id = s.layer_id(p)?;
             let rows: Vec<usize> = p
@@ -35,19 +35,19 @@ pub fn commands() -> Vec<C> {
                 .unwrap_or_default();
             set(s, id, rows, mode(p));
             Ok(Value::Null)
-        })
+        }).roles(&[])
         .params(r#"{"layer"?, "rows": [number], "mode"?}"#),
         C::new("select.clear", "Clear", "Home › Selection", |s, _| {
             s.map_mut().clear_selection();
             Ok(Value::Null)
-        })
+        }).roles(&[])
         .when(need_selection),
         C::new("select.all", "Select All", "Data › Selection", |s, p| {
             let id = s.layer_id(p)?;
             let n = s.map().layer(id).map(|l| l.dataset.features.len()).unwrap_or(0);
             set(s, id, (0..n).collect(), Mode::New);
             Ok(Value::Null)
-        }).params(r#"{"layer"?: name|id (default: the active layer)}"#)
+        }).roles(&[]).params(r#"{"layer"?: name|id (default: the active layer)}"#)
         .when(need_layer),
         C::new("select.switch", "Switch Selection", "Data › Selection", |s, p| {
             let id = s.layer_id(p)?;
@@ -55,7 +55,7 @@ pub fn commands() -> Vec<C> {
             let rows: Vec<usize> = (0..l.dataset.features.len()).filter(|r| !l.selection.contains(r)).collect();
             set(s, id, rows, Mode::New);
             Ok(Value::Null)
-        }).params(r#"{"layer"?: name|id (default: the active layer)}"#)
+        }).roles(&[]).params(r#"{"layer"?: name|id (default: the active layer)}"#)
         .when(need_layer),
         C::new("select.zoomTo", "Zoom To Selection", "Home › Selection", |s, _| {
             let e = s.map().selection_extent();
@@ -64,7 +64,7 @@ pub fn commands() -> Vec<C> {
             }
             s.zoom_to(&e);
             Ok(Value::Null)
-        })
+        }).roles(&[])
         .view()
         .when(need_selection),
         C::new("select.layerFromSelection", "Make Layer From Selected Features", "Data › Selection", |s, p| {
@@ -81,12 +81,12 @@ pub fn commands() -> Vec<C> {
             }
             let nid = super::layer::add_dataset(s, ds);
             Ok(json!({"layer": nid}))
-        }).params(r#"{"layer"?: name|id (default: the active layer, which need not be the layer last selected in)}"#)
+        }).roles(&[]).params(r#"{"layer"?: name|id (default: the active layer, which need not be the layer last selected in)}"#)
         .when(need_selection),
-        C::new("identify", "Identify", "Home › Inspect", identify).view().params(
+        C::new("identify", "Identify", "Home › Inspect", identify).roles(&[]).view().params(
             r#"{"lon", "lat", "tolerancePx"?, "mode"?: "topmost"|"visible"|"selectable"|"selectedInContents"|"none" (the map's pop-up mode when omitted; the mode picks the layers, and every feature under the point in them, up to 100, is in "results"; topmost and visible take vector tile layers' features too, with "tileLayer" and "sourceLayer", from the tiles drawn there: one not loaded yet is asked for, and its features come on a later identify; and they list in "featureInfo" the WMS layers drawn there to ask, each {tileLayer, url} (its GetFeatureInfo request) or {tileLayer, capabilities} (its service's, when the layer doesn't know its request): identify.featureInfo reads what they answer; selectedInContents does both for the tile layer picked in the Layers pane (map.selectTiles) alone, whichever it is, a basemap or MapLibre style too)}"#,
         ),
-        C::new("map.popupMode", "Pop-up Mode", "Home › Navigate", popup_mode)
+        C::new("map.popupMode", "Pop-up Mode", "Home › Navigate", popup_mode).roles(&[])
             .params(r#"{"mode": "topmost"|"visible"|"selectable"|"selectedInContents"|"none"}"#),
     ];
     commands.extend(info::commands());

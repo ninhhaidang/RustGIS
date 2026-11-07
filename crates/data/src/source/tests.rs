@@ -371,6 +371,38 @@ fn geoparquet_refuses_invalid_column_ranges() {
     }
 }
 
+/// A dictionary page whose header says it holds two billion values is refused before the `parquet`
+/// crate makes room for them (64 GB for a binary column; fuzzing, #1498). The page patched is the
+/// file's last column chunk, so no other chunk moves.
+#[test]
+fn geoparquet_refuses_dictionary_counts_its_page_cannot_hold() {
+    use ::parquet::file::reader::{FileReader, SerializedFileReader};
+    let path = dir().join("dictionary-count.parquet");
+    write_parquet(&path, false);
+    let original = std::fs::read(&path).unwrap();
+    assert!(crate::io::read_layers("x.parquet", &original).is_ok());
+    let md = SerializedFileReader::new(bytes::Bytes::copy_from_slice(&original)).unwrap().metadata().clone();
+    let mut groups = md.row_groups().to_vec();
+    let last = groups.len() - 1;
+    let mut cols = groups[last].columns().to_vec();
+    let geometry = cols.len() - 1;
+    let start = cols[geometry].dictionary_page_offset().unwrap() as usize;
+    // In the page header, the dictionary page header (field 7, a struct) and its first field, the
+    // count (an i32 varint).
+    let at = start + original[start..].windows(2).position(|w| w == [0x4c, 0x15]).unwrap() + 2;
+    let end = at + original[at..].iter().position(|b| b & 0x80 == 0).unwrap() + 1;
+    let count = [0x80, 0xd0, 0xac, 0xf3, 0x0e]; // zigzag(2_000_000_000)
+    let grown = (count.len() - (end - at)) as i64;
+    let mut bytes = [&original[..at], &count, &original[end..start + cols[geometry].compressed_size() as usize]].concat();
+    let size = cols[geometry].compressed_size() + grown;
+    cols[geometry] = cols[geometry].clone().into_builder().set_total_compressed_size(size).build().unwrap();
+    groups[last] = groups[last].clone().into_builder().set_column_metadata(cols).build().unwrap();
+    let md = md.into_builder().set_row_groups(groups).build();
+    ::parquet::file::metadata::ParquetMetaDataWriter::new(&mut bytes, &md).finish().unwrap();
+    let error = crate::io::read_layers("x.parquet", &bytes).err().unwrap().to_string();
+    assert!(error.contains("dictionary page says it holds 2000000000 values"), "{error}");
+}
+
 #[test]
 fn flatgeobuf_refuses_feature_sizes_before_allocating() {
     let path = dir().join("bad-feature-size.fgb");

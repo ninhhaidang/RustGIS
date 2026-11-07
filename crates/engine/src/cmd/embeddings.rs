@@ -18,13 +18,13 @@ pub fn commands() -> Vec<C> {
     vec![
         C::new("embeddings.datasets", "Satellite Embedding Datasets", "Home › Add › Web Data", |_, _| {
             Ok(json!({"datasets": emb::DATASETS.iter().map(|d| d.to_json()).collect::<Vec<_>>()}))
-        })
+        }).roles(&[])
         .view(),
         // Not a view: it adds the footprints layer (by default).
-        C::new("embeddings.search", "Search Satellite Embeddings", "Home › Add › Web Data", search).params(
+        C::new("embeddings.search", "Search Satellite Embeddings", "Home › Add › Web Data", search).roles(&[]).params(
             r#"{"dataset": "alphaearth" | "earth-index" | "tessera", "year"?: number (AlphaEarth and Tessera: 2017–2025, default 2024), "bbox"?: [west, south, east, north] | "view" (the map's extent, the default), "footprints"?: bool (adds the tiles' footprints as a layer, default true)}"#,
         ),
-        C::new("embeddings.add", "Add Satellite Embeddings", "Home › Add › Web Data", add).params(
+        C::new("embeddings.add", "Add Satellite Embeddings", "Home › Add › Web Data", add).roles(&[]).params(
             r#"{"dataset": "alphaearth" | "earth-index" | "tessera", "url"?: "AlphaEarth's tile or Earth Index's file, as embeddings.search lists it (Earth Index: default the MGRS tile at the view's centre)", "year"?: number (Tessera, default 2024), "bands"?: [red, green, blue] (bands from 1; AlphaEarth default [2, 17, 10], Tessera [1, 2, 3]), "stretch"?: number (AlphaEarth: dequantised values shown over ±stretch, default 0.3), "dimension"?: number (Earth Index: a vector value kept as each point's `value`, from 1), "bbox"?: [west, south, east, north] | "view" (Earth Index and Tessera: the area read, default the map's extent), "name"?: text, "ran"?: (internal: what the app read)}"#,
         ),
     ]
@@ -153,7 +153,8 @@ fn add(s: &mut Session, p: &Value) -> CmdResult {
             if !crate::render::rustgis_tiles::cog::probe_blocking(file)? {
                 return Err(format!("{file}: not a cloud-optimised GeoTIFF"));
             }
-            super::layer::add_cog(s, &json!({"name": name}), &crate::render::rustgis_tiles::cog::with_look(file, &look))
+            let look = crate::render::rustgis_tiles::cog::with_look(file, &look);
+            super::layer::add_cog(s, &json!({"name": name}), &look, cfg!(not(target_arch = "wasm32")))
         }
         "earth-index" => add_points(s, p, name),
         _ => add_tessera(s, p, d, name),

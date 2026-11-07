@@ -925,3 +925,54 @@ fn remembered_database_session_refusal_suppresses_only_matching_saved_value() {
         }
     }
 }
+
+/// A peer cannot use a typed or saved password to select a different database table.
+#[test]
+fn peer_database_replacement_requires_the_exact_previously_shared_source() {
+    if isolated("peer_database_replacement_requires_the_exact_previously_shared_source") {
+        return;
+    }
+    for saved in [false, true] {
+        for changed in [true, false] {
+            let server = Server::start(true);
+            let mut s = app(Arc::new(MemorySecrets::new()), "{}");
+            let id = if saved {
+                remember(&mut s, "Peer", &server.address, "RGSYNTH_peer_password")
+            } else {
+                let id = s.run("connection.new", &json!({"kind":"postgres", "address":server.address})).unwrap()["id"]
+                    .as_str()
+                    .unwrap()
+                    .to_string();
+                let (_, key) = crate::connections::database_key(&server.address).unwrap();
+                rustgis_data::source::duckdb::remember_password(&key, "RGSYNTH_peer_password");
+                id
+            };
+            // Install the approved source without starting its reader before the exchange.
+            s.project = serde_json::from_str(&project_layers(&server.address, 1)).unwrap();
+            let (text, _) = s.peer_text(crate::Peer::Bridge).unwrap();
+            let mut incoming: Value = serde_json::from_str(&text).unwrap();
+            if changed {
+                incoming["maps"][0]["layers"][0]["source"]["postgis"]["table"] = json!("unapproved");
+            } else {
+                incoming["maps"][0]["layers"][0]["visible"] = json!(false);
+            }
+            let report = s.open_peer_text(crate::Peer::Bridge, &incoming.to_string()).unwrap();
+            if changed {
+                server.empty();
+                assert!(report.notices().iter().any(|n| n.contains("reconnect")));
+                let source = s.map_mut().layers[0].source.as_mut().unwrap();
+                assert!(source.open().is_err(), "a later automatic open must not adopt a password either");
+                server.empty();
+                let (again, _) = s.peer_text(crate::Peer::Bridge).unwrap();
+                let report = s.open_peer_text(crate::Peer::Bridge, &again).unwrap();
+                assert!(report.notices().iter().any(|n| n.contains("reconnect")), "another peer round trip cannot approve the source");
+                server.empty();
+                s.run("connection.login", &json!({"id":id})).unwrap();
+                assert_eq!(server.take(), b"RGSYNTH_peer_password\0", "explicit reconnect remains available");
+            } else {
+                assert_eq!(server.take(), b"RGSYNTH_peer_password\0");
+                assert!(report.notices().is_empty(), "unchanged readers keep their login: {report:?}");
+            }
+        }
+    }
+}

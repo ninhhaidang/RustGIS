@@ -23,7 +23,9 @@ pub mod projection;
 pub mod qgis;
 pub mod raster;
 pub mod report;
+pub mod slots;
 pub mod source;
+pub use slots::{LayerRole, Slot, SlotAt, SlotPos, TileRole};
 pub mod symbol_by;
 pub mod symbology;
 pub mod tiles;
@@ -528,6 +530,8 @@ impl Layer {
         }
         let Some(src) = &mut self.source else { return false };
         src.window_fields = Some(self.dataset.fields.len());
+        // The view keeps up to its limit of the features the query keeps (#1456).
+        src.set_query(self.definition_query.as_deref(), &self.dataset.fields);
         // A failed read leaves nothing drawn for it (its error shows in Layers), not the
         // previous view's features.
         match src.poll(block) {
@@ -2442,9 +2446,7 @@ impl Map {
                 src.byte_budget = bytes;
                 src.full_read = block;
                 if changed || mode_changed || budget_changed {
-                    let selected = std::mem::take(&mut src.saved_selection);
-                    src.reset_window();
-                    src.saved_selection = selected;
+                    src.reread();
                 }
                 if changed || (!block && layer.view_cache_bytes() > bytes) {
                     // Preserve ids while discarding a window that no longer fits. The next
@@ -2752,6 +2754,222 @@ fn de_no_fill<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<NoFill>, 
 fn de_reference_scale<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<f64>, D::Error> {
     let v: Option<f64> = Option::deserialize(d)?;
     Ok(v.filter(|r| (REFERENCE_SCALES.0..=REFERENCE_SCALES.1).contains(r)))
+}
+
+impl Map {
+    /// Offers each persisted address and local path once, before any output mutation.
+    pub fn slots(&self) -> Vec<Slot<'_>> {
+        let Map {
+            name: _,
+            layers,
+            service_groups,
+            groups: _,
+            basemap: _,
+            tiles,
+            camera: _,
+            bookmarks: _,
+            graticule: _,
+            projection: _,
+            popup_mode: _,
+            label_display: _,
+            label_lock: _,
+            label_lock_line_anchors: _,
+            editing: _,
+            swipe: _,
+            view,
+            thumbnail: _,
+            animation: _,
+            time: _,
+            body: _,
+            next_layer_id: _,
+            instance_id: _,
+        } = self;
+        let mut out = Vec::new();
+        for (group, g) in service_groups.iter().enumerate() {
+            let ServiceGroup { id: _, name: _, url, kind: _, anonymous: _, expanded: _, children } = g;
+            out.push(Slot { at: SlotPos::Group { group, child: None }, value: url, address: true, local_path: false });
+            for (child, c) in children.iter().enumerate() {
+                let ServiceChild { layer: _, collection: _, source_url } = c;
+                out.push(Slot { at: SlotPos::Group { group, child: Some(child) }, value: source_url, address: true, local_path: false });
+            }
+        }
+        for (tile, t) in tiles.iter().enumerate() {
+            out.extend(t.output_slots().into_iter().map(|(role, value, local_path)| Slot {
+                at: SlotPos::Tile { tile, role },
+                value,
+                address: true,
+                local_path,
+            }));
+        }
+        let view::ViewSettings {
+            effects: _,
+            color_vision: _,
+            wireframe: _,
+            clip_distance: _,
+            terrain,
+            fast: _,
+            navigator: _,
+            first_person: _,
+        } = view;
+        if let Some(view::Terrain { source, exaggeration: _ }) = terrain {
+            match source {
+                view::TerrainSource::Tiles { url, encoding: _ } => {
+                    out.push(Slot { at: SlotPos::Terrain, value: url, address: true, local_path: false })
+                }
+                view::TerrainSource::Layer(_) => {}
+            }
+        }
+        for (layer, l) in layers.iter().enumerate() {
+            out.extend(l.output_slots().into_iter().map(|(role, value, address, local_path)| Slot {
+                at: SlotPos::Layer { layer, role },
+                value,
+                address,
+                local_path,
+            }));
+        }
+        out
+    }
+
+    /// Resolves only the recorded location; never rediscovers or reclassifies a written value.
+    pub fn slot_mut(&mut self, at: &SlotPos) -> Option<&mut String> {
+        match at {
+            SlotPos::Group { group, child } => {
+                let g = self.service_groups.get_mut(*group)?;
+                match child {
+                    Some(c) => Some(&mut g.children.get_mut(*c)?.source_url),
+                    None => Some(&mut g.url),
+                }
+            }
+            SlotPos::Tile { tile, role } => self.tiles.get_mut(*tile)?.output_slot_mut(*role),
+            SlotPos::Terrain => match &mut self.view.terrain.as_mut()?.source {
+                view::TerrainSource::Tiles { url, encoding: _ } => Some(url),
+                view::TerrainSource::Layer(_) => None,
+            },
+            SlotPos::Layer { layer, role } => self.layers.get_mut(*layer)?.output_slot_mut(*role),
+        }
+    }
+}
+
+impl Layer {
+    /// Classifies whole owning fields; a source serving as provenance and a path occurs once.
+    pub fn output_slots(&self) -> Vec<(LayerRole, &str, bool, bool)> {
+        let Layer {
+            id: _,
+            name: _,
+            visible: _,
+            dataset,
+            renderer: _,
+            labels: _,
+            transparency: _,
+            min_scale: _,
+            max_scale: _,
+            definition_query: _,
+            time: _,
+            selection: _,
+            expanded: _,
+            selectable: _,
+            graphics: _,
+            blend: _,
+            mask: _,
+            display_filters: _,
+            aggregation: _,
+            extrusion: _,
+            line_strokes: _,
+            fill_layers: _,
+            no_fill: _,
+            stroke_levels: _,
+            marker_rotation: _,
+            symbol_by: _,
+            reference_scale: _,
+            priority: _,
+            design: _,
+            raster,
+            source,
+            postgis,
+            gpkg,
+            connection: _,
+            anonymous: _,
+            instance_id: _,
+            projected: _,
+            display: _,
+            display_rejected: _,
+            display_levels: _,
+            projected_extents: _,
+            projected_vertices: _,
+            thinned: _,
+            projected_rev: _,
+            projected_for: _,
+            view_memory: _,
+            geometry_kinds: _,
+            geometry_rev: _,
+            diagram: _,
+        } = self;
+        let mut out = Vec::new();
+        let rustgis_data::Dataset {
+            name: _,
+            geometry_type: _,
+            fields: _,
+            features: _,
+            source: provenance,
+            crs: _,
+            crs_incomplete: _,
+            zm_dropped: _,
+            windowed: _,
+        } = dataset;
+        if let Some(v) = provenance {
+            out.push((LayerRole::Dataset, v.as_str(), true, paths::is_local(v)));
+        }
+        if let Some(s) = source {
+            out.extend(s.output_slots());
+        }
+        if let Some(r) = raster {
+            out.extend(r.output_slots());
+        }
+        if let Some(g) = gpkg {
+            out.push((LayerRole::GpkgPath, g.path.as_str(), false, paths::is_local(&g.path)));
+        }
+        if let Some(pg) = postgis {
+            out.push((LayerRole::PostgisEditDatabase, pg.origin.database.as_str(), true, false));
+        }
+        out
+    }
+
+    /// Allocation-free resolution, valid while the layer's structure is held unchanged.
+    pub fn output_slot_mut(&mut self, role: LayerRole) -> Option<&mut String> {
+        match role {
+            LayerRole::Dataset => self.dataset.source.as_mut(),
+            LayerRole::Streamed
+            | LayerRole::GdalPath
+            | LayerRole::DuckDbDatabase
+            | LayerRole::PostgisDatabase
+            | LayerRole::MysqlDatabase
+            | LayerRole::SqlServerDatabase => self.source.as_mut()?.output_slot_mut(role),
+            LayerRole::Raster | LayerRole::ZarrStore => self.raster.as_mut()?.output_slot_mut(role),
+            LayerRole::GpkgPath => Some(&mut self.gpkg.as_mut()?.path),
+            LayerRole::PostgisEditDatabase => Some(&mut self.postgis.as_mut()?.origin.database),
+        }
+    }
+}
+
+impl Map {
+    /// Bridge identity is independent of the address value; duplicate ids remain ambiguous.
+    pub fn slot_identity(&self, at: &SlotPos) -> Option<SlotAt> {
+        match at {
+            SlotPos::Group { group, child } => {
+                let g = self.service_groups.get(*group)?;
+                Some(SlotAt::Group {
+                    id: g.id,
+                    child: match child {
+                        Some(i) => Some(g.children.get(*i)?.layer),
+                        None => None,
+                    },
+                })
+            }
+            SlotPos::Tile { tile, role } => Some(SlotAt::Tile { id: self.tiles.get(*tile)?.id.clone(), role: *role }),
+            SlotPos::Terrain => Some(SlotAt::Terrain),
+            SlotPos::Layer { layer, role } => Some(SlotAt::Layer { id: self.layers.get(*layer)?.id, role: *role }),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -3186,6 +3404,61 @@ mod tests {
         // Budget exhaustion falls back to the original, fully projected geometry.
         let full = flat.project(chunk.dataset.features[0].geometry.as_ref().unwrap());
         assert_eq!(chunk.thinned_in(&flat, "mercator", 1e6), &[Some(full)]);
+    }
+
+    /// #1456: a view holding more features than it reads keeps its limit of the definition
+    /// query's matches, so a match the unfiltered sample leaves out still draws.
+    #[test]
+    fn a_streamed_view_reads_its_definition_querys_matches() {
+        let mut ds = Dataset::new("sites", GeometryType::Point, vec![Field::new("n", FieldType::Integer)]);
+        for i in 0..5 {
+            ds.push(Some(Geometry::Point(Coord::new(f64::from(i), 0.0))), vec![Value::Int(i64::from(i))]);
+        }
+        let bytes = std::sync::Arc::new(rustgis_data::source::fgb::write(&ds).unwrap());
+        let handle = rustgis_data::source::open_shared("sites.fgb", bytes.clone(), None).unwrap();
+        let mut src = source::SourceLayer::from_bytes("sites.fgb", bytes, None, handle);
+        src.limit = 2;
+        let mut l = Layer::new_streamed(1, src);
+        let view = Extent::new(-1.0, -1.0, 5.0, 1.0);
+        let shown = |l: &Layer| -> Vec<Value> {
+            l.visible_rows()
+                .iter()
+                .zip(l.dataset.features.iter())
+                .filter(|(v, _)| **v)
+                .filter_map(|(_, f)| f.attrs.first().cloned())
+                .collect()
+        };
+        l.sync_source(&view, true);
+        let sampled = shown(&l);
+        assert_eq!(sampled.len(), 2, "the view reads a sample of two");
+        let left_out = (0..5).find(|n| !sampled.contains(&Value::Int(*n))).unwrap();
+        l.definition_query = Some(format!("n = {left_out}"));
+        assert!(shown(&l).is_empty(), "filtering the sample loses the match");
+        l.sync_source(&view, true);
+        assert_eq!(shown(&l), [Value::Int(left_out)]);
+        // More matches than the view reads: a sample of them, up to its limit, counted as matches.
+        l.definition_query = Some(format!("n <> {left_out}"));
+        l.sync_source(&view, true);
+        assert_eq!((shown(&l).len(), l.dataset.features.len()), (2, 2));
+        let src = l.source.as_ref().unwrap();
+        assert_eq!((src.sampled(), src.sampled_matches()), (Some((2, 4)), true));
+        // A row number is a row's place in the view: the view is read as without a query. The
+        // words in a text are only text.
+        l.definition_query = Some("@row_number = 1".into());
+        l.sync_source(&view, true);
+        let src = l.source.as_ref().unwrap();
+        assert_eq!((src.sampled(), src.sampled_matches()), (Some((2, 5)), false));
+        l.definition_query = Some(format!("n = {left_out} or 'x' = '@row_number'"));
+        l.sync_source(&view, true);
+        assert_eq!(shown(&l), [Value::Int(left_out)]);
+        // However it's quoted or nested, a row number is found in the parsed query.
+        l.definition_query = Some(format!("!n! = {left_out} and (@row_number >= 1 or 'it''s' = '')"));
+        l.sync_source(&view, true);
+        assert!(!l.source.as_ref().unwrap().sampled_matches());
+        // A query that doesn't parse leaves the view as read without one, as for loaded layers.
+        l.definition_query = Some("n = = 1".into());
+        l.sync_source(&view, true);
+        assert_eq!(shown(&l), sampled);
     }
 
     #[test]
