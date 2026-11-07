@@ -379,8 +379,9 @@ fn parcel_id(col: usize, row: usize) -> String {
 
 /// The parcels and zoning layers, and an assessment table to join to the parcels.
 ///
-/// The table keys parcels by the same text ids. It has no row for the last parcel, and has a row
-/// for "101": the first parcel's id read as a number, which must not match it.
+/// The table keys parcels by the same text ids. It has no rows for "00103", which straddles the
+/// zones' boundary, or for the last parcel, and has a row for "101": the first parcel's id read as
+/// a number, which must not match it.
 fn job_data() -> (String, String, String) {
     let mut parcels = Vec::new();
     for row in 0..3 {
@@ -396,7 +397,7 @@ fn job_data() -> (String, String, String) {
         json!({"type": "Feature", "properties": {"zone": "C2"}, "geometry": rect(SPLIT, SOUTH, WEST + 4.0 * STEP, SOUTH + 2.0 * STEP)}),
     ];
     let mut csv = String::from("parcel_id,value_usd\n");
-    for k in 0..11 {
+    for k in (0..12).filter(|&k| !unassessed(k)) {
         csv += &format!("{},{}\n", parcel_id(k % 4, k / 4), 100_000 + k * 1_000);
     }
     csv += "101,999999\n";
@@ -480,10 +481,16 @@ fn check_totals(stats: &Dataset) {
     }
 }
 
-/// The value the assessment table gives a parcel: none for the last, which has no row.
+/// Whether the assessment table has no row for the parcel numbered `k` from 0: "00103", split
+/// into two pieces by the overlay, and the last, which is in no zone.
+fn unassessed(k: usize) -> bool {
+    k == 2 || k == 11
+}
+
+/// The value the assessment table gives a parcel: none for those with no row.
 fn assessment(parcel: &str) -> Field {
-    let k = parcel.parse::<i64>().unwrap_or_else(|_| panic!("{parcel}")) - 101;
-    if k < 11 { Field::Int(100_000 + k * 1_000) } else { Field::Null }
+    let k = parcel.parse::<usize>().unwrap_or_else(|_| panic!("{parcel}")) - 101;
+    if unassessed(k) { Field::Null } else { Field::Int(100_000 + k as i64 * 1_000) }
 }
 
 /// Checks that every feature carries its parcel's assessed value; the number checked.
@@ -509,13 +516,17 @@ fn join_overlay_summarise_map_save_reopen_and_share() {
         s.run("gp.run", step).unwrap_or_else(|e| panic!("{}: {e}", step["tool"]));
     }
 
-    // The join matched every parcel by its text id; "101" matched none, and the parcel with no
-    // assessment kept its row with no value.
+    // The join matched every parcel by its text id; "101" matched none, and the parcels with no
+    // assessment kept their rows with no value.
     assert_eq!(check_values(layer(&s, "assessed")), 12);
     check_totals(table(&s, "zoned_Statistics"));
     let zoned = layer(&s, "zoned").clone();
-    // Every piece keeps its parcel's value through the overlay.
+    // Every piece keeps its parcel's value through the overlay, "00103"'s two pieces none.
     assert_eq!(check_values(&zoned), 13);
+    let (id, value) = (zoned.field_index("parcel_id").unwrap(), zoned.field_index("value_usd").unwrap());
+    let split = (0..zoned.features.len()).filter(|&r| zoned.value(r, id).to_string() == "00103").collect::<Vec<_>>();
+    assert_eq!(split.len(), 2, "the overlay splits 00103");
+    assert!(split.iter().all(|&r| zoned.value(r, value) == &Field::Null), "00103 has no assessment");
 
     let png = dir.path("map.png");
     s.run("share.exportMap", &json!({"path": png, "width": 320, "height": 200})).unwrap();

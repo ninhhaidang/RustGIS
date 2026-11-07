@@ -65,6 +65,7 @@ jobs:
     needs: changed
     if: needs.changed.outputs.run == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     outputs:
       tested: ${{ steps.data.outputs.ok }}
     steps:
@@ -73,7 +74,10 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           save-if: false
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      # Restored and saved as separate steps: the combined action would save a set missing a file
+      # whose download failed, and an exact hit is never saved again.
+      - id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: workflow-data
           key: workflow-data-census-2024-1
@@ -87,7 +91,7 @@ jobs:
           while read -r sum url; do
             file="${url##*/}"
             if ! echo "$sum  $file" | sha256sum -c --status 2>/dev/null; then
-              curl -sSfL --retry 3 -o "$file" "$url" || { echo "::warning::could not download $url"; ok=false; continue; }
+              curl -sSfL --retry 3 --retry-max-time 600 --connect-timeout 30 --max-time 300 -o "$file" "$url" || { echo "::warning::could not download $url"; ok=false; continue; }
               echo "$sum  $file" | sha256sum -c || { echo "::error::$file has changed: update its checksum and check the test"; exit 1; }
             fi
           done <<'LIST'
@@ -95,6 +99,12 @@ jobs:
           38cdd818f50248f67fabf4baf4b82df4ed6110dcaafebcbe4d4f9a389bb47ab8 https://www2.census.gov/geo/docs/maps-data/data/gazetteer/2024_Gazetteer/2024_gaz_tracts_47.txt
           LIST
           echo "ok=$ok" >> "$GITHUB_OUTPUT"
+      - name: Keep the Census files
+        if: steps.data.outputs.ok == 'true' && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: workflow-data
+          key: workflow-data-census-2024-1
       - name: Run the workflow tests on them
         if: steps.data.outputs.ok == 'true'
         env:
@@ -104,8 +114,9 @@ jobs:
   report:
     name: Report
     needs: [changed, rust, workflows]
-    # A cancelled run is neither a failure nor a fix.
-    if: always() && github.event_name == 'schedule' && needs.changed.outputs.run == 'true' && needs.rust.result != 'cancelled' && needs.workflows.result != 'cancelled'
+    # A cancelled run is neither a failure nor a fix. A job that ran out of time ends cancelled too,
+    # but the run isn't: that is a failure.
+    if: ${{ !cancelled() && github.event_name == 'schedule' && needs.changed.outputs.run == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       issues: write
