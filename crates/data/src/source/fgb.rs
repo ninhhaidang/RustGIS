@@ -76,14 +76,28 @@ impl FgbSource {
         // The code is an EPSG one only when the organization is EPSG (or not given, which means EPSG).
         let epsg_org = h.crs().is_none_or(|c| c.org().is_none_or(|o| o.eq_ignore_ascii_case("epsg")));
         let code = h.crs().map(|c| c.code()).and_then(|c| u32::try_from(c).ok()).filter(|c| *c > 0 && epsg_org);
-        if !epsg_org && let Some(org) = h.crs().and_then(|c| c.org()) {
-            notes.push(format!("its coordinate system is defined by {org}, not EPSG; read as longitude/latitude"));
-        }
-        // A coordinate system described (by WKT or name) but without an EPSG code can't be converted.
-        if code.is_none() && h.crs().is_some_and(|c| c.wkt().is_some_and(|w| !w.contains("WGS 84") && !w.contains("WGS84"))) {
-            notes.push("its coordinate system has no EPSG code; read as longitude/latitude".into());
-        }
-        let reproject = Reproject::from_epsg(code, &mut notes);
+        // Another body's system (an IAU organization, or WKT that says so) is said, or refused when
+        // its coordinates aren't longitude/latitude. It is checked whenever there's no EPSG code
+        // RustGIS converts, because an unknown code is read as longitude/latitude too.
+        let other_body = match h.crs() {
+            Some(c) if code.and_then(Crs::from_epsg).is_none() => {
+                Reproject::planetary("its coordinate system", c.org(), Some(i64::from(c.code())), c.wkt(), &mut notes)
+            }
+            _ => None,
+        };
+        let reproject = match other_body {
+            Some(r) => r?,
+            None => {
+                if !epsg_org && let Some(org) = h.crs().and_then(|c| c.org()) {
+                    notes.push(format!("its coordinate system is defined by {org}, not EPSG; read as longitude/latitude"));
+                }
+                // A coordinate system described (by WKT or name) but without an EPSG code can't be converted.
+                if code.is_none() && h.crs().is_some_and(|c| c.wkt().is_some_and(|w| !w.contains("WGS 84") && !w.contains("WGS84"))) {
+                    notes.push("its coordinate system has no EPSG code; read as longitude/latitude".into());
+                }
+                Reproject::from_epsg(code, &mut notes)
+            }
+        };
         let mut fields = Vec::new();
         let mut slots = Vec::new();
         let mut left_out = Vec::new();
@@ -123,7 +137,7 @@ impl FgbSource {
             fields,
             extent,
             count: (count > 0).then_some(count),
-            crs: reproject.label(),
+            crs: reproject.info_crs(),
             // The crate's index search assumes the default node size; other files are scanned.
             indexed: h.index_node_size() == flatgeobuf::packed_r_tree::PackedRTree::DEFAULT_NODE_SIZE && count > 0,
             notes,

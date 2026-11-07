@@ -4,7 +4,7 @@ use std::path::Path;
 
 use serde_json::{Map, Value as Json, json};
 
-use crate::raster::Crs;
+use crate::raster::{Crs, planetary};
 use crate::{Coord, DataError, Dataset, Field, FieldType, Geometry, GeometryType, ReadReport, Result, Value};
 
 /// Largest file read into memory (256 MiB). Parsing JSON can take several times the file size.
@@ -797,7 +797,7 @@ pub fn read_geojson(text: &str, name: &str) -> Result<(Dataset, ReadReport)> {
     let mut features = Collector::default();
     match stream_features(text, &mut features) {
         Ok(rest) => match rest.get("type").and_then(Json::as_str) {
-            Some("FeatureCollection") => Ok(features.finish(name, &rest)),
+            Some("FeatureCollection") => features.finish(name, &rest),
             Some(_) => read_geojson_value(Json::Object(rest), name),
             None => Err(DataError::Format("GeoJSON: missing \"type\"".into())),
         },
@@ -827,9 +827,25 @@ fn clip(s: &str) -> String {
 /// Only named EPSG codes and CRS84 are honoured (not links, WKT or PROJ strings in the name, nor
 /// codes RustGIS doesn't know). The coordinates are x/y (easting/northing, longitude/latitude)
 /// whatever the axis order of the EPSG definition, as the legacy GeoJSON text says.
-pub(crate) fn declared_crs(root: &Map<String, Json>, messages: &mut Vec<String>) -> Option<(Crs, crate::raster::Transformer)> {
-    let decl = root.get("crs").filter(|v| !v.is_null())?;
-    match legacy_crs(decl) {
+///
+/// An IAU code (another body's system, as GDAL writes `urn:ogc:def:crs:IAU_2015::49900`) is read
+/// as longitude/latitude with a notice when it is planetocentric. Any other IAU code is an error,
+/// because its coordinates would land in the wrong place ([`planetary::declared`]).
+pub(crate) fn declared_crs(root: &Map<String, Json>, messages: &mut Vec<String>) -> Result<Option<(Crs, crate::raster::Transformer)>> {
+    let Some(decl) = root.get("crs").filter(|v| !v.is_null()) else { return Ok(None) };
+    if let Some(name) = decl.get("properties").and_then(|p| p.get("name")).and_then(Json::as_str).filter(|n| n.len() <= CRS_NAME_MAX)
+        && let Some((authority, code)) = iau_name(name)
+        && let Some(found) = planetary::declared(Some(&authority), Some(code), None)
+    {
+        return match found {
+            planetary::Declared::LonLat { note, .. } => {
+                messages.push(format!("GeoJSON crs \"{}\": {note}", clip(name)));
+                Ok(None)
+            }
+            planetary::Declared::Refused(e) => Err(DataError::Format(format!("GeoJSON crs \"{}\": {e}", clip(name)))),
+        };
+    }
+    Ok(match legacy_crs(decl) {
         Ok(found) => found,
         Err(why) => {
             let shown = match decl.get("properties").and_then(|p| p.get("name")).and_then(Json::as_str) {
@@ -842,7 +858,24 @@ pub(crate) fn declared_crs(root: &Map<String, Json>, messages: &mut Vec<String>)
             messages.push(format!("GeoJSON crs {shown}: {why}; coordinates are read as longitude/latitude"));
             None
         }
+    })
+}
+
+/// The authority and code of a `crs` name whose authority is the IAU's: `IAU_2015:49900`,
+/// `urn:ogc:def:crs:IAU_2015::49900`, `urn:ogc:def:crs:IAU:2015:49900` or
+/// `http(s)://www.opengis.net/def/crs/IAU/2015/49900` (any case, whitespace around).
+fn iau_name(name: &str) -> Option<(String, i64)> {
+    let up = name.trim().to_ascii_uppercase();
+    let rest = ["URN:OGC:DEF:CRS:", "HTTP://WWW.OPENGIS.NET/DEF/CRS/", "HTTPS://WWW.OPENGIS.NET/DEF/CRS/"]
+        .iter()
+        .find_map(|p| up.strip_prefix(p))
+        .unwrap_or(&up);
+    let authority = rest.split([':', '/']).next().filter(|a| planetary::is_iau(a))?;
+    let code = rest.rsplit([':', '/']).next()?;
+    if code.is_empty() || !code.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
     }
+    Some((authority.to_string(), code.parse().ok()?))
 }
 
 fn legacy_crs(decl: &Json) -> std::result::Result<Option<(Crs, crate::raster::Transformer)>, String> {
@@ -1107,14 +1140,14 @@ impl Collector {
     }
 
     /// The dataset; `root` is the document's top level (for its `crs`, see [`declared_crs`]).
-    fn finish(self, name: &str, root: &Map<String, Json>) -> (Dataset, ReadReport) {
+    fn finish(self, name: &str, root: &Map<String, Json>) -> Result<(Dataset, ReadReport)> {
         let mut report = ReadReport { skipped: self.skipped, ..ReadReport::default() };
         let mut ds = Dataset::new(name, GeometryType::None, self.schema.fields());
         ds.features.reserve(self.features.len());
         if report.skipped > 0 {
             report.messages.push(format!("{} features had unreadable geometry", report.skipped));
         }
-        let declared = declared_crs(root, &mut report.messages);
+        let declared = declared_crs(root, &mut report.messages)?;
         let mut unconverted = 0usize;
         // Only features kept count toward the heights dropped.
         let mut zm = 0usize;
@@ -1155,7 +1188,7 @@ impl Collector {
         }
         // Last, as a source read in place notes it.
         ds.drop_zm(&mut report, zm);
-        (ds, report)
+        Ok((ds, report))
     }
 }
 
@@ -1177,7 +1210,7 @@ fn read_geojson_value(root: Json, name: &str) -> Result<(Dataset, ReadReport)> {
         Some(_) => features.add(&json!({"type": "Feature", "geometry": &root, "properties": {}})),
         None => return Err(DataError::Format("GeoJSON: missing \"type\"".into())),
     }
-    Ok(features.finish(name, &top))
+    features.finish(name, &top)
 }
 
 fn json_type(v: &Json) -> Option<FieldType> {
@@ -2115,7 +2148,7 @@ fn read_shapefile_parts(mut parts: ShapefileParts, name: &str, crs: Option<Crs>)
             ds.crs = Some(c);
             Some(c.transformer().map_err(DataError::Format)?)
         }
-        None => shapefile_crs(parts.prj.as_deref(), &mut report).map(|(crs, t)| {
+        None => shapefile_crs(parts.prj.as_deref(), &mut report)?.map(|(crs, t)| {
             ds.crs = Some(crs);
             t
         }),
@@ -2217,9 +2250,11 @@ fn read_shapefile_parts(mut parts: ShapefileParts, name: &str, crs: Option<Crs>)
 
 /// Converts a Shapefile's coordinates to longitude/latitude, from the coordinate system in its
 /// `.prj`: `None` for longitude/latitude, or when there's no `.prj` or it isn't understood (said in
-/// the report).
-fn shapefile_crs(prj: Option<&str>, report: &mut ReadReport) -> Option<(Crs, crate::raster::Transformer)> {
-    let crs = match crate::raster::wkt::read_wkt(prj?) {
+/// the report). Another body's system that can't be read is an error, because its coordinates
+/// would land in the wrong place as longitude/latitude.
+fn shapefile_crs(prj: Option<&str>, report: &mut ReadReport) -> Result<Option<(Crs, crate::raster::Transformer)>> {
+    let Some(prj) = prj else { return Ok(None) };
+    let crs = match crate::raster::wkt::read_wkt(prj) {
         Ok((c, note)) => {
             if let Some(n) = note {
                 report.messages.push(format!("the .prj file: {n}"));
@@ -2227,18 +2262,21 @@ fn shapefile_crs(prj: Option<&str>, report: &mut ReadReport) -> Option<(Crs, cra
             c
         }
         Err(e) => {
+            if let Some(refused) = planetary::refused_wkt(prj, &e) {
+                return Err(DataError::Format(format!("the .prj file: {refused}")));
+            }
             report.messages.push(format!("the .prj file: {e}; coordinates are read as longitude/latitude"));
-            return None;
+            return Ok(None);
         }
     };
     if crs == crate::raster::Crs::LonLat {
-        return None;
+        return Ok(None);
     }
     match crs.transformer() {
-        Ok(t) => Some((crs, t)),
+        Ok(t) => Ok(Some((crs, t))),
         Err(e) => {
             report.messages.push(format!("the .prj file: {e}; coordinates are read as longitude/latitude"));
-            None
+            Ok(None)
         }
     }
 }

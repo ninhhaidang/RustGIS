@@ -72,6 +72,22 @@ fn geo_tags<R: Read + Seek>(dec: &mut Decoder<R>) -> Result<Geo> {
     // A projected file with a user-defined projection (the NLCD's Albers, say) defines it in its
     // keys: read as its own system, never as the geographic system it's based on.
     let user_defined = key(1024) == Some(1) && key(3072).is_none_or(|c| !usable(&c));
+    let citation = |k: u16| match geokey(&keys, &gdoubles, &gascii, k) {
+        Some(KeyValue::Ascii(t)) if !t.trim().is_empty() => Some(t),
+        _ => None,
+    };
+    // PCSCitation, else GTCitation.
+    let system = || citation(3073).or_else(|| citation(1026)).unwrap_or_else(|| "the file's own projection".into());
+    // A projection of another body's planetographic longitude/latitude is refused when a citation
+    // says so, as GDAL names one. GeoTIFF has no key for axis directions, and PROJ gives such a
+    // projection westings.
+    if user_defined
+        && planetary_axes(&keys, &gdoubles, &gascii).is_some()
+        // PCSCitation, GTCitation, GeogCitation.
+        && [3073, 1026, 2049].into_iter().filter_map(citation).any(|t| super::planetary::ographic_name(&t))
+    {
+        return Err(err(super::planetary::refused(&system(), super::planetary::OGRAPHIC_PROJECTED)));
+    }
     // A projection the keys don't describe well enough is left unknown (the open goes on, and fails
     // later only if the coordinates aren't degrees), its reason kept for the message.
     let mut custom_error = None;
@@ -87,6 +103,19 @@ fn geo_tags<R: Read + Seek>(dec: &mut Decoder<R>) -> Result<Geo> {
         let code = key(3072).filter(usable).or(key(2048).filter(usable)).map(u32::from);
         (code, code.and_then(Crs::from_epsg))
     };
+    // Another body's system ([`super::planetary`]). A geographic one is its own system, not WGS 84:
+    // its longitude/latitude are read as they are, and a GeoTIFF written from it keeps its keys.
+    // A projection of it that can't be read is refused, because its metres would be read as
+    // degrees.
+    let crs = match crs {
+        None if geographic_model && key(2048).is_none_or(|c| !usable(&c)) => planetary_geographic(&keys, &gdoubles, &gascii)?.or(crs),
+        crs => crs,
+    };
+    if let Some(e) = &custom_error
+        && planetary_axes(&keys, &gdoubles, &gascii).is_some()
+    {
+        return Err(err(super::planetary::refused(&system(), e.strip_prefix("GeoTIFF: ").unwrap_or(e))));
+    }
 
     // A TIFF with none of the GeoTIFF tags is a scan; one with only some of them is damaged.
     let tagless = keys.is_empty() && [33550u16, 33922, 34264].iter().all(|t| dec.find_tag(Tag::Unknown(*t)).ok().flatten().is_none());
@@ -230,6 +259,103 @@ fn geokey(keys: &[u16], doubles: &[f64], ascii: &str, k: u16) -> Option<KeyValue
     }
 }
 
+/// Metres per unit of the ellipsoid's axes in a file's keys (GeogLinearUnits, metres when it isn't
+/// given). `a` is the semi-major axis as the keys give it. When that is already the Earth's in
+/// metres, the factor is 1, because some writers give metres whatever unit they declare. `None`
+/// for a unit the keys don't size.
+fn axis_unit(keys: &[u16], doubles: &[f64], ascii: &str, a: f64) -> Option<f64> {
+    if !super::planetary::off_earth(a) {
+        return Some(1.0);
+    }
+    // GeogLinearUnits
+    match geokey(keys, doubles, ascii, 2052) {
+        None | Some(KeyValue::Short(9001)) => Some(1.0),      // metre
+        Some(KeyValue::Short(9002)) => Some(0.3048),          // foot
+        Some(KeyValue::Short(9003)) => Some(1200.0 / 3937.0), // US survey foot
+        Some(KeyValue::Short(9036)) => Some(1000.0),          // kilometre
+        // GeogLinearUnitSize
+        _ => match geokey(keys, doubles, ascii, 2053) {
+            Some(KeyValue::Double(f)) if f.is_finite() && f > 0.0 => Some(f),
+            _ => None,
+        },
+    }
+}
+
+/// The semi-major and semi-minor axes, in metres, of the ellipsoid a file's keys give by its axes
+/// (GeogSemiMajorAxis with GeogSemiMinorAxis or GeogInvFlattening, in GeogLinearUnits), when it is
+/// another body's than the Earth's ([`super::planetary`]).
+fn planetary_axes(keys: &[u16], doubles: &[f64], ascii: &str) -> Option<(f64, f64)> {
+    let num = |k| match geokey(keys, doubles, ascii, k) {
+        Some(KeyValue::Double(v)) if v.is_finite() && v > 0.0 => Some(v),
+        _ => None,
+    };
+    let raw = num(2057)?; // GeogSemiMajorAxis
+    let to_m = axis_unit(keys, doubles, ascii, raw)?;
+    let a = raw * to_m;
+    // GeogSemiMinorAxis, GeogInvFlattening
+    let b = match (num(2058), num(2059)) {
+        (Some(b), _) => b * to_m,
+        (None, Some(rf)) => a - a / rf,
+        (None, None) => a,
+    };
+    super::planetary::off_earth(a).then_some((a, b))
+}
+
+/// A geographic file's own system when it is another body's: its ellipsoid by its axes, named by
+/// its citation (`GCS Name = Mars (2015) - Sphere / Ocentric|…`), with the keys it came in. `None`
+/// for the Earth's. It is an error when its cells would land in the wrong place as
+/// longitude/latitude in degrees:
+/// - a planetographic system, told by its citation as GDAL names an IAU `…01` system (GeoTIFF has
+///   no key for longitudes counted west);
+/// - other angular units than degrees.
+fn planetary_geographic(keys: &[u16], doubles: &[f64], ascii: &str) -> Result<Option<Crs>> {
+    let Some((a, b)) = planetary_axes(keys, doubles, ascii) else { return Ok(None) };
+    // GeogCitation
+    let citation = match geokey(keys, doubles, ascii, 2049) {
+        Some(KeyValue::Ascii(t)) => t,
+        _ => String::new(),
+    };
+    let first = citation.split('|').next().unwrap_or("");
+    let label = match first.trim().strip_prefix("GCS Name =").unwrap_or(first).trim() {
+        "" => format!("Geographic coordinate system (semi-major axis {a} m)"),
+        name => name.to_string(),
+    };
+    if super::planetary::ographic_name(first) {
+        return Err(err(super::planetary::refused(&label, super::planetary::OGRAPHIC)));
+    }
+    let degree = |f: f64| (f - 1f64.to_radians()).abs() < 1e-12;
+    // GeogAngularUnits
+    let unit = match geokey(keys, doubles, ascii, 2054) {
+        // Degrees, the default (9102); 9122 is the degree "supplier to define representation".
+        None | Some(KeyValue::Short(9102 | 9122)) => None,
+        // User-defined, sized by GeogAngularUnitSize in radians.
+        Some(KeyValue::Short(32767)) => match geokey(keys, doubles, ascii, 2055) {
+            Some(KeyValue::Double(f)) if degree(f) => None,
+            Some(KeyValue::Double(f)) => Some(format!("units of {f} radians")),
+            _ => Some("a user-defined unit of no size".to_string()),
+        },
+        Some(KeyValue::Short(code)) => Some(format!("GeogAngularUnits {code}")),
+        Some(_) => Some("an unreadable GeogAngularUnits".to_string()),
+    };
+    if let Some(unit) = unit {
+        let why = format!("its longitude/latitude are in {unit}, not degrees");
+        return Err(err(super::planetary::refused(&label, &why)));
+    }
+    // A prime meridian other than the body's reference one, in degrees (GeogPrimeMeridianLong).
+    let pm = match geokey(keys, doubles, ascii, 2061) {
+        Some(KeyValue::Double(pm)) if pm.is_finite() && pm != 0.0 => format!(" +pm={pm}"),
+        _ => String::new(),
+    };
+    let def = CustomCrs {
+        proj4: format!("+proj=longlat +a={a} +b={b}{pm} +no_defs"),
+        label,
+        geokeys: keys.to_vec(),
+        doubles: doubles.to_vec(),
+        ascii: ascii.to_string(),
+    };
+    Crs::custom(def).map(Some).map_err(err)
+}
+
 /// A user-defined projection from a file's GeoKeys, as a PROJ definition.
 fn custom_crs(keys: &[u16], doubles: &[f64], ascii: &str) -> Result<Crs> {
     let (proj4, label) = proj4_of_keys(keys, doubles, ascii)?;
@@ -290,16 +416,30 @@ fn proj4_of_keys(keys: &[u16], doubles: &[f64], ascii: &str) -> Result<(String, 
         Some(c) => return Err(err(format!("the file's own projection (coordinate transformation {c}) isn't supported"))),
         None => return Err(err("the file's own projection isn't described in its keys")),
     };
-    // The datum or ellipsoid, by code or by its axes.
+    // The datum or ellipsoid, by code or by its axes, in metres.
     let earth = match (short(2048), short(2050), short(2056)) {
         (Some(4326), _, _) | (_, Some(6326), _) | (_, _, Some(7030)) => "+datum=WGS84".to_string(),
         (Some(4269), _, _) | (_, Some(6269), _) | (_, _, Some(7019)) => "+ellps=GRS80 +towgs84=0,0,0".to_string(),
         (Some(4267), _, _) | (_, Some(6267), _) | (_, _, Some(7008)) => "+ellps=clrk66".to_string(),
-        _ => match (num(2057), num(2059), num(2058)) {
-            (Some(a), Some(rf), _) if a > 0.0 && rf > 0.0 => format!("+a={a} +rf={rf}"),
-            (Some(a), _, Some(b)) if a > 0.0 && b > 0.0 => format!("+a={a} +b={b}"),
-            _ => "+datum=WGS84".to_string(),
-        },
+        _ => {
+            // Axes in a unit the keys don't size can't be taken for metres: the ellipsoid, and so
+            // every cell, would be another size.
+            let axis_m = match num(2057) {
+                Some(a) => axis_unit(keys, doubles, ascii, a).ok_or_else(|| {
+                    let unit = short(2052).map(|u| format!(" (GeogLinearUnits {u})")).unwrap_or_default();
+                    err(format!("the file's ellipsoid axes are in a unit{unit} that isn't supported"))
+                })?,
+                None => 1.0,
+            };
+            match (num(2057).map(|a| a * axis_m), num(2059), num(2058).map(|b| b * axis_m)) {
+                (Some(a), Some(rf), _) if a > 0.0 && rf > 0.0 => format!("+a={a} +rf={rf}"),
+                (Some(a), _, Some(b)) if a > 0.0 && b > 0.0 => format!("+a={a} +b={b}"),
+                // Another body's sphere (no flattening, or 0): not WGS 84, which would read its
+                // metres as the Earth's ([`super::planetary`]).
+                (Some(a), rf, None) if super::planetary::off_earth(a) && rf.is_none_or(|rf| rf == 0.0) => format!("+a={a} +b={a}"),
+                _ => "+datum=WGS84".to_string(),
+            }
+        }
     };
     let label = text(3073).or_else(|| text(1026)).filter(|t| !t.trim().is_empty()).unwrap_or_else(|| "Custom projection".into());
     Ok((format!("{proj} {earth} {units} +no_defs"), label))
@@ -1350,6 +1490,7 @@ pub(super) fn read_limited_with_nodata(
     let mut r = Raster::new(name, w, h, bands, transform, crs, geo.nodata, color, data_type)?;
     r.overview = overview;
     r.rounded = rounded;
+    r.lost.extend(super::planetary::note_of(crs));
     r.lost.extend(table_lost);
     if let Some(p) = &described {
         r.apply_pam(p, super::pam::GDAL_METADATA);

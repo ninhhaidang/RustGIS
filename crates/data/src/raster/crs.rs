@@ -369,9 +369,10 @@ impl Crs {
     /// no known shift writes, as `+a`/`+rf` even on WGS 84's axes (SVY21's), and the reading says
     /// so. `+ellps=WGS84` and `+ellps=GRS80` alone need no shift (GRS 80 datums the reader knows
     /// get a null one), nor does a Mercator on Web Mercator's sphere of radius 6378137 m. Written
-    /// back in the same system, positions come back exact.
+    /// back in the same system, positions come back exact. False for another body's system
+    /// ([`Crs::is_planetary`]): it has no shift to WGS 84 at all, and its own notice says so.
     pub fn lacks_datum_shift(self) -> bool {
-        let Some(def) = self.custom_def() else { return false };
+        let Some(def) = self.custom_def().filter(|_| !self.is_planetary()) else { return false };
         let keys: Vec<&str> = def.proj4.split_whitespace().collect();
         let has = |prefix: &str| keys.iter().any(|k| k.starts_with(prefix));
         let shifted = has("+towgs84=") || has("+datum=") || has("+nadgrids=");
@@ -382,6 +383,13 @@ impl Crs {
         let wgs84 = keys.contains(&"+ellps=WGS84") || keys.contains(&"+ellps=GRS80") || sphere;
         let ellipsoid = has("+ellps=") || has("+a=") || has("+R=");
         ellipsoid && !wgs84 && !shifted
+    }
+
+    /// Whether the system is another body's than the Earth's: a custom one whose ellipsoid's
+    /// semi-major axis isn't the Earth's ([`super::planetary`]). Its longitude/latitude are read as
+    /// they are, on the Earth.
+    pub fn is_planetary(self) -> bool {
+        self.custom_def().and_then(|d| super::planetary::proj4_axes(&d.proj4)).is_some_and(|(a, _)| super::planetary::off_earth(a))
     }
 
     /// A transformer between this system and WGS 84 longitude/latitude.

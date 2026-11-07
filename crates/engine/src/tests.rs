@@ -15548,6 +15548,37 @@ fn rounded_raster_values_are_said_on_import_and_export() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// An ASCII grid whose `.prj` can't be read is added in longitude/latitude, and adding it says so;
+/// one whose `.prj` is read says nothing of it.
+#[test]
+fn an_ascii_grid_s_unread_prj_is_said_when_added() {
+    let dir = std::env::temp_dir().join(format!("rustgis-engine-asc-prj-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut s = Session::new(Project::default());
+    for (name, prj, said) in [
+        (
+            "geocentric",
+            r#"GEOCCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["metre",1]]"#,
+            true,
+        ),
+        (
+            "wgs84",
+            r#"GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]]"#,
+            false,
+        ),
+    ] {
+        let path = dir.join(format!("{name}.asc"));
+        std::fs::write(&path, "ncols 2\nnrows 2\nxllcorner 10\nyllcorner 40\ncellsize 1\n1 2\n3 4\n").unwrap();
+        std::fs::write(dir.join(format!("{name}.prj")), prj).unwrap();
+        let mark = s.notice_mark();
+        s.run("layer.addData", &json!({"path": path})).unwrap();
+        let notes: Vec<&str> = s.notices_since(mark).iter().map(|n| n.text.as_str()).filter(|t| t.contains("the .prj file")).collect();
+        assert_eq!(notes.len(), usize::from(said), "{name}: {:?}", s.notices_since(mark));
+        assert!(notes.iter().all(|n| n.contains(name) && n.contains("read as longitude/latitude")), "{notes:?}");
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 #[test]
 fn layers_export_to_geopackage_geoparquet_shapefile_and_kmz() {
     let dir = std::env::temp_dir().join(format!("rustgis-engine-export-{}", std::process::id()));

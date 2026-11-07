@@ -604,6 +604,32 @@ Coordinates beyond ±180.5° longitude or ±90.5° latitude (a CSV of eastings a
 `"crs"`, a Shapefile without its `.prj`) aren't longitude/latitude: an export says they're out of
 place, and Define Projection, below, places them.
 
+Coordinate systems of other bodies than the Earth (Mars, the Moon and the rest of the IAU's
+`IAU_2015` codes, or any datum whose ellipsoid isn't the Earth's) aren't read as such yet: every
+layer is placed on the Earth.
+
+- **Read, with a notice.** A layer whose coordinates are the body's longitude/latitude, counted
+  east, is read as it is: a geographic `.prj` or WKT, a GeoTIFF's own keys, an IAU code ending in
+  `00` or `02`, or a projection RustGIS unprojects. Adding it says that the map, its scale bar and
+  measurements take it for the Earth.
+- **Refused.** A layer whose coordinates would land in the wrong place as longitude/latitude is
+  refused, and the error says why:
+  - projected metres the reader can't convert: a FlatGeobuf, GeoParquet or GeoJSON whose system
+    is another body's projection, a GeoPackage one known only by its IAU code, or a projection
+    RustGIS doesn't read;
+  - geocentric X/Y/Z (a GeoParquet system);
+  - longitude/latitude in another unit than degrees (a GeoParquet or GeoTIFF one);
+  - longitudes counted west: planetographic systems, and projections of them, unless their axes
+    say they count east. An Esri `.prj` has no axes, so a planetographic one is refused.
+- **Exported.** Exporting such a layer as WGS 84 longitude/latitude says so. Exported in its own
+  system, a vector file (a Shapefile's `.prj`, say) gives its datum only by the ellipsoid's axes,
+  and that is said too. A GeoTIFF read with its own GeoKeys is written back with them and their
+  citation. Projecting such a layer onto another ellipsoid (the Earth's) is refused. A layer known
+  to be another body's only by an IAU code, or by an ellipsoid its reader doesn't keep
+  (GeoParquet), keeps no system, so its export can't tell. Adding it says so instead: an export
+  takes its coordinates for WGS 84 longitude/latitude, and one in a projection projects them as
+  the Earth's.
+
 ## Define Projection
 
 When a Shapefile's `.prj` is missing or incorrect, right-click its layer and choose

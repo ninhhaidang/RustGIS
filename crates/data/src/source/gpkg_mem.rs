@@ -118,7 +118,7 @@ impl GpkgMemSource {
             code: int(get(r, "organization_coordsys_id")),
             definition: text(get(r, "definition")),
         });
-        let reproject = super::gpkg_reproject(srs_id, row, &mut notes);
+        let reproject = super::gpkg_reproject(srs_id, row, &mut notes)?;
 
         let table = schema
             .iter()
@@ -161,7 +161,7 @@ impl GpkgMemSource {
             count: Some(count),
             // A system the definition gives, by its PROJ definition, so the layer keeps it
             // (`SourceInfo::coordinate_system`), as a Shapefile's .prj does (#1476).
-            crs: reproject.crs.custom_def().map(|d| d.proj4.clone()).unwrap_or_else(|| reproject.label()),
+            crs: reproject.info_crs(),
             indexed: false,
             notes,
             zm_dropped: false,

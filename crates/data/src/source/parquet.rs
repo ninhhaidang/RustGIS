@@ -173,8 +173,15 @@ impl ParquetSource {
         let mut notes = Vec::new();
         let crs = col_meta.and_then(|c| c.get("crs"));
         let code = crs_code(crs);
-        // A coordinate system given without an EPSG code (and not OGC:CRS84) can't be converted.
-        if code.is_none() && crs.is_some_and(|c| !c.is_null() && !is_crs84(c)) {
+        // Another body's system is said, or refused when its coordinates aren't longitude/latitude.
+        let other_body = crs.filter(|_| code.is_none()).and_then(crate::raster::planetary::projjson);
+        if let Some(crate::raster::planetary::Declared::Refused(e)) = &other_body {
+            return Err(DataError::Format(format!("its coordinate system: {e}")));
+        }
+        if let Some(crate::raster::planetary::Declared::LonLat { note, .. }) = &other_body {
+            notes.push(format!("its coordinate system: {note}"));
+        } else if code.is_none() && crs.is_some_and(|c| !c.is_null() && !is_crs84(c)) {
+            // A coordinate system given without an EPSG code (and not OGC:CRS84) can't be converted.
             notes.push("its coordinate system has no EPSG code; read as longitude/latitude".into());
         }
         let reproject = Reproject::from_epsg(code, &mut notes);

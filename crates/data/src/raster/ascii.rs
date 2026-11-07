@@ -92,6 +92,7 @@ pub(super) fn read_with_nodata(text: &str, name: &str, crs: Option<Crs>, sidecar
     };
     let gt = GeoTransform { origin_x: x, origin_y: top, pixel_width: dx, pixel_height: -dy };
     let mut r = Raster::new(name, w, h, vec![data], gt, crs, nodata, ColorHint::Gray, "Float32")?;
+    r.lost.extend(super::planetary::note_of(crs));
     if rounded > 0 {
         r.rounded = vec![rounded];
     }

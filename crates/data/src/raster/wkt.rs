@@ -11,6 +11,7 @@
 //! datums recover the same Helmert transformation as their bundled EPSG definition.
 
 use super::crs::{Crs, CustomCrs, epsg_proj4};
+use super::planetary;
 
 /// The most nested brackets read.
 const MAX_DEPTH: usize = 32;
@@ -234,8 +235,15 @@ pub fn crs_from_wkt(text: &str) -> Result<Crs, String> {
     read_wkt(text).map(|(crs, _)| crs)
 }
 
-/// The coordinate system a WKT text describes, with a note when its datum has no conversion to
-/// WGS 84 available (for example, NAD 27), so positions may be off by up to a few hundred metres.
+/// The coordinate system a WKT text describes, with a note when:
+/// - its datum has no conversion to WGS 84 available (for example, NAD 27), so positions may be off
+///   by up to a few hundred metres;
+/// - or it is another body's than the Earth's ([`planetary`]), whose longitude/latitude are read
+///   as they are.
+///
+/// Longitudes counted west are refused. So is another body's planetographic system, or a
+/// projection of one, unless its axes say they count east. On most bodies planetographic
+/// longitudes count west, and an Esri `.prj` has no axes to say otherwise.
 pub fn read_wkt(text: &str) -> Result<(Crs, Option<String>), String> {
     let root = wkt1(parse(text)?, 0)?;
     if let Some(a) = root.child("AUTHORITY")
@@ -245,14 +253,94 @@ pub fn read_wkt(text: &str) -> Result<(Crs, Option<String>), String> {
         return Ok((crs, None));
     }
     match root.name.to_ascii_uppercase().as_str() {
-        "GEOGCS" => Ok((geographic(&root)?, datum_note(Some(&root)))),
+        "GEOGCS" => {
+            if on_another_body(Some(&root)) && planetographic(&root) && !counts_east(&root) {
+                return Err(planetary::OGRAPHIC.into());
+            }
+            let crs = geographic(&root)?;
+            Ok((crs, note(crs, Some(&root))))
+        }
         "PROJCS" => {
+            if on_another_body(root.child("GEOGCS")) {
+                mirrored_projection(&root)?;
+            }
             let crs = projected(&root)?;
-            let note = if matches!(crs, Crs::Custom(_)) { datum_note(root.child("GEOGCS")) } else { None };
+            let note = if matches!(crs, Crs::Custom(_)) { note(crs, root.child("GEOGCS")) } else { None };
             Ok((crs, note))
         }
         other => Err(format!("{other} coordinate systems aren't supported")),
     }
+}
+
+/// Whether a WKT1 geographic system's ellipsoid is another body's. It is checked before the system
+/// is read, because reading a system keeps it in the run's table even when it is then refused.
+fn on_another_body(geog: Option<&Node>) -> bool {
+    geog.and_then(|g| g.child("DATUM")).and_then(|d| d.child("SPHEROID")).and_then(|s| s.num(0)).is_some_and(planetary::off_earth)
+}
+
+/// Whether a system is planetographic by its name or its IAU code ([`planetary::iau_ographic`]).
+fn planetographic(n: &Node) -> bool {
+    planetary::ographic_name(n.title())
+        || n.child("AUTHORITY").is_some_and(|a| authority_code(a).is_some_and(|c| planetary::iau_ographic(a.title(), i64::from(c))))
+}
+
+/// Whether one of a system's own axes points east. Axes tied to a meridian (polar ones) don't count.
+fn counts_east(n: &Node) -> bool {
+    n.nodes()
+        .filter(|a| a.name.eq_ignore_ascii_case("AXIS") && a.child("MERIDIAN").is_none())
+        .any(|a| a.items.iter().any(|i| matches!(i, Item::Word(w) if w.eq_ignore_ascii_case("east"))))
+}
+
+/// Why another body's projection would be read mirrored, if it would:
+/// - its own axes point west or south;
+/// - or it projects planetographic longitude/latitude, to which PROJ gives westings, and its axes
+///   don't say x counts east.
+///
+/// It projects planetographic longitude/latitude when its own name or code says so, when its
+/// geographic system's axes point west, or when that system's name or code says so and its axes
+/// don't point east.
+fn mirrored_projection(p: &Node) -> Result<(), String> {
+    if reversed_axes(p) {
+        return Err("axes pointing west or south aren't supported".into());
+    }
+    let base_ographic = p.child("GEOGCS").is_some_and(|g| reversed_axes(g) || (planetographic(g) && !counts_east(g)));
+    if (planetographic(p) || base_ographic) && !counts_east(p) {
+        return Err(planetary::OGRAPHIC_PROJECTED.into());
+    }
+    Ok(())
+}
+
+/// The note for reading `crs`, whose `GEOGCS` is `geog`. It says that the system is another body's,
+/// or that its datum has no conversion to WGS 84 ([`datum_note`]). Never both: another body's
+/// datum has no such conversion to lack.
+fn note(crs: Crs, geog: Option<&Node>) -> Option<String> {
+    if !crs.is_planetary() {
+        return datum_note(geog);
+    }
+    let system = match geog.and_then(|g| g.child("DATUM")).map(Node::title).filter(|d| !d.trim().is_empty()) {
+        Some(datum) => format!("{} (datum {datum})", crs.label()),
+        None => crs.label(),
+    };
+    Some(planetary::read_note(&system))
+}
+
+/// The name of another body's datum (else of its ellipsoid) in a WKT text, told by the ellipsoid's
+/// semi-major axis ([`planetary`]). It names the system when one that can't be read is refused.
+/// `None` for the Earth's, and for text that isn't WKT.
+pub fn planetary_datum(text: &str) -> Option<String> {
+    fn find(n: &Node, depth: usize) -> Option<String> {
+        if depth > MAX_DEPTH {
+            return None;
+        }
+        if let Some(e) = n.child_of(&["SPHEROID", "ELLIPSOID"])
+            && let Some(a) = e.num(0)
+            && planetary::off_earth(a * factor(e.child_of(&LENGTH_UNIT)).unwrap_or(1.0))
+        {
+            return Some(if n.title().trim().is_empty() { e.title() } else { n.title() }.to_string());
+        }
+        n.nodes().find_map(|c| find(c, depth + 1))
+    }
+    find(&parse(text).ok()?, 0)
 }
 
 /// The WKT1 form of a coordinate system: WKT1 as it is, WKT2 rewritten. A compound system (a
@@ -315,6 +403,11 @@ fn geographic2(g: &Node, top: bool) -> Result<Node, String> {
     {
         return Err(format!("{kind} coordinate systems aren't supported"));
     }
+    // Longitudes counted west (planetographic ones, on most bodies) would be read as east, which
+    // mirrors the data. WKT1 has no way to say so, as for a projected system's axes.
+    if top && reversed_axes(g) && epsg_id(g).and_then(Crs::from_epsg).is_none() {
+        return Err("axes pointing west or south aren't supported".into());
+    }
     let unit = cs_unit(g, &ANGLE_UNIT);
     let mut items = Vec::new();
     if let Some(d) = g.child_of(&["DATUM", "GEODETICDATUM", "TRF", "ENSEMBLE"]) {
@@ -338,8 +431,15 @@ fn geographic2(g: &Node, top: bool) -> Result<Node, String> {
     if let Some(f) = factor(unit) {
         items.push(Item::Node(Node::new("UNIT", unit.map_or("", Node::title), [Item::Num(f)])));
     }
+    // Its axes are kept so that [`read_wkt`] can check their directions.
+    items.extend(axes(g));
     items.extend(authority(g).filter(|_| top));
     Ok(Node::new("GEOGCS", g.title(), items))
+}
+
+/// A system's `AXIS` nodes, as they are.
+fn axes(n: &Node) -> impl Iterator<Item = Item> + '_ {
+    n.nodes().filter(|a| a.name.eq_ignore_ascii_case("AXIS")).cloned().map(Item::Node)
 }
 
 /// How a parameter's value is measured, for its unit conversion.
@@ -459,6 +559,7 @@ fn projected2(p: &Node) -> Result<Node, String> {
         }
     }
     items.push(Item::Node(Node::new("UNIT", unit.map_or("metre", Node::title), [Item::Num(to_m)])));
+    items.extend(axes(p));
     items.extend(authority(p));
     Ok(Node::new("PROJCS", p.title(), items))
 }
@@ -546,6 +647,10 @@ fn authority_code(a: &Node) -> Option<u32> {
 /// (which differ by a metre or so) from Greenwich, otherwise on the file's own datum and prime
 /// meridian.
 fn geographic(g: &Node) -> Result<Crs, String> {
+    // A WKT1 system's own axes, when it gives them: longitudes counted west would be mirrored.
+    if reversed_axes(g) {
+        return Err("axes pointing west or south aren't supported".into());
+    }
     if let Some(f) = g.child("UNIT").and_then(|u| u.num(0))
         && (f - 1f64.to_radians()).abs() > 1e-9
     {
@@ -1920,5 +2025,127 @@ mod tests {
         let again = to_wkt(read).unwrap();
         assert!(again.contains("DATUM[\"CH1903+\"") || again.contains("DATUM[\"CH1903\""), "{again}");
         assert!(crs_from_wkt(&again).is_ok(), "{again}");
+    }
+
+    /// Another body's system (Mars, IAU 2015) gets its own note instead of the datum note, and its
+    /// longitudes counted west are refused; no Earth system the bundle holds gets the note.
+    #[test]
+    fn planetary_systems_are_said_and_west_longitudes_refused() {
+        let esri = r#"GEOGCS["GCS_Mars_2015_-_Sphere_Ocentric",DATUM["D_Mars_2015_-_Sphere",SPHEROID["Mars_2015_-_Sphere",3396190.0,0.0]],PRIMEM["Reference_Meridian",0.0],UNIT["Degree",0.0174532925199433]]"#;
+        let (crs, note) = read_wkt(esri).unwrap();
+        let note = note.unwrap();
+        // (Named as the run's table first knew its definition.)
+        assert!(crs.is_planetary() && note.contains(&format!("{} (datum D_Mars_2015_-_Sphere)", crs.label())), "{note}");
+        assert!(!note.contains("few hundred metres"), "{note}");
+        assert_eq!(crs.custom_def().unwrap().proj4, "+proj=longlat +a=3396190 +b=3396190 +no_defs");
+        let projected =
+            format!(r#"PROJCS["Mars eqc",{esri},PROJECTION["Equirectangular"],PARAMETER["central_meridian",0],UNIT["metre",1]]"#);
+        let (crs, note) = read_wkt(&projected).unwrap();
+        assert!(crs.is_planetary() && !crs.is_geographic() && note.is_some_and(|n| n.contains("D_Mars_2015_-_Sphere")));
+        // Longitudes counted west, in WKT2 and WKT1, are refused; north/east axes are read.
+        let wkt2 = |lon: &str| {
+            format!(
+                r#"GEOGCRS["Mars (2015) / Ographic",DATUM["Mars (2015)",ELLIPSOID["Mars (2015)",3396.19,169.894447223612,LENGTHUNIT["kilometre",1000]]],PRIMEM["Reference Meridian",0,ANGLEUNIT["degree",0.0174532925199433]],CS[ellipsoidal,2],AXIS["geodetic latitude (Lat)",north,ORDER[1],ANGLEUNIT["degree",0.0174532925199433]],AXIS["geodetic longitude (Lon)",{lon},ORDER[2],ANGLEUNIT["degree",0.0174532925199433]],ID["IAU",49901,2015]]"#
+            )
+        };
+        assert_eq!(read_wkt(&wkt2("west")).unwrap_err(), "axes pointing west or south aren't supported");
+        assert_eq!(planetary_datum(&wkt2("west")).as_deref(), Some("Mars (2015)"));
+        assert!(read_wkt(&wkt2("east")).unwrap().0.is_planetary());
+        let wkt1 = esri
+            .replace("UNIT[\"Degree\",0.0174532925199433]]", "UNIT[\"Degree\",0.0174532925199433],AXIS[\"Lon\",WEST],AXIS[\"Lat\",NORTH]]");
+        assert_eq!(read_wkt(&wkt1).unwrap_err(), "axes pointing west or south aren't supported");
+        // Planetographic with no axes saying east (an Esri `.prj` has none), by its name or its
+        // IAU code, in WKT1 and WKT2: refused; axes saying east are read. Not merely a name
+        // ending so.
+        let ographic = esri.replace("GCS_Mars_2015_-_Sphere_Ocentric", "GCS_Mars_2015_Ographic");
+        assert_eq!(read_wkt(&ographic).unwrap_err(), planetary::OGRAPHIC);
+        let east = ographic.replace("0.0174532925199433]]", r#"0.0174532925199433],AXIS["Lon",EAST],AXIS["Lat",NORTH]]"#);
+        let north_only = ographic.replace("0.0174532925199433]]", r#"0.0174532925199433],AXIS["Lat",NORTH]]"#);
+        assert_eq!(read_wkt(&north_only).unwrap_err(), planetary::OGRAPHIC);
+        assert!(read_wkt(&east).unwrap().0.is_planetary());
+        let coded = esri.replace("0.0174532925199433]]", r#"0.0174532925199433],AUTHORITY["IAU_2015","49901"]]"#);
+        assert_eq!(read_wkt(&coded).unwrap_err(), planetary::OGRAPHIC);
+        assert!(read_wkt(&coded.replace("49901", "49900")).is_ok());
+        assert!(read_wkt(&esri.replace("Sphere_Ocentric", "cartographic")).is_ok());
+        let bare2 = wkt2("west").replace(r#"CS[ellipsoidal,2],"#, "");
+        let bare2: String = bare2.split(",AXIS[").next().map(|head| format!("{head},ID[\"IAU\",49901,2015]]")).unwrap();
+        assert!(!bare2.contains("AXIS"), "{bare2}");
+        assert_eq!(read_wkt(&bare2).unwrap_err(), planetary::OGRAPHIC);
+        // A projection of it: by its own name or code, or its geographic system's, unless its axes
+        // say x counts east; its own axes pointing west are refused.
+        let eqc = |geog: &str, name: &str, tail: &str| {
+            format!(r#"PROJCS["{name}",{geog},PROJECTION["Equirectangular"],PARAMETER["central_meridian",0],UNIT["metre",1]{tail}]"#)
+        };
+        for (geog, name, tail) in [
+            (ographic.as_str(), "Mars eqc", ""),
+            (esri, "Mars_2015_Ographic_Equirectangular", ""),
+            (esri, "Mars eqc", r#",AUTHORITY["IAU_2015","49911"]"#),
+            (esri, "Mars eqc", r#",AUTHORITY["IAU_2015","49916"]"#),
+            (wkt1.as_str(), "Mars eqc", ""),
+        ] {
+            assert_eq!(read_wkt(&eqc(geog, name, tail)).unwrap_err(), planetary::OGRAPHIC_PROJECTED, "{name}{tail}");
+        }
+        // A refused system takes no place in the run's table: the next system with its definition
+        // is named as that one is. (On an ellipsoid no other test reads.)
+        let venus = |name: &str, axes: &str| {
+            format!(
+                r#"GEOGCS["{name}",DATUM["D_Venus",SPHEROID["Venus",6051800.5,0.0]],PRIMEM["Reference_Meridian",0.0],UNIT["Degree",0.0174532925199433]{axes}]"#
+            )
+        };
+        assert_eq!(read_wkt(&venus("GCS_Venus_Ographic", "")).unwrap_err(), planetary::OGRAPHIC);
+        let projected = eqc(&venus("GCS_Venus_Ographic", ""), "Refused eqc", "");
+        assert_eq!(read_wkt(&projected).unwrap_err(), planetary::OGRAPHIC_PROJECTED);
+        let (read, _) = read_wkt(&venus("Venus east", r#",AXIS["Lon",EAST],AXIS["Lat",NORTH]"#)).unwrap();
+        assert_eq!(read.label(), "Venus east");
+        let (read, _) = read_wkt(&eqc(&venus("Venus", ""), "Venus eqc", r#",AXIS["Easting",EAST]"#)).unwrap();
+        assert_eq!(read.label(), "Venus eqc");
+        let northing = eqc(ographic.as_str(), "Mars eqc", r#",AXIS["Northing",NORTH]"#);
+        assert_eq!(read_wkt(&northing).unwrap_err(), planetary::OGRAPHIC_PROJECTED);
+        let westing = eqc(esri, "Mars eqc", r#",AXIS["Westing",WEST],AXIS["Northing",NORTH]"#);
+        assert_eq!(read_wkt(&westing).unwrap_err(), "axes pointing west or south aren't supported");
+        for (geog, name, tail) in [
+            (ographic.as_str(), "Mars eqc", r#",AXIS["Easting",EAST],AXIS["Northing",NORTH]"#),
+            (east.as_str(), "Mars eqc", ""),
+            (esri, "Mars eqc", r#",AUTHORITY["IAU_2015","49910"]"#),
+            (esri, "Mars eqc", r#",AUTHORITY["IAU_2015","49912"]"#),
+        ] {
+            assert!(read_wkt(&eqc(geog, name, tail)).unwrap().0.is_planetary(), "{name}{tail}");
+        }
+        // An Earth geographic system with the usual axes is read as before.
+        assert_eq!(read_wkt(r#"GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],UNIT["degree",0.0174532925199433],AXIS["Lat",NORTH],AXIS["Long",EAST]]"#).unwrap(), (Crs::LonLat, None));
+        // Earth datums aren't another body's; hostile text is nobody's.
+        for text in [
+            "",
+            "garbage",
+            "GEOGCS[",
+            r#"GEOGCS["x",DATUM["d",SPHEROID["s",NaN,0]]]"#,
+            r#"GEOGCS["x",DATUM["d",SPHEROID["s",-3396190,0]]]"#,
+        ] {
+            assert_eq!(planetary_datum(text), None, "{text}");
+        }
+        let deep = format!("{}{}", "A[".repeat(10_000), "]".repeat(10_000));
+        assert_eq!(planetary_datum(&deep), None);
+        // Every system in the bundle, written as WKT: never another body's datum. (Read back by
+        // its parameters for a sample only: each custom system read takes a place in the run's
+        // table.)
+        let mut written = 0;
+        for code in 1024..=u16::MAX {
+            let Some(wkt) = Crs::from_epsg(u32::from(code)).and_then(to_wkt) else { continue };
+            assert_eq!(planetary_datum(&wkt), None, "EPSG:{code}");
+            written += 1;
+        }
+        assert!(written > 3000, "{written}");
+        let mut sampled = 0;
+        // (Not UTM zone 31N: the table names a definition after its first reader, and
+        // `written_wkt_reads_back_as_the_same_system` names that one My_Grid.)
+        for code in [4267u32, 4230, 4277, 27700, 2056, 31370, 28992, 3035, 2193, 32634, 26917, 3413, 5514, 4087, 8857, 3006] {
+            let Some(wkt) = Crs::from_epsg(code).and_then(to_wkt) else { continue };
+            let wkt = wkt.replace(&format!(",AUTHORITY[\"EPSG\",\"{code}\"]"), "");
+            let (crs, note) = read_wkt(&wkt).unwrap_or_else(|e| panic!("EPSG:{code}: {e}"));
+            assert!(!crs.is_planetary(), "EPSG:{code}");
+            assert!(!note.is_some_and(|n| n.contains("another body")), "EPSG:{code}");
+            sampled += 1;
+        }
+        assert!(sampled >= 12, "{sampled}");
     }
 }

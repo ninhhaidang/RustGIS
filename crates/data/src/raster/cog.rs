@@ -381,7 +381,8 @@ fn read_layout(r: Sparse) -> Result<Parse> {
         Err(_) if seen.missing().is_some() => Err(err("the header isn't read yet")),
         Err(e) => Ok(Err(e.to_string())),
     };
-    let mut lost = Vec::new();
+    // Another body's system is said, as when the file is read whole.
+    let mut lost: Vec<String> = super::planetary::note_of(geo.0).into_iter().collect();
     let palette = match color {
         ColorHint::Gray if palette_image => match tag(&mut dec, Tag::ColorMap)? {
             Ok(None) => {

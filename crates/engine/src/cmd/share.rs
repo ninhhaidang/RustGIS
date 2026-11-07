@@ -251,6 +251,10 @@ fn write_layer(l: &rustgis_map::Layer, path: &str, asked: Option<Crs>, gpkg: Gpk
     // GeoJSON, KML and GPX are longitude/latitude; the others keep the layer's own system unless
     // told another.
     let crs = asked.unwrap_or_else(|| rustgis_data::io::default_export_crs(ds, &ext));
+    // Another body's layer projected onto another ellipsoid would be wrong data, not a wrong name.
+    if let Some(e) = rustgis_data::export_error(ds, crs) {
+        return Err(format!("{path}: {e}"));
+    }
     let (written, left_out, skipped, table) = match &chunks {
         Some((src, layer)) => {
             let (e, table) =

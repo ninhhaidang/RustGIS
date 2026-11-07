@@ -127,7 +127,7 @@ impl ShpSource {
         }
         let reproject = match crs {
             Some(c) => Reproject::from_crs(c, &mut notes),
-            None => shp_reproject(crate::raster::read_prj(path).as_deref(), &mut notes),
+            None => shp_reproject(crate::raster::read_prj(path).as_deref(), &mut notes)?,
         };
         let extent = if native.is_empty() || !native.min_x.is_finite() { Extent::EMPTY } else { reproject.extent_to_lonlat(&native) };
         if reproject.is_lonlat()
@@ -529,22 +529,27 @@ fn value(c: &Column, b: &[u8], encoding: &dyn shapefile::dbase::Encoding) -> Val
     }
 }
 
-/// The coordinate system in a `.prj`, with what couldn't be understood said in the notes.
-fn shp_reproject(prj: Option<&str>, notes: &mut Vec<String>) -> Reproject {
-    let crs = match prj.map(crate::raster::wkt::read_wkt) {
+/// The coordinate system in a `.prj`, with what couldn't be understood said in the notes. Another
+/// body's system that can't be read is an error, as when the file is read whole.
+fn shp_reproject(prj: Option<&str>, notes: &mut Vec<String>) -> Result<Reproject> {
+    use crate::raster::planetary;
+    let crs = match prj.map(|p| (p, crate::raster::wkt::read_wkt(p))) {
         None => crate::raster::Crs::LonLat,
-        Some(Ok((c, note))) => {
+        Some((_, Ok((c, note)))) => {
             if let Some(n) = note {
                 notes.push(format!("the .prj file: {n}"));
             }
             c
         }
-        Some(Err(e)) => {
+        Some((p, Err(e))) => {
+            if let Some(refused) = planetary::refused_wkt(p, &e) {
+                return Err(DataError::Format(format!("the .prj file: {refused}")));
+            }
             notes.push(format!("the .prj file: {e}; coordinates are read as longitude/latitude"));
             crate::raster::Crs::LonLat
         }
     };
-    Reproject::from_crs(crs, notes)
+    Ok(Reproject::from_crs(crs, notes))
 }
 
 #[cfg(test)]

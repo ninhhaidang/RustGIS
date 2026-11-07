@@ -163,7 +163,7 @@ impl GeoJsonSource {
         if scan.skipped > 0 {
             notes.push(format!("{} features had unreadable geometry", scan.skipped));
         }
-        let reproject = Reproject::known(declared_crs(&rest, &mut notes));
+        let reproject = Reproject::known(declared_crs(&rest, &mut notes)?);
         // The declaration may come after the features, so only now can each be tried: those the
         // declared system can't convert are found here (and left out of every read, the count,
         // the extent and the geometry type), as they are when the file is read whole.

@@ -212,15 +212,18 @@ fn wkids(t: &[u8], x: &[u8]) -> Vec<(String, u32)> {
 /// The coordinate system Esri data names: by its EPSG or Esri `code` (a WKID), else from its `wkt`,
 /// with the transformer to longitude/latitude. `(None, None)` for longitude/latitude, and for a
 /// system that can't be read, which `report` says; coordinates are then read as longitude/latitude.
-/// The File Geodatabase and ArcGIS protocol buffer readers share it.
-pub(crate) fn esri_crs(code: Option<u32>, wkt: Option<&str>, report: &mut ReadReport) -> (Option<Crs>, Option<Transformer>) {
+/// Another body's system that can't be read is an error instead, because its coordinates would
+/// land in the wrong place as longitude/latitude. The File Geodatabase and ArcGIS protocol buffer
+/// readers share it.
+pub(crate) fn esri_crs(code: Option<u32>, wkt: Option<&str>, report: &mut ReadReport) -> Result<(Option<Crs>, Option<Transformer>)> {
+    use crate::raster::planetary;
     // By its code, else from the WKT.
     let by_code = code.and_then(crs_of_code).and_then(|c| match c.transformer() {
         Ok(t) if c != Crs::LonLat => Some((Some(c), Some(t))),
         Ok(_) => Some((None, None)),
         Err(_) => None,
     });
-    match (by_code, wkt) {
+    Ok(match (by_code, wkt) {
         (Some(by_code), _) => by_code,
         (None, Some(wkt)) => match crate::raster::wkt::read_wkt(wkt) {
             Ok((c, note)) => {
@@ -237,12 +240,15 @@ pub(crate) fn esri_crs(code: Option<u32>, wkt: Option<&str>, report: &mut ReadRe
                 }
             }
             Err(e) => {
+                if let Some(refused) = planetary::refused_wkt(wkt, &e) {
+                    return Err(DataError::Format(format!("coordinate system: {refused}")));
+                }
                 report.messages.push(format!("coordinate system: {e}; coordinates are read as longitude/latitude"));
                 (None, None)
             }
         },
         (None, None) => (None, None),
-    }
+    })
 }
 
 /// A coordinate system by its EPSG or Esri code.
@@ -275,7 +281,7 @@ fn read_table(name: &str, t: &[u8], x: &[u8], wkid: Option<u32>) -> Result<Optio
         Shape::Other(code) => return Err(DataError::Unsupported(format!("geometry type {code}"))),
     };
     let wkt = table.geometry.as_ref().map(|g| g.wkt.as_str()).filter(|w| !w.is_empty() && !w.starts_with('{'));
-    let (crs, to_lonlat) = esri_crs(wkid.filter(|_| table.geometry.is_some()), wkt, &mut report);
+    let (crs, to_lonlat) = esri_crs(wkid.filter(|_| table.geometry.is_some()), wkt, &mut report)?;
     // The attribute fields: every field but the geometry, and the object ID first.
     let mut fields: Vec<Field> = Vec::new();
     let mut columns: Vec<usize> = Vec::new();

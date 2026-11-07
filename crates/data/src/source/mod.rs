@@ -659,6 +659,31 @@ pub(crate) struct Reproject {
 }
 
 impl Reproject {
+    /// For a reader that converts only EPSG codes: a coordinate system declared without one, by
+    /// `authority` and `code` or by a `wkt` definition, when it is another body's
+    /// ([`crate::raster::planetary::declared`]). `None` when it isn't.
+    /// - Its longitude/latitude are read as they are, with a note. The layer keeps the system when
+    ///   the definition gives it.
+    /// - Other coordinates are an error, because they would land in the wrong place.
+    ///
+    /// `what` starts the note or the error (`its coordinate system (srs_id 49900)`).
+    pub(crate) fn planetary(
+        what: &str,
+        authority: Option<&str>,
+        code: Option<i64>,
+        wkt: Option<&str>,
+        notes: &mut Vec<String>,
+    ) -> Option<Result<Reproject>> {
+        use crate::raster::planetary::{Declared, declared};
+        Some(match declared(authority, code, wkt)? {
+            Declared::Refused(e) => Err(DataError::Format(format!("{what}: {e}"))),
+            Declared::LonLat { note, crs } => {
+                notes.push(format!("{what}: {note}"));
+                Ok(Reproject::from_crs(crs.unwrap_or(Crs::LonLat), notes))
+            }
+        })
+    }
+
     /// From an EPSG code; an unknown or missing code is taken as longitude/latitude, with a note.
     pub(crate) fn from_epsg(code: Option<u32>, notes: &mut Vec<String>) -> Reproject {
         let crs = match code {
@@ -717,6 +742,13 @@ impl Reproject {
         self.crs.label()
     }
 
+    /// The system as [`SourceInfo::crs`] gives it: a custom one (another body's, declared by a
+    /// definition) by its PROJ definition, which [`SourceInfo::coordinate_system`] reads back as
+    /// that very system, as the Shapefile source does; else its name.
+    pub(crate) fn info_crs(&self) -> String {
+        self.crs.custom_def().map(|d| d.proj4.clone()).unwrap_or_else(|| self.label())
+    }
+
     /// The geometry in longitude/latitude; `None` when a coordinate can't be converted.
     pub(crate) fn geometry(&self, g: Geometry) -> Option<Geometry> {
         let Some(t) = &self.t else { return Some(g) };
@@ -770,7 +802,9 @@ pub(crate) struct GpkgSrs {
 /// (#1476): by its EPSG code when its organization is EPSG and the code is known, else by its WKT
 /// definition, else longitude/latitude, with a note. With no row for `srs_id`, it is taken as an
 /// EPSG code only for WGS 84 and Web Mercator, the ids writers commonly use without defining.
-pub(crate) fn gpkg_reproject(srs_id: i64, row: Option<GpkgSrs>, notes: &mut Vec<String>) -> Reproject {
+/// Another body's system ([`Reproject::planetary`]) is said, or an error when its coordinates
+/// would be in the wrong place as longitude/latitude.
+pub(crate) fn gpkg_reproject(srs_id: i64, row: Option<GpkgSrs>, notes: &mut Vec<String>) -> Result<Reproject> {
     // The WKT the row defines the system with, if any. ("undefined", or a writer's "undefined
     // geographic …", defines nothing.)
     let definition = row
@@ -792,28 +826,46 @@ pub(crate) fn gpkg_reproject(srs_id: i64, row: Option<GpkgSrs>, notes: &mut Vec<
         Some(_) => None,
     };
     if let Some(crs) = epsg.and_then(Crs::from_epsg) {
-        return Reproject::from_crs(crs, notes);
+        return Ok(Reproject::from_crs(crs, notes));
     }
+    let what = format!("its coordinate system (srs_id {srs_id})");
+    // Another body's system that can't be converted is told by its definition, or without one by
+    // its organization and code (an IAU one). Its longitude/latitude are read with a notice. Other
+    // coordinates are refused, because they would land in the wrong place. A planetary definition
+    // that `read_wkt` reads is converted like any other, with its own notice.
+    let other_body = |definition: Option<&str>, notes: &mut Vec<String>| {
+        row.as_ref().and_then(|r| Reproject::planetary(&what, r.organization.as_deref(), r.code, definition, notes))
+    };
     // Else the WKT the row defines it with: a custom system, or a code this build doesn't know.
     if let Some(definition) = definition {
-        let (crs, note) = crate::raster::wkt::read_wkt(definition)
-            .map(|(crs, note)| (crs, note.map(|n| format!("its coordinate system (srs_id {srs_id}): {n}"))))
-            .unwrap_or_else(|e| {
-                (Crs::LonLat, Some(format!("its coordinate system (srs_id {srs_id}) can't be read ({e}); read as longitude/latitude")))
-            });
-        notes.extend(note);
-        return Reproject::from_crs(crs, notes);
+        let crs = match crate::raster::wkt::read_wkt(definition) {
+            Ok((crs, note)) => {
+                notes.extend(note.map(|n| format!("{what}: {n}")));
+                crs
+            }
+            Err(e) => {
+                if let Some(reproject) = other_body(Some(definition), notes) {
+                    return reproject;
+                }
+                notes.push(format!("{what} can't be read ({e}); read as longitude/latitude"));
+                Crs::LonLat
+            }
+        };
+        return Ok(Reproject::from_crs(crs, notes));
+    }
+    if let Some(reproject) = other_body(None, notes) {
+        return reproject;
     }
     if epsg.is_some() {
         // A code this build doesn't know, and no definition to fall back on: said by its code.
-        return Reproject::from_epsg(epsg, notes);
+        return Ok(Reproject::from_epsg(epsg, notes));
     }
     // Longitude/latitude is what WGS 84 and the spec's "undefined geographic" id 0 mean; any other
     // id, the "undefined cartesian" -1 too, is assumed to be it.
     if srs_id != 0 && srs_id != 4326 {
         notes.push(format!("its coordinate system (srs_id {srs_id}) has no EPSG code; read as longitude/latitude"));
     }
-    Reproject::from_crs(Crs::LonLat, notes)
+    Ok(Reproject::from_crs(Crs::LonLat, notes))
 }
 
 /// The extent of an extent's edges (sampled, since edges curve when reprojected) through `f`.
