@@ -8,8 +8,9 @@ Lasso** (drag a freehand outline), or **Select by Radius** (drag from the centre
 selection; Ctrl/Cmd removes; Esc cancels an unfinished outline. Area tools use even-odd fill, so a
 self-crossing outline selects its alternating filled regions. Radius uses the Neighborhood Explorer's
 local Mercator distance and retained geographic prefilter; its outline and readout are approximate
-and some features near the outline may be excluded. The main Select button remains click/rectangle
-selection.
+and some features near the outline may be excluded. A feature reaching beyond 85.05°, where Web
+Mercator stops, is measured on the ground instead, so it may be selected outside the outline, which
+stops at 85.05°, or left out inside it. The main Select button remains click/rectangle selection.
 All selection tools take only features that are drawn, in selectable layers: a definition query or
 a display filter hiding a feature keeps it out, and a click picks the feature drawn on top among the
 selectable layers. **Select By Attributes** takes a SQL clause and checks it as you type; **Select By
@@ -138,16 +139,42 @@ that crosses 85.05° is straight in the tools, but the Web Mercator map clamps i
 where that map shows it: about 48 km at 84.5°N for an edge from (0°, 80°N) to (10°E, 89°N). A
 pole is a line in these coordinates, not a point, so Minimum Bounding Geometry of points spread
 around a pole spans their longitudes (a flat polygon with no area, for points on one parallel,
-and the tool says how many hulls have no area), not the cap they enclose on the ground. The globe
-draws a long edge along the great circle between its ends, so near a pole it shows a little
-poleward of where the tools take it: about 850 m at the middle of a 10° edge along 88°N (as
-everywhere, the tools take an edge as straight on the map, not on the globe).
+and the tool says how many hulls have no area), not the cap they
+enclose on the ground. The globe draws a long edge along the great circle between its ends, so near
+a pole it shows a little poleward of where the tools take it: about 850 m at the middle of a 10°
+edge along 88°N (as everywhere, the tools take an edge as straight on the map, not on the globe).
 Beyond 85.05°, the dangle check measures line ends about their pole (on WGS 84's curvature there,
 within 0.13% out to 85°), right up to the pole and across ±180°; an edge winding round a pole so
 many times that it can't be measured closely is measured coarsely, and the check says it's
-incomplete.
-Radius selections and the Neighborhood Explorer still measure in local Web Mercator, and the Cut
-Polygon, Reshape and Trace edits still work in it.
+incomplete. Features that both reach a pole
+(to within 1e-7°, about a centimeter) meet there, one place on the ground, in Select By Location
+and Spatial Join (Intersects), whatever their longitudes; in Clip, the overlays, Erase, Split,
+Summarize Within and Spatial Join ("Have their center in") a point at a pole falls in a polygon
+reaching it (a line or polygon meeting another only at a pole has no part in it, as at a corner
+anywhere); and a point at a pole is covered (Must Be Covered By) by polygons that together surround
+the pole (elsewhere, a point on the boundary between two polygons is still reported, as before),
+not by ones that only touch it at a corner or leave a gap reaching it (a hole no other polygon
+fills included). The check looks at circles around the pole from 1.1 cm to 8.7 km from it on the
+ground, out to the first the polygons don't reach at all: a gap more than 9e-6° of longitude wide
+where it crosses one counts, and narrower ones are taken for the seams the overlays' rounding
+leaves. It leans to reporting: such a gap counts even if it doesn't reach the pole, and so do
+polygons reaching less far from the pole on one side than on another, within 8.7 km.
+Spatial Join's Within, Contains and Largest overlap still see a pole as a line. Radius selections
+and the Neighborhood Explorer measure a feature reaching beyond 85.05°, or any feature from a center
+beyond it, on the ground, following each edge as the tools take it (straight on the map) to within
+about 125 m out to 5,000 km (farther, more, but only ever nearer); the
+Neighborhood Explorer also takes a center beyond 85.05°, while radius selections take centers within
+±85.05°. A feature within ±85.05° searched from a center within it is still measured in local
+Mercator, which doesn't go over the pole, so from a high latitude a feature just within 85.05° on
+the far side of the pole can be left out while one just beyond it, nearer on the ground, is found.
+A search measures at most 250,000 points and steps along edges in each layer, in steps of at most
+half a degree; past them, or along an edge over 512° long (as only a hostile file has), a feature is
+counted at the least distance it could be, so it may lie beyond the radius, and the tool warns how
+many were, layer by layer. Shapes with a finite latitude past ±90° are left out of radius searches,
+with a count; missing or infinite coordinates and their incident edges are omitted from the
+measurement, also with a count. An incomplete polygon is measured along its remaining finite
+edges, without assuming it contains the center. The overlay tools, Select By Location, Spatial Join, Summarize
+Within and topology validation refuse latitudes past ±90° before doing their work.
 
 These are the built-in tools; GeoLibre and plugin tools join them when available.
 Use these ids in `gp.run`'s `tool` parameter (`gp.tools` lists the available tools and their parameters):

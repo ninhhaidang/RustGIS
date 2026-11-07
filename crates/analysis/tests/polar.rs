@@ -394,6 +394,452 @@ fn the_plane_keeps_longitudes_past_180_as_they_are() {
 }
 
 #[test]
+fn a_radius_near_a_pole_reaches_as_far_as_it_says() {
+    let c = Coord::new;
+    let mut pts = Dataset::new("pts", GeometryType::Point, vec![]);
+    // 33.5 km and 55.8 km north of 89°N, and 447 km away at 85°N, on the same meridian.
+    for y in [89.3, 89.5, 85.0] {
+        pts.push(Some(Geometry::Point(c(10.0, y))), vec![]);
+    }
+    let found = rustgis_analysis::network::within(&pts, &[0, 1, 2], c(10.0, 89.0), 50_000.0);
+    assert_eq!(found.iter().map(|(r, _)| *r).collect::<Vec<_>>(), [0], "{found:?}");
+    let d = found.first().map(|(_, d)| *d).unwrap_or_default();
+    assert!((d - 33_507.0).abs() < 50.0, "{d}");
+
+    // 120 km around the South Pole reaches 89°S (111.7 km) and not 88.9°S (122.9 km).
+    let mut pts = Dataset::new("pts", GeometryType::Point, vec![]);
+    for (x, y) in [(0.0, -89.0), (10.0, -88.9)] {
+        pts.push(Some(Geometry::Point(c(x, y))), vec![]);
+    }
+    let found = rustgis_analysis::network::within(&pts, &[0, 1], c(0.0, -90.0), 120_000.0);
+    assert_eq!(found.iter().map(|(r, _)| *r).collect::<Vec<_>>(), [0], "{found:?}");
+}
+
+#[test]
+fn a_radius_reaches_polar_shapes_along_their_edges() {
+    let c = Coord::new;
+    let ground = rustgis_geom::wgs84_distance_m;
+    let shapes = |g: Geometry| {
+        let mut ds = Dataset::new("shapes", GeometryType::Polygon, vec![]);
+        ds.push(Some(g), vec![]);
+        ds
+    };
+    let reach = |ds: &Dataset, at: Coord, r: f64| rustgis_analysis::network::within(ds, &[0], at, r).first().map(|(_, d)| *d);
+    // Inside a box from 84°N to 89°N: no distance at all. From a center that's no place, nothing.
+    assert_eq!(reach(&shapes(square(0.0, 84.0, 90.0, 89.0)), c(45.0, 85.0), 50_000.0), Some(0.0));
+    for at in [c(45.0, 1000.0), c(45.0, f64::NAN), c(f64::INFINITY, 85.0)] {
+        assert_eq!(reach(&shapes(square(0.0, 84.0, 90.0, 89.0)), at, 50_000_000.0), None, "{at:?}");
+    }
+    // A cap written from 0° to 360° holds a center at 10°W, inside it on the ground, however its
+    // longitude is written. A radius that's no distance reaches nothing.
+    let cap360 = shapes(Geometry::Polygon(vec![vec![vec![c(0.0, 85.0), c(360.0, 85.0), c(360.0, 90.0), c(0.0, 90.0), c(0.0, 85.0)]]]));
+    for x in [-10.0, 710.0, -370.0] {
+        assert_eq!(reach(&cap360, c(x, 88.0), 100_000.0), Some(0.0), "{x}");
+    }
+    for r in [f64::NAN, -1.0] {
+        assert!(rustgis_analysis::network::within(&cap360, &[0], c(-10.0, 88.0), r).is_empty(), "{r}");
+    }
+    // A polygon whose ring is one point, 10 km off, written once or closed: as far as that point.
+    for ring in [vec![c(10.0, 86.0)], vec![c(10.0, 86.0), c(10.0, 86.0)]] {
+        let d = reach(&shapes(Geometry::Polygon(vec![vec![ring]])), c(10.0, 86.09), 50_000.0);
+        assert!(d.is_some_and(|d| (d - ground(c(10.0, 86.09), c(10.0, 86.0))).abs() < 10.0), "{d:?}");
+    }
+    // A cap cut at ±180°, its edge along 85.5°N half a degree north: that far, not as far as the
+    // pole.
+    let cap = Geometry::Polygon(vec![vec![vec![c(-180.0, 85.5), c(180.0, 85.5), c(180.0, 90.0), c(-180.0, 90.0), c(-180.0, 85.5)]]]);
+    let d = reach(&shapes(cap), c(0.0, 85.0), 100_000.0);
+    assert!(d.is_some_and(|d| (d - ground(c(0.0, 85.0), c(0.0, 85.5))).abs() < 10.0), "{d:?}");
+    // A meridian from pole to pole, a degree west at 45°N: about 79 km off, not 0 by a chord.
+    let mut line = Dataset::new("meridian", GeometryType::Polyline, vec![]);
+    line.push(Some(Geometry::Line(vec![vec![c(0.0, -90.0), c(0.0, 90.0)]])), vec![]);
+    let d = reach(&line, c(1.0, 45.0), 100_000.0);
+    assert!(d.is_some_and(|d| (d - ground(c(1.0, 45.0), c(0.0, 45.0))).abs() < 100.0), "{d:?}");
+    // From 80°N, 1,600 km reaches a point beyond 85.05° on the far side of the pole, 1,563 km away
+    // over it. One within ±85.05°, from a center within it, is measured in local Web Mercator as
+    // before, which doesn't go over the pole: 2,300 km from 80°N doesn't reach 80°N across it.
+    let mut pts = Dataset::new("pts", GeometryType::Point, vec![]);
+    pts.push(Some(Geometry::Point(c(180.0, 86.0))), vec![]);
+    let d = reach(&pts, c(0.0, 80.0), 1_600_000.0);
+    assert!(d.is_some_and(|d| (d - ground(c(0.0, 80.0), c(180.0, 86.0))).abs() < 100.0), "{d:?}");
+    let mut pts = Dataset::new("pts", GeometryType::Point, vec![]);
+    pts.push(Some(Geometry::Point(c(180.0, 80.0))), vec![]);
+    assert_eq!(reach(&pts, c(0.0, 80.0), 2_300_000.0), None);
+    // A line along 180° from 88.1°N to 89.4°S, through the antipode (0°, 89°S) of a center at 89°N,
+    // where the plane at the center tears: 400 km reaches it 2.9° away over the pole (324 km), not
+    // at a chord across the tear; 200 km doesn't.
+    let mut line = Dataset::new("through", GeometryType::Polyline, vec![]);
+    line.push(Some(Geometry::Line(vec![vec![c(180.0, 88.1), c(180.0, -89.4)]])), vec![]);
+    let d = reach(&line, c(0.0, 89.0), 400_000.0);
+    assert!(d.is_some_and(|d| (d - ground(c(0.0, 89.0), c(180.0, 88.1))).abs() < 100.0), "{d:?}");
+    assert_eq!(reach(&line, c(0.0, 89.0), 200_000.0), None);
+    // A line from near the center (180°, 89°N; 55 km off at its nearest) down to 89°S and along it
+    // past the center's antipode (0°, 89°S), where the plane at the center draws neighboring steps
+    // on opposite sides of it, their chord 40 km from the center: not within 50 km.
+    let mut line = Dataset::new("far", GeometryType::Polyline, vec![]);
+    // (Steps from 150.25°E fall either side of 0°, not on it.)
+    line.push(Some(Geometry::Line(vec![vec![c(150.25, 89.5), c(150.25, -89.0), c(-170.0, -89.0)]])), vec![]);
+    assert_eq!(reach(&line, c(180.0, 89.0), 50_000.0), None);
+    let d = reach(&line, c(180.0, 89.0), 60_000.0);
+    assert!(d.is_some_and(|d| (52_000.0..58_000.0).contains(&d)), "{d:?}");
+}
+
+#[test]
+fn a_radius_follows_hostile_lines_near_a_pole_in_bounded_steps() {
+    // 200 lines, each going 348 times nearly all the way around along 89.95°N, 5.6 km from a center
+    // at 89.9°N: about 50 million half-degree steps, far past the search's budget. The edges
+    // followed before it runs out find the first line where it is; every line still counts, the
+    // rest at their boxes' distance (5.5 km), never more than they are.
+    let c = Coord::new;
+    let path: Vec<Coord> = (0..=348).map(|i| c(if i % 2 == 0 { -179.5 } else { 179.5 }, 89.95)).collect();
+    let mut lines = Dataset::new("hostile", GeometryType::Polyline, vec![]);
+    for _ in 0..200 {
+        lines.push(Some(Geometry::Line(vec![path.clone()])), vec![]);
+    }
+    let rows: Vec<usize> = (0..200).collect();
+    let found = rustgis_analysis::network::within(&lines, &rows, c(0.0, 89.9), 10_000.0);
+    assert_eq!(found.len(), 200);
+    assert!(found.iter().all(|(_, d)| (5_500.0..5_600.0).contains(d)), "{:?}", found.first());
+}
+
+#[test]
+fn a_larger_radius_never_loses_a_feature() {
+    // Each shape is measured one way whatever the radius. Within ±85.05°, in local Web Mercator: a
+    // point at 75°N from Paris, whether the radius reaches 85.05° or not, and one at 82.95°N from
+    // 84°N the same.
+    let c = Coord::new;
+    let found = |at: Coord, p: Coord, r: f64| {
+        let mut pts = Dataset::new("pts", GeometryType::Point, vec![]);
+        pts.push(Some(Geometry::Point(p)), vec![]);
+        rustgis_analysis::network::within(&pts, &[0], at, r).first().map(|(_, d)| *d)
+    };
+    let paris = c(2.35, 48.86);
+    assert_eq!(found(paris, c(2.35, 75.0), 4_000_000.0), found(paris, c(2.35, 75.0), 4_100_000.0));
+    let (at, p) = (c(0.0, 84.0), c(3.9277, 82.9505));
+    let (near, far) = (found(at, p, 117_000.0), found(at, p, 117_020.0));
+    assert!(near.is_some() && near == far, "{near:?} {far:?}");
+    // On the ground: a line along 89.99°N, 10 km from a center at 89.9°N, found at 20 km, where 400
+    // lines around 89.6°N (33 km off) are out of reach, and at 50 km, where following those lines
+    // first leaves too few of the search's steps for it, so it counts as near as its box (9.95 km):
+    // never farther than it is.
+    let at = c(0.0, 89.9);
+    let mut ds = Dataset::new("polar", GeometryType::Polyline, vec![]);
+    for _ in 0..400 {
+        ds.push(Some(Geometry::Line(vec![vec![c(-179.5, 89.6), c(179.5, 89.6)]])), vec![]);
+    }
+    ds.push(Some(Geometry::Line(vec![vec![c(-150.0, 89.99), c(150.0, 89.99)]])), vec![]);
+    let rows: Vec<usize> = (0..=400).collect();
+    let point = |r: f64| rustgis_analysis::network::within(&ds, &rows, at, r).into_iter().find(|(row, _)| *row == 400).map(|(_, d)| d);
+    let (near, far) = (point(20_000.0), point(50_000.0));
+    let fell_back = far.is_some_and(|f| (9_940.0..9_960.0).contains(&f) && near.is_some_and(|n| f < n));
+    assert!(near.is_some_and(|d| (9_900.0..10_200.0).contains(&d)) && fell_back, "{near:?} {far:?}");
+}
+
+#[test]
+fn features_reaching_the_same_pole_meet_there() {
+    // Wedges from 89°S to the South Pole at 0°E and 90°E: apart in the plane, where the pole is a
+    // line, but one place on the ground. One at 0°E reaching the North Pole meets neither.
+    let wedge = |x: f64, s: f64| square(x, s * 90.0, x + 10.0, s * 89.0);
+    let m = Map(HashMap::from([
+        layer("south0", vec![wedge(0.0, -1.0)]),
+        layer("south90", vec![wedge(90.0, -1.0)]),
+        layer("north0", vec![wedge(0.0, 1.0)]),
+    ]));
+    let selected = |input: &str, select: &str| {
+        let r = rustgis_analysis::run("selectByLocation", &m, &serde_json::json!({"input": input, "select": select})).unwrap();
+        let Output::Selection { rows, .. } = r.output else { panic!("expected a selection") };
+        rows
+    };
+    assert_eq!((selected("south0", "south90"), selected("north0", "south90")), (vec![0], vec![]));
+    let r = rustgis_analysis::run("selectByLocation", &m, &serde_json::json!({"input": "south0", "select": "south90", "invert": "Yes"}))
+        .unwrap();
+    let Output::Selection { rows, .. } = r.output else { panic!("expected a selection") };
+    assert!(rows.is_empty(), "{rows:?}");
+    let joined = |target: &str, join: &str, how: &str| {
+        let mut params = serde_json::json!({"target": target, "join": join, "match": how});
+        if how == "Closest" {
+            params["distanceField"] = serde_json::json!("gap");
+        }
+        run(&m, "spatialJoin", params)
+    };
+    let sj = joined("south0", "south90", "Intersects");
+    assert_eq!(sj.value(0, sj.field_index("join_count").unwrap()), &Value::Int(1));
+    let sj = joined("north0", "south90", "Intersects");
+    assert_eq!(sj.value(0, sj.field_index("join_count").unwrap()), &Value::Int(0));
+    let sj = joined("south0", "south90", "Closest");
+    assert_eq!(sj.value(0, sj.field_index("gap").unwrap()), &Value::Float(0.0));
+}
+
+#[test]
+fn a_clipped_wedge_still_meets_others_at_the_pole() {
+    // A wedge from 0°E to 90°E, clipped, still reaches the pole, where it meets one at 120°E: the
+    // overlay's grid moves its pole vertices, but not out of the pole's tolerance.
+    let m = Map(HashMap::from([
+        layer("wedge", vec![square(0.0, -90.0, 90.0, -89.0)]),
+        layer("mask", vec![square(-180.0, -90.0, 180.0, -80.0)]),
+    ]));
+    let clipped = run(&m, "clip", serde_json::json!({"input": "wedge", "clip": "mask"}));
+    let off = latitudes(&clipped).1.iter().map(|y| (y + 90.0).abs()).fold(f64::INFINITY, f64::min);
+    let m = Map(HashMap::from([("clipped".to_string(), clipped), layer("other", vec![square(120.0, -90.0, 130.0, -89.0)])]));
+    let r = rustgis_analysis::run("selectByLocation", &m, &serde_json::json!({"input": "clipped", "select": "other"})).unwrap();
+    let Output::Selection { rows, .. } = r.output else { panic!("expected a selection") };
+    assert_eq!(rows, [0], "pole vertices {off:e}° off");
+}
+
+#[test]
+fn a_spatial_join_finds_every_feature_at_the_pole_through_its_index() {
+    // Twenty wedges reaching the South Pole all around it, and five squares far off: enough join
+    // features (over 16) for Spatial Join to look them up in its grid, where a wedge's extent
+    // meets only its neighbors'.
+    let wedges = (0..20).map(|i| square(-180.0 + 18.0 * f64::from(i), -90.0, -172.0 + 18.0 * f64::from(i), -89.0));
+    let far = (0..5).map(|i| square(f64::from(i), 0.0, f64::from(i) + 0.5, 0.5));
+    let m = Map(HashMap::from([layer("target", vec![square(0.0, -90.0, 10.0, -89.0)]), layer("join", wedges.chain(far).collect())]));
+    let sj = run(&m, "spatialJoin", serde_json::json!({"target": "target", "join": "join", "match": "Intersects"}));
+    assert_eq!(sj.value(0, sj.field_index("join_count").unwrap()), &Value::Int(20));
+}
+
+#[test]
+fn a_point_at_a_pole_is_found_through_each_index() {
+    // The South Pole points of the test below, with twenty points and twenty squares far off: more
+    // than 16 features on each side, so the tools look them up in their grids, where the pole
+    // points' extents don't meet the wedge's.
+    let c = Coord::new;
+    let mut pts = Dataset::new("pts", GeometryType::Point, vec![Field::new("k", FieldType::Text)]);
+    let polar = [c(0.0, -90.0), c(120.0, -90.0), c(0.0, -90.0 + 5e-8), c(45.0, -90.0 + 5e-8)];
+    for p in polar.into_iter().chain((0..20).map(|i| c(100.0 + f64::from(i), 10.0))) {
+        pts.push(Some(Geometry::Point(p)), vec![Value::Text("a".into())]);
+    }
+    let far = (0..20).map(|i| square(f64::from(i), 0.0, f64::from(i) + 0.5, 0.5));
+    let (_, polys) = layer("polys", std::iter::once(square(0.0, -90.0, 90.0, -89.0)).chain(far).collect());
+    let m = Map(HashMap::from([("pts".to_string(), pts), ("polys".to_string(), polys)]));
+    for (tool, params, want) in [
+        ("clip", serde_json::json!({"input": "pts", "clip": "polys"}), 4),
+        ("intersect", serde_json::json!({"input": "pts", "overlay": "polys"}), 4),
+        ("erase", serde_json::json!({"input": "pts", "erase": "polys"}), 20),
+    ] {
+        assert_eq!(run(&m, tool, params).features.len(), want, "{tool}");
+    }
+    let counted = run(&m, "countPoints", serde_json::json!({"polygons": "polys", "points": "pts"}));
+    assert_eq!(counted.value(0, counted.field_index("point_count").unwrap()), &Value::Int(4));
+    let split = rustgis_analysis::run("split", &m, &serde_json::json!({"input": "pts", "split": "polys"})).unwrap();
+    let Output::Layers(layers) = split.output else { panic!("expected layers") };
+    let [rustgis_analysis::OutputLayer::Vector(part)] = layers.as_slice() else { panic!("expected one layer: {layers:?}") };
+    assert_eq!(part.features.len(), 4);
+    let joined = run(&m, "spatialJoin", serde_json::json!({"target": "pts", "join": "polys", "match": "Have their center in"}));
+    let count = joined.field_index("join_count").unwrap();
+    let found: Vec<usize> = (0..24).filter(|r| joined.value(*r, count) == &Value::Int(1)).collect();
+    assert_eq!(found, [0, 1, 2, 3]);
+}
+
+#[test]
+fn a_point_at_a_pole_meets_what_reaches_it_and_lies_in_what_surrounds_it() {
+    // In the plane a pole is a line, on the ground one place. Points at the South Pole, written at
+    // 0°E and 120°E and 5e-8° off it, touch a wedge from 0°E to 90°E reaching the pole: Clip and
+    // Intersect keep them and Summarize Within counts them, as they do points on an edge. Only a
+    // polygon that surrounds the pole holds them inside, as Must Be Covered By counts; nothing
+    // reaches the North Pole point. A point 5e-8° off the pole within the wedge, at 45°E, lies
+    // inside it as anywhere else.
+    let c = Coord::new;
+    let mut pts = Dataset::new("pts", GeometryType::Point, vec![Field::new("k", FieldType::Text)]);
+    for p in [c(0.0, -90.0), c(120.0, -90.0), c(0.0, -90.0 + 5e-8), c(0.0, 90.0), c(45.0, -90.0 + 5e-8)] {
+        pts.push(Some(Geometry::Point(p)), vec![Value::Text("a".into())]);
+    }
+    let (_, wedge) = layer("wedge", vec![square(0.0, -90.0, 90.0, -89.0)]);
+    let m = Map(HashMap::from([("pts".to_string(), pts.clone()), ("wedge".to_string(), wedge.clone())]));
+    for (tool, params) in [
+        ("clip", serde_json::json!({"input": "pts", "clip": "wedge"})),
+        ("intersect", serde_json::json!({"input": "pts", "overlay": "wedge"})),
+    ] {
+        assert_eq!(latitudes(&run(&m, tool, params)).0, 4, "{tool}");
+    }
+    let counted = run(&m, "countPoints", serde_json::json!({"polygons": "wedge", "points": "pts"}));
+    assert_eq!(counted.value(0, counted.field_index("point_count").unwrap()), &Value::Int(4));
+    // Erase takes them away, leaving the North Pole point; Split puts them in the wedge's layer;
+    // Spatial Join finds each in the wedge when it has its center there.
+    let erased = run(&m, "erase", serde_json::json!({"input": "pts", "erase": "wedge"}));
+    assert_eq!(latitudes(&erased), (1, vec![90.0]));
+    let split = rustgis_analysis::run("split", &m, &serde_json::json!({"input": "pts", "split": "wedge"})).unwrap();
+    let Output::Layers(layers) = split.output else { panic!("expected layers") };
+    let [rustgis_analysis::OutputLayer::Vector(part)] = layers.as_slice() else { panic!("expected one layer: {layers:?}") };
+    assert_eq!(part.features.len(), 4);
+    let joined = run(&m, "spatialJoin", serde_json::json!({"target": "pts", "join": "wedge", "match": "Have their center in"}));
+    let count = joined.field_index("join_count").unwrap();
+    let counts: Vec<&Value> = (0..5).map(|r| joined.value(r, count)).collect();
+    assert_eq!(counts, [&Value::Int(1), &Value::Int(1), &Value::Int(1), &Value::Int(0), &Value::Int(1)]);
+    let uncovered = |by: &Dataset| -> Vec<usize> {
+        rustgis_analysis::topology::not_covered(&pts, &[0, 1, 2, 3, 4], by).errors.iter().flat_map(|e| e.rows.clone()).collect()
+    };
+    assert_eq!(uncovered(&wedge), [0, 1, 2, 3]);
+    // Surrounding the pole: a cap written from −180° to 180° or from 0° to 360°, one in two halves
+    // (meeting exactly, or 1e-9° apart, as an overlay's rounding can leave them), one in parts
+    // written in both ways, one with an island far west; not one leaving a gap of 10° or of 1° (its
+    // pole points lie on its edge), nor one with a hole reaching the pole (the point beside the
+    // pole, at 0°, lies inside it, as anywhere else), even one narrowing to a corner there, under a
+    // meter wide in the plane a meter off the pole, unless another polygon fills it; nor halves
+    // with a gap narrowing to the pole between them (along a meridian or slanting, 0.5° wide at
+    // 85°S, millimeters a meter off the pole in the plane), or one with a notch narrowing to it;
+    // nor one whose longitudes can't be taken (one infinite, or so far around that a meter is lost
+    // in rounding). A cap 110 m across holds it, in halves a seam apart too; a hole near the pole
+    // that doesn't reach it is reported as if it did, as the check leans to reporting.
+    let ring = |w: f64, e: f64| vec![c(w, -85.0), c(e, -85.0), c(e, -90.0), c(w, -90.0), c(w, -85.0)];
+    let island = vec![c(-100.0, 0.0), c(-95.0, 0.0), c(-95.0, 5.0), c(-100.0, 5.0), c(-100.0, 0.0)];
+    let hole = vec![c(-60.0, -90.0), c(-50.0, -90.0), c(-50.0, -89.0), c(-60.0, -89.0), c(-60.0, -90.0)];
+    let narrowing = vec![c(-60.0, -89.0), c(-50.0, -89.0), c(-55.0, -90.0), c(-60.0, -89.0)];
+    let tapering = vec![c(0.0, -85.0), c(180.0, -85.0), c(180.0, -90.0), c(1.0, -90.0), c(0.0, -89.0), c(0.0, -85.0)];
+    let notched = vec![
+        c(-180.0, -85.0),
+        c(180.0, -85.0),
+        c(180.0, -90.0),
+        c(2.0, -90.0),
+        c(0.0, -89.5),
+        c(-2.0, -90.0),
+        c(-180.0, -90.0),
+        c(-180.0, -85.0),
+    ];
+    let infinite = vec![c(-180.0, -85.0), c(f64::INFINITY, -85.0), c(180.0, -90.0), c(-180.0, -90.0), c(-180.0, -85.0)];
+    let half_wedge = vec![c(0.5, -85.0), c(180.0, -85.0), c(180.0, -90.0), c(0.0, -90.0), c(0.5, -85.0)];
+    let near = vec![c(10.0, -89.999), c(20.0, -89.999), c(20.0, -89.99), c(10.0, -89.99), c(10.0, -89.999)];
+    let small = vec![c(-180.0, -89.9995), c(180.0, -89.9995), c(180.0, -90.0), c(-180.0, -90.0), c(-180.0, -89.9995)];
+    let slanted_west = vec![c(-180.0, -85.0), c(10.0, -85.0), c(0.0, -90.0), c(-180.0, -90.0), c(-180.0, -85.0)];
+    let slanted_east = vec![c(10.5, -85.0), c(180.0, -85.0), c(180.0, -90.0), c(0.0, -90.0), c(10.5, -85.0)];
+    let small_west = vec![c(-180.0, -89.9995), c(0.0, -89.9995), c(0.0, -90.0), c(-180.0, -90.0), c(-180.0, -89.9995)];
+    let small_east = vec![c(1e-9, -89.9995), c(180.0, -89.9995), c(180.0, -90.0), c(1e-9, -90.0), c(1e-9, -89.9995)];
+    let notch_outline = vec![
+        c(0.0, -85.0),
+        c(360.0, -85.0),
+        c(360.0, -90.0),
+        c(200.0, -90.0),
+        c(200.0, -86.0),
+        c(100.0, -86.0),
+        c(100.0, -90.0),
+        c(0.0, -90.0),
+        c(0.0, -85.0),
+    ];
+    let notch_hole = vec![c(100.0, -90.0), c(200.0, -90.0), c(200.0, -86.5), c(100.0, -86.5), c(100.0, -90.0)];
+    let short_of = vec![c(-180.0, -85.0), c(180.0, -85.0), c(180.0, -89.9999995), c(-180.0, -89.9999995), c(-180.0, -85.0)];
+    let nearly = vec![
+        c(-180.0, -85.0),
+        c(180.0, -85.0),
+        c(180.0, -90.0),
+        c(2.0, -90.0),
+        c(0.0, -89.9999996),
+        c(-2.0, -90.0),
+        c(-180.0, -90.0),
+        c(-180.0, -85.0),
+    ];
+    let one = |rings: Vec<Vec<Vec<Coord>>>| vec![Geometry::Polygon(rings)];
+    let each = |rings: Vec<Vec<Vec<Coord>>>| rings.into_iter().map(|r| Geometry::Polygon(vec![r])).collect::<Vec<_>>();
+    for (name, features, want) in [
+        ("cap", one(vec![vec![ring(-180.0, 180.0)]]), vec![3]),
+        ("cap from 0°", one(vec![vec![ring(0.0, 360.0)]]), vec![3]),
+        ("halves", one(vec![vec![ring(-180.0, 0.0)], vec![ring(0.0, 180.0)]]), vec![3]),
+        ("halves a seam apart", one(vec![vec![ring(-180.0, 0.0)], vec![ring(1e-9, 180.0)]]), vec![3]),
+        ("halves overlapping", one(vec![vec![ring(-180.0, 10.0)], vec![ring(-10.0, 180.0)]]), vec![3]),
+        ("halves as two features", each(vec![vec![ring(-180.0, 0.0)], vec![ring(0.0, 180.0)]]), vec![3]),
+        ("parts both ways", one(vec![vec![ring(-180.0, -10.0)], vec![ring(0.0, 180.0)], vec![ring(350.0, 360.0)]]), vec![3]),
+        ("island", one(vec![vec![ring(0.0, 360.0)], vec![island.clone()]]), vec![3]),
+        ("gap", one(vec![vec![ring(0.0, 350.0)]]), vec![0, 1, 2, 3]),
+        ("halves a degree apart", each(vec![vec![ring(-180.0, 0.0)], vec![ring(1.0, 180.0)]]), vec![0, 1, 2, 3]),
+        ("hole", one(vec![vec![ring(-180.0, 180.0), hole.clone()]]), vec![0, 1, 3]),
+        ("hole narrowing to the pole", one(vec![vec![ring(-180.0, 180.0), narrowing.clone()]]), vec![0, 1, 3]),
+        (
+            "that hole filled",
+            vec![Geometry::Polygon(vec![vec![ring(-180.0, 180.0), narrowing.clone()]]), Geometry::Polygon(vec![vec![narrowing.clone()]])],
+            vec![3],
+        ),
+        ("halves a gap narrowing to the pole apart", each(vec![vec![ring(-180.0, 0.0)], vec![tapering.clone()]]), vec![0, 1, 2, 3]),
+        ("a notch to the pole", one(vec![vec![notched.clone()]]), vec![0, 1, 2, 3]),
+        ("halves a 0.5° wedge apart", each(vec![vec![ring(-180.0, 0.0)], vec![half_wedge.clone()]]), vec![0, 1, 2, 3]),
+        ("a hole near the pole, not reaching it", one(vec![vec![ring(-180.0, 180.0), near.clone()]]), vec![0, 1, 3]),
+        ("halves a slanted 0.5° wedge apart", each(vec![vec![slanted_west.clone()], vec![slanted_east.clone()]]), vec![0, 1, 3]),
+        ("a small cap in halves a seam apart", each(vec![vec![small_west.clone()], vec![small_east.clone()]]), vec![3]),
+        ("a cap stopping 5e-7° short of the pole", one(vec![vec![short_of.clone()]]), vec![0, 1, 2, 3, 4]),
+        ("a notch ending 4e-7° short of the pole", one(vec![vec![nearly.clone()]]), vec![0, 1, 2, 3]),
+        ("a hole beside its outline, in its gap", one(vec![vec![ring(0.0, 350.0), ring(350.0, 360.0)]]), vec![0, 1, 2, 3]),
+        ("a hole filling a notch in its outline", one(vec![vec![notch_outline.clone(), notch_hole.clone()]]), vec![0, 1, 2, 3]),
+        ("a cap 110 m across", one(vec![vec![small.clone()]]), vec![3]),
+        ("a longitude infinite", one(vec![vec![infinite.clone()]]), vec![0, 1, 3]),
+        ("a turn written 1e15° away", one(vec![vec![ring(1e15, 1e15 + 360.0)]]), vec![0, 1, 2, 3, 4]),
+    ] {
+        assert_eq!(uncovered(&layer("cap", features).1), want, "{name}");
+    }
+}
+
+#[test]
+fn radius_search_reports_invalid_input_without_clamping() {
+    let c = Coord::new;
+    let mut ds = Dataset::new("bad", GeometryType::Point, vec![]);
+    ds.push(Some(Geometry::Point(c(0.0, 100.0))), vec![]);
+    ds.push(Some(Geometry::Line(vec![vec![c(0.0, 89.0), c(0.5, 89.0), c(f64::NAN, 89.0), c(1.0, 89.0)]])), vec![]);
+    ds.push(Some(Geometry::Point(c(0.0, 89.0))), vec![]);
+    let report = rustgis_analysis::network::within_report(&ds, &[0, 1, 2], c(0.0, 90.0), 200_000.0);
+    assert_eq!(report.invalid_latitudes, 1);
+    assert_eq!(report.missing_coordinates, 1);
+    assert_eq!(report.rows.len(), 2);
+    assert!(!report.rows.iter().any(|(r, _)| *r == 0));
+    let clean = rustgis_analysis::network::within_report(&ds, &[2], c(0.0, 90.0), 200_000.0);
+    assert_eq!((clean.invalid_latitudes, clean.missing_coordinates), (0, 0));
+}
+
+#[test]
+fn radius_search_measures_incomplete_polygons_only_along_finite_edges() {
+    let c = Coord::new;
+    for (latitude, radius) in [(45.0, 100_000.0), (89.0, 10_000.0)] {
+        let (a, b, d) = (c(-1.0, latitude - 1.0), c(1.0, latitude - 1.0), c(-1.0, latitude + 1.0));
+        let at = c(0.0, latitude);
+        let mut edges = Dataset::new("edges", GeometryType::Polyline, vec![]);
+        edges.push(Some(Geometry::Line(vec![vec![a, b], vec![d, a]])), vec![]);
+        let expected = rustgis_analysis::network::within_report(&edges, &[0], at, radius);
+        assert_eq!(expected.rows.len(), 1);
+        assert!(expected.rows[0].1 > 1_000.0);
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let (_, ds) = layer("broken", vec![Geometry::Polygon(vec![vec![vec![a, b, c(1.0, bad), d, a]]])]);
+            let report = rustgis_analysis::network::within_report(&ds, &[0], at, radius);
+            assert_eq!((report.invalid_latitudes, report.missing_coordinates, report.bounded), (0, 1, 0));
+            assert_eq!(report.rows.len(), 1, "{latitude} {bad}");
+            assert!((report.rows[0].1 - expected.rows[0].1).abs() < 1e-6, "{latitude} {bad}: {:?}", report.rows);
+        }
+        let (_, clean) = layer("clean", vec![Geometry::Polygon(vec![vec![vec![a, b, c(1.0, latitude + 1.0), d, a]]])]);
+        let report = rustgis_analysis::network::within_report(&clean, &[0], at, radius);
+        assert_eq!((report.rows, report.missing_coordinates), (vec![(0, 0.0)], 0));
+    }
+}
+
+#[test]
+fn pole_tools_refuse_latitudes_outside_the_earth() {
+    let cases = [
+        ("clip", serde_json::json!({"input":"a", "clip":"b"})),
+        ("CLIP", serde_json::json!({"input":"a", "clip":"b"})),
+        ("erase", serde_json::json!({"input":"a", "erase":"b"})),
+        ("intersect", serde_json::json!({"input":"a", "overlay":"b"})),
+        ("identity", serde_json::json!({"input":"a", "overlay":"b"})),
+        ("union", serde_json::json!({"input":"a", "overlay":"b"})),
+        ("symmetricalDifference", serde_json::json!({"input":"a", "overlay":"b"})),
+        ("update", serde_json::json!({"input":"a", "update":"b"})),
+        ("split", serde_json::json!({"input":"a", "split":"b"})),
+        ("countPoints", serde_json::json!({"points":"a", "polygons":"b"})),
+        ("spatialJoin", serde_json::json!({"target":"a", "join":"b"})),
+        ("selectByLocation", serde_json::json!({"input":"a", "select":"b"})),
+        ("Select Layer By Location", serde_json::json!({"input":"a", "select":"b"})),
+    ];
+    for (id, params) in cases {
+        for bad in ["a", "b"] {
+            for latitude in [95.0, f64::INFINITY, f64::NEG_INFINITY] {
+                let map = Map(HashMap::from([
+                    layer("a", vec![square(0.0, 88.0, 1.0, if bad == "a" { latitude } else { 89.0 })]),
+                    layer("b", vec![square(0.0, 88.0, 1.0, if bad == "b" { latitude } else { 89.0 })]),
+                ]));
+                let error = rustgis_analysis::run(id, &map, &params).unwrap_err();
+                assert!(error.contains("latitude past ±90°"), "{id} {bad}: {error}");
+                let resolved = rustgis_analysis::resolve_published(id).unwrap();
+                let error =
+                    rustgis_analysis::run_resolved(&resolved, &map, &params, &rustgis_analysis::control::Control::new()).unwrap_err();
+                assert!(error.contains("latitude past ±90°"), "resolved {id} {bad}: {error}");
+            }
+        }
+    }
+}
+
+#[test]
 fn polar_dangles_match_parts_stored_many_turns_apart() {
     let c = Coord::new;
     for turn in [720.0, -1080.0] {
@@ -403,5 +849,33 @@ fn polar_dangles_match_parts_stored_many_turns_apart() {
         let checked = rustgis_analysis::topology::dangles(&ds, &[0, 1], 1.0);
         assert!(checked.complete);
         assert_eq!(checked.errors.len(), 2, "turn {turn}");
+    }
+}
+
+#[test]
+fn summarize_within_validates_unselected_polygons_it_also_reads() {
+    struct Selected<'a>(&'a Map);
+    impl Inputs for Selected<'_> {
+        fn dataset(&self, name: &str) -> Option<&Dataset> {
+            self.0.dataset(name)
+        }
+        fn selection(&self, name: &str) -> &[usize] {
+            if name == "zones" { &[0] } else { &[] }
+        }
+    }
+    for invalid in [false, true] {
+        let mut points = Dataset::new("points", GeometryType::Point, vec![]);
+        points.push(Some(Geometry::Point(Coord::new(0.5, 89.0))), vec![]);
+        let map = Map(HashMap::from([
+            ("points".into(), points),
+            layer("zones", vec![square(0.0, 88.0, 1.0, 89.0), square(0.0, 89.0, 1.0, if invalid { 95.0 } else { 90.0 })]),
+        ]));
+        let result = rustgis_analysis::run("countPoints", &Selected(&map), &serde_json::json!({"points":"points", "polygons":"zones"}));
+        if invalid {
+            let error = result.unwrap_err();
+            assert!(error.contains("zones") && error.contains("1 feature(s)") && error.contains("latitude past ±90°"), "{error}");
+        } else {
+            assert!(result.is_ok(), "{result:?}");
+        }
     }
 }

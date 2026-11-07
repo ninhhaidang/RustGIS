@@ -1981,21 +1981,35 @@ fn topology_validate(s: &mut Session, p: &Json) -> CmdResult {
     // Rules whose check stopped early (an error or work limit), or measured some part more coarsely
     // than it's meant to (a line winding round a pole many times): their counts may be off.
     let mut incomplete = Vec::new();
+    // Polygons a check had to leave out, by rule.
+    let mut skipped = Vec::new();
     for rule in s.map().editing.topology.clone() {
         let Some(l) = s.map().layer_by_name(rule.layer()) else { continue };
         let rows: Vec<usize> = l.visible_rows().iter().enumerate().filter(|(_, v)| **v).map(|(i, _)| i).collect();
+        rustgis_analysis::validate_latitudes(&l.dataset, rows.iter().copied())?;
         let found = match &rule {
             TopologyRule::MustNotOverlap { .. } => t::overlaps(&l.dataset, &rows),
             TopologyRule::MustNotHaveGaps { .. } => t::gaps(&l.dataset, &rows),
             TopologyRule::MustNotSelfIntersect { .. } => t::self_intersections(&l.dataset, &rows),
             TopologyRule::MustNotHaveDangles { .. } => t::dangles(&l.dataset, &rows, tol),
             TopologyRule::MustBeCoveredBy { by, .. } => match s.map().layer_by_name(by) {
-                Some(b) => t::not_covered(&l.dataset, &rows, &b.dataset),
+                Some(b) => {
+                    rustgis_analysis::validate_latitudes(&b.dataset, 0..b.dataset.features.len())?;
+                    t::not_covered(&l.dataset, &rows, &b.dataset)
+                }
                 None => continue,
             },
         };
-        if !found.complete {
+        if !found.complete || found.skipped > 0 {
             incomplete.push(rule.label().to_string());
+        }
+        if found.skipped > 0 {
+            // The features left out are the covering layer's.
+            let of = match &rule {
+                TopologyRule::MustBeCoveredBy { by, .. } => by.as_str(),
+                _ => l.name.as_str(),
+            };
+            skipped.push(format!("{} on '{}': {} feature(s) of '{}'", rule.label(), l.name, found.skipped, of));
         }
         errors.extend(found.errors.into_iter().map(|e| crate::TopologyIssue {
             rule: rule.label().to_string(),
@@ -2007,9 +2021,15 @@ fn topology_validate(s: &mut Session, p: &Json) -> CmdResult {
     }
     if !incomplete.is_empty() {
         s.warn(format!(
-            "{} topology rule(s) weren't checked completely ({}): a check stopped early, or measured a line winding round a pole coarsely, so their counts may be off",
+            "{} topology rule(s) weren't checked completely ({}): a check stopped early, left out a polygon, or measured a line winding round a pole coarsely, so their counts may be off",
             incomplete.len(),
             incomplete.join(", ")
+        ));
+    }
+    if !skipped.is_empty() {
+        s.warn(format!(
+            "Polygons left out of the check at a pole (a coordinate missing or infinite, or a million turns around), so its result there may be wrong: {}",
+            skipped.join("; ")
         ));
     }
     let n = errors.len();

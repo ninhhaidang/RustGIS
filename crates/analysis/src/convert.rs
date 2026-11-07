@@ -17,6 +17,12 @@ fn back(c: &GC<f64>) -> Coord {
     plane_to_lonlat(Coord::new(c.x, c.y))
 }
 
+/// The poles something spanning latitudes `south` to `north` reaches (to within
+/// [`rustgis_geom::POLE_TOLERANCE`]): the North Pole, then the South Pole.
+pub(crate) fn reaches_poles(south: f64, north: f64) -> (bool, bool) {
+    (north >= 90.0 - rustgis_geom::POLE_TOLERANCE, south <= -90.0 + rustgis_geom::POLE_TOLERANCE)
+}
+
 pub fn ring(r: &[Coord]) -> LineString<f64> {
     LineString::new(r.iter().map(|c| gc(*c)).collect())
 }

@@ -1088,17 +1088,27 @@ fn route(s: &mut Session, p: &Value) -> CmdResult {
 
 fn neighborhood(s: &mut Session, p: &Value) -> CmdResult {
     let at = Coord::new(f(p, "lon").ok_or("lon is required")?, f(p, "lat").ok_or("lat is required")?);
+    if !(at.x.is_finite() && at.y.abs() <= 90.0) {
+        return Err("lon must be a finite number and lat within -90 to 90".into());
+    }
     let radius = f(p, "radius").filter(|r| *r > 0.0).ok_or("radius is required (metres)")?.min(5e6);
     let only: Option<Vec<String>> =
         p.get("layers").and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_ascii_lowercase)).collect());
     let mut out = Vec::new();
     let mut found: Vec<(u32, Vec<usize>)> = Vec::new();
+    let mut bounded = Vec::new();
+    let mut invalid = Vec::new();
     for l in s.map().layers.iter().filter(|l| s.map().shows(l) && !l.is_raster() && !l.graphics) {
         if only.as_ref().is_some_and(|o| !o.contains(&l.name.to_ascii_lowercase())) {
             continue;
         }
         let rows: Vec<usize> = l.visible_rows().iter().enumerate().filter(|(_, v)| **v).map(|(i, _)| i).collect();
-        let near = network::within(&l.dataset, &rows, at, radius);
+        let report = network::within_report(&l.dataset, &rows, at, radius);
+        let (near, n) = (report.rows, report.bounded);
+        invalid.push((l.name.clone(), report.invalid_latitudes, report.missing_coordinates));
+        if n > 0 {
+            bounded.push((l.name.clone(), n));
+        }
         if near.is_empty() {
             continue;
         }
@@ -1114,6 +1124,8 @@ fn neighborhood(s: &mut Session, p: &Value) -> CmdResult {
         out.push(json!({"layer": l.name, "count": near.len(), "nearestKm": near.first().map(|x| x.1 / 1000.0), "sums": sums}));
         found.push((l.id, near.into_iter().map(|x| x.0).collect()));
     }
+    super::select::warn_bounded(s, &bounded);
+    super::select::warn_radius_input(s, &invalid);
     if b(p, "select").unwrap_or(false) {
         s.map_mut().clear_selection();
         for (id, rows) in found {

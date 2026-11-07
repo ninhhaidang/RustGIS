@@ -4,8 +4,9 @@
 //! pure `run` function over datasets. Inputs refer to layers by name through [`Inputs`].
 //! The geometry tools and topology checks work in the analysis plane
 //! ([`rustgis_geom::lonlat_to_plane`]: Web Mercator meters within ±85.05°, continued beyond to
-//! the poles), radius searches in Web Mercator meters, and buffers are geodesic: drawn in a
-//! projection centered on each feature (see [`geodesic`]) so a 100 km buffer is 100 km on the
+//! the poles), radius searches in Web Mercator meters (on the ground when the center or the
+//! feature's box reaches beyond 85.05°, see [`network::within`]), and buffers are geodesic: drawn
+//! in a projection centered on each feature (see [`geodesic`]) so a 100 km buffer is 100 km on the
 //! ground.
 //!
 //! Tools from external suites (the GeoLibre/Whitebox tools in `rustgis-geolibre`, and plugins
@@ -555,11 +556,73 @@ pub fn run(id: &str, inputs: &dyn Inputs, params: &Value) -> Result<ToolResult, 
     let spec = tool(id).ok_or_else(|| format!("no tool '{id}'"))?;
     let p = resolve_params(spec, params)?;
     // A bug in a tool must not take the app down.
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match source_of(spec) {
-        Some((_, runner)) => runner(spec, inputs, &p),
-        None => (spec.run)(inputs, &p),
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        validate_pole_inputs(spec, inputs, &p)?;
+        match source_of(spec) {
+            Some((_, runner)) => runner(spec, inputs, &p),
+            None => (spec.run)(inputs, &p),
+        }
     }))
     .unwrap_or_else(|_| Err(format!("{} failed unexpectedly", spec.name)))
+}
+
+/// Validates the rows a pole-aware tool reads, on either execution path.
+fn validate_pole_inputs(spec: &ToolSpec, inputs: &dyn Inputs, p: &Value) -> Result<(), String> {
+    if matches!(
+        spec.id,
+        "clip"
+            | "erase"
+            | "intersect"
+            | "identity"
+            | "union"
+            | "symmetricalDifference"
+            | "update"
+            | "split"
+            | "countPoints"
+            | "spatialJoin"
+            | "selectByLocation"
+    ) {
+        for param in spec
+            .params
+            .iter()
+            .filter(|p| matches!(p.kind, ParamKind::Layer | ParamKind::PolygonLayer | ParamKind::PointLayer | ParamKind::VectorLayer))
+        {
+            if let Some(name) = p.get(param.name).and_then(Value::as_str)
+                && let Some(ds) = inputs.dataset(name)
+            {
+                let selected = inputs.selection(name);
+                let reads_all = matches!((spec.id, param.name), ("selectByLocation", "input") | ("countPoints", "polygons"));
+                if selected.is_empty() || reads_all {
+                    validate_latitudes(ds, 0..ds.features.len())?;
+                } else {
+                    validate_latitudes(ds, selected.iter().copied())?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Refuses latitudes outside the Earth, including infinities, instead of clamping them to a pole.
+pub fn validate_latitudes(ds: &rustgis_data::Dataset, rows: impl IntoIterator<Item = usize>) -> Result<(), String> {
+    let invalid = rows
+        .into_iter()
+        .filter(|&row| {
+            let mut invalid = false;
+            if let Some(g) = ds.features.get(row).and_then(|f| f.geometry.as_ref()) {
+                g.for_each_coord(|c| invalid |= c.y.abs() > 90.0);
+            }
+            invalid
+        })
+        .count();
+    if invalid > 0 {
+        Err(format!(
+            "'{name}' has {invalid} feature(s) with a latitude past ±90°; repair their coordinates before analysis",
+            name = ds.name
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 /// [`run`] under `control`: setting its flag stops the tool at its next check, and its count
@@ -581,9 +644,12 @@ pub fn run_resolved(
 ) -> Result<ToolResult, String> {
     run_under(tool.spec.name, control, || {
         let params = tool.resolve_params(params)?;
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match tool.runner {
-            Some(runner) => runner(tool.spec, inputs, &params),
-            None => (tool.spec.run)(inputs, &params),
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            validate_pole_inputs(tool.spec, inputs, &params)?;
+            match tool.runner {
+                Some(runner) => runner(tool.spec, inputs, &params),
+                None => (tool.spec.run)(inputs, &params),
+            }
         }))
         .unwrap_or_else(|_| Err(format!("{} failed unexpectedly", tool.spec.name)))
     })

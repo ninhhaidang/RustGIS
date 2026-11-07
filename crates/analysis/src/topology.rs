@@ -14,20 +14,22 @@ pub struct TopologyError {
     pub at: Coord,
 }
 
-/// A check's errors, and whether it finished (a check stops at an error or work limit) with every
-/// part measured as closely as it's meant to be.
+/// A check's errors, whether it finished (a check stops at an error or work limit) with every part
+/// measured as closely as it's meant to be, and how many polygons it had to leave out (see the
+/// check for why).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Checked {
     pub errors: Vec<TopologyError>,
     pub complete: bool,
+    pub skipped: usize,
 }
 
 impl Checked {
     fn done(errors: Vec<TopologyError>) -> Checked {
-        Checked { errors, complete: true }
+        Checked { errors, complete: true, skipped: 0 }
     }
     fn partial(errors: Vec<TopologyError>) -> Checked {
-        Checked { errors, complete: false }
+        Checked { errors, complete: false, skipped: 0 }
     }
 }
 
@@ -809,15 +811,224 @@ fn rest_of_part(part: &[Coord], from_start: bool, skip: f64) -> Vec<Coord> {
     Vec::new()
 }
 
-/// Points of `ds` that fall in no polygon of `by`.
+/// Whether polygons (in the analysis plane, of one feature or several) hold the North Pole (the
+/// South Pole when not `north`) inside them together, as the check counts the inside: on the
+/// ground they surround it, so in the plane they run along that edge of the world a whole turn,
+/// however their longitudes are written (from −180° to 180°, from 0° to 360°, or in parts
+/// meeting or overlapping along meridians, written either way). They do if lines 0.13 m, 1 m,
+/// 10 m, … 100 km off it in the plane (1.1 cm to 8.7 km on the ground; the nearest just past
+/// [`rustgis_geom::POLE_TOLERANCE`], within which the overlays take a polygon to reach the pole)
+/// lie inside them all the way around but for gaps of under a meter (9e-6° of longitude), as the
+/// overlays' rounding leaves seams centimeters wide in the plane (nothing on the ground beside the
+/// pole), from the nearest out to the first wholly outside them, where they end (#1033). A gap
+/// reaching the pole (between polygons, in one's outline, or a hole no other polygon fills),
+/// however narrow beside it, widens away from it, so it counts once it's wider than a meter on one
+/// of the lines; one narrower all the way out to 100 km is taken for a seam. A gap near the pole
+/// that doesn't reach it, crossing a line, counts too: the check leans to reporting. A polygon
+/// whose crossings with a line can't be worked out (a coordinate missing or infinite there, or so
+/// far around, a million turns, that a meter is lost in rounding) doesn't count. When the rest
+/// don't surround the pole, or might not have with them (the lines end at one wholly outside the
+/// rest that a polygon left out reaches), the rows (`polygons` come with their features' rows) of
+/// those left out are returned with the answer, each once, for the check to say; otherwise those
+/// left out changed nothing.
+fn surrounds_pole<'a>(polygons: impl IntoIterator<Item = (usize, &'a geo::Polygon<f64>)>, north: bool) -> (bool, Vec<usize>) {
+    /// The widest gap, in the plane's meters, taken for a seam.
+    const SEAM_M: f64 = 1.0;
+    let (rows, polygons): (Vec<usize>, Vec<&geo::Polygon<f64>>) = polygons.into_iter().unzip();
+    let mut skipped = vec![false; polygons.len()];
+    let round = std::f64::consts::TAU * rustgis_geom::MERCATOR_R;
+    let inside = |gaps: &[(f64, f64)]| gaps.iter().all(|(a, b)| b - a <= SEAM_M);
+    let ended = |gaps: &[(f64, f64)]| gaps.iter().any(|(a, b)| b - a >= round);
+    let mut lines = [0.13, 1.0, 10.0, 100.0, 1e3, 1e4, 1e5].into_iter();
+    let (mut surrounds, mut uncertain) = (false, false);
+    if let Some(near) = lines.next() {
+        surrounds = inside(&outside_line(&polygons, north, near, &mut skipped).0);
+        for off in lines {
+            if !surrounds {
+                break;
+            }
+            let (gaps, left) = outside_line(&polygons, north, off, &mut skipped);
+            if ended(&gaps) {
+                // Where the polygons end, unless one left out reaches the line.
+                uncertain = left;
+                break;
+            }
+            surrounds = inside(&gaps);
+        }
+    }
+    if surrounds && !uncertain {
+        return (true, Vec::new());
+    }
+    let mut left_out: Vec<usize> = rows.iter().zip(&skipped).filter(|(_, s)| **s).map(|(r, _)| *r).collect();
+    left_out.sort_unstable();
+    left_out.dedup();
+    (surrounds, left_out)
+}
+
+/// The stretches of the line `off` meters off the North Pole (the South Pole when not `north`) in
+/// the analysis plane that lie outside `polygons`, within one turn from 0, a stretch across its end
+/// taken whole (so it may run past a turn), for [`surrounds_pole`], and whether it left out a
+/// polygon. A polygon that may reach the line but that it can't use is marked in `skipped`; one
+/// whose latitudes miss the line plays no part, however its longitudes are written.
+fn outside_line(polygons: &[&geo::Polygon<f64>], north: bool, off: f64, skipped: &mut [bool]) -> (Vec<(f64, f64)>, bool) {
+    /// The farthest a polygon may lie east or west in the plane (meters, about a million turns),
+    /// where it still rounds to about a centimeter, well under a seam.
+    const FAR_M: f64 = 4.0e13;
+    let round = std::f64::consts::TAU * rustgis_geom::MERCATOR_R;
+    let pole = lonlat_to_plane(Coord::new(0.0, if north { 90.0 } else { -90.0 })).y;
+    let y = if north { pole - off } else { pole + off };
+    // Each polygon's stretches of the line inside it: inside its outline, less those inside its
+    // holes (so a hole outside the outline takes nothing), between the places each ring crosses
+    // the line (worked out exactly, where an overlay would round them to a grid); each brought
+    // within one turn (split where it wraps).
+    let mut inside: Vec<(f64, f64)> = Vec::new();
+    let (mut outline, mut holes) = (Vec::new(), Vec::new());
+    let mut left = false;
+    for (i, polygon) in polygons.iter().enumerate() {
+        let Some(r) = polygon.bounding_rect() else { continue };
+        let mut skip = || {
+            left = true;
+            if let Some(s) = skipped.get_mut(i) {
+                *s = true;
+            }
+        };
+        let (y0, y1) = (r.min().y, r.max().y);
+        if y0.is_finite() && y1.is_finite() && !(y0 <= y && y <= y1) {
+            continue;
+        }
+        let usable = [r.min().x, y0, r.max().x, y1].iter().all(|v| v.is_finite()) && r.min().x >= -FAR_M && r.max().x <= FAR_M;
+        if !usable {
+            skip();
+            continue;
+        }
+        outline.clear();
+        holes.clear();
+        // A coordinate missing would pair the crossings wrongly.
+        if !ring_stretches(polygon.exterior(), y, &mut outline)
+            || !polygon.interiors().iter().all(|hole| ring_stretches(hole, y, &mut holes))
+        {
+            skip();
+            continue;
+        }
+        holes.sort_by(|a, b| a.0.total_cmp(&b.0));
+        for (lo, hi) in less(&outline, &holes) {
+            if hi - lo >= round {
+                return (Vec::new(), left);
+            }
+            let from = lo.rem_euclid(round);
+            let to = from + (hi - lo);
+            inside.push((from, to.min(round)));
+            if to > round {
+                inside.push((0.0, to - round));
+            }
+        }
+    }
+    // What lies between them, west to east, from the turn's start.
+    inside.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut outside = Vec::new();
+    let mut reached = 0.0;
+    for (from, to) in inside {
+        if from > reached {
+            outside.push((reached, from));
+        }
+        reached = f64::max(reached, to);
+    }
+    if reached < round {
+        outside.push((reached, round));
+    }
+    // A stretch running across the turn's end and on from its start is one.
+    if let [first, .., last] = outside.as_mut_slice()
+        && first.0 <= 0.0
+        && last.1 >= round
+    {
+        last.1 = round + first.1;
+        outside.remove(0);
+    }
+    (outside, left)
+}
+
+/// Adds to `out` the stretches of the line at `y` inside `ring`, between the places it crosses
+/// the line, paired west to east; false when a crossing can't be worked out (a coordinate missing
+/// or infinite).
+fn ring_stretches(ring: &geo::LineString<f64>, y: f64, out: &mut Vec<(f64, f64)>) -> bool {
+    let mut crossings: Vec<f64> = ring
+        .lines()
+        .filter(|e| (e.start.y > y) != (e.end.y > y))
+        .map(|e| e.start.x + (y - e.start.y) * (e.end.x - e.start.x) / (e.end.y - e.start.y))
+        .collect();
+    if crossings.iter().any(|x| !x.is_finite()) {
+        return false;
+    }
+    crossings.sort_by(f64::total_cmp);
+    out.extend(crossings.as_chunks::<2>().0.iter().filter(|[lo, hi]| lo < hi).map(|&[lo, hi]| (lo, hi)));
+    true
+}
+
+/// The parts of the stretches `of` (apart, west to east, as [`ring_stretches`] gives them) outside
+/// every one of `holes` (sorted by where they start), in one pass along both: a ring crossing the
+/// line a million times costs no more than its crossings.
+fn less(of: &[(f64, f64)], holes: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    // The holes' stretches joined where they overlap, so they too lie apart, west to east.
+    let mut apart: Vec<(f64, f64)> = Vec::with_capacity(holes.len());
+    for &(lo, hi) in holes {
+        match apart.last_mut() {
+            Some(last) if lo <= last.1 => last.1 = last.1.max(hi),
+            _ => apart.push((lo, hi)),
+        }
+    }
+    let mut out = Vec::new();
+    let mut next = 0;
+    for &(mut lo, hi) in of {
+        // Holes ending before this stretch end before every later one too.
+        while apart.get(next).is_some_and(|h| h.1 <= lo) {
+            next += 1;
+        }
+        // Those overlapping it: the last of them may overlap the next stretch, so it's kept.
+        for &(hole_lo, hole_hi) in apart.get(next..).unwrap_or_default() {
+            if hole_lo >= hi {
+                break;
+            }
+            if hole_lo > lo {
+                out.push((lo, hole_lo));
+            }
+            lo = lo.max(hole_hi);
+            if lo >= hi {
+                break;
+            }
+        }
+        if lo < hi {
+            out.push((lo, hi));
+        }
+    }
+    out
+}
+
+/// Points of `ds` that fall in no polygon of `by`. A point at a pole (to within
+/// [`rustgis_geom::POLE_TOLERANCE`]) also falls in the polygons of `by` when together they surround
+/// the pole (`surrounds_pole`); ones that only touch it, at a corner, hold it on their boundary,
+/// as everywhere else (#1033). Features of `by` the test at a pole had to leave out (a coordinate
+/// missing or infinite, or a million turns around) when the rest don't surround it, or might not
+/// have with them, are counted in `skipped`, each once at either pole, for the check to say its
+/// result there may be wrong.
 pub fn not_covered(ds: &Dataset, rows: &[usize], by: &Dataset) -> Checked {
     let all: Vec<usize> = (0..by.features.len()).collect();
     let polys = polygons(by, &all);
+    // Whether the polygons together surround each pole, found at the first point there, with the
+    // features left out.
+    type Holds = Option<(bool, Vec<usize>)>;
+    let (mut holds_north, mut holds_south): (Holds, Holds) = (None, None);
+    let with_skipped = |c: Checked, north: &Holds, south: &Holds| {
+        let mut left_out: Vec<usize> = north.iter().chain(south).flat_map(|(_, rows)| rows.iter().copied()).collect();
+        left_out.sort_unstable();
+        left_out.dedup();
+        Checked { skipped: left_out.len(), ..c }
+    };
+    let parts = || polys.iter().flat_map(|(r, mp, _)| mp.0.iter().map(move |p| (*r, p)));
     let mut out = Vec::new();
     crate::control::begin(rows.len());
     for (i, r) in rows.iter().enumerate() {
         if crate::control::cancelled() {
-            return Checked::partial(out);
+            return with_skipped(Checked::partial(out), &holds_north, &holds_south);
         }
         crate::control::reached(i);
         let pts: Vec<Coord> = match ds.features.get(*r).and_then(|f| f.geometry.as_ref()) {
@@ -828,21 +1039,94 @@ pub fn not_covered(ds: &Dataset, rows: &[usize], by: &Dataset) -> Checked {
         for c in pts {
             let m = lonlat_to_plane(c);
             let p = geo::Point::new(m.x, m.y);
-            if !polys.iter().any(|(_, mp, bb)| rects_touch(bb, &geo::Rect::new(p.0, p.0)) && mp.contains(&p)) {
+            let surrounded = match crate::convert::reaches_poles(c.y, c.y) {
+                (true, _) => holds_north.get_or_insert_with(|| surrounds_pole(parts(), true)).0,
+                (_, true) => holds_south.get_or_insert_with(|| surrounds_pole(parts(), false)).0,
+                _ => false,
+            };
+            let covered = surrounded || polys.iter().any(|(_, mp, bb)| rects_touch(bb, &geo::Rect::new(p.0, p.0)) && mp.contains(&p));
+            if !covered {
                 out.push(TopologyError { rows: vec![*r], at: c });
             }
         }
         if out.len() >= MAX_ERRORS {
-            return Checked::partial(out);
+            return with_skipped(Checked::partial(out), &holds_north, &holds_south);
         }
     }
-    Checked::done(out)
+    with_skipped(Checked::done(out), &holds_north, &holds_south)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use rustgis_data::GeometryType;
+
+    #[test]
+    fn holes_are_taken_from_an_outline_in_one_pass() {
+        // Holes overlapping each other, one running across two stretches, one covering a stretch.
+        let got = less(&[(0.0, 10.0), (20.0, 30.0), (40.0, 50.0)], &[(1.0, 5.0), (2.0, 3.0), (4.0, 8.0), (9.0, 25.0), (40.0, 50.0)]);
+        assert_eq!(got, [(0.0, 1.0), (8.0, 9.0), (25.0, 30.0)]);
+        // A million stretches and a million holes between them, as a ring zigzagging across the
+        // line would make: one pass, not a million times a million.
+        let at = |i: u32, d: f64| f64::from(i) * 4.0 + d;
+        let of: Vec<(f64, f64)> = (0..1_000_000).map(|i| (at(i, 0.0), at(i, 2.0))).collect();
+        let holes: Vec<(f64, f64)> = (0..1_000_000).map(|i| (at(i, 1.0), at(i, 3.0))).collect();
+        let got = less(&of, &holes);
+        assert!(got.len() == 1_000_000 && got.iter().all(|(lo, hi)| hi - lo == 1.0));
+    }
+
+    #[test]
+    fn a_polygon_left_out_at_a_pole_is_counted() {
+        // Around the South Pole, a cap from 20°E round to 10°E, and the 10° between them written a
+        // million turns and more on (1e9° + 90° is 10°E): that one can't be used at the pole, so a
+        // point there is reported, and the check counts the polygon it left out. A whole cap
+        // covers the point without looking further, and counts none.
+        let c = Coord::new;
+        let ring = |w: f64, e: f64| Geometry::Polygon(vec![vec![vec![c(w, -85.0), c(e, -85.0), c(e, -90.0), c(w, -90.0), c(w, -85.0)]]]);
+        let cap = || ring(-180.0, 180.0);
+        let (open, far) = (ring(20.0, 370.0), ring(1e9 + 90.0, 1e9 + 100.0));
+        let mut pts = Dataset::new("pts", GeometryType::Point, vec![]);
+        pts.push(Some(Geometry::Point(c(0.0, -90.0))), vec![]);
+        let layer = |gs: Vec<Geometry>| {
+            let mut by = Dataset::new("by", GeometryType::Polygon, vec![]);
+            for g in gs {
+                by.push(Some(g), vec![]);
+            }
+            by
+        };
+        let checked = not_covered(&pts, &[0], &layer(vec![open, far]));
+        assert!(checked.errors.len() == 1 && checked.skipped == 1, "{checked:?}");
+        let checked = not_covered(&pts, &[0], &layer(vec![cap()]));
+        assert!(checked.errors.is_empty() && checked.skipped == 0, "{checked:?}");
+        // A polygon whose latitudes miss the pole's lines plays no part, however far around it's
+        // written: with a whole cap, in either order, the point is covered and none is counted.
+        let at = |w: f64, e: f64, y0: f64, y1: f64| vec![c(w, y0), c(e, y0), c(e, y1), c(w, y1), c(w, y0)];
+        let band = Geometry::Polygon(vec![vec![at(1e9, 1e9 + 10.0, 0.0, 10.0)]]);
+        for gs in [vec![band.clone(), cap()], vec![cap(), band.clone()]] {
+            let checked = not_covered(&pts, &[0], &layer(gs));
+            assert!(checked.errors.is_empty() && checked.skipped == 0, "{checked:?}");
+        }
+        // Left out at both poles, a feature of two parts at one and a feature at the other, beside
+        // that band: two features, each once.
+        let open = |y0: f64, y1: f64| Geometry::Polygon(vec![vec![at(20.0, 370.0, y0, y1)]]);
+        let halves =
+            |y0: f64, y1: f64| Geometry::Polygon(vec![vec![at(1e9 + 90.0, 1e9 + 95.0, y0, y1)], vec![at(1e9 + 95.0, 1e9 + 100.0, y0, y1)]]);
+        let mut poles = Dataset::new("pts", GeometryType::Point, vec![]);
+        poles.push(Some(Geometry::Point(c(0.0, -90.0))), vec![]);
+        poles.push(Some(Geometry::Point(c(0.0, 90.0))), vec![]);
+        let by = layer(vec![open(-85.0, -90.0), halves(-85.0, -90.0), band, open(85.0, 90.0), halves(85.0, 90.0)]);
+        let checked = not_covered(&poles, &[0, 1], &by);
+        assert!(checked.errors.len() == 2 && checked.skipped == 2, "{checked:?}");
+        // A cap 500 m across about the South Pole covers it out to its lines within 87 m; the line
+        // 860 m off lies wholly outside it, where the check ends. A polygon left out that reaches
+        // that line might have changed the answer: the point is still covered, but it's counted.
+        let small = Geometry::Polygon(vec![vec![at(-180.0, 180.0, -90.0, -89.9955)]]);
+        let checked = not_covered(&pts, &[0], &layer(vec![small.clone()]));
+        assert!(checked.errors.is_empty() && checked.skipped == 0, "{checked:?}");
+        let across = Geometry::Polygon(vec![vec![at(1e9, 1e9 + 10.0, -89.995, -89.99)]]);
+        let checked = not_covered(&pts, &[0], &layer(vec![small, across]));
+        assert!(checked.errors.is_empty() && checked.skipped == 1, "{checked:?}");
+    }
 
     fn square(x: f64, y: f64, s: f64) -> Geometry {
         Geometry::Polygon(vec![vec![vec![
