@@ -198,12 +198,12 @@ const MAX_FAILED: usize = 4096;
 
 /// What a tile's arrival leaves: the map draws again. One that failed is remembered until its
 /// wait is over (a minute, or what its server's `Retry-After` said), the map asked to draw again
-/// then; one the fetch queue dropped (the view moved on, see [`crate::cache::DROPPED`]) is no
-/// failure: not remembered, it is asked for again when it is drawn next, and the tiles that
+/// then; a dropped or retired read is no resource failure (see [`crate::cache::keep_failure`]):
+/// not remembered, it is asked for again when it is drawn next, and the tiles that
 /// pushed it out draw the map as they land.
 fn tile_landed(key: (String, usize, u32), r: &Result<Bands, String>) {
     match r {
-        Err(e) if e == crate::cache::DROPPED => return,
+        Err(e) if !crate::cache::keep_failure(e, &crate::cache::current_still()) => return,
         Err(e) => {
             let until = Instant::now() + crate::cache::retry_wait(e, RETRY);
             remember_failed(&mut failed().lock().unwrap_or_else(|e| e.into_inner()), key, until);
@@ -591,6 +591,10 @@ mod tests {
         assert!(failed().lock().unwrap().contains_key(&key(2)));
         tile_landed(key(3), &Ok(Arc::new(vec![vec![0.0f32]].into())));
         assert!(!failed().lock().unwrap().contains_key(&key(3)));
+        crate::cache::with_still(Arc::new(|| false), || tile_landed(key(4), &Err("HTTP 503".into())));
+        assert!(!failed().lock().unwrap().contains_key(&key(4)), "a retired window read must not delay a live caller");
+        tile_landed(key(4), &Err("HTTP 503".into()));
+        assert!(failed().lock().unwrap().contains_key(&key(4)), "a live server failure still waits before retrying");
     }
 
     /// Failed tiles are forgotten with their file (a login or a connection changed: asked for at

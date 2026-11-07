@@ -305,7 +305,14 @@ pub fn serve_if_child() {
             let _ = out.flush();
             answer.clear();
             let _ = input.read_line(&mut answer);
-            serde_json::from_str(&answer).unwrap_or_else(|_| json!({"error": "no answer"}))
+            let reply: Value = serde_json::from_str(&answer).unwrap_or_else(|_| json!({"error": "no answer"}));
+            if params.get("fail").and_then(Value::as_bool) == Some(true)
+                && reply.get("ok").and_then(|v| v.get("pending")).and_then(Value::as_bool) == Some(true)
+            {
+                json!({"error":"nope"})
+            } else {
+                reply
+            }
         }
         Some('n') => {
             let _ = writeln!(out, "a library printing");
@@ -349,6 +356,16 @@ pub fn serve_if_child() {
             }
         }
         Some('m') => {
+            // Hold an actual tool request for cancellation tests; ordinary calls do not wait.
+            if let (Some(ready), Some(release)) =
+                (params.get("control_ready").and_then(Value::as_str), params.get("control_release").and_then(Value::as_str))
+            {
+                let _ = std::fs::write(ready, b"started");
+                let start = std::time::Instant::now();
+                while !std::path::Path::new(release).is_file() && start.elapsed() < std::time::Duration::from_secs(20) {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            }
             let _ = writeln!(out, "{}", json!({"progress": "making"}));
             json!({"ok": {"layers": [{"name": "Made", "geojson": {"type": "FeatureCollection", "features": [
             {"type": "Feature", "properties": {"n": 1}, "geometry": {"type": "Point", "coordinates": [1, 2]}}]}}], "messages": ["made"]}})

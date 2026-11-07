@@ -1243,6 +1243,7 @@ mod tests {
 
     #[test]
     fn a_deferred_token_add_keeps_its_original_connection_when_selection_changes() {
+        let _turn = crate::fetching::turn();
         let mut app = RustGisApp::with_sample();
         let api = "http://127.0.0.1:9/stac";
         let one = app.run("connection.new", json!({"kind":"stac", "name":"One", "address":api})).unwrap();
@@ -1341,6 +1342,7 @@ mod tests {
     /// the dropped listing doesn't hold it up.
     #[test]
     fn a_catalog_picked_during_a_pending_listing_is_browsed() {
+        let _turn = crate::fetching::turn();
         use egui_kittest::kittest::Queryable;
         let mut app = RustGisApp::with_sample();
         // Nothing listens on port 9 of the loopback address: the browse is refused, harmlessly.

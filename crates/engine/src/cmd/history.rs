@@ -15,9 +15,13 @@ pub fn commands() -> Vec<C> {
     vec![
         C::new("gp.historyCode", "Copy Run As Code", "Analyze › Geoprocessing", code)
             .roles(&[])
+            .effects(crate::policy::Effects::NONE)
             .view()
             .params(r#"{"run": index in the history (0 = the first run), "as"?: "python" (default)|"command" (a Script pane line)|"cli"}"#),
-        C::new("gp.historyScript", "Save History As Python Script", "Analyze › Geoprocessing", script).roles(&[]).view(),
+        C::new("gp.historyScript", "Save History As Python Script", "Analyze › Geoprocessing", script)
+            .roles(&[])
+            .effects(crate::policy::Effects::NONE)
+            .view(),
     ]
 }
 

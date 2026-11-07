@@ -32,12 +32,17 @@ The browser app doesn't ask yet; it warns before you leave a page with unsaved c
 default), RustGIS keeps your changes as a [recovery copy](#autosave-and-recovery) and offers them
 back the next time it starts; with autosave off, they are lost, so save before you quit.
 
-Supported layer and video address fields, and recognized task, model, notebook and history
-parameters, omit recognized passwords, access keys, tokens and signatures. Notices count what was removed or could not
-be checked. The open session keeps its credentials, but a saved workflow or protected source may
-need them again when reopened. User notes, feature data and opaque content are preserved; see
+Saving removes recognized credentials from supported layer and video addresses and from
+recognized task, model, notebook and history parameters. Notices count detected removals and
+content that could not be checked. Unrecognized credentials can remain in addresses without a
+notice. Diagnostic logging uses a broader sensitive-name list: a parameter named `auth` or
+`jwt` may be hidden in a diagnostic message while remaining in a saved address. Inspect
+shared addresses when a service uses names outside the recognized saved-credential rules.
+The open session keeps its credentials, but a saved workflow or protected source may
+need them again when reopened. User notes, feature data and opaque content are preserved.
+Review addresses and preserved content before sharing a file; see
 [Sharing projects and generated items](https://github.com/opengeos/RustGIS/blob/main/SECURITY.md#sharing-projects-and-generated-items)
-before sharing a file. Review addresses before sharing too: an unrecognized credential can remain unchanged.
+for the supported scope.
 
 ### Autosave and recovery
 
@@ -45,7 +50,7 @@ The desktop app keeps a recovery copy of unsaved work. While the project has cha
 saved, it writes a copy every few minutes (5 by default), and only when something changed since
 the last one. Choose how often, or turn it off, in **Settings › Autosave**
 (`ui.autosave={"minutes": 10}`; `0` is off). The copy is written in the background, so a large
-project doesn't hold up the app. It leaves out layer passwords, keys and tokens, as a saved project
+project doesn't hold up the app. It removes recognized layer credentials, as a saved project
 does. It is kept in the `recovery` folder of the app's
 [data folder](../installation.md#settings-data-and-cache-folders), not beside your project.
 Saving, opening or starting another project, and choosing **Don't Save** when you quit remove it.
@@ -402,8 +407,8 @@ duplication and nudging have their own [layout shortcuts](layouts.md#layouts).
       **Delete**. A recorded tool's step is named after the tool.
     - In the Browser pane, a click on a task opens its steps; **Run All Steps** is in its context
       menu.
-    - A task from a file (`.rgistask`, or inside a project or a package) can't read or write files
-      or run scripts. Its built-in analysis tools may still name their output layers with a plain
+    - A task from a file (`.rgistask`, or inside a project or a package) can't read or write files,
+      use the network, run other software or perform actions reserved to the user. Its built-in analysis tools may still name their output layers with a plain
       name: one with `/`, `\`, `.` or `:` (a folder, an extension or a drive) makes the task count
       as writing files, so write `Buffer 1500 m` rather than `Buffer 1.5 km`. GeoLibre and plugin
       tools' outputs are refused.

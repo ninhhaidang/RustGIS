@@ -8,24 +8,25 @@ use super::{f, ps};
 use crate::render::rustgis_tiles::arcgis_auth::{self, Info};
 use crate::{CmdResult, CommandSpec as C, Session};
 
+/// Declares sign-in changes as reserved account operations, independently of their network reach.
 pub fn commands() -> Vec<C> {
     vec![
-        C::new("arcgis.signIn", "Sign In to ArcGIS", "Home › Add › Service", sign_in).roles(&[]).view().params(
+        C::new("arcgis.signIn", "Sign In to ArcGIS", "Home › Add › Service", sign_in).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network).with(crate::policy::Effect::Reserved)).view().params(
             r#"{"portal"?: "the portal's address: an ArcGIS Online organization's (https://myorg.maps.arcgis.com) or an ArcGIS Enterprise portal's (https://gis.example.org/portal); ArcGIS Online when blank", "clientId"?: "the client id of an OAuth app registered on the portal (Developer credentials) whose redirect URLs list http://127.0.0.1:7290/arcgis/callback; RustGIS's own app when absent on ArcGIS Online (required for ArcGIS Enterprise)", "port"?: "the callback server's port (7290; the redirect URL registered must name it)"} → the sign-in page to open in the browser; the session is kept when the browser comes back (arcgis.status tells). Desktop and command line only"#,
         ),
-        C::new("arcgis.token", "Use ArcGIS Token", "Home › Add › Service", token).roles(&[]).view().params(
+        C::new("arcgis.token", "Use ArcGIS Token", "Home › Add › Service", token).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network).with(crate::policy::Effect::Reserved)).view().params(
             r#"{"url": "an ArcGIS REST address on https:// (a service's, …/rest/services, or a portal's …/sharing/rest)", "token": "an ArcGIS token for it"} — kept for the session only, never in the project; sent to that ArcGIS Server's (or portal's) requests only. A service address given to service.layers or service.add with ?token=… does the same"#,
         ),
-        C::new("arcgis.signOut", "Sign Out of ArcGIS", "Home › Add › Service", sign_out).roles(&[])
+        C::new("arcgis.signOut", "Sign Out of ArcGIS", "Home › Add › Service", sign_out).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network).with(crate::policy::Effect::Reserved))
             .view()
             .params(r#"{"portal"?: "a signed-in portal's address, or a server a token was given for (arcgis.status lists them); every one when absent"}"#),
         C::new("arcgis.cancelSignIn", "Cancel ArcGIS Sign-In", "Home › Add › Service", |_s, _p| {
             #[cfg(not(target_arch = "wasm32"))]
             arcgis_auth::cancel_sign_in();
             Ok(status())
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Reserved))
         .view(),
-        C::new("arcgis.status", "ArcGIS Sign-In Status", "Home › Add › Service", |_s, _p| Ok(status())).roles(&[]).view(),
+        C::new("arcgis.status", "ArcGIS Sign-In Status", "Home › Add › Service", |_s, _p| Ok(status())).roles(&[]).effects(crate::policy::Effects::NONE).view(),
     ]
 }
 

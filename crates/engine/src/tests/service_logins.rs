@@ -1143,13 +1143,13 @@ fn plugin_downloads_stay_anonymous_after_the_front_end_adds_them() {
     .unwrap();
     let request = s.take_url_requests().pop().unwrap();
     // The claimed UI path preserves the engine's bound parameters and anonymous provenance.
-    let mut pending = request.clone();
+    let mut pending = request.params().clone();
     assert_eq!(pending["anonymous"], true);
     assert!(header(pending["url"].as_str().unwrap()).is_none());
-    let token = s.download_started();
+    let token = s.download_started_for(&request).unwrap();
     assert!(s.download_landed(token, br#"{"type":"FeatureCollection","features":[{"type":"Feature","geometry":{"type":"Point","coordinates":[1,2]},"properties":{}}]}"#.to_vec()));
     pending["id"] = json!(token);
-    s.run("layer.addDownload", &pending).unwrap();
+    s.complete_download(token, &pending).unwrap();
     s.run("layer.addUrl", &json!({"url":format!("{origin}/deferred.pmtiles"),"anonymous":true,"name":"Archive"})).unwrap();
     s.run("connection.login", &json!({"id":id,"apiKey":"deferred-sentinel-757"})).unwrap();
     let layer = s.map().layers.iter().find(|l| l.name == "Deferred").unwrap();

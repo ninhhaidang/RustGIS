@@ -30,20 +30,21 @@ const SSL_MODES: &[&str] = &["disable", "allow", "prefer", "require", "verify-ca
 #[cfg(not(target_arch = "wasm32"))]
 const MAX_LISTED: usize = 5_000;
 
+/// Keeps database writes reserved and declares network and credential-file reach for live checks.
 pub fn commands() -> Vec<C> {
     vec![
-        C::new("pg.connect", "Connect PostGIS", "Home › Add › Add Data", connect).roles(&[]).view().params(
+        C::new("pg.connect", "Connect PostGIS", "Home › Add › Add Data", connect).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Reserved).with(crate::policy::Effect::Network).with(crate::policy::Effect::Files)).view().params(
             r#"{"connection"?: "host=… port=… dbname=… user=…, or a postgresql:// address (instead of the parts below)", "host"?: string, "port"?: number, "database"?: string, "user"?: string, "password"?: "kept for this session only, never saved", "sslmode"?: "disable"|"prefer"|"require"|"verify-ca"|"verify-full"}"#,
         ),
-        C::new("pg.disconnect", "Disconnect PostGIS", "Home › Add › Add Data", disconnect).roles(&[]).view().when(need_connection),
-        C::new("pg.status", "PostGIS Connection", "Home › Add › Add Data", status).roles(&[]).view(),
-        C::new("pg.tables", "List PostGIS Tables", "Home › Add › Add Data", tables).roles(&[]).view().when(need_connection).params(r#"{"schema"?: string}"#),
-        C::new("pg.pendingEdits", "PostGIS Edits", "Edit › Manage Edits", pending_edits).roles(&[]).view().params(r#"{"layer"?: "a layer added with pg.addLayer (default: the active one)"}"#),
-        C::new("pg.saveEdits", "Save to PostGIS", "Edit › Manage Edits", save_edits).roles(&[])
+        C::new("pg.disconnect", "Disconnect PostGIS", "Home › Add › Add Data", disconnect).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Reserved)).view().when(need_connection),
+        C::new("pg.status", "PostGIS Connection", "Home › Add › Add Data", status).roles(&[]).effects(crate::policy::Effects::NONE).view(),
+        C::new("pg.tables", "List PostGIS Tables", "Home › Add › Add Data", tables).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network).with(crate::policy::Effect::Files)).view().when(need_connection).params(r#"{"schema"?: string}"#),
+        C::new("pg.pendingEdits", "PostGIS Edits", "Edit › Manage Edits", pending_edits).roles(&[]).effects(crate::policy::Effects::NONE).view().params(r#"{"layer"?: "a layer added with pg.addLayer (default: the active one)"}"#),
+        C::new("pg.saveEdits", "Save to PostGIS", "Edit › Manage Edits", save_edits).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Reserved).with(crate::policy::Effect::Network).with(crate::policy::Effect::Files))
             .params(r#"{"layer"?: "a layer added with pg.addLayer (default: the active one)"}"#),
-        C::new("pg.discardEdits", "Discard PostGIS Edits", "Edit › Manage Edits", discard_edits).roles(&[])
+        C::new("pg.discardEdits", "Discard PostGIS Edits", "Edit › Manage Edits", discard_edits).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network).with(crate::policy::Effect::Files))
             .params(r#"{"layer"?: "a layer added with pg.addLayer (default: the active one)"}"#),
-        C::new("pg.addLayer", "Add PostGIS Layer", "Home › Add › Add Data", add_layer).roles(&[]).when(need_connection).params(
+        C::new("pg.addLayer", "Add PostGIS Layer", "Home › Add › Add Data", add_layer).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network).with(crate::policy::Effect::Files)).when(need_connection).params(
             r#"{"table": "table, schema.table, or table:column for one of several geometry columns", "where"?: "an SQL condition on the table's columns", "limit"?: "the most rows of each layer (default and most: 100000)", "name"?: string, "crs"?: "EPSG:… of a geometry that doesn't say"}"#,
         ),
     ]

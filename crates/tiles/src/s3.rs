@@ -103,6 +103,11 @@ fn lock() -> std::sync::MutexGuard<'static, Registry> {
     REGISTRY.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Reads selection state without recovering a poisoned store as fresh authority.
+fn read_registry() -> Result<std::sync::MutexGuard<'static, Registry>, String> {
+    REGISTRY.lock().map_err(|_| "active S3 connection store unavailable".to_string())
+}
+
 /// A connection as the registry keeps it: name, endpoint, region, buckets and credentials checked.
 fn checked(mut c: Connection) -> Result<Connection, String> {
     c.name = c.name.trim().to_string();
@@ -251,9 +256,19 @@ pub fn disconnect(name: &str) -> bool {
     reg.connections.len() != before
 }
 
-fn granted() -> std::sync::MutexGuard<'static, Vec<(String, String)>> {
+/// Shares the existing bucket grants between requests and pure identity snapshots.
+fn grant_store() -> &'static Mutex<Vec<(String, String)>> {
     static G: std::sync::OnceLock<Mutex<Vec<(String, String)>>> = std::sync::OnceLock::new();
-    G.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner())
+    G.get_or_init(Default::default)
+}
+
+fn granted() -> std::sync::MutexGuard<'static, Vec<(String, String)>> {
+    grant_store().lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Captures grants with the same fail-closed lock behavior as account selection.
+fn read_grants() -> Result<std::sync::MutexGuard<'static, Vec<(String, String)>>, String> {
+    grant_store().lock().map_err(|_| "active S3 bucket grants unavailable".to_string())
 }
 
 /// Lets a connection serve a bucket for the rest of the session: the user browsed or added it
@@ -270,8 +285,13 @@ pub fn grant(name: &str, bucket: &str) {
 }
 
 /// Whether a connection serves a bucket: it was given the bucket, or the bucket was granted to it.
-fn serves(c: &Connection, bucket: &str) -> bool {
-    c.buckets.iter().any(|b| b == bucket) || granted().iter().any(|(n, b)| *n == c.name && b == bucket)
+fn serves(c: &Connection, bucket: &str, grants: &[(String, String)]) -> bool {
+    c.buckets.iter().any(|b| b == bucket) || grants.iter().any(|(n, b)| *n == c.name && b == bucket)
+}
+
+/// Selects the first implicit account serving this bucket under the captured grants.
+fn bucket_connection(reg: &Registry, grants: &[(String, String)], bucket: &str) -> Option<Connection> {
+    reg.implicit().find(|c| serves(c, bucket, grants)).cloned()
 }
 
 /// The session's connections.
@@ -382,7 +402,8 @@ pub fn parse(url: &str) -> Result<(String, String), String> {
 /// connection's login serves no bucket this way: its addresses name it ([`connect_saved`]).
 pub fn for_bucket(bucket: &str) -> Option<Connection> {
     let reg = lock();
-    reg.implicit().find(|c| serves(c, bucket)).cloned()
+    let grants = granted();
+    bucket_connection(&reg, &grants, bucket)
 }
 
 /// Starts an address read anonymously whatever the connections: nothing signed, and an `s3://`
@@ -525,7 +546,7 @@ fn bound_target(address: &str) -> Result<(String, Connection), String> {
     // Snapshot only the selected login and this request's explicit grant. No URL parsing,
     // origin validation or signing runs under the registry lock, and the grant list isn't copied.
     let snapshot = |bucket: Option<&str>| -> Result<(Connection, bool), String> {
-        let reg = lock();
+        let reg = read_registry()?;
         let saved = reg.saved.iter().find(|s| s.binding == b.binding).ok_or(UNRESOLVED)?;
         let c = reg.connections.iter().find(|c| c.name == saved.name).ok_or(UNRESOLVED)?;
         let granted = bucket.is_some_and(|bucket| saved.grants.iter().any(|g| g == bucket));
@@ -582,23 +603,59 @@ pub struct Prepared {
     pub signed: bool,
 }
 
-/// Makes a GET of `url` ready: an `s3://` address becomes its web address, and a request to a
-/// connection's endpoint (or to AWS S3 for an AWS connection) is signed with its credentials.
-/// An address read through a saved connection is signed by that connection alone
-/// ([`bound_target`]), and never read without it. Other addresses pass unchanged.
-pub fn prepare(url: &str) -> Result<Prepared, String> {
+/// An exact in-memory S3 selection, never a display or persistence representation.
+/// Known addresses retain only their selected account or its absence; unknown routes retain all state.
+#[derive(Clone, PartialEq, Eq)]
+pub struct AccountIdentity(Identity);
+
+#[derive(Clone, PartialEq, Eq)]
+enum Identity {
+    All { connections: Vec<Connection>, saved: Vec<Saved>, grants: Vec<(String, String)> },
+    Address { url: String, choice: Choice },
+}
+
+/// Captures all active selection state for a route whose eventual addresses are unknown.
+/// No I/O or signing occurs; a poisoned registry or grant store is an error.
+pub fn account_identity() -> Result<AccountIdentity, String> {
+    let reg = read_registry()?;
+    let grants = read_grants()?;
+    Ok(AccountIdentity(Identity::All { connections: reg.connections.clone(), saved: reg.saved.clone(), grants: grants.clone() }))
+}
+
+/// Captures the account selected by `prepare`, including absence and explicit anonymous reads.
+/// Pass the same address as `prepare`; service-login wrappers are removed by its caller.
+/// No I/O or signing occurs; unavailable relevant state is an error, never an absent account.
+pub fn account_identity_for(url: &str) -> Result<AccountIdentity, String> {
+    Ok(AccountIdentity(Identity::Address { url: url.to_string(), choice: choice(url)? }))
+}
+
+impl AccountIdentity {
+    /// Re-selects without I/O; poison, rotation, replacement or newly covering accounts refuse later work.
+    pub fn is_current(&self) -> bool {
+        let current = match &self.0 {
+            Identity::All { .. } => account_identity(),
+            Identity::Address { url, .. } => account_identity_for(url),
+        };
+        current.is_ok_and(|current| current == *self)
+    }
+}
+
+/// The sender and identity capture share this unsigned destination/account selection.
+#[derive(Clone, PartialEq, Eq)]
+struct Choice {
+    url: String,
+    signer: Option<(Connection, String)>,
+}
+
+/// Resolves the destination and signer once, without clock-dependent signing or I/O.
+fn choice(url: &str) -> Result<Choice, String> {
     if rustgis_data::s3_address::is_wrapper(url) {
         let (target, c) = bound_target(url)?;
-        let Some(cr) = c.credentials.as_ref() else {
-            return Ok(Prepared { url: target, headers: Vec::new(), signed: false });
-        };
         let region = match c.endpoint {
             Some(_) => c.region.clone(),
             None => aws_region(&target.to_ascii_lowercase(), &c.region),
         };
-        let url = canonical_url(&target)?;
-        let headers = sign_get(&url, &region, cr, &amz_date(now_secs()))?;
-        return Ok(Prepared { url, headers, signed: true });
+        return Ok(Choice { url: target, signer: Some((c, region)) });
     }
     let (url, anonymous) = split_anonymous(url);
     if anonymous && rustgis_data::s3_address::is_wrapper(url) {
@@ -606,12 +663,27 @@ pub fn prepare(url: &str) -> Result<Prepared, String> {
     }
     let (url, signer) = if is_s3(url) {
         let (bucket, key) = parse(url)?;
-        let conn = if anonymous { None } else { for_bucket(&bucket) };
+        let conn = if anonymous {
+            None
+        } else {
+            let reg = read_registry()?;
+            let grants = read_grants()?;
+            bucket_connection(&reg, &grants, &bucket)
+        };
         let region = conn.as_ref().map(|c| c.region.clone()).unwrap_or_default();
         (object_url(&bucket, &key, conn.as_ref()), conn.map(|c| (c, region)))
     } else {
-        (url.to_string(), if anonymous { None } else { signer_for(url) })
+        (url.to_string(), if anonymous { None } else { signer_for(url)? })
     };
+    Ok(Choice { url, signer })
+}
+
+/// Makes a GET of `url` ready: an `s3://` address becomes its web address, and a request to a
+/// connection's endpoint (or to AWS S3 for an AWS connection) is signed with its credentials.
+/// An address read through a saved connection is signed by that connection alone
+/// ([`bound_target`]), and never read without it. Other addresses pass unchanged.
+pub fn prepare(url: &str) -> Result<Prepared, String> {
+    let Choice { url, signer } = choice(url)?;
     let Some((c, region)) = signer else {
         return Ok(Prepared { url, headers: Vec::new(), signed: false });
     };
@@ -681,37 +753,45 @@ fn aws_region(url: &str, default: &str) -> String {
 /// one whose endpoint is the address's scheme and authority (default ports aside), or (an AWS
 /// connection) an address at AWS S3 of a bucket the connection serves ([`for_bucket`]): never
 /// another bucket at amazonaws.com. A saved connection's login never signs by address.
-fn signer_for(url: &str) -> Option<(Connection, String)> {
+fn signer_for(url: &str) -> Result<Option<(Connection, String)>, String> {
     let lower = url.to_ascii_lowercase();
-    let (scheme, rest) = lower.split_once("://")?;
-    let authority = rest.split(['/', '?', '#']).next()?;
+    let Some((scheme, rest)) = lower.split_once("://") else { return Ok(None) };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
     if authority.contains('@') {
-        return None;
+        return Ok(None);
     }
     let here = origin(scheme, authority);
-    let reg = lock();
-    if let Some(c) = reg.implicit().find(|c| c.credentials.is_some() && c.endpoint.as_deref() == Some(here.as_str())) {
-        return Some((c.clone(), c.region.clone()));
-    }
     let host = authority.split(':').next().unwrap_or(authority);
-    if !aws_host(scheme, &here, host) {
-        return None;
-    }
-    let c = match aws_bucket(host, rest) {
-        Some(bucket) => reg.implicit().find(|c| c.credentials.is_some() && c.endpoint.is_none() && serves(c, &bucket))?,
-        // The service itself (`https://s3.<region>.amazonaws.com/`, no bucket): the account's
-        // bucket list (`buckets_url`), signed by an AWS connection of that region. It names no
-        // bucket, so no one else's server sees the request.
-        None => {
-            let path = rest.split_once('/').map(|(_, p)| p).unwrap_or("");
-            let region = host.strip_prefix("s3.").and_then(|r| r.strip_suffix(".amazonaws.com"))?;
-            if !path.split(['?', '#']).next().unwrap_or("").is_empty() {
-                return None;
+    let aws = aws_host(scheme, &here, host);
+    let bucket = aws_bucket(host, rest);
+    let list_region = host.strip_prefix("s3.").and_then(|r| r.strip_suffix(".amazonaws.com"));
+    let path = rest.split_once('/').map(|(_, p)| p).unwrap_or("");
+    let list_root = path.split(['?', '#']).next().unwrap_or("").is_empty();
+    // Parse before locking; only selected connections are cloned while the registry is held.
+    let c = {
+        let reg = read_registry()?;
+        if let Some(c) = reg.implicit().find(|c| c.credentials.is_some() && c.endpoint.as_deref() == Some(here.as_str())) {
+            return Ok(Some((c.clone(), c.region.clone())));
+        }
+        if !aws {
+            return Ok(None);
+        }
+        match bucket {
+            Some(bucket) => {
+                let grants = read_grants()?;
+                reg.implicit().find(|c| c.credentials.is_some() && c.endpoint.is_none() && serves(c, &bucket, &grants)).cloned()
             }
-            reg.implicit().find(|c| c.credentials.is_some() && c.endpoint.is_none() && c.region == region)?
+            // The service itself names no bucket: only an AWS connection of its region signs its root.
+            None => {
+                let Some(region) = list_region.filter(|_| list_root) else { return Ok(None) };
+                reg.implicit().find(|c| c.credentials.is_some() && c.endpoint.is_none() && c.region == region).cloned()
+            }
         }
     };
-    Some((c.clone(), aws_region(&lower, &c.region)))
+    Ok(c.map(|c| {
+        let region = aws_region(&lower, &c.region);
+        (c, region)
+    }))
 }
 
 /// The bucket an AWS S3 address names: its host's first label (virtual-hosted) or its path's

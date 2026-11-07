@@ -136,6 +136,16 @@ impl SessionLogins {
         self.anonymous
     }
 
+    /// The immutable runtime owner used by the networking crate's private account snapshot.
+    pub(crate) fn session_id(&self) -> u64 {
+        self.session
+    }
+
+    /// Sorted connection ids only; bearer bindings never enter the policy's JSON projection.
+    pub(crate) fn active_ids(&self) -> Vec<&str> {
+        self.active.keys().map(String::as_str).collect()
+    }
+
     fn owner(&self, id: &str) -> String {
         format!("{}/{id}", self.session)
     }

@@ -4861,6 +4861,7 @@ mod tests {
     /// included, so every step of a slider drag made the map flicker.
     #[test]
     fn a_style_change_over_tiles_keeps_the_frame_instead_of_a_preview() {
+        let _turn = crate::fetching::turn();
         let mut app = RustGisApp::with_sample();
         // Nothing listens there: the tiles fail, the map still draws.
         app.run("map.addTiles", json!({"url": "http://127.0.0.1:9/{z}/{x}/{y}.png", "name": "Offline"})).expect("tile layer");

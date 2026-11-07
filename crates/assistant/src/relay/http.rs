@@ -436,6 +436,7 @@ fn submit(shared: &Arc<Shared>, line: String) -> Submitted {
             return Submitted::Failed("503 Service Unavailable", "the app is busy; try again".into());
         }
         queue.push_back(Request {
+            plans: Vec::new(),
             approval_required: false,
             held: Arc::new(AtomicBool::new(false)),
             id: shared.next_id.fetch_add(1, SeqCst),

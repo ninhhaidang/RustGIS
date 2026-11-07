@@ -128,10 +128,11 @@ pub fn commands() -> Vec<C> {
             };
             let r = push(s, nb)?;
             // Trusted only once it exists.
-            s.trusted_notebooks.insert(name.to_ascii_lowercase());
+
             Ok(r)
         })
         .roles(&[])
+        .effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
         .params(r#"{"name"?}"#),
         C::new("notebook.open", "Add and Open Notebook", "Analyze › Notebook", |s, p| {
             let text = super::items::read_text(p)?;
@@ -145,6 +146,7 @@ pub fn commands() -> Vec<C> {
             push(s, nb)
         })
         .roles(&[crate::ParamRole { key: "text", role: crate::Role::Document(crate::Document::Notebook) }])
+        .effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
         .params(r#"{"path"?: "*.rgisnb|*.ipynb", "text"?: notebook JSON, "data"?: base64 file}"#),
         C::new("notebook.activate", "Open Notebook", "Browser", |s, p| {
             let i = index(s, p)?;
@@ -152,6 +154,7 @@ pub fn commands() -> Vec<C> {
             Ok(json!({"notebook": i}))
         })
         .roles(&[])
+        .effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
         .view()
         .when(need_notebook)
         .params(r#"{"notebook": name|index}"#),
@@ -163,6 +166,7 @@ pub fn commands() -> Vec<C> {
             Ok(Value::Null)
         })
         .roles(&[])
+        .effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
         .when(need_notebook)
         .params(r#"{"notebook"?}"#),
         C::new("notebook.addCell", "Add Cell", "Notebook", |s, p| {
@@ -182,6 +186,7 @@ pub fn commands() -> Vec<C> {
             Ok(json!({"cell": at, "cells": nb.cells.len()}))
         })
         .roles(&[crate::ParamRole { key: "source", role: crate::Role::Opaque }])
+        .effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
         .when(need_notebook)
         .params(r#"{"notebook"?, "kind"?: "code"|"markdown", "source"?, "at"?: index}"#),
         C::new("notebook.editCell", "Edit Cell", "Notebook", |s, p| {
@@ -192,6 +197,7 @@ pub fn commands() -> Vec<C> {
             Ok(json!({"cell": k}))
         })
         .roles(&[crate::ParamRole { key: "source", role: crate::Role::Opaque }])
+        .effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
         .when(need_notebook)
         .params(r#"{"notebook"?, "cell": index, "source": text}"#),
         C::new("notebook.removeCell", "Delete Cell", "Notebook", |s, p| {
@@ -201,10 +207,12 @@ pub fn commands() -> Vec<C> {
             Ok(json!({"cells": nb.cells.len()}))
         })
         .roles(&[])
+        .effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
         .when(need_notebook)
         .params(r#"{"notebook"?, "cell": index}"#),
         C::new("notebook.run", "Run Cells", "Notebook", run)
             .roles(&[])
+            .effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Automation).with(crate::policy::Effect::Files))
             .when(need_notebook)
             .params(r#"{"notebook"?, "cell"?: index (default: every command cell, stopping at an error)}"#),
         C::new("notebook.save", "Save Notebook", "Notebook", |s, p| {
@@ -215,6 +223,7 @@ pub fn commands() -> Vec<C> {
             Ok(json!({"path": path}))
         })
         .roles(&[])
+        .effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
         .view()
         .when(need_notebook)
         .params(r#"{"notebook"?, "path": "*.rgisnb|*.ipynb"}"#),
@@ -281,13 +290,20 @@ fn run(s: &mut Session, p: &Value) -> CmdResult {
     }
     s.notebook_running = true;
     // The flag is cleared on every path, a panic included.
-    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_cells(s, p)))
-        .unwrap_or_else(|_| Err("the notebook failed unexpectedly".into()));
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let name = s.item_name("notebook", p)?;
+        if s.item_trusted("notebook", &name) {
+            run_cells(s, p)
+        } else {
+            s.narrowed(crate::policy::Narrow::Item { kind: "notebook", name }, |s| run_cells(s, p))?
+        }
+    }))
+    .unwrap_or_else(|_| Err("the notebook failed unexpectedly".into()));
     s.notebook_running = false;
     r
 }
 
-/// Runs command cells and cleans generated output before applying its retained-size bound.
+/// Runs cells through the shared command boundary and cleans retained generated output.
 fn run_cells(s: &mut Session, p: &Value) -> CmdResult {
     let i = index(s, p)?;
     let cells: Vec<usize> = match p.get("cell") {
@@ -316,10 +332,10 @@ fn run_cells(s: &mut Session, p: &Value) -> CmdResult {
         let script = c.source.clone();
         // A notebook from a file (opened, or in an opened project) is someone else's: its
         // cells may not read or write files or run other scripts.
-        let trusted = s.project.notebooks.get(i).is_some_and(|nb| s.trusted_notebooks.contains(&nb.name.to_ascii_lowercase()));
-        let r = match (trusted, untrusted_line(&script)) {
+        let trusted = s.project.notebooks.get(i).is_some_and(|nb| s.item_trusted("notebook", &nb.name));
+        let r = match (trusted, untrusted_line(s, &script)) {
             (false, Some(n)) => Err(format!(
-                "line {n} reads or writes files or runs a script, which a notebook from a file can't do; copy it into a new notebook to run it"
+                "line {n} reads or writes files, uses the network or runs other software or reserved actions, which a notebook from a file can't do; copy it into a new notebook to run it"
             )),
             _ => super::workflows::run_script(s, &json!({"script": script})),
         };
@@ -338,9 +354,10 @@ fn run_cells(s: &mut Session, p: &Value) -> CmdResult {
                     .collect();
                 if lines.is_empty() { "(nothing to run)".to_string() } else { lines.join("\n") }
             }
-            Err(e) => rustgis_data::diagnostics::Redacted::new(&e).into_string(),
+            Err(e) => e,
         };
-        let text = rustgis_data::address::scrub_addresses(&text).0.into_owned();
+        let text = crate::durable::generated_text(&text);
+        let text = if failed { rustgis_data::diagnostics::Redacted::new(&text).into_string() } else { text };
         // Into the cell that ran, which a command removing or adding cells may have moved: the
         // cell with its source nearest to where it was.
         let ran_cell = find(s).and_then(|i| s.project.notebooks.get_mut(i)).and_then(|nb| {
@@ -349,7 +366,6 @@ fn run_cells(s: &mut Session, p: &Value) -> CmdResult {
         });
         if let Some(c) = ran_cell {
             // Scrubbed before the cut, so no part of a login binding a result quoted is kept.
-            let text = crate::render::rustgis_tiles::logins::scrub(&text);
             c.output = Some(text.chars().take(MAX_OUTPUT).collect());
             c.error = failed;
             // The Jupyter outputs are from an earlier run; this one's output replaces them.
@@ -367,7 +383,7 @@ fn run_cells(s: &mut Session, p: &Value) -> CmdResult {
 }
 
 /// The first line (1-based) of a cell whose command could reach outside the session.
-fn untrusted_line(script: &str) -> Option<usize> {
+fn untrusted_line(s: &Session, script: &str) -> Option<usize> {
     script.lines().enumerate().find_map(|(n, line)| {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -376,7 +392,7 @@ fn untrusted_line(script: &str) -> Option<usize> {
         let (id, rest) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
         // Malformed params read as none here; `run_script` rejects that line before it runs.
         let params: Value = serde_json::from_str(rest.trim()).unwrap_or(Value::Null);
-        super::items::touches_files(id.trim_end_matches('='), &params).then_some(n + 1)
+        super::items::touches_files(s, id.trim_end_matches('='), &params).then_some(n + 1)
     })
 }
 

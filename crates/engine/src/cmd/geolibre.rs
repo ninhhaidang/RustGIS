@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 
 /// The importer reads files and URLs named inside the project, so callers require approval.
 pub fn commands() -> Vec<C> {
-    vec![C::new("project.importGeolibre", "Import GeoLibre Project", "Project › Import", import_project).roles(&[]).params(
+    vec![C::new("project.importGeolibre", "Import GeoLibre Project", "Project › Import", import_project).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Reserved).with(crate::policy::Effect::Files)).params(
         r#"{"path"?: "*.geolibre|*.geolibre.json", "url"?: "https://…", "text"?: "project JSON", "data"?: "base64 JSON", "dir"?: "folder for local data"} → {map, layers, notes}"#,
     )]
 }
@@ -64,13 +64,14 @@ fn import_project(s: &mut Session, p: &Value) -> CmdResult {
             }
             q["url"] = json!(geolibre::download_url(url));
         }
-        return s.request_url(&q);
+        return s.request_import_url(&q);
     }
     let text = project_text(p)?;
     let mut report = Report::default();
     let project = geolibre::read_project(&text, &mut report)?;
-    #[cfg(target_arch = "wasm32")]
-    ensure_download_capacity(s, &project.layers)?;
+    if cfg!(target_arch = "wasm32") || s.leave_downloads {
+        ensure_download_capacity(s, &project.layers, cfg!(target_arch = "wasm32"))?;
+    }
     let dir = ps(p, "dir").filter(|d| !d.trim().is_empty()).map(str::to_string).or_else(|| {
         ps(p, "path")
             .and_then(|p| std::path::Path::new(p).parent())
@@ -208,29 +209,38 @@ fn source_address(r: &Value) -> &str {
     }
 }
 
-/// Refuses a browser import before creating its map when its whole-file requests cannot all
-/// be queued. Streaming tiles/COGs and inline features consume no whole-file request slots.
-#[cfg(any(target_arch = "wasm32", test))]
-fn ensure_download_capacity(s: &Session, layers: &[Value]) -> Result<(), String> {
-    let count = layers
-        .iter()
-        .filter(|r| {
-            let kind = string(r, "type");
-            let address = source_address(r);
-            rustgis_map::tiles::is_web(address)
-                && !(kind == "geojson" && inline_data(r).is_some())
-                && (matches!(kind, "geojson" | "flatgeobuf" | "geoparquet" | "zarr" | "lidar" | "mbtiles")
-                    || (kind == "raster" && array(&r["source"], "tiles").is_empty() && !super::layer::is_tiff_url(address)))
-        })
-        .count();
+/// The loader's whole-file queue choice; native MBTiles is synchronous and browser TIFFs stream.
+fn needs_deferred_download(r: &Value, browser: bool) -> bool {
+    let kind = string(r, "type");
+    if string(r.get("metadata").unwrap_or(&Value::Null), "sourceKind") == "sql-query"
+        || (kind == "geojson" && inline_data(r).is_some())
+        || !rustgis_map::tiles::is_web(source_address(r))
+    {
+        return false;
+    }
+    match kind {
+        "geojson" | "flatgeobuf" | "geoparquet" | "zarr" | "lidar" => true,
+        "mbtiles" => browser,
+        "raster" => {
+            array(r.get("source").unwrap_or(&Value::Null), "tiles").is_empty()
+                && (!browser || !super::layer::is_tiff_url(source_address(r)))
+        }
+        _ => false,
+    }
+}
+
+/// Refuses a deferred import before creating its map when whole-file requests cannot all fit.
+/// Streaming tiles/COGs and inline features consume no whole-file request slots.
+fn ensure_download_capacity(s: &Session, layers: &[Value], browser: bool) -> Result<(), String> {
+    let count = layers.iter().filter(|r| needs_deferred_download(r, browser)).count();
     // Once the UI drains url_requests, each Zarr reader (including a queued reader)
     // owns a session download id. Count all stages so a second import sees those slots.
     let occupied =
-        s.url_requests.len().saturating_add(s.downloading.len()).saturating_add(s.downloaded.len()).saturating_add(s.landed_reads.len());
+        s.queued_url_count().saturating_add(s.downloading.len()).saturating_add(s.downloaded.len()).saturating_add(s.landed_reads.len());
     let available = crate::MAX_URL_REQUESTS.saturating_sub(occupied);
     if count > available {
         return Err(format!(
-            "GeoLibre import needs {count} downloads, but only {available} of {} browser download slots are available; split the project or wait for pending downloads before importing",
+            "GeoLibre import needs {count} downloads, but only {available} of {} download slots are available; split the project or wait for pending downloads before importing",
             crate::MAX_URL_REQUESTS
         ));
     }
@@ -295,7 +305,7 @@ fn add_layer(s: &mut Session, r: &Value, dir: Option<&str>, report: &mut Report,
                 let mut saved = r.clone();
                 saved["visible"] = json!(boolean(r, "visible", true) && folder.0);
                 saved["opacity"] = json!(number(r, "opacity", 1.0).clamp(0.0, 1.0) * folder.1);
-                s.request_url(&json!({"url":address,"whole":true,"name":name,"geolibreLayer":{"token":token,"record":saved}}))?;
+                s.request_import_url(&json!({"url":address,"whole":true,"name":name,"geolibreLayer":{"token":token,"record":saved}}))?;
                 report.approximated(name, "MBTiles archive is downloading; wait before saving");
             }
             report.approximated(name, "tile overlays draw above feature layers; tile vector styling uses RustGIS defaults");
@@ -344,8 +354,8 @@ fn add_layer(s: &mut Session, r: &Value, dir: Option<&str>, report: &mut Report,
         // The project's saved camera is restored after the import, so each added layer keeps the view.
         let mut q = json!({"name":name,"zoom":false});
         q[if remote { "url" } else { "path" }] = json!(address);
-        #[cfg(target_arch = "wasm32")]
-        if remote && kind != "cog" && !(kind == "raster" && super::layer::is_tiff_url(&address)) {
+        let defer = cfg!(target_arch = "wasm32") || s.leave_downloads;
+        if defer && needs_deferred_download(r, cfg!(target_arch = "wasm32")) {
             // Reserve the final position and group membership before downloads can finish in
             // arbitrary order. The token follows the layer across map switches and reordering.
             let token = pending_token();
@@ -367,7 +377,7 @@ fn add_layer(s: &mut Session, r: &Value, dir: Option<&str>, report: &mut Report,
                 }
             }
             q["geolibreLayer"] = json!({"token":token,"record":r});
-            s.request_url(&q)?;
+            s.request_import_url(&q)?;
             report.approximated(name, "URL data is downloading; its saved style is applied when the download completes");
             return Ok(Added::Feature(id));
         }
@@ -577,19 +587,61 @@ fn group_look(groups: &std::collections::HashMap<&str, &Value>, id: &str) -> (bo
 mod admission_tests {
     use super::*;
 
+    /// Taken opaque requests still occupy capacity; native deferred import must refuse atomically.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn geolibre_native_deferred_import_checks_taken_request_capacity() {
+        let mut s = Session::new(crate::project::Project::default());
+        s.request_import_url(&json!({"url":"https://capacity.invalid/held.geojson"})).unwrap();
+        let held = s.take_url_requests().pop().unwrap();
+        let before = serde_json::to_value(&s.project).unwrap();
+        let layers: Vec<_> = (0..crate::MAX_URL_REQUESTS)
+            .map(|i| json!({"id":i.to_string(),"name":format!("Layer {i}"),"type":"geojson","source":{"url":format!("https://capacity.invalid/{i}.geojson")}}))
+            .collect();
+        let text = json!({"version":"0.2.0","name":"Capacity","mapView":{},"basemapStyleUrl":"","layers":layers}).to_string();
+        let result = s.run_leaving_downloads("project.importGeolibre", &json!({"text":text}));
+        assert!(result.is_err(), "an oversized native deferred import returned a partial map");
+        assert!(result.unwrap_err().contains("15"), "the held opaque request must occupy its slot");
+        assert_eq!(serde_json::to_value(&s.project).unwrap(), before);
+        assert!(s.take_url_requests().is_empty());
+        let claim = s.download_started_for(&held).unwrap();
+        s.download_failed(claim);
+        s.request_import_url(&json!({"url":"https://capacity.invalid/abandoned.geojson"})).unwrap();
+        let abandoned = s.take_url_requests().pop().unwrap();
+        assert!(ensure_download_capacity(&s, &layers, false).is_err());
+        drop(abandoned);
+        assert!(ensure_download_capacity(&s, &layers, false).is_ok(), "a dropped opaque handle must release its slot");
+    }
+
+    /// A generic raster TIFF deferred by the native loader keeps its import reservation and style.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn geolibre_native_deferred_raster_tiff_keeps_its_reservation() {
+        let mut s = Session::new(crate::project::Project::default());
+        let record = json!({"id":"r","name":"Raster","type":"raster","source":{"url":"https://capacity.invalid/image.tif"}});
+        let text = json!({"version":"0.2.0","name":"Raster","mapView":{},"basemapStyleUrl":"","layers":[record]}).to_string();
+        let out = s.run_leaving_downloads("project.importGeolibre", &json!({"text":text})).unwrap();
+        assert_eq!(out["layers"], json!(["Raster"]));
+        let layer = s.map().layer_by_name("Raster").unwrap();
+        assert!(layer.dataset.source.as_deref().is_some_and(|s| s.starts_with("geolibre-pending:")));
+        let requests = s.take_url_requests();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].params().get("geolibreLayer").is_some());
+    }
+
     #[test]
     fn geolibre_browser_import_refuses_an_oversized_download_batch_before_mutation() {
         let mut s = Session::new(crate::project::Project::default());
         let layers: Vec<_> =
             (0..17).map(|i| json!({"type":"geojson","source":{"url":format!("https://example.org/{i}.geojson")}})).collect();
         let before = s.project.clone();
-        assert!(ensure_download_capacity(&s, &layers).unwrap_err().contains("needs 17 downloads"));
+        assert!(ensure_download_capacity(&s, &layers, true).unwrap_err().contains("needs 17 downloads"));
         assert_eq!(s.project.maps.len(), before.maps.len());
         assert!(s.url_requests.is_empty());
-        assert!(ensure_download_capacity(&s, &layers[..16]).is_ok());
+        assert!(ensure_download_capacity(&s, &layers[..16], true).is_ok());
         s.request_url(&json!({"url":"https://example.org/other.geojson"})).unwrap();
-        assert!(ensure_download_capacity(&s, &layers[..16]).is_err());
-        assert!(ensure_download_capacity(&s, &layers[..15]).is_ok());
+        assert!(ensure_download_capacity(&s, &layers[..16], true).is_err());
+        assert!(ensure_download_capacity(&s, &layers[..15], true).is_ok());
     }
 
     #[test]
@@ -605,11 +657,20 @@ mod admission_tests {
             json!({"type":"raster","source":{"tiles":["https://example.org/{z}/{x}/{y}.png"]}}),
             json!({"type":"pmtiles","source":{"url":"https://example.org/archive.pmtiles"}}),
             json!({"type":"geojson","sourcePath":"local.geojson"}),
+            json!({"type":"geojson","metadata":{"sourceKind":"sql-query"},"source":{"url":"https://example.org/query"}}),
         ];
-        assert!(ensure_download_capacity(&s, &layers).is_ok());
+        assert!(ensure_download_capacity(&s, &layers, true).is_ok());
         for kind in ["flatgeobuf", "geoparquet", "zarr", "lidar", "mbtiles", "raster"] {
-            assert!(ensure_download_capacity(&s, &[json!({"type":kind,"source":{"url":"https://example.org/data"}})]).is_err(), "{kind}");
+            assert!(
+                ensure_download_capacity(&s, &[json!({"type":kind,"source":{"url":"https://example.org/data"}})], true).is_err(),
+                "{kind}"
+            );
         }
+        assert!(
+            ensure_download_capacity(&s, &[json!({"type":"mbtiles","source":{"url":"https://example.org/archive.mbtiles"}})], false)
+                .is_ok()
+        );
+        assert!(ensure_download_capacity(&s, &layers[2..3], false).is_err(), "native deferred TIFFs occupy a whole-file slot");
     }
 
     /// A long ancestry and a cycle exercise indexed lookup without recursion or repeated scans.
@@ -632,16 +693,16 @@ mod admission_tests {
         let before = s.project.maps.len();
         let layers: Vec<_> = (0..10).map(|i| json!({"type":"zarr","source":{"url":format!("https://example.org/{i}.zarr")}})).collect();
         for i in 0..10 {
-            s.request_url(&json!({"url":format!("https://example.org/{i}.zarr"),"geolibreZarr":true})).unwrap();
+            s.request_import_url(&json!({"url":format!("https://example.org/{i}.zarr"),"geolibreZarr":true})).unwrap();
         }
         let requests = s.take_url_requests();
-        let ids: Vec<_> = requests.iter().map(|_| s.download_started()).collect();
-        assert!(ensure_download_capacity(&s, &layers).is_err());
-        assert!(ensure_download_capacity(&s, &layers[..6]).is_ok());
+        let ids: Vec<_> = requests.iter().map(|request| s.download_started_for(request).unwrap()).collect();
+        assert!(ensure_download_capacity(&s, &layers, true).is_err());
+        assert!(ensure_download_capacity(&s, &layers[..6], true).is_ok());
         // Landed bytes still await their completion callback and retain the slot.
         assert!(s.download_landed(ids[0], Vec::new()));
-        assert!(ensure_download_capacity(&s, &layers).is_err());
-        assert!(ensure_download_capacity(&s, &layers[..6]).is_ok());
+        assert!(ensure_download_capacity(&s, &layers, true).is_err());
+        assert!(ensure_download_capacity(&s, &layers[..6], true).is_ok());
         assert_eq!(s.project.maps.len(), before);
         assert!(s.url_requests.is_empty());
     }

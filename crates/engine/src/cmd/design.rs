@@ -81,7 +81,7 @@ pub(crate) fn apply_with(s: &mut Session, id: u32, changes: Vec<Change>, new_def
             Elevation::Constant(z) => Some(*z),
             Elevation::Surface(name) => {
                 let c = g.label_point()?;
-                let r = s.map().layer_by_name(name)?.raster.as_ref()?.data.as_ref()?;
+                let r = surface_layer(s, name)?.raster.as_ref()?.data.as_ref()?;
                 let (col, row) = r.pixel_at(c)?;
                 r.value(0, col, row).map(f64::from)
             }
@@ -238,16 +238,16 @@ pub(crate) fn apply_with(s: &mut Session, id: u32, changes: Vec<Change>, new_def
 pub fn commands() -> Vec<C> {
     vec![
         // Data design.
-        C::new("data.domain", "Domains", "Data › Data Design", domain).roles(&[]).when(need_feature_layer).params(
+        C::new("data.domain", "Domains", "Data › Data Design", domain).roles(&[]).effects(crate::policy::Effects::NONE).when(need_feature_layer).params(
             r#"{"layer"?, "field": string, "coded"?: [[code, description], …], "min"?: number, "max"?: number, "clear"?: bool, "force"?: bool (set it even though existing values fall outside)}"#,
         ),
-        C::new("data.subtypes", "Subtypes", "Data › Data Design", subtypes).roles(&[]).when(need_feature_layer).params(
+        C::new("data.subtypes", "Subtypes", "Data › Data Design", subtypes).roles(&[]).effects(crate::policy::Effects::NONE).when(need_feature_layer).params(
             r#"{"layer"?, "field": integer field, "subtypes": [{"code": n, "name": string, "defaults"?: {field: value}}], "symbolize"?: bool, "clear"?: bool}"#,
         ),
-        C::new("data.attributeRule", "Attribute Rules", "Data › Data Design", attribute_rule).roles(&[]).when(need_feature_layer).params(
+        C::new("data.attributeRule", "Attribute Rules", "Data › Data Design", attribute_rule).roles(&[]).effects(crate::policy::Effects::NONE).when(need_feature_layer).params(
             r#"{"layer"?, "name": string, "kind": "calculation"|"constraint", "field"?: field set by a calculation, "expression": calculator expression or SQL where clause, "remove"?: bool}"#,
         ),
-        C::new("data.contingentValues", "Contingent Values", "Data › Data Design", contingent).roles(&[]).when(need_feature_layer).params(
+        C::new("data.contingentValues", "Contingent Values", "Data › Data Design", contingent).roles(&[]).effects(crate::policy::Effects::NONE).when(need_feature_layer).params(
             r#"{"layer"?, "name": string, "fields": [field, …], "combos": [[value, …], …], "remove"?: bool}"#,
         ),
         C::new("data.archive", "Add Archive", "Data › Archiving", |s, p| {
@@ -256,7 +256,7 @@ pub fn commands() -> Vec<C> {
             let l = s.map_mut().layer_mut(id).ok_or("no such layer")?;
             l.design.archive = if on { Some(l.design.archive.take().unwrap_or_default()) } else { None };
             Ok(json!({"archiving": on}))
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .when(need_feature_layer)
         .params(r#"{"layer"?, "on"?: bool}"#),
         C::new("data.archiveHistory", "Archive History", "Data › Archiving", |s, p| {
@@ -270,23 +270,23 @@ pub fn commands() -> Vec<C> {
                 .map(|e| json!({"time": e.time, "feature": e.id, "action": match (&e.before, &e.after) { (None, _) => "insert", (_, None) => "delete", _ => "update" }}))
                 .collect();
             Ok(json!({"edits": a.len(), "recent": rows}))
-        }).roles(&[]).params(r#"{"layer"?: name|id (default: the active layer)}"#)
+        }).roles(&[]).effects(crate::policy::Effects::NONE).params(r#"{"layer"?: name|id (default: the active layer)}"#)
         .view()
         .when(need_feature_layer),
-        C::new("data.archiveRestore", "Restore From Archive", "Data › Archiving", archive_restore).roles(&[])
+        C::new("data.archiveRestore", "Restore From Archive", "Data › Archiving", archive_restore).roles(&[]).effects(crate::policy::Effects::NONE)
             .when(need_editable)
             .params(r#"{"layer"?, "time": seconds since 1970 (the layer as it was then)}"#),
-        C::new("data.relate", "Related Data", "Data › Relationship", relate).roles(&[]).params(
+        C::new("data.relate", "Related Data", "Data › Relationship", relate).inputs(relationship_inputs).roles(&[]).effects(crate::policy::Effects::NONE).params(
             r#"{"name": string, "origin": layer, "originKey": field, "destination": layer, "destinationKey": field, "remove"?: bool}"#,
         ),
-        C::new("data.related", "Select Related", "Data › Relationship", related).roles(&[])
+        C::new("data.related", "Select Related", "Data › Relationship", related).inputs(related_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
             .params(r#"{"name"?: relationship (all when omitted), "select"?: bool (select the related rows; default true)}"#),
         // Manage edits.
         C::new("edit.enable", "Edit", "Edit › Manage Edits", |s, p| {
             let set = &mut s.map_mut().editing.settings;
             set.enabled = b(p, "on").unwrap_or(!set.enabled);
             Ok(json!({"enabled": set.enabled}))
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .params(r#"{"on"?: bool}"#),
         C::new("edit.settings", "Editing Settings", "Edit › Manage Edits", |s, p| {
             let set = &mut s.map_mut().editing.settings;
@@ -294,7 +294,7 @@ pub fn commands() -> Vec<C> {
                 set.show_vertices = v;
             }
             Ok(json!({"enabled": set.enabled, "showVertices": set.show_vertices}))
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .params(r#"{"showVertices"?: bool}"#),
         C::new("edit.status", "Edit Status", "Edit › Manage Edits", |s, _| {
             let rows: Vec<Json> = s
@@ -303,9 +303,9 @@ pub fn commands() -> Vec<C> {
                 .filter_map(|(id, c)| s.map().layer(*id).map(|l| json!({"layer": l.name, "added": c.added, "modified": c.modified, "deleted": c.deleted})))
                 .collect();
             Ok(json!({"unsaved": s.dirty(), "layers": rows}))
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .view(),
-        C::new("edit.template", "Manage Templates", "Edit › Manage Edits", template).roles(&[]).when(need_feature_layer).params(
+        C::new("edit.template", "Manage Templates", "Edit › Manage Edits", template).roles(&[]).effects(crate::policy::Effects::NONE).when(need_feature_layer).params(
             r#"{"layer"?, "name": string, "defaults"?: {field: value}, "description"?: string, "remove"?: bool}"#,
         ),
         // Snapping.
@@ -321,9 +321,9 @@ pub fn commands() -> Vec<C> {
                 }
             }
             Ok(json!({"enabled": sn.enabled, "tolerancePx": sn.tolerance_px, "vertex": sn.vertex, "edge": sn.edge, "end": sn.end}))
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .params(r#"{"on"?: bool, "tolerancePx"?: number, "vertex"?: bool, "edge"?: bool, "end"?: bool}"#),
-        C::new("edit.snap", "Snap Point", "Edit › Snapping", snap).roles(&[]).view().params(r#"{"lon", "lat"}"#),
+        C::new("edit.snap", "Snap Point", "Edit › Snapping", snap).roles(&[]).effects(crate::policy::Effects::NONE).view().params(r#"{"lon", "lat"}"#),
         // Modify features.
         C::new("edit.move", "Move", "Edit › Features › Modify", |s, p| {
             let unit = distance_unit_metres(p)?;
@@ -335,7 +335,7 @@ pub fn commands() -> Vec<C> {
                 return Err("dx and dy must be finite distances in the command's units (limit: 40,000 km per axis after ground-to-grid)".into());
             }
             modify(s, |g| Some(g.map_coords(&|c: Coord| shift(c, dx, dy))))
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .when(need_editable_selection)
         .params(r#"{"dx": distance east, "dy": distance north, "units"?: "Meters" (default)|"Feet"|"Kilometers"|"Miles"}"#),
         C::new("edit.rotate", "Rotate", "Edit › Features › Modify", |s, p| {
@@ -355,7 +355,7 @@ pub fn commands() -> Vec<C> {
                     merc_to_lonlat(Coord::new(c.x + x * cos - y * sin, c.y + x * sin + y * cos))
                 }))
             })
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .when(need_editable_selection)
         .params(r#"{"angle": degrees clockwise}"#),
         C::new("edit.scale", "Scale", "Edit › Features › Modify", |s, p| {
@@ -371,7 +371,7 @@ pub fn commands() -> Vec<C> {
                     merc_to_lonlat(Coord::new(c.x + (m.x - c.x) * k, c.y + (m.y - c.y) * k))
                 }))
             })
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .when(need_editable_selection)
         .params(r#"{"factor": number}"#),
         C::new("edit.flip", "Flip Line", "Edit › Features › Modify", |s, _| {
@@ -379,36 +379,36 @@ pub fn commands() -> Vec<C> {
                 Geometry::Line(parts) => Some(Geometry::Line(parts.iter().rev().map(|p| p.iter().rev().copied().collect()).collect())),
                 _ => None,
             })
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .when(need_editable_selection),
-        C::new("edit.setGeometry", "Set Geometry", "Edit › Features › Modify", set_geometry).roles(&[])
+        C::new("edit.setGeometry", "Set Geometry", "Edit › Features › Modify", set_geometry).roles(&[]).effects(crate::policy::Effects::NONE)
             .when(need_editable)
             .params(r#"{"layer"?, "row": number, "geometry": GeoJSON geometry}"#),
-        C::new("edit.vertex", "Edit Vertex", "Edit › Features › Modify", edit_vertex).roles(&[]).when(need_editable).params(
+        C::new("edit.vertex", "Edit Vertex", "Edit › Features › Modify", edit_vertex).roles(&[]).effects(crate::policy::Effects::NONE).when(need_editable).params(
             r#"{"layer"?, "row": number, "action": "move"|"insert"|"delete", "part"?: number, "ring"?: number, "index": number (insert: the vertex the new one follows), "lon"?, "lat"?}"#,
         ),
-        C::new("edit.merge", "Merge", "Edit › Features › Modify", merge).roles(&[]).when(need_editable_selection),
-        C::new("edit.moveSharedVertex", "Move Shared Vertex", "Edit › Features › Modify", shared_vertex::run).roles(&[]).when(need_editable).params(
+        C::new("edit.merge", "Merge", "Edit › Features › Modify", merge).roles(&[]).effects(crate::policy::Effects::NONE).when(need_editable_selection),
+        C::new("edit.moveSharedVertex", "Move Shared Vertex", "Edit › Features › Modify", shared_vertex::run).roles(&[]).effects(crate::policy::Effects::NONE).when(need_editable).params(
             r#"{"layer"?, "row": number, "part"?: number, "ring"?: number, "index": number, "lon": degrees, "lat": degrees}"#,
         ),
-        C::new("edit.explode", "Explode", "Edit › Features › Modify", explode).roles(&[]).when(need_editable_selection),
-        C::new("edit.split", "Split", "Edit › Features › Modify", split).roles(&[]).when(need_editable_selection).params(r#"{"lon", "lat"}"#),
-        C::new("edit.cutPolygon", "Cut Polygon", "Edit › Features › Modify", sketch::cut_polygon).roles(&[])
+        C::new("edit.explode", "Explode", "Edit › Features › Modify", explode).roles(&[]).effects(crate::policy::Effects::NONE).when(need_editable_selection),
+        C::new("edit.split", "Split", "Edit › Features › Modify", split).roles(&[]).effects(crate::policy::Effects::NONE).when(need_editable_selection).params(r#"{"lon", "lat"}"#),
+        C::new("edit.cutPolygon", "Cut Polygon", "Edit › Features › Modify", sketch::cut_polygon).roles(&[]).effects(crate::policy::Effects::NONE)
             .when(need_editable_selection)
             .params(r#"{"line": GeoJSON LineString (lon/lat) drawn across the selected polygons}"#),
-        C::new("edit.reshape", "Reshape", "Edit › Features › Modify", sketch::reshape).roles(&[])
+        C::new("edit.reshape", "Reshape", "Edit › Features › Modify", sketch::reshape).roles(&[]).effects(crate::policy::Effects::NONE)
             .when(need_editable_selection)
             .params(r#"{"line": GeoJSON LineString (lon/lat) drawn across the selected line or polygon's boundary}"#),
-        C::new("edit.trace", "Trace Edge Path", "Edit › Features", sketch::trace).roles(&[]).view().params(
+        C::new("edit.trace", "Trace Edge Path", "Edit › Features", sketch::trace).roles(&[]).effects(crate::policy::Effects::NONE).view().params(
             r#"{"from": [lon, lat], "to": [lon, lat], "layer"?, "row"?: number (else the nearest edge within the tolerance), "tolerancePx"?: number (default: the snapping tolerance)}"#,
         ),
-        C::new("edit.traverse", "Traverse", "Edit › Features › Modify", traverse).roles(&[]).when(need_editable).params(
+        C::new("edit.traverse", "Traverse", "Edit › Features › Modify", traverse).roles(&[]).effects(crate::policy::Effects::NONE).when(need_editable).params(
             r#"{"layer"?, "start": [lon, lat], "units"?: "Meters" (default)|"Feet"|"Kilometers"|"Miles", "legs": [{"distance": number, "bearing": degrees from north}]} (closed in a polygon layer, open in a line layer)"#,
         ),
         C::new("edit.tools", "Editor Tools", "Edit › Tools", |s, _| {
             let tools: Vec<Json> = s.registry.commands.iter().filter(|c| c.location.starts_with("Edit › Features")).map(|c| json!({"id": c.id, "label": c.label, "params": c.params})).collect();
             Ok(Json::Array(tools))
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .view(),
         // Elevation and corrections.
         C::new("edit.elevation", "Elevation", "Edit › Elevation", |s, p| {
@@ -423,15 +423,15 @@ pub fn commands() -> Vec<C> {
                     Elevation::Constant(z.clamp(-12_000.0, 100_000.0))
                 },
                 "surface" => {
-                    let n = ps(p, "surface").ok_or("surface (a raster layer) is required")?;
-                    let l = s.map().layer_by_name(n).filter(|l| l.is_raster()).ok_or_else(|| format!("no raster layer '{n}'"))?;
+                    let n = surface_name(p)?;
+                    let l = surface_layer(s,n).ok_or_else(|| format!("no raster layer '{n}'"))?;
                     Elevation::Surface(l.name.clone())
                 }
                 m => return Err(format!("unknown elevation mode '{m}'")),
             };
             s.map_mut().editing.settings.elevation = e;
             Ok(Json::Null)
-        }).roles(&[])
+        }).inputs(elevation_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
         .params(r#"{"mode": "none"|"constant"|"surface", "z"?: number, "units"?: "Meters" (default)|"Feet"|"Kilometers"|"Miles", "surface"?: raster layer}"#),
         C::new("edit.groundToGrid", "Ground To Grid", "Edit › Corrections", |s, p| {
             let on = b(p, "on").unwrap_or(true);
@@ -442,13 +442,13 @@ pub fn commands() -> Vec<C> {
             }
             s.map_mut().editing.settings.ground_to_grid = on.then_some((k, r.clamp(-360.0, 360.0)));
             Ok(json!({"on": on}))
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .params(r#"{"on"?: bool, "scale"?: factor, "rotation"?: degrees}"#),
         // Topology.
-        C::new("topology.rules", "Topology Options", "Edit › Manage Edits", topology_rules).roles(&[]).params(
+        C::new("topology.rules", "Topology Options", "Edit › Manage Edits", topology_rules).inputs(topology_inputs).roles(&[]).effects(crate::policy::Effects::NONE).params(
             r#"{"add"?: {"rule": "mustNotOverlap"|"mustNotHaveGaps"|"mustNotSelfIntersect"|"mustNotHaveDangles"|"mustBeCoveredBy", "layer": layer, "by"?: polygon layer}, "remove"?: index, "clear"?: bool}"#,
         ),
-        C::new("topology.validate", "Error Inspector", "Edit › Manage Edits", topology_validate).roles(&[]).view().params(r#"{"toleranceM"?: metres (dangles)}"#),
+        C::new("topology.validate", "Error Inspector", "Edit › Manage Edits", topology_validate).inputs(validation_inputs).roles(&[]).effects(crate::policy::Effects::NONE).view().params(r#"{"toleranceM"?: metres (dangles)}"#),
     ]
 }
 
@@ -1043,9 +1043,9 @@ fn relate(s: &mut Session, p: &Json) -> CmdResult {
         let f = l.dataset.field_index(key).and_then(|i| l.dataset.fields.get(i)).ok_or_else(|| format!("{layer} has no field '{key}'"))?;
         Ok((l.name.clone(), f.name.clone()))
     };
-    let (origin, origin_key) = field_of(ps(p, "origin").ok_or("origin is required")?, ps(p, "originKey").ok_or("originKey is required")?)?;
-    let (destination, destination_key) =
-        field_of(ps(p, "destination").ok_or("destination is required")?, ps(p, "destinationKey").ok_or("destinationKey is required")?)?;
+    let [origin_name, destination_name] = relationship_names(p)?;
+    let (origin, origin_key) = field_of(origin_name, ps(p, "originKey").ok_or("originKey is required")?)?;
+    let (destination, destination_key) = field_of(destination_name, ps(p, "destinationKey").ok_or("destinationKey is required")?)?;
     let rels = &mut s.map_mut().editing.relationships;
     rels.retain(|r| !r.name.eq_ignore_ascii_case(&name));
     rels.push(Relationship { name: name.clone(), origin, origin_key, destination, destination_key });
@@ -1054,18 +1054,7 @@ fn relate(s: &mut Session, p: &Json) -> CmdResult {
 
 /// The rows related to the selection through relationships (both ways), selecting them.
 fn related(s: &mut Session, p: &Json) -> CmdResult {
-    let rels: Vec<Relationship> = match ps(p, "name") {
-        Some(n) => vec![
-            s.map()
-                .editing
-                .relationships
-                .iter()
-                .find(|r| r.name.eq_ignore_ascii_case(n))
-                .cloned()
-                .ok_or_else(|| format!("no relationship '{n}'"))?,
-        ],
-        None => s.map().editing.relationships.clone(),
-    };
+    let rels = related_relationships(s, p)?;
     if rels.is_empty() {
         return Err("the map has no relationships".into());
     }
@@ -1258,8 +1247,9 @@ fn topology_rules(s: &mut Session, p: &Json) -> CmdResult {
         rules.remove(i as usize);
     }
     if let Some(a) = p.get("add") {
+        let names = topology_add_names(p)?;
         let layer_of = |k: &str| -> Result<String, String> {
-            let n = a.get(k).and_then(Json::as_str).ok_or_else(|| format!("{k} is required"))?;
+            let n = names.get(if k == "by" { 1 } else { 0 }).copied().ok_or_else(|| format!("{k} is required"))?;
             s.map().layer_by_name(n).filter(|l| !l.is_raster()).map(|l| l.name.clone()).ok_or_else(|| format!("no feature layer '{n}'"))
         };
         let layer = layer_of("layer")?;
@@ -1341,4 +1331,97 @@ fn topology_validate(s: &mut Session, p: &Json) -> CmdResult {
         errors.iter().take(1000).map(|e| json!({"rule": e.rule, "layer": e.layer, "rows": e.rows, "lon": e.lon, "lat": e.lat})).collect();
     s.topology_errors = errors;
     Ok(json!({"errors": n, "first": out, "incomplete": incomplete}))
+}
+
+/// Resolves the first named relationship, or all relationships, for both-direction selection.
+fn related_relationships(input: &impl super::InputSource, p: &Json) -> Result<Vec<Relationship>, String> {
+    let context = input.input_context();
+    let s = &context;
+    Ok(match ps(p, "name") {
+        Some(n) => vec![
+            s.map()
+                .editing
+                .relationships
+                .iter()
+                .find(|r| r.name.eq_ignore_ascii_case(n))
+                .cloned()
+                .ok_or_else(|| format!("no relationship '{n}'"))?,
+        ],
+        None => s.map().editing.relationships.clone(),
+    })
+}
+
+/// Removal consumes no endpoints; creation binds both actual feature-layer names.
+fn relationship_inputs(input: &super::InputContext<'_>, p: &Json) -> Result<super::Inputs, String> {
+    let s = input;
+    if b(p, "remove") == Some(true) {
+        return Ok(super::Inputs::layers(std::iter::empty()));
+    }
+    let names = relationship_names(p)?;
+    super::Inputs::named(s.map(), names)
+}
+/// Parses the required origin and destination names shared with relationship creation.
+fn relationship_names(p: &Json) -> Result<[&str; 2], String> {
+    Ok([ps(p, "origin").ok_or("origin is required")?, ps(p, "destination").ok_or("destination is required")?])
+}
+/// Binds the existing endpoints visited by the same stored relationship selection.
+fn related_inputs(input: &super::InputContext<'_>, p: &Json) -> Result<super::Inputs, String> {
+    let s = input;
+    let relationships = related_relationships(input, p)?;
+    Ok(super::Inputs::layers(
+        relationships.iter().flat_map(|r| [&r.origin, &r.destination]).filter_map(|n| s.map().layer_by_name(n)).map(|l| (s.map(), l)),
+    ))
+}
+/// Binds only the endpoints of a rule being added.
+fn topology_inputs(input: &super::InputContext<'_>, p: &Json) -> Result<super::Inputs, String> {
+    let s = input;
+    let names = topology_add_names(p)?;
+    super::Inputs::named(s.map(), names)
+}
+/// Only a covered-by rule consumes a second layer named by.
+fn topology_add_names(p: &Json) -> Result<Vec<&str>, String> {
+    let Some(add) = p.get("add") else { return Ok(Vec::new()) };
+    let mut names = vec![add.get("layer").and_then(Json::as_str).ok_or("layer is required")?];
+    if add.get("rule").and_then(Json::as_str) == Some("mustBeCoveredBy") {
+        names.push(add.get("by").and_then(Json::as_str).ok_or("by is required")?);
+    }
+    Ok(names)
+}
+/// Binds the stored rule endpoints that validation can actually find.
+fn validation_inputs(input: &super::InputContext<'_>, _: &Json) -> Result<super::Inputs, String> {
+    let s = input;
+    let names = s.map().editing.topology.iter().flat_map(|r| {
+        let mut names = vec![r.layer()];
+        if let TopologyRule::MustBeCoveredBy { by, .. } = r {
+            names.push(by.as_str());
+        }
+        names
+    });
+    Ok(super::Inputs::layers(names.filter_map(|n| s.map().layer_by_name(n)).map(|l| (s.map(), l))))
+}
+
+/// Finds the literal raster surface used for elevation validation and sampling.
+fn surface_layer<'a>(input: &'a impl super::InputSource, name: &str) -> Option<&'a rustgis_map::Layer> {
+    let context = input.input_context();
+    let s = &context;
+    s.map().layer_by_name(name).filter(|l| l.is_raster())
+}
+/// The literal surface selector shared by the executor and dependency planning.
+fn surface_name(p: &Json) -> Result<&str, String> {
+    ps(p, "surface").ok_or("surface (a raster layer) is required".into())
+}
+/// Only surface mode consumes a layer; constant and none are parameter-only.
+fn elevation_inputs(input: &super::InputContext<'_>, p: &Json) -> Result<super::Inputs, String> {
+    let name = if ps(p, "mode") == Some("surface") { Some(surface_name(p)?) } else { None };
+    super::Inputs::named(input.map(), name)
+}
+/// Only new rows sample the stored elevation surface; ordinary attribute edits do not.
+pub(crate) fn new_feature_inputs(input: &super::InputContext<'_>, p: &Json) -> Result<super::Inputs, String> {
+    let s = input;
+    let mut inputs = super::Inputs::primary(s, p)?;
+    if let Elevation::Surface(name) = &s.map().editing.settings.elevation {
+        inputs.layers.extend(surface_layer(input, name).map(|l| (s.map().instance_id(), l.id)));
+        inputs.state = json!({"surface":name});
+    }
+    Ok(inputs)
 }

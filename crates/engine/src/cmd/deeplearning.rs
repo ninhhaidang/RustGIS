@@ -52,10 +52,10 @@ pub fn commands() -> Vec<C> {
             let mut r = json!({"model": m.name, "accuracy": m.accuracy, "classes": m.model.classes, "epochs": m.epochs});
             r["replaced"] = json!(store(s, m));
             Ok(r)
-        }).roles(&[])
+        }).inputs(training_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
         .when(need_raster)
         .params(r#"{"layer": raster, "training": polygon layer, "classField": field naming each polygon's class, "bands"?: [1-based], "hidden"?: [units per hidden layer] (default [32, 16]), "epochs"?: 1..500 (default 60), "model"?: name}"#),
-        C::new("dl.classify", "Deep Learning Tools", "Analyze › Image Classification", classify).roles(&[]).when(need_raster).params(
+        C::new("dl.classify", "Deep Learning Tools", "Analyze › Image Classification", classify).inputs(classify_inputs).roles(&[]).effects(crate::policy::Effects::NONE).when(need_raster).params(
             r#"{"layer": raster, "model"?: a trained model's name, "training"?: polygon layer, "classField"?: field, "bands"?: [1-based], "hidden"?: [units], "epochs"?: 1..500 (without a model: train one first, as dl.train), "name"?: output, "ran"?: (internal: classes the app has worked out)}"#,
         ),
         C::new("dl.package", "Deep Learning Package", "Publish › Package", |s, p| {
@@ -63,7 +63,7 @@ pub fn commands() -> Vec<C> {
             let bytes = package(s, p)?;
             rustgis_data::io::write_atomic(Path::new(path), &bytes).map_err(|e| format!("{path}: {e}"))?;
             Ok(json!({"path": path, "bytes": bytes.len()}))
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
         .view()
         .when(need_model)
         .params(r#"{"model"?: name (default: the last trained), "path": "*.rgisdlpk"}"#),
@@ -91,16 +91,16 @@ pub fn commands() -> Vec<C> {
             let name = m.name.clone();
             store(s, m);
             Ok(json!({"model": name}))
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
         .params(r#"{"path"?: "*.rgisdlpk", "data"?: base64}"#),
         C::new("dl.remove", "Delete Model", "Analyze › Image Classification", |s, p| {
             let i = model_index(s, p)?;
             s.project.dl_models.remove(i);
             Ok(Value::Null)
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .when(need_model)
         .params(r#"{"model": name}"#),
-        C::new("imagery.hostedImagery", "Create Hosted Imagery", "Analyze › Imagery Sharing", hosted).roles(&[]).view().when(need_raster).params(
+        C::new("imagery.hostedImagery", "Create Hosted Imagery", "Analyze › Imagery Sharing", hosted).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files)).view().when(need_raster).params(
             r#"{"layer": raster, "path": "*.zip" (z/x/y.png tiles, tiles.json and a viewer page), "minZoom"?: 0..22, "maxZoom"?: 0..22 (default: the raster's resolution)}"#,
         ),
     ]
@@ -134,7 +134,9 @@ fn store(s: &mut Session, m: DlModel) -> bool {
     }
 }
 
-fn model_index(s: &Session, p: &Value) -> Result<usize, String> {
+fn model_index(input: &impl super::InputSource, p: &Value) -> Result<usize, String> {
+    let context = input.input_context();
+    let s = &context;
     let ms = &s.project.dl_models;
     match ps(p, "model") {
         Some(n) => ms.iter().position(|m| m.name.eq_ignore_ascii_case(n)).ok_or_else(|| format!("no model '{n}'")),
@@ -190,7 +192,7 @@ fn training(s: &Session, p: &Value) -> Result<Training, String> {
     let r = raster(s, p)?;
     r.require_coordinates()?;
     let bands = bands_param(p, &r)?;
-    let tl = ps(p, "training").ok_or("training (a polygon layer) is required")?;
+    let tl = super::imagery::training_name(p)?;
     let l = s
         .map()
         .layer_by_name(tl)
@@ -477,4 +479,21 @@ onwheel=e=>{{const nz=Math.max(minZ,Math.min(maxZ,z+(e.deltaY<0?1:-1)));if(nz!==
         cx = c.x,
         cy = c.y
     )
+}
+
+/// Binds both raster and training polygons through their shared literal selectors.
+fn training_inputs(input: &super::InputContext<'_>, p: &Value) -> Result<super::Inputs, String> {
+    let s = input;
+    super::Inputs::named(s.map(), [super::imagery::raster_name(p)?, super::imagery::training_name(p)?])
+}
+/// Follows classification's training-or-saved-model branch without copying trained weights.
+fn classify_inputs(input: &super::InputContext<'_>, p: &Value) -> Result<super::Inputs, String> {
+    if p.get("training").is_some() {
+        return training_inputs(input, p);
+    }
+    let s = input;
+    let mut inputs = super::Inputs::named(s.map(), [super::imagery::raster_name(p)?])?;
+    let i = model_index(input, p)?;
+    inputs.state = json!({"model":s.project.dl_models.get(i).map(|m|&m.name),"index":i});
+    Ok(inputs)
 }

@@ -281,7 +281,24 @@ impl FileBridge {
                 }
                 let entered = s.active_layer;
                 s.actor = Some(BRIDGE_ACTOR.to_string());
-                let text = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| server.handle(s, &call))).ok().flatten();
+                let access = if server.full_access {
+                    rustgis_engine::policy::AgentAccess::Full
+                } else if server.allow_access {
+                    rustgis_engine::policy::AgentAccess::Allow
+                } else {
+                    rustgis_engine::policy::AgentAccess::Refuse
+                };
+                let scope = rustgis_engine::policy::Scope::agent(
+                    access,
+                    true,
+                    BRIDGE_ACTOR,
+                    Some(BRIDGE_ACTOR.into()),
+                    Arc::new(BridgeLive(Arc::downgrade(&self.inner))),
+                );
+                let text =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| server.handle_scoped(s, &call, scope, Vec::new(), "bridge")))
+                        .ok()
+                        .flatten();
                 s.actor = None;
                 if s.active_layer != entered || (crate::relay::selects_layer(&call) && crate::relay::reply_ok(text.as_deref())) {
                     *lock(&self.inner.active) = s.active_layer;
@@ -370,6 +387,26 @@ fn write_atomic(dir: &Path, name: &str, text: &str) -> Result<(), String> {
         let _ = std::fs::remove_file(&tmp);
         format!("{}: {e}", path.display())
     })
+}
+
+struct BridgeLive(std::sync::Weak<Inner>);
+impl rustgis_engine::policy::Revocation for BridgeLive {
+    fn allows(&self, e: rustgis_engine::policy::Effects) -> bool {
+        use rustgis_engine::policy::Effect;
+        let Some(inner) = self.0.upgrade() else {
+            return false;
+        };
+        if inner.stopped.load(SeqCst) {
+            return false;
+        }
+        if e.contains(Effect::Reserved) || e.contains(Effect::Automation) || e.contains(Effect::Replaces) {
+            return inner.full_access.load(SeqCst);
+        }
+        if e.contains(Effect::Files) || e.contains(Effect::Network) || e.contains(Effect::Plugin) {
+            return inner.allow_access.load(SeqCst) || inner.full_access.load(SeqCst);
+        }
+        true
+    }
 }
 
 #[cfg(test)]

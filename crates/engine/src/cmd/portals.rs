@@ -11,20 +11,20 @@ use crate::{CmdResult, CommandSpec as C, Session};
 
 pub fn commands() -> Vec<C> {
     vec![
-        C::new("osm.download", "Download OpenStreetMap Data", "Home › Add › Web Data", osm_download).roles(&[]).params(
+        C::new("osm.download", "Download OpenStreetMap Data", "Home › Add › Web Data", osm_download).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network)).params(
             r#"{"bbox"?: [west, south, east, north] | "view" (the map's extent, the default), "view"?: bool (false: a bbox must be given), "preset"?: "buildings"|"roads"|"railways"|"water"|"landuse"|"parks"|"pois"|"boundaries", "tags"?: "key=value, key" (any of them), "url"?: "an Overpass server (default https://overpass-api.de/api/interpreter)", "name"?: text, "answer"?: "the server's JSON answer, when already fetched (the app's background request)"}"#,
         ),
-        C::new("boundaries.add", "Add Administrative Boundaries", "Home › Add › Web Data", boundaries_add).roles(&[]).params(
+        C::new("boundaries.add", "Add Administrative Boundaries", "Home › Add › Web Data", boundaries_add).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network)).params(
             r#"{"country": "ISO 3166 alpha-3 code (CHE, KEN…)", "level"?: "ADM0" (the country, default) … "ADM5", "name"?: text, "text"?: "the boundaries' GeoJSON, when already fetched (the app's background request)"}"#,
         ),
-        C::new("boundaries.countries", "List geoBoundaries Countries", "Home › Add › Web Data", boundaries_countries).roles(&[]).view(),
-        C::new("portal.search", "Search Open Data", "Home › Add › Web Data", portal_search).roles(&[]).view().params(
+        C::new("boundaries.countries", "List geoBoundaries Countries", "Home › Add › Web Data", boundaries_countries).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network)).view(),
+        C::new("portal.search", "Search Open Data", "Home › Add › Web Data", portal_search).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network)).view().params(
             r#"{"query"?: text (needed by ckan, socrata, arcgis-hub and huggingface), "portal"?: "ckan" (data.gov's catalogue, the default, or any CKAN site) | "socrata" | "arcgis-hub" | "arcgis-portal" (ArcGIS Online, or the portal at url) | "earthdata-gis" (NASA's) | "openaerialmap" | "usgs-dem" (3DEP elevation models) | "ign-lidar" (IGN's LiDAR HD tiles, France) | "geolens" | "huggingface" (a dataset's files: portal.files) | "ocean-data" | "dynamical" (weather and climate Zarr stores), "url"?: "the portal: a CKAN site (https://open.canada.ca/data), a Socrata site (data.cityofnewyork.us), an ArcGIS Hub site, an ArcGIS portal, a GeoLens server", "org"?: "an ArcGIS organisation's id: its public items only", "type"?: "an ArcGIS portal's kind of item: all (the default), imagery, maps, features or webmaps", "dataset"?: "usgs-dem's elevation model: 1 meter, 1/9 arc-second (about 3 m), 1/3 arc-second (about 10 m, the default), 1 arc-second (about 30 m), Alaska 5 meter", "bbox"?: [west, south, east, north] | "view", "view"?: bool (true: where the map is; openaerialmap, usgs-dem and ign-lidar search where the map is unless given a bbox), "limit"?: 1–50 (20)}"#,
         ),
-        C::new("portal.files", "List a Dataset's Files", "Home › Add › Web Data", portal_files).roles(&[]).view().params(
+        C::new("portal.files", "List a Dataset's Files", "Home › Add › Web Data", portal_files).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network)).view().params(
             r#"{"dataset": "a Hugging Face dataset, owner/name, or an ArcGIS web map's item id (portal.search lists them)", "portal"?: "huggingface" (the default) | "arcgis-portal" | "earthdata-gis", "url"?: "the ArcGIS portal"}"#,
         ),
-        C::new("portal.add", "Add Open Data", "Home › Add › Web Data", portal_add).roles(&[]).params(
+        C::new("portal.add", "Add Open Data", "Home › Add › Web Data", portal_add).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network)).params(
             r#"{"url": "a resource's address, as portal.search lists it", "use"?: "file" (read by address, the default) | "zarr" (a store: its variable, or the first, at "index"'s steps, as layer.addZarr) | "wms" | "wfs" | "arcgis" (a service), "variable"?: "a Zarr store's variable", "index"?: {"time": 0}, "layer"?: "a service's layer (default: its first)", "name"?: text, "portal"?: "the portal's address the resource came from (an address it gives may not reach into the local network)"}"#,
         ),
     ]

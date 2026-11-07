@@ -1496,35 +1496,14 @@ impl Map {
             t.normalize();
         }
         let window = self.time.as_ref().map(time::TimeSlider::window);
-        let current = self.time.as_ref().map(|t| t.current);
         for l in &mut self.layers {
             let Layer { time, dataset, .. } = l;
             if let Some(b) = time.as_mut() {
                 b.apply(dataset, window);
             }
         }
-        let window = self.time.as_ref().map(time::TimeSlider::window);
         for t in &mut self.tiles {
-            // A file per date (a STAC data cube's tile): the last date in the window, or none; with
-            // the slider off, the last date of all, as at the end of the slider.
-            if !t.time_urls.is_empty() {
-                let at = match window {
-                    Some((from, to)) => t.time_urls.iter().rposition(|(d, _)| *d >= from && *d < to),
-                    None => t.time_urls.len().checked_sub(1),
-                };
-                t.time_hidden = at.is_none();
-                if let Some((d, u)) = at.and_then(|i| t.time_urls.get(i)) {
-                    t.url.clone_from(u);
-                    t.time_at = *d;
-                }
-                continue;
-            }
-            // Only web addresses take dates (a file's template is dropped when it is repaired).
-            if let Some(template) = t.time_url.as_ref().filter(|u| tiles::is_web(u)) {
-                // Off: the first date the slider showed, or the template's start of time.
-                t.url = rustgis_data::time::fill_template(template, current.unwrap_or(t.time_at));
-                t.time_at = current.unwrap_or(t.time_at);
-            }
+            t.apply_time(self.time.as_ref());
         }
     }
 
@@ -2851,7 +2830,7 @@ impl Map {
 }
 
 impl Layer {
-    /// Classifies whole owning fields; a source serving as provenance and a path occurs once.
+    /// Classifies each whole owning field once; equal addresses in different fields stay distinct.
     pub fn output_slots(&self) -> Vec<(LayerRole, &str, bool, bool)> {
         let Layer {
             id: _,

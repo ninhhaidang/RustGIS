@@ -41,6 +41,13 @@ including output from another session. This changes displayed output, not the st
 requests or permission checks. RustGIS does not retain revoked secrets just to recognize them
 in later output; review that output before sharing it.
 
+## Embedding-page command boundary
+
+The execution policy covers engine commands admitted through named assistant, MCP, plugin and
+imported-item scopes. The authority of `ui.*` RUN messages from embedding pages remains a
+separate, unresolved boundary; engine approval checks do not establish authorization for those
+UI messages.
+
 ## What counts as a security problem
 
 RustGIS makes promises about what untrusted plugins, files, agents and web pages can do. A way

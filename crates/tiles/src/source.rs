@@ -671,6 +671,7 @@ mod tests {
 
     #[test]
     fn resolves_raster_and_vector_templates_at_once() {
+        let _turn = crate::cache::turn();
         let Resolve::Ready(r) = resolve(&spec(Kind::Raster, "https://{s}.tile.example.com/{z}/{x}/{y}.png")) else { panic!("not ready") };
         assert_eq!(r.attribution, vec!["© OSM".to_string()]);
         match r.style.sources.first().map(|s| &s.1) {
@@ -702,6 +703,7 @@ mod tests {
 
     #[test]
     fn own_style_layers_draw_vector_tiles() {
+        let _turn = crate::cache::turn();
         let mut own = spec(Kind::Vector, "https://tiles.example.com/fields/{z}/{x}/{y}.pbf");
         own.style_layers = r##"[{"id": "f", "type": "fill", "source": "elsewhere", "source-layer": "fields",
             "paint": {"fill-color": ["step", ["get", "score"], "#d73027", 50, "#1a9850"]}}]"##
@@ -755,6 +757,7 @@ mod tests {
 
     #[test]
     fn refuses_forbidden_addresses() {
+        let _turn = crate::cache::turn();
         assert!(matches!(resolve(&spec(Kind::Raster, "http://169.254.169.254/{z}/{x}/{y}.png")), Resolve::Failed(_)));
         // A self-hosted server the user names is fine.
         assert!(matches!(resolve(&spec(Kind::Raster, "http://localhost:8080/{z}/{x}/{y}.png")), Resolve::Ready(_)));

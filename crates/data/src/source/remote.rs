@@ -41,6 +41,40 @@ pub const NEED: &str = "waiting for the file's bytes";
 /// covering, a server without ranges): it is downloaded whole instead.
 pub const READ_WHOLE: &str = "can't be read in place";
 
+/// An owned, principal-free predicate for a claimed deferred request.
+pub type Still = std::sync::Arc<dyn Fn() -> bool + Send + Sync>;
+thread_local! { static STILL: std::cell::RefCell<Option<Still>> = const { std::cell::RefCell::new(None) }; }
+/// Clones synchronous request context before a worker or browser future is scheduled.
+pub fn current_still() -> Option<Still> {
+    STILL.with(|s| s.borrow().clone())
+}
+/// The guard is synchronous. Never hold it across an await.
+pub fn with_still<T>(still: Still, f: impl FnOnce() -> T) -> T {
+    with_optional_still(Some(still), f)
+}
+/// Re-enters captured context synchronously, including around follow-on callbacks.
+pub fn with_optional_still<T>(still: Option<Still>, f: impl FnOnce() -> T) -> T {
+    struct Restore(Option<Still>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            STILL.with(|s| *s.borrow_mut() = self.0.take());
+        }
+    }
+    let previous = current_still();
+    let combined = match (previous.clone(), still) {
+        (Some(a), Some(b)) => Some(std::sync::Arc::new(move || a() && b()) as Still),
+        (Some(a), None) => Some(a),
+        (None, b) => b,
+    };
+    STILL.with(|s| *s.borrow_mut() = combined);
+    let _restore = Restore(previous);
+    f()
+}
+/// Checked immediately before a request-producing stage, without suspension before sending.
+pub fn check_still(still: &Option<Still>) -> std::result::Result<(), String> {
+    if still.as_ref().is_some_and(|s| !s()) { Err("request cancelled before it was sent".into()) } else { Ok(()) }
+}
+
 /// A request for part of a file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Want {
@@ -86,6 +120,17 @@ pub fn can_fetch() -> bool {
 
 /// Fetches a whole file through the installed fetcher (a file that can't be read in place).
 pub fn fetch_whole(url: &str, done: Done) {
+    let still = current_still();
+    if let Err(e) = check_still(&still) {
+        done(Err(Failed::Other(e)));
+        return;
+    }
+    let context = still.clone();
+    let done: Done = Box::new(move |r| {
+        with_optional_still(context.clone(), || {
+            done(check_still(&context).map_err(Failed::Other).and(r));
+        })
+    });
     if let Err(error) = crate::login_address::check(url) {
         done(Err(Failed::Other(error.into())));
         return;
@@ -438,16 +483,34 @@ pub fn drive<T: Send + 'static>(
     done: Box<dyn FnOnce(Result<T>) + Send>,
 ) {
     static NEXT: AtomicU64 = AtomicU64::new(1);
-    step(remote, work, done, NEXT.fetch_add(1, Ordering::Relaxed), 0);
+    step(remote, work, done, NEXT.fetch_add(1, Ordering::Relaxed), 0, current_still());
 }
 
+/// Re-enters the owned synchronous carrier for each read round, including callbacks on another thread.
 fn step<T: Send + 'static>(
     remote: Arc<Remote>,
     work: Arc<dyn Fn() -> Result<T> + Send + Sync>,
     done: Box<dyn FnOnce(Result<T>) + Send>,
     drive: u64,
     rounds: usize,
+    still: Option<Still>,
 ) {
+    with_optional_still(still.clone(), || step_in(remote, work, done, drive, rounds, still));
+}
+
+/// Checks before reading, sending each new range, accepting bytes and starting another round.
+fn step_in<T: Send + 'static>(
+    remote: Arc<Remote>,
+    work: Arc<dyn Fn() -> Result<T> + Send + Sync>,
+    done: Box<dyn FnOnce(Result<T>) + Send>,
+    drive: u64,
+    rounds: usize,
+    still: Option<Still>,
+) {
+    if let Err(e) = check_still(&still) {
+        done(Err(DataError::Format(e)));
+        return;
+    }
     if let Err(error) = crate::login_address::check(remote.url()) {
         done(Err(DataError::Format(error.into())));
         return;
@@ -462,7 +525,7 @@ fn step<T: Send + 'static>(
     }
     let wants = remote.take_missing(drive);
     if wants.is_empty() {
-        done(r);
+        done(check_still(&still).map_err(DataError::Format).and(r));
         return;
     }
     // Readers plan within READ_BUDGET; a round asking for far more is a hostile file's offsets.
@@ -488,42 +551,49 @@ fn step<T: Send + 'static>(
     let round = Arc::new(Mutex::new(Round { left: wants.len(), failed: None, done: Some(done) }));
     for w in wants {
         let (remote2, work2, round2) = (remote.clone(), work.clone(), round.clone());
+        let context = still.clone();
         let landed: Done = Box::new(move |res| {
-            match (w, res) {
-                (Want::Range(a, b), Ok(bytes)) => remote2.insert(a, b - a, bytes),
-                (Want::Tail(n), Ok(bytes)) => remote2.insert_tail(n, bytes),
-                // (Reads ask for ranges and tails; a whole file is all of its bytes from the start.)
-                (Want::Whole, Ok(bytes)) => remote2.insert(0, bytes.len() as u64, bytes),
-                // A request dropped unfetched (the view moved on) is asked for again next round.
-                (_, Err(Failed::Dropped)) => {}
-                // A range past the end of the file.
-                (Want::Range(a, b), Err(Failed::PastEnd)) => remote2.insert(a, b - a, Vec::new()),
-                (_, Err(e)) => {
-                    let e = match e {
-                        Failed::NoRanges => format!("the server doesn't answer byte-range requests ({READ_WHOLE})"),
-                        Failed::PastEnd => "the last bytes asked for past the end of the file".into(),
-                        Failed::Dropped => "the request was dropped".into(),
-                        Failed::Other(e) => e,
-                    };
-                    let mut r = round2.lock().unwrap_or_else(|e| e.into_inner());
-                    r.failed.get_or_insert(e);
-                }
-            }
-            let next = {
-                let mut r = round2.lock().unwrap_or_else(|e| e.into_inner());
-                r.left = r.left.saturating_sub(1);
-                if r.left == 0 { Some((r.done.take(), r.failed.take())) } else { None }
-            };
-            if let Some((Some(done), failed)) = next {
-                match failed {
-                    Some(e) => {
-                        done(Err(DataError::Format(if e.starts_with(remote2.url()) { e } else { format!("{}: {e}", remote2.url()) })))
+            with_optional_still(context.clone(), || {
+                let res = check_still(&context).map_err(Failed::Other).and(res);
+                match (w, res) {
+                    (Want::Range(a, b), Ok(bytes)) => remote2.insert(a, b - a, bytes),
+                    (Want::Tail(n), Ok(bytes)) => remote2.insert_tail(n, bytes),
+                    // (Reads ask for ranges and tails; a whole file is all of its bytes from the start.)
+                    (Want::Whole, Ok(bytes)) => remote2.insert(0, bytes.len() as u64, bytes),
+                    // A request dropped unfetched (the view moved on) is asked for again next round.
+                    (_, Err(Failed::Dropped)) => {}
+                    // A range past the end of the file.
+                    (Want::Range(a, b), Err(Failed::PastEnd)) => remote2.insert(a, b - a, Vec::new()),
+                    (_, Err(e)) => {
+                        let e = match e {
+                            Failed::NoRanges => format!("the server doesn't answer byte-range requests ({READ_WHOLE})"),
+                            Failed::PastEnd => "the last bytes asked for past the end of the file".into(),
+                            Failed::Dropped => "the request was dropped".into(),
+                            Failed::Other(e) => e,
+                        };
+                        let mut r = round2.lock().unwrap_or_else(|e| e.into_inner());
+                        r.failed.get_or_insert(e);
                     }
-                    None => step(remote2, work2, done, drive, rounds + 1),
                 }
-            }
+                let next = {
+                    let mut r = round2.lock().unwrap_or_else(|e| e.into_inner());
+                    r.left = r.left.saturating_sub(1);
+                    if r.left == 0 { Some((r.done.take(), r.failed.take())) } else { None }
+                };
+                if let Some((Some(done), failed)) = next {
+                    match failed {
+                        Some(e) => {
+                            done(Err(DataError::Format(if e.starts_with(remote2.url()) { e } else { format!("{}: {e}", remote2.url()) })))
+                        }
+                        None => step(remote2, work2, done, drive, rounds + 1, context),
+                    }
+                }
+            })
         });
-        fetch(&remote.url, w, landed);
+        match check_still(&still) {
+            Ok(()) => fetch(&remote.url, w, landed),
+            Err(e) => landed(Err(Failed::Other(e))),
+        }
     }
 }
 

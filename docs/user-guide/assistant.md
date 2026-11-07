@@ -21,8 +21,22 @@ than relying only on the model's reply. Commands that would read or write files,
 an address on the internet, run a plugin, script, task or model, or replace the project wait
 for you: **Allow** or **Decline**. SQL queries also ask, because SQL can access files and the
 network. **Allow such actions for this conversation** remembers the exact command and all
-its parameters, not general access to a file or server. Plugin commands, user automation and
+its parameters, not general access to a file or server. Plugin commands and tools, user automation and
 project replacement ask every time.
+
+The approval freezes the ordered operations shown, including tool defaults, target layers,
+selected layers used implicitly, and the current source and account choices. Changing those,
+editing a task or notebook, reloading a plugin, or replacing the project requires a new review.
+A remembered operation must match the same contents and targets; at most 64 are retained for
+the conversation. Large or unresolved requests refuse before running: split them into smaller
+steps or run them yourself. Reviews are bounded to 1,000 operations, four nested items, 64 KiB
+of frozen parameters and bindings, and 4 KiB of displayed text.
+
+Queued tools and downloads keep the initiating caller's authority. Stop, a revoked agent grant,
+a disabled plugin or project replacement prevents a new stage or result from being applied.
+A network request already sent may still finish; its revoked result is discarded. Tasks,
+notebooks and models opened from files, or made or changed by an assistant, agent or plugin,
+remain restricted to project edits. Undo restores the provenance of the exact content it restores.
 
 Enter sends, Shift+Enter starts a new line, and Up and Down recall earlier messages when the
 message box is empty or showing a recalled message. Drag the grip above it to resize it.
@@ -250,7 +264,11 @@ fetch the USGS stream gauges in Texas and add them to the map."
   file it writes) waits for **Allow**, **Always allow** (when the agent offers it) or
   **Decline** in its window. **Allow** never becomes a persistent approval: if no once-only
   option exists, use the explicitly labelled **Always allow** or decline. **Approve agents' actions without asking** lets them through
-  instead. Turn it on only if you trust the agent with your computer.
+  instead. Turn it on only if you trust the agent with your computer. With it off, RustGIS
+  sends a task only after confirming an asking or read-only mode; an agent with unknown or
+  missing modes must first report a compatible mode. Turning the setting off during a turn
+  that bypasses approval cancels that turn and requests an asking mode where available.
+  Cancellation cannot recall actions the agent already performed.
 - **RustGIS checks its own tools.** File, network, plugin-command and project-replacement
   requests from a local agent wait for a separate **Allow** or **Decline** in its window.
   Approval applies only to that exact MCP message and that agent's run; a batch is approved or
@@ -262,7 +280,7 @@ fetch the USGS stream gauges in Texas and add them to the map."
   the agent and its inputs. It also selects the agent's own full-access mode where available.
 - **Its work is kept.** Each task gets a folder in `Documents/RustGIS/Agent work`, and what the
   agent adds to the map comes from there. The assistant's reply names the folder.
-- **On the map, it has its thread's permission only.** It reaches the map through the MCP relay
+- **Its relay token carries its thread's permission.** It reaches the map through the MCP relay
   with a token of its own, which RustGIS revokes when the thread ends. **Stop** in its window, or
   **×** in the list, revokes its token immediately and terminates its live process tree on a
   background thread. A reaped leader's old process ID is never signalled.
@@ -363,3 +381,10 @@ ACP input uses a bounded background writer queue, so a stalled agent cannot bloc
 buttons or follow-up submission. Queue overflow reports an error instead of blocking. On Linux
 and macOS, an exited leader is observed without reaping until cleanup; its reserved identity
 lets Stop terminate surviving process-group descendants before finally reaping the leader.
+
+Exact approvals can follow an ordered activation of an existing map: later default layers use
+that map's normal selection rules. Layer identities include their owning map, even when two
+maps use the same numeric layer ids. A later step after a map creation, duplication, removal or
+rename cannot yet be frozen without running the change, so an exact approval refuses that
+combined request. Split it into requests, or perform the map change yourself first. Ordinary
+native commands and already allowed execution keep their existing behavior.

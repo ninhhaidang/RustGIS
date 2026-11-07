@@ -28,10 +28,10 @@ pub struct LayerClip {
 
 pub fn commands() -> Vec<C> {
     vec![
-        C::new("layer.copy", "Copy Layers", "Layers", copy).roles(&[]).view().params(
+        C::new("layer.copy", "Copy Layers", "Layers", copy).inputs(copy_inputs).roles(&[]).effects(crate::policy::Effects::NONE).view().params(
             r#"{"layer"?: name|id | [name|id, …] (default: the active layer, unless a group is given), "group"?: name|id | [name|id, …] (the group with all its layers and subgroups)}"#,
         ),
-        C::new("layer.paste", "Paste Layers", "Layers", paste).roles(&[]).when(need_copied).params(
+        C::new("layer.paste", "Paste Layers", "Layers", paste).inputs(paste_inputs).roles(&[]).effects(crate::policy::Effects::NONE).when(need_copied).params(
             r#"{"map"?: name (default: the map in view), "group"?: name|id (into that group, at its top; copied groups go in it too), "to"?: position (0 = top, the default; never inside a group: above it)}"#,
         ),
     ]
@@ -51,39 +51,8 @@ fn list(v: &Value) -> Result<Vec<&Value>, String> {
 }
 
 fn copy(s: &mut Session, p: &Value) -> CmdResult {
-    let mut ids: Vec<u32> = Vec::new();
-    let mut groups: Vec<LayerGroup> = Vec::new();
-    if let Some(v) = p.get("group").filter(|v| !v.is_null()) {
-        for g in list(v)? {
-            let id = super::group::group_id(s.map(), &json!({"group": g}))?;
-            let m = s.map();
-            // The group and its subgroups, outermost first, each once.
-            let mut tree = vec![id];
-            tree.extend(m.subgroups(id));
-            tree.sort_by_key(|g| m.group_depth(*g));
-            for gid in tree {
-                let Some(group) = m.group(gid) else { continue };
-                if groups.iter().all(|x| x.id != gid) {
-                    ids.extend(&group.children);
-                    groups.push(group.clone());
-                }
-            }
-        }
-    }
-    match p.get("layer") {
-        Some(v @ Value::Array(_)) => {
-            for v in list(v)? {
-                ids.push(s.layer_id(&json!({"layer": v}))?);
-            }
-        }
-        Some(v) if !v.is_null() => ids.push(s.layer_id(p)?),
-        // The active layer by default, unless only groups are copied.
-        _ if groups.is_empty() => ids.push(s.layer_id(p)?),
-        _ => {}
-    }
+    let (ids, groups) = copy_selection(s, p)?;
     let m = s.map();
-    ids.sort_by_key(|id| m.layer_index(*id));
-    ids.dedup();
     let layers: Vec<Layer> = ids
         .iter()
         .filter_map(|id| m.layer(*id))
@@ -189,14 +158,10 @@ fn paste(s: &mut Session, p: &Value) -> CmdResult {
     }
     // A mask follows its layer when that was pasted too; one the map lacks is cleared. Masks are
     // found as the renderer finds them: the first polygon layer of that name, case aside (ASCII).
-    let polygon = |m: &Map, id: u32| m.layer(id).is_some_and(|l| l.geometry_type() == GeometryType::Polygon);
     let mut unmasked: Vec<String> = Vec::new();
     for id in &pasted {
         let Some(mask) = m.layer(*id).and_then(|l| l.mask.clone()) else { continue };
-        let own = copied.iter().find(|(was, c)| was.eq_ignore_ascii_case(&mask) && polygon(m, *c)).map(|(_, c)| *c);
-        let found = own.or_else(|| {
-            m.layers.iter().find(|l| l.name.eq_ignore_ascii_case(&mask) && l.geometry_type() == GeometryType::Polygon).map(|l| l.id)
-        });
+        let found = mask_target(&mask, copied.iter().filter_map(|(name, id)| m.layer(*id).map(|l| (name.as_str(), l))), m).map(|l| l.id);
         let target = found.and_then(|c| m.layer(c)).map(|l| l.name.clone());
         if let Some(l) = m.layer_mut(*id) {
             if target.is_none() {
@@ -236,4 +201,77 @@ fn paste(s: &mut Session, p: &Value) -> CmdResult {
         many => s.notify(format!("{} lost their masks: {map} has no polygon layers by those names", many.join(", ")), false),
     }
     Ok(json!({"map": map, "layers": pasted, "groups": group_ids, "unmasked": unmasked}))
+}
+
+/// Resolves explicit layer lists and expanded groups with copy's precise active-layer fallback.
+fn copy_selection(input: &impl super::InputSource, p: &Value) -> Result<(Vec<u32>, Vec<LayerGroup>), String> {
+    let context = input.input_context();
+    let s = &context;
+    let mut ids: Vec<u32> = Vec::new();
+    let mut groups: Vec<LayerGroup> = Vec::new();
+    if let Some(v) = p.get("group").filter(|v| !v.is_null()) {
+        for g in list(v)? {
+            let id = super::group::group_id(s.map(), &json!({"group": g}))?;
+            let m = s.map();
+            // The group and its subgroups, outermost first, each once.
+            let mut tree = vec![id];
+            tree.extend(m.subgroups(id));
+            tree.sort_by_key(|g| m.group_depth(*g));
+            for gid in tree {
+                let Some(group) = m.group(gid) else { continue };
+                if groups.iter().all(|x| x.id != gid) {
+                    ids.extend(&group.children);
+                    groups.push(group.clone());
+                }
+            }
+        }
+    }
+    match p.get("layer") {
+        Some(v @ Value::Array(_)) => {
+            for v in list(v)? {
+                ids.push(s.layer_id(&json!({"layer": v}))?);
+            }
+        }
+        Some(v) if !v.is_null() => ids.push(s.layer_id(p)?),
+        // The active layer by default, unless only groups are copied.
+        _ if groups.is_empty() => ids.push(s.layer_id(p)?),
+        _ => {}
+    }
+    let m = s.map();
+    ids.sort_by_key(|id| m.layer_index(*id));
+    ids.dedup();
+    Ok((ids, groups))
+}
+
+/// Binds the copied layer subtree and copied group membership without changing the clipboard.
+fn copy_inputs(input: &super::InputContext<'_>, p: &Value) -> Result<super::Inputs, String> {
+    let s = input;
+    let (ids, groups) = copy_selection(input, p)?;
+    let mut inputs = super::Inputs::layers(ids.iter().filter_map(|id| s.map().layer(*id)).map(|l| (s.map(), l)));
+    inputs.state = json!(groups.iter().map(|g| (g.id, g.parent, &g.children)).collect::<Vec<_>>());
+    Ok(inputs)
+}
+/// Binds detached clipboard incarnations, destination and existing mask dependencies without rebinding ids.
+fn paste_inputs(input: &super::InputContext<'_>, p: &Value) -> Result<super::Inputs, String> {
+    let s = input;
+    let clip = s.layer_clipboard.as_ref().ok_or("no layers have been copied")?;
+    let map = s.project.maps.get(super::navigate::map_at(input, p)?).ok_or("no map")?;
+    let group = p.get("group").filter(|v| !v.is_null()).map(|_| super::group::group_id(map, p)).transpose()?;
+    let masks = clip.layers.iter().filter_map(|l| l.mask.as_ref()).filter_map(|name| {
+        let found = mask_target(name, clip.layers.iter().map(|l| (l.name.as_str(), l)), map)?;
+        map.layers.iter().find(|l| std::ptr::eq(*l, found))
+    });
+    let mut inputs = super::Inputs::layers(masks.map(|l| (map, l)));
+    inputs.maps.push(map.instance_id());
+    inputs.state = json!({"group":group,"clipboard":clip.layers.iter().map(|l|(l.instance_id(),&l.name,&l.mask,crate::policy::input_source(l))).collect::<Vec<_>>(),"groups":clip.groups.iter().map(|g|(g.id,g.parent,&g.children)).collect::<Vec<_>>()});
+    Ok(inputs)
+}
+
+/// Copied polygons win over the destination's first matching polygon, exactly as paste remaps masks.
+fn mask_target<'a>(name: &str, copied: impl IntoIterator<Item = (&'a str, &'a Layer)>, destination: &'a Map) -> Option<&'a Layer> {
+    copied
+        .into_iter()
+        .find(|(was, l)| was.eq_ignore_ascii_case(name) && l.geometry_type() == GeometryType::Polygon)
+        .map(|(_, l)| l)
+        .or_else(|| destination.layers.iter().find(|l| l.name.eq_ignore_ascii_case(name) && l.geometry_type() == GeometryType::Polygon))
 }

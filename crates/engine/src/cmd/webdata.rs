@@ -13,12 +13,12 @@ pub fn commands() -> Vec<C> {
     vec![
         C::new("nationalMap.services", "List The National Map Services", "Home › Add › Web Data › United States", |_, _| {
             Ok(national_map_list())
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .view(),
-        C::new("nationalMap.add", "Add The National Map Service", "Home › Add › Web Data › United States", national_map_add).roles(&[]).params(
+        C::new("nationalMap.add", "Add The National Map Service", "Home › Add › Web Data › United States", national_map_add).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network)).params(
             r#"{"service": "a service's id or title (nationalMap.services lists them), e.g. \"basemap/USGSTopo\"", "name"?: text}"#,
         ),
-        C::new("fieldsOfTheWorld.add", "Add Fields of the World", "Home › Add › Web Data", fields_add).roles(&[]).params(
+        C::new("fieldsOfTheWorld.add", "Add Fields of the World", "Home › Add › Web Data", fields_add).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network)).params(
             r#"{"year"?: 2017–2025 (2025), "draw"?: "both"|"fields"|"density" (both: field density zoomed out, fields from zoom 9), "minScore"?: 0–100 (fields scoring below are hidden; 0)}"#,
         ),
     ]

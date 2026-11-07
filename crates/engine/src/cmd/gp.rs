@@ -10,51 +10,51 @@ use crate::{CmdResult, CommandSpec as C, GpRecord, Session};
 
 pub fn commands() -> Vec<C> {
     vec![
-        C::new("gp.run", "Run Tool", "Analyze › Geoprocessing", run).roles(&[crate::ParamRole { key: "params", role: crate::Role::ToolParams }]).when(need_layers).params(r#"{"tool": tool id, "params": {...} (a layer by name; a standalone table by name or id)}"#),
-        C::new("gp.spatialJoin", "Spatial Join", "Analyze › Overlay", spatial_join).roles(&[])
+        C::new("gp.run", "Run Tool", "Analyze › Geoprocessing", run).roles(&[crate::ParamRole { key: "params", role: crate::Role::ToolParams }]).effects(crate::policy::Effects::NONE).when(need_layers).params(r#"{"tool": tool id, "params": {...} (a layer by name; a standalone table by name or id)}"#),
+        C::new("gp.spatialJoin", "Spatial Join", "Analyze › Overlay", spatial_join).roles(&[]).effects(crate::policy::Effects::NONE)
             .when(need_layers)
             .params(
                 r#"{"target": layer, "join": layer, "match"?: "Intersects" (default) | "Contains" | "Within", "operation"?: "Join one to one" (default) | "Join one to many", "keepAll"?: "Keep all" (default) | "Keep only matching", "prefix"?: "join_", "output"?: text}"#,
             ),
-        C::new("gp.zonalStats", "Zonal Statistics", "Analyze › Raster", zonal_stats).roles(&[])
+        C::new("gp.zonalStats", "Zonal Statistics", "Analyze › Raster", zonal_stats).roles(&[]).effects(crate::policy::Effects::NONE)
             .when(need_layers)
             .params(
                 r#"{"raster": raster, "polygons": polygon layer, "bands"?: [1-based band numbers] or single band (default 1), "stats"?: ["mean", "min", "max", "sum", "count", "stddev"] or "all" (default "all"), "prefix"?: text, "output"?: text}"#,
             ),
-        C::new("gp.bufferPoint", "Buffer A Point", "Analyze › Geoprocessing", buffer_point).roles(&[]).params(
+        C::new("gp.bufferPoint", "Buffer A Point", "Analyze › Geoprocessing", buffer_point).roles(&[]).effects(crate::policy::Effects::NONE).params(
             r#"{"lon": number, "lat": number, "distance": number, "units"?: "Kilometers" (default) | "Meters" | "Miles" | "Feet", "name"?: output}"#,
         ),
         C::new("gp.tools", "Tools", "Analyze › Geoprocessing", |_, _| {
             Ok(Value::Array(
-                rustgis_analysis::tools()
+                rustgis_analysis::published_tools()
                     .map(|t| {
                         json!({"id": t.id, "name": t.name, "toolbox": t.toolbox, "summary": t.summary,
                             "params": t.params.iter().map(|p| json!({"name": p.name, "label": p.label, "required": p.required, "kind": format!("{:?}", p.kind)})).collect::<Vec<_>>()})
                     })
                     .collect(),
             ))
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .view(),
-        C::new("gp.geolibre", "GeoLibre Tools", "Analyze › Geoprocessing", |_, _| Ok(geolibre_status())).roles(&[]).view(),
+        C::new("gp.geolibre", "GeoLibre Tools", "Analyze › Geoprocessing", |_, _| Ok(geolibre_status())).roles(&[]).effects(crate::policy::Effects::NONE).view(),
         C::new("gp.installGeolibre", "Install GeoLibre Tools", "Analyze › Geoprocessing", |_, _| {
             let path = install_geolibre(&|_, _| {})?;
             #[cfg(all(feature = "geolibre", not(target_arch = "wasm32")))]
             rustgis_geolibre::set_runner(Some(std::path::PathBuf::from(&path)))?;
             Ok(json!({"path": path, "status": geolibre_status()}))
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Reserved))
         .view(),
-        C::new("gp.uninstallGeolibre", "Uninstall GeoLibre Tools", "Analyze › Geoprocessing", |_, _| uninstall_geolibre()).roles(&[]).view(),
-        C::new("gp.finish", "Finish Tool Run", "Analyze › Geoprocessing", finish).roles(&[])
+        C::new("gp.uninstallGeolibre", "Uninstall GeoLibre Tools", "Analyze › Geoprocessing", |_, _| uninstall_geolibre()).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Reserved)).view(),
+        C::new("gp.finish", "Finish Tool Run", "Analyze › Geoprocessing", finish).roles(&[]).effects(crate::policy::Effects::NONE)
             .params(r#"{"id": a finished run (the browser's GeoLibre tools run asynchronously)}"#),
-        C::new("gp.fileDelivered", "Finish File Export", "Analyze › Geoprocessing", file_delivered).roles(&[])
+        C::new("gp.fileDelivered", "Finish File Export", "Analyze › Geoprocessing", file_delivered).roles(&[]).effects(crate::policy::Effects::NONE)
             .params(r#"{"id": pending file id, "error"?: download failure message}"#),
-        C::new("gp.setGeolibre", "Locate GeoLibre Runner", "Analyze › Geoprocessing", set_geolibre).roles(&[])
+        C::new("gp.setGeolibre", "Locate GeoLibre Runner", "Analyze › Geoprocessing", set_geolibre).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Reserved).with(crate::policy::Effect::Files))
             .view()
             .params(r#"{"path"?: "the geolibre executable (empty: look in the usual places)"}"#),
         C::new("gp.clearHistory", "Clear History", "Analyze › Geoprocessing › History", |s, _| {
             s.project.gp_history.clear();
             Ok(Value::Null)
-        }).roles(&[]),
+        }).roles(&[]).effects(crate::policy::Effects::NONE),
     ]
 }
 
@@ -62,7 +62,7 @@ pub fn commands() -> Vec<C> {
 pub fn geolibre_tools() -> &'static [rustgis_analysis::ToolSpec] {
     #[cfg(feature = "geolibre")]
     {
-        rustgis_analysis::external_tools_of(rustgis_geolibre::SOURCE)
+        rustgis_analysis::published_external_tools_of(rustgis_geolibre::SOURCE)
     }
     #[cfg(not(feature = "geolibre"))]
     {
@@ -74,7 +74,7 @@ pub fn geolibre_tools() -> &'static [rustgis_analysis::ToolSpec] {
 pub fn is_geolibre_tool(spec: &rustgis_analysis::ToolSpec) -> bool {
     #[cfg(feature = "geolibre")]
     {
-        rustgis_analysis::external_source(spec) == Some(rustgis_geolibre::SOURCE)
+        rustgis_analysis::published_external_tools_of(rustgis_geolibre::SOURCE).iter().any(|t| std::ptr::eq(t, spec))
     }
     #[cfg(not(feature = "geolibre"))]
     {
@@ -88,7 +88,7 @@ pub fn is_geolibre_tool(spec: &rustgis_analysis::ToolSpec) -> bool {
 pub fn geolibre_status() -> Value {
     #[cfg(all(feature = "geolibre", not(target_arch = "wasm32")))]
     {
-        let found = rustgis_geolibre::runner::find();
+        let found = rustgis_geolibre::runner::selected();
         json!({
             "supported": true,
             "web": false,
@@ -178,12 +178,24 @@ const MAX_ASYNC_RUNS: usize = 8;
 /// A GeoLibre run to carry out asynchronously (the browser's WASI runner): run `tool` with
 /// `argv` in a working folder `/work` holding `files`, then pass the new files and the printed
 /// lines to [`external_complete`] with `id`.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ExternalRun {
+    continuation: crate::policy::Continuation,
     pub id: u64,
     pub tool: String,
     pub argv: Vec<String>,
     pub files: Vec<(String, Vec<u8>)>,
+}
+
+impl ExternalRun {
+    pub fn can_start(&self) -> Result<(), String> {
+        self.continuation.check()
+    }
+    /// An owned principal-free predicate for preparation and the actual browser tool start.
+    pub fn still(&self) -> crate::render::rustgis_tiles::cache::Still {
+        let c = self.continuation.clone();
+        std::sync::Arc::new(move || c.check().is_ok())
+    }
 }
 
 /// The new files and printed lines of a finished run, or the runner's error.
@@ -194,15 +206,25 @@ pub type ExternalOutput = Result<(Vec<(String, Vec<u8>)>, Vec<String>), String>;
 pub fn external_start(s: &mut Session, tool: &str, params: &Value) -> Result<ExternalRun, String> {
     #[cfg(feature = "geolibre")]
     {
-        let spec = rustgis_analysis::tool(tool)
-            .filter(|t| rustgis_analysis::external_source(t) == Some(rustgis_geolibre::SOURCE))
-            .ok_or_else(|| format!("no GeoLibre tool '{tool}'"))?;
-        let params = rustgis_analysis::resolve_params(spec, params)?;
-        let job = rustgis_geolibre::prepare(spec, &map_inputs(s, Some(spec), &params)?, &params)?;
+        let op = s.authorize_tool(tool, params)?;
+        let continuation = s.tool_continuation(&op)?;
+        let crate::policy::ToolOp { pin, params } = op.op();
+        let spec = pin.spec();
+        if pin.resolved().source() != Some(rustgis_geolibre::SOURCE) {
+            return Err(format!("no GeoLibre tool '{tool}'"));
+        }
+        let params = params.clone();
+        let job = preparing(&continuation, || pin.prepare_suite(&map_inputs(s, Some(spec), &params)?, &params))?;
         s.next_pending = s.next_pending.wrapping_add(1);
         let id = s.next_pending;
-        let run = ExternalRun { id, tool: job.tool.clone(), argv: job.argv("/work"), files: job.files.clone() };
-        s.started.push((id, job, params, now_ms()));
+        let run = ExternalRun {
+            id,
+            tool: job.tool.clone(),
+            argv: job.argv("/work"),
+            files: job.files.clone(),
+            continuation: continuation.clone(),
+        };
+        s.started.push((id, job, params, now_ms(), continuation));
         // A run whose runner never answers is dropped eventually (it holds its input files).
         if s.started.len() > MAX_ASYNC_RUNS {
             s.started.remove(0);
@@ -226,7 +248,9 @@ pub fn external_complete(s: &mut Session, id: u64, ran: ExternalOutput) -> Resul
             .iter()
             .position(|(n, ..)| *n == id)
             .ok_or("the tool's run was dropped (its project was closed, or too many runs were waiting)")?;
-        let (_, job, params, t0) = s.started.remove(i);
+        s.check_delivery(&s.started.get(i).ok_or("no started tool with that id")?.4)?;
+        let (_, job, params, t0, continuation) = s.started.remove(i);
+        s.check_continuation(&continuation)?;
         // Reading the runner's files back parses outside `Session::run`'s guard: a bug in a
         // reader must not take the app down.
         let result = ran.map_err(|e| format!("{}: {e}", job.name)).and_then(|(files, lines)| {
@@ -236,6 +260,7 @@ pub fn external_complete(s: &mut Session, id: u64, ran: ExternalOutput) -> Resul
         let tool_id = format!("{}{}", rustgis_geolibre::PREFIX, job.tool);
         s.pending.push(crate::PendingRun {
             id,
+            continuation,
             tool: job.name.clone(),
             tool_id,
             params,
@@ -260,6 +285,7 @@ pub fn external_complete(s: &mut Session, id: u64, ran: ExternalOutput) -> Resul
 /// [`PluginRun::run`] there, hand what it returns to [`plugin_complete`], then apply it with
 /// `gp.finish {"id"}`.
 pub struct PluginRun {
+    continuation: crate::policy::Continuation,
     pub id: u64,
     /// The tool's id.
     pub tool: &'static str,
@@ -269,6 +295,7 @@ pub struct PluginRun {
 impl PluginRun {
     /// Runs the tool, blocking until it ends; `control` stops it and shows its progress.
     pub fn run(&self, control: &rustgis_plugins::tools::Control) -> Result<rustgis_analysis::ToolResult, String> {
+        self.continuation.check()?;
         // A bug in a tool must not take the app down.
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.job.run(control)))
             .unwrap_or_else(|_| Err(format!("{} failed unexpectedly", self.job.name())))
@@ -278,6 +305,7 @@ impl PluginRun {
 /// A tool's run on another thread, started and not yet complete: a plugin tool's
 /// ([`plugin_start`]) or a built-in one's ([`tool_start`]).
 pub(crate) struct StartedRun {
+    continuation: crate::policy::Continuation,
     id: u64,
     name: String,
     /// The tool's id, for the history.
@@ -302,24 +330,42 @@ fn full_ids(full: &std::collections::HashMap<String, Dataset>) -> FullIds {
     full.iter().map(|(k, d)| (k.clone(), d.features.iter().map(|f| f.id).collect())).collect()
 }
 
+/// Checks and carries the admitted owner through every synchronous input/preparation request.
+fn preparing<T>(continuation: &crate::policy::Continuation, f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    continuation.check()?;
+    let owner = continuation.clone();
+    let still = std::sync::Arc::new(move || owner.check().is_ok()) as crate::render::rustgis_tiles::cache::Still;
+    crate::render::rustgis_tiles::cache::with_still(still, || {
+        let result = f()?;
+        continuation.check()?;
+        Ok(result)
+    })
+}
+
 /// Prepares a run of a plugin tool on the active map, as `gp.run` would run it: its parameters
 /// checked and its layers read now, so that the map can change while it runs.
 pub fn plugin_start(s: &mut Session, tool: &str, params: &Value) -> Result<PluginRun, String> {
-    let spec = rustgis_analysis::tool(tool_id(tool).unwrap_or(tool))
-        .filter(|t| t.id.starts_with(rustgis_plugins::PREFIX))
-        .ok_or_else(|| format!("no plugin tool '{tool}'"))?;
-    let resolved = rustgis_analysis::resolve_params(spec, params)?;
-    let inputs = map_inputs(s, Some(spec), &resolved)?;
-    let job = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| rustgis_plugins::tools::prepare(spec, &inputs, &resolved)))
+    let op = s.authorize_tool(tool, params)?;
+    let continuation = s.tool_continuation(&op)?;
+    let crate::policy::ToolOp { pin, params: resolved } = op.op();
+    let spec = pin.spec();
+    let plugin = pin.plugin().ok_or_else(|| format!("no plugin tool '{tool}'"))?;
+    let (_, tid) = rustgis_plugins::split_id(spec.id).ok_or("invalid plugin tool id")?;
+    let (job, full_ids) = preparing(&continuation, || {
+        let inputs = map_inputs(s, Some(spec), resolved)?;
+        let job = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            rustgis_plugins::tools::prepare_pinned(plugin.plugin(), tid, &inputs, resolved)
+        }))
         .unwrap_or_else(|_| Err(format!("{} failed unexpectedly", spec.name)))?;
-    let full_ids = full_ids(&inputs.loaded);
-    drop(inputs);
-    let read = read_layers(s, spec, &resolved);
+        Ok((job, full_ids(&inputs.loaded)))
+    })?;
+    let read = read_layers(s, spec, resolved);
     s.next_pending = s.next_pending.wrapping_add(1);
     let id = s.next_pending;
     let params = recorded(Some(spec), params.clone());
     let map = (s.map().instance_id(), s.map().name.clone());
     s.plugin_runs.push(StartedRun {
+        continuation: continuation.clone(),
         id,
         name: spec.name.to_string(),
         tool: spec.id.to_string(),
@@ -333,7 +379,7 @@ pub fn plugin_start(s: &mut Session, tool: &str, params: &Value) -> Result<Plugi
     if s.plugin_runs.len() > MAX_ASYNC_RUNS {
         s.plugin_runs.remove(0);
     }
-    Ok(PluginRun { id, tool: spec.id, job })
+    Ok(PluginRun { id, tool: spec.id, job, continuation })
 }
 
 /// Whether a run from [`plugin_start`] still waits for its result: opening or creating a
@@ -353,6 +399,25 @@ pub fn plugin_complete(s: &mut Session, id: u64, result: Result<rustgis_analysis
     complete(s, id, result, None)
 }
 
+/// Where a sealed tool result lands; payload parameters cannot select this route.
+#[derive(Clone, Copy)]
+pub(crate) enum Landing {
+    Failure,
+    Project,
+    Map,
+}
+/// Classifies the actual owned output, shared by routing and the completion authority check.
+pub(crate) fn landing(result: &Result<rustgis_analysis::ToolResult, String>) -> Landing {
+    match result {
+        Err(_) => Landing::Failure,
+        Ok(r) => match &r.output {
+            Output::Layer(_) | Output::Selection { .. } | Output::Update { .. } => Landing::Map,
+            Output::Layers(out) if out.iter().any(|o| !matches!(o, rustgis_analysis::OutputLayer::Table(_))) => Landing::Map,
+            _ => Landing::Project,
+        },
+    }
+}
+
 /// Completes a started run: fits its result to the edits made while it ran and to the windows of
 /// the streamed layers it read whole (`full_ids` when it read them on its thread), and leaves it
 /// for `gp.finish {"id"}`.
@@ -367,15 +432,13 @@ fn complete(
         .iter()
         .position(|r| r.id == id)
         .ok_or("the tool's run was dropped (its project was closed, or too many runs were waiting)")?;
-    let run = s.plugin_runs.remove(i);
+    s.check_gp_delivery(&s.plugin_runs.get(i).ok_or("no started tool with that id")?.continuation)?;
+    let mut run = s.plugin_runs.remove(i);
+    s.refit_gp_sources(&mut run.continuation, &run.read)?;
     let mut result = result;
     // What it adds to or changes on the map belongs on the map it ran on, whatever its name or
     // place now: not another made since with its name.
-    let on_map = matches!(&result, Ok(r) if match &r.output {
-        Output::Layer(_) | Output::Selection { .. } | Output::Update { .. } => true,
-        Output::Layers(out) => out.iter().any(|o| !matches!(o, rustgis_analysis::OutputLayer::Table(_))),
-        _ => false,
-    });
+    let on_map = matches!(landing(&result), Landing::Map);
     let mut same = (0..s.project.maps.len()).filter(|&i| s.project.maps.get(i).is_some_and(|m| m.instance_id() == run.map.0));
     let ran_on = same.next().filter(|_| same.next().is_none());
     if on_map && ran_on != Some(s.project.active_map) {
@@ -398,6 +461,7 @@ fn complete(
     fit_to_windows(s, &mut result, &full_ids);
     s.pending.push(crate::PendingRun {
         id,
+        continuation: run.continuation,
         tool: run.name,
         tool_id: run.tool,
         params: run.params,
@@ -416,6 +480,8 @@ fn complete(
 /// another thread ([`ToolRun::run`]) while the session goes on. Desktop only: the browser runs
 /// tools inline, and its GeoLibre tools through its own runner ([`external_start`]).
 pub struct ToolRun {
+    pin: crate::policy::ToolPin,
+    continuation: crate::policy::Continuation,
     pub id: u64,
     /// The tool's id.
     pub tool: &'static str,
@@ -435,22 +501,30 @@ impl ToolRun {
     /// Reads the tool's inputs and runs it, blocking until it ends; `control` stops it and counts
     /// its progress (see [`rustgis_analysis::control`]).
     pub fn run(self, control: &std::sync::Arc<rustgis_analysis::control::Control>) -> ToolDone {
-        let ToolRun { tool, snap, params, .. } = self;
-        let name = rustgis_analysis::tool(tool).map_or(tool, |t| t.name);
+        let ToolRun { pin, continuation, snap, params, .. } = self;
+        let spec = pin.spec();
+        let name = spec.name;
+        if let Err(e) = continuation.check() {
+            return ToolDone { result: Err(e), full_ids: FullIds::new() };
+        }
         if control.is_cancelled() {
             return ToolDone { result: Err(format!("{name} was cancelled before it started")), full_ids: FullIds::new() };
         }
+        let current = continuation.clone();
+        let still = std::sync::Arc::new(move || current.check().is_ok()) as crate::render::rustgis_tiles::cache::Still;
         // A bug in reading the inputs, like one in a tool, must not take the app down.
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let inputs = match inputs_of(snap, rustgis_analysis::tool(tool), &params) {
-                Ok(inputs) => inputs,
-                Err(e) => return ToolDone { result: Err(e), full_ids: FullIds::new() },
-            };
-            let mut result = rustgis_analysis::run_with(tool, &inputs, &params, control);
-            if let Ok(r) = &mut result {
-                r.messages.extend(inputs.messages.iter().cloned());
-            }
-            ToolDone { result, full_ids: full_ids(&inputs.loaded) }
+            crate::render::rustgis_tiles::cache::with_still(still, || {
+                let inputs = match inputs_of(snap, Some(spec), &params) {
+                    Ok(inputs) => inputs,
+                    Err(e) => return ToolDone { result: Err(e), full_ids: FullIds::new() },
+                };
+                let mut result = pin.run(&inputs, &params, control, &|| continuation.check());
+                if let Ok(r) = &mut result {
+                    r.messages.extend(inputs.messages.iter().cloned());
+                }
+                ToolDone { result, full_ids: full_ids(&inputs.loaded) }
+            })
         }))
         .unwrap_or_else(|_| ToolDone { result: Err(format!("{name} failed unexpectedly")), full_ids: FullIds::new() })
     }
@@ -464,16 +538,22 @@ impl ToolRun {
 /// layer edited meanwhile is handled as for a plugin tool. Plugin tools start with
 /// [`plugin_start`].
 pub fn tool_start(s: &mut Session, tool: &str, params: &Value) -> Result<ToolRun, String> {
-    let spec = rustgis_analysis::tool(tool_id(tool).unwrap_or(tool))
-        .filter(|t| !t.id.starts_with(rustgis_plugins::PREFIX))
-        .ok_or_else(|| format!("no tool '{tool}'"))?;
-    let resolved = rustgis_analysis::resolve_params(spec, params)?;
+    let op = s.authorize_tool(tool, params)?;
+    let continuation = s.tool_continuation(&op)?;
+    let crate::policy::ToolOp { pin, params: resolved } = op.op();
+    let pin = pin.clone();
+    let resolved = resolved.clone();
+    let spec = pin.spec();
+    if pin.plugin().is_some() {
+        return Err(format!("no built-in or suite tool '{tool}'"));
+    }
     let read = read_layers(s, spec, &resolved);
     s.next_pending = s.next_pending.wrapping_add(1);
     let id = s.next_pending;
     let recorded_params = recorded(Some(spec), params.clone());
     let full_ids = FullIds::new();
     s.plugin_runs.push(StartedRun {
+        continuation: continuation.clone(),
         id,
         name: spec.name.to_string(),
         tool: spec.id.to_string(),
@@ -487,7 +567,7 @@ pub fn tool_start(s: &mut Session, tool: &str, params: &Value) -> Result<ToolRun
     if s.plugin_runs.len() > MAX_ASYNC_RUNS {
         s.plugin_runs.remove(0);
     }
-    Ok(ToolRun { id, tool: spec.id, snap: Snapshot::owned(s), params: params.clone() })
+    Ok(ToolRun { id, tool: spec.id, snap: Snapshot::owned(s), params: resolved, pin, continuation })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -515,7 +595,7 @@ pub fn tool_complete(s: &mut Session, id: u64, done: ToolDone) -> Result<(), Str
 /// thread of its own ([`super::workflows::ahead_on_copy`]): what it read and what it made, for
 /// the run here to take instead of running the tool again.
 pub(crate) struct RanAhead {
-    tool: String,
+    pin: crate::policy::ToolPin,
     params: Value,
     read: Snapshot<'static>,
     /// The view's extent, when the tool asked for it.
@@ -562,12 +642,16 @@ pub(crate) fn ran_ahead(s: &mut Session) -> Vec<RanAhead> {
 #[cfg(not(target_arch = "wasm32"))]
 /// The next tool run ahead, if it is this one on the same inputs: its result, the streamed rows
 /// it read whole and how long it took. Any other drops the rest, which came after it.
-fn take_ahead(s: &mut Session, tool: &str, params: &Value) -> Option<(Result<rustgis_analysis::ToolResult, String>, FullIds, u64)> {
+fn take_ahead(
+    s: &mut Session,
+    pin: &crate::policy::ToolPin,
+    params: &Value,
+) -> Option<(Result<rustgis_analysis::ToolResult, String>, FullIds, u64)> {
     let Some(Ahead::Taking(ran)) = &mut s.tools_ahead else { return None };
     let next = ran.pop_front()?;
     let now = Snapshot::of(s);
     let view = next.view.is_none_or(|v| v == view_extent(&now));
-    if next.tool == tool && next.params == *params && view && same_read(&next.read, &now) {
+    if next.pin == *pin && next.params == *params && view && same_read(&next.read, &now) {
         #[cfg(test)]
         {
             s.tools_taken += 1;
@@ -645,7 +729,7 @@ fn fit_to_changes(
     };
     // Another layer with its id (on a map that took the name of the one it ran on), or the layer
     // relinked to another table of its file, isn't it.
-    if now.dataset.source != was.source || now.linked_table() != was.table.as_deref() {
+    if now.instance_id() != was.instance || now.dataset.source != was.source || now.linked_table() != was.table.as_deref() {
         *res = Err(format!("{layer} was removed or replaced while {tool} ran"));
         return;
     }
@@ -690,6 +774,8 @@ fn output_layer(res: &Result<rustgis_analysis::ToolResult, String>) -> Option<St
 pub(crate) struct Read {
     /// The layer, by id: renamed perhaps, but not another of the same name.
     id: u32,
+    /// Numeric ids may be reused after removal; only this incarnation can receive an update.
+    instance: u64,
     /// Its dataset as the run read it: a copy that shares the rows, so taking it costs nothing
     /// however large the layer, and any edit since (which copies the rows held here too) shows.
     /// For a streamed layer, the window in view then.
@@ -703,9 +789,20 @@ pub(crate) struct Read {
 }
 
 impl Read {
+    /// Loading the same streamed source whole changes its representation, not its origin.
+    pub(crate) fn materialized(&self, id: u32, instance: u64, now: &rustgis_map::Layer) -> bool {
+        self.id == id
+            && self.instance == instance
+            && self.streamed
+            && !now.is_streamed()
+            && now.dataset.source == self.source
+            && now.linked_table() == self.table.as_deref()
+    }
+    /// Retains the same in-memory incarnation and source while names and streamed windows move.
     fn of(l: &rustgis_map::Layer) -> Self {
         Read {
             id: l.id,
+            instance: l.instance_id(),
             dataset: l.dataset.clone(),
             streamed: l.is_streamed(),
             source: l.dataset.source.clone(),
@@ -767,8 +864,12 @@ fn fit_to_windows(s: &Session, res: &mut Result<rustgis_analysis::ToolResult, St
 fn finish(s: &mut Session, p: &Value) -> CmdResult {
     let id = p.get("id").and_then(Value::as_u64).ok_or("id is required")?;
     let i = s.pending.iter().position(|r| r.id == id).ok_or("no finished run with that id")?;
+    s.check_gp_finish(&s.pending[i].continuation, landing(&s.pending[i].result))?;
     let r = s.pending.remove(i);
-    apply(s, Ran { name: r.tool, id: r.tool_id, command: None, started: r.started }, r.params, r.result, r.millis)
+    let c = r.continuation.clone();
+    s.resume_gp(&c, landing(&r.result), |s| {
+        apply(s, Ran { name: r.tool, id: r.tool_id, command: None, started: r.started }, r.params, r.result, r.millis)
+    })?
 }
 
 /// What a tool reads of the session: the active map, the standalone tables, the geoprocessing
@@ -857,10 +958,10 @@ fn inputs_of<'a>(snap: Snapshot<'a>, spec: Option<&rustgis_analysis::ToolSpec>, 
     #[cfg(not(target_arch = "wasm32"))]
     let mut full = full;
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(spec) = spec.filter(|t| rustgis_analysis::external_source(t).is_none()) {
+    if let Some(spec) = spec.filter(|t| rustgis_analysis::TOOLS.iter().any(|builtin| std::ptr::eq(builtin, *t))) {
         for parameter in spec.params.iter().filter(|p| p.kind == rustgis_analysis::ParamKind::VectorLayers) {
             for name in rustgis_analysis::layer_list(params.get(parameter.name).unwrap_or(&Value::Null))? {
-                if snap.map.layer_by_name(name).is_none() && !full.contains_key(name) {
+                if vector_file_input(spec, &snap.map, name) && !full.contains_key(name) {
                     let (dataset, report) = rustgis_data::io::read_path(std::path::Path::new(name)).map_err(|e| format!("{name}: {e}"))?;
                     messages.extend(report.messages.into_iter().map(|message| format!("{name}: {message}")));
                     full.insert(name.to_string(), dataset);
@@ -905,18 +1006,22 @@ fn streamed_inputs(
         if full.contains_key(&key) {
             continue;
         }
-        if let Some(l) =
-            map.layer_by_name(n).filter(|l| l.is_streamed() && (l.selection.is_empty() || spec.is_some_and(|t| t.id == "vectorToPmtiles")))
-        {
+        if let Some(l) = map.layer_by_name(n).filter(|l| reads_full_source(l, spec)) {
             full.insert(key, l.load_all().map_err(|e| format!("{}: {e}", l.name))?);
         }
     }
     Ok(full)
 }
 
+/// The executor's source-read choice, shared with pure permission planning.
+/// Selected in-memory windows need no whole read, except for the PMTiles exporter.
+pub(crate) fn reads_full_source(layer: &rustgis_map::Layer, spec: Option<&rustgis_analysis::ToolSpec>) -> bool {
+    layer.is_streamed() && (layer.selection.is_empty() || spec.is_some_and(|t| t.id == "vectorToPmtiles"))
+}
+
 /// The layers a tool's parameters name: the values of its layer parameters (all of them, for a
 /// tool without a spec), so a field or text value that happens to match a layer's name isn't one.
-fn layer_names<'v>(spec: Option<&rustgis_analysis::ToolSpec>, params: &'v Value) -> Vec<&'v str> {
+pub(crate) fn layer_names<'v>(spec: Option<&rustgis_analysis::ToolSpec>, params: &'v Value) -> Vec<&'v str> {
     fn names<'v>(v: &'v Value, out: &mut Vec<&'v str>) {
         match v {
             Value::String(s) => out.push(s),
@@ -1016,9 +1121,7 @@ impl Inputs for MapInputs<'_> {
         self.loaded
             .get(layer)
             .or_else(|| self.loaded.get(&layer.to_ascii_lowercase()))
-            .or_else(|| self.snap.map.layer_by_name(layer).map(|l| &l.dataset))
-            // A table as commands find one: by its name, else (names can repeat) by its id.
-            .or_else(|| crate::project::find_table(&self.snap.tables, layer).and_then(|i| self.snap.tables.get(i)).map(|t| &t.dataset))
+            .or_else(|| project_input(&self.snap.map, &self.snap.tables, layer, false).map(|i| i.dataset()))
     }
     fn table(&self, id: u32) -> Option<&Dataset> {
         self.snap.tables.iter().find(|t| t.id == id).map(|t| &t.dataset)
@@ -1055,9 +1158,15 @@ fn run(s: &mut Session, p: &Value) -> CmdResult {
     run_tool(s, &tool, &params)
 }
 
+/// Resolves the same tool for execution and permission checks, keeping built-in name precedence.
+/// History records may name a tool by its display name rather than its id.
+pub fn resolve_tool(name: &str) -> Option<&'static rustgis_analysis::ToolSpec> {
+    rustgis_analysis::resolve_published(name).map(|r| r.spec())
+}
+
 /// The id of a tool named by its id or its display name (history records keep the name).
 pub fn tool_id(name: &str) -> Option<&'static str> {
-    rustgis_analysis::tool(name).or_else(|| rustgis_analysis::tools().find(|t| t.name.eq_ignore_ascii_case(name))).map(|t| t.id)
+    resolve_tool(name).map(|t| t.id)
 }
 
 /// One point, for a tool run on a place clicked on the map.
@@ -1096,7 +1205,12 @@ fn buffer_point(s: &mut Session, p: &Value) -> CmdResult {
         command["name"] = n.clone();
     }
     let t0 = now_ms();
-    let res = rustgis_analysis::run("buffer", &PointInput(ds), &params);
+    let op = s.point_tool(&params)?;
+    let c = s.tool_continuation(&op)?;
+    s.check_continuation(&c)?;
+    let tool = op.op();
+    let res = tool.pin.run(&PointInput(ds), &tool.params, &rustgis_analysis::control::Control::new(), &|| c.check());
+    s.check_continuation(&c)?;
     let millis = now_ms().saturating_sub(t0);
     let ran = Ran { name: "Buffer".into(), id: "buffer".into(), command: Some(("gp.bufferPoint".into(), command)), started: t0 };
     apply(s, ran, params, res, millis)
@@ -1130,37 +1244,60 @@ pub fn run_tool_with(
     params: &Value,
     control: &std::sync::Arc<rustgis_analysis::control::Control>,
 ) -> CmdResult {
-    let tool = tool_id(tool).unwrap_or(tool).to_string();
-    let params = params.clone();
+    let op = s.authorize_tool(tool, params)?;
+    s.invoke_tool(op, control)
+}
+
+/// Runs only the immutable tool/schema/load admitted by policy.
+pub(crate) fn execute(
+    s: &mut Session,
+    op: crate::policy::Authorized<crate::policy::ToolOp>,
+    control: &std::sync::Arc<rustgis_analysis::control::Control>,
+) -> CmdResult {
+    let crate::policy::ToolOp { pin, params } = op.op();
+    pin.current()?;
+    let spec = pin.spec();
+    #[cfg(not(target_arch = "wasm32"))]
+    let recording = matches!(s.tools_ahead, Some(Ahead::Recording(_)));
+    #[cfg(not(target_arch = "wasm32"))]
+    let current = rustgis_analysis::control::current().filter(|_| recording);
+    #[cfg(not(target_arch = "wasm32"))]
+    let control = current.as_ref().unwrap_or(control);
     let t0 = now_ms();
     if control.is_cancelled() {
-        let spec = rustgis_analysis::tool(&tool);
-        let name = spec.map(|t| t.name).unwrap_or("Tool").to_string();
-        let e = format!("{name} was cancelled before it started");
-        return apply(s, Ran { name, id: tool, command: None, started: t0 }, recorded(spec, params), Err(e), 0);
+        let e = format!("{} was cancelled before it started", spec.name);
+        return apply(
+            s,
+            Ran { name: spec.name.into(), id: spec.id.into(), command: None, started: t0 },
+            recorded(Some(spec), params.clone()),
+            Err(e),
+            0,
+        );
     }
+    let continuation = s.tool_continuation(&op)?;
     #[cfg(not(target_arch = "wasm32"))]
-    let ran = take_ahead(s, &tool, &params);
+    let ran = take_ahead(s, pin, params);
     #[cfg(target_arch = "wasm32")]
     let ran = None;
     let (mut res, ids, millis) = match ran {
         Some(ran) => ran,
         None => {
             #[cfg(not(target_arch = "wasm32"))]
-            let recording = matches!(s.tools_ahead, Some(Ahead::Recording(_)));
-            #[cfg(not(target_arch = "wasm32"))]
-            if recording && !rustgis_analysis::tool(&tool).is_some_and(|t| !rustgis_analysis::is_external(t) && !writes_files(t)) {
+            if recording && (pin.resolved().source().is_some() || writes_files(spec)) {
                 return Err(NOT_AHEAD.into());
             }
-            // A copy of the session runs under the control of the thread it runs on, which Cancel stops.
-            #[cfg(not(target_arch = "wasm32"))]
-            let current = rustgis_analysis::control::current().filter(|_| recording);
-            #[cfg(not(target_arch = "wasm32"))]
-            let control = current.as_ref().unwrap_or(control);
             #[cfg(not(target_arch = "wasm32"))]
             let read = recording.then(|| Snapshot::owned(s));
-            let inputs = map_inputs(s, rustgis_analysis::tool(&tool), &params)?;
-            let mut res = rustgis_analysis::run_with(&tool, &inputs, &params, control);
+            let inputs = map_inputs(s, Some(spec), params)?;
+            let mut res = if let Some(plugin) = pin.plugin() {
+                let (_, tool) = rustgis_plugins::split_id(spec.id).ok_or("invalid plugin tool id")?;
+                rustgis_analysis::run_under(spec.name, control, || {
+                    rustgis_plugins::tools::prepare_pinned(plugin.plugin(), tool, &inputs, params)?
+                        .run(&rustgis_plugins::tools::Control::default())
+                })
+            } else {
+                pin.run(&inputs, params, control, &|| continuation.check())
+            };
             if let Ok(result) = &mut res {
                 result.messages.extend(inputs.messages.iter().cloned());
             }
@@ -1176,16 +1313,29 @@ pub fn run_tool_with(
             let millis = now_ms().saturating_sub(t0);
             #[cfg(not(target_arch = "wasm32"))]
             if let (Some(read), Some(Ahead::Recording(ran))) = (read, &mut s.tools_ahead) {
-                let (result, full_ids) = (res.clone(), ids.clone());
-                ran.push(RanAhead { tool: tool.clone(), params: params.clone(), read, view, result, full_ids, millis });
+                ran.push(RanAhead {
+                    pin: pin.clone(),
+                    params: params.clone(),
+                    read,
+                    view,
+                    result: res.clone(),
+                    full_ids: ids.clone(),
+                    millis,
+                });
             }
             (res, ids, millis)
         }
     };
+    pin.current()?;
+    continuation.check()?;
     fit_to_windows(s, &mut res, &ids);
-    let spec = rustgis_analysis::tool(&tool);
-    let name = spec.map(|t| t.name).unwrap_or("Tool").to_string();
-    apply(s, Ran { name, id: tool, command: None, started: t0 }, recorded(spec, params), res, millis)
+    apply(
+        s,
+        Ran { name: spec.name.into(), id: spec.id.into(), command: None, started: t0 },
+        recorded(Some(spec), params.clone()),
+        res,
+        millis,
+    )
 }
 
 /// Whether a tool can read files named by a path or vector-layer-list parameter.
@@ -1200,6 +1350,7 @@ pub fn writes_files(spec: &rustgis_analysis::ToolSpec) -> bool {
 
 /// A browser file export waiting for delivery, without a success record until acknowledged.
 pub(crate) struct PendingFile {
+    pub(crate) continuation: crate::policy::Continuation,
     pub(crate) id: u64,
     pub(crate) file_name: String,
     pub(crate) bytes: Option<Vec<u8>>,
@@ -1220,7 +1371,7 @@ fn queue_file(s: &mut Session, file_name: String, bytes: Vec<u8>, record: GpReco
     }
     s.next_pending = s.next_pending.wrapping_add(1);
     let id = s.next_pending;
-    s.file_outputs.push(PendingFile { id, file_name: file_name.clone(), bytes: Some(bytes), record });
+    s.file_outputs.push(PendingFile { id, file_name: file_name.clone(), bytes: Some(bytes), record, continuation: s.continuation()? });
     s.request_only = true;
     Ok(json!({"pending": true, "download": id, "file": file_name}))
 }
@@ -1229,6 +1380,7 @@ fn queue_file(s: &mut Session, file_name: String, bytes: Vec<u8>, record: GpReco
 fn file_delivered(s: &mut Session, p: &Value) -> CmdResult {
     let id = p.get("id").and_then(Value::as_u64).ok_or("id is required")?;
     let i = s.file_outputs.iter().position(|f| f.id == id).ok_or("no pending file with that id")?;
+    s.gp_file_owner(&s.file_outputs[i].continuation)?;
     if s.file_outputs[i].bytes.is_some() {
         return Err("the file has not been handed to the download service".into());
     }
@@ -1333,6 +1485,8 @@ fn names_file(source: &str, destination: &std::path::Path) -> bool {
 
 /// Adds a tool's result to the map and the history.
 fn apply(s: &mut Session, ran: Ran, params: Value, res: Result<rustgis_analysis::ToolResult, String>, millis: u64) -> CmdResult {
+    let continuation = s.continuation()?;
+    s.check_continuation(&continuation)?;
     let Ran { name, id, command, started } = ran;
     let at = started / 1000;
     let mut result = match res {
@@ -1518,6 +1672,18 @@ mod file_tests {
         assert!(pending.contains("pixels are not loaded"), "{pending}");
     }
 
+    /// Unit bytes still enter through Session::run so their late acknowledgment has an owner.
+    fn queue_file(s: &mut Session, name: String, bytes: Vec<u8>, record: GpRecord) -> CmdResult {
+        if s.registry.get("test.queueFile").is_none() {
+            s.registry.commands.push(C::new("test.queueFile", "File export", "Test", |s, p| {
+                let record = serde_json::from_value(p["record"].clone()).unwrap();
+                let bytes = serde_json::from_value(p["bytes"].clone()).unwrap();
+                super::queue_file(s, p["name"].as_str().unwrap().into(), bytes, record)
+            }));
+        }
+        s.run("test.queueFile", &json!({"name":name,"bytes":bytes,"record":record}))
+    }
+
     fn record() -> GpRecord {
         GpRecord {
             tool: "File export".into(),
@@ -1587,12 +1753,110 @@ mod file_tests {
         assert_eq!(s.undo_depth(), depth);
     }
 
+    /// Browser file bytes are an owned snapshot; native delivery does not target the displayed map.
+    #[test]
+    fn native_file_delivery_survives_a_map_switch() {
+        for take_before_switch in [false, true] {
+            let mut s = task_session(json!([]));
+            let pending = s.run("gp.run", &json!({"tool":"vectorToPmtiles", "params":{"input":"Cities","minZoom":0,"maxZoom":0}})).unwrap();
+            let id = pending["download"].as_u64().unwrap();
+            let early = take_before_switch.then(|| s.take_gp_files());
+            s.run("map.new", &json!({"name":"Other"})).unwrap();
+            let displayed = s.map().instance_id();
+            let files = early.unwrap_or_else(|| s.take_gp_files());
+            assert_eq!(files.len(), 1, "the native snapshot survives either delivery boundary");
+            assert_eq!(files[0].0, id);
+            assert!(files[0].2.starts_with(b"PMTiles\x03"), "the real exporter produced the queued file");
+            assert!(s.project.gp_history.is_empty(), "bytes alone do not record success");
+            assert_eq!(s.acknowledge_gp_file(id, None).unwrap()["delivered"], true);
+            assert_eq!(s.map().instance_id(), displayed, "delivery does not activate its origin map");
+            assert_eq!(s.project.gp_history.len(), 1);
+            assert!(s.project.gp_history[0].ok);
+            assert!(s.take_gp_files().is_empty(), "bytes are handed over once");
+            assert!(s.acknowledge_gp_file(id, None).is_err(), "delivery is acknowledged once");
+        }
+    }
+
+    /// Browser-style bytes and final delivery remain one-use and owned by their initiating agent.
+    #[test]
+    fn permission_policy_file_delivery_owner_and_replay() {
+        struct Live(std::sync::atomic::AtomicBool);
+        impl crate::policy::Revocation for Live {
+            fn allows(&self, _: crate::policy::Effects) -> bool {
+                self.0.load(std::sync::atomic::Ordering::SeqCst)
+            }
+        }
+        let mut s = task_session(json!([]));
+        let live = std::sync::Arc::new(Live(std::sync::atomic::AtomicBool::new(true)));
+        let owner =
+            crate::policy::Scope::agent(crate::policy::AgentAccess::Allow, false, "file-owner", Some("file-owner".into()), live.clone());
+        let foreign = crate::policy::Scope::agent(
+            crate::policy::AgentAccess::Allow,
+            false,
+            "file-foreign",
+            None,
+            std::sync::Arc::new(Live(std::sync::atomic::AtomicBool::new(true))),
+        );
+        let call = crate::policy::Call::tool("vectorToPmtiles", json!({"input":"Cities","minZoom":0,"maxZoom":0}));
+        let pending = s.run_scoped(owner.clone(), &call).unwrap();
+        let id = pending["download"].as_u64().unwrap();
+        assert!(s.run_scoped(foreign.clone(), &crate::policy::Call::command("gp.fileDelivered", json!({"id":id}))).is_err());
+        let mark = s.notice_mark();
+        assert!(s.with_scope(foreign, |s| s.take_gp_files()).unwrap().is_empty());
+        assert!(s.notices_since(mark).is_empty(), "a foreign drain leaves the owner's bytes and notices alone");
+        assert_eq!(s.take_gp_files().len(), 1);
+        assert!(s.take_gp_files().is_empty());
+        assert_eq!(s.acknowledge_gp_file(id, None).unwrap()["delivered"], true);
+        assert_eq!(s.undo_actor(), Some(Some("file-owner")));
+        assert!(s.acknowledge_gp_file(id, None).is_err());
+        s.run_scoped(owner.clone(), &crate::policy::Call::command("edit.undo", Value::Null)).unwrap();
+        // Several exports can be revoked together before the UI takes their bytes.
+        let mut retired = Vec::new();
+        for name in ["first.pmtiles", "second.pmtiles"] {
+            let call = crate::policy::Call::tool("vectorToPmtiles", json!({"input":"Cities","minZoom":0,"maxZoom":0,"output":name}));
+            let pending = s.run_scoped(owner.clone(), &call).unwrap();
+            retired.push(pending["download"].as_u64().unwrap());
+        }
+        live.0.store(false, std::sync::atomic::Ordering::SeqCst);
+        let mark = s.notice_mark();
+        assert!(s.take_gp_files().is_empty());
+        let errors: Vec<_> = s.notices_since(mark).iter().filter(|notice| notice.error).map(|notice| notice.text.as_str()).collect();
+        assert_eq!(
+            errors,
+            [
+                "2 pending file export(s) could not be completed (\"first.pmtiles\", \"second.pmtiles\"): this request's authority was revoked"
+            ]
+        );
+        assert!(s.project.gp_history.is_empty(), "revoked queued files cannot record success");
+        assert!(s.take_gp_files().is_empty());
+        for id in retired {
+            assert!(s.acknowledge_gp_file(id, None).is_err(), "a retired file cannot replay its acknowledgment");
+        }
+        assert_eq!(s.notices_since(mark).len(), 1, "retired file exports report their count once");
+        live.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        // A host callback may revoke authority after taking the bytes but before acknowledgment.
+        let pending = s.run_scoped(owner.clone(), &call).unwrap();
+        let id = pending["download"].as_u64().unwrap();
+        assert_eq!(s.take_gp_files().len(), 1);
+        live.0.store(false, std::sync::atomic::Ordering::SeqCst);
+        let notice_mark = s.notice_mark();
+        assert!(s.acknowledge_gp_file(id, None).unwrap_err().contains("revoked"));
+        assert!(s.notices_since(notice_mark).is_empty(), "the UI must report failures before command dispatch");
+        assert!(s.project.gp_history.is_empty(), "revoked delivery cannot record success");
+        live.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        let pending = s.run_scoped(owner, &call).unwrap();
+        s.run("map.new", &json!({"name":"Other"})).unwrap();
+        assert!(s.take_gp_files().is_empty(), "restricted delivery still requires its original active map");
+        assert!(s.acknowledge_gp_file(pending["download"].as_u64().unwrap(), None).is_err());
+        assert!(s.project.gp_history.is_empty(), "refused restricted delivery cannot record success");
+    }
+
     #[test]
     fn queueing_a_file_is_not_an_edit_before_delivery() {
         let mut s = Session::new(crate::Project::default());
         s.mark_saved();
         let depth = s.undo_depth();
-        let pending = s.guarded("File export", true, |s| queue_file(s, "cities.pmtiles".into(), vec![1, 2, 3], record())).unwrap();
+        let pending = queue_file(&mut s, "cities.pmtiles".into(), vec![1, 2, 3], record()).unwrap();
         assert!(!s.dirty(), "generated bytes alone do not change the project");
         assert_eq!(s.undo_depth(), depth, "queueing must not add an empty undo step");
         assert!(s.project.gp_history.is_empty());
@@ -1655,6 +1919,34 @@ mod file_tests {
         }
         assert!(queue_file(&mut s, "too-many.pmtiles".into(), vec![1], record()).is_err());
         assert_eq!(s.take_gp_files().len(), 8);
+    }
+
+    /// Draining an old refused file cannot let a new export escape a failed handler's rollback.
+    #[test]
+    fn failed_commands_cannot_replace_retired_pending_files() {
+        let mut s = task_session(json!([]));
+        let login = s
+            .run("connection.new", &json!({"kind":"wms","address":"https://file-rollback.invalid/wms","auth":"header","keyName":"X-Key"}))
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        s.run("connection.login", &json!({"id":login,"apiKey":"RGSYNTH_file_rollback"})).unwrap();
+        let old =
+            s.run("gp.run", &json!({"tool":"vectorToPmtiles","params":{"input":"Cities","minZoom":0,"maxZoom":0}})).unwrap()["download"]
+                .as_u64()
+                .unwrap();
+        s.run("connection.logout", &json!({"id":login})).unwrap();
+        s.registry.commands.push(C::new("test.replaceFileThenFail", "Failed replacement export", "Test", |s, _| {
+            s.take_gp_files();
+            s.run("gp.run", &json!({"tool":"vectorToPmtiles","params":{"input":"Cities","minZoom":0,"maxZoom":0}}))?;
+            Err("fail after replacing a refused file".into())
+        }));
+        assert!(s.run("test.replaceFileThenFail", &Value::Null).is_err());
+        assert!(s.take_gp_files().is_empty(), "the failed handler's replacement file cannot reach the UI");
+        assert!(s.file_outputs.is_empty());
+        assert!(s.acknowledge_gp_file(old, None).is_err(), "the old refused file must not be restored either");
+        assert!(s.project.gp_history.is_empty());
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -2154,15 +2446,20 @@ mod file_tests {
         std::fs::create_dir(&root).unwrap();
         let destination = root.join("cities.pmtiles");
         std::fs::write(&destination, b"previous").unwrap();
-        let file = || {
-            Ok(rustgis_analysis::ToolResult {
-                output: Output::File { file_name: "cities.pmtiles".into(), bytes: b"archive".to_vec() },
-                messages: vec!["Exported data".into()],
-            })
-        };
-        let ran = || Ran { name: "File export".into(), id: "vectorToPmtiles".into(), command: None, started: 1000 };
+        s.registry.commands.push(C::new("test.applyFile", "File export", "Test", |s, p| {
+            apply(
+                s,
+                Ran { name: "File export".into(), id: "vectorToPmtiles".into(), command: None, started: 1000 },
+                p.clone(),
+                Ok(rustgis_analysis::ToolResult {
+                    output: Output::File { file_name: "cities.pmtiles".into(), bytes: b"archive".to_vec() },
+                    messages: vec!["Exported data".into()],
+                }),
+                3,
+            )
+        }));
         let params = json!({"output": destination.display().to_string()});
-        let out = apply(&mut s, ran(), params, file(), 3).unwrap();
+        let out = s.run("test.applyFile", &params).unwrap();
         assert_eq!(out["bytes"], 7);
         assert_eq!(std::fs::read(&destination).unwrap(), b"archive");
         assert!(s.map().layers.is_empty());
@@ -2172,7 +2469,7 @@ mod file_tests {
         std::fs::create_dir(&occupied).unwrap();
         std::fs::write(occupied.join("keep"), b"unchanged").unwrap();
         let params = json!({"output": occupied.display().to_string()});
-        assert!(s.guarded("File export", true, |s| apply(s, ran(), params, file(), 3)).is_err());
+        assert!(s.guarded("File export", true, |s| s.run("test.applyFile", &params)).is_err());
         assert_eq!(std::fs::read(occupied.join("keep")).unwrap(), b"unchanged");
         assert_eq!(s.project.gp_history.len(), 2, "a failed save must be recorded");
         let failed = &s.project.gp_history[1];
@@ -2188,7 +2485,7 @@ mod file_tests {
         s.project.gp_history.resize(500, previous);
         let params = json!({"output": occupied.display().to_string()});
         assert!(
-            s.guarded("Failed export task", true, |s| { s.guarded("File export", true, |s| apply(s, ran(), params, file(), 3)) }).is_err()
+            s.guarded("Failed export task", true, |s| { s.guarded("File export", true, |s| s.run("test.applyFile", &params)) }).is_err()
         );
         assert_eq!(s.project.gp_history.len(), 500);
         assert!(s.project.gp_history.last().is_some_and(|record| !record.ok));
@@ -2205,7 +2502,7 @@ mod file_permission_tests {
     #[test]
     fn file_tools_are_file_access_even_without_an_output_path() {
         let s = Session::new(crate::Project::default());
-        let tool = rustgis_analysis::tool("vectorToPmtiles").expect("registered file export tool");
+        let tool = rustgis_analysis::resolve_published("vectorToPmtiles").expect("registered file export tool").spec();
         assert!(writes_files(tool));
         assert!(!reads_files(tool), "output files are not input paths");
         for output in [None, Some("archive"), Some("cities.pmtiles")] {
@@ -2214,7 +2511,7 @@ mod file_permission_tests {
                 params["output"] = json!(output);
             }
             let p = json!({"tool": "vectorToPmtiles", "params": params});
-            assert!(crate::cmd::items::touches_files("gp.run", &p));
+            assert!(crate::cmd::items::touches_files(&s, "gp.run", &p));
             let reaches = s.registry.get("gp.run").and_then(|spec| crate::cmd::plugins::reaches(spec, &p));
             assert!(matches!(reaches, Some(crate::cmd::plugins::Reach::Files)));
         }
@@ -2225,4 +2522,32 @@ mod file_permission_tests {
         };
         assert!(crate::model::output_ports(&node).is_empty(), "files must not be wired as layers");
     }
+}
+
+/// A project dataset chosen with the same precedence as the actual tool input provider.
+pub(crate) enum ProjectInput<'a> {
+    Layer(&'a rustgis_map::Layer),
+    Table(&'a crate::project::Table),
+}
+impl<'a> ProjectInput<'a> {
+    fn dataset(self) -> &'a Dataset {
+        match self {
+            Self::Layer(l) => &l.dataset,
+            Self::Table(t) => &t.dataset,
+        }
+    }
+}
+pub(crate) fn project_input<'a>(
+    map: &'a rustgis_map::Map,
+    tables: &'a [crate::project::Table],
+    name: &str,
+    raster: bool,
+) -> Option<ProjectInput<'a>> {
+    map.layer_by_name(name).map(ProjectInput::Layer).or_else(|| {
+        (!raster).then(|| crate::project::find_table(tables, name).and_then(|i| tables.get(i)).map(ProjectInput::Table)).flatten()
+    })
+}
+/// Builtin VectorLayers reads absent map names as files before MapInputs' table fallback.
+pub(crate) fn vector_file_input(spec: &rustgis_analysis::ToolSpec, map: &rustgis_map::Map, name: &str) -> bool {
+    rustgis_analysis::TOOLS.iter().any(|t| std::ptr::eq(t, spec)) && map.layer_by_name(name).is_none()
 }

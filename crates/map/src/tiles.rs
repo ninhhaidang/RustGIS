@@ -431,6 +431,30 @@ impl TileLayer {
         self.visible && !self.time_hidden && self.error.is_none()
     }
 
+    /// Selects this tile's date and address from a normalized slider, without fetching it.
+    /// With no slider, a dated list shows its last entry and a template keeps its saved date.
+    pub fn apply_time(&mut self, time: Option<&crate::time::TimeSlider>) {
+        let window = time.map(crate::time::TimeSlider::window);
+        let current = time.map(|t| t.current);
+        if !self.time_urls.is_empty() {
+            let at = match window {
+                Some((from, to)) => self.time_urls.iter().rposition(|(d, _)| *d >= from && *d < to),
+                None => self.time_urls.len().checked_sub(1),
+            };
+            self.time_hidden = at.is_none();
+            if let Some((d, u)) = at.and_then(|i| self.time_urls.get(i)) {
+                self.url.clone_from(u);
+                self.time_at = *d;
+            }
+            return;
+        }
+        // Only web addresses take dates (a file's template is dropped when it is repaired).
+        if let Some(template) = self.time_url.as_ref().filter(|u| is_web(u)) {
+            self.url = rustgis_data::time::fill_template(template, current.unwrap_or(self.time_at));
+            self.time_at = current.unwrap_or(self.time_at);
+        }
+    }
+
     /// Checks the address and brings the numbers into range, after reading one from a project
     /// file or a command.
     pub fn repair(&mut self) -> Result<(), String> {

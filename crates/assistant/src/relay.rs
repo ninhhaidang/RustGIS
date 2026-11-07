@@ -26,6 +26,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use rustgis_engine::Session;
+use rustgis_engine::policy::{AgentAccess, Effect, Effects, Outcome, Pending, Revocation, Scope};
 use serde_json::Value;
 
 use crate::framing::{self, MAX_LINE, Oversize, read_message_max};
@@ -109,6 +110,7 @@ const CANCELLED: u8 = 2;
 
 /// A queued message: its line, what its connection allows, where its reply goes, and its state.
 struct Request {
+    plans: Vec<(String, Pending)>,
     /// A positive preflight is cached while this exact message waits for a decision.
     approval_required: bool,
     /// Set while it waits for the user's approval, so its connection waits for the user
@@ -131,6 +133,8 @@ struct Request {
 pub struct Approval {
     pub id: u64,
     pub summary: String,
+    /// Sanitized engine cards, including structured details for translated UI presentation.
+    pub reviews: Vec<rustgis_engine::policy::Review>,
     token: String,
     state: Arc<AtomicU8>,
     decision: Arc<AtomicU8>,
@@ -215,6 +219,8 @@ pub struct ScreenRequest {
 /// A `snapshot` request waiting for the app to capture its window.
 struct Shot {
     req: Request,
+    scope: Scope,
+    completion: rustgis_engine::policy::Deferred,
     /// The request's JSON-RPC id and the tool's arguments.
     id: Value,
     args: Value,
@@ -692,18 +698,22 @@ impl Relay {
         }
         // A last resort, as for the messages `poll` runs: a panic answers with an error instead
         // of breaking the app.
-        let answer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match shot_png {
-            Ok(png) => crate::mcp::snapshot_result(s, &png, "screen", settled, &shot.args, None),
-            Err(why) => crate::mcp::render_snapshot(s, &shot.args, Some(&why)),
+        let req = shot.req;
+        let scope = shot.scope;
+        let answer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            s.finish_deferred(shot.completion, |s| match shot_png {
+                Ok(png) => crate::mcp::snapshot_result_checked(s, &png, "screen", settled, &shot.args, None, &scope),
+                Err(why) => crate::mcp::render_snapshot_checked(s, &shot.args, Some(&why), &scope),
+            })?
         }))
         .unwrap_or_else(|_| Err("the snapshot failed unexpectedly".into()));
         let result = answer.unwrap_or_else(|e| serde_json::json!({"content": [{"type": "text", "text": e}], "isError": true}));
         let reply = serde_json::json!({"jsonrpc": "2.0", "id": shot.id, "result": result}).to_string();
-        if let Some(a) = action(&shot.req.line, Some(&reply)) {
+        if let Some(a) = action(&req.line, Some(&reply)) {
             *lock(&self.owner.last) = Some(a);
         }
-        self.audit(&shot.req.line, Some(&reply), Duration::ZERO);
-        let _ = shot.req.reply.send(Some(reply));
+        self.audit(&req.line, Some(&reply), Duration::ZERO);
+        let _ = req.reply.send(Some(reply));
         self.owner.shared.notify();
     }
 
@@ -765,8 +775,8 @@ impl Relay {
         Ok(Grant { token, file, shared: Arc::downgrade(shared) })
     }
 
-    /// A local agent still has file/network capability, but every gated MCP message waits for
-    /// RustGIS-side approval. Neither --yes nor the global relay checkbox bypasses this queue.
+    /// With automatic approval off, gated MCP messages attached with this grant wait for
+    /// RustGIS-side approval. Neither --yes nor the global relay checkbox widens the grant.
     pub fn grant_reviewed(&self, auto: bool) -> Result<Grant, String> {
         let grant = self.grant(true)?;
         let grants = lock(&self.owner.shared.grants);
@@ -817,13 +827,21 @@ impl Relay {
             let reviewed = policy.get(&req.token).copied() == Some(false);
             if reviewed && access {
                 if !req.approval_required
-                    && let Some(summary) = approval_summary(s, &req.line)
+                    && let Some((summary, plans)) = {
+                        let layers = self.enter_agent(s, &req.token);
+                        let scope = self.request_scope(&req, AgentAccess::Review, s.actor.clone());
+                        let result = approval_plans(s, &req.line, &scope, &req.id.to_string());
+                        self.leave_agent(s, &req.token, layers, false);
+                        result
+                    }
                 {
+                    req.plans = plans;
                     req.approval_required = true;
                     req.held.store(true, SeqCst);
                     lock(&self.owner.shared.approvals).push(Approval {
                         id: req.id,
                         summary,
+                        reviews: req.plans.iter().map(|(_, p)| p.review().clone()).collect(),
                         token: req.token.clone(),
                         state: Arc::clone(&req.state),
                         decision: Arc::clone(&req.decision),
@@ -877,7 +895,38 @@ impl Relay {
                     .is_none()
             {
                 let wait = Duration::from_secs_f64(crate::mcp::snapshot_wait(&args));
-                *lock(&self.owner.shared.shot) = Some(Shot { req, id, args, wait });
+                let mode = if full_access {
+                    AgentAccess::Full
+                } else if reviewed && allow_access {
+                    AgentAccess::Review
+                } else if allow_access {
+                    AgentAccess::Allow
+                } else {
+                    AgentAccess::Refuse
+                };
+                let scope = self.request_scope(&req, mode, None);
+                let call = crate::provider::ToolCall {
+                    id: crate::mcp::request_key(&req.id.to_string(), 0),
+                    name: "snapshot".into(),
+                    args: args.clone(),
+                };
+                let completion = (|| {
+                    let engine = crate::tools::policy_call(&call)?.ok_or("missing snapshot adapter")?;
+                    let permit = req.plans.iter().position(|(id, _)| id == &call.id).map(|i| req.plans.remove(i).1.allow());
+                    s.defer(scope.clone(), &engine, permit)
+                })();
+                let completion = match completion {
+                    Ok(c) => c,
+                    Err(e) => {
+                        let answer =
+                            serde_json::json!({"jsonrpc":"2.0","id":id,"result":{"content":[{"type":"text","text":e}],"isError":true}})
+                                .to_string();
+                        let _ = req.reply.send(Some(answer));
+                        ran += 1;
+                        continue;
+                    }
+                };
+                *lock(&self.owner.shared.shot) = Some(Shot { req, scope, completion, id, args, wait });
                 let mut queue = lock(&self.owner.shared.requests);
                 for rest in pending.rev() {
                     queue.push_front(rest);
@@ -889,9 +938,23 @@ impl Relay {
             // The agent works with its own active layer and is named in the undo history; the
             // user's selection is theirs again afterwards.
             let layers = self.enter_agent(s, &req.token);
+            let mode = if full_access {
+                AgentAccess::Full
+            } else if reviewed && allow_access {
+                AgentAccess::Review
+            } else if allow_access {
+                AgentAccess::Allow
+            } else {
+                AgentAccess::Refuse
+            };
+            let scope = self.request_scope(&req, mode, s.actor.clone());
+            let permits =
+                if reviewed { std::mem::take(&mut req.plans).into_iter().map(|(id, p)| (id, p.allow())).collect() } else { Vec::new() };
             let started = Instant::now();
-            let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| server.handle(s, &req.line)))
-                .unwrap_or_else(|_| Some(internal_error(&req.line)));
+            let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                server.handle_scoped(s, &req.line, scope, permits, &req.id.to_string())
+            }))
+            .unwrap_or_else(|_| Some(internal_error(&req.line)));
             // A layer.select that failed (an unknown layer, a refusal) chose nothing.
             let picked = selects_layer(&req.line) && reply_ok(out.as_deref());
             self.leave_agent(s, &req.token, layers, picked);
@@ -909,6 +972,18 @@ impl Relay {
 impl Relay {
     /// Before an agent's call: names it as the session's actor and makes its own active layer
     /// (if it still exists) the session's. Returns the user's active layer.
+    fn request_scope(&self, req: &Request, access: AgentAccess, actor: Option<String>) -> Scope {
+        let actor = actor
+            .or_else(|| lock(&self.owner.shared.agents).get(&req.token).map(|a| a.name.clone()))
+            .unwrap_or_else(|| format!("relay {} request {}", self.owner.shared.run_id, req.id));
+        Scope::agent(
+            access,
+            true,
+            &actor,
+            Some(actor.clone()),
+            Arc::new(GrantLive { shared: Arc::downgrade(&self.owner.shared), token: req.token.clone(), asked: req.asked, access }),
+        )
+    }
     fn enter_agent(&self, s: &mut Session, token: &str) -> (Option<u32>, Option<u32>) {
         let mut agents = lock(&self.owner.shared.agents);
         let n = agents.len() + 1;
@@ -1231,6 +1306,7 @@ fn connection(stream: TcpStream, slot: &mut Slot) {
                 false
             } else {
                 queue.push_back(Request {
+                    plans: Vec::new(),
                     approval_required: false,
                     held: Arc::clone(&held),
                     id: shared.next_id.fetch_add(1, SeqCst),
@@ -1386,43 +1462,36 @@ fn request_id(msg: &Value) -> Value {
 
 /// Preflight the exact tool calls in a message, including batches. Reserved commands still go
 /// through Server::refusal and remain unavailable even after approval.
-fn approval_summary(s: &Session, line: &str) -> Option<String> {
+fn approval_plans(s: &Session, line: &str, scope: &Scope, request: &str) -> Option<(String, Vec<(String, Pending)>)> {
     let msg: Value = serde_json::from_str(line).ok()?;
     let messages = msg.as_array().map(Vec::as_slice).unwrap_or_else(|| std::slice::from_ref(&msg));
-    let server = Server { allow_access: true, skills: Vec::new(), users_project: true, full_access: false };
+    if messages.len() > crate::mcp::MAX_BATCH {
+        return None;
+    }
     let mut summaries = Vec::new();
-    for msg in messages {
-        if msg.get("method").and_then(Value::as_str) != Some("tools/call") || msg.get("id").is_none() {
+    let mut plans = Vec::new();
+    for (position, msg) in messages.iter().enumerate() {
+        if msg.get("method").and_then(Value::as_str) != Some("tools/call") {
             continue;
         }
-        let Some(params) = msg.get("params") else { continue };
-        let Some(name) = params.get("name").and_then(Value::as_str) else { continue };
-        let call = crate::provider::ToolCall {
-            id: String::new(),
-            name: name.to_string(),
-            args: params.get("arguments").cloned().unwrap_or(Value::Null),
+        let Some(id) = msg.get("id") else {
+            continue;
         };
-        if server.refusal(s, &call).is_none()
-            && let Some(reason) = crate::tools::gate(s, &call)
+        if !matches!(id, Value::String(_) | Value::Number(_)) {
+            continue;
+        }
+        let Some(params) = msg.get("params").filter(|p| p.is_object()) else { continue };
+        let Ok((name, arguments)) = crate::mcp::tool_request(params) else { continue };
+        let call = crate::provider::ToolCall { id: crate::mcp::request_key(request, position), name: name.into(), args: arguments };
+        if let Ok(Some(engine)) = crate::tools::policy_call(&call)
+            && let Outcome::NeedsApproval(p) = s.review(scope, &engine)
         {
-            summaries.push(format!("{}: {reason}", approval_text(name, &call.args)));
+            let review = p.review();
+            summaries.push(format!("{}: {}\n{}", review.what, review.why, review.steps.join("\n")));
+            plans.push((call.id, p));
         }
     }
-    (!summaries.is_empty()).then(|| summaries.join("\n"))
-}
-
-/// The most of a request's arguments an approval shows.
-const MAX_APPROVAL_TEXT: usize = 4096;
-
-/// A tool call as an approval shows it: its complete arguments, never cut (a cut text could hide
-/// the file or address approved), or a request too long to show, to decline.
-fn approval_text(name: &str, args: &Value) -> String {
-    let full = args.to_string();
-    if full.len() > MAX_APPROVAL_TEXT {
-        format!("{name}: a request too long to show in full ({} bytes); decline it", full.len())
-    } else {
-        format!("{name} {full}")
-    }
+    (!plans.is_empty()).then(|| (summaries.join("\n"), plans))
 }
 
 fn declined_reply(line: &str) -> String {
@@ -1451,6 +1520,41 @@ fn error_reply(id: &Value, code: i64, message: &str) -> String {
 fn internal_error(message: &str) -> String {
     let id = serde_json::from_str::<Value>(message).ok().map_or(Value::Null, |v| request_id(&v));
     error_reply(&id, -32603, "internal error")
+}
+
+/// The original grant and current user settings, checked on fetch workers as well as the UI.
+struct GrantLive {
+    shared: std::sync::Weak<Shared>,
+    token: String,
+    asked: bool,
+    access: AgentAccess,
+}
+impl Revocation for GrantLive {
+    fn allows(&self, effects: Effects) -> bool {
+        let Some(shared) = self.shared.upgrade() else {
+            return false;
+        };
+        if shared.stopped.load(SeqCst) {
+            return false;
+        }
+        let Some(access) = shared.access(&self.token, self.asked) else {
+            return false;
+        };
+        if (effects.contains(Effect::Reserved) || effects.contains(Effect::Automation) || effects.contains(Effect::Replaces))
+            && (!shared.full_access.load(SeqCst) || !same_token(&self.token, &shared.token))
+        {
+            return false;
+        }
+        if effects.contains(Effect::Files) || effects.contains(Effect::Network) || effects.contains(Effect::Plugin) {
+            if !access {
+                return false;
+            }
+            if self.access == AgentAccess::Allow && lock(&shared.reviewed).get(&self.token) == Some(&false) {
+                return false;
+            }
+        }
+        true
+    }
 }
 
 #[cfg(test)]
@@ -1491,6 +1595,7 @@ mod tests {
             let state = Arc::new(AtomicU8::new(PENDING));
             let id = relay.owner.shared.next_id.fetch_add(1, SeqCst);
             lock(&relay.owner.shared.requests).push_back(Request {
+                plans: Vec::new(),
                 approval_required: false,
                 held: Arc::default(),
                 id,
@@ -1517,6 +1622,37 @@ mod tests {
         assert!(path.exists());
         let reply: Value = serde_json::from_str(&rx.recv().unwrap().unwrap()).unwrap();
         assert_ne!(reply["result"]["isError"], true, "{reply}");
+        let changed = root.path().join("changed.png");
+        let (id, rx, _) = queue(export(&changed));
+        assert_eq!(relay.poll(&mut s), 0);
+        assert!(grant.pending().iter().any(|p| p.id == id)); // Freeze the actual first card.
+        s.run("layer.select", &json!({"layer":"Cities"})).unwrap();
+        grant.decide(id, true);
+        assert_eq!(relay.poll(&mut s), 1);
+        assert!(rx.recv().unwrap().unwrap().contains("changed"));
+        assert!(!changed.exists());
+        // A load replaced while the actual relay card is shown cannot inherit its consent.
+        let load = || {
+            rustgis_engine::plugins::load(
+                rustgis_engine::plugins::Package::from_zip(&rustgis_engine::plugins::testing::package("relay-policy-load", &["edit"]))
+                    .unwrap(),
+                "test",
+            )
+            .unwrap()
+        };
+        load();
+        let (id, rx, _) = queue(
+            json!({"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"run_command","arguments":{"command":"plugin:relay-policy-load/f","params":{"op":"layer.rename","params":{"layer":"Cities","name":"stale load"}}}}}),
+        );
+        assert_eq!(relay.poll(&mut s), 0);
+        assert!(grant.pending().iter().any(|p| p.id == id));
+        rustgis_engine::plugins::unload("relay-policy-load");
+        load();
+        grant.decide(id, true);
+        assert_eq!(relay.poll(&mut s), 1);
+        assert!(rx.recv().unwrap().unwrap().contains("changed"));
+        assert!(s.map().layer_by_name("stale load").is_none());
+        rustgis_engine::plugins::unload("relay-policy-load");
         let denied = root.path().join("denied.png");
         let (id, rx, _) = queue(export(&denied));
         assert_eq!(relay.poll(&mut s), 0);
@@ -1529,10 +1665,26 @@ mod tests {
         let batch_path = root.path().join("batch.png");
         let (id, rx, _) = queue(json!([{"jsonrpc":"2.0","id":0,"method":"tools/call"},export(&batch_path)]));
         assert_eq!(relay.poll(&mut s), 0, "malformed earlier entries cannot bypass batch approval");
+        assert!(grant.pending().iter().any(|p| p.id == id && p.summary.contains("share.exportMap")));
         grant.decide(id, false);
         assert_eq!(relay.poll(&mut s), 1);
         assert!(rx.recv().unwrap().unwrap().contains("declined"));
         assert!(!batch_path.exists());
+        // Repeated wire ids must not let a read consume the export's approval.
+        let duplicate_path = root.path().join("duplicate-id.png");
+        let (id, rx, _) = queue(json!([
+            {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_layers","arguments":{}}},
+            export(&duplicate_path)
+        ]));
+        assert_eq!(relay.poll(&mut s), 0);
+        assert!(!duplicate_path.exists());
+        grant.decide(id, true);
+        assert_eq!(relay.poll(&mut s), 1);
+        let reply: Value = serde_json::from_str(&rx.recv().unwrap().unwrap()).unwrap();
+        let replies = reply.as_array().unwrap();
+        assert_eq!(replies.len(), 2, "{reply}");
+        assert!(replies.iter().all(|r| r["id"] == 1 && r["result"]["isError"] == false), "{reply}");
+        assert!(duplicate_path.exists());
         let expired = root.path().join("expired.png");
         let (id, _, state) = queue(export(&expired));
         assert_eq!(relay.poll(&mut s), 0);
@@ -2104,6 +2256,42 @@ mod tests {
         relay.stop();
     }
 
+    /// The actual queued screen completion keeps its original grant and project generation.
+    #[test]
+    fn permission_policy_delayed_screen_refuses_revocation_and_replacement() {
+        let relay = Relay::start(0).unwrap();
+        let mut s = sample();
+        relay.set_screen(true);
+        relay.set_allow_access(true);
+        let mut client = TcpStream::connect(("127.0.0.1", relay.port())).unwrap();
+        attach(&mut client, &relay, false);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("held.png");
+        for (id, replace) in [(1, false), (2, true)] {
+            relay.set_allow_access(true);
+            writeln!(client, "{}", snapshot_call(id, json!({"save_path":path}))).unwrap();
+            client.flush().unwrap();
+            wait_until("the held screen request", || {
+                relay.poll(&mut s);
+                relay.screen_request().is_some()
+            });
+            if replace {
+                s.run("project.new", &json!({"name":"replacement"})).unwrap();
+            } else {
+                relay.set_allow_access(false);
+            }
+            // The fallback path is also late work; it must refuse before rendering/writing.
+            relay.finish_screen(&mut s, Err("screen unavailable".into()), false);
+            let r = reply(&client);
+            assert_eq!(r["result"]["isError"], true, "{r}");
+            assert!(!path.exists());
+            assert!(relay.screen_request().is_none());
+            relay.finish_screen(&mut s, Ok(vec![1, 2, 3]), false);
+            assert!(!path.exists(), "a replay has no owner claim");
+        }
+        relay.stop();
+    }
+
     /// Without the map on screen, or when the app can't capture it, a snapshot is drawn
     /// offscreen and says so; `mode: render` never waits for the app.
     #[test]
@@ -2630,9 +2818,20 @@ mod tests {
             json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "run_command", "arguments": {"command": "share.exportMap", "params": params}}})
                 .to_string()
         };
-        let padded = approval_summary(&s, &call(json!({"a": "a".repeat(400), "path": "/home/u/.profile"}))).unwrap();
+        let scope = Scope::agent(AgentAccess::Review, true, "review-fixture", None, std::sync::Arc::new(crate::tools::Live::default()));
+        let summary = |line: &str| approval_plans(&s, line, &scope, "request").map(|(text, _)| text);
+        let padded = summary(&call(json!({"a": "a".repeat(400), "path": "/home/u/.profile"}))).unwrap();
         assert!(padded.contains("/home/u/.profile"), "{padded}");
-        let huge = approval_summary(&s, &call(json!({"a": "a".repeat(5000), "path": "/home/u/.profile"}))).unwrap();
-        assert!(huge.contains("too long to show in full") && !huge.contains(".profile"), "{huge}");
+        let huge = call(json!({"a": "a".repeat(5000), "path": "/home/u/.profile"}));
+        assert!(summary(&huge).is_none(), "an unshowable request is refused before approval");
+        let raw: Value = serde_json::from_str(&huge).unwrap();
+        let engine = crate::tools::policy_call(&crate::provider::ToolCall {
+            id: "request/1".into(),
+            name: "run_command".into(),
+            args: raw["params"]["arguments"].clone(),
+        })
+        .unwrap()
+        .unwrap();
+        assert!(matches!(s.review(&scope, &engine), Outcome::Refused(e) if e.contains("too long to show in full")));
     }
 }

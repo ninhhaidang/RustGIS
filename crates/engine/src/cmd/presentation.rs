@@ -43,7 +43,7 @@ pub fn commands() -> Vec<C> {
             let i = s.project.presentations.len() - 1;
             s.active_presentation = Some(i);
             Ok(json!({"presentation": i, "name": name}))
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .params(r#"{"name"?, "title"?: the title page's text}"#),
         C::new("presentation.import", "Import Presentation", "Publish › Presentation", |s, p| {
             let text = super::items::read_text(p)?;
@@ -58,13 +58,13 @@ pub fn commands() -> Vec<C> {
             let i = s.project.presentations.len() - 1;
             s.active_presentation = Some(i);
             Ok(json!({"presentation": i, "name": name}))
-        }).roles(&[crate::ParamRole { key: "text", role: crate::Role::Document(crate::Document::Presentation) }])
+        }).roles(&[crate::ParamRole { key: "text", role: crate::Role::Document(crate::Document::Presentation) }]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
         .params(r#"{"path"?: "*.rgispres", "text"?: presentation JSON, "data"?: base64 file}"#),
         C::new("presentation.activate", "Open Presentation", "Browser", |s, p| {
             let i = index(s, p)?;
             s.active_presentation = Some(i);
             Ok(json!({"presentation": i}))
-        }).roles(&[])
+        }).inputs(object_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
         .view()
         .when(need_presentation)
         .params(r#"{"presentation": name|index}"#),
@@ -73,14 +73,11 @@ pub fn commands() -> Vec<C> {
             s.project.presentations.remove(i);
             s.active_presentation = None;
             Ok(Value::Null)
-        }).roles(&[])
+        }).inputs(object_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
         .when(need_presentation)
         .params(r#"{"presentation"?}"#),
         C::new("presentation.mapPage", "Map Page", "Publish › Page", |s, p| {
-            let map = match ps(p, "map") {
-                Some(n) => s.project.maps.iter().find(|m| m.name.eq_ignore_ascii_case(n)).ok_or_else(|| format!("no map '{n}'"))?,
-                None => s.map(),
-            };
+            let map = map_page_source(s,p)?;
             let name = map.name.clone();
             // The map view as it is now, unless a place is given.
             let c = map.center_lonlat();
@@ -88,14 +85,14 @@ pub fn commands() -> Vec<C> {
             let width_m = f(p, "widthM").unwrap_or(s.view_size.0 * map.ground_res()).clamp(10.0, 4e7);
             let title = ps(p, "title").unwrap_or(&name).to_string();
             add_page(s, p, title, PageKind::Map { map: name, center, width_m })
-        }).roles(&[])
+        }).inputs(map_page_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
         .when(need_presentation)
         .params(r#"{"presentation"?, "map"?: name (default: the active map, at its current view), "lon"?, "lat"?, "widthM"?: ground width shown (m), "title"?, "at"?: page index}"#),
         C::new("presentation.blankPage", "Blank Page", "Publish › Page", |s, p| {
             let background = super::layout::color(p, "background", Rgba::rgb(0xFF, 0xFF, 0xFF))?;
             let text: String = ps(p, "text").unwrap_or("").chars().take(MAX_TEXT).collect();
             add_page(s, p, ps(p, "title").unwrap_or("").to_string(), PageKind::Blank { text, background })
-        }).roles(&[])
+        }).inputs(object_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
         .when(need_presentation)
         .params(r##"{"presentation"?, "title"?, "text"?, "background"?: "#RRGGBB"|"#RRGGBBAA", "at"?}"##),
         C::new("presentation.imagePage", "Image Page", "Publish › Page", |s, p| {
@@ -106,7 +103,7 @@ pub fn commands() -> Vec<C> {
             };
             let caption: String = ps(p, "caption").unwrap_or("").chars().take(MAX_CAPTION).collect();
             add_page(s, p, ps(p, "title").unwrap_or("").to_string(), PageKind::Image { image, caption })
-        }).roles(&[])
+        }).inputs(object_inputs).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
         .when(need_presentation)
         .params(r#"{"presentation"?, "path"?: PNG/JPEG file, "image"?: base64, "data"?: base64, "title"?, "caption"?, "at"?}"#),
         C::new("presentation.videoPage", "Video Page", "Publish › Page", |s, p| {
@@ -119,10 +116,10 @@ pub fn commands() -> Vec<C> {
             let caption: String = ps(p, "caption").unwrap_or("").chars().take(MAX_CAPTION).collect();
             let title = ps(p, "title").map(str::to_string).unwrap_or_else(|| video_label(&source));
             add_page(s, p, title, PageKind::Video { source, poster, caption })
-        }).roles(&[])
+        }).inputs(object_inputs).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
         .when(need_presentation)
         .params(r#"{"presentation"?, "source": video file or URL, "poster"?: PNG/JPEG file, "posterImage"?: base64, "title"?, "caption"?, "at"?}"#),
-        C::new("presentation.updatePage", "Page Properties", "Presentation", update_page).roles(&[]).when(need_presentation).params(
+        C::new("presentation.updatePage", "Page Properties", "Presentation", update_page).inputs(page_inputs).roles(&[]).effects(crate::policy::Effects::NONE).when(need_presentation).params(
             r##"{"presentation"?, "page": index, "title"?, "text"?, "caption"?, "notes"?, "seconds"?, "background"?: "#RRGGBB"|"#RRGGBBAA", "moveTo"?: index}"##,
         ),
         C::new("presentation.removePage", "Delete Page", "Presentation", |s, p| {
@@ -130,7 +127,7 @@ pub fn commands() -> Vec<C> {
             let pres = s.project.presentations.get_mut(i).ok_or("no presentation")?;
             pres.pages.remove(k);
             Ok(json!({"pages": pres.pages.len()}))
-        }).roles(&[])
+        }).inputs(page_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
         .when(need_presentation)
         .params(r#"{"presentation"?, "page": index}"#),
         C::new("presentation.save", "Presentation File", "Publish › Save As", |s, p| {
@@ -139,7 +136,7 @@ pub fn commands() -> Vec<C> {
             let bytes = presentation_file(s, i)?;
             rustgis_data::io::write_atomic(Path::new(path), &bytes).map_err(|e| format!("{path}: {e}"))?;
             Ok(json!({"path": path}))
-        }).roles(&[])
+        }).inputs(object_inputs).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
         .view()
         .when(need_presentation)
         .params(r#"{"presentation"?, "path": "*.rgispres"}"#),
@@ -160,7 +157,7 @@ pub fn commands() -> Vec<C> {
             let (bytes, pages) = export_bytes(s, i, format, dpi)?;
             rustgis_data::io::write_atomic(Path::new(&path), &bytes).map_err(|e| format!("{path}: {e}"))?;
             Ok(json!({"path": path, "pages": pages, "bytes": bytes.len()}))
-        }).roles(&[])
+        }).inputs(export_inputs).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
         .view()
         .when(need_presentation)
         .params(r#"{"presentation"?, "path": "*.pdf|*.html (a self-contained slideshow, videos playable)|*.png (the first page)", "dpi"?: 48..300}"#),
@@ -190,7 +187,9 @@ pub(crate) fn video_label(source: &str) -> String {
 }
 
 /// The presentation named or numbered by `presentation`, else the active one, else the last.
-pub fn index(s: &Session, p: &Value) -> Result<usize, String> {
+fn index_input(input: &impl super::InputSource, p: &Value) -> Result<usize, String> {
+    let context = input.input_context();
+    let s = &context;
     let ps_ = &s.project.presentations;
     match p.get("presentation") {
         Some(Value::Number(n)) => {
@@ -209,8 +208,10 @@ pub fn index(s: &Session, p: &Value) -> Result<usize, String> {
     }
 }
 
-fn page_of(s: &Session, p: &Value) -> Result<(usize, usize), String> {
-    let i = index(s, p)?;
+fn page_of(input: &impl super::InputSource, p: &Value) -> Result<(usize, usize), String> {
+    let context = input.input_context();
+    let s = &context;
+    let i = index_input(input, p)?;
     let n = s.project.presentations.get(i).map_or(0, |x| x.pages.len());
     let k = p.get("page").and_then(Value::as_u64).and_then(|k| usize::try_from(k).ok()).ok_or("page is required")?;
     if k >= n {
@@ -328,8 +329,7 @@ pub fn page_layout(s: &Session, pres: &Presentation, page: &Page) -> Layout {
                 l.add("Title", (m, m, w - 2.0 * m, h * 0.12), text(&page.title, 30.0, dark, true));
             }
             let (fw, fh) = (w - 2.0 * m, h - top - m);
-            let map =
-                s.project.maps.iter().find(|x| x.name.eq_ignore_ascii_case(map)).map_or_else(|| s.map().name.clone(), |x| x.name.clone());
+            let map = page_map(s, map).name.clone();
             let scale = (width_m / (fw / 1000.0)).clamp(rustgis_map::layout::MIN_FRAME_SCALE, rustgis_map::layout::MAX_FRAME_SCALE);
             l.add(
                 "Map",
@@ -530,4 +530,63 @@ document.addEventListener('click',e=>{{if(e.target.tagName!=='VIDEO')go(i+1)}});
         title = html_escape(&name)
     );
     Ok((html.into_bytes(), n))
+}
+
+/// Resolves a supplied string map or the active-map default used to initialize a page.
+fn map_page_source<'a>(input: &'a impl super::InputSource, p: &Value) -> Result<&'a rustgis_map::Map, String> {
+    let context = input.input_context();
+    let s = &context;
+    match ps(p, "map") {
+        Some(name) => s.project.maps.iter().find(|m| m.name.eq_ignore_ascii_case(name)).ok_or_else(|| format!("no map '{name}'")),
+        None => Ok(s.map()),
+    }
+}
+/// Stored page map names fall back to the active map when absent, matching rendering.
+fn page_map<'a>(input: &'a impl super::InputSource, name: &str) -> &'a rustgis_map::Map {
+    let context = input.input_context();
+    let s = &context;
+    s.project.maps.iter().find(|m| m.name.eq_ignore_ascii_case(name)).unwrap_or_else(|| s.map())
+}
+/// Binds the map whose current view initializes the page.
+fn map_page_inputs(input: &super::InputContext<'_>, p: &Value) -> Result<super::Inputs, String> {
+    let map = map_page_source(input, p)?;
+    let mut inputs = object_inputs(input, p)?;
+    inputs.maps.push(map.instance_id());
+    Ok(inputs)
+}
+/// PNG consumes page zero; PDF/HTML consume all pages, using the renderer's stored-map fallback.
+fn export_inputs(input: &super::InputContext<'_>, p: &Value) -> Result<super::Inputs, String> {
+    let s = input;
+    let i = index_input(input, p)?;
+    let pres = s.project.presentations.get(i).ok_or("no presentation")?;
+    let png = ps(p, "path").is_some_and(|p| p.to_ascii_lowercase().ends_with(".png"));
+    let mut inputs = super::Inputs::layers(std::iter::empty());
+    for page in pres.pages.iter().take(if png { 1 } else { usize::MAX }) {
+        if let PageKind::Map { map, .. } = &page.kind {
+            let map = page_map(input, map);
+            inputs.extend(super::tiles::render_inputs(map));
+        }
+    }
+    inputs.state = json!({"presentation":i,"name":pres.name,"maps":pres.pages.iter().take(if png {1}else {usize::MAX}).enumerate().filter_map(|(i,p)|match &p.kind {PageKind::Map{map,..}=>Some((i,map)),_=>None}).collect::<Vec<_>>(),"tiles":inputs.state});
+    Ok(inputs)
+}
+
+/// Stored page references are not read by ordinary object edits or serialization.
+fn object_inputs(input: &super::InputContext<'_>, p: &Value) -> Result<super::Inputs, String> {
+    let s = input;
+    let i = index_input(input, p)?;
+    let mut inputs = super::Inputs::layers(std::iter::empty());
+    inputs.state = json!({"presentation":i,"name":s.project.presentations.get(i).map(|p|&p.name)});
+    Ok(inputs)
+}
+/// Page editing uses the executor's required numeric page selector.
+fn page_inputs(input: &super::InputContext<'_>, p: &Value) -> Result<super::Inputs, String> {
+    let mut inputs = object_inputs(input, p)?;
+    inputs.state["page"] = json!(page_of(input, p)?.1);
+    Ok(inputs)
+}
+
+/// The presentation/report selected by the live session, using the same pure resolver as approval.
+pub fn index(s: &Session, p: &Value) -> Result<usize, String> {
+    index_input(s, p)
 }

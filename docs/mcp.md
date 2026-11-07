@@ -376,6 +376,10 @@ protocol.
 
 ### Local-agent approvals
 
+These rules govern requests authenticated with the run's token. Local agent programs run with
+your operating-system account and their own tool permissions; a program allowed to read the main
+relay token can use its native-client access described above.
+
 Local agents launched by the assistant use `Relay::grant_reviewed(auto)`, not an unrestricted
 run grant. With automatic approval off, gated tool calls wait in a RustGIS-side queue scoped to
 that grant and exact message, including all tool calls in a batch. `--yes` and the general relay
@@ -384,6 +388,11 @@ stopping the relay cancels pending work. The approval wait has a separate 15-min
 other clients' reads can still run while it waits. Explicit automatic approval bypasses this
 extra queue for that run, but not the reserved-command refusals. Ordinary MCP clients retain
 the access policy described above.
+
+The displayed batch is frozen with its effective parameters, targets and runtime loads. If
+those change while it waits, RustGIS refuses it and the agent must request it again. Delayed
+downloads, tool results and screenshots retain the original grant, check it before starting
+another stage and before landing, and can be completed only once by their owner.
 
 Stopping the relay through its command or status-bar control also turns off its remembered
 agent-control choice. Copyable setup commands are labelled for POSIX shells or PowerShell and

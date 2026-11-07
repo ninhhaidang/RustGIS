@@ -11,36 +11,36 @@ pub fn commands() -> Vec<C> {
     vec![
         // Replacing or saving the project isn't an undoable edit: these are `.view()` commands
         // that manage `dirty` and the history themselves.
-        C::new("project.new", "New Project", "Project", new).roles(&[]).key("Mod+N").view().params(r#"{"name"?: string}"#),
-        C::new("project.sample", "World Atlas Sample", "Project", sample).roles(&[]).view(),
-        C::new("project.open", "Open Project", "Project", open).roles(&[]).key("Mod+O").view().params(r#"{"path": string}"#),
-        C::new("project.openText", "Open Project (from text)", "Project", open_text).roles(&[crate::ParamRole { key: "text", role: crate::Role::Document(crate::Document::Project) }]).view().params(r#"{"text": project JSON, "fileName"?: string, "package"?: "true for package contents: never restore saved layer secrets"}"#),
-        C::new("project.save", "Save Project", "Project", save).roles(&[]).key("Mod+S").view().params(r#"{"path"?: string}"#),
-        C::new("project.saveAs", "Save Project As", "Project", save_as).roles(&[]).key("Mod+Shift+S").view().params(r#"{"path": string}"#),
-        C::new("project.rename", "Rename Project", "Project", rename).roles(&[]).params(r#"{"name": string}"#),
-        C::new("edit.undo", "Undo", "Quick Access Toolbar", |s, _| if s.undo() { Ok(Value::Null) } else { Err("nothing to undo".into()) }).roles(&[])
+        C::new("project.new", "New Project", "Project", new).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Replaces)).key("Mod+N").view().params(r#"{"name"?: string}"#),
+        C::new("project.sample", "World Atlas Sample", "Project", sample).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Replaces)).view(),
+        C::new("project.open", "Open Project", "Project", open).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Replaces).with(crate::policy::Effect::Files)).key("Mod+O").view().params(r#"{"path": string}"#),
+        C::new("project.openText", "Open Project (from text)", "Project", open_text).roles(&[crate::ParamRole { key: "text", role: crate::Role::Document(crate::Document::Project) }]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Replaces).with(crate::policy::Effect::Network)).view().params(r#"{"text": project JSON, "fileName"?: string, "package"?: "true for package contents: never restore saved layer secrets"}"#),
+        C::new("project.save", "Save Project", "Project", save).inputs(save_inputs).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files)).key("Mod+S").view().params(r#"{"path"?: string}"#),
+        C::new("project.saveAs", "Save Project As", "Project", save_as).inputs(save_as_inputs).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files)).key("Mod+Shift+S").view().params(r#"{"path": string}"#),
+        C::new("project.rename", "Rename Project", "Project", rename).roles(&[]).effects(crate::policy::Effects::NONE).params(r#"{"name": string}"#),
+        C::new("edit.undo", "Undo", "Quick Access Toolbar", |s, _| if s.undo() { Ok(Value::Null) } else { Err("nothing to undo".into()) }).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::History))
             .key("Mod+Z")
             .view()
             .when(|s| if s.can_undo() { None } else { Some("nothing to undo") }),
-        C::new("edit.redo", "Redo", "Quick Access Toolbar", |s, _| if s.redo() { Ok(Value::Null) } else { Err("nothing to redo".into()) }).roles(&[])
+        C::new("edit.redo", "Redo", "Quick Access Toolbar", |s, _| if s.redo() { Ok(Value::Null) } else { Err("nothing to redo".into()) }).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::History))
             .key("Mod+Y")
             .view()
             .when(|s| if s.can_redo() { None } else { Some("nothing to redo") }),
-        C::new("tool.set", "Set Map Tool", "Home › Navigate", set_tool).roles(&[])
+        C::new("tool.set", "Set Map Tool", "Home › Navigate", set_tool).roles(&[]).effects(crate::policy::Effects::NONE)
             .view()
             .params(r#"{"tool": "explore"|"select"|"selectPolygon"|"selectLasso"|"selectRadius"|"zoomIn"|"measure"|"measureArea"|"createPoint"|"createLine"|"createPolygon"|"editVertices"|"cutPolygon"|"reshape"|"graphicPoint"|"graphicText"|"graphicLine"|"graphicCurve"|"graphicFreehand"|"graphicPolygon"|"graphicLasso"|"graphicRectangle"|"graphicCircle"|"graphicEllipse"|"graphicPicture"}"#),
-        C::new("info.project", "Project Info", "Project", info).roles(&[]).view().params(r#"{"nameFilter"?: string, "includeFields"?: bool}"#),
-        C::new("info.commands", "List Commands", "Help", list).roles(&[]).view(),
+        C::new("info.project", "Project Info", "Project", info).inputs(super::tiles::listing_inputs).roles(&[]).effects(crate::policy::Effects::NONE).view().params(r#"{"nameFilter"?: string, "includeFields"?: bool}"#),
+        C::new("info.commands", "List Commands", "Help", list).roles(&[]).effects(crate::policy::Effects::NONE).view(),
         // The session log (#797): read, written out, emptied, turned on or off. It sits outside
         // the project, so none of these changes the project or takes an undo step.
-        C::new("project.log", "Session Log", "Project", log).roles(&[]).view().params(
+        C::new("project.log", "Session Log", "Project", log).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files)).view().params(
             r#"{"since"?: milliseconds since 1970 (UTC), "until"?: milliseconds, "command"?: "a command id, or the start of one (layer.)", "failed"?: bool (true: only those that failed; false: only those that succeeded), "limit"?: entries, a whole number (default 100, the newest; 1 to 1000)} → {"entries": [{"at", "command", "params", "ok", "error"?, "millis"}], "count": matching, "total": in the log, "on": bool}"#,
         ),
-        C::new("project.exportLog", "Export Session Log", "Project", export_log).roles(&[])
+        C::new("project.exportLog", "Export Session Log", "Project", export_log).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
             .view()
             .params(r#"{"path": ".csv, .jsonl or .ndjson file", "format"?: "csv"|"jsonl" (for a path with no extension; one given must match the extension)}"#),
-        C::new("project.clearLog", "Clear Session Log", "Project", clear_log).roles(&[]).view(),
-        C::new("project.logCommands", "Log Commands", "Project", log_commands).roles(&[]).view().params(r#"{"on"?: bool (default: turn it the other way)}"#),
+        C::new("project.clearLog", "Clear Session Log", "Project", clear_log).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Reserved)).view(),
+        C::new("project.logCommands", "Log Commands", "Project", log_commands).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Reserved)).view().params(r#"{"on"?: bool (default: turn it the other way)}"#),
     ]
 }
 
@@ -162,6 +162,7 @@ fn reset(s: &mut Session, p: Project) {
     }
     s.opened_package = None;
     s.opened = s.opened.wrapping_add(1);
+    s.sync_policy_generation();
     s.active_layer = s.map().layers.first().map(|l| l.id);
     s.table_layer = None;
     s.table_standalone = None;
@@ -327,10 +328,7 @@ fn name_from_file(s: &mut Session, file: &std::path::Path) {
 }
 
 fn save(s: &mut Session, p: &Value) -> CmdResult {
-    let path = match super::ps(p, "path") {
-        Some(x) => PathBuf::from(x),
-        None => s.path.clone().ok_or("this project hasn't been saved yet; use Save As")?,
-    };
+    let path = save_path(s, p)?;
     write(s, path)
 }
 
@@ -518,4 +516,26 @@ fn label_classes_set(labels: &rustgis_map::Labeling) -> bool {
         || !d.visible
         || d.name != rustgis_map::symbology::DEFAULT_LABEL_CLASS
         || d.where_.as_deref().is_some_and(|w| !w.trim().is_empty())
+}
+
+/// Save uses the explicit string path, otherwise the current native project path.
+fn save_path(input: &impl super::InputSource, p: &Value) -> Result<PathBuf, String> {
+    let context = input.input_context();
+    let s = &context;
+    match super::ps(p, "path") {
+        Some(x) => Ok(PathBuf::from(x)),
+        None => s.path.clone().ok_or_else(|| "this project hasn't been saved yet; use Save As".into()),
+    }
+}
+/// Binds the full exported project and the same implicit destination used by Save.
+fn save_inputs(input: &super::InputContext<'_>, p: &Value) -> Result<super::Inputs, String> {
+    let mut inputs = super::items::project_inputs(input, p)?;
+    inputs.state = json!({"path":save_path(input,p)?});
+    Ok(inputs)
+}
+/// Save As requires its explicit path; there is no stored-path fallback.
+fn save_as_inputs(input: &super::InputContext<'_>, p: &Value) -> Result<super::Inputs, String> {
+    let mut inputs = super::items::project_inputs(input, p)?;
+    inputs.state = json!({"path":ps(p,"path").ok_or("path is required")?});
+    Ok(inputs)
 }

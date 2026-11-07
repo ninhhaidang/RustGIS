@@ -13,19 +13,19 @@ const WHERE: &str = "Home › Add › Web Data › United States › USGS NLDI";
 
 pub fn commands() -> Vec<C> {
     vec![
-        C::new("nldi.flowline", "NLDI Flowline", WHERE, flowline).roles(&[]).params(
+        C::new("nldi.flowline", "NLDI Flowline", WHERE, flowline).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network)).params(
             r#"{"lon": number, "lat": number (a point in the United States), "direction"?: "none" (the whole flowline, default) | "up" (its part upstream of the point) | "down", "name"?: text, "answer"?: "the flowtrace's GeoJSON, or a COMID's flowline, when already fetched", "snapped"?: [lon, lat] (with a COMID's flowline: where the point meets it)} — adds the flowline and the raindrop's path to it; returns its COMID"#,
         ),
-        C::new("nldi.comid", "NLDI COMID at a Point", WHERE, comid_cmd).roles(&[])
+        C::new("nldi.comid", "NLDI COMID at a Point", WHERE, comid_cmd).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network))
             .view()
             .params(r#"{"lon": number, "lat": number} — the nearest NHDPlus flowline's COMID, and where the point snaps to it"#),
-        C::new("nldi.basin", "NLDI Basin", WHERE, basin).roles(&[]).params(
+        C::new("nldi.basin", "NLDI Basin", WHERE, basin).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network)).params(
             r#"{"comid"?: number (an NHDPlus flowline's), "lon"?: number, "lat"?: number (or a point: its flowline's COMID), "name"?: text, "answer"?: "the basin's GeoJSON, when already fetched"} — adds the basin draining to the flowline"#,
         ),
-        C::new("nldi.sources", "NLDI Navigation Sources", WHERE, sources).roles(&[]).view().params(
+        C::new("nldi.sources", "NLDI Navigation Sources", WHERE, sources).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network)).view().params(
             r#"{"comid"?: number (an NHDPlus flowline's), "lon"?: number, "lat"?: number (or a point: its flowline's COMID), "mode"?: "UM" (upstreamMain, default) | "UT" (upstreamTributaries) | "DM" (downstreamMain) | "DD" (downstreamDiversions), "answer"?: text} — the linked data a navigation can list (flowlines, nwissite, wqp, huc12pp…)"#,
         ),
-        C::new("nldi.navigate", "NLDI Navigation", WHERE, navigate).roles(&[]).params(
+        C::new("nldi.navigate", "NLDI Navigation", WHERE, navigate).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network)).params(
             r#"{"comid"?: number (an NHDPlus flowline's), "lon"?: number, "lat"?: number (or a point: its flowline's COMID), "mode"?: "UM" (upstreamMain, default) | "UT" | "DM" | "DD", "distance"?: km 1–9999 (500), "source"?: "flowlines" (default) or a source nldi.sources lists (nwissite, wqp…), "name"?: text, "answer"?: "the navigation's GeoJSON, when already fetched"} — adds the flowlines or sites along the way"#,
         ),
     ]

@@ -755,6 +755,11 @@ impl DatabaseLogins {
         self.selected.iter().find(|((k, d), _)| *k == kind && d == key).map(|(_, id)| id.as_str())
     }
 
+    /// Current web-service choices, including choices whose login is presently absent.
+    pub(crate) fn web_selections(&self) -> Vec<(&str, &str)> {
+        self.selected.iter().filter(|((kind, _), _)| *kind == WEB).map(|((_, origin), id)| (origin.as_str(), id.as_str())).collect()
+    }
+
     pub fn select(&mut self, kind: &'static str, key: &str, id: &str) {
         self.selected.insert((kind, key.to_string()), id.to_string());
     }

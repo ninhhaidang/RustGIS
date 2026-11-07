@@ -159,7 +159,7 @@ fn draw_page(
         .iter()
         .filter_map(|e| match &e.kind {
             ElementKind::MapFrame { map, center, scale, bearing, pitch, .. } => {
-                let mi = maps.iter().position(|m| m.name.eq_ignore_ascii_case(map))?;
+                let mi = map_index(maps, map)?;
                 let m = maps.get(mi)?;
                 Some((e.id, mi, frame_camera(m, *center, *scale, *bearing, *pitch), e.w * PT_PER_MM, e.h * PT_PER_MM))
             }
@@ -2040,6 +2040,11 @@ fn chart(pm: &mut Canvas, r: Rect, ds: &rustgis_data::Dataset, field: &str, labe
             text::text_at(pm, &t, r.x(), y + bh / 2.0, px.min(bh * 0.9), dark, false, text::Align::Left, false);
         }
     }
+}
+
+/// The first case-insensitive frame-map name match; a missing reference renders no map.
+pub fn map_index(maps: &[rustgis_map::Map], name: &str) -> Option<usize> {
+    maps.iter().position(|map| map.name.eq_ignore_ascii_case(name))
 }
 
 #[cfg(test)]

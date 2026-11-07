@@ -619,6 +619,7 @@ mod tests {
 
     #[test]
     fn pictures_draw_what_the_style_draws() {
+        let _turn = crate::cache::turn();
         let (spec, dir) = spec("same");
         let r = resolved(&spec);
         // Zooms whose pictures are a whole number of pixels across, so they are at the view's
@@ -654,6 +655,7 @@ mod tests {
 
     #[test]
     fn pictures_drawn_stand_in_while_the_map_moves() {
+        let _turn = crate::cache::turn();
         let (spec, dir) = spec("moving");
         let r = resolved(&spec);
         let f = frame(2.2, 1.0);
@@ -703,6 +705,7 @@ mod tests {
 
     #[test]
     fn pictures_are_drawn_a_round_at_least_in_a_frame() {
+        let _turn = crate::cache::turn();
         let (spec, dir) = spec("round");
         let r = resolved(&spec);
         let squares: Vec<Placed> = template::covering(&frame(3.0, 1.0).extent(300, 200), 4);
@@ -720,6 +723,7 @@ mod tests {
 
     #[test]
     fn pictures_are_drawn_once() {
+        let _turn = crate::cache::turn();
         let (spec, dir) = spec("once");
         resolved(&spec);
         let f = frame(2.2, 1.0);

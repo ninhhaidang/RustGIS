@@ -192,6 +192,7 @@ mod tests {
     /// command.
     #[test]
     fn a_tile_layers_legend_opens_under_it() {
+        let _turn = crate::fetching::turn();
         let mut app = RustGisApp::with_sample();
         for c in ["Cities", "Countries"] {
             app.session.run("layer.expand", &json!({"layer": c, "on": false})).unwrap();

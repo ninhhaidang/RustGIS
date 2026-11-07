@@ -129,7 +129,20 @@ const MANAGE: &str = r#"{"item"?: id|name (default: the last of its kind), "map"
 /// Publish shared items and import models, checking file compatibility before creating a model.
 pub fn commands() -> Vec<C> {
     let share_as = |id: &'static str, label: &'static str, run: fn(&mut Session, &Value) -> CmdResult, params: &'static str| {
-        C::new(id, label, "Publish › Share As", run).roles(&[]).params(params)
+        C::new(id, label, "Publish › Share As", run)
+            .inputs(match id {
+                "share.webMap" => web_map_inputs,
+                "share.webScene" => web_scene_inputs,
+                "share.geodataService" => geodata_inputs,
+                "share.webTool" => web_tool_inputs,
+                "share.linkChart" => link_inputs,
+                "share.webStyle" => style_inputs,
+                "share.locator" => locator_inputs,
+                _ => layer_inputs,
+            })
+            .roles(&[])
+            .effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
+            .params(params)
     };
     vec![
         share_as("share.webMap", "Web Map", web_map, r#"{"map"?: name (default: the active map), "path"?: "*.html" (default: the first data store)}"#),
@@ -143,19 +156,19 @@ pub fn commands() -> Vec<C> {
         C::new("share.jobs", "Jobs", "Publish › Share As", |s, _| {
             let items: Vec<Value> = s.project.shared.iter().rev().map(|i| serde_json::to_value(i).unwrap_or(Value::Null)).collect();
             Ok(json!({"items": items, "stores": s.project.data_stores}))
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .view(),
-        C::new("share.saveWebMap", "Save Web Map", "Publish › Manage", |s, p| update_item(s, p, "webMap", ps(p, "map"))).roles(&[]).when(need_items).params(MANAGE),
-        C::new("share.replaceWebLayer", "Replace Web Layer", "Publish › Manage", |s, p| update_item(s, p, "webLayer", ps(p, "layer"))).roles(&[])
+        C::new("share.saveWebMap", "Save Web Map", "Publish › Manage", |s, p| update_item(s, p, "webMap", ps(p, "map"))).inputs(update_web_map_inputs).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files)).when(need_items).params(MANAGE),
+        C::new("share.replaceWebLayer", "Replace Web Layer", "Publish › Manage", |s, p| update_item(s, p, "webLayer", ps(p, "layer"))).inputs(update_layer_inputs).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
             .when(need_items)
             .params(r#"{"item"?: id|name (default: the last web layer), "layer"?: the layer replacing it (default: the one it was made from)}"#),
-        C::new("share.dataStore", "Data Stores", "Publish › Manage", data_store).roles(&[]).params(r#"{"name"?, "path"?: folder, "remove"?: name (no parameters: list them)}"#),
-        C::new("share.upload", "Upload File", "Publish › Manage", upload).roles(&[]).params(r#"{"path": file, "store"?: name (default: the first data store)}"#),
-        C::new("share.saveWebScene", "Save Web Scene", "Publish › Manage", |s, p| update_item(s, p, "webScene", ps(p, "map"))).roles(&[]).when(need_items).params(MANAGE),
-        C::new("share.saveWebLinkChart", "Save Web Link Chart", "Publish › Manage", |s, p| update_item(s, p, "linkChart", ps(p, "relationship"))).roles(&[])
+        C::new("share.dataStore", "Data Stores", "Publish › Manage", data_store).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files)).params(r#"{"name"?, "path"?: folder, "remove"?: name (no parameters: list them)}"#),
+        C::new("share.upload", "Upload File", "Publish › Manage", upload).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files)).params(r#"{"path": file, "store"?: name (default: the first data store)}"#),
+        C::new("share.saveWebScene", "Save Web Scene", "Publish › Manage", |s, p| update_item(s, p, "webScene", ps(p, "map"))).inputs(update_web_scene_inputs).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files)).when(need_items).params(MANAGE),
+        C::new("share.saveWebLinkChart", "Save Web Link Chart", "Publish › Manage", |s, p| update_item(s, p, "linkChart", ps(p, "relationship"))).inputs(update_links_inputs).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
             .when(need_items)
             .params(r#"{"item"?: id|name (default: the last link chart), "relationship"?: re-share another relationship}"#),
-        C::new("locator.find", "Find Place", "Home › Inspect", find).roles(&[]).params(r#"{"locator"?: shared item name or *.rgisloc path (default: the last locator), "text": search text, "limit"?: 1..100, "zoom"?: bool (go to the best match)}"#),
+        C::new("locator.find", "Find Place", "Home › Inspect", find).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files)).params(r#"{"locator"?: shared item name or *.rgisloc path (default: the last locator), "text": search text, "limit"?: 1..100, "zoom"?: bool (go to the best match)}"#),
         C::new("model.import", "Import Model", "Analyze › Geoprocessing", |s, p| {
             let text = super::items::read_text(p)?;
             let v: Value = serde_json::from_str(&text).map_err(|e| format!("not a RustGIS web tool: {e}"))?;
@@ -172,7 +185,7 @@ pub fn commands() -> Vec<C> {
                 s.notify("1 model name was trimmed, shortened, replaced or made unique during import.", false);
             }
             Ok(imported)
-        }).roles(&[crate::ParamRole { key: "text", role: crate::Role::Document(crate::Document::Model) }])
+        }).roles(&[crate::ParamRole { key: "text", role: crate::Role::Document(crate::Document::Model) }]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Reserved).with(crate::policy::Effect::Files))
         .params(r#"{"path"?: "*.model.json" | "*.rgistool", "text"?: file JSON, "data"?: base64 file}"#),
     ]
 }
@@ -182,7 +195,7 @@ pub fn share_bytes(s: &mut Session, kind: &str, p: &Value) -> Result<(String, Ve
     match kind {
         "webMap" => {
             let mut m = map_of(s, p)?;
-            m.layers.iter_mut().filter(|l| l.visible).try_for_each(load_whole)?;
+            m.layers.iter_mut().filter(|l| shared_layer("webMap", l)).try_for_each(load_whole)?;
             let html = web_map_html(&m, &m.name)?;
             Ok((m.name.clone(), html.into_bytes(), m.name))
         }
@@ -205,17 +218,14 @@ pub fn share_bytes(s: &mut Session, kind: &str, p: &Value) -> Result<(String, Ve
         }
         "geodataService" => {
             let mut m = map_of(s, p)?;
-            m.layers.iter_mut().filter(|l| !l.is_raster() && !l.graphics).try_for_each(load_whole)?;
-            let mut layers: Vec<&Dataset> = m.layers.iter().filter(|l| !l.is_raster() && !l.graphics).map(|l| &l.dataset).collect();
+            m.layers.iter_mut().filter(|l| shared_layer("geodataService", l)).try_for_each(load_whole)?;
+            let mut layers: Vec<&Dataset> = m.layers.iter().filter(|l| shared_layer("geodataService", l)).map(|l| &l.dataset).collect();
             layers.extend(s.project.tables.iter().map(|t| &t.dataset));
             Ok((m.name.clone(), ogc_zip(&m.name, &layers, &[])?, m.name.clone()))
         }
         "webTool" => {
-            let ms = &mut s.project.models;
-            let m = match ps(p, "model") {
-                Some(n) => ms.iter_mut().find(|m| m.name.eq_ignore_ascii_case(n)).ok_or_else(|| format!("no model '{n}'"))?,
-                None => ms.last_mut().ok_or("make a model first (ModelBuilder)")?,
-            };
+            let i = shared_model(s, p)?;
+            let m = s.project.models.get_mut(i).ok_or("make a model first (ModelBuilder)")?;
             let name = m.name.clone();
             let (bytes, report) = crate::durable::output(m, None, |m| {
                 let params: Vec<Value> = m
@@ -238,7 +248,7 @@ pub fn share_bytes(s: &mut Session, kind: &str, p: &Value) -> Result<(String, Ve
         }
         "webScene" => {
             let mut m = map_of(s, p)?;
-            m.layers.iter_mut().filter(|l| l.visible && !l.is_raster()).try_for_each(load_whole)?;
+            m.layers.iter_mut().filter(|l| shared_layer("webScene", l)).try_for_each(load_whole)?;
             Ok((m.name.clone(), gltf(&m, s.view_size)?, m.name.clone()))
         }
         "linkChart" => {
@@ -255,10 +265,7 @@ pub fn share_bytes(s: &mut Session, kind: &str, p: &Value) -> Result<(String, Ve
 
 /// A map to share, its layer groups folded into their layers (the shared formats have none).
 fn map_of(s: &Session, p: &Value) -> Result<Map, String> {
-    let mut m = match ps(p, "map") {
-        Some(n) => s.project.maps.iter().find(|m| m.name.eq_ignore_ascii_case(n)).cloned().ok_or_else(|| format!("no map '{n}'"))?,
-        None => s.map().clone(),
-    };
+    let mut m = shared_map(s, p)?.clone();
     m.bake_groups();
     Ok(m)
 }
@@ -271,7 +278,9 @@ fn load_whole(l: &mut Layer) -> Result<(), String> {
     Ok(())
 }
 
-fn layer_of(s: &Session, p: &Value) -> Result<Layer, String> {
+fn layer_of(input: &impl super::InputSource, p: &Value) -> Result<Layer, String> {
+    let context = input.input_context();
+    let s = &context;
     let id = s.layer_id(p)?;
     let l = s.map().layer(id).cloned().ok_or("no such layer")?;
     if l.is_raster() {
@@ -281,7 +290,9 @@ fn layer_of(s: &Session, p: &Value) -> Result<Layer, String> {
 }
 
 /// Where a share goes: `path`, else the named or first data store.
-fn target(s: &Session, p: &Value, name: &str, ext: &str) -> Result<String, String> {
+fn target(input: &impl super::InputSource, p: &Value, name: &str, ext: &str) -> Result<String, String> {
+    let context = input.input_context();
+    let s = &context;
     if let Some(path) = ps(p, "path") {
         return Ok(path.to_string());
     }
@@ -337,25 +348,7 @@ fn share(s: &mut Session, p: &Value, kind: &str) -> CmdResult {
 
 /// Re-shares an item in place, from its source or a new one.
 fn update_item(s: &mut Session, p: &Value, kind: &str, new_source: Option<&str>) -> CmdResult {
-    let item = match p.get("item") {
-        Some(Value::Number(n)) => s.project.shared.iter().find(|i| Some(u64::from(i.id)) == n.as_u64() && i.kind == kind),
-        Some(Value::String(n)) => s.project.shared.iter().rev().find(|i| i.kind == kind && i.name.eq_ignore_ascii_case(n)),
-        _ => s.project.shared.iter().rev().find(|i| i.kind == kind),
-    }
-    .cloned()
-    .ok_or_else(|| format!("no shared {} to update", KINDS.iter().find(|k| k.0 == kind).map_or(kind, |k| k.2).to_ascii_lowercase()))?;
-    if !item.this_session {
-        return Err(format!(
-            "'{}' came with the opened project; share it again with Share As (choosing where it goes) before updating it",
-            item.name
-        ));
-    }
-    let source = new_source.unwrap_or(&item.source).to_string();
-    let q = match kind {
-        "webLayer" => json!({"layer": source, "path": item.path}),
-        "linkChart" => json!({"relationship": if source.is_empty() { Value::Null } else { json!(source) }, "path": item.path}),
-        _ => json!({"map": source, "path": item.path}),
-    };
+    let q = update_params(s, p, kind, new_source)?;
     share(s, &q, kind)
 }
 
@@ -888,23 +881,7 @@ fn locator(l: &Layer, fields: Option<&[String]>) -> Result<Locator, String> {
 
 fn find(s: &mut Session, p: &Value) -> CmdResult {
     let text = ps(p, "text").map(str::trim).filter(|t| !t.is_empty()).ok_or("text is required")?.to_lowercase();
-    let path = match ps(p, "locator") {
-        Some(n) => s
-            .project
-            .shared
-            .iter()
-            .rev()
-            .find(|i| i.kind == "locator" && i.name.eq_ignore_ascii_case(n))
-            .map_or_else(|| n.to_string(), |i| i.path.clone()),
-        None => s
-            .project
-            .shared
-            .iter()
-            .rev()
-            .find(|i| i.kind == "locator")
-            .map(|i| i.path.clone())
-            .ok_or("share a locator first (Share As › Locator)")?,
-    };
+    let path = locator_path(s, p)?;
     let body = super::items::read_text(&json!({"path": path}))?;
     let loc: Locator = serde_json::from_str(&body).map_err(|e| format!("not a RustGIS locator: {e}"))?;
     let limit = p.get("limit").and_then(Value::as_u64).unwrap_or(10).clamp(1, 100) as usize;
@@ -1179,25 +1156,8 @@ fn viewpoint(m: &Map, at: &rustgis_map::Camera, view: (f64, f64)) -> (Value, Val
 /// A link chart: the features joined by the map's relationships, as a node-link diagram (a
 /// self-contained page with a force layout; drag nodes, hover for names).
 fn link_chart(s: &Session, rel: Option<&str>) -> Result<String, String> {
-    let rels: Vec<&rustgis_map::design::Relationship> = s
-        .project
-        .maps
-        .iter()
-        .flat_map(|m| m.editing.relationships.iter())
-        .filter(|r| rel.is_none_or(|n| r.name.eq_ignore_ascii_case(n)))
-        .collect();
-    if rels.is_empty() {
-        return Err(match rel {
-            Some(n) => format!("no relationship '{n}'"),
-            None => "the project has no relationships (Data Design › Relationships)".into(),
-        });
-    }
-    // A layer by name (the active map first) and the map it's in.
-    let active = s.project.active_map;
-    let find = |n: &str| {
-        let in_map = |mi: usize| s.project.maps.get(mi).and_then(|m| m.layer_by_name(n)).map(|l| (mi, l));
-        in_map(active).or_else(|| (0..s.project.maps.len()).find_map(in_map))
-    };
+    let rels = link_relationships(s, rel)?;
+    let find = |name: &str| link_layer(s, name).and_then(|(m, l)| s.project.maps.iter().position(|p| std::ptr::eq(p, m)).map(|i| (i, l)));
     let mut nodes: Vec<Value> = Vec::new();
     // Nodes by map, layer id and row (same-named layers in different maps stay apart).
     let mut index: HashMap<(usize, u32, usize), usize> = HashMap::new();
@@ -1295,4 +1255,208 @@ const moving=N.reduce((m,a)=>Math.max(m,Math.abs(a.vx),Math.abs(a.vy)),0);if(mov
         links = script_json(&Value::Array(links)),
         layers = script_json(&json!(layers)),
     ))
+}
+
+/// Resolves saved/default and literal locator paths without reading their contents.
+pub(crate) fn locator_path(s: &Session, p: &Value) -> Result<String, String> {
+    match ps(p, "locator") {
+        Some(n) => Ok(s
+            .project
+            .shared
+            .iter()
+            .rev()
+            .find(|i| i.kind == "locator" && i.name.eq_ignore_ascii_case(n))
+            .map_or_else(|| n.to_string(), |i| i.path.clone())),
+        None => s
+            .project
+            .shared
+            .iter()
+            .rev()
+            .find(|i| i.kind == "locator")
+            .map(|i| i.path.clone())
+            .ok_or_else(|| "share a locator first (Share As › Locator)".to_string()),
+    }
+}
+
+/// Sharing accepts a string map name; every other value selects the active map.
+fn shared_map<'a>(input: &'a impl super::InputSource, p: &Value) -> Result<&'a Map, String> {
+    let context = input.input_context();
+    let s = &context;
+    match ps(p, "map") {
+        Some(n) => s.project.maps.iter().find(|m| m.name.eq_ignore_ascii_case(n)).ok_or_else(|| format!("no map '{n}'")),
+        None => Ok(s.map()),
+    }
+}
+/// Reconstructs a managed item's effective stored source and path exactly as re-sharing uses them.
+fn update_params(input: &impl super::InputSource, p: &Value, kind: &str, new_source: Option<&str>) -> Result<Value, String> {
+    let context = input.input_context();
+    let s = &context;
+    let item = match p.get("item") {
+        Some(Value::Number(n)) => s.project.shared.iter().find(|i| Some(u64::from(i.id)) == n.as_u64() && i.kind == kind),
+        Some(Value::String(n)) => s.project.shared.iter().rev().find(|i| i.kind == kind && i.name.eq_ignore_ascii_case(n)),
+        _ => s.project.shared.iter().rev().find(|i| i.kind == kind),
+    }
+    .cloned()
+    .ok_or_else(|| format!("no shared {} to update", KINDS.iter().find(|k| k.0 == kind).map_or(kind, |k| k.2).to_ascii_lowercase()))?;
+    if !item.this_session {
+        return Err(format!(
+            "'{}' came with the opened project; share it again with Share As (choosing where it goes) before updating it",
+            item.name
+        ));
+    }
+    let source = new_source.unwrap_or(&item.source).to_string();
+    Ok(match kind {
+        "webLayer" => json!({"layer": source, "path": item.path}),
+        "linkChart" => json!({"relationship": if source.is_empty() { Value::Null } else { json!(source) }, "path": item.path}),
+        _ => json!({"map": source, "path": item.path}),
+    })
+}
+
+/// Binds the managed web map's effective source and saved output path.
+fn update_web_map_inputs(input: &super::InputContext<'_>, p: &Value) -> Result<super::Inputs, String> {
+    update_source_inputs(input, p, "webMap", ps(p, "map"))
+}
+/// Binds the managed scene's effective source and saved output path.
+fn update_web_scene_inputs(input: &super::InputContext<'_>, p: &Value) -> Result<super::Inputs, String> {
+    update_source_inputs(input, p, "webScene", ps(p, "map"))
+}
+/// Binds a managed feature layer even when the request omits its source.
+fn update_layer_inputs(input: &super::InputContext<'_>, p: &Value) -> Result<super::Inputs, String> {
+    update_source_inputs(input, p, "webLayer", ps(p, "layer"))
+}
+/// Binds the managed chart's stored relationship selection and saved path.
+fn update_links_inputs(input: &super::InputContext<'_>, p: &Value) -> Result<super::Inputs, String> {
+    update_source_inputs(input, p, "linkChart", ps(p, "relationship"))
+}
+/// Uses the same effective parameter reconstruction as the actual managed update.
+fn update_source_inputs(input: &impl super::InputSource, p: &Value, kind: &str, new_source: Option<&str>) -> Result<super::Inputs, String> {
+    let q = update_params(input, p, kind, new_source)?;
+    let mut inputs = share_kind_inputs(input, &q, kind)?;
+    inputs.state = json!({"source":inputs.state,"effective":q});
+    Ok(inputs)
+}
+
+/// Keeps every matching relationship in project order, or all relationships when omitted.
+fn link_relationships<'a>(
+    input: &'a impl super::InputSource,
+    rel: Option<&str>,
+) -> Result<Vec<&'a rustgis_map::design::Relationship>, String> {
+    let context = input.input_context();
+    let s = &context;
+    let rels = s
+        .project
+        .maps
+        .iter()
+        .flat_map(|m| &m.editing.relationships)
+        .filter(|r| rel.is_none_or(|n| r.name.eq_ignore_ascii_case(n)))
+        .collect::<Vec<_>>();
+    if rels.is_empty() {
+        return Err(match rel {
+            Some(n) => format!("no relationship '{n}'"),
+            None => "the project has no relationships (Data Design › Relationships)".into(),
+        });
+    }
+    Ok(rels)
+}
+/// Relationship endpoints resolve in the active map first, then the first project match.
+fn link_layer<'a>(input: &'a impl super::InputSource, name: &str) -> Option<(&'a Map, &'a Layer)> {
+    let context = input.input_context();
+    let s = &context;
+    let in_map = |m: &'a Map| m.layer_by_name(name).map(|l| (m, l));
+    in_map(s.map()).or_else(|| s.project.maps.iter().find_map(in_map))
+}
+/// Collects the actual existing relationship endpoints without constructing the chart.
+fn link_source_inputs(input: &super::InputContext<'_>, p: &Value) -> Result<super::Inputs, String> {
+    let rels = link_relationships(input, ps(p, "relationship"))?;
+    let mut inputs =
+        super::Inputs::layers(rels.iter().flat_map(|r| [r.origin.as_str(), r.destination.as_str()]).filter_map(|n| link_layer(input, n)));
+    inputs.state = json!({"relationships":rels});
+    Ok(inputs)
+}
+
+/// Layer inclusion is shared by the serializer's whole-source preparation and its pure selector.
+fn shared_layer(kind: &str, l: &Layer) -> bool {
+    match kind {
+        "geodataService" => !l.is_raster() && !l.graphics,
+        "webScene" => l.visible && !l.is_raster(),
+        _ => l.visible,
+    }
+}
+/// Selects a named model case-insensitively, otherwise the last model, for web-tool serialization.
+fn shared_model(input: &impl super::InputSource, p: &Value) -> Result<usize, String> {
+    let context = input.input_context();
+    let s = &context;
+    match ps(p, "model") {
+        Some(n) => s.project.models.iter().position(|m| m.name.eq_ignore_ascii_case(n)).ok_or_else(|| format!("no model '{n}'")),
+        None => s.project.models.len().checked_sub(1).ok_or_else(|| "make a model first (ModelBuilder)".into()),
+    }
+}
+/// Binds effective included datasets and the actual target path without producing export bytes.
+fn share_kind_inputs(input: &impl super::InputSource, p: &Value, kind: &str) -> Result<super::Inputs, String> {
+    let context = input.input_context();
+    let s = &context;
+    let (mut inputs, name) = match kind {
+        "webMap" | "webScene" | "geodataService" => {
+            let map = shared_map(input, p)?;
+            let mut baked = map.clone();
+            baked.bake_groups();
+            let mut inputs = super::Inputs::layers(
+                baked.layers.iter().filter(|l| shared_layer(kind, l)).filter_map(|l| map.layer(l.id)).map(|l| (map, l)),
+            );
+            inputs.maps.push(map.instance_id());
+            if kind == "geodataService" {
+                inputs.tables.extend(s.project.tables.iter().map(|t| t.id));
+            }
+            (inputs, map.name.clone())
+        }
+        "webTool" => {
+            let i = shared_model(input, p)?;
+            let model = s.project.models.get(i).ok_or("no model")?;
+            let mut inputs = super::Inputs::layers(std::iter::empty());
+            inputs.state = json!({"model":model});
+            (inputs, model.name.clone())
+        }
+        "linkChart" => (link_source_inputs(s, p)?, ps(p, "relationship").unwrap_or("Relationships").to_string()),
+        _ => {
+            let l = layer_of(input, p)?;
+            (super::Inputs::primary(s, p)?, l.name)
+        }
+    };
+    let ext = KINDS.iter().find(|k| k.0 == kind).map_or("bin", |k| k.1);
+    let path = target(input, p, &name, ext)?;
+    inputs.review_places.push(path.clone());
+    inputs.state = json!({"selection":inputs.state,"path":path});
+    Ok(inputs)
+}
+/// Binds visible web-map sources after applying the same group visibility as export.
+fn web_map_inputs(input: &super::InputContext<'_>, p: &Value) -> Result<super::Inputs, String> {
+    share_kind_inputs(input, p, "webMap")
+}
+/// Binds visible feature sources that the scene exporter materializes.
+fn web_scene_inputs(input: &super::InputContext<'_>, p: &Value) -> Result<super::Inputs, String> {
+    share_kind_inputs(input, p, "webScene")
+}
+/// Binds the feature map and standalone tables consumed by geodata export.
+fn geodata_inputs(input: &super::InputContext<'_>, p: &Value) -> Result<super::Inputs, String> {
+    share_kind_inputs(input, p, "geodataService")
+}
+/// Freezes the selected model's executable definition for this output operation.
+fn web_tool_inputs(input: &super::InputContext<'_>, p: &Value) -> Result<super::Inputs, String> {
+    share_kind_inputs(input, p, "webTool")
+}
+/// Binds chart relationships together with the effective export destination.
+fn link_inputs(input: &super::InputContext<'_>, p: &Value) -> Result<super::Inputs, String> {
+    share_kind_inputs(input, p, "linkChart")
+}
+/// Binds the shared feature layer and its effective destination.
+fn layer_inputs(input: &super::InputContext<'_>, p: &Value) -> Result<super::Inputs, String> {
+    share_kind_inputs(input, p, "webLayer")
+}
+/// Binds the style's owning feature layer and effective JSON destination.
+fn style_inputs(input: &super::InputContext<'_>, p: &Value) -> Result<super::Inputs, String> {
+    share_kind_inputs(input, p, "webStyle")
+}
+/// Binds the locator's feature layer and effective locator destination.
+fn locator_inputs(input: &super::InputContext<'_>, p: &Value) -> Result<super::Inputs, String> {
+    share_kind_inputs(input, p, "locator")
 }

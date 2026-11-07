@@ -1319,6 +1319,9 @@ fn local_agents_setting(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
         );
     }
     if app.assistant.local_agents && ui.checkbox(&mut app.assistant.agents_auto, tl!("Approve agents' actions without asking")).changed() {
+        // Publish the change before returning from the widget: a held ACP reply can arrive
+        // before the next frame polls threads.
+        app.assistant.threads.set_auto(app.assistant.agents_auto);
         save_pref(app, "assistant_agents_auto", if app.assistant.agents_auto { "on" } else { "off" });
         if let Some(a) = app.assistant.agent.as_mut() {
             a.set_agents_auto(app.assistant.agents_auto);
@@ -1481,14 +1484,28 @@ fn composer(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens, busy: bool, ctx: &egu
     #[cfg(not(target_arch = "wasm32"))]
     crate::agentthreads::list(app, ui, t);
     // An action waiting for approval comes first.
-    let pending = app.assistant.agent.as_ref().and_then(|a| a.pending(&app.session));
-    if let Some((what, why, can_always)) = pending {
+    let pending = app
+        .assistant
+        .agent
+        .as_ref()
+        .and_then(|a| a.pending(&app.session).map(|(what, why, always)| (what, why, always, a.pending_review().cloned())));
+    if let Some((what, why, can_always, review)) = pending {
         egui::Frame::NONE.fill(t.amber.gamma_multiply(0.15)).corner_radius(6).inner_margin(8).stroke(egui::Stroke::new(1.0, t.amber)).show(
             ui,
             |ui| {
                 ui.label(RichText::new(tl!("Allow this action?")).font(semibold(12.5)));
-                ui.label(RichText::new(crate::i18n::fmt("The assistant wants to run this, and {why}:", &[("why", tl_raw!(&why))])).small());
-                ui.label(RichText::new(what).monospace().small());
+                egui::ScrollArea::vertical().max_height(280.0).id_salt(("assistant_approval", &what, &why)).show(ui, |ui| {
+                    if let Some(review) = &review {
+                        crate::approvalcard::show(ui, &app.session.registry, review);
+                    } else {
+                        // Legacy requests have no structured review: keep all their context visible.
+                        ui.label(
+                            RichText::new(crate::i18n::fmt("The assistant wants to run this, and {why}:", &[("why", tl_raw!(&why))]))
+                                .small(),
+                        );
+                        ui.add(egui::Label::new(RichText::new(&what).monospace().small()).wrap());
+                    }
+                });
                 // Plugin commands, scripts and replacing the project are asked about every time.
                 if can_always {
                     ui.checkbox(&mut app.assistant.always, tl!("Allow such actions for this conversation"));
@@ -1802,7 +1819,7 @@ pub(crate) fn peer_replaced(app: &mut RustGisApp) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -2069,6 +2086,28 @@ mod tests {
         )
     }
 
+    /// Render the real local-agent settings without polling threads, preserving the interval
+    /// between a checkbox callback and the next poll while the fake ACP agent replies.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn local_agents_harness(mut app: RustGisApp) -> egui_kittest::Harness<'static, RustGisApp> {
+        app.assistant.local_agents = true;
+        app.assistant.agents_auto = true;
+        app.assistant.agents_found = Some((Vec::new(), Vec::new()));
+        let mut fonts = false;
+        egui_kittest::Harness::builder().with_size(vec2(700.0, 350.0)).build_ui_state(
+            move |ui, app| {
+                if !fonts {
+                    crate::theme::install_fonts(ui.ctx(), &[], None);
+                    fonts = true;
+                    ui.ctx().request_repaint();
+                    return;
+                }
+                local_agents_setting(app, ui, &Tokens::light());
+            },
+            app,
+        )
+    }
+
     /// The actual Remember checkbox goes through the deferred save path and deletes the stored key.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
@@ -2245,6 +2284,92 @@ mod tests {
         assert!(h.state().assistant.chunks.is_none());
         assert!(h.state().assistant.inflight.is_none());
         assert!(!h.state().assistant.agent.as_ref().unwrap().busy());
+    }
+
+    /// Real pending reviews keep their reach visible while exact requests wait under Details.
+    #[test]
+    fn compact_approval_details_preserve_frozen_request_and_defaults() {
+        use egui_kittest::kittest::Queryable;
+        use serde_json::json;
+
+        for (tool, args, expected) in [
+            (
+                "run",
+                json!({"script": concat!(
+                    "layer.visibility {\"layer\":\"Countries\",\"visible\":false}\n",
+                    "layer.visibility {\"visible\":false}\n",
+                    "map.addTiles {\"name\":\"Synthetic tiles\",\"url\":\"https://tiles.invalid/{z}/{x}/{y}.png\"}"
+                )}),
+                vec!["3 project edits", "line 3 (map.addTiles)", "World / Countries", "https://tiles.invalid/{z}/{x}/{y}.png"],
+            ),
+            (
+                "run_command",
+                json!({"command":"layer.addSql","params":{"sql":"FROM t","database":"/synthetic/views.duckdb"}}),
+                vec!["views in the database /synthetic/views.duckdb", "Destinations"],
+            ),
+        ] {
+            let mut app = RustGisApp::with_sample();
+            app.session.run("map.basemap", &json!({"name":"ocean"})).unwrap();
+            app.session.run("layer.select", &json!({"layer":"Cities"})).unwrap();
+            let config = Config {
+                provider: "custom".into(),
+                base_url: "https://provider.invalid/v1".into(),
+                model: "synthetic".into(),
+                key: String::new(),
+                account: String::new(),
+                client_id: String::new(),
+                session: String::new(),
+                reasoning: None,
+                tool_output_token_limit: rustgis_assistant::tools::DEFAULT_OUTPUT_TOKENS,
+            };
+            let mut agent = Agent::new(config, &app.session);
+            assert!(matches!(agent.ask("Review only", &app.session), Step::Send(_)));
+            let body = json!({"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{
+                "id":"compact-card","type":"function","function":{"name":tool,"arguments":args.to_string()}
+            }]},"finish_reason":"tool_calls"}]})
+            .to_string()
+            .into_bytes();
+            assert_eq!(
+                agent.receive(agent.generation(), Ok(HttpResponse { status: 200, body, headers: vec![] }), &mut app.session),
+                Step::Confirm
+            );
+            let exact = agent.pending_review().unwrap().what.clone();
+            let can_always = agent.pending(&app.session).unwrap().2;
+            let project = serde_json::to_value(&app.session.project).unwrap();
+            app.assistant.agent = Some(agent);
+            let mut fonts = false;
+            let mut h = egui_kittest::Harness::builder().with_size(vec2(680.0, 600.0)).build_ui_state(
+                move |ui, app: &mut RustGisApp| {
+                    if !fonts {
+                        crate::theme::install_fonts(ui.ctx(), &[], None);
+                        fonts = true;
+                        ui.ctx().request_repaint();
+                        return;
+                    }
+                    let ctx = ui.ctx().clone();
+                    composer(app, ui, &Tokens::light(), true, &ctx);
+                },
+                app,
+            );
+            h.run();
+            assert!(h.query_by_label(&exact).is_none(), "raw vehicle starts collapsed");
+            for text in expected {
+                assert!(h.query_by_label_contains(text).is_some(), "missing overview context: {text}");
+            }
+            assert!(h.query_by_label_contains("Starting active layer: Cities; selected layers: [Cities]").is_some());
+            assert_eq!(h.query_by_label("Allow such actions for this conversation").is_some(), can_always);
+            h.get_by_label("Details").click();
+            h.run();
+            h.get_by_label(&exact);
+            h.get_by_label("Allow");
+            h.get_by_label("Decline");
+            h.get_by_label("Details").click();
+            h.run();
+            assert!(h.query_by_label(&exact).is_none());
+            assert_eq!(h.state().assistant.agent.as_ref().unwrap().pending_review().unwrap().what, exact);
+            assert_eq!(serde_json::to_value(&h.state().session.project).unwrap(), project);
+            assert!(!h.state().assistant.always);
+        }
     }
 
     #[test]

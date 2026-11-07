@@ -34,6 +34,16 @@ pub struct ServiceSource {
     pub documents: Vec<Value>,
 }
 
+/// Uses the same translated tileset progress text when discovery starts and when it retires.
+pub(crate) fn reading_tileset(name: &str) -> String {
+    i18n::fmt("Reading the tileset of {name}", &[("name", name)])
+}
+
+/// Uses the same translated coverage progress text when discovery starts and when it retires.
+pub(crate) fn describing(name: &str) -> String {
+    i18n::fmt("Describing {name}", &[("name", name)])
+}
+
 /// A service type as the add dialog and `ui.addService` name it, `auto` for any other text.
 pub(crate) fn kind_of(t: &str) -> &'static str {
     match t {
@@ -153,7 +163,7 @@ pub(crate) fn add_layer_from(
         };
         let slot = crate::fetch_into(&describe);
         app.ui.service_steps.push(crate::ServiceStep::Coverage { params: p, slot, dialog, origin, opened: app.session.opened });
-        return Ok(i18n::fmt("Describing {name}", &[("name", &title)]));
+        return Ok(describing(&title));
     }
     let mut p = json!({"url": src.url, "layer": name, "text": src.text, "documents": src.documents, "source_url": l.get("source_url")});
     if src.kind != "auto" {
@@ -185,10 +195,10 @@ pub(crate) fn add_layer_from(
             let resolve = crate::TilesResolve {
                 params: p,
                 list: list.clone(),
-                doc: list.clone(),
                 crossed_origin: anonymous
                     || rustgis_engine::render::rustgis_tiles::logins::origin(&src.url)
                         != rustgis_engine::render::rustgis_tiles::logins::origin(&list),
+                doc: list,
                 read: 0,
                 withheld_addresses: 0,
                 vector,
@@ -196,7 +206,7 @@ pub(crate) fn add_layer_from(
                 slot,
             };
             app.ui.service_steps.push(crate::ServiceStep::Tiles { resolve, dialog, origin, opened: app.session.opened });
-            Ok(i18n::fmt("Reading the tileset of {name}", &[("name", &title)]))
+            Ok(reading_tileset(&title))
         }
         None => crate::connectiontree::run_named(app, "service.add", p, origin.as_deref()).map(|_| added(&title)),
     }
@@ -507,34 +517,43 @@ fn next_request(app: &mut RustGisApp, params: &Value, pages: &Pages) -> Result<S
 /// The next answer fetched, or the collection added (with a note when some features were left
 /// unread), or why it couldn't be fetched said.
 pub(crate) fn go_on(app: &mut RustGisApp, landed: Landed, left: usize, step: Step) {
-    match step {
-        Step::Decoded(dataset, report, note) => {
-            noted(app, &landed, note);
-            app.add_landed_read(landed, *dataset, report);
-        }
-        Step::Failed(e) => {
-            app.session.download_failed(landed.id);
-            app.session.request_failed(&landed.params, &e);
-            let url = &landed.url;
-            let e = if e.starts_with(url.as_str()) { e } else { format!("{url}: {e}") };
-            app.landed_in_dialog(&landed.params, Err(&e));
-            app.session.notify(e, true);
-        }
-        Step::Fetch(pages) => {
-            let next = next_request(app, &landed.params, &pages);
-            let slot = match next {
-                // A layer's description: small, and soon given up on.
-                Ok(url) if pages.describing() => fetch_description(&url, left.min(ogc::DESCRIPTION_MAX)),
-                Ok(url) => fetch_into_limited(&url, left),
-                Err(e) => Slot::new(std::sync::Mutex::new(Some(Err(e)))),
-            };
-            app.ui.service_pages.push(PageRead { landed, pages, left, slot, asked: web_time::Instant::now() });
-        }
-        Step::Done(bytes, note) => {
-            noted(app, &landed, note);
-            app.add_landed(landed, bytes);
-        }
+    if let Err(e) = app.session.download_continues(landed.id) {
+        app.session.request_failed(&landed.params, &e);
+        app.landed_in_dialog(&landed.params, Err(&e));
+        app.session.notify(e, true);
+        return;
     }
+    let still = app.session.download_still(landed.id);
+    rustgis_engine::render::rustgis_tiles::cache::with_optional_still(still, || {
+        match step {
+            Step::Decoded(dataset, report, note) => {
+                noted(app, &landed, note);
+                app.add_landed_read(landed, *dataset, report);
+            }
+            Step::Failed(e) => {
+                app.session.request_failed(&landed.params, &e);
+                app.session.download_failed(landed.id);
+                let url = &landed.url;
+                let e = if e.starts_with(url.as_str()) { e } else { format!("{url}: {e}") };
+                app.landed_in_dialog(&landed.params, Err(&e));
+                app.session.notify(e, true);
+            }
+            Step::Fetch(pages) => {
+                let next = next_request(app, &landed.params, &pages);
+                let slot = match next {
+                    // A layer's description: small, and soon given up on.
+                    Ok(url) if pages.describing() => fetch_description(&url, left.min(ogc::DESCRIPTION_MAX)),
+                    Ok(url) => fetch_into_limited(&url, left),
+                    Err(e) => Slot::new(std::sync::Mutex::new(Some(Err(e)))),
+                };
+                app.ui.service_pages.push(PageRead { landed, pages, left, slot, asked: web_time::Instant::now() });
+            }
+            Step::Done(bytes, note) => {
+                noted(app, &landed, note);
+                app.add_landed(landed, bytes);
+            }
+        }
+    });
 }
 
 /// Says what was left unread of a service layer's features, by its name.

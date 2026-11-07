@@ -14,10 +14,10 @@ use crate::{CmdResult, CommandSpec as C, Session};
 
 pub fn commands() -> Vec<C> {
     vec![
-        C::new("cube.catalog", "Data Cube Catalog", "Home › Add › Web Data", catalog).roles(&[]).view().params(
+        C::new("cube.catalog", "Data Cube Catalog", "Home › Add › Web Data", catalog).roles(&[]).effects(crate::policy::Effects::NONE).view().params(
             r#"{"theme"?: "vegetation"|"land cover"|"water"|"climate"|"ocean"|"atmosphere"|"elevation", "bbox"?: [west, south, east, north] | "view" (entries with data there; default: anywhere), "query"?: "words, all of them in an entry's name, provider or id"} → the data cubes ready to open (cube.open), each with its provider, themes, area, period, step, resolution, source (a STAC collection and band, or a Zarr variable) and licence"#,
         ),
-        C::new("cube.open", "Open a Data Cube", "Home › Add › Web Data", open).roles(&[]).params(
+        C::new("cube.open", "Open a Data Cube", "Home › Add › Web Data", open).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network)).params(
             r#"{"id": an entry of cube.catalog, "bbox"?: [west, south, east, north] | "view" (a STAC entry's area, default the map's extent; a Zarr entry's variable is read whole, but an area given must meet the entry's), "start"?, "end"?: dates, both or neither (default: the entry's last full calendar year), "maxCloud"?: percent (a STAC entry's cloud cover cap; default the entry's), "range"?: [low, high] (a STAC entry's values shown from black to white, in the band's units; default the entry's), "name"?: text} → the cube on the map, following the time slider, as stac.addCube or layer.addZarr adds it (desktop)"#,
         ),
     ]

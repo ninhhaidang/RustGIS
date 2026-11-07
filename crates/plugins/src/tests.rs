@@ -250,6 +250,92 @@ fn tools_join_the_geoprocessing_tools() {
     crate::unload("unit-tools");
 }
 
+/// Old prepared tool jobs cannot run after their plugin is toggled, replaced or removed.
+#[test]
+fn prepared_tools_keep_their_load_and_refuse_revoked_handles() {
+    struct Empty;
+    impl rustgis_analysis::Inputs for Empty {
+        /// The fixed-output plugin needs no project dataset.
+        fn dataset(&self, _: &str) -> Option<&rustgis_data::Dataset> {
+            None
+        }
+        /// The fixture gives the plugin no selected rows.
+        fn selection(&self, _: &str) -> &[usize] {
+            &[]
+        }
+    }
+
+    let plugin = load("unit-pinned-tool", &[]);
+    let job = crate::tools::prepare_pinned(&plugin, "m", &Empty, &json!({})).unwrap();
+    assert!(crate::is_current(&plugin));
+    assert_eq!(job.run(&crate::tools::Control::default()).unwrap().messages, ["made"]);
+
+    crate::set_enabled("unit-pinned-tool", false).unwrap();
+    assert!(!crate::is_current(&plugin));
+    assert!(job.run(&crate::tools::Control::default()).unwrap_err().contains("changed or was disabled"));
+    crate::set_enabled("unit-pinned-tool", true).unwrap();
+    let enabled = crate::get("unit-pinned-tool").unwrap();
+    assert!(crate::is_current(&enabled));
+    assert!(!crate::is_current(&plugin), "enabling cannot revive an old load");
+    let job = crate::tools::prepare_pinned(&enabled, "m", &Empty, &json!({})).unwrap();
+
+    let replacement = load("unit-pinned-tool", &[]);
+    assert!(crate::is_current(&replacement));
+    assert!(!crate::is_current(&enabled), "identical package bytes still make a new load");
+    assert!(job.run(&crate::tools::Control::default()).is_err());
+    let err = crate::tools::prepare_pinned(&enabled, "m", &Empty, &json!({"input": "Missing"})).err().unwrap();
+    assert!(err.contains("updated or removed"), "refuse before reading inputs: {err}");
+    let job = crate::tools::prepare_pinned(&replacement, "m", &Empty, &json!({})).unwrap();
+    crate::unload("unit-pinned-tool");
+    assert!(!crate::is_current(&replacement));
+    assert!(job.run(&crate::tools::Control::default()).is_err());
+
+    let withdrawn = load("unit-pinned-withdrawn", &[]);
+    let job = crate::tools::prepare_pinned(&withdrawn, "m", &Empty, &json!({})).unwrap();
+    crate::apply_blocklist(
+        "https://pinned-test.invalid/registry.json",
+        vec![registry::Blocked { id: "unit-pinned-withdrawn".into(), sha256: None, reason: "test withdrawal".into() }],
+    );
+    assert!(!crate::is_current(&withdrawn));
+    assert!(job.run(&crate::tools::Control::default()).is_err());
+}
+
+/// A schema captured from one registry snapshot cannot be paired with another plugin load.
+#[test]
+fn pinned_tool_schema_refuses_changed_defaults_display_and_stale_load() {
+    // This schema-comparison scenario holds its own publication; other fixtures reload the
+    // process-wide provider, which may legitimately make a concurrent lookup unavailable.
+    #[cfg(not(target_arch = "wasm32"))]
+    if std::env::var_os("RUSTGIS_SCHEMA_PIN_TEST_CHILD").is_none() {
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "tests::pinned_tool_schema_refuses_changed_defaults_display_and_stale_load", "--nocapture"])
+            .env("RUSTGIS_SCHEMA_PIN_TEST_CHILD", "1")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        assert!(String::from_utf8_lossy(&out.stdout).contains("test result: ok. 1 passed; 0 failed;"));
+        return;
+    }
+    crate::tools::register();
+    let first = load("unit-schema-pin", &[]);
+    let spec = rustgis_analysis::resolve("plugin:unit-schema-pin/m").unwrap();
+    crate::tools::matches_pinned(&first, spec.spec()).unwrap();
+    let mut manifest: Value = serde_json::from_str(&testing::manifest("unit-schema-pin", &[])).unwrap();
+    manifest["tools"][0]["name"] = json!("Different operation");
+    manifest["tools"][0]["params"][1]["default"] = json!(42);
+    let text = manifest.to_string();
+    let bytes = testing::zip_of(&[("plugin.json", text.as_bytes()), ("plugin.wasm", &testing::wasm())]);
+    let second = crate::load(Package::from_zip(&bytes).unwrap(), "test").unwrap();
+    assert!(crate::tools::matches_pinned(&first, spec.spec()).unwrap_err().contains("updated or removed"));
+    assert!(crate::tools::matches_pinned(&second, spec.spec()).unwrap_err().contains("schema or display"));
+    let current = rustgis_analysis::resolve("plugin:unit-schema-pin/m").unwrap();
+    crate::tools::matches_pinned(&second, current.spec()).unwrap();
+    assert_eq!(current.resolve_params(&json!({"input":"Cities"})).unwrap()["size"], 42);
+    crate::set_enabled("unit-schema-pin", false).unwrap();
+    assert!(crate::tools::matches_pinned(&second, current.spec()).is_err());
+    crate::unload("unit-schema-pin");
+}
+
 /// Registry and blocklist parsing validates entries and resolves package addresses safely.
 #[test]
 fn registries_and_blocklists_are_read_defensively() {
@@ -1026,9 +1112,9 @@ fn process_plugins_that_hang_are_stopped() {
 #[test]
 fn process_tools_show_progress_and_can_be_cancelled() {
     let dir = process_folder("proc-cancel", &[]);
-    let p = crate::prepare(Package::from_dir(&dir).unwrap(), "test").unwrap();
+    let p = crate::load(Package::from_dir(&dir).unwrap(), "test").unwrap();
     let job = crate::tools::Job {
-        plugin: std::sync::Arc::new(p),
+        plugin: p.clone(),
         name: "Work Forever".into(),
         request: json!({"abi": 1, "kind": "tool", "id": "w", "params": {}, "layers": {}, "lang": "en"}),
     };
@@ -1051,13 +1137,14 @@ fn process_tools_show_progress_and_can_be_cancelled() {
     assert!(e == "Work Forever: cancelled" && t0.elapsed() < std::time::Duration::from_secs(10), "{e}");
     // Progress shows while a tool runs, but isn't kept in its messages as log lines are.
     let job = crate::tools::Job {
-        plugin: std::sync::Arc::new(crate::prepare(Package::from_dir(&dir).unwrap(), "test").unwrap()),
+        plugin: p,
         name: "Make Points".into(),
         request: json!({"abi": 1, "kind": "tool", "id": "m", "params": {}, "layers": {}, "lang": "en"}),
     };
     let control = crate::tools::Control::default();
     assert_eq!(job.run(&control).unwrap().messages, vec!["made"]);
     assert_eq!(control.last_log().as_deref(), Some("making"));
+    crate::unload("proc-cancel");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

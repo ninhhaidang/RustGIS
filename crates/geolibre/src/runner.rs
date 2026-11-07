@@ -25,7 +25,17 @@ pub(crate) fn exe_name() -> &'static str {
 static CHOSEN: Mutex<Option<PathBuf>> = Mutex::new(None);
 
 /// The runner found, with its version, cached until the choice changes.
-static FOUND: Mutex<Option<Option<(PathBuf, String)>>> = Mutex::new(None);
+struct Found {
+    generation: u64,
+    value: Option<Option<(PathBuf, String)>>,
+}
+static FOUND: Mutex<Found> = Mutex::new(Found { generation: 0, value: None });
+
+/// The already discovered choice, without probing programs or searching the filesystem.
+/// None means unavailable or not yet explicitly discovered by trusted native code.
+pub fn selected() -> Option<(PathBuf, String)> {
+    FOUND.lock().ok().and_then(|f| f.value.clone().flatten())
+}
 
 /// A command for the runner, without a console window on Windows.
 fn command(exe: &Path) -> Command {
@@ -122,17 +132,19 @@ fn candidates() -> Vec<PathBuf> {
 /// The answer is kept until the choice changes (Locate…). Probing runs without holding the
 /// cache's lock, so a slow candidate never blocks another caller.
 pub fn find() -> Option<(PathBuf, String)> {
-    if let Ok(found) = FOUND.lock()
-        && let Some(f) = found.as_ref()
-    {
-        return f.clone();
-    }
+    let generation = {
+        let found = FOUND.lock().ok()?;
+        if let Some(value) = &found.value {
+            return value.clone();
+        }
+        found.generation
+    };
     let probed = candidates().into_iter().find_map(|p| version_of(&p).map(|v| (p, v)));
-    if let Ok(mut found) = FOUND.lock() {
-        // Another caller may have stored an answer meanwhile: the first one stays.
-        return found.get_or_insert(probed).clone();
+    let mut found = FOUND.lock().ok()?;
+    if found.generation != generation {
+        return found.value.clone().flatten();
     }
-    probed
+    found.value.get_or_insert(probed).clone()
 }
 
 /// Uses `exe` as the runner (`None`: look in the usual places again). Fails, keeping the
@@ -147,7 +159,8 @@ pub fn choose(exe: Option<PathBuf>) -> Result<Option<(PathBuf, String)>, String>
         *c = exe;
     }
     if let Ok(mut f) = FOUND.lock() {
-        *f = None;
+        f.generation = f.generation.saturating_add(1);
+        f.value = None;
     }
     Ok(find())
 }
@@ -167,12 +180,49 @@ pub fn manifests() -> Result<Vec<Value>, String> {
     }
 }
 
+/// A chosen native runner. Captures path/version, not an attestation of executable bytes.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ResolvedRunner {
+    exe: PathBuf,
+    version: String,
+}
+impl ResolvedRunner {
+    /// Captures the selected executable path and reported version without permitting mutation.
+    pub fn capture() -> Result<Self, String> {
+        let (exe, version) = selected().ok_or("the GeoLibre runner is not published; open the tools or locate the runner first")?;
+        Ok(Self { exe, version })
+    }
+    /// Rejects a changed runner choice before preparing or starting another stage.
+    pub fn check(&self) -> Result<(), String> {
+        if selected().as_ref() != Some(&(self.exe.clone(), self.version.clone())) {
+            Err("the GeoLibre runner changed before this stage started".into())
+        } else {
+            Ok(())
+        }
+    }
+}
+
 /// Runs one tool in `dir` with `argv` (`--name=value` strings); returns the lines it printed.
 /// The error carries what the tool wrote to stderr.
 pub fn run(id: &str, argv: &[String], dir: &Path) -> Result<Vec<String>, String> {
-    let (exe, _) = find().ok_or("the GeoLibre runner isn't installed")?;
-    let mut c = command(&exe);
+    let _ = find(); // Explicit legacy native execution may discover; pinned policy execution never does.
+    run_pinned(&ResolvedRunner::capture()?, id, argv, dir, &|| Ok(()))
+}
+
+/// Checks the captured choice and caller's live predicate immediately before spawning it.
+pub(crate) fn run_pinned(
+    pin: &ResolvedRunner,
+    id: &str,
+    argv: &[String],
+    dir: &Path,
+    live: &dyn Fn() -> Result<(), String>,
+) -> Result<Vec<String>, String> {
+    pin.check()?;
+    let exe = &pin.exe;
+    let mut c = command(exe);
     c.current_dir(dir).stdin(Stdio::null()).arg(id).args(argv);
+    live()?;
+    pin.check()?;
     let out = c.output().map_err(|e| format!("{}: {e}", exe.display()))?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
