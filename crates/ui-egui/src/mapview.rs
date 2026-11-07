@@ -306,7 +306,8 @@ pub struct MapView {
     pub menu_lonlat: Option<Coord>,
     /// The text graphic the context menu was opened on (layer id, row), for Edit Text.
     pub menu_text: Option<(u32, usize)>,
-    pub dms: bool,
+    /// How the pointer's coordinates read (status bar, right-click menu); a preference.
+    pub coord_format: crate::CoordReadout,
     pub render_ms: u64,
     pub notices_seen: usize,
     pub toasts: Vec<Toast>,
@@ -404,7 +405,7 @@ impl Default for MapView {
             pointer_lonlat: None,
             menu_lonlat: None,
             menu_text: None,
-            dms: false,
+            coord_format: crate::CoordReadout::Decimal,
             render_ms: 0,
             notices_seen: 0,
             toasts: Vec::new(),

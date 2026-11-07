@@ -26,6 +26,7 @@ mod connectiontree;
 mod connectionui;
 #[cfg(not(target_arch = "wasm32"))]
 mod connectui;
+mod coordreadout;
 mod cswui;
 mod cubesui;
 mod diagnosticlog;
@@ -119,6 +120,7 @@ use serde_json::{Value, json};
 pub use autosave::FolderStore;
 pub use autosave::{Recovery, RecoveryStore};
 pub use chrome::{DoubleClick, TitlebarMetrics};
+pub use coordreadout::CoordReadout;
 pub use rustgis_assistant;
 pub use rustgis_engine;
 pub use widgets::big_split_menu;
@@ -1385,6 +1387,20 @@ impl RustGisApp {
             .unwrap_or_else(|| "Meters".into());
         self.ui.measurement_imperial =
             self.services.load_pref.as_ref().and_then(|load| load("measurement_units")).as_deref() == Some("imperial");
+        // The pointer's coordinate format; a missing one reads as decimal degrees. One this
+        // version doesn't know (a newer RustGIS may have saved it) is said and read as decimal
+        // degrees too. It stays saved until the user picks a format (`ui.coordinateFormat`).
+        if let Some(code) = self.services.load_pref.as_ref().and_then(|load| load(coordreadout::PREF)) {
+            match CoordReadout::from_code(&code) {
+                Some(format) => self.map.coord_format = format,
+                None => {
+                    // Notices are shown as written, and the language is set only in `start`.
+                    i18n::set_current(self.chosen_lang());
+                    self.session
+                        .notify(tl!("The saved coordinate format isn't known to this version, so decimal degrees are shown."), false);
+                }
+            }
+        }
         // The GPU map backend: RUSTGIS_GPU forces it on, else the saved preference.
         self.map.gpu_enabled = std::env::var_os("RUSTGIS_GPU").is_some()
             || self.services.load_pref.as_ref().and_then(|load| load("ui.map.gpu")).as_deref() == Some("1");
@@ -2916,6 +2932,18 @@ impl RustGisApp {
                 self.ui.measurement_imperial = imperial;
                 if let Some(save) = &self.services.save_pref {
                     save("measurement_units", if imperial { "imperial" } else { "metric" });
+                }
+            }
+            "ui.coordinateFormat" => {
+                let format = match p.get("format") {
+                    None | Some(Value::Null) => self.map.coord_format.next(),
+                    Some(Value::String(v)) => CoordReadout::from_code(v)
+                        .ok_or_else(|| tl!("The coordinate format must be decimal, dms, utm or mgrs").to_string())?,
+                    _ => return Err(tl!("The coordinate format must be decimal, dms, utm or mgrs").into()),
+                };
+                self.map.coord_format = format;
+                if let Some(save) = &self.services.save_pref {
+                    save(coordreadout::PREF, format.code());
                 }
             }
             "ui.moveSharedVertices" => {

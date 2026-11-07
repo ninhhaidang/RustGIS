@@ -6,7 +6,7 @@ use rustgis_engine::geom::Coord;
 use serde_json::json;
 
 use crate::widgets::{menu_row, submenu_row};
-use crate::{RustGisApp, i18n};
+use crate::{CoordReadout, RustGisApp, i18n};
 
 /// Decimal places of the coordinates shown, copied and sent to Google (~0.1 m).
 const PRECISION: usize = 6;
@@ -49,6 +49,20 @@ fn trim(v: f64) -> String {
 /// "lat, lon", as Google Maps writes a place.
 fn lat_lon(c: Coord) -> String {
     format!("{:.p$}, {:.p$}", c.y, c.x, p = PRECISION)
+}
+
+/// The coordinate row: the text it shows and copies, in the readout's format, and whether it fell
+/// back from it. Decimal degrees are `lat, lon` ([`lat_lon`]); north of 84° N or south of 80° S,
+/// and on another body's map (`earth` false), UTM and MGRS fall back to them (and the row's hover
+/// text says why).
+fn coordinate_row(c: Coord, f: CoordReadout, earth: bool) -> (String, bool) {
+    match f {
+        CoordReadout::Decimal => (lat_lon(c), false),
+        _ => match f.format(c, earth) {
+            Some(text) => (text, false),
+            None => (lat_lon(c), true),
+        },
+    }
 }
 
 /// The place as a GeoJSON point feature.
@@ -107,8 +121,23 @@ fn run(app: &mut RustGisApp, id: &str, params: serde_json::Value) {
 pub fn show(app: &mut RustGisApp, ui: &mut Ui, c: Coord) {
     let c = place(c);
     ui.set_min_width(240.0);
-    let coords = lat_lon(c);
-    if menu_row(ui, "locate", &coords, "", true).on_hover_text(tl!("Copy coordinates to the clipboard")).clicked() {
+    let format = app.map.coord_format;
+    let earth = app.session.map().body().is_earth();
+    let (coords, fell_back) = coordinate_row(c, format, earth);
+    let hover = if fell_back && !earth {
+        i18n::fmt(
+            "Copy coordinates to the clipboard. {format} is a grid of the Earth, so latitude and longitude are copied",
+            &[("format", format.label())],
+        )
+    } else if fell_back {
+        i18n::fmt(
+            "Copy coordinates to the clipboard. No {format} here: outside the UTM zones (80° S to 84° N), so latitude and longitude are copied",
+            &[("format", format.label())],
+        )
+    } else {
+        tl!("Copy coordinates to the clipboard").to_string()
+    };
+    if menu_row(ui, "locate", &coords, "", true).on_hover_text(hover).clicked() {
         ui.ctx().copy_text(coords);
         ui.close();
     }
@@ -239,5 +268,32 @@ mod tests {
         assert!(google_earth_url(c, 30.0).ends_with(",0a,150d,35y,0h,0t,0r"));
         assert!((web_zoom(156_543.033_92, 0.0)).abs() < 1e-9);
         assert!(point_geojson(c).contains("\"Point\""));
+    }
+
+    #[test]
+    fn the_coordinate_row_copies_the_chosen_format() {
+        let p = Coord::new(44.4, 33.3);
+        assert_eq!(coordinate_row(p, CoordReadout::Decimal, true), ("33.300000, 44.400000".into(), false));
+        assert_eq!(coordinate_row(p, CoordReadout::Dms, true), ("44°24′00.0″ E  33°18′00.0″ N".into(), false));
+        assert_eq!(coordinate_row(p, CoordReadout::Utm, true), ("38north 444141 3684706".into(), false));
+        assert_eq!(coordinate_row(p, CoordReadout::Mgrs, true), ("38S MB 44140 84706".into(), false));
+        // What is copied as UTM or MGRS is found again by the search box, in both hemispheres.
+        for q in [p, Coord::new(-58.4, -34.6), Coord::new(151.2, -33.87), Coord::new(3.0, -1e-7), Coord::new(-21.9, 64.15)] {
+            for f in [CoordReadout::Utm, CoordReadout::Mgrs] {
+                let (text, fell_back) = coordinate_row(q, f, true);
+                assert!(!fell_back, "{text}");
+                let at = rustgis_engine::cmd::search::read_grid_reference(&text).unwrap_or_else(|e| panic!("{text}: {e}"));
+                assert!((at.x - q.x).abs() < 1e-4 && (at.y - q.y).abs() < 1e-4, "{text} {at:?}");
+            }
+        }
+        // Where UTM has no zone, the row falls back to latitude and longitude (and says so).
+        let pole = Coord::new(10.0, 86.0);
+        for f in [CoordReadout::Utm, CoordReadout::Mgrs] {
+            assert_eq!(coordinate_row(pole, f, true), ("86.000000, 10.000000".into(), true), "{f:?}");
+            // On another body's map as well: UTM and MGRS are the Earth's grids.
+            assert_eq!(coordinate_row(p, f, false), ("33.300000, 44.400000".into(), true), "{f:?}");
+        }
+        assert!(!coordinate_row(pole, CoordReadout::Dms, true).1);
+        assert_eq!(coordinate_row(p, CoordReadout::Dms, false), coordinate_row(p, CoordReadout::Dms, true));
     }
 }

@@ -44,6 +44,17 @@ fn lookup_fallback_and_tags() {
     assert_eq!(fmt("{n} of {total} selected", &[("n", "3"), ("total", "{n}")]), "3 of {n} selected");
 }
 
+/// `fmt_raw` fills a message in logical order, for `paragraph` to fit; `fmt` is the same
+/// message in display form.
+#[test]
+fn fmt_raw_keeps_logical_order() {
+    let args = [("reason", "سلام abc")];
+    assert_eq!(fmt_raw("{reason}", &args), "سلام abc");
+    assert_eq!(fmt("{reason}", &args), rtl::visual("سلام abc"));
+    assert_ne!(fmt("{reason}", &args), fmt_raw("{reason}", &args));
+    assert_eq!(fmt_raw("{reason} {", &args), "سلام abc {");
+}
+
 #[test]
 fn bengali_registration_and_fallback() {
     let bn = Lang::from_code("bn").unwrap_or(Lang::EN);

@@ -452,16 +452,24 @@ pub fn location(loc: &str) -> String {
 /// logical order — [`t_raw`] (`tl_raw!`) for translated fragments, raw data as it is —
 /// for the finished message is transformed as a whole.
 pub fn fmt(template: &str, args: &[(&str, &str)]) -> String {
-    format_translated(tr_raw(current(), template), args)
+    rtl::visual(&fmt_raw(template, args))
+}
+
+/// [`fmt`] in logical order, without the display form: for a message shown with
+/// [`paragraph`], which fits a right-to-left message to its rows and puts each row in
+/// display form itself.
+pub fn fmt_raw(template: &str, args: &[(&str, &str)]) -> String {
+    fill_placeholders(tr_raw(current(), template), args)
 }
 
 /// Translates a template in its context, then fills placeholders before RTL display conversion.
 pub fn fmt_context(context: &str, template: &str, args: &[(&str, &str)]) -> String {
-    format_translated(t_raw_context(context, template), args)
+    rtl::visual(&fill_placeholders(t_raw_context(context, template), args))
 }
 
-/// Fills placeholders once, keeping inserted data literal and transforming the completed line.
-fn format_translated(template: &str, args: &[(&str, &str)]) -> String {
+/// Fills placeholders once, keeping inserted data literal, and leaves the line in logical
+/// order: callers put the completed line in display form as a whole, or not at all.
+fn fill_placeholders(template: &str, args: &[(&str, &str)]) -> String {
     let mut out = String::with_capacity(template.len());
     let mut rest = template;
     while let Some((before, after)) = rest.split_once('{') {
@@ -469,7 +477,7 @@ fn format_translated(template: &str, args: &[(&str, &str)]) -> String {
         let Some((name, tail)) = after.split_once('}') else {
             out.push('{');
             out.push_str(after);
-            return rtl::visual(&out);
+            return out;
         };
         match args.iter().find(|(k, _)| *k == name) {
             Some((_, v)) => out.push_str(v),
@@ -482,7 +490,7 @@ fn format_translated(template: &str, args: &[(&str, &str)]) -> String {
         rest = tail;
     }
     out.push_str(rest);
-    rtl::visual(&out)
+    out
 }
 
 thread_local! {
