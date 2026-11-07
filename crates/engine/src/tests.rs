@@ -30128,6 +30128,213 @@ fn a_pdf_says_which_frames_and_pages_it_draws_as_pictures() {
     );
 }
 
+#[test]
+fn layer_invert_ramp_reverses_the_class_colors() {
+    // #1355: Invert Color Ramp reverses the order of a layer's class colours.
+    let mut s = world();
+    let colors = |s: &Session| -> Vec<rustgis_map::Rgba> {
+        match &s.map().layer_by_name("Countries").unwrap().renderer {
+            rustgis_map::Renderer::Graduated { symbols, .. } => symbols.iter().map(|y| y.fill).collect(),
+            rustgis_map::Renderer::Unique { classes, .. } => classes.iter().map(|c| c.1.fill).collect(),
+            _ => vec![],
+        }
+    };
+    // A single symbol has no color scheme to invert.
+    s.run("layer.symbology", &json!({"layer": "Countries", "type": "single"})).unwrap();
+    assert!(s.run("layer.invertRamp", &json!({"layer": "Countries"})).is_err());
+    s.run("layer.symbology", &json!({"layer": "Countries", "type": "graduated", "field": "pop_est", "classes": 5})).unwrap();
+    let before = colors(&s);
+    assert_eq!(before.len(), 5);
+    let mark = s.notice_mark();
+    s.run("layer.invertRamp", &json!({"layer": "Countries"})).unwrap();
+    assert!(s.notices_since(mark).is_empty(), "nothing was left as it was, so nothing is said: {:?}", s.notices_since(mark));
+    let mut reversed = before.clone();
+    reversed.reverse();
+    assert_eq!(colors(&s), reversed);
+    // Twice is the original; one undo step undoes one inversion.
+    s.run("layer.invertRamp", &json!({"layer": "Countries"})).unwrap();
+    assert_eq!(colors(&s), before);
+    s.run("layer.invertRamp", &json!({"layer": "Countries"})).unwrap();
+    s.run("edit.undo", &Value::Null).unwrap();
+    assert_eq!(colors(&s), before);
+    // Unique Values too.
+    s.run("layer.symbology", &json!({"layer": "Countries", "type": "unique", "field": "income_grp"})).unwrap();
+    let before = colors(&s);
+    s.run("layer.invertRamp", &json!({"layer": "Countries"})).unwrap();
+    let mut reversed = before.clone();
+    reversed.reverse();
+    assert_eq!(colors(&s), reversed);
+    assert!(s.run("layer.invertRamp", &json!({"layer": "Nope"})).is_err());
+
+    // A colour set by hand travels with the reversal, and each polygon fill keeps its own opacity.
+    s.run("layer.symbology", &json!({"layer": "Countries", "type": "graduated", "field": "pop_est", "classes": 5})).unwrap();
+    s.run("layer.classStyle", &json!({"layer": "Countries", "index": 0, "color": "#11223344"})).unwrap();
+    let before = colors(&s);
+    s.run("layer.invertRamp", &json!({"layer": "Countries"})).unwrap();
+    let after = colors(&s);
+    assert_eq!(after.len(), 5);
+    assert_eq!(after[4].with_alpha(0), before[0].with_alpha(0), "the edited colour moved to the other end");
+    assert_eq!(after[4].a(), before[4].a(), "a fill keeps its own opacity");
+    assert_eq!(after[0].a(), before[0].a());
+    assert_eq!(before[0].a(), 0x44);
+
+    // A class drawn with a stack of fills of its own is drawn instead of its symbol, so the
+    // reversal can't reach it: it keeps its fills, and the command says so.
+    s.run("layer.symbology", &json!({"layer": "Countries", "type": "graduated", "field": "pop_est", "classes": 5})).unwrap();
+    s.run("layer.fillLayers", &json!({"layer": "Countries", "index": 0, "fills": [{"color": "#FF0000", "pattern": "solid"}]})).unwrap();
+    let own = |s: &Session| match &s.map().layer_by_name("Countries").unwrap().renderer {
+        rustgis_map::Renderer::Graduated { class_fills, .. } => class_fills.clone(),
+        _ => Default::default(),
+    };
+    let mark = s.notice_mark();
+    let before = colors(&s);
+    let fills_before = own(&s);
+    assert_eq!(fills_before.keys().copied().collect::<Vec<_>>(), vec![0]);
+    s.run("layer.invertRamp", &json!({"layer": "Countries"})).unwrap();
+    assert_eq!(own(&s), fills_before, "the class keeps its own fills, as they were");
+    // Class 0 keeps its colour, and the others reverse among themselves.
+    let after = colors(&s);
+    assert_eq!(after[0], before[0]);
+    assert_eq!(after[1..], [before[4], before[3], before[2], before[1]]);
+    let notices = s.notices_since(mark);
+    assert!(
+        notices.iter().any(|n| n.text.starts_with("1 class(es) drawn with fills or strokes of their own were left as they are")),
+        "{notices:?}"
+    );
+
+    // A Stretch raster switches its invert option, and other rasters are refused.
+    use rustgis_data::raster::{ColorHint, Crs, GeoTransform, Raster};
+    let gt = GeoTransform { origin_x: 0.0, origin_y: 2.0, pixel_width: 1.0, pixel_height: -1.0 };
+    let r = Raster::new("dem", 2, 2, vec![vec![1.0, 2.0, 3.0, 4.0]], gt, Crs::LonLat, None, ColorHint::Gray, "Float32").unwrap();
+    s.map_mut().add_raster("dem", rustgis_map::RasterLayer::from_path(r, "dem.tif"));
+    s.run("raster.symbology", &json!({"layer": "dem", "type": "stretch", "ramp": "Terrain"})).unwrap();
+    let inverted = |s: &Session| match s.map().layer_by_name("dem").and_then(|l| l.raster.as_ref()).map(|r| r.style.renderer.clone()) {
+        Some(rustgis_map::RasterRenderer::Stretch { invert, .. }) => Some(invert),
+        _ => None,
+    };
+    assert_eq!(inverted(&s), Some(false));
+    s.run("layer.invertRamp", &json!({"layer": "dem"})).unwrap();
+    assert_eq!(inverted(&s), Some(true));
+    s.run("layer.invertRamp", &json!({"layer": "dem"})).unwrap();
+    assert_eq!(inverted(&s), Some(false));
+    s.run("raster.symbology", &json!({"layer": "dem", "type": "classify", "classes": 2, "method": "equalInterval"})).unwrap();
+    assert!(s.run("layer.invertRamp", &json!({"layer": "dem"})).is_err(), "a classified raster has no invert option");
+}
+
+#[test]
+fn layer_invert_ramp_says_when_the_layers_own_stack_hides_the_colors() {
+    // #1355: classes without a stack of their own are drawn from the layer's `line_strokes` or
+    // `fill_layers`; when every layer of it sets its own color, the color scheme shows in none of
+    // them, and the command says so (the colors are reversed all the same).
+    let notices = |s: &mut Session, layer: &str| -> Vec<String> {
+        let mark = s.notice_mark();
+        s.run("layer.invertRamp", &json!({"layer": layer})).unwrap();
+        s.notices_since(mark).iter().map(|n| n.text.clone()).collect()
+    };
+    let mut s = world();
+    // A line layer: strokes that all set a color hide the symbol; a core that follows the class doesn't.
+    s.run("layer.symbology", &json!({"layer": "Rivers", "type": "graduated", "field": "scalerank", "classes": 4})).unwrap();
+    assert!(notices(&mut s, "Rivers").is_empty(), "no stack, nothing to say");
+    let own = json!([{"color": "#000000", "width": 5}, {"color": "#FFFFFF", "width": 2}]);
+    s.run("layer.lineStrokes", &json!({"layer": "Rivers", "strokes": own})).unwrap();
+    let said = notices(&mut s, "Rivers");
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(said[0].starts_with("The layer's stacked strokes set their own colors"), "{said:?}");
+    let casing_and_core = json!([{"color": "#000000", "width": 5}, {"width": 2}]);
+    s.run("layer.lineStrokes", &json!({"layer": "Rivers", "strokes": casing_and_core})).unwrap();
+    assert!(notices(&mut s, "Rivers").is_empty(), "the core follows the class, so the scheme shows");
+    s.run("layer.lineStrokes", &json!({"layer": "Rivers", "strokes": []})).unwrap();
+    assert!(notices(&mut s, "Rivers").is_empty());
+    // A polygon layer: its stacked fills.
+    s.run("layer.symbology", &json!({"layer": "Countries", "type": "graduated", "field": "pop_est", "classes": 4})).unwrap();
+    s.run("layer.fillLayers", &json!({"layer": "Countries", "fills": [{"color": "#00AA00", "pattern": "solid"}]})).unwrap();
+    let said = notices(&mut s, "Countries");
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(said[0].starts_with("The layer's stacked fills set their own colors"), "{said:?}");
+    s.run("layer.fillLayers", &json!({"layer": "Countries", "fills": [{"pattern": "solid"}]})).unwrap();
+    assert!(notices(&mut s, "Countries").is_empty(), "a fill that follows the class shows the scheme");
+
+    // The notice about the layer's stack comes only when some classes changed places: with every
+    // class drawn from a stack of its own, none did, and the layer's stack is not what shows.
+    s.run("layer.symbology", &json!({"layer": "Countries", "type": "graduated", "field": "pop_est", "classes": 2})).unwrap();
+    s.run("layer.fillLayers", &json!({"layer": "Countries", "fills": [{"color": "#00AA00", "pattern": "solid"}]})).unwrap();
+    for index in 0..2 {
+        s.run("layer.fillLayers", &json!({"layer": "Countries", "index": index, "fills": [{"color": "#AA0000", "pattern": "solid"}]}))
+            .unwrap();
+    }
+    let said = notices(&mut s, "Countries");
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(said[0].starts_with("2 class(es) drawn with fills or strokes of their own"), "{said:?}");
+
+    // Their own stacks replace the layer's even where they follow the class, so the layer's stack
+    // is not what shows and the command says nothing of it.
+    for index in 0..2 {
+        s.run("layer.fillLayers", &json!({"layer": "Countries", "index": index, "fills": [{"pattern": "solid"}]})).unwrap();
+    }
+    assert!(notices(&mut s, "Countries").is_empty(), "every class has a stack of its own");
+    // One class left on the layer's stack is enough to say it.
+    s.run("layer.symbology", &json!({"layer": "Countries", "type": "graduated", "field": "pop_est", "classes": 3})).unwrap();
+    s.run("layer.fillLayers", &json!({"layer": "Countries", "fills": [{"color": "#00AA00", "pattern": "solid"}]})).unwrap();
+    s.run("layer.fillLayers", &json!({"layer": "Countries", "index": 0, "fills": [{"pattern": "solid"}]})).unwrap();
+    let said = notices(&mut s, "Countries");
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(said[0].starts_with("The layer's stacked fills set their own colors"), "{said:?}");
+}
+
+#[test]
+fn layer_invert_ramp_says_when_symbol_by_expression_sets_colors() {
+    // #1355: Symbol by Expression colors are drawn over the class colors, so the reversal shows only
+    // where the expression gives none; with no color expression (a size one doesn't set colors) it is quiet.
+    let notices = |s: &mut Session| -> Vec<String> {
+        let mark = s.notice_mark();
+        s.run("layer.invertRamp", &json!({"layer": "Countries"})).unwrap();
+        s.notices_since(mark).iter().map(|n| n.text.clone()).collect()
+    };
+    let mut s = world();
+    s.run("layer.symbology", &json!({"layer": "Countries", "type": "graduated", "field": "pop_est", "classes": 4})).unwrap();
+    assert!(notices(&mut s).is_empty());
+    s.run("layer.symbolBy", &json!({"layer": "Countries", "strokeWidth": "2"})).unwrap();
+    assert!(notices(&mut s).is_empty(), "a width is no color");
+    s.run("layer.symbolBy", &json!({"layer": "Countries", "fill": "if(pop_est > 1e8, '#ff0000', NULL)"})).unwrap();
+    let said = notices(&mut s);
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(said[0].starts_with("The layer's Symbol by Expression sets some features' colors"), "{said:?}");
+    s.run("layer.symbolBy", &json!({"layer": "Countries", "fill": null, "stroke": "'#00ff00'"})).unwrap();
+    assert_eq!(notices(&mut s).len(), 1, "a stroke color counts too");
+}
+
+#[test]
+fn layer_invert_ramp_says_when_there_is_nothing_to_invert() {
+    // #1355: with fewer than two classes showing the scheme, an inversion would change nothing, so
+    // the command refuses rather than succeed silently. A raster's Invert is a switch and is no
+    // class count, and a class kept for its own stack has its own notice.
+    let mut s = world();
+    s.run("layer.symbology", &json!({"layer": "Countries", "type": "graduated", "field": "pop_est", "classes": 1})).unwrap();
+    let classes = |s: &Session| match &s.map().layer_by_name("Countries").unwrap().renderer {
+        rustgis_map::Renderer::Graduated { symbols, .. } => symbols.len(),
+        _ => 0,
+    };
+    assert_eq!(classes(&s), 1, "one class to invert");
+    let err = s.run("layer.invertRamp", &json!({"layer": "Countries"})).unwrap_err();
+    assert!(err.contains("nothing to invert"), "{err}");
+    // Two classes reverse, with no notice.
+    s.run("layer.symbology", &json!({"layer": "Countries", "type": "graduated", "field": "pop_est", "classes": 2})).unwrap();
+    let mark = s.notice_mark();
+    s.run("layer.invertRamp", &json!({"layer": "Countries"})).unwrap();
+    assert!(s.notices_since(mark).is_empty());
+}
+
+#[test]
+fn layer_invert_ramp_refuses_a_graphics_layer() {
+    // #1355: a graphics layer draws each feature in its own style, whatever its renderer holds, so
+    // reversing the renderer's colors would change nothing and say nothing.
+    let mut s = world();
+    s.run("graphics.add", &json!({"shape": "rectangle", "points": [[0, 45], [10, 55]], "fill": "#FF000040"})).unwrap();
+    let id = s.map().layers.iter().find(|l| l.graphics).map(|l| l.id).unwrap();
+    let err = s.run("layer.invertRamp", &json!({"layer": id})).unwrap_err();
+    assert!(err.contains("graphics layer"), "{err}");
+}
+
 /// Calculate Field keeps a decimal result as it is in a decimal field, rather than rounding it to
 /// the six places its text shows, and says what a whole-number field cuts: a fraction, or a number
 /// past the 64-bit range (null). Results the field holds give no notice.

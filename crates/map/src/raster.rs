@@ -1240,6 +1240,17 @@ impl RasterStyle {
         }
     }
 
+    /// Flips a Stretch's colour scheme end for end (#1355). Returns false for other renderers.
+    pub fn invert_ramp(&mut self) -> bool {
+        match &mut self.renderer {
+            RasterRenderer::Stretch { invert, .. } => {
+                *invert = !*invert;
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Recolours with a colour scheme.
     pub fn set_ramp(&mut self, ramp: Ramp) {
         match &mut self.renderer {

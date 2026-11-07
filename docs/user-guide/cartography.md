@@ -186,6 +186,34 @@ As with other class colour edits, changing the field or graduated ranges starts 
 a different scheme through `layer.symbology` resets polygon opacity to its default.
 Layer/group transparency still applies on top of the symbol's opacity in maps and exports.
 
+**Invert Color Ramp** (Symbology pane, or `layer.invertRamp`) reverses the colours of a Graduated
+Colors or Unique Values layer's classes along the legend's order, so the highest class takes the
+lowest class's colour. Colours edited by hand travel with the reversal, but a polygon fill's
+opacity stays with its position in the legend, as it does when a colour scheme is applied: a
+semi-transparent fill picked for the first class is still the first class's opacity afterwards.
+Applying it twice gives the original back. The `<all other values>` swatch is no colour of the
+scheme and stays as it is. With fewer than two classes showing the scheme there is nothing to
+reverse, and the command says so instead of succeeding.
+
+A class whose own stack hides its symbol keeps it, and the others reverse among themselves; a
+notice says how many classes with a stack of their own were left as they are. A stack hides the
+symbol when it is drawn (stacked fills on a polygon layer, stacked strokes on a line or point
+layer; a polygon's stacked strokes and a line's stacked fills are not drawn) and every layer of it
+sets a colour of its own. A layer of a stack left on "follow the class" shows the class's colour,
+so that class reverses with the rest: a road's black casing over a core that follows the class.
+When the layer's own stack (the one classes without a stack of their own are drawn from) sets a
+colour in every layer, the classes show those colours and little of the colour scheme: the colours
+are reversed all the same, and a notice says so. On a layer that holds several kinds of geometry,
+the reversal treats every class as the layer's main kind, as choosing a colour scheme does.
+A fill or stroke colour from **Symbol by Expression** is drawn over the classes' colours wherever
+the expression gives one, so the reversal shows only where it gives none, and a notice says so.
+
+Choosing a colour scheme again starts from the scheme's own order, but classing the layer again
+on the same field, ranges and scheme keeps the reversed colours, as it keeps other colours edited
+by hand. On a Stretch raster the command switches the existing "Invert color scheme" option. A
+graphics layer draws each feature in its own style, so it has no colour scheme to invert and the
+command says so.
+
 ### Line strokes
 
 A line layer draws one stroke by default. The **Strokes** section of the Symbology pane stacks
