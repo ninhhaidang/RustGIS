@@ -9,8 +9,9 @@ use rustgis_engine::analysis::{ParamKind, tools};
 use rustgis_engine::data::GeometryType;
 use rustgis_engine::map::raster::{Normalizer, RasterLegend, RasterStyle};
 use rustgis_engine::map::symbology::{
-    ClassRef, ClassStyle, Dash, LineCap, LineJoin, LineMark, LineMarkers, LineStroke, MAX_LABEL, MAX_LINE_MARKER_SIZE, MAX_MARKER_INTERVAL,
-    MAX_STROKE_OFFSET, MAX_STROKE_WIDTH, MAX_STROKES, MAX_UNIQUE, MIN_MARKER_INTERVAL, OTHER_VALUES, Placements, normalize_label,
+    ClassRef, ClassStyle, Dash, LineCap, LineJoin, LineMark, LineMarkers, LineStroke, MAX_EXPRESSION_CLASSES, MAX_LABEL,
+    MAX_LINE_MARKER_SIZE, MAX_MARKER_INTERVAL, MAX_STROKE_OFFSET, MAX_STROKE_WIDTH, MAX_STROKES, MIN_MARKER_INTERVAL, OTHER_VALUES,
+    Placements, normalize_label,
 };
 use rustgis_engine::map::tiles::{TileKind, TileLayer};
 use rustgis_engine::map::{
@@ -4885,13 +4886,17 @@ fn legend_list(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, t: &Tokens) {
             // Unique Values legends sort their classes (by value or by label): row i shows class `order[i]`,
             // and the rows past them (`<all other values>`) keep their place.
             let order = l.renderer.class_order();
-            // At most MAX_UNIQUE classes (a style import can bring more), then Unique Values'
-            // `<all other values>`, the legend's last row, whatever their number.
-            let rows: Vec<usize> = match &l.renderer {
+            // As many classes as can be drawn from an expression or a QGIS rule style
+            // (MAX_EXPRESSION_CLASSES), then Unique Values' `<all other values>`, the legend's
+            // last row, whatever their number. A categorized style import can bring more: how
+            // many aren't listed is said below the list.
+            let (rows, unlisted): (Vec<usize>, usize) = match &l.renderer {
                 Renderer::Unique { .. } => {
-                    (0..legend.len().saturating_sub(1)).take(MAX_UNIQUE).chain(legend.len().checked_sub(1)).collect()
+                    let classes = legend.len().saturating_sub(1);
+                    let rows = (0..classes).take(MAX_EXPRESSION_CLASSES).chain(legend.len().checked_sub(1)).collect();
+                    (rows, classes.saturating_sub(MAX_EXPRESSION_CLASSES))
                 }
-                _ => (0..legend.len()).take(MAX_UNIQUE + 1).collect(),
+                _ => ((0..legend.len()).take(MAX_EXPRESSION_CLASSES).collect(), legend.len().saturating_sub(MAX_EXPRESSION_CLASSES)),
             };
             let mut seen = std::collections::HashSet::new();
             for i in rows {
@@ -5011,6 +5016,17 @@ fn legend_list(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, t: &Tokens) {
                         ui.data_mut(|d| d.insert_temp(typing, buf));
                     }
                 });
+            }
+            if unlisted > 0 {
+                let note = if unlisted == 1 {
+                    tl!("1 more class isn't listed: the list's limit doesn't change how it's drawn").to_string()
+                } else {
+                    crate::i18n::fmt(
+                        "{n} more classes aren't listed: the list's limit doesn't change how they're drawn",
+                        &[("n", &unlisted.to_string())],
+                    )
+                };
+                ui.label(egui::RichText::new(note).size(11.5).color(t.text_dim));
             }
         },
     );
@@ -7959,6 +7975,60 @@ mod tests {
         let mut raised = egui::ecolor::Hsva::from_srgb([200, 30, 40]);
         raised.a = 1.0;
         assert_eq!(picked_colour(raised, 0.0, picked), picked.with_alpha(255), "raising the opacity shows it");
+    }
+
+    /// The Unique Values list shows as many classes as can be drawn from a QGIS rule style
+    /// (MAX_EXPRESSION_CLASSES), not only as many as a field's automatic classes (#1252); past
+    /// that, as a categorized style import can bring, it says how many it doesn't list.
+    #[test]
+    fn unique_values_list_every_class_drawn_and_says_how_many_it_leaves_out() {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        let mut app = RustGisApp::with_sample();
+        app.run("layer.symbology", json!({"layer": "Countries", "type": "unique", "field": "name"})).unwrap();
+        let id = layer(&app, "Countries");
+        // A style import's classes past the automatic ones: `n` in all.
+        let grow_to = |app: &mut RustGisApp, n: usize| {
+            if let Some(l) = app.session.map_mut().layers.iter_mut().find(|l| l.id == id)
+                && let Renderer::Unique { classes, .. } = &mut l.renderer
+            {
+                let symbol = classes[0].1;
+                let had = classes.len();
+                classes.extend((had..n.max(had)).map(|i| (format!("imported {i}"), symbol)));
+            }
+        };
+        let n = 150;
+        assert!(n > rustgis_engine::map::symbology::MAX_UNIQUE && n <= MAX_EXPRESSION_CLASSES);
+        grow_to(&mut app, n);
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(600.0, 600.0)).with_max_steps(8).build_ui_state(
+            move |ui, app: &mut RustGisApp| {
+                let layer = app.session.map().layer(id).unwrap().clone();
+                egui::ScrollArea::vertical().show(ui, |ui| legend_list(app, ui, &layer, &Tokens::light()));
+            },
+            app,
+        );
+        h.run_steps(2);
+        // A label box for each class, and one for `<all other values>`.
+        assert_eq!(h.query_all_by_role(Role::TextInput).count(), n + 1);
+        assert!(h.query_by_label_contains("more classes aren't listed").is_none());
+
+        // More than can be listed, as a categorized style import can bring: the first ones,
+        // `<all other values>`, and how many are left out.
+        grow_to(h.state_mut(), MAX_EXPRESSION_CLASSES + 37);
+        h.run_steps(2);
+        assert_eq!(h.query_all_by_role(Role::TextInput).count(), MAX_EXPRESSION_CLASSES + 1);
+        // `<all other values>` keeps the last row.
+        let last = h.query_all_by_role(Role::TextInput).last().and_then(|n| n.value()).unwrap_or_default();
+        assert_eq!(last, OTHER_VALUES);
+        assert!(h.query_by_label_contains("37 more classes aren't listed").is_some());
+        // One left out is said as one.
+        if let Some(l) = h.state_mut().session.map_mut().layers.iter_mut().find(|l| l.id == id)
+            && let Renderer::Unique { classes, .. } = &mut l.renderer
+        {
+            classes.truncate(MAX_EXPRESSION_CLASSES + 1);
+        }
+        h.run_steps(2);
+        assert!(h.query_by_label_contains("1 more class isn't listed").is_some());
     }
 
     /// Editing opacity must not turn a transparent red or a near-transparent colour into black.
