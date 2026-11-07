@@ -546,7 +546,8 @@ pub(crate) fn ahead_on_copy(s: &Session, command: &'static str, p: &Value) -> su
 
 #[cfg(not(target_arch = "wasm32"))]
 /// A script's run on a copy of the session ([`ahead_on_copy`]), unless its first line would stop
-/// the copy at once (or the script doesn't read): then it runs here, with no copy made.
+/// the copy at once, or the script has no lines or doesn't parse: then it runs here, with no copy
+/// made.
 pub(crate) fn script_ahead(s: &Session, p: &Value) -> Option<super::reads::ReadAhead> {
     let lines = script_commands(ps(p, "script")?).ok()?;
     let (_, id, params) = lines.first()?;

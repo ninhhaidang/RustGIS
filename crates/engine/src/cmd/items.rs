@@ -884,8 +884,9 @@ pub(crate) fn touches_files(command: &str, params: &Value) -> bool {
 /// (or a model, or a notebook) from a file, or a plugin without `files`, may set it: only
 /// `gp.run`'s `{"tool", "params"}` shape, only `params.output`, only for the tools in
 /// `rustgis_analysis::TOOLS`, which name their output layer and never a file through it (see
-/// `out_name` there), not GeoLibre or plugin tools, which may write theirs as files, and only a
-/// plain name, with no `/`, `\`, `.` or `:`. Anything else stays a place.
+/// `out_name` there), not GeoLibre or plugin tools, which may write theirs as files; and
+/// `gp.spatialJoin`'s and `gp.zonalStats`'s `output`, the same built-in tools run with their
+/// parameters flat. Only a plain name, with no `/`, `\`, `.` or `:`. Anything else stays a place.
 pub(crate) fn layer_name_left_out<'a>(command: &str, params: &'a Value) -> std::borrow::Cow<'a, Value> {
     use std::borrow::Cow;
     // Resolved as gp.run resolves it (by id or name, a built-in tool first), then held to the
@@ -899,6 +900,14 @@ pub(crate) fn layer_name_left_out<'a>(command: &str, params: &'a Value) -> std::
     };
     let plain = |t: &str| !t.trim().is_empty() && !t.contains(['/', '\\', '.', ':']) && !looks_like_path(t);
     let named = || params.pointer("/params/output").and_then(Value::as_str).is_some_and(plain);
+    // Spatial Join and Zonal Statistics run their built-in tool with the parameters flat.
+    if matches!(command, "gp.spatialJoin" | "gp.zonalStats") && params.get("output").and_then(Value::as_str).is_some_and(plain) {
+        let mut out = params.clone();
+        if let Some(p) = out.as_object_mut() {
+            p.remove("output");
+        }
+        return Cow::Owned(out);
+    }
     // Copied only when there is a name to leave out: other commands' parameters (a file's
     // contents, say) are read as they are.
     if command != "gp.run" || !built_in() || !named() {

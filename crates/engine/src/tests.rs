@@ -2364,7 +2364,11 @@ fn imported_tasks_name_outputs_and_steps_are_edited() {
     assert!(s.run("task.import", &json!({"text": to_a_file.to_string()})).is_err());
     assert!(crate::cmd::items::touches_files("gp.run", &json!({"tool": "buffer", "params": {"output": "../x.shp"}})));
     assert!(!crate::cmd::items::touches_files("gp.run", &json!({"tool": "buffer", "params": {"output": "Near cities"}})));
-    // Only a plain layer name, only gp.run's, only for RustGIS's own tools.
+    // Spatial Join and Zonal Statistics run their built-in tool with the parameters flat: a
+    // plain output name stays in the session there too.
+    assert!(!crate::cmd::items::touches_files("gp.spatialJoin", &json!({"target": "Cities", "join": "Countries", "output": "Joined"})));
+    assert!(!crate::cmd::items::touches_files("gp.zonalStats", &json!({"raster": "dem", "polygons": "Countries", "output": "Zones"})));
+    // Only a plain layer name, only gp.run's (and those two's), only for RustGIS's own tools.
     for (command, params) in [
         ("gp.run", json!({"tool": "buffer", "params": {"output": "x.shp"}})),
         ("gp.run", json!({"tool": "buffer", "params": {"output": "sub/x"}})),
@@ -2376,6 +2380,8 @@ fn imported_tasks_name_outputs_and_steps_are_edited() {
         ("gp.run", json!({"tool": "someOtherTool", "params": {"output": "x"}})),
         ("gp.run", json!({"tool": "buffer", "params": {"input": "Cities", "nested": {"output": "x"}}})),
         ("layer.rename", json!({"layer": "Cities", "output": "x"})),
+        ("gp.spatialJoin", json!({"target": "Cities", "join": "Countries", "output": "C:/temp/x.shp"})),
+        ("gp.zonalStats", json!({"raster": "dem", "polygons": "Countries", "output": "../zones"})),
     ] {
         assert!(crate::cmd::items::touches_files(command, &params), "{command} {params}");
     }
@@ -30467,6 +30473,16 @@ fn a_scripts_tools_run_ahead_are_taken_by_its_run() {
     assert!(saved.exists());
     assert_eq!(s.project.gp_history.len(), 2);
     std::fs::remove_dir_all(&dir).ok();
+
+    // Spatial Join with its output named stays on the copy: its name is a layer's, not a file's,
+    // so it and the tool after it are taken, and the layer is made under that name.
+    let join = r#"gp.spatialJoin {"target": "Points", "join": "Points", "output": "Joined"}"#;
+    let p = json!({"script": format!("{join}\n{}", tool(1000))});
+    let mut s = session();
+    crate::cmd::reads::read_ahead(&s, "script.run", &p).unwrap().run(&Control::stoppable()).unwrap().placed(&mut s);
+    s.run("script.run", &p).unwrap();
+    assert_eq!(s.tools_taken, 2);
+    assert!(s.map().layer_by_name("Joined").is_some());
 
     // An edit stops the copy (the rows it makes there are never the run here's): the tool
     // before it is taken, the one after it runs here.
