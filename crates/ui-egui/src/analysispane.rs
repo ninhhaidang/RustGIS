@@ -1566,13 +1566,36 @@ pub fn script_pane(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
 /// [`script_ran`] keeps it out of the pane; its notice stays among the session's.
 fn start_over_in_another_project(app: &mut RustGisApp) {
     let opened = app.session.opened;
-    let w = &mut app.workflow;
-    if w.script_project.is_some_and(|p| p != opened) {
-        w.script.clear();
-        w.script_out.clear();
-        w.script_last = None;
+    if app.workflow.script_project.is_some_and(|p| p != opened) {
+        clear_script(app);
     }
-    w.script_project = Some(opened);
+    app.workflow.script_project = Some(opened);
+}
+
+/// The Clear button: [`clear_script`], with the script first kept as an undo step of the box and
+/// the focus given to the box, so Ctrl+Z brings the script back. The box records undo steps only
+/// while focused, so the step is added here, as `scriptcomplete::accept` does.
+fn clear_keeping_undo(app: &mut RustGisApp, ui: &Ui, box_id: egui::Id) {
+    use egui::text::{CCursor, CCursorRange};
+    let mut state = egui::widgets::text_edit::TextEditState::load(ui.ctx(), box_id).unwrap_or_default();
+    let mut undoer = state.undoer();
+    let end = CCursorRange::one(CCursor::new(app.workflow.script.chars().count()));
+    undoer.add_undo(&(state.cursor.char_range().unwrap_or(end), app.workflow.script.clone()));
+    state.set_undoer(undoer);
+    state.cursor.set_char_range(Some(CCursorRange::one(CCursor::new(0))));
+    state.store(ui.ctx(), box_id);
+    clear_script(app);
+    ui.memory_mut(|m| m.request_focus(box_id));
+}
+
+/// The Script pane emptied: its script, results and count, so the next run is `Run #1`, and the
+/// Details window with the run it showed. Clear does it, and another project opening.
+fn clear_script(app: &mut RustGisApp) {
+    let w = &mut app.workflow;
+    w.script.clear();
+    w.script_out.clear();
+    w.script_last = None;
+    w.script_details = false;
 }
 
 /// The height of the Script box's first lines.
@@ -1731,7 +1754,8 @@ fn script(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens, fit: bool) {
     }
     ui.horizontal(|ui| {
         // As egui reads the keys: ⌘ on a Mac, the browser's too (from its user agent).
-        let shortcut = if ui.ctx().os().is_mac() { "⌘+Enter" } else { "Ctrl+Enter" };
+        let mac = ui.ctx().os().is_mac();
+        let shortcut = if mac { "⌘+Enter" } else { "Ctrl+Enter" };
         let run = ui.button(tl!("Run")).on_hover_text(crate::i18n::fmt("Run the script ({keys})", &[("keys", shortcut)])).clicked();
         if run || ctrl_enter {
             let script = app.workflow.script.clone();
@@ -1739,6 +1763,20 @@ fn script(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens, fit: bool) {
         }
         if ui.button(tl!("Commands…")).on_hover_text(tl!("Search every command and its parameters")).clicked() {
             let _ = app.run("ui.commandSearch", Value::Null);
+        }
+        // Not while a run is under way: its results would land in the emptied pane.
+        let w = &app.workflow;
+        let running = !w.script_started.is_empty();
+        let anything = !w.script.is_empty() || !w.script_out.is_empty() || w.script_last.is_some();
+        let undo = if mac { "⌘+Z" } else { "Ctrl+Z" };
+        let mut clear = ui
+            .add_enabled(anything && !running, egui::Button::new(tl!("Clear")))
+            .on_hover_text(crate::i18n::fmt("Empty the script and its results ({keys} brings the script back)", &[("keys", undo)]));
+        if running {
+            clear = clear.on_disabled_hover_text(tl!("Wait for the run to finish"));
+        }
+        if clear.clicked() {
+            clear_keeping_undo(app, ui, box_id);
         }
     });
     // Above the results' scroll, so it stays in view: its number and how long it took, and on
@@ -2086,6 +2124,50 @@ mod tests {
         let second = app.workflow.script_last.as_ref().map(|r| (r.secs, r.at)).unwrap();
         assert!(second.0 < 5.0 && second.1 >= 1_010, "{second:?}");
         assert_eq!(app.workflow.script_out, vec![("cancelled".to_string(), true)]);
+    }
+
+    /// Clear empties the Script pane as another project opening does (#1511): the script, its
+    /// results and count, and Details. The box keeps the focus, so Ctrl+Z brings the script back.
+    /// With nothing to clear, or a run under way, the button is off.
+    #[test]
+    fn clear_empties_the_script_pane_and_undo_brings_the_script_back() {
+        use egui_kittest::kittest::NodeT;
+        let mut app = RustGisApp::with_sample();
+        app.workflow.script = "map.zoomFull".to_string();
+        script_ran(&mut app, crate::Landed::Ran(Ok(json!({"ran": [{"line": 1, "command": "map.zoomFull", "result": null}]}))));
+        // Details open (its window isn't drawn here: it would sit over the button the pointer clicks).
+        app.workflow.script_details = true;
+        let mut fonts = false;
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(900.0, 800.0)).build_ui_state(
+            move |ui, app: &mut RustGisApp| {
+                if !fonts {
+                    crate::theme::install_fonts(ui.ctx(), &[], None);
+                    fonts = true;
+                    return;
+                }
+                script_pane(app, ui, &Tokens::light());
+            },
+            app,
+        );
+        h.run();
+        let on = |h: &egui_kittest::Harness<'_, RustGisApp>| !h.get_by_label("Clear").accesskit_node().is_disabled();
+        assert!(on(&h));
+        h.get_by_label("Clear").click();
+        h.run();
+        let w = &h.state().workflow;
+        assert!(w.script.is_empty() && w.script_out.is_empty() && w.script_last.is_none(), "script, results and count");
+        assert!(!w.script_details, "Details closes with the run it showed");
+        assert!(h.get_by_role(egui::accesskit::Role::MultilineTextInput).is_focused(), "the box keeps the focus");
+        assert!(!on(&h), "nothing left to clear");
+        // The box's own undo brings the script back, with nothing clicked first.
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+        h.run();
+        assert_eq!(h.state().workflow.script, "map.zoomFull");
+        assert!(h.state().workflow.script_last.is_none(), "the results stay gone");
+        // A run under way: off, as its results would land in the emptied pane.
+        h.state_mut().workflow.script_started.push_back((0, web_time::Instant::now(), 0));
+        h.run();
+        assert!(!on(&h));
     }
 
     /// Details… opens the last run in a window of its own, each line folded: a result the pane cuts
