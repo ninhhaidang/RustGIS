@@ -25,7 +25,7 @@ fn need_slider(s: &Session) -> Option<&'static str> {
 
 pub fn commands() -> Vec<C> {
     vec![
-        C::new("time.bind", "Bind to Time Slider", "View › Time", bind).roles(&[])
+        C::new("time.bind", "Bind to Time Slider", "View › Time", bind).roles(&[]).effects(crate::policy::Effects::NONE)
             .when(need_feature_layer)
             .params(r#"{"layer"?, "field"?: date field (default: the one most of whose values read as dates), "start"?, "end"?: dates (default: the field's span, when the slider is new), "unit"?: "hour"|"day"|"month"|"year", "interval"?: number, "show"?: "step"|"wide"|"wider"|"cumulative"}"#),
         C::new("time.unbind", "Unbind from Time Slider", "View › Time", |s, p| {
@@ -34,7 +34,7 @@ pub fn commands() -> Vec<C> {
             let was = l.time.take().map(|t| t.field);
             super::zarr::follow_time(s);
             Ok(json!({"unbound": was}))
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .when(need_feature_layer)
         .params(r#"{"layer"?}"#),
         C::new("time.fields", "Time Fields", "View › Time", |s, p| {
@@ -42,11 +42,11 @@ pub fn commands() -> Vec<C> {
             let l = s.map().layer(id).ok_or("no such layer")?;
             let fields: Vec<Value> = time_fields(&l.dataset).into_iter().map(|(n, share)| json!({"field": n, "share": share})).collect();
             Ok(json!({"fields": fields, "bound": l.time.as_ref().map(|t| t.field.clone())}))
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .view()
         .when(need_feature_layer)
         .params(r#"{"layer"?}"#),
-        C::new("time.set", "Time Slider Settings", "View › Time", set).roles(&[]).params(
+        C::new("time.set", "Time Slider Settings", "View › Time", set).roles(&[]).effects(crate::policy::Effects::NONE).params(
             r#"{"start"?, "end"?: dates (text, a year or milliseconds since 1970), "date"?: the current step, "unit"?: "hour"|"day"|"month"|"year", "interval"?: steps of that many units, "dates"?: [dates] (irregular steps; [] for regular ones), "show"?: "step"|"wide"|"wider"|"cumulative", "before"?: steps before the current one the window takes in, "after"?: steps from the current one (at least 1), "cumulative"?: bool, "speed"?: milliseconds a step shows for, "loop"?: bool, "format"?: date format (YYYY, MM, MMM, DD, HH, mm), "off"?: bool (turns the slider off, every feature showing)}"#,
         ),
         C::new("time.goTo", "Go to Date", "View › Time", |s, p| {
@@ -64,7 +64,7 @@ pub fn commands() -> Vec<C> {
             m.apply_time();
             super::zarr::follow_time(s);
             Ok(info(s))
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .view()
         .when(need_slider)
         .params(r#"{"date": date | "step": number (0 = the first)}"#),
@@ -76,12 +76,12 @@ pub fn commands() -> Vec<C> {
             m.apply_time();
             super::zarr::follow_time(s);
             Ok(info(s))
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .view()
         .when(need_slider)
         .params(r#"{"by"?: steps (default 1; negative goes back), "wrap"?: bool (past the end starts over)}"#),
-        C::new("time.info", "Time Slider", "View › Time", |s, _| Ok(info(s))).roles(&[]).view(),
-        C::new("time.export", "Export Time Animation", "View › Time", export).roles(&[])
+        C::new("time.info", "Time Slider", "View › Time", |s, _| Ok(info(s))).roles(&[]).effects(crate::policy::Effects::NONE).view(),
+        C::new("time.export", "Export Time Animation", "View › Time", export).inputs(export_inputs).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
             .view()
             .when(need_slider)
             .params(r#"{"path": "*.gif" | "*.zip" (PNG frames), "width"?, "height"?: px, "speed"?: milliseconds a frame shows for (default: the slider's), "from"?, "to"?: dates (default: the whole span)}"#),
@@ -253,6 +253,72 @@ pub(crate) fn set(s: &mut Session, p: &Value) -> CmdResult {
     Ok(info(s))
 }
 
+/// The executor's bounded frame selection, shared with its pure source selector.
+struct ExportFrames {
+    saved: TimeSlider,
+    steps: Vec<f64>,
+    width: f64,
+    height: f64,
+}
+
+/// Selects date-filtered steps and dimensions within the executor's frame and pixel budgets.
+fn export_frames(map: &rustgis_map::Map, p: &Value) -> Result<ExportFrames, String> {
+    let (w, h) = (f(p, "width").unwrap_or(640.0).clamp(64.0, 1920.0), f(p, "height").unwrap_or(400.0).clamp(64.0, 1080.0));
+    let (from, to) = (date(p, "from")?, date(p, "to")?);
+    let saved = map.time.clone().ok_or("the time slider is off")?;
+    let steps: Vec<f64> = saved.steps().into_iter().filter(|t| from.is_none_or(|a| *t >= a) && to.is_none_or(|z| *t <= z)).collect();
+    if steps.is_empty() {
+        return Err("no step falls between from and to".into());
+    }
+    // Rendering blocks while it runs: a bound on the work.
+    if steps.len() > MAX_FRAMES || steps.len() as f64 * w * h > MAX_PIXELS {
+        return Err(format!("{} frames at {w:.0} × {h:.0} is too many; narrow from and to, or lower the size", steps.len()));
+    }
+    Ok(ExportFrames { saved, steps, width: w, height: h })
+}
+
+/// Resolves only bounded tile/slider copies with the same date owner that each real frame uses.
+fn frame_tiles(map: &rustgis_map::Map, frames: &ExportFrames, mut visit: impl FnMut(&rustgis_map::TileLayer)) {
+    for source in &map.tiles {
+        let mut tile = source.clone();
+        let mut slider = frames.saved.clone();
+        for step in &frames.steps {
+            slider.current = *step;
+            slider.normalize();
+            tile.apply_time(Some(&slider));
+            if tile.draws() && tile.opacity > 0.0 {
+                visit(&tile);
+            }
+        }
+    }
+}
+
+/// Binds raw dated definitions and selected steps, showing only resolved redacted destinations.
+fn export_inputs(input: &super::InputContext<'_>, p: &Value) -> Result<super::Inputs, String> {
+    let frames = export_frames(input.map(), p)?;
+    let mut inputs = super::tiles::render_inputs(input.map());
+    // Raw definitions plus the exact slider/steps bind every derived route without expanding
+    // private state into a second copy for every frame. Only redacted resolved URLs are shown.
+    inputs.state = json!({"render":inputs.state,"time":frames.saved,"steps":frames.steps});
+    let mut places = std::collections::BTreeSet::new();
+    frame_tiles(input.map(), &frames, |tile| {
+        places.insert(crate::sources::redact(&tile.url));
+        places.extend(tile.legends.iter().map(|legend| crate::sources::redact(&legend.url)));
+    });
+    inputs.review_places = places.into_iter().collect();
+    Ok(inputs)
+}
+
+/// A later selected frame can reveal another source even when the current frame draws none.
+pub(crate) fn export_reach(input: &super::InputContext<'_>, p: &Value) -> crate::policy::Effects {
+    let Ok(frames) = export_frames(input.map(), p) else { return crate::policy::Effects::NONE };
+    let mut reach = crate::policy::Effects::NONE;
+    frame_tiles(input.map(), &frames, |tile| {
+        reach = reach.union(super::tiles::render_tile_reach(tile));
+    });
+    reach
+}
+
 /// Renders every step (or those from `from` to `to`) and writes them as a GIF or a zip of PNGs.
 fn export(s: &mut Session, p: &Value) -> CmdResult {
     // Files are written by the desktop app; the browser's go through its services.
@@ -265,18 +331,8 @@ fn export(s: &mut Session, p: &Value) -> CmdResult {
     if !gif && !lower.ends_with(".zip") {
         return Err("path must end in .gif (an animation) or .zip (PNG frames)".into());
     }
-    let (w, h) = (f(p, "width").unwrap_or(640.0).clamp(64.0, 1920.0), f(p, "height").unwrap_or(400.0).clamp(64.0, 1080.0));
-    let (from, to) = (date(p, "from")?, date(p, "to")?);
-    let saved = s.map().time.clone().ok_or("the time slider is off")?;
+    let ExportFrames { saved, steps, width: w, height: h } = export_frames(s.map(), p)?;
     let speed = f(p, "speed").map_or(saved.speed_ms, |x| x.clamp(16.0, 60_000.0) as u32);
-    let steps: Vec<f64> = saved.steps().into_iter().filter(|t| from.is_none_or(|a| *t >= a) && to.is_none_or(|z| *t <= z)).collect();
-    if steps.is_empty() {
-        return Err("no step falls between from and to".into());
-    }
-    // Rendering blocks while it runs: a bound on the work.
-    if steps.len() > MAX_FRAMES || steps.len() as f64 * w * h > MAX_PIXELS {
-        return Err(format!("{} frames at {w:.0} × {h:.0} is too many; narrow from and to, or lower the size", steps.len()));
-    }
     // Each frame shows the view's extent, as Export Map does. The slider comes back however the
     // frames end (an error, or a panic the session catches).
     let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| frames(s, &steps, w, h, gif.then_some(speed))));
@@ -335,4 +391,20 @@ fn frames(s: &mut Session, steps: &[f64], w: f64, h: f64, gif: Option<u32>) -> R
         }
     }
     if gif.is_some() { Ok(out) } else { rustgis_data::zip::write(&pngs) }
+}
+
+/// `follow_time` visits these source-backed layers in every map, including deferred reads.
+/// Capturing their reach is pure: it neither advances time nor opens a Zarr store.
+pub(crate) fn following_sources(s: &Session) -> Vec<(u64, u32, &str)> {
+    s.project
+        .maps
+        .iter()
+        .flat_map(|m| {
+            m.layers.iter().filter_map(move |l| l.raster.as_ref()?.time_zarr.as_ref().map(|z| (m.instance_id(), l.id, z.store.as_str())))
+        })
+        .collect()
+}
+/// Commands that actually call the shared `follow_time` executor, including nested settings.
+pub(crate) fn follows_sources(id: &str) -> bool {
+    matches!(id, "time.bind" | "time.unbind" | "time.set" | "time.goTo" | "time.step" | "time.export")
 }

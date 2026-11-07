@@ -2,9 +2,9 @@
 //! pixels, a copy of the map or project to draw). A script or the command line writes it where
 //! the command is called; the app writes it on a thread of its own with progress and Cancel
 //! (#1291 step 3): [`export_start`] reads the session, [`ExportRun::run`] writes the file, and
-//! [`export_land`] says what was written, as the command would have. It lands whatever layer is
-//! active or project is open by then: the file is written either way, and an export changes
-//! nothing in the project.
+//! [`export_land`] says what was written, as the command would have. The admitted operation owns
+//! preparation, file commit and delivery; a completed write remains written even if delivery
+//! is subsequently refused.
 
 use serde_json::Value;
 
@@ -15,9 +15,14 @@ use crate::{CmdResult, Session};
 pub struct Wrote {
     pub(crate) answer: Value,
     pub(crate) notes: Vec<String>,
+    /// A physical write completed, even if authority to deliver its result is later refused.
+    pub(crate) written_path: Option<String>,
     /// What it does to the session once written, after its notes, and adds to its answer (a
     /// GeoPackage table replaced: the layers reading it read it again).
     pub(crate) then: Option<Then>,
+    /// Authority retained for delivery from the native export worker.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) owner: Option<crate::policy::Continuation>,
 }
 
 /// What an export does to the session once its file is written, and adds to its answer; or the
@@ -48,10 +53,26 @@ pub fn runs_in_background(command: &str) -> Option<(&'static str, &'static str)>
 /// `command`'s export written here: it says what it wrote.
 pub(crate) fn write_here(s: &mut Session, p: &Value, command: &str) -> CmdResult {
     let &(_, name, start) = IN_BACKGROUND.iter().find(|(c, ..)| *c == command).ok_or_else(|| format!("{command} isn't an export"))?;
-    let work = start(s, p)?;
-    // Where a person at a terminal can stop it with Ctrl-C, as on the app's thread.
-    let wrote = if s.stoppable { written_under(name, &rustgis_analysis::control::Control::stoppable(), work)? } else { work()? };
+    let owner = s.continuation()?;
+    owner.check()?;
+    let current = owner.clone();
+    let still = std::sync::Arc::new(move || current.check().is_ok());
+    // The probe keeps authority checks at file commit even when the user cannot cancel this run.
+    let control = if s.stoppable { rustgis_analysis::control::Control::stoppable() } else { rustgis_analysis::control::Control::new() };
+    let wrote = crate::render::rustgis_tiles::cache::with_still(still, || {
+        let work = start(s, p)?;
+        written_under(name, &control, work)
+    })?;
+    s.check_continuation(&owner).map_err(|why| completion_refused(wrote.written_path.as_deref(), why))?;
     said(s, wrote)
+}
+
+/// Keeps a completed file visible when its result cannot be delivered to the session.
+pub(crate) fn completion_refused(written_path: Option<&str>, why: String) -> String {
+    match written_path {
+        Some(path) => format!("Exported {path}; completion was refused: {why}"),
+        None => why,
+    }
 }
 
 /// `work` under `control`, as [`rustgis_analysis::run_under`] runs it, except that a file once
@@ -67,7 +88,7 @@ fn written_under(name: &str, control: &std::sync::Arc<rustgis_analysis::control:
 
 /// Says what an export wrote, and gives its answer (or the failure its `then` says).
 fn said(s: &mut Session, wrote: Wrote) -> CmdResult {
-    let Wrote { mut answer, notes, then } = wrote;
+    let Wrote { mut answer, notes, then, .. } = wrote;
     for note in notes {
         s.notify(note, false);
     }
@@ -101,6 +122,7 @@ pub(crate) fn drawn(
             Some((l.instance_id(), l.name.clone(), src.error.clone()?, src.clone()))
         })
         .collect();
+    let written_path = written.is_ok().then(|| path.clone());
     let answer = written.as_ref().map_or(Value::Null, Value::clone);
     let then: Then = Box::new(move |s: &mut Session, _: &mut Value| {
         use rustgis_data::diagnostics::Severity;
@@ -135,7 +157,14 @@ pub(crate) fn drawn(
         s.notify(format!("Exported {path}"), false);
         Ok(())
     });
-    Ok(Wrote { answer, notes: Vec::new(), then: Some(then) })
+    Ok(Wrote {
+        answer,
+        notes: Vec::new(),
+        written_path,
+        then: Some(then),
+        #[cfg(not(target_arch = "wasm32"))]
+        owner: None,
+    })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -159,6 +188,8 @@ pub struct Started {
     pub(crate) params: Value,
     pub(crate) at: u64,
     pub(crate) start: web_time::Instant,
+    /// The admitted invocation; cloned metadata never selects replacement authority.
+    pub(crate) owner: crate::policy::Continuation,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -172,10 +203,17 @@ impl ExportRun {
     /// (see [`rustgis_analysis::control`]). A cancelled export leaves no file, or the one there
     /// before.
     pub fn run(self, control: &std::sync::Arc<rustgis_analysis::control::Control>) -> Result<Wrote, String> {
-        let ExportRun { name, work, .. } = self;
+        let ExportRun { name, work, started } = self;
+        let owner = started.owner;
+        owner.check()?;
+        let current = owner.clone();
+        let still = std::sync::Arc::new(move || current.check().is_ok());
         // A bug in a writer must not take the app down.
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| written_under(name, control, work)))
-            .unwrap_or_else(|_| Err(format!("{name} failed unexpectedly")))
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            crate::render::rustgis_tiles::cache::with_still(still, || written_under(name, control, work))
+        }))
+        .unwrap_or_else(|_| Err(format!("{name} failed unexpectedly")))
+        .map(|w| Wrote { owner: Some(owner), ..w })
     }
 }
 
@@ -183,10 +221,23 @@ impl ExportRun {
 /// Starts `command` (one of [`IN_BACKGROUND`]'s) with `p`, to write its file on another thread:
 /// its parameters checked and its inputs taken now.
 pub fn export_start(s: &mut Session, command: &str, p: &Value) -> Result<ExportRun, String> {
-    let &(command, name, start) =
+    s.start_export(command, p)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// Prepares only a registered, admitted export and seals its initiating authority.
+pub(crate) fn export_start_raw(s: &mut Session, op: crate::policy::Authorized<crate::policy::CommandOp>) -> Result<ExportRun, String> {
+    let crate::policy::CommandOp::Registered { spec, params } = op.op() else { return Err("not a registered export".into()) };
+    let (command, p) = (spec.id, params);
+    let &(_, name, start) =
         IN_BACKGROUND.iter().find(|(c, ..)| *c == command).ok_or_else(|| format!("{command} doesn't run in the background"))?;
-    let started = Started { command, params: p.clone(), at: crate::project_log::now_ms(), start: web_time::Instant::now() };
-    Ok(ExportRun { name, started, work: start(s, p)? })
+    let owner = s.continuation()?;
+    owner.check()?;
+    let current = owner.clone();
+    let still = std::sync::Arc::new(move || current.check().is_ok());
+    let started = Started { command, params: p.clone(), at: crate::project_log::now_ms(), start: web_time::Instant::now(), owner };
+    let work = crate::render::rustgis_tiles::cache::with_still(still, || start(s, p))?;
+    Ok(ExportRun { name, started, work })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -194,10 +245,20 @@ pub fn export_start(s: &mut Session, command: &str, p: &Value) -> Result<ExportR
 /// its answer: the troubleshooting history files what it says (its failure too) under that
 /// command, and the session's log has its entry, as when it runs here.
 pub fn export_land(s: &mut Session, started: Started, done: Result<Wrote, String>) -> CmdResult {
-    let Started { command, params, at, start } = started;
+    let Started { command, params, at, start, owner } = started;
     let before = s.diagnostic_source.replace(command);
     let mark = s.notice_mark();
-    let landed = done.and_then(|wrote| said(s, wrote));
+    let landed: CmdResult = (|| {
+        if let Ok(wrote) = &done {
+            let completed = wrote.owner.as_ref().ok_or("the export has no initiating authority")?;
+            if !owner.same_run(completed) {
+                return Err("this export result belongs to another run".into());
+            }
+        }
+        let written_path = done.as_ref().ok().and_then(|wrote| wrote.written_path.clone());
+        s.finish_export(&owner, |s| done.and_then(|wrote| said(s, wrote)))
+            .map_err(|why| completion_refused(written_path.as_deref(), why))?
+    })();
     // Its failure said once, under the command, as `Session::run` says one.
     if let Err(e) = &landed {
         let text = Session::redacted(e);
@@ -226,7 +287,14 @@ mod tests {
         // The work places its file, then Cancel comes before the run returns.
         let work: Work = Box::new(move || {
             late.cancel();
-            Ok(Wrote { answer: serde_json::json!({"path": "x"}), notes: vec!["Exported x".into()], then: None })
+            Ok(Wrote {
+                answer: serde_json::json!({"path": "x"}),
+                notes: vec!["Exported x".into()],
+                written_path: Some("x".into()),
+                then: None,
+                #[cfg(not(target_arch = "wasm32"))]
+                owner: None,
+            })
         });
         let wrote = written_under("Export Raster", &control, work).unwrap();
         assert_eq!(wrote.notes, ["Exported x"]);

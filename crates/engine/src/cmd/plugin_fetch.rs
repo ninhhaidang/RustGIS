@@ -282,7 +282,9 @@ impl Calls {
 pub const REQUEST_WAIT: Duration = Duration::from_secs(10 * 60);
 
 /// A plugin command waiting for its fetches, or its downloads, before it runs again.
+#[derive(Clone)]
 pub(crate) struct Retry {
+    continuation: crate::policy::Continuation,
     id: String,
     params: Value,
     urls: Vec<String>,
@@ -301,8 +303,9 @@ pub(crate) struct Retry {
 /// The downloads plugin commands wait for (#1202): those the app is making, with what was
 /// asked and since when, and those added, with what adding them answered, until the command
 /// waiting for them runs again.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct UrlWaits {
+    owners: std::collections::BTreeMap<u64, crate::policy::Continuation>,
     in_flight: Vec<(u64, Value, Instant)>,
     landed: Vec<(u64, Value, CmdResult, Added)>,
     /// Requests given up (past [`REQUEST_WAIT`], or their command replaced or dropped), with their
@@ -436,12 +439,16 @@ fn asked_by(asked: &Value, params: &Value) -> bool {
 }
 
 impl UrlWaits {
+    pub(crate) fn owner(&self, n: u64) -> Option<&crate::policy::Continuation> {
+        self.owners.get(&n)
+    }
+
     /// The number of a download being made for `asked`, or made and added while its command
     /// waits to run again: a request made again then is that one, not another download.
-    pub(crate) fn in_flight(&self, asked: &Value) -> Option<u64> {
+    pub(crate) fn in_flight(&self, asked: &Value, owns: impl Fn(u64) -> bool) -> Option<u64> {
         // One that failed added nothing: asked again, it is downloaded again.
-        let made = self.landed.iter().find(|(_, q, answer, _)| answer.is_ok() && same_request(q, asked)).map(|(n, ..)| *n);
-        self.in_flight.iter().find(|(_, q, _)| same_request(q, asked)).map(|(n, ..)| *n).or(made)
+        let made = self.landed.iter().find(|(n, q, answer, _)| answer.is_ok() && owns(*n) && same_request(q, asked)).map(|(n, ..)| *n);
+        self.in_flight.iter().find(|(n, q, _)| owns(*n) && same_request(q, asked)).map(|(n, ..)| *n).or(made)
     }
 
     /// Whether what request `n` added once it landed is no longer in the project.
@@ -517,6 +524,9 @@ impl UrlWaits {
             }
         }
         self.landed.retain(|(m, ..)| *m != n);
+        if !taken {
+            self.owners.remove(&n);
+        }
     }
 
     /// Kept until its download lands (and is refused) or fails: never forgotten while it can
@@ -539,6 +549,9 @@ impl UrlWaits {
     /// A given-up request's late download was refused: nothing more to remember of it.
     pub(crate) fn refused(&mut self, n: u64) {
         self.expired.retain(|(m, _)| *m != n);
+        if !self.has(n) {
+            self.owners.remove(&n);
+        }
     }
 
     /// Only what `waiting` still waits for is kept.
@@ -546,6 +559,14 @@ impl UrlWaits {
         let wanted = |n: &u64| waiting.iter().any(|r| r.requests.contains(n));
         self.in_flight.retain(|(n, ..)| wanted(n));
         self.landed.retain(|(n, ..)| wanted(n));
+        let retained: Vec<u64> = self
+            .in_flight
+            .iter()
+            .map(|(n, ..)| *n)
+            .chain(self.landed.iter().map(|(n, ..)| *n))
+            .chain(self.expired.iter().map(|(n, ..)| *n))
+            .collect();
+        self.owners.retain(|n, _| retained.contains(n));
     }
 }
 
@@ -598,6 +619,7 @@ impl Session {
                 requests.iter().filter(|(n, _)| !self.url_waits.has(*n)).filter_map(|(_, q)| q["url"].as_str().map(String::from)).collect();
             return Err(format!("{id}: gave up after fetching {MAX_RETRIES} times{}", not_started(&dropped)));
         }
+        let continuation = self.continuation()?;
         // Past the given-up downloads that can still land, no more are asked for: each must be
         // remembered until it lands, to be refused then. Those not yet taken by the front end
         // aren't downloaded. It is refused before any wait changes, so the command's earlier run
@@ -610,10 +632,11 @@ impl Session {
                     cancelled.extend(
                         self.url_requests
                             .iter()
-                            .filter(|q| q["request"].as_u64() == Some(*n))
-                            .filter_map(|q| q["url"].as_str().map(String::from)),
+                            .filter(|q| q.params()["request"].as_u64() == Some(*n))
+                            .filter_map(|q| q.params()["url"].as_str().map(String::from)),
                     );
-                    self.url_requests.retain(|q| q["request"].as_u64() != Some(*n));
+                    self.url_requests.retain(|q| q.params()["request"].as_u64() != Some(*n));
+                    self.retire_abandoned_requests();
                 }
             }
             return Err(format!(
@@ -625,7 +648,7 @@ impl Session {
         // downloads a replaced or dropped run alone waited for are given up, so they aren't added
         // with no command to go on with them.
         let keeps: Vec<u64> = requests.iter().map(|(n, _)| *n).collect();
-        if let Some(i) = self.plugin_retries.iter().position(|r| r.id == id) {
+        if let Some(i) = self.plugin_retries.iter().position(|r| r.id == id && self.same_url_caller(&r.continuation, &continuation)) {
             let old = self.plugin_retries.remove(i);
             let cancelled = self.give_up_requests(&old, &keeps);
             self.notify(
@@ -652,11 +675,13 @@ impl Session {
         let numbers = requests.iter().map(|(n, _)| *n).collect();
         for (n, asked) in requests {
             self.url_waits.wait(n, asked);
+            self.url_waits.owners.entry(n).or_insert_with(|| continuation.clone());
         }
         // What this run already had answered (it is a rerun waiting again): kept for the next.
         let answered = self.rerun_landed.clone();
         let said = self.rerun_said.clone();
         self.plugin_retries.push(Retry {
+            continuation,
             id: id.to_string(),
             params: params.clone(),
             urls,
@@ -679,11 +704,12 @@ impl Session {
                 let queued: Vec<String> = self
                     .url_requests
                     .iter()
-                    .filter(|q| q["request"].as_u64() == Some(*n))
-                    .filter_map(|q| q["url"].as_str().map(String::from))
+                    .filter(|q| q.params()["request"].as_u64() == Some(*n))
+                    .filter_map(|q| q.params()["url"].as_str().map(String::from))
                     .collect();
                 self.url_waits.give_up(*n, queued.is_empty());
-                self.url_requests.retain(|q| q["request"].as_u64() != Some(*n));
+                self.url_requests.retain(|q| q.params()["request"].as_u64() != Some(*n));
+                self.retire_abandoned_requests();
                 cancelled.extend(queued);
             }
         }
@@ -742,8 +768,7 @@ impl Session {
                 self.rerun_landed = r.answered.iter().cloned().chain(mine).collect();
                 self.rerun_said = r.said;
                 self.retry_tries = r.tries;
-                // Run as the app runs a plugin's command: what it asks for now is left to the app.
-                let res = self.run_leaving_downloads(&r.id, &r.params);
+                let res = self.with_deferred_downloads(|s| s.retry_continuation(&r.continuation, &r.params));
                 self.retry_tries = 0;
                 self.rerun_landed.clear();
                 self.rerun_said.clear();
@@ -864,378 +889,272 @@ mod tests {
         assert!(!asked_by(&json!({"url": u}), &json!({"url": u, "connection": "c1"})));
     }
 
-    /// Downloads given up after the wait are said once, in one notice with their addresses,
-    /// whatever the commands do with their errors; none while they still have time.
+    fn load_test_plugin(id: &str) -> String {
+        let package = rustgis_plugins::Package::from_zip(&rustgis_plugins::testing::package(id, &["edit", "network"])).unwrap();
+        rustgis_plugins::load(package, "test").unwrap();
+        format!("plugin:{id}/f")
+    }
+
+    fn ask(s: &mut Session, command: &str, params: Value) -> CmdResult {
+        s.run_leaving_downloads(command, &json!({"op":"layer.addUrl", "params":params}))
+    }
+
+    /// Timeouts are one counted, redacted notice, and a real pinned command receives the failure.
     #[test]
     fn a_download_given_up_is_said_with_its_address() {
-        // Only where the clock has run that long: a machine just started can't be that far back.
         let Some(long_ago) = Instant::now().checked_sub(REQUEST_WAIT + Duration::from_secs(1)) else { return };
         let mut s = Session::new(crate::project::Project::default());
-        let url = "https://x.org/slow.csv?token=hunter2";
-        s.retry_plugin("plugin:eng-slow/f", &json!({}), Vec::new(), vec![(900, json!({"url": url}))]).unwrap();
+        let first = load_test_plugin("eng-slow-real");
+        let other = load_test_plugin("eng-slow-other");
+        ask(&mut s, &first, json!({"url":"https://x.org/slow.csv?token=hunter2"})).unwrap();
+        let taken = s.take_url_requests();
         let mark = s.notice_mark();
         s.poll_plugin_retries();
         assert!(s.notices_since(mark).is_empty(), "it still has time");
         s.url_waits.in_flight[0].2 = long_ago;
+        let ran = s.poll_plugin_retries();
+        assert!(ran[0].1.is_err(), "{ran:?}");
         s.poll_plugin_retries();
-        s.poll_plugin_retries();
-        let notices = s.notices_since(mark);
-        let said: Vec<&str> = notices.iter().filter(|n| n.error && n.text.contains("stopped waiting")).map(|n| n.text.as_str()).collect();
+        let said: Vec<_> = s.notices_since(mark).iter().filter(|n| n.error && n.text.contains("stopped waiting")).collect();
         assert_eq!(said.len(), 1, "{said:?}");
-        assert!(said[0].starts_with("https://x.org/slow.csv") && !said[0].contains("hunter2"), "{said:?}");
-        // Several at once: one notice, with how many and which.
-        let others = vec![(901, json!({"url": "https://x.org/a.csv?token=hunter2"})), (902, json!({"url": "https://x.org/b.csv"}))];
-        s.retry_plugin("plugin:eng-slow/g", &json!({}), Vec::new(), others).unwrap();
+        assert!(said[0].text.starts_with("https://x.org/slow.csv") && !said[0].text.contains("hunter2"));
+        // A real late claim is refused before its bytes can add anything.
+        let id = s.download_started_for(&taken[0]).unwrap();
+        assert!(s.download_landed(id, b"x,y\n1,2\n".to_vec()));
+        let mut p = taken[0].params().clone();
+        p["id"] = json!(id);
+        assert!(s.complete_download(id, &p).unwrap_err().contains("stopped waiting"));
+        assert!(s.downloaded.is_empty() && s.map().layers.is_empty());
+        ask(&mut s, &first, json!({"url":"https://x.org/a.csv?token=hunter2"})).unwrap();
+        ask(&mut s, &other, json!({"url":"https://x.org/b.csv"})).unwrap();
+        let _taken = s.take_url_requests();
         s.url_waits.in_flight.iter_mut().for_each(|w| w.2 = long_ago);
         let mark = s.notice_mark();
         s.poll_plugin_retries();
-        let notices = s.notices_since(mark);
-        let said: Vec<&str> = notices.iter().filter(|n| n.error && n.text.contains("stopped waiting")).map(|n| n.text.as_str()).collect();
+        let said: Vec<_> = s.notices_since(mark).iter().filter(|n| n.error && n.text.contains("stopped waiting")).collect();
         assert_eq!(said.len(), 1, "{said:?}");
         assert!(
-            said[0].starts_with("2 downloads") && said[0].contains("https://x.org/a.csv") && said[0].contains("https://x.org/b.csv"),
-            "{said:?}"
+            said[0].text.starts_with("2 downloads")
+                && said[0].text.contains("https://x.org/a.csv")
+                && said[0].text.contains("https://x.org/b.csv")
         );
-        assert!(!said[0].contains("hunter2"), "{said:?}");
+        assert!(!said[0].text.contains("hunter2"));
+        rustgis_plugins::unload("eng-slow-real");
+        rustgis_plugins::unload("eng-slow-other");
     }
 
-    /// A waiting command's answer names what it waits for, without the addresses' keys.
     #[test]
     fn a_waiting_answer_hides_the_keys_of_its_addresses() {
         let mut s = Session::new(crate::project::Project::default());
+        let command = load_test_plugin("eng-keys-real");
         let doc = "https://x.org/doc.json?token=hunter2";
-        let csv = "https://x.org/a.csv?token=hunter3";
-        let r = s.retry_plugin("plugin:eng-keys/f", &json!({}), vec![format!("eng-keys {doc}")], vec![(900, json!({"url": csv}))]).unwrap();
-        let (fetching, downloading) = (r["fetching"][0].as_str().unwrap(), r["downloading"][0].as_str().unwrap());
-        assert!(fetching.starts_with("https://x.org/doc.json") && !fetching.contains("hunter2"), "{r}");
-        assert!(downloading.starts_with("https://x.org/a.csv") && !downloading.contains("hunter3"), "{r}");
-        assert!(s.url_waits.holds(900, &json!({"url": csv})), "it still waits for the address asked for");
+        let cache_key = key("eng-keys-real", doc);
+        cache().in_flight.push((cache_key.clone(), Instant::now()));
+        TEST.with(|t| t.set((false, false)));
+        let r = s.run_leaving_downloads(&command, &json!({"op":"host.fetch","params":{"url":doc}})).unwrap();
+        TEST.with(|t| t.set((false, true)));
+        assert!(r["fetching"][0].as_str().unwrap().starts_with("https://x.org/doc.json") && !r.to_string().contains("hunter2"));
+        let r = ask(&mut s, &command, json!({"url":"https://x.org/a.csv?token=hunter3"})).unwrap();
+        assert!(r["downloading"][0].as_str().unwrap().starts_with("https://x.org/a.csv") && !r.to_string().contains("hunter3"));
+        let taken = s.take_url_requests();
+        assert!(taken[0].params()["url"].as_str().unwrap().contains("hunter3"), "the actual request remains exact");
+        cache().in_flight.retain(|(k, _)| k != &cache_key);
+        rustgis_plugins::unload("eng-keys-real");
     }
 
-    /// A refused landing's error, which the assistant and MCP get as it is, keeps an address's
-    /// keys out of it.
+    /// Refusal requires a real claim and cannot consume a different caller's bytes by number.
     #[test]
     fn a_refused_landing_hides_the_keys_of_its_address() {
         let mut s = Session::new(crate::project::Project::default());
+        let command = load_test_plugin("eng-refuse-real");
         let url = "https://x.org/e.geojson?token=hunter2";
-        s.url_waits.remember_given_up(800, json!({"url": url}));
-        let e = s.run("layer.addUrl", &json!({"url": url, "request": 800})).unwrap_err();
+        ask(&mut s, &command, json!({"url":url})).unwrap();
+        let taken = s.take_url_requests();
+        let id = s.download_started_for(&taken[0]).unwrap();
+        let n = taken[0].params()["request"].as_u64().unwrap();
+        ask(&mut s, &command, json!({"url":"https://x.org/next.csv"})).unwrap();
+        assert!(s.url_waits.given_up(n, taken[0].params()));
+        assert!(s.download_landed(id, br#"{"type":"Point","coordinates":[1,2]}"#.to_vec()));
+        let mut p = taken[0].params().clone();
+        p["id"] = json!(id);
+        s.merge_undo("late download");
+        s.run("map.rename", &json!({"name":"Before late completion"})).unwrap();
+        s.merge_undo("late download");
+        let e = s.complete_download(id, &p).unwrap_err();
         assert!(e.starts_with("https://x.org/e.geojson") && e.contains("stopped waiting") && !e.contains("hunter2"), "{e}");
-        s.url_waits.added.push_back((801, json!({"url": url})));
-        let e = s.run("layer.addUrl", &json!({"url": url, "request": 801})).unwrap_err();
-        assert!(e.starts_with("https://x.org/e.geojson") && e.contains("added already") && !e.contains("hunter2"), "{e}");
+        let before = s.undo_depth();
+        s.run("map.rename", &json!({"name":"After late completion"})).unwrap();
+        assert_eq!(s.undo_depth(), before + 1, "a pre-guard completion refusal must consume its merge key");
+        s.run("edit.undo", &Value::Null).unwrap();
+        assert_eq!(s.map().name, "Before late completion");
+        assert!(s.map().layers.is_empty() && s.downloaded.is_empty());
+        rustgis_plugins::unload("eng-refuse-real");
     }
 
-    /// A caller giving a waited download's number with its address lands it; the app's own
-    /// download of it landing after isn't added again, and says so (#1202).
+    /// Bookkeeping matches imports exactly and keeps bounded tombstones until a late delivery.
     #[test]
-    fn a_download_landed_twice_is_added_once() {
+    fn landed_downloads_answer_every_waiting_run() {
+        let mut waits = UrlWaits::default();
+        let asked = json!({"url":"https://x.org/f.csv", "x":"lon", "anonymous":true});
+        waits.wait(905, asked.clone());
+        assert!(!waits.holds(905, &json!({"url":"https://x.org/f.csv", "x":"lng", "anonymous":true})));
+        assert!(waits.holds(905, &json!({"url":"https://x.org/f.csv", "x":"lon", "anonymous":true,"id":3,"cog":true})));
+        waits.land(905, Ok(json!({"layer":7})), Added::default());
+        assert_eq!(waits.in_flight(&asked, |_| true), Some(905));
+        assert_eq!(waits.in_flight(&asked, |_| false), None, "another owner cannot share it");
+        assert!(waits.added_already(905, &asked));
+        let passed = json!({"url":"https://x.org/g.csv","x":"lon","whole":true,"zoom":false,"dates":["2020"],"name":5,"bounds":"x"});
+        waits.wait(906, passed);
+        for zoom in [None, Some(true), Some(false)] {
+            let mut p = json!({"url":"https://x.org/g.csv","x":"lon","id":4});
+            if let Some(zoom) = zoom {
+                p["zoom"] = json!(zoom);
+            }
+            assert!(waits.holds(906, &p));
+        }
+        assert!(!waits.holds(906, &json!({"url":"https://x.org/g.csv"})));
+        waits.give_up(906, true);
+        assert!(waits.given_up(906, &json!({"url":"https://x.org/g.csv","x":"lon"})));
+        waits.refused(906);
+        assert!(!waits.given_up(906, &json!({"url":"https://x.org/g.csv","x":"lon"})));
+        let first = json!({"url":"https://x.org/out.csv"});
+        waits.remember_given_up(800, first.clone());
+        for n in 1..MAX_EXPIRED as u64 {
+            waits.remember_given_up(10_000 + n, json!({"url":format!("https://x.org/{n}.csv")}));
+        }
+        assert!(waits.given_up_full() && waits.given_up(800, &first));
+        waits.refused(800);
+        assert!(!waits.given_up_full());
         let mut s = Session::new(crate::project::Project::default());
-        let url = "https://x.org/a.geojson";
-        s.url_waits.wait(900, json!({"url": url}));
-        let point = br#"{"type": "Point", "coordinates": [1, 2]}"#;
-        let add = |s: &mut Session| {
-            let id = s.download_started();
-            assert!(s.download_landed(id, point.to_vec()));
-            s.run("layer.addDownload", &json!({"id": id, "url": url, "request": 900}))
-        };
-        add(&mut s).unwrap();
-        assert_eq!(s.map().layers.len(), 1);
-        let mark = s.notice_mark();
-        let e = add(&mut s).unwrap_err();
-        assert!(e.starts_with(url) && e.contains("added already"), "{e}");
-        assert_eq!(s.map().layers.len(), 1, "added once");
-        // Said by the session, as any refused command is: once, for every front end.
-        let said: Vec<&str> = s.notices_since(mark).iter().filter(|n| n.error).map(|n| n.text.as_str()).collect();
-        assert_eq!(said, [e.as_str()]);
-        assert!(s.downloaded.is_empty(), "its bytes go");
-        // One that landed read already (a service's protocol buffer pages) goes the same way.
-        let id = s.download_started();
-        let read = rustgis_data::Dataset::new("a", rustgis_data::GeometryType::Point, Vec::new());
-        assert!(s.download_landed_read(id, read, rustgis_data::ReadReport::default()));
-        s.run("layer.addDownload", &json!({"id": id, "url": url, "request": 900})).unwrap_err();
-        assert!(s.landed_reads.is_empty(), "its read goes");
+        let command = load_test_plugin("eng-full-real");
+        ask(&mut s, &command, json!({"url":"https://x.org/kept.csv"})).unwrap();
+        for n in 0..MAX_EXPIRED as u64 {
+            s.url_waits.remember_given_up(10_000 + n, json!({"url":format!("https://x.org/{n}.csv")}));
+        }
+        let e = ask(&mut s, &command, json!({"url":"https://x.org/refused.csv"})).unwrap_err();
+        assert!(e.contains("still under way") && e.contains("wasn't started"), "{e}");
+        let kept = s.take_url_requests();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].params()["url"], "https://x.org/kept.csv");
+        assert!(s.plugin_retries_waiting() && s.poll_plugin_retries().is_empty());
+        rustgis_plugins::unload("eng-full-real");
+        for cancelled in
+            [vec!["https://x.org/a?token=hunter2".into()], vec!["https://x.org/a?token=hunter2".into(), "https://x.org/b".into()]]
+        {
+            assert!(!not_started(&cancelled).contains("hunter2"));
+        }
     }
 
-    /// A download made while a command still waits is that one when asked for again, until what it
-    /// added is taken away: then a request made since is a new download, not that error (#1202).
-    #[test]
-    fn a_download_taken_away_is_downloaded_again() {
-        let mut s = Session::new(crate::sample::world_project());
-        let asked = json!({"url": "https://x.org/a.geojson"});
-        let ask = |s: &mut Session| {
-            s.call_requests = Some(Vec::new());
-            s.request_url(&asked).unwrap();
-            s.call_requests.take().unwrap()[0].0
-        };
-        let id = s.map().layers[0].id;
-        s.url_waits.wait(900, asked.clone());
-        let answer: CmdResult = Ok(json!({"layer": id}));
-        let added = Added::of(s.map(), &answer);
-        s.url_waits.land(900, answer, added);
-        assert_eq!(ask(&mut s), 900, "still there");
-        assert!(s.take_url_requests().is_empty());
-        s.map_mut().layers.retain(|l| l.id != id);
-        let again = ask(&mut s);
-        assert_ne!(again, 900, "taken away");
-        assert_eq!(s.take_url_requests(), [json!({"url": "https://x.org/a.geojson", "request": again})]);
-        // A standalone table, which no map holds, the same.
-        let mut s = Session::new(crate::sample::world_project());
-        let table = s.project.add_table(rustgis_data::Dataset::new("t", rustgis_data::GeometryType::None, Vec::new()));
-        s.url_waits.wait(901, asked.clone());
-        let answer: CmdResult = Ok(json!({"table": "t", "id": table}));
-        let added = Added::of(s.map(), &answer);
-        s.url_waits.land(901, answer, added);
-        assert_eq!(ask(&mut s), 901, "still there");
-        assert!(s.take_url_requests().is_empty());
-        s.project.tables.retain(|t| t.id != table);
-        assert_ne!(ask(&mut s), 901, "taken away");
-        assert_eq!(s.take_url_requests().len(), 1);
-    }
-
-    /// A download that failed is asked for again as a new download, not answered as the one
-    /// that failed; one being made or added is the same request still for a plugin command's
-    /// call, and another download for any other; a request that isn't an object is refused
-    /// (#1202).
+    /// Sharing is bounded by the original plugin incarnation; duplicate clicks of that owner
+    /// share one download, while another plugin gets its own real request and answer.
     #[test]
     fn a_failed_download_asked_again_is_downloaded_again() {
         let mut s = Session::new(crate::project::Project::default());
-        let asked = json!({"url": "https://x.org/a.geojson"});
-        s.url_waits.wait(900, asked.clone());
-        s.url_waits.land(900, Err("https://x.org/a.geojson: 404 Not Found".into()), Added::default());
-        assert_eq!(s.url_waits.in_flight(&asked), None);
-        s.request_url(&asked).unwrap();
-        let taken = s.take_url_requests();
-        assert_eq!(taken.len(), 1, "{taken:?}");
-        assert_ne!(taken[0]["request"], json!(900));
-        // Added: the same request for a plugin command's call, nothing downloaded again...
-        let other = json!({"url": "https://x.org/b.geojson"});
-        s.url_waits.wait(901, other.clone());
-        s.url_waits.land(901, Ok(json!({"layer": 1})), Added::default());
-        assert_eq!(s.url_waits.in_flight(&other), Some(901));
-        s.call_requests = Some(Vec::new());
-        s.request_url(&other).unwrap();
-        assert!(s.take_url_requests().is_empty());
-        assert_eq!(s.call_requests.take().unwrap()[0].0, 901);
-        // ... and downloaded again when asked from anywhere else (the Add Data dialog).
-        s.request_url(&other).unwrap();
-        let taken = s.take_url_requests();
-        assert_eq!(taken.len(), 1, "{taken:?}");
-        assert_ne!(taken[0]["request"], json!(901));
-        // Being made, the same: that one for a plugin command's call, another from anywhere else.
-        let third = json!({"url": "https://x.org/c.geojson"});
-        s.url_waits.wait(902, third.clone());
-        s.call_requests = Some(Vec::new());
-        // However often one call asks for it, its command waits for it once.
-        for _ in 0..3 {
-            s.request_url(&third).unwrap();
-        }
-        assert!(s.take_url_requests().is_empty());
-        let asked: Vec<u64> = s.call_requests.take().unwrap().iter().map(|(n, _)| *n).collect();
-        assert_eq!(asked, [902]);
-        s.request_url(&third).unwrap();
-        assert_ne!(s.take_url_requests()[0]["request"], json!(902));
-        assert!(s.request_url(&json!("https://x.org/d.geojson")).unwrap_err().contains("an object"));
+        let a = load_test_plugin("eng-share-real-a");
+        let b = load_test_plugin("eng-share-real-b");
+        let p = json!({"url":"https://x.org/a.csv"});
+        ask(&mut s, &a, p.clone()).unwrap();
+        let first = s.take_url_requests();
+        ask(&mut s, &a, p.clone()).unwrap();
+        assert!(s.take_url_requests().is_empty(), "same pinned owner shares its outstanding request");
+        ask(&mut s, &b, p.clone()).unwrap();
+        let other = s.take_url_requests();
+        assert_ne!(first[0].params()["request"], other[0].params()["request"], "different plugin pins do not share authority");
+        s.request_failed(first[0].params(), "404");
+        let ran = s.poll_plugin_retries();
+        assert_eq!(ran.len(), 1);
+        assert_eq!(ran[0].0, a);
+        assert!(ran[0].1.as_ref().unwrap_err().contains("404"));
+        assert!(s.plugin_retries_waiting(), "the other owner's wait is intact");
+        ask(&mut s, &a, p).unwrap();
+        let again = s.take_url_requests();
+        assert_ne!(again[0].params()["request"], first[0].params()["request"]);
+        rustgis_plugins::unload("eng-share-real-a");
+        rustgis_plugins::unload("eng-share-real-b");
     }
 
-    /// A number given with another address than the download it was given for isn't taken: the
-    /// request is a download of its own, with its own number; handed back with its own address,
-    /// it is queued again, whole (#1202).
+    /// Payload numbers never select an existing wait or authority. Native requests still get
+    /// distinct engine receipts, and non-object requests are refused.
     #[test]
     fn a_number_given_for_another_address_is_set_aside() {
         let mut s = Session::new(crate::project::Project::default());
-        s.url_waits.wait(900, json!({"url": "https://x.org/a.geojson"}));
-        s.request_url(&json!({"url": "https://x.org/b.geojson", "request": 900})).unwrap();
+        s.request_url(&json!({"url":"https://x.org/a.geojson"})).unwrap();
+        let first = s.take_url_requests();
+        let n = first[0].params()["request"].as_u64().unwrap();
+        s.request_url(&json!({"url":"https://x.org/a.geojson","request":n})).unwrap();
+        s.request_url(&json!({"url":"https://x.org/b.geojson","request":n})).unwrap();
         let taken = s.take_url_requests();
-        assert_eq!(taken.len(), 1, "{taken:?}");
-        assert_eq!(taken[0]["url"], "https://x.org/b.geojson");
-        assert_ne!(taken[0]["request"], json!(900));
-        s.request_url(&json!({"url": "https://x.org/a.geojson", "request": 900})).unwrap();
-        let taken = s.take_url_requests();
-        assert_eq!((taken[0]["request"].clone(), taken[0]["whole"].clone()), (json!(900), json!(true)), "{taken:?}");
-        // The same address read another way (columns it wasn't asked with) isn't it either.
-        let other_import = json!({"url": "https://x.org/a.geojson", "x": "lon", "y": "lat", "request": 900});
-        assert!(!s.url_waits.holds(900, &other_import) && s.url_waits.holds(900, &json!({"url": "https://x.org/a.geojson"})));
-        // A number nothing asked under, taken by no one: set aside, so the counter can't reach it
-        // and queue two downloads under one number.
-        let next = s.next_request + 1;
-        s.request_url(&json!({"url": "https://x.org/c.geojson", "request": next + 1})).unwrap();
-        s.request_url(&json!({"url": "https://x.org/d.geojson"})).unwrap();
-        let taken = s.take_url_requests();
-        let numbers: Vec<_> = taken.iter().map(|q| q["request"].as_u64()).collect();
-        assert_eq!(numbers, [Some(next), Some(next + 1)], "{taken:?}");
-        // Handed back with the same request queued under another number: queued as well, or nothing
-        // would land the number its command waits for.
-        let doubled = json!({"url": "https://x.org/f.geojson"});
-        s.url_waits.wait(910, doubled.clone());
-        s.request_url(&doubled).unwrap();
-        s.request_url(&json!({"url": "https://x.org/f.geojson", "request": 910})).unwrap();
-        let taken = s.take_url_requests();
-        assert_eq!(taken.len(), 2, "{taken:?}");
-        assert_eq!((taken[1]["request"].clone(), taken[1]["whole"].clone()), (json!(910), json!(true)), "{taken:?}");
-        assert_ne!(taken[0]["request"], json!(910));
-        // Given up, its number is set aside too: another download, and the first one's landing,
-        // under that number, is still refused.
-        let late = json!({"url": "https://x.org/e.geojson"});
-        s.url_waits.remember_given_up(800, late.clone());
-        s.request_url(&json!({"url": "https://x.org/e.geojson", "request": 800})).unwrap();
-        assert_ne!(s.take_url_requests()[0]["request"], json!(800));
-        assert!(s.url_waits.given_up(800, &late));
-        let e = s.run("layer.addUrl", &json!({"url": "https://x.org/e.geojson", "request": 800})).unwrap_err();
-        assert!(e.contains("stopped waiting"), "{e}");
+        assert_eq!(taken.len(), 2);
+        assert_ne!(taken[0].params()["request"], json!(n));
+        assert_ne!(taken[1].params()["request"], taken[0].params()["request"]);
+        assert!(s.request_url(&json!("https://x.org/d.geojson")).unwrap_err().contains("an object"));
     }
 
-    /// Plugin commands waiting for the same download each get its answer, a rerun that waits
-    /// again keeps the answers it had, and a download that lands after its command gave up isn't
-    /// added (#1202).
+    /// In-place dispatch shares the same terminal result hook as downloaded-byte completion.
     #[test]
-    fn landed_downloads_answer_every_waiting_run() {
-        use crate::Session;
-        for id in ["eng-share-a", "eng-share-b"] {
-            let pkg = rustgis_plugins::Package::from_zip(&rustgis_plugins::testing::package(id, &["edit", "network"])).unwrap();
-            rustgis_plugins::load(pkg, "test").unwrap();
+    fn an_owned_in_place_failure_settles_its_wait() {
+        let mut s = Session::new(crate::project::Project::default());
+        s.request_url(&json!({"url":""})).unwrap();
+        let taken = s.take_url_requests();
+        let p = taken[0].params();
+        let n = p["request"].as_u64().unwrap();
+        s.url_waits.wait(n, without_request(p));
+        let id = s.download_started_for(&taken[0]).unwrap();
+        let error = s.add_in_place_for(id, p).unwrap_err();
+        assert!(error.contains("url is required"), "{error}");
+        assert!(s.url_waits.landed.iter().any(|(m, _, answer, _)| *m == n && answer.is_err()));
+        assert!(!s.url_waits.holds(n, p));
+    }
+
+    /// The ordinary pending-download cap can retire a plugin-owned claim below the claim cap.
+    #[test]
+    fn retiring_a_download_claim_settles_only_its_own_wait() {
+        let mut s = Session::new(crate::project::Project::default());
+        let mut requests = Vec::new();
+        for url in ["https://retired.invalid/first.geojson", "https://retired.invalid/second.geojson"] {
+            s.request_url(&json!({"url":url})).unwrap();
+            let request = s.take_url_requests().pop().unwrap();
+            let n = request.params()["request"].as_u64().unwrap();
+            s.url_waits.wait(n, without_request(request.params()));
+            let id = s.download_started_for(&request).unwrap();
+            requests.push((id, n, request));
         }
-        // Answers name layers that are on the map (the sample's), as a rerun checks.
-        let mut s = Session::new(crate::sample::world_project());
-        let (l7, l8) = (u64::from(s.map().layers[0].id), u64::from(s.map().layers[1].id));
-        // What a command calls, and what is kept as asked: read with no saved login.
-        let asked = json!({"url": "https://x.org/a.csv", "anonymous": true});
-        let p = json!({"op": "layer.addUrl", "params": {"url": "https://x.org/a.csv"}});
-        // Two commands wait for one download (request 900): both get what adding it answered.
-        for id in ["plugin:eng-share-a/f", "plugin:eng-share-b/f"] {
-            s.retry_plugin(id, &p, Vec::new(), vec![(900, asked.clone())]).unwrap();
-        }
-        s.url_waits.land(900, Ok(json!({"layer": l7})), Added::default());
-        let ran = s.poll_plugin_retries();
-        assert_eq!(ran.len(), 2, "{ran:?}");
-        assert!(ran.iter().all(|(_, r)| r.as_ref().is_ok_and(|v| v["layer"] == l7)), "{ran:?}");
-        assert!(s.take_url_requests().is_empty(), "nothing asked again");
-        // A rerun that waits again for another download keeps what it had: a.csv isn't asked again.
-        s.rerun_landed = vec![(asked.clone(), Ok(json!({"layer": l7})), Default::default())];
-        s.retry_plugin("plugin:eng-share-a/f", &p, Vec::new(), vec![(901, json!({"url": "https://x.org/b.csv"}))]).unwrap();
-        s.rerun_landed.clear();
-        s.url_waits.land(901, Ok(json!({"layer": l8})), Added::default());
-        let ran = s.poll_plugin_retries();
-        assert_eq!(ran.len(), 1, "{ran:?}");
-        assert_eq!(ran[0].1.as_ref().unwrap()["layer"], l7, "{ran:?}");
-        assert!(s.take_url_requests().is_empty(), "nothing asked again");
-        // The download it waited for answers too, for a run that asks for it.
-        let b = json!({"url": "https://x.org/b.csv", "anonymous": true});
-        let call = json!({"op": "layer.addUrl", "params": {"url": "https://x.org/b.csv"}});
-        s.rerun_landed = vec![(asked.clone(), Ok(json!({"layer": l7})), Default::default())];
-        s.retry_plugin("plugin:eng-share-a/f", &call, Vec::new(), vec![(904, b.clone())]).unwrap();
-        s.rerun_landed.clear();
-        s.url_waits.land(904, Ok(json!({"layer": l8})), Added::default());
-        let ran = s.poll_plugin_retries();
-        assert_eq!(ran[0].1.as_ref().unwrap()["layer"], l8, "{ran:?}");
-        // The same address asked another way (other columns) doesn't land a wait.
-        s.retry_plugin("plugin:eng-share-a/f", &p, Vec::new(), vec![(905, json!({"url": "https://x.org/f.csv", "x": "lon"}))]).unwrap();
-        assert!(!s.url_waits.holds(905, &json!({"url": "https://x.org/f.csv", "x": "lng", "id": 3})));
-        assert!(s.url_waits.holds(905, &json!({"url": "https://x.org/f.csv", "x": "lon", "id": 3, "cog": true})));
-        // What the front end doesn't pass on (`whole`, a `name` that isn't text, `bounds` that
-        // aren't a list), or may change (`zoom`), doesn't stop a landing.
-        let asked =
-            json!({"url": "https://x.org/g.csv", "x": "lon", "whole": true, "zoom": false, "dates": ["2020"], "name": 5, "bounds": "x"});
-        s.retry_plugin("plugin:eng-share-a/f", &p, Vec::new(), vec![(906, asked)]).unwrap();
-        assert!(s.url_waits.holds(906, &json!({"url": "https://x.org/g.csv", "x": "lon", "id": 4})));
-        assert!(s.url_waits.holds(906, &json!({"url": "https://x.org/g.csv", "x": "lon", "zoom": true})));
-        assert!(s.url_waits.holds(906, &json!({"url": "https://x.org/g.csv", "x": "lon", "zoom": false})));
-        // A key the front end passes on, left out: another import, which lands nothing.
-        assert!(!s.url_waits.holds(906, &json!({"url": "https://x.org/g.csv"})));
-        // Given up past the wait (`expire`): each late landing is refused, once.
-        // (Only where the clock has run that long: a machine just started can't be that far back.)
-        if let Some(long_ago) = Instant::now().checked_sub(REQUEST_WAIT + Duration::from_secs(1)) {
-            for (n, file) in [(902, "c.csv"), (903, "c2.csv")] {
-                s.url_waits.in_flight.push((n, json!({"url": format!("https://x.org/{file}")}), long_ago));
-            }
-            s.url_waits.expire();
-            for (n, file) in [(902, "c.csv"), (903, "c2.csv")] {
-                let late = json!({"url": format!(" https://x.org/{file} "), "request": n});
-                assert!(s.url_waits.given_up(n, &late), "{n}");
-                let e = s.run("layer.addUrl", &late).unwrap_err();
-                assert!(e.contains("stopped waiting"), "{e}");
-                assert!(!s.url_waits.given_up(n, &late), "{n}: forgotten once refused");
+        let (first, number, request) = &requests[0];
+        let still = s.download_still(*first).unwrap();
+        struct Live;
+        impl crate::policy::Revocation for Live {
+            fn allows(&self, _: crate::policy::Effects) -> bool {
+                true
             }
         }
-        // One still out stays given up however many more are: past the bound, a plugin command
-        // asks for no new download (and its request isn't downloaded); one that fails is
-        // forgotten, which frees a place.
-        let first = json!({"url": "https://x.org/out.csv"});
-        s.url_waits.expired.clear();
-        s.retry_plugin("plugin:eng-share-c/f", &p, Vec::new(), vec![(959, json!({"url": "https://x.org/old.csv"}))]).unwrap();
-        s.url_waits.remember_given_up(800, first.clone());
-        for n in 1..MAX_EXPIRED as u64 {
-            s.url_waits.remember_given_up(10_000 + n, json!({"url": format!("https://x.org/{n}.csv")}));
+        let foreign = crate::policy::Scope::assistant(1521, std::sync::Arc::new(Live));
+        s.with_scope(foreign, |s| {
+            s.download_failed(*first);
+            assert!(!s.download_done(*first));
+            assert!(s.download_continues(*first).is_err());
+            assert!(!s.download_landed(*first, Vec::new()));
+        })
+        .unwrap();
+        assert!(still() && s.url_waits.holds(*number, request.params()), "foreign callbacks cannot consume the owner's claim or wait");
+        for _ in 0..62 {
+            s.download_started();
         }
+        assert_eq!(
+            requests.iter().filter(|(id, ..)| s.download_still(*id).is_some()).count(),
+            2,
+            "both original claims remain below the cap"
+        );
         let mark = s.notice_mark();
-        s.url_requests.push(json!({"url": "https://x.org/new.csv", "request": 960}));
-        let e = s.retry_plugin("plugin:eng-share-c/f", &p, Vec::new(), vec![(960, json!({"url": "https://x.org/new.csv"}))]).unwrap_err();
-        assert!(e.contains("still under way") && e.contains("its download of https://x.org/new.csv wasn't started"), "{e}");
-        for cancelled in [
-            vec!["https://x.org/a?token=hunter2".to_string()],
-            vec!["https://x.org/a?token=hunter2".to_string(), "https://x.org/b".to_string()],
-        ] {
-            assert!(!not_started(&cancelled).contains("hunter2"));
-        }
-        assert!(s.take_url_requests().is_empty(), "not downloaded");
-        // Refused, it changed nothing: the command's earlier run still waits.
-        assert!(s.plugin_retries.iter().any(|r| r.id == "plugin:eng-share-c/f" && r.requests == [959]));
-        assert!(s.url_waits.has(959) && !s.notices_since(mark).iter().any(|n| n.text.contains("replaced by this one")));
-        // One another command already waits for starts no download: it is shared, not refused.
-        let shared = json!({"url": "https://x.org/shared.csv"});
-        s.url_waits.wait(961, shared.clone());
-        s.retry_plugin("plugin:eng-share-d/f", &p, Vec::new(), vec![(961, shared)]).unwrap();
-        s.plugin_retries.clear();
-        s.url_waits.keep_only(&[]);
-        assert!(s.url_waits.given_up(800, &first), "still refused when it lands");
-        s.request_failed(&json!({"url": "https://x.org/out.csv", "request": 800}), "offline");
-        assert!(!s.url_waits.given_up(800, &first) && !s.url_waits.given_up_full());
-        s.url_waits.expired.clear();
-        // A run replaced by another gives up the download only it waited for.
-        s.retry_plugin("plugin:eng-share-b/f", &p, Vec::new(), vec![(950, json!({"url": "https://x.org/d.csv"}))]).unwrap();
-        s.retry_plugin("plugin:eng-share-b/f", &p, Vec::new(), vec![(951, json!({"url": "https://x.org/e.csv"}))]).unwrap();
-        let e = s.run("layer.addUrl", &json!({"url": "https://x.org/d.csv", "request": 950})).unwrap_err();
-        assert!(e.contains("stopped waiting"), "{e}");
-        // One the front end hadn't taken yet is taken off the queue and forgotten: it can't land.
-        let queued = json!({"url": "https://x.org/q.csv"});
-        s.url_requests.push(json!({"url": "https://x.org/q.csv", "request": 970}));
-        s.retry_plugin("plugin:eng-share-e/f", &p, Vec::new(), vec![(970, queued.clone())]).unwrap();
-        s.retry_plugin("plugin:eng-share-e/f", &p, Vec::new(), Vec::new()).unwrap();
-        assert!(!s.url_waits.given_up(970, &queued) && s.take_url_requests().is_empty());
-        // A number given with another address lands nothing.
-        let _ = s.run("layer.addDownload", &json!({"url": "https://x.org/other.csv", "request": 951, "id": 424242}));
-        assert!(s.url_waits.holds(951, &json!({"url": "https://x.org/e.csv"})), "951 still waits for e.csv");
-        // Asked again by a plugin command's call once made, while the command waits: that one,
-        // not another download.
-        s.url_waits.land(951, Ok(json!({"layer": l7})), Added::default());
-        s.call_requests = Some(Vec::new());
-        s.request_url(&json!({"url": "https://x.org/e.csv"})).unwrap();
-        s.call_requests = None;
-        assert!(s.take_url_requests().is_empty(), "made already");
-        // Handed back by the front end that took it (the browser found it must be downloaded
-        // whole): queued again, whole. Asked again by its address alone by a plugin command's
-        // call, it is that one.
-        let g = json!({"url": "https://x.org/g.csv"});
-        s.retry_plugin("plugin:eng-share-f/f", &p, Vec::new(), vec![(952, g.clone())]).unwrap();
-        s.call_requests = Some(Vec::new());
-        s.request_url(&g).unwrap();
-        s.call_requests = None;
-        assert!(s.take_url_requests().is_empty(), "under way");
-        s.request_url(&json!({"url": "https://x.org/g.csv", "request": 952})).unwrap();
-        assert_eq!(s.take_url_requests(), [json!({"url": "https://x.org/g.csv", "request": 952, "whole": true})]);
-        // A run replaced gives up the download only it waits for, unless a command running again
-        // in the same poll (out of the list until it has run) waits for it too.
-        for (n, ready) in [(953, false), (954, true)] {
-            let h = json!({"url": format!("https://x.org/{n}.csv")});
-            s.retry_plugin("plugin:eng-share-g/f", &p, Vec::new(), vec![(n, h.clone())]).unwrap();
-            s.rerun_requests = if ready { vec![n] } else { Vec::new() };
-            s.retry_plugin("plugin:eng-share-g/f", &p, Vec::new(), Vec::new()).unwrap();
-            s.rerun_requests.clear();
-            assert_eq!(s.url_waits.given_up(n, &h), !ready, "{n}");
-        }
-        for id in ["eng-share-a", "eng-share-b"] {
-            rustgis_plugins::unload(id);
-        }
+        s.download_started();
+        assert!(!still(), "retirement revokes its transport predicate");
+        assert!(!s.url_waits.holds(*number, request.params()), "the retired request no longer blocks its plugin");
+        let (_, other, request) = &requests[1];
+        assert!(s.url_waits.holds(*other, request.params()), "the other wait is untouched");
+        assert!(s.url_waits.landed.iter().any(|(n, _, answer, _)| n == number && answer.is_err()));
+        assert_eq!(s.notices_since(mark).len(), 1, "retirement is reported once");
+        s.download_failed(requests[1].0);
+        assert!(!s.url_waits.holds(*other, request.params()), "an explicit failure also settles its exact wait");
+        assert!(s.url_waits.landed.iter().any(|(n, _, answer, _)| n == other && answer.is_err()));
     }
 
     #[test]

@@ -576,6 +576,78 @@ mod tests {
         plugins::unload("ui-url");
     }
 
+    /// The real deferred request and probe loop refuse a withdrawn plugin before a fallback send.
+    #[test]
+    fn permission_policy_plugin_deferred_probe_refuses_before_fallback() {
+        let _turn = crate::fetching::turn();
+        use rustgis_engine::{plugins, render::rustgis_tiles::cache};
+        use std::sync::{
+            Arc, Mutex,
+            atomic::{AtomicUsize, Ordering},
+        };
+        let sent = Arc::new(AtomicUsize::new(0));
+        let count = sent.clone();
+        let held = Arc::new(Mutex::new(Vec::new()));
+        let callbacks = held.clone();
+        cache::set_fetcher(move |_, done| {
+            count.fetch_add(1, Ordering::SeqCst);
+            callbacks.lock().unwrap().push(done);
+        });
+        let mut app = RustGisApp::with_sample();
+        let load = || {
+            plugins::load(plugins::Package::from_zip(&plugins::testing::package("ui-policy-probe", &["edit", "network"])).unwrap(), "test")
+                .unwrap()
+        };
+        let p = json!({"url":"http://127.0.0.1:9/policy-held.fgb","name":"Held source"});
+        load();
+        app.run("plugin:ui-policy-probe/f", json!({"op":"layer.addUrl","params":p})).unwrap();
+        plugins::unload("ui-policy-probe");
+        assert!(app.session.take_url_requests().is_empty());
+        assert_eq!(sent.load(Ordering::SeqCst), 0);
+        load();
+        app.run("plugin:ui-policy-probe/f", json!({"op":"layer.addUrl","params":p})).unwrap();
+        let request = app.session.take_url_requests().pop().unwrap();
+        app.add_url(request.params(), Some(&request), None).unwrap();
+        assert_eq!(sent.load(Ordering::SeqCst), 1, "the actual probe starts under the live owner");
+        assert_eq!(app.ui.cog_probes.len(), 1);
+        plugins::unload("ui-policy-probe");
+        *app.ui.cog_probes[0].2.lock().unwrap() = Some(Ok(false));
+        app.poll_data_downloads();
+        assert_eq!(sent.load(Ordering::SeqCst), 1, "revoked probe starts no whole-file fallback");
+        assert!(app.session.map().layer_by_name("Held source").is_none());
+        for done in std::mem::take(&mut *held.lock().unwrap()) {
+            done(Err("probe revoked".into()));
+        }
+        // The same real probe can succeed while its owner remains loaded. Reuse the built-in
+        // FGB writer and installed fetcher; no server or replacement completion token is needed.
+        let bytes = rustgis_engine::data::source::fgb::write(&app.session.map().layer_by_name("Cities").unwrap().dataset).unwrap();
+        cache::set_fetcher(move |url, done| {
+            let (url, _) = cache::split_download_limit(&url);
+            let (_, range) = cache::split_range(url);
+            let answer = match range {
+                Some((a, b)) => bytes.get(a as usize..b.saturating_add(1).min(bytes.len() as u64) as usize).unwrap_or_default().to_vec(),
+                None => bytes.clone(),
+            };
+            done(Ok(answer));
+        });
+        load();
+        let p = json!({"url":"http://127.0.0.1:9/policy-recorded.fgb", "name":"Recorded source"});
+        app.run("plugin:ui-policy-probe/f", json!({"op":"layer.addUrl", "params":p})).unwrap();
+        let request = app.session.take_url_requests().pop().unwrap();
+        app.ws.recording = Some(Vec::new());
+        app.add_url(request.params(), Some(&request), None).unwrap();
+        assert_eq!(app.ui.cog_probes.len(), 1, "the actual live probe still lands through its UI receiver");
+        app.poll_data_downloads();
+        let steps = app.ws.recording.as_ref().unwrap();
+        assert!(app.session.map().layer_by_name("Recorded source").is_some());
+        assert_eq!(steps.len(), 1, "successful in-place delivery records its replayable command");
+        assert_eq!(steps[0].command, "layer.addUrl");
+        assert_eq!(steps[0].params["url"], p["url"]);
+        assert!(steps[0].params.get("id").is_none(), "opaque completion ids are not replay parameters");
+        assert!(steps[0].params.get("request").is_none(), "request receipts are not replay parameters");
+        plugins::unload("ui-policy-probe");
+    }
+
     /// A GeoTIFF asked for as a scan keeps only its pixels: the app downloads it whole, once,
     /// without first reading its header to see whether it could be read in place.
     #[test]
@@ -627,6 +699,10 @@ mod tests {
     /// that is said once, with its address, whether or not that holds a key (#1202).
     #[test]
     fn a_late_download_is_refused_in_one_notice() {
+        #[cfg(not(target_arch = "wasm32"))]
+        if crate::isolate_account_test("pluginpanel::tests::a_late_download_is_refused_in_one_notice") {
+            return;
+        }
         use rustgis_engine::plugins;
         let pkg = plugins::Package::from_zip(&plugins::testing::package("ui-late-said", &["edit", "network"])).unwrap();
         plugins::load(pkg, "test").unwrap();
@@ -636,12 +712,12 @@ mod tests {
             // The app takes it and starts downloading; the command is run again for another
             // address, so nothing waits for the first now.
             let taken = app.session.take_url_requests();
-            assert_eq!(taken.len(), 1, "{taken:?}");
+            assert_eq!(taken.len(), 1);
+            let id = app.session.download_started_for(&taken[0]).unwrap();
             app.run("plugin:ui-late-said/f", json!({"op": "layer.addUrl", "params": {"url": "https://x.org/second.csv"}})).unwrap();
-            let id = app.session.download_started();
             let mark = app.session.notice_mark();
             let layers = app.session.map().layers.len();
-            let landed = crate::serviceui::Landed { id, url: first.to_string(), params: taken[0].clone(), origin: None };
+            let landed = crate::serviceui::Landed { id, url: first.to_string(), params: taken[0].params().clone(), origin: None };
             app.add_landed(landed, b"name,lon,lat\nA,10,50\n".to_vec());
             assert_eq!(app.session.map().layers.len(), layers, "not added");
             let said: Vec<String> = app.session.notices_since(mark).iter().filter(|n| n.error).map(|n| n.text.clone()).collect();
@@ -656,6 +732,10 @@ mod tests {
     /// out, from what the app keeps of the request: a file read whole, and a service's page (#1202).
     #[test]
     fn a_failed_download_answers_the_command_waiting_at_once() {
+        #[cfg(not(target_arch = "wasm32"))]
+        if crate::isolate_account_test("pluginpanel::tests::a_failed_download_answers_the_command_waiting_at_once") {
+            return;
+        }
         use rustgis_engine::plugins;
         use rustgis_engine::render::rustgis_tiles::cache;
         let _turn = crate::fetching::turn();
@@ -666,8 +746,8 @@ mod tests {
             let mut app = RustGisApp::with_sample();
             app.run("plugin:ui-fail/f", json!({"op": "layer.addUrl", "params": params})).unwrap();
             let taken = app.session.take_url_requests();
-            assert_eq!(taken.len(), 1, "{taken:?}");
-            app.run("ui.addUrl", taken[0].clone()).unwrap();
+            assert_eq!(taken.len(), 1);
+            app.add_url(taken[0].params(), Some(&taken[0]), None).unwrap();
             let ctx = egui::Context::default();
             let mut ran = Vec::new();
             for _ in 0..400 {
@@ -690,6 +770,10 @@ mod tests {
     /// it fails, not the wait running out (#1202).
     #[test]
     fn a_failed_service_read_answers_the_command_waiting() {
+        #[cfg(not(target_arch = "wasm32"))]
+        if crate::isolate_account_test("pluginpanel::tests::a_failed_service_read_answers_the_command_waiting") {
+            return;
+        }
         use rustgis_engine::plugins;
         let pkg = plugins::Package::from_zip(&plugins::testing::package("ui-pages", &["edit", "network"])).unwrap();
         plugins::load(pkg, "test").unwrap();
@@ -697,9 +781,9 @@ mod tests {
         let url = "https://x.org/collections/a/items";
         app.run("plugin:ui-pages/f", json!({"op": "layer.addUrl", "params": {"url": url, "service": true}})).unwrap();
         let taken = app.session.take_url_requests();
-        assert_eq!(taken.len(), 1, "{taken:?}");
-        let id = app.session.download_started();
-        let landed = crate::serviceui::Landed { id, url: url.to_string(), params: taken[0].clone(), origin: None };
+        assert_eq!(taken.len(), 1);
+        let id = app.session.download_started_for(&taken[0]).unwrap();
+        let landed = crate::serviceui::Landed { id, url: url.to_string(), params: taken[0].params().clone(), origin: None };
         crate::serviceui::go_on(&mut app, landed, 0, rustgis_engine::data::ogc::Step::Failed("its second page failed".into()));
         let ran = app.session.poll_plugin_retries();
         assert_eq!(ran.len(), 1, "{ran:?}");

@@ -12,6 +12,11 @@ use super::exports::{Work, Wrote};
 use super::{f, need_layer, ps};
 use crate::{CommandSpec as C, Session};
 
+/// The map export binds exactly the map and tile routes the worker will copy.
+fn map_inputs(s: &super::InputContext<'_>, _: &Value) -> Result<super::Inputs, String> {
+    Ok(super::tiles::render_inputs(s.map()))
+}
+
 pub fn commands() -> Vec<C> {
     vec![
         C::new("share.exportMap", "Export Map", "Publish › Output", |s, p| {
@@ -19,14 +24,17 @@ pub fn commands() -> Vec<C> {
             // tiles. The app runs it here, not on a thread, while one loads.
             super::tiles::follow_style_view(s, web_time::Duration::from_secs(30));
             super::exports::write_here(s, p, "share.exportMap")
-        }).roles(&[])
+        }).inputs(map_inputs).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
         .view()
             .params(r#"{"path": "*.png", "width"?: px, "height"?: px, "dpi"?: 96..600}"#),
-        C::new("share.exportLayer", "Export Features", "Publish › Output", |s, p| super::exports::write_here(s, p, "share.exportLayer")).roles(&[])
+        C::new("share.exportLayer", "Export Features", "Publish › Output", |s, p| super::exports::write_here(s, p, "share.exportLayer")).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
             .view()
             .when(need_layer)
             .params(r#"{"layer"?, "path": "*.geojson|*.csv|*.fgb|*.gpkg|*.parquet|*.shp|*.zip|*.kml|*.kmz|*.gpx", "crs"?: "EPSG:… (or WKT) for a GeoPackage, Shapefile or FlatGeobuf (default: the system the layer was read in, else EPSG:4326)", "mode"?: "newFile (default: refuses an existing file) | addTable | replaceTable, for a GeoPackage", "tableName"?: "the GeoPackage table (default: the layer's name)"}"#),
         C::new("share.exportTable", "Export Table", "Publish › Output", |s, p| {
+            let owner = s.continuation()?;
+            owner.check()?;
+            let _progress = rustgis_analysis::control::install_progress(None);
             let path = ps(p, "path").ok_or("path is required")?;
             let ext = Path::new(path).extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
             let gpkg = gpkg_table(p, &ext)?;
@@ -40,6 +48,7 @@ pub fn commands() -> Vec<C> {
             }
             let (left_out, table) =
                 rustgis_data::io::write_path_to(&t.dataset, Path::new(path), Crs::LonLat, &gpkg).map_err(|e| e.to_string())?;
+            s.check_continuation(&owner).map_err(|why| super::exports::completion_refused(Some(path), why))?;
             if left_out > 0 {
                 s.notify(format!("{path}: {left_out} features without drawable geometry were left out"), false);
             }
@@ -49,7 +58,7 @@ pub fn commands() -> Vec<C> {
             let mut out = json!({"path": path});
             report_table(s, path, &gpkg, table, &mut out);
             Ok(out)
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
         .params(
             r#"{"table": name|id (a standalone table), "path": "*.geojson|*.csv|*.fgb|*.gpkg|*.parquet|*.shp|*.zip|*.kml|*.kmz|*.gpx", "mode"?: "newFile (default: refuses an existing file) | addTable | replaceTable, for a GeoPackage", "tableName"?: "the GeoPackage table (default: the table's name)"}"#,
         )
@@ -280,6 +289,7 @@ fn write_layer(l: &rustgis_map::Layer, path: &str, asked: Option<Crs>, gpkg: Gpk
     let answer = json!({"path": path, "features": written, "leftOut": left_out, "crs": crs.label()});
     // The table written, said and put in the answer once the export lands, where the session
     // (layers reading a replaced table) is at hand.
+    let written_path = Some(path.to_string());
     let path = path.to_string();
     let then: Option<super::exports::Then> = table.map(|t| {
         Box::new(move |s: &mut Session, out: &mut Value| {
@@ -287,7 +297,14 @@ fn write_layer(l: &rustgis_map::Layer, path: &str, asked: Option<Crs>, gpkg: Gpk
             Ok(())
         }) as super::exports::Then
     });
-    Ok(Wrote { answer, notes: said, then })
+    Ok(Wrote {
+        answer,
+        notes: said,
+        written_path,
+        then,
+        #[cfg(not(target_arch = "wasm32"))]
+        owner: None,
+    })
 }
 
 /// Whether `a` and `b` are the same existing file.

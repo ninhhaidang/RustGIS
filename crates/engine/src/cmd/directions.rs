@@ -11,7 +11,7 @@ use crate::render::rustgis_tiles::routing::{self, Avoid, Mode, Route, Router};
 use crate::{CmdResult, CommandSpec as C, Session};
 
 pub fn commands() -> Vec<C> {
-    vec![C::new("map.route", "Directions", "Home › Navigate", route).roles(&[]).params(
+    vec![C::new("map.route", "Directions", "Home › Navigate", route).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network)).params(
         r#"{"from": [lon, lat] | "a place, an address or 'lat, lon'", "to": the same, "via"?: [places] (stops on the way), "mode"?: "drive" (default) | "bike" | "walk", "avoid"?: ["tolls", "highways", "ferries"] (driving), "imperial"?: bool (miles in the instructions), "language"?: "en-US" | "de" | …, "url"?: "a Valhalla server of your own", "addLayer"?: bool (adds the route and its steps as layers, default true), "zoom"?: bool (default true), "answer"?: "a routing answer already fetched (the app's; nothing is fetched)", "route"?: index of the route in answer}"#,
     )]
 }

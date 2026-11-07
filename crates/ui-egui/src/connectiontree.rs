@@ -37,6 +37,8 @@ pub struct State {
 /// A STAC asset waiting on its signing token: the token's address, the asset, the layer's name,
 /// the connection it was added from (named in Recent once it is added) and the token on its way.
 struct Signing {
+    /// The project that asked for the asset, checked before caching its token or adding data.
+    opened: u64,
     token_url: String,
     href: String,
     name: String,
@@ -209,6 +211,7 @@ fn advance(app: &mut RustGisApp, id: &str, mut f: Fetch, bytes: Vec<u8>) -> Entr
     }
 }
 
+/// Advances connection listings and only the asset signings owned by the current project.
 pub fn poll(app: &mut RustGisApp, ctx: &egui::Context) {
     let tree = &mut app.ui.connection_tree;
     let mut landed = Vec::new();
@@ -229,6 +232,9 @@ pub fn poll(app: &mut RustGisApp, ctx: &egui::Context) {
     }
     // STAC assets that needed a token: signed and added when it lands.
     for signing in std::mem::take(&mut app.ui.connection_tree.tokens) {
+        if !app.service_read_current(signing.opened, &signing.href, None) {
+            continue;
+        }
         let Some(r) = signing.slot.lock().unwrap_or_else(|e| e.into_inner()).take() else {
             app.ui.connection_tree.tokens.push(signing);
             continue;
@@ -315,7 +321,7 @@ fn add_asset(app: &mut RustGisApp, href: &str, name: &str, origin: Option<&str>,
         let slot = crate::fetch_into(&token_url);
         let (href, name, origin) = (href.to_string(), name.to_string(), origin.map(str::to_string));
         let connection = connection.map(str::to_string);
-        app.ui.connection_tree.tokens.push(Signing { token_url, href, name, origin, connection, slot });
+        app.ui.connection_tree.tokens.push(Signing { opened: app.session.opened, token_url, href, name, origin, connection, slot });
     }
     Ok(())
 }
@@ -1035,6 +1041,7 @@ mod tests {
 
     #[test]
     fn a_tileset_step_names_its_layer_and_a_refused_one_is_not_recorded() {
+        let _turn = crate::fetching::turn();
         let mut h = harness();
         let api = "https://x.org/collections";
         let tiled = r#"{"collections": [{"id": "relief", "links": [{"rel": "tilesets-map", "href": "https://x.org/relief/map/tiles"}]}]}"#;
@@ -1128,6 +1135,79 @@ mod tests {
         assert_eq!(noted.kind, "url");
         assert!(noted.address.starts_with(&url) && noted.address.contains("GetCoverage"), "{}", noted.address);
         assert_eq!(h.state().session.map().layer_by_name("Soil carbon").unwrap().connection, id);
+    }
+
+    /// A signing response cannot turn an old click into an addition to a replacement project.
+    #[test]
+    fn deferred_asset_signing_cannot_add_to_a_replacement_project() {
+        use rustgis_engine::render::rustgis_tiles::cache;
+        use std::sync::Mutex;
+        let _turn = crate::fetching::turn();
+        for (case, (replace, ready)) in
+            [(None, true), (Some(false), false), (Some(false), true), (Some(true), false), (Some(true), true)].into_iter().enumerate()
+        {
+            let href = format!("https://review29{case}.blob.core.windows.net/old-assets/points.csv");
+            let token_url = stac::sas_token_url(&href).unwrap();
+            let (asset, token) = (href.clone(), token_url.clone());
+            let sent = Arc::new(Mutex::new(Vec::new()));
+            let held = Arc::new(Mutex::new(Vec::<cache::Done>::new()));
+            let (seen, callbacks) = (sent.clone(), held.clone());
+            cache::set_fetcher(move |url, done| {
+                let plain = cache::split_download_limit(&url).0;
+                // Earlier frames' workers can still reach the process-wide fetcher.
+                if plain != token && plain.split('?').next() != Some(asset.as_str()) {
+                    done(Err("outside the signing fixture".into()));
+                    return;
+                }
+                seen.lock().unwrap().push(plain.to_string());
+                callbacks.lock().unwrap().push(done);
+            });
+            let mut app = RustGisApp::with_sample();
+            let (text, _) = app.session.project.saved_text(None).unwrap();
+            add_asset(&mut app, &href, "Old asset", None, None).unwrap();
+            assert_eq!(app.ui.connection_tree.tokens.len(), 1);
+            assert_eq!(sent.lock().unwrap().as_slice(), std::slice::from_ref(&token_url));
+            let finish = || {
+                for done in std::mem::take(&mut *held.lock().unwrap()) {
+                    done(Ok(br#"{"token":"sig=review29-synthetic"}"#.to_vec()));
+                }
+            };
+            if ready {
+                finish();
+            }
+            match replace {
+                Some(true) => app.open_peer_text(&text).unwrap(),
+                Some(false) => {
+                    app.session.run("project.openText", &json!({"text":text})).unwrap();
+                }
+                None => {}
+            }
+            let mark = app.session.notice_mark();
+            poll(&mut app, &egui::Context::default());
+            let drained = app.ui.connection_tree.tokens.is_empty();
+            if !ready {
+                finish();
+            }
+            poll(&mut app, &egui::Context::default());
+            for done in std::mem::take(&mut *held.lock().unwrap()) {
+                done(Err("test download finished".into()));
+            }
+            assert!(drained && app.ui.connection_tree.tokens.is_empty(), "old signing must retire before inspecting its slot");
+            if replace.is_some() {
+                assert_eq!(sent.lock().unwrap().as_slice(), std::slice::from_ref(&token_url), "the old asset must not be requested");
+                assert!(app.ui.downloads.is_empty() && app.ui.cog_probes.is_empty());
+                assert!(stac::cached_token(&token_url).is_none(), "an old response must not update the token cache");
+                assert_eq!(app.session.notices_since(mark).iter().filter(|n| n.text.contains("project was closed")).count(), 1);
+            } else {
+                assert_eq!(
+                    *sent.lock().unwrap(),
+                    [token_url.clone(), stac::sign(&href, "sig=review29-synthetic")],
+                    "a current signing response starts exactly its asset download"
+                );
+                assert_eq!(app.ui.downloads.len(), 1);
+                assert!(stac::cached_token(&token_url).is_some());
+            }
+        }
     }
 
     /// The whole path on screen: open a connection in the Data Sources pane and double-click a

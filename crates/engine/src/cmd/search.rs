@@ -15,7 +15,7 @@ use crate::{CmdResult, CommandSpec as C, Session};
 pub fn commands() -> Vec<C> {
     vec![
         // Not a view command: going to a feature selects it.
-        C::new("map.search", "Search", "Map", search_cmd).roles(&[]).params(
+        C::new("map.search", "Search", "Map", search_cmd).inputs(search_inputs).roles(&[]).effects(crate::policy::Effects::NONE).params(
             r#"{"query": "a latitude and longitude (40.7, -74.0; 40°42'N 74°0'W), a layer, a bookmark or a value in a layer's table", "limit"?: 1–50, "go"?: true (the first hit) | index}"#,
         ),
     ]
@@ -134,6 +134,11 @@ pub struct Results {
 
 /// Searches the active map for `query`: a coordinate first, then layers, bookmarks and features.
 pub fn search(s: &Session, query: &str, limit: usize) -> Results {
+    search_map(s.map(), query, limit)
+}
+
+/// Builds bounded hits without selecting one or opening tile metadata.
+fn search_map(map: &rustgis_map::Map, query: &str, limit: usize) -> Results {
     let q: String = query.trim().chars().take(MAX_CHARS).collect();
     let mut out = Results::default();
     if q.is_empty() {
@@ -143,7 +148,6 @@ pub fn search(s: &Session, query: &str, limit: usize) -> Results {
         out.hits.push(Hit::Coordinate { lon: c.x, lat: c.y });
     }
     let needle = q.to_lowercase();
-    let map = s.map();
     for l in &map.layers {
         if contains_ci(&l.name, &needle) {
             out.hits.push(Hit::Layer { id: l.id, name: l.name.clone() });
@@ -317,10 +321,11 @@ fn around(c: Coord) -> Extent {
     Extent::new(c.x - 0.05, c.y - 0.04, c.x + 0.05, c.y + 0.04)
 }
 
-fn search_cmd(s: &mut Session, p: &Value) -> CmdResult {
+/// Resolves the command's actual bounded hit list and optional destination without going to it.
+fn search_request(map: &rustgis_map::Map, p: &Value) -> Result<(Results, Option<usize>), String> {
     let query = ps(p, "query").map(str::trim).filter(|q| !q.is_empty()).ok_or("query is required")?;
     let limit = f(p, "limit").filter(|l| l.is_finite()).map(|l| l.clamp(1.0, 50.0) as usize).unwrap_or(LIMIT);
-    let r = search(s, query, limit);
+    let r = search_map(map, query, limit);
     let pick = match p.get("go") {
         None | Some(Value::Null | Value::Bool(false)) => None,
         Some(Value::Bool(true)) => Some(0),
@@ -332,8 +337,33 @@ fn search_cmd(s: &mut Session, p: &Value) -> CmdResult {
         ),
     };
     if let Some(i) = pick {
-        let hit =
-            r.hits.get(i).ok_or_else(|| if r.hits.is_empty() { format!("nothing matches '{query}'") } else { format!("no hit {i}") })?;
+        r.hits.get(i).ok_or_else(|| if r.hits.is_empty() { format!("nothing matches '{query}'") } else { format!("no hit {i}") })?;
+    }
+    Ok((r, pick))
+}
+
+/// Binds a chosen tile's raw route; other hits retain the ordinary layer context.
+fn search_inputs(input: &super::InputContext<'_>, p: &Value) -> Result<super::Inputs, String> {
+    let (hits, pick) = search_request(input.map(), p)?;
+    match pick.and_then(|i| hits.hits.get(i)) {
+        Some(Hit::Tile { index, .. }) => Ok(super::tiles::tile_inputs(input.map(), [*index])),
+        _ => super::Inputs::single_layer(input, p),
+    }
+}
+
+/// Only going to a tile hit can ask its coverage reader to open the selected source.
+pub(crate) fn metadata_reach(input: &super::InputContext<'_>, p: &Value) -> crate::policy::Effects {
+    let tile = search_request(input.map(), p).ok().and_then(|(hits, pick)| match pick.and_then(|i| hits.hits.get(i)) {
+        Some(Hit::Tile { index, .. }) => input.map().tiles.get(*index),
+        _ => None,
+    });
+    tile.map_or(crate::policy::Effects::NONE, super::tiles::coverage_reach)
+}
+
+/// Uses the same bounded hit choice as approval before changing the view or selection.
+fn search_cmd(s: &mut Session, p: &Value) -> CmdResult {
+    let (r, pick) = search_request(s.map(), p)?;
+    if let Some(hit) = pick.and_then(|i| r.hits.get(i)) {
         go_to(s, hit)?;
     }
     Ok(json!({"hits": r.hits.iter().map(Hit::to_json).collect::<Vec<_>>(), "partial": r.partial}))

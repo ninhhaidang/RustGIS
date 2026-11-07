@@ -11,7 +11,7 @@ use crate::{CmdResult, CommandSpec as C, Session};
 
 pub fn commands() -> Vec<C> {
     vec![
-        C::new("map.effects", "View Effects", "View › Effects", effects).roles(&[]).params(
+        C::new("map.effects", "View Effects", "View › Effects", effects).roles(&[]).effects(crate::policy::Effects::NONE).params(
             r#"{"sunTime"?: seconds since 1970|"now"|null (illumination), "weather"?: "none"|"haze"|"fog"|"rain"|"snow", "vignette"?, "edges"?, "stars"?: bool (visual effects; stars around the globe), "tiltShift"?, "grain"?: bool (camera effects), "brightness"?, "contrast"?, "saturation"?: -100..100, "sepia"?: 0..100 (post-processing), "reset"?: bool}"#,
         ),
         C::new("map.colorVision", "Color Vision Simulator", "View › Accessibility", |s, p| {
@@ -19,13 +19,13 @@ pub fn commands() -> Vec<C> {
             let cv = ColorVision::from_code(m).ok_or_else(|| format!("unknown colour vision '{m}'"))?;
             s.map_mut().view.color_vision = cv;
             Ok(json!({"mode": cv.code()}))
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .view()
         .params(r#"{"mode": "normal"|"protanopia"|"deuteranopia"|"tritanopia"|"achromatopsia"}"#),
         C::new("layer.priority", "Depth Priority", "View › Scene", |s, p| {
             let v = p.get("value").and_then(Value::as_i64).ok_or("value is required (higher draws on top)")?.clamp(-1000, 1000) as i32;
             with(s, p, |l| l.priority = v)
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .when(need_layer)
         .params(r#"{"layer"?, "value": integer (higher draws on top)}"#),
         C::new("map.drawingMode", "Drawing Mode", "View › Scene", |s, p| {
@@ -36,7 +36,7 @@ pub fn commands() -> Vec<C> {
             };
             s.map_mut().view.wireframe = w;
             Ok(json!({"wireframe": w}))
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .params(r#"{"mode": "standard"|"wireframe"}"#),
         C::new("map.clipping", "View Clipping", "View › View Clipping", |s, p| {
             let d = match ps(p, "mode").unwrap_or("distance") {
@@ -46,9 +46,9 @@ pub fn commands() -> Vec<C> {
             };
             s.map_mut().view.clip_distance = d;
             Ok(json!({"distance": d}))
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .params(r#"{"mode": "none"|"distance", "distance"?: metres from the view's centre}"#),
-        C::new("map.terrain", "Terrain", "View › Scene", terrain).roles(&[]).params(
+        C::new("map.terrain", "Terrain", "View › Scene", terrain).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network)).params(
             r#"{"layer"?: a DEM raster layer (heights in metres; without layer or tiles, and no terrain yet, the active layer when it is a raster) | "tiles"?: elevation tile URL with {z}/{x}/{y}, "encoding"?: "terrarium"|"mapbox" (tiles; default terrarium), "exaggeration"?: 0 to 20 (default 1, or the terrain's), "off"?: true}"#,
         ),
         C::new("map.displayType", "Display Type", "View › Options", |s, p| {
@@ -59,17 +59,17 @@ pub fn commands() -> Vec<C> {
             };
             s.map_mut().view.fast = fast;
             Ok(json!({"mode": if fast { "speed" } else { "quality" }}))
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .view()
         .params(r#"{"mode": "quality"|"speed"}"#),
         C::new("map.navigator", "Navigator", "View › Navigation", |s, p| {
             let v = &mut s.map_mut().view;
             v.navigator = b(p, "on").unwrap_or(!v.navigator);
             Ok(json!({"navigator": v.navigator}))
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .view()
         .params(r#"{"on"?: bool}"#),
-        C::new("map.camera", "Camera", "View › Navigation", camera).roles(&[]).view().params(r#"{"lon"?, "lat"?, "scale"? (the camera's position when omitted)}"#),
+        C::new("map.camera", "Camera", "View › Navigation", camera).roles(&[]).effects(crate::policy::Effects::NONE).view().params(r#"{"lon"?, "lat"?, "scale"? (the camera's position when omitted)}"#),
         C::new("map.navigation", "Navigation Mode", "Home › Navigate", |s, p| {
             let fp = match ps(p, "mode").ok_or("mode is required")? {
                 "planar" => false,
@@ -83,7 +83,7 @@ pub fn commands() -> Vec<C> {
                 m.set_projection(rustgis_map::Projection::WebMercator);
             }
             Ok(json!({"mode": if fp { "firstPerson" } else { "planar" }}))
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .params(r#"{"mode": "planar"|"firstPerson"}"#),
         C::new("map.viewMode", "View", "View › View", |s, p| {
             let next = match ps(p, "mode").ok_or("mode is required")? {
@@ -100,9 +100,9 @@ pub fn commands() -> Vec<C> {
             let m = s.map_mut();
             m.set_projection(next);
             Ok(json!({"projection": m.projection.code(), "label": m.projection.label()}))
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .params(r#"{"mode": "global" (a globe)|"local" (a flat view centred here; not in the web app)}"#),
-        C::new("map.walk", "Walk", "Home › Navigate", walk).roles(&[]).view().params(r#"{"forward"?: steps, "right"?: steps, "up"?: steps (first-person navigation)}"#),
+        C::new("map.walk", "Walk", "Home › Navigate", walk).roles(&[]).effects(crate::policy::Effects::NONE).view().params(r#"{"forward"?: steps, "right"?: steps, "up"?: steps (first-person navigation)}"#),
     ]
 }
 

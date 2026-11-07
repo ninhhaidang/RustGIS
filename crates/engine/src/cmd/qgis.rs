@@ -12,10 +12,10 @@ use crate::{CmdResult, CommandSpec as C, Session};
 
 pub fn commands() -> Vec<C> {
     vec![
-        C::new("project.importQgis", "Import QGIS Project", "Project › Import", import_project).roles(&[]).params(
+        C::new("project.importQgis", "Import QGIS Project", "Project › Import", import_project).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Reserved).with(crate::policy::Effect::Files)).params(
             r#"{"path"?: "*.qgs|*.qgz", "text"?: "a .qgs file's text", "data"?: "a .qgs or .qgz file, base64", "dir"?: "the folder its relative paths start from (default: the file's)"} → the layers added and notes on what wasn't carried over"#,
         ),
-        C::new("style.importQgis", "Import QGIS Style", "Style › Styles", import_style).roles(&[]).when(need_layer).params(
+        C::new("style.importQgis", "Import QGIS Style", "Style › Styles", import_style).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files)).when(need_layer).params(
             r#"{"layer"?, "path"?: "*.qml", "text"?: "a .qml file's text", "data"?: "a .qml file, base64"} → notes on what wasn't carried over"#,
         ),
     ]

@@ -11,23 +11,23 @@ use crate::{CmdResult, CommandSpec as C, Session};
 
 pub fn commands() -> Vec<C> {
     vec![
-        C::new("map.zoomFull", "Full Extent", "Home › Navigate", zoom_full).roles(&[]).view(),
-        C::new("map.zoomIn", "Fixed Zoom In", "Home › Navigate", |s, _| zoom(s, 2.0)).roles(&[]).view().key("Mod+="),
-        C::new("map.zoomOut", "Fixed Zoom Out", "Home › Navigate", |s, _| zoom(s, 0.5)).roles(&[]).view().key("Mod+-"),
+        C::new("map.zoomFull", "Full Extent", "Home › Navigate", zoom_full).roles(&[]).effects(crate::policy::Effects::NONE).view(),
+        C::new("map.zoomIn", "Fixed Zoom In", "Home › Navigate", |s, _| zoom(s, 2.0)).roles(&[]).effects(crate::policy::Effects::NONE).view().key("Mod+="),
+        C::new("map.zoomOut", "Fixed Zoom Out", "Home › Navigate", |s, _| zoom(s, 0.5)).roles(&[]).effects(crate::policy::Effects::NONE).view().key("Mod+-"),
         C::new("map.prevExtent", "Previous Extent", "Home › Navigate", |s, _| {
             if s.extent_back() { Ok(Value::Null) } else { Err("no previous extent".into()) }
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .view()
         .when(|s| if s.can_extent_back() { None } else { Some("no previous extent") }),
         C::new("map.nextExtent", "Next Extent", "Home › Navigate", |s, _| {
             if s.extent_forward() { Ok(Value::Null) } else { Err("no next extent".into()) }
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .view()
         .when(|s| if s.can_extent_forward() { None } else { Some("no next extent") }),
         C::new("map.zoomWorld", "Zoom To World", "Home › Navigate", |s, _| {
             s.zoom_to(&Extent::new(-170.0, -58.0, 180.0, 78.0));
             Ok(Value::Null)
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .view(),
         C::new("map.extent", "View Extent", "Home › Navigate", |s, _| {
             let e = if s.map().projection.is_globe() { Extent::new(-180.0, -90.0, 180.0, 90.0) } else { super::workspace::view_extent(s) };
@@ -35,26 +35,26 @@ pub fn commands() -> Vec<C> {
                 return Err("the view shows no part of the Earth".into());
             }
             Ok(json!({"extent": [e.min_x, e.min_y, e.max_x, e.max_y]}))
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .view(),
-        C::new("map.zoomToExtent", "Zoom To Extent", "Home › Navigate", zoom_to_extent).roles(&[])
+        C::new("map.zoomToExtent", "Zoom To Extent", "Home › Navigate", zoom_to_extent).roles(&[]).effects(crate::policy::Effects::NONE)
             .view()
             .params(r#"{"extent": [minLon, minLat, maxLon, maxLat]}"#),
-        C::new("map.goToXY", "By Coordinates…", "Home › Navigate › Locate", go_to_xy).roles(&[])
+        C::new("map.goToXY", "By Coordinates…", "Home › Navigate › Locate", go_to_xy).roles(&[]).effects(crate::policy::Effects::NONE)
             .view()
             .params(r#"{"lon" | "x": number, "lat" | "y": number, "scale"?: number, "bearing"?: degrees clockwise from north, "pitch"?: degrees of tilt (0 to 85)}"#),
-        C::new("map.goToLink", "Go To Map Link", "Home › Navigate", go_to_link).roles(&[])
+        C::new("map.goToLink", "Go To Map Link", "Home › Navigate", go_to_link).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
             .view()
             .params(r#"{"url": a map link ending in #zoom/lat/lon[/bearing[/pitch]] (as MapLibre writes them; also #map=…), or just zoom/lat/lon[/bearing[/pitch]]}"#),
         C::new("map.link", "Map Link", "Home › Navigate", |s, _| {
             let hash = link_of(s.map()).ok_or("the view shows no part of the Earth")?;
             Ok(json!({"hash": hash}))
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .view(),
-        C::new("map.setBearing", "Rotate Map", "Home › Navigate", set_bearing).roles(&[])
+        C::new("map.setBearing", "Rotate Map", "Home › Navigate", set_bearing).roles(&[]).effects(crate::policy::Effects::NONE)
             .view()
             .params(r#"{"bearing": degrees clockwise from north (the direction the top of the view faces) | "by": degrees to turn it further}"#),
-        C::new("map.setPitch", "Tilt Map", "Home › Navigate", set_pitch).roles(&[])
+        C::new("map.setPitch", "Tilt Map", "Home › Navigate", set_pitch).roles(&[]).effects(crate::policy::Effects::NONE)
             .view()
             .params(r#"{"pitch": degrees of tilt from looking straight down (0 to 85) | "by": degrees to tilt it further}"#),
         C::new("map.resetNorth", "Reset North", "Home › Navigate", |s, _| {
@@ -63,29 +63,29 @@ pub fn commands() -> Vec<C> {
             m.camera.set_pitch(0.0);
             s.record_extent();
             Ok(Value::Null)
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .view(),
         C::new("map.setScale", "Set Scale", "Status Bar", |s, p| {
             let sc = f(p, "scale").ok_or("scale is required")?;
             s.map_mut().set_scale(sc);
             s.record_extent();
             Ok(Value::Null)
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .view()
         .params(r#"{"scale": number}"#),
-        C::new("map.basemap", "Basemap", "Home › Add", basemap).roles(&[])
+        C::new("map.basemap", "Basemap", "Home › Add", basemap).roles(&[]).effects(crate::policy::Effects::NONE)
             .params(r#"{"name": "paper"|"midnight"|"ocean"|"atlas"|"blank", "keepTiles"?: bool (keeps the web tile basemaps over it)}"#),
         C::new("map.graticule", "Graticule", "View › Display", |s, p| {
             let m = s.map_mut();
             m.graticule = super::b(p, "on").unwrap_or(!m.graticule);
             Ok(Value::Null)
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .params(r#"{"on"?: bool (toggles when omitted)}"#),
         C::new("map.reloadWebLayers", "Reload Web Layers", "View › Display", |_, _| {
             // The map view draws again when the tile cache's generation moves.
             crate::render::rustgis_tiles::cache::clear();
             Ok(json!({"generation": crate::render::rustgis_tiles::cache::generation()}))
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .view(),
         C::new("map.projection", "Globe", "View › View", |s, p| {
             // A preset's parameters, over those of `type` or of the map's own preset.
@@ -111,18 +111,18 @@ pub fn commands() -> Vec<C> {
                 super::workspace::fill_cache(s);
             }
             Ok(out)
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .params(r#"{"type"?: "mercator"|"globe"|preset id (with parameters: "robinson +lon_0=150")|"EPSG:<code>"|"ESRI:<code>" (toggles the globe when omitted), "lon_0"?: degrees (a preset's central meridian), "lat_1"?, "lat_2"?: degrees (a conic preset's standard parallels; these apply to the map's own preset when type is omitted)}"#),
         C::new("map.projections", "Projections", "View › View", |_, _| {
             let mut v = vec![json!({"id": "mercator", "label": "Web Mercator"}), json!({"id": "globe", "label": "Globe"})];
             v.extend(rustgis_map::projection::PRESETS.iter().map(|(id, label, _)| json!({"id": id, "label": label})));
             Ok(Value::Array(v))
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .view(),
-        C::new("bookmark.add", "New Bookmark", "Home › Navigate › Bookmarks", add_bookmark).roles(&[]).params(
+        C::new("bookmark.add", "New Bookmark", "Home › Navigate › Bookmarks", add_bookmark).inputs(map_inputs).roles(&[]).effects(crate::policy::Effects::NONE).params(
             r#"{"name"?: string (a number is added when another bookmark has it), "description"?: string, "map"?: name (default: the active map; its current view)}"#,
         ),
-        C::new("bookmark.go", "Go To Bookmark", "Home › Navigate › Bookmarks", go_bookmark).roles(&[])
+        C::new("bookmark.go", "Go To Bookmark", "Home › Navigate › Bookmarks", go_bookmark).inputs(bookmark_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
             .view()
             .params(r#"{"name": string, "map"?: name (the bookmark's map), "pan"?: bool (keep the current scale)}"#),
         C::new("bookmark.remove", "Remove Bookmark", "Home › Navigate › Bookmarks", |s, p| {
@@ -131,7 +131,7 @@ pub fn commands() -> Vec<C> {
                 m.bookmarks.remove(bi);
             }
             Ok(Value::Null)
-        }).roles(&[])
+        }).inputs(bookmark_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
         .params(r#"{"name": string, "map"?: name (default: the active map)}"#),
         C::new("bookmark.rename", "Rename Bookmark", "Bookmarks", |s, p| {
             let new = ps(p, "newName").map(str::trim).filter(|n| !n.is_empty()).ok_or("newName is required")?;
@@ -141,7 +141,7 @@ pub fn commands() -> Vec<C> {
                 b.name = name.clone();
             }
             Ok(json!({"name": name}))
-        }).roles(&[])
+        }).inputs(bookmark_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
         .params(r#"{"name": string, "newName": string (a number is added when another bookmark has it), "map"?: name}"#),
         C::new("bookmark.update", "Update Bookmark", "Bookmarks", |s, p| {
             let (mi, bi) = bookmark_at(s, p)?;
@@ -156,7 +156,7 @@ pub fn commands() -> Vec<C> {
                 }
             }
             Ok(Value::Null)
-        }).roles(&[])
+        }).inputs(bookmark_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
         .params(r#"{"name": string (it takes the current view; its map must be in view), "map"?: name}"#),
         C::new("bookmark.describe", "Bookmark Description", "Bookmarks", |s, p| {
             let text: String = ps(p, "description").ok_or("description is required")?.trim().chars().take(MAX_DESCRIPTION).collect();
@@ -165,7 +165,7 @@ pub fn commands() -> Vec<C> {
                 b.description = text;
             }
             Ok(Value::Null)
-        }).roles(&[])
+        }).inputs(bookmark_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
         .params(r#"{"name": string, "description": string (empty clears it), "map"?: name}"#),
         C::new("bookmark.move", "Move Bookmark", "Bookmarks", |s, p| {
             let to = super::uint(p, "to").ok_or("to is required (an index)")?;
@@ -176,48 +176,41 @@ pub fn commands() -> Vec<C> {
                 m.bookmarks.insert(to, b);
             }
             Ok(Value::Null)
-        }).roles(&[])
+        }).inputs(bookmark_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
         .params(r#"{"name": string, "to": index (0: first; past the end: last), "map"?: name}"#),
-        C::new("bookmark.save", "Export Bookmarks", "Home › Navigate › Bookmarks", |s, p| super::items::save_item(s, "bookmarks", p)).roles(&[])
+        C::new("bookmark.save", "Export Bookmarks", "Home › Navigate › Bookmarks", |s, p| super::items::save_item(s, "bookmarks", p)).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
             .view()
             .params(r#"{"path": "*.rgisbookmarks"}"#),
-        C::new("bookmark.import", "Import Bookmarks", "Home › Navigate › Bookmarks", import_bookmarks).roles(&[])
+        C::new("bookmark.import", "Import Bookmarks", "Home › Navigate › Bookmarks", import_bookmarks).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
             .params(r#"{"path"?: "*.rgisbookmarks", "text"?: bookmarks JSON, "data"?: base64 file}"#),
-        C::new("map.new", "New Map", "Home › Project", new_map).roles(&[]).params(r#"{"name"?: string}"#),
+        C::new("map.new", "New Map", "Home › Project", new_map).transition(unmodelled_transition).roles(&[]).effects(crate::policy::Effects::NONE).params(r#"{"name"?: string}"#),
         C::new("map.activate", "Activate Map", "Browser", |s, p| {
-            let n = s_name(p)?;
-            let i = s.project.maps.iter().position(|m| m.name.eq_ignore_ascii_case(n)).ok_or_else(|| format!("no map '{n}'"))?;
-            s.project.active_map = i;
-            s.active_layer = s.map().layers.first().map(|l| l.id);
+            let choice = activation(&super::InputSource::input_context(&*s), p)?;
+            let choice = choice.ok_or("no activation choice")?;
+            s.project.active_map = choice.map;
+            s.active_layer = choice.layer;
             s.table_layer = None;
             Ok(Value::Null)
-        }).roles(&[])
+        }).inputs(required_map_inputs).transition(activation).roles(&[]).effects(crate::policy::Effects::NONE)
         .params(r#"{"name": string}"#)
         .view(),
         C::new("map.rename", "Rename Map", "Layers", |s, p| {
-            let n = s_name(p)?.trim();
-            if n.is_empty() {
-                return Err("name is required".into());
-            }
-            let i = map_at(s, p)?;
+            let (i, name) = rename_choice(&super::InputSource::input_context(&*s), p)?;
             let old = s.project.maps.get(i).map(|m| m.name.clone()).ok_or("no map")?;
-            // Unique among the other maps, so a name finds one map (tabs, Browser, map frames).
-            let name = super::numbered(n, |n| s.project.maps.iter().enumerate().any(|(j, m)| j != i && m.name.eq_ignore_ascii_case(n)));
             if let Some(m) = s.project.maps.get_mut(i) {
                 m.name = name.clone();
             }
             follow_renamed_map(s, &old, &name);
             Ok(json!({"name": name}))
-        }).roles(&[])
+        }).transition(rename_transition).inputs(map_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
         .params(r#"{"name": string (the new name; a number is added when another map has it), "map"?: name (default: the active map)}"#),
-        C::new("map.duplicate", "Duplicate Map", "Browser", duplicate_map).roles(&[])
+        C::new("map.duplicate", "Duplicate Map", "Browser", duplicate_map).transition(unmodelled_transition).inputs(duplicate_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
             .params(r#"{"map"?: name (default: the active map), "name"?: string (default: "<map> copy"; a number is added when another map has it)}"#),
         C::new("map.remove", "Delete Map", "Browser", |s, p| {
             if s.project.maps.len() < 2 {
                 return Err("a project keeps at least one map".into());
             }
-            let n = s_name(p)?;
-            let i = s.project.maps.iter().position(|m| m.name.eq_ignore_ascii_case(n)).ok_or_else(|| format!("no map '{n}'"))?;
+            let i = required_map_at(s,p)?;
             s.project.maps.remove(i);
             // Deleting another map keeps the one in view (a map tab's close button).
             let active = s.project.active_map;
@@ -229,7 +222,7 @@ pub fn commands() -> Vec<C> {
                 s.table_layer = None;
             }
             Ok(Value::Null)
-        }).roles(&[])
+        }).transition(unmodelled_transition).inputs(required_map_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
         .params(r#"{"name": string}"#),
     ]
 }
@@ -254,9 +247,11 @@ fn s_name(p: &Value) -> Result<&str, String> {
 
 /// The map `map` names (default: the active one). A `map` that isn't a name is an error, never
 /// the active map.
-pub(crate) fn map_at(s: &Session, p: &Value) -> Result<usize, String> {
+pub(crate) fn map_at(input: &impl super::InputSource, p: &Value) -> Result<usize, String> {
+    let context = input.input_context();
+    let s = &context;
     match p.get("map") {
-        None | Some(Value::Null) => Ok(s.project.active_map),
+        None | Some(Value::Null) => Ok(s.active_map),
         Some(Value::String(m)) => s.project.maps.iter().position(|x| x.name.eq_ignore_ascii_case(m)).ok_or_else(|| format!("no map '{m}'")),
         Some(_) => Err("map must be a map's name".into()),
     }
@@ -619,8 +614,10 @@ fn place_at(map: &Map, lonlat: Coord, ground: f64) -> Option<rustgis_map::Camera
 }
 
 /// The map (`map`, default the active one) and the index of its bookmark `name` (any case).
-fn bookmark_at(s: &Session, p: &Value) -> Result<(usize, usize), String> {
-    let mi = map_at(s, p)?;
+fn bookmark_at(input: &impl super::InputSource, p: &Value) -> Result<(usize, usize), String> {
+    let context = input.input_context();
+    let s = &context;
+    let mi = map_at(input, p)?;
     let n = s_name(p)?;
     let bi = s.project.maps.get(mi).and_then(|m| m.bookmarks.iter().position(|b| b.name.eq_ignore_ascii_case(n)));
     Ok((mi, bi.ok_or_else(|| format!("no bookmark '{n}'"))?))
@@ -751,4 +748,75 @@ fn new_map(s: &mut Session, p: &Value) -> CmdResult {
     s.active_layer = None;
     s.table_layer = None;
     Ok(json!({"name": name}))
+}
+
+/// Uses the strict map selector for operations that accept map names or null.
+fn map_inputs(input: &super::InputContext<'_>, p: &Value) -> Result<super::Inputs, String> {
+    let s = input;
+    let map = s.project.maps.get(map_at(input, p)?).ok_or("no map")?;
+    let mut inputs = super::Inputs::layers(std::iter::empty());
+    inputs.maps.push(map.instance_id());
+    Ok(inputs)
+}
+
+/// Activation and removal require a string name, unlike optional map selectors.
+fn required_map_at(input: &impl super::InputSource, p: &Value) -> Result<usize, String> {
+    let context = input.input_context();
+    let s = &context;
+    let n = s_name(p)?;
+    s.project.maps.iter().position(|m| m.name.eq_ignore_ascii_case(n)).ok_or_else(|| format!("no map '{n}'"))
+}
+/// Binds the required map and its existing layers before activation/removal.
+fn required_map_inputs(input: &super::InputContext<'_>, p: &Value) -> Result<super::Inputs, String> {
+    let s = input;
+    let map = s.project.maps.get(required_map_at(input, p)?).ok_or("no map")?;
+    let mut inputs = super::Inputs::layers(map.layers.iter().map(|l| (map, l)));
+    inputs.maps.push(map.instance_id());
+    Ok(inputs)
+}
+/// Binds the map and layer incarnations that duplication will clone.
+fn duplicate_inputs(input: &super::InputContext<'_>, p: &Value) -> Result<super::Inputs, String> {
+    let s = input;
+    let map = s.project.maps.get(map_at(input, p)?).ok_or("no map")?;
+    let mut inputs = super::Inputs::layers(map.layers.iter().map(|l| (map, l)));
+    inputs.maps.push(map.instance_id());
+    Ok(inputs)
+}
+/// Binds the bookmark's source map and the active destination map without freezing camera data.
+fn bookmark_inputs(input: &super::InputContext<'_>, p: &Value) -> Result<super::Inputs, String> {
+    let s = input;
+    let (mi, bi) = bookmark_at(input, p)?;
+    let map = s.project.maps.get(mi).ok_or("no map")?;
+    let mut inputs = super::Inputs::layers(std::iter::empty());
+    inputs.maps.extend([map.instance_id(), s.map().instance_id()]);
+    inputs.state = json!({"bookmark":bi,"name":map.bookmarks.get(bi).map(|b|&b.name)});
+    Ok(inputs)
+}
+
+/// The actual activation choice, shared with ordered approval; raw selection bookkeeping survives.
+fn activation(s: &super::InputContext<'_>, p: &Value) -> Result<Option<super::Selection>, String> {
+    let map = required_map_at(s, p)?;
+    let layer = s.project.maps.get(map).and_then(|m| m.layers.first()).map(|l| l.id);
+    Ok(Some(super::Selection { map, layer, names_changed: false }))
+}
+/// Validates the actual rename selector and uniqueness rule without changing project data.
+fn rename_choice(s: &super::InputContext<'_>, p: &Value) -> Result<(usize, String), String> {
+    let n = s_name(p)?.trim();
+    if n.is_empty() {
+        return Err("name is required".into());
+    }
+    let i = map_at(s, p)?;
+    let name = super::numbered(n, |n| s.project.maps.iter().enumerate().any(|(j, m)| j != i && m.name.eq_ignore_ascii_case(n)));
+    Ok((i, name))
+}
+/// Renaming preserves defaults on the same incarnation; it does not model a later map namespace.
+fn rename_transition(s: &super::InputContext<'_>, p: &Value) -> Result<Option<super::Selection>, String> {
+    let _ = rename_choice(s, p)?;
+    let mut selection = s.selection();
+    selection.names_changed = true;
+    Ok(Some(selection))
+}
+/// These namespace changes cannot be predicted by a scalar borrowed view, so exact Ask refuses.
+fn unmodelled_transition(_: &super::InputContext<'_>, _: &Value) -> Result<Option<super::Selection>, String> {
+    Ok(None)
 }

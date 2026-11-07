@@ -22,7 +22,7 @@ const MAX_TEXT: usize = 2 * ogc::MAX_INFO_BYTES;
 
 pub(super) fn commands() -> Vec<C> {
     vec![
-        C::new("identify.featureInfo", "Identify WMS Layer", "Home › Inspect", feature_info).roles(&[]).view().params(
+        C::new("identify.featureInfo", "Identify WMS Layer", "Home › Inspect", feature_info).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network)).view().params(
             r#"{"layer": "a WMS tile layer's name", "lon"?, "lat"?: the point (for a request), "text"?: "the GetFeatureInfo answer, when already fetched (identify lists the requests)", "url"?: "the request text answers: with lon and lat, the service's error in its format gives the request in the next format the layer offers ({url}), and features answered in a later format keep the layer asking in it", "capabilities"?: "the service's capabilities document, when the layer doesn't know its request (identify then asks for it)", "request"?: bool (only say what to fetch next: {url} or {capabilities})} → results, as identify's (with "tileLayer"), or with request or after an error, what to fetch"#,
         ),
     ]

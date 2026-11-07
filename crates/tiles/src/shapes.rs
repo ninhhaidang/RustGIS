@@ -506,6 +506,7 @@ mod tests {
 
     #[test]
     fn shapes_are_what_the_style_draws() {
+        let _turn = crate::cache::turn();
         let (spec, dir) = archive("draws", STYLE);
         ready(&spec);
         let v = tile(&spec, 2.5);
@@ -533,6 +534,7 @@ mod tests {
 
     #[test]
     fn patterns_without_a_sprite_and_line_patterns_are_left_out() {
+        let _turn = crate::cache::turn();
         let style = STYLE.replacen(
             '[',
             r#"[{"id": "p", "type": "fill", "source": "x", "source-layer": "parks", "paint": {"fill-pattern": "dots"}},
@@ -551,6 +553,7 @@ mod tests {
 
     #[test]
     fn a_pattern_chosen_with_image_asks_the_loaded_sprite() {
+        let _turn = crate::cache::turn();
         let pattern = |name: &str, value: &str| {
             let style = STYLE.replacen(
                 '[',
@@ -588,6 +591,7 @@ mod tests {
 
     #[test]
     fn a_pattern_changing_with_the_zoom_is_drawn_zoom_by_zoom() {
+        let _turn = crate::cache::turn();
         let source = |name: &str, value: &str| {
             let style = STYLE.replacen(
                 '[',
@@ -609,6 +613,7 @@ mod tests {
 
     #[test]
     fn a_step_at_the_next_level_holds_over_this_one() {
+        let _turn = crate::cache::turn();
         let style = STYLE.replace(r#""line-width": 2,"#, r#""line-width": ["step", ["zoom"], 2, 3, 6],"#);
         let (spec, dir) = archive("step", &style);
         ready(&spec);
@@ -623,6 +628,7 @@ mod tests {
 
     #[test]
     fn styles_are_judged_over_the_whole_level() {
+        let _turn = crate::cache::turn();
         // A raster layer from the middle of the level: its meshes would serve where it shows.
         let style = STYLE.replacen('[', r#"[{"id": "r", "type": "raster", "source": "x", "minzoom": 2.8},"#, 1);
         let (spec, dir) = archive("level", &style);
@@ -661,6 +667,7 @@ mod tests {
 
     #[test]
     fn styles_with_long_dash_patterns_are_declined() {
+        let _turn = crate::cache::turn();
         // Three lengths repeat to six: more than the meshes hold.
         let style = STYLE.replace(r#""line-dasharray": [3, 2]"#, r#""line-dasharray": [3, 2, 1]"#);
         let (spec, dir) = archive("dashes", &style);
@@ -682,6 +689,7 @@ mod tests {
 
     #[test]
     fn styles_drawn_otherwise_are_declined() {
+        let _turn = crate::cache::turn();
         // A raster layer is a picture of its own.
         let style = STYLE.replacen('[', r#"[{"id": "r", "type": "raster", "source": "x"},"#, 1);
         let (spec, dir) = archive("raster", &style);

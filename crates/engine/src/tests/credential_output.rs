@@ -580,7 +580,7 @@ fn generated_notebook_errors_are_cleaned_before_the_output_is_retained() {
     let mut s = marked();
     let source = format!("layer.addUrl {{\"url\":\"https://h.invalid/?token={SECRET}\",\"cellSize\":1}}");
     s.project.notebooks[0].cells[0].source = source.clone();
-    s.trusted_notebooks.insert("credentials".into());
+    s.trusted_notebooks.insert("credentials".into(), std::sync::Arc::new(s.item_content("notebook", "credentials").unwrap()));
     let _ = s.run("notebook.run", &json!({"notebook":0}));
     assert_eq!(s.project.notebooks[0].cells[0].source, source);
     assert!(!s.project.notebooks[0].cells[0].output.as_ref().unwrap().contains(SECRET));
@@ -607,7 +607,7 @@ fn generated_notebook_errors_are_cleaned_before_the_output_is_retained() {
 fn peers_bypass_saved_restore_and_retention_requires_the_current_exact_slot() {
     let mut s = marked();
     let saved = s.project.saved_text(None).unwrap().0;
-    s.trusted_tasks.insert("credentials".into());
+    s.trusted_tasks.insert("credentials".into(), std::sync::Arc::new(s.item_content("task", "credentials").unwrap()));
     let generation = s.opened;
     s.open_peer_text(Peer::Embedder, &saved).unwrap();
     assert!(s.opened != generation && s.trusted_tasks.is_empty());
@@ -712,12 +712,18 @@ fn short_basic_passwords_are_scrubbed_only_from_output_while_active() {
     }
     use crate::render::rustgis_tiles::logins;
 
+    let owner = Session::new(Project::default());
     let mut other = Session::new(Project::default());
     let value = logins::basic("synthetic-user", "a");
     let origin = "https://short-basic.invalid";
-    let binding =
-        logins::activate(origin, "synthetic-short-basic-output-owner", logins::Method::Header("Authorization".into()), &value, false)
-            .unwrap();
+    let binding = logins::activate(
+        origin,
+        &format!("{}/short-basic", owner.web_logins.session_id()),
+        logins::Method::Header("Authorization".into()),
+        &value,
+        false,
+    )
+    .unwrap();
     let payload = value.strip_prefix("Basic ").unwrap();
     assert_eq!(logins::scrub(&format!("echo {value} {payload} a")), "echo [redacted] [redacted] [redacted]");
     other.notify("alpha", false);

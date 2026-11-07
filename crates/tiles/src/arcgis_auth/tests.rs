@@ -6,6 +6,55 @@ fn grant(token: &str, expires_at: i64) -> Grant {
     Grant { access_token: token.into(), refresh_token: Some("refresh".into()), expires_at, username: "ana".into() }
 }
 
+/// Raw account identity stays in memory and follows the effective selection, including absence.
+#[test]
+fn permission_transport_account_identity_binds_exact_selected_credentials() {
+    fn send_sync<T: Send + Sync>() {}
+    send_sync::<AccountIdentity>();
+    let portal = "https://identity.example.org/portal";
+    let url = "https://identity.example.org/server/rest/services/A/MapServer";
+    let absent = account_identity_for(url).unwrap();
+    assert!(absent.is_current());
+    sign_in(portal, "client", grant("synthetic-a", now_secs() + 3600), scopes_for(portal, None, &[]));
+    assert!(!absent.is_current());
+    let selected = account_identity_for(url).unwrap();
+    assert!(selected.is_current());
+    assert!(selected == account_identity_for(url).unwrap());
+    // A different store entry doesn't affect this request's selected account.
+    add_token("https://unrelated-identity.example.org/rest/services/A/MapServer", "synthetic-other").unwrap();
+    assert!(selected.is_current());
+    // A more specific account replaces the effective credential behind the same public URL.
+    add_token(url, "synthetic-server").unwrap();
+    assert!(!selected.is_current());
+    let first = account_identity_for(url).unwrap();
+    add_token(url, "synthetic-replacement").unwrap();
+    assert!(!first.is_current());
+    let replaced = account_identity_for(url).unwrap();
+    assert!(replaced.is_current() && replaced != first);
+    // Removing a selected account also changes identity; credentials never come from a label.
+    sign_out(Some("https://identity.example.org/server"));
+    assert!(!replaced.is_current());
+    sign_out(Some(portal));
+    sign_out(Some("https://unrelated-identity.example.org"));
+}
+
+/// A poisoned active store must never turn into a normal empty snapshot.
+#[test]
+fn permission_transport_account_capture_fails_closed() {
+    let store = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let worker = store.clone();
+    assert!(
+        std::thread::spawn(move || {
+            let _locked = worker.lock().unwrap();
+            panic!("synthetic poison");
+        })
+        .join()
+        .is_err()
+    );
+    assert!(identity_in(&store, None).is_err());
+    assert!(identity_in(&store, Some("https://identity.example.org/rest/services/A")).is_err());
+}
+
 #[test]
 fn portal_bases() {
     assert_eq!(portal_base("").unwrap(), ONLINE);

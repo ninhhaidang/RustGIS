@@ -9,16 +9,16 @@ use crate::{CmdResult, CommandSpec as C, Session};
 
 pub fn commands() -> Vec<C> {
     vec![
-        C::new("s3.connect", "Connect to S3", "Home › Add › S3", connect).roles(&[]).params(
+        C::new("s3.connect", "Connect to S3", "Home › Add › S3", connect).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Reserved)).params(
             r#"{"name"?: text (default "default"), "endpoint"?: "https://… of an S3-compatible service (MinIO, Cloudflare R2, Wasabi…); AWS when absent", "region"?: text (default us-east-1), "buckets"?: [names] (the buckets it serves; others are read anonymously unless browsed through it with s3.list), "accessKeyId"?: text, "secretAccessKey"?: text, "sessionToken"?: text, "profile"?: "an AWS profile in ~/.aws/credentials and config (desktop)", "anonymous"?: bool (no credentials), "environment"?: bool (AWS_ACCESS_KEY_ID… from the environment, desktop)} — without keys, a profile or environment, the connection is anonymous; credentials are kept for the session only"#,
         )
         .view(),
-        C::new("s3.disconnect", "Disconnect From S3", "Home › Add › S3", disconnect).roles(&[]).view().params(r#"{"name": text}"#),
+        C::new("s3.disconnect", "Disconnect From S3", "Home › Add › S3", disconnect).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Reserved)).view().params(r#"{"name": text}"#),
         C::new("s3.connections", "S3 Connections", "Home › Add › S3", |_s, _p| {
             Ok(json!({"connections": s3::connections().iter().map(Connection::public).collect::<Vec<_>>()}))
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .view(),
-        C::new("s3.list", "List S3 Bucket", "Home › Add › S3", list).roles(&[]).view().params(
+        C::new("s3.list", "List S3 Bucket", "Home › Add › S3", list).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network)).view().params(
             r#"{"url"?: "s3://bucket/prefix/", "bucket"?: text, "prefix"?: text, "connection"?: "a connection's name: its buckets when no bucket is given; a bucket listed through it is served by it from then on", "limit"?: number (default 1000, at most 10000)}"#,
         ),
     ]

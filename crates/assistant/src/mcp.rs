@@ -12,8 +12,9 @@
 //! network use left is drawing web tile layers that the project the user opened already has.
 
 use rustgis_engine::Session;
-use rustgis_engine::cmd::plugins::{Reach, reaches, user_only};
+use rustgis_engine::policy::{AgentAccess, Effects, Outcome, Permit, Scope};
 use serde_json::{Value, json};
+use std::sync::Arc;
 
 use crate::provider::ToolCall;
 use crate::{docs, tools};
@@ -81,10 +82,11 @@ const INVALID_PARAMS: i64 = -32602;
 /// MCP's code for a resource that doesn't exist.
 const RESOURCE_NOT_FOUND: i64 = -32002;
 
-/// Commands that replace the project. They are reserved to the user in the desktop app, to keep
-/// their work, and refused on its relay ([`Server::users_project`]); in `rustgis-cli mcp` the
-/// session is the client's own.
-const PROJECT_COMMANDS: &[&str] = &["project.new", "project.open", "project.openText", "project.sample", "project.fromTemplate"];
+/// Binds an ingress request to its complete-message position, independently of wire ids.
+/// Count batch entries before filtering; an unbatched message always uses position zero.
+pub(crate) fn request_key(root: &str, position: usize) -> String {
+    format!("{root}/{position}")
+}
 
 impl Server {
     /// A server with the built-in skills. `rustgis-cli mcp` and the desktop's relay replace them
@@ -96,6 +98,17 @@ impl Server {
     /// Handles one message (a line of JSON): the reply to send, or `None` for a notification or
     /// a response.
     pub fn handle(&self, s: &mut Session, message: &str) -> Option<String> {
+        self.handle_scoped(s, message, self.scope(s), Vec::new(), "")
+    }
+    /// Named relay/file-bridge ingress; permits are engine plans stored when approval was shown.
+    pub(crate) fn handle_scoped(
+        &self,
+        s: &mut Session,
+        message: &str,
+        scope: Scope,
+        mut permits: Vec<(String, Permit)>,
+        request: &str,
+    ) -> Option<String> {
         let msg: Value = match serde_json::from_str(message) {
             Ok(v) => v,
             Err(e) => return Some(error(&Value::Null, PARSE_ERROR, &format!("not JSON: {e}"))),
@@ -108,18 +121,30 @@ impl Server {
                 error_value(&Value::Null, INVALID_REQUEST, &format!("a batch holds at most {MAX_BATCH} messages"))
             }
             Value::Array(batch) => {
-                let replies: Vec<Value> = batch.iter().filter_map(|m| self.handle_value(s, m)).collect();
+                let replies: Vec<Value> = batch
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(position, m)| self.handle_value(s, m, &scope, &mut permits, &request_key(request, position)))
+                    .collect();
                 if replies.is_empty() {
                     return None;
                 }
                 Value::Array(replies)
             }
-            _ => self.handle_value(s, &msg)?,
+            _ => self.handle_value(s, &msg, &scope, &mut permits, &request_key(request, 0))?,
         };
         Some(reply.to_string())
     }
 
-    fn handle_value(&self, s: &mut Session, msg: &Value) -> Option<Value> {
+    /// Applies per-entry JSON-RPC identity/notification rules before tool dispatch.
+    fn handle_value(
+        &self,
+        s: &mut Session,
+        msg: &Value,
+        scope: &Scope,
+        permits: &mut Vec<(String, Permit)>,
+        request: &str,
+    ) -> Option<Value> {
         let Some(obj) = msg.as_object() else {
             return Some(error_value(&Value::Null, INVALID_REQUEST, "expected a JSON-RPC object"));
         };
@@ -136,28 +161,29 @@ impl Server {
             return Some(error_value(&Value::Null, INVALID_REQUEST, "id must be a string or a number"));
         }
         let params = obj.get("params").cloned().unwrap_or(Value::Null);
-        Some(match self.call(s, method, &params) {
+        Some(match self.call(s, method, &params, scope, permits, request) {
             Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
             Err((code, message)) => error_value(&id, code, &message),
         })
     }
 
-    fn call(&self, s: &mut Session, method: &str, params: &Value) -> Result<Value, RpcError> {
+    fn call(
+        &self,
+        s: &mut Session,
+        method: &str,
+        params: &Value,
+        scope: &Scope,
+        permits: &mut Vec<(String, Permit)>,
+        request: &str,
+    ) -> Result<Value, RpcError> {
         match method {
             "initialize" => Ok(initialize(params, &self.instructions())),
             "ping" => Ok(json!({})),
             "tools/list" => Ok(json!({"tools": tool_list()})),
             "tools/call" => {
-                let name = params.get("name").and_then(Value::as_str).ok_or((INVALID_PARAMS, "name is required".to_string()))?;
-                let args = match params.get("arguments") {
-                    None | Some(Value::Null) => json!({}),
-                    Some(v @ Value::Object(_)) => v.clone(),
-                    Some(_) => return Err((INVALID_PARAMS, "arguments must be an object".into())),
-                };
-                if !TOOL_NAMES.contains(&name) && !tools::defs().iter().any(|d| d.name == name) {
-                    return Err((INVALID_PARAMS, format!("unknown tool '{name}'")));
-                }
-                Ok(self.call_tool(s, name, args))
+                let (name, args) = tool_request(params)?;
+                let permit = permits.iter().position(|(id, _)| id == request).map(|i| permits.remove(i).1);
+                Ok(self.call_tool(s, name, args, scope.clone(), permit, request))
             }
             "resources/list" => Ok(json!({"resources": resource_list()})),
             "resources/templates/list" => Ok(json!({"resourceTemplates": []})),
@@ -183,24 +209,27 @@ impl Server {
     }
 
     /// Runs a tool; failures are results the model reads (`isError`), not protocol errors.
-    fn call_tool(&self, s: &mut Session, name: &str, args: Value) -> Value {
+    fn call_tool(&self, s: &mut Session, name: &str, args: Value, scope: Scope, permit: Option<Permit>, request: &str) -> Value {
         let text = |t: String, is_error: bool| json!({"content": [{"type": "text", "text": t}], "isError": is_error});
+        let call = ToolCall { id: request.into(), name: name.into(), args: args.clone() };
         let result = match name {
-            "view_map" => return view_map(s, &args).unwrap_or_else(|e| text(e, true)),
+            "view_map" => {
+                let result = (|| {
+                    let engine = tools::policy_call(&call)?.ok_or("missing view adapter")?;
+                    let owned = s.defer(scope, &engine, permit)?;
+                    s.finish_deferred(owned, |s| view_map(s, &args))?
+                })();
+                return result.unwrap_or_else(|e| text(e, true));
+            }
             "snapshot" => {
-                let call = ToolCall { id: String::new(), name: name.to_string(), args: args.clone() };
-                return match self.refusal(s, &call) {
-                    Some(why) => text(why, true),
-                    None => self.snapshot(s, &args).unwrap_or_else(|e| text(e, true)),
-                };
+                let admitted = (|| {
+                    let engine = tools::policy_call(&call)?.ok_or("missing snapshot adapter")?;
+                    let owned = s.defer(scope.clone(), &engine, permit)?;
+                    s.finish_deferred(owned, |s| self.snapshot(s, &args, &scope))?
+                })();
+                return admitted.unwrap_or_else(|e| text(e, true));
             }
-            _ => {
-                let call = ToolCall { id: String::new(), name: name.to_string(), args };
-                match self.refusal(s, &call) {
-                    Some(why) => Err(why),
-                    None => tools::run(s, &call),
-                }
-            }
+            _ => tools::run(s, &call, scope, permit),
         };
         match result {
             Ok(t) => text(t, false),
@@ -211,7 +240,7 @@ impl Server {
     /// `snapshot` drawn offscreen: the server can't see the app's window, so a `screen` snapshot
     /// is drawn too, with a note. The desktop relay captures the window itself
     /// ([`crate::relay`]) and comes here only when the map isn't on screen.
-    fn snapshot(&self, s: &mut Session, a: &Value) -> Result<Value, String> {
+    fn snapshot(&self, s: &mut Session, a: &Value, scope: &Scope) -> Result<Value, String> {
         let note = match a.get("mode").and_then(Value::as_str) {
             Some("screen") if self.users_project => Some(
                 "the map isn't on screen in RustGIS (a layout or the catalog is shown, or the window is hidden), so it was drawn offscreen",
@@ -221,7 +250,7 @@ impl Server {
             }
             _ => None,
         };
-        render_snapshot(s, a, note)
+        render_snapshot_checked(s, a, note, scope)
     }
 
     /// What the model is told about the server when it connects.
@@ -234,73 +263,41 @@ impl Server {
     /// commands, files and the network included. A refusal added below is lifted by it too, so a
     /// rule that must hold even then belongs before this check.
     pub fn refusal(&self, s: &Session, call: &ToolCall) -> Option<String> {
-        if self.full_access {
-            return None;
+        match tools::policy_call(call) {
+            Err(e) => Some(e),
+            Ok(None) => None,
+            Ok(Some(call)) => match s.review(&self.scope(s), &call) {
+                Outcome::Allowed => None,
+                Outcome::NeedsApproval(p) => Some(p.review().why.clone()),
+                Outcome::Refused(e) => Some(e),
+            },
         }
-        // A snapshot saved to a file writes it.
-        if call.name == "snapshot" {
-            let path = save_path(&call.args)?;
-            return (!self.allow_access).then(|| {
-                format!("snapshot was not saved to '{path}': it writes a file on this computer. The server allows that only when started with --yes (rustgis-cli mcp --yes).")
-            });
-        }
-        // A script is refused when any of its lines would be, before any of it runs. A script
-        // that doesn't parse runs to say so.
-        if call.name == "run" {
-            let script = call.args.get("script").and_then(Value::as_str).unwrap_or("");
-            let lines = rustgis_engine::cmd::workflows::script_commands(script).ok()?;
-            // An agent's undo is checked against the step on top before the script runs, so a
-            // second undo in it could reach a step beneath, the user's: undo and redo run alone
-            // (a script of that one line, as the file bridge sends, is checked like a command).
-            if s.actor.is_some()
-                && lines.len() > 1
-                && let Some((n, id, _)) = lines.iter().find(|(_, id, _)| matches!(id.as_str(), "edit.undo" | "edit.redo"))
-            {
-                return Some(format!(
-                    "line {n}: '{id}' runs on its own (run_command, or a script of that one line), so it takes back only your own last step"
-                ));
-            }
-            return lines.into_iter().find_map(|(n, id, params)| {
-                let line = ToolCall { id: String::new(), name: "run_command".into(), args: json!({"command": id, "params": params}) };
-                self.refusal(s, &line).map(|why| format!("line {n}: {why}"))
-            });
-        }
-        let (id, params) = tools::target(call)?;
-        // An agent working on the user's project undoes and redoes only its own steps.
-        if let (Some(me), true) = (s.actor.as_deref(), matches!(id.as_str(), "edit.undo" | "edit.redo")) {
-            let top = if id == "edit.undo" { s.undo_actor() } else { s.redo_actor() };
-            if let Some(by) = top.filter(|by| *by != Some(me)) {
-                let whose = by.map_or_else(|| "the user's".to_string(), |other| format!("{other}'s"));
-                return Some(format!(
-                    "'{id}' was not run: the step it would change is {whose}, and an agent undoes and redoes only its own steps"
-                ));
-            }
-        }
-        let project = PROJECT_COMMANDS.contains(&id.as_str());
-        if project && self.users_project {
-            return Some(format!(
-                "'{id}' is reserved to the user: it would replace the project they have open in RustGIS. Work on the open project instead, or ask the user to open another"
-            ));
-        }
-        if user_only(&id) && !project && !matches!(id.as_str(), "edit.undo" | "edit.redo") {
-            return Some(format!(
-                "'{id}' is reserved to the user (plugin management, scripts, tasks, models and the GeoLibre runner); run it in RustGIS itself"
-            ));
-        }
-        let why = if id.starts_with(rustgis_engine::plugins::PREFIX) {
-            "it runs a plugin's command"
-        } else if id == "project.openText" {
-            // A project can hold web tile layers, which drawing the map (view_map) fetches.
-            "a project can bring in web layers that connect to the internet"
-        } else {
-            match reaches(s.registry.get(&id)?, &params)? {
-                Reach::Files => "it reads or writes files on this computer",
-                Reach::Network => "it connects to an address on the internet",
-            }
-        };
-        (!self.allow_access)
-            .then(|| format!("'{id}' was not run: {why}. The server allows that only when started with --yes (rustgis-cli mcp --yes)."))
     }
+    /// Captures this server's named ingress; nested work inherits it through Session::run.
+    fn scope(&self, s: &Session) -> Scope {
+        let access = if self.full_access {
+            AgentAccess::Full
+        } else if self.allow_access {
+            AgentAccess::Allow
+        } else {
+            AgentAccess::Refuse
+        };
+        Scope::agent(access, self.users_project, "stdio", s.actor.clone(), Arc::new(FixedLive))
+    }
+}
+
+/// Validates the same tool envelope for execution and reviewed batch extraction.
+pub(crate) fn tool_request(params: &Value) -> Result<(&str, Value), RpcError> {
+    let name = params.get("name").and_then(Value::as_str).ok_or((INVALID_PARAMS, "name is required".to_string()))?;
+    let args = match params.get("arguments") {
+        None | Some(Value::Null) => json!({}),
+        Some(v @ Value::Object(_)) => v.clone(),
+        Some(_) => return Err((INVALID_PARAMS, "arguments must be an object".into())),
+    };
+    if !TOOL_NAMES.contains(&name) && !tools::defs().iter().any(|d| d.name == name) {
+        return Err((INVALID_PARAMS, format!("unknown tool '{name}'")));
+    }
+    Ok((name, args))
 }
 
 fn initialize(params: &Value, instructions: &str) -> Value {
@@ -436,6 +433,12 @@ pub fn snapshot_wait(a: &Value) -> f64 {
 /// A `snapshot` drawn offscreen at `max_width` in the view's shape, with `note` saying why when it
 /// was asked of the screen.
 pub fn render_snapshot(s: &mut Session, a: &Value, note: Option<&str>) -> Result<Value, String> {
+    render_snapshot_with(s, a, note, None)
+}
+pub(crate) fn render_snapshot_checked(s: &mut Session, a: &Value, note: Option<&str>, scope: &Scope) -> Result<Value, String> {
+    render_snapshot_with(s, a, note, Some(scope))
+}
+fn render_snapshot_with(s: &mut Session, a: &Value, note: Option<&str>, scope: Option<&Scope>) -> Result<Value, String> {
     let asked = a.get("max_width").and_then(Value::as_f64).filter(|v| v.is_finite()).unwrap_or(1024.0).clamp(64.0, MAX_VIEW);
     // The view's shape, so the image shows what the window does: a very tall view is narrowed
     // to fit rather than squashed.
@@ -446,16 +449,47 @@ pub fn render_snapshot(s: &mut Session, a: &Value, note: Option<&str>) -> Result
     let png = rustgis_engine::cmd::share::map_png(s, Some(width), Some(height), None)?;
     // Tiles still on their way are missing from it.
     let settled = rustgis_engine::render::rustgis_tiles::cache::in_flight() == 0;
-    snapshot_result(s, &png, "render", settled, a, note)
+    snapshot_result_with(s, &png, "render", settled, a, note, scope)
 }
 
 /// A `snapshot` result: the image, and the view it shows as JSON. `mode` is how it was made
 /// (`screen` or `render`) and `settled` whether drawing had finished. Saves the PNG to
 /// `save_path` when the arguments name one (the caller checked the server allows it).
 pub fn snapshot_result(s: &mut Session, png: &[u8], mode: &str, settled: bool, a: &Value, note: Option<&str>) -> Result<Value, String> {
+    snapshot_result_with(s, png, mode, settled, a, note, None)
+}
+/// Formats a delivered screenshot inside its already resumed initiating scope.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn snapshot_result_checked(
+    s: &mut Session,
+    png: &[u8],
+    mode: &str,
+    settled: bool,
+    a: &Value,
+    note: Option<&str>,
+    scope: &Scope,
+) -> Result<Value, String> {
+    snapshot_result_with(s, png, mode, settled, a, note, Some(scope))
+}
+/// Checks late save authority and acquires metadata through inherited dispatch.
+fn snapshot_result_with(
+    s: &mut Session,
+    png: &[u8],
+    mode: &str,
+    settled: bool,
+    a: &Value,
+    note: Option<&str>,
+    scope: Option<&Scope>,
+) -> Result<Value, String> {
     use base64::Engine;
+    if let Some(scope) = scope {
+        scope.check_live(Effects::NONE)?;
+    }
     let saved = match save_path(a) {
         Some(path) => {
+            if let Some(scope) = scope {
+                scope.check_live(Effects::NONE.with(rustgis_engine::policy::Effect::Files))?;
+            }
             std::fs::write(path, png).map_err(|e| format!("could not save the snapshot to '{path}': {e}"))?;
             Some(path)
         }
@@ -463,7 +497,7 @@ pub fn snapshot_result(s: &mut Session, png: &[u8], mode: &str, settled: bool, a
     };
     // The PNG's own size, from its header.
     let dim = |at: usize| png.get(at..at + 4).and_then(|b| <[u8; 4]>::try_from(b).ok()).map(u32::from_be_bytes);
-    let info = s.run("info.project", &json!({"includeFields": false}))?;
+    let info = s.run("info.project", &json!({"includeFields":false}))?;
     let meta = json!({
         "mode": mode,
         "width": dim(16),
@@ -511,4 +545,11 @@ fn error_value(id: &Value, code: i64, message: &str) -> Value {
 
 fn error(id: &Value, code: i64, message: &str) -> String {
     error_value(id, code, message).to_string()
+}
+
+struct FixedLive;
+impl rustgis_engine::policy::Revocation for FixedLive {
+    fn allows(&self, _: Effects) -> bool {
+        true
+    }
 }

@@ -351,6 +351,7 @@ mod tests {
 
     #[test]
     fn forgetting_drops_the_decoded_sheets() {
+        let _turn = crate::cache::turn();
         let key = "forget-test|".to_string();
         let sprite = Sheet { sheet: sheet(), index: Default::default(), cut: Default::default() };
         sprites().lock().unwrap().insert(key.clone(), Arc::new(sprite));

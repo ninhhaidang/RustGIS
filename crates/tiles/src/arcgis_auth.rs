@@ -371,6 +371,76 @@ struct Session {
     retry_at: i64,
 }
 
+/// An immutable, exact runtime account snapshot, never an output representation. It contains
+/// credentials and deliberately has no formatting, serialization or raw-value accessors.
+/// Renewal that rotates credentials invalidates it just like replacing a token does.
+#[derive(Clone, PartialEq, Eq)]
+pub struct AccountIdentity {
+    url: Option<String>,
+    accounts: Vec<Account>,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct Account {
+    portal: String,
+    client_id: String,
+    username: String,
+    access_token: String,
+    expires_at: i64,
+    refresh_token: Option<String>,
+    scopes: Vec<Scope>,
+}
+
+impl From<&Session> for Account {
+    fn from(s: &Session) -> Self {
+        Self {
+            portal: s.portal.clone(),
+            client_id: s.client_id.clone(),
+            username: s.username.clone(),
+            access_token: s.access_token.clone(),
+            expires_at: s.expires_at,
+            refresh_token: s.refresh_token.clone(),
+            scopes: s.scopes.clone(),
+        }
+    }
+}
+
+impl AccountIdentity {
+    /// Compares only active in-memory accounts. Never restores, renews or performs I/O;
+    /// an unavailable or poisoned store returns false.
+    pub fn is_current(&self) -> bool {
+        identity(self.url.as_deref()).is_ok_and(|current| *self == current)
+    }
+}
+
+fn identity(url: Option<&str>) -> Result<AccountIdentity, String> {
+    identity_in(store(), url)
+}
+
+fn identity_in(store: &Mutex<Vec<Session>>, url: Option<&str>) -> Result<AccountIdentity, String> {
+    let all = store.lock().map_err(|_| "active account store unavailable".to_string())?;
+    let accounts = match url {
+        Some(url) => covering(&all, url).and_then(|i| all.get(i)).map(Account::from).into_iter().collect(),
+        None => all.iter().map(Account::from).collect(),
+    };
+    Ok(AccountIdentity { url: url.map(str::to_string), accounts })
+}
+
+/// Snapshots all active runtime accounts in selection order, without I/O. Use when the
+/// request's eventual addresses cannot yet be scoped; unrelated account changes invalidate it.
+/// An unavailable or poisoned store is an error, never an empty identity.
+pub fn account_identity() -> Result<AccountIdentity, String> {
+    identity(None)
+}
+
+/// Snapshots the account selected for this address, including its absence. Changes to an
+/// unrelated account do not invalidate it; a newly covering account or rotation does.
+/// Expiry and retry scheduling are not executed by this pure read.
+/// An unavailable or poisoned store is an error, never an absent account.
+pub fn account_identity_for(url: &str) -> Result<AccountIdentity, String> {
+    identity(Some(url))
+}
+
 fn store() -> &'static Mutex<Vec<Session>> {
     static S: std::sync::OnceLock<Mutex<Vec<Session>>> = std::sync::OnceLock::new();
     S.get_or_init(Mutex::default)
@@ -818,17 +888,33 @@ mod native {
     /// POSTs a form; a refusal's answer (an OAuth `error`, often with HTTP 400) is returned for
     /// the caller to read, while a server error (5xx) counts as the portal not being reached.
     fn post_form(url: &str, body: &str) -> Result<Vec<u8>, String> {
-        let resp = agent(true)
-            .post(url)
-            .header("Content-Type", "application/x-www-form-urlencoded")
-            .header("Accept", "application/json")
-            .send(body)
-            .map_err(|e| format!("couldn't reach the portal: {e}"))?;
+        post_form_claimed(url, body, &None)
+    }
+
+    /// Checks a download's owned predicate after request preparation, directly at renewal send.
+    /// Interactive sign-in and sign-out use `post_form` without a download predicate.
+    fn post_form_claimed(url: &str, body: &str, still: &Option<crate::cache::Still>) -> Result<Vec<u8>, String> {
+        let resp = send_form(
+            still,
+            || agent(true).post(url).header("Content-Type", "application/x-www-form-urlencoded").header("Accept", "application/json"),
+            |req| req.send(body).map_err(|e| format!("couldn't reach the portal: {e}")),
+        )?;
         let status = resp.status().as_u16();
         if status >= 500 {
             return Err(format!("the portal answered HTTP {status}"));
         }
         resp.into_body().with_config().limit(1 << 20).read_to_vec().map_err(|e| e.to_string())
+    }
+
+    /// Request preparation (including TLS setup) can wait; the final send has its own check.
+    fn send_form<T, R>(
+        still: &Option<crate::cache::Still>,
+        prepare: impl FnOnce() -> T,
+        send: impl FnOnce(T) -> Result<R, String>,
+    ) -> Result<R, String> {
+        let prepared = prepare();
+        crate::cache::check_still(still)?;
+        send(prepared)
     }
 
     fn get_json(url: &str, token: &str) -> Result<Vec<u8>, String> {
@@ -1008,12 +1094,29 @@ mod native {
     /// Like [`authorization`](super::authorization), renewing the access token first when it is
     /// about to expire. A refused renewal ends the session; an unreachable portal keeps it.
     pub fn authorization_fresh(url: &str) -> Option<String> {
+        authorization_fresh_using(url, crate::cache::current_still(), post_form_claimed)
+    }
+
+    fn renewing() -> &'static Mutex<()> {
+        static RENEWING: Mutex<()> = Mutex::new(());
+        &RENEWING
+    }
+
+    /// The same owned predicate crosses the renewal lock and reaches the actual sender.
+    fn authorization_fresh_using(
+        url: &str,
+        still: Option<crate::cache::Still>,
+        post: impl FnOnce(&str, &str, &Option<crate::cache::Still>) -> Result<Vec<u8>, String>,
+    ) -> Option<String> {
+        crate::cache::check_still(&still).ok()?;
         if super::renewal_due(url).is_some() {
             // One renewal at a time: the others wait for it, then find the token fresh.
-            static RENEWING: Mutex<()> = Mutex::new(());
-            let _one = RENEWING.lock().unwrap_or_else(|e| e.into_inner());
+            let _one = renewing().lock().unwrap_or_else(|e| e.into_inner());
+            crate::cache::check_still(&still).ok()?;
             if let Some(r) = super::renewal_due(url) {
-                let answer = post_form(&r.endpoint, &r.body);
+                crate::cache::check_still(&still).ok()?;
+                let answer = post(&r.endpoint, &r.body, &still);
+                crate::cache::check_still(&still).ok()?;
                 super::renewal_done(&r, answer.as_deref().map_err(String::clone));
             }
         }
@@ -1079,6 +1182,149 @@ mod native {
             t = escape(title),
             m = escape(text)
         )
+    }
+
+    #[cfg(test)]
+    mod renewal_tests {
+        use super::*;
+
+        /// Revocation during synchronous request preparation is checked at the actual sender.
+        #[test]
+        fn permission_transport_renewal_rechecks_immediately_before_post() {
+            use std::sync::{
+                Arc,
+                atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst},
+                mpsc::channel,
+            };
+            let live = Arc::new(AtomicBool::new(true));
+            let flag = live.clone();
+            let still: crate::cache::Still = Arc::new(move || flag.load(SeqCst));
+            let sends = Arc::new(AtomicUsize::new(0));
+            let posted = sends.clone();
+            let (entered, entry) = channel();
+            let (release, released) = channel();
+            let worker = std::thread::spawn(move || {
+                send_form(
+                    &Some(still),
+                    || {
+                        entered.send(()).unwrap();
+                        released.recv().unwrap();
+                    },
+                    |()| {
+                        posted.fetch_add(1, SeqCst);
+                        Ok(())
+                    },
+                )
+            });
+            entry.recv_timeout(Duration::from_secs(10)).unwrap();
+            live.store(false, SeqCst);
+            release.send(()).unwrap();
+            assert!(worker.join().unwrap().unwrap_err().contains("cancelled"));
+            assert_eq!(sends.load(SeqCst), 0);
+        }
+
+        /// Renewal is permitted while current, but a rotated credential needs fresh consent.
+        #[test]
+        fn permission_transport_renewal_rotation_invalidates_old_identity_only() {
+            use crate::{arcgis_auth as auth, cache};
+            let portal = "https://rotation.example.org/portal";
+            let url = format!("{portal}/sharing/rest/content/items/a");
+            let due = || {
+                auth::sign_in(
+                    portal,
+                    "client",
+                    auth::Grant {
+                        access_token: "synthetic-old".into(),
+                        refresh_token: Some("synthetic-refresh".into()),
+                        expires_at: auth::now_secs() + 20,
+                        username: "test".into(),
+                    },
+                    auth::scopes_for(portal, None, &[]),
+                )
+            };
+            let answer = br#"{"access_token":"synthetic-new","refresh_token":"synthetic-rotated","expires_in":3600}"#;
+            due();
+            let identity = auth::account_identity_for(&url).unwrap();
+            let still: cache::Still = std::sync::Arc::new(move || identity.is_current());
+            let token = authorization_fresh_using(&url, Some(still.clone()), |_, _, owned| {
+                assert!(std::sync::Arc::ptr_eq(owned.as_ref().unwrap(), &still));
+                cache::check_still(owned).unwrap();
+                Ok(answer.to_vec())
+            });
+            assert_eq!(token.as_deref(), Some("Bearer synthetic-new"));
+            assert!(cache::check_still(&Some(still)).is_err(), "the final GET must refuse old identity");
+            let fresh = auth::account_identity_for(&url).unwrap();
+            let fresh: cache::Still = std::sync::Arc::new(move || fresh.is_current());
+            assert!(cache::check_still(&Some(fresh.clone())).is_ok());
+            assert!(authorization_fresh_using(&url, Some(fresh), |_, _, _| panic!("already renewed")).is_some());
+            // Ordinary unclaimed User requests retain renewal behavior.
+            due();
+            assert_eq!(
+                authorization_fresh_using(&url, None, |_, _, owned| {
+                    assert!(owned.is_none());
+                    Ok(answer.to_vec())
+                })
+                .as_deref(),
+                Some("Bearer synthetic-new")
+            );
+            auth::sign_out(Some(portal));
+        }
+
+        /// A real renewal waits behind preparation; revocation prevents its POST and the GET.
+        #[test]
+        fn permission_transport_renewal_rechecks_after_waiting_for_preparation() {
+            use std::sync::{
+                Arc,
+                atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst},
+                mpsc::channel,
+            };
+            let portal = "https://held-renewal.example.org/portal";
+            let url = format!("{portal}/sharing/rest/content/items/a");
+            super::super::sign_in(
+                portal,
+                "client",
+                super::super::Grant {
+                    access_token: "synthetic-old".into(),
+                    refresh_token: Some("synthetic-refresh".into()),
+                    expires_at: super::super::now_secs() + 20,
+                    username: "test".into(),
+                },
+                super::super::scopes_for(portal, None, &[]),
+            );
+            let one = renewing().lock().unwrap();
+            let live = Arc::new(AtomicBool::new(true));
+            let sends = Arc::new(AtomicUsize::new(0));
+            let (entered, entry) = channel();
+            let flag = live.clone();
+            let first = AtomicBool::new(true);
+            let still: crate::cache::Still = Arc::new(move || {
+                let allowed = flag.load(SeqCst);
+                if first.swap(false, SeqCst) {
+                    entered.send(()).unwrap();
+                }
+                allowed
+            });
+            let posted = sends.clone();
+            let worker = std::thread::spawn(move || {
+                crate::cache::with_still(still, || {
+                    let auth = authorization_fresh_using(&url, crate::cache::current_still(), |_, _, _| {
+                        posted.fetch_add(1, SeqCst);
+                        Ok(br#"{"access_token":"synthetic-new","expires_in":3600}"#.to_vec())
+                    });
+                    assert!(auth.is_none());
+                    // The native GET's actual-send check still rejects the same initiating claim.
+                    if crate::cache::check_still(&crate::cache::current_still()).is_ok() {
+                        posted.fetch_add(1, SeqCst);
+                    }
+                })
+            });
+            entry.recv_timeout(Duration::from_secs(10)).unwrap();
+            live.store(false, SeqCst);
+            drop(one);
+            worker.join().unwrap();
+            assert_eq!(sends.load(SeqCst), 0);
+            super::super::sign_out(Some(portal));
+        }
     }
 }
 

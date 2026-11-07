@@ -72,7 +72,7 @@ pub fn port_kind(k: ParamKind) -> Option<(PortKind, bool)> {
 
 /// A tool node's tool, if RustGIS has it.
 pub fn tool_of(node: &ModelNode) -> Option<&'static ToolSpec> {
-    node.tool.as_deref().and_then(crate::cmd::gp::tool_id).and_then(rustgis_analysis::tool)
+    node.tool.as_deref().and_then(|id| rustgis_analysis::resolve_published(id).map(|r| r.spec()))
 }
 
 /// The ports edges can come into.
@@ -567,9 +567,10 @@ impl RunReport {
 /// in a file, whose tools may not read or write files. The report is kept in
 /// `Session::model_run`, whatever happens. A failed run discards its queued exports, so their
 /// nodes become errors rather than waiting for delivery.
-pub fn run(s: &mut Session, name: &str, g: &ModelGraph, trusted: bool) -> Result<Value, String> {
+pub(crate) fn run(s: &mut Session, op: crate::policy::Authorized<crate::policy::ModelOp>) -> Result<Value, String> {
+    let crate::policy::ModelOp { name, graph: g } = op.op();
     let mut report = RunReport { model: name.to_string(), ..Default::default() };
-    let res = run_into(s, g, trusted, &mut report);
+    let res = run_into(s, g, &mut report);
     if res.is_err() {
         for node in report.nodes.iter_mut().filter(|node| node.status == "pending") {
             node.status = "error";
@@ -584,19 +585,11 @@ pub fn run(s: &mut Session, name: &str, g: &ModelGraph, trusted: bool) -> Result
     out
 }
 
-fn run_into(s: &mut Session, g: &ModelGraph, trusted: bool, report: &mut RunReport) -> Result<Vec<Value>, String> {
+/// Validate the graph and reject an imported graph's external tools before executing any node.
+/// Trusted graphs retain the normal tool execution and output wiring.
+fn run_into(s: &mut Session, g: &ModelGraph, report: &mut RunReport) -> Result<Vec<Value>, String> {
     if let Some(p) = validate(s, g).first() {
         return Err(p.message.clone());
-    }
-    if !trusted
-        && let Some(n) = g.nodes.iter().find(|n| {
-            n.kind == ModelNodeKind::Tool && crate::cmd::items::touches_files("gp.run", &json!({"tool": n.tool, "params": n.params}))
-        })
-    {
-        return Err(format!(
-            "{} reads or writes files, which a model from a file can't do; add that tool again in ModelBuilder to run it",
-            title(n)
-        ));
     }
     let order = topological_order(g).ok_or("The model contains a loop.")?;
     // The layer each node hands on, and the layers each tool node added (by id).
@@ -933,6 +926,19 @@ mod tests {
 
     #[test]
     fn queued_file_does_not_hide_undo_for_prior_model_tools() {
+        // Other native connection tests rotate process-wide accounts. This local-byte/undo
+        // scenario must not acquire their account changes between producing and delivering bytes.
+        #[cfg(not(target_arch = "wasm32"))]
+        if std::env::var_os("RUSTGIS_MODEL_FILE_CHILD").is_none() {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "model::tests::queued_file_does_not_hide_undo_for_prior_model_tools", "--nocapture"])
+                .env("RUSTGIS_MODEL_FILE_CHILD", "1")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+            assert!(String::from_utf8_lossy(&out.stdout).contains("1 passed"));
+            return;
+        }
         let mut s = session();
         let depth = s.undo_depth();
         let graph = json!({"nodes": [
@@ -951,7 +957,7 @@ mod tests {
         assert!(!s.model_run.as_ref().unwrap().ok);
         assert!(s.model_run.as_ref().unwrap().nodes.iter().any(|n| n.node == "file" && n.status == "pending"));
         let files = s.take_gp_files();
-        assert_eq!(files.len(), 1);
+        assert_eq!(files.len(), 1, "{:?}", s.notices);
         assert!(files[0].2.starts_with(b"PMTiles\x03"));
         assert!(s.dirty());
         assert_eq!(s.undo_depth(), depth + 1);
@@ -1035,6 +1041,32 @@ mod tests {
         assert_eq!(report.error.as_deref(), Some("download denied"));
         assert!(report.nodes.iter().any(|n| n.node == "first" && n.status == "done"));
         assert!(report.nodes.iter().all(|n| n.status != "pending"));
+    }
+
+    /// Terminal authority refusal updates the matching model node without claiming delivery.
+    #[test]
+    fn retired_model_file_does_not_remain_pending() {
+        let mut s = session();
+        let login = s
+            .run("connection.new", &json!({"kind":"wms","address":"https://model-retire.invalid/wms","auth":"header","keyName":"X-Key"}))
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        s.run("connection.login", &json!({"id":login,"apiKey":"RGSYNTH_model_retire"})).unwrap();
+        s.run("model.run", &json!({"graph":file_graph()})).unwrap();
+        let id = s.file_outputs[0].id;
+        assert_eq!(s.model_run.as_ref().unwrap().nodes[0].status, "pending");
+        s.run("connection.logout", &json!({"id":login})).unwrap();
+        assert!(s.take_gp_files().is_empty());
+        let report = s.model_run.as_ref().unwrap();
+        assert_eq!(report.nodes[0].status, "error", "a retired export cannot wait for an impossible acknowledgement");
+        assert!(!report.ok && report.error.is_some());
+        assert!(report.pending_files.is_empty());
+        assert!(s.project.gp_history.is_empty(), "refused bytes cannot record successful delivery");
+        let before = report.clone();
+        assert!(s.acknowledge_gp_file(id, None).is_err());
+        assert_eq!(s.model_run.as_ref(), Some(&before));
     }
 
     #[test]

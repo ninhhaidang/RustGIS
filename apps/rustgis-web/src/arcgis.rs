@@ -60,6 +60,12 @@ async fn sleep(ms: i32) -> Result<(), String> {
 /// A request to the portal: a form POSTed, or a GET. Never redirected, never with the page's
 /// cookies.
 async fn request(url: &str, form: Option<&str>) -> Result<Vec<u8>, String> {
+    request_claimed(url, form, None).await
+}
+
+/// A renewal caused by a claimed download checks its owned predicate on first poll and send.
+async fn request_claimed(url: &str, form: Option<&str>, still: Option<cache::Still>) -> Result<Vec<u8>, String> {
+    cache::check_still(&still)?;
     let window = web_sys::window().ok_or("no window")?;
     let init = web_sys::RequestInit::new();
     init.set_redirect(web_sys::RequestRedirect::Error);
@@ -81,7 +87,9 @@ async fn request(url: &str, form: Option<&str>) -> Result<Vec<u8>, String> {
     };
     let timer = window.set_timeout_with_callback_and_timeout_and_arguments_0(stop.unchecked_ref(), REQUEST_MS).ok();
     let read = async {
-        let resp: web_sys::Response = wasm_bindgen_futures::JsFuture::from(window.fetch_with_str_and_init(url, &init))
+        let promise =
+            crate::request::prepare_and_send(&still, || async { Ok(()) }, |()| window.fetch_with_str_and_init(url, &init)).await?;
+        let resp: web_sys::Response = wasm_bindgen_futures::JsFuture::from(promise)
             .await
             .map_err(|_| "couldn't reach the portal".to_string())?
             .dyn_into()
@@ -177,7 +185,10 @@ async fn finish(flow: &arcgis_auth::WebSignIn, popup: &web_sys::Window) -> Resul
 
 /// Renews the session covering `url` when its access token is about to expire (one renewal at a
 /// time; the fetches meanwhile use the token, still valid for a minute).
-pub async fn renew_if_due(url: &str) {
+pub async fn renew_if_due(url: &str, still: Option<cache::Still>) {
+    if cache::check_still(&still).is_err() {
+        return;
+    }
     if RENEWING.get() {
         return;
     }
@@ -191,6 +202,9 @@ pub async fn renew_if_due(url: &str) {
     }
     RENEWING.set(true);
     let _renewing = Renewing;
-    let answer = request(&r.endpoint, Some(&r.body)).await;
+    let answer = request_claimed(&r.endpoint, Some(&r.body), still.clone()).await;
+    if cache::check_still(&still).is_err() {
+        return;
+    }
     arcgis_auth::renewal_done(&r, answer.as_deref().map_err(String::clone));
 }

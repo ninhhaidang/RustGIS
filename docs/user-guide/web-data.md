@@ -495,10 +495,12 @@ rustgis-cli run --cmd 'portal.files={"dataset":"giswqs/geospatial"}'
 rustgis-cli run --sample --cmd 'portal.add={"url":"https://data.geopf.fr/telechargement/download/LiDARHD-NUALID/NUALHD_1-0__LAZ_LAMB93_KE_2025-06-06/LHD_FXX_0652_6864_PTS_LAMB93_IGN69.copc.laz","name":"LiDAR HD 0652-6864"}'
 ```
 
-Service discovery forwards only a small set of query options to addresses supplied by the
-service: `collections`, `datetime`, `subset`, `subset-crs`, `crs`, `bgcolor` and `transparent`.
+When forwarding query options to addresses supplied by a service, RustGIS copies only
+`collections`, `datetime`, `subset`, `subset-crs`, `crs`, `bgcolor` and `transparent`.
 Other settings, including keys, are inherited only by sub-addresses RustGIS constructs within
-the original source path. A counted notice says when a listed address did not receive settings.
+the original source path. Some discovery paths report withheld settings in a counted notice.
+An advertised WMS GetMap address can replace the discovery address without inheriting its query;
+this does not produce that notice.
 If it needs authentication, supply an explicitly authorized address for that source rather than
 relying on a token being copied from the discovery address. Destination addresses keep settings
 they already contain.

@@ -178,6 +178,17 @@ pub fn get(id: &str) -> Option<Arc<Plugin>> {
     PLUGINS.read().ok()?.iter().find(|p| p.manifest.id == id).cloned()
 }
 
+/// Whether this exact load is still enabled and not withdrawn. Reloading, toggling or
+/// removing a plugin invalidates old handles even if its id and package bytes are unchanged.
+/// An unavailable plugin or blocklist lock refuses the handle.
+pub fn is_current(plugin: &Arc<Plugin>) -> bool {
+    plugin.enabled
+        && PLUGINS.read().is_ok_and(|v| v.iter().any(|p| p.enabled && Arc::ptr_eq(p, plugin)))
+        && [&BLOCKED, &BLOCKED_EXTRA]
+            .iter()
+            .all(|list| list.read().is_ok_and(|v| registry::blocked(&v, &plugin.manifest.id, &plugin.sha256).is_none()))
+}
+
 /// `plugin:<plugin>/<item>`.
 pub fn command_id(plugin: &str, item: &str) -> String {
     format!("{PREFIX}{plugin}/{item}")

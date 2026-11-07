@@ -591,79 +591,98 @@ fn refused(resp: &web_sys::Response) -> String {
 /// map's edge): its failure isn't recorded, only noted once per server, as on the desktop. A
 /// request carrying a login is recorded by its plain address and scrubbed text
 /// ([`RequestDiagnostics::failed`]), never its binding or credential.
-async fn fetch_bytes(url: &str, capture: Capture, omit: &'static [u16]) -> Result<Vec<u8>, String> {
+async fn fetch_bytes(
+    url: &str,
+    capture: Capture,
+    still: Option<rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::cache::Still>,
+    omit: &'static [u16],
+) -> Result<Vec<u8>, String> {
     use rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::{cache::RequestDiagnostics, failure::Failure};
     let mut diagnostics = RequestDiagnostics::with_capture(url, "GET", capture);
     diagnostics.omit_statuses(omit);
     let answer = async {
-        let window = web_sys::window().ok_or("no window")?;
         use rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::{cache, logins};
-        // A data download carries its caller's budget (at most MAX_DOWNLOAD); other fetches use 64 MB.
-        let (url, limit) = cache::split_download_limit(url);
-        let max = limit.map(|n| n as u64).unwrap_or(64 << 20);
-        let (url, tail) = cache::split_tail(url);
-        let (url, range) = cache::split_range(url);
-        // An `s3://` address becomes its web address, and a request to an S3 connection's endpoint
-        // is signed (the bucket's CORS rules must allow the Authorization and x-amz-* headers).
-        logins::check(url).map_err(str::to_string)?;
-        let bound = url;
-        let prepared = rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::s3::prepare(logins::inner(url))?;
-        let url = prepared.url.as_str();
-        // An ArcGIS sign-in's token, for the portal and the servers it covers, renewed first when it
-        // is about to expire. It goes as the request's `token` parameter, not a header: ArcGIS's
-        // query endpoints answer the header's CORS preflight with an error.
-        if !prepared.signed {
-            crate::arcgis::renew_if_due(url).await;
-        }
-        let target = logins::inherit(bound, url);
-        let login = if prepared.signed { None } else { logins::apply(&target).map_err(str::to_string)? };
-        let login_url = login.as_ref().map_or(url, |applied| applied.url.as_str());
-        let arcgis =
-            if prepared.signed { None } else { rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::arcgis_auth::with_token(login_url) };
-        // Only the request carries credentials: messages and cache keys keep the original address.
-        let request = arcgis.as_deref().unwrap_or(login_url);
-        let result = async {
-            let err = |e: wasm_bindgen::JsValue| {
-                if login.is_some() { "the browser couldn't process the authenticated request".to_string() } else { format!("{e:?}") }
-            };
-            let login_header = login.as_ref().and_then(|applied| applied.header.as_ref());
-            let asked = match (range, tail) {
-                (Some((a, b)), _) => Some(format!("bytes={a}-{b}")),
-                (None, Some(n)) => Some(format!("bytes=-{n}")),
-                (None, None) => None,
-            };
-            let init = web_sys::RequestInit::new();
-            // A tile or document that stalls is given up (see `STALL_MS`).
-            let abort = if limit.is_none() { web_sys::AbortController::new().ok() } else { None };
-            if let Some(a) = &abort {
-                init.set_signal(Some(&a.signal()));
-            }
-            let stalled = || format!("nothing came in {} seconds", STALL_MS / 1000);
-            if asked.is_some() || !prepared.headers.is_empty() || login_header.is_some() {
-                let headers = web_sys::Headers::new().map_err(err)?;
-                if let Some(r) = &asked {
-                    headers.set("Range", r).map_err(err)?;
+        let (promise, abort, range, tail, max, url, bound, authenticated) = crate::request::prepare_and_send(
+            &still,
+            || async {
+                let window = web_sys::window().ok_or("no window")?;
+                // A data download carries its caller's budget (at most MAX_DOWNLOAD); other fetches use 64 MB.
+                let (url, limit) = cache::split_download_limit(url);
+                let max = limit.map(|n| n as u64).unwrap_or(64 << 20);
+                let (url, tail) = cache::split_tail(url);
+                let (url, range) = cache::split_range(url);
+                // An `s3://` address becomes its web address, and a request to an S3 connection's endpoint
+                // is signed (the bucket's CORS rules must allow the Authorization and x-amz-* headers).
+                logins::check(url).map_err(str::to_string)?;
+                let bound = url;
+                let prepared = rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::s3::prepare(logins::inner(url))?;
+                let url = prepared.url.as_str();
+                // An ArcGIS sign-in's token, for the portal and the servers it covers, renewed first when it
+                // is about to expire. It goes as the request's `token` parameter, not a header: ArcGIS's
+                // query endpoints answer the header's CORS preflight with an error.
+                if !prepared.signed {
+                    crate::arcgis::renew_if_due(url, still.clone()).await;
+                    cache::check_still(&still)?;
                 }
-                for (k, v) in &prepared.headers {
-                    if !login_header.is_some_and(|(name, _)| name.eq_ignore_ascii_case(k)) {
-                        headers.set(k, v).map_err(err)?;
+                let target = logins::inherit(bound, url);
+                let login = if prepared.signed { None } else { logins::apply(&target).map_err(str::to_string)? };
+                let login_url = login.as_ref().map_or(url, |applied| applied.url.as_str());
+                let arcgis =
+                    if prepared.signed { None } else { rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::arcgis_auth::with_token(login_url) };
+                // Only the request carries credentials: messages and cache keys keep the original address.
+                let request = arcgis.as_deref().unwrap_or(login_url);
+                let authenticated = prepared.signed || arcgis.is_some() || login.is_some();
+                let err = |e: wasm_bindgen::JsValue| {
+                    if authenticated { "the browser couldn't process the authenticated request".to_string() } else { format!("{e:?}") }
+                };
+                let login_header = login.as_ref().and_then(|applied| applied.header.as_ref());
+                let asked = match (range, tail) {
+                    (Some((a, b)), _) => Some(format!("bytes={a}-{b}")),
+                    (None, Some(n)) => Some(format!("bytes=-{n}")),
+                    (None, None) => None,
+                };
+                let init = web_sys::RequestInit::new();
+                // A tile or document that stalls is given up (see `STALL_MS`).
+                let abort = if limit.is_none() { web_sys::AbortController::new().ok() } else { None };
+                if let Some(a) = &abort {
+                    init.set_signal(Some(&a.signal()));
+                }
+                if asked.is_some() || !prepared.headers.is_empty() || login_header.is_some() {
+                    let headers = web_sys::Headers::new().map_err(err)?;
+                    if let Some(r) = &asked {
+                        headers.set("Range", r).map_err(err)?;
                     }
+                    for (k, v) in &prepared.headers {
+                        if !login_header.is_some_and(|(name, _)| name.eq_ignore_ascii_case(k)) {
+                            headers.set(k, v).map_err(err)?;
+                        }
+                    }
+                    if let Some((name, value)) = login_header {
+                        headers.set(name, value).map_err(err)?;
+                    }
+                    init.set_headers(&headers);
                 }
-                if let Some((name, value)) = login_header {
-                    headers.set(name, value).map_err(err)?;
+                // A signed or authorized request goes only where its credentials are for.
+                if authenticated {
+                    init.set_redirect(web_sys::RequestRedirect::Error);
                 }
-                init.set_headers(&headers);
-            }
-            // A signed or authorized request goes only where its credentials are for.
-            if prepared.signed || arcgis.is_some() || login.is_some() {
-                init.set_redirect(web_sys::RequestRedirect::Error);
-            }
-            // A credential-bearing address goes nowhere else: no referrer from it, no cookies with it.
-            if arcgis.is_some() || login.is_some() {
-                init.set_referrer_policy(web_sys::ReferrerPolicy::NoReferrer);
-                init.set_credentials(web_sys::RequestCredentials::Omit);
-            }
-            let promise = window.fetch_with_str_and_init(request, &init);
+                // A credential-bearing address goes nowhere else: no referrer from it, no cookies with it.
+                if arcgis.is_some() || login.is_some() {
+                    init.set_referrer_policy(web_sys::ReferrerPolicy::NoReferrer);
+                    init.set_credentials(web_sys::RequestCredentials::Omit);
+                }
+                Ok((window, request.to_string(), init, abort, range, tail, max, prepared.url, bound.to_string(), authenticated))
+            },
+            |(window, request, init, abort, range, tail, max, url, bound, authenticated)| {
+                (window.fetch_with_str_and_init(&request, &init), abort, range, tail, max, url, bound, authenticated)
+            },
+        )
+        .await?;
+        let err = |e: wasm_bindgen::JsValue| {
+            if authenticated { "the browser couldn't process the authenticated request".to_string() } else { format!("{e:?}") }
+        };
+        let stalled = || format!("nothing came in {} seconds", STALL_MS / 1000);
+        let result = async {
             // A refused fetch is an opaque TypeError ("Failed to fetch") by design. Keep its message
             // only on requests without a login: even a browser's error may repeat credentials.
             let resp: web_sys::Response = unless_stalled(promise, abort.as_ref())
@@ -673,7 +692,7 @@ async fn fetch_bytes(url: &str, capture: Capture, omit: &'static [u16]) -> Resul
                     stalled()
                 })?
                 .map_err(|e| {
-                    let why = if login.is_some() {
+                    let why = if authenticated {
                         "the authenticated request failed".to_string()
                     } else {
                         e.dyn_ref::<js_sys::Error>().map(|e| String::from(e.message())).unwrap_or_else(|| err(e))
@@ -755,8 +774,9 @@ async fn fetch_bytes(url: &str, capture: Capture, omit: &'static [u16]) -> Resul
             Ok(bytes)
         }
         .await;
-        logins::check(bound).map_err(str::to_string)?;
-        result.map_err(|error| if login.is_some() { logins::scrub_error(&format!("{url}: {error}")) } else { error })
+        cache::check_still(&still)?;
+        logins::check(&bound).map_err(str::to_string)?;
+        result.map_err(|error| if authenticated { logins::scrub_error(&format!("{url}: {error}")) } else { error })
     }
     .await;
     diagnostics.record(answer.map_err(|e| Failure::new(url, e))).map_err(|failure| failure.message)
@@ -764,45 +784,61 @@ async fn fetch_bytes(url: &str, capture: Capture, omit: &'static [u16]) -> Resul
 
 /// POSTs a JSON document and reads the answer (at most the tile cache's `MAX_BYTES`), without
 /// following redirects; an error status is `HTTP <status>`.
-async fn post_json(url: &str, body: &str, capture: Capture) -> Result<Vec<u8>, String> {
+async fn post_json(
+    url: &str,
+    body: &str,
+    capture: Capture,
+    still: Option<rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::cache::Still>,
+) -> Result<Vec<u8>, String> {
     use rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::{cache::RequestDiagnostics, failure::Failure};
     let mut diagnostics = RequestDiagnostics::with_capture(url, "POST", capture);
     let answer = async {
         use rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::{cache, logins, s3};
-        let window = web_sys::window().ok_or("no window")?;
-        logins::check(url).map_err(str::to_string)?;
-        // Preparation supplies the reached URL, never GET signing headers for a POST.
-        let prepared = s3::prepare(logins::inner(url))?;
-        if prepared.signed {
-            return Err("S3 signed JSON POST requests are not supported.".into());
-        }
-        let target = logins::inherit(url, &prepared.url);
-        let login = logins::apply(&target).map_err(str::to_string)?;
-        let request = prepared.url.as_str();
-        let result = async {
-            let err = |e: wasm_bindgen::JsValue| {
-                if login.is_some() { "the browser couldn't process the authenticated request".to_string() } else { format!("{e:?}") }
-            };
-            let init = web_sys::RequestInit::new();
-            init.set_method("POST");
-            init.set_redirect(web_sys::RequestRedirect::Error);
-            let headers = web_sys::Headers::new().map_err(err)?;
-            let login_header = login.as_ref().and_then(|applied| applied.header.as_ref());
-            for name in ["Content-Type", "Accept"] {
-                if !login_header.is_some_and(|(login_name, _)| login_name.eq_ignore_ascii_case(name)) {
-                    headers.set(name, "application/json").map_err(err)?;
+        let (promise, authenticated) = crate::request::prepare_and_send(
+            &still,
+            || async {
+                let window = web_sys::window().ok_or("no window")?;
+                logins::check(url).map_err(str::to_string)?;
+                // Preparation supplies the reached URL, never GET signing headers for a POST.
+                let prepared = s3::prepare(logins::inner(url))?;
+                if prepared.signed {
+                    return Err("S3 signed JSON POST requests are not supported.".into());
                 }
-            }
-            if let Some((name, value)) = login_header {
-                headers.set(name, value).map_err(err)?;
-            }
-            init.set_headers(&headers);
-            init.set_body(&wasm_bindgen::JsValue::from_str(body));
-            if login.is_some() {
-                init.set_referrer_policy(web_sys::ReferrerPolicy::NoReferrer);
-                init.set_credentials(web_sys::RequestCredentials::Omit);
-            }
-            let resp: web_sys::Response = wasm_bindgen_futures::JsFuture::from(window.fetch_with_str_and_init(request, &init))
+                let target = logins::inherit(url, &prepared.url);
+                let login = logins::apply(&target).map_err(str::to_string)?;
+                let request = prepared.url.as_str();
+                let err = |e: wasm_bindgen::JsValue| {
+                    if login.is_some() { "the browser couldn't process the authenticated request".to_string() } else { format!("{e:?}") }
+                };
+                let init = web_sys::RequestInit::new();
+                init.set_method("POST");
+                init.set_redirect(web_sys::RequestRedirect::Error);
+                let headers = web_sys::Headers::new().map_err(err)?;
+                let login_header = login.as_ref().and_then(|applied| applied.header.as_ref());
+                for name in ["Content-Type", "Accept"] {
+                    if !login_header.is_some_and(|(login_name, _)| login_name.eq_ignore_ascii_case(name)) {
+                        headers.set(name, "application/json").map_err(err)?;
+                    }
+                }
+                if let Some((name, value)) = login_header {
+                    headers.set(name, value).map_err(err)?;
+                }
+                init.set_headers(&headers);
+                init.set_body(&wasm_bindgen::JsValue::from_str(body));
+                if login.is_some() {
+                    init.set_referrer_policy(web_sys::ReferrerPolicy::NoReferrer);
+                    init.set_credentials(web_sys::RequestCredentials::Omit);
+                }
+                Ok((window, request.to_string(), init, login.is_some()))
+            },
+            |(window, request, init, authenticated)| (window.fetch_with_str_and_init(&request, &init), authenticated),
+        )
+        .await?;
+        let err = |e: wasm_bindgen::JsValue| {
+            if authenticated { "the browser couldn't process the authenticated request".to_string() } else { format!("{e:?}") }
+        };
+        let result = async {
+            let resp: web_sys::Response = wasm_bindgen_futures::JsFuture::from(promise)
                 .await
                 .map_err(|_| "the browser couldn't reach it (offline, or the server doesn't accept requests from web pages)".to_string())?
                 .dyn_into()
@@ -819,8 +855,9 @@ async fn post_json(url: &str, body: &str, capture: Capture) -> Result<Vec<u8>, S
             Ok(bytes.to_vec())
         }
         .await;
+        cache::check_still(&still)?;
         logins::check(url).map_err(str::to_string)?;
-        result.map_err(|error| if login.is_some() { logins::scrub_error(&format!("{url}: {error}")) } else { error })
+        result.map_err(|error| if authenticated { logins::scrub_error(&format!("{url}: {error}")) } else { error })
     }
     .await;
     diagnostics.record(answer.map_err(|e| Failure::new(url, e))).map_err(|failure| failure.message)
@@ -829,48 +866,68 @@ async fn post_json(url: &str, body: &str, capture: Capture) -> Result<Vec<u8>, S
 /// Asks for an address's headers (`HEAD`): a TIFF header's announced length and the type. The
 /// browser shows a page `X-TIFF-Header-Length` only when the server exposes it
 /// (`Access-Control-Expose-Headers`); without it, the header is read as any other file's.
-async fn head(url: &str, capture: Capture) -> Result<rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::cache::Head, String> {
+async fn head(
+    url: &str,
+    capture: Capture,
+    still: Option<rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::cache::Still>,
+) -> Result<rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::cache::Head, String> {
     use rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::{cache::RequestDiagnostics, failure::Failure};
     let mut diagnostics = RequestDiagnostics::with_capture(url, "HEAD", capture);
     let answer = async {
         use rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::{cache, logins, s3};
-        let window = web_sys::window().ok_or("no window")?;
-        logins::check(url).map_err(str::to_string)?;
-        let bound = url;
-        let prepared = s3::prepare(logins::inner(url))?;
-        // A request signed for S3 is signed for a GET.
-        if prepared.signed {
-            return Ok(cache::Head::default());
-        }
-        let url = prepared.url.as_str();
-        let target = logins::inherit(bound, url);
-        let login = logins::apply(&target).map_err(str::to_string)?;
-        let request = login.as_ref().map_or(url, |applied| applied.url.as_str());
-        let result = async {
-            let err = |e: wasm_bindgen::JsValue| {
-                if login.is_some() { "the browser couldn't process the authenticated request".to_string() } else { format!("{e:?}") }
-            };
-            let init = web_sys::RequestInit::new();
-            init.set_method("HEAD");
-            let login_header = login.as_ref().and_then(|applied| applied.header.as_ref());
-            if !prepared.headers.is_empty() || login_header.is_some() {
-                let headers = web_sys::Headers::new().map_err(err)?;
-                for (k, v) in &prepared.headers {
-                    if !login_header.is_some_and(|(name, _)| name.eq_ignore_ascii_case(k)) {
-                        headers.set(k, v).map_err(err)?;
+        let sent = crate::request::prepare_and_send(
+            &still,
+            || async {
+                let window = web_sys::window().ok_or("no window")?;
+                logins::check(url).map_err(str::to_string)?;
+                let bound = url;
+                let prepared = s3::prepare(logins::inner(url))?;
+                // A request signed for S3 is signed for a GET.
+                if prepared.signed {
+                    return Ok(None);
+                }
+                let url = prepared.url.as_str();
+                let target = logins::inherit(bound, url);
+                let login = logins::apply(&target).map_err(str::to_string)?;
+                let request = login.as_ref().map_or(url, |applied| applied.url.as_str());
+                let err = |e: wasm_bindgen::JsValue| {
+                    if login.is_some() { "the browser couldn't process the authenticated request".to_string() } else { format!("{e:?}") }
+                };
+                let init = web_sys::RequestInit::new();
+                init.set_method("HEAD");
+                let login_header = login.as_ref().and_then(|applied| applied.header.as_ref());
+                if !prepared.headers.is_empty() || login_header.is_some() {
+                    let headers = web_sys::Headers::new().map_err(err)?;
+                    for (k, v) in &prepared.headers {
+                        if !login_header.is_some_and(|(name, _)| name.eq_ignore_ascii_case(k)) {
+                            headers.set(k, v).map_err(err)?;
+                        }
                     }
+                    if let Some((name, value)) = login_header {
+                        headers.set(name, value).map_err(err)?;
+                    }
+                    init.set_headers(&headers);
                 }
-                if let Some((name, value)) = login_header {
-                    headers.set(name, value).map_err(err)?;
+                if login.is_some() {
+                    init.set_redirect(web_sys::RequestRedirect::Error);
+                    init.set_referrer_policy(web_sys::ReferrerPolicy::NoReferrer);
+                    init.set_credentials(web_sys::RequestCredentials::Omit);
                 }
-                init.set_headers(&headers);
-            }
-            if login.is_some() {
-                init.set_redirect(web_sys::RequestRedirect::Error);
-                init.set_referrer_policy(web_sys::ReferrerPolicy::NoReferrer);
-                init.set_credentials(web_sys::RequestCredentials::Omit);
-            }
-            let resp: web_sys::Response = wasm_bindgen_futures::JsFuture::from(window.fetch_with_str_and_init(request, &init))
+                Ok(Some((window, request.to_string(), init, url.to_string(), login.is_some())))
+            },
+            |request| {
+                request.map(|(window, request, init, url, authenticated)| {
+                    (window.fetch_with_str_and_init(&request, &init), url, authenticated)
+                })
+            },
+        )
+        .await?;
+        let Some((promise, reached, authenticated)) = sent else { return Ok(cache::Head::default()) };
+        let err = |e: wasm_bindgen::JsValue| {
+            if authenticated { "the browser couldn't process the authenticated request".to_string() } else { format!("{e:?}") }
+        };
+        let result = async {
+            let resp: web_sys::Response = wasm_bindgen_futures::JsFuture::from(promise)
                 .await
                 .map_err(|_| "the browser couldn't reach it (offline, or the server doesn't accept requests from web pages)".to_string())?
                 .dyn_into()
@@ -888,8 +945,9 @@ async fn head(url: &str, capture: Capture) -> Result<rustgis_ui_egui::rustgis_en
             })
         }
         .await;
-        logins::check(bound).map_err(str::to_string)?;
-        result.map_err(|error| if login.is_some() { logins::scrub_error(&format!("{url}: {error}")) } else { error })
+        cache::check_still(&still)?;
+        logins::check(url).map_err(str::to_string)?;
+        result.map_err(|error| if authenticated { logins::scrub_error(&format!("{reached}: {error}")) } else { error })
     }
     .await;
     diagnostics.record(answer.map_err(|e| Failure::new(url, e))).map_err(|failure| failure.message)
@@ -966,12 +1024,10 @@ fn clipboard() -> Option<web_sys::Clipboard> {
 fn services(inbox: Inbox, font_inbox: Inbox, notes: Notes, ctx: egui::Context, embedded: bool) -> Services {
     // Map tiles come through the browser's fetch (the app repaints when they arrive).
     rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::cache::set_fetcher_omitting(|url, done, omit| {
-        let capture = Capture::current();
-        wasm_bindgen_futures::spawn_local(async move {
-            let result = fetch_bytes(&url, capture.clone(), omit).await;
-            let _scope = capture.enter();
-            done(result);
-        });
+        wasm_bindgen_futures::spawn_local(crate::request::handoff(
+            move |capture, still| async move { fetch_bytes(&url, capture, still, omit).await },
+            done,
+        ));
     });
     // Their pictures are decoded by the browser, off the page's thread.
     rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::cache::set_image_decoder(|bytes, done| {
@@ -988,21 +1044,17 @@ fn services(inbox: Inbox, font_inbox: Inbox, notes: Notes, ctx: egui::Context, e
     });
     // So are HEAD requests (a GeoTIFF made on request saying how long its header is).
     rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::cache::set_header(|url, done| {
-        let capture = Capture::current();
-        wasm_bindgen_futures::spawn_local(async move {
-            let result = head(&url, capture.clone()).await;
-            let _scope = capture.enter();
-            done(result);
-        });
+        wasm_bindgen_futures::spawn_local(crate::request::handoff(
+            move |capture, still| async move { head(&url, capture, still).await },
+            done,
+        ));
     });
     // So are JSON documents POSTed (the NLDI's flowtrace).
     rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::cache::set_poster(|url, body, done| {
-        let capture = Capture::current();
-        wasm_bindgen_futures::spawn_local(async move {
-            let result = post_json(&url, &body, capture.clone()).await;
-            let _scope = capture.enter();
-            done(result);
-        });
+        wasm_bindgen_futures::spawn_local(crate::request::handoff(
+            move |capture, still| async move { post_json(&url, &body, capture, still).await },
+            done,
+        ));
     });
     let open_inbox = inbox.clone();
     let font_ctx = ctx.clone();
@@ -1059,7 +1111,7 @@ fn services(inbox: Inbox, font_inbox: Inbox, notes: Notes, ctx: egui::Context, e
             let (url, inbox, ctx) = (url.to_string(), font_sink.clone(), font_ctx.clone());
             let capture = Capture::current();
             wasm_bindgen_futures::spawn_local(async move {
-                match fetch_bytes(&url, capture, &[]).await {
+                match fetch_bytes(&url, capture, None, &[]).await {
                     Ok(bytes) => {
                         inbox.lock().unwrap_or_else(|e| e.into_inner()).push((url, bytes));
                         ctx.request_repaint();
@@ -1157,8 +1209,9 @@ fn services(inbox: Inbox, font_inbox: Inbox, notes: Notes, ctx: egui::Context, e
         fetch: Some(Box::new(move |url: &str, slot| {
             let (url, ctx) = (url.to_string(), fetch_ctx.clone());
             let capture = Capture::current();
+            let still = rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::cache::current_still();
             wasm_bindgen_futures::spawn_local(async move {
-                let r = fetch_bytes(&url, capture, &[]).await.map_err(|e| format!("{url}: {e}"));
+                let r = fetch_bytes(&url, capture, still, &[]).await.map_err(|e| format!("{url}: {e}"));
                 *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
                 ctx.request_repaint();
             });

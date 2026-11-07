@@ -105,28 +105,31 @@ pub(crate) fn for_each_row<T: Send, S>(
         return Ok(());
     }
     let run = control::current();
+    let still = rustgis_data::source::remote::current_still();
     let rows = std::sync::Mutex::new(rows.enumerate());
     let failed = AtomicBool::new(false);
     let work = || {
-        let _stop = StopOnPanic(&failed);
-        let _run = control::install(run.clone());
-        let mut s = scratch();
-        let mut taken = Vec::with_capacity(BATCH);
-        while !failed.load(Ordering::Relaxed) && !control::cancelled() {
-            // The lock is held only to take rows; a poisoned one means a thread panicked.
-            if let Ok(mut r) = rows.lock() {
-                let take = (r.len() / threads.saturating_mul(BATCH)).clamp(1, BATCH);
-                taken.extend(r.by_ref().take(take));
+        rustgis_data::source::remote::with_optional_still(still.clone(), || {
+            let _stop = StopOnPanic(&failed);
+            let _run = control::install(run.clone());
+            let mut s = scratch();
+            let mut taken = Vec::with_capacity(BATCH);
+            while !failed.load(Ordering::Relaxed) && !control::cancelled() {
+                // The lock is held only to take rows; a poisoned one means a thread panicked.
+                if let Ok(mut r) = rows.lock() {
+                    let take = (r.len() / threads.saturating_mul(BATCH)).clamp(1, BATCH);
+                    taken.extend(r.by_ref().take(take));
+                }
+                if taken.is_empty() {
+                    break;
+                }
+                let n = taken.len();
+                for (i, row) in taken.drain(..) {
+                    f(&mut s, i, row);
+                }
+                control::advance(n);
             }
-            if taken.is_empty() {
-                break;
-            }
-            let n = taken.len();
-            for (i, row) in taken.drain(..) {
-                f(&mut s, i, row);
-            }
-            control::advance(n);
-        }
+        })
     };
     std::thread::scope(|scope| {
         let others: Vec<_> =
@@ -182,34 +185,37 @@ pub(crate) fn try_map_on<T: Sync, S, R: Send, E: Send + From<Cancelled>>(
             .collect();
     }
     let run = control::current();
+    let still = rustgis_data::source::remote::current_still();
     let next = AtomicUsize::new(0);
     let failed = AtomicBool::new(false);
     let work = || {
-        let _stop = StopOnPanic(&failed);
-        let _run = control::install(run.clone());
-        let mut s = scratch();
-        let mut made = Vec::new();
-        while !failed.load(Ordering::Relaxed) {
-            let from = next.fetch_add(BATCH, Ordering::Relaxed);
-            let Some(batch) = items.get(from..items.len().min(from.saturating_add(BATCH))).filter(|b| !b.is_empty()) else { break };
-            // Cancel is looked at, and progress counted, item by item, as on one thread: an item
-            // can take long (a large zone, say), so a batch of them would hold both back.
-            for (k, item) in batch.iter().enumerate() {
-                if control::cancelled() {
-                    failed.store(true, Ordering::Relaxed);
-                    return Err((from + k, Cancelled.into()));
-                }
-                match f(&mut s, from + k, item) {
-                    Ok(r) => made.push((from + k, r)),
-                    Err(e) => {
+        rustgis_data::source::remote::with_optional_still(still.clone(), || {
+            let _stop = StopOnPanic(&failed);
+            let _run = control::install(run.clone());
+            let mut s = scratch();
+            let mut made = Vec::new();
+            while !failed.load(Ordering::Relaxed) {
+                let from = next.fetch_add(BATCH, Ordering::Relaxed);
+                let Some(batch) = items.get(from..items.len().min(from.saturating_add(BATCH))).filter(|b| !b.is_empty()) else { break };
+                // Cancel is looked at, and progress counted, item by item, as on one thread: an item
+                // can take long (a large zone, say), so a batch of them would hold both back.
+                for (k, item) in batch.iter().enumerate() {
+                    if control::cancelled() {
                         failed.store(true, Ordering::Relaxed);
-                        return Err((from + k, e));
+                        return Err((from + k, Cancelled.into()));
                     }
+                    match f(&mut s, from + k, item) {
+                        Ok(r) => made.push((from + k, r)),
+                        Err(e) => {
+                            failed.store(true, Ordering::Relaxed);
+                            return Err((from + k, e));
+                        }
+                    }
+                    control::advance(1);
                 }
-                control::advance(1);
             }
-        }
-        Ok(made)
+            Ok(made)
+        })
     };
 
     let mut parts = Vec::with_capacity(threads);
@@ -257,6 +263,38 @@ impl Drop for StopOnPanic<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The raster row workers inherit the initiating predicate, rather than creating a root
+    /// request context on a new thread.
+    #[test]
+    fn raster_rows_keep_their_request_context() {
+        let mut rows = vec![0u8; 256];
+        rustgis_data::source::remote::with_still(std::sync::Arc::new(|| true), || {
+            assert_eq!(
+                for_each_row(
+                    rows.chunks_mut(1),
+                    4,
+                    || (),
+                    |_, _, row| {
+                        assert!(rustgis_data::source::remote::current_still().is_some());
+                        row[0] = 1;
+                    }
+                ),
+                Ok(())
+            );
+            let items = try_map_on(
+                &rows,
+                4,
+                || (),
+                |_, _, value| {
+                    assert!(rustgis_data::source::remote::current_still().is_some());
+                    Ok::<_, Cancelled>(*value)
+                },
+            );
+            assert_eq!(items, Ok(vec![1; 256]));
+        });
+        assert!(rustgis_data::source::remote::current_still().is_none());
+    }
 
     #[test]
     fn a_work_cap_grows_with_the_threads_a_run_takes() {

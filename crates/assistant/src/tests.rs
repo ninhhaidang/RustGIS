@@ -8,6 +8,25 @@ use crate::chatgpt;
 use crate::provider::*;
 use crate::tools;
 
+/// Direct behavior fixtures explicitly accept a displayed engine review; Agent tests below
+/// still exercise their own pending/decision path.
+fn run_tool_call(s: &mut Session, call: &ToolCall) -> Result<String, String> {
+    run_tool_call_with_budget(s, call, tools::DEFAULT_OUTPUT_TOKENS)
+}
+fn run_tool_call_with_budget(s: &mut Session, call: &ToolCall, tokens: usize) -> Result<String, String> {
+    use rustgis_engine::policy::{Outcome, Scope};
+    let scope = Scope::assistant(42, std::sync::Arc::new(tools::Live::default()));
+    let permit = match tools::policy_call(call)? {
+        Some(call) => match s.review(&scope, &call) {
+            Outcome::Allowed => None,
+            Outcome::NeedsApproval(p) => Some(p.allow()),
+            Outcome::Refused(e) => return Err(e),
+        },
+        None => None,
+    };
+    tools::run_with_budget(s, call, tokens, scope, permit)
+}
+
 fn sample() -> Session {
     let mut s = Session::new(Project::default());
     let _ = s.run("project.sample", &Value::Null);
@@ -227,6 +246,24 @@ fn connection_management_requires_fresh_approval_but_can_run_in_app() {
 
 #[test]
 fn connection_commands_require_fresh_approval_before_login_or_scripts() {
+    // The S3 logins change a process-wide registry that parallel approval readers snapshot.
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        const SCENARIO: &str = "tests::connection_commands_require_fresh_approval_before_login_or_scripts";
+        if std::env::var("RUSTGIS_ASSISTANT_CONNECTION_APPROVAL_CHILD").as_deref() != Ok(SCENARIO) {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", SCENARIO])
+                .env("RUSTGIS_ASSISTANT_CONNECTION_APPROVAL_CHILD", SCENARIO)
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let mut summaries = stdout.lines().filter(|line| line.starts_with("test result:"));
+            let ran_one = summaries.next().is_some_and(|line| line.starts_with("test result: ok. 1 passed; 0 failed; 0 ignored;"))
+                && summaries.next().is_none();
+            assert!(output.status.success() && ran_one, "{stdout}\n{}", String::from_utf8_lossy(&output.stderr));
+            return;
+        }
+    }
     use rustgis_engine::render::rustgis_tiles::s3;
 
     for command in ["connection.browse", "connection.test", "connection.login"] {
@@ -317,6 +354,71 @@ fn remembered_database_forget_requires_fresh_direct_and_script_approval() {
     }
 }
 
+/// Undeclared external runners fail closed at assistant/MCP ingress; the engine tests load
+/// the real plugin fixture to exercise reviewed plugin approvals.
+#[test]
+fn undeclared_external_tools_refuse_by_id_and_display_name() {
+    use rustgis_engine::analysis::{self, Inputs, Output, ToolResult, ToolSpec};
+    /// Register a unique tool name plus a colliding built-in name to exercise resolution.
+    fn specs() -> Vec<ToolSpec> {
+        [("plugin:assistant-containment/x", "Assistant containment selection"), ("plugin:assistant-containment/shadow", "Buffer")]
+            .into_iter()
+            .map(|(id, name)| ToolSpec {
+                id,
+                name,
+                toolbox: "Tests",
+                summary: "Selection fixture",
+                params: &[],
+                run: analysis::external_placeholder,
+            })
+            .collect()
+    }
+    /// A deterministic tool result makes unauthorized execution observable without I/O.
+    fn run(_: &ToolSpec, _: &dyn Inputs, _: &Value) -> Result<ToolResult, String> {
+        Ok(ToolResult { output: Output::Selection { layer: "Cities".into(), rows: vec![0, 2] }, messages: vec![] })
+    }
+    analysis::register_external("assistant-containment", specs, run);
+    // Explicit native discovery publishes metadata; untrusted callers cannot discover it.
+    assert_eq!(analysis::external_tools_of("assistant-containment").len(), 2);
+    assert!(analysis::resolve_published("plugin:assistant-containment/x").is_some());
+    let mut s = sample();
+    let cities = s.map().layer_by_name("Cities").unwrap().id;
+    for tool in ["plugin:assistant-containment/x", "Assistant containment selection"] {
+        for (name, args) in [
+            ("run_tool", json!({"tool": tool, "params": {}})),
+            ("run_tool", json!({"tool": tool, "params": "{}"})),
+            ("run_command", json!({"command": "gp.run", "params": {"tool": tool, "params": {}}})),
+            ("run_command", json!({"command": "gp.run", "params": json!({"tool": tool, "params": {}}).to_string()})),
+            ("run", json!({"script": format!("gp.run {}", json!({"tool": tool, "params": {}}))})),
+        ] {
+            let c = ToolCall { id: "envelope".into(), name: name.into(), args: args.clone() };
+            if name == "run_command" {
+                assert_eq!(tools::target(&c), Some(("gp.run".into(), json!({"tool": tool, "params": {}}))));
+            }
+            s.run("select.all", &json!({"layer": "Cities"})).unwrap();
+            s.run("select.clear", &json!({"layer": "Cities"})).unwrap();
+            let (error, why) = call_tool(&mcp::Server::new(false), &mut s, name, args.clone());
+            assert!(error && why.contains("plugin"), "{why}");
+            assert!(s.map().layer(cities).unwrap().selection.is_empty());
+            let mut a = Agent::new(cfg("openai"), &s);
+            a.ask("select", &s);
+            assert!(matches!(a.receive(a.generation(), ok(calls(name, args.clone())), &mut s), Step::Send(_)));
+            assert!(a.pending(&s).is_none(), "an unreviewed runner cannot be approved");
+            assert!(s.map().layer(cities).unwrap().selection.is_empty());
+            let (error, why) = call_tool(&mcp::Server::new(true), &mut s, name, args);
+            assert!(error, "{why}");
+            assert!(s.map().layer(cities).unwrap().selection.is_empty());
+        }
+    }
+    let built_in = ToolCall {
+        id: "b".into(),
+        name: "run_tool".into(),
+        args: json!({"tool": "Buffer", "params": {"input": "Cities", "distance": 10}}),
+    };
+    assert!(tools::gate(&s, &built_in).is_none(), "the built-in name wins");
+    assert!(tools::policy_call(&built_in).is_ok());
+}
+
 #[test]
 fn gate_rules() {
     let s = sample();
@@ -336,7 +438,7 @@ fn gate_rules() {
     }
     // A QGIS project given as text names its files and addresses inside: asked, as with a path.
     let qgis = g("run_command", json!({"command": "project.importQgis", "params": {"text": "<qgis/>"}}));
-    assert!(qgis.as_deref().is_some_and(|w| w.contains("QGIS project")), "{qgis:?}");
+    assert!(qgis.as_deref().is_some_and(|w| w.contains("before reading")), "{qgis:?}");
     assert!(g("run_command", json!({"command": "script.run", "params": {"script": "map.zoomFull {}"}})).is_some());
     assert!(g("run_command", json!({"command": "plugin.install", "params": {"path": "x.rgplugin"}})).is_some());
     assert!(g("run_command", json!({"command": "map.addTiles", "params": {"url": "https://tile.example/{z}/{x}/{y}.png"}})).is_some());
@@ -347,23 +449,27 @@ fn gate_rules() {
     }
     assert!(g("run_command", json!({"command": "connection.login", "params": {"id": "c1", "remember": true}})).is_some());
     let sql = g("run_command", json!({"command": "layer.addSql", "params": {"sql": "SELECT ST_Point(0, 0) AS g"}}));
-    assert!(sql.as_deref().is_some_and(|w| w.contains("SQL") && w.contains("internet")), "{sql:?}");
+    assert!(sql.as_deref().is_some_and(|w| w.contains("files") && w.contains("internet")), "{sql:?}");
     let sql = g("run_command", json!({"command": "layer.addSql", "params": {"sql": "FROM t", "database": "/data/x.duckdb"}}));
     assert!(sql.as_deref().is_some_and(|w| w.contains("views in the database /data/x.duckdb")), "{sql:?}");
+    let script = "layer.addSql {\"sql\":\"FROM t\",\"database\":\"/data/x.duckdb\"}";
+    let sql = g("run", json!({"script":script}));
+    assert!(sql.as_deref().is_some_and(|w| w.contains("views in the database /data/x.duckdb")), "{sql:?}");
+
     assert!(g("run_tool", json!({"tool": "buffer", "params": {"input": "Cities", "distance": 100}})).is_none());
     assert!(g("list_layers", json!({})).is_none());
     assert!(g("run_command", json!({"command": "info.fileLayers", "params": {"path": "/etc/passwd"}})).is_some());
     assert!(g("run_command", json!({"command": "info.fileColumns", "params": {"path": "/etc/passwd"}})).is_some());
     // Georeferencing and projecting are file commands only when they write a file.
-    let extent = json!({"layer": "r", "extent": [10.0, 45.0, 10.04, 45.04]});
+    let extent = json!({"layer": "Cities", "extent": [10.0, 45.0, 10.04, 45.04]});
     assert!(g("run_command", json!({"command": "raster.georeference", "params": extent})).is_none());
-    let pts = json!({"layer": "r", "points": [[0, 0, 1, 1], [1, 0, 2, 1], [0, 1, 1, 2]], "transform": "affine", "crs": 32613});
+    let pts = json!({"layer": "Cities", "points": [[0, 0, 1, 1], [1, 0, 2, 1], [0, 1, 1, 2]], "transform": "affine", "crs": 32613});
     assert!(g("run_command", json!({"command": "raster.georeference", "params": pts})).is_none());
     let mut file = pts.clone();
     file["path"] = json!("/tmp/x.tif");
     assert!(g("run_command", json!({"command": "raster.georeference", "params": file})).is_some());
     // So is projecting a raster.
-    let project = json!({"layer": "r", "crs": 31983, "cellSize": 100, "extent": "Countries"});
+    let project = json!({"layer": "Cities", "crs": 31983, "cellSize": 100, "extent": "Countries"});
     assert!(g("run_command", json!({"command": "raster.project", "params": project})).is_none());
     let mut file = project.clone();
     file["path"] = json!("/tmp/x.tif");
@@ -390,13 +496,13 @@ fn tool_results_carry_notices() {
         name: "run_command".into(),
         args: json!({"command": "layer.addDataText", "params": {"fileName": "pts.csv", "text": "lon,lat\n1,2\nx,y\n"}}),
     };
-    let out: Value = serde_json::from_str(&tools::run(&mut s, &call).unwrap()).unwrap();
+    let out: Value = serde_json::from_str(&run_tool_call(&mut s, &call).unwrap()).unwrap();
     assert!(
         out["notices"].as_array().is_some_and(|n| n.iter().any(|t| t.as_str().is_some_and(|t| t.contains("no usable coordinates")))),
         "{out}"
     );
     let quiet: Value = serde_json::from_str(
-        &tools::run(&mut s, &ToolCall { id: "y".into(), name: "run_command".into(), args: json!({"command": "map.zoomFull"}) }).unwrap(),
+        &run_tool_call(&mut s, &ToolCall { id: "y".into(), name: "run_command".into(), args: json!({"command": "map.zoomFull"}) }).unwrap(),
     )
     .unwrap();
     assert!(quiet.get("notices").is_none(), "{quiet}");
@@ -412,7 +518,7 @@ fn a_failed_commands_redacted_error_is_not_repeated_as_a_notice() {
         name: "run_command".into(),
         args: json!({"command": "layer.addData", "params": {"path": "/no/such/dir/data.geojson?token=hidden"}}),
     };
-    let err = tools::run(&mut s, &call).unwrap_err();
+    let err = run_tool_call(&mut s, &call).unwrap_err();
     assert_eq!(err.lines().count(), 1, "{err}");
 }
 
@@ -424,56 +530,57 @@ fn map_switch_and_remove_do_not_report_layers_added() {
     let world = s.map().name.clone();
     assert!(!world.is_empty(), "sample project needs a named map");
     let on_world: Value = serde_json::from_str(
-        &tools::run(&mut s, &t("run_command", json!({"command": "map.activate", "params": {"name": world}}))).unwrap(),
+        &run_tool_call(&mut s, &t("run_command", json!({"command": "map.activate", "params": {"name": world}}))).unwrap(),
     )
     .unwrap();
     assert!(on_world.get("layersAdded").is_none(), "activating the current map must not invent layersAdded: {on_world}");
 
-    tools::run(&mut s, &t("run_command", json!({"command": "map.new", "params": {"name": "Repro"}}))).unwrap();
+    run_tool_call(&mut s, &t("run_command", json!({"command": "map.new", "params": {"name": "Repro"}}))).unwrap();
     assert_eq!(s.map().name, "Repro");
     let activate: Value = serde_json::from_str(
-        &tools::run(&mut s, &t("run_command", json!({"command": "map.activate", "params": {"name": world}}))).unwrap(),
+        &run_tool_call(&mut s, &t("run_command", json!({"command": "map.activate", "params": {"name": world}}))).unwrap(),
     )
     .unwrap();
     assert!(activate.get("layersAdded").is_none(), "map.activate must not report the target map's layers as added: {activate}");
     assert_eq!(s.map().name, world);
 
     let remove: Value = serde_json::from_str(
-        &tools::run(&mut s, &t("run_command", json!({"command": "map.remove", "params": {"name": "Repro"}}))).unwrap(),
+        &run_tool_call(&mut s, &t("run_command", json!({"command": "map.remove", "params": {"name": "Repro"}}))).unwrap(),
     )
     .unwrap();
     assert!(remove.get("layersAdded").is_none(), "map.remove must not report remaining layers as added: {remove}");
     assert_eq!(s.project.maps.len(), 1);
 
     // Removing the active, populated map switches to another map's layers: still nothing added.
-    tools::run(&mut s, &t("run_command", json!({"command": "map.new", "params": {"name": "Gone"}}))).unwrap();
+    run_tool_call(&mut s, &t("run_command", json!({"command": "map.new", "params": {"name": "Gone"}}))).unwrap();
     let pts = json!({"fileName": "pts.csv", "text": "lon,lat\n1,2\n"});
-    tools::run(&mut s, &t("run_command", json!({"command": "layer.addDataText", "params": pts.clone()}))).unwrap();
+    run_tool_call(&mut s, &t("run_command", json!({"command": "layer.addDataText", "params": pts.clone()}))).unwrap();
     assert_eq!(s.map().name, "Gone");
-    let remove_active: Value =
-        serde_json::from_str(&tools::run(&mut s, &t("run_command", json!({"command": "map.remove", "params": {"name": "Gone"}}))).unwrap())
-            .unwrap();
+    let remove_active: Value = serde_json::from_str(
+        &run_tool_call(&mut s, &t("run_command", json!({"command": "map.remove", "params": {"name": "Gone"}}))).unwrap(),
+    )
+    .unwrap();
     assert!(remove_active.get("layersAdded").is_none(), "removing the active map must not report the next map's layers: {remove_active}");
     assert_eq!(s.map().name, world);
 
     // Renaming the active map keeps its layers: nothing added.
     let renamed: Value = serde_json::from_str(
-        &tools::run(&mut s, &t("run_command", json!({"command": "map.rename", "params": {"name": "Renamed"}}))).unwrap(),
+        &run_tool_call(&mut s, &t("run_command", json!({"command": "map.rename", "params": {"name": "Renamed"}}))).unwrap(),
     )
     .unwrap();
     assert!(renamed.get("layersAdded").is_none(), "map.rename must not report the map's layers as added: {renamed}");
 
     // A layer added to a map the command also created is still reported.
-    tools::run(&mut s, &t("run_command", json!({"command": "map.new", "params": {"name": "Fresh"}}))).unwrap();
+    run_tool_call(&mut s, &t("run_command", json!({"command": "map.new", "params": {"name": "Fresh"}}))).unwrap();
     let fresh: Value =
-        serde_json::from_str(&tools::run(&mut s, &t("run_command", json!({"command": "layer.addDataText", "params": pts}))).unwrap())
+        serde_json::from_str(&run_tool_call(&mut s, &t("run_command", json!({"command": "layer.addDataText", "params": pts}))).unwrap())
             .unwrap();
     assert!(fresh.get("layersAdded").and_then(Value::as_array).is_some_and(|a| a.len() == 1), "{fresh}");
-    tools::run(&mut s, &t("run_command", json!({"command": "map.activate", "params": {"name": "Renamed"}}))).unwrap();
+    run_tool_call(&mut s, &t("run_command", json!({"command": "map.activate", "params": {"name": "Renamed"}}))).unwrap();
 
     // Real adds still report layersAdded.
     let buffered: Value = serde_json::from_str(
-        &tools::run(&mut s, &t("run_tool", json!({"tool": "buffer", "params": {"input": "Cities", "distance": 100}}))).unwrap(),
+        &run_tool_call(&mut s, &t("run_tool", json!({"tool": "buffer", "params": {"input": "Cities", "distance": 100}}))).unwrap(),
     )
     .unwrap();
     let added = buffered.get("layersAdded").and_then(Value::as_array);
@@ -488,10 +595,10 @@ fn read_features_reads_a_pivot_table() {
     let t = |name: &str, args: Value| ToolCall { id: "x".into(), name: name.into(), args };
     let params = json!({"input": "Countries", "fields": "continent", "pivot": "income_grp", "value": "pop_est", "statistic": "SUM"});
     let ran: Value =
-        serde_json::from_str(&tools::run(&mut s, &t("run_tool", json!({"tool": "pivotTable", "params": params}))).unwrap()).unwrap();
+        serde_json::from_str(&run_tool_call(&mut s, &t("run_tool", json!({"tool": "pivotTable", "params": params}))).unwrap()).unwrap();
     let name = ran["table"].as_str().map(str::to_string).unwrap_or_default();
     assert_eq!(name, "Countries_Pivot", "{ran}");
-    let read: Value = serde_json::from_str(&tools::run(&mut s, &t("read_features", json!({"table": name}))).unwrap()).unwrap();
+    let read: Value = serde_json::from_str(&run_tool_call(&mut s, &t("read_features", json!({"table": name}))).unwrap()).unwrap();
     let rows = read["rows"].as_array().cloned().unwrap_or_default();
     assert!(!rows.is_empty() && read["total"].as_u64() == Some(rows.len() as u64), "{read}");
     let mut cells = 0.0;
@@ -518,7 +625,7 @@ fn read_features_reads_a_tools_output_table() {
     let mut s = sample();
     let t = |name: &str, args: Value| ToolCall { id: "x".into(), name: name.into(), args };
     let stats = json!({"tool": "summaryStatistics", "params": {"input": "Countries", "field": "pop_est", "case": "continent"}});
-    let ran: Value = serde_json::from_str(&tools::run(&mut s, &t("run_tool", stats)).unwrap()).unwrap();
+    let ran: Value = serde_json::from_str(&run_tool_call(&mut s, &t("run_tool", stats)).unwrap()).unwrap();
     let name = ran["table"].as_str().map(str::to_string).unwrap_or_default();
     assert!(!name.is_empty(), "run_tool must name the table it added: {ran}");
     let groups = s.project.tables.last().map(|t| t.features.len()).unwrap_or_default();
@@ -530,7 +637,7 @@ fn read_features_reads_a_tools_output_table() {
         json!({"layer": name.to_uppercase()}),
         json!({"layer": name, "where": "COUNT_pop_est > 0", "order_by": "SUM_pop_est DESC"}),
     ] {
-        let read: Value = serde_json::from_str(&tools::run(&mut s, &t("read_features", args.clone())).unwrap()).unwrap();
+        let read: Value = serde_json::from_str(&run_tool_call(&mut s, &t("read_features", args.clone())).unwrap()).unwrap();
         assert_eq!(read["table"], json!(name), "{args}: {read}");
         assert!(read.get("layer").is_none(), "{read}");
         assert_eq!(read["total"].as_u64(), Some(groups as u64), "{read}");
@@ -538,20 +645,20 @@ fn read_features_reads_a_tools_output_table() {
         assert!(!rows.is_empty() && rows.iter().all(|r| r.get("_lon").is_none() && r["continent"].is_string()), "{read}");
     }
     let sorted: Value =
-        serde_json::from_str(&tools::run(&mut s, &t("read_features", json!({"table": name, "order_by": "SUM_pop_est DESC"}))).unwrap())
+        serde_json::from_str(&run_tool_call(&mut s, &t("read_features", json!({"table": name, "order_by": "SUM_pop_est DESC"}))).unwrap())
             .unwrap();
     let sums: Vec<f64> = sorted["rows"].as_array().unwrap().iter().filter_map(|r| r["SUM_pop_est"].as_f64()).collect();
     assert!(sums.windows(2).all(|w| w[0] >= w[1]), "{sums:?}");
-    let sel = tools::run(&mut s, &t("read_features", json!({"table": name, "selected": true})));
+    let sel = run_tool_call(&mut s, &t("read_features", json!({"table": name, "selected": true})));
     assert!(sel.as_ref().is_err_and(|e| e.contains("no selection")), "{sel:?}");
-    let missing = tools::run(&mut s, &t("read_features", json!({"layer": "No such thing"})));
+    let missing = run_tool_call(&mut s, &t("read_features", json!({"layer": "No such thing"})));
     assert!(missing.as_ref().is_err_and(|e| e.contains("no layer or standalone table named")), "{missing:?}");
-    assert!(tools::run(&mut s, &t("read_features", json!({"table": "Countries"}))).is_err(), "a layer is not a table");
-    assert!(tools::run(&mut s, &t("read_features", json!({}))).is_err());
+    assert!(run_tool_call(&mut s, &t("read_features", json!({"table": "Countries"}))).is_err(), "a layer is not a table");
+    assert!(run_tool_call(&mut s, &t("read_features", json!({}))).is_err());
     // An unused `table` sent as null or empty text leaves `layer` in charge.
     for unused in [json!(null), json!(""), json!("  ")] {
         let read: Value = serde_json::from_str(
-            &tools::run(&mut s, &t("read_features", json!({"layer": "Cities", "table": unused, "limit": 1}))).unwrap(),
+            &run_tool_call(&mut s, &t("read_features", json!({"layer": "Cities", "table": unused, "limit": 1}))).unwrap(),
         )
         .unwrap();
         assert_eq!(read["layer"], json!("Cities"), "{unused}: {read}");
@@ -561,8 +668,8 @@ fn read_features_reads_a_tools_output_table() {
         s.run("layer.addDataText", &json!({"fileName": file, "text": format!("k,v\na,{v}\n")})).unwrap();
     }
     for name in ["stats", "Stats"] {
-        let by_layer = tools::run(&mut s, &t("read_features", json!({"layer": name}))).unwrap();
-        assert_eq!(by_layer, tools::run(&mut s, &t("read_features", json!({"table": name}))).unwrap(), "{name}");
+        let by_layer = run_tool_call(&mut s, &t("read_features", json!({"layer": name}))).unwrap();
+        assert_eq!(by_layer, run_tool_call(&mut s, &t("read_features", json!({"table": name}))).unwrap(), "{name}");
         assert!(by_layer.contains(&format!("\"table\":\"{name}\"")), "{by_layer}");
     }
     // Names are matched as written, by `layer` as by `table`: `stats ` and ` Stats` are tables of
@@ -576,31 +683,31 @@ fn read_features_reads_a_tools_output_table() {
     for (name, v) in [("stats", 1.0), ("Stats", 2.0), ("stats ", 3.0), (" Stats", 4.0)] {
         for arg in ["layer", "table"] {
             let args = Value::Object([(arg.to_string(), json!(name))].into_iter().collect());
-            let read: Value = serde_json::from_str(&tools::run(&mut s, &t("read_features", args)).unwrap()).unwrap();
+            let read: Value = serde_json::from_str(&run_tool_call(&mut s, &t("read_features", args)).unwrap()).unwrap();
             assert_eq!((read["table"].as_str(), read["rows"][0]["v"].as_f64()), (Some(name), Some(v)), "{arg} {name:?}: {read}");
         }
     }
     for name in ["stats  ", "  Stats"] {
-        let by_layer = tools::run(&mut s, &t("read_features", json!({"layer": name})));
+        let by_layer = run_tool_call(&mut s, &t("read_features", json!({"layer": name})));
         assert!(by_layer.as_ref().is_err_and(|e| e.contains("no layer or standalone table named")), "{name:?}: {by_layer:?}");
-        let by_table = tools::run(&mut s, &t("read_features", json!({"table": name})));
+        let by_table = run_tool_call(&mut s, &t("read_features", json!({"table": name})));
         assert!(by_table.as_ref().is_err_and(|e| e.contains("no standalone table named")), "{name:?}: {by_table:?}");
     }
     let id = s.project.tables.last().map(|t| t.id).unwrap_or_default();
     // A layer with that id reads; otherwise it's an error, never the table.
-    let by_id = tools::run(&mut s, &t("read_features", json!({"layer": id.to_string()})));
+    let by_id = run_tool_call(&mut s, &t("read_features", json!({"layer": id.to_string()})));
     let read_a_layer = match &by_id {
         Ok(r) => r.contains("\"layer\"") && !r.contains("\"table\""),
         Err(e) => e.contains("no layer or standalone table named"),
     };
     assert!(read_a_layer, "{by_id:?}");
-    assert!(tools::run(&mut s, &t("read_features", json!({"table": id.to_string()}))).is_ok());
+    assert!(run_tool_call(&mut s, &t("read_features", json!({"table": id.to_string()}))).is_ok());
     // A table named like a layer: `layer` reads the layer.
     s.run("layer.addDataText", &json!({"fileName": "Cities.csv", "text": "k,v\na,1\n"})).unwrap();
     let city: Value =
-        serde_json::from_str(&tools::run(&mut s, &t("read_features", json!({"layer": "Cities", "limit": 1}))).unwrap()).unwrap();
+        serde_json::from_str(&run_tool_call(&mut s, &t("read_features", json!({"layer": "Cities", "limit": 1}))).unwrap()).unwrap();
     assert_eq!(city["layer"], json!("Cities"), "{city}");
-    let tab: Value = serde_json::from_str(&tools::run(&mut s, &t("read_features", json!({"table": "Cities"}))).unwrap()).unwrap();
+    let tab: Value = serde_json::from_str(&run_tool_call(&mut s, &t("read_features", json!({"table": "Cities"}))).unwrap()).unwrap();
     assert_eq!((tab["table"].as_str(), tab["total"].as_u64()), (Some("Cities"), Some(1)), "{tab}");
 }
 
@@ -608,15 +715,15 @@ fn read_features_reads_a_tools_output_table() {
 fn geoprocessing_and_reading_data() {
     let mut s = sample();
     let t = |name: &str, args: Value| ToolCall { id: "x".into(), name: name.into(), args };
-    let found = tools::run(&mut s, &t("search_tools", json!({"query": "buffer"}))).unwrap_or_default();
+    let found = run_tool_call(&mut s, &t("search_tools", json!({"query": "buffer"}))).unwrap_or_default();
     assert!(found.contains("\"buffer\""), "{found}");
-    let desc = tools::run(&mut s, &t("describe_tool", json!({"tool": "buffer"}))).unwrap_or_default();
+    let desc = run_tool_call(&mut s, &t("describe_tool", json!({"tool": "buffer"}))).unwrap_or_default();
     assert!(desc.contains("distance"), "{desc}");
     let before = s.map().layers.len();
-    let ran = tools::run(&mut s, &t("run_tool", json!({"tool": "buffer", "params": {"input": "Cities", "distance": 100}})));
+    let ran = run_tool_call(&mut s, &t("run_tool", json!({"tool": "buffer", "params": {"input": "Cities", "distance": 100}})));
     assert!(ran.as_deref().is_ok_and(|r| r.contains("layersAdded")), "{ran:?}");
     assert_eq!(s.map().layers.len(), before + 1);
-    let rows = tools::run(
+    let rows = run_tool_call(
         &mut s,
         &t("read_features", json!({"layer": "Cities", "where": "pop_max > 10000000", "fields": ["name", "pop_max"], "order_by": "pop_max", "descending": true, "limit": 3})),
     )
@@ -626,9 +733,9 @@ fn geoprocessing_and_reading_data() {
     let r = v["rows"].as_array().cloned().unwrap_or_default();
     assert_eq!(r.len(), 3);
     assert!(r[0]["pop_max"].as_i64() >= r[1]["pop_max"].as_i64());
-    assert!(tools::run(&mut s, &t("read_features", json!({"layer": "Cities", "fields": ["nope"]}))).is_err());
-    assert!(tools::run(&mut s, &t("read_features", json!({"layer": "Cities", "fields": [1, null]}))).is_err());
-    let cmds = tools::run(&mut s, &t("search_commands", json!({"query": "basemap"}))).unwrap_or_default();
+    assert!(run_tool_call(&mut s, &t("read_features", json!({"layer": "Cities", "fields": ["nope"]}))).is_err());
+    assert!(run_tool_call(&mut s, &t("read_features", json!({"layer": "Cities", "fields": [1, null]}))).is_err());
+    let cmds = run_tool_call(&mut s, &t("search_commands", json!({"query": "basemap"}))).unwrap_or_default();
     assert!(cmds.contains("map.basemap"), "{cmds}");
 }
 
@@ -660,13 +767,13 @@ fn hostile_arguments_never_panic() {
             let c = ToolCall { id: "x".into(), name: def.name.into(), args: args.clone() };
             let _ = tools::gate(&s, &c);
             let _ = tools::summary(&c);
-            if let Ok(r) = tools::run(&mut s, &c) {
+            if let Ok(r) = run_tool_call(&mut s, &c) {
                 assert!(r.len() <= tools::MAX_RESULT);
                 assert!(serde_json::from_str::<Value>(&r).is_ok());
             }
         }
     }
-    let _ = tools::run(&mut s, &ToolCall { id: "x".into(), name: "rm_rf".into(), args: Value::Null });
+    let _ = run_tool_call(&mut s, &ToolCall { id: "x".into(), name: "rm_rf".into(), args: Value::Null });
 }
 
 #[test]
@@ -909,7 +1016,7 @@ fn ordering_mixed_columns_never_panics() {
         name: "read_features".into(),
         args: json!({"layer": "Cities", "order_by": "name DESC", "fields": ["name"], "limit": 30}),
     };
-    let r = tools::run(&mut s, &t);
+    let r = run_tool_call(&mut s, &t);
     let v: Value = r.as_deref().ok().and_then(|r| serde_json::from_str(r).ok()).unwrap_or(Value::Null);
     let rows = v["rows"].as_array().cloned().unwrap_or_default();
     assert_eq!(rows.len(), 30, "{r:?}");
@@ -966,13 +1073,22 @@ fn stopping_a_request_drops_its_message() {
 fn malformed_params_are_refused() {
     let mut s = sample();
     let n = s.map().layers.len();
-    for params in [json!("{\"layer\": "), json!("[1]"), json!(5)] {
-        let c = ToolCall { id: "x".into(), name: "run_command".into(), args: json!({"command": "layer.remove", "params": params}) };
-        assert!(tools::run(&mut s, &c).is_err());
+    for params in [json!("{\"layer\": "), json!("[1]"), json!([1]), json!(5), json!("false")] {
+        for (name, args) in [
+            ("run_command", json!({"command": "layer.remove", "params": params})),
+            ("run_tool", json!({"tool": "buffer", "params": params})),
+        ] {
+            let c = ToolCall { id: "x".into(), name: name.into(), args: args.clone() };
+            assert!(tools::target(&c).is_none(), "invalid params aren't classified as defaults");
+            assert!(tools::gate(&s, &c).is_some_and(|e| e.contains("params")) && tools::policy_call(&c).is_err());
+            assert!(run_tool_call(&mut s, &c).is_err());
+            let (error, why) = call_tool(&mcp::Server::new(true), &mut s, name, args);
+            assert!(error && why.contains("params"), "{why}");
+            assert_eq!(s.map().layers.len(), n, "a malformed envelope must not remove the active layer or run a tool");
+        }
     }
-    assert_eq!(s.map().layers.len(), n, "no layer may be removed by a call whose parameters didn't parse");
     let c = ToolCall { id: "x".into(), name: "run_command".into(), args: json!({"command": "map.zoomFull", "params": "{}"}) };
-    assert!(tools::run(&mut s, &c).is_ok());
+    assert!(run_tool_call(&mut s, &c).is_ok());
 }
 
 #[test]
@@ -1126,6 +1242,59 @@ fn mcp_snapshot_draws_offscreen_and_saves_with_access() {
     assert!(tools::gate(&s, &call).is_some_and(|w| w.contains("writes a file")));
     let plain = ToolCall { id: String::new(), name: "snapshot".into(), args: json!({}) };
     assert!(tools::gate(&s, &plain).is_none());
+}
+
+/// Image adapters share map-render source reach and exact private routes with command exports.
+#[test]
+fn permission_render_adapters_require_and_bind_remote_tile_sources() {
+    use rustgis_engine::policy::{AgentAccess, Effect, Effects, Outcome, Revocation, Scope};
+    use std::sync::Arc;
+    struct LocalOnly;
+    impl Revocation for LocalOnly {
+        fn allows(&self, effects: Effects) -> bool {
+            !effects.contains(Effect::Network)
+        }
+    }
+    let local = Scope::agent(AgentAccess::Allow, false, "adapter-render-local", None, Arc::new(LocalOnly));
+    let mut missed = Vec::new();
+    for name in ["snapshot", "view_map"] {
+        let mut s = Session::new(Project::default());
+        let call = ToolCall { id: name.into(), name: name.into(), args: json!({}) };
+        let engine = tools::policy_call(&call).unwrap().unwrap();
+        assert!(matches!(s.review(&local, &engine), Outcome::Allowed), "an in-memory map stays offline");
+        s.map_mut().tiles.push(rustgis_engine::map::TileLayer::new(
+            "Remote image",
+            rustgis_engine::map::TileKind::Raster,
+            "https://adapter-render.invalid/{z}/{x}/{y}.png?token=RGSYNTH_adapter_first",
+        ));
+        if !matches!(s.review(&local, &engine), Outcome::Refused(_)) {
+            missed.push(name);
+        }
+        let scope = Scope::assistant(1521, Arc::new(tools::Live::default()));
+        if let Outcome::NeedsApproval(pending) = s.review(&scope, &engine) {
+            assert!(!format!("{:?}", pending.review()).contains("RGSYNTH_adapter_"));
+            let remembered = pending.remember().unwrap();
+            let permit = pending.allow();
+            s.map_mut().tiles[0].url = "https://adapter-render.invalid/{z}/{x}/{y}.png?token=RGSYNTH_adapter_changed".into();
+            let Outcome::NeedsApproval(changed) = s.review(&scope, &engine) else { panic!("changed render still needs approval") };
+            assert!(!changed.covered_by(&remembered), "redaction cannot hide a changed tile route");
+            assert!(s.defer(scope.clone(), &engine, Some(permit)).is_err(), "the changed route is refused before rendering");
+            let held = s.defer(scope, &engine, Some(changed.allow())).unwrap();
+            s.map_mut().tiles[0].url = "https://adapter-render.invalid/{z}/{x}/{y}.png?token=RGSYNTH_adapter_after_defer".into();
+            let mut called = false;
+            let error = s
+                .finish_deferred(held, |_| {
+                    called = true;
+                })
+                .unwrap_err();
+            assert!(!called && error.contains("changed"), "the live render callback never sees a route changed after admission: {error}");
+        } else {
+            missed.push(name);
+        }
+        s.map_mut().tiles[0].visible = false;
+        assert!(matches!(s.review(&local, &engine), Outcome::Allowed), "hidden remote tiles are not fetched");
+    }
+    assert!(missed.is_empty(), "image adapters omitted remote tile admission: {missed:?}");
 }
 
 /// Only the desktop relay, where the session is the user's open project, tells the agent the
@@ -1492,13 +1661,13 @@ fn docs_tools_are_the_assistants_too() {
     assert!(names.contains(&"search_docs") && names.contains(&"read_doc"));
     let mut s = sample();
     let call = |name: &str, args: Value| ToolCall { id: "d".into(), name: name.into(), args };
-    let found = tools::run(&mut s, &call("search_docs", json!({"query": "basemap", "limit": 3}))).unwrap();
+    let found = run_tool_call(&mut s, &call("search_docs", json!({"query": "basemap", "limit": 3}))).unwrap();
     assert!(found.contains("basemap") || found.contains("Basemap"), "{found}");
-    assert!(tools::run(&mut s, &call("read_doc", json!({"page": "cli.md"}))).unwrap().contains("rustgis-cli"));
-    assert!(tools::run(&mut s, &call("read_doc", json!({"page": "nope.md"}))).is_err());
+    assert!(run_tool_call(&mut s, &call("read_doc", json!({"page": "cli.md"}))).unwrap().contains("rustgis-cli"));
+    assert!(run_tool_call(&mut s, &call("read_doc", json!({"page": "nope.md"}))).is_err());
     // Every page is complete JSON, including escaped Markdown, and fits the shared byte budget.
     for p in crate::docs::PAGES {
-        let page = tools::run(&mut s, &call("read_doc", json!({"page": p.path}))).unwrap();
+        let page = run_tool_call(&mut s, &call("read_doc", json!({"page": p.path}))).unwrap();
         assert!(page.len() <= tools::MAX_RESULT);
         assert!(serde_json::from_str::<Value>(&page).is_ok_and(|v| v["page"] == p.path), "{}", p.path);
     }
@@ -2286,12 +2455,13 @@ fn tool_output_truncation_is_valid_json() {
     }
     let mut s = sample();
     let search =
-        tools::run(&mut s, &ToolCall { id: "s".into(), name: "search_docs".into(), args: json!({"query": "map", "limit": 30}) }).unwrap();
+        run_tool_call(&mut s, &ToolCall { id: "s".into(), name: "search_docs".into(), args: json!({"query": "map", "limit": 30}) })
+            .unwrap();
     let parsed: Value = serde_json::from_str(&search).unwrap();
     assert_eq!(parsed["results"].as_array().unwrap().len(), 30);
     assert!(search.len() > 8000, "exercise the former mid-JSON clipping boundary");
     for query in ["map", "layer", "data", "the"] {
-        let result = tools::run_with_budget(
+        let result = run_tool_call_with_budget(
             &mut s,
             &ToolCall { id: "s".into(), name: "search_docs".into(), args: json!({"query": query, "limit": 30}) },
             819,
@@ -2309,7 +2479,7 @@ fn documentation_reads_resume_without_gaps() {
     let mut offset = 1u64;
     let mut text = String::new();
     loop {
-        let result = tools::run_with_budget(
+        let result = run_tool_call_with_budget(
             &mut s,
             &ToolCall {
                 id: "r".into(),
@@ -2389,15 +2559,15 @@ fn documentation_offsets_reject_invalid_values() {
     for offset in [json!(null), json!(0), json!(-1), json!(1.5), json!("2"), json!([]), json!({}), json!(1e20)] {
         let args = json!({"page": "cli.md", "offset": offset});
         let call = ToolCall { id: "r".into(), name: "read_doc".into(), args: args.clone() };
-        assert!(tools::run(&mut s, &call).unwrap_err().contains("offset must be a positive integer"));
+        assert!(run_tool_call(&mut s, &call).unwrap_err().contains("offset must be a positive integer"));
         let (error, text) = call_tool(&server, &mut s, "read_doc", args);
         assert!(error && text.contains("offset must be a positive integer"));
     }
     assert!(crate::docs::read_with_budget("cli.md", None, 0, 2000, tools::MAX_RESULT).is_err());
     let read = |args| ToolCall { id: "r".into(), name: "read_doc".into(), args };
-    let default = tools::run(&mut s, &read(json!({"page": "cli.md"}))).unwrap();
-    assert_eq!(default, tools::run(&mut s, &read(json!({"page": "cli.md", "offset": 1}))).unwrap());
-    assert_ne!(default, tools::run(&mut s, &read(json!({"page": "cli.md", "offset": 2}))).unwrap());
+    let default = run_tool_call(&mut s, &read(json!({"page": "cli.md"}))).unwrap();
+    assert_eq!(default, run_tool_call(&mut s, &read(json!({"page": "cli.md", "offset": 1}))).unwrap());
+    assert_ne!(default, run_tool_call(&mut s, &read(json!({"page": "cli.md", "offset": 2}))).unwrap());
 }
 
 #[test]
@@ -3218,7 +3388,9 @@ fn acp_agent_output_is_bounded() {
     use crate::acp::{Event, MAX_TEXT, Session};
     let (mut s, _) = Session::new("Codex", "x", "/w", vec!["cli".into()], false);
     s.line(r#"{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":1,"agentCapabilities":{},"authMethods":[]}}"#);
-    s.line(r#"{"jsonrpc":"2.0","id":1,"result":{"sessionId":"sess_1"}}"#);
+    s.line(
+        r#"{"jsonrpc":"2.0","id":1,"result":{"sessionId":"sess_1","modes":{"currentModeId":"agent","availableModes":[{"id":"agent"}]}}}"#,
+    );
     // A message streamed in huge pieces (multi-byte, to cut on a character) stops growing at
     // the cap.
     let chunk = "é".repeat(300 * 1024);
@@ -3262,7 +3434,9 @@ fn acp_sessions_run_a_task_ask_permission_and_report() {
     );
     assert!(s.cancel().is_none(), "nothing to cancel before the session exists");
     // session/new → session/prompt with the brief and the task.
-    let (out, _) = s.line(r#"{"jsonrpc":"2.0","id":1,"result":{"sessionId":"sess_1"}}"#);
+    let (out, _) = s.line(
+        r#"{"jsonrpc":"2.0","id":1,"result":{"sessionId":"sess_1","modes":{"currentModeId":"agent","availableModes":[{"id":"agent"}]}}}"#,
+    );
     let prompt: Value = serde_json::from_str(&out[0]).unwrap();
     assert_eq!((prompt["method"].as_str(), prompt["params"]["sessionId"].as_str()), (Some("session/prompt"), Some("sess_1")));
     assert!(prompt["params"]["prompt"][0]["text"].as_str().unwrap().ends_with("Task: Map the rivers"));
@@ -3301,7 +3475,7 @@ fn acp_sessions_run_a_task_ask_permission_and_report() {
     // The thread waits: a follow-up goes to the same session, with the next id, and its report
     // is its own.
     assert!(s.idle() && !s.finished() && s.cancel().is_none());
-    let follow: Value = serde_json::from_str(&s.follow_up("Colour them by flow").unwrap()[0]).unwrap();
+    let follow: Value = serde_json::from_str(&s.follow_up("Colour them by flow").unwrap().0[0]).unwrap();
     assert_eq!(
         (follow["method"].as_str(), follow["id"].as_u64(), follow["params"]["sessionId"].as_str()),
         (Some("session/prompt"), Some(3), Some("sess_1"))
@@ -3334,7 +3508,7 @@ fn acp_sessions_run_a_task_ask_permission_and_report() {
     assert!(matches!(&ev[0], Event::Done { error: true, report } if report.contains("sign in")));
     let ev = fail(&[
         r#"{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":1}}"#,
-        r#"{"jsonrpc":"2.0","id":1,"result":{"sessionId":"s"}}"#,
+        r#"{"jsonrpc":"2.0","id":1,"result":{"sessionId":"s","modes":{"currentModeId":"agent","availableModes":[{"id":"agent"}]}}}"#,
         r#"{"jsonrpc":"2.0","id":2,"result":{"stopReason":"cancelled"}}"#,
     ]);
     assert!(matches!(&ev[0], Event::Done { error: true, report } if report.contains("stopped")));
@@ -3364,6 +3538,9 @@ fn acp_agents_are_put_in_a_mode_that_works_and_asks_or_acts_alone() {
     // The task goes once the agent answers.
     let (out, _) = s.line(&json!({"jsonrpc": "2.0", "id": set["id"], "result": {}}).to_string());
     assert_eq!(method(&out[0])["method"], "session/prompt");
+    // An unfamiliar current mode is never assumed to ask; negotiate a known asking mode.
+    let (_, out) = start(false, "surprise");
+    assert_eq!(method(&out[0])["params"]["modeId"], "agent");
     // Already in a mode that works: the task goes at once.
     let (_, out) = start(false, "agent");
     assert_eq!(method(&out[0])["method"], "session/prompt");
@@ -3375,13 +3552,103 @@ fn acp_agents_are_put_in_a_mode_that_works_and_asks_or_acts_alone() {
     s.line(r#"{"jsonrpc":"2.0","id":2,"result":{"stopReason":"end_turn"}}"#);
     // The setting turned off before a follow-up: back to asking, then the follow-up.
     s.set_auto(false);
-    let lines = s.follow_up("Next").unwrap();
+    let (lines, _) = s.follow_up("Next").unwrap();
     assert_eq!(method(&lines[0])["params"]["modeId"], "agent");
-    // A refused mode change: the task goes anyway, in the mode it's in.
+    // A refused auto-on upgrade keeps the task going in its confirmed asking mode.
     let (mut s, out) = start(true, "agent");
     let (out, _) = s.line(&json!({"jsonrpc": "2.0", "id": method(&out[0])["id"], "error": {"code": -32602, "message": "no"}}).to_string());
     assert_eq!(method(&out[0])["method"], "session/prompt");
-    // An agent without modes just gets the task.
+    // A failed downgrade refuses both the initial task and a follow-up, with a report.
+    let (mut s, out) = start(false, "agent-full-access");
+    let refused = json!({"jsonrpc": "2.0", "id": method(&out[0])["id"], "error": {"code": -32602, "message": "no"}});
+    let (out, events) = s.line(&refused.to_string());
+    assert!(out.is_empty() && s.idle());
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, crate::acp::Event::Done { error: true, report } if report.contains("refused") && report.contains("mode")))
+    );
+    let (out, _) = s.follow_up("Still asks").unwrap();
+    assert_eq!(method(&out[0])["method"], "session/set_mode");
+    // Mode changes never overlap: the agent could otherwise apply the old upgrade after
+    // a successful downgrade. Wait for the upgrade, then negotiate the latest setting.
+    let (mut s, upgrade) = start(true, "agent");
+    assert!(s.set_auto(false).0.is_empty());
+    let (downgrade, _) = s.line(&json!({"id": method(&upgrade[0])["id"], "result": {}}).to_string());
+    assert_eq!(method(&downgrade[0])["params"]["modeId"], "agent");
+    assert_ne!(method(&upgrade[0])["id"], method(&downgrade[0])["id"]);
+    assert!(s.line(&json!({"id": method(&upgrade[0])["id"], "result": {}}).to_string()).0.is_empty());
+    assert!(s.line(&json!({"id": method(&upgrade[0])["id"], "error": {"message": "stale"}}).to_string()).1.is_empty());
+    let (out, _) = s.line(&json!({"id": method(&downgrade[0])["id"], "result": {}}).to_string());
+    assert_eq!(method(&out[0])["method"], "session/prompt");
+    // A malformed success cannot establish asking mode or release the held task.
+    for result in [Value::Null, json!(false), json!([]), json!("ok")] {
+        let (mut s, out) = start(false, "agent-full-access");
+        let (out, events) = s.line(&json!({"id": method(&out[0])["id"], "result": result}).to_string());
+        assert!(out.is_empty() && s.idle(), "{result}");
+        assert!(events.iter().any(|e| matches!(e, crate::acp::Event::Done { error: true, .. })));
+    }
+    let (mut s, out) = start(false, "agent-full-access");
+    let (out, events) = s.line(&json!({"id": method(&out[0])["id"]}).to_string());
+    assert!(out.is_empty() && s.idle());
+    assert!(events.iter().any(|e| matches!(e, crate::acp::Event::Done { error: true, .. })));
+    // Auto-on may continue after an invalid upgrade response, but turning auto off must
+    // contain the now-unconfirmed mode rather than trust the old asking-mode report.
+    let (mut s, out) = start(true, "agent");
+    let (out, _) = s.line(&json!({"id": method(&out[0])["id"], "result": null}).to_string());
+    assert_eq!(method(&out[0])["method"], "session/prompt");
+    let (out, _) = s.set_auto(false);
+    assert_eq!(method(&out[0])["method"], "session/cancel");
+    assert_eq!(method(&out[1])["params"]["modeId"], "agent");
+    // An active bypass turn is cancelled as well as downgraded. A follow-up waits for
+    // cancellation to be acknowledged, then goes through readiness again.
+    let (mut s, out) = start(true, "agent-full-access");
+    assert_eq!(method(&out[0])["method"], "session/prompt");
+    let (out, events) = s.set_auto(false);
+    assert_eq!(
+        out.iter().map(|l| method(l)["method"].clone()).collect::<Vec<_>>(),
+        json!(["session/cancel", "session/set_mode"]).as_array().unwrap().clone()
+    );
+    assert!(events.iter().any(|e| matches!(e, crate::acp::Event::Text(t) if t.contains("automatic approval"))));
+    assert!(s.set_auto(false).0.is_empty() && s.follow_up("too early").is_none());
+    let downgrade = method(&out[1]);
+    s.line(r#"{"id":2,"result":{"stopReason":"cancelled"}}"#);
+    let (out, _) = s.follow_up("Wait for asking").unwrap();
+    assert!(out.is_empty());
+    let (out, _) = s.line(&json!({"id": downgrade["id"], "result": {}}).to_string());
+    assert_eq!(method(&out[0])["method"], "session/prompt");
+    // The same containment applies to an unsolicited mode change during an auto-off turn.
+    let (mut s, _) = start(false, "agent");
+    let (out, _) = s.line(&json!({"method": "session/update", "params": {"update": {"sessionUpdate": "current_mode_update", "currentModeId": "agent-full-access"}}}).to_string());
+    assert_eq!(method(&out[0])["method"], "session/cancel");
+    assert_eq!(method(&out[1])["params"]["modeId"], "agent");
+    // No asking mode: a bypass or unverified agent gets no task. Read-only still works.
+    for modes in [
+        json!({"currentModeId": "agent-full-access", "availableModes": [{"id": "agent-full-access"}]}),
+        json!({"currentModeId": "surprise", "availableModes": [{"id": "surprise"}]}),
+        json!({"currentModeId": "agent", "availableModes": ["agent"]}),
+        json!({"currentModeId": "agent", "availableModes": [{"id": "agent"}, {"id": 5}]}),
+        json!({"currentModeId": "agent", "availableModes": []}),
+        Value::Null,
+    ] {
+        let (mut s, _) = Session::new("Unverified", "x", "/w", vec![], false);
+        s.line(r#"{"id":0,"result":{"protocolVersion":1}}"#);
+        let (out, events) = s.line(&json!({"id":1,"result":{"sessionId":"s","modes":modes}}).to_string());
+        assert!(out.is_empty() && s.idle(), "{modes}");
+        assert!(events.iter().any(|e| matches!(e, crate::acp::Event::Done { error: true, .. })), "{events:?}");
+        assert!(s.follow_up("no bypass").unwrap().0.is_empty());
+        s.set_auto(true);
+        assert_eq!(method(&s.follow_up("explicit auto").unwrap().0[0])["method"], "session/prompt");
+        let (out, _) = s.set_auto(false);
+        assert_eq!(method(&out[0])["method"], "session/cancel", "an unverified running mode is contained too");
+    }
+    let (mut s, _) = Session::new("Read only", "x", "/w", vec![], false);
+    s.line(r#"{"id":0,"result":{"protocolVersion":1}}"#);
+    let (out, _) =
+        s.line(r#"{"id":1,"result":{"sessionId":"s","modes":{"currentModeId":"read-only","availableModes":[{"id":"read-only"}]}}}"#);
+    assert_eq!(method(&out[0])["method"], "session/prompt");
+    // With automatic approval on, an agent without modes still gets the task.
+
     let (mut s, _) = Session::new("goose", "x", "/w", vec![], true);
     s.line(r#"{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":1}}"#);
     let (out, _) = s.line(r#"{"jsonrpc":"2.0","id":1,"result":{"sessionId":"g"}}"#);
@@ -3840,7 +4107,7 @@ fn acp_permissions_never_upgrade_once_to_always_and_stale_errors_are_ignored() {
     }
     let (mut s, _) = Session::new("Agent", "task", "/work", vec![], false);
     s.line(r#"{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":1,"authMethods":[]}}"#);
-    s.line(r#"{"jsonrpc":"2.0","id":1,"result":{"sessionId":"s"}}"#);
+    s.line(r#"{"jsonrpc":"2.0","id":1,"result":{"sessionId":"s","modes":{"currentModeId":"agent","availableModes":[{"id":"agent"}]}}}"#);
     s.line(r#"{"jsonrpc":"2.0","id":2,"result":{"stopReason":"end_turn"}}"#);
     assert!(s.idle());
     assert!(s.line(r#"{"jsonrpc":"2.0","id":2,"error":{"code":-32000,"message":"Authentication required"}}"#).1.is_empty());
@@ -4303,7 +4570,7 @@ fn list_layers_includes_web_tile_layers() {
     s.run("map.addTiles", &json!({"url": wms, "kind": "raster", "name": "Rain radar", "overlay": true})).unwrap();
     s.run("map.setTiles", &json!({"name": "Rain radar", "visible": false})).unwrap();
     let call = ToolCall { id: "x".into(), name: "list_layers".into(), args: json!({}) };
-    let out: Value = serde_json::from_str(&tools::run(&mut s, &call).unwrap()).unwrap();
+    let out: Value = serde_json::from_str(&run_tool_call(&mut s, &call).unwrap()).unwrap();
     let tiles = out["tileLayers"].as_array().cloned().unwrap_or_default();
     let radar = tiles.iter().find(|t| t["name"] == "Rain radar");
     assert!(radar.is_some_and(|t| t["visible"] == false && t["overlay"] == true && t["kind"] == "raster" && t["index"].is_u64()), "{out}");
@@ -4364,4 +4631,142 @@ fn peer_replacement_cancels_approvals_and_stale_replies() {
     assert_eq!(agent.generation(), current);
     assert!(agent.waiting() && agent.pending(&s).is_none());
     assert_eq!(agent.transcript.len(), transcript);
+}
+
+/// The existing real Wasm fixture crosses Agent pending/decide and MCP, by id and display name.
+#[test]
+fn permission_policy_real_plugin_approval_and_changed_first_card() {
+    use rustgis_engine::plugins;
+    let mut s = sample();
+    let mut package = plugins::Package::from_zip(&plugins::testing::package("assistant-policy-real", &["edit"])).unwrap();
+    package.manifest.tools.iter_mut().find(|t| t.id == "x").unwrap().name = "Reviewed selection fixture".into();
+    package.manifest.tools.iter_mut().find(|t| t.id == "m").unwrap().name = "Buffer".into();
+    plugins::load(package, "test").unwrap();
+    for tool in ["plugin:assistant-policy-real/x", "Reviewed selection fixture"] {
+        for (name, args) in [
+            ("run_tool", json!({"tool":tool,"params":{"input":"Cities"}})),
+            ("run_tool", json!({"tool":tool,"params":"{\"input\":\"Cities\"}"})),
+            ("run_command", json!({"command":"gp.run","params":{"tool":tool,"params":{"input":"Cities"}}})),
+            ("run_command", json!({"command":"gp.run","params":json!({"tool":tool,"params":{"input":"Cities"}}).to_string()})),
+            ("run", json!({"script":format!("gp.run {}",json!({"tool":tool,"params":{"input":"Cities"}}))})),
+        ] {
+            if !s.map().layer_by_name("Cities").unwrap().selection.is_empty() {
+                s.run("select.clear", &json!({"layer":"Cities"})).unwrap();
+            }
+            assert!(call_tool(&mcp::Server::new(false), &mut s, name, args.clone()).0);
+            assert!(s.map().layer_by_name("Cities").unwrap().selection.is_empty());
+            let mut a = Agent::new(cfg("openai"), &s);
+            a.ask("select", &s);
+            assert_eq!(a.receive(a.generation(), ok(call("real", name, args.clone())), &mut s), Step::Confirm);
+            assert!(!a.pending(&s).unwrap().2, "every plugin run asks separately");
+            a.decide(true, true, &mut s);
+            assert_eq!(s.map().layer_by_name("Cities").unwrap().selection, [0, 2]);
+            if !s.map().layer_by_name("Cities").unwrap().selection.is_empty() {
+                s.run("select.clear", &json!({"layer":"Cities"})).unwrap();
+            }
+            let (error, why) = call_tool(&mcp::Server::new(true), &mut s, name, args);
+            assert!(!error, "{why}");
+            assert_eq!(s.map().layer_by_name("Cities").unwrap().selection, [0, 2]);
+        }
+    }
+    assert_eq!(rustgis_engine::analysis::resolve_published("Buffer").unwrap().spec().id, "buffer");
+    s.run("layer.select", &json!({"layer":"Cities"})).unwrap();
+    let mut a = Agent::new(cfg("openai"), &s);
+    a.ask("rename the active layer", &s);
+    let args = json!({"command":"plugin:assistant-policy-real/f","params":{"op":"layer.rename","params":{"name":"No stale rename"}}});
+    assert_eq!(a.receive(a.generation(), ok(call("changed", "run_command", args)), &mut s), Step::Confirm);
+    let first = a.pending(&s).unwrap();
+    assert!(first.0.contains("plugin:assistant-policy-real/f"));
+    s.run("layer.select", &json!({"layer":"Countries"})).unwrap();
+    a.decide(true, false, &mut s);
+    assert!(s.map().layer_by_name("No stale rename").is_none());
+    assert!(a.transcript.iter().any(|e| matches!(e,Entry::Tool{error:true,result,..} if result.contains("changed"))));
+    // The actual first shown item card also retains its original executable content.
+    s.run("task.new", &json!({"name":"Shown item","steps":[{"title":"Visibility","command":"layer.visibility","params":{"layer":"Cities","visible":false}}]}))
+        .unwrap();
+    let mut a = Agent::new(cfg("openai"), &s);
+    a.ask("run the task", &s);
+    assert_eq!(
+        a.receive(a.generation(), ok(call("item", "run_command", json!({"command":"task.run","params":{"task":"Shown item"}}))), &mut s),
+        Step::Confirm
+    );
+    assert!(a.pending(&s).unwrap().0.contains("Shown item"));
+    let map = s.map().clone();
+    s.run("task.addStep", &json!({"task":"Shown item","title":"Changed content","command":"map.zoomIn","params":{}})).unwrap();
+    a.decide(true, false, &mut s);
+    assert_eq!(s.map().name, map.name);
+    assert_eq!(s.map().camera, map.camera);
+    assert_eq!(s.map().layer_by_name("Cities").unwrap().visible, map.layer_by_name("Cities").unwrap().visible);
+    assert!(a.transcript.iter().any(|e| matches!(e,Entry::Tool{error:true,result,..} if result.contains("changed"))));
+    plugins::unload("assistant-policy-real");
+}
+
+/// Non-Ask scripts have no approval-plan node/project budget, but deny the whole vehicle first.
+#[test]
+fn permission_policy_mcp_long_script_preflight_and_unrelated_project_size() {
+    let mut s = sample();
+    let server = mcp::Server::new(true);
+    let script = "map.link {}\n".repeat(1001);
+    let (error, why) = call_tool(&server, &mut s, "run", json!({"script":script}));
+    assert!(!error, "{why}");
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("never-export.png");
+    assert!(!path.exists());
+    let forbidden = format!(
+        "share.exportMap {}\n{}model.new {{\"name\":\"reserved later\"}}",
+        json!({"path":path,"width":64,"height":64}),
+        "map.link {}\n".repeat(1001)
+    );
+    let (error, why) = call_tool(&server, &mut s, "run", json!({"script":forbidden}));
+    assert!(error && why.contains("reserved"), "{why}");
+    assert!(!path.exists(), "whole-script refusal precedes the first irreversible line");
+    let id = s.map().layer_by_name("Cities").unwrap().id;
+    s.map_mut().layer_mut(id).unwrap().dataset.source = Some("unrelated metadata".repeat(10_000));
+    let (error, why) = call_tool(&server, &mut s, "run_command", json!({"command":"map.graticule","params":{"on":true}}));
+    assert!(!error, "{why}");
+}
+
+/// The actual pending card exposes effective saved targets and nested SQL's specialized reason.
+#[test]
+fn permission_policy_pending_effective_share_and_nested_sql() {
+    let mut s = sample();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("saved-cities.zip");
+    s.run("share.webLayer", &json!({"layer":"Cities","path":path})).unwrap();
+    s.run("layer.select", &json!({"layer":"Countries"})).unwrap();
+    let mut a = Agent::new(cfg("openai"), &s);
+    a.ask("update the saved share", &s);
+    assert_eq!(
+        a.receive(a.generation(), ok(call("saved", "run_command", json!({"command":"share.replaceWebLayer","params":{}}))), &mut s),
+        Step::Confirm
+    );
+    let shown = a.pending(&s).unwrap().0;
+    assert!(shown.contains("Cities") && shown.contains(&path.display().to_string()), "{shown}");
+    assert!(a.pending_review().unwrap().defaults.is_none());
+    a.decide(false, false, &mut s);
+    let params = json!({"sql":"FROM t","database":"/data/x.duckdb", "password":"RGSYNTH_direct_review_secret",
+        "metadata":{"script":format!("layer.addUrl {}", json!({"url":"https://example.invalid/data?token=RGSYNTH_url_review_secret","token":"RGSYNTH_nested_review_secret"}))}});
+    let script = format!("layer.addSql {params}");
+    s.run("task.new", &json!({"name":"SQL child","steps":[{"title":"Query","command":"layer.addSql","params":{"sql":"FROM t","database":"/data/x.duckdb"}}]})).unwrap();
+    s.run("notebook.new", &json!({"name":"SQL notebook"})).unwrap();
+    s.run("notebook.editCell", &json!({"notebook":"SQL notebook","cell":1,"source":script})).unwrap();
+    for (name, args) in [
+        ("run", json!({"script":script})),
+        ("run_command", json!({"command":"task.run","params":{"task":"SQL child"}})),
+        ("run_command", json!({"command":"notebook.run","params":{"notebook":"SQL notebook","cell":1}})),
+    ] {
+        let mut a = Agent::new(cfg("openai"), &s);
+        a.ask("query", &s);
+        assert_eq!(a.receive(a.generation(), ok(call("sql", name, args)), &mut s), Step::Confirm);
+        let (what, why, _) = a.pending(&s).unwrap();
+        assert!(why.contains("views in the database /data/x.duckdb"), "{why}");
+        if name == "run" {
+            assert_eq!(a.pending_review().unwrap().lines, [(1, "layer.addSql".into())]);
+            assert!(why.contains("line 1 (layer.addSql)"), "{why}");
+            assert!(what.contains("FROM t") && what.contains("/data/x.duckdb"), "{what}");
+            assert!(!what.contains("RGSYNTH_"), "secrets cannot become consent display data");
+            assert!(!what.contains("structured content omitted"), "{what}");
+        }
+        a.decide(false, false, &mut s);
+    }
 }

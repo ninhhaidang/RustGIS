@@ -52,12 +52,19 @@ fn new_files(dir: &Path, job: &Job) -> Vec<(String, Vec<u8>)> {
 }
 
 pub(crate) fn run(job: &Job) -> Result<ToolResult, String> {
+    run_pinned(job, &runner::ResolvedRunner::capture()?, &|| Ok(()))
+}
+
+/// Stages only after the captured runner and live caller are still valid.
+pub(crate) fn run_pinned(job: &Job, pin: &runner::ResolvedRunner, live: &dyn Fn() -> Result<(), String>) -> Result<ToolResult, String> {
+    pin.check()?;
+    live()?;
     let scratch = Scratch::new()?;
     for (name, bytes) in &job.files {
         let path = scratch.0.join(name);
         std::fs::write(&path, bytes).map_err(|e| format!("can't write {}: {e}", path.display()))?;
     }
-    let lines = runner::run(&job.tool, &job.argv(&scratch.0.display().to_string()), &scratch.0)?;
+    let lines = runner::run_pinned(pin, &job.tool, &job.argv(&scratch.0.display().to_string()), &scratch.0, live)?;
     let files = new_files(&scratch.0, job);
     Ok(finish(job, &files, &lines, Some(&scratch.0)))
 }

@@ -22,6 +22,8 @@ mod embed;
 mod geolibre;
 #[cfg(target_arch = "wasm32")]
 mod parts;
+#[cfg(any(target_arch = "wasm32", test))]
+mod request;
 #[cfg(target_arch = "wasm32")]
 mod web;
 

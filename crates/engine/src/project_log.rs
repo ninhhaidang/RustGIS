@@ -138,6 +138,65 @@ fn kept_error(e: &str) -> String {
 /// `v` without secrets: as History's Copy as code takes them out (`history::redacted`), and,
 /// first, inside the JSON a text holds (a script's command lines: `s3.connect {"secret": …}`),
 /// whose objects are redacted in place.
+/// A bounded review's display projection, without the log's clipping. Never used for
+/// execution, consent equality or provenance; the policy retains its private original.
+pub(crate) fn review_params(v: &Value) -> Result<Value, String> {
+    review_value(v, 0)
+}
+
+/// Projects bounded review data recursively, including JSON held inside nested script strings.
+/// A card that cannot show its structure safely is refused; log/diagnostic clipping is separate.
+fn review_value(v: &Value, depth: usize) -> Result<Value, String> {
+    if depth > 32 {
+        return Err("too deeply nested to show in full; ask for a smaller request".into());
+    }
+    Ok(match v {
+        Value::Object(o) => {
+            let mut out = serde_json::Map::new();
+            for (key, value) in o {
+                let sensitive =
+                    rustgis_data::address::normalized_name(key).as_deref() != Some("key") && rustgis_data::address::log_sensitive(key);
+                let Value::String(public_key) = review_value(&Value::String(key.clone()), depth + 1)? else {
+                    return Err("a review field name must be text".into());
+                };
+                let value = if sensitive { Value::String(String::new()) } else { review_value(value, depth + 1)? };
+                if out.insert(public_key, value).is_some() {
+                    return Err("redacted field names cannot be distinguished; simplify the request".into());
+                }
+            }
+            crate::cmd::history::redacted(&Value::Object(out))
+        }
+        Value::Array(a) => Value::Array(a.iter().map(|v| review_value(v, depth + 1)).collect::<Result<_, _>>()?),
+        Value::String(text) => {
+            let mut out = String::new();
+            let mut rest = text.as_str();
+            while let Some(at) = rest.find(['{', '[']) {
+                let (before, from) = rest.split_at(at);
+                out.push_str(before);
+                let mut values = serde_json::Deserializer::from_str(from).into_iter::<Value>();
+                match values.next() {
+                    Some(Ok(value @ (Value::Object(_) | Value::Array(_)))) => {
+                        let value = review_value(&value, depth + 1)?;
+                        out.push_str(&value.to_string());
+                        rest = from.get(values.byte_offset()..).unwrap_or("");
+                    }
+                    _ if from.get(1..).is_some_and(|r| r.trim_start().starts_with(['"', '\''])) || last_secret_name(from).is_some() => {
+                        return Err("structured text cannot be safely shown in full; simplify the request".into());
+                    }
+                    _ => {
+                        let first = from.chars().next().ok_or("empty structured text")?;
+                        out.push(first);
+                        rest = from.get(first.len_utf8()..).unwrap_or("");
+                    }
+                }
+            }
+            out.push_str(rest);
+            Value::String(crate::cmd::history::redacted_text(&sql_secrets_removed(&out)))
+        }
+        other => other.clone(),
+    })
+}
+
 fn redacted(v: &Value) -> Value {
     crate::cmd::history::redacted(&embedded_redacted(v, 0))
 }

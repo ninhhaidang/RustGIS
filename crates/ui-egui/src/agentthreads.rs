@@ -62,6 +62,31 @@ pub struct Threads {
     relay_ours: bool,
 }
 
+impl Threads {
+    /// Publish the shared approval setting synchronously to every live ACP session.
+    pub(crate) fn set_auto(&self, auto: bool) {
+        for t in &self.runs {
+            t.run.set_auto(auto);
+        }
+    }
+}
+
+/// Put the real process fixture into the same live-thread collection the checkbox updates.
+#[cfg(test)]
+pub(crate) fn insert_test_run(app: &mut RustGisApp, run: Run) {
+    app.assistant.threads.runs.push(ThreadRun {
+        id: "goose-1".into(),
+        label: "goose",
+        run,
+        feed: Vec::new(),
+        requests: Vec::new(),
+        working: true,
+        since: web_time::Instant::now(),
+        window: false,
+        map_seen: None,
+    });
+}
+
 impl Drop for Threads {
     fn drop(&mut self) {
         // Ordinary Close/New conversation clears runs without blocking. Actual application
@@ -80,15 +105,15 @@ fn cli() -> Option<PathBuf> {
 /// Starts the tasks the assistant handed out, passes on what threads did, asked and reported,
 /// and gives the assistant the reports once it's free.
 pub fn poll(app: &mut RustGisApp, ctx: &egui::Context) {
+    // Apply restored/programmatic setting changes before queued tasks or follow-ups start.
+    let auto = app.assistant.agents_auto;
+    app.assistant.threads.set_auto(auto);
     let delegations = app.assistant.agent.as_mut().map(|a| a.take_delegations()).unwrap_or_default();
     for d in delegations {
         start(app, d, ctx);
     }
-    let auto = app.assistant.agents_auto;
     let (mut reports, mut closed) = (Vec::new(), Vec::new());
     for t in &mut app.assistant.threads.runs {
-        // The user's setting reaches every thread: its next task's mode, and requests waiting.
-        t.run.set_auto(auto);
         let newest = t.run.map_approvals().iter().map(|a| a.id).max();
         if newest > t.map_seen {
             t.window = true;
@@ -151,8 +176,9 @@ fn deliver(app: &mut RustGisApp, ctx: &egui::Context) {
 /// Starts a thread on a task, or sends a follow-up to one.
 fn start(app: &mut RustGisApp, d: rustgis_assistant::agent::Delegation, ctx: &egui::Context) {
     if d.follow_up {
+        let auto = app.assistant.agents_auto;
         let sent = app.assistant.threads.runs.iter_mut().find(|t| t.id == d.thread).is_some_and(|t| {
-            let sent = !t.working && t.run.follow_up(&d.task);
+            let sent = !t.working && t.run.follow_up(&d.task, auto);
             if sent {
                 t.working = true;
                 t.window = true;
@@ -316,9 +342,27 @@ pub fn windows(app: &mut RustGisApp, ctx: &egui::Context) {
                 if let Some(p) = th.run.map_approvals().first() {
                     egui::Frame::NONE.fill(t.amber.gamma_multiply(0.15)).corner_radius(6).inner_margin(8).show(ui, |ui| {
                         ui.label(RichText::new(tl!("Allow this agent's RustGIS action?")).strong());
-                        // The whole request (up to 4 KB), scrolled rather than cut.
+                        if th.run.map_approvals().len() > 1 {
+                            ui.label(crate::i18n::fmt("{count} requests waiting", &[("count", &th.run.map_approvals().len().to_string())]));
+                        }
+                        // Overview and exact Details share one scroll area; controls stay outside.
                         egui::ScrollArea::vertical().max_height(160.0).id_salt(("acp_approval", p.id)).show(ui, |ui| {
-                            ui.label(RichText::new(&p.summary).monospace().small());
+                            if p.reviews.is_empty() {
+                                ui.label(RichText::new(&p.summary).monospace().small());
+                            } else {
+                                for (index, review) in p.reviews.iter().enumerate() {
+                                    ui.push_id(index, |ui| {
+                                        if p.reviews.len() > 1 {
+                                            ui.separator();
+                                            ui.label(crate::i18n::fmt(
+                                                "Request {current} of {count}",
+                                                &[("current", &(index + 1).to_string()), ("count", &p.reviews.len().to_string())],
+                                            ));
+                                        }
+                                        crate::approvalcard::show(ui, &app.session.registry, review);
+                                    });
+                                }
+                            }
                         });
                         ui.horizontal(|ui| {
                             if ui.button(tl!("Allow")).clicked() {

@@ -33,3 +33,7 @@ zip = { version = "9", default-features = false, features = ["deflate"] }
 # The relay's token folder and file must belong to the user running the process.
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1", features = ["process"] }
+
+[dev-dependencies]
+# Exercise the existing real Wasm fixture through Agent and MCP entry points.
+rustgis-engine = { workspace = true, features = ["testing"] }

@@ -61,6 +61,9 @@ pub struct RasterLayer {
     /// A remote reload shared with render snapshots, never serialized.
     #[serde(skip)]
     opening: Option<RasterRead>,
+    /// The initiating read's runtime lifetime, retained through queued application and retry.
+    #[serde(skip)]
+    read_still: Option<rustgis_data::source::remote::Still>,
     /// The style is the file's own look once its pixels land (a layer added before they have;
     /// saved with a project saved before they did, so it opens in that look still).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -217,6 +220,7 @@ impl RasterLayer {
             error: None,
             masked: MaskedStats::default(),
             opening: None,
+            read_still: None,
             restyle: false,
             look: None,
             pixels_said: false,
@@ -246,6 +250,7 @@ impl RasterLayer {
             error: None,
             masked: MaskedStats::default(),
             opening: None,
+            read_still: None,
             restyle: false,
             look: None,
             pixels_said: false,
@@ -275,6 +280,7 @@ impl RasterLayer {
             error: None,
             masked: MaskedStats::default(),
             opening: None,
+            read_still: None,
             restyle: false,
             look: None,
             pixels_said: false,
@@ -309,6 +315,7 @@ impl RasterLayer {
             error: None,
             masked: MaskedStats::default(),
             opening: None,
+            read_still: None,
             restyle: true,
             look: None,
             pixels_said: false,
@@ -358,6 +365,9 @@ impl RasterLayer {
     /// [`RasterLayer::reload`] natively). What it can't start (no address, an address that isn't a
     /// tile layer's, no reader here) is the caller's to say.
     fn begin_in_place_read(&mut self) -> Result<(), String> {
+        use rustgis_data::source::remote;
+        let still = remote::current_still();
+        remote::check_still(&still)?;
         let Some(address) = self.path.clone() else { return Err("the raster has no source".to_string()) };
         // Checked as a tile layer's address is (http(s) or s3, a host, no control characters): a
         // project edited by hand asks for nothing else.
@@ -369,10 +379,11 @@ impl RasterLayer {
         let slot = Arc::new(Mutex::new(None));
         let land = slot.clone();
         self.opening = Some(slot);
+        self.read_still = still.clone();
         reader(
             &address,
             Box::new(move |result| {
-                *land.lock().unwrap_or_else(|e| e.into_inner()) = Some(result.map(Arc::new));
+                *land.lock().unwrap_or_else(|e| e.into_inner()) = Some(remote::check_still(&still).and(result.map(Arc::new)));
                 crate::source::wake();
             }),
         );
@@ -399,7 +410,13 @@ impl RasterLayer {
         if self.read_failure().is_none() {
             return;
         }
-        if let Err(e) = self.begin_in_place_read() {
+        use rustgis_data::source::remote;
+        let still = self.read_still.clone();
+        if let Err(e) = remote::check_still(&still) {
+            self.fail(e);
+            return;
+        }
+        if let Err(e) = remote::with_optional_still(still, || self.begin_in_place_read()) {
             self.land(Err(e));
         }
     }
@@ -423,6 +440,10 @@ impl RasterLayer {
         if self.time_zarr.is_some() {
             return Ok(());
         }
+        use rustgis_data::source::remote;
+        let still = remote::current_still();
+        remote::check_still(&still)?;
+        self.read_still = still;
         self.opening = None;
         self.error = None;
         self.failed_at = None;
@@ -458,16 +479,17 @@ impl RasterLayer {
             let placement = self.placement;
             let slot = Arc::new(Mutex::new(None));
             let land = slot.clone();
+            let still = self.read_still.clone();
             self.data = None;
             self.opening = Some(slot);
             rustgis_data::source::remote::fetch_whole(
                 path,
                 Box::new(move |result| {
-                    let result = result
-                        .map_err(|e| match e {
+                    let result = remote::check_still(&still)
+                        .and(result.map_err(|e| match e {
                             rustgis_data::source::remote::Failed::Other(message) => message,
                             _ => "The raster could not be downloaded.".to_string(),
-                        })
+                        }))
                         .and_then(|bytes| {
                             rustgis_data::raster::read_bytes(&name, &bytes)
                                 .and_then(|r| placed(r, placement))
@@ -510,6 +532,11 @@ impl RasterLayer {
     fn wait_for_read(&mut self, deadline: Instant) -> Result<(), String> {
         let Some(slot) = self.opening.clone() else { return Ok(()) };
         loop {
+            if let Err(e) = rustgis_data::source::remote::check_still(&self.read_still) {
+                self.opening = None;
+                self.fail(e.clone());
+                return Err(e);
+            }
             if let Some(result) = slot.lock().unwrap_or_else(|e| e.into_inner()).clone() {
                 self.opening = None;
                 let error = result.as_ref().err().cloned();
@@ -582,6 +609,12 @@ impl RasterLayer {
     /// Installs a completed remote read; each render copy can observe the same shared result.
     pub(crate) fn poll_reload(&mut self) -> bool {
         let Some(slot) = self.opening.as_ref() else { return false };
+        if let Err(e) = rustgis_data::source::remote::check_still(&self.read_still) {
+            self.opening = None;
+            self.fail(e);
+            crate::source::another_frame();
+            return false;
+        }
         let Some(result) = slot.lock().unwrap_or_else(|e| e.into_inner()).clone() else { return true };
         self.opening = None;
         self.land(result);
@@ -1567,6 +1600,7 @@ impl RasterLayer {
             error: _,
             masked: _,
             opening: _,
+            read_still: _,
             in_place: _,
             restyle: _,
             look: _,
@@ -1600,6 +1634,39 @@ impl RasterLayer {
 
 #[cfg(test)]
 mod tests {
+    /// A completed read can wait for a render copy or the blocking consumer. Revocation
+    /// between callback and application must refuse both consumers of the shared slot.
+    #[test]
+    fn permission_policy_completed_raster_checks_lifetime_at_application() {
+        use rustgis_data::source::remote;
+        use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+        let previous = in_place_reader().lock().unwrap().take();
+        set_in_place_reader(|_, done| done(Ok(dem())));
+        let mut failures = Vec::new();
+        for revoke in [false, true] {
+            let live = Arc::new(AtomicBool::new(true));
+            let flag = live.clone();
+            let still: remote::Still = Arc::new(move || flag.load(SeqCst));
+            let mut layer = remote::with_still(still, || RasterLayer::opening_in_place("https://raster-landing.invalid/scene.tif"));
+            assert!(layer.data.is_none() && layer.opening.as_ref().unwrap().lock().unwrap().is_some(), "callback completed before poll");
+            let mut render_copy = layer.clone();
+            live.store(!revoke, SeqCst);
+            assert!(!layer.poll_reload());
+            if layer.data.is_some() == revoke {
+                failures.push(format!("render application ignored revoke={revoke}"));
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let r = render_copy.wait_for_read(Instant::now() + web_time::Duration::from_secs(1));
+                if r.is_ok() == revoke || render_copy.data.is_some() == revoke {
+                    failures.push(format!("blocking application ignored revoke={revoke}"));
+                }
+            }
+        }
+        *in_place_reader().lock().unwrap() = previous;
+        assert!(failures.is_empty(), "{failures:?}");
+    }
+
     use rustgis_data::raster::{Crs, GeoTransform};
 
     use super::*;

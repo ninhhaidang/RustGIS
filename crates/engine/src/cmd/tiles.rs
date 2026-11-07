@@ -62,17 +62,18 @@ pub const NETWORK: &[&str] = &[
     "arcgis.token",
 ];
 
+/// Registers commands for tile-layer sources, drawing properties, coverage and celestial bodies.
 pub fn commands() -> Vec<C> {
     vec![
-        C::new("map.addTiles", "Add Tile Layer", "Home › Add", add).roles(&[]).params(
+        C::new("map.addTiles", "Add Tile Layer", "Home › Add", add).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network)).params(
             r#"{"url": "https://…/{z}/{x}/{y}.png" | vector tiles ".pbf" or TileJSON | MapLibre style.json | a PMTiles archive (web address or file path) | an MBTiles file path, "kind"?: "raster"|"vector"|"style"|"pmtiles"|"mbtiles" (guessed from the url), "name"?: text, "bounds"?: [west, south, east, north] (longitude/latitude coverage, when known), "attribution"?: text, "minZoom"?: number, "maxZoom"?: number, "tileSize"?: 256|512 (1024 too for a WMS or map service asked for in Web Mercator by its tiles' box: their pictures are asked for that size), "singleImage"?: bool (a WMS or map service: one picture of the view instead of tiles, so symbols and labels aren't cut at tile edges; tiles on the globe, a tilted map or a projection the service doesn't offer; by default on for one, unless tileSize is given), "tms"?: bool, "subdomains"?: [text], "layers"?: [vector tile layer names, drawn in colours of their own], "styleLayers"?: [MapLibre style layers drawing vector tiles instead (their source is the tiles')], "opacity"?: 0–1, "blend"?: "normal"|"multiply"|"screen"|"overlay"|"darken"|"lighten"|"difference" (how it combines with what is beneath), "overlay"?: bool (on top of the map's layers, as every new layer goes; without it a basemap, under them; one with the same address and role is replaced when it has the same name or the same look), "top"?: bool (on top of the map's layers, as a layer added as data goes; by default an overlay's place), "replace"?: bool (removes the other tile basemaps, not overlays), "id"?: catalog id, "view"?: bool (a MapLibre style: go to the place, zoom, bearing and pitch its root properties give, once it loads), "start"?, "end"?: dates a url with date placeholders ({date:YYYY-MM-DD}, {YYYY}) spans, turning the time slider on (or, when it is on, setting its span), "unit"?, "interval"?, "dates"?: its steps (as in time.set), "legend"?: "the web address of its legend picture (PNG or JPEG)" | [address | {"url": address, "minScale"?: scale denominator, "maxScale"?: one (the scales it is for, from minScale up to below maxScale)}] (at most 16; the Layers pane shows the one for the map's scale under the layer; service.add gives a WMS or WMTS layer its service's), "connection"?: "the id of the saved web-service connection it comes from (as service.add): the tile layer records it, and its tiles are read with its login"}"#,
         ),
-        C::new("map.removeTiles", "Remove Tile Layer", "Home › Add", remove).roles(&[])
+        C::new("map.removeTiles", "Remove Tile Layer", "Home › Add", remove).roles(&[]).effects(crate::policy::Effects::NONE)
             .params(r#"{"name"?: text, "index"?: number, "id"?: catalog id} (removes every tile layer when none is given)"#),
-        C::new("map.setTiles", "Tile Layer Properties", "Home › Add", set).roles(&[]).params(
+        C::new("map.setTiles", "Tile Layer Properties", "Home › Add", set).inputs(set_inputs).roles(&[]).effects(crate::policy::Effects::NONE).params(
             r#"{"name"?: text | "index"?: number (0 = top) | "id"?: catalog id, "visible"?: bool, "opacity"?: 0–1, "blend"?: "normal"|"multiply"|"screen"|"overlay"|"darken"|"lighten"|"difference", "move"?: "up"|"down"|"top"|"bottom" (past the next layer in the drawing order of all the map's layers, a feature or raster layer too), "to"?: number (its place in that order among the other layers, 0 = top; the Layers pane lists it), "rename"?: text, "bands"?: [red, green, blue] | [band] (a cloud-optimised GeoTIFF's bands shown, from 1; [] for its own), "range"?: [low, high] (the values shown from black to full colour; null: each band's 2nd–98th percentile), "dequantize"?: "aef" (AlphaEarth's quantised embeddings) | "none", "legend"?: as map.addTiles's, or null for none, "hiddenLayers"?: [source layer name] (vector tiles' source layers not drawn or identified, as map.tiles's sourceLayers names them; replaces the list, [] or null for none), "singleImage"?: bool (as map.addTiles's), "tileSize"?: 256|512|1024 (a WMS or map service asked for in Web Mercator: its tiles' size)}"#,
         ),
-        C::new("map.tiles", "Tile Layers", "Home › Add", |s, _| Ok(list(s, false))).roles(&[]).view(),
+        C::new("map.tiles", "Tile Layers", "Home › Add", |s, _| Ok(list(s, false))).inputs(listing_inputs).roles(&[]).effects(crate::policy::Effects::NONE).view(),
         // As `layer.expand` for a layer's classes: what the pane shows, not an edit to undo.
         C::new("map.expandTiles", "Expand Tile Legend", "Layers", |s, p| {
             let i = find(s, p)?.ok_or("name or index is required")?;
@@ -80,20 +81,20 @@ pub fn commands() -> Vec<C> {
             let t = s.map_mut().tiles.get_mut(i).ok_or("no tile layer at that index")?;
             t.expanded = on.unwrap_or(!t.expanded);
             Ok(json!({"index": i, "expanded": t.expanded}))
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .params(r#"{"name"?: text | "index"?: number (0 = top) | "id"?: catalog id, "on"?: bool (toggles when omitted)} — shows or hides a tile layer's legend and source layers under it in the Layers pane"#)
         .view(),
         // As `layer.select` for a map layer: what the pane shows, not an edit to undo.
-        C::new("map.selectTiles", "Select Tile Layer", "Layers", select_tiles).roles(&[])
+        C::new("map.selectTiles", "Select Tile Layer", "Layers", select_tiles).roles(&[]).effects(crate::policy::Effects::NONE)
             .params(r#"{"name"?: text | "index"?: number (0 = top) | "id"?: catalog id} — picks a tile layer in the Layers pane, leaving no map layer active (picking one ends it): the Selected in Layers pop-up mode identifies it"#)
             .view(),
-        C::new("map.zoomToTiles", "Zoom To Tile Layer", "Home › Add", zoom_to).roles(&[])
+        C::new("map.zoomToTiles", "Zoom To Tile Layer", "Home › Add", zoom_to).roles(&[]).effects(crate::policy::Effects::NONE).inputs(zoom_inputs)
             .params(r#"{"name"?: text | "index"?: number (0 = top) | "id"?: catalog id} (advertised service bounds, or the bounds in a PMTiles archive or cloud-optimised GeoTIFF header)"#)
             .view(),
-        C::new("map.body", "Celestial Body", "Home › Add", body).roles(&[]).params(
+        C::new("map.body", "Celestial Body", "Home › Add", body).roles(&[]).effects(crate::policy::Effects::NONE).params(
             r#"{"name"?: "earth"|"moon"|"mars"|"mercury"|"venus"|"io"|"europa"|"ganymede"|"callisto"|"titan"|"pluto"|"charon" (map.bodies lists them; default: the basemap's body), "basemap"?: a planetary basemap's id (default: the body's first; USGS Imagery on the Earth) | false (adds none, keeping the web basemaps but other bodies')}"#,
         ),
-        C::new("map.bodies", "Celestial Bodies", "Home › Add", |s, _| Ok(bodies(s))).roles(&[]).view(),
+        C::new("map.bodies", "Celestial Bodies", "Home › Add", |s, _| Ok(bodies(s))).roles(&[]).effects(crate::policy::Effects::NONE).view(),
     ]
 }
 
@@ -204,15 +205,29 @@ pub(crate) fn add(s: &mut Session, p: &Value) -> CmdResult {
     add_with_metadata_wait(s, p, web_time::Duration::from_secs(1))
 }
 
+/// The executor and its source-reach selector accept the same explicit or guessed kind.
+fn add_kind(p: &Value, url: &str) -> Result<TileKind, String> {
+    match ps(p, "kind") {
+        Some(k) => TileKind::from_code(k).ok_or_else(|| format!("unknown kind '{k}' (raster, vector, style, pmtiles or mbtiles)")),
+        None => Ok(TileKind::guess(url)),
+    }
+}
+
+/// Local archive additions read files even though the command also declares network reach.
+pub(crate) fn add_reach(p: &Value) -> crate::policy::Effects {
+    let Some(url) = ps(p, "url").map(str::trim) else { return crate::policy::Effects::NONE };
+    match add_kind(p, url) {
+        Ok(kind @ (TileKind::PmTiles | TileKind::MbTiles)) => tile_source_reach(&TileLayer::new("", kind, url)),
+        _ => crate::policy::Effects::NONE,
+    }
+}
+
 /// Adds after a caller's header check; a zero wait avoids spending that caller's budget twice.
 pub(crate) fn add_with_metadata_wait(s: &mut Session, p: &Value, metadata_wait: web_time::Duration) -> CmdResult {
     let bound = crate::service_logins::request_params(s, p)?;
     let p = bound.as_ref();
     let url = ps(p, "url").map(str::trim).filter(|u| !u.is_empty()).ok_or("url is required")?;
-    let kind = match ps(p, "kind") {
-        Some(k) => TileKind::from_code(k).ok_or_else(|| format!("unknown kind '{k}' (raster, vector, style, pmtiles or mbtiles)"))?,
-        None => TileKind::guess(url),
-    };
+    let kind = add_kind(p, url)?;
     // A dated address (`{date:YYYY-MM-DD}`) follows the time slider, which the layer's span
     // (`start`, `end`) turns on when it is off.
     let dated = rustgis_data::time::is_template(url);
@@ -516,8 +531,9 @@ fn follow_archive(s: &mut Session, t: &TileLayer, wait: web_time::Duration) -> b
 }
 
 /// The tile layer a command names by `index`, `name` or `id`.
-pub(crate) fn find(s: &Session, p: &Value) -> Result<Option<usize>, String> {
-    let tiles = &s.map().tiles;
+pub(crate) fn find(input: &impl super::InputSource, p: &Value) -> Result<Option<usize>, String> {
+    let context = input.input_context();
+    let tiles = &context.map().tiles;
     if let Some(i) = f(p, "index") {
         let i = (i >= 0.0 && i.fract() == 0.0).then_some(i as usize).filter(|i| *i < tiles.len());
         return i.map(Some).ok_or_else(|| "no tile layer at that index".to_string());
@@ -529,6 +545,143 @@ pub(crate) fn find(s: &Session, p: &Value) -> Result<Option<usize>, String> {
         return tiles.iter().position(|t| t.id == id).map(Some).ok_or_else(|| format!("no tile layer '{id}'"));
     }
     Ok(None)
+}
+
+/// Exact source and routing state, kept private and charged to the planner's existing size limit.
+/// Inline style layers change drawing, not the tile source, and are deliberately not copied here.
+fn tile_source_state(t: &TileLayer) -> Value {
+    json!({
+        "name":t.name,"id":t.id,"kind":t.kind.code(),"url":t.url,"bounds":t.bounds,
+        "connection":t.connection,"anonymous":t.anonymous,"subdomains":t.subdomains,
+        "minZoom":t.min_zoom,"maxZoom":t.max_zoom,"tileSize":t.tile_size,"tms":t.tms,
+        "singleImage":t.single_image,"layers":t.layers,"hiddenLayers":t.hidden_layers,
+        "timeUrl":t.time_url,"timeUrls":t.time_urls,"timeAt":t.time_at,"timeHidden":t.time_hidden,
+        "legends":t.legends,"visible":t.visible,"opacity":t.opacity,"error":t.error.is_some(),
+        "overlay":t.overlay,"over":t.over
+    })
+}
+
+/// Binds the executor's chosen tile before its coverage header can be read.
+fn zoom_inputs(input: &super::InputContext<'_>, p: &Value) -> Result<super::Inputs, String> {
+    let i = find(input, p)?.ok_or("give the tile layer's name or index")?;
+    Ok(tile_inputs(input.map(), [i]))
+}
+
+/// Freezes only the selected tile routes, with their stack positions and owning map.
+pub(crate) fn tile_inputs(map: &rustgis_map::Map, indices: impl IntoIterator<Item = usize>) -> super::Inputs {
+    let mut inputs = super::Inputs::layers(std::iter::empty());
+    inputs.maps.push(map.instance_id());
+    let tiles: Vec<_> = indices
+        .into_iter()
+        .filter_map(|i| {
+            map.tiles.get(i).map(|tile| {
+                inputs.review_places.push(crate::sources::redact(&tile.url));
+                json!({"index":i,"tile":tile_source_state(tile)})
+            })
+        })
+        .collect();
+    inputs.state = json!({"map":map.instance_id(),"tiles":tiles});
+    inputs
+}
+
+/// Archive names in the returned list need metadata even when their bounds are already known.
+fn listing_indices(map: &rustgis_map::Map) -> impl Iterator<Item = usize> + '_ {
+    map.tiles.iter().enumerate().filter(|(_, t)| matches!(t.kind, TileKind::PmTiles | TileKind::MbTiles)).map(|(i, _)| i)
+}
+
+/// Listing source-layer names asks archive metadata for every archive, even with known bounds.
+pub(crate) fn listing_inputs(input: &super::InputContext<'_>, _: &Value) -> Result<super::Inputs, String> {
+    Ok(tile_inputs(input.map(), listing_indices(input.map())))
+}
+
+/// Binds the property target and archive routes read for the returned listing.
+fn set_inputs(input: &super::InputContext<'_>, p: &Value) -> Result<super::Inputs, String> {
+    let i = find(input, p)?.ok_or("name or index is required")?;
+    let mut indices: Vec<_> = listing_indices(input.map()).collect();
+    if !indices.contains(&i) {
+        indices.push(i);
+    }
+    Ok(tile_inputs(input.map(), indices))
+}
+
+/// An uploaded MBTiles archive is already in memory; only unwrapped local archives read files.
+/// Anonymous S3 and saved-login wrappers retain network reach even if their payload is malformed.
+fn tile_source_reach(t: &TileLayer) -> crate::policy::Effects {
+    use crate::policy::{Effect, Effects};
+    use rustgis_render::rustgis_tiles::{mbtiles, s3};
+    if t.kind == TileKind::MbTiles && mbtiles::is_upload(&t.url) {
+        Effects::NONE
+    } else if matches!(t.kind, TileKind::PmTiles | TileKind::MbTiles)
+        && !s3::split_anonymous(&t.url).1
+        && rustgis_map::tiles::is_local_archive(&t.url)
+    {
+        Effects::NONE.with(Effect::Files)
+    } else {
+        Effects::NONE.with(Effect::Network)
+    }
+}
+
+/// Mirrors `extent_of`: advertised bounds and kinds without a coverage reader do no I/O.
+pub(crate) fn metadata_reach(input: &impl super::InputSource, p: &Value) -> crate::policy::Effects {
+    let context = input.input_context();
+    let tile = find(&context, p).ok().flatten().and_then(|i| context.map().tiles.get(i));
+    tile.map_or(crate::policy::Effects::NONE, coverage_reach)
+}
+
+/// Coverage is read only when it was not supplied by the service or project.
+pub(crate) fn coverage_reach(t: &TileLayer) -> crate::policy::Effects {
+    if t.bounds.is_none() && matches!(t.kind, TileKind::PmTiles | TileKind::MbTiles | TileKind::Cog) {
+        tile_source_reach(t)
+    } else {
+        crate::policy::Effects::NONE
+    }
+}
+
+/// Archive source-layer names come from metadata rather than the stored geographic bounds.
+pub(crate) fn listing_reach(map: &rustgis_map::Map) -> crate::policy::Effects {
+    listing_indices(map)
+        .filter_map(|i| map.tiles.get(i))
+        .fold(crate::policy::Effects::NONE, |reach, tile| reach.union(tile_source_reach(tile)))
+}
+
+/// Setting a COG look checks its header; the command's returned list also reads archive names.
+pub(crate) fn set_reach(input: &super::InputContext<'_>, p: &Value) -> crate::policy::Effects {
+    let mut reach = listing_reach(input.map());
+    if matches!(cog_look(p), Ok(Some(_)))
+        && let Some(tile) = find(input, p).ok().flatten().and_then(|i| input.map().tiles.get(i))
+        && tile.kind == TileKind::Cog
+    {
+        reach = reach.union(tile_source_reach(tile));
+    }
+    reach
+}
+
+/// Retains raw tile routes alongside the map and ordinary layers consumed by an export.
+/// Only separately redacted addresses enter its public review; private state is never a label.
+pub(crate) fn render_inputs(map: &rustgis_map::Map) -> super::Inputs {
+    let mut inputs = super::Inputs::layers(map.layers.iter().map(|layer| (map, layer)));
+    inputs.maps.push(map.instance_id());
+    inputs.state = json!({"map":map.instance_id(),"tiles":map.tiles.iter().map(tile_source_state).collect::<Vec<_>>()});
+    for tile in map.tiles.iter().filter(|t| t.draws() && t.opacity > 0.0) {
+        inputs.review_places.push(crate::sources::redact(&tile.url));
+        inputs.review_places.extend(tile.legends.iter().map(|l| crate::sources::redact(&l.url)));
+    }
+    inputs
+}
+
+/// Source reach of tiles a referenced map draws, including their web legend pictures.
+/// The map's built-in basemap is a drawn palette and has no external source.
+pub(crate) fn render_reach(map: &rustgis_map::Map) -> crate::policy::Effects {
+    map.tiles.iter().fold(crate::policy::Effects::NONE, |reach, tile| reach.union(render_tile_reach(tile)))
+}
+
+/// A resolved frame's tile uses the same drawing and source rules as an ordinary map export.
+pub(crate) fn render_tile_reach(tile: &TileLayer) -> crate::policy::Effects {
+    if !(tile.draws() && tile.opacity > 0.0) {
+        return crate::policy::Effects::NONE;
+    }
+    let reach = tile_source_reach(tile);
+    if tile.legends.is_empty() { reach } else { reach.with(crate::policy::Effect::Network) }
 }
 
 /// Picks a tile layer in the Layers pane: the only one picked, with no map layer active.

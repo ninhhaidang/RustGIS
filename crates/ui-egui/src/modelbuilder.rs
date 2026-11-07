@@ -368,7 +368,7 @@ fn load_saved(app: &mut RustGisApp, name: &str) -> Result<(), String> {
         Some(graph) => graph.clone(),
         None => model::checked_steps_to_graph(&m.steps)?,
     };
-    let imported = !app.session.trusted_models.contains(&m.name.to_ascii_lowercase());
+    let imported = !app.session.item_trusted("model", &m.name);
     let n = m.name.clone();
     app.mb.load(&n, Some(n.clone()), graph, imported);
     Ok(())

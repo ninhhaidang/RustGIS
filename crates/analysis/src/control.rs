@@ -66,6 +66,38 @@ impl rustgis_data::progress::Probe for Control {
     }
 }
 
+/// Carries the initiating request predicate to the data writer's last commit check as well as
+/// its loops. Progress still belongs to the original control; revocation never changes its flag.
+struct Progress {
+    control: Option<Arc<Control>>,
+    still: Option<rustgis_data::source::remote::Still>,
+}
+
+impl rustgis_data::progress::Probe for Progress {
+    fn cancelled(&self) -> bool {
+        self.control.as_ref().is_some_and(|c| c.is_cancelled()) || rustgis_data::source::remote::check_still(&self.still).is_err()
+    }
+    fn begin(&self, total: u64) {
+        if let Some(control) = &self.control {
+            rustgis_data::progress::Probe::begin(control.as_ref(), total);
+        }
+    }
+    fn advance(&self, n: u64) {
+        if let Some(control) = &self.control {
+            rustgis_data::progress::Probe::advance(control.as_ref(), n);
+        }
+    }
+}
+
+/// Installs the existing progress carrier with the current owned request predicate. With no
+/// explicit control, forwards the enclosing analysis run's, if any; authority is captured even
+/// when no run control exists, for a synchronous command's file commit checks.
+pub fn install_progress(control: Option<Arc<Control>>) -> rustgis_data::progress::Installed {
+    let control = control.or_else(current);
+    let still = rustgis_data::source::remote::current_still();
+    rustgis_data::progress::install(Some(Arc::new(Progress { control, still })))
+}
+
 /// A tool stopped because it was asked to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Cancelled;
@@ -114,6 +146,7 @@ impl Drop for Installed {
 /// Whether the run on this thread was asked to stop.
 pub(crate) fn cancelled() -> bool {
     CURRENT.with(|c| c.borrow().as_ref().is_some_and(|c| c.is_cancelled()))
+        || rustgis_data::source::remote::check_still(&rustgis_data::source::remote::current_still()).is_err()
 }
 
 /// Whether the run on this thread can be stopped while it goes ([`Control::stoppable`]), and so
@@ -190,6 +223,50 @@ pub(crate) fn advance(n: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Revocation during real file construction must reach the data writer's final rename,
+    /// even though the person did not press Cancel. Its prior file and the next run survive.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn an_owned_write_rechecks_authority_before_installing_its_file() -> Result<(), Box<dyn std::error::Error>> {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("rustgis-owned-progress-{}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join("output");
+        std::fs::write(&path, b"before")?;
+        let live = Arc::new(AtomicBool::new(true));
+        let current = live.clone();
+        let control = Control::new();
+        for controlled in [true, false] {
+            live.store(true, Ordering::SeqCst);
+            std::fs::write(&path, b"before")?;
+            let current = current.clone();
+            let result = rustgis_data::source::remote::with_still(Arc::new(move || current.load(Ordering::SeqCst)), || {
+                let write = || {
+                    let written: std::io::Result<()> = rustgis_data::io::write_atomic_with(&path, |out| {
+                        out.write_all(b"replacement")?;
+                        live.store(false, Ordering::SeqCst);
+                        Ok(())
+                    });
+                    assert!(written.is_err(), "revocation must stop the actual file commit");
+                    written.map_err(|e| e.to_string())
+                };
+                if controlled {
+                    crate::run_under("Export", &control, write)
+                } else {
+                    let _progress = install_progress(None);
+                    write()
+                }
+            });
+            assert!(result.is_err());
+            assert_eq!(std::fs::read(&path)?, b"before");
+            assert!(!control.is_cancelled(), "revocation did not change the user's cancel flag");
+            rustgis_data::io::write_atomic(&path, b"next run")?;
+            assert_eq!(std::fs::read(&path)?, b"next run");
+        }
+        std::fs::remove_dir_all(dir)?;
+        Ok(())
+    }
 
     #[test]
     fn a_run_sees_its_own_control_and_the_one_before_comes_back() {

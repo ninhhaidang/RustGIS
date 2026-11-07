@@ -415,9 +415,14 @@ impl Session {
         Ok((text, report))
     }
 
-    /// Replaces a project with peer/import semantics, bypassing explicit-save restoration.
-    /// Reset clears active connections, pending work and item trust before incoming resolution.
+    /// Replaces a project synchronously with peer/import semantics. No command runs with User
+    /// authority. Reset advances generation, clears item trust, history, pending work and active
+    /// connections; old approvals and continuations must bind to that generation.
     pub fn open_peer_text(&mut self, peer: Peer, text: &str) -> Result<Report, String> {
+        self.with_scope(crate::policy::Scope::peer(), |s| s.open_peer_text_scoped(peer, text))?
+    }
+    /// The existing raw census/reset path runs synchronously under peer provenance.
+    fn open_peer_text_scoped(&mut self, peer: Peer, text: &str) -> Result<Report, String> {
         let mut p = Project::from_peer_raw(text)?;
         let exchange = self.exchange.as_ref().filter(|e| peer == Peer::Bridge && e.generation == self.opened);
         let raw = exchange.map(|e| e.incoming(&p));

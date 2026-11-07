@@ -1,5 +1,19 @@
 //! Task re-entry stays bounded without changing finite scripts or outer transactions.
 use super::*;
+use crate::policy::{AgentAccess, Call, Effect, Effects, Outcome, Revocation, Scope};
+use std::sync::Arc;
+
+struct Live;
+impl Revocation for Live {
+    fn allows(&self, _: Effects) -> bool {
+        true
+    }
+}
+
+/// A live caller whose access setting is checked by the ordinary permission table.
+fn agent(access: AgentAccess) -> Scope {
+    Scope::agent(access, true, "metadata-review", Some("metadata-review".into()), Arc::new(Live))
+}
 
 /// Create a locally trusted task through the public API, keeping the trust policy in the test.
 fn task(s: &mut Session, name: &str, steps: Value) {
@@ -157,4 +171,150 @@ fn task_reentry_guard_covers_notebook_paths() {
     assert!(result["ran"][0]["result"]["error"].is_u64(), "the task keeps the notebook's cell-error result: {result}");
     assert!(s.project.notebooks[0].cells.iter().any(|c| c.error && c.output.as_deref().is_some_and(|o| o.contains("already running"))));
     assert!(!s.task_running && !s.notebook_running);
+}
+
+/// Running locally authored notebook cells requires a fresh approval, as other automation does.
+#[test]
+fn permission_review_notebook_automation_asks_each_time() {
+    #[cfg(not(target_arch = "wasm32"))]
+    if isolate_process_test("tests::task_reentry::permission_review_notebook_automation_asks_each_time") {
+        return;
+    }
+    let mut s = world();
+    s.run("notebook.new", &json!({"name":"Local automation"})).unwrap();
+    s.run("notebook.editCell", &json!({"notebook":"Local automation","cell":1,"source":"map.rename {\"name\":\"Notebook result\"}"}))
+        .unwrap();
+    let scope = Scope::assistant(1481, Arc::new(Live));
+    let call = Call::command("notebook.run", json!({"notebook":"Local automation","cell":1}));
+    let Outcome::NeedsApproval(pending) = s.review(&scope, &call) else { panic!("notebook automation needs approval") };
+    assert!(!pending.review().remember, "a notebook run cannot be approved for the whole conversation");
+    s.run_permitted(scope, pending.allow(), &call).unwrap();
+    assert_eq!(s.map().name, "Notebook result");
+}
+
+/// A plugin's file/edit permissions do not grant access to a user's notebook automation.
+#[test]
+fn permission_review_notebook_automation_is_refused_to_plugins() {
+    #[cfg(not(target_arch = "wasm32"))]
+    if isolate_process_test("tests::task_reentry::permission_review_notebook_automation_is_refused_to_plugins") {
+        return;
+    }
+    let mut s = world();
+    s.run("notebook.new", &json!({"name":"User notebook"})).unwrap();
+    s.run("notebook.editCell", &json!({"notebook":"User notebook","cell":1,"source":"map.rename {\"name\":\"Notebook result\"}"})).unwrap();
+    let plugin_id = "review-notebook-automation";
+    plugin(plugin_id, &["files", "edit"]);
+    let before = serde_json::to_value(&s.project).unwrap();
+    let result = forward(&mut s, plugin_id, "notebook.run", json!({"notebook":"User notebook","cell":1}));
+    rustgis_plugins::unload(plugin_id);
+    assert!(result.is_err(), "a plugin cannot start notebook automation: {result:?}");
+    assert_eq!(serde_json::to_value(&s.project).unwrap(), before);
+    s.run("notebook.run", &json!({"notebook":"User notebook","cell":1})).unwrap();
+    assert_eq!(s.map().name, "Notebook result", "native notebook execution remains available");
+}
+
+/// A live network denial must refuse connection admission before any database is opened.
+#[test]
+fn permission_review_postgis_connect_checks_live_network_authority() {
+    struct NoNetwork;
+    impl Revocation for NoNetwork {
+        fn allows(&self, effects: Effects) -> bool {
+            !effects.contains(Effect::Network)
+        }
+    }
+    let s = world();
+    let scope = Scope::assistant(1482, Arc::new(NoNetwork));
+    let call = Call::command("pg.connect", json!({"host":"127.0.0.1","database":"not-opened"}));
+    assert!(
+        matches!(s.review(&scope, &call), Outcome::Refused(error) if error.contains("revoked")),
+        "connecting must check the caller's live network authority before I/O"
+    );
+    assert!(matches!(s.review(&scope, &Call::command("pg.status", json!({}))), Outcome::Allowed));
+    let live = Scope::assistant(1483, Arc::new(Live));
+    assert!(matches!(s.review(&live, &call), Outcome::NeedsApproval(_)), "a live connection request still asks for explicit approval");
+}
+
+/// Lists, offline snapshots and projected caches stay available without external access or lost undo.
+#[test]
+fn permission_review_memory_views_and_offline_work_need_no_external_access() {
+    // Undo invalidates geometry caches; every other project field must be restored exactly.
+    let payload = |project: &Project| {
+        let mut project = project.clone();
+        for map in &mut project.maps {
+            for layer in &mut map.layers {
+                layer.geometry_rev = 0;
+            }
+        }
+        serde_json::to_value(project).unwrap()
+    };
+    let mut s = world();
+    for name in ["Open area", "Sync area", "Remove area"] {
+        s.run("offline.download", &json!({"name":name,"extent":[1,48,4,50]})).unwrap();
+    }
+    s.run("cache.empty", &Value::Null).unwrap();
+    let scope = agent(AgentAccess::Refuse);
+    let mut errors = Vec::new();
+    for (id, params) in [
+        ("share.jobs", json!({})),
+        ("offline.download", json!({"name":"Created area","extent":[1,48,4,50]})),
+        ("offline.open", json!({"name":"Open area"})),
+        ("offline.sync", json!({"name":"Sync area"})),
+        ("offline.remove", json!({"name":"Remove area"})),
+        ("cache.fill", json!({})),
+        ("cache.auto", json!({"on":true})),
+    ] {
+        let (before, undo) = (payload(&s.project), s.undo_depth());
+        match s.run_scoped(scope.clone(), &Call::command(id, params)) {
+            Err(error) => errors.push((id, error)),
+            Ok(result) => {
+                if id == "cache.fill" {
+                    assert!(result["cached"].as_u64().is_some_and(|n| n > 0), "{result}");
+                }
+                if id == "cache.auto" {
+                    assert!(s.auto_cache);
+                }
+                if matches!(id, "offline.download" | "offline.open" | "offline.remove") {
+                    assert_eq!(s.undo_depth(), undo + 1, "{id} keeps its ordinary edit transaction");
+                    s.run("edit.undo", &Value::Null).unwrap();
+                    assert_eq!(payload(&s.project), before, "{id} remains undoable");
+                }
+            }
+        }
+    }
+    assert!(errors.is_empty(), "memory-only work was refused: {errors:?}");
+}
+
+/// Changes to saved/favourite preferences require file permission before their lists change.
+#[test]
+fn permission_review_source_preferences_require_file_permission() {
+    #[cfg(not(target_arch = "wasm32"))]
+    if isolate_process_test("tests::task_reentry::permission_review_source_preferences_require_file_permission") {
+        return;
+    }
+    // A connection label carries no path-shaped text from which Files could be inferred.
+    let source = json!({"kind":"database","address":"Review connection"});
+    let mut failures = Vec::new();
+    for (id, params) in [
+        ("sources.favourite", source.clone()),
+        ("sources.favourite", json!({"kind":"database","address":source["address"],"on":false})),
+        ("sources.remove", json!({"list":"saved","kind":"database","address":source["address"]})),
+    ] {
+        let mut s = world();
+        s.run("sources.save", &source).unwrap();
+        if params.get("on") == Some(&Value::Bool(false)) {
+            s.run("sources.favourite", &source).unwrap();
+        }
+        let before = s.sources.to_json();
+        let call = Call::command(id, params);
+        if s.run_scoped(agent(AgentAccess::Refuse), &call).is_ok() {
+            failures.push(format!("{id} changed preferences without file permission"));
+            continue;
+        }
+        assert_eq!(s.sources.to_json(), before, "a refused preference change leaves its lists intact");
+        let scope = Scope::assistant(1484, Arc::new(Live));
+        let Outcome::NeedsApproval(pending) = s.review(&scope, &call) else { panic!("{id} needs file approval") };
+        s.run_permitted(scope, pending.allow(), &call).unwrap();
+        assert_ne!(s.sources.to_json(), before, "explicit approval permits the preference change");
+    }
+    assert!(failures.is_empty(), "{}", failures.join("; "));
 }

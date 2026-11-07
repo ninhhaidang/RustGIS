@@ -135,12 +135,10 @@ enum Phase {
     Finished,
 }
 
-/// The request ids of the three requests RustGIS makes.
+/// The initial request ids; later prompts and mode changes share a monotonic allocator.
 const INIT: u64 = 0;
 const NEW: u64 = 1;
 const PROMPT: u64 = 2;
-/// The id of a `session/set_mode` request (one at a time).
-const SET_MODE: u64 = 1_000_000;
 
 /// The agents' modes that act without asking (Codex, Claude Code, others').
 const FULL_MODES: &[&str] = &["agent-full-access", "bypassPermissions", "full-access", "yolo"];
@@ -148,6 +146,32 @@ const FULL_MODES: &[&str] = &["agent-full-access", "bypassPermissions", "full-ac
 const ASKING_MODES: &[&str] = &["agent", "default", "ask", "code", "workspace-write"];
 /// Their modes that can't do the work (read only, planning).
 const IDLE_MODES: &[&str] = &["read-only", "plan"];
+
+/// What the advertised, confirmed mode lets the agent do. Missing or malformed mode data
+/// never establishes that the agent asks before acting.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ModeClass {
+    Asking,
+    Bypass,
+    Idle,
+    Unknown,
+    None,
+}
+
+/// Readiness for the latest automatic-approval setting, rather than for an earlier request.
+enum Ready {
+    Now,
+    Switch(String),
+    Refuse,
+}
+
+/// Only a response with this identity can confirm this mode change.
+#[derive(Debug)]
+struct Negotiation {
+    id: u64,
+    mode: String,
+    started: web_time::Instant,
+}
 
 /// One task's ACP session with an agent.
 #[derive(Debug)]
@@ -160,6 +184,9 @@ pub struct Session {
     session_id: Option<String>,
     /// The id of the task's `session/prompt`: each follow-up gets the next one.
     prompt_id: u64,
+    next_id: u64,
+    /// A cancelled turn still owns its prompt until the agent answers it.
+    stop_reason: Option<String>,
     /// The message being streamed, and the last whole one.
     text: String,
     last: String,
@@ -170,9 +197,9 @@ pub struct Session {
     /// The agent's modes, and the one it's in.
     modes: Vec<String>,
     mode: Option<String>,
-    /// The task, waiting for a mode change to be answered; and the mode asked for.
+    /// The task held until its current mode negotiation succeeds.
     queued: Option<String>,
-    asked_mode: Option<String>,
+    asked_mode: Option<Negotiation>,
 }
 
 /// The longest message kept from an agent (bytes): the rest is cut.
@@ -221,6 +248,8 @@ impl Session {
             phase: Phase::Initializing,
             session_id: None,
             prompt_id: PROMPT,
+            next_id: PROMPT + 1,
+            stop_reason: None,
             text: String::new(),
             last: String::new(),
             tools: Vec::new(),
@@ -259,7 +288,7 @@ impl Session {
                     out.push(json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32601, "message": format!("RustGIS doesn't provide {method}")}}).to_string());
                 }
             }
-            (Some("session/update"), None) => events.extend(self.update(msg.pointer("/params/update").unwrap_or(&Value::Null))),
+            (Some("session/update"), None) => events.extend(self.update(msg.pointer("/params/update").unwrap_or(&Value::Null), &mut out)),
             // A response to one of RustGIS's requests.
             (None, Some(id)) => self.response(id.as_u64(), &msg, &mut out, &mut events),
             _ => {}
@@ -267,14 +296,30 @@ impl Session {
         (out, events)
     }
 
+    /// Accept only the current negotiation or turn reply; a failed downgrade never releases work.
     fn response(&mut self, id: Option<u64>, msg: &Value, out: &mut Vec<String>, events: &mut Vec<Event>) {
-        // A mode change answered (or refused: the task goes ahead in the mode it's in).
-        if id == Some(SET_MODE) && self.asked_mode.is_some() && self.phase == Phase::Working && self.queued.is_some() {
-            let asked = self.asked_mode.take();
-            if msg.get("error").is_none() {
-                self.mode = asked;
+        // A stale response cannot change the confirmed mode or release a held prompt.
+        if self.asked_mode.as_ref().is_some_and(|asked| Some(asked.id) == id) {
+            let Some(asked) = self.asked_mode.take() else { return };
+            if msg.get("error").is_none() && msg.get("result").is_some_and(Value::is_object) {
+                self.mode = Some(asked.mode);
+                out.extend(self.release_prompt(false, events));
+            } else {
+                // An invalid response doesn't establish whether the requested change was
+                // applied. In particular, don't retain an old asking mode after an upgrade.
+                if !msg.get("error").is_some_and(Value::is_object) {
+                    self.mode = None;
+                }
+                if self.queued.is_some() {
+                    if self.auto {
+                        // Upgrading is best effort: automatic approval still permits work.
+                        // Downgrading with auto off is never best effort.
+                        out.extend(self.release_prompt(false, events));
+                    } else {
+                        events.extend(self.refuse_mode("the agent refused the asking mode"));
+                    }
+                }
             }
-            out.extend(self.queued.take());
             return;
         }
         // Ignore stale or unsolicited responses before interpreting success or failure.
@@ -333,24 +378,32 @@ impl Session {
                 };
                 self.session_id = Some(sid.to_string());
                 self.phase = Phase::Working;
-                let modes = result.pointer("/modes/availableModes").and_then(Value::as_array).into_iter().flatten();
-                self.modes = modes.filter_map(|m| m.get("id").and_then(Value::as_str).map(str::to_string)).collect();
+                self.modes = result
+                    .pointer("/modes/availableModes")
+                    .and_then(Value::as_array)
+                    .and_then(|modes| modes.iter().map(|m| m.get("id")?.as_str().map(str::to_string)).collect::<Option<Vec<_>>>())
+                    .unwrap_or_default();
                 self.mode = result.pointer("/modes/currentModeId").and_then(Value::as_str).map(str::to_string);
                 let prompt = rpc(
                     PROMPT,
                     "session/prompt",
                     json!({"sessionId": sid, "prompt": [{"type": "text", "text": format!("{BRIEF}{}", self.task)}]}),
                 );
-                out.extend(self.with_mode(prompt));
+                self.queued = Some(prompt);
+                out.extend(self.release_prompt(true, events));
             }
             (Some(id), Phase::Working) if id == self.prompt_id => {
                 let stop = result.get("stopReason").and_then(Value::as_str).unwrap_or("end_turn");
                 events.extend(self.flush());
-                let (report, error) = match stop {
-                    "end_turn" => (self.last.clone(), false),
-                    "cancelled" => (format!("{} was stopped.", self.label), true),
-                    "refusal" => (format!("{} refused the task. {}", self.label, self.last), true),
-                    _ => (format!("{} stopped early ({stop}). {}", self.label, self.last), true),
+                let (report, error) = if let Some(why) = self.stop_reason.take() {
+                    (why, true)
+                } else {
+                    match stop {
+                        "end_turn" => (self.last.clone(), false),
+                        "cancelled" => (format!("{} was stopped.", self.label), true),
+                        "refusal" => (format!("{} refused the task. {}", self.label, self.last), true),
+                        _ => (format!("{} stopped early ({stop}). {}", self.label, self.last), true),
+                    }
                 };
                 events.extend(self.turn_done(report, error));
             }
@@ -358,41 +411,159 @@ impl Session {
         }
     }
 
-    /// The mode the agent should be in for the next task, if not the one it's in: its full-access
-    /// mode when the user lets it act without asking; otherwise a mode that works but asks.
-    fn wanted_mode(&self) -> Option<String> {
-        let has = |m: &&str| self.modes.iter().any(|x| x == m);
-        let current = self.mode.as_deref().unwrap_or("");
-        let want = if self.auto {
-            FULL_MODES.iter().copied().find(has)
-        } else if current.is_empty() || FULL_MODES.contains(&current) || IDLE_MODES.contains(&current) {
-            ASKING_MODES.iter().copied().find(has)
+    /// Classify only confirmed mode data from a valid advertised mode list.
+    fn mode_class(&self) -> ModeClass {
+        let Some(mode) = self.mode.as_deref().filter(|_| !self.modes.is_empty()) else { return ModeClass::None };
+        if ASKING_MODES.contains(&mode) {
+            ModeClass::Asking
+        } else if FULL_MODES.contains(&mode) {
+            ModeClass::Bypass
+        } else if IDLE_MODES.contains(&mode) {
+            ModeClass::Idle
         } else {
-            None
-        };
-        want.filter(|m| *m != current).map(|m| m.to_string())
+            ModeClass::Unknown
+        }
     }
 
-    /// The lines that start a task: a mode change first when one is needed (the task waits for
-    /// its answer), then the task.
-    fn with_mode(&mut self, prompt: String) -> Vec<String> {
-        let (Some(mode), Some(sid)) = (self.wanted_mode(), self.session_id.clone()) else { return vec![prompt] };
-        self.queued = Some(prompt);
-        self.asked_mode = Some(mode.clone());
-        vec![rpc(SET_MODE, "session/set_mode", json!({"sessionId": sid, "modeId": mode}))]
+    /// Recompute readiness under the current setting. Automatic upgrades are attempted only
+    /// before a task, so a refused optional upgrade doesn't prevent an auto-on task running.
+    fn ready(&self, upgrade: bool) -> Ready {
+        let offered = |modes: &[&str]| modes.iter().find(|m| self.modes.iter().any(|x| x == **m)).map(|m| (*m).to_string());
+        if self.auto {
+            return match offered(FULL_MODES).filter(|m| upgrade && Some(m.as_str()) != self.mode.as_deref()) {
+                Some(mode) => Ready::Switch(mode),
+                None => Ready::Now,
+            };
+        }
+        if self.mode_class() == ModeClass::Asking {
+            return Ready::Now;
+        }
+        match offered(ASKING_MODES) {
+            Some(mode) => Ready::Switch(mode),
+            None if self.mode_class() == ModeClass::Idle => Ready::Now,
+            None => Ready::Refuse,
+        }
     }
 
-    /// Whether the user lets the agent act without asking, for its next task.
-    pub fn set_auto(&mut self, auto: bool) {
+    /// Allocate distinct JSON-RPC ids for prompts and mode changes; exhaustion fails closed.
+    fn request_id(&mut self) -> Option<u64> {
+        let id = self.next_id;
+        self.next_id = id.checked_add(1)?;
+        Some(id)
+    }
+
+    /// Ask for a mode under a new identity, with at most one change in flight. A sent
+    /// change can still be applied by the agent even if its response is ignored locally.
+    fn switch_mode(&mut self, mode: String) -> Option<String> {
+        if self.asked_mode.is_some() {
+            return None;
+        }
+        let sid = self.session_id.clone()?;
+        let id = self.request_id()?;
+        self.asked_mode = Some(Negotiation { id, mode: mode.clone(), started: web_time::Instant::now() });
+        Some(rpc(id, "session/set_mode", json!({"sessionId": sid, "modeId": mode})))
+    }
+
+    /// Only a fresh readiness check releases work. Even an already-safe current mode waits
+    /// while a switch is in flight: that switch could still put the agent in bypass mode.
+    fn release_prompt(&mut self, upgrade: bool, events: &mut Vec<Event>) -> Vec<String> {
+        if self.queued.is_none() || self.asked_mode.is_some() {
+            return Vec::new();
+        }
+        match self.ready(upgrade) {
+            Ready::Now => self.queued.take().into_iter().collect(),
+            Ready::Switch(mode) => match self.switch_mode(mode) {
+                Some(line) => vec![line],
+                None => {
+                    events.extend(self.refuse_mode("a mode request could not be started"));
+                    Vec::new()
+                }
+            },
+            Ready::Refuse => {
+                let why = if self.modes.is_empty() {
+                    "the agent advertised no modes, so RustGIS can't confirm that it asks before acting"
+                } else {
+                    "RustGIS can't confirm that the agent asks before acting"
+                };
+                events.extend(self.refuse_mode(why));
+                Vec::new()
+            }
+        }
+    }
+
+    /// Refuse this held task visibly, retaining the session for a safely negotiated follow-up.
+    fn refuse_mode(&mut self, why: &str) -> Vec<Event> {
+        self.queued = None;
+        let mode = self.mode.as_deref().unwrap_or("unreported");
+        self.turn_done(
+            format!("{}: {why} (mode: {mode}). Change the agent's mode, or turn automatic approval on, then try again.", self.label),
+            true,
+        )
+    }
+
+    /// Cancel a running turn whose mode no longer meets the setting, and negotiate asking.
+    /// Cancellation can't recall actions already performed, so keep waiting for the turn's reply.
+    fn contain_running(&mut self, why: &str, events: &mut Vec<Event>) -> Vec<String> {
+        if self.auto
+            || self.phase != Phase::Working
+            || self.queued.is_some()
+            || self.stop_reason.is_some()
+            || matches!(self.mode_class(), ModeClass::Asking | ModeClass::Idle)
+        {
+            return Vec::new();
+        }
+        let mut out: Vec<String> = self.cancel().into_iter().collect();
+        let report = format!("{} was stopped: {why}.", self.label);
+        self.stop_reason = Some(report.clone());
+        events.extend(self.flush());
+        events.push(Event::Text(format!("Stopping {}: {why}.", self.label)));
+        // Do not overlap mode changes: an earlier change could otherwise apply after
+        // the downgrade. Held follow-ups wait for it and then check readiness again.
+        if self.asked_mode.is_none()
+            && let Ready::Switch(mode) = self.ready(false)
+        {
+            out.extend(self.switch_mode(mode));
+        }
+        out
+    }
+
+    /// Apply automatic approval immediately. Turning it off cancels an unsafe running turn;
+    /// held work is re-negotiated and never released by an earlier upgrade's response.
+    /// Callers send the lines in order and display the returned events.
+    pub fn set_auto(&mut self, auto: bool) -> (Vec<String>, Vec<Event>) {
+        if self.auto == auto {
+            return (Vec::new(), Vec::new());
+        }
         self.auto = auto;
+        let mut events = Vec::new();
+        if self.queued.is_some() {
+            let out = self.release_prompt(true, &mut events);
+            return (out, events);
+        }
+        let out = self.contain_running("automatic approval was turned off", &mut events);
+        (out, events)
     }
 
-    fn update(&mut self, u: &Value) -> Vec<Event> {
+    /// Retire a session after an unanswered negotiation. A timed-out request can still
+    /// change the agent's mode later, so this session must never receive another task.
+    pub fn poll(&mut self) -> Vec<Event> {
+        if !self.asked_mode.as_ref().is_some_and(|a| a.started.elapsed() >= web_time::Duration::from_secs(60)) {
+            return Vec::new();
+        }
+        self.mode = None;
+        self.finish_with(format!("{}: the mode request timed out. Start a new agent thread before trying again.", self.label), true)
+    }
+
+    /// Track mode notifications as well as replies: an auto-off turn entering an unsafe mode
+    /// must be cancelled even when RustGIS didn't request that change.
+    fn update(&mut self, u: &Value, out: &mut Vec<String>) -> Vec<Event> {
         let s = |k: &str| u.get(k).and_then(Value::as_str).unwrap_or("").to_string();
         match u.get("sessionUpdate").and_then(Value::as_str) {
             Some("current_mode_update") => {
                 self.mode = u.get("currentModeId").and_then(Value::as_str).map(str::to_string);
-                Vec::new()
+                let mut events = Vec::new();
+                out.extend(self.contain_running("the agent entered a mode that doesn't confirm approval", &mut events));
+                events
             }
             Some("agent_message_chunk") => {
                 if let Some(t) = u.pointer("/content/text").and_then(Value::as_str) {
@@ -495,19 +666,23 @@ impl Session {
         Some(json!({"jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": sid}}).to_string())
     }
 
-    /// A follow-up task for the thread, once it has finished the last one: the lines to send (a
-    /// mode change first, when the user's setting changed since).
-    pub fn follow_up(&mut self, task: &str) -> Option<Vec<String>> {
+    /// A follow-up task for the thread after its last prompt finishes. It uses the same
+    /// readiness gate as the first prompt; a refusal is returned as an event with no prompt.
+    pub fn follow_up(&mut self, task: &str) -> Option<(Vec<String>, Vec<Event>)> {
         let sid = self.session_id.clone().filter(|_| self.phase == Phase::Idle)?;
+        let id = self.request_id()?;
         self.phase = Phase::Working;
-        self.prompt_id += 1;
+        self.prompt_id = id;
         self.last.clear();
         let prompt = rpc(
             self.prompt_id,
             "session/prompt",
             json!({"sessionId": sid, "prompt": [{"type": "text", "text": format!("{FOLLOW_UP}{task}")}]}),
         );
-        Some(self.with_mode(prompt))
+        self.queued = Some(prompt);
+        let mut events = Vec::new();
+        let out = self.release_prompt(true, &mut events);
+        Some((out, events))
     }
 
     /// The agent's process ended: its report, if it was working, or that the thread closed.
@@ -543,12 +718,19 @@ impl Session {
     /// A task ended; the thread waits for a follow-up.
     fn turn_done(&mut self, report: String, error: bool) -> Vec<Event> {
         self.phase = Phase::Idle;
+        self.queued = None;
+        self.stop_reason = None;
         let report = if report.trim().is_empty() { format!("{} finished without a report.", self.label) } else { report };
         vec![Event::Done { report, error }]
     }
 
+    /// End this session permanently, discarding held work and pending negotiations so
+    /// late replies cannot revive it or authorize a follow-up.
     fn finish_with(&mut self, report: String, error: bool) -> Vec<Event> {
         self.phase = Phase::Finished;
+        self.queued = None;
+        self.asked_mode = None;
+        self.stop_reason = None;
         let report = if report.trim().is_empty() { format!("{} finished without a report.", self.label) } else { report };
         vec![Event::Done { report, error }]
     }
@@ -624,6 +806,33 @@ pub fn installed() -> Installed {
         }
     }
     (ready, need_node)
+}
+
+#[cfg(test)]
+mod mode_tests {
+    use super::*;
+
+    #[test]
+    fn a_timed_out_mode_request_retires_the_session_even_between_turns() {
+        for held in [true, false] {
+            let (mut s, _) = Session::new("Agent", "Map it", "/w", vec![], !held);
+            s.line(r#"{"id":0,"result":{"protocolVersion":1}}"#);
+            s.line(r#"{"id":1,"result":{"sessionId":"s","modes":{"currentModeId":"agent-full-access","availableModes":[{"id":"agent"},{"id":"agent-full-access"}]}}}"#);
+            if !held {
+                s.set_auto(false);
+                s.line(r#"{"id":2,"result":{"stopReason":"cancelled"}}"#);
+                assert!(s.idle());
+            }
+            let asked = s.asked_mode.as_mut().unwrap();
+            let id = asked.id;
+            asked.started = asked.started.checked_sub(web_time::Duration::from_secs(61)).unwrap();
+            let events = s.poll();
+            assert!(events.iter().any(|e| matches!(e, Event::Done { error: true, report } if report.contains("timed out"))));
+            assert!(s.finished() && s.follow_up("Try again").is_none());
+            assert_eq!(s.line(&json!({"id": id, "result": {}}).to_string()), (vec![], vec![]));
+            assert!(s.poll().is_empty());
+        }
+    }
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

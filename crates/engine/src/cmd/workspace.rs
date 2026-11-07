@@ -63,6 +63,7 @@ fn now() -> f64 {
     web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0)
 }
 
+/// Separates in-memory cache controls from commands that read or remove files on disk.
 pub fn commands() -> Vec<C> {
     vec![
         C::new("view.linkViews", "Link Views", "View › Link", |s, p| {
@@ -71,19 +72,19 @@ pub fn commands() -> Vec<C> {
                 s.sync_linked_views();
             }
             Ok(json!({"linked": s.project.link_views}))
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .params(r#"{"on"?: bool}"#),
         C::new("project.thumbnail", "Create Thumbnail", "Publish › Thumbnail", |s, p| {
             let t = thumbnail(s, p)?;
             s.project.thumbnail = t;
             Ok(json!({"thumbnail": s.project.thumbnail.is_some()}))
-        }).roles(&[])
+        }).inputs(thumbnail_inputs).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
         .params(r#"{"create"?: bool (from the map view), "image"?: base64 PNG/JPEG, "path"?: image file, "clear"?: bool}"#),
         C::new("map.thumbnail", "Map Thumbnail", "Publish › Thumbnail", |s, p| {
             let t = thumbnail(s, p)?;
             s.map_mut().thumbnail = t;
             Ok(json!({"thumbnail": s.map().thumbnail.is_some()}))
-        }).roles(&[])
+        }).inputs(thumbnail_inputs).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
         .params(r#"{"create"?: bool, "image"?: base64 PNG/JPEG, "path"?: image file, "clear"?: bool}"#),
         // Workflow Manager.
         C::new("job.new", "Workflow Manager", "View › Windows", |s, p| {
@@ -105,7 +106,7 @@ pub fn commands() -> Vec<C> {
                 updated: t,
             });
             Ok(json!({"job": id}))
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .params(r#"{"name": string, "description"?, "assigned"?, "viewExtent"?: bool (the job covers the map view)}"#),
         C::new("job.update", "Update Job", "View › Windows", |s, p| {
             let id = p.get("job").and_then(Value::as_u64).ok_or("job is required")?;
@@ -125,14 +126,14 @@ pub fn commands() -> Vec<C> {
             }
             j.updated = now();
             Ok(Value::Null)
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .params(r#"{"job": id, "status"?: "new"|"in progress"|"on hold"|"done", "assigned"?, "description"?}"#),
         C::new("job.remove", "Delete Job", "View › Windows", |s, p| {
             let id = p.get("job").and_then(Value::as_u64).ok_or("job is required")?;
             let before = s.project.jobs.len();
             s.project.jobs.retain(|j| u64::from(j.id) != id);
             if s.project.jobs.len() == before { Err(format!("no job {id}")) } else { Ok(Value::Null) }
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .params(r#"{"job": id}"#),
         // Animation.
         C::new("animation.add", "Add Keyframe", "View › Animation", |s, p| {
@@ -144,7 +145,7 @@ pub fn commands() -> Vec<C> {
             }
             m.animation.push(k);
             Ok(json!({"keyframes": m.animation.len()}))
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .params(r#"{"seconds"?: time from the previous keyframe}"#),
         C::new("animation.remove", "Remove Keyframe", "View › Animation", |s, p| {
             let m = s.map_mut();
@@ -159,21 +160,21 @@ pub fn commands() -> Vec<C> {
                 }
             }
             Ok(json!({"keyframes": m.animation.len()}))
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .params(r#"{"index"?: number (the last one when omitted), "all"?: bool}"#),
         C::new("animation.export", "Export Animation", "View › Animation", |s, p| {
             let path = ps(p, "path").ok_or("path is required (a .zip of PNG frames)")?.to_string();
             let bytes = animation_zip(s, p)?;
             rustgis_data::io::write_atomic(std::path::Path::new(&path), &bytes).map_err(|e| format!("{path}: {e}"))?;
             Ok(json!({"path": path, "bytes": bytes.len()}))
-        }).roles(&[])
+        }).inputs(map_render_inputs).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
         .view()
         .params(r#"{"path": "*.zip", "fps"?: 1..30, "width"?, "height"?: px}"#),
         // Profiles.
         C::new("profile.create", "Create Profile", "View › Profile Viewing", |s, p| {
             let pts = points(p)?;
             profile(s, p, &pts)
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .view()
         .params(r#"{"layer": elevation raster, "points": [[lon, lat], …], "samples"?: number}"#),
         C::new("profile.autoComplete", "Auto-complete Profile", "View › Profile Viewing", |s, p| {
@@ -191,7 +192,7 @@ pub fn commands() -> Vec<C> {
                 t *= 1.1;
             }
             profile(s, p, &[a, Coord::new(a.x + dx * t, a.y + dy * t)])
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .view()
         .params(r#"{"layer": elevation raster, "samples"?: number (default 200), "points": [[lon, lat], [lon, lat]] (a start and a direction)}"#),
         C::new("profile.crossSection", "Cross Section", "View › Profile Viewing", |s, p| {
@@ -207,7 +208,7 @@ pub fn commands() -> Vec<C> {
             let half_deg = f(p, "width").unwrap_or(2000.0).clamp(1.0, 1e6) / 2.0 / 111_320.0;
             let (nx, ny) = (-dy / len * half_deg / k, dx / len * half_deg);
             profile(s, p, &[Coord::new(mid.x - nx, mid.y - ny), Coord::new(mid.x + nx, mid.y + ny)])
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .view()
         .params(
             r#"{"layer": elevation raster, "samples"?: number (default 200), "points": [[lon, lat], [lon, lat]] (the line crossed), "at"?: 0..1 along it, "width"?: metres}"#,
@@ -216,25 +217,25 @@ pub fn commands() -> Vec<C> {
             let lines = selected_lines(s, p, false)?;
             let first = lines.into_iter().next().ok_or("no line")?;
             profile(s, p, &first)
-        }).roles(&[])
+        }).inputs(profile_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
         .view()
         .params(r#"{"layer": elevation raster, "samples"?: number (default 200), "lines": line layer, "row"?: number (the first selected when omitted)}"#),
         C::new("profile.alongSelected", "Profile Along Selected Lines", "View › Profile Viewing", |s, p| {
             let lines = selected_lines(s, p, true)?;
             let out: Vec<Value> = lines.iter().take(50).map(|l| profile(s, p, l)).collect::<Result<_, _>>()?;
             Ok(Value::Array(out))
-        }).roles(&[])
+        }).inputs(profile_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
         .view()
         .params(r#"{"layer": elevation raster, "samples"?: number (default 200), "lines": line layer}"#),
         // Infographics and diagnostics.
-        C::new("info.infographic", "Infographics", "Home › Inspect", infographic).roles(&[])
+        C::new("info.infographic", "Infographics", "Home › Inspect", infographic).roles(&[]).effects(crate::policy::Effects::NONE)
             .view()
             .params(r#"{"layer"? (every visible feature layer when omitted)}"#),
-        C::new("info.diagnostics", "Diagnostic Monitor", "Help › Performance", |s, _| Ok(diagnostics(s))).roles(&[]).view(),
+        C::new("info.diagnostics", "Diagnostic Monitor", "Help › Performance", |s, _| Ok(diagnostics(s))).roles(&[]).effects(crate::policy::Effects::NONE).view(),
         // Offline areas.
-        C::new("offline.download", "Download Map", "Data › Offline", offline_download).roles(&[])
+        C::new("offline.download", "Download Map", "Data › Offline", offline_download).roles(&[]).effects(crate::policy::Effects::NONE)
             .params(r#"{"name"?: string, "extent"?: [minLon, minLat, maxLon, maxLat] (the map view when omitted)}"#),
-        C::new("offline.sync", "Sync", "Data › Offline", offline_sync).roles(&[]).params(r#"{"name": offline area}"#),
+        C::new("offline.sync", "Sync", "Data › Offline", offline_sync).roles(&[]).effects(crate::policy::Effects::NONE).params(r#"{"name": offline area}"#),
         C::new("offline.remove", "Remove", "Data › Offline", |s, p| {
             let n = ps(p, "name").ok_or("name is required")?;
             let before = s.project.offline_areas.len();
@@ -255,7 +256,7 @@ pub fn commands() -> Vec<C> {
                 }
             }
             Ok(Value::Null)
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .params(r#"{"name": offline area}"#),
         C::new("offline.open", "Open Offline Map", "Data › Offline", |s, p| {
             let n = ps(p, "name").ok_or("name is required")?;
@@ -282,13 +283,13 @@ pub fn commands() -> Vec<C> {
             let e = s.project.offline_areas.iter().find(|a| a.name.eq_ignore_ascii_case(n)).map(|a| a.extent).unwrap_or(Extent::EMPTY);
             s.zoom_to(&e);
             Ok(Value::Null)
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .params(r#"{"name": offline area}"#),
         // Feature cache.
         C::new("cache.fill", "Fill Cache", "Data › Feature Cache", |s, _| {
             let n = fill_cache(s);
             Ok(json!({"cached": n}))
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .view(),
         C::new("cache.empty", "Empty Cache", "Data › Feature Cache", |s, _| {
             let mut n = 0;
@@ -299,17 +300,17 @@ pub fn commands() -> Vec<C> {
                 }
             }
             Ok(json!({"emptied": n}))
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .view(),
         // The Shapefile index cache on disk, shared by every project (#1259). Command search,
         // scripts and the CLI run it; it has no ribbon button.
-        C::new("cache.emptyIndexes", "Empty Index Cache", "Data › Shapefile Index Cache", empty_indexes).roles(&[]).view(),
+        C::new("cache.emptyIndexes", "Empty Index Cache", "Data › Shapefile Index Cache", empty_indexes).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files)).view(),
         // A fill runs to the end in one go (it's quick); cancelling stops the automatic fills
         // that follow projection changes.
         C::new("cache.cancel", "Cancel Caching", "Data › Feature Cache", |s, _| {
             s.auto_cache = false;
             Ok(Value::Null)
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .view(),
         C::new("cache.auto", "Auto Cache", "Data › Feature Cache", |s, p| {
             s.auto_cache = b(p, "on").unwrap_or(!s.auto_cache);
@@ -317,7 +318,7 @@ pub fn commands() -> Vec<C> {
                 fill_cache(s);
             }
             Ok(json!({"autoCache": s.auto_cache}))
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .view()
         .params(r#"{"on"?: bool}"#),
     ]
@@ -359,11 +360,27 @@ pub fn view_extent_of(m: &rustgis_map::Map, (w, h): (f64, f64)) -> Extent {
     ll
 }
 
+/// Connects active-map rendering to the common layer and raw tile route bindings.
+fn map_render_inputs(input: &super::InputContext<'_>, _: &Value) -> Result<super::Inputs, String> {
+    Ok(super::tiles::render_inputs(input.map()))
+}
+
+/// Clearing wins; otherwise only an explicit create request asks the map renderer.
+fn creates_thumbnail(p: &Value) -> bool {
+    !b(p, "clear").unwrap_or(false) && b(p, "create").unwrap_or(false)
+}
+
+/// Adds renderer bindings only on the branch that creates a thumbnail from the map.
+fn thumbnail_inputs(input: &super::InputContext<'_>, p: &Value) -> Result<super::Inputs, String> {
+    if creates_thumbnail(p) { map_render_inputs(input, p) } else { Ok(super::Inputs::layers(std::iter::empty())) }
+}
+
+/// Clears, renders, or accepts a supplied picture in the same precedence as its selector.
 fn thumbnail(s: &mut Session, p: &Value) -> Result<Option<String>, String> {
     if b(p, "clear").unwrap_or(false) {
         return Ok(None);
     }
-    if b(p, "create").unwrap_or(false) {
+    if creates_thumbnail(p) {
         let png = super::share::map_png(s, Some(240.0), Some(160.0), Some(96.0))?;
         return Ok(Some(base64::engine::general_purpose::STANDARD.encode(png)));
     }
@@ -410,7 +427,7 @@ fn profile(s: &Session, p: &Value, path: &[Coord]) -> CmdResult {
 }
 
 fn selected_lines(s: &Session, p: &Value, all: bool) -> Result<Vec<Vec<Coord>>, String> {
-    let n = ps(p, "lines").ok_or("lines (a line layer) is required")?;
+    let n = profile_lines(p)?;
     let l =
         s.map().layer_by_name(n).filter(|l| l.geometry_type() == GeometryType::Polyline).ok_or_else(|| format!("no line layer '{n}'"))?;
     let rows: Vec<usize> = match p.get("row").and_then(Value::as_u64) {
@@ -775,4 +792,15 @@ fn offline_sync(s: &mut Session, p: &Value) -> CmdResult {
         );
     }
     Ok(json!({"updated": updated, "added": added, "deleted": deleted, "skipped": skipped, "conflicts": conflicts.len()}))
+}
+
+/// Binds the elevation raster and literal selected-line source.
+fn profile_inputs(input: &super::InputContext<'_>, p: &Value) -> Result<super::Inputs, String> {
+    let s = input;
+    super::Inputs::named(s.map(), [super::imagery::raster_name(p)?, profile_lines(p)?])
+}
+
+/// Parses the same required line-layer name used by profile extraction.
+fn profile_lines(p: &Value) -> Result<&str, String> {
+    ps(p, "lines").ok_or("lines (a line layer) is required".into())
 }

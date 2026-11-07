@@ -329,15 +329,15 @@ pub fn land_job(app: &mut RustGisApp) -> bool {
     match job.kind {
         JobKind::Tool { id, slot } => {
             let Some(done) = take(&slot) else { return false };
-            let r = gp::tool_complete(&mut app.session, id, done).and_then(|_| app.run("gp.finish", json!({"id": id})));
+            let r = gp::tool_complete(&mut app.session, id, done).and_then(|_| app.finish_gp(id));
             show(app, r);
         }
-        JobKind::Raster { id, command, mut params, slot } => match take(&slot) {
+        JobKind::Raster { id, command, params, slot } => match take(&slot) {
             // Added by its command, as if it had run here.
             Some(Ok(made)) => match workflows::raster_land(&mut app.session, id, made) {
                 Ok(true) => {
-                    params["ran"] = json!(id);
-                    run_now(app, command, params);
+                    let result = app.finish_raster(command, id, &params);
+                    show(app, result);
                 }
                 Ok(false) => dropped(app, job.name),
                 Err(e) => show(app, Err(e)),

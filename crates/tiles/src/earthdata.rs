@@ -61,6 +61,40 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// An immutable, exact active-runtime token snapshot. It never reads the credential store
+/// or expires/restores a token, and has no formatting, serialization or raw-value accessors.
+#[derive(Clone, PartialEq, Eq)]
+pub struct AccountIdentity {
+    relevant: bool,
+    token: Option<String>,
+}
+
+impl AccountIdentity {
+    /// Checks exact active in-memory identity, without restoration or any other I/O.
+    /// An unavailable or poisoned relevant store returns false.
+    pub fn is_current(&self) -> bool {
+        identity_in(token_store(), self.relevant).is_ok_and(|current| *self == current)
+    }
+}
+
+/// Snapshots the active token only; an unread remembered token remains unread.
+/// An unavailable or poisoned store is an error, never an absent token.
+pub fn account_identity() -> Result<AccountIdentity, String> {
+    identity_in(token_store(), true)
+}
+
+fn identity_in(store: &Mutex<Option<String>>, relevant: bool) -> Result<AccountIdentity, String> {
+    let token = if relevant { store.lock().map_err(|_| "active account store unavailable".to_string())?.clone() } else { None };
+    Ok(AccountIdentity { relevant, token })
+}
+
+/// Snapshots the token for a data host, including its absence. Public/search/login and
+/// unrelated addresses do not acquire a dependency on the active token.
+/// An unavailable or poisoned relevant store is an error, never an absent token.
+pub fn account_identity_for(url: &str) -> Result<AccountIdentity, String> {
+    identity_in(token_store(), is_data_host(url))
+}
+
 /// A token as given (`None` when blank): one word of JWT characters, without `Bearer `; anything
 /// else is refused, so it can't break the header it goes in.
 fn checked(token: &str) -> Result<Option<String>, String> {
@@ -796,9 +830,20 @@ mod tests {
     const DATA: &str = "https://data.lpdaac.earthdatacloud.nasa.gov/a.tif";
 
     fn session_tokens() {
+        fn send_sync<T: Send + Sync>() {}
+        send_sync::<AccountIdentity>();
+        let irrelevant = account_identity_for(CMR).unwrap();
+        let absent = account_identity_for(DATA).unwrap();
         assert!(set_token(Some("bad token with spaces")).is_err());
         assert!(set_token(Some("a\r\nX-Evil: 1")).is_err());
         set_token(Some(&format!("Bearer {LASTING}"))).unwrap();
+        assert!(!absent.is_current());
+        let identity = account_identity_for(DATA).unwrap();
+        assert!(identity.is_current() && identity == account_identity().unwrap());
+        set_token(Some("synthetic-replacement")).unwrap();
+        assert!(!identity.is_current() && irrelevant.is_current());
+        assert!(account_identity_for(DATA).unwrap().is_current());
+        set_token(Some(LASTING)).unwrap();
         assert!(has_token());
         assert_eq!(token_expiry(), Some(4_000_000_000));
         assert_eq!(authorization(DATA).as_deref(), Some(format!("Bearer {LASTING}").as_str()));
@@ -814,6 +859,22 @@ mod tests {
         assert_eq!(token_expiry(), None);
         set_token(Some("  ")).unwrap();
         assert!(!has_token());
+    }
+
+    #[test]
+    fn permission_transport_earthdata_capture_fails_closed() {
+        let store = Arc::new(Mutex::new(None));
+        let worker = store.clone();
+        assert!(
+            std::thread::spawn(move || {
+                let _locked = worker.lock().unwrap();
+                panic!("synthetic poison");
+            })
+            .join()
+            .is_err()
+        );
+        assert!(identity_in(&store, true).is_err());
+        assert!(identity_in(&store, false).is_ok(), "unrelated URLs don't depend on this store");
     }
 
     /// A new run of the app: nothing typed yet, the store not read.
@@ -837,9 +898,12 @@ mod tests {
         assert!(is_remembered());
         relaunch(&store);
         assert!(!has_token() && !is_remembered());
+        let unread = account_identity_for(DATA).unwrap();
+        assert!(unread.is_current() && !has_token(), "snapshotting never restores the remembered token");
         assert_eq!(authorization("https://cmr.earthdata.nasa.gov/search"), None);
         assert!(!has_token(), "a public host doesn't read the store");
         assert_eq!(authorization(DATA).as_deref(), Some(format!("Bearer {LASTING}").as_str()));
+        assert!(!unread.is_current(), "restoration changes active identity just like replacement");
         assert!(is_remembered());
         assert_eq!(restore(), Restored::Nothing, "read once");
 

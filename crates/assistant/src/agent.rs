@@ -7,6 +7,12 @@ use std::collections::VecDeque;
 use crate::provider::{self, Config, HttpRequest, HttpResponse, Note, ToolCall, ToolResult, Turn};
 use crate::{acp, compact, skills, tools};
 use rustgis_engine::Session;
+use rustgis_engine::policy::{Outcome, Pending, Permit, Remembered, Scope};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
+static CONVERSATIONS: AtomicU64 = AtomicU64::new(1);
 
 /// Model requests per user message before the agent stops and reports back.
 pub const MAX_STEPS: u32 = 16;
@@ -91,8 +97,11 @@ pub struct Agent {
     last_context: String,
     /// Goes up when a run is stopped or cleared: responses to older requests are dropped.
     generation: u64,
-    /// Commands approved for the rest of the conversation (see [`tools::approval_key`]).
-    always: Vec<String>,
+    /// Exact operations approved for the rest of this conversation and project generation.
+    always: Vec<Remembered>,
+    pending_policy: Option<Pending>,
+    conversation: u64,
+    live: Arc<tools::Live>,
     system: String,
     /// Retries of the request out ([`MAX_RETRIES`]).
     retries: u32,
@@ -171,6 +180,9 @@ impl Agent {
             last_context: String::new(),
             generation: 0,
             always: Vec::new(),
+            pending_policy: None,
+            conversation: CONVERSATIONS.fetch_add(1, Ordering::Relaxed),
+            live: Arc::new(tools::Live::default()),
             system: base_system.clone() + &skills::catalog(&skills),
             base_system,
             skills,
@@ -291,6 +303,7 @@ impl Agent {
         child.depth = self.depth + 1;
         child.allowed = allowed;
         child.always = self.always.clone();
+        child.conversation = self.conversation;
         child.no_reasoning = self.no_reasoning.clone();
         // The budget is the main assistant's: what's left of it for this message.
         child.max_steps = self.max_steps.saturating_sub(self.steps).max(1);
@@ -366,13 +379,22 @@ impl Agent {
             }
             return Some((what, "it starts or follows up a local agent with its own file, network and execution tools".into(), false));
         }
-        let reason = tools::gate(s, call)?;
-        (!self.approved(s, call)).then(|| (tools::summary(call), reason, tools::approval_key(s, call).is_some()))
+        let _ = s;
+        let review = self.pending_policy.as_ref()?.review();
+        let details = review.details.iter().flat_map(|d| d.targets.iter().chain(&d.places)).cloned().collect::<Vec<_>>().join("\n");
+        Some((format!("{}\n{}\n{}", review.what, review.steps.join("\n"), details), review.why.clone(), review.remember))
     }
 
-    /// Whether the user allowed calls like this one for the rest of the conversation.
-    fn approved(&self, s: &Session, call: &ToolCall) -> bool {
-        tools::approval_key(s, call).is_some_and(|k| self.always.contains(&k))
+    /// The exact displayed engine card, with structured details for translated UI presentation.
+    pub fn pending_review(&self) -> Option<&rustgis_engine::policy::Review> {
+        if let Some(child) = &self.child {
+            return child.pending_review();
+        }
+        self.pending_policy.as_ref().map(|p| p.review())
+    }
+
+    fn scope(&self) -> Scope {
+        Scope::assistant(self.conversation, self.live.clone())
     }
 
     /// Changes in the generation tell a caller its response is stale.
@@ -390,6 +412,10 @@ impl Agent {
         self.steps = 0;
         self.last_context.clear();
         self.always.clear();
+        self.pending_policy = None;
+        self.live.0.store(false, Ordering::SeqCst);
+        self.live = Arc::new(tools::Live::default());
+        self.conversation = CONVERSATIONS.fetch_add(1, Ordering::Relaxed);
         self.retries = 0;
         self.retrying_summary = None;
         self.preview = None;
@@ -406,9 +432,13 @@ impl Agent {
     }
 
     fn ask_unguarded(&mut self, text: &str, s: &Session) -> Step {
+        self.always.retain(|r| r.belongs_to_generation(s.project_generation()));
         let text = text.trim();
         if text.is_empty() || self.busy() {
             return Step::Done;
+        }
+        if !self.live.0.load(Ordering::SeqCst) {
+            self.live = Arc::new(tools::Live::default());
         }
         self.transcript.push(Entry::User(text.to_string()));
         let text = compact::escape_user(text);
@@ -486,7 +516,7 @@ impl Agent {
     }
 
     /// Runs a call: the agent's own tools, else the session's.
-    fn run_tool(&self, s: &mut Session, call: &ToolCall, tokens: usize) -> Result<String, String> {
+    fn run_tool(&self, s: &mut Session, call: &ToolCall, tokens: usize, permit: Option<Permit>) -> Result<String, String> {
         if !self.allowed.is_empty() && call.name != "load_skill" && !self.allowed.contains(&call.name) {
             return Err(format!("'{}' isn't one of this subagent's tools", call.name));
         }
@@ -496,7 +526,7 @@ impl Agent {
                 let markdown = skills::load(&self.skills, name)?;
                 Ok(tools::bounded_json(&serde_json::json!({"name":name,"markdown":markdown}), tokens))
             }
-            _ => tools::run_with_budget(s, call, tokens),
+            _ => tools::run_with_budget(s, call, tokens, self.scope(), permit),
         }
     }
 
@@ -734,8 +764,26 @@ impl Agent {
                 }
                 return self.start_child(s, &call);
             }
-            if tools::gate(s, &call).is_some() && !self.approved(s, &call) {
-                return Step::Confirm;
+            match tools::policy_call(&call) {
+                Ok(Some(engine)) => match s.review(&self.scope(), &engine) {
+                    Outcome::Allowed => {}
+                    Outcome::NeedsApproval(pending) => {
+                        let covered = self.always.iter().any(|r| pending.covered_by(r));
+                        self.pending_policy = Some(pending);
+                        if !covered {
+                            return Step::Confirm;
+                        }
+                    }
+                    Outcome::Refused(why) => {
+                        self.record_front(why.clone(), why, true);
+                        continue;
+                    }
+                },
+                Err(why) => {
+                    self.record_front(why.clone(), why, true);
+                    continue;
+                }
+                Ok(None) => {}
             }
             self.run_front(s, true);
         }
@@ -758,8 +806,9 @@ impl Agent {
         // Off the queue before it runs: a call that panics is interrupted, not left to run.
         let State::Calls(q, _) = &mut self.state else { return };
         let Some(call) = q.pop_front() else { return };
+        let permit = self.pending_policy.take().filter(|_| allow).map(Pending::allow);
         let (content, error) = if allow {
-            match self.run_tool(s, &call, tokens) {
+            match self.run_tool(s, &call, tokens, permit) {
                 Ok(c) => (c, false),
                 Err(e) => (tools::bounded_json(&serde_json::json!({"error": e}), tokens), true),
             }
@@ -872,9 +921,10 @@ impl Agent {
         // Its steps count against this message's budget; its "always" approvals stay.
         self.steps = self.steps.saturating_add(child.steps);
         for key in &child.always {
-            if !self.always.contains(key) {
-                self.always.push(key.clone());
+            if self.always.len() >= 64 {
+                self.always.remove(0);
             }
+            self.always.push(key.clone());
         }
         let (report, error) = child.report();
         self.record_front(report.clone(), report, error);
@@ -933,10 +983,12 @@ impl Agent {
         }
         if allow
             && always
-            && let State::Calls(q, _) = &self.state
-            && let Some(key) = q.front().and_then(|c| tools::approval_key(s, c))
+            && let Some(remembered) = self.pending_policy.as_ref().and_then(Pending::remember)
         {
-            self.always.push(key);
+            if self.always.len() >= 64 {
+                self.always.remove(0);
+            }
+            self.always.push(remembered);
         }
         self.run_front(s, allow);
         self.drain(s)
@@ -959,6 +1011,8 @@ impl Agent {
 
     /// Stops the run: a request out is forgotten, calls not yet run are skipped.
     pub fn stop(&mut self) {
+        self.live.0.store(false, Ordering::SeqCst);
+        self.pending_policy = None;
         if !self.busy() {
             return;
         }
@@ -1001,6 +1055,8 @@ impl Agent {
     /// queued get the result `queued`; a call that was running when the run ended (it has left the
     /// queue but has no result) gets `interrupted`.
     fn halt(&mut self, why: Entry, queued: &str, interrupted: &str) {
+        self.live.0.store(false, Ordering::SeqCst);
+        self.pending_policy = None;
         self.child = None;
         self.retrying_summary = None;
         self.retries = 0;
@@ -1162,5 +1218,11 @@ pub fn run_blocking<E: Into<crate::Error>>(
             }
             Step::Done => return,
         };
+    }
+}
+
+impl Drop for Agent {
+    fn drop(&mut self) {
+        self.live.0.store(false, Ordering::SeqCst);
     }
 }

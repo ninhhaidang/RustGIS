@@ -22,7 +22,7 @@ use rustgis_data::raster::crs::Transformer;
 use rustgis_geom::Coord;
 use web_time::{Duration, Instant};
 
-use crate::cache::{Done, MAX_BYTES, RANGE};
+use crate::cache::{Done, MAX_BYTES, RANGE, caller_callback};
 
 pub mod raster;
 
@@ -345,6 +345,7 @@ fn forget_file_in(t: &mut Tiles, url: &str) {
 
 /// A file's info: `Ok(None)` while it is being read (asking for it starts the read).
 pub fn info(url: &str) -> Result<Option<Arc<Info>>, String> {
+    crate::cache::check_still(&crate::cache::current_still())?;
     crate::logins::check(url).map_err(str::to_string)?;
     let url = split(url).0;
     {
@@ -367,7 +368,13 @@ pub fn info(url: &str) -> Result<Option<Arc<Info>>, String> {
     Ok(None)
 }
 
+/// Shares parsed headers and loading waiters, retaining retry delays only for resource failures.
 fn with_info(url: &str, then: Box<dyn FnOnce(Result<Arc<Info>, String>) + Send>) {
+    let then = caller_callback(then);
+    if let Err(e) = crate::cache::check_still(&crate::cache::current_still()) {
+        then(Err(e));
+        return;
+    }
     if let Err(e) = crate::logins::check(url) {
         then(Err(e.to_string()));
         return;
@@ -401,22 +408,25 @@ fn with_info(url: &str, then: Box<dyn FnOnce(Result<Arc<Info>, String>) + Send>)
     load(
         url.to_string(),
         Box::new(move |r| {
+            let r = crate::cache::check_still(&crate::cache::current_still()).and(r);
             let r = crate::logins::check(&key)
                 .map_err(str::to_string)
                 .and(r)
                 .map_err(|e| if rustgis_data::login_address::is_wrapper(&key) { crate::logins::scrub_error(&e) } else { e });
+            let transient = r.as_ref().err().is_some_and(|e| !crate::cache::keep_failure(e, &crate::cache::current_still()));
             let waiting = {
                 let mut i = infos().lock().unwrap_or_else(|e| e.into_inner());
-                let next = match &r {
-                    Ok(info) => State::Ready(info.clone()),
+                let old = match &r {
+                    Ok(info) => i.insert(key, State::Ready(info.clone())),
+                    Err(_) if transient => i.remove(&key),
                     Err(e) => {
                         // Read again once its wait is over: the map draws again then (a 429
                         // or 503 says when).
                         crate::cache::notify_at(Instant::now() + crate::cache::retry_wait(e, RETRY));
-                        State::Failed(e.clone(), Instant::now())
+                        i.insert(key, State::Failed(e.clone(), Instant::now()))
                     }
                 };
-                match i.insert(key, next) {
+                match old {
                     Some(State::Loading(w)) => w,
                     _ => Vec::new(),
                 }
@@ -703,7 +713,13 @@ fn percentiles(mut v: Vec<f32>) -> (f32, f32) {
 /// tiles of the bands shown) and kept.
 type StretchThen = Box<dyn FnOnce(Result<Vec<(f32, f32)>, String>) + Send>;
 
+/// Shares computed stretches; a retired read cannot leave fallback values or a retry delay.
 fn with_stretch(info: Arc<Info>, file: String, look: Look, then: StretchThen) {
+    let then = caller_callback(then);
+    if let Err(e) = crate::cache::check_still(&crate::cache::current_still()) {
+        then(Err(e));
+        return;
+    }
     if let Some(s) = info.stretch_for(&look) {
         then(Ok(s));
         return;
@@ -744,25 +760,27 @@ fn with_stretch(info: Arc<Info>, file: String, look: Look, then: StretchThen) {
     let shown_bands = colour.len();
     let key_aef = look.aef;
     let done = move |r: Result<Vec<(f32, f32)>, String>| {
+        let r = crate::cache::check_still(&crate::cache::current_still()).and(r);
         let waiting = i.stretching.lock().unwrap_or_else(|e| e.into_inner()).remove(&key).unwrap_or_default();
-        // An overview that can't be read: the type's full range for now (not kept: the failure may
-        // pass), and no read again until RETRY has passed.
+        // A server error uses the type's full range until RETRY passes. Dropped or retired
+        // reads propagate their refusal without leaving a shared stretch or retry delay.
         let s = match r {
             Ok(s) => {
                 keep_stretch(&i, key, s.clone());
-                s
+                Ok(s)
             }
+            Err(e) if !crate::cache::keep_failure(&e, &crate::cache::current_still()) => Err(e),
             Err(_) => {
                 let mut failed = i.stretch_failed.lock().unwrap_or_else(|e| e.into_inner());
                 if failed.len() >= MAX_LOOKS {
                     failed.clear();
                 }
                 failed.insert(key, Instant::now());
-                vec![type_range(&i.layout, key_aef); shown_bands]
+                Ok(vec![type_range(&i.layout, key_aef); shown_bands])
             }
         };
         for w in waiting {
-            w(Ok(s.clone()));
+            w(s.clone());
         }
     };
     fetch_bands(
@@ -994,6 +1012,11 @@ fn fetch_all_with(get: GetTile, info: Arc<Info>, url: String, level: usize, want
 
 /// One tile of a level, decoded: from the tiles kept, or read.
 fn get_tile(info: Arc<Info>, url: String, level: usize, idx: u32, then: Box<dyn FnOnce(Result<Bands, String>) + Send>) {
+    let then = caller_callback(then);
+    if let Err(e) = crate::cache::check_still(&crate::cache::current_still()) {
+        then(Err(e));
+        return;
+    }
     if let Err(e) = crate::logins::check(&url) {
         then(Err(e.to_string()));
         return;
@@ -1058,6 +1081,7 @@ fn get_tile(info: Arc<Info>, url: String, level: usize, idx: u32, then: Box<dyn 
             let r = r
                 .and_then(|b| cog::decode_tile_counted(&info.header, &info.layout, level, idx, b).map_err(|e| e.to_string()))
                 .map(Arc::new);
+            let r = crate::cache::check_still(&crate::cache::current_still()).and(r);
             let r = crate::logins::check(&key.0).map_err(str::to_string).and(r);
             let waiting = {
                 let mut t = tiles().lock().unwrap_or_else(|e| e.into_inner());
@@ -1501,6 +1525,148 @@ pub fn read_values_counted_blocking(
 
 #[cfg(test)]
 mod tests {
+    /// Two callers share cached bytes, but a joining callback never borrows the loader's
+    /// lifetime. Both metadata-to-overview and tile-to-next-tile run the real range reader;
+    /// a retired loader also leaves no successful header or raw tile for later callers.
+    #[test]
+    fn permission_policy_shared_cog_waiters_keep_their_own_lifetime() {
+        use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+        let _turn = crate::cache::turn();
+        let _alarm = crate::cache::alarm_turn();
+        let file = Arc::new(cog::example(512, 128));
+        let held = Arc::new(Mutex::new(Vec::<(String, Done)>::new()));
+        let hold = held.clone();
+        crate::cache::set_fetcher(move |url, done| hold.lock().unwrap().push((url, done)));
+        let drain = || {
+            let mut sent = 0;
+            loop {
+                let pending = std::mem::take(&mut *held.lock().unwrap());
+                if pending.is_empty() {
+                    return sent;
+                }
+                for (url, done) in pending {
+                    sent += 1;
+                    assert!(sent < 100, "bounded overview fixture");
+                    let (_, range) = crate::cache::split_range(&url);
+                    let (a, b) = range.unwrap();
+                    done(Ok(file[a as usize..((b + 1) as usize).min(file.len())].to_vec()));
+                }
+            }
+        };
+        let mut failures = Vec::new();
+        for revoke in [false, true] {
+            let url = format!("https://shared-cog.invalid/{revoke}.tif");
+            let (loaded, info_result) = std::sync::mpsc::channel();
+            with_info(&url, Box::new(move |r| loaded.send(r).unwrap()));
+            assert_eq!(held.lock().unwrap().len(), 1, "first caller holds the header");
+            let live = Arc::new(AtomicBool::new(true));
+            let flag = live.clone();
+            let still: crate::cache::Still = Arc::new(move || flag.load(SeqCst));
+            let (done, result) = std::sync::mpsc::channel();
+            crate::cache::with_still(still.clone(), || raster::overview(&url, Box::new(move |r| done.send(r).unwrap())));
+            live.store(!revoke, SeqCst);
+            let sent = drain();
+            let info = info_result.recv().unwrap().unwrap();
+            let r = result.recv().unwrap();
+            if revoke {
+                if r.is_ok() || sent != 1 {
+                    failures.push(format!("revoked metadata waiter succeeded or fetched {sent} ranges"));
+                }
+            } else {
+                assert!(r.is_ok() && sent > 1, "live overview needs real tile ranges: {sent}");
+            }
+            // A different tile starts under User; the bounded joiner's successful callback
+            // would ask for a second tile. It must receive refusal before doing so.
+            let (first, first_result) = std::sync::mpsc::channel();
+            get_tile(info.clone(), url.clone(), 0, 0, Box::new(move |r| first.send(r).unwrap()));
+            live.store(true, SeqCst);
+            let (done, result) = std::sync::mpsc::channel();
+            let (i, u) = (info.clone(), url.clone());
+            crate::cache::with_still(still.clone(), || {
+                get_tile(
+                    i.clone(),
+                    u.clone(),
+                    0,
+                    0,
+                    Box::new(move |r| match r {
+                        Ok(_) => get_tile(i, u, 0, 1, Box::new(move |r| done.send(r).unwrap())),
+                        Err(e) => done.send(Err(e)).unwrap(),
+                    }),
+                );
+            });
+            live.store(!revoke, SeqCst);
+            drain();
+            assert!(first_result.recv().unwrap().is_ok());
+            if result.recv().unwrap().is_ok() == revoke {
+                failures.push(format!("tile joiner did not respect revoke={revoke}"));
+            }
+            // Ready hits are an entry point too, even without another network request.
+            live.store(false, SeqCst);
+            let (done, result) = std::sync::mpsc::channel();
+            crate::cache::with_still(still.clone(), || get_tile(info.clone(), url.clone(), 0, 0, Box::new(move |r| done.send(r).unwrap())));
+            if result.recv().unwrap().is_ok() {
+                failures.push("revoked ready tile was delivered".into());
+            }
+            // A retired statistics read must not delay a later caller's stretch for a minute.
+            forget_file(&url);
+            let look = Look { aef: true, ..Default::default() };
+            let (done, result) = std::sync::mpsc::channel();
+            live.store(true, SeqCst);
+            crate::cache::with_still(still, || {
+                with_stretch(info.clone(), url.clone(), look.clone(), Box::new(move |r| done.send(r).unwrap()))
+            });
+            assert!(!held.lock().unwrap().is_empty(), "the stretch starts a real range read");
+            live.store(false, SeqCst);
+            drain();
+            assert!(result.recv().unwrap().is_err());
+            if !info.stretch_failed.lock().unwrap().is_empty() {
+                failures.push("a revoked stretch left a shared retry delay".into());
+            }
+            let (done, result) = std::sync::mpsc::channel();
+            let key = (info.colour(&look), look.aef);
+            with_stretch(info.clone(), url, look, Box::new(move |r| done.send(r).unwrap()));
+            drain();
+            assert!(result.recv().unwrap().is_ok());
+            // Valid raw samples may already be shared; a computed stretch is kept, whereas
+            // a recent failure's placeholder would return without storing this look's key.
+            if !info.stretch.lock().unwrap().contains_key(&key) {
+                failures.push("a live stretch caller received the cancelled read's fallback".into());
+            }
+        }
+        let url = "https://shared-cog.invalid/retired-loader.tif";
+        let live = Arc::new(AtomicBool::new(true));
+        let flag = live.clone();
+        let still: crate::cache::Still = Arc::new(move || flag.load(SeqCst));
+        let (done, result) = std::sync::mpsc::channel();
+        crate::cache::with_still(still.clone(), || with_info(url, Box::new(move |r| done.send(r).unwrap())));
+        live.store(false, SeqCst);
+        drain();
+        assert!(result.recv().unwrap().is_err());
+        if infos().lock().unwrap().contains_key(url) {
+            failures.push("a retired loader cached a successful header".into());
+            forget_file(url);
+        }
+        let (done, result) = std::sync::mpsc::channel();
+        with_info(url, Box::new(move |r| done.send(r).unwrap()));
+        drain();
+        let info = result.recv().unwrap().unwrap();
+        live.store(true, SeqCst);
+        let (done, result) = std::sync::mpsc::channel();
+        crate::cache::with_still(still, || get_tile(info.clone(), url.into(), 0, 0, Box::new(move |r| done.send(r).unwrap())));
+        live.store(false, SeqCst);
+        drain();
+        assert!(result.recv().unwrap().is_err());
+        if tiles().lock().unwrap().map.contains_key(&(url.into(), 0, 0)) {
+            failures.push("a retired loader cached successful raw samples".into());
+            forget_file(url);
+        }
+        let (done, result) = std::sync::mpsc::channel();
+        get_tile(info, url.into(), 0, 0, Box::new(move |r| done.send(r).unwrap()));
+        assert!(drain() > 0, "the live caller reads fresh raw samples");
+        assert!(result.recv().unwrap().is_ok());
+        assert!(failures.is_empty(), "{failures:?}");
+    }
+
     /// A palette image's own look colours its values by the table the header keeps apart from its
     /// colour hint (`Layout::palette`), with no stretch read or kept; a look of its bands doesn't.
     #[test]

@@ -38,42 +38,42 @@ fn first() -> String {
 
 pub fn commands() -> Vec<C> {
     vec![
-        C::new("raster.georeference", "Georeference", "Analyze › Alignment", georeference).roles(&[]).params(
+        C::new("raster.georeference", "Georeference", "Analyze › Alignment", georeference).inputs(raster_inputs).roles(&[]).effects(crate::policy::Effects::NONE).params(
             r#"{"layer": raster, "points"?: [[column, row, lon, lat], …] (two or more; with "transform": [column, row, x, y, on?]), "extent"?: [minLon, minLat, maxLon, maxLat], "transform"?: "similarity"|"affine"|"projective"|"polynomial2"|"polynomial3"|"spline" (fits the points and warps the raster onto a north-up grid covering the warped image; without it the points and extent only shift and scale the grid), "pointsCrs"?: EPSG code or "EPSG:n" of the points' x and y (default 4326), "crs"?: the output's (default pointsCrs), "resampling"?: "nearest"|"bilinear"|"cubic" (default bilinear), "cellSize"?: output units (default about the source pixel's size on the ground), "name"?: new layer for the result (default replaces the layer's raster), "path"?: "*.tif" (also writes the warp as a cloud-optimised GeoTIFF)}"#,
         ),
-        C::new("raster.project", "Project Raster", "Analyze › Alignment", project_raster).roles(&[]).params(
+        C::new("raster.project", "Project Raster", "Analyze › Alignment", project_raster).inputs(project_inputs).roles(&[]).effects(crate::policy::Effects::NONE).params(
             r#"{"layer": raster, "crs"?: EPSG code or "EPSG:n" of the output (default the layer's), "cellSize"?: number or [x, y] in the output's units (default about the layer's pixel there), "origin"?: [x, y] a cell corner falls on (default [0, 0], so grids of the same cellSize line up), "extent"?: polygon layer (its selected or all features' bounds) | [west, south, east, north] in degrees | "view" (default the layer's footprint), "grid"?: raster layer whose coordinate system, cells and extent are taken exactly (instead of crs, cellSize, origin and extent), "resampling"?: "nearest" (default) | "bilinear" | "cubic" | "average" (the mean of the pixels whose centres fall in a cell) | "mode" (their most frequent value, the least of those tied), "name"?: new layer (default "<layer> projected"), "path"?: GeoTIFF to write it to}"#,
         ),
-        C::new("raster.rasterize", "Polygons to Raster", "Analyze › Alignment", rasterize).roles(&[]).params(
+        C::new("raster.rasterize", "Polygons to Raster", "Analyze › Alignment", rasterize).inputs(rasterize_inputs).roles(&[]).effects(crate::policy::Effects::NONE).params(
             r#"{"layer": polygon layer (its selected or all features; a later one over an earlier), "field"?: numeric field (its values) or text field (codes 1 to n in sorted order of its values, listed in a table named after the result with classes), "value"?: number every polygon gives when there is no field (default 1), "nodata"?: number of the cells under no polygon (default 0), "crs"?: EPSG code or "EPSG:n" of the output (default the layer's), "cellSize"?: number or [x, y] in the output's units (required without grid), "origin"?: [x, y] a cell corner falls on (default [0, 0], so grids of the same cellSize line up), "extent"?: polygon layer (its selected or all features' bounds) | [west, south, east, north] in degrees | "view" (default the polygons' bounds), "grid"?: raster layer whose coordinate system, cells and extent are taken exactly (instead of crs, cellSize, origin and extent), "name"?: new layer (default "<layer> raster"), "path"?: GeoTIFF to write it to}"#,
         ),
         // A fit is a measurement of the points, not a project change: no undo step.
-        C::new("raster.gcpFit", "Control Point Fit", "Analyze › Alignment", gcp_fit).roles(&[]).view().params(
+        C::new("raster.gcpFit", "Control Point Fit", "Analyze › Alignment", gcp_fit).roles(&[]).effects(crate::policy::Effects::NONE).view().params(
             r#"{"points": [[column, row, x, y, on?], …] (on: 1/0 or true/false, default on), "transform"?: "similarity"|"affine"|"projective"|"polynomial2"|"polynomial3"|"spline" (default: similarity under 3 points, else affine), "compare"?: bool (fit every transform and recommend one; transform and leaveOneOut are then ignored), "leaveOneOut"?: bool (default true)}"#,
         ),
-        C::new("raster.change", "Change Detection", "Analyze › Image Analysis", change).roles(&[])
+        C::new("raster.change", "Change Detection", "Analyze › Image Analysis", change).inputs(change_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
             .params(r#"{"before": raster, "after": raster, "band"?: 1-based, "method"?: "difference"|"ratio"|"percent", "name"?, "ran"?: (internal: a raster the app has worked out)}"#),
-        C::new("raster.spectral", "Spectral Analysis", "Analyze › Image Analysis", spectral).roles(&[])
+        C::new("raster.spectral", "Spectral Analysis", "Analyze › Image Analysis", spectral).inputs(spectral_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
             .view()
             .params(r#"{"layer": raster, "lon"?, "lat"?, "zone"?: polygon layer (the selected or first polygon)}"#),
         C::new("raster.classify", "Classification Wizard", "Analyze › Image Classification", |s, p| {
             super::workflows::made_or_ran(s, p, "raster.classify")
-        }).roles(&[])
+        }).inputs(raster_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
         .params(r#"{"layer": raster, "classes"?: 2..50, "bands"?: [1-based], "name"?: output, "ran"?: (internal: classes the app has worked out)}"#),
-        C::new("raster.classifySupervised", "Classification Tools", "Analyze › Image Classification", supervised).roles(&[])
+        C::new("raster.classifySupervised", "Classification Tools", "Analyze › Image Classification", supervised).inputs(supervised_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
             .params(r#"{"layer": raster, "training": polygon layer, "classField": field, "bands"?: [1-based], "name"?: output, "ran"?: (internal: a raster the app has worked out)}"#),
-        C::new("raster.index", "Indices", "Analyze › Imagery Tools", index).roles(&[]).params(
+        C::new("raster.index", "Indices", "Analyze › Imagery Tools", index).inputs(raster_inputs).roles(&[]).effects(crate::policy::Effects::NONE).params(
             r#"{"layer": raster, "index": "ndvi"|"ndwi"|"savi"|"nbr"|"ndbi"|"evi", "red"?, "green"?, "blue"?, "nir"?, "swir"?: band numbers, "name"?: output, "ran"?: (internal: a raster the app has worked out)}"#,
         ),
-        C::new("raster.process", "Process", "Analyze › Imagery Tools", process).roles(&[])
+        C::new("raster.process", "Process", "Analyze › Imagery Tools", process).inputs(process_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
             .params(r#"{"layer": raster, "operation": "clip"|"resample", "extent"?: [minLon, minLat, maxLon, maxLat] (clip; the view when omitted), "polygon"?: polygon layer (clip to its selected or all polygons; cells outside become no-data), "selectedOnly"?: bool (clip to selected polygons when true, all when false), "factor"?: n (resample: n×n pixels become one), "name"?: output, "ran"?: (internal: a raster the app has worked out)}"#),
-        C::new("raster.mosaic", "Mosaic Rasters", "Analyze › Imagery Tools", raster_mosaic).roles(&[]).params(
+        C::new("raster.mosaic", "Mosaic Rasters", "Analyze › Imagery Tools", raster_mosaic).inputs(mosaic_inputs).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files)).params(
             r#"{"inputs": [raster layer or file path, …] (two or more, in one coordinate system and cell size; where they overlap the first wins), "name"?: output, "path"?: GeoTIFF to write the mosaic to}"#,
         ),
-        C::new("raster.editPixels", "Pixel Editor", "Analyze › Imagery Tools", edit_pixels).roles(&[])
+        C::new("raster.editPixels", "Pixel Editor", "Analyze › Imagery Tools", edit_pixels).inputs(raster_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
             .params(r#"{"layer": raster, "polygon": [[lon, lat], …], "value"?: number (no-data when omitted), "band"?: 1-based (all when omitted)}"#),
         // Measurements are session results, not project changes: no undo step.
-        C::new("raster.measure", "Mensuration Tools", "Analyze › Mensuration", measure).roles(&[]).view().params(
+        C::new("raster.measure", "Mensuration Tools", "Analyze › Mensuration", measure).inputs(measure_inputs).roles(&[]).effects(crate::policy::Effects::NONE).view().params(
             r#"{"layer"?: elevation raster, "kind": "distance"|"area"|"height"|"volume", "points": [[lon, lat], …], "base"?: metres (volume)}"#,
         ),
         C::new("raster.measurements", "Results", "Analyze › Mensuration", |s, p| {
@@ -81,10 +81,10 @@ pub fn commands() -> Vec<C> {
                 s.measurements.clear();
             }
             Ok(Value::Array(s.measurements.clone()))
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .view()
         .params(r#"{"clear"?: bool}"#),
-        C::new("imagery.workspace", "New Workspace", "Analyze › Ortho Mapping", new_workspace).roles(&[]).params(
+        C::new("imagery.workspace", "New Workspace", "Analyze › Ortho Mapping", new_workspace).inputs(workspace_inputs).roles(&[]).effects(crate::policy::Effects::NONE).params(
             r#"{"kind": "ortho"|"reality", "name"?: string, "images": [raster layers], "cellSize"?: degrees, "method"?: "first"|"mean"}"#,
         ),
         C::new("imagery.workspaceOptions", "Workspace Options", "Analyze › Ortho Mapping", |s, p| {
@@ -97,21 +97,23 @@ pub fn commands() -> Vec<C> {
                 w.method = method(p, "first")?;
             }
             serde_json::to_value(&*w).map_err(|e| e.to_string())
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .params(r#"{"name": workspace, "cellSize"?: degrees|null, "method"?: "first"|"mean"}"#),
-        C::new("imagery.mosaic", "Build Mosaic", "Analyze › Ortho Mapping", mosaic).roles(&[]).params(r#"{"name": workspace, "ran"?: (internal: a raster the app has worked out)}"#),
-        C::new("imagery.mesh", "Export Mesh", "Analyze › Reality Mapping", mesh).roles(&[])
+        C::new("imagery.mosaic", "Build Mosaic", "Analyze › Ortho Mapping", mosaic).inputs(workspace_mosaic_inputs).roles(&[]).effects(crate::policy::Effects::NONE).params(r#"{"name": workspace, "ran"?: (internal: a raster the app has worked out)}"#),
+        C::new("imagery.mesh", "Export Mesh", "Analyze › Reality Mapping", mesh).inputs(raster_inputs).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
             .view()
             .params(r#"{"layer": elevation raster, "path"?: "*.obj" (the text is returned without one), "step"?: pixels between vertices}"#),
     ]
 }
 
-fn raster_named(s: &Session, n: &str) -> Result<Arc<Raster>, String> {
+fn raster_named(input: &impl super::InputSource, n: &str) -> Result<Arc<Raster>, String> {
+    let context = input.input_context();
+    let s = &context;
     s.map().layer_by_name(n).and_then(|l| l.raster.as_ref()).and_then(|r| r.data.clone()).ok_or_else(|| format!("no raster layer '{n}'"))
 }
 
 pub(crate) fn raster(s: &Session, p: &Value) -> Result<Arc<Raster>, String> {
-    raster_named(s, ps(p, "layer").ok_or("layer is required")?)
+    raster_named(s, raster_name(p)?)
 }
 
 pub(crate) fn name(p: &Value, d: String) -> String {
@@ -399,7 +401,7 @@ const EXACT_WHOLE: f64 = 16_777_216.0;
 /// text field's code or one `value` (see `rustgis_analysis::warp::rasterize`). A new layer, and
 /// for a text field a table of its codes.
 fn rasterize(s: &mut Session, p: &Value) -> CmdResult {
-    let ln = ps(p, "layer").ok_or("layer is required: a polygon layer")?;
+    let ln = rasterize_name(p)?;
     let l = s.map().layer_by_name(ln).filter(|l| l.raster.is_none()).ok_or_else(|| format!("no vector layer '{ln}'"))?;
     let ds = &l.dataset;
     if ds.geometry_type != GeometryType::Polygon {
@@ -593,6 +595,9 @@ fn tif_path(p: &Value) -> Result<Option<String>, String> {
 /// written there first as a cloud-optimised GeoTIFF, which becomes the layer's source. `info`,
 /// with the extent, the file and the name the layer got, is the result.
 fn add_output(s: &mut Session, out: Raster, path: Option<String>, classes: bool, mut info: Value) -> CmdResult {
+    let owner = s.continuation()?;
+    owner.check()?;
+    let _progress = rustgis_analysis::control::install_progress(None);
     let out_name = out.name.clone();
     let e = out.extent();
     info["extent"] = json!([e.min_x, e.min_y, e.max_x, e.max_y]);
@@ -610,6 +615,7 @@ fn add_output(s: &mut Session, out: Raster, path: Option<String>, classes: bool,
     if classes && let Some(d) = rl.data.clone() {
         rl.style.renderer = rustgis_map::raster::unique_values(&d, 0, rustgis_map::Ramp::Harbour);
     }
+    s.check_continuation(&owner)?;
     let v = super::raster::add_raster(s, &out_name, rl)?;
     if let (Some(o), Some(i)) = (info.as_object_mut(), v.as_object()) {
         for (k, val) in i {
@@ -635,10 +641,7 @@ fn grid_param(
     natural: impl FnOnce(Crs) -> Result<([f64; 4], Option<f64>), String>,
 ) -> Result<warp::Grid, String> {
     // A grid named as anything but a raster layer's name is refused rather than ignored.
-    let template = match p.get("grid") {
-        None | Some(Value::Null) => None,
-        Some(v) => Some(v.as_str().ok_or("grid is a raster layer's name")?),
-    };
+    let template = project_grid(p)?;
     Ok(match template {
         Some(template) => {
             if ["crs", "cellSize", "origin", "extent"].iter().any(|k| p.get(*k).is_some_and(|v| !v.is_null())) {
@@ -681,7 +684,8 @@ fn grid_param(
             };
             let bounds = match p.get("extent") {
                 None | Some(Value::Null) => footprint,
-                Some(Value::String(l)) if l != "view" => {
+                Some(Value::String(_)) if project_extent_name(p).is_some() => {
+                    let l = project_extent_name(p).ok_or("extent layer is required")?;
                     let layer = s.map().layer_by_name(l).filter(|l| l.raster.is_none()).ok_or_else(|| format!("no vector layer '{l}'"))?;
                     let rows: Vec<usize> =
                         if layer.selection.is_empty() { (0..layer.dataset.features.len()).collect() } else { layer.selection.clone() };
@@ -801,8 +805,9 @@ fn change(s: &mut Session, p: &Value) -> CmdResult {
 
 /// What a change detection reads of the session, and the work that compares the rasters.
 pub(crate) fn change_work(s: &Session, p: &Value) -> Result<super::workflows::Work, String> {
-    let a = raster_named(s, ps(p, "before").ok_or("before is required")?)?;
-    let bfr = raster_named(s, ps(p, "after").ok_or("after is required")?)?;
+    let [before, after] = change_names(p)?;
+    let a = raster_named(s, before)?;
+    let bfr = raster_named(s, after)?;
     // The method is checked before any pixels are resampled.
     let method = ps(p, "method").unwrap_or("difference").to_string();
     if !matches!(method.as_str(), "difference" | "ratio" | "percent") {
@@ -843,7 +848,7 @@ fn spectral(s: &mut Session, p: &Value) -> CmdResult {
     let r = raster(s, p)?;
     let all: Vec<usize> = (0..r.band_count()).collect();
     let names: Vec<String> = r.bands.iter().map(|b| b.name.clone()).collect();
-    if let Some(z) = ps(p, "zone") {
+    if let Some(z) = spectral_zone(p) {
         let l = s
             .map()
             .layer_by_name(z)
@@ -878,7 +883,7 @@ pub(crate) fn supervised_work(s: &Session, p: &Value) -> Result<super::workflows
     if bands.is_empty() {
         return Err("give at least one band".into());
     }
-    let tl = ps(p, "training").ok_or("training (a polygon layer) is required")?;
+    let tl = training_name(p)?;
     let l = s
         .map()
         .layer_by_name(tl)
@@ -964,7 +969,7 @@ pub(crate) fn process_work(s: &Session, p: &Value) -> Result<super::workflows::W
         "clip" if p.get("polygon").is_some_and(|v| !v.is_null()) => {
             // Before the mask, which places the polygons on the raster's coordinates.
             r.require_coordinates()?;
-            let pl = ps(p, "polygon").ok_or("polygon is a polygon layer's name")?;
+            let pl = clip_polygon(p).ok_or("polygon is a polygon layer's name")?;
             let l = s
                 .map()
                 .layer_by_name(pl)
@@ -1142,8 +1147,8 @@ fn mosaic_name(v: &Value) -> Result<&str, &'static str> {
 
 /// The raster layer a mosaic input names, with its cells in memory. An error means the input isn't
 /// one.
-fn mosaic_layer(s: &Session, v: &Value) -> Result<Arc<Raster>, String> {
-    raster_named(s, mosaic_name(v)?)
+fn mosaic_layer(input: &impl super::InputSource, v: &Value) -> Result<Arc<Raster>, String> {
+    raster_named(input, mosaic_name(v)?)
 }
 
 /// Whether [`raster_mosaic`] reads a mosaic input from a file: it isn't a [`mosaic_layer`] and it
@@ -1591,16 +1596,7 @@ fn new_workspace(s: &mut Session, p: &Value) -> CmdResult {
     if !matches!(kind, "ortho" | "reality") {
         return Err("kind is ortho or reality".into());
     }
-    let images: Vec<String> = p
-        .get("images")
-        .and_then(Value::as_array)
-        .ok_or("images is required")?
-        .iter()
-        .map(|v| {
-            let n = v.as_str().ok_or("images are raster layer names")?;
-            s.map().layer_by_name(n).filter(|l| l.is_raster()).map(|l| l.name.clone()).ok_or_else(|| format!("no raster layer '{n}'"))
-        })
-        .collect::<Result<_, String>>()?;
+    let images = workspace_images(s, p)?;
     if images.is_empty() {
         return Err("give at least one image".into());
     }
@@ -1629,8 +1625,7 @@ fn mosaic(s: &mut Session, p: &Value) -> CmdResult {
 /// What a workspace's mosaic reads of the session (its images and options), and the work that
 /// lays them on one grid.
 pub(crate) fn mosaic_work(s: &Session, p: &Value) -> Result<super::workflows::Work, String> {
-    let n = ps(p, "name").ok_or("name is required")?;
-    let w = s.project.workspaces.iter().find(|w| w.name.eq_ignore_ascii_case(n)).cloned().ok_or_else(|| format!("no workspace '{n}'"))?;
+    let w = workspace_of(s, p)?.clone();
     let imgs: Vec<Arc<Raster>> = w.images.iter().map(|i| raster_named(s, i)).collect::<Result<_, _>>()?;
     let mut e = Extent::EMPTY;
     for r in &imgs {
@@ -1725,5 +1720,134 @@ fn mesh(s: &mut Session, p: &Value) -> CmdResult {
             Ok(json!({"path": path, "vertices": v, "faces": faces}))
         }
         None => Ok(json!({"text": obj, "vertices": v, "faces": faces})),
+    }
+}
+
+/// The literal raster/secondary inputs used by this module, without reading any pixels/files.
+fn raster_inputs(input: &super::InputContext<'_>, p: &Value) -> Result<super::Inputs, String> {
+    let s = input;
+    super::Inputs::named(s.map(), [raster_name(p)?])
+}
+/// Measures distance and area without a raster, or binds the explicitly selected elevation raster.
+fn measure_inputs(input: &super::InputContext<'_>, p: &Value) -> Result<super::Inputs, String> {
+    super::Inputs::named(input.map(), ps(p, "layer"))
+}
+/// Binds both literal before/after rasters used by change detection.
+fn change_inputs(input: &super::InputContext<'_>, p: &Value) -> Result<super::Inputs, String> {
+    let s = input;
+    super::Inputs::named(s.map(), change_names(p)?)
+}
+/// Binds the primary raster and optional literal zone polygon.
+fn spectral_inputs(input: &super::InputContext<'_>, p: &Value) -> Result<super::Inputs, String> {
+    let s = input;
+    super::Inputs::named(s.map(), std::iter::once(raster_name(p)?).chain(spectral_zone(p)))
+}
+/// Binds the primary raster and the actual training polygon selector.
+fn supervised_inputs(input: &super::InputContext<'_>, p: &Value) -> Result<super::Inputs, String> {
+    let s = input;
+    super::Inputs::named(s.map(), [raster_name(p)?, training_name(p)?])
+}
+/// Binds a clip polygon only when the selected processing operation consumes one.
+fn process_inputs(input: &super::InputContext<'_>, p: &Value) -> Result<super::Inputs, String> {
+    let s = input;
+    let clip = clip_polygon(p);
+    super::Inputs::named(s.map(), std::iter::once(raster_name(p)?).chain(clip))
+}
+/// Binds the grid template when present, otherwise the optional extent layer.
+fn project_inputs(input: &super::InputContext<'_>, p: &Value) -> Result<super::Inputs, String> {
+    let s = input;
+    super::Inputs::named(s.map(), std::iter::once(raster_name(p)?).chain(project_grid(p)?.or_else(|| project_extent_name(p))))
+}
+/// The rasterizer's literal vector selector, shared with pure dependency planning.
+fn rasterize_name(p: &Value) -> Result<&str, String> {
+    ps(p, "layer").ok_or("layer is required: a polygon layer".into())
+}
+/// Binds the exact vector selector and only the grid or extent the rasterizer consumes.
+fn rasterize_inputs(input: &super::InputContext<'_>, p: &Value) -> Result<super::Inputs, String> {
+    let mut inputs = super::Inputs::named(input.map(), [rasterize_name(p)?])?;
+    if let Some(name) = project_grid(p)?.or_else(|| project_extent_name(p)) {
+        inputs.extend(super::Inputs::named(input.map(), [name])?);
+    }
+    Ok(inputs)
+}
+/// Retains in-project raster precedence over paths using the executor's pure lookup.
+fn mosaic_inputs(input: &super::InputContext<'_>, p: &Value) -> Result<super::Inputs, String> {
+    let s = input;
+    let inputs = p.get("inputs").and_then(Value::as_array).ok_or("inputs are raster names or files")?;
+    let mut names = Vec::new();
+    for v in inputs {
+        let name = mosaic_name(v)?;
+        if mosaic_layer(input, v).is_ok() {
+            names.push(name);
+        }
+    }
+    super::Inputs::named(s.map(), names)
+}
+/// Binds raster images validated for a newly created imagery workspace.
+fn workspace_inputs(input: &super::InputContext<'_>, p: &Value) -> Result<super::Inputs, String> {
+    let s = input;
+    let names = workspace_images(input, p)?;
+    super::Inputs::named(s.map(), names.iter().map(String::as_str))
+}
+/// Resolves the stored workspace and its image names without mosaicking pixels.
+fn workspace_mosaic_inputs(input: &super::InputContext<'_>, p: &Value) -> Result<super::Inputs, String> {
+    let s = input;
+    let workspace = workspace_of(input, p)?;
+    super::Inputs::named(s.map(), workspace.images.iter().map(String::as_str))
+}
+
+/// The literal primary raster selector shared by handlers and their pure input metadata.
+pub(crate) fn raster_name(p: &Value) -> Result<&str, String> {
+    ps(p, "layer").ok_or("layer is required".into())
+}
+/// The literal training polygons used by imagery and deep learning.
+pub(crate) fn training_name(p: &Value) -> Result<&str, String> {
+    ps(p, "training").ok_or("training (a polygon layer) is required".into())
+}
+/// Parses the same required literal names used by change detection.
+fn change_names(p: &Value) -> Result<[&str; 2], String> {
+    Ok([ps(p, "before").ok_or("before is required")?, ps(p, "after").ok_or("after is required")?])
+}
+/// Selects only a string zone, as the spectral executor does.
+fn spectral_zone(p: &Value) -> Option<&str> {
+    ps(p, "zone")
+}
+/// Only the clip operation consumes the polygon selector.
+fn clip_polygon(p: &Value) -> Option<&str> {
+    (ps(p, "operation") == Some("clip")).then(|| ps(p, "polygon")).flatten()
+}
+/// A string extent other than view names a literal project vector layer.
+fn project_extent_name(p: &Value) -> Option<&str> {
+    ps(p, "extent").filter(|n| *n != "view")
+}
+
+/// Validates literal raster names in the workspace's declared image order.
+fn workspace_images(input: &impl super::InputSource, p: &Value) -> Result<Vec<String>, String> {
+    let context = input.input_context();
+    let s = &context;
+    p.get("images")
+        .and_then(Value::as_array)
+        .ok_or("images is required")?
+        .iter()
+        .map(|v| {
+            let n = v.as_str().ok_or("images are raster layer names")?;
+            s.map().layer_by_name(n).filter(|l| l.is_raster()).map(|l| l.name.clone()).ok_or_else(|| format!("no raster layer '{n}'"))
+        })
+        .collect::<Result<_, String>>()
+}
+
+/// Resolves the stored workspace by its case-insensitive name.
+fn workspace_of<'a>(input: &'a impl super::InputSource, p: &Value) -> Result<&'a Workspace, String> {
+    let context = input.input_context();
+    let s = &context;
+    let name = ps(p, "name").ok_or("name is required")?;
+    s.project.workspaces.iter().find(|w| w.name.eq_ignore_ascii_case(name)).ok_or_else(|| format!("no workspace '{name}'"))
+}
+
+/// Distinguishes omitted/null grid from a required literal raster name.
+fn project_grid(p: &Value) -> Result<Option<&str>, String> {
+    match p.get("grid") {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => v.as_str().map(Some).ok_or_else(|| "grid is a raster layer's name".into()),
     }
 }

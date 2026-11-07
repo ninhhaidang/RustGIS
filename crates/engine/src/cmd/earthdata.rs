@@ -12,16 +12,16 @@ use crate::{CmdResult, CommandSpec as C, Session};
 
 pub fn commands() -> Vec<C> {
     vec![
-        C::new("earthdata.collections", "Search NASA Earthdata Collections", "Home › Add › Web Data › NASA Earthaccess", collections).roles(&[])
+        C::new("earthdata.collections", "Search NASA Earthdata Collections", "Home › Add › Web Data › NASA Earthaccess", collections).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network))
             .view()
             .params(r#"{"keyword"?: text (free text: "sea surface temperature"), "shortName"?: "a collection's short name (HLSL30, ATL08, GEDI02_A…)", "cloudHosted"?: bool (only collections in NASA's cloud), "limit"?: 1–100 (20), "page"?: number (1), "answer"?: "CMR's JSON answer, when already fetched (the app's background request)"} — keyword or shortName is needed; searching needs no Earthdata Login"#),
-        C::new("earthdata.granules", "Search NASA Earthdata Granules", "Home › Add › Web Data › NASA Earthaccess", granules).roles(&[]).params(
+        C::new("earthdata.granules", "Search NASA Earthdata Granules", "Home › Add › Web Data › NASA Earthaccess", granules).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network)).params(
             r#"{"collection"?: "a collection's concept id (C…-PROVIDER, as earthdata.collections lists it)", "shortName"?: "or a short name: its cloud-hosted, newest version", "bbox"?: [west, south, east, north] | "view" (the map's extent, the default), "view"?: bool (false: everywhere), "start"?: "YYYY-MM-DD", "end"?: "YYYY-MM-DD", "limit"?: 1–100 (25), "page"?: number (1), "footprints"?: bool (adds the granules' footprints as a layer, default true), "name"?: text (the footprints layer's), "answer"?: "CMR's JSON answer, when already fetched"} — each granule lists its data files; add a GeoTIFF with layer.addUrl (files need an Earthdata Login token: earthdata.login)"#,
         ),
-        C::new("earthdata.login", "Earthdata Login Token", "Home › Add › Web Data › NASA Earthaccess", login).roles(&[]).view().params(
+        C::new("earthdata.login", "Earthdata Login Token", "Home › Add › Web Data › NASA Earthaccess", login).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Reserved)).view().params(
             r#"{"token": "an Earthdata Login token (Earthdata Login › Generate Token)", "remember"?: bool (false: kept for the session only; true: also remembered on this computer, in the system's credential store, and read back when next needed; without it a token remembered before is deleted)} — never in the project; sent only to NASA's Earthdata data hosts (https://*.earthdatacloud.nasa.gov, *.earthdata.nasa.gov) when their files are read; an expired token is forgotten"#,
         ),
-        C::new("earthdata.logout", "Forget Earthdata Login Token", "Home › Add › Web Data › NASA Earthaccess", logout).roles(&[])
+        C::new("earthdata.logout", "Forget Earthdata Login Token", "Home › Add › Web Data › NASA Earthaccess", logout).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Reserved))
             .view()
             .params("{} — forgets the token for the session and deletes the one remembered on this computer"),
         C::new("earthdata.status", "Earthdata Login Status", "Home › Add › Web Data › NASA Earthaccess", |_s, _p| {
@@ -29,7 +29,7 @@ pub fn commands() -> Vec<C> {
             earthdata::restore();
             earthdata::forget_if_expired();
             Ok(status())
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .view()
         .params("{} — whether a token is kept, its expiry, whether it is remembered on this computer, and whether an expired one was forgotten (give a new one with earthdata.login)"),
     ]

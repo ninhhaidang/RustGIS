@@ -655,8 +655,35 @@ fn size_text(n: u64) -> String {
 mod tests {
     use super::*;
 
+    /// Keeps S3 mutations out of parallel tests' process-wide account snapshots.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn isolate_account_test(name: &str) -> bool {
+        if std::env::var("RUSTGIS_ACCOUNT_SCENARIO").as_deref() == Ok(name) {
+            return false;
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", name])
+            .env("RUSTGIS_ACCOUNT_SCENARIO", name)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut summaries = stdout.lines().filter(|line| line.starts_with("test result:"));
+        let ran_one = summaries.next().is_some_and(|line| line.starts_with("test result: ok. 1 passed; 0 failed; 0 ignored;"))
+            && summaries.next().is_none();
+        assert!(
+            output.status.success() && ran_one,
+            "isolated account scenario failed or ran no test:\n{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        true
+    }
+
     #[test]
     fn anonymous_connection_can_be_kept_and_picked_after_disconnect() {
+        #[cfg(not(target_arch = "wasm32"))]
+        if isolate_account_test("s3ui::tests::anonymous_connection_can_be_kept_and_picked_after_disconnect") {
+            return;
+        }
         let mut app = RustGisApp::with_sample();
         app.ui.s3.name = "keep-s3-test".into();
         app.ui.s3.endpoint = "https://s3.example.com".into();
@@ -684,6 +711,10 @@ mod tests {
 
     #[test]
     fn picking_typed_keys_clears_previous_secrets_and_waits_for_connect() {
+        #[cfg(not(target_arch = "wasm32"))]
+        if isolate_account_test("s3ui::tests::picking_typed_keys_clears_previous_secrets_and_waits_for_connect") {
+            return;
+        }
         let mut app = RustGisApp::with_sample();
         let v = app
             .run(
@@ -719,6 +750,10 @@ mod tests {
 
     #[test]
     fn browsing_through_a_saved_login_names_it_and_a_session_connection_does_not() {
+        #[cfg(not(target_arch = "wasm32"))]
+        if isolate_account_test("s3ui::tests::browsing_through_a_saved_login_names_it_and_a_session_connection_does_not") {
+            return;
+        }
         let mut app = RustGisApp::with_sample();
         let v = app
             .run(
@@ -742,6 +777,10 @@ mod tests {
 
     #[test]
     fn editing_or_removing_the_picked_connection_refills_the_form_and_drops_its_listing() {
+        #[cfg(not(target_arch = "wasm32"))]
+        if isolate_account_test("s3ui::tests::editing_or_removing_the_picked_connection_refills_the_form_and_drops_its_listing") {
+            return;
+        }
         let mut app = RustGisApp::with_sample();
         let v = app
             .run(
@@ -778,6 +817,10 @@ mod tests {
 
     #[test]
     fn s3_saved_picker_and_connection_entry_reauthenticate_a_foreign_session_login() {
+        #[cfg(not(target_arch = "wasm32"))]
+        if isolate_account_test("s3ui::tests::s3_saved_picker_and_connection_entry_reauthenticate_a_foreign_session_login") {
+            return;
+        }
         use rustgis_engine::data::secrets::MemorySecrets;
         use std::sync::Arc;
         let _turn = crate::fetching::turn();
@@ -814,6 +857,10 @@ mod tests {
 
     #[test]
     fn s3_saved_picker_retains_ordinary_session_login_semantics() {
+        #[cfg(not(target_arch = "wasm32"))]
+        if isolate_account_test("s3ui::tests::s3_saved_picker_retains_ordinary_session_login_semantics") {
+            return;
+        }
         let mut app = RustGisApp::with_sample();
         let name = "s3-ui-unmapped-session";
         app.run(

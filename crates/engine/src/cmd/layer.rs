@@ -15,45 +15,45 @@ use crate::{CmdResult, CommandSpec as C, Session};
 /// Registers layer commands shared by the UI, CLI and command search.
 pub fn commands() -> Vec<C> {
     vec![
-        C::new("layer.addData", "Add Data", "Home › Add", add_data).roles(&[])
+        C::new("layer.addData", "Add Data", "Home › Add", add_data).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
             .params(r#"{"path": string, "name"?: string, "layer"?: "GeoPackage, GDAL, DuckDB or DXF layer", "paperSpace"?: "bool: a DXF's layout entities too", "stream"?: bool, "as"?: "scan" (a TIFF, PNG or JPEG, even a photo or a GeoTIFF, as a picture with no coordinates), "crs"?: "EPSG:… (or WKT) for Shapefile coordinates (overrides .prj), a CSV, a CityJSON model, or a GDAL or DuckDB file that doesn't say", "x"?: "CSV x/longitude column", "y"?: "CSV y/latitude column", "wkt"?: "CSV WKT geometry column", "delimiter"?: ","|";"|"\\t"|"|"}"#),
-        C::new("layer.addPhotos", "Add Photos", "Home › Add", add_photos).roles(&[]).params(
+        C::new("layer.addPhotos", "Add Photos", "Home › Add", add_photos).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files)).params(
             r#"{"paths"?: [JPEG photo files], "folder"?: "a folder of photos (every JPEG in it)", "name"?: "the layer (default Photos; photos join it when it exists)"}"#,
         ),
-        C::new("info.fileLayers", "List Layers in File", "Home › Add › Add Data", file_layers).roles(&[])
+        C::new("info.fileLayers", "List Layers in File", "Home › Add › Add Data", file_layers).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
             .view()
             .params(r#"{"path": string, "crs"?: "EPSG:… for a .city.json that doesn't say (as layer.addData)"}"#),
-        C::new("info.fileColumns", "List Columns in File", "Home › Add › Add Data › Delimited Text", file_columns).roles(&[]).view().params(
+        C::new("info.fileColumns", "List Columns in File", "Home › Add › Add Data › Delimited Text", file_columns).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files)).view().params(
             r#"{"path": "a delimited text file (CSV, TSV, TXT) or a spreadsheet", "delimiter"?: ","|";"|"\\t"|"|", "layer"?: "a spreadsheet's sheet (the first by default)"}"#,
         ),
-        C::new("layer.addSql", "Add Data From SQL", "Home › Add", add_sql).roles(&[]).params(
+        C::new("layer.addSql", "Add Data From SQL", "Home › Add", add_sql).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files).with(crate::policy::Effect::Network)).params(
             r#"{"sql": "one DuckDB SELECT; DuckDB Spatial's ST_ functions, read_parquet('…'), web addresses", "name"?: string, "database"?: "a .duckdb file or a PostgreSQL connection (postgres:host=… dbname=…) whose tables the query names", "password"?: "the connection's, kept for this session only", "crs"?: "EPSG:… of a geometry that doesn't say", "stream"?: bool, "ran"?: "a result the app ran (the SQL pane)"}"#,
         ),
-        C::new("layer.addDatabase", "Add Data From Database", "Home › Add › Add Data", add_database).roles(&[]).params(
+        C::new("layer.addDatabase", "Add Data From Database", "Home › Add › Add Data", add_database).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network).with(crate::policy::Effect::Files)).params(
             r#"{"database": "postgres:host=… dbname=… user=… (or a postgresql:// address; PostGIS tables are read live), a mysql://user@host:port/database address (MySQL or MariaDB, read live; mariadb:// too), an mssql://user@host:1433/database address (SQL Server or Azure SQL, read live; ?encrypt=strict|false, ?trust-server-certificate=true for a self-signed certificate, ?instance=NAME; on Windows DOMAIN\\user or no user signs in with Windows), or a .duckdb file", "password"?: "kept for this session only, never saved", "layer"?: "a table, as table or schema.table (table:column for one of several geometry columns; default: every table with a geometry column)", "crs"?: "EPSG:… of a geometry that doesn't say", "name"?: string, "stream"?: bool}"#,
         ),
-        C::new("info.databaseTables", "List Database Tables", "Home › Add › Add Data › Database", database_tables).roles(&[])
+        C::new("info.databaseTables", "List Database Tables", "Home › Add › Add Data › Database", database_tables).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network).with(crate::policy::Effect::Files))
             .view()
             .params(r#"{"database": "as layer.addDatabase", "password"?: string}"#),
-        C::new("layer.defineProjection", "Define Projection", "Layers", define_projection).roles(&[])
+        C::new("layer.defineProjection", "Define Projection", "Layers", define_projection).roles(&[]).effects(crate::policy::Effects::NONE)
             .when(need_feature_layer)
             .params(r#"{"layer"?: name|id, "crs": "EPSG:… or WKT; reinterpret native coordinates, without rewriting the source file"}"#),
-        C::new("layer.loadAll", "Load All Features", "Layers", load_all).roles(&[]).when(need_streamed).params(r#"{"layer"?: name|id}"#),
-        C::new("layer.addUrl", "Add Data From URL", "Home › Add › Add Data", add_url).roles(&[]).params(
+        C::new("layer.loadAll", "Load All Features", "Layers", load_all).roles(&[]).effects(crate::policy::Effects::NONE).when(need_streamed).params(r#"{"layer"?: name|id}"#),
+        C::new("layer.addUrl", "Add Data From URL", "Home › Add › Add Data", add_url).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network)).params(
             r#"{"url": "https://…/data.geojson|.csv|.parquet|.fgb|.gpkg|.zip|.shp (its .dbf fetched beside it, and its .shx, .prj and .cpg when there)|.kml|.kmz|.gpx|.tif|.jp2 (JPEG 2000: desktop, through GDAL) (the format from the address, else the contents) | a .pmtiles archive", "name"?: text, "layer"?: "one layer of a zip, KML or GPX", "zoom"?: "bool: true frames everything added; false keeps the view, even on an empty map; omitted, the first content on an empty map is framed (a GeoParquet, FlatGeobuf or cloud-optimised GeoTIFF read in place likewise; a PMTiles or MBTiles archive ignores zoom and is framed on its bounds unless it covers the whole world)", "x"?, "y"?, "wkt"?, "crs"?, "delimiter"?, "paperSpace"?, "stream"?, "as"? (as layer.addData), "whole"?: "bool: download a cloud-optimised GeoTIFF whole (as a raster layer) instead of reading it in place (an address without a file name is read in place when its first bytes are a cloud-optimised GeoTIFF)", "cog"?: "bool: the address is a cloud-optimised GeoTIFF whatever its name says (the app's probe found it so)", "bbox"?: "[west, south, east, north] in degrees | "view": a cloud-optimised GeoTIFF's window as a raster layer (desktop and command line), read by range at full resolution, in the file's coordinate system, with its colour table and class names; at most 64 million values (all bands)", "cellSize"?: "with bbox: the coarsest overview whose cells are at most this size is read (the file's units; metres for longitude/latitude, a degree taken as 111.32 km)", "cube"?: "bool: a data cube's file: a tile layer that follows the time slider (stac.addCube adds them), kept one when the project opens again", "start"?, "end"?, "unit"?, "interval"?, "dates"?: "a GeoTIFF address with date placeholders ({date:YYYY}, {YYYY}{MM}{DD}), one file per date: the dates it spans and steps through (as time.set), turning the time slider on", "connection"?: "the id of the saved web-service connection it comes from (as service.add)", "anonymous"?: bool (internal: a plugin-origin download must never adopt a saved login), "request"?: "number (internal: the download a plugin command left to the app, #1202)"}"#,
         ),
-        C::new("layer.addDownload", "Add Downloaded Data", "Home › Add", add_download).roles(&[])
+        C::new("layer.addDownload", "Add Downloaded Data", "Home › Add", add_download).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Reserved).with(crate::policy::Effect::Files))
             .params(r#"{"id": a download the app finished (Home › Add › Add Data › From URL), "url": its address, "name"?: text, "layer"?: text, "zoom"?: bool, "x"?, "y"?, "wkt"?, "crs"?, "delimiter"?, "paperSpace"?, "stream"?, "as"? (as layer.addData), "service"?: bool (a service's features: their axes (when they came as GeoJSON) and paging are checked, and the address is kept as the layer's source), "bounds"?: [west, south, east, north] (with service: the layer's longitude/latitude bounds from its capabilities, which its axes are checked against; without bounds they are left as they come; ignored without service), "coverage"?: bool (a WCS coverage: a GeoTIFF, else the service's error, and its request kept as the layer's source), "geolibreProject"?: bool (internal: downloaded project JSON), "geolibreLayer"?: {"token", "record"} (internal: reserved imported layer and its saved style), "geolibreZarr"?: bool (internal: an imported Zarr slice as GeoTIFF), "connection"?: "as layer.addUrl", "anonymous"?: bool (internal: preserves a plugin-origin download's anonymous reads), "request"?: number (internal: the download a plugin command left to the app, #1202)}"#),
-        C::new("layer.addEncodedPolyline", "Add Encoded Polyline", "Home › Add", add_encoded_polyline).roles(&[]).params(
+        C::new("layer.addEncodedPolyline", "Add Encoded Polyline", "Home › Add", add_encoded_polyline).roles(&[]).effects(crate::policy::Effects::NONE).params(
             r#"{"polyline": "encoded polyline text" | [texts] (one line each), "precision"?: 5 (Google) | 6 (OSRM, Valhalla), "name"?: text}"#,
         ),
-        C::new("layer.addDataText", "Add Data (from text)", "Home › Add", add_data_text).roles(&[]).params(r#"{"fileName": "name.geojson|.csv|.tsv", "text": string, "name"?: text, "x"?, "y"?, "wkt"?, "crs"?, "delimiter"? (as layer.addData, for delimited text), "layer"?, "paperSpace"? (as layer.addData, for a file of several layers)}"#),
-        C::new("layer.addSample", "Add Sample Data", "Home › Add › Add Data", add_sample).roles(&[]).params(r#"{"name": "countries"|"cities"|"rivers"|"lakes"}"#),
-        C::new("layer.remove", "Remove", "Layers", remove).roles(&[])
+        C::new("layer.addDataText", "Add Data (from text)", "Home › Add", add_data_text).roles(&[]).effects(crate::policy::Effects::NONE).params(r#"{"fileName": "name.geojson|.csv|.tsv", "text": string, "name"?: text, "x"?, "y"?, "wkt"?, "crs"?, "delimiter"? (as layer.addData, for delimited text), "layer"?, "paperSpace"? (as layer.addData, for a file of several layers)}"#),
+        C::new("layer.addSample", "Add Sample Data", "Home › Add › Add Data", add_sample).roles(&[]).effects(crate::policy::Effects::NONE).params(r#"{"name": "countries"|"cities"|"rivers"|"lakes"}"#),
+        C::new("layer.remove", "Remove", "Layers", remove).roles(&[]).effects(crate::policy::Effects::NONE)
             .key("Delete")
             .when(need_layer)
             .params(r#"{"layer"?: name|id | [name|id] (default: the layer selection)}"#),
-        C::new("layer.select", "Select Layer", "Layers", select).roles(&[])
+        C::new("layer.select", "Select Layer", "Layers", select).roles(&[]).effects(crate::policy::Effects::NONE)
             .params(r#"{"layer"?: name|id | [name|id] (default: the active layer; the last of a list becomes the active layer), "mode"?: "replace" (only these; the default) | "toggle" (each in or out of the layer selection; the last one out leaves no active layer) | "extend" (added to it)}"#)
             .view(),
         C::new("layer.rename", "Rename", "Layers", |s, p| {
@@ -102,7 +102,7 @@ pub fn commands() -> Vec<C> {
             // So do legends that leave it out.
             legends_follow_layer(s, &old, Some(&n));
             Ok(r)
-        }).roles(&[]).params(r#"{"layer"?, "name": string}"#)
+        }).roles(&[]).effects(crate::policy::Effects::NONE).params(r#"{"layer"?, "name": string}"#)
         .when(need_layer),
         C::new("layer.visibility", "Visibility", "Layers", |s, p| {
             let ids = layer_ids(s, p)?;
@@ -118,11 +118,11 @@ pub fn commands() -> Vec<C> {
                 }
             }
             Ok(Value::Null)
-        }).roles(&[]).params(r#"{"layer"?: name|id | [name|id] (default: the layer selection), "visible"?: bool (toggles when omitted: all take the opposite of the active layer's state)}"#)
+        }).roles(&[]).effects(crate::policy::Effects::NONE).params(r#"{"layer"?: name|id | [name|id] (default: the layer selection), "visible"?: bool (toggles when omitted: all take the opposite of the active layer's state)}"#)
         .when(need_layer),
-        C::new("layer.moveUp", "Move Up", "Layers", |s, p| move_layer(s, p, -1)).roles(&[]).params(r#"{"layer"?: name|id (default: the active layer)}"#).when(need_layer),
-        C::new("layer.moveDown", "Move Down", "Layers", |s, p| move_layer(s, p, 1)).roles(&[]).params(r#"{"layer"?: name|id (default: the active layer)}"#).when(need_layer),
-        C::new("layer.move", "Move", "Layers", move_to).roles(&[])
+        C::new("layer.moveUp", "Move Up", "Layers", |s, p| move_layer(s, p, -1)).roles(&[]).effects(crate::policy::Effects::NONE).params(r#"{"layer"?: name|id (default: the active layer)}"#).when(need_layer),
+        C::new("layer.moveDown", "Move Down", "Layers", |s, p| move_layer(s, p, 1)).roles(&[]).effects(crate::policy::Effects::NONE).params(r#"{"layer"?: name|id (default: the active layer)}"#).when(need_layer),
+        C::new("layer.move", "Move", "Layers", move_to).roles(&[]).effects(crate::policy::Effects::NONE)
             .when(need_layer)
             .params(r#"{"layer"?: name|id | [name|id] (default: the layer selection), "to": position (0 = top; past the end, the bottom). Several keep their order, the topmost landing at "to" as one layer would, and go only to the top or the bottom (one in a group, to its group's): with 4 layers and 2 of them, 2 or more is the bottom, 1 is refused}"#),
         C::new("layer.zoomTo", "Zoom To Layer", "Layers", |s, p| {
@@ -133,10 +133,10 @@ pub fn commands() -> Vec<C> {
             }
             s.zoom_to(&e);
             Ok(Value::Null)
-        }).roles(&[]).params(r#"{"layer"?: name|id | [name|id] (default: the layer selection; zooms to all of them)}"#)
+        }).roles(&[]).effects(crate::policy::Effects::NONE).params(r#"{"layer"?: name|id | [name|id] (default: the layer selection; zooms to all of them)}"#)
         .view()
         .when(need_layer),
-        C::new("layer.symbology", "Symbology", "Style › Drawing", symbology).roles(&[])
+        C::new("layer.symbology", "Symbology", "Style › Drawing", symbology).roles(&[]).effects(crate::policy::Effects::NONE)
             .when(need_feature_layer)
             .params(r#"{"layer"?, "type": "single"|"unique"|"graduated"|"proportional", "field"?, "expression"?: text|null (unique: class by this expression's values instead of a field; blank or null: by a field; with neither key, Unique Values keep the layer's expression), "classes"?: 1..12, "method"?: "naturalBreaks"|"equalInterval"|"quantile"|"geometricInterval"|"standardDeviation"|"arithmeticProgression"|"headTailBreaks"|"manual", "breaks"?: [numbers] (manual: the classes' upper bounds, closed by the field's largest value), "ramp"?: string}"#),
         C::new("layer.ramp", "Color Scheme", "Style › Drawing", |s, p| {
@@ -152,9 +152,9 @@ pub fn commands() -> Vec<C> {
                     }
                 }
             })
-        }).roles(&[]).params(r#"{"layer"?, "ramp": colour ramp name}"#)
+        }).roles(&[]).effects(crate::policy::Effects::NONE).params(r#"{"layer"?, "ramp": colour ramp name}"#)
         .when(need_layer),
-        C::new("layer.classStyle", "Class Style", "Style › Drawing", class_style).roles(&[])
+        C::new("layer.classStyle", "Class Style", "Style › Drawing", class_style).roles(&[]).effects(crate::policy::Effects::NONE)
             .when(need_feature_layer)
             .params(
                 r##"{"layer"?, "value"?: text|number (a Unique Values class), "index"?: number (a Graduated Colors class, 0 = the lowest), "other"?: true (Unique Values' <all other values>), "color"?: "#RRGGBB" (preserves polygon translucency, minimum alpha 150)|"#RRGGBBAA" (sets alpha exactly), "outline"?: "#RRGGBB"|"#RRGGBBAA", "label"?: text (the legend label; "" goes back to the value or range)}"##,
@@ -185,7 +185,7 @@ pub fn commands() -> Vec<C> {
                 // A fill colour after No Fill is drawn, unless it is transparent itself (#1301).
                 take_no_fill(l);
             })
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .when(need_feature_layer)
         .params(r##"{"layer"?, "color": "#RRGGBB"|"#RRGGBBAA" (the fill; a polygon's outline is left as it is, set it with layer.outline)}"##),
         C::new("layer.noFill", "No Fill", "Style › Drawing", |s, p| {
@@ -209,7 +209,7 @@ pub fn commands() -> Vec<C> {
                     l.no_fill = Some(NoFill::Symbols);
                 }
             })
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .when(need_polygon_features)
         .params(r#"{"layer"?: name|id (default: the active layer containing polygons; hides polygon fills, keeping outlines and point/line symbols)}"#),
         C::new("layer.outline", "Outline", "Style › Drawing", |s, p| {
@@ -225,15 +225,15 @@ pub fn commands() -> Vec<C> {
                     }
                 })
             })
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .when(need_feature_layer)
         .params(r##"{"layer"?, "color"?: "#RRGGBB"|"#RRGGBBAA", "width"?: number}"##),
-        C::new("layer.lineStrokes", "Line Strokes", "Style › Drawing", line_strokes).roles(&[])
+        C::new("layer.lineStrokes", "Line Strokes", "Style › Drawing", line_strokes).roles(&[]).effects(crate::policy::Effects::NONE)
             .when(need_lines_or_points)
             .params(
                 r##"{"layer"?, "strokes": [{"color"?: "#RRGGBB"|"#RRGGBBAA"|null (null: the renderer's line colour), "width"?: points|null (null: the renderer's width), "offset"?: points (positive: right of the line's direction, negative: left), "cap"?: "round"|"flat"|"square", "join"?: "round"|"miter"|"bevel", "level"?: 0..255|null (with layer.strokeLevels: the level it draws at; null: its place in the stack), "dash"?: [points, …]|null (dash, gap, … in turn, at most 8; null: solid), "markers"?: {"mark"?: "circle"|"square"|"triangle"|"diamond"|"star"|"character"|"hash" (a mark across the line), "char"?: text (a character of a font as the marker instead of a shape), "font"?: text (the installed family it is drawn from; none: the label font), "size"?: points (a marker's size, a hash mark's length; default 4), "at"?: "interval"|"vertices"|"innerVertices"|"first"|"last"|"middle"|"segmentMiddles" or a list of them (default "interval"), "interval"?: points (default 12), "offsetAlong"?: points (from the start, back from the end, on from the middle), "rotate"?: bool (turned with the line; default true), "averageAngle"?: points (the stretch of line a marker at an interval turns with; 0: its segment), "angle"?: degrees clockwise (a hash mark at 0 crosses the line square), "outline"?: "#RRGGBB"|"#RRGGBBAA" (the markers' outline, as wide as the stroke)}|null (markers or hash marks along the line in the stroke's colour, instead of a line; cap, join and dash don't apply)}] (drawn bottom first; [] goes back to the single stroke, or for a class to the layer's strokes; on a point layer they are its marks: each stroke's markers drawn at the point in place of the symbol's, "offsetAlong" shifting a mark right and "offset" down, both turned with its "angle", and "rotate" turning it by layer.markerRotation's field), "value"?: text|number (a Unique Values class's own strokes), "index"?: number (a Graduated Colors class's, 0 = the lowest), "other"?: true (Unique Values' <all other values>)}"##,
             ),
-        C::new("layer.fillLayers", "Fill Layers", "Style › Drawing", fill_layers).roles(&[])
+        C::new("layer.fillLayers", "Fill Layers", "Style › Drawing", fill_layers).roles(&[]).effects(crate::policy::Effects::NONE)
             .when(need_polygon_features)
             .params(
                 r##"{"layer"?, "value"?|"index"?|"other"?: a class of Unique Values (its value, or other: true) or Graduated Colors (its index) to set its own fills (none: the layer's), "fills": [{"color"?: "#RRGGBB"|"#RRGGBBAA"|null (null: the feature's fill colour, so the fills follow the classes), "pattern"?: "solid" (default)|"hatch" (parallel lines)|"dots" (markers on a grid)|"gradient" (from color to color2 across the feature)|"shapeburst" (from color at the edge to color2 inside), "angle"?: degrees anticlockwise from east (hatch), "spacing"?: points between lines (hatch, 1 to 500; default 8) or points across and down between markers, a number or [across, down] (dots), "width"?: a hatch line's width in points (0 to 50; default 1), "offset"?: points across the lines (hatch) or [across, down] (dots), "marker"?: "circle"|"square"|"triangle"|"diamond"|"star" (dots), "char"?: text (dots: a character of a font as the marker instead of a shape), "font"?: text (the installed family it is drawn from; none: the label font), "size"?: a marker's size in points (default 3), "outline"?: a marker's outline colour or null, "outlineWidth"?: points, "displacement"?: [across, down] points every other row and column are shifted by (dots), "color2"?: "#RRGGBB"|"#RRGGBBAA" (gradient, shapeburst: the second colour; default white), "stops"?: [[0..1, "#RRGGBB"|"#RRGGBBAA"], …] (gradient, shapeburst: colours between the two, at most 16), "discrete"?: bool (each colour held until the next stop), "shape"?: "linear" (default)|"radial"|"conical" (gradient), "from"?: [across, down]|"centroid" (gradient: where color is, 0..1 in the feature's box; default [0.5, 0], the top middle), "to"?: [across, down]|"centroid" (where color2 is; default [0.5, 1]), "spread"?: "pad" (default)|"reflect"|"repeat" (gradient: past its points), "angle"?: degrees anticlockwise (gradient: turned round its box's middle), "inView"?: bool (gradient: from and to in the map view's box, not the feature's), "distance"?: points|null (shapeburst: how deep it shades; null or none: to the point deepest inside), "blur"?: 0..17 (shapeburst: pixels), "ignoreRings"?: bool (shapeburst: holes' edges left out)}] (bottom first, at most 8; [] for the symbol's single fill; the outline is drawn over them)}"##,
@@ -263,10 +263,10 @@ pub fn commands() -> Vec<C> {
             }
             l.marker_rotation = field.map(|field| rustgis_map::MarkerRotation { field, counterclockwise });
             Ok(Value::Null)
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .when(need_points)
         .params(r#"{"layer"?, "field": numeric field name|null (each point's marker turned by the angle in it, in degrees; null: not turned), "counterclockwise"?: bool (the angles run counterclockwise, as in mathematics; default clockwise, as on a compass)}"#),
-        C::new("layer.symbolBy", "Symbol by Expression", "Style › Drawing", symbol_by).roles(&[])
+        C::new("layer.symbolBy", "Symbol by Expression", "Style › Drawing", symbol_by).roles(&[]).effects(crate::policy::Effects::NONE)
             .when(need_feature_layer)
             .params(r#"{"layer"?, "size"?: expression|null (a point's marker size in points), "fill"?: expression|null (the fill colour: '#RRGGBB', a CSS colour name or 'r,g,b[,a]' as color_rgb gives it), "stroke"?: expression|null (the outline colour, a line's colour), "strokeWidth"?: expression|null (the outline's width in points, a line's width), "angle"?: expression|null (point layers: each marker turned by it, in degrees clockwise, in place of layer.markerRotation's field)} (each expression in the language of queries, per feature, @map_scale the map's scale; a key left out keeps its expression, null or "" removes it; where an expression gives null the symbol's own value is drawn)"#),
         C::new("layer.strokeLevels", "Stroke Levels", "Style › Drawing", |s, p| {
@@ -278,7 +278,7 @@ pub fn commands() -> Vec<C> {
             }
             l.stroke_levels = on;
             Ok(json!({"on": on}))
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .when(need_lines)
         .params(r#"{"layer"?, "on": bool (draw every feature's stacked strokes of one level before the next, so casings join under the cores)}"#),
         C::new("layer.marker", "Marker", "Style › Drawing", |s, p| {
@@ -308,13 +308,13 @@ pub fn commands() -> Vec<C> {
                     }
                 })
             })
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .when(need_feature_layer)
         .params(r#"{"layer"?, "shape"?: "circle"|"square"|"triangle"|"diamond"|"star", "char"?: text (a character of a font as the marker, its first; sized by the font's em), "font"?: text (the installed family the character is drawn from; "" or one not installed: the label font), "size"?: number}"#),
         C::new("layer.transparency", "Transparency", "Style › Effects", |s, p| {
             let t = f(p, "value").ok_or("value (0–100) is required")?.clamp(0.0, 100.0) as f32;
             with(s, p, |l| l.transparency = t)
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .when(need_layer)
         .params(r#"{"layer"?, "value": 0..100}"#),
         C::new("layer.scaleRange", "Visibility Range", "Style › Visibility Range", |s, p| {
@@ -324,7 +324,7 @@ pub fn commands() -> Vec<C> {
                 l.min_scale = min;
                 l.max_scale = max;
             })
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .when(need_layer)
         .params(r#"{"layer"?, "min"?: scale (out beyond), "max"?: scale (in beyond)}"#),
         C::new("layer.referenceScale", "Reference Scale", "Style › Drawing", |s, p| {
@@ -347,7 +347,7 @@ pub fn commands() -> Vec<C> {
             }
             l.reference_scale = scale;
             Ok(json!({"scale": scale}))
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .when(need_feature_layer)
         .params(r#"{"layer"?, "scale": 1:N the symbols' and labels' sizes are set for (drawn at another scale they grow and shrink with the map)|"current" (the map's scale)|null (sizes stay as set on screen)}"#),
         C::new("layer.selectable", "Selectable", "Layers", |s, p| {
@@ -362,18 +362,18 @@ pub fn commands() -> Vec<C> {
                 }
             }
             Ok(Value::Null)
-        }).roles(&[]).params(r#"{"layer"?: name|id | [name|id] (default: the layer selection), "on"?: bool (toggles when omitted: all take the opposite of the active layer's state)}"#)
+        }).roles(&[]).effects(crate::policy::Effects::NONE).params(r#"{"layer"?: name|id | [name|id] (default: the layer selection), "on"?: bool (toggles when omitted: all take the opposite of the active layer's state)}"#)
         .when(need_feature_layer),
         C::new("layer.expand", "Expand Legend", "Layers", |s, p| {
             let on = b(p, "on");
             with(s, p, |l| l.expanded = on.unwrap_or(!l.expanded))
-        }).roles(&[]).params(r#"{"layer"?, "on"?: bool (toggles when omitted)}"#)
+        }).roles(&[]).effects(crate::policy::Effects::NONE).params(r#"{"layer"?, "on"?: bool (toggles when omitted)}"#)
         .view()
         .when(need_layer),
         C::new("labels.enable", "Label", "Labeling › Labels", |s, p| {
             let on = b(p, "on");
             with(s, p, |l| l.labels.enabled = on.unwrap_or(!l.labels.enabled))
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .when(need_feature_layer)
         .params(r#"{"layer"?, "on"?: bool}"#),
         C::new("labels.field", "Label Field", "Labeling › Label Class", |s, p| {
@@ -386,7 +386,7 @@ pub fn commands() -> Vec<C> {
                 labels.enabled = true;
                 Ok(())
             })
-        }).roles(&[]).params(r#"{"layer"?, "class"?: name (none: the Default class, by whatever name it has), "field": name}"#)
+        }).roles(&[]).effects(crate::policy::Effects::NONE).params(r#"{"layer"?, "class"?: name (none: the Default class, by whatever name it has), "field": name}"#)
         .when(need_feature_layer),
         C::new("labels.style", "Text Symbol", "Labeling › Text Symbol", |s, p| {
             let size = f(p, "size").map(|v| v.clamp(*LABEL_SIZE.start(), *LABEL_SIZE.end()) as f32);
@@ -488,7 +488,7 @@ pub fn commands() -> Vec<C> {
                     c.italic = it;
                 }
             })
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .when(need_feature_layer)
         .params(r##"{"layer"?, "class"?: name (none: the Default class, by whatever name it has), "size"?: number, "color"?: "#RRGGBB"|"#RRGGBBAA", "halo"?: bool, "haloColor"?: "#RRGGBB"|"#RRGGBBAA"|"" (""/null: white or dark, whichever stands out from the text), "haloWidth"?: points 0-10|null (null: the thin halo), "spacing"?: points between letters (-5 to 50), "bold"?: bool, "italic"?: bool, "font"?: installed family name (labels.fonts lists them; "" is the label font), "background"?: false|null (none) | true (white, a thin dark outline) | {"fill"?: "#RRGGBB"|"#RRGGBBAA"|"" ("": none), "stroke"?: colour|"" (the outline; "": none), "strokeWidth"?: points 0-10, "padding"?: [across, up and down] points 0-50, "radius"?: corner radius in points 0-50} (a rectangle behind the text; what isn't given is kept, or the default's), "wrapChar"?: text (a line break wherever it occurs, left out; a space puts each word on its own line; "" for none), "wrapLength"?: characters (a longest line, broken between words; 0 for none; at most 500), "lineAlign"?: "left"|"center"|"right" (how a label's lines line up)}"##),
         C::new("layer.definitionQuery", "Definition Query", "Data › Definition Query", |s, p| {
@@ -519,20 +519,20 @@ pub fn commands() -> Vec<C> {
                 );
             }
             with(s, p, |l| l.definition_query = if q.is_empty() { None } else { Some(q.clone()) })
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .when(need_feature_layer)
         .params(r#"{"layer"?, "where": "SQL clause, empty to clear"}"#),
         C::new("table.open", "Attribute Table", "Data › Table", |s, p| {
             s.table_layer = Some(s.layer_id(p)?);
             Ok(Value::Null)
-        }).roles(&[]).params(r#"{"layer"?: name|id (default: the active layer)}"#)
+        }).roles(&[]).effects(crate::policy::Effects::NONE).params(r#"{"layer"?: name|id (default: the active layer)}"#)
         .view()
         .key("Ctrl+T")
         .when(need_feature_layer),
         C::new("table.close", "Close Table", "Data › Table", |s, _| {
             s.table_layer = None;
             Ok(Value::Null)
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .view(),
         C::new("table.remove", "Remove Table", "Data › Table", |s, p| {
             // The position this command took before tables had ids: refused, rather than
@@ -543,13 +543,13 @@ pub fn commands() -> Vec<C> {
             let i = s.table_index(p)?;
             s.project.tables.remove(i);
             Ok(Value::Null)
-        }).roles(&[])
+        }).roles(&[]).effects(crate::policy::Effects::NONE)
         .params(r#"{"table": name|id (a standalone table; of tables sharing a name, the name is the first)} (the old position, "at", is refused)"#),
         C::new("layer.fields", "Fields", "Data › Data Design", |s, p| {
             let id = s.layer_id(p)?;
             let l = s.map().layer(id).ok_or("no layer")?;
             Ok(json!(l.dataset.fields.iter().map(|f| json!({"name": f.name, "type": f.ty.label(), "alias": f.alias})).collect::<Vec<_>>()))
-        }).roles(&[]).params(r#"{"layer"?: name|id (default: the active layer)}"#)
+        }).roles(&[]).effects(crate::policy::Effects::NONE).params(r#"{"layer"?: name|id (default: the active layer)}"#)
         .view()
         .when(need_feature_layer),
     ]
@@ -1462,7 +1462,7 @@ fn read_whole(p: &Value, path: &str) -> WholeRead {
 /// with `"stream"` given, a `.json` with a coordinate system or layer given, a large GeoJSON that
 /// isn't a FeatureCollection).
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn add_data_ahead(p: &Value) -> Option<super::reads::ReadAhead> {
+pub(crate) fn add_data_ahead(p: &Value) -> Option<super::reads::ReadWork> {
     use super::reads::ahead;
     const NAME: &str = "Add Data";
     let path = gdb_path(ps(p, "path")?).into_owned();
@@ -1499,7 +1499,7 @@ pub(crate) fn add_data_ahead(p: &Value) -> Option<super::reads::ReadAhead> {
 }
 
 #[cfg(target_arch = "wasm32")]
-pub(crate) fn add_data_ahead(_: &Value) -> Option<super::reads::ReadAhead> {
+pub(crate) fn add_data_ahead(_: &Value) -> Option<super::reads::ReadWork> {
     None
 }
 
@@ -2811,7 +2811,7 @@ fn load_all_key(l: &rustgis_map::Layer) -> String {
 
 /// Load All's read of the streamed layer `p` names, made before it runs ([`super::reads`]), on a
 /// copy of the layer.
-pub(crate) fn load_all_ahead(s: &Session, p: &Value) -> Option<super::reads::ReadAhead> {
+pub(crate) fn load_all_ahead(s: &Session, p: &Value) -> Option<super::reads::ReadWork> {
     let l = s.map().layer(s.layer_id(p).ok()?)?;
     let mut copy = l.clone();
     let source = copy.source.as_mut()?;
@@ -3084,6 +3084,29 @@ pub fn url_file_name(url: &str, bytes: &[u8]) -> Result<String, String> {
     }
 }
 
+/// Identifies a bounded data download using the same filename and companion rules as its reader.
+/// Discovery, content-sniffed imports and external drivers keep conservative account checks.
+pub(crate) fn fixed_download_urls(p: &Value) -> Option<Vec<String>> {
+    let url = p.get("url")?.as_str()?;
+    if url.is_empty()
+        || url.trim() != url
+        || ["service", "coverage"].iter().any(|key| p.get(key).is_some_and(|v| !v.is_null() && v.as_bool() != Some(false)))
+        || ["geolibreProject", "geolibreLayer", "geolibreZarr"].iter().any(|key| p.get(key).is_some())
+        || rustgis_data::time::is_template(url)
+    {
+        return None;
+    }
+    let name = url_file_name(url, &[]).ok()?;
+    if rustgis_data::raster::is_jpeg2000_name(&name) {
+        return None;
+    }
+    let mut urls = vec![url.to_string()];
+    if let Some(parts) = rustgis_data::io::shapefile_part_urls(url) {
+        urls.extend(parts.into_iter().map(|(_, url)| url));
+    }
+    Some(urls)
+}
+
 /// Downloads data from a web address and adds it (the command line, MCP and the assistant; the
 /// app downloads off the frame and adds the bytes). In the browser, where nothing may wait, the
 /// request is kept for the app ([`Session::request_url`]), which downloads and adds it as its own
@@ -3091,13 +3114,16 @@ pub fn url_file_name(url: &str, bytes: &[u8]) -> Result<String, String> {
 /// Its errors quote addresses without their keys: the assistant's and MCP's tools return them as
 /// they are.
 pub(crate) fn add_url(s: &mut Session, p: &Value) -> CmdResult {
-    add_url_as_given(s, p).map_err(|e| crate::sources::redact_text(&e))
+    let owner = s.continuation()?;
+    let out = add_url_as_given(s, p).map_err(|e| crate::sources::redact_text(&e))?;
+    s.check_continuation(&owner)?;
+    Ok(out)
 }
 
 fn add_url_as_given(s: &mut Session, p: &Value) -> CmdResult {
     let bound = crate::service_logins::request_params(s, p)?;
     let p = bound.as_ref();
-    if ["geolibreProject", "geolibreLayer", "geolibreZarr"].iter().any(|key| p.get(key).is_some()) {
+    if ["geolibreProject", "geolibreLayer", "geolibreZarr"].iter().any(|key| p.get(key).is_some()) && !s.import_completion(p) {
         return Err("GeoLibre download state is internal; use project.importGeolibre".into());
     }
     let url = ps(p, "url").map(str::trim).filter(|u| !u.is_empty()).ok_or("url is required")?;
@@ -3449,6 +3475,7 @@ fn download_shapefile_blocking(url: &str) -> Result<Vec<u8>, String> {
             Err(e) => return Err(part_failed(&u, over_shared_limit(e))),
         }
     }
+    cache::check_still(&cache::current_still())?;
     zipped_within(&name, shp, got, left).map_err(|e| part_failed(url, e))
 }
 
@@ -4486,7 +4513,9 @@ const MAX_LAYER_LIST: usize = 10_000;
 
 /// The layers a command acts on: `layer` as a name or id, or a list of them; else the layer
 /// selection (the active layer alone when nothing else is picked).
-pub(crate) fn layer_ids(s: &Session, p: &Value) -> Result<Vec<u32>, String> {
+pub(crate) fn layer_ids(input: &impl super::InputSource, p: &Value) -> Result<Vec<u32>, String> {
+    let context = input.input_context();
+    let s = &context;
     match p.get("layer") {
         Some(Value::Array(list)) => {
             if list.is_empty() {
@@ -4857,4 +4886,13 @@ fn class_style(s: &mut Session, p: &Value) -> CmdResult {
     let g = l.geometry_type();
     let e = l.renderer.set_class_style(&class, &style, g)?;
     Ok(json!({"label": e.label, "color": e.symbol.fill.hex(), "outline": e.symbol.stroke.hex()}))
+}
+
+/// These loaders interpret `layer` inside an external file/database, never as a map layer.
+/// The selector remains frozen with its path/address, including the loader's empty default.
+pub(crate) fn external_dataset_selector(command: &str) -> bool {
+    matches!(
+        command,
+        "layer.addData" | "layer.addDatabase" | "info.fileColumns" | "layer.addUrl" | "layer.addDownload" | "layer.addDataText"
+    )
 }

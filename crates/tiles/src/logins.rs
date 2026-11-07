@@ -90,9 +90,40 @@ struct Redaction {
     encoded: bool,
 }
 
-fn entries() -> MutexGuard<'static, BTreeMap<String, Entry>> {
+fn registry() -> &'static Mutex<BTreeMap<String, Entry>> {
     static ENTRIES: OnceLock<Mutex<BTreeMap<String, Entry>>> = OnceLock::new();
-    ENTRIES.get_or_init(Mutex::default).lock().unwrap_or_else(|e| e.into_inner())
+    ENTRIES.get_or_init(Mutex::default)
+}
+
+fn entries() -> MutexGuard<'static, BTreeMap<String, Entry>> {
+    registry().lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// An exact runtime snapshot of one session's login generations, including their absence.
+/// It contains no credential and is never a display or persistence representation.
+#[derive(Clone, PartialEq, Eq)]
+pub struct AccountIdentity {
+    session: u64,
+    entries: Vec<(String, String, Method)>,
+}
+
+/// Captures only the initiating session's runtime bindings. Other sessions cannot invalidate it.
+/// Approval capture must fail closed when the runtime registry cannot be read consistently.
+pub fn account_identity(session: u64) -> Result<AccountIdentity, &'static str> {
+    let entries = registry().lock().map_err(|_| "The service login identity is unavailable.")?;
+    let entries = entries
+        .iter()
+        .filter(|(_, entry)| entry.owner.split_once('/').is_some_and(|(s, _)| s.parse::<u64>() == Ok(session)))
+        .map(|(binding, entry)| (binding.clone(), entry.origin.clone(), entry.method.clone()))
+        .collect();
+    Ok(AccountIdentity { session, entries })
+}
+
+impl AccountIdentity {
+    /// Poison or any change to this session's active binding generations refuses later work.
+    pub fn is_current(&self) -> bool {
+        account_identity(self.session).is_ok_and(|current| current == *self)
+    }
 }
 
 /// Installs a fresh session/connection login generation. Only addresses bound to the returned
@@ -275,6 +306,8 @@ fn append_percent_encoded(result: &mut String, value: &str) {
 /// Redacts active raw credentials, percent-encoded credentials (with either hex case), and
 /// the bare Base64 payload of Basic credentials. Matching the original input in one pass
 /// prevents overlapping values or a credential resembling `[redacted]` from leaking secrets.
+/// Matching covers every active login in this process; short passwords can replace ordinary
+/// text in another session's output. Revoked credentials are not retained for redaction.
 pub fn scrub(text: &str) -> String {
     let entries = entries();
     if entries.is_empty() && !text.contains(rustgis_data::login_address::PREFIX) {
@@ -548,6 +581,44 @@ mod tests {
             let password = "p".repeat(n);
             assert_eq!(valid_basic("", &password), valid_value(&basic("", &password)));
         }
+    }
+
+    /// Identity includes an empty session and ignores a different session with a shared prefix.
+    #[test]
+    fn runtime_identity_binds_session_generations_and_absence() {
+        let _turn = crate::cache::turn();
+        let session = 9_150_001;
+        let empty = account_identity(session).unwrap();
+        assert!(empty.is_current());
+        let unrelated =
+            activate("https://identity-login.example", "91500010/other", Method::Header("X-Key".into()), "synthetic-identity-other", false)
+                .unwrap();
+        assert!(empty.is_current());
+        let binding = activate(
+            "https://identity-login.example",
+            "9150001/connection",
+            Method::Header("X-Key".into()),
+            "synthetic-identity-first",
+            false,
+        )
+        .unwrap();
+        assert!(!empty.is_current());
+        let active = account_identity(session).unwrap();
+        assert!(active.is_current() && active == account_identity(session).unwrap());
+        assert!(deactivate(&unrelated));
+        assert!(active.is_current());
+        assert!(deactivate(&binding));
+        assert!(!active.is_current());
+        let replacement = activate(
+            "https://identity-login.example",
+            "9150001/connection",
+            Method::Header("X-Key".into()),
+            "synthetic-identity-first",
+            false,
+        )
+        .unwrap();
+        assert!(active != account_identity(session).unwrap(), "same credential is a new generation");
+        assert!(deactivate(&replacement));
     }
 
     #[test]
