@@ -528,6 +528,8 @@ impl Layer {
         }
         let Some(src) = &mut self.source else { return false };
         src.window_fields = Some(self.dataset.fields.len());
+        // The view keeps up to its limit of the features the query keeps (#1456).
+        src.set_query(self.definition_query.as_deref(), &self.dataset.fields);
         // A failed read leaves nothing drawn for it (its error shows in Layers), not the
         // previous view's features.
         match src.poll(block) {
@@ -2442,9 +2444,7 @@ impl Map {
                 src.byte_budget = bytes;
                 src.full_read = block;
                 if changed || mode_changed || budget_changed {
-                    let selected = std::mem::take(&mut src.saved_selection);
-                    src.reset_window();
-                    src.saved_selection = selected;
+                    src.reread();
                 }
                 if changed || (!block && layer.view_cache_bytes() > bytes) {
                     // Preserve ids while discarding a window that no longer fits. The next
@@ -3186,6 +3186,61 @@ mod tests {
         // Budget exhaustion falls back to the original, fully projected geometry.
         let full = flat.project(chunk.dataset.features[0].geometry.as_ref().unwrap());
         assert_eq!(chunk.thinned_in(&flat, "mercator", 1e6), &[Some(full)]);
+    }
+
+    /// #1456: a view holding more features than it reads keeps its limit of the definition
+    /// query's matches, so a match the unfiltered sample leaves out still draws.
+    #[test]
+    fn a_streamed_view_reads_its_definition_querys_matches() {
+        let mut ds = Dataset::new("sites", GeometryType::Point, vec![Field::new("n", FieldType::Integer)]);
+        for i in 0..5 {
+            ds.push(Some(Geometry::Point(Coord::new(f64::from(i), 0.0))), vec![Value::Int(i64::from(i))]);
+        }
+        let bytes = std::sync::Arc::new(rustgis_data::source::fgb::write(&ds).unwrap());
+        let handle = rustgis_data::source::open_shared("sites.fgb", bytes.clone(), None).unwrap();
+        let mut src = source::SourceLayer::from_bytes("sites.fgb", bytes, None, handle);
+        src.limit = 2;
+        let mut l = Layer::new_streamed(1, src);
+        let view = Extent::new(-1.0, -1.0, 5.0, 1.0);
+        let shown = |l: &Layer| -> Vec<Value> {
+            l.visible_rows()
+                .iter()
+                .zip(l.dataset.features.iter())
+                .filter(|(v, _)| **v)
+                .filter_map(|(_, f)| f.attrs.first().cloned())
+                .collect()
+        };
+        l.sync_source(&view, true);
+        let sampled = shown(&l);
+        assert_eq!(sampled.len(), 2, "the view reads a sample of two");
+        let left_out = (0..5).find(|n| !sampled.contains(&Value::Int(*n))).unwrap();
+        l.definition_query = Some(format!("n = {left_out}"));
+        assert!(shown(&l).is_empty(), "filtering the sample loses the match");
+        l.sync_source(&view, true);
+        assert_eq!(shown(&l), [Value::Int(left_out)]);
+        // More matches than the view reads: a sample of them, up to its limit, counted as matches.
+        l.definition_query = Some(format!("n <> {left_out}"));
+        l.sync_source(&view, true);
+        assert_eq!((shown(&l).len(), l.dataset.features.len()), (2, 2));
+        let src = l.source.as_ref().unwrap();
+        assert_eq!((src.sampled(), src.sampled_matches()), (Some((2, 4)), true));
+        // A row number is a row's place in the view: the view is read as without a query. The
+        // words in a text are only text.
+        l.definition_query = Some("@row_number = 1".into());
+        l.sync_source(&view, true);
+        let src = l.source.as_ref().unwrap();
+        assert_eq!((src.sampled(), src.sampled_matches()), (Some((2, 5)), false));
+        l.definition_query = Some(format!("n = {left_out} or 'x' = '@row_number'"));
+        l.sync_source(&view, true);
+        assert_eq!(shown(&l), [Value::Int(left_out)]);
+        // However it's quoted or nested, a row number is found in the parsed query.
+        l.definition_query = Some(format!("!n! = {left_out} and (@row_number >= 1 or 'it''s' = '')"));
+        l.sync_source(&view, true);
+        assert!(!l.source.as_ref().unwrap().sampled_matches());
+        // A query that doesn't parse leaves the view as read without one, as for loaded layers.
+        l.definition_query = Some("n = = 1".into());
+        l.sync_source(&view, true);
+        assert_eq!(shown(&l), sampled);
     }
 
     #[test]
