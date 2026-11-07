@@ -2252,6 +2252,8 @@ impl RustGisApp {
             // command waiting for it went with the old project's waits.
             self.retire_cog_probes();
         }
+        // Fields and layers can go while the table is closed: its column views follow them.
+        table::prune_views(self);
         // Undo and redo can move vertices: an index chosen before may now name another vertex.
         // A step moved or deleted, from the pane, Command Search, the assistant or a script: the
         // step being edited (and the current one) follow it, so Save writes where it was typed.

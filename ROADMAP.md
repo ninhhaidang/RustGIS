@@ -100,7 +100,7 @@ And alongside it:
   (`edit.moveSharedVertex`); different vertex densities and linked insertion/deletion remain
   open.
 - Editor tracking fields (created/edited by and at).
-- Attribute table columns: rename, hide and reorder _(open)_.
+- Attribute table columns: rename (hide and reorder are done) _(open)_.
 - Persistent attribute joins and virtual fields. _Coordinate first_ (they change `Feature`).
 - Attribute forms: widgets, constraints and conditional visibility, on top of domains and
   subtypes.
