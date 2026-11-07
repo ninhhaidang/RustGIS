@@ -531,9 +531,9 @@ struct Pending {
 /// A source being opened off the frame.
 type Opening = Arc<Mutex<Option<Result<Arc<dyn FeatureSource>, String>>>>;
 
-/// Tells the app something landed (a read, or a source opened by its address).
-pub(crate) fn landed() {
-    GENERATION.fetch_add(1, Ordering::Relaxed);
+/// Asks the app for a frame (the waker) with nothing new to draw: what landed while the map drew
+/// is said a frame after (see [`wake`] for something new to draw).
+pub(crate) fn another_frame() {
     if let Some(w) = waker().lock().ok().and_then(|w| w.clone()) {
         w();
     }
@@ -806,7 +806,7 @@ impl SourceLayer {
                         if let Ok(mut s) = land.lock() {
                             *s = Some(r.map(Arc::from).map_err(|e| e.to_string()));
                         }
-                        landed();
+                        wake();
                     }),
                 );
                 Ok(())
@@ -839,7 +839,7 @@ impl SourceLayer {
                 if let Ok(mut s) = land.lock() {
                     *s = Some(r);
                 }
-                landed();
+                wake();
             }),
         );
         Ok(())
@@ -1061,7 +1061,7 @@ impl SourceLayer {
                     if let Ok(mut slot) = p2.result.lock() {
                         *slot = Some(r.map_err(|e| e.to_string()));
                     }
-                    landed();
+                    wake();
                 }),
             );
             self.pending = Some(pending);
@@ -1189,8 +1189,9 @@ fn waker() -> &'static Mutex<Option<Arc<dyn Fn() + Send + Sync>>> {
     W.get_or_init(|| Mutex::new(None))
 }
 
-/// Something read in the background (outside this module: a Zarr step) has landed: the map
-/// redraws ([`generation`]) and the UI is woken.
+/// Something read in the background (a feature read, a source opened by its address, a raster's
+/// pixels read in place; outside this module, a Zarr step) has landed: the map redraws
+/// ([`generation`]) and the UI is woken.
 pub fn wake() {
     GENERATION.fetch_add(1, Ordering::Relaxed);
     if let Some(w) = waker().lock().ok().and_then(|w| w.clone()) {

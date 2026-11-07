@@ -3,23 +3,28 @@
 //! tile (`cog:{z}/{x}/{y}@<address>`) is drawn from them in Web Mercator, as a picture, so a COG is
 //! a tile layer like a PMTiles archive: drawn as its tiles land, on the desktop and in the browser.
 //!
-//! Grey images are stretched between their 2nd and 98th percentiles (from the coarsest
-//! overview); 8-bit colour images are shown as they are. An address may end with a [`Look`]
-//! (`#bands=2,17,10&range=-0.3,0.3`): the bands shown as red, green and blue (or one, grey) and
-//! their stretch. Bands stored apart (planar files, such as AlphaEarth's 64 embedding bands) are
-//! read a band at a time, only those shown. Files are hostile input: header reads, tile counts and
-//! sizes are bounded (see [`rustgis_data::raster::cog`]).
+//! A file's own look is what its PhotometricInterpretation says: RGB images in colour, palette
+//! images by their colour table, grey (MinIsBlack) ones grey, their first band, but for three bands
+//! (taken as red, green and blue), each with its alpha band. Other bands of an image with more are
+//! for the user to pick. Grey and colour images are stretched between their 2nd and 98th
+//! percentiles (from the coarsest overview); 8-bit colour images are shown as they are. An address
+//! may end with a [`Look`] (`#bands=2,17,10&range=-0.3,0.3`): the bands shown as red, green and
+//! blue (or one, grey) and their stretch. Bands stored apart (planar files, such as AlphaEarth's 64
+//! embedding bands) are read a band at a time, only those shown. Files are hostile input: header
+//! reads, tile counts and sizes are bounded (see [`rustgis_data::raster::cog`]).
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use rustgis_data::raster::ColorHint;
-use rustgis_data::raster::cog::{self, Layout, Parse, Sparse};
+use rustgis_data::raster::cog::{self, Layout, Level, Parse, Sparse};
 use rustgis_data::raster::crs::Transformer;
 use rustgis_geom::Coord;
 use web_time::{Duration, Instant};
 
 use crate::cache::{Done, MAX_BYTES, RANGE};
+
+pub mod raster;
 
 /// The scheme of a map tile drawn from a COG.
 pub const SCHEME: &str = "cog:";
@@ -68,6 +73,9 @@ pub struct Look {
     pub range: Option<(f32, f32)>,
     /// Values are AlphaEarth's quantised embeddings, shown as `sign(v)·(v/127.5)²`.
     pub aef: bool,
+    /// A data cube's file (`stac.addCube`): a tile layer that follows the time slider, kept one
+    /// when its project opens again.
+    pub cube: bool,
 }
 
 impl Look {
@@ -75,13 +83,16 @@ impl Look {
     pub fn suffix(&self) -> String {
         let mut parts = Vec::new();
         if !self.bands.is_empty() {
-            parts.push(format!("bands={}", self.bands.iter().map(|b| (b + 1).to_string()).collect::<Vec<_>>().join(",")));
+            parts.push(format!("bands={}", self.bands.iter().map(|b| b.saturating_add(1).to_string()).collect::<Vec<_>>().join(",")));
         }
         if let Some((lo, hi)) = self.range {
             parts.push(format!("range={lo},{hi}"));
         }
         if self.aef {
             parts.push("dequantize=aef".into());
+        }
+        if self.cube {
+            parts.push("cube=1".into());
         }
         if parts.is_empty() { String::new() } else { format!("#{}", parts.join("&")) }
     }
@@ -108,6 +119,7 @@ impl Look {
                     look.range = Some((lo, hi));
                 }
                 "dequantize" => look.aef = v == "aef",
+                "cube" => look.cube = v == "1",
                 _ => return None,
             }
         }
@@ -168,33 +180,52 @@ pub struct Info {
     /// Stretches whose read failed, and when: drawn with the type's full range meanwhile (not
     /// kept), read again after [`RETRY`].
     stretch_failed: Mutex<HashMap<(Vec<usize>, bool), Instant>>,
-    /// The file's own bands shown as red, green, blue (or one, grey), and alpha.
-    rgb: bool,
-    alpha: bool,
+    /// The file's alpha band, shown with any look.
+    alpha: Option<usize>,
 }
 
 impl Info {
-    /// The bands a look shows (0-based): three as red, green and blue (and the file's alpha, as a
-    /// fourth, for its own), or one, grey.
-    pub fn shown(&self, look: &Look) -> Vec<usize> {
+    /// The bands a look colours the map with (0-based): three as red, green and blue, or one,
+    /// grey. Its own: an RGB image's colour bands, or a grey image's three bands (most remote
+    /// sensing images are grey, whatever their bands: three are taken as red, green and blue);
+    /// else the first band, the others for the user to pick.
+    pub fn colour(&self, look: &Look) -> Vec<usize> {
         let n = self.layout.bands.max(1);
         // Bands the file has, as many as asked (one or three); otherwise the file's own look.
         let picked: Vec<usize> = look.bands.iter().copied().filter(|b| *b < n).collect();
         match picked.len() {
             1 | 3 if picked.len() == look.bands.len() => picked,
-            _ if self.rgb && self.alpha => vec![0, 1, 2, 3],
-            _ if self.rgb => vec![0, 1, 2],
+            _ if matches!(self.layout.color, ColorHint::Rgb { .. }) && n >= 3 => vec![0, 1, 2],
+            _ if matches!(self.layout.color, ColorHint::Gray) && n == 3 => vec![0, 1, 2],
             _ => vec![0],
         }
     }
 
+    /// The bands a look reads: its colour bands, then the file's alpha band, if it has one.
+    pub fn shown(&self, look: &Look) -> Vec<usize> {
+        self.shown_from(self.colour(look))
+    }
+
+    /// [`Info::shown`], from the look's colours already found.
+    fn shown_from(&self, mut shown: Vec<usize>) -> Vec<usize> {
+        if let Some(a) = self.alpha.filter(|a| !shown.contains(a)) {
+            shown.push(a);
+        }
+        shown
+    }
+
+    /// The colours of a palette image's values, when its own look shows them.
+    fn palette(&self, look: &Look) -> Option<&[[u8; 4]]> {
+        self.layout.palette.as_deref().filter(|_| look.bands.is_empty() && look.range.is_none() && !look.aef)
+    }
+
     /// The bands' (low, high) values for a look, when known.
-    fn stretch_for(&self, look: &Look, shown: &[usize]) -> Option<Vec<(f32, f32)>> {
-        let colour = &shown[..shown.len().min(3)];
+    fn stretch_for(&self, look: &Look) -> Option<Vec<(f32, f32)>> {
+        let colour = self.colour(look);
         if let Some(r) = look.range {
             return Some(vec![r; colour.len()]);
         }
-        self.stretch.lock().unwrap_or_else(|e| e.into_inner()).get(&(colour.to_vec(), look.aef)).cloned()
+        self.stretch.lock().unwrap_or_else(|e| e.into_inner()).get(&(colour, look.aef)).cloned()
     }
 }
 
@@ -212,7 +243,9 @@ fn infos() -> &'static Mutex<HashMap<String, State>> {
 type Bands = Arc<cog::Tile>;
 
 enum TileState {
-    Ready(Bands, usize),
+    /// Decoded: its bands, how many samples they hold, and when it was last used (see
+    /// [`Tiles::clock`]).
+    Ready(Bands, usize, u64),
     Loading(Vec<Box<dyn FnOnce(Result<Bands, String>) + Send>>),
 }
 
@@ -220,6 +253,52 @@ enum TileState {
 struct Tiles {
     map: HashMap<(String, usize, u32), TileState>,
     samples: usize,
+    /// Goes up with each use: past [`BUDGET`], the tile used longest ago makes room, never one
+    /// the map in view has just used (which would be read again, and make room for itself by
+    /// throwing out another in view: the view flickering between levels).
+    clock: u64,
+    /// The tiles ready, by when each was last used (the clock then, unique): the first is the
+    /// one to make room, found without a scan of them all.
+    order: BTreeMap<u64, (String, usize, u32)>,
+}
+
+impl Tiles {
+    /// A tile ready, marked as just used.
+    fn used(&mut self, key: &(String, usize, u32)) -> Option<Bands> {
+        self.clock += 1;
+        let now = self.clock;
+        match self.map.get_mut(key) {
+            Some(TileState::Ready(b, _, used)) => {
+                self.order.remove(used);
+                *used = now;
+                self.order.insert(now, key.clone());
+                Some(b.clone())
+            }
+            _ => None,
+        }
+    }
+
+    /// Keeps a tile ready, making room for it past [`BUDGET`] (the tiles used longest ago go);
+    /// returns what was kept under its key before.
+    fn keep(&mut self, key: (String, usize, u32), bands: Bands, samples: usize) -> Option<TileState> {
+        // Kept under this key already: counted once.
+        let before = self.map.remove(&key);
+        if let Some(TileState::Ready(_, n, used)) = &before {
+            self.samples = self.samples.saturating_sub(*n);
+            self.order.remove(used);
+        }
+        while self.samples + samples > BUDGET {
+            let Some((_, k)) = self.order.pop_first() else { break };
+            if let Some(TileState::Ready(_, n, _)) = self.map.remove(&k) {
+                self.samples = self.samples.saturating_sub(n);
+            }
+        }
+        self.clock += 1;
+        self.samples += samples;
+        self.order.insert(self.clock, key.clone());
+        self.map.insert(key, TileState::Ready(bands, samples, self.clock));
+        before
+    }
 }
 
 fn tiles() -> &'static Mutex<Tiles> {
@@ -227,24 +306,41 @@ fn tiles() -> &'static Mutex<Tiles> {
     T.get_or_init(Mutex::default)
 }
 
-/// Forgets every file and tile, so they are read again (with [`crate::cache::clear`]).
+/// Forgets every file and tile (those that failed too), so they are read again (with
+/// [`crate::cache::clear`]).
 pub(crate) fn forget() {
     infos().lock().unwrap_or_else(|e| e.into_inner()).retain(|_, s| matches!(s, State::Loading(_)));
+    raster::forget_failed(None);
     let mut t = tiles().lock().unwrap_or_else(|e| e.into_inner());
     t.map.retain(|_, s| matches!(s, TileState::Loading(_)));
+    t.order.clear();
     t.samples = 0;
 }
 
-/// Forgets what was read of one file (its info and its tiles), but not a read under way: a
-/// failed read is made again with whatever login now signs the file's address.
+/// Forgets what was read of one file (its info and its tiles, those that failed too), but not a
+/// read under way: a failed read is made again with whatever login now signs the file's address.
 pub(crate) fn forget_file(url: &str) {
     let mut all = infos().lock().unwrap_or_else(|e| e.into_inner());
     if all.get(url).is_some_and(|s| !matches!(s, State::Loading(_))) {
         all.remove(url);
     }
     drop(all);
-    let mut t = tiles().lock().unwrap_or_else(|e| e.into_inner());
-    t.map.retain(|(u, _, _), s| u != url || matches!(s, TileState::Loading(_)));
+    raster::forget_failed(Some(url));
+    forget_file_in(&mut tiles().lock().unwrap_or_else(|e| e.into_inner()), url);
+}
+
+/// Forgets a file's tiles kept (not those loading) from `t`.
+fn forget_file_in(t: &mut Tiles, url: &str) {
+    let mut freed = 0;
+    t.map.retain(|(u, _, _), s| match s {
+        TileState::Ready(_, n, _) if u == url => {
+            freed += *n;
+            false
+        }
+        _ => true,
+    });
+    t.samples = t.samples.saturating_sub(freed);
+    t.order.retain(|_, (u, _, _)| u != url);
 }
 
 /// A file's info: `Ok(None)` while it is being read (asking for it starts the read).
@@ -256,7 +352,14 @@ pub fn info(url: &str) -> Result<Option<Arc<Info>>, String> {
         match i.get(url) {
             Some(State::Ready(info)) => return Ok(Some(info.clone())),
             Some(State::Loading(_)) => return Ok(None),
-            Some(State::Failed(e, at)) if at.elapsed() < RETRY => return Err(e.clone()),
+            Some(State::Failed(e, at)) => {
+                // Not read again until its wait is over: the map draws again then.
+                let wait = crate::cache::retry_wait(e, RETRY);
+                if at.elapsed() < wait {
+                    crate::cache::notify_at(*at + wait);
+                    return Err(e.clone());
+                }
+            }
             _ => {}
         }
     }
@@ -282,7 +385,8 @@ fn with_info(url: &str, then: Box<dyn FnOnce(Result<Arc<Info>, String>) + Send>)
                 waiting.push(then);
                 return;
             }
-            Some(State::Failed(e, at)) if at.elapsed() < RETRY => {
+            Some(State::Failed(e, at)) if at.elapsed() < crate::cache::retry_wait(e, RETRY) => {
+                crate::cache::notify_at(*at + crate::cache::retry_wait(e, RETRY));
                 let e = e.clone();
                 drop(i);
                 then(Err(e));
@@ -305,7 +409,12 @@ fn with_info(url: &str, then: Box<dyn FnOnce(Result<Arc<Info>, String>) + Send>)
                 let mut i = infos().lock().unwrap_or_else(|e| e.into_inner());
                 let next = match &r {
                     Ok(info) => State::Ready(info.clone()),
-                    Err(e) => State::Failed(e.clone(), Instant::now()),
+                    Err(e) => {
+                        // Read again once its wait is over: the map draws again then (a 429
+                        // or 503 says when).
+                        crate::cache::notify_at(Instant::now() + crate::cache::retry_wait(e, RETRY));
+                        State::Failed(e.clone(), Instant::now())
+                    }
                 };
                 match i.insert(key, next) {
                     Some(State::Loading(w)) => w,
@@ -494,8 +603,16 @@ fn stats(url: String, header: Sparse, layout: Layout, done: Box<dyn FnOnce(Resul
     // The zoom whose pixels match the full image's.
     let res = (merc[2] - merc[0]).abs() / w.max(1.0);
     let max_zoom = if res > 0.0 { (2.0 * HALF / f64::from(SIZE) / res).log2().ceil().clamp(0.0, 24.0) as u8 } else { 18 };
-    let rgb = layout.bands >= 3;
-    let alpha = matches!(layout.color, ColorHint::Rgb { alpha: true });
+    let alpha = match layout.color {
+        ColorHint::Rgb { alpha: true } if layout.bands >= 4 => Some(3),
+        ColorHint::GrayAlpha if layout.bands >= 2 => Some(1),
+        _ => None,
+    };
+    let rgb = match layout.color {
+        ColorHint::Rgb { .. } => layout.bands >= 3,
+        ColorHint::Gray => layout.bands == 3,
+        _ => false,
+    };
     let bytes = layout.data_type == "UInt8";
     let info = Arc::new(Info {
         layout,
@@ -508,33 +625,37 @@ fn stats(url: String, header: Sparse, layout: Layout, done: Box<dyn FnOnce(Resul
         stretch: Mutex::new(HashMap::new()),
         stretching: Mutex::new(HashMap::new()),
         stretch_failed: Mutex::new(HashMap::new()),
-        rgb,
         alpha,
     });
     // 8-bit colour images are shown as they are; others between the coarsest overview's
-    // percentiles.
+    // percentiles (a palette image's own look needs none: its table colours its values, see
+    // `with_stretch`).
     let own = Look::default();
     if bytes && rgb {
-        info.stretch.lock().unwrap_or_else(|e| e.into_inner()).insert((vec![0, 1, 2], false), vec![(0.0, 255.0); 3]);
+        let colour = info.colour(&own);
+        let n = colour.len();
+        info.stretch.lock().unwrap_or_else(|e| e.into_inner()).insert((colour, false), vec![(0.0, 255.0); n]);
         done(Ok(info));
         return;
     }
-    let i = info.clone();
-    with_stretch(
-        info,
-        url.clone(),
-        own,
-        Box::new(move |r| match r {
-            Ok(_) => done(Ok(i)),
-            Err(e) => done(Err(format!("{url}: {e}"))),
-        }),
-    );
+    // Any other look's stretch is read when a tile first needs it (`with_stretch`): a header read
+    // for a window or an in-place overview reads nothing more.
+    done(Ok(info));
 }
 
-/// The image the stretch is read from: the coarsest at least 256 pixels wide (GDAL writes
-/// overviews down to a pixel, too few to take percentiles of), else the full image.
-fn stats_level(layout: &Layout) -> usize {
-    layout.levels.iter().rposition(|l| l.width >= 256 && l.height >= 256).unwrap_or(0)
+/// The image the stretch is read from: of those few enough tiles to read for it, the coarsest of
+/// at least 256 × 256 pixels (GDAL writes overviews down to a pixel, too few to take percentiles
+/// of), else the finest. A long strip's overviews are narrow: one 256 pixels wide is too many tiles
+/// long, a narrower one plenty of pixels. None small enough: the coarsest (the type's range is
+/// shown).
+fn stats_level(levels: &[Level]) -> usize {
+    let few = |l: &Level| (l.tiles() as usize) <= MAX_STATS_TILES;
+    let pixels = |l: &Level| u64::from(l.width) * u64::from(l.height);
+    levels
+        .iter()
+        .rposition(|l| few(l) && pixels(l) >= 256 * 256)
+        .or_else(|| levels.iter().position(few))
+        .unwrap_or(levels.len().saturating_sub(1))
 }
 
 /// The full range of a file's type of values, as a look shows them (floats have none: 0–255 is a
@@ -554,7 +675,7 @@ fn type_range(layout: &Layout, aef: bool) -> (f32, f32) {
 /// Keeps a look's stretch: a few looks a file (a script trying many is hostile input); past them,
 /// the others are read again when asked for.
 fn keep_stretch(info: &Info, key: (Vec<usize>, bool), s: Vec<(f32, f32)>) {
-    let own = (info.shown(&Look::default()).into_iter().take(3).collect::<Vec<_>>(), false);
+    let own = (info.colour(&Look::default()), false);
     let mut kept = info.stretch.lock().unwrap_or_else(|e| e.into_inner());
     // Past the cap one other look goes, never the file's own (an 8-bit colour image's is "as it
     // is", not read).
@@ -583,13 +704,18 @@ fn percentiles(mut v: Vec<f32>) -> (f32, f32) {
 type StretchThen = Box<dyn FnOnce(Result<Vec<(f32, f32)>, String>) + Send>;
 
 fn with_stretch(info: Arc<Info>, file: String, look: Look, then: StretchThen) {
-    let shown = info.shown(&look);
-    if let Some(s) = info.stretch_for(&look, &shown) {
+    if let Some(s) = info.stretch_for(&look) {
         then(Ok(s));
         return;
     }
-    let colour: Vec<usize> = shown.iter().copied().take(3).collect();
-    let coarsest = stats_level(&info.layout);
+    // A palette image's own look colours its values by its table (see `paint`): no stretch to
+    // read, and none kept, which a look of its bands would take for its own.
+    if info.palette(&look).is_some() {
+        then(Ok(vec![(0.0, 255.0)]));
+        return;
+    }
+    let colour = info.colour(&look);
+    let coarsest = stats_level(&info.layout.levels);
     let n = info.layout.levels.get(coarsest).map(|l| l.tiles() as usize).unwrap_or(0);
     // Too many tiles to read for it: the values' full range for the type.
     if n == 0 || n > MAX_STATS_TILES {
@@ -725,50 +851,144 @@ fn fetch_bands(
 
 type Gathered = Box<dyn FnOnce(Result<Vec<Bands>, String>) + Send>;
 
+/// How many times the fetch queue may drop the tiles of a joint read of `tiles` before it fails:
+/// eight a tile, 64 at least, so a busy queue delays a read but one that never gets its turn ends
+/// (the browser has no other end to it).
+fn drops_allowed(tiles: usize) -> usize {
+    tiles.saturating_mul(8).max(64)
+}
+
+/// Tiles a joint read ([`fetch_all`]) has under way at once: half the fetch queue, so a read of
+/// many (the overview of a file with few overviews) doesn't push its own requests out of it.
+pub(super) const AT_ONCE: usize = 256;
+
 /// Reads tiles of a level (each once, shared by the map tiles that need it), then calls `then`
-/// with their bands in the order asked.
+/// with their bands in the order asked. [`AT_ONCE`] are under way at a time, and a tile the fetch
+/// queue dropped (other reads filled it: see [`crate::cache::DROPPED`]) is asked for again, so a
+/// drop is a delay, not a failure, until the drops pass [`drops_allowed`]: then the read fails,
+/// saying so, rather than asking without end (the layer reads again later).
 fn fetch_all(info: Arc<Info>, url: String, level: usize, wanted: Vec<u32>, then: Gathered) {
+    fetch_all_with(Arc::new(get_tile), info, url, level, wanted, then)
+}
+
+/// How [`fetch_all_with`] gets a tile: [`get_tile`], or a test's stand-in.
+type GetTile = Arc<dyn Fn(Arc<Info>, String, usize, u32, Box<dyn FnOnce(Result<Bands, String>) + Send>) + Send + Sync>;
+
+/// [`fetch_all`] through `get`.
+fn fetch_all_with(get: GetTile, info: Arc<Info>, url: String, level: usize, wanted: Vec<u32>, then: Gathered) {
     if wanted.is_empty() {
         then(Ok(Vec::new()));
         return;
     }
     struct Gather {
+        get: GetTile,
+        info: Arc<Info>,
+        url: String,
+        level: usize,
+        wanted: Vec<u32>,
         got: Vec<Option<Bands>>,
-        left: usize,
+        /// Places in `wanted` not asked for yet (or dropped, to ask for again), the next last.
+        to_ask: Vec<usize>,
+        in_flight: usize,
+        /// Someone is asking for the next tiles, and asks again after: a tile answered at once
+        /// leaves it to them (asking from the answer would nest as deep as the tiles kept).
+        asking: bool,
+        /// Tiles the fetch queue dropped so far, bounded by [`drops_allowed`].
+        dropped: usize,
         failed: Option<String>,
         then: Option<Gathered>,
     }
-    let g = Arc::new(Mutex::new(Gather { got: vec![None; wanted.len()], left: wanted.len(), failed: None, then: Some(then) }));
-    for (k, idx) in wanted.into_iter().enumerate() {
-        let g = g.clone();
-        get_tile(
-            info.clone(),
-            url.clone(),
-            level,
-            idx,
-            Box::new(move |r| {
+    let n = wanted.len();
+    let g = Arc::new(Mutex::new(Gather {
+        get,
+        info,
+        url,
+        level,
+        wanted,
+        got: vec![None; n],
+        to_ask: (0..n).rev().collect(),
+        in_flight: 0,
+        asking: false,
+        dropped: 0,
+        failed: None,
+        then: Some(then),
+    }));
+    ask(&g);
+
+    /// Asks for the next tiles, [`AT_ONCE`] under way at most, until all are here or one failed
+    /// (then once the rest have answered), and answers `then` once.
+    fn ask(g: &Arc<Mutex<Gather>>) {
+        loop {
+            let (get, info, url, level, batch) = {
                 let mut s = g.lock().unwrap_or_else(|e| e.into_inner());
-                match r {
-                    Ok(b) => {
-                        if let Some(slot) = s.got.get_mut(k) {
-                            *slot = Some(b);
-                        }
+                if s.asking {
+                    return;
+                }
+                if s.in_flight == 0 && (s.to_ask.is_empty() || s.failed.is_some()) {
+                    if let Some(then) = s.then.take() {
+                        let r = match s.failed.take() {
+                            Some(e) => Err(e),
+                            None => Ok(s.got.iter_mut().filter_map(Option::take).collect()),
+                        };
+                        drop(s);
+                        then(r);
                     }
-                    Err(e) => s.failed = Some(e),
+                    return;
                 }
-                s.left = s.left.saturating_sub(1);
-                if s.left == 0
-                    && let Some(then) = s.then.take()
-                {
-                    let r = match s.failed.take() {
-                        Some(e) => Err(e),
-                        None => Ok(s.got.iter_mut().filter_map(Option::take).collect()),
-                    };
-                    drop(s);
-                    then(r);
+                let mut batch = Vec::new();
+                while s.in_flight < AT_ONCE && s.failed.is_none() {
+                    let Some(k) = s.to_ask.pop() else { break };
+                    let Some(&idx) = s.wanted.get(k) else { continue };
+                    s.in_flight += 1;
+                    batch.push((k, idx));
                 }
-            }),
-        );
+                if batch.is_empty() {
+                    return;
+                }
+                s.asking = true;
+                (s.get.clone(), s.info.clone(), s.url.clone(), s.level, batch)
+            };
+            for (k, idx) in batch {
+                let g = g.clone();
+                get(
+                    info.clone(),
+                    url.clone(),
+                    level,
+                    idx,
+                    Box::new(move |r| {
+                        {
+                            let mut s = g.lock().unwrap_or_else(|e| e.into_inner());
+                            s.in_flight = s.in_flight.saturating_sub(1);
+                            match r {
+                                Ok(b) => {
+                                    if let Some(slot) = s.got.get_mut(k) {
+                                        *slot = Some(b);
+                                    }
+                                }
+                                // Dropped: asked for again, within the drops allowed (a batch
+                                // already asked for answers after the read failed: not counted).
+                                Err(e) if e == crate::cache::DROPPED => {
+                                    if s.failed.is_none() {
+                                        s.dropped += 1;
+                                        if s.dropped > drops_allowed(s.wanted.len()) {
+                                            s.failed = Some(format!(
+                                                "the fetch queue dropped its tiles {} times (other reads filled it): busy",
+                                                s.dropped
+                                            ));
+                                        } else {
+                                            s.to_ask.push(k);
+                                        }
+                                    }
+                                }
+                                Err(e) => s.failed = Some(e),
+                            }
+                        }
+                        ask(&g);
+                    }),
+                );
+            }
+            g.lock().unwrap_or_else(|e| e.into_inner()).asking = false;
+        }
     }
 }
 
@@ -789,9 +1009,21 @@ fn get_tile(info: Arc<Info>, url: String, level: usize, idx: u32, then: Box<dyn 
     let nb = info.layout.chunk_bands();
     let per_band = (l.tile_width as usize) * (l.tile_height as usize);
     let samples = per_band * nb;
-    // A tile the file leaves out (GDAL's sparse files: no bytes) is empty.
+    // A tile the file leaves out (GDAL's sparse files: no bytes) is empty: kept as any other, so
+    // a window over it is whole at once rather than asking for it at every draw.
     if len == 0 {
-        then(Ok(Arc::new(vec![vec![f32::NAN; per_band]; nb].into())));
+        let key = (url.clone(), level, idx);
+        let mut t = tiles().lock().unwrap_or_else(|e| e.into_inner());
+        let empty = match t.used(&key) {
+            Some(b) => b,
+            None => {
+                let b: Bands = Arc::new(vec![vec![f32::NAN; per_band]; nb].into());
+                t.keep(key, b.clone(), samples);
+                b
+            }
+        };
+        drop(t);
+        then(Ok(empty));
         return;
     }
     // Bytes at offset 0 would be the file's header: a broken index, said rather than drawn blank.
@@ -802,13 +1034,13 @@ fn get_tile(info: Arc<Info>, url: String, level: usize, idx: u32, then: Box<dyn 
     let key = (url.clone(), level, idx);
     {
         let mut t = tiles().lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(b) = t.used(&key) {
+            drop(t);
+            then(Ok(b));
+            return;
+        }
         match t.map.get_mut(&key) {
-            Some(TileState::Ready(b, _)) => {
-                let b = b.clone();
-                drop(t);
-                then(Ok(b));
-                return;
-            }
+            Some(TileState::Ready(..)) => {}
             Some(TileState::Loading(w)) => {
                 w.push(then);
                 return;
@@ -830,19 +1062,8 @@ fn get_tile(info: Arc<Info>, url: String, level: usize, idx: u32, then: Box<dyn 
             let waiting = {
                 let mut t = tiles().lock().unwrap_or_else(|e| e.into_inner());
                 let old = match &r {
-                    Ok(b) => {
-                        // Over the budget: tiles ready make room (the cache is a working set).
-                        while t.samples + samples > BUDGET {
-                            let Some(k) = t.map.iter().find(|(_, s)| matches!(s, TileState::Ready(..))).map(|(k, _)| k.clone()) else {
-                                break;
-                            };
-                            if let Some(TileState::Ready(_, n)) = t.map.remove(&k) {
-                                t.samples = t.samples.saturating_sub(n);
-                            }
-                        }
-                        t.samples += samples;
-                        t.map.insert(key, TileState::Ready(b.clone(), samples))
-                    }
+                    // Over the budget: the tiles used longest ago make room.
+                    Ok(b) => t.keep(key, b.clone(), samples),
                     // A failed tile is read again by the next map tile that needs it.
                     Err(_) => t.map.remove(&key),
                 };
@@ -993,8 +1214,18 @@ fn draw(info: Arc<Info>, url: String, look: &Look, stretch: &[(f32, f32)], z: u8
         done(Err("too many GeoTIFF tiles for one map tile".into()));
         return;
     }
-    let shown = info.shown(look);
-    let pen = Pen { rgb: shown.len() >= 3, alpha: shown.len() >= 4, aef: look.aef, stretch: stretch.to_vec() };
+    let colour = info.colour(look);
+    let colours = colour.len();
+    let shown = info.shown_from(colour);
+    let pen = Pen {
+        rgb: colours >= 3,
+        // The alpha band where it is among those shown: after the colours, or one of them.
+        alpha: info.alpha.and_then(|a| shown.iter().rposition(|b| *b == a)),
+        alpha_max: rustgis_data::raster::alpha_max(info.layout.data_type),
+        palette: info.palette(look).map(<[[u8; 4]]>::to_vec),
+        aef: look.aef,
+        stretch: stretch.to_vec(),
+    };
     let w2 = wanted.clone();
     fetch_bands(
         info,
@@ -1011,9 +1242,13 @@ fn draw(info: Arc<Info>, url: String, look: &Look, stretch: &[(f32, f32)], z: u8
 
 /// How a map tile's pixels are coloured from the bands shown.
 struct Pen {
-    /// Three bands as red, green and blue (else one, grey), and a fourth as alpha.
+    /// Three bands as red, green and blue (else one, grey).
     rgb: bool,
-    alpha: bool,
+    /// Where the alpha band is among those shown, after the colour ones, and its opaque value.
+    alpha: Option<usize>,
+    alpha_max: f32,
+    /// A palette image's colours, by value (no stretch).
+    palette: Option<Vec<[u8; 4]>>,
     aef: bool,
     stretch: Vec<(f32, f32)>,
 }
@@ -1031,23 +1266,38 @@ fn paint(pen: &Pen, spots: &[Option<(u32, usize)>], wanted: &[u32], tiles: &[Pic
         let Some((t, at)) = spot else { continue };
         let Some(bands) = wanted.binary_search(t).ok().and_then(|i| tiles.get(i)) else { continue };
         let v = |b: usize| bands.get(b).and_then(|(chunk, i)| chunk.get(*i)).and_then(|band| band.get(*at)).copied().unwrap_or(f32::NAN);
+        // The alpha band's value, 0 to 255 (opaque without one); none where it hides the pixel.
+        let a = match pen.alpha {
+            Some(i) => {
+                let a = v(i);
+                if a.is_nan() || a <= 0.0 {
+                    continue;
+                }
+                ((a / pen.alpha_max).clamp(0.0, 1.0) * 255.0).round() as u8
+            }
+            None => 255,
+        };
         let px = if pen.rgb {
             let (r, g, b) = (v(0), v(1), v(2));
             if !(r.is_finite() && g.is_finite() && b.is_finite()) {
                 continue;
             }
-            let a = if pen.alpha { v(3) } else { 255.0 };
-            if pen.alpha && (a.is_nan() || a <= 0.0) {
+            [scale(0, r), scale(1, g), scale(2, b), a]
+        } else if let Some(table) = &pen.palette {
+            let g = v(0);
+            // A value past the table: nothing.
+            let Some(c) = (g.is_finite() && g >= 0.0).then(|| table.get(g as usize)).flatten() else { continue };
+            if c[3] == 0 {
                 continue;
             }
-            [scale(0, r), scale(1, g), scale(2, b), a.clamp(0.0, 255.0) as u8]
+            [c[0], c[1], c[2], ((u16::from(c[3]) * u16::from(a)) / 255) as u8]
         } else {
             let g = v(0);
             if !g.is_finite() {
                 continue;
             }
             let g = scale(0, g);
-            [g, g, g, 255]
+            [g, g, g, a]
         };
         if let Some(out) = rgba.get_mut(k * 4..k * 4 + 4) {
             out.copy_from_slice(&px);
@@ -1251,6 +1501,80 @@ pub fn read_values_counted_blocking(
 
 #[cfg(test)]
 mod tests {
+    /// A palette image's own look colours its values by the table the header keeps apart from its
+    /// colour hint (`Layout::palette`), with no stretch read or kept; a look of its bands doesn't.
+    #[test]
+    fn a_palette_images_own_look_has_its_table() {
+        use rustgis_data::raster::cog::{Parse, Sparse, example, layout};
+        use std::sync::{Arc, Mutex};
+        let Ok(Parse::Done(mut layout)) = layout(&Sparse::default().with(0, example(64, 16))) else { panic!("not a COG") };
+        layout.palette = Some(vec![[1, 2, 3, 255]; 256]);
+        let transformer = layout.crs.transformer().unwrap();
+        let info = Arc::new(super::Info {
+            layout: *layout,
+            header: Sparse::default(),
+            transformer,
+            bounds: [0.0; 4],
+            merc: [0.0; 4],
+            min_zoom: 0,
+            max_zoom: 0,
+            stretch: Mutex::default(),
+            stretching: Mutex::default(),
+            stretch_failed: Mutex::default(),
+            alpha: None,
+        });
+        let own = super::Look::default();
+        assert_eq!(info.palette(&own).map(<[[u8; 4]]>::len), Some(256));
+        assert!(info.palette(&super::Look { bands: vec![0], ..super::Look::default() }).is_none());
+        let (tx, rx) = std::sync::mpsc::channel();
+        super::with_stretch(info.clone(), "test://palette.tif".into(), own.clone(), Box::new(move |r| tx.send(r).unwrap_or_default()));
+        let stretch = rx.recv_timeout(std::time::Duration::from_secs(5)).expect("answered at once").unwrap();
+        assert_eq!(stretch, vec![(0.0, 255.0)]);
+        assert!(info.stretch_for(&own).is_none(), "kept, which a look of its bands would take for its own");
+    }
+
+    /// A joint read whose tiles the fetch queue keeps dropping ends, saying so, rather than
+    /// asking without end: within eight drops a tile (64 at least).
+    #[test]
+    fn a_read_the_queue_keeps_dropping_ends() {
+        use rustgis_data::raster::cog::{Parse, Sparse, example, layout};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Mutex};
+        let Ok(Parse::Done(layout)) = layout(&Sparse::default().with(0, example(64, 16))) else { panic!("not a COG") };
+        let transformer = layout.crs.transformer().unwrap();
+        let info = Arc::new(super::Info {
+            layout: *layout,
+            header: Sparse::default(),
+            transformer,
+            bounds: [0.0; 4],
+            merc: [0.0; 4],
+            min_zoom: 0,
+            max_zoom: 0,
+            stretch: Mutex::default(),
+            stretching: Mutex::default(),
+            stretch_failed: Mutex::default(),
+            alpha: None,
+        });
+        let asked = Arc::new(AtomicUsize::new(0));
+        let a = asked.clone();
+        let get: super::GetTile = Arc::new(
+            move |_: Arc<super::Info>, _: String, _: usize, _: u32, done: Box<dyn FnOnce(Result<super::Bands, String>) + Send>| {
+                a.fetch_add(1, Ordering::Relaxed);
+                done(Err(crate::cache::DROPPED.into()));
+            },
+        );
+        let (tx, rx) = std::sync::mpsc::channel();
+        let wanted: Vec<u32> = (0..16).collect();
+        super::fetch_all_with(get, info, "test://dropping.tif".into(), 0, wanted, Box::new(move |r| tx.send(r).unwrap_or_default()));
+        let r = rx.recv_timeout(std::time::Duration::from_secs(10)).expect("the read ended");
+        let e = r.map(|_| ()).unwrap_err();
+        // Eight drops a tile, then the read fails on the next; the rest of that batch isn't counted.
+        assert!(e.contains("dropped its tiles 129 times"), "{e}");
+        let asked = asked.load(Ordering::Relaxed);
+        assert!((129..=129 + 15).contains(&asked), "{asked}");
+        assert_eq!((super::drops_allowed(1), super::drops_allowed(16), super::drops_allowed(4096)), (64, 128, 32768));
+    }
+
     #[test]
     fn announced_header_lengths_and_types() {
         use super::{HEAD, header_length, named_tiff, not_tiff_type};
@@ -1282,7 +1606,28 @@ mod tests {
         let rustgis_data::raster::cog::Parse::Done(l) = cog::layout(&Sparse::default().with(0, file)).unwrap() else { panic!() };
         // Overviews down to 64 pixels: the 256-pixel one is read.
         assert_eq!(l.levels.last().map(|l| l.width), Some(64));
-        assert_eq!(l.levels[stats_level(&l)].width, 256);
+        assert_eq!(l.levels[stats_level(&l.levels)].width, 256);
+        // A long strip (a WorldView image 44 626 × 353 888 pixels, in tiles of 256): its overview
+        // 349 pixels wide is 22 tiles, too many; the one 175 wide, 6 tiles, still a quarter of a
+        // million pixels, is read.
+        let level = |width: u32, height: u32| Level {
+            ifd: 0,
+            width,
+            height,
+            tile_width: 256,
+            tile_height: 256,
+            offsets: Vec::new(),
+            counts: Vec::new(),
+        };
+        let strip: Vec<Level> = [(44_626, 353_888), (5579, 44_236), (698, 5530), (349, 2765), (175, 1383), (88, 692)]
+            .into_iter()
+            .map(|(w, h)| level(w, h))
+            .collect();
+        assert_eq!(strip[stats_level(&strip)].width, 175);
+        // Only small ones: the finest of them; none: the coarsest.
+        assert_eq!(stats_level(&[level(4096, 4096), level(200, 200), level(100, 100)]), 1);
+        assert_eq!(stats_level(&[level(8192, 8192), level(4096, 4096)]), 1);
+        assert_eq!(stats_level(&[]), 0);
     }
 
     /// Reads `file`'s layout as [`load`] and [`step`] do, a range at a time: the layout, how many
@@ -1392,7 +1737,7 @@ mod tests {
     #[test]
     fn looks_in_addresses() {
         let u = "https://x.org/a.tiff";
-        let look = Look { bands: vec![1, 16, 9], range: Some((-0.3, 0.3)), aef: true };
+        let look = Look { bands: vec![1, 16, 9], range: Some((-0.3, 0.3)), aef: true, cube: false };
         let shown = with_look(u, &look);
         assert_eq!(shown, "https://x.org/a.tiff#bands=2,17,10&range=-0.3,0.3&dequantize=aef");
         assert_eq!(split(&shown), (u, look));
@@ -1418,7 +1763,7 @@ mod tests {
         red[1] = f32::NAN;
         let tile: Picked = vec![(Arc::new(vec![red].into()), 0), (chunk(20.0), 0), (chunk(30.0), 0)];
         let spots: Vec<Option<(u32, usize)>> = (0..(SIZE * SIZE) as usize).map(|k| if k < 2 { Some((7, k)) } else { None }).collect();
-        let pen = Pen { rgb: true, alpha: false, aef: false, stretch: vec![(0.0, 40.0); 3] };
+        let pen = Pen { rgb: true, alpha: None, alpha_max: 255.0, palette: None, aef: false, stretch: vec![(0.0, 40.0); 3] };
         let out = paint(&pen, &spots, &[7], &[tile]).unwrap();
         let px = &out[crate::cache::RAW.len() + 8..];
         assert_eq!(&px[..4], &[64, 128, 191, 255]);
@@ -1444,5 +1789,73 @@ mod tests {
         assert_eq!(at(s), &[0, 0, 0, 0], "the next row's first pixel");
         // Nothing there: no picture.
         assert!(paint(&pen, &vec![None; spots.len()], &[], &[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn paints_grey_with_alpha_and_palettes() {
+        let chunk = |v: Vec<f32>| -> Bands { Arc::new(vec![v].into()) };
+        let spots: Vec<Option<(u32, usize)>> = (0..(SIZE * SIZE) as usize).map(|k| (k < 3).then_some((7, k))).collect();
+        let px = |out: Vec<u8>| out[crate::cache::RAW.len() + 8..crate::cache::RAW.len() + 8 + 12].to_vec();
+        // A 16-bit pan band and its 16-bit alpha band: opaque, half, hidden.
+        let tile: Picked = vec![(chunk(vec![500.0, 1000.0, 1000.0, 0.0]), 0), (chunk(vec![65535.0, 32768.0, 0.0, 0.0]), 0)];
+        let pen = Pen { rgb: false, alpha: Some(1), alpha_max: 65535.0, palette: None, aef: false, stretch: vec![(0.0, 1000.0)] };
+        assert_eq!(px(paint(&pen, &spots, &[7], &[tile]).unwrap()), [128, 128, 128, 255, 255, 255, 255, 128, 0, 0, 0, 0]);
+        // A palette image: each value its colour, a transparent one or one past the table nothing.
+        let tile: Picked = vec![(chunk(vec![1.0, 2.0, 9.0, 0.0]), 0)];
+        let table = vec![[0, 0, 0, 255], [200, 10, 20, 255], [0, 0, 0, 0]];
+        let pen = Pen { rgb: false, alpha: None, alpha_max: 255.0, palette: Some(table), aef: false, stretch: vec![(0.0, 255.0)] };
+        let out = px(paint(&pen, &spots, &[7], &[tile]).unwrap());
+        assert_eq!(&out[..4], &[200, 10, 20, 255]);
+        assert_eq!(&out[4..8], &[0, 0, 0, 0], "a transparent colour");
+        assert_eq!(&out[8..12], &[0, 0, 0, 0], "a value past the table");
+    }
+
+    #[test]
+    fn the_tiles_used_longest_ago_make_room() {
+        let mut t = Tiles::default();
+        let key = |i: u32| ("https://x.org/a.tif".to_string(), 0usize, i);
+        let bands: Bands = Arc::new(cog::Tile::default());
+        let half = BUDGET / 2;
+        t.keep(key(1), bands.clone(), half);
+        t.keep(key(2), bands.clone(), half);
+        // Tile 1 is used again (the view still shows it): tile 2 makes room for tile 3.
+        assert!(t.used(&key(1)).is_some());
+        t.keep(key(3), bands.clone(), half);
+        assert!(t.used(&key(1)).is_some() && t.used(&key(3)).is_some());
+        assert!(t.used(&key(2)).is_none());
+        assert_eq!(t.samples, 2 * half);
+        // Kept again under its key: counted once, nothing else making room for it.
+        t.keep(key(3), bands.clone(), half);
+        assert!(t.used(&key(1)).is_some() && t.used(&key(3)).is_some());
+        assert_eq!((t.samples, t.order.len()), (2 * half, 2));
+        forget_file_in(&mut t, "https://x.org/a.tif");
+        assert_eq!((t.samples, t.order.len(), t.map.len()), (0, 0, 0));
+    }
+
+    /// A file's header refused with a `Retry-After` (429 or 503) isn't asked for again before
+    /// then (the failure stands, no read starts), and the map is asked to draw again by then, on
+    /// each draw while it waits (as a tile's is), so a layer whose header failed doesn't stay
+    /// failed until something else draws the map. (That the file is read again then: the
+    /// engine's `a_header_refused_with_retry_after_is_read_again_when_it_says`.)
+    #[test]
+    fn a_header_refused_with_retry_after_has_the_map_drawn_again_then() {
+        // Its turn at the cache (another test's clearing would forget the failure) and the alarms.
+        let _turn = crate::cache::turn();
+        let _alarm = crate::cache::alarm_turn();
+        let file = "test://cog/busy.tif";
+        let refused = || super::State::Failed("http status: 503 (retry after 2 s)".into(), Instant::now());
+        super::infos().lock().unwrap().insert(file.to_string(), refused());
+        crate::cache::clear_alarms();
+        let within = || crate::cache::next_alarm().is_some_and(|d| d <= Duration::from_secs(2));
+        let waiting = || matches!(super::infos().lock().unwrap().get(file), Some(super::State::Failed(..)));
+        let Err(e) = super::info(file) else { panic!("read while waiting") };
+        assert!(e.contains("retry after 2 s"), "{e}");
+        assert!(waiting(), "asked for again before its wait was over");
+        assert!(within(), "no alarm on a draw while waiting: {:?}", crate::cache::next_alarm());
+        // Again on the next draw: the alarm fired (or was consumed) before the wait was over.
+        crate::cache::clear_alarms();
+        assert!(super::info(file).is_err() && waiting());
+        assert!(within(), "not armed again: {:?}", crate::cache::next_alarm());
+        super::infos().lock().unwrap().remove(file);
     }
 }

@@ -27,6 +27,11 @@ pub(crate) struct TileOutput {
     pub attribution: Vec<String>,
     pub pending: bool,
     pub errors: Vec<String>,
+    /// Raster layers read in place drawn from less than the view needs (a coarser level, tiles
+    /// they couldn't read), by id: shown, with the error among `errors`; an export refuses them.
+    pub partial: Vec<u32>,
+    /// Raster layers read in place whose tiles are still on their way, by id.
+    pub pending_in_place: Vec<u32>,
 }
 
 impl TileOutput {

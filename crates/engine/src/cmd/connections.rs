@@ -46,7 +46,7 @@ pub fn commands() -> Vec<C> {
             r#"{"id": "a saved S3 connection's id or name"} (deletes stored keys; a login in this session keeps working)"#,
         ),
         C::new("connection.resolveS3", "Choose S3 Connection", "Home › Add › Data Sources", resolve_s3).view().params(
-            r#"{"source": "a pending project S3 source address", "id": "a candidate saved connection id"} → {id, reopened, failed}: explicitly grants this bucket and opens only its waiting sources"#,
+            r#"{"source": "a pending project S3 source address", "id": "a candidate saved connection id"} → {id, reopened, failed, reading}: explicitly grants this bucket and opens only its waiting sources; reading counts the rasters read in place whose overview is still being read (the desktop doesn't wait for it: it lands as the map draws, and one that fails is said then)"#,
         ),
         C::new("connection.forgetPassword", "Forget Saved Password", "Home › Add › Data Sources", forget_password).view().params(r#"{"id": "a database connection's id or name"}"#),
         C::new("connection.test", "Test Connection", "Home › Add › Data Sources", test).view().params(

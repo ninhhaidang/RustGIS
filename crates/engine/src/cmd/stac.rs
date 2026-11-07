@@ -974,7 +974,7 @@ fn add_cube(s: &mut Session, p: &Value) -> CmdResult {
             dates.extend(urls.iter().map(|(d, _)| *d));
             let Some((_, first)) = urls.first() else { continue };
             let name = if many { format!("{base} {tile}") } else { base.clone() };
-            let r = match super::layer::add_url(s, &json!({"url": first, "name": name, "connection":p.get("connection")})) {
+            let r = match super::layer::add_url(s, &json!({"url": first, "name": name, "cube": true, "connection": p.get("connection")})) {
                 Ok(r) => r,
                 Err(e) => {
                     undo(s);

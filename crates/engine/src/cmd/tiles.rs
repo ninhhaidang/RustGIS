@@ -563,6 +563,84 @@ fn blend(p: &Value) -> Result<Option<Blend>, String> {
     ps(p, "blend").map(|m| Blend::from_code(m).ok_or_else(|| format!("unknown blend mode '{m}'"))).transpose()
 }
 
+/// Turns a map's plain COG tile layers into raster layers read in place, each where it was drawn,
+/// with its name, visibility, opacity, blend, look, connection and anonymity: those of projects saved before GeoTIFFs read
+/// in place were raster layers, and those `map.addTiles` (kind `cog`) still adds, as a project or
+/// a map file opens, and then only: a tile layer added this session stays one until then (a
+/// plain GeoTIFF is one kind of layer, however it was added; what a tile layer had that a raster
+/// layer hasn't is said once, see `Session::notice_landed_rasters`). A dated series, a data cube's
+/// files and AlphaEarth's embeddings stay tile layers.
+pub(crate) fn cog_tiles_to_rasters(m: &mut rustgis_map::Map) {
+    use rustgis_map::raster::RasterLayer;
+    let mut i = 0;
+    while let Some(t) = m.tiles.get(i) {
+        let (file, look) = cog::split(&t.url);
+        if t.kind != TileKind::Cog
+            || t.time_url.is_some()
+            || !t.time_urls.is_empty()
+            || look.aef
+            || look.cube
+            || rustgis_data::time::is_template(file)
+        {
+            i += 1;
+            continue;
+        }
+        let t = m.tiles.remove(i);
+        let (file, look) = cog::split(&t.url);
+        // What a raster layer hasn't, said once the project is open (see
+        // `Session::notice_landed_rasters`).
+        let plain = rustgis_map::TileLayer::new(&t.name, TileKind::Cog, file);
+        let mut dropped = Vec::new();
+        if !t.attribution.trim().is_empty() {
+            dropped.push("attribution");
+        }
+        if !t.legends.is_empty() {
+            dropped.push("legend");
+        }
+        if (t.min_zoom, t.max_zoom) != (plain.min_zoom, plain.max_zoom) {
+            dropped.push("zoom range");
+        }
+        if t.bounds.is_some() {
+            dropped.push("bounds");
+        }
+        if t.overlay {
+            dropped.push("overlay");
+        }
+        // Read with the project's other rasters read in place (see `project::read_in_place`), in
+        // its look once it lands.
+        let rl = RasterLayer::unread_in_place(file).with_look(address_look(&look)).from_tiles_dropping(dropped);
+        // A name another layer has: numbered, as a layer added is.
+        let mut name = t.name.clone();
+        let mut nth = 1;
+        while m.layer_by_name(&name).is_some() {
+            nth += 1;
+            name = format!("{} ({nth})", t.name);
+        }
+        let id = m.add_raster(name, rl);
+        if let Some(l) = m.layer_mut(id) {
+            l.visible = t.visible;
+            l.transparency = (1.0 - t.opacity.clamp(0.0, 1.0)) * 100.0;
+            l.blend = t.blend;
+            // Read again through the saved connection it came from, as the tile layer was; one an
+            // anonymous plugin command added takes no saved login, as before.
+            l.connection = t.connection.clone();
+            l.anonymous = t.anonymous;
+        }
+        // Just over the layer it was drawn over, in its group; under them all without one.
+        let group = t.over.and_then(|o| m.group_of(o).map(|g| g.id));
+        if m.place_layer(id, group, t.over).is_err() {
+            let _ = m.place_layer(id, None, None);
+        }
+    }
+}
+
+/// The look a COG tile layer's address keeps (see [`Look`]) as a raster layer's: its bands, one
+/// grey or three as red, green and blue, and its fixed range. A COG tile layer becomes a raster
+/// layer read in place with it.
+pub(crate) fn address_look(look: &Look) -> rustgis_map::raster::AddressLook {
+    rustgis_map::raster::AddressLook { bands: look.bands.clone(), range: look.range.map(|(lo, hi)| (f64::from(lo), f64::from(hi))) }
+}
+
 /// A change of a COG layer's look a command asks for (`bands`, `range`, `dequantize`), applied to
 /// the look it has; `None` when it asks for none.
 #[allow(clippy::type_complexity)]
@@ -603,6 +681,7 @@ fn cog_look(p: &Value) -> Result<Option<Box<dyn Fn(Look) -> Look>>, String> {
         bands: bands.clone().unwrap_or(old.bands),
         range: range.unwrap_or(old.range),
         aef: aef.unwrap_or(old.aef),
+        cube: old.cube,
     })))
 }
 
@@ -704,7 +783,7 @@ fn set(s: &mut Session, p: &Value) -> CmdResult {
             if let Ok(Some(info)) = cog::info(&t.url)
                 && let Some(b) = new.bands.iter().find(|b| **b >= info.layout.bands)
             {
-                return Err(format!("the GeoTIFF has {} bands, not {}", info.layout.bands, b + 1));
+                return Err(format!("the GeoTIFF has {} bands, not {}", info.layout.bands, b.saturating_add(1)));
             }
             Some(cog::with_look(&t.url, &new))
         }

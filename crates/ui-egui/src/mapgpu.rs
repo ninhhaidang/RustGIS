@@ -1732,6 +1732,8 @@ mod tests {
             tiles_pending: false,
             data_pending: false,
             tile_errors: vec![],
+            partial: vec![],
+            pending_in_place: vec![],
             tilt: None,
             clips: vec![],
         };
@@ -2347,6 +2349,8 @@ mod tests {
             tiles_pending: false,
             data_pending: false,
             tile_errors: vec![],
+            partial: vec![],
+            pending_in_place: vec![],
             tilt: None,
             clips: vec![],
         };

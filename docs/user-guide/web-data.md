@@ -610,10 +610,11 @@ their footprints drawn as a layer.
 | **Tessera** (Cambridge; 128 values a 10 m pixel, 2017–2025) | **Add view** reads three bands (1, 2 and 3 by default) of the view from Tessera's [Zarr store](https://data.source.coop/tessera/tessera/zarr/v1.1-dclimate) in place (the shard's index, then the chunks the view needs: at most about 6 km a side, its centre when the view is larger), as a 32-bit raster in UTM. |
 | **Clay**, **Major TOM**, **Copernicus-Embed** | Listed with links to their data and papers; RustGIS doesn't read them. |
 
-AlphaEarth's tiles keep their look in their layer's address (`#bands=2,17,10&range=-0.3,0.3&dequantize=aef`),
-which `map.setTiles` changes for any cloud-optimised GeoTIFF read in place (`"bands"`, `"range"`,
-`"dequantize"`); GeoTIFFs with their bands stored apart (planar), signed bytes and bottom-up images
-are read in place too. The commands: `embeddings.datasets`, `embeddings.search` (`"dataset"`,
+AlphaEarth's tiles are tile layers that keep their look in their address
+(`#bands=2,17,10&range=-0.3,0.3&dequantize=aef`), which `map.setTiles` changes (`"bands"`,
+`"range"`, `"dequantize"`); other cloud-optimised GeoTIFFs are raster layers read in place, styled
+in the Symbology pane. GeoTIFFs with their bands stored apart (planar), signed bytes and bottom-up
+images are read in place too. The commands: `embeddings.datasets`, `embeddings.search` (`"dataset"`,
 `"year"`, `"bbox"` or the view, `"footprints"`) and `embeddings.add` (`"dataset"`, `"url"`,
 `"bands"`, `"stretch"`, `"dimension"`, `"bbox"`, `"year"`):
 

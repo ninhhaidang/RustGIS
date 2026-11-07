@@ -40,7 +40,7 @@ pub fn commands() -> Vec<C> {
             .params(r#"{"layer"?: name|id, "crs": "EPSG:… or WKT; reinterpret native coordinates, without rewriting the source file"}"#),
         C::new("layer.loadAll", "Load All Features", "Layers", load_all).when(need_streamed).params(r#"{"layer"?: name|id}"#),
         C::new("layer.addUrl", "Add Data From URL", "Home › Add › Add Data", add_url).params(
-            r#"{"url": "https://…/data.geojson|.csv|.parquet|.fgb|.gpkg|.zip|.shp (its .dbf fetched beside it, and its .shx, .prj and .cpg when there)|.kml|.kmz|.gpx|.tif|.jp2 (JPEG 2000: desktop, through GDAL) (the format from the address, else the contents) | a .pmtiles archive", "name"?: text, "layer"?: "one layer of a zip, KML or GPX", "zoom"?: "bool: true frames everything added; false keeps the view, even on an empty map; omitted, the first content on an empty map is framed (a GeoParquet, FlatGeobuf or cloud-optimised GeoTIFF read in place likewise; a PMTiles or MBTiles archive ignores zoom and is framed on its bounds unless it covers the whole world)", "x"?, "y"?, "wkt"?, "crs"?, "delimiter"?, "paperSpace"?, "stream"?, "as"? (as layer.addData), "whole"?: "bool: download a cloud-optimised GeoTIFF whole (as a raster layer) instead of reading it in place (an address without a file name is read in place when its first bytes are a cloud-optimised GeoTIFF)", "cog"?: "bool: the address is a cloud-optimised GeoTIFF whatever its name says (the app's probe found it so)", "bbox"?: "[west, south, east, north] in degrees | "view": a cloud-optimised GeoTIFF's window as a raster layer (desktop and command line), read by range at full resolution, in the file's coordinate system, with its colour table and class names; at most 64 million values (all bands)", "cellSize"?: "with bbox: the coarsest overview whose cells are at most this size is read (the file's units; metres for longitude/latitude, a degree taken as 111.32 km)", "start"?, "end"?, "unit"?, "interval"?, "dates"?: "a GeoTIFF address with date placeholders ({date:YYYY}, {YYYY}{MM}{DD}), one file per date: the dates it spans and steps through (as time.set), turning the time slider on", "connection"?: "the id of the saved web-service connection it comes from (as service.add)", "anonymous"?: bool (internal: a plugin-origin download must never adopt a saved login), "request"?: "number (internal: the download a plugin command left to the app, #1202)"}"#,
+            r#"{"url": "https://…/data.geojson|.csv|.parquet|.fgb|.gpkg|.zip|.shp (its .dbf fetched beside it, and its .shx, .prj and .cpg when there)|.kml|.kmz|.gpx|.tif|.jp2 (JPEG 2000: desktop, through GDAL) (the format from the address, else the contents) | a .pmtiles archive", "name"?: text, "layer"?: "one layer of a zip, KML or GPX", "zoom"?: "bool: true frames everything added; false keeps the view, even on an empty map; omitted, the first content on an empty map is framed (a GeoParquet, FlatGeobuf or cloud-optimised GeoTIFF read in place likewise; a PMTiles or MBTiles archive ignores zoom and is framed on its bounds unless it covers the whole world)", "x"?, "y"?, "wkt"?, "crs"?, "delimiter"?, "paperSpace"?, "stream"?, "as"? (as layer.addData), "whole"?: "bool: download a cloud-optimised GeoTIFF whole (as a raster layer) instead of reading it in place (an address without a file name is read in place when its first bytes are a cloud-optimised GeoTIFF)", "cog"?: "bool: the address is a cloud-optimised GeoTIFF whatever its name says (the app's probe found it so)", "bbox"?: "[west, south, east, north] in degrees | "view": a cloud-optimised GeoTIFF's window as a raster layer (desktop and command line), read by range at full resolution, in the file's coordinate system, with its colour table and class names; at most 64 million values (all bands)", "cellSize"?: "with bbox: the coarsest overview whose cells are at most this size is read (the file's units; metres for longitude/latitude, a degree taken as 111.32 km)", "cube"?: "bool: a data cube's file: a tile layer that follows the time slider (stac.addCube adds them), kept one when the project opens again", "start"?, "end"?, "unit"?, "interval"?, "dates"?: "a GeoTIFF address with date placeholders ({date:YYYY}, {YYYY}{MM}{DD}), one file per date: the dates it spans and steps through (as time.set), turning the time slider on", "connection"?: "the id of the saved web-service connection it comes from (as service.add)", "anonymous"?: bool (internal: a plugin-origin download must never adopt a saved login), "request"?: "number (internal: the download a plugin command left to the app, #1202)"}"#,
         ),
         C::new("layer.addDownload", "Add Downloaded Data", "Home › Add", add_download)
             .params(r#"{"id": a download the app finished (Home › Add › Add Data › From URL), "url": its address, "name"?: text, "layer"?: text, "zoom"?: bool, "x"?, "y"?, "wkt"?, "crs"?, "delimiter"?, "paperSpace"?, "stream"?, "as"? (as layer.addData), "service"?: bool (a service's features: their axes (when they came as GeoJSON) and paging are checked, and the address is kept as the layer's source), "bounds"?: [west, south, east, north] (with service: the layer's longitude/latitude bounds from its capabilities, which its axes are checked against; without bounds they are left as they come; ignored without service), "coverage"?: bool (a WCS coverage: a GeoTIFF, else the service's error, and its request kept as the layer's source), "geolibreProject"?: bool (internal: downloaded project JSON), "geolibreLayer"?: {"token", "record"} (internal: reserved imported layer and its saved style), "geolibreZarr"?: bool (internal: an imported Zarr slice as GeoTIFF), "connection"?: "as layer.addUrl", "anonymous"?: bool (internal: preserves a plugin-origin download's anonymous reads), "request"?: number (internal: the download a plugin command left to the app, #1202)}"#),
@@ -2852,6 +2852,7 @@ pub(crate) fn add_layer_text(s: &mut Session, text: &str) -> CmdResult {
     super::connections::clear_active();
     s.project.normalize();
     super::connections::restore_active(s);
+    s.wait_in_place_reads();
     // Only the database the added layer reads can change here.
     let keys: Vec<_> = s.map().layer(id).and_then(|l| l.source.as_ref()).map(super::connections::layer_keys).unwrap_or_default();
     super::connections::resolve_keys(s, &keys);
@@ -3591,17 +3592,38 @@ pub fn is_unnamed_url(url: &str) -> bool {
 }
 
 /// Adds a cloud-optimised GeoTIFF by its address as a layer read in place (its tiles by range,
-/// as the view needs them), framed when its header is in. `probed`: its header was just read
-/// (natively), so it is waited for if something emptied the tile cache since (a login ended): the
-/// layer would go unframed. One not read yet isn't waited for (a project opening its files).
+/// as the view needs them), framed when its header is in and it is the first content on the map
+/// (`"zoom"` says otherwise: `true` frames it, `false` keeps the view). `probed`: its header was
+/// just read (natively), so it is waited for if something emptied the tile cache since (a login
+/// ended): the layer would go unframed. One not read yet isn't waited for (a project opening its
+/// files).
 pub(crate) fn add_cog(s: &mut Session, p: &Value, url: &str, probed: bool) -> CmdResult {
+    add_cog_with(s, p, url, true, probed)
+}
+
+/// [`add_cog`], a GeoTIFF that can't be read now added all the same (unless `strict`), showing
+/// why: a project being imported keeps its layers.
+pub(crate) fn add_cog_with(s: &mut Session, p: &Value, url: &str, strict: bool, probed: bool) -> CmdResult {
     let stem = cog_name(url);
     let name = ps(p, "name").map(str::trim).filter(|n| !n.is_empty()).unwrap_or(&stem);
     let empty_before = super::map_is_empty(s);
+    // A GeoTIFF is a raster layer like a file's, read in place; a dated series, a data cube's file
+    // (which follow the time slider) and AlphaEarth's quantised embeddings (which raster styles
+    // don't dequantise) are tile layers.
+    let (file, mut look) = crate::render::rustgis_tiles::cog::split(url);
+    // A key given as `null` (a script's unused one) asks for nothing.
+    let given = |k: &str| p.get(k).filter(|v| !v.is_null());
+    // A data cube's file stays a tile layer, its project opened again too: its address says so.
+    look.cube |= b(p, "cube") == Some(true);
+    let dated = rustgis_data::time::is_template(file) || ["start", "end", "unit", "interval", "dates"].iter().any(|k| given(k).is_some());
+    if !dated && !look.aef && !look.cube {
+        return add_in_place(s, name, file, &look, strict, b(p, "zoom"), probed);
+    }
+    let url = crate::render::rustgis_tiles::cog::with_look(url, &look);
     let mut q = json!({"url": url, "kind": "cog", "name": name, "top": true});
     // A dated address's span and steps (see map.addTiles).
     for k in ["start", "end", "unit", "interval", "dates", "connection"] {
-        if let Some(v) = p.get(k) {
+        if let Some(v) = given(k) {
             q[k] = v.clone();
         }
     }
@@ -3643,20 +3665,15 @@ pub(crate) fn add_cog(s: &mut Session, p: &Value, url: &str, probed: bool) -> Cm
             s.zoom_to(&rustgis_geom::Extent::new(w, so, e, n));
         }
         r["bounds"] = json!(info.bounds);
-        // Drawn in place, the tiles are drawn as values: what the header holds beside them (a
-        // colour table, band and class names) comes only with a window, and is said.
+        // Drawn in place, the tiles are drawn as values (a palette image's by its colour table):
+        // what the header holds beside them (band and class names) comes only with a window, and
+        // is said.
         let l = &info.layout;
         let named = l.described.as_ref().is_some_and(|d| d.bands.iter().any(|b| b.description.is_some() || !b.categories.is_empty()));
         let mut said: Vec<String> = l.lost.clone();
         said.extend(l.described.iter().flat_map(|d| d.lost.iter().map(|x| format!("{}: {x}", rustgis_data::raster::pam::GDAL_METADATA))));
-        // Grey only for a palette file: an RGB file with band names is drawn in its colours.
-        match (l.palette.is_some(), named) {
-            (true, true) => {
-                said.push("drawn in place in grey, without its colour table and band or class names: a window (\"bbox\") reads them".into())
-            }
-            (true, false) => said.push("drawn in place in grey, without its colour table: a window (\"bbox\") reads it".into()),
-            (false, true) => said.push("drawn in place without its band or class names: a window (\"bbox\") reads them".into()),
-            (false, false) => {}
+        if named {
+            said.push("drawn in place without its band or class names: a window (\"bbox\") reads them".into());
         }
         // A tile layer's own name, as added.
         let shown = r.get("name").and_then(Value::as_str).unwrap_or(name).to_string();
@@ -3676,6 +3693,105 @@ pub(crate) fn add_cog(s: &mut Session, p: &Value, url: &str, probed: bool) -> Cm
         });
     }
     r["inPlace"] = json!(true);
+    Ok(r)
+}
+
+/// Adds a cloud-optimised GeoTIFF as a raster layer read in place: its overview held (read now
+/// where the session waits for reads in place, failing the command when it can't be; landing as
+/// the map draws on the desktop and in the browser, see [`Session::in_place_wait`]), the part in
+/// view read as the map draws. A look at the address's end (`#bands=…&range=…`) is its style.
+/// `zoom` is the adding command's `"zoom"`:
+/// `Some(true)` frames it, `Some(false)` keeps the view, `None` frames it only as the first content
+/// on an empty map. `probed` is [`add_cog`]'s.
+fn add_in_place(
+    s: &mut Session,
+    name: &str,
+    file: &str,
+    look: &crate::render::rustgis_tiles::cog::Look,
+    strict: bool,
+    zoom: Option<bool>,
+    probed: bool,
+) -> CmdResult {
+    use crate::render::rustgis_tiles::cog;
+    // Judged as an address a project keeps is (a host, no spaces, not too long) before it is read.
+    rustgis_map::tiles::check_url(file)?;
+    let empty_before = super::map_is_empty(s);
+    // Strict, where the session waits: read now, failing when it can't be. Strict on the desktop:
+    // added now, its overview landing as the map draws (and failing there, said), so a slow host
+    // doesn't hold the window. Otherwise read with the other layers added with it (see
+    // `project::read_in_place`); in the browser, landing later.
+    #[cfg(not(target_arch = "wasm32"))]
+    let layer = if strict && s.in_place_wait {
+        rustgis_map::raster::RasterLayer::in_place(cog::raster::overview_blocking(file)?, file)
+    } else if strict {
+        rustgis_map::raster::RasterLayer::opening_in_place(file)
+    } else {
+        rustgis_map::raster::RasterLayer::unread_in_place(file)
+    };
+    #[cfg(target_arch = "wasm32")]
+    let layer = {
+        let _ = strict;
+        rustgis_map::raster::RasterLayer::opening_in_place(file)
+    };
+    let layer = layer.with_look(super::tiles::address_look(look));
+    let landed = layer.data.is_some();
+    let mut r = super::raster::add_raster_after(s, name, layer, zoom)?;
+    // A header just read (natively) is waited for if something emptied the tile cache since (a
+    // login ended): the layer would go unframed. A plugin's command in the app doesn't wait (it
+    // runs on the frame), as in the browser.
+    #[cfg(not(target_arch = "wasm32"))]
+    let info = if probed && !s.leave_downloads { cog::info_blocking(file).map(Some) } else { cog::info(file) };
+    #[cfg(target_arch = "wasm32")]
+    let info = {
+        let _ = probed;
+        cog::info(file)
+    };
+    // Its header couldn't be read (a failure recorded and not tried again yet, or now): the view
+    // stays where it was, and the answer says why (the layer says so too, once its read fails).
+    if let Err(e) = &info {
+        r["warning"] = json!(format!(
+            "{} couldn't be read ({}), so the map wasn't moved to it",
+            crate::sources::redact(file),
+            crate::sources::redact_text(e)
+        ));
+    }
+    if let Ok(Some(info)) = info {
+        let [w, so, e, n] = info.bounds;
+        // Framed on the file's bounds when it is the first content on the map, as other data is,
+        // or when asked to.
+        if zoom.unwrap_or(empty_before) {
+            s.zoom_to(&rustgis_geom::Extent::new(w, so, e, n));
+        }
+        r["bounds"] = json!(info.bounds);
+        // Added before its overview is in: sized by the header as the answer would be once the
+        // overview had landed (the level the layer holds, every band, and the full size when the
+        // level isn't it).
+        if !landed && let Some(level) = cog::raster::overview_level(&info) {
+            let levels = &info.layout.levels;
+            if let Some(l) = levels.get(level) {
+                r["width"] = json!(l.width);
+                r["height"] = json!(l.height);
+                r["bands"] = json!(info.layout.bands);
+            }
+            if let Some(full) = levels.first().filter(|_| level > 0) {
+                r["overviewOf"] = json!([full.width, full.height]);
+            }
+        }
+    }
+    if !landed {
+        // Its overview is still being read (it lands as the map draws): a size the answer can't
+        // give yet (the header not in, or no level small enough to hold) is null, not 0.
+        r["reading"] = json!(true);
+        if r["width"].as_u64() == Some(0) {
+            for key in ["width", "height", "bands"] {
+                r[key] = Value::Null;
+            }
+        }
+    }
+    r["inPlace"] = json!(true);
+    r["kind"] = json!("raster");
+    let added = r["layer"].as_u64().and_then(|id| u32::try_from(id).ok()).and_then(|id| s.map().layer(id));
+    r["name"] = json!(added.map(|l| l.name.clone()));
     Ok(r)
 }
 

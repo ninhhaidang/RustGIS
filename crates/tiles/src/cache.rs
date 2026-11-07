@@ -10,7 +10,7 @@
 //! map stopped asking for is dropped unfetched ([`crate::schedule`]). Natively they are fetched on
 //! worker threads; the browser app installs its own fetcher with [`set_fetcher`].
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -63,7 +63,7 @@ type ImageDecoder = Box<dyn Fn(Vec<u8>, Decoded) + Send + Sync>;
 /// Bytes the cache keeps before dropping the least recently used entries.
 const BUDGET: usize = if cfg!(target_arch = "wasm32") { 160 << 20 } else { 384 << 20 };
 /// A failed address is tried again after this long.
-pub(crate) const RETRY: Duration = Duration::from_secs(60);
+pub const RETRY: Duration = Duration::from_secs(60);
 /// The largest tile or document fetched.
 pub const MAX_BYTES: usize = 16 << 20;
 /// The error a fetcher gives a request it dropped unfetched (the view moved on): the address is
@@ -191,9 +191,148 @@ pub fn set_waker(f: impl Fn() + Send + Sync + 'static) {
     *waker().lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(f));
 }
 
-/// Goes up each time a fetch finishes: a map drawn at an older generation may now draw more.
+/// When the map is next to draw again by itself (a failed read may be tried again then): each
+/// wait asked for ([`notify_at`]), in milliseconds after [`alarm_base`] plus one, the earliest
+/// first. Every wait is kept (the earliest [`MAX_ALARMS`]), not the earliest alone: the draw when
+/// it is over may not ask again for a later one (a style kept whole while its elevation source
+/// waits).
+fn alarms() -> &'static Mutex<BTreeSet<u64>> {
+    static A: OnceLock<Mutex<BTreeSet<u64>>> = OnceLock::new();
+    A.get_or_init(Mutex::default)
+}
+
+/// The most waits kept at once: a later one past them all is left to its read, which asks again
+/// on each draw while it waits.
+const MAX_ALARMS: usize = 1024;
+
+fn alarm_base() -> Instant {
+    static B: OnceLock<Instant> = OnceLock::new();
+    *B.get_or_init(Instant::now)
+}
+
+/// `when` as the alarms keep it.
+fn alarm_at(when: Instant) -> u64 {
+    (when.saturating_duration_since(alarm_base()).as_millis() as u64).saturating_add(1)
+}
+
+fn alarm_hook() -> &'static Mutex<Option<Arc<dyn Fn(Duration) + Send + Sync>>> {
+    static A: OnceLock<Mutex<Option<Arc<dyn Fn(Duration) + Send + Sync>>>> = OnceLock::new();
+    A.get_or_init(Mutex::default)
+}
+
+/// Sets how the app is asked to draw again after a while (a repaint after it): a read that failed
+/// is tried again once its wait is over, though nothing else draws the map. The request lasts
+/// one frame (egui's `request_repaint_after`): it is made again on each draw while the wait
+/// lasts (see [`generation`]).
+pub fn set_alarm(f: impl Fn(Duration) + Send + Sync + 'static) {
+    *alarm_hook().lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(f));
+}
+
+/// Asks the app to draw again after `after` (see [`set_alarm`]).
+fn ring(after: Duration) {
+    let hook = alarm_hook().lock().unwrap_or_else(|e| e.into_inner()).clone();
+    if let Some(hook) = hook {
+        hook(after);
+    }
+}
+
+/// Draws the map again at `when`: [`generation`] goes up then, so a map waiting on a failed read
+/// asks for it again. The app is asked for the earliest wait pending; each draw asks it again
+/// for the earliest left (see [`generation`]).
+pub fn notify_at(when: Instant) {
+    let at = alarm_at(when);
+    let earliest = {
+        let mut a = alarms().lock().unwrap_or_else(|e| e.into_inner());
+        if a.len() >= MAX_ALARMS {
+            // Full: a wait past every one kept is left to its read; an earlier one takes the
+            // latest's place.
+            if a.last().is_some_and(|last| at >= *last) {
+                return;
+            }
+            a.pop_last();
+        }
+        a.insert(at);
+        a.first() == Some(&at)
+    };
+    if earliest {
+        ring(when.saturating_duration_since(Instant::now()));
+    }
+}
+
+/// Goes up each time a fetch finishes, and once a wait asked for ([`notify_at`]) is over: a map
+/// drawn at an older generation may now draw more. Read as the map draws, it asks the app to draw
+/// again at the earliest wait still pending: the app's request lasts one frame (egui's
+/// `request_repaint_after`), and a draw before the wait was over (the pointer moved) used it up.
 pub fn generation() -> u64 {
+    let now = alarm_at(Instant::now());
+    let next = {
+        let mut a = alarms().lock().unwrap_or_else(|e| e.into_inner());
+        if a.first().is_some_and(|at| *at <= now) {
+            // Every wait over is one draw: the generation goes up once for them all.
+            let later = a.split_off(&now.saturating_add(1));
+            *a = later;
+            GENERATION.fetch_add(1, Ordering::Relaxed);
+        }
+        a.first().copied()
+    };
+    if let Some(at) = next {
+        ring(Duration::from_millis(at.saturating_sub(now)));
+    }
     GENERATION.load(Ordering::Relaxed)
+}
+
+/// How long until the earliest wait pending; none when there is none.
+#[cfg(test)]
+pub(crate) fn next_alarm() -> Option<Duration> {
+    let at = alarms().lock().unwrap_or_else(|e| e.into_inner()).first().copied()?;
+    Some(Duration::from_millis(at.saturating_sub(alarm_at(Instant::now()))))
+}
+
+/// Forgets every wait pending.
+#[cfg(test)]
+pub(crate) fn clear_alarms() {
+    alarms().lock().unwrap_or_else(|e| e.into_inner()).clear();
+}
+
+/// Undoes [`set_alarm`]: a test done with its own.
+#[cfg(test)]
+pub(crate) fn clear_alarm() {
+    *alarm_hook().lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
+/// A test's turn at the process-wide alarms, held by the tests that arm, read or clear them, or
+/// set what rings: they run in parallel threads of one process, and one's clearing would erase
+/// another's.
+#[cfg(test)]
+pub(crate) fn alarm_turn() -> std::sync::MutexGuard<'static, ()> {
+    static L: Mutex<()> = Mutex::new(());
+    L.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// How long a server that refused with 429 or 503 asked to be left before it is asked again, as
+/// the error's text says it (`http status: 503 (retry after 30 s)`; see
+/// [`crate::failure::with_retry_after`]).
+pub fn retry_after(error: &str) -> Option<Duration> {
+    let (_, rest) = error.rsplit_once("(retry after ")?;
+    let secs: u64 = rest.strip_suffix(" s)")?.parse().ok()?;
+    // Bounded as when written: a text from elsewhere (an address echoed) can't ask for years.
+    Some(Duration::from_secs(secs.clamp(1, crate::failure::MAX_RETRY_AFTER)))
+}
+
+/// How long a failed read waits before it is tried again: what its server asked for (see
+/// [`retry_after`]), else `default`.
+pub fn retry_wait(error: &str, default: Duration) -> Duration {
+    retry_after(error).unwrap_or(default)
+}
+
+/// How long a read that has failed `failures` times in a row waits before the next try: `wait`,
+/// doubled for each failure past the first, within the hour (see [`retry_after`]'s bound), so a
+/// file that never reads isn't asked for every minute all session.
+pub fn backoff(wait: Duration, failures: u32) -> Duration {
+    let most = Duration::from_secs(crate::failure::MAX_RETRY_AFTER);
+    // Past twelve doublings the wait is over the hour whatever it was (it is a second at least).
+    let doublings = failures.saturating_sub(1).min(12);
+    wait.saturating_mul(1u32 << doublings).min(most)
 }
 
 /// How many fetches are under way. Once a fetch no longer counts, its [`generation`] shows.
@@ -242,7 +381,15 @@ fn request(url: &str, want: Want, omit: &'static [u16]) -> State {
         match &slot.entry {
             Entry::Ready(p, _) => return State::Ready(p.clone()),
             Entry::Pending => return State::Pending,
-            Entry::Failed(e, at) if at.elapsed() < RETRY => return State::Failed(e.clone()),
+            Entry::Failed(e, at) if at.elapsed() < retry_wait(e, RETRY) => {
+                // A server that said when to come back (429 or 503 with `Retry-After`) is asked
+                // again then: the map draws again at that time, though nothing else draws it.
+                // One that didn't is asked again by the next draw after a minute, as before.
+                if let Some(wait) = retry_after(e) {
+                    notify_at(*at + wait);
+                }
+                return State::Failed(e.clone());
+            }
             Entry::Failed(..) => {}
         }
     }
@@ -537,6 +684,10 @@ fn fetch_tile(url: String, host: String, want: Want, omit: &'static [u16]) {
                 }
                 Err(e) => {
                     log::debug!("{}", crate::logins::scrub(&format!("{}: {e}", answer.key)));
+                    // Refused until a time its server gave: the map draws again then.
+                    if let Some(wait) = retry_after(&e) {
+                        notify_at(Instant::now() + wait);
+                    }
                     Entry::Failed(e, Instant::now())
                 }
             });
@@ -773,8 +924,11 @@ impl<'a> RequestDiagnostics<'a> {
 /// another message (an address can hold "404").
 pub fn http_status(error: &str) -> Option<u16> {
     let e = error.trim();
-    let code = e.strip_prefix("http status: ").or_else(|| e.strip_prefix("HTTP "))?;
-    (code.len() == 3 && code.bytes().all(|b| b.is_ascii_digit())).then(|| code.parse().ok()).flatten()
+    let rest = e.strip_prefix("http status: ").or_else(|| e.strip_prefix("HTTP "))?;
+    // The status, and nothing after it but how long to wait (see [`retry_after`]).
+    let (code, after) = rest.split_at_checked(3)?;
+    let known = after.is_empty() || (after.starts_with(" (retry after ") && retry_after(after).is_some());
+    (known && code.bytes().all(|b| b.is_ascii_digit())).then(|| code.parse().ok()).flatten()
 }
 
 /// Downloads a file the user named (data added by its web address): up to [`MAX_DOWNLOAD`]
@@ -1499,7 +1653,11 @@ mod native {
             let status = resp.status().as_u16();
             diagnostics.answered(status);
             if !(200..300).contains(&status) {
-                return Err(Failure::without_answer("", format!("http status: {status}"), Reason::Status(status)));
+                return Err(Failure::without_answer(
+                    "",
+                    crate::failure::with_retry_after(format!("http status: {status}"), status, retry_after_header(&resp)),
+                    Reason::Status(status),
+                ));
             }
             let mut buf = Vec::new();
             resp.body_mut()
@@ -1589,6 +1747,11 @@ mod native {
             _ => Reason::Other,
         };
         Failure::without_answer("", e.to_string(), reason)
+    }
+
+    /// An answer's `Retry-After` header, as sent.
+    fn retry_after_header(resp: &ureq::http::Response<ureq::Body>) -> Option<&str> {
+        resp.headers().get("retry-after").and_then(|v| v.to_str().ok())
     }
 
     /// An answer with an error status (#509): its kept headers and the start of its body.
@@ -1735,7 +1898,11 @@ mod native {
                     return Err(if detail && !prepared.signed && login.is_none() {
                         refused(&mut resp)
                     } else {
-                        Failure::without_answer("", format!("http status: {status}"), Reason::Status(status))
+                        Failure::without_answer(
+                            "",
+                            crate::failure::with_retry_after(format!("http status: {status}"), status, retry_after_header(&resp)),
+                            Reason::Status(status),
+                        )
                     });
                 }
                 if !resp.status().is_redirection() {
@@ -2114,6 +2281,12 @@ mod tests {
         let records = network_records(&history, &url);
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].network.as_ref().unwrap().status, Some(503));
+        // One that says when to ask again: its wait goes with the status, read back as the wait.
+        let wait = "HTTP/1.1 503 Unavailable\r\nRetry-After: 30\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        let base = serve(vec![wait.into()]);
+        let e = native::get(&native::agent(), &format!("{base}/tiles/0/0/0.png"), &[404]).unwrap_err();
+        assert_eq!(e, "http status: 503 (retry after 30 s)");
+        assert_eq!((http_status(&e), retry_wait(&e, RETRY)), (Some(503), Duration::from_secs(30)));
         // A download's absence names the address asked for, not the module's markers.
         let base = serve(vec![not_found.into()]);
         let url = format!("{base}/data.zarr/zarr.json");
@@ -2289,6 +2462,110 @@ mod tests {
         assert_eq!(http_status("https://x.org/404/a.zarr: timed out"), None);
         assert_eq!(http_status("HTTP 4040"), None);
         assert_eq!(http_status("io: connection reset (read 404 bytes)"), None);
+        // With how long the server asked to be left: the status, and the wait.
+        assert_eq!(http_status("http status: 503 (retry after 30 s)"), Some(503));
+        assert_eq!(http_status("HTTP 429 (retry after 2 s)"), Some(429));
+        assert_eq!(http_status("HTTP 429 (something else)"), None);
+        assert_eq!(retry_after("http status: 503 (retry after 30 s)"), Some(Duration::from_secs(30)));
+        assert_eq!(retry_after("http status: 503"), None);
+        assert_eq!(retry_after("x (retry after 18446744073709551615 s)"), Some(Duration::from_secs(3600)), "bounded, never overflowing");
+        assert_eq!(retry_after("x (retry after 0 s)"), Some(Duration::from_secs(1)));
+        assert_eq!(retry_wait("HTTP 429 (retry after 2 s)", RETRY), Duration::from_secs(2));
+        assert_eq!(retry_wait("http status: 500", RETRY), RETRY);
+    }
+
+    /// A read that fails again waits twice as long each time, within the hour: a file that never
+    /// reads isn't asked for every minute all session.
+    #[test]
+    fn a_read_that_fails_again_waits_longer_each_time() {
+        let minute = Duration::from_secs(60);
+        assert_eq!(backoff(minute, 0), minute);
+        assert_eq!(backoff(minute, 1), minute);
+        assert_eq!(backoff(minute, 2), Duration::from_secs(120));
+        assert_eq!(backoff(minute, 3), Duration::from_secs(240));
+        assert_eq!(backoff(minute, 7), Duration::from_secs(3600), "within the hour");
+        assert_eq!(backoff(minute, u32::MAX), Duration::from_secs(3600), "bounded, never overflowing");
+        // A server's own wait is doubled the same way, within the hour.
+        assert_eq!(backoff(Duration::from_secs(1), 2), Duration::from_secs(2));
+        assert_eq!(backoff(Duration::from_secs(3600), 2), Duration::from_secs(3600));
+    }
+
+    /// A tile its server refused saying when to come back (429 or 503 with `Retry-After`) has the
+    /// map asked to draw again then, from the gate, on each draw while it waits (the alarm is
+    /// one-shot, and another may have fired since; the failure arms it first). The alarm is the
+    /// earliest pending one, read here as the map reads it. The entry is stored as a failed fetch
+    /// stores it: the fetcher is one for the process, and another test's may be in.
+    #[test]
+    fn a_tile_refused_with_retry_after_has_the_map_drawn_again_then() {
+        // Its turn at the cache (the entry is planted in it, and another test's clearing would
+        // drop it) and at the alarms.
+        let _turn = super::turn();
+        let _alarm = super::alarm_turn();
+        let within = |secs: u64| super::next_alarm().is_some_and(|d| d <= Duration::from_secs(secs));
+        let url = "test://cache/busy.json";
+        store(url, Entry::Failed("http status: 503 (retry after 2 s)".into(), Instant::now()));
+        super::clear_alarms();
+        let State::Failed(e) = get(url, Want::Json) else { panic!("not failed") };
+        assert!(e.contains("retry after 2 s"), "{e}");
+        assert!(within(2), "no alarm on a draw while waiting: {:?}", super::next_alarm());
+        // Again on the next draw: the alarm fired (or was consumed) before the wait was over.
+        super::clear_alarms();
+        assert!(matches!(get(url, Want::Json), State::Failed(_)));
+        assert!(within(2), "not armed again: {:?}", super::next_alarm());
+    }
+
+    /// A read that failed asks the map to draw again when it may be tried: the generation goes up
+    /// once that time has come.
+    #[test]
+    fn the_map_draws_again_when_a_wait_is_over() {
+        let _alarm = super::alarm_turn();
+        let before = generation();
+        notify_at(Instant::now() + Duration::from_millis(20));
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        assert!(generation() > before);
+    }
+
+    /// Every wait asked for has the map drawn again when it is over, not the earliest alone: the
+    /// draw when the earlier is over may not ask for the later again (a style kept whole while
+    /// its elevation source waits), so the later is kept, and the app asked for it then.
+    #[test]
+    fn a_later_wait_isnt_lost_behind_an_earlier_one() {
+        let _alarm = super::alarm_turn();
+        let asked = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let noted = asked.clone();
+        super::set_alarm(move |after| noted.lock().unwrap_or_else(|e| e.into_inner()).push(after));
+        super::clear_alarms();
+        let before = generation();
+        notify_at(Instant::now() + Duration::from_millis(20));
+        notify_at(Instant::now() + Duration::from_millis(150));
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let earlier = generation();
+        assert!(earlier > before, "the earlier wait over");
+        // The later is still pending, and asked of the app as the earlier was over.
+        assert!(super::next_alarm().is_some_and(|d| d <= Duration::from_millis(150)), "{:?}", super::next_alarm());
+        let later = |asked: &Vec<Duration>| asked.iter().any(|d| (Duration::from_millis(30)..=Duration::from_millis(150)).contains(d));
+        assert!(later(&asked.lock().unwrap_or_else(|e| e.into_inner())), "{:?}", asked.lock().unwrap_or_else(|e| e.into_inner()));
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        assert!(generation() > earlier, "the later wait over");
+        super::clear_alarm();
+    }
+
+    /// A draw before a wait is over asks the app for it again: the app's request lasts one frame,
+    /// and a draw since (the pointer moved) used it up.
+    #[test]
+    fn a_draw_before_a_wait_is_over_asks_for_it_again() {
+        let _alarm = super::alarm_turn();
+        let asked = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let noted = asked.clone();
+        super::set_alarm(move |after| noted.lock().unwrap_or_else(|e| e.into_inner()).push(after));
+        super::clear_alarms();
+        notify_at(Instant::now() + Duration::from_millis(300));
+        asked.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        let _ = generation();
+        let again = asked.lock().unwrap_or_else(|e| e.into_inner()).iter().any(|d| *d <= Duration::from_millis(300));
+        assert!(again, "{:?}", asked.lock().unwrap_or_else(|e| e.into_inner()));
+        super::clear_alarms();
+        super::clear_alarm();
     }
 
     #[test]

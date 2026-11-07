@@ -268,6 +268,29 @@ fn clip(s: &str, n: usize) -> String {
     if s.chars().count() > n { s.chars().take(n).chain(['…']).collect() } else { s.to_string() }
 }
 
+/// The most layer names a notice lists (the rest counted), each cut to 80 characters: the notice
+/// stays well within what a notice keeps.
+const NAMES_SAID: usize = 5;
+
+/// Layer names for a notice: the first [`NAMES_SAID`], each clipped, and how many more.
+fn names_said(names: &[String]) -> String {
+    let shown: Vec<String> = names.iter().take(NAMES_SAID).map(|n| clip(n, 80)).collect();
+    match names.len().saturating_sub(NAMES_SAID) {
+        0 => shown.join(", "),
+        more => format!("{} and {more} more", shown.join(", ")),
+    }
+}
+
+/// What a raster layer read in place holds for its statistics and tools, when it holds an
+/// overview of the image the map draws.
+pub(crate) fn in_place_overview(d: &rustgis_data::raster::Raster) -> Option<String> {
+    let (fw, fh) = d.overview?;
+    Some(format!(
+        "read in place: the map draws its {fw} × {fh} pixels as it needs them, while statistics, histograms and raster tools read a {} × {} overview",
+        d.width, d.height
+    ))
+}
+
 pub struct Registry {
     pub commands: Vec<CommandSpec>,
 }
@@ -594,6 +617,12 @@ pub struct Session {
     /// (`map.addTiles` with `"view": true`), or a PMTiles/MBTiles archive whose bounds it goes to, and the
     /// camera and owning map instance then: moved or switched since, the map stays.
     pub style_view: Option<(rustgis_map::TileLayer, Camera, u64)>,
+    /// Whether a command waits for the overview of a raster read in place (natively, at most two
+    /// minutes; the browser never waits): the command line, Python and tests do, so a result is
+    /// complete; the desktop app doesn't, as its commands run on the window's own thread, and the
+    /// layer lands as the map draws (failing is said then, and read again: see
+    /// [`Session::read_in_place_again`]).
+    pub in_place_wait: bool,
     pub notices: Vec<Notice>,
     /// Troubleshooting history, independent of the active pane, project files and undo.
     pub diagnostics: rustgis_data::diagnostics::History,
@@ -946,8 +975,10 @@ impl Session {
         #[cfg(feature = "geolibre")]
         rustgis_geolibre::register();
         rustgis_plugins::tools::register();
-        // FlatGeobuf and GeoParquet by their web address are read through the tile fetchers.
+        // FlatGeobuf and GeoParquet by their web address are read through the tile fetchers, and
+        // cloud-optimised GeoTIFFs' overviews for raster layers read in place.
         render::rustgis_tiles::remote::install();
+        map::raster::set_in_place_reader(render::rustgis_tiles::cog::raster::overview);
         rustgis_data::diagnostics::set_clock(|| {
             web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
         });
@@ -978,6 +1009,7 @@ impl Session {
             layer_selection_of: None,
             view_size: (1200.0, 720.0),
             style_view: None,
+            in_place_wait: true,
             notices: Vec::new(),
             diagnostics: rustgis_data::diagnostics::History::default(),
             notices_given: 0,
@@ -1357,6 +1389,14 @@ impl Session {
                 let added = cmd::plugins::fetch::Added::of(self.map(), &res);
                 self.url_waits.land(n, res.clone(), added);
             }
+            // A failed overview whose wait is over is read again (the app does this each frame;
+            // a session that doesn't draw, the command line or Python, as its next command runs),
+            // waited for where the session waits for reads in place.
+            if self.read_in_place_again() {
+                self.wait_in_place_reads();
+            }
+            // Pixels the command read in place (a project, an import) say what they lost.
+            self.notice_landed_rasters();
             // A plugin's command waiting for its fetches answers `pending` and runs again when they
             // land: logged then, once. (Another command's `pending`, a download the web app makes, is
             // logged as it is asked for: nothing runs it again.)
@@ -1805,6 +1845,131 @@ impl Session {
         {
             self.sql_results = sql_results;
         }
+    }
+
+    /// Says what reading raster layers' pixels lost when it wasn't said as each was added (pixels
+    /// read in place land later: in the browser, a project, an import): what the file's header
+    /// left out (`Raster::lost`: a colour table missing or short, GDAL metadata that doesn't
+    /// decode), an overview statistics and tools read, a layer read in place that couldn't be
+    /// read, and why. Once for each layer's pixels or failure, one notice of each kind; the app
+    /// calls it each frame.
+    pub fn notice_landed_rasters(&mut self) {
+        let (mut lost, mut held, mut failed, mut dropped) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        for m in &mut self.project.maps {
+            for l in &mut m.layers {
+                let Some(rl) = &mut l.raster else { continue };
+                if let Some(e) = rl.error_unsaid() {
+                    failed.push((l.name.clone(), e));
+                }
+                let dropped_here = rl.dropped_unsaid();
+                if !dropped_here.is_empty() {
+                    dropped.push((l.name.clone(), dropped_here));
+                }
+                let in_place = rl.in_place;
+                lost.extend(rl.lost_unsaid().into_iter().map(|what| (l.name.clone(), what)));
+                let Some(d) = rl.pixels_unsaid() else { continue };
+                if let Some(what) = in_place.then(|| in_place_overview(&d)).flatten() {
+                    held.push((l.name.clone(), what));
+                }
+            }
+        }
+        // What a header left out, as adding the layer says it (one notice a kind, with counts).
+        cmd::raster::say_losses(self, lost);
+        if !dropped.is_empty() {
+            let mut kinds: Vec<&str> = dropped.iter().flat_map(|(_, k)| k.iter().copied()).collect();
+            kinds.sort_unstable();
+            kinds.dedup();
+            let names: Vec<String> = dropped.iter().map(|(n, _)| n.clone()).collect();
+            self.notify(
+                format!(
+                    "{} COG tile layer(s) opened as raster layers read in place, which have no {}: not kept for {}",
+                    dropped.len(),
+                    kinds.join(", "),
+                    names_said(&names)
+                ),
+                false,
+            );
+        }
+        match &failed[..] {
+            [] => {}
+            [(one, e)] => self.notify(format!("{}: couldn't be read in place: {e}", clip(one, 80)), true),
+            many => {
+                let names: Vec<String> = many.iter().map(|(n, _)| n.clone()).collect();
+                self.notify(format!("{} raster layers couldn't be read in place: {}", many.len(), names_said(&names)), true);
+            }
+        }
+        match &held[..] {
+            [] => {}
+            [(one, what)] => self.notify(format!("{}: {what}", clip(one, 80)), false),
+            many => {
+                let names: Vec<String> = many.iter().map(|(n, _)| n.clone()).collect();
+                self.notify(
+                    format!(
+                        "{} rasters are read in place: the map draws them at full resolution as it needs it, while statistics, histograms and raster tools read an overview of each: {}",
+                        many.len(),
+                        names_said(&names)
+                    ),
+                    false,
+                )
+            }
+        }
+    }
+
+    /// Waits for the overviews of the rasters read in place that a project, an import or a layer
+    /// file began reading together (see [`crate::project::read_in_place`]), where the session
+    /// waits for them ([`Session::in_place_wait`]: natively, two minutes at most for all); where
+    /// it doesn't, they land as the map draws. Failing is the layer's to say (see
+    /// [`Session::notice_landed_rasters`]).
+    pub(crate) fn wait_in_place_reads(&mut self) {
+        if !self.in_place_wait {
+            return;
+        }
+        // Every map's at once: one wait bounds them all, not each map's in turn.
+        let mut named: Vec<(String, &mut rustgis_map::raster::RasterLayer)> = self
+            .project
+            .maps
+            .iter_mut()
+            .flat_map(|m| m.layers.iter_mut())
+            .filter_map(|l| {
+                let name = l.name.clone();
+                let rl = l.raster.as_mut()?;
+                rl.in_place.then_some((name, rl))
+            })
+            .collect();
+        let mut layers: Vec<&mut rustgis_map::raster::RasterLayer> = named.iter_mut().map(|(_, rl)| &mut **rl).collect();
+        for (i, e) in rustgis_map::raster::wait_for_reads(&mut layers) {
+            if let Some((name, _)) = named.get(i) {
+                log::warn!("{name}: {e}");
+            }
+        }
+    }
+
+    /// Reads again the overview of a raster layer read in place whose read failed, once its wait
+    /// is over: a minute, or what its server's `Retry-After` said, as a tile or a file's header is
+    /// read again (see `rustgis_tiles::cache::retry_wait`), doubled each time it fails again,
+    /// within the hour (`cache::backoff`: a file that never reads isn't asked for every minute all
+    /// session); until then the map is asked to draw again when the wait is over. The app calls it
+    /// each frame, with [`Session::notice_landed_rasters`], and [`Session::run`] after each command
+    /// (a session that doesn't draw, the command line or Python, asks again that way); the pixels
+    /// land as the map draws, or are waited for where the session waits for reads in place
+    /// ([`Session::in_place_wait`]). Whether a read was started.
+    pub fn read_in_place_again(&mut self) -> bool {
+        use render::rustgis_tiles::cache;
+        let mut started = false;
+        for m in &mut self.project.maps {
+            for l in &mut m.layers {
+                let Some(rl) = &mut l.raster else { continue };
+                let Some((e, at, failures)) = rl.read_failure() else { continue };
+                let wait = cache::backoff(cache::retry_wait(e, cache::RETRY), failures);
+                if at.elapsed() < wait {
+                    cache::notify_at(at + wait);
+                } else {
+                    rl.read_again();
+                    started = true;
+                }
+            }
+        }
+        started
     }
 
     pub fn notify(&mut self, text: impl Into<String>, error: bool) {

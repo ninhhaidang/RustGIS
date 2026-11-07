@@ -157,6 +157,9 @@ fn import_project(s: &mut Session, p: &Value) -> CmdResult {
             report.approximated(string(g, "name"), "nested folder flattened; inherited visibility and opacity retained");
         }
     }
+    // Its GeoTIFFs read in place, read together rather than one after another.
+    crate::project::read_in_place(s.map_mut());
+    s.wait_in_place_reads();
     order.reverse();
     s.map_mut().layers.sort_by_key(|l| order.iter().position(|id| *id == l.id).unwrap_or(usize::MAX));
     s.request_only = false;
@@ -369,7 +372,7 @@ fn add_layer(s: &mut Session, r: &Value, dir: Option<&str>, report: &mut Report,
             return Ok(Added::Feature(id));
         }
         if kind == "cog" && remote {
-            super::layer::add_cog(s, &q, &address, false)?
+            super::layer::add_cog_with(s, &q, &address, false, false)?
         } else if kind == "zarr" {
             if let Some(v) = src.get("variable") {
                 q["variable"] = v.clone();

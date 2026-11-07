@@ -416,6 +416,7 @@ fn layer_address(l: &rustgis_map::Layer) -> Option<&str> {
 fn rebind_connection(s: &mut Session, c: &Connection) -> usize {
     let binding = s.web_logins.active.get(&c.id).map(|a| a.binding.as_str());
     let origin = login_origin(c);
+    let wait = s.in_place_wait;
     let mut failed = 0usize;
     let mut rewrite = |address: &mut String| {
         let (prefix, raw) = crate::sources::template_archive(address).unwrap_or(("", address.as_str()));
@@ -477,8 +478,10 @@ fn rebind_connection(s: &mut Session, c: &Connection) -> usize {
                 && let Some(path) = raster.path.as_mut()
                 && rewrite(path)
             {
-                // Reload keeps the style and publishes any failure through raster.error.
-                let _ = raster.reload();
+                // Reload keeps the style and publishes any failure through raster.error. A layer
+                // read in place lands as the map draws where the session doesn't wait for reads
+                // in place (the desktop), so a login made again doesn't hold the window.
+                let _ = if raster.in_place && !wait { raster.begin_reload() } else { raster.reload() };
             }
             if let Some(path) = &mut l.dataset.source {
                 rewrite(path);

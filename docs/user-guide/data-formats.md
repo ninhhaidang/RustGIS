@@ -111,16 +111,57 @@ unresponsive. The original JPEG 2000 byte buffer is released once it has been st
 before GDAL runs or the GeoTIFF is read back. The converted GeoTIFF and decoded raster still
 occupy memory together; the 512 MiB file limit is not a limit on total process memory.
 
-A tiled GeoTIFF is read in place rather than downloaded: its header first, then, by HTTP range
-requests, the tiles of the overview each part of the view needs. Overviews make zoomed-out reads
-smaller. It is a tile layer (`map.addTiles` kind `cog`, saved by its address), drawn under the map's
-own layers: RGB(A) 8-bit images in colour, other images stretched between the 2nd and 98th
-percentiles of their coarsest overview. Planar files (bands stored apart), signed-byte data and
-bottom-up images work too. `map.setTiles` selects one or three `"bands"` (from 1) and a fixed
-`"range"`; see [Satellite embeddings](web-data.md#satellite-embeddings).
-A GeoTIFF in strips, a rotated image or an unsupported tiled image downloads whole as a raster layer, as does a
-GeoTIFF added with `"whole": true` (for raster tools and symbology). The web app needs the server
-to allow range requests (CORS with the `Range` header).
+A tiled GeoTIFF (a cloud-optimised one) is read in place rather than downloaded: its header
+first, then, by HTTP range requests, only the parts the map needs. It is a raster layer like a
+GeoTIFF file, saved by its address: the Symbology pane, the raster commands (`raster.symbology`,
+`raster.bands`, `raster.stretch`, `raster.dra`, `raster.enhance`, `raster.mask`…), its legend,
+identify and the raster tools work on it as on a file's. The layer holds an overview of the image
+(every band, about two million values), from which its statistics, histograms and tools read, as a
+file too large to hold whole is opened from an overview; zoomed in past it, the map reads the part
+in view at the resolution it needs as it draws, and draws it with the layer's style and the
+overview's statistics, so the image looks the same at every zoom. Until a part's tiles arrive, the
+level zoomed from stands in for them. A turned layer (Rotation in the Symbology pane) is drawn
+from the overview it holds: zoomed in past it, the map says so and an export refuses it. The
+Details pane says the image's full size and that it is read in place. The desktop app adds the
+layer at once and reads its overview as the map draws (the Details pane says so until it is in),
+so a slow host doesn't hold the window; the command line and Python wait for it, up to two
+minutes, so a command's result is complete. A saved S3 connection chosen for such layers (Choose
+S3 connection…) counts them as still being read until their overview is in, apart from what it
+opened. A file whose smallest image is too large to hold as the overview (a large image saved
+without overviews) is refused where the session waits for it (the command line, Python); the desktop
+app and the browser add the layer, which says why it can't be read. GDAL's COG driver or `gdaladdo`
+makes the overviews. A tile a sparse file leaves out is empty. A tile, the file's header or the
+overview a layer holds, that fails to arrive is asked for again a minute later, or when its server
+says to in a `Retry-After` header (with a 429 or 503 answer, within the hour); the map draws again
+then. An overview that fails again waits twice as long each time, up to an hour. On the command
+line and in Python, which don't draw, the next command run once the wait is over reads a failed
+overview again, waiting for it as the project did.
+Exporting the layer (Raster to PMTiles) waits for its tiles on the desktop, up to two minutes,
+and isn't written without them; the web app can't wait, so an export whose tiles aren't all in
+says so and asks for the rest: export again once they are in (a large archive may take a few
+tries).
+
+Its first look is what the file's PhotometricInterpretation tag says:
+
+- **RGB:** red, green and blue, with the alpha band if there is one. Bands past the colour ones
+  (an RGB and near-infrared orthophoto, say) are read too.
+- **Palette:** its colour table (Colormap).
+- **Grey (MinIsBlack, as most remote sensing images are):** the first band stretched in grey, or
+  three bands as red, green and blue. An alpha band is shown with it.
+
+In an image with more bands (an 8-band multispectral image, say) you pick the combination in the
+Symbology pane, as for any raster. GeoTIFF files follow the same rule and have every band too (an
+RGB and near-infrared file has four), and so do other rasters without colours of their own (Zarr
+stores, files read through GDAL): four or more bands open as the first in grey, where any three
+or more used to open as red, green and blue. A palette image without its colour table is drawn in
+grey, and says so. Planar files (bands stored
+apart), 8- to 64-bit integer and floating-point data, signed-byte data and bottom-up images work
+too. A dated series of GeoTIFFs (an address with date placeholders), a data cube's files and
+AlphaEarth's embeddings are tile layers that follow the time slider or dequantise their values;
+see [Satellite embeddings](web-data.md#satellite-embeddings).
+A GeoTIFF in strips, a rotated image or an unsupported tiled image downloads whole, as does a
+GeoTIFF added with `"whole": true` (for raster tools that need every pixel at full resolution).
+The web app needs the server to allow range requests (CORS with the `Range` header).
 
 On the desktop and the command line, `"bbox"` reads just an area of a cloud-optimised GeoTIFF as
 a raster layer, for files too large to download whole (a national land-cover map, a 1° elevation
@@ -136,10 +177,10 @@ tile), without a STAC catalogue:
 - Only the tiles the window crosses are read, at full resolution. `"cellSize"` reads the coarsest
   overview whose cells are no larger, in the file's units (metres for a longitude/latitude file, a
   degree taken as 111.32 km); one finer than the full image's cells reads the full image, with a
-  notice. Without it the window takes no overview's values. Reading the header still reads up to
-  16 tiles of the coarsest overview at least 256 pixels a side (the full image when none is), for
-  the stretch it is drawn with, as for any GeoTIFF drawn in place. An 8-bit colour file skips it,
-  and so does one whose level has more than 16 tiles: it is drawn with its value type's full range.
+  notice. Without it the window takes no overview's values. Reading the header reads nothing
+  more: a GeoTIFF read in place as a raster layer takes its stretch from the overview it holds,
+  and a tile layer (a dated series, a data cube's file) reads a few tiles of its coarsest
+  overview for its stretch when a tile first needs it.
 - A window holds 64 million values at most, all bands together (256 MB), and 4,096 of the file's
   tiles a band. A window over the first limit is refused, naming the cell size that fits when an
   overview does, or asking for a smaller box; one over the second asks for a coarser level or a
@@ -177,9 +218,10 @@ desktop, while in the web app they need the file downloaded first.
 
 On desktop, `layer.addUrl` waits for downloads, up to a minute; the From URL… dialog (`ui.addUrl`)
 and a plugin's `layer.addUrl` work in the background. In the web app the same dialog handles asynchronous downloads.
-`layer.addUrl` can add PMTiles and COG tile layers directly, but an ordinary download returns
-`{"pending": true, "url": "…"}` and is added later by the app. To open a remote GeoParquet or
-FlatGeobuf whose header hasn't been fetched yet, use the From URL… dialog or a `?data=` link.
+`layer.addUrl` can add PMTiles archives and GeoTIFFs read in place directly, but an ordinary
+download returns `{"pending": true, "url": "…"}` and is added later by the app. To open a remote
+GeoParquet or FlatGeobuf whose header hasn't been fetched yet, use the From URL… dialog or a
+`?data=` link.
 
 ## Map and feature services
 

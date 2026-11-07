@@ -2006,13 +2006,16 @@ fn data_from_a_web_address_lands_later() {
     assert!(h.state().ui.downloads.is_empty());
 }
 
-/// Add Data From URL reads a cloud-optimised GeoTIFF in place from an address that names no file
-/// (an API such as Vantor's `…/geotiff?…`): its first bytes are probed off the frame, then the
-/// layer reads its tiles by range, never downloading it whole.
-#[test]
-fn an_unnamed_cog_address_is_read_in_place() {
+/// A local server answering with a small cloud-optimised GeoTIFF by range, its HEAD answers
+/// announcing the TIFF header's length as Vantor's Transform API does: its address, the bytes it
+/// has sent and the file's length.
+fn serve_cog() -> (std::net::SocketAddr, std::sync::Arc<std::sync::atomic::AtomicUsize>, usize) {
+    serve_cog_bytes(rustgis_engine::data::raster::cog::example(2048, 256))
+}
+
+/// [`serve_cog`] serving `body`.
+fn serve_cog_bytes(body: Vec<u8>) -> (std::net::SocketAddr, std::sync::Arc<std::sync::atomic::AtomicUsize>, usize) {
     use std::io::{Read, Write};
-    let body = rustgis_engine::data::raster::cog::example(2048, 256);
     let total = body.len();
     let sent = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let count = sent.clone();
@@ -2024,7 +2027,6 @@ fn an_unnamed_cog_address_is_read_in_place() {
             let mut buf = [0u8; 4096];
             let read = s.read(&mut buf).unwrap_or(0);
             let req = String::from_utf8_lossy(&buf[..read]).to_ascii_lowercase();
-            // Its headers announce the TIFF header's length, as Vantor's Transform API does.
             if req.starts_with("head ") {
                 let _ = write!(
                     s,
@@ -2046,6 +2048,41 @@ fn an_unnamed_cog_address_is_read_in_place() {
             let _ = s.write_all(part);
         }
     });
+    (addr, sent, total)
+}
+
+/// A cloud-optimised GeoTIFF read in place is a raster layer like a file's: the Symbology pane
+/// shows it with the same raster controls (its renderer, its bands), not COG ones of its own.
+#[test]
+fn a_cog_read_in_place_uses_the_raster_symbology_pane() {
+    use rustgis_engine::data::raster::cog::{Example, example_with};
+    let (addr, _, _) = serve_cog_bytes(example_with(&Example { size: 512, tile: 256, bands: 8, ..Example::default() }));
+    let mut h = harness();
+    h.state_mut().run("ui.language", json!({"code": "en"})).unwrap();
+    h.state_mut().run("project.new", json!(null)).unwrap();
+    let r = h.state_mut().run("layer.addUrl", json!({"url": format!("http://{addr}/multispectral.tif"), "name": "Multispectral"})).unwrap();
+    assert_eq!(r["inPlace"], true, "{r}");
+    assert!(h.state().session.map().tiles.is_empty(), "a raster layer, not a tile layer");
+    h.state_mut().run("raster.bands", json!({"layer": "Multispectral", "red": 5, "green": 3, "blue": 2})).unwrap();
+    h.state_mut().run("ui.pane.symbology", json!(null)).unwrap();
+    for _ in 0..3 {
+        h.step();
+    }
+    assert_eq!(h.state().ui.right, Some(rustgis_ui_egui::RightPane::Symbology));
+    h.get_by_label("Primary symbology");
+    // The band pickers a file raster's RGB symbology has, on the bands chosen.
+    for colour in ["Red", "Green", "Blue"] {
+        assert!(h.query_by_label(colour).is_some(), "{colour}");
+    }
+    assert!(h.query_by_label("The raster's data couldn't be read.").is_none());
+}
+
+/// Add Data From URL reads a cloud-optimised GeoTIFF in place from an address that names no file
+/// (an API such as Vantor's `…/geotiff?…`): its first bytes are probed off the frame, then the
+/// layer reads its tiles by range, never downloading it whole.
+#[test]
+fn an_unnamed_cog_address_is_read_in_place() {
+    let (addr, sent, total) = serve_cog();
     let mut h = harness();
     h.step();
     let url = format!("http://{addr}/analytics/v1/raster/ortho-with-overviews/geotiff?function=pansharp_ortho&key=k");
@@ -2053,13 +2090,13 @@ fn an_unnamed_cog_address_is_read_in_place() {
     assert!(h.state().ui.downloads.is_empty(), "probed first, not downloaded");
     for _ in 0..200 {
         h.step();
-        if h.state().session.map().tiles.iter().any(|t| t.name == "Ortho") {
+        if h.state().session.map().layers.iter().any(|l| l.name == "Ortho") {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
-    let t = h.state().session.map().tiles.iter().find(|t| t.name == "Ortho").cloned();
-    assert!(t.is_some_and(|t| t.url == url), "added as a tile layer read in place");
+    let t = h.state().session.map().layers.iter().find(|l| l.name == "Ortho").and_then(|l| l.raster.clone());
+    assert!(t.is_some_and(|r| r.in_place && r.path.as_deref() == Some(url.as_str())), "added as a raster layer read in place");
     assert!(h.state().ui.downloads.is_empty() && h.state().ui.cog_probes.is_empty());
     let read = sent.load(std::sync::atomic::Ordering::Relaxed);
     assert!(read < total / 4, "{read} of {total} bytes read");
@@ -2069,13 +2106,13 @@ fn an_unnamed_cog_address_is_read_in_place() {
     assert!(h.state().ui.downloads.is_empty() && h.state().ui.cog_probes.len() == 1);
     for _ in 0..200 {
         h.step();
-        if h.state().session.map().tiles.iter().any(|t| t.name == "Null") {
+        if h.state().session.map().layers.iter().any(|l| l.name == "Null") {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
-    let t = h.state().session.map().tiles.iter().find(|t| t.name == "Null").cloned();
-    assert!(t.is_some_and(|t| t.url == null_url), "added as a tile layer read in place");
+    let t = h.state().session.map().layers.iter().find(|l| l.name == "Null").and_then(|l| l.raster.clone());
+    assert!(t.is_some_and(|r| r.in_place && r.path.as_deref() == Some(null_url.as_str())), "added as a raster layer read in place");
     // A probe under way when another project opens is dropped: its layer never lands there.
     h.state_mut().run("ui.addUrl", json!({"url": format!("{url}&n=3"), "name": "Late"})).unwrap();
     h.state_mut().run("project.new", json!({})).unwrap();
@@ -2084,7 +2121,7 @@ fn an_unnamed_cog_address_is_read_in_place() {
         h.step();
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
-    assert!(!h.state().session.map().tiles.iter().any(|t| t.name == "Late"));
+    assert!(!h.state().session.map().layers.iter().any(|l| l.name == "Late"));
 }
 
 /// A service layer added from the app (Add From Service, the Connections tree) is read page by

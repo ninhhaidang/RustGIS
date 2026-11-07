@@ -1041,7 +1041,9 @@ descriptions GDAL and rasterio write inside a GeoTIFF (its `GDAL_METADATA` tag) 
 too, a sidecar's taking precedence.
 Exporting a raster opened from an overview writes that overview; the results of adding and of
 exporting it (`layer.addData`, `share.exportRaster`) give the full size as `overviewOf`, so scripts
-and the MCP server see it too.
+and the MCP server see it too. A GeoTIFF read in place that is added before its overview is in
+(the desktop app, the browser) answers `"reading": true`, sized by its header when that is in, and
+with `null` for its size and bands until then.
 `share.exportRaster` writes an untiled GeoTIFF; with `"cog": true` it writes a cloud-optimised one:
 512-pixel tiles compressed with Deflate, overviews (each half the size of the last, down to one
 tile), and every directory ahead of the tiles, so a reader fetches the header once and then only the

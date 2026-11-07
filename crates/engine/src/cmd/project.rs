@@ -174,16 +174,17 @@ fn reset(s: &mut Session, p: Project) {
     // nothing of the new project is fetched before.
     s.s3_pending.clear();
     crate::s3_connections::resolve_project_s3(s);
+    // Its rasters read in place, begun together as it was read: waited for where the session
+    // waits (the command line, Python), landing as the map draws on the desktop.
+    s.wait_in_place_reads();
     // What reading a raster left out (a colour table, names, a sidecar's scale) is said again as
     // the project opens, as when it was added. One still read in the background isn't here yet.
-    let lost: Vec<(String, String)> = s
-        .project
-        .maps
-        .iter()
-        .flat_map(|m| &m.layers)
-        .filter_map(|l| Some((&l.name, l.raster.as_ref()?.data.as_ref()?)))
-        .flat_map(|(name, d)| d.lost.iter().map(move |l| (name.clone(), l.clone())))
-        .collect();
+    let mut lost: Vec<(String, String)> = Vec::new();
+    for l in s.project.maps.iter_mut().flat_map(|m| &mut m.layers) {
+        if let Some(rl) = &mut l.raster {
+            lost.extend(rl.lost_unsaid().into_iter().map(|what| (l.name.clone(), what)));
+        }
+    }
     super::raster::say_losses(s, lost);
     // A terrain saved on a DEM name two layers share draws the first of them: said, as the
     // project opens (its layers keep their names).

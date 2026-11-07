@@ -447,6 +447,9 @@ fn import_maps(s: &mut Session, p: &Value) -> CmdResult {
             if let Some(d) = dir.as_deref().and_then(Path::to_str) {
                 crate::project::resolve_file_paths(d, m.file_paths_mut());
             }
+            // An older map file's plain COG tile layers open as raster layers read in place, as a
+            // project's do (a project imported had them opened as it was read).
+            super::tiles::cog_tiles_to_rasters(&mut m);
             for notice in crate::project::label_losses::map_notices(&text, &m) {
                 s.notify(notice, false);
             }
@@ -486,6 +489,7 @@ fn import_maps(s: &mut Session, p: &Value) -> CmdResult {
     super::connections::restore_active(s);
     super::connections::resolve_project(s);
     crate::s3_connections::resolve_project_s3(s);
+    s.wait_in_place_reads();
     super::connections::note_waiting(s);
     if let Some(n) = names.last()
         && let Some(i) = s.project.maps.iter().position(|m| &m.name == n)

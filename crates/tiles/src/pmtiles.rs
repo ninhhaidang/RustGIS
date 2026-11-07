@@ -418,7 +418,14 @@ pub fn info(archive: &str) -> Result<Option<Arc<Info>>, String> {
     match all.get(archive) {
         Some(State::Ready(i)) => return Ok(Some(i.clone())),
         Some(State::Loading(_)) => return Ok(None),
-        Some(State::Failed(e, at)) if at.elapsed() < RETRY => return Err(e.clone()),
+        Some(State::Failed(e, at)) => {
+            // Not read again until its wait is over: the map draws again then.
+            let wait = crate::cache::retry_wait(e, RETRY);
+            if at.elapsed() < wait {
+                crate::cache::notify_at(*at + wait);
+                return Err(e.clone());
+            }
+        }
         _ => {}
     }
     all.insert(archive.to_string(), State::Loading(Vec::new()));
@@ -450,7 +457,8 @@ fn with_info(archive: &str, f: Box<dyn FnOnce(Result<Arc<Info>, String>) + Send>
             f(Ok(i));
         }
         Some(State::Loading(waiting)) => waiting.push(f),
-        Some(State::Failed(e, at)) if at.elapsed() < RETRY => {
+        Some(State::Failed(e, at)) if at.elapsed() < crate::cache::retry_wait(e, RETRY) => {
+            crate::cache::notify_at(*at + crate::cache::retry_wait(e, RETRY));
             let e = e.clone();
             drop(all);
             f(Err(e));
@@ -512,7 +520,12 @@ fn finish(archive: &str, r: Result<Info, String>) {
             // A read the busy queue dropped isn't the archive's fault: forgotten, so the next
             // draw reads it again, rather than kept as a failure.
             Err(e) if e == crate::cache::DROPPED => all.remove(archive),
-            Err(e) => all.insert(archive.to_string(), State::Failed(e.clone(), Instant::now())),
+            Err(e) => {
+                // Read again once its wait is over: the map draws again then (a 429 or 503 says
+                // when).
+                crate::cache::notify_at(Instant::now() + crate::cache::retry_wait(e, RETRY));
+                all.insert(archive.to_string(), State::Failed(e.clone(), Instant::now()))
+            }
         };
         match old {
             Some(State::Loading(w)) => w,

@@ -44,7 +44,17 @@ struct LoginFile {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl LoginFile {
+    /// A server that sends the whole file, whatever is asked for (as before ranges were answered).
     fn new(body: Vec<u8>) -> Self {
+        Self::with(body, false)
+    }
+
+    /// A server that answers a range asked for with that part (a file read in place asks so).
+    fn ranged(body: Vec<u8>) -> Self {
+        Self::with(body, true)
+    }
+
+    fn with(body: Vec<u8>, ranges: bool) -> Self {
         use std::io::{Read, Write};
         use std::sync::atomic::{AtomicBool, Ordering};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -76,10 +86,30 @@ impl LoginFile {
                 let request = String::from_utf8_lossy(&request).into_owned();
                 let authorized = request.to_ascii_lowercase().contains("\r\nx-key: fixture-login-757\r\n")
                     || request.split_whitespace().nth(1).is_some_and(|p| p.starts_with("/public"));
+                // A range asked for (a file read in place): that part.
+                let range =
+                    request.lines().find_map(|l| l.to_ascii_lowercase().strip_prefix("range: bytes=").map(str::to_string)).and_then(|r| {
+                        let (a, b) = r.trim().split_once('-')?;
+                        let last = body.len().checked_sub(1)?;
+                        if a.is_empty() {
+                            let n = b.parse::<usize>().ok()?.min(body.len());
+                            return Some((body.len() - n, last));
+                        }
+                        Some((a.parse::<usize>().ok()?, b.parse::<usize>().ok()?.min(last)))
+                    });
+                let range = range.filter(|_| ranges);
+                let head = request.to_ascii_lowercase().starts_with("head ");
                 log.lock().unwrap().push(request);
-                let (status, bytes) = if authorized { ("200 OK", body.as_slice()) } else { ("401 Unauthorized", &[][..]) };
+                let (status, bytes) = match (authorized, range) {
+                    (false, _) => ("401 Unauthorized", &[][..]),
+                    (true, Some((a, b))) if a <= b => ("206 Partial Content", &body[a..=b]),
+                    (true, _) => ("200 OK", body.as_slice()),
+                };
                 let _ = write!(stream, "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", bytes.len());
-                let _ = stream.write_all(bytes);
+                // A HEAD request is answered with the length alone.
+                if !head {
+                    let _ = stream.write_all(bytes);
+                }
             }
         });
         Self { base, requests, stop, worker: Some(worker) }
@@ -1400,4 +1430,42 @@ fn delayed_head_refusal_keeps_secrets_out_of_history_across_login_lifecycle() {
             }
         }
     }
+}
+
+/// A cloud-optimised GeoTIFF added by address from a saved web-service connection is a raster
+/// layer read in place that records the connection, as the tile layer it was did, its address
+/// bound to the connection's login (never carrying the key) and read with it; the login made
+/// again, its address is bound to the new login and it is read again through it.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_cog_read_in_place_from_a_connection_records_it_and_follows_its_login() {
+    let server = LoginFile::ranged(rustgis_data::raster::cog::example(512, 256));
+    let mut s = session(None);
+    let id = new(&mut s, json!({"kind":"ogcapi","address":format!("{}/collections",server.base),"auth":"header","keyName":"X-Key"}));
+    s.run("connection.login", &json!({"id":id,"apiKey":"fixture-login-757","allowInsecure":true})).unwrap();
+    let r = s.run("layer.addUrl", &json!({"url":format!("{}/scene.tif",server.base),"name":"Scene","connection":id})).unwrap();
+    assert_eq!((r["inPlace"].as_bool(), r["width"].as_u64()), (Some(true), Some(512)), "{r}");
+    let path = {
+        let layer = &s.map().layers[0];
+        let raster = layer.raster.as_ref().unwrap();
+        assert!(raster.in_place && raster.data.is_some(), "{:?}", raster.error);
+        assert_eq!(layer.connection, id);
+        raster.path.clone().unwrap()
+    };
+    assert!(rustgis_data::login_address::is_wrapper(&path) && !path.contains("fixture-login-757"), "{path}");
+    let carried = |server: &LoginFile| {
+        let requests = server.requests.lock().unwrap();
+        !requests.is_empty() && requests.iter().all(|r| r.to_ascii_lowercase().contains("\r\nx-key: fixture-login-757\r\n"))
+    };
+    assert!(carried(&server), "{:?}", server.requests.lock().unwrap());
+    // Logged in again (a new binding): the layer's address follows it, and it is read through it.
+    server.requests.lock().unwrap().clear();
+    s.run("connection.login", &json!({"id":id,"apiKey":"fixture-login-757","allowInsecure":true})).unwrap();
+    let layer = &s.map().layers[0];
+    let raster = layer.raster.as_ref().unwrap();
+    let again = raster.path.clone().unwrap();
+    assert!(again != path && rustgis_data::login_address::is_wrapper(&again), "{again}");
+    assert!(raster.data.is_some() && raster.error.is_none(), "{:?}", raster.error);
+    assert_eq!(layer.connection, id);
+    assert!(carried(&server), "{:?}", server.requests.lock().unwrap());
 }

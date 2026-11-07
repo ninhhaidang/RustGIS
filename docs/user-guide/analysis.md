@@ -179,7 +179,11 @@ bands, colors, mask and resampling. Set the minimum and maximum zoom from 0 to 1
 transparency are included. The raster must be georeferenced and fit
 within one world. Turn off dynamic range adjustment and display rotation first. The in-memory
 export is limited to 512 tiles and 64 MiB of compressed tile data; reduce the extent or zoom range
-if it exceeds a limit. Areas beyond the Web Mercator latitude limit are clipped.
+if it exceeds a limit. Areas beyond the Web Mercator latitude limit are clipped. A cloud-optimised
+GeoTIFF read in place is exported from its full-resolution tiles: the desktop waits for them (two
+minutes at most); the web app can't wait, so an export whose tiles aren't all in says so and asks
+for the rest: export again once they are in (a large export may take a few tries). Without them
+nothing is written.
 
 **Vector to PMTiles** (`vectorToPmtiles`) writes a single-layer MVT archive in standard Web
 Mercator. Choose `minZoom` and `maxZoom` from 0 to 16; `sourceLayer` defaults to the input

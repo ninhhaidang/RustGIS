@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex, Weak};
 
 use rustgis_data::raster::{BandStats, ColorHint, Raster};
 use serde::{Deserialize, Serialize};
+use web_time::Instant;
 
 use crate::color::{Ramp, Rgba};
 use crate::symbology::{ClassMethod, class_breaks, fmt_num};
@@ -20,6 +21,11 @@ pub struct RasterLayer {
     /// The file it was read from; reopened when the project loads.
     #[serde(default)]
     pub path: Option<String>,
+    /// `path` is a cloud-optimised GeoTIFF's web address, read in place: the layer holds an
+    /// overview of it (its statistics, histograms and tools read that), and the map reads the part
+    /// in view as it draws (see [`set_in_place_reader`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub in_place: bool,
     /// The file's own name (for its format) when it is embedded.
     #[serde(default)]
     pub file_name: Option<String>,
@@ -55,6 +61,102 @@ pub struct RasterLayer {
     /// A remote reload shared with render snapshots, never serialized.
     #[serde(skip)]
     opening: Option<RasterRead>,
+    /// The style is the file's own look once its pixels land (a layer added before they have;
+    /// saved with a project saved before they did, so it opens in that look still).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    restyle: bool,
+    /// The look its address gave a layer read in place, applied when its pixels land (saved, as
+    /// `restyle` is, until they have).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    look: Option<AddressLook>,
+    /// What reading its pixels lost has been said (see [`RasterLayer::pixels_unsaid`]).
+    #[serde(skip)]
+    pixels_said: bool,
+    /// Why it couldn't be read in place has been said (see [`RasterLayer::error_unsaid`]).
+    #[serde(skip)]
+    error_said: bool,
+    /// When reading its overview in place failed, for the read to be made again once its wait is
+    /// over (see [`RasterLayer::read_failure`]).
+    #[serde(skip)]
+    failed_at: Option<Instant>,
+    /// How many reads of its overview in place have failed in a row: each waits longer than the
+    /// last (see [`RasterLayer::read_failure`]).
+    #[serde(skip)]
+    failures: u32,
+    /// What reading its pixels left out (`Raster::lost`) has been said (see
+    /// [`RasterLayer::lost_unsaid`]).
+    #[serde(skip)]
+    lost_said: bool,
+    /// What its address's look asked for that the file hasn't (bands past its own), said with
+    /// what the pixels lost.
+    #[serde(skip)]
+    look_lost: Option<String>,
+    /// Settings of the tile layer this one was opened from that a raster layer hasn't (see
+    /// [`RasterLayer::dropped_unsaid`]).
+    #[serde(skip)]
+    dropped: Vec<&'static str>,
+}
+
+/// Called once with a cloud-optimised GeoTIFF's overview, or why it couldn't be read.
+pub type InPlaceRead = Box<dyn FnOnce(Result<Raster, String>) + Send>;
+
+/// Reads the overviews of `layers` read in place and not read yet, all at once: a project of
+/// several opens in the time of the slowest, not of them all. Waited for natively when `wait`
+/// (at most two minutes in all); otherwise, as always in the browser, they land as the map draws
+/// (see [`wait_for_reads`]). Other layers are left as they are. Returns each failure, by its
+/// place in `layers`: without waiting, the reads that couldn't start.
+pub fn read_together(layers: &mut [&mut RasterLayer], wait: bool) -> Vec<(usize, String)> {
+    let mut failed = Vec::new();
+    let unread = |l: &RasterLayer| l.in_place && l.data.is_none() && l.opening.is_none() && l.time_zarr.is_none();
+    for (i, l) in layers.iter_mut().enumerate() {
+        // Started without waiting: waited for below, together.
+        if unread(l)
+            && let Err(e) = l.begin_reload()
+        {
+            failed.push((i, e));
+        }
+    }
+    if wait {
+        failed.extend(wait_for_reads(layers));
+    }
+    failed
+}
+
+/// Waits (natively; at most two minutes for all) for the overviews of `layers` being read in
+/// place (see [`read_together`]), installing them. Returns each failure, by its place in
+/// `layers`. In the browser, where nothing may wait, they land as the map draws.
+pub fn wait_for_reads(layers: &mut [&mut RasterLayer]) -> Vec<(usize, String)> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = layers;
+        Vec::new()
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let deadline = Instant::now() + rustgis_data::raster::IN_PLACE_WAIT;
+        let mut failed = Vec::new();
+        for (i, l) in layers.iter_mut().enumerate() {
+            if l.in_place
+                && l.opening.is_some()
+                && let Err(e) = l.wait_for_read(deadline)
+            {
+                failed.push((i, e));
+            }
+        }
+        failed
+    }
+}
+type InPlaceReader = Arc<dyn Fn(&str, InPlaceRead) + Send + Sync>;
+
+fn in_place_reader() -> &'static Mutex<Option<InPlaceReader>> {
+    static R: std::sync::OnceLock<Mutex<Option<InPlaceReader>>> = std::sync::OnceLock::new();
+    R.get_or_init(Mutex::default)
+}
+
+/// Sets how a cloud-optimised GeoTIFF's overview is read by its address (the tile cache's reader,
+/// which checks addresses and signs requests; this crate does no networking).
+pub fn set_in_place_reader(f: impl Fn(&str, InPlaceRead) + Send + Sync + 'static) {
+    *in_place_reader().lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(f));
 }
 
 /// The renderer bands' statistics without the masked pixels, and what they were worked out for:
@@ -80,6 +182,9 @@ impl RasterLayer {
         if self.embedded.is_some() {
             return Err("the raster's data is kept in the project: there's no file to repair".into());
         }
+        if self.in_place {
+            return Err("the raster is read in place by its address: add the address again to change it".into());
+        }
         let sub = subdataset.or(self.subdataset.as_deref());
         let r = rustgis_data::raster::read_path_with(std::path::Path::new(path), sub, self.crs.as_deref())
             .and_then(|r| placed(r, self.placement))
@@ -100,6 +205,7 @@ impl RasterLayer {
         style.repair(&r);
         Ok(RasterLayer {
             path: Some(path.into()),
+            in_place: false,
             file_name: None,
             embedded: None,
             subdataset: sub.map(String::from),
@@ -111,6 +217,15 @@ impl RasterLayer {
             error: None,
             masked: MaskedStats::default(),
             opening: None,
+            restyle: false,
+            look: None,
+            pixels_said: false,
+            error_said: false,
+            failed_at: None,
+            failures: 0,
+            lost_said: false,
+            look_lost: None,
+            dropped: Vec::new(),
         })
     }
 
@@ -119,6 +234,7 @@ impl RasterLayer {
         let style = RasterStyle::default_for(&raster);
         RasterLayer {
             path: Some(path.into()),
+            in_place: false,
             file_name: None,
             embedded: None,
             subdataset: None,
@@ -130,6 +246,15 @@ impl RasterLayer {
             error: None,
             masked: MaskedStats::default(),
             opening: None,
+            restyle: false,
+            look: None,
+            pixels_said: false,
+            error_said: false,
+            failed_at: None,
+            failures: 0,
+            lost_said: false,
+            look_lost: None,
+            dropped: Vec::new(),
         }
     }
 
@@ -138,6 +263,7 @@ impl RasterLayer {
         let style = RasterStyle::default_for(&raster);
         RasterLayer {
             path: None,
+            in_place: false,
             file_name: Some(file_name.into()),
             embedded: Some(Arc::new(bytes)),
             subdataset: None,
@@ -149,18 +275,174 @@ impl RasterLayer {
             error: None,
             masked: MaskedStats::default(),
             opening: None,
+            restyle: false,
+            look: None,
+            pixels_said: false,
+            error_said: false,
+            failed_at: None,
+            failures: 0,
+            lost_said: false,
+            look_lost: None,
+            dropped: Vec::new(),
         }
     }
 
-    /// Reads the pixels again from the path or the embedded file (after a project opens). An S3
-    /// or login-wrapped address is downloaded whole, keeping its wrapper. A layer that follows the
-    /// time slider is left to the engine, which reads the step shown.
+    /// A cloud-optimised GeoTIFF read in place by its address, its overview `raster` read.
+    pub fn in_place(raster: Raster, address: impl Into<String>) -> RasterLayer {
+        RasterLayer { in_place: true, ..RasterLayer::from_path(raster, address) }
+    }
+
+    /// A cloud-optimised GeoTIFF read in place by its address, its overview not read yet: drawn,
+    /// in its own look, once [`RasterLayer::reload`] (or [`read_together`]) has read it.
+    pub fn unread_in_place(address: impl Into<String>) -> RasterLayer {
+        RasterLayer {
+            path: Some(address.into()),
+            in_place: true,
+            file_name: None,
+            embedded: None,
+            subdataset: None,
+            crs: None,
+            time_zarr: None,
+            placement: None,
+            style: RasterStyle::placeholder(),
+            data: None,
+            error: None,
+            masked: MaskedStats::default(),
+            opening: None,
+            restyle: true,
+            look: None,
+            pixels_said: false,
+            error_said: false,
+            failed_at: None,
+            failures: 0,
+            lost_said: false,
+            look_lost: None,
+            dropped: Vec::new(),
+        }
+    }
+
+    /// [`RasterLayer::unread_in_place`], its overview being read: it lands as the map draws
+    /// ([`RasterLayer::poll_reload`]), in the browser and on the desktop alike, and failing is
+    /// said then (see [`RasterLayer::error_unsaid`]).
+    pub fn opening_in_place(address: impl Into<String>) -> RasterLayer {
+        let mut layer = RasterLayer::unread_in_place(address);
+        let _ = layer.begin_reload();
+        layer
+    }
+
+    /// The layer in the look its address gives (see [`AddressLook`]): now, when its pixels are
+    /// here, else once they land.
+    pub fn with_look(mut self, look: AddressLook) -> RasterLayer {
+        match self.data.clone() {
+            Some(d) => {
+                self.look_lost = RasterStyle::look_lost(&d, &look);
+                if let Some(style) = RasterStyle::for_look(&d, &look) {
+                    self.style = style;
+                }
+            }
+            None => self.look = Some(look),
+        }
+        self
+    }
+
+    /// Marks the layer as one that couldn't be read, and why (a project opened without the
+    /// connection its address needs), for [`RasterLayer::error_unsaid`] to say.
+    pub fn fail(&mut self, why: impl Into<String>) {
+        self.error = Some(why.into());
+        self.error_said = false;
+        self.failed_at = None;
+    }
+
+    /// Starts reading its overview in place by the reader the app installed, which answers later
+    /// (installed by [`RasterLayer::poll_reload`] as the map draws, or waited for by
+    /// [`RasterLayer::reload`] natively). What it can't start (no address, an address that isn't a
+    /// tile layer's, no reader here) is the caller's to say.
+    fn begin_in_place_read(&mut self) -> Result<(), String> {
+        let Some(address) = self.path.clone() else { return Err("the raster has no source".to_string()) };
+        // Checked as a tile layer's address is (http(s) or s3, a host, no control characters): a
+        // project edited by hand asks for nothing else.
+        crate::tiles::check_url(&address)?;
+        let Some(reader) = in_place_reader().lock().unwrap_or_else(|e| e.into_inner()).clone() else {
+            return Err(format!("{address}: can't be read in place here"));
+        };
+        self.data = None;
+        let slot = Arc::new(Mutex::new(None));
+        let land = slot.clone();
+        self.opening = Some(slot);
+        reader(
+            &address,
+            Box::new(move |result| {
+                *land.lock().unwrap_or_else(|e| e.into_inner()) = Some(result.map(Arc::new));
+                crate::source::wake();
+            }),
+        );
+        Ok(())
+    }
+
+    /// Why reading its overview in place failed, when, and how many reads in a row have failed:
+    /// for the read to be made again once its wait is over (see [`RasterLayer::read_again`]), as a
+    /// tile or a file's header is, waiting longer each time. `None` for a layer with its pixels,
+    /// one being read, and one that waits for something other than time (its bucket's connection:
+    /// see [`RasterLayer::fail`]).
+    pub fn read_failure(&self) -> Option<(&str, Instant, u32)> {
+        if !self.in_place || self.data.is_some() || self.opening.is_some() {
+            return None;
+        }
+        Some((self.error.as_deref()?, self.failed_at?, self.failures))
+    }
+
+    /// Reads its overview again after a read that failed (see [`RasterLayer::read_failure`]),
+    /// without waiting: it lands as the map draws, natively as in the browser (nothing may wait
+    /// each frame). The layer keeps its error until then, and failing the same way again isn't
+    /// said again.
+    pub fn read_again(&mut self) {
+        if self.read_failure().is_none() {
+            return;
+        }
+        if let Err(e) = self.begin_in_place_read() {
+            self.land(Err(e));
+        }
+    }
+
+    /// Reads the pixels again from the path or the embedded file (after a project opens). A
+    /// layer read in place is waited for natively (at most two minutes), as a file is read;
+    /// another layer's S3 or login-wrapped address is downloaded whole, keeping its wrapper. A
+    /// layer that follows the time slider is left to the engine, which reads the step shown.
     pub fn reload(&mut self) -> Result<(), String> {
+        self.reload_in(true)
+    }
+
+    /// [`RasterLayer::reload`] without waiting for a layer read in place: its overview lands as
+    /// the map draws ([`RasterLayer::poll_reload`]), natively as in the browser, so a command on
+    /// the desktop's own thread isn't held by a slow host. The error is a read that can't start.
+    pub fn begin_reload(&mut self) -> Result<(), String> {
+        self.reload_in(false)
+    }
+
+    fn reload_in(&mut self, wait: bool) -> Result<(), String> {
         if self.time_zarr.is_some() {
             return Ok(());
         }
         self.opening = None;
         self.error = None;
+        self.failed_at = None;
+        self.failures = 0;
+        // Read in place: its overview, by the reader the app installed; waited for natively when
+        // asked to (as a file is read), else landing later, as always in the browser.
+        if self.in_place {
+            if let Err(e) = self.begin_in_place_read() {
+                self.error = Some(e.clone());
+                self.error_said = false;
+                return Err(e);
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            if wait {
+                return self.wait_for_read(Instant::now() + rustgis_data::raster::IN_PLACE_WAIT);
+            }
+            #[cfg(target_arch = "wasm32")]
+            let _ = wait;
+            return Ok(());
+        }
         if self.embedded.is_none()
             && let Some(path) = self.path.as_deref().filter(|p| {
                 rustgis_data::login_address::is_wrapper(p)
@@ -193,7 +475,7 @@ impl RasterLayer {
                                 .map_err(|e| e.to_string())
                         });
                     *land.lock().unwrap_or_else(|e| e.into_inner()) = Some(result);
-                    crate::source::landed();
+                    crate::source::wake();
                 }),
             );
             return Ok(());
@@ -211,6 +493,8 @@ impl RasterLayer {
             Ok(r) => {
                 self.style.repair(&r);
                 self.data = Some(Arc::new(r));
+                self.pixels_said = false;
+                self.lost_said = false;
                 Ok(())
             }
             Err(e) => {
@@ -221,19 +505,119 @@ impl RasterLayer {
         }
     }
 
+    /// Waits (natively, until `deadline`) for a read under way, then installs it.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn wait_for_read(&mut self, deadline: Instant) -> Result<(), String> {
+        let Some(slot) = self.opening.clone() else { return Ok(()) };
+        loop {
+            if let Some(result) = slot.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+                self.opening = None;
+                let error = result.as_ref().err().cloned();
+                self.land(result);
+                return error.map_or(Ok(()), Err);
+            }
+            if Instant::now() >= deadline {
+                let address = self.path.clone().unwrap_or_default();
+                let e = format!("{address}: no answer in two minutes");
+                self.opening = None;
+                self.land(Err(e.clone()));
+                return Err(e);
+            }
+            std::thread::sleep(web_time::Duration::from_millis(10));
+        }
+    }
+
+    /// Its pixels, the first time they are asked for after they landed (added with them, or read
+    /// in place later: in the browser, a project, an import), so what reading them lost (a colour
+    /// table missing, an overview held) is said once for them.
+    pub fn pixels_unsaid(&mut self) -> Option<Arc<Raster>> {
+        if self.pixels_said {
+            return None;
+        }
+        let d = self.data.clone()?;
+        self.pixels_said = true;
+        Some(d)
+    }
+
+    /// The layer, opened from a tile layer whose `dropped` settings (`"attribution"`, `"legend"`,
+    /// `"zoom range"`, `"bounds"`, `"overlay"`) a raster layer hasn't, so they aren't kept: said
+    /// once, by [`RasterLayer::dropped_unsaid`].
+    pub fn from_tiles_dropping(mut self, dropped: Vec<&'static str>) -> RasterLayer {
+        self.dropped = dropped;
+        self
+    }
+
+    /// The tile layer settings dropped when this layer was opened from one, the first time they
+    /// are asked for.
+    pub fn dropped_unsaid(&mut self) -> Vec<&'static str> {
+        std::mem::take(&mut self.dropped)
+    }
+
+    /// What reading its pixels left out (`Raster::lost`), the first time it is asked for after
+    /// they landed, so it is said once: as the layer is added, as its project opens, or when they
+    /// land later (the browser).
+    pub fn lost_unsaid(&mut self) -> Vec<String> {
+        if self.lost_said {
+            // A look applied after the pixels' losses were said: what it asked for that the file
+            // hasn't, on its own, not the pixels' losses again.
+            return self.look_lost.take().into_iter().collect();
+        }
+        let mut lost = self.data.as_ref().map(|d| d.lost.clone()).unwrap_or_default();
+        lost.extend(self.look_lost.take());
+        self.lost_said = self.data.is_some();
+        lost
+    }
+
+    /// Why a layer read in place couldn't be read, the first time it is asked for after the read
+    /// failed, so it is said once (a project, an import or the browser read it after adding it).
+    pub fn error_unsaid(&mut self) -> Option<String> {
+        if !self.in_place || self.error_said {
+            return None;
+        }
+        let e = self.error.clone()?;
+        self.error_said = true;
+        Some(e)
+    }
+
     /// Installs a completed remote read; each render copy can observe the same shared result.
     pub(crate) fn poll_reload(&mut self) -> bool {
         let Some(slot) = self.opening.as_ref() else { return false };
         let Some(result) = slot.lock().unwrap_or_else(|e| e.into_inner()).clone() else { return true };
         self.opening = None;
+        self.land(result);
+        // Installed while the map draws: a frame after it says what reading them lost.
+        crate::source::another_frame();
+        false
+    }
+
+    /// Installs pixels read (or why they couldn't be): in the file's own look for a layer added
+    /// before they arrived, else in its style, repaired for them.
+    fn land(&mut self, result: Result<Arc<Raster>, String>) {
         match result {
             Ok(raster) => {
-                self.style.repair(&raster);
+                self.pixels_said = false;
+                self.lost_said = false;
+                if std::mem::take(&mut self.restyle) {
+                    let look = self.look.take();
+                    self.look_lost = look.as_ref().and_then(|look| RasterStyle::look_lost(&raster, look));
+                    let look = look.and_then(|look| RasterStyle::for_look(&raster, &look));
+                    self.style = look.unwrap_or_else(|| RasterStyle::default_for(&raster));
+                } else {
+                    self.style.repair(&raster);
+                }
                 self.data = Some(raster);
+                self.error = None;
+                self.failed_at = None;
+                self.failures = 0;
             }
-            Err(error) => self.error = Some(error),
+            Err(error) => {
+                // A read made again that fails as before (see `read_again`) isn't said again.
+                self.error_said = self.error_said && self.error.as_deref() == Some(error.as_str());
+                self.error = Some(error);
+                self.failed_at = Some(Instant::now());
+                self.failures = self.failures.saturating_add(1);
+            }
         }
-        false
     }
 
     /// Statistics of the renderer's bands (one per band, in its order) without the pixels the
@@ -705,9 +1089,91 @@ fn one() -> f64 {
     1.0
 }
 
+/// The look an address gives a GeoTIFF read in place (`…/scene.tif#bands=5,3,2&range=0,3000`, as
+/// tile layers kept it): the bands drawn (from 0; one in grey, or red, green and blue) and a fixed
+/// stretch.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AddressLook {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bands: Vec<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range: Option<(f64, f64)>,
+}
+
 impl RasterStyle {
-    /// The default look: the file's colours, RGB for colour images, unique values for a few
-    /// categories, otherwise a grey stretch.
+    /// The style `look` gives `r`: its own look (see [`RasterStyle::default_for`]) with the bands
+    /// and stretch the look names (bands it hasn't are left as they are); `None` for a look that
+    /// names neither. A palette image stretched by a range, or whose address names bands, is
+    /// drawn in grey, as its tile layer was.
+    pub fn for_look(r: &Raster, look: &AddressLook) -> Option<RasterStyle> {
+        if look.bands.is_empty() && look.range.is_none() {
+            return None;
+        }
+        // Bands the file hasn't: its own look (said by `look_lost`); a palette image in grey, as
+        // its tile layer draws one whose address names bands (its colours are of one band alone).
+        if Self::look_lost(r, look).is_some() {
+            let mut style = RasterStyle::default_for(r);
+            if matches!(style.renderer, RasterRenderer::Colormap) {
+                style.renderer = RasterRenderer::Stretch { band: 0, ramp: Ramp::gray(), invert: false };
+                style.stretch = Stretch::default();
+            }
+            if let Some((lo, hi)) = look.range {
+                style.stretch = Stretch::custom(lo, hi);
+            }
+            return Some(style);
+        }
+        let mut style = RasterStyle::default_for(r);
+        let n = r.band_count();
+        match look.bands[..] {
+            [b] if b < n => style.renderer = RasterRenderer::Stretch { band: b, ramp: Ramp::gray(), invert: false },
+            [red, green, blue] if red < n && green < n && blue < n => style.renderer = RasterRenderer::Rgb { red, green, blue },
+            [] if matches!(style.renderer, RasterRenderer::Colormap) => {
+                style.renderer = RasterRenderer::Stretch { band: 0, ramp: Ramp::gray(), invert: false };
+            }
+            _ => {}
+        }
+        if let Some((lo, hi)) = look.range {
+            style.stretch = Stretch::custom(lo, hi);
+        }
+        Some(style)
+    }
+
+    /// What a look asks for that `r` can't draw: bands past its own, or two bands (one is drawn
+    /// in grey, three as red, green and blue), so the file's own look is drawn instead; `None`
+    /// when the look fits.
+    pub fn look_lost(r: &Raster, look: &AddressLook) -> Option<String> {
+        let n = r.band_count();
+        // A palette image's colours are of one band alone: in grey, as its tile layer drew it.
+        let own = if matches!(r.color, ColorHint::Palette(_)) { "drawn in grey" } else { "drawn in its own look" };
+        let past: Vec<String> = look.bands.iter().filter(|b| **b >= n).map(|b| b.saturating_add(1).to_string()).collect();
+        if !past.is_empty() {
+            return Some(format!("its address asks for band(s) {} (from 1), which it hasn't ({n} band(s)): {own}", past.join(", ")));
+        }
+        // An address written by hand: `map.setTiles` takes one band or three.
+        (!matches!(look.bands.len(), 0 | 1 | 3))
+            .then(|| format!("its address asks for {} bands; one is drawn in grey, three as red, green and blue: {own}", look.bands.len()))
+    }
+
+    /// A style for a layer whose pixels haven't arrived (its own look replaces it when they do).
+    pub fn placeholder() -> RasterStyle {
+        RasterStyle {
+            renderer: RasterRenderer::Stretch { band: 0, ramp: Ramp::gray(), invert: false },
+            stretch: Stretch::default(),
+            dra: false,
+            resampling: Resampling::Nearest,
+            brightness: 0.0,
+            contrast: 0.0,
+            gamma: 1.0,
+            rotation: 0.0,
+            mask: RasterMask::default(),
+        }
+    }
+
+    /// The default look, as the file's PhotometricInterpretation says: the file's colours, RGB for
+    /// colour images and for grey ones of exactly three bands (most remote sensing images are
+    /// grey, whatever their bands: three are taken as red, green and blue), unique values for a
+    /// few categories, otherwise a grey stretch of the first band (an image of more bands is
+    /// combined as the user picks).
     pub fn default_for(r: &Raster) -> RasterStyle {
         RasterStyle::default_with(r, &RasterDefaults::default())
     }
@@ -721,7 +1187,7 @@ impl RasterStyle {
             ColorHint::Rgb { .. } if r.band_count() >= 3 => {
                 (RasterRenderer::Rgb { red: 0, green: 1, blue: 2 }, if byte_rgb { Stretch::None } else { Stretch::default() })
             }
-            _ if r.band_count() >= 3 => (RasterRenderer::Rgb { red: 0, green: 1, blue: 2 }, Stretch::default()),
+            ColorHint::Gray if r.band_count() == 3 => (RasterRenderer::Rgb { red: 0, green: 1, blue: 2 }, Stretch::default()),
             _ => match r.bands.first().and_then(|b| b.stats.categories.as_ref()).filter(|c| c.len() <= 16 && r.data_type.contains("Int")) {
                 Some(_) => (unique_values(r, 0, Ramp::Harbour), Stretch::None),
                 None => (RasterRenderer::Stretch { band: 0, ramp: d.ramp.clone(), invert: d.invert }, d.stretch),
@@ -1148,6 +1614,36 @@ mod tests {
         let gt = GeoTransform { origin_x: 0.0, origin_y: 4.0, pixel_width: 1.0, pixel_height: -1.0 };
         let data: Vec<f32> = (0..16).map(|i| (i % 4 + i / 4) as f32).collect();
         Raster::new("dem", 4, 4, vec![data], gt, Crs::LonLat, None, ColorHint::Gray, "Float32").unwrap()
+    }
+
+    /// What reading the pixels lost is said once; a look applied after that (bands the file
+    /// hasn't) says what it lost on its own, not the pixels' losses again.
+    #[test]
+    fn a_look_applied_after_the_losses_were_said_says_its_own_alone() {
+        let mut r = dem();
+        r.lost.push("its colour table is left out".into());
+        let mut rl = RasterLayer::in_place(r, "test://look-later.tif");
+        assert_eq!(rl.lost_unsaid(), vec!["its colour table is left out".to_string()]);
+        assert!(rl.lost_unsaid().is_empty());
+        let mut rl = rl.with_look(AddressLook { bands: vec![9], range: None });
+        let said = rl.lost_unsaid();
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert!(!said[0].contains("colour table"), "{said:?}");
+        assert!(rl.lost_unsaid().is_empty());
+        // A look applied before they are said is said with them, once.
+        let mut r = dem();
+        r.lost.push("its colour table is left out".into());
+        let mut rl = RasterLayer::in_place(r, "test://look-first.tif").with_look(AddressLook { bands: vec![9], range: None });
+        assert_eq!(rl.lost_unsaid().len(), 2);
+        assert!(rl.lost_unsaid().is_empty());
+    }
+
+    /// A project file may ask for any band number: the one past the last `usize` is said by
+    /// number, not overflowed.
+    #[test]
+    fn a_look_asking_for_the_band_past_the_last_usize_is_said() {
+        let lost = RasterStyle::look_lost(&dem(), &AddressLook { bands: vec![usize::MAX], range: None }).unwrap();
+        assert!(lost.contains(&format!("band(s) {} (from 1)", usize::MAX)), "{lost}");
     }
 
     #[test]
