@@ -116,18 +116,20 @@ fn plan(r: &Raster, band: usize) -> Result<Plan> {
     if matches!(r.color, ColorHint::Rgb { .. }) && r.bands.len() >= 3 {
         // A fourth band is alpha only when the raster says so (RGB and near-infrared isn't).
         let has_alpha = r.bands.len() >= 4 && matches!(r.color, ColorHint::Rgb { alpha: true });
-        if let Some(sample) = sample_of(&[0, 1, 2]) {
+        let rgbi = r.bands.len() == 4 && !has_alpha;
+        let color_bands: Vec<usize> = (0..if rgbi { 4 } else { 3 }).collect();
+        if let Some(sample) = sample_of(&color_bands) {
             let alpha = has_alpha && sample_of(&[0, 1, 2, 3]) == Some(sample);
             let max = if sample == Sample::Byte { 255.0 } else { 65_535.0 };
             // Pixels with no value need a way to say so: alpha (see-through, in tile_samples), or a
             // no-data value the samples hold. Otherwise they are written as floats, with NaN.
             let n = r.width as usize * r.height as usize;
-            let holes = (0..3).any(|b| r.bands.get(b).is_some_and(|band| band.stats.count < n));
+            let holes = color_bands.iter().copied().any(|b| r.bands.get(b).is_some_and(|band| band.stats.count < n));
             // An alpha band that can't share the colour bands' type keeps its place through the
             // float plan below rather than being dropped.
             if alpha == has_alpha && (alpha || !holes || int_nodata(max).is_some()) {
                 return Ok(Plan {
-                    bands: (0..if alpha { 4 } else { 3 }).collect(),
+                    bands: (0..if alpha || rgbi { 4 } else { 3 }).collect(),
                     sample,
                     rgb: true,
                     alpha: alpha.then_some(3),
@@ -138,7 +140,7 @@ fn plan(r: &Raster, band: usize) -> Result<Plan> {
             }
         }
         let alpha = has_alpha;
-        let n = if alpha { 4 } else { 3 };
+        let n = if alpha || rgbi { 4 } else { 3 };
         return Ok(Plan {
             bands: (0..n).collect(),
             sample: Sample::Float,
@@ -393,6 +395,8 @@ fn entries(r: &Raster, plan: &Plan, lv: &Level, first: bool, geo: &GeoKeys, big:
     e.push(table(325, lv.tiles(), big, true));
     if plan.alpha.is_some() {
         e.push(shorts(338, &[2]));
+    } else if plan.rgb && spp == 4 {
+        e.push(shorts(338, &[0]));
     }
     e.push(shorts(339, &vec![format; spp]));
     if first {
@@ -966,7 +970,8 @@ mod tests {
         assert_eq!((back.data_type.as_str(), back.value(3, 0, 0), back.value(3, 1, 0)), ("UInt8", Some(255.0), Some(0.0)));
         // A fourth band the raster doesn't call alpha isn't written as one.
         let rgbi = utm(1, 1, vec![vec![10.0], vec![20.0], vec![30.0], vec![0.0]], ColorHint::Rgb { alpha: false }, "UInt8", None);
-        assert_eq!(geotiff::read(Cursor::new(write(&rgbi, 0).unwrap()), "b").unwrap().band_count(), 3);
+        let back = geotiff::read(Cursor::new(write(&rgbi, 0).unwrap()), "b").unwrap();
+        assert_eq!((back.band_count(), back.color), (4, ColorHint::Rgb { alpha: false }));
         // Every palette index used and a cell with none: no index is left to mark it, so refused.
         let colors: Vec<[u8; 4]> = (0..=255u8).map(|i| [i, 0, 0, 255]).collect();
         let mut idx: Vec<f32> = (0..=255u8).map(f32::from).collect();
@@ -983,6 +988,27 @@ mod tests {
         let scan = utm(2, 1, vec![vec![1.0, 2.0]], ColorHint::Gray, "UInt8", None).into_scan().unwrap();
         let e = write(&scan, 0).unwrap_err().to_string();
         assert!(e.contains("no coordinates"), "{e}");
+    }
+
+    #[test]
+    fn rgbi_writers_keep_nir_without_marking_it_as_alpha() {
+        for (dt, factor) in [("UInt8", 1.0), ("UInt16", 100.0), ("Float32", 0.01)] {
+            let mut bands: Vec<Vec<f32>> = [200.0, 100.0, 50.0, 0.0].iter().map(|v| vec![v * factor; 16]).collect();
+            // Measured NIR next to zeros: a writer that zeroes the band fails.
+            if let Some(v) = bands[3].first_mut() {
+                *v = 75.0 * factor;
+            }
+            let r = utm(4, 4, bands, ColorHint::Rgb { alpha: false }, dt, None);
+            for bytes in [geotiff::write(&r, 0).unwrap(), write(&r, 0).unwrap()] {
+                let back = geotiff::read(Cursor::new(bytes), "rgbi").unwrap();
+                assert_eq!(back.band_count(), 4);
+                assert_eq!(back.color, ColorHint::Rgb { alpha: false });
+                for (b, original) in r.bands.iter().enumerate() {
+                    assert_eq!(back.bands[b].data, original.data, "{dt}, band {b}");
+                }
+            }
+            assert_eq!(written_bands(&r, 0).unwrap(), vec![0, 1, 2, 3]);
+        }
     }
 
     #[test]

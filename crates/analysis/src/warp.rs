@@ -600,10 +600,13 @@ impl Canvas {
         };
         let rgb = matches!(r.color, ColorHint::Rgb { .. }) && nb >= 3;
         let gray = picture && matches!(r.color, ColorHint::Gray) && nb == 1 && r.data_type == "UInt8";
-        let add_alpha = (rgb || gray) && alpha_src.is_none() && r.nodata.is_none();
+        // RGBI already uses band 3 for data. An appended alpha would be at band 4, while RGB
+        // renderers read alpha at band 3; keep its bands and use NaN outside instead.
+        let rgbi = rgb && nb > 3 && alpha_src.is_none();
+        let add_alpha = ((rgb && nb == 3) || gray) && alpha_src.is_none() && r.nodata.is_none();
         // Cells with no value: no-data where the raster has some. Colours with alpha are zero there.
         let clear = alpha_src.is_some() || add_alpha;
-        let none = if picture || r.data_type.starts_with("Float") { f32::NAN } else { 0.0 };
+        let none = if picture || rgbi || r.data_type.starts_with("Float") { f32::NAN } else { 0.0 };
         let outside = if clear { 0.0 } else { r.nodata.map_or(none, |d| d as f32) };
         let color = match (add_alpha, rgb) {
             (true, true) => ColorHint::Rgb { alpha: true },
@@ -1069,6 +1072,22 @@ mod tests {
         assert_eq!([0, 1, 2, 3].map(|b| out.value(b, mid_c, mid_r)), [Some(200.0), Some(100.0), Some(50.0), Some(255.0)]);
         // The image's cells keep whole-number values.
         assert!(out.bands.iter().all(|b| b.data.iter().all(|v| v.fract() == 0.0)));
+    }
+
+    #[test]
+    fn rgbi_reprojection_keeps_nir_as_data_and_uses_nan_outside() {
+        let r = scan(2, 2, vec![vec![200.0; 4], vec![100.0; 4], vec![50.0; 4], vec![0.0; 4]], ColorHint::Rgb { alpha: false }, "UInt16");
+        let grid = Grid::snapped(Crs::LonLat, [-1.0, -1.0, 3.0, 3.0], (1.0, 1.0), (0.0, 0.0)).unwrap();
+        let out = project(&r, &grid, Method::Sample(Resampling::Nearest), "warped".into()).unwrap();
+        assert_eq!(out.band_count(), 4);
+        assert_eq!(out.color, ColorHint::Rgb { alpha: false });
+        assert_eq!([0, 1, 2, 3].map(|b| out.value(b, 1, 1)), [Some(200.0), Some(100.0), Some(50.0), Some(0.0)]);
+        assert!((0..4).all(|b| out.value(b, 0, 0).is_none()));
+        let bytes = rustgis_data::raster::geotiff::write(&out, 0).unwrap();
+        let back = rustgis_data::raster::geotiff::read(std::io::Cursor::new(bytes), "saved").unwrap();
+        assert_eq!(back.color, ColorHint::Rgb { alpha: false });
+        assert_eq!(back.value(3, 1, 1), Some(0.0));
+        assert!((0..4).all(|b| back.value(b, 0, 0).is_none()));
     }
 
     #[test]

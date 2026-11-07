@@ -1332,6 +1332,13 @@ fn mosaic_matches(first: &Raster, r: &Raster) -> Result<(), String> {
     if r.band_count() != first.band_count() {
         return Err(format!("{} has {} bands, {} {}", r.name, r.band_count(), first.name, first.band_count()));
     }
+    // The mosaic takes the first input's colour, so a last band that is alpha in one input and
+    // data in another (RGBA and RGB with near-infrared) would take one role for both.
+    let alpha = |r: &Raster| matches!(r.color, ColorHint::Rgb { alpha: true } | ColorHint::GrayAlpha);
+    if alpha(r) != alpha(first) {
+        let (with, without) = if alpha(r) { (r, first) } else { (first, r) };
+        return Err(format!("{}'s last band is transparency, {}'s is data: use rasters with matching band roles", with.name, without.name));
+    }
     Ok(())
 }
 
@@ -1645,13 +1652,33 @@ pub(crate) fn mosaic_work(s: &Session, p: &Value) -> Result<super::workflows::Wo
         return Err(format!("the mosaic would be {cols} × {rows} cells; set a larger cell size in the workspace options"));
     }
     let nb = imgs.iter().map(|r| r.band_count()).min().unwrap_or(1).min(if w.kind == "reality" { 1 } else { 4 });
+    let omitted: Vec<String> = w
+        .images
+        .iter()
+        .zip(&imgs)
+        .filter(|(_, r)| r.band_count() > nb)
+        .map(|(name, r)| {
+            let bands = ((nb + 1)..=r.band_count()).map(|b| b.to_string()).collect::<Vec<_>>().join(", ");
+            format!("'{name}': band(s) {bands}")
+        })
+        .collect();
+    let extra = (!omitted.is_empty()).then(|| {
+        json!({"messages": [format!(
+            "{} image(s) have bands omitted from the {nb}-band mosaic: {}",
+            omitted.len(), omitted.join("; ")
+        )]})
+    });
     Ok(Box::new(move || {
         let refs: Vec<&Raster> = imgs.iter().map(|r| &**r).collect();
         let mut bands = rasterops::mosaic(&refs, &e, cell, (cols, rows), nb, w.method == "mean")?;
         // Colour only when every image is colour. A mosaic of 8-bit images stays 8-bit (means
         // rounded), so it displays as they do; anything else is Float32.
         let all_rgb = imgs.iter().all(|r| matches!(r.color, ColorHint::Rgb { .. }));
-        let color = if matches!(nb, 3 | 4) && all_rgb { ColorHint::Rgb { alpha: nb == 4 } } else { ColorHint::Gray };
+        let all_alpha = imgs.iter().all(|r| matches!(r.color, ColorHint::Rgb { alpha: true }));
+        if nb == 4 && !all_alpha && imgs.iter().any(|r| matches!(r.color, ColorHint::Rgb { alpha: true })) {
+            return Err("RGBA images cannot share a mosaic's fourth band with data bands: use images with matching band roles".into());
+        }
+        let color = if matches!(nb, 3 | 4) && all_rgb { ColorHint::Rgb { alpha: nb == 4 && all_alpha } } else { ColorHint::Gray };
         let all_u8 = imgs.iter().all(|r| r.data_type == "UInt8");
         let dt = if matches!(color, ColorHint::Rgb { .. }) && all_u8 { "UInt8" } else { "Float32" };
         if dt == "UInt8" {
@@ -1664,7 +1691,7 @@ pub(crate) fn mosaic_work(s: &Session, p: &Value) -> Result<super::workflows::Wo
         let out =
             Raster::new(format!("{} {suffix}", w.name), cols as u32, rows as u32, bands, gt, Crs::LonLat, Some(NODATA as f64), color, dt)
                 .map_err(|e| e.to_string())?;
-        super::workflows::made(out, None)
+        super::workflows::made(out, extra)
     }))
 }
 

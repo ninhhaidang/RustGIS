@@ -31758,6 +31758,79 @@ fn raster_classes_run_on_another_thread() {
     assert_eq!(s.project.dl_models.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), ["scene_model", "scene_model 2"]);
 }
 
+#[test]
+fn rgbi_mosaics_keep_nir_without_alpha_and_reject_mixed_band_roles() {
+    isolate_plugins();
+    use rustgis_data::raster::{ColorHint, Crs, GeoTransform, Raster, geotiff};
+    use rustgis_map::raster::RasterLayer;
+    let mut s = Session::new(Project::default());
+    let gt = GeoTransform { origin_x: 0.0, origin_y: 2.0, pixel_width: 1.0, pixel_height: -1.0 };
+    for (name, color, count) in [
+        ("nir", ColorHint::Rgb { alpha: false }, 4),
+        ("nir2", ColorHint::Rgb { alpha: false }, 4),
+        ("rgba", ColorHint::Rgb { alpha: true }, 4),
+        ("rgb", ColorHint::Rgb { alpha: false }, 3),
+        ("multispectral", ColorHint::Gray, 4),
+    ] {
+        let mut bands = vec![vec![200.0; 4], vec![100.0; 4], vec![50.0; 4], vec![0.0; 4]];
+        bands.truncate(count);
+        let r = Raster::new(name, 2, 2, bands, gt, Crs::LonLat, None, color, "UInt8").unwrap();
+        let bytes = geotiff::write(&r, 0).unwrap();
+        s.map_mut().add_raster(name, RasterLayer::from_bytes(r, format!("{name}.tif"), bytes));
+    }
+    for (name, images, alpha) in [("RGBI", vec!["nir", "nir2"], false), ("RGBA", vec!["rgba"], true)] {
+        s.run("imagery.workspace", &json!({"kind":"ortho", "name":name, "images":images, "cellSize":1})).unwrap();
+        let result = s.run("imagery.mosaic", &json!({"name":name})).unwrap();
+        assert!(result.get("messages").is_none(), "{result}");
+        let layer = s.map().layer(result["layer"].as_u64().unwrap() as u32).unwrap();
+        let rl = layer.raster.as_ref().unwrap();
+        let r = rl.data.as_ref().unwrap();
+        assert_eq!(r.band_count(), 4);
+        assert_eq!(r.color, ColorHint::Rgb { alpha });
+        assert_eq!(r.value(3, 0, 0), Some(0.0));
+        // The embedded file must also keep NIR when a project is reopened.
+        let back = geotiff::read(std::io::Cursor::new(rl.embedded.as_ref().unwrap().as_slice()), "saved").unwrap();
+        assert_eq!((back.band_count(), back.color), (4, ColorHint::Rgb { alpha }));
+    }
+    for (name, images, lost) in [
+        ("RGBI + RGB", vec!["nir", "rgb"], vec!["nir"]),
+        ("two RGBI + RGB", vec!["rgb", "nir", "nir2"], vec!["nir", "nir2"]),
+        ("RGBA + RGB", vec!["rgba", "rgb"], vec!["rgba"]),
+    ] {
+        s.run("imagery.workspace", &json!({"kind":"ortho", "name":name, "images":images, "cellSize":1})).unwrap();
+        let result = s.run("imagery.mosaic", &json!({"name":name})).unwrap();
+        let messages = result["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 1, "{result}");
+        let message = messages[0].as_str().unwrap();
+        assert!(message.starts_with(&format!("{} image(s)", lost.len())), "{message}");
+        assert!(message.contains("3-band mosaic"), "{message}");
+        for image in lost {
+            assert!(message.contains(&format!("'{image}': band(s) 4")), "{message}");
+        }
+        assert!(!message.contains("'rgb':"), "{message}");
+        let layer = s.map().layer(result["layer"].as_u64().unwrap() as u32).unwrap();
+        let r = layer.raster.as_ref().unwrap().data.as_ref().unwrap();
+        assert_eq!(r.band_count(), 3);
+        assert_eq!(r.color, ColorHint::Rgb { alpha: false });
+    }
+    for (name, images) in [
+        ("mixed", vec!["nir", "rgba"]),
+        ("mixed non-RGB", vec!["multispectral", "rgba"]),
+        ("mixed non-RGB reversed", vec!["rgba", "multispectral"]),
+    ] {
+        s.run("imagery.workspace", &json!({"kind":"ortho", "name":name, "images":images, "cellSize":1})).unwrap();
+        let e = s.run("imagery.mosaic", &json!({"name":name})).unwrap_err().to_string();
+        assert!(e.contains("matching band roles"), "{e}");
+        // Mosaic Rasters refuses the same mix rather than giving one input's role to both.
+        let e = s.run("raster.mosaic", &json!({"inputs": images, "name": format!("{name} raster")})).unwrap_err().to_string();
+        assert!(e.contains("matching band roles"), "{e}");
+    }
+    // Matching roles still mosaic, keeping them.
+    let v = s.run("raster.mosaic", &json!({"inputs": ["nir", "nir2"], "name": "nir raster"})).unwrap();
+    let r = s.map().layer(v["layer"].as_u64().unwrap() as u32).unwrap().raster.as_ref().unwrap().data.clone().unwrap();
+    assert_eq!((r.band_count(), r.color.clone()), (4, ColorHint::Rgb { alpha: false }));
+}
+
 /// Add Data's and Load All's reads made before the command runs (the desktop app's, on a thread
 /// of their own) are the ones the command takes: it adds what they read, without reading again.
 #[cfg(not(target_arch = "wasm32"))]
