@@ -4647,9 +4647,10 @@ fn tabulate_intersection(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, Strin
         rs.iter().filter(|&&r| ds.features.get(r).and_then(|f| f.geometry.as_ref()).is_some_and(jumps)).count()
     };
     let (zones_unsplit, classes_unsplit) = (unsplit(zones, &zone_rows), unsplit(classes, &class_rows));
-    // Features with an edge beyond 85.05° that runs east or west: the overlay, in the analysis plane,
-    // takes it straight in longitude and latitude there (the Web Mercator map clamps it), while `area_km2` takes the shortest way between
-    // its ends, which near a pole runs far poleward of it (#1033).
+    // Features with an edge beyond 85.05° that runs east or west: the overlay, in the analysis
+    // plane, takes it straight in longitude and latitude there (the Web Mercator map clamps it),
+    // while `area_km2` takes the shortest way between its ends, which near a pole runs far
+    // poleward of it (#1033).
     let polar = |ds: &Dataset, rs: &[usize]| {
         let max = rustgis_geom::MAX_LAT;
         let across = |g: &Geometry| {

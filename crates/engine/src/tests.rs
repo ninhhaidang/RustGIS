@@ -8028,6 +8028,26 @@ fn data_design_rules_hold_on_every_edit() {
 }
 
 #[test]
+fn split_refuses_a_line_with_a_latitude_past_the_poles() {
+    let mut s = world();
+    s.run("layer.template", &json!({"template": "lines", "name": "Paths"})).unwrap();
+    let add = |s: &mut Session, coords: Value| {
+        s.run("edit.addFeature", &json!({"layer": "Paths", "geometry": {"type": "LineString", "coordinates": coords}})).unwrap()
+    };
+    add(&mut s, json!([[0, 88], [5, 88]]));
+    let bad = add(&mut s, json!([[0, 88], [0, 95], [10, 88]]))["row"].as_u64().unwrap() as usize;
+    let before = s.map().layer_by_name("Paths").unwrap().dataset.features.clone();
+    // Both lines are selected: the one past the pole is refused, and neither is split.
+    s.run("select.rows", &json!({"layer": "Paths", "rows": [0, bad]})).unwrap();
+    assert!(s.run("edit.split", &json!({"lon": 2, "lat": 88})).is_err());
+    assert_eq!(s.map().layer_by_name("Paths").unwrap().dataset.features, before);
+    // Without it, the same split works.
+    s.run("select.rows", &json!({"layer": "Paths", "rows": [0]})).unwrap();
+    s.run("edit.split", &json!({"lon": 2, "lat": 88})).unwrap();
+    assert_eq!(s.map().layer_by_name("Paths").unwrap().dataset.features.len(), before.len() + 1);
+}
+
+#[test]
 fn modify_tools_snapping_topology_relationships_and_elevation() {
     let mut s = with_raster();
     s.run("layer.template", &json!({"template": "lines", "name": "Paths"})).unwrap();

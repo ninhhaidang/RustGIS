@@ -809,7 +809,8 @@ being split there (the map, and with it the percentages and shares, takes them t
 while area_km2 takes their ground shape), how many have an edge beyond 85.05° running east or west
 (their percentages and shares follow the analysis plane, which takes such an edge straight in
 longitude and latitude, not clamped as the Web Mercator map draws it, so they and area_km2 can
-differ widely, as above), how many zones overlap no class feature and so have no rows, how many class features have no value in a sum field (they add nothing to its shares) and,
+differ widely, as above), how many zones overlap no class feature and so have no rows, how many
+class features have no value in a sum field (they add nothing to its shares) and,
 with sum fields, how many class features lie partly or wholly outside the zones. Only selected
 features are used when a layer has a selection, and the table is named `<zones>_Tabulate` unless
 `output` names it.

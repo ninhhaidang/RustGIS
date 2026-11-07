@@ -392,3 +392,16 @@ fn the_plane_keeps_longitudes_past_180_as_they_are() {
         assert!((e.min_y - lat).abs() < 1e-7 && (e.max_y - lat - 0.4).abs() < 1e-7, "{lat}: {e:?}");
     }
 }
+
+#[test]
+fn polar_dangles_match_parts_stored_many_turns_apart() {
+    let c = Coord::new;
+    for turn in [720.0, -1080.0] {
+        let mut ds = Dataset::new("turns", GeometryType::Polyline, vec![]);
+        ds.push(Some(Geometry::Line(vec![vec![c(0.0, 88.0), c(0.0, 89.0)]])), vec![]);
+        ds.push(Some(Geometry::Line(vec![vec![c(turn, 89.0), c(turn, 89.5)]])), vec![]);
+        let checked = rustgis_analysis::topology::dangles(&ds, &[0, 1], 1.0);
+        assert!(checked.complete);
+        assert_eq!(checked.errors.len(), 2, "turn {turn}");
+    }
+}

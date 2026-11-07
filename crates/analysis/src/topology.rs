@@ -405,8 +405,7 @@ fn about_pole(c: Coord, north: bool) -> Coord {
 
 /// What an end beyond 85.05° can reach in the analysis plane: every point within the tolerance of
 /// it in the frame about its pole lies within `wy` of it north–south and, unless the tolerance
-/// reaches the pole, within `wx` east–west, also across ±180° (one turn each way: longitudes more
-/// than a turn apart aren't compared).
+/// reaches the pole, within `wx` east–west, also across ±180° and any whole turns in stored longitudes.
 struct Reach {
     end: Coord,
     wx: f64,
@@ -424,11 +423,12 @@ impl Reach {
         Self { end, wx, wy }
     }
 
-    /// The window's offsets east–west: itself, and a turn either way while it's narrower than the
-    /// world.
-    fn shifts(&self) -> impl Iterator<Item = f64> {
+    /// The window's copies nearest `center`, and a turn either way while it is narrower than
+    /// the world. Stored parts can be any number of whole turns from the end.
+    fn shifts(&self, center: f64) -> impl Iterator<Item = f64> {
         let round = std::f64::consts::TAU * rustgis_geom::MERCATOR_R;
-        [0.0, round, -round].into_iter().take(if self.wx.is_finite() { 3 } else { 1 })
+        let shift = round * ((center - self.end.x) / round).round();
+        [shift, shift + round, shift - round].into_iter().take(if self.wx.is_finite() { 3 } else { 1 })
     }
 
     /// Whether the box of the edge `a`–`b` meets the window or one of its copies: a cheap test
@@ -437,7 +437,10 @@ impl Reach {
         a.y.min(b.y) <= self.end.y + self.wy
             && a.y.max(b.y) >= self.end.y - self.wy
             && (self.wx.is_infinite()
-                || self.shifts().any(|s| a.x.min(b.x) <= self.end.x + s + self.wx && a.x.max(b.x) >= self.end.x + s - self.wx))
+                || (b.x - a.x).abs() >= std::f64::consts::TAU * rustgis_geom::MERCATOR_R
+                || self
+                    .shifts(a.x / 2.0 + b.x / 2.0)
+                    .any(|s| a.x.min(b.x) <= self.end.x + s + self.wx && a.x.max(b.x) >= self.end.x + s - self.wx))
     }
 
     /// The stretches of the edge `a`–`b` (straight in the plane) within reach, one for the window
@@ -460,11 +463,13 @@ impl Reach {
         };
         let mut spans = [None; 3];
         let Some((y0, y1)) = clip(self.end.y - self.wy, self.end.y + self.wy, a.y, b.y) else { return spans };
-        if self.wx.is_infinite() {
+        // More than two turns can meet more than three copies. Measure the whole latitude
+        // stretch instead; edge_from's piece and work limits still bound it and report coarseness.
+        if self.wx.is_infinite() || (b.x - a.x).abs() > 2.0 * std::f64::consts::TAU * rustgis_geom::MERCATOR_R {
             spans[0] = (a.x.is_finite() && b.x.is_finite()).then_some((y0, y1));
             return spans;
         }
-        for (span, s) in spans.iter_mut().zip(self.shifts()) {
+        for (span, s) in spans.iter_mut().zip(self.shifts(a.x / 2.0 + b.x / 2.0)) {
             *span = clip(self.end.x + s - self.wx, self.end.x + s + self.wx, a.x, b.x).and_then(|(x0, x1)| {
                 let (t0, t1) = (x0.max(y0), x1.min(y1));
                 (t0 <= t1).then_some((t0, t1))
@@ -744,9 +749,14 @@ impl<'a> PolarEnds<'a> {
         let rows = cells.key(end.x, end.y - reach.wy).1.max(0)..=cells.key(end.x, end.y + reach.wy).1.min(cells.last.1);
         // The window's columns and its copies', in order, each column once where they overlap.
         let mut columns = [(0, -1); 3];
-        for (span, shift) in columns.iter_mut().zip(reach.shifts()) {
+        for (span, shift) in columns.iter_mut().zip(reach.shifts(cells.origin.0 + cells.size * cells.last.0 as f64 / 2.0)) {
             let left = cells.key(end.x + shift - reach.wx, end.y).0.max(0);
             *span = (left, cells.key(end.x + shift + reach.wx, end.y).0.min(cells.last.0));
+        }
+        // A grid wider than two turns can contain many copies. Scan its occupied cells once;
+        // the edge tests use the nearest turn, and the existing work limit bounds the scan.
+        if cells.size * (cells.last.0 as f64 + 1.0) > 2.0 * std::f64::consts::TAU * rustgis_geom::MERCATOR_R {
+            columns = [(0, cells.last.0), (0, -1), (0, -1)];
         }
         columns.sort_unstable();
         let mut done = -1i64;
@@ -1127,7 +1137,7 @@ mod tests {
             (c(-20.0, 0.0), c(20.0, 0.0), [Some((0.25, 0.75)), None, None]),
             (c(0.0, -10.0), c(20.0, 10.0), [Some((0.25, 0.5)), None, None]),
             (c(-20.0, 10.0), c(20.0, 10.0), [None, None, None]),
-            (c(round - 20.0, 0.0), c(round, 0.0), [None, Some((0.5, 1.0)), None]),
+            (c(round - 20.0, 0.0), c(round, 0.0), [Some((0.5, 1.0)), None, None]),
             (c(-round, 0.0), c(round, 0.0), [Some((0.5, 0.5)), Some((1.0, 1.0)), Some((0.0, 0.0))]),
             (c(f64::NAN, 0.0), c(20.0, 0.0), [None, None, None]),
             (c(0.0, f64::NAN), c(20.0, 0.0), [None, None, None]),

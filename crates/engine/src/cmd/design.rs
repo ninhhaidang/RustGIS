@@ -4,11 +4,14 @@
 
 use rustgis_data::value::PastClasses;
 use rustgis_data::{Feature, FieldType, Geometry, GeometryType, Value};
-use rustgis_geom::{Coord, lonlat_to_merc, merc_to_lonlat};
+use rustgis_geom::{
+    Aeqd, Coord, MAX_LAT, POLE_TOLERANCE, SphericalMean, haversine_m, lonlat_to_merc, lonlat_to_plane, merc_to_lonlat, plane_to_lonlat,
+};
 use rustgis_map::design::{
     AttributeRule, ContingentSet, Domain, DomainKind, Elevation, FeatureTemplate, Relationship, RuleKind, Subtype, Subtypes, TopologyRule,
 };
 use serde_json::{Value as Json, json};
+use std::collections::HashMap;
 
 use super::{b, f, need_feature_layer, ps};
 use crate::{CmdResult, CommandSpec as C, Session};
@@ -334,50 +337,97 @@ pub fn commands() -> Vec<C> {
             if !(dx.is_finite() && dy.is_finite()) || dx.abs() > 4e7 || dy.abs() > 4e7 {
                 return Err("dx and dy must be finite distances in the command's units (limit: 40,000 km per axis after ground-to-grid)".into());
             }
-            modify(s, |g| Some(g.map_coords(&|c: Coord| shift(c, dx, dy))))
+            // In Web Mercator, as always, while a feature and its result stay within its square
+            // (each moved once, and kept for the move); one that doesn't, and those sharing a
+            // vertex with it, move on the ground (#1033), or for a move of no distance stay as
+            // they are.
+            let mut shifted: HashMap<(u32, usize), Geometry> = HashMap::new();
+            for l in s.map().layers.iter().filter(|l| !l.is_raster()) {
+                for r in &l.selection {
+                    let Some(g) = l.dataset.features.get(*r).and_then(|f| f.geometry.as_ref()).filter(|g| within_square(g)) else { continue };
+                    // A vertex missing a coordinate stays as it was, as on the ground.
+                    let done = g.map_coords(&|c: Coord| if c.is_finite() { shift(c, dx, dy) } else { c });
+                    if within_square(&done) {
+                        shifted.insert((l.id, *r), done);
+                    }
+                }
+            }
+            let still = dx == 0.0 && dy == 0.0;
+            if still && shifted.is_empty() {
+                return Err("a move of no distance changes nothing".into());
+            }
+            let (planes, ground, coarse) = if still {
+                (HashMap::new(), 0, 0)
+            } else {
+                move_planes(s, |key| shifted.contains_key(&key), dx.hypot(dy))?
+            };
+            let mut placed = HashMap::new();
+            placed.try_reserve(ground).map_err(|_| "not enough memory to move the selection on the ground")?;
+            // Each group's move, worked out once: its planes and its turn's sine and cosine.
+            let mut moves: HashMap<(i64, i64), (Aeqd, Aeqd, f64, f64)> = HashMap::new();
+            let done = move_features(s, |key, g| match planes.get(&key) {
+                Some(center) => {
+                    let (from, to, sin, cos) = *moves.entry(vertex_key(*center)).or_insert_with(|| {
+                        let (from, to, turn) = ground_move(*center, dx, dy);
+                        let (sin, cos) = turn.sin_cos();
+                        (from, to, sin, cos)
+                    });
+                    polar_transform(g, (&from, &to), Some(&mut placed), |p| Coord::new(p.x * cos + p.y * sin, p.y * cos - p.x * sin))
+                        .map(Some)
+                }
+                None => Ok(shifted.remove(&key)),
+            })?;
+            center_notice(s, coarse);
+            Ok(done)
         }).roles(&[]).effects(crate::policy::Effects::NONE)
         .when(need_editable_selection)
         .params(r#"{"dx": distance east, "dy": distance north, "units"?: "Meters" (default)|"Feet"|"Kilometers"|"Miles"}"#),
         C::new("edit.rotate", "Rotate", "Edit › Features › Modify", |s, p| {
             let deg = f(p, "angle").ok_or("angle is required")?;
-            modify(s, |g| {
+            let mut steps = CenterSteps::new();
+            let done = move_features(s, |_, g| {
                 // Any point, a feature's or a text graphic's, turns on itself: left out, so a
                 // selection of points alone fails rather than recording an edit that changes
                 // nothing (and an undo step).
                 if matches!(g, Geometry::Point(_)) {
-                    return None;
+                    return Ok(None);
                 }
-                let c = lonlat_to_merc(g.extent().center());
                 let (sin, cos) = (-deg.to_radians()).sin_cos();
-                Some(g.map_coords(&|p: Coord| {
-                    let m = lonlat_to_merc(p);
-                    let (x, y) = (m.x - c.x, m.y - c.y);
-                    merc_to_lonlat(Coord::new(c.x + x * cos - y * sin, c.y + x * sin + y * cos))
-                }))
-            })
+                about_center(
+                    g,
+                    |c, m| {
+                        let (x, y) = (m.x - c.x, m.y - c.y);
+                        Coord::new(c.x + x * cos - y * sin, c.y + x * sin + y * cos)
+                    },
+                    |p| Coord::new(p.x * cos - p.y * sin, p.x * sin + p.y * cos),
+                    &mut steps,
+                )
+            })?;
+            center_notice(s, steps.coarse);
+            Ok(done)
         }).roles(&[]).effects(crate::policy::Effects::NONE)
         .when(need_editable_selection)
         .params(r#"{"angle": degrees clockwise}"#),
         C::new("edit.scale", "Scale", "Edit › Features › Modify", |s, p| {
             let k = f(p, "factor").filter(|k| *k > 0.0 && *k < 1e6).ok_or("factor must be a positive number")?;
-            modify(s, |g| {
+            let mut steps = CenterSteps::new();
+            let done = move_features(s, |_, g| {
                 // Any point, a feature's or a text graphic's, scales on itself: left out, as above.
                 if matches!(g, Geometry::Point(_)) {
-                    return None;
+                    return Ok(None);
                 }
-                let c = lonlat_to_merc(g.extent().center());
-                Some(g.map_coords(&|p: Coord| {
-                    let m = lonlat_to_merc(p);
-                    merc_to_lonlat(Coord::new(c.x + (m.x - c.x) * k, c.y + (m.y - c.y) * k))
-                }))
-            })
+                let merc = |c: Coord, m: Coord| Coord::new(c.x + (m.x - c.x) * k, c.y + (m.y - c.y) * k);
+                about_center(g, merc, |p| Coord::new(p.x * k, p.y * k), &mut steps)
+            })?;
+            center_notice(s, steps.coarse);
+            Ok(done)
         }).roles(&[]).effects(crate::policy::Effects::NONE)
         .when(need_editable_selection)
         .params(r#"{"factor": number}"#),
         C::new("edit.flip", "Flip Line", "Edit › Features › Modify", |s, _| {
-            modify(s, |g| match g {
-                Geometry::Line(parts) => Some(Geometry::Line(parts.iter().rev().map(|p| p.iter().rev().copied().collect()).collect())),
-                _ => None,
+            modify(s, |_, g| match g {
+                Geometry::Line(parts) => Ok(Some(Geometry::Line(parts.iter().rev().map(|p| p.iter().rev().copied().collect()).collect()))),
+                _ => Ok(None),
             })
         }).roles(&[]).effects(crate::policy::Effects::NONE)
         .when(need_editable_selection),
@@ -470,14 +520,446 @@ fn shift(c: Coord, dx: f64, dy: f64) -> Coord {
     merc_to_lonlat(Coord::new(m.x + dx * k, m.y + dy * k))
 }
 
+/// A move on the ground by `dx` and `dy` meters east and north of `center`, as a turn of the world
+/// (#1033): the center goes along the geodesic leaving it that way, and every point keeps its
+/// distance and direction from it, the direction turned as much as the geodesic's own direction
+/// turns on the way. The azimuthal equidistant planes at the center and at the moved center, and
+/// that turn (radians, clockwise).
+fn ground_move(center: Coord, dx: f64, dy: f64) -> (Aeqd, Aeqd, f64) {
+    let from = Aeqd::new(center);
+    if dx == 0.0 && dy == 0.0 {
+        return (from, from, 0.0);
+    }
+    let (to, arriving) = from.inverse_heading(Coord::new(dx, dy));
+    let turn = arriving.to_radians() - dx.atan2(dy);
+    // Within half a turn either way (GeographicLib may give −180° where atan2 gives 180°).
+    (from, Aeqd::new(to), turn - std::f64::consts::TAU * (turn / std::f64::consts::TAU).round())
+}
+
 /// A ground distance and direction corrected to the grid: scaled and rotated.
 fn ground_to_grid(dx: f64, dy: f64, k: f64, rot_deg: f64) -> (f64, f64) {
     let (sin, cos) = (-rot_deg.to_radians()).sin_cos();
     ((dx * cos - dy * sin) * k, (dx * sin + dy * cos) * k)
 }
 
+/// Whether every vertex of `g` lies within Web Mercator's square, ±85.05° (every finite one: a
+/// coordinate missing stays missing either way). A feature that does, and whose Web Mercator result
+/// does, is edited in Web Mercator as it always has been (#1033).
+fn within_square(g: &Geometry) -> bool {
+    let mut within = true;
+    g.for_each_coord(|c| within &= !c.y.is_finite() || c.y.abs() <= MAX_LAT);
+    within
+}
+
+/// The whole turns of 360° that bring longitude `x` nearest `was`: an exact multiple of 360, so
+/// adding it once to the same longitude always gives the same result (shared vertices stay equal).
+fn turns(x: f64, was: f64) -> f64 {
+    360.0 * ((was - x) / 360.0).round()
+}
+
+/// A vertex as a key, in billionths of a degree (a tenth of a millimeter), the same for one place
+/// however it's written: 180° or −180°, 190.1° or −169.9°, a pole at any longitude and to within
+/// [`POLE_TOLERANCE`].
+fn vertex_key(c: Coord) -> (i64, i64) {
+    /// Billionths of a degree in a turn.
+    const TURN: i64 = 360_000_000_000;
+    if c.y.abs() >= 90.0 - POLE_TOLERANCE {
+        return (0, (90f64.copysign(c.y) * 1e9) as i64);
+    }
+    // Within a turn first, so a hostile longitude can't overflow the key (exactly east of 0°; west
+    // of it, adding the turn rounds, perhaps up to 360°), then rounded, and the last turn taken
+    // off exactly.
+    (((c.x.rem_euclid(360.0) * 1e9).round() as i64).rem_euclid(TURN), (c.y * 1e9).round() as i64)
+}
+
+/// Refuses a line or polygon that moving its vertices one by one on the ground would break
+/// (#1033): one reaching a pole (as rings cut at ±180° and closed along it do), or with an edge
+/// spanning 180° of longitude or more (which way around it goes is then unclear once moved).
+/// Points move anywhere.
+fn ground_movable(g: &Geometry) -> Result<(), String> {
+    let mut beyond = false;
+    g.for_each_coord(|c| beyond |= c.is_finite() && c.y.abs() > 90.0);
+    if beyond {
+        return Err("a latitude past ±90° is no place, so it cannot be moved, rotated or scaled".into());
+    }
+    if matches!(g, Geometry::Point(_) | Geometry::MultiPoint(_)) {
+        return Ok(());
+    }
+    // A vertex missing a coordinate (or with an infinite one) is no place, and stays as it was:
+    // it reaches no pole and makes no edge wide.
+    let (mut pole, mut wide) = (false, false);
+    g.for_each_coord(|c| pole |= c.is_finite() && c.y.abs() >= 90.0 - POLE_TOLERANCE);
+    if pole {
+        return Err("a line or polygon that reaches a pole can't be moved, rotated or scaled yet".into());
+    }
+    g.for_each_edge(|_, a, b| wide |= a.is_finite() && b.is_finite() && (b.x - a.x).abs() >= 180.0);
+    if wide {
+        return Err("features beyond 85.05° are moved, rotated and scaled on the ground, which can't yet take a line or polygon \
+                    with an edge spanning 180° of longitude or more"
+            .into());
+    }
+    Ok(())
+}
+
+/// The longest stretch of an edge, in degrees of longitude or latitude, that [`plane_at`] weighs
+/// at once.
+const CENTER_STEP_DEG: f64 = 0.5;
+/// The most stretches it cuts one edge into (an edge 180° long takes 360).
+const CENTER_STEPS_MAX: f64 = 1024.0;
+/// The most stretches it cuts all the edges of one command's features into; past them, an edge is
+/// weighed in one.
+const CENTER_STEPS_TOTAL: usize = 1_000_000;
+
+/// What a command's ground centers may still spend: the stretches left of [`CENTER_STEPS_TOTAL`],
+/// and how many edges were weighed in one for want of them (said by [`center_notice`]).
+struct CenterSteps {
+    left: usize,
+    coarse: usize,
+}
+
+impl CenterSteps {
+    fn new() -> Self {
+        Self { left: CENTER_STEPS_TOTAL, coarse: 0 }
+    }
+}
+
+/// Says how many edges a command's ground centers weighed in one, past its limit of stretches.
+fn center_notice(s: &mut Session, coarse: usize) {
+    if coarse > 0 {
+        s.warn(format!(
+            "{coarse} edge(s) of features beyond 85.05° were weighed in one to find their center, past one command's limit of a million stretches: those centers are worked out more coarsely"
+        ));
+    }
+}
+/// The farthest (meters) a polar edit may carry a vertex from the center it's moved, turned or
+/// scaled about: a quarter of the way around the world, well short of the center's antipode, where
+/// the azimuthal equidistant plane tears.
+const GROUND_REACH_M: f64 = 10_000_000.0;
+
+/// The center on the sphere of `geoms`, which edits beyond Web Mercator's square move, turn and
+/// scale about. It's the center of their lines and rings, each edge (as the analysis plane draws
+/// it) weighed by length on the sphere in stretches of at most half a degree, so a vertex added
+/// along an edge hardly moves it; with no edges of any length, of their vertices (their points).
+/// The stretches come out of the command's `steps` ([`CENTER_STEPS_TOTAL`]); once they run out, an
+/// edge is weighed in one, and counted in `steps.coarse`. A center at a pole takes its directions
+/// from the prime meridian, however the features' longitudes are written. `None` when they balance
+/// out (or have no finite coordinate).
+fn plane_at<'a>(geoms: impl IntoIterator<Item = &'a Geometry>, steps: &mut CenterSteps) -> Option<Coord> {
+    let (mut edges, mut vertices) = (SphericalMean::default(), SphericalMean::default());
+    for g in geoms {
+        g.for_each_coord(|c| vertices.add(c));
+        if matches!(g, Geometry::Point(_) | Geometry::MultiPoint(_)) {
+            continue;
+        }
+        g.for_each_edge(|_, a, b| {
+            // An edge to a vertex missing a coordinate, or with an infinite one, weighs nothing
+            // (an infinite latitude would otherwise reach a pole in the plane).
+            if !(a.is_finite() && b.is_finite()) {
+                return;
+            }
+            let span = (b.x - a.x).abs().max((b.y - a.y).abs()) / CENTER_STEP_DEG;
+            let n = if span > 1.0 { span.ceil().min(CENTER_STEPS_MAX) } else { 1.0 };
+            let n = if n as usize <= steps.left {
+                n
+            } else {
+                steps.coarse += usize::from(n > 1.0);
+                1.0
+            };
+            steps.left = steps.left.saturating_sub(n as usize);
+            let (pa, pb) = (lonlat_to_plane(a), lonlat_to_plane(b));
+            let at = |t: f64| plane_to_lonlat(Coord::new(pa.x + (pb.x - pa.x) * t, pa.y + (pb.y - pa.y) * t));
+            let mut last = a;
+            for k in 1..=n as usize {
+                let q = if k as f64 >= n { b } else { at(k as f64 / n) };
+                edges.add_weighted(at((k as f64 - 0.5) / n), haversine_m(last, q));
+                last = q;
+            }
+        });
+    }
+    // A feature whose edges all have no length (one point, repeated) is centered on its vertices.
+    let c = edges.center().or_else(|| vertices.center())?;
+    Some(if c.y.abs() >= 90.0 - POLE_TOLERANCE { Coord::new(0.0, 90f64.copysign(c.y)) } else { c })
+}
+
+/// `g` turned or scaled about its center: in Web Mercator, as always, by `merc` (taking the
+/// center of `g`'s extent and a point, both in Web Mercator) while `g` and its result stay within
+/// the square; otherwise on the ground (#1033), by `ground` (taking a point's meters east and north
+/// of the feature's center, [`plane_at`], found within the command's `steps`).
+fn about_center(
+    g: &Geometry,
+    merc: impl Fn(Coord, Coord) -> Coord,
+    ground: impl Fn(Coord) -> Coord,
+    steps: &mut CenterSteps,
+) -> Result<Option<Geometry>, String> {
+    if within_square(g) {
+        // About the extent of the vertices that have both coordinates; one missing a coordinate
+        // stays as it was, as on the ground.
+        let c = lonlat_to_merc(g.extent().center());
+        let done = g.map_coords(&|p: Coord| if p.is_finite() { merc_to_lonlat(merc(c, lonlat_to_merc(p))) } else { p });
+        if within_square(&done) {
+            return Ok(Some(done));
+        }
+    }
+    ground_movable(g)?;
+    let plane = Aeqd::new(plane_at(std::iter::once(g), steps).ok_or("the feature has no center to turn or scale it about")?);
+    polar_transform(g, (&plane, &plane), None, ground).map(Some)
+}
+
+/// For a move, the center each selected feature moves about on the ground (#1033), by its place
+/// in the selection (layer, row). Selected features that share a vertex move together: a group
+/// whose features all `stay` within Web Mercator's square moves there, as always, and isn't in the
+/// map; any other moves rigidly about its own center ([`plane_at`]), so shared vertices stay
+/// shared, and groups apart move apart (a feature far from a pole isn't pulled along by one near
+/// it, and features near both poles each have a center). A move on the ground goes at most
+/// [`GROUND_REACH_M`] (`reach_m` is how far this one goes), and only features it can carry
+/// ([`ground_movable`]). With the map, how many vertices move on the ground.
+fn move_planes(
+    s: &Session,
+    stays: impl Fn((u32, usize)) -> bool,
+    reach_m: f64,
+) -> Result<(HashMap<(u32, usize), Coord>, usize, usize), String> {
+    let selected: Vec<((u32, usize), &Geometry)> = s
+        .map()
+        .layers
+        .iter()
+        .filter(|l| !l.is_raster())
+        .flat_map(|l| l.selection.iter().filter_map(move |r| Some(((l.id, *r), l.dataset.features.get(*r)?.geometry.as_ref()?))))
+        .collect();
+    // Most moves stay within the square: then no feature needs grouping.
+    let stay: Vec<bool> = selected.iter().map(|(key, _)| stays(*key)).collect();
+    if stay.iter().all(|s| *s) {
+        return Ok((HashMap::new(), 0, 0));
+    }
+    if reach_m > GROUND_REACH_M {
+        return Err("a move on the ground (beyond or across 85.05°) can go at most 10,000 km at once".into());
+    }
+    // A feature leaving the square that can't move on the ground is refused before the selection
+    // is grouped (those joined to it are checked once grouped).
+    for ((_, g), stays) in selected.iter().zip(&stay) {
+        if !stays {
+            ground_movable(g)?;
+        }
+    }
+    // Each feature's group: the lowest feature it's joined to through shared vertices, found by
+    // following `group` up (union-find, pointing each feature on the way at the one above its own).
+    let mut group: Vec<usize> = (0..selected.len()).collect();
+    let find = |group: &mut [usize], mut i: usize| {
+        while let Some(&up) = group.get(i) {
+            if up == i {
+                break;
+            }
+            let above = group.get(up).copied().unwrap_or(up);
+            if let Some(g) = group.get_mut(i) {
+                *g = above;
+            }
+            i = up;
+        }
+        i
+    };
+    let mut owner: HashMap<(i64, i64), usize> = HashMap::new();
+    let vertices = selected.iter().map(|(_, g)| g.coord_count()).sum();
+    owner.try_reserve(vertices).map_err(|_| "not enough memory to find which selected features share vertices")?;
+    for (i, (_, g)) in selected.iter().enumerate() {
+        let mut shared = Vec::new();
+        g.for_each_coord(|c| {
+            if c.is_finite() {
+                match owner.entry(vertex_key(c)) {
+                    std::collections::hash_map::Entry::Occupied(o) => shared.push(*o.get()),
+                    std::collections::hash_map::Entry::Vacant(v) => {
+                        v.insert(i);
+                    }
+                }
+            }
+        });
+        for o in shared {
+            let (a, b) = (find(&mut group, o), find(&mut group, i));
+            if let Some(g) = group.get_mut(a.max(b)) {
+                *g = a.min(b);
+            }
+        }
+    }
+    // In selection order, so the budget is spent the same way every time.
+    let mut members: std::collections::BTreeMap<usize, Vec<usize>> = std::collections::BTreeMap::new();
+    for i in 0..selected.len() {
+        members.entry(find(&mut group, i)).or_default().push(i);
+    }
+    let (mut planes, mut ground, mut steps) = (HashMap::new(), 0usize, CenterSteps::new());
+    for ids in members.values() {
+        let geoms = || ids.iter().filter_map(|i| selected.get(*i).map(|(_, g)| *g));
+        if ids.iter().all(|i| stay.get(*i).copied().unwrap_or(true)) {
+            continue;
+        }
+        for i in ids {
+            let Some((_, g)) = selected.get(*i) else { continue };
+            // Those leaving the square were checked above.
+            if stay.get(*i).copied().unwrap_or(true) {
+                ground_movable(g)?;
+            }
+            ground += g.coord_count();
+        }
+        let plane = plane_at(geoms(), &mut steps).ok_or("the selected features have no center to move them about")?;
+        planes.extend(ids.iter().filter_map(|i| selected.get(*i).map(|(key, _)| (*key, plane))));
+    }
+    Ok((planes, ground, steps.coarse))
+}
+
+/// How near a pole (meters) a moved line or ring may come: nearer, it's taken to reach it.
+const POLE_CLEARANCE_M: f64 = 0.02;
+
+/// What [`polar_transform`] moves at once: a feature's point, a line's part, or a polygon's ring.
+#[derive(Clone, Copy, PartialEq)]
+enum PathKind {
+    Point,
+    Line,
+    Ring,
+}
+
+/// `g` moved, turned or scaled on the ground (#1033): `f` takes each vertex's meters east and north
+/// of the center in `from`, an azimuthal equidistant plane, and the result is placed back from
+/// `to` (the same plane, or for a move one at the moved center). Vertices are moved one by one,
+/// which a line or ring can't survive where it reaches or goes around a pole: callers refuse first
+/// what [`ground_movable`] refuses, and here one that would be carried onto or around a pole is
+/// refused, as is any feature carried farther than [`GROUND_REACH_M`] from the center. Longitudes
+/// run on across ±180° as the vertices do, each point, and each part's and shell's first vertex,
+/// in the range nearest where it was (so a feature is written as before, not a turn away), and a
+/// polygon's holes in its shell's; but a vertex `placed` already (shared with a feature moved
+/// before) lands exactly where it did, and a line or ring follows the first it has by whole turns
+/// (another it shares, written a turn apart in the two features, stays a turn apart, as written).
+/// A vertex missing a coordinate can't be placed on the ground: it stays as it was. Edges stay
+/// straight in longitude/latitude between the moved vertices.
+fn polar_transform(
+    g: &Geometry,
+    (from, to): (&Aeqd, &Aeqd),
+    mut placed: Option<&mut HashMap<(i64, i64), Coord>>,
+    f: impl Fn(Coord) -> Coord,
+) -> Result<Geometry, String> {
+    use rustgis_data::geometry::{ring_contains, seg_dist2};
+    let poles = [to.forward(Coord::new(0.0, 90.0)), to.forward(Coord::new(0.0, -90.0))];
+    // A path moved, back in longitude/latitude, its first vertex in the range nearest the
+    // longitude `anchor` (a hole's), or else where it was.
+    let mut path = |pts: &[Coord], kind: PathKind, anchor: Option<f64>| -> Result<Vec<Coord>, String> {
+        let mut out = Vec::with_capacity(pts.len());
+        for c in pts {
+            // A vertex missing a coordinate, or with an infinite one, is no place: it isn't
+            // measured here, and stays as it was below.
+            let p = if c.is_finite() { f(from.forward(*c)) } else { Coord::new(f64::NAN, f64::NAN) };
+            if p.x.hypot(p.y) > GROUND_REACH_M {
+                return Err("features beyond 85.05° are edited on the ground about their center, and that would carry one more \
+                            than 10,000 km from it"
+                    .into());
+            }
+            out.push(p);
+        }
+        let near = |pole: Coord| seg_dist2(&out, pole) <= POLE_CLEARANCE_M * POLE_CLEARANCE_M;
+        if kind != PathKind::Point && poles.iter().any(|pole| near(*pole) || (kind == PathKind::Ring && ring_contains(&out, *pole))) {
+            return Err("that would carry a line or polygon onto or around a pole, which it can't cross yet".into());
+        }
+        for (v, was) in out.iter_mut().zip(pts) {
+            *v = if was.is_finite() { to.inverse(*v) } else { *was };
+        }
+        // Each vertex's whole turns: a point's nearest where it was; a line's or ring's carried on
+        // from the vertex before (the last placed: one missing a coordinate is left out), not
+        // wrapped at ±180°, from its first vertex's.
+        let mut whole: Vec<f64> = Vec::with_capacity(out.len());
+        let mut before: Option<f64> = None;
+        for (c, was) in out.iter().zip(pts) {
+            let near = if kind == PathKind::Point { was.x } else { before.or(anchor).unwrap_or(was.x) };
+            let t = if was.is_finite() { turns(c.x, near) } else { 0.0 };
+            if was.is_finite() {
+                before = Some(c.x + t);
+            }
+            whole.push(t);
+        }
+        if let Some(placed) = placed.as_deref_mut() {
+            // A line or ring follows its first vertex placed before by whole turns.
+            let aligned = if kind == PathKind::Point {
+                0.0
+            } else {
+                pts.iter()
+                    .zip(&out)
+                    .zip(&whole)
+                    .find_map(|((c, p), t)| placed.get(&vertex_key(*c)).filter(|_| c.is_finite()).map(|was| turns(p.x + t, was.x)))
+                    .unwrap_or(0.0)
+            };
+            for ((p, t), at) in out.iter_mut().zip(whole).zip(pts) {
+                if !at.is_finite() {
+                    continue;
+                }
+                p.x += t + aligned;
+                // A vertex placed before lands exactly there (written perhaps as 180° there and
+                // −180° here), when it's the same place to within rounding, or for a point whole
+                // turns away.
+                let was = *placed.entry(vertex_key(*at)).or_insert(*p);
+                let off = if kind == PathKind::Point { turns(p.x, was.x) } else { 0.0 };
+                if (was.x - p.x - off).abs() < 1e-9 && (was.y - p.y).abs() < 1e-9 {
+                    *p = was;
+                }
+            }
+        } else {
+            out.iter_mut().zip(whole).for_each(|(c, t)| c.x += t);
+        }
+        // Written straight in longitude/latitude, a line or ring must still be what was moved: no
+        // edge spanning 180° or more (it would run around the other side of a pole), and a closed
+        // ring closed. An edge to a vertex missing a coordinate, or with an infinite one, left as
+        // it was, is no edge here.
+        let wide = out.windows(2).any(|w| matches!(w, [a, b] if a.is_finite() && b.is_finite() && (b.x - a.x).abs() >= 180.0));
+        let opened = kind == PathKind::Ring && pts.first() == pts.last() && out.first() != out.last();
+        if kind != PathKind::Point && (wide || opened) {
+            return Err("that would carry a line or polygon onto or around a pole, which it can't cross yet".into());
+        }
+        Ok(out)
+    };
+    Ok(match g {
+        Geometry::Point(c) => Geometry::Point(path(std::slice::from_ref(c), PathKind::Point, None)?.first().copied().unwrap_or(*c)),
+        Geometry::MultiPoint(v) => Geometry::MultiPoint(path(v, PathKind::Point, None)?),
+        Geometry::Line(parts) => Geometry::Line(parts.iter().map(|p| path(p, PathKind::Line, None)).collect::<Result<_, _>>()?),
+        Geometry::Polygon(polys) => {
+            let mut moved = Vec::with_capacity(polys.len());
+            for rings in polys {
+                // Its holes go in its shell's range, nearest the middle of the shell's longitudes,
+                // however far the shell runs on or follows a shared vertex.
+                let (mut out, mut anchor): (Vec<Vec<Coord>>, Option<f64>) = (Vec::with_capacity(rings.len()), None);
+                for ring in rings {
+                    let ring = path(ring, PathKind::Ring, anchor)?;
+                    if out.is_empty() {
+                        let (lo, hi) = ring
+                            .iter()
+                            .filter(|c| c.x.is_finite())
+                            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), c| (lo.min(c.x), hi.max(c.x)));
+                        if lo <= hi {
+                            anchor = Some((lo + hi) / 2.0);
+                        }
+                    }
+                    out.push(ring);
+                }
+                moved.push(out);
+            }
+            Geometry::Polygon(moved)
+        }
+    })
+}
+
+/// [`modify`] for a move, turn or scale, which leaves a vertex missing a coordinate where it was:
+/// says how many of the features it changed have one.
+fn move_features(s: &mut Session, mut change: impl FnMut((u32, usize), &Geometry) -> Result<Option<Geometry>, String>) -> CmdResult {
+    let mut missing = 0usize;
+    let done = modify(s, |key, g| {
+        let moved = change(key, g)?;
+        if moved.is_some() {
+            let mut has = false;
+            g.for_each_coord(|c| has |= !c.is_finite());
+            missing += usize::from(has);
+        }
+        Ok(moved)
+    })?;
+    if missing > 0 {
+        s.warn(format!("{missing} feature(s) have a vertex missing a coordinate, which was left where it was"));
+    }
+    Ok(done)
+}
+
 /// Applies a geometry change to every selected feature of every layer (in the selection's layers).
-fn modify(s: &mut Session, change: impl Fn(&Geometry) -> Option<Geometry>) -> CmdResult {
+fn modify(s: &mut Session, mut change: impl FnMut((u32, usize), &Geometry) -> Result<Option<Geometry>, String>) -> CmdResult {
     let mut n = 0;
     let ids: Vec<u32> = s.map().layers.iter().filter(|l| !l.selection.is_empty() && !l.is_raster()).map(|l| l.id).collect();
     for id in ids {
@@ -485,7 +967,7 @@ fn modify(s: &mut Session, change: impl Fn(&Geometry) -> Option<Geometry>) -> Cm
         let l = s.map_mut().layer_mut(id).ok_or("no such layer")?;
         for r in l.selection.clone() {
             let Some(f) = l.dataset.features.get_mut(r) else { continue };
-            let Some(g) = f.geometry.as_ref().and_then(&change) else { continue };
+            let Some(g) = f.geometry.as_ref().map(|g| change((id, r), g)).transpose()?.flatten() else { continue };
             super::edit::validate(&g)?;
             let before = f.clone();
             f.geometry = Some(g);
@@ -649,38 +1131,111 @@ fn explode(s: &mut Session, _: &Json) -> CmdResult {
 /// Splits the selected lines at the point on them nearest to (lon, lat).
 fn split(s: &mut Session, p: &Json) -> CmdResult {
     let at = Coord::new(f(p, "lon").ok_or("lon is required")?, f(p, "lat").ok_or("lat is required")?);
+    if !(at.is_finite() && at.y.abs() <= 90.0) {
+        return Err("lon and lat are degrees".into());
+    }
     let id = selection_layer(s)?;
     let l = s.map_mut().layer_mut(id).ok_or("no such layer")?;
+    // A vertex past ±90° is no place: the search would take it for the pole, so the lines are
+    // refused up front, before any is split.
+    let mut beyond_pole = false;
+    for feat in l.selection.iter().filter_map(|r| l.dataset.features.get(*r)) {
+        if let Some(Geometry::Line(parts)) = &feat.geometry {
+            beyond_pole |= parts.iter().flatten().any(|c| c.is_finite() && c.y.abs() > 90.0);
+        }
+    }
+    if beyond_pole {
+        return Err("a selected line has a latitude past ±90°, which is no place".into());
+    }
     let mut changes = Vec::new();
+    let mut steps = SplitSteps { left: SPLIT_STEPS_TOTAL, floor: f64::INFINITY };
+    // Lines the search, past its steps, couldn't search in full where a nearer point might lie:
+    // split at the nearest point it found, or left whole when that was an end.
+    let (mut rough, mut whole) = (0, 0);
+    let mut unmeasured = 0usize;
     for r in l.selection.clone() {
         let Some(f) = l.dataset.features.get(r).cloned() else { continue };
         let Some(Geometry::Line(parts)) = &f.geometry else { continue };
-        // The nearest segment of the nearest part.
-        let m = lonlat_to_merc(at);
-        let mut best: Option<(f64, usize, usize, Coord)> = None;
+        steps.floor = f64::INFINITY;
+        // The nearest segment of the nearest part, in the analysis plane (Web Mercator within
+        // ±85.05°, not clamped beyond it, #1033). Where the point asked or the line reaches beyond
+        // 85.05°, where the plane stretches east–west far more than north–south, each segment's
+        // nearest point is found, and compared, on the ground.
+        let m = lonlat_to_plane(at);
+        // A vertex missing a coordinate, or with an infinite one, is no place: it decides nothing.
+        let ground = at.y.abs() > MAX_LAT || parts.iter().flatten().any(|c| c.is_finite() && c.y.abs() > MAX_LAT);
+        // On the ground, each vertex's distance, measured once (part after part, in one buffer),
+        // where the plane has it (a latitude past ±90° at the pole). The line's nearest point is no
+        // farther than the nearest end of a segment it can measure (both ends known), so a segment
+        // that can't come nearer than that (or than a point already found) isn't searched.
+        let mut dists: Vec<f64> = Vec::new();
+        if ground {
+            dists.try_reserve(parts.iter().map(Vec::len).sum()).map_err(|_| "not enough memory to split the selected lines")?;
+            dists.extend(
+                parts
+                    .iter()
+                    .flatten()
+                    .map(|c| if c.is_finite() { haversine_m(at, Coord::new(c.x, c.y.clamp(-90.0, 90.0))) } else { f64::NAN }),
+            );
+        }
+        let (mut nearest_vertex, mut base) = (f64::INFINITY, 0);
+        for p in parts {
+            for ends in dists.get(base..base + p.len()).unwrap_or_default().windows(2).filter(|e| e.iter().all(|d| d.is_finite())) {
+                nearest_vertex = ends.iter().fold(nearest_vertex, |n, d| n.min(*d));
+            }
+            base += p.len();
+        }
+        let (mut best, mut base): (Option<(f64, usize, usize, Coord)>, usize) = (None, 0);
         for (pi, part) in parts.iter().enumerate() {
+            let part_dists = dists.get(base..base + part.len()).unwrap_or_default();
+            base += part.len();
             for (si, w) in part.windows(2).enumerate() {
                 let (Some(a), Some(b2)) = (w.first(), w.get(1)) else { continue };
-                let (a, b2) = (lonlat_to_merc(*a), lonlat_to_merc(*b2));
-                let (dx, dy) = (b2.x - a.x, b2.y - a.y);
-                let len2 = dx * dx + dy * dy;
-                let t = if len2 > 0.0 { (((m.x - a.x) * dx + (m.y - a.y) * dy) / len2).clamp(0.0, 1.0) } else { 0.0 };
-                let q = Coord::new(a.x + t * dx, a.y + t * dy);
-                let d = (q.x - m.x).powi(2) + (q.y - m.y).powi(2);
-                if best.is_none_or(|b| d < b.0) {
-                    best = Some((d, pi, si, merc_to_lonlat(q)));
+                // A segment to a vertex that's no place (an infinite coordinate; a missing one
+                // measures as NaN below) is passed over, not run to a pole.
+                if !(a.is_finite() && b2.is_finite()) {
+                    unmeasured += 1;
+                    continue;
+                }
+                let (d, q) = if ground {
+                    let ends = part_dists.get(si).zip(part_dists.get(si + 1)).map(|(da, db)| (*da, *db));
+                    let bound = best.map_or(nearest_vertex, |b| b.0.min(nearest_vertex));
+                    let Some(near) = ends.and_then(|ends| nearest_on_ground(at, (*a, *b2), ends, bound, &mut steps)) else { continue };
+                    near
+                } else {
+                    let (a, b2) = (lonlat_to_plane(*a), lonlat_to_plane(*b2));
+                    let (dx, dy) = (b2.x - a.x, b2.y - a.y);
+                    let len2 = dx * dx + dy * dy;
+                    let t = if len2 > 0.0 { (((m.x - a.x) * dx + (m.y - a.y) * dy) / len2).clamp(0.0, 1.0) } else { 0.0 };
+                    let q = Coord::new(a.x + t * dx, a.y + t * dy);
+                    ((q.x - m.x).powi(2) + (q.y - m.y).powi(2), plane_to_lonlat(q))
+                };
+                // A segment missing a coordinate (its distance NaN) is passed over.
+                if !d.is_finite() {
+                    unmeasured += 1;
+                } else if best.is_none_or(|b| d < b.0) {
+                    best = Some((d, pi, si, q));
                 }
             }
         }
-        let Some((_, pi, si, q)) = best else { continue };
+        let Some((d, pi, si, q)) = best else { continue };
         let Some(part) = parts.get(pi) else { continue };
+        // A part of a segment the search couldn't look at for want of steps might hold a point
+        // nearer than the one found.
+        let unsure = d > steps.floor;
+        // At a vertex (to within a millimeter), the parts meet there, without it repeated.
+        let at_end = [part.get(si), part.get(si + 1)].into_iter().flatten().find(|v| rustgis_geom::haversine_m(**v, q) < 0.001);
+        let q = at_end.copied().unwrap_or(q);
         let mut first: Vec<Coord> = part.iter().take(si + 1).copied().collect();
-        first.push(q);
+        if first.last() != Some(&q) {
+            first.push(q);
+        }
         let mut second = vec![q];
-        second.extend(part.iter().skip(si + 1).copied());
+        second.extend(part.iter().skip(si + 1).copied().skip_while(|c| *c == q));
         // At (or within a centimetre of) the line's ends isn't a split.
         let near = |a: Option<&Coord>| a.is_some_and(|a| rustgis_geom::haversine_m(*a, q) < 0.01);
         if first.len() < 2 || second.len() < 2 || near(first.first()) || near(second.last()) {
+            whole += usize::from(unsure);
             continue;
         }
         let mut a_parts: Vec<Vec<Coord>> = parts.iter().take(pi).cloned().collect();
@@ -693,13 +1248,144 @@ fn split(s: &mut Session, p: &Json) -> CmdResult {
         }
         l.dataset.push(Some(Geometry::Line(b_parts)), f.attrs.clone());
         changes.push(Change { before: None, row: Some(l.dataset.features.len() - 1) });
+        rough += usize::from(unsure);
     }
+    let unsearched =
+        |n: usize| format!("{n} line(s) near a pole couldn't be searched in full within one split's limit of a million distances");
     if changes.is_empty() {
+        if unmeasured > 0 {
+            return Err(format!(
+                "no line could be split away from its ends; {unmeasured} segment(s) could not be measured because of invalid coordinates"
+            ));
+        }
+        if whole > 0 {
+            return Err(format!("{}: the nearest point found was at an end; select fewer lines, or simplify them", unsearched(whole)));
+        }
         return Err("select a line to split (away from its ends)".into());
     }
     l.touch_geometry();
     apply(s, id, changes)?;
+    if unmeasured > 0 {
+        s.warn(format!("{unmeasured} segment(s) of the selected lines could not be measured because of invalid coordinates; the split search skipped them, so the point found may not be the nearest"));
+    }
+    if rough > 0 {
+        s.warn(format!("{}: each was split at the nearest point found, which may not be the nearest", unsearched(rough)));
+    }
+    if whole > 0 {
+        s.warn(format!("{} and were left whole: the nearest point found was at an end", unsearched(whole)));
+    }
     Ok(json!({"split": true}))
+}
+
+/// How many ground distances one split may work out along segments (a million, as its notices
+/// say); past them, a segment counts as near as the nearest point found on it so far, its nearer
+/// end at first.
+const SPLIT_STEPS_TOTAL: usize = 1_000_000;
+
+/// The ground distances a split may still work out ([`SPLIT_STEPS_TOTAL`] at first), and, for the
+/// line being searched, the least distance a part of a segment it couldn't search for want of them
+/// might lie at.
+struct SplitSteps {
+    left: usize,
+    floor: f64,
+}
+
+/// The ground distance (meters) from `at` to the segment a–b, straight in the analysis plane, and
+/// the point on it that distance away, or None when no point on it can be nearer than `bound` or
+/// an end is missing a coordinate; `da` and `db` are its ends' distances. The segment is sampled
+/// evenly in the plane, once for each 22.5° of longitude or latitude it spans (eight times at
+/// least), without skipping turns; each sample no farther than its neighbors marks a basin (one each time
+/// the segment passes `at`, as one going around a pole does), refined by golden-section search to
+/// a millimeter, nearest first, while it could hold a point nearer than the nearest found, or than
+/// `bound`. Each distance takes one of the command's `steps`; once they're spent, the nearest
+/// found (the nearer end, at first) stands, and `steps` notes how near the rest might be.
+fn nearest_on_ground(at: Coord, (a, b): (Coord, Coord), (da, db): (f64, f64), bound: f64, steps: &mut SplitSteps) -> Option<(f64, Coord)> {
+    const STEP_DEG: f64 = 22.5;
+    const PIECES_MIN: usize = 8;
+    const GOLDEN_STEPS: usize = 60;
+    if !(da.is_finite() && db.is_finite()) {
+        return None;
+    }
+    let (pa, pb) = (lonlat_to_plane(a), lonlat_to_plane(b));
+    let point = |t: f64| plane_to_lonlat(Coord::new(pa.x + t * (pb.x - pa.x), pa.y + t * (pb.y - pa.y)));
+    // A stretch of the plane covers at most cos φ as much ground, φ its latitude nearest the
+    // equator, and no more than 85.05° from it (beyond, the plane is stretched north–south as much
+    // as there, and east–west more), on a sphere smaller than Web Mercator's. By the triangle
+    // inequality, no point of the segment is nearer than half its ends' distances less its length.
+    let lat = if a.y * b.y <= 0.0 { 0.0 } else { a.y.abs().min(b.y.abs()).min(MAX_LAT) };
+    let length = lat.to_radians().cos() * (pb.x - pa.x).hypot(pb.y - pa.y);
+    if (da + db - length) / 2.0 > bound {
+        return None;
+    }
+    let mut best = if db < da { (db, b) } else { (da, a) };
+    let span = (b.x - a.x).abs().max((b.y - a.y).abs()) / STEP_DEG;
+    let pieces = if span > PIECES_MIN as f64 { span.ceil() as usize } else { PIECES_MIN };
+    if pieces > steps.left {
+        steps.floor = steps.floor.min((da + db - length) / 2.0);
+        return Some(best);
+    }
+    steps.left -= pieces;
+    let samples: Vec<f64> = (0..=pieces)
+        .map(|i| match i {
+            0 => da,
+            i if i == pieces => db,
+            i => haversine_m(at, point(i as f64 / pieces as f64)),
+        })
+        .collect();
+    // A basin's least distance is no less than its sample's less two samples' spacing of ground.
+    let spacing = length / pieces as f64;
+    let mut basins: Vec<(f64, usize)> = samples
+        .iter()
+        .enumerate()
+        .filter(|&(i, d)| {
+            let (before, after) = (i.checked_sub(1).and_then(|j| samples.get(j)), samples.get(i + 1));
+            before.is_none_or(|n| d <= n) && after.is_none_or(|n| d <= n) && !(before == Some(d) && after == Some(d))
+        })
+        .map(|(i, d)| (*d, i))
+        .collect();
+    basins.sort_by(|x, y| x.0.total_cmp(&y.0));
+    let golden = (5f64.sqrt() - 1.0) / 2.0;
+    let dist = |t: f64| haversine_m(at, point(t));
+    for (d, i) in basins {
+        let t = i as f64 / pieces as f64;
+        if d < best.0 {
+            best = (d, point(t));
+        }
+        if d - 2.0 * spacing >= best.0.min(bound) {
+            break;
+        }
+        if GOLDEN_STEPS + 3 > steps.left {
+            // This basin and the farther ones left unsearched.
+            steps.floor = steps.floor.min(d - 2.0 * spacing);
+            break;
+        }
+        let (mut lo, mut hi) = ((t - 1.0 / pieces as f64).max(0.0), (t + 1.0 / pieces as f64).min(1.0));
+        let (mut c, mut e) = (hi - golden * (hi - lo), lo + golden * (hi - lo));
+        let (mut dc, mut de) = (dist(c), dist(e));
+        let mut spent = 3;
+        for _ in 0..GOLDEN_STEPS {
+            if (hi - lo) * length < 1e-3 {
+                break;
+            }
+            spent += 1;
+            if dc < de {
+                (hi, e, de) = (e, c, dc);
+                c = hi - golden * (hi - lo);
+                dc = dist(c);
+            } else {
+                (lo, c, dc) = (c, e, de);
+                e = lo + golden * (hi - lo);
+                de = dist(e);
+            }
+        }
+        steps.left -= spent;
+        let q = point((lo + hi) / 2.0);
+        let d = haversine_m(at, q);
+        if d < best.0 {
+            best = (d, q);
+        }
+    }
+    Some(best)
 }
 
 /// Draws a line (or a closed polygon) from a start point by distances and bearings, corrected by
@@ -1424,4 +2110,112 @@ pub(crate) fn new_feature_inputs(input: &super::InputContext<'_>, p: &Json) -> R
         inputs.state = json!({"surface":name});
     }
     Ok(inputs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_center_is_found_within_the_commands_budget() {
+        // A line at 89.9°N whose ten edges each span 170° of longitude: 340 half-degree stretches
+        // each, out of the budget; with none left, each edge is weighed in one, and a center is
+        // still found.
+        let line = Geometry::Line(vec![(0..=10).map(|i| Coord::new(if i % 2 == 0 { 0.0 } else { 170.0 }, 89.9)).collect()]);
+        let mut steps = CenterSteps::new();
+        assert!(plane_at([&line], &mut steps).is_some());
+        assert_eq!(CENTER_STEPS_TOTAL - steps.left, 10 * 340);
+        assert_eq!(steps.coarse, 0);
+        let mut steps = CenterSteps { left: 0, coarse: 0 };
+        assert!(plane_at([&line], &mut steps).is_some() && steps.left == 0);
+        assert_eq!(steps.coarse, 10);
+    }
+
+    #[test]
+    fn a_center_says_when_its_steps_run_out() {
+        // A line at 89.9°N of 3,000 edges, each 340 half-degree stretches: the million run out in
+        // the 2,942nd, and the 59 after it are weighed in one, which is counted; ten edges are not.
+        let zigzag =
+            |edges: usize| Geometry::Line(vec![(0..=edges).map(|i| Coord::new(if i % 2 == 0 { 0.0 } else { 170.0 }, 89.9)).collect()]);
+        let mut steps = CenterSteps::new();
+        assert!(plane_at([&zigzag(3_000)], &mut steps).is_some());
+        assert_eq!(steps.coarse, 59);
+        let mut steps = CenterSteps::new();
+        assert!(plane_at([&zigzag(10)], &mut steps).is_some());
+        assert_eq!(steps.coarse, 0);
+    }
+
+    #[test]
+    fn a_tiny_move_on_the_ground_doesnt_turn() {
+        for (dx, dy) in [(1e-12, 0.0), (1e-9, 1e-9), (0.0, -1e-12)] {
+            let (_, _, turn) = ground_move(Coord::new(30.0, 88.0), dx, dy);
+            assert!(turn.abs() < 1e-9, "{dx} {dy}: {turn}");
+        }
+    }
+
+    #[test]
+    fn a_vertex_is_one_key_however_its_longitude_is_written() {
+        let key = |x: f64, y: f64| vertex_key(Coord::new(x, y));
+        assert_eq!(key(180.0, -87.0), key(-180.0, -87.0));
+        assert_eq!(key(0.0, 86.0), key(-0.0, 86.0));
+        assert_eq!(key(370.0, 86.0), key(10.0, 86.0));
+        assert_eq!(key(190.1, 86.0), key(-169.9, 86.0));
+        assert_eq!(key(370.1, 86.0), key(10.1, 86.0));
+        assert_eq!(key(36_000_000_010.0, 86.0), key(10.0, 86.0));
+        assert_eq!(key(-1e-20, 86.0), key(0.0, 86.0));
+        assert_eq!(key(10.0, 90.0), key(200.0, 90.0));
+        assert_eq!(key(10.0, 90.0), key(200.0, 89.999_999_95));
+        assert_ne!(key(10.0, 86.0), key(11.0, 86.0));
+    }
+
+    #[test]
+    fn a_hole_lands_in_its_shell_however_far_the_shell_goes() {
+        // A box at 86°N to 87°N with a hole, whose corner a feature moved before placed a turn
+        // east: the shell follows it there, and the hole comes with the shell.
+        let c = Coord::new;
+        let shell = vec![c(10.0, 86.0), c(15.0, 86.0), c(15.0, 87.0), c(10.0, 87.0), c(10.0, 86.0)];
+        let hole = vec![c(11.0, 86.2), c(11.0, 86.8), c(14.0, 86.8), c(14.0, 86.2), c(11.0, 86.2)];
+        let plane = Aeqd::new(c(12.5, 86.5));
+        let mut placed = HashMap::new();
+        placed.insert(vertex_key(c(10.0, 86.0)), c(370.0, 86.0));
+        let moved = polar_transform(&Geometry::Polygon(vec![vec![shell, hole]]), (&plane, &plane), Some(&mut placed), |p| p);
+        let Ok(Geometry::Polygon(p)) = moved else { panic!("{moved:?}") };
+        let span = |r: &[Coord]| r.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), c| (lo.min(c.x), hi.max(c.x)));
+        let ((slo, shi), (hlo, hhi)) = (span(&p[0][0]), span(&p[0][1]));
+        assert!(slo > 369.0 && slo < hlo && hhi < shi, "{p:?}");
+    }
+
+    #[test]
+    fn a_split_searches_a_segment_within_its_budget() {
+        // From 89°N on 0°, along 88°N from 30°W to 30°E: searched, its nearest point is on 0°, a
+        // kilometer nearer than its ends, and the search takes a few dozen of the budget; with
+        // too few left, the nearer end stands for it, and the steps note how near the segment
+        // might come (no nearer than the point found, nor than half its ends' distances less its
+        // length).
+        let c = Coord::new;
+        let (at, a, b) = (c(0.0, 89.0), c(-30.0, 88.0), c(30.0, 88.0));
+        let ends = (haversine_m(at, a), haversine_m(at, b));
+        let mut steps = SplitSteps { left: 1_000, floor: f64::INFINITY };
+        let (d, q) = nearest_on_ground(at, (a, b), ends, f64::INFINITY, &mut steps).unwrap();
+        assert!(
+            q.x.abs() < 1e-6 && d < ends.0 - 1_000.0 && (900..990).contains(&steps.left) && steps.floor.is_infinite(),
+            "{q:?} {d} {}",
+            steps.left
+        );
+        let mut steps = SplitSteps { left: 5, floor: f64::INFINITY };
+        assert_eq!(nearest_on_ground(at, (a, b), ends, f64::INFINITY, &mut steps), Some((ends.0, a)));
+        assert!(steps.left == 5 && steps.floor <= d && steps.floor < ends.0, "{}", steps.floor);
+        // Nor is a segment missing a coordinate measured.
+        assert_eq!(nearest_on_ground(at, (c(f64::NAN, 88.0), b), (f64::NAN, ends.1), f64::INFINITY, &mut steps), None);
+    }
+
+    #[test]
+    fn points_moved_with_lines_dont_pull_their_center() {
+        // A line's center is its edges' wherever points selected with it are.
+        let c = Coord::new;
+        let line = Geometry::Line(vec![vec![c(0.0, 86.0), c(10.0, 86.0)]]);
+        let points = Geometry::MultiPoint(vec![c(90.0, 88.0), c(100.0, 88.0)]);
+        let (mut a, mut b) = (CenterSteps::new(), CenterSteps::new());
+        assert_eq!(plane_at([&line, &points], &mut a), plane_at([&line], &mut b));
+    }
 }

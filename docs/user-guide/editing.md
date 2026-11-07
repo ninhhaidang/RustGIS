@@ -41,6 +41,37 @@ you edit the value or choose units; click **Apply elevation** to apply the new i
   and flip line direction. A single point turns and scales on itself, so Rotate and Scale leave
   points (text graphics included) as they are: with only points selected they change nothing,
   say so, and add no undo step. Edit › Tools lists every editing tool.
+  Beyond 85.05°, where Web Mercator stops, Move, Rotate and Scale work on the ground: a feature
+  that reaches beyond it, or that the edit would take beyond it, moves rigidly, together with the
+  selected features sharing a vertex with it (their center goes the distance and direction asked,
+  along the ground and across a pole if that's the way, and the rest turn with the world around
+  it), and turns or scales about its own center. Within ±85.05° an edit is made in Web Mercator, as
+  before (where a long move north covers less ground than asked, and Rotate and Scale turn about
+  the middle of the feature's extent), so an edit that just stays within 85.05° and one that just
+  passes it can land far apart. Only the vertices move rigidly: edges stay straight in longitude
+  and latitude between them, so long edges bend, the more so the nearer the pole one end is than
+  the other, and far less for moves north–south than east–west: an edge from 87° to 89° bends
+  333 m for each kilometer moved east; one from 89.5° to 89.99° bends much more. Add vertices along them first to keep their shape. A moved
+  feature's longitudes run on from where they were written, past ±180° if it crosses there (to
+  188°, say, rather than −172°), as within ±85.05°; one carried more than halfway around a pole
+  is written within half a turn of where it was.
+  Rotate and Scale use each feature's own center, so selected neighbors sharing a corner can
+  separate at that corner.
+  Right by a pole a move's directions turn quickly with its center's place: a center at
+  the pole takes "east" from the prime meridian (toward 90°E), one a meter away from its own
+  longitude. The whole edit is refused, and nothing changes, when a selected line or polygon
+  edited on the ground reaches a pole (so moving every feature of a world layer fails while
+  Antarctica is selected), spans 180° of longitude or more in one edge, or would be carried onto
+  or around a pole, or when the edit would move a feature more than 10,000 km on the ground or
+  carry a vertex more than 10,000 km from the center it's edited about. A move of no distance
+  leaves features beyond 85.05° as they are. Moving neighbors one at a time, one within ±85.05°
+  and one beyond, can leave their shared corners apart, by about the distance moved times
+  2·sin(Δλ/2), Δλ being the corner's longitude from the center of the one moved on the ground (a
+  tenth of it 6° away, half of it 30° away): select them together. Split cuts beyond 85.05° where
+  it's asked: where the point or the line reaches beyond it, at the line's point nearest on the
+  ground (once a split has worked out a million distances along segments near the point, a
+  segment counts as near as the nearest point found on it so far, its nearer end at first, and the
+  split says how many lines it cut that way, or left whole when that point was an end).
 - **Cut Polygon** (Edit › Tools, or the Editing pane): select polygons, then click a line across
   them and double-click to finish. Each polygon the line crosses from edge to edge is cut into
   pieces; a zigzag line can make several. The pieces keep the original's attributes. The

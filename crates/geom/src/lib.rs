@@ -334,6 +334,55 @@ pub fn spherical_centre(pts: &[Coord]) -> Option<Coord> {
     from_vector(s)
 }
 
+/// The center on the sphere of points taken one at a time, each with a weight (such as stretches
+/// of lines by their lengths): their weighted mean direction from the Earth's center.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SphericalMean {
+    sum: [f64; 3],
+    weight: f64,
+    /// How many times the totals were scaled down by 2⁵¹² to keep them finite.
+    shrunk: i32,
+}
+
+impl SphericalMean {
+    /// Takes in a point; a non-finite one is left out.
+    pub fn add(&mut self, c: Coord) {
+        self.add_weighted(c, 1.0);
+    }
+
+    /// Takes in a point counting `weight` times (as a stretch of a line does, by its length); a
+    /// non-finite point, or a weight that isn't a positive normal number (zero, negative,
+    /// subnormal, missing or infinite), is left out: a subnormal one rounds its direction away.
+    pub fn add_weighted(&mut self, c: Coord, weight: f64) {
+        if c.is_finite() && weight.is_normal() && weight > 0.0 {
+            // Totals that would overflow are scaled down by a power of two, as is every weight
+            // after, which leaves the mean as it was (a weight tiny beside them drops to nothing,
+            // as it would anyway).
+            let shrink = 0.5f64.powi(512);
+            let mut weight = weight * 0.5f64.powi(self.shrunk.saturating_mul(512));
+            if self.weight + weight > 1e300 {
+                self.sum = self.sum.map(|s| s * shrink);
+                self.weight *= shrink;
+                self.shrunk = self.shrunk.saturating_add(1);
+                weight *= shrink;
+            }
+            let (s, v) = (self.sum, unit_vector(c));
+            self.sum = [s[0] + v[0] * weight, s[1] + v[1] * weight, s[2] + v[2] * weight];
+            self.weight += weight;
+        }
+    }
+
+    /// The center of the points so far, or `None` when there are none or they balance out (such as
+    /// two antipodes) to within rounding of their total weight.
+    pub fn center(&self) -> Option<Coord> {
+        if self.weight <= 0.0 {
+            return None;
+        }
+        // Their mean direction, as a vector no longer than 1 (the threshold is then relative).
+        from_vector(self.sum.map(|s| s / self.weight))
+    }
+}
+
 /// The point `dist_m` metres from `c` along the geodesic leaving it at `azimuth_deg` (clockwise
 /// from north): the direct geodesic problem on the WGS 84 ellipsoid.
 pub fn geodesic_destination(c: Coord, azimuth_deg: f64, dist_m: f64) -> Coord {
@@ -521,6 +570,17 @@ impl Aeqd {
         let (lat, lon): (f64, f64) = WGS84.direct(self.lat0, self.lon0, p.x.atan2(p.y).to_degrees(), p.x.hypot(p.y));
         Coord::new(self.lon0 + wrap_lon(lon - self.lon0), lat)
     }
+
+    /// [`Aeqd::inverse`], with the azimuth (degrees clockwise from north) the geodesic from the
+    /// center arrives there with: a direction carried along it turns as much as that differs from
+    /// the azimuth it left with, `p.x.atan2(p.y)`.
+    pub fn inverse_heading(&self, p: Coord) -> (Coord, f64) {
+        if !(p.x.is_finite() && p.y.is_finite()) {
+            return (Coord::new(f64::NAN, f64::NAN), f64::NAN);
+        }
+        let (lat, lon, azi2): (f64, f64, f64) = WGS84.direct(self.lat0, self.lon0, p.x.atan2(p.y).to_degrees(), p.x.hypot(p.y));
+        (Coord::new(self.lon0 + wrap_lon(lon - self.lon0), lat), azi2)
+    }
 }
 
 /// Area of a lon/lat ring on the sphere (square metres, always positive).
@@ -648,6 +708,71 @@ pub fn format_dms(c: Coord) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_weighted_point_counts_as_that_many() {
+        // Weight 2 is the point taken twice; a weight of 0, below 0 or missing, and a point
+        // missing a coordinate, are left out.
+        let (a, b) = (Coord::new(0.0, 0.0), Coord::new(90.0, 0.0));
+        let (mut twice, mut weighted) = (SphericalMean::default(), SphericalMean::default());
+        [a, a, b].into_iter().for_each(|c| twice.add(c));
+        weighted.add_weighted(a, 2.0);
+        weighted.add(b);
+        for (c, w) in [(b, 0.0), (b, -1.0), (b, f64::NAN), (Coord::new(f64::NAN, 0.0), 1.0)] {
+            weighted.add_weighted(c, w);
+        }
+        let (t, w) = (twice.center().unwrap(), weighted.center().unwrap());
+        assert!((t.x - w.x).abs() < 1e-12 && (t.y - w.y).abs() < 1e-12, "{t:?} {w:?}");
+        // Antipodes weighing a million each balance out, to within their rounding.
+        let mut balanced = SphericalMean::default();
+        balanced.add_weighted(a, 1e6);
+        balanced.add_weighted(Coord::new(180.0, 0.0), 1e6);
+        assert_eq!(balanced.center(), None);
+    }
+
+    #[test]
+    fn any_weight_gives_the_mean() {
+        // A tiny weight alone is still a center, and the largest weights don't overflow the
+        // totals: a and b at the largest weight each meet halfway, and a third point weighing
+        // the same pulls the center towards it, as at any weight.
+        let (a, b) = (Coord::new(0.0, 0.0), Coord::new(90.0, 0.0));
+        let mut tiny = SphericalMean::default();
+        tiny.add_weighted(b, 1e-13);
+        assert_eq!(tiny.center(), Some(b));
+        let (mut huge, mut unit) = (SphericalMean::default(), SphericalMean::default());
+        for c in [a, b, a] {
+            huge.add_weighted(c, f64::MAX);
+            unit.add_weighted(c, 1.0);
+        }
+        let mut half = SphericalMean::default();
+        half.add_weighted(a, f64::MAX);
+        half.add_weighted(b, f64::MAX);
+        let mid = half.center().unwrap();
+        assert!((mid.x - 45.0).abs() < 1e-9 && mid.y.abs() < 1e-9, "{mid:?}");
+        // Totals scaled down once they hold a point: the second 1e300 passes the limit.
+        let mut grown = SphericalMean::default();
+        grown.add_weighted(a, 1e300);
+        grown.add_weighted(b, 1e300);
+        let mid = grown.center().unwrap();
+        assert!((mid.x - 45.0).abs() < 1e-9 && mid.y.abs() < 1e-9, "{mid:?}");
+        // A subnormal weight is left out, as a zero one is: alone, no center.
+        let mut sub = SphericalMean::default();
+        sub.add_weighted(b, 5e-324);
+        assert_eq!(sub.center(), None);
+        let (h, u) = (huge.center().unwrap(), unit.center().unwrap());
+        assert!((h.x - u.x).abs() < 1e-9 && (h.y - u.y).abs() < 1e-9, "{h:?} {u:?}");
+    }
+
+    #[test]
+    fn a_geodesic_arrives_turned_as_far_as_it_has_gone_around_the_pole() {
+        // From 88°N, east 300 km: near a pole the geodesic turns away from it by about as much
+        // longitude as it covers (53° here), arriving heading south of east; a step of a
+        // trillionth of a meter doesn't turn at all.
+        let (at, heading) = Aeqd::new(Coord::new(0.0, 88.0)).inverse_heading(Coord::new(300_000.0, 0.0));
+        assert!(((heading - 90.0) - at.x).abs() < 1.0 && at.x > 45.0, "{at:?} {heading}");
+        let (_, heading) = Aeqd::new(Coord::new(0.0, 88.0)).inverse_heading(Coord::new(1e-12, 0.0));
+        assert!((heading - 90.0).abs() < 1e-9, "{heading}");
+    }
 
     #[test]
     fn mercator_roundtrip() {
