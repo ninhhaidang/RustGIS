@@ -723,6 +723,70 @@ fn err(e: parquet::errors::ParquetError) -> DataError {
     DataError::Format(format!("GeoParquet: {e}"))
 }
 
+/// The reader of a row group's column, its pages checked by [`CheckedPages`].
+fn column_reader(rg: &dyn RowGroupReader, col: usize) -> Result<ColumnReader> {
+    let desc = rg.metadata().column(col).column_descr_ptr();
+    let bits = match desc.physical_type() {
+        Physical::BOOLEAN => 1,
+        Physical::INT32 | Physical::FLOAT | Physical::BYTE_ARRAY => 32,
+        Physical::INT64 | Physical::DOUBLE => 64,
+        Physical::INT96 => 96,
+        Physical::FIXED_LEN_BYTE_ARRAY => u64::try_from(desc.type_length()).unwrap_or(0).max(1) * 8,
+    };
+    let pages = CheckedPages { pages: rg.get_column_page_reader(col).map_err(err)?, bits };
+    Ok(parquet::column::reader::get_column_reader(desc, Box::new(pages)))
+}
+
+/// A column's pages, a dictionary page refused when it says it holds more values than its bytes
+/// can: the `parquet` crate makes room for the count it is told before decoding any (a few bytes
+/// of header can ask for tens of gigabytes).
+struct CheckedPages {
+    pages: Box<dyn parquet::column::page::PageReader>,
+    /// The fewest bits one value of the column takes in a dictionary page (plain encoded).
+    bits: u64,
+}
+
+impl Iterator for CheckedPages {
+    type Item = parquet::errors::Result<parquet::column::page::Page>;
+
+    /// The next page, checked as [`PageReader::get_next_page`](parquet::column::page::PageReader::get_next_page) checks it.
+    fn next(&mut self) -> Option<Self::Item> {
+        use parquet::column::page::PageReader;
+        self.get_next_page().transpose()
+    }
+}
+
+impl parquet::column::page::PageReader for CheckedPages {
+    /// The next page, or an error for a dictionary page whose count its bytes can't hold.
+    fn get_next_page(&mut self) -> parquet::errors::Result<Option<parquet::column::page::Page>> {
+        let page = self.pages.get_next_page()?;
+        if let Some(parquet::column::page::Page::DictionaryPage { buf, num_values, .. }) = &page
+            && u64::from(*num_values).saturating_mul(self.bits) > (buf.len() as u64).saturating_mul(8)
+        {
+            return Err(parquet::errors::ParquetError::General(format!(
+                "a dictionary page says it holds {num_values} values, more than its {} bytes can",
+                buf.len()
+            )));
+        }
+        Ok(page)
+    }
+
+    /// The next page's header, unchecked: a peek decodes no values.
+    fn peek_next_page(&mut self) -> parquet::errors::Result<Option<parquet::column::page::PageMetadata>> {
+        self.pages.peek_next_page()
+    }
+
+    /// Skips the next page unchecked: a skipped page is never decoded.
+    fn skip_next_page(&mut self) -> parquet::errors::Result<()> {
+        self.pages.skip_next_page()
+    }
+
+    /// Whether the next page starts a record, as the column's own pages say.
+    fn at_record_boundary(&mut self) -> parquet::errors::Result<bool> {
+        self.pages.at_record_boundary()
+    }
+}
+
 fn geometry_type_name(t: &str) -> Option<GeometryType> {
     let t = t.trim_end_matches(" Z").trim_end_matches(" M").trim_end_matches(" ZM");
     match t {
@@ -939,7 +1003,7 @@ fn read_values(rg: &dyn RowGroupReader, col: usize, take: &[bool]) -> Result<Vec
         (Some(i), Some(f)) => Value::Float(i as f64 * f),
         (Some(i), None) => Value::Int(i),
     };
-    Ok(match rg.get_column_reader(col).map_err(err)? {
+    Ok(match column_reader(rg, col)? {
         ColumnReader::BoolColumnReader(mut r) => {
             read_column(&mut r, take, max_def)?.into_iter().map(|v| v.map(Value::Bool).unwrap_or_default()).collect()
         }
@@ -962,7 +1026,7 @@ fn read_values(rg: &dyn RowGroupReader, col: usize, take: &[bool]) -> Result<Vec
 /// Reads a binary column (the WKB geometry), for the rows `take` marks, in order.
 fn read_bytes(rg: &dyn RowGroupReader, col: usize, take: &[bool]) -> Result<Vec<Option<Vec<u8>>>> {
     let max_def = rg.metadata().column(col).column_descr().max_def_level();
-    match rg.get_column_reader(col).map_err(err)? {
+    match column_reader(rg, col)? {
         ColumnReader::ByteArrayColumnReader(mut r) => {
             Ok(read_column(&mut r, take, max_def)?.into_iter().map(|v| v.map(|b| b.data().to_vec())).collect())
         }
@@ -974,7 +1038,7 @@ fn read_bytes(rg: &dyn RowGroupReader, col: usize, take: &[bool]) -> Result<Vec<
 fn read_f64(rg: &dyn RowGroupReader, col: usize, n: usize) -> Result<Vec<Option<f64>>> {
     let max_def = rg.metadata().column(col).column_descr().max_def_level();
     let all = vec![true; n];
-    match rg.get_column_reader(col).map_err(err)? {
+    match column_reader(rg, col)? {
         ColumnReader::FloatColumnReader(mut r) => Ok(read_column(&mut r, &all, max_def)?.into_iter().map(|v| v.map(f64::from)).collect()),
         ColumnReader::DoubleColumnReader(mut r) => read_column(&mut r, &all, max_def),
         _ => Ok(Vec::new()),
@@ -1128,7 +1192,7 @@ fn read_lists(rg: &dyn RowGroupReader, col: usize, take: &[bool]) -> Result<Vec<
             }
         }};
     }
-    match rg.get_column_reader(col).map_err(err)? {
+    match column_reader(rg, col)? {
         ColumnReader::FloatColumnReader(mut r) => lists!(r, |v: f32| v),
         ColumnReader::DoubleColumnReader(mut r) => lists!(r, |v: f64| v as f32),
         _ => return Err(DataError::Format("GeoParquet: the list column holds no numbers".into())),
