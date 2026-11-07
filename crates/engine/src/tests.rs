@@ -12678,7 +12678,7 @@ fn gdal_rasters_reopen_with_their_choices() {
 /// and picking either adds only its own layer (#1375).
 #[test]
 fn cityjson_types_cut_to_one_name_are_picked_apart() {
-    // 64: the characters of a type a layer name keeps (`cityjson::MAX_TYPE_IN_NAME`).
+    // 64: the characters of a type a layer name keeps (`citymodel::MAX_TYPE_IN_NAME`).
     let long = "+".to_string() + &"A".repeat(64);
     let object = |ty: String| json!({"type": ty, "geometry": [{"type": "MultiSurface", "lod": "1", "boundaries": [[[0, 1, 2]]]}]});
     let model = json!({

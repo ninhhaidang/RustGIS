@@ -1,6 +1,7 @@
 use serde_json::json;
 
 use super::*;
+use crate::{Coord, Geometry, GeometryType};
 
 /// A document in longitude/latitude (unit transform), with the given vertices and objects.
 fn doc(vertices: Json, objects: Json) -> Vec<u8> {
