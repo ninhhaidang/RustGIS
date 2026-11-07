@@ -49,11 +49,11 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           # Pull requests restore main's cache but don't save their own: saving takes minutes on
-          # Windows, and pull request caches crowd main's out of the repository's cache space.
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          # The nightly's cache holds the release build too: keep it apart from the one pull
-          # requests restore.
-          key: ${{ inputs.release-build && 'release' || '' }}
+          # Windows, and pull request caches crowd main's out of the repository's cache space. A
+          # run with the release build (the nightly, `ci:full`) restores it too and saves nothing:
+          # its own cache would hold the release build as well, and one used once a night is
+          # evicted before the next.
+          save-if: ${{ github.ref == 'refs/heads/main' && !inputs.release-build }}
       - name: Tests
         run: cargo test --workspace --locked
       - name: Layering check

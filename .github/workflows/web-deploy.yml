@@ -43,6 +43,12 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          # Shared with the pull request previews' build of the same app (docs-preview.yml),
+          # which restores this cache and saves none of its own. Saved from main's pushes only: a
+          # run started by hand may build another ref, which the previews would then restore.
+          shared-key: web
+          save-if: ${{ github.event_name == 'push' }}
 
       - name: Build the web app
         run: |
