@@ -1302,7 +1302,8 @@ fn topology_validate(s: &mut Session, p: &Json) -> CmdResult {
     use rustgis_analysis::topology as t;
     let tol = f(p, "toleranceM").unwrap_or(1.0).clamp(0.0, 10_000.0);
     let mut errors = Vec::new();
-    // Rules whose check stopped early (an error or work limit): their counts are partial.
+    // Rules whose check stopped early (an error or work limit), or measured some part more coarsely
+    // than it's meant to (a line winding round a pole many times): their counts may be off.
     let mut incomplete = Vec::new();
     for rule in s.map().editing.topology.clone() {
         let Some(l) = s.map().layer_by_name(rule.layer()) else { continue };
@@ -1327,6 +1328,13 @@ fn topology_validate(s: &mut Session, p: &Json) -> CmdResult {
             lon: e.at.x,
             lat: e.at.y,
         }));
+    }
+    if !incomplete.is_empty() {
+        s.warn(format!(
+            "{} topology rule(s) weren't checked completely ({}): a check stopped early, or measured a line winding round a pole coarsely, so their counts may be off",
+            incomplete.len(),
+            incomplete.join(", ")
+        ));
     }
     let n = errors.len();
     let out: Vec<Json> =

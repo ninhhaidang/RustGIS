@@ -8,12 +8,15 @@
 //!
 //! The outline keeps its distance between its vertices too, not only at them (#1159): an edge
 //! drawn straight in the plane is split before it comes back to lon/lat wherever a straight edge
-//! there would stray from it ([`OUTLINE_TOLERANCE`]), so up to 85° of latitude the sides are
+//! there would stray from it ([`OUTLINE_TOLERANCE`]), straight as the tools draw edges (in the
+//! analysis plane: Web Mercator within ±85.05°, straight in lon/lat beyond, #1033), so at any
+//! latitude, as far as [`MAX_SPLITS`] halvings reach, the sides are
 //! within 0.012% of the distance (or 1 cm) wherever the feature is within 150 km of its
 //! projection's centre: the projection's own error, under 0.0093% there, and the edges' 0.002%.
 //! A winding line or outline buffered in stretches can have vertices up to [`STRETCH_M`] from a
 //! stretch's centre, where the sides are within 0.05%. A ring gains at most [`MAX_ADDED`] points,
-//! which only a ring of thousands of long edges uses up; past that, its edges are left whole.
+//! which only a ring of thousands of long edges uses up; past that, its edges are left whole,
+//! and the buffer says so ([`BudgetedBuffer::coarse`]), as Buffer then does.
 //!
 //! Arcs use a 2.8125° step: 128 edges to a point's circle and 64 to a semicircular cap.
 //! Between vertices, those edges cut at most 0.031% of the distance inside the circle in the
@@ -26,7 +29,7 @@ use geo::{
     orient::Direction,
 };
 use rustgis_data::{Coord, Geometry};
-use rustgis_geom::{Aeqd, geodesic_interpolate, haversine_m, lonlat_to_merc, merc_to_lonlat, spherical_centre};
+use rustgis_geom::{Aeqd, geodesic_interpolate, haversine_m, lonlat_to_plane, plane_to_lonlat, spherical_centre};
 
 /// A feature within this distance of its centre is buffered in one projection (the error is
 /// under 0.01%).
@@ -86,10 +89,18 @@ pub fn geodesic_buffer(g: &Geometry, metres: f64) -> Option<Geometry> {
 }
 
 /// A buffered outline and its budget charge: at least the retained coordinate count, or the
-/// pre-union disc total for a multipoint, whichever is larger.
+/// pre-union disc total for a multipoint, whichever is larger; and whether an edge of it was left
+/// straying more than its tolerance, for want of [`MAX_ADDED`] points or [`MAX_SPLITS`] halvings.
 pub(crate) struct BudgetedBuffer {
     pub geometry: Option<Geometry>,
     pub charged_vertices: usize,
+    pub coarse: bool,
+}
+
+std::thread_local! {
+    /// Whether the buffer being made on this thread left an edge straying more than its tolerance
+    /// ([`Plane::split`]); each buffer is made whole on one thread, which resets it first.
+    static COARSE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// A buffer that must fit the caller's remaining vertex budget. Multipoint discs are counted
@@ -98,8 +109,9 @@ pub(crate) struct BudgetedBuffer {
 /// outlines, not all temporary allocations inside the polygon overlay backend.
 pub(crate) fn geodesic_buffer_with_limit(g: &Geometry, metres: f64, max_vertices: usize) -> Result<BudgetedBuffer, &'static str> {
     if !metres.is_finite() {
-        return Ok(BudgetedBuffer { geometry: None, charged_vertices: 0 });
+        return Ok(BudgetedBuffer { geometry: None, charged_vertices: 0, coarse: false });
     }
+    COARSE.set(false);
     let mut pre_union_vertices = 0;
     let mp = match g {
         Geometry::Point(c) => point(*c, metres),
@@ -124,7 +136,7 @@ pub(crate) fn geodesic_buffer_with_limit(g: &Geometry, metres: f64, max_vertices
         return Err(VERTEX_BUDGET_ERROR);
     }
     let charged_vertices = pre_union_vertices.max(mp.coords_count());
-    Ok(BudgetedBuffer { geometry: to_geometry(&mp), charged_vertices })
+    Ok(BudgetedBuffer { geometry: to_geometry(&mp), charged_vertices, coarse: COARSE.get() })
 }
 
 /// Buffers of this many features or more are made on several threads.
@@ -133,32 +145,40 @@ pub(crate) const PARALLEL_FEATURES: usize = 256;
 /// The buffers of `geoms` at `metres`, in their order, as [`geodesic_buffer`] makes them: on
 /// several threads when there are many (one in the browser), since each is made alone.
 pub fn geodesic_buffers(geoms: &[&Geometry], metres: f64) -> Vec<Option<Geometry>> {
-    geodesic_buffers_with_limit(geoms, metres, usize::MAX).unwrap_or_default()
+    geodesic_buffers_with_limit(geoms, metres, usize::MAX).map(|(b, _)| b).unwrap_or_default()
 }
 
-/// Ordered parallel buffers sharing an outline budget, including pre-union multipoint discs.
+/// Ordered parallel buffers sharing an outline budget, including pre-union multipoint discs, and
+/// how many of them left an edge straying more than its tolerance ([`BudgetedBuffer::coarse`]).
 /// `usize::MAX` disables cumulative charging for the public unlimited API. Each buffer checks the
 /// allowance left before it is made, then is charged to it before it is kept. In-flight
 /// operations may allocate temporary geometry on each thread (one in the browser).
-pub(crate) fn geodesic_buffers_with_limit(geoms: &[&Geometry], metres: f64, limit: usize) -> Result<Vec<Option<Geometry>>, &'static str> {
+pub(crate) fn geodesic_buffers_with_limit(
+    geoms: &[&Geometry],
+    metres: f64,
+    limit: usize,
+) -> Result<(Vec<Option<Geometry>>, usize), &'static str> {
     buffers_on(geoms, metres, crate::parallel::threads_for(geoms.len(), PARALLEL_FEATURES), limit)
 }
 
 /// [`geodesic_buffers_with_limit`] on `threads` threads, through [`crate::parallel::try_map_on`]:
 /// a buffer past the budget stops the others.
-fn buffers_on(geoms: &[&Geometry], metres: f64, threads: usize, limit: usize) -> Result<Vec<Option<Geometry>>, &'static str> {
-    let remaining = std::sync::atomic::AtomicUsize::new(limit);
+fn buffers_on(geoms: &[&Geometry], metres: f64, threads: usize, limit: usize) -> Result<(Vec<Option<Geometry>>, usize), &'static str> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let (remaining, coarse) = (AtomicUsize::new(limit), AtomicUsize::new(0));
     crate::control::begin(geoms.len());
-    crate::parallel::try_map_on(
+    let buffers = crate::parallel::try_map_on(
         geoms,
         threads,
         || (),
-        |_, _, g| {
-            let buffered = geodesic_buffer_with_limit(g, metres, remaining.load(std::sync::atomic::Ordering::Relaxed))?;
+        |_, _, g| -> Result<Option<Geometry>, &'static str> {
+            let buffered = geodesic_buffer_with_limit(g, metres, remaining.load(Ordering::Relaxed))?;
             charge(&remaining, limit, buffered.charged_vertices)?;
+            coarse.fetch_add(usize::from(buffered.coarse), Ordering::Relaxed);
             Ok(buffered.geometry)
         },
-    )
+    )?;
+    Ok((buffers, coarse.load(Ordering::Relaxed)))
 }
 
 /// Takes `vertices` from the `remaining` budget that threads share, or says it is spent; nothing
@@ -240,9 +260,9 @@ impl Plane {
     }
 
     /// The points to add between `a` and `b`, an edge straight in the plane, so that back in lon/lat
-    /// straight edges between them stay within `tolerance` metres of it. The edge's quarter points
-    /// and midpoint are compared with the same points of the straight edge in Web Mercator, the
-    /// plane the tools draw edges in (one point alone misses a stray that changes side, as along a
+    /// straight edges between them stay within `tolerance` meters of it. The edge's quarter points
+    /// and midpoint are compared with the same points of the straight edge in the analysis plane,
+    /// the plane the tools draw edges in (one point alone misses a stray that changes side, as along a
     /// line crossing the equator); an edge that strays is halved, and each half checked again, up
     /// to [`MAX_SPLITS`] times, while the ring's `budget` of added points lasts. Each point, the
     /// ends and those added to `out`, comes with its place in lon/lat.
@@ -255,7 +275,14 @@ impl Plane {
         budget: &mut usize,
         out: &mut Vec<(GC<f64>, Coord)>,
     ) {
-        if *budget == 0 || depth >= MAX_SPLITS || !may_stray(a, b, la, lb, tolerance) {
+        if !may_stray(a, b, la, lb, tolerance) {
+            return;
+        }
+        // Out of points or halvings: an edge that still strays is left so, and the buffer says so.
+        if *budget == 0 || depth >= MAX_SPLITS {
+            if self.strays(a, b, la, lb, tolerance) {
+                COARSE.set(true);
+            }
             return;
         }
         if !self.strays(a, b, la, lb, tolerance) {
@@ -265,6 +292,13 @@ impl Plane {
         let mid = (mid, self.to_lonlat(mid));
         self.split((a, la), mid, tolerance, depth + 1, budget, out);
         if *budget == 0 {
+            // Out of points in the first half: `mid` isn't added, so the edge left runs from the
+            // last point added to `b`, checked by no call below.
+            if let Some(&(p, lp)) = out.last()
+                && self.strays(p, b, lp, lb, tolerance)
+            {
+                COARSE.set(true);
+            }
             return;
         }
         *budget -= 1;
@@ -273,27 +307,19 @@ impl Plane {
     }
 
     /// Whether the edge from `a` to `b` (straight in the plane, `la` and `lb` in lon/lat) strays
-    /// from the same edge straight in Web Mercator by more than `tolerance` metres at its quarter
-    /// points or midpoint.
+    /// from the same edge straight in the analysis plane ([`lonlat_to_plane`]: Web Mercator within
+    /// ±85.05°, straight in lon/lat beyond) by more than `tolerance` meters at its quarter points
+    /// or midpoint.
     fn strays(&self, a: GC<f64>, b: GC<f64>, la: Coord, lb: Coord, tolerance: f64) -> bool {
         let at = |t: f64| self.0.inverse(Coord::new(a.x + t * (b.x - a.x), a.y + t * (b.y - a.y)));
-        let beyond = |c: Coord| c.y.abs() >= rustgis_geom::MAX_LAT;
-        match (beyond(la), beyond(lb)) {
-            // Beyond Web Mercator's 85.05° there's no straight edge to compare with.
-            (true, true) => false,
-            // Across that edge: halved until each piece is on one side of it or too short to stray.
-            (true, false) | (false, true) => true,
-            (false, false) => {
-                // `b` on `a`'s side of the antimeridian, so the straight edge is the short one.
-                let near_b = Coord::new(la.x + wrap(lb.x - la.x), lb.y);
-                let (ma, mb) = (lonlat_to_merc(la), lonlat_to_merc(near_b));
-                [0.25, 0.5, 0.75].into_iter().any(|t| {
-                    let p = at(t);
-                    let chord = merc_to_lonlat(Coord::new(ma.x + t * (mb.x - ma.x), ma.y + t * (mb.y - ma.y)));
-                    haversine_m(p, Coord::new(p.x + wrap(chord.x - p.x), chord.y)) > tolerance
-                })
-            }
-        }
+        // `b` on `a`'s side of the antimeridian, so the straight edge is the short one.
+        let near_b = Coord::new(la.x + wrap(lb.x - la.x), lb.y);
+        let (ma, mb) = (lonlat_to_plane(la), lonlat_to_plane(near_b));
+        [0.25, 0.5, 0.75].into_iter().any(|t| {
+            let p = at(t);
+            let chord = plane_to_lonlat(Coord::new(ma.x + t * (mb.x - ma.x), ma.y + t * (mb.y - ma.y)));
+            haversine_m(p, Coord::new(p.x + wrap(chord.x - p.x), chord.y)) > tolerance
+        })
     }
 
     /// A ring round a pole, which goes once round the globe in longitude, as a lon/lat ring: cut at
@@ -333,8 +359,11 @@ impl Plane {
 }
 
 /// Whether the edge from `a` to `b` in the plane (`la` and `lb` in lon/lat) can stray as far as
-/// `tolerance` from the same edge straight in Web Mercator, so that [`Plane::strays`] must look.
-/// Straight in Web Mercator is a rhumb line, which runs off the geodesic by about L² tan φ / 8R
+/// `tolerance` from the same edge straight in the analysis plane, so that [`Plane::strays`] must
+/// look. Beyond 85.05° the analysis plane's straight edges are straight in lon/lat: spirals about a
+/// pole, not rhumb lines, bounded as such; an edge reaching across 85.05°, or with its ends beyond
+/// it about both poles, is always looked at. Within ±85.05° straight in
+/// the analysis plane is straight in Web Mercator, a rhumb line, which runs off the geodesic by about L² tan φ / 8R
 /// at latitude φ, the heading of a geodesic turning by L tan φ / R along it: 2.0e-8 per square
 /// metre at 46°, 1.9e-7 at 84°, as measured for [`STRAY_PER_M2`], plus [`FLAT_ALLOWANCE`] for the
 /// ellipsoid and near the equator. Straight in the plane is the
@@ -345,16 +374,43 @@ impl Plane {
 /// the look that most of a buffer's time went to.
 fn may_stray(a: GC<f64>, b: GC<f64>, la: Coord, lb: Coord, tolerance: f64) -> bool {
     let length2 = (b.x - a.x).powi(2) + (b.y - a.y).powi(2);
+    let length = length2.sqrt();
+    let rho = a.x.hypot(a.y).max(b.x.hypot(b.y)) + length;
+    let (beyond_a, beyond_b) = (la.y.abs() > rustgis_geom::MAX_LAT, lb.y.abs() > rustgis_geom::MAX_LAT);
+    if beyond_a || beyond_b {
+        // [`STRAY_PER_M2`] holds for rhumb lines, not here, where even a short edge near a pole
+        // strays meters: an edge with an end within ±85.05° (where the plane bends) or ends about
+        // both poles is always looked at.
+        if !(beyond_a && beyond_b) || la.y * lb.y <= 0.0 {
+            return true;
+        }
+        // Straight in lon/lat is, about the pole, a spiral ([`spiral_stray`]). Its chord there,
+        // straight about the pole, turns from the geodesic as this plane's straight edges do, at
+        // its own distance from its center.
+        let from_pole = |c: Coord| (90.0 - c.y.abs()).to_radians() * rustgis_geom::WGS84_POLAR_RADIUS_M;
+        let (pa, pb) = (from_pole(la), from_pole(lb));
+        let spiral = spiral_stray(pa.max(pb), (pa - pb).abs(), wrap(lb.x - la.x).to_radians().abs());
+        let turn = (FLAT_ALLOWANCE + PLANE_TURN * (rho + pa.max(pb)) / EARTH_R_M) / (8.0 * EARTH_R_M) * length2;
+        let stray = STRAY_MARGIN * (spiral + turn);
+        return !stray.is_finite() || stray > tolerance;
+    }
     if STRAY_PER_M2 * length2 <= tolerance {
         return false;
     }
-    let length = length2.sqrt();
     let lat = la.y.abs().max(lb.y.abs()).to_radians() + length / EARTH_R_M;
-    let rho = a.x.hypot(a.y).max(b.x.hypot(b.y)) + length;
     if !(lat.is_finite() && rho.is_finite()) || lat >= 89f64.to_radians() {
         return true;
     }
     STRAY_MARGIN * (lat.tan() + FLAT_ALLOWANCE + PLANE_TURN * rho / EARTH_R_M) / (8.0 * EARTH_R_M) * length2 > tolerance
+}
+
+/// How far, at most, an edge straight in longitude and latitude strays from its chord in a plane
+/// about its pole (meters): through `dl` radians of longitude, its distance from the pole changing
+/// by `drho` meters, `rho` being its end farther from the pole, it's a spiral, which strays by at
+/// most Δλ(ρΔλ + 2Δρ)/8 (the most its second derivative reaches, over 8). For the buffers' edges
+/// and the dangle check's pieces beyond 85.05°.
+pub(crate) fn spiral_stray(rho: f64, drho: f64, dl: f64) -> f64 {
+    dl * (rho * dl + 2.0 * drho) / 8.0
 }
 
 /// A longitude difference folded into −180..180.
@@ -537,15 +593,98 @@ mod tests {
     }
 
     #[test]
+    fn an_outline_beyond_85_degrees_follows_its_edges_as_the_tools_draw_them() {
+        // An octagon 100 km around 87°N in its projection, edges of about 77 km, all beyond 85.05°,
+        // where the tools draw an edge straight in lon/lat (#1033). Back in lon/lat, each edge of
+        // the outline, drawn as the tools draw it, stays within the tolerance of the octagon's: it
+        // gains the points that keep it there.
+        let plane = Plane::new(Coord::new(10.0, 87.0), 10.0);
+        let corner = |k: usize| {
+            let (s, c) = (k as f64 * std::f64::consts::FRAC_PI_4).sin_cos();
+            GC { x: 100_000.0 * c, y: 100_000.0 * s }
+        };
+        let octagon = LineString::new((0..=8).map(corner).collect());
+        let tolerance = 100_000.0 * OUTLINE_TOLERANCE;
+        let ring = plane.ring(&octagon, tolerance);
+        assert!(ring.0.len() > octagon.0.len(), "{}", ring.0.len());
+        let worst = farthest_drawn(&plane, &ring, &octagon);
+        assert!(worst <= 2.0 * tolerance, "{worst} m off the octagon, tolerance {tolerance} m");
+    }
+
+    #[test]
+    fn a_small_buffer_near_a_pole_follows_its_circle_as_the_tools_draw_it() {
+        // A point's buffer beyond 85.05° has short edges (49 m for 1 km), but near a pole an edge
+        // straight in lon/lat strays meters even so: each is looked at, not let pass for its length.
+        // Back in lon/lat, each edge of the outline, drawn as the tools draw it, stays within the
+        // tolerance of the circle drawn in the plane: across ±180° too, and round a pole (where the
+        // ring is closed by edges along ±180° and the pole, which aren't the circle's).
+        let cases = [
+            (10.0, 85.5, 1_000.0),
+            (10.0, 88.0, 1_000.0),
+            (10.0, 89.9, 100.0),
+            (10.0, 89.9, 10_000.0),
+            (10.0, 89.99, 1_000.0),
+            (10.0, -89.99, 1_000.0),
+            (180.0, 89.9, 10_000.0),
+            (10.0, 89.95, 10_000.0),
+        ];
+        for (lon, lat, meters) in cases {
+            let c = Coord::new(lon, lat);
+            let plane = Plane::new(c, c.x);
+            let circle = Point::new(0.0, 0.0).buffer_with_style(buffer_style(meters));
+            let Some(outline) = circle.0.first().map(Polygon::exterior) else { panic!("no circle at {lat}°") };
+            let tolerance = (meters * OUTLINE_TOLERANCE).max(MIN_TOLERANCE_M);
+            let ring = plane.ring(outline, tolerance);
+            // Only the last circle holds its pole.
+            assert_eq!(ring.0.iter().any(|p| p.y.abs() >= 90.0), (lon, lat) == (10.0, 89.95), "{lon}°, {lat}°");
+            let worst = farthest_drawn(&plane, &ring, outline);
+            assert!(worst <= 2.0 * tolerance, "{lon}°, {lat}°, {meters} m: {worst} m off the circle, tolerance {tolerance} m");
+        }
+    }
+
+    /// How far, at most, `ring` (in lon/lat, as [`Plane::ring`] gives it) drawn as the tools draw
+    /// its edges (straight in the analysis plane) comes from `outline` in `plane`, at each edge's
+    /// quarter points and midpoint; edges to a pole, which close a ring round it, aren't measured.
+    fn farthest_drawn(plane: &Plane, ring: &LineString<f64>, outline: &LineString<f64>) -> f64 {
+        let mut worst = 0.0_f64;
+        for w in ring.0.windows(2) {
+            let [a, b] = w else { continue };
+            if a.y.abs().max(b.y.abs()) >= 90.0 {
+                continue;
+            }
+            let (pa, pb) = (lonlat_to_plane(Coord::new(a.x, a.y)), lonlat_to_plane(Coord::new(b.x, b.y)));
+            for t in [0.25, 0.5, 0.75] {
+                let drawn = plane_to_lonlat(Coord::new(pa.x + t * (pb.x - pa.x), pa.y + t * (pb.y - pa.y)));
+                let p = plane.0.forward(drawn);
+                let off = outline
+                    .0
+                    .windows(2)
+                    .filter_map(|e| {
+                        Some(rustgis_data::geometry::seg_dist2(
+                            &[Coord::new(e.first()?.x, e.first()?.y), Coord::new(e.get(1)?.x, e.get(1)?.y)],
+                            p,
+                        ))
+                    })
+                    .fold(f64::INFINITY, f64::min)
+                    .sqrt();
+                worst = worst.max(off);
+            }
+        }
+        worst
+    }
+
+    #[test]
     fn an_edge_let_pass_by_its_latitude_does_not_stray() {
-        // Wherever `may_stray` lets an edge pass without looking, looking agrees: planes from 88°S
-        // to 88°N (past Web Mercator's 85.05° too), edges of 100 m to 1,000 km in eight directions,
-        // up to 5,000 km from the centre to the side or at 45°, at the tolerances of buffers from
-        // 100 m to 5,000 km (the largest Buffer makes).
-        let mut passed = 0;
-        for lat in (-84..=84).step_by(12).chain([-88, -86, 86, 88]) {
-            let plane = Plane::new(Coord::new(10.0, f64::from(lat)), 10.0);
-            for len in [100.0, 500.0, 1_000.0, 2_000.0, 5_000.0, 10_000.0, 30_000.0, 100_000.0, 300_000.0, 1_000_000.0] {
+        // Wherever `may_stray` lets an edge pass without looking, looking agrees: planes from
+        // 89.99°S to 89.99°N (past Web Mercator's 85.05° too), edges of 10 m to 1,000 km in eight
+        // directions, up to 5,000 km from the center to the side or at 45°, at the tolerances of
+        // buffers from 100 m to 5,000 km (the largest Buffer makes). Beyond 85.05° every edge is
+        // tried, short ones too, as the spirals' bound lets them pass.
+        let (mut passed, mut polar) = (0, 0);
+        let lats = (-84..=84).step_by(12).map(f64::from).chain([-89.99, -89.9, -88.0, -86.0, 85.5, 86.0, 88.0, 89.0, 89.9, 89.99]);
+        for lat in lats {
+            let plane = Plane::new(Coord::new(10.0, lat), 10.0);
+            for len in [10.0, 50.0, 100.0, 500.0, 1_000.0, 2_000.0, 5_000.0, 10_000.0, 30_000.0, 100_000.0, 300_000.0, 1_000_000.0] {
                 for k in 0..8 {
                     let (sin, cos) = (f64::from(k) * std::f64::consts::PI / 8.0).sin_cos();
                     // The edge's centre off it to the side (where the plane turns it most) or obliquely.
@@ -558,10 +697,12 @@ mod tests {
                         let a = GC { x: cx - cos * len / 2.0, y: cy - sin * len / 2.0 };
                         let b = GC { x: cx + cos * len / 2.0, y: cy + sin * len / 2.0 };
                         let (la, lb) = (plane.to_lonlat(a), plane.to_lonlat(b));
+                        let beyond = la.y.abs().min(lb.y.abs()) > rustgis_geom::MAX_LAT;
                         for metres in [100.0, 1_000.0, 5_000.0, 50_000.0, 500_000.0, 2_000_000.0, 5_000_000.0] {
                             let tolerance = (metres * OUTLINE_TOLERANCE).max(MIN_TOLERANCE_M);
-                            if STRAY_PER_M2 * len * len > tolerance && !may_stray(a, b, la, lb, tolerance) {
+                            if (beyond || STRAY_PER_M2 * len * len > tolerance) && !may_stray(a, b, la, lb, tolerance) {
                                 passed += 1;
+                                polar += usize::from(beyond);
                                 assert!(!plane.strays(a, b, la, lb, tolerance), "{len} m at {lat}°, {off} m off, {metres} m");
                             }
                         }
@@ -569,8 +710,8 @@ mod tests {
                 }
             }
         }
-        // Most edges a buffer has at mid latitudes are let pass.
-        assert!(passed > 1_000, "{passed}");
+        // Most edges a buffer has at mid latitudes are let pass, and many beyond 85.05°.
+        assert!(passed > 1_000 && polar > 1_000, "{passed}, {polar} beyond 85.05°");
     }
 
     #[test]
@@ -583,12 +724,37 @@ mod tests {
         let vertices: usize = alone.iter().flatten().map(Geometry::coord_count).sum();
         // The exact shared limit succeeds; one vertex less fails on every thread count.
         for threads in [1, 3, 16] {
-            assert_eq!(buffers_on(&refs, 5_000.0, threads, vertices).unwrap(), alone);
+            assert_eq!(buffers_on(&refs, 5_000.0, threads, vertices).unwrap(), (alone.clone(), 0));
             assert_eq!(buffers_on(&refs, 5_000.0, threads, vertices - 1).unwrap_err(), VERTEX_BUDGET_ERROR);
-            assert_eq!(buffers_on(&refs, 5_000.0, threads, usize::MAX).unwrap(), alone, "{threads} threads");
-            assert_eq!(buffers_on(&refs[..3], 5_000.0, threads, usize::MAX).unwrap(), alone[..3], "{threads} threads, 3 features");
+            assert_eq!(buffers_on(&refs, 5_000.0, threads, usize::MAX).unwrap(), (alone.clone(), 0), "{threads} threads");
+            assert_eq!(buffers_on(&refs[..3], 5_000.0, threads, usize::MAX).unwrap().0, alone[..3], "{threads} threads, 3 features");
         }
-        assert!(buffers_on(&[], 5_000.0, 3, 0).unwrap().is_empty());
+        assert!(buffers_on(&[], 5_000.0, 3, 0).unwrap().0.is_empty());
+        // A ring 5,000 km out from its plane's center, where straight edges stray most, of 2,000
+        // edges, needs far more than MAX_ADDED points: its edges are left so, and the buffer says
+        // so. A ring of 10 km round the center needs none.
+        let plane = Plane::new(Coord::new(0.0, 0.0), 0.0);
+        let circle = |r: f64, n: usize| {
+            LineString::new(
+                (0..=n).map(|i| std::f64::consts::TAU * i as f64 / n as f64).map(|t| GC { x: r * t.cos(), y: r * t.sin() }).collect(),
+            )
+        };
+        COARSE.set(false);
+        let _ = plane.ring(&circle(5_000_000.0, 2_000), 0.02);
+        assert!(COARSE.get(), "the far ring kept its tolerance");
+        COARSE.set(false);
+        let _ = plane.ring(&circle(10_000.0, 64), 0.02);
+        assert!(!COARSE.get(), "the near ring was coarse");
+        // A budget running out within an edge's first half leaves the edge from the last point added
+        // to its end, which no deeper call checks: one point for a long straying edge is too few.
+        let far = circle(5_000_000.0, 8);
+        let ends: Vec<(GC<f64>, Coord)> = far.0.iter().take(2).map(|p| (*p, plane.to_lonlat(*p))).collect();
+        let [a, b] = ends.as_slice() else { panic!("two ends") };
+        assert!(plane.strays(a.0, b.0, a.1, b.1, 0.02), "the edge doesn't stray");
+        let (mut budget, mut out) = (1, vec![*a]);
+        COARSE.set(false);
+        plane.split(*a, *b, 0.02, 0, &mut budget, &mut out);
+        assert!(budget == 0 && COARSE.get(), "budget {budget}, {} points: not marked", out.len());
         // Overlapping multipoint unions stay small, but every disc is charged across workers.
         let multipoint = Geometry::MultiPoint(vec![Coord::new(0.0, 0.0); 2]);
         let refs = vec![&multipoint; 2 * BATCH];

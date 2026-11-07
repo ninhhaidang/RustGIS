@@ -30379,3 +30379,28 @@ fn a_scripts_tools_run_ahead_are_taken_by_its_run() {
         assert!(s.registry.get(id).is_some(), "{id}");
     }
 }
+
+#[test]
+fn topology_validate_says_when_a_polar_check_is_incomplete() {
+    // A line winding round the North Pole about 19,000 times: its dangle check measures it coarsely,
+    // so the rule is reported as incomplete, once, in a notice.
+    let c = rustgis_geom::Coord::new;
+    let mut s = Session::new(Project::default());
+    let mut winding = rustgis_data::Dataset::new("Winding", rustgis_data::GeometryType::Polyline, vec![]);
+    winding.push(Some(rustgis_data::Geometry::Line(vec![vec![c(0.0, 89.9999), c(7_000_000.0, 89.9999)]])), vec![]);
+    s.map_mut().add_layer(rustgis_map::Layer::new(0, winding));
+    s.run("topology.rules", &json!({"add": {"rule": "mustNotHaveDangles", "layer": "Winding"}})).unwrap();
+    let mark = s.notice_mark();
+    s.run("topology.validate", &json!({"toleranceM": 20})).unwrap();
+    let said: Vec<&str> = s.notices_since(mark).iter().map(|n| n.text.as_str()).collect();
+    assert_eq!(said.iter().filter(|t| t.starts_with("1 topology rule(s) weren't checked completely")).count(), 1, "{said:?}");
+    // A line measured as closely as it needs to be says nothing of the kind.
+    s.run("topology.rules", &json!({"clear": true})).unwrap();
+    let mut short = rustgis_data::Dataset::new("Short", rustgis_data::GeometryType::Polyline, vec![]);
+    short.push(Some(rustgis_data::Geometry::Line(vec![vec![c(0.0, 89.9999), c(2_000.0, 89.9999)]])), vec![]);
+    s.map_mut().add_layer(rustgis_map::Layer::new(0, short));
+    s.run("topology.rules", &json!({"add": {"rule": "mustNotHaveDangles", "layer": "Short"}})).unwrap();
+    let mark = s.notice_mark();
+    s.run("topology.validate", &json!({"toleranceM": 20})).unwrap();
+    assert!(s.notices_since(mark).iter().all(|n| !n.text.contains("weren't checked completely")));
+}
