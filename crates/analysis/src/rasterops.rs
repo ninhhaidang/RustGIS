@@ -550,6 +550,11 @@ fn idw_on(
         return Err("the distance coefficient must be zero or more".into());
     }
     let k = if neighbours == 0 { points.len() } else { neighbours.clamp(1, points.len()) };
+    // At a power of 2 (the default) the weights are ratios of squared distances: no square root
+    // or power per cell and point, as GDAL's IDW does it. Squaring keeps the distances' order, so
+    // the nearest points are the same.
+    let squared = power == 2.0;
+    let exact = if squared { 1e-24 } else { 1e-12 };
     // Each row on its own, on several threads when the work is large (#1252); a thread's
     // distances go into its own buffer.
     let scratch_bytes = points.len().saturating_mul(std::mem::size_of::<(f64, f64)>());
@@ -581,22 +586,28 @@ fn idw_on(
                 }
                 let c = Coord::new(extent.min_x + (col as f64 + 0.5) * cell_deg, extent.max_y - (row as f64 + 0.5) * cell_deg);
                 near.clear();
-                near.extend(points.iter().map(|(p, v)| {
+                let d2 = |p: &Coord| {
                     let dx = (p.x - c.x) * kx;
-                    ((dx * dx + (p.y - c.y).powi(2)).sqrt(), *v)
-                }));
+                    dx * dx + (p.y - c.y).powi(2)
+                };
+                // One loop or the other, each kept tight.
+                if squared {
+                    near.extend(points.iter().map(|(p, v)| (d2(p), *v)));
+                } else {
+                    near.extend(points.iter().map(|(p, v)| (d2(p).sqrt(), *v)));
+                }
                 if k < near.len() {
                     near.select_nth_unstable_by(k - 1, |a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
                     near.truncate(k);
                 }
-                let v = if let Some(exact) = near.iter().find(|(d, _)| *d < 1e-12) {
-                    exact.1
+                let v = if let Some(on) = near.iter().find(|(d, _)| *d < exact) {
+                    on.1
                 } else {
                     // Weights relative to the nearest point's: the same ratios as 1/dᵖ, without
                     // overflowing for a high power.
                     let nearest = near.iter().map(|(d, _)| *d).fold(f64::INFINITY, f64::min);
                     let (num, den) = near.iter().fold((0.0, 0.0), |(n, d), (dist, v)| {
-                        let wgt = (nearest / dist).powf(power);
+                        let wgt = if squared { nearest / dist } else { (nearest / dist).powf(power) };
                         (n + wgt * v, d + wgt)
                     });
                     num / den
@@ -1794,13 +1805,76 @@ mod tests {
             })
             .collect();
         let extent = Extent::new(0.0, 40.0, 10.0, 50.0);
-        for neighbours in [0, 8] {
-            let one = idw_on(Some(1), &pts, &extent, 0.1, 2.0, neighbours, "idw").unwrap_or_else(|e| panic!("{e}"));
+        // At a power of 2 (squared distances) and another (the general path).
+        for (power, neighbours) in [(2.0, 0), (2.0, 8), (3.0, 0), (3.0, 8)] {
+            let one = idw_on(Some(1), &pts, &extent, 0.1, power, neighbours, "idw").unwrap_or_else(|e| panic!("{e}"));
             for threads in [2, 7, 16] {
-                let many = idw_on(Some(threads), &pts, &extent, 0.1, 2.0, neighbours, "idw").unwrap_or_else(|e| panic!("{e}"));
+                let many = idw_on(Some(threads), &pts, &extent, 0.1, power, neighbours, "idw").unwrap_or_else(|e| panic!("{e}"));
                 let bits = |r: &Raster| r.bands[0].data.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
-                assert_eq!(bits(&one), bits(&many), "{threads} threads, {neighbours} neighbours");
+                assert_eq!(bits(&one), bits(&many), "power {power}, {threads} threads, {neighbours} neighbours");
             }
+        }
+    }
+
+    /// At a power of 2 the weights come from squared distances, with no square root or power
+    /// (#1252): the surface is the general path's to within rounding, from every point and from
+    /// the nearest few, and a cell on a point still takes its value.
+    #[test]
+    fn idw_at_power_two_is_the_general_paths_surface() {
+        let pts: Vec<(Coord, f64)> = (0..400)
+            .map(|i| {
+                let (x, y) = ((i * 37 % 400) as f64 / 40.0, (i * 91 % 400) as f64 / 40.0);
+                (Coord::new(x, 40.0 + y), (x * 1.3).sin() * 100.0 + y * 7.0)
+            })
+            .chain([(Coord::new(0.05, 49.95), 1234.5)])
+            .collect();
+        let extent = Extent::new(0.0, 40.0, 10.0, 50.0);
+        for neighbours in [0, 8] {
+            let fast = idw_on(Some(1), &pts, &extent, 0.1, 2.0, neighbours, "idw").unwrap_or_else(|e| panic!("{e}"));
+            // The general path can't be asked for at a power of 2, and one near 2 has other
+            // weights: the reference is made here, as the general path made it at 2.
+            let k = if neighbours == 0 { pts.len() } else { neighbours };
+            let (w, h) = (100usize, 100usize);
+            for row in 0..h {
+                let kx = (extent.max_y - (row as f64 + 0.5) * 0.1).to_radians().cos();
+                for col in 0..w {
+                    let c = Coord::new(extent.min_x + (col as f64 + 0.5) * 0.1, extent.max_y - (row as f64 + 0.5) * 0.1);
+                    let mut near: Vec<(f64, f64)> = pts.iter().map(|(p, v)| (((p.x - c.x) * kx).hypot(p.y - c.y), *v)).collect();
+                    near.sort_by(|a, b| a.0.total_cmp(&b.0));
+                    // Points tied with the last one kept (as far as rounding goes): either may be
+                    // the one picked, so each is a right answer.
+                    let last = near[k - 1].0;
+                    let tied: Vec<(f64, f64)> = near[k - 1..].iter().copied().filter(|(d, _)| (d - last).abs() <= last * 1e-12).collect();
+                    let surface = |chosen: &[(f64, f64)]| {
+                        (match chosen.iter().find(|(d, _)| *d < 1e-12) {
+                            Some(on) => on.1,
+                            None => {
+                                let nearest = chosen.iter().map(|(d, _)| *d).fold(f64::INFINITY, f64::min);
+                                let (n, d) = chosen.iter().fold((0.0, 0.0), |(n, d), (dist, v)| {
+                                    let wgt = (nearest / dist).powf(2.0);
+                                    (n + wgt * v, d + wgt)
+                                });
+                                n / d
+                            }
+                        }) as f32
+                    };
+                    let got = fast.bands[0].data[row * w + col];
+                    let wants: Vec<f32> = tied
+                        .iter()
+                        .map(|t| {
+                            let mut chosen = near[..k - 1].to_vec();
+                            chosen.push(*t);
+                            surface(&chosen)
+                        })
+                        .collect();
+                    assert!(
+                        wants.iter().any(|want| (got - want).abs() <= want.abs() * 1e-6 + 1e-6),
+                        "({col}, {row}), {neighbours} neighbours: {got} vs {wants:?}"
+                    );
+                }
+            }
+            // The cell centred on the last point takes its value.
+            assert_eq!(fast.bands[0].data[0], 1234.5, "{neighbours} neighbours");
         }
     }
 
