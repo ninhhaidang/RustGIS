@@ -446,9 +446,10 @@ fn request(url: &str, want: Want, omit: &'static [u16]) -> State {
             }
         };
     }
+    let asked_at = crate::mbtiles::epoch();
     c.slots.insert(url.to_string(), Slot { entry: Entry::Pending, used: tick, asked: now });
     drop(c);
-    start(url.to_string(), want, omit);
+    start(url.to_string(), want, omit, asked_at);
     State::Pending
 }
 
@@ -491,11 +492,16 @@ pub fn clear() {
 }
 
 /// The resource a cache key reads: its address without a download budget, a byte range or a
-/// tail, and for a tile of a PMTiles or COG archive, the archive's address.
+/// tail, and for a tile of a PMTiles, COG or MBTiles archive, the archive's address.
 fn resource_of(key: &str) -> &str {
     let key = split_download_limit(key).0;
     let key = split_tail(key).0;
     let key = split_range(key).0;
+    // An MBTiles file's path whole, as its tiles and the record of forgotten files name it: a
+    // `#` in a file's name isn't a COG's look.
+    if crate::mbtiles::is_tile(key) {
+        return key.split_once('@').map_or(key, |(_, archive)| archive);
+    }
     if key.starts_with(crate::pmtiles::SCHEME) || key.starts_with(crate::cog::SCHEME) {
         return key.split_once('@').map_or(key, |(_, archive)| crate::cog::split(archive).0);
     }
@@ -504,9 +510,14 @@ fn resource_of(key: &str) -> &str {
 
 /// Forgets what was read of one address (and of the archive or file it names), so it is read
 /// again, as [`clear`] does for everything: after the login that signs it changed (a source
-/// whose address stays the same, read again with other keys). Reads under way are kept.
+/// whose address stays the same, read again with other keys). Reads under way are kept, except an
+/// MBTiles file's tiles: it is forgotten when it may be replaced, and its old tiles mustn't stay.
 pub fn forget(url: &str) {
-    let url = crate::cog::split(split_download_limit(url).0).0;
+    let url = split_download_limit(url).0;
+    // An MBTiles file's path is taken whole (see [`resource_of`]).
+    let url = if crate::mbtiles::check(url).is_ok() { url } else { crate::cog::split(url).0 };
+    // First: a tile answered from here on is dropped, and one answered before goes with the rest.
+    crate::mbtiles::forget_archive(url);
     let mut c = lock();
     let dropped: usize = c
         .slots
@@ -517,7 +528,7 @@ pub fn forget(url: &str) {
             _ => 0,
         })
         .sum();
-    c.slots.retain(|k, s| matches!(s.entry, Entry::Pending) || resource_of(k) != url);
+    c.slots.retain(|k, s| resource_of(k) != url || (matches!(s.entry, Entry::Pending) && !crate::mbtiles::is_tile(k)));
     c.bytes = c.bytes.saturating_sub(dropped);
     drop(c);
     crate::pmtiles::forget_archive(url);
@@ -581,8 +592,9 @@ pub fn wait_for_news_unless(since: u64, timeout: Duration, stop: impl Fn() -> bo
     let _ = (since, timeout, stop);
 }
 
-/// A waiting fetch: its decode kind, diagnostics owner, expected statuses and initiating context.
-type Job = (Want, Capture, &'static [u16], Option<Still>);
+/// A waiting fetch: its decode kind, diagnostics owner, expected statuses, when it was asked for
+/// ([`land`]) and initiating context.
+type Job = (Want, Capture, &'static [u16], u64, Option<Still>);
 
 fn queue() -> &'static Mutex<Queue<Job>> {
     static Q: OnceLock<Mutex<Queue<Job>>> = OnceLock::new();
@@ -590,7 +602,7 @@ fn queue() -> &'static Mutex<Queue<Job>> {
 }
 
 /// Asks for a tile: fetched now when its server has room, else it waits its turn.
-fn start(url: String, want: Want, omit: &'static [u16]) {
+fn start(url: String, want: Want, omit: &'static [u16], asked_at: u64) {
     let capture = Capture::current();
     let still = current_still();
     IN_FLIGHT.fetch_add(1, Ordering::Relaxed);
@@ -599,7 +611,7 @@ fn start(url: String, want: Want, omit: &'static [u16]) {
         let mut q = queue().lock().unwrap_or_else(|e| e.into_inner());
         let mut c = lock();
         let latest = c.latest.unwrap_or_else(Instant::now);
-        let now = q.push(url, (want, capture, omit, still), |u| c.slots.get(u).map(|s| s.asked), latest, &mut swept);
+        let now = q.push(url, (want, capture, omit, asked_at, still), |u| c.slots.get(u).map(|s| s.asked), latest, &mut swept);
         // Under the same lock as the choice: a tile asked for again meanwhile isn't forgotten.
         forget_dropped(&mut c, &swept);
         now
@@ -658,9 +670,9 @@ fn launch(jobs: Vec<Waiting<Job>>) {
             }
             let _lower = Lower;
             while let Some(w) = pop() {
-                let (want, capture, omit, still) = w.job;
+                let (want, capture, omit, asked_at, still) = w.job;
                 let _scope = capture.enter();
-                with_optional_still(still, || fetch_tile(w.url, w.host, want, omit));
+                with_optional_still(still, || fetch_tile(w.url, w.host, want, omit, asked_at));
             }
         }
         // A tile queued after the last `pop` and before the flag went down is started here.
@@ -677,6 +689,8 @@ struct Answer {
     key: String,
     host: String,
     entry: Option<Entry>,
+    /// When the tile was asked for, for an MBTiles file forgotten since ([`land`]).
+    asked_at: u64,
 }
 
 impl Answer {
@@ -688,26 +702,41 @@ impl Answer {
 
 impl Drop for Answer {
     fn drop(&mut self) {
-        match self.entry.take() {
-            Some(entry) => store(&self.key, entry),
-            // Never answered (or dropped by the fetcher): forgotten, fetched again when asked for.
-            None => {
-                let mut c = lock();
-                if matches!(c.slots.get(&self.key), Some(Slot { entry: Entry::Pending, .. })) {
-                    c.slots.remove(&self.key);
-                }
-            }
-        }
+        land(&self.key, self.entry.take(), self.asked_at);
         release(&self.host);
         finished();
     }
 }
 
+/// Keeps what a fetch asked for at `asked_at` answered. A tile of an MBTiles file forgotten since may be
+/// of the old file, so it is dropped. Its slot went with the forget: one there now is a newer read's.
+fn land(key: &str, entry: Option<Entry>, asked_at: u64) {
+    if entry.is_some() && login_gone(key) {
+        return;
+    }
+    // Under the lock [`forget`] takes after recording the file: if that hasn't been recorded yet,
+    // what is stored here goes with the slots it removes next.
+    let mut c = lock();
+    if crate::mbtiles::forgotten_since(key, asked_at) {
+        return;
+    }
+    // Asked for before the record of forgotten files was emptied, so it can't be told: read again.
+    match entry.filter(|_| !crate::mbtiles::asked_before_emptied(key, asked_at)) {
+        Some(entry) => keep(&mut c, key, entry),
+        // Never answered (or dropped by the fetcher): forgotten, fetched again when asked for.
+        None => {
+            if matches!(c.slots.get(key), Some(Slot { entry: Entry::Pending, .. })) {
+                c.slots.remove(key);
+            }
+        }
+    }
+}
+
 /// Retains the initiating lifetime through deferred decoding. Retired results are forgotten;
 /// only live successes and resource failures are shared with later callers.
-fn fetch_tile(url: String, host: String, want: Want, omit: &'static [u16]) {
+fn fetch_tile(url: String, host: String, want: Want, omit: &'static [u16], asked_at: u64) {
     let owner = current_still();
-    let answer = Answer { key: url.clone(), host, entry: None };
+    let answer = Answer { key: url.clone(), host, entry: None, asked_at };
     let done: Done = Box::new(move |bytes| {
         // Shared archive reads can answer under another loader's narrower lifetime. Retain
         // that floor with this tile's owner before a browser decoder suspends completion.
@@ -1297,14 +1326,26 @@ fn finished() {
 }
 
 fn store(url: &str, entry: Entry) {
-    if crate::logins::check(resource_of(url)).is_err() {
-        let mut c = lock();
-        if let Some(Slot { entry: Entry::Ready(_, n), .. }) = c.slots.remove(url) {
-            c.bytes = c.bytes.saturating_sub(n);
-        }
+    if login_gone(url) {
         return;
     }
+    keep(&mut lock(), url, entry);
+}
+
+/// Whether the login `url` was fetched with is gone, in which case nothing of it is kept.
+fn login_gone(url: &str) -> bool {
+    if crate::logins::check(resource_of(url)).is_ok() {
+        return false;
+    }
     let mut c = lock();
+    if let Some(Slot { entry: Entry::Ready(_, n), .. }) = c.slots.remove(url) {
+        c.bytes = c.bytes.saturating_sub(n);
+    }
+    true
+}
+
+/// [`store`], holding the cache's lock.
+fn keep(c: &mut Cache, url: &str, entry: Entry) {
     let added = if let Entry::Ready(_, n) = &entry { *n } else { 0 };
     // Dropped while it was fetched (cleared, or evicted): kept anyway, it was asked for.
     let tick = c.tick;
@@ -1315,7 +1356,7 @@ fn store(url: &str, entry: Entry) {
     }
     c.bytes += added;
     if c.bytes > BUDGET {
-        evict(&mut c);
+        evict(c);
     }
 }
 
@@ -2137,6 +2178,87 @@ mod tests {
     }
 
     use super::*;
+
+    /// A full record of forgotten files is emptied. A tile asked for before that can't be told, so
+    /// it isn't kept and is asked for again; one asked for since is, and so is what isn't MBTiles.
+    #[test]
+    fn a_full_record_of_forgotten_files_has_older_tiles_read_again() {
+        // A turn: another test forgetting files meanwhile could empty the record of them.
+        let _turn = turn();
+        let archive = |i: usize| format!("/forgotten-{i}.mbtiles");
+        let key = crate::mbtiles::template(&archive(0)).replace("{z}", "0").replace("{x}", "0").replace("{y}", "0");
+        let failed = |why: &str| Some(Entry::Failed(why.into(), Instant::now()));
+        let old = crate::mbtiles::epoch();
+        lock().slots.insert(key.clone(), Slot { entry: Entry::Pending, used: 0, asked: Instant::now() });
+        for i in 0..=crate::mbtiles::MAX_FORGOTTEN {
+            crate::mbtiles::forget_archive(&archive(i));
+        }
+        assert!(crate::mbtiles::forgotten_len() <= crate::mbtiles::MAX_FORGOTTEN);
+        assert!(!crate::mbtiles::forgotten_since(&key, old), "the record no longer holds it");
+
+        land(&key, failed("old file"), old);
+        assert!(!lock().slots.contains_key(&key));
+        land(&key, failed("new file"), crate::mbtiles::epoch());
+        assert!(matches!(lock().slots.get(&key).map(|s| &s.entry), Some(Entry::Failed(why, _)) if why == "new file"));
+        land("test://not-mbtiles/forgotten.json", failed("kept"), old);
+        assert!(lock().slots.remove("test://not-mbtiles/forgotten.json").is_some());
+        forget(&archive(0));
+    }
+
+    /// An MBTiles file whose name reads like a COG's look (`#cube=1`) is forgotten under its whole
+    /// path, the one its tiles name: its tiles go, and a read of it under way isn't kept.
+    #[test]
+    fn an_mbtiles_file_named_like_a_look_is_forgotten_whole() {
+        let _turn = turn();
+        let archive = "/maps#cube=1.mbtiles";
+        let key = crate::mbtiles::template(archive).replace("{z}", "0").replace("{x}", "0").replace("{y}", "0");
+        let old = crate::mbtiles::epoch();
+        lock().slots.insert(key.clone(), Slot { entry: Entry::Failed("old file".into(), Instant::now()), used: 0, asked: Instant::now() });
+        forget(archive);
+        assert!(!lock().slots.contains_key(&key));
+        assert!(crate::mbtiles::forgotten_since(&key, old), "the file is recorded under the path its tiles name");
+        land(&key, Some(Entry::Failed("old file".into(), Instant::now())), old);
+        assert!(!lock().slots.contains_key(&key));
+    }
+
+    /// A tile still being read when its MBTiles file is forgotten isn't kept when it lands, even
+    /// after the same tile was asked for again and answered; a read begun since is.
+    #[test]
+    fn a_forgotten_mbtiles_file_drops_the_tile_being_read() {
+        // A turn: another test forgetting files meanwhile could empty the record of them.
+        let _turn = turn();
+        let archive = "/forgotten-pending.mbtiles";
+        let key = crate::mbtiles::template(archive).replace("{z}", "0").replace("{x}", "0").replace("{y}", "0");
+        let failed = |why: &str| Some(Entry::Failed(why.into(), Instant::now()));
+        let kept = || match lock().slots.get(&key).map(|s| &s.entry) {
+            Some(Entry::Failed(why, _)) => Some(why.clone()),
+            _ => None,
+        };
+
+        let old = crate::mbtiles::epoch();
+        lock().slots.insert(key.clone(), Slot { entry: Entry::Pending, used: 0, asked: Instant::now() });
+        forget(archive);
+        land(&key, failed("old file"), old);
+        assert_eq!(kept(), None);
+        assert!(!lock().slots.contains_key(&key));
+
+        // Asked for again before the old read is over: the new read lands first, or last.
+        land(&key, failed("new file"), crate::mbtiles::epoch());
+        land(&key, failed("old file"), old);
+        assert_eq!(kept().as_deref(), Some("new file"));
+        forget(archive);
+
+        // Or the old one lands while the new one is pending: the new one's answer is what stays.
+        let new = crate::mbtiles::epoch();
+        lock().slots.insert(key.clone(), Slot { entry: Entry::Pending, used: 0, asked: Instant::now() });
+        land(&key, failed("old file"), old);
+        assert!(matches!(lock().slots.get(&key), Some(Slot { entry: Entry::Pending, .. })), "the new read's slot stays");
+        land(&key, None, old);
+        assert!(matches!(lock().slots.get(&key), Some(Slot { entry: Entry::Pending, .. })), "also if the old read went unanswered");
+        land(&key, failed("new file"), new);
+        assert_eq!(kept().as_deref(), Some("new file"));
+        forget(archive);
+    }
 
     /// Queued fetches and dedicated download threads recheck authority on actual start.
     #[cfg(not(target_arch = "wasm32"))]

@@ -353,6 +353,21 @@ mod file {
         all.clear();
     }
 
+    /// Forgets the open connections to the files `keep` says no to. Windows won't move or delete a
+    /// file SQLite has open, so a file nothing reads any more mustn't stay in the pool.
+    pub fn close_unless(keep: impl Fn(&Path) -> bool) {
+        let mut all = pool().lock().unwrap_or_else(|e| e.into_inner());
+        if !all.keys().all(|path| keep(path)) {
+            GENERATION.fetch_add(1, Ordering::SeqCst);
+            all.retain(|path, _| keep(path));
+        }
+    }
+
+    /// Whether a connection to `path` is kept open.
+    pub fn is_open(path: &Path) -> bool {
+        pool().lock().unwrap_or_else(|e| e.into_inner()).get(path).is_some_and(|open| !open.is_empty())
+    }
+
     /// The metadata of the MBTiles file at `path`.
     pub fn open_path(path: &Path) -> Result<Info, String> {
         with(path, |c| {
@@ -414,10 +429,40 @@ mod file {
             }
         })
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// Only the files `keep` says no to lose their connections, and one left alone stays open.
+        #[test]
+        fn close_unless_leaves_the_files_it_keeps() {
+            struct Cleanup(PathBuf);
+            impl Drop for Cleanup {
+                fn drop(&mut self) {
+                    // Also clean up if an assertion fails with the files still open.
+                    close_unless(|path| !path.starts_with(&self.0));
+                    let _ = std::fs::remove_dir_all(&self.0);
+                }
+            }
+            let dir = std::env::temp_dir().join(format!("rustgis-mbtiles-close-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let _cleanup = Cleanup(dir.clone());
+            let (kept, gone) = (dir.join("kept.mbtiles"), dir.join("gone.mbtiles"));
+            for path in [&kept, &gone] {
+                std::fs::write(path, b"").unwrap();
+                pool().lock().unwrap().entry(path.clone()).or_default().push(open(path).unwrap());
+            }
+            close_unless(|path| path != gone);
+            assert!(is_open(&kept));
+            assert!(!is_open(&gone));
+            std::fs::remove_file(&gone).unwrap();
+        }
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use file::{close, close_all, open_path, tile_path};
+pub use file::{close, close_all, close_unless, is_open, open_path, tile_path};
 
 #[cfg(test)]
 mod tests {
