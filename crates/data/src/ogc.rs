@@ -3532,9 +3532,27 @@ impl Pages {
 
     fn land_page(mut self, answer: Result<Vec<u8>, String>) -> Step {
         if matches!(self.phase, Phase::WfsHits) {
-            let matched = answer.ok().and_then(|b| wfs_matched(&b));
-            let Some(matched) = matched else {
-                return self.stop("the WFS total couldn't be read; the features received may be incomplete".into());
+            // Why the request failed is kept, so the notice says why completeness is unknown.
+            let matched = match answer {
+                Ok(b) => wfs_matched(&b).ok_or(None),
+                // An error holding an address isn't repeated: `redact` keeps its path, which can
+                // hold a key.
+                Err(e) => Err(Some(e).filter(|e| !e.contains("://"))),
+            };
+            let matched = match matched {
+                Ok(matched) => matched,
+                Err(why) => {
+                    // Without the credentials an address in the error may hold, and not all of a
+                    // long one.
+                    let why = why
+                        .map(|e| {
+                            let mut e = crate::diagnostics::redact(&e);
+                            crate::diagnostics::cut_with_ellipsis(&mut e, MAX_REASON);
+                            format!(" ({e})")
+                        })
+                        .unwrap_or_default();
+                    return self.stop(format!("the WFS total couldn't be read{why}; the features received may be incomplete"));
+                }
             };
             let offset = self.features.len();
             if offset > self.max {
@@ -3839,8 +3857,12 @@ impl Pages {
         if let Some((ds, ..)) = &mut self.decoded {
             ds.features.truncate(max);
         }
-        let note = format!("the first {max} features are read; the rest aren't");
-        if matches!(self.phase, Phase::WfsHits | Phase::WfsOffsets { .. }) { self.stop(note) } else { self.finish(Some(note)) }
+        // Not through `stop`, whose "N WFS features read:" would say the count twice.
+        let note = match self.phase {
+            Phase::WfsOffsets { matched, .. } => format!("the first {max} of {matched} WFS features are read; the rest aren't"),
+            _ => format!("the first {max} features are read; the rest aren't"),
+        };
+        self.finish(Some(note))
     }
 
     /// The pages' features in the first page's collection, without its paging members.
@@ -5002,7 +5024,17 @@ mod tests {
         {
             let (bytes, note) = join_pages(url, first.to_vec(), 100, |_| answer.clone());
             assert_eq!(count(&bytes), 2);
-            assert!(note.unwrap().contains("incomplete"));
+            let note = note.unwrap();
+            assert!(note.contains("incomplete"));
+            // The failed request's reason is kept.
+            assert_eq!(note.contains("(timeout)"), answer.is_err(), "{note}");
+        }
+        // A credential in the failed request's address isn't repeated in the notice.
+        {
+            let failed = Err::<Vec<u8>, String>("error sending request for url (https://x.test/wfs?token=abc123)".to_string());
+            let (_, note) = join_pages(url, first.to_vec(), 100, |_| failed.clone());
+            let note = note.unwrap();
+            assert!(note.contains("incomplete") && !note.contains("abc123"), "{note}");
         }
         for last in [
             Err("timeout".into()),
@@ -5026,10 +5058,14 @@ mod tests {
             if calls == 1 { Ok(hits.to_vec()) } else { Ok(br#"{"features":[{"id":3},{"id":4}]}"#.to_vec()) }
         });
         assert_eq!(count(&bytes), 3);
-        assert!(note.unwrap().contains("3 of 4 WFS features read"));
+        let note = note.unwrap();
+        assert!(note.contains("the first 3 of 4 WFS features are read"), "{note}");
+        assert!(!note.contains("WFS features read:"), "{note}");
         let (bytes, note) = join_pages(url, first.to_vec(), 1, |_| panic!("limit checked before hits"));
         assert_eq!(count(&bytes), 1);
-        assert!(note.unwrap().contains("first 1"));
+        let note = note.unwrap();
+        assert!(note.contains("first 1"), "{note}");
+        assert!(!note.contains("WFS features read:"), "{note}");
         for suffix in ["&STARTINDEX=0", "&RESULTTYPE=hits"] {
             let (bytes, note) =
                 join_pages(&format!("{url}{suffix}"), first.to_vec(), 100, |_| panic!("explicit request must stay unchanged"));

@@ -814,7 +814,10 @@ fn custom(p: &Node, method: &str) -> Result<Crs, String> {
         // arrives as the plain name through the METHODS table.
         "HOTINE_OBLIQUE_MERCATOR" | "HOTINE_OBLIQUE_MERCATOR_AZIMUTH_NATURAL_ORIGIN" if get(&["AZIMUTH"]).is_some() => omerc(true)?,
         // EPSG's methods 9806 and 9818 have no scale factor; PROJ's cass and poly ignore one.
-        "CASSINI_SOLDNER" => format!("+proj=cass +lat_0={lat0} {at}"),
+        // ESRI writes plain `Cassini` to `.prj` files for the same ellipsoidal method (EPSG 9806):
+        // ESRI's projection reference describes it as Cassini-Soldner, and GDAL's ESRI WKT
+        // morphing maps `Cassini` and `Cassini_Soldner` to each other.
+        "CASSINI_SOLDNER" | "CASSINI" => format!("+proj=cass +lat_0={lat0} {at}"),
         "POLYCONIC" => format!("+proj=poly +lat_0={lat0} {at}"),
         "EQUAL_EARTH" => format!("+proj=eqearth {at}"),
         // The implementation fixes the cone axis and pseudo standard parallel. Refuse other
@@ -1604,6 +1607,26 @@ mod tests {
         let crs = crs_from_wkt(&renamed).unwrap();
         let ll = crs.transformer().unwrap().to_lonlat(Coord::new(500_000.0, 5_000_000.0)).unwrap();
         assert!((ll.x - 3.0).abs() < 1e-6 && (ll.y - 45.153_477).abs() < 1e-5, "{ll:?}");
+    }
+
+    #[test]
+    fn esri_cassini_name() {
+        // ArcGIS writes Cassini-Soldner as plain `Cassini` in a `.prj`: Berlin's Soldner grid
+        // (EPSG:3068) under that name and a name RustGIS doesn't know reads as the EPSG system.
+        let epsg = Crs::from_epsg(3068).unwrap();
+        let wkt = to_wkt(epsg).unwrap().replace(",AUTHORITY[\"EPSG\",\"3068\"]", "");
+        let start = wkt.find('"').unwrap() + 1;
+        let end = start + wkt[start..].find('"').unwrap();
+        let esri =
+            format!("{}My_Soldner{}", &wkt[..start], &wkt[end..]).replace("PROJECTION[\"Cassini_Soldner\"]", "PROJECTION[\"Cassini\"]");
+        assert!(esri.contains("PROJECTION[\"Cassini\"]"), "{esri}");
+        let crs = crs_from_wkt(&esri).unwrap_or_else(|e| panic!("{e}: {esri}"));
+        // Near the grid origin and a few degrees from it, where a spherical form would differ.
+        for lonlat in [Coord::new(13.4, 52.4), Coord::new(17.5, 55.5)] {
+            let a = epsg.transformer().unwrap().from_lonlat(lonlat).unwrap();
+            let b = crs.transformer().unwrap().from_lonlat(lonlat).unwrap();
+            assert!((a.x - b.x).abs() < 0.01 && (a.y - b.y).abs() < 0.01, "{a:?} {b:?}");
+        }
     }
 
     #[test]

@@ -1060,7 +1060,6 @@ fn values_1d(a: &Array, chunks: &HashMap<String, Vec<u8>>) -> Result<Vec<f64>> {
     Ok(out)
 }
 
-/// A number attribute (`scale_factor`, `_FillValue`).
 /// A JSON number exactly: a whole one as one.
 fn exact_number(n: &serde_json::Number) -> Option<Exact> {
     n.as_i64()
@@ -1087,6 +1086,7 @@ fn attr_exact(a: &Array, k: &str) -> Option<Exact> {
     }
 }
 
+/// A number attribute (`scale_factor`, `_FillValue`).
 fn attr_f64(a: &Array, k: &str) -> Option<f64> {
     match a.attrs.get(k)? {
         Value::Number(n) => n.as_f64(),

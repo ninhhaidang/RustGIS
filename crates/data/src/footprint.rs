@@ -43,6 +43,28 @@ pub(crate) enum Hull {
     Unmerged,
 }
 
+/// Whether a face's outer `ring` shows from above, in a shape `size` across (its larger X or Y
+/// span), by the cosine of its tilt (its projected area over its area): walls, even leaning ones,
+/// show as slivers, which cover nothing and which the union can't always take. Faces narrower than
+/// a ten-thousandth of the shape are left out too (a flat shape).
+pub(crate) fn shows(ring: &[P3], size: f64) -> bool {
+    let (mut nx, mut ny, mut nz) = (0.0, 0.0, 0.0);
+    let (mut longest, mut area2) = (0.0f64, 0.0);
+    // From the ring's first point: projected coordinates run to millions, whose products would
+    // lose the millimetres a small face is measured in.
+    let o = ring.first().copied().unwrap_or([0.0; 3]);
+    let local: Vec<P3> = ring.iter().map(|p| [p[0] - o[0], p[1] - o[1], p[2] - o[2]]).collect();
+    for (a, b) in local.iter().zip(local.iter().cycle().skip(1)) {
+        nx += (a[1] - b[1]) * (a[2] + b[2]);
+        ny += (a[2] - b[2]) * (a[0] + b[0]);
+        nz += (a[0] - b[0]) * (a[1] + b[1]);
+        longest = longest.max((b[0] - a[0]).hypot(b[1] - a[1]));
+        area2 += a[0] * b[1] - b[0] * a[1];
+    }
+    let n = nx.hypot(ny).hypot(nz);
+    n > 0.0 && nz.abs() / n > 0.05 && longest > 0.0 && area2.abs() / longest > size * 1e-4
+}
+
 /// A shape's footprint: the union of its `faces` (each its outer ring and then its holes) seen from
 /// above. Faces standing on edge, such as walls, show nothing and are left out. The footprint is the
 /// hull of `points` when no face shows, or when its faces aren't merged: `truncated` (the reader left
@@ -72,26 +94,6 @@ pub(crate) fn footprint<F: AsRef<[Vec<P3>]>>(
     if !size.is_finite() {
         return (None, None);
     }
-    // A face shows from above by the cosine of its tilt (its projected area over its area): walls,
-    // even leaning ones, show as slivers, which cover nothing and which the union can't always
-    // take. Faces narrower than a ten-thousandth of the shape are left out too (a flat shape).
-    let shows = |ring: &[P3]| {
-        let (mut nx, mut ny, mut nz) = (0.0, 0.0, 0.0);
-        let (mut longest, mut area2) = (0.0f64, 0.0);
-        // From the ring's first point: projected coordinates run to millions, whose products would
-        // lose the millimetres a small face is measured in.
-        let o = ring.first().copied().unwrap_or([0.0; 3]);
-        let local: Vec<P3> = ring.iter().map(|p| [p[0] - o[0], p[1] - o[1], p[2] - o[2]]).collect();
-        for (a, b) in local.iter().zip(local.iter().cycle().skip(1)) {
-            nx += (a[1] - b[1]) * (a[2] + b[2]);
-            ny += (a[2] - b[2]) * (a[0] + b[0]);
-            nz += (a[0] - b[0]) * (a[1] + b[1]);
-            longest = longest.max((b[0] - a[0]).hypot(b[1] - a[1]));
-            area2 += a[0] * b[1] - b[0] * a[1];
-        }
-        let n = nx.hypot(ny).hypot(nz);
-        n > 0.0 && nz.abs() / n > 0.05 && longest > 0.0 && area2.abs() / longest > size * 1e-4
-    };
     let ring2 = |r: &[P3]| geo::LineString::from(r.iter().map(|p| (p[0], p[1])).collect::<Vec<_>>());
     // Past the cap, a partial union would be wrong: the hull below stands in.
     let seen: Vec<geo::Polygon<f64>> = faces
@@ -99,7 +101,7 @@ pub(crate) fn footprint<F: AsRef<[Vec<P3>]>>(
         .filter(|_| !truncated)
         .filter_map(|face| {
             let (outer, holes) = face.as_ref().split_first()?;
-            (outer.len() >= 3 && shows(outer))
+            (outer.len() >= 3 && shows(outer, size))
                 .then(|| geo::Polygon::new(ring2(outer), holes.iter().map(|h| ring2(h)).collect()).orient(Direction::Default))
         })
         .collect();

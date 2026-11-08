@@ -24,7 +24,7 @@
 //!   (Molodensky–Badekas for Korean 1985, a chain of operations for NGO 1948 …), and the 11
 //!   planetary ones (Moon, Mars), whose bodies the map can't hold;
 //! - the seven PROJ can't write as a PROJ string (Hammer–Aitoff, Fuller, Cube, Tobler …) and the
-//!   two two-point oblique Mercators (53025, 54025), for which RustGIS has no WKT form.
+//!   two two-point oblique Mercators (53025, 54025), which RustGIS refuses.
 //!
 //! The three Earth sinusoidal systems (Sphere and World Sinusoidal, 53008 and 54008, and Africa
 //! Sinusoidal, 102011) were added afterwards (opengeos/RustGIS#563): RustGIS computes the

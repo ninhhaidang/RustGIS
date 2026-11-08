@@ -253,6 +253,21 @@ fn instances_and_tin_reliefs_are_said() {
     assert!(read("m.city.json", &only, None).unwrap_err().to_string().contains("TINRelief"));
 }
 
+/// An instance whose reference point can't be drawn isn't said to be drawn as a point.
+#[test]
+fn an_instance_kept_without_geometry_isnt_said_to_be_drawn() {
+    let instance = |at: usize| {
+        json!({"tree": {"type": "SolitaryVegetationObject", "geometry": [
+            {"type": "GeometryInstance", "template": 0, "boundaries": [at], "transformationMatrix": []}]}})
+    };
+    let vertices = json!([[0, 0, 0], [1e200, 0, 0]]);
+    let out = read("m.city.json", &doc(vertices.clone(), instance(1)), Crs::from_epsg(3857)).unwrap();
+    assert!(geometry(&out[0].0, 0).is_none(), "{:?}", geometry(&out[0].0, 0));
+    assert!(!says(&out, "geometry instances are drawn"), "{:?}", messages_of(&out));
+    let out = read("m.city.json", &doc(vertices, instance(0)), Crs::from_epsg(3857)).unwrap();
+    assert!(says(&out, "1 geometry instances are drawn as a point"), "{:?}", messages_of(&out));
+}
+
 /// An attribute named as one of the reader's fields keeps its value, under a name that says so.
 #[test]
 fn an_attribute_named_as_a_field_is_renamed_and_said() {
@@ -518,6 +533,26 @@ fn a_lone_face_seen_edge_on_has_no_footprint() {
     let out = read("m.city.json", &bytes, None).unwrap();
     assert!(geometry(&out[0].0, 0).is_none(), "{:?}", geometry(&out[0].0, 0));
     assert!(says(&out, "1 city objects have a shape that can't be drawn"), "{:?}", messages_of(&out));
+}
+
+/// A level 0 face leaning a little off vertical shows a sliver from above, which isn't kept as the
+/// footprint as it stands: it is measured as [`footprint`] measures any face, and is a wall.
+#[test]
+fn a_lone_face_nearly_on_edge_is_a_wall() {
+    let bytes = doc(
+        json!([[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [10.0, 0.3, 10.0], [0.0, 0.3, 10.0]]),
+        json!({"w": {"type": "Building", "geometry": [{"type": "MultiSurface", "lod": "0", "boundaries": [[[0, 1, 2, 3]]]}]}}),
+    );
+    let out = read("m.city.json", &bytes, None).unwrap();
+    assert!(says(&out, "1 city objects with no faces seen from above"), "{:?}", messages_of(&out));
+    // Lying flat, the same face is the footprint and says nothing.
+    let bytes = doc(
+        json!([[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [10.0, 0.3, 0.0], [0.0, 0.3, 0.0]]),
+        json!({"w": {"type": "Building", "geometry": [{"type": "MultiSurface", "lod": "0", "boundaries": [[[0, 1, 2, 3]]]}]}}),
+    );
+    let out = read("m.city.json", &bytes, None).unwrap();
+    assert!((area(geometry(&out[0].0, 0)) - 3.0).abs() < 1e-9, "{:?}", geometry(&out[0].0, 0));
+    assert!(messages_of(&out).is_empty(), "{:?}", messages_of(&out));
 }
 
 /// Lines and points show the level of detail they came from, not the footprint's. Their own heights
@@ -981,6 +1016,7 @@ fn a_system_given_over_the_one_named_is_said() {
     // ...and without one given, it is an error, not a note.
     let e = read("m.city.json", root.to_string().as_bytes(), None).unwrap_err().to_string();
     assert!(e.contains("it names a coordinate system RustGIS doesn't know"), "{e}");
+    assert!(e.contains("give one with the crs parameter of layer.addData"), "{e}");
 }
 
 /// One building whose LoD 2 geometry passes the face cap: a face with a courtyard first (marked

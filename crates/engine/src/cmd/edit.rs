@@ -32,7 +32,7 @@ pub fn commands() -> Vec<C> {
 
 pub(crate) fn add_feature(s: &mut Session, p: &Json) -> CmdResult {
     let id = s.layer_id(p)?;
-    let g = p.get("geometry").and_then(rustgis_data::io::geometry_from_geojson).ok_or("geometry must be a GeoJSON geometry")?;
+    let g = geometry_param(p)?;
     let l = s.map_mut().layer_mut(id).ok_or("no layer")?;
     let want = l.geometry_type();
     let ok = want == g.kind() || want == GeometryType::None;
@@ -66,6 +66,25 @@ pub(crate) fn add_feature(s: &mut Session, p: &Json) -> CmdResult {
     l.selection = vec![row];
     super::design::apply(s, id, vec![super::design::Change { before: None, row: Some(row) }])?;
     Ok(json!({"row": row}))
+}
+
+/// The `geometry` parameter as a geometry. A GeometryCollection of more or fewer than one member
+/// (at any depth) is refused as such, not as something that isn't GeoJSON.
+pub(crate) fn geometry_param(p: &Json) -> Result<Geometry, String> {
+    let given = p.get("geometry");
+    if let Some(g) = given.and_then(rustgis_data::io::geometry_from_geojson) {
+        return Ok(g);
+    }
+    let mut g = given;
+    // Bounded by the JSON's own depth: each round goes one level in.
+    while let Some(c) = g.filter(|g| g.get("type").and_then(Json::as_str) == Some("GeometryCollection")) {
+        match c.get("geometries").and_then(Json::as_array).map(Vec::as_slice) {
+            Some([only]) => g = Some(only),
+            Some(_) => return Err("a GeometryCollection must hold exactly one geometry".into()),
+            None => break,
+        }
+    }
+    Err("geometry must be a GeoJSON geometry".into())
 }
 
 /// Rejects empty or degenerate geometry, which would break extents, labels and rendering.

@@ -179,26 +179,34 @@ fn ring(mut r: Vec<Coord>) -> Option<Vec<Coord>> {
     (r.len() >= 4).then_some(r)
 }
 
-/// The rings of a polygon or surface patch: exterior (outerBoundaryIs) first.
-fn polygon(p: &Node, zm: &Cell<bool>) -> Option<Vec<Vec<Coord>>> {
-    // Each ring `ring` keeps (at least three points, closed if it wasn't), and whether it had Z or M.
+/// The rings of a polygon or surface patch: exterior (outerBoundaryIs) first. `lost` counts the
+/// rings left out: too few points or unreadable, and exterior rings past the first.
+fn polygon(p: &Node, zm: &Cell<bool>, lost: &Cell<usize>) -> Option<Vec<Vec<Coord>>> {
+    // Each ring `ring` keeps (at least four positions once closed, closed if it wasn't), and whether
+    // it had Z or M.
     let boundary = |names: &[&str]| -> Vec<(Vec<Coord>, bool)> {
         let kept = |b: Node| {
             let dims = Cell::new(false);
-            ring(coords(&b, &dims)?).map(|r| (r, dims.get()))
+            let r = coords(&b, &dims).and_then(ring).map(|r| (r, dims.get()));
+            lost.set(lost.get() + usize::from(r.is_none()));
+            r
         };
         p.descendants().filter(|d| d.is_element() && is_gml(d) && names.contains(&local(d))).filter_map(kept).collect()
     };
     // The first exterior ring, then the interiors: only the rings kept mark Z or M.
-    let outer = boundary(&["exterior", "outerBoundaryIs"]).into_iter().next()?;
+    let mut outers = boundary(&["exterior", "outerBoundaryIs"]).into_iter();
+    let outer = outers.next()?;
+    lost.set(lost.get() + outers.count());
     let mut rings = vec![outer];
     rings.extend(boundary(&["interior", "innerBoundaryIs"]));
     zm.set(zm.get() || rings.iter().any(|(_, d)| *d));
     Some(rings.into_iter().map(|(r, _)| r).collect())
 }
 
-/// A GML geometry element as a geometry; `zm` is set when Z or M values are dropped.
-fn geometry(g: &Node, zm: &Cell<bool>) -> Option<Geometry> {
+/// A GML geometry element as a geometry; `zm` is set when Z or M values are dropped, and `lost`
+/// counts the rings and surface patches left out (too few points, or unreadable). Members of a
+/// multi-geometry left out are counted by `parts_lost`.
+fn geometry(g: &Node, zm: &Cell<bool>, lost: &Cell<usize>) -> Option<Geometry> {
     let kids =
         |names: &[&str]| -> Vec<Node> { g.descendants().filter(|d| d.is_element() && is_gml(d) && names.contains(&local(d))).collect() };
     match local(g) {
@@ -222,9 +230,20 @@ fn geometry(g: &Node, zm: &Cell<bool>) -> Option<Geometry> {
             let parts: Vec<Vec<Coord>> = kids(&["LineString", "Curve"]).iter().filter_map(kept).collect();
             (!parts.is_empty()).then_some(Geometry::Line(parts))
         }
-        "Polygon" => Some(Geometry::Polygon(vec![polygon(g, zm)?])),
+        "Polygon" => Some(Geometry::Polygon(vec![polygon(g, zm, lost)?])),
         "Surface" | "MultiPolygon" | "MultiSurface" => {
-            let polys: Vec<Vec<Vec<Coord>>> = kids(&["Polygon", "PolygonPatch"]).iter().filter_map(|p| polygon(p, zm)).collect();
+            let polys: Vec<Vec<Vec<Coord>>> = kids(&["Polygon", "PolygonPatch"])
+                .iter()
+                .filter_map(|p| {
+                    // A polygon left out whole counts once, not by its rings; a multi-geometry's
+                    // member left out is counted by `parts_lost`, so only a surface's patch here.
+                    let rings = Cell::new(0);
+                    let poly = polygon(p, zm, &rings);
+                    let whole = usize::from(!local(g).starts_with("Multi"));
+                    lost.set(lost.get() + if poly.is_some() { rings.get() } else { whole });
+                    poly
+                })
+                .collect();
             (!polys.is_empty()).then_some(Geometry::Polygon(polys))
         }
         "Envelope" | "Box" => {
@@ -260,7 +279,7 @@ fn parts_lost(g: &Node) -> usize {
                 && match (kind, local(&x)) {
                     ("MultiPoint", "Point") => coords(&x, &scratch).is_some_and(|c| !c.is_empty()),
                     ("MultiLineString" | "MultiCurve", "LineString" | "Curve") => coords(&x, &scratch).is_some_and(|c| c.len() >= 2),
-                    ("MultiPolygon" | "MultiSurface", "Polygon" | "PolygonPatch") => polygon(&x, &scratch).is_some(),
+                    ("MultiPolygon" | "MultiSurface", "Polygon" | "PolygonPatch") => polygon(&x, &scratch, &Cell::new(0)).is_some(),
                     _ => false,
                 }
         })
@@ -297,6 +316,8 @@ struct Kind {
     unread_more: bool,
     /// Members of multi-geometries that gave nothing to keep.
     parts_lost: usize,
+    /// Rings and surface patches of its geometries left out.
+    lost: usize,
 }
 
 /// Reads a GML file into a layer per feature type (those with features).
@@ -323,6 +344,7 @@ pub fn read(file_name: &str, bytes: &[u8]) -> Result<Vec<(Dataset, ReadReport)>>
     let (mut skipped, mut file_srs): (usize, Option<(Crs, bool)>) = (0, None);
     let mut unknown_srs: Option<String> = None;
     let mut over = 0usize;
+    // Rings and parts left out of the geometries kept.
     for f in members {
         let name = local(&f).to_string();
         if !kinds.contains_key(&name) {
@@ -338,6 +360,8 @@ pub fn read(file_name: &str, bytes: &[u8]) -> Result<Vec<(Dataset, ReadReport)>>
         let mut bad = false;
         // Whether the geometry kept had Z or M values.
         let mut zm = false;
+        // Rings and surface patches left out of the geometry kept.
+        let mut rings_lost = 0;
         // Properties not read, and those holding GML of a kind not read (another kind of
         // geometry): the feature's unreadable shape when it has none, else not read.
         let (mut unread, mut shapes_not_read) = (Vec::new(), Vec::new());
@@ -363,10 +387,11 @@ pub fn read(file_name: &str, bytes: &[u8]) -> Result<Vec<(Dataset, ReadReport)>>
                         None => unknown_srs = Some(s.to_string()),
                     }
                 }
-                let dims = Cell::new(false);
-                match geometry(&g, &dims) {
+                let (dims, lost) = (Cell::new(false), Cell::new(0));
+                match geometry(&g, &dims, &lost) {
                     Some(gm) => {
                         zm = dims.get();
+                        rings_lost += lost.get();
                         geom = Some(gm);
                         kind.parts_lost += parts_lost(&g);
                     }
@@ -419,6 +444,7 @@ pub fn read(file_name: &str, bytes: &[u8]) -> Result<Vec<(Dataset, ReadReport)>>
         // A geometry that couldn't be read, unless another property gave the feature its shape.
         skipped += usize::from(bad && geom.is_none());
         kind.zm += usize::from(zm && geom.is_some());
+        kind.lost += rings_lost;
         kind.rows.push((geom, attrs));
     }
     let mut report = ReadReport { skipped, ..ReadReport::default() };
@@ -472,6 +498,15 @@ pub fn read(file_name: &str, bytes: &[u8]) -> Result<Vec<(Dataset, ReadReport)>>
         let mut rep = if out.is_empty() { report.clone() } else { ReadReport::default() };
         if file_srs.is_none() && outside {
             rep.messages.push("the GML doesn't say its coordinate system (srsName) and its coordinates aren't longitude/latitude".into());
+        }
+        // Said with the layer it happened in, which may be the only one added.
+        if kind.lost > 0 {
+            let what =
+                if kind.lost == 1 { "ring or surface patch of a geometry was" } else { "rings or surface patches of geometries were" };
+            rep.messages.push(format!(
+                "{}: {} {what} left out: too few points, unreadable coordinates, a patch with no exterior ring, or an exterior ring past the first",
+                ds.name, kind.lost
+            ));
         }
         if zm > 0 {
             ds.zm_dropped = true;
@@ -571,7 +606,8 @@ mod tests {
             rep.messages
         );
 
-        // A one-point 3D part is left out, and its height with it: the 2D line kept says nothing.
+        // A one-point 3D part is left out, and its height with it: the 2D line kept drops no Z,
+        // and the part left out is said.
         let gml = r#"<wfs:FeatureCollection xmlns:wfs="http://www.opengis.net/wfs/2.0" xmlns:gml="http://www.opengis.net/gml/3.2" xmlns:app="http://example.com/app">
 <wfs:member><app:roads gml:id="r.1"><app:geom><gml:MultiCurve srsName="EPSG:4326"><gml:curveMember><gml:LineString><gml:pos>10 48 312</gml:pos></gml:LineString></gml:curveMember>
   <gml:curveMember><gml:LineString><gml:posList srsDimension="2">10 48 11 49</gml:posList></gml:LineString></gml:curveMember></gml:MultiCurve></app:geom></app:roads></wfs:member>
@@ -590,7 +626,8 @@ mod tests {
         );
         assert_eq!(layers[0].0.features[0].geometry, Some(Geometry::Line(vec![vec![Coord::new(10.0, 48.0), Coord::new(11.0, 49.0)]])));
 
-        // A two-point 3D interior ring is left out: the 2D polygon kept says nothing.
+        // A two-point 3D interior ring is left out: the 2D polygon kept drops no Z, and the ring
+        // left out is said.
         let gml = r#"<wfs:FeatureCollection xmlns:wfs="http://www.opengis.net/wfs/2.0" xmlns:gml="http://www.opengis.net/gml/3.2" xmlns:app="http://example.com/app">
 <wfs:member><app:parcels gml:id="p.1"><app:geom><gml:Polygon srsName="EPSG:4326">
   <gml:exterior><gml:LinearRing><gml:posList srsDimension="2">10 48 11 48 11 49 10 48</gml:posList></gml:LinearRing></gml:exterior>
@@ -599,7 +636,66 @@ mod tests {
 </wfs:FeatureCollection>"#;
         let layers = read("p.gml", gml.as_bytes()).unwrap();
         assert!(!layers[0].0.zm_dropped, "{:?}", layers[0].1.messages);
+        assert!(
+            layers[0].1.messages.iter().any(|m| m.contains(": 1 ring or surface patch of a geometry was left out")),
+            "{:?}",
+            layers[0].1.messages
+        );
         assert!(matches!(&layers[0].0.features[0].geometry, Some(Geometry::Polygon(p)) if p.len() == 1 && p[0].len() == 1));
+    }
+
+    /// Rings with too few points are left out and counted, once a kind, and a multi-geometry's
+    /// member left out only as a part; a clean file says nothing of them.
+    #[test]
+    fn rings_and_parts_left_out_are_counted() {
+        let layers = read("w.gml", WFS.as_bytes()).unwrap();
+        assert!(layers.iter().all(|(_, r)| !r.messages.iter().any(|m| m.contains("or surface patch"))), "{:?}", layers[0].1.messages);
+        // A second exterior ring is a ring left out; a multi-surface's polygon whose only ring is
+        // two points is a part left out, said once, by the parts notice.
+        let gml = r#"<wfs:FeatureCollection xmlns:wfs="http://www.opengis.net/wfs/2.0" xmlns:gml="http://www.opengis.net/gml/3.2" xmlns:app="http://example.com/app">
+<wfs:member><app:parcels gml:id="p.1"><app:geom><gml:Polygon srsName="EPSG:4326">
+  <gml:exterior><gml:LinearRing><gml:posList>10 48 11 48 11 49 10 48</gml:posList></gml:LinearRing></gml:exterior>
+  <gml:exterior><gml:LinearRing><gml:posList>20 48 21 48 21 49 20 48</gml:posList></gml:LinearRing></gml:exterior>
+</gml:Polygon></app:geom></app:parcels></wfs:member>
+<wfs:member><app:parcels gml:id="p.2"><app:geom><gml:MultiSurface srsName="EPSG:4326">
+  <gml:surfaceMember><gml:Polygon><gml:exterior><gml:LinearRing><gml:posList>10 48 11 48 11 49 10 48</gml:posList></gml:LinearRing></gml:exterior></gml:Polygon></gml:surfaceMember>
+  <gml:surfaceMember><gml:Polygon><gml:exterior><gml:LinearRing><gml:posList>10 48 11 48</gml:posList></gml:LinearRing></gml:exterior></gml:Polygon></gml:surfaceMember>
+</gml:MultiSurface></app:geom></app:parcels></wfs:member>
+</wfs:FeatureCollection>"#;
+        let layers = read("p.gml", gml.as_bytes()).unwrap();
+        let (ds, rep) = &layers[0];
+        assert_eq!((ds.features.len(), rep.skipped), (2, 0));
+        let said: Vec<&String> = rep.messages.iter().filter(|m| m.contains("or surface patch")).collect();
+        assert_eq!(said.len(), 1, "{:?}", rep.messages);
+        assert!(said[0].contains(": 1 ring or surface patch of a geometry was left out"), "{said:?}");
+        assert!(rep.messages.iter().any(|m| m.contains(": 1 part of multi-geometries")), "{:?}", rep.messages);
+
+        // With two feature types, the notice goes with the one that lost a part, not the first.
+        let gml = r#"<wfs:FeatureCollection xmlns:wfs="http://www.opengis.net/wfs/2.0" xmlns:gml="http://www.opengis.net/gml/3.2" xmlns:app="http://example.com/app">
+<wfs:member><app:roads gml:id="r.1"><app:geom><gml:LineString srsName="EPSG:4326"><gml:posList>10 48 11 49</gml:posList></gml:LineString></app:geom></app:roads></wfs:member>
+<wfs:member><app:parcels gml:id="p.1"><app:geom><gml:MultiSurface srsName="EPSG:4326">
+  <gml:surfaceMember><gml:Polygon><gml:exterior><gml:LinearRing><gml:posList>10 48 11 48 11 49 10 48</gml:posList></gml:LinearRing></gml:exterior></gml:Polygon></gml:surfaceMember>
+  <gml:surfaceMember><gml:Polygon><gml:exterior><gml:LinearRing><gml:posList>10 48 11 48</gml:posList></gml:LinearRing></gml:exterior></gml:Polygon></gml:surfaceMember>
+</gml:MultiSurface></app:geom></app:parcels></wfs:member>
+</wfs:FeatureCollection>"#;
+        let layers = read("two.gml", gml.as_bytes()).unwrap();
+        let said = |i: usize| layers[i].1.messages.iter().any(|m| m.contains("multi-geometries"));
+        assert_eq!(layers.len(), 2);
+        assert!(!said(0) && said(1), "{:?}", layers.iter().map(|l| &l.1.messages).collect::<Vec<_>>());
+        assert!(layers[1].1.messages.iter().any(|m| m.starts_with(&format!("{}: 1 part", layers[1].0.name))), "{:?}", layers[1].1.messages);
+
+        // A multi-surface's polygon with only an interior ring is left out and counted once, as a
+        // part, not again as a ring.
+        let gml = r#"<wfs:FeatureCollection xmlns:wfs="http://www.opengis.net/wfs/2.0" xmlns:gml="http://www.opengis.net/gml/3.2" xmlns:app="http://example.com/app">
+<wfs:member><app:parcels gml:id="p.1"><app:geom><gml:MultiSurface srsName="EPSG:4326">
+  <gml:surfaceMember><gml:Polygon><gml:exterior><gml:LinearRing><gml:posList>10 48 11 48 11 49 10 48</gml:posList></gml:LinearRing></gml:exterior></gml:Polygon></gml:surfaceMember>
+  <gml:surfaceMember><gml:Polygon><gml:interior><gml:LinearRing><gml:posList>10 48 11 48 11 49 10 48</gml:posList></gml:LinearRing></gml:interior></gml:Polygon></gml:surfaceMember>
+</gml:MultiSurface></app:geom></app:parcels></wfs:member>
+</wfs:FeatureCollection>"#;
+        let layers = read("hole.gml", gml.as_bytes()).unwrap();
+        let messages = &layers[0].1.messages;
+        assert!(!messages.iter().any(|m| m.contains("or surface patch")), "{messages:?}");
+        assert!(messages.iter().any(|m| m.contains(": 1 part of multi-geometries")), "{messages:?}");
     }
 
     /// A multi-geometry member that is only a reference gives nothing, and is said; a whole one

@@ -577,8 +577,10 @@ pub struct Raster {
     /// left out.
     pub lost: Vec<String>,
     /// How many values of each band changed when read as `f32` (Int32 IDs past 16,777,216, Float64
-    /// values with more digits than `f32` holds), by band; empty when none did. NaN and no-data
-    /// values aren't counted.
+    /// values with more digits than `f32` holds), by band; empty when none did. NaN values and
+    /// samples that are the no-data value aren't counted (one that rounds onto it is). The two are
+    /// compared once read as `f32`: a long decimal whose `f32` reading differs from the no-data
+    /// value's (rounded through `f64`) is counted, as it isn't masked as no-data either.
     pub rounded: Vec<u64>,
     /// Who holds the rights to the picture (the TIFF Copyright tag): the credits a map's tile
     /// layers ask for, on a GeoTIFF of the view. Read from a GeoTIFF that has it, and written

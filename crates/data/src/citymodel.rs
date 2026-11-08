@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use serde_json::Value as Json;
 
-use crate::footprint::{Hull, P3, footprint, usable_xy};
+use crate::footprint::{Hull, P3, footprint, shows, usable_xy};
 use crate::raster::Crs;
 use crate::{Coord, DataError, Dataset, Field, Geometry, GeometryType, ReadReport, Result, Value};
 
@@ -211,7 +211,7 @@ fn lone_face(face: &[Vec<P3>]) -> Option<Geometry> {
         hi - lo
     };
     let size = span(|c| c.x).max(span(|c| c.y));
-    (crate::geometry::ring_area(outer).abs() > size * size * 5e-5).then(|| Geometry::Polygon(vec![rings]))
+    shows(face.first()?, size).then(|| Geometry::Polygon(vec![rings]))
 }
 
 /// An object's footprint and the level of detail it came from: the first of its LoD 0, the
@@ -355,7 +355,7 @@ pub(crate) fn coordinate_system(
         }
         (None, Some(system)) => known_system(system).ok_or_else(|| {
             let system: String = system.chars().take(80).collect();
-            DataError::Format(format!("{file_name}: it names a coordinate system RustGIS doesn't know ({system})"))
+            DataError::Format(format!("{file_name}: it names a coordinate system RustGIS doesn't know ({system}); give one with the crs parameter of layer.addData (from the command line, Python or the AI Assistant)"))
         })?,
         (None, None) if within(180.0, 90.0) => {
             notes.push("the file names no coordinate system: its coordinates are read as longitude/latitude".into());
@@ -642,7 +642,10 @@ pub(crate) fn object_rows(parts: ObjectParts, object: usize, counts: &mut Counts
         push(Family::Line, line_lod, geometry, heights_differ(lines.iter().flatten()), lines_draw);
     }
     let Highest { lod: point_lod, parts: points, usable: points_usable, .. } = points;
-    counts.instances += points.iter().filter(|(_, instance)| *instance).count();
+    // Only those drawn: a point row kept without geometry draws no instance.
+    if points_usable {
+        counts.instances += points.iter().filter(|(_, instance)| *instance).count();
+    }
     let points: Vec<P3> = points.into_iter().map(|(p, _)| p).collect();
     if !points.is_empty() {
         let geometry = points_usable.then(|| match points.as_slice() {
