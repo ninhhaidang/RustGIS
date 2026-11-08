@@ -600,12 +600,23 @@ mod tests {
     /// first row holds the start of the sentence.
     #[test]
     fn a_right_to_left_note_keeps_its_rows_in_reading_order() {
+        use rustgis_engine::render::fonts::{ScriptFont, script_font};
         let text = "هیچ مکانی در این مرجع شبکه نیست زیرا حرف پس از منطقه کمربند عرض جغرافیایی است";
-        // The interface fonts, which hold the Persian glyphs, are in from the next frame on.
+        // The Persian face, as the app installs it for Persian: the interface face alone has no
+        // Persian glyphs on macOS (San Francisco) or with the built-in fonts.
+        let Some((bytes, _)) = script_font(ScriptFont::Arabic) else {
+            // On CI a missing face fails, so the check is never skipped there unseen.
+            assert!(std::env::var_os("CI").is_none(), "no installed face draws Persian");
+            eprintln!("skipped: no installed face draws Persian");
+            return;
+        };
+        let extra =
+            vec![("script-arabic".to_string(), std::sync::Arc::new(egui::FontData::from_owned(bytes.clone())), Some(ScriptFont::Arabic))];
+        // The fonts are in from the next frame on.
         let mut fonts = false;
         let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(220.0, 300.0)).build_ui(move |ui| {
             if !fonts {
-                crate::theme::install_fonts(ui.ctx(), &[], None);
+                crate::theme::install_fonts(ui.ctx(), &extra, Some(ScriptFont::Arabic));
                 fonts = true;
                 return;
             }
