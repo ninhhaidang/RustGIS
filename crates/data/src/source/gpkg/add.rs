@@ -234,12 +234,16 @@ fn related(conn: &Connection, table: &str) -> Result<bool> {
 }
 
 /// The views, and triggers on other tables, whose SQL mentions `table` (by a case-blind search,
-/// so a longer name containing it counts too), by name.
+/// so a longer name containing it counts too), by name. Another table's own spatial index
+/// triggers (`rtree_<other>_…` on `<other>`) touch only that table and its index, so they're left
+/// out: replacing `parcels` doesn't name `parcels_2`'s.
 fn dependents(conn: &Connection, table: &str) -> Result<Vec<String>> {
     let mut st = conn
         .prepare(
             "SELECT name FROM sqlite_master WHERE type IN ('view', 'trigger') AND lower(tbl_name) != lower(?1)
-                AND instr(lower(sql), lower(?1)) > 0 ORDER BY name",
+                AND instr(lower(sql), lower(?1)) > 0
+                AND NOT (type = 'trigger' AND lower(substr(name, 1, length(tbl_name) + 7)) = 'rtree_' || lower(tbl_name) || '_')
+                ORDER BY name",
         )
         .map_err(err)?;
     let names = st.query_map([table], |r| r.get::<_, String>(0)).map_err(err)?;

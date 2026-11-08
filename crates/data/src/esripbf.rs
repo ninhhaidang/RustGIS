@@ -124,7 +124,7 @@ pub struct Losses {
     pub no_crs: bool,
     /// Values that don't fit their field's type.
     pub unreadable: usize,
-    /// Values or field names that aren't valid UTF-8.
+    /// Values, field names or aliases that aren't valid UTF-8.
     pub not_utf8: usize,
     /// Polygon rings without area.
     pub flat_rings: usize,
@@ -156,7 +156,7 @@ impl Losses {
         }
         if self.not_utf8 > 0 {
             out.push(format!(
-                "{} values or field names aren't valid UTF-8; the bytes that can't be read are replaced with U+FFFD",
+                "{} values, field names or aliases aren't valid UTF-8; the bytes that can't be read are replaced with U+FFFD",
                 self.not_utf8
             ));
         }
@@ -276,22 +276,23 @@ pub fn read_page_within(bytes: &[u8], name: &str, limit: usize) -> Result<Page> 
     let (mut repeated, mut not_read, mut unknown) = (0usize, 0usize, 0usize);
     let mut object_id_field = None;
     for Declared { name, number, utf8, alias } in declared {
-        tally.not_utf8 += usize::from(!utf8);
         let Some(read_as) = kind(number) else {
             not_read += 1;
             columns.push(None);
             continue;
         };
-        unknown += usize::from(number > LAST_FIELD_TYPE);
         // Fields are found by name whatever its case, so the first of a name keeps it.
         if !names.insert(name.to_lowercase()) {
             repeated += 1;
             columns.push(None);
             continue;
         }
+        unknown += usize::from(number > LAST_FIELD_TYPE);
         if number == OID && object_id_field.is_none() {
             object_id_field = Some(fields.len());
         }
+        // Only a field that's kept counts toward the UTF-8 notice: a left-out name isn't shown.
+        tally.not_utf8 += usize::from(!utf8);
         columns.push(Some((fields.len(), read_as)));
         fields.push(Field { name, ty: read_as.field_type(), alias });
     }
@@ -726,7 +727,7 @@ struct Tally {
     unreadable: usize,
     /// Polygon rings without area.
     flat_rings: usize,
-    /// Text values and field names that aren't valid UTF-8.
+    /// Text values, field names and aliases that aren't valid UTF-8.
     not_utf8: usize,
     /// Bytes left of [`MAX_GEOMETRY_BYTES`].
     geometry_room: usize,

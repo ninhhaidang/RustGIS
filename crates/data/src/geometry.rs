@@ -214,7 +214,9 @@ impl Geometry {
     /// A point for a label or a pop-up: the point itself, the middle vertex of the longest line
     /// part, or the centroid of the largest valid polygon (moved inside it if the centroid falls out).
     ///
-    /// Returns `None` if the geometry is empty or if all polygon parts contain non-finite coordinates.
+    /// Returns `None` if the geometry is empty (no points, no line vertices), if no polygon part
+    /// has only finite coordinates and a non-empty outer ring (a part with a non-finite hole is
+    /// left out whole), or if the chosen part's centroid isn't finite.
     pub fn label_point(&self) -> Option<Coord> {
         match self {
             Geometry::Point(c) => Some(*c),

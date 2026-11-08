@@ -462,9 +462,11 @@ pub struct Service {
     pub past_read_limit: Option<String>,
 }
 
-/// Most layers or collections `service.layers` lists from one document. The others are still read
-/// ([`Service::listed`]), so that they can be added by name: which ones come first is up to the
-/// server, and some change their order between answers (#1519).
+/// Most layers or collections `service.layers` lists from one document. An OGC API collection
+/// can make up to three layers (features, map tiles, vector tiles), so its listing can pass this
+/// many layers. The others are still read ([`Service::listed`]), so that they can be added by
+/// name: which ones come first is up to the server, and some change their order between answers
+/// (#1519).
 const MAX_LISTED_LAYERS: usize = 2_000;
 /// Most layers or collections read from one document, which is hostile input.
 const MAX_READ_LAYERS: usize = if cfg!(test) { 3_000 } else { 100_000 };

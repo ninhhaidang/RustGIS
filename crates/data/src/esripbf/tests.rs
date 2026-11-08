@@ -271,7 +271,10 @@ fn text_that_isnt_utf8_is_read_with_replacements_and_said() {
     assert_eq!(ds.fields[0].name, "N\u{FFFD}AME");
     assert_eq!(ds.features[0].attrs, [Value::Text("a\u{FFFD}b".into())]);
     assert_eq!(ds.features[1].attrs, [Value::Text("ok".into())]);
-    assert_eq!(report.messages, ["2 values or field names aren't valid UTF-8; the bytes that can't be read are replaced with U+FFFD"]);
+    assert_eq!(
+        report.messages,
+        ["2 values, field names or aliases aren't valid UTF-8; the bytes that can't be read are replaced with U+FFFD"]
+    );
 }
 
 #[test]
@@ -592,6 +595,27 @@ fn a_field_type_rustgis_doesnt_know_is_read_as_text_and_said() {
     let known: Vec<Vec<u8>> = (0..=LAST_FIELD_TYPE).filter(|t| !(7..=9).contains(t)).map(|t| field(&format!("F{t}"), t)).collect();
     let (_, report) = read(&answer(&known), "t").unwrap();
     assert!(report.messages.is_empty(), "{:?}", report.messages);
+}
+
+#[test]
+fn a_repeated_field_of_an_unknown_type_is_only_said_left_out() {
+    // The repeat is dropped, so it isn't also said to be read as text.
+    let bytes = answer(&[field("NAME", 4), field("name", 17), feature(&[text("a"), uint(5)])]);
+    let (ds, report) = read(&bytes, "t").unwrap();
+    assert_eq!(ds.fields.len(), 1);
+    assert_eq!(report.messages, ["1 fields repeat an earlier field's name and are left out"]);
+}
+
+#[test]
+fn a_left_out_field_whose_name_isnt_utf8_is_only_said_left_out() {
+    // The name isn't shown, so it isn't said to be read with replacements.
+    let repeat = message(13, &[message(1, b"N\xffame"), number(2, 4)].concat());
+    let bytes = answer(&[field("N\u{FFFD}AME", 4), repeat, feature(&[text("a"), text("b")])]);
+    let (_, report) = read(&bytes, "t").unwrap();
+    assert_eq!(report.messages, ["1 fields repeat an earlier field's name and are left out"]);
+    let geometry = message(13, &[message(1, b"G\xff"), number(2, 7)].concat());
+    let (_, report) = read(&answer(&[field("NAME", 4), geometry, feature(&[text("a")])]), "t").unwrap();
+    assert_eq!(report.messages, ["1 fields hold geometries, blobs or rasters, which aren't read, and are left out"]);
 }
 
 #[test]

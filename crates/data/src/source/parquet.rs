@@ -43,7 +43,8 @@ pub struct ParquetSource {
     field_cols: Vec<usize>,
     /// Leaf column indices of the bbox covering's xmin, ymin, xmax, ymax.
     covering: Option<[usize; 4]>,
-    /// The metadata declares the covering, whose null boxes then imply null geometry.
+    /// The metadata declares the covering, whose null boxes then mean no geometry or an empty
+    /// one, neither of which meets an extent.
     declared_covering: bool,
     reproject: Reproject,
     /// The file, when it is read by its web address.
@@ -343,7 +344,7 @@ impl ParquetSource {
 
     /// Whether inferred bounds may omit or count rows that only their geometry can test.
     /// Unknown null counts require the same fallback as known nulls; declared coverings promise
-    /// that a box is present if and only if geometry is present.
+    /// that a box is present if and only if a non-empty geometry is present.
     fn needs_geometry_filter(&self, md: &ParquetMetaData, g: usize) -> bool {
         let Some(c) = self.covering else { return true };
         !self.declared_covering

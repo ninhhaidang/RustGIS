@@ -126,6 +126,9 @@ impl<R: Read> Read for Guard<R> {
             let size = <[u8; 4]>::try_from(&*buf)
                 .map(u32::from_le_bytes)
                 .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "an invalid feature size prefix"))?;
+            if size == 0 {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "a zero-size feature"));
+            }
             let size = u64::from(size);
             let remaining = self.end.map(|end| end.saturating_sub(self.pos)).unwrap_or(u64::MAX).min(super::remote::READ_BUDGET);
             if size > remaining || usize::try_from(size).ok().and_then(|n| n.checked_add(4)).is_none() {
@@ -179,6 +182,22 @@ mod tests {
         let error = guard.read_exact(&mut [0; 4]).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert!(error.to_string().contains("read budget"));
+        assert!(guard.failure.borrow().is_some());
+    }
+
+    #[test]
+    fn a_zero_size_prefix_is_named() {
+        let mut guard = Guard {
+            input: io::Cursor::new(0u32.to_le_bytes()),
+            pos: 0,
+            end: Some(4),
+            start: Rc::new(Cell::new(0)),
+            next: None,
+            failure: Failure::default(),
+        };
+        let error = guard.read_exact(&mut [0; 4]).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(error.to_string(), "a zero-size feature");
         assert!(guard.failure.borrow().is_some());
     }
 }

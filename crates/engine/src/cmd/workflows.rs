@@ -1036,12 +1036,21 @@ fn interpolate_work(s: &Session, p: &Value) -> Result<Work, String> {
     let ds = feature_ds(s, p)?;
     let field = ps(p, "field").ok_or("field is required")?;
     let fi = ds.field_index(field).ok_or_else(|| format!("no field named '{field}'"))?;
-    let pts: Vec<(Coord, f64)> = ds
-        .features
-        .iter()
-        .enumerate()
-        .filter_map(|(r, ft)| Some((ft.geometry.as_ref()?.label_point()?, ds.value(r, fi).as_f64().filter(|v| v.is_finite())?)))
-        .collect();
+    // Features without a place or a number are left out, and said (by kind, with a count).
+    let (mut no_point, mut no_value) = (0usize, 0usize);
+    let mut pts: Vec<(Coord, f64)> = Vec::with_capacity(ds.features.len());
+    for (r, ft) in ds.features.iter().enumerate() {
+        let Some(c) = ft.geometry.as_ref().and_then(|g| g.label_point()).filter(|c| c.is_finite()) else {
+            no_point += 1;
+            continue;
+        };
+        let Some(v) = ds.value(r, fi).as_f64().filter(|v| v.is_finite()) else {
+            no_value += 1;
+            continue;
+        };
+        pts.push((c, v));
+    }
+    let (layer_name, field_name) = (ds.name.clone(), field.to_string());
     let e = s.project.gp_env.extent.unwrap_or_else(|| {
         let mut e = Extent::EMPTY;
         pts.iter().for_each(|(c, _)| e.expand(*c));
@@ -1051,7 +1060,37 @@ fn interpolate_work(s: &Session, p: &Value) -> Result<Work, String> {
     let name = out_name(p, format!("{}_{field}_idw", ds.name));
     let power = f(p, "power").unwrap_or(2.0).clamp(0.5, 10.0);
     let neighbors = p.get("neighbors").and_then(Value::as_u64).unwrap_or(12).max(1) as usize;
-    Ok(Box::new(move || made(rasterops::idw(&pts, &e, cell, power, neighbors, &name)?, None)))
+    Ok(Box::new(move || {
+        // A surface that can't be made says what was left out of it, so the input can be fixed.
+        let left_out = |e: String| {
+            let mut why = Vec::new();
+            if no_point > 0 {
+                why.push(format!("{no_point} features with no geometry or no usable point"));
+            }
+            if no_value > 0 {
+                why.push(format!("{no_value} whose value isn't a number"));
+            }
+            if why.is_empty() { e } else { format!("{e} ({} left out)", why.join(", ")) }
+        };
+        let m = made(rasterops::idw(&pts, &e, cell, power, neighbors, &name).map_err(left_out)?, None)?;
+        if no_point == 0 && no_value == 0 {
+            return Ok(m);
+        }
+        let then: Then = Box::new(move |s: &mut Session, v: &mut Value| {
+            let mut why = Vec::new();
+            if no_point > 0 {
+                why.push(format!("{no_point} with no geometry or no usable point"));
+            }
+            if no_value > 0 {
+                why.push(format!("{no_value} whose {field_name} isn't a number"));
+            }
+            s.notify(format!("{layer_name}: features left out of the surface: {}", why.join(", ")), false);
+            if let Some(o) = v.as_object_mut() {
+                o.insert("skipped".into(), json!({"noPoint": no_point, "noValue": no_value}));
+            }
+        });
+        Ok(Made { then: Some(then), ..m })
+    }))
 }
 
 /// Creates a route layer and reports invalid source segments omitted from its network.
