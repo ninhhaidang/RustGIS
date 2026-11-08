@@ -127,7 +127,7 @@ And alongside it:
 Built in means no runner download, the selection honoured, geodesic distances and attributes
 kept. Before adding a tool, check whether the GeoLibre suite already has it (`gp.tools`); a
 built-in version must justify itself on one of those.
-- STL export; copy a layout to the clipboard.
+- Copy a layout to the clipboard.
 - UTM and MGRS grids and coordinate readouts.
 - H3 grids built in, next to the A5 grids (the GeoLibre suite has H3 tools only when its runner
   is installed).

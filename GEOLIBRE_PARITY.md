@@ -216,7 +216,7 @@ _GeoLibre: docs/features.md › Map tools, printing, and media; docs/user-guide/
   per-feature map series (_Roadmap: any time_ for the clipboard).
 - [ ] **Map and video recording**: canvas recording, a marker along a line to MP4, camera tours.
   Partial: keyframe PNG frames, time slider GIFs.
-- [ ] **STL 3D export**. Partial: OBJ and glTF (_Roadmap: any time_).
+- [x] **STL 3D export**: binary STL beside OBJ and glTF.
 
 ## Sharing, collaboration & publishing
 _GeoLibre: docs/collaboration.md, docs/server-api.md, docs/user-guide/embedding.md, projects.md,
