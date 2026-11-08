@@ -60,6 +60,7 @@ Click the model name or the gear to open the settings. The assistant works with:
 | Ollama (local) | `qwen3` | none; the server from `OLLAMA_BASE_URL` (default `http://localhost:11434`) |
 | OpenAI-compatible | — | LM Studio, vLLM, llama.cpp…: `OPENAI_COMPATIBLE_BASE_URL` (default `http://localhost:1234/v1`), with an optional `OPENAI_COMPATIBLE_API_KEY` |
 | Requesty | `anthropic/claude-sonnet-5-5` | [app.requesty.ai](https://app.requesty.ai/api-keys), or `REQUESTY_API_KEY`; for the EU, set the **Address** to `https://router.eu.requesty.ai/v1` |
+| TrustedRouter | `trustedrouter/auto` | [trustedrouter.com](https://trustedrouter.com), or `TRUSTEDROUTER_API_KEY` |
 
 The ↻ button lists the provider's models. The provider and model you last chose in the settings
 are used at start. Until you choose one, `RUSTGIS_ASSISTANT_PROVIDER` and
@@ -336,7 +337,7 @@ can be used only once), and the keychain is read under the same lock.
 Plain HTTP is only used for servers on your computer or local network.
 
 In the web app, the browser calls the provider directly. Anthropic, OpenAI, Gemini,
-OpenRouter and Requesty accept that; a local Ollama server must allow the page's origin
+OpenRouter, Requesty and TrustedRouter accept that; a local Ollama server must allow the page's origin
 (`OLLAMA_ORIGINS=https://web.rustgis.app ollama serve`).
 
 ## Retries and long conversations

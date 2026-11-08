@@ -106,6 +106,9 @@ fn first_keyed_provider_is_the_first_key_provider_and_never_a_sign_in() {
     assert_eq!(first_keyed(keyed(&["requesty", "openrouter", "custom"])), Some("openrouter"));
     assert_eq!(first_keyed(keyed(&["requesty", "custom"])), Some("custom"));
     assert_eq!(first_keyed(keyed(&["requesty"])), Some("requesty"));
+    // TrustedRouter comes after it, for the same reason.
+    assert_eq!(first_keyed(keyed(&["trustedrouter", "requesty"])), Some("requesty"));
+    assert_eq!(first_keyed(keyed(&["trustedrouter"])), Some("trustedrouter"));
     assert_eq!(first_keyed(keyed(&[])), None);
 }
 
@@ -983,6 +986,17 @@ fn requesty_lists_its_models_with_a_bearer_key() {
     assert_eq!(p.key_env, &["REQUESTY_API_KEY"]);
     let req = models_request(&cfg("requesty"));
     assert_eq!(req.url, "https://router.requesty.ai/v1/models");
+    assert!(req.headers.iter().any(|(k, v)| k == "Authorization" && v == "Bearer k"));
+}
+
+#[test]
+fn trustedrouter_lists_its_models_with_a_bearer_key() {
+    let p = preset("trustedrouter").expect("TrustedRouter preset");
+    assert_eq!((p.api, p.keyless, p.login), (Api::OpenAi, false, false));
+    assert_eq!(p.key_env, &["TRUSTEDROUTER_API_KEY"]);
+    assert_eq!(p.model, "trustedrouter/auto");
+    let req = models_request(&cfg("trustedrouter"));
+    assert_eq!(req.url, "https://api.trustedrouter.com/v1/models");
     assert!(req.headers.iter().any(|(k, v)| k == "Authorization" && v == "Bearer k"));
 }
 

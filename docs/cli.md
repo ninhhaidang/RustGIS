@@ -117,7 +117,7 @@ rustgis-cli ask --login                             # sign in with ChatGPT to us
 rustgis-cli ask --sample --provider chatgpt "Zoom to Tokyo"
 ```
 
-The provider is `--provider` (`anthropic`, `openai`, `chatgpt`, `gemini`, `openrouter`, `ollama`, `custom`, `requesty`),
+The provider is `--provider` (`anthropic`, `openai`, `chatgpt`, `gemini`, `openrouter`, `ollama`, `custom`, `requesty`, `trustedrouter`),
 else `RUSTGIS_ASSISTANT_PROVIDER`, else the first with a key in the environment, else the app's
 saved provider when `--use-saved-secrets` is set, else Ollama. ChatGPT sign-in is used only when
 that provider is selected. Account management and `--models` do not read saved API keys:

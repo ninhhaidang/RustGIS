@@ -142,6 +142,18 @@ pub const PRESETS: &[Preset] = &[
         key_url: "https://app.requesty.ai/api-keys",
         login: false,
     },
+    Preset {
+        id: "trustedrouter",
+        label: "TrustedRouter",
+        api: Api::OpenAi,
+        base_url: "https://api.trustedrouter.com/v1",
+        model: "trustedrouter/auto",
+        key_env: &["TRUSTEDROUTER_API_KEY"],
+        url_env: "",
+        keyless: false,
+        key_url: "https://trustedrouter.com",
+        login: false,
+    },
 ];
 
 /// The preset with this id.
