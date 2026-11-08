@@ -376,7 +376,7 @@ impl Durable for VecSteps {
 /// Reads documents at the existing reader bound, without normalization, trust or restore-cache
 /// access. Unchanged documents keep their exact text; only changed typed copies are serialized.
 fn document(kind: Document, v: &Value, depth: usize, report: &mut Report) -> Option<Value> {
-    let Some(text) = v.as_str().filter(|s| s.len() as u64 <= crate::project::MAX_BYTES) else { return invalid(v, report) };
+    let Some(text) = v.as_str().filter(|s| s.len() as u64 <= crate::project::max_bytes()) else { return invalid(v, report) };
     if serde_json::from_str::<DocumentFormat>(text).is_ok_and(|f| f.format > u64::from(crate::project::FORMAT)) {
         report.unchecked = report.unchecked.saturating_add(1);
         return None;

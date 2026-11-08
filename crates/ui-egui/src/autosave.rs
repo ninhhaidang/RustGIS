@@ -728,11 +728,13 @@ mod folder {
         fn read_pending(&self) -> Result<String, String> {
             let path = self.list().first().map(|(p, _)| p.clone()).ok_or("there is no unsaved work to recover")?;
             let mut bytes = Vec::new();
+            let max = rustgis_engine::project::max_bytes() + MAX_HEADER;
             std::fs::File::open(&path)
-                .and_then(|f| f.take(rustgis_engine::project::MAX_BYTES + MAX_HEADER + 1).read_to_end(&mut bytes))
+                .and_then(|f| f.take(max + 1).read_to_end(&mut bytes))
                 .map_err(|e| format!("{}: {e}", path.display()))?;
-            if bytes.len() as u64 > rustgis_engine::project::MAX_BYTES + MAX_HEADER {
-                return Err("the recovery copy is too large".into());
+            if bytes.len() as u64 > max {
+                let mib = ((max - MAX_HEADER) >> 20).to_string();
+                return Err(crate::i18n::fmt("the recovery copy is too large (maximum {mib} MiB on this computer)", &[("mib", &mib)]));
             }
             // The description line goes in place: a copy near the size limit isn't held twice.
             let mut text = String::from_utf8(bytes).map_err(|_| "the recovery copy isn't text".to_string())?;

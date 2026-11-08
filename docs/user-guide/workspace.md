@@ -11,6 +11,20 @@ streamed layers reopen their sources, and file-backed rasters reopen their files
 sources accessible when moving a project. See [Project items](data.md#project-items) for
 templates, packages and files for individual items.
 
+A project file holds the features of every layer loaded whole (GeoJSON, KML/KMZ, GPX, and
+Shapefiles of up to 100,000 features), so a project of many such layers grows large. How large a
+project can be saved and opened follows the computer's memory: on the desktop, as much as a
+quarter of it holds open (about 800 MiB of project for every 16 GB), from 512 MiB up to 4 GiB; in
+the web app and a 32-bit build, 512 MiB. Save refuses a project past it, rather than writing one that can't be opened
+again, and Open refuses a larger file, saying its size, the limit, and how much memory a computer
+needs to open it. A project saved on a
+computer with more memory may need one like it to open. A project package (`.rgispkg`) holds
+at most 1 GiB once unzipped (256 MiB in the web app), its project and its files together, as zip
+archives do here; the package file itself is smaller. `gp.env` reports the limit as
+`projectBytes`. A GeoPackage, FlatGeobuf, GeoParquet or Shapefile of more than 100,000 features
+(or any, added with `"stream": true`) is read in place and stays out of the project file; a
+smaller one is loaded whole.
+
 **Open** also accepts a project package (`.rgispkg`), as do drag-and-drop and the desktop
 command line. A package opens as a new, unsaved project; Save writes a plain `.rgis` file.
 Opening or creating a project clears undo history; saving does not.
