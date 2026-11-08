@@ -599,9 +599,9 @@ RustGIS keeps x and y only. When a source has Z or M values (heights or measures
 they were dropped, and exporting or converting the layer (or exporting a standalone table that
 holds geometry), or sharing it as a web map, web layer or OGC API Features, says what's written
 lacks them.
-Shapefile, GeoPackage, GeoParquet, FlatGeobuf, PostGIS, File Geodatabase, GeoJSON, KML (altitudes
-other than 0), GML and CSV WKT columns are checked; sources read through GDAL or DuckDB, and SQL
-Server tables, aren't yet. GPX elevations and LiDAR heights are kept as fields, and a File
+Shapefile, GeoPackage, GeoParquet, FlatGeobuf, PostGIS, SQL Server, File Geodatabase, GeoJSON, KML
+(altitudes other than 0), GML and CSV WKT columns are checked; sources read through GDAL or DuckDB
+aren't yet. GPX elevations and LiDAR heights are kept as fields, and a File
 Geodatabase multipatch's heights as `z_min` and `z_max`. Where a source doesn't declare its
 dimensions, only a sample is checked: the first 16 rows of a GeoParquet file without geometry types
 (in its first row group), and the first 16 rows with a geometry of a GeoPackage table with optional

@@ -650,8 +650,17 @@ impl SqlServerSource {
             if src.info.extent.is_empty() {
                 src.info.notes.push("the table's extent couldn't be measured in time: zooming to the layer does nothing".into());
             }
+            src.check_zm();
         }
         Ok(src)
+    }
+
+    /// Notes the Z and M values reading drops: `STAsBinary` writes x and y only. Counts the rows
+    /// with them within the probe timeout, and says so when that count fails or runs out of time.
+    fn check_zm(&mut self) {
+        let sql = zm_probe(&self.table.sql_from(), &ident(&self.table.column), &self.filter(None));
+        let probe = self.conn.query_within(&sql, &[], PROBE_TIMEOUT).map(|rows| rows.map(|r| first_count(&r)));
+        note_zm(&mut self.info, probe);
     }
 
     fn has_index(&self) -> bool {
@@ -783,6 +792,28 @@ impl SqlServerSource {
         }
         out.complete = stride(matched, limit) <= 1 && rows.len() as u64 >= matched;
         Ok(out)
+    }
+}
+
+/// The query that counts the rows of `from` matching `filter` whose geometry column `g` has Z or M
+/// values.
+fn zm_probe(from: &str, g: &str, filter: &str) -> String {
+    format!("SELECT COUNT_BIG(*) FROM {from} WHERE {filter} AND ({g}.HasZ = 1 OR {g}.HasM = 1)")
+}
+
+/// Records what the Z/M count found: rows with Z or M values mark the source (with the count when
+/// the server gave one), none says nothing, and a count that failed (`Err`) or ran out of time
+/// (`Ok(None)`) gets a note saying the table wasn't checked and why.
+fn note_zm(info: &mut SourceInfo, probe: Result<Option<Option<u64>>>) {
+    match probe {
+        Ok(Some(Some(0))) => {}
+        Ok(Some(n)) => info.drop_zm(n),
+        Ok(None) => info.notes.push(format!(
+            "the table couldn't be checked for Z or M values (heights or measures) within {PROBE_TIMEOUT} s: any it has are dropped, as RustGIS keeps x and y only"
+        )),
+        Err(e) => info.notes.push(format!(
+            "the table couldn't be checked for Z or M values (heights or measures): {e}; any it has are dropped, as RustGIS keeps x and y only"
+        )),
     }
 }
 
@@ -978,6 +1009,44 @@ mod tests {
         assert_eq!(box_text(&Extent::new(0.0, 0.0, f64::INFINITY, 1.0), false), None);
     }
 
+    #[test]
+    fn zm_probe_counts_heights_and_measures() {
+        assert_eq!(
+            zm_probe("[dbo].[t]", "[g]", "[g] IS NOT NULL AND [g].STSrid = 4326"),
+            "SELECT COUNT_BIG(*) FROM [dbo].[t] WHERE [g] IS NOT NULL AND [g].STSrid = 4326 AND ([g].HasZ = 1 OR [g].HasM = 1)"
+        );
+    }
+
+    #[test]
+    fn zm_counts_become_notes() {
+        let noted = |probe: Result<Option<Option<u64>>>| {
+            let mut info = SourceInfo {
+                name: "t".into(),
+                format: "SQL Server",
+                geometry_type: GeometryType::Point,
+                fields: vec![],
+                extent: Extent::EMPTY,
+                count: Some(3),
+                crs: "EPSG:4326".into(),
+                indexed: false,
+                notes: vec![],
+                zm_dropped: false,
+            };
+            note_zm(&mut info, probe);
+            info
+        };
+        let none = noted(Ok(Some(Some(0))));
+        assert!(!none.zm_dropped && none.notes.is_empty(), "{:?}", none.notes);
+        let two = noted(Ok(Some(Some(2))));
+        assert!(two.zm_dropped && two.notes == [crate::zm_note(Some(2))], "{:?}", two.notes);
+        let uncounted = noted(Ok(Some(None)));
+        assert!(uncounted.zm_dropped && uncounted.notes == [crate::zm_note(None)], "{:?}", uncounted.notes);
+        let slow = noted(Ok(None));
+        assert!(!slow.zm_dropped && slow.notes.len() == 1 && slow.notes[0].contains("within 10 s"), "{:?}", slow.notes);
+        let failed = noted(Err(DataError::Format("permission denied".into())));
+        assert!(!failed.zm_dropped && failed.notes.len() == 1 && failed.notes[0].contains("permission denied"), "{:?}", failed.notes);
+    }
+
     #[cfg(not(windows))]
     #[test]
     fn windows_auth_requires_windows() {
@@ -1035,5 +1104,37 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// `RUSTGIS_TEST_MSSQL=… cargo test -- --ignored sqlserver_live_zm`: creates and drops two
+    /// tables in the database.
+    #[test]
+    #[ignore]
+    fn sqlserver_live_zm() {
+        let Ok(address) = std::env::var("RUSTGIS_TEST_MSSQL") else { return };
+        let super::super::duckdb::Database::Sqlserver(address) = super::super::duckdb::Database::parse(&address) else {
+            panic!("not a connection")
+        };
+        let conn = connect(&address, true).unwrap_or_else(|e| panic!("{e}"));
+        let run = |sql: &str| conn.query(sql, &[]).unwrap_or_else(|e| panic!("{sql}: {e}"));
+        // Names of their own, so the test never touches an existing table: CREATE TABLE fails on one.
+        let tag = std::process::id();
+        let (zm_name, flat_name) = (format!("rustgis_zm_test_{tag}"), format!("rustgis_flat_test_{tag}"));
+        for (name, rows) in
+            [(&zm_name, &["POINT (1 2 3)", "POINT (1 2 NULL 4)", "POINT (5 6)"][..]), (&flat_name, &["POINT (1 2)", "POINT (5 6)"])]
+        {
+            run(&format!("CREATE TABLE dbo.{name} (id INT PRIMARY KEY IDENTITY, g geometry)"));
+            let values = rows.iter().map(|w| format!("(geometry::STGeomFromText('{w}', 4326))")).collect::<Vec<_>>().join(", ");
+            run(&format!("INSERT INTO dbo.{name} (g) VALUES {values}"));
+        }
+        let open = |name: &str| {
+            let t = find_table(&conn, name).unwrap_or_else(|e| panic!("{e}"));
+            SqlServerSource::open(conn.clone(), t, Some(Family::Points), None).unwrap_or_else(|e| panic!("{e}")).info
+        };
+        let zm = open(&zm_name);
+        let flat = open(&flat_name);
+        run(&format!("DROP TABLE dbo.{zm_name}; DROP TABLE dbo.{flat_name}"));
+        assert!(zm.zm_dropped && zm.notes.contains(&crate::zm_note(Some(2))), "{:?}", zm.notes);
+        assert!(!flat.zm_dropped && !flat.notes.iter().any(|n| n.contains("Z or M")), "{:?}", flat.notes);
     }
 }
