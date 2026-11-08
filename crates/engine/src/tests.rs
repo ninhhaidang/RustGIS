@@ -20169,6 +20169,102 @@ fn layer_address_redaction_preserves_templates_and_local_paths() {
     assert_eq!(anonymous, format!("{prefix}https://bucket.example/a"));
 }
 
+/// A COG's look isn't a key: it stays in a saved address. The address's keys still go, and so does
+/// any other fragment (OAuth and SAS links carry tokens there), however much it resembles a look.
+#[test]
+fn layer_address_redaction_keeps_a_cogs_look() {
+    let prefix = crate::render::rustgis_tiles::s3::ANONYMOUS;
+    let bound = rustgis_data::login_address::bind("0123456789abcdef", "https://h.example", "https://h.example/a.tif#range=0,1000").unwrap();
+    let cases = [
+        // Nothing to take out: no change at all.
+        ("https://h.example/a.tif#range=0,1000".to_string(), "https://h.example/a.tif#range=0,1000".to_string()),
+        (
+            "s3://bucket/a.tif#bands=2,3,4&range=-0.5,0.5&dequantize=aef".into(),
+            "s3://bucket/a.tif#bands=2,3,4&range=-0.5,0.5&dequantize=aef".into(),
+        ),
+        (format!("{prefix}https://h.example/a.tif#bands=1"), format!("{prefix}https://h.example/a.tif#bands=1")),
+        // Its keys go, its look stays.
+        ("https://u:p@h.example/a.tif?token=s3cret&v=1#range=0,1000".into(), "https://h.example/a.tif?v=1#range=0,1000".into()),
+        ("https://u:p@h.example#range=0,1000".into(), "https://h.example#range=0,1000".into()),
+        (format!("{prefix}https://h.example/a.tif?token=s3cret#bands=1"), format!("{prefix}https://h.example/a.tif#bands=1")),
+        (bound, "https://h.example/a.tif#range=0,1000".into()),
+        // Not a look: it goes as before.
+        ("https://h.example/a.tif#access_token=s3cret".into(), "https://h.example/a.tif".into()),
+        ("https://h.example/a.tif#range=0,1000&token=s3cret".into(), "https://h.example/a.tif".into()),
+        ("https://h.example/a.tif#dequantize=s3cret".into(), "https://h.example/a.tif".into()),
+        ("https://h.example/a.tif#range=0,1000?token=s3cret".into(), "https://h.example/a.tif".into()),
+        ("https://h.example/a.tif#dequantize=aef?token=s3cret".into(), "https://h.example/a.tif".into()),
+        // A word `dequantize` doesn't have: a reader takes it as a look, a saved file doesn't.
+        ("https://h.example/a.tif#range=0,1000&dequantize=s3cret".into(), "https://h.example/a.tif".into()),
+        ("cog:{z}/{x}/{y}@https://h.example/a.tif#dequantize=s3cret".into(), "cog:{z}/{x}/{y}@https://h.example/a.tif".into()),
+        (
+            rustgis_data::s3_address::bind("", "s3.example.org", "https://h.example/a.tif#dequantize=s3cret").unwrap(),
+            rustgis_data::s3_address::bind("", "s3.example.org", "https://h.example/a.tif").unwrap(),
+        ),
+        // Its own words stay.
+        ("https://h.example/a.tif#range=0,1000&dequantize=none".into(), "https://h.example/a.tif#range=0,1000&dequantize=none".into()),
+        ("cog:{z}/{x}/{y}@https://h.example/a.tif#dequantize=aef".into(), "cog:{z}/{x}/{y}@https://h.example/a.tif#dequantize=aef".into()),
+        ("https://h.example/a.tif#range=0,1000&cube=1".into(), "https://h.example/a.tif#range=0,1000&cube=1".into()),
+        ("https://h.example/a.tif#cube=s3cret".into(), "https://h.example/a.tif".into()),
+        // A look after another fragment: only the look stays.
+        ("https://h.example/a.tif#sig=s3cret#range=0,1000".into(), "https://h.example/a.tif#range=0,1000".into()),
+    ];
+    for (given, expected) in &cases {
+        let address = match crate::durable::public_address(given) {
+            crate::durable::Kept::Unchanged => given.clone(),
+            crate::durable::Kept::Changed(address) => address,
+            crate::durable::Kept::Withheld(_) => panic!("valid address was withheld: {given}"),
+        };
+        assert_eq!(&address, expected, "from {given}");
+    }
+}
+
+/// A data cube saved with one range for all its dates opens with that range, and saving it says
+/// nothing about keys. A key among its addresses goes and is counted, and only that one.
+#[test]
+fn saved_cubes_keep_their_look() {
+    let mut s = Session::new(Project::default());
+    let mut cube = rustgis_map::TileLayer::new("Cube", rustgis_map::TileKind::Cog, "https://h.example/2021.tif#range=0,1000");
+    cube.time_urls = vec![(1.0, "https://h.example/2020.tif#range=0,1000".into()), (2.0, "https://h.example/2021.tif#range=0,1000".into())];
+    let expected = (cube.url.clone(), cube.time_urls.clone());
+    s.map_mut().tiles.push(cube);
+    let dir = std::env::temp_dir().join(format!("rustgis-cube-look-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("cube.rgis");
+
+    // Clean: nothing was taken out, so nothing is said.
+    let saved = s.run("project.saveAs", &json!({"path": path})).unwrap();
+    assert_eq!(saved["stripped"], 0, "{saved}");
+    assert!(!s.notices.iter().any(|n| n.text.contains("saved without their keys")));
+    let mut t = Session::new(Project::default());
+    t.run("project.open", &json!({"path": path})).unwrap();
+    let opened = &t.map().tiles[0];
+    assert_eq!((opened.url.clone(), opened.time_urls.clone()), expected);
+
+    // Lossy: one date's token goes and is counted; its look stays; the open project keeps it all.
+    let with_key = "https://h.example/2020.tif?token=s3cret#range=0,1000";
+    s.map_mut().tiles[0].time_urls[0].1 = with_key.into();
+    let saved = s.run("project.saveAs", &json!({"path": path})).unwrap();
+    assert_eq!(saved["stripped"], 1, "{saved}");
+    assert!(s.notices.iter().any(|n| n.text.contains("1 layer address(es) were saved without their keys")));
+    assert_eq!(s.map().tiles[0].time_urls[0].1, with_key);
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(!text.contains("s3cret") && text.contains("https://h.example/2020.tif#range=0,1000"), "{text}");
+    // Opened again before RustGIS closes, it has its token back, with its look.
+    t.run("project.open", &json!({"path": path})).unwrap();
+    assert_eq!(t.map().tiles[0].time_urls[0].1, with_key);
+
+    // A cube of one file: its address is all that keeps it a tile layer when its project opens.
+    let one_file = "https://h.example/2020.tif#range=0,1000&cube=1";
+    let mut one = Session::new(Project::default());
+    one.map_mut().tiles.push(rustgis_map::TileLayer::new("One date", rustgis_map::TileKind::Cog, one_file));
+    let saved = one.run("project.saveAs", &json!({"path": path})).unwrap();
+    assert_eq!(saved["stripped"], 0, "{saved}");
+    t.run("project.open", &json!({"path": path})).unwrap();
+    assert_eq!(t.map().tiles[0].url, one_file);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[test]
 fn saved_layer_files_keep_no_address_secrets() {
     let mut s = world();

@@ -43,6 +43,8 @@ need them again when reopened. User notes, feature data and opaque content are p
 Review addresses and preserved content before sharing a file; see
 [Sharing projects and generated items](https://github.com/opengeos/RustGIS/blob/main/SECURITY.md#sharing-projects-and-generated-items)
 for the supported scope.
+A cloud-optimised GeoTIFF's look in its address (`#bands=…`, `#range=…`, `#dequantize=aef`, a data
+cube's fixed range too) is saved; any other `#` part isn't.
 
 ### Autosave and recovery
 

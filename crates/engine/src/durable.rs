@@ -622,8 +622,7 @@ fn public_address_at(address: &str, depth: usize) -> Kept {
     }
     if matches!(prefix, "pmtiles:" | "cog:") {
         let Some((head, archive)) = crate::sources::template_archive(text) else { return Kept::Withheld(prefix) };
-        let file = crate::render::rustgis_tiles::cog::split(archive).0;
-        let look = archive.get(file.len()..).unwrap_or("");
+        let (file, look) = split_look(archive);
         return match public_address_at(file, depth + 1) {
             Kept::Unchanged => Kept::Unchanged,
             Kept::Changed(s) => Kept::Changed(format!("{head}{s}{look}")),
@@ -631,8 +630,7 @@ fn public_address_at(address: &str, depth: usize) -> Kept {
         };
     }
     if prefix == "rustgis-s3:" {
-        let file = crate::render::rustgis_tiles::cog::split(text).0;
-        let look = text.get(file.len()..).unwrap_or("");
+        let (file, look) = split_look(text);
         let Ok(Some(b)) = s3_address::parse(file) else { return Kept::Withheld(prefix) };
         let endpoint = public_address_at(b.endpoint, depth + 1);
         let url = public_address_at(b.url, depth + 1);
@@ -662,11 +660,27 @@ fn public_address_at(address: &str, depth: usize) -> Kept {
             None => Kept::Withheld(prefix),
         };
     }
-    match public_web_address(address) {
+    // A COG's look is kept, as on the wrappers above; any other fragment goes, as OAuth and
+    // SAS-style links carry tokens there.
+    let (file, look) = split_look(address);
+    match public_web_address(file) {
         Public::Unchanged => Kept::Unchanged,
-        Public::Changed { address, .. } => Kept::Changed(address),
+        Public::Changed { address, .. } => Kept::Changed(format!("{address}{look}")),
         Public::Withheld => Kept::Withheld(prefix),
     }
+}
+
+/// A COG address without its look (`…#bands=…`), and the look as written. A reader takes any word
+/// for `dequantize` and `cube`, but a saved look holds only numbers and these keys' own words: any
+/// other, or a key not named here, stays in the address and goes as any other fragment does.
+fn split_look(address: &str) -> (&str, &str) {
+    let file = crate::render::rustgis_tiles::cog::split(address).0;
+    let look = address.get(file.len()..).unwrap_or("");
+    let plain = look.split(['#', '&']).filter(|kv| !kv.is_empty()).all(|kv| {
+        // `Look::parse` has checked that `bands` and `range` are numbers.
+        matches!(kv.split_once('='), Some(("bands" | "range", _) | ("dequantize", "aef" | "none") | ("cube", "0" | "1")))
+    });
+    if plain { (file, look) } else { (address, "") }
 }
 
 /// Emits preparation losses after the durable projection's journal has restored live fields.
