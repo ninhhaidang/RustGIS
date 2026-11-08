@@ -1576,16 +1576,46 @@ fn start_over_in_another_project(app: &mut RustGisApp) {
 /// the focus given to the box, so Ctrl+Z brings the script back. The box records undo steps only
 /// while focused, so the step is added here, as `scriptcomplete::accept` does.
 fn clear_keeping_undo(app: &mut RustGisApp, ui: &Ui, box_id: egui::Id) {
+    keep_for_undo(app, ui.ctx(), box_id);
+    clear_script(app);
+    ui.memory_mut(|m| m.request_focus(box_id));
+}
+
+/// The Script box's script kept as an undo step of the box, its cursor at the start, before
+/// something else replaces it (Clear, Open in Script Pane).
+fn keep_for_undo(app: &RustGisApp, ctx: &egui::Context, box_id: egui::Id) {
     use egui::text::{CCursor, CCursorRange};
-    let mut state = egui::widgets::text_edit::TextEditState::load(ui.ctx(), box_id).unwrap_or_default();
+    let mut state = egui::widgets::text_edit::TextEditState::load(ctx, box_id).unwrap_or_default();
     let mut undoer = state.undoer();
     let end = CCursorRange::one(CCursor::new(app.workflow.script.chars().count()));
     undoer.add_undo(&(state.cursor.char_range().unwrap_or(end), app.workflow.script.clone()));
     state.set_undoer(undoer);
     state.cursor.set_char_range(Some(CCursorRange::one(CCursor::new(0))));
-    state.store(ui.ctx(), box_id);
+    state.store(ctx, box_id);
+}
+
+/// Whether a Script pane run is under way or waiting: what lands from it would land in a script
+/// replaced meanwhile.
+pub(crate) fn script_running(app: &RustGisApp) -> bool {
+    !app.workflow.script_started.is_empty()
+}
+
+/// Opens `script` in the Script pane (the session log's Open in Script Pane), in place of the
+/// pane's script and results, as Clear empties them: the script that was there comes back with
+/// Ctrl+Z, even one left from a project since replaced (kept first, then the pane started over,
+/// so that doesn't empty it when it next shows). Nothing while a run is under way
+/// ([`script_running`]).
+pub(crate) fn open_script(app: &mut RustGisApp, ctx: &egui::Context, script: String) {
+    if script_running(app) {
+        return;
+    }
+    let box_id = egui::Id::unique("script_text");
+    keep_for_undo(app, ctx, box_id);
+    start_over_in_another_project(app);
     clear_script(app);
-    ui.memory_mut(|m| m.request_focus(box_id));
+    app.workflow.script = script;
+    app.ui.open_right(crate::RightPane::Script);
+    ctx.memory_mut(|m| m.request_focus(box_id));
 }
 
 /// The Script pane emptied: its script, results and count, so the next run is `Run #1`, and the

@@ -1499,11 +1499,13 @@ impl Session {
                 // command's result as it was, without an entry, and says so in the app's log.
                 let logged = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     if project_log::is_logged(self, id, params) {
-                        let params = match step {
-                            Some(label) => serde_json::json!({"step": label}),
-                            None => project_log::kept_params(params),
+                        // The step's label isn't a parameter: the command, run again, takes none.
+                        let (params, partial) = match step {
+                            Some(label) => (serde_json::json!({"step": label}), false),
+                            None => project_log::kept_and_partial(params),
                         };
-                        let e = project_log::entry(id, params, &res, at, start.elapsed());
+                        let project = (project_log::kept_name(&self.title()), self.opened);
+                        let e = project_log::entry(project, id, params, partial, &res, at, start.elapsed());
                         if joins && res.is_ok() { self.log.join_last(e) } else { self.log.push(e) }
                     }
                 }));

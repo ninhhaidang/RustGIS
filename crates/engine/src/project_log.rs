@@ -247,14 +247,67 @@ fn embedded_redacted(v: &Value, depth: usize) -> Value {
             o.iter()
                 .map(|(k, x)| {
                     // Preserve History's plain-key refinement; the log-only fields share diagnostics'
-                    // canonical list. Clipping already bounds recursion and text before this pass.
+                    // canonical list.
                     let sensitive =
                         rustgis_data::address::normalized_name(k).as_deref() != Some("key") && rustgis_data::address::log_sensitive(k);
                     (k.clone(), if sensitive { Value::String(String::new()) } else { embedded_redacted(x, depth + 1) })
                 })
                 .collect(),
         ),
+        // Past eight levels, left out, as `clip` does: JSON read from a text wasn't clipped, and
+        // what is that deep isn't looked at.
+        Value::Array(_) | Value::Object(_) => Value::String("…".into()),
         other => other.clone(),
+    }
+}
+
+/// JSON whose every object has each of its keys once, as its text is read: deserializing one with
+/// a key written twice (at any depth) fails.
+struct UniqueKeys;
+
+impl<'de> Deserialize<'de> for UniqueKeys {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        d.deserialize_any(UniqueKeys)
+    }
+}
+
+impl<'de> serde::de::Visitor<'de> for UniqueKeys {
+    type Value = UniqueKeys;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("JSON")
+    }
+    fn visit_bool<E>(self, _: bool) -> Result<Self, E> {
+        Ok(self)
+    }
+    fn visit_i64<E>(self, _: i64) -> Result<Self, E> {
+        Ok(self)
+    }
+    fn visit_u64<E>(self, _: u64) -> Result<Self, E> {
+        Ok(self)
+    }
+    fn visit_f64<E>(self, _: f64) -> Result<Self, E> {
+        Ok(self)
+    }
+    fn visit_str<E>(self, _: &str) -> Result<Self, E> {
+        Ok(self)
+    }
+    fn visit_unit<E>(self) -> Result<Self, E> {
+        Ok(self)
+    }
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut items: A) -> Result<Self, A::Error> {
+        while items.next_element::<UniqueKeys>()?.is_some() {}
+        Ok(self)
+    }
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut keys: A) -> Result<Self, A::Error> {
+        let mut seen = std::collections::HashSet::new();
+        while let Some(key) = keys.next_key::<String>()? {
+            if !seen.insert(key) {
+                return Err(serde::de::Error::custom("a key written twice"));
+            }
+            keys.next_value::<UniqueKeys>()?;
+        }
+        Ok(self)
     }
 }
 
@@ -273,7 +326,19 @@ pub(crate) fn json_in_text_redacted(t: &str) -> String {
         match objects.next() {
             Some(Ok(v @ Value::Object(_))) => {
                 let end = objects.byte_offset();
-                out.push_str(&serde_json::to_string(&crate::cmd::history::redacted(&v)).unwrap_or_default());
+                // Redacted by the log's own rule, as its parameters are. When that takes nothing
+                // out, the object is kept as written: a script copied back from the log is the
+                // one that ran, and its spacing doesn't make it partial. Not when a key is written
+                // twice, though: the value read is the last one, but the text still holds the
+                // first (a secret, perhaps, under an escaped name), so that object is written
+                // out again from what was read.
+                let kept = redacted(&v);
+                let written = from.get(..end).unwrap_or("");
+                if kept == v && serde_json::from_str::<UniqueKeys>(written).is_ok() {
+                    out.push_str(written);
+                } else {
+                    out.push_str(&serde_json::to_string(&kept).unwrap_or_default());
+                }
                 rest = from.get(end..).unwrap_or("");
             }
             // Cut short by the clip, or an object that doesn't parse (a trailing comma, single
@@ -430,7 +495,19 @@ fn clip(v: &Value, chars: usize, items: usize, depth: usize) -> Value {
 
 /// The entry of command `id`, which started at `at` and took `took`; its error without secrets,
 /// clipped to [`LOG_ERROR_CHARS`].
-pub(crate) fn entry(id: &str, params: Value, res: &CmdResult, at: u64, took: web_time::Duration) -> LogEntry {
+/// `partial`: its parameters aren't all as given ([`kept_and_partial`]). It is the entry of the
+/// project given, its name as the log keeps it ([`kept_name`]) and its `Session::opened`: the one
+/// open as the command ended (the one it opened, for one that opens a project), or for an export,
+/// the one it started in.
+pub(crate) fn entry(
+    project: (String, u64),
+    id: &str,
+    params: Value,
+    partial: bool,
+    res: &CmdResult,
+    at: u64,
+    took: web_time::Duration,
+) -> LogEntry {
     let error = res.as_ref().err().map(|e| kept_error(e));
     LogEntry {
         at,
@@ -439,7 +516,25 @@ pub(crate) fn entry(id: &str, params: Value, res: &CmdResult, at: u64, took: web
         ok: res.is_ok(),
         error,
         millis: u64::try_from(took.as_millis()).unwrap_or(u64::MAX),
+        project: project.0,
+        opened: project.1,
+        partial,
     }
+}
+
+/// A project's name as the log keeps it: cut at [`crate::cmd::MAX_NAME`] characters and a `…`, as
+/// a name read from a file may be longer than one given to `project.rename`.
+pub(crate) fn kept_name(name: &str) -> String {
+    let max = crate::cmd::MAX_NAME;
+    if name.chars().nth(max).is_some() { format!("{}…", name.chars().take(max).collect::<String>()) } else { name.to_string() }
+}
+
+/// `params` as the log keeps them ([`kept_params`]), and whether that is less than they were:
+/// cut to fit or with secrets taken out, so they wouldn't run again as they ran.
+pub(crate) fn kept_and_partial(params: &Value) -> (Value, bool) {
+    let kept = kept_params(params);
+    let partial = kept != *params;
+    (kept, partial)
 }
 
 /// Most entries the log keeps; past it, the oldest go first.
@@ -454,9 +549,9 @@ pub const LOG_LIST_ITEMS: usize = 100;
 pub const LOG_ERROR_CHARS: usize = 500;
 
 /// One command run in the session: when it started (UTC, milliseconds since 1970), its id, its
-/// parameters (secrets taken out, large values clipped), whether it succeeded, its error, and how
-/// long it took.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// parameters (secrets taken out, large values clipped), whether it succeeded, its error, how
+/// long it took, and the project it ran in.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct LogEntry {
     pub at: u64,
     pub command: String,
@@ -467,6 +562,17 @@ pub struct LogEntry {
     pub error: Option<String>,
     #[serde(default)]
     pub millis: u64,
+    /// The name of the project open when it ran (the one it opened, for a command that opens one).
+    #[serde(default)]
+    pub project: String,
+    /// Which of the session's projects that was ([`Session::opened`]), so two of the same name
+    /// (two new ones, both "Untitled") are told apart. The session's own: not saved with the log.
+    #[serde(skip)]
+    pub opened: u64,
+    /// Its parameters aren't all as given (cut to fit, or with secrets taken out): copied, they
+    /// wouldn't run as they ran.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub partial: bool,
 }
 
 impl LogEntry {
@@ -607,7 +713,7 @@ impl SessionLog {
     /// line). Entry by entry, so a long log isn't held as text first.
     pub fn write(&self, w: &mut dyn std::io::Write, csv: bool) -> std::io::Result<()> {
         if csv {
-            w.write_all(b"time_utc,at,command,ok,millis,error,params\n")?;
+            w.write_all(b"time_utc,at,command,ok,millis,error,params,project\n")?;
         }
         self.entries.iter().try_for_each(|e| write_entry(w, e, csv))
     }
@@ -634,14 +740,15 @@ fn write_entry(w: &mut dyn std::io::Write, e: &LogEntry, csv: bool) -> std::io::
     if csv {
         writeln!(
             w,
-            "{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{}",
             e.time_utc(),
             e.at,
             csv_cell(&e.command),
             e.ok,
             e.millis,
             csv_cell(e.error.as_deref().unwrap_or("")),
-            csv_cell(&e.params.to_string())
+            csv_cell(&e.params.to_string()),
+            csv_cell(&e.project)
         )
     } else {
         serde_json::to_writer(&mut *w, e).map_err(std::io::Error::other)?;

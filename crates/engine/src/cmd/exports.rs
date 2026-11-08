@@ -190,6 +190,9 @@ pub struct Started {
     pub(crate) start: web_time::Instant,
     /// The admitted invocation; cloned metadata never selects replacement authority.
     pub(crate) owner: crate::policy::Continuation,
+    /// The project it started in, its name as the log keeps it and its `Session::opened`: the
+    /// log's entry names that one, not one opened while it ran.
+    pub(crate) project: (String, u64),
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -235,7 +238,8 @@ pub(crate) fn export_start_raw(s: &mut Session, op: crate::policy::Authorized<cr
     owner.check()?;
     let current = owner.clone();
     let still = std::sync::Arc::new(move || current.check().is_ok());
-    let started = Started { command, params: p.clone(), at: crate::project_log::now_ms(), start: web_time::Instant::now(), owner };
+    let project = (crate::project_log::kept_name(&s.title()), s.opened);
+    let started = Started { command, params: p.clone(), at: crate::project_log::now_ms(), start: web_time::Instant::now(), owner, project };
     let work = crate::render::rustgis_tiles::cache::with_still(still, || start(s, p))?;
     Ok(ExportRun { name, started, work })
 }
@@ -245,7 +249,7 @@ pub(crate) fn export_start_raw(s: &mut Session, op: crate::policy::Authorized<cr
 /// its answer: the troubleshooting history files what it says (its failure too) under that
 /// command, and the session's log has its entry, as when it runs here.
 pub fn export_land(s: &mut Session, started: Started, done: Result<Wrote, String>) -> CmdResult {
-    let Started { command, params, at, start, owner } = started;
+    let Started { command, params, at, start, owner, project } = started;
     let before = s.diagnostic_source.replace(command);
     let mark = s.notice_mark();
     let landed: CmdResult = (|| {
@@ -268,8 +272,9 @@ pub fn export_land(s: &mut Session, started: Started, done: Result<Wrote, String
     }
     s.diagnostic_source = before;
     if s.log.on() && crate::project_log::is_logged(s, command, &params) {
-        let entry = crate::project_log::entry(command, crate::project_log::kept_params(&params), &landed, at, start.elapsed());
-        s.log.push(entry);
+        let (kept, partial) = crate::project_log::kept_and_partial(&params);
+        // The project it started in, not one opened while it ran.
+        s.log.push(crate::project_log::entry(project, command, kept, partial, &landed, at, start.elapsed()));
     }
     landed
 }
