@@ -308,6 +308,51 @@ impl Expr {
     }
 }
 
+/// The highest zoom a style is drawn at (see `template::style_zoom`).
+const MAX_STYLE_ZOOM: f32 = 24.0;
+
+/// How many steps to a zoom [`StyleLayer::color_relief_undrawable`] checks a layer's colours at,
+/// between the zooms they name.
+const ZOOM_GRID: f32 = 16.0;
+
+/// Collects the numbers `n` names: its literals and the stops of its steps and ramps, up to a
+/// few thousand (the grid still checks between past that).
+fn numbers(n: &Node, out: &mut Vec<f64>) {
+    if out.len() >= 4096 {
+        return;
+    }
+    let stops = |list: &[(f64, Node)], out: &mut Vec<f64>| {
+        for (at, o) in list {
+            out.push(*at);
+            numbers(o, out);
+        }
+    };
+    match n {
+        Node::Lit(Val::Num(v)) => out.push(*v),
+        Node::Lit(_) | Node::Var(_) | Node::LegacyGet(_) | Node::LegacyHas(_) => {}
+        Node::Call(_, args) => args.iter().for_each(|a| numbers(a, out)),
+        Node::Match(input, arms, default) => {
+            numbers(input, out);
+            arms.iter().for_each(|(_, o)| numbers(o, out));
+            numbers(default, out);
+        }
+        Node::Step(input, first, list) => {
+            numbers(input, out);
+            numbers(first, out);
+            stops(list, out);
+        }
+        Node::Interp(_, input, list) => {
+            numbers(input, out);
+            stops(list, out);
+        }
+        Node::Let(binds, body) => {
+            binds.iter().for_each(|(_, v)| numbers(v, out));
+            numbers(body, out);
+        }
+        Node::Tokens(inner) | Node::LegacyIn(inner, _) => numbers(inner, out),
+    }
+}
+
 /// Colours by height, from a `color-relief-color` (see [`Expr::elevation_ramp`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct ElevationRamp {
@@ -1481,6 +1526,8 @@ pub struct StyleLayer {
     filter: Option<Expr>,
     paint: HashMap<String, Expr>,
     layout: HashMap<String, Expr>,
+    /// See [`StyleLayer::color_relief_undrawable`]; worked out once, when parsed.
+    relief_undrawable: bool,
 }
 
 impl StyleLayer {
@@ -1512,7 +1559,7 @@ impl StyleLayer {
                 .collect()
         };
         let zoom = |k: &str, d: f32| o.get(k).and_then(Json::as_f64).map(|z| z as f32).filter(|z| z.is_finite()).unwrap_or(d);
-        Some(StyleLayer {
+        let mut layer = StyleLayer {
             id: str_of(o.get("id")).unwrap_or_default(),
             kind,
             source: str_of(o.get("source")),
@@ -1523,7 +1570,10 @@ impl StyleLayer {
             filter: o.get("filter").filter(|f| !f.is_null()).map(Expr::filter),
             paint: props(o.get("paint").and_then(Json::as_object)),
             layout: props(layout_json),
-        })
+            relief_undrawable: false,
+        };
+        layer.relief_undrawable = layer.find_relief_undrawable();
+        Some(layer)
     }
 
     /// Filter result (true without a filter).
@@ -1733,6 +1783,36 @@ impl StyleLayer {
     /// can draw (see [`Expr::elevation_ramp`]).
     pub fn color_relief_ramp(&self, zoom: f32) -> Option<ElevationRamp> {
         self.paint.get("color-relief-color")?.elevation_ramp(zoom)
+    }
+
+    /// Whether it is a shown `color-relief` layer that RustGIS can't colour at some zoom it
+    /// shows at (its `color-relief-color` isn't a [`color_relief_ramp`](Self::color_relief_ramp)
+    /// there), and so skips there.
+    pub fn color_relief_undrawable(&self) -> bool {
+        self.relief_undrawable
+    }
+
+    /// Works out [`color_relief_undrawable`](Self::color_relief_undrawable): the colours are
+    /// checked at each zoom from 0 to [`MAX_STYLE_ZOOM`] the layer shows at that the expression
+    /// names (the stops and thresholds of zoom steps, ramps and comparisons), and on a grid of
+    /// [`ZOOM_GRID`] steps to a zoom for anything worked out from the zoom between them.
+    fn find_relief_undrawable(&self) -> bool {
+        if self.kind != LayerKind::ColorRelief || !self.visible {
+            return false;
+        }
+        let shown = |z: &f32| (0.0..=MAX_STYLE_ZOOM).contains(z) && self.visible_at(*z);
+        let Some(expr) = self.paint.get("color-relief-color") else {
+            return (0..=MAX_STYLE_ZOOM as u32).map(|z| z as f32).chain([self.min_zoom]).any(|z| shown(&z));
+        };
+        let lo = self.min_zoom.clamp(0.0, MAX_STYLE_ZOOM);
+        if !expr.uses_zoom() {
+            return [lo, MAX_STYLE_ZOOM].iter().any(shown) && expr.elevation_ramp(lo).is_none();
+        }
+        let mut named = Vec::new();
+        numbers(&expr.0, &mut named);
+        let grid = (0..=((MAX_STYLE_ZOOM - lo) * ZOOM_GRID) as u32).map(|i| lo + i as f32 / ZOOM_GRID);
+        let named = named.into_iter().filter(|z| z.is_finite()).map(|z| z as f32);
+        [lo, MAX_STYLE_ZOOM].into_iter().chain(grid).chain(named).filter(shown).any(|z| expr.elevation_ramp(z).is_none())
     }
 
     /// `color-relief-opacity` (default 1).

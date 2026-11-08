@@ -886,6 +886,34 @@ mod tests {
     }
 
     #[test]
+    fn a_relief_layer_rustgis_cant_colour_is_said_with_each_drawing() {
+        let _turn = crate::cache::turn();
+        let drawn_error = |colour: serde_json::Value, host: &str| {
+            let doc = serde_json::json!({"version": 8, "sources": {"dem": {"type": "raster-dem", "tiles": ["https://t.example.com/{z}/{x}/{y}.png"]}},
+                "layers": [{"id": "relief", "type": "color-relief", "source": "dem", "paint": {"color-relief-color": colour}}]});
+            let r = Resolved {
+                style: Style::parse(&doc).unwrap(),
+                sprites: Vec::new(),
+                attribution: Vec::new(),
+                left_out: Vec::new(),
+                made: Mutex::new(Instant::now()),
+                waiting: false,
+            };
+            let s = spec(Kind::Style, &format!("https://{host}.example.com/style.json"));
+            resolved().lock().unwrap().insert(s.key(), Arc::new(r));
+            let mut pm = tiny_skia::Pixmap::new(8, 8).unwrap();
+            let frame = crate::draw::Frame { left: 0.0, top: 800.0, m_per_px: 100.0, ppp: 1.0 };
+            crate::draw::draw(&mut pm, &s, 1.0, &frame, false).error
+        };
+        let on_zoom = serde_json::json!(["interpolate", ["linear"], ["zoom"], 0, "#00f", 10, "#fff"]);
+        assert!(
+            drawn_error(on_zoom, "relief-on-zoom").is_some_and(|e| e.contains("color-relief layer(s) skipped") && e.ends_with(": relief"))
+        );
+        let ramp = serde_json::json!(["interpolate", ["linear"], ["elevation"], 0, "#00f", 1000, "#fff"]);
+        assert_eq!(drawn_error(ramp, "relief-on-height"), None);
+    }
+
+    #[test]
     fn a_style_that_left_something_out_draws_the_rest_and_says_so() {
         let _turn = crate::cache::turn();
         let doc = serde_json::json!({"version": 8, "sources": {}, "layers": [{"id": "bg", "type": "background", "paint": {"background-color": "#f00"}}]});
