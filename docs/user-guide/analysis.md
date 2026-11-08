@@ -455,7 +455,9 @@ gap between two parts never counts; a line's parts that cross the antimeridian, 
 where the next begins on its other side, as a GeoJSON file splits a line that crosses it, are one
 line. A ring ends where it starts, so a point there is made once, and a line that ends where it
 starts (a contour) is walked as a ring too; a part shorter than its offsets gets none. A line that
-passes through one place twice gets a point there each time the distance lands on it. Each point
+passes through one place twice gets a point there each time the distance lands on it, except at a
+closed line's shared start and end, which gets one point (a line through A, B and back to A gets
+one at A). Each point
 has its feature's attributes and three fields: `orig_fid`, the feature's OID, as Feature Vertices
 To Points writes it, and, named as in QGIS's Points along geometry, `distance` (how far along its
 part, in `units`, the start offset included) and `angle` (the line's direction there, in degrees
@@ -936,7 +938,13 @@ CRS metadata. Coordinates are used directly, without projection or snapping.
 - **Unsplit Line** (`unsplitLine`) joins line parts at exactly equal endpoints where precisely
   two part ends meet and all attribute values agree. Reversed parts and closed cycles are
   supported. Branches, attribute changes, and intersections away from endpoints stay separate.
-  Every output chain retains its common attributes; no field values are discarded.
+  Every output chain retains its common attributes; no field values are discarded. Each chain of
+  joined parts is its own output feature, so a multipart input can become several features.
+  Joins are decided among the selected features only, when there is a selection: an unselected
+  part meeting an endpoint neither joins it nor stops a join there. Two open parts with
+  equal attributes that share both endpoints join into one closed line when no other considered
+  part ends there; a part that is already closed has two ends at its endpoint, so it joins
+  nothing there.
 
 Missing geometries and empty or too-short parts are skipped with a count. If skipping leaves
 no usable output, the tool returns an error. Non-finite coordinates and malformed rows with
@@ -967,7 +975,7 @@ repeated in a row: it is a data-quality check reported beside them.
 | Code | What is wrong |
 | --- | --- |
 | `null_geometry` | No geometry, or one without coordinates |
-| `non_finite_coordinate` | A coordinate is not a number or infinite. The row is written without geometry, so it can't spoil the layer's extent |
+| `non_finite_coordinate` | A coordinate is not a number or infinite. The row is written without geometry, so it can't spoil the layer's extent. A ring with one is reported for those coordinates and left out of every other check: its points, its edges' crossings and its containment in other rings |
 | `too_few_points` | A line part with fewer than 2 distinct points, a ring with fewer than 3, or a polygon part without rings |
 | `ring_not_closed` | A ring's last point is not its first |
 | `repeated_vertex` | The same vertex twice in a row (a closed ring's last point doesn't count) |

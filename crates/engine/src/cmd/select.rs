@@ -269,8 +269,10 @@ pub(crate) fn warn_bounded(s: &mut Session, bounded: &[(String, usize)]) {
     }
     let total: usize = bounded.iter().map(|(_, n)| n).sum();
     let layers: Vec<String> = bounded.iter().map(|(layer, n)| format!("{layer} {n}")).collect();
+    let steps = rustgis_map::graphics::thousands(network::REACH_STEPS_TOTAL as f64);
+    let longest = network::REACH_STEPS_MAX * network::REACH_STEP_DEG;
     s.warn(format!(
-        "{total} feature(s) near a pole ({}) couldn't be measured in full (past a search's 250,000 steps a layer, or along an edge over 512° long) and were counted at the least distance they could be: they may lie farther, even beyond the radius",
+        "{total} feature(s) near a pole ({}) couldn't be measured in full (past a search's {steps} steps a layer, or along an edge over {longest}° long) and were counted at the least distance they could be: they may lie farther, even beyond the radius",
         layers.join(", ")
     ));
 }
@@ -511,6 +513,24 @@ mod tests {
     use crate::{Project, Tool};
     use rustgis_data::{Dataset, Field, FieldType, Geometry, GeometryType, Value as DataValue};
     use rustgis_geom::{lonlat_to_merc, merc_to_lonlat};
+
+    /// The pole warning states the search's limits from the constants that set them.
+    #[test]
+    fn bounded_warning_states_the_search_limits() {
+        let mut s = Session::new(Project::default());
+        let mark = s.notices_given();
+        warn_bounded(&mut s, &[("Cities".into(), 2)]);
+        let text = s.notices_since(mark).first().map(|n| n.text.as_str()).unwrap_or_default();
+        assert!(
+            text.contains("2 feature(s) near a pole (Cities 2)")
+                && text.contains(&format!(
+                    "past a search's {} steps a layer",
+                    rustgis_map::graphics::thousands(network::REACH_STEPS_TOTAL as f64)
+                ))
+                && text.contains(&format!("along an edge over {}° long", network::REACH_STEPS_MAX * network::REACH_STEP_DEG)),
+            "{text}"
+        );
+    }
 
     fn fixture() -> (Session, u32, u32) {
         let mut s = Session::new(Project::default());

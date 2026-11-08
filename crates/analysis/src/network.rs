@@ -537,15 +537,15 @@ impl Steps {
 }
 
 /// The longest step, in degrees of longitude or latitude, that [`polar_reach`] follows an edge by.
-const REACH_STEP_DEG: f64 = 0.5;
+pub const REACH_STEP_DEG: f64 = 0.5;
 /// The most steps it takes along one edge; one needing more (over 512° long, as only a hostile
 /// edge is) counts as near as its box.
-const REACH_STEPS_MAX: f64 = 1024.0;
+pub const REACH_STEPS_MAX: f64 = 1024.0;
 /// The most steps one search ([`within`]) takes along all its shapes' edges, a point measured
 /// counting as one; past them, a point or edge counts as near as its box
 /// ([`least_distance_to_box`]), so a shape may be counted in that's farther than the radius, never
 /// left out for want of steps.
-const REACH_STEPS_TOTAL: usize = 250_000;
+pub const REACH_STEPS_TOTAL: usize = 250_000;
 /// More than a degree of longitude or latitude is long anywhere on the ground (meters): a step's
 /// length is at most this times the degrees it spans in each.
 const DEGREE_M_MAX: f64 = 111_700.0;

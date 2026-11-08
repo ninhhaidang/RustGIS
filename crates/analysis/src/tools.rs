@@ -98,7 +98,7 @@ pub static TOOLS: &[ToolSpec] = &[
         id: "repairGeometry",
         name: "Repair Geometry",
         toolbox: "Data Management › Features",
-        summary: "Writes every feature with its geometry made valid: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved. Says what was repaired in each.",
+        summary: "Writes every feature with its geometry made valid where it can be: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved. Features with a missing or non-finite coordinate anywhere, even in a hole, or left with no usable points or, for polygons, no area once repaired, are written without geometry. Other features too complex to check, or whose repair fails, are written unchanged. Says what was repaired in each.",
         params: &[
             P { name: "input", label: "Input Features", kind: K::VectorLayer, required: true, default: "", help: "" },
             P { name: "output", label: "Output Name", kind: K::Text, required: false, default: "", help: "" },
@@ -1512,7 +1512,7 @@ fn buffer_with_limits(inp: &dyn Inputs, p: &Json, limit: usize, bytes: usize) ->
     }
     if coarse > 0 {
         r.messages.push(format!(
-            "{coarse} of {} features' buffers have edges left longer than their outline allows (a ring of thousands of long edges uses up the points added to it): their sides there can stray from the distance by more than a buffer otherwise keeps to (0.012%, 0.05% along a line or outline buffered in stretches, or 1 cm)",
+            "{coarse} of {} features' buffers have outline edges left with fewer points along them than they need (the points a ring may add ran out, as on a ring of thousands of long edges, or a very long edge was halved as many times as it may be): their sides there can stray from the distance by more than a buffer otherwise keeps to (0.012%, 0.05% along a line or outline buffered in stretches, or 1 cm)",
             picked.len()
         ));
     }
@@ -2342,8 +2342,9 @@ fn size_output_points<'a>(
     for f in feats {
         let Some(g) = &f.geometry else { continue };
         let k = count(g);
-        // Saturating, as sizes from input are. A row repeated in the selection (a project can
-        // restore one) is counted again, and its points are written twice.
+        // Saturating, as sizes from input are. A row repeated in the selection (only a custom
+        // `Inputs` can give one: a project's selection is normalized on load) is counted again,
+        // and its points are written twice.
         n = n.saturating_add(k);
         if estimate {
             let own = f.attrs.get(..kept).unwrap_or(&f.attrs);
@@ -3321,7 +3322,7 @@ fn select_by_location_with_work_limit(inp: &dyn Inputs, p: &Json, limit: usize, 
     let coarse = coarse.into_inner();
     if coarse > 0 {
         messages.push(format!(
-            "{coarse} selecting features' buffers have edges left longer than their outline allows (a ring of thousands of long edges uses up the points added to it): features near their edges there may be selected or not by more than a buffer otherwise keeps to (0.012% of the distance, 0.05% along a line or outline buffered in stretches, or 1 cm)"
+            "{coarse} selecting features' buffers have outline edges left with fewer points along them than they need (the points a ring may add ran out, as on a ring of thousands of long edges, or a very long edge was halved as many times as it may be): features near their edges there may be selected or not by more than a buffer otherwise keeps to (0.012% of the distance, 0.05% along a line or outline buffered in stretches, or 1 cm)"
         ));
     }
     Ok(ToolResult { output: Output::Selection { layer: ds.name.clone(), rows: hits }, messages })
@@ -3630,6 +3631,9 @@ fn kernel_density_tool(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String>
     // which would land on the map's edge rather than where it is (#1033): its latitude doesn't
     // come back.
     let mut beyond: usize = 0;
+    // A multipoint's members with non-finite coordinates, in the features whose other members
+    // were used (a feature with none usable is counted in `skipped`).
+    let (mut non_finite, mut non_finite_features) = (0usize, 0usize);
     let project = |c: Coord, beyond: &mut usize| {
         // Web Mercator's limit is known exactly: the round trip alone would let a latitude a hair
         // past it through, onto the edge.
@@ -3666,17 +3670,20 @@ fn kernel_density_tool(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String>
                 }
             }
             Geometry::MultiPoint(cs) => {
-                let mut any = false;
+                let (mut any, mut bad) = (false, 0usize);
                 for c in cs {
-                    if c.is_finite()
-                        && let Some(p_proj) = project(*c, &mut beyond)
-                    {
+                    if !c.is_finite() {
+                        bad += 1;
+                    } else if let Some(p_proj) = project(*c, &mut beyond) {
                         pts.push((p_proj, w));
                         any = true;
                     }
                 }
                 if !any {
                     skipped += 1;
+                } else if bad > 0 {
+                    non_finite = non_finite.saturating_add(bad);
+                    non_finite_features += 1;
                 }
             }
             _ => {
@@ -3688,6 +3695,9 @@ fn kernel_density_tool(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String>
     // Only Web Mercator's limit is known to be a latitude.
     let why = if crs == Crs::WebMercator { " (past 85.05° of latitude)" } else { "" };
     let beyond_note = (beyond > 0).then(|| format!("{beyond} point(s) beyond what {} can hold{why} were left out", crs.label()));
+    let non_finite_note = (non_finite > 0).then(|| {
+        format!("{non_finite} point(s) with non-finite coordinates were left out of {non_finite_features} multipoint feature(s) whose other points were used")
+    });
     if pts.is_empty() {
         let none = "input layer has no valid points with positive weights to analyze";
         return Err(beyond_note.map_or_else(|| none.to_string(), |note| format!("{none}: {note}")));
@@ -3753,7 +3763,7 @@ fn kernel_density_tool(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String>
     };
     Ok(ToolResult {
         output: Output::Layers(vec![OutputLayer::Raster { file_name: format!("{name}.tif"), name, bytes }]),
-        messages: std::iter::once(msg).chain(beyond_note).collect(),
+        messages: std::iter::once(msg).chain(beyond_note).chain(non_finite_note).collect(),
     })
 }
 
@@ -8491,8 +8501,14 @@ mod tests {
             for dissolve in ["None", "All"] {
                 let params = serde_json::json!({"input": "l", "distance": 1, "units": "Meters", "dissolve": dissolve});
                 let res = crate::run("buffer", &m, &params).unwrap_or_else(|e| panic!("{e}"));
-                let said = res.messages.iter().any(|m| m.starts_with("1 of 1 features' buffers have edges left longer"));
-                assert_eq!(said, coarse, "dissolve {dissolve}: {:?}", res.messages);
+                let note =
+                    res.messages.iter().find(|m| m.starts_with("1 of 1 features' buffers have outline edges left with fewer points"));
+                assert_eq!(note.is_some(), coarse, "dissolve {dissolve}: {:?}", res.messages);
+                // The note names both reasons an edge can be left coarse.
+                assert!(
+                    note.is_none_or(|m| m.contains("the points a ring may add ran out") && m.contains("halved as many times as it may be")),
+                    "{note:?}"
+                );
             }
         }
     }
@@ -8742,6 +8758,37 @@ mod tests {
         let res = crate::run("kernelDensity", &m, &params).unwrap();
         let note = res.messages.iter().find(|m| m.contains("beyond what")).cloned().unwrap_or_default();
         assert!(note.starts_with("1 point(s) beyond what") && !note.contains("85.05°"), "{:?}", res.messages);
+    }
+
+    /// A multipoint's non-finite members are left out and counted when its other members are
+    /// used; a clean multipoint says nothing of the kind.
+    #[test]
+    fn kernel_density_counts_a_multipoints_non_finite_members() {
+        let run = |members: Vec<Coord>| {
+            let mut pts = Dataset::new("pts", GeometryType::Point, vec![]);
+            pts.push(Some(Geometry::Point(Coord::new(0.0, 60.0))), vec![]);
+            pts.push(Some(Geometry::MultiPoint(members)), vec![]);
+            let m = Map(HashMap::from([("pts".to_string(), pts)]));
+            let params = serde_json::json!({"input": "pts", "crs": "EPSG:3857", "radius": 5000.0, "pixelSize": 1000.0});
+            crate::run("kernelDensity", &m, &params).map(|r| r.messages).unwrap_or_else(|e| vec![e])
+        };
+        let lossy = run(vec![Coord::new(0.01, 60.0), Coord::new(f64::NAN, 60.0), Coord::new(0.0, f64::INFINITY)]);
+        assert!(lossy.iter().any(|m| m.contains("from 2 points (bandwidth")), "{lossy:?}");
+        assert!(lossy.iter().all(|m| !m.contains("beyond what")), "{lossy:?}");
+        let notes: Vec<_> = lossy.iter().filter(|m| m.contains("non-finite")).collect();
+        assert!(
+            notes.len() == 1
+                && notes.iter().all(|m| m.starts_with("2 point(s) with non-finite coordinates were left out of 1 multipoint feature(s)")),
+            "{lossy:?}"
+        );
+        let unusable = run(vec![Coord::new(f64::NAN, 60.0), Coord::new(0.0, f64::INFINITY)]);
+        assert!(unusable.iter().any(|m| m.contains("from 1 points (1 skipped, bandwidth")), "{unusable:?}");
+        assert!(unusable.iter().all(|m| !m.contains("were left out of")), "{unusable:?}");
+        let clean = run(vec![Coord::new(0.01, 60.0), Coord::new(0.02, 60.0)]);
+        assert!(
+            clean.iter().any(|m| m.contains("from 3 points (bandwidth")) && clean.iter().all(|m| !m.contains("non-finite")),
+            "{clean:?}"
+        );
     }
 
     #[test]
