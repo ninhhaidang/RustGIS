@@ -624,7 +624,7 @@ fn a_vertex_missing_a_coordinate_left_where_it_was_is_counted() {
             s.notices_since(mark).iter().filter(|n| n.text.contains("missing a coordinate")).map(|n| n.text.clone()).collect::<Vec<_>>();
         (ran.is_ok(), said)
     };
-    let one = ["1 feature(s) have a vertex missing a coordinate, which was left where it was"];
+    let one = ["1 feature(s) have a vertex missing a coordinate or with an infinite one, which was left where it was"];
     let edits = [("edit.move", json!({"dx": 1000.0})), ("edit.rotate", json!({"angle": 10.0})), ("edit.scale", json!({"factor": 1.5}))];
     let near_equator = boxed(10.0, 10.0, 11.0, 11.0);
     for ring in [polar_ring(), near_equator] {
@@ -656,7 +656,10 @@ fn a_vertex_missing_a_coordinate_left_where_it_was_is_counted() {
     let features = vec![polygon(two), polygon(once), polygon(boxed(30.0, 10.0, 31.0, 11.0)), Geometry::Point(Coord::new(f64::NAN, 10.0))];
     let (mut s, _) = layer(GeometryType::Polygon, features);
     let (ran, text) = said(&mut s, "edit.rotate", &json!({"angle": 10.0}));
-    assert!(ran && text == ["2 feature(s) have a vertex missing a coordinate, which was left where it was"], "{text:?}");
+    assert!(
+        ran && text == ["2 feature(s) have a vertex missing a coordinate or with an infinite one, which was left where it was"],
+        "{text:?}"
+    );
     // A refused edit (a polygon reaching a pole can't be turned yet) says nothing of the kind.
     let mut cap = polar_ring();
     cap[0].y = -90.0;

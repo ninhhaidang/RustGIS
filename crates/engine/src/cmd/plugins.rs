@@ -680,6 +680,6 @@ mod tests {
         // A layer undone while the command waited: said, not named.
         s.rerun_landed = vec![(asked.clone(), Ok(json!({"layer": 4_000_000})), Default::default())];
         let e = s.run("layer.addUrl", &asked).unwrap_err();
-        assert!(e.contains("taken away (undone)"), "{e}");
+        assert!(e.contains("removed or undone"), "{e}");
     }
 }

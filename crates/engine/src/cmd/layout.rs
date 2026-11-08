@@ -786,7 +786,7 @@ pub fn parse_arrangement(v: &Value) -> Result<Homes, String> {
                 let corner = o.get(*key).and_then(Value::as_str).map(str::trim).unwrap_or("");
                 homes[i] = CORNER_NAMES
                     .iter()
-                    .position(|c| *c == corner)
+                    .position(|c| c.eq_ignore_ascii_case(corner))
                     .ok_or_else(|| format!("arrangement: \"{key}\" is \"top-left\", \"top-right\", \"bottom-left\" or \"bottom-right\""))?;
             }
             if (0..4).any(|i| homes[..i].contains(&homes[i])) {
@@ -2062,7 +2062,7 @@ fn publication(s: &mut Session, p: &Value) -> CmdResult {
             _ => (format!("the {} and the {last}", rest.join(", the ")), "sit"),
         };
         warnings
-            .push(format!("{names} {verb} on what the map shows, the freer corners having gone to the others: move by hand what matters"));
+            .push(format!("{names} {verb} on what the map shows, the freer places having gone to the others: move by hand what matters"));
     }
     for (i, (a, ra)) in placed.iter().enumerate() {
         for (b, rb) in placed.iter().skip(i + 1) {

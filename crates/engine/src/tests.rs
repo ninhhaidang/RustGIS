@@ -5342,7 +5342,7 @@ fn terrain_is_set_from_a_dem_or_tiles() {
     s.active_layer = Some(second);
     s.run("layer.rename", &json!({"name": name})).unwrap();
     let e = s.run("map.terrain", &json!({})).unwrap_err();
-    assert!(e.contains("two layers are called"), "{e}");
+    assert!(e.contains("more than one layer is called"), "{e}");
     s.run("layer.rename", &json!({"name": "dem 2"})).unwrap();
     s.active_layer = Some(id);
     s.run("map.terrain", &json!({})).unwrap();
@@ -6859,6 +6859,10 @@ fn publication_arrangements_and_the_favourite() {
     let custom = json!({"locator": "bottom-left", "northArrow": "top-left", "legend": "top-right", "scaleBar": "bottom-right"});
     let r = s.run("layout.publication", &json!({"extent": extent, "author": "", "arrangement": custom})).unwrap();
     assert_eq!((r["arrangement"].as_str(), corners(&s)), (Some("custom"), ["bottom left", "top left", "top right", "bottom right"]), "{r}");
+    // Corner names, like arrangement names, are read whatever their case.
+    let shouted = json!({"locator": "Bottom-Left", "northArrow": "TOP-LEFT", "legend": "top-Right", "scaleBar": "bottom-right"});
+    let r = s.run("layout.publication", &json!({"extent": extent, "author": "", "arrangement": shouted})).unwrap();
+    assert_eq!(corners(&s), ["bottom left", "top left", "top right", "bottom right"], "{r}");
     // The favourite: shown, set, then the one the default and "favourite" take.
     let shown = s.run("layout.arrangement", &json!({})).unwrap();
     assert_eq!((shown["favourite"].as_str(), shown["corners"]["legend"].as_str()), (Some("classic"), Some("bottom-left")));
@@ -13098,9 +13102,22 @@ fn a_service_layers_address_is_copied_without_its_key() {
     let r = s.run("layer.addDownload", &json!({"id": id, "url": url, "name": "Api", "service": true})).unwrap();
     let layer = r["layer"].as_u64().or_else(|| r["layers"][0].as_u64()).unwrap() as u32;
     assert_eq!(s.map().layer(layer).and_then(|l| l.dataset.source.as_deref()), Some(url));
+    let mark = s.notice_mark();
     let copied = s.run("layer.copyPath", &json!({"layer": layer})).unwrap();
     let text = copied["text"].as_str().unwrap();
     assert!(text.starts_with("https://x.org/collections/a/items?") && !text.contains("SECRET"), "{text}");
+    let said = |s: &Session| s.notices_since(mark).iter().filter(|n| n.text.contains("leaves out part")).count();
+    assert_eq!(said(&s), 1, "the copied address says what it left out");
+    // An address with nothing secret in it is copied as it is, with no notice.
+    let id = s.download_started();
+    assert!(s.download_landed(id, br#"{"type": "Point", "coordinates": [1, 2]}"#.to_vec()));
+    let plain = "https://x.org/collections/b/items?f=json";
+    let r = s.run("layer.addDownload", &json!({"id": id, "url": plain, "name": "Plain", "service": true})).unwrap();
+    let layer = r["layer"].as_u64().or_else(|| r["layers"][0].as_u64()).unwrap() as u32;
+    let mark = s.notice_mark();
+    let copied = s.run("layer.copyPath", &json!({"layer": layer})).unwrap();
+    assert_eq!(copied["text"], plain);
+    assert!(s.notices_since(mark).iter().all(|n| !n.text.contains("leaves out")), "{:?}", s.notices_since(mark));
 }
 
 /// The app's downloads land in the project they were started for, as bytes (no base64); one
@@ -15425,6 +15442,47 @@ fn exporting_features_refuses_to_replace_an_existing_geopackage() {
     let error = s.run("share.exportLayer", &json!({"layer": "Countries", "path": path})).unwrap_err();
     assert!(error.to_string().contains("Choose a new filename"), "{error}");
     assert_eq!(std::fs::read(&path).unwrap(), before);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// A new GeoPackage whose asked-for table name is reserved says what the table is called
+/// instead; one written under the name asked for says nothing of it.
+#[test]
+fn a_new_geopackage_says_when_its_table_name_was_changed() {
+    let dir = std::env::temp_dir().join(format!("rustgis-engine-gpkg-rename-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut s = world();
+    let said = |s: &Session, mark: u64| s.notices_since(mark).iter().filter(|n| n.text.contains("instead of")).count();
+    let mark = s.notice_mark();
+    let path = dir.join("reserved.gpkg");
+    let out = s.run("share.exportLayer", &json!({"layer": "Cities", "path": path, "tableName": "gpkg_cities"})).unwrap();
+    assert_eq!(out["table"].as_str(), Some("layer_gpkg_cities"), "{out}");
+    assert_eq!(said(&s, mark), 1, "{:?}", s.notices_since(mark));
+    let both = |s: &Session, mark: u64| {
+        s.notices_since(mark).iter().any(|n| n.text.contains("wrote the table layer_gpkg_cities instead of 'gpkg_cities'"))
+    };
+    assert!(both(&s, mark), "{:?}", s.notices_since(mark));
+    // The default name, the layer's, is said the same way when it is changed.
+    s.run("layer.rename", &json!({"layer": "Cities", "name": "gpkg_cities"})).unwrap();
+    let mark = s.notice_mark();
+    let path = dir.join("default.gpkg");
+    let out = s.run("share.exportLayer", &json!({"layer": "gpkg_cities", "path": path})).unwrap();
+    assert_eq!(out["table"].as_str(), Some("layer_gpkg_cities"), "{out}");
+    assert!(both(&s, mark), "{:?}", s.notices_since(mark));
+    s.run("layer.rename", &json!({"layer": "gpkg_cities", "name": "Cities"})).unwrap();
+    // A control character in the name asked for is dropped, and shown escaped in the notice.
+    let mark = s.notice_mark();
+    let path = dir.join("control.gpkg");
+    let out = s.run("share.exportLayer", &json!({"layer": "Cities", "path": path, "tableName": "road\nnetwork"})).unwrap();
+    assert_eq!(out["table"].as_str(), Some("roadnetwork"), "{out}");
+    assert!(s.notices_since(mark).iter().any(|n| n.text.contains("instead of 'road\\nnetwork'")), "{:?}", s.notices_since(mark));
+    let mark = s.notice_mark();
+    let path = dir.join("plain.gpkg");
+    let out = s.run("share.exportLayer", &json!({"layer": "Cities", "path": path, "tableName": "towns"})).unwrap();
+    assert_eq!(out["table"].as_str(), Some("towns"), "{out}");
+    assert_eq!(said(&s, mark), 0, "{:?}", s.notices_since(mark));
+    drop(s);
     std::fs::remove_dir_all(dir).unwrap();
 }
 

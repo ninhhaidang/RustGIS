@@ -270,7 +270,9 @@ fn terrain(s: &mut Session, p: &Value) -> CmdResult {
     if let TerrainSource::Layer(n) = &t.source
         && m.layers.iter().filter(|l| l.name.eq_ignore_ascii_case(n)).count() > 1
     {
-        let e = format!("two layers are called '{n}': rename one, then turn Terrain on");
+        let e = format!(
+            "more than one layer is called '{n}': give the DEM a name of its own, then try again naming it (Terrain stays as it was)"
+        );
         // A terrain that was on stays as it was.
         if let Some(old) = old_terrain {
             m.view.terrain = Some(old);

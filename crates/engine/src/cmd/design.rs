@@ -939,8 +939,8 @@ fn polar_transform(
     })
 }
 
-/// [`modify`] for a move, turn or scale, which leaves a vertex missing a coordinate where it was:
-/// says how many of the features it changed have one.
+/// [`modify`] for a move, turn or scale, which leaves a vertex missing a coordinate (or with an
+/// infinite one) where it was: says how many of the features it changed have one.
 fn move_features(s: &mut Session, mut change: impl FnMut((u32, usize), &Geometry) -> Result<Option<Geometry>, String>) -> CmdResult {
     let mut missing = 0usize;
     let done = modify(s, |key, g| {
@@ -953,7 +953,7 @@ fn move_features(s: &mut Session, mut change: impl FnMut((u32, usize), &Geometry
         Ok(moved)
     })?;
     if missing > 0 {
-        s.warn(format!("{missing} feature(s) have a vertex missing a coordinate, which was left where it was"));
+        s.warn(format!("{missing} feature(s) have a vertex missing a coordinate or with an infinite one, which was left where it was"));
     }
     Ok(done)
 }

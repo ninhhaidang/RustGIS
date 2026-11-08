@@ -1345,6 +1345,25 @@ fn permission_policy_web_login_reselection_refuses_old_consent_and_landing() {
     assert!(s.map().layers.is_empty());
 }
 
+/// A session choice naming a connection that is gone is no choice: the one connection left at
+/// the origin still lends its login, as with no choice at all.
+#[test]
+fn permission_policy_web_login_stale_choice_falls_back_to_the_sole_connection() {
+    use crate::{connections::WEB, render::rustgis_tiles::logins, service_logins};
+    let mut s = Session::new(Project::default());
+    let origin = "https://policy-stale-choice.example.invalid";
+    let definition = json!({"kind":"wms","name":"Only","address":origin,"auth":"header","keyName":"X-Key"});
+    let id = s.run("connection.new", &definition).unwrap()["id"].as_str().unwrap().to_string();
+    s.run("connection.login", &json!({"id":id,"apiKey":"RGSYNTH_stale_choice"})).unwrap();
+    let url = format!("{origin}/roads.geojson");
+    let fresh = service_logins::request(&mut s, None, &url).unwrap();
+    assert_ne!(fresh, url, "the sole connection's login is lent");
+    s.database_logins.select(WEB, origin, "gone");
+    let stale = service_logins::request(&mut s, None, &url).unwrap();
+    assert_ne!(stale, url, "a choice of a connection that is gone doesn't read anonymously");
+    assert_eq!(logins::apply(&stale).unwrap().unwrap().header.unwrap().1, "RGSYNTH_stale_choice");
+}
+
 /// Runtime snapshots include absence and this owner's logout, while another Session is separate.
 #[test]
 fn permission_policy_web_accounts_ignore_other_sessions_and_revoke_owned_sends() {

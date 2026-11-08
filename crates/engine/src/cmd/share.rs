@@ -39,6 +39,7 @@ pub fn commands() -> Vec<C> {
             let ext = Path::new(path).extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
             let gpkg = gpkg_table(p, &ext)?;
             let t = s.project.tables.get(s.table_index(p)?).ok_or("no such table")?;
+            let default = t.dataset.name.clone();
             // Tables may retain geometry and its import losses, just as feature layers do.
             let notes = rustgis_data::export_notes([(&t.dataset, t.dataset.extent())], path, Crs::LonLat);
             let mut dbf_notes = Vec::new();
@@ -56,7 +57,7 @@ pub fn commands() -> Vec<C> {
                 s.notify(note, false);
             }
             let mut out = json!({"path": path});
-            report_table(s, path, &gpkg, table, &mut out);
+            report_table(s, path, &gpkg, &default, table, &mut out);
             Ok(out)
         }).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
         .params(
@@ -91,8 +92,26 @@ pub fn gpkg_table(p: &Value, ext: &str) -> Result<GpkgTable, String> {
 /// an export into an existing GeoPackage also says so, what went with a replaced table, and
 /// which views and triggers elsewhere name it. Layers read in place from a replaced table read
 /// it again.
-fn report_table(s: &mut Session, path: &str, gpkg: &GpkgTable, table: Option<GpkgWritten>, out: &mut Value) {
+fn report_table(s: &mut Session, path: &str, gpkg: &GpkgTable, default: &str, table: Option<GpkgWritten>, out: &mut Value) {
     let Some(table) = table else { return };
+    // A new file's table is said only when it isn't the name asked for, or by default the
+    // layer's (a reserved name is prefixed, control characters and edge spaces dropped); one
+    // added to or replaced in a file is always named below.
+    let asked = gpkg.name.as_deref().unwrap_or(default);
+    if gpkg.mode == GpkgMode::NewFile && asked != table.table {
+        let note = if asked.trim().is_empty() {
+            format!("{path}: wrote the table {}, as there was no name to give it", table.table)
+        } else {
+            // Escaped: a control character in the name would otherwise reach the terminal.
+            let asked: String =
+                asked.chars().map(|c| if c.is_control() { c.escape_default().to_string() } else { c.to_string() }).collect();
+            format!(
+                "{path}: wrote the table {} instead of '{asked}' (GeoPackage table names can't start with gpkg_, sqlite_ or rtree_, and lose control characters and edge spaces)",
+                table.table
+            )
+        };
+        s.notify(note, false);
+    }
     if gpkg.mode != GpkgMode::NewFile {
         let (reread, failed) =
             if table.replaced { super::gpkg::reset_sources(s, Path::new(path), &table.table, true) } else { (0, Vec::new()) };
@@ -628,9 +647,10 @@ fn write_layer(l: &rustgis_map::Layer, path: &str, asked: Option<Crs>, gpkg: Gpk
     // (layers reading a replaced table) is at hand.
     let written_path = Some(path.to_string());
     let path = path.to_string();
+    let default = ds.name.clone();
     let then: Option<super::exports::Then> = table.map(|t| {
         Box::new(move |s: &mut Session, out: &mut Value| {
-            report_table(s, &path, &gpkg, Some(t), out);
+            report_table(s, &path, &gpkg, &default, Some(t), out);
             Ok(())
         }) as super::exports::Then
     });

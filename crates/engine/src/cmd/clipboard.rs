@@ -194,5 +194,10 @@ fn copy_path(s: &mut Session, p: &Value) -> CmdResult {
     let path = path.ok_or_else(|| format!("{} isn't stored in a file", l.name))?;
     // A service layer's address is its source: copied without keys, tokens or its password, as
     // the details pane shows it and a saved project keeps a web address.
-    Ok(json!({"text": crate::sources::redact(&path)}))
+    let text = crate::sources::redact(&path);
+    if text != path {
+        // Not the layer's name: it may hold an address with a key of its own.
+        s.notify("The copied address leaves out part of the layer's address (keys, tokens, a password, a login or a fragment), so it may not work as it is", false);
+    }
+    Ok(json!({"text": text}))
 }

@@ -321,8 +321,10 @@ pub fn request(s: &mut Session, connection: Option<&str>, url: &str) -> Result<S
             return Ok(plain.to_string());
         }
         Some(c.clone())
-    } else if let Some(id) = s.database_logins.selection(WEB, &origin) {
-        candidates.iter().find(|c| c.id == id).map(|c| (*c).clone())
+    // A choice naming a connection no longer here (or no longer at this origin) is no choice:
+    // the sole connection left still lends its login.
+    } else if let Some(c) = s.database_logins.selection(WEB, &origin).and_then(|id| candidates.iter().find(|c| c.id == id)) {
+        Some((*c).clone())
     } else if candidates.len() == 1 {
         candidates.first().map(|c| (*c).clone())
     } else {

@@ -520,11 +520,16 @@ impl UrlWaits {
         }
     }
 
-    /// Downloads waited for past [`REQUEST_WAIT`] land as failed, and are remembered as given up:
-    /// their addresses, redacted, to be said (a notice with a key in it loses what follows it).
-    fn expire(&mut self) -> Vec<String> {
-        let late: Vec<(u64, Value)> =
-            self.in_flight.iter().filter(|(.., at)| at.elapsed() >= REQUEST_WAIT).map(|(n, q, _)| (*n, q.clone())).collect();
+    /// Downloads waited for past [`REQUEST_WAIT`] by `now` land as failed, and are remembered as
+    /// given up: their addresses, redacted, to be said (a notice with a key in it loses what
+    /// follows it).
+    fn expire_at(&mut self, now: Instant) -> Vec<String> {
+        let late: Vec<(u64, Value)> = self
+            .in_flight
+            .iter()
+            .filter(|(.., at)| now.saturating_duration_since(*at) >= REQUEST_WAIT)
+            .map(|(n, q, _)| (*n, q.clone()))
+            .collect();
         let mut addresses = Vec::new();
         for (n, asked) in late {
             self.land(n, Err(format!("no download in {} minutes", REQUEST_WAIT.as_secs() / 60)), Added::default());
@@ -867,13 +872,19 @@ impl Session {
     /// what it answered this time. Its `layer.addUrl` calls answer what adding each download
     /// answered. Errors are also given as notices, as for any command.
     pub fn poll_plugin_retries(&mut self) -> Vec<(String, CmdResult)> {
+        self.poll_plugin_retries_at(Instant::now())
+    }
+
+    /// [`Session::poll_plugin_retries`] as at `now`: downloads waited for past [`REQUEST_WAIT`]
+    /// by then are given up (a test passes a later time instead of backdating the waits).
+    fn poll_plugin_retries_at(&mut self, now: Instant) -> Vec<(String, CmdResult)> {
         self.url_waits.documents_in();
         if self.plugin_retries.is_empty() {
             return Vec::new();
         }
         // Said here too: the command may go on without it, and what it answers goes nowhere.
         let minutes = REQUEST_WAIT.as_secs() / 60;
-        match self.url_waits.expire().as_slice() {
+        match self.url_waits.expire_at(now).as_slice() {
             [] => {}
             [url] => self.notify(format!("{url}: no download in {minutes} minutes, so its plugin command stopped waiting for it"), true),
             many => self.notify(
@@ -1114,7 +1125,7 @@ mod tests {
         s.map_mut().layers[at] = other;
         s.rerun_landed = vec![(asked.clone(), answer, added)];
         let e = s.run("layer.addUrl", &asked).unwrap_err();
-        assert!(e.contains("taken away (undone)"), "{e}");
+        assert!(e.contains("removed or undone"), "{e}");
         // A tile layer (a GeoTIFF read in place answers its place in the list), then taken away.
         let tiles = json!({"url": "https://x.org/{z}/{x}/{y}.png", "name": "T"});
         let answer = s.run("map.addTiles", &tiles);
@@ -1135,7 +1146,7 @@ mod tests {
         s.run("map.removeTiles", &json!({"index": moved})).unwrap();
         assert!(s.map().tiles.iter().any(|t| t.name == "T2"));
         let e = s.run("layer.addUrl", &asked).unwrap_err();
-        assert!(e.contains("taken away (undone)"), "{e}");
+        assert!(e.contains("removed or undone"), "{e}");
         // A standalone table (a file with no geometry), then taken away.
         let answer = s.run("layer.addDataText", &json!({"fileName": "sites.csv", "text": "id,street\n1,Champ de Mars\n"}));
         assert!(answer.as_ref().unwrap()["table"].is_string(), "{answer:?}");
@@ -1143,7 +1154,7 @@ mod tests {
         assert_eq!(s.run("layer.addUrl", &asked), answer);
         s.run("table.remove", &json!({"table": "sites"})).unwrap();
         let e = s.run("layer.addUrl", &asked).unwrap_err();
-        assert!(e.contains("the table its download added was taken away (undone)"), "{e}");
+        assert!(e.contains("the table its download added was removed or undone"), "{e}");
     }
 
     /// A number lands only the read it was given for: a plugin's has no login, and a read that
@@ -1173,7 +1184,6 @@ mod tests {
     /// Timeouts are one counted, redacted notice, and a real pinned command receives the failure.
     #[test]
     fn a_download_given_up_is_said_with_its_address() {
-        let Some(long_ago) = Instant::now().checked_sub(REQUEST_WAIT + Duration::from_secs(1)) else { return };
         let mut s = Session::new(crate::project::Project::default());
         let first = load_test_plugin("eng-slow-real");
         let other = load_test_plugin("eng-slow-other");
@@ -1182,8 +1192,7 @@ mod tests {
         let mark = s.notice_mark();
         s.poll_plugin_retries();
         assert!(s.notices_since(mark).is_empty(), "it still has time");
-        s.url_waits.in_flight[0].2 = long_ago;
-        let ran = s.poll_plugin_retries();
+        let ran = s.poll_plugin_retries_at(Instant::now() + REQUEST_WAIT);
         assert!(ran[0].1.is_err(), "{ran:?}");
         s.poll_plugin_retries();
         let said: Vec<_> = s.notices_since(mark).iter().filter(|n| n.error && n.text.contains("stopped waiting")).collect();
@@ -1199,9 +1208,8 @@ mod tests {
         ask(&mut s, &first, json!({"url":"https://x.org/a.csv?token=hunter2"})).unwrap();
         ask(&mut s, &other, json!({"url":"https://x.org/b.csv"})).unwrap();
         let _taken = s.take_url_requests();
-        s.url_waits.in_flight.iter_mut().for_each(|w| w.2 = long_ago);
         let mark = s.notice_mark();
-        s.poll_plugin_retries();
+        s.poll_plugin_retries_at(Instant::now() + REQUEST_WAIT);
         let said: Vec<_> = s.notices_since(mark).iter().filter(|n| n.error && n.text.contains("stopped waiting")).collect();
         assert_eq!(said.len(), 1, "{said:?}");
         assert!(
