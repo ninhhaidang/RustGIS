@@ -76,6 +76,9 @@ pub fn commands() -> Vec<C> {
             let mut l = s.project.layouts.get(i).ok_or("open a layout first")?.clone();
             l.name = super::copy_name(ps(p, "newName"), &l.name, |n| s.project.layouts.iter().any(|x| x.name.eq_ignore_ascii_case(n)));
             let name = l.name.clone();
+            if s.project.layouts.len() >= crate::project::MAX_LAYOUTS {
+                return Err(format!("a project holds at most {} layouts; remove one first", crate::project::MAX_LAYOUTS));
+            }
             s.project.layouts.insert(i + 1, l);
             s.active_layout = Some(i + 1);
             Ok(json!({"name": name, "layout": i + 1}))
@@ -318,6 +321,9 @@ pub(crate) fn new_layout(s: &mut Session, p: &Value) -> CmdResult {
             );
         }
         t => return Err(format!("unknown template '{t}'")),
+    }
+    if s.project.layouts.len() >= crate::project::MAX_LAYOUTS {
+        return Err(format!("a project holds at most {} layouts; remove one first", crate::project::MAX_LAYOUTS));
     }
     s.project.layouts.push(l);
     let i = s.project.layouts.len() - 1;
@@ -2079,6 +2085,9 @@ fn publication(s: &mut Session, p: &Value) -> CmdResult {
     }
     // Every element by name and id, for `layout.update`.
     let elements: Vec<Value> = l.elements.iter().map(|e| json!({"element": e.id, "name": e.name, "kind": e.kind.code()})).collect();
+    if s.project.layouts.len() >= crate::project::MAX_LAYOUTS {
+        return Err(format!("a project holds at most {} layouts; remove one first", crate::project::MAX_LAYOUTS));
+    }
     s.project.layouts.push(l);
     let i = s.project.layouts.len() - 1;
     s.active_layout = Some(i);
@@ -3682,19 +3691,43 @@ pub(crate) fn import(s: &mut Session, text: &str) -> CmdResult {
         return Err("the layout file is too large".into());
     }
     let mut l: Layout = serde_json::from_str(text).map_err(|e| format!("not a RustGIS layout: {e}"))?;
-    l.clamp();
+    // Refused before anything is said of it.
+    if s.project.layouts.len() >= crate::project::MAX_LAYOUTS {
+        return Err(format!("a project holds at most {} layouts; remove one first", crate::project::MAX_LAYOUTS));
+    }
+    let repairs = l.clamp();
+    if !repairs.is_empty() {
+        for notice in crate::project::layout_notices(&l.name, "while importing the layout file", 0, &[(l.name.clone(), repairs)]) {
+            s.notify(notice, false);
+        }
+    }
     l.name = unique_name(s, &l.name);
     // Frames showing maps this project lacks show the active map instead.
     let fallback = s.map().name.clone();
     let names: Vec<String> = s.project.maps.iter().map(|m| m.name.to_ascii_lowercase()).collect();
+    let mut swapped = 0usize;
     for e in &mut l.elements {
         if let ElementKind::MapFrame { map, .. } = &mut e.kind
             && !names.contains(&map.to_ascii_lowercase())
         {
             *map = fallback.clone();
+            swapped = swapped.saturating_add(1);
         }
     }
+    if swapped > 0 {
+        s.notify(
+            format!(
+                "{}: {swapped} map frame(s) showing a map this project lacks show \"{}\" instead",
+                crate::project::short_name(&l.name),
+                crate::project::short_name(&fallback)
+            ),
+            false,
+        );
+    }
     let name = l.name.clone();
+    if s.project.layouts.len() >= crate::project::MAX_LAYOUTS {
+        return Err(format!("a project holds at most {} layouts; remove one first", crate::project::MAX_LAYOUTS));
+    }
     s.project.layouts.push(l);
     let i = s.project.layouts.len() - 1;
     s.active_layout = Some(i);

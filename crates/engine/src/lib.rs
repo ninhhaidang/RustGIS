@@ -1071,7 +1071,7 @@ impl Session {
         rustgis_data::diagnostics::set_clock(|| {
             web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
         });
-        let label_notices = std::mem::take(&mut project.label_read_notices);
+        let label_notices = project.take_read_notices(&crate::project::ALL_PARTS);
         let mut session = Session {
             project,
             path: None,

@@ -286,7 +286,8 @@ impl DiagramLabel {
 
 /// Reads a layer's diagram leniently: one that isn't (a crafted file's) is `None`, and the rest
 /// of the layer still reads. A diagram without categories, or a size that isn't a number, is
-/// not a diagram, as an empty one draws nothing.
+/// not a diagram, as an empty one draws nothing. [`DiagramAudit`] counts what this changes, for
+/// the project reader's notices.
 pub fn de_diagram<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<DiagramSettings>, D::Error> {
     #[derive(Deserialize)]
     #[serde(untagged)]
@@ -301,6 +302,75 @@ pub fn de_diagram<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Diagr
         }
         _ => None,
     })
+}
+
+/// What reading a layer's saved diagram through [`de_diagram`] changed, counted without keeping
+/// the diagram: the project reader adds these up across its layers and says so once per kind.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DiagramAudit {
+    /// Diagrams that didn't read, or had no named category, and so were dropped (0 or 1).
+    pub dropped: usize,
+    /// Categories removed from a diagram that was kept: blank field names, or beyond
+    /// [`MAX_CATEGORIES`].
+    pub categories_removed: usize,
+    /// Categories kept that repeat an earlier one's field (ignoring case), each drawn again as
+    /// its own slice or bar.
+    pub repeated_fields: usize,
+    /// Diagrams whose size, data range or outline width was brought into range or order (0 or
+    /// 1). A start angle is turned into 0 to 360, the same direction, so isn't counted.
+    pub adjusted: usize,
+}
+
+impl DiagramAudit {
+    /// The counts of `self` and `other` together.
+    pub fn plus(self, other: DiagramAudit) -> DiagramAudit {
+        DiagramAudit {
+            dropped: self.dropped.saturating_add(other.dropped),
+            categories_removed: self.categories_removed.saturating_add(other.categories_removed),
+            repeated_fields: self.repeated_fields.saturating_add(other.repeated_fields),
+            adjusted: self.adjusted.saturating_add(other.adjusted),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for DiagramAudit {
+    /// Reads a saved diagram as [`de_diagram`] does and counts what that changes; a missing or
+    /// null diagram changes nothing.
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Read {
+            Settings(DiagramSettings),
+            Other(serde::de::IgnoredAny),
+        }
+        let s = match Option::<Read>::deserialize(d)? {
+            None => return Ok(DiagramAudit::default()),
+            Some(Read::Other(_)) => return Ok(DiagramAudit { dropped: 1, ..DiagramAudit::default() }),
+            Some(Read::Settings(s)) => s,
+        };
+        let kept = s.clone().clamped();
+        if kept.categories.is_empty() {
+            return Ok(DiagramAudit { dropped: 1, ..DiagramAudit::default() });
+        }
+        let mut seen: Vec<&str> = Vec::with_capacity(kept.categories.len());
+        let mut repeated_fields = 0usize;
+        for c in &kept.categories {
+            if seen.iter().any(|f| f.eq_ignore_ascii_case(&c.field)) {
+                repeated_fields = repeated_fields.saturating_add(1);
+            } else {
+                seen.push(&c.field);
+            }
+        }
+        // Any finite angle names the same direction after a whole number of turns: not counted.
+        let angle_adjusted = !s.start_angle.is_finite();
+        let adjusted = kept.size != s.size || angle_adjusted || kept.stroke_width != s.stroke_width;
+        Ok(DiagramAudit {
+            dropped: 0,
+            categories_removed: s.categories.len().saturating_sub(kept.categories.len()),
+            repeated_fields,
+            adjusted: usize::from(adjusted),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -482,6 +552,33 @@ mod tests {
             let read: Read = serde_json::from_value(v).expect("the layer still reads");
             assert!(read.diagram.is_none(), "not a diagram: {junk}");
         }
+    }
+
+    #[test]
+    fn the_audit_counts_what_reading_a_diagram_changes() {
+        let audit = |v: serde_json::Value| serde_json::from_value::<DiagramAudit>(v).expect("an audit always reads");
+        assert_eq!(audit(serde_json::Value::Null), DiagramAudit::default(), "no diagram, nothing changed");
+        assert_eq!(audit(serde_json::to_value(settings()).unwrap()), DiagramAudit::default(), "a clean diagram reads as it is");
+        for angle in [360.0, 720.0, -360.0, -10.0] {
+            let turned = DiagramSettings { start_angle: angle, ..settings() };
+            assert_eq!(
+                audit(serde_json::to_value(turned).unwrap()),
+                DiagramAudit::default(),
+                "{angle} names a direction, not out of range"
+            );
+        }
+        for junk in [serde_json::json!("nonsense"), serde_json::json!({"kind": "hexagon"}), serde_json::json!({"categories": []})] {
+            assert_eq!(audit(junk.clone()).dropped, 1, "dropped: {junk}");
+        }
+        let mut lossy = settings();
+        lossy.categories = (0..MAX_CATEGORIES + 2)
+            .map(|i| DiagramCategory { field: format!("f{i}"), colour: CATEGORY_COLORS[0] })
+            .chain(std::iter::once(DiagramCategory { field: " ".into(), colour: CATEGORY_COLORS[0] }))
+            .collect();
+        lossy.categories[1].field = "F0".into();
+        lossy.stroke_width = 99.0;
+        let a = audit(serde_json::to_value(lossy).unwrap());
+        assert_eq!(a, DiagramAudit { dropped: 0, categories_removed: 3, repeated_fields: 1, adjusted: 1 });
     }
 
     #[test]

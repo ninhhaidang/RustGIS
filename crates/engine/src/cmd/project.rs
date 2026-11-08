@@ -157,7 +157,7 @@ fn reset(s: &mut Session, p: Project) {
     // Kept until the command ends: a failure gives the project back with its history.
     s.put_aside();
     s.project = p;
-    for text in std::mem::take(&mut s.project.label_read_notices) {
+    for text in s.project.take_read_notices(&crate::project::ALL_PARTS) {
         s.notify(text, false);
     }
     s.opened_package = None;
