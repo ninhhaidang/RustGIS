@@ -1172,6 +1172,21 @@ pub(crate) fn is_wildcard_inputs(v: Option<&Value>) -> bool {
         || v.and_then(Value::as_array).is_some_and(|arr| arr.len() == 1 && arr.first().and_then(Value::as_str) == Some("*"))
 }
 
+/// The most inputs one `gp.batch` runs over.
+pub(crate) const MAX_BATCH_ITEMS: usize = 10_000;
+
+/// Whether a folder batch runs files with this lowercase extension.
+#[cfg(not(target_arch = "wasm32"))]
+fn is_folder_target_ext(ext: &str) -> bool {
+    matches!(ext, "shp" | "geojson" | "json" | "gpkg" | "fgb" | "parquet" | "geoparquet" | "kml" | "kmz" | "gpx" | "csv")
+}
+
+/// Whether a file with this lowercase extension may be a Shapefile or GeoPackage sidecar.
+#[cfg(not(target_arch = "wasm32"))]
+fn is_folder_sidecar_ext(ext: &str) -> bool {
+    matches!(ext, "dbf" | "shx" | "prj" | "cpg" | "qpj" | "sbn" | "sbx" | "qix" | "xml" | "gpkg-wal" | "gpkg-shm" | "wal" | "shm")
+}
+
 /// Runs a geoprocessing tool in batch across multiple layers or files.
 fn batch(s: &mut Session, p: &Value) -> CmdResult {
     use rustgis_analysis::control::Control;
@@ -1270,6 +1285,22 @@ pub fn run_batch_with(s: &mut Session, p: &Value, control: &std::sync::Arc<rustg
     if base_params.get(batch_param).is_some_and(|v| !v.is_null()) {
         s.notify(format!("gp.batch: 'params.{batch_param}' is replaced by the batch inputs"), false);
     }
+    // The other names the tool reads its input under are dropped from each item too.
+    let shadowed: Vec<&str> = rustgis_analysis::param_aliases(spec, batch_param)
+        .iter()
+        .copied()
+        .filter(|alias| *alias != batch_param && base_params.get(*alias).is_some_and(|v| !v.is_null()))
+        .collect();
+    if !shadowed.is_empty() {
+        s.notify(
+            format!(
+                "gp.batch: {} other name(s) for '{batch_param}' in 'params' replaced by the batch inputs ({})",
+                shadowed.len(),
+                shadowed.join(", ")
+            ),
+            false,
+        );
+    }
 
     let mut unknown: Vec<&str> = base_params
         .as_object()
@@ -1353,75 +1384,80 @@ pub fn run_batch_with(s: &mut Session, p: &Value, control: &std::sync::Arc<rustg
         let mut symlinks = 0;
         let mut non_utf8 = 0;
         let mut unreadable = 0;
-        match std::fs::read_dir(dir) {
-            Ok(entries) => {
-                let mut dir_entries = Vec::new();
-                let mut shp_stems = std::collections::HashSet::new();
-                let mut gpkg_stems = std::collections::HashSet::new();
-                for entry in entries {
-                    match entry {
-                        Ok(entry) => match entry.file_type() {
-                            Ok(ft) => {
-                                if ft.is_symlink() {
-                                    symlinks += 1;
-                                } else {
-                                    let path = entry.path();
-                                    if path.to_str().is_none() {
-                                        non_utf8 += 1;
-                                        continue;
-                                    }
-                                    if ft.is_file() {
-                                        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
-                                        if ext == "shp"
-                                            && let Some(stem) = path.file_stem().and_then(|stem| stem.to_str())
-                                        {
-                                            shp_stems.insert(stem.to_ascii_lowercase());
-                                        } else if ext == "gpkg"
-                                            && let Some(stem) = path.file_stem().and_then(|stem| stem.to_str())
-                                        {
-                                            gpkg_stems.insert(stem.to_ascii_lowercase());
-                                        }
-                                    }
-                                    dir_entries.push((path, ft));
-                                }
-                            }
-                            Err(_) => {
-                                unreadable += 1;
-                            }
-                        },
-                        Err(_) => {
-                            unreadable += 1;
-                        }
-                    }
-                }
-                for (path, ft) in dir_entries {
-                    if ft.is_file() {
-                        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
-                        if matches!(
-                            ext.as_str(),
-                            "shp" | "geojson" | "json" | "gpkg" | "fgb" | "parquet" | "geoparquet" | "kml" | "kmz" | "gpx" | "csv"
-                        ) {
-                            files.push(path.display().to_string());
-                        } else {
-                            let stem = path.file_stem().and_then(|stem| stem.to_str()).unwrap_or("").to_ascii_lowercase();
-                            let is_shp_sidecar = (matches!(ext.as_str(), "dbf" | "shx" | "prj" | "cpg" | "qpj" | "sbn" | "sbx" | "qix")
-                                && shp_stems.contains(&stem))
-                                || (ext == "xml" && stem.strip_suffix(".shp").map(|s| shp_stems.contains(s)).unwrap_or(false));
-                            let is_gpkg_sidecar = matches!(ext.as_str(), "gpkg-wal" | "gpkg-shm" | "wal" | "shm")
-                                && (gpkg_stems.contains(&stem)
-                                    || stem.strip_suffix(".gpkg").map(|s| gpkg_stems.contains(s)).unwrap_or(false));
-                            if !is_shp_sidecar && !is_gpkg_sidecar {
-                                skipped += 1;
-                            }
-                        }
-                    } else if ft.is_dir() {
-                        subfolders += 1;
-                    } else {
-                        unreadable += 1;
-                    }
-                }
+        // The folder is read twice so only the files a batch runs are held, however many other
+        // entries it has: the first pass finds them and the Shapefile/GeoPackage names, the
+        // second counts the sidecar-like files that match neither as skipped.
+        let mut shp_stems = std::collections::HashSet::new();
+        let mut gpkg_stems = std::collections::HashSet::new();
+        let entries = std::fs::read_dir(dir).map_err(|e| format!("folder '{folder}': {e}"))?;
+        for entry in entries {
+            let Ok(entry) = entry else {
+                unreadable += 1;
+                continue;
+            };
+            let Ok(ft) = entry.file_type() else {
+                unreadable += 1;
+                continue;
+            };
+            if ft.is_symlink() {
+                symlinks += 1;
+                continue;
             }
-            Err(e) => return Err(format!("folder '{folder}': {e}")),
+            let path = entry.path();
+            if path.to_str().is_none() {
+                non_utf8 += 1;
+                continue;
+            }
+            if ft.is_dir() {
+                subfolders += 1;
+                continue;
+            }
+            if !ft.is_file() {
+                unreadable += 1;
+                continue;
+            }
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+            if is_folder_target_ext(&ext) {
+                if files.len() >= MAX_BATCH_ITEMS {
+                    return Err(format!(
+                        "folder '{folder}' has more than {MAX_BATCH_ITEMS} supported files, more than a batch runs; split it into smaller folders"
+                    ));
+                }
+                let stem = path.file_stem().and_then(|stem| stem.to_str()).unwrap_or("").to_ascii_lowercase();
+                if ext == "shp" {
+                    shp_stems.insert(stem);
+                } else if ext == "gpkg" {
+                    gpkg_stems.insert(stem);
+                }
+                files.push(path.display().to_string());
+            } else if !is_folder_sidecar_ext(&ext) {
+                skipped += 1;
+            }
+        }
+        // Errors here were already counted by the first pass.
+        let entries = std::fs::read_dir(dir).map_err(|e| format!("folder '{folder}': {e}"))?;
+        for entry in entries.flatten() {
+            let Ok(ft) = entry.file_type() else { continue };
+            if !ft.is_file() || ft.is_symlink() {
+                continue;
+            }
+            let path = entry.path();
+            if path.to_str().is_none() {
+                continue;
+            }
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+            if !is_folder_sidecar_ext(&ext) {
+                continue;
+            }
+            let stem = path.file_stem().and_then(|stem| stem.to_str()).unwrap_or("").to_ascii_lowercase();
+            let is_shp_sidecar = (matches!(ext.as_str(), "dbf" | "shx" | "prj" | "cpg" | "qpj" | "sbn" | "sbx" | "qix")
+                && shp_stems.contains(&stem))
+                || (ext == "xml" && stem.strip_suffix(".shp").map(|s| shp_stems.contains(s)).unwrap_or(false));
+            let is_gpkg_sidecar = matches!(ext.as_str(), "gpkg-wal" | "gpkg-shm" | "wal" | "shm")
+                && (gpkg_stems.contains(&stem) || stem.strip_suffix(".gpkg").map(|s| gpkg_stems.contains(s)).unwrap_or(false));
+            if !is_shp_sidecar && !is_gpkg_sidecar {
+                skipped += 1;
+            }
         }
         if symlinks > 0 {
             s.notify(format!("folder '{folder}': {symlinks} symlink(s) skipped"), false);
@@ -1462,6 +1498,14 @@ pub fn run_batch_with(s: &mut Session, p: &Value, control: &std::sync::Arc<rustg
         return Err(
             "no inputs provided (specify 'inputs' as an array of layers/paths, '*' for all layers, or 'folder' as a directory path)".into(),
         );
+    }
+
+    // Each item keeps its output as a layer: a hostile list or folder can't make the batch unbounded.
+    if targets.len() > MAX_BATCH_ITEMS {
+        return Err(format!(
+            "{} inputs is more than a batch runs (at most {MAX_BATCH_ITEMS}); split it into smaller batches",
+            targets.len()
+        ));
     }
 
     let mut succeeded = Vec::new();
@@ -5298,6 +5342,96 @@ mod batch_tests {
         let failed: Vec<_> = s.project.gp_history[before..].iter().filter(|r| !r.ok).collect();
         assert_eq!(failed.len(), 1);
         assert_eq!(failed[0].params["input"], "Nowhere");
+    }
+
+    #[test]
+    fn a_batch_over_too_many_inputs_is_refused() {
+        let mut s = test_session();
+        let inputs = vec![json!("Cities"); super::MAX_BATCH_ITEMS + 1];
+        let before = s.map().layers.len();
+        let err = s.run("gp.batch", &json!({"tool": "buffer", "inputs": inputs, "params": {"distance": 1}})).unwrap_err();
+        assert!(err.contains(&format!("{} inputs", super::MAX_BATCH_ITEMS + 1)), "{err}");
+        assert_eq!(s.map().layers.len(), before, "nothing ran");
+    }
+
+    #[test]
+    fn a_batch_at_the_input_limit_is_accepted() {
+        let mut s = test_session();
+        let control = rustgis_analysis::control::Control::new();
+        control.cancel();
+        let inputs = vec![json!("Cities"); super::MAX_BATCH_ITEMS];
+        let res = super::run_batch_with(&mut s, &json!({"tool": "buffer", "inputs": inputs, "params": {"distance": 1}}), &control).unwrap();
+        assert_eq!(res["total"], super::MAX_BATCH_ITEMS);
+        assert_eq!(res["cancelled"], true);
+    }
+
+    #[test]
+    fn a_folder_over_the_limit_is_refused_before_any_item_runs() {
+        let dir = std::env::temp_dir().join(format!("rustgis-batch-limit-{}-{}", std::process::id(), now_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for i in 0..=super::MAX_BATCH_ITEMS {
+            std::fs::write(dir.join(format!("{i}.csv")), "x,y\n").unwrap();
+        }
+        let mut s = test_session();
+        let layers = s.map().layers.len();
+        let history = s.project.gp_history.len();
+        let res = s.run("gp.batch", &json!({"tool": "buffer", "folder": dir, "params": {"distance": 1}}));
+        let _ = std::fs::remove_dir_all(&dir);
+        let err = res.unwrap_err();
+        assert!(err.contains(&format!("more than {} supported files", super::MAX_BATCH_ITEMS)), "{err}");
+        assert_eq!(s.map().layers.len(), layers, "no item ran");
+        assert_eq!(s.project.gp_history.len(), history, "no item was attempted");
+    }
+
+    #[test]
+    fn a_folder_of_other_and_orphan_sidecar_files_runs_its_data_files() {
+        let dir = std::env::temp_dir().join(format!("rustgis-batch-other-{}-{}", std::process::id(), now_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("pts.csv"), "x,y\n1,2\n").unwrap();
+        // Text files, `.xml` files that aren't `<name>.shp.xml` and `.dbf` files with no `.shp`
+        // are none of them sidecars of a file the batch runs.
+        for i in 0..50 {
+            for ext in ["txt", "xml", "dbf"] {
+                std::fs::write(dir.join(format!("{i}.{ext}")), "").unwrap();
+            }
+        }
+        let mut s = test_session();
+        let res = s.run("gp.batch", &json!({"tool": "buffer", "folder": dir, "params": {"distance": 1}}));
+        let _ = std::fs::remove_dir_all(&dir);
+        let res = res.unwrap();
+        assert_eq!(res["total"], 1, "{res}");
+        assert!(s.notices.iter().any(|n| n.text.contains("150 unsupported files skipped")), "{:?}", s.notices);
+    }
+
+    #[test]
+    fn a_static_alias_dropped_from_each_item_is_reported() {
+        let mut s = Session::new(crate::Project::default());
+        let mut ds = Dataset::new(
+            "Tracts",
+            rustgis_data::GeometryType::Point,
+            vec![rustgis_data::Field::new("GEOID", rustgis_data::FieldType::Text)],
+        );
+        ds.push_next(Some(rustgis_data::Geometry::Point(rustgis_geom::Coord::new(0.0, 0.0))), vec![rustgis_data::Value::Text("01".into())]);
+        s.map_mut().add_layer(rustgis_map::Layer::new(0, ds));
+        let mut join =
+            Dataset::new("Census", rustgis_data::GeometryType::None, vec![rustgis_data::Field::new("FIPS", rustgis_data::FieldType::Text)]);
+        join.push_next(None, vec![rustgis_data::Value::Text("01".into())]);
+        s.project.add_table(join);
+        let shared = json!({"targetField": "GEOID", "joinTable": "Census", "joinField": "FIPS"});
+        let mark = s.notice_mark();
+        s.run("gp.batch", &json!({"tool": "joinField", "inputs": ["Tracts"], "params": shared})).unwrap();
+        assert!(!s.notices_since(mark).iter().any(|n| n.text.contains("other name(s)")), "a clean run says nothing");
+        let mut with_alias = shared.clone();
+        with_alias["input"] = json!("Tracts");
+        let mark = s.notice_mark();
+        s.run("gp.batch", &json!({"tool": "joinField", "inputs": ["Tracts"], "params": with_alias})).unwrap();
+        assert!(
+            s.notices_since(mark)
+                .iter()
+                .any(|n| n.text.contains("1 other name(s) for 'target' in 'params' replaced by the batch inputs (input)")),
+            "{:?}",
+            s.notices_since(mark)
+        );
     }
 
     #[test]
