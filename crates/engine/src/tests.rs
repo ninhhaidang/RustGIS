@@ -34365,6 +34365,102 @@ fn a_diagram_that_wont_show_says_why() {
     assert!(said(&s, mark, "Countries", "on the globe"), "globe: {:?}", s.notices_since(mark));
 }
 
+/// A project or layer file opened with a diagram on aggregated points or extruded polygons says
+/// so once per such layer, as setting it does; one with plain diagrams says nothing of the kind
+/// (#1596).
+#[test]
+fn opening_a_diagram_that_wont_show_says_why() {
+    let about = |s: &Session| -> Vec<String> { s.notices.iter().map(|n| n.text.clone()).filter(|t| t.contains("the diagram")).collect() };
+    let mut s = world();
+    s.run("layer.diagram", &json!({"layer": "Cities", "kind": "pie", "fields": ["pop_max"], "size": 8})).unwrap();
+    s.run("layer.diagram", &json!({"layer": "Countries", "kind": "pie", "fields": ["pop_est"], "size": 8})).unwrap();
+    let clean = serde_json::to_string(&s.project).unwrap();
+    let quiet = Session::new(Project::from_json(&clean).unwrap());
+    assert!(about(&quiet).is_empty(), "{:?}", about(&quiet));
+    s.run("layer.aggregation", &json!({"layer": "Cities", "shape": "hexagon"})).unwrap();
+    s.run("layer.extrusion", &json!({"layer": "Countries", "type": "height", "height": 1000})).unwrap();
+    let hidden = serde_json::to_string(&s.project).unwrap();
+    let check = |said: Vec<String>| {
+        assert_eq!(said.len(), 2, "{said:?}");
+        assert!(said.iter().any(|t| t.starts_with("1 layer(s) ('Cities')") && t.contains("aggregated into bins")), "{said:?}");
+        assert!(said.iter().any(|t| t.starts_with("1 layer(s) ('Countries')") && t.contains("when a flat map is tilted")), "{said:?}");
+    };
+    check(about(&Session::new(Project::from_json(&hidden).unwrap())));
+    let mut reopened = Session::new(Project::default());
+    reopened.run("project.openText", &json!({"text": hidden})).unwrap();
+    check(about(&reopened));
+    // A layer file: one notice for its layer.
+    let cities = s.map().layer_by_name("Cities").map(|l| serde_json::to_string(l).unwrap()).unwrap();
+    let mut added = Session::new(Project::default());
+    crate::cmd::layer::add_layer_text(&mut added, &cities).unwrap();
+    let said = about(&added);
+    assert!(said.len() == 1 && said[0].contains("aggregated into bins"), "{said:?}");
+    // A map file: both layers; one with plain diagrams says nothing.
+    let map = |s: &Session| serde_json::to_string(s.map()).unwrap();
+    let mut imported = Session::new(Project::default());
+    imported.run("map.import", &json!({"text": map(&s)})).unwrap();
+    check(about(&imported));
+    let plain = Session::new(Project::from_json(&clean).unwrap());
+    let mut imported = Session::new(Project::default());
+    imported.run("map.import", &json!({"text": map(&plain)})).unwrap();
+    assert!(about(&imported).is_empty(), "{:?}", about(&imported));
+    // A style import takes no diagrams, so it says nothing about them.
+    let mut styled = Session::new(Project::default());
+    styled.run("style.import", &json!({"text": cities})).unwrap();
+    styled.run("style.import", &json!({"text": map(&s)})).unwrap();
+    styled.run("style.import", &json!({"text": hidden})).unwrap();
+    assert!(about(&styled).is_empty(), "{:?}", about(&styled));
+    // A file whose label audit can't read it (a sequence-form label class) still says so.
+    let mut odd: Value = serde_json::from_str(&cities).unwrap();
+    odd["labels"]["classes"] = json!([["Extra", true, null, "pop_max", 10, [0, 0, 0, 255], false, false]]);
+    let mut added = Session::new(Project::default());
+    crate::cmd::layer::add_layer_text(&mut added, &odd.to_string()).unwrap();
+    assert_eq!(about(&added).len(), 1, "{:?}", about(&added));
+    let mut odd_map: Value = serde_json::from_str(&map(&s)).unwrap();
+    for l in odd_map["layers"].as_array_mut().unwrap() {
+        l["labels"]["classes"] = json!([["Extra", true, null, "pop_max", 10, [0, 0, 0, 255], false, false]]);
+    }
+    let mut imported = Session::new(Project::default());
+    imported.run("map.import", &json!({"text": odd_map.to_string()})).unwrap();
+    check(about(&imported));
+    // An offline snapshot: quiet with the project, said when it opens as a map.
+    let mut offline = Session::new(Project::from_json(&clean).unwrap());
+    let snapshot = s.map().clone();
+    offline.project.offline_areas.push(crate::project::OfflineArea {
+        name: "Trip".into(),
+        map: snapshot.name.clone(),
+        extent: rustgis_geom::Extent::new(-10.0, -10.0, 10.0, 10.0),
+        created: 0.0,
+        synced: 0.0,
+        data: snapshot,
+    });
+    let mut reread = Session::new(Project::from_json(&serde_json::to_string(&offline.project).unwrap()).unwrap());
+    assert!(about(&reread).is_empty(), "{:?}", about(&reread));
+    reread.run("offline.open", &json!({"name": "Trip"})).unwrap();
+    check(about(&reread));
+    // A project's map past the 100 `map.import` takes gives no notice there.
+    let mut wide = Session::new(Project::from_json(&clean).unwrap()).project;
+    let plain_map = wide.maps[0].clone();
+    let hidden_map = s.map().clone();
+    wide.maps = (0..100).map(|_| plain_map.clone()).chain(std::iter::once(hidden_map)).collect();
+    let mut imported = Session::new(Project::default());
+    imported.run("map.import", &json!({"text": serde_json::to_string(&wide).unwrap()})).unwrap();
+    assert!(about(&imported).is_empty(), "{:?}", about(&imported));
+    // Many such layers: one notice, counting them and naming the first three.
+    let mut many = s.project.clone();
+    let template = many.maps[0].layer_by_name("Cities").cloned().unwrap();
+    many.maps[0].layers = (0..25)
+        .map(|i| {
+            let mut l = template.clone();
+            l.id = 1000 + i;
+            l.name = format!("Cities {i}");
+            l
+        })
+        .collect();
+    let said = about(&Session::new(Project::from_json(&serde_json::to_string(&many).unwrap()).unwrap()));
+    assert!(said.len() == 1 && said[0].starts_with("25 layer(s) ('Cities 0', 'Cities 1', 'Cities 2' and 22 more)"), "{said:?}");
+}
+
 #[test]
 fn bundled_ca_roots_are_said_once_a_session() {
     // #1591: a Linux system without CA certificates makes native HTTPS trust the bundled roots.

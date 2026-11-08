@@ -428,6 +428,9 @@ fn embedded_map(m: &Map, budget: &mut u64) -> Map {
     m
 }
 
+/// The most maps one `map.import` adds.
+const MAX_IMPORTED_MAPS: usize = 100;
+
 /// Adds maps from a map file, project or package.
 fn import_maps(s: &mut Session, p: &Value) -> CmdResult {
     let text = read_text(p)?;
@@ -456,6 +459,11 @@ fn import_maps(s: &mut Session, p: &Value) -> CmdResult {
                 for notice in project.take_read_notices(&[crate::project::ReadPart::Labels, crate::project::ReadPart::Diagrams]) {
                     s.notify(notice, false);
                 }
+                // Hidden diagrams of the maps imported only.
+                let imported = project.maps.iter().take(MAX_IMPORTED_MAPS).flat_map(|m| &m.layers);
+                for (_, notice) in crate::project::label_losses::hidden(imported) {
+                    s.notify(notice, false);
+                }
                 project.maps
             }
             Err(error) => {
@@ -465,7 +473,7 @@ fn import_maps(s: &mut Session, p: &Value) -> CmdResult {
         },
     };
     let mut names = Vec::new();
-    for mut m in maps.into_iter().take(100) {
+    for mut m in maps.into_iter().take(MAX_IMPORTED_MAPS) {
         // A binding in a file is no authority to use a login here.
         crate::s3_connections::clear_bindings(m.addresses_mut());
         crate::project::clear_login_bindings(m.addresses_mut());

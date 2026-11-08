@@ -276,6 +276,10 @@ pub fn commands() -> Vec<C> {
                     l.renew_instance_id();
                     l.normalize_selection();
                 }
+                // As a project's maps say when opened (#1596).
+                for (_, text) in crate::project::label_losses::hidden(m.layers.iter()) {
+                    s.notify(text, false);
+                }
                 s.project.maps.push(m);
                 s.project.active_map = s.project.maps.len() - 1;
             }

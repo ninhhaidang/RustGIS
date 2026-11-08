@@ -1318,11 +1318,13 @@ pub const MAX_ITEMS: usize = 1000;
 pub(crate) enum ReadPart {
     Labels,
     Diagrams,
+    /// Diagrams that won't show for their layer's aggregation or extrusion (#1596).
+    HiddenDiagrams,
     Layouts,
 }
 
 /// Every part: a whole project opened.
-pub(crate) const ALL_PARTS: [ReadPart; 3] = [ReadPart::Labels, ReadPart::Diagrams, ReadPart::Layouts];
+pub(crate) const ALL_PARTS: [ReadPart; 4] = [ReadPart::Labels, ReadPart::Diagrams, ReadPart::HiddenDiagrams, ReadPart::Layouts];
 
 /// The most layouts a project keeps (`layout.*` commands refuse to make more).
 pub(crate) const MAX_LAYOUTS: usize = 200;
