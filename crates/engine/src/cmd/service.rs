@@ -123,6 +123,8 @@ impl Discovery {
 }
 
 const MAX_SERVICE_DOCUMENTS: usize = 4;
+/// A notice for legend pictures a service listed that its layer cannot keep (an address too long).
+const LEGENDS_LEFT_OUT_NOTICE: &str = "{n} legend picture(s) the service listed were left out: their addresses are too long";
 
 /// Whether what this `service.add` would wait for is left off the frame: it is a plugin command's,
 /// run by the desktop app, which runs the command again when it has come (#1319).
@@ -907,8 +909,11 @@ fn add_discovered(s: &mut Session, p: &Value, url: &str, want: &str, found: &Dis
                     }
                 }
             }
-            // (Those the layer wouldn't keep, an address too long, are left out, not refused.)
+            // (Those the layer wouldn't keep, an address too long, are left out, not refused,
+            // and counted in a notice.)
             let legends = rustgis_map::tiles::checked_legends(layer.legends.iter().cloned());
+            let offered = layer.legends.len().min(rustgis_data::ogc::MAX_LEGENDS);
+            s.notify_loss(LEGENDS_LEFT_OUT_NOTICE, u32::try_from(offered.saturating_sub(legends.len())).unwrap_or(u32::MAX));
             if !legends.is_empty() {
                 add["legend"] = json!(legends);
             }

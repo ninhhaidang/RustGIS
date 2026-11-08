@@ -672,6 +672,16 @@ mod tests {
     }
 
     #[test]
+    fn same_origin_legend_with_a_space_keeps_its_login() {
+        let document = rustgis_data::login_address::bind("0123456789abcdef", "https://maps.test", "https://maps.test/wms").unwrap();
+        let url = rustgis_data::login_address::inherit(&document, "https://maps.test/legend?LAYER=a b");
+        let legend = rustgis_data::ogc::Legend { url: url.clone(), ..Default::default() };
+        assert_eq!(checked_legends([legend]).first().map(|l| l.url.as_str()), Some(url.as_str()));
+        assert_eq!(rustgis_data::login_address::inner(&url), "https://maps.test/legend?LAYER=a%20b");
+        assert!(check_url(&url).is_ok());
+    }
+
+    #[test]
     fn style_layers_are_checked() {
         assert!(checked_style_layers(r#"[{"id": "a", "type": "fill"}]"#).is_ok());
         assert!(checked_style_layers("{}").is_err());

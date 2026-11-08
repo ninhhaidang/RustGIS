@@ -159,6 +159,34 @@ fn oversized_same_origin_document_targets_fail_closed() {
     }
 }
 
+#[test]
+fn same_origin_document_links_with_unsafe_characters_keep_the_login() {
+    let bound_base = crate::login_address::bind(BASE_BINDING, ORIGIN, BASE).unwrap();
+    for (href, target, same_origin) in [
+        ("https://maps.example.org/a b/advertised", "https://maps.example.org/a%20b/advertised", true),
+        ("/a b/advertised", "https://maps.example.org/a%20b/advertised", true),
+        ("a b/advertised", "https://maps.example.org/folder/a%20b/advertised", true),
+        ("a\\b/advertised", "https://maps.example.org/folder/a/b/advertised", true),
+        ("?map=a b", "https://maps.example.org/folder/caps.xml?map=a%20b", true),
+        ("https://foreign.example.org/a b/advertised", "https://foreign.example.org/a b/advertised", false),
+    ] {
+        for (base, has_login) in [(BASE, false), (bound_base.as_str(), true)] {
+            for (boundary, document) in documents::documents(href) {
+                let service = parse(base, document.as_bytes()).unwrap();
+                let context = format!("{boundary} {href}");
+                let expected = (has_login && same_origin).then_some(BASE_BINDING);
+                for request in requests(&service) {
+                    let bound = crate::login_address::parse(&request).unwrap();
+                    assert_eq!(bound.map(|b| b.binding), expected, "{context}: {request}");
+                    // An unbound link is used as written, like before; a bound one as it is sent.
+                    let target = if expected.is_some() { target.to_string() } else { target.replace("%20", " ").replace("a/b", "a\\b") };
+                    assert!(crate::login_address::inner(&request).starts_with(&target), "{context}: {request}");
+                }
+            }
+        }
+    }
+}
+
 fn assert_operation(request: &str, service: &str, operation: &str, version: &str) {
     let inner = crate::login_address::inner(request);
     let url = url::Url::parse(inner).unwrap();

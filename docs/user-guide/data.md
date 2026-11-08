@@ -864,6 +864,9 @@ Relative links, including parent paths, resolve against the document's address w
 template placeholders or query values, including proxy parameters containing `https://` URLs.
 KVP requests replace capabilities operation parameters, keeping unrelated parameters such as
 MapServer's `map=`.
+A same-origin link whose path or query holds a space, backslash or control character keeps the
+login: tabs, line breaks and trailing spaces are dropped, a backslash in the path becomes `/` and
+other spaces, control characters and backslashes are percent-encoded (a space as `%20`).
 If a service supplies a same-origin link too long to carry its login, the request is refused
 instead of being fetched anonymously. Addresses that cannot be rebound to a login are left
 unchanged and reported.
