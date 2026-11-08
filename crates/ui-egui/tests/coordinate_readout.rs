@@ -136,3 +136,79 @@ fn the_status_bar_reads_the_pointer_in_the_chosen_format_and_a_click_switches() 
     hover_map(&mut h);
     h.get_by_label(&rustgis_engine::geom::format_lonlat(h.state().map.pointer_lonlat.unwrap()));
 }
+
+/// Moves the mouse onto the status bar, off the map, for a few frames.
+fn hover_status_bar(h: &mut egui_kittest::Harness<'_, RustGisApp>) {
+    for _ in 0..3 {
+        h.input_mut().events.push(egui::Event::PointerMoved(egui::pos2(800.0, 892.0)));
+        h.step();
+    }
+}
+
+fn readout_at_center(h: &mut egui_kittest::Harness<'_, RustGisApp>) -> String {
+    h.state_mut().run("map.goToXY", json!({"lon": 44.4, "lat": 33.3, "scale": 10000})).unwrap();
+    hover_map(h);
+    rustgis_engine::geom::format_lonlat(h.state().map.pointer_lonlat.expect("the pointer is over the map"))
+}
+
+#[test]
+fn the_readout_is_a_dash_until_the_pointer_has_been_over_the_map() {
+    let mut h = harness(RustGisApp::with_sample());
+    h.step();
+    h.get_by_label("—");
+    hover_status_bar(&mut h);
+    h.get_by_label("—");
+    assert!(h.state().map.pointer_lonlat.is_none());
+}
+
+#[test]
+fn the_position_stays_when_the_pointer_leaves_the_map_and_a_click_switches_format() {
+    let mut h = harness(RustGisApp::with_sample());
+    let decimal = readout_at_center(&mut h);
+    hover_status_bar(&mut h);
+    assert!(h.state().map.pointer_lonlat.is_none());
+    h.get_by_label(&decimal);
+    // The pointer in the window's corner, or gone altogether, keeps it too.
+    h.input_mut().events.push(egui::Event::PointerGone);
+    h.step();
+    h.get_by_label(&decimal);
+    // A click on the readout shows the same position in the next format.
+    h.get_by_label(&decimal).click();
+    h.step();
+    h.step();
+    assert_eq!(h.state().map.coord_format, CoordReadout::Dms);
+    let at = h.state().map.pointer_lonlat;
+    assert!(at.is_none());
+    h.get_by_label_contains("44°");
+    // The pointer back over the map follows it again.
+    hover_map(&mut h);
+    assert!(h.state().map.pointer_lonlat.is_some());
+}
+
+#[test]
+fn the_position_is_dropped_on_another_map_or_project() {
+    let mut h = harness(RustGisApp::with_sample());
+    let decimal = readout_at_center(&mut h);
+    hover_status_bar(&mut h);
+    h.get_by_label(&decimal);
+    // Another map becoming the active one.
+    h.state_mut().run("map.new", json!({"name": "Second Map"})).unwrap();
+    h.step();
+    h.step();
+    assert!(h.query_by_label(&decimal).is_none());
+    h.get_by_label("—");
+    // Back on the first map it is not remembered from before.
+    h.state_mut().run("map.activate", json!({"name": "World Atlas"})).ok();
+    h.step();
+    h.step();
+    h.get_by_label("—");
+    // A new position, then another project replacing this one.
+    let decimal = readout_at_center(&mut h);
+    hover_status_bar(&mut h);
+    h.get_by_label(&decimal);
+    h.state_mut().run("project.new", json!({})).unwrap();
+    h.step();
+    h.step();
+    assert!(h.query_by_label(&decimal).is_none());
+    h.get_by_label("—");
+}

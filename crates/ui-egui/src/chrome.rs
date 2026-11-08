@@ -305,9 +305,13 @@ pub fn status_bar(app: &mut RustGisApp, ui: &mut Ui) {
                 // Pointer coordinates.
                 let format = app.map.coord_format;
                 let earth = app.session.map().body().is_earth();
+                // Kept after the pointer leaves the map, so a click here still shows the position;
+                // dimmed then, to tell it from a live one.
+                let kept = app.map.kept_pointer_lonlat(app.session.map().instance_id(), app.session.opened);
+                let live = app.map.pointer_lonlat.is_some();
                 let resp = ui.add(
                     egui::Label::new(
-                        egui::RichText::new(format.readout(app.map.pointer_lonlat, earth)).monospace().size(11.5).color(t.text_dim),
+                        egui::RichText::new(format.readout(kept, earth)).monospace().size(11.5).color(if live { t.text_dim } else { t.text_disabled }),
                     )
                     .sense(Sense::click()),
                 );

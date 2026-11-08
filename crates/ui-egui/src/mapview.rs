@@ -302,6 +302,9 @@ pub struct MapView {
     /// A map or layout waiting for the user to confirm its deletion.
     pub deleting: Option<Deletion>,
     pub pointer_lonlat: Option<Coord>,
+    /// The last pointer position seen over a map, kept for the status bar readout after the
+    /// pointer leaves the map; with the map's instance and the session's `opened` it belongs to.
+    kept_lonlat: Option<(Coord, u64, u64)>,
     /// Where the map's context menu was opened: the pointer leaves the map for the menu.
     pub menu_lonlat: Option<Coord>,
     /// The text graphic the context menu was opened on (layer id, row), for Edit Text.
@@ -403,6 +406,7 @@ impl Default for MapView {
             popup_rev: 0,
             deleting: None,
             pointer_lonlat: None,
+            kept_lonlat: None,
             menu_lonlat: None,
             menu_text: None,
             coord_format: crate::CoordReadout::Decimal,
@@ -437,6 +441,18 @@ impl Default for MapView {
 }
 
 impl MapView {
+    /// The position the status bar shows: the last one over this map, kept while the pointer is
+    /// elsewhere. A position from another map or project no longer applies, so it is dropped.
+    pub fn kept_pointer_lonlat(&mut self, map_instance: u64, opened: u64) -> Option<Coord> {
+        match self.kept_lonlat {
+            Some((c, m, o)) if m == map_instance && o == opened => Some(c),
+            _ => {
+                self.kept_lonlat = None;
+                None
+            }
+        }
+    }
+
     /// Whether an exact frame is being composed off the UI thread, or the frame shown waits for
     /// tile pictures still to be drawn.
     pub fn drawing(&self) -> bool {
@@ -2257,6 +2273,9 @@ fn interact(app: &mut RustGisApp, ui: &mut Ui, resp: &egui::Response, rect: Rect
     let time = now(ui);
     let hover = resp.hover_pos();
     app.map.pointer_lonlat = hover.and_then(|p| screen_to_lonlat(app, rect, p));
+    if let Some(c) = app.map.pointer_lonlat.filter(|c| c.is_finite()) {
+        app.map.kept_lonlat = Some((c, app.session.map().instance_id(), app.session.opened));
+    }
     let tool = app.session.tool;
     cancel_changed_selection(app, rect);
 

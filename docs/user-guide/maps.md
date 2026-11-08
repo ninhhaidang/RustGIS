@@ -138,8 +138,11 @@ and **View In Google Earth** open the place in your browser at about the same zo
 
 ### Coordinate readouts
 
-The status bar shows the pointer's coordinates. Click them to step through four formats; the
-choice is remembered and also sets the right-click menu's first row. The same place in each:
+The status bar shows the pointer's coordinates while it is over the map, and keeps the last
+position (dimmed) when it leaves, so you can move to the status bar and click it. It reads `—`
+until the pointer has been over the map, and again after you switch to another map or open another
+project. Click the coordinates to step through four formats; the choice is remembered and also
+sets the right-click menu's first row. The same place in each:
 
 | Format | Example | |
 | --- | --- | --- |
