@@ -407,20 +407,28 @@ mod tests {
     }
 
     /// Command Search's menu entry and the editor's rows must agree: every row can be customized,
-    /// and every command that can be customized has a row.
+    /// and every command that can be customized has a row. Plugins are the process's, and other
+    /// tests load and unload theirs meanwhile, so of the plugins' commands only those of this test's
+    /// own plugin are compared.
     #[test]
     fn search_customize_agrees_with_the_editor_rows() {
+        use rustgis_engine::plugins;
+        let pkg = plugins::Package::from_zip(&plugins::testing::package("ui-shortcut-rows", &["edit"])).unwrap();
+        plugins::load(pkg, "test").unwrap();
+        let ours = |id: &str| !id.starts_with(plugins::PREFIX) || id.starts_with("plugin:ui-shortcut-rows/");
         let app = RustGisApp::new(Session::new(Project::default()));
-        let ids: std::collections::HashSet<String> = rows(&app, false).into_iter().map(|(id, _, _)| id).collect();
+        let ids: std::collections::HashSet<String> = rows(&app, false).into_iter().map(|(id, _, _)| id).filter(|id| ours(id)).collect();
+        assert!(ids.iter().any(|id| id.starts_with("plugin:ui-shortcut-rows/")), "its plugin's commands have rows");
         for id in &ids {
             assert!(can_customize(&app, id), "{id} has an editor row but Command Search cannot customize it");
         }
         let registry = app.session.registry.commands.iter().map(|c| c.id.to_string());
         let ui = crate::chrome::UI_COMMANDS.iter().map(|&(id, _, _)| id.to_string());
-        let plugins = rustgis_engine::plugins::commands().into_iter().map(|c| c.id);
+        let plugin_commands = plugins::commands().into_iter().map(|c| c.id);
         let bound = app.ui.keymap.bindings.iter().map(|b| b.command.clone());
-        for id in registry.chain(ui).chain(plugins).chain(bound) {
+        for id in registry.chain(ui).chain(plugin_commands).chain(bound).filter(|id| ours(id)) {
             assert_eq!(can_customize(&app, &id), ids.contains(&id), "{id}");
         }
+        plugins::unload("ui-shortcut-rows");
     }
 }

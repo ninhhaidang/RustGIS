@@ -840,6 +840,8 @@ pub struct Session {
     /// While a plugin command runs again for its downloads: what each one asked for, and what
     /// adding it answered, for its `layer.addUrl` to answer once.
     pub(crate) rerun_landed: Vec<(serde_json::Value, CmdResult, cmd::plugins::fetch::Added)>,
+    /// Which of those are failures already told in this run (see [`Session::rerun_answer`]).
+    pub(crate) rerun_told: Vec<usize>,
     /// While a plugin command runs again: the errors its earlier runs said, not said again.
     pub(crate) rerun_said: Vec<String>,
     /// While plugin commands whose downloads are in run again: the downloads they wait for, still
@@ -1161,6 +1163,7 @@ impl Session {
             next_request: 0,
             call_requests: None,
             rerun_landed: Vec::new(),
+            rerun_told: Vec::new(),
             rerun_said: Vec::new(),
             rerun_requests: Vec::new(),
             retry_tries: 0,

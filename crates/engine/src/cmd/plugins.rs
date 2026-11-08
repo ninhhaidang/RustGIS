@@ -567,9 +567,14 @@ impl Session {
         // Restore only the original opaque authorities removed by intentional suspension.
         // No JSON request can create a fresh User admission after the rollback.
         let suspended_keys: Vec<u64> = suspended.iter().map(|q| q.key).collect();
-        if self.retry_tries < fetch::MAX_RETRIES {
+        let giving_up = self.retry_tries >= fetch::MAX_RETRIES;
+        if !giving_up {
             self.restore_plugin_requests(suspended)?;
         }
+        // A service's document is read here, once the run is kept: the app adds nothing for it,
+        // and with no command waiting nothing would take it.
+        let documents: Vec<(u64, Value)> =
+            requested.iter().filter(|(n, asked)| !giving_up && fetch::is_document(asked) && !self.url_waits.has(*n)).cloned().collect();
         // The errors this run said stay: the next run, doing the same again, doesn't repeat them.
         let earlier = self.rerun_said.len();
         let said: Vec<String> = self.notices_since(mark).iter().filter(|n| n.error).map(|n| n.text.clone()).collect();
@@ -580,6 +585,10 @@ impl Session {
         if let Err(e) = &res {
             self.discard_plugin_requests(&suspended_keys);
             self.notify(e.clone(), true);
+        } else {
+            for (n, asked) in &documents {
+                self.url_waits.read_document(*n, asked);
+            }
         }
         res
     }

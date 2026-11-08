@@ -3193,13 +3193,17 @@ fn add_url_as_given(s: &mut Session, p: &Value) -> CmdResult {
     if !s.import_completion(p) {
         no_geolibre_state(p)?;
     }
+    // Marks a service's document, read and kept for `service.add`: as a download, no layer would come.
+    if super::plugins::fetch::is_document(p) {
+        return Err("\"document\" is internal to service.add: leave it out".into());
+    }
     let url = ps(p, "url").map(str::trim).filter(|u| !u.is_empty()).ok_or("url is required")?;
     // A plugin command run again once the download it left to the app was added (#1202): what
     // adding it answered, as often as the run asks for it (the app downloaded and added it once).
     // Answering it changes nothing (the layer is its own undo step).
     let wanted = s.asked_for(p);
     if s.leave_downloads
-        && let Some((_, answer, added)) = s.rerun_landed.iter().find(|(asked, ..)| super::plugins::fetch::same_request(asked, &wanted))
+        && let Some((answer, added)) = s.rerun_answer(&wanted)
     {
         s.request_only = true;
         // Added to another map than the one shown now: the command's next steps would act on this
@@ -3224,10 +3228,10 @@ fn add_url_as_given(s: &mut Session, p: &Value) -> CmdResult {
         if missing || added.gone(s.map()) {
             return Err(format!("{url}: the layer its download added was taken away (undone) before the command ran again"));
         }
-        if super::plugins::fetch::table_gone(answer, &s.project) {
+        if super::plugins::fetch::table_gone(&answer, &s.project) {
             return Err(format!("{url}: the table its download added was taken away (undone) before the command ran again"));
         }
-        return added.answer_now(s.map(), answer);
+        return added.answer_now(s.map(), &answer);
     }
     // An address read through a saved S3 connection is judged by the address it wraps; the whole
     // address stays what is fetched and kept.

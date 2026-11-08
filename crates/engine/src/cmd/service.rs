@@ -124,7 +124,26 @@ impl Discovery {
 
 const MAX_SERVICE_DOCUMENTS: usize = 4;
 
+/// Whether what this `service.add` would wait for is left off the frame: it is a plugin command's,
+/// run by the desktop app, which runs the command again when it has come (#1319).
+fn leaves_waits(s: &Session) -> bool {
+    cfg!(not(target_arch = "wasm32")) && s.leave_downloads && s.call_requests.is_some()
+}
+
+/// What a `service.add` waiting for the document at `url` answers: its command runs again.
+fn waiting_for(s: &mut Session, url: &str) -> CmdResult {
+    s.request_only = true;
+    // (Without its keys: a saved login's may be in it, and the plugin gave only the service.)
+    Ok(json!({"pending": true, "url": crate::sources::redact(url)}))
+}
+
 fn capabilities(s: &mut Session, p: &Value) -> Result<Discovery, String> {
+    discover(s, p, false)
+}
+
+/// Reads a service's documents, fetching what `p` doesn't give: waiting for them, or with `left`,
+/// off the frame ([`Session::left_document`]), when a document not in yet is its `next`.
+fn discover(s: &mut Session, p: &Value, left: bool) -> Result<Discovery, String> {
     let original = url_of(p)?;
     let mut address =
         crate::render::rustgis_tiles::logins::inherit(original, &rustgis_data::ogc::capabilities_url(original, ps(p, "type")));
@@ -168,6 +187,12 @@ fn capabilities(s: &mut Session, p: &Value) -> Result<Discovery, String> {
                 return Ok(result);
             };
             rustgis_data::ogc::parse(&address, text.as_bytes())
+        } else if left {
+            let Some(read) = s.left_document(&address).map_err(|e| format!("{original}: {e}"))? else {
+                result.next = Some(address);
+                return Ok(result);
+            };
+            read.and_then(|bytes| rustgis_data::ogc::parse(&address, &bytes)).map_err(|e| format!("{original}: {e}"))
         } else {
             fetch_capabilities(original, &address)
         };
@@ -433,6 +458,67 @@ fn advertised_template_with(
     out
 }
 
+/// What [`left_template`] has: the template, or the document it waits for.
+enum LeftTemplate {
+    Read(AdvertisedTemplate),
+    Waiting(String),
+}
+
+/// [`advertised_template`] read off the frame. It keeps every foreign hop and counts the addresses
+/// whose query was withheld, as that does. A document that can't be asked for now (too many being
+/// read) fails the command, as it does for the capabilities: it wasn't read, so it doesn't fall
+/// back to the standard tile address. Every fallback to that address is said.
+fn left_template(s: &mut Session, source: &str, list: &str, vector: bool, withheld: &mut u32) -> Result<LeftTemplate, String> {
+    use rustgis_data::ogc::{TilesStep, resolve_tiles};
+    let mut out = AdvertisedTemplate { template: None, crossed_origin: crosses_origin(source, list) };
+    let mut doc = list.to_string();
+    for _ in 0..2 {
+        let shown = crate::sources::redact(&doc);
+        if let Err(e) = crate::render::rustgis_tiles::address::check(&doc, Some(list)) {
+            let e = crate::sources::redact_text(&e);
+            s.notify(format!("{shown}: this tile set document was refused, so the standard tile address is used: {e}"), false);
+            return Ok(LeftTemplate::Read(out));
+        }
+        let Some(read) = s.left_document(&doc)? else { return Ok(LeftTemplate::Waiting(doc)) };
+        let body = match read {
+            Ok(body) => body,
+            Err(e) => {
+                s.notify(format!("{shown}: its tile sets couldn't be read, so the standard tile address is used: {e}"), false);
+                return Ok(LeftTemplate::Read(out));
+            }
+        };
+        let Some(resolved) = resolve_tiles(list, &doc, &body, vector) else {
+            s.notify(format!("{shown}: it names no tiles of this layer, so the standard tile address is used"), false);
+            return Ok(LeftTemplate::Read(out));
+        };
+        *withheld = withheld.saturating_add(resolved.withheld_addresses);
+        match resolved.step {
+            TilesStep::Template(t) => {
+                out.crossed_origin |= crosses_origin(&doc, &t);
+                match checked_template(list, &t) {
+                    Ok(t) => out.template = Some(t),
+                    // (Its error names the template, which may carry keys.)
+                    Err(e) => {
+                        let e = crate::sources::redact_text(&e);
+                        s.notify(format!("{shown}: its tile template was refused, so the standard tile address is used: {e}"), false);
+                    }
+                }
+                return Ok(LeftTemplate::Read(out));
+            }
+            TilesStep::Next(next) => {
+                out.crossed_origin |= crosses_origin(&doc, &next);
+                // Resolved against the document read, never the original login.
+                doc = next;
+            }
+        }
+    }
+    s.notify(
+        format!("{}: its tile sets lead on past two documents, so the standard tile address is used", crate::sources::redact(list)),
+        false,
+    );
+    Ok(LeftTemplate::Read(out))
+}
+
 /// In the browser nothing waits: the app reads the template itself and passes it as `"tiles"`.
 #[cfg(target_arch = "wasm32")]
 fn advertised_template(source: &str, list: &str, _: bool, _: &mut u32) -> AdvertisedTemplate {
@@ -575,16 +661,22 @@ pub(crate) fn add(s: &mut Session, p: &Value) -> CmdResult {
     let p = bound.as_ref();
     let url = url_of(p)?.to_string();
     let want = ps(p, "layer").map(str::trim).filter(|l| !l.is_empty()).ok_or("layer is required")?;
-    let found = capabilities(s, p)?;
+    let leaving = leaves_waits(s);
+    let reads_off_frame = leaving && ps(p, "text").is_none();
+    let found = discover(s, p, reads_off_frame)?;
     let mut withheld = found.service.withheld_addresses;
-    let result = add_discovered(s, p, &url, want, &found, &mut withheld);
+    let result = match found.next.as_deref().filter(|_| reads_off_frame) {
+        Some(next) => waiting_for(s, next),
+        None => add_discovered(s, p, &url, want, &found, &mut withheld, leaving),
+    };
     notify_withheld(s, withheld);
     result
 }
 
 /// Adds from an already-read listing, accumulating resolver losses for `add`'s single notice
-/// epilogue. Validation and execution errors return unchanged through that epilogue too.
-fn add_discovered(s: &mut Session, p: &Value, url: &str, want: &str, found: &Discovery, withheld: &mut u32) -> CmdResult {
+/// epilogue. Validation and execution errors return unchanged through that epilogue too. With
+/// `leaving`, what it would wait for is left off the frame ([`leaves_waits`]).
+fn add_discovered(s: &mut Session, p: &Value, url: &str, want: &str, found: &Discovery, withheld: &mut u32, leaving: bool) -> CmdResult {
     let candidates = || {
         found
             .service
@@ -668,6 +760,12 @@ fn add_discovered(s: &mut Session, p: &Value, url: &str, want: &str, found: &Dis
             template: Some(checked_template(source, t)?),
             crossed_origin: crosses_origin(source, list) || crosses_origin(list, t),
         },
+        (Some(list), None) if leaving => {
+            match left_template(s, source, list, matches!(layer.offer, Offer::VectorTiles { .. }), withheld)? {
+                LeftTemplate::Read(advertised) => advertised,
+                LeftTemplate::Waiting(doc) => return waiting_for(s, &doc),
+            }
+        }
         (Some(list), None) => advertised_template(source, list, matches!(layer.offer, Offer::VectorTiles { .. }), withheld),
         _ => AdvertisedTemplate::default(),
     };
@@ -775,7 +873,21 @@ fn add_discovered(s: &mut Session, p: &Value, url: &str, want: &str, found: &Dis
         }
         Offer::Coverage(c) => {
             let anonymous = capability_crossed || crosses_origin(source, &c.endpoint) || s.web_logins.is_anonymous();
-            let (get, _, _) = coverage_request(s, p, c, anonymous)?;
+            let (get, _, _) = match ps(p, "describe") {
+                // A plugin's command: its description read off the frame, as its documents are.
+                None if leaving => {
+                    let c = coverage_for(c, anonymous);
+                    let described = describe_address(&c);
+                    let Some(read) = s.left_document(&described).map_err(|e| format!("{}: {e}", c.id))? else {
+                        return waiting_for(s, &described);
+                    };
+                    let bytes = read.map_err(|e| format!("{}: {e}", c.id))?;
+                    let info = rustgis_data::ogc::parse_describe(&c, &bytes)?;
+                    let (get, area) = coverage_request_from(s, p, &c, &info)?;
+                    (get, area, described)
+                }
+                _ => coverage_request(s, p, c, anonymous)?,
+            };
             #[cfg(target_arch = "wasm32")]
             {
                 let _ = get;
@@ -784,6 +896,10 @@ fn add_discovered(s: &mut Session, p: &Value, url: &str, want: &str, found: &Dis
             #[cfg(not(target_arch = "wasm32"))]
             {
                 crate::service_logins::anonymously(s, anonymous, |s| {
+                    if leaving {
+                        // (Whole: a coverage's address may end in .tif, and it is read as a raster.)
+                        return super::layer::add_url(s, &json!({"url": get, "name": name, "coverage": true, "whole": true}));
+                    }
                     let bytes = crate::render::rustgis_tiles::cache::download_blocking(&get).map_err(|e| format!("{name}: {e}"))?;
                     coverage_check(&name, &bytes)?;
                     let r = super::raster::add_named_bytes(s, &json!({"name": name}), format!("{name}.tif"), bytes, None)?;
@@ -806,11 +922,6 @@ fn add_discovered(s: &mut Session, p: &Value, url: &str, want: &str, found: &Dis
                 // An area asked for, whether or not the request could carry it: a slow whole layer
                 // then says so, and doesn't suggest the `bbox` already given.
                 let given = p.get("bbox").is_some_and(|b| !b.is_null() && *b != "full");
-                if given && asked.is_none() {
-                    let why = if area.is_none() { "an area across the antimeridian" } else { "its request can't carry an area" };
-                    s.notify(format!("{name}: {why}, so the whole layer is asked for"), false);
-                }
-                let max = crate::render::rustgis_tiles::cache::MAX_DOWNLOAD;
                 let from = asked.as_deref().unwrap_or(items);
                 let crossed = capability_crossed || crosses_origin(source, from);
                 let from = if crossed { crate::render::rustgis_tiles::logins::inner(from) } else { from };
@@ -818,16 +929,43 @@ fn add_discovered(s: &mut Session, p: &Value, url: &str, want: &str, found: &Dis
                 crate::service_logins::anonymously(s, anonymous, |s| {
                     // An area request keeps the view until the requested box is applied below.
                     let keep_view = asked.is_some().then_some(false);
-                    let mut r = match download_layer(s, &name, from, max, true).map_err(|e| slow_whole_layer(e, given))? {
-                        Downloaded::Bytes(bytes) => {
-                            let bytes = features_answer(s, &name, bytes, layer.bbox);
-                            super::raster::add_named_bytes(s, &json!({"name": name}), format!("{name}.geojson"), bytes, keep_view)?
+                    // A plugin's command: downloaded off the frame as Add From Service does, added,
+                    // and its command run again, which is answered here and goes on (#1319).
+                    let left = leaving.then(|| {
+                        let mut q = json!({"url": from, "name": name, "service": true});
+                        if let Some(bounds) = layer.bbox {
+                            q["bounds"] = json!(bounds);
                         }
-                        // Read in protocol buffer pages: their positions as the service's system
-                        // places them, so there are no axes to check.
-                        Downloaded::Read(read) => super::layer::add_read(s, &json!({"name": name}), *read, keep_view)?,
+                        if let Some(zoom) = keep_view {
+                            q["zoom"] = json!(zoom);
+                        }
+                        q
+                    });
+                    // (By the run that has its answer: a run that waits is undone, and this goes with it.)
+                    if given && asked.is_none() && left.as_ref().is_none_or(|q| s.rerun_has(q)) {
+                        let why = if area.is_none() { "an area across the antimeridian" } else { "its request can't carry an area" };
+                        s.notify(format!("{name}: {why}, so the whole layer is asked for"), false);
+                    }
+                    let mut r = if let Some(q) = left {
+                        let r = super::layer::add_url(s, &q).map_err(|e| slow_whole_layer(e, given))?;
+                        if r.get("pending").is_some() {
+                            return Ok(r);
+                        }
+                        r
+                    } else {
+                        let max = crate::render::rustgis_tiles::cache::MAX_DOWNLOAD;
+                        let r = match download_layer(s, &name, from, max, true).map_err(|e| slow_whole_layer(e, given))? {
+                            Downloaded::Bytes(bytes) => {
+                                let bytes = features_answer(s, &name, bytes, layer.bbox);
+                                super::raster::add_named_bytes(s, &json!({"name": name}), format!("{name}.geojson"), bytes, keep_view)?
+                            }
+                            // Read in protocol buffer pages: their positions as the service's system
+                            // places them, so there are no axes to check.
+                            Downloaded::Read(read) => super::layer::add_read(s, &json!({"name": name}), *read, keep_view)?,
+                        };
+                        mark_service_source(s, &r, from);
+                        r
                     };
-                    mark_service_source(s, &r, from);
                     // Over an area, the features crossing it: the view stays, or goes to a box given
                     // (the whole layer's bounds would show a country to fill one state).
                     match (asked.is_some(), area, p.get("bbox")) {
@@ -886,23 +1024,44 @@ fn coverage_area(s: &Session, p: &Value, info: &rustgis_data::ogc::CoverageInfo,
 /// A coverage's GetCoverage address and the area it covers: its description from `"describe"`, or
 /// fetched (waiting for it).
 fn coverage_request(s: &Session, p: &Value, c: &Coverage, anonymous: bool) -> Result<(String, [f64; 4], String), String> {
-    let c = if anonymous {
+    let c = coverage_for(c, anonymous);
+    let c = c.as_ref();
+    let describe = describe_address(c);
+    let info = match ps(p, "describe") {
+        Some(text) => rustgis_data::ogc::parse_describe(c, text.as_bytes())?,
+        None => fetch_describe(c, &describe)?,
+    };
+    let (get, area) = coverage_request_from(s, p, c, &info)?;
+    Ok((get, area, describe))
+}
+
+/// A coverage as it is asked for: with no saved login when `anonymous`.
+fn coverage_for(c: &Coverage, anonymous: bool) -> std::borrow::Cow<'_, Coverage> {
+    if anonymous {
         let mut plain = c.clone();
         plain.endpoint = crate::render::rustgis_tiles::logins::inner(&c.endpoint).to_string();
         std::borrow::Cow::Owned(plain)
     } else {
         std::borrow::Cow::Borrowed(c)
-    };
-    let c = c.as_ref();
-    let describe = crate::render::rustgis_tiles::logins::inherit(&c.endpoint, &rustgis_data::ogc::describe_coverage_url(c));
-    let info = match ps(p, "describe") {
-        Some(text) => rustgis_data::ogc::parse_describe(c, text.as_bytes())?,
-        None => fetch_describe(c, &describe)?,
-    };
-    let area = coverage_area(s, p, &info, &c.id)?;
-    let get = crate::render::rustgis_tiles::logins::inherit(&c.endpoint, &rustgis_data::ogc::get_coverage_url(c, &info, area));
+    }
+}
+
+/// A coverage's DescribeCoverage address.
+fn describe_address(c: &Coverage) -> String {
+    crate::render::rustgis_tiles::logins::inherit(&c.endpoint, &rustgis_data::ogc::describe_coverage_url(c))
+}
+
+/// [`coverage_request`] with its description read.
+fn coverage_request_from(
+    s: &Session,
+    p: &Value,
+    c: &Coverage,
+    info: &rustgis_data::ogc::CoverageInfo,
+) -> Result<(String, [f64; 4]), String> {
+    let area = coverage_area(s, p, info, &c.id)?;
+    let get = crate::render::rustgis_tiles::logins::inherit(&c.endpoint, &rustgis_data::ogc::get_coverage_url(c, info, area));
     crate::render::rustgis_tiles::address::check(&get, Some(&c.endpoint))?;
-    Ok((get, area, describe))
+    Ok((get, area))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1023,6 +1182,77 @@ fn fetch_records(url: &str, _: &str) -> Result<rustgis_data::ogc::RecordPage, St
 mod tests {
     use super::*;
 
+    /// Every fallback to the standard tile address off the frame is said (AGENTS.md, Never silent):
+    /// a list leading on past two documents, a template refused, a document address refused. A
+    /// template read says nothing (#1319).
+    #[test]
+    fn a_tile_list_off_the_frame_says_why_it_falls_back() {
+        let (source, list) = ("https://x.org/collections", "https://x.org/collections/a/map/tiles");
+        let land = |s: &mut Session, url: &str, body: Value| {
+            let asked = s.asked_for(&json!({"url": url, "document": true}));
+            let mut added = crate::cmd::plugins::fetch::Added::default();
+            added.document = Some(serde_json::to_vec(&body).unwrap().into());
+            s.rerun_landed.push((asked, Ok(json!({})), added));
+        };
+        let tilesets = |next: &str| json!({"tilesets": [{"tileMatrixSetId": "WebMercatorQuad", "links": [{"rel": "self", "href": next}]}]});
+        let template = |href: &str| json!({"links": [{"rel": "item", "type": "image/png", "href": href}]});
+        // A document asked for past the first, where none should be: it names nothing, said.
+        let nothing_more = |_: &str| json!({});
+        // What the list leads to, read in turn: the template it ends with, and what was said.
+        let read = |first: Value, then: &dyn Fn(&str) -> Value| {
+            let mut s = Session::new(crate::sample::world_project());
+            s.call_requests = Some(Vec::new());
+            land(&mut s, list, first);
+            let mark = s.notice_mark();
+            for _ in 0..3 {
+                match left_template(&mut s, source, list, false, &mut 0).unwrap() {
+                    LeftTemplate::Read(out) => {
+                        let said: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+                        return (out.template, said);
+                    }
+                    LeftTemplate::Waiting(doc) => land(&mut s, &doc, then(&doc)),
+                }
+            }
+            panic!("it never read a template");
+        };
+        let (t, said) = read(tilesets("https://x.org/t/1"), &|doc| tilesets(&format!("{doc}/more")));
+        assert!(t.is_none() && said.len() == 1 && said[0].contains("past two documents"), "{said:?}");
+        let (t, said) = read(template("https://x.org/paint/{tileMatrix}.png?token=hunter2"), &nothing_more);
+        assert!(t.is_none() && said.len() == 1 && said[0].contains("tile template was refused"), "{said:?}");
+        assert!(!said[0].contains("hunter2"), "{said:?}");
+        // A document on the web pointing into the local network.
+        let (t, said) = read(tilesets("http://127.0.0.1/t/1"), &nothing_more);
+        assert!(t.is_none() && said.len() == 1 && said[0].contains("document was refused"), "{said:?}");
+        let (t, said) = read(template("https://x.org/paint/{tileMatrix}/{tileCol}/{tileRow}.png"), &nothing_more);
+        assert_eq!(t.as_deref(), Some("https://x.org/paint/{z}/{x}/{y}.png"));
+        assert!(said.is_empty(), "{said:?}");
+    }
+
+    /// A tile list that can't be asked for, with as many documents being read as can be, fails
+    /// the command: it wasn't read, so the layer doesn't go on the standard tile address (#1319).
+    #[test]
+    fn a_tile_list_past_the_read_limit_fails_the_command() {
+        let mut s = Session::new(crate::sample::world_project());
+        s.call_requests = Some(Vec::new());
+        for i in 0..crate::MAX_URL_REQUESTS {
+            assert!(s.left_document(&format!("https://x.org/{i}")).unwrap().is_none());
+        }
+        let mark = s.notice_mark();
+        let mut withheld = 0;
+        let list = "https://x.org/collections/a/map/tiles";
+        let Err(e) = left_template(&mut s, "https://x.org/collections", list, false, &mut withheld) else {
+            panic!("it went on to a template");
+        };
+        assert!(e.contains("already being read"), "{e}");
+        assert!(s.notices_since(mark).is_empty(), "no notice of a standard tile address");
+        // Asked for while there is room, it waits for the list.
+        let mut s = Session::new(crate::sample::world_project());
+        s.call_requests = Some(Vec::new());
+        assert!(
+            matches!(left_template(&mut s, "https://x.org/collections", list, false, &mut withheld), Ok(LeftTemplate::Waiting(d)) if d == list)
+        );
+    }
+
     #[test]
     fn foreign_tileset_hops_stay_anonymous_on_return_and_fallback() {
         use crate::{Project, render::rustgis_tiles as tiles, service_logins as web};
@@ -1104,5 +1334,15 @@ mod tests {
         assert!(super::slow_whole_layer(slow.clone(), false).ends_with("with \"bbox\": [west, south, east, north] or \"view\""));
         assert_eq!(super::slow_whole_layer(slow.clone(), true), slow);
         assert_eq!(super::slow_whole_layer("404 Not Found".into(), false), "404 Not Found");
+    }
+
+    /// What a command is told it waits for has no keys in it: a saved login's may be in the address.
+    #[test]
+    fn a_document_waited_for_is_named_without_its_keys() {
+        let mut s = crate::Session::new(crate::sample::world_project());
+        let r = super::waiting_for(&mut s, "https://x.org/wfs?request=GetCapabilities&token=hunter2").unwrap();
+        let url = r["url"].as_str().unwrap();
+        assert!(url.starts_with("https://x.org/wfs") && !url.contains("hunter2"), "{r}");
+        assert_eq!(r["pending"], true);
     }
 }

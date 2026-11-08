@@ -17,9 +17,13 @@
 //! desktop app since #1170) runs again the same way once the app has added it (#1202): its
 //! `layer.addUrl` then answers what adding the download answered, so the command goes on with
 //! the layer (clips, renames or styles it).
+//!
+//! A plugin command's `service.add` on the desktop waits the same way (#1319): the documents it
+//! reads are fetched off the frame ([`Session::left_document`]), and its features or coverage are
+//! left to the app as `layer.addUrl`'s download is.
 
 use std::collections::VecDeque;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
 use web_time::{Duration, Instant};
@@ -281,12 +285,24 @@ impl Calls {
 /// with an error: one the app lost track of doesn't keep it waiting for ever.
 pub const REQUEST_WAIT: Duration = Duration::from_secs(10 * 60);
 
+/// The most bytes a service's document read off the frame may have: it is kept until no command
+/// waits for it, and read again each time the command runs.
+pub const MAX_DOCUMENT: usize = 64 << 20;
+/// How long a service's document read off the frame may take: what a command waiting for it had.
+const DOCUMENT_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// A plugin command waiting for its fetches, or its downloads, before it runs again.
 #[derive(Clone)]
 pub(crate) struct Retry {
     continuation: crate::policy::Continuation,
     id: String,
     params: Value,
+    /// The view it first ran with, and the size of the window showing it: the window answers while
+    /// the command waits, and a view changed meanwhile must not make the next run ask for another
+    /// area (#1319).
+    view: (crate::map::Camera, (f64, f64)),
+    /// The notices given when it began to wait: one given since is about the time it waits.
+    notices: u64,
     urls: Vec<String>,
     /// The downloads it left to the app ([`Session::request_url`]), by request number.
     requests: Vec<u64>,
@@ -316,6 +332,8 @@ pub(crate) struct UrlWaits {
     /// caller gave its number with the same address, then the app's own download came) isn't
     /// added twice.
     added: VecDeque<(u64, Value)>,
+    /// A service's documents being read off the frame, by request number.
+    reading: Vec<(u64, Arc<Mutex<Option<Result<Vec<u8>, String>>>>)>,
 }
 
 /// What adding a landed download added, to tell when its command runs again whether it is still
@@ -331,6 +349,8 @@ pub(crate) struct Added {
     /// The map it was added to (its instance id, which stays with it as maps are removed or
     /// moved), which may not be the one shown when the command runs again.
     pub(crate) map: u64,
+    /// A service's document read off the frame ([`Session::left_document`]), which adds nothing.
+    pub(crate) document: Option<Arc<[u8]>>,
 }
 
 impl Added {
@@ -350,7 +370,7 @@ impl Added {
             (None, Some(i)) => usize::try_from(i).ok().and_then(|i| map.tiles.get(i)).cloned().into_iter().collect(),
             _ => Vec::new(),
         };
-        Added { layers, tiles, map: at }
+        Added { layers, tiles, map: at, document: None }
     }
 
     /// `answer` as it stands in `map` now: a tile layer's place in the list, which moves as others
@@ -477,7 +497,8 @@ impl UrlWaits {
     pub(crate) fn land(&mut self, n: u64, answer: CmdResult, added: Added) {
         if let Some(i) = self.in_flight.iter().position(|(m, ..)| *m == n) {
             let (_, asked, _) = self.in_flight.remove(i);
-            if answer.is_ok() {
+            // (A document adds nothing, and no front end lands it again by its number.)
+            if answer.is_ok() && added.document.is_none() {
                 if self.added.len() >= MAX_EXPIRED {
                     self.added.pop_front();
                 }
@@ -536,6 +557,36 @@ impl UrlWaits {
         self.expired.push((n, asked));
     }
 
+    /// Starts reading the document `asked` for off the frame, as request `n`.
+    pub(crate) fn read_document(&mut self, n: u64, asked: &Value) {
+        let slot: Arc<Mutex<Option<Result<Vec<u8>, String>>>> = Arc::default();
+        let land = slot.clone();
+        crate::render::rustgis_tiles::cache::download_within(
+            asked["url"].as_str().unwrap_or(""),
+            MAX_DOCUMENT,
+            DOCUMENT_TIMEOUT,
+            Box::new(move |r| *land.lock().unwrap_or_else(|e| e.into_inner()) = Some(r)),
+        );
+        self.reading.push((n, slot));
+    }
+
+    /// Lands the documents read by now. One whose command gave up is dropped, and forgotten.
+    fn documents_in(&mut self) {
+        for (n, slot) in std::mem::take(&mut self.reading) {
+            let answer = slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+            let Some(answer) = answer else {
+                self.reading.push((n, slot));
+                continue;
+            };
+            match answer {
+                Ok(bytes) => self.land(n, Ok(json!({})), Added { document: Some(bytes.into()), ..Added::default() }),
+                // Its command gets this as its answer: without the address's keys.
+                Err(e) => self.land(n, Err(crate::sources::redact_text(&e)), Added::default()),
+            }
+            self.refused(n);
+        }
+    }
+
     /// Whether as many given-up downloads are still out as are remembered ([`MAX_EXPIRED`]).
     fn given_up_full(&self) -> bool {
         self.expired.len() >= MAX_EXPIRED
@@ -579,6 +630,12 @@ pub(crate) fn without_request(p: &Value) -> Value {
     p
 }
 
+/// Whether a download request asks for a service's document, which the session reads itself,
+/// rather than data for the app to add.
+pub(crate) fn is_document(p: &Value) -> bool {
+    p.get("document").and_then(Value::as_bool) == Some(true)
+}
+
 /// Whether two download requests ask for the same thing, whatever their numbers, and whatever
 /// spaces are around their addresses (the app downloads the address trimmed).
 pub(crate) fn same_request(a: &Value, b: &Value) -> bool {
@@ -605,6 +662,71 @@ impl Session {
             o.insert("anonymous".into(), json!(true));
         }
         asked
+    }
+
+    /// What a command run again is answered for `wanted`: what adding the download answered, and
+    /// what it added. A failure answers once a run, and a call made again after it is a new try:
+    /// each run gets what the run before it got, in order, so a command that tries again after a
+    /// failure goes on to its next try, and doesn't find the same failure every time.
+    pub(crate) fn rerun_answer(&mut self, wanted: &Value) -> Option<(CmdResult, Added)> {
+        let told = &self.rerun_told;
+        let at = self
+            .rerun_landed
+            .iter()
+            .enumerate()
+            .position(|(i, (asked, answer, _))| same_request(asked, wanted) && (answer.is_ok() || !told.contains(&i)))?;
+        let (_, answer, added) = self.rerun_landed.get(at)?;
+        let answered = (answer.clone(), added.clone());
+        if answered.0.is_err() {
+            self.rerun_told.push(at);
+        }
+        Some(answered)
+    }
+
+    /// The service document at `url`, for a plugin command's `service.add` (#1319): what reading it
+    /// off the frame gave, or `None` when it is asked for now, and the command runs again once it
+    /// has come. Its waiting, replacing and giving up are a download's. `Err` when it can't be asked
+    /// for now, with as many being read as can be: not a read that failed.
+    pub(crate) fn left_document(&mut self, url: &str) -> Result<Option<Result<Arc<[u8]>, String>>, String> {
+        let asked = self.asked_for(&json!({"url": url, "document": true}));
+        if let Some((answer, added)) = self.rerun_answer(&asked) {
+            return Ok(Some(answer.and_then(|_| added.document.ok_or_else(|| "no document came".to_string()))));
+        }
+        // Asked for already in this call, or by a run before it for the same caller: that read,
+        // not another (as a download is shared, `enqueue_url`).
+        let caller = self.continuation().ok();
+        let owns = |n: u64| {
+            caller.as_ref().is_some_and(|c| {
+                self.url_waits.owner(n).is_some_and(|owner| self.same_url_caller(owner, c) && self.check_continuation(owner).is_ok())
+            })
+        };
+        let now = self.call_requests.as_deref().unwrap_or_default();
+        let number =
+            match now.iter().find(|(_, q)| same_request(q, &asked)).map(|(n, _)| *n).or_else(|| self.url_waits.in_flight(&asked, owns)) {
+                Some(n) => n,
+                None => {
+                    // Each one read stays in memory, so they wait in the numbers a download does.
+                    let reading = self.url_waits.reading.len() + now.iter().filter(|(_, q)| is_document(q)).count();
+                    if reading >= crate::MAX_URL_REQUESTS {
+                        return Err(format!("{} documents are already being read; try again when they have come", crate::MAX_URL_REQUESTS));
+                    }
+                    self.next_request += 1;
+                    self.next_request
+                }
+            };
+        if let Some(asked_now) = self.call_requests.as_mut()
+            && !asked_now.iter().any(|(n, _)| *n == number)
+        {
+            asked_now.push((number, asked));
+        }
+        Ok(None)
+    }
+
+    /// Whether a command run again has an answer for `wanted`.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn rerun_has(&self, wanted: &Value) -> bool {
+        let wanted = self.asked_for(wanted);
+        self.rerun_landed.iter().any(|(asked, ..)| same_request(asked, &wanted))
     }
 
     /// Keeps plugin command `id` to run again once `urls` (cache keys) have landed, and the
@@ -684,6 +806,9 @@ impl Session {
             continuation,
             id: id.to_string(),
             params: params.clone(),
+            // (A run again holds the view of its first, so this keeps it.)
+            view: (self.map().camera, self.view_size),
+            notices: self.notice_mark(),
             urls,
             requests: numbers,
             answered,
@@ -722,11 +847,27 @@ impl Session {
         !self.plugin_retries.is_empty()
     }
 
+    /// Whether plugin command `id` is waiting to run again with these parameters: asked for again,
+    /// it would only start over.
+    pub fn plugin_command_waits(&self, id: &str, params: &Value) -> bool {
+        self.plugin_retries.iter().any(|r| r.id == id && r.params == *params)
+    }
+
+    /// The plugin command waiting longest for its fetches or downloads, for the front end to show:
+    /// not while the latest notice is an error given since it began to wait, which goes first. A
+    /// command may wait for minutes, while the window takes other work.
+    pub fn plugin_command_waiting(&self) -> Option<&str> {
+        let first = self.plugin_retries.first()?;
+        let failed = self.notices_since(first.notices).last().is_some_and(|n| n.error);
+        (!failed).then_some(first.id.as_str())
+    }
+
     /// Runs again the plugin commands whose fetches have all landed and whose downloads the app
     /// has all added (see `host.fetch` and `layer.addUrl` in `docs/plugins.md`): each command and
     /// what it answered this time. Its `layer.addUrl` calls answer what adding each download
     /// answered. Errors are also given as notices, as for any command.
     pub fn poll_plugin_retries(&mut self) -> Vec<(String, CmdResult)> {
+        self.url_waits.documents_in();
         if self.plugin_retries.is_empty() {
             return Vec::new();
         }
@@ -768,9 +909,22 @@ impl Session {
                 self.rerun_landed = r.answered.iter().cloned().chain(mine).collect();
                 self.rerun_said = r.said;
                 self.retry_tries = r.tries;
+                // It sees the view it first ran with, whichever map is shown now, so it asks for the
+                // same area; one it doesn't move itself goes back to what the user has moved to since.
+                let (held, size) = r.view;
+                let map = self.map().instance_id();
+                let shown = std::mem::replace(&mut self.map_mut().camera, held);
+                let shown_size = std::mem::replace(&mut self.view_size, size);
+                // Run as the app runs a plugin's command, as the caller it first ran for: what it
+                // asks for now is left to the app.
                 let res = self.with_deferred_downloads(|s| s.retry_continuation(&r.continuation, &r.params));
+                self.view_size = shown_size;
+                if let Some(m) = self.project.maps.iter_mut().find(|m| m.instance_id() == map && m.camera == held) {
+                    m.camera = shown;
+                }
                 self.retry_tries = 0;
                 self.rerun_landed.clear();
+                self.rerun_told.clear();
                 self.rerun_said.clear();
                 (r.id, res)
             })
@@ -787,6 +941,123 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A failure answers once a run, in the order it came, and a call made again after it is a new
+    /// download: a command trying again gets its next try, not the same failure for ever. What was
+    /// added answers as often as it is asked for (#1319).
+    #[test]
+    fn a_failed_answer_is_given_once_a_run() {
+        let mut s = Session::new(crate::sample::world_project());
+        s.leave_downloads = true;
+        let id = u64::from(s.map().layers[0].id);
+        let asked = json!({"url": "https://x.org/a.geojson"});
+        let failed: CmdResult = Err("https://x.org/a.geojson: 502 Bad Gateway".into());
+        s.rerun_landed = vec![(asked.clone(), failed.clone(), Added::default())];
+        assert_eq!(s.run("layer.addUrl", &asked), failed);
+        assert_eq!(s.run("layer.addUrl", &asked).unwrap()["pending"], true, "the next try");
+        assert_eq!(s.take_url_requests().len(), 1);
+        // The next run: that failure again, in its place, then what the try that followed gave.
+        s.rerun_told.clear();
+        let answer: CmdResult = Ok(json!({"layer": id}));
+        s.rerun_landed.push((asked.clone(), answer.clone(), Added::of(s.map(), &answer)));
+        assert_eq!(s.run("layer.addUrl", &asked), failed);
+        for _ in 0..2 {
+            assert_eq!(s.run("layer.addUrl", &asked), answer);
+        }
+        assert!(s.take_url_requests().is_empty(), "nothing asked again");
+    }
+
+    /// A document asked for twice in one call is one read, and they wait in the numbers a download
+    /// does: each stays in memory until its command has run (#1319).
+    #[test]
+    fn documents_asked_for_in_a_call_are_one_read_each_and_limited() {
+        let mut s = Session::new(crate::sample::world_project());
+        s.call_requests = Some(Vec::new());
+        assert!(s.left_document("https://x.org/same").unwrap().is_none());
+        assert!(s.left_document("https://x.org/same").unwrap().is_none());
+        assert_eq!(s.call_requests.as_ref().unwrap().len(), 1);
+        for i in 1..crate::MAX_URL_REQUESTS {
+            assert!(s.left_document(&format!("https://x.org/{i}")).unwrap().is_none());
+        }
+        let e = s.left_document("https://x.org/one-more").unwrap_err();
+        assert!(e.contains("already being read"), "{e}");
+        assert_eq!(s.call_requests.as_ref().unwrap().len(), crate::MAX_URL_REQUESTS);
+        // One already asked for is still answered as waiting.
+        assert!(s.left_document("https://x.org/same").unwrap().is_none());
+    }
+
+    /// `layer.addUrl` can't mark its download as a service's document: nothing would add it, and
+    /// nothing would say so. A plugin's call and a direct one are refused, and nothing is read (#1319).
+    #[test]
+    fn a_download_cannot_be_marked_as_a_document() {
+        let mut s = Session::new(crate::sample::world_project());
+        s.leave_downloads = true;
+        s.call_requests = Some(Vec::new());
+        let marked = json!({"url": "https://x.org/a.csv", "document": true});
+        assert!(s.run("layer.addUrl", &marked).unwrap_err().contains("internal"));
+        assert!(s.call_requests.as_ref().unwrap().is_empty() && s.url_waits.reading.is_empty());
+        // Without the mark, it is a download as ever.
+        assert_eq!(s.run("layer.addUrl", &json!({"url": "https://x.org/a.csv"})).unwrap()["pending"], true);
+    }
+
+    /// A run refused for too many given-up downloads starts none of its documents' reads: with no
+    /// command waiting, nothing would take them (#1319).
+    #[test]
+    fn a_refused_run_starts_no_read() {
+        use rustgis_plugins as plugins;
+        let pkg = plugins::Package::from_zip(&rustgis_plugins::testing::package("refused-read", &["edit", "network"])).unwrap();
+        plugins::load(pkg, "test").unwrap();
+        let mut s = Session::new(crate::sample::world_project());
+        for n in 0..MAX_EXPIRED as u64 {
+            s.url_waits.remember_given_up(n + 1000, json!({"url": format!("https://x.org/{n}")}));
+        }
+        let forwarded = json!({"op": "service.add", "params": {"url": "https://x.org/wfs", "type": "wfs", "layer": "a"}});
+        let e = s.run_leaving_downloads("plugin:refused-read/f", &forwarded).unwrap_err();
+        assert!(e.contains("still under way"), "{e}");
+        assert!(s.url_waits.reading.is_empty());
+        plugins::unload("refused-read");
+    }
+
+    /// A document read takes no download's place among those added: past [`MAX_EXPIRED`]
+    /// documents, a download added is still refused when it lands again (#1319).
+    #[test]
+    fn documents_read_keep_no_download_out_of_those_added() {
+        let mut waits = UrlWaits::default();
+        waits.wait(1, json!({"url": "https://x.org/a.csv"}));
+        waits.land(1, Ok(json!({})), Added::default());
+        for n in 0..MAX_EXPIRED as u64 {
+            waits.wait(n + 2, json!({"url": format!("https://x.org/doc/{n}"), "document": true}));
+            waits.land(n + 2, Ok(json!({})), Added { document: Some(Arc::from(&b"caps"[..])), ..Added::default() });
+        }
+        assert!(waits.added_already(1, &json!({"url": "https://x.org/a.csv", "request": 1})));
+    }
+
+    /// A document read off the frame lands for the command waiting for it; one whose command gave
+    /// up is dropped and forgotten. An unread one stays out, and asks nothing of the app (#1319).
+    #[test]
+    fn documents_read_off_the_frame_land_or_are_dropped() {
+        let reading = |answer| -> Arc<Mutex<Option<Result<Vec<u8>, String>>>> { Arc::new(Mutex::new(answer)) };
+        let doc = |n: u32| json!({"url": format!("https://x.org/{n}"), "document": true});
+        let mut waits = UrlWaits::default();
+        waits.wait(1, doc(1));
+        waits.wait(2, doc(2));
+        waits.wait(3, doc(3));
+        waits.remember_given_up(4, doc(4));
+        waits.reading = vec![
+            (1, reading(Some(Ok(b"caps".to_vec())))),
+            (2, reading(Some(Err("https://x.org/2?token=hunter2: 404 Not Found".into())))),
+            (3, reading(None)),
+            (4, reading(Some(Ok(b"late".to_vec())))),
+        ];
+        waits.documents_in();
+        let landed = |n: u64| waits.landed.iter().find(|(m, ..)| *m == n);
+        assert_eq!(landed(1).unwrap().3.document.as_deref(), Some(&b"caps"[..]));
+        let e = landed(2).unwrap().2.as_ref().unwrap_err();
+        assert!(e.contains("404") && !e.contains("hunter2"), "{e}");
+        assert!(landed(3).is_none() && waits.reading.len() == 1 && waits.reading[0].0 == 3);
+        assert!(landed(4).is_none() && !waits.given_up(4, &doc(4)), "given up, it is forgotten");
+        assert!(is_document(&doc(1)) && !is_document(&json!({"url": "https://x.org/1"})));
+    }
 
     /// A command run again checks that what its download added is still there: a layer with its
     /// id but other data (one added after an undo), a tile layer taken away (another of its

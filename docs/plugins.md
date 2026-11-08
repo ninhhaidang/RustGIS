@@ -476,10 +476,28 @@ A call asked again while its download is under way (the button clicked twice) wa
 download, not another. A command runs again at most 64 times, and a download not added within 10
 minutes runs it again with an error.
 
-Other commands that wait for a server (`service.add`, say) still wait with the window held. A
-command the user starts from the ribbon, command search or a panel first shows "Running …" in the
-status bar with a busy cursor, and clicks made during a long run are dropped, so they don't run it
-again.
+`service.add` does the same on the desktop: it reads the service's documents off the frame,
+answering `{"pending": true, "url": …}`, and leaves a feature layer or a coverage to download as
+`layer.addUrl` does, so the same call answers what adding it answered once the command runs again
+(a feature layer's with `"area"`, when asked for over one). The command may run several times on
+the way, once for each document at most, and a map layer is added by the run that has them. Up to
+16 documents are read at a time, and asking for more fails. In the web app
+`service.add` still refuses to download.
+
+While a command waits the window answers, so the user can work and the project can change. The
+status bar says the command is running, and asking for it again with the same parameters does
+nothing. A run again sees the view the command first ran with, and the window's size then, unless
+it moves the view itself; the layers, the selection and the rest are as they are by then. With
+another map shown by then, or another project open, it isn't run again: it stops with an error. A failed answer is given once a run, in
+the order it came, so a call made again after it is a new try. Because everything before the call
+runs again, a command replacing a layer removes the old one after the call: removed before it, the
+run again finds its new layer gone, and says so. With the old name still in use the new layer came
+in as `Name (2)`, so rename it once the old one is gone.
+
+Other commands that wait for a server (`service.layers`, `host.fetch`, say) still wait with the
+window held. A command the user starts from the ribbon, command search or a panel first shows
+"Running …" in the status bar with a busy cursor, and clicks made during a long run are dropped,
+so they don't run it again.
 
 `rustgis-cli commands` lists every command id and its parameters.
 
