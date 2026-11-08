@@ -1223,3 +1223,101 @@ fn a_layer_that_draws_nothing_goes_after_one_that_draws() {
     let out = read("m.city.json", &doc(box_vertices(), objects), None).unwrap();
     assert_eq!(out.iter().map(|(d, _)| d.name.as_str()).collect::<Vec<_>>(), ["m B", "m A"]);
 }
+
+/// A line that would draw but for its X or Y, left out for one that draws nothing, is said: the
+/// object keeps a row with geometry, so the notice for a shape that can't be drawn doesn't count it.
+#[test]
+fn a_line_lost_to_its_coordinates_is_said_when_what_is_kept_draws_nothing() {
+    let vertices = json!([[0, 0, 0], [1e200, 0, 0], [0, 1, 0]]);
+    let lines = |far: usize| {
+        json!({"a": {"type": "Road", "geometry": [
+            {"type": "MultiLineString", "lod": "1", "boundaries": [[0, far]]},
+            {"type": "MultiLineString", "lod": "2", "boundaries": [[0]]},
+        ]}})
+    };
+    let out = read("m.city.json", &doc(vertices.clone(), lines(1)), Crs::from_epsg(3857)).unwrap();
+    assert_eq!(value(&out[0].0, 0, "lod"), crate::Value::Text("2".into()));
+    assert!(says(&out, "1 city objects have a line whose X or Y can't be drawn"), "{:?}", messages_of(&out));
+    assert!(!says(&out, "shape that can't be drawn"), "{:?}", messages_of(&out));
+    // With the LoD 1 line's X and Y good, it is drawn, and nothing is said.
+    let out = read("m.city.json", &doc(vertices.clone(), lines(2)), Crs::from_epsg(3857)).unwrap();
+    assert_eq!(value(&out[0].0, 0, "lod"), crate::Value::Text("1".into()));
+    assert!(!says(&out, "X or Y can't be drawn"), "{:?}", messages_of(&out));
+    // Above a line of one point, the line left out is a higher level: the one kept is the one that
+    // can be drawn from, not the one that can't.
+    let objects = json!({"a": {"type": "Road", "geometry": [
+        {"type": "MultiLineString", "lod": "1", "boundaries": [[0]]},
+        {"type": "MultiLineString", "lod": "2", "boundaries": [[0, 1]]},
+    ]}});
+    let out = read("m.city.json", &doc(vertices, objects), Crs::from_epsg(3857)).unwrap();
+    assert_eq!(value(&out[0].0, 0, "lod"), crate::Value::Text("1".into()));
+    assert!(geometry(&out[0].0, 0).is_some());
+    assert!(says(&out, "1 city objects have a line whose X or Y can't be drawn"), "{:?}", messages_of(&out));
+    assert!(!says(&out, "shape that can't be drawn"), "{:?}", messages_of(&out));
+}
+
+/// Attributes are typed as the GeoJSON reader types properties: a field takes the type of every
+/// value in its layer, nulls aside, widening integers to decimals and mixed kinds to text.
+#[test]
+fn attributes_are_typed_by_every_value_in_their_layer() {
+    let solid = json!([{"type": "Solid", "lod": "2", "boundaries": box_shell()}]);
+    // The same box on the vertices after the first eight.
+    let higher = json!([{"type": "Solid", "lod": "2", "boundaries": [[[[8, 11, 10, 9]], [[12, 13, 14, 15]], [[8, 9, 13, 12]]]]}]);
+    let objects = json!({
+        "a": {"type": "Building", "attributes": {"count": null, "share": 1, "mixed": 1, "flag": true, "nested": {"k": 1, "a": [2]},
+            "big": 18446744073709551615_u64, "none": null, "exact": 1e300}, "geometry": solid},
+        "b": {"type": "Building", "attributes": {"count": 3, "share": 0.5, "mixed": "x", "flag": false, "big": 1, "exact": 0.1}, "geometry": higher},
+    });
+    // From 2 to 9 high and from 20 to 30: each height its own value, in each row, so none can stand
+    // in another's place.
+    let vertices = Json::Array([square(2), square(9), square(20), square(30)].concat());
+    let out = read("m.city.json", &doc(vertices, objects), None).unwrap();
+    let ds = &out[0].0;
+    let heights = |row| [value(ds, row, "z_min"), value(ds, row, "z_max"), value(ds, row, "height")];
+    assert_eq!(heights(0), [2.0, 9.0, 7.0].map(crate::Value::Float));
+    assert_eq!(heights(1), [20.0, 30.0, 10.0].map(crate::Value::Float));
+    let ty = |name: &str| ds.fields.iter().find(|f| f.name == name).map(|f| f.ty);
+    assert_eq!(ty("count"), Some(crate::FieldType::Integer));
+    assert_eq!(ty("share"), Some(crate::FieldType::Double));
+    assert_eq!(ty("mixed"), Some(crate::FieldType::Text));
+    assert_eq!(ty("flag"), Some(crate::FieldType::Boolean));
+    assert_eq!(ty("nested"), Some(crate::FieldType::Text));
+    assert_eq!(value(ds, 0, "share"), crate::Value::Float(1.0));
+    assert_eq!(value(ds, 0, "mixed"), crate::Value::Text("1".into()));
+    assert_eq!(value(ds, 0, "count"), crate::Value::Null);
+    assert_eq!(value(ds, 1, "nested"), crate::Value::Null);
+    assert_eq!(value(ds, 0, "nested"), crate::Value::Text(r#"{"a":[2],"k":1}"#.into()));
+    // Past a 64-bit integer, a number is a decimal, and so is its column.
+    assert_eq!(ty("big"), Some(crate::FieldType::Double));
+    assert_eq!(value(ds, 0, "big"), crate::Value::Float(18446744073709551615_u64 as f64));
+    assert_eq!(ty("none"), Some(crate::FieldType::Text));
+    assert_eq!(value(ds, 0, "exact"), crate::Value::Float(1e300));
+    assert_eq!(value(ds, 1, "exact"), crate::Value::Float(0.1));
+    let names: Vec<&str> = ds.fields.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(
+        names,
+        ["id", "type", "parent", "lod", "big", "count", "exact", "flag", "mixed", "nested", "none", "share", "z_min", "z_max", "height"]
+    );
+}
+
+/// A line whose first point's X is NaN still has two different points to draw from: left out for
+/// its coordinates, beside a line of one point kept, it is said. (A CityGML reader can meet NaN,
+/// whose numbers are text; CityJSON's can't be.)
+#[test]
+fn a_line_starting_at_nan_is_said_when_lost() {
+    let mut parts = ObjectParts::default();
+    parts.lines.add_lines(1.0, || Some("1".into()), vec![vec![[f64::NAN, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]]]);
+    parts.lines.add_lines(2.0, || Some("2".into()), vec![vec![[0.0, 0.0, 0.0]]]);
+    let (mut counts, mut budget) = (Counts::default(), MAX_FILE_FACES);
+    let made = object_rows(parts, 0, &mut counts, &mut budget);
+    assert_eq!(made.rows.first().and_then(|r| r.lod.as_deref()), Some("2"));
+    assert_eq!((counts.unusable_lost, counts.no_footprint), (1, 0));
+    // With NaN and one point that is a number, it has no two points to draw from: nothing is lost.
+    let mut parts = ObjectParts::default();
+    parts.lines.add_lines(1.0, || Some("1".into()), vec![vec![[f64::NAN, 0.0, 0.0], [1.0, 0.0, 0.0], [f64::NAN, 5.0, 0.0]]]);
+    parts.lines.add_lines(2.0, || Some("2".into()), vec![vec![[0.0, 0.0, 0.0]]]);
+    let mut counts = Counts::default();
+    let made = object_rows(parts, 0, &mut counts, &mut budget);
+    assert_eq!(made.rows.first().and_then(|r| r.lod.as_deref()), Some("2"));
+    assert_eq!(counts.unusable_lost, 0);
+}

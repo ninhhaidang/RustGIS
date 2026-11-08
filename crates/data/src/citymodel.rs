@@ -9,12 +9,13 @@
 //! the difference in `height`, the names File Geodatabase multipatches use, so an extrusion stands
 //! both up the same way.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use serde_json::Value as Json;
 
 use crate::footprint::{Hull, P3, footprint, usable_xy};
-use crate::raster::{Crs, Transformer};
+use crate::raster::Crs;
 use crate::{Coord, DataError, Dataset, Field, Geometry, GeometryType, ReadReport, Result, Value};
 
 /// The most layers read: extension types make their number the file's to choose.
@@ -61,7 +62,7 @@ pub(crate) struct Row {
     pub(crate) lod: Option<String>,
     /// Its points' heights differ, and only their lowest and highest are kept.
     pub(crate) z_dropped: bool,
-    /// Its geometry couldn't be converted to longitude/latitude.
+    /// Its geometry couldn't be converted to longitude/latitude: set by [`finish`], never by a reader.
     pub(crate) unconverted: bool,
     /// It draws something: a geometry, and for lines one of two different points.
     pub(crate) draws: bool,
@@ -105,6 +106,8 @@ pub(crate) struct Counts {
     pub(crate) renamed: BTreeSet<String>,
     /// Objects drawn from another geometry or level of detail than one whose X or Y can't be drawn.
     pub(crate) unusable_passed: usize,
+    /// Objects whose geometry with X or Y that can't be drawn was left out, the rest drawing nothing.
+    pub(crate) unusable_lost: usize,
     /// Attributes renamed because another of their layer has the same name in another case.
     pub(crate) cased: BTreeSet<String>,
 }
@@ -422,16 +425,33 @@ fn attribute_names<'a>(objects: impl Iterator<Item = &'a Built>, counts: &mut Co
 }
 
 /// The rows, heights and solids of a file's objects as layers, with the file's notes and one notice
-/// per kind of what was left out. `stem` names the layers.
+/// per kind of what was left out. `stem` names the layers. The rows' geometries come in `crs` and
+/// are converted to longitude/latitude here.
 pub(crate) fn finish(
     file_name: &str,
     stem: &str,
-    rows: Vec<Row>,
+    mut rows: Vec<Row>,
     mut built: Vec<Built>,
     mut counts: Counts,
     notes: Vec<String>,
     crs: Crs,
 ) -> Result<Vec<(Dataset, ReadReport)>> {
+    // Converted once every object is in: a reader that streams its objects knows its system, and
+    // whether the coordinates fit it, only then.
+    if crs != Crs::LonLat {
+        let to_lonlat = crs.transformer().map_err(|e| DataError::Format(format!("{file_name}: {e}")))?;
+        let mut objects = HashSet::new();
+        for row in &mut rows {
+            if let Some(g) = row.geometry.take() {
+                row.geometry = crate::io::geometry_to_lonlat(&g, &to_lonlat);
+                if row.geometry.is_none() {
+                    (row.unconverted, row.draws) = (true, false);
+                    objects.insert(row.object);
+                }
+            }
+        }
+        counts.unconverted += objects.len();
+    }
     counts.parent_rounds = raise_parents(&mut built, MAX_PARENT_VISITS).unwrap_or(0);
     counts.height_overflows = built.iter().filter(|b| b.z.is_some_and(|(lo, hi)| !(hi - lo).is_finite())).count();
     let is_3d = |b: &Built| b.solid || b.z.is_some_and(|(lo, hi)| hi > lo);
@@ -447,7 +467,7 @@ pub(crate) fn finish(
         )));
     }
 
-    let mut out = layers(stem, rows, &built, crs, &mut counts)?;
+    let mut out = layers(stem, rows, &built, crs, &mut counts);
     if out.is_empty() {
         let mut why = String::new();
         if counts.tin_reliefs > 0 {
@@ -479,16 +499,21 @@ pub(crate) struct ObjectRows {
 /// points that a transform took past the numbers [`usable_xy`] takes take the place of good ones.
 pub(crate) struct Highest<T> {
     drawable: bool,
+    /// Its parts' X and Y are all ones [`usable_xy`] takes: the parts kept share it, as they share
+    /// `drawable` and `rank`.
+    usable: bool,
     rank: f64,
     lod: Option<String>,
     parts: Vec<T>,
     /// The highest level of detail with a geometry whose X or Y can't be drawn ([`usable_xy`]).
     unusable: Option<f64>,
+    /// One of those would draw something but for its X or Y.
+    would_draw: bool,
 }
 
 impl<T> Default for Highest<T> {
     fn default() -> Self {
-        Highest { drawable: false, rank: f64::NEG_INFINITY, lod: None, parts: Vec::new(), unusable: None }
+        Highest { drawable: false, usable: false, rank: f64::NEG_INFINITY, lod: None, parts: Vec::new(), unusable: None, would_draw: false }
     }
 }
 
@@ -497,13 +522,16 @@ impl<T> Highest<T> {
     fn add(&mut self, rank: f64, lod: impl FnOnce() -> Option<String>, parts: Vec<T>, usable: bool, drawable: bool) {
         if !usable {
             self.unusable = Some(self.unusable.map_or(rank, |r| r.max(rank)));
+            self.would_draw |= drawable;
         }
         let drawable = usable && drawable;
-        let key = |d: bool, r: f64| (d, r);
-        if key(drawable, rank) > key(self.drawable, self.rank) {
-            *self = Highest { drawable, rank, lod: lod(), parts: Vec::new(), unusable: self.unusable };
+        // Usable parts go before others at a higher level too: a line of one point kept is a row
+        // with geometry, and the one left out is said.
+        let key = |d: bool, u: bool, r: f64| (d, u, r);
+        if key(drawable, usable, rank) > key(self.drawable, self.usable, self.rank) {
+            *self = Highest { drawable, usable, rank, lod: lod(), parts: Vec::new(), ..*self };
         }
-        if drawable == self.drawable && rank == self.rank {
+        if drawable == self.drawable && usable == self.usable && rank == self.rank {
             self.parts.extend(parts);
         }
     }
@@ -513,6 +541,12 @@ impl<T> Highest<T> {
     fn left_unusable(&self) -> bool {
         self.drawable && self.unusable.is_some_and(|r| r >= self.rank)
     }
+
+    /// A geometry that would draw but for its X or Y was left out, and the family keeps one that
+    /// draws nothing (a line of one point).
+    fn lost_unusable(&self) -> bool {
+        !self.drawable && self.would_draw
+    }
 }
 
 impl Highest<Vec<P3>> {
@@ -520,7 +554,11 @@ impl Highest<Vec<P3>> {
     /// different points.
     pub(crate) fn add_lines(&mut self, rank: f64, lod: impl FnOnce() -> Option<String>, lines: Vec<Vec<P3>>) {
         let usable = lines.iter().flatten().all(usable_xy);
-        let drawable = lines.iter().any(|p| p.iter().any(|q| p.first().is_some_and(|f| f[..2] != q[..2])));
+        // Two points that differ, told apart only by X and Y that are numbers: NaN differs from itself.
+        let drawable = lines.iter().any(|line| {
+            let mut points = line.iter().filter(|p| !p[0].is_nan() && !p[1].is_nan());
+            points.next().is_some_and(|first| points.any(|p| first[..2] != p[..2]))
+        });
         self.add(rank, lod, lines, usable, drawable);
     }
 }
@@ -574,13 +612,7 @@ fn heights_differ<'a>(mut points: impl Iterator<Item = &'a P3>) -> bool {
 }
 
 /// An object's rows, its heights, and whether it has solids, from its parts.
-pub(crate) fn object_rows(
-    parts: ObjectParts,
-    object: usize,
-    to_lonlat: Option<&Transformer>,
-    counts: &mut Counts,
-    budget: &mut usize,
-) -> ObjectRows {
+pub(crate) fn object_rows(parts: ObjectParts, object: usize, counts: &mut Counts, budget: &mut usize) -> ObjectRows {
     let ObjectParts { surfaces, lines, points, heights, solid } = parts;
     counts.bad_heights += usize::from(heights.bad);
     let mut rows = Vec::new();
@@ -588,18 +620,13 @@ pub(crate) fn object_rows(
     let mut shapeless = false;
     // A geometry with X or Y that can't be drawn was passed over for another: counted once too.
     let mut unusable = lines.left_unusable() || points.left_unusable();
+    // One that would have drawn was left out, and what is kept draws nothing: not shapeless, so said
+    // apart.
+    let mut lost = false;
     let mut push = |family: Family, lod: Option<String>, geometry: Option<Geometry>, z_dropped: bool, drawable: bool| {
         shapeless |= geometry.is_none();
-        let (geometry, unconverted) = match (geometry, to_lonlat) {
-            (Some(g), Some(t)) => {
-                let converted = crate::io::geometry_to_lonlat(&g, t);
-                let failed = converted.is_none();
-                (converted, failed)
-            }
-            (g, _) => (g, false),
-        };
         let draws = drawable && geometry.is_some();
-        rows.push(Row { family, geometry, object, lod, z_dropped, unconverted, draws });
+        rows.push(Row { family, geometry, object, lod, z_dropped, unconverted: false, draws });
     };
     if !surfaces.is_empty() {
         let (geometry, lod, passed_unusable) = object_footprint(surfaces, counts, budget);
@@ -607,16 +634,18 @@ pub(crate) fn object_rows(
         push(Family::Polygon, lod, geometry, false, true);
     }
     let coords = |p: &[P3]| p.iter().map(|p| Coord::new(p[0], p[1])).collect::<Vec<_>>();
-    let Highest { lod: line_lod, parts: lines, drawable: lines_draw, .. } = lines;
+    let lines_lost = lines.lost_unusable();
+    let Highest { lod: line_lod, parts: lines, drawable: lines_draw, usable: lines_usable, .. } = lines;
     if !lines.is_empty() {
-        let geometry = lines.iter().flatten().all(usable_xy).then(|| Geometry::Line(lines.iter().map(|l| coords(l)).collect()));
+        let geometry = lines_usable.then(|| Geometry::Line(lines.iter().map(|l| coords(l)).collect()));
+        lost |= lines_lost && geometry.is_some();
         push(Family::Line, line_lod, geometry, heights_differ(lines.iter().flatten()), lines_draw);
     }
-    let Highest { lod: point_lod, parts: points, .. } = points;
+    let Highest { lod: point_lod, parts: points, usable: points_usable, .. } = points;
     counts.instances += points.iter().filter(|(_, instance)| *instance).count();
     let points: Vec<P3> = points.into_iter().map(|(p, _)| p).collect();
     if !points.is_empty() {
-        let geometry = points.iter().all(usable_xy).then(|| match points.as_slice() {
+        let geometry = points_usable.then(|| match points.as_slice() {
             [p] => Geometry::Point(Coord::new(p[0], p[1])),
             many => Geometry::MultiPoint(coords(many)),
         });
@@ -624,7 +653,7 @@ pub(crate) fn object_rows(
     }
     counts.no_footprint += usize::from(shapeless);
     counts.unusable_passed += usize::from(unusable);
-    counts.unconverted += usize::from(rows.iter().any(|r| r.unconverted));
+    counts.unusable_lost += usize::from(lost);
     ObjectRows { rows, z: heights.z, solid }
 }
 
@@ -660,9 +689,9 @@ pub(crate) fn raise_parents(built: &mut [Built], visits: usize) -> Option<usize>
     Some(rounds)
 }
 
-/// A row's properties as a GeoJSON feature with no geometry, its attributes under their layer's
-/// `names`.
-fn feature_text(b: &Built, lod: Option<&str>, names: &HashMap<String, String>) -> String {
+/// A row's properties, its attributes under their layer's `names` (unique, as [`attribute_names`]
+/// makes them), sorted by name as a GeoJSON feature's are. Attributes are borrowed, not copied.
+fn properties<'a>(b: &'a Built, lod: Option<&'a str>, names: &'a HashMap<String, String>) -> BTreeMap<&'a str, Cow<'a, Json>> {
     let (lo, hi) = (b.z.map(|z| z.0), b.z.map(|z| z.1));
     let parent = (!b.parent_ids.is_empty()).then(|| b.parent_ids.join(", "));
     let fixed = [
@@ -671,12 +700,12 @@ fn feature_text(b: &Built, lod: Option<&str>, names: &HashMap<String, String>) -
         ("parent", parent.map_or(Json::Null, Json::from)),
         ("lod", lod.map_or(Json::Null, Json::from)),
     ];
-    let own = b.attributes.iter().map(|(k, v)| (names.get(k).map_or(k.as_str(), String::as_str), v.clone()));
     let heights = [("z_min", number(lo)), ("z_max", number(hi)), ("height", number(lo.zip(hi).map(|(l, h)| h - l)))];
-    let fields: Vec<String> = fixed.into_iter().chain(own).chain(heights).map(|(k, v)| format!("{}:{v}", Json::from(k))).collect();
-    format!("{{\"type\":\"Feature\",\"geometry\":null,\"properties\":{{{}}}}}", fields.join(","))
+    let own = b.attributes.iter().map(|(k, v)| (names.get(k).map_or(k.as_str(), String::as_str), Cow::Borrowed(v)));
+    fixed.into_iter().map(|(k, v)| (k, Cow::Owned(v))).chain(own).chain(heights.into_iter().map(|(k, v)| (k, Cow::Owned(v)))).collect()
 }
 
+/// A height as JSON: null when there is none, or it isn't a finite number.
 fn number(v: Option<f64>) -> Json {
     v.and_then(serde_json::Number::from_f64).map_or(Json::Null, Json::Number)
 }
@@ -716,14 +745,14 @@ pub(crate) fn unique_names(names: Vec<String>) -> Vec<String> {
         .collect()
 }
 
-/// The rows as layers: their fields found as GeoJSON's are, so a city model's attribute reads like
+/// The rows as layers: their fields typed as GeoJSON's are, so a city model's attribute reads like
 /// any. Those that draw something come first: a file named `.json` adds only the first layer, and
 /// the cap leaves out the last.
-fn layers(stem: &str, rows: Vec<Row>, built: &[Built], crs: Crs, counts: &mut Counts) -> Result<Vec<(Dataset, ReadReport)>> {
-    let mut groups: BTreeMap<(String, Family), Vec<Row>> = BTreeMap::new();
+fn layers(stem: &str, rows: Vec<Row>, built: &[Built], crs: Crs, counts: &mut Counts) -> Vec<(Dataset, ReadReport)> {
+    let mut groups: BTreeMap<(String, Family), Vec<(Row, &Built)>> = BTreeMap::new();
     for row in rows {
         let Some(b) = built.get(row.object) else { continue };
-        groups.entry((b.ty.clone(), row.family)).or_default().push(row);
+        groups.entry((b.ty.clone(), row.family)).or_default().push((row, b));
     }
     let total = groups.len();
     let mut families: HashMap<String, usize> = HashMap::new();
@@ -732,7 +761,7 @@ fn layers(stem: &str, rows: Vec<Row>, built: &[Built], crs: Crs, counts: &mut Co
     }
     let mut sorted: Vec<_> = groups.into_iter().collect();
     // Layers that draw go first, and then those with some geometry: a `.json` file adds the first.
-    sorted.sort_by_cached_key(|(_, rows)| (!rows.iter().any(|r| r.draws), !rows.iter().any(|r| r.geometry.is_some())));
+    sorted.sort_by_cached_key(|(_, rows)| (!rows.iter().any(|(r, _)| r.draws), !rows.iter().any(|(r, _)| r.geometry.is_some())));
     sorted.truncate(MAX_LAYERS);
     let names = unique_names(
         sorted
@@ -750,30 +779,48 @@ fn layers(stem: &str, rows: Vec<Row>, built: &[Built], crs: Crs, counts: &mut Co
     );
     let mut out = Vec::with_capacity(total.min(MAX_LAYERS));
     for (((_, family), rows), name) in sorted.into_iter().zip(names) {
-        let renames = attribute_names(rows.iter().filter_map(|r| built.get(r.object)), counts);
-        let features: Vec<String> =
-            rows.iter().filter_map(|r| built.get(r.object).map(|b| feature_text(b, r.lod.as_deref(), &renames))).collect();
-        let text = format!("{{\"type\":\"FeatureCollection\",\"features\":[{}]}}", features.join(","));
-        let (table, mut report) = crate::io::read_geojson(&text, &name)?;
-        let any = rows.iter().any(|r| r.geometry.is_some());
+        let renames = attribute_names(rows.iter().map(|(_, b)| *b), counts);
+        // Typed as the GeoJSON reader types properties, without writing them out and reading them
+        // back: first every value for the types, then each row's, one row at a time.
+        let mut schema = crate::io::Schema::default();
+        for (r, b) in &rows {
+            for (k, v) in &properties(b, r.lod.as_deref(), &renames) {
+                schema.see(k, v);
+            }
+        }
+        let fields = schema.fields();
+        let any = rows.iter().any(|(r, _)| r.geometry.is_some());
         let kind = match family {
             _ if !any => GeometryType::None,
             Family::Polygon => GeometryType::Polygon,
             Family::Line => GeometryType::Polyline,
             Family::Point => GeometryType::Point,
         };
-        let order = field_order(&table.fields);
-        let mut ds = Dataset::new(&name, kind, order.iter().filter_map(|&i| table.fields.get(i).cloned()).collect());
-        let z_dropped = rows.iter().filter(|r| r.z_dropped).count();
+        let order = field_order(&fields);
+        // Where each field goes among the layer's, in `order`.
+        let mut at = vec![0; fields.len()];
+        for (to, &from) in order.iter().enumerate() {
+            if let Some(slot) = at.get_mut(from) {
+                *slot = to;
+            }
+        }
+        let mut ds = Dataset::new(&name, kind, order.iter().filter_map(|&i| fields.get(i).cloned()).collect());
+        let z_dropped = rows.iter().filter(|(r, _)| r.z_dropped).count();
         // What couldn't be converted can't come back by defining the projection again.
-        ds.crs_incomplete = rows.iter().any(|r| r.unconverted);
-        // Rows and attributes are paired by position: one missing would shift every later row.
-        if table.features.len() != rows.len() {
-            return Err(DataError::Format(format!("{name}: {} rows were built but {} have attributes", rows.len(), table.features.len())));
+        ds.crs_incomplete = rows.iter().any(|(r, _)| r.unconverted);
+        for (row, b) in rows {
+            let mut attrs = vec![Value::Null; fields.len()];
+            for (k, v) in &properties(b, row.lod.as_deref(), &renames) {
+                let i = schema.index(k);
+                if let Some(field) = i.and_then(|i| fields.get(i))
+                    && let Some(slot) = i.and_then(|i| at.get(i)).and_then(|&to| attrs.get_mut(to))
+                {
+                    *slot = crate::io::coerce(Value::from_json(v), field.ty);
+                }
+            }
+            ds.push_next(row.geometry, attrs);
         }
-        for (row, feature) in rows.into_iter().zip(table.features.iter()) {
-            ds.push_next(row.geometry, order.iter().map(|&i| feature.attrs.get(i).cloned().unwrap_or(Value::Null)).collect());
-        }
+        let mut report = ReadReport::default();
         ds.crs = (crs != Crs::LonLat).then_some(crs);
         ds.drop_zm(&mut report, z_dropped);
         out.push((ds, report));
@@ -783,7 +830,7 @@ fn layers(stem: &str, rows: Vec<Row>, built: &[Built], crs: Crs, counts: &mut Co
     {
         report.messages.push(format!("{} of {total} layers are left out: only the first {MAX_LAYERS} are read", total - MAX_LAYERS));
     }
-    Ok(out)
+    out
 }
 
 /// Some of a set's names, for a notice, and how many more there are.
@@ -839,6 +886,13 @@ fn messages(c: &Counts) -> Vec<String> {
         format!(
             "{} city objects have a geometry whose X or Y can't be drawn (not a finite number, or too large), left out: they are drawn from another of their geometries or levels of detail",
             c.unusable_passed
+        ),
+    );
+    say(
+        c.unusable_lost,
+        format!(
+            "{} city objects have a line whose X or Y can't be drawn (not a finite number, or too large), left out: what is kept of their lines draws nothing",
+            c.unusable_lost
         ),
     );
     say(c.no_geometry, format!("{} city objects have no geometry of their own: they are kept without geometry", c.no_geometry));

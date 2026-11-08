@@ -179,6 +179,8 @@ pub(crate) fn read_member(file_name: &str, bytes: &[u8], given: Option<Crs>) -> 
     read_with(file_name, bytes, given, true)
 }
 
+/// Reads a CityJSON document; with `keep_named`, the system it names, when RustGIS knows it, goes
+/// before `given`.
 fn read_with(file_name: &str, bytes: &[u8], given: Option<Crs>, keep_named: bool) -> Result<Vec<(Dataset, ReadReport)>> {
     if bytes.len() as u64 > crate::io::MAX_BYTES {
         return Err(DataError::Format(format!("file is too large ({} bytes)", bytes.len())));
@@ -210,8 +212,6 @@ fn read_with(file_name: &str, bytes: &[u8], given: Option<Crs>, keep_named: bool
     let given = given.filter(|_| !keep_named || named.and_then(known_system).is_none());
     let crs = coordinate_system(file_name, given, named, &vertices, &mut notes)?;
     notes.extend(doc.appearance.and_then(appearance_note));
-    let to_lonlat =
-        if crs == Crs::LonLat { None } else { Some(crs.transformer().map_err(|e| DataError::Format(format!("{file_name}: {e}")))?) };
     let Some(objects) = doc.objects else {
         return Err(DataError::Format(format!("{file_name}: no CityObjects")));
     };
@@ -240,7 +240,7 @@ fn read_with(file_name: &str, bytes: &[u8], given: Option<Crs>, keep_named: bool
             }
         };
         let parts = object_parts(&object.geometry, &vertices, &mut counts);
-        let made = object_rows(parts, at_row, to_lonlat.as_ref(), &mut counts, &mut budget);
+        let made = object_rows(parts, at_row, &mut counts, &mut budget);
         if made.rows.is_empty() {
             // Its attributes stay: its children, in their own rows, are where it is drawn.
             counts.no_geometry += 1;
