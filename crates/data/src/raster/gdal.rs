@@ -8,9 +8,9 @@
 //! say how to get it.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use crate::source::external::{self, TempFile, fnv1a, output_with_budget, stamp, touch};
+use crate::source::gdal::command;
 use crate::{DataError, Result};
 
 /// Raster file types read through GDAL. (Not `.vrt`, which can point GDAL at any file on the
@@ -27,6 +27,41 @@ const MAX_SUBDATASETS: usize = 256;
 pub fn is_gdal_raster_name(name: &str) -> bool {
     let ext = Path::new(name).extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
     EXTENSIONS.contains(&ext.as_str())
+}
+
+/// The GDAL drivers that may open a raster, by its type (`-if`). GDAL picks a driver from a file's
+/// contents, so without them a VRT renamed `.img` would read whatever files or addresses it names.
+/// A driver GDAL wasn't built with is only warned about; other types are refused. A subdataset
+/// opens through its file's drivers (HDF's through its `Image` driver).
+fn drivers(src: &Path) -> Result<&'static [&'static str]> {
+    let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    Ok(match ext.as_str() {
+        "jp2" | "j2k" => &["JP2OpenJPEG", "JP2KAK", "JP2ECW", "JP2MrSID"],
+        // ERDAS Imagine, or raw cells with an ENVI or EHdr `.hdr` header beside them.
+        "img" => &["HFA", "ENVI", "EHdr"],
+        "hgt" => &["SRTMHGT"],
+        // A USGS DEM, or a GTOPO30 tile.
+        "dem" => &["USGSDEM", "EHdr"],
+        "dt0" | "dt1" | "dt2" => &["DTED"],
+        // NetCDF-4 is HDF5, and either driver may be the one built.
+        "nc" | "nc4" | "hdf5" | "h5" | "he5" => &["netCDF", "HDF5", "HDF5Image"],
+        "hdf" => &["HDF4", "HDF4Image", "HDF5", "HDF5Image"],
+        "bil" | "bsq" | "bip" => &["EHdr", "ENVI", "GenBin"],
+        "envi" => &["ENVI"],
+        // Surfer grids, Northwood grids, and GMT's (NetCDF).
+        "grd" => &["GSAG", "GSBG", "GS7BG", "NWT_GRD", "NWT_GRC", "netCDF"],
+        "rst" => &["RST"],
+        "sdat" => &["SAGA"],
+        "kea" => &["KEA"],
+        "ers" => &["ERS"],
+        "ntf" | "nitf" => &["NITF"],
+        "ecw" => &["ECW"],
+        "sid" => &["MrSID"],
+        "gsb" => &["NTv2"],
+        "bt" => &["BT"],
+        "rsw" => &["RMF"],
+        _ => return Err(DataError::Unsupported(format!("{}: not a raster type read through GDAL", src.display()))),
+    })
 }
 
 fn program(name: &str) -> Option<PathBuf> {
@@ -97,6 +132,48 @@ fn missing() -> DataError {
     )
 }
 
+/// Refuses an ER Mapper header that would open more than its own data: any but an `ERStorage` one
+/// (a `Translated` one's data file GDAL opens as any format, so a VRT beside it would read whatever
+/// it names), or one whose data file isn't a file beside it (GDAL before 3.12 follows `../`).
+/// Other files pass.
+fn plain_ers(src: &Path) -> Result<()> {
+    if !src.extension().is_some_and(|e| e.eq_ignore_ascii_case("ers")) {
+        return Ok(());
+    }
+    // A header is a few kilobytes of text.
+    const MAX_HEADER: u64 = 1 << 20;
+    let meta = std::fs::metadata(src)?;
+    // A pipe or device named `.ers` would never finish being read.
+    if !meta.is_file() {
+        return Err(DataError::Format("not a file: an ER Mapper header is one".into()));
+    }
+    if meta.len() > MAX_HEADER {
+        return Err(DataError::Format("too large for an ER Mapper header".into()));
+    }
+    let text = String::from_utf8_lossy(&std::fs::read(src)?).into_owned();
+    // Every line naming a key, so a second one can't hide behind the first.
+    let values = |key: &str| {
+        // GDAL ends a line at a carriage return too.
+        text.split(['\r', '\n'])
+            .filter_map(|l| l.split_once('='))
+            .filter(|(k, _)| k.trim().eq_ignore_ascii_case(key))
+            .map(|(_, v)| v.trim().trim_matches('"').to_string())
+            .collect::<Vec<_>>()
+    };
+    // Only raw data of its own: each type's first word, so trailing text can't change it.
+    let own = |t: &String| t.split_whitespace().next().is_some_and(|w| w.trim_matches('"').eq_ignore_ascii_case("ERStorage"));
+    if !values("DataSetType").iter().all(own) {
+        return Err(DataError::Unsupported(
+            "an ER Mapper header that isn't raw data of its own (DataSetType = ERStorage), such as one linking to another file, isn't read"
+                .into(),
+        ));
+    }
+    if values("DataFile").iter().any(|f| f.contains(['/', '\\', ':']) || f == "..") {
+        return Err(DataError::Unsupported("an ER Mapper header whose data file isn't beside it isn't read".into()));
+    }
+    Ok(())
+}
+
 /// The subdatasets of a file (NetCDF variables, HDF datasets): GDAL's name for each, and its
 /// description. Empty for a file that is one raster.
 pub fn subdatasets(src: &Path) -> Result<Vec<(String, String)>> {
@@ -105,9 +182,12 @@ pub fn subdatasets(src: &Path) -> Result<Vec<(String, String)>> {
 
 /// Lists subdatasets with the downloaded raster's optional workspace budget.
 fn subdatasets_with_budget(src: &Path, workspace: Option<(&Path, u64)>) -> Result<Vec<(String, String)>> {
-    let gdalinfo = program("gdalinfo").ok_or_else(missing)?;
     let full = std::path::absolute(src).unwrap_or_else(|_| src.to_path_buf());
-    let mut c = Command::new(gdalinfo);
+    // Its type and header first, so a file that isn't read says so whether GDAL is installed or not.
+    let drivers = drivers(&full)?;
+    plain_ers(&full)?;
+    let gdalinfo = program("gdalinfo").ok_or_else(missing)?;
+    let mut c = command(gdalinfo, drivers);
     // With the metadata (`-nomd` would drop the SUBDATASETS domain too, `-mdd` or not).
     c.arg("-json").arg("-nogcp").arg("-norat").arg("-noct").arg(&full);
     let out = output_with_budget(c, LIST_TIMEOUT, "GDAL", workspace)?;
@@ -142,9 +222,9 @@ struct Described {
 }
 
 /// What GDAL says of a raster (a file or subdataset, as GDAL names it).
-fn describe(input: &std::ffi::OsStr, workspace: Option<(&Path, u64)>) -> Result<Described> {
+fn describe(input: &std::ffi::OsStr, drivers: &[&str], workspace: Option<(&Path, u64)>) -> Result<Described> {
     let gdalinfo = program("gdalinfo").ok_or_else(missing)?;
-    let mut c = Command::new(gdalinfo);
+    let mut c = command(gdalinfo, drivers);
     c.args(["-json", "-nogcp", "-nomd", "-norat", "-noct"]).arg(input);
     let out = output_with_budget(c, LIST_TIMEOUT, "GDAL", workspace)?;
     if !out.status.success() {
@@ -253,8 +333,8 @@ fn subdataset_file(name: &str) -> Option<&str> {
 const FOUND: &str = "\n\u{1}found\n";
 
 /// The conversion's version, in its cache key: raised when what a conversion makes changes (its
-/// options, the wrap), so older results are made again.
-const CONVERSION: u32 = 2;
+/// options, the wrap, the drivers its input may open as), so older results are made again.
+const CONVERSION: u32 = 3;
 
 /// Whether two paths name the same file: canonical paths when both resolve, else spellings
 /// compared with one separator (and, on Windows, without regard to case).
@@ -304,6 +384,7 @@ fn convert_in(dir: &Path, src: &Path, layer: Option<&str>, crs: Option<&str>, bu
         });
     }
     let translate = program("gdal_translate").ok_or_else(missing)?;
+    let drivers = drivers(&full)?;
     let subs = subdatasets_with_budget(&full, workspace)?;
     let (input, picked) = if subs.is_empty() {
         if let Some(l) = layer {
@@ -332,7 +413,7 @@ fn convert_in(dir: &Path, src: &Path, layer: Option<&str>, crs: Option<&str>, bu
     // A raster that doesn't say its coordinate system: WGS 84 when its coordinates look like
     // longitude/latitude (as NetCDF climate grids often are), else the user must say.
     let mut assumed_lonlat = false;
-    let d = describe(&input, workspace)?;
+    let d = describe(&input, drivers, workspace)?;
     let Some(extent) = d.extent else {
         return Err(DataError::Format("the raster isn't georeferenced: GDAL finds no coordinates for its cells".into()));
     };
@@ -356,14 +437,14 @@ fn convert_in(dir: &Path, src: &Path, layer: Option<&str>, crs: Option<&str>, bu
     let cog = ["-q", "-of", "COG", "-co", "COMPRESS=DEFLATE", "-co", "BIGTIFF=IF_SAFER", "-co", "OVERVIEWS=AUTO"];
     let mut c = if wrap {
         let warp = program("gdalwarp").ok_or_else(missing)?;
-        let mut c = Command::new(warp);
+        let mut c = command(warp, drivers);
         c.args(cog).args(["-t_srs", "EPSG:4326", "-te", "-180", "-90", "180", "90", "--config", "CENTER_LONG", "0"]);
         if let Some(crs) = crs {
             c.args(["-s_srs", crs]);
         }
         c
     } else {
-        let mut c = Command::new(&translate);
+        let mut c = command(translate, drivers);
         c.args(cog);
         if let Some(crs) = crs {
             c.args(["-a_srs", crs]);
@@ -413,6 +494,7 @@ fn ours(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
 
     #[test]
     fn names() {
@@ -474,6 +556,87 @@ mod tests {
         assert!(!same_file(Path::new("/nowhere/x.nc"), Path::new("/nowhere/y.nc")));
         assert!(same_file(Path::new("/nowhere/x.nc"), Path::new("/nowhere/x.nc")));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Every type read through GDAL has its drivers; a reference file has none.
+    #[test]
+    fn every_type_has_its_drivers() {
+        assert!(EXTENSIONS.iter().all(|e| drivers(Path::new(&format!("a.{e}"))).is_ok()));
+        assert!(drivers(Path::new("a.vrt")).is_err() && drivers(Path::new("a.tif")).is_err());
+    }
+
+    /// An ER Mapper header opens only its own data beside it: one linking to another file, or
+    /// naming data elsewhere, is refused before GDAL runs (GDAL installed or not).
+    #[test]
+    fn er_mapper_headers_open_only_their_own_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let header = |name: &str, lines: &str| {
+            let p = dir.path().join(name);
+            std::fs::write(&p, format!("DatasetHeader Begin\n{lines}\tDataType\t= Raster\nDatasetHeader End\n")).unwrap();
+            p
+        };
+        let plain = header("plain.ers", "\tDataSetType\t= ERStorage\n\tDataFile\t= \"plain.dat\"\n");
+        assert!(plain_ers(&plain).is_ok());
+        let linked = header("linked.ers", "\tDataSetType\t= ERStorage\n\tdatasettype = Translated\n");
+        assert!(plain_ers(&linked).is_err_and(|e| e.to_string().contains("ERStorage")));
+        // Only raw data passes, whatever follows the type's word.
+        for kind in ["Translated ;", "Translated", "Other", "\"Translated\""] {
+            let p = header("kind.ers", &format!("\tDataSetType\t= {kind}\n"));
+            assert!(plain_ers(&p).is_err(), "{kind}");
+        }
+        let trailing = header("trailing.ers", "\tDataSetType\t= \"ERStorage\" ; raw\n");
+        assert!(plain_ers(&trailing).is_ok());
+        // Lines ended by carriage returns alone are lines to GDAL too.
+        let cr = header("cr.ers", "\tVersion\t= \"6.0\"\r\tDataSetType\t= Translated\r");
+        assert!(plain_ers(&cr).is_err());
+        for far in ["../far.dat", "/tmp/far.dat", "C:\\far.dat", ".."] {
+            let p = header("far.ers", &format!("\tDataFile\t= \"{far}\"\n"));
+            assert!(plain_ers(&p).is_err_and(|e| e.to_string().contains("isn't beside it")), "{far}");
+        }
+        assert!(subdatasets(&linked).is_err_and(|e| e.to_string().contains("ERStorage")));
+        // No type at all is raw data to GDAL (only `Translated` links), so it opens.
+        let untyped = header("untyped.ers", "\tDataFile\t= \"untyped.dat\"\n");
+        assert!(plain_ers(&untyped).is_ok());
+        // A folder named like one isn't read as a header, nor a pipe (which would never finish).
+        let folder = dir.path().join("folder.ers");
+        std::fs::create_dir(&folder).unwrap();
+        assert!(plain_ers(&folder).is_err());
+        #[cfg(unix)]
+        {
+            let pipe = dir.path().join("pipe.ers");
+            assert!(Command::new("mkfifo").arg(&pipe).status().is_ok_and(|s| s.success()));
+            assert!(plain_ers(&pipe).is_err_and(|e| e.to_string().contains("not a file")));
+        }
+        // Not an ER Mapper header: nothing to check.
+        assert!(plain_ers(Path::new("/nowhere/a.img")).is_ok());
+    }
+
+    /// A VRT renamed `.img` isn't opened as a VRT, so the raster it names isn't read.
+    #[test]
+    fn a_renamed_vrt_isnt_read_when_gdal_is_installed() {
+        let Some(translate) = program("gdal_translate") else { return };
+        if program("gdalinfo").is_none() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let asc = dir.path().join("private.asc");
+        std::fs::write(&asc, "ncols 1\nnrows 1\nxllcorner 0\nyllcorner 0\ncellsize 1\n7\n").unwrap();
+        let tif = dir.path().join("private.tif");
+        let made = Command::new(&translate).args(["-q", "-a_srs", "EPSG:4326"]).arg(&asc).arg(&tif).status();
+        assert!(made.is_ok_and(|s| s.success()));
+        let img = dir.path().join("audit.img");
+        let vrt = format!(
+            "<VRTDataset rasterXSize=\"1\" rasterYSize=\"1\"><SRS>EPSG:4326</SRS><GeoTransform>0,1,0,1,0,-1</GeoTransform>\
+             <VRTRasterBand dataType=\"Byte\" band=\"1\"><SimpleSource><SourceFilename relativeToVRT=\"0\">{}</SourceFilename>\
+             <SourceBand>1</SourceBand></SimpleSource></VRTRasterBand></VRTDataset>",
+            tif.display()
+        );
+        std::fs::write(&img, vrt).unwrap();
+        // Without its type's drivers, GDAL reads it.
+        assert!(Command::new(program("gdalinfo").unwrap()).arg(&img).status().is_ok_and(|s| s.success()));
+        // With them, it doesn't take it for an ERDAS Imagine file.
+        let e = convert_in(&dir.path().join("cache"), &img, None, None, None).unwrap_err().to_string();
+        assert!(e.contains("not recognized"), "{e}");
     }
 
     /// Runs only where GDAL is installed: a NetCDF file's variables, an HGT tile.
