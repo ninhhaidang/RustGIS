@@ -412,6 +412,9 @@ fn checked_template(service: &str, t: &str) -> Result<String, String> {
 struct AdvertisedTemplate {
     template: Option<String>,
     crossed_origin: bool,
+    /// Why the standard tile address is used instead, when a template was looked for and not
+    /// found: the notice to give.
+    fallback: Option<String>,
 }
 
 /// Compares canonical origins without treating a runtime login wrapper as part of the origin.
@@ -437,20 +440,41 @@ fn advertised_template_with(
     mut read: impl FnMut(&str) -> Result<Vec<u8>, String>,
 ) -> AdvertisedTemplate {
     use rustgis_data::ogc::{TilesStep, resolve_tiles};
-    let mut out = AdvertisedTemplate { template: None, crossed_origin: crosses_origin(source, list) };
+    let mut out = AdvertisedTemplate { template: None, crossed_origin: crosses_origin(source, list), fallback: None };
     let mut doc = list.to_string();
+    // Each fallback is said, as [`left_template`] says it.
     for _ in 0..2 {
-        if crate::render::rustgis_tiles::address::check(&doc, Some(list)).is_err() {
-            break;
+        let shown = crate::sources::redact(&doc);
+        if let Err(e) = crate::render::rustgis_tiles::address::check(&doc, Some(list)) {
+            let e = crate::sources::redact_text(&e);
+            out.fallback = Some(format!("{shown}: this tile set document was refused, so the standard tile address is used: {e}"));
+            return out;
         }
-        let Ok(body) = read(&doc) else { break };
-        let Some(resolved) = resolve_tiles(list, &doc, &body, vector) else { break };
+        let body = match read(&doc) {
+            Ok(body) => body,
+            Err(e) => {
+                let e = crate::sources::redact_text(&e);
+                out.fallback = Some(format!("{shown}: its tile sets couldn't be read, so the standard tile address is used: {e}"));
+                return out;
+            }
+        };
+        let Some(resolved) = resolve_tiles(list, &doc, &body, vector) else {
+            out.fallback = Some(format!("{shown}: it names no tiles of this layer, so the standard tile address is used"));
+            return out;
+        };
         *withheld = withheld.saturating_add(resolved.withheld_addresses);
         match resolved.step {
             TilesStep::Template(t) => {
                 out.crossed_origin |= crosses_origin(&doc, &t);
-                out.template = checked_template(list, &t).ok();
-                break;
+                match checked_template(list, &t) {
+                    Ok(t) => out.template = Some(t),
+                    // (Its error names the template, which may carry keys.)
+                    Err(e) => {
+                        let e = crate::sources::redact_text(&e);
+                        out.fallback = Some(format!("{shown}: its tile template was refused, so the standard tile address is used: {e}"));
+                    }
+                }
+                return out;
             }
             TilesStep::Next(next) => {
                 out.crossed_origin |= crosses_origin(&doc, &next);
@@ -459,6 +483,8 @@ fn advertised_template_with(
             }
         }
     }
+    out.fallback =
+        Some(format!("{}: its tile sets lead on past two documents, so the standard tile address is used", crate::sources::redact(list)));
     out
 }
 
@@ -474,7 +500,7 @@ enum LeftTemplate {
 /// back to the standard tile address. Every fallback to that address is said.
 fn left_template(s: &mut Session, source: &str, list: &str, vector: bool, withheld: &mut u32) -> Result<LeftTemplate, String> {
     use rustgis_data::ogc::{TilesStep, resolve_tiles};
-    let mut out = AdvertisedTemplate { template: None, crossed_origin: crosses_origin(source, list) };
+    let mut out = AdvertisedTemplate { template: None, crossed_origin: crosses_origin(source, list), fallback: None };
     let mut doc = list.to_string();
     for _ in 0..2 {
         let shown = crate::sources::redact(&doc);
@@ -526,7 +552,7 @@ fn left_template(s: &mut Session, source: &str, list: &str, vector: bool, withhe
 /// In the browser nothing waits: the app reads the template itself and passes it as `"tiles"`.
 #[cfg(target_arch = "wasm32")]
 fn advertised_template(source: &str, list: &str, _: bool, _: &mut u32) -> AdvertisedTemplate {
-    AdvertisedTemplate { template: None, crossed_origin: crosses_origin(source, list) }
+    AdvertisedTemplate { template: None, crossed_origin: crosses_origin(source, list), fallback: None }
 }
 
 /// Adds a template resolved off the command thread through the ordinary admitted command.
@@ -826,6 +852,7 @@ fn add_discovered(s: &mut Session, p: &Value, url: &str, want: &str, found: &Dis
         (Some(list), Some(t)) => AdvertisedTemplate {
             template: Some(checked_template(source, t)?),
             crossed_origin: crosses_origin(source, list) || crosses_origin(list, t),
+            fallback: None,
         },
         (Some(list), None) if leaving => {
             match left_template(s, source, list, matches!(layer.offer, Offer::VectorTiles { .. }), withheld)? {
@@ -833,7 +860,13 @@ fn add_discovered(s: &mut Session, p: &Value, url: &str, want: &str, found: &Dis
                 LeftTemplate::Waiting(doc) => return waiting_for(s, &doc),
             }
         }
-        (Some(list), None) => advertised_template(source, list, matches!(layer.offer, Offer::VectorTiles { .. }), withheld),
+        (Some(list), None) => {
+            let advertised = advertised_template(source, list, matches!(layer.offer, Offer::VectorTiles { .. }), withheld);
+            if let Some(note) = &advertised.fallback {
+                s.notify(note.clone(), false);
+            }
+            advertised
+        }
         _ => AdvertisedTemplate::default(),
     };
     match &layer.offer {
@@ -1320,6 +1353,21 @@ mod tests {
         );
     }
 
+    /// The blocking read of an advertised template says each fallback to the standard address.
+    #[test]
+    fn advertised_template_fallbacks_are_said() {
+        let list = "https://tiles-fallback.example.invalid/tiles?f=json";
+        let mut withheld = 0;
+        let none = advertised_template_with(list, list, false, &mut withheld, |_| Ok(b"{}".to_vec()));
+        assert!(none.template.is_none());
+        assert!(none.fallback.as_ref().is_some_and(|n| n.contains("names no tiles")), "{:?}", none.fallback);
+        let refused = advertised_template_with(list, "file:///etc/tiles", false, &mut withheld, |_| Ok(b"{}".to_vec()));
+        assert!(refused.fallback.as_ref().is_some_and(|n| n.contains("was refused")), "{:?}", refused.fallback);
+        let next = json!({"tilesets":[{"tileMatrixSetId":"WebMercatorQuad","links":[{"rel":"self","href":"https://tiles-fallback.example.invalid/next"}]}]});
+        let far = advertised_template_with(list, list, false, &mut withheld, |_| Ok(serde_json::to_vec(&next).unwrap_or_default()));
+        assert!(far.fallback.as_ref().is_some_and(|n| n.contains("past two documents")), "{:?}", far.fallback);
+    }
+
     #[test]
     fn foreign_tileset_hops_stay_anonymous_on_return_and_fallback() {
         use crate::{Project, render::rustgis_tiles as tiles, service_logins as web};
@@ -1362,6 +1410,9 @@ mod tests {
             assert_eq!(reads, [format!("{list_origin}/tiles?f=json"), format!("{next}?f=json")]);
             assert!(resolved.crossed_origin);
             assert_eq!(withheld, 0);
+            // A tile set that couldn't be read is said; one read gives no notice.
+            assert_eq!(resolved.fallback.as_ref().is_some_and(|n| n.contains("couldn't be read")), fail, "{:?}", resolved.fallback);
+            assert!(fail || resolved.fallback.is_none(), "{:?}", resolved.fallback);
             let chosen = resolved.template.unwrap_or_else(|| tiles::logins::inherit(&source, &template));
             if !fail {
                 assert_eq!(chosen, template, "returning to A must not recover its binding");

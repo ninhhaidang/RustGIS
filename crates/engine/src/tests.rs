@@ -15150,14 +15150,28 @@ fn kml_ground_overlays_become_rasters() {
     std::fs::create_dir_all(&dir).unwrap();
     let only = r#"<kml><GroundOverlay><name>Far</name><Icon><href>../secret.png</href></Icon><LatLonBox><north>1</north><south>0</south><east>1</east><west>0</west></LatLonBox></GroundOverlay>
 <GroundOverlay><name>Web</name><Icon><href>https://example.com/x.png</href></Icon><LatLonBox><north>1</north><south>0</south><east>1</east><west>0</west></LatLonBox></GroundOverlay>
-<GroundOverlay><name>Here</name><Icon><href>red.png</href></Icon><LatLonBox><north>1</north><south>0</south><east>1</east><west>0</west></LatLonBox></GroundOverlay></kml>"#;
+<GroundOverlay><name>Here</name><Icon><href>red.png</href></Icon><LatLonBox><north>1</north><south>0</south><east>1</east><west>0</west></LatLonBox></GroundOverlay>
+<GroundOverlay><name>Folder</name><Icon><href>folder.png</href></Icon><LatLonBox><north>1</north><south>0</south><east>1</east><west>0</west></LatLonBox></GroundOverlay>
+<GroundOverlay><name>Gone</name><Icon><href>gone.png</href></Icon><LatLonBox><north>1</north><south>0</south><east>1</east><west>0</west></LatLonBox></GroundOverlay>
+<GroundOverlay><name>Through</name><Icon><href>red.png/x.png</href></Icon><LatLonBox><north>1</north><south>0</south><east>1</east><west>0</west></LatLonBox></GroundOverlay></kml>"#;
     std::fs::write(dir.join("o.kml"), only).unwrap();
+    std::fs::create_dir_all(dir.join("folder.png")).unwrap();
     std::fs::write(dir.join("red.png"), red.encode_png().unwrap()).unwrap();
     let mut u = Session::new(Project::default());
     u.run("layer.addData", &json!({"path": dir.join("o.kml").display().to_string()})).unwrap();
     assert!(u.map().layer_by_name("Here").is_some());
     assert!(u.map().layer_by_name("Far").is_none() && u.map().layer_by_name("Web").is_none());
     assert!(u.notices.iter().any(|n| n.text.contains("Far (its picture ../secret.png isn't in the file or beside it)")));
+    for name in ["Folder", "Gone", "Through"] {
+        assert!(u.map().layer_by_name(name).is_none(), "{name}");
+    }
+    // A picture beside it that can't be read says why, not that it's missing.
+    assert!(u.notices.iter().any(|n| n.text.contains("Folder (its picture folder.png can't be read:") && n.text.contains("isn't a file")));
+    assert!(!u.notices.iter().any(|n| n.text.contains("folder.png isn't in the file")));
+    // One missing beside it (or under a file named as a folder) is said to be missing.
+    for name in ["Gone (its picture gone.png", "Through (its picture red.png/x.png"] {
+        assert!(u.notices.iter().any(|n| n.text.contains(&format!("{name} isn't in the file or beside it)"))), "{name}: {:?}", u.notices);
+    }
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -33266,6 +33280,49 @@ fn topology_refuses_latitudes_past_the_poles() {
             result.unwrap();
         }
     }
+}
+
+#[test]
+fn importing_a_file_that_is_neither_map_nor_project_says_so() {
+    // Neither a map nor a project: the refusal names what the import takes, not a failed project.
+    let mut s = world();
+    let e = s.run("map.import", &json!({"text": r#"{"name": 5, "layers": 3}"#})).unwrap_err();
+    assert!(e.contains("not a RustGIS map file, project or package"), "{e}");
+    // Text that isn't JSON at all is said to be none of them the same way.
+    let e = s.run("map.import", &json!({"text": "not json"})).unwrap_err();
+    assert!(e.contains("not a RustGIS map file, project or package"), "{e}");
+    assert!(!e.contains("not a RustGIS project"), "{e}");
+    let e = s.run("style.import", &json!({"text": r#"{"name": 5, "layers": 3}"#})).unwrap_err();
+    assert!(e.contains("not a RustGIS layer file, map file or project"), "{e}");
+    let e = s.run("style.import", &json!({"text": "not json"})).unwrap_err();
+    assert!(e.contains("not a RustGIS layer file, map file or project"), "{e}");
+    // A project from a newer RustGIS keeps its advice.
+    let e = s.run("map.import", &json!({"text": r#"{"format": 99999, "maps": 3}"#})).unwrap_err();
+    assert!(e.contains("Update RustGIS"), "{e}");
+}
+
+#[test]
+fn model_import_refusals_name_their_cause() {
+    let mut s = world();
+    // A file that is no model or web tool is said to be one, not told to update RustGIS.
+    for text in [r#"{"type": "FeatureCollection", "features": []}"#, r#"{"version": 99, "name": "x"}"#] {
+        let e = s.run("model.import", &json!({"text": text})).unwrap_err();
+        assert!(e.contains("not a RustGIS model or web tool (no graph or steps)"), "{e}");
+    }
+    // A model by its schema, or a web tool by its format, from a newer RustGIS that holds
+    // something else is told to update.
+    for text in [
+        json!({"$schema": crate::model::SCHEMA, "version": "2.0.0", "name": "New", "nodes": []}),
+        json!({"format": "RustGIS web tool", "version": 2, "name": "New"}),
+    ] {
+        let e = s.run("model.import", &json!({"text": text.to_string()})).unwrap_err();
+        assert!(e.contains("Update RustGIS"), "{e}");
+    }
+    // A model whose nodes would be dropped says the causes it may have.
+    let graph = json!({"nodes": [{"id": "a", "kind": "input", "layer": "Cities"}, {"id": "a", "kind": "input", "layer": "Countries"}], "edges": []});
+    let text = json!({"$schema": crate::model::SCHEMA, "version": "1.0.0", "name": "Dup", "graph": graph}).to_string();
+    let e = s.run("model.import", &json!({"text": text})).unwrap_err();
+    assert!(e.contains("would discard 1 node(s)") && e.contains("repeated connections into a single-input port"), "{e}");
 }
 
 /// `analysis.interpolate` says how many features it leaves out, and why: those with no place to

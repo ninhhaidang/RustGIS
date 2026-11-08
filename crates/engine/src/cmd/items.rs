@@ -422,7 +422,7 @@ fn embedded_map(m: &Map, budget: &mut u64) -> Map {
 /// Adds maps from a map file, project or package.
 fn import_maps(s: &mut Session, p: &Value) -> CmdResult {
     let text = read_text(p)?;
-    crate::project::check_format(&text, "map file or project")?;
+    crate::project::check_format(&text, "map file, project or package")?;
     let dir = ps(p, "path").and_then(|path| std::path::absolute(path).ok()).and_then(|p| p.parent().map(Path::to_path_buf));
     super::connections::clear_active();
     let maps: Vec<Map> = match serde_json::from_str::<Map>(&text) {
@@ -451,7 +451,7 @@ fn import_maps(s: &mut Session, p: &Value) -> CmdResult {
             }
             Err(error) => {
                 super::connections::restore_active(s);
-                return Err(error);
+                return Err(not_a(error, "map file, project or package"));
             }
         },
     };
@@ -487,6 +487,16 @@ fn import_maps(s: &mut Session, p: &Value) -> CmdResult {
     Ok(json!({"maps": names}))
 }
 
+/// A project read's refusal for an import that also takes `kinds`: text that is none of them is
+/// said to be none of them, not only a failed project. Other refusals (such as "Update RustGIS")
+/// are kept as they are.
+fn not_a(error: String, kinds: &str) -> String {
+    match error.strip_prefix("not a RustGIS project: ") {
+        Some(why) => format!("not a RustGIS {kinds}: {why}"),
+        None => error,
+    }
+}
+
 fn add_style(s: &mut Session, mut item: StyleItem) {
     item.name = item.name.trim().chars().take(200).collect();
     if item.name.is_empty() {
@@ -515,7 +525,7 @@ fn import_styles(s: &mut Session, p: &Value) -> CmdResult {
         super::connections::clear_active();
         let project = Project::from_import_json(&text, None);
         super::connections::restore_active(s);
-        let mut project = project?;
+        let mut project = project.map_err(|e| not_a(e, "layer file, map file or project"))?;
         for notice in std::mem::take(&mut project.label_read_notices) {
             s.notify(notice, false);
         }
