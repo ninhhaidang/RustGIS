@@ -6168,6 +6168,22 @@ pub(crate) fn normalize_params(spec: &ToolSpec, p: &mut serde_json::Map<String, 
     }
 }
 
+/// Parameter aliases recognized by `normalize_join_field_params`.
+pub static JOIN_FIELD_ALIASES: &[&str] = &[
+    "input",
+    "target_layer",
+    "join",
+    "source",
+    "join_table",
+    "target_field",
+    "key",
+    "target_key",
+    "join_field",
+    "join_key",
+    "duplicateStrategy",
+    "duplicate_strategy",
+];
+
 pub(crate) fn normalize_join_field_params(p: &mut serde_json::Map<String, Json>) {
     let is_blank = |val: Option<&Json>| val.is_none_or(|v| v.is_null() || v.as_str().is_some_and(|s| s.trim().is_empty()));
     let find_first =

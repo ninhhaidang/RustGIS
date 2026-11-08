@@ -633,6 +633,12 @@ impl<'a> Builder<'a> {
                 let tool = params.get("tool").and_then(Value::as_str).ok_or("tool is required")?;
                 n.children.push(self.tool(tool, params.get("params").unwrap_or(&Value::Null))?);
             }
+            // The batch's items aren't expanded here: it declares Files and Automation, and adds
+            // what its tool reaches beyond a built-in's (a plugin's code, an unreviewed runner).
+            "gp.batch" => {
+                let tool = params.get("tool").and_then(Value::as_str).ok_or("tool is required")?;
+                n.effects = n.effects.union(batch_tool_effects(tool)?);
+            }
             "gp.spatialJoin" => n.children.push(self.tool("spatialJoin", params)?),
             "gp.zonalStats" => n.children.push(self.tool("zonalStats", params)?),
             "script.run" if self.strict => {
@@ -1402,6 +1408,19 @@ impl Session {
             "web":{"selected":self.database_logins.web_selections(),"active":self.web_logins.active_ids()}
         })
     }
+}
+
+/// What a batch's tool reaches beyond a built-in's, without its per-item parameters.
+pub(super) fn batch_tool_effects(name: &str) -> Result<Effects, String> {
+    let pin = ToolPin::resolve(name)?;
+    let mut e = Effects::NONE;
+    if pin.plugin.is_some() {
+        e = e.with(Effect::Plugin);
+    }
+    if pin.resolved.source().is_some_and(|s| s != "geolibre" && s != rustgis_plugins::tools::SOURCE) {
+        e = e.with(Effect::Unreviewed);
+    }
+    Ok(e)
 }
 
 /// Projects pinned tool effects for compatibility consumers; execution still uses its own token.

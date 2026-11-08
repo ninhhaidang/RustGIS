@@ -196,8 +196,8 @@ model-builder.md, segmentation.md, obia.md_
   eCognition import. RustGIS has pixel classification.
 - [ ] **Visual Model Builder canvas**: a node graph with validation and export to code. Partial:
   ModelBuilder with a node canvas and models from history.
-- [ ] **Re-run or copy history as code; batch runs over a folder**. Partial: history copied as
-  code; batch runs are missing (_Roadmap: solid ground_).
+- [x] **Re-run or copy history as code; batch runs over a folder**: history copied as code, batch
+  runs over layers and folders (`gp.batch`).
 - [ ] **Viewshed from public terrain tiles (no DEM needed)**. Partial: needs a loaded elevation
   raster (_Roadmap: analysis_ for a DEM downloader).
 - [x] **Conversion**: vector to PMTiles/GeoParquet, raster to COG: GeoParquet, COG and vector and

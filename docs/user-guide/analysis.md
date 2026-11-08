@@ -176,6 +176,40 @@ measurement, also with a count. An incomplete polygon is measured along its rema
 edges, without assuming it contains the center. The overlay tools, Select By Location, Spatial Join, Summarize
 Within and topology validation refuse latitudes past ±90° before doing their work.
 
+### Batch geoprocessing (`gp.batch`)
+
+Run one tool over many layers in the project or a folder of vector files:
+
+```json
+gp.batch={"tool":"buffer","inputs":["Cities","Rivers"],"outputPattern":"{input}_buf","params":{"distance":50,"units":"Kilometers"}}
+```
+
+- `"tool"`: the tool's id (such as `"buffer"`, `"simplify"` or `"convexHull"`).
+- `"inputs"`: layer names or, on desktop and the command line, file paths; or `"*"` for every
+  vector layer on the active map, hidden ones included (raster and graphics layers are left out,
+  with a notice). In the browser, add a file as a layer first and use its layer name.
+- `"folder"`: on desktop and the command line, a folder whose `.shp`, `.geojson`, `.json`,
+  `.gpkg`, `.fgb`, `.parquet`, `.geoparquet`, `.kml`, `.kmz`, `.gpx` and `.csv` files are run over
+  in alphabetical order. Subfolders and symbolic links are skipped, with a count.
+- `"outputPattern"` (or `"output_pattern"`): the name of each output layer, `"{input}_{tool}"` by
+  default, where `{input}` is the layer's name or the file's name without its extension and
+  `{tool}` the tool's id. It must include `{input}`. A name already taken gets a number (`_2`).
+  Tools that change a layer in place or select features keep their own names.
+- `"params"`: the parameters every run shares. The batch input replaces a value given there for
+  the input parameter, with a notice.
+- `"param"` (or `"batch_param"`): the parameter each input goes to; by default the tool's first
+  layer parameter, else `"input"`.
+
+One input failing doesn't stop the others. The result counts what `"succeeded"` and `"failed"`,
+names the `"outputs"` (layers or tables) and lists each failure in `"errors"`, with one notice
+for the failures. If every input fails, the batch is an error naming each input and why. What a
+reader drops or assumes for a file input (Z values, a coordinate system) is one notice per kind,
+naming the inputs, and is kept in the history and the result's `"warnings"`. Tools that write a
+file are refused. A batch is yours to run: the AI Assistant asks each time, and plugins and
+imported tasks can't run one.
+
+### Built-in tools
+
 These are the built-in tools; GeoLibre and plugin tools join them when available.
 Use these ids in `gp.run`'s `tool` parameter (`gp.tools` lists the available tools and their parameters):
 

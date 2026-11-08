@@ -32,6 +32,11 @@ pub fn command_effects(spec: &crate::CommandSpec, params: &serde_json::Value) ->
         && let Ok(node) = plan::tool_effect_node(tool, params.get("params").unwrap_or(&serde_json::Value::Null))
     {
         effects.union(node)
+    } else if spec.id == "gp.batch"
+        && let Some(tool) = params.get("tool").and_then(serde_json::Value::as_str)
+        && let Ok(tool) = plan::batch_tool_effects(tool)
+    {
+        effects.union(tool)
     } else {
         effects
     }

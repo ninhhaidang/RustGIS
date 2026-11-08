@@ -99,7 +99,7 @@ fn script(s: &mut Session, _: &Value) -> CmdResult {
 /// The commands other than `gp.run` a run is copied as. The history comes from the project file,
 /// which may say anything: only these are written into code, so a crafted file can't pass any
 /// other command off as a geoprocessing run (and an id is never text to escape).
-const REPLAYED: &[&str] = &["gp.bufferPoint"];
+const REPLAYED: &[&str] = &["gp.bufferPoint", "gp.batch"];
 
 /// The command that runs `r` again, with its parameters: `gp.run` with the tool, or the command
 /// that ran it (a point buffered where the map was clicked, `gp.bufferPoint`).

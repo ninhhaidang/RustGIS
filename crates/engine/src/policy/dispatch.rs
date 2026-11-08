@@ -693,10 +693,19 @@ impl Session {
     }
     /// Runs a pinned tool and records symbolic output identities for later frozen wires.
     pub(crate) fn invoke_tool(&mut self, op: Authorized<ToolOp>, control: &Arc<rustgis_analysis::control::Control>) -> CmdResult {
+        self.invoke_tool_with(op, control, &crate::cmd::gp::RunOpts::default()).map(|(value, _)| value)
+    }
+    /// [`Self::invoke_tool`] applied as `opts` says (a batch item), returning the run's messages.
+    pub(crate) fn invoke_tool_with(
+        &mut self,
+        op: Authorized<ToolOp>,
+        control: &Arc<rustgis_analysis::control::Control>,
+        opts: &crate::cmd::gp::RunOpts,
+    ) -> Result<(Value, Vec<String>), String> {
         let node = op.node.clone();
         let number = node.number;
-        let result = self.with_node(node, |s| crate::cmd::gp::execute(s, op, control));
-        if let Ok(value) = &result {
+        let result = self.with_node(node, |s| crate::cmd::gp::execute(s, op, control, opts));
+        if let Ok((value, _)) = &result {
             // Engine apply's result identifies the actual output kind. An identically named
             // layer must never substitute for a produced standalone table (or vice versa).
             let layer = value
