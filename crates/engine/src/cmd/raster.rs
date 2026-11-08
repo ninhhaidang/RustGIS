@@ -1010,6 +1010,11 @@ pub(super) fn write_geotiff(r: &Raster, bi: usize, cog: bool, path: &str) -> Res
         let (values, verb) = values_were(written);
         note.push_str(&format!("; {values} in it {verb} rounded to 32-bit floats when {} was read", r.name));
     }
+    if bands.iter().any(|b| r.rounded_some.get(*b).copied().unwrap_or(false)) {
+        // Made from part of a raster with rounded values (a clip, an edit): how many it kept isn't
+        // known, so no count is given.
+        note.push_str("; some values in it may have been rounded to 32-bit floats when the raster it was made from was read");
+    }
     // The bands the writer leaves out (it writes `band`, or a colour raster's colour bands, which
     // `band` doesn't change) are said, names and all.
     if bands.len() < r.bands.len() {

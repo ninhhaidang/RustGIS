@@ -582,6 +582,11 @@ pub struct Raster {
     /// compared once read as `f32`: a long decimal whose `f32` reading differs from the no-data
     /// value's (rounded through `f64`) is counted, as it isn't masked as no-data either.
     pub rounded: Vec<u64>,
+    /// By band, whether the band holds some values rounded when its source was read, how many
+    /// not known: a raster made from part of one with `rounded` values (a clip, a pixel edit)
+    /// keeps an unknown share of them, so it carries this mark instead of a count. Empty when
+    /// none does.
+    pub rounded_some: Vec<bool>,
     /// Who holds the rights to the picture (the TIFF Copyright tag): the credits a map's tile
     /// layers ask for, on a GeoTIFF of the view. Read from a GeoTIFF that has it, and written
     /// when this raster is exported; a raster made from it (clipped, reprojected) starts
@@ -756,6 +761,7 @@ impl Raster {
             georeferenced: true,
             lost: Vec::new(),
             rounded: Vec::new(),
+            rounded_some: Vec::new(),
             copyright: None,
             transformer,
             extent: Extent::EMPTY,
@@ -940,6 +946,30 @@ impl Raster {
 
     pub fn band_count(&self) -> usize {
         self.bands.len()
+    }
+
+    /// Whether band `b` holds values rounded when its source was read: counted in `rounded`, or
+    /// marked in `rounded_some` with no count.
+    pub fn band_rounded(&self, b: usize) -> bool {
+        self.rounded.get(b).is_some_and(|n| *n > 0) || self.rounded_some.get(b).copied().unwrap_or(false)
+    }
+
+    /// Marks this raster, made from part of `src` band for band (a clip, a pixel edit, a
+    /// resample), as holding some of `src`'s rounded values, how many unknown: the bands of `src`
+    /// that held any are marked, and the count, which was `src`'s whole, isn't kept.
+    pub fn keep_rounded_mark(&mut self, src: &Raster) {
+        self.keep_rounded_marks(std::iter::once(src));
+    }
+
+    /// As [`Raster::keep_rounded_mark`], for a raster made from parts of several (a mosaic): a
+    /// band is marked when any source's band of that number held rounded values.
+    pub fn keep_rounded_marks<'a>(&mut self, srcs: impl IntoIterator<Item = &'a Raster>) {
+        let mut marks = vec![false; self.band_count()];
+        for src in srcs {
+            marks.iter_mut().enumerate().for_each(|(b, m)| *m |= src.band_rounded(b));
+        }
+        self.rounded = Vec::new();
+        self.rounded_some = if marks.contains(&true) { marks } else { Vec::new() };
     }
 
     /// Whether a value is a real measurement (not no-data or NaN).

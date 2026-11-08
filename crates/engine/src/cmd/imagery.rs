@@ -278,6 +278,7 @@ fn georeference(s: &mut Session, p: &Value) -> CmdResult {
     let mut out = rebuild(&r, gt, Crs::LonLat, copied(&r)?)?;
     // The same pixels, so the same values rounded when the file was read.
     out.rounded = r.rounded.clone();
+    out.rounded_some = r.rounded_some.clone();
     let e = out.extent();
     let v = replace(s, &layer, out)?;
     Ok(json!({"layer": v["layer"], "extent": [e.min_x, e.min_y, e.max_x, e.max_y]}))
@@ -321,7 +322,9 @@ fn warp_to_fit(s: &mut Session, p: &Value, layer: &str, r: &Raster) -> CmdResult
     };
     let new_layer = ps(p, "name").map(str::trim).filter(|n| !n.is_empty()).map(|n| n.chars().take(200).collect::<String>());
     let out_name = new_layer.clone().unwrap_or_else(|| r.name.clone());
-    let out = warp::warp(r, &fit, &warp::Options { crs, points_crs, resampling, cell, name: out_name })?;
+    let mut out = warp::warp(r, &fit, &warp::Options { crs, points_crs, resampling, cell, name: out_name })?;
+    // Resampled from values rounded when the file was read, some or all of them.
+    out.keep_rounded_mark(r);
     if let Some((fw, fh)) = r.overview {
         let note =
             format!("{}: warped at reduced resolution, from its {} × {} overview of the {fw} × {fh} raster", r.name, r.width, r.height);
@@ -1129,7 +1132,9 @@ pub(crate) fn process_work(s: &Session, p: &Value) -> Result<super::workflows::W
                 };
                 let nodata = r.nodata.or(Some(NODATA as f64));
                 let color = if matches!(r.color, ColorHint::Palette(_)) { ColorHint::Gray } else { r.color.clone() };
-                let out = Raster::new(out, w, h, bands, gt, r.crs, nodata, color, r.data_type.clone()).map_err(|e| e.to_string())?;
+                let mut out = Raster::new(out, w, h, bands, gt, r.crs, nodata, color, r.data_type.clone()).map_err(|e| e.to_string())?;
+                // The blocks average values rounded when the file was read, some or all of them.
+                out.keep_rounded_mark(&r);
                 super::workflows::made(out, None)
             }))
         }
@@ -1282,6 +1287,8 @@ fn raster_mosaic(s: &mut Session, p: &Value) -> CmdResult {
         o.name = i.name.clone();
         o.classes = i.classes.clone();
     });
+    // Cells rounded when an input was read may be among those the mosaic keeps.
+    out.keep_rounded_marks(rs.iter().map(|r| &**r));
     let other: Vec<&str> = rs
         .iter()
         .skip(1)
@@ -1380,6 +1387,8 @@ fn clip_window(
     let gt = GeoTransform { origin_x: o.x, origin_y: o.y, ..r.transform };
     let mut out = Raster::new(name, w, h, bands, gt, r.crs, nodata, r.color.clone(), r.data_type.clone()).map_err(|e| e.to_string())?;
     out.bands.iter_mut().zip(&r.bands).for_each(|(o, i)| o.name = i.name.clone());
+    // Some of the values rounded when the file was read may be in the window: how many isn't known.
+    out.keep_rounded_mark(r);
     Ok(out)
 }
 
@@ -1470,6 +1479,8 @@ fn edit_pixels(s: &mut Session, p: &Value) -> CmdResult {
     let mut out = Raster::new(r.name.clone(), r.width, r.height, bands, r.transform, r.crs, nodata, r.color.clone(), r.data_type.clone())
         .map_err(|e| e.to_string())?;
     out.bands.iter_mut().zip(&r.bands).for_each(|(o, i)| o.name = i.name.clone());
+    // The edit may have overwritten some of the values rounded when the file was read.
+    out.keep_rounded_mark(&r);
     replace(s, &layer, out)?;
     Ok(json!({"pixels": n}))
 }

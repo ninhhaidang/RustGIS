@@ -15828,6 +15828,53 @@ fn rounded_raster_values_are_said_on_import_and_export() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// A raster clipped, resampled, mosaicked, warped or pixel-edited from one with values rounded when it
+/// was read keeps a mark
+/// of them, with no count (it holds an unknown share), and its export says so; one made from a
+/// clean raster says nothing of rounding (#1614).
+#[test]
+fn rasters_made_from_rounded_ones_keep_the_rounded_note() {
+    let dir = std::env::temp_dir().join(format!("rustgis-engine-rounded-part-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    const SOME: &str = "some values in it may have been rounded to 32-bit floats";
+    let raster = |s: &Session, name: &str| s.map().layer_by_name(name).and_then(|l| l.raster.as_ref()?.data.clone()).unwrap();
+    let mut s = Session::new(Project::default());
+    for (file, values, rounded) in
+        [("ids.asc", "16777217 100000001\n1234567.891 7", true), ("clean.asc", "16777216 12.3\n123.4567 7", false)]
+    {
+        let path = dir.join(file);
+        std::fs::write(&path, format!("ncols 2\nnrows 2\nxllcorner 10\nyllcorner 40\ncellsize 1\n{values}")).unwrap();
+        let id = s.run("layer.addData", &json!({"path": path})).unwrap()["layer"].as_u64().unwrap();
+        let name = s.map().layer(id as u32).unwrap().name.clone();
+        let clip = format!("{name}_part");
+        s.run("raster.process", &json!({"layer": name, "operation": "clip", "extent": [10.2, 41.2, 10.8, 41.8], "name": clip})).unwrap();
+        let clipped = raster(&s, &clip);
+        assert_eq!((clipped.width, clipped.height, clipped.rounded.is_empty()), (1, 1, true), "{file}");
+        assert_eq!(clipped.rounded_some, if rounded { vec![true] } else { vec![] }, "{file}");
+        let (half, joined) = (format!("{name}_half"), format!("{name}_joined"));
+        s.run("raster.process", &json!({"layer": name, "operation": "resample", "factor": 2, "name": half})).unwrap();
+        s.run("raster.mosaic", &json!({"inputs": [clip, name], "name": joined})).unwrap();
+        let warped = format!("{name}_warped");
+        let points = [[0, 0, 10, 42], [2, 0, 12, 42], [0, 2, 10, 40]];
+        let fit = json!({"layer": name, "transform": "affine", "crs": 4326, "pointsCrs": 4326, "points": points, "name": warped});
+        s.run("raster.georeference", &fit).unwrap();
+        s.run(
+            "raster.editPixels",
+            &json!({"layer": name, "polygon": [[10.1, 40.1], [10.9, 40.1], [10.9, 40.9], [10.1, 40.9]], "value": 1}),
+        )
+        .unwrap();
+        for layer in [clip.as_str(), half.as_str(), joined.as_str(), warped.as_str(), name.as_str()] {
+            let mark = s.notice_mark();
+            s.run("share.exportRaster", &json!({"layer": layer, "path": dir.join(format!("{layer}.tif"))})).unwrap();
+            let notes = s.notices_since(mark);
+            assert_eq!(notes.iter().any(|n| n.text.contains(SOME)), rounded, "{layer}: {notes:?}");
+            // No count is given: the whole file's would be wrong for a part of it.
+            assert!(!notes.iter().any(|n| n.text.contains("3 values in it")), "{layer}: {notes:?}");
+        }
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// An ASCII grid whose `.prj` can't be read is added in longitude/latitude, and adding it says so;
 /// one whose `.prj` is read says nothing of it.
 #[test]
