@@ -18,7 +18,7 @@ pub const MAX_READS: usize = 400;
 /// How deep a walk goes below its start.
 pub const MAX_DEPTH: usize = 8;
 /// The most links read from one document.
-const MAX_LINKS: usize = 5000;
+pub(super) const MAX_LINKS: usize = 5000;
 /// The most documents waiting to be read.
 const MAX_QUEUE: usize = 20_000;
 /// The most documents read at once.
@@ -90,7 +90,7 @@ pub fn parse_item_links(bytes: &[u8], from: &str) -> Result<Vec<Child>, String> 
 
 /// The links of a relation, resolved against `from`: (address, title), the first
 /// [`MAX_LINKS`] of them (counted among that relation's alone).
-fn links(v: &Value, rel: &str, from: &str) -> Vec<(String, String)> {
+pub(super) fn links(v: &Value, rel: &str, from: &str) -> Vec<(String, String)> {
     of_rel(v, rel).take(MAX_LINKS).filter_map(|l| Some((resolve(from, l.get("href")?.as_str()?)?, text(l.get("title"))))).collect()
 }
 
@@ -100,7 +100,7 @@ fn of_rel<'a>(v: &'a Value, rel: &'a str) -> impl Iterator<Item = &'a Value> {
 }
 
 /// Whether a document has more links of a relation than a walk follows.
-fn too_many(v: &Value, rel: &str) -> bool {
+pub(super) fn too_many(v: &Value, rel: &str) -> bool {
     of_rel(v, rel).nth(MAX_LINKS).is_some()
 }
 
@@ -155,7 +155,7 @@ impl Filter {
     }
 
     /// Whether an item is kept (`phase` is its `phase` property, if it has one).
-    fn keeps(&self, item: &Item, phase: Option<&str>) -> bool {
+    pub(super) fn keeps(&self, item: &Item, phase: Option<&str>) -> bool {
         if let (Some([w, s, e, n]), Some([iw, is, ie, inn])) = (self.bbox, item.bbox) {
             // A box over the antimeridian (west east of east), the filter's or the item's, is two:
             // up to 180° and from -180°.

@@ -6,6 +6,8 @@
 use serde_json::Value;
 
 pub mod catalog;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod dated;
 
 /// Element 84's Earth Search (Sentinel-2, Landsat, Copernicus DEM and more, on AWS), the default.
 pub const EARTH_SEARCH: &str = "https://earth-search.aws.element84.com/v1";
@@ -30,6 +32,8 @@ const MAX_TEXT: usize = 2000;
 const MAX_FOOTPRINT: usize = 20_000;
 /// The most properties kept with an item.
 const MAX_PROPERTIES: usize = 100;
+/// The most codes for a failed retrieval kept with an asset.
+pub const MAX_INVALID: usize = 32;
 
 /// A collection an API offers.
 #[derive(Clone, Debug, PartialEq)]
@@ -54,6 +58,12 @@ pub struct Asset {
     /// Its first band's stored no-data value (`raster:bands` or `eo:bands` `nodata`), for files
     /// whose own header doesn't name it.
     pub nodata: Option<f64>,
+    /// Stored values that are codes for a failed retrieval rather than values (JAXA Earth's
+    /// `je:rasters` `dn.error`).
+    pub invalid: Vec<f64>,
+    /// Whether its metadata names such codes but they couldn't be read whole (one isn't a number,
+    /// or there are more than are kept): its values can't be told from them.
+    pub codes_unread: bool,
 }
 
 /// An item: a scene (or tile) with its footprint, time and assets.
@@ -336,6 +346,16 @@ fn item(f: &Value, from: Option<&str>) -> Option<Item> {
         .flatten()
         .take(MAX_ASSETS)
         .filter_map(|(k, a)| {
+            // Codes for a failed retrieval are stored values that aren't values: read whole, or
+            // `None` when one isn't a number or there are more than are kept, so that none is read
+            // as a value (a data cube leaves such an asset's item out, and says so).
+            let invalid = match a.get("je:rasters").and_then(|r| r.get("dn")?.get("error")) {
+                None => Some(Vec::new()),
+                Some(codes) => codes
+                    .as_array()
+                    .filter(|c| c.len() <= MAX_INVALID)
+                    .and_then(|c| c.iter().map(|c| c.as_f64().filter(|v| v.is_finite())).collect::<Option<Vec<f64>>>()),
+            };
             Some(Asset {
                 key: k.chars().take(200).collect(),
                 href: {
@@ -360,6 +380,8 @@ fn item(f: &Value, from: Option<&str>) -> Option<Item> {
                 scale: band_number(a, "scale"),
                 offset: band_number(a, "offset"),
                 nodata: band_number(a, "nodata"),
+                invalid: invalid.clone().unwrap_or_default(),
+                codes_unread: invalid.is_none(),
             })
         })
         .collect();
@@ -418,9 +440,22 @@ fn tile_of(p: &Value) -> Option<String> {
 }
 
 /// An asset's first band's number `key` (`scale`, `offset`, `nodata`): from `raster:bands`, else from
-/// `eo:bands`, where some catalogs (Brazil Data Cube's) put it.
+/// `eo:bands`, where some catalogs (Brazil Data Cube's) put it, else from JAXA Earth's `je:rasters`.
 fn band_number(asset: &Value, key: &str) -> Option<f64> {
-    ["raster:bands", "eo:bands"].iter().find_map(|b| asset.get(*b)?.as_array()?.first()?.get(key)?.as_f64()).filter(|v| v.is_finite())
+    let je = || {
+        let (group, name) = match key {
+            "scale" => ("dn2value", "slope"),
+            "offset" => ("dn2value", "offset"),
+            "nodata" => ("dn", "nodata"),
+            _ => return None,
+        };
+        asset.get("je:rasters")?.get(group)?.get(name)?.as_f64()
+    };
+    ["raster:bands", "eo:bands"]
+        .iter()
+        .find_map(|b| asset.get(*b)?.as_array()?.first()?.get(key)?.as_f64())
+        .or_else(je)
+        .filter(|v| v.is_finite())
 }
 
 /// How many numbers a GeoJSON geometry holds (bounded by how deep it goes).
@@ -855,6 +890,8 @@ mod tests {
             scale: None,
             offset: None,
             nodata: None,
+            invalid: Vec::new(),
+            codes_unread: false,
         }];
         // A Planetary Computer asset is added after signing it with its container's token.
         let (_, href) = pc.asset_href(None).unwrap();
@@ -936,6 +973,24 @@ mod tests {
         assert_eq!(resolve("https://x.org/a", "//y.org/d.tif").as_deref(), Some("https://y.org/d.tif"));
         assert_eq!(resolve("https://x.org/a", "s3://b/k").as_deref(), Some("s3://b/k"));
         assert_eq!(resolve("https://x.org/a", ""), None);
+    }
+
+    /// JAXA Earth's codes for a failed retrieval: read whole, or the asset says they weren't.
+    #[test]
+    fn retrieval_error_codes_are_read_whole_or_said_unread() {
+        let with = |codes: serde_json::Value| {
+            let v = serde_json::json!({"type": "Feature", "id": "t", "properties": {"datetime": "2024-01-01T00:00:00Z"},
+                "assets": {"V": {"href": "https://x.org/v.tiff", "je:rasters": {"dn": {"error": codes}}}}});
+            item_from_json(&v, None).unwrap().assets
+        };
+        let read = |codes: serde_json::Value| with(codes).pop().map(|a| (a.invalid, a.codes_unread)).unwrap();
+        assert_eq!(read(serde_json::json!([5, 6.5])), (vec![5.0, 6.5], false));
+        assert_eq!(read(serde_json::json!(null)), (vec![], true), "named but not a list");
+        // A code that isn't a number, or more than are kept, would be read as a value: the asset
+        // stays (a search shows it) but says its codes weren't read.
+        assert_eq!(read(serde_json::json!([5, "x"])), (vec![], true));
+        assert!(read(serde_json::json!((0..=MAX_INVALID).collect::<Vec<_>>())).1);
+        assert_eq!(read(serde_json::json!((0..MAX_INVALID).collect::<Vec<_>>())).0.len(), MAX_INVALID);
     }
 
     /// A data cube's tile and a band's scale (#559): the grid codes catalogs use, and

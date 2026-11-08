@@ -37,7 +37,7 @@ const MAX_ENTRIES: usize = 500;
 /// What an entry opens.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Source {
-    /// A STAC API's collection, and the asset (a band) read from its items.
+    /// A STAC API's or a static catalog's collection, and the asset (a band) read from its items.
     Stac { collection: String, asset: String },
     /// A Zarr store's variable.
     Zarr { variable: String },
@@ -58,7 +58,7 @@ pub struct Entry {
     /// How often it has a date, and its cells' size, as people read them ("16 days", "232 m").
     pub step: String,
     pub resolution: String,
-    /// The STAC API or the Zarr store.
+    /// The STAC API, the static collection's `collection.json`, or the Zarr store.
     pub url: String,
     pub source: Source,
     /// The values shown from the low colour to the high one, in the band's units (STAC).
