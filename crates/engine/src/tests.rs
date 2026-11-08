@@ -33543,10 +33543,14 @@ fn export_map_to_geotiff_draws_tile_layers_and_keeps_their_credits() {
     drop(c);
     s.map_mut().tiles.clear();
     s.run("layer.addData", &json!({"path": broken.display().to_string()})).unwrap();
-    // Its file gone before the map is drawn.
-    let gone = s.map().tiles[0].url.clone();
-    std::fs::remove_file(&broken).unwrap();
-    s.map_mut().tiles[0].url = gone.replace("broken", "gone");
+    // Its file gone before the map is drawn: the layer points at an archive that isn't there.
+    // (Not by deleting `broken.mbtiles`: the session holds it open, and Windows refuses to
+    // delete an open file.)
+    let url = s.map().tiles[0].url.clone();
+    let gone = url.strip_suffix("broken.mbtiles").map(|head| format!("{head}gone.mbtiles"));
+    assert!(gone.is_some(), "{url}");
+    assert!(!dir.join("gone.mbtiles").exists());
+    s.map_mut().tiles[0].url = gone.unwrap_or_default();
     let n = s.notices.len();
     s.run("share.exportMap", &json!({"path": path.display().to_string()})).unwrap();
     // Said as a tile layer that couldn't be drawn, or (where the reader is slower to give up)
