@@ -323,8 +323,12 @@ pub fn command(app: &mut RustGisApp, p: &Value) -> Result<(), String> {
 pub fn open(app: &mut RustGisApp, name: Option<&str>) -> Result<(), String> {
     forget_old_project(app);
     if let Some(n) = name {
-        if !app.session.project.models.iter().any(|m| m.name.eq_ignore_ascii_case(n)) {
+        let Some(m) = app.session.project.models.iter().find(|m| m.name.eq_ignore_ascii_case(n)) else {
             return Err(crate::i18n::fmt("no model '{name}'", &[("name", n)]));
+        };
+        // A model that can't be shown is refused before the user is asked to discard changes.
+        if m.graph.is_none() {
+            model::checked_steps_to_graph(&m.steps)?;
         }
         if app.mb.open && app.mb.dirty() && !app.mb.saved_as.as_deref().is_some_and(|s| s.eq_ignore_ascii_case(n)) {
             app.mb.confirm = Some(Pending::Open(n.to_string()));
@@ -2075,5 +2079,11 @@ mod tests {
             assert_eq!(app.mb.saved_as.as_deref(), Some("Keep"));
             assert_eq!(app.session.project.models, models);
         }
+        // With unsaved changes, it is refused before the user is asked to discard them.
+        app.mb.name = "Keep edited".into();
+        assert!(app.mb.dirty());
+        let error = app.run("ui.modelBuilder", json!({"name": "Large"})).unwrap_err();
+        assert!(error.contains("1001 steps"), "{error}");
+        assert!(app.mb.confirm.is_none(), "no discard prompt for a model that can't be opened");
     }
 }

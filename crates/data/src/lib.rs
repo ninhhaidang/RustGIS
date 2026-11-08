@@ -59,7 +59,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, thiserror::Error)]
 pub enum DataError {
     #[error("i/o: {0}")]
-    Io(std::io::Error),
+    Io(#[source] std::io::Error),
     #[error("{0}")]
     Format(String),
     /// The server refused the login: no password, or a wrong one.
@@ -598,6 +598,13 @@ impl Dataset {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_io_error_keeps_its_source() {
+        let e = DataError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "gone"));
+        let source = std::error::Error::source(&e).map(ToString::to_string);
+        assert_eq!(source.as_deref(), Some("gone"));
+    }
 
     #[test]
     fn features_are_shared_until_changed() {

@@ -1960,6 +1960,7 @@ fn layer_row(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, scale: f64, reorder: 
                     ("renderer", tl_raw!(rl.style.renderer.label())),
                 ],
             ),
+            None if rl.error.is_none() && rl.in_place => tl!("Reading in place…").to_string(),
             None => crate::i18n::fmt(
                 "The raster's data couldn't be read: {error}",
                 &[("error", rl.error.as_deref().or(rl.path.as_deref()).unwrap_or(""))],
@@ -6436,7 +6437,12 @@ fn raster_symbology(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, t: &Tokens) {
     ui.label(egui::RichText::new(&l.name).font(semibold(14.0)));
     let Some(rl) = l.raster.clone() else { return };
     let Some(d) = rl.data.clone() else {
-        ui.label(egui::RichText::new(tl!("The raster's data couldn't be read.")).color(t.red));
+        // Read in place, its overview is on its way until it lands, or fails (as Details says).
+        if rl.error.is_none() && rl.in_place {
+            ui.label(egui::RichText::new(tl!("Reading in place…")).color(t.text_dim));
+        } else {
+            ui.label(egui::RichText::new(tl!("The raster's data couldn't be read.")).color(t.red));
+        }
         return;
     };
     let style = rl.style.clone();

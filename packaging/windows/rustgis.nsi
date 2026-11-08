@@ -64,8 +64,9 @@ VIAddVersionKey "LegalCopyright" "Copyright the RustGIS contributors. Apache-2.0
 ; replaced while it runs, so a silent install waits for each one it replaces (rustgis.exe, and
 ; rustgis-cli.exe a terminal may be running) to be released, for up to 30 seconds each. Still
 ; running then, nothing is installed (exit code 2): a silent install would skip the locked files
-; and still record the new version. RustGIS's next start says the update didn't arrive. Run by
-; hand, the installer doesn't wait: replacing a running program asks to retry, as before.
+; and still record the new version. RustGIS's next start says the update didn't arrive. Run
+; interactively (without /S), the installer doesn't wait: replacing a running program asks to
+; retry, as before.
 ; `ID` makes the labels of each insertion unique.
 !macro WaitForFree FILE ID
   IfSilent 0 free_${ID}

@@ -440,20 +440,18 @@ impl Theme {
     pub fn parse(fallback_name: &str, text: &str) -> Result<Theme, String> {
         // Notepad saves UTF-8 with a byte-order mark, which serde refuses at the first byte.
         let text = text.trim_start_matches('\u{feff}');
+        // The schema is read first, so a newer file's new keys are refused by its number, not as unknown.
+        let loose: serde_json::Value = serde_json::from_str(text).map_err(|e| e.to_string())?;
+        if let Some(found) = loose.get("schema").and_then(serde_json::Value::as_u64).filter(|&n| n != u64::from(SCHEMA)) {
+            let named = loose.get("name").and_then(serde_json::Value::as_str).unwrap_or_default();
+            let name = shown_name(named, fallback_name, &mut Vec::new());
+            return Err(schema_refused(&name, &found.to_string()));
+        }
         let raw: Raw = serde_json::from_str(text).map_err(|e| e.to_string())?;
         let mut notes = Vec::new();
-        let mut name = clean_name(&raw.name, &mut notes);
-        if name.is_empty() {
-            name = clean_name(fallback_name, &mut notes);
-        }
-        if name.is_empty() {
-            name = "Theme".to_string();
-        }
+        let name = shown_name(&raw.name, fallback_name, &mut notes);
         if raw.schema != SCHEMA {
-            return Err(i18n::fmt(
-                "{name}: theme schema {found} is not {schema}",
-                &[("name", name.as_str()), ("found", &raw.schema.to_string()), ("schema", &SCHEMA.to_string())],
-            ));
+            return Err(schema_refused(&name, &raw.schema.to_string()));
         }
         let extends = raw.extends.is_some();
         let base = match raw.extends.as_deref() {
@@ -470,7 +468,7 @@ impl Theme {
         };
         let unknown: Vec<&str> = raw.colours.keys().map(String::as_str).filter(|k| !TOKENS.contains(k)).collect();
         if !unknown.is_empty() {
-            let names = unknown.join(", ");
+            let names = unknown.into_iter().map(clip).collect::<Vec<_>>().join(", ");
             return Err(i18n::fmt("{name}: unknown {names}", &[("name", name.as_str()), ("names", &names)]));
         }
         let missing: Vec<&str> = match extends {
@@ -750,18 +748,62 @@ pub fn contrast(a: Color32, b: Color32) -> f32 {
     (a.max(b) + 0.05) / (a.min(b) + 0.05)
 }
 
+/// The file's name, else the name of its file, else "Theme".
+fn shown_name(name: &str, fallback_name: &str, notes: &mut Vec<String>) -> String {
+    let mut shown = clean_name(name, notes);
+    if shown.is_empty() {
+        shown = clean_name(fallback_name, notes);
+    }
+    if shown.is_empty() {
+        shown = "Theme".to_string();
+    }
+    shown
+}
+
+/// The refusal of a file written for another theme schema.
+fn schema_refused(name: &str, found: &str) -> String {
+    i18n::fmt("{name}: theme schema {found} is not {schema}", &[("name", name), ("found", found), ("schema", &SCHEMA.to_string())])
+}
+
 /// A name as the menu shows it, with a note for everything it had to drop or cut.
 fn clean_name(name: &str, notes: &mut Vec<String>) -> String {
-    let trimmed = name.trim();
-    let printable = trimmed.chars().filter(|c| !c.is_control()).count();
-    let controls = trimmed.chars().count() - printable;
-    let kept: String = trimmed.chars().filter(|c| !c.is_control()).take(MAX_NAME).collect();
+    // Spaces and control characters at either end are removed; those inside are shown as spaces.
+    let trimmed = name.trim_matches(|c: char| c.is_whitespace() || c.is_control());
+    let controls = trimmed.chars().filter(|c| c.is_control()).count();
+    // Spaces at the ends are trimmed quietly, as before; other control characters there are told.
+    let hard = |s: &str| s.chars().filter(|c| c.is_control() && !c.is_whitespace()).count();
+    let removed = hard(name).saturating_sub(hard(trimmed));
+    // A run of spaces holding a control character becomes one space, so "Mine\nTwo" reads "Mine Two".
+    let mut spaced = String::with_capacity(trimmed.len());
+    let mut run = String::new();
+    for c in trimmed.chars() {
+        if c.is_whitespace() || c.is_control() {
+            run.push(c);
+            continue;
+        }
+        if run.chars().any(char::is_control) {
+            spaced.push(' ');
+        } else {
+            spaced.push_str(&run);
+        }
+        run.clear();
+        spaced.push(c);
+    }
+    let printable = spaced.chars().count();
+    let kept: String = spaced.chars().take(MAX_NAME).collect();
     let kept = kept.trim();
     if controls > 0 {
         notes.push(if controls == 1 {
-            i18n::fmt("{name}: 1 control character was dropped from the name", &[("name", kept)])
+            i18n::fmt("{name}: 1 control character in the name was shown as a space", &[("name", kept)])
         } else {
-            i18n::fmt("{name}: {n} control characters were dropped from the name", &[("name", kept), ("n", &controls.to_string())])
+            i18n::fmt("{name}: {n} control characters in the name were shown as spaces", &[("name", kept), ("n", &controls.to_string())])
+        });
+    }
+    if removed > 0 {
+        notes.push(if removed == 1 {
+            i18n::fmt("{name}: 1 control character at an end of the name was removed", &[("name", kept)])
+        } else {
+            i18n::fmt("{name}: {n} control characters at the ends of the name were removed", &[("name", kept), ("n", &removed.to_string())])
         });
     }
     if printable > MAX_NAME {
@@ -922,8 +964,8 @@ fn write_theme_text(path: &std::path::Path, text: &str, permissions: Option<std:
 }
 
 /// A value as a message shows it: long enough to recognise, short enough to stay one line.
-fn clip(text: &str) -> String {
-    let mut out: String = text.chars().take(32).collect();
+pub(crate) fn clip(text: &str) -> String {
+    let mut out: String = text.chars().take(32).map(|c| if c.is_control() { ' ' } else { c }).collect();
     if out.chars().count() < text.chars().count() {
         out.push('…');
     }
@@ -1272,6 +1314,15 @@ mod tests {
     }
 
     #[test]
+    fn a_newer_file_with_new_keys_is_refused_by_its_schema() {
+        let mut json: serde_json::Value = serde_json::from_str(&light().to_json().expect("json")).expect("json");
+        json["schema"] = 2.into();
+        json["shadows"] = serde_json::json!({"depth": 3});
+        let err = Theme::parse("Mine", &json.to_string()).expect_err("a newer schema is refused");
+        assert!(err.contains("theme schema 2 is not 1"), "the number is named, not the new key: {err}");
+    }
+
+    #[test]
     fn a_file_round_trips_with_its_alpha() {
         let theme = light();
         let back = Theme::parse("light", &theme.to_json().expect("json")).expect("its own file parses");
@@ -1600,6 +1651,7 @@ mod tests {
     fn a_bad_value_is_echoed_short() {
         assert_eq!(clip("abc"), "abc", "a short value is kept as it is");
         assert!(clip(&"x".repeat(500)).chars().count() <= 33, "a long value is cut to one line");
+        assert_eq!(clip("a\nb\tc"), "a b c", "a control character would break the line");
     }
 
     #[test]
@@ -1634,6 +1686,10 @@ mod tests {
         assert_eq!(theme.metrics.heading, 17.0, "what the file does not set stays standard");
         assert_eq!(theme.notes.len(), 1, "{:?}", theme.notes);
         assert!(theme.notes[0].contains("5 sizes"), "every held value is counted: {:?}", theme.notes);
+
+        // JSON has no infinity, and a size past f32 is refused when the file is read, not reset.
+        json["metrics"]["heading"] = serde_json::json!(1e39);
+        assert!(Theme::parse("Mine", &json.to_string()).is_err());
     }
 
     /// Radius clamping and rounding are counted, while an exact supported radius stays quiet.
@@ -1670,7 +1726,16 @@ mod tests {
         let mut json: serde_json::Value = serde_json::from_str(&light().to_json().expect("json")).expect("json");
         json["name"] = serde_json::json!("Mine\nSecond line\twith a tab");
         let theme = Theme::parse("Mine", &json.to_string()).expect("it parses");
-        assert_eq!(theme.name, "MineSecond linewith a tab", "a newline would break the button");
+        assert_eq!(theme.name, "Mine Second line with a tab", "a newline would break the button");
+        assert_eq!(theme.notes.len(), 1, "{:?}", theme.notes);
+        assert!(theme.notes[0].contains("2 control characters"), "{:?}", theme.notes);
+
+        // One at an end is removed, and the note says so rather than "shown as a space".
+        json["name"] = serde_json::json!("Mine \u{7}");
+        let theme = Theme::parse("Mine", &json.to_string()).expect("it parses");
+        assert_eq!(theme.name, "Mine");
+        assert_eq!(theme.notes.len(), 1, "{:?}", theme.notes);
+        assert!(theme.notes[0].contains("1 control character at an end of the name was removed"), "{:?}", theme.notes);
 
         json["name"] = serde_json::json!("N".repeat(200));
         let theme = Theme::parse("Mine", &json.to_string()).expect("it parses");

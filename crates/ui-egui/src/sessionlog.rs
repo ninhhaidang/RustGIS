@@ -219,7 +219,8 @@ fn save(app: &mut RustGisApp) {
                 if app.download_bytes("session-log.csv", bytes)
                     && let Some(said) = app.session.log.dropped_said()
                 {
-                    app.session.notify(format!("session-log.csv: not in it: {said}"), false);
+                    app.session
+                        .notify(crate::i18n::fmt("{name}: not in it: {said}", &[("name", "session-log.csv"), ("said", &said)]), false);
                 }
             }
             Err(e) => app.session.notify(e.to_string(), true),

@@ -397,10 +397,14 @@ fn tell_unloaded(app: &mut RustGisApp) {
     }
     let text = match failed.as_slice() {
         [] => return,
-        [(id, reason)] => crate::i18n::fmt(
-            "The plugin {id} wasn't loaded. Open Plugins › Plugin Manager to see it. {reason}",
-            &[("id", id), ("reason", reason)],
-        ),
+        // The way to it first, so a long reason cut from the notice doesn't take it along.
+        [(id, reason)] => match reason.trim().trim_end_matches('.') {
+            "" => crate::i18n::fmt("The plugin {id} wasn't loaded. Open Plugins › Plugin Manager to see it.", &[("id", id)]),
+            reason => crate::i18n::fmt(
+                "The plugin {id} wasn't loaded (open Plugins › Plugin Manager to see it): {reason}.",
+                &[("id", id), ("reason", reason)],
+            ),
+        },
         _ => {
             let ids: Vec<&str> = failed.iter().map(|(id, _)| id.as_str()).collect();
             crate::i18n::fmt(
@@ -1249,8 +1253,8 @@ mod tests {
         let mut app = app_fetching(|_| Err("unreachable".into()));
         let told = start(&mut app, vec![record("demo", "0")]);
         assert_eq!(told.len(), 1, "{told:?}");
-        assert!(told[0].0.starts_with("The plugin demo wasn't loaded."), "{told:?}");
-        assert!(told[0].0.ends_with("unreachable"), "{told:?}");
+        assert!(told[0].0.starts_with("The plugin demo wasn't loaded (open Plugins › Plugin Manager to see it): "), "{told:?}");
+        assert!(told[0].0.ends_with("unreachable."), "{told:?}");
 
         // A download that isn't the one installed.
         let mut app = app_fetching(|_| Ok(b"x".to_vec()));
@@ -1263,7 +1267,7 @@ mod tests {
         let damaged = Saved { data: Some("!not base64!".into()), url: None, ..record("damaged", "0") };
         let told = start(&mut app, vec![damaged]);
         assert_eq!(told.len(), 1, "{told:?}");
-        assert!(told[0].0.starts_with("The plugin damaged wasn't loaded.") && told[0].0.contains("damaged:"), "{told:?}");
+        assert!(told[0].0.starts_with("The plugin damaged wasn't loaded (open Plugins") && told[0].0.contains("damaged:"), "{told:?}");
 
         // Loaded: nothing to tell, nothing listed.
         struct Cleanup(#[allow(dead_code)] tempfile::TempDir);
@@ -1303,7 +1307,8 @@ mod tests {
         let listed: Vec<&str> = app.plugins.unloaded.iter().map(|u| u.saved.id.as_str()).collect();
         assert_eq!(listed, ["damaged"]);
         let told: Vec<&str> = app.session.notices_since(mark).iter().map(|n| n.text.as_str()).collect();
-        assert!(told.len() == 1 && told[0].starts_with("The plugin damaged wasn't loaded."), "{told:?}");
+        assert!(told.len() == 1 && told[0].starts_with("The plugin damaged wasn't loaded (open Plugins"), "{told:?}");
+        assert!(!told[0].contains(".."), "a reason's own full stop isn't doubled: {told:?}");
         assert!(rp::get("restore-new").is_some());
     }
 

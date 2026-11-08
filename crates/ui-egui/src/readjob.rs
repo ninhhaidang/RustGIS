@@ -339,7 +339,7 @@ pub fn land(app: &mut RustGisApp) -> bool {
             [what] => app.session.notify(crate::i18n::fmt("{what} was left: {why}", &[("what", what), ("why", &reason)]), false),
             [first, ..] => app.session.notify(
                 crate::i18n::fmt(
-                    "{n} files or layers were left, the first {what}: {why}",
+                    "{n} reads were left, the first {what}: {why}",
                     &[("n", &of.len().to_string()), ("what", first), ("why", &reason)],
                 ),
                 false,
@@ -457,9 +457,7 @@ mod tests {
         app.run("project.new", Value::Null).unwrap();
         landed(&mut app, 60);
         assert!(app.session.map().layers.is_empty());
-        assert!(
-            app.session.notices.iter().any(|n| n.text == "2 files or layers were left, the first first.csv: another project was opened")
-        );
+        assert!(app.session.notices.iter().any(|n| n.text == "2 reads were left, the first first.csv: another project was opened"));
 
         // Closing the app cancels a read under way and waits for it.
         crate::layerchooser::add_file(&mut app, &first).unwrap();

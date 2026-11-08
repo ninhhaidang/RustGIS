@@ -1538,6 +1538,16 @@ struct MovingLabel {
 /// what the Move Label tool grabs, as it is drawn now. Labels not of a layer's features aren't;
 /// nor any while a moving globe or tilted map draws them from where they were placed.
 fn label_at(app: &RustGisApp, rect: Rect, p: Pos2) -> Option<PlacedLabel> {
+    label_at_where(app, rect, p, |_| true)
+}
+
+/// The topmost moved label under the pointer, even beneath one never moved (Show all labels).
+fn pinned_label_at(app: &RustGisApp, rect: Rect, p: Pos2) -> Option<PlacedLabel> {
+    label_at_where(app, rect, p, |l| l.collide.pinned)
+}
+
+/// The topmost label under the pointer that `keep` accepts.
+fn label_at_where(app: &RustGisApp, rect: Rect, p: Pos2, keep: impl Fn(&PlacedLabel) -> bool) -> Option<PlacedLabel> {
     if app.map.key.is_none_or(|key| key.rev != app.session.revision || key.sources != rustgis_engine::map::source::generation()) {
         return None;
     }
@@ -1557,7 +1567,7 @@ fn label_at(app: &RustGisApp, rect: Rect, p: Pos2) -> Option<PlacedLabel> {
         return None;
     }
     let at = p - rect.min;
-    app.map.labels.iter().rev().filter(|l| l.collide.source.is_some() && !l.text.is_empty()).find_map(|l| {
+    app.map.labels.iter().rev().filter(|l| l.collide.source.is_some() && !l.text.is_empty() && keep(l)).find_map(|l| {
         let mut l = l.clone();
         // Where it is drawn now: its text at its own size, its callout's feature where it is.
         (l.x, l.y) = (shift.x + l.x * s, shift.y + l.y * s);
@@ -2725,8 +2735,7 @@ fn interact(app: &mut RustGisApp, ui: &mut Ui, resp: &egui::Response, rect: Rect
             // Labels move by dragging them; Shift-clicking a moved one puts it back.
             Tool::MoveLabel => {
                 if shift
-                    && let Some((layer, feature, class)) =
-                        label_at(app, rect, p).filter(|l| l.collide.pinned).and_then(|l| l.collide.source)
+                    && let Some((layer, feature, class)) = pinned_label_at(app, rect, p).and_then(|l| l.collide.source)
                     && let Some(name) = label_class_name(app, layer, class)
                     && let Err(error) = app.run("labels.move", json!({"layer": layer, "class": name, "feature": feature, "to": null}))
                 {
@@ -4626,6 +4635,13 @@ mod tests {
         let pinned = h.state().map.labels.iter().find(|l| l.collide.pinned).map(|l| rect.min + vec2(l.x, l.y));
         let shift = egui::Modifiers { shift: true, ..none };
         let at = pinned.expect("the moved label drawn");
+        // A label never moved drawn over the moved one doesn't hide it from Shift-click.
+        let mut over = h.state().map.labels.iter().find(|l| l.collide.pinned).cloned().expect("the moved label");
+        (over.collide.pinned, over.text) = (false, "Over".into());
+        h.state_mut().map.labels.push(over);
+        assert_eq!(label_at(h.state(), rect, at).map(|l| l.text), Some("Over".into()), "the unmoved label is on top");
+        assert!(pinned_label_at(h.state(), rect, at).is_some_and(|l| l.collide.pinned), "the moved one is still found");
+        // Clicked with the unmoved label still on top: the moved one is put back.
         selection_pointer(&mut h, at, None, shift);
         selection_pointer(&mut h, at, Some(true), shift);
         selection_pointer(&mut h, at, Some(false), shift);
