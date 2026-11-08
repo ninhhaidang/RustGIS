@@ -87,10 +87,27 @@ pub fn commands() -> Vec<C> {
             r#"{"fromLayer"?: bool (the active or named layer's colour ramp stretch; the settings apply to every raster added later that would be a grey stretch, opened files and analysis results alike), "layer"?, "ramp"?, "invert"?: bool, "stretch"?: "none"|"minMax"|"percentClip"|"standardDeviation"|"histogramEqualize", "low"?, "high"?: %, "n"?: deviations, "resampling"?: "nearest"|"bilinear", "reset"?: bool (back to the black-to-white grey stretch)}"#,
         ),
         C::new("raster.info", "Raster Information", "Data › Information", info).view().when(need_raster).roles(&[]).effects(crate::policy::Effects::NONE).params(r#"{"layer"?}"#),
-        C::new("share.exportRaster", "Export Raster", "Data › Information", |s, p| super::exports::write_here(s, p, "share.exportRaster")).view().when(need_raster).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files)).params(
-            r#"{"layer"?, "path": "*.tif", "band"?: 1.. (rasters that aren't colour ones; a colour raster writes its colour bands), "cog"?: bool (a cloud-optimised GeoTIFF: 512 px tiles, Deflate, overviews; default false, an untiled GeoTIFF)}"#,
+        C::new("share.exportRaster", "Export Raster", "Data › Information", |s, p| super::exports::write_here(s, p, "share.exportRaster")).view().when(need_exportable).inputs(export_inputs).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files)).params(
+            r#"{"layer"?, "path": "*.tif", "band"?: 1.. (rasters that aren't colour ones; a colour raster writes its colour bands), "cog"?: bool (a cloud-optimised GeoTIFF: 512 px tiles, Deflate, overviews; default false, an untiled GeoTIFF), "tiles"?: "a tile layer's name, or its index (0 = top): its raster tiles (XYZ, WMTS, WMS, a raster archive) put together as an RGBA GeoTIFF in Web Mercator; by default the tile layer picked in the Layers pane, when no layer is given or active", "bbox"?: "[west, south, east, north] in degrees, for a tile layer (default: the view's)", "zoom"?: "0..30, the tiles' zoom (default: the zoom the view shows); at most 1024 tiles and 8192 pixels a side"}"#,
         ),
     ]
+}
+
+/// Export Raster writes the active (or named) raster layer, or a tile layer: one a script names
+/// (`tiles`) while another layer is active, or the one picked in the Layers pane. Which, and
+/// why none, is said by the export itself once tile layers are there.
+fn need_exportable(s: &Session) -> Option<&'static str> {
+    need_raster(s).filter(|_| s.map().tiles.is_empty())
+}
+
+/// The export reads the tile layer it writes, with its route; else the raster layer.
+fn export_inputs(input: &super::InputContext<'_>, p: &Value) -> Result<super::Inputs, String> {
+    match super::tile_export::target(input, p)? {
+        Some(i) if super::tile_export::named(p) => Ok(super::tiles::tile_inputs(input.map(), [i])),
+        // The tile layer picked in the Layers pane is a choice a plan can't see ahead of time.
+        Some(_) => Ok(super::Inputs::unresolved()),
+        None => super::Inputs::single_layer(input, p),
+    }
 }
 
 /// The raster layer named by `p` (default: active layer) and its data.
@@ -947,7 +964,20 @@ pub fn geotiff_bytes(s: &Session, p: &Value) -> Result<(String, Vec<u8>), String
 /// `share.exportRaster`'s inputs, and the work that writes the raster as a GeoTIFF (a
 /// cloud-optimised one with `cog`).
 pub(crate) fn export_work(s: &Session, p: &Value) -> Result<super::exports::Work, String> {
+    if let Some(i) = super::tile_export::target(s, p)? {
+        return super::tile_export::export_work(s, p, i);
+    }
     let path = ps(p, "path").ok_or("path is required")?.to_string();
+    // A raster layer is written whole: a box or zoom asked for would be dropped.
+    if [p.get("bbox"), p.get("zoom")].into_iter().flatten().any(|v| !v.is_null()) {
+        return Err("bbox and zoom are for a tile layer: name it with \"tiles\", or pick it in the Layers pane".into());
+    }
+    // No layer named or active, nor a tile layer picked: what to pick.
+    if matches!(p.get("layer"), None | Some(Value::Null))
+        && let Some(why) = need_raster(s)
+    {
+        return Err(why.replace("a raster layer", "a raster or tile layer"));
+    }
     let (_, r) = get(s, p)?;
     let bi = band(p, "band", &r)?.unwrap_or(0);
     let cog = b(p, "cog") == Some(true);
@@ -955,7 +985,7 @@ pub(crate) fn export_work(s: &Session, p: &Value) -> Result<super::exports::Work
 }
 
 /// Writes raster `r` (band `bi`, or its colour bands) to `path`, and says what the file holds.
-fn write_geotiff(r: &Raster, bi: usize, cog: bool, path: &str) -> Result<super::exports::Wrote, String> {
+pub(super) fn write_geotiff(r: &Raster, bi: usize, cog: bool, path: &str) -> Result<super::exports::Wrote, String> {
     let cog = if cog {
         // Tiles go to the file as they are made: the whole file is never held in memory.
         Some(raster::cogwrite::write_file(r, bi, Path::new(path)).map_err(|e| format!("{path}: {e}"))?)

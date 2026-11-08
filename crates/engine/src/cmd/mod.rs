@@ -51,6 +51,7 @@ pub mod sharing;
 pub mod sources;
 pub mod sql;
 pub mod stac;
+pub mod tile_export;
 pub mod tiles;
 pub mod time;
 pub mod view;

@@ -606,7 +606,7 @@ fn set_inputs(input: &super::InputContext<'_>, p: &Value) -> Result<super::Input
 
 /// An uploaded MBTiles archive is already in memory; only unwrapped local archives read files.
 /// Anonymous S3 and saved-login wrappers retain network reach even if their payload is malformed.
-fn tile_source_reach(t: &TileLayer) -> crate::policy::Effects {
+pub(crate) fn tile_source_reach(t: &TileLayer) -> crate::policy::Effects {
     use crate::policy::{Effect, Effects};
     use rustgis_render::rustgis_tiles::{mbtiles, s3};
     if t.kind == TileKind::MbTiles && mbtiles::is_upload(&t.url) {

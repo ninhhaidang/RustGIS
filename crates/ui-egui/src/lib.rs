@@ -3944,7 +3944,12 @@ impl RustGisApp {
                 }
             }
             "ui.exportRaster" if self.services.download.is_some() => {
-                // The web app: encode once and download.
+                // The web app: encode once and download. A tile layer is fetched on a thread of
+                // its own, which the browser hasn't: the export says so.
+                if p.get("tiles").is_some_and(|t| !t.is_null()) || self.session.selected_tile().is_some() {
+                    let tiles = p.get("tiles").cloned().unwrap_or(Value::Null);
+                    return self.run("share.exportRaster", json!({"path": "tiles.tif", "tiles": tiles}));
+                }
                 match rustgis_engine::cmd::raster::geotiff_bytes(&self.session, &Value::Null) {
                     Ok((name, bytes)) => {
                         self.download(&format!("{name}.tif"), bytes);
@@ -3956,18 +3961,51 @@ impl RustGisApp {
                 }
             }
             "ui.exportRaster" => {
-                let name = self
-                    .session
-                    .active_layer
-                    .and_then(|id| self.session.map().layer(id))
-                    .map(|l| format!("{}.tif", l.name))
-                    .unwrap_or_default();
+                // A tile layer (the one its menu names, else the one picked) is written over the
+                // view at the zoom it shows.
+                // A tile layer asked for by name or index is that one or none, never another.
+                let tile = match p.get("tiles").filter(|t| !t.is_null()) {
+                    Some(v) => {
+                        let all = &self.session.map().tiles;
+                        let named = v.as_str().and_then(|n| all.iter().position(|t| t.name.eq_ignore_ascii_case(n.trim())));
+                        match v.as_u64().and_then(|i| usize::try_from(i).ok()).or(named).filter(|i| *i < all.len()) {
+                            Some(i) => Some(i),
+                            None => {
+                                let why = tl!("No such tile layer").to_string();
+                                self.session.notify(why.clone(), true);
+                                return Err(why);
+                            }
+                        }
+                    }
+                    None => self.session.selected_tile(),
+                };
+                let tiles = self.session.map().tiles.get(tile.unwrap_or(usize::MAX)).map(|t| t.name.clone());
+                let name = match &tiles {
+                    Some(t) => format!("{t}.tif"),
+                    None => self
+                        .session
+                        .active_layer
+                        .and_then(|id| self.session.map().layer(id))
+                        .map(|l| format!("{}.tif", l.name))
+                        .unwrap_or_default(),
+                };
+                // Neither a tile layer nor a raster: said before the save dialog, not after it.
+                let raster = self.session.active_layer.and_then(|id| self.session.map().layer(id)).is_some_and(|l| l.is_raster());
+                if tiles.is_none() && !raster {
+                    let why = tl!("Select a raster or tile layer in the Layers pane first").to_string();
+                    self.session.notify(why.clone(), true);
+                    return Err(why);
+                }
                 if let Some(path) = dialogs::pick_save(&name, &["tif", "tiff"], tl!("GeoTIFF")) {
+                    let params = match tile.filter(|_| tiles.is_some()) {
+                        Some(i) => json!({"path": path, "tiles": i}),
+                        None => json!({"path": path}),
+                    };
                     // Written on a thread of its own, with progress and Cancel in the status bar.
                     #[cfg(not(target_arch = "wasm32"))]
-                    return exportjob::start(self, "share.exportRaster", json!({"path": path}));
+                    return exportjob::start(self, "share.exportRaster", params);
                     #[cfg(target_arch = "wasm32")]
-                    return self.run("share.exportRaster", json!({"path": path}));
+                    return self.run("share.exportRaster", params);
                 }
             }
             "ui.exportMap" => {

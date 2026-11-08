@@ -90,6 +90,12 @@ pub(super) fn command(s: &crate::cmd::InputContext<'_>, spec: &CommandSpec, para
         "map.tiles" | "info.project" => crate::cmd::tiles::listing_reach(s.map()),
         "map.setTiles" => crate::cmd::tiles::set_reach(s, params),
         "time.export" => crate::cmd::time::export_reach(s, params),
+        // A tile layer's export fetches its tiles (an archive, from its file).
+        "share.exportRaster" => crate::cmd::tile_export::target(s, params)
+            .ok()
+            .flatten()
+            .and_then(|i| s.map().tiles.get(i))
+            .map_or(Effects::NONE, crate::cmd::tiles::tile_source_reach),
         _ => Effects::NONE,
     });
     if matches!(
