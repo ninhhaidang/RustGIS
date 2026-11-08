@@ -400,6 +400,9 @@ fn entries(r: &Raster, plan: &Plan, lv: &Level, first: bool, geo: &GeoKeys, big:
     }
     e.push(shorts(339, &vec![format; spp]));
     if first {
+        if let Some(c) = r.copyright.as_deref().map(super::tag_text).filter(|c| !c.is_empty()) {
+            e.push(ascii(33432, &c));
+        }
         let gt = r.transform;
         e.push(doubles(33550, &[gt.pixel_width.abs(), gt.pixel_height.abs(), 0.0]));
         e.push(doubles(33922, &[0.0, 0.0, 0.0, gt.origin_x, gt.origin_y, 0.0]));

@@ -1,4 +1,4 @@
-//! Publish tab: export the map as PNG and layers as GeoJSON, CSV, FlatGeobuf, GeoPackage,
+//! Publish tab: export the map as PNG or GeoTIFF and layers as GeoJSON, CSV, FlatGeobuf, GeoPackage,
 //! GeoParquet, Shapefile, KML/KMZ or GPX.
 
 use std::path::Path;
@@ -26,7 +26,7 @@ pub fn commands() -> Vec<C> {
             super::exports::write_here(s, p, "share.exportMap")
         }).inputs(map_inputs).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
         .view()
-            .params(r#"{"path": "*.png", "width"?: px, "height"?: px, "dpi"?: 96..600}"#),
+            .params(r#"{"path": "*.png|*.tif|*.tiff", "width"?: "points (pixels at 96 dpi), the view fitted in it", "height"?: points, "dpi"?: "48..600 (default 96)", "fit"?: "true to lower the dpi until a side fits 8192 pixels, saying so", "cog"?: "true for a cloud-optimised GeoTIFF"}"#),
         C::new("share.exportLayer", "Export Features", "Publish › Output", |s, p| super::exports::write_here(s, p, "share.exportLayer")).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
             .view()
             .when(need_layer)
@@ -148,6 +148,33 @@ fn report_table(s: &mut Session, path: &str, gpkg: &GpkgTable, table: Option<Gpk
     out["replaced"] = json!(table.replaced);
 }
 
+/// The active map's view as PNG bytes at `dpi`, or, for a view too large for it, at the most that
+/// fits 8192 pixels a side, said: for the app's Export Map download and Capture To Clipboard,
+/// which offer no size.
+pub fn map_png_fitted(s: &mut Session, dpi: f64) -> Result<Vec<u8>, String> {
+    let view = export_view(s.map().camera, s.view_size, None, None, Some(dpi));
+    let fitted = fitted_dpi(&view, dpi, false);
+    let png = map_png(s, None, None, Some(fitted.unwrap_or(dpi)))?;
+    // A view past 8000 points is cut to its middle, as Export Map's is: said too, with where a
+    // size can be given (this image takes none).
+    let (vw, vh) = s.view_size;
+    if vw > MOST_POINTS || vh > MOST_POINTS {
+        s.notify(
+            format!(
+                "The map image: the view is {vw:.0} × {vh:.0} points, more than the {MOST_POINTS:.0} a side an image holds, so it is cut to its middle: Export Map (share.exportMap) with a width or height of at most {MOST_POINTS:.0} draws it whole"
+            ),
+            false,
+        );
+    }
+    if let Some(lower) = fitted {
+        s.notify(
+            format!("The map is drawn at {lower} DPI, the most an image of this view holds ({} pixels a side)", rustgis_render::MAX_SIDE),
+            false,
+        );
+    }
+    Ok(png)
+}
+
 /// Renders the active map at the current view (or a requested size) to PNG bytes.
 pub fn map_png(s: &mut Session, width: Option<f64>, height: Option<f64>, dpi: Option<f64>) -> Result<Vec<u8>, String> {
     let view_size = s.view_size;
@@ -157,25 +184,135 @@ pub fn map_png(s: &mut Session, width: Option<f64>, height: Option<f64>, dpi: Op
 /// Renders `map` at its camera in a view of `(vw, vh)` points (or a requested size) to PNG bytes.
 fn png_of(
     map: &mut rustgis_map::Map,
-    (vw, vh): (f64, f64),
+    view_size: (f64, f64),
     width: Option<f64>,
     height: Option<f64>,
     dpi: Option<f64>,
 ) -> Result<Vec<u8>, String> {
+    let view = export_view(map.camera, view_size, width, height, dpi);
+    // Past the canvas's limit the picture would be cut off at its top left: refused instead.
+    fits_pixels(&view, false)?;
+    rustgis_render::render_png(map, &view)
+}
+
+/// Refuses an export of `view` with a side past the [`rustgis_render::MAX_SIDE`] pixels a canvas
+/// holds, saying how many it would be (and, for the box around a `turned` view, that the box is
+/// why).
+fn fits_pixels(view: &View, turned: bool) -> Result<(), String> {
+    let (pw, ph) = ((view.width * view.pixels_per_point).round(), (view.height * view.pixels_per_point).round());
+    let most = f64::from(rustgis_render::MAX_SIDE);
+    if pw <= most && ph <= most {
+        return Ok(());
+    }
+    let why = if turned { " (the box around the turned view; or set the bearing to 0)" } else { "" };
+    Err(format!("{pw} × {ph} pixels{why} is more than the {most} a side an export draws: give a smaller width, height or dpi"))
+}
+
+/// The most characters of the credits a GeoTIFF export's notice shows; its answer has them all.
+const CREDITS_SHOWN: usize = 200;
+
+/// The most points a side an export of the map draws; a larger view is cut to its middle.
+pub const MOST_POINTS: f64 = 8000.0;
+
+/// What [`export_view`]'s limit of [`MOST_POINTS`] a side does to an export to `path` of a view
+/// of `(vw, vh)` points, for it to say: with no size given, a larger view is cut to its middle;
+/// a size given past the limit is drawn at the limit: the view still fits whole, with less ground
+/// around it than the size asked for.
+fn size_notes(
+    path: &str,
+    (vw, vh): (f64, f64),
+    width: Option<f64>,
+    height: Option<f64>,
+) -> Vec<(rustgis_data::diagnostics::Severity, String)> {
+    let fin = |v: Option<f64>| v.filter(|x| x.is_finite());
+    let (width, height) = (fin(width), fin(height));
+    let mut notes = Vec::new();
+    let note = |text: String| (rustgis_data::diagnostics::Severity::Info, format!("{path}: {text}"));
+    if width.is_none() && height.is_none() && (vw > MOST_POINTS || vh > MOST_POINTS) {
+        notes.push(note(format!(
+            "the view is {vw:.0} × {vh:.0} points, more than the {MOST_POINTS:.0} a side an export holds, so it is cut to its middle: give a width or height of at most {MOST_POINTS:.0} to draw it whole"
+        )));
+    }
+    for (name, v) in [("width", width), ("height", height)] {
+        if let Some(v) = v.filter(|v| *v > MOST_POINTS) {
+            notes.push(note(format!(
+                "a {name} of {v:.0} points is more than the {MOST_POINTS:.0} an export holds, so it is drawn at {MOST_POINTS:.0}, holding less ground than asked (the whole view still fits): a higher dpi gives more pixels"
+            )));
+        }
+        if let Some(v) = v.filter(|v| *v < LEAST_POINTS) {
+            notes.push(note(format!(
+                "a {name} of {v} points is less than the {LEAST_POINTS:.0} an export draws, so it is drawn at {LEAST_POINTS:.0}"
+            )));
+        }
+    }
+    notes
+}
+
+/// The fewest points a side an export of the map draws.
+const LEAST_POINTS: f64 = 16.0;
+/// The DPI an export of the map draws at, at least and at most.
+const DPI_RANGE: (f64, f64) = (48.0, 600.0);
+
+/// What the DPI range does to an export to `path` asked at `dpi`, for it to say.
+fn dpi_note(path: &str, dpi: Option<f64>) -> Option<(rustgis_data::diagnostics::Severity, String)> {
+    let dpi = dpi.filter(|d| d.is_finite())?;
+    let (least, most) = DPI_RANGE;
+    let drawn = dpi.clamp(least, most);
+    (drawn != dpi).then(|| {
+        (
+            rustgis_data::diagnostics::Severity::Info,
+            format!("{path}: a dpi of {dpi} is outside {least:.0} to {most:.0}, so it is drawn at {drawn:.0}"),
+        )
+    })
+}
+
+/// With `fit`, the DPI an export of the view (at `dpi`) is lowered to so that no side passes the
+/// [`rustgis_render::MAX_SIDE`] pixels a canvas holds, a GeoTIFF of a turned view counting the
+/// box around it: the most whole DPI that fits, `None` when `dpi` already does.
+fn fitted_dpi(view: &View, dpi: f64, tif: bool) -> Option<f64> {
+    let (w, h) =
+        if tif && is_turned(view.camera.bearing) { view.camera.rotated_size(view.width, view.height) } else { (view.width, view.height) };
+    let side = w.max(h);
+    let most = f64::from(rustgis_render::MAX_SIDE);
+    // As the export sizes its canvas: a turned GeoTIFF's box rounded out, else rounded.
+    let px = side * view.pixels_per_point;
+    let px = if tif && is_turned(view.camera.bearing) { px.ceil() } else { px.round() };
+    if !side.is_finite() || side <= 0.0 || px <= most {
+        return None;
+    }
+    // Never above the DPI asked, nor below the least: `max` keeps the bounds in order (clamp
+    // panics otherwise) for a caller asking below it.
+    Some((most * 96.0 / side).floor().clamp(DPI_RANGE.0, dpi.max(DPI_RANGE.0)))
+}
+
+/// Whether a view at `bearing` is turned (not north up).
+fn is_turned(bearing: f64) -> bool {
+    let b = bearing.rem_euclid(360.0);
+    b.min(360.0 - b) > 1e-9
+}
+
+/// The view an export of the map at `camera` draws, in a view of `(vw, vh)` points: a requested
+/// size keeps the same ground extent, and `dpi` sets the pixels per point.
+fn export_view(
+    camera: rustgis_map::camera::Camera,
+    (vw, vh): (f64, f64),
+    width: Option<f64>,
+    height: Option<f64>,
+    dpi: Option<f64>,
+) -> View {
     // NaN would pass through `clamp`; non-finite values fall back to the defaults.
     let fin = |v: Option<f64>| v.filter(|x| x.is_finite());
     let (width, height, dpi) = (fin(width), fin(height), fin(dpi));
-    let w = width.unwrap_or(vw).clamp(16.0, 8000.0);
-    let h = height.unwrap_or(vh).clamp(16.0, 8000.0);
-    let ppp = (dpi.unwrap_or(96.0) / 96.0).clamp(0.5, 6.0);
-    let mut camera = map.camera;
+    let w = width.unwrap_or(vw).clamp(LEAST_POINTS, MOST_POINTS);
+    let h = height.unwrap_or(vh).clamp(LEAST_POINTS, MOST_POINTS);
+    let ppp = dpi.unwrap_or(96.0).clamp(DPI_RANGE.0, DPI_RANGE.1) / 96.0;
+    let mut camera = camera;
     // Keep the same ground extent when the size differs from the view.
     if width.is_some() || height.is_some() {
         camera.res *= (vw / w).max(vh / h);
         camera.clamp();
     }
-    let view = View { width: w, height: h, pixels_per_point: ppp, camera, sky: false };
-    rustgis_render::render_png(map, &view)
+    View { width: w, height: h, pixels_per_point: ppp, camera, sky: false }
 }
 
 /// The map view on one PDF page (for printing): the page is the view's shape at 96 points per
@@ -200,11 +337,42 @@ pub fn map_pdf(s: &mut Session, dpi: f64) -> Result<Vec<u8>, String> {
     Ok(rustgis_render::pdf::write(&[page], &s.map().name))
 }
 
-/// `share.exportMap`: draws the active map as it is now to a PNG. It draws a copy of the map, so
+/// `share.exportMap`: draws the active map as it is now to a PNG, or a GeoTIFF for a `.tif` or
+/// `.tiff` path ([`geotiff_work`]). It draws a copy of the map, so
 /// the map can move meanwhile; a cancelled export stops waiting for tiles and writes nothing.
 pub(crate) fn map_work(s: &Session, p: &Value) -> Result<Work, String> {
     let path = ps(p, "path").ok_or("path is required")?.to_string();
     let (width, height, dpi) = (f(p, "width"), f(p, "height"), f(p, "dpi"));
+    let ext = Path::new(&path).extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    let cog = match p.get("cog") {
+        None | Some(Value::Null) => false,
+        Some(v) => v.as_bool().ok_or("cog must be true or false")?,
+    };
+    let tif = matches!(ext.as_str(), "tif" | "tiff");
+    let fit = match p.get("fit") {
+        None | Some(Value::Null) => false,
+        Some(v) => v.as_bool().ok_or("fit must be true or false")?,
+    };
+    let mut sized = size_notes(&path, s.view_size, width, height);
+    sized.extend(dpi_note(&path, dpi));
+    // `fit`: a view too large for the DPI asked is drawn at the most that fits, and says so.
+    let asked = dpi.filter(|d| d.is_finite()).unwrap_or(96.0).clamp(DPI_RANGE.0, DPI_RANGE.1);
+    let dpi = match fit.then(|| fitted_dpi(&export_view(s.map().camera, s.view_size, width, height, Some(asked)), asked, tif)).flatten() {
+        Some(lower) => {
+            sized.push((
+                rustgis_data::diagnostics::Severity::Info,
+                format!("{path}: drawn at {lower} DPI, the most an export of this view holds ({} pixels a side)", rustgis_render::MAX_SIDE),
+            ));
+            Some(lower)
+        }
+        None => dpi,
+    };
+    if tif {
+        return geotiff_work(s, path, export_view(s.map().camera, s.view_size, width, height, dpi), cog, sized);
+    }
+    if cog {
+        return Err("cog is for a GeoTIFF (.tif or .tiff) export".into());
+    }
     let (mut map, view_size) = (s.map().detached(), s.view_size);
     Ok(Box::new(move || {
         let written = (|| {
@@ -213,8 +381,168 @@ pub(crate) fn map_work(s: &Session, p: &Value) -> Result<Work, String> {
             rustgis_data::io::write_atomic(Path::new(&path), &png).map_err(|e| format!("{path}: {e}"))?;
             Ok(json!({"path": path, "bytes": png.len()}))
         })();
-        super::exports::drawn(std::slice::from_ref(&map), Vec::new(), written, path)
+        // What the size limit did is said of a file written.
+        let sized = if written.is_ok() { sized } else { Vec::new() };
+        super::exports::drawn(std::slice::from_ref(&map), sized, written, path)
     }))
+}
+
+/// `share.exportMap` to a GeoTIFF: the view drawn as data (its layers and labels, without the
+/// scale bar and credits, which sit on the screen), RGB (a drawn view is opaque), placed on the
+/// ground in the map's projection, the credits in its Copyright tag. What may have left gaps in
+/// it (tiles still on their way, tile layers that failed) is said: on the ground a gap looks like
+/// data. A turned view is drawn north up over the box around it, and says so; a tilted view, the
+/// globe and a map of another body are refused, as no grid of square pixels in one coordinate
+/// system holds them.
+fn geotiff_work(
+    s: &Session,
+    path: String,
+    view: View,
+    cog: bool,
+    sized: Vec<(rustgis_data::diagnostics::Severity, String)>,
+) -> Result<Work, String> {
+    let m = s.map();
+    let crs = map_crs(m)?;
+    if view.camera.pitch.abs() > 1e-6 {
+        return Err(format!(
+            "the map is tilted {:.0}°: a GeoTIFF needs it looking straight down (pitch 0), or export a PNG",
+            view.camera.pitch
+        ));
+    }
+    let mut view = view;
+    let mut notices = Vec::new();
+    let bearing = view.camera.bearing;
+    let turned = is_turned(bearing);
+    if turned {
+        // North up over the box around the turned view: everything it shows, and more at the
+        // corners.
+        // In points whose pixels, once rounded, still cover the box.
+        let (bw, bh) = view.camera.rotated_size(view.width, view.height);
+        let ppp = view.pixels_per_point;
+        view.width = (bw * ppp).ceil() / ppp;
+        view.height = (bh * ppp).ceil() / ppp;
+        view.camera.bearing = 0.0;
+        notices.push((
+            rustgis_data::diagnostics::Severity::Info,
+            format!("{path}: the map is turned {bearing:.0}°, so the GeoTIFF is drawn north up over the box around the view"),
+        ));
+    }
+    // A turned view's box is larger than the view: said, as the fix differs.
+    fits_pixels(&view, turned)?;
+    let name = m.name.clone();
+    let mut map = m.detached();
+    Ok(Box::new(move || {
+        let mut notices = notices;
+        let written = (|| {
+            let placed = rustgis_render::render_placed(&mut map, &view)?;
+            rustgis_data::progress::check().map_err(|e| e.to_string())?;
+            for gap in &placed.gaps {
+                notices.push((rustgis_data::diagnostics::Severity::Warning, format!("{path}: {gap}")));
+            }
+            let credits = placed.credits;
+            // The drawn picture is dropped once its bands are made, before the raster's
+            // statistics and the file's encoding.
+            let mut r = placed_raster(&name, placed.pixmap, &view, crs)?;
+            r.copyright = (!credits.is_empty()).then(|| credits.join(" | "));
+            rustgis_data::progress::check().map_err(|e| e.to_string())?;
+            let (bytes, tiled) = if cog {
+                // Tiles go to the file as they are made; its tiling is in the answer, as Export
+                // Raster gives it.
+                let c = rustgis_data::raster::cogwrite::write_file(&r, 0, Path::new(&path)).map_err(|e| format!("{path}: {e}"))?;
+                (c.bytes, Some(json!({"overviews": c.levels.len().saturating_sub(1), "bigTiff": c.big})))
+            } else {
+                let bytes = rustgis_data::raster::geotiff::write(&r, 0).map_err(|e| format!("{path}: {e}"))?;
+                rustgis_data::io::write_atomic(Path::new(&path), &bytes).map_err(|e| format!("{path}: {e}"))?;
+                (bytes.len() as u64, None)
+            };
+            let mut out = json!({"path": path, "width": r.width, "height": r.height, "crs": crs.label(), "bytes": bytes});
+            if let Some(t) = tiled {
+                out["cog"] = t;
+            }
+            if let Some(c) = &r.copyright {
+                out["copyright"] = json!(c);
+                if let Some(note) = rustgis_data::raster::tag_text_note(c) {
+                    // Quoted (control characters escaped, so a service's credits can't reach a
+                    // terminal raw) and cut short: the answer holds them whole.
+                    let shown: String = c.chars().take(CREDITS_SHOWN).collect();
+                    let more = if c.chars().count() > CREDITS_SHOWN { "…" } else { "" };
+                    notices.push((rustgis_data::diagnostics::Severity::Info, format!("{path}: {note} (the credits: {shown:?}{more})")));
+                }
+            }
+            Ok(out)
+        })();
+        // What the size limit did is said of a file written, first.
+        if written.is_ok() {
+            notices.splice(0..0, sized);
+        }
+        super::exports::drawn(std::slice::from_ref(&map), notices, written, path)
+    }))
+}
+
+/// The coordinate system a GeoTIFF of map `m`'s view is in: its flat projection's.
+fn map_crs(m: &rustgis_map::Map) -> Result<Crs, String> {
+    let body = m.body();
+    if !body.is_earth() {
+        return Err(format!("a map of {} can't be saved as a GeoTIFF yet: export a PNG", body.name));
+    }
+    match &m.projection {
+        rustgis_map::Projection::Globe => {
+            Err("the globe can't be saved as a GeoTIFF: switch to a flat projection (View › Projection), or export a PNG".into())
+        }
+        rustgis_map::Projection::WebMercator => Ok(Crs::WebMercator),
+        rustgis_map::Projection::Custom(code) => {
+            let (proj4, label) = rustgis_map::projection::lookup(code)?;
+            // An EPSG system is written by its code; any other by its definition.
+            if let Some(n) = label.strip_prefix("EPSG:").and_then(|n| n.parse::<u32>().ok())
+                && let Some(crs) = Crs::from_epsg(n)
+            {
+                return Ok(crs);
+            }
+            let shown = label.clone();
+            let def = rustgis_data::raster::crs::CustomCrs { proj4, label, geokeys: Vec::new(), doubles: Vec::new(), ascii: String::new() };
+            let crs = Crs::custom(def)?;
+            if !rustgis_data::raster::geotiff::describes(crs) {
+                return Err(format!(
+                    "the map's projection, {shown}, can't be described in a GeoTIFF: switch the map to an EPSG projection, or export a PNG"
+                ));
+            }
+            Ok(crs)
+        }
+    }
+}
+
+/// The drawn view `pm` as an RGB raster placed on the ground: the view's centre at the image's
+/// centre, each pixel `res / pixels_per_point` map units a side. A drawn view is opaque (its
+/// background is filled), so it has no alpha band. While the bands are filled the picture is
+/// held too, 16 bytes a pixel in all (about 1 GiB at 8192 a side); a machine that can't hold
+/// them gets an error, not a crash.
+fn placed_raster(name: &str, pm: tiny_skia::Pixmap, view: &View, crs: Crs) -> Result<rustgis_data::raster::Raster, String> {
+    let (w, h) = (pm.width(), pm.height());
+    let mut bands: Vec<Vec<f32>> = (0..3)
+        .map(|_| rustgis_data::raster::grid::<f32>(w as usize, h as usize))
+        .collect::<Result<_, _>>()
+        .map_err(|e| format!("{name}: {e}"))?;
+    for px in pm.pixels() {
+        // tiny-skia keeps colours premultiplied; a file keeps them straight.
+        let c = px.demultiply();
+        for (band, v) in bands.iter_mut().zip([c.red(), c.green(), c.blue()]) {
+            band.push(f32::from(v));
+        }
+    }
+    drop(pm);
+    let cam = view.camera;
+    let cell = cam.res / view.pixels_per_point;
+    // The renderer puts the centre at half the view's width in points, times the pixels per
+    // point, unrounded: the corner is half the view from it, whatever whole number of pixels the
+    // picture is.
+    let transform = rustgis_data::raster::GeoTransform {
+        origin_x: cam.center.x - view.width / 2.0 * cam.res,
+        origin_y: cam.center.y + view.height / 2.0 * cam.res,
+        pixel_width: cell,
+        pixel_height: -cell,
+    };
+    let color = rustgis_data::raster::ColorHint::Rgb { alpha: false };
+    rustgis_data::raster::Raster::new(name, w, h, bands, transform, crs, None, color, "UInt8").map_err(|e| e.to_string())
 }
 
 /// `share.exportLayer`: writes a layer to a file by its extension. A streamed layer exports its

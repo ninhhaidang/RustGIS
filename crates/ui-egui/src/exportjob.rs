@@ -158,4 +158,26 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// The ribbon's Export Map to a `.tif` writes a GeoTIFF on a thread like the PNG, at 192 DPI
+    /// where that fits (the engine's `fit`).
+    #[test]
+    fn export_map_to_a_geotiff_runs_on_a_thread() {
+        let mut app = RustGisApp::with_sample();
+        app.session.view_size = (400.0, 300.0);
+        let dir = std::env::temp_dir().join(format!("rustgis-export-tif-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("map.tif");
+        crate::dialogs::PICKED.with(|c| *c.borrow_mut() = Some(path.display().to_string()));
+        assert_eq!(app.run("ui.exportMap", Value::Null).unwrap()["started"], "Export Map");
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        while land(&mut app) {
+            assert!(std::time::Instant::now() < end, "Export Map never landed");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let r = rustgis_engine::data::raster::geotiff::read(std::io::Cursor::new(std::fs::read(&path).unwrap()), "map").unwrap();
+        // 400 × 300 points at 192 DPI.
+        assert_eq!((r.width, r.height, r.bands.len()), (800, 600, 3));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

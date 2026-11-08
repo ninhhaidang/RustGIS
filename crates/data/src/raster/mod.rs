@@ -580,6 +580,11 @@ pub struct Raster {
     /// values with more digits than `f32` holds), by band; empty when none did. NaN and no-data
     /// values aren't counted.
     pub rounded: Vec<u64>,
+    /// Who holds the rights to the picture (the TIFF Copyright tag): the credits a map's tile
+    /// layers ask for, on a GeoTIFF of the view. Read from a GeoTIFF that has it, and written
+    /// when this raster is exported; a raster made from it (clipped, reprojected) starts
+    /// without.
+    pub copyright: Option<String>,
     transformer: Transformer,
     extent: Extent,
 }
@@ -606,6 +611,54 @@ pub(crate) fn gdal_metadata_of(r: &Raster, bands: &[usize]) -> Option<String> {
     let names: Vec<Option<&str>> = bands.iter().map(|b| band_name_of(r, *b)).collect();
     let first = bands.first().and_then(|b| r.bands.get(*b)).map_or(&[][..], |b| &b.classes[..]);
     pam::gdal_metadata(&names, first)
+}
+
+/// Text for a TIFF ASCII tag, which holds 7-bit ASCII only: control characters (a NUL would end
+/// it early) as spaces, `©` and `®` as `(c)` and `(R)`, any other character outside ASCII as `?`
+/// ([`tag_text_changes`] counts them), trimmed.
+pub fn tag_text(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '©' => out.push_str("(c)"),
+            '®' => out.push_str("(R)"),
+            c if c.is_control() => out.push(' '),
+            c if c.is_ascii() => out.push(c),
+            _ => out.push('?'),
+        }
+    }
+    out.trim().to_string()
+}
+
+/// What [`tag_text`] changes in `s` (the trimmed ends not counted): how many `©` and `®` it
+/// writes as `(c)` and `(R)`, how many characters as `?`, and how many control characters as
+/// spaces, line breaks and tabs among them.
+pub fn tag_text_changes(s: &str) -> (usize, usize, usize) {
+    let inner = s.trim_matches(|c: char| c.is_control() || c.is_ascii_whitespace());
+    let symbols = inner.chars().filter(|c| matches!(c, '©' | '®')).count();
+    let questioned = inner.chars().filter(|c| !c.is_ascii() && !c.is_control() && !matches!(c, '©' | '®')).count();
+    (symbols, questioned, inner.chars().filter(|c| c.is_control()).count())
+}
+
+/// What writing `s` to a TIFF ASCII tag ([`tag_text`]) changes, for an export to say: `None`
+/// when it is written as it is (or is empty); that no tag is written when nothing of it is left.
+pub fn tag_text_note(s: &str) -> Option<String> {
+    // Nothing a tag can hold (control characters only): the writers write no tag.
+    if tag_text(s).is_empty() {
+        return (!s.is_empty()).then(|| "the credits hold nothing a Copyright tag can, so the file has none".to_string());
+    }
+    let (symbols, questioned, spaced) = tag_text_changes(s);
+    let count = |n: usize, one: &str, many: &str| if n == 1 { format!("1 {one}") } else { format!("{n} {many}") };
+    let parts: Vec<String> = [
+        (symbols, count(symbols, "© or ® as (c) or (R)", "©s or ®s as (c) or (R)")),
+        (questioned, count(questioned, "character as ?", "characters as ?")),
+        (spaced, count(spaced, "control character as a space", "control characters as spaces")),
+    ]
+    .into_iter()
+    .filter(|(n, _)| *n > 0)
+    .map(|(_, part)| part)
+    .collect();
+    (!parts.is_empty()).then(|| format!("the Copyright tag holds ASCII only, so it is written with {}", parts.join(", ")))
 }
 
 /// How many of the names [`gdal_metadata_of`] writes for `bands` hold a character XML can't (a
@@ -701,6 +754,7 @@ impl Raster {
             georeferenced: true,
             lost: Vec::new(),
             rounded: Vec::new(),
+            copyright: None,
             transformer,
             extent: Extent::EMPTY,
         };

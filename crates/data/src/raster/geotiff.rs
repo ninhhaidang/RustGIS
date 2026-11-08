@@ -466,6 +466,13 @@ fn same_projection(a: &str, b: &str) -> bool {
     })
 }
 
+/// Whether a raster in `crs` can be written as a GeoTIFF: an EPSG system always, a user-defined
+/// one when it came with GeoKeys or its PROJ definition can be said as them (see
+/// [`keys_from_proj4`]).
+pub fn describes(crs: Crs) -> bool {
+    crs.custom_def().is_none_or(|d| !d.geokeys.is_empty() || keys_from_proj4(&d.proj4, &d.label).is_some())
+}
+
 /// GeoKeys for a user-defined projection from its PROJ definition (one read from WKT, which
 /// came with no keys), the inverse of [`custom_crs`]: the key directory, its double parameters and
 /// its ASCII parameters. `None` for a projection the keys can't say.
@@ -1221,6 +1228,15 @@ pub(super) fn read_limited_with_nodata(
         },
         Err(e) => Some(super::pam::Pam::losing(format!("it doesn't decode ({e}): band and class names are left out"))),
     };
+    // Who holds the rights to the picture, kept as it reads so an export of it says so too (the
+    // writers make it the ASCII a tag holds, and the exports say what that changed); one that
+    // doesn't read as text is left out, and said.
+    let (copyright, copyright_lost) = match dec.find_tag(Tag::Copyright).map(|v| v.map(|v| v.into_string())) {
+        Ok(None) => (None, None),
+        Ok(Some(Ok(c))) => (Some(c.trim().to_string()), None),
+        Ok(Some(Err(e))) => (None, Some(format!("its Copyright tag: it isn't ASCII text ({e}), so it is left out"))),
+        Err(e) => (None, Some(format!("its Copyright tag: it can't be read ({e}), so it is left out"))),
+    };
     let spp = samples(&mut dec);
     let bytes = sample_bytes(&mut dec);
     // The decoded image is held at its own pixel size before conversion to f32, so bound bytes
@@ -1436,6 +1452,8 @@ pub(super) fn read_limited_with_nodata(
         r.georeferenced = false;
         r.overview = overview;
         r.rounded = rounded;
+        r.copyright = copyright.filter(|c| !c.is_empty());
+        r.lost.extend(copyright_lost);
         r.lost.extend(table_lost);
         if let Some(p) = &described {
             r.apply_pam(p, super::pam::GDAL_METADATA);
@@ -1487,6 +1505,8 @@ pub(super) fn read_limited_with_nodata(
     let mut r = Raster::new(name, w, h, bands, transform, crs, geo.nodata, color, data_type)?;
     r.overview = overview;
     r.rounded = rounded;
+    r.copyright = copyright.filter(|c| !c.is_empty());
+    r.lost.extend(copyright_lost);
     r.lost.extend(super::planetary::note_of(crs));
     r.lost.extend(table_lost);
     if let Some(p) = &described {
@@ -1520,7 +1540,10 @@ pub(super) fn geo_keys(r: &Raster) -> Result<GeoKeys> {
         Some(d) if d.geokeys.is_empty() => {
             return Err(err(format!("{}: a coordinate system without GeoTIFF keys can't be written", d.label)));
         }
-        Some(d) => d.geokeys.clone(),
+        // The tiepoint is written at the corner of the first pixel, so the raster type is area: a
+        // system first read from a point file (whose grid was moved to the corner on reading) is
+        // written as one too, or readers would place it half a pixel off.
+        Some(d) => as_area(&d.geokeys),
         None => vec![
             1,
             1,
@@ -1541,6 +1564,20 @@ pub(super) fn geo_keys(r: &Raster) -> Result<GeoKeys> {
         ],
     };
     Ok(GeoKeys { keys, custom })
+}
+
+/// GeoKey directory `keys` with the raster type (1025) as area (1), as the writers' corner
+/// tiepoint says.
+fn as_area(keys: &[u16]) -> Vec<u16> {
+    let mut keys = keys.to_vec();
+    // After the 4-short header, 4 shorts a key: its id, where its value is (0: in place), its
+    // count and its value.
+    for entry in keys.get_mut(4..).into_iter().flat_map(|k| k.as_chunks_mut::<4>().0) {
+        if let [1025, 0, _, value] = entry {
+            *value = 1;
+        }
+    }
+    keys
 }
 
 /// Whether band `b` is written as bytes: whole numbers within 0–255 (or no valid pixels at all),
@@ -1623,6 +1660,7 @@ fn encode(r: &Raster, band: usize) -> Result<Vec<u8>> {
     // Each branch below names the bands it writes as samples (`$written`): their names, and the
     // first one's class names (the red band's, for a colour file), go to GDAL's metadata tag,
     // read back on open.
+    let copyright = r.copyright.as_deref().map(super::tag_text).filter(|c| !c.is_empty());
     macro_rules! tags {
         ($img:expr, $written:expr) => {{
             let classes = super::gdal_metadata_of(r, $written);
@@ -1647,6 +1685,9 @@ fn encode(r: &Raster, band: usize) -> Result<Vec<u8>> {
             }
             if let Some(xml) = &classes {
                 e.write_tag(Tag::Unknown(42112), xml.as_str()).map_err(err)?;
+            }
+            if let Some(c) = &copyright {
+                e.write_tag(Tag::Copyright, c.as_str()).map_err(err)?;
             }
             if let Some(nd) = r.nodata {
                 e.write_tag(Tag::GdalNodata, nd.to_string().as_str()).map_err(err)?;
@@ -1720,6 +1761,73 @@ fn encode(r: &Raster, band: usize) -> Result<Vec<u8>> {
 mod tests {
     use super::*;
     use crate::raster::tests::small;
+
+    /// Who holds the rights (the Copyright tag) is written by both writers and read back, as the
+    /// ASCII a TIFF tag holds (`©` as `(c)`, control characters as spaces, others as `?`); a
+    /// raster without it writes none.
+    #[test]
+    fn copyright_round_trips() {
+        let mut r = small();
+        assert_eq!(read(std::io::Cursor::new(write(&r, 0).unwrap()), "none").unwrap().copyright, None);
+        r.copyright = Some("© OpenStreetMap contributors | Bundesamt für Landestopografie\0\n".into());
+        let want = Some("(c) OpenStreetMap contributors | Bundesamt f?r Landestopografie".to_string());
+        // One written as ?; the NUL and line break at the end are trimmed, not counted.
+        assert_eq!(super::super::tag_text_changes(r.copyright.as_deref().unwrap()), (1, 1, 0));
+        // Inside, a line break and U+0085 (a control character outside ASCII) are spaces.
+        assert_eq!(super::super::tag_text_changes("a\nb\u{85}c ü"), (0, 1, 2));
+        assert_eq!(
+            super::super::tag_text_note("© a\nb ü").as_deref(),
+            Some(
+                "the Copyright tag holds ASCII only, so it is written with 1 © or ® as (c) or (R), 1 character as ?, 1 control character as a space"
+            )
+        );
+        assert_eq!(super::super::tag_text_note("plain"), None);
+        assert_eq!(super::super::tag_text_note(""), None);
+        // Nothing a tag can hold: no tag is written, and that is said.
+        assert_eq!(
+            super::super::tag_text_note("\0\n").as_deref(),
+            Some("the credits hold nothing a Copyright tag can, so the file has none")
+        );
+        let mut blank = small();
+        blank.copyright = Some("\0\n".into());
+        assert_eq!(read(std::io::Cursor::new(write(&blank, 0).unwrap()), "none").unwrap().copyright, None);
+        // A Copyright tag that isn't text (bytes, not ASCII) is left out, and said.
+        let mut buf = std::io::Cursor::new(Vec::new());
+        {
+            let mut enc = tiff::encoder::TiffEncoder::new(&mut buf).unwrap();
+            let mut img = enc.new_image::<tiff::encoder::colortype::Gray8>(2, 2).unwrap();
+            img.encoder().write_tag(Tag::Copyright, &[0xA9u8, 0x20, 0x58][..]).unwrap();
+            img.write_data(&[1, 2, 3, 4]).unwrap();
+        }
+        let odd = read(std::io::Cursor::new(buf.into_inner()), "odd").unwrap();
+        assert_eq!(odd.copyright, None);
+        assert!(odd.lost.iter().any(|l| l.starts_with("its Copyright tag: it isn't ASCII text")), "{:?}", odd.lost);
+        assert_eq!(super::super::tag_text("a\nb\u{85}c ü"), "a b c ?");
+        // A scan (a TIFF with no GeoTIFF tags) keeps it too.
+        let mut buf = std::io::Cursor::new(Vec::new());
+        {
+            let mut enc = tiff::encoder::TiffEncoder::new(&mut buf).unwrap();
+            let mut img = enc.new_image::<tiff::encoder::colortype::Gray8>(2, 2).unwrap();
+            img.encoder().write_tag(Tag::Copyright, "(c) Scan").unwrap();
+            img.write_data(&[1, 2, 3, 4]).unwrap();
+        }
+        let scan = read(std::io::Cursor::new(buf.into_inner()), "scan").unwrap();
+        assert_eq!((scan.georeferenced, scan.copyright.as_deref()), (false, Some("(c) Scan")));
+        assert_eq!(read(std::io::Cursor::new(write(&r, 0).unwrap()), "tif").unwrap().copyright, want);
+        let cog = super::super::cogwrite::write(&r, 0).unwrap();
+        assert_eq!(read(std::io::Cursor::new(cog), "cog").unwrap().copyright, want);
+    }
+
+    /// A user-defined system's keys are written with the raster type as area, as the corner
+    /// tiepoint is: one first read from a point file isn't placed half a pixel off.
+    #[test]
+    fn custom_keys_are_written_as_area() {
+        let point = [1u16, 1, 0, 3, 1024, 0, 1, 1, 1025, 0, 1, 2, 3072, 0, 1, 32767];
+        assert_eq!(as_area(&point), [1, 1, 0, 3, 1024, 0, 1, 1, 1025, 0, 1, 1, 3072, 0, 1, 32767]);
+        // A key whose value is elsewhere (not in place) is left alone, as is a short directory.
+        assert_eq!(as_area(&[1, 1, 0, 1, 1025, 34737, 1, 2]), [1, 1, 0, 1, 1025, 34737, 1, 2]);
+        assert_eq!(as_area(&[1, 1]), [1, 1]);
+    }
 
     #[test]
     fn float_colour_round_trip() {
