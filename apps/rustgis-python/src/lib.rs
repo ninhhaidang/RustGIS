@@ -222,7 +222,11 @@ impl Engine {
     /// The notices commands have given since the last call (a file's warnings, a tool's
     /// summary): `(text, is_error)` pairs, oldest first.
     fn take_notices(&self, py: Python<'_>) -> Vec<(String, bool)> {
-        let notices: Vec<(String, bool)> = self.with_session(py, |session| session.notices.drain(..).map(|n| (n.text, n.error)).collect());
+        let notices: Vec<(String, bool)> = self.with_session(py, |session| {
+            // A client made on a background thread since the last command may have chosen the trust.
+            session.notice_trust();
+            session.notices.drain(..).map(|n| (n.text, n.error)).collect()
+        });
         self.flush(py);
         notices
     }

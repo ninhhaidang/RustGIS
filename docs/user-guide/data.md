@@ -642,7 +642,8 @@ inspection proxy's) must be trusted by the operating system for the account runn
   variables select the trust sources instead of the default system locations (an empty
   `SSL_CERT_DIR` counts as unset).
   If no default system roots are found and neither variable is set, this client falls back to
-  its bundled Mozilla roots, so public HTTPS still works in minimal containers. It does not
+  its bundled Mozilla roots, so public HTTPS still works in minimal containers, and says so
+  once a session (in the status bar and the troubleshooting history). It does not
   add Mozilla roots to an existing CA store (even one it can't read) or an explicitly configured one.
 
 `SSL_CERT_FILE` and `SSL_CERT_DIR` do **not** override Windows or macOS trust for this client.

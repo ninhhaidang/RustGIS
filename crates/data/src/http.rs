@@ -5,6 +5,7 @@
 //! the `SSL_CERT_FILE` and `SSL_CERT_DIR` the platform verifier reads). The browser uses its own.
 
 use std::sync::LazyLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use ureq::tls::{RootCerts, TlsConfig};
 
@@ -16,8 +17,22 @@ use ureq::tls::{RootCerts, TlsConfig};
 /// The platform verifier reads the system's certificates each time an agent sets up TLS, so an
 /// agent should be made once and kept, its requests leaving its TLS settings alone.
 pub fn tls_config() -> TlsConfig {
-    static ROOTS: LazyLock<RootCerts> = LazyLock::new(system_roots);
+    static ROOTS: LazyLock<RootCerts> = LazyLock::new(|| {
+        let roots = system_roots();
+        BUNDLED.store(matches!(roots, RootCerts::WebPki), Ordering::Relaxed);
+        roots
+    });
     TlsConfig::builder().root_certs(ROOTS.clone()).build()
+}
+
+/// Set once the first native client's trust fell back to the bundled roots.
+static BUNDLED: AtomicBool = AtomicBool::new(false);
+
+/// Whether native clients trust the bundled Mozilla roots because the system has none (see
+/// [`tls_config`]). False until the first client is made, so a session asks again after each
+/// command and says it once (`Session` in the engine): an assumed trust source isn't silent.
+pub fn bundled_roots() -> bool {
+    BUNDLED.load(Ordering::Relaxed)
 }
 
 #[cfg(all(unix, not(target_vendor = "apple"), not(target_os = "android")))]

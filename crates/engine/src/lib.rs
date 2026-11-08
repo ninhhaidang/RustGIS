@@ -700,6 +700,8 @@ pub struct Session {
     /// Runtime-only: never in Project, undo or PutAside, so replacement cannot erase them.
     loss_notices: Vec<LossNotice>,
     loss_notice_overflow: u32,
+    /// Whether this session has said that native HTTPS trusts the bundled CA roots (#1591).
+    bundled_roots_said: bool,
     /// Troubleshooting history, independent of the active pane, project files and undo.
     pub diagnostics: rustgis_data::diagnostics::History,
     /// Notices given in this session, including ones no longer kept (see [`Session::notices_since`]),
@@ -1101,6 +1103,7 @@ impl Session {
             notices: Vec::new(),
             loss_notices: Vec::new(),
             loss_notice_overflow: 0,
+            bundled_roots_said: false,
             diagnostics: rustgis_data::diagnostics::History::default(),
             notices_given: 0,
             table_layer: None,
@@ -1973,6 +1976,9 @@ impl Session {
         }
         // What a header left out, as adding the layer says it (one notice a kind, with counts).
         cmd::raster::say_losses(self, lost);
+        // The browser uses its own trust; only native clients can fall back.
+        #[cfg(not(target_arch = "wasm32"))]
+        self.notice_trust();
         if !dropped.is_empty() {
             let mut kinds: Vec<&str> = dropped.iter().flat_map(|(_, k)| k.iter().copied()).collect();
             kinds.sort_unstable();
@@ -2010,6 +2016,28 @@ impl Session {
                     false,
                 )
             }
+        }
+    }
+
+    /// Says once a session that native HTTPS trusts the bundled Mozilla roots, as a Linux or BSD
+    /// system with no CA certificates and no `SSL_CERT_FILE` or `SSL_CERT_DIR` makes it
+    /// ([`rustgis_data::http::bundled_roots`]): the trust source was assumed, not the system's.
+    /// Checked after each command and each frame, as the clients are first made when a request is.
+    /// Says, once a session, that native HTTPS fell back to the bundled CA roots, if it did. Run
+    /// with [`Session::notice_landed_rasters`]; a reader of the notices that runs no command (the
+    /// Python package) calls it first, as a client made on a background thread chooses the trust.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn notice_trust(&mut self) {
+        self.say_bundled_roots(rustgis_data::http::bundled_roots());
+    }
+
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    fn say_bundled_roots(&mut self, bundled: bool) {
+        if bundled && !self.bundled_roots_said {
+            self.bundled_roots_said = true;
+            self.warn(
+                "This system has no CA certificates, so HTTPS servers are checked against the Mozilla roots bundled with RustGIS: install the system's CA certificates (or set SSL_CERT_FILE or SSL_CERT_DIR) to use its trust instead",
+            );
         }
     }
 
