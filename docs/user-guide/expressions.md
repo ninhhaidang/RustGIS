@@ -144,8 +144,8 @@ Rules shared by all of them:
 Areas and lengths are measured on the WGS 84 ellipsoid, as
 [Calculate Geometry](editing.md) in the attribute table measures them, whatever
 the layer's coordinate system (with the same
-[two exceptions](analysis.md#geoprocessing-tools), a ring with a full-turn edge and one
-winding around a pole). On a feature with no geometry, or coordinates that aren't
+[exception](analysis.md#geoprocessing-tools) for a ring winding around a pole; a ring with a
+full-turn edge, such as a globe-wide band, counts its whole parallels there too). On a feature with no geometry, or coordinates that aren't
 longitudes and latitudes, they are null. Measuring another kind of layer (`$area` on lines), or a
 unit that isn't one of those, is an error.
 
