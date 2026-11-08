@@ -392,6 +392,18 @@ fn registries_and_blocklists_are_read_defensively() {
     assert!(registry::blocked(&list, "x", "anything").is_some());
     assert!(registry::blocked(&list, "y", &sha).is_some());
     assert!(registry::blocked(&list, "y", &"b".repeat(64)).is_none());
+    // A list too long to read whole is refused, not cut short.
+    let entry = json!({"id": "x"});
+    let full = Value::Array(vec![entry.clone(); registry::MAX_ENTRIES]);
+    assert_eq!(registry::parse_blocklist(&full.to_string()).unwrap().len(), registry::MAX_ENTRIES);
+    let over = Value::Array(vec![entry; registry::MAX_ENTRIES + 1]);
+    assert!(registry::parse_blocklist(&over.to_string()).unwrap_err().contains("at most"));
+    // A refused entry isn't quoted at length.
+    let long = json!([{"id": "x".repeat(100_000)}, "y".repeat(100_000)]);
+    for list in [json!([long[0].clone()]), json!([long[1].clone()])] {
+        let e = registry::parse_blocklist(&list.to_string()).unwrap_err();
+        assert!(e.starts_with("blocklist entry 1") && e.len() < 400, "{}", e.len());
+    }
 }
 
 /// Blocklisting unloads affected plugins and prevents them from being loaded again.
@@ -403,6 +415,25 @@ fn blocked_plugins_are_unloaded_and_refused() {
     assert!(crate::get("unit-blocked").is_none());
     let pkg = Package::from_zip(&testing::package("unit-blocked", &[])).unwrap();
     assert!(crate::load(pkg, "t").unwrap_err().contains("malware"));
+    // A refresh of the wrong shape is refused and leaves the withdrawal in place.
+    for text in [
+        "{}",
+        r#"{"blocked": {}}"#,
+        r#"{"blocked": null}"#,
+        "1",
+        r#"[{"reason": "no id"}]"#,
+        "[1]",
+        r#"[{"id": "ok"}, {"reason": "no id"}]"#,
+        r#"[{"id": "unit-blocked", "sha256": "sha256:abc"}]"#,
+        r#"[{"id": "Unit Blocked"}]"#,
+        r#"[{"id": "unit blocked"}]"#,
+    ] {
+        assert!(crate::store::save_blocklist(registry::DEFAULT_URL, text).is_err(), "{text}");
+        assert!(crate::blocked("unit-blocked", "any").is_some(), "{text} cleared the blocklist");
+    }
+    // Only an explicitly empty list clears it.
+    assert_eq!(registry::parse_blocklist(r#"{"blocked": []}"#).unwrap(), Vec::new());
+    assert_eq!(registry::parse_blocklist("[]").unwrap(), Vec::new());
     crate::set_blocklist(Vec::new());
     // Another registry's blocklist only adds: it can't bring back what the hosted one withdrew.
     load("unit-blocked", &[]);
@@ -1188,6 +1219,32 @@ fn process_manifests_are_checked() {
     let m = base(json!({"runtime": "process", "run": {other: ["x"]}})).unwrap();
     let pkg = Package { manifest: m, wasm: Vec::new(), sha256: String::new(), dir: Some(std::env::temp_dir()), skills: Vec::new() };
     assert!(crate::prepare(pkg, "test").unwrap_err().contains("doesn't run on this platform"));
+}
+
+/// A refused refresh leaves the cached hosted blocklist byte for byte, and a cache that can't be
+/// read at start is reported rather than ignored.
+#[test]
+fn cached_blocklist_survives_refused_refreshes() {
+    let plugins = std::env::temp_dir().join(format!("rustgis-test-blocklist-cache-{}", std::process::id()));
+    let _store = store_lock();
+    crate::store::set_dir(Some(plugins.clone()));
+    std::fs::create_dir_all(&plugins).unwrap();
+    let cache = plugins.join("blocklist.json");
+    let good = r#"{"blocked": [{"id": "cached-withdrawal"}]}"#;
+    std::fs::write(&cache, good).unwrap();
+    for text in ["{}", r#"{"blocked": {}}"#, r#"[{"id": "ok"}, {"reason": "no id"}]"#] {
+        assert!(crate::store::save_blocklist(registry::DEFAULT_URL, text).is_err(), "{text}");
+        assert_eq!(std::fs::read_to_string(&cache).unwrap(), good, "{text} overwrote the cache");
+    }
+    std::fs::write(&cache, r#"[{"id": "a"}, {"reason": "no id"}]"#).unwrap();
+    let errors = crate::store::load_installed();
+    assert!(errors.iter().any(|e| e.contains("blocklist.json") && e.contains("entry 2")), "{errors:?}");
+    // So is one that isn't text; none at all is fine.
+    std::fs::write(&cache, [0xff, 0xfe]).unwrap();
+    assert!(crate::store::load_installed().iter().any(|e| e.contains("blocklist.json")));
+    std::fs::remove_file(&cache).unwrap();
+    assert!(crate::store::load_installed().is_empty());
+    let _ = std::fs::remove_dir_all(&plugins);
 }
 
 #[test]

@@ -12784,6 +12784,45 @@ fn serve_files(files: Vec<(String, Vec<u8>)>) -> (String, std::sync::Arc<std::sy
     (base, asked)
 }
 
+/// A registry whose blocklist can't be read warns that the last blocklist read stays in force;
+/// one with a readable blocklist says nothing, apart from naming the plugins it turned off.
+#[test]
+fn unreadable_plugin_blocklist_warns() {
+    let warned = |blocklist: &[u8]| {
+        let (base, _) =
+            serve_files(vec![("/registry.json".into(), br#"{"plugins": []}"#.to_vec()), ("/blocklist.json".into(), blocklist.to_vec())]);
+        let mut s = Session::new(Project::default());
+        let mark = s.notices_given();
+        s.run("plugin.registry", &json!({"url": format!("{base}/registry.json")})).unwrap();
+        let said: Vec<_> = s.notices_since(mark).iter().filter(|n| n.text.contains("stays in force")).collect();
+        assert!(said.iter().all(|n| n.severity == rustgis_data::diagnostics::Severity::Warning), "{said:?}");
+        // It names the blocklist and why it was refused.
+        assert!(
+            said.iter().all(|n| n.text.contains(&format!("{base}/blocklist.json")) && n.text.contains("no 'blocked' list")),
+            "{said:?}"
+        );
+        said.len()
+    };
+    assert_eq!(warned(br#"{"blocked": {}}"#), 1);
+    assert_eq!(warned(br#"{"blocked": []}"#), 0);
+    // In the same test, as both apply blocklists, which unload plugins process-wide: one that
+    // isn't text is refused with a warning, and one that withdraws a loaded plugin says so.
+    let run = |blocklist: &[u8]| {
+        let (base, _) =
+            serve_files(vec![("/registry.json".into(), br#"{"plugins": []}"#.to_vec()), ("/blocklist.json".into(), blocklist.to_vec())]);
+        let mut s = Session::new(Project::default());
+        let mark = s.notices_given();
+        s.run("plugin.registry", &json!({"url": format!("{base}/registry.json")})).unwrap();
+        s.notices_since(mark).iter().map(|n| n.text.clone()).collect::<Vec<_>>()
+    };
+    let said = run(b"[{\"id\": \"eng-\xff\"}]");
+    assert!(said.iter().any(|t| t.contains("isn't text") && t.contains("stays in force")), "{said:?}");
+    plugin("eng-withdrawn", &[]);
+    let said = run(br#"[{"id": "eng-withdrawn"}]"#);
+    assert!(said.iter().any(|t| t.contains("1 plugin(s) were withdrawn") && t.contains("Test eng-withdrawn")), "{said:?}");
+    assert!(rustgis_plugins::get("eng-withdrawn").is_none());
+}
+
 /// A Shapefile published as loose files is added by its `.shp` address (#1238): its `.dbf`,
 /// `.shx`, `.prj` and `.cpg` are fetched beside it with the address's query, and its `.prj` places
 /// it; the parts that aren't there are done without, said, but not its `.dbf`, nor a part a

@@ -12,7 +12,7 @@ use crate::manifest::{Permission, Runtime, valid_id, version_parts};
 pub const DEFAULT_URL: &str = "https://plugins.rustgis.app/registry.json";
 
 /// The most entries read from a registry (or a blocklist): room for tens of thousands of plugins.
-const MAX_ENTRIES: usize = 100_000;
+pub(crate) const MAX_ENTRIES: usize = 100_000;
 
 /// The largest registry downloaded (a registry entry is about 1 KB, so this is ample).
 pub const MAX_REGISTRY_BYTES: usize = 64 * 1024 * 1024;
@@ -192,15 +192,40 @@ pub fn blocklist_url(registry: &str) -> String {
     resolve(registry, "blocklist.json")
 }
 
-/// Reads a blocklist (an object with a `blocked` array, or a bare array).
+/// Reads a blocklist (an object with a `blocked` array, or a bare array). Any other shape, an
+/// entry whose `id` isn't a plugin id or whose `sha256`, when given, isn't a SHA-256 hash (either
+/// would match nothing; no `sha256`, or `null`, withdraws every version), or more than 100,000
+/// entries, is an error rather than a shorter list, so a malformed refresh leaves the last good
+/// list in place: only `[]` or `{"blocked": []}` clears it.
 pub fn parse_blocklist(text: &str) -> Result<Vec<Blocked>, String> {
     let root: Value = serde_json::from_str(text).map_err(|e| format!("the blocklist isn't valid JSON: {e}"))?;
-    let list = match &root {
-        Value::Array(a) => a.clone(),
-        Value::Object(o) => o.get("blocked").and_then(Value::as_array).cloned().unwrap_or_default(),
-        _ => Vec::new(),
+    let list = match root {
+        Value::Array(a) => a,
+        Value::Object(mut o) => match o.remove("blocked") {
+            Some(Value::Array(a)) => a,
+            _ => return Err("the blocklist has no 'blocked' list".into()),
+        },
+        _ => return Err("the blocklist isn't a list or an object with a 'blocked' list".into()),
     };
-    Ok(list.into_iter().take(MAX_ENTRIES).filter_map(|v| serde_json::from_value::<Blocked>(v).ok()).collect())
+    if list.len() > MAX_ENTRIES {
+        return Err(format!("the blocklist has {} entries; at most {MAX_ENTRIES} can be read", list.len()));
+    }
+    list.into_iter()
+        .enumerate()
+        .map(|(i, v)| {
+            // The reason is cut short: it can quote the entry, which comes from the network.
+            let b = serde_json::from_value::<Blocked>(v)
+                .map_err(|e| format!("blocklist entry {}: {}", i + 1, e.to_string().chars().take(200).collect::<String>()))?;
+            if !valid_id(&b.id, false) {
+                return Err(format!("blocklist entry {}: id isn't a plugin id", i + 1));
+            }
+            // Either case: `blocked` compares hashes ignoring it.
+            match &b.sha256 {
+                Some(h) if !is_sha256(&h.to_ascii_lowercase()) => Err(format!("blocklist entry {}: sha256 isn't a SHA-256 hash", i + 1)),
+                _ => Ok(b),
+            }
+        })
+        .collect()
 }
 
 /// Why a package is blocked, if it is.

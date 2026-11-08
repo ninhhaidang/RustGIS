@@ -617,11 +617,20 @@ pub fn poll(app: &mut RustGisApp, ctx: &egui::Context) {
             Job::Blocklist { registry, slot } => match take(&slot) {
                 None => waiting.push(Job::Blocklist { registry, slot }),
                 Some(Ok(b)) => {
-                    let text = String::from_utf8_lossy(&b).to_string();
+                    // Not text is refused too: a replaced byte in an id would match nothing.
+                    let text = std::str::from_utf8(&b).map_err(|e| format!("it isn't text: {e}"));
                     #[cfg(not(target_arch = "wasm32"))]
-                    let pulled = rp::store::save_blocklist(&registry, &text).unwrap_or_default();
+                    let pulled = text.and_then(|t| rp::store::save_blocklist(&registry, t));
                     #[cfg(target_arch = "wasm32")]
-                    let pulled = rp::registry::parse_blocklist(&text).map(|l| rp::apply_blocklist(&registry, l)).unwrap_or_default();
+                    let pulled = text.and_then(rp::registry::parse_blocklist).map(|l| rp::apply_blocklist(&registry, l));
+                    // One that can't be read leaves the list in force as it was.
+                    let pulled = pulled.unwrap_or_else(|e| {
+                        app.session.warn(crate::i18n::fmt(
+                            "The plugin blocklist couldn't be read ({error}); the last one read, if any, stays in force.",
+                            &[("error", &e)],
+                        ));
+                        Vec::new()
+                    });
                     for name in pulled {
                         app.session.notify(
                             crate::i18n::fmt("{name} was withdrawn from the plugin registry and has been turned off.", &[("name", &name)]),
@@ -629,8 +638,16 @@ pub fn poll(app: &mut RustGisApp, ctx: &egui::Context) {
                         );
                     }
                 }
-                // No blocklist: nothing is blocked.
-                Some(Err(_)) => {}
+                // Another registry may have no blocklist (it blocks nothing); the hosted one always
+                // has one, so the list in force may be out of date.
+                Some(Err(e)) => {
+                    if rp::registry::is_default(&registry) {
+                        app.session.warn(crate::i18n::fmt(
+                            "The plugin blocklist couldn't be downloaded ({error}); the last one read, if any, stays in force.",
+                            &[("error", &e)],
+                        ));
+                    }
+                }
             },
             Job::Download { entry, slot } => match take(&slot) {
                 None => waiting.push(Job::Download { entry, slot }),
