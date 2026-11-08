@@ -1369,3 +1369,62 @@ fn streamed_lod_recovers_caching_after_an_escaped_source_panic() {
     assert!(source.cached_thinning("mercator", 0, || Ok(true)).unwrap());
     assert!(source.cached_thinning("mercator", 0, || panic!("recovered decision must be cached")).unwrap());
 }
+
+/// A streamed extruded layer's charts go over its extrusions, which its spool draws once every
+/// chunk is read: none is covered by a roof (#1596).
+#[test]
+fn streamed_extrusions_keep_their_charts_on_top() {
+    let magenta = Rgba::rgb(255, 0, 255);
+    let mut ds = Dataset::new("blocks", GeometryType::Polygon, vec![Field::new("n", FieldType::Double)]);
+    for i in 0..12 {
+        let x = (i % 4) as f64 * 0.05 - 0.1;
+        let y = (i / 4) as f64 * 0.05 - 0.07;
+        ds.push(
+            Some(Geometry::Polygon(vec![vec![vec![
+                Coord::new(x, y),
+                Coord::new(x + 0.03, y),
+                Coord::new(x + 0.03, y + 0.03),
+                Coord::new(x, y + 0.03),
+                Coord::new(x, y),
+            ]]])),
+            vec![Value::Float(5.0)],
+        );
+    }
+    let mut m = Map::new("test");
+    m.basemap = rustgis_map::Basemap::Blank;
+    m.add_dataset(ds);
+    m.camera = Camera::new(rustgis_geom::lonlat_to_merc(Coord::new(-0.03, -0.02)), 60.0);
+    let l = &mut m.layers[0];
+    l.extrusion = Some(rustgis_map::effects::Extrusion {
+        height: 1500.0,
+        field: None,
+        factor: 1.0,
+        face_culling: true,
+        lighting: true,
+        shadows: false,
+    });
+    l.diagram = Some(rustgis_map::DiagramSettings {
+        kind: rustgis_map::DiagramKind::Pie,
+        categories: vec![rustgis_map::DiagramCategory { field: "n".into(), colour: magenta }],
+        size: rustgis_map::DiagramSize::Fixed(8.0),
+        start_angle: 0.0,
+        background: None,
+        stroke: rustgis_map::DiagramSettings::default_stroke(),
+        stroke_width: 0.75,
+        labels: rustgis_map::DiagramLabel::None,
+    });
+    let view = View { width: 320.0, height: 240.0, pixels_per_point: 1.0, camera: m.camera, sky: false };
+    let magentas =
+        |pm: &Pixmap| pm.pixels().iter().filter(|p| p.red() > 200 && p.green() < 60 && p.blue() > 200 && p.alpha() > 200).count();
+    let whole = magentas(&render(&mut m.clone(), &view).unwrap().pixmap);
+    assert!(whole > 100, "the resident layer's charts: {whole} px");
+    for size in [1, 5] {
+        let mut actual = m.clone();
+        actual.layers[0] = streamed(&m.layers[0], size);
+        let Some(RenderOutput::Cpu(got)) = render_with_backend(&mut actual, &view, true, Backend::Cpu) else {
+            panic!("complete frame");
+        };
+        let n = magentas(&got.pixmap);
+        assert!(n * 10 >= whole * 9, "chunks of {size}: {n} chart px, {whole} resident");
+    }
+}

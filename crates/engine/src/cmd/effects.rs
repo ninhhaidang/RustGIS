@@ -93,7 +93,9 @@ pub fn commands() -> Vec<C> {
                 }
                 Some(o) => return Err(format!("unknown bin shape '{o}'")),
             };
-            with(s, p, |l| l.aggregation = agg)
+            let r = with(s, p, |l| l.aggregation = agg)?;
+            super::diagram::hidden_notice(s, id);
+            Ok(r)
         })
         .roles(&[])
         .effects(crate::policy::Effects::NONE)
@@ -193,6 +195,7 @@ fn extrusion(s: &mut Session, p: &Value) -> CmdResult {
     };
     let globe = s.map().projection.is_globe();
     let mut r = with(s, p, |l| l.extrusion = x)?;
+    super::diagram::hidden_notice(s, id);
     // The globe draws polygons flat; extrusion shows on flat maps.
     if globe && let Some(o) = r.as_object_mut() {
         o.insert("note".into(), json!("extrusion shows on flat maps; the globe draws the polygons flat"));
