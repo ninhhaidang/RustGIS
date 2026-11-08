@@ -998,7 +998,7 @@ fn crowding(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, c: &Class) {
                         .range(CALLOUT_REACH)
                         .speed(1.0)
                         .max_decimals(0)
-                        .prefix(tl!("at most "))
+                        .prefix(format!("{} ", tl!("at most")))
                         .suffix(" pt"),
                 )
                 .labelled_by(input_label.id)
