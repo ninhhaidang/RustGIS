@@ -680,7 +680,13 @@ pub fn format_area(m2: f64) -> String {
     if !m2.is_finite() {
         return "—".to_string();
     }
-    if m2.abs().round() < 1.0e6 { format!("{m2:.0} m²") } else { format!("{:.1} km²", m2 / 1.0e6) }
+    if m2.abs().round() < 1.0e6 {
+        // A tiny negative area rounds to `-0`; it reads `0 m²`.
+        let whole = format!("{m2:.0}");
+        format!("{} m²", if whole == "-0" { "0" } else { &whole })
+    } else {
+        format!("{:.1} km²", m2 / 1.0e6)
+    }
 }
 
 /// Formats a lon/lat pair in decimal degrees with hemispheres: `12.345° E 45.678° N`.
@@ -1235,6 +1241,9 @@ mod tests {
         assert_eq!(format_distance(-12_500.0), "-12.5 km");
         assert_eq!(format_distance(-99_949.0), "-99.9 km");
         assert_eq!(format_distance(-99_960.0), "-100 km");
+        assert_eq!(format_area(-0.3), "0 m²");
+        assert_eq!(format_area(-0.0), "0 m²");
+        assert_eq!(format_area(-0.6), "-1 m²");
         assert_eq!(format_area(-999_999.4), "-999999 m²");
         assert_eq!(format_area(-999_999.6), "-1.0 km²");
         assert_eq!(format_area(-1.0e6), "-1.0 km²");

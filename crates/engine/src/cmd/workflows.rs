@@ -27,6 +27,7 @@ pub fn commands() -> Vec<C> {
             .params(r#"{"name"?: model (default: the last), "graph"?: run this graph instead (as model.new)}"#),
         C::new("model.validate", "Validate Model", "Analyze › Geoprocessing", |s, p| {
             let (_, g, _) = model_graph(s, p)?;
+            note_passed_graph(s, p);
             let problems = crate::model::validate(s, &g);
             Ok(json!({"ok": problems.is_empty(), "problems": problems}))
         }).roles(&[crate::ParamRole { key: "graph", role: crate::Role::ModelGraph }]).effects(crate::policy::Effects::NONE)
@@ -443,9 +444,60 @@ pub fn gallery_list(kind: &str) -> CmdResult {
     Ok(Value::Array(out))
 }
 
+/// Tells the user what a graph passed to a command lost or changed when it was read: one notice
+/// per kind, each with a count.
+fn notify_graph_dropped(s: &mut Session, dropped: crate::model::GraphDropped) {
+    if dropped.nodes > 0 {
+        s.notify(format!("model graph: {} node(s) left out: unreadable, without an id, or with the id of another", dropped.nodes), false);
+    }
+    if dropped.edges > 0 {
+        s.notify(
+            format!(
+                "model graph: {} connection(s) left out: unreadable, to a missing node or itself, without an input port, or repeating another",
+                dropped.edges
+            ),
+            false,
+        );
+    }
+    if dropped.ids > 0 {
+        s.notify(
+            format!(
+                "model graph: {} node id(s) changed: trimmed of spaces or cut to {} characters (connections naming the old id follow it)",
+                dropped.ids,
+                crate::model::MAX_NODE_ID
+            ),
+            false,
+        );
+    }
+    if dropped.positions > 0 {
+        s.notify(
+            format!("model graph: {} node position(s) changed: not a number (moved to 0, 0) or out of range (clamped)", dropped.positions),
+            false,
+        );
+    }
+    if dropped.params > 0 {
+        s.notify(format!("model graph: {} node(s) had parameters that were not an object; they were left out", dropped.params), false);
+    }
+}
+
+/// Reads the `graph` a command was passed, if any, with what reading it left out or changed. The
+/// command reports that once it succeeds, so a command that fails says nothing about it.
+fn read_graph(p: &Value) -> Result<(Option<crate::project::ModelGraph>, crate::model::GraphDropped), String> {
+    let Some(g) = p.get("graph").filter(|g| !g.is_null()) else { return Ok((None, Default::default())) };
+    let (graph, dropped) = crate::model::graph_from_json_counted(g)?;
+    Ok((Some(graph), dropped))
+}
+
+/// Says what the graph a command was passed (rather than a saved model's) lost when read.
+fn note_passed_graph(s: &mut Session, p: &Value) {
+    if let Some(Ok((_, dropped))) = p.get("graph").filter(|g| !g.is_null()).map(crate::model::graph_from_json_counted) {
+        notify_graph_dropped(s, dropped);
+    }
+}
+
 fn new_model(s: &mut Session, p: &Value) -> CmdResult {
     let base = ps(p, "name").map(str::trim).filter(|n| !n.is_empty()).unwrap_or("Model").chars().take(200).collect::<String>();
-    let graph = p.get("graph").filter(|g| !g.is_null()).map(crate::model::graph_from_json).transpose()?;
+    let (graph, dropped) = read_graph(p)?;
     let steps: Vec<ModelStep> = match p.get("steps") {
         _ if graph.is_some() => graph.as_ref().map(crate::model::graph_to_steps).unwrap_or_default(),
         Some(v) => serde_json::from_value(v.clone()).map_err(|e| format!("steps: {e}"))?,
@@ -506,6 +558,7 @@ fn new_model(s: &mut Session, p: &Value) -> CmdResult {
     }
     let n = steps.len();
     s.project.models.push(Model { name: name.clone(), steps, graph });
+    notify_graph_dropped(s, dropped);
     Ok(json!({"model": name, "steps": n}))
 }
 
@@ -637,11 +690,14 @@ fn run_model_here(s: &mut Session, p: &Value) -> CmdResult {
     }
     let (name, _, trusted) = model_graph(s, p)?;
     let op = s.authorize_model(p)?;
-    if trusted || p.get("graph").is_some_and(|g| !g.is_null()) {
-        crate::model::run(s, op)
+    let out = if trusted || p.get("graph").is_some_and(|g| !g.is_null()) {
+        crate::model::run(s, op)?
     } else {
-        s.narrowed(crate::policy::Narrow::Item { kind: "model", name }, |s| crate::model::run(s, op))?
-    }
+        s.narrowed(crate::policy::Narrow::Item { kind: "model", name }, |s| crate::model::run(s, op))??
+    };
+    // Said once the run went ahead, not for one that was refused.
+    note_passed_graph(s, p);
+    Ok(out)
 }
 
 /// The stored source and destination names used by graph saving and its provenance check.
@@ -654,7 +710,8 @@ pub(crate) fn model_save_names(p: &Value) -> Result<(String, String), String> {
 /// Saves a graph as a model, replacing the one of that name (or adding it).
 fn save_model(s: &mut Session, p: &Value) -> CmdResult {
     let (name, new_name) = model_save_names(p)?;
-    let g = crate::model::graph_from_json(p.get("graph").ok_or("graph is required")?)?;
+    let (g, dropped) = read_graph(p)?;
+    let g = g.ok_or("graph is required")?;
     let i = s.project.models.iter().position(|m| m.name.eq_ignore_ascii_case(&name));
     if !new_name.eq_ignore_ascii_case(&name) && s.project.models.iter().any(|m| m.name.eq_ignore_ascii_case(&new_name)) {
         return Err(format!("a model named '{new_name}' already exists"));
@@ -667,6 +724,7 @@ fn save_model(s: &mut Session, p: &Value) -> CmdResult {
         None => s.project.models.push(model),
     }
     s.trusted_models.remove(&name.to_ascii_lowercase());
+    notify_graph_dropped(s, dropped);
     Ok(json!({"model": new_name}))
 }
 
@@ -680,9 +738,13 @@ fn export_model(s: &mut Session, p: &Value) -> CmdResult {
     match ps(p, "path") {
         Some(path) => {
             rustgis_data::io::write_atomic(std::path::Path::new(path), text.as_bytes()).map_err(|e| format!("{path}: {e}"))?;
+            note_passed_graph(s, p);
             Ok(json!({"model": name, "path": path}))
         }
-        None => Ok(json!({"model": name, "fileName": format!("{file}.model.json"), "text": text})),
+        None => {
+            note_passed_graph(s, p);
+            Ok(json!({"model": name, "fileName": format!("{file}.model.json"), "text": text}))
+        }
     }
 }
 

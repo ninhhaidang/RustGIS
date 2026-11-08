@@ -241,6 +241,12 @@ jobs:
               | select(.starter.nodes[0] | trusted)
               | select(.comments.nodes[-1]
                        | (.author.__typename == "Bot" and (.body | startswith("**Claude autofix ("))) | not)
+              # A thread a maintainer left for the release quality pass (the last reply from a
+              # writer ends with the quality-sweep marker) waits for that pass, not for autofix. A
+              # later reply from a bot or a non-writer doesn't bring it back; a writer's does.
+              | select(([.comments.nodes[] | select(.author.__typename != "Bot" and (.author.login as $l | $writers | index($l)))]
+                        | last | (.body // ""))
+                       | test("<!-- quality-sweep -->\\s*$") | not)
               | { id, path, line: (.line // .originalLine), outdated: .isOutdated,
                   comments: (.comments.totalCount as $n | .starter.nodes[0] as $s
                              | [ $s, (.comments.nodes[] | select(.id != $s.id)) ]

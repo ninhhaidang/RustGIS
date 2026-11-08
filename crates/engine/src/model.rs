@@ -20,7 +20,7 @@ use crate::project::{ModelEdge, ModelGraph, ModelNode, ModelNodeKind, ModelStep}
 pub const MAX_NODES: usize = 2000;
 pub const MAX_EDGES: usize = 4000;
 /// Identifier length and canvas coordinate limits used by graph commands and file checks.
-const MAX_NODE_ID: usize = 100;
+pub(crate) const MAX_NODE_ID: usize = 100;
 const MAX_NODE_POSITION: f32 = 1e6;
 /// The output port of input and tool nodes.
 pub const OUT: &str = "out";
@@ -477,6 +477,28 @@ pub fn graph_to_steps(g: &ModelGraph) -> Vec<ModelStep> {
 /// edges to missing nodes or to themselves. Bounded in size.
 /// Repeated connections into many-valued input ports retain their multiplicity.
 pub fn graph_from_json(v: &Value) -> Result<ModelGraph, String> {
+    graph_from_json_counted(v).map(|(g, _)| g)
+}
+
+/// What [`graph_from_json_counted`] left out of a graph.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GraphDropped {
+    /// Nodes that could not be read, had no id, or repeated another's id.
+    pub nodes: usize,
+    /// Connections that could not be read, joined a missing node or itself, had no input port,
+    /// or repeated another.
+    pub edges: usize,
+    /// Kept nodes whose id was trimmed of spaces or cut to its longest length.
+    pub ids: usize,
+    /// Kept nodes whose position was not a number (moved to 0, 0) or out of range (clamped).
+    pub positions: usize,
+    /// Kept nodes whose parameters were not an object, so they were left out.
+    pub params: usize,
+}
+
+/// Reads a graph as [`graph_from_json`] does, and counts the nodes and connections it left out
+/// and the nodes it changed, so a command can say so. Errors when `nodes` is missing or either list is too long.
+pub fn graph_from_json_counted(v: &Value) -> Result<(ModelGraph, GraphDropped), String> {
     let nodes = v.get("nodes").and_then(Value::as_array).ok_or("a model graph needs \"nodes\"")?;
     if nodes.len() > MAX_NODES {
         return Err(format!("a model can have at most {MAX_NODES} nodes"));
@@ -486,37 +508,79 @@ pub fn graph_from_json(v: &Value) -> Result<ModelGraph, String> {
         return Err(format!("a model can have at most {MAX_EDGES} connections"));
     }
     let mut g = ModelGraph::default();
+    let mut dropped = GraphDropped::default();
+    // Ids trimmed or cut, from what the file gave to what is kept: connections naming a node by
+    // the id it was given still reach it.
+    let mut renamed: Vec<(String, String)> = Vec::new();
+    // The ids given to the nodes kept, and to those left out for repeating a kept one's id once
+    // trimmed or cut: a connection naming only a left-out node is left out with it, rather than
+    // moved onto the node that kept the id.
+    let mut given_kept: Vec<String> = Vec::new();
+    let mut given_dropped: Vec<String> = Vec::new();
     for n in nodes {
-        let Ok(mut node) = serde_json::from_value::<ModelNode>(n.clone()) else { continue };
-        node.id = node.id.trim().chars().take(MAX_NODE_ID).collect();
-        if node.id.is_empty() || g.nodes.iter().any(|m| m.id == node.id) {
+        let Ok(mut node) = serde_json::from_value::<ModelNode>(n.clone()) else {
+            dropped.nodes += 1;
+            continue;
+        };
+        let id: String = node.id.trim().chars().take(MAX_NODE_ID).collect();
+        if id.is_empty() || g.nodes.iter().any(|m| m.id == id) {
+            dropped.nodes += 1;
+            if !id.is_empty() {
+                given_dropped.push(node.id);
+            }
             continue;
         }
+        given_kept.push(node.id.clone());
+        if id != node.id {
+            dropped.ids += 1;
+            renamed.push((std::mem::take(&mut node.id), id.clone()));
+            node.id = id;
+        }
+        let (x, y) = (node.x, node.y);
         if !node.x.is_finite() || !node.y.is_finite() {
             node.x = 0.0;
             node.y = 0.0;
         }
         node.x = node.x.clamp(-MAX_NODE_POSITION, MAX_NODE_POSITION);
         node.y = node.y.clamp(-MAX_NODE_POSITION, MAX_NODE_POSITION);
-        if !node.params.is_object() {
+        if node.x.to_bits() != x.to_bits() || node.y.to_bits() != y.to_bits() {
+            dropped.positions += 1;
+        }
+        if !node.params.is_object() && !node.params.is_null() {
+            dropped.params += 1;
             node.params = Value::Null;
         }
         g.nodes.push(node);
     }
     for e in edges {
-        let Ok(e) = serde_json::from_value::<ModelEdge>(e.clone()) else { continue };
+        let Ok(mut e) = serde_json::from_value::<ModelEdge>(e.clone()) else {
+            dropped.edges += 1;
+            continue;
+        };
+        let left_out = |end: &String| given_dropped.contains(end) && !given_kept.contains(end);
+        if left_out(&e.from) || left_out(&e.to) {
+            dropped.edges += 1;
+            continue;
+        }
+        for end in [&mut e.from, &mut e.to] {
+            if let Some((_, id)) = renamed.iter().find(|(given, _)| given == end) {
+                *end = id.clone();
+            }
+        }
         let has = |id: &str| g.nodes.iter().any(|n| n.id == id);
         let repeated_input =
             g.nodes.iter().find(|n| n.id == e.to).is_some_and(|n| input_ports(n).iter().any(|p| p.id == e.to_port && p.many));
         if e.from != e.to && has(&e.from) && has(&e.to) && !e.to_port.is_empty() && (repeated_input || !g.edges.contains(&e)) {
             g.edges.push(e);
+        } else {
+            dropped.edges += 1;
         }
     }
     // A graph with no positions (written by hand or by an agent) is laid out.
     if g.nodes.iter().all(|n| n.x == 0.0 && n.y == 0.0) {
         layout(&mut g);
     }
-    Ok(g)
+    Ok((g, dropped))
 }
 
 /// How one node fared in a run.

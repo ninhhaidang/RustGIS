@@ -56,8 +56,9 @@ On the desktop, a file Add Data reads whole (a GeoTIFF or another raster, one GD
 GeoJSON of up to 32 MB, delimited text or a spreadsheet) is read in the background, so the map
 and the rest of the window stay in use: the status bar shows **Add Data**, how many files wait
 after it, and **Cancel**. Files dropped or added together are read one at a time and added in
-that order; one that asks which layers to add joins them once you choose. Cancel leaves the file being read and those waiting; opening another project, or
-switching to another map, leaves them too, and a message says which. A file read in place, a web
+that order; one that asks which layers to add joins them once you choose. Cancel drops the file
+being read and those waiting; opening another project, or switching to another map, drops them
+too, and a message says so (the files waiting are counted, not named). A file read in place, a web
 service or a database adds as before, and scripts read the file where the command runs. So does
 **Delimited Text…**: it reads the file with the columns picked as you press **Add**, so a read
 that fails (a column that isn't in the file, a coordinate system it doesn't know) keeps the
@@ -90,9 +91,9 @@ and S-JTSK, the same built-in Helmert datum transformation as the EPSG definitio
 transformation in the file takes precedence. RDN2008 and IGM95 are treated as WGS 84-like
 datums. These transformations do not replace regional grid corrections for survey accuracy. An
 unrecognized datum keeps its ellipsoid and produces a notice when no transformation is
-available. Swiss oblique Mercator, the standard Krovak East/North variant, and the oblique
-Mercator, Cassini-Soldner, polyconic and Equal Earth methods are supported from their
-parameters, as are sinusoidal (MODIS), Robinson, orthographic and Mercator (variant A), in `.prj`
+available. Swiss oblique Mercator, the standard Krovak East/North variant, the oblique
+Mercator in its azimuth forms (the two-point form, with no azimuth, is refused), and the
+Cassini-Soldner, polyconic and Equal Earth methods are supported from their parameters, as are sinusoidal (MODIS), Robinson, orthographic and Mercator (variant A), in `.prj`
 files and in GeoTIFF keys. Esri's orthographic is a spherical projection: on an ellipsoid it is
 refused, with a notice, rather than computed as EPSG's ellipsoidal one. The equidistant
 cylindrical projection (EPSG:4087, World Equidistant Cylindrical) is computed on its ellipsoid,

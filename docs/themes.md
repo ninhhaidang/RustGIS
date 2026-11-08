@@ -53,8 +53,9 @@ once a second. Without that folder, the app does not wake just to check for them
 the folder while the app is idle, interact with the app or use **Reload Themes** to discover it. A save
 that changes that metadata is picked up automatically. If a save preserves both size and
 modification time, use **Reload Themes** to reread it. A theme in use that stops loading leaves the window on the nearest built-in
-until it loads again: the button names the theme drawn, the menu gives the reason, and the choice
-returns with the file.
+until it loads again: the button names the theme drawn, and the choice returns with the file. A
+file that is refused is listed in the menu with its reason; one deleted or moved away is not
+listed, and only the fallback shows it is gone.
 
 ## A short theme
 
@@ -145,7 +146,7 @@ map's light or dark defaults. It is not inferred from the colours.
 `metrics` are in points: item spacing, button padding, row height, corner radius and text sizes.
 Corner radius is held between 0 and 32 and rounded to the nearest whole point; an adjustment is counted.
 Sizes are held to what a window can draw, and a notice says when a value was held. A file over 64 KB
-is not read.
+is refused.
 
 ## Tokens
 

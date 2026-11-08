@@ -601,7 +601,10 @@ class _Api:
             **params: More ``map.addTiles`` parameters (``kind``, ``attribution``, ...).
 
         Returns:
-            The tile layer's position, kind and name.
+            The tile layer's position, kind and name. An archive (PMTiles or MBTiles)
+            added without an ``id`` also reports ``zoomed``, whether its bounds framed
+            the map by the time the call returned (``False`` while its metadata is
+            still loading, which can frame the map later).
         """
         if name is not None:
             params["name"] = name

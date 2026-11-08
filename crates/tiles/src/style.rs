@@ -1150,7 +1150,7 @@ fn parse_sprites(entries: &[Json]) -> (Vec<(String, String)>, Vec<String>) {
     }
     if past > 0 {
         left_out.push(format!(
-            "{past} of {total} sprites left out, so their icons and patterns aren't drawn: a style's first {MAX_SPRITES} are read"
+            "{past} of {total} sprites left out, so their icons and patterns aren't drawn: only the first {MAX_SPRITES} with a usable id of their own and an address are used"
         ));
     }
     (sprites, left_out)

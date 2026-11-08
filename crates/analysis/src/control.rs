@@ -102,8 +102,8 @@ pub fn install_progress(control: Option<Arc<Control>>) -> rustgis_data::progress
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Cancelled;
 
-/// What [`crate::run_with`] says of a run that was cancelled (it names the tool and how far it
-/// came).
+/// The error text the `From<Cancelled>` conversions carry. [`crate::run_with`] replaces it with
+/// its own "… was cancelled" message, which names the tool and how far it came.
 pub(crate) const CANCELLED: &str = "cancelled";
 
 impl From<Cancelled> for String {

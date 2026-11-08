@@ -190,7 +190,7 @@ gp.batch={"tool":"buffer","inputs":["Cities","Rivers"],"outputPattern":"{input}_
   with a notice). In the browser, add a file as a layer first and use its layer name.
 - `"folder"`: on desktop and the command line, a folder whose `.shp`, `.geojson`, `.json`,
   `.gpkg`, `.fgb`, `.parquet`, `.geoparquet`, `.kml`, `.kmz`, `.gpx` and `.csv` files are run over
-  in alphabetical order. Subfolders and symbolic links are skipped, with a count.
+  in file-name order (byte order, so ASCII capitals come before lowercase letters). Subfolders and symbolic links are skipped, with a count.
 - `"outputPattern"` (or `"output_pattern"`): the name of each output layer, `"{input}_{tool}"` by
   default, where `{input}` is the layer's name or the file's name without its extension and
   `{tool}` the tool's id. It must include `{input}`. A name already taken gets a number (`_2`).
@@ -961,7 +961,8 @@ such as `exterior ring of part 1 crosses itself; 3 repeated vertices in ring 2 o
 feature with more than 20 problems lists the first 20 and counts the rest. If the input already
 has a `problem` or `detail` field, the new one gets the next free name (`problem_2`) and the
 tool says so. When nothing is wrong, the output layer is empty and the message says how many
-features were checked.
+features were checked. `repeated_vertex` is not one of the OGC rules, which allow a point
+repeated in a row: it is a data-quality check reported beside them.
 
 | Code | What is wrong |
 | --- | --- |
@@ -1190,7 +1191,7 @@ the environment does not set their output grids.
 computer's memory, or a container's limit when it is lower: each plans for a quarter of it, never
 below the web app's fixed limits and never above a ceiling.
 
-| Limit | Fixed (web app, smallest) | Desktop: a quarter of memory at | Ceiling |
+| Limit | Floor (web app value in brackets) | Desktop: a quarter of memory at | Ceiling |
 |---|---|---|---|
 | `rasterSamples`: samples a raster read holds (cells times bands) | 120 million (32 million in the web app) | 8 bytes a sample | 1 billion |
 | `outputPixels`: pixels of a raster a tool makes | 64 million | 16 bytes a pixel | 512 million |
@@ -1410,7 +1411,7 @@ The Analyze tab's imagery groups open their tools in the Workflows pane:
   - **Resampling:** `nearest` (the default: it never invents a value, which is right for classes),
     `bilinear` or `cubic` sample each cell at its centre. A cell whose centre falls on a no-data
     pixel (or on NaN, with or without a no-data value; in a colour image, no-data in every
-    channel) is no-data; otherwise they interpolate from the pixels around it that have a value,
+    colour channel, alpha aside) is no-data; otherwise they interpolate from the pixels around it that have a value,
     as gdalwarp does. Going coarser, they skip the detail between cell centres and can give a jagged
     result, where gdalwarp widens its kernel to smooth it. `average` and `mode`
     take every pixel whose centre falls in the cell (no-data skipped), its mean or its most frequent
