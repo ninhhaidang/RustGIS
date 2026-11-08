@@ -25,6 +25,8 @@
 //! positive, with physical dimensions from 1 pixel through the GPU's maximum 2D texture size.
 //! `"dt": seconds` sets each frame's length, default 0.25; a short one such as 0.016 catches the map mid-motion.
 //! The window opens the World Atlas sample.
+//! `"readsOffFrame": true` on the first line runs Add Data, Load All, models and scripts on a
+//! thread of their own, as the desktop app does (the status bar shows the run and Cancel).
 //! `"recovery": "/abs/dir"` on the first line gives the run that recovery folder, as the desktop
 //! app has one (Settings › Autosave; a copy left there is offered by the recovery dialog).
 //!
@@ -150,6 +152,8 @@ fn main() {
     let ribbon_split = lines.first().and_then(|l| l.get("ribbonSplit")).and_then(Value::as_bool).unwrap_or(false);
     let mut split_showcase = RibbonSplitShowcase::default();
     let mut app = RustGisApp::with_sample();
+    // As the desktop app does: Add Data, Load All, models and scripts run on a thread of their own.
+    app.reads_off_frame = lines.first().and_then(|l| l.get("readsOffFrame")).and_then(Value::as_bool).unwrap_or(false);
     if let Some(dir) = lines.first().and_then(|l| l.get("recovery")).and_then(Value::as_str) {
         let store = rustgis_ui_egui::FolderStore::open(std::path::Path::new(dir)).expect("recovery folder");
         app = app.with_services(rustgis_ui_egui::Services { recovery: Some(Box::new(store)), ..Default::default() });

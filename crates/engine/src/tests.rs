@@ -33643,6 +33643,64 @@ fn a_scripts_tools_run_ahead_are_taken_by_its_run() {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_scripts_batch_runs_ahead_and_stops_with_its_cancel() {
+    if isolate_process_test("tests::a_scripts_batch_runs_ahead_and_stops_with_its_cancel") {
+        return;
+    }
+    use crate::cmd::reads::{read_ahead, read_land};
+    use rustgis_analysis::control::Control;
+    let dir = std::env::temp_dir().join(format!("rustgis-batch-ahead-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("towns.csv");
+    std::fs::write(&file, "name,x,y\nA,8,47\nB,9,46\n").unwrap();
+    let session = || {
+        let mut s = Session::new(Project::default());
+        for name in ["North", "South"] {
+            let mut points = rustgis_data::Dataset::new(name, rustgis_data::GeometryType::Point, Vec::new());
+            points.push_next(Some(rustgis_data::Geometry::Point(rustgis_geom::Coord::new(8.0, 47.0))), Vec::new());
+            s.map_mut().add_layer(rustgis_map::Layer::new(0, points));
+        }
+        s
+    };
+    let batch = json!({"tool": "buffer", "inputs": ["North", "South", file.display().to_string()], "params": {"distance": 1000}});
+    let p = json!({"script": format!("gp.batch {batch}")});
+    let layers = |s: &Session| s.map().layers.iter().map(|l| (l.name.clone(), l.dataset.features.len())).collect::<Vec<_>>();
+    let mut here = session();
+    here.run("script.run", &p).unwrap();
+
+    // A batch runs on a copy of the session, with Cancel in the status bar: each item's tool and
+    // the file it read are taken by the run here, which reads the file no more.
+    let mut s = session();
+    let ahead = read_ahead(&mut s, "script.run", &p).unwrap();
+    assert!(ahead.reads(), "a batch runs on a thread of its own");
+    let read = ahead.run(&Control::stoppable()).unwrap();
+    let r = read_land(&mut s, read).unwrap();
+    assert_eq!(s.tools_taken, 3, "{r}");
+    assert!(s.read_ahead.is_none() && s.tools_ahead.is_none() && s.files_ahead.is_none());
+    assert_eq!(layers(&s), layers(&here));
+    assert_eq!(s.project.gp_history.len(), here.project.gp_history.len());
+    assert!(s.notices.iter().any(|n| n.text == "Batch 'buffer' complete: all 3 succeeded"), "{:?}", s.notices);
+
+    // The file changed after the copy read it: the run here reads it again, and runs its tool.
+    let mut s = session();
+    let read = read_ahead(&mut s, "script.run", &p).unwrap().run(&Control::stoppable()).unwrap();
+    std::fs::write(&file, "name,x,y\nA,8,47\nB,9,46\nC,10,45\n").unwrap();
+    read_land(&mut s, read).unwrap();
+    assert_eq!(s.tools_taken, 2);
+    assert!(s.files_ahead.is_none());
+    assert_eq!(s.map().layer_by_name("towns_buffer").map(|l| l.dataset.features.len()), Some(3));
+
+    // Cancelled while it runs: the batch stops between items, and the run adds nothing.
+    let mut s = session();
+    let control = Control::stoppable();
+    control.cancel();
+    assert!(read_ahead(&mut s, "script.run", &p).unwrap().run(&control).err().is_some_and(|e| e.contains("cancelled")));
+    assert_eq!(s.map().layers.len(), 2);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn topology_validate_says_when_a_polar_check_is_incomplete() {
     // A line winding round the North Pole about 19,000 times: its dangle check measures it coarsely,

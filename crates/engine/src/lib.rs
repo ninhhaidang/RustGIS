@@ -890,6 +890,10 @@ pub struct Session {
     /// ([`cmd::gp::Ahead::Taking`]), or which that copy records ([`cmd::gp::Ahead::Recording`]).
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) tools_ahead: Option<cmd::gp::Ahead>,
+    /// The files a batch read on that copy, which the batch's run here takes
+    /// ([`cmd::gp::FilesAhead`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) files_ahead: Option<cmd::gp::FilesAhead>,
     /// Where the requests a copy of the session makes for a model's run ahead go
     /// ([`cmd::workflows::ahead_on_copy`]): the session's own Diagnostics, as when they're made
     /// there. Its notices stay its own: the run there says them.
@@ -1184,6 +1188,8 @@ impl Session {
             read_ahead: None,
             #[cfg(not(target_arch = "wasm32"))]
             tools_ahead: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            files_ahead: None,
             #[cfg(not(target_arch = "wasm32"))]
             requests_into: None,
             #[cfg(test)]

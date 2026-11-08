@@ -628,23 +628,85 @@ pub(crate) enum Ahead {
 pub(crate) const NOT_AHEAD: &str = "runs where the model or script runs";
 
 #[cfg(not(target_arch = "wasm32"))]
+/// A file a batch read on a copy of the session ([`super::workflows::ahead_on_copy`]), for the
+/// batch's run here to take instead of reading it again.
+pub(crate) struct FileAhead {
+    path: std::path::PathBuf,
+    /// The file's size and modification time when it was read: one changed since is read again.
+    stamp: Option<(u64, std::time::SystemTime)>,
+    read: Result<(Dataset, rustgis_data::ReadReport), String>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// A file's size and modification time, when the system gives them.
+fn file_stamp(path: &std::path::Path) -> Option<(u64, std::time::SystemTime)> {
+    let meta = std::fs::metadata(path).ok()?;
+    Some((meta.len(), meta.modified().ok()?))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// The files a batch of a model or script run ahead read: recorded on the copy, then taken in
+/// order by the run here.
+pub(crate) enum FilesAhead {
+    Recording(Vec<FileAhead>),
+    Taking(std::collections::VecDeque<FileAhead>),
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// What a model's or script's run on a copy of the session made: its tools' runs and the files
+/// its batches read, in order.
+pub(crate) struct RanAheads {
+    tools: Vec<RanAhead>,
+    files: Vec<FileAhead>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 /// Runs `run` taking the tools `ran` ahead: each one whose inputs are still the same as the run
-/// ahead read them is taken; from the first that isn't, the tools run here. Restored on every
-/// path, a panic included (raised again), so no later run takes them.
-pub(crate) fn taking<T>(s: &mut Session, ran: Vec<RanAhead>, run: impl FnOnce(&mut Session) -> T) -> T {
-    s.tools_ahead = Some(Ahead::Taking(ran.into()));
+/// ahead read them is taken; from the first that isn't, the tools run here. A batch takes the
+/// files read ahead the same way. Restored on every path, a panic included (raised again), so no
+/// later run takes them.
+pub(crate) fn taking<T>(s: &mut Session, ran: RanAheads, run: impl FnOnce(&mut Session) -> T) -> T {
+    s.tools_ahead = Some(Ahead::Taking(ran.tools.into()));
+    s.files_ahead = Some(FilesAhead::Taking(ran.files.into()));
     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(s)));
     s.tools_ahead = None;
+    s.files_ahead = None;
     r.unwrap_or_else(|p| std::panic::resume_unwind(p))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-/// The tools a copy of the session recorded ([`Ahead::Recording`]), taken.
-pub(crate) fn ran_ahead(s: &mut Session) -> Vec<RanAhead> {
-    match s.tools_ahead.take() {
+/// What a copy of the session recorded ([`Ahead::Recording`], [`FilesAhead::Recording`]), taken.
+pub(crate) fn ran_ahead(s: &mut Session) -> RanAheads {
+    let tools = match s.tools_ahead.take() {
         Some(Ahead::Recording(ran)) => ran,
         _ => Vec::new(),
+    };
+    let files = match s.files_ahead.take() {
+        Some(FilesAhead::Recording(read)) => read,
+        _ => Vec::new(),
+    };
+    RanAheads { tools, files }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// Reads a batch's input file: on a copy of the session, recorded for the run here
+/// ([`FilesAhead::Recording`]); there, the copy's read of it when it is the next one taken and
+/// the file hasn't changed since (its size and modification time), else read here, as are the
+/// rest (whose tools then run here too, on what is read now).
+fn read_batch_file(s: &mut Session, path: &std::path::Path) -> Result<(Dataset, rustgis_data::ReadReport), String> {
+    if let Some(FilesAhead::Taking(files)) = &mut s.files_ahead {
+        match files.pop_front() {
+            Some(next) if next.path == path && next.stamp.is_some() && next.stamp == file_stamp(path) => return next.read,
+            _ => s.files_ahead = None,
+        }
     }
+    let stamp = file_stamp(path);
+    let read = rustgis_data::io::read_path(path).map_err(|e| e.to_string());
+    // The dataset's rows are shared with the copy's layer, not copied.
+    if let Some(FilesAhead::Recording(files)) = &mut s.files_ahead {
+        files.push(FileAhead { path: path.to_path_buf(), stamp, read: read.clone() });
+    }
+    read
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1187,10 +1249,13 @@ fn is_folder_sidecar_ext(ext: &str) -> bool {
     matches!(ext, "dbf" | "shx" | "prj" | "cpg" | "qpj" | "sbn" | "sbx" | "qix" | "xml" | "gpkg-wal" | "gpkg-shm" | "wal" | "shm")
 }
 
-/// Runs a geoprocessing tool in batch across multiple layers or files.
+/// Runs a geoprocessing tool in batch across multiple layers or files: under the control of the
+/// run it is part of when there is one (a script the app runs on a thread of its own, with Cancel
+/// in the status bar), so cancelling that run stops the batch between items and the batch says
+/// how many it ran; under its own otherwise.
 fn batch(s: &mut Session, p: &Value) -> CmdResult {
     use rustgis_analysis::control::Control;
-    let control = if s.stoppable { Control::stoppable() } else { Control::new() };
+    let control = rustgis_analysis::control::current().unwrap_or_else(|| if s.stoppable { Control::stoppable() } else { Control::new() });
     run_batch_with(s, p, &control)
 }
 
@@ -1552,7 +1617,7 @@ pub fn run_batch_with(s: &mut Session, p: &Value, control: &std::sync::Arc<rustg
                 if was_trimmed {
                     trimmed_paths += 1;
                 }
-                match rustgis_data::io::read_path(path) {
+                match read_batch_file(s, path) {
                     Ok((dataset, report)) => {
                         for msg in report.messages {
                             item_reader_warnings.push(format!("{target}: {msg}"));
@@ -1833,6 +1898,12 @@ pub fn run_batch_with(s: &mut Session, p: &Value, control: &std::sync::Arc<rustg
                 }
             }
             Err(err) => {
+                // On a copy of the session, a tool that runs where the script runs stops the copy
+                // there, as in a model: the run here runs it and the items after it.
+                #[cfg(not(target_arch = "wasm32"))]
+                if err == NOT_AHEAD && matches!(s.tools_ahead, Some(Ahead::Recording(_))) {
+                    return Err(err);
+                }
                 if control.is_cancelled() {
                     cancelled_after = Some(i + 1);
                     interrupted_error = Some(err.clone());
@@ -4400,6 +4471,71 @@ mod batch_tests {
         assert_eq!(res["errors"][0]["interrupted"], true);
         assert!(!s.notices.iter().any(|n| n.text.contains("failed")));
         assert!(s.notices.iter().any(|n| n.text.contains("cancelled after 1 of 3 (Cancel Item Tool was cancelled)")));
+    }
+
+    static OUTER_CTL: std::sync::Mutex<Option<std::sync::Arc<rustgis_analysis::control::Control>>> = std::sync::Mutex::new(None);
+    static OUTER_RUNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    /// Presses Cancel on the run the batch is part of (not the batch's own control).
+    fn cancel_outer_runner(
+        _spec: &rustgis_analysis::ToolSpec,
+        _inputs: &dyn rustgis_analysis::Inputs,
+        _params: &serde_json::Value,
+    ) -> Result<rustgis_analysis::ToolResult, String> {
+        OUTER_RUNS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if let Ok(guard) = OUTER_CTL.lock()
+            && let Some(ctl) = guard.as_ref()
+        {
+            ctl.cancel();
+        }
+        Err("cancelled from outside".into())
+    }
+
+    #[test]
+    fn batch_run_stops_with_the_run_it_is_part_of() {
+        rustgis_analysis::register_external(
+            "test_cancel_outer_suite",
+            || {
+                vec![rustgis_analysis::ToolSpec {
+                    id: "test:cancel_outer",
+                    name: "Cancel Outer Tool",
+                    toolbox: "Test",
+                    summary: "",
+                    params: &[rustgis_analysis::ParamSpec {
+                        name: "input",
+                        label: "Input Layer",
+                        kind: rustgis_analysis::ParamKind::Layer,
+                        required: true,
+                        default: "",
+                        help: "",
+                    }],
+                    run: rustgis_analysis::external_placeholder,
+                }]
+            },
+            cancel_outer_runner,
+        );
+        let mut s = Session::new(crate::Project::default());
+        for (i, name) in ["L1", "L2", "L3"].into_iter().enumerate() {
+            s.map_mut().add_layer(rustgis_map::Layer::new(i as u32, Dataset::new(name, rustgis_data::GeometryType::Point, Vec::new())));
+        }
+        // The batch runs as a command under the control of the run it is part of (a script run
+        // ahead with Cancel in the status bar): cancelling that run stops it after the item under
+        // way, and it says how many it ran.
+        let control = rustgis_analysis::control::Control::new();
+        *OUTER_CTL.lock().unwrap() = Some(control.clone());
+        let mut res = None;
+        let ran = rustgis_analysis::run_under("Run Script", &control, || {
+            res = Some(s.run("gp.batch", &json!({"tool": "test:cancel_outer", "inputs": ["L1", "L2", "L3"]})));
+            Ok(())
+        });
+        *OUTER_CTL.lock().unwrap() = None;
+        assert!(ran.is_err(), "the run it is part of was cancelled");
+        let res = res.unwrap().unwrap();
+        assert_eq!(OUTER_RUNS.load(std::sync::atomic::Ordering::SeqCst), 1, "the items after it never ran");
+        assert_eq!(res["cancelled"], true);
+        assert_eq!(res["attempted"], 1);
+        assert_eq!(res["total"], 3);
+        assert!(s.notices.iter().any(|n| n.text.contains("Batch 'test:cancel_outer' cancelled after 1 of 3")), "{:?}", s.notices);
     }
 
     fn empty_output_runner(

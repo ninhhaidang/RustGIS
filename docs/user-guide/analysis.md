@@ -208,6 +208,13 @@ naming the inputs, and is kept in the history and the result's `"warnings"`. Too
 file are refused. A batch is yours to run: the AI Assistant asks each time, and plugins and
 imported tasks can't run one.
 
+On the desktop, a batch in the Script pane runs in the background, as the script's tools do: the
+status bar shows **Run Script** and **Cancel**. Cancel stops the batch after the item under way,
+before the next one starts, and the run adds nothing. A batch run under a run that can be
+cancelled stops with it, and says how many items it ran (`"cancelled"` and `"attempted"` in its
+result, and a notice such as `Batch 'buffer' cancelled after 2 of 10`). On the command line,
+Ctrl-C stops a batch as it stops any command.
+
 ### Built-in tools
 
 These are the built-in tools; GeoLibre and plugin tools join them when available.
@@ -1233,7 +1240,7 @@ off with nothing to clear, and while a run is under way. Opening a
 project (New, Open, the sample, a template, or the same one again), from the app, a script, the
 assistant or an agent, starts the pane blank: the script, its results, the count and the Details
 window go with the old project. A script that opens a project itself stays, with its results, as
-the new project's Run #1. On the desktop, a script's tools and models, with selections, layer
+the new project's Run #1. On the desktop, a script's tools, models and batches, with selections, layer
 renames and definition queries, the environment and the projection between them, are worked out
 in the background first, so the map and the rest of the window stay in use: the status bar shows
 **Run Script** and **Cancel**, and the results say **Running…** until the run is added. From the

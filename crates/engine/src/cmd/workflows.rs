@@ -585,7 +585,7 @@ pub(crate) fn model_graph(s: &Session, p: &Value) -> Result<(String, crate::proj
 /// ([`ahead_on_copy`]) whose inputs are still the same.
 fn run_model(s: &mut Session, p: &Value) -> CmdResult {
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(ran) = super::reads::take::<Vec<super::gp::RanAhead>>(s, MODEL_AHEAD) {
+    if let Some(ran) = super::reads::take::<super::gp::RanAheads>(s, MODEL_AHEAD) {
         return super::gp::taking(s, ran, |s| run_model_here(s, p));
     }
     run_model_here(s, p)
@@ -620,6 +620,7 @@ pub(crate) fn ahead_on_copy(s: &Session, command: &'static str, p: &Value) -> su
         copy.view_size = view_size;
         copy.active_layer = active_layer;
         copy.tools_ahead = Some(super::gp::Ahead::Recording(Vec::new()));
+        copy.files_ahead = Some(super::gp::FilesAhead::Recording(Vec::new()));
         let _ = copy.run(command, &p);
         super::gp::ran_ahead(&mut copy)
     })
@@ -637,12 +638,13 @@ pub(crate) fn script_ahead(s: &Session, p: &Value) -> Option<super::reads::ReadW
 
 #[cfg(not(target_arch = "wasm32"))]
 /// The commands a script's line may run on a copy of the session ([`runs_on_a_copy`]): those
-/// whose results are taken (a tool, a model) and those that change only what the taking compares
+/// whose results are taken (a tool, a model, a batch) and those that change only what the taking compares
 /// by value (a selection, a layer's name or query, the environment, the projection). A line that
 /// makes rows of its own (an edit, a layer from a selection) isn't one: the rows it made on the
 /// copy are never the run here's, so every tool after it would run again.
 pub(crate) const ON_A_COPY: &[&str] = &[
     "model.run",
+    "gp.batch",
     "gp.run",
     "gp.spatialJoin",
     "gp.zonalStats",
@@ -669,8 +671,10 @@ pub(crate) const ON_A_COPY: &[&str] = &[
 /// other line stops the copy there, Add Data and Load All among them (they would read their
 /// files and servers twice).
 fn runs_on_a_copy(s: &Session, id: &str, params: &Value) -> bool {
-    // A model's own tools are checked as they run; any other line by what its parameters name.
-    ON_A_COPY.contains(&id) && (id == "model.run" || !super::items::touches_files(s, id, params))
+    // A model's own tools are checked as they run, and so are a batch's: a batch writes no file
+    // (it runs tools that add layers), and the files it reads are read once, on the copy, for the
+    // run here to take ([`super::gp::FilesAhead`]). Any other line by what its parameters name.
+    ON_A_COPY.contains(&id) && (matches!(id, "model.run" | "gp.batch") || !super::items::touches_files(s, id, params))
 }
 
 fn run_model_here(s: &mut Session, p: &Value) -> CmdResult {
@@ -808,7 +812,7 @@ fn wire(v: &mut Value, outputs: &[String], step: usize, depth: usize) -> Result<
 /// The whole script is one undo step.
 pub(crate) fn run_script(s: &mut Session, p: &Value) -> CmdResult {
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(ran) = super::reads::take::<Vec<super::gp::RanAhead>>(s, SCRIPT_AHEAD) {
+    if let Some(ran) = super::reads::take::<super::gp::RanAheads>(s, SCRIPT_AHEAD) {
         return super::gp::taking(s, ran, |s| run_script_here(s, p));
     }
     run_script_here(s, p)
