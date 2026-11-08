@@ -13886,6 +13886,39 @@ fn tile_layers_take_their_services_legends() {
     assert_eq!(legends(&s, "Topo").0, Vec::<String>::new(), "a refusal changes nothing");
 }
 
+/// A WMS layer that lost its times to the document's cap says so when it is added, and the time
+/// slider's refusal says why (#1519).
+#[test]
+fn a_wms_layer_past_the_time_cap_says_its_times_are_left_out() {
+    let times: Vec<String> = (0..1000).map(|i| (1000 + i).to_string()).collect();
+    let children: String = (0..60).map(|i| format!("<Layer><Name>c{i}</Name><Title>C{i}</Title></Layer>")).collect();
+    let wms = format!(
+        r#"<WMS_Capabilities version="1.3.0" xmlns="http://www.opengis.net/wms"><Capability><Layer><Title>Root</Title><CRS>EPSG:3857</CRS><Dimension name="time" units="ISO8601" default="1999">{}</Dimension>{children}</Layer></Capability></WMS_Capabilities>"#,
+        times.join(",")
+    );
+    let mut s = Session::new(Project::default());
+    let url = "https://maps.example.com/wms";
+    let mark = s.notice_mark();
+    s.run("service.add", &json!({"url": url, "layer": "c0", "text": wms})).unwrap();
+    assert!(s.notices_since(mark).iter().all(|n| !n.text.contains("times are left out")), "{:?}", s.notices_since(mark));
+    // 50,000 times go to the first 50 layers.
+    s.run("service.add", &json!({"url": url, "layer": "c55", "text": wms})).unwrap();
+    let said = "C55: 1000 of its times are left out: RustGIS keeps at most 1000 for a layer and 50000 for one document's layers";
+    assert!(s.notices_since(mark).iter().any(|n| n.text == said), "{:?}", s.notices_since(mark));
+    let e = s.run("service.add", &json!({"url": url, "layer": "c55", "text": wms, "time": "slider"})).unwrap_err();
+    assert!(e.contains("its 1000 times are left out, past the 50000"), "{e}");
+    // A layer with 1,100 times of its own loses 100 to its own cap, not the document's: the notice says so.
+    let own: String = (0..1100).map(|i| (1000 + i).to_string()).collect::<Vec<_>>().join(",");
+    let long = format!(
+        r#"<WMS_Capabilities version="1.3.0" xmlns="http://www.opengis.net/wms"><Capability><Layer><Title>Root</Title><CRS>EPSG:3857</CRS><Layer><Name>long</Name><Title>Long</Title><Dimension name="time" units="ISO8601" default="1999">{own}</Dimension></Layer></Layer></Capability></WMS_Capabilities>"#
+    );
+    let mut own_cap = Session::new(Project::default());
+    let mark = own_cap.notice_mark();
+    own_cap.run("service.add", &json!({"url": url, "layer": "long", "text": long})).unwrap();
+    let said = "Long: 100 of its times are left out: RustGIS keeps at most 1000 for a layer and 50000 for one document's layers";
+    assert!(own_cap.notices_since(mark).iter().any(|n| n.text == said), "{:?}", own_cap.notices_since(mark));
+}
+
 /// A WMS layer with a time dimension (WMS 1.3.0 Annex C) is added at its default or the time
 /// asked for, named with it: one time where the layer takes single values, a list or interval
 /// where it takes several; GetFeatureInfo asks at the same time, its project's layer too.
@@ -14790,6 +14823,120 @@ fn service_features_asked_for_over_an_area() {
 fn view_lonlat(s: &Session) -> [f64; 4] {
     let e = crate::cmd::workspace::view_extent(s);
     [e.min_x, e.min_y, e.max_x, e.max_y]
+}
+
+/// A layer past the first 2000 of a long list is added by its name, and the list says it stops
+/// (#1519: IBGE's WFS has 10,186 types, and its order changes between answers).
+#[test]
+fn a_layer_past_the_listing_is_added_by_name() {
+    use ogc_server::{Route, Server};
+    let answer = r#"{"type":"FeatureCollection","features":[{"type":"Feature","id":"a.1","geometry":{"type":"Point","coordinates":[1,1]},"properties":{}}]}"#;
+    let server = Server::new(vec![Route::new("/wfs", answer)]);
+    let url = format!("{}/wfs", server.base);
+    let caps = |n: usize| {
+        let types: String = (1..=n).map(|i| format!("<FeatureType><Name>t:{i}</Name></FeatureType>")).collect();
+        format!(
+            r#"<WFS_Capabilities version="2.0.0"><OperationsMetadata><Operation name="GetFeature"><DCP><HTTP><Get href="{}/wfs?"/></HTTP></DCP></Operation></OperationsMetadata><FeatureTypeList>{types}</FeatureTypeList></WFS_Capabilities>"#,
+            server.base
+        )
+    };
+    let mut s = Session::new(Project::default());
+    let whole = s.run("service.layers", &json!({"url": url, "text": caps(2000)})).unwrap();
+    assert_eq!(whole["count"], 2000);
+    assert_eq!(whole["notes"], json!([]));
+    assert!(whole.get("total").is_none() && whole.get("listedNote").is_none());
+    let cut = s.run("service.layers", &json!({"url": url, "text": caps(2001)})).unwrap();
+    assert_eq!(cut["total"], 2001);
+    assert_eq!(cut["listedNote"], cut["notes"][0]);
+    assert!(cut.get("atLeast").is_none());
+    assert_eq!(cut["count"], 2000);
+    assert_eq!(cut["layers"].as_array().unwrap().len(), 2000);
+    assert_eq!(cut["layers"][1999]["name"], "t:2000");
+    assert_eq!(cut["notes"], json!(["only the first 2000 of 2001 layers are listed; service.add takes any of them by name"]));
+    s.run("service.add", &json!({"url": url, "layer": "t:2001", "text": caps(2001), "name": "Last"})).unwrap();
+    assert!(s.map().layer_by_name("Last").is_some());
+    assert!(server.requests().iter().any(|r| r.query.iter().any(|(k, v)| k == "TYPENAMES" && v == "t:2001")));
+    // A name it doesn't have isn't sent to a list said to hold them all.
+    let e = s.run("service.add", &json!({"url": url, "layer": "t:0", "text": caps(2001)})).unwrap_err();
+    assert!(e.ends_with("no layer 't:0' (service.layers lists the first 2000 of 2001 layers)"), "{e}");
+
+    // A service group takes all of an OGC API's collections, so it still refuses so long a list.
+    let collections: Vec<Value> = (1..=2001)
+        .map(|i| json!({"id": format!("c{i}"), "links": [{"rel": "items", "href": format!("collections/c{i}/items")}]}))
+        .collect();
+    let text = json!({"collections": collections}).to_string();
+    let url = "https://api.example.org/collections";
+    let listed = s.run("service.layers", &json!({"url": url, "text": text})).unwrap();
+    assert_eq!(listed["count"], 2000);
+    let e = s.run("service.groupPlan", &json!({"url": url, "text": text})).unwrap_err();
+    assert!(e.contains("more than 2000"), "{e}");
+}
+
+/// A layer past what RustGIS reads of a document is refused for that reason, not as absent.
+#[test]
+fn a_layer_past_the_read_limit_is_refused_saying_so() {
+    let wfs: String = (1..=100_001).map(|i| format!("<FeatureType><Name>t:{i}</Name></FeatureType>")).collect();
+    let wfs = format!(r#"<WFS_Capabilities version="2.0.0"><FeatureTypeList>{wfs}</FeatureTypeList></WFS_Capabilities>"#);
+    let mut s = Session::new(Project::default());
+    let url = "https://wfs.example.org/wfs";
+    let listed = s.run("service.layers", &json!({"url": url, "text": wfs})).unwrap();
+    assert_eq!(listed["count"], 2000);
+    // The dialog's heading and Connect's summary count those read, saying there are more.
+    assert_eq!((&listed["total"], &listed["atLeast"]), (&json!(100_000), &json!(true)));
+    assert_eq!(
+        listed["notes"],
+        json!([
+            "RustGIS reads at most 100000 feature types from one document: 1 left out",
+            "only the first 2000 of the 100000 layers read are listed; service.add takes any of them by name",
+        ])
+    );
+    let e = s.run("service.add", &json!({"url": url, "layer": "t:100001", "text": wfs})).unwrap_err();
+    assert!(
+        e.contains(
+            "no layer 't:100001' (service.layers lists the first 2000 of the 100000 layers read; RustGIS reads at most 100000 feature types"
+        ),
+        "{e}"
+    );
+
+    let wcs: String = (1..=100_001).map(|i| format!("<CoverageSummary><CoverageId>c{i}</CoverageId></CoverageSummary>")).collect();
+    let wcs = format!("<Capabilities><Contents>{wcs}</Contents></Capabilities>");
+    let p = json!({"url": "https://wcs.example.org/wcs", "layer": "c100001", "text": wcs, "bbox": "full"});
+    let e = s.run("service.coverage", &p).unwrap_err();
+    assert!(
+        e.contains(
+            "no coverage 'c100001' (service.layers lists the first 2000 of the 100000 layers read; RustGIS reads at most 100000 coverages"
+        ),
+        "{e}"
+    );
+
+    // All under one parent, as a service's layers often are: this takes minutes if each looks
+    // through its siblings. (Its last layer is the one past the limit.)
+    let wms: String = (1..=100_001).map(|i| format!("<Layer><Name>t{i}</Name></Layer>")).collect();
+    let wms = format!(
+        r#"<WMS_Capabilities version="1.3.0"><Capability><Layer><CRS>EPSG:3857</CRS>{wms}</Layer></Capability></WMS_Capabilities>"#
+    );
+    let e = s.run("service.add", &json!({"url": "https://wms.example.org/wms", "layer": "t100001", "text": wms})).unwrap_err();
+    assert!(e.contains("from one document: 1 left out"), "{e}");
+    s.run("service.add", &json!({"url": "https://wms.example.org/wms", "layer": "t1", "text": wms})).unwrap();
+
+    // Many boxes on the parent they share: this too takes minutes if each looks through them.
+    let boxes = r#"<BoundingBox CRS="EPSG:4326" minx="1" miny="1" maxx="2" maxy="2"/>"#.repeat(50_000);
+    let wms: String = (1..=50_000).map(|i| format!("<Layer><Name>t{i}</Name></Layer>")).collect();
+    let wms = format!(
+        r#"<WMS_Capabilities version="1.3.0"><Capability><Layer><CRS>EPSG:3857</CRS><CRS>EPSG:4326</CRS>{boxes}{wms}</Layer></Capability></WMS_Capabilities>"#
+    );
+    let listed = s.run("service.layers", &json!({"url": "https://wms.example.org/wms", "text": wms})).unwrap();
+    assert_eq!(listed["count"], 2000);
+
+    // An ArcGIS service is read as far as it is listed.
+    let layers: Vec<Value> = (1..=2001).map(|i| json!({"id": i, "name": format!("l{i}")})).collect();
+    let url = "https://gis.example.org/arcgis/rest/services/P/FeatureServer";
+    let p = json!({"url": url, "layer": "l2001", "text": json!({"layers": layers}).to_string()});
+    let e = s.run("service.add", &p).unwrap_err();
+    assert!(
+        e.contains("no layer 'l2001' (service.layers lists those read; RustGIS reads at most 2000 layers from one document: 1 left out)"),
+        "{e}"
+    );
 }
 
 /// #1053: a WFS answering like GeoServer (longitude first, named urn:ogc:def:crs:EPSG::4326) is

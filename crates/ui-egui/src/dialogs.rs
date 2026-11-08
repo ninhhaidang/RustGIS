@@ -1010,11 +1010,15 @@ fn add_service(app: &mut RustGisApp, ui: &mut egui::Ui) -> bool {
             let none = Vec::new();
             let layers = v.get("layers").and_then(Value::as_array).unwrap_or(&none);
             let grouped = kind.starts_with("OGC API");
+            // A listing that stops short counts them all, and says so here in the dialog's own
+            // words instead of its note: the filter searches only those listed.
+            let listed_note = v.get("listedNote").and_then(Value::as_str);
+            let count = crate::connectionui::layer_count(v);
             ui.horizontal(|ui| {
                 ui.label(
                     egui::RichText::new(crate::i18n::fmt(
                         "{kind} {title}: {count} layers",
-                        &[("kind", kind), ("title", title), ("count", &layers.len().to_string())],
+                        &[("kind", kind), ("title", title), ("count", &count)],
                     ))
                     .strong(),
                 );
@@ -1023,7 +1027,19 @@ fn add_service(app: &mut RustGisApp, ui: &mut egui::Ui) -> bool {
                 }
             });
             for n in v.get("notes").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
-                ui.label(egui::RichText::new(n).small().weak());
+                if Some(n) != listed_note {
+                    ui.label(egui::RichText::new(n).small().weak());
+                }
+            }
+            if listed_note.is_some() {
+                ui.label(
+                    egui::RichText::new(crate::i18n::fmt(
+                        "The filter searches the first {n} of them; the service.add command adds any other by its name.",
+                        &[("n", &layers.len().to_string())],
+                    ))
+                    .small()
+                    .weak(),
+                );
             }
             // A long list is filtered by words; a directory's services lead back to it.
             let browse = &mut app.ui.service_browse;
@@ -1088,9 +1104,14 @@ fn add_service(app: &mut RustGisApp, ui: &mut egui::Ui) -> bool {
             }
             let added = conn.added.as_ref();
             let rows: &[(usize, Option<Removal>)] = added.map_or(&[], |a| a.rows.as_slice());
-            if added.is_some_and(|a| a.matched > SHOWN_LAYERS) {
+            if let Some(a) = added.filter(|a| a.matched > SHOWN_LAYERS) {
                 ui.label(
-                    egui::RichText::new(crate::i18n::fmt("The first {n} are listed.", &[("n", &SHOWN_LAYERS.to_string())])).small().weak(),
+                    egui::RichText::new(crate::i18n::fmt(
+                        "{n} of {m} are listed.",
+                        &[("n", &SHOWN_LAYERS.to_string()), ("m", &a.matched.to_string())],
+                    ))
+                    .small()
+                    .weak(),
                 );
             }
             let ui_width = ui.available_width();

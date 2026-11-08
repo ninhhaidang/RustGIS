@@ -585,6 +585,13 @@ pub fn poll(app: &mut RustGisApp, ctx: &egui::Context) {
     }
 }
 
+/// How many layers a service's listing has: all of them when the list stops short (`total`),
+/// with a `+` when the document has more than were read.
+pub(crate) fn layer_count(r: &Value) -> String {
+    let count = r["total"].as_u64().unwrap_or(r["layers"].as_array().map_or(0, Vec::len) as u64);
+    if r["atLeast"] == true { format!("{count}+") } else { count.to_string() }
+}
+
 fn summary(kind: &str, r: &Value) -> String {
     let count = r["count"].as_u64().unwrap_or(0).to_string();
     match kind {
@@ -605,11 +612,11 @@ fn summary(kind: &str, r: &Value) -> String {
         _ => {
             let kind = r["kind"].as_str().unwrap_or("");
             let title = r["title"].as_str().unwrap_or("");
-            let count = r["layers"].as_array().map_or(0, Vec::len);
-            if count == 0 && r["next"].is_string() {
+            let count = layer_count(r);
+            if r["layers"].as_array().is_none_or(Vec::is_empty) && r["next"].is_string() {
                 i18n::fmt("Connected to {kind} {title}", &[("kind", kind), ("title", title)])
             } else {
-                i18n::fmt("{kind} {title}: {count} layers", &[("kind", kind), ("title", title), ("count", &count.to_string())])
+                i18n::fmt("{kind} {title}: {count} layers", &[("kind", kind), ("title", title), ("count", &count)])
             }
         }
     }

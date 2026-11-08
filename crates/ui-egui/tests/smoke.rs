@@ -2360,6 +2360,60 @@ fn a_service_is_listed_when_its_capabilities_land() {
     h.step();
 }
 
+/// A listing that stops short says in Add From Service how many layers there are, that its filter
+/// searches only those listed, and how many of them are shown, in one place and not three.
+#[test]
+fn a_cut_listing_says_what_the_filter_searches() {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        let types: String = (1..=2001).map(|i| format!("<FeatureType><Name>t:{i}</Name></FeatureType>")).collect();
+        let body = format!(
+            r#"<WFS_Capabilities version="2.0.0"><ServiceIdentification><Title>Local</Title></ServiceIdentification><OperationsMetadata><Operation name="GetFeature"><DCP><HTTP><Get href="http://127.0.0.1/wfs?"/></HTTP></DCP></Operation></OperationsMetadata><FeatureTypeList>{types}</FeatureTypeList></WFS_Capabilities>"#
+        );
+        for stream in listener.incoming().take(1) {
+            let Ok(mut s) = stream else { continue };
+            let mut buf = [0u8; 2048];
+            let _ = s.read(&mut buf);
+            let _ = write!(
+                s,
+                "HTTP/1.1 200 OK
+Content-Length: {}
+Connection: close
+
+",
+                body.len()
+            );
+            let _ = s.write_all(body.as_bytes());
+        }
+    });
+    let mut h = harness();
+    h.state_mut().run("ui.addService", json!(null)).unwrap();
+    h.step();
+    h.state_mut().run("ui.addService", json!({"url": format!("http://{addr}/wfs"), "type": "wfs"})).unwrap();
+    for _ in 0..200 {
+        h.step();
+        if h.state().ui.service.as_ref().is_some_and(|c| c.listing.is_some() || c.error.is_some() || c.failure.is_some()) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let conn = h.state().ui.service.as_ref().unwrap();
+    assert_eq!(conn.error, None);
+    assert_eq!(conn.listing.as_ref().unwrap()["total"], 2001);
+    h.step();
+    h.step();
+    h.get_by_label_contains("Local: 2001 layers");
+    h.get_by_label("The filter searches the first 2000 of them; the service.add command adds any other by its name.");
+    h.get_by_label("500 of 2000 are listed.");
+    assert!(h.query_by_label_contains("only the first 2000").is_none(), "the note isn't said twice");
+    h.state_mut().ui.service_browse.filter = "t:20".into();
+    h.step();
+    h.step();
+    assert!(h.query_by_label_contains("are listed.").is_none(), "its 12 matches are all shown");
+}
+
 #[test]
 fn connections_section_and_dialog() {
     use std::io::{Read, Write};

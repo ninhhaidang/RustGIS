@@ -4,6 +4,7 @@
 //! HTML — read as features. Answers are hostile input: they are capped like capabilities.
 
 use std::borrow::Cow;
+use std::sync::Arc;
 
 use roxmltree::Node;
 use serde::{Deserialize, Serialize};
@@ -25,8 +26,9 @@ pub struct FeatureInfo {
     /// The layer's GetMap image format (part of the request).
     pub map_format: String,
     /// The answer formats (INFO_FORMAT) the service offers; none when the layer isn't queryable.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub formats: Vec<String>,
+    /// (One list for all of a document's layers, which may be a great many.)
+    #[serde(default, skip_serializing_if = "no_formats")]
+    pub formats: Arc<[String]>,
     /// The system it is asked in, as the service names it, for a layer drawn in a system of its
     /// own (#769); empty, Web Mercator.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -34,6 +36,11 @@ pub struct FeatureInfo {
     /// Whether its bounding box is written north first (WMS 1.3.0, in such a system).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub lat_first: bool,
+}
+
+/// Whether a layer has no answer formats (none is saved).
+fn no_formats(formats: &Arc<[String]>) -> bool {
+    formats.is_empty()
 }
 
 /// Pixels across the map window a request describes, the point in its middle pixel.
@@ -56,7 +63,7 @@ impl FeatureInfo {
 
     /// The service's request for one of its layers.
     pub(super) fn for_layer(&self, layer: &str, queryable: bool) -> FeatureInfo {
-        let formats = if queryable { self.formats.clone() } else { Vec::new() };
+        let formats = if queryable { Arc::clone(&self.formats) } else { Arc::default() };
         FeatureInfo { layer: layer.to_string(), formats, ..self.clone() }
     }
 
@@ -76,7 +83,7 @@ impl FeatureInfo {
     /// layer offers it under two names). `None` when no other format is left.
     pub fn retry_after(&self, request: &str) -> Option<FeatureInfo> {
         let rank = format_rank(self.format_of(request)?);
-        let formats: Vec<String> = self.formats.iter().filter(|f| format_rank(f) > rank).cloned().collect();
+        let formats: Arc<[String]> = self.formats.iter().filter(|f| format_rank(f) > rank).cloned().collect();
         let next = FeatureInfo { formats, ..self.clone() };
         next.info_format().is_some().then_some(next)
     }
@@ -89,7 +96,7 @@ impl FeatureInfo {
         if self.info_format().is_none_or(|f| format_rank(f) >= rank) {
             return None;
         }
-        let formats: Vec<String> = self.formats.iter().filter(|f| format_rank(f) >= rank).cloned().collect();
+        let formats: Arc<[String]> = self.formats.iter().filter(|f| format_rank(f) >= rank).cloned().collect();
         Some(FeatureInfo { formats, ..self.clone() })
     }
 
@@ -148,7 +155,7 @@ impl FeatureInfo {
 /// doesn't offer one.
 pub(super) fn request_of(root: &Node, url: &str, version: &str, map_format: &str) -> Option<FeatureInfo> {
     let request = root.descendants().find(|n| n.is_element() && local(n) == "GetFeatureInfo")?;
-    let formats: Vec<String> = children(&request, "Format").map(|f| text_of(&f)).filter(|f| !f.is_empty()).take(32).collect();
+    let formats: Arc<[String]> = children(&request, "Format").map(|f| text_of(&f)).filter(|f| !f.is_empty()).take(32).collect();
     let get = request
         .descendants()
         .find(|n| n.is_element() && local(n) == "Get")
@@ -609,7 +616,7 @@ mod tests {
             url: without_wms_keys(&address),
             version: "1.3.0".into(),
             layer: "roads".into(),
-            formats: vec!["application/json".into()],
+            formats: ["application/json".to_string()].into(),
             ..FeatureInfo::default()
         };
         assert!(info.queryable());
@@ -650,7 +657,11 @@ mod tests {
         ));
         assert!(r.contains("&BBOX=899,1899,1101,2101&WIDTH=101&HEIGHT=101&"));
         assert!(r.contains("&QUERY_LAYERS=roads&INFO_FORMAT=application%2Fjson&FEATURE_COUNT=10&I=50&J=50&EXCEPTIONS=XML"));
-        let old = FeatureInfo { version: "1.1.1".into(), formats: vec!["text/html".into(), "application/vnd.ogc.gml".into()], ..roads };
+        let old = FeatureInfo {
+            version: "1.1.1".into(),
+            formats: ["text/html".to_string(), "application/vnd.ogc.gml".to_string()].into(),
+            ..roads
+        };
         let r = old.request(0.0, 0.0, 1.0).unwrap();
         assert!(r.contains("&SRS=EPSG:3857&"));
         assert!(r.contains("&INFO_FORMAT=application%2Fvnd.ogc.gml&"));
@@ -825,7 +836,7 @@ mod tests {
         // Both names of GeoJSON go, then GML, then plain text, then HTML; nothing after the last.
         let gml = fi.retry_after(&ask(&fi)).unwrap();
         assert_eq!(gml.info_format(), Some("application/vnd.ogc.gml"));
-        assert_eq!(gml.formats, ["application/vnd.ogc.gml", "text/plain", "text/html"]);
+        assert_eq!(*gml.formats, ["application/vnd.ogc.gml", "text/plain", "text/html"]);
         assert_eq!(gml.layer, "lines");
         assert!(ask(&gml).contains("&INFO_FORMAT=application%2Fvnd.ogc.gml&"));
         let plain = fi.retry_after(&ask(&gml)).unwrap();
@@ -844,7 +855,7 @@ mod tests {
         assert!(fi.answered(&ask(&fi)).is_none());
         assert!(gml.answered(&ask(&fi)).is_none());
         // Formats RustGIS doesn't read don't count as left.
-        let odd = FeatureInfo { formats: vec!["text/xml".into(), "image/png".into()], ..fi.clone() };
+        let odd = FeatureInfo { formats: ["text/xml".to_string(), "image/png".to_string()].into(), ..fi.clone() };
         assert!(odd.retry_after(&ask(&odd)).is_none());
     }
 
@@ -911,7 +922,7 @@ mod tests {
             url: "https://wms.example.org/".into(),
             version: "1.3.0".into(),
             layer: "a".into(),
-            formats: vec!["application/json".into()],
+            formats: ["application/json".to_string()].into(),
             crs: "EPSG:2056".into(),
             ..FeatureInfo::default()
         };

@@ -3305,7 +3305,7 @@ mod tests {
             url: template::join(&url, "./info"),
             layer: "roads".into(),
             version: "1.3.0".into(),
-            formats: vec!["application/json".into()],
+            formats: ["application/json".to_string()].into(),
             ..Default::default()
         };
         native::get(&native::agent(), &info.request(0.0, 0.0, 10.0).unwrap(), &[]).unwrap();

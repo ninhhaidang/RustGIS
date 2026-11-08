@@ -211,6 +211,9 @@ fn discover(s: &mut Session, p: &Value, left: bool) -> Result<Discovery, String>
             result.service.kind = service.kind.clone();
             result.service.title = service.title.clone();
         }
+        if let Some(listed) = service.listed {
+            result.service.listed = Some(result.service.layers.len() + listed);
+        }
         // Parsers bound each document's collections/layers; visited documents bound the merge.
         // Distinct offers may share a name (including generated tile names and collection ids).
         for layer in service.layers {
@@ -218,6 +221,7 @@ fn discover(s: &mut Session, p: &Value, left: bool) -> Result<Discovery, String>
             result.sources.push(CapabilitySource { address: address.clone(), crossed_origin });
         }
         result.service.withheld_addresses = result.service.withheld_addresses.saturating_add(service.withheld_addresses);
+        result.service.past_read_limit = result.service.past_read_limit.take().or(service.past_read_limit);
         result.service.notes.extend(service.notes);
         let features = result.service.layers.iter().any(|l| matches!(l.offer, Offer::Features { .. }));
         let tiles = result.service.layers.iter().any(|l| matches!(l.offer, Offer::Tiles { .. } | Offer::VectorTiles { .. }));
@@ -616,9 +620,31 @@ pub(crate) fn layers(s: &mut Session, p: &Value) -> CmdResult {
     let p = owned.as_ref().unwrap_or(p);
     let bound = crate::service_logins::request_params(s, p)?;
     let p = bound.as_ref();
-    let found = capabilities(s, p)?;
+    let mut found = capabilities(s, p)?;
     notify_withheld(s, found.service.withheld_addresses);
+    let of = layer_count(&found.service);
+    let total = found.service.layers.len();
+    let mut cut = None;
+    if let Some(listed) = found.service.listed.filter(|&listed| listed < total) {
+        found.service.layers.truncate(listed);
+        let note = format!("only the first {listed} of {of} are listed; service.add takes any of them by name");
+        found.service.notes.push(note.clone());
+        cut = Some(note);
+    }
     let mut out = service_json(&found.service);
+    // How many there are, for a window that says it its own way: `listedNote` says the list
+    // stops (Add From Service: its filter searches only those listed), and `atLeast` that the
+    // document has more than were read.
+    let past_limit = found.service.past_read_limit.is_some();
+    if cut.is_some() || past_limit {
+        out["total"] = json!(total);
+    }
+    if past_limit {
+        out["atLeast"] = json!(true);
+    }
+    if let Some(note) = cut {
+        out["listedNote"] = json!(note);
+    }
     if let Some(layers) = out.get_mut("layers").and_then(Value::as_array_mut) {
         for (layer, source) in layers.iter_mut().zip(found.sources) {
             layer_source(layer, source);
@@ -628,6 +654,28 @@ pub(crate) fn layers(s: &mut Session, p: &Value) -> CmdResult {
         out["next"] = json!(next);
     }
     Ok(out)
+}
+
+/// How many layers a service has, for a note: those read, when the document goes past the limit.
+fn layer_count(service: &Service) -> String {
+    let total = service.layers.len();
+    if service.past_read_limit.is_some() { format!("the {total} layers read") } else { format!("{total} layers") }
+}
+
+/// The error for a name the document doesn't give. It may also be past what is read of the
+/// document, which can't be told from a mistyped name, so that is said beside it.
+fn not_listed(url: &str, what: &str, want: &str, service: &Service) -> String {
+    let total = service.layers.len();
+    let past_limit = service.past_read_limit.as_deref();
+    let listing = match (service.listed.filter(|&listed| listed < total), past_limit) {
+        (Some(listed), _) => format!("service.layers lists the first {listed} of {}", layer_count(service)),
+        (None, Some(_)) => "service.layers lists those read".to_string(),
+        (None, None) => "service.layers lists them".to_string(),
+    };
+    match past_limit {
+        Some(why) => format!("{url}: no {what} '{want}' ({listing}; {why})"),
+        None => format!("{url}: no {what} '{want}' ({listing})"),
+    }
 }
 
 /// Publishes the selected document and its already-resolved feature login provenance.
@@ -694,7 +742,7 @@ fn add_discovered(s: &mut Session, p: &Value, url: &str, want: &str, found: &Dis
             let left_out = |n: &&String| n.contains(rustgis_data::ogc::LEFT_OUT_3D) && n.to_lowercase().contains(&quoted);
             match found.service.notes.iter().find(left_out) {
                 Some(why) => format!("{url}: no layer '{want}': {why}"),
-                None => format!("{url}: no layer '{want}' (service.layers lists them)"),
+                None => not_listed(url, "layer", want, &found.service),
             }
         })?;
     let capability_crossed = source.crossed_origin;
@@ -716,6 +764,12 @@ fn add_discovered(s: &mut Session, p: &Value, url: &str, want: &str, found: &Dis
     let pinned = asked.is_some_and(|a| a.eq_ignore_ascii_case("default"));
     let slider = match (&layer.time, asked) {
         (Some(t), Some(a)) if a.eq_ignore_ascii_case("slider") => Some(t.slider().ok_or_else(|| match t.changes() {
+            _ if t.values.is_empty() && t.cut > 0 => format!(
+                "{}: its {} times are left out, past the {} RustGIS keeps for one document's layers, so there is nothing for the time slider to step through",
+                layer.title,
+                t.cut,
+                rustgis_data::ogc::MAX_DOCUMENT_TIME_VALUES
+            ),
             true => format!("{}: its times aren't dates the time slider can step to (give one of them as time)", layer.title),
             false => format!(
                 "{}: it lists only one time, {}: nothing for the time slider to step through",
@@ -740,6 +794,19 @@ fn add_discovered(s: &mut Session, p: &Value, url: &str, want: &str, found: &Dis
         (None, Some(_)) => return Err(format!("{}: the layer has no time to pick (leave time out)", layer.title)),
         (None, None) => None,
     };
+    // (A layer far down a document may have lost its times to the document's cap.)
+    if let Some(t) = layer.time.as_ref().filter(|t| t.cut > 0) {
+        s.notify(
+            format!(
+                "{}: {} of its times are left out: RustGIS keeps at most {} for a layer and {} for one document's layers",
+                layer.title,
+                t.cut,
+                rustgis_data::ogc::MAX_TIME_VALUES,
+                rustgis_data::ogc::MAX_DOCUMENT_TIME_VALUES
+            ),
+            false,
+        );
+    }
     let title = match (&time, asked) {
         (Some(t), Some(_)) => format!("{} {t}", layer.title),
         _ => layer.title.clone(),
@@ -1091,7 +1158,7 @@ fn coverage(s: &mut Session, p: &Value) -> CmdResult {
         .zip(&found.sources)
         .filter(|(_, source)| ps(p, "source_url").is_none_or(|s| same_address(s, &source.address)))
         .find(|(l, _)| l.name == want || l.name.eq_ignore_ascii_case(want))
-        .ok_or_else(|| format!("{url}: no coverage '{want}' (service.layers lists them)"))?;
+        .ok_or_else(|| not_listed(&url, "coverage", want, &found.service))?;
     let Offer::Coverage(c) = &layer.offer else { return Err(format!("{url}: '{want}' isn't a WCS coverage")) };
     let anonymous = source.crossed_origin
         || crosses_origin(&source.address, &c.endpoint)
