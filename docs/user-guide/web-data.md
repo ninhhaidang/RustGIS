@@ -409,8 +409,9 @@ reads it back the next time it is needed: when the pane opens or a file is read 
 server. A token saved without the box ticked deletes the one remembered before. An expired token
 is forgotten, here and in the credential store, and the pane asks for a new one.
 `earthdata.status` reports whether a token is kept, its expiry, whether it is remembered and
-whether an expired one was forgotten; `earthdata.logout` (**Remove token**) forgets it and deletes
-the remembered one. The command line (`--use-saved-secrets`) and Python (`use_saved_secrets=True`)
+whether an expired one was forgotten; `earthdata.logout` (**Remove token**) forgets it, deletes
+the remembered one and empties the download cache, so files and documents read with the token
+are read again when next needed. The command line (`--use-saved-secrets`) and Python (`use_saved_secrets=True`)
 use the remembered token too; without them, and in the web app, a token lasts for the session.
 
 In the web app, searching and footprints work, but NASA's data servers don't let web pages read

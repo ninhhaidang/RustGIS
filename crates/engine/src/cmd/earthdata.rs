@@ -23,7 +23,7 @@ pub fn commands() -> Vec<C> {
         ),
         C::new("earthdata.logout", "Forget Earthdata Login Token", "Home › Add › Web Data › NASA Earthaccess", logout).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Reserved))
             .view()
-            .params("{} — forgets the token for the session and deletes the one remembered on this computer"),
+            .params("{} — forgets the token for the session, deletes the one remembered on this computer and empties the download cache (what was read with it)"),
         C::new("earthdata.status", "Earthdata Login Status", "Home › Add › Web Data › NASA Earthaccess", |_s, _p| {
             // Asked for: the token remembered on this computer is read, if it wasn't.
             earthdata::restore();
@@ -64,6 +64,9 @@ fn login(_s: &mut Session, p: &Value) -> CmdResult {
 
 fn logout(_s: &mut Session, _p: &Value) -> CmdResult {
     let forgotten = earthdata::logout();
+    // Files and documents read with the token are cached by address: they go with it, as at an
+    // ArcGIS sign-out. Always, since a token forgotten on expiry may have read what is kept.
+    crate::render::rustgis_tiles::cache::clear();
     let mut out = status();
     if let Err(w) = forgotten {
         out["warning"] = json!(w);

@@ -110,6 +110,12 @@ fn inet_aton(h: &str) -> Option<Ipv4Addr> {
     u32::try_from(value).ok().map(Ipv4Addr::from)
 }
 
+/// Whether `url` is an HTTPS address. Schemes are case-insensitive (RFC 3986 §3.1), and the HTTP
+/// client fetches `HTTPS://…` as `https://…`, so a check comparing the scheme must ignore case.
+pub fn is_https(url: &str) -> bool {
+    url.get(..8).is_some_and(|s| s.eq_ignore_ascii_case("https://"))
+}
+
 /// Whether `url` may be fetched. `from` is where it was found (a document, or the address that
 /// redirected to it), or `None` when the user gave it.
 pub fn check(url: &str, from: Option<&str>) -> Result<(), String> {
@@ -190,5 +196,15 @@ mod tests {
         assert!(check("http://169.254.169.254/", None).is_err());
         assert!(check("http://127.1:8080/{z}/{x}/{y}.pbf", Some("https://example.com/style.json")).is_err());
         assert!(check("file:///etc/passwd", None).is_err());
+    }
+
+    #[test]
+    fn tells_https_in_any_case() {
+        for yes in ["https://a.org/x", "HTTPS://a.org/x", "HttpS://a.org"] {
+            assert!(is_https(yes), "{yes}");
+        }
+        for no in ["http://a.org/x", "HTTP://a.org/x", "https:/a.org", "https", "", "ftp://a.org", "httpsx://a.org", "é"] {
+            assert!(!is_https(no), "{no}");
+        }
     }
 }
