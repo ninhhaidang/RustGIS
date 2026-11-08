@@ -24,7 +24,7 @@ pub fn streams(ext: &str) -> bool {
 }
 
 /// What an export wrote.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Exported {
     /// Features written.
     pub written: usize,
@@ -32,6 +32,10 @@ pub struct Exported {
     pub left_out: usize,
     /// Rows of the source that couldn't be read, so aren't in the export.
     pub skipped: usize,
+    /// Per field of the layer, values written as null because the field's type couldn't hold
+    /// them (GeoParquet; empty for the other formats). See
+    /// [`crate::source::parquet::unfit_note`].
+    pub unfit: Vec<usize>,
 }
 
 /// Writes every feature of `src` to `path` in the format of its extension, in `crs` (see
@@ -108,6 +112,7 @@ fn write_chunks_to(
         Ok(())
     };
     let mut table = None;
+    let mut unfit = Vec::new();
     let left_out = match ext.as_str() {
         #[cfg(not(target_arch = "wasm32"))]
         "gpkg" => {
@@ -135,11 +140,12 @@ fn write_chunks_to(
             crate::source::fgb::write_features(&layer.name, geometry_type, &layer.fields, crs, out, &mut feed)
         })?,
         _ => write_atomic_with(path, |out| {
-            crate::source::parquet::write_features(geometry_type, &layer.fields, out, &mut feed)?;
+            let (_, counts) = crate::source::parquet::write_features(geometry_type, &layer.fields, out, &mut feed)?;
+            unfit = counts;
             Ok::<_, DataError>(0)
         })?,
     };
-    Ok((Exported { written: total.saturating_sub(left_out), left_out, skipped }, table))
+    Ok((Exported { written: total.saturating_sub(left_out), left_out, skipped, unfit }, table))
 }
 
 /// The kind of a source's first geometry, read up to it; `None` for a source without any (read

@@ -2365,13 +2365,13 @@ pub fn shapefile_names_note(fields: &[Field], target: &str) -> Option<String> {
 }
 
 /// Keeps a diagnostic on one line and prevents field names from reordering its text.
-fn dbf_notice_char(c: char) -> char {
+pub(crate) fn dbf_notice_char(c: char) -> char {
     let reorders = matches!(c, '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}');
     if c.is_control() || reorders || matches!(c, '\u{2028}' | '\u{2029}') { ' ' } else { c }
 }
 
 /// A bounded field name for a dBase notice, with controls and directional marks flattened.
-fn dbf_notice_name(name: &str) -> String {
+pub(crate) fn dbf_notice_name(name: &str) -> String {
     let mut out = String::new();
     for c in name.chars().map(dbf_notice_char) {
         if out.len() + c.len_utf8() > 40 {

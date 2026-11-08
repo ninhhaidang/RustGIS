@@ -128,7 +128,9 @@ fn a_streamed_export_writes_what_a_whole_export_writes() {
                 let streamed = write_chunks_in(src.as_ref(), &layer, &a, crs, 2048).unwrap();
                 let left_out = crate::io::write_path_in(&whole, &b, crs).unwrap();
                 let what = format!("{format} to .{ext} in {}", crs.label());
-                assert_eq!(streamed, Exported { written: whole.features.len() - left_out, left_out, skipped: 0 }, "{what}");
+                let unfit = streamed.unfit.clone();
+                assert!(unfit.iter().all(|n| *n == 0), "{what}: {unfit:?}");
+                assert_eq!(streamed, Exported { written: whole.features.len() - left_out, left_out, skipped: 0, unfit }, "{what}");
                 let (a, b) = (read_back(&a), read_back(&b));
                 assert_eq!((&a.fields, a.geometry_type, a.crs), (&b.fields, b.geometry_type, b.crs), "{what}");
                 assert_eq!(a.features, b.features, "{what}");
@@ -325,4 +327,46 @@ fn a_streamed_export_into_an_existing_geopackage_starts_again_inside_its_transac
     (failing.fail_after, failing.fail_pass) = (Some(2), Some(1));
     assert!(write_chunks_to(&failing, &layer2, &county, Crs::LonLat, &add, 1).is_err());
     assert_eq!(std::fs::read(&county).unwrap(), before);
+}
+
+/// A GeoParquet export writes a value its column's type can't hold as null and counts it per
+/// field, streamed or whole, and one notice names the fields; clean values give none.
+#[test]
+fn geoparquet_counts_values_written_as_null() {
+    let d = folder("parquet-unfit");
+    let mut ds = squares();
+    // Two values the Integer column can't hold, one the Boolean column can't, one text cell
+    // (always kept) and a null (not a loss).
+    ds.features[1].attrs[1] = Value::Float(2.5);
+    ds.features[2].attrs[1] = Value::Text("many".into());
+    ds.features[3].attrs[3] = Value::Text("yes".into());
+    ds.features[4].attrs[0] = Value::Int(4);
+    ds.features[5].attrs[1] = Value::Null;
+    ds.features[6].attrs[2] = Value::Float(f64::NAN);
+    let layer = Dataset::new("squares", ds.geometry_type, ds.fields.clone());
+    let streamed = write_chunks_in(&Runs::new(&ds, 40), &layer, &d.join("lossy.parquet"), Crs::LonLat, 2048).unwrap();
+    assert_eq!(streamed.unfit, vec![0, 2, 1, 1]);
+    let note = crate::source::parquet::unfit_note(&layer.fields, &streamed.unfit, "lossy.parquet").unwrap();
+    assert_eq!(
+        note,
+        "lossy.parquet: 4 values couldn't be written as their columns' types and were written as null, in 'count', 'share', 'open'"
+    );
+    assert_eq!(crate::source::parquet::values_note(&ds, "lossy.parquet").as_deref(), Some(note.as_str()));
+    let back = read_back(&d.join("lossy.parquet"));
+    assert_eq!((&back.features[1].attrs[1], &back.features[3].attrs[3]), (&Value::Null, &Value::Null));
+
+    let clean = squares();
+    let streamed = write_chunks_in(&Runs::new(&clean, 40), &layer, &d.join("clean.parquet"), Crs::LonLat, 2048).unwrap();
+    assert_eq!(streamed.unfit, vec![0; 4]);
+    assert_eq!(crate::source::parquet::unfit_note(&layer.fields, &streamed.unfit, "clean.parquet"), None);
+    assert_eq!(crate::source::parquet::values_note(&clean, "clean.parquet"), None);
+    // Other formats count nothing.
+    let csv = write_chunks_in(&Runs::new(&ds, 40), &layer, &d.join("lossy.csv"), Crs::LonLat, 2048).unwrap();
+    assert!(csv.unfit.is_empty());
+    // Names and the target are flattened and bounded, so the notice stays one line in order.
+    let fields = vec![Field::new("a\u{202E}b\nc", FieldType::Integer), Field::new("x".repeat(60), FieldType::Integer)];
+    let note = crate::source::parquet::unfit_note(&fields, &[1, 1], "out\u{2028}.parquet").unwrap();
+    let want = "out .parquet: 2 values couldn't be written as their columns' types and were written as null, in 'a b c'";
+    assert_eq!(note, format!("{want}, '{}…'", "x".repeat(40)));
+    let _ = std::fs::remove_dir_all(d);
 }

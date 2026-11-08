@@ -47,6 +47,9 @@ pub fn commands() -> Vec<C> {
                 dbf_notes.extend(rustgis_data::io::shapefile_names_note(&t.dataset.fields, path));
                 dbf_notes.extend(rustgis_data::io::shapefile_values_notes(&t.dataset, path));
             }
+            if matches!(ext.as_str(), "parquet" | "geoparquet") {
+                dbf_notes.extend(rustgis_data::source::parquet::values_note(&t.dataset, path));
+            }
             let (left_out, table) =
                 rustgis_data::io::write_path_to(&t.dataset, Path::new(path), Crs::LonLat, &gpkg).map_err(|e| e.to_string())?;
             s.check_continuation(&owner).map_err(|why| super::exports::completion_refused(Some(path), why))?;
@@ -607,15 +610,19 @@ fn write_layer(l: &rustgis_map::Layer, path: &str, asked: Option<Crs>, gpkg: Gpk
     if let Some(e) = rustgis_data::export_error(ds, crs) {
         return Err(format!("{path}: {e}"));
     }
-    let (written, left_out, skipped, table) = match &chunks {
+    let parquet = matches!(ext.as_str(), "parquet" | "geoparquet");
+    let (written, left_out, skipped, table, unfit) = match &chunks {
         Some((src, layer)) => {
             let (e, table) =
                 rustgis_data::export::write_source_to(src.as_ref(), layer, Path::new(&path), crs, &gpkg).map_err(|e| e.to_string())?;
-            (e.written, e.left_out, e.skipped, table)
+            // Counted as the chunks were written, as the layer holds none of them.
+            let unfit = rustgis_data::source::parquet::unfit_note(&layer.fields, &e.unfit, path);
+            (e.written, e.left_out, e.skipped, table, unfit)
         }
         None => {
             let (left_out, table) = rustgis_data::io::write_path_to(ds, Path::new(&path), crs, &gpkg).map_err(|e| e.to_string())?;
-            (ds.features.len().saturating_sub(left_out), left_out, unread, table)
+            let unfit = if parquet { rustgis_data::source::parquet::values_note(ds, path) } else { None };
+            (ds.features.len().saturating_sub(left_out), left_out, unread, table, unfit)
         }
     };
     // A streamed layer's extent is its whole source's.
@@ -638,6 +645,7 @@ fn write_layer(l: &rustgis_map::Layer, path: &str, asked: Option<Crs>, gpkg: Gpk
     }
     said.extend(notes);
     said.extend(dbf_notes);
+    said.extend(unfit);
     if shapefile && rustgis_data::raster::wkt::to_wkt(crs).is_none() {
         said.push(format!("{path}: no .prj written, as {} has no WKT form", crs.label()));
     }
