@@ -454,6 +454,8 @@ enum Measure {
 const METHODS: &[(u32, &str, &str)] = &[
     (9807, "TRANSVERSE_MERCATOR", "Transverse_Mercator"),
     (9804, "MERCATOR_VARIANT_A", "Mercator_1SP"),
+    (1026, "MERCATOR_SPHERICAL", "Mercator_Spherical"),
+    (9840, "ORTHOGRAPHIC", "Orthographic"),
     (9805, "MERCATOR_VARIANT_B", "Mercator_2SP"),
     (1024, "POPULAR_VISUALISATION_PSEUDO_MERCATOR", "Popular_Visualisation_Pseudo_Mercator"),
     (9801, "LAMBERT_CONIC_CONFORMAL_1SP", "Lambert_Conformal_Conic_1SP"),
@@ -467,8 +469,8 @@ const METHODS: &[(u32, &str, &str)] = &[
     (9812, "HOTINE_OBLIQUE_MERCATOR_VARIANT_A", "Hotine_Oblique_Mercator"),
     (9815, "HOTINE_OBLIQUE_MERCATOR_VARIANT_B", "Hotine_Oblique_Mercator_Azimuth_Center"),
     (1028, "EQUIDISTANT_CYLINDRICAL", "Equirectangular"),
-    (1029, "EQUIDISTANT_CYLINDRICAL_SPHERICAL", "Equirectangular"),
-    (9823, "EQUIDISTANT_CYLINDRICAL_SPHERICAL", "Equirectangular"),
+    (1029, "EQUIDISTANT_CYLINDRICAL_SPHERICAL", "Equidistant_Cylindrical_Spherical"),
+    (9823, "EQUIDISTANT_CYLINDRICAL_SPHERICAL", "Equidistant_Cylindrical_Spherical"),
     (9835, "LAMBERT_CYLINDRICAL_EQUAL_AREA", "Cylindrical_Equal_Area"),
     (9834, "LAMBERT_CYLINDRICAL_EQUAL_AREA_SPHERICAL", "Cylindrical_Equal_Area"),
 ];
@@ -758,14 +760,23 @@ fn custom(p: &Node, method: &str) -> Result<Crs, String> {
     // Metres per linear unit: false eastings and northings are in the system's units, PROJ's in
     // metres.
     let to_m = p.child("UNIT").and_then(|u| u.num(0)).filter(|m| *m > 0.0).unwrap_or(1.0);
-    let lat0 = get(&["LATITUDE_OF_ORIGIN", "LATITUDE_OF_CENTER"]).unwrap_or(0.0);
-    let lon0 = get(&["CENTRAL_MERIDIAN", "LONGITUDE_OF_CENTER", "LONGITUDE_OF_ORIGIN"]).unwrap_or(0.0);
+    // (GDAL writes Esri WKT for some methods with EPSG's parameter names: `Latitude of natural
+    // origin`.)
+    let lat0 = get(&["LATITUDE_OF_ORIGIN", "LATITUDE_OF_CENTER", "LATITUDE_OF_NATURAL_ORIGIN"]).unwrap_or(0.0);
+    let lon0 = get(&["CENTRAL_MERIDIAN", "LONGITUDE_OF_CENTER", "LONGITUDE_OF_ORIGIN", "LONGITUDE_OF_NATURAL_ORIGIN"]).unwrap_or(0.0);
     let x0 = get(&["FALSE_EASTING"]).unwrap_or(0.0) * to_m;
     let y0 = get(&["FALSE_NORTHING"]).unwrap_or(0.0) * to_m;
     let k0 = get(&["SCALE_FACTOR"]).unwrap_or(1.0);
     let lat1 = get(&["STANDARD_PARALLEL_1"]);
     let lat2 = get(&["STANDARD_PARALLEL_2"]);
     let at = format!("+lon_0={lon0} +x_0={x0} +y_0={y0}");
+    // Whether the earth the definition gets is a sphere; Esri names its datums `D_…`.
+    let sphere = proj4rs::Proj::from_proj_string(&format!("+proj=longlat {}", earth(p.child("GEOGCS"))))
+        .is_ok_and(|e| e.ellipse_parameters().0 == e.ellipse_parameters().1);
+    let esri = p
+        .child("GEOGCS")
+        .and_then(|g| g.child("DATUM"))
+        .is_some_and(|d| d.title().trim().get(..2).is_some_and(|p| p.eq_ignore_ascii_case("D_")));
     // Hotine's oblique Mercator by its azimuth: `no_uoff` puts the origin at the natural origin
     // on the centre line (EPSG's variant A, WKT1's plain `Hotine_Oblique_Mercator`), else at the
     // centre (EPSG's variant B, `…_Azimuth_Center`). An azimuth of 90° (or 270°, the same
@@ -818,7 +829,10 @@ fn custom(p: &Node, method: &str) -> Result<Crs, String> {
         {
             format!("+proj=krovak +lat_0={lat0} +k_0={k0} {at}")
         }
-        "MERCATOR" | "MERCATOR_1SP" | "MERCATOR_2SP" => match lat1 {
+        // `Mercator_Variant_A` is Esri's name for EPSG's method 9804 (as GDAL writes the IAU's
+        // Mercator systems); `Mercator_Spherical` is EPSG's 1026, the same on a sphere only.
+        "MERCATOR_SPHERICAL" if !sphere => return Err("the Mercator (Spherical) projection on an ellipsoid isn't supported".into()),
+        "MERCATOR" | "MERCATOR_1SP" | "MERCATOR_2SP" | "MERCATOR_VARIANT_A" | "MERCATOR_SPHERICAL" => match lat1 {
             Some(ts) => format!("+proj=merc +lat_ts={ts} {at}"),
             None => format!("+proj=merc +k_0={k0} {at}"),
         },
@@ -847,12 +861,35 @@ fn custom(p: &Node, method: &str) -> Result<Crs, String> {
                 format!("+proj=stere +lat_0={pole} +lat_ts={ts} {at}")
             }
         }
-        "EQUIRECTANGULAR" | "EQUIDISTANT_CYLINDRICAL" | "PLATE_CARREE" => format!("+proj=eqc +lat_ts={} {at}", lat1.unwrap_or(0.0)),
+        // EPSG's methods 1029 and 9823 are the spherical form: on a sphere the same, on an
+        // ellipsoid not the ellipsoidal one (method 1028) the definition would get, so refused.
+        "EQUIDISTANT_CYLINDRICAL_SPHERICAL" if !sphere => {
+            return Err("the Equidistant Cylindrical (Spherical) projection on an ellipsoid isn't supported".into());
+        }
+        // A latitude of origin (PROJ's `+lat_0`, which GDAL writes as `latitude_of_origin`) moves
+        // the northings' origin.
+        "EQUIRECTANGULAR" | "EQUIDISTANT_CYLINDRICAL" | "PLATE_CARREE" | "EQUIDISTANT_CYLINDRICAL_SPHERICAL" if lat0 != 0.0 => {
+            format!("+proj=eqc +lat_ts={} +lat_0={lat0} {at}", lat1.unwrap_or(0.0))
+        }
+        "EQUIRECTANGULAR" | "EQUIDISTANT_CYLINDRICAL" | "PLATE_CARREE" | "EQUIDISTANT_CYLINDRICAL_SPHERICAL" => {
+            format!("+proj=eqc +lat_ts={} {at}", lat1.unwrap_or(0.0))
+        }
         "CYLINDRICAL_EQUAL_AREA" | "LAMBERT_CYLINDRICAL_EQUAL_AREA" | "BEHRMANN" => {
             let ts = lat1.unwrap_or(if method == "BEHRMANN" { 30.0 } else { 0.0 });
             format!("+proj=cea +lat_ts={ts} {at}")
         }
         "MOLLWEIDE" => format!("+proj=moll {at}"),
+        // Sinusoidal is computed by RustGIS (`rustgis_geom::Sinusoidal`), Robinson by proj4rs
+        // from Robinson's table, on a sphere of the semi-major axis as in PROJ.
+        "SINUSOIDAL" => format!("+proj=sinu {at}"),
+        "ROBINSON" => format!("+proj=robin {at}"),
+        // EPSG's method 9840, on the ellipsoid (proj4rs follows the EPSG Guidance Note 7-2). Esri's
+        // Orthographic is a spherical one: on a sphere they agree, on an ellipsoid they don't, and
+        // which one an Esri file means can't be told, so that is refused rather than guessed.
+        "ORTHOGRAPHIC" | "ORTHOGRAPHIC_SPHERICAL" if !sphere && (esri || method == "ORTHOGRAPHIC_SPHERICAL") => {
+            return Err("the Orthographic projection as Esri defines it (on a sphere) isn't supported on an ellipsoid".into());
+        }
+        "ORTHOGRAPHIC" | "ORTHOGRAPHIC_SPHERICAL" => format!("+proj=ortho +lat_0={lat0} {at}"),
         "MILLER_CYLINDRICAL" => format!("+proj=mill {at}"),
         "" => return Err("the projection isn't named".into()),
         _ => return Err(format!("the {} projection isn't supported", p.child("PROJECTION").map_or("", Node::title))),
@@ -1149,7 +1186,12 @@ pub fn to_wkt(crs: Crs) -> Option<String> {
     let ellps = text("ellps").or(datum.map(|d| d.2));
     let known = ellps.and_then(|e| ELLIPSOIDS.iter().find(|r| r.0.eq_ignore_ascii_case(e)));
     let ellps_name = known.map_or("unnamed", |r| r.1);
-    let (a, b) = proj.ellipse_parameters();
+    // proj4rs computes `eqc` on a sphere of the semi-major axis and gives that sphere, but RustGIS
+    // computes it on the datum's ellipsoid (`crs::ellipsoidal_eqc`), the one written here.
+    let (a, b) = match text("proj") {
+        Some("eqc") => super::crs::eqc_geographic(&def).ok()?.ellipse_parameters(),
+        _ => proj.ellipse_parameters(),
+    };
     // A named ellipsoid's flattening as published; else from its axes (PROJ keeps a and b).
     let rf = match known {
         Some(k) if text("rf").is_none() && text("b").is_none() => k.2,
@@ -1298,6 +1340,9 @@ pub fn to_wkt(crs: Crs) -> Option<String> {
         }
         "eqc" => {
             ps = vec![("standard_parallel_1", lat_ts.unwrap_or(0.0)), ("central_meridian", lon0)];
+            if lat0 != 0.0 {
+                ps.insert(0, ("latitude_of_origin", lat0));
+            }
             "Equirectangular"
         }
         "cea" => {
@@ -1311,6 +1356,20 @@ pub fn to_wkt(crs: Crs) -> Option<String> {
         "mill" => {
             ps = vec![("central_meridian", lon0)];
             "Miller_Cylindrical"
+        }
+        "sinu" => {
+            ps = vec![("central_meridian", lon0)];
+            "Sinusoidal"
+        }
+        "robin" => {
+            ps = vec![("central_meridian", lon0)];
+            "Robinson"
+        }
+        // OGC's name, which the reader takes as EPSG's ellipsoidal method 9840, as proj4rs
+        // computes it.
+        "ortho" => {
+            ps = vec![("latitude_of_origin", lat0), ("central_meridian", lon0)];
+            "Orthographic"
         }
         // The Swiss oblique Mercator is Hotine's, centred on its origin, with the azimuth and the
         // grid's angle at 90° (EPSG's method 9815), the form the reader takes it in.
@@ -1412,6 +1471,115 @@ mod tests {
         assert_eq!(utm(&norm("NAD83 / UTM zone 17N")), Some(26917));
         assert_eq!(utm("ETRS_1989_UTM_ZONE_32N"), Some(25832));
         assert_eq!(utm("WGS_1984_UTM_ZONE_61N"), None);
+    }
+
+    /// The methods Esri and IAU `.prj` files name that the reader takes: Sinusoidal, Robinson,
+    /// Orthographic and Mercator (variant A), in WKT1 and WKT2, with their parameters.
+    #[test]
+    fn sinusoidal_robinson_orthographic_and_mercator_variant_a() {
+        let proj4 = |wkt: &str| crs_from_wkt(wkt).map(|c| c.custom_def().map(|d| d.proj4.clone()).unwrap_or_default());
+        let esri = |method: &str, params: &str| format!(r#"PROJCS["x",{GEOG_4326},PROJECTION["{method}"],{params},UNIT["Meter",1.0]]"#);
+        let common = r#"PARAMETER["False_Easting",100.0],PARAMETER["False_Northing",-200.0],PARAMETER["Central_Meridian",-75.0]"#;
+        let p = proj4(&esri("Sinusoidal", common)).unwrap();
+        assert!(p.starts_with("+proj=sinu +lon_0=-75 +x_0=100 +y_0=-200") && p.contains("+datum=WGS84"), "{p}");
+        let p = proj4(&esri("Robinson", common)).unwrap();
+        assert!(p.starts_with("+proj=robin +lon_0=-75 +x_0=100 +y_0=-200"), "{p}");
+        let p = proj4(&esri("Mercator_Variant_A", &format!(r#"{common},PARAMETER["Scale_Factor",0.997]"#))).unwrap();
+        assert!(p.starts_with("+proj=merc +k_0=0.997 +lon_0=-75"), "{p}");
+        // Orthographic by its natural origin's names (as GDAL writes Esri WKT for the IAU's), or
+        // Esri's centre: on a sphere.
+        let sphere = GEOG_4326.replace("D_WGS_1984", "D_Sphere").replace("6378137.0,298.257223563", "6378137.0,0.0");
+        for params in [
+            r#"PARAMETER["Latitude of natural origin",40.0],PARAMETER["Longitude of natural origin",-100.0]"#,
+            r#"PARAMETER["Latitude_Of_Center",40.0],PARAMETER["Longitude_Of_Center",-100.0]"#,
+        ] {
+            let wkt = esri("Orthographic", params).replace(GEOG_4326, &sphere);
+            let p = proj4(&wkt).unwrap();
+            assert!(p.starts_with("+proj=ortho +lat_0=40 +lon_0=-100") && p.contains("+a=6378137 +b=6378137"), "{p}");
+        }
+
+        // WKT2: EPSG's Orthographic (9840) on an ellipsoid; Esri's names without an ID.
+        let wkt2 = |method: &str, params: &str, ellipsoid: &str| {
+            format!(
+                r#"PROJCRS["x",BASEGEOGCRS["g",DATUM["d",ELLIPSOID["e",{ellipsoid},LENGTHUNIT["metre",1]]],PRIMEM["Greenwich",0,ANGLEUNIT["degree",0.0174532925199433]]],CONVERSION["c",{method},{params}PARAMETER["False easting",0,LENGTHUNIT["metre",1],ID["EPSG",8806]],PARAMETER["False northing",0,LENGTHUNIT["metre",1],ID["EPSG",8807]]],CS[Cartesian,2],AXIS["(E)",east,ORDER[1],LENGTHUNIT["metre",1]],AXIS["(N)",north,ORDER[2],LENGTHUNIT["metre",1]]]"#
+            )
+        };
+        let origin = r#"PARAMETER["Latitude of natural origin",55,ANGLEUNIT["degree",0.0174532925199433],ID["EPSG",8801]],PARAMETER["Longitude of natural origin",5,ANGLEUNIT["degree",0.0174532925199433],ID["EPSG",8802]],"#;
+        let p = proj4(&wkt2(r#"METHOD["Orthographic",ID["EPSG",9840]]"#, origin, "6378137,298.257223563")).unwrap();
+        assert!(p.starts_with("+proj=ortho +lat_0=55 +lon_0=5") && p.contains("+a=6378137 +rf=298.257223563"), "{p}");
+        let p = proj4(&wkt2(r#"METHOD["Robinson"]"#, origin, "6378137,298.257223563")).unwrap();
+        assert!(p.starts_with("+proj=robin +lon_0=5"), "{p}");
+        let p = proj4(&wkt2(r#"METHOD["Sinusoidal"]"#, origin, "3396190,0")).unwrap();
+        assert!(p.starts_with("+proj=sinu +lon_0=5") && p.contains("+a=3396190 +b=3396190"), "{p}");
+        // Mercator (Spherical), EPSG's 1026, on a sphere; refused on an ellipsoid, as is Esri's
+        // (spherical) Orthographic.
+        let spherical = r#"METHOD["Mercator (Spherical)",ID["EPSG",1026]]"#;
+        let p = proj4(&wkt2(spherical, origin, "3396190,0")).unwrap();
+        assert!(p.starts_with("+proj=merc +k_0=1 +lon_0=5"), "{p}");
+        let e = proj4(&wkt2(spherical, origin, "6378137,298.257223563")).unwrap_err();
+        assert!(e.contains("Mercator (Spherical) projection on an ellipsoid isn't supported"), "{e}");
+        // Equidistant Cylindrical (Spherical), EPSG's 1029: the same on a sphere, refused on an
+        // ellipsoid rather than computed as the ellipsoidal method 1028.
+        let eqc_spherical = r#"METHOD["Equidistant Cylindrical (Spherical)",ID["EPSG",1029]]"#;
+        let p = proj4(&wkt2(eqc_spherical, origin, "3396190,0")).unwrap();
+        // Its latitude of natural origin (PROJ's `+lat_0`) is kept.
+        assert!(p.starts_with("+proj=eqc +lat_ts=0 +lat_0=55 +lon_0=5"), "{p}");
+        let e = proj4(&wkt2(eqc_spherical, origin, "6378137,298.257223563")).unwrap_err();
+        assert!(e.contains("Equidistant Cylindrical (Spherical) projection on an ellipsoid isn't supported"), "{e}");
+        let e = proj4(&wkt2(r#"METHOD["Orthographic (Spherical)"]"#, origin, "6378137,298.257223563")).unwrap_err();
+        assert!(e.contains("isn't supported on an ellipsoid"), "{e}");
+        let e =
+            proj4(&esri("Orthographic", r#"PARAMETER["Latitude_Of_Center",40.0],PARAMETER["Longitude_Of_Center",-100.0]"#)).unwrap_err();
+        assert!(e.contains("isn't supported on an ellipsoid"), "{e}");
+    }
+
+    /// The EPSG Guidance Note 7-2's example of Mercator (variant A), EPSG:3002 (Makassar / NEIEZ),
+    /// as an Esri `.prj` names the method: 3°S 120°E on the Bessel 1841 ellipsoid is
+    /// E = 5 009 726.58 m, N = 569 150.82 m. The same as Snyder 1987's ellipsoidal formulas
+    /// (ch. 7, eqs. 7-6 and 7-7) give.
+    #[test]
+    fn mercator_variant_a_guidance_note_example() {
+        let wkt = r#"PROJCS["Makassar_NEIEZ",GEOGCS["GCS_Makassar",DATUM["D_Makassar",SPHEROID["Bessel_1841",6377397.155,299.1528128]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Mercator_Variant_A"],PARAMETER["False_Easting",3900000.0],PARAMETER["False_Northing",900000.0],PARAMETER["Central_Meridian",110.0],PARAMETER["Scale_Factor",0.997],UNIT["Meter",1.0]]"#;
+        let (crs, note) = read_wkt(wkt).unwrap();
+        // Makassar has no shift to WGS 84 in the file: said, and left out, so longitude/latitude
+        // on its own datum is what goes in.
+        assert!(note.is_some_and(|n| n.contains("D_Makassar")));
+        let m = crs.transformer().unwrap().from_lonlat(Coord::new(120.0, -3.0)).unwrap();
+        assert!((m.x - 5_009_726.58).abs() < 0.01 && (m.y - 569_150.82).abs() < 0.01, "{m:?}");
+        let (a, f) = (6_377_397.155f64, 1.0f64 / 299.152_812_8);
+        let e = (f * (2.0 - f)).sqrt();
+        let phi = -3f64.to_radians();
+        let x = 3_900_000.0 + a * 0.997 * 10f64.to_radians();
+        let y = 900_000.0
+            + a * 0.997
+                * ((std::f64::consts::FRAC_PI_4 + phi / 2.0).tan() * ((1.0 - e * phi.sin()) / (1.0 + e * phi.sin())).powf(e / 2.0)).ln();
+        assert!((m.x - x).abs() < 0.001 && (m.y - y).abs() < 0.001, "{m:?} {x} {y}");
+    }
+
+    /// Sinusoidal, Robinson, orthographic and equidistant cylindrical systems are written back to
+    /// WKT and read again as the same.
+    #[test]
+    fn new_methods_are_written_back() {
+        for (def, lonlat) in [
+            ("+proj=sinu +lon_0=15 +x_0=200000 +y_0=-100000 +datum=WGS84 +units=m +no_defs", (36.82, -1.29)),
+            ("+proj=robin +lon_0=150 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs", (170.0, 40.0)),
+            ("+proj=ortho +lat_0=55 +lon_0=5 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs", (2.13, 53.81)),
+            ("+proj=ortho +lat_0=0 +lon_0=0 +x_0=0 +y_0=0 +a=3396190 +b=3396190 +units=m +no_defs", (30.0, 20.0)),
+            // An equidistant cylindrical system's latitude of origin, on an ellipsoid and a sphere.
+            ("+proj=eqc +lat_ts=30 +lat_0=10 +lon_0=10 +x_0=1000 +y_0=2000 +datum=WGS84 +units=m +no_defs", (12.0, 40.0)),
+            ("+proj=eqc +lat_ts=0 +lat_0=-20 +lon_0=0 +x_0=0 +y_0=0 +R=3396190 +units=m +no_defs", (30.0, 20.0)),
+            // An unnamed ellipsoid by its axes and flattening (Mars's IAU 2015 ellipsoid), which
+            // proj4rs's own eqc replaces with a sphere: the ellipsoid is the one written.
+            ("+proj=eqc +lat_ts=0 +lon_0=0 +x_0=0 +y_0=0 +a=3396190 +rf=169.894447223612 +units=m +no_defs", (12.0, 40.0)),
+            ("+proj=eqc +lat_ts=20 +lon_0=0 +x_0=0 +y_0=0 +a=6378137 +b=6356752.314245 +units=m +no_defs", (12.0, 40.0)),
+        ] {
+            let crs = Crs::parse(def).unwrap();
+            let wkt = to_wkt(crs).unwrap_or_else(|| panic!("{def}"));
+            let read = crs_from_wkt(&wkt).unwrap_or_else(|e| panic!("{def}: {e}: {wkt}"));
+            let c = Coord::new(lonlat.0, lonlat.1);
+            let (a, b) = (crs.transformer().unwrap().from_lonlat(c).unwrap(), read.transformer().unwrap().from_lonlat(c).unwrap());
+            assert!((a.x - b.x).abs() < 0.001 && (a.y - b.y).abs() < 0.001, "{def}: {a:?} {b:?}\n{wkt}");
+        }
     }
 
     #[test]
@@ -1736,7 +1904,7 @@ mod tests {
     fn wkt2_corpus() {
         // Projections RustGIS builds no PROJ definition for: read by their EPSG code only, as in
         // WKT1.
-        let by_code_only = ["EPSG:5514", "ESRI:54008"];
+        let by_code_only = ["EPSG:5514"];
         let rows = corpus();
         assert_eq!(rows.len(), 84);
         for (code, [x, y, lon, lat], wkt) in rows {

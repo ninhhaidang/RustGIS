@@ -92,7 +92,13 @@ datums. These transformations do not replace regional grid corrections for surve
 unrecognized datum keeps its ellipsoid and produces a notice when no transformation is
 available. Swiss oblique Mercator, the standard Krovak East/North variant, and the oblique
 Mercator, Cassini-Soldner, polyconic and Equal Earth methods are supported from their
-parameters.
+parameters, as are sinusoidal (MODIS), Robinson, orthographic and Mercator (variant A), in `.prj`
+files and in GeoTIFF keys. Esri's orthographic is a spherical projection: on an ellipsoid it is
+refused, with a notice, rather than computed as EPSG's ellipsoidal one. The equidistant
+cylindrical projection (EPSG:4087, World Equidistant Cylindrical) is computed on its ellipsoid,
+as EPSG defines it, not on a sphere, both for data and for a map drawn in it (as is the
+Equirectangular preset). An ellipsoid flatter than about 1/100, such as Jupiter's or Saturn's, is
+refused in it rather than approximated.
 
 Shapefile text uses a supported `.cpg` encoding, otherwise the `.dbf` code page, with UTF-8 as
 the fallback. Keep the sidecar files together.

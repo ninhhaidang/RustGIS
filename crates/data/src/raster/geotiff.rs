@@ -410,6 +410,10 @@ fn proj4_of_keys(keys: &[u16], doubles: &[f64], ascii: &str) -> Result<(String, 
         }
         Some(16) => format!("+proj=sterea +lat_0={lat0} +lon_0={lon0} +k_0={k0} +x_0={x0} +y_0={y0}"),
         Some(17) => format!("+proj=eqc +lat_ts={lat1} +lon_0={lon0} +x_0={x0} +y_0={y0}"),
+        // CT_Orthographic: EPSG's method 9840, on the ellipsoid.
+        Some(21) => format!("+proj=ortho +lat_0={lat0} +lon_0={lon0} +x_0={x0} +y_0={y0}"),
+        // CT_Robinson.
+        Some(23) => format!("+proj=robin +lon_0={lon0} +x_0={x0} +y_0={y0}"),
         // MODIS's grid; RustGIS computes it (`rustgis_geom::Sinusoidal`).
         Some(24) => format!("+proj=sinu +lon_0={lon0} +x_0={x0} +y_0={y0}"),
         Some(28) => format!("+proj=cea +lat_ts={lat1} +lon_0={lon0} +x_0={x0} +y_0={y0}"),
@@ -446,34 +450,19 @@ fn proj4_of_keys(keys: &[u16], doubles: &[f64], ascii: &str) -> Result<(String, 
 }
 
 /// Whether two PROJ definitions place the same points: points around the projection's origin,
-/// unprojected by both, land within a millimetre-scale tolerance.
+/// unprojected by both (as RustGIS computes them, sinusoidal and ellipsoidal equidistant
+/// cylindrical included), land within a centimetre.
 fn same_projection(a: &str, b: &str) -> bool {
     let offsets = [(0.0, 0.0), (100_000.0, 50_000.0), (-250_000.0, 150_000.0), (300_000.0, -200_000.0), (-50_000.0, -400_000.0)];
-    // Sinusoidal, which proj4rs lacks, by its own inverse; one sinusoidal and one not differ.
-    match (rustgis_geom::Sinusoidal::from_proj4(a), rustgis_geom::Sinusoidal::from_proj4(b)) {
-        (Some(Ok(sa)), Some(Ok(sb))) => {
-            return offsets.iter().all(|(dx, dy)| {
-                // The same map point in both, so a different false origin is a different projection.
-                let m = rustgis_geom::Coord::new(sa.x0 + dx, sa.y0 + dy);
-                // Degrees: 1e-7 is about a centimetre.
-                matches!((sa.inverse(m), sb.inverse(m)), (Some(p), Some(q)) if (p.x - q.x).abs() < 1e-7 && (p.y - q.y).abs() < 1e-7)
-            });
-        }
-        (None, None) => {}
-        _ => return false,
-    }
-    let (Ok(pa), Ok(pb), Ok(ll)) = (
-        proj4rs::Proj::from_proj_string(a),
-        proj4rs::Proj::from_proj_string(b),
-        proj4rs::Proj::from_proj_string("+proj=longlat +datum=WGS84 +no_defs"),
-    ) else {
-        return false;
-    };
+    let (Ok(ta), Ok(tb)) = (super::crs::transformer_of(a), super::crs::transformer_of(b)) else { return false };
+    // The same map points in both, offset from the first's false origin, so a different false
+    // origin is a different projection.
+    let num = |k: &str| a.split_whitespace().find_map(|t| t.strip_prefix(k)?.parse::<f64>().ok()).filter(|v| v.is_finite()).unwrap_or(0.0);
+    let (x0, y0) = (num("+x_0="), num("+y_0="));
     offsets.iter().all(|(dx, dy)| {
-        let (mut p, mut q) = ((*dx, *dy, 0.0), (*dx, *dy, 0.0));
-        let ok = proj4rs::transform::transform(&pa, &ll, &mut p).is_ok() && proj4rs::transform::transform(&pb, &ll, &mut q).is_ok();
-        // Radians: 1e-9 is under a centimetre.
-        ok && p.0.is_finite() && p.1.is_finite() && (p.0 - q.0).abs() < 1e-9 && (p.1 - q.1).abs() < 1e-9
+        let m = rustgis_geom::Coord::new(x0 + dx, y0 + dy);
+        // Degrees: 1e-7 is about a centimetre.
+        matches!((ta.to_lonlat(m), tb.to_lonlat(m)), (Some(p), Some(q)) if (p.x - q.x).abs() < 1e-7 && (p.y - q.y).abs() < 1e-7)
     })
 }
 
@@ -548,6 +537,9 @@ fn keys_from_proj4(proj4: &str, label: &str) -> Option<(Vec<u16>, Vec<f64>, Stri
         "stere" => (14, vec![(3080, lon0), (3081, lat0), (3082, x0), (3083, y0), (3092, k0)]),
         "sterea" => (16, vec![(3080, lon0), (3081, lat0), (3082, x0), (3083, y0), (3092, k0)]),
         "eqc" => (17, vec![(3078, num("lat_ts").unwrap_or(0.0)), (3080, lon0), (3082, x0), (3083, y0)]),
+        // By the projection centre's keys (3088, 3089), as GDAL writes them.
+        "ortho" => (21, vec![(3082, x0), (3083, y0), (3088, lon0), (3089, lat0)]),
+        "robin" => (23, vec![(3082, x0), (3083, y0), (3088, lon0)]),
         "cea" => (28, vec![(3078, num("lat_ts").unwrap_or(0.0)), (3080, lon0), (3082, x0), (3083, y0)]),
         // Its longitude is the projection centre's (3088), as GDAL and MODIS write it.
         "sinu" => (24, vec![(3082, x0), (3083, y0), (3088, lon0)]),
@@ -1907,7 +1899,7 @@ mod tests {
         let (a, b) = (r.crs.transformer().unwrap().to_lonlat(c).unwrap(), back.crs.transformer().unwrap().to_lonlat(c).unwrap());
         assert!((a.x - b.x).abs() < 1e-9 && (a.y - b.y).abs() < 1e-9 && (a.x + 97.5).abs() < 1e-6, "{a:?} {b:?}");
         // One the keys can't say is refused, as before.
-        assert!(keys_from_proj4("+proj=robin +lon_0=0 +datum=WGS84", "x").is_none());
+        assert!(keys_from_proj4("+proj=moll +lon_0=0 +datum=WGS84", "x").is_none());
         assert!(keys_from_proj4("junk", "x").is_none());
         assert!(keys_from_proj4("+proj=tmerc +lon_0=0 +units=us-ft +datum=WGS84", "x").is_none(), "only metres");
         for unsaid in [
@@ -1932,6 +1924,30 @@ mod tests {
             keys_from_proj4("+proj=stere +lat_0=90 +lat_ts=70 +lon_0=-45 +k=1 +x_0=0 +y_0=0 +datum=WGS84 +units=m", "NSIDC").unwrap();
         let back = custom_crs(&k, &d, &a).unwrap().custom_def().unwrap().proj4.clone();
         assert!(back.contains("+lat_0=90") && back.contains("+lat_ts=70") && back.contains("+lon_0=-45"), "{back}");
+    }
+
+    /// Orthographic and Robinson systems from WKT are written as keys (CT_Orthographic 21 and
+    /// CT_Robinson 23, by the projection centre's keys) and read back as the same; an ellipsoidal
+    /// equidistant cylindrical one (EPSG:4087's, CT 17) is compared as computed on the ellipsoid.
+    #[test]
+    fn orthographic_robinson_and_ellipsoidal_eqc_are_written_as_keys() {
+        for (def, ct) in [
+            ("+proj=ortho +lat_0=55 +lon_0=5 +x_0=100 +y_0=-200 +datum=WGS84 +units=m +no_defs", 21),
+            ("+proj=ortho +lat_0=-90 +lon_0=0 +x_0=0 +y_0=0 +a=1737400 +b=1737400 +units=m +no_defs", 21),
+            ("+proj=robin +lon_0=150 +x_0=1000 +y_0=-2000 +datum=WGS84 +units=m +no_defs", 23),
+            ("+proj=eqc +lat_ts=30 +lon_0=-90 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs", 17),
+            ("+proj=eqc +lat_ts=0 +lon_0=0 +x_0=0 +y_0=0 +a=3396190 +rf=169.894447223612 +units=m +no_defs", 17),
+        ] {
+            let (k, d, a) = keys_from_proj4(def, "x").unwrap_or_else(|| panic!("{def}"));
+            assert_eq!(geokey(&k, &d, &a, 3075).map(|v| matches!(v, KeyValue::Short(c) if c == ct)), Some(true), "{def}");
+            let back = custom_crs(&k, &d, &a).unwrap().custom_def().unwrap().proj4.clone();
+            assert!(same_projection(def, &back), "{def}: {back}");
+        }
+        // The same projection on a sphere of the semi-major axis is another one.
+        assert!(!same_projection(
+            "+proj=eqc +lat_ts=0 +lon_0=0 +datum=WGS84 +units=m +no_defs",
+            "+proj=eqc +lat_ts=0 +lon_0=0 +R=6378137 +units=m +no_defs"
+        ));
     }
 
     #[test]
