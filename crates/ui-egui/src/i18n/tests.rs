@@ -42,6 +42,8 @@ fn lookup_fallback_and_tags() {
     assert_eq!(lang_from_tag("xx-YY"), None);
     assert_eq!(first_supported(["xx", "fr-CA", "de"]).map(Lang::code), Some("fr"));
     assert_eq!(fmt("{n} of {total} selected", &[("n", "3"), ("total", "{n}")]), "3 of {n} selected");
+    assert_eq!(lang_from_tag("lo_LA.UTF-8").map(Lang::code), Some("lo"));
+    assert_eq!(lang_from_tag("lo-LA").map(Lang::code), Some("lo"));
 }
 
 /// `fmt_raw` fills a message in logical order, for `paragraph` to fit; `fmt` is the same

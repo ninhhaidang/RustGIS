@@ -306,6 +306,9 @@ pub enum ScriptFont {
     Arabic,
     /// Bengali glyph coverage only; the current text stack does not shape Indic conjuncts.
     Bengali,
+    /// Lao letters, drawn after the interface face (which keeps drawing Latin words). Vowel and
+    /// tone marks are placed by the face's default offsets; there is no mark positioning.
+    Lao,
 }
 
 const BENGALI_CANDIDATES: &[&str] = &[
@@ -337,11 +340,39 @@ const ARABIC_CANDIDATES: &[&str] = &[
     "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",
 ];
 
+/// Installed faces with Lao letters (checked by [`covers_lao`]).
+const LAO_CANDIDATES: &[&str] = &[
+    // Windows 10/11 (Leelawadee UI; plain Leelawadee has Thai only).
+    "C:\\Windows\\Fonts\\LeelawUI.ttf",
+    "C:\\Windows\\Fonts\\DokChamp.ttf",
+    "/System/Library/Fonts/Supplemental/Lao Sangam MN.ttf",
+    "/System/Library/Fonts/Supplemental/Lao MN.ttc",
+    "/usr/share/fonts/noto/NotoSansLao-Regular.ttf",
+    "/usr/share/fonts/truetype/noto/NotoSansLao-Regular.ttf",
+    "/usr/share/fonts/opentype/noto/NotoSansLao-Regular.otf",
+    "/usr/share/fonts/google-noto/NotoSansLao-Regular.ttf",
+    "/usr/share/fonts/google-noto-vf/NotoSansLao[wdth,wght].ttf",
+    "/usr/share/fonts/TTF/NotoSansLao-Regular.ttf",
+    "/usr/share/fonts/truetype/lao/Phetsarath_OT.ttf",
+    // DejaVu Sans draws Lao too, where no Lao face is installed.
+    "/usr/share/fonts/TTF/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",
+];
+
 /// Whether a face draws Persian letters (farsi yeh, gaf) and Latin ones.
 fn covers_arabic(bytes: &[u8], index: u32) -> bool {
     use ab_glyph::Font;
     ab_glyph::FontRef::try_from_slice_and_index(bytes, index)
         .is_ok_and(|f| ['\u{6CC}', '\u{6AF}', 'A', 'z'].iter().all(|c| f.glyph_id(*c).0 != 0))
+}
+
+/// Whether a face draws Lao letters (ko, kho, the vowel sign aa and a tone mark). Latin letters
+/// aren't required: the face falls back after the interface face, which draws them.
+fn covers_lao(bytes: &[u8], index: u32) -> bool {
+    use ab_glyph::Font;
+    ab_glyph::FontRef::try_from_slice_and_index(bytes, index)
+        .is_ok_and(|f| ['\u{0E81}', '\u{0E82}', '\u{0EB2}', '\u{0EC8}'].iter().all(|c| f.glyph_id(*c).0 != 0))
 }
 
 /// An installed face for `script` (bytes and face index), found once. `None` on the web or when
@@ -356,6 +387,10 @@ pub fn script_font(script: ScriptFont) -> Option<&'static (Vec<u8>, u32)> {
         ScriptFont::Bengali => {
             static FOUND: OnceLock<Option<(Vec<u8>, u32)>> = OnceLock::new();
             FOUND.get_or_init(|| BENGALI_CANDIDATES.iter().find_map(|p| read(p).filter(|b| covers_bengali(b)).map(|b| (b, 0)))).as_ref()
+        }
+        ScriptFont::Lao => {
+            static FOUND: OnceLock<Option<(Vec<u8>, u32)>> = OnceLock::new();
+            FOUND.get_or_init(|| LAO_CANDIDATES.iter().find_map(|p| read(p).filter(|b| covers_lao(b, 0)).map(|b| (b, 0)))).as_ref()
         }
     }
 }
@@ -386,14 +421,14 @@ pub fn symbol_font() -> Option<&'static (Vec<u8>, u32)> {
     FOUND.get_or_init(|| SYMBOL_CANDIDATES.iter().find_map(|p| read(p).filter(|b| covers_symbols(b, 0)).map(|b| (b, 0)))).as_ref()
 }
 
-/// Where the web app downloads a verified face for `script` from. Bengali has no verified hosted
-/// asset yet, so it is discovered only among installed desktop fonts.
+/// Where the web app downloads a verified face for `script` from. Bengali and Lao have no verified
+/// hosted asset yet, so they are discovered only among installed desktop fonts.
 pub fn script_font_url(script: ScriptFont) -> Option<&'static str> {
     match script {
         ScriptFont::Cjk(region) => Some(cjk_font_url(region)),
         ScriptFont::Arabic => Some("https://assets.rustgis.app/fonts/Vazirmatn-Regular.ttf"),
         // No verified Bengali asset is hosted by RustGIS; don't guess a URL.
-        ScriptFont::Bengali => None,
+        ScriptFont::Bengali | ScriptFont::Lao => None,
     }
 }
 
@@ -404,6 +439,13 @@ mod tests {
         assert!(!super::covers_bengali(epaint_default_fonts::UBUNTU_LIGHT));
         assert!(!super::covers_bengali(b"not a font"));
         assert_eq!(super::script_font_url(super::ScriptFont::Bengali), None);
+    }
+
+    #[test]
+    fn lao_coverage_requires_lao_glyphs() {
+        assert!(!super::covers_lao(epaint_default_fonts::UBUNTU_LIGHT, 0));
+        assert!(!super::covers_lao(b"not a font", 0));
+        assert_eq!(super::script_font_url(super::ScriptFont::Lao), None);
     }
 
     /// A variable Noto Serif (one file for every weight, its italic beside it) is found in a
