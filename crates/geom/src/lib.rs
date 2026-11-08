@@ -36,8 +36,9 @@ pub const MERCATOR_R: f64 = 6_378_137.0;
 /// Latitude limit of Web Mercator.
 pub const MAX_LAT: f64 = 85.051_128_78;
 /// How near ±90° (degrees) a latitude counts as the pole: about a centimeter, more than geometry
-/// operations' rounding moves a pole vertex (around 1e-8°). For the polar edits and the features
-/// meeting at a pole that build on this (#1033); here only the tests use it.
+/// operations' rounding moves a pole vertex (around 1e-8°). The engine's polar edits
+/// (`cmd/design.rs`) and analysis's topology, conversion and network code use it to find the
+/// features meeting at a pole (#1033).
 pub const POLE_TOLERANCE: f64 = 1e-7;
 /// Screen pixel size assumed when converting resolution to a map scale (0.28 mm, OGC).
 pub const PIXEL_M: f64 = 0.000_28;

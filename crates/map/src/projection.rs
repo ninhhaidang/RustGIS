@@ -1228,8 +1228,9 @@ mod tests {
         assert!(e.contains("labrd"), "{e}");
         // proj4rs 0.3 added Cassini, the polyconic, Equal Earth and the oblique Mercator: their
         // codes are accepted (EPSG:5880's polyconic, whose refusal was #208), and draw where PROJ
-        // does: 54°W 10°S lands at (5 000 000, 8 894 145.167) in pyproj 3.8.0's EPSG:5880, its
-        // false easting less a million-odd metres.
+        // does: 54°W 10°S lands at (5 000 000, 8 894 145.167) in pyproj 3.8.0's EPSG:5880. On the
+        // central meridian x is the false easting itself; y is the false northing (10 000 000)
+        // less a million-odd metres.
         for ok in ["EPSG:5880", "EPSG:2057", "EPSG:3068", "EPSG:8858"] {
             crate::Projection::from_code(ok).unwrap_or_else(|e| panic!("{ok}: {e}"));
         }

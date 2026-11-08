@@ -327,9 +327,14 @@ pub fn map_pdf(s: &mut Session, dpi: f64) -> Result<Vec<u8>, String> {
     let (w, h) = (mm(view.width), mm(view.height));
     let page = if drawing.overflowed() {
         // Too large for vectors: the map as one picture, as it is drawn on screen.
-        super::layout::pictured_notices(s, &[], &[1]);
         let png = rustgis_render::render_png(s.map_mut(), &view)?;
         let pm = rustgis_render::decode_png(&png).ok_or("could not draw the map")?;
+        // Said once the picture is drawn. The budget counts the drawing's pictures (rasters,
+        // tiles) as well as its shapes.
+        let (mb, items) = (rustgis_render::vector::MAX_COST >> 20, rustgis_render::vector::MAX_ITEMS / 1_000_000);
+        s.warn(format!(
+            "The map is drawn as one picture, not vectors: kept as vectors, it would pass the drawing limit ({mb} MB or {items} million items)"
+        ));
         rustgis_render::pdf::Page::new(&pm, w, h)
     } else {
         rustgis_render::pdf::Page::drawing(drawing, w, h)

@@ -585,6 +585,10 @@ pub fn parse_mgrs(text: &str) -> Result<Mgrs, GridError> {
         }
         _ => return Err(GridError::Digits),
     };
+    // The zone first, as `parse_utm` does: `0AAA` names a bad zone, not a polar reference.
+    if !(1..=60).contains(&zone) {
+        return Err(GridError::Zone);
+    }
     let band = band_letter(band)?;
     let [column, row] = letters;
     let digit = |s: &str| if s.is_empty() { Ok(0) } else { s.parse::<u32>().map_err(|_| GridError::Digits) };
@@ -976,6 +980,8 @@ mod tests {
             ("123SMB", GridError::Syntax),
             ("0SMB", GridError::Zone),
             ("61SMB", GridError::Zone),
+            ("0AAA", GridError::Zone),
+            ("61AVE", GridError::Zone),
             // The zone is judged once the text is written as a reference: a number past 60
             // before a word is ordinary text.
             ("75 Main St", GridError::Syntax),

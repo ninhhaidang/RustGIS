@@ -241,7 +241,16 @@ impl Canvas {
     pub fn place(&mut self, child: Canvas, transform: Transform, opacity: f32, blend: Blend, clip: Option<Clip>) {
         if self.rec.is_none() || !child.is_recording() {
             let paint = PixmapPaint { opacity, blend_mode: crate::blend_mode(blend), quality: tiny_skia::FilterQuality::Bilinear };
-            self.pixels().draw_pixmap(0, 0, child.pm.as_ref(), &paint, transform, None);
+            // Cut to `clip` as the recording is: a mask the size of these pixels.
+            let mask = match &clip {
+                Some(c) => {
+                    let Some(mut m) = Mask::new(self.pm.width(), self.pm.height()) else { return };
+                    m.fill_path(&c.path, c.rule, true, c.transform);
+                    Some(m)
+                }
+                None => None,
+            };
+            self.pixels().draw_pixmap(0, 0, child.pm.as_ref(), &paint, transform, mask.as_ref());
             return;
         }
         let Some(drawing) = child.into_drawing() else { return };
@@ -392,6 +401,41 @@ mod tests {
         let Item::Stroke { path, stroke, .. } = &items[2] else { panic!("the item expected") };
         // The dashes cut from the square's 80 px outline, kept solid.
         assert!(stroke.width == 2.0 && path.segments().filter(|s| matches!(s, tiny_skia::PathSegment::MoveTo(_))).count() == 10);
+    }
+
+    #[test]
+    fn placing_pixels_keeps_inside_the_clip() {
+        let mut c = Canvas::new(40, 20).unwrap();
+        let mut child = c.sub(40, 20).unwrap();
+        child.pixels().fill(Color::from_rgba8(200, 0, 0, 255));
+        let clip = Clip {
+            path: PathBuilder::from_rect(Rect::from_xywh(0.0, 0.0, 20.0, 20.0).unwrap()),
+            rule: FillRule::Winding,
+            transform: Transform::identity(),
+        };
+        c.place(child, Transform::identity(), 1.0, Blend::Normal, Some(clip));
+        let pm = c.into_pixmap();
+        assert_eq!(pm.pixel(5, 10).map(|p| p.alpha()), Some(255), "inside the clip");
+        assert_eq!(pm.pixel(30, 10).map(|p| p.alpha()), Some(0), "outside the clip");
+    }
+
+    #[test]
+    fn placing_pixels_cuts_to_the_clip_where_its_own_transform_puts_it() {
+        let mut c = Canvas::new(40, 20).unwrap();
+        let mut child = c.sub(10, 20).unwrap();
+        child.pixels().fill(Color::from_rgba8(200, 0, 0, 255));
+        // The clip covers x 20 to 30, the child x 15 to 25: only 20 to 25 is drawn.
+        let clip = Clip {
+            path: PathBuilder::from_rect(Rect::from_xywh(0.0, 0.0, 10.0, 20.0).unwrap()),
+            rule: FillRule::Winding,
+            transform: Transform::from_translate(20.0, 0.0),
+        };
+        c.place(child, Transform::from_translate(15.0, 0.0), 1.0, Blend::Normal, Some(clip));
+        let pm = c.into_pixmap();
+        let alpha = |x| pm.pixel(x, 10).map(|p| p.alpha());
+        assert_eq!(alpha(22), Some(255), "the child inside the clip");
+        assert_eq!(alpha(17), Some(0), "the child outside the clip");
+        assert_eq!(alpha(27), Some(0), "the clip past the child");
     }
 
     #[test]

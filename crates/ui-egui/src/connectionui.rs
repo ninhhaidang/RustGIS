@@ -89,6 +89,7 @@ pub(crate) fn translated(e: &str) -> String {
         web::NOT_THIS_SESSION => tl!("This request's login does not belong to this session."),
         web::CHOOSE_CONNECTION => tl!("Several saved connections match this address. Choose a connection explicitly."),
         web::NO_SUCH_CONNECTION => tl!("No saved web-service connection with this id."),
+        web::CONNECTION_TEXT => tl!("connection must be a saved web-service connection id (text)"),
         other => other,
     }
     .to_string()

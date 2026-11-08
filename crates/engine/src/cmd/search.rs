@@ -721,6 +721,9 @@ mod tests {
             ("38Z 444141 3684706", GridError::Polar),
             ("38ZMB4414084706", GridError::Polar),
             ("99X 1 2", GridError::Zone),
+            // A bad zone is judged before a polar or unknown band.
+            ("0AAA", GridError::Zone),
+            ("61AVE", GridError::Zone),
             ("33U 1000000 5523456", GridError::OutsideZone),
         ] {
             assert_eq!(read_grid_reference(q), Err(why), "{q}");

@@ -250,6 +250,9 @@ fn add_asset(s: &mut Session, p: &Value) -> CmdResult {
     let p = bound.as_ref();
     let i = item(p)?;
     let (key, href) = i.asset_href(ps(p, "asset"))?;
+    // Codes for a failed retrieval (JAXA Earth's `dn.error`), which a data cube skips but a
+    // single file draws as values: of the asset `asset_href` picked, by the same selector.
+    let codes = i.pick(ps(p, "asset")).ok().map(|a| (a.invalid.clone(), a.codes_unread)).unwrap_or_default();
     let name = ps(p, "name").map(str::trim).filter(|n| !n.is_empty()).map(str::to_string).unwrap_or_else(|| format!("{} {key}", i.id));
     // A Planetary Computer asset is read with its storage container's token.
     #[cfg(not(target_arch = "wasm32"))]
@@ -258,7 +261,27 @@ fn add_asset(s: &mut Session, p: &Value) -> CmdResult {
     if let Some(connection) = p.get("connection") {
         add["connection"] = connection.clone();
     }
-    super::layer::add_url(s, &add)
+    let added = super::layer::add_url(s, &add)?;
+    match codes {
+        (_, true) => s.warn(format!(
+            "{name}: its metadata's codes for a failed retrieval (je:rasters dn.error) couldn't be read whole (not a list of numbers, or too many), so the map draws any such codes in the file as values"
+        )),
+        (invalid, false) if !invalid.is_empty() => {
+            // The first few, large ones (a float's lowest, -3.4e38) in exponent form.
+            const SHOWN: usize = 5;
+            let code = |v: &f64| if v.abs() >= 1e6 { format!("{v:e}") } else { v.to_string() };
+            let mut listed = invalid.iter().take(SHOWN).map(code).collect::<Vec<_>>().join(", ");
+            if invalid.len() > SHOWN {
+                listed.push_str(&format!(" and {} more", invalid.len() - SHOWN));
+            }
+            s.warn(format!(
+                "{name}: its metadata marks failed retrievals with {} code(s) ({listed}), which the map draws as values",
+                invalid.len()
+            ));
+        }
+        _ => {}
+    }
+    Ok(added)
 }
 
 /// The most items a data cube on the time slider takes (its search is paged up to this).
