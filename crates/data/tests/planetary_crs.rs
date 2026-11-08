@@ -140,6 +140,14 @@ fn planetographic_systems_without_east_axes_are_refused() {
     let dir = tempfile::tempdir().unwrap();
     let r = 3_396_190.0f64;
     let metres = LONLAT.map(|(lon, lat)| (r * lon.to_radians(), r * lat.to_radians()));
+    // The planetographic systems are on the flattened Mars (2015) ellipsoid, where equidistant
+    // cylindrical northings are meridian distances (EPSG method 1028), not r·φ.
+    let f = 1.0 / 169.894447223612;
+    let eqc = rustgis_geom::EquidistantCylindrical::new(r, f * (2.0 - f), 0.0, 0.0, 0.0, 0.0, 0.0).unwrap();
+    let on_ellipsoid = LONLAT.map(|(lon, lat)| {
+        let c = eqc.forward(Coord::new(lon, lat)).unwrap();
+        (c.x, c.y)
+    });
     let with_axes = |wkt: &str, axes: &str| format!("{},{axes}]", wkt.strip_suffix(']').unwrap());
     let east_north = r#"AXIS["Lon",EAST],AXIS["Lat",NORTH]"#;
     let unnamed = MARS_OGRAPHIC_ESRI.replace("GCS_Mars_2015_Ographic", "GCS_Mars");
@@ -194,14 +202,14 @@ fn planetographic_systems_without_east_axes_are_refused() {
         ("esri_east", with_axes(MARS_OGRAPHIC_ESRI, east_north), LONLAT),
         ("wkt2_east", MARS_WEST.replace(",west,", ",east,"), LONLAT),
         ("ocentric_code", with_axes(&unnamed, r#"AUTHORITY["IAU_2015","49900"]"#), LONLAT),
-        ("eqc_easting", eqc_on(&with_axes(MARS_OGRAPHIC_ESRI, east_north), "Mars_Equirectangular"), metres),
+        ("eqc_easting", eqc_on(&with_axes(MARS_OGRAPHIC_ESRI, east_north), "Mars_Equirectangular"), on_ellipsoid),
         (
             "eqc_base_easting",
             with_axes(&eqc_on(MARS_OGRAPHIC_ESRI, "Mars_Equirectangular"), r#"AXIS["Easting",EAST],AXIS["Northing",NORTH]"#),
-            metres,
+            on_ellipsoid,
         ),
         ("eqc_ocentric_code", with_axes(MARS_EQC, r#"AUTHORITY["IAU_2015","49910"]"#), metres),
-        ("wkt2_eqc_easting", wkt2_eqc("Mars (2015) / Ographic", "east"), metres),
+        ("wkt2_eqc_easting", wkt2_eqc("Mars (2015) / Ographic", "east"), on_ellipsoid),
     ];
     for (name, prj, native) in &read {
         let path = shapefile(dir.path(), name, *native, prj);
@@ -238,8 +246,12 @@ fn planetographic_systems_without_east_axes_are_refused() {
     assert!(planetary_notes(&report.messages).is_empty(), "{:?}", report.messages);
     let src = source::open_path(&path, None).unwrap();
     assert_eq!(said(&src.info().notes), 1, "{:?}", src.info().notes);
-    let a = 6_378_137.0f64;
-    let earth_metres = LONLAT.map(|(lon, lat)| (a * lon.to_radians(), a * lat.to_radians()));
+    let f = 1.0 / 298.257223563;
+    let wgs84_eqc = rustgis_geom::EquidistantCylindrical::new(6_378_137.0, f * (2.0 - f), 0.0, 0.0, 0.0, 0.0, 0.0).unwrap();
+    let earth_metres = LONLAT.map(|(lon, lat)| {
+        let c = wgs84_eqc.forward(Coord::new(lon, lat)).unwrap();
+        (c.x, c.y)
+    });
     let earth_eqc = eqc_on(&west, "World_Equidistant_Cylindrical");
     assert!(earth_eqc.contains("WGS_1984") && earth_eqc.contains("WEST"), "{earth_eqc}");
     let path = shapefile(dir.path(), "earth_eqc_west", earth_metres, &earth_eqc);
@@ -744,13 +756,13 @@ fn a_mars_projection_in_a_geotiff_is_said_or_refused() {
     // On the Earth, such a citation changes nothing.
     let earth = cited_on(6_378_137.0, 3073, "Ographic test grid|").unwrap();
     assert!(!earth.crs.is_planetary() && earth.lost.is_empty(), "{:?}", earth.lost);
-    // A transformation RustGIS doesn't read (23, the New Zealand Map Grid's): refused on Mars, even
+    // A transformation RustGIS doesn't read (26, the New Zealand Map Grid's): refused on Mars, even
     // where the numbers look like degrees, as they are metres.
     let mut unread = eqc.clone();
     let at = unread.chunks(4).position(|k| k[0] == 3075).unwrap() * 4 + 3;
-    unread[at] = 23;
+    unread[at] = 26;
     let e = raster::read_bytes("unread.tif", &geotiff(-180.0, &unread, &[3_396_190.0], "")).unwrap_err().to_string();
-    assert!(e.contains(ANOTHER_BODY) && e.contains("transformation 23"), "{e}");
+    assert!(e.contains(ANOTHER_BODY) && e.contains("transformation 26"), "{e}");
     // On the Earth it is read as longitude/latitude where the numbers fit, as before.
     let earth = raster::read_bytes("earth.tif", &geotiff(-180.0, &unread, &[6_378_137.0], "")).unwrap();
     assert_eq!(earth.crs, Crs::LonLat);
