@@ -1,5 +1,7 @@
 # az interface catalog: English<TAB>translation
  by 	 ×
+"instance" must be a layer's instance number, not {value}	"instance" {value} deyil, layın nüsxə nömrəsi olmalıdır
+"layer" must be a layer's id or name, not {value}	"layer" {value} deyil, layın id-si və ya adı olmalıdır
 '{b}' isn't a bucket name	'{b}' bucket adı deyil
 '{text}' isn't a scale: type one such as 1:12,345	«{text}» miqyas deyil: məsələn, 1:12,345 kimi birini yazın
 (b4-b3)/(b4+b3)	(b4-b3)/(b4+b3)
@@ -440,6 +442,7 @@ Basemap	Əsas xəritə
 Basemaps	Əsas xəritələr
 Basic authentication	Sadə autentifikasiya
 Basin from hydrolocation	Hidrolokasiyadan hövzə
+Batch Run	Paketlə işə sal
 Bearing	Azimut
 Before	Əvvəl
 Before the event	Hadisədən əvvəl
@@ -778,6 +781,7 @@ Connected to {kind} {title}	{kind} {title} ilə bağlantı quruldu
 Connecting to {url}…	{url} ünvanına qoşulur…
 Connection	Bağlantı
 Connection failure	Bağlantı xətası
+connection must be a saved web-service connection id (text)	connection saxlanmış veb xidmət bağlantısının id-si (mətn) olmalıdır
 connection.new returned no id	connection.new identifikator qaytarmadı
 Connections	Bağlantılar
 Connections you add are listed here	Əlavə etdiyiniz bağlantılar burada sadalanır
@@ -809,6 +813,7 @@ Copied the layout to the clipboard	Tərtibat mübadilə buferinə kopyalandı
 Copied the layout to the clipboard at {dpi} dpi, not {wanted}: the page is too large for a larger image	Tərtibat mübadilə buferinə {wanted} deyil, {dpi} dpi ilə kopyalandı: səhifə daha böyük şəkil üçün çox böyükdür
 Copied the map to the clipboard	Xəritə mübadilə buferinə kopyalandı
 Copied {path}	{path} kopyalandı
+Copied. The log cut its parameters short or took their secrets out, so it may not run as it ran.	Kopyalandı. Jurnal parametrləri qısaltdı və ya onlardan sirləri çıxardı, ona görə də əvvəlki kimi işləməyə bilər.
 Copies the (selected) features of a layer to a new layer.	Layın (seçilmiş) obyektlərini yeni laya kopyalayır.
 Copy	Kopyala
 Copy / Cut / Paste features	Obyektləri kopyala / kəs / yapışdır
@@ -834,6 +839,7 @@ Copy Layers	Layları kopyala
 Copy Parameters	Parametrləri kopyala
 Copy Path	Yolu kopyala
 Copy Run As Code	İcranı kod kimi kopyala
+Copy Script	Skripti kopyala
 Copy sign-in link	Giriş keçidini kopyala
 Copy the filtered history, including technical details	Süzülmüş tarixçəni texniki təfərrüatlarla birlikdə kopyala
 Copy the selected features (also as GeoJSON text).	Seçilmiş obyektləri kopyalayın (həm də GeoJSON mətni kimi).
@@ -1693,6 +1699,7 @@ In Beyond	Yaxınlaşma həddi
 In degrees.	Dərəcə ilə.
 In memory	Yaddaşda
 In place	Yerində
+In place of the Script pane's script ({keys} brings it back)	Skript panelindəki skriptin yerinə ({keys} onu geri qaytarır)
 In place, holding a {w} × {h} overview	Yerində, {w} × {h} icmal ilə
 In Progress	İcra olunur
 in progress	icra olunur
@@ -1772,6 +1779,7 @@ Invert color scheme	Rəng sxemini tərsinə çevir
 Invert the selection.	Seçimi tərsinə çevirin.
 IS	IS
 IS NULL	IS NULL
+It can't run in a script	Onu skriptdə işə salmaq olmaz
 it changed since it was installed: install it again from the Plugin Manager	quraşdırıldıqdan sonra dəyişib: onu Plagin menecerindən yenidən quraşdırın
 it connects to an address on the internet	internetdəki ünvana qoşulur
 It didn't open: {error}	Açılmadı: {error}
@@ -2343,6 +2351,7 @@ no service or file links	xidmət və ya fayl keçidi yoxdur
 No services match your search.	Axtarışınıza uyğun xidmət yoxdur.
 No standalone tables	Müstəqil cədvəl yoxdur
 No styles yet	Hələ üslub yoxdur
+No such tile layer	Belə kafel layı yoxdur
 no system keychain in this build	bu yığımda sistem açar dəsti yoxdur
 No tasks yet. Record one, or make one from your geoprocessing history with Analyze › Task.	Hələ tapşırıq yoxdur. Birini yazın və ya Analiz › Tapşırıq ilə geoemal tarixçənizdən yaradın.
 no text graphic there	orada mətn qrafikası yoxdur
@@ -2432,6 +2441,7 @@ Only a tile archive read from a file (PMTiles or MBTiles) can be repaired.	Yaln�
 Only cubes with data where the map is	Yalnız xəritənin olduğu yerdə məlumatı olan kublar
 Only features matching this expression draw in {layer}.	{layer} layında yalnız bu ifadəyə uyğun obyektlər çəkilir.
 Only selected polygons will be included in the output.	Nəticəyə yalnız seçilmiş poliqonlar daxil ediləcək.
+Only the commands run in the project open now	Yalnız hazırda açıq olan layihədə işə salınan əmrlər
 Only the map's area	Yalnız xəritə sahəsi
 Only where the map is	Yalnız xəritənin olduğu yerdə
 Opacity	Qeyri-şəffaflıq
@@ -2452,6 +2462,7 @@ Open Diagnostics	Diaqnostikanı aç
 Open folder	Qovluğu aç
 Open In Geoprocessing…	Geoemalda aç…
 Open in ModelBuilder	Model qurucusunda aç
+Open in Script Pane	Skript panelində aç
 Open in Tool	Alətdə aç
 Open Layout	Tərtibatı aç
 Open ModelBuilder	Model qurucusunu aç
@@ -2652,7 +2663,7 @@ Plugins marked Not sandboxed run as programs on your computer instead, and can d
 Plugins run in a sandbox: they can't reach your files or the network, and they change the project only through RustGIS's own commands, within the permissions you accept.	Plaginlər qum qutusunda işləyir: onlar fayllarınıza və ya şəbəkəyə çata bilməz və layihəni yalnız RustGIS-in öz əmrləri ilə, qəbul etdiyiniz icazələr daxilində dəyişirlər.
 PMTiles archive	PMTiles arxivi
 PNG frames (zip)	PNG kadrları (zip)
-PNG image	PNG təsviri
+PNG image or GeoTIFF	PNG təsviri və ya GeoTIFF
 Point	Nöqtə
 Point the selected layer at its file after the file moved or was renamed.	Fayl köçürüldükdən və ya adı dəyişdirildikdən sonra seçilmiş layı öz faylına yönəlt.
 Points	Nöqtələr
@@ -3194,6 +3205,7 @@ Select a layer in the Layers pane	Laylar panelində lay seçin
 select a layer in the Layers pane first	əvvəlcə Laylar panelində lay seçin
 Select a layer in the Layers pane.	Laylar panelində lay seçin.
 Select a navigation method after tracing a point.	Nöqtəni izlədikdən sonra naviqasiya üsulu seçin.
+Select a raster or tile layer in the Layers pane first	Əvvəlcə Laylar panelində rastr və ya kafel layı seçin
 Select All	Hamısını seç
 Select an element to format it.	Formatlamaq üçün element seçin.
 Select By\nAttributes	Atributlara\ngörə seç
@@ -3661,6 +3673,7 @@ The desktop app adds data cubes	Məlumat kublarını masaüstü tətbiq əlavə 
 The distance between two marks along the line	Xətt boyunca iki işarə arasındakı məsafə
 The environment (AWS_ACCESS_KEY_ID…)	Mühit (AWS_ACCESS_KEY_ID…)
 The features where the map is	Xəritənin olduğu yerdəki obyektlər
+The filter searches the first {n} of them; the service.add command adds any other by its name.	Filtr onların ilk {n} ədədində axtarır; service.add əmri istənilən digərini adı ilə əlavə edir.
 The first 1,000 entries; narrow it down a folder at a time.	İlk 1000 element; hər dəfə bir qovluq daraldın.
 The first {n} are listed.	İlk {n} göstərilir.
 The first {n} are shown: search to narrow them.	İlk {n} göstərilir: daraltmaq üçün axtarın.
@@ -3688,6 +3701,7 @@ The layer's strokes	Layın cizgiləri
 the layout export failed unexpectedly	tərtibatın ixracı gözlənilmədən uğursuz oldu
 The link doesn't say its STAC API: Find Items searches {api}	Keçid öz STAC API-sini göstərmir: «Elementləri tap» {api} üzrə axtarır
 The list of plugins to browse. Leave it empty for the RustGIS plugin registry.	Baxmaq üçün plaginlərin siyahısı. RustGIS plagin reyestri üçün boş saxlayın.
+The log cut it short or took its secrets out: it would run only in part	Jurnal onu qısaltdı və ya sirləri çıxardı: yalnız qismən işləyərdi
 The longest a callout's line may be.	İstinad xəttinin ola biləcəyi ən böyük uzunluq.
 The map at the left; the title, locator, legend, sources and reference in a panel at the right.	Xəritə solda; başlıq, lokator, legenda, mənbələr və istinad sağda paneldə.
 the map has no GeoPackage layer loaded for editing (Home › Add Data › Edit GeoPackage Table…)	xəritədə redaktə üçün yüklənmiş GeoPackage layı yoxdur (Əsas › Məlumat əlavə et › GeoPackage cədvəlini redaktə et…)
@@ -3728,7 +3742,10 @@ the picture is too large to show	şəkil göstərmək üçün çox böyükdür
 the picture is too large to show, or isn't one	şəkil göstərmək üçün çox böyükdür və ya şəkil deyil
 the place lies outside the zone given	yer verilmiş zonadan kənardadır
 The places leave this device for the public Valhalla server at {server}, run by FOSSGIS. Don't continue if your project is bound by data privacy or data sovereignty rules.	Yerlər bu cihazdan FOSSGIS tərəfindən idarə olunan {server} ünvanındakı ictimai Valhalla serverinə göndərilir. Layihəniz məlumat məxfiliyi və ya məlumat suverenliyi qaydalarına tabedirsə, davam etməyin.
-The plugin {id} wasn't loaded. Open Plugins › Plugin Manager to see it. {reason}	{id} plagini yüklənmədi. Onu görmək üçün Plaginlər › Plagin meneceri bölməsini açın. {reason}
+The plugin blocklist couldn't be downloaded ({error}); the last one read, if any, stays in force.	Plagin blok siyahısı endirilə bilmədi ({error}); son oxunan siyahı, varsa, qüvvədə qalır.
+The plugin blocklist couldn't be read ({error}); the last one read, if any, stays in force.	Plagin blok siyahısı oxuna bilmədi ({error}); son oxunan siyahı, varsa, qüvvədə qalır.
+The plugin {id} wasn't loaded (open Plugins › Plugin Manager to see it): {reason}.	{id} plagini yüklənmədi (onu görmək üçün Plaginlər › Plagin meneceri bölməsini açın): {reason}.
+The plugin {id} wasn't loaded. Open Plugins › Plugin Manager to see it.	{id} plagini yüklənmədi. Onu görmək üçün Plaginlər › Plagin meneceri bölməsini açın.
 The portal's OAuth app	Portalın OAuth tətbiqi
 the presentation export failed unexpectedly	təqdimatın ixracı gözlənilmədən uğursuz oldu
 the preview failed unexpectedly	ön baxış gözlənilmədən uğursuz oldu
@@ -3744,7 +3761,7 @@ The range is two numbers, low and high (0, 0.9)	Diapazon iki ədəddir, aşağı
 The raster's data couldn't be read.	Rastrın məlumatı oxuna bilmədi.
 The raster's data couldn't be read: {error}	Rastrın məlumatları oxuna bilmədi: {error}
 the recovery copy is incomplete	bərpa surəti tam deyil
-the recovery copy is too large	bərpa surəti çox böyükdür
+the recovery copy is too large (maximum {mib} MiB on this computer)	bərpa surəti çox böyükdür (bu kompüterdə maksimum {mib} MiB)
 the recovery copy isn't text	bərpa surəti mətn deyil
 the release isn't known	buraxılış məlum deyil
 The reply reached its length limit.	Cavab uzunluq limitinə çatdı.
@@ -3759,6 +3776,7 @@ The saved password could not be used. Type a password to try again; check Rememb
 The saved S3 connection no longer matches this source.	Saxlanmış S3 bağlantısı artıq bu mənbəyə uyğun gəlmir.
 The saved sign-in changed. Select your account again.	Saxlanmış giriş dəyişib. Hesabınızı yenidən seçin.
 The scale the layer's symbol and label sizes are set for. At other scales they grow and shrink with the map, as on paper.	Layın simvol və etiket ölçülərinin təyin olunduğu miqyas. Digər miqyaslarda onlar kağızda olduğu kimi xəritə ilə birlikdə böyüyür və kiçilir.
+The script, for the Script pane	Skript paneli üçün skript
 The selected GeoPackage layer is no longer available; choose a layer	Seçilmiş GeoPackage layı artıq əlçatan deyil; lay seçin
 The server had a problem answering.	Server cavab verərkən problem yarandı.
 The server is limiting requests.	Server sorğuları məhdudlaşdırır.
@@ -3840,6 +3858,7 @@ This map's thumbnail, from the view.	Görünüşdən bu xəritənin miniatürü.
 This platform does not report the system theme	Bu platforma sistem mövzusunu bildirmir
 This plugin can:	Bu plagin bunları edə bilər:
 This plugin runs as a program on your computer, outside RustGIS's sandbox. It can do anything you can: read and change your files, use the network and run other programs. Install it only if you trust its author.	Bu plagin RustGIS-in qum qutusundan kənarda, kompüterinizdə proqram kimi işləyir. Sizin edə bildiyiniz hər şeyi edə bilər: fayllarınızı oxuyub dəyişə, şəbəkədən istifadə edə və başqa proqramlar işə sala bilər. Onu yalnız müəllifinə etibar edirsinizsə quraşdırın.
+This project	Bu layihə
 This project uses a connection for {origin} that is not saved on this computer.	Bu layihə {origin} üçün bu kompüterdə saxlanmamış bağlantıdan istifadə edir.
 This read was already started	Bu oxuma artıq başlayıb
 This release has no installer for this computer: get it from the release page.	Bu buraxılışda bu kompüter üçün quraşdırıcı yoxdur: onu buraxılış səhifəsindən əldə edin.
@@ -4096,6 +4115,7 @@ VN-2000 / UTM zone 48N	VN-2000 / UTM zonası 48N
 VN-2000 / UTM zone 49N	VN-2000 / UTM zonası 49N
 Volume	Həcm
 Wait for the run to finish	İcranın bitməsini gözləyin
+Wait for the Script pane's run to finish	Skript panelindəki icranın bitməsini gözləyin
 Waiting for the browser…	Brauzer gözlənilir…
 Waiting for your answer	Cavabınızı gözləyir
 Walk	Gəzinti
@@ -4201,7 +4221,7 @@ Wrap at	Bölmə işarəsi
 Wrap length	Sətir uzunluğu
 Write a plugin	Plagin yaz
 Writes a separate two-vertex line for each consecutive vertex pair.	Hər ardıcıl təpə cütü üçün ayrıca iki təpəli xətt yazır.
-Writes every feature with its geometry made valid: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved. Says what was repaired in each.	Hər obyekti həndəsəsi etibarlı edilmiş şəkildə yazır: halqalar qapanır, təkrarlanan təpələr və cırlaşmış hissələr atılır, öz-özünü kəsişmələr, üst-üstə düşən hissələr və qabıqdan kənar dəliklər həll edilir. Hər birində nəyin düzəldildiyini bildirir.
+Writes every feature with its geometry made valid where it can be: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved. Features with a missing or non-finite coordinate anywhere, even in a hole, or left with no usable points or, for polygons, no area once repaired, are written without geometry. Other features too complex to check, or whose repair fails, are written unchanged. Says what was repaired in each.	Hər obyekti həndəsəsi mümkün olduqca etibarlı edilmiş şəkildə yazır: halqalar qapanır, təkrarlanan təpələr və cırlaşmış hissələr atılır, öz-özünü kəsişmələr, üst-üstə düşən hissələr və qabıqdan kənar dəliklər həll edilir. Hər hansı yerində, hətta dəlikdə belə, çatışmayan və ya sonlu olmayan koordinatı olan, yaxud düzəldildikdən sonra istifadəyə yararlı nöqtəsi və ya poliqonlar üçün sahəsi qalmayan obyektlər həndəsəsiz yazılır. Yoxlanmaq üçün çox mürəkkəb olan və ya düzəldilməsi alınmayan digər obyektlər dəyişdirilmədən yazılır. Hər birində nəyin düzəldildiyini bildirir.
 Writes one axis-aligned bounding rectangle per feature in stored longitude/latitude coordinates. Zero-area envelopes are skipped.	Saxlanmış uzunluq/en koordinatlarında hər obyekt üçün oxlara paralel bir əhatə düzbucaqlısı yazır. Sıfır sahəli çərçivələr buraxılır.
 Writes Sen's slope, the test's Z and p-value, and the slope where the trend is significant.	Sen meylini, testin Z və p-qiymətini, həmçinin trendin əhəmiyyətli olduğu yerlərdə meyli yazır.
 Writes the features with invalid geometry, such as self-intersecting or unclosed rings, holes outside their shell or overlapping parts, and says what is wrong with each.	Etibarsız həndəsəli obyektləri, məsələn, öz-özünü kəsən və ya qapanmamış halqaları, qabıqdan kənar dəlikləri və ya üst-üstə düşən hissələri olanları yazır və hər birində nəyin səhv olduğunu bildirir.

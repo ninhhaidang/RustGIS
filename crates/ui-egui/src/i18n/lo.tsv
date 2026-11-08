@@ -1,9 +1,13 @@
 # lo interface catalog: English<TAB>translation
  by 	 ໂດຍ
+"instance" must be a layer's instance number, not {value}	"instance" ຕ້ອງເປັນໝາຍເລກອິນສະແຕນຂອງຊັ້ນຂໍ້ມູນ, ບໍ່ແມ່ນ {value}
+"layer" must be a layer's id or name, not {value}	"layer" ຕ້ອງເປັນ id ຫຼື ຊື່ຂອງຊັ້ນຂໍ້ມູນ, ບໍ່ແມ່ນ {value}
 '{b}' isn't a bucket name	'{b}' ບໍ່ແມ່ນຊື່ bucket
 '{text}' isn't a scale: type one such as 1:12,345	'{text}' ບໍ່ແມ່ນມາດຕາສ່ວນ: ໃຫ້ພິມຄືແນວນີ້ 1:12,345
 (b4-b3)/(b4+b3)	(b4-b3)/(b4+b3)
+(expression)	(ນິພົດ)
 (filtered)	(ກັ່ນຕອງແລ້ວ)
+(none)	(ບໍ່ມີ)
 ({selected} of {total})	({selected} ຈາກ {total})
 + Add Stop	+ ເພີ່ມຈຸດຢຸດພັກ
 + Input	+ ຂໍ້ມູນເຂົ້າ
@@ -15,6 +19,8 @@
 00:00 UTC	00:00 UTC
 06:00 UTC	06:00 UTC
 0° crosses the line square	0° ຕັດກັບເສັ້ນຕັ້ງສາກ
+1 entry	1 ລາຍການ
+1 more class isn't listed: the list's limit doesn't change how it's drawn	ມີອີກ 1 ຄລາສທີ່ບໍ່ໄດ້ສະແດງໃນລາຍການ: ຂີດຈຳກັດຂອງລາຍການບໍ່ປ່ຽນວິທີການແຕ້ມ
 12:00 UTC	12:00 UTC
 16 imported Zarr stores are already queued	ບ່ອນເກັບ Zarr ທີ່ນຳເຂົ້າ 16 ແຫ່ງຢູ່ໃນຄິວແລ້ວ
 18:00 UTC	18:00 UTC
@@ -60,9 +66,10 @@ A line, or markers or hash marks along it	ເສັ້ນ, ຫຼື ຈຸດ�
 A magnifying lens that follows the pointer.	ແວ່ນຂະຫຍາຍທີ່ຍ້າຍຕາມຕົວຊີ້ເມົາສ໌.
 A map, feature or coverage service's address: WMS, WMTS, WFS, WCS, OGC API Features or Tiles, or an ArcGIS FeatureServer, MapServer, ImageServer or VectorTileServer (or a services directory, to browse).	ທີ່ຢູ່ບໍລິການແຜນທີ່, ຟີເຈີ ຫຼື ພື້ນຜິວ: WMS, WMTS, WFS, WCS, OGC API Features ຫຼື Tiles, ຫຼື ArcGIS FeatureServer, MapServer, ImageServer ຫຼື VectorTileServer (ຫຼື ໄດເຣັກໂທຣີບໍລິການ ເພື່ອເລືອກເບິ່ງ).
 a name, or owner/name such as giswqs/geospatial	ຊື່, ຫຼື ເຈົ້າຂອງ/ຊື່ ເຊັ່ນ giswqs/geospatial
-A named endpoint you can reuse. Keys and tokens are kept until RustGIS closes, never saved.	ຈຸດເຊື່ອມຕໍ່ທີ່ມີຊື່ເຊິ່ງນຳໃຊ້ຄືນໄດ້. ຄີ ແລະ ໂທເຄັນຈະຖືກເກັບໄວ້ຈົນກວ່າ RustGIS ຈະປິດ ແລະ ຈະບໍ່ບັນທຶກຖາວອນ.
 A named endpoint you can reuse. Keys are kept until RustGIS closes unless you choose to remember them on this computer; the connection itself never keeps them.	ຈຸດເຊື່ອມຕໍ່ທີ່ມີຊື່ເຊິ່ງນຳໃຊ້ຄືນໄດ້. ຄີຈະຖືກເກັບໄວ້ຈົນກວ່າ RustGIS ຈະປິດ ເວັ້ນເສຍແຕ່ທ່ານເລືອກໃຫ້ຈື່ໄວ້ໃນຄອມພິວເຕີນີ້; ຕົວເຊື່ອມຕໍ່ເອງຈະບໍ່ເກັບຄີໄວ້ເລີຍ.
 A named endpoint you can reuse. Passwords last for this session unless you choose to remember them in this computer's password store.	ຈຸດເຊື່ອມຕໍ່ທີ່ມີຊື່ເຊິ່ງນຳໃຊ້ຄືນໄດ້. ລະຫັດຜ່ານຈະຢູ່ສະເພາະຮອບການໃຊ້ນີ້ ເວັ້ນເສຍແຕ່ທ່ານເລືອກໃຫ້ບັນທຶກໄວ້ໃນບ່ອນເກັບລະຫັດຜ່ານຂອງຄອມພິວເຕີນີ້.
+A new GeoPackage	GeoPackage ໃໝ່
+A new table in a GeoPackage	ຕາຕະລາງໃໝ່ໃນ GeoPackage
 A node cannot connect to itself.	ໂນດບໍ່ສາມາດເຊື່ອມຕໍ່ຫາຕົວມັນເອງໄດ້.
 A notebook of text and command cells.	ປຶ້ມບັນທຶກໂນ້ດບຸກທີ່ປະກອບດ້ວຍຫ້ອງຂໍ້ຄວາມ ແລະ ຫ້ອງຄຳສັ່ງ.
 A password or token in the address was left out of the saved connection definition.	ລະຫັດຜ່ານ ຫຼື ໂທເຄັນໃນທີ່ຢູ່ຖືກຍົກເວັ້ນອອກຈາກການບັນທຶກການເຊື່ອມຕໍ່.
@@ -78,8 +85,13 @@ A rustgis-cli command, for a POSIX shell (macOS, Linux, WSL, Git Bash)	ຄຳສ
 A saved key could not be read. A key entered now will be kept for this session only.	ບໍ່ສາມາດອ່ານຄີທີ່ບັນທຶກໄວ້. ຄີທີ່ປ້ອນຕອນນີ້ຈະຖືກເກັບໄວ້ສະເພາະຮອບການໃຊ້ນີ້ເທົ່ານັ້ນ.
 A service import or refresh is already running.	ກຳລັງນຳເຂົ້າ ຫຼື ໂຫຼດຂໍ້ມູນບໍລິການຄືນໃໝ່ຢູ່ແລ້ວ.
 A service's layers stay in their service group.	ຊັ້ນຂໍ້ມູນຂອງບໍລິການຈະຢູ່ໃນກຸ່ມບໍລິການນັ້ນໆ.
+A small chart of several numeric fields, drawn on each feature over its symbol	ແຜນພູມນ້ອຍຂອງຫຼາຍຟິວຕົວເລກ, ແຕ້ມເທິງແຕ່ລະຟີເຈີທັບສັນຍະລັກຂອງມັນ
+A streamed layer needs Load All Features first	ຊັ້ນຂໍ້ມູນແບບສະຕຣີມຕ້ອງ ໂຫຼດຟີເຈີທັງໝົດ ກ່ອນ
+A table replaced in a GeoPackage	ຕາຕະລາງທີ່ຖືກແທນທີ່ໃນ GeoPackage
 A task holds at most 200 steps: stop recording to make it, then record the rest as another task.	ໜ້າວຽກໜຶ່ງເກັບໄດ້ສູງສຸດ 200 ຂັ້ນຕອນ: ຢຸດການບັນທຶກເພື່ອສ້າງມັນ, ແລ້ວບັນທຶກສ່ວນທີ່ເຫຼືອເປັນອີກໜ້າວຽກໜຶ່ງ.
 A template with the first selected feature's values	ແມ່ແບບທີ່ໃຊ້ຄ່າຈາກຟີເຈີທຳອິດທີ່ເລືອກ
+A theme file	ໄຟລ໌ຮູບແບບສີສັນ
+A theme file was refused. Open Settings > Theme for the reason.	ໄຟລ໌ຮູບແບບສີສັນຖືກປະຕິເສດ. ເປີດ ການຕັ້ງຄ່າ > ຮູບແບບສີສັນ ເພື່ອເບິ່ງເຫດຜົນ.
 A tile layer per grid tile, each following the time slider through its dates.	ຊັ້ນຂໍ້ມູນໄທລ໌ຕໍ່ໜຶ່ງຫ້ອງຕາໜ່າງ, ແຕ່ລະອັນປ່ຽນຕາມແຖບເລື່ອນເວລາ.
 A tile service's address: raster tiles with {z}/{x}/{y} (or {-y}, {q}, {bbox-epsg-3857} for WMS), vector tiles (.pbf) or TileJSON, a MapLibre style, a PMTiles archive (a web address, or a file on this computer), or an MBTiles file on this computer.	ທີ່ຢູ່ບໍລິການໄທລ໌: ຣາສເຕີໄທລ໌ທີ່ມີ {z}/{x}/{y} (ຫຼື {-y}, {q}, {bbox-epsg-3857} ສຳລັບ WMS), ເວັກເຕີໄທລ໌ (.pbf) ຫຼື TileJSON, ຮູບແບບ MapLibre, ໄຟລ໌ PMTiles (ທີ່ຢູ່ເວັບ ຫຼື ໄຟລ໌ໃນຄອມພິວເຕີນີ້), ຫຼື ໄຟລ໌ MBTiles ໃນຄອມພິວເຕີນີ້.
 A token for {server}	ໂທເຄັນສຳລັບ {server}
@@ -316,6 +328,7 @@ Amazon S3	Amazon S3
 Amazon S3, or an S3-compatible service (MinIO, Cloudflare R2, Wasabi…) by its endpoint. Keys are kept until RustGIS closes; a saved connection keeps its name, endpoint and region, never its secret.	Amazon S3 ຫຼື ບໍລິການທີ່ຮອງຮັບ S3 (MinIO, Cloudflare R2, Wasabi…) ດ້ວຍ endpoint. ຄີຈະຖືກເກັບຈົນກວ່າ RustGIS ປິດ; ການເຊື່ອມຕໍ່ທີ່ບັນທຶກຈະເກັບພຽງຊື່, endpoint ແລະ region, ບໍ່ເກັບ secret ເລີຍ.
 amenity=cafe, shop	amenity=cafe, shop
 An agent on this computer asks to:	ເອເຈັນໃນເຄື່ອງນີ້ຮ້ອງຂໍເພື່ອ:
+An API key sent in a header must use plain ASCII characters.	API key ທີ່ສົ່ງໃນ header ຕ້ອງໃຊ້ຕົວອັກສອນ ASCII ທຳມະດາ.
 An ArcGIS Online organization's or an ArcGIS Enterprise portal's address; ArcGIS Online when blank	ທີ່ຢູ່ອົງກອນ ArcGIS Online ຫຼື ພໍທັລ ArcGIS Enterprise; ຖ້າປະວ່າງຈະຖືເປັນ ArcGIS Online
 An AWS profile	ໂປຣໄຟລ໌ AWS
 Analysis	ການວິເຄາະ
@@ -327,11 +340,14 @@ Angle	ມຸມ
 Animated GIF	ຮູບພາບເຄື່ອນໄຫວ GIF
 Animation	ພາບເຄື່ອນໄຫວ
 Another dropped file wasn't opened: drop it again once you've answered about the unsaved changes.	ອີກໄຟລ໌ໜຶ່ງທີ່ລາກມາວາງບໍ່ໄດ້ຖືກເປີດ: ໃຫ້ລາກມາວາງໃໝ່ອີກຄັ້ງຫຼັງຈາກຕອບເລື່ອງການບັນທຶກການປ່ຽນແປງແລ້ວ.
+another project was opened	ໂຄງການອື່ນຖືກເປີດ
 Another run is under way.	ກຳລັງເຮັດວຽກອື່ນຢູ່.
 Any	ໃດກໍໄດ້
 anywhere in the records	ທຸກບ່ອນໃນຂໍ້ມູນ
 API key	API key
+API key in a header	API key ໃນ header
 Appends vector layers of the same geometry type into a new layer, optionally combining their attributes.	ຕໍ່ຊັ້ນຂໍ້ມູນເວັກເຕີທີ່ມີປະເພດຮູບຊົງດຽວກັນເຂົ້າເປັນຊັ້ນຂໍ້ມູນໃໝ່, ພ້ອມທັງເລືອກຮວມຕາຕະລາງຄຸນລັກສະນະໄດ້.
+Application	ແອັບພລິເຄຊັນ
 Apply	ນຳໃຊ້
 Apply a function to a raster	ນຳໃຊ້ຟັງຊັນກັບຣາສເຕີ
 Apply Control Points	ນຳໃຊ້ຈຸດຄວບຄຸມ
@@ -377,6 +393,7 @@ Assistant settings	ການຕັ້ງຄ່າຜູ້ຊ່ວຍ
 At both ends	ຢູ່ທັງສອງສົ້ນ
 At inner vertices	ຢູ່ຈຸດຈອດທາງໃນ
 At intervals	ຕາມໄລຍະຫ່າງ
+at most	ສູງສຸດ
 At the end	ຢູ່ສົ້ນສຸດ
 At the start	ຢູ່ຈຸດເລີ່ມຕົ້ນ
 At vertices	ຢູ່ຈຸດຈອດ
@@ -419,9 +436,13 @@ Band {n}	ແຖບຄື້ນ {n}
 Bands	ແຖບຄື້ນ
 Bands: blue green red NIR SWIR	ແຖບຄື້ນ: ຟ້າ ຂຽວ ແດງ NIR SWIR
 Banner	ປ້າຍແບນເນີ
+Bar	ແທ່ງ
+Bar Chart	ແຜນພູມແທ່ງ
 Basemap	ແຜນທີ່ພື້ນຖານ
 Basemaps	ແຜນທີ່ພື້ນຖານ
+Basic authentication	ການຢືນຢັນຕົວຕົນແບບພື້ນຖານ (Basic)
 Basin from hydrolocation	ອ່າງຮັບນ້ຳຈາກຈຸດອຸທົກກະສາດ
+Batch Run	ເຮັດວຽກເປັນຊຸດ
 Bearing	ທິດທາງມຸມ (Bearing)
 Before	ກ່ອນ
 Before the event	ກ່ອນເຫດການ
@@ -512,6 +533,7 @@ Calculated {rows} features	ຄິດໄລ່ແລ້ວ {rows} ຟີເຈີ
 Calculates a magnitude-per-unit-area surface from point features using a kernel function.	ຄິດໄລ່ພື້ນຜິວຄວາມໜາແໜ້ນຕໍ່ຫົວໜ່ວຍພື້ນທີ່ຈາກຟີເຈີຈຸດໂດຍໃຊ້ຟັງຊັນເຄີເນວ (kernel).
 Calculates raster summary statistics for each polygon feature.	ຄິດໄລ່ສະຖິຕິສະຫຼຸບຂອງຣາສເຕີສຳລັບແຕ່ລະຮູບຫຼາຍແຈ.
 Calculation	ການຄິດໄລ່
+Callouts	ເສັ້ນຊີ້ (Callout)
 Camera	ກ້ອງ
 Camera Effect	ເອັບເຟັກກ້ອງ
 Can't read this folder	ບໍ່ສາມາດອ່ານໂຟນເດີນີ້
@@ -563,6 +585,7 @@ Check Again	ກວດສອບຄືນໃໝ່
 Check for\nUpdates	ກວດສອບ\nການອັບເດດ
 Check for Updates	ກວດສອບການອັບເດດ
 Check for Updates…	ກວດສອບການອັບເດດ…
+Check Geometry	ກວດສອບເລຂາຄະນິດ
 Check the address and the service type.	ກວດສອບທີ່ຢູ່ ແລະ ປະເພດຂອງບໍລິການ.
 Check the address and your connection.	ກວດສອບທີ່ຢູ່ ແລະ ການເຊື່ອມຕໍ່ຂອງທ່ານ.
 Check the address.	ກວດສອບທີ່ຢູ່.
@@ -576,6 +599,7 @@ Choose a contrast stretch for the raster layer.	ເລືອກການປັ�
 Choose a country	ເລືອກປະເທດ
 Choose a delimited text file or a spreadsheet, then pick its columns.	ເລືອກໄຟລ໌ຂໍ້ຄວາມທີ່ມີຕົວຂັ້ນ ຫຼື ຕາຕະລາງສະເປຣດຊີດ, ແລ້ວເລືອກຖັນຂໍ້ມູນ.
 Choose a destination	ເລືອກປາຍທາງ
+Choose a field	ເລືອກຟິວ
 Choose a field to apply this renderer:	ເລືອກຟິວເພື່ອໃຊ້ຮູບແບບການສະແດງຜົນນີ້:
 choose a file first	ເລືອກໄຟລ໌ກ່ອນ
 Choose a GeoPackage layer	ເລືອກຊັ້ນຂໍ້ມູນ GeoPackage
@@ -608,6 +632,7 @@ Choose the interface language.	ເລືອກພາສາສະແດງຜົ�
 Choose the source coordinate system before importing	ເລືອກລະບົບພິກັດຕົ້ນທາງກ່ອນນຳເຂົ້າ
 Choose the source coordinate system before importing. It replaces a missing or incorrect .prj without changing the original file.	ເລືອກລະບົບພິກັດຕົ້ນທາງກ່ອນນຳເຂົ້າ. ມັນຈະປ່ຽນແທນໄຟລ໌ .prj ທີ່ຂາດຫາຍ ຫຼື ບໍ່ຖືກຕ້ອງ ໂດຍບໍ່ແຕະຕ້ອງໄຟລ໌ຕົ້ນສະບັບ.
 Choose which layers a click identifies.	ເລືອກຊັ້ນຂໍ້ມູນທີ່ຈະໃຫ້ສະແດງລາຍລະອຽດເມື່ອກົດ.
+Choose which saved connection to use for this address. This choice lasts for this session.	ເລືອກການເຊື່ອມຕໍ່ທີ່ບັນທຶກໄວ້ສຳລັບທີ່ຢູ່ນີ້. ການເລືອກນີ້ມີຜົນສະເພາະຮອບການໃຊ້ນີ້.
 Choose which saved connection to use for this database. This choice lasts for this session.	ເລືອກການເຊື່ອມຕໍ່ທີ່ບັນທຶກໄວ້ສຳລັບຖານຂໍ້ມູນນີ້. ຈະມີຜົນສະເພາະຮອບການໃຊ້ນີ້.
 Choose which tabs the ribbon shows.	ເລືອກແທັບທີ່ຈະສະແດງເທິງຣິບບອນ.
 Circle	ວົງມົນ
@@ -615,6 +640,7 @@ Circle Radius (km)	ລັດສະໝີວົງມົນ (km)
 Cities	ຕົວເມືອງ
 Class	ຊັ້ນຂໍ້ມູນ
 Class color	ສີຂອງຊັ້ນຂໍ້ມູນ
+Class Fields	ຟິວຄລາສ
 Class Style	ສະໄຕລ໌ຊັ້ນຂໍ້ມູນ
 Class {n}	ຊັ້ນຂໍ້ມູນ {n}
 Class {n} up to	ຊັ້ນຂໍ້ມູນ {n} ສູງສຸດຮອດ
@@ -631,10 +657,13 @@ Classify from training polygons	ຈັດຈຳແນກຈາກຮູບຫຼ
 Claude Code and Codex connect through an ACP adapter. On first use, npx downloads and runs its pinned version from npm.	Claude Code ແລະ Codex ເຊື່ອມຕໍ່ຜ່ານຕົວແປງ ACP. ໃນການນຳໃຊ້ຄັ້ງທຳອິດ, npx ຈະດາວໂຫຼດ ແລະ ເປີດໃຊ້ລຸ້ນທີ່ລະບຸໄວ້ຈາກ npm.
 Clear	ລຶບລ້າງ
 Clear\nLimits	ລຶບລ້າງ\nຂີດຈຳກັດ
+Clear all diagnostic history for this session	ລຶບປະຫວັດການກວດວິນິດໄສທັງໝົດຂອງຮອບການໃຊ້ນີ້
+Clear Diagram	ລຶບແຜນພູມ
 Clear Filters	ລຶບລ້າງຕົວກັ່ນຕອງ
 Clear Guides	ລຶບລ້າງເສັ້ນແນະນຳ
 Clear History	ລຶບລ້າງປະຫວັດ
 Clear Limits	ລຶບລ້າງຂີດຈຳກັດ
+Clear Log	ລຶບບັນທຶກ
 Clear mask	ລຶບລ້າງໜ້າກາກບັງ
 Clear NLDI result	ລຶບລ້າງຜົນໄດ້ຮັບ NLDI
 Clear search	ລຶບລ້າງການຄົ້ນຫາ
@@ -675,7 +704,6 @@ Click to edit the description	ກົດເພື່ອແກ້ໄຂຄຳອ�
 Click to place a point graphic.	ກົດເພື່ອວາງກຣາຟິກຮູບຈຸດ.
 Click to select the node	ກົດເພື່ອເລືອກໂນດ
 Click to select, double-click to add, right-click for more	ກົດເພື່ອເລືອກ, ກົດສອງຄັ້ງເພື່ອເພີ່ມ, ກົດຂວາເພື່ອເບິ່ງເພີ່ມເຕີມ
-Click to switch between decimal degrees and DMS	ກົດເພື່ອສະຫຼັບລະຫວ່າງອົງສາທົດສະນິຍົມ ແລະ ອົງສາ-ລິບດາ-ຟີລິບດາ (DMS)
 Click vertices · click the start or double-click to select · Shift adds · Ctrl/Cmd removes · Esc cancels	ກົດຈຸດຈອດ · ກົດຈຸດເລີ່ມຕົ້ນ ຫຼື ກົດສອງຄັ້ງເພື່ອເລືອກ · Shift ເພີ່ມ · Ctrl/Cmd ເອົາອອກ · Esc ຍົກເລີກ
 Client ID	Client ID
 Clip	ຕັດ (Clip)
@@ -718,6 +746,7 @@ Colorbar	ແຖບສີ
 Colormap	ແຜນຜັງສີ
 Colors from the raster's own color table.	ສີຈາກຕາຕະລາງສີຂອງຣາສເຕີເອງ.
 Colour ramps (RustGIS, QGIS, GDAL, GMT)	ຊຸດສີ (RustGIS, QGIS, GDAL, GMT)
+Columns	ຖັນ
 Columns named like longitude/latitude, easting/northing or geometry are picked for you.	ຖັນທີ່ມີຊື່ເຊັ່ນ longitude/latitude, easting/northing ຫຼື geometry ຈະຖືກເລືອກໃຫ້ອັດຕະໂນມັດ.
 Combinations from the box above, one per line	ຄ່າປະສົມຈາກກ່ອງຂ້າງເທິງ, ໜຶ່ງອັນຕໍ່ແຖວ
 Combines two polygon layers into every piece either covers, with the attributes of both where they overlap.	ຮວມສອງຊັ້ນຂໍ້ມູນຮູບຫຼາຍແຈເຂົ້າກັນເປັນທຸກໆຊິ້ນສ່ວນທີ່ປົກຄຸມ, ພ້ອມດຶງຄຸນລັກສະນະຂອງທັງສອງບ່ອນທີ່ຊ້ອນທັບກັນ.
@@ -729,6 +758,7 @@ command is required	ຕ້ອງການຄຳສັ່ງ
 Command Search	ຄົ້ນຫາຄຳສັ່ງ
 Commands	ຄຳສັ່ງ
 Commands on the Plugins tab: {commands} · Tools in the Tools pane: {tools}	ຄຳສັ່ງເທິງແທັບປລັກອິນ: {commands} · ເຄື່ອງມືໃນໜ້າຕ່າງເຄື່ອງມື: {tools}
+Commands that change the project, or that name a file, folder or address, appear here.	ຄຳສັ່ງທີ່ປ່ຽນແປງໂຄງການ, ຫຼື ທີ່ລະບຸໄຟລ໌, ໂຟນເດີ ຫຼື ທີ່ຢູ່, ຈະສະແດງຢູ່ນີ້.
 Commands…	ຄຳສັ່ງ…
 Common scales	ມາດຕາສ່ວນທົ່ວໄປ
 Compact	ບີບອັດ
@@ -750,6 +780,8 @@ Connected for editing: {db}	ເຊື່ອມຕໍ່ເພື່ອດັດ�
 Connected to {kind} {title}	ເຊື່ອມຕໍ່ກັບ {kind} {title} ແລ້ວ
 Connecting to {url}…	ກຳລັງເຊື່ອມຕໍ່ຫາ {url}…
 Connection	ການເຊື່ອມຕໍ່
+Connection failure	ການເຊື່ອມຕໍ່ລົ້ມເຫຼວ
+connection must be a saved web-service connection id (text)	connection ຕ້ອງເປັນ id ການເຊື່ອມຕໍ່ເວັບເຊີວິສທີ່ບັນທຶກໄວ້ (ຂໍ້ຄວາມ)
 connection.new returned no id	connection.new ບໍ່ໄດ້ສົ່ງຄ່າລະຫັດ id ກັບມາ
 Connections	ການເຊື່ອມຕໍ່
 Connections you add are listed here	ການເຊື່ອມຕໍ່ທີ່ທ່ານເພີ່ມຈະສະແດງຢູ່ນີ້
@@ -769,20 +801,27 @@ Convert the selected layer's labels into an annotation layer.	ແປງປ້າ
 Convert this layer's labels into an annotation layer.	ແປງປ້າຍກຳກັບຂອງຊັ້ນຂໍ້ມູນນີ້ເປັນຊັ້ນຂໍ້ມູນຄຳອະທິບາຍ (annotation).
 Convert To Annotation	ແປງເປັນຄຳອະທິບາຍ (Annotation)
 Converted data	ຂໍ້ມູນທີ່ແປງແລ້ວ
+Converts polygon boundaries, including holes, to multipart lines. Shared boundaries are kept for each feature.	ແປງຂອບຂອງຮູບຫຼາຍແຈ, ລວມທັງຮູ, ເປັນເສັ້ນຫຼາຍສ່ວນ. ຂອບທີ່ໃຊ້ຮ່ວມກັນຈະຖືກເກັບໄວ້ສຳລັບແຕ່ລະຟີເຈີ.
 Convert…	ແປງ…
 Coordinate	ພິກັດ
 Coordinate System	ລະບົບພິກັດ
 Coordinate system	ລະບົບພິກັດ
 Coordinate System…	ລະບົບພິກັດ…
+Coordinates in {format}. Click to switch: decimal degrees, DMS, UTM, MGRS. UTM and MGRS cover the Earth from 80° S to 84° N.	ພິກັດໃນຮູບແບບ {format}. ກົດເພື່ອສະຫຼັບ: ອົງສາທົດສະນິຍົມ, DMS, UTM, MGRS. UTM ແລະ MGRS ຄອບຄຸມໂລກຈາກ 80° S ຫາ 84° N.
 Copied the command.	ສຳເນົາຄຳສັ່ງແລ້ວ.
+Copied the layout to the clipboard	ສຳເນົາໜ້າຈັດວາງໃສ່ຄລິບບອດແລ້ວ
+Copied the layout to the clipboard at {dpi} dpi, not {wanted}: the page is too large for a larger image	ສຳເນົາໜ້າຈັດວາງໃສ່ຄລິບບອດແລ້ວທີ່ {dpi} dpi, ບໍ່ແມ່ນ {wanted}: ໜ້າໃຫຍ່ເກີນໄປສຳລັບຮູບທີ່ໃຫຍ່ກວ່ານີ້
 Copied the map to the clipboard	ສຳເນົາແຜນທີ່ໃສ່ຄລິບບອດແລ້ວ
 Copied {path}	ສຳເນົາ {path} ແລ້ວ
+Copied. The log cut its parameters short or took their secrets out, so it may not run as it ran.	ສຳເນົາແລ້ວ. ບັນທຶກໄດ້ຕັດພາຣາມິເຕີໃຫ້ສັ້ນລົງ ຫຼື ເອົາຂໍ້ມູນລັບອອກ, ສະນັ້ນມັນອາດຈະບໍ່ເຮັດວຽກຄືເກົ່າ.
 Copies the (selected) features of a layer to a new layer.	ສຳເນົາຟີເຈີ (ທີ່ເລືອກ) ຂອງຊັ້ນຂໍ້ມູນໄປຍັງຊັ້ນຂໍ້ມູນໃໝ່.
 Copy	ສຳເນົາ
 Copy / Cut / Paste features	ສຳເນົາ / ຕັດ / ວາງ ຟີເຈີ
 Copy a model.run command that runs this model, for the Script pane or Python	ສຳເນົາຄຳສັ່ງ model.run ເພື່ອລັນໂມເດວນີ້, ສຳລັບໜ້າຕ່າງສະຄຣິບ ຫຼື Python
 Copy Address	ສຳເນົາທີ່ຢູ່
 Copy address	ສຳເນົາທີ່ຢູ່
+Copy All	ສຳເນົາທັງໝົດ
+Copy an image of the layout to the clipboard.	ສຳເນົາຮູບພາບໜ້າຈັດວາງໃສ່ຄລິບບອດ.
 Copy an image of the map to the clipboard.	ສຳເນົາຮູບພາບແຜນທີ່ໃສ່ຄລິບບອດ.
 Copy as CLI Command	ສຳເນົາເປັນຄຳສັ່ງ CLI
 Copy as Command	ສຳເນົາເປັນຄຳສັ່ງ
@@ -790,13 +829,19 @@ Copy As GeoJSON	ສຳເນົາເປັນ GeoJSON
 Copy as Python	ສຳເນົາເປັນ Python
 Copy Command	ສຳເນົາຄຳສັ່ງ
 Copy coordinates to the clipboard	ສຳເນົາພິກັດໃສ່ຄລິບບອດ
+Copy coordinates to the clipboard. No {format} here: outside the UTM zones (80° S to 84° N), so latitude and longitude are copied	ສຳເນົາພິກັດໃສ່ຄລິບບອດ. ບໍ່ມີ {format} ຢູ່ນີ້: ຢູ່ນອກເຂດ UTM (80° S ຫາ 84° N), ສະນັ້ນຈຶ່ງສຳເນົາເສັ້ນຂະໜານ ແລະ ເສັ້ນແວງ
+Copy coordinates to the clipboard. {format} is a grid of the Earth, so latitude and longitude are copied	ສຳເນົາພິກັດໃສ່ຄລິບບອດ. {format} ເປັນຕາໜ່າງຂອງໂລກ, ສະນັ້ນຈຶ່ງສຳເນົາເສັ້ນຂະໜານ ແລະ ເສັ້ນແວງ
 Copy details	ສຳເນົາລາຍລະອຽດ
+Copy diagnostics	ສຳເນົາຂໍ້ມູນການກວດວິນິດໄສ
 Copy Group	ສຳເນົາກຸ່ມ
 Copy Layer	ສຳເນົາຊັ້ນຂໍ້ມູນ
 Copy Layers	ສຳເນົາບັນດາຊັ້ນຂໍ້ມູນ
+Copy Parameters	ສຳເນົາພາຣາມິເຕີ
 Copy Path	ສຳເນົາເສັ້ນທາງໄຟລ໌
 Copy Run As Code	ສຳເນົາການເຮັດວຽກເປັນໂຄດ
+Copy Script	ສຳເນົາສະຄຣິບ
 Copy sign-in link	ສຳເນົາລິ້ງເຂົ້າສູ່ລະບົບ
+Copy the filtered history, including technical details	ສຳເນົາປະຫວັດທີ່ກັ່ນຕອງແລ້ວ, ລວມທັງລາຍລະອຽດທາງເຕັກນິກ
 Copy the selected features (also as GeoJSON text).	ສຳເນົາຟີເຈີທີ່ເລືອກ (ໃນຮູບແບບຂໍ້ຄວາມ GeoJSON ພ້ອມ).
 Copy the selected features and delete them.	ສຳເນົາຟີເຈີທີ່ເລືອກ ແລະ ລຶບພວກມັນອອກ.
 Copy the selected layer's data source path.	ສຳເນົາເສັ້ນທາງແຫຼ່ງຂໍ້ມູນຂອງຊັ້ນຂໍ້ມູນທີ່ເລືອກ.
@@ -806,10 +851,13 @@ Copy, Cut and Paste keys cannot be reassigned.	ປຸ່ມ ສຳເນົາ, 
 Corner radius	ລັດສະໝີມຸມ
 Corrections	ການແກ້ໄຂໃຫ້ຖືກຕ້ອງ
 Cost	ຕົ້ນທຶນ
+could not draw the layout	ບໍ່ສາມາດແຕ້ມໜ້າຈັດວາງໄດ້
 could not draw the map	ບໍ່ສາມາດແຕ້ມແຜນທີ່ໄດ້
 could not start the keychain worker	ບໍ່ສາມາດເປີດໃຊ້ຕົວຈັດການ keychain ໄດ້
 Couldn't check for updates: {error}	ບໍ່ສາມາດກວດສອບການອັບເດດໄດ້: {error}
 Couldn't download the font for {language}; pick the language again to retry.	ບໍ່ສາມາດດາວໂຫຼດຟອນສຳລັບ {language}; ກະລຸນາເລືອກພາສາຄືນໃໝ່ເພື່ອລອງອີກຄັ້ງ.
+Couldn't download the update: {error}	ບໍ່ສາມາດດາວໂຫຼດການອັບເດດ: {error}
+Couldn't install the update: {error}	ບໍ່ສາມາດຕິດຕັ້ງການອັບເດດ: {error}
 Couldn't load the plugin registry: {error}	ບໍ່ສາມາດໂຫຼດທະບຽນປລັກອິນ: {error}
 Counterclockwise	ທວນເຂັມໂມງ
 Countries, cities, rivers and lakes	ປະເທດ, ຕົວເມືອງ, ແມ່ນ້ຳ ແລະ ໜອງບຶງ
@@ -832,6 +880,7 @@ Create Profile	ສ້າງຮູບຕັດໜ້າດິນ
 Create Thumbnail	ສ້າງຮູບຫຍໍ້
 Creates a point at each vertex of the input features.	ສ້າງຈຸດຢູ່ແຕ່ລະຈຸດຈອດຂອງຟີເຈີຕົ້ນທາງ.
 Creates a point inside each input feature.	ສ້າງຈຸດຢູ່ພາຍໃນແຕ່ລະຟີເຈີຕົ້ນທາງ.
+Creates points at a set distance along each line, or each polygon ring.	ສ້າງຈຸດຕາມໄລຍະທີ່ກຳນົດລຽບຕາມແຕ່ລະເສັ້ນ, ຫຼື ແຕ່ລະວົງຂອງຮູບຫຼາຍແຈ.
 Creates points from a table's x and y coordinate fields.	ສ້າງຈຸດຈາກຟິວພິກັດ x ແລະ y ຂອງຕາຕະລາງ.
 Creates polygons around input features at a given distance.	ສ້າງຮູບຫຼາຍແຈອ້ອມຮອບຟີເຈີຕົ້ນທາງຕາມໄລຍະຫ່າງທີ່ກຳນົດ.
 Cross Section	ໜ້າຕັດຂວາງ
@@ -841,6 +890,7 @@ Ctrl+	Ctrl+
 Ctrl+Enter	Ctrl+Enter
 Ctrl+K	Ctrl+K
 Ctrl+T	Ctrl+T
+Ctrl+Z	Ctrl+Z
 Cumulative	ສະສົມ
 Current date	ວັນທີປະຈຸບັນ
 Current Project	ໂຄງການປະຈຸບັນ
@@ -855,7 +905,8 @@ Customize keyboard shortcuts.	ປັບແຕ່ງປຸ່ມລັດແປ�
 Cut	ຕັດ
 Cut a raster into web map tiles	ຕັດຣາສເຕີເປັນໄທລ໌ແຜນທີ່ເວັບ
 Cut a raster into web map tiles (XYZ PNG) with a viewer page.	ຕັດຣາສເຕີເປັນໄທລ໌ແຜນທີ່ເວັບ (XYZ PNG) ພ້ອມໜ້າສະແດງຜົນ.
-Dark\nMode	ໂໝດ\nມືດ
+Cut Polygon	ຕັດຮູບຫຼາຍແຈ
+Dark	ມືດ
 Dash	ເສັ້ນຂີດ
 Dash and gap lengths in points, in turn, such as 4 2. Empty for a solid line.	ຄວາມຍາວຂອງເສັ້ນຂີດ ແລະ ຍະຫວ່າງເປັນພອຍຕ໌ (pt) ສະຫຼັບກັນ ເຊັ່ນ 4 2. ປະວ່າງໄວ້ຖ້າຕ້ອງການເສັ້ນທຶບ.
 Dash-dot	ເສັ້ນຂີດສະຫຼັບຈຸດ
@@ -892,6 +943,7 @@ Dates a cell needs is a whole number, or empty for half	ຈຳນວນວັນ
 Day	ມື້
 Day and night shading for a time.	ເງົາກາງເວັນ ແລະ ກາງຄືນຕາມຊ່ວງເວລາ.
 Decimal	ທົດສະນິຍົມ
+decimal degrees	ອົງສາທົດສະນິຍົມ
 Decline	ປະຕິເສດ
 Deep Learning	ການຮຽນຮູ້ເຊີງເລິກ (Deep Learning)
 Deep Learning\nTools	ເຄື່ອງມື\nDeep Learning
@@ -905,6 +957,7 @@ Definition\nQuery	ຄຳສັ່ງສອບຖາມ\nກຳນົດເງື
 Definition Query	ຄຳສັ່ງສອບຖາມກຳນົດເງື່ອນໄຂ
 Definition query	ຄຳສັ່ງສອບຖາມກຳນົດເງື່ອນໄຂ
 Definition Query…	ຄຳສັ່ງສອບຖາມກຳນົດເງື່ອນໄຂ…
+degrees, minutes and seconds	ອົງສາ, ລິບດາ ແລະ ຟີລິບດາ
 Delete	ລຶບ
 Delete (or Backspace)	ລຶບ (ຫຼື Backspace)
 Delete Cell	ລຶບຫ້ອງ
@@ -937,13 +990,15 @@ Delimiter	ຕົວຂັ້ນ
 Density	ຄວາມໜາແໜ້ນ
 Depth Priority	ລຳດັບຄວາມເລິກ
 Descending	ຮຽງຈາກຫຼາຍຫາໜ້ອຍ
-Describing	ກຳລັງອະທິບາຍ
+Describing {name}	ກຳລັງອະທິບາຍ {name}
 Description	ຄຳອະທິບາຍ
 Desktop and command line only	ສະເພາະເດັສທັອບ ແລະ ຄຳສັ່ງ Command line ເທົ່ານັ້ນ
 Destination	ປາຍທາງ
 Destination key	ຄີປາຍທາງ
+Destinations ({operation}): {places}	ປາຍທາງ ({operation}): {places}
 Details	ລາຍລະອຽດ
 Details of the selected layer.	ລາຍລະອຽດຂອງຊັ້ນຂໍ້ມູນທີ່ເລືອກ.
+Details…	ລາຍລະອຽດ…
 Deviations	ຄ່າບ່ຽງເບນ
 DGGS	DGGS
 Diagnostic\nMonitor	ຈໍພາບ\nກວດວິນິດໄສ
@@ -951,6 +1006,8 @@ Diagnostic Monitor	ຈໍພາບກວດວິນິດໄສ
 Diagnostics	ການກວດວິນິດໄສ
 Diagonal ↗	ສະແຽງຂຶ້ນ ↗
 Diagonal ↘	ສະແຽງລົງ ↘
+Diagram	ແຜນພູມ
+Diagram Settings	ການຕັ້ງຄ່າແຜນພູມ
 Diamond	ຮູບເຂົ້າຫຼາມຕັດ
 Difference, ratio or percent change between two rasters.	ຜົນຕ່າງ, ອັດຕາສ່ວນ ຫຼື ເປີເຊັນການປ່ຽນແປງລະຫວ່າງສອງຣາສເຕີ.
 Digit	ຕົວເລກ
@@ -998,20 +1055,27 @@ Double-click	ກົດສອງຄັ້ງ
 Double-click to add	ກົດສອງຄັ້ງເພື່ອເພີ່ມ
 Download	ດາວໂຫຼດ
 Download\nMap	ດາວໂຫຼດ\nແຜນທີ່
+Download and Install	ດາວໂຫຼດ ແລະ ຕິດຕັ້ງ
+Download it again and load it.	ດາວໂຫຼດມັນອີກຄັ້ງ ແລະ ໂຫຼດມັນ.
 Download its features in the view (up to the server's limit)	ດາວໂຫຼດຟີເຈີໃນມຸມມອງ (ສູງສຸດບໍ່ເກີນຂີດຈຳກັດຂອງເຊີເວີ)
 Download Map	ດາວໂຫຼດແຜນທີ່
 Download OpenStreetMap Data	ດາວໂຫຼດຂໍ້ມູນ OpenStreetMap
 Download the GeoLibre runner	ດາວໂຫຼດຕົວເປີດໃຊ້ GeoLibre
 Downloaded {name}	ດາວໂຫຼດ {name} ແລ້ວ
 Downloading {url}…	ກຳລັງດາວໂຫຼດ {url}…
+Downloading: {done} MB	ກຳລັງດາວໂຫຼດ: {done} MB
+Downloading: {done} of {total} MB	ກຳລັງດາວໂຫຼດ: {done} ຈາກ {total} MB
 Downloading…	ກຳລັງດາວໂຫຼດ…
 Downloading… {mb} MB	ກຳລັງດາວໂຫຼດ… {mb} MB
+Downloading… {name}	ກຳລັງດາວໂຫຼດ… {name}
 DRA	DRA
 Drag / middle-drag	ລາກ / ລາກດ້ວຍປຸ່ມເມົາສ໌ກາງ
 Drag a box	ລາກກອບ
 Drag a box or click to zoom in	ລາກກອບ ຫຼື ກົດເພື່ອຊູມເຂົ້າ
 Drag a box to draw an ellipse.	ລາກກອບເພື່ອແຕ້ມຮູບວົງຮີ.
 Drag a box to zoom into.	ລາກກອບເພື່ອຊູມເຂົ້າພື້ນທີ່ນັ້ນ.
+Drag a label to where it should be · drag the map to pan · Esc to stop	ລາກປ້າຍກຳກັບໄປບ່ອນທີ່ຕ້ອງການ · ລາກແຜນທີ່ເພື່ອເລື່ອນ · Esc ເພື່ອຢຸດ
+Drag a label to where it should be; its callout's line follows. Shift-click a moved label to put it back.	ລາກປ້າຍກຳກັບໄປບ່ອນທີ່ຕ້ອງການ; ເສັ້ນຊີ້ຂອງມັນຈະຕາມໄປ. Shift-ກົດປ້າຍກຳກັບທີ່ຍ້າຍແລ້ວເພື່ອສົ່ງກັບບ່ອນເດີມ.
 Drag a map frame to pan its map, wheel to zoom it · Esc to stop	ລາກກອບແຜນທີ່ເພື່ອຍ້າຍແຜນທີ່, ໝູນລໍ້ເມົາສ໌ເພື່ອຊູມ · Esc ເພື່ອຢຸດ
 Drag a rectangle, then pick a PNG or JPEG image to place in it.	ລາກຮູບສີ່ແຈສາກ, ແລ້ວເລືອກຮູບ PNG ຫຼື JPEG ເພື່ອວາງໃສ່.
 Drag a tool from the palette to start building, or add an input layer.	ລາກເຄື່ອງມືຈາກຖາດເພື່ອເລີ່ມຕົ້ນສ້າງ, ຫຼື ເພີ່ມຊັ້ນຂໍ້ມູນເຂົ້າ.
@@ -1034,14 +1098,20 @@ Drag to draw a rectangle.	ລາກເພື່ອແຕ້ມຮູບສີ່
 Drag to resize the message box	ລາກເພື່ອປັບຂະໜາດກ່ອງຂໍ້ຄວາມ
 Drag tools from the palette onto the canvas.	ລາກເຄື່ອງມືຈາກຖາດມາວາງໃສ່ພື້ນທີ່ເຮັດວຽກ.
 Drag vertices on the map; click an edge to add one	ລາກຈຸດຈອດເທິງແຜນທີ່; ກົດໃສ່ເສັ້ນຂອບເພື່ອເພີ່ມຈຸດ
+Drape the map over the heights of the active raster layer (a DEM, in metres), and tilt the map to see the relief. Click again to flatten it.	ປູແຜນທີ່ທັບຄວາມສູງຂອງຊັ້ນຂໍ້ມູນແຣັສເຕີທີ່ໃຊ້ງານຢູ່ (DEM, ເປັນແມັດ), ແລະ ອຽງແຜນທີ່ເພື່ອເບິ່ງຄວາມສູງຕ່ຳ. ກົດອີກຄັ້ງເພື່ອເຮັດໃຫ້ແປ.
 Draw	ແຕ້ມ
 Draw a halo around label text.	ແຕ້ມແສງເຮືອງຮອບຂໍ້ຄວາມປ້າຍກຳກັບ.
 Draw a labelled latitude/longitude grid over the map frame.	ແຕ້ມຕາໜ່າງເສັ້ນຂະໜານ/ເສັ້ນແວງພ້ອມປ້າຍບອກເທິງກອບແຜນທີ່.
+Draw a line across the selected feature's edge · double-click to reshape it	ແຕ້ມເສັ້ນຂ້າມຂອບຂອງຟີເຈີທີ່ເລືອກ · ກົດສອງຄັ້ງເພື່ອປັບຮູບຊົງ
+Draw a line across the selected feature's edge; double-click to reshape it	ແຕ້ມເສັ້ນຂ້າມຂອບຂອງຟີເຈີທີ່ເລືອກ; ກົດສອງຄັ້ງເພື່ອປັບຮູບຊົງ
+Draw a line across the selected polygons · double-click to cut them	ແຕ້ມເສັ້ນຂ້າມຮູບຫຼາຍແຈທີ່ເລືອກ · ກົດສອງຄັ້ງເພື່ອຕັດພວກມັນ
+Draw a line across the selected polygons; double-click to cut them	ແຕ້ມເສັ້ນຂ້າມຮູບຫຼາຍແຈທີ່ເລືອກ; ກົດສອງຄັ້ງເພື່ອຕັດພວກມັນ
 Draw a model: chain tools from input layers to the results to keep	ແຕ້ມໂມເດວ: ເຊື່ອມຕໍ່ເຄື່ອງມືຈາກຊັ້ນຂໍ້ມູນເຂົ້າໄປຫາຜົນໄດ້ຮັບທີ່ຕ້ອງການເກັບ
 Draw a model: chain tools from input layers to the results to keep.	ແຕ້ມໂມເດວ: ເຊື່ອມຕໍ່ເຄື່ອງມືຈາກຊັ້ນຂໍ້ມູນເຂົ້າໄປຫາຜົນໄດ້ຮັບທີ່ຕ້ອງການເກັບ.
 Draw as: {how}	ແຕ້ມເປັນ: {how}
 Draw at its place in the stack, the bottom stroke first	ແຕ້ມຕາມລຳດັບຊັ້ນ, ໂດຍແຕ້ມເສັ້ນຂອບລຸ່ມສຸດກ່ອນ
 Draw every feature's strokes of one level before the next, so casings join under the cores where lines meet	ແຕ້ມເສັ້ນຂອບຂອງທຸກຟີເຈີໃນລະດັບໜຶ່ງໃຫ້ແລ້ວກ່ອນລະດັບຖັດໄປ ເພື່ອໃຫ້ເສັ້ນຂອບນອກເຊື່ອມກັນຢູ່ກ້ອງແກນເສັ້ນບ່ອນທີ່ບັນຈົບກັນ
+Draw every label, over the others where they crowd, rather than leaving some out.	ແຕ້ມທຸກປ້າຍກຳກັບ, ທັບປ້າຍອື່ນໃນບ່ອນທີ່ແອອັດ, ແທນທີ່ຈະປະບາງອັນອອກ.
 Draw it over every other element	ແຕ້ມທັບເທິງທຸກໆອົງປະກອບອື່ນ
 Draw it over the element above it	ແຕ້ມທັບເທິງອົງປະກອບທີ່ຢູ່ເທິງມັນ
 Draw it under every other element	ແຕ້ມໄວ້ກ້ອງທຸກໆອົງປະກອບອື່ນ
@@ -1065,12 +1135,14 @@ Drawing Order	ລຳດັບການສະແດງຜົນ
 drawn by the server	ປະມວນຜົນແຕ້ມໂດຍເຊີເວີ
 Drive	ລົດໃຫຍ່
 Drone and aerial imagery shared on OpenAerialMap, newest first, added as cloud-optimised GeoTIFFs.	ພາບຖ່າຍຈາກໂດຣນ ແລະ ທາງອາກາດທີ່ແບ່ງປັນເທິງ OpenAerialMap, ສະແດງອັນໃໝ່ສຸດກ່ອນ, ເພີ່ມເຂົ້າມາເປັນ GeoTIFF ທີ່ປັບແຕ່ງສຳລັບຄລາວ (COG).
+Drop this field	ລຶບຟິວນີ້ອອກ
 Duplicate	ເຮັດສຳເນົາຊ້ຳ
 Duplicate Connection	ເຮັດສຳເນົາການເຊື່ອມຕໍ່ຊ້ຳ
 Duplicate Element	ເຮັດສຳເນົາອົງປະກອບຊ້ຳ
 Duplicate Keys	ຄີຊ້ຳກັນ
 Duplicate Layout	ເຮັດສຳເນົາໜ້າຈັດວາງຊ້ຳ
 Duplicate Map	ເຮັດສຳເນົາແຜນທີ່ຊ້ຳ
+Duration: {duration} ms	ໄລຍະເວລາ: {duration} ms
 Dusk	ຍາມຄ່ຳ
 Dynamic\nText	ຂໍ້ຄວາມ\nໄດນາມິກ
 Dynamic Picture	ຮູບພາບໄດນາມິກ
@@ -1086,6 +1158,7 @@ e.g. pop_est > 100000000 AND continent = 'Asia'	ຕົວຢ່າງ: pop_est >
 e.g. pop_max > 1000000	ຕົວຢ່າງ: pop_max > 1000000
 Each class labels the features its own clause matches, so a feature can get a label from more than one.	ແຕ່ລະຊັ້ນຂໍ້ມູນຈະຕິດປ້າຍກຳກັບຟີເຈີທີ່ກົງກັບເງື່ອນໄຂຂອງມັນ, ດັ່ງນັ້ນຟີເຈີໜຶ່ງອາດມີປ້າຍກຳກັບໄດ້ຈາກຫຼາຍຊັ້ນ.
 Each geoprocessing run becomes a step, chained by its outputs	ການປະມວນຜົນພູມສັນຖານແຕ່ລະຄັ້ງຈະກາຍເປັນຂັ້ນຕອນໜຶ່ງ, ເຊິ່ງເຊື່ອມໂຍງກັນດ້ວຍຜົນໄດ້ຮັບ
+Each line's whole result, to read or copy	ຜົນໄດ້ຮັບທັງໝົດຂອງແຕ່ລະແຖວ, ເພື່ອອ່ານ ຫຼື ສຳເນົາ
 Earth Index has no points in the view	Earth Index ບໍ່ມີຈຸດຢູ່ໃນມຸມມອງນີ້
 Earth Search	Earth Search
 Earthdata Cloud	Earthdata Cloud
@@ -1142,6 +1215,8 @@ Embeddings	Embeddings
 Ember	ສີຖານໄຟ
 Empty	ຫວ່າງເປົ່າ
 Empty Cache	ລຶບລ້າງແຄຊ
+Empty Index Cache	ລ້າງແຄຊດັດຊະນີ
+Empty the script and its results ({keys} brings the script back)	ລ້າງສະຄຣິບ ແລະ ຜົນໄດ້ຮັບຂອງມັນ ({keys} ນຳສະຄຣິບກັບຄືນມາ)
 Enable Lighting	ເປີດໃຊ້ແສງສະຫວ່າງ
 Enable Plugin	ເປີດໃຊ້ປລັກອິນ
 Enabled	ເປີດໃຊ້ງານແລ້ວ
@@ -1149,12 +1224,15 @@ Encloses each feature, or all features, in its convex hull.	ສ້າງຂອ�
 Encoded polyline	ເສັ້ນໂພລີໄລນ໌ເຂົ້າລະຫັດ
 End	ສິ້ນສຸດ
 End date	ວັນທີສິ້ນສຸດ
+End Offset	ໄລຍະຫຍັບຈຸດສິ້ນສຸດ
 Endpoint	Endpoint
 Enhancement	ການປັບແຕ່ງພາບ
 Enter	Enter
 Enter an API key.	ປ້ອນ API key.
 Enter an EPSG code as a number, such as 32650	ປ້ອນລະຫັດ EPSG ເປັນຕົວເລກ ເຊັ່ນ 32650
+Enter the password or key for this connection. Web-service logins last for this session only.	ປ້ອນລະຫັດຜ່ານ ຫຼື ຄີສຳລັບການເຊື່ອມຕໍ່ນີ້. ການເຂົ້າສູ່ລະບົບເວັບເຊີວິສມີຜົນສະເພາະຮອບການໃຊ້ນີ້ເທົ່ານັ້ນ.
 Enter the provider's address.	ປ້ອນທີ່ຢູ່ຂອງຜູ້ໃຫ້ບໍລິການ.
+Enter this connection's password or API key to log in.	ປ້ອນລະຫັດຜ່ານ ຫຼື API key ຂອງການເຊື່ອມຕໍ່ນີ້ເພື່ອເຂົ້າສູ່ລະບົບ.
 Enter to send, Shift+Enter for a new line	Enter ເພື່ອສົ່ງ, Shift+Enter ເພື່ອຂຶ້ນແຖວໃໝ່
 EnviroAtlas	EnviroAtlas
 EnviroAtlas…	EnviroAtlas…
@@ -1175,6 +1253,7 @@ Erase Features	ລຶບຟີເຈີອອກ
 Error	ຂໍ້ຜິດພາດ
 Error Inspector	ຕົວຕรวจສອບຂໍ້ຜິດພາດ
 Error Inspector (validate)	ຕົວຕรวจສອບຂໍ້ຜິດພາດ (ກວດສອບຄວາມຖືກຕ້ອງ)
+Errors	ຂໍ້ຜິດພາດ
 Esc	Esc
 Escape	Escape
 ESRI	ESRI
@@ -1188,7 +1267,9 @@ Every layer, as FEMA draws them	ທຸກຊັ້ນຂໍ້ມູນ ຕາ�
 Every run, in order, as a script that opens the project	ທຸກການເຮັດວຽກ ຕາມລຳດັບ ໃນຮູບແບບສະຄຣິບທີ່ເປີດໂຄງການ
 every Socrata site, or one such as data.cityofnewyork.us	ທຸກເວັບໄຊ Socrata ຫຼື ສະເພາະເວັບໄຊ ເຊັ່ນ data.cityofnewyork.us
 Every {n} min	ທຸກໆ {n} ນາທີ
+Everything done in this session, from the app, scripts, the AI Assistant or plugins	ທຸກຢ່າງທີ່ເຮັດໃນຮອບການໃຊ້ນີ້, ຈາກແອັບ, ສະຄຣິບ, AI ຜູ້ຊ່ວຍ ຫຼື ປລັກອິນ
 Everywhere	ທຸກບ່ອນ
+Exact request	ຄຳຮ້ອງຂໍທີ່ແນ່ນອນ
 Existing field	ຟິວທີ່ມີຢູ່ແລ້ວ
 Existing Template	ແມ່ແບບທີ່ມີຢູ່ແລ້ວ
 exit rotary	ອອກຈາກວົງວຽນ
@@ -1237,7 +1318,7 @@ Export the map view as a PNG image (with labels and a scale bar).	ສົ່ງ�
 Export the open layout as PDF or PNG.	ສົ່ງອອກໜ້າຈັດວາງທີ່ເປີດຢູ່ເປັນ PDF ຫຼື PNG.
 Export the presentation as a slideshow or PDF, or save it as a file.	ສົ່ງອອກງານນຳສະເໜີເປັນສະໄລດ໌ໂຊ ຫຼື PDF, ຫຼື ບັນທຶກເປັນໄຟລ໌.
 Export the report, or save it as a report file or template.	ສົ່ງອອກລາຍງານ, ຫຼື ບັນທຶກເປັນໄຟລ໌ລາຍງານ ຫຼື ແມ່ແບບ.
-Export the selected layer as a 3D model (OBJ), polygons extruded.	ສົ່ງອອກຊັ້ນຂໍ້ມູນທີ່ເລືອກເປັນໂມເດວ 3D (OBJ) ໂດຍດຶງຮູບຫຼາຍແຈໃຫ້ມີຄວາມສູງ.
+Export the selected layer as a 3D model (OBJ or STL), polygons extruded.	ສົ່ງອອກຊັ້ນຂໍ້ມູນທີ່ເລືອກເປັນໂມເດວ 3D (OBJ ຫຼື STL) ໂດຍດຶງຮູບຫຼາຍແຈໃຫ້ມີຄວາມສູງ.
 Export the selected layer to GeoJSON or CSV.	ສົ່ງອອກຊັ້ນຂໍ້ມູນທີ່ເລືອກເປັນ GeoJSON ຫຼື CSV.
 Export the steps as an animated GIF.	ສົ່ງອອກຂັ້ນຕອນເປັນພາບເຄື່ອນໄຫວ GIF.
 Export Time Animation	ສົ່ງອອກພາບເຄື່ອນໄຫວຕາມເວລາ
@@ -1262,16 +1343,22 @@ Face Culling	ການຕັດໜ້າພື້ນຜິວທີ່ມອງ�
 Faces	ໜ້າພື້ນຜິວ
 Factor	ຄ່າຕົວຄູນ
 Failed	ຫຼົ້ມເຫຼວ
+Failed only	ສະເພາະທີ່ລົ້ມເຫຼວ
+Failed replacement export	ການສົ່ງອອກແທນທີ່ລົ້ມເຫຼວ
 Fallback	ຟອນສຳຮອງ
 FALSE	FALSE
 Farthest	ໄກທີ່ສຸດ
 Faster drawing: no antialiasing.	ສະແດງຜົນໄວຂຶ້ນ: ບໍ່ລົບຮອຍຫຍັກ.
+Favourite Arrangement	ການຈັດລຽງທີ່ມັກ
 Favourite Data Source	ແຫຼ່ງຂໍ້ມູນໂປດ
 Favourites	ລາຍການໂປດ
 Feature	ຟີເຈີ
 Feature\nAnalysis	ການວິເຄາະ\nຟີເຈີ
 Feature\nTo Point	ຟີເຈີ\nເປັນຈຸດ
 Feature Cache	ແຄຊຟີເຈີ
+Feature Envelope To Polygon	ແປງຂອບເຂດຟີເຈີເປັນຮູບຫຼາຍແຈ
+Feature ID	ID ຟີເຈີ
+Feature identifier, not a dataset field or a row position.	ຕົວລະບຸຟີເຈີ, ບໍ່ແມ່ນຟິວຂອງຊຸດຂໍ້ມູນ ຫຼື ຕຳແໜ່ງແຖວ.
 Feature Layer	ຊັ້ນຂໍ້ມູນຟີເຈີ
 Feature layers: ask the service only for the features that cross the map's view	ຊັ້ນຂໍ້ມູນຟີເຈີ: ຮ້ອງຂໍຈາກບໍລິການສະເພາະຟີເຈີທີ່ຕັດຜ່ານມຸມມອງແຜນທີ່ເທົ່ານັ້ນ
 Feature Templates	ແມ່ແບບຟີເຈີ
@@ -1309,6 +1396,7 @@ File	ໄຟລ໌
 File bridge only	ສະເພາະຕົວເຊື່ອມຕໍ່ໄຟລ໌ (File bridge) ເທົ່ານັ້ນ
 File bridge: the script ran	ຕົວເຊື່ອມຕໍ່ໄຟລ໌: ສະຄຣິບເຮັດວຽກແລ້ວ
 File bridge: {error}	ຕົວເຊື່ອມຕໍ່ໄຟລ໌: {error}
+File export	ການສົ່ງອອກໄຟລ໌
 File name	ຊື່ໄຟລ໌
 file path	ເສັ້ນທາງໄຟລ໌
 Files ({n})	ໄຟລ໌ ({n})
@@ -1322,6 +1410,7 @@ Fills for	ສີພື້ນສຳລັບ
 Film grain	ເມັດເກຣນຮູບເງົາ
 Filter	ກັ່ນຕອງ
 Filter bookmarks	ກັ່ນຕອງບຸກມາກ
+Filter by command	ກັ່ນຕອງຕາມຄຳສັ່ງ
 Filter layers	ກັ່ນຕອງຊັ້ນຂໍ້ມູນ
 Filter rows…	ກັ່ນຕອງແຖວ…
 Find a place by coordinates, name, or address.	ຄົ້ນຫາສະຖານທີ່ດ້ວຍພິກັດ, ຊື່, ຫຼື ທີ່ຢູ່.
@@ -1348,6 +1437,7 @@ First-Person Navigation	ການນຳທາງມຸມມອງບຸກຄ�
 Fit	ພໍດີ
 Fit To Map View	ປັບໃຫ້ພໍດີກັບມຸມມອງແຜນທີ່
 Fix the problems listed below first	ແກ້ໄຂບັນຫາທີ່ລະບຸທາງລຸ່ມນີ້ກ່ອນ
+Fixed	ຄົງທີ່
 Fixed Zoom In	ຊູມເຂົ້າໄລຍະຄົງທີ່
 Fixed Zoom Out	ຊູມອອກໄລຍະຄົງທີ່
 Flat	ຮາບພຽງ
@@ -1360,6 +1450,7 @@ Folder Connections	ການເຊື່ອມຕໍ່ໂຟນເດີ
 folder connections need the desktop app	ການເຊື່ອມຕໍ່ໂຟນເດີຮຽກຮ້ອງໃຫ້ໃຊ້ແອັບເດັສທັອບ
 Folders	ໂຟນເດີຕ່າງໆ
 Folder…	ໂຟນເດີ…
+Follow the System	ຕາມລະບົບ
 Follow the time slider	ປ່ຽນຕາມແຖບເລື່ອນເວລາ
 Font	ຟອນ
 for a store that doesn't say	ສຳລັບບ່ອນເກັບຂໍ້ມູນທີ່ບໍ່ໄດ້ລະບຸ
@@ -1369,6 +1460,7 @@ Forest	ປ່າໄມ້
 Forget Earthdata Login Token	ລຶບໂທເຄັນ Earthdata Login ທີ່ຈື່ໄວ້
 Forget Saved Keys	ລຶບຄີທີ່ບັນທຶກໄວ້
 Forget Saved Password	ລຶບລະຫັດຜ່ານທີ່ບັນທຶກໄວ້
+Forget this plugin: the app stops trying to load it at start.	ລືມປລັກອິນນີ້: ແອັບຈະເຊົາພະຍາຍາມໂຫຼດມັນຕອນເລີ່ມຕົ້ນ.
 Format	ຮູບແບບ
 Found: {names}. An agent works on this map through RustGIS's tools and with its own (web, scripts, files) in a folder of its own, kept in Documents › RustGIS › Agent work. It asks you before each action.	ພົບ: {names}. ເອເຈັນເຮັດວຽກເທິງແຜນທີ່ນີ້ຜ່ານເຄື່ອງມືຂອງ RustGIS ແລະ ເຄື່ອງມືຂອງມັນເອງ (ເວັບ, ສະຄຣິບ, ໄຟລ໌) ໃນໂຟນເດີສະເພາະ ເຊິ່ງເກັບໄວ້ທີ່ ເອກະສານ › RustGIS › Agent work. ມັນຈະຖາມທ່ານກ່ອນທຸກການກະທຳ.
 Frame rate	ອັດຕາເຟຣມ (Frame rate)
@@ -1439,6 +1531,7 @@ Give the catalogue's web address	ລະບຸທີ່ຢູ່ເວັບຂ�
 Give the file's web address	ລະບຸທີ່ຢູ່ເວັບຂອງໄຟລ໌
 Give the service's web address	ລະບຸທີ່ຢູ່ເວັບຂອງບໍລິການ
 give the text's layer and row, or the lon and lat to place one	ລະບຸຊັ້ນຂໍ້ມູນ ແລະ ແຖວຂອງຂໍ້ຄວາມ, ຫຼື ລະບຸເສັ້ນແວງ ແລະ ເສັ້ນຂະໜານເພື່ອວາງລົງ
+given up before its read began: its project was closed, or more than 64 downloads started after it	ຖືກຍົກເລີກກ່ອນເລີ່ມການອ່ານ: ໂຄງການຂອງມັນຖືກປິດ, ຫຼື ມີການດາວໂຫຼດຫຼາຍກວ່າ 64 ລາຍການເລີ່ມຫຼັງຈາກມັນ
 Global	ທົ່ວໂລກ
 Globe	ໜ່ວຍໂລກ
 Go	ໄປ
@@ -1491,12 +1584,15 @@ Hazards	ໄພພິບັດ
 Haze	ໝອກຄວັນ
 Haze, fog, rain or snow over the map.	ໝອກຄວັນ, ໝອກ, ຝົນ ຫຼື ຫິມະເທິງແຜນທີ່.
 Head/Tail Breaks	ການແບ່ງຊ່ວງ Head/Tail
+Header name	ຊື່ header
 Height	ຄວາມສູງ
 Height (mm)	ຄວາມສູງ (mm)
 Help	ການຊ່ວຍເຫຼືອ
 Help › Help	ການຊ່ວຍເຫຼືອ › ການຊ່ວຍເຫຼືອ
 Hexagons	ຮູບຫົກແຈ
+Hidden columns: {n}	ຖັນທີ່ເຊື່ອງໄວ້: {n}
 Hide	ເຊື່ອງ
+Hide Column	ເຊື່ອງຖັນ
 Hide features far from the view's centre.	ເຊື່ອງຟີເຈີທີ່ຢູ່ໄກຈາກໃຈກາງມຸມມອງ.
 Hide Group	ເຊື່ອງກຸ່ມ
 Hide labels when the viewer is closer than this.	ເຊື່ອງປ້າຍກຳກັບເມື່ອມຸມມອງຢູ່ໃກ້ກວ່າໄລຍະນີ້.
@@ -1534,9 +1630,12 @@ host=localhost dbname=gis user=postgres	host=localhost dbname=gis user=postgres
 host=… dbname=… user=…	host=… dbname=… user=…
 Hosted Imagery	ຮູບພາບພາບຖ່າຍດາວທຽມເທິງໂຮສຕ໌
 Hour	ຊົ່ວໂມງ
+How much of each zone each class of polygons covers, with the classes' totals shared out to the zones by area.	ແຕ່ລະເຂດຖືກປົກຄຸມໂດຍແຕ່ລະຄລາສຂອງຮູບຫຼາຍແຈຫຼາຍປານໃດ, ໂດຍແບ່ງຍອດລວມຂອງຄລາສໃຫ້ແຕ່ລະເຂດຕາມພື້ນທີ່.
 How often RustGIS keeps a copy of unsaved work, to offer it back after a crash.	ຄວາມຖີ່ທີ່ RustGIS ບັນທຶກສຳເນົາວຽກທີ່ຍັງບໍ່ໄດ້ບັນທຶກ ເພື່ອນຳກັບມາຄືນຫຼັງຈາກໂປຣແກຣມຄ້າງ ຫຼື ດັບ.
 How the layer's colours combine with the tile layers and basemap beneath.	ວິທີທີ່ສີຂອງຊັ້ນຂໍ້ມູນປະສົມປະສານກັບຊັ້ນຂໍ້ມູນໄທລ໌ ແລະ ແຜນທີ່ພື້ນຖານດ້ານລຸ່ມ.
 How the layer's colours combine with what's beneath.	ວິທີທີ່ສີຂອງຊັ້ນຂໍ້ມູນປະສົມປະສານກັບສິ່ງທີ່ຢູ່ດ້ານລຸ່ມ.
+HTTP failure	HTTP ລົ້ມເຫຼວ
+HTTP status: {status}	ສະຖານະ HTTP: {status}
 HUB Ocean's Ocean Data Platform: marine datasets, read as features (up to 10,000 each).	ເວທີຂໍ້ມູນມະຫາສະໝຸດຂອງ HUB Ocean: ຊຸດຂໍ້ມູນທາງທະເລ, ອ່ານເປັນຟີເຈີ (ສູງສຸດ 10,000 ລາຍການຕໍ່ຊຸດ).
 hub.arcgis.com, or an organisation's Hub site	hub.arcgis.com ຫຼື ເວັບໄຊ Hub ຂອງອົງກອນ
 Hugging Face	Hugging Face
@@ -1551,6 +1650,7 @@ Identity Features	ຟີເຈີເອກະລັກ
 Idle	ວ່າງ
 IDW\nInterpolation	ການປະມານຄ່າຊ່ວງ\nIDW
 IDW Interpolation	ການປະມານຄ່າຊ່ວງ IDW
+If its place is taken or (curved) the line bends too much, the label tries other places along the line.	ຖ້າບ່ອນຂອງມັນຖືກໃຊ້ແລ້ວ ຫຼື (ແບບໂຄ້ງ) ເສັ້ນໂຄ້ງຫຼາຍເກີນໄປ, ປ້າຍກຳກັບຈະລອງບ່ອນອື່ນລຽບຕາມເສັ້ນ.
 IGN LiDAR HD	IGN LiDAR HD
 IGN LiDAR HD…	IGN LiDAR HD…
 IGN's LiDAR HD point clouds of France: 1 km tiles where the map is, added as COPC point clouds.	ກຸ່ມເມກຈຸດ LiDAR HD ຂອງປະເທດຝຣັ່ງ ຈາກ IGN: ໄທລ໌ຂະໜາດ 1 ກມ ໃນຕຳແໜ່ງແຜນທີ່, ເພີ່ມເປັນກຸ່ມເມກຈຸດ COPC.
@@ -1598,6 +1698,9 @@ IN	IN
 In Beyond	ຂະຫຍາຍເກີນກວ່ານີ້
 In degrees.	ເປັນອົງສາ.
 In memory	ໃນໜ່ວຍຄວາມຈຳ
+In place	ໃນບ່ອນເດີມ
+In place of the Script pane's script ({keys} brings it back)	ແທນສະຄຣິບຂອງໜ້າຕ່າງສະຄຣິບ ({keys} ນຳມັນກັບຄືນມາ)
+In place, holding a {w} × {h} overview	ໃນບ່ອນເດີມ, ພ້ອມພາບລວມ {w} × {h}
 In Progress	ກຳລັງດຳເນີນການ
 in progress	ກຳລັງດຳເນີນການ
 In project	ໃນໂຄງການ
@@ -1606,15 +1709,18 @@ In the browser, pick the .shp and .dbf together, with any sidecars, or pick a ZI
 In the coordinate system's units: metres for UTM.	ໃນຫົວໜ່ວຍຂອງລະບົບພິກັດ: ແມັດ ສຳລັບ UTM.
 In the middle	ຢູ່ເຄິ່ງກາງ
 In use	ກຳລັງໃຊ້ງານ
+Include End Point	ລວມຈຸດສິ້ນສຸດ
 Indent	ຫຍໍ້ໜ້າເຂົ້າ
 Indent Group	ຫຍໍ້ໜ້າກຸ່ມເຂົ້າ
 Indent Layer	ຫຍໍ້ໜ້າຊັ້ນຂໍ້ມູນເຂົ້າ
 Indexes	ດັດສະນີ
 Indices	ດັດສະນີ
+Info	ຂໍ້ມູນ
 Infographics	ອິນໂຟກຣາຟິກ
 Information	ຂໍ້ມູນ
 INPUT	ຂໍ້ມູນຂາເຂົ້າ
 Input	ຂໍ້ມູນຂາເຂົ້າ
+Input Class Features	ຟີເຈີຄລາສຕົ້ນທາງ
 Input Features	ຟີເຈີຂາເຂົ້າ
 Input Layer	ຊັ້ນຂໍ້ມູນຂາເຂົ້າ
 Input Layers	ຊັ້ນຂໍ້ມູນຂາເຂົ້າ
@@ -1624,12 +1730,14 @@ Input Raster	ແຣັສເຕີຂາເຂົ້າ
 Input Rows	ແຖວຂາເຂົ້າ
 Input Summary Features	ຟີເຈີສະຫຼຸບຂາເຂົ້າ
 Input Table	ຕາຕະລາງຂາເຂົ້າ
+Input Zone Features	ຟີເຈີເຂດຕົ້ນທາງ
 Insert	ແຊກ
 Insert Dynamic Text	ແຊກຂໍ້ຄວາມແບບໄດນາມິກ
 Inspect	ກວດສອບ
 Install	ຕິດຕັ້ງ
 Install a plugin	ຕິດຕັ້ງປລັກອິນ
 Install a plugin from a .rgplugin file.	ຕິດຕັ້ງປລັກອິນຈາກໄຟລ໌ .rgplugin.
+Install and Restart	ຕິດຕັ້ງ ແລະ ເປີດຄືນໃໝ່
 Install from a file	ຕິດຕັ້ງຈາກໄຟລ໌
 Install From File	ຕິດຕັ້ງຈາກໄຟລ໌
 Install From File…	ຕິດຕັ້ງຈາກໄຟລ໌…
@@ -1646,6 +1754,8 @@ Installed {name} {version}. Find it on the Plugins tab; its tools are also in th
 Installing it downloads Python {version} and the packages it needs from the internet.	ການຕິດຕັ້ງຈະດາວໂຫຼດ Python {version} ແລະ ແພັກເກດທີ່ຈຳເປັນຈາກອິນເຕີເນັດ.
 Integer field: values are rounded.	ຟິລດ໌ຈຳນວນຖ້ວນ: ຄ່າຈະຖືກປັດເສດ.
 Interface font: {font}	ຟອນຕ໌ສ່ວນຕິດຕໍ່ຜູ້ໃຊ້: {font}
+Interface Scale	ຂະໜາດສ່ວນຕິດຕໍ່
+Interface scale held to {percent}%	ຂະໜາດສ່ວນຕິດຕໍ່ຖືກຈຳກັດໄວ້ທີ່ {percent}%
 Interpolate a surface from points (IDW)	ປະມານຄ່າພື້ນຜິວຈາກຈຸດ (IDW)
 Interpolates a 2-band raster surface (Prediction and Variance) from point features using Ordinary Kriging.	ປະມານຄ່າພື້ນຜິວແຣັສເຕີແບບ 2 ແຖບ (ການຄາດຄະເນ ແລະ ຄວາມຜັນປ່ຽນ) ຈາກຟີເຈີຈຸດ ໂດຍໃຊ້ Ordinary Kriging.
 Interpolates a raster surface from feature values by inverse distance weighting, as QGIS does.	ປະມານຄ່າພື້ນຜິວແຣັສເຕີຈາກຄ່າຟີເຈີດ້ວຍວິທີຖ່ວງນ້ຳໜັກໄລຍະທາງປີ້ນກັບ, ຄືກັນກັບ QGIS.
@@ -1654,6 +1764,7 @@ Interpolation Attribute	ຄຸນລັກສະນະການປະມານ�
 Interpret the layer's native coordinates in this coordinate system. This changes where it draws; the source file is unchanged.	ຕີຄວາມໝາຍພິກັດເດີມຂອງຊັ້ນຂໍ້ມູນໃນລະບົບພິກັດນີ້. ການກະທຳນີ້ຈະປ່ຽນແປງຕຳແໜ່ງທີ່ສະແດງ; ໄຟລ໌ຕົ້ນສະບັບຈະບໍ່ປ່ຽນແປງ.
 Intersect	ຕັດກັນ
 Interval	ໄລຍະຫ່າງ
+Into	ເຂົ້າໃນ
 Into the group just above it, as its last item	ເຂົ້າໄປໃນກຸ່ມທີ່ຢູ່ເທິງມັນ, ເປັນລາຍການສຸດທ້າຍ
 invalid child id	ໄອດີລູກຂ່າຍບໍ່ຖືກຕ້ອງ
 Invalid or reserved shortcut key.	ປຸ່ມລັດບໍ່ຖືກຕ້ອງ ຫຼື ເປັນປຸ່ມທີ່ສະຫງວນໄວ້.
@@ -1663,10 +1774,13 @@ Invalid shortcut binding.	ການຜູກມັດປຸ່ມລັດບໍ
 Invalid shortcut key.	ປຸ່ມລັດບໍ່ຖືກຕ້ອງ.
 Invalid: {error}	ບໍ່ຖືກຕ້ອງ: {error}
 Invert	ປີ້ນກັບ
+Invert Color Ramp	ປີ້ນຊຸດສີ
 Invert color scheme	ປີ້ນຊຸດສີ
 Invert the selection.	ປີ້ນການເລືອກ.
 IS	IS
 IS NULL	IS NULL
+It can't run in a script	ມັນບໍ່ສາມາດເຮັດວຽກໃນສະຄຣິບໄດ້
+it changed since it was installed: install it again from the Plugin Manager	ມັນມີການປ່ຽນແປງຫຼັງຈາກຕິດຕັ້ງ: ຕິດຕັ້ງມັນອີກຄັ້ງຈາກຕົວຈັດການປລັກອິນ
 it connects to an address on the internet	ມັນເຊື່ອມຕໍ່ກັບທີ່ຢູ່ໃນອິນເຕີເນັດ
 It didn't open: {error}	ບໍ່ສາມາດເປີດໄດ້: {error}
 It has no code: nothing in it runs.	ບໍ່ມີໂຄດ: ບໍ່ມີຫຍັງເຮັດວຽກພາຍໃນ.
@@ -1687,9 +1801,11 @@ It's too large to keep in the browser: install it again on your next visit.	ມ�
 Italic	ໂຕເນີ້ງ
 Item Pop-ups	ປັອບອັບລາຍການ
 Item {id}	ລາຍການ {id}
+its copy kept in the browser is damaged: {error}	ສຳເນົາທີ່ເກັບໄວ້ໃນບຣາວເຊີເສຍຫາຍ: {error}
 its default	ຄ່າເລີ່ມຕົ້ນຂອງມັນ
 Its default: {default}. Its times: {times}	ຄ່າເລີ່ມຕົ້ນຂອງມັນ: {default}. ເວລາຂອງມັນ: {times}
 Its firewall ({firewall}) blocked RustGIS. The service may only allow some applications: contact its administrator and send them the details below.	ໄຟວໍລ໌ ({firewall}) ໄດ້ບລັອກ RustGIS. ບໍລິການອາດອະນຸຍາດສະເພາະບາງແອັບພລິເຄຊັນ: ໃຫ້ຕິດຕໍ່ຜູ້ເບິ່ງແຍງລະບົບ ແລະ ສົ່ງລາຍລະອຽດດ້ານລຸ່ມນີ້ໃຫ້ເຂົາເຈົ້າ.
+its layer was removed	ຊັ້ນຂໍ້ມູນຂອງມັນຖືກລຶບອອກ
 Its tool isn't available now (a plugin's, not loaded, or a suite's, not installed)	ເຄື່ອງມືນີ້ບໍ່ພ້ອມໃຊ້ງານໃນຕອນນີ້ (ເປັນຂອງປລັກອິນທີ່ຍັງບໍ່ໄດ້ໂຫຼດ, ຫຼື ເຄື່ອງມືຊຸດທີ່ຍັງບໍ່ໄດ້ຕິດຕັ້ງ)
 Jobs	ໜ້າວຽກລະບົບ
 JOIN	JOIN
@@ -1700,6 +1816,7 @@ Join Operation	ການດຳເນີນການເຊື່ອມຕໍ່
 Joins	ການເຊື່ອມຕໍ່ຂໍ້ມູນ
 Joins attributes from a join layer to a target layer based on their spatial relationship.	ເຊື່ອມຕໍ່ຄຸນລັກສະນະຈາກຊັ້ນຂໍ້ມູນເຊື່ອມຕໍ່ໄປຫາຊັ້ນຂໍ້ມູນເປົ້າໝາຍ ໂດຍອີງຕາມຄວາມສຳພັນທາງພື້ນທີ່.
 Joins attributes from a source table or layer to a target layer or table based on matching key values.	ເຊື່ອມຕໍ່ຄຸນລັກສະນະຈາກຕາຕະລາງ ຫຼື ຊັ້ນຂໍ້ມູນຕົ້ນທາງ ໄປຫາຊັ້ນຂໍ້ມູນ ຫຼື ຕາຕະລາງເປົ້າໝາຍ ໂດຍອີງຕາມຄ່າຫຼັກທີ່ກົງກັນ.
+Joins exact endpoint matches through degree-two nodes when all attributes agree. Branches stay separate.	ເຊື່ອມຈຸດປາຍທີ່ກົງກັນພໍດີຜ່ານໂນດລະດັບສອງ ເມື່ອຄຸນລັກສະນະທັງໝົດກົງກັນ. ສາຂາຈະຍັງແຍກກັນ.
 Journal figure, 1 column (90 mm)	ຮູບປະກອບວາລະສານ, 1 ຖັນ (90 ມມ)
 Journal figure, 1.5 columns (140 mm)	ຮູບປະກອບວາລະສານ, 1.5 ຖັນ (140 ມມ)
 Journal figure, 2 columns (190 mm)	ຮູບປະກອບວາລະສານ, 2 ຖັນ (190 ມມ)
@@ -1732,6 +1849,7 @@ Keys are kept for this session only: there is no credential store to remember th
 Keys from	ຄີຈາກ
 Keys were saved for this connection, but there is no credential store here to read them from.	ຄີຖືກບັນທຶກໄວ້ສຳລັບການເຊື່ອມຕໍ່ນີ້ແລ້ວ, ແຕ່ບໍ່ມີບ່ອນເກັບຂໍ້ມູນປະຈຳຕົວໃນນີ້ທີ່ຈະອ່ານພວກມັນໄດ້.
 Kilometers	ກິໂລແມັດ
+Kind	ປະເພດ
 kind is required	ຈຳເປັນຕ້ອງມີ kind
 KML	KML
 KMZ	KMZ
@@ -1754,6 +1872,7 @@ Labels	ປ້າຍກຳກັບ
 labels are drawn for feature layers, not rasters	ປ້າຍກຳກັບຈະຖືກສະແດງສຳລັບຊັ້ນຂໍ້ມູນຟີເຈີ, ບໍ່ແມ່ນແຣັສເຕີ
 Labels are drawn for feature layers, not rasters.	ປ້າຍກຳກັບຈະຖືກສະແດງສຳລັບຊັ້ນຂໍ້ມູນຟີເຈີ, ບໍ່ແມ່ນແຣັສເຕີ.
 Labels are off for this layer: the clause applies once they are on.	ປ້າຍກຳກັບຖືກປິດຢູ່ສຳລັບຊັ້ນຂໍ້ມູນນີ້: ເງື່ອນໄຂຈະມີຜົນເມື່ອເປີດໃຊ້ງານພວກມັນ.
+Labels by Expression	ປ້າຍກຳກັບຕາມນິພົດ
 Lagoon	ທະເລສາບນ້ຳເຄັມ (Lagoon)
 Lambert Conformal Conic	ແຜ່ນດິນຮູບຈວຍມາດຕະຖານແລມເບີດ
 Lambert Cylindrical Equal Area	ແຜ່ນດິນຮູບທໍ່ກົມເທົ່າພື້ນທີ່ແລມເບີດ
@@ -1804,6 +1923,7 @@ Let your Agents Control RustGIS	ອະນຸຍາດໃຫ້ຕົວແທນ
 Letter spacing	ໄລຍະຫ່າງຕົວອັກສອນ
 Level	ລະດັບ
 Library	ຄັງເກັບ
+Light	ແຈ້ງ
 Light and Shadow	ແສງ ແລະ ເງົາ
 Light the extruded shapes from the north-west.	ສ່ອງແສງໃສ່ຮູບຊົງທີ່ດຶງຍື່ນຈາກທິດພາຍັບ (ທິດຕາເວັນຕົກສ່ຽງເໜືອ).
 Lighting	ການຈັດແສງ
@@ -1822,7 +1942,9 @@ Line of sight between two points	ເສັ້ນສາຍຕາລະຫວ່�
 Line Of Sight From Here	ເສັ້ນສາຍຕາຈາກບ່ອນນີ້
 Line Strokes	ເສັ້ນຂອບ
 Line width	ຄວາມກວ້າງເສັ້ນ
+line {line} ({command})	ແຖວ {line} ({command})
 Line {n} isn't four numbers (column row lon lat)	ແຖວ {n} ບໍ່ແມ່ນຕົວເລກສີ່ຕົວ (column row lon lat)
+line {n}: {command}	ແຖວ {n}: {command}
 Linear	ເສັ້ນຊື່
 Lines	ເສັ້ນ
 Lines and ticks	ເສັ້ນ ແລະ ຂີດໝາຍ
@@ -1864,14 +1986,18 @@ Live summary of the features in view.	ສະຫຼຸບແບບສົດໆຂ
 Load	ໂຫຼດ
 Load a GeoPackage layer's rows again as they are in the file, dropping its edits.	ໂຫຼດແຖວຂອງຊັ້ນຂໍ້ມູນ GeoPackage ຄືນໃໝ່ຕາມໄຟລ໌ຕົ້ນສະບັບ, ໂດຍຍົກເລີກການແກ້ໄຂທັງໝົດ.
 Load a PostGIS layer's rows again as they are in the database, dropping its edits.	ໂຫຼດແຖວຂອງຊັ້ນຂໍ້ມູນ PostGIS ຄືນໃໝ່ຕາມຖານຂໍ້ມູນ, ໂດຍຍົກເລີກການແກ້ໄຂທັງໝົດ.
+Load a Theme from File…	ໂຫຼດຮູບແບບສີສັນຈາກໄຟລ໌…
 Load All Features	ໂຫຼດຟີເຈີທັງໝົດ
+Load All parameters must be an object	ພາຣາມິເຕີຂອງ Load All ຕ້ອງເປັນອັອບເຈັກ
 Load an unpacked plugin from its folder while you develop it.	ໂຫຼດປລັກອິນທີ່ຍັງບໍ່ທັນແພັກເກດຈາກໂຟນເດີໃນຂະນະທີ່ທ່ານກຳລັງພັດທະນາ.
 Load for editing	ໂຫຼດເພື່ອການແກ້ໄຂ
 Load more	ໂຫຼດເພີ່ມເຕີມ
 Load sources & plot	ໂຫຼດແຫຼ່ງຂໍ້ມູນ ແລະ ສະແດງຈຸດ
 Load the table whole (up to 100,000 rows) so its edits can be saved back to it with Edit › Save to PostGIS. It needs a single-column integer primary key.	ໂຫຼດຕາຕະລາງທັງໝົດ (ສູງສຸດ 100,000 ແຖວ) ເພື່ອໃຫ້ສາມາດບັນທຶກການແກ້ໄຂກັບໄປໄດ້ດ້ວຍ ແກ້ໄຂ › ບັນທຶກລົງ PostGIS. ຕ້ອງການຄີຫຼັກເປັນຈຳນວນຖ້ວນຖັນດຽວ.
 Load Whitebox and GeoLibre tools	ໂຫຼດເຄື່ອງມື Whitebox ແລະ GeoLibre
+Loaded {id}.	ໂຫຼດ {id} ແລ້ວ.
 Loaded {name} from its folder.	ໂຫຼດ {name} ຈາກໂຟນເດີສຳເລັດແລ້ວ.
+Loading a theme file needs the desktop app	ການໂຫຼດໄຟລ໌ຮູບແບບສີສັນຕ້ອງໃຊ້ແອັບເດັສທັອບ
 Loading the GeoLibre tools…	ກຳລັງໂຫຼດເຄື່ອງມື GeoLibre…
 Loading…	ກຳລັງໂຫຼດ…
 Loads map tiles from the web	ໂຫຼດໄທລ໌ແຜນທີ່ຈາກເວັບ
@@ -1883,6 +2009,7 @@ Locate	ຊອກຫາຕຳແໜ່ງ
 Locate GeoLibre Runner	ຊອກຫາຕົວດຳເນີນການ GeoLibre
 Locate the GeoLibre runner	ຊອກຫາຕົວດຳເນີນການ GeoLibre
 Locate…	ຊອກຫາຕຳແໜ່ງ…
+Locatieserver (the Netherlands)	Locatieserver (ເນເທີແລນ)
 Location	ສະຖານທີ່
 Locator	ຕົວກຳນົດຕຳແໜ່ງ
 Lock	ລັອກ
@@ -1892,7 +2019,13 @@ Log Commands	ບັນທຶກຄຳສັ່ງ
 Log In to Connection	ເຂົ້າສູ່ລະບົບການເຊື່ອມຕໍ່
 Log In to {name}…	ເຂົ້າສູ່ລະບົບ {name}…
 Log In…	ເຂົ້າສູ່ລະບົບ…
+Log Out	ອອກຈາກລະບົບ
+Log Out of Connection	ອອກຈາກລະບົບການເຊື່ອມຕໍ່
+Logged in	ເຂົ້າສູ່ລະບົບແລ້ວ
 Logged in for this session	ເຂົ້າສູ່ລະບົບແລ້ວສຳລັບເຊສຊັນນີ້
+Logged out. Enter the password or key to log in again.	ອອກຈາກລະບົບແລ້ວ. ປ້ອນລະຫັດຜ່ານ ຫຼື ຄີເພື່ອເຂົ້າສູ່ລະບົບອີກຄັ້ງ.
+Logging is off: commands run now aren't recorded.	ການບັນທຶກປິດຢູ່: ຄຳສັ່ງທີ່ເຮັດວຽກຕອນນີ້ຈະບໍ່ຖືກບັນທຶກ.
+Login	ເຂົ້າສູ່ລະບົບ
 Long	ຈຳນວນຖ້ວນຍາວ
 Long dash	ຂີດຍາວ
 Longitude	ເສັ້ນແວງ (Longitude)
@@ -1984,10 +2117,12 @@ Merge	ລວມເຂົ້າກັນ
 Merge elevation rasters into a surface model and export a 3D mesh.	ລວມແຣັສເຕີຄວາມສູງເຂົ້າເປັນຕົວແບບພື້ນຜິວ ແລະ ສົ່ງອອກເປັນຕາໜ່າງ 3D.
 Merge Rules	ກົດເກນການລວມ
 Merges polygons that share a field value into one feature per value.	ລວມຮູບຫຼາຍແຈທີ່ມີຄ່າຟິລດ໌ຄືກັນເຂົ້າເປັນຟີເຈີດຽວຕໍ່ແຕ່ລະຄ່າ.
+Messages and failed requests from this session. Oldest entries are discarded when the history is full.	ຂໍ້ຄວາມ ແລະ ຄຳຮ້ອງຂໍທີ່ລົ້ມເຫຼວຈາກຮອບການໃຊ້ນີ້. ລາຍການເກົ່າສຸດຈະຖືກລຶບເມື່ອປະຫວັດເຕັມ.
 Messages appear here.	ຂໍ້ຄວາມຈະສະແດງຢູ່ນີ້.
 Meters	ແມັດ
 Method	ວິທີການ
 Metric	ເມຕຣິກ
+MGRS	MGRS
 Midnight	ທ່ຽງຄືນ
 Miles	ໄມລ໌
 Miller Cylindrical	ແຜ່ນດິນຮູບທໍ່ກົມມິນເລີ
@@ -2049,14 +2184,18 @@ Most rows	ຈຳນວນແຖວສູງສຸດ
 Most rows: a whole number	ຈຳນວນແຖວສູງສຸດ: ຕ້ອງເປັນຈຳນວນຖ້ວນ
 Mouse wheel	ກົງລໍ້ເມົາສ໌
 Move	ຍ້າຍ
+Move a label crowded off its spot to a free one nearby, with a line back to its feature. Labels along lines stay.	ຍ້າຍປ້າຍກຳກັບທີ່ຖືກບຽດອອກຈາກບ່ອນຂອງມັນໄປບ່ອນວ່າງໃກ້ຄຽງ, ພ້ອມເສັ້ນຊີ້ກັບໄປຫາຟີເຈີຂອງມັນ. ປ້າຍກຳກັບລຽບຕາມເສັ້ນຈະຢູ່ບ່ອນເດີມ.
 Move Bookmark	ຍ້າຍບຸກມາກ
 Move Down	ຍ້າຍລົງ
 Move down	ຍ້າຍລົງ
 Move down: labels of the classes listed first are placed first when they compete for room.	ຍ້າຍລົງ: ປ້າຍກຳກັບຂອງຄລາສທີ່ຢູ່ໃນລາຍການກ່ອນຈະຖືກຈັດວາງກ່ອນ ເມື່ອມີການຍາດພື້ນທີ່ກັນ.
 Move Group	ຍ້າຍກຸ່ມ
 Move Group To Group	ຍ້າຍກຸ່ມໄປຍັງກຸ່ມ
+Move Label	ຍ້າຍປ້າຍກຳກັບ
 Move Label Class	ຍ້າຍຄລາສປ້າຍກຳກັບ
+Move Left	ຍ້າຍໄປຊ້າຍ
 Move polygon vertices stored at the same coordinate in this layer, including point-only contacts.	ຍ້າຍຈຸດຍອດ (Vertex) ຂອງຮູບຫຼາຍແຈທີ່ເກັບໄວ້ໃນພິກັດດຽວກັນໃນຊັ້ນຂໍ້ມູນນີ້, ລວມທັງຈຸດສຳຜັດສະເພາະຈຸດ.
+Move Right	ຍ້າຍໄປຂວາ
 Move Shared Vertex	ຍ້າຍຈຸດຍອດຮ່ວມ
 Move Task Step	ຍ້າຍຂັ້ນຕອນໜ້າວຽກ
 Move To Bottom	ຍ້າຍໄປລຸ່ມສຸດ
@@ -2066,7 +2205,7 @@ Move To {group}	ຍ້າຍໄປຍັງ {group}
 Move Up	ຍ້າຍຂຶ້ນ
 Move up	ຍ້າຍຂຶ້ນ
 Move up: labels of the classes listed first are placed first when they compete for room.	ຍ້າຍຂຶ້ນ: ປ້າຍກຳກັບຂອງຄລາສທີ່ຢູ່ໃນລາຍການກ່ອນຈະຖືກຈັດວາງກ່ອນ ເມື່ອມີການຍາດພື້ນທີ່ກັນ.
-Move, rotate, scale, merge, explode, split or flip the selected features.	ຍ້າຍ, ໝູນ, ປັບຂະໜາດ, ລວມ, ແຍກສ່ວນ, ຕັດແບ່ງ ຫຼື ປີ້ນດ້ານ ຟີເຈີທີ່ເລືອກ.
+Move, rotate, scale, merge, explode, split, cut, reshape or flip the selected features.	ຍ້າຍ, ໝູນ, ປັບຂະໜາດ, ລວມ, ແຍກສ່ວນ, ແບ່ງ, ຕັດ, ປັບຮູບຊົງ ຫຼື ປີ້ນຟີເຈີທີ່ເລືອກ.
 Move, Rotate, Scale…	ຍ້າຍ, ໝູນ, ປັບຂະໜາດ…
 MultiLineString	MultiLineString
 MultiPolygon	MultiPolygon
@@ -2101,8 +2240,11 @@ Near Features	ຟີເຈີໃກ້ຄຽງ
 Nearest Neighbor	ຈຸດບ້ານໃກ້ເຮືອນຄຽງທີ່ໃກ້ທີ່ສຸດ (Nearest Neighbor)
 Neatline	ເສັ້ນຂອບລະວັງ
 Needs three or more bands.	ຕ້ອງການແຖບຄື້ນ 3 ແຖບຂຶ້ນໄປ.
+Needs two or more numeric fields.	ຕ້ອງການຟິວຕົວເລກສອງຟິວ ຫຼື ຫຼາຍກວ່າ.
 Neighborhood Explorer	ຕົວສຳຫຼວດພື້ນທີ່ໃກ້ຄຽງ
+Network	ເຄືອຂ່າຍ
 Network Analysis	ການວິເຄາະເຄືອຂ່າຍ
+Network failures	ເຄືອຂ່າຍລົ້ມເຫຼວ
 New	ສ້າງໃໝ່
 New\nLayout	ໜ້າຈັດວາງ\nໃໝ່
 New\nMap	ແຜນທີ່\nໃໝ່
@@ -2114,6 +2256,7 @@ New Bookmark	ບຸກມາກໃໝ່
 New Bookmark…	ບຸກມາກໃໝ່…
 New Connection	ການເຊື່ອມຕໍ່ໃໝ່
 New Connection ▾	ການເຊື່ອມຕໍ່ໃໝ່ ▾
+New Connection…	ການເຊື່ອມຕໍ່ໃໝ່…
 New conversation	ການສົນທະນາໃໝ່
 New Custom Template	ແມ່ແບບກຳນົດເອງໃໝ່
 New features use this template's values	ຟີເຈີໃໝ່ຈະໃຊ້ຄ່າຈາກແມ່ແບບນີ້
@@ -2141,6 +2284,7 @@ New Template (a layout page)	ແມ່ແບບໃໝ່ (ໜ້າຈັດວ�
 New Workspace	ພື້ນທີ່ເຮັດວຽກໃໝ່
 New Workspace From Visible Rasters	ສ້າງພື້ນທີ່ເຮັດວຽກໃໝ່ຈາກແຣັສເຕີທີ່ເບິ່ງເຫັນ
 Next	ຕໍ່ໄປ
+Next Coordinate Format	ຮູບແບບພິກັດຖັດໄປ
 Next Extent	ຂອບເຂດຖັດໄປ
 Next Page	ໜ້າຕໍ່ໄປ
 NLDI result cleared.	ລຶບລ້າງຜົນຮັບ NLDI ແລ້ວ.
@@ -2154,11 +2298,13 @@ No bookmarks yet. New Bookmark saves the current view of the map.	ຍັງບ�
 No catalogs below this one: Find Items lists its items	ບໍ່ມີແຄັດຕາລັອກກ້ອງອັນນີ້: ຄຳສັ່ງ 'ຊອກຫາລາຍການ' ຈະສະແດງລາຍການຂອງມັນ
 No COMID was returned for this point.	ບໍ່ມີການສົ່ງຄືນຄ່າ COMID ສຳລັບຈຸດນີ້.
 no command	ບໍ່ມີຄຳສັ່ງ
+No command matches	ບໍ່ມີຄຳສັ່ງທີ່ກົງກັນ
 No data at the points picked.	ບໍ່ມີຂໍ້ມູນຢູ່ຈຸດທີ່ເລືອກ.
 No data cube matches	ບໍ່ມີກ້ອນຂໍ້ມູນ (Data Cube) ທີ່ກົງກັນ
 No datasets match.	ບໍ່ມີຊຸດຂໍ້ມູນທີ່ກົງກັນ.
 No datasets with data RustGIS can add	ບໍ່ມີຊຸດຂໍ້ມູນທີ່ມີຮູບແບບທີ່ RustGIS ສາມາດເພີ່ມໄດ້
 no date in the name	ບໍ່ມີວັນທີໃນຊື່
+No diagnostic entries match this filter.	ບໍ່ມີລາຍການກວດວິນິດໄສທີ່ກົງກັບຕົວກັ່ນຕອງນີ້.
 no download service	ບໍ່ມີບໍລິການດາວໂຫຼດ
 No edits since the project was saved	ບໍ່ມີການແກ້ໄຂນັບຕັ້ງແຕ່ບັນທຶກໂຄງການ
 No features are selected in this layer.	ບໍ່ມີຟີເຈີໃດຖືກເລືອກໃນຊັ້ນຂໍ້ມູນນີ້.
@@ -2175,12 +2321,15 @@ No layer selected	ບໍ່ມີຊັ້ນຂໍ້ມູນທີ່ຖື�
 No layers match	ບໍ່ມີຊັ້ນຂໍ້ມູນທີ່ກົງກັນ
 No layers match your search.	ບໍ່ມີຊັ້ນຂໍ້ມູນທີ່ກົງກັບການຄົ້ນຫາຂອງທ່ານ.
 No mask	ບໍ່ມີໜ້າກາກ (Mask)
+no model '{name}'	ບໍ່ມີໂມເດວ '{name}'
 No models are available for this account.	ບໍ່ມີຕົວແບບພ້ອມໃຊ້ງານສຳລັບບັນຊີນີ້.
 No notebooks yet. Analyze › New Notebook starts one, or Add and Open Notebook opens one.	ຍັງບໍ່ມີໂນ້ດບຸກເທື່ອ. ໄປທີ່ ວິເຄາະ › ໂນ້ດບຸກໃໝ່ ເພື່ອເລີ່ມຕົ້ນ, ຫຼື ເພີ່ມ ແລະ ເປີດໂນ້ດບຸກ ເພື່ອເປີດ.
 No offline areas	ບໍ່ມີພື້ນທີ່ອອບລາຍນ໌
 No other reports	ບໍ່ມີນິພົນອື່ນ
+No place at this grid reference: {reason}	ບໍ່ມີສະຖານທີ່ຢູ່ຕາມພິກັດຕາໜ່າງນີ້: {reason}
 No place found	ບໍ່ພົບສະຖານທີ່
 No place matches that address.	ບໍ່ມີສະຖານທີ່ໃດກົງກັບທີ່ຢູ່ນັ້ນ.
+No place there to move the label to; it stays where it was.	ບໍ່ມີບ່ອນໃຫ້ຍ້າຍປ້າຍກຳກັບໄປ; ມັນຈະຢູ່ບ່ອນເດີມ.
 No plugin panel is open.	ບໍ່ມີແຜງປລັກອິນເປີດຢູ່.
 No plugins are installed. Browse the plugin registry, or install a .rgplugin file.	ບໍ່ມີປລັກອິນຕິດຕັ້ງເທື່ອ. ເບິ່ງໃນຄັງທະບຽນປລັກອິນ ຫຼື ຕິດຕັ້ງຈາກໄຟລ໌ .rgplugin.
 No plugins match.	ບໍ່ມີປລັກອິນທີ່ກົງກັນ.
@@ -2196,16 +2345,20 @@ No relationships yet	ຍັງບໍ່ມີຄວາມສຳພັນເທ�
 No reports yet. Publish › New Report lists the selected layer's records.	ຍັງບໍ່ມີນິພົນເທື່ອ. ໄປທີ່ ເຜີຍແຜ່ › ນິພົນໃໝ່ ເພື່ອສະແດງລາຍການບັນທຶກຂອງຊັ້ນຂໍ້ມູນທີ່ເລືອກ.
 no row	ບໍ່ມີແຖວ
 No saved S3 keys. Enter accessKeyId and secretAccessKey.	ບໍ່ມີຄີ S3 ທີ່ບັນທຶກໄວ້. ກະລຸນາປ້ອນ accessKeyId ແລະ secretAccessKey.
+No saved web-service connection with this id.	ບໍ່ມີການເຊື່ອມຕໍ່ເວັບເຊີວິສທີ່ບັນທຶກໄວ້ທີ່ມີ id ນີ້.
 No serif font is installed, so this text is drawn in the sans-serif	ບໍ່ມີຟອນຕ໌ແບບ Serif ຕິດຕັ້ງຢູ່, ດັ່ງນັ້ນຂໍ້ຄວາມນີ້ຈຶ່ງສະແດງເປັນແບບ Sans-serif ແທນ
 no service or file links	ບໍ່ມີບໍລິການ ຫຼື ລິ້ງໄຟລ໌
 No services match your search.	ບໍ່ມີບໍລິການທີ່ກົງກັບການຄົ້ນຫາຂອງທ່ານ.
 No standalone tables	ບໍ່ມີຕາຕະລາງດ່ຽວ
 No styles yet	ຍັງບໍ່ມີຮູບແບບເທື່ອ
+No such tile layer	ບໍ່ມີຊັ້ນຂໍ້ມູນໄທລ໌ນີ້
 no system keychain in this build	ບໍ່ມີ System Keychain ໃນລຸ້ນບິວນີ້
 No tasks yet. Record one, or make one from your geoprocessing history with Analyze › Task.	ຍັງບໍ່ມີໜ້າວຽກເທື່ອ. ບັນທຶກຂຶ້ນມາໃໝ່, ຫຼື ສ້າງຂຶ້ນຈາກປະຫວັດ Geoprocessing ດ້ວຍ ວິເຄາະ › ໜ້າວຽກ.
 no text graphic there	ບໍ່ມີກຣາຟິກຂໍ້ຄວາມຢູ່ບ່ອນນັ້ນ
+No theme is named {name}.	ບໍ່ມີຮູບແບບສີສັນຊື່ {name}.
 No tools match your search.	ບໍ່ມີເຄື່ອງມືທີ່ກົງກັບການຄົ້ນຫາຂອງທ່ານ.
 no yearly series	ບໍ່ມີຊຸດຂໍ້ມູນລາຍປີ
+No {format} here	ບໍ່ມີ {format} ຢູ່ນີ້
 NoData	NoData
 Nominatim	Nominatim
 None	ບໍ່ມີ
@@ -2221,13 +2374,17 @@ Not a GeoLibre project	ບໍ່ແມ່ນໂຄງການ GeoLibre
 not a picture	ບໍ່ແມ່ນຮູບພາບ
 not a RustGIS layout	ບໍ່ແມ່ນໜ້າຈັດວາງ RustGIS
 not a RustGIS project	ບໍ່ແມ່ນໂຄງການ RustGIS
+not a UTM or MGRS grid reference	ບໍ່ແມ່ນພິກັດຕາໜ່າງ UTM ຫຼື MGRS
+Not added: a drawn line holds at most 10,000 points	ບໍ່ໄດ້ເພີ່ມ: ເສັ້ນທີ່ແຕ້ມມີໄດ້ສູງສຸດ 10,000 ຈຸດ
 Not applied yet.	ຍັງບໍ່ທັນນຳໃຊ້ເທື່ອ.
 Not for texts: a text is edited in the Format pane.	ບໍ່ສາມາດໃຊ້ກັບຂໍ້ຄວາມ: ຂໍ້ຄວາມຕ້ອງແກ້ໄຂໃນຊ່ອງຮູບແບບ.
+Not loaded	ບໍ່ໄດ້ໂຫຼດ
 not needed	ບໍ່ຈຳເປັນ
 Not sandboxed	ຢູ່ນອກ Sandbox
 Not saved yet	ຍັງບໍ່ໄດ້ບັນທຶກເທື່ອ
 Not searched, as they didn't load: {folders}	ບໍ່ໄດ້ຄົ້ນຫາ ເນື່ອງຈາກບໍ່ສາມາດໂຫຼດໄດ້: {folders}
 Not Selectable	ເລືອກບໍ່ໄດ້
+Not traced: a drawn line holds at most 10,000 points	ບໍ່ໄດ້ຕິດຕາມຮອຍ: ເສັ້ນທີ່ແຕ້ມມີໄດ້ສູງສຸດ 10,000 ຈຸດ
 Notebook	ໂນ້ດບຸກ
 Notebook Pane	ຊ່ອງໂນ້ດບຸກ
 Nothing found	ບໍ່ພົບຫຍັງ
@@ -2235,6 +2392,7 @@ Nothing found where the map is	ບໍ່ພົບຫຍັງໃນຕຳແໜ�
 Nothing here	ບໍ່ມີຫຍັງຢູ່ນີ້
 Nothing matches.	ບໍ່ມີສິ່ງທີ່ກົງກັນ.
 Nothing named {name} to rename	ບໍ່ມີລາຍການຊື່ {name} ທີ່ຈະປ່ຽນຊື່
+Nothing ran: the script has no commands.	ບໍ່ມີຫຍັງເຮັດວຽກ: ສະຄຣິບບໍ່ມີຄຳສັ່ງ.
 Nothing shared yet. Publish › Share As makes web maps, layers, styles, scenes and more.	ຍັງບໍ່ມີການແບ່ງປັນເທື່ອ. ໄປທີ່ ເຜີຍແຜ່ › ແບ່ງປັນເປັນ ເພື່ອສ້າງແຜນທີ່ເວັບ, ຊັ້ນຂໍ້ມູນ, ຮູບແບບ, ຊີນ ແລະ ອື່ນໆ.
 Nothing to add here	ບໍ່ມີຫຍັງທີ່ຈະເພີ່ມຢູ່ນີ້
 Nothing to test	ບໍ່ມີຫຍັງທີ່ຈະທົດສອບ
@@ -2251,6 +2409,7 @@ Ocean Data Platform	ເວທີຂໍ້ມູນມະຫາສະໝຸດ
 Ocean Data Platform…	ເວທີຂໍ້ມູນມະຫາສະໝຸດ…
 of a geometry that doesn't say	ຂອງຮູບເລຂາຄະນິດທີ່ບໍ່ໄດ້ລະບຸ
 Off	ປິດ
+Off, the commands run aren't recorded; what is in the log stays	ປິດ, ຄຳສັ່ງທີ່ເຮັດວຽກຈະບໍ່ຖືກບັນທຶກ; ສິ່ງທີ່ຢູ່ໃນບັນທຶກແລ້ວຍັງຄົງຢູ່
 Off, west and south are negative: -112.5°.	ປິດ, ທິດຕາເວັນຕົກ ແລະ ທິດໃຕ້ຈະຕິດລົບ: -112.5°.
 Offline	ອອບລາຍນ໌
 Offline area	ພື້ນທີ່ອອບລາຍນ໌
@@ -2259,7 +2418,6 @@ Offset down	ຫຍັບລົງລຸ່ມ
 Offset right	ຫຍັບໄປຂວາ
 OGC API	OGC API
 OGC API Features and Tiles	OGC API Features ແລະ Tiles
-OID	OID
 Older copies waiting: {n}.	ສຳເນົາເກົ່າທີ່ລໍຖ້າຢູ່: {n} ອັນ.
 Ollama (local)	Ollama (ພາຍໃນເຄື່ອງ)
 On	ເປີດ
@@ -2267,6 +2425,7 @@ On Hold	ພັກໄວ້ຊົ່ວຄາວ
 on hold	ພັກໄວ້ຊົ່ວຄາວ
 on must be true or false	on ຕ້ອງເປັນ true ຫຼື false
 On the desktop, the key can also come from {vars}.	ເທິງເດັສທັອບ, ຄີສາມາດດຶງມາຈາກ {vars} ໄດ້ເຊັ່ນກັນ.
+On the map	ເທິງແຜນທີ່
 On-screen compass, zoom slider and pan pad.	ເຂັມທິດເທິງໜ້າຈໍ, ແຖບເລື່ອນຊູມ ແລະ ແຜ່ນຄວບຄຸມການເລື່ອນແຜນທີ່.
 One command per line: id {json}. Lines starting with # are comments.	ແຖວລະໜຶ່ງຄຳສັ່ງ: id {json}. ແຖວທີ່ເລີ່ມຕົ້ນດ້ວຍ # ແມ່ນຄຳອະທິບາຍ (Comment).
 One DuckDB SELECT: DuckDB Spatial's ST_ functions, files and web addresses (read_parquet('…')), and the tables of the database below. Ctrl+Enter runs it.	DuckDB SELECT ດຽວ: ສາມາດໃຊ້ຟັງຊັນ ST_ ຂອງ DuckDB Spatial, ໄຟລ໌ ແລະ ທີ່ຢູ່ເວັບ (read_parquet('…')), ພ້ອມທັງຕາຕະລາງຂອງຖານຂໍ້ມູນດ້ານລຸ່ມ. ກົດ Ctrl+Enter ເພື່ອດຳເນີນການ.
@@ -2282,6 +2441,7 @@ Only a tile archive read from a file (PMTiles or MBTiles) can be repaired.	ສ�
 Only cubes with data where the map is	ສະເພາະກ້ອນຂໍ້ມູນທີ່ມີຂໍ້ມູນໃນພື້ນທີ່ແຜນທີ່
 Only features matching this expression draw in {layer}.	ສະເພາະຟີເຈີທີ່ກົງກັບນິພົດນີ້ເທົ່ານັ້ນທີ່ຈະສະແດງໃນ {layer}.
 Only selected polygons will be included in the output.	ສະເພາະຮູບຫຼາຍແຈທີ່ເລືອກເທົ່ານັ້ນທີ່ຈະຖືກລວມເຂົ້າໃນຜົນຮັບ.
+Only the commands run in the project open now	ສະເພາະຄຳສັ່ງທີ່ເຮັດວຽກໃນໂຄງການທີ່ເປີດຢູ່ຕອນນີ້
 Only the map's area	ສະເພາະພື້ນທີ່ຂອງແຜນທີ່
 Only where the map is	ສະເພາະພື້ນທີ່ທີ່ແຜນທີ່ຢູ່
 Opacity	ຄວາມທຶບແສງ
@@ -2298,9 +2458,11 @@ Open Custom Template	ເປີດແມ່ແບບກຳນົດເອງ
 Open data catalogs registered with Portolan: pick a publisher's catalog, then Find Items for its collections.	ແຄັດຕາລັອກຂໍ້ມູນເປີດທີ່ລົງທະບຽນກັບ Portolan: ເລືອກແຄັດຕາລັອກຂອງຜູ້ເຜີຍແຜ່, ຈາກນັ້ນກົດ 'ຊອກຫາລາຍການ' ເພື່ອເບິ່ງຄໍເລັກຊັນຕ່າງໆ.
 Open data catalogues searched by text. Files are added by their address (read in place when they can be); a service opens Add From Service to pick its layer.	ແຄັດຕາລັອກຂໍ້ມູນເປີດທີ່ຄົ້ນຫາດ້ວຍຂໍ້ຄວາມ. ໄຟລ໌ຈະຖືກເພີ່ມຜ່ານທີ່ຢູ່ຂອງພວກມັນ (ອ່ານຈາກບ່ອນເດີມໂດຍກົງເມື່ອສາມາດເຮັດໄດ້); ບໍລິການຈະເປີດ 'ເພີ່ມຈາກບໍລິການ' ເພື່ອເລືອກຊັ້ນຂໍ້ມູນ.
 Open data products on Source Cooperative. GeoParquet, FlatGeobuf, cloud-optimised GeoTIFFs and PMTiles are read in place; other files are downloaded.	ຜະລິດຕະພັນຂໍ້ມູນເປີດເທິງ Source Cooperative. GeoParquet, FlatGeobuf, GeoTIFF ທີ່ປັບແຕ່ງສຳລັບຄລາວ ແລະ PMTiles ຈະຖືກອ່ານຈາກບ່ອນເດີມໂດຍກົງ; ໄຟລ໌ອື່ນໆຈະຖືກດາວໂຫຼດມາໄວ້ໃນເຄື່ອງ.
+Open Diagnostics	ເປີດການກວດວິນິດໄສ
 Open folder	ເປີດໂຟນເດີ
 Open In Geoprocessing…	ເປີດໃນ Geoprocessing…
 Open in ModelBuilder	ເປີດໃນ ModelBuilder
+Open in Script Pane	ເປີດໃນໜ້າຕ່າງສະຄຣິບ
 Open in Tool	ເປີດໃນເຄື່ອງມື
 Open Layout	ເປີດໜ້າຈັດວາງ
 Open ModelBuilder	ເປີດ ModelBuilder
@@ -2441,6 +2603,7 @@ Pause.	ພັກໄວ້ຊົ່ວຄາວ.
 PDF	PDF
 PDF or PNG	PDF ຫຼື PNG
 PDF, PNG or SVG	PDF, PNG ຫຼື SVG
+PDOK's public server	ເຊີບເວີສາທາລະນະຂອງ PDOK
 Percent Clip	ຕັດຂອບຕາມເປີເຊັນ (Percent Clip)
 Perceptually Uniform	ສະເໝີພາບທາງການຮັບຮູ້ (Perceptually Uniform)
 Performance	ປະສິດທິພາບ
@@ -2453,9 +2616,12 @@ Pick a route in the list, or click a grey route on the map.	ເລືອກເ�
 Pick a single layer.	ເລືອກຊັ້ນຂໍ້ມູນດຽວ.
 Pick it on the map	ເລືອກເທິງແຜນທີ່
 Pick one…	ເລືອກໜຶ່ງລາຍການ…
+Pick the GeoPackage next. Its other tables are kept.	ເລືອກ GeoPackage ຕໍ່ໄປ. ຕາຕະລາງອື່ນຂອງມັນຈະຖືກເກັບໄວ້.
 Picture	ຮູບພາບ
 Pictures	ຮູບພາບ
 Pictures, attachments and chart	ຮູບພາບ, ໄຟລ໌ຄັດຕິດ ແລະ ຕາຕະລາງເສັ້ນສະແດງ
+Pie	ວົງມົນ
+Pie Chart	ແຜນພູມວົງມົນ
 Pipe	ທໍ່
 Pitch	ມຸມກົ້ມເງີຍ (Pitch)
 Pivot Field	ຟິລດ໌ຕາຕະລາງສະຫຼຸບ (Pivot)
@@ -2497,17 +2663,21 @@ Plugins marked Not sandboxed run as programs on your computer instead, and can d
 Plugins run in a sandbox: they can't reach your files or the network, and they change the project only through RustGIS's own commands, within the permissions you accept.	ປລັກອິນເຮັດວຽກໃນ Sandbox: ພວກມັນບໍ່ສາມາດເຂົ້າເຖິງໄຟລ໌ ຫຼື ເຄືອຂ່າຍຂອງທ່ານໄດ້, ແລະ ຈະປ່ຽນແປງໂຄງການຜ່ານຄຳສັ່ງຂອງ RustGIS ເອງເທົ່ານັ້ນ, ພາຍໃຕ້ສິດອະນຸຍາດທີ່ທ່ານຍອມຮັບ.
 PMTiles archive	ຄັງເກັບ PMTiles
 PNG frames (zip)	ເຟຣມ PNG (zip)
-PNG image	ຮູບພາບ PNG
+PNG image or GeoTIFF	ຮູບພາບ PNG ຫຼື GeoTIFF
 Point	ຈຸດ
 Point the selected layer at its file after the file moved or was renamed.	ກຳນົດເສັ້ນທາງຂອງຊັ້ນຂໍ້ມູນທີ່ເລືອກໄປຫາໄຟລ໌ຂອງມັນ ຫຼັງຈາກໄຟລ໌ຖືກຍ້າຍ ຫຼື ປ່ຽນຊື່.
 Points	ຈຸດ
+Points Along Lines	ຈຸດລຽບຕາມເສັ້ນ
 points each	ຈຸດຕໍ່ອັນ
+polar (UPS) grid references, north of 84° N or south of 80° S, aren't supported	ບໍ່ຮອງຮັບພິກັດຕາໜ່າງຂົ້ວໂລກ (UPS), ທາງເໜືອຂອງ 84° N ຫຼື ທາງໃຕ້ຂອງ 80° S
 Polar, conformal: Antarctica and the Southern Ocean.	ຂົ້ວໂລກ, ແບບຮັກສາຮູບຮ່າງ: ທະວີບອັງຕາກຕິກ ແລະ ມະຫາສະໝຸດໃຕ້.
 Polar, conformal: the Arctic and the northern lands.	ຂົ້ວໂລກ, ແບບຮັກສາຮູບຮ່າງ: ອາກຕິກ ແລະ ດິນແດນທາງເໜືອ.
 Polygon	ຮູບຫຼາຍແຈ
 Polygon (draw)	ຮູບຫຼາຍແຈ (ວາດ)
 Polygon layer	ຊັ້ນຂໍ້ມູນຮູບຫຼາຍແຈ
+Polygon To Line	ຮູບຫຼາຍແຈເປັນເສັ້ນ
 Polygons	ຮູບຫຼາຍແຈ
+Polygons to Raster	ຮູບຫຼາຍແຈເປັນແຣັສເຕີ
 Polyline	ເສັ້ນຫຼາຍທ່ອນ
 Pop-up Mode	ໂໝດປັອບອັບ
 pop_max > 1000000	pop_max > 1000000
@@ -2588,6 +2758,7 @@ Publication Layout	ໜ້າຈັດວາງສິ່ງພິມ
 Publish	ເຜີຍແຜ່
 Publish › Output	ເຜີຍແຜ່ › ຂໍ້ມູນຂາອອກ
 Put the layer back as it was then	ຍ້ອນສະພາບຊັ້ນຂໍ້ມູນກັບຄືນສູ່ສະຖານະໃນຕອນນັ້ນ
+Put this layer's moved labels back where their classes place them.	ສົ່ງປ້າຍກຳກັບທີ່ຍ້າຍແລ້ວຂອງຊັ້ນຂໍ້ມູນນີ້ກັບໄປບ່ອນທີ່ຄລາສຂອງພວກມັນກຳນົດ.
 Python environment failed: {error}	ສະພາບແວດລ້ອມ Python ຫຼົ້ມເຫຼວ: {error}
 Python environment not prepared	ສະພາບແວດລ້ອມ Python ຍັງບໍ່ໄດ້ກຽມພ້ອມ
 Python environment ready	ສະພາບແວດລ້ອມ Python ພ້ອມໃຊ້ງານ
@@ -2627,21 +2798,23 @@ Raster layer	ຊັ້ນຂໍ້ມູນແຣັສເຕີ
 Raster tiles (XYZ)	ໄທລ໌ແຣັສເຕີ (XYZ)
 Raster to PMTiles	ປ່ຽນແຣັສເຕີເປັນ PMTiles
 Raster · {w} × {h} · {n} bands · {renderer}	ແຣັສເຕີ · {w} × {h} · {n} ແຖບຄື້ນ · {renderer}
+Read	ອ່ານ
 Read and write files on this computer	ອ່ານ ແລະ ຂຽນໄຟລ໌ໃນຄອມພິວເຕີເຄື່ອງນີ້
 Read error	ເກີດຂໍ້ຜິດພາດໃນການອ່ານ
 Read the bands picked for the view (at most about 6 km a side)	ອ່ານແຖບຄື້ນທີ່ເລືອກສຳລັບມຸມມອງ (ສູງສຸດປະມານ 6 ກມ ຕໍ່ດ້ານ)
 Read the map's layers and features	ອ່ານຊັ້ນຂໍ້ມູນ ແລະ ຟີເຈີຂອງແຜນທີ່
 Read the points in the view, coloured by their principal components	ອ່ານຈຸດໃນມຸມມອງ, ໃສ່ສີຕາມອົງປະກອບຫຼັກ (Principal Components) ຂອງພວກມັນ
 Reading a granule's files needs an Earthdata Login token, which works for every NASA DAAC. It is kept until RustGIS closes unless you tick Remember, never in the project, and sent only to NASA's Earthdata data servers.	ການອ່ານໄຟລ໌ Granule ຈຳເປັນຕ້ອງມີໂທເຄັນ Earthdata Login ເຊິ່ງໃຊ້ໄດ້ກັບທຸກໆ NASA DAAC. ມັນຈະຖືກເກັບໄວ້ຈົນກວ່າ RustGIS ຈະປິດ ລົງເວັ້ນແຕ່ທ່ານຈະເລືອກ 'ຈົດຈຳ', ຈະບໍ່ເກັບໄວ້ໃນໂຄງການຢ່າງເດັດຂາດ, ແລະ ຈະສົ່ງໄປຍັງເຊີບເວີຂໍ້ມູນ Earthdata ຂອງ NASA ເທົ່ານັ້ນ.
+Reading in place…	ກຳລັງອ່ານໃນບ່ອນເດີມ…
 Reading the catalog: {n} documents read, {m} items found…	ກຳລັງອ່ານແຄັດຕາລັອກ: ອ່ານແລ້ວ {n} ເອກະສານ, ພົບ {m} ລາຍການ…
 Reading the catalog…	ກຳລັງອ່ານແຄັດຕາລັອກ…
 Reading the embeddings…	ກຳລັງອ່ານຕົວຝັງແວັກເຕີ (Embeddings)…
 Reading the file's layers…	ກຳລັງອ່ານຊັ້ນຂໍ້ມູນຂອງໄຟລ໌…
 Reading the installed fonts…	ກຳລັງອ່ານຟອນຕ໌ທີ່ຕິດຕັ້ງແລ້ວ…
 Reading the store… ({n} files to go)	ກຳລັງອ່ານຄັງເກັບ… (ເຫຼືອອີກ {n} ໄຟລ໌)
-Reading the tileset of	ກຳລັງອ່ານຊຸດໄທລ໌ຂອງ
+Reading the tileset of {name}	ກຳລັງອ່ານຊຸດໄທລ໌ຂອງ {name}
+Reading the window failed unexpectedly	ການອ່ານຂອບເຂດ (window) ລົ້ມເຫຼວແບບບໍ່ຄາດຄິດ
 Reading {n} of Overture's {ty} files where the map is: {attribution}	ກຳລັງອ່ານໄຟລ໌ {ty} ຂອງ Overture ຈຳນວນ {n} ໄຟລ໌ ໃນພື້ນທີ່ແຜນທີ່: {attribution}
-Reading {url} page by page…	ກຳລັງອ່ານ {url} ເທື່ອລະໜ້າ…
 Reading {url}…	ກຳລັງອ່ານ {url}…
 Reads and writes files	ອ່ານ ແລະ ຂຽນໄຟລ໌
 Reads the map	ອ່ານແຜນທີ່
@@ -2682,6 +2855,7 @@ Relationship name	ຊື່ຄວາມສຳພັນ
 Relationships	ຄວາມສຳພັນ
 Release	ລຸ້ນປ່ອຍ
 Reload	ໂຫຼດຄືນໃໝ່
+Reload Themes	ໂຫຼດຮູບແບບສີສັນຄືນໃໝ່
 Reload Web Layers	ໂຫຼດຊັ້ນຂໍ້ມູນເວັບຄືນໃໝ່
 Remember on this computer	ຈົດຈຳໄວ້ໃນຄອມພິວເຕີເຄື່ອງນີ້
 Remember the key on this computer	ຈົດຈຳຄີໄວ້ໃນຄອມພິວເຕີເຄື່ອງນີ້
@@ -2714,6 +2888,8 @@ Remove this stop	ລຶບຈຸດແວ່ນີ້ອອກ
 Remove Tile Layer	ລຶບຊັ້ນຂໍ້ມູນໄທລ໌ອອກ
 Remove token	ລຶບໂທເຄັນອອກ
 Remove {name}	ລຶບ {name} ອອກ
+Removed {id}.	ລຶບ {id} ແລ້ວ.
+Removed {name}	ລຶບ {name} ແລ້ວ
 Removes the parts of input features that fall inside erase polygons.	ລຶບພາກສ່ວນຂອງຟີເຈີຂາເຂົ້າທີ່ຕົກຢູ່ໃນຮູບຫຼາຍແຈລຶບອອກ.
 Removes vertices that deviate less than a tolerance (Douglas–Peucker).	ລຶບຈຸດຍອດ (Vertex) ທີ່ຄາດເຄື່ອນນ້ອຍກວ່າຄ່າຜິດດ່ຽງທີ່ກຳນົດ (Douglas–Peucker).
 Rename	ປ່ຽນຊື່
@@ -2732,6 +2908,7 @@ Repair	ສ້ອມແປງ
 Repair\nSource	ສ້ອມແປງ\nແຫຼ່ງຂໍ້ມູນ
 Repair Data Source	ສ້ອມແປງແຫຼ່ງຂໍ້ມູນ
 Repair Data Source…	ສ້ອມແປງແຫຼ່ງຂໍ້ມູນ…
+Repair Geometry	ສ້ອມແປງເລຂາຄະນິດ
 Repair is disabled while discovery is in flight	ປິດການສ້ອມແປງໃນຂະນະທີ່ກຳລັງຄົ້ນຫາຂໍ້ມູນ
 Repair Tile Archive	ສ້ອມແປງຄັງເກັບໄທລ໌
 Repaired {name}	ສ້ອມແປງ {name} ສຳເລັດແລ້ວ
@@ -2747,6 +2924,7 @@ Report Pane	ຊ່ອງນິພົນ
 Report Properties	ຄຸນສົມບັດນິພົນ
 Report Section	ພາກສ່ວນນິພົນ
 Report Template	ແມ່ແບບນິພົນ
+Request failure	ຄຳຮ້ອງຂໍລົ້ມເຫຼວ
 Request ID	ໄອດີຄຳຮ້ອງຂໍ
 Requests go to the OpenAI API and use your ChatGPT plan.	ຄຳຮ້ອງຂໍຈະຖືກສົ່ງໄປຍັງ OpenAI API ແລະ ໃຊ້ແພັກເກດ ChatGPT ຂອງທ່ານ.
 Requests send your message and the map's layer names, fields and the rows the assistant reads to the provider.	ການສົ່ງຄຳຮ້ອງຂໍຈະສົ່ງຂໍ້ຄວາມຂອງທ່ານ ພ້ອມທັງຊື່ຊັ້ນຂໍ້ມູນ, ຟິລດ໌ ແລະ ແຖວຂໍ້ມູນທີ່ຜູ້ຊ່ວຍອ່ານໄດ້ ໄປຍັງຜູ້ໃຫ້ບໍລິການ.
@@ -2758,10 +2936,13 @@ Reset All	ຕັ້ງຄ່າໃໝ່ທັງໝົດ
 Reset brightness, contrast and gamma.	ຕັ້ງຄ່າຄວາມສະຫວ່າງ, ຄວາມຄົມຊັດ ແລະ ແກມມາ ໃໝ່.
 Reset Default	ຕັ້ງຄ່າໃໝ່ເປັນຄ່າເລີ່ມຕົ້ນ
 Reset Effects	ຕັ້ງຄ່າເອັບເຟັກໃໝ່
+Reset Interface Scale	ຕັ້ງຂະໜາດສ່ວນຕິດຕໍ່ຄືນໃໝ່
+Reset Moved	ຕັ້ງຄືນທີ່ຍ້າຍແລ້ວ
 Reset North	ຕັ້ງຄ່າທິດເໜືອໃໝ່
 Reset north	ຕັ້ງຄ່າທິດເໜືອໃໝ່
 Reset unreadable saved shortcuts before importing.	ຕັ້ງຄ່າປຸ່ມລັດທີ່ບັນທຶກໄວ້ແຕ່ອ່ານບໍ່ໄດ້ໃໝ່ ກ່ອນທີ່ຈະນຳເຂົ້າ.
 Reset {key}	ຕັ້ງຄ່າ {key} ໃໝ່
+Reshape	ປັບຮູບຊົງ
 Resolution (0–30)	ຄວາມລະອຽດ (0–30)
 Response	ການຕອບສະໜອງ
 Restore	ກູ້ຄືນ
@@ -2772,6 +2953,10 @@ Resume	ສືບຕໍ່
 Retry	ລອງໃໝ່
 Retry after	ລອງໃໝ່ຫຼັງຈາກ
 Reverse	ປີ້ນກັບ
+Reverse the order of the classes' colors.	ປີ້ນລຳດັບສີຂອງຄລາສ.
+Review errors, warnings, information and failed network requests from this session.	ກວດເບິ່ງຂໍ້ຜິດພາດ, ຄຳເຕືອນ, ຂໍ້ມູນ ແລະ ຄຳຮ້ອງຂໍເຄືອຂ່າຍທີ່ລົ້ມເຫຼວຈາກຮອບການໃຊ້ນີ້.
+Review messages and failed network requests	ກວດເບິ່ງຂໍ້ຄວາມ ແລະ ຄຳຮ້ອງຂໍເຄືອຂ່າຍທີ່ລົ້ມເຫຼວ
+Review this request	ກວດເບິ່ງຄຳຮ້ອງຂໍນີ້
 RGB	RGB
 Ribbon	ແຖບເຄື່ອງມື Ribbon
 Right	ຂວາ
@@ -2841,11 +3026,16 @@ RustGIS report or report template	ນິພົນ ຫຼື ແມ່ແບບ�
 RustGIS styles	ຮູບແບບ RustGIS
 RustGIS task	ໜ້າວຽກ RustGIS
 RustGIS was quit last time without saving your changes.	ຄັ້ງກ່ອນໜ້ານີ້ RustGIS ຖືກປິດອອກໄປໂດຍບໍ່ໄດ້ບັນທຶກການປ່ຽນແປງຂອງທ່ານ.
+RustGIS was updated to {version}.	RustGIS ຖືກອັບເດດເປັນ {version} ແລ້ວ.
 RustGIS {latest} is available.	ມີ RustGIS ລຸ້ນ {latest} ພ້ອມໃຫ້ໃຊ້ງານແລ້ວ.
+RustGIS {version} installs when RustGIS closes.	RustGIS {version} ຈະຕິດຕັ້ງເມື່ອປິດ RustGIS.
 RustGIS {version} is the latest version.	RustGIS {version} ແມ່ນລຸ້ນຫຼ້າສຸດແລ້ວ.
+RustGIS {version} wasn't installed: try again from Help › Check for Updates, or install it from the release page.	RustGIS {version} ບໍ່ໄດ້ຖືກຕິດຕັ້ງ: ລອງອີກຄັ້ງຈາກ ການຊ່ວຍເຫຼືອ › ກວດສອບການອັບເດດ, ຫຼື ຕິດຕັ້ງຈາກໜ້າລຸ້ນປ່ອຍ.
 RUSTGIS_ASSISTANT_MODEL	RUSTGIS_ASSISTANT_MODEL
 RUSTGIS_ASSISTANT_PROVIDER	RUSTGIS_ASSISTANT_PROVIDER
 RUSTGIS_GPU	RUSTGIS_GPU
+RUSTGIS_UPDATE_RELEASE	RUSTGIS_UPDATE_RELEASE
+S after the zone is latitude band S; for the southern hemisphere write the zone, then south (33 south 412345 3768000)	S ຫຼັງເຂດແມ່ນແຖບເສັ້ນຂະໜານ S; ສຳລັບຊີກໂລກໃຕ້ ໃຫ້ຂຽນເຂດ ແລ້ວ south (33 south 412345 3768000)
 S3	S3
 S3 Buckets	ຖັງ S3
 S3 Connections	ການເຊື່ອມຕໍ່ S3
@@ -2872,12 +3062,14 @@ Save As Report File…	ບັນທຶກເປັນໄຟລ໌ນິພົນ
 Save As Report Template…	ບັນທຶກເປັນແມ່ແບບນິພົນ…
 Save as {name}	ບັນທຶກເປັນ {name}
 Save As…	ບັນທຶກເປັນ…
+Save changes before testing this connection.	ບັນທຶກການປ່ຽນແປງກ່ອນທົດສອບການເຊື່ອມຕໍ່ນີ້.
 Save changes to {name}?	ບັນທຶກການປ່ຽນແປງໃສ່ {name} ຫຼື ບໍ່?
 Save Color Ramps	ບັນທຶກແຖບສີ
 Save Data Source	ບັນທຶກແຫຼ່ງຂໍ້ມູນ
 Save History As Python Script	ບັນທຶກປະຫວັດເປັນສະຄຣິບ Python
 Save Layer File	ບັນທຶກໄຟລ໌ຊັ້ນຂໍ້ມູນ
 Save Layout File	ບັນທຶກໄຟລ໌ໜ້າຈັດວາງ
+Save Log As…	ບັນທຶກປະຫວັດເປັນ…
 Save Map File	ບັນທຶກໄຟລ໌ແຜນທີ່
 Save Model	ບັນທຶກຕົວແບບ
 Save Notebook	ບັນທຶກໂນ້ດບຸກ
@@ -2890,6 +3082,7 @@ Save Project Template	ບັນທຶກແມ່ແບບໂຄງການ
 Save Style Items	ບັນທຶກລາຍການຮູບແບບ
 Save Task Item	ບັນທຶກລາຍການໜ້າວຽກ
 Save the active map (with its data) as a map file.	ບັນທຶກແຜນທີ່ທີ່ໃຊ້ງານຢູ່ (ພ້ອມກັບຂໍ້ມູນ) ເປັນໄຟລ໌ແຜນທີ່.
+Save the connection first: a login belongs to a saved connection.	ບັນທຶກການເຊື່ອມຕໍ່ກ່ອນ: ການເຂົ້າສູ່ລະບົບແມ່ນຂຶ້ນກັບການເຊື່ອມຕໍ່ທີ່ບັນທຶກໄວ້.
 Save the last task as a task file.	ບັນທຶກໜ້າວຽກຫຼ້າສຸດເປັນໄຟລ໌ໜ້າວຽກ.
 Save the layout as a layout file.	ບັນທຶກໜ້າຈັດວາງເປັນໄຟລ໌ໜ້າຈັດວາງ.
 Save the model as a file (*.model.json)	ບັນທຶກຕົວແບບເປັນໄຟລ໌ (*.model.json)
@@ -2942,10 +3135,12 @@ Scale 1:	ມາດຕາສ່ວນ 1:
 Scale and rotate entered distances and directions to the grid.	ປັບຂະໜາດ ແລະ ໝູນໄລຍະທາງ ແລະ ທິດທາງທີ່ປ້ອນເຂົ້າໃຫ້ກົງກັບຕາໜ່າງ.
 Scale ×2	ຂະຫຍາຍ ×2
 Scale ×½	ຫຍໍ້ ×½
+Scaled by sum	ປັບຂະໜາດຕາມຜົນລວມ
 Scene	ຊີນ (Scene)
 Score threshold	ເກນຄະແນນ
 Score two rasters 1–10 and weight them	ໃຫ້ຄະແນນສອງແຣັສເຕີ 1–10 ແລະ ຖ່ວງນ້ຳໜັກພວກມັນ
 Script	ສະຄຣິບ
+Script Results	ຜົນໄດ້ຮັບສະຄຣິບ
 Scroll the ribbon left	ເລື່ອນແຖບ Ribbon ໄປທາງຊ້າຍ
 Scroll the ribbon right	ເລື່ອນແຖບ Ribbon ໄປທາງຂວາ
 Scroll the tabs left	ເລື່ອນແທັບໄປທາງຊ້າຍ
@@ -2971,6 +3166,7 @@ Search places for “{query}”	ຄົ້ນຫາສະຖານທີ່ສຳ
 Search plugins	ຄົ້ນຫາປລັກອິນ
 Search Radius	ລັດສະໝີຄົ້ນຫາ
 Search results © OpenStreetMap contributors	ຜົນການຄົ້ນຫາ © ຜູ້ປະກອບສ່ວນ OpenStreetMap
+Search results: PDOK Locatieserver (Kadaster)	ຜົນການຄົ້ນຫາ: PDOK Locatieserver (Kadaster)
 Search Satellite Embeddings	ຄົ້ນຫາຕົວຝັງແວັກເຕີພາບດາວທຽມ
 Search services and layers…	ຄົ້ນຫາບໍລິການ ແລະ ຊັ້ນຂໍ້ມູນ…
 Search services…	ຄົ້ນຫາບໍລິການ…
@@ -3009,6 +3205,7 @@ Select a layer in the Layers pane	ເລືອກຊັ້ນຂໍ້ມູນ�
 select a layer in the Layers pane first	ເລືອກຊັ້ນຂໍ້ມູນໃນໜ້າຕ່າງຊັ້ນຂໍ້ມູນກ່ອນ
 Select a layer in the Layers pane.	ເລືອກຊັ້ນຂໍ້ມູນໃນໜ້າຕ່າງຊັ້ນຂໍ້ມູນ.
 Select a navigation method after tracing a point.	ເລືອກວິທີການນຳທາງຫຼັງຈາກຕິດຕາມຈຸດແລ້ວ.
+Select a raster or tile layer in the Layers pane first	ເລືອກຊັ້ນຂໍ້ມູນແຣັສເຕີ ຫຼື ໄທລ໌ ໃນໜ້າຕ່າງຊັ້ນຂໍ້ມູນກ່ອນ
 Select All	ເລືອກທັງໝົດ
 Select an element to format it.	ເລືອກອົງປະກອບເພື່ອກຳນົດຮູບແບບ.
 Select By\nAttributes	ເລືອກຕາມ\nຄຸນລັກສະນະ
@@ -3068,9 +3265,11 @@ Service group data exceeds 64 MB.	ຂໍ້ມູນກຸ່ມການບໍ�
 Service Import Requests	ຄຳຂໍນຳເຂົ້າການບໍລິການ
 Service Layers	ຊັ້ນຂໍ້ມູນການບໍລິການ
 Session Log	ບັນທຶກປະຈຳວາລະ
+Session log	ບັນທຶກປະຈຳວາລະ
 Session token	ໂທເຄັນວາລະ
 Set	ຕັ້ງຄ່າ
 Set Cell Size	ຕັ້ງຄ່າຂະໜາດເມັດສີ
+Set Diagram	ຕັ້ງແຜນພູມ
 Set Domain	ຕັ້ງຄ່າຂອບເຂດຂໍ້ມູນ
 Set Filter	ຕັ້ງຄ່າຕົວກັ່ນຕອງ
 Set Geometry	ຕັ້ງຄ່າເລຂາຄະນິດ
@@ -3083,7 +3282,9 @@ Set the pixels inside a polygon.	ກຳນົດຄ່າເມັດສີພ�
 Settings	ການຕັ້ງຄ່າ
 Settings › Customize	ການຕັ້ງຄ່າ › ປັບແຕ່ງ
 Settings › Customize › Keyboard Shortcuts	ການຕັ້ງຄ່າ › ປັບແຕ່ງ › ປຸ່ມລັດແປ້ນພິມ
+Settings › Theme	ການຕັ້ງຄ່າ › ຮູບແບບສີສັນ
 Several places	ຫຼາຍບ່ອນ
+Several saved connections match this address. Choose a connection explicitly.	ມີການເຊື່ອມຕໍ່ທີ່ບັນທຶກໄວ້ຫຼາຍອັນກົງກັບທີ່ຢູ່ນີ້. ເລືອກການເຊື່ອມຕໍ່ຢ່າງຊັດເຈນ.
 Shade from the outer edge alone	ໃສ່ເງົາສະເພາະຂອບທາງນອກ
 Shade to the point deepest inside	ໃສ່ເງົາຈົນຮອດຈຸດເລິກສຸດທາງໃນ
 Shade walls by the way they face the light.	ໃສ່ເງົາຝາຕາມທິດທາງທີ່ຫັນໃສ່ແສງ.
@@ -3092,6 +3293,7 @@ Shaded Relief	ພູມສັນຖານມີເງົາ
 Shape	ຮູບຮ່າງ
 Shapeburst	ເງົາໄລ່ລະດັບຕາມຮູບຊົງ
 Shapefile	Shapefile
+Shapefile Index Cache	ແຄຊດັດຊະນີ Shapefile
 Shapes	ຮູບຮ່າງຕ່າງໆ
 Share	ແບ່ງປັນ
 Share As	ແບ່ງປັນເປັນ
@@ -3125,6 +3327,8 @@ Shortcuts	ປຸ່ມລັດ
 Shortest route over a line network	ເສັ້ນທາງສັ້ນທີ່ສຸດເທິງເຄືອຂ່າຍສາຍທາງ
 Show	ສະແດງ
 Show a second map beside this one.	ສະແດງແຜນທີ່ທີສອງຄຽງຄູ່ກັບແຜນທີ່ນີ້.
+Show All Columns	ສະແດງຖັນທັງໝົດ
+Show all labels	ສະແດງປ້າຍກຳກັບທັງໝົດ
 Show all values	ສະແດງທຸກຄ່າ
 Show details when hovering items in the Browser view.	ສະແດງລາຍລະອຽດເມື່ອຊີ້ເມົາສ໌ໃສ່ລາຍການໃນມຸມມອງບຣາວເຊີ.
 Show different features at different scales.	ສະແດງຟີເຈີທີ່ແຕກຕ່າງກັນຕາມມາດຕາສ່ວນຕ່າງກັນ.
@@ -3253,6 +3457,7 @@ Split	ແຍກ
 Split (click the line)	ແຍກ (ຄລິກໃສ່ເສັ້ນ)
 Split Features	ແຍກຟີເຈີ
 Split Field	ຟິວແຍກ
+Split Line At Vertices	ແຍກເສັ້ນຢູ່ຈຸດຈອດ
 Split the widest class	ແຍກຊັ້ນຂໍ້ມູນທີ່ກວ້າງທີ່ສຸດ
 Splits input features by overlay polygons, keeping every part: those inside get the overlay's attributes.	ແຍກຟີເຈີຂາເຂົ້າດ້ວຍຮູບຫຼາຍແຈຊ້ອນທັບ ໂດຍຮັກສາທຸກສ່ວນໄວ້: ສ່ວນທີ່ຢູ່ທາງໃນຈະໄດ້ຮັບຄຸນລັກສະນະຂອງຊັ້ນຊ້ອນທັບ.
 Splits input features where they overlap overlay polygons, keeping both layers' attributes.	ແຍກຟີເຈີຂາເຂົ້າບ່ອນທີ່ທັບຊ້ອນກັບຮູບຫຼາຍແຈຊ້ອນທັບ ໂດຍຮັກສາຄຸນລັກສະນະຂອງທັງສອງຊັ້ນຂໍ້ມູນໄວ້.
@@ -3316,11 +3521,14 @@ Star	ດາວ
 Stars	ດາວຕ່າງໆ
 Start	ເລີ່ມຕົ້ນ
 Start an empty model	ເລີ່ມຕົ້ນໂມເດວຫວ່າງເປົ່າ
+Start angle	ມຸມເລີ່ມຕົ້ນ
 Start date	ວັນທີເລີ່ມຕົ້ນ
+Start Offset	ໄລຍະຫຍັບຈຸດເລີ່ມຕົ້ນ
 Start Over	ເລີ່ມໃໝ່ແຕ່ຕົ້ນ
 Start over at the end while playing.	ເລີ່ມໃໝ່ແຕ່ຕົ້ນເມື່ອຮອດຕອນທ້າຍໃນຂະນະທີ່ກຳລັງຫຼິ້ນ.
 Start With	ເລີ່ມຕົ້ນດ້ວຍ
 Start-up	ການເລີ່ມຕົ້ນລະບົບ
+Starting active layer: {active}; selected layers: [{selected}]	ຊັ້ນຂໍ້ມູນທີ່ໃຊ້ງານຕອນເລີ່ມ: {active}; ຊັ້ນຂໍ້ມູນທີ່ເລືອກ: [{selected}]
 starting with a project file needs the desktop app	ການເລີ່ມຕົ້ນດ້ວຍໄຟລ໌ໂຄງການຈຳເປັນຕ້ອງໃຊ້ແອັບເດັສທັອບ
 Statistic	ຄ່າສະຖິຕິ
 Statistic is already listed for this field.	ຄ່າສະຖິຕິນີ້ມີຢູ່ໃນລາຍການຂອງຟິວນີ້ແລ້ວ.
@@ -3340,6 +3548,8 @@ Step through the layer's times with the time slider (View › Time), which start
 Step Time	ເວລາຂັ້ນຕອນ
 Step {n} done	ຂັ້ນຕອນ {n} ສຳເລັດແລ້ວ
 Stepped line	ເສັ້ນຂັ້ນໄດ
+Steps needing access	ຂັ້ນຕອນທີ່ຕ້ອງການສິດເຂົ້າເຖິງ
+STL 3D Model…	ໂມເດວ 3D STL…
 Stop	ຢຸດ
 Stop drawing labels, for faster navigation.	ຢຸດແຕ້ມປ້າຍກຳກັບ ເພື່ອການນຳທາງທີ່ໄວຂຶ້ນ.
 Stop filling the cache.	ຢຸດການຕື່ມຂໍ້ມູນແຄຊ.
@@ -3368,6 +3578,7 @@ Subreport: {name}	ລາຍງານຍ່ອຍ: {name}
 Subtypes	ປະເພດຍ່ອຍ
 Subtypes, one per line: code=name	ປະເພດຍ່ອຍ, ແຖວລະໜຶ່ງລາຍການ: ລະຫັດ=ຊື່
 Suitability Modeler	ຕົວສ້າງໂມເດວຄວາມເໝາະສົມ
+Sum Fields	ຟິວຜົນລວມ
 Summarise	ສະຫຼຸບ
 Summarise a Data Cube over Time	ສະຫຼຸບກ້ອນຂໍ້ມູນ (Data Cube) ຕາມເວລາ
 Summarise over time	ສະຫຼຸບຕາມເວລາ
@@ -3388,7 +3599,6 @@ Swap the start and the destination	ສະຫຼັບຈຸດເລີ່ມຕ
 Swipe	ຮູດປຽບທຽບ
 Switch	ສະຫຼັບ
 Switch between GPU and CPU map rendering	ສະຫຼັບລະຫວ່າງການປະມວນຜົນແຜນທີ່ດ້ວຍ GPU ແລະ CPU
-Switch between light and dark themes.	ສະຫຼັບລະຫວ່າງຮູບແບບສີສະຫວ່າງ ແລະ ສີມືດ.
 Switch Selection	ສະຫຼັບການເລືອກ
 Switch selection	ສະຫຼັບການເລືອກ
 Switch to a dark basemap	ສະຫຼັບໄປໃຊ້ແຜນທີ່ພື້ນຖານສີມືດ
@@ -3407,9 +3617,11 @@ Table	ຕາຕະລາງ
 Table Frame	ກອບຕາຕະລາງ
 Table or layer	ຕາຕະລາງ ຫຼື ຊັ້ນຂໍ້ມູນ
 Tables	ຕາຕະລາງທັງໝົດ
+Tabulate Intersection	ຕາຕະລາງການຊ້ອນທັບ (Tabulate Intersection)
 Tags	ແທັກ
 Take the data in view offline, to edit and sync back later.	ນຳຂໍ້ມູນໃນມຸມມອງໄປໃຊ້ອອບໄລນ໌ ເພື່ອດັດແກ້ ແລະ ຊິ້ງຄ໌ກັບຄືນພາຍຫຼັງ.
 Take this bound out	ເອົາຂອບເຂດນີ້ອອກ
+Target details ({operation}): {targets}	ລາຍລະອຽດເປົ້າໝາຍ ({operation}): {targets}
 Target Features	ຟີເຈີເປົ້າໝາຍ
 Target Key Field	ຟິວຫຼັກເປົ້າໝາຍ
 Target Records	ລະບຽນເປົ້າໝາຍ
@@ -3419,6 +3631,7 @@ Task Item	ລາຍການວຽກ
 Task name	ຊື່ວຽກ
 Tasks	ວຽກທັງໝົດ
 Tasks: guided steps that each run a command.	ວຽກ: ຂັ້ນຕອນແນະນຳທີ່ແຕ່ລະຂັ້ນຕອນຈະດຳເນີນການຄຳສັ່ງ.
+Technical details	ລາຍລະອຽດທາງເຕັກນິກ
 Template name	ຊື່ແມ່ແບບ
 Templates	ແມ່ແບບ
 Temporary credentials (with a session token) are kept for this session only.	ຂໍ້ມູນປະຈຳຕົວຊົ່ວຄາວ (ພ້ອມໂທເຄັນວາລະ) ຈະຖືກເກັບໄວ້ສະເພາະວາລະນີ້ເທົ່ານັ້ນ.
@@ -3432,7 +3645,9 @@ Test Connection	ທົດສອບການເຊື່ອມຕໍ່
 Testing…	ກຳລັງທົດສອບ…
 Text	ຂໍ້ຄວາມ
 Text Symbol	ສັນຍະລັກຂໍ້ຄວາມ
+Text, e.g. "name" || ' (' || round("pop" / 1e6, 1) || ' M)', in place of the field; size in points, color as '#RRGGBB', angle in degrees clockwise. Empty: the field's or the class's own.	ຂໍ້ຄວາມ, ເຊັ່ນ "name" || ' (' || round("pop" / 1e6, 1) || ' M)', ແທນຟິວ; ຂະໜາດເປັນພອຍ, ສີເປັນ '#RRGGBB', ມຸມເປັນອົງສາຕາມເຂັມໂມງ. ປະວ່າງ: ໃຊ້ຂອງຟິວ ຫຼື ຂອງຄລາສເອງ.
 That connection would create a loop.	ການເຊື່ອມຕໍ່ນັ້ນຈະເຮັດໃຫ້ເກີດການວົນຊ້ຳ.
+the 100 km square letters aren't used in this zone	ຕົວອັກສອນສີ່ຫຼ່ຽມ 100 km ບໍ່ໄດ້ໃຊ້ໃນເຂດນີ້
 The active project or map changed; reopen Define Projection for the intended layer.	ໂຄງການ ຫຼື ແຜນທີ່ທີ່ໃຊ້ງານຢູ່ມີການປ່ຽນແປງ; ກະລຸນາເປີດ 'ກຳນົດເສັ້ນໂຄງ' ຄືນໃໝ່ສຳລັບຊັ້ນຂໍ້ມູນທີ່ຕ້ອງການ.
 The active project or map changed; reopen the GeoPackage dialog for the intended layer.	ໂຄງການ ຫຼື ແຜນທີ່ທີ່ໃຊ້ງານຢູ່ມີການປ່ຽນແປງ; ກະລຸນາເປີດກ່ອງຂໍ້ຄວາມ GeoPackage ຄືນໃໝ່ສຳລັບຊັ້ນຂໍ້ມູນທີ່ຕ້ອງການ.
 The address fields are empty in every row.	ຟິວທີ່ຢູ່ຫວ່າງເປົ່າໃນທຸກໆແຖວ.
@@ -3444,11 +3659,13 @@ The assistant is busy; stop it or wait for it to finish.	ຜູ້ຊ່ວຍ�
 The assistant wants to run this, and {why}:	ຜູ້ຊ່ວຍຕ້ອງການດຳເນີນການນີ້, ເນື່ອງຈາກ {why}:
 The Basemaps plugin's tab of public basemaps.	ແທັບແຜນທີ່ພື້ນຖານສາທາລະນະຂອງປລັກອິນ Basemaps.
 The browser didn't give RustGIS the clipboard ({why}): paste with {keys}.	ບຣາວເຊີບໍ່ໄດ້ສົ່ງຄລິບບອດໃຫ້ RustGIS ({why}): ວາງດ້ວຍ {keys}.
+the browser kept neither a copy of it nor where to download it	ບຣາວເຊີບໍ່ໄດ້ເກັບທັງສຳເນົາຂອງມັນ ແລະ ບ່ອນທີ່ຈະດາວໂຫຼດມັນ
 the capture failed unexpectedly	ການບັນທຶກພາບລົ້ມເຫຼວຢ່າງບໍ່ຄາດຄິດ
 The class these label groups and the Labeling pane edit.	ຄລາສທີ່ກຸ່ມປ້າຍກຳກັບເຫຼົ່ານີ້ ແລະ ໜ້າຕ່າງການໃສ່ປ້າຍກຳກັບໃຊ້ດັດແກ້.
 The clipboard came after you moved on, so nothing was pasted: paste with {keys}.	ຂໍ້ມູນຄລິບບອດມາຮອດຫຼັງຈາກທ່ານຍ້າຍໄປບ່ອນອື່ນແລ້ວ ຈຶ່ງບໍ່ມີຫຍັງຖືກວາງ: ວາງດ້ວຍ {keys}.
 The connection failed; trying again in {seconds} s.	ການເຊື່ອມຕໍ່ລົ້ມເຫຼວ; ຈະລອງໃໝ່ໃນອີກ {seconds} ວິນາທີ.
 the connection has no id	ການເຊື່ອມຕໍ່ບໍ່ມີລະຫັດປະຈຳຕົວ (id)
+The coordinate format must be decimal, dms, utm or mgrs	ຮູບແບບພິກັດຕ້ອງເປັນ decimal, dms, utm ຫຼື mgrs
 The country list couldn't be read ({e}): type a country's code	ບໍ່ສາມາດອ່ານລາຍຊື່ປະເທດໄດ້ ({e}): ພິມລະຫັດປະເທດ
 The current elevation stays in effect while you edit inputs. Click Apply elevation to apply the value and units.	ລະດັບຄວາມສູງປະຈຸບັນຍັງຄົງມີຜົນໃນຂະນະທີ່ທ່ານດັດແກ້ຂໍ້ມູນຂາເຂົ້າ. ຄລິກ 'ນຳໃຊ້ລະດັບຄວາມສູງ' ເພື່ອນຳໃຊ້ຄ່າ ແລະ ຫົວໜ່ວຍ.
 The dataset has nothing RustGIS can add	ຊຸດຂໍ້ມູນນີ້ບໍ່ມີສິ່ງທີ່ RustGIS ສາມາດເພີ່ມໄດ້
@@ -3456,12 +3673,16 @@ The desktop app adds data cubes	ແອັບເດັສທັອບສາມາ
 The distance between two marks along the line	ໄລຍະຫ່າງລະຫວ່າງສອງເຄື່ອງໝາຍຕາມລວງເສັ້ນ
 The environment (AWS_ACCESS_KEY_ID…)	ສະພາບແວດລ້ອມລະບົບ (AWS_ACCESS_KEY_ID…)
 The features where the map is	ຟີເຈີໃນບໍລິເວນທີ່ແຜນທີ່ຕັ້ງຢູ່
+The filter searches the first {n} of them; the service.add command adds any other by its name.	ຕົວກັ່ນຕອງຄົ້ນຫາ {n} ອັນທຳອິດ; ຄຳສັ່ງ service.add ເພີ່ມອັນອື່ນໄດ້ຕາມຊື່ຂອງມັນ.
 The first 1,000 entries; narrow it down a folder at a time.	1,000 ລາຍການທຳອິດ; ຈຳກັດຂອບເຂດໃຫ້ແຄບລົງເທື່ອລະໂຟນເດີ.
 The first {n} are listed.	ສະແດງ {n} ລາຍການທຳອິດ.
 The first {n} are shown: search to narrow them.	ສະແດງ {n} ລາຍການທຳອິດ: ຄົ້ນຫາເພື່ອຈຳກັດຂອບເຂດໃຫ້ແຄບລົງ.
 The first {n} rows	{n} ແຖວທຳອິດ
 The flowtrace didn't answer: the whole flowline nearest the point is shown.	ການຕິດຕາມສາຍນ້ຳໄຫຼບໍ່ມີການຕອບສະໜອງ: ສະແດງສາຍນ້ຳໄຫຼທັງໝົດທີ່ຢູ່ໃກ້ຈຸດທີ່ສຸດ.
+the grid digits must be an even count of 0 to 10, half for the easting and half for the northing	ຕົວເລກຕາໜ່າງຕ້ອງເປັນຈຳນວນຄູ່ຈາກ 0 ຫາ 10, ເຄິ່ງໜຶ່ງສຳລັບ easting ແລະ ເຄິ່ງໜຶ່ງສຳລັບ northing
 The installed GeoLibre runner lists no tools.	ຕົວດຳເນີນການ GeoLibre ທີ່ຕິດຕັ້ງໄວ້ບໍ່ມີລາຍການເຄື່ອງມື.
+The installer is downloaded and checked. RustGIS closes, installs the update and opens again.	ຕົວຕິດຕັ້ງຖືກດາວໂຫຼດ ແລະ ກວດສອບແລ້ວ. RustGIS ຈະປິດ, ຕິດຕັ້ງການອັບເດດ ແລະ ເປີດຄືນໃໝ່.
+The interface colours, spacing and text sizes: a built-in theme or a file from the themes folder.	ສີ, ໄລຍະຫ່າງ ແລະ ຂະໜາດຕົວອັກສອນຂອງສ່ວນຕິດຕໍ່: ຮູບແບບສີສັນທີ່ມີໃນຕົວ ຫຼື ໄຟລ໌ຈາກໂຟນເດີ themes.
 The job covers the map view	ວຽກກວມເອົາມຸມມອງແຜນທີ່
 The key is kept for this session only.	ຄີຈະຖືກເກັບໄວ້ສະເພາະວາລະນີ້ເທົ່ານັ້ນ.
 The key is kept for this session only; it has not been remembered.	ຄີຈະຖືກເກັບໄວ້ສະເພາະວາລະນີ້ເທົ່ານັ້ນ; ບໍ່ໄດ້ມີການຈື່ຈຳໄວ້.
@@ -3470,13 +3691,18 @@ the keychain backend stopped unexpectedly	ລະບົບເບື້ອງຫ�
 the keychain worker stopped	ຕົວປະມວນຜົນ keychain ຢຸດເຮັດວຽກ
 The keys saved on this computer were forgotten; a login in this session keeps working.	ຄີທີ່ບັນທຶກໄວ້ໃນຄອມພິວເຕີເຄື່ອງນີ້ຖືກລຶບການຈື່ຈຳແລ້ວ; ແຕ່ການເຂົ້າສູ່ລະບົບໃນວາລະນີ້ຍັງຄົງໃຊ້ງານໄດ້ຕໍ່ໄປ.
 The kilometres' last two digits, as topographic maps print them: 43 for 543000.	ສອງໂຕເລກທ້າຍຂອງກິໂລແມັດ ຕາມທີ່ພິມໃນແຜນທີ່ພູມສັນຖານ: 43 ແທນໃຫ້ 543000.
+the latitude band must be a letter from C to X (not I or O)	ແຖບເສັ້ນຂະໜານຕ້ອງເປັນຕົວອັກສອນຈາກ C ຫາ X (ບໍ່ແມ່ນ I ຫຼື O)
+the layer Export Features was opened on is gone	ຊັ້ນຂໍ້ມູນທີ່ ສົ່ງອອກຟີເຈີ ເປີດໃຊ້ນັ້ນບໍ່ມີແລ້ວ
 The layer shows the step the time slider is at, and turns the slider on over the variable's dates.	ຊັ້ນຂໍ້ມູນຈະສະແດງຂັ້ນຕອນທີ່ແຖບເລື່ອນເວລາຢູ່ ແລະ ເປີດໃຊ້ແຖບເລື່ອນຕາມຊ່ວງວັນທີຂອງຕົວປ່ຽນ.
+the layer's description took too long	ການອະທິບາຍຊັ້ນຂໍ້ມູນໃຊ້ເວລາດົນເກີນໄປ
 The layer's file couldn't be read: {error}	ບໍ່ສາມາດອ່ານໄຟລ໌ຂອງຊັ້ນຂໍ້ມູນໄດ້: {error}
 The layer's fills	ສີຕື່ມຂອງຊັ້ນຂໍ້ມູນ
 The layer's strokes	ເສັ້ນຂອງຊັ້ນຂໍ້ມູນ
 the layout export failed unexpectedly	ການສົ່ງອອກການຈັດໜ້າລົ້ມເຫຼວຢ່າງບໍ່ຄາດຄິດ
 The link doesn't say its STAC API: Find Items searches {api}	ລິ້ງບໍ່ໄດ້ລະບຸ STAC API: ການຄົ້ນຫາລາຍການຈະຄົ້ນຫາ {api}
 The list of plugins to browse. Leave it empty for the RustGIS plugin registry.	ລາຍຊື່ປລັກອິນທີ່ຈະເບິ່ງ. ປະວ່າງໄວ້ເພື່ອໃຊ້ຄັງລົງທະບຽນປລັກອິນຂອງ RustGIS.
+The log cut it short or took its secrets out: it would run only in part	ບັນທຶກໄດ້ຕັດມັນໃຫ້ສັ້ນ ຫຼື ເອົາຂໍ້ມູນລັບອອກ: ມັນຈະເຮັດວຽກໄດ້ພຽງບາງສ່ວນ
+The longest a callout's line may be.	ຄວາມຍາວສູງສຸດຂອງເສັ້ນຊີ້.
 The map at the left; the title, locator, legend, sources and reference in a panel at the right.	ແຜນທີ່ຢູ່ເບື້ອງຊ້າຍ; ຫົວຂໍ້, ແຜນທີ່ດັດຊະນີ, ຄຳອະທິບາຍສັນຍະລັກ, ແຫຼ່ງຂໍ້ມູນ ແລະ ອ້າງອີງ ຢູ່ໃນແຜງເບື້ອງຂວາ.
 the map has no GeoPackage layer loaded for editing (Home › Add Data › Edit GeoPackage Table…)	ແຜນທີ່ບໍ່ມີຊັ້ນຂໍ້ມູນ GeoPackage ທີ່ໂຫຼດມາເພື່ອດັດແກ້ (ໜ້າຫຼັກ › ເພີ່ມຂໍ້ມູນ › ດັດແກ້ຕາຕະລາງ GeoPackage…)
 the map has no layers	ແຜນທີ່ບໍ່ມີຊັ້ນຂໍ້ມູນ
@@ -3484,6 +3710,7 @@ the map has no PostGIS layer loaded for editing (Home › Add Data › Database�
 The map has no tile archive read from a file.	ແຜນທີ່ບໍ່ມີຄັງເກັບໄທລ໌ທີ່ອ່ານຈາກໄຟລ໌.
 The map is drawn in this coordinate system; layers are projected on the fly.	ແຜນທີ່ຖືກແຕ້ມໃນລະບົບພິກັດນີ້; ຊັ້ນຂໍ້ມູນຈະຖືກແປງເສັ້ນໂຄງໃນທັນທີ.
 the map isn't on screen in RustGIS (a layout or the catalog is shown), so it was drawn offscreen	ແຜນທີ່ບໍ່ໄດ້ສະແດງເທິງໜ້າຈໍໃນ RustGIS (ສະແດງການຈັດໜ້າ ຫຼື ຄາຕາລັອກຢູ່), ດັ່ງນັ້ນຈຶ່ງຖືກແຕ້ມຢູ່ນອກໜ້າຈໍ
+the map it was asked for isn't open	ແຜນທີ່ທີ່ຮ້ອງຂໍບໍ່ໄດ້ເປີດຢູ່
 The map view as it is now	ມຸມມອງແຜນທີ່ຕາມທີ່ເປັນຢູ່ຕອນນີ້
 The map's extent isn't known yet	ຍັງບໍ່ທັນຮູ້ຂອບເຂດຂອງແຜນທີ່ເທື່ອ
 The map's view takes {n} of Overture's {ty} files (up to {max}): zoom in, or add the theme as map tiles	ມຸມມອງແຜນທີ່ຕ້ອງໃຊ້ {n} ໄຟລ໌ {ty} ຂອງ Overture (ສູງສຸດ {max}): ຊູມເຂົ້າ ຫຼື ເພີ່ມຮູບແບບເປັນໄທລ໌ແຜນທີ່
@@ -3498,16 +3725,27 @@ The model is ready to run.	ໂມເດວພ້ອມທີ່ຈະເຮັ�
 The model sent an empty reply; ask again, or try another model.	ໂມເດວສົ່ງຄຳຕອບຫວ່າງເປົ່າ; ກະລຸນາຖາມໃໝ່ ຫຼື ລອງໃຊ້ໂມເດວອື່ນ.
 The National Map	The National Map
 The National Map…	The National Map…
+The newest {shown} of {count} entries	{shown} ລາຍການລ່າສຸດຈາກ {count} ລາຍການ
 the NLDI's answer isn't UTF-8 text	ຄຳຕອບຂອງ NLDI ບໍ່ແມ່ນຂໍ້ຄວາມ UTF-8
+the northing doesn't fall in the latitude band given	northing ບໍ່ຢູ່ໃນແຖບເສັ້ນຂະໜານທີ່ໃຫ້ມາ
+The notes are cut here: the release page has all of them.	ບົດບັນທຶກຖືກຕັດຢູ່ນີ້: ໜ້າລຸ້ນປ່ອຍມີທັງໝົດ.
 the old file's list must disappear immediately	the old file's list must disappear immediately
+The one waiting after it was left too	ອັນທີ່ລໍຖ້າຢູ່ຫຼັງມັນກໍຖືກປະໄວ້ເຊັ່ນກັນ
 the open project has unsaved changes: save them before recovering other work	ໂຄງການທີ່ເປີດຢູ່ມີການປ່ຽນແປງທີ່ຍັງບໍ່ໄດ້ບັນທຶກ: ບັນທຶກພວກມັນກ່ອນທີ່ຈະກູ້ຄືນວຽກອື່ນ
 The open project has unsaved changes: save them, then recover this copy.	ໂຄງການທີ່ເປີດຢູ່ມີການປ່ຽນແປງທີ່ຍັງບໍ່ໄດ້ບັນທຶກ: ບັນທຶກພວກມັນ ແລ້ວກູ້ຄືນສຳເນົານີ້.
 The page in colour, the title in light text and the map in a light card.	ໜ້າເຈ້ຍມີສີສັນ, ຫົວຂໍ້ເປັນຂໍ້ຄວາມສີສະຫວ່າງ ແລະ ແຜນທີ່ຢູ່ໃນກາດສີສະຫວ່າງ.
+the page is too large to copy to the clipboard: export it instead	ໜ້າໃຫຍ່ເກີນໄປທີ່ຈະສຳເນົາໃສ່ຄລິບບອດ: ໃຫ້ສົ່ງອອກແທນ
 the page is too large to draw	ໜ້າເຈ້ຍໃຫຍ່ເກີນໄປທີ່ຈະແຕ້ມໄດ້
+The password or key must fit a 4096-byte HTTP header, without control characters.	ລະຫັດຜ່ານ ຫຼື ຄີຕ້ອງພໍດີກັບ HTTP header 4096 ໄບຕ໌, ໂດຍບໍ່ມີຕົວອັກສອນຄວບຄຸມ.
 The password was refused. Type a password to try again.	ລະຫັດຜ່ານບໍ່ຖືກຕ້ອງ. ພິມລະຫັດຜ່ານເພື່ອລອງໃໝ່.
 the picture is too large to show	ຮູບພາບໃຫຍ່ເກີນໄປທີ່ຈະສະແດງ
 the picture is too large to show, or isn't one	ຮູບພາບໃຫຍ່ເກີນໄປທີ່ຈະສະແດງ ຫຼື ບໍ່ແມ່ນໄຟລ໌ຮູບພາບ
+the place lies outside the zone given	ສະຖານທີ່ຢູ່ນອກເຂດທີ່ໃຫ້ມາ
 The places leave this device for the public Valhalla server at {server}, run by FOSSGIS. Don't continue if your project is bound by data privacy or data sovereignty rules.	ຂໍ້ມູນສະຖານທີ່ຈະຖືກສົ່ງອອກຈາກອຸປະກອນນີ້ໄປຍັງເຊີບເວີສາທາລະນະ Valhalla ທີ່ {server} ເຊິ່ງດຳເນີນການໂດຍ FOSSGIS. ຢ່າດຳເນີນການຕໍ່ ຖ້າໂຄງການຂອງທ່ານຜູກມັດກັບກົດລະບຽບຄວາມເປັນສ່ວນຕົວຂອງຂໍ້ມູນ ຫຼື ອະທິປະໄຕຂອງຂໍ້ມູນ.
+The plugin blocklist couldn't be downloaded ({error}); the last one read, if any, stays in force.	ບໍ່ສາມາດດາວໂຫຼດລາຍການບລັອກປລັກອິນ ({error}); ລາຍການທີ່ອ່ານຫຼ້າສຸດ, ຖ້າມີ, ຍັງມີຜົນບັງຄັບໃຊ້.
+The plugin blocklist couldn't be read ({error}); the last one read, if any, stays in force.	ບໍ່ສາມາດອ່ານລາຍການບລັອກປລັກອິນ ({error}); ລາຍການທີ່ອ່ານຫຼ້າສຸດ, ຖ້າມີ, ຍັງມີຜົນບັງຄັບໃຊ້.
+The plugin {id} wasn't loaded (open Plugins › Plugin Manager to see it): {reason}.	ປລັກອິນ {id} ບໍ່ໄດ້ຖືກໂຫຼດ (ເປີດ ປລັກອິນ › ຕົວຈັດການປລັກອິນ ເພື່ອເບິ່ງ): {reason}.
+The plugin {id} wasn't loaded. Open Plugins › Plugin Manager to see it.	ປລັກອິນ {id} ບໍ່ໄດ້ຖືກໂຫຼດ. ເປີດ ປລັກອິນ › ຕົວຈັດການປລັກອິນ ເພື່ອເບິ່ງ.
 The portal's OAuth app	ແອັບ OAuth ຂອງພໍທັລ
 the presentation export failed unexpectedly	ການສົ່ງອອກບົດສະເໜີລົ້ມເຫຼວຢ່າງບໍ່ຄາດຄິດ
 the preview failed unexpectedly	ການສະແດງຕົວຢ່າງລົ້ມເຫຼວຢ່າງບໍ່ຄາດຄິດ
@@ -3523,7 +3761,7 @@ The range is two numbers, low and high (0, 0.9)	ຊ່ວງຄ່າປະກ�
 The raster's data couldn't be read.	ບໍ່ສາມາດອ່ານຂໍ້ມູນຣັສເຕີໄດ້.
 The raster's data couldn't be read: {error}	ບໍ່ສາມາດອ່ານຂໍ້ມູນຣັສເຕີໄດ້: {error}
 the recovery copy is incomplete	ສຳເນົາກູ້ຄືນບໍ່ສົມບູນ
-the recovery copy is too large	ສຳເນົາກູ້ຄືນໃຫຍ່ເກີນໄປ
+the recovery copy is too large (maximum {mib} MiB on this computer)	ສຳເນົາກູ້ຄືນໃຫຍ່ເກີນໄປ (ສູງສຸດ {mib} MiB ໃນຄອມພິວເຕີນີ້)
 the recovery copy isn't text	ສຳເນົາກູ້ຄືນບໍ່ແມ່ນຂໍ້ຄວາມ
 the release isn't known	ບໍ່ຮູ້ລຸ້ນປ່ອຍ
 The reply reached its length limit.	ຄຳຕອບຍາວຮອດຂີດຈຳກັດແລ້ວ.
@@ -3532,10 +3770,13 @@ The reply stopped early ({reason}).	ຄຳຕອບຢຸດກ່ອນກຳ�
 the report export failed unexpectedly	ການສົ່ງອອກລາຍງານລົ້ມເຫຼວຢ່າງບໍ່ຄາດຄິດ
 The request failed.	ຄຳຮ້ອງຂໍລົ້ມເຫຼວ.
 The result wired into this output is added to the map under this name.	ຜົນຮັບທີ່ເຊື່ອມຕໍ່ກັບຜົນອອກນີ້ຈະຖືກເພີ່ມໃສ່ແຜນທີ່ພາຍໃຕ້ຊື່ນີ້.
+The saved coordinate format isn't known to this version, so decimal degrees are shown.	ລຸ້ນນີ້ບໍ່ຮູ້ຈັກຮູບແບບພິກັດທີ່ບັນທຶກໄວ້, ສະນັ້ນຈຶ່ງສະແດງເປັນອົງສາທົດສະນິຍົມ.
+The saved favourite arrangement of publication layouts can't be used ({why}), so "classic" is used.	ການຈັດລຽງທີ່ມັກຂອງໜ້າຈັດວາງສິ່ງພິມທີ່ບັນທຶກໄວ້ບໍ່ສາມາດໃຊ້ໄດ້ ({why}), ສະນັ້ນຈຶ່ງໃຊ້ "classic".
 The saved password could not be used. Type a password to try again; check Remember on this computer to replace the saved password.	ບໍ່ສາມາດໃຊ້ລະຫັດຜ່ານທີ່ບັນທຶກໄວ້ໄດ້. ພິມລະຫັດຜ່ານເພື່ອລອງໃໝ່; ໝາຍຕິກ 'ຈື່ໃນຄອມພິວເຕີເຄື່ອງນີ້' ເພື່ອປ່ຽນແທນລະຫັດຜ່ານທີ່ບັນທຶກໄວ້.
 The saved S3 connection no longer matches this source.	ການເຊື່ອມຕໍ່ S3 ທີ່ບັນທຶກໄວ້ບໍ່ກົງກັບແຫຼ່ງຂໍ້ມູນນີ້ອີກຕໍ່ໄປ.
 The saved sign-in changed. Select your account again.	ຂໍ້ມູນການເຂົ້າສູ່ລະບົບທີ່ບັນທຶກໄວ້ມີການປ່ຽນແປງ. ເລືອກບັນຊີຂອງທ່ານຄືນໃໝ່.
 The scale the layer's symbol and label sizes are set for. At other scales they grow and shrink with the map, as on paper.	ມາດຕາສ່ວນທີ່ກຳນົດຂະໜາດສັນຍະລັກ ແລະ ປ້າຍກຳກັບຂອງຊັ້ນຂໍ້ມູນ. ໃນມາດຕາສ່ວນອື່ນພວກມັນຈະຂະຫຍາຍ ແລະ ຫຍໍ້ໄປພ້ອມກັບແຜນທີ່ ຄືກັນກັບເທິງເຈ້ຍ.
+The script, for the Script pane	ສະຄຣິບ, ສຳລັບໜ້າຕ່າງສະຄຣິບ
 The selected GeoPackage layer is no longer available; choose a layer	ຊັ້ນຂໍ້ມູນ GeoPackage ທີ່ເລືອກບໍ່ພ້ອມໃຊ້ງານອີກຕໍ່ໄປ; ເລືອກຊັ້ນຂໍ້ມູນ
 The server had a problem answering.	ເຊີບເວີພົບບັນຫາໃນການຕອບສະໜອງ.
 The server is limiting requests.	ເຊີບເວີກຳລັງຈຳກັດຈຳນວນຄຳຮ້ອງຂໍ.
@@ -3544,12 +3785,14 @@ The server took too long to answer.	ເຊີບເວີໃຊ້ເວລາ�
 The service may be private or need a token.	ການບໍລິການອາດຈະເປັນສ່ວນຕົວ ຫຼື ຕ້ອງການໂທເຄັນ.
 The service needs a sign-in or a token.	ການບໍລິການຕ້ອງການການເຂົ້າສູ່ລະບົບ ຫຼື ໂທເຄັນ.
 The service's answer isn't UTF-8 text	ຄຳຕອບຂອງການບໍລິການບໍ່ແມ່ນຂໍ້ຄວາມ UTF-8
+The session login could not be used. Enter it again.	ບໍ່ສາມາດໃຊ້ການເຂົ້າສູ່ລະບົບຂອງຮອບການໃຊ້ໄດ້. ປ້ອນມັນອີກຄັ້ງ.
 The Shapefile's files download as one zip.	ໄຟລ໌ຕ່າງໆຂອງ Shapefile ຈະດາວໂຫຼດເປັນໄຟລ໌ zip ດຽວ.
 The share of each cell covered by fields, for the zoomed-out view	ອັດຕາສ່ວນຂອງແຕ່ລະເມັດສີທີ່ປົກຄຸມດ້ວຍເນື້ອທີ່ກະສິກຳ ສຳລັບມຸມມອງຊູມອອກ
 The sign-in expired or was revoked. Sign in again.	ການເຂົ້າສູ່ລະບົບໝົດອາຍຸ ຫຼື ຖືກຍົກເລີກ. ເຂົ້າສູ່ລະບົບຄືນໃໝ່.
 The sign-in is kept in the system keychain, never in the app's settings or a project file.	ຂໍ້ມູນການເຂົ້າສູ່ລະບົບຖືກເກັບໄວ້ໃນ keychain ຂອງລະບົບ, ບໍ່ເຄີຍເກັບໄວ້ໃນການຕັ້ງຄ່າແອັບ ຫຼື ໄຟລ໌ໂຄງການເລີຍ.
 The sign-in is still kept in the app's settings folder, readable by your user account: the system keychain is unavailable, so it hasn't been moved there yet.	ຂໍ້ມູນການເຂົ້າສູ່ລະບົບຍັງຄົງຖືກເກັບໄວ້ໃນໂຟນເດີການຕັ້ງຄ່າຂອງແອັບ ເຊິ່ງບັນຊີຜູ້ໃຊ້ຂອງທ່ານສາມາດອ່ານໄດ້: ເນື່ອງຈາກ keychain ຂອງລະບົບບໍ່ພ້ອມໃຊ້ງານ ຈຶ່ງຍັງບໍ່ໄດ້ຍ້າຍໄປບ່ອນນັ້ນ.
 The significance level is a number, such as 0.05	ລະດັບໄນສຳຄັນແມ່ນຕົວເລກ ເຊັ່ນ 0.05
+The size of the menu, the panes and the text drawn in them.	ຂະໜາດຂອງເມນູ, ໜ້າຕ່າງ ແລະ ຂໍ້ຄວາມທີ່ແຕ້ມໃນພວກມັນ.
 The start-up project {path} didn't open: {error}	ໂຄງການເລີ່ມຕົ້ນ {path} ບໍ່ສາມາດເປີດໄດ້: {error}
 The start-up project {path} isn't a RustGIS project file.	ໂຄງການເລີ່ມຕົ້ນ {path} ບໍ່ແມ່ນໄຟລ໌ໂຄງການ RustGIS.
 The step's layer {name} isn't in the map.	ຊັ້ນຂໍ້ມູນ {name} ຂອງຂັ້ນຕອນນີ້ບໍ່ມີຢູ່ໃນແຜນທີ່.
@@ -3568,17 +3811,22 @@ The title and subtitle in a band of colour across the top.	ຫົວຂໍ້ �
 The title over the map, the sources and the reference in boxes under it.	ຫົວຂໍ້ຢູ່ເທິງແຜນທີ່, ແຫຼ່ງຂໍ້ມູນ ແລະ ອ້າງອີງ ຢູ່ໃນກ່ອງທາງລຸ່ມ.
 The token expired and was forgotten. Paste a new one.	ໂທເຄັນໝົດອາຍຸ ແລະ ຖືກລຶບອອກແລ້ວ. ກະລຸນາວາງອັນໃໝ່.
 The token expires on {date}.	ໂທເຄັນໝົດອາຍຸໃນວັນທີ {date}.
+The tools run on this project: saved with it, and each can run again	ເຄື່ອງມືທີ່ເຮັດວຽກໃນໂຄງການນີ້: ບັນທຶກພ້ອມກັບໂຄງການ, ແລະ ແຕ່ລະອັນສາມາດເຮັດວຽກອີກຄັ້ງ
 The trend couldn't start: {error}	ບໍ່ສາມາດເລີ່ມຕົ້ນການວິເຄາະທ່າອ່ຽງໄດ້: {error}
 The trend failed unexpectedly	ການວິເຄາະທ່າອ່ຽງລົ້ມເຫຼວຢ່າງບໍ່ຄາດຄິດ
 The trend finished after another project was opened, so it wasn't added	ການວິເຄາະທ່າອ່ຽງສຳເລັດຫຼັງຈາກເປີດໂຄງການອື່ນແລ້ວ ຈຶ່ງບໍ່ໄດ້ຖືກເພີ່ມເຂົ້າ
+the UTM zone must be 1 to 60	ເຂດ UTM ຕ້ອງເປັນ 1 ຫາ 60
 The values shown from black to white, the same for every date and tile (the band's own units). Empty: each file's own stretch.	ຄ່າທີ່ສະແດງຈາກສີດຳຫາສີຂາວ ຄືກັນສຳລັບທຸກວັນທີ ແລະ ທຸກໄທລ໌ (ຫົວໜ່ວຍຂອງແຖບຄື້ນເອງ). ຖ້າຫວ່າງເປົ່າ: ໃຊ້ການດຶງຍືດຂອງແຕ່ລະໄຟລ໌ເອງ.
 the view has no extent	ມຸມມອງບໍ່ມີຂອບເຂດ
 The view is larger than one read: its centre was read (zoom in for the rest)	ມຸມມອງໃຫຍ່ກວ່າການອ່ານຄັ້ງດຽວ: ອ່ານສະເພາະສ່ວນໃຈກາງ (ຊູມເຂົ້າເພື່ອເບິ່ງສ່ວນທີ່ເຫຼືອ)
 The web app always runs the latest release: reload the page to get it.	ເວັບແອັບເຮັດວຽກເທິງລຸ້ນຫຼ້າສຸດສະເໝີ: ໂຫຼດໜ້າຄືນໃໝ່ເພື່ອອັບເດດ.
 The web app can't link to files on this computer: add the file again with Add Data.	ເວັບແອັບບໍ່ສາມາດເຊື່ອມຕໍ່ກັບໄຟລ໌ໃນຄອມພິວເຕີເຄື່ອງນີ້ໄດ້: ເພີ່ມໄຟລ໌ຄືນໃໝ່ດ້ວຍ 'ເພີ່ມຂໍ້ມູນ'.
+The whole log, as CSV or JSON Lines (.jsonl): it may name files and addresses, so look at it before sharing it	ບັນທຶກທັງໝົດ, ເປັນ CSV ຫຼື JSON Lines (.jsonl): ມັນອາດລະບຸໄຟລ໌ ແລະ ທີ່ຢູ່, ສະນັ້ນກວດເບິ່ງກ່ອນແບ່ງປັນ
 the window's screenshot didn't come back in time, so the map was drawn offscreen	ພາບໜ້າຈໍຂອງປ່ອງຢ້ຽມບໍ່ຕອບສະໜອງທັນເວລາ ຈຶ່ງແຕ້ມແຜນທີ່ຢູ່ນອກໜ້າຈໍ
 the window's screenshot didn't hold the map, so it was drawn offscreen	ພາບໜ້າຈໍຂອງປ່ອງຢ້ຽມບໍ່ມີຮູບແຜນທີ່ ຈຶ່ງແຕ້ມຢູ່ນອກໜ້າຈໍ
+The {n} waiting after it were left too	{n} ອັນທີ່ລໍຖ້າຢູ່ຫຼັງມັນກໍຖືກປະໄວ້ເຊັ່ນກັນ
 Theme	ຮູບແບບສີສັນ
+Theme {name} loaded and kept at {path}	ໂຫຼດຮູບແບບສີສັນ {name} ແລ້ວ ແລະ ເກັບໄວ້ທີ່ {path}
 There is no expression defined.	ບໍ່ມີການກຳນົດນິພົດໄວ້.
 there is no unsaved work to recover	ບໍ່ມີວຽກທີ່ຍັງບໍ່ໄດ້ບັນທຶກໃຫ້ກູ້ຄືນ
 Thermal	ຄວາມຮ້ອນ
@@ -3607,13 +3855,20 @@ This layer's data is kept in the project or read from a database or web address:
 This map has no layers yet.	ແຜນທີ່ນີ້ຍັງບໍ່ທັນມີຊັ້ນຂໍ້ມູນເທື່ອ.
 This map's thumbnail, from an image.	ຮູບຕົວຢ່າງຂອງແຜນທີ່ນີ້, ຈາກຮູບພາບ.
 This map's thumbnail, from the view.	ຮູບຕົວຢ່າງຂອງແຜນທີ່ນີ້, ຈາກມຸມມອງ.
+This platform does not report the system theme	ແພລດຟອມນີ້ບໍ່ລາຍງານຮູບແບບສີສັນຂອງລະບົບ
 This plugin can:	ປລັກອິນນີ້ສາມາດ:
 This plugin runs as a program on your computer, outside RustGIS's sandbox. It can do anything you can: read and change your files, use the network and run other programs. Install it only if you trust its author.	ປລັກອິນນີ້ເຮັດວຽກເປັນໂປຣແກຣມໃນຄອມພິວເຕີຂອງທ່ານ ຢູ່ນອກແຊນບ໋ອກຂອງ RustGIS. ມັນສາມາດເຮັດໄດ້ທຸກຢ່າງທີ່ທ່ານເຮັດໄດ້: ອ່ານ ແລະ ປ່ຽນແປງໄຟລ໌ຂອງທ່ານ, ໃຊ້ເຄືອຂ່າຍ ແລະ ຮັນໂປຣແກຣມອື່ນໆ. ຕິດຕັ້ງສະເພາະເມື່ອທ່ານເຊື່ອຖືຜູ້ພັດທະນາເທົ່ານັ້ນ.
+This project	ໂຄງການນີ້
+This project uses a connection for {origin} that is not saved on this computer.	ໂຄງການນີ້ໃຊ້ການເຊື່ອມຕໍ່ສຳລັບ {origin} ທີ່ບໍ່ໄດ້ບັນທຶກໄວ້ໃນຄອມພິວເຕີນີ້.
+This read was already started	ການອ່ານນີ້ໄດ້ເລີ່ມແລ້ວ
+This release has no installer for this computer: get it from the release page.	ລຸ້ນປ່ອຍນີ້ບໍ່ມີຕົວຕິດຕັ້ງສຳລັບຄອມພິວເຕີນີ້: ດາວໂຫຼດຈາກໜ້າລຸ້ນປ່ອຍ.
 This request has no one-time allow option.	ຄຳຮ້ອງຂໍນີ້ບໍ່ມີຕົວເລືອກອະນຸຍາດຄັ້ງດຽວ.
 This request uses an unsupported capability. Check the parameter and change the request.	ຄຳຮ້ອງຂໍນີ້ໃຊ້ຄຸນສົມບັດທີ່ບໍ່ຮອງຮັບ. ກວດເບິ່ງພາຣາມິເຕີ ແລະ ປ່ຽນແປງຄຳຮ້ອງຂໍ.
+This request's login does not belong to this session.	ການເຂົ້າສູ່ລະບົບຂອງຄຳຮ້ອງຂໍນີ້ບໍ່ແມ່ນຂອງຮອບການໃຊ້ນີ້.
 This result is kept	ຜົນຮັບນີ້ຖືກເກັບຮັກສາໄວ້
 This run has no tool form to open	ການປະມວນຜົນນີ້ບໍ່ມີຟອມເຄື່ອງມືທີ່ຈະເປີດ
 This S3 connection choice is no longer available.	ຕົວເລືອກການເຊື່ອມຕໍ່ S3 ນີ້ບໍ່ພ້ອມໃຊ້ງານອີກຕໍ່ໄປ.
+This service layer isn't recorded: its tile discovery crossed origins, and a task could use a different login.	ຊັ້ນຂໍ້ມູນບໍລິການນີ້ບໍ່ໄດ້ຖືກບັນທຶກ: ການຄົ້ນຫາໄທລ໌ຂອງມັນຂ້າມ origin, ແລະ ໜ້າວຽກອາດໃຊ້ການເຂົ້າສູ່ລະບົບອື່ນ.
 This step	ຂັ້ນຕອນນີ້
 This step names no tool to show.	ຂັ້ນຕອນນີ້ບໍ່ໄດ້ລະບຸເຄື່ອງມືທີ່ຈະສະແດງ.
 This value cannot be shown as a list. Edit its JSON below.	ຄ່ານີ້ບໍ່ສາມາດສະແດງເປັນລາຍການໄດ້. ແກ້ໄຂ JSON ຂອງມັນຢູ່ດ້ານລຸ່ມ.
@@ -3641,6 +3896,7 @@ Time series	ອະນຸກົມເວລາ
 Time Series at a Point	ອະນຸກົມເວລາຢູ່ຈຸດ
 Time Slider	ແຖບເລື່ອນເວລາ
 Time Slider Settings	ການຕັ້ງຄ່າແຖບເລື່ອນເວລາ
+Timeout	ໝົດເວລາ
 Tint by elevation	ໄລ່ສີຕາມລະດັບຄວາມສູງ
 Tissot's Indicatrix	ວົງບົ່ງຊີ້ທິສໂຊ (Tissot's Indicatrix)
 Title	ຫົວຂໍ້
@@ -3654,6 +3910,7 @@ Tolls	ດ່ານເກັບຄ່າທຳນຽມ
 Too many shortcut changes to save.	ມີການປ່ຽນແປງປຸ່ມລັດຫຼາຍເກີນໄປທີ່ຈະບັນທຶກ.
 Too many shortcut changes to save. Changes apply only to this session.	ມີການປ່ຽນແປງປຸ່ມລັດຫຼາຍເກີນໄປທີ່ຈະບັນທຶກ. ການປ່ຽນແປງຈະມີຜົນສະເພາະວາລະນີ້ເທົ່ານັ້ນ.
 Tool Gallery	ຄັງເຄື່ອງມື
+Tool runs	ການເຮັດວຽກຂອງເຄື່ອງມື
 Toolboxes	ກ່ອງເຄື່ອງມື
 Tools	ເຄື່ອງມື
 Tools\nPane	ໜ້າຕ່າງ\nເຄື່ອງມື
@@ -3672,6 +3929,8 @@ Topology rules and the errors they find.	ກົດລະບຽບໂທໂປໂ
 Total {total}   ·   Segment {segment}	ທັງໝົດ {total}   ·   ຊ່ວງ {segment}
 Trace	ຕິດຕາມຮອຍ
 Trace a point first: click the map.	ຕິດຕາມຈຸດກ່ອນ: ຄລິກໃສ່ແຜນທີ່.
+Trace Edge Path	ຕິດຕາມເສັ້ນທາງຂອບ
+Trace must be on or off	Trace ຕ້ອງເປັນ on ຫຼື off
 Track jobs and their status.	ຕິດຕາມວຽກ ແລະ ສະຖານະຂອງວຽກ.
 Train a neural network on training polygons	ຝຶກສອນໂຄງຂ່າຍປະສາດທຽມດ້ວຍຮູບຫຼາຍແຈຝຶກສອນ
 Train a neural network on training polygons and classify every pixel.	ຝຶກສອນໂຄງຂ່າຍປະສາດທຽມດ້ວຍຮູບຫຼາຍແຈຝຶກສອນ ແລະ ຈັດຈຳແນກທຸກເມັດສີ.
@@ -3687,9 +3946,12 @@ Trend Analysis…	ການວິເຄາະທ່າອ່ຽງ…
 Trend over a series of rasters	ທ່າອ່ຽງຕາມຊຸດຂໍ້ມູນຣັສເຕີ
 Triangle	ສາມແຈ
 TRUE	TRUE
+Try Again	ລອງອີກຄັ້ງ
 Try again in a moment.	ກະລຸນາລອງໃໝ່ອີກຄັ້ງໃນຈັກໜ່ອຍ.
 Try again later.	ກະລຸນາລອງໃໝ່ພາຍຫຼັງ.
+Try other places along the line	ລອງບ່ອນອື່ນລຽບຕາມເສັ້ນ
 Try other places round the point	ລອງຕຳແໜ່ງອື່ນອ້ອມຮອບຈຸດ
+Trying again…	ກຳລັງລອງອີກຄັ້ງ…
 Turn each mark with the line's direction	ໝູນແຕ່ລະເຄື່ອງໝາຍຕາມທິດທາງຂອງເສັ້ນ
 Turn each point's marker by the angle in a field, in degrees	ໝູນເຄື່ອງໝາຍຂອງແຕ່ລະຈຸດຕາມມຸມໃນຟິວ (ເປັນອົງສາ)
 Turn editing on or off for the map.	ເປີດ ຫຼື ປິດ ການດັດແກ້ສຳລັບແຜນທີ່.
@@ -3701,7 +3963,7 @@ Turn the mark by the layer's rotation field, its offset with it	ໝູນເຄ�
 Turn the time slider off: every feature shows again.	ປິດແຖບເລື່ອນເວລາ: ທຸກຟີເຈີຈະສະແດງຄືນໃໝ່.
 Turned further, clockwise	ໝູນຕໍ່ໄປຕາມເຂັມໂມງ
 Turns a field's values into fields: a row for each combination of the row fields' values, a column for each value of the pivot field.	ປ່ຽນຄ່າຂອງຟິວໃຫ້ກາຍເປັນຟິວ: ໜຶ່ງແຖວສຳລັບແຕ່ລະການຮວມກັນຂອງຄ່າໃນຟິວແຖວ, ໜຶ່ງຖັນສຳລັບແຕ່ລະຄ່າຂອງຟິວພິວອດ.
-Turns a table's addresses into points: each row's address fields are joined with commas (such as street, city, country) and looked up. The public servers take up to 100 addresses a run, one a second; a server of your own takes more.	ປ່ຽນທີ່ຢູ່ໃນຕາຕະລາງໃຫ້ເປັນຈຸດ: ຟິວທີ່ຢູ່ຂອງແຕ່ລະແຖວຈະຖືກເຊື່ອມຕໍ່ດ້ວຍຈຸດ (ເຊັ່ນ: ຖະໜົນ, ເມືອງ, ປະເທດ) ແລ້ວນຳໄປຄົ້ນຫາ. ເຊີບເວີສາທາລະນະຮັບໄດ້ສູງສຸດ 100 ທີ່ຢູ່ຕໍ່ການເຮັດວຽກໜຶ່ງຄັ້ງ ໃນອັດຕາໜຶ່ງທີ່ຢູ່ຕໍ່ວິນາທີ; ສ່ວນເຊີບເວີຂອງທ່ານເອງຈະຮອງຮັບໄດ້ຫຼາຍກວ່ານັ້ນ.
+Turns a table's addresses into points: each row's address fields are joined with commas (such as street, city, country) and looked up. OpenStreetMap's public Nominatim and Photon take up to 100 addresses a run, one a second; PDOK's Locatieserver (Dutch addresses) and a server of your own take more.	ແປງທີ່ຢູ່ໃນຕາຕະລາງເປັນຈຸດ: ຟິວທີ່ຢູ່ຂອງແຕ່ລະແຖວຈະຖືກເຊື່ອມດ້ວຍເຄື່ອງໝາຍຈຸດ (ເຊັ່ນ ຖະໜົນ, ເມືອງ, ປະເທດ) ແລ້ວຄົ້ນຫາ. Nominatim ແລະ Photon ສາທາລະນະຂອງ OpenStreetMap ຮັບໄດ້ສູງສຸດ 100 ທີ່ຢູ່ຕໍ່ຄັ້ງ, ວິນາທີລະອັນ; Locatieserver ຂອງ PDOK (ທີ່ຢູ່ໃນເນເທີແລນ) ແລະ ເຊີບເວີຂອງທ່ານເອງຮັບໄດ້ຫຼາຍກວ່າ.
 Two layers are named {name}: the step names it, so it replays on the first of them. Rename one to tell them apart.	ມີສອງຊັ້ນຂໍ້ມູນທີ່ຊື່ {name}: ຂັ້ນຕອນອ້າງອີງຕາມຊື່ ດັ່ງນັ້ນມັນຈະເຮັດວຽກກັບຊັ້ນຂໍ້ມູນທຳອິດ. ກະລຸນາປ່ຽນຊື່ອັນໃດອັນໜຶ່ງເພື່ອແຍກຄວາມແຕກຕ່າງ.
 Type	ປະເພດ
 type a file name	ພິມຊື່ໄຟລ໌
@@ -3711,6 +3973,7 @@ Type an address or coordinates and press Enter, or click the map.	ພິມທ�
 Type numbers separated by commas	ພິມຕົວເລກຂັ້ນດ້ວຍໝາຍຈຸດ
 Type the access key ID and the secret access key to remember them on this computer.	ພິມ Access Key ID ແລະ Secret Access Key ເພື່ອຈື່ໄວ້ໃນຄອມພິວເຕີເຄື່ອງນີ້.
 Type the keys to log in for this session, then Save.	ພິມຄີເພື່ອເຂົ້າສູ່ລະບົບສຳລັບວາລະນີ້ ແລ້ວກົດບັນທຶກ.
+Type the password or key, or leave it blank to use this connection's session login, then Save.	ພິມລະຫັດຜ່ານ ຫຼື ຄີ, ຫຼື ປະວ່າງໄວ້ເພື່ອໃຊ້ການເຂົ້າສູ່ລະບົບຮອບການໃຊ້ຂອງການເຊື່ອມຕໍ່ນີ້, ແລ້ວກົດ ບັນທຶກ.
 Type the password to remember it on this computer.	ພິມລະຫັດຜ່ານເພື່ອຈື່ໄວ້ໃນຄອມພິວເຕີເຄື່ອງນີ້.
 Type the password, then Save. Remember on this computer is optional.	ພິມລະຫັດຜ່ານ ແລ້ວກົດບັນທຶກ. ການເລືອກ 'ຈື່ໃນຄອມພິວເຕີເຄື່ອງນີ້' ແມ່ນຂຶ້ນກັບຄວາມສະໝັກໃຈ.
 Typed below	ພິມໄວ້ດ້ານລຸ່ມ
@@ -3742,6 +4005,7 @@ Unknown shortcut command.	ບໍ່ຮູ້ຈັກຄຳສັ່ງປຸ່
 UNKNOWN TOOL	ເຄື່ອງມືທີ່ບໍ່ຮູ້ຈັກ
 Unload the GeoLibre tools and stop loading them when RustGIS starts.	ເອົາເຄື່ອງມື GeoLibre ອອກ ແລະ ຢຸດການໂຫຼດພວກມັນເມື່ອ RustGIS ເລີ່ມຕົ້ນ.
 Unsaved changes	ການປ່ຽນແປງທີ່ຍັງບໍ່ໄດ້ບັນທຶກ
+Unsplit Line	ເຊື່ອມເສັ້ນທີ່ແຍກກັນ
 Unsupervised classes (k-means)	ຊັ້ນຂໍ້ມູນແບບບໍ່ມີຜູ້ກຳກັບ (k-means)
 Unsupervised classes (k-means).	ຊັ້ນຂໍ້ມູນແບບບໍ່ມີຜູ້ກຳກັບ (k-means).
 Unsupported shortcut file version.	ລຸ້ນໄຟລ໌ປຸ່ມລັດບໍ່ຮອງຮັບ.
@@ -3778,6 +4042,7 @@ Use each feature's line color	ໃຊ້ສີເສັ້ນຂອງແຕ່�
 Use each feature's line width	ໃຊ້ຄວາມກວ້າງເສັ້ນຂອງແຕ່ລະຟີເຈີ
 Use layers instead	ໃຊ້ຊັ້ນຂໍ້ມູນແທນ
 Use the Layer's Strokes	ໃຊ້ເສັ້ນຂອງຊັ້ນຂໍ້ມູນ
+User	ຜູ້ໃຊ້
 USERPROFILE	USERPROFILE
 USGS 3DEP DEM	USGS 3DEP DEM
 USGS 3DEP DEM…	USGS 3DEP DEM…
@@ -3793,6 +4058,7 @@ USGS The National Map	USGS The National Map
 USGS The National Map's map services (topographic maps, imagery, elevation, hydrography, boundaries and more) and a few partners'. Each is added as a tile layer.	ການບໍລິການແຜນທີ່ຂອງ USGS The National Map (ແຜນທີ່ພູມສັນຖານ, ພາບຖ່າຍ, ຄວາມສູງ, ອຸທົກກະສາດ, ຂອບເຂດ ແລະ ອື່ນໆ) ລວມທັງຂອງຄູ່ຮ່ວມງານບາງສ່ວນ. ແຕ່ລະອັນຈະຖືກເພີ່ມເປັນຊັ້ນຂໍ້ມູນໄທລ໌.
 Using ChatGPT plan	ກຳລັງໃຊ້ແພັກເກດ ChatGPT
 Utilities	ລະບົບສາທາລະນູປະໂພກ
+UTM	UTM
 Valid combinations, one per line: a, b	ການປະສົມປະສານທີ່ຖືກຕ້ອງ, ແຖວລະໜຶ່ງລາຍການ: a, b
 Valid expression · {n} matching rows	ນິພົດຖືກຕ້ອງ · ກົງກັບ {n} ແຖວ
 Valid: {n} of {of} features match	ຖືກຕ້ອງ: ກົງກັບ {n} ຈາກ {of} ຟີເຈີ
@@ -3848,10 +4114,15 @@ VN-2000 / TM-3 (Vietnam)	VN-2000 / TM-3 (ຫວຽດນາມ)
 VN-2000 / UTM zone 48N	VN-2000 / UTM ເຂດ 48N
 VN-2000 / UTM zone 49N	VN-2000 / UTM ເຂດ 49N
 Volume	ບໍລິມາດ
+Wait for the run to finish	ລໍຖ້າໃຫ້ການເຮັດວຽກສຳເລັດ
+Wait for the Script pane's run to finish	ລໍຖ້າໃຫ້ການເຮັດວຽກຂອງໜ້າຕ່າງສະຄຣິບສຳເລັດ
 Waiting for the browser…	ກຳລັງລໍຖ້າບຣາວເຊີ…
 Waiting for your answer	ກຳລັງລໍຖ້າຄຳຕອບຂອງທ່ານ
 Walk	ຍ່າງ
 Want more basemaps?	ຕ້ອງການແຜນທີ່ພື້ນຖານເພີ່ມເຕີມບໍ່?
+Warning	ຄຳເຕືອນ
+Warnings	ຄຳເຕືອນ
+Wavefront OBJ…	Wavefront OBJ…
 WCS	WCS
 WCS Coverage Request	ຄຳຮ້ອງຂໍພື້ນທີ່ປົກຄຸມ WCS
 Weather	ສະພາບອາກາດ
@@ -3869,6 +4140,7 @@ Web service (detected)	ການບໍລິການເວັບ (ກວດພ�
 Web Style	ຮູບແບບເທິງເວັບ
 Web Tile Layers	ຊັ້ນຂໍ້ມູນໄທລ໌ເທິງເວັບ
 Web Tool	ເຄື່ອງມືເທິງເວັບ
+Web-service logins last for this session only.	ການເຂົ້າສູ່ລະບົບເວັບເຊີວິສມີຜົນສະເພາະຮອບການໃຊ້ນີ້ເທົ່ານັ້ນ.
 Website	ເວັບໄຊ
 Weekly usage	ການນຳໃຊ້ປະຈຳອາທິດ
 Weights	ນ້ຳໜັກ
@@ -3877,10 +4149,12 @@ West	ຕາເວັນຕົກ
 WFS	WFS
 WGS 84 / Globe	WGS 84 / ໜ່ວຍໂລກ
 WGS 84 / Web Mercator	WGS 84 / Web Mercator
+What each slice or bar says beside it: its value, its share in percent, or both	ສິ່ງທີ່ແຕ່ລະສ່ວນ ຫຼື ແທ່ງສະແດງຢູ່ຂ້າງມັນ: ຄ່າ, ສ່ວນແບ່ງເປັນເປີເຊັນ, ຫຼື ທັງສອງ
 What RustGIS opens with: the World Atlas sample or a blank map.	ສິ່ງທີ່ RustGIS ຈະເປີດຂຶ້ນມາ: ຕົວຢ່າງ World Atlas ຫຼື ແຜນທີ່ຫວ່າງເປົ່າ.
 What RustGIS opens with: the World Atlas sample, a blank map, a project you choose, or the last project opened or saved.	ສິ່ງທີ່ RustGIS ຈະເປີດຂຶ້ນມາ: ຕົວຢ່າງ World Atlas, ແຜນທີ່ຫວ່າງເປົ່າ, ໂຄງການທີ່ທ່ານເລືອກ ຫຼື ໂຄງການຫຼ້າສຸດທີ່ເປີດ ຫຼື ບັນທຶກໄວ້.
 What to do, where to find it and why	ສິ່ງທີ່ຕ້ອງເຮັດ, ບ່ອນທີ່ຈະຊອກຫາ ແລະ ເຫດຜົນ
 What's near a point	ສິ່ງທີ່ຢູ່ໃກ້ຈຸດ
+What's new	ມີຫຍັງໃໝ່
 When a file holds several layers, choose the ones to add instead of adding them all.	ເມື່ອໄຟລ໌ໜຶ່ງບັນຈຸຫຼາຍຊັ້ນຂໍ້ມູນ, ໃຫ້ເລືອກຊັ້ນຂໍ້ມູນທີ່ຈະເພີ່ມແທນການເພີ່ມທັງໝົດ.
 When its place is taken, the label tries the other places round the point, corners first.	ເມື່ອບ່ອນນັ້ນຖືກຄອບຄອງແລ້ວ, ປ້າຍກຳກັບຈະພະຍາຍາມວາງຢູ່ຕຳແໜ່ງອື່ນອ້ອມຮອບຈຸດ ໂດຍເລີ່ມຈາກມຸມຕ່າງໆກ່ອນ.
 WHERE	WHERE
@@ -3894,6 +4168,8 @@ Where tools work	ຂອບເຂດທີ່ເຄື່ອງມືເຮັດ
 Whether the Select tool picks these layers' features on the map	ເຄື່ອງມືເລືອກຈະເລືອກເອົາຟີເຈີຂອງຊັ້ນຂໍ້ມູນເຫຼົ່ານີ້ເທິງແຜນທີ່ຫຼືບໍ່
 Whether the service is asked for one picture of the view or for tiles.	ການບໍລິການຈະຖືກຮ້ອງຂໍເປັນຮູບພາບດຽວຂອງມຸມມອງ ຫຼື ເປັນໄທລ໌.
 Which 5 countries have the largest GDP?	5 ປະເທດໃດທີ່ມີ GDP ຫຼາຍທີ່ສຸດ?
+While drawing, click two points on a feature's edge to follow the edge between them	ຂະນະແຕ້ມ, ກົດສອງຈຸດເທິງຂອບຂອງຟີເຈີເພື່ອຕິດຕາມຂອບລະຫວ່າງພວກມັນ
+While drawing, click two points on a feature's edge to follow the edge between them.	ຂະນະແຕ້ມ, ກົດສອງຈຸດເທິງຂອບຂອງຟີເຈີເພື່ອຕິດຕາມຂອບລະຫວ່າງພວກມັນ.
 While typing, shortcuts without Ctrl/⌘ are paused. First-person navigation keeps Escape, Home and Delete.	ໃນຂະນະທີ່ກຳລັງພິມ, ປຸ່ມລັດທີ່ບໍ່ມີ Ctrl/⌘ ຈະຖືກພັກໄວ້ຊົ່ວຄາວ. ການນຳທາງມຸມມອງບຸກຄົນທີໜຶ່ງຈະຮັກສາປຸ່ມ Escape, Home ແລະ Delete ໄວ້.
 White behind dark text, dark behind light.	ສີຂາວຢູ່ຫຼັງຂໍ້ຄວາມສີມືດ, ສີມືດຢູ່ຫຼັງຂໍ້ຄວາມສີສະຫວ່າງ.
 Whitebox and GeoLibre tools	ເຄື່ອງມື Whitebox ແລະ GeoLibre
@@ -3915,8 +4191,10 @@ WKT column	ຖັນ WKT
 WMS	WMS
 WMTS	WMTS
 Words	ຄຳສັບ
+Words in the command's id, such as layer. or export	ຄຳໃນ id ຂອງຄຳສັ່ງ, ເຊັ່ນ layer. ຫຼື export
 words in the name	ຄຳສັບໃນຊື່
 words to keep to (optional)	ຄຳສັບທີ່ຕ້ອງການຈຳກັດໄວ້ (ເລືອກໄດ້)
+Worked	ສຳເລັດ
 Workflow	ຂະບວນການເຮັດວຽກ
 Workflow Manager	ຕົວຈັດການຂະບວນການເຮັດວຽກ
 Workflows	ຂະບວນການເຮັດວຽກຕ່າງໆ
@@ -3942,7 +4220,11 @@ Worldview	ມຸມມອງໂລກ
 Wrap at	ຕັດແຖວທີ່
 Wrap length	ຄວາມຍາວຕັດແຖວ
 Write a plugin	ຂຽນປລັກອິນ
+Writes a separate two-vertex line for each consecutive vertex pair.	ສ້າງເສັ້ນສອງຈຸດຈອດແຍກຕ່າງຫາກສຳລັບແຕ່ລະຄູ່ຈຸດຈອດທີ່ຕິດກັນ.
+Writes every feature with its geometry made valid where it can be: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved. Features with a missing or non-finite coordinate anywhere, even in a hole, or left with no usable points or, for polygons, no area once repaired, are written without geometry. Other features too complex to check, or whose repair fails, are written unchanged. Says what was repaired in each.	ຂຽນທຸກຟີເຈີໂດຍເຮັດໃຫ້ເລຂາຄະນິດຖືກຕ້ອງເທົ່າທີ່ເຮັດໄດ້: ປິດວົງ, ລຶບຈຸດຈອດທີ່ຊ້ຳກັນ ແລະ ສ່ວນທີ່ເສື່ອມ, ແກ້ໄຂການຕັດກັນເອງ, ສ່ວນທີ່ຊ້ອນກັນ ແລະ ຮູທີ່ຢູ່ນອກເປືອກ. ຟີເຈີທີ່ມີພິກັດຂາດຫາຍ ຫຼື ບໍ່ຈຳກັດຢູ່ບ່ອນໃດກໍຕາມ, ແມ່ນແຕ່ໃນຮູ, ຫຼື ບໍ່ເຫຼືອຈຸດທີ່ໃຊ້ໄດ້ ຫຼື, ສຳລັບຮູບຫຼາຍແຈ, ບໍ່ມີພື້ນທີ່ຫຼັງສ້ອມແປງ, ຈະຖືກຂຽນໂດຍບໍ່ມີເລຂາຄະນິດ. ຟີເຈີອື່ນທີ່ຊັບຊ້ອນເກີນກວ່າຈະກວດສອບ, ຫຼື ສ້ອມແປງບໍ່ສຳເລັດ, ຈະຖືກຂຽນໂດຍບໍ່ປ່ຽນແປງ. ບອກວ່າໄດ້ສ້ອມແປງຫຍັງໃນແຕ່ລະອັນ.
+Writes one axis-aligned bounding rectangle per feature in stored longitude/latitude coordinates. Zero-area envelopes are skipped.	ຂຽນສີ່ຫຼ່ຽມຂອບເຂດທີ່ຂະໜານກັບແກນໜຶ່ງອັນຕໍ່ຟີເຈີ ໃນພິກັດ longitude/latitude ທີ່ເກັບໄວ້. ຂອບເຂດທີ່ມີພື້ນທີ່ສູນຈະຖືກຂ້າມ.
 Writes Sen's slope, the test's Z and p-value, and the slope where the trend is significant.	ບັນທຶກຄວາມຊັນຂອງ Sen, ຄ່າ Z ແລະ p-value ຂອງການທົດສອບ ລວມທັງຄວາມຊັນໃນສ່ວນທີ່ທ່າອ່ຽງມີໄນສຳຄັນ.
+Writes the features with invalid geometry, such as self-intersecting or unclosed rings, holes outside their shell or overlapping parts, and says what is wrong with each.	ຂຽນຟີເຈີທີ່ມີເລຂາຄະນິດບໍ່ຖືກຕ້ອງ, ເຊັ່ນ ວົງທີ່ຕັດກັນເອງ ຫຼື ບໍ່ປິດ, ຮູທີ່ຢູ່ນອກເປືອກ ຫຼື ສ່ວນທີ່ຊ້ອນກັນ, ແລະ ບອກວ່າແຕ່ລະອັນຜິດຫຍັງ.
 writing the copy failed unexpectedly	ການຂຽນສຳເນົາລົ້ມເຫຼວຢ່າງບໍ່ຄາດຄິດ
 X (mm)	X (ມມ)
 X column	ຖັນ X
@@ -3969,6 +4251,7 @@ Zarr URL is required	ຈຳເປັນຕ້ອງມີ URL ຂອງ Zarr
 Zarr Variables	ຕົວປ່ຽນ Zarr
 Zarr…	Zarr…
 Zonal Statistics	ສະຖິຕິຕາມເຂດ
+Zone Fields	ຟິວເຂດ
 Zone Polygons	ຮູບຫຼາຍແຈເຂດ
 Zoom	ຊູມ
 Zoom about the pointer	ຊູມອ້ອມຕົວຊີ້
@@ -4003,7 +4286,6 @@ Zoom To World	ຊູມໄປຫາທົ່ວໂລກ
 Zoom {z} · Bearing {b}° · Pitch {p}°	ຊູມ {z} · ທິດມຸມ {b}° · ມຸມອຽງ {p}°
 Zoom: the map's zoom level, as web maps count it. Bearing: the direction the top of the map faces, clockwise from north. Pitch: the tilt from looking straight down. Click to reset bearing and pitch.	ຊູມ: ລະດັບການຊູມຂອງແຜນທີ່ຕາມການຄິດໄລ່ຂອງແຜນທີ່ເວັບ. ທິດມຸມ: ທິດທາງທີ່ສ່ວນເທິງຂອງແຜນທີ່ຫັນໄປ ໂດຍວັດຕາມເຂັມໂມງຈາກທິດເໜືອ. ມຸມອຽງ: ຄວາມອຽງຈາກການແນມຊື່ລົງລຸ່ມ. ຄລິກເພື່ອຕັ້ງຄ່າທິດມຸມ ແລະ ມຸມອຽງຄືນໃໝ່.
 {agent} was stopped by you.	{agent} ຖືກຢຸດໂດຍທ່ານ.
-{id} changed since it was installed; install it again from the Plugin Manager.	{id} ມີການປ່ຽນແປງຕັ້ງແຕ່ຕິດຕັ້ງ; ກະລຸນາຕິດຕັ້ງໃໝ່ຈາກຕົວຈັດການປລັກອິນ.
 {names}: needs Node.js (npx) for its ACP adapter.	{names}: ຕ້ອງການ Node.js (npx) ສຳລັບຕົວແປງ ACP.
 {name} is larger than {mb} MB	{name} ໃຫຍ່ກວ່າ {mb} MB
 {name} runs as a program on your computer: it needs the desktop app or rustgis-cli.	{name} ເຮັດວຽກເປັນໂປຣແກຣມໃນຄອມພິວເຕີຂອງທ່ານ: ມັນຕ້ອງການແອັບເດັສທັອບ ຫຼື rustgis-cli.
@@ -4022,7 +4304,7 @@ Zoom: the map's zoom level, as web maps count it. Bearing: the direction the top
 — fps	— fps
 “{text}” isn't a {type} value: {field} is left as it was.	“{text}” ບໍ່ແມ່ນຄ່າປະເພດ {type}: {field} ຈະຖືກປະໄວ້ຄືເກົ່າ.
 ⌘+Enter	⌘+Enter
+⌘+Z	⌘+Z
 ⌘K	⌘K
 ▶ Simulate	▶ ຈຳລອງ
-Light	ແຈ້ງ
-Dark	ມືດ
+＋ Add field	＋ ເພີ່ມຟິວ

@@ -1,5 +1,7 @@
 # bn interface catalog: English<TAB>translation
  by 	 দ্বারা 
+"instance" must be a layer's instance number, not {value}	"instance" অবশ্যই একটি layer-এর instance নম্বর হতে হবে, {value} নয়
+"layer" must be a layer's id or name, not {value}	"layer" অবশ্যই একটি layer-এর id বা নাম হতে হবে, {value} নয়
 '{b}' isn't a bucket name	'{b}' কোনো bucket-এর নাম নয়
 '{text}' isn't a scale: type one such as 1:12,345	'{text}' কোনো স্কেল নয়: 1:12,345-এর মতো একটি স্কেল লিখুন
 (b4-b3)/(b4+b3)	(b4-b3)/(b4+b3)
@@ -440,6 +442,7 @@ Basemap	বেসম্যাপ
 Basemaps	বেসম্যাপসমূহ
 Basic authentication	বেসিক প্রমাণীকরণ
 Basin from hydrolocation	হাইড্রোলোকেশন থেকে অববাহিকা
+Batch Run	ব্যাচ রান
 Bearing	দিকনির্দেশ
 Before	আগে
 Before the event	ঘটনার আগে
@@ -778,6 +781,7 @@ Connected to {kind} {title}	{kind} {title}-এর সঙ্গে সংযু�
 Connecting to {url}…	{url}-এ সংযোগ করা হচ্ছে…
 Connection	সংযোগ
 Connection failure	সংযোগ ব্যর্থতা
+connection must be a saved web-service connection id (text)	connection অবশ্যই একটি সংরক্ষিত ওয়েব সার্ভিস সংযোগের id (টেক্সট) হতে হবে
 connection.new returned no id	connection.new কোনো ID ফেরত দেয়নি
 Connections	সংযোগসমূহ
 Connections you add are listed here	আপনি যে সংযোগ যোগ করেন সেগুলো এখানে তালিকাভুক্ত হবে
@@ -809,6 +813,7 @@ Copied the layout to the clipboard	লেআউট ক্লিপবোর্�
 Copied the layout to the clipboard at {dpi} dpi, not {wanted}: the page is too large for a larger image	লেআউট {wanted}-এর বদলে {dpi} dpi-তে ক্লিপবোর্ডে কপি করা হয়েছে: বড় ছবির জন্য পৃষ্ঠাটি খুব বড়
 Copied the map to the clipboard	মানচিত্র clipboard-এ কপি করা হয়েছে
 Copied {path}	{path} কপি করা হয়েছে
+Copied. The log cut its parameters short or took their secrets out, so it may not run as it ran.	কপি করা হয়েছে। লগ এর parameter ছেঁটে ফেলেছে বা এর গোপন তথ্য সরিয়ে দিয়েছে, তাই এটি আগের মতো না-ও চলতে পারে।
 Copies the (selected) features of a layer to a new layer.	একটি layer-এর (নির্বাচিত) feature-গুলো নতুন layer-এ কপি করে।
 Copy	কপি
 Copy / Cut / Paste features	Feature কপি / কাট / পেস্ট
@@ -834,6 +839,7 @@ Copy Layers	Layer-গুলো কপি করুন
 Copy Parameters	প্যারামিটার কপি করুন
 Copy Path	Path কপি করুন
 Copy Run As Code	Run as code কপি করুন
+Copy Script	স্ক্রিপ্ট কপি করুন
 Copy sign-in link	সাইন-ইন লিংক কপি করুন
 Copy the filtered history, including technical details	ফিল্টার করা ইতিহাস কপি করুন, প্রযুক্তিগত বিবরণসহ
 Copy the selected features (also as GeoJSON text).	নির্বাচিত feature-গুলো কপি করুন (GeoJSON text হিসেবেও)।
@@ -1693,6 +1699,7 @@ In Beyond	নির্ধারিত সীমার বাইরে
 In degrees.	ডিগ্রিতে।
 In memory	মেমরিতে
 In place	নিজস্ব স্থানে
+In place of the Script pane's script ({keys} brings it back)	Script pane-এর স্ক্রিপ্টের জায়গায় ({keys} সেটি ফিরিয়ে আনে)
 In place, holding a {w} × {h} overview	নিজস্ব স্থানে, একটি {w} × {h} ওভারভিউসহ
 In Progress	চলমান
 in progress	চলমান
@@ -1772,6 +1779,7 @@ Invert color scheme	রঙের scheme উল্টান
 Invert the selection.	নির্বাচন উল্টে দিন।
 IS	IS
 IS NULL	IS NULL
+It can't run in a script	এটি স্ক্রিপ্টে চলতে পারে না
 it changed since it was installed: install it again from the Plugin Manager	ইনস্টলের পর এটি বদলেছে: প্লাগইন ম্যানেজার থেকে আবার ইনস্টল করুন
 it connects to an address on the internet	ইন্টারনেটের কোনো ঠিকানায় সংযোগ করে
 It didn't open: {error}	এটি খোলেনি: {error}
@@ -2343,6 +2351,7 @@ no service or file links	service বা file-এর কোনো link নেই
 No services match your search.	আপনার অনুসন্ধানের সঙ্গে কোনো service মেলেনি।
 No standalone tables	কোনো স্বতন্ত্র table নেই
 No styles yet	এখনও কোনো style নেই
+No such tile layer	এমন কোনো tile layer নেই
 no system keychain in this build	এই build-এ কোনো system keychain নেই
 No tasks yet. Record one, or make one from your geoprocessing history with Analyze › Task.	এখনও কোনো task নেই। একটি রেকর্ড করুন, অথবা Analyze › Task দিয়ে geoprocessing history থেকে তৈরি করুন।
 no text graphic there	সেখানে কোনো text graphic নেই
@@ -2432,6 +2441,7 @@ Only a tile archive read from a file (PMTiles or MBTiles) can be repaired.	শ�
 Only cubes with data where the map is	শুধু মানচিত্র যেখানে আছে সেখানে ডেটা থাকা cube
 Only features matching this expression draw in {layer}.	শুধু এই expression-এর সঙ্গে মেলা feature {layer}-এ আঁকা হবে।
 Only selected polygons will be included in the output.	Output-এ শুধু নির্বাচিত polygon অন্তর্ভুক্ত হবে।
+Only the commands run in the project open now	শুধু এখন খোলা project-এ চালানো command
 Only the map's area	শুধু মানচিত্রের এলাকা
 Only where the map is	শুধু মানচিত্র যেখানে আছে
 Opacity	অস্বচ্ছতা
@@ -2452,6 +2462,7 @@ Open Diagnostics	ডায়াগনস্টিক খুলুন
 Open folder	ফোল্ডার খুলুন
 Open In Geoprocessing…	Geoprocessing-এ খুলুন…
 Open in ModelBuilder	ModelBuilder-এ খুলুন
+Open in Script Pane	Script pane-এ খুলুন
 Open in Tool	Tool-এ খুলুন
 Open Layout	Layout খুলুন
 Open ModelBuilder	ModelBuilder খুলুন
@@ -2652,7 +2663,7 @@ Plugins marked Not sandboxed run as programs on your computer instead, and can d
 Plugins run in a sandbox: they can't reach your files or the network, and they change the project only through RustGIS's own commands, within the permissions you accept.	Plugin sandbox-এ চলে: তারা আপনার file বা network-এ পৌঁছাতে পারে না এবং আপনার অনুমোদিত সীমার মধ্যে শুধু RustGIS-এর নিজস্ব command দিয়েই project বদলায়।
 PMTiles archive	PMTiles আর্কাইভ
 PNG frames (zip)	PNG ফ্রেম (zip)
-PNG image	PNG ছবি
+PNG image or GeoTIFF	PNG ছবি বা GeoTIFF
 Point	বিন্দু
 Point the selected layer at its file after the file moved or was renamed.	ফাইল সরানো বা নাম বদলানোর পর নির্বাচিত layer-কে তার ফাইলে নির্দেশ করুন।
 Points	বিন্দুসমূহ
@@ -3194,6 +3205,7 @@ Select a layer in the Layers pane	Layer pane-এ একটি layer নির্
 select a layer in the Layers pane first	আগে Layer pane-এ একটি layer নির্বাচন করুন
 Select a layer in the Layers pane.	Layer pane-এ একটি layer নির্বাচন করুন।
 Select a navigation method after tracing a point.	একটি বিন্দু trace করার পরে navigation পদ্ধতি নির্বাচন করুন।
+Select a raster or tile layer in the Layers pane first	আগে Layer pane-এ একটি রাস্টার বা tile layer নির্বাচন করুন
 Select All	সব নির্বাচন করুন
 Select an element to format it.	Format করতে একটি element নির্বাচন করুন।
 Select By\nAttributes	অ্যাট্রিবিউট অনুসারে\nনির্বাচন
@@ -3661,6 +3673,7 @@ The desktop app adds data cubes	Desktop app data cube যোগ করে
 The distance between two marks along the line	রেখা বরাবর দুটি মার্কের মধ্যে দূরত্ব
 The environment (AWS_ACCESS_KEY_ID…)	এনভায়রনমেন্ট (AWS_ACCESS_KEY_ID…)
 The features where the map is	মানচিত্র যেখানে আছে, সেখানকার feature
+The filter searches the first {n} of them; the service.add command adds any other by its name.	ফিল্টারটি এগুলোর প্রথম {n}টিতে খোঁজে; service.add command অন্য যেকোনোটিকে তার নাম দিয়ে যোগ করে।
 The first 1,000 entries; narrow it down a folder at a time.	প্রথম ১,০০০টি entry; একবারে একটি folder ধরে অনুসন্ধান সীমিত করুন।
 The first {n} are listed.	প্রথম {n}টি তালিকাভুক্ত।
 The first {n} are shown: search to narrow them.	প্রথম {n}টি দেখানো হয়েছে: তালিকা সীমিত করতে অনুসন্ধান করুন।
@@ -3688,6 +3701,7 @@ The layer's strokes	Layer-এর stroke
 the layout export failed unexpectedly	layout export অপ্রত্যাশিতভাবে ব্যর্থ হয়েছে
 The link doesn't say its STAC API: Find Items searches {api}	link-এ STAC API উল্লেখ নেই: Find Items {api}-তে অনুসন্ধান করে
 The list of plugins to browse. Leave it empty for the RustGIS plugin registry.	ব্রাউজ করার plugin-এর তালিকা। RustGIS plugin registry ব্যবহার করতে ফাঁকা রাখুন।
+The log cut it short or took its secrets out: it would run only in part	লগ এটি ছেঁটে ফেলেছে বা এর গোপন তথ্য সরিয়ে দিয়েছে: এটি শুধু আংশিকভাবে চলবে
 The longest a callout's line may be.	কলআউট রেখার সর্বোচ্চ দৈর্ঘ্য।
 The map at the left; the title, locator, legend, sources and reference in a panel at the right.	বামে মানচিত্র; শিরোনাম, লোকেটর, লেজেন্ড, উৎস ও রেফারেন্স ডানের একটি প্যানেলে।
 the map has no GeoPackage layer loaded for editing (Home › Add Data › Edit GeoPackage Table…)	মানচিত্রে সম্পাদনার জন্য লোড করা কোনো GeoPackage layer নেই (হোম › ডেটা যোগ করুন › GeoPackage টেবিল সম্পাদনা…)
@@ -3728,7 +3742,10 @@ the picture is too large to show	ছবিটি দেখানোর জন্
 the picture is too large to show, or isn't one	ছবিটি দেখানোর জন্য খুব বড়, অথবা এটি ছবি নয়
 the place lies outside the zone given	স্থানটি প্রদত্ত জোনের বাইরে
 The places leave this device for the public Valhalla server at {server}, run by FOSSGIS. Don't continue if your project is bound by data privacy or data sovereignty rules.	স্থানগুলো এই ডিভাইস ছেড়ে FOSSGIS-চালিত {server} public Valhalla server-এ যাবে। আপনার project-এ data privacy বা sovereignty-র নিয়ম থাকলে এগোবেন না।
-The plugin {id} wasn't loaded. Open Plugins › Plugin Manager to see it. {reason}	প্লাগইন {id} লোড হয়নি। দেখতে Plugin-সমূহ › প্লাগইন ম্যানেজার খুলুন। {reason}
+The plugin blocklist couldn't be downloaded ({error}); the last one read, if any, stays in force.	প্লাগইন blocklist ডাউনলোড করা যায়নি ({error}); সর্বশেষ পড়া blocklist, যদি থাকে, কার্যকর থাকবে।
+The plugin blocklist couldn't be read ({error}); the last one read, if any, stays in force.	প্লাগইন blocklist পড়া যায়নি ({error}); সর্বশেষ পড়া blocklist, যদি থাকে, কার্যকর থাকবে।
+The plugin {id} wasn't loaded (open Plugins › Plugin Manager to see it): {reason}.	প্লাগইন {id} লোড হয়নি (দেখতে Plugin-সমূহ › প্লাগইন ম্যানেজার খুলুন): {reason}।
+The plugin {id} wasn't loaded. Open Plugins › Plugin Manager to see it.	প্লাগইন {id} লোড হয়নি। দেখতে Plugin-সমূহ › প্লাগইন ম্যানেজার খুলুন।
 The portal's OAuth app	পোর্টালের OAuth app
 the presentation export failed unexpectedly	presentation export অপ্রত্যাশিতভাবে ব্যর্থ হয়েছে
 the preview failed unexpectedly	preview অপ্রত্যাশিতভাবে ব্যর্থ হয়েছে
@@ -3744,7 +3761,7 @@ The range is two numbers, low and high (0, 0.9)	Range-এ দুটি সংখ
 The raster's data couldn't be read.	Raster-এর data পড়া যায়নি।
 The raster's data couldn't be read: {error}	Raster-এর ডেটা পড়া যায়নি: {error}
 the recovery copy is incomplete	পুনরুদ্ধার কপি অসম্পূর্ণ
-the recovery copy is too large	পুনরুদ্ধার কপি অনেক বড়
+the recovery copy is too large (maximum {mib} MiB on this computer)	পুনরুদ্ধার কপি অনেক বড় (এই কম্পিউটারে সর্বোচ্চ {mib} MiB)
 the recovery copy isn't text	পুনরুদ্ধার কপি টেক্সট নয়
 the release isn't known	Release জানা নেই
 The reply reached its length limit.	উত্তরটি দৈর্ঘ্যের সীমায় পৌঁছেছে।
@@ -3759,6 +3776,7 @@ The saved password could not be used. Type a password to try again; check Rememb
 The saved S3 connection no longer matches this source.	সংরক্ষিত S3 সংযোগ আর এই source-এর সাথে মেলে না।
 The saved sign-in changed. Select your account again.	সংরক্ষিত সাইন-ইন বদলেছে। আবার account বেছে নিন।
 The scale the layer's symbol and label sizes are set for. At other scales they grow and shrink with the map, as on paper.	যে স্কেলের জন্য layer-এর প্রতীক ও label-এর আকার নির্ধারিত। অন্য স্কেলে কাগজের মতোই মানচিত্রের সাথে এগুলো বড় ও ছোট হয়।
+The script, for the Script pane	স্ক্রিপ্টটি, Script pane-এর জন্য
 The selected GeoPackage layer is no longer available; choose a layer	নির্বাচিত GeoPackage layer আর উপলব্ধ নয়; একটি layer বেছে নিন
 The server had a problem answering.	উত্তর দিতে server-এর সমস্যা হয়েছে।
 The server is limiting requests.	Server request সীমিত করছে।
@@ -3840,6 +3858,7 @@ This map's thumbnail, from the view.	view থেকে নেওয়া এই
 This platform does not report the system theme	এই প্ল্যাটফর্ম সিস্টেম থিম জানায় না
 This plugin can:	এই plugin পারে:
 This plugin runs as a program on your computer, outside RustGIS's sandbox. It can do anything you can: read and change your files, use the network and run other programs. Install it only if you trust its author.	এই plugin RustGIS sandbox-এর বাইরে আপনার কম্পিউটারে program হিসেবে চলে। এটি আপনার মতোই সব করতে পারে: file পড়া ও বদলানো, network ব্যবহার এবং অন্য program চালানো। শুধু লেখককে বিশ্বাস করলেই ইনস্টল করুন।
+This project	এই project
 This project uses a connection for {origin} that is not saved on this computer.	এই প্রজেক্ট {origin}-এর জন্য এমন একটি সংযোগ ব্যবহার করে যা এই কম্পিউটারে সংরক্ষিত নেই।
 This read was already started	এই পড়া আগেই শুরু হয়েছে
 This release has no installer for this computer: get it from the release page.	এই রিলিজে এই কম্পিউটারের জন্য কোনো ইনস্টলার নেই: release page থেকে নিন।
@@ -4096,6 +4115,7 @@ VN-2000 / UTM zone 48N	VN-2000 / UTM zone 48N
 VN-2000 / UTM zone 49N	VN-2000 / UTM zone 49N
 Volume	আয়তন
 Wait for the run to finish	রান শেষ হওয়া পর্যন্ত অপেক্ষা করুন
+Wait for the Script pane's run to finish	Script pane-এর রান শেষ হওয়া পর্যন্ত অপেক্ষা করুন
 Waiting for the browser…	Browser-এর জন্য অপেক্ষা করা হচ্ছে…
 Waiting for your answer	আপনার উত্তরের অপেক্ষায়
 Walk	হাঁটুন
@@ -4201,7 +4221,7 @@ Wrap at	যেখানে ভাঙবে
 Wrap length	ভাঙার দৈর্ঘ্য
 Write a plugin	Plugin লিখুন
 Writes a separate two-vertex line for each consecutive vertex pair.	প্রতিটি পরপর ভার্টেক্স জোড়ার জন্য আলাদা দুই-ভার্টেক্সের রেখা লেখে।
-Writes every feature with its geometry made valid: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved. Says what was repaired in each.	প্রতিটি ফিচারকে বৈধ জ্যামিতিসহ লেখে: রিং বন্ধ করা হয়, পুনরাবৃত্ত ভার্টেক্স ও অবক্ষয়িত অংশ বাদ দেওয়া হয়, স্ব-ছেদ, পরস্পর-আবৃত অংশ ও বাইরের রিংয়ের বাইরে থাকা গর্ত ঠিক করা হয়। প্রতিটিতে কী মেরামত হয়েছে তা জানায়।
+Writes every feature with its geometry made valid where it can be: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved. Features with a missing or non-finite coordinate anywhere, even in a hole, or left with no usable points or, for polygons, no area once repaired, are written without geometry. Other features too complex to check, or whose repair fails, are written unchanged. Says what was repaired in each.	প্রতিটি ফিচারকে যেখানে সম্ভব বৈধ জ্যামিতিসহ লেখে: রিং বন্ধ করা হয়, পুনরাবৃত্ত ভার্টেক্স ও অবক্ষয়িত অংশ বাদ দেওয়া হয়, স্ব-ছেদ, পরস্পর-আবৃত অংশ ও বাইরের রিংয়ের বাইরে থাকা গর্ত ঠিক করা হয়। যেসব ফিচারের কোথাও, এমনকি কোনো গর্তেও, কোনো স্থানাঙ্ক অনুপস্থিত বা অসীম (non-finite), অথবা মেরামতের পর কোনো ব্যবহারযোগ্য বিন্দু থাকে না বা পলিগনের ক্ষেত্রে কোনো ক্ষেত্রফল থাকে না, সেগুলো জ্যামিতি ছাড়া লেখা হয়। যাচাইয়ের জন্য অতিরিক্ত জটিল বা যেগুলোর মেরামত ব্যর্থ হয়, এমন অন্য ফিচার অপরিবর্তিত লেখা হয়। প্রতিটিতে কী মেরামত হয়েছে তা জানায়।
 Writes one axis-aligned bounding rectangle per feature in stored longitude/latitude coordinates. Zero-area envelopes are skipped.	সংরক্ষিত দ্রাঘিমাংশ/অক্ষাংশ স্থানাঙ্কে প্রতিটি ফিচারের জন্য একটি অক্ষ-সমান্তরাল সীমানা আয়তক্ষেত্র লেখে। শূন্য ক্ষেত্রফলের এনভেলপ বাদ দেওয়া হয়।
 Writes Sen's slope, the test's Z and p-value, and the slope where the trend is significant.	Sen-এর ঢাল, পরীক্ষার Z ও p-value, এবং trend তাৎপর্যপূর্ণ হলে সেই ঢাল লেখে।
 Writes the features with invalid geometry, such as self-intersecting or unclosed rings, holes outside their shell or overlapping parts, and says what is wrong with each.	অবৈধ জ্যামিতির ফিচার লেখে, যেমন স্ব-ছেদী বা খোলা রিং, বাইরের রিংয়ের বাইরে থাকা গর্ত বা পরস্পর-আবৃত অংশ, এবং প্রতিটিতে কী ভুল তা জানায়।

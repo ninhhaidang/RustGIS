@@ -1,5 +1,7 @@
 # ka interface catalog: English<TAB>translation
  by 	 ×
+"instance" must be a layer's instance number, not {value}	"instance" უნდა იყოს ფენის ეგზემპლარის ნომერი და არა {value}
+"layer" must be a layer's id or name, not {value}	"layer" უნდა იყოს ფენის id ან სახელი და არა {value}
 '{b}' isn't a bucket name	„{b}“ არ არის ბაკეტის სახელი
 '{text}' isn't a scale: type one such as 1:12,345	„{text}“ მასშტაბი არ არის: შეიყვანეთ, მაგალითად, 1:12,345
 (b4-b3)/(b4+b3)	(b4-b3)/(b4+b3)
@@ -440,6 +442,7 @@ Basemap	საბაზისო რუკა
 Basemaps	საბაზისო რუკები
 Basic authentication	საბაზისო ავთენტიფიკაცია
 Basin from hydrolocation	აუზი ჰიდროლოკაციიდან
+Batch Run	პაკეტური გაშვება
 Bearing	აზიმუტი
 Before	მანამდე
 Before the event	მოვლენამდე
@@ -778,6 +781,7 @@ Connected to {kind} {title}	დაკავშირებულია: {kind} {
 Connecting to {url}…	{url}-თან დაკავშირება…
 Connection	კავშირი
 Connection failure	კავშირის შეცდომა
+connection must be a saved web-service connection id (text)	connection უნდა იყოს შენახული ვებსერვისის კავშირის id (ტექსტი)
 connection.new returned no id	connection.new-მა იდენტიფიკატორი არ დააბრუნა
 Connections	კავშირები
 Connections you add are listed here	თქვენ მიერ დამატებული კავშირები აქ ჩამოითვლება
@@ -809,6 +813,7 @@ Copied the layout to the clipboard	განლაგება დაკოპ�
 Copied the layout to the clipboard at {dpi} dpi, not {wanted}: the page is too large for a larger image	განლაგება დაკოპირდა გაცვლის ბუფერში {dpi} dpi-ით და არა {wanted}-ით: გვერდი ძალიან დიდია უფრო დიდი გამოსახულებისთვის
 Copied the map to the clipboard	რუკა დაკოპირდა გაცვლის ბუფერში
 Copied {path}	დაკოპირდა {path}
+Copied. The log cut its parameters short or took their secrets out, so it may not run as it ran.	დაკოპირდა. ჟურნალმა მისი პარამეტრები შეამოკლა ან საიდუმლოებები ამოიღო, ამიტომ შეიძლება ისე ვერ გაეშვას, როგორც გაეშვა.
 Copies the (selected) features of a layer to a new layer.	ფენის (მონიშნული) ობიექტების ახალ ფენაში კოპირება.
 Copy	კოპირება
 Copy / Cut / Paste features	ობიექტების კოპირება / ამოჭრა / ჩასმა
@@ -834,6 +839,7 @@ Copy Layers	ფენების კოპირება
 Copy Parameters	პარამეტრების კოპირება
 Copy Path	მისამართის კოპირება
 Copy Run As Code	გაშვების კოპირება კოდად
+Copy Script	სკრიპტის კოპირება
 Copy sign-in link	შესვლის ბმულის კოპირება
 Copy the filtered history, including technical details	გაფილტრული ისტორიის კოპირება ტექნიკური დეტალების ჩათვლით
 Copy the selected features (also as GeoJSON text).	მონიშნული ობიექტების კოპირება (GeoJSON ტექსტადაც).
@@ -1693,6 +1699,7 @@ In Beyond	შორს, მის მიღმა
 In degrees.	გრადუსებში.
 In memory	მეხსიერებაში
 In place	ადგილზე
+In place of the Script pane's script ({keys} brings it back)	სკრიპტის პანელის სკრიპტის ნაცვლად ({keys} მას დააბრუნებს)
 In place, holding a {w} × {h} overview	ადგილზე, {w} × {h} მიმოხილვით
 In Progress	მიმდინარეობს
 in progress	მიმდინარეობს
@@ -1772,6 +1779,7 @@ Invert color scheme	ფერთა სქემის ინვერსია
 Invert the selection.	მონიშვნის ინვერსია.
 IS	IS
 IS NULL	IS NULL
+It can't run in a script	მისი სკრიპტში გაშვება შეუძლებელია
 it changed since it was installed: install it again from the Plugin Manager	ინსტალაციის შემდეგ შეიცვალა: ხელახლა დააინსტალირეთ დანამატების მენეჯერიდან
 it connects to an address on the internet	ის უკავშირდება ინტერნეტის მისამართს
 It didn't open: {error}	ვერ გაიხსნა: {error}
@@ -2343,6 +2351,7 @@ no service or file links	სერვისის ან ფაილის ბ�
 No services match your search.	თქვენს ძიებას არცერთი სერვისი არ შეესაბამება.
 No standalone tables	დამოუკიდებელი ცხრილები არ არის
 No styles yet	სტილები ჯერ არ არის
+No such tile layer	ასეთი ფილების ფენა არ არსებობს
 no system keychain in this build	ამ ანაწყობში სისტემის გასაღებების საცავი არ არის
 No tasks yet. Record one, or make one from your geoprocessing history with Analyze › Task.	ამოცანები ჯერ არ არის. ჩაწერეთ ერთი, ან შექმენით გეოდამუშავების ისტორიიდან: გაანალიზება › ამოცანა.
 no text graphic there	იქ ტექსტური გრაფიკა არ არის
@@ -2432,6 +2441,7 @@ Only a tile archive read from a file (PMTiles or MBTiles) can be repaired.	შ�
 Only cubes with data where the map is	მხოლოდ კუბები მონაცემებით რუკის არეალში
 Only features matching this expression draw in {layer}.	{layer}-ში მხოლოდ ამ გამოსახულების შესაბამისი ობიექტები იხატება.
 Only selected polygons will be included in the output.	გამოსავალში მხოლოდ მონიშნული პოლიგონები შევა.
+Only the commands run in the project open now	მხოლოდ ახლა გახსნილ პროექტში გაშვებული ბრძანებები
 Only the map's area	მხოლოდ რუკის არეალი
 Only where the map is	მხოლოდ რუკის არეალში
 Opacity	გამჭვირვალობა
@@ -2452,6 +2462,7 @@ Open Diagnostics	დიაგნოსტიკის გახსნა
 Open folder	საქაღალდის გახსნა
 Open In Geoprocessing…	გეოდამუშავებაში გახსნა…
 Open in ModelBuilder	ModelBuilder-ში გახსნა
+Open in Script Pane	სკრიპტის პანელში გახსნა
 Open in Tool	ხელსაწყოში გახსნა
 Open Layout	განლაგების გახსნა
 Open ModelBuilder	ModelBuilder-ის გახსნა
@@ -2652,7 +2663,7 @@ Plugins marked Not sandboxed run as programs on your computer instead, and can d
 Plugins run in a sandbox: they can't reach your files or the network, and they change the project only through RustGIS's own commands, within the permissions you accept.	დანამატები იზოლირებულ გარემოში მუშაობს: ისინი ვერ წვდებიან თქვენს ფაილებსა და ქსელს. პროექტს ცვლიან მხოლოდ RustGIS-ის საკუთარი ბრძანებებით, თქვენ მიერ მიღებული ნებართვების ფარგლებში.
 PMTiles archive	PMTiles არქივი
 PNG frames (zip)	PNG კადრები (zip)
-PNG image	PNG სურათი
+PNG image or GeoTIFF	PNG სურათი ან GeoTIFF
 Point	წერტილი
 Point the selected layer at its file after the file moved or was renamed.	მონიშნული ფენის მიმართვა თავის ფაილზე, ფაილის გადატანის ან გადარქმევის შემდეგ.
 Points	წერტილები
@@ -3194,6 +3205,7 @@ Select a layer in the Layers pane	აირჩიეთ ფენა ფენ�
 select a layer in the Layers pane first	ჯერ აირჩიეთ ფენა ფენების პანელში
 Select a layer in the Layers pane.	აირჩიეთ ფენა ფენების პანელში.
 Select a navigation method after tracing a point.	წერტილის კვლევის შემდეგ აირჩიეთ ნავიგაციის მეთოდი.
+Select a raster or tile layer in the Layers pane first	ჯერ აირჩიეთ რასტრული ან ფილების ფენა ფენების პანელში
 Select All	ყველას მონიშვნა
 Select an element to format it.	დასაფორმატებლად აირჩიეთ ელემენტი.
 Select By\nAttributes	მონიშვნა\nატრიბუტებით
@@ -3661,6 +3673,7 @@ The desktop app adds data cubes	მონაცემთა კუბებს �
 The distance between two marks along the line	მანძილი ორ ნიშანს შორის ხაზის გასწვრივ
 The environment (AWS_ACCESS_KEY_ID…)	გარემო (AWS_ACCESS_KEY_ID…)
 The features where the map is	ობიექტები რუკის არეალში
+The filter searches the first {n} of them; the service.add command adds any other by its name.	ფილტრი ეძებს მათგან პირველ {n}-ში; service.add ბრძანება ნებისმიერ სხვას მისი სახელით ამატებს.
 The first 1,000 entries; narrow it down a folder at a time.	პირველი 1,000 ჩანაწერი; დააზუსტეთ თითო საქაღალდით.
 The first {n} are listed.	ჩამოთვლილია პირველი {n}.
 The first {n} are shown: search to narrow them.	ნაჩვენებია პირველი {n}: შესამცირებლად გამოიყენეთ ძიება.
@@ -3688,6 +3701,7 @@ The layer's strokes	ფენის შტრიხები
 the layout export failed unexpectedly	განლაგების ექსპორტი მოულოდნელად ჩავარდა
 The link doesn't say its STAC API: Find Items searches {api}	ბმული არ მიუთითებს თავის STAC API-ს: „ელემენტების პოვნა“ ეძებს {api}-ში
 The list of plugins to browse. Leave it empty for the RustGIS plugin registry.	დანამატების სია დასათვალიერებლად. დატოვეთ ცარიელი RustGIS-ის დანამატების რეესტრისთვის.
+The log cut it short or took its secrets out: it would run only in part	ჟურნალმა ის შეამოკლა ან საიდუმლოებები ამოიღო: ის მხოლოდ ნაწილობრივ გაეშვება
 The longest a callout's line may be.	მიმთითებელი ხაზის მაქსიმალური სიგრძე.
 The map at the left; the title, locator, legend, sources and reference in a panel at the right.	რუკა მარცხნივ; სათაური, ლოკატორი, ლეგენდა, წყაროები და მითითება მარჯვენა პანელში.
 the map has no GeoPackage layer loaded for editing (Home › Add Data › Edit GeoPackage Table…)	რუკას არ აქვს რედაქტირებისთვის ჩატვირთული GeoPackage ფენა (საწყისი › მონაცემების დამატება › GeoPackage-ის ცხრილის რედაქტირება…)
@@ -3728,7 +3742,10 @@ the picture is too large to show	სურათი საჩვენებლ�
 the picture is too large to show, or isn't one	სურათი საჩვენებლად ძალიან დიდია ან სურათი არ არის
 the place lies outside the zone given	ადგილი მოცემული ზონის გარეთაა
 The places leave this device for the public Valhalla server at {server}, run by FOSSGIS. Don't continue if your project is bound by data privacy or data sovereignty rules.	ადგილები ამ მოწყობილობიდან გაიგზავნება საჯარო Valhalla სერვერზე მისამართით {server}, რომელსაც FOSSGIS მართავს. ნუ გააგრძელებთ, თუ თქვენს პროექტზე მონაცემთა კონფიდენციალურობის ან მონაცემთა სუვერენიტეტის წესები ვრცელდება.
-The plugin {id} wasn't loaded. Open Plugins › Plugin Manager to see it. {reason}	დანამატი {id} არ ჩაიტვირთა. სანახავად გახსენით დანამატები › დანამატების მენეჯერი. {reason}
+The plugin blocklist couldn't be downloaded ({error}); the last one read, if any, stays in force.	დანამატების შავი სიის ჩამოტვირთვა ვერ მოხერხდა ({error}); ბოლოს წაკითხული სია, თუ არსებობს, ძალაში რჩება.
+The plugin blocklist couldn't be read ({error}); the last one read, if any, stays in force.	დანამატების შავი სიის წაკითხვა ვერ მოხერხდა ({error}); ბოლოს წაკითხული სია, თუ არსებობს, ძალაში რჩება.
+The plugin {id} wasn't loaded (open Plugins › Plugin Manager to see it): {reason}.	დანამატი {id} არ ჩაიტვირთა (სანახავად გახსენით დანამატები › დანამატების მენეჯერი): {reason}.
+The plugin {id} wasn't loaded. Open Plugins › Plugin Manager to see it.	დანამატი {id} არ ჩაიტვირთა. სანახავად გახსენით დანამატები › დანამატების მენეჯერი.
 The portal's OAuth app	პორტალის OAuth აპი
 the presentation export failed unexpectedly	პრეზენტაციის ექსპორტი მოულოდნელად ჩავარდა
 the preview failed unexpectedly	გადახედვა მოულოდნელად ჩავარდა
@@ -3744,7 +3761,7 @@ The range is two numbers, low and high (0, 0.9)	დიაპაზონი ო�
 The raster's data couldn't be read.	რასტრის მონაცემების წაკითხვა ვერ მოხერხდა.
 The raster's data couldn't be read: {error}	რასტრის მონაცემების წაკითხვა ვერ მოხერხდა: {error}
 the recovery copy is incomplete	აღდგენის ასლი არასრულია
-the recovery copy is too large	აღდგენის ასლი ძალიან დიდია
+the recovery copy is too large (maximum {mib} MiB on this computer)	აღდგენის ასლი ძალიან დიდია (ამ კომპიუტერზე მაქსიმუმ {mib} MiB)
 the recovery copy isn't text	აღდგენის ასლი ტექსტი არ არის
 the release isn't known	გამოშვება უცნობია
 The reply reached its length limit.	პასუხმა სიგრძის ლიმიტს მიაღწია.
@@ -3759,6 +3776,7 @@ The saved password could not be used. Type a password to try again; check Rememb
 The saved S3 connection no longer matches this source.	შენახული S3 კავშირი აღარ შეესაბამება ამ წყაროს.
 The saved sign-in changed. Select your account again.	შენახული შესვლა შეიცვალა. ხელახლა აირჩიეთ თქვენი ანგარიში.
 The scale the layer's symbol and label sizes are set for. At other scales they grow and shrink with the map, as on paper.	მასშტაბი, რომლისთვისაც დაყენებულია ფენის სიმბოლოებისა და წარწერების ზომები. სხვა მასშტაბებზე ისინი რუკასთან ერთად იზრდება და მცირდება, როგორც ქაღალდზე.
+The script, for the Script pane	სკრიპტი, სკრიპტის პანელისთვის
 The selected GeoPackage layer is no longer available; choose a layer	მონიშნული GeoPackage ფენა აღარ არის ხელმისაწვდომი; აირჩიეთ ფენა
 The server had a problem answering.	სერვერს პასუხისას პრობლემა შეექმნა.
 The server is limiting requests.	სერვერი მოთხოვნებს ზღუდავს.
@@ -3840,6 +3858,7 @@ This map's thumbnail, from the view.	ამ რუკის მინიატ�
 This platform does not report the system theme	ეს პლატფორმა არ აცნობებს სისტემის თემას
 This plugin can:	ამ დანამატს შეუძლია:
 This plugin runs as a program on your computer, outside RustGIS's sandbox. It can do anything you can: read and change your files, use the network and run other programs. Install it only if you trust its author.	ეს დანამატი მუშაობს როგორც პროგრამა თქვენს კომპიუტერზე, RustGIS-ის იზოლირებული გარემოს გარეთ. მას შეუძლია ყველაფერი, რაც თქვენ შეგიძლიათ: თქვენი ფაილების წაკითხვა და შეცვლა, ქსელის გამოყენება და სხვა პროგრამების გაშვება. დააინსტალირეთ მხოლოდ მაშინ, თუ მის ავტორს ენდობით.
+This project	ეს პროექტი
 This project uses a connection for {origin} that is not saved on this computer.	ეს პროექტი იყენებს კავშირს {origin}-ისთვის, რომელიც ამ კომპიუტერზე შენახული არ არის.
 This read was already started	ეს წაკითხვა უკვე დაწყებულია
 This release has no installer for this computer: get it from the release page.	ამ გამოშვებას ამ კომპიუტერისთვის ინსტალატორი არ აქვს: ჩამოტვირთეთ გამოშვების გვერდიდან.
@@ -4096,6 +4115,7 @@ VN-2000 / UTM zone 48N	VN-2000 / UTM zone 48N
 VN-2000 / UTM zone 49N	VN-2000 / UTM zone 49N
 Volume	მოცულობა
 Wait for the run to finish	დაელოდეთ გაშვების დასრულებას
+Wait for the Script pane's run to finish	დაელოდეთ სკრიპტის პანელის გაშვების დასრულებას
 Waiting for the browser…	ბრაუზერის მოლოდინი…
 Waiting for your answer	ელოდება თქვენს პასუხს
 Walk	სიარული
@@ -4201,7 +4221,7 @@ Wrap at	გადატანა აქ
 Wrap length	გადატანის სიგრძე
 Write a plugin	დანამატის დაწერა
 Writes a separate two-vertex line for each consecutive vertex pair.	წერს ცალკე ორწვეროიან ხაზს წვეროების თითოეული მიმდევრობითი წყვილისთვის.
-Writes every feature with its geometry made valid: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved. Says what was repaired in each.	წერს ყველა ობიექტს ვალიდური გეომეტრიით: რგოლები იკვრება, განმეორებადი წვეროები და გადაგვარებული ნაწილები ცილდება, თვითგადაკვეთები, გადაფარული ნაწილები და გარსის გარეთ მდებარე ხვრელები სწორდება. თითოეულში აღნიშნავს, რა შეკეთდა.
+Writes every feature with its geometry made valid where it can be: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved. Features with a missing or non-finite coordinate anywhere, even in a hole, or left with no usable points or, for polygons, no area once repaired, are written without geometry. Other features too complex to check, or whose repair fails, are written unchanged. Says what was repaired in each.	წერს ყველა ობიექტს ვალიდური გეომეტრიით, სადაც ეს შესაძლებელია: რგოლები იკვრება, განმეორებადი წვეროები და გადაგვარებული ნაწილები ცილდება, თვითგადაკვეთები, გადაფარული ნაწილები და გარსის გარეთ მდებარე ხვრელები სწორდება. ობიექტები, რომელთაც სადმე, თუნდაც ხვრელში, აკლიათ კოორდინატი ან აქვთ არასასრული კოორდინატი, ან შეკეთების შემდეგ არ რჩებათ გამოსადეგი წერტილები ან, პოლიგონების შემთხვევაში, ფართობი, ჩაიწერება გეომეტრიის გარეშე. სხვა ობიექტები, რომლებიც შესამოწმებლად ზედმეტად რთულია ან რომელთა შეკეთებაც ვერ ხერხდება, ჩაიწერება უცვლელად. თითოეულში აღნიშნავს, რა შეკეთდა.
 Writes one axis-aligned bounding rectangle per feature in stored longitude/latitude coordinates. Zero-area envelopes are skipped.	წერს ღერძების პარალელურ ერთ მომცველ მართკუთხედს თითოეული ობიექტისთვის შენახულ გრძედ/განედ კოორდინატებში. ნულოვანი ფართობის მომცველები გამოტოვებულია.
 Writes Sen's slope, the test's Z and p-value, and the slope where the trend is significant.	ჩაწერს სენის დახრილობას, ტესტის Z-სა და p-მნიშვნელობას, და დახრილობას იქ, სადაც ტრენდი მნიშვნელოვანია.
 Writes the features with invalid geometry, such as self-intersecting or unclosed rings, holes outside their shell or overlapping parts, and says what is wrong with each.	წერს არავალიდური გეომეტრიის მქონე ობიექტებს, მაგალითად თვითგადამკვეთი ან შეუკრავი რგოლებით, გარსის გარეთ ხვრელებით ან გადაფარული ნაწილებით, და აღნიშნავს, რა არის თითოეულში არასწორი.

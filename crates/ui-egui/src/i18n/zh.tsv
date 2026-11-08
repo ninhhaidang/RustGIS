@@ -1,5 +1,7 @@
 # zh interface catalog: English<TAB>translation
  by 	 与
+"instance" must be a layer's instance number, not {value}	"instance" 必须是图层的实例编号，而不是 {value}
+"layer" must be a layer's id or name, not {value}	"layer" 必须是图层的 ID 或名称，而不是 {value}
 '{b}' isn't a bucket name	“{b}”不是有效的存储桶名称
 '{text}' isn't a scale: type one such as 1:12,345	“{text}”不是比例尺：请输入类似 1:12,345 的值
 (b4-b3)/(b4+b3)	(b4-b3)/(b4+b3)
@@ -440,6 +442,7 @@ Basemap	底图
 Basemaps	底图
 Basic authentication	基本身份验证
 Basin from hydrolocation	由水文位置获取流域
+Batch Run	批量运行
 Bearing	方位角
 Before	之前
 Before the event	事件之前
@@ -778,6 +781,7 @@ Connected to {kind} {title}	已连接到 {kind} {title}
 Connecting to {url}…	正在连接到 {url}…
 Connection	连接
 Connection failure	连接失败
+connection must be a saved web-service connection id (text)	connection 必须是已保存的 Web 服务连接 ID（文本）
 connection.new returned no id	connection.new 未返回 id
 Connections	连接
 Connections you add are listed here	你添加的连接将列在此处
@@ -809,6 +813,7 @@ Copied the layout to the clipboard	已将布局复制到剪贴板
 Copied the layout to the clipboard at {dpi} dpi, not {wanted}: the page is too large for a larger image	已以 {dpi} dpi（而非 {wanted} dpi）将布局复制到剪贴板：页面太大，无法生成更大的图像
 Copied the map to the clipboard	已将地图复制到剪贴板
 Copied {path}	已复制 {path}
+Copied. The log cut its parameters short or took their secrets out, so it may not run as it ran.	已复制。日志截断了其参数或移除了其中的密钥，因此它可能无法按原样运行。
 Copies the (selected) features of a layer to a new layer.	将图层的（所选）要素复制到新图层。
 Copy	复制
 Copy / Cut / Paste features	复制/剪切/粘贴要素
@@ -834,6 +839,7 @@ Copy Layers	复制图层
 Copy Parameters	复制参数
 Copy Path	复制路径
 Copy Run As Code	将运行复制为代码
+Copy Script	复制脚本
 Copy sign-in link	复制登录链接
 Copy the filtered history, including technical details	复制筛选后的历史记录，包括技术详细信息
 Copy the selected features (also as GeoJSON text).	复制所选要素（同时作为 GeoJSON 文本）。
@@ -1693,6 +1699,7 @@ In Beyond	放大超过
 In degrees.	以度为单位。
 In memory	内存中
 In place	原位
+In place of the Script pane's script ({keys} brings it back)	替换脚本窗格中的脚本（按 {keys} 可恢复）
 In place, holding a {w} × {h} overview	原位，保留 {w} × {h} 概视图
 In Progress	进行中
 in progress	进行中
@@ -1772,6 +1779,7 @@ Invert color scheme	反转配色方案
 Invert the selection.	反转选择。
 IS	IS
 IS NULL	IS NULL
+It can't run in a script	无法在脚本中运行
 it changed since it was installed: install it again from the Plugin Manager	安装后已被更改：请从插件管理器重新安装
 it connects to an address on the internet	它会连接到互联网上的地址
 It didn't open: {error}	未能打开：{error}
@@ -2343,6 +2351,7 @@ no service or file links	没有服务或文件链接
 No services match your search.	没有与搜索匹配的服务。
 No standalone tables	无独立表
 No styles yet	暂无样式
+No such tile layer	没有此瓦片图层
 no system keychain in this build	此版本中没有系统钥匙串
 No tasks yet. Record one, or make one from your geoprocessing history with Analyze › Task.	尚无任务。请录制一个，或通过“分析 › 任务”从地理处理历史记录创建一个。
 no text graphic there	该处没有文本图形
@@ -2432,6 +2441,7 @@ Only a tile archive read from a file (PMTiles or MBTiles) can be repaired.	只�
 Only cubes with data where the map is	仅限地图所在范围有数据的立方体
 Only features matching this expression draw in {layer}.	只有与此表达式匹配的要素才会在 {layer} 中绘制。
 Only selected polygons will be included in the output.	输出中仅包含选中的多边形。
+Only the commands run in the project open now	仅显示在当前打开的项目中运行的命令
 Only the map's area	仅限地图范围
 Only where the map is	仅限地图所在范围
 Opacity	不透明度
@@ -2452,6 +2462,7 @@ Open Diagnostics	打开诊断信息
 Open folder	打开文件夹
 Open In Geoprocessing…	在地理处理中打开…
 Open in ModelBuilder	在模型构建器中打开
+Open in Script Pane	在脚本窗格中打开
 Open in Tool	在工具中打开
 Open Layout	打开布局
 Open ModelBuilder	打开模型构建器
@@ -2652,7 +2663,7 @@ Plugins marked Not sandboxed run as programs on your computer instead, and can d
 Plugins run in a sandbox: they can't reach your files or the network, and they change the project only through RustGIS's own commands, within the permissions you accept.	插件在沙箱中运行：它们无法访问您的文件或网络，只能在您接受的权限范围内通过 RustGIS 自身的命令更改工程。
 PMTiles archive	PMTiles 归档
 PNG frames (zip)	PNG 帧（zip）
-PNG image	PNG 图像
+PNG image or GeoTIFF	PNG 图像或 GeoTIFF
 Point	点
 Point the selected layer at its file after the file moved or was renamed.	在文件移动或重命名后，将所选图层重新指向其文件。
 Points	点
@@ -3194,6 +3205,7 @@ Select a layer in the Layers pane	在图层窗格中选择一个图层
 select a layer in the Layers pane first	请先在图层窗格中选择一个图层
 Select a layer in the Layers pane.	在图层窗格中选择一个图层。
 Select a navigation method after tracing a point.	追踪一个点后，选择导航方法。
+Select a raster or tile layer in the Layers pane first	请先在图层窗格中选择一个栅格图层或瓦片图层
 Select All	全选
 Select an element to format it.	选择一个元素以设置其格式。
 Select By\nAttributes	按属性\n选择
@@ -3661,6 +3673,7 @@ The desktop app adds data cubes	桌面应用可添加数据立方体
 The distance between two marks along the line	沿线两个标记之间的距离
 The environment (AWS_ACCESS_KEY_ID…)	环境变量（AWS_ACCESS_KEY_ID…）
 The features where the map is	地图所在范围内的要素
+The filter searches the first {n} of them; the service.add command adds any other by its name.	筛选仅搜索其中前 {n} 个；service.add 命令可按名称添加其他任意一个。
 The first 1,000 entries; narrow it down a folder at a time.	前 1,000 个条目；请逐级进入文件夹缩小范围。
 The first {n} are listed.	已列出前 {n} 个。
 The first {n} are shown: search to narrow them.	仅显示前 {n} 个：请搜索以缩小范围。
@@ -3688,6 +3701,7 @@ The layer's strokes	图层的描边
 the layout export failed unexpectedly	布局导出意外失败
 The link doesn't say its STAC API: Find Items searches {api}	该链接未注明其 STAC API：“查找项目”将搜索 {api}
 The list of plugins to browse. Leave it empty for the RustGIS plugin registry.	要浏览的插件列表。留空则使用 RustGIS 插件库。
+The log cut it short or took its secrets out: it would run only in part	日志截断了它或移除了其中的密钥：它只能部分运行
 The longest a callout's line may be.	引线的最大长度。
 The map at the left; the title, locator, legend, sources and reference in a panel at the right.	地图在左侧；标题、定位器、图例、来源和参考信息在右侧面板中。
 the map has no GeoPackage layer loaded for editing (Home › Add Data › Edit GeoPackage Table…)	地图中没有已加载以供编辑的 GeoPackage 图层（主页 › 添加数据 › 编辑 GeoPackage 表…）
@@ -3728,7 +3742,10 @@ the picture is too large to show	图片太大，无法显示
 the picture is too large to show, or isn't one	图片太大无法显示，或不是图片
 the place lies outside the zone given	该位置位于给定分带之外
 The places leave this device for the public Valhalla server at {server}, run by FOSSGIS. Don't continue if your project is bound by data privacy or data sovereignty rules.	这些地点将离开本设备，发送到由 FOSSGIS 运营的公共 Valhalla 服务器 {server}。如果你的工程受数据隐私或数据主权规定约束，请勿继续。
-The plugin {id} wasn't loaded. Open Plugins › Plugin Manager to see it. {reason}	插件 {id} 未加载。请打开“插件 › 插件管理器”查看。{reason}
+The plugin blocklist couldn't be downloaded ({error}); the last one read, if any, stays in force.	无法下载插件阻止列表（{error}）；上次读取的列表（如有）仍然有效。
+The plugin blocklist couldn't be read ({error}); the last one read, if any, stays in force.	无法读取插件阻止列表（{error}）；上次读取的列表（如有）仍然有效。
+The plugin {id} wasn't loaded (open Plugins › Plugin Manager to see it): {reason}.	插件 {id} 未加载（请打开“插件 › 插件管理器”查看）：{reason}。
+The plugin {id} wasn't loaded. Open Plugins › Plugin Manager to see it.	插件 {id} 未加载。请打开“插件 › 插件管理器”查看。
 The portal's OAuth app	门户的 OAuth 应用
 the presentation export failed unexpectedly	演示文稿导出意外失败
 the preview failed unexpectedly	预览意外失败
@@ -3744,7 +3761,7 @@ The range is two numbers, low and high (0, 0.9)	范围为两个数字，下限�
 The raster's data couldn't be read.	无法读取栅格数据。
 The raster's data couldn't be read: {error}	无法读取栅格数据：{error}
 the recovery copy is incomplete	恢复副本不完整
-the recovery copy is too large	恢复副本过大
+the recovery copy is too large (maximum {mib} MiB on this computer)	恢复副本过大（在此计算机上最大为 {mib} MiB）
 the recovery copy isn't text	恢复副本不是文本
 the release isn't known	未知的发布版本
 The reply reached its length limit.	回复已达到长度上限。
@@ -3759,6 +3776,7 @@ The saved password could not be used. Type a password to try again; check Rememb
 The saved S3 connection no longer matches this source.	已保存的 S3 连接与此数据源不再匹配。
 The saved sign-in changed. Select your account again.	保存的登录信息已更改。请重新选择账户。
 The scale the layer's symbol and label sizes are set for. At other scales they grow and shrink with the map, as on paper.	图层符号和标注大小所对应的比例尺。在其他比例尺下，它们会像纸质地图一样随地图放大和缩小。
+The script, for the Script pane	脚本，用于脚本窗格
 The selected GeoPackage layer is no longer available; choose a layer	所选 GeoPackage 图层已不可用；请选择图层
 The server had a problem answering.	服务器响应时出现问题。
 The server is limiting requests.	服务器正在限制请求。
@@ -3840,6 +3858,7 @@ This map's thumbnail, from the view.	此地图的缩略图，来自视图。
 This platform does not report the system theme	此平台不报告系统主题
 This plugin can:	此插件可以：
 This plugin runs as a program on your computer, outside RustGIS's sandbox. It can do anything you can: read and change your files, use the network and run other programs. Install it only if you trust its author.	此插件作为程序在您的计算机上运行，位于 RustGIS 沙箱之外。它能做您能做的任何事：读取和更改您的文件、使用网络以及运行其他程序。请仅在信任其作者时安装。
+This project	此项目
 This project uses a connection for {origin} that is not saved on this computer.	此工程使用了一个 {origin} 的连接，但此计算机上未保存该连接。
 This read was already started	此读取已开始
 This release has no installer for this computer: get it from the release page.	此版本没有适用于此计算机的安装程序：请从发布页面获取。
@@ -4096,6 +4115,7 @@ VN-2000 / UTM zone 48N	VN-2000 / UTM 48N 带
 VN-2000 / UTM zone 49N	VN-2000 / UTM 49N 带
 Volume	体积
 Wait for the run to finish	等待运行完成
+Wait for the Script pane's run to finish	请等待脚本窗格的运行完成
 Waiting for the browser…	正在等待浏览器…
 Waiting for your answer	正在等待你的回复
 Walk	行走
@@ -4201,7 +4221,7 @@ Wrap at	换行字符
 Wrap length	换行长度
 Write a plugin	编写插件
 Writes a separate two-vertex line for each consecutive vertex pair.	为每对相邻折点分别写出一条两点线。
-Writes every feature with its geometry made valid: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved. Says what was repaired in each.	写出所有要素并使其几何有效：闭合环，删除重复折点和退化部分，解决自相交、重叠部分以及位于外壳之外的孔洞。并说明每个要素修复了什么。
+Writes every feature with its geometry made valid where it can be: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved. Features with a missing or non-finite coordinate anywhere, even in a hole, or left with no usable points or, for polygons, no area once repaired, are written without geometry. Other features too complex to check, or whose repair fails, are written unchanged. Says what was repaired in each.	写出所有要素并尽可能使其几何有效：闭合环，删除重复折点和退化部分，解决自相交、重叠部分以及位于外壳之外的孔洞。任何位置（即使在孔洞中）存在缺失或非有限坐标的要素，或修复后没有可用点、对于面而言没有面积的要素，将不带几何写出。其他过于复杂而无法检查或修复失败的要素将原样写出。并说明每个要素修复了什么。
 Writes one axis-aligned bounding rectangle per feature in stored longitude/latitude coordinates. Zero-area envelopes are skipped.	按存储的经纬度坐标为每个要素写出一个与坐标轴对齐的外包矩形。跳过面积为零的包络矩形。
 Writes Sen's slope, the test's Z and p-value, and the slope where the trend is significant.	输出 Sen 斜率、检验的 Z 值和 p 值，以及趋势显著处的斜率。
 Writes the features with invalid geometry, such as self-intersecting or unclosed rings, holes outside their shell or overlapping parts, and says what is wrong with each.	写出几何无效的要素，例如自相交或未闭合的环、位于外壳之外的孔洞或重叠部分，并说明每个要素的问题。

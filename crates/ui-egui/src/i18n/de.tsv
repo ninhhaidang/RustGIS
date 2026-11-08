@@ -1,5 +1,7 @@
 # de interface catalog: English<TAB>translation
  by 	 von
+"instance" must be a layer's instance number, not {value}	"instance" muss die Instanznummer eines Layers sein, nicht {value}
+"layer" must be a layer's id or name, not {value}	"layer" muss die ID oder der Name eines Layers sein, nicht {value}
 '{b}' isn't a bucket name	„{b}“ ist kein Bucket-Name
 '{text}' isn't a scale: type one such as 1:12,345	„{text}“ ist kein Maßstab: Geben Sie einen wie 1:12,345 ein
 (b4-b3)/(b4+b3)	(b4-b3)/(b4+b3)
@@ -440,6 +442,7 @@ Basemap	Grundkarte
 Basemaps	Grundkarten
 Basic authentication	Basisauthentifizierung
 Basin from hydrolocation	Einzugsgebiet ab Hydrolokation
+Batch Run	Stapelverarbeitung
 Bearing	Richtung
 Before	Davor
 Before the event	Vor dem Ereignis
@@ -778,6 +781,7 @@ Connected to {kind} {title}	Verbunden mit {kind} {title}
 Connecting to {url}…	Verbindung mit {url} wird hergestellt…
 Connection	Verbindung
 Connection failure	Verbindungsfehler
+connection must be a saved web-service connection id (text)	connection muss die ID einer gespeicherten Webdienst-Verbindung sein (Text)
 connection.new returned no id	connection.new lieferte keine ID
 Connections	Verbindungen
 Connections you add are listed here	Hinzugefügte Verbindungen werden hier aufgeführt
@@ -809,6 +813,7 @@ Copied the layout to the clipboard	Layout in die Zwischenablage kopiert
 Copied the layout to the clipboard at {dpi} dpi, not {wanted}: the page is too large for a larger image	Layout mit {dpi} dpi statt {wanted} in die Zwischenablage kopiert: Die Seite ist für ein größeres Bild zu groß
 Copied the map to the clipboard	Karte in die Zwischenablage kopiert
 Copied {path}	{path} kopiert
+Copied. The log cut its parameters short or took their secrets out, so it may not run as it ran.	Kopiert. Das Protokoll hat die Parameter gekürzt oder ihre Geheimnisse entfernt, daher läuft es möglicherweise nicht so wie damals.
 Copies the (selected) features of a layer to a new layer.	Kopiert die (ausgewählten) Objekte eines Layers in einen neuen Layer.
 Copy	Kopieren
 Copy / Cut / Paste features	Objekte kopieren / ausschneiden / einfügen
@@ -834,6 +839,7 @@ Copy Layers	Layer kopieren
 Copy Parameters	Parameter kopieren
 Copy Path	Pfad kopieren
 Copy Run As Code	Ausführung als Code kopieren
+Copy Script	Skript kopieren
 Copy sign-in link	Anmeldelink kopieren
 Copy the filtered history, including technical details	Den gefilterten Verlauf einschließlich technischer Details kopieren
 Copy the selected features (also as GeoJSON text).	Die ausgewählten Objekte kopieren (auch als GeoJSON-Text).
@@ -1693,6 +1699,7 @@ In Beyond	Ausblenden unter
 In degrees.	In Grad.
 In memory	Im Speicher
 In place	An Ort und Stelle
+In place of the Script pane's script ({keys} brings it back)	Ersetzt das Skript im Skriptbereich ({keys} holt es zurück)
 In place, holding a {w} × {h} overview	An Ort und Stelle, mit einer Übersicht von {w} × {h}
 In Progress	In Bearbeitung
 in progress	in Bearbeitung
@@ -1772,6 +1779,7 @@ Invert color scheme	Farbschema umkehren
 Invert the selection.	Die Auswahl umkehren.
 IS	IS
 IS NULL	IS NULL
+It can't run in a script	Es kann nicht in einem Skript ausgeführt werden
 it changed since it was installed: install it again from the Plugin Manager	es wurde seit der Installation geändert: Installieren Sie es über den Plugin-Manager erneut
 it connects to an address on the internet	es verbindet sich mit einer Adresse im Internet
 It didn't open: {error}	Es wurde nicht geöffnet: {error}
@@ -2343,6 +2351,7 @@ no service or file links	keine Dienst- oder Dateilinks
 No services match your search.	Keine Dienste entsprechen Ihrer Suche.
 No standalone tables	Keine eigenständigen Tabellen
 No styles yet	Noch keine Stile
+No such tile layer	Kein solcher Kachel-Layer
 no system keychain in this build	kein Systemschlüsselbund in diesem Build
 No tasks yet. Record one, or make one from your geoprocessing history with Analyze › Task.	Noch keine Aufgaben. Zeichnen Sie eine auf oder erstellen Sie eine aus Ihrem Geoverarbeitungsverlauf mit Analysieren › Aufgabe.
 no text graphic there	dort ist keine Textgrafik
@@ -2432,6 +2441,7 @@ Only a tile archive read from a file (PMTiles or MBTiles) can be repaired.	Nur e
 Only cubes with data where the map is	Nur Würfel mit Daten im Kartenausschnitt
 Only features matching this expression draw in {layer}.	Nur Objekte, die diesem Ausdruck entsprechen, werden in {layer} gezeichnet.
 Only selected polygons will be included in the output.	Nur ausgewählte Polygone werden in die Ausgabe übernommen.
+Only the commands run in the project open now	Nur die Befehle, die im jetzt geöffneten Projekt ausgeführt wurden
 Only the map's area	Nur der Kartenbereich
 Only where the map is	Nur im Kartenausschnitt
 Opacity	Deckkraft
@@ -2452,6 +2462,7 @@ Open Diagnostics	Diagnose öffnen
 Open folder	Ordner öffnen
 Open In Geoprocessing…	In Geoverarbeitung öffnen…
 Open in ModelBuilder	In ModelBuilder öffnen
+Open in Script Pane	Im Skriptbereich öffnen
 Open in Tool	Im Werkzeug öffnen
 Open Layout	Layout öffnen
 Open ModelBuilder	ModelBuilder öffnen
@@ -2652,7 +2663,7 @@ Plugins marked Not sandboxed run as programs on your computer instead, and can d
 Plugins run in a sandbox: they can't reach your files or the network, and they change the project only through RustGIS's own commands, within the permissions you accept.	Plugins laufen in einer Sandbox: Sie können weder auf Ihre Dateien noch auf das Netzwerk zugreifen und ändern das Projekt nur über die eigenen Befehle von RustGIS, im Rahmen der von Ihnen akzeptierten Berechtigungen.
 PMTiles archive	PMTiles-Archiv
 PNG frames (zip)	PNG-Einzelbilder (ZIP)
-PNG image	PNG-Bild
+PNG image or GeoTIFF	PNG-Bild oder GeoTIFF
 Point	Punkt
 Point the selected layer at its file after the file moved or was renamed.	Den ausgewählten Layer auf seine Datei verweisen, nachdem die Datei verschoben oder umbenannt wurde.
 Points	Punkte
@@ -3194,6 +3205,7 @@ Select a layer in the Layers pane	Einen Layer im Layer-Bereich auswählen
 select a layer in the Layers pane first	zuerst einen Layer im Layer-Bereich auswählen
 Select a layer in the Layers pane.	Einen Layer im Layer-Bereich auswählen.
 Select a navigation method after tracing a point.	Wählen Sie nach dem Verfolgen eines Punktes eine Navigationsmethode.
+Select a raster or tile layer in the Layers pane first	Wählen Sie zuerst einen Raster- oder Kachel-Layer im Layer-Bereich aus
 Select All	Alle auswählen
 Select an element to format it.	Wählen Sie ein Element aus, um es zu formatieren.
 Select By\nAttributes	Nach Attributen\nauswählen
@@ -3661,6 +3673,7 @@ The desktop app adds data cubes	Die Desktop-App fügt Datenwürfel hinzu
 The distance between two marks along the line	Der Abstand zwischen zwei Markierungen entlang der Linie
 The environment (AWS_ACCESS_KEY_ID…)	Die Umgebung (AWS_ACCESS_KEY_ID…)
 The features where the map is	Die Objekte im Kartenausschnitt
+The filter searches the first {n} of them; the service.add command adds any other by its name.	Der Filter durchsucht die ersten {n} davon; der Befehl service.add fügt jeden anderen über seinen Namen hinzu.
 The first 1,000 entries; narrow it down a folder at a time.	Die ersten 1.000 Einträge; grenzen Sie Ordner für Ordner ein.
 The first {n} are listed.	Die ersten {n} werden aufgeführt.
 The first {n} are shown: search to narrow them.	Die ersten {n} werden angezeigt: Suchen Sie, um sie einzugrenzen.
@@ -3688,6 +3701,7 @@ The layer's strokes	Die Striche des Layers
 the layout export failed unexpectedly	der Layout-Export ist unerwartet fehlgeschlagen
 The link doesn't say its STAC API: Find Items searches {api}	Der Link nennt keine STAC-API: Elemente finden durchsucht {api}
 The list of plugins to browse. Leave it empty for the RustGIS plugin registry.	Die Liste der Plugins zum Durchsuchen. Leer lassen für das RustGIS-Plugin-Verzeichnis.
+The log cut it short or took its secrets out: it would run only in part	Das Protokoll hat es gekürzt oder seine Geheimnisse entfernt: Es würde nur teilweise ausgeführt
 The longest a callout's line may be.	Die maximale Länge der Führungslinie.
 The map at the left; the title, locator, legend, sources and reference in a panel at the right.	Die Karte links; Titel, Lokator, Legende, Quellen und Bezugsangaben in einer Leiste rechts.
 the map has no GeoPackage layer loaded for editing (Home › Add Data › Edit GeoPackage Table…)	die Karte enthält keinen zur Bearbeitung geladenen GeoPackage-Layer (Start › Daten hinzufügen › GeoPackage-Tabelle bearbeiten…)
@@ -3728,7 +3742,10 @@ the picture is too large to show	das Bild ist zu groß zum Anzeigen
 the picture is too large to show, or isn't one	das Bild ist zu groß zum Anzeigen oder keines
 the place lies outside the zone given	der Ort liegt außerhalb der angegebenen Zone
 The places leave this device for the public Valhalla server at {server}, run by FOSSGIS. Don't continue if your project is bound by data privacy or data sovereignty rules.	Die Orte verlassen dieses Gerät und gehen an den öffentlichen Valhalla-Server unter {server}, betrieben von FOSSGIS. Fahren Sie nicht fort, wenn Ihr Projekt Datenschutz- oder Datensouveränitätsregeln unterliegt.
-The plugin {id} wasn't loaded. Open Plugins › Plugin Manager to see it. {reason}	Das Plugin {id} wurde nicht geladen. Öffnen Sie Plugins › Plugin-Manager, um es anzuzeigen. {reason}
+The plugin blocklist couldn't be downloaded ({error}); the last one read, if any, stays in force.	Die Plugin-Sperrliste konnte nicht heruntergeladen werden ({error}); die zuletzt gelesene bleibt, falls vorhanden, in Kraft.
+The plugin blocklist couldn't be read ({error}); the last one read, if any, stays in force.	Die Plugin-Sperrliste konnte nicht gelesen werden ({error}); die zuletzt gelesene bleibt, falls vorhanden, in Kraft.
+The plugin {id} wasn't loaded (open Plugins › Plugin Manager to see it): {reason}.	Das Plugin {id} wurde nicht geladen (öffnen Sie Plugins › Plugin-Manager, um es anzuzeigen): {reason}.
+The plugin {id} wasn't loaded. Open Plugins › Plugin Manager to see it.	Das Plugin {id} wurde nicht geladen. Öffnen Sie Plugins › Plugin-Manager, um es anzuzeigen.
 The portal's OAuth app	Die OAuth-App des Portals
 the presentation export failed unexpectedly	der Präsentations-Export ist unerwartet fehlgeschlagen
 the preview failed unexpectedly	die Vorschau ist unerwartet fehlgeschlagen
@@ -3744,7 +3761,7 @@ The range is two numbers, low and high (0, 0.9)	Der Bereich besteht aus zwei Zah
 The raster's data couldn't be read.	Die Daten des Rasters konnten nicht gelesen werden.
 The raster's data couldn't be read: {error}	Die Daten des Rasters konnten nicht gelesen werden: {error}
 the recovery copy is incomplete	die Wiederherstellungskopie ist unvollständig
-the recovery copy is too large	die Wiederherstellungskopie ist zu groß
+the recovery copy is too large (maximum {mib} MiB on this computer)	die Wiederherstellungskopie ist zu groß (höchstens {mib} MiB auf diesem Computer)
 the recovery copy isn't text	die Wiederherstellungskopie ist kein Text
 the release isn't known	das Release ist unbekannt
 The reply reached its length limit.	Die Antwort hat ihre Längenbegrenzung erreicht.
@@ -3759,6 +3776,7 @@ The saved password could not be used. Type a password to try again; check Rememb
 The saved S3 connection no longer matches this source.	Die gespeicherte S3-Verbindung passt nicht mehr zu dieser Quelle.
 The saved sign-in changed. Select your account again.	Die gespeicherte Anmeldung hat sich geändert. Wählen Sie Ihr Konto erneut aus.
 The scale the layer's symbol and label sizes are set for. At other scales they grow and shrink with the map, as on paper.	Der Maßstab, für den die Symbol- und Beschriftungsgrößen des Layers festgelegt sind. Bei anderen Maßstäben wachsen und schrumpfen sie mit der Karte, wie auf Papier.
+The script, for the Script pane	Das Skript, für den Skriptbereich
 The selected GeoPackage layer is no longer available; choose a layer	Der ausgewählte GeoPackage-Layer ist nicht mehr verfügbar; wählen Sie einen Layer
 The server had a problem answering.	Der Server hatte ein Problem beim Antworten.
 The server is limiting requests.	Der Server begrenzt die Anfragen.
@@ -3840,6 +3858,7 @@ This map's thumbnail, from the view.	Die Miniaturansicht dieser Karte, aus der A
 This platform does not report the system theme	Diese Plattform meldet das Systemthema nicht
 This plugin can:	Dieses Plugin kann:
 This plugin runs as a program on your computer, outside RustGIS's sandbox. It can do anything you can: read and change your files, use the network and run other programs. Install it only if you trust its author.	Dieses Plugin läuft als Programm auf Ihrem Computer, außerhalb der Sandbox von RustGIS. Es kann alles, was Sie können: Ihre Dateien lesen und ändern, das Netzwerk nutzen und andere Programme ausführen. Installieren Sie es nur, wenn Sie dem Autor vertrauen.
+This project	Dieses Projekt
 This project uses a connection for {origin} that is not saved on this computer.	Dieses Projekt verwendet eine Verbindung für {origin}, die auf diesem Computer nicht gespeichert ist.
 This read was already started	Dieser Lesevorgang wurde bereits gestartet
 This release has no installer for this computer: get it from the release page.	Dieses Release hat kein Installationsprogramm für diesen Computer: Laden Sie es von der Release-Seite herunter.
@@ -4096,6 +4115,7 @@ VN-2000 / UTM zone 48N	VN-2000 / UTM-Zone 48N
 VN-2000 / UTM zone 49N	VN-2000 / UTM-Zone 49N
 Volume	Volumen
 Wait for the run to finish	Warten Sie, bis der Lauf beendet ist
+Wait for the Script pane's run to finish	Warten Sie, bis die Ausführung im Skriptbereich abgeschlossen ist
 Waiting for the browser…	Warte auf den Browser…
 Waiting for your answer	Wartet auf Ihre Antwort
 Walk	Gehen
@@ -4201,7 +4221,7 @@ Wrap at	Umbrechen bei
 Wrap length	Umbruchlänge
 Write a plugin	Ein Plugin schreiben
 Writes a separate two-vertex line for each consecutive vertex pair.	Schreibt für jedes aufeinanderfolgende Stützpunktpaar eine eigene Linie mit zwei Stützpunkten.
-Writes every feature with its geometry made valid: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved. Says what was repaired in each.	Schreibt jedes Objekt mit gültig gemachter Geometrie: Ringe geschlossen, wiederholte Stützpunkte und degenerierte Teile entfernt, Selbstüberschneidungen, überlappende Teile und Löcher außerhalb ihrer Hülle aufgelöst. Gibt für jedes an, was repariert wurde.
+Writes every feature with its geometry made valid where it can be: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved. Features with a missing or non-finite coordinate anywhere, even in a hole, or left with no usable points or, for polygons, no area once repaired, are written without geometry. Other features too complex to check, or whose repair fails, are written unchanged. Says what was repaired in each.	Schreibt jedes Objekt mit gültig gemachter Geometrie, wo das möglich ist: Ringe geschlossen, wiederholte Stützpunkte und degenerierte Teile entfernt, Selbstüberschneidungen, überlappende Teile und Löcher außerhalb ihrer Hülle aufgelöst. Objekte mit einer fehlenden oder nicht endlichen Koordinate an beliebiger Stelle, auch in einem Loch, oder die nach der Reparatur keine verwendbaren Punkte oder, bei Polygonen, keine Fläche mehr haben, werden ohne Geometrie geschrieben. Andere Objekte, die zu komplex zum Prüfen sind oder deren Reparatur fehlschlägt, werden unverändert geschrieben. Gibt für jedes an, was repariert wurde.
 Writes one axis-aligned bounding rectangle per feature in stored longitude/latitude coordinates. Zero-area envelopes are skipped.	Schreibt pro Objekt ein achsenparalleles umgebendes Rechteck in gespeicherten Längen-/Breitenkoordinaten. Hüllen ohne Fläche werden übersprungen.
 Writes Sen's slope, the test's Z and p-value, and the slope where the trend is significant.	Schreibt die Sen-Steigung, Z und p-Wert des Tests sowie die Steigung dort, wo der Trend signifikant ist.
 Writes the features with invalid geometry, such as self-intersecting or unclosed rings, holes outside their shell or overlapping parts, and says what is wrong with each.	Schreibt die Objekte mit ungültiger Geometrie, etwa sich selbst schneidenden oder nicht geschlossenen Ringen, Löchern außerhalb ihrer Hülle oder überlappenden Teilen, und gibt an, was bei jedem falsch ist.

@@ -1,5 +1,7 @@
 # vi interface catalog: English<TAB>translation
  by 	 theo
+"instance" must be a layer's instance number, not {value}	"instance" phải là số thực thể của một lớp, không phải {value}
+"layer" must be a layer's id or name, not {value}	"layer" phải là id hoặc tên của một lớp, không phải {value}
 '{b}' isn't a bucket name	'{b}' không phải tên bucket
 '{text}' isn't a scale: type one such as 1:12,345	'{text}' không phải là tỷ lệ: hãy nhập một tỷ lệ như 1:12,345
 (b4-b3)/(b4+b3)	(b4-b3)/(b4+b3)
@@ -440,6 +442,7 @@ Basemap	Bản đồ nền
 Basemaps	Bản đồ nền
 Basic authentication	Xác thực cơ bản
 Basin from hydrolocation	Lưu vực từ vị trí thủy văn
+Batch Run	Chạy hàng loạt
 Bearing	Hướng
 Before	Trước
 Before the event	Trước sự kiện
@@ -778,6 +781,7 @@ Connected to {kind} {title}	Đã kết nối tới {kind} {title}
 Connecting to {url}…	Đang kết nối tới {url}…
 Connection	Kết nối
 Connection failure	Lỗi kết nối
+connection must be a saved web-service connection id (text)	connection phải là id của một kết nối dịch vụ web đã lưu (văn bản)
 connection.new returned no id	connection.new không trả về id
 Connections	Kết nối
 Connections you add are listed here	Các kết nối bạn thêm được liệt kê ở đây
@@ -809,6 +813,7 @@ Copied the layout to the clipboard	Đã sao chép bố cục vào bảng nhớ t
 Copied the layout to the clipboard at {dpi} dpi, not {wanted}: the page is too large for a larger image	Đã sao chép bố cục vào bảng nhớ tạm ở {dpi} dpi, không phải {wanted}: trang quá lớn cho ảnh lớn hơn
 Copied the map to the clipboard	Đã sao chép bản đồ vào bảng nhớ tạm
 Copied {path}	Đã sao chép {path}
+Copied. The log cut its parameters short or took their secrets out, so it may not run as it ran.	Đã sao chép. Nhật ký đã cắt bớt tham số hoặc loại bỏ thông tin bí mật của chúng, nên có thể nó không chạy như lúc đã chạy.
 Copies the (selected) features of a layer to a new layer.	Sao chép các đối tượng (được chọn) của một lớp sang một lớp mới.
 Copy	Sao chép
 Copy / Cut / Paste features	Sao chép / Cắt / Dán đối tượng
@@ -834,6 +839,7 @@ Copy Layers	Sao chép các lớp
 Copy Parameters	Sao chép tham số
 Copy Path	Sao chép đường dẫn
 Copy Run As Code	Sao chép lần chạy thành mã
+Copy Script	Sao chép script
 Copy sign-in link	Sao chép liên kết đăng nhập
 Copy the filtered history, including technical details	Sao chép lịch sử đã lọc, kèm chi tiết kỹ thuật
 Copy the selected features (also as GeoJSON text).	Sao chép các đối tượng được chọn (cả dưới dạng văn bản GeoJSON).
@@ -1693,6 +1699,7 @@ In Beyond	Khi phóng to hơn
 In degrees.	Tính bằng độ.
 In memory	Trong bộ nhớ
 In place	Tại chỗ
+In place of the Script pane's script ({keys} brings it back)	Thay cho script trong khung Script ({keys} để khôi phục)
 In place, holding a {w} × {h} overview	Tại chỗ, kèm ảnh tổng quan {w} × {h}
 In Progress	Đang thực hiện
 in progress	đang thực hiện
@@ -1772,6 +1779,7 @@ Invert color scheme	Đảo ngược bảng màu
 Invert the selection.	Đảo ngược vùng chọn.
 IS	IS
 IS NULL	IS NULL
+It can't run in a script	Không thể chạy trong script
 it changed since it was installed: install it again from the Plugin Manager	nó đã thay đổi kể từ khi cài đặt: hãy cài đặt lại từ Trình quản lý plugin
 it connects to an address on the internet	nó kết nối tới một địa chỉ trên internet
 It didn't open: {error}	Không mở được: {error}
@@ -2343,6 +2351,7 @@ no service or file links	không có liên kết dịch vụ hay tệp
 No services match your search.	Không có dịch vụ nào khớp với tìm kiếm của bạn.
 No standalone tables	Không có bảng độc lập
 No styles yet	Chưa có kiểu nào
+No such tile layer	Không có lớp ô bản đồ như vậy
 no system keychain in this build	bản dựng này không có chuỗi khóa hệ thống
 No tasks yet. Record one, or make one from your geoprocessing history with Analyze › Task.	Chưa có nhiệm vụ nào. Hãy ghi một nhiệm vụ, hoặc tạo từ lịch sử xử lý không gian bằng Phân tích › Nhiệm vụ.
 no text graphic there	không có đồ họa văn bản ở đó
@@ -2432,6 +2441,7 @@ Only a tile archive read from a file (PMTiles or MBTiles) can be repaired.	Chỉ
 Only cubes with data where the map is	Chỉ các khối có dữ liệu trong vùng bản đồ
 Only features matching this expression draw in {layer}.	Chỉ các đối tượng khớp biểu thức này được vẽ trong {layer}.
 Only selected polygons will be included in the output.	Chỉ các vùng được chọn mới có trong kết quả.
+Only the commands run in the project open now	Chỉ các lệnh đã chạy trong dự án đang mở
 Only the map's area	Chỉ vùng bản đồ
 Only where the map is	Chỉ trong vùng bản đồ
 Opacity	Độ mờ đục
@@ -2452,6 +2462,7 @@ Open Diagnostics	Mở Chẩn đoán
 Open folder	Mở thư mục
 Open In Geoprocessing…	Mở trong Xử lý không gian…
 Open in ModelBuilder	Mở trong ModelBuilder
+Open in Script Pane	Mở trong khung Script
 Open in Tool	Mở trong công cụ
 Open Layout	Mở bố cục
 Open ModelBuilder	Mở ModelBuilder
@@ -2652,7 +2663,7 @@ Plugins marked Not sandboxed run as programs on your computer instead, and can d
 Plugins run in a sandbox: they can't reach your files or the network, and they change the project only through RustGIS's own commands, within the permissions you accept.	Plugin chạy trong hộp cát: chúng không thể truy cập tệp của bạn hay mạng, và chỉ thay đổi dự án thông qua các lệnh của chính RustGIS, trong phạm vi quyền bạn chấp nhận.
 PMTiles archive	Kho PMTiles
 PNG frames (zip)	Khung hình PNG (zip)
-PNG image	Ảnh PNG
+PNG image or GeoTIFF	Ảnh PNG hoặc GeoTIFF
 Point	Điểm
 Point the selected layer at its file after the file moved or was renamed.	Trỏ lớp đã chọn tới tệp của nó sau khi tệp được chuyển hoặc đổi tên.
 Points	Điểm
@@ -3194,6 +3205,7 @@ Select a layer in the Layers pane	Chọn một lớp trong ngăn Lớp
 select a layer in the Layers pane first	hãy chọn một lớp trong ngăn Lớp trước
 Select a layer in the Layers pane.	Chọn một lớp trong ngăn Lớp.
 Select a navigation method after tracing a point.	Chọn một phương pháp điều hướng sau khi dò một điểm.
+Select a raster or tile layer in the Layers pane first	Hãy chọn một lớp raster hoặc lớp ô bản đồ trong ngăn Lớp trước
 Select All	Chọn tất cả
 Select an element to format it.	Chọn một phần tử để định dạng.
 Select By\nAttributes	Chọn theo\nthuộc tính
@@ -3661,6 +3673,7 @@ The desktop app adds data cubes	Ứng dụng máy tính thêm khối dữ liệu
 The distance between two marks along the line	Khoảng cách giữa hai dấu dọc theo đường
 The environment (AWS_ACCESS_KEY_ID…)	Môi trường (AWS_ACCESS_KEY_ID…)
 The features where the map is	Các đối tượng trong vùng bản đồ
+The filter searches the first {n} of them; the service.add command adds any other by its name.	Bộ lọc tìm trong {n} mục đầu tiên; lệnh service.add thêm bất kỳ mục nào khác theo tên của nó.
 The first 1,000 entries; narrow it down a folder at a time.	1.000 mục đầu tiên; hãy thu hẹp dần từng thư mục.
 The first {n} are listed.	Đã liệt kê {n} mục đầu tiên.
 The first {n} are shown: search to narrow them.	Đang hiển thị {n} mục đầu tiên: hãy tìm kiếm để thu hẹp.
@@ -3688,6 +3701,7 @@ The layer's strokes	Nét của lớp
 the layout export failed unexpectedly	xuất bố cục thất bại ngoài dự kiến
 The link doesn't say its STAC API: Find Items searches {api}	Liên kết không ghi rõ STAC API của nó: Tìm mục sẽ tìm trong {api}
 The list of plugins to browse. Leave it empty for the RustGIS plugin registry.	Danh sách plugin để duyệt. Để trống để dùng kho plugin RustGIS.
+The log cut it short or took its secrets out: it would run only in part	Nhật ký đã cắt bớt hoặc loại bỏ thông tin bí mật: nó chỉ chạy được một phần
 The longest a callout's line may be.	Độ dài tối đa của đường dẫn nhãn.
 The map at the left; the title, locator, legend, sources and reference in a panel at the right.	Bản đồ bên trái; tiêu đề, bộ định vị, chú giải, nguồn và tham chiếu trong một bảng bên phải.
 the map has no GeoPackage layer loaded for editing (Home › Add Data › Edit GeoPackage Table…)	bản đồ không có lớp GeoPackage nào được tải để chỉnh sửa (Trang chủ › Thêm dữ liệu › Chỉnh sửa bảng GeoPackage…)
@@ -3728,7 +3742,10 @@ the picture is too large to show	ảnh quá lớn để hiển thị
 the picture is too large to show, or isn't one	ảnh quá lớn để hiển thị, hoặc không phải ảnh
 the place lies outside the zone given	địa điểm nằm ngoài múi đã cho
 The places leave this device for the public Valhalla server at {server}, run by FOSSGIS. Don't continue if your project is bound by data privacy or data sovereignty rules.	Các địa điểm sẽ rời khỏi thiết bị này để tới máy chủ Valhalla công cộng tại {server} do FOSSGIS vận hành. Đừng tiếp tục nếu dự án của bạn phải tuân theo quy định về quyền riêng tư hoặc chủ quyền dữ liệu.
-The plugin {id} wasn't loaded. Open Plugins › Plugin Manager to see it. {reason}	Plugin {id} chưa được tải. Mở Plugin › Trình quản lý plugin để xem. {reason}
+The plugin blocklist couldn't be downloaded ({error}); the last one read, if any, stays in force.	Không thể tải xuống danh sách chặn plugin ({error}); danh sách đọc gần nhất, nếu có, vẫn có hiệu lực.
+The plugin blocklist couldn't be read ({error}); the last one read, if any, stays in force.	Không thể đọc danh sách chặn plugin ({error}); danh sách đọc gần nhất, nếu có, vẫn có hiệu lực.
+The plugin {id} wasn't loaded (open Plugins › Plugin Manager to see it): {reason}.	Plugin {id} chưa được tải (mở Plugin › Trình quản lý plugin để xem): {reason}.
+The plugin {id} wasn't loaded. Open Plugins › Plugin Manager to see it.	Plugin {id} chưa được tải. Mở Plugin › Trình quản lý plugin để xem.
 The portal's OAuth app	Ứng dụng OAuth của cổng
 the presentation export failed unexpectedly	xuất bản trình bày thất bại ngoài dự kiến
 the preview failed unexpectedly	xem trước thất bại ngoài dự kiến
@@ -3744,7 +3761,7 @@ The range is two numbers, low and high (0, 0.9)	Khoảng là hai số, thấp v�
 The raster's data couldn't be read.	Không thể đọc dữ liệu của raster.
 The raster's data couldn't be read: {error}	Không thể đọc dữ liệu của raster: {error}
 the recovery copy is incomplete	bản sao khôi phục không đầy đủ
-the recovery copy is too large	bản sao khôi phục quá lớn
+the recovery copy is too large (maximum {mib} MiB on this computer)	bản sao khôi phục quá lớn (tối đa {mib} MiB trên máy tính này)
 the recovery copy isn't text	bản sao khôi phục không phải văn bản
 the release isn't known	không rõ bản phát hành
 The reply reached its length limit.	Câu trả lời đã đạt giới hạn độ dài.
@@ -3759,6 +3776,7 @@ The saved password could not be used. Type a password to try again; check Rememb
 The saved S3 connection no longer matches this source.	Kết nối S3 đã lưu không còn khớp với nguồn này.
 The saved sign-in changed. Select your account again.	Thông tin đăng nhập đã lưu đã thay đổi. Hãy chọn lại tài khoản.
 The scale the layer's symbol and label sizes are set for. At other scales they grow and shrink with the map, as on paper.	Tỷ lệ mà kích thước ký hiệu và nhãn của lớp được đặt theo. Ở các tỷ lệ khác, chúng phóng to và thu nhỏ theo bản đồ, như trên giấy.
+The script, for the Script pane	Script, cho khung Script
 The selected GeoPackage layer is no longer available; choose a layer	Lớp GeoPackage đã chọn không còn; hãy chọn một lớp
 The server had a problem answering.	Máy chủ gặp sự cố khi phản hồi.
 The server is limiting requests.	Máy chủ đang giới hạn yêu cầu.
@@ -3840,6 +3858,7 @@ This map's thumbnail, from the view.	Ảnh thu nhỏ của bản đồ này, t�
 This platform does not report the system theme	Nền tảng này không báo chủ đề hệ thống
 This plugin can:	Plugin này có thể:
 This plugin runs as a program on your computer, outside RustGIS's sandbox. It can do anything you can: read and change your files, use the network and run other programs. Install it only if you trust its author.	Plugin này chạy như một chương trình trên máy tính của bạn, bên ngoài hộp cát của RustGIS. Nó có thể làm mọi việc bạn làm được: đọc và thay đổi tệp của bạn, dùng mạng và chạy các chương trình khác. Chỉ cài đặt nếu bạn tin tưởng tác giả của nó.
+This project	Dự án này
 This project uses a connection for {origin} that is not saved on this computer.	Dự án này dùng một kết nối cho {origin} chưa được lưu trên máy tính này.
 This read was already started	Lượt đọc này đã được bắt đầu
 This release has no installer for this computer: get it from the release page.	Bản phát hành này không có trình cài đặt cho máy tính này: hãy tải từ trang phát hành.
@@ -4096,6 +4115,7 @@ VN-2000 / UTM zone 48N	VN-2000 / UTM múi 48N
 VN-2000 / UTM zone 49N	VN-2000 / UTM múi 49N
 Volume	Thể tích
 Wait for the run to finish	Chờ lượt chạy hoàn tất
+Wait for the Script pane's run to finish	Hãy đợi lượt chạy của khung Script hoàn tất
 Waiting for the browser…	Đang chờ trình duyệt…
 Waiting for your answer	Đang chờ câu trả lời của bạn
 Walk	Đi bộ
@@ -4201,7 +4221,7 @@ Wrap at	Ngắt tại
 Wrap length	Độ dài ngắt dòng
 Write a plugin	Viết plugin
 Writes a separate two-vertex line for each consecutive vertex pair.	Ghi một đường hai đỉnh riêng cho mỗi cặp đỉnh liên tiếp.
-Writes every feature with its geometry made valid: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved. Says what was repaired in each.	Ghi mọi đối tượng với hình học được làm hợp lệ: khép kín vòng, bỏ đỉnh lặp và phần suy biến, giải quyết tự giao cắt, phần chồng lấn và lỗ nằm ngoài vỏ. Cho biết những gì đã sửa ở mỗi đối tượng.
+Writes every feature with its geometry made valid where it can be: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved. Features with a missing or non-finite coordinate anywhere, even in a hole, or left with no usable points or, for polygons, no area once repaired, are written without geometry. Other features too complex to check, or whose repair fails, are written unchanged. Says what was repaired in each.	Ghi mọi đối tượng với hình học được làm hợp lệ khi có thể: khép kín vòng, bỏ đỉnh lặp và phần suy biến, giải quyết tự giao cắt, phần chồng lấn và lỗ nằm ngoài vỏ. Các đối tượng có tọa độ bị thiếu hoặc không hữu hạn ở bất kỳ đâu, kể cả trong lỗ, hoặc không còn điểm dùng được hay, với đa giác, không còn diện tích sau khi sửa, sẽ được ghi không có hình học. Các đối tượng khác quá phức tạp để kiểm tra, hoặc sửa không thành công, được ghi nguyên trạng. Cho biết những gì đã sửa ở mỗi đối tượng.
 Writes one axis-aligned bounding rectangle per feature in stored longitude/latitude coordinates. Zero-area envelopes are skipped.	Ghi một hình chữ nhật bao song song trục cho mỗi đối tượng theo tọa độ kinh độ/vĩ độ đã lưu. Bỏ qua khung bao có diện tích bằng không.
 Writes Sen's slope, the test's Z and p-value, and the slope where the trend is significant.	Ghi độ dốc Sen, giá trị Z và p của kiểm định, và độ dốc tại nơi xu hướng có ý nghĩa.
 Writes the features with invalid geometry, such as self-intersecting or unclosed rings, holes outside their shell or overlapping parts, and says what is wrong with each.	Ghi các đối tượng có hình học không hợp lệ, như vòng tự giao cắt hoặc không khép kín, lỗ nằm ngoài vỏ hoặc phần chồng lấn, và cho biết lỗi của từng đối tượng.

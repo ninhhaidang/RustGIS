@@ -1,5 +1,7 @@
 # ru interface catalog: English<TAB>translation
  by 	 по
+"instance" must be a layer's instance number, not {value}	"instance" должен быть номером экземпляра слоя, а не {value}
+"layer" must be a layer's id or name, not {value}	"layer" должен быть id или именем слоя, а не {value}
 '{b}' isn't a bucket name	«{b}» — не имя бакета
 '{text}' isn't a scale: type one such as 1:12,345	«{text}» не является масштабом: введите, например, 1:12,345
 (b4-b3)/(b4+b3)	(b4-b3)/(b4+b3)
@@ -440,6 +442,7 @@ Basemap	Базовая карта
 Basemaps	Базовые карты
 Basic authentication	Базовая аутентификация
 Basin from hydrolocation	Бассейн по гидролокации
+Batch Run	Пакетный запуск
 Bearing	Азимут
 Before	До
 Before the event	До события
@@ -778,6 +781,7 @@ Connected to {kind} {title}	Подключено к {kind} {title}
 Connecting to {url}…	Подключение к {url}…
 Connection	Подключение
 Connection failure	Сбой подключения
+connection must be a saved web-service connection id (text)	connection должен быть id сохранённого подключения к веб-сервису (текст)
 connection.new returned no id	connection.new не вернул идентификатор
 Connections	Подключения
 Connections you add are listed here	Здесь перечислены добавленные вами подключения
@@ -809,6 +813,7 @@ Copied the layout to the clipboard	Макет скопирован в буфер
 Copied the layout to the clipboard at {dpi} dpi, not {wanted}: the page is too large for a larger image	Макет скопирован в буфер обмена с разрешением {dpi} dpi, а не {wanted}: страница слишком велика для большего изображения
 Copied the map to the clipboard	Карта скопирована в буфер обмена
 Copied {path}	Скопировано: {path}
+Copied. The log cut its parameters short or took their secrets out, so it may not run as it ran.	Скопировано. Журнал сократил параметры или удалил из них секреты, поэтому команда может выполниться не так, как раньше.
 Copies the (selected) features of a layer to a new layer.	Копирует (выбранные) объекты слоя в новый слой.
 Copy	Копировать
 Copy / Cut / Paste features	Копировать / вырезать / вставить объекты
@@ -834,6 +839,7 @@ Copy Layers	Копировать слои
 Copy Parameters	Копировать параметры
 Copy Path	Копировать путь
 Copy Run As Code	Копировать запуск как код
+Copy Script	Копировать скрипт
 Copy sign-in link	Скопировать ссылку для входа
 Copy the filtered history, including technical details	Копировать отфильтрованную историю вместе с техническими сведениями
 Copy the selected features (also as GeoJSON text).	Копировать выбранные объекты (также как текст GeoJSON).
@@ -1693,6 +1699,7 @@ In Beyond	Вкл. за пределами
 In degrees.	В градусах.
 In memory	В памяти
 In place	На месте
+In place of the Script pane's script ({keys} brings it back)	Вместо скрипта на панели скриптов ({keys} возвращает его)
 In place, holding a {w} × {h} overview	На месте, с обзорным уровнем {w} × {h}
 In Progress	Выполняется
 in progress	выполняется
@@ -1772,6 +1779,7 @@ Invert color scheme	Инвертировать цветовую схему
 Invert the selection.	Инвертировать выборку.
 IS	IS
 IS NULL	IS NULL
+It can't run in a script	Это нельзя запустить в скрипте
 it changed since it was installed: install it again from the Plugin Manager	он изменился после установки: установите его заново через «Менеджер модулей»
 it connects to an address on the internet	подключается к адресу в интернете
 It didn't open: {error}	Не открылось: {error}
@@ -2343,6 +2351,7 @@ no service or file links	нет ссылок на сервисы или файл
 No services match your search.	Нет сервисов, соответствующих поиску.
 No standalone tables	Нет отдельных таблиц
 No styles yet	Стилей пока нет
+No such tile layer	Нет такого слоя тайлов
 no system keychain in this build	в этой сборке нет системной связки ключей
 No tasks yet. Record one, or make one from your geoprocessing history with Analyze › Task.	Задач пока нет. Запишите задачу или создайте её из истории геообработки через Анализ › Задача.
 no text graphic there	там нет текстовой графики
@@ -2432,6 +2441,7 @@ Only a tile archive read from a file (PMTiles or MBTiles) can be repaired.	Ис�
 Only cubes with data where the map is	Только кубы с данными в области карты
 Only features matching this expression draw in {layer}.	В слое {layer} отображаются только объекты, соответствующие этому выражению.
 Only selected polygons will be included in the output.	В результат будут включены только выбранные полигоны.
+Only the commands run in the project open now	Только команды, запущенные в открытом сейчас проекте
 Only the map's area	Только область карты
 Only where the map is	Только в области карты
 Opacity	Непрозрачность
@@ -2452,6 +2462,7 @@ Open Diagnostics	Открыть диагностику
 Open folder	Открыть папку
 Open In Geoprocessing…	Открыть в геообработке…
 Open in ModelBuilder	Открыть в ModelBuilder
+Open in Script Pane	Открыть на панели скриптов
 Open in Tool	Открыть в инструменте
 Open Layout	Открыть макет
 Open ModelBuilder	Открыть ModelBuilder
@@ -2652,7 +2663,7 @@ Plugins marked Not sandboxed run as programs on your computer instead, and can d
 Plugins run in a sandbox: they can't reach your files or the network, and they change the project only through RustGIS's own commands, within the permissions you accept.	Модули работают в песочнице: у них нет доступа к вашим файлам и сети, и они изменяют проект только через собственные команды RustGIS в рамках разрешений, которые вы приняли.
 PMTiles archive	Архив PMTiles
 PNG frames (zip)	Кадры PNG (zip)
-PNG image	Изображение PNG
+PNG image or GeoTIFF	Изображение PNG или GeoTIFF
 Point	Точка
 Point the selected layer at its file after the file moved or was renamed.	Указать выбранному слою его файл после перемещения или переименования файла.
 Points	Точки
@@ -3194,6 +3205,7 @@ Select a layer in the Layers pane	Выберите слой на панели «
 select a layer in the Layers pane first	сначала выберите слой на панели «Слои»
 Select a layer in the Layers pane.	Выберите слой на панели «Слои».
 Select a navigation method after tracing a point.	Выберите метод навигации после отслеживания точки.
+Select a raster or tile layer in the Layers pane first	Сначала выберите растровый слой или слой тайлов на панели «Слои»
 Select All	Выбрать все
 Select an element to format it.	Выберите элемент, чтобы отформатировать его.
 Select By\nAttributes	Выбрать по\nатрибутам
@@ -3661,6 +3673,7 @@ The desktop app adds data cubes	Кубы данных добавляет нас�
 The distance between two marks along the line	Расстояние между двумя знаками вдоль линии
 The environment (AWS_ACCESS_KEY_ID…)	Окружение (AWS_ACCESS_KEY_ID…)
 The features where the map is	Объекты в области карты
+The filter searches the first {n} of them; the service.add command adds any other by its name.	Фильтр ищет среди первых {n} из них; команда service.add добавляет любой другой по имени.
 The first 1,000 entries; narrow it down a folder at a time.	Первые 1 000 записей; сужайте поиск по одной папке за раз.
 The first {n} are listed.	Показаны первые {n}.
 The first {n} are shown: search to narrow them.	Показаны первые {n}: используйте поиск, чтобы сузить список.
@@ -3688,6 +3701,7 @@ The layer's strokes	Обводки слоя
 the layout export failed unexpectedly	экспорт макета неожиданно завершился ошибкой
 The link doesn't say its STAC API: Find Items searches {api}	Ссылка не указывает свой STAC API: «Найти элементы» ищет в {api}
 The list of plugins to browse. Leave it empty for the RustGIS plugin registry.	Список модулей для просмотра. Оставьте пустым, чтобы использовать каталог модулей RustGIS.
+The log cut it short or took its secrets out: it would run only in part	Журнал сократил это или удалил секреты: выполнится только частично
 The longest a callout's line may be.	Наибольшая допустимая длина линии выноски.
 The map at the left; the title, locator, legend, sources and reference in a panel at the right.	Карта слева; заголовок, локатор, легенда, источники и справка на панели справа.
 the map has no GeoPackage layer loaded for editing (Home › Add Data › Edit GeoPackage Table…)	на карте нет слоя GeoPackage, загруженного для редактирования (Главная › Добавить данные › Редактировать таблицу GeoPackage…)
@@ -3728,7 +3742,10 @@ the picture is too large to show	изображение слишком боль�
 the picture is too large to show, or isn't one	изображение слишком большое для показа или не является изображением
 the place lies outside the zone given	место лежит вне указанной зоны
 The places leave this device for the public Valhalla server at {server}, run by FOSSGIS. Don't continue if your project is bound by data privacy or data sovereignty rules.	Места отправляются с этого устройства на публичный сервер Valhalla по адресу {server}, которым управляет FOSSGIS. Не продолжайте, если на ваш проект распространяются правила конфиденциальности или суверенитета данных.
-The plugin {id} wasn't loaded. Open Plugins › Plugin Manager to see it. {reason}	Модуль {id} не загружен. Откройте «Модули › Менеджер модулей», чтобы увидеть его. {reason}
+The plugin blocklist couldn't be downloaded ({error}); the last one read, if any, stays in force.	Не удалось скачать список блокировки модулей ({error}); последний прочитанный список, если он есть, остаётся в силе.
+The plugin blocklist couldn't be read ({error}); the last one read, if any, stays in force.	Не удалось прочитать список блокировки модулей ({error}); последний прочитанный список, если он есть, остаётся в силе.
+The plugin {id} wasn't loaded (open Plugins › Plugin Manager to see it): {reason}.	Модуль {id} не загружен (откройте «Модули › Менеджер модулей», чтобы увидеть его): {reason}.
+The plugin {id} wasn't loaded. Open Plugins › Plugin Manager to see it.	Модуль {id} не загружен. Откройте «Модули › Менеджер модулей», чтобы увидеть его.
 The portal's OAuth app	Приложение OAuth портала
 the presentation export failed unexpectedly	экспорт презентации неожиданно завершился ошибкой
 the preview failed unexpectedly	предпросмотр неожиданно завершился ошибкой
@@ -3744,7 +3761,7 @@ The range is two numbers, low and high (0, 0.9)	Диапазон задаётс�
 The raster's data couldn't be read.	Не удалось прочитать данные растра.
 The raster's data couldn't be read: {error}	Не удалось прочитать данные растра: {error}
 the recovery copy is incomplete	копия для восстановления неполна
-the recovery copy is too large	копия для восстановления слишком велика
+the recovery copy is too large (maximum {mib} MiB on this computer)	копия для восстановления слишком велика (максимум {mib} MiB на этом компьютере)
 the recovery copy isn't text	копия для восстановления не является текстом
 the release isn't known	выпуск неизвестен
 The reply reached its length limit.	Ответ достиг предельной длины.
@@ -3759,6 +3776,7 @@ The saved password could not be used. Type a password to try again; check Rememb
 The saved S3 connection no longer matches this source.	Сохранённое подключение S3 больше не соответствует этому источнику.
 The saved sign-in changed. Select your account again.	Сохранённые данные входа изменились. Выберите учётную запись снова.
 The scale the layer's symbol and label sizes are set for. At other scales they grow and shrink with the map, as on paper.	Масштаб, для которого заданы размеры символов и подписей слоя. При других масштабах они увеличиваются и уменьшаются вместе с картой, как на бумаге.
+The script, for the Script pane	Скрипт для панели скриптов
 The selected GeoPackage layer is no longer available; choose a layer	Выбранный слой GeoPackage больше недоступен; выберите слой
 The server had a problem answering.	У сервера возникла проблема с ответом.
 The server is limiting requests.	Сервер ограничивает запросы.
@@ -3840,6 +3858,7 @@ This map's thumbnail, from the view.	Эскиз этой карты из вид�
 This platform does not report the system theme	Эта платформа не сообщает системную тему
 This plugin can:	Этот модуль может:
 This plugin runs as a program on your computer, outside RustGIS's sandbox. It can do anything you can: read and change your files, use the network and run other programs. Install it only if you trust its author.	Этот модуль работает как программа на вашем компьютере, вне песочницы RustGIS. Он может всё, что можете вы: читать и изменять ваши файлы, использовать сеть и запускать другие программы. Устанавливайте его, только если доверяете автору.
+This project	Этот проект
 This project uses a connection for {origin} that is not saved on this computer.	Этот проект использует подключение к {origin}, которое не сохранено на этом компьютере.
 This read was already started	Это чтение уже начато
 This release has no installer for this computer: get it from the release page.	В этом выпуске нет установщика для этого компьютера: скачайте его со страницы выпуска.
@@ -4096,6 +4115,7 @@ VN-2000 / UTM zone 48N	VN-2000 / UTM zone 48N
 VN-2000 / UTM zone 49N	VN-2000 / UTM zone 49N
 Volume	Объём
 Wait for the run to finish	Дождитесь завершения запуска
+Wait for the Script pane's run to finish	Дождитесь завершения запуска на панели скриптов
 Waiting for the browser…	Ожидание браузера…
 Waiting for your answer	Ждёт вашего ответа
 Walk	Ходьба
@@ -4201,7 +4221,7 @@ Wrap at	Перенос по
 Wrap length	Длина переноса
 Write a plugin	Написать модуль
 Writes a separate two-vertex line for each consecutive vertex pair.	Записывает отдельную линию из двух вершин для каждой пары последовательных вершин.
-Writes every feature with its geometry made valid: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved. Says what was repaired in each.	Записывает каждый объект с исправленной геометрией: кольца замкнуты, повторяющиеся вершины и вырожденные части удалены, самопересечения, перекрывающиеся части и дырки вне внешней границы устранены. Сообщает, что исправлено в каждом.
+Writes every feature with its geometry made valid where it can be: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved. Features with a missing or non-finite coordinate anywhere, even in a hole, or left with no usable points or, for polygons, no area once repaired, are written without geometry. Other features too complex to check, or whose repair fails, are written unchanged. Says what was repaired in each.	Записывает каждый объект с геометрией, исправленной там, где это возможно: кольца замкнуты, повторяющиеся вершины и вырожденные части удалены, самопересечения, перекрывающиеся части и дырки вне внешней границы устранены. Объекты с отсутствующей или неконечной координатой где угодно, даже в дырке, а также объекты, у которых после исправления не осталось пригодных точек или, для полигонов, площади, записываются без геометрии. Другие объекты, слишком сложные для проверки или не поддавшиеся исправлению, записываются без изменений. Сообщает, что исправлено в каждом.
 Writes one axis-aligned bounding rectangle per feature in stored longitude/latitude coordinates. Zero-area envelopes are skipped.	Записывает по одному ограничивающему прямоугольнику, выровненному по осям, на каждый объект в сохранённых координатах долготы/широты. Охваты нулевой площади пропускаются.
 Writes Sen's slope, the test's Z and p-value, and the slope where the trend is significant.	Записывает наклон Сена, Z и p-значение теста, а также наклон там, где тренд значим.
 Writes the features with invalid geometry, such as self-intersecting or unclosed rings, holes outside their shell or overlapping parts, and says what is wrong with each.	Записывает объекты с недопустимой геометрией, например самопересекающимися или незамкнутыми кольцами, дырками вне внешней границы или перекрывающимися частями, и сообщает, что не так с каждым.

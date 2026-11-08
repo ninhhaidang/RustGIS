@@ -1,5 +1,7 @@
 # ko interface catalog: English<TAB>translation
  by 	 ×
+"instance" must be a layer's instance number, not {value}	"instance"는 {value}이(가) 아니라 레이어의 인스턴스 번호여야 합니다
+"layer" must be a layer's id or name, not {value}	"layer"는 {value}이(가) 아니라 레이어의 ID 또는 이름이어야 합니다
 '{b}' isn't a bucket name	'{b}'은(는) 버킷 이름이 아닙니다
 '{text}' isn't a scale: type one such as 1:12,345	'{text}'은(는) 축척이 아닙니다: 1:12,345처럼 입력하세요
 (b4-b3)/(b4+b3)	(b4-b3)/(b4+b3)
@@ -440,6 +442,7 @@ Basemap	배경지도
 Basemaps	배경지도
 Basic authentication	기본 인증
 Basin from hydrolocation	수문 위치에서 유역 구하기
+Batch Run	일괄 실행
 Bearing	방위
 Before	앞
 Before the event	이벤트 이전
@@ -778,6 +781,7 @@ Connected to {kind} {title}	{kind} {title}에 연결했습니다
 Connecting to {url}…	{url}에 연결하는 중…
 Connection	연결
 Connection failure	연결 실패
+connection must be a saved web-service connection id (text)	connection은 저장된 웹 서비스 연결 ID(텍스트)여야 합니다
 connection.new returned no id	connection.new가 ID를 반환하지 않았습니다
 Connections	연결
 Connections you add are listed here	추가한 연결이 여기에 표시됩니다
@@ -809,6 +813,7 @@ Copied the layout to the clipboard	레이아웃을 클립보드에 복사했습�
 Copied the layout to the clipboard at {dpi} dpi, not {wanted}: the page is too large for a larger image	레이아웃을 {wanted} dpi가 아닌 {dpi} dpi로 클립보드에 복사했습니다. 페이지가 너무 커서 더 큰 이미지를 만들 수 없습니다
 Copied the map to the clipboard	지도를 클립보드에 복사했습니다
 Copied {path}	{path} 복사됨
+Copied. The log cut its parameters short or took their secrets out, so it may not run as it ran.	복사했습니다. 로그에서 매개변수가 잘렸거나 비밀 정보가 제거되었으므로 원래대로 실행되지 않을 수 있습니다.
 Copies the (selected) features of a layer to a new layer.	레이어의 (선택한) 피처를 새 레이어로 복사합니다.
 Copy	복사
 Copy / Cut / Paste features	피처 복사/잘라내기/붙여넣기
@@ -834,6 +839,7 @@ Copy Layers	레이어 복사
 Copy Parameters	매개변수 복사
 Copy Path	경로 복사
 Copy Run As Code	실행을 코드로 복사
+Copy Script	스크립트 복사
 Copy sign-in link	로그인 링크 복사
 Copy the filtered history, including technical details	필터링된 기록을 기술 세부 정보와 함께 복사
 Copy the selected features (also as GeoJSON text).	선택한 피처를 복사합니다(GeoJSON 텍스트로도).
@@ -1693,6 +1699,7 @@ In Beyond	다음보다 확대 시
 In degrees.	도 단위.
 In memory	메모리 내
 In place	제자리
+In place of the Script pane's script ({keys} brings it back)	스크립트 창의 스크립트를 대체합니다({keys}로 되돌릴 수 있음)
 In place, holding a {w} × {h} overview	제자리, {w} × {h} 개요 유지
 In Progress	진행 중
 in progress	진행 중
@@ -1772,6 +1779,7 @@ Invert color scheme	색상표 반전
 Invert the selection.	선택을 반전합니다.
 IS	IS
 IS NULL	IS NULL
+It can't run in a script	스크립트에서 실행할 수 없습니다
 it changed since it was installed: install it again from the Plugin Manager	설치 후 변경되었습니다. 플러그인 관리자에서 다시 설치하세요
 it connects to an address on the internet	인터넷의 주소에 연결하는
 It didn't open: {error}	열리지 않았습니다: {error}
@@ -2343,6 +2351,7 @@ no service or file links	서비스 또는 파일 링크가 없습니다
 No services match your search.	검색과 일치하는 서비스가 없습니다.
 No standalone tables	독립 테이블 없음
 No styles yet	아직 스타일이 없습니다
+No such tile layer	해당 타일 레이어가 없습니다
 no system keychain in this build	이 빌드에는 시스템 키체인이 없음
 No tasks yet. Record one, or make one from your geoprocessing history with Analyze › Task.	아직 태스크가 없습니다. 하나를 기록하거나 분석 › 태스크에서 지오프로세싱 기록으로 만드세요.
 no text graphic there	그곳에 텍스트 그래픽이 없습니다
@@ -2432,6 +2441,7 @@ Only a tile archive read from a file (PMTiles or MBTiles) can be repaired.	파�
 Only cubes with data where the map is	지도 영역에 데이터가 있는 큐브만
 Only features matching this expression draw in {layer}.	이 표현식과 일치하는 피처만 {layer}에 그려집니다.
 Only selected polygons will be included in the output.	선택한 폴리곤만 출력에 포함됩니다.
+Only the commands run in the project open now	지금 열려 있는 프로젝트에서 실행한 명령만
 Only the map's area	지도 영역만
 Only where the map is	지도 영역만
 Opacity	불투명도
@@ -2452,6 +2462,7 @@ Open Diagnostics	진단 정보 열기
 Open folder	폴더 열기
 Open In Geoprocessing…	지오프로세싱에서 열기…
 Open in ModelBuilder	ModelBuilder에서 열기
+Open in Script Pane	스크립트 창에서 열기
 Open in Tool	도구에서 열기
 Open Layout	레이아웃 열기
 Open ModelBuilder	ModelBuilder 열기
@@ -2652,7 +2663,7 @@ Plugins marked Not sandboxed run as programs on your computer instead, and can d
 Plugins run in a sandbox: they can't reach your files or the network, and they change the project only through RustGIS's own commands, within the permissions you accept.	플러그인은 샌드박스에서 실행됩니다. 파일이나 네트워크에 접근할 수 없으며, 사용자가 허용한 권한 내에서 RustGIS 자체 명령을 통해서만 프로젝트를 변경합니다.
 PMTiles archive	PMTiles 아카이브
 PNG frames (zip)	PNG 프레임(zip)
-PNG image	PNG 이미지
+PNG image or GeoTIFF	PNG 이미지 또는 GeoTIFF
 Point	포인트
 Point the selected layer at its file after the file moved or was renamed.	파일을 옮기거나 이름을 바꾼 뒤 선택한 레이어가 해당 파일을 가리키도록 합니다.
 Points	포인트
@@ -3194,6 +3205,7 @@ Select a layer in the Layers pane	레이어 창에서 레이어를 선택하세�
 select a layer in the Layers pane first	먼저 레이어 창에서 레이어를 선택하세요
 Select a layer in the Layers pane.	레이어 창에서 레이어를 선택하세요.
 Select a navigation method after tracing a point.	포인트를 추적한 후 탐색 방법을 선택하세요.
+Select a raster or tile layer in the Layers pane first	먼저 레이어 창에서 래스터 또는 타일 레이어를 선택하세요
 Select All	모두 선택
 Select an element to format it.	서식을 지정할 요소를 선택하세요.
 Select By\nAttributes	속성으로\n선택
@@ -3661,6 +3673,7 @@ The desktop app adds data cubes	데이터 큐브는 데스크톱 앱에서 추�
 The distance between two marks along the line	라인을 따른 두 마크 사이의 거리
 The environment (AWS_ACCESS_KEY_ID…)	환경 변수(AWS_ACCESS_KEY_ID…)
 The features where the map is	지도 영역의 피처
+The filter searches the first {n} of them; the service.add command adds any other by its name.	필터는 그중 처음 {n}개를 검색합니다. 그 밖의 항목은 service.add 명령으로 이름을 지정해 추가할 수 있습니다.
 The first 1,000 entries; narrow it down a folder at a time.	처음 1,000개 항목입니다. 폴더 단위로 범위를 좁히세요.
 The first {n} are listed.	처음 {n}개가 표시됩니다.
 The first {n} are shown: search to narrow them.	처음 {n}개가 표시됩니다: 검색하여 범위를 좁히세요.
@@ -3688,6 +3701,7 @@ The layer's strokes	레이어의 선
 the layout export failed unexpectedly	레이아웃 내보내기가 예기치 않게 실패했습니다
 The link doesn't say its STAC API: Find Items searches {api}	링크에 STAC API가 지정되지 않았습니다: 항목 찾기는 {api}을(를) 검색합니다
 The list of plugins to browse. Leave it empty for the RustGIS plugin registry.	둘러볼 플러그인 목록입니다. 비워 두면 RustGIS 플러그인 레지스트리를 사용합니다.
+The log cut it short or took its secrets out: it would run only in part	로그에서 잘렸거나 비밀 정보가 제거되었습니다: 일부만 실행됩니다
 The longest a callout's line may be.	지시선의 최대 길이입니다.
 The map at the left; the title, locator, legend, sources and reference in a panel at the right.	왼쪽에 지도, 오른쪽 패널에 제목, 로케이터, 범례, 출처, 참조 정보를 배치합니다.
 the map has no GeoPackage layer loaded for editing (Home › Add Data › Edit GeoPackage Table…)	지도에 편집용으로 불러온 GeoPackage 레이어가 없습니다(홈 › 데이터 추가 › GeoPackage 테이블 편집…)
@@ -3728,7 +3742,10 @@ the picture is too large to show	그림이 너무 커서 표시할 수 없습니
 the picture is too large to show, or isn't one	그림이 너무 커서 표시할 수 없거나 그림이 아닙니다
 the place lies outside the zone given	위치가 지정한 구역 밖에 있습니다
 The places leave this device for the public Valhalla server at {server}, run by FOSSGIS. Don't continue if your project is bound by data privacy or data sovereignty rules.	이 장소들은 이 기기를 떠나 FOSSGIS가 운영하는 공개 Valhalla 서버 {server}(으)로 전송됩니다. 프로젝트가 데이터 개인정보 보호 또는 데이터 주권 규정을 따라야 한다면 계속하지 마세요.
-The plugin {id} wasn't loaded. Open Plugins › Plugin Manager to see it. {reason}	플러그인 {id}을(를) 불러오지 않았습니다. 플러그인 › 플러그인 관리자를 열어 확인하세요. {reason}
+The plugin blocklist couldn't be downloaded ({error}); the last one read, if any, stays in force.	플러그인 차단 목록을 다운로드할 수 없습니다({error}). 마지막으로 읽은 목록이 있으면 그 목록이 계속 적용됩니다.
+The plugin blocklist couldn't be read ({error}); the last one read, if any, stays in force.	플러그인 차단 목록을 읽을 수 없습니다({error}). 마지막으로 읽은 목록이 있으면 그 목록이 계속 적용됩니다.
+The plugin {id} wasn't loaded (open Plugins › Plugin Manager to see it): {reason}.	플러그인 {id}을(를) 불러오지 않았습니다(플러그인 › 플러그인 관리자를 열어 확인하세요): {reason}.
+The plugin {id} wasn't loaded. Open Plugins › Plugin Manager to see it.	플러그인 {id}을(를) 불러오지 않았습니다. 플러그인 › 플러그인 관리자를 열어 확인하세요.
 The portal's OAuth app	포털의 OAuth 앱
 the presentation export failed unexpectedly	프레젠테이션 내보내기가 예기치 않게 실패했습니다
 the preview failed unexpectedly	미리 보기가 예기치 않게 실패했습니다
@@ -3744,7 +3761,7 @@ The range is two numbers, low and high (0, 0.9)	범위는 최솟값과 최댓값
 The raster's data couldn't be read.	래스터 데이터를 읽을 수 없습니다.
 The raster's data couldn't be read: {error}	래스터 데이터를 읽을 수 없습니다: {error}
 the recovery copy is incomplete	복구 사본이 불완전합니다
-the recovery copy is too large	복구 사본이 너무 큽니다
+the recovery copy is too large (maximum {mib} MiB on this computer)	복구 사본이 너무 큽니다(이 컴퓨터에서 최대 {mib} MiB)
 the recovery copy isn't text	복구 사본이 텍스트가 아닙니다
 the release isn't known	릴리스를 알 수 없습니다
 The reply reached its length limit.	응답이 길이 한도에 도달했습니다.
@@ -3759,6 +3776,7 @@ The saved password could not be used. Type a password to try again; check Rememb
 The saved S3 connection no longer matches this source.	저장된 S3 연결이 더 이상 이 소스와 일치하지 않습니다.
 The saved sign-in changed. Select your account again.	저장된 로그인 정보가 변경되었습니다. 계정을 다시 선택하세요.
 The scale the layer's symbol and label sizes are set for. At other scales they grow and shrink with the map, as on paper.	레이어의 심볼과 라벨 크기가 맞춰진 축척입니다. 다른 축척에서는 종이 지도처럼 지도와 함께 커지거나 작아집니다.
+The script, for the Script pane	스크립트 창용 스크립트
 The selected GeoPackage layer is no longer available; choose a layer	선택한 GeoPackage 레이어를 더 이상 사용할 수 없습니다. 레이어를 선택하세요
 The server had a problem answering.	서버가 응답하는 중 문제가 발생했습니다.
 The server is limiting requests.	서버가 요청을 제한하고 있습니다.
@@ -3840,6 +3858,7 @@ This map's thumbnail, from the view.	뷰로 만든 이 지도의 썸네일.
 This platform does not report the system theme	이 플랫폼은 시스템 테마를 알려 주지 않습니다
 This plugin can:	이 플러그인이 할 수 있는 작업:
 This plugin runs as a program on your computer, outside RustGIS's sandbox. It can do anything you can: read and change your files, use the network and run other programs. Install it only if you trust its author.	이 플러그인은 RustGIS 샌드박스 밖에서 컴퓨터의 프로그램으로 실행됩니다. 파일 읽기 및 변경, 네트워크 사용, 다른 프로그램 실행 등 사용자가 할 수 있는 모든 작업을 할 수 있습니다. 작성자를 신뢰하는 경우에만 설치하세요.
+This project	이 프로젝트
 This project uses a connection for {origin} that is not saved on this computer.	이 프로젝트는 이 컴퓨터에 저장되지 않은 {origin} 연결을 사용합니다.
 This read was already started	이 읽기는 이미 시작되었습니다
 This release has no installer for this computer: get it from the release page.	이 릴리스에는 이 컴퓨터용 설치 프로그램이 없습니다. 릴리스 페이지에서 받으세요.
@@ -4096,6 +4115,7 @@ VN-2000 / UTM zone 48N	VN-2000 / UTM 48N 구역
 VN-2000 / UTM zone 49N	VN-2000 / UTM 49N 구역
 Volume	부피
 Wait for the run to finish	실행이 끝날 때까지 대기
+Wait for the Script pane's run to finish	스크립트 창의 실행이 끝날 때까지 기다리세요
 Waiting for the browser…	브라우저를 기다리는 중…
 Waiting for your answer	응답을 기다리는 중
 Walk	걷기
@@ -4201,7 +4221,7 @@ Wrap at	줄바꿈 문자
 Wrap length	줄바꿈 길이
 Write a plugin	플러그인 만들기
 Writes a separate two-vertex line for each consecutive vertex pair.	연속된 버텍스 쌍마다 버텍스 두 개짜리 라인을 따로 씁니다.
-Writes every feature with its geometry made valid: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved. Says what was repaired in each.	모든 피처의 지오메트리를 유효하게 만들어 씁니다. 링을 닫고, 중복 버텍스와 퇴화된 부분을 제거하고, 자체 교차, 겹치는 부분, 외곽 밖의 구멍을 해결합니다. 각 피처에서 무엇을 복구했는지 알려 줍니다.
+Writes every feature with its geometry made valid where it can be: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved. Features with a missing or non-finite coordinate anywhere, even in a hole, or left with no usable points or, for polygons, no area once repaired, are written without geometry. Other features too complex to check, or whose repair fails, are written unchanged. Says what was repaired in each.	모든 피처의 지오메트리를 가능한 한 유효하게 만들어 씁니다. 링을 닫고, 중복 버텍스와 퇴화된 부분을 제거하고, 자체 교차, 겹치는 부분, 외곽 밖의 구멍을 해결합니다. 구멍을 포함해 어디에든 누락되었거나 유한하지 않은 좌표가 있는 피처, 또는 복구 후 사용할 수 있는 점이 남지 않거나 폴리곤의 경우 면적이 없는 피처는 지오메트리 없이 씁니다. 너무 복잡해 확인할 수 없거나 복구에 실패한 그 밖의 피처는 변경하지 않고 씁니다. 각 피처에서 무엇을 복구했는지 알려 줍니다.
 Writes one axis-aligned bounding rectangle per feature in stored longitude/latitude coordinates. Zero-area envelopes are skipped.	저장된 경도/위도 좌표로 피처마다 축에 정렬된 경계 사각형을 하나씩 씁니다. 면적이 0인 엔벨로프는 건너뜁니다.
 Writes Sen's slope, the test's Z and p-value, and the slope where the trend is significant.	Sen 기울기, 검정의 Z 값과 p 값, 그리고 추세가 유의한 곳의 기울기를 기록합니다.
 Writes the features with invalid geometry, such as self-intersecting or unclosed rings, holes outside their shell or overlapping parts, and says what is wrong with each.	자체 교차하거나 닫히지 않은 링, 외곽 밖의 구멍, 겹치는 부분 등 잘못된 지오메트리를 가진 피처를 쓰고, 각각 무엇이 잘못되었는지 알려 줍니다.

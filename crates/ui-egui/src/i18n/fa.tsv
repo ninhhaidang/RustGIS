@@ -1,5 +1,7 @@
 # fa interface catalog: English<TAB>translation
  by 	توسط
+"instance" must be a layer's instance number, not {value}	"instance" باید شماره نمونه یک لایه باشد، نه {value}
+"layer" must be a layer's id or name, not {value}	"layer" باید شناسه یا نام یک لایه باشد، نه {value}
 '{b}' isn't a bucket name	نام باکت «{b}» معتبر نیست
 '{text}' isn't a scale: type one such as 1:12,345	مقیاس «{text}» معتبر نیست: مقیاسی مانند ۱:۱۲٬۳۴۵ وارد کنید
 (b4-b3)/(b4+b3)	(b4-b3)/(b4+b3)
@@ -440,6 +442,7 @@ Basemap	نقشه‌ی پایه
 Basemaps	نقشه‌های پایه
 Basic authentication	احراز هویت پایه (Basic)
 Basin from hydrolocation	حوضه آبریز از موقعیت هیدرولوژیک
+Batch Run	اجرای دسته‌ای
 Bearing	جهت
 Before	قبل
 Before the event	پیش از رویداد
@@ -778,6 +781,7 @@ Connected to {kind} {title}	به {kind} {title} متصل شد
 Connecting to {url}…	در حال اتصال به {url}…
 Connection	اتصال
 Connection failure	خطای اتصال
+connection must be a saved web-service connection id (text)	connection باید شناسه یک اتصال سرویس وب ذخیره‌شده (متن) باشد
 connection.new returned no id	connection.new هیچ شناسه‌ای برنگرداند
 Connections	اتصال‌ها
 Connections you add are listed here	اتصال‌هایی که اضافه می‌کنید اینجا فهرست می‌شوند
@@ -809,6 +813,7 @@ Copied the layout to the clipboard	صفحه‌آرایی در کلیپ‌بور�
 Copied the layout to the clipboard at {dpi} dpi, not {wanted}: the page is too large for a larger image	صفحه‌آرایی با {dpi} dpi و نه {wanted} در کلیپ‌بورد کپی شد: صفحه برای تصویر بزرگ‌تر خیلی بزرگ است
 Copied the map to the clipboard	نقشه در کلیپ‌برد کپی شد
 Copied {path}	کپی شد: {path}
+Copied. The log cut its parameters short or took their secrets out, so it may not run as it ran.	کپی شد. گزارش پارامترهایش را کوتاه کرده یا رازهایش را حذف کرده است، پس ممکن است آن‌طور که اجرا شده بود اجرا نشود.
 Copies the (selected) features of a layer to a new layer.	عناصر (انتخاب‌شده) یک لایه را به یک لایه جدید کپی می‌کند.
 Copy	کپی
 Copy / Cut / Paste features	کپی / برش / چسباندن عناصر
@@ -834,6 +839,7 @@ Copy Layers	کپی لایه‌ها
 Copy Parameters	کپی پارامترها
 Copy Path	کپی مسیر
 Copy Run As Code	کپی اجرا به‌عنوان کد
+Copy Script	کپی اسکریپت
 Copy sign-in link	کپی پیوند ورود
 Copy the filtered history, including technical details	کپی سابقه پالایش‌شده، همراه با جزئیات فنی
 Copy the selected features (also as GeoJSON text).	کپی عناصر انتخاب‌شده (هم به صورت متن GeoJSON).
@@ -1693,6 +1699,7 @@ In Beyond	نزدیک‌تر از
 In degrees.	به درجه.
 In memory	در حافظه
 In place	درجا
+In place of the Script pane's script ({keys} brings it back)	به جای اسکریپت پنل Script ({keys} آن را برمی‌گرداند)
 In place, holding a {w} × {h} overview	درجا، با یک پیش‌نمای {w} × {h}
 In Progress	در حال انجام
 in progress	در حال انجام
@@ -1772,6 +1779,7 @@ Invert color scheme	وارونه‌کردن طرح رنگ
 Invert the selection.	وارونه‌کردن انتخاب.
 IS	IS
 IS NULL	IS NULL
+It can't run in a script	نمی‌تواند در یک اسکریپت اجرا شود
 it changed since it was installed: install it again from the Plugin Manager	پس از نصب تغییر کرده است: آن را دوباره از مدیریت افزونه نصب کنید
 it connects to an address on the internet	به نشانی‌ای در اینترنت وصل می‌شود
 It didn't open: {error}	باز نشد: {error}
@@ -2343,6 +2351,7 @@ no service or file links	بدون پیوند سرویس یا فایل
 No services match your search.	هیچ سرویسی با جستجوی شما مطابقت ندارد.
 No standalone tables	بدون جدول مستقل
 No styles yet	هنوز استایلی نیست
+No such tile layer	چنین لایه کاشی‌ای وجود ندارد
 no system keychain in this build	در این نسخه جاکلیدی سیستم وجود ندارد
 No tasks yet. Record one, or make one from your geoprocessing history with Analyze › Task.	هنوز تسکی نیست. یکی ضبط کنید، یا از تاریخچه زمین‌پردازش با تحلیل › Task بسازید.
 no text graphic there	آن‌جا گرافیک متنی نیست
@@ -2432,6 +2441,7 @@ Only a tile archive read from a file (PMTiles or MBTiles) can be repaired.	فق�
 Only cubes with data where the map is	فقط مکعب‌هایی که در محل نقشه داده دارند
 Only features matching this expression draw in {layer}.	فقط عناصری که با این عبارت مطابقت دارند در {layer} ترسیم می‌شوند.
 Only selected polygons will be included in the output.	فقط چندضلعی‌های انتخاب‌شده در خروجی گنجانده می‌شوند.
+Only the commands run in the project open now	فقط دستورهایی که در پروژه بازِ کنونی اجرا شده‌اند
 Only the map's area	فقط محدوده نقشه
 Only where the map is	فقط در محل نقشه
 Opacity	کدری
@@ -2452,6 +2462,7 @@ Open Diagnostics	بازکردن عیب‌یابی
 Open folder	بازکردن پوشه
 Open In Geoprocessing…	بازکردن در زمین‌پردازش…
 Open in ModelBuilder	بازکردن در ModelBuilder
+Open in Script Pane	باز کردن در پنل Script
 Open in Tool	بازکردن در ابزار
 Open Layout	بازکردن صفحه‌آرایی
 Open ModelBuilder	بازکردن ModelBuilder
@@ -2652,7 +2663,7 @@ Plugins marked Not sandboxed run as programs on your computer instead, and can d
 Plugins run in a sandbox: they can't reach your files or the network, and they change the project only through RustGIS's own commands, within the permissions you accept.	افزونه‌ها در سندباکس اجرا می‌شوند: به فایل‌ها یا شبکه شما دسترسی ندارند و پروژه را فقط از طریق دستورهای خود RustGIS و در محدوده مجوزهایی که می‌پذیرید تغییر می‌دهند.
 PMTiles archive	بایگانی PMTiles
 PNG frames (zip)	فریم‌های PNG (zip)
-PNG image	تصویر PNG
+PNG image or GeoTIFF	تصویر PNG یا GeoTIFF
 Point	نقطه
 Point the selected layer at its file after the file moved or was renamed.	لایه انتخاب‌شده را پس از جابه‌جایی یا تغییر نام فایل، به فایلش ارجاع می‌دهد.
 Points	نقاط
@@ -3194,6 +3205,7 @@ Select a layer in the Layers pane	انتخاب یک لایه در پنل Layers
 select a layer in the Layers pane first	اول در پنل Layers یک لایه انتخاب کنید
 Select a layer in the Layers pane.	در پنل Layers یک لایه انتخاب کنید.
 Select a navigation method after tracing a point.	پس از ردگیری نقطه، یک روش ناوبری انتخاب کنید.
+Select a raster or tile layer in the Layers pane first	اول در پنل Layers یک لایه رستر یا لایه کاشی انتخاب کنید
 Select All	انتخاب همه
 Select an element to format it.	عنصری انتخاب کنید تا قالب‌بندی شود.
 Select By\nAttributes	انتخاب با\nویژگی ها
@@ -3661,6 +3673,7 @@ The desktop app adds data cubes	برنامه دسکتاپ مکعب‌های دا
 The distance between two marks along the line	فاصله بین دو نشان در امتداد خط
 The environment (AWS_ACCESS_KEY_ID…)	محیط (AWS_ACCESS_KEY_ID…)
 The features where the map is	عنصرهای موجود در محل نقشه
+The filter searches the first {n} of them; the service.add command adds any other by its name.	فیلتر در {n} مورد اول آن‌ها جستجو می‌کند؛ دستور service.add هر مورد دیگری را با نامش اضافه می‌کند.
 The first 1,000 entries; narrow it down a folder at a time.	هزار ورودی اول؛ هر بار یک پوشه محدودش کنید.
 The first {n} are listed.	{n} مورد اول فهرست شده‌اند.
 The first {n} are shown: search to narrow them.	{n} مورد اول نمایش داده می‌شوند: برای محدودکردن، جستجو کنید.
@@ -3688,6 +3701,7 @@ The layer's strokes	ضربه‌های لایه
 the layout export failed unexpectedly	برون‌بری صفحه‌آرایی به‌طور غیرمنتظره‌ای ناموفق شد
 The link doesn't say its STAC API: Find Items searches {api}	پیوند، API STAC خودش را نگفته: Find Items در {api} جستجو می‌کند
 The list of plugins to browse. Leave it empty for the RustGIS plugin registry.	فهرست افزونه‌ها برای مرور. برای فهرست افزونه RustGIS، خالی بگذارید.
+The log cut it short or took its secrets out: it would run only in part	گزارش آن را کوتاه کرده یا رازهایش را حذف کرده است: فقط بخشی از آن اجرا می‌شود
 The longest a callout's line may be.	بیشترین طول ممکن برای خط راهنما.
 The map at the left; the title, locator, legend, sources and reference in a panel at the right.	نقشه در چپ؛ عنوان، مکان‌یاب، شرح، منابع و مرجع در پنلی در راست.
 the map has no GeoPackage layer loaded for editing (Home › Add Data › Edit GeoPackage Table…)	نقشه هیچ لایه GeoPackage بارگذاری‌شده برای ویرایش ندارد (خانه › افزودن داده › ویرایش جدول GeoPackage…)
@@ -3728,7 +3742,10 @@ the picture is too large to show	تصویر برای نمایش خیلی بزر�
 the picture is too large to show, or isn't one	تصویر برای نمایش خیلی بزرگ است، یا اصلاً تصویر نیست
 the place lies outside the zone given	این مکان بیرون از ناحیه داده‌شده است
 The places leave this device for the public Valhalla server at {server}, run by FOSSGIS. Don't continue if your project is bound by data privacy or data sovereignty rules.	مکان‌ها از این دستگاه به سرور عمومی Valhalla در {server} می‌روند که FOSSGIS اداره می‌کند. اگر پروژه شما تابع قواعد حریم خصوصی داده یا حاکمیت داده است، ادامه ندهید.
-The plugin {id} wasn't loaded. Open Plugins › Plugin Manager to see it. {reason}	افزونه {id} بارگذاری نشد. برای دیدنش افزونه‌ها › مدیریت افزونه را باز کنید. {reason}
+The plugin blocklist couldn't be downloaded ({error}); the last one read, if any, stays in force.	فهرست مسدود افزونه‌ها دانلود نشد ({error})؛ آخرین فهرست خوانده‌شده، اگر باشد، معتبر می‌ماند.
+The plugin blocklist couldn't be read ({error}); the last one read, if any, stays in force.	فهرست مسدود افزونه‌ها خوانده نشد ({error})؛ آخرین فهرست خوانده‌شده، اگر باشد، معتبر می‌ماند.
+The plugin {id} wasn't loaded (open Plugins › Plugin Manager to see it): {reason}.	افزونه {id} بارگذاری نشد (برای دیدنش افزونه‌ها › مدیریت افزونه را باز کنید): {reason}.
+The plugin {id} wasn't loaded. Open Plugins › Plugin Manager to see it.	افزونه {id} بارگذاری نشد. برای دیدنش افزونه‌ها › مدیریت افزونه را باز کنید.
 The portal's OAuth app	برنامه OAuth پورتال
 the presentation export failed unexpectedly	برون‌بری Presentation به‌طور غیرمنتظره‌ای ناموفق شد
 the preview failed unexpectedly	پیش‌نمایش به‌طور غیرمنتظره‌ای ناموفق شد
@@ -3744,7 +3761,7 @@ The range is two numbers, low and high (0, 0.9)	بازه دو عدد است، ک
 The raster's data couldn't be read.	داده رستر خوانده نشد.
 The raster's data couldn't be read: {error}	داده‌های رستر خوانده نشد: {error}
 the recovery copy is incomplete	نسخه‌ی بازیابی ناقص است
-the recovery copy is too large	نسخه‌ی بازیابی بیش از حد بزرگ است
+the recovery copy is too large (maximum {mib} MiB on this computer)	نسخه‌ی بازیابی بیش از حد بزرگ است (حداکثر {mib} MiB روی این رایانه)
 the recovery copy isn't text	نسخه‌ی بازیابی متن نیست
 the release isn't known	انتشار ناشناخته است
 The reply reached its length limit.	پاسخ به سقف طول رسید.
@@ -3759,6 +3776,7 @@ The saved password could not be used. Type a password to try again; check Rememb
 The saved S3 connection no longer matches this source.	اتصال S3 ذخیره‌شده دیگر با این منبع مطابقت ندارد.
 The saved sign-in changed. Select your account again.	ورود ذخیره‌شده تغییر کرده است. حساب خود را دوباره انتخاب کنید.
 The scale the layer's symbol and label sizes are set for. At other scales they grow and shrink with the map, as on paper.	مقیاسی که اندازه نمادها و برچسب‌های لایه برای آن تنظیم شده است. در مقیاس‌های دیگر، مانند روی کاغذ، همراه با نقشه بزرگ و کوچک می‌شوند.
+The script, for the Script pane	اسکریپت، برای پنل Script
 The selected GeoPackage layer is no longer available; choose a layer	لایه GeoPackage انتخاب‌شده دیگر در دسترس نیست؛ یک لایه انتخاب کنید
 The server had a problem answering.	سرور در پاسخ‌دادن به مشکل خورد.
 The server is limiting requests.	سرور در حال محدودکردن درخواست‌هاست.
@@ -3840,6 +3858,7 @@ This map's thumbnail, from the view.	تصویر بندانگشتی این نقش
 This platform does not report the system theme	این سکو پوسته سیستم را گزارش نمی‌دهد
 This plugin can:	این افزونه می‌تواند:
 This plugin runs as a program on your computer, outside RustGIS's sandbox. It can do anything you can: read and change your files, use the network and run other programs. Install it only if you trust its author.	این افزونه مثل یک برنامه روی رایانه شما، بیرون از سندباکس RustGIS اجرا می‌شود. هر کاری را که شما می‌توانید می‌کند: خواندن و تغییر فایل‌هایتان، استفاده از شبکه و اجرای برنامه‌های دیگر. فقط اگر به نویسنده‌اش اعتماد دارید نصبش کنید.
+This project	این پروژه
 This project uses a connection for {origin} that is not saved on this computer.	این پروژه از اتصالی برای {origin} استفاده می‌کند که روی این رایانه ذخیره نشده است.
 This read was already started	این خواندن پیش‌تر آغاز شده است
 This release has no installer for this computer: get it from the release page.	این انتشار نصب‌کننده‌ای برای این رایانه ندارد: آن را از صفحه انتشار بگیرید.
@@ -4096,6 +4115,7 @@ VN-2000 / UTM zone 48N	VN-2000 / UTM zone 48N
 VN-2000 / UTM zone 49N	VN-2000 / UTM zone 49N
 Volume	حجم
 Wait for the run to finish	منتظر پایان اجرا بمانید
+Wait for the Script pane's run to finish	صبر کنید تا اجرای پنل Script تمام شود
 Waiting for the browser…	در انتظار مرورگر…
 Waiting for your answer	در انتظار پاسخ شما
 Walk	قدم‌زدن
@@ -4201,7 +4221,7 @@ Wrap at	شکستن در
 Wrap length	طول شکستن
 Write a plugin	نوشتن افزونه
 Writes a separate two-vertex line for each consecutive vertex pair.	برای هر جفت رأس پیاپی، یک خط دورأسی جداگانه می‌نویسد.
-Writes every feature with its geometry made valid: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved. Says what was repaired in each.	هر عنصر را با هندسه معتبرشده می‌نویسد: حلقه‌ها بسته، رأس‌های تکراری و بخش‌های تباهیده حذف، و خودتقاطع‌ها، بخش‌های هم‌پوشان و حفره‌های بیرون از حلقه بیرونی رفع می‌شوند. می‌گوید در هر کدام چه چیزی ترمیم شد.
+Writes every feature with its geometry made valid where it can be: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved. Features with a missing or non-finite coordinate anywhere, even in a hole, or left with no usable points or, for polygons, no area once repaired, are written without geometry. Other features too complex to check, or whose repair fails, are written unchanged. Says what was repaired in each.	هر عنصر را تا جایی که ممکن است با هندسه معتبرشده می‌نویسد: حلقه‌ها بسته، رأس‌های تکراری و بخش‌های تباهیده حذف، و خودتقاطع‌ها، بخش‌های هم‌پوشان و حفره‌های بیرون از حلقه بیرونی رفع می‌شوند. عناصری که در هر جایی، حتی در یک حفره، مختصات گمشده یا نامتناهی دارند، یا پس از ترمیم هیچ نقطه قابل استفاده‌ای یا، برای چندضلعی‌ها، هیچ مساحتی برایشان نمی‌ماند، بدون هندسه نوشته می‌شوند. سایر عناصری که برای بررسی بیش از حد پیچیده‌اند یا ترمیمشان ناموفق است، بدون تغییر نوشته می‌شوند. می‌گوید در هر کدام چه چیزی ترمیم شد.
 Writes one axis-aligned bounding rectangle per feature in stored longitude/latitude coordinates. Zero-area envelopes are skipped.	برای هر عنصر یک مستطیل محدودکننده هم‌راستا با محورها در مختصات طول/عرض جغرافیایی ذخیره‌شده می‌نویسد. پوش‌های با مساحت صفر نادیده گرفته می‌شوند.
 Writes Sen's slope, the test's Z and p-value, and the slope where the trend is significant.	شیب Sen، مقدار Z و p-value آزمون، و شیب در جاهایی که روند معنادار است را می‌نویسد.
 Writes the features with invalid geometry, such as self-intersecting or unclosed rings, holes outside their shell or overlapping parts, and says what is wrong with each.	عناصری با هندسه نامعتبر، مانند حلقه‌های خودمتقاطع یا بسته‌نشده، حفره‌های بیرون از حلقه بیرونی یا بخش‌های هم‌پوشان، را می‌نویسد و می‌گوید هر کدام چه مشکلی دارد.

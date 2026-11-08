@@ -1,5 +1,7 @@
 # el interface catalog: English<TAB>translation
  by 	 ανά
+"instance" must be a layer's instance number, not {value}	Το "instance" πρέπει να είναι ο αριθμός παρουσίας ενός επιπέδου, όχι {value}
+"layer" must be a layer's id or name, not {value}	Το "layer" πρέπει να είναι το αναγνωριστικό ή το όνομα ενός επιπέδου, όχι {value}
 '{b}' isn't a bucket name	Το '{b}' δεν είναι όνομα bucket
 '{text}' isn't a scale: type one such as 1:12,345	Το '{text}' δεν είναι κλίμακα: πληκτρολογήστε μια όπως 1:12,345
 (b4-b3)/(b4+b3)	(b4-b3)/(b4+b3)
@@ -440,6 +442,7 @@ Basemap	Basemap
 Basemaps	Basemaps
 Basic authentication	Βασικός έλεγχος ταυτότητας
 Basin from hydrolocation	Λεκάνη απορροής από υδρολογική θέση
+Batch Run	Μαζική εκτέλεση
 Bearing	Αζιμούθιο
 Before	Πριν
 Before the event	Πριν από το συμβάν
@@ -778,6 +781,7 @@ Connected to {kind} {title}	Συνδέθηκε σε {kind} {title}
 Connecting to {url}…	Σύνδεση σε {url}…
 Connection	Σύνδεση
 Connection failure	Αποτυχία σύνδεσης
+connection must be a saved web-service connection id (text)	Το connection πρέπει να είναι το αναγνωριστικό μιας αποθηκευμένης σύνδεσης υπηρεσίας web (κείμενο)
 connection.new returned no id	το connection.new δεν επέστρεψε id
 Connections	Συνδέσεις
 Connections you add are listed here	Οι συνδέσεις που προσθέτετε εμφανίζονται εδώ
@@ -809,6 +813,7 @@ Copied the layout to the clipboard	Η διάταξη αντιγράφηκε στ
 Copied the layout to the clipboard at {dpi} dpi, not {wanted}: the page is too large for a larger image	Η διάταξη αντιγράφηκε στο πρόχειρο στα {dpi} dpi, όχι στα {wanted}: η σελίδα είναι πολύ μεγάλη για μεγαλύτερη εικόνα
 Copied the map to the clipboard	Ο χάρτης αντιγράφηκε στο πρόχειρο
 Copied {path}	Αντιγράφηκε: {path}
+Copied. The log cut its parameters short or took their secrets out, so it may not run as it ran.	Αντιγράφηκε. Το αρχείο καταγραφής περιέκοψε τις παραμέτρους ή αφαίρεσε τα μυστικά τους, οπότε ίσως να μην εκτελεστεί όπως εκτελέστηκε.
 Copies the (selected) features of a layer to a new layer.	Αντιγράφει τις (επιλεγμένες) οντότητες ενός επιπέδου σε νέο επίπεδο.
 Copy	Αντιγραφή
 Copy / Cut / Paste features	Αντιγραφή / Αποκοπή / Επικόλληση οντοτήτων
@@ -834,6 +839,7 @@ Copy Layers	Αντιγραφή επιπέδων
 Copy Parameters	Αντιγραφή παραμέτρων
 Copy Path	Αντιγραφή διαδρομής
 Copy Run As Code	Αντιγραφή εκτέλεσης ως κώδικα
+Copy Script	Αντιγραφή σεναρίου
 Copy sign-in link	Αντιγραφή συνδέσμου σύνδεσης
 Copy the filtered history, including technical details	Αντιγραφή του φιλτραρισμένου ιστορικού, μαζί με τις τεχνικές λεπτομέρειες
 Copy the selected features (also as GeoJSON text).	Αντιγραφή των επιλεγμένων οντοτήτων (και ως κείμενο GeoJSON).
@@ -1692,6 +1698,7 @@ In Beyond	Όριο μεγέθυνσης
 In degrees.	Σε μοίρες.
 In memory	Στη μνήμη
 In place	Επί τόπου
+In place of the Script pane's script ({keys} brings it back)	Στη θέση του σεναρίου του πλαισίου Σεναρίου (το {keys} το επαναφέρει)
 In place, holding a {w} × {h} overview	Επί τόπου, με επισκόπηση {w} × {h}
 In Progress	Σε εξέλιξη
 in progress	σε εξέλιξη
@@ -1771,6 +1778,7 @@ Invert color scheme	Αντιστροφή χρωματικού συνδυασμο
 Invert the selection.	Αντιστροφή της επιλογής.
 IS	IS
 IS NULL	IS NULL
+It can't run in a script	Δεν μπορεί να εκτελεστεί σε σενάριο
 it changed since it was installed: install it again from the Plugin Manager	άλλαξε από τότε που εγκαταστάθηκε: εγκαταστήστε το ξανά από τη Διαχείριση πρόσθετων
 it connects to an address on the internet	συνδέεται σε μια διεύθυνση στο διαδίκτυο
 It didn't open: {error}	Δεν άνοιξε: {error}
@@ -2342,6 +2350,7 @@ no service or file links	χωρίς συνδέσμους υπηρεσιών ή �
 No services match your search.	Καμία υπηρεσία δεν ταιριάζει με την αναζήτησή σας.
 No standalone tables	Δεν υπάρχουν αυτόνομοι πίνακες
 No styles yet	Δεν υπάρχουν ακόμη στυλ
+No such tile layer	Δεν υπάρχει τέτοιο επίπεδο tiles
 no system keychain in this build	δεν υπάρχει κλειδοθήκη συστήματος σε αυτή την έκδοση
 No tasks yet. Record one, or make one from your geoprocessing history with Analyze › Task.	Δεν υπάρχουν ακόμη εργασίες. Καταγράψτε μία ή δημιουργήστε μία από το ιστορικό γεωεπεξεργασίας με Ανάλυση › Εργασία.
 no text graphic there	δεν υπάρχει γραφικό κειμένου εκεί
@@ -2431,6 +2440,7 @@ Only a tile archive read from a file (PMTiles or MBTiles) can be repaired.	Μό�
 Only cubes with data where the map is	Μόνο κύβοι με δεδομένα στην περιοχή του χάρτη
 Only features matching this expression draw in {layer}.	Στο {layer} σχεδιάζονται μόνο οι οντότητες που ταιριάζουν με αυτή την έκφραση.
 Only selected polygons will be included in the output.	Στο αποτέλεσμα θα συμπεριληφθούν μόνο τα επιλεγμένα πολύγωνα.
+Only the commands run in the project open now	Μόνο οι εντολές που εκτελέστηκαν στο έργο που είναι τώρα ανοιχτό
 Only the map's area	Μόνο η περιοχή του χάρτη
 Only where the map is	Μόνο στην περιοχή του χάρτη
 Opacity	Αδιαφάνεια
@@ -2451,6 +2461,7 @@ Open Diagnostics	Άνοιγμα διαγνωστικών
 Open folder	Άνοιγμα φακέλου
 Open In Geoprocessing…	Άνοιγμα στη γεωεπεξεργασία…
 Open in ModelBuilder	Άνοιγμα στο ModelBuilder
+Open in Script Pane	Άνοιγμα στο πλαίσιο Σεναρίου
 Open in Tool	Άνοιγμα στο εργαλείο
 Open Layout	Άνοιγμα διάταξης
 Open ModelBuilder	Άνοιγμα ModelBuilder
@@ -2651,7 +2662,7 @@ Plugins marked Not sandboxed run as programs on your computer instead, and can d
 Plugins run in a sandbox: they can't reach your files or the network, and they change the project only through RustGIS's own commands, within the permissions you accept.	Τα πρόσθετα εκτελούνται σε sandbox: δεν έχουν πρόσβαση στα αρχεία σας ή στο δίκτυο, και αλλάζουν το έργο μόνο μέσω των εντολών του ίδιου του RustGIS, εντός των δικαιωμάτων που αποδέχεστε.
 PMTiles archive	Αρχειοθήκη PMTiles
 PNG frames (zip)	Καρέ PNG (zip)
-PNG image	Εικόνα PNG
+PNG image or GeoTIFF	Εικόνα PNG ή GeoTIFF
 Point	Σημείο
 Point the selected layer at its file after the file moved or was renamed.	Σύνδεση του επιλεγμένου επιπέδου με το αρχείο του αφού το αρχείο μετακινήθηκε ή μετονομάστηκε.
 Points	Σημεία
@@ -3193,6 +3204,7 @@ Select a layer in the Layers pane	Επιλέξτε ένα επίπεδο στο 
 select a layer in the Layers pane first	επιλέξτε πρώτα ένα επίπεδο στο πλαίσιο «Επίπεδα»
 Select a layer in the Layers pane.	Επιλέξτε ένα επίπεδο στο πλαίσιο «Επίπεδα».
 Select a navigation method after tracing a point.	Επιλέξτε μέθοδο πλοήγησης αφού εντοπίσετε ένα σημείο.
+Select a raster or tile layer in the Layers pane first	Επιλέξτε πρώτα ένα επίπεδο raster ή tiles στο πλαίσιο «Επίπεδα»
 Select All	Επιλογή όλων
 Select an element to format it.	Επιλέξτε ένα στοιχείο για να το μορφοποιήσετε.
 Select By\nAttributes	Επιλογή βάσει\nγνωρισμάτων
@@ -3660,6 +3672,7 @@ The desktop app adds data cubes	Η εφαρμογή επιφάνειας εργ�
 The distance between two marks along the line	Η απόσταση μεταξύ δύο σημάνσεων κατά μήκος της γραμμής
 The environment (AWS_ACCESS_KEY_ID…)	Το περιβάλλον (AWS_ACCESS_KEY_ID…)
 The features where the map is	Οι οντότητες στην περιοχή του χάρτη
+The filter searches the first {n} of them; the service.add command adds any other by its name.	Το φίλτρο αναζητά στα πρώτα {n} από αυτά· η εντολή service.add προσθέτει οποιοδήποτε άλλο με το όνομά του.
 The first 1,000 entries; narrow it down a folder at a time.	Οι πρώτες 1.000 καταχωρίσεις. Περιορίστε την αναζήτηση έναν φάκελο τη φορά.
 The first {n} are listed.	Εμφανίζονται τα πρώτα {n}.
 The first {n} are shown: search to narrow them.	Εμφανίζονται τα πρώτα {n}: κάντε αναζήτηση για να τα περιορίσετε.
@@ -3687,6 +3700,7 @@ The layer's strokes	Οι πινελιές του επιπέδου
 the layout export failed unexpectedly	η εξαγωγή της διάταξης απέτυχε απρόσμενα
 The link doesn't say its STAC API: Find Items searches {api}	Ο σύνδεσμος δεν αναφέρει το STAC API του: η «Εύρεση στοιχείων» αναζητά στο {api}
 The list of plugins to browse. Leave it empty for the RustGIS plugin registry.	Η λίστα πρόσθετων για περιήγηση. Αφήστε την κενή για το μητρώο πρόσθετων του RustGIS.
+The log cut it short or took its secrets out: it would run only in part	Το αρχείο καταγραφής την περιέκοψε ή αφαίρεσε τα μυστικά της: θα εκτελούνταν μόνο εν μέρει
 The longest a callout's line may be.	Το μέγιστο μήκος της γραμμής μιας επεξήγησης.
 The map at the left; the title, locator, legend, sources and reference in a panel at the right.	Ο χάρτης αριστερά· ο τίτλος, ο εντοπιστής, το υπόμνημα, οι πηγές και η αναφορά σε πάνελ στα δεξιά.
 the map has no GeoPackage layer loaded for editing (Home › Add Data › Edit GeoPackage Table…)	ο χάρτης δεν έχει επίπεδο GeoPackage φορτωμένο για επεξεργασία (Αρχική › Προσθήκη δεδομένων › Επεξεργασία πίνακα GeoPackage…)
@@ -3727,7 +3741,10 @@ the picture is too large to show	η εικόνα είναι πολύ μεγάλ�
 the picture is too large to show, or isn't one	η εικόνα είναι πολύ μεγάλη για εμφάνιση ή δεν είναι εικόνα
 the place lies outside the zone given	η τοποθεσία βρίσκεται έξω από τη δοσμένη ζώνη
 The places leave this device for the public Valhalla server at {server}, run by FOSSGIS. Don't continue if your project is bound by data privacy or data sovereignty rules.	Οι τοποθεσίες αποστέλλονται από αυτήν τη συσκευή στον δημόσιο διακομιστή Valhalla στο {server}, τον οποίο λειτουργεί το FOSSGIS. Μη συνεχίσετε αν το έργο σας υπόκειται σε κανόνες απορρήτου ή κυριαρχίας δεδομένων.
-The plugin {id} wasn't loaded. Open Plugins › Plugin Manager to see it. {reason}	Το πρόσθετο {id} δεν φορτώθηκε. Ανοίξτε Πρόσθετα › Διαχείριση πρόσθετων για να το δείτε. {reason}
+The plugin blocklist couldn't be downloaded ({error}); the last one read, if any, stays in force.	Δεν ήταν δυνατή η λήψη της λίστας αποκλεισμού πρόσθετων ({error})· η τελευταία που διαβάστηκε, αν υπάρχει, παραμένει σε ισχύ.
+The plugin blocklist couldn't be read ({error}); the last one read, if any, stays in force.	Δεν ήταν δυνατή η ανάγνωση της λίστας αποκλεισμού πρόσθετων ({error})· η τελευταία που διαβάστηκε, αν υπάρχει, παραμένει σε ισχύ.
+The plugin {id} wasn't loaded (open Plugins › Plugin Manager to see it): {reason}.	Το πρόσθετο {id} δεν φορτώθηκε (ανοίξτε Πρόσθετα › Διαχείριση πρόσθετων για να το δείτε): {reason}.
+The plugin {id} wasn't loaded. Open Plugins › Plugin Manager to see it.	Το πρόσθετο {id} δεν φορτώθηκε. Ανοίξτε Πρόσθετα › Διαχείριση πρόσθετων για να το δείτε.
 The portal's OAuth app	Η εφαρμογή OAuth της πύλης
 the presentation export failed unexpectedly	η εξαγωγή της παρουσίασης απέτυχε απρόσμενα
 the preview failed unexpectedly	η προεπισκόπηση απέτυχε απρόσμενα
@@ -3743,7 +3760,7 @@ The range is two numbers, low and high (0, 0.9)	Το εύρος είναι δύ�
 The raster's data couldn't be read.	Δεν ήταν δυνατή η ανάγνωση των δεδομένων του raster.
 The raster's data couldn't be read: {error}	Δεν ήταν δυνατή η ανάγνωση των δεδομένων του raster: {error}
 the recovery copy is incomplete	το αντίγραφο ανάκτησης είναι ελλιπές
-the recovery copy is too large	το αντίγραφο ανάκτησης είναι πολύ μεγάλο
+the recovery copy is too large (maximum {mib} MiB on this computer)	το αντίγραφο ανάκτησης είναι πολύ μεγάλο (μέγιστο {mib} MiB σε αυτόν τον υπολογιστή)
 the recovery copy isn't text	το αντίγραφο ανάκτησης δεν είναι κείμενο
 the release isn't known	η έκδοση δεν είναι γνωστή
 The reply reached its length limit.	Η απάντηση έφτασε το όριο μήκους της.
@@ -3758,6 +3775,7 @@ The saved password could not be used. Type a password to try again; check Rememb
 The saved S3 connection no longer matches this source.	Η αποθηκευμένη σύνδεση S3 δεν αντιστοιχεί πλέον σε αυτήν την πηγή.
 The saved sign-in changed. Select your account again.	Η αποθηκευμένη σύνδεση άλλαξε. Επιλέξτε ξανά τον λογαριασμό σας.
 The scale the layer's symbol and label sizes are set for. At other scales they grow and shrink with the map, as on paper.	Η κλίμακα για την οποία έχουν οριστεί τα μεγέθη συμβόλων και ετικετών του επιπέδου. Σε άλλες κλίμακες μεγαλώνουν και μικραίνουν μαζί με τον χάρτη, όπως στο χαρτί.
+The script, for the Script pane	Το σενάριο, για το πλαίσιο Σεναρίου
 The selected GeoPackage layer is no longer available; choose a layer	Το επιλεγμένο επίπεδο GeoPackage δεν είναι πλέον διαθέσιμο· επιλέξτε επίπεδο
 The server had a problem answering.	Ο διακομιστής αντιμετώπισε πρόβλημα κατά την απάντηση.
 The server is limiting requests.	Ο διακομιστής περιορίζει τα αιτήματα.
@@ -3839,6 +3857,7 @@ This map's thumbnail, from the view.	Η μικρογραφία αυτού του
 This platform does not report the system theme	Αυτή η πλατφόρμα δεν αναφέρει το θέμα του συστήματος
 This plugin can:	Αυτό το πρόσθετο μπορεί να:
 This plugin runs as a program on your computer, outside RustGIS's sandbox. It can do anything you can: read and change your files, use the network and run other programs. Install it only if you trust its author.	Αυτό το πρόσθετο εκτελείται ως πρόγραμμα στον υπολογιστή σας, εκτός του απομονωμένου περιβάλλοντος (sandbox) του RustGIS. Μπορεί να κάνει οτιδήποτε μπορείτε κι εσείς: να διαβάζει και να αλλάζει τα αρχεία σας, να χρησιμοποιεί το δίκτυο και να εκτελεί άλλα προγράμματα. Εγκαταστήστε το μόνο αν εμπιστεύεστε τον δημιουργό του.
+This project	Αυτό το έργο
 This project uses a connection for {origin} that is not saved on this computer.	Αυτό το έργο χρησιμοποιεί σύνδεση για {origin} που δεν είναι αποθηκευμένη σε αυτόν τον υπολογιστή.
 This read was already started	Αυτή η ανάγνωση είχε ήδη ξεκινήσει
 This release has no installer for this computer: get it from the release page.	Αυτή η έκδοση δεν έχει πρόγραμμα εγκατάστασης για αυτόν τον υπολογιστή: κατεβάστε την από τη σελίδα της έκδοσης.
@@ -4095,6 +4114,7 @@ VN-2000 / UTM zone 48N	VN-2000 / UTM ζώνη 48N
 VN-2000 / UTM zone 49N	VN-2000 / UTM ζώνη 49N
 Volume	Όγκος
 Wait for the run to finish	Περιμένετε να ολοκληρωθεί η εκτέλεση
+Wait for the Script pane's run to finish	Περιμένετε να ολοκληρωθεί η εκτέλεση του πλαισίου Σεναρίου
 Waiting for the browser…	Αναμονή για το πρόγραμμα περιήγησης…
 Waiting for your answer	Αναμονή για την απάντησή σας
 Walk	Περπάτημα
@@ -4200,7 +4220,7 @@ Wrap at	Αναδίπλωση στο
 Wrap length	Μήκος αναδίπλωσης
 Write a plugin	Συγγραφή πρόσθετου
 Writes a separate two-vertex line for each consecutive vertex pair.	Γράφει ξεχωριστή γραμμή δύο κορυφών για κάθε ζεύγος διαδοχικών κορυφών.
-Writes every feature with its geometry made valid: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved. Says what was repaired in each.	Γράφει κάθε οντότητα με έγκυρη γεωμετρία: κλειστοί δακτύλιοι, αφαίρεση επαναλαμβανόμενων κορυφών και εκφυλισμένων τμημάτων, επίλυση αυτοτομών, επικαλυπτόμενων τμημάτων και οπών εκτός του κελύφους τους. Αναφέρει τι επιδιορθώθηκε σε καθεμία.
+Writes every feature with its geometry made valid where it can be: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved. Features with a missing or non-finite coordinate anywhere, even in a hole, or left with no usable points or, for polygons, no area once repaired, are written without geometry. Other features too complex to check, or whose repair fails, are written unchanged. Says what was repaired in each.	Γράφει κάθε οντότητα με τη γεωμετρία της έγκυρη όπου είναι δυνατό: κλειστοί δακτύλιοι, αφαίρεση επαναλαμβανόμενων κορυφών και εκφυλισμένων τμημάτων, επίλυση αυτοτομών, επικαλυπτόμενων τμημάτων και οπών εκτός του κελύφους τους. Οντότητες με συντεταγμένη που λείπει ή δεν είναι πεπερασμένη οπουδήποτε, ακόμη και σε οπή, ή που μετά την επιδιόρθωση μένουν χωρίς χρήσιμα σημεία ή, για πολύγωνα, χωρίς εμβαδόν, γράφονται χωρίς γεωμετρία. Άλλες οντότητες, πολύ σύνθετες για έλεγχο ή των οποίων η επιδιόρθωση αποτυγχάνει, γράφονται αμετάβλητες. Αναφέρει τι επιδιορθώθηκε σε καθεμία.
 Writes one axis-aligned bounding rectangle per feature in stored longitude/latitude coordinates. Zero-area envelopes are skipped.	Γράφει ένα ορθογώνιο οριοθέτησης ευθυγραμμισμένο με τους άξονες ανά οντότητα σε αποθηκευμένες συντεταγμένες γεωγραφικού μήκους/πλάτους. Τα περιβάλλοντα μηδενικού εμβαδού παραλείπονται.
 Writes Sen's slope, the test's Z and p-value, and the slope where the trend is significant.	Γράφει την κλίση Sen, το Z και την τιμή p του ελέγχου, και την κλίση όπου η τάση είναι στατιστικά σημαντική.
 Writes the features with invalid geometry, such as self-intersecting or unclosed rings, holes outside their shell or overlapping parts, and says what is wrong with each.	Γράφει τις οντότητες με μη έγκυρη γεωμετρία, όπως αυτοτεμνόμενους ή μη κλειστούς δακτυλίους, οπές εκτός του κελύφους τους ή επικαλυπτόμενα τμήματα, και αναφέρει τι είναι λάθος σε καθεμία.

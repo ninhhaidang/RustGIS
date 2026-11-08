@@ -1,5 +1,7 @@
 # nl interface catalog: English<TAB>translation
  by 	 door
+"instance" must be a layer's instance number, not {value}	"instance" moet het instantienummer van een laag zijn, niet {value}
+"layer" must be a layer's id or name, not {value}	"layer" moet de id of naam van een laag zijn, niet {value}
 '{b}' isn't a bucket name	‘{b}’ is geen bucketnaam
 '{text}' isn't a scale: type one such as 1:12,345	‘{text}’ is geen schaal: typ er een zoals 1:12,345
 (b4-b3)/(b4+b3)	(b4-b3)/(b4+b3)
@@ -440,6 +442,7 @@ Basemap	Basiskaart
 Basemaps	Basiskaarten
 Basic authentication	Basisverificatie
 Basin from hydrolocation	Stroomgebied vanaf hydrolocatie
+Batch Run	Batchgewijs uitvoeren
 Bearing	Richting
 Before	Ervoor
 Before the event	Voor de gebeurtenis
@@ -778,6 +781,7 @@ Connected to {kind} {title}	Verbonden met {kind} {title}
 Connecting to {url}…	Verbinden met {url}…
 Connection	Verbinding
 Connection failure	Verbindingsfout
+connection must be a saved web-service connection id (text)	connection moet de id van een opgeslagen webserviceverbinding zijn (tekst)
 connection.new returned no id	connection.new gaf geen id terug
 Connections	Verbindingen
 Connections you add are listed here	Verbindingen die u toevoegt, worden hier weergegeven
@@ -809,6 +813,7 @@ Copied the layout to the clipboard	De lay-out is naar het klembord gekopieerd
 Copied the layout to the clipboard at {dpi} dpi, not {wanted}: the page is too large for a larger image	De lay-out is met {dpi} dpi in plaats van {wanted} naar het klembord gekopieerd: de pagina is te groot voor een grotere afbeelding
 Copied the map to the clipboard	De kaart is naar het klembord gekopieerd
 Copied {path}	{path} gekopieerd
+Copied. The log cut its parameters short or took their secrets out, so it may not run as it ran.	Gekopieerd. Het logboek heeft de parameters ingekort of de geheimen eruit gehaald, dus het werkt misschien niet zoals het werkte.
 Copies the (selected) features of a layer to a new layer.	Kopieert de (geselecteerde) objecten van een laag naar een nieuwe laag.
 Copy	Kopiëren
 Copy / Cut / Paste features	Objecten kopiëren / knippen / plakken
@@ -834,6 +839,7 @@ Copy Layers	Lagen kopiëren
 Copy Parameters	Parameters kopiëren
 Copy Path	Pad kopiëren
 Copy Run As Code	Uitvoering kopiëren als code
+Copy Script	Script kopiëren
 Copy sign-in link	Aanmeldlink kopiëren
 Copy the filtered history, including technical details	De gefilterde geschiedenis kopiëren, inclusief technische details
 Copy the selected features (also as GeoJSON text).	De geselecteerde objecten kopiëren (ook als GeoJSON-tekst).
@@ -1693,6 +1699,7 @@ In Beyond	Ingezoomd voorbij
 In degrees.	In graden.
 In memory	In het geheugen
 In place	Ter plaatse
+In place of the Script pane's script ({keys} brings it back)	In plaats van het script in het scriptvenster ({keys} haalt het terug)
 In place, holding a {w} × {h} overview	Ter plaatse, met een overzicht van {w} × {h}
 In Progress	Bezig
 in progress	bezig
@@ -1772,6 +1779,7 @@ Invert color scheme	Kleurenschema omkeren
 Invert the selection.	De selectie omkeren.
 IS	IS
 IS NULL	IS NULL
+It can't run in a script	Het kan niet in een script worden uitgevoerd
 it changed since it was installed: install it again from the Plugin Manager	hij is gewijzigd sinds de installatie: installeer hem opnieuw vanuit Pluginbeheer
 it connects to an address on the internet	het maakt verbinding met een adres op internet
 It didn't open: {error}	Het is niet geopend: {error}
@@ -2343,6 +2351,7 @@ no service or file links	geen dienst- of bestandskoppelingen
 No services match your search.	Geen diensten gevonden voor je zoekopdracht.
 No standalone tables	Geen zelfstandige tabellen
 No styles yet	Nog geen stijlen
+No such tile layer	Geen tegellaag met deze naam
 no system keychain in this build	geen systeemsleutelhanger in deze build
 No tasks yet. Record one, or make one from your geoprocessing history with Analyze › Task.	Nog geen taken. Neem er een op, of maak er een uit je geoverwerkingsgeschiedenis met Analyseren › Taak.
 no text graphic there	daar is geen tekstelement
@@ -2432,6 +2441,7 @@ Only a tile archive read from a file (PMTiles or MBTiles) can be repaired.	Allee
 Only cubes with data where the map is	Alleen kubussen met gegevens waar de kaart is
 Only features matching this expression draw in {layer}.	Alleen objecten die aan deze expressie voldoen worden getekend in {layer}.
 Only selected polygons will be included in the output.	Alleen geselecteerde polygonen worden in de uitvoer opgenomen.
+Only the commands run in the project open now	Alleen de opdrachten die in het nu geopende project zijn uitgevoerd
 Only the map's area	Alleen het kaartgebied
 Only where the map is	Alleen waar de kaart is
 Opacity	Dekking
@@ -2452,6 +2462,7 @@ Open Diagnostics	Diagnostiek openen
 Open folder	Map openen
 Open In Geoprocessing…	Openen in Geoverwerking…
 Open in ModelBuilder	Openen in ModelBuilder
+Open in Script Pane	Openen in scriptvenster
 Open in Tool	Openen in gereedschap
 Open Layout	Lay-out openen
 Open ModelBuilder	ModelBuilder openen
@@ -2652,7 +2663,7 @@ Plugins marked Not sandboxed run as programs on your computer instead, and can d
 Plugins run in a sandbox: they can't reach your files or the network, and they change the project only through RustGIS's own commands, within the permissions you accept.	Plugins draaien in een sandbox: ze kunnen niet bij je bestanden of het netwerk, en ze wijzigen het project alleen via de eigen opdrachten van RustGIS, binnen de rechten die je accepteert.
 PMTiles archive	PMTiles-archief
 PNG frames (zip)	PNG-frames (zip)
-PNG image	PNG-afbeelding
+PNG image or GeoTIFF	PNG-afbeelding of GeoTIFF
 Point	Punt
 Point the selected layer at its file after the file moved or was renamed.	De geselecteerde laag naar zijn bestand laten verwijzen nadat het bestand is verplaatst of hernoemd.
 Points	Punten
@@ -3194,6 +3205,7 @@ Select a layer in the Layers pane	Selecteer een laag in het venster Lagen
 select a layer in the Layers pane first	selecteer eerst een laag in het venster Lagen
 Select a layer in the Layers pane.	Selecteer een laag in het venster Lagen.
 Select a navigation method after tracing a point.	Kies een navigatiemethode nadat je een punt hebt getraceerd.
+Select a raster or tile layer in the Layers pane first	Selecteer eerst een raster- of tegellaag in het venster Lagen
 Select All	Alles selecteren
 Select an element to format it.	Selecteer een element om het op te maken.
 Select By\nAttributes	Selecteren op\nattributen
@@ -3661,6 +3673,7 @@ The desktop app adds data cubes	De desktop-app voegt datakubussen toe
 The distance between two marks along the line	De afstand tussen twee merktekens langs de lijn
 The environment (AWS_ACCESS_KEY_ID…)	De omgeving (AWS_ACCESS_KEY_ID…)
 The features where the map is	De objecten waar de kaart is
+The filter searches the first {n} of them; the service.add command adds any other by its name.	Het filter doorzoekt de eerste {n} ervan; de opdracht service.add voegt elke andere toe op naam.
 The first 1,000 entries; narrow it down a folder at a time.	De eerste 1.000 items; verfijn map voor map.
 The first {n} are listed.	De eerste {n} worden weergegeven.
 The first {n} are shown: search to narrow them.	De eerste {n} worden weergegeven: zoek om ze te beperken.
@@ -3688,6 +3701,7 @@ The layer's strokes	De streken van de laag
 the layout export failed unexpectedly	het exporteren van de lay-out is onverwacht mislukt
 The link doesn't say its STAC API: Find Items searches {api}	De link noemt geen STAC-API: Items zoeken doorzoekt {api}
 The list of plugins to browse. Leave it empty for the RustGIS plugin registry.	De lijst met plugins om door te bladeren. Laat leeg voor het RustGIS-pluginregister.
+The log cut it short or took its secrets out: it would run only in part	Het logboek heeft het ingekort of de geheimen eruit gehaald: het zou slechts gedeeltelijk worden uitgevoerd
 The longest a callout's line may be.	De maximale lengte van de verwijslijn.
 The map at the left; the title, locator, legend, sources and reference in a panel at the right.	De kaart links; de titel, locator, legenda, bronnen en referentie in een paneel rechts.
 the map has no GeoPackage layer loaded for editing (Home › Add Data › Edit GeoPackage Table…)	de kaart heeft geen voor bewerken geladen GeoPackage-laag (Start › Gegevens toevoegen › GeoPackage-tabel bewerken…)
@@ -3728,7 +3742,10 @@ the picture is too large to show	de afbeelding is te groot om te tonen
 the picture is too large to show, or isn't one	de afbeelding is te groot om te tonen, of is er geen
 the place lies outside the zone given	de plaats ligt buiten de opgegeven zone
 The places leave this device for the public Valhalla server at {server}, run by FOSSGIS. Don't continue if your project is bound by data privacy or data sovereignty rules.	De plaatsen verlaten dit apparaat naar de openbare Valhalla-server op {server}, beheerd door FOSSGIS. Ga niet verder als je project gebonden is aan regels voor gegevensprivacy of gegevenssoevereiniteit.
-The plugin {id} wasn't loaded. Open Plugins › Plugin Manager to see it. {reason}	De plugin {id} is niet geladen. Open Plugins › Pluginbeheer om hem te zien. {reason}
+The plugin blocklist couldn't be downloaded ({error}); the last one read, if any, stays in force.	De blokkeerlijst voor plugins kon niet worden gedownload ({error}); de laatst gelezen lijst, als die er is, blijft van kracht.
+The plugin blocklist couldn't be read ({error}); the last one read, if any, stays in force.	De blokkeerlijst voor plugins kon niet worden gelezen ({error}); de laatst gelezen lijst, als die er is, blijft van kracht.
+The plugin {id} wasn't loaded (open Plugins › Plugin Manager to see it): {reason}.	De plugin {id} is niet geladen (open Plugins › Pluginbeheer om hem te zien): {reason}.
+The plugin {id} wasn't loaded. Open Plugins › Plugin Manager to see it.	De plugin {id} is niet geladen. Open Plugins › Pluginbeheer om hem te zien.
 The portal's OAuth app	De OAuth-app van de portal
 the presentation export failed unexpectedly	het exporteren van de presentatie is onverwacht mislukt
 the preview failed unexpectedly	het voorbeeld is onverwacht mislukt
@@ -3744,7 +3761,7 @@ The range is two numbers, low and high (0, 0.9)	Het bereik is twee getallen, laa
 The raster's data couldn't be read.	De rastergegevens konden niet worden gelezen.
 The raster's data couldn't be read: {error}	De gegevens van het raster konden niet worden gelezen: {error}
 the recovery copy is incomplete	de herstelkopie is onvolledig
-the recovery copy is too large	de herstelkopie is te groot
+the recovery copy is too large (maximum {mib} MiB on this computer)	de herstelkopie is te groot (maximaal {mib} MiB op deze computer)
 the recovery copy isn't text	de herstelkopie is geen tekst
 the release isn't known	de release is onbekend
 The reply reached its length limit.	Het antwoord bereikte de maximale lengte.
@@ -3759,6 +3776,7 @@ The saved password could not be used. Type a password to try again; check Rememb
 The saved S3 connection no longer matches this source.	De opgeslagen S3-verbinding komt niet meer overeen met deze bron.
 The saved sign-in changed. Select your account again.	De opgeslagen aanmelding is gewijzigd. Selecteer je account opnieuw.
 The scale the layer's symbol and label sizes are set for. At other scales they grow and shrink with the map, as on paper.	De schaal waarvoor de symbool- en labelgrootten van de laag zijn ingesteld. Bij andere schalen groeien en krimpen ze mee met de kaart, zoals op papier.
+The script, for the Script pane	Het script, voor het scriptvenster
 The selected GeoPackage layer is no longer available; choose a layer	De geselecteerde GeoPackage-laag is niet meer beschikbaar; kies een laag
 The server had a problem answering.	De server had een probleem met antwoorden.
 The server is limiting requests.	De server beperkt het aantal verzoeken.
@@ -3840,6 +3858,7 @@ This map's thumbnail, from the view.	De miniatuur van deze kaart, uit de weergav
 This platform does not report the system theme	Dit platform geeft het systeemthema niet door
 This plugin can:	Deze plugin kan:
 This plugin runs as a program on your computer, outside RustGIS's sandbox. It can do anything you can: read and change your files, use the network and run other programs. Install it only if you trust its author.	Deze plugin draait als programma op je computer, buiten de sandbox van RustGIS. Hij kan alles wat jij kunt: je bestanden lezen en wijzigen, het netwerk gebruiken en andere programma's starten. Installeer hem alleen als je de maker vertrouwt.
+This project	Dit project
 This project uses a connection for {origin} that is not saved on this computer.	Dit project gebruikt een verbinding voor {origin} die niet op deze computer is opgeslagen.
 This read was already started	Dit lezen was al gestart
 This release has no installer for this computer: get it from the release page.	Deze release heeft geen installatieprogramma voor deze computer: haal het van de releasepagina.
@@ -4096,6 +4115,7 @@ VN-2000 / UTM zone 48N	VN-2000 / UTM-zone 48N
 VN-2000 / UTM zone 49N	VN-2000 / UTM-zone 49N
 Volume	Volume
 Wait for the run to finish	Wacht tot de uitvoering klaar is
+Wait for the Script pane's run to finish	Wacht tot de uitvoering in het scriptvenster klaar is
 Waiting for the browser…	Wachten op de browser…
 Waiting for your answer	Wacht op je antwoord
 Walk	Lopen
@@ -4201,7 +4221,7 @@ Wrap at	Afbreken bij
 Wrap length	Afbreeklengte
 Write a plugin	Een plugin schrijven
 Writes a separate two-vertex line for each consecutive vertex pair.	Schrijft een aparte lijn met twee hoekpunten voor elk opeenvolgend paar hoekpunten.
-Writes every feature with its geometry made valid: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved. Says what was repaired in each.	Schrijft elk object met geldig gemaakte geometrie: ringen gesloten, herhaalde hoekpunten en gedegenereerde delen verwijderd, zelfdoorsnijdingen, overlappende delen en gaten buiten hun buitenring opgelost. Vermeldt per object wat er is gerepareerd.
+Writes every feature with its geometry made valid where it can be: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved. Features with a missing or non-finite coordinate anywhere, even in a hole, or left with no usable points or, for polygons, no area once repaired, are written without geometry. Other features too complex to check, or whose repair fails, are written unchanged. Says what was repaired in each.	Schrijft elk object met geometrie die waar mogelijk geldig is gemaakt: ringen gesloten, herhaalde hoekpunten en gedegenereerde delen verwijderd, zelfdoorsnijdingen, overlappende delen en gaten buiten hun buitenring opgelost. Objecten met ergens een ontbrekende of niet-eindige coördinaat, zelfs in een gat, of die na reparatie geen bruikbare punten of, bij polygonen, geen oppervlakte overhouden, worden zonder geometrie geschreven. Andere objecten die te complex zijn om te controleren, of waarvan de reparatie mislukt, worden ongewijzigd geschreven. Vermeldt per object wat er is gerepareerd.
 Writes one axis-aligned bounding rectangle per feature in stored longitude/latitude coordinates. Zero-area envelopes are skipped.	Schrijft per object één asparallelle begrenzende rechthoek in opgeslagen lengte-/breedtecoördinaten. Omhullenden zonder oppervlakte worden overgeslagen.
 Writes Sen's slope, the test's Z and p-value, and the slope where the trend is significant.	Schrijft de Sen-helling, de Z en p-waarde van de test, en de helling waar de trend significant is.
 Writes the features with invalid geometry, such as self-intersecting or unclosed rings, holes outside their shell or overlapping parts, and says what is wrong with each.	Schrijft de objecten met ongeldige geometrie, zoals zichzelf snijdende of niet-gesloten ringen, gaten buiten hun buitenring of overlappende delen, en vermeldt wat er met elk mis is.

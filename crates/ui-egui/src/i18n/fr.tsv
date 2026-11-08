@@ -1,5 +1,7 @@
 # fr interface catalog: English<TAB>translation
  by 	 par
+"instance" must be a layer's instance number, not {value}	"instance" doit être le numéro d'instance d'une couche, et non {value}
+"layer" must be a layer's id or name, not {value}	"layer" doit être l'identifiant ou le nom d'une couche, et non {value}
 '{b}' isn't a bucket name	« {b} » n'est pas un nom de compartiment
 '{text}' isn't a scale: type one such as 1:12,345	« {text} » n'est pas une échelle : saisissez-en une comme 1:12,345
 (b4-b3)/(b4+b3)	(b4-b3)/(b4+b3)
@@ -440,6 +442,7 @@ Basemap	Fond de carte
 Basemaps	Fonds de carte
 Basic authentication	Authentification de base
 Basin from hydrolocation	Bassin depuis une hydrolocalisation
+Batch Run	Exécution par lots
 Bearing	Orientation
 Before	Avant
 Before the event	Avant l'événement
@@ -778,6 +781,7 @@ Connected to {kind} {title}	Connecté à {kind} {title}
 Connecting to {url}…	Connexion à {url}…
 Connection	Connexion
 Connection failure	Échec de connexion
+connection must be a saved web-service connection id (text)	connection doit être l'identifiant d'une connexion de service web enregistrée (texte)
 connection.new returned no id	connection.new n'a renvoyé aucun identifiant
 Connections	Connexions
 Connections you add are listed here	Les connexions que vous ajoutez sont listées ici
@@ -809,6 +813,7 @@ Copied the layout to the clipboard	Mise en page copiée dans le presse-papiers
 Copied the layout to the clipboard at {dpi} dpi, not {wanted}: the page is too large for a larger image	Mise en page copiée dans le presse-papiers à {dpi} dpi, et non {wanted} : la page est trop grande pour une image plus grande
 Copied the map to the clipboard	Carte copiée dans le presse-papiers
 Copied {path}	{path} copié
+Copied. The log cut its parameters short or took their secrets out, so it may not run as it ran.	Copié. Le journal a tronqué ses paramètres ou en a retiré les secrets : il risque de ne pas s'exécuter comme la première fois.
 Copies the (selected) features of a layer to a new layer.	Copie les entités (sélectionnées) d'une couche dans une nouvelle couche.
 Copy	Copier
 Copy / Cut / Paste features	Copier / Couper / Coller des entités
@@ -834,6 +839,7 @@ Copy Layers	Copier les couches
 Copy Parameters	Copier les paramètres
 Copy Path	Copier le chemin
 Copy Run As Code	Copier l'exécution en code
+Copy Script	Copier le script
 Copy sign-in link	Copier le lien de connexion
 Copy the filtered history, including technical details	Copier l'historique filtré, détails techniques compris
 Copy the selected features (also as GeoJSON text).	Copier les entités sélectionnées (également en texte GeoJSON).
@@ -1693,6 +1699,7 @@ In Beyond	Masquer au-delà de
 In degrees.	En degrés.
 In memory	En mémoire
 In place	Sur place
+In place of the Script pane's script ({keys} brings it back)	À la place du script du volet Script ({keys} le rétablit)
 In place, holding a {w} × {h} overview	Sur place, avec un aperçu de {w} × {h}
 In Progress	En cours
 in progress	en cours
@@ -1772,6 +1779,7 @@ Invert color scheme	Inverser la palette de couleurs
 Invert the selection.	Inverser la sélection.
 IS	IS
 IS NULL	IS NULL
+It can't run in a script	Elle ne peut pas s'exécuter dans un script
 it changed since it was installed: install it again from the Plugin Manager	elle a changé depuis son installation : réinstallez-la depuis le Gestionnaire d'extensions
 it connects to an address on the internet	il se connecte à une adresse sur Internet
 It didn't open: {error}	Ouverture impossible : {error}
@@ -2343,6 +2351,7 @@ no service or file links	aucun lien vers un service ou un fichier
 No services match your search.	Aucun service ne correspond à votre recherche.
 No standalone tables	Aucune table autonome
 No styles yet	Aucun style pour l'instant
+No such tile layer	Aucune couche de tuiles de ce nom
 no system keychain in this build	aucun trousseau système dans cette version
 No tasks yet. Record one, or make one from your geoprocessing history with Analyze › Task.	Aucune tâche pour l'instant. Enregistrez-en une, ou créez-en une à partir de votre historique de géotraitement avec Analyse › Tâche.
 no text graphic there	aucun graphique de texte à cet endroit
@@ -2432,6 +2441,7 @@ Only a tile archive read from a file (PMTiles or MBTiles) can be repaired.	Seule
 Only cubes with data where the map is	Seulement les cubes ayant des données là où se trouve la carte
 Only features matching this expression draw in {layer}.	Seules les entités correspondant à cette expression sont dessinées dans {layer}.
 Only selected polygons will be included in the output.	Seuls les polygones sélectionnés seront inclus dans la sortie.
+Only the commands run in the project open now	Seulement les commandes exécutées dans le projet ouvert actuellement
 Only the map's area	Seulement la zone de la carte
 Only where the map is	Seulement là où se trouve la carte
 Opacity	Opacité
@@ -2452,6 +2462,7 @@ Open Diagnostics	Ouvrir le diagnostic
 Open folder	Ouvrir le dossier
 Open In Geoprocessing…	Ouvrir dans Géotraitement…
 Open in ModelBuilder	Ouvrir dans ModelBuilder
+Open in Script Pane	Ouvrir dans le volet Script
 Open in Tool	Ouvrir dans l'outil
 Open Layout	Ouvrir une mise en page
 Open ModelBuilder	Ouvrir ModelBuilder
@@ -2652,7 +2663,7 @@ Plugins marked Not sandboxed run as programs on your computer instead, and can d
 Plugins run in a sandbox: they can't reach your files or the network, and they change the project only through RustGIS's own commands, within the permissions you accept.	Les extensions s'exécutent dans un bac à sable : elles ne peuvent accéder ni à vos fichiers ni au réseau, et ne modifient le projet qu'au moyen des commandes de RustGIS, dans la limite des autorisations que vous acceptez.
 PMTiles archive	Archive PMTiles
 PNG frames (zip)	Images PNG (zip)
-PNG image	Image PNG
+PNG image or GeoTIFF	Image PNG ou GeoTIFF
 Point	Point
 Point the selected layer at its file after the file moved or was renamed.	Faire pointer la couche sélectionnée vers son fichier après son déplacement ou son changement de nom.
 Points	Points
@@ -3194,6 +3205,7 @@ Select a layer in the Layers pane	Sélectionnez une couche dans le volet Couches
 select a layer in the Layers pane first	sélectionnez d'abord une couche dans le volet Couches
 Select a layer in the Layers pane.	Sélectionnez une couche dans le volet Couches.
 Select a navigation method after tracing a point.	Choisissez une méthode de navigation après avoir tracé un point.
+Select a raster or tile layer in the Layers pane first	Sélectionnez d'abord une couche raster ou de tuiles dans le volet Couches
 Select All	Tout sélectionner
 Select an element to format it.	Sélectionnez un élément pour le mettre en forme.
 Select By\nAttributes	Sélection par\nattributs
@@ -3661,6 +3673,7 @@ The desktop app adds data cubes	L'application de bureau ajoute les cubes de donn
 The distance between two marks along the line	La distance entre deux marques le long de la ligne
 The environment (AWS_ACCESS_KEY_ID…)	L'environnement (AWS_ACCESS_KEY_ID…)
 The features where the map is	Les entités là où se trouve la carte
+The filter searches the first {n} of them; the service.add command adds any other by its name.	Le filtre recherche parmi les {n} premières ; la commande service.add ajoute toute autre par son nom.
 The first 1,000 entries; narrow it down a folder at a time.	Les 1 000 premières entrées ; affinez dossier par dossier.
 The first {n} are listed.	Les {n} premiers sont listés.
 The first {n} are shown: search to narrow them.	Les {n} premiers sont affichés : faites une recherche pour les affiner.
@@ -3688,6 +3701,7 @@ The layer's strokes	Les traits de la couche
 the layout export failed unexpectedly	l'export de la mise en page a échoué de manière inattendue
 The link doesn't say its STAC API: Find Items searches {api}	Le lien n'indique pas son API STAC : Rechercher des éléments interroge {api}
 The list of plugins to browse. Leave it empty for the RustGIS plugin registry.	La liste des extensions à parcourir. Laissez vide pour utiliser le registre des extensions RustGIS.
+The log cut it short or took its secrets out: it would run only in part	Le journal l'a tronqué ou en a retiré les secrets : il ne s'exécuterait qu'en partie
 The longest a callout's line may be.	La longueur maximale d'une ligne de rappel.
 The map at the left; the title, locator, legend, sources and reference in a panel at the right.	La carte à gauche ; le titre, le localisateur, la légende, les sources et la référence dans un panneau à droite.
 the map has no GeoPackage layer loaded for editing (Home › Add Data › Edit GeoPackage Table…)	la carte n'a aucune couche GeoPackage chargée pour l'édition (Accueil › Ajouter des données › Modifier une table GeoPackage…)
@@ -3728,7 +3742,10 @@ the picture is too large to show	l'image est trop grande pour être affichée
 the picture is too large to show, or isn't one	l'image est trop grande pour être affichée, ou n'en est pas une
 the place lies outside the zone given	le lieu se trouve hors de la zone indiquée
 The places leave this device for the public Valhalla server at {server}, run by FOSSGIS. Don't continue if your project is bound by data privacy or data sovereignty rules.	Les lieux quittent cet appareil pour le serveur public Valhalla à l'adresse {server}, géré par FOSSGIS. Ne continuez pas si votre projet est soumis à des règles de confidentialité ou de souveraineté des données.
-The plugin {id} wasn't loaded. Open Plugins › Plugin Manager to see it. {reason}	L'extension {id} n'a pas été chargée. Ouvrez Extensions › Gestionnaire d'extensions pour la voir. {reason}
+The plugin blocklist couldn't be downloaded ({error}); the last one read, if any, stays in force.	La liste de blocage des extensions n'a pas pu être téléchargée ({error}) ; la dernière lue, s'il y en a une, reste en vigueur.
+The plugin blocklist couldn't be read ({error}); the last one read, if any, stays in force.	La liste de blocage des extensions n'a pas pu être lue ({error}) ; la dernière lue, s'il y en a une, reste en vigueur.
+The plugin {id} wasn't loaded (open Plugins › Plugin Manager to see it): {reason}.	L'extension {id} n'a pas été chargée (ouvrez Extensions › Gestionnaire d'extensions pour la voir) : {reason}.
+The plugin {id} wasn't loaded. Open Plugins › Plugin Manager to see it.	L'extension {id} n'a pas été chargée. Ouvrez Extensions › Gestionnaire d'extensions pour la voir.
 The portal's OAuth app	L'application OAuth du portail
 the presentation export failed unexpectedly	l'export de la présentation a échoué de manière inattendue
 the preview failed unexpectedly	la prévisualisation a échoué de manière inattendue
@@ -3744,7 +3761,7 @@ The range is two numbers, low and high (0, 0.9)	La plage est composée de deux n
 The raster's data couldn't be read.	Impossible de lire les données du raster.
 The raster's data couldn't be read: {error}	Les données du raster n'ont pas pu être lues : {error}
 the recovery copy is incomplete	la copie de récupération est incomplète
-the recovery copy is too large	la copie de récupération est trop volumineuse
+the recovery copy is too large (maximum {mib} MiB on this computer)	la copie de récupération est trop volumineuse (maximum {mib} MiB sur cet ordinateur)
 the recovery copy isn't text	la copie de récupération n'est pas du texte
 the release isn't known	la version est inconnue
 The reply reached its length limit.	La réponse a atteint sa limite de longueur.
@@ -3759,6 +3776,7 @@ The saved password could not be used. Type a password to try again; check Rememb
 The saved S3 connection no longer matches this source.	La connexion S3 enregistrée ne correspond plus à cette source.
 The saved sign-in changed. Select your account again.	La connexion enregistrée a changé. Sélectionnez à nouveau votre compte.
 The scale the layer's symbol and label sizes are set for. At other scales they grow and shrink with the map, as on paper.	L'échelle pour laquelle les tailles des symboles et des étiquettes de la couche sont définies. À d'autres échelles, elles grandissent et rétrécissent avec la carte, comme sur papier.
+The script, for the Script pane	Le script, pour le volet Script
 The selected GeoPackage layer is no longer available; choose a layer	La couche GeoPackage sélectionnée n'est plus disponible ; choisissez une couche
 The server had a problem answering.	Le serveur a rencontré un problème pour répondre.
 The server is limiting requests.	Le serveur limite les requêtes.
@@ -3840,6 +3858,7 @@ This map's thumbnail, from the view.	La miniature de cette carte, à partir de l
 This platform does not report the system theme	Cette plateforme n'indique pas le thème du système
 This plugin can:	Cette extension peut :
 This plugin runs as a program on your computer, outside RustGIS's sandbox. It can do anything you can: read and change your files, use the network and run other programs. Install it only if you trust its author.	Cette extension s'exécute comme un programme sur votre ordinateur, en dehors du bac à sable de RustGIS. Elle peut faire tout ce que vous pouvez faire : lire et modifier vos fichiers, utiliser le réseau et lancer d'autres programmes. Ne l'installez que si vous faites confiance à son auteur.
+This project	Ce projet
 This project uses a connection for {origin} that is not saved on this computer.	Ce projet utilise une connexion pour {origin} qui n'est pas enregistrée sur cet ordinateur.
 This read was already started	Cette lecture a déjà commencé
 This release has no installer for this computer: get it from the release page.	Cette version n'a pas de programme d'installation pour cet ordinateur : obtenez-la depuis la page de la version.
@@ -4096,6 +4115,7 @@ VN-2000 / UTM zone 48N	VN-2000 / UTM zone 48N
 VN-2000 / UTM zone 49N	VN-2000 / UTM zone 49N
 Volume	Volume
 Wait for the run to finish	Attendez la fin de l'exécution
+Wait for the Script pane's run to finish	Attendez la fin de l'exécution du volet Script
 Waiting for the browser…	En attente du navigateur…
 Waiting for your answer	En attente de votre réponse
 Walk	Marcher
@@ -4201,7 +4221,7 @@ Wrap at	Couper à
 Wrap length	Longueur de ligne
 Write a plugin	Écrire une extension
 Writes a separate two-vertex line for each consecutive vertex pair.	Écrit une ligne distincte à deux sommets pour chaque paire de sommets consécutifs.
-Writes every feature with its geometry made valid: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved. Says what was repaired in each.	Écrit chaque entité avec sa géométrie rendue valide : anneaux fermés, sommets répétés et parties dégénérées supprimés, auto-intersections, parties superposées et trous hors de leur enveloppe extérieure résolus. Indique ce qui a été réparé pour chacune.
+Writes every feature with its geometry made valid where it can be: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved. Features with a missing or non-finite coordinate anywhere, even in a hole, or left with no usable points or, for polygons, no area once repaired, are written without geometry. Other features too complex to check, or whose repair fails, are written unchanged. Says what was repaired in each.	Écrit chaque entité avec sa géométrie rendue valide lorsque c'est possible : anneaux fermés, sommets répétés et parties dégénérées supprimés, auto-intersections, parties superposées et trous hors de leur enveloppe extérieure résolus. Les entités ayant une coordonnée manquante ou non finie où que ce soit, même dans un trou, ou qui n'ont plus de points utilisables ou, pour les polygones, plus de surface une fois réparées, sont écrites sans géométrie. Les autres entités trop complexes à vérifier, ou dont la réparation échoue, sont écrites inchangées. Indique ce qui a été réparé pour chacune.
 Writes one axis-aligned bounding rectangle per feature in stored longitude/latitude coordinates. Zero-area envelopes are skipped.	Écrit un rectangle englobant aligné sur les axes par entité, en coordonnées longitude/latitude stockées. Les enveloppes de surface nulle sont ignorées.
 Writes Sen's slope, the test's Z and p-value, and the slope where the trend is significant.	Écrit la pente de Sen, le Z et la valeur p du test, et la pente là où la tendance est significative.
 Writes the features with invalid geometry, such as self-intersecting or unclosed rings, holes outside their shell or overlapping parts, and says what is wrong with each.	Écrit les entités à la géométrie non valide, comme des anneaux auto-intersectants ou non fermés, des trous hors de leur enveloppe extérieure ou des parties superposées, et indique ce qui ne va pas pour chacune.

@@ -1,5 +1,7 @@
 # ja interface catalog: English<TAB>translation
  by 	 ×
+"instance" must be a layer's instance number, not {value}	"instance" にはレイヤーのインスタンス番号を指定してください ({value} ではなく)
+"layer" must be a layer's id or name, not {value}	"layer" にはレイヤーの ID または名前を指定してください ({value} ではなく)
 '{b}' isn't a bucket name	「{b}」はバケット名ではありません
 '{text}' isn't a scale: type one such as 1:12,345	「{text}」は縮尺ではありません: 1:12,345 のように入力してください
 (b4-b3)/(b4+b3)	(b4-b3)/(b4+b3)
@@ -440,6 +442,7 @@ Basemap	ベースマップ
 Basemaps	ベースマップ
 Basic authentication	Basic 認証
 Basin from hydrolocation	水文地点からの流域
+Batch Run	バッチ実行
 Bearing	方位
 Before	前
 Before the event	イベント前
@@ -778,6 +781,7 @@ Connected to {kind} {title}	{kind} {title} に接続しました
 Connecting to {url}…	{url} に接続しています…
 Connection	接続
 Connection failure	接続エラー
+connection must be a saved web-service connection id (text)	connection には保存済み Web サービス接続の ID (テキスト) を指定してください
 connection.new returned no id	connection.new が ID を返しませんでした
 Connections	接続
 Connections you add are listed here	追加した接続がここに一覧表示されます
@@ -809,6 +813,7 @@ Copied the layout to the clipboard	レイアウトをクリップボードにコ
 Copied the layout to the clipboard at {dpi} dpi, not {wanted}: the page is too large for a larger image	レイアウトを {wanted} dpi ではなく {dpi} dpi でクリップボードにコピーしました: ページが大きすぎるため、これ以上大きな画像にできません
 Copied the map to the clipboard	マップをクリップボードにコピーしました
 Copied {path}	{path} をコピーしました
+Copied. The log cut its parameters short or took their secrets out, so it may not run as it ran.	コピーしました。ログでパラメーターが省略されたかシークレットが取り除かれているため、元どおりには実行されない可能性があります。
 Copies the (selected) features of a layer to a new layer.	レイヤーの（選択された）フィーチャを新しいレイヤーにコピーします。
 Copy	コピー
 Copy / Cut / Paste features	フィーチャのコピー/切り取り/貼り付け
@@ -834,6 +839,7 @@ Copy Layers	レイヤーのコピー
 Copy Parameters	パラメーターをコピー
 Copy Path	パスのコピー
 Copy Run As Code	実行をコードとしてコピー
+Copy Script	スクリプトのコピー
 Copy sign-in link	サインインリンクをコピー
 Copy the filtered history, including technical details	絞り込んだ履歴を技術的な詳細を含めてコピー
 Copy the selected features (also as GeoJSON text).	選択したフィーチャをコピーします（GeoJSON テキストとしても）。
@@ -1693,6 +1699,7 @@ In Beyond	拡大の限界
 In degrees.	度単位。
 In memory	メモリ内
 In place	インプレース
+In place of the Script pane's script ({keys} brings it back)	スクリプト ウィンドウのスクリプトを置き換えます ({keys} で元に戻せます)
 In place, holding a {w} × {h} overview	インプレース ({w} × {h} のオーバービューを保持)
 In Progress	進行中
 in progress	進行中
@@ -1772,6 +1779,7 @@ Invert color scheme	配色を反転
 Invert the selection.	選択を反転します。
 IS	IS
 IS NULL	IS NULL
+It can't run in a script	スクリプトでは実行できません
 it changed since it was installed: install it again from the Plugin Manager	インストール後に変更されています: プラグイン マネージャーから再インストールしてください
 it connects to an address on the internet	インターネット上のアドレスに接続する
 It didn't open: {error}	開けませんでした: {error}
@@ -2343,6 +2351,7 @@ no service or file links	サービスやファイルへのリンクがありま�
 No services match your search.	検索に一致するサービスがありません。
 No standalone tables	スタンドアロン テーブルはありません
 No styles yet	スタイルはまだありません
+No such tile layer	そのタイル レイヤーはありません
 no system keychain in this build	このビルドにはシステム キーチェーンがありません
 No tasks yet. Record one, or make one from your geoprocessing history with Analyze › Task.	タスクはまだありません。記録するか、[解析] › [タスク] でジオプロセシング履歴から作成してください。
 no text graphic there	そこにテキスト グラフィックはありません
@@ -2432,6 +2441,7 @@ Only a tile archive read from a file (PMTiles or MBTiles) can be repaired.	修�
 Only cubes with data where the map is	マップの表示範囲にデータがあるキューブのみ
 Only features matching this expression draw in {layer}.	この式に一致するフィーチャのみが {layer} に描画されます。
 Only selected polygons will be included in the output.	選択したポリゴンのみが出力に含まれます。
+Only the commands run in the project open now	現在開いているプロジェクトで実行したコマンドのみ
 Only the map's area	マップの範囲のみ
 Only where the map is	マップの表示範囲のみ
 Opacity	不透明度
@@ -2452,6 +2462,7 @@ Open Diagnostics	診断情報を開く
 Open folder	フォルダーを開く
 Open In Geoprocessing…	ジオプロセシングで開く…
 Open in ModelBuilder	ModelBuilder で開く
+Open in Script Pane	スクリプト ウィンドウで開く
 Open in Tool	ツールで開く
 Open Layout	レイアウトを開く
 Open ModelBuilder	ModelBuilder を開く
@@ -2652,7 +2663,7 @@ Plugins marked Not sandboxed run as programs on your computer instead, and can d
 Plugins run in a sandbox: they can't reach your files or the network, and they change the project only through RustGIS's own commands, within the permissions you accept.	プラグインはサンドボックス内で実行されます。ファイルやネットワークにはアクセスできず、プロジェクトの変更は、許可した権限の範囲内で RustGIS 自身のコマンドを通じてのみ行います。
 PMTiles archive	PMTiles アーカイブ
 PNG frames (zip)	PNG フレーム (zip)
-PNG image	PNG 画像
+PNG image or GeoTIFF	PNG 画像または GeoTIFF
 Point	ポイント
 Point the selected layer at its file after the file moved or was renamed.	ファイルの移動または名前変更の後に、選択したレイヤーをそのファイルに関連付け直します。
 Points	ポイント
@@ -3194,6 +3205,7 @@ Select a layer in the Layers pane	レイヤー ウィンドウでレイヤーを
 select a layer in the Layers pane first	先にレイヤー ウィンドウでレイヤーを選択してください
 Select a layer in the Layers pane.	レイヤー ウィンドウでレイヤーを選択してください。
 Select a navigation method after tracing a point.	ポイントをトレースした後、ナビゲーション方法を選択してください。
+Select a raster or tile layer in the Layers pane first	先にレイヤー ウィンドウでラスターまたはタイル レイヤーを選択してください
 Select All	すべて選択
 Select an element to format it.	書式を設定するエレメントを選択してください。
 Select By\nAttributes	属性検索\nで選択
@@ -3661,6 +3673,7 @@ The desktop app adds data cubes	データ キューブはデスクトップ ア�
 The distance between two marks along the line	ライン上の 2 つのマークの間隔
 The environment (AWS_ACCESS_KEY_ID…)	環境変数 (AWS_ACCESS_KEY_ID…)
 The features where the map is	マップの表示範囲のフィーチャ
+The filter searches the first {n} of them; the service.add command adds any other by its name.	フィルターはそのうち最初の {n} 個を検索します。それ以外は service.add コマンドで名前を指定して追加できます。
 The first 1,000 entries; narrow it down a folder at a time.	最初の 1,000 件です。フォルダーごとに絞り込んでください。
 The first {n} are listed.	最初の {n} 件を表示しています。
 The first {n} are shown: search to narrow them.	最初の {n} 件を表示しています: 検索して絞り込んでください。
@@ -3688,6 +3701,7 @@ The layer's strokes	レイヤーのストローク
 the layout export failed unexpectedly	レイアウトのエクスポートが予期せず失敗しました
 The link doesn't say its STAC API: Find Items searches {api}	リンクに STAC API が示されていません: [アイテムを検索] は {api} を検索します
 The list of plugins to browse. Leave it empty for the RustGIS plugin registry.	参照するプラグインの一覧です。空欄にすると RustGIS プラグイン レジストリを使用します。
+The log cut it short or took its secrets out: it would run only in part	ログで省略されたかシークレットが取り除かれています: 一部しか実行されません
 The longest a callout's line may be.	引き出し線の最大の長さ。
 The map at the left; the title, locator, legend, sources and reference in a panel at the right.	左にマップ。タイトル、ロケーター、凡例、ソース、参照情報は右のパネルに配置します。
 the map has no GeoPackage layer loaded for editing (Home › Add Data › Edit GeoPackage Table…)	マップに編集用に読み込まれた GeoPackage レイヤーがありません (ホーム › データの追加 › GeoPackage テーブルの編集…)
@@ -3728,7 +3742,10 @@ the picture is too large to show	画像が大きすぎて表示できません
 the picture is too large to show, or isn't one	画像が大きすぎて表示できないか、画像ではありません
 the place lies outside the zone given	場所が指定されたゾーンの外にあります
 The places leave this device for the public Valhalla server at {server}, run by FOSSGIS. Don't continue if your project is bound by data privacy or data sovereignty rules.	これらの場所はこのデバイスから、FOSSGIS が運営する公開 Valhalla サーバー {server} に送信されます。プロジェクトがデータのプライバシーやデータ主権の規則に従う必要がある場合は、続行しないでください。
-The plugin {id} wasn't loaded. Open Plugins › Plugin Manager to see it. {reason}	プラグイン {id} は読み込まれませんでした。「プラグイン › プラグイン マネージャー」を開いて確認してください。{reason}
+The plugin blocklist couldn't be downloaded ({error}); the last one read, if any, stays in force.	プラグインのブロックリストをダウンロードできませんでした ({error})。最後に読み込んだリストがあれば、それが引き続き有効です。
+The plugin blocklist couldn't be read ({error}); the last one read, if any, stays in force.	プラグインのブロックリストを読み込めませんでした ({error})。最後に読み込んだリストがあれば、それが引き続き有効です。
+The plugin {id} wasn't loaded (open Plugins › Plugin Manager to see it): {reason}.	プラグイン {id} は読み込まれませんでした (「プラグイン › プラグイン マネージャー」を開いて確認してください): {reason}。
+The plugin {id} wasn't loaded. Open Plugins › Plugin Manager to see it.	プラグイン {id} は読み込まれませんでした。「プラグイン › プラグイン マネージャー」を開いて確認してください。
 The portal's OAuth app	ポータルの OAuth アプリ
 the presentation export failed unexpectedly	プレゼンテーションのエクスポートが予期せず失敗しました
 the preview failed unexpectedly	プレビューが予期せず失敗しました
@@ -3744,7 +3761,7 @@ The range is two numbers, low and high (0, 0.9)	範囲は下限と上限の 2 �
 The raster's data couldn't be read.	ラスターのデータを読み込めませんでした。
 The raster's data couldn't be read: {error}	ラスターのデータを読み取れませんでした: {error}
 the recovery copy is incomplete	復旧用コピーが不完全です
-the recovery copy is too large	復旧用コピーが大きすぎます
+the recovery copy is too large (maximum {mib} MiB on this computer)	復旧用コピーが大きすぎます (このコンピューターでの上限は {mib} MiB)
 the recovery copy isn't text	復旧用コピーはテキストではありません
 the release isn't known	リリースが不明です
 The reply reached its length limit.	回答が長さの上限に達しました。
@@ -3759,6 +3776,7 @@ The saved password could not be used. Type a password to try again; check Rememb
 The saved S3 connection no longer matches this source.	保存された S3 接続はこのソースと一致しなくなりました。
 The saved sign-in changed. Select your account again.	保存されたサインイン情報が変更されました。アカウントを再度選択してください。
 The scale the layer's symbol and label sizes are set for. At other scales they grow and shrink with the map, as on paper.	レイヤーのシンボルとラベルのサイズの基準となる縮尺です。ほかの縮尺では、紙の地図と同じようにマップに合わせて拡大・縮小します。
+The script, for the Script pane	スクリプト ウィンドウ用のスクリプト
 The selected GeoPackage layer is no longer available; choose a layer	選択した GeoPackage レイヤーは利用できなくなりました。レイヤーを選択してください
 The server had a problem answering.	サーバーの応答中に問題が発生しました。
 The server is limiting requests.	サーバーがリクエストを制限しています。
@@ -3840,6 +3858,7 @@ This map's thumbnail, from the view.	ビューから作成するこのマップ�
 This platform does not report the system theme	このプラットフォームはシステムのテーマを報告しません
 This plugin can:	このプラグインでできること:
 This plugin runs as a program on your computer, outside RustGIS's sandbox. It can do anything you can: read and change your files, use the network and run other programs. Install it only if you trust its author.	このプラグインは RustGIS のサンドボックスの外で、コンピューター上のプログラムとして実行されます。ファイルの読み取りや変更、ネットワークの使用、他のプログラムの実行など、あなたができることは何でもできます。作者を信頼できる場合にのみインストールしてください。
+This project	このプロジェクト
 This project uses a connection for {origin} that is not saved on this computer.	このプロジェクトは、このコンピューターに保存されていない {origin} の接続を使用しています。
 This read was already started	この読み込みは既に開始されています
 This release has no installer for this computer: get it from the release page.	このリリースにはこのコンピューター用のインストーラーがありません: リリース ページから入手してください。
@@ -4096,6 +4115,7 @@ VN-2000 / UTM zone 48N	VN-2000 / UTM ゾーン 48N
 VN-2000 / UTM zone 49N	VN-2000 / UTM ゾーン 49N
 Volume	体積
 Wait for the run to finish	実行が完了するまで待機
+Wait for the Script pane's run to finish	スクリプト ウィンドウの実行が終わるまでお待ちください
 Waiting for the browser…	ブラウザーを待っています…
 Waiting for your answer	あなたの返答を待っています
 Walk	歩行
@@ -4201,7 +4221,7 @@ Wrap at	折り返し文字
 Wrap length	折り返しの長さ
 Write a plugin	プラグインを作成
 Writes a separate two-vertex line for each consecutive vertex pair.	連続する頂点のペアごとに、2 頂点の個別のラインを書き出します。
-Writes every feature with its geometry made valid: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved. Says what was repaired in each.	すべてのフィーチャのジオメトリを有効にして書き出します: リングを閉じ、重複する頂点と縮退した部分を削除し、自己交差、重なる部分、外殻の外にある穴を解消します。各フィーチャで修復した内容を報告します。
+Writes every feature with its geometry made valid where it can be: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved. Features with a missing or non-finite coordinate anywhere, even in a hole, or left with no usable points or, for polygons, no area once repaired, are written without geometry. Other features too complex to check, or whose repair fails, are written unchanged. Says what was repaired in each.	すべてのフィーチャのジオメトリを可能な限り有効にして書き出します: リングを閉じ、重複する頂点と縮退した部分を削除し、自己交差、重なる部分、外殻の外にある穴を解消します。穴の中も含め、どこかに欠落した座標や有限でない座標があるフィーチャ、または修復後に使用できる点が残らない (ポリゴンの場合は面積がなくなる) フィーチャは、ジオメトリなしで書き出されます。その他、複雑すぎて確認できないフィーチャや修復に失敗したフィーチャは、変更せずに書き出されます。各フィーチャで修復した内容を報告します。
 Writes one axis-aligned bounding rectangle per feature in stored longitude/latitude coordinates. Zero-area envelopes are skipped.	保存されている経度/緯度座標で、フィーチャごとに軸に平行な外接矩形を 1 つ書き出します。面積がゼロのエンベロープはスキップされます。
 Writes Sen's slope, the test's Z and p-value, and the slope where the trend is significant.	Sen の傾き、検定の Z 値と p 値、およびトレンドが有意な箇所の傾きを出力します。
 Writes the features with invalid geometry, such as self-intersecting or unclosed rings, holes outside their shell or overlapping parts, and says what is wrong with each.	自己交差するリングや閉じていないリング、外殻の外にある穴、重なる部分など、無効なジオメトリを持つフィーチャを書き出し、それぞれの問題点を報告します。

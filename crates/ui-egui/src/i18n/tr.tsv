@@ -1,5 +1,7 @@
 # tr interface catalog: English<TAB>translation
  by 	 ×
+"instance" must be a layer's instance number, not {value}	"instance", {value} değil, bir katmanın örnek numarası olmalıdır
+"layer" must be a layer's id or name, not {value}	"layer", {value} değil, bir katmanın kimliği veya adı olmalıdır
 '{b}' isn't a bucket name	'{b}' bir bucket adı değil
 '{text}' isn't a scale: type one such as 1:12,345	'{text}' bir ölçek değil: 1:12,345 gibi bir ölçek yazın
 (b4-b3)/(b4+b3)	(b4-b3)/(b4+b3)
@@ -440,6 +442,7 @@ Basemap	Altlık Harita
 Basemaps	Altlık Haritalar
 Basic authentication	Temel kimlik doğrulama
 Basin from hydrolocation	Hidro-konumdan havza
+Batch Run	Toplu Çalıştır
 Bearing	Yön
 Before	Önce
 Before the event	Olaydan önce
@@ -778,6 +781,7 @@ Connected to {kind} {title}	{kind} {title} ile bağlantı kuruldu
 Connecting to {url}…	{url} adresine bağlanılıyor…
 Connection	Bağlantı
 Connection failure	Bağlantı hatası
+connection must be a saved web-service connection id (text)	connection, kayıtlı bir web hizmeti bağlantısının kimliği (metin) olmalıdır
 connection.new returned no id	connection.new bir kimlik döndürmedi
 Connections	Bağlantılar
 Connections you add are listed here	Eklediğiniz bağlantılar burada listelenir
@@ -809,6 +813,7 @@ Copied the layout to the clipboard	Sayfa düzeni panoya kopyalandı
 Copied the layout to the clipboard at {dpi} dpi, not {wanted}: the page is too large for a larger image	Sayfa düzeni panoya {wanted} yerine {dpi} dpi ile kopyalandı: sayfa daha büyük bir görüntü için fazla büyük
 Copied the map to the clipboard	Harita panoya kopyalandı
 Copied {path}	{path} kopyalandı
+Copied. The log cut its parameters short or took their secrets out, so it may not run as it ran.	Kopyalandı. Günlük parametrelerini kısalttı veya gizli bilgilerini çıkardı; bu yüzden çalıştığı gibi çalışmayabilir.
 Copies the (selected) features of a layer to a new layer.	Bir katmanın (seçili) detaylarını yeni bir katmana kopyalar.
 Copy	Kopyala
 Copy / Cut / Paste features	Detayları Kopyala / Kes / Yapıştır
@@ -834,6 +839,7 @@ Copy Layers	Katmanları Kopyala
 Copy Parameters	Parametreleri Kopyala
 Copy Path	Yolu Kopyala
 Copy Run As Code	Çalıştırmayı Kod Olarak Kopyala
+Copy Script	Betiği Kopyala
 Copy sign-in link	Oturum açma bağlantısını kopyala
 Copy the filtered history, including technical details	Süzülmüş geçmişi teknik ayrıntılarla birlikte kopyala
 Copy the selected features (also as GeoJSON text).	Seçili detayları kopyala (GeoJSON metni olarak da).
@@ -1693,6 +1699,7 @@ In Beyond	Ötesinde Açık
 In degrees.	Derece cinsinden.
 In memory	Bellekte
 In place	Yerinde
+In place of the Script pane's script ({keys} brings it back)	Betik bölmesindeki betiğin yerine ({keys} onu geri getirir)
 In place, holding a {w} × {h} overview	Yerinde, {w} × {h} genel bakış ile
 In Progress	Devam Ediyor
 in progress	devam ediyor
@@ -1772,6 +1779,7 @@ Invert color scheme	Renk şemasını ters çevir
 Invert the selection.	Seçimi ters çevir.
 IS	IS
 IS NULL	IS NULL
+It can't run in a script	Bir betikte çalıştırılamaz
 it changed since it was installed: install it again from the Plugin Manager	yüklendikten sonra değişti: Eklenti Yöneticisi'nden yeniden yükleyin
 it connects to an address on the internet	internetteki bir adrese bağlanır
 It didn't open: {error}	Açılmadı: {error}
@@ -2343,6 +2351,7 @@ no service or file links	servis veya dosya bağlantısı yok
 No services match your search.	Aramanızla eşleşen servis yok.
 No standalone tables	Bağımsız tablo yok
 No styles yet	Henüz stil yok
+No such tile layer	Böyle bir karo katmanı yok
 no system keychain in this build	bu derlemede sistem anahtarlığı yok
 No tasks yet. Record one, or make one from your geoprocessing history with Analyze › Task.	Henüz görev yok. Bir tane kaydedin veya Analiz › Görev ile coğrafi işleme geçmişinizden oluşturun.
 no text graphic there	orada metin grafiği yok
@@ -2432,6 +2441,7 @@ Only a tile archive read from a file (PMTiles or MBTiles) can be repaired.	Yaln�
 Only cubes with data where the map is	Yalnızca haritanın olduğu yerde verisi olan küpler
 Only features matching this expression draw in {layer}.	{layer} katmanında yalnızca bu ifadeyle eşleşen detaylar çizilir.
 Only selected polygons will be included in the output.	Çıktıya yalnızca seçili poligonlar dahil edilecek.
+Only the commands run in the project open now	Yalnızca şu anda açık olan projede çalıştırılan komutlar
 Only the map's area	Yalnızca haritanın alanı
 Only where the map is	Yalnızca haritanın olduğu yerde
 Opacity	Opaklık
@@ -2452,6 +2462,7 @@ Open Diagnostics	Tanılamayı Aç
 Open folder	Klasörü aç
 Open In Geoprocessing…	Coğrafi İşlemede Aç…
 Open in ModelBuilder	Model Oluşturucuda Aç
+Open in Script Pane	Betik Bölmesinde Aç
 Open in Tool	Araçta Aç
 Open Layout	Sayfa Düzeni Aç
 Open ModelBuilder	Model Oluşturucuyu Aç
@@ -2652,7 +2663,7 @@ Plugins marked Not sandboxed run as programs on your computer instead, and can d
 Plugins run in a sandbox: they can't reach your files or the network, and they change the project only through RustGIS's own commands, within the permissions you accept.	Eklentiler bir korumalı alanda çalışır: dosyalarınıza veya ağa erişemezler ve projeyi yalnızca RustGIS'in kendi komutlarıyla, kabul ettiğiniz izinler dahilinde değiştirirler.
 PMTiles archive	PMTiles arşivi
 PNG frames (zip)	PNG kareleri (zip)
-PNG image	PNG görüntüsü
+PNG image or GeoTIFF	PNG görüntüsü veya GeoTIFF
 Point	Nokta
 Point the selected layer at its file after the file moved or was renamed.	Dosya taşındıktan veya yeniden adlandırıldıktan sonra seçili katmanı dosyasına yönlendir.
 Points	Noktalar
@@ -3194,6 +3205,7 @@ Select a layer in the Layers pane	Katmanlar panelinde bir katman seçin
 select a layer in the Layers pane first	önce Katmanlar panelinde bir katman seçin
 Select a layer in the Layers pane.	Katmanlar panelinde bir katman seçin.
 Select a navigation method after tracing a point.	Bir nokta izledikten sonra bir gezinme yöntemi seçin.
+Select a raster or tile layer in the Layers pane first	Önce Katmanlar panelinde bir raster veya karo katmanı seçin
 Select All	Tümünü Seç
 Select an element to format it.	Biçimlendirmek için bir öğe seçin.
 Select By\nAttributes	Özniteliğe\nGöre Seç
@@ -3661,6 +3673,7 @@ The desktop app adds data cubes	Veri küplerini masaüstü uygulaması ekler
 The distance between two marks along the line	Çizgi boyunca iki işaret arasındaki mesafe
 The environment (AWS_ACCESS_KEY_ID…)	Ortam (AWS_ACCESS_KEY_ID…)
 The features where the map is	Haritanın olduğu yerdeki detaylar
+The filter searches the first {n} of them; the service.add command adds any other by its name.	Filtre bunların ilk {n} tanesinde arar; service.add komutu diğerlerini adıyla ekler.
 The first 1,000 entries; narrow it down a folder at a time.	İlk 1.000 girdi; her seferinde bir klasör daraltın.
 The first {n} are listed.	İlk {n} tanesi listelendi.
 The first {n} are shown: search to narrow them.	İlk {n} tanesi gösteriliyor: daraltmak için arayın.
@@ -3688,6 +3701,7 @@ The layer's strokes	Katmanın konturları
 the layout export failed unexpectedly	sayfa düzeni dışa aktarımı beklenmedik şekilde başarısız oldu
 The link doesn't say its STAC API: Find Items searches {api}	Bağlantı STAC API'sini belirtmiyor: Öğeleri Bul {api} üzerinde arar
 The list of plugins to browse. Leave it empty for the RustGIS plugin registry.	Göz atılacak eklenti listesi. RustGIS eklenti kayıt defteri için boş bırakın.
+The log cut it short or took its secrets out: it would run only in part	Günlük bunu kısalttı veya gizli bilgilerini çıkardı: yalnızca kısmen çalışır
 The longest a callout's line may be.	Bir belirtme çizgisinin olabileceği en uzun boy.
 The map at the left; the title, locator, legend, sources and reference in a panel at the right.	Harita solda; başlık, konum bulucu, lejant, kaynaklar ve referans sağda bir panelde.
 the map has no GeoPackage layer loaded for editing (Home › Add Data › Edit GeoPackage Table…)	haritada düzenleme için yüklenmiş GeoPackage katmanı yok (Giriş › Veri Ekle › GeoPackage Tablosunu Düzenle…)
@@ -3728,7 +3742,10 @@ the picture is too large to show	resim gösterilemeyecek kadar büyük
 the picture is too large to show, or isn't one	resim gösterilemeyecek kadar büyük veya resim değil
 the place lies outside the zone given	yer verilen dilimin dışında
 The places leave this device for the public Valhalla server at {server}, run by FOSSGIS. Don't continue if your project is bound by data privacy or data sovereignty rules.	Yerler bu cihazdan FOSSGIS tarafından işletilen {server} adresindeki herkese açık Valhalla sunucusuna gönderilir. Projeniz veri gizliliği veya veri egemenliği kurallarına tabiyse devam etmeyin.
-The plugin {id} wasn't loaded. Open Plugins › Plugin Manager to see it. {reason}	{id} eklentisi yüklenmedi. Görmek için Eklentiler › Eklenti Yöneticisi'ni açın. {reason}
+The plugin blocklist couldn't be downloaded ({error}); the last one read, if any, stays in force.	Eklenti engel listesi indirilemedi ({error}); varsa en son okunan liste geçerliliğini korur.
+The plugin blocklist couldn't be read ({error}); the last one read, if any, stays in force.	Eklenti engel listesi okunamadı ({error}); varsa en son okunan liste geçerliliğini korur.
+The plugin {id} wasn't loaded (open Plugins › Plugin Manager to see it): {reason}.	{id} eklentisi yüklenmedi (görmek için Eklentiler › Eklenti Yöneticisi'ni açın): {reason}.
+The plugin {id} wasn't loaded. Open Plugins › Plugin Manager to see it.	{id} eklentisi yüklenmedi. Görmek için Eklentiler › Eklenti Yöneticisi'ni açın.
 The portal's OAuth app	Portalın OAuth uygulaması
 the presentation export failed unexpectedly	sunum dışa aktarımı beklenmedik şekilde başarısız oldu
 the preview failed unexpectedly	önizleme beklenmedik şekilde başarısız oldu
@@ -3744,7 +3761,7 @@ The range is two numbers, low and high (0, 0.9)	Aralık, alt ve üst olmak üzer
 The raster's data couldn't be read.	Rasterin verisi okunamadı.
 The raster's data couldn't be read: {error}	Rasterın verisi okunamadı: {error}
 the recovery copy is incomplete	kurtarma kopyası eksik
-the recovery copy is too large	kurtarma kopyası çok büyük
+the recovery copy is too large (maximum {mib} MiB on this computer)	kurtarma kopyası çok büyük (bu bilgisayarda en fazla {mib} MiB)
 the recovery copy isn't text	kurtarma kopyası metin değil
 the release isn't known	sürüm bilinmiyor
 The reply reached its length limit.	Yanıt uzunluk sınırına ulaştı.
@@ -3759,6 +3776,7 @@ The saved password could not be used. Type a password to try again; check Rememb
 The saved S3 connection no longer matches this source.	Kayıtlı S3 bağlantısı artık bu kaynakla eşleşmiyor.
 The saved sign-in changed. Select your account again.	Kayıtlı oturum değişti. Hesabınızı yeniden seçin.
 The scale the layer's symbol and label sizes are set for. At other scales they grow and shrink with the map, as on paper.	Katmanın sembol ve etiket boyutlarının ayarlandığı ölçek. Diğer ölçeklerde, kâğıttaki gibi haritayla birlikte büyüyüp küçülürler.
+The script, for the Script pane	Betik bölmesi için betik
 The selected GeoPackage layer is no longer available; choose a layer	Seçili GeoPackage katmanı artık kullanılamıyor; bir katman seçin
 The server had a problem answering.	Sunucu yanıt verirken bir sorun yaşadı.
 The server is limiting requests.	Sunucu istekleri sınırlıyor.
@@ -3840,6 +3858,7 @@ This map's thumbnail, from the view.	Görünümden bu haritanın küçük resmi.
 This platform does not report the system theme	Bu platform sistem temasını bildirmiyor
 This plugin can:	Bu eklenti şunları yapabilir:
 This plugin runs as a program on your computer, outside RustGIS's sandbox. It can do anything you can: read and change your files, use the network and run other programs. Install it only if you trust its author.	Bu eklenti, RustGIS'in korumalı alanının dışında, bilgisayarınızda bir program olarak çalışır. Sizin yapabildiğiniz her şeyi yapabilir: dosyalarınızı okuyup değiştirebilir, ağı kullanabilir ve başka programlar çalıştırabilir. Yalnızca yazarına güveniyorsanız yükleyin.
+This project	Bu proje
 This project uses a connection for {origin} that is not saved on this computer.	Bu proje, {origin} için bu bilgisayarda kayıtlı olmayan bir bağlantı kullanıyor.
 This read was already started	Bu okuma zaten başlatıldı
 This release has no installer for this computer: get it from the release page.	Bu sürümde bu bilgisayar için yükleyici yok: sürüm sayfasından edinin.
@@ -4096,6 +4115,7 @@ VN-2000 / UTM zone 48N	VN-2000 / UTM dilimi 48N
 VN-2000 / UTM zone 49N	VN-2000 / UTM dilimi 49N
 Volume	Hacim
 Wait for the run to finish	Çalıştırmanın bitmesini bekleyin
+Wait for the Script pane's run to finish	Betik bölmesindeki çalıştırmanın bitmesini bekleyin
 Waiting for the browser…	Tarayıcı bekleniyor…
 Waiting for your answer	Yanıtınızı bekliyor
 Walk	Yürü
@@ -4201,7 +4221,7 @@ Wrap at	Sarma yeri
 Wrap length	Sarma uzunluğu
 Write a plugin	Eklenti yaz
 Writes a separate two-vertex line for each consecutive vertex pair.	Ardışık her köşe çifti için ayrı bir iki köşeli çizgi yazar.
-Writes every feature with its geometry made valid: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved. Says what was repaired in each.	Her detayı geometrisi geçerli hâle getirilmiş olarak yazar: halkalar kapatılır, yinelenen köşeler ve bozuk parçalar atılır, kendisiyle kesişmeler, örtüşen parçalar ve dış sınırının dışındaki delikler giderilir. Her birinde neyin onarıldığını bildirir.
+Writes every feature with its geometry made valid where it can be: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved. Features with a missing or non-finite coordinate anywhere, even in a hole, or left with no usable points or, for polygons, no area once repaired, are written without geometry. Other features too complex to check, or whose repair fails, are written unchanged. Says what was repaired in each.	Her detayı geometrisi mümkün olduğunca geçerli hâle getirilmiş olarak yazar: halkalar kapatılır, yinelenen köşeler ve bozuk parçalar atılır, kendisiyle kesişmeler, örtüşen parçalar ve dış sınırının dışındaki delikler giderilir. Herhangi bir yerinde, bir delikte bile, eksik veya sonlu olmayan bir koordinatı olan ya da onarımdan sonra kullanılabilir noktası veya çokgenler için alanı kalmayan detaylar geometrisiz yazılır. Denetlenemeyecek kadar karmaşık olan veya onarımı başarısız olan diğer detaylar değiştirilmeden yazılır. Her birinde neyin onarıldığını bildirir.
 Writes one axis-aligned bounding rectangle per feature in stored longitude/latitude coordinates. Zero-area envelopes are skipped.	Her detay için, saklanan boylam/enlem koordinatlarında eksenlere hizalı bir sınırlayıcı dikdörtgen yazar. Alanı sıfır olan zarflar atlanır.
 Writes Sen's slope, the test's Z and p-value, and the slope where the trend is significant.	Sen eğimini, testin Z ve p değerini ve eğilimin anlamlı olduğu yerlerdeki eğimi yazar.
 Writes the features with invalid geometry, such as self-intersecting or unclosed rings, holes outside their shell or overlapping parts, and says what is wrong with each.	Kendisiyle kesişen veya kapanmamış halkalar, dış sınırının dışındaki delikler ya da örtüşen parçalar gibi geçersiz geometriye sahip detayları yazar ve her birinde neyin yanlış olduğunu bildirir.

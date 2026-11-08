@@ -1,5 +1,7 @@
 # id interface catalog: English<TAB>translation
  by 	 oleh
+"instance" must be a layer's instance number, not {value}	"instance" harus berupa nomor instans layer, bukan {value}
+"layer" must be a layer's id or name, not {value}	"layer" harus berupa ID atau nama layer, bukan {value}
 '{b}' isn't a bucket name	'{b}' bukan nama bucket
 '{text}' isn't a scale: type one such as 1:12,345	'{text}' bukan skala: ketik skala seperti 1:12,345
 (b4-b3)/(b4+b3)	(b4-b3)/(b4+b3)
@@ -440,6 +442,7 @@ Basemap	Peta dasar
 Basemaps	Peta dasar
 Basic authentication	Autentikasi dasar
 Basin from hydrolocation	DAS dari hidrolokasi
+Batch Run	Jalankan Batch
 Bearing	Arah
 Before	Sebelum
 Before the event	Sebelum kejadian
@@ -778,6 +781,7 @@ Connected to {kind} {title}	Terhubung ke {kind} {title}
 Connecting to {url}…	Menghubungkan ke {url}…
 Connection	Koneksi
 Connection failure	Kegagalan koneksi
+connection must be a saved web-service connection id (text)	connection harus berupa ID koneksi layanan web tersimpan (teks)
 connection.new returned no id	connection.new tidak mengembalikan id
 Connections	Koneksi
 Connections you add are listed here	Koneksi yang Anda tambahkan tercantum di sini
@@ -809,6 +813,7 @@ Copied the layout to the clipboard	Tata letak disalin ke papan klip
 Copied the layout to the clipboard at {dpi} dpi, not {wanted}: the page is too large for a larger image	Tata letak disalin ke papan klip pada {dpi} dpi, bukan {wanted}: halaman terlalu besar untuk gambar yang lebih besar
 Copied the map to the clipboard	Peta disalin ke papan klip
 Copied {path}	{path} disalin
+Copied. The log cut its parameters short or took their secrets out, so it may not run as it ran.	Disalin. Log memotong parameternya atau menghapus rahasianya, jadi mungkin tidak berjalan seperti saat dijalankan.
 Copies the (selected) features of a layer to a new layer.	Menyalin fitur (terpilih) dari suatu layer ke layer baru.
 Copy	Salin
 Copy / Cut / Paste features	Salin / Potong / Tempel fitur
@@ -834,6 +839,7 @@ Copy Layers	Salin Layer
 Copy Parameters	Salin Parameter
 Copy Path	Salin Path
 Copy Run As Code	Salin Jalankan sebagai Kode
+Copy Script	Salin Skrip
 Copy sign-in link	Salin tautan masuk
 Copy the filtered history, including technical details	Salin riwayat yang difilter, termasuk detail teknis
 Copy the selected features (also as GeoJSON text).	Salin fitur terpilih (juga sebagai teks GeoJSON).
@@ -1693,6 +1699,7 @@ In Beyond	Perbesar Melewati
 In degrees.	Dalam derajat.
 In memory	Di memori
 In place	Di tempat
+In place of the Script pane's script ({keys} brings it back)	Menggantikan skrip di panel Skrip ({keys} mengembalikannya)
 In place, holding a {w} × {h} overview	Di tempat, dengan ikhtisar {w} × {h}
 In Progress	Sedang Berjalan
 in progress	sedang berjalan
@@ -1772,6 +1779,7 @@ Invert color scheme	Balik skema warna
 Invert the selection.	Balik seleksi.
 IS	IS
 IS NULL	IS NULL
+It can't run in a script	Tidak dapat dijalankan dalam skrip
 it changed since it was installed: install it again from the Plugin Manager	plugin berubah sejak dipasang: pasang lagi dari Pengelola Plugin
 it connects to an address on the internet	terhubung ke alamat di internet
 It didn't open: {error}	Tidak terbuka: {error}
@@ -2343,6 +2351,7 @@ no service or file links	tidak ada tautan layanan atau file
 No services match your search.	Tidak ada layanan yang cocok dengan pencarian Anda.
 No standalone tables	Tidak ada tabel mandiri
 No styles yet	Belum ada gaya
+No such tile layer	Tidak ada layer ubin tersebut
 no system keychain in this build	tidak ada keychain sistem di build ini
 No tasks yet. Record one, or make one from your geoprocessing history with Analyze › Task.	Belum ada tugas. Rekam satu, atau buat dari riwayat geoprosesing Anda dengan Analisis › Tugas.
 no text graphic there	tidak ada grafik teks di sana
@@ -2432,6 +2441,7 @@ Only a tile archive read from a file (PMTiles or MBTiles) can be repaired.	Hanya
 Only cubes with data where the map is	Hanya kubus dengan data di area peta
 Only features matching this expression draw in {layer}.	Hanya fitur yang cocok dengan ekspresi ini yang digambar di {layer}.
 Only selected polygons will be included in the output.	Hanya poligon terpilih yang akan disertakan dalam keluaran.
+Only the commands run in the project open now	Hanya perintah yang dijalankan di proyek yang terbuka sekarang
 Only the map's area	Hanya area peta
 Only where the map is	Hanya di area peta
 Opacity	Opasitas
@@ -2452,6 +2462,7 @@ Open Diagnostics	Buka Diagnostik
 Open folder	Buka folder
 Open In Geoprocessing…	Buka di Geoprosesing…
 Open in ModelBuilder	Buka di ModelBuilder
+Open in Script Pane	Buka di Panel Skrip
 Open in Tool	Buka di Alat
 Open Layout	Buka Tata Letak
 Open ModelBuilder	Buka ModelBuilder
@@ -2652,7 +2663,7 @@ Plugins marked Not sandboxed run as programs on your computer instead, and can d
 Plugins run in a sandbox: they can't reach your files or the network, and they change the project only through RustGIS's own commands, within the permissions you accept.	Plugin berjalan di sandbox: plugin tidak dapat mengakses file Anda atau jaringan, dan hanya mengubah proyek melalui perintah RustGIS sendiri, dalam batas izin yang Anda setujui.
 PMTiles archive	Arsip PMTiles
 PNG frames (zip)	Bingkai PNG (zip)
-PNG image	Gambar PNG
+PNG image or GeoTIFF	Gambar PNG atau GeoTIFF
 Point	Titik
 Point the selected layer at its file after the file moved or was renamed.	Arahkan layer terpilih ke filenya setelah file dipindahkan atau diganti namanya.
 Points	Titik
@@ -3194,6 +3205,7 @@ Select a layer in the Layers pane	Pilih layer di panel Layer
 select a layer in the Layers pane first	pilih layer di panel Layer terlebih dahulu
 Select a layer in the Layers pane.	Pilih layer di panel Layer.
 Select a navigation method after tracing a point.	Pilih metode navigasi setelah menelusuri titik.
+Select a raster or tile layer in the Layers pane first	Pilih layer raster atau layer ubin di panel Layer terlebih dahulu
 Select All	Pilih Semua
 Select an element to format it.	Pilih elemen untuk memformatnya.
 Select By\nAttributes	Pilih Menurut\nAtribut
@@ -3661,6 +3673,7 @@ The desktop app adds data cubes	Aplikasi desktop menambahkan kubus data
 The distance between two marks along the line	Jarak antara dua tanda di sepanjang garis
 The environment (AWS_ACCESS_KEY_ID…)	Lingkungan (AWS_ACCESS_KEY_ID…)
 The features where the map is	Fitur di area peta
+The filter searches the first {n} of them; the service.add command adds any other by its name.	Filter mencari di {n} yang pertama; perintah service.add menambahkan yang lain berdasarkan namanya.
 The first 1,000 entries; narrow it down a folder at a time.	1.000 entri pertama; persempit satu folder demi satu folder.
 The first {n} are listed.	{n} yang pertama dicantumkan.
 The first {n} are shown: search to narrow them.	{n} yang pertama ditampilkan: cari untuk mempersempitnya.
@@ -3688,6 +3701,7 @@ The layer's strokes	Goresan layer
 the layout export failed unexpectedly	ekspor tata letak gagal secara tak terduga
 The link doesn't say its STAC API: Find Items searches {api}	Tautan tidak menyebutkan STAC API-nya: Cari Item mencari di {api}
 The list of plugins to browse. Leave it empty for the RustGIS plugin registry.	Daftar plugin untuk dijelajahi. Biarkan kosong untuk registri plugin RustGIS.
+The log cut it short or took its secrets out: it would run only in part	Log memotongnya atau menghapus rahasianya: hanya akan berjalan sebagian
 The longest a callout's line may be.	Panjang maksimum garis callout.
 The map at the left; the title, locator, legend, sources and reference in a panel at the right.	Peta di kiri; judul, lokator, legenda, sumber, dan referensi dalam panel di kanan.
 the map has no GeoPackage layer loaded for editing (Home › Add Data › Edit GeoPackage Table…)	peta tidak memiliki layer GeoPackage yang dimuat untuk penyuntingan (Beranda › Tambah Data › Edit Tabel GeoPackage…)
@@ -3728,7 +3742,10 @@ the picture is too large to show	gambar terlalu besar untuk ditampilkan
 the picture is too large to show, or isn't one	gambar terlalu besar untuk ditampilkan, atau bukan gambar
 the place lies outside the zone given	tempat itu berada di luar zona yang diberikan
 The places leave this device for the public Valhalla server at {server}, run by FOSSGIS. Don't continue if your project is bound by data privacy or data sovereignty rules.	Tempat-tempat ini dikirim dari perangkat ini ke server Valhalla publik di {server}, yang dikelola FOSSGIS. Jangan lanjutkan jika proyek Anda terikat aturan privasi data atau kedaulatan data.
-The plugin {id} wasn't loaded. Open Plugins › Plugin Manager to see it. {reason}	Plugin {id} tidak dimuat. Buka Plugin › Pengelola Plugin untuk melihatnya. {reason}
+The plugin blocklist couldn't be downloaded ({error}); the last one read, if any, stays in force.	Daftar blokir plugin tidak dapat diunduh ({error}); daftar terakhir yang dibaca, jika ada, tetap berlaku.
+The plugin blocklist couldn't be read ({error}); the last one read, if any, stays in force.	Daftar blokir plugin tidak dapat dibaca ({error}); daftar terakhir yang dibaca, jika ada, tetap berlaku.
+The plugin {id} wasn't loaded (open Plugins › Plugin Manager to see it): {reason}.	Plugin {id} tidak dimuat (buka Plugin › Pengelola Plugin untuk melihatnya): {reason}.
+The plugin {id} wasn't loaded. Open Plugins › Plugin Manager to see it.	Plugin {id} tidak dimuat. Buka Plugin › Pengelola Plugin untuk melihatnya.
 The portal's OAuth app	Aplikasi OAuth portal
 the presentation export failed unexpectedly	ekspor presentasi gagal secara tak terduga
 the preview failed unexpectedly	pratinjau gagal secara tak terduga
@@ -3744,7 +3761,7 @@ The range is two numbers, low and high (0, 0.9)	Rentang berupa dua angka, rendah
 The raster's data couldn't be read.	Data raster tidak dapat dibaca.
 The raster's data couldn't be read: {error}	Data raster tidak dapat dibaca: {error}
 the recovery copy is incomplete	salinan pemulihan tidak lengkap
-the recovery copy is too large	salinan pemulihan terlalu besar
+the recovery copy is too large (maximum {mib} MiB on this computer)	salinan pemulihan terlalu besar (maksimum {mib} MiB di komputer ini)
 the recovery copy isn't text	salinan pemulihan bukan teks
 the release isn't known	rilis tidak dikenal
 The reply reached its length limit.	Balasan mencapai batas panjangnya.
@@ -3759,6 +3776,7 @@ The saved password could not be used. Type a password to try again; check Rememb
 The saved S3 connection no longer matches this source.	Koneksi S3 tersimpan tidak lagi cocok dengan sumber ini.
 The saved sign-in changed. Select your account again.	Sesi masuk yang disimpan berubah. Pilih akun Anda lagi.
 The scale the layer's symbol and label sizes are set for. At other scales they grow and shrink with the map, as on paper.	Skala yang menjadi acuan ukuran simbol dan label layer. Pada skala lain, ukurannya membesar dan mengecil mengikuti peta, seperti di atas kertas.
+The script, for the Script pane	Skrip, untuk panel Skrip
 The selected GeoPackage layer is no longer available; choose a layer	Layer GeoPackage terpilih tidak lagi tersedia; pilih layer
 The server had a problem answering.	Server mengalami masalah saat menjawab.
 The server is limiting requests.	Server membatasi permintaan.
@@ -3840,6 +3858,7 @@ This map's thumbnail, from the view.	Thumbnail peta ini, dari tampilan.
 This platform does not report the system theme	Platform ini tidak melaporkan tema sistem
 This plugin can:	Plugin ini dapat:
 This plugin runs as a program on your computer, outside RustGIS's sandbox. It can do anything you can: read and change your files, use the network and run other programs. Install it only if you trust its author.	Plugin ini berjalan sebagai program di komputer Anda, di luar sandbox RustGIS. Plugin ini dapat melakukan apa pun yang dapat Anda lakukan: membaca dan mengubah file Anda, menggunakan jaringan, dan menjalankan program lain. Pasang hanya jika Anda memercayai pembuatnya.
+This project	Proyek ini
 This project uses a connection for {origin} that is not saved on this computer.	Proyek ini menggunakan koneksi untuk {origin} yang tidak tersimpan di komputer ini.
 This read was already started	Pembacaan ini sudah dimulai
 This release has no installer for this computer: get it from the release page.	Rilis ini tidak memiliki penginstal untuk komputer ini: dapatkan dari halaman rilis.
@@ -4096,6 +4115,7 @@ VN-2000 / UTM zone 48N	VN-2000 / UTM zone 48N
 VN-2000 / UTM zone 49N	VN-2000 / UTM zone 49N
 Volume	Volume
 Wait for the run to finish	Tunggu hingga eksekusi selesai
+Wait for the Script pane's run to finish	Tunggu hingga proses di panel Skrip selesai
 Waiting for the browser…	Menunggu peramban…
 Waiting for your answer	Menunggu jawaban Anda
 Walk	Berjalan
@@ -4201,7 +4221,7 @@ Wrap at	Bungkus di
 Wrap length	Panjang bungkus
 Write a plugin	Tulis plugin
 Writes a separate two-vertex line for each consecutive vertex pair.	Menulis garis dua verteks terpisah untuk setiap pasangan verteks berurutan.
-Writes every feature with its geometry made valid: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved. Says what was repaired in each.	Menulis setiap fitur dengan geometri yang dibuat valid: cincin ditutup, verteks berulang dan bagian degenerasi dibuang, perpotongan diri, bagian yang tumpang tindih, dan lubang di luar cangkangnya diselesaikan. Menyebutkan apa yang diperbaiki pada masing-masing.
+Writes every feature with its geometry made valid where it can be: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved. Features with a missing or non-finite coordinate anywhere, even in a hole, or left with no usable points or, for polygons, no area once repaired, are written without geometry. Other features too complex to check, or whose repair fails, are written unchanged. Says what was repaired in each.	Menulis setiap fitur dengan geometri yang dibuat valid sebisa mungkin: cincin ditutup, verteks berulang dan bagian degenerasi dibuang, perpotongan diri, bagian yang tumpang tindih, dan lubang di luar cangkangnya diselesaikan. Fitur dengan koordinat yang hilang atau tidak hingga di mana pun, bahkan di lubang, atau yang tidak lagi memiliki titik yang dapat digunakan atau, untuk poligon, tidak memiliki luas setelah diperbaiki, ditulis tanpa geometri. Fitur lain yang terlalu rumit untuk diperiksa, atau yang perbaikannya gagal, ditulis tanpa perubahan. Menyebutkan apa yang diperbaiki pada masing-masing.
 Writes one axis-aligned bounding rectangle per feature in stored longitude/latitude coordinates. Zero-area envelopes are skipped.	Menulis satu persegi panjang pembatas sejajar sumbu per fitur dalam koordinat bujur/lintang tersimpan. Amplop berluas nol dilewati.
 Writes Sen's slope, the test's Z and p-value, and the slope where the trend is significant.	Menulis kemiringan Sen, nilai Z dan p-value uji, serta kemiringan di tempat tren signifikan.
 Writes the features with invalid geometry, such as self-intersecting or unclosed rings, holes outside their shell or overlapping parts, and says what is wrong with each.	Menulis fitur dengan geometri tidak valid, seperti cincin yang berpotongan sendiri atau tidak tertutup, lubang di luar cangkangnya, atau bagian yang tumpang tindih, dan menyebutkan apa yang salah pada masing-masing.
