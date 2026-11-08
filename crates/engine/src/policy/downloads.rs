@@ -436,7 +436,9 @@ impl Session {
             let refinement = (key == "id" && value.as_u64() == Some(id))
                 || (key == "cog" && in_place && value.as_bool() == Some(true))
                 || (key == "whole" && value.as_bool() == Some(true))
-                || (key == "zoom" && value.as_bool() == Some(false) && claim.params.get(key).and_then(Value::as_bool) == Some(true));
+                || (key == "zoom"
+                    && crate::cmd::bool_value(value) == Some(false)
+                    && claim.params.get(key).and_then(crate::cmd::bool_value) == Some(true));
             if !refinement && claim.params.get(key) != Some(value) {
                 return Err("the download's address or parameters changed since it was requested".into());
             }

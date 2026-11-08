@@ -199,7 +199,7 @@ mod tests {
         cache::set_fetcher(move |url, done| callbacks.lock().unwrap().push((url, done)));
         let mut h = launch_with_permissions("ui-queued-url", &["edit", "network"]);
         let camera = h.state().session.map().camera;
-        for zoom in ["false", "true", "on"] {
+        for zoom in ["false", "true", "on", "yes", "auto"] {
             let name = format!("Places {zoom}");
             let url = format!("http://127.0.0.1:9/queued-{zoom}.csv");
             let params = json!({"url":url,"name":name,"x":"east","y":"north","zoom":zoom});
@@ -224,7 +224,9 @@ mod tests {
             assert_eq!(request.params(), &expected, "the claim preserves the caller's options, anonymous reads and engine receipt");
             let app = h.state_mut();
             app.session.map_mut().camera = camera;
-            app.ui.link_zoomed = false;
+            // "yes" lands after a link has zoomed: its claimed text still reads as true, so the
+            // view is kept rather than the download refused (#1600).
+            app.ui.link_zoomed = zoom == "yes";
             app.add_url(request.params(), Some(request), None).unwrap();
             let (asked, done) = held.lock().unwrap().pop().unwrap();
             let (asked, limit) = cache::split_download_limit(&asked);
@@ -238,8 +240,11 @@ mod tests {
             assert_eq!(places.dataset.features.len(), 2);
             assert!(places.anonymous);
             assert!(places.connection.is_empty());
-            if zoom == "false" {
-                assert_eq!(app.session.map().camera, camera, "false keeps the view");
+            // Text it can't read is read as false and said (#1600); the rest says nothing of it.
+            let unread = app.session.notices_since(mark).iter().filter(|n| n.text.contains("zoom = \"auto\" (read as false)")).count();
+            assert_eq!(unread, usize::from(zoom == "auto"), "{zoom}: {:?}", app.session.notices_since(mark));
+            if matches!(zoom, "false" | "yes" | "auto") {
+                assert_eq!(app.session.map().camera, camera, "false, unreadable text, and a later link, keep the view");
             } else {
                 assert!(app.session.map().camera.res < camera.res, "true and on frame the new points");
                 assert!(app.ui.link_zoomed);

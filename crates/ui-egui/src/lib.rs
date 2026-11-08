@@ -4418,10 +4418,10 @@ impl RustGisApp {
                 if let Some(zoom) = p.get("zoom") {
                     q["zoom"] = zoom.clone();
                 }
-            } else if let Some(zoom) =
-                p.get("zoom").and_then(|v| v.as_bool().or_else(|| v.as_str().map(|s| matches!(s, "true" | "yes" | "1" | "on"))))
-            {
-                q["zoom"] = json!(zoom);
+            } else if let Some(zoom) = p.get("zoom").filter(|v| !v.is_null()) {
+                // Read as the engine reads a true/false parameter; a value it can't read goes on
+                // as given, for the command adding the download to read as false and say so (#1600).
+                q["zoom"] = rustgis_engine::cmd::bool_value(zoom).map_or_else(|| zoom.clone(), |z| json!(z));
             }
             if let Some(number) = p.get("request").filter(|v| v.is_u64()) {
                 q["request"] = number.clone();
@@ -4717,7 +4717,7 @@ impl RustGisApp {
         let shown = rustgis_engine::sources::redact(&url);
         p["id"] = json!(id);
         p["url"] = json!(url);
-        let zoom = p.get("zoom").and_then(Value::as_bool) == Some(true);
+        let zoom = p.get("zoom").and_then(rustgis_engine::cmd::bool_value) == Some(true);
         if zoom && self.ui.link_zoomed {
             p["zoom"] = json!(false);
         }

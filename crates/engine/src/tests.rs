@@ -1847,6 +1847,61 @@ fn rivers_are_labelled_along_their_lines_in_italics() {
     assert!(!text.contains("italic"), "{text}");
 }
 
+/// A true/false parameter reads true, false, yes, no, on, off, 1 and 0 in any case; other text is
+/// read as false and another number ignored, each named in one notice per command (#1600).
+#[test]
+fn unread_boolean_parameter_text_is_said() {
+    let mut s = world();
+    const SAID: &str = "Not read as true or false:";
+    let unread = |s: &Session| s.notices.iter().filter(|n| n.text.starts_with(SAID)).count();
+    let style = |s: &Session| {
+        let c = &s.map().layer_by_name("Rivers").unwrap().labels.default;
+        (c.bold, c.italic)
+    };
+    for (given, expect) in
+        [("True", true), (" YES ", true), ("On", true), ("1", true), ("False", false), ("no", false), ("OFF", false), ("0", false)]
+    {
+        s.run("labels.style", &json!({"layer": "Rivers", "italic": given, "bold": given})).unwrap();
+        assert_eq!(style(&s), (expect, expect), "{given}");
+    }
+    s.run("labels.style", &json!({"layer": "Rivers", "italic": 1, "bold": true})).unwrap();
+    assert_eq!(style(&s), (true, true));
+    s.run("labels.style", &json!({"layer": "Rivers", "italic": 0, "bold": 0.0})).unwrap();
+    assert_eq!(style(&s), (false, false));
+    s.run("labels.style", &json!({"layer": "Rivers", "italic": 1, "bold": true})).unwrap();
+    assert_eq!(unread(&s), 0, "clean input gives no notice: {:?}", s.notices.last());
+    s.run("labels.style", &json!({"layer": "Rivers", "italic": "auto", "bold": "ture"})).unwrap();
+    assert_eq!(style(&s), (false, false));
+    assert_eq!(unread(&s), 1, "{:?}", s.notices.last());
+    let said = s.notices.iter().find(|n| n.text.starts_with(SAID)).map(|n| n.text.clone()).unwrap();
+    assert!(said.contains("italic = \"auto\" (read as false)") && said.contains("bold = \"ture\" (read as false)"), "{said}");
+    // A number other than 1 or 0 leaves the setting as it was, and says so.
+    s.run("labels.style", &json!({"layer": "Rivers", "italic": true})).unwrap();
+    s.run("labels.style", &json!({"layer": "Rivers", "italic": 5})).unwrap();
+    assert_eq!(style(&s), (false, true));
+    assert_eq!(unread(&s), 2, "{:?}", s.notices.last());
+    assert!(s.notices.iter().any(|n| n.text.contains("italic = 5 (ignored)")), "{:?}", s.notices.last());
+    // A long value is said by its length, not quoted in part; ten distinct values name eight
+    // and count the rest once each, however often a command reads them.
+    let long = "k".repeat(41);
+    s.run("labels.style", &json!({"layer": "Rivers", "italic": long})).unwrap();
+    let said = s.notices.iter().rev().find(|n| n.text.starts_with(SAID)).map(|n| n.text.clone()).unwrap();
+    assert!(said.contains("italic = a value of 41 characters (read as false)") && !said.contains("kkk"), "{said}");
+    let p: Value = (0..10).map(|i| (format!("k{i}"), json!(format!("v{i}")))).collect::<serde_json::Map<_, _>>().into();
+    crate::cmd::clear_unread_bools();
+    for _ in 0..3 {
+        for i in 0..10 {
+            assert_eq!(crate::cmd::b(&p, &format!("k{i}")), Some(false));
+        }
+    }
+    let said = crate::cmd::take_unread_bools().unwrap();
+    assert!(said.contains("k7 = \"v7\"") && !said.contains("k8 =") && said.contains(", 2 more ("), "{said}");
+    // The next clean command says nothing more.
+    let before = unread(&s);
+    s.run("labels.style", &json!({"layer": "Rivers", "italic": true})).unwrap();
+    assert_eq!(unread(&s), before);
+}
+
 #[test]
 fn a_qgis_project_in_degrees_opens_in_equirectangular() {
     // QGIS draws a project in degrees as plate carrée, longitude and latitude as x and y.
@@ -5778,8 +5833,8 @@ fn layout_legends_list_what_the_frame_draws() {
     // <all other values> can be left out on its own, in either mode.
     s.run("layout.update", &json!({"element": id, "hideOther": true})).unwrap();
     assert!(matches!(legend(&s).1, rustgis_map::layout::ElementKind::Legend { all_classes: true, hide_other: true, .. }));
-    // Read like every other on/off parameter (`b`): a value that is neither a bool nor text keeps
-    // the setting, and text other than true/yes/1/on turns it off.
+    // Read like every other on/off parameter (`b`): a value that is neither a bool, 1 or 0 nor
+    // text keeps the setting, and text other than true/yes/1/on turns it off.
     s.run("layout.update", &json!({"element": id, "hideOther": 5})).unwrap();
     assert!(matches!(legend(&s).1, rustgis_map::layout::ElementKind::Legend { hide_other: true, .. }), "a number keeps the setting");
     s.run("layout.update", &json!({"element": id, "hideOther": "off"})).unwrap();
@@ -8215,6 +8270,10 @@ fn analysis_workflows_models_scripts_and_raster_functions() {
     }
     assert!(s.run("raster.function", &json!({"layer": dem, "function": "warp"})).is_err());
     assert!(s.run("raster.function", &json!({"layer": dem, "function": "bandMath", "expression": "b2"})).is_err());
+    // A remap's `keep`, read off the command's thread, is still said when it can't be read (#1600).
+    let remap = json!({"layer": dem, "function": "remap", "ranges": [[0, 300, 1]], "keep": "auto"});
+    s.run("raster.function", &remap).unwrap();
+    assert!(s.notices.iter().any(|n| n.text.contains("keep = \"auto\" (read as false)")), "{:?}", s.notices.last());
     let r = s
         .run(
             "raster.functionChain",
@@ -31774,6 +31833,30 @@ fn calculate_field_keeps_decimals_and_says_what_whole_numbers_cut() {
     assert!(s.notices_since(mark).iter().all(|n| !n.text.starts_with("Attribute rule")), "{:?}", s.notices_since(mark));
 }
 
+/// A raster function started on another thread says a `keep` it can't read when it starts, and a
+/// function that doesn't read `keep` says nothing of it (#1600).
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn background_raster_function_says_unread_keep() {
+    use crate::cmd::workflows::raster_start;
+    let mut s = world();
+    s.run("layer.addDataBytes", &json!({"fileName": "dem.tif", "data": dem_b64()})).unwrap();
+    let dem = s.map().layers.iter().find(|l| l.is_raster()).unwrap().name.clone();
+    let said = |s: &Session| s.notices.iter().filter(|n| n.text.contains("keep = \"auto\" (read as false)")).count();
+    s.run("raster.function", &json!({"layer": dem, "function": "slope", "keep": "auto"})).unwrap();
+    assert_eq!(said(&s), 0, "slope doesn't read keep");
+    let p = json!({"layer": dem, "function": "remap", "ranges": [[0, 300, 1]], "keep": "auto"});
+    raster_start(&mut s, "raster.function", &p).unwrap();
+    assert_eq!(said(&s), 1, "{:?}", s.notices.last());
+    let notice = s.notices.iter().rev().find(|n| n.text.contains("keep = \"auto\"")).unwrap().clone();
+    let records = s.diagnostics.records();
+    assert!(records.iter().any(|r| r.message == notice.text && r.source == "raster.function"), "{records:?}");
+    // Each step of a chain, likewise.
+    let chain = json!({"layer": dem, "steps": [{"function": "slope", "keep": "auto"}, {"function": "remap", "ranges": [[0, 90, 1]], "keep": "auto"}]});
+    raster_start(&mut s, "raster.functionChain", &chain).unwrap();
+    assert_eq!(said(&s), 2, "{:?}", s.notices.last());
+}
+
 /// Viewshed and Interpolate made on another thread, as the Analysis pane runs them (#1291 step 3):
 /// the raster handed over (`ran`) is the one the command makes here, a cancelled run is an error
 /// saying so, and a run whose project was closed meanwhile adds nothing.
@@ -32282,6 +32365,15 @@ fn exports_run_on_another_thread() {
     assert!(export_start(&mut s, "share.exportLayer", &json!({"layer": "Countries", "path": at("x.gpkg"), "crs": "EPSG:nope"})).is_err());
     assert!(export_start(&mut s, "share.exportRaster", &json!({"layer": dem, "path": at("x.tif"), "band": 99})).is_err());
     assert!(export_start(&mut s, "layout.export", &json!({"path": at("x.jpg")})).is_err(), "a format it can't write");
+    // A true/false value it can't read is said when it starts, under the command (#1600); a clean
+    // start says nothing.
+    let unread = |s: &Session, mark: u64| s.notices_since(mark).iter().filter(|n| n.text.contains("allPages = \"typo\"")).count();
+    let mark = s.notice_mark();
+    export_start(&mut s, "layout.export", &json!({"path": at("pages.pdf"), "dpi": 48, "allPages": "yes"})).unwrap();
+    assert!(s.notices_since(mark).is_empty(), "{:?}", s.notices_since(mark));
+    export_start(&mut s, "layout.export", &json!({"path": at("pages.pdf"), "dpi": 48, "allPages": "typo"})).unwrap();
+    assert_eq!(unread(&s, mark), 1, "{:?}", s.notices_since(mark));
+    assert_eq!(s.diagnostics.records().last().map(|r| r.source.clone()).as_deref(), Some("layout.export"));
     // Map and layout exports draw a copy of what was there when they started: moving the map or
     // removing the layout meanwhile changes nothing in the file.
     let (here, there) = (at("still_here.png"), at("still_there.png"));

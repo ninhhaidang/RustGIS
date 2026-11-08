@@ -1470,7 +1470,7 @@ impl Session {
             let (at, start) = (project_log::now_ms(), web_time::Instant::now());
             #[cfg(not(target_arch = "wasm32"))]
             let files_before: Vec<String> = self.mbtiles_files().map(str::to_string).collect();
-            let res = run(self);
+            let res = self.with_unread_bools(source, run);
             // Whichever command took its last layer away (removed, undone, the project closed):
             // the file can now be moved or replaced, so what was read of it is forgotten too.
             #[cfg(not(target_arch = "wasm32"))]
@@ -2104,6 +2104,21 @@ impl Session {
     pub fn notify(&mut self, text: impl Into<String>, error: bool) {
         use rustgis_data::diagnostics::Severity;
         self.notice(text.into(), if error { Severity::Error } else { Severity::Info });
+    }
+
+    /// Runs `f`, then says the true/false parameters it could not read: text taken as false,
+    /// other values ignored (#1600), as `source`'s notice. Inside another such run (a command's
+    /// script, a command run by a command) they are left for the outer one to say.
+    pub(crate) fn with_unread_bools<T>(&mut self, source: Option<&'static str>, f: impl FnOnce(&mut Self) -> T) -> T {
+        let scope = cmd::UnreadBoolsScope::open();
+        let r = f(self);
+        if let Some(text) = scope.close() {
+            let said_by = source.or(self.diagnostic_source);
+            let previous = std::mem::replace(&mut self.diagnostic_source, said_by);
+            self.warn(text);
+            self.diagnostic_source = previous;
+        }
+        r
     }
 
     /// A nonfatal problem: existing notice consumers still see it as a non-error, while

@@ -945,7 +945,12 @@ fn function_work(s: &Session, p: &Value) -> Result<Work, String> {
     let src = raster_of(s, ps(p, "layer").ok_or("layer is required")?)?;
     let target = resample_target(s, p)?;
     let name = out_name(p, format!("{}_{}", src.name, ps(p, "function").unwrap_or("")));
-    let p = p.clone();
+    let mut p = p.clone();
+    // Read here, on the command's thread, where an unreadable value is said (#1600); only a remap
+    // or threshold reads it.
+    if matches!(ps(&p, "function"), Some("remap" | "threshold")) {
+        super::settle_bool(&mut p, "keep");
+    }
     Ok(Box::new(move || {
         let pixels = apply_function(&src, &p, target.as_deref())?;
         // Only a resample takes another raster's grid.
@@ -962,9 +967,13 @@ fn function_chain(s: &mut Session, p: &Value) -> CmdResult {
 /// target), and the work that applies them.
 fn function_chain_work(s: &Session, p: &Value) -> Result<Work, String> {
     let src = raster_of(s, ps(p, "layer").ok_or("layer is required")?)?;
-    let steps = p.get("steps").and_then(Value::as_array).ok_or("steps is required")?.clone();
+    let mut steps = p.get("steps").and_then(Value::as_array).ok_or("steps is required")?.clone();
     if steps.is_empty() || steps.len() > 20 {
         return Err("give 1 to 20 steps".into());
+    }
+    // Read here, on the command's thread, where an unreadable value is said (#1600).
+    for st in steps.iter_mut().filter(|st| matches!(ps(st, "function"), Some("remap" | "threshold"))) {
+        super::settle_bool(st, "keep");
     }
     let func = |st: &Value| st.get("function").and_then(Value::as_str).unwrap_or("?").to_string();
     let targets: Vec<_> = steps
