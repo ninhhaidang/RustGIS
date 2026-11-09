@@ -442,9 +442,21 @@ fn open_text(s: &mut Session, p: &Value) -> CmdResult {
 
 /// Saves the project to `path` (`.rgis` added when it has no extension) and makes it the
 /// project's file. The project as it is now is the saved state undo can return to.
+///
+/// The path must name a project file (`.rgis`, or the legacy `.rgisx`, in any case), so a save
+/// never goes over a data file, a package or any other kind of file, including when the
+/// project was opened from a file with another extension.
 fn write(s: &mut Session, path: PathBuf) -> CmdResult {
     let path = if path.extension().is_none() { path.with_extension(crate::project::EXTENSION) } else { path };
     let destination = std::path::absolute(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+    if !crate::project::is_project_file(&path.to_string_lossy()) {
+        let ext = path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+        return Err(if ext == crate::project::PACKAGE_EXTENSION {
+            "a project saves to a .rgis file; Package Project (project.package) writes a .rgispkg package".into()
+        } else {
+            format!("a project saves to a .rgis file, not a .{ext} one")
+        });
+    }
     let report = s.project.save(&destination)?;
     let stripped = report.layer_addresses();
     s.mark_saved();

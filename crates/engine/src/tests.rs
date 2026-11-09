@@ -2254,6 +2254,49 @@ fn project_extension_is_rgis_and_legacy_rgisx_opens() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// Save and Save As write only to a project file: a data file or a package path is refused and
+/// left as it was, with the session unchanged, while any case of `.rgis`/`.rgisx` saves.
+/// Opening project JSON under another extension never exempts that path from validation.
+#[test]
+fn save_refuses_a_path_that_isnt_a_project_file() {
+    let dir = std::env::temp_dir().join(format!("rustgis-save-ext-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut s = world();
+    let first = dir.join("atlas.rgis");
+    s.run("project.saveAs", &json!({"path": first})).unwrap();
+    let name = s.project.name.clone();
+    let data = dir.join("roads.geojson");
+    std::fs::write(&data, b"keep this data").unwrap();
+    let e = s.run("project.saveAs", &json!({"path": data})).unwrap_err();
+    assert!(e.contains("a .rgis file, not a .geojson one"), "{e}");
+    let e = s.run("project.save", &json!({"path": dir.join("data.GPKG")})).unwrap_err();
+    assert!(e.contains("not a .gpkg one"), "{e}");
+    let package = dir.join("atlas.rgispkg");
+    let e = s.run("project.saveAs", &json!({"path": package})).unwrap_err();
+    assert!(e.contains("project.package"), "{e}");
+    assert_eq!(std::fs::read(&data).unwrap(), b"keep this data");
+    assert!(!package.exists() && !dir.join("data.GPKG").exists());
+    assert_eq!(s.path.as_deref(), Some(first.as_path()));
+    assert_eq!(s.project.name, name, "a refused Save As keeps the project's name");
+    for ok in ["Upper.RGIS", "old.rgisx"] {
+        s.run("project.saveAs", &json!({"path": dir.join(ok)})).unwrap();
+        assert!(Project::load(&dir.join(ok)).is_ok(), "{ok}");
+    }
+    // Opening project JSON under another extension does not permit overwriting it.
+    let kept = dir.join("atlas.json");
+    std::fs::copy(&first, &kept).unwrap();
+    s.run("project.open", &json!({"path": kept})).unwrap();
+    s.run("project.rename", &json!({"name": "renamed"})).unwrap();
+    let before = std::fs::read(&kept).unwrap();
+    assert!(s.run("project.save", &Value::Null).is_err());
+    assert!(s.run("project.saveAs", &json!({"path": kept})).is_err());
+    assert_eq!(std::fs::read(&kept).unwrap(), before);
+    assert_eq!(s.project.name, "renamed");
+    assert!(s.dirty());
+    assert_eq!(s.path.as_deref(), Some(kept.as_path()));
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// A table file picked inside a File Geodatabase stands for the geodatabase, in `layer.addData`
 /// and `info.fileLayers` alike; through GDAL when it is installed.
 #[cfg(not(target_arch = "wasm32"))]
