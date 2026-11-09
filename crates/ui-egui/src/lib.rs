@@ -3958,7 +3958,7 @@ impl RustGisApp {
                     let tiles = p.get("tiles").cloned().unwrap_or(Value::Null);
                     return self.run("share.exportRaster", json!({"path": "tiles.tif", "tiles": tiles}));
                 }
-                match rustgis_engine::cmd::raster::geotiff_bytes(&self.session, &Value::Null) {
+                match rustgis_engine::cmd::raster::geotiff_bytes(&mut self.session, &Value::Null) {
                     Ok((name, bytes)) => {
                         self.download(&format!("{name}.tif"), bytes);
                     }

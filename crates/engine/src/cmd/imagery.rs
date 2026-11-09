@@ -323,6 +323,8 @@ fn warp_to_fit(s: &mut Session, p: &Value, layer: &str, r: &Raster) -> CmdResult
     let new_layer = ps(p, "name").map(str::trim).filter(|n| !n.is_empty()).map(|n| n.chars().take(200).collect::<String>());
     let out_name = new_layer.clone().unwrap_or_else(|| r.name.clone());
     let mut out = warp::warp(r, &fit, &warp::Options { crs, points_crs, resampling, cell, name: out_name })?;
+    let used = warp::Method::Sample(resampling).used_on(r);
+    report_resampled_classes(s, r, &out, used.id());
     // Resampled from values rounded when the file was read, some or all of them.
     out.keep_rounded_mark(r);
     if let Some((fw, fh)) = r.overview {
@@ -331,7 +333,7 @@ fn warp_to_fit(s: &mut Session, p: &Value, layer: &str, r: &Raster) -> CmdResult
         s.notify(note, false);
     }
     let mut info = json!({
-        "transform": kind.id(), "crs": crs.label(), "pointsCrs": points_crs.label(), "resampling": resampling.id(),
+        "transform": kind.id(), "crs": crs.label(), "pointsCrs": points_crs.label(), "resampling": used.id(),
         "width": out.width, "height": out.height, "bands": out.band_count(), "cellSize": out.transform.pixel_width,
     });
     if let Some((fw, fh)) = r.overview {
@@ -340,10 +342,9 @@ fn warp_to_fit(s: &mut Session, p: &Value, layer: &str, r: &Raster) -> CmdResult
     // A file written is the layer's source; without one the pixels are kept in the project.
     let rl = match &path {
         Some(path) => {
-            let cog =
-                rustgis_data::raster::cogwrite::write_file(&out, 0, std::path::Path::new(path)).map_err(|e| format!("{path}: {e}"))?;
+            let wrote = super::raster::write_and_report(s, &out, 0, true, path)?;
             info["path"] = json!(path);
-            info["cog"] = json!({"overviews": cog.levels.len().saturating_sub(1), "bigTiff": cog.big, "bytes": cog.bytes});
+            info["cog"] = wrote.get("cog").cloned().unwrap_or(Value::Null);
             let e = out.extent();
             info["extent"] = json!([e.min_x, e.min_y, e.max_x, e.max_y]);
             RasterLayer::from_path(out, path.clone())
@@ -383,8 +384,10 @@ fn project_raster(s: &mut Session, p: &Value) -> CmdResult {
     let path = tif_path(p)?;
     let out_name = name(p, format!("{} projected", r.name));
     let out = warp::project(&r, &grid, method, out_name.clone())?;
+    let used = method.used_on(&r);
+    report_resampled_classes(s, &r, &out, used.id());
     let mut info = json!({
-        "name": out_name, "crs": grid.crs.label(), "resampling": method.used_on(&r).id(), "width": out.width, "height": out.height, "bands": out.band_count(),
+        "name": out_name, "crs": grid.crs.label(), "resampling": used.id(), "width": out.width, "height": out.height, "bands": out.band_count(),
         "cellSize": [grid.cell_x, grid.cell_y], "corner": [grid.min_x, grid.max_y],
     });
     if let Some((fw, fh)) = r.overview {
@@ -394,6 +397,31 @@ fn project_raster(s: &mut Session, p: &Value) -> CmdResult {
         info["projectedFromOverview"] = json!({"width": r.width, "height": r.height, "of": [fw, fh]});
     }
     add_output(s, out, path, false, info)
+}
+
+/// Report categorical labels removed by value-mixing resampling, with bounded band numbers.
+fn report_resampled_classes(s: &mut Session, source: &Raster, out: &Raster, method: &str) {
+    let mut count = 0usize;
+    let mut bands = Vec::new();
+    for (i, band) in source.bands.iter().enumerate() {
+        if band.classes.iter().any(|name| !name.is_empty()) && out.bands.get(i).is_some_and(|b| b.classes.is_empty()) {
+            count += 1;
+            if bands.len() < 16 {
+                bands.push((i + 1).to_string());
+            }
+        }
+    }
+    if count > 0 {
+        let more = if count > bands.len() { format!(", … ({} more)", count - bands.len()) } else { String::new() };
+        s.notify(
+            format!(
+                "{}: class names of {count} band(s) ({}{more}) not kept under {method}: resampling can mix their values",
+                source.name,
+                bands.join(", ")
+            ),
+            false,
+        );
+    }
 }
 
 /// The largest whole number a raster's 32-bit float pixels hold exactly.
@@ -607,10 +635,9 @@ fn add_output(s: &mut Session, out: Raster, path: Option<String>, classes: bool,
     // A file written is the layer's source; without one the pixels are kept in the project.
     let mut rl = match &path {
         Some(path) => {
-            let cog =
-                rustgis_data::raster::cogwrite::write_file(&out, 0, std::path::Path::new(path)).map_err(|e| format!("{path}: {e}"))?;
+            let wrote = super::raster::write_and_report(s, &out, 0, true, path)?;
             info["path"] = json!(path);
-            info["cog"] = json!({"overviews": cog.levels.len().saturating_sub(1), "bigTiff": cog.big, "bytes": cog.bytes});
+            info["cog"] = wrote.get("cog").cloned().unwrap_or(Value::Null);
             RasterLayer::from_path(out, path.clone())
         }
         None => layer_of(out)?,
@@ -1287,6 +1314,17 @@ fn raster_mosaic(s: &mut Session, p: &Value) -> CmdResult {
         o.name = i.name.clone();
         o.classes = i.classes.clone();
     });
+    out.copyright = first.copyright.clone();
+    // The first input's metadata accompanies its pixels; report other credits rather than
+    // silently dropping them or attributing every input to the first one's owner.
+    super::raster::say_losses(
+        s,
+        rs.iter()
+            .skip(1)
+            .filter(|r| r.copyright.is_some() && r.copyright != first.copyright)
+            .map(|r| (r.name.clone(), "its copyright differs from the first input's and is not kept in the mosaic".to_string()))
+            .collect(),
+    );
     // Cells rounded when an input was read may be among those the mosaic keeps.
     out.keep_rounded_marks(rs.iter().map(|r| &**r));
     let other: Vec<&str> = rs
@@ -1300,8 +1338,7 @@ fn raster_mosaic(s: &mut Session, p: &Value) -> CmdResult {
     }
     let path = ps(p, "path").map(str::trim).filter(|p| !p.is_empty()).map(str::to_string);
     if let Some(path) = &path {
-        let bytes = rustgis_data::raster::geotiff::write(&out, 0).map_err(|e| e.to_string())?;
-        rustgis_data::io::write_atomic(std::path::Path::new(path), &bytes).map_err(|e| format!("{path}: {e}"))?;
+        super::raster::write_and_report(s, &out, 0, false, path)?;
     }
     let mut v = add(s, out, false)?;
     if let (Some(o), Some(path)) = (v.as_object_mut(), path) {

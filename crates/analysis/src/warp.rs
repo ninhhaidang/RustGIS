@@ -589,8 +589,8 @@ impl Canvas {
 
     /// How `r` is held: as a `picture` (a scan being georeferenced), a grey byte image gains
     /// alpha as a colour one does; as data, it keeps its one band, and a cell with no value is
-    /// its no-data, else NaN in a floating-point type and 0 in a whole-number one, as GDAL leaves
-    /// it.
+    /// its no-data, else NaN for floating-point or named-class data and 0 in other whole-number
+    /// data. Named class zero must remain distinct from cells outside the coverage.
     fn of(r: &Raster, picture: bool) -> Canvas {
         let nb = r.bands.len();
         let alpha_src = match r.color {
@@ -606,7 +606,8 @@ impl Canvas {
         let add_alpha = ((rgb && nb == 3) || gray) && alpha_src.is_none() && r.nodata.is_none();
         // Cells with no value: no-data where the raster has some. Colours with alpha are zero there.
         let clear = alpha_src.is_some() || add_alpha;
-        let none = if picture || rgbi || r.data_type.starts_with("Float") { f32::NAN } else { 0.0 };
+        let labelled = r.bands.iter().any(|b| !b.classes.is_empty());
+        let none = if picture || rgbi || labelled || r.data_type.starts_with("Float") { f32::NAN } else { 0.0 };
         let outside = if clear { 0.0 } else { r.nodata.map_or(none, |d| d as f32) };
         let color = match (add_alpha, rgb) {
             (true, true) => ColorHint::Rgb { alpha: true },
@@ -635,8 +636,8 @@ impl Canvas {
         }
     }
 
-    /// The output raster on `g`, its bands named as the source's.
-    fn finish(&self, r: &Raster, g: &Grid, bands: Vec<Vec<f32>>, name: String) -> Result<Raster, String> {
+    /// The output on `g`, keeping band labels and credits, and class names when values are preserved.
+    fn finish(&self, r: &Raster, g: &Grid, bands: Vec<Vec<f32>>, method: Method, name: String) -> Result<Raster, String> {
         let mut out = Raster::new(
             name,
             g.width as u32,
@@ -651,7 +652,14 @@ impl Canvas {
         .map_err(|e| e.to_string())?;
         for (i, band) in out.bands.iter_mut().enumerate() {
             band.name = r.bands.get(i).map_or_else(|| "Alpha".to_string(), |b| b.name.clone());
+            if matches!(method, Method::Sample(Resampling::Nearest) | Method::Mode)
+                && let Some(source) = r.bands.get(i)
+            {
+                band.classes = source.classes.clone();
+            }
         }
+        out.copyright = r.copyright.clone();
+        out.keep_rounded_mark(r);
         Ok(out)
     }
 }
@@ -756,7 +764,7 @@ fn sampled(
     let sampler = Sampler { r, method, alpha: canvas.alpha_src, round: !r.data_type.starts_with("Float") };
     let mut bands = canvas.bands(ow, oh)?;
     if ow == 0 {
-        return canvas.finish(r, g, bands, name);
+        return canvas.finish(r, g, bands, Method::Sample(method), name);
     }
     let x_at = |ox: usize| g.min_x + (ox as f64 + 0.5) * g.cell_x;
     // A cell's work in `MIN_ROW_WORK`'s units (some 30 ns): its pixels read per band, and its
@@ -787,7 +795,7 @@ fn sampled(
             }
         },
     )?;
-    canvas.finish(r, g, bands, name)
+    canvas.finish(r, g, bands, Method::Sample(method), name)
 }
 
 /// `r` on the grid `g`, each cell the mean (or, with `mode`, the most frequent value, with GDAL's
@@ -811,7 +819,7 @@ fn aggregated(
     let nearest = Sampler { r, method: Resampling::Nearest, alpha: None, round };
     let mut bands = canvas.bands(ow, oh)?;
     if ow == 0 {
-        return canvas.finish(r, g, bands, name);
+        return canvas.finish(r, g, bands, if mode { Method::Mode } else { Method::Average }, name);
     }
     let x_at = |i: usize| g.min_x + i as f64 * g.cell_x;
     let each = Aggregate { r, canvas: &canvas, nearest, mode, round };
@@ -847,7 +855,7 @@ fn aggregated(
             each.row(s, &mut line);
         },
     )?;
-    canvas.finish(r, g, bands, name)
+    canvas.finish(r, g, bands, if mode { Method::Mode } else { Method::Average }, name)
 }
 
 /// A thread's scratch in [`aggregated`].
@@ -1433,6 +1441,27 @@ mod tests {
         let floats = Raster::new("f", 4, 4, vec![vec![3.5; 16]], gt, crs, None, ColorHint::Gray, "Float32").unwrap();
         let out = project(&floats, &g, Method::Sample(Resampling::Bilinear), "b".into()).unwrap();
         assert_eq!((out.band_count(), out.value(0, 0, 0), out.value(0, 3, 1)), (1, None, Some(3.5)));
+    }
+
+    #[test]
+    fn projected_classes_keep_zero_distinct_from_outside_cells() {
+        let gt = GeoTransform { origin_x: 0.0, origin_y: 2.0, pixel_width: 1.0, pixel_height: -1.0 };
+        let mut r = Raster::new("c", 2, 2, vec![vec![0.0, 1.0, 1.0, 0.0]], gt, Crs::LonLat, None, ColorHint::Gray, "UInt8").unwrap();
+        r.bands[0].classes = vec!["water".into(), "land".into()];
+        let g = Grid::snapped(r.crs, [-1.0, 0.0, 2.0, 2.0], (1.0, 1.0), (0.0, 0.0)).unwrap();
+        for method in [Method::Sample(Resampling::Nearest), Method::Mode] {
+            let out = project(&r, &g, method, "p".into()).unwrap();
+            assert_eq!(out.value(0, 0, 0), None, "outside must not become class zero");
+            assert_eq!(out.value(0, 1, 0), Some(0.0));
+            assert_eq!(out.bands[0].class_name(0.0), Some("water"));
+            assert_eq!(out.bands[0].classes, r.bands[0].classes);
+            for bytes in [rustgis_data::raster::geotiff::write(&out, 0).unwrap(), rustgis_data::raster::cogwrite::write(&out, 0).unwrap()] {
+                let written = rustgis_data::raster::read_bytes("p.tif", &bytes).unwrap();
+                assert_eq!(written.value(0, 0, 0), None);
+                assert_eq!(written.value(0, 1, 0), Some(0.0));
+                assert_eq!(written.bands[0].classes, r.bands[0].classes);
+            }
+        }
     }
 
     /// Grids with the same cell and origin line up wherever their areas are; a grid too large to

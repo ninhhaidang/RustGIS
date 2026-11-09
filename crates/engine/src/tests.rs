@@ -16278,6 +16278,242 @@ fn rounded_raster_values_are_said_on_import_and_export() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// Downloads and files made by mosaic/warp report the rounded values they actually write.
+#[test]
+fn raster_download_mosaic_and_warp_report_export_losses() {
+    let dir = std::env::temp_dir().join(format!("rustgis-raster-export-notes-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for (name, values, rounded) in [("rounded", "16777217 100000001\n1234567.891 7", true), ("clean", "1 2\n3 4", false)] {
+        let mut s = Session::new(Project::default());
+        let path = dir.join(format!("{name}.asc"));
+        std::fs::write(&path, format!("ncols 2\nnrows 2\nxllcorner 10\nyllcorner 40\ncellsize 1\n{values}")).unwrap();
+        let id = s.run("layer.addData", &json!({"path": path, "name": name})).unwrap()["layer"].as_u64().unwrap();
+        for cog in [false, true] {
+            let mark = s.notice_mark();
+            let (_, bytes) = crate::cmd::raster::geotiff_bytes(&mut s, &json!({"layer": id, "cog": cog})).unwrap();
+            assert_eq!(rustgis_data::raster::read_bytes("download.tif", &bytes).unwrap().width, 2);
+            let notes = s.notices_since(mark);
+            assert_eq!(
+                notes.iter().filter(|n| n.text.contains("3 values in it were rounded to 32-bit floats")).count(),
+                usize::from(rounded),
+                "download, cog={cog}: {notes:?}"
+            );
+        }
+        let points = [[0, 0, 10, 42], [2, 0, 12, 42], [0, 2, 10, 40]];
+        for (command, mut params) in [
+            ("raster.mosaic", json!({"inputs": [name, name], "name": "mosaic"})),
+            ("raster.georeference", json!({"layer": name, "transform": "affine", "points": points, "name": "warped"})),
+        ] {
+            let output = dir.join(format!("{name}-{command}.tif"));
+            params["path"] = json!(output);
+            let mark = s.notice_mark();
+            s.run(command, &params).unwrap();
+            assert!(rustgis_data::raster::read_path(&output).is_ok());
+            let notes = s.notices_since(mark);
+            assert_eq!(
+                notes.iter().filter(|n| n.text.contains("some values in it may have been rounded to 32-bit floats")).count(),
+                usize::from(rounded),
+                "{command}: {notes:?}"
+            );
+            assert!(!notes.iter().any(|n| n.text.contains("3 values in it")), "{command}: {notes:?}");
+        }
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// Metadata limits are reported from downloads, mosaics and warped files, with the files checked.
+#[test]
+fn raster_export_paths_report_band_class_and_credit_changes() {
+    use rustgis_data::raster::{ColorHint, Crs, GeoTransform, Raster, geotiff};
+    let dir = std::env::temp_dir().join(format!("rustgis-raster-export-metadata-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut s = Session::new(Project::default());
+    let gt = GeoTransform { origin_x: 10.0, origin_y: 42.0, pixel_width: 1.0, pixel_height: -1.0 };
+    let mut r =
+        Raster::new("Metadata", 2, 2, vec![vec![1.0; 4]; 5], gt, Crs::LonLat, None, ColorHint::Rgb { alpha: false }, "Float32").unwrap();
+    r.bands[0].name = "red\u{1}name".into();
+    r.bands[0].classes = vec!["zero".into(), "one\u{2}name".into()];
+    r.bands[1].classes = vec!["zero".into(), "green class".into()];
+    r.copyright = Some("© Owner".into());
+    let mut other = r.clone();
+    other.name = "Other".into();
+    other.copyright = Some("Another owner".into());
+    let bytes = geotiff::write(&r, 0).unwrap();
+    crate::cmd::raster::add_raster(&mut s, "Metadata", rustgis_map::RasterLayer::from_bytes(r, "metadata.tif", bytes)).unwrap();
+    let bytes = geotiff::write(&other, 0).unwrap();
+    crate::cmd::raster::add_raster(&mut s, "Other", rustgis_map::RasterLayer::from_bytes(other, "other.tif", bytes)).unwrap();
+    let check = |s: &Session, mark, bytes: &[u8]| {
+        let notes = s.notices_since(mark).iter().map(|n| n.text.as_str()).collect::<Vec<_>>().join("\n");
+        for text in [
+            "3 of its 5 bands written",
+            "class names of band(s) 2 aren't written",
+            "Copyright tag holds ASCII",
+            "2 band or class name(s) held control characters",
+        ] {
+            assert!(notes.contains(text), "missing {text}: {notes}");
+        }
+        let written = rustgis_data::raster::read_bytes("written.tif", bytes).unwrap();
+        assert_eq!(written.band_count(), 3);
+        assert_eq!(written.bands[0].name, "red name");
+        assert_eq!(written.bands[0].classes, ["zero", "one name"]);
+        assert_eq!(written.copyright.as_deref(), Some("(c) Owner"));
+    };
+    for cog in [false, true] {
+        let mark = s.notice_mark();
+        let (_, bytes) = crate::cmd::raster::geotiff_bytes(&mut s, &json!({"layer": "Metadata", "cog": cog})).unwrap();
+        check(&s, mark, &bytes);
+    }
+    let points = [[0, 0, 10, 42], [2, 0, 12, 42], [0, 2, 10, 40]];
+    for (cmd, mut params) in [
+        ("raster.mosaic", json!({"inputs": ["Metadata", "Metadata"], "name": "mosaic"})),
+        (
+            "raster.georeference",
+            json!({"layer": "Metadata", "transform": "affine", "points": points, "resampling": "nearest", "name": "warped"}),
+        ),
+    ] {
+        let path = dir.join(format!("{cmd}.tif"));
+        params["path"] = json!(path);
+        let mark = s.notice_mark();
+        s.run(cmd, &params).unwrap();
+        check(&s, mark, &std::fs::read(path).unwrap());
+    }
+    for (second, changed) in [("Metadata", false), ("Other", true)] {
+        let mark = s.notice_mark();
+        let out = s.run("raster.mosaic", &json!({"inputs": ["Metadata", second], "name": "rights"})).unwrap();
+        assert_eq!(out_raster(&s, &out).copyright.as_deref(), Some("© Owner"));
+        assert_eq!(s.notices_since(mark).iter().any(|n| n.text.contains("copyright differs")), changed, "{:?}", s.notices_since(mark));
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// Class labels describe source values; interpolating or averaging those values drops the labels
+/// with a notice, while nearest, mode and palette-safe sampling retain them.
+#[test]
+fn raster_resampling_class_names_follow_the_values_and_report_losses() {
+    use rustgis_data::raster::{ColorHint, Crs, GeoTransform, Raster, geotiff};
+    let dir = std::env::temp_dir().join(format!("rustgis-resampled-classes-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut s = Session::new(Project::default());
+    let labels: Vec<String> = ["unknown", "one", "two", "water", "snow", "forest"].map(str::to_owned).to_vec();
+    let gt = GeoTransform { origin_x: 10.0, origin_y: 42.0, pixel_width: 1.0, pixel_height: -1.0 };
+    for (name, color, labelled, data_type) in [
+        ("Classes", ColorHint::Gray, true, "Float32"),
+        ("Palette", ColorHint::Palette((0..6).map(|i| [i * 30, 0, 0, 255]).collect()), true, "UInt8"),
+        ("Clean", ColorHint::Gray, false, "Float32"),
+    ] {
+        let mut r = Raster::new(name, 2, 2, vec![vec![3.0, 5.0, 5.0, 3.0]], gt, Crs::LonLat, None, color, data_type).unwrap();
+        if labelled {
+            r.bands[0].classes = labels.clone();
+        }
+        let bytes = geotiff::write(&r, 0).unwrap();
+        crate::cmd::raster::add_raster(&mut s, name, rustgis_map::RasterLayer::from_bytes(r, format!("{name}.tif"), bytes)).unwrap();
+    }
+    let points = [[0, 0, 10, 42], [2, 0, 12, 42], [0, 2, 10, 40]];
+    let params = |cmd: &str, layer: &str| {
+        if cmd == "raster.georeference" {
+            json!({"layer":layer, "transform":"affine", "points":points, "cellSize":0.5})
+        } else {
+            json!({"layer":layer, "crs":4326, "extent":[10,40,12,42], "cellSize":2})
+        }
+    };
+    let lost = |n: &&crate::Notice| n.text.contains("class names of") && n.text.contains("not kept under");
+    for (cmd, requested, method, keep) in [
+        ("raster.georeference", None, "bilinear", false),
+        ("raster.georeference", Some("nearest"), "nearest", true),
+        ("raster.georeference", Some("cubic"), "cubic", false),
+        ("raster.project", Some("nearest"), "nearest", true),
+        ("raster.project", Some("bilinear"), "bilinear", false),
+        ("raster.project", Some("cubic"), "cubic", false),
+        ("raster.project", Some("average"), "average", false),
+        ("raster.project", Some("mode"), "mode", true),
+    ] {
+        for file in [false, true] {
+            let mut p = params(cmd, "Classes");
+            p["name"] = json!(format!("{cmd}-{method}-{file}"));
+            if let Some(method) = requested {
+                p["resampling"] = json!(method);
+            }
+            let path = dir.join(format!("{cmd}-{method}.tif"));
+            if file {
+                p["path"] = json!(path);
+            }
+            let mark = s.notice_mark();
+            let answer = s.run(cmd, &p).unwrap();
+            let out = out_raster(&s, &answer);
+            if keep {
+                assert_eq!(out.bands[0].classes, labels, "{cmd}/{method}");
+            } else {
+                assert!(out.bands[0].classes.is_empty(), "{cmd}/{method}: labels no longer describe the values");
+                assert!(out.bands[0].data.iter().any(|v| v.is_finite() && *v != 3.0 && *v != 5.0), "{cmd}/{method}: values really mixed");
+            }
+            let notes: Vec<_> = s.notices_since(mark).iter().filter(lost).collect();
+            assert_eq!(notes.len(), usize::from(!keep), "{cmd}/{method}: {:?}", s.notices_since(mark));
+            if !keep {
+                assert!(notes[0].text.contains("1 band(s) (1)") && notes[0].text.contains(method), "{:?}", notes[0]);
+            }
+            if file {
+                let written = rustgis_data::raster::read_bytes("written.tif", &std::fs::read(path).unwrap()).unwrap();
+                assert_eq!(written.bands[0].classes, out.bands[0].classes);
+            }
+        }
+    }
+    // Palette requests use value-preserving methods, and report the effective method.
+    for (cmd, requested, effective) in
+        [("raster.georeference", "bilinear", "nearest"), ("raster.project", "bilinear", "nearest"), ("raster.project", "average", "mode")]
+    {
+        let mut p = params(cmd, "Palette");
+        p["name"] = json!(format!("palette-{cmd}-{requested}"));
+        p["resampling"] = json!(requested);
+        let mark = s.notice_mark();
+        let answer = s.run(cmd, &p).unwrap();
+        assert_eq!(answer["resampling"], effective);
+        assert_eq!(out_raster(&s, &answer).bands[0].classes, labels);
+        assert!(!s.notices_since(mark).iter().any(|n| lost(&n)));
+    }
+    for cmd in ["raster.georeference", "raster.project"] {
+        let mark = s.notice_mark();
+        s.run(cmd, &params(cmd, "Clean")).unwrap();
+        assert!(!s.notices_since(mark).iter().any(|n| lost(&n)));
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn raster_export_review_tool_notice_preserves_path_and_band_guidance() {
+    use rustgis_data::raster::{ColorHint, Crs, GeoTransform, Raster, geotiff};
+    let dir = std::env::temp_dir().join(format!("rustgis-mosaic-band-guidance-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let filename = if cfg!(target_os = "windows") { "mosaic.tif" } else { "give \"band\" for another.tif" };
+    let path = dir.join(filename);
+    let gt = GeoTransform { origin_x: 0.0, origin_y: 2.0, pixel_width: 1.0, pixel_height: -1.0 };
+    let r = Raster::new(
+        "Multi",
+        2,
+        2,
+        vec![vec![1.0, 2.0, 3.0, 4.0], vec![5.0, 6.0, 7.0, 8.0]],
+        gt,
+        Crs::LonLat,
+        None,
+        ColorHint::Gray,
+        "Float32",
+    )
+    .unwrap();
+    let bytes = geotiff::write(&r, 0).unwrap();
+    let mut s = Session::new(Project::default());
+    crate::cmd::raster::add_raster(&mut s, "Multi", rustgis_map::RasterLayer::from_bytes(r, "multi.tif", bytes)).unwrap();
+    let mark = s.notice_mark();
+    s.run("raster.mosaic", &json!({"inputs":["Multi","Multi"],"name":"Mosaic","path":path})).unwrap();
+    assert!(path.is_file());
+    let notes = s.notices_since(mark);
+    let note = &notes.iter().find(|n| n.text.starts_with("Exported ")).unwrap().text;
+    assert!(note.starts_with(&format!("Exported {}", path.display())), "{note}");
+    assert!(note.contains("1 of its 2 bands written"), "{note}");
+    let instruction = "export the resulting layer with share.exportRaster and give \"band\" for another";
+    assert_eq!(note.matches(instruction).count(), 1, "{note}");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// A raster clipped, resampled, mosaicked, warped or pixel-edited from one with values rounded when it
 /// was read keeps a mark
 /// of them, with no count (it holds an unknown share), and its export says so; one made from a
@@ -16308,12 +16544,30 @@ fn rasters_made_from_rounded_ones_keep_the_rounded_note() {
         let points = [[0, 0, 10, 42], [2, 0, 12, 42], [0, 2, 10, 40]];
         let fit = json!({"layer": name, "transform": "affine", "crs": 4326, "pointsCrs": 4326, "points": points, "name": warped});
         s.run("raster.georeference", &fit).unwrap();
+        let projected = format!("{name}_projected");
+        let projected_file = format!("{name}_projected_file");
+        for (output, file) in [(&projected, false), (&projected_file, true)] {
+            let mut p = json!({"layer":name, "crs":4326, "extent":[10,40,12,42], "cellSize":0.5, "name":output});
+            if file {
+                p["path"] = json!(dir.join(format!("{output}.tif")));
+            }
+            let mark = s.notice_mark();
+            s.run("raster.project", &p).unwrap();
+            assert_eq!(
+                s.notices_since(mark).iter().any(|n| n.text.contains(SOME)),
+                file && rounded,
+                "{output}: {:?}",
+                s.notices_since(mark)
+            );
+        }
         s.run(
             "raster.editPixels",
             &json!({"layer": name, "polygon": [[10.1, 40.1], [10.9, 40.1], [10.9, 40.9], [10.1, 40.9]], "value": 1}),
         )
         .unwrap();
-        for layer in [clip.as_str(), half.as_str(), joined.as_str(), warped.as_str(), name.as_str()] {
+        for layer in
+            [clip.as_str(), half.as_str(), joined.as_str(), warped.as_str(), projected.as_str(), projected_file.as_str(), name.as_str()]
+        {
             let mark = s.notice_mark();
             s.run("share.exportRaster", &json!({"layer": layer, "path": dir.join(format!("{layer}.tif"))})).unwrap();
             let notes = s.notices_since(mark);
