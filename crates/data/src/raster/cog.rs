@@ -418,12 +418,12 @@ fn read_layout(r: Sparse) -> Result<Parse> {
         Ok(Some(v)) => match v.into_string() {
             Ok(t) => super::pam::parse_gdal_metadata(&t),
             Err(e) => {
-                lost.push(format!("its GDAL metadata isn't text ({e}): band and class names are left out"));
+                lost.push(format!("its GDAL metadata isn't text ({e}): band and class names and wavelengths are left out"));
                 None
             }
         },
         Err(e) => {
-            lost.push(format!("its GDAL metadata doesn't decode ({e}): band and class names are left out"));
+            lost.push(format!("its GDAL metadata doesn't decode ({e}): band and class names and wavelengths are left out"));
             None
         }
     };
@@ -667,6 +667,9 @@ pub struct Example {
     pub sparse: bool,
     /// Without overviews: the full image alone (a file saved without them).
     pub no_overviews: bool,
+    /// Without `classes`: band `b`'s wavelength, 400 + 100 b nanometres, in GDAL's metadata
+    /// (its only item there).
+    pub wavelengths: bool,
 }
 
 impl Default for Example {
@@ -688,6 +691,7 @@ impl Default for Example {
             no_table: false,
             sparse: false,
             no_overviews: false,
+            wavelengths: false,
         }
     }
 }
@@ -826,6 +830,9 @@ pub fn example_with(e: &Example) -> Vec<u8> {
                     r#"<GDALMetadata><Item name="CLASS_3">Forest Formation</Item><Item name="CLASS_15">Pasture</Item></GDALMetadata>"#
                 };
                 t.push((42112, V::A([xml.as_bytes(), b"\0"].concat())));
+            } else if e.wavelengths {
+                let items: String = (0..nb).map(|b| format!(r#"<Item name="wavelength" sample="{b}">{}</Item>"#, 400 + 100 * b)).collect();
+                t.push((42112, V::A([format!("<GDALMetadata>{items}</GDALMetadata>").as_bytes(), b"\0"].concat())));
             }
         }
         if e.int8 {
@@ -1073,7 +1080,7 @@ pub(crate) mod tests {
         bad[entry + 8..entry + 12].copy_from_slice(&(len + 1000).to_le_bytes());
         let Parse::Done(l) = layout(&Sparse::default().with_len(u64::from(len)).with(0, bad)).unwrap() else { panic!("not read") };
         let said: Vec<&String> = l.lost.iter().chain(l.described.iter().flat_map(|d| d.lost.iter())).collect();
-        assert!(said.iter().any(|x| x.contains("band and class names are left out")), "{said:?}");
+        assert!(said.iter().any(|x| x.contains("band and class names and wavelengths are left out")), "{said:?}");
     }
 
     #[test]

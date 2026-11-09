@@ -652,6 +652,7 @@ impl Canvas {
         .map_err(|e| e.to_string())?;
         for (i, band) in out.bands.iter_mut().enumerate() {
             band.name = r.bands.get(i).map_or_else(|| "Alpha".to_string(), |b| b.name.clone());
+            band.wavelength = r.bands.get(i).and_then(|b| b.wavelength);
             if matches!(method, Method::Sample(Resampling::Nearest) | Method::Mode)
                 && let Some(source) = r.bands.get(i)
             {

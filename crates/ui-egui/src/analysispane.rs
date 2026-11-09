@@ -47,6 +47,8 @@ pub struct Workflow {
     /// ([`rustgis_engine::Session::opened`]); `None` until the pane first shows.
     script_project: Option<u64>,
     pub trend: TrendForm,
+    /// The Spectral Analysis section's profile: the points read and charted.
+    pub spectral: crate::spectralui::Spectral,
     pub selected_only: Option<bool>,
     pub zonal_stats: ZonalStatsForm,
     /// A workflow running on a thread of its own: its progress and Cancel show, and what it made
@@ -868,14 +870,7 @@ pub fn workflows(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
             }
         }
         "trend" => trend(app, ui, &rasters),
-        "spectral" => {
-            heading(ui, "Band values at a point");
-            combo(ui, "wf_sp", "Layer", &mut app.workflow.layer, &rasters);
-            pick_button(app, ui, "spectral", 1, "Click a pixel on the map");
-            if let Some(p) = picked(app, "spectral").and_then(|v| v.first().copied()) {
-                run(app, "raster.spectral", json!({"layer": app.workflow.layer, "lon": p.x, "lat": p.y}));
-            }
-        }
+        "spectral" => crate::spectralui::section(app, ui, t),
         "classify" => {
             heading(ui, "Unsupervised classes (k-means)");
             combo(ui, "wf_k", "Layer", &mut app.workflow.layer, &rasters);
@@ -1173,7 +1168,8 @@ pub fn workflows(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
             }
         }
     }
-    if let Some(p) = &app.workflow.pick {
+    // The spectral profile picks on until turned off: its button shows it, with no count.
+    if let Some(p) = app.workflow.pick.as_ref().filter(|p| p.purpose != crate::spectralui::PURPOSE) {
         ui.label(
             egui::RichText::new(crate::i18n::fmt(
                 "Click the map: {n} of {total}",

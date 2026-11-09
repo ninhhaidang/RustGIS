@@ -1240,9 +1240,9 @@ pub(super) fn read_limited_with_nodata(
         Ok(None) => None,
         Ok(Some(v)) => match v.into_string() {
             Ok(t) => super::pam::parse_gdal_metadata(&t),
-            Err(e) => Some(super::pam::Pam::losing(format!("it isn't text ({e}): band and class names are left out"))),
+            Err(e) => Some(super::pam::Pam::losing(format!("it isn't text ({e}): band and class names and wavelengths are left out"))),
         },
-        Err(e) => Some(super::pam::Pam::losing(format!("it doesn't decode ({e}): band and class names are left out"))),
+        Err(e) => Some(super::pam::Pam::losing(format!("it doesn't decode ({e}): band and class names and wavelengths are left out"))),
     };
     // Who holds the rights to the picture, kept as it reads so an export of it says so too (the
     // writers make it the ASCII a tag holds, and the exports say what that changed); one that

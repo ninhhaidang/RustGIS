@@ -4089,7 +4089,16 @@ fn imagery_groups(app: &mut RustGisApp, ui: &mut Ui) {
                 wf("change"),
                 false,
             );
-            small(ui, app, "graduated", "Spectral Analysis", "Every band's value at a pixel.", "ui.pane.workflows", wf("spectral"), false);
+            small(
+                ui,
+                app,
+                "graduated",
+                "Spectral Analysis",
+                "Chart every band at points on the map, and compare them.",
+                "ui.pane.workflows",
+                wf("spectral"),
+                false,
+            );
         });
     });
     group(ui, "Image Classification", |ui| {

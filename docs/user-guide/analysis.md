@@ -1447,10 +1447,25 @@ The Analyze tab's imagery groups open their tools in the Workflows pane:
   it holds: each point's residual in pixels and map units, the RMSE, and each point's error when
   it is left out of the fit. With `compare` it fits them all and recommends the simplest whose
   leave-one-out error is close to the best.
-- **Change Detection** (difference, ratio, percent), **Spectral Analysis** (every band at a
-  pixel), **Indices** (NDVI, NDWI, SAVI, NBR, NDBI, EVI), **Process** (clip to the view, to a
-  box, or to a polygon layer's selected or all polygons, with the cells outside them no-data;
-  resample) and the **Pixel Editor** (set the pixels inside a polygon).
+- **Spectral Analysis** (`raster.spectral`) charts a multiband raster's spectral profile: every
+  band's value at points on the map, to compare the signatures of water, vegetation, soil or roofs
+  before drawing training samples for a classification. Pick the raster, turn on **Pick Points** and
+  click: each click adds a point until you turn it off. Identify's pop-up on a pixel of two bands or
+  more has a **Spectral Profile** button that adds that pixel. Up to six points are compared, a line
+  each, in the colour of a numbered marker on the map. The x axis is the bands' wavelengths in
+  nanometres when the file gives one for every band (see [Rasters](data.md#rasters)), drawn in
+  wavelength order, and their numbers otherwise. Hovering the chart shows a band's name, wavelength
+  and each point's value; **×** takes a point off, **Clear** all of them, and **Export CSV…**
+  (desktop) writes a row per band (its number, name and wavelength) and a column per point. From
+  scripts, `{"layer": "scene", "points": [[-43.95, -19.92], [-43.96, -19.93]]}` gives one profile
+  per point (up to 1,000; a point off the raster keeps its place with null values, and is said),
+  `{"lon", "lat"}` one pixel and `{"zone": "polygons"}` the mean in the selected or first polygon;
+  every answer has the band names and, when the file gives any, `"wavelengths"` in nanometres.
+  After GeoLibre's spectral profile.
+- **Change Detection** (difference, ratio, percent), **Indices** (NDVI, NDWI, SAVI, NBR, NDBI,
+  EVI), **Process** (clip to the view, to a box, or to a polygon layer's selected or all polygons,
+  with the cells outside them no-data; resample) and the **Pixel Editor** (set the pixels inside a
+  polygon).
 - **Mosaic Rasters** (`raster.mosaic`) merges tiles of one grid, such as the 1 km tiles of a state
   elevation model, into one raster in their own coordinate system and cell size, optionally
   written to a GeoTIFF: `{"inputs": ["dgm_1.tif", "dgm_2.tif", …], "path": "dem.tif"}`. Inputs

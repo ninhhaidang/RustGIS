@@ -1831,7 +1831,7 @@ mod tests {
         bad[entry + 8..entry + 12].copy_from_slice(&(len + 1000).to_le_bytes());
         let (l, ..) = layout_by_ranges(&bad).expect("read");
         let said: Vec<&String> = l.lost.iter().chain(l.described.iter().flat_map(|d| d.lost.iter())).collect();
-        assert!(said.iter().any(|x| x.contains("band and class names are left out")), "{said:?}");
+        assert!(said.iter().any(|x| x.contains("band and class names and wavelengths are left out")), "{said:?}");
     }
 
     /// The header alone of a tiled GeoTIFF, `side` pixels a side in 256-pixel tiles, laid out as

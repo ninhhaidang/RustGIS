@@ -3814,14 +3814,17 @@ pub(crate) fn add_cog_with(s: &mut Session, p: &Value, url: &str, strict: bool, 
         }
         r["bounds"] = json!(info.bounds);
         // Drawn in place, the tiles are drawn as values (a palette image's by its colour table):
-        // what the header holds beside them (band and class names) comes only with a window, and
-        // is said.
+        // what the header holds beside them (band and class names, wavelengths) comes only with a
+        // window, and is said.
         let l = &info.layout;
-        let named = l.described.as_ref().is_some_and(|d| d.bands.iter().any(|b| b.description.is_some() || !b.categories.is_empty()));
+        let named = l
+            .described
+            .as_ref()
+            .is_some_and(|d| d.bands.iter().any(|b| b.description.is_some() || !b.categories.is_empty() || b.wavelength.is_some()));
         let mut said: Vec<String> = l.lost.clone();
         said.extend(l.described.iter().flat_map(|d| d.lost.iter().map(|x| format!("{}: {x}", rustgis_data::raster::pam::GDAL_METADATA))));
         if named {
-            said.push("drawn in place without its band or class names: a window (\"bbox\") reads them".into());
+            said.push("drawn in place without its band names, class names or wavelengths: a window (\"bbox\") reads them".into());
         }
         // A tile layer's own name, as added.
         let shown = r.get("name").and_then(Value::as_str).unwrap_or(name).to_string();

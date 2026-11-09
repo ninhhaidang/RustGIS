@@ -58,6 +58,10 @@ pub fn show(app: &mut RustGisApp, ui: &mut Ui) {
     if app.ui.right != Some(RightPane::TimeSeries) && app.workflow.pick.as_ref().is_some_and(|p| p.purpose == "ts_point") {
         app.workflow.pick = None;
     }
+    // So for the spectral profile's points, which it goes on picking until turned off.
+    if app.ui.right != Some(RightPane::Workflows) && app.workflow.pick.as_ref().is_some_and(|p| p.purpose == crate::spectralui::PURPOSE) {
+        app.workflow.pick = None;
+    }
     // A failed renderer switch waits for a field only while the Symbology pane shows its layer.
     if app.ui.right == Some(RightPane::Symbology) {
         let _ = pending_symbology(app, ui.ctx());

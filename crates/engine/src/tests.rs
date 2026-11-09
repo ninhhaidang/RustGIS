@@ -9044,6 +9044,37 @@ fn layer_effects_and_imagery_tools() {
     let r = s.run("imagery.mosaic", &json!({"name": "Valley"})).unwrap();
     let mo = s.map().layer(r["layer"].as_u64().unwrap() as u32).unwrap().raster.as_ref().unwrap().data.clone().unwrap();
     assert_eq!((mo.width, mo.height), (20, 20));
+    // Images of one wavelength give the mosaic it, read back from its GeoTIFF too; images of
+    // two give it none, and that is said.
+    let give = |s: &mut Session, layer: &str, nm: Option<f64>| {
+        let id = s.map().layer_by_name(layer).unwrap().id;
+        let data = s.map_mut().layer_mut(id).unwrap().raster.as_mut().unwrap().data.as_mut().unwrap();
+        std::sync::Arc::make_mut(data).bands[0].wavelength = nm;
+    };
+    give(&mut s, &dem, Some(842.0));
+    give(&mut s, "dem_later", Some(842.0));
+    let r = s.run("imagery.mosaic", &json!({"name": "Valley"})).unwrap();
+    assert!(r.get("messages").is_none(), "{r}");
+    let layer = s.map().layer(r["layer"].as_u64().unwrap() as u32).unwrap().raster.as_ref().unwrap();
+    assert_eq!(layer.data.as_ref().unwrap().bands[0].wavelength, Some(842.0));
+    let bytes = layer.embedded.clone().expect("the mosaic's GeoTIFF");
+    let back = rustgis_data::raster::geotiff::read(std::io::Cursor::new(bytes.as_slice()), "back").unwrap();
+    assert_eq!(back.bands[0].wavelength, Some(842.0));
+    // A rounding apart is one wavelength, as the readers take it.
+    give(&mut s, "dem_later", Some(842.000_000_1));
+    let r = s.run("imagery.mosaic", &json!({"name": "Valley"})).unwrap();
+    assert!(r.get("messages").is_none(), "{r}");
+    give(&mut s, "dem_later", Some(665.0));
+    let r = s.run("imagery.mosaic", &json!({"name": "Valley"})).unwrap();
+    assert_eq!(
+        r["messages"],
+        json!(["1 band(s) have no wavelength in the mosaic: the images don't all give the same one (or some give none)"]),
+        "{r}"
+    );
+    let mo = s.map().layer(r["layer"].as_u64().unwrap() as u32).unwrap().raster.as_ref().unwrap().data.clone().unwrap();
+    assert_eq!(mo.bands[0].wavelength, None);
+    give(&mut s, &dem, None);
+    give(&mut s, "dem_later", None);
     s.run("imagery.workspace", &json!({"kind": "reality", "images": ["dem_later"]})).unwrap();
     let r = s.run("imagery.mosaic", &json!({"name": "Reality Mapping"})).unwrap();
     let dsm = s.map().layer(r["layer"].as_u64().unwrap() as u32).unwrap().name.clone();
@@ -20039,6 +20070,24 @@ fn a_data_cubes_file_stays_a_tile_layer_when_its_project_reopens() {
     assert_eq!((t.map().tiles.len(), t.map().layers.iter().filter(|l| l.raster.is_some()).count()), (1, 0));
 }
 
+/// A tile layer's file whose header gives only its bands' wavelengths says they aren't drawn
+/// with it, as it says of band and class names.
+#[test]
+fn a_tile_layer_says_its_wavelengths_need_a_window() {
+    use rustgis_data::raster::cog::{Example, example_with};
+    let file = example_with(&Example { size: 512, bands: 3, wavelengths: true, ..Example::default() });
+    let (base, _) = serve_ranges(file);
+    let mut s = Session::new(Project::default());
+    let mark = s.notice_mark();
+    s.run("layer.addUrl", &json!({"url": format!("{base}/cube-2020.tif"), "cube": true})).unwrap();
+    let said: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+    assert!(
+        said.iter()
+            .any(|t| t.ends_with("drawn in place without its band names, class names or wavelengths: a window (\"bbox\") reads them")),
+        "{said:?}"
+    );
+}
+
 /// Dated-series keys given as `null` (a script's unused ones) ask for nothing: the GeoTIFF is a
 /// raster layer read in place, not a tile layer.
 #[test]
@@ -27607,12 +27656,34 @@ fn dem_tiles_mosaic_clip_by_polygon_share_a_stretch_and_report_overviews() {
     let mark = s.notice_mark();
     let v = s.run("raster.mosaic", &json!({"inputs": ["west", "over"], "name": "renamed"})).unwrap();
     let said: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
-    assert!(said.iter().any(|n| n == "over: band or class names other than west's, which the mosaic keeps"), "{said:?}");
+    assert!(said.iter().any(|n| n == "over: band names, classes or wavelengths other than west's, which the mosaic keeps"), "{said:?}");
     assert_eq!(raster(&s, &v).bands[0].name, west_band);
     let mark = s.notice_mark();
     s.run("raster.mosaic", &json!({"inputs": ["west", "east"], "name": "same"})).unwrap();
-    assert!(!s.notices_since(mark).iter().any(|n| n.text.contains("band or class names")));
+    assert!(!s.notices_since(mark).iter().any(|n| n.text.contains("band names, classes")));
     named(&mut s, &over_band);
+    // So is one giving its band another wavelength; the mosaic keeps the first's.
+    let wavelength = |s: &mut Session, nm: Option<f64>| {
+        let data = s.map_mut().layer_mut(over).unwrap().raster.as_mut().unwrap().data.as_mut().unwrap();
+        std::sync::Arc::make_mut(data).bands[0].wavelength = nm;
+    };
+    wavelength(&mut s, Some(842.0));
+    let mark = s.notice_mark();
+    let v = s.run("raster.mosaic", &json!({"inputs": ["west", "over"], "name": "nir"})).unwrap();
+    let said: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+    assert!(said.iter().any(|n| n == "over: band names, classes or wavelengths other than west's, which the mosaic keeps"), "{said:?}");
+    assert_eq!(raster(&s, &v).bands[0].wavelength, None);
+    // Inputs of one wavelength: the mosaic has it, and nothing is said.
+    let west = s.map().layer_by_name("west").unwrap().id;
+    let data = s.map_mut().layer_mut(west).unwrap().raster.as_mut().unwrap().data.as_mut().unwrap();
+    std::sync::Arc::make_mut(data).bands[0].wavelength = Some(842.0);
+    let mark = s.notice_mark();
+    let v = s.run("raster.mosaic", &json!({"inputs": ["west", "over"], "name": "nir both"})).unwrap();
+    assert!(!s.notices_since(mark).iter().any(|n| n.text.contains("band names, classes")), "{:?}", s.notices_since(mark));
+    assert_eq!(raster(&s, &v).bands[0].wavelength, Some(842.0));
+    let data = s.map_mut().layer_mut(west).unwrap().raster.as_mut().unwrap().data.as_mut().unwrap();
+    std::sync::Arc::make_mut(data).bands[0].wavelength = None;
+    wavelength(&mut s, None);
     // A file given by path says what its reading left out (here a sidecar's scale); one read whole
     // says nothing.
     let file = dir.join("west.tif");
@@ -36745,6 +36816,101 @@ fn bundled_ca_roots_are_said_once_a_session() {
     let mut other = Session::new(Project::default());
     other.say_bundled_roots(true);
     assert_eq!(said(&other), 1);
+}
+
+/// `raster.spectral` reads several points (one off the raster said, its values null), and every
+/// answer gives the bands' wavelengths in nanometres, read back from the GeoTIFF's GDAL metadata;
+/// a raster whose file gives none has none.
+#[test]
+fn spectral_profiles_at_points_with_wavelengths() {
+    use base64::Engine;
+    use rustgis_data::raster::{ColorHint, Crs, GeoTransform, Raster, geotiff};
+    let tiff = |wavelengths: bool| {
+        let gt = GeoTransform { origin_x: 10.0, origin_y: 45.0, pixel_width: 0.01, pixel_height: -0.01 };
+        // Red, green, blue: 30 + i, 20 + i, 10 + i at pixel i.
+        let bands = (0..3).map(|b| (0..16).map(|i| (30 - b * 10 + i) as f32).collect()).collect();
+        let mut r = Raster::new("scene", 4, 4, bands, gt, Crs::LonLat, None, ColorHint::Rgb { alpha: false }, "UInt8").unwrap();
+        if wavelengths {
+            for ((band, nm), name) in r.bands.iter_mut().zip([665.0, 560.0, 490.0]).zip(["Red", "Green", "Blue"]) {
+                band.wavelength = Some(nm);
+                band.name = name.to_string();
+            }
+        }
+        base64::engine::general_purpose::STANDARD.encode(geotiff::write(&r, 0).unwrap())
+    };
+    let mut s = Session::new(Project::default());
+    s.run("layer.addDataBytes", &json!({"fileName": "scene.tif", "data": tiff(true)})).unwrap();
+    s.run("layer.addDataBytes", &json!({"fileName": "plain.tif", "data": tiff(false)})).unwrap();
+    let mark = s.notice_mark();
+    let v = s.run("raster.spectral", &json!({"layer": "scene", "points": [[10.005, 44.995], [10.015, 44.985], [20.0, 10.0]]})).unwrap();
+    assert_eq!(v["wavelengths"], json!([665.0, 560.0, 490.0]), "{v}");
+    assert_eq!(v["wavelengthUnit"], "nm");
+    assert_eq!(v["bands"].as_array().map(Vec::len), Some(3));
+    assert_eq!(v["profiles"][0]["pixel"], json!([0, 0]));
+    assert_eq!(v["profiles"][0]["values"], json!([30.0, 20.0, 10.0]));
+    assert_eq!(v["profiles"][1]["pixel"], json!([1, 1]));
+    assert_eq!(v["profiles"][1]["values"], json!([35.0, 25.0, 15.0]));
+    assert_eq!(v["profiles"][2]["pixel"], Value::Null);
+    assert_eq!(v["profiles"][2]["values"], json!([null, null, null]));
+    let said: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+    assert_eq!(said, ["scene: 1 of 3 points fall outside the raster: their values are null"]);
+    // All inside: nothing said.
+    let mark = s.notice_mark();
+    s.run("raster.spectral", &json!({"layer": "scene", "points": [[10.005, 44.995]]})).unwrap();
+    assert!(s.notices_since(mark).is_empty());
+    // One point and a zone give the wavelengths too; a file without them gives none.
+    let one = s.run("raster.spectral", &json!({"layer": "scene", "lon": 10.005, "lat": 44.995})).unwrap();
+    assert_eq!(one["wavelengths"], json!([665.0, 560.0, 490.0]));
+    assert_eq!(one["values"], json!([30.0, 20.0, 10.0]));
+    // A resampled raster keeps its bands' names and wavelengths.
+    s.run("raster.process", &json!({"layer": "scene", "operation": "resample", "factor": 2, "name": "half"})).unwrap();
+    let half = s.run("raster.spectral", &json!({"layer": "half", "lon": 10.005, "lat": 44.995})).unwrap();
+    assert_eq!(half["wavelengths"], json!([665.0, 560.0, 490.0]));
+    assert_eq!((&one["bands"], &half["bands"]), (&json!(["Red", "Green", "Blue"]), &json!(["Red", "Green", "Blue"])), "{half}");
+    let plain = s.run("raster.spectral", &json!({"layer": "plain", "points": [[10.005, 44.995]]})).unwrap();
+    assert!(plain.get("wavelengths").is_none(), "{plain}");
+    // Points read before one point: the point left out is said.
+    let mark = s.notice_mark();
+    let both = s.run("raster.spectral", &json!({"layer": "scene", "lon": 10.015, "lat": 44.985, "points": [[10.005, 44.995]]})).unwrap();
+    assert_eq!(both["profiles"][0]["pixel"], json!([0, 0]));
+    let said: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+    assert_eq!(said, ["scene: lon and lat left out: points are read"]);
+    // A zone is read before both, and says so.
+    let ring = "[10.001, 44.999], [10.019, 44.999], [10.019, 44.981], [10.001, 44.981], [10.001, 44.999]";
+    let zone = format!(r#"{{"type":"Feature","properties":{{}},"geometry":{{"type":"Polygon","coordinates":[[{ring}]]}}}}"#);
+    s.run("layer.addDataText", &json!({"fileName": "zone.geojson", "text": zone})).unwrap();
+    for (extra, left) in [
+        (json!({"lon": 10.005, "lat": 44.995}), "lon and lat"),
+        (json!({"points": [[10.005, 44.995]]}), "points"),
+        (json!({"points": [[10.005, 44.995]], "lon": 10.005}), "points, lon and lat"),
+    ] {
+        let mut params = json!({"layer": "scene", "zone": "zone"});
+        params.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        let mark = s.notice_mark();
+        let v = s.run("raster.spectral", &params).unwrap();
+        assert!(v["pixels"].as_u64().is_some_and(|n| n > 0), "{v}");
+        assert_eq!((&v["wavelengths"], &v["wavelengthUnit"]), (&json!([665.0, 560.0, 490.0]), &json!("nm")), "{v}");
+        let said: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+        assert_eq!(said, [format!("scene: {left} left out: the zone's mean is read")]);
+    }
+    // A run that fails says nothing of what it left out.
+    let mark = s.notice_mark();
+    s.run("raster.spectral", &json!({"layer": "scene", "lon": 10.005, "lat": 44.995, "points": [[20.0, 10.0]]})).unwrap_err();
+    let said: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+    assert_eq!(said, ["the point is outside the raster"], "only the error is said");
+    // Points that can't be read are errors.
+    for (points, error) in [
+        (json!([[20.0, 10.0], [30.0, 10.0]]), "every point is outside the raster"),
+        (json!([[20.0, 10.0]]), "the point is outside the raster"),
+        (json!([]), "points is empty"),
+        (json!("10,45"), "points is a list"),
+        (json!([[10.0, 45.0], [10.0]]), "point 2 isn't [lon, lat]"),
+        (json!([[10.0, "45"]]), "point 1 isn't [lon, lat]"),
+        (json!(vec![[10.005, 44.995]; 1001]), "at most 1000"),
+    ] {
+        let e = s.run("raster.spectral", &json!({"layer": "scene", "points": points})).unwrap_err();
+        assert!(e.contains(error), "{e}");
+    }
 }
 
 #[test]
