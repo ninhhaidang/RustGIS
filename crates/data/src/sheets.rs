@@ -10,6 +10,8 @@ use calamine::{Data, ExcelDateTime, ExcelDateTimeType, Reader, Sheets, open_work
 use crate::io::{Columns, CsvOptions, columns_of, read_rows};
 use crate::{DataError, Dataset, ReadReport, Result};
 
+mod biff;
+
 /// Spreadsheet file types.
 pub const EXTENSIONS: &[&str] = &["xlsx", "xlsm", "xlsb", "xls", "ods"];
 
@@ -208,26 +210,49 @@ fn check_compound(bytes: &[u8]) -> Result<()> {
     // Small streams sit in the mini stream (the root entry's chain), in 64-byte sectors laid out
     // by the mini FAT. calamine reads both only when the header gives the mini FAT a length.
     let mini_fat_len = u32_at(64) as usize;
-    let (mini_fat, mini_len) = if mini_fat_len > 0 {
+    let (mini_fat, mini_len, root_sectors) = if mini_fat_len > 0 {
         let (root, root_len) = streams.first().map_or((END_OF_CHAIN, 0), |(_, s, l)| (*s, *l));
-        let mini_len = main.read(root, root_len)?.into_iter().map(|id| sector(id).len()).sum::<usize>().min(root_len);
+        let root_sectors = main.read(root, root_len)?;
+        let mini_len = root_sectors.iter().map(|id| sector(*id).len()).sum::<usize>().min(root_len);
         let table_len = mini_fat_len.saturating_mul(size);
         let mini_fat: Vec<u8> = main.read(u32_at(60), table_len)?.into_iter().flat_map(sector).copied().take(table_len).collect();
-        (words(&mini_fat), mini_len)
+        (words(&mini_fat), mini_len, root_sectors)
     } else {
-        (Vec::new(), 0)
+        (Vec::new(), 0, Vec::new())
     };
     let mini = Sectors { table: &mini_fat, data_len: mini_len, size: 64 };
     // calamine reads these streams, each the first entry by its name (without regard to case),
     // through the mini FAT when it is shorter than 4096 bytes. Other entries, unused ones with
     // junk in them among them, are never read.
+    let has_workbook = streams.iter().any(|(name, ..)| name.eq_ignore_ascii_case("Workbook"));
     for want in ["Workbook", "Book", "\u{5}SummaryInformation", "\u{5}DocumentSummaryInformation"] {
         if let Some((_, start, len)) = streams.iter().find(|(name, ..)| name.eq_ignore_ascii_case(want)) {
-            if *len < 4096 {
-                mini.read(*start, *len)?
-            } else {
-                main.read(*start, *len)?
-            };
+            let ids = if *len < 4096 { mini.read(*start, *len)? } else { main.read(*start, *len)? };
+            if want == "Workbook" || (want == "Book" && !has_workbook) {
+                if *len as u64 > crate::io::MAX_BYTES {
+                    return Err(DataError::Format("spreadsheet: the XLS Workbook stream is too large".into()));
+                }
+                // Read only the chosen stream. In the mini stream a 64-byte sector is a slice
+                // of the root's sector chain, which may itself be fragmented.
+                let workbook: Vec<u8> = if *len < 4096 {
+                    ids.iter()
+                        .flat_map(|id| {
+                            let from = (*id as usize).saturating_mul(64);
+                            root_sectors.get(from / size).map_or(&[][..], |root| {
+                                let data = sector(*root);
+                                let offset = from % size;
+                                data.get(offset..offset.saturating_add(64).min(data.len())).unwrap_or(&[])
+                            })
+                        })
+                        .copied()
+                        .take(*len)
+                        .collect()
+                } else {
+                    ids.iter().flat_map(|id| sector(*id)).copied().take(*len).collect()
+                };
+                biff::check(&workbook, MAX_CELLS)
+                    .map_err(|e| DataError::Format(format!("spreadsheet: the .xls file cannot be read safely ({e})")))?;
+            }
         }
     }
     Ok(())
@@ -288,8 +313,9 @@ fn damaged<T>(what: &str) -> Result<T> {
 
 /// Refuses a sheet whose cells span more than [`MAX_CELLS`] before calamine lays it out as a dense
 /// grid (one cell at `XFD1048576` would ask for 17 billion): an `.xlsx` or `.xlsb` sheet's cells
-/// are read one at a time for their extent first. An `.xls` sheet can't be larger than 65,536 ×
-/// 256 cells, and an `.ods` one is checked after reading.
+/// are read one at a time for their extent first. Every `.xls` sheet's BIFF records and cell
+/// spans are checked by [`check_compound`] before the workbook is opened; an `.ods` one is
+/// checked after reading.
 fn check_size(wb: &mut Sheets<Cursor<&[u8]>>, sheet: &str) -> Result<()> {
     let mut b: Option<(u32, u32, u32, u32)> = None;
     let mut grow = |(r, c): (u32, u32)| -> Result<()> {
@@ -637,6 +663,191 @@ mod tests {
         b[60..64].copy_from_slice(&2u32.to_le_bytes());
         b[64..68].copy_from_slice(&1u32.to_le_bytes());
         b
+    }
+
+    /// A BIFF8 workbook in a sound compound container, with small worksheet streams.
+    fn biff_book(globals: &[(u16, Vec<u8>)], sheets: &[Vec<(u16, Vec<u8>)>]) -> Vec<u8> {
+        fn record(out: &mut Vec<u8>, kind: u16, data: &[u8]) {
+            out.extend(kind.to_le_bytes());
+            out.extend((data.len() as u16).to_le_bytes());
+            out.extend(data);
+        }
+        let bof = |kind: u16| {
+            let mut data = vec![0u8; 16];
+            data[..2].copy_from_slice(&0x0600u16.to_le_bytes());
+            data[2..4].copy_from_slice(&kind.to_le_bytes());
+            data
+        };
+        let mut stream = Vec::new();
+        record(&mut stream, 0x0809, &bof(5));
+        for (kind, data) in globals {
+            record(&mut stream, *kind, data);
+        }
+        let mut offsets = Vec::new();
+        for i in 0..sheets.len() {
+            offsets.push(stream.len() + 4);
+            let mut data = vec![0, 0, 0, 0, 0, 0, 1, 0];
+            data.push(b'A' + i as u8);
+            record(&mut stream, 0x0085, &data);
+        }
+        record(&mut stream, 0x000A, &[]);
+        for (i, records) in sheets.iter().enumerate() {
+            let offset = stream.len() as u32;
+            stream[offsets[i]..offsets[i] + 4].copy_from_slice(&offset.to_le_bytes());
+            record(&mut stream, 0x0809, &bof(0x0010));
+            for (kind, data) in records {
+                record(&mut stream, *kind, data);
+            }
+            record(&mut stream, 0x000A, &[]);
+        }
+        assert!(stream.len() <= 512);
+        let mut book = small_book(
+            &[0xFFFF_FFFD, END_OF_CHAIN, END_OF_CHAIN, END_OF_CHAIN],
+            0,
+            stream.len() as u32,
+            &[1, 2, 3, 4, 5, 6, 7, END_OF_CHAIN],
+        );
+        book[1024 + 120..1024 + 124].copy_from_slice(&512u32.to_le_bytes());
+        book[2048..2048 + stream.len()].copy_from_slice(&stream);
+        book
+    }
+
+    /// BIFF fields are checked before calamine runs, including browser entry points (#1495).
+    #[test]
+    fn xls_biff_records_are_checked_before_the_parser() {
+        let refuses = |book: &[u8], kind: &str| {
+            assert!(check_compound(book).is_err(), "{kind} reached the unchecked BIFF parser");
+            assert!(sheet_names(book).is_err(), "{kind}: names");
+            assert!(columns(book, None).is_err(), "{kind}: columns");
+            assert!(read(book, "bad.xls", None, &CsvOptions::default()).is_err(), "{kind}: read");
+        };
+        for kind in [0x002F, 0x0042, 0x0022, 0x0809, 0x0085, 0x0018, 0x0017] {
+            refuses(&biff_book(&[(kind, vec![])], &[]), &format!("short global {kind:x}"));
+        }
+        for len in 0..14 {
+            refuses(&biff_book(&[(0x0018, vec![0; len])], &[]), "short defined name");
+        }
+        let mut name = vec![0; 15];
+        name[4..6].copy_from_slice(&100u16.to_le_bytes());
+        refuses(&biff_book(&[(0x0018, name)], &[]), "defined-name formula length");
+        for token in [0x3a, 0x3b, 0x3c, 0x3d, 0x5a, 0x7b] {
+            let mut name = vec![0; 16];
+            name[3] = 1;
+            name[4..6].copy_from_slice(&1u16.to_le_bytes());
+            name[15] = b'N';
+            name.push(token);
+            refuses(&biff_book(&[(0x0018, name)], &[]), "short defined-name reference");
+        }
+        for kind in [0x0203, 0x0204, 0x0205, 0x027E, 0x00FD, 0x00BD, 0x00E5, 0x0006] {
+            refuses(&biff_book(&[], &[vec![(kind, vec![])]]), &format!("short cell record {kind:x}"));
+        }
+        let mut formula = vec![0; 22];
+        formula[20..22].copy_from_slice(&200u16.to_le_bytes());
+        refuses(&biff_book(&[], &[vec![(0x0006, formula)]]), "cell formula length");
+        let mut reversed = vec![0; 6];
+        reversed[2..4].copy_from_slice(&10u16.to_le_bytes());
+        reversed[4..6].copy_from_slice(&1u16.to_le_bytes());
+        refuses(&biff_book(&[], &[vec![(0x00bd, reversed)]]), "reversed MulRk columns");
+        refuses(&biff_book(&[], &[vec![(0x00e5, vec![0xff, 0xff])]]), "merge count past its record");
+        for token in [0x3a, 0x3b, 0x3c, 0x3d, 0x18, 0x19, 0x1c, 0x1d, 0x1e, 0x1f, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x2a, 0x2b, 0x39] {
+            let mut formula = vec![0; 22];
+            formula[20..22].copy_from_slice(&1u16.to_le_bytes());
+            formula.push(token);
+            refuses(&biff_book(&[], &[vec![(0x0006, formula)]]), &format!("short formula token {token:x}"));
+        }
+        for flags in [0x08, 0x04, 0x0c] {
+            let mut sst = vec![0; 8];
+            sst.extend([1, 0, flags]);
+            refuses(&biff_book(&[(0x00fc, sst)], &[]), "short rich string header");
+        }
+        let mut sst = vec![0; 8];
+        sst.extend([1, 0, 0]);
+        refuses(&biff_book(&[(0x00fc, sst), (0x003c, vec![])], &[]), "empty string continuation");
+        let mut offset = vec![0; 9];
+        offset[..4].copy_from_slice(&u32::MAX.to_le_bytes());
+        offset[6] = 1;
+        offset[8] = b'X';
+        refuses(&biff_book(&[(0x0085, offset)], &[]), "sheet past Workbook");
+    }
+
+    /// Declared and actual cell spans, across every eagerly read sheet, have one bound (#1495).
+    #[test]
+    fn xls_biff_allocations_are_bounded_before_the_parser() {
+        let dimensions = |first: u32, end: u32, cols: u16| {
+            let mut data = Vec::new();
+            data.extend(first.to_le_bytes());
+            data.extend(end.to_le_bytes());
+            data.extend(0u16.to_le_bytes());
+            data.extend(cols.to_le_bytes());
+            data.extend(0u16.to_le_bytes());
+            (0x0200, data)
+        };
+        for dims in [dimensions(50, 1, 1), dimensions(0, u32::MAX, 256)] {
+            let book = biff_book(&[], &[vec![dims]]);
+            assert!(check_compound(&book).is_err(), "Dimensions reached the unchecked allocator");
+        }
+        let mut number = vec![0; 14];
+        number[..2].copy_from_slice(&u16::MAX.to_le_bytes());
+        number[2..4].copy_from_slice(&u16::MAX.to_le_bytes());
+        let book = biff_book(&[], &[vec![(0x0203, vec![0; 14]), (0x0203, number)]]);
+        assert!(check_compound(&book).is_err(), "far-apart cells reached the dense-grid allocator");
+        let book = biff_book(&[], &[vec![dimensions(0, 65_536, 256)], vec![dimensions(0, 65_536, 256)]]);
+        assert!(check_compound(&book).is_err(), "the budget applies to all sheets, including unselected ones");
+        // Normal cached formula values remain readable, and names-only reads still work.
+        let mut header = vec![0; 6];
+        header.extend(7.0f64.to_le_bytes());
+        let mut formula = vec![0; 22];
+        formula[..2].copy_from_slice(&1u16.to_le_bytes());
+        formula[6..14].copy_from_slice(&8.0f64.to_le_bytes());
+        formula[20..22].copy_from_slice(&3u16.to_le_bytes());
+        formula.extend([0x1e, 8, 0]);
+        let book = biff_book(&[], &[vec![(0x0203, header), (0x0006, formula)]]);
+        assert!(check_compound(&book).is_ok());
+        assert_eq!(sheet_names(&book).unwrap(), ["A"]);
+        let (ds, report) = read(&book, "clean.xls", None, &CsvOptions::default()).unwrap();
+        assert_eq!(ds.features.len(), 1);
+        assert!(report.messages.is_empty());
+    }
+
+    #[test]
+    fn xls_biff_mutations_accepted_by_the_guard_do_not_panic() {
+        let mut header = vec![0; 6];
+        header.extend(7.0f64.to_le_bytes());
+        let mut formula = vec![0; 22];
+        formula[..2].copy_from_slice(&1u16.to_le_bytes());
+        formula[6..14].copy_from_slice(&8.0f64.to_le_bytes());
+        formula[20..22].copy_from_slice(&3u16.to_le_bytes());
+        formula.extend([0x1e, 8, 0]);
+        let mut sst = vec![0; 8];
+        sst[..4].copy_from_slice(&2u32.to_le_bytes());
+        sst[4..8].copy_from_slice(&2u32.to_le_bytes());
+        sst.extend([4, 0, 0]);
+        sst.extend(b"name");
+        sst.extend([4, 0, 0]);
+        sst.extend(b"city");
+        let mut first = vec![0; 10];
+        let mut second = first.clone();
+        second[..2].copy_from_slice(&1u16.to_le_bytes());
+        second[6..10].copy_from_slice(&1u32.to_le_bytes());
+        first[6..10].copy_from_slice(&0u32.to_le_bytes());
+        for seed in [
+            biff_book(&[], &[vec![(0x0203, header), (0x0006, formula)]]),
+            biff_book(&[(0x00fc, sst)], &[vec![(0x00fd, first), (0x00fd, second)]]),
+        ] {
+            assert!(check_compound(&seed).is_ok());
+            assert!(open_workbook_auto_from_rs(Cursor::new(seed.as_slice())).is_ok());
+            let len = u32::from_le_bytes(seed[1272..1276].try_into().unwrap()) as usize;
+            for i in 0..len {
+                for value in [0, 0x80, 0xff] {
+                    let mut mutated = seed.clone();
+                    mutated[2048 + i] = value;
+                    if check_compound(&mutated).is_ok() {
+                        let result = std::panic::catch_unwind(|| open_workbook_auto_from_rs(Cursor::new(mutated.as_slice())));
+                        assert!(result.is_ok(), "BIFF byte {i}, value {value:x}, passed the guard but panicked");
+                    }
+                }
+            }
+        }
     }
 
     #[test]
