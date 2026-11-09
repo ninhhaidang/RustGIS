@@ -68,6 +68,9 @@ struct Entry {
     /// Drawn while some of it was on its way, at this cache generation: drawn again once the
     /// cache has more.
     waiting: Option<u64>,
+    /// A failed or partial constituent read is reconsidered when the tile cache changes,
+    /// without keeping an export pending while its server is refusing it.
+    failed: Option<u64>,
     /// For a style with pattern fills, the ids of the sprites it was drawn from.
     sheets: Option<Vec<String>>,
 }
@@ -78,7 +81,7 @@ fn sprites_read(r: &Resolved, zoom: f32, ppp: f32) -> (bool, Option<Vec<String>>
     if !r.style.layers.iter().any(|l| l.visible_at(zoom) && l.draws_patterns()) {
         return (false, None);
     }
-    match sprite::load(&r.sprites, ppp >= 1.5) {
+    match sprite::load_from(&r.sprites, ppp >= 1.5, r.from.as_ref()) {
         Load::Pending => (true, None),
         Load::Ready(s) => (false, Some(s.sheet_ids())),
         Load::Failed => (false, Some(Vec::new())),
@@ -212,15 +215,19 @@ fn draws_shapes(r: &Resolved, zoom: f32) -> bool {
 /// The pictures of `r`'s shapes over `view`, drawing those missing, and out to `reach` (only
 /// those already drawn), bottom first; `None` when the style draws no vector shapes here, or the
 /// view is too wide for pictures (the whole world on the globe). `frame` gives the scale.
-pub(crate) fn cover(r: &Arc<Resolved>, frame: &Frame, view: &Extent, reach: Option<&Extent>, pending: &mut bool) -> Option<Vec<Item>> {
+pub(crate) fn cover(
+    r: &Arc<Resolved>,
+    frame: &Frame,
+    view: &Extent,
+    reach: Option<&Extent>,
+    pending: &mut bool,
+    error: &mut Option<String>,
+) -> Option<Vec<Item>> {
     let ppp = frame.ppp;
     if !(ppp.is_finite() && ppp > 0.0 && frame.m_per_px.is_finite() && frame.m_per_px > 0.0) || view.width() > template::HALF_WORLD {
         return None;
     }
     let zoom = template::style_zoom(frame.m_per_px * f64::from(ppp));
-    if !draws_shapes(r, zoom) {
-        return None;
-    }
     let step = (zoom * STEPS).round();
     let level = (step / STEPS).floor();
     // Squares of 256 to 512 pixels: those the size of a 256-point tile at one pixel a point, of
@@ -230,15 +237,33 @@ pub(crate) fn cover(r: &Arc<Resolved>, frame: &Frame, view: &Extent, reach: Opti
     let z = (level + down) as u8;
     let side = (512.0 * ppp * (step / STEPS - level - down).exp2()).round().clamp(16.0, MAX_SIDE) as u32;
     let m_per_px = TileId::span(z) / f64::from(side);
+    // Tile selection, visibility and retries must describe the pixels actually prepared,
+    // including rounding across a source zoom boundary and fractional pixel densities.
+    let picture_frame = Frame { left: frame.left, top: frame.top, m_per_px, ppp };
+    let zoom = template::style_zoom(m_per_px * f64::from(ppp));
+    if !draws_shapes(r, zoom) {
+        return None;
+    }
     let key = |tile| Key { style: Arc::as_ptr(r) as usize, tile, step: step as i32, ppp: ppp.to_bits() };
     let generation = cache::generation();
-    let (sprites_pending, read) = sprites_read(r, zoom, ppp);
-    // A view of more squares than a covering holds (a huge window) is drawn straight instead;
-    // a reach of more keeps to the view.
+    // Decline before starting diagnostics or reads if this view needs straight drawing.
     let span = TileId::span(z);
     if ((view.width() / span).ceil() + 1.0) * ((view.height() / span).ceil() + 1.0) > template::MAX_TILES as f64 {
         return None;
     }
+    if let Some(reason) = crate::draw::left_out_at(r, frame, &picture_frame, false) {
+        crate::draw::add_error(error, reason);
+    }
+    // Pictures include padding and may stand in at another zoom. Their preparation errors
+    // do not describe this viewport: gather current diagnostics without repainting shapes.
+    let mut visible = Drawn::default();
+    draw_layers(None, (0, 0), view, r, &picture_frame, Pass::Shapes, &mut visible);
+    *pending |= visible.pending;
+    if let Some(reason) = visible.error {
+        crate::draw::add_error(error, reason);
+    }
+    let (sprites_pending, read) = sprites_read(r, zoom, ppp);
+    // A reach of more squares than a covering holds keeps to the view.
     let squares = reach
         .map(|e| template::covering(e, z))
         .filter(|s| !s.is_empty() && s.len() < template::MAX_TILES)
@@ -256,6 +281,7 @@ pub(crate) fn cover(r: &Arc<Resolved>, frame: &Frame, view: &Extent, reach: Opti
                 Some(e)
                     if !in_view
                         || (e.waiting.is_none_or(|g| g == generation)
+                            && e.failed.is_none_or(|g| g == generation)
                             && sprites_serve(e.sheets.as_deref(), sprites_pending, read.as_deref())) =>
                 {
                     e.used = tick;
@@ -311,7 +337,8 @@ pub(crate) fn cover(r: &Arc<Resolved>, frame: &Frame, view: &Extent, reach: Opti
         let tick = s.tick;
         let mut added = false;
         for (&i, d) in todo.iter().zip(drawn) {
-            let (Some(slot), Some((pm, waiting))) = (found.get_mut(i), d) else { continue };
+            let (Some(slot), Some(d)) = (found.get_mut(i), d) else { continue };
+            let DrawnPicture { image: pm, pending: waiting, retry } = d;
             *pending |= waiting;
             let bytes = pm.data().len();
             let picture = Arc::new(Payload::Image(pm));
@@ -321,6 +348,7 @@ pub(crate) fn cover(r: &Arc<Resolved>, frame: &Frame, view: &Extent, reach: Opti
                 bytes,
                 used: tick,
                 waiting: waiting.then_some(generation),
+                failed: retry.then_some(generation),
                 sheets: read.clone(),
             };
             s.bytes += bytes;
@@ -426,6 +454,13 @@ fn evict(s: &mut Store) {
     }
 }
 
+/// One prepared picture and the pending or incomplete reads that produced it.
+struct DrawnPicture {
+    image: Pixmap,
+    pending: bool,
+    retry: bool,
+}
+
 /// Draws the pictures of `squares`: each a `side`-pixel pixmap and whether some of it is still
 /// on its way, `None` for those not drawn. Natively the squares are shared among threads. With
 /// `until`, drawing stops once it has passed, after a picture (a round of them natively).
@@ -437,7 +472,7 @@ fn draw_all(
     ppp: f32,
     reach: f64,
     until: Option<Instant>,
-) -> Vec<Option<(Pixmap, bool)>> {
+) -> Vec<Option<DrawnPicture>> {
     let Some(until) = until else { return draw_some(r, squares, side, m_per_px, ppp, reach) };
     let round = if cfg!(target_arch = "wasm32") { 1 } else { std::thread::available_parallelism().map_or(1, |n| n.get()).min(16) };
     let mut out = Vec::with_capacity(squares.len());
@@ -452,14 +487,14 @@ fn draw_all(
 }
 
 /// Draws the pictures of all of `squares` (see [`draw_all`]).
-fn draw_some(r: &Resolved, squares: &[Placed], side: u32, m_per_px: f64, ppp: f32, reach: f64) -> Vec<Option<(Pixmap, bool)>> {
+fn draw_some(r: &Resolved, squares: &[Placed], side: u32, m_per_px: f64, ppp: f32, reach: f64) -> Vec<Option<DrawnPicture>> {
     let one = |p: &Placed| draw_one(r, p, side, m_per_px, ppp, reach);
     #[cfg(not(target_arch = "wasm32"))]
     {
         let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).min(squares.len()).min(16);
         if threads > 1 {
             let next = std::sync::atomic::AtomicUsize::new(0);
-            let out: Mutex<Vec<Option<(Pixmap, bool)>>> = Mutex::new((0..squares.len()).map(|_| None).collect());
+            let out: Mutex<Vec<Option<DrawnPicture>>> = Mutex::new((0..squares.len()).map(|_| None).collect());
             std::thread::scope(|scope| {
                 for _ in 0..threads {
                     scope.spawn(|| {
@@ -481,7 +516,7 @@ fn draw_some(r: &Resolved, squares: &[Placed], side: u32, m_per_px: f64, ppp: f3
 }
 
 /// Draws the shapes of one square, with those of the tiles around it out to `reach` points.
-fn draw_one(r: &Resolved, p: &Placed, side: u32, m_per_px: f64, ppp: f32, reach: f64) -> Option<(Pixmap, bool)> {
+fn draw_one(r: &Resolved, p: &Placed, side: u32, m_per_px: f64, ppp: f32, reach: f64) -> Option<DrawnPicture> {
     let mut pm = Pixmap::new(side, side)?;
     let e = p.extent();
     let frame = Frame { left: e.min_x, top: e.max_y, m_per_px, ppp };
@@ -489,12 +524,346 @@ fn draw_one(r: &Resolved, p: &Placed, side: u32, m_per_px: f64, ppp: f32, reach:
     let pad = reach * f64::from(ppp) * m_per_px;
     let view = Extent::new(e.min_x - pad, e.min_y - pad, e.max_x + pad, e.max_y + pad);
     let mut d = Drawn::default();
-    draw_layers(Some(&mut pm), (side, side), &view, r, &frame, Pass::Shapes, &mut d);
-    Some((pm, d.pending))
+    let retry = draw_layers(Some(&mut pm), (side, side), &view, r, &frame, Pass::Shapes, &mut d);
+    Some(DrawnPicture { image: pm, pending: d.pending, retry })
 }
 
 #[cfg(test)]
 mod tests {
+    /// Pattern failures follow prepared pixels, while absent patterns leave no sprite warning.
+    #[test]
+    fn rounded_picture_patterns_report_sprite_failures() {
+        let _turn = cache::turn();
+        for min in [3, 4] {
+            let base = format!("https://rounded-pattern.example/{min}");
+            let style = serde_json::to_vec(&serde_json::json!({"version":8,"sprite":format!("{base}/sprite"),
+                "sources":{"s":{"type":"vector","tiles":[format!("{base}/tile")],"maxzoom":0}},
+                "layers":[{"id":"pattern","type":"fill","source":"s","source-layer":"l","minzoom":min,"paint":{"fill-pattern":"a"}}]}))
+            .unwrap();
+            let bytes = crate::mvt::encode(&Tile::default());
+            cache::set_fetcher(move |url, done| {
+                if url.ends_with("/style.json") {
+                    done(Ok(style.clone()));
+                } else if url.contains("/sprite") {
+                    done(Err("HTTP 503".into()));
+                } else {
+                    done(Ok(bytes.clone()));
+                }
+            });
+            let spec = Spec {
+                kind: Kind::Style,
+                url: format!("{base}/style.json"),
+                subdomains: Vec::new(),
+                min_zoom: 0,
+                max_zoom: 14,
+                tile_size: 512,
+                tms: false,
+                attribution: String::new(),
+                layers: Vec::new(),
+                style_layers: String::new(),
+                hidden_layers: Vec::new(),
+            };
+            let f = frame(2.999, 1.0);
+            let view = f.extent(64, 64);
+            resolved(&spec);
+            let mut pm = Pixmap::new(64, 64).unwrap();
+            draw(&mut pm, &spec, 1.0, &f, false);
+            cache::wait(Duration::from_secs(2));
+            let d = draw(&mut pm, &spec, 1.0, &f, false);
+            assert_eq!(d.error.as_deref().is_some_and(|e| e.contains("pattern")), min == 3, "draw at pattern minzoom {min}: {:?}", d.error);
+            let placed = place(&spec, 1.0, &f, &view, &view, None).unwrap();
+            assert_eq!(
+                placed.error.as_deref().is_some_and(|e| e.contains("pattern")),
+                min == 3,
+                "placement at pattern minzoom {min}: {:?}",
+                placed.error
+            );
+        }
+    }
+
+    /// A rounded picture zoom must report and retry the tiles that supplied its pixels.
+    #[test]
+    fn picture_failures_at_rounded_zoom_retry_through_cover() {
+        let _turn = cache::turn();
+        let tile = Tile {
+            layers: vec![Layer {
+                name: "l".into(),
+                extent: 4096,
+                features: vec![Feature {
+                    id: None,
+                    kind: GeomKind::Polygon,
+                    props: Vec::new(),
+                    geometry: vec![vec![[0.0, 0.0], [4096.0, 0.0], [4096.0, 4096.0], [0.0, 4096.0], [0.0, 0.0]]],
+                }],
+            }],
+        };
+        for ppp in [1.0, 1.5] {
+            let root = format!("https://picture-rounded.example/{ppp}");
+            let failed_url = format!("{root}/3");
+            let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let attempts = calls.clone();
+            let bytes = crate::mvt::encode(&tile);
+            cache::set_fetcher(move |url, done| {
+                if url.ends_with("/3") && attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                    done(Err("HTTP 503".into()));
+                } else {
+                    done(Ok(bytes.clone()));
+                }
+            });
+            let style = crate::style::Style::parse(&serde_json::json!({"version":8,
+                "sources":{"s":{"type":"vector","tiles":[format!("{root}/{{z}}")]}},
+                "layers":[{"id":"fill","type":"fill","source":"s","source-layer":"l"}]}))
+            .unwrap();
+            let r = Arc::new(Resolved {
+                style,
+                from: None,
+                sprites: Vec::new(),
+                attribution: Vec::new(),
+                left_out: Vec::new(),
+                made: Mutex::new(Instant::now()),
+                waiting: false,
+            });
+            let f = frame(2.999, ppp);
+            let view = f.extent(64, 64);
+            cover(&r, &f, &view, None, &mut false, &mut None);
+            cache::wait(Duration::from_secs(2));
+            let mut error = None;
+            let failed = cover(&r, &f, &view, None, &mut false, &mut error).unwrap();
+            assert!(error.is_some(), "the failed picture input must be reported at {ppp} pixels per point");
+            assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+            assert!(cache::expire_failure(&failed_url));
+            cover(&r, &f, &view, None, &mut false, &mut None);
+            cache::wait(Duration::from_secs(2));
+            assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2, "cover must retry its rounded-zoom input");
+            let recovered = cover(&r, &f, &view, None, &mut false, &mut None).unwrap();
+            assert!(failed.iter().zip(&recovered).all(|(a, b)| !Arc::ptr_eq(&a.payload, &b.payload)));
+            assert!(
+                recovered
+                    .iter()
+                    .any(|it| matches!(it.payload.as_ref(), Payload::Image(pm) if pm.data().as_chunks::<4>().0.iter().any(|p| p[3]>0)))
+            );
+        }
+    }
+
+    /// A layer the renderer cannot draw must not select or report its separate source.
+    #[test]
+    fn undrawn_line_patterns_do_not_report_refused_tiles() {
+        let _turn = cache::turn();
+        let bytes = crate::mvt::encode(&Tile::default());
+        cache::set_fetcher(move |url, done| {
+            assert!(url.starts_with("https://pattern-control.example/"));
+            done(Ok(bytes.clone()));
+        });
+        let mut style = crate::style::Style::parse(&serde_json::json!({"version":8,
+            "sources":{"hidden":{"type":"vector","tiles":["http://127.0.0.1/{z}"]},"shown":{"type":"vector","tiles":["https://pattern-control.example/{z}"]}},
+            "layers":[{"id":"pattern","type":"line","source":"hidden","source-layer":"l","paint":{"line-pattern":"rail"}},
+                {"id":"fill","type":"fill","source":"shown","source-layer":"l"}]})).unwrap();
+        for (_, src) in &mut style.sources {
+            if let Source::Vector { from, .. } = src {
+                *from = Some(crate::address::Origin::named("https://pattern-control.example/style.json"));
+            }
+        }
+        let r = Resolved {
+            style,
+            from: None,
+            sprites: Vec::new(),
+            attribution: Vec::new(),
+            left_out: Vec::new(),
+            made: Mutex::new(Instant::now()),
+            waiting: false,
+        };
+        let f = frame(2.2, 1.0);
+        let mut drawn = Drawn::default();
+        draw_layers(None, (64, 64), &f.extent(64, 64), &r, &f, Pass::Shapes, &mut drawn);
+        assert!(drawn.error.is_none(), "an unsupported layer cannot omit drawable tiles: {:?}", drawn.error);
+    }
+
+    /// Padded preparation and later cache reuse must report the current viewport only.
+    #[test]
+    fn picture_refusals_follow_the_viewport_not_preparation_padding() {
+        let _turn = cache::turn();
+        let bytes = crate::mvt::encode(&Tile::default());
+        cache::set_fetcher(move |_, done| done(Ok(bytes.clone())));
+        let mut style = crate::style::Style::parse(&serde_json::json!({"version":8,
+            "sources":{"s":{"type":"vector","tiles":["http://127.0.0.1/{z}/{x}/{y}","https://picture-view.example/{z}/{x}/{y}"]}},
+            "layers":[{"id":"line","type":"line","source":"s","source-layer":"l","paint":{"line-width":20}}]}))
+        .unwrap();
+        let from = crate::address::Origin::named("https://picture-view.example/style.json");
+        if let Source::Vector { from: selected, .. } = &mut style.sources.first_mut().unwrap().1 {
+            *selected = Some(from.clone());
+        }
+        let r = Arc::new(Resolved {
+            style,
+            from: Some(from),
+            sprites: Vec::new(),
+            attribution: Vec::new(),
+            left_out: Vec::new(),
+            made: Mutex::new(Instant::now()),
+            waiting: false,
+        });
+        let square = TileId { z: 3, x: 6, y: 4 }.extent();
+        let f = Frame { left: square.min_x, top: square.max_y, m_per_px: template::HALF_WORLD / (256.0 * 2.2f64.exp2()), ppp: 1.0 };
+        let view = Extent::new(
+            square.min_x + square.width() * 0.3,
+            square.min_y + square.height() * 0.3,
+            square.min_x + square.width() * 0.6,
+            square.min_y + square.height() * 0.6,
+        );
+        let mut kept = Vec::new();
+        for _ in 0..2 {
+            let mut error = None;
+            kept = cover(&r, &f, &view, None, &mut false, &mut error).unwrap();
+            cache::wait(Duration::from_secs(2));
+            assert!(error.is_none(), "only padding crosses a refused shard: {error:?}");
+        }
+        // A deterministic destination refusal does not make these pixels retryable.
+        cache::get_tile("https://picture-view.example/unrelated", cache::Want::Vector);
+        cache::wait(Duration::from_secs(2));
+        let mut error = None;
+        let again = cover(&r, &f, &view, None, &mut false, &mut error).unwrap();
+        assert!(error.is_none());
+        assert_eq!(kept.len(), again.len());
+        assert!(kept.iter().zip(&again).all(|(old, new)| Arc::ptr_eq(&old.payload, &new.payload)));
+    }
+
+    /// A neighbouring tile can paint a circle into view even when its own square is outside.
+    #[test]
+    fn picture_reports_refused_symbols_reaching_in_from_a_neighbour() {
+        let _turn = cache::turn();
+        let bytes = crate::mvt::encode(&Tile {
+            layers: vec![Layer {
+                name: "l".into(),
+                extent: 4096,
+                features: vec![Feature {
+                    id: None,
+                    kind: GeomKind::Point,
+                    props: vec![("radius".into(), crate::mvt::Value::Number(40.0))],
+                    geometry: vec![vec![[4090.0, 1024.0]]],
+                }],
+            }],
+        });
+        cache::set_fetcher(move |_, done| done(Ok(bytes.clone())));
+        for (radius, inset, reaches) in [
+            (serde_json::json!(20), 4.0, true),
+            (serde_json::json!(["get", "radius"]), 24.0, true),
+            (serde_json::json!(["min", 2, ["get", "radius"]]), 300.0, false),
+        ] {
+            let tile = TileId { z: 2, x: 3, y: 2 }.extent();
+            let m_per_px = frame(2.2, 1.0).m_per_px;
+            let f =
+                Frame { left: tile.min_x + inset * m_per_px, top: tile.max_y - tile.height() * 0.25 + 32.0 * m_per_px, m_per_px, ppp: 1.0 };
+            let view = f.extent(64, 64);
+            for restricted in [false, true] {
+                let mut style = crate::style::Style::parse(&serde_json::json!({"version":8,
+                "sources":{"s":{"type":"vector","tiles":["http://127.0.0.1/{z}/{x}/{y}","https://picture-neighbour.example/{z}/{x}/{y}"]}},
+                "layers":[{"id":"point","type":"circle","source":"s","source-layer":"l","paint":{"circle-radius":radius,"circle-color":"#ff0000"}}]}))
+            .unwrap();
+                let from = restricted.then(|| crate::address::Origin::named("https://picture-neighbour.example/style.json"));
+                if let Source::Vector { from: selected, .. } = &mut style.sources.first_mut().unwrap().1 {
+                    *selected = from.clone();
+                }
+                let r = Arc::new(Resolved {
+                    style,
+                    from,
+                    sprites: Vec::new(),
+                    attribution: Vec::new(),
+                    left_out: Vec::new(),
+                    made: Mutex::new(Instant::now()),
+                    waiting: false,
+                });
+                cover(&r, &f, &view, None, &mut false, &mut None);
+                cache::wait(Duration::from_secs(2));
+                let mut error = None;
+                let pictures = cover(&r, &f, &view, None, &mut false, &mut error).unwrap();
+                let painted = pictures.iter().any(|it| {
+                    let Payload::Image(pm) = it.payload.as_ref() else { return false };
+                    let x = ((view.min_x + 2.0 * m_per_px - it.at.min_x) / it.at.width() * f64::from(pm.width())).floor();
+                    let y = ((it.at.max_y - (view.max_y - 32.0 * m_per_px)) / it.at.height() * f64::from(pm.height())).floor();
+                    x >= 0.0 && y >= 0.0 && pm.pixel(x as u32, y as u32).is_some_and(|px| px.alpha() > 0)
+                });
+                assert_eq!(
+                    painted,
+                    reaches && !restricted,
+                    "the permitted neighbour paints only when its radius reaches the actual viewport"
+                );
+                assert_eq!(error.is_some(), reaches && restricted, "only visible missing neighbour geometry must be reported: {error:?}");
+            }
+        }
+    }
+
+    /// Routine missing tiles and reported failures both replace their pixels after recovery.
+    #[test]
+    fn picture_failures_refresh_after_recovery() {
+        let _turn = cache::turn();
+        let tile = Tile {
+            layers: vec![Layer {
+                name: "l".into(),
+                extent: 4096,
+                features: vec![Feature {
+                    id: None,
+                    kind: GeomKind::Polygon,
+                    props: Vec::new(),
+                    geometry: vec![vec![[0.0, 0.0], [4096.0, 0.0], [4096.0, 4096.0], [0.0, 4096.0], [0.0, 0.0]]],
+                }],
+            }],
+        };
+        let mut stale = Vec::new();
+        for status in [503, 404, 410] {
+            let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let attempts = calls.clone();
+            let bytes = crate::mvt::encode(&tile);
+            cache::set_fetcher(move |_, done| {
+                if attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                    done(Err(format!("http status: {status}")));
+                } else {
+                    done(Ok(bytes.clone()));
+                }
+            });
+            let url = format!("https://picture-retry.example/{status}");
+            let style = crate::style::Style::parse(&serde_json::json!({"version":8,
+                "sources":{"s":{"type":"vector","tiles":[url],"maxzoom":0}},
+                "layers":[{"id":"fill","type":"fill","source":"s","source-layer":"l","paint":{"fill-color":"#ff0000"}}]}))
+            .unwrap();
+            let r = Arc::new(Resolved {
+                style,
+                from: None,
+                sprites: Vec::new(),
+                attribution: Vec::new(),
+                left_out: Vec::new(),
+                made: Mutex::new(Instant::now()),
+                waiting: false,
+            });
+            let f = frame(2.2, 1.0);
+            let view = f.extent(64, 64);
+            cover(&r, &f, &view, None, &mut false, &mut None);
+            cache::wait(Duration::from_secs(2));
+            let mut error = None;
+            let mut pending = false;
+            let failed = cover(&r, &f, &view, None, &mut pending, &mut error).unwrap();
+            assert!(!pending, "an unavailable tile must not keep export pending");
+            assert_eq!(error.is_some(), status == 503, "routine status {status}: {error:?}");
+            assert!(!failed.is_empty());
+            assert!(failed.iter().all(|it| matches!(it.payload.as_ref(), Payload::Image(pm) if pm.data().iter().all(|b| *b == 0))));
+            assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+            assert!(cache::expire_failure(&url));
+            cover(&r, &f, &view, None, &mut false, &mut None);
+            cache::wait(Duration::from_secs(2));
+            assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2, "cover must initiate the expired tile's retry");
+            assert!(matches!(cache::peek(&url).as_deref(), Some(Payload::Vector(t)) if !t.layers[0].features.is_empty()));
+            let mut error = None;
+            let recovered = cover(&r, &f, &view, None, &mut false, &mut error).unwrap();
+            assert!(error.is_none(), "recovered tile still has an old picture warning: {error:?}");
+            let replaced = failed.len() == recovered.len()
+                && failed.iter().zip(&recovered).all(|(old, new)| old.at == new.at && !Arc::ptr_eq(&old.payload, &new.payload));
+            let painted = recovered
+                .iter()
+                .any(|it| matches!(it.payload.as_ref(), Payload::Image(pm) if pm.data().as_chunks::<4>().0.iter().any(|px| px[3] > 0)));
+            if !replaced || !painted {
+                stale.push(status);
+            }
+        }
+        assert!(stale.is_empty(), "recovered geometry left old blank pictures cached for HTTP {stale:?}");
+    }
     use super::*;
     use crate::draw::{draw, place};
     use crate::mvt::{Feature, GeomKind, Layer, Tile};
@@ -662,33 +1031,34 @@ mod tests {
         drawn(&spec, &f, 1.0);
         let view = f.extent(300, 200);
         let mut pending = false;
-        let held: Vec<Arc<Payload>> = cover(&r, &f, &view, None, &mut pending).unwrap().into_iter().map(|i| i.payload).collect();
+        let held: Vec<Arc<Payload>> = cover(&r, &f, &view, None, &mut pending, &mut None).unwrap().into_iter().map(|i| i.payload).collect();
         let theirs = |items: &[Item]| items.iter().all(|i| held.iter().any(|h| Arc::ptr_eq(h, &i.payload)));
         // A little further in, or coarser (as frames drawn mid-motion are): those drawn stand in.
         // Over the same ground: the view's squares are those drawn, or above or below them.
         for g in [frame(2.3, 1.0), frame(2.9, 1.0), frame(2.2, 0.6), frame(1.6, 1.0)] {
-            let (items, lacks) = paced(Pace::Moving, || cover(&r, &g, &view, None, &mut pending).unwrap());
+            let (items, lacks) = paced(Pace::Moving, || cover(&r, &g, &view, None, &mut pending, &mut None).unwrap());
             assert!(lacks == Some(Unfinished::Later) && !items.is_empty() && theirs(&items), "stood in at {}", g.m_per_px);
             // Each covering the view's squares, where it is.
             assert!(items.iter().all(|i| i.at.intersects(&i.clip) && i.clip.width() > 0.0));
         }
         // Still, or over two levels away: drawn.
         let g = frame(2.3, 1.0);
-        let still = cover(&r, &g, &view, None, &mut pending).unwrap();
+        let still = cover(&r, &g, &view, None, &mut pending, &mut None).unwrap();
         assert!(!theirs(&still));
         let far = frame(5.5, 1.0);
-        let (items, lacks) = paced(Pace::Moving, || cover(&r, &far, &view, None, &mut pending).unwrap());
+        let (items, lacks) = paced(Pace::Moving, || cover(&r, &far, &view, None, &mut pending, &mut None).unwrap());
         // Nothing stands in that far away (a slow machine may leave some for the next frame).
         assert!(lacks != Some(Unfinished::Later) && !theirs(&items));
         // Settling, the exact pictures are drawn while there's time (a round at least).
         let g = frame(2.35, 1.0);
-        let (items, lacks) = paced(Pace::Settling, || cover(&r, &g, &view, None, &mut pending).unwrap());
+        let (items, lacks) = paced(Pace::Settling, || cover(&r, &g, &view, None, &mut pending, &mut None).unwrap());
         // A round at least is new; complete, nothing held stands in.
         let held_in = |i: &Item| held.iter().any(|h| Arc::ptr_eq(h, &i.payload));
         assert!(lacks != Some(Unfinished::Later) && items.iter().any(|i| !held_in(i)));
         assert!(lacks.is_some() || !items.iter().any(held_in));
         // Inside nested calls, the outer one hears of pictures standing in.
-        let ((_, inner), outer) = paced(Pace::Settling, || paced(Pace::Moving, || cover(&r, &frame(2.25, 1.0), &view, None, &mut pending)));
+        let ((_, inner), outer) =
+            paced(Pace::Settling, || paced(Pace::Moving, || cover(&r, &frame(2.25, 1.0), &view, None, &mut pending, &mut None)));
         assert!(inner == Some(Unfinished::Later) && outer == inner);
         assert!(PACE.with(|p| p.get()).is_none());
         // One deadline for the frame, whoever asks; an inner call keeps within it.
@@ -742,16 +1112,16 @@ mod tests {
         let r = resolved(&spec);
         let mut pending = false;
         let world = Extent::new(-template::HALF_WORLD * 1.5, -1e6, template::HALF_WORLD * 1.5, 1e6);
-        assert!(cover(&r, &f, &world, None, &mut pending).is_none());
+        assert!(cover(&r, &f, &world, None, &mut pending, &mut None).is_none());
         // More squares than a covering holds: drawn straight too, not left blank.
         let near = frame(12.0, 1.0);
         let huge = near.extent(20_000, 10_000);
         assert!(huge.width() < template::HALF_WORLD);
-        assert!(cover(&r, &near, &huge, None, &mut pending).is_none());
+        assert!(cover(&r, &near, &huge, None, &mut pending, &mut None).is_none());
         for m_per_px in [0.0, f64::NAN, f64::INFINITY] {
-            assert!(cover(&r, &Frame { m_per_px, ..f }, &view, None, &mut pending).is_none());
+            assert!(cover(&r, &Frame { m_per_px, ..f }, &view, None, &mut pending, &mut None).is_none());
         }
-        assert!(cover(&r, &Frame { ppp: f32::NAN, ..f }, &view, None, &mut pending).is_none());
+        assert!(cover(&r, &Frame { ppp: f32::NAN, ..f }, &view, None, &mut pending, &mut None).is_none());
         let _ = std::fs::remove_dir_all(dir);
     }
 }

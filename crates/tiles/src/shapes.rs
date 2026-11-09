@@ -18,7 +18,7 @@ use crate::cache::Payload;
 use crate::draw::{Drawn, Frame, Label, Pass, draw_layers, tiles_in};
 use crate::mvt::{GeomKind, Tile};
 use crate::source::{Resolve, Resolved, Spec, resolve};
-use crate::sprite::{self, Load, Sprite};
+use crate::sprite::{Load, Sprite};
 use crate::style::{FeatureCtx, LayerKind, LineCap, LineJoin, PATTERNS, Rgba, Source, StyleLayer};
 use crate::template;
 
@@ -76,16 +76,28 @@ pub fn vector_tiles(spec: &Spec, frame: &Frame, view: &Extent, reach: Option<&Ex
     let source = drawn_source(&r, level)?;
     let src = r.style.sources.iter().find(|(id, _)| *id == source).map(|(_, s)| s)?;
     let mut pending = false;
-    let tiles = tiles_in(src, view, reach, frame, zoom, &mut pending)
-        .into_iter()
-        .map(|it| DataTile { payload: it.payload, at: it.at, z: it.z, clip: it.clip })
-        .collect();
+    let mut error = crate::draw::left_out(&r, frame, true);
+    let mut selection_error = None;
+    let selection = tiles_in(src, view, reach, frame, zoom, &mut pending, &mut selection_error);
+    // Mesh backgrounds cover only returned data squares. When selection leaves holes,
+    // ordinary drawing paints the whole background and the remaining geometry together.
+    if selection.mesh_gaps
+        && r.style.layers.iter().any(|l| l.kind == LayerKind::Background && shown_in(l, f32::from(level), f32::from(level) + 1.0))
+    {
+        return None;
+    }
+    if let Some(note) = selection_error {
+        crate::draw::add_error(&mut error, note);
+    }
+    let tiles = selection.items.into_iter().map(|it| DataTile { payload: it.payload, at: it.at, z: it.z, clip: it.clip }).collect();
     let mut d = Drawn::default();
     if let Some(size) = labels {
         draw_layers(None, size, &frame.extent(size.0, size.1), &r, frame, Pass::Labels, &mut d);
     }
+    if let Some(refused) = d.error {
+        crate::draw::add_error(&mut error, refused);
+    }
     let attribution = r.attribution.clone();
-    let error = crate::draw::left_out(&r, frame, true);
     Some(VectorTiles { style: r, source, tiles, level, labels: d.labels, attribution, pending: pending || d.pending, error })
 }
 
@@ -226,7 +238,7 @@ fn average(img: &tiny_skia::Pixmap) -> Option<[f32; 4]> {
 /// the next level, in its order. Its background, when it has one, is the first run, filling the
 /// square.
 pub fn shapes(style: &Resolved, source: &str, tile: &Tile, level: u8) -> TileShapes {
-    shapes_with(style, source, tile, level, &|| sprite::load(&style.sprites, false))
+    shapes_with(style, source, tile, level, &|| style.load_sprites(false))
 }
 
 /// [`shapes`], with `load` to load the style's sprites.
@@ -632,25 +644,20 @@ mod tests {
         // A raster layer from the middle of the level: its meshes would serve where it shows.
         let style = STYLE.replacen('[', r#"[{"id": "r", "type": "raster", "source": "x", "minzoom": 2.8},"#, 1);
         let (spec, dir) = archive("level", &style);
-        ready(&spec);
-        let f = frame(2.5);
-        assert!(vector_tiles(&spec, &f, &f.extent(300, 200), None, None).is_none());
+        assert!(drawn_source(&ready(&spec), 2).is_none());
         // Shown from the next level only: these meshes are fine.
         let style = STYLE.replacen('[', r#"[{"id": "r", "type": "raster", "source": "x", "minzoom": 3},"#, 1);
         let (spec, dir2) = archive("next-level", &style);
-        ready(&spec);
-        assert!(vector_tiles(&spec, &f, &f.extent(300, 200), None, None).is_some());
+        assert!(drawn_source(&ready(&spec), 2).is_some());
         // Caps changing within the level.
         let style = STYLE.replace(r#""line-cap": "round""#, r#""line-cap": ["step", ["zoom"], "butt", 2.5, "round"]"#);
         let (spec, dir4) = archive("caps", &style);
-        ready(&spec);
-        assert!(vector_tiles(&spec, &f, &f.extent(300, 200), None, None).is_none());
+        assert!(drawn_source(&ready(&spec), 2).is_none());
         let _ = std::fs::remove_dir_all(dir4);
         // Caps changing at the next level: not within this one.
         let style = STYLE.replace(r#""line-cap": "round""#, r#""line-cap": ["step", ["zoom"], "butt", 3, "round"]"#);
         let (spec, dir5) = archive("next-caps", &style);
-        ready(&spec);
-        assert!(vector_tiles(&spec, &f, &f.extent(300, 200), None, None).is_some());
+        assert!(drawn_source(&ready(&spec), 2).is_some());
         let _ = std::fs::remove_dir_all(dir5);
         // A long dash pattern from the end of the level.
         let style = STYLE.replace(
@@ -658,11 +665,32 @@ mod tests {
             r#""line-dasharray": ["step", ["zoom"], ["literal", [3, 2]], 2.9, ["literal", [3, 2, 1]]]"#,
         );
         let (spec, dir3) = archive("late-dashes", &style);
-        ready(&spec);
-        assert!(vector_tiles(&spec, &f, &f.extent(300, 200), None, None).is_none());
+        assert!(drawn_source(&ready(&spec), 2).is_none());
         for d in [dir, dir2, dir3] {
             let _ = std::fs::remove_dir_all(d);
         }
+    }
+
+    /// Fully loaded geometry reaches the entry point for eligible styles only; no missing tile
+    /// or background gap can make an unsupported style pass this rejection test accidentally.
+    #[test]
+    fn unsupported_styles_stay_out_of_the_mesh_entrypoint() {
+        let _turn = crate::cache::turn();
+        let (spec, dir) = archive("entrypoint", STYLE);
+        let loaded = tile(&spec, 2.5);
+        assert!(!loaded.pending && !loaded.tiles.is_empty());
+        let frame = frame(2.5);
+        let view = frame.extent(300, 200);
+        assert!(vector_tiles(&spec, &frame, &view, None, None).is_some());
+        for style in [
+            STYLE.replacen('[', r#"[{"id":"r","type":"raster","source":"x"},"#, 1),
+            STYLE.replace(r#""line-cap": "round""#, r#""line-cap": ["step", ["zoom"], "butt", 2.5, "round"]"#),
+        ] {
+            let unsupported = Spec { style_layers: style, ..spec.clone() };
+            assert!(drawn_source(&ready(&unsupported), 2).is_none());
+            assert!(vector_tiles(&unsupported, &frame, &view, None, None).is_none());
+        }
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -671,9 +699,7 @@ mod tests {
         // Three lengths repeat to six: more than the meshes hold.
         let style = STYLE.replace(r#""line-dasharray": [3, 2]"#, r#""line-dasharray": [3, 2, 1]"#);
         let (spec, dir) = archive("dashes", &style);
-        ready(&spec);
-        let f = frame(2.5);
-        assert!(vector_tiles(&spec, &f, &f.extent(300, 200), None, None).is_none());
+        assert!(drawn_source(&ready(&spec), 2).is_none());
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -693,13 +719,11 @@ mod tests {
         // A raster layer is a picture of its own.
         let style = STYLE.replacen('[', r#"[{"id": "r", "type": "raster", "source": "x"},"#, 1);
         let (spec, dir) = archive("raster", &style);
-        ready(&spec);
-        let f = frame(2.5);
-        assert!(vector_tiles(&spec, &f, &f.extent(300, 200), None, None).is_none());
+        assert!(drawn_source(&ready(&spec), 2).is_none());
         let _ = std::fs::remove_dir_all(dir);
         // Nor a broken scale.
         let (spec, dir) = archive("scale", STYLE);
-        ready(&spec);
+        tile(&spec, 2.5);
         let f = Frame { m_per_px: f64::NAN, ..frame(2.5) };
         assert!(vector_tiles(&spec, &f, &frame(2.5).extent(300, 200), None, None).is_none());
         let _ = std::fs::remove_dir_all(dir);

@@ -30039,24 +30039,23 @@ fn session_log_entries_name_their_project_and_say_when_their_params_are_partial(
     let ran = last(&s);
     assert_eq!((ran.params["script"].as_str(), ran.partial), (Some(script), false), "{ran:?}");
     // A secret's key written twice is read as its last value: the first isn't kept as written.
-    let _ =
-        s.run("script.run", &json!({"script": "map.new {\"name\": \"M\", \"secretAccessKey\": \"S3CRET\", \"secretAccessKey\": \"\"}"}));
+    let _ = s.run("script.run", &json!({"script": "map.new {\"name\": \"M\", \"secretAccessKey\": \"zzzz\", \"secretAccessKey\": \"\"}"}));
     let twice = last(&s);
-    assert!(!twice.params.to_string().contains("S3CRET") && twice.partial, "{twice:?}");
+    assert!(!twice.params.to_string().contains("zzzz") && twice.partial, "{twice:?}");
     // Nor with its name escaped, nor a key a plain name blanks only for its value, nor deeper in;
     // and a key only logs leave out (`passphrase`) isn't kept either, nor one past eight levels.
     for script in [
-        r#"map.new {"name": "M", "passphrase": "S3CRET"}"#,
-        r#"map.new {"name": "M", "a": [[[[[[[[[{"passphrase": "S3CRET"}]]]]]]]]]}"#,
-        r#"map.new {"name": "M", "\u0074oken": "S3CRET", "\u0074oken": ""}"#,
-        r#"map.new {"name": "M", "key": "AKIAIOSFODNN7S3CRET", "key": ""}"#,
-        r#"map.new {"name": "M", "style": {"token": "S3CRET", "token": ""}}"#,
+        r#"map.new {"name": "M", "passphrase": "zzzz"}"#,
+        r#"map.new {"name": "M", "a": [[[[[[[[[{"passphrase": "zzzz"}]]]]]]]]]}"#,
+        r#"map.new {"name": "M", "\u0074oken": "zzzz", "\u0074oken": ""}"#,
+        r#"map.new {"name": "M", "key": "AKIAIOSFODNN7zzzz", "key": ""}"#,
+        r#"map.new {"name": "M", "style": {"token": "zzzz", "token": ""}}"#,
     ] {
         let before = s.log.len();
         let _ = s.run("script.run", &json!({"script": script}));
         let e = last(&s);
         assert_eq!((s.log.len(), e.command.as_str()), (before + 1, "script.run"), "{script}: its own entry");
-        assert!(!e.params.to_string().contains("S3CRET") && e.partial, "{script}: {e:?}");
+        assert!(!e.params.to_string().contains("zzzz") && e.partial, "{script}: {e:?}");
     }
     // A name past the bound is cut, and says so.
     s.project.name = "n".repeat(crate::cmd::MAX_NAME + 5);
@@ -30068,10 +30067,10 @@ fn session_log_entries_name_their_project_and_say_when_their_params_are_partial(
     s.run("script.run", &json!({"script": long})).unwrap();
     assert!(last(&s).partial);
     // An address without its token: partial too.
-    let _ = s.run("service.layers", &json!({"url": "https://x.org/wms?token=S3CRET&layers=a", "text": "not a capabilities document"}));
+    let _ = s.run("service.layers", &json!({"url": "https://x.org/wms?token=zzzz&layers=a", "text": "not a capabilities document"}));
     let service = last(&s);
     assert_eq!(service.command, "service.layers", "{service:?}");
-    assert!(!service.params.to_string().contains("S3CRET") && service.partial, "{service:?}");
+    assert!(!service.params.to_string().contains("zzzz") && service.partial, "{service:?}");
     // And `project.log` says so: `partial` is in its answer.
     let answer = s.run("project.log", &json!({"command": "service.layers", "limit": 1})).unwrap();
     assert_eq!(answer["entries"][0]["partial"], json!(true), "{answer}");

@@ -544,6 +544,31 @@ fn calls(n: &Node, op: Op) -> bool {
     }
 }
 
+/// A finite upper bound for numeric results at this zoom. Unknown arithmetic stays unbounded;
+/// a cap or a finite set of possible outputs can still bound a feature-dependent expression.
+fn numeric_upper(n: &Node, f: &FeatureCtx) -> Option<f64> {
+    if free(n) {
+        return eval(n, f, &mut Vec::new()).as_f64().filter(|v| v.is_finite());
+    }
+    let bound = |n| numeric_upper(n, f);
+    match n {
+        Node::Call(Op::Min, args) => args.iter().filter_map(bound).reduce(f64::min),
+        Node::Call(Op::Max | Op::Coalesce | Op::IsNumber, args) => numeric_upper_all(args.iter(), f),
+        Node::Call(Op::Case, args) => {
+            numeric_upper_all(args.iter().skip(1).step_by(2).chain(args.last().filter(|_| args.len() % 2 == 1)), f)
+        }
+        Node::Match(_, arms, default) => numeric_upper_all(arms.iter().map(|(_, n)| n).chain(std::iter::once(default.as_ref())), f),
+        Node::Step(_, first, stops) => numeric_upper_all(std::iter::once(first.as_ref()).chain(stops.iter().map(|(_, n)| n)), f),
+        // Interpolation and other arithmetic may create NaN or lose precision even from
+        // bounded inputs. Only an enclosing proven cap may narrow their full margin.
+        _ => None,
+    }
+}
+
+fn numeric_upper_all<'a>(nodes: impl Iterator<Item = &'a Node>, f: &FeatureCtx) -> Option<f64> {
+    nodes.map(|n| numeric_upper(n, f)).try_fold(f64::NEG_INFINITY, |upper, n| Some(upper.max(n?))).filter(|v| v.is_finite())
+}
+
 /// See [`Expr::feature_free`].
 fn free(n: &Node) -> bool {
     match n {
@@ -1258,6 +1283,8 @@ impl StyleView {
 pub enum Source {
     Vector {
         tiles: Vec<String>,
+        /// Runtime provenance of the tile templates; `None` for a user-selected template.
+        from: Option<crate::address::Origin>,
         url: Option<String>,
         min_zoom: u8,
         max_zoom: u8,
@@ -1265,6 +1292,8 @@ pub enum Source {
     },
     Raster {
         tiles: Vec<String>,
+        /// Runtime provenance of the tile templates; `None` for a user-selected template.
+        from: Option<crate::address::Origin>,
         url: Option<String>,
         tile_size: u32,
         min_zoom: u8,
@@ -1274,6 +1303,8 @@ pub enum Source {
     /// Elevation tiles, for `hillshade` and `color-relief` layers.
     RasterDem {
         tiles: Vec<String>,
+        /// Runtime provenance of the tile templates; `None` for a user-selected template.
+        from: Option<crate::address::Origin>,
         url: Option<String>,
         tile_size: u32,
         min_zoom: u8,
@@ -1355,14 +1386,14 @@ impl Source {
         let (tiles, url, attribution) = (strings(get("tiles")), str_of(get("url")), str_of(get("attribution")).unwrap_or_default());
         let (min_zoom, max_zoom) = (zoom_u8(get("minzoom"), 0), zoom_u8(get("maxzoom"), 22));
         match get("type").and_then(Json::as_str) {
-            Some("vector") => Source::Vector { tiles, url, min_zoom, max_zoom, attribution },
+            Some("vector") => Source::Vector { tiles, from: None, url, min_zoom, max_zoom, attribution },
             Some("raster") => {
                 let tile_size = get("tileSize").and_then(Json::as_u64).map_or(512, |t| t.clamp(1, 4096) as u32);
-                Source::Raster { tiles, url, tile_size, min_zoom, max_zoom, attribution }
+                Source::Raster { tiles, from: None, url, tile_size, min_zoom, max_zoom, attribution }
             }
             Some("raster-dem") => {
                 let tile_size = get("tileSize").and_then(Json::as_u64).map_or(512, |t| t.clamp(1, 4096) as u32);
-                Source::RasterDem { tiles, url, tile_size, min_zoom, max_zoom, attribution, encoding: DemEncoding::parse(j) }
+                Source::RasterDem { tiles, from: None, url, tile_size, min_zoom, max_zoom, attribution, encoding: DemEncoding::parse(j) }
             }
             _ => Source::Other,
         }
@@ -1609,6 +1640,22 @@ impl StyleLayer {
     /// Whether the paint property `name` depends on the zoom.
     pub fn paint_uses_zoom(&self, name: &str) -> bool {
         self.paint.get(name).is_some_and(Expr::uses_zoom)
+    }
+
+    /// A conservative width at this zoom, including the property's default when evaluation
+    /// fails. `None` leaves an unbounded expression to the drawing's full margin.
+    pub(crate) fn paint_width_bound(&self, name: &str, zoom: f32, default: f32) -> Option<f32> {
+        let f = FeatureCtx::zoom_only(zoom);
+        let Some(expr) = self.paint.get(name) else { return Some(default) };
+        if expr.feature_free() {
+            return Some(self.width(name, &f, default));
+        }
+        numeric_upper(&expr.0, &f).map(|v| (v as f32).max(default)).filter(|v| v.is_finite())
+    }
+
+    /// Whether a layout property can differ between features at the same zoom.
+    pub(crate) fn layout_uses_features(&self, name: &str) -> bool {
+        self.layout.get(name).is_some_and(|expr| !expr.feature_free())
     }
 
     /// Whether the paint property `name` asks the sprite for an image.
@@ -2390,6 +2437,7 @@ mod tests {
             st.source("r"),
             Some(&Source::Raster {
                 tiles: vec!["https://r/{z}/{x}/{y}.png".into()],
+                from: None,
                 url: None,
                 tile_size: 256,
                 min_zoom: 0,
@@ -2404,6 +2452,7 @@ mod tests {
             v,
             Source::Vector {
                 tiles: vec!["https://x/{z}/{x}/{y}.pbf".into()],
+                from: None,
                 url: Some("https://x/tiles.json".into()),
                 min_zoom: 0,
                 max_zoom: 14,

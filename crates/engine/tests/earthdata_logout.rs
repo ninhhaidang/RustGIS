@@ -7,6 +7,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use base64::Engine as _;
 use rustgis_engine::render::rustgis_tiles::cache::{self, State, Want};
 use rustgis_engine::{Project, Session};
 use serde_json::{Value, json};
@@ -39,7 +40,9 @@ fn earthdata_logout_forgets_what_was_read_with_the_token() {
 
     // A token kept until the logout, and one forgotten on expiry before it (its JWT says it
     // expired in 1970): what either read goes at the logout.
-    for (round, token) in ["edl.token.value", "eyJhbGciOiJub25lIn0.eyJleHAiOjF9.c2ln"].into_iter().enumerate() {
+    // An unsigned placeholder with an explicit expiry claim, never a usable credential.
+    let expired = format!("unsigned.{}.unsigned", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(br#"{"exp":0}"#));
+    for (round, token) in ["placeholder", expired.as_str()].into_iter().enumerate() {
         let status = s.run("earthdata.login", &json!({"token": token})).unwrap_or_else(|e| panic!("{e}"));
         assert_eq!(status["token"], Value::Bool(true));
         // Addresses of the round's own, so nothing read before it answers from the cache.

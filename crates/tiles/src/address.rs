@@ -7,8 +7,11 @@
 //! can't make the app probe local services. Link-local addresses, where cloud metadata services
 //! answer, are never fetched.
 //!
-//! Hosts are judged by name or literal address; names are not resolved, so a public name that
-//! resolves to a local address is not caught here.
+//! These spelling checks also run after template expansion. Native fetchers additionally
+//! filter the resolved IPs before connecting: a public document cannot select a local
+//! connection, and no request can connect to a forbidden address. The browser controls its
+//! own DNS and connections; its adapter checks the normalized URL and refuses redirects whose
+//! destinations it cannot inspect.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
@@ -21,6 +24,61 @@ pub enum Reach {
     Local,
     /// Never fetched: link-local and unspecified addresses, cloud metadata hosts.
     Forbidden,
+}
+
+/// Where a fetched document actually came from. Runtime only: a document cannot grant
+/// itself a local-network allowance by including a field in its JSON.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Origin {
+    pub(crate) url: String,
+    pub(crate) reach: Reach,
+}
+
+impl Origin {
+    /// Origin for a trusted transport's normalized final destination when DNS is opaque,
+    /// such as the browser. This does not perform normalization or grant credentials.
+    pub fn named(url: &str) -> Self {
+        Self { url: url.to_owned(), reach: reach(crate::logins::inner(url)) }
+    }
+
+    /// Provenance for a trusted native transport's actual peer, never its DNS candidates.
+    /// Forbidden peers and non-web destinations are rejected before their bytes are accepted.
+    pub fn connected(url: &str, peer: IpAddr) -> Result<Self, String> {
+        let observed = ip_reach(peer);
+        check_reach(url, Reach::Local)?;
+        if observed == Reach::Forbidden {
+            return Err("that peer address is never fetched".into());
+        }
+        Ok(Self { url: url.into(), reach: observed })
+    }
+
+    /// Retains a selected binding after the transport verifies it remained authorized through
+    /// every redirect. Omit this when a hop dropped the login, even on returning to its server.
+    /// The normalized destination and observed network reach remain unchanged.
+    pub fn retain_binding(mut self, selected: &str) -> Result<Self, String> {
+        self.url = inherit(selected, &self.url)?;
+        Ok(self)
+    }
+
+    /// Checks a descendant without replacing the document's observed reach with host spelling.
+    pub(crate) fn check(&self, url: &str) -> Result<(), String> {
+        // Expansion can introduce a selector that was hidden from document joining.
+        // Only the supplying document's own selection may survive that boundary.
+        let (plain, _) = crate::s3::split_anonymous(url);
+        if let Some(child) = rustgis_data::login_address::parse(plain).map_err(str::to_string)? {
+            let parent = rustgis_data::login_address::parse(&self.url).map_err(str::to_string)?;
+            if parent.is_none_or(|p| p.binding != child.binding || p.origin != child.origin) {
+                return Err("a document cannot select another service login".into());
+            }
+        }
+        if let Some(child) = rustgis_data::s3_address::parse(plain).map_err(str::to_string)? {
+            let parent = rustgis_data::s3_address::parse(&self.url).map_err(str::to_string)?;
+            if parent.is_none_or(|p| p.binding != child.binding || p.endpoint != child.endpoint) {
+                return Err("a document cannot select another S3 account".into());
+            }
+        }
+        check_reach(url, self.reach)
+    }
 }
 
 /// The host of an HTTP(S) address, without user info, port or IPv6 brackets.
@@ -39,6 +97,11 @@ pub fn ip_reach(ip: IpAddr) -> Reach {
         IpAddr::V6(v6) => {
             if let Some(v4) = v6.to_ipv4_mapped() {
                 return v4_reach(v4);
+            }
+            // RFC 6052's well-known /96 translates to this IPv4 destination. Its IPv6
+            // spelling must not widen a local or forbidden peer's network reach.
+            if let [0x64, 0xff9b, 0, 0, 0, 0, hi, lo] = v6.segments() {
+                return v4_reach(Ipv4Addr::from((u32::from(hi) << 16) | u32::from(lo)));
             }
             let seg0 = v6.segments().first().copied().unwrap_or(0);
             if v6.is_unspecified() || (seg0 & 0xffc0) == 0xfe80 {
@@ -119,26 +182,53 @@ pub fn is_https(url: &str) -> bool {
 /// Whether `url` may be fetched. `from` is where it was found (a document, or the address that
 /// redirected to it), or `None` when the user gave it.
 pub fn check(url: &str, from: Option<&str>) -> Result<(), String> {
+    check_reach(url, from.map_or(Reach::Local, |u| reach(crate::logins::inner(u))))
+}
+
+/// Keeps a selected account only on its own effective server. Explicit anonymous reads stay
+/// anonymous for descendants; neither wrapper can grant a wider network reach.
+pub(crate) fn inherit(from: &str, to: &str) -> Result<String, String> {
+    let (plain, anonymous) = crate::s3::split_anonymous(from);
+    if anonymous {
+        return Ok(crate::s3::anonymous(to));
+    }
+    if let Some(bound) = rustgis_data::s3_address::parse(plain).map_err(str::to_string)? {
+        let old = crate::s3::bound_destination(plain)?.ok_or("not a saved S3 address")?;
+        let candidate = rustgis_data::s3_address::bind(bound.binding, bound.endpoint, to).map_err(str::to_string)?;
+        let new = crate::s3::bound_destination(&candidate)?.ok_or("not a saved S3 address")?;
+        if crate::logins::origin(&old).is_some_and(|origin| Some(origin) == crate::logins::origin(&new)) {
+            return Ok(candidate);
+        }
+        return Ok(to.to_string());
+    }
+    Ok(crate::logins::inherit(from, to))
+}
+
+/// Checks a transport's normalized destination under its inherited runtime ceiling, unwrapping
+/// account markers without widening it. Call before sending; Forbidden is always refused.
+pub fn check_reach(url: &str, ceiling: Reach) -> Result<(), String> {
+    if ceiling == Reach::Forbidden {
+        return Err("a forbidden document cannot supply request destinations".into());
+    }
     crate::logins::check(url).map_err(str::to_string)?;
     if let Some(bound) = rustgis_data::login_address::parse(url).map_err(str::to_string)? {
-        return check(bound.url, from.map(crate::logins::inner));
+        return check_reach(bound.url, ceiling);
     }
-    let from = from.map(crate::logins::inner);
     // An address read through a saved S3 connection is judged by where it is fetched, which its
     // own endpoint decides (no login is needed to keep it).
     if let Some(destination) = crate::s3::bound_destination(url)? {
-        return check(&destination, from);
+        return check_reach(&destination, ceiling);
     }
     // An `s3://` address is judged by the web address it is fetched from.
     // An address read anonymously is judged as the address it marks.
     if let (inner, true) = crate::s3::split_anonymous(url) {
-        if rustgis_data::s3_address::is_wrapper(inner) {
+        if rustgis_data::s3_address::is_wrapper(inner) || crate::s3::split_anonymous(inner).1 {
             return Err("not a saved S3 address".into());
         }
-        return if crate::s3::is_s3(inner) { check(&crate::s3::https_url(url)?, from) } else { check(inner, from) };
+        return if crate::s3::is_s3(inner) { check_reach(&crate::s3::https_url(url)?, ceiling) } else { check_reach(inner, ceiling) };
     }
     if crate::s3::is_s3(url) {
-        return check(&crate::s3::https_url(url)?, from);
+        return check_reach(&crate::s3::https_url(url)?, ceiling);
     }
     let lower = url.to_ascii_lowercase();
     if !(lower.starts_with("https://") || lower.starts_with("http://")) {
@@ -147,11 +237,9 @@ pub fn check(url: &str, from: Option<&str>) -> Result<(), String> {
     if url.chars().any(|c| c.is_whitespace() || c.is_control()) {
         return Err(format!("{url}: the address has spaces in it"));
     }
-    match (reach(url), from) {
-        (Reach::Forbidden, _) => Err(format!("{url}: that address is never fetched")),
-        (Reach::Local, Some(origin)) if reach(origin) == Reach::Public => {
-            Err(format!("{url}: a document on the web can't point into the local network"))
-        }
+    match reach(url) {
+        Reach::Forbidden => Err(format!("{url}: that address is never fetched")),
+        Reach::Local if ceiling == Reach::Public => Err(format!("{url}: a document on the web can't point into the local network")),
         _ => Ok(()),
     }
 }
@@ -159,6 +247,40 @@ pub fn check(url: &str, from: Option<&str>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn connected_destinations_separate_names_from_observed_peers() {
+        let origin = Origin::connected("https://selected.internal/style.json", "203.0.113.1".parse().unwrap()).unwrap();
+        assert_eq!(origin.reach, Reach::Public);
+        assert!(origin.check("http://127.0.0.1/tile").is_err());
+        assert!(Origin::connected("http://metadata.google.internal/", "203.0.113.1".parse().unwrap()).is_err());
+        assert!(Origin::connected("https://selected.internal/", "169.254.169.254".parse().unwrap()).is_err());
+    }
+
+    /// Translation addresses retain the IPv4 destination's policy, including on native peers.
+    #[test]
+    fn nat64_destinations_keep_the_embedded_ipv4_reach() {
+        for (v4, expected) in [
+            ("169.254.169.254", Reach::Forbidden),
+            ("0.0.0.0", Reach::Forbidden),
+            ("127.0.0.1", Reach::Local),
+            ("10.0.0.1", Reach::Local),
+            ("203.0.113.1", Reach::Public),
+        ] {
+            let peer: IpAddr = format!("64:ff9b::{v4}").parse().unwrap();
+            let url = format!("http://[{peer}]/tile");
+            assert_eq!(ip_reach(peer), expected, "translated {v4}");
+            assert_eq!(reach(&url), expected);
+            assert_eq!(check(&url, None).is_ok(), expected != Reach::Forbidden);
+            assert_eq!(check(&url, Some("https://public.example/style.json")).is_ok(), expected == Reach::Public);
+            let observed = Origin::connected("https://dns.example/tile", peer);
+            if expected == Reach::Forbidden {
+                assert!(observed.is_err(), "DNS cannot hide a forbidden translated peer");
+            } else {
+                assert_eq!(observed.unwrap().reach, expected);
+            }
+        }
+    }
 
     #[test]
     fn judges_addresses() {

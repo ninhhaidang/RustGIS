@@ -393,7 +393,7 @@ pub fn meshes(
     // Whether the style's sprite is still on its way, asked before the store is locked (a
     // lookup in the sprites the tile cache keeps).
     let (sprite_pending, sprites_read) = if rustgis_tiles::shapes::draws_patterns(style, level) {
-        match rustgis_tiles::sprite::load(&style.sprites, false) {
+        match style.load_sprites(false) {
             rustgis_tiles::sprite::Load::Pending => (true, Vec::new()),
             rustgis_tiles::sprite::Load::Ready(s) => (false, s.sheet_ids()),
             rustgis_tiles::sprite::Load::Failed => (false, Vec::new()),
@@ -683,6 +683,7 @@ mod tests {
             let layer = serde_json::json!({"id": "p", "type": "fill", "source": "s", "source-layer": "l", "paint": paint});
             let sprites = vec![("default".to_owned(), address.clone())];
             Arc::new(Resolved {
+                from: None,
                 style: Style {
                     name: String::new(),
                     sources: vec![("s".into(), Source::parse(&serde_json::json!({"type": "vector", "tiles": ["x/{z}/{x}/{y}"]})))],
@@ -703,6 +704,22 @@ mod tests {
         assert!(meshes(&resolved(serde_json::json!({"fill-pattern": "dots"})), "s", &[], 3, None).1);
         // Without pattern fills, a mesh doesn't wait for sprites.
         assert!(!meshes(&resolved(serde_json::json!({"fill-color": "#f00"})), "s", &[], 3, None).1);
+        // A public style's private sprite must be refused synchronously, not queued by
+        // this preliminary GPU lookup. `serve` answers without opening any sockets.
+        let mut private = resolved(serde_json::json!({"fill-pattern":"dots"}));
+        let style = Arc::get_mut(&mut private).unwrap();
+        style.from = Some(rustgis_tiles::address::Origin::named("https://mesh-style.example/style.json"));
+        style.sprites = vec![("default".into(), "http://127.0.0.1/mesh-private-only".into())];
+        let id = TileId { z: 3, x: 0, y: 0 };
+        let tiles = [DataTile { payload: Arc::new(Payload::Vector(tile())), at: id.extent(), z: id.z, clip: id.extent() }];
+        let (made, waiting) = meshes(&private, "s", &tiles, 3, None);
+        assert!(!waiting, "a refused sprite must never become a pending fetch");
+        assert!(made.first().and_then(Option::as_ref).is_some_and(|m| !m.waiting));
+        assert_eq!(
+            crate::tiles::tests::PRIVATE_SPRITE_REQUESTS.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "neither sprite JSON nor PNG may reach the fetcher"
+        );
     }
 
     #[test]
@@ -713,6 +730,7 @@ mod tests {
         use rustgis_tiles::style::{Source, Style, StyleLayer};
         let layer = serde_json::json!({"id": "p", "type": "fill", "source": "s", "source-layer": "parks", "paint": {"fill-color": "#f00"}});
         let style = Arc::new(Resolved {
+            from: None,
             style: Style {
                 name: String::new(),
                 sources: vec![("s".into(), Source::parse(&serde_json::json!({"type": "vector", "tiles": ["x/{z}/{x}/{y}"]})))],

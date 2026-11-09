@@ -35,6 +35,25 @@ pub(crate) async fn prepare_and_send<T, R, F: Future<Output = Result<T, String>>
     Ok(send(prepared))
 }
 
+/// Formats a fetch failure without exposing the authenticated request's credentials.
+pub(crate) fn fetch_error(url: &str, error: String, authenticated: bool) -> String {
+    use rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::logins;
+    if authenticated && cache::http_status(&error).is_none() { logins::scrub_error(&format!("{url}: {error}")) } else { error }
+}
+
+/// Checks the browser's normalized destination under the caller's inherited ceiling.
+/// Normalization may reveal a local host; its original spelling cannot narrow an explicit
+/// local choice or widen a public document's permission. The normalizer performs no I/O.
+pub(crate) fn destination(
+    url: &str,
+    ceiling: rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::address::Reach,
+    normalize: impl FnOnce(&str) -> Result<String, String>,
+) -> Result<String, String> {
+    let normalized = normalize(url)?;
+    rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::address::check_reach(&normalized, ceiling)?;
+    Ok(normalized)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -48,6 +67,39 @@ mod tests {
         },
         task::{Context, Poll, Waker},
     };
+
+    /// The browser parser's output is checked at the same preparation boundary used by GET,
+    /// HEAD and POST: an explicit local choice survives normalization, but public input does not.
+    #[test]
+    fn normalized_destinations_keep_the_request_ceiling() {
+        use rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::address::Reach;
+        for ceiling in [Reach::Local, Reach::Public] {
+            for (spelling, normalized, permitted) in [
+                ("http://local%68ost:3000/style.json", "http://localhost:3000/style.json", ceiling == Reach::Local),
+                ("http://%31%36%39.254.169.254/tile", "http://169.254.169.254/tile", false),
+                ("https://public.example/tile", "https://public.example/tile", true),
+            ] {
+                let result = destination(spelling, ceiling, |_| Ok(normalized.into()));
+                assert_eq!(result.is_ok(), permitted, "{spelling} under {ceiling:?}");
+                if permitted {
+                    assert_eq!(result.unwrap(), normalized);
+                }
+            }
+        }
+    }
+
+    /// Status-only authenticated failures retain their machine-readable routine gap/backoff signal.
+    #[test]
+    fn authenticated_fetch_errors_preserve_http_statuses() {
+        for authenticated in [false, true] {
+            for error in ["HTTP 404", "HTTP 410", "HTTP 429 (retry after 30 s)"] {
+                assert_eq!(fetch_error("https://status.example/tile", error.into(), authenticated), error);
+            }
+        }
+        let error = fetch_error("https://status.example/tile?token=synthetic", "couldn't reach it".into(), true);
+        assert!(!error.contains("synthetic"));
+        assert!(cache::http_status(&error).is_none());
+    }
 
     fn poll<F: Future + ?Sized>(f: Pin<&mut F>) -> Poll<F::Output> {
         f.poll(&mut Context::from_waker(Waker::noop()))

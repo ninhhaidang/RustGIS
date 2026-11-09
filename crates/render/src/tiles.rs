@@ -868,10 +868,15 @@ pub(crate) mod tests {
     static HOLD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     static HELD: std::sync::Mutex<Vec<rustgis_tiles::cache::Done>> = std::sync::Mutex::new(Vec::new());
 
+    pub(crate) static PRIVATE_SPRITE_REQUESTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
     /// Serves tiles and documents for `https://tiles.test/…` without a network. Under `split/`,
     /// zoom 11 is red, zoom 13 blue, and zoom 12 never arrives.
     pub(crate) fn serve() {
         rustgis_tiles::cache::set_fetcher(|url, done| {
+            if url.starts_with("http://127.0.0.1/mesh-private-only") {
+                PRIVATE_SPRITE_REQUESTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
             let color = |r, g, b| {
                 let mut pm = tiny_skia::Pixmap::new(256, 256).unwrap();
                 pm.fill(tiny_skia::Color::from_rgba8(r, g, b, 255));

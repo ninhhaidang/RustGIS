@@ -50,8 +50,8 @@ pub(crate) fn forget() {
 }
 
 /// The map tiles made without a picture that failed: when each was made, and it.
-fn made_for_now() -> &'static Mutex<HashMap<String, (web_time::Instant, Arc<Payload>)>> {
-    static KEPT: OnceLock<Mutex<HashMap<String, (web_time::Instant, Arc<Payload>)>>> = OnceLock::new();
+fn made_for_now() -> &'static Mutex<HashMap<String, (web_time::Instant, Arc<Payload>, String)>> {
+    static KEPT: OnceLock<Mutex<HashMap<String, (web_time::Instant, Arc<Payload>, String)>>> = OnceLock::new();
     KEPT.get_or_init(Mutex::default)
 }
 
@@ -72,7 +72,7 @@ pub(crate) enum Made {
     Done(Payload),
     /// Made without a picture that failed (the service may answer when asked again): shown, not
     /// kept in the cache, and made again once the picture is asked for again ([`FOR_NOW`]).
-    ForNow(Arc<Payload>),
+    ForNow(Arc<Payload>, String),
     Failed(String),
 }
 
@@ -81,11 +81,14 @@ pub(crate) enum Made {
 /// [`missing`]) is left clear, and one that failed otherwise too, the tile made again once it is
 /// asked for again; with none there at all, the tile is empty when they were all missing, else
 /// it fails.
-pub(crate) fn make(url: &str) -> Made {
-    if let Some((at, tile)) = made_for_now().lock().unwrap_or_else(|e| e.into_inner()).get(url)
+pub(crate) fn make(url: &str, from: Option<&crate::address::Origin>) -> Made {
+    // Partial composites are shared only with callers holding the same reach. The plan is
+    // geometry alone and can be shared; its pictures always pass the inherited boundary.
+    let key = format!("{:?}|{url}", from.map_or(crate::address::Reach::Local, |o| o.reach));
+    if let Some((at, tile, note)) = made_for_now().lock().unwrap_or_else(|e| e.into_inner()).get(&key)
         && at.elapsed() < FOR_NOW
     {
-        return Made::ForNow(tile.clone());
+        return Made::ForNow(tile.clone(), note.clone());
     }
     let known = plans().lock().unwrap_or_else(|e| e.into_inner()).get(url).cloned();
     let plan = match known {
@@ -104,9 +107,11 @@ pub(crate) fn make(url: &str) -> Made {
     }
     let mut pictures = Vec::with_capacity(plan.parts.len());
     let (mut waiting, mut error) = (false, None);
+    let mut failed = 0;
     for p in &plan.parts {
         // A matrix tile past the service's coverage is routine; a WMS picture (any area asked) isn't.
-        let state = if p.tile.is_some() { cache::get_tile(&p.url, Want::Image) } else { cache::get(&p.url, Want::Image) };
+        let state =
+            if p.tile.is_some() { cache::get_tile_from(&p.url, Want::Image, from) } else { cache::get_from(&p.url, Want::Image, from) };
         match state {
             State::Ready(payload) => pictures.push(Some(payload)),
             State::Pending => waiting = true,
@@ -117,7 +122,8 @@ pub(crate) fn make(url: &str) -> Made {
                 // for any raster tile, the map's layer list doesn't name it: a layer drawn in its
                 // own system does, see `native_tiles`.)
                 if p.tile.is_none() || !missing(&e) {
-                    error = Some(e);
+                    failed += 1;
+                    error.get_or_insert(e);
                 }
                 pictures.push(None);
             }
@@ -150,17 +156,18 @@ pub(crate) fn make(url: &str) -> Made {
     let tile = compose(&plan, &pictures, SIZE).map_or(Payload::Empty, Payload::Image);
     let mut kept = made_for_now().lock().unwrap_or_else(|e| e.into_inner());
     if !for_now {
-        kept.remove(url);
+        kept.remove(&key);
         return Made::Done(tile);
     }
     // Those past their while first, then all if it is still full.
-    kept.retain(|_, (at, _)| at.elapsed() < FOR_NOW);
+    kept.retain(|_, (at, _, _)| at.elapsed() < FOR_NOW);
     if kept.len() >= MAX_FOR_NOW {
         kept.clear();
     }
     let tile = Arc::new(tile);
-    kept.insert(url.to_string(), (web_time::Instant::now(), tile.clone()));
-    Made::ForNow(tile)
+    let note = format!("{failed} warped tile components left out: {}", error.unwrap_or_default());
+    kept.insert(key, (web_time::Instant::now(), tile.clone(), note.clone()));
+    Made::ForNow(tile, note)
 }
 
 /// Whether a WMTS tile's failure means the service doesn't have it (past its coverage): a 4xx

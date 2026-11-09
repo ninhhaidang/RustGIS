@@ -266,7 +266,12 @@ enum SheetLoad {
 /// and a sprite has it, else at 1×. Ready once none is on its way, with those that could be
 /// read; one that can't only loses its images.
 pub fn load(sprites: &[(String, String)], hi_dpi: bool) -> Load {
-    load_with(sprites, |base| load_sheet(base, hi_dpi))
+    load_from(sprites, hi_dpi, None)
+}
+
+/// Loads style-chosen sheets with the same reach as their supplying document.
+pub(crate) fn load_from(sprites: &[(String, String)], hi_dpi: bool, from: Option<&crate::address::Origin>) -> Load {
+    load_with(sprites, |base| load_sheet(base, hi_dpi, from))
 }
 
 fn load_with(sprites: &[(String, String)], sheet: impl Fn(&str) -> SheetLoad) -> Load {
@@ -301,27 +306,29 @@ fn keep(all: &mut HashMap<String, Arc<Sheet>>, key: String, sheet: Arc<Sheet>, b
     all.insert(key, sheet);
 }
 
-fn load_sheet(base: &str, hi_dpi: bool) -> SheetLoad {
+/// Tries high density then normal density without changing the document's authority.
+fn load_sheet(base: &str, hi_dpi: bool, from: Option<&crate::address::Origin>) -> SheetLoad {
     // A login revoked or not covering this address: before any cached sheet is served.
     if crate::logins::check(base).is_err() {
         return SheetLoad::Failed;
     }
     if hi_dpi {
-        match load_one(base, "@2x") {
+        match load_one(base, "@2x", from) {
             SheetLoad::Failed => {}
             other => return other,
         }
     }
-    load_one(base, "")
+    load_one(base, "", from)
 }
 
-fn load_one(base: &str, density: &str) -> SheetLoad {
-    let key = format!("{base}|{density}");
+/// Caches decoded sheets separately by reach; both index and picture use that ceiling.
+fn load_one(base: &str, density: &str, from: Option<&crate::address::Origin>) -> SheetLoad {
+    let key = format!("{:?}|{base}|{density}", from.map(|o| o.reach));
     if let Some(s) = sprites().lock().unwrap_or_else(|p| p.into_inner()).get(&key) {
         return SheetLoad::Ready(s.clone());
     }
-    let index = cache::get(&with_suffix(base, &format!("{density}.json")), Want::Json);
-    let sheet = cache::get(&with_suffix(base, &format!("{density}.png")), Want::Image);
+    let index = cache::get_from(&with_suffix(base, &format!("{density}.json")), Want::Json, from);
+    let sheet = cache::get_from(&with_suffix(base, &format!("{density}.png")), Want::Image, from);
     match (index, sheet) {
         (State::Ready(i), State::Ready(p)) => match (&*i, &*p) {
             (Payload::Json(index), Payload::Image(sheet)) => {

@@ -344,11 +344,29 @@ impl Capture {
     /// request's own facts (address, method, status, duration) and its failure's message: the
     /// transport's, or the browser's. `details` may hold the few response headers a refusal
     /// keeps. A response body is never passed. Everything is redacted and bounded here.
-    pub fn network_failure(&self, source: &str, message: &str, details: &str, mut network: Network) {
+    pub fn network_failure(&self, source: &str, message: &str, details: &str, network: Network) {
+        self.keep_network_failure(source, message, details, network, false);
+    }
+
+    /// Keeps repeated policy refusals once while their sanitized facts remain in this bounded
+    /// history. Clearing or evicting the record permits it to be reported again.
+    pub fn network_failure_once(&self, source: &str, message: &str, details: &str, network: Network) {
+        self.keep_network_failure(source, message, details, network, true);
+    }
+
+    /// Compares sanitized facts under the retention lock, so Clear cannot lose a refusal.
+    fn keep_network_failure(&self, source: &str, message: &str, details: &str, mut network: Network, once: bool) {
         let Some(state) = self.0.upgrade() else { return };
         network.url = clean_address(&network.url);
+        if once {
+            // Rejected tile paths on one server are one policy refusal, not distinct attempts.
+            network.url = url::Url::parse(&network.url)
+                .ok()
+                .filter(|u| u.origin().is_tuple())
+                .map_or(network.url, |u| u.origin().ascii_serialization());
+        }
         network.method = known_method(&network.method);
-        History(state).retain(Record {
+        let record = Record {
             id: 0,
             timestamp_ms: timestamp_ms(),
             severity: Severity::Error,
@@ -356,7 +374,16 @@ impl Capture {
             message: bounded(message, MAX_MESSAGE_BYTES),
             details: bounded(details, MAX_DETAILS_BYTES),
             network: Some(network),
-        });
+        };
+        let mut state = lock(&state);
+        if once
+            && state.records.iter().any(|r| {
+                r.source == record.source && r.message == record.message && r.details == record.details && r.network == record.network
+            })
+        {
+            return;
+        }
+        store(&mut state, record);
     }
 }
 

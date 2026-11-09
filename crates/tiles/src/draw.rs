@@ -52,6 +52,20 @@ pub struct Drawn {
     pub error: Option<String>,
 }
 
+/// Retains each distinct refusal alongside any earlier source or sprite warning.
+pub(crate) fn add_error(to: &mut Option<String>, error: String) {
+    for message in error.split("; ") {
+        match to {
+            Some(previous) if !previous.split("; ").any(|kept| kept == message) => {
+                previous.push_str("; ");
+                previous.push_str(message);
+            }
+            None => *to = Some(message.to_string()),
+            _ => {}
+        }
+    }
+}
+
 /// One tile's worth of drawing: the tile data, where that tile is, and the square it stands in for.
 #[derive(Clone)]
 pub(crate) struct Item {
@@ -61,17 +75,36 @@ pub(crate) struct Item {
     pub(crate) clip: Extent,
 }
 
+/// Selected tiles and whether their vector data leaves part of the view without a mesh.
+/// A visible style background needs ordinary drawing when mesh squares cannot cover it.
+pub(crate) struct TileSelection {
+    pub(crate) items: Vec<Item>,
+    pub(crate) mesh_gaps: bool,
+    /// A failed or partial read may supply more pixels after the tile cache changes.
+    pub(crate) retry: bool,
+}
+
 /// What of a resolved style was left out, as a drawing's error (the style still draws): what
 /// resolving it left out, and any sprites that couldn't be read, for the images shown at `frame`.
 /// A drawing takes its images at the frame's density; a mesh (`mesh`) its pattern fills at 1×.
 pub(crate) fn left_out(r: &Resolved, frame: &Frame, mesh: bool) -> Option<String> {
+    left_out_at(r, frame, frame, mesh)
+}
+
+/// Reports icons at their live frame and patterns and relief at their prepared shape frame.
+pub(crate) fn left_out_at(r: &Resolved, frame: &Frame, shapes: &Frame, mesh: bool) -> Option<String> {
     let zoom = template::style_zoom(frame.m_per_px * f64::from(frame.ppp));
-    let shown = |draws: fn(&StyleLayer) -> bool| r.style.layers.iter().any(|l| l.visible_at(zoom) && draws(l));
+    let shape_zoom = template::style_zoom(shapes.m_per_px * f64::from(shapes.ppp));
+    let shown = |zoom, draws: fn(&StyleLayer) -> bool| r.style.layers.iter().any(|l| l.visible_at(zoom) && draws(l));
     let hi_dpi = frame.ppp >= 1.5;
-    let unread = sprite_notes(shown(StyleLayer::draws_icons), shown(StyleLayer::draws_patterns), hi_dpi, hi_dpi && !mesh, |hi, what| {
-        sprite::unread_note(&r.sprites, r.style.sprites_listed, &sprite::load(&r.sprites, hi), what)
-    });
-    let relief = relief_note(&r.style.layers, zoom);
+    let unread = sprite_notes(
+        shown(zoom, StyleLayer::draws_icons),
+        shown(shape_zoom, StyleLayer::draws_patterns),
+        hi_dpi,
+        shapes.ppp >= 1.5 && !mesh,
+        |hi, what| sprite::unread_note(&r.sprites, r.style.sprites_listed, &r.load_sprites(hi), what),
+    );
+    let relief = relief_note(&r.style.layers, shape_zoom);
     let all: Vec<&str> = r.left_out.iter().map(String::as_str).chain(unread.iter().map(String::as_str)).chain(relief.as_deref()).collect();
     (!all.is_empty()).then(|| all.join("; "))
 }
@@ -131,15 +164,15 @@ pub fn draw(pm: &mut Pixmap, spec: &Spec, opacity: f32, frame: &Frame, labels: b
         }
     };
     out.attribution = r.attribution.clone();
-    out.error = left_out(&r, frame, false);
     out.pending |= r.waiting;
     if !(frame.m_per_px.is_finite() && frame.m_per_px > 0.0) || opacity <= 0.0 {
+        out.error = left_out(&r, frame, false);
         return out;
     }
     let (w, h) = (pm.width(), pm.height());
     // A style drawing vector shapes draws them from tile pictures drawn once (see `picture`):
     // a map moving across them only puts them in place.
-    if let Some(pictures) = crate::picture::cover(&r, frame, &frame.extent(w, h), None, &mut out.pending) {
+    if let Some(pictures) = crate::picture::cover(&r, frame, &frame.extent(w, h), None, &mut out.pending, &mut out.error) {
         for it in &pictures {
             draw_raster(pm, it, frame, opacity);
         }
@@ -148,6 +181,7 @@ pub fn draw(pm: &mut Pixmap, spec: &Spec, opacity: f32, frame: &Frame, labels: b
         }
         return out;
     }
+    out.error = left_out(&r, frame, false);
     let mut layer_pm = if opacity < 0.999 { Pixmap::new(w, h) } else { None };
     let target: &mut Pixmap = match layer_pm.as_mut() {
         Some(p) => p,
@@ -172,7 +206,9 @@ pub(crate) enum Pass {
 }
 
 /// Draws the layers of a resolved style for `pass` into `target` (a `w × h` pixmap at `frame`)
-/// from the tiles over `view`, collecting labels into `out`.
+/// from the tiles over `view`, collecting labels into `out`. Shape-only selection without a
+/// target includes neighbouring vector tiles whose paint can reach the viewport.
+/// Returns whether a failed or partial tile read could add pixels when the cache changes.
 pub(crate) fn draw_layers(
     mut target: Option<&mut Pixmap>,
     (w, h): (u32, u32),
@@ -181,7 +217,8 @@ pub(crate) fn draw_layers(
     frame: &Frame,
     pass: Pass,
     out: &mut Drawn,
-) {
+) -> bool {
+    let mut retry = false;
     let zoom = template::style_zoom(frame.m_per_px * f64::from(frame.ppp));
     let mut items: HashMap<String, Vec<Item>> = HashMap::new();
     let mut boxes: Boxes = HashMap::new();
@@ -191,7 +228,7 @@ pub(crate) fn draw_layers(
     let mut sprite_state: Option<Option<Arc<Sprite>>> = None;
     let mut sprite = |pending: &mut bool| -> Option<Arc<Sprite>> {
         sprite_state
-            .get_or_insert_with(|| match sprite::load(&r.sprites, frame.ppp >= 1.5) {
+            .get_or_insert_with(|| match r.load_sprites(frame.ppp >= 1.5) {
                 Load::Ready(s) => Some(s),
                 Load::Pending => {
                     *pending = true;
@@ -207,7 +244,7 @@ pub(crate) fn draw_layers(
             Pass::Shapes => layer.kind != LayerKind::Symbol,
             Pass::Labels => layer.kind == LayerKind::Symbol,
         };
-        if !wanted || !layer.visible_at(zoom) {
+        if !wanted || !layer.visible_at(zoom) || !drawable(layer) {
             continue;
         }
         if layer.kind == LayerKind::Background {
@@ -227,11 +264,28 @@ pub(crate) fn draw_layers(
         }
         if !items.contains_key(src_id) {
             let Some(src) = r.style.sources.iter().find(|s| s.0 == src_id).map(|s| &s.1) else { continue };
-            // Hillshade reads the heights a pixel past the view's edges: those tiles too.
-            let pad = 2.0 * frame.m_per_px;
+            // Hillshade needs neighbouring heights. Picture diagnostics also need vector
+            // neighbours whose wide shapes can reach the current viewport, not all of a
+            // prepared picture's padding. Raster layers keep the exact viewport.
+            let pixels = if target.is_none() && pass == Pass::Shapes && matches!(src, Source::Vector { .. }) {
+                r.style
+                    .layers
+                    .iter()
+                    .filter(|l| l.source.as_deref() == Some(src_id) && l.visible_at(zoom) && drawable(l))
+                    .map(|l| match l.kind {
+                        LayerKind::Line | LayerKind::Circle => overhang(l, zoom) * frame.ppp,
+                        LayerKind::Fill | LayerKind::FillExtrusion => 2.0 * frame.ppp.max(1.0),
+                        _ => 0.0,
+                    })
+                    .fold(0.0f32, f32::max)
+            } else {
+                0.0
+            };
+            let pad = if matches!(src, Source::RasterDem { .. }) { 2.0 * frame.m_per_px } else { f64::from(pixels) * frame.m_per_px };
             let reach = Extent::new(view.min_x - pad, view.min_y - pad, view.max_x + pad, view.max_y + pad);
-            let list = tiles_for(src, if matches!(src, Source::RasterDem { .. }) { &reach } else { view }, frame, zoom, &mut out.pending);
-            items.insert(src_id.to_string(), list);
+            let selected = tiles_in(src, &reach, None, frame, zoom, &mut out.pending, &mut out.error);
+            retry |= selected.retry;
+            items.insert(src_id.to_string(), selected.items);
         }
         let Some(list) = items.get(src_id) else { continue };
         match layer.kind {
@@ -252,9 +306,6 @@ pub(crate) fn draw_layers(
             }
             LayerKind::Fill | LayerKind::FillExtrusion | LayerKind::Line | LayerKind::Circle => {
                 let Some(t) = target.as_deref_mut() else { continue };
-                if !drawable(layer) {
-                    continue;
-                }
                 // A pattern fill without its sprite isn't drawn: its fallback colour is black.
                 let sheet = if pattern(layer).is_some() {
                     match sprite(&mut out.pending) {
@@ -289,6 +340,7 @@ pub(crate) fn draw_layers(
     }
     // The cap keeps the labels placed first, whichever layers they came from.
     crate::symbols::keep_first(&mut out.labels, crate::symbols::MAX_LABELS);
+    retry
 }
 
 /// One raster tile placed on the map, for a renderer that draws each tile itself (the GPU map
@@ -332,6 +384,7 @@ pub fn place_raster(spec: &Spec, opacity: f32, frame: &Frame, view: &Extent, rea
     place_as(spec, opacity, frame, view, reach, None, false)
 }
 
+/// Places raster or prepared vector pictures and retains both shape and label refusals.
 fn place_as(
     spec: &Spec,
     opacity: f32,
@@ -356,23 +409,29 @@ fn place_as(
         }
     };
     out.attribution = r.attribution.clone();
-    out.error = left_out(&r, frame, false);
     out.pending |= r.waiting;
     if !(frame.m_per_px.is_finite() && frame.m_per_px > 0.0) || opacity <= 0.0 {
+        out.error = left_out(&r, frame, false);
         return Some(out);
     }
     // Without pictures, a style drawing shapes is left to the check below (no raster layers only).
-    if let Some(pictures) = pictures.then(|| crate::picture::cover(&r, frame, view, Some(reach), &mut out.pending)).flatten() {
+    if let Some(pictures) =
+        pictures.then(|| crate::picture::cover(&r, frame, view, Some(reach), &mut out.pending, &mut out.error)).flatten()
+    {
         let opacity = opacity.clamp(0.0, 1.0);
         out.tiles = pictures.into_iter().map(|it| Placement { picture: it.payload, at: it.at, clip: it.clip, opacity }).collect();
         if let Some(size) = labels {
             let mut d = Drawn::default();
             draw_layers(None, size, &frame.extent(size.0, size.1), &r, frame, Pass::Labels, &mut d);
+            if let Some(refused) = d.error {
+                add_error(&mut out.error, refused);
+            }
             out.labels = d.labels;
             out.pending |= d.pending;
         }
         return Some(out);
     }
+    out.error = left_out(&r, frame, false);
     let zoom = template::style_zoom(frame.m_per_px * f64::from(frame.ppp));
     let shown: Vec<&StyleLayer> = r.style.layers.iter().filter(|l| l.visible_at(zoom) && l.kind != LayerKind::Other).collect();
     // Raster layers only; several are composited together before the layer's opacity applies.
@@ -384,7 +443,8 @@ fn place_as(
         let Some(src_id) = layer.source.as_deref() else { continue };
         if !items.contains_key(src_id) {
             let Some(src) = r.style.sources.iter().find(|s| s.0 == src_id).map(|s| &s.1) else { continue };
-            items.insert(src_id, tiles_in(src, view, Some(reach), frame, zoom, &mut out.pending));
+            let list = tiles_in(src, view, Some(reach), frame, zoom, &mut out.pending, &mut out.error);
+            items.insert(src_id, list.items);
         }
         let o = (layer.raster_opacity(zoom) * opacity).clamp(0.0, 1.0);
         for it in items.get(src_id).into_iter().flatten() {
@@ -450,7 +510,7 @@ pub fn pick(spec: &Spec, x: f64, y: f64, m_per_px: f64, tol_px: f32, limit: usiz
             if !matches!(src, Source::Vector { .. }) {
                 continue;
             }
-            items.insert(src_id.to_string(), tiles_for(src, &view, &frame, zoom, &mut pending));
+            items.insert(src_id.to_string(), tiles_for(src, &view, &frame, zoom, &mut pending, &mut None));
         }
         let Some(list) = items.get(src_id) else { continue };
         // Every tile within reach (a feature near a tile's edge may be in its neighbour), the real
@@ -544,65 +604,122 @@ fn hits(f: &crate::mvt::Feature, kind: LayerKind, p: [f32; 2], reach: f32) -> bo
 }
 
 /// The tiles of a source in view, with stand-ins for those not here yet.
-fn tiles_for(src: &Source, view: &Extent, frame: &Frame, zoom: f32, pending: &mut bool) -> Vec<Item> {
-    tiles_in(src, view, None, frame, zoom, pending)
+fn tiles_for(src: &Source, view: &Extent, frame: &Frame, zoom: f32, pending: &mut bool, error: &mut Option<String>) -> Vec<Item> {
+    tiles_in(src, view, None, frame, zoom, pending, error).items
 }
 
 /// The tiles of a source in view and out to `reach` (those in the cache only), with stand-ins
-/// for those not here yet.
-pub(crate) fn tiles_in(src: &Source, view: &Extent, reach: Option<&Extent>, frame: &Frame, zoom: f32, pending: &mut bool) -> Vec<Item> {
-    let (tiles, min_z, max_z, want, z) = match src {
-        Source::Raster { tiles, tile_size, min_zoom, max_zoom, .. } | Source::RasterDem { tiles, tile_size, min_zoom, max_zoom, .. } => {
+/// for those not here yet. Expanded destinations retain the supplying document's reach;
+/// refused tiles are counted in `error` and network history without requesting or reusing bytes. Valid
+/// tiles still draw, even when another shard of the same source is refused.
+pub(crate) fn tiles_in(
+    src: &Source,
+    view: &Extent,
+    reach: Option<&Extent>,
+    frame: &Frame,
+    zoom: f32,
+    pending: &mut bool,
+    error: &mut Option<String>,
+) -> TileSelection {
+    let (tiles, from, min_z, max_z, want, z) = match src {
+        Source::Raster { tiles, from, tile_size, min_zoom, max_zoom, .. }
+        | Source::RasterDem { tiles, from, tile_size, min_zoom, max_zoom, .. } => {
             let z = template::zoom_for(frame.m_per_px * f64::from(frame.ppp), *tile_size, *max_zoom);
-            (tiles, *min_zoom, *max_zoom, Want::Image, z)
+            (tiles, from, *min_zoom, *max_zoom, Want::Image, z)
         }
-        Source::Vector { tiles, min_zoom, max_zoom, .. } => {
-            (tiles, *min_zoom, *max_zoom, Want::Vector, (zoom.floor() as u8).min(*max_zoom))
+        Source::Vector { tiles, from, min_zoom, max_zoom, .. } => {
+            (tiles, from, *min_zoom, *max_zoom, Want::Vector, (zoom.floor() as u8).min(*max_zoom))
         }
-        Source::Other => return Vec::new(),
+        Source::Other => return TileSelection { items: Vec::new(), mesh_gaps: true, retry: false },
     };
     if tiles.is_empty() || z < min_z || zoom + 0.5 < f32::from(min_z) {
-        return Vec::new();
+        return TileSelection { items: Vec::new(), mesh_gaps: true, retry: false };
     }
     // A mosaic over half the world wide (the globe's, a world projection's) takes the zoom whose
     // tiles all fit, as its far edges are in view; a flat view keeps those nearest its centre.
     let z = if view.width() > template::HALF_WORLD { template::fitting_zoom(view, z, min_z) } else { z };
-    let url = |t: TileId| {
+    let url = |t: TileId| -> Result<Option<String>, (String, String)> {
         let i = (t.x as usize).wrapping_add(t.y as usize) % tiles.len();
-        tiles.get(i).map(|tpl| template::expand(tpl, t, 256, false, &[]))
+        let Some(tpl) = tiles.get(i) else { return Ok(None) };
+        let expanded = template::expand(tpl, t, 256, false, &[]);
+        // Archive tile keys are made here from the archive the layer explicitly names. They
+        // aren't network destinations; their HTTP range reads pass the transport checks.
+        let checked = if let Some(from) = from {
+            // A document cannot supply internal archive keys, even with local reach.
+            from.check(&expanded)
+        } else if !crate::pmtiles::is_tile(&expanded) && !crate::mbtiles::is_tile(&expanded) && !crate::cog::is_tile(&expanded) {
+            crate::address::check(&expanded, None)
+        } else {
+            Ok(())
+        };
+        checked.map_err(|e| (expanded.clone(), e))?;
+        Ok(Some(expanded))
     };
+    // Ancestors and children are cache-only, but an invalid destination must not read a tile
+    // previously cached by an explicitly local layer either.
+    let cached_url = |t| url(t).ok().flatten();
     let mut exact = Vec::new();
     let mut stand_ins = Vec::new();
+    // Like prepared pictures, a mesh cannot cover a view larger than selection's tile cap.
+    let span = TileId::span(z);
+    let mut mesh_gaps = ((view.width() / span).ceil() + 1.0) * ((view.height() / span).ceil() + 1.0) > template::MAX_TILES as f64;
+    let mut omitted = 0;
+    let mut first_error = None;
+    let mut retry = false;
+    let mut partial = 0;
+    let mut first_partial = None;
     // A missing tile is stood in for by its nearest ancestor in the cache and, for raster tiles,
     // by its children in the cache, the ancestor only in the quarters they leave: zooming in, the
     // tiles of the zoom being passed through are often missing while those of the zoom it ends
     // at are already here, and they are sharper. Nothing is drawn twice, so a see-through layer
     // stays even.
     let stand_in = |out: &mut Vec<Item>, p: &Placed| {
-        let parent = ancestor(p, min_z, &url);
+        let parent = ancestor(p, min_z, &cached_url, from.as_ref());
         if want != Want::Image || p.id.z >= max_z {
             out.extend(parent);
             return;
         }
         for c in p.id.children() {
             let cp = Placed { id: c, wx: p.wx * 2 + i64::from(c.x & 1) };
-            match url(c).and_then(|u| cache::peek(&u)) {
+            match cached_url(c).and_then(|u| cache::peek_from(&u, from.as_ref())) {
                 Some(payload) => out.push(Item { payload, at: cp.extent(), z: c.z, clip: cp.extent() }),
                 None => out.extend(parent.as_ref().map(|a| Item { clip: cp.extent(), ..a.clone() })),
             }
         }
     };
     let mut placed = reach.map(|e| template::covering(e, z)).unwrap_or_default();
-    if placed.is_empty() {
+    if placed.is_empty() || placed.len() >= template::MAX_TILES {
         placed = template::covering(view, z);
     }
+    mesh_gaps |= placed.is_empty();
     for p in placed {
-        let Some(u) = url(p.id) else { continue };
+        let area = p.extent();
+        // A tile merely touching the view's edge has no visible pixels.
+        let visible = area.min_x < view.max_x && area.max_x > view.min_x && area.min_y < view.max_y && area.max_y > view.min_y;
+        let u = match url(p.id) {
+            Ok(Some(u)) => u,
+            Ok(None) => continue,
+            Err((url, e)) => {
+                if visible {
+                    cache::note_refusal(&url, &e);
+                    mesh_gaps = true;
+                    omitted += 1;
+                    first_error.get_or_insert(e);
+                }
+                continue;
+            }
+        };
         // Past the view, only what the cache already has.
-        let state = if p.extent().intersects(view) {
-            cache::get_tile(&u, want)
+        let state = if visible {
+            let (state, note) = cache::tile_noted(&u, want, from.as_ref());
+            if let Some(note) = note {
+                retry = true;
+                partial += 1;
+                first_partial.get_or_insert(note);
+            }
+            state
         } else {
-            match cache::peek(&u) {
+            match cache::peek_from(&u, from.as_ref()) {
                 Some(payload) => State::Ready(payload),
                 None => {
                     stand_in(&mut stand_ins, &p);
@@ -611,24 +728,43 @@ pub(crate) fn tiles_in(src: &Source, view: &Extent, reach: Option<&Extent>, fram
             }
         };
         match state {
-            State::Ready(payload) => exact.push(Item { payload, at: p.extent(), z: p.id.z, clip: p.extent() }),
-            State::Failed(_) => {}
+            State::Ready(payload) => {
+                mesh_gaps |= visible && !matches!(payload.as_ref(), Payload::Vector(_));
+                exact.push(Item { payload, at: area, z: p.id.z, clip: area });
+            }
+            State::Failed(e) => {
+                retry |= visible;
+                mesh_gaps |= visible;
+                if !cache::routine_tile_failure(&e) {
+                    omitted += 1;
+                    first_error.get_or_insert(e);
+                }
+            }
             State::Pending => {
                 *pending = true;
+                let first = stand_ins.len();
                 stand_in(&mut stand_ins, &p);
+                // Vector stand-ins are a single ancestor covering this tile's whole square.
+                mesh_gaps |= visible && !stand_ins.get(first).is_some_and(|it| matches!(it.payload.as_ref(), Payload::Vector(_)));
             }
         }
     }
     // Stand-ins first, so the real tiles draw over their edges.
     stand_ins.extend(exact);
-    stand_ins
+    if let Some(reason) = first_error {
+        add_error(error, format!("{omitted} tiles left out: {reason}"));
+    }
+    if let Some(reason) = first_partial {
+        add_error(error, format!("{partial} tiles are partial (first: {reason})"));
+    }
+    TileSelection { items: stand_ins, mesh_gaps, retry }
 }
 
 /// The nearest ancestor of a missing tile already in the cache, clipped to the missing tile.
-fn ancestor(p: &Placed, min_z: u8, url: &dyn Fn(TileId) -> Option<String>) -> Option<Item> {
+fn ancestor(p: &Placed, min_z: u8, url: &dyn Fn(TileId) -> Option<String>, from: Option<&crate::address::Origin>) -> Option<Item> {
     for lv in 1..=p.id.z.saturating_sub(min_z).min(8) {
         let a = p.id.ancestor(lv)?;
-        if let Some(payload) = url(a).and_then(|u| cache::peek(&u)) {
+        if let Some(payload) = url(a).and_then(|u| cache::peek_from(&u, from)) {
             let ap = Placed { id: a, wx: p.wx.div_euclid(1 << lv) };
             return Some(Item { payload, at: ap.extent(), z: a.z, clip: p.extent() });
         }
@@ -788,19 +924,27 @@ fn boxes_of(known: &mut Boxes, it: &Item, layer: &StyleLayer) -> Arc<Vec<[f32; 4
 const OVERHANG: f32 = 16.0;
 
 /// How far a layer's shapes reach past their geometry at `zoom`, in points: a line's half width
-/// (twice its width at a mitred corner), a circle's radius and outline. Widths that depend on
-/// the feature are taken at the layer's own, and never less than [`OVERHANG`].
+/// (twice its width at a mitred corner), a circle's radius and outline. Known expression caps
+/// narrow the reach; unbounded widths keep the 512-point margin, with at least [`OVERHANG`].
 pub(crate) fn overhang(layer: &StyleLayer, zoom: f32) -> f32 {
     let ctx = FeatureCtx::zoom_only(zoom);
     let reach = match layer.kind {
         LayerKind::Line => {
-            let k = if layer.line_join(&ctx) == crate::style::LineJoin::Miter { 2.0 } else { 0.75 };
-            layer.line_width(&ctx) * k
+            let miter = layer.layout_uses_features("line-join") || layer.line_join(&ctx) == crate::style::LineJoin::Miter;
+            let Some(width) = layer.paint_width_bound("line-width", zoom, 1.0) else { return 512.0 };
+            width * if miter { 2.0 } else { 0.75 }
         }
-        LayerKind::Circle => layer.circle_radius(&ctx) + layer.circle_stroke_width(&ctx),
+        LayerKind::Circle => {
+            let (Some(radius), Some(stroke)) =
+                (layer.paint_width_bound("circle-radius", zoom, 5.0), layer.paint_width_bound("circle-stroke-width", zoom, 0.0))
+            else {
+                return 512.0;
+            };
+            radius + stroke
+        }
         _ => 0.0,
     };
-    if reach.is_finite() { reach.clamp(OVERHANG, 512.0) } else { OVERHANG }
+    if reach.is_finite() { reach.clamp(OVERHANG, 512.0) } else { 512.0 }
 }
 
 fn draw_vector(pm: &mut Pixmap, it: &Item, layer: &StyleLayer, frame: &Frame, zoom: f32, sheet: Option<&Sprite>, boxes: &[[f32; 4]]) {
@@ -1175,6 +1319,18 @@ fn area(r: &[(f32, f32)]) -> f32 {
 #[cfg(test)]
 pub(crate) mod tests {
     #[test]
+    fn refusal_counts_are_not_substring_duplicates() {
+        let mut error = Some("12 tiles left out: refused".to_string());
+        super::add_error(&mut error, "2 tiles left out: refused".into());
+        assert_eq!(error.as_deref(), Some("12 tiles left out: refused; 2 tiles left out: refused"));
+        let combined = error.unwrap();
+        let mut error = Some("sprite left out".to_string());
+        super::add_error(&mut error, combined.clone());
+        super::add_error(&mut error, combined);
+        assert_eq!(error.as_deref(), Some("sprite left out; 12 tiles left out: refused; 2 tiles left out: refused"));
+    }
+
+    #[test]
     fn a_relief_layer_rustgis_cant_colour_is_said_the_same_at_every_zoom() {
         let layer = |id: &str, extra: serde_json::Value| {
             let mut j = serde_json::json!({"id": id, "type": "color-relief", "source": "dem"});
@@ -1529,6 +1685,72 @@ pub(crate) mod tests {
         }
         assert_eq!(got.iter().map(|p| p.source_layer.as_str()).collect::<Vec<_>>(), vec!["pois"]);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn bounded_shape_widths_keep_their_conservative_reach() {
+        for (radius, expected) in [
+            (serde_json::json!(["min", 2, ["get", "radius"]]), 16.0),
+            (serde_json::json!(["max", 0, ["min", 30, ["get", "radius"]]]), 30.0),
+            (serde_json::json!(["case", ["has", "radius"], 30, 40]), 40.0),
+            (serde_json::json!(["step", ["get", "radius"], 20, 10, 30]), 30.0),
+            (serde_json::json!(["interpolate", ["linear"], ["get", "radius"], 0, 20, 100, 30]), 512.0),
+            (serde_json::json!(["get", "radius"]), 512.0),
+            // NaN is ignored by min: it must not masquerade as a finite cap on the other input.
+            (serde_json::json!(["min", ["sqrt", -1], ["get", "radius"]]), 512.0),
+        ] {
+            let layer = StyleLayer::parse(&serde_json::json!({"id":"p", "type":"circle", "paint":{"circle-radius":radius}})).unwrap();
+            assert_eq!(overhang(&layer, 4.0), expected);
+            for value in [
+                None,
+                Some(crate::mvt::Value::Number(-1.0)),
+                Some(crate::mvt::Value::Number(500.0)),
+                Some(crate::mvt::Value::String("invalid".into())),
+            ] {
+                let props = value.map(|v| vec![("radius".into(), v)]).unwrap_or_default();
+                let f = FeatureCtx { props: &props, ..FeatureCtx::zoom_only(4.0) };
+                assert!(overhang(&layer, 4.0) >= layer.circle_radius(&f).min(512.0));
+            }
+        }
+        let line = StyleLayer::parse(&serde_json::json!({"id":"r", "type":"line", "paint":{"line-width":["min", 20, ["get","width"]]},
+            "layout":{"line-join":["case", ["has","width"], "miter", "round"]}}))
+        .unwrap();
+        assert_eq!(overhang(&line, 4.0), 40.0, "a feature may choose a mitred corner");
+    }
+
+    #[test]
+    fn large_shape_caps_keep_the_full_margin() {
+        for (kind, paint) in [
+            ("line", serde_json::json!({"line-width":["min",3e38,["get","width"]]})),
+            (
+                "circle",
+                serde_json::json!({"circle-radius":["min",3e38,["get","radius"]],"circle-stroke-width":["min",3e38,["get","stroke"]]}),
+            ),
+        ] {
+            let layer = StyleLayer::parse(&serde_json::json!({"id":"p","type":kind,"paint":paint})).unwrap();
+            assert_eq!(overhang(&layer, 4.0), 512.0, "combining large caps must not shrink the margin");
+        }
+    }
+
+    #[test]
+    fn interpolated_width_caps_do_not_hide_nonfinite_outputs() {
+        let stop = serde_json::json!(["min", 2, ["/", -1, ["get", "zero"]]]);
+        let radius = serde_json::json!(["min", ["interpolate", ["linear"], ["get", "t"], 0, stop, 1, stop], ["get", "radius"]]);
+        let layer = StyleLayer::parse(&serde_json::json!({"id":"p","type":"circle","paint":{"circle-radius":radius}})).unwrap();
+        let props = vec![
+            ("zero".into(), crate::mvt::Value::Number(0.0)),
+            ("t".into(), crate::mvt::Value::Number(0.5)),
+            ("radius".into(), crate::mvt::Value::Number(100.0)),
+        ];
+        let f = FeatureCtx { props: &props, ..FeatureCtx::zoom_only(4.0) };
+        assert_eq!(layer.circle_radius(&f), 100.0, "min ignores the interpolated NaN");
+        assert!(overhang(&layer, 4.0) >= layer.circle_radius(&f), "the inferred cap must contain the actual painted radius");
+        let radius = serde_json::json!(["interpolate", ["linear"], ["get", "t"], -2e18, -2e18, 0, 150]);
+        let layer = StyleLayer::parse(&serde_json::json!({"id":"p","type":"circle","paint":{"circle-radius":radius}})).unwrap();
+        let props = vec![("t".into(), crate::mvt::Value::Number(-1.0))];
+        let f = FeatureCtx { props: &props, ..FeatureCtx::zoom_only(4.0) };
+        assert_eq!(layer.circle_radius(&f), 256.0, "finite interpolation may lose precision through cancellation");
+        assert!(overhang(&layer, 4.0) >= layer.circle_radius(&f), "finite stop values alone do not prove a conservative cap");
     }
 
     #[test]

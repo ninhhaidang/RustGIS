@@ -279,6 +279,33 @@ Ocean, Atlas, Blank), which need no network, and web tile layers over them:
 HTTPS tiles use [platform certificate trust](data.md#https-certificates) on desktop and the
 command line, including private CAs trusted by the operating system. The web app uses the browser.
 
+Tile addresses are checked after filling their placeholders, before cached bytes or network
+requests are used. In the native app, a document on the internet cannot select a local
+destination IP. Explicitly selected self-hosted servers remain supported, including ordinary
+hostnames resolved by local DNS, with local fallback when the same hostname also returns
+public addresses. Native fetchers filter the resolved IPs before connecting,
+using the supplying document's actual connection reach. Native requests refuse
+link-local and unspecified addresses, including those represented by IPv4-mapped IPv6
+addresses or the well-known NAT64 prefix. Public IPv4 destinations under that prefix can pass.
+Document redirects also change the base for relative references.
+IPv4 decoding covers mapped addresses and the well-known `64:ff9b::/96` prefix. It does not
+inspect destinations behind 6to4 tunnels or custom translation gateways, including the
+[RFC 8215](https://www.rfc-editor.org/rfc/rfc8215#section-5) `64:ff9b:1::/48` prefix, whose
+translation is network-specific. Such routes can hide a private or link-local IPv4 destination
+behind a public-looking IPv6 address; restrictions on those routes require network firewall policy.
+Native redirects are checked at each hop. In the web app, use the final service address:
+tile, style, TileJSON and sprite redirects, including HTTP-to-HTTPS upgrades and CDN hops,
+are refused because the browser hides their destinations from the app. The same browser
+transport refuses redirects for downloads, fonts, archive range reads and HEAD requests for
+file metadata; see
+[network downloads](data.md#network-downloads).
+The web app checks the URL's spelling and normalized address, but cannot inspect resolved IPs.
+A public-looking hostname can reach a private or link-local server if the browser permits it;
+DNS resolution, local-network permissions and certificate trust are controlled by the browser.
+Native tile and document requests, and file downloads through **From URL…**,
+connect directly without an environment HTTP proxy, so a proxy cannot resolve destinations
+beyond these checks. See [network downloads](data.md#network-downloads) if your network requires a proxy.
+
 The gallery's **Web Basemaps** need no API key: the OpenFreeMap vector maps (Liberty, Bright,
 Positron, Dark, Fiord) and USGS Imagery. Choosing one replaces the other web basemaps; tick
 **Stack on the current basemaps** above them to add it over the others instead (clicking one
