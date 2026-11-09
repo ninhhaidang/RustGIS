@@ -1396,7 +1396,7 @@ fn add_data(s: &mut Session, p: &Value) -> CmdResult {
     if path.to_ascii_lowercase().ends_with(".shp")
         && let Some(crs) = ps(p, "crs").map(str::trim).filter(|c| !c.is_empty())
     {
-        let crs = rustgis_data::raster::Crs::parse(crs)?;
+        let crs = super::parse_crs(s, crs)?;
         let name = Path::new(path).file_stem().and_then(|n| n.to_str()).unwrap_or("layer");
         let stream = b(p, "stream").unwrap_or_else(|| {
             rustgis_data::source::shp::record_count(Path::new(path)).is_some_and(|n| n > rustgis_map::source::STREAM_ABOVE)
@@ -1587,7 +1587,7 @@ pub(crate) fn add_layers(s: &mut Session, p: &Value, file_name: &str, bytes: &[u
     let dxf = rustgis_data::dxf::is_dxf_name(file_name);
     let mut reads = match crs.filter(|_| landxml) {
         _ if lower.ends_with(".zip") && crs.is_some() => {
-            let crs = crs.map(rustgis_data::raster::Crs::parse).transpose()?;
+            let crs = crs.map(|text| super::parse_crs(s, text)).transpose()?;
             rustgis_data::io::read_zip_in(file_name, bytes, crs)
                 .map_err(|e| e.to_string())?
                 .into_iter()
@@ -1596,7 +1596,7 @@ pub(crate) fn add_layers(s: &mut Session, p: &Value, file_name: &str, bytes: &[u
         }
         // A CityJSON model with a coordinate system given, which takes the place of any it names.
         _ if crs.is_some() && rustgis_data::io::is_cityjson(file_name, bytes) => {
-            let crs = crs.map(rustgis_data::raster::Crs::parse).transpose()?;
+            let crs = crs.map(|text| super::parse_crs(s, text)).transpose()?;
             rustgis_data::cityjson::read(file_name, bytes, crs)
                 .map_err(|e| e.to_string())?
                 .into_iter()
@@ -1608,7 +1608,7 @@ pub(crate) fn add_layers(s: &mut Session, p: &Value, file_name: &str, bytes: &[u
         }
         _ if dxf => {
             let opts = rustgis_data::dxf::Options {
-                crs: crs.map(rustgis_data::raster::Crs::parse).transpose()?,
+                crs: crs.map(|text| super::parse_crs(s, text)).transpose()?,
                 layer: ps(p, "layer").map(str::trim).filter(|l| !l.is_empty()),
                 paper_space: b(p, "paperSpace").unwrap_or(false),
             };
@@ -1619,7 +1619,7 @@ pub(crate) fn add_layers(s: &mut Session, p: &Value, file_name: &str, bytes: &[u
                 .collect()
         }
         Some(c) => {
-            let crs = rustgis_data::raster::Crs::parse(c)?;
+            let crs = super::parse_crs(s, c)?;
             rustgis_data::landxml::read(file_name, bytes, Some(crs))
                 .map_err(|e| e.to_string())?
                 .into_iter()
@@ -1886,7 +1886,7 @@ fn apply_styles(s: &mut Session, id: u32, styles: &[(String, rustgis_data::kml::
 
 /// The layers a file holds, without adding them: a GeoPackage's feature tables, a GDAL dataset's
 /// layers, or the one layer of other files. `layer.addData` takes a name with `"layer"`.
-fn file_layers(_s: &mut Session, p: &Value) -> CmdResult {
+fn file_layers(s: &mut Session, p: &Value) -> CmdResult {
     let path = s_req(p, "path")?;
     let path = &*gdb_path(path);
     let err = |e: rustgis_data::DataError| format!("{path}: {e}");
@@ -1954,7 +1954,7 @@ fn file_layers(_s: &mut Session, p: &Value) -> CmdResult {
         let zip = path.to_ascii_lowercase().ends_with(".zip");
         let layers: Vec<String> = match crs.filter(|_| zip || rustgis_data::io::is_cityjson(path, &bytes)) {
             Some(crs) => {
-                let crs = Some(rustgis_data::raster::Crs::parse(crs)?);
+                let crs = Some(super::parse_crs(s, crs)?);
                 let read =
                     if zip { rustgis_data::io::read_zip_in(path, &bytes, crs) } else { rustgis_data::cityjson::read(path, &bytes, crs) };
                 read.map_err(err)?.into_iter().map(|(ds, _)| ds.name).collect()
@@ -2840,7 +2840,7 @@ fn need_streamed(s: &Session) -> Option<&'static str> {
 /// replacement before mutating the layer; undo then restores geometry, metadata and caches.
 fn define_projection(s: &mut Session, p: &Value) -> CmdResult {
     let id = s.layer_id(p)?;
-    let crs = rustgis_data::raster::Crs::parse(s_req(p, "crs")?)?;
+    let crs = super::parse_crs(s, s_req(p, "crs")?)?;
     let l = s.map().layer(id).ok_or("no such layer")?;
     if l.is_raster() || l.is_streamed() {
         return Err(
@@ -3002,7 +3002,13 @@ fn read_sheet(p: &Value, file_name: &str, bytes: &[u8]) -> Result<(rustgis_data:
     let stem = Path::new(file_name).file_stem().and_then(|s| s.to_str()).unwrap_or("sheet");
     let opts = csv_options(p)?.unwrap_or_default();
     let sheet = ps(p, "layer").map(str::trim).filter(|l| !l.is_empty());
-    rustgis_data::sheets::read(bytes, stem, sheet, &opts).map_err(|e| format!("{file_name}: {e}"))
+    let (dataset, mut report) = rustgis_data::sheets::read(bytes, stem, sheet, &opts).map_err(|e| format!("{file_name}: {e}"))?;
+    if let (Some(text), Some(crs)) = (ps(p, "crs"), opts.crs)
+        && let Some(note) = rustgis_data::raster::wkt::projection_compatibility_note(text, crs)
+    {
+        report.messages.push(format!("crs: {note}"));
+    }
+    Ok((dataset, report))
 }
 
 /// The `x`, `y`, `wkt`, `crs` and `delimiter` parameters for a delimited text file, when any is
@@ -3113,6 +3119,11 @@ fn read_delimited(
     let stem = Path::new(name).file_stem().and_then(|s| s.to_str()).unwrap_or("layer");
     let (ds, mut report) = rustgis_data::io::read_csv_with(&text, stem, &opts).map_err(|e| format!("{name}: {e}"))?;
     report.messages.extend(note);
+    if let (Some(text), Some(crs)) = (ps(p, "crs"), opts.crs)
+        && let Some(note) = rustgis_data::raster::wkt::projection_compatibility_note(text, crs)
+    {
+        report.messages.push(format!("crs: {note}"));
+    }
     Ok(Some((ds, report)))
 }
 

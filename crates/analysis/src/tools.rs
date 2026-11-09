@@ -3074,6 +3074,12 @@ pub fn holds_coordinates(ds: &Dataset, field: usize) -> bool {
     }
 }
 
+/// Typed WKT retains its explicit method warning; a code alone follows the compatibility policy.
+fn crs_with_compatibility_note(text: &str) -> Result<(Crs, Option<&'static str>), String> {
+    let crs = Crs::parse(text)?;
+    Ok((crs, rustgis_data::raster::wkt::projection_compatibility_note(text, crs)))
+}
+
 fn xy_table_to_point(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
     let ds = input(inp, p, "input")?;
     let field = |k: &str| {
@@ -3081,9 +3087,9 @@ fn xy_table_to_point(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
         find_field_case_insensitive(ds, name)
     };
     let (xi, yi) = (field("x")?, field("y")?);
-    let crs = match s(p, "crs").trim() {
-        "" => Crs::LonLat,
-        t => Crs::parse(t)?,
+    let (crs, crs_note) = match s(p, "crs").trim() {
+        "" => (Crs::LonLat, None),
+        text => crs_with_compatibility_note(text)?,
     };
     let to = crs.transformer()?;
     let mut out = copy_schema(ds, out_name(p, format!("{}_Points", ds.name)), GeometryType::Point);
@@ -3111,6 +3117,7 @@ fn xy_table_to_point(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
         });
     }
     let mut messages = vec![format!("XY Table To Point: {placed} points")];
+    messages.extend(crs_note.map(|note| format!("XY Table To Point: its coordinate system: {note}")));
     if placed < total {
         messages.push(format!("{} of {total} rows have no usable coordinates; they are in the table without a point", total - placed));
     }
@@ -3607,10 +3614,10 @@ fn kernel_density_tool(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String>
     }
 
     let crs_text = s(p, "crs").trim();
-    let crs = if !crs_text.is_empty() {
-        Crs::parse(crs_text)?
+    let (crs, crs_note) = if !crs_text.is_empty() {
+        crs_with_compatibility_note(crs_text)?
     } else if let Some(c) = ds.crs {
-        c
+        (c, None)
     } else {
         return Err(format!(
             "kernel density requires a projected coordinate system with linear units (such as UTM or State Plane); '{}' has no coordinate system. Provide a projected system under 'crs' (e.g. EPSG:32618)",
@@ -3784,7 +3791,11 @@ fn kernel_density_tool(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String>
     };
     Ok(ToolResult {
         output: Output::Layers(vec![OutputLayer::Raster { file_name: format!("{name}.tif"), name, bytes }]),
-        messages: std::iter::once(msg).chain(beyond_note).chain(non_finite_note).collect(),
+        messages: std::iter::once(msg)
+            .chain(beyond_note)
+            .chain(non_finite_note)
+            .chain(crs_note.map(|note| format!("Kernel Density: its coordinate system: {note}")))
+            .collect(),
     })
 }
 
@@ -9251,6 +9262,38 @@ mod tests {
         // 19. pixelSize larger than automatic Silverman radius raises radius to pixelSize instead of erroring
         let res_auto_bump = crate::run("kernelDensity", &m_outlier, &serde_json::json!({"input": "outlier_ds", "pixelSize": 1000.0}));
         assert!(res_auto_bump.is_ok(), "pixelSize > auto radius should succeed by bumping radius: {:?}", res_auto_bump.err());
+    }
+
+    #[test]
+    fn typed_wkt_eqc_tools_report_the_compatibility_formula() {
+        let wkt = include_str!("../../data/src/raster/wkt2_corpus.tsv")
+            .lines()
+            .find(|row| row.starts_with("EPSG:4087\t"))
+            .unwrap()
+            .split('\t')
+            .nth(5)
+            .unwrap();
+        let mut table =
+            Dataset::new("Coordinates", GeometryType::None, vec![Field::new("x", FieldType::Double), Field::new("y", FieldType::Double)]);
+        table.push(None, vec![Value::Float(0.0), Value::Float(5_009_377.085_697_311)]);
+        let mut points = Dataset::new("Density points", GeometryType::Point, vec![]);
+        points.push(Some(Geometry::Point(Coord::new(0.0, 45.0))), vec![]);
+        points.push(Some(Geometry::Point(Coord::new(0.01, 45.01))), vec![]);
+        let inputs = Map(HashMap::from([("Coordinates".into(), table), ("Density points".into(), points)]));
+        for (crs, expected) in [(wkt, 1), ("EPSG:4087", 0)] {
+            for (tool, params) in [
+                ("xyTableToPoint", serde_json::json!({"input":"Coordinates","x":"x","y":"y","crs":crs})),
+                ("kernelDensity", serde_json::json!({"input":"Density points","crs":crs,"radius":10000.0,"pixelSize":1000.0})),
+            ] {
+                let result = crate::run(tool, &inputs, &params).unwrap();
+                assert_eq!(
+                    result.messages.iter().filter(|note| note.contains("EPSG method 1028")).count(),
+                    expected,
+                    "{tool}: {:?}",
+                    result.messages
+                );
+            }
+        }
     }
 
     #[test]

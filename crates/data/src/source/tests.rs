@@ -5,6 +5,30 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 #[test]
+fn explicit_method_1028_warns_for_known_geopackage_authorities() {
+    let wkt = r#"PROJCRS["World EQC",BASEGEOGCRS["WGS 84",DATUM["WGS_1984",ELLIPSOID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0]],CONVERSION["EQC",METHOD["Equidistant Cylindrical",ID["EPSG",1028]]],CS[Cartesian,2],AXIS["Easting",east],AXIS["Northing",north],LENGTHUNIT["metre",1]]"#;
+    let sphere = wkt.replace("298.257223563", "0");
+    let wkt1 = crate::raster::wkt::to_wkt(Crs::from_epsg(4087).unwrap()).unwrap();
+    for (definition, code, warned) in [(wkt, 4087, true), (&sphere, 4087, false), (&wkt1, 4087, false), (wkt, 3857, false)] {
+        let mut notes = Vec::new();
+        let row = GpkgSrs { organization: Some("EPSG".into()), code: Some(code), definition: Some(definition.into()) };
+        let read = gpkg_reproject(100001, Some(row), &mut notes).unwrap();
+        assert_eq!(notes.iter().filter(|n| n.contains("EPSG method 1028")).count(), usize::from(warned), "{definition}: {notes:?}");
+        if warned {
+            assert!(
+                notes[0].contains("srs_id 100001")
+                    && notes[0].contains("PROJ/GDAL")
+                    && notes[0].contains("using EPSG:4087 parameters in preference to the WKT definition"),
+                "{notes:?}"
+            );
+            let point = Geometry::Point(Coord::new(0.0, 5_009_377.085_697_311));
+            let Geometry::Point(at) = read.geometry(point).unwrap() else { panic!("not a point") };
+            assert!(at.x.abs() < 1e-9 && (at.y - 45.0).abs() < 1e-9, "{at:?}");
+        }
+    }
+}
+
+#[test]
 fn file_geodatabase_names() {
     assert!(is_gdb_name("/x/roads.gdb") && is_gdb_name("Roads.GDB/") && is_gdb_name(r"C:\x\roads.gdb\"));
     assert!(!is_gdb_name("roads.gdbtable") && !is_gdb_name("gdb") && !is_gdb_name("roads.shp"));

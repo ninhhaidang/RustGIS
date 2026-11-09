@@ -826,6 +826,12 @@ pub(crate) fn gpkg_reproject(srs_id: i64, row: Option<GpkgSrs>, notes: &mut Vec<
         Some(_) => None,
     };
     if let Some(crs) = epsg.and_then(Crs::from_epsg) {
+        if let Some(note) = definition.and_then(|d| crate::raster::wkt::projection_compatibility_note(d, crs)) {
+            notes.push(format!(
+                "its coordinate system (srs_id {srs_id}): using EPSG:{} parameters in preference to the WKT definition; {note}",
+                crs.epsg()
+            ));
+        }
         return Ok(Reproject::from_crs(crs, notes));
     }
     let what = format!("its coordinate system (srs_id {srs_id})");

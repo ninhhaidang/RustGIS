@@ -140,14 +140,9 @@ fn planetographic_systems_without_east_axes_are_refused() {
     let dir = tempfile::tempdir().unwrap();
     let r = 3_396_190.0f64;
     let metres = LONLAT.map(|(lon, lat)| (r * lon.to_radians(), r * lat.to_radians()));
-    // The planetographic systems are on the flattened Mars (2015) ellipsoid, where equidistant
-    // cylindrical northings are meridian distances (EPSG method 1028), not r·φ.
-    let f = 1.0 / 169.894447223612;
-    let eqc = rustgis_geom::EquidistantCylindrical::new(r, f * (2.0 - f), 0.0, 0.0, 0.0, 0.0, 0.0).unwrap();
-    let on_ellipsoid = LONLAT.map(|(lon, lat)| {
-        let c = eqc.forward(Coord::new(lon, lat)).unwrap();
-        (c.x, c.y)
-    });
+    // PROJ 9.7.1: +proj=eqc +a=3396190 +rf=169.894447223612.
+    // The projection uses the semi-major axis as its radius even on a planetographic datum.
+    let proj_metres = [(-7_930_954.528_618_374, 1_105_473.108_809_661), (4_590_825.323_180_067, 1_093_025.422_329_766_7)];
     let with_axes = |wkt: &str, axes: &str| format!("{},{axes}]", wkt.strip_suffix(']').unwrap());
     let east_north = r#"AXIS["Lon",EAST],AXIS["Lat",NORTH]"#;
     let unnamed = MARS_OGRAPHIC_ESRI.replace("GCS_Mars_2015_Ographic", "GCS_Mars");
@@ -202,14 +197,14 @@ fn planetographic_systems_without_east_axes_are_refused() {
         ("esri_east", with_axes(MARS_OGRAPHIC_ESRI, east_north), LONLAT),
         ("wkt2_east", MARS_WEST.replace(",west,", ",east,"), LONLAT),
         ("ocentric_code", with_axes(&unnamed, r#"AUTHORITY["IAU_2015","49900"]"#), LONLAT),
-        ("eqc_easting", eqc_on(&with_axes(MARS_OGRAPHIC_ESRI, east_north), "Mars_Equirectangular"), on_ellipsoid),
+        ("eqc_easting", eqc_on(&with_axes(MARS_OGRAPHIC_ESRI, east_north), "Mars_Equirectangular"), proj_metres),
         (
             "eqc_base_easting",
             with_axes(&eqc_on(MARS_OGRAPHIC_ESRI, "Mars_Equirectangular"), r#"AXIS["Easting",EAST],AXIS["Northing",NORTH]"#),
-            on_ellipsoid,
+            proj_metres,
         ),
         ("eqc_ocentric_code", with_axes(MARS_EQC, r#"AUTHORITY["IAU_2015","49910"]"#), metres),
-        ("wkt2_eqc_easting", wkt2_eqc("Mars (2015) / Ographic", "east"), on_ellipsoid),
+        ("wkt2_eqc_easting", wkt2_eqc("Mars (2015) / Ographic", "east"), proj_metres),
     ];
     for (name, prj, native) in &read {
         let path = shapefile(dir.path(), name, *native, prj);
@@ -246,12 +241,7 @@ fn planetographic_systems_without_east_axes_are_refused() {
     assert!(planetary_notes(&report.messages).is_empty(), "{:?}", report.messages);
     let src = source::open_path(&path, None).unwrap();
     assert_eq!(said(&src.info().notes), 1, "{:?}", src.info().notes);
-    let f = 1.0 / 298.257223563;
-    let wgs84_eqc = rustgis_geom::EquidistantCylindrical::new(6_378_137.0, f * (2.0 - f), 0.0, 0.0, 0.0, 0.0, 0.0).unwrap();
-    let earth_metres = LONLAT.map(|(lon, lat)| {
-        let c = wgs84_eqc.forward(Coord::new(lon, lat)).unwrap();
-        (c.x, c.y)
-    });
+    let earth_metres = LONLAT.map(|(lon, lat)| (6_378_137.0 * lon.to_radians(), 6_378_137.0 * lat.to_radians()));
     let earth_eqc = eqc_on(&west, "World_Equidistant_Cylindrical");
     assert!(earth_eqc.contains("WGS_1984") && earth_eqc.contains("WEST"), "{earth_eqc}");
     let path = shapefile(dir.path(), "earth_eqc_west", earth_metres, &earth_eqc);
@@ -784,7 +774,12 @@ fn an_ascii_grid_with_a_mars_prj_is_said_or_refused() {
     assert!(e.contains(ANOTHER_BODY) && e.contains("Bonne"), "{e}");
     let earth = raster::read_path(&dir.path().join("earth.asc")).unwrap();
     assert!(planetary_notes(&earth.lost).is_empty(), "{:?}", earth.lost);
-    assert!(!earth.lost.iter().any(|l| l.contains(".prj")), "{:?}", earth.lost);
+    assert_eq!(
+        earth.lost.iter().filter(|l| l.contains(".prj") && l.contains("has no conversion to WGS 84")).count(),
+        1,
+        "{:?}",
+        earth.lost
+    );
 }
 
 /// An Earth `.prj` next to an ASCII grid that RustGIS can't read leaves the grid in

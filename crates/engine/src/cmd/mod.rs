@@ -125,6 +125,24 @@ pub fn all() -> Vec<CommandSpec> {
     v
 }
 
+/// Parse a user-supplied CRS and report an explicit WKT compatibility choice.
+pub(crate) fn parse_crs(s: &mut Session, text: &str) -> Result<rustgis_data::raster::Crs, String> {
+    let crs = rustgis_data::raster::Crs::parse(text)?;
+    if let Some(note) = rustgis_data::raster::wkt::projection_compatibility_note(text, crs) {
+        s.warn(format!("crs: {note}"));
+    }
+    Ok(crs)
+}
+
+/// Report a CRS already validated by a pure options parser, after its options were applied.
+pub(crate) fn say_crs_note(s: &mut Session, text: &str) {
+    if let Ok(crs) = rustgis_data::raster::Crs::parse(text)
+        && let Some(note) = rustgis_data::raster::wkt::projection_compatibility_note(text, crs)
+    {
+        s.warn(format!("crs: {note}"));
+    }
+}
+
 pub(crate) fn ps<'a>(p: &'a Value, k: &str) -> Option<&'a str> {
     p.get(k).and_then(Value::as_str)
 }

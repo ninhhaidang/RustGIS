@@ -1388,15 +1388,19 @@ pub fn read_bytes(file_name: &str, bytes: &[u8]) -> Result<Raster> {
 
 /// An ASCII grid at `path` (its `text`), in the coordinate system of the `.prj` next to it.
 fn read_ascii(path: &Path, text: &str, name: &str, nodata: Option<f64>) -> Result<Raster> {
-    let (crs, unread) = sidecar_crs(path)?;
+    let (crs, note) = sidecar_crs(path)?;
     let mut r = ascii::read_with_nodata(text, name, crs, nodata)?;
-    // A .prj that couldn't be read leaves the grid in longitude/latitude, as a Shapefile's does.
-    r.lost.extend(unread.map(|e| format!("the .prj file: {e}; coordinates are read as longitude/latitude")));
+    // Planetary body notices have their own path. Preserve the method warning without duplicating
+    // those, and only assume lon/lat for an unreadable definition.
+    r.lost.extend(note.map(|message| match crs {
+        Some(_) => format!("the .prj file: {message}"),
+        None => format!("the .prj file: {message}; coordinates are read as longitude/latitude"),
+    }));
     Ok(r)
 }
 
-/// The coordinate system in the `.prj` next to an ASCII grid, when RustGIS understands it. Else
-/// why it doesn't, so the grid is read without it and says so. Another body's system RustGIS
+/// The coordinate system and WKT notice in the `.prj` next to an ASCII grid. An unreadable
+/// definition returns no system and explains why, so the grid says it assumes longitude/latitude. Another body's system RustGIS
 /// doesn't understand is an error instead, because the grid would land in the wrong place as
 /// longitude/latitude.
 fn sidecar_crs(path: &Path) -> Result<(Option<Crs>, Option<String>)> {
@@ -1405,8 +1409,13 @@ fn sidecar_crs(path: &Path) -> Result<(Option<Crs>, Option<String>)> {
         let there = std::fs::metadata(path.with_extension("prj")).is_ok_and(|m| m.is_file());
         return Ok((None, there.then(|| "it can't be read as text".to_string())));
     };
-    match wkt::crs_from_wkt(&prj) {
-        Ok(crs) => Ok((Some(crs), None)),
+    match wkt::read_wkt(&prj) {
+        Ok((crs, note)) => {
+            // The raster's body channel reports planetary interpretation once; datum and
+            // projection notices from this sidecar must otherwise be preserved.
+            let note = if crs.is_planetary() { wkt::projection_compatibility_note(&prj, crs).map(str::to_owned) } else { note };
+            Ok((Some(crs), note))
+        }
         Err(e) => match planetary::refused_wkt(&prj, &e) {
             Some(refused) => Err(DataError::Format(format!("the .prj file: {refused}"))),
             None => Ok((None, Some(e))),

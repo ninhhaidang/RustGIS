@@ -264,6 +264,16 @@ pub fn pick_variable(store: &zarr::Store, sel: &mut zarr::Selection) -> Result<(
     Ok(())
 }
 
+/// Keep a typed WKT's compatibility choice with the decoded raster's other read notices.
+fn crs_lost(r: &mut raster::Raster, text: Option<&str>) {
+    if let Some(text) = text
+        && let Some(note) = raster::wkt::projection_compatibility_note(text, r.crs)
+        && !r.lost.iter().any(|existing| existing == note)
+    {
+        r.lost.push(note.to_string());
+    }
+}
+
 pub(crate) fn add(s: &mut Session, p: &Value) -> CmdResult {
     if b(p, "time") == Some(true) {
         return add_following(s, p);
@@ -281,6 +291,7 @@ pub(crate) fn add(s: &mut Session, p: &Value) -> CmdResult {
         let i = s.downloaded.iter().position(|(d, _)| *d == id).ok_or("no such read (it was dropped when another project opened)")?;
         let (_, tif) = s.downloaded.remove(i);
         let mut r = raster::read_bytes("zarr.tif", &tif).map_err(|e| e.to_string())?;
+        crs_lost(&mut r, crs);
         r.source = Some(root.clone());
         let name = ps(p, "name").map(str::to_string).unwrap_or_else(|| layer_name(&root, &sel, &[]));
         let mut layer = RasterLayer::from_bytes(r, format!("{}.tif", store_name(&root)), tif);
@@ -303,7 +314,8 @@ pub(crate) fn add(s: &mut Session, p: &Value) -> CmdResult {
         Source::Dir(d) => {
             let store = zarr::read_metadata(Path::new(&d)).map_err(|e| format!("{d}: {e}"))?;
             pick_variable(&store, &mut sel)?;
-            let r = zarr::read_dir(Path::new(&d), &sel.label(), crs).map_err(|e| format!("{d}: {e}"))?;
+            let mut r = zarr::read_dir(Path::new(&d), &sel.label(), crs).map_err(|e| format!("{d}: {e}"))?;
+            crs_lost(&mut r, crs);
             let name = ps(p, "name").map(str::to_string).unwrap_or_else(|| r.name.clone());
             // Absolute, so the project finds the store again from anywhere.
             let full = std::path::absolute(&d).map(|p| p.display().to_string()).unwrap_or(d);
@@ -322,6 +334,7 @@ pub(crate) fn add(s: &mut Session, p: &Value) -> CmdResult {
             }
             let name = ps(p, "name").map(str::to_string).unwrap_or_else(|| layer_name(&u, &sel, &[]));
             let mut r = zarr::assemble(&store, &plan, &chunks, &name, crs_parsed).map_err(|e| format!("{u}: {e}"))?;
+            crs_lost(&mut r, crs);
             r.source = Some(u.clone());
             // Kept in the project as a GeoTIFF: a web store isn't fetched again when it opens.
             let tif = raster::geotiff::write(&r, 0).map_err(|e| e.to_string())?;
@@ -575,7 +588,10 @@ pub(crate) fn read_slice(zt: &ZarrTime, i: usize) -> Result<Option<raster::Raste
     // A step none of whose chunks is there was never written (Zarr's fill value): `None`, told
     // apart by its error kind, not its message.
     match read {
-        Ok(r) => Ok(Some(r)),
+        Ok(mut r) => {
+            crs_lost(&mut r, crs);
+            Ok(Some(r))
+        }
         Err(rustgis_data::DataError::NoChunks(_)) => Ok(None),
         Err(e) => Err(e.to_string()),
     }
@@ -1233,7 +1249,7 @@ fn series(s: &mut Session, p: &Value) -> CmdResult {
                 None => {
                     let given =
                         src.crs.as_deref().ok_or("the store doesn't say its coordinate system; give \"crs\" (such as EPSG:3035)")?;
-                    Crs::parse(given)?
+                    super::parse_crs(s, given)?
                 }
             };
             let m = crs

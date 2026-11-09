@@ -1074,10 +1074,10 @@ mod tests {
         assert!(p.inverse(Coord::new(19_000_000.0, 9_000_000.0)).is_none());
     }
 
-    /// A map in EPSG:4087 (and the Equirectangular preset, its definition) is computed on the
-    /// ellipsoid as the data crate reads the system, not on proj4rs's sphere: a raster in
+    /// A map in EPSG:4087 (and the Equirectangular preset, its definition) uses the same
+    /// PROJ-compatible spherical formula as the data crate: a raster in
     /// EPSG:4087 is drawn in its own coordinates on such a map, so both must put a place at the
-    /// same point. The EPSG Guidance Note 7-2's example: 55°N 10°E is E 1 113 194.91, N 6 097 230.31.
+    /// same point. PROJ 9.7.1: 55°N 10°E in EPSG:4087 is E 1 113 194.91, N 6 122 571.99.
     #[test]
     fn ellipsoidal_equidistant_cylindrical_draws_as_its_data_reads() {
         let data = rustgis_data::raster::Crs::from_epsg(4087).unwrap().transformer().unwrap();
@@ -1099,7 +1099,7 @@ mod tests {
             }
         }
         let m = Projector::new("EPSG:4087").unwrap().forward(Coord::new(10.0, 55.0)).unwrap();
-        assert!((m.x - 1_113_194.91).abs() < 0.005 && (m.y - 6_097_230.31).abs() < 0.005, "{m:?}");
+        assert!((m.x - 1_113_194.907_932_735_7).abs() < 1e-6 && (m.y - 6_122_571.993_630_046).abs() < 1e-6, "{m:?}");
         // ESRI:54002 is true to scale at 60°: half the easting per degree, the same northing.
         let (a, b) = (
             Projector::new("ESRI:54002").unwrap().forward(Coord::new(1.0, 45.0)).unwrap(),

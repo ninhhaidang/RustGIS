@@ -1,8 +1,7 @@
-//! The equidistant cylindrical projection on an ellipsoid (EPSG method 1028, PROJ's `eqc`): the
-//! system of EPSG:4087 (WGS 84 / World Equidistant Cylindrical) and of the ellipsoidal
-//! equirectangular systems of other bodies. proj4rs computes `eqc` on a sphere of the semi-major
-//! axis only, which puts a point at 45°N about 24 km off on WGS 84, so the ellipsoidal form is
-//! computed here.
+//! The equidistant cylindrical projection on an ellipsoid (EPSG method 1028).
+//! This mathematical implementation differs from PROJ 9.7.1/GDAL's `eqc`, which uses a sphere of the
+//! semi-major axis even for ellipsoidal datums. Data readers and map projections pass `es = 0`
+//! for legacy PROJ/GDAL file compatibility; datum transformations retain the original ellipsoid.
 //!
 //! From the EPSG Guidance Note 7-2 (IOGP Publication 373-7-2), method 1028:
 //! E = FE + ν₁·cos φ₁·(λ − λ₀) and N = FN + M, where φ₁ is the latitude of true scale,

@@ -450,7 +450,7 @@ fn proj4_of_keys(keys: &[u16], doubles: &[f64], ascii: &str) -> Result<(String, 
 }
 
 /// Whether two PROJ definitions place the same points: points around the projection's origin,
-/// unprojected by both (as RustGIS computes them, sinusoidal and ellipsoidal equidistant
+/// unprojected by both (as RustGIS computes them, sinusoidal and PROJ-compatible equidistant
 /// cylindrical included), land within a centimetre.
 fn same_projection(a: &str, b: &str) -> bool {
     let offsets = [(0.0, 0.0), (100_000.0, 50_000.0), (-250_000.0, 150_000.0), (300_000.0, -200_000.0), (-50_000.0, -400_000.0)];
@@ -2052,7 +2052,7 @@ mod tests {
 
     /// Orthographic and Robinson systems from WKT are written as keys (CT_Orthographic 21 and
     /// CT_Robinson 23, by the projection centre's keys) and read back as the same; an ellipsoidal
-    /// equidistant cylindrical one (EPSG:4087's, CT 17) is compared as computed on the ellipsoid.
+    /// equidistant cylindrical one (EPSG:4087's, CT 17) uses PROJ-compatible coordinates.
     #[test]
     fn orthographic_robinson_and_ellipsoidal_eqc_are_written_as_keys() {
         for (def, ct) in [
@@ -2067,8 +2067,8 @@ mod tests {
             let back = custom_crs(&k, &d, &a).unwrap().custom_def().unwrap().proj4.clone();
             assert!(same_projection(def, &back), "{def}: {back}");
         }
-        // The same projection on a sphere of the semi-major axis is another one.
-        assert!(!same_projection(
+        // PROJ uses the same coordinates on a sphere of the semi-major axis.
+        assert!(same_projection(
             "+proj=eqc +lat_ts=0 +lon_0=0 +datum=WGS84 +units=m +no_defs",
             "+proj=eqc +lat_ts=0 +lon_0=0 +R=6378137 +units=m +no_defs"
         ));

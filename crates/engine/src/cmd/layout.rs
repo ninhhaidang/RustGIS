@@ -2560,6 +2560,11 @@ fn add_element(s: &mut Session, p: &Value) -> CmdResult {
             if let Some(ElementKind::MapFrame { grid, .. }) = l.element_mut(frame).map(|e| &mut e.kind) {
                 *grid = new;
             }
+            if !b(p, "off").unwrap_or(false)
+                && let Some(text) = ps(p, "crs")
+            {
+                super::say_crs_note(s, text);
+            }
             return Ok(json!({"element": frame}));
         }
         o => return Err(format!("unknown element kind '{o}'")),
@@ -3315,6 +3320,9 @@ fn update(s: &mut Session, p: &Value) -> CmdResult {
         || p.get("exclude").is_some_and(|v| !v.is_null());
     if new_columns.is_some() || (in_columns && refitted) {
         say_legend_fit(s, li, id);
+    }
+    if let Some(text) = p.get("grid").and_then(|grid| grid.get("crs")).and_then(Value::as_str) {
+        super::say_crs_note(s, text);
     }
     if let Some(w) = font_told {
         return Ok(json!({"warning": w}));

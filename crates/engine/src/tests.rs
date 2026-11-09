@@ -16600,6 +16600,167 @@ fn rasters_made_from_rounded_ones_keep_the_rounded_note() {
 /// An ASCII grid whose `.prj` can't be read is added in longitude/latitude, and adding it says so;
 /// one whose `.prj` is read says nothing of it.
 #[test]
+fn projection_review_typed_layer_inputs_report_the_formula_choice() {
+    let wkt = include_str!("../../data/src/raster/wkt2_corpus.tsv")
+        .lines()
+        .find(|row| row.starts_with("EPSG:4087\t"))
+        .unwrap()
+        .split('\t')
+        .nth(5)
+        .unwrap();
+    let dir = std::env::temp_dir().join(format!("rustgis-typed-eqc-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for (definition, expected) in [(wkt, 1), ("EPSG:4087", 0)] {
+        for mode in ["define", "csv", "export"] {
+            let mut session = world();
+            let mark = session.notice_mark();
+            match mode {
+                "define" => {
+                    session.run("layer.defineProjection", &json!({"layer":"Cities","crs":definition})).unwrap();
+                }
+                "csv" => {
+                    let path = dir.join("point.csv");
+                    std::fs::write(&path, "e,n\n0,5009377.085697311\n").unwrap();
+                    let result = session.run("layer.addData", &json!({"path":path,"x":"e","y":"n","crs":definition})).unwrap();
+                    let layer = session.map().layer(result["layer"].as_u64().unwrap() as u32).unwrap();
+                    assert!((layer.dataset.features[0].geometry.as_ref().unwrap().label_point().unwrap().y - 45.0).abs() < 1e-9);
+                }
+                _ => {
+                    session
+                        .run(
+                            "share.exportLayer",
+                            &json!({"layer":"Cities","path":dir.join(format!("export-{expected}.shp")),"crs":definition}),
+                        )
+                        .unwrap();
+                }
+            }
+            assert_eq!(
+                session.notices_since(mark).iter().filter(|notice| notice.text.contains("EPSG method 1028")).count(),
+                expected,
+                "{mode}: {:?}",
+                session.notices_since(mark)
+            );
+        }
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn projection_review_layout_grid_reports_the_formula_choice() {
+    let wkt = include_str!("../../data/src/raster/wkt2_corpus.tsv")
+        .lines()
+        .find(|row| row.starts_with("EPSG:4087\t"))
+        .unwrap()
+        .split('\t')
+        .nth(5)
+        .unwrap();
+    for (definition, expected) in [(wkt, 1), ("EPSG:4087", 0)] {
+        let mut session = world();
+        session.run("layout.new", &json!({"template":"map"})).unwrap();
+        let frame = session.project.layouts[0].elements.iter().find(|element| element.kind.code() == "mapFrame").unwrap().id;
+        for (command, params) in [
+            ("layout.addElement", json!({"kind":"grid","type":"measured","crs":definition})),
+            ("layout.update", json!({"element":frame,"grid":{"type":"measured","crs":definition}})),
+        ] {
+            let mark = session.notice_mark();
+            session.run(command, &params).unwrap();
+            assert_eq!(
+                session.notices_since(mark).iter().filter(|notice| notice.text.contains("EPSG method 1028")).count(),
+                expected,
+                "{command}"
+            );
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn projection_review_zarr_parameters_report_the_formula_choice() {
+    let _cache = zarr_cache_lock();
+    let wkt = include_str!("../../data/src/raster/wkt2_corpus.tsv")
+        .lines()
+        .find(|row| row.starts_with("EPSG:4087\t"))
+        .unwrap()
+        .split('\t')
+        .nth(5)
+        .unwrap();
+    let (dir, path) = zarr_store_over_time("eqc-input-notice");
+    // Projected coordinates with no declared CRS, so the supplied definition is actually used.
+    let store = std::path::Path::new(&path);
+    let mut metadata: Value = serde_json::from_str(&std::fs::read_to_string(store.join(".zmetadata")).unwrap()).unwrap();
+    let objects = metadata["metadata"].as_object_mut().unwrap();
+    for (old, new) in [("lat", "y"), ("lon", "x")] {
+        let array = objects.remove(&format!("{old}/.zarray")).unwrap();
+        objects.insert(format!("{new}/.zarray"), array);
+        objects.remove(&format!("{old}/.zattrs"));
+        objects.insert(format!("{new}/.zattrs"), json!({"_ARRAY_DIMENSIONS":[new],"units":"m"}));
+        std::fs::rename(store.join(old), store.join(new)).unwrap();
+    }
+    objects.get_mut("t/.zattrs").unwrap()["_ARRAY_DIMENSIONS"] = json!(["time", "y", "x"]);
+    std::fs::write(store.join(".zmetadata"), metadata.to_string()).unwrap();
+    for (definition, expected) in [(wkt, 1), ("EPSG:4087", 0)] {
+        for following in [false, true] {
+            let mut session = Session::new(Project::default());
+            let result = session
+                .run("layer.addZarr", &json!({"path":path,"variable":"t","index":{"time":0},"crs":definition,"time":following}))
+                .unwrap();
+            let layer = session.map().layer(result["layer"].as_u64().unwrap() as u32).unwrap();
+            assert_eq!(layer.raster.as_ref().unwrap().data.as_ref().unwrap().crs, rustgis_data::raster::Crs::parse(definition).unwrap());
+            assert_eq!(
+                session.notices.iter().filter(|notice| notice.text.contains("EPSG method 1028")).count(),
+                expected,
+                "following={following}: {:?}",
+                session.notices
+            );
+        }
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn projection_review_ascii_grid_keeps_its_datum_notice() {
+    let dir = std::env::temp_dir().join(format!("rustgis-ascii-datum-note-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("nad27.asc");
+    std::fs::write(&path, "ncols 1\nnrows 1\nxllcorner -80\nyllcorner 40\ncellsize 1\n7\n").unwrap();
+    std::fs::write(path.with_extension("prj"), r#"GEOGCS["GCS_North_American_1927",DATUM["D_North_American_1927",SPHEROID["Clarke_1866",6378206.4,294.9786982]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]]"#).unwrap();
+    let mut session = Session::new(Project::default());
+    session.run("layer.addData", &json!({"path":path})).unwrap();
+    assert_eq!(session.notices.iter().filter(|notice| notice.text.contains("has no conversion to WGS 84")).count(), 1);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn ascii_grid_reports_declared_method_1028_compatibility() {
+    let dir = std::env::temp_dir().join(format!("rustgis-ascii-eqc-note-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let projected = include_str!("../../data/src/raster/wkt2_corpus.tsv")
+        .lines()
+        .find(|row| row.starts_with("EPSG:4087\t"))
+        .unwrap()
+        .split('\t')
+        .nth(5)
+        .unwrap();
+    let geographic = r#"GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]]"#;
+    for (name, wkt, y, expected) in [("projected", projected, 5_009_377.085_697_311, 1), ("geographic", geographic, 40.0, 0)] {
+        let path = dir.join(format!("{name}.asc"));
+        std::fs::write(&path, format!("ncols 1\nnrows 1\nxllcorner 0\nyllcorner {y}\ncellsize 1\n7\n")).unwrap();
+        std::fs::write(path.with_extension("prj"), wkt).unwrap();
+        let mut session = Session::new(Project::default());
+        session.run("layer.addData", &json!({"path":path})).unwrap();
+        let notices = session.notices.iter().filter(|notice| notice.text.contains("EPSG method 1028")).collect::<Vec<_>>();
+        assert_eq!(notices.len(), expected, "{name}: {:?}", session.notices);
+        assert!(notices.iter().all(|notice| notice.text.contains("the .prj file") && !notice.text.contains("read as longitude/latitude")));
+        if expected > 0 {
+            let raster = rustgis_data::raster::read_path(&path).unwrap();
+            let point = raster.crs.transformer().unwrap().to_lonlat(rustgis_data::Coord::new(0.0, y)).unwrap();
+            assert!((point.y - 45.0).abs() < 1e-9);
+        }
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn an_ascii_grid_s_unread_prj_is_said_when_added() {
     let dir = std::env::temp_dir().join(format!("rustgis-engine-asc-prj-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
