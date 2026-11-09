@@ -939,6 +939,8 @@ static PLUGINS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[test]
 fn a_ribbon_wider_than_the_window_scrolls_with_arrow_buttons() {
+    // A plugin's tab, added or removed by a test running alongside, would change the tab strip.
+    let _turn = PLUGINS.lock().unwrap_or_else(|e| e.into_inner());
     let mut h = harness();
     h.set_size(egui::vec2(900.0, 600.0));
     h.state_mut().ui.tab = "View".into();
@@ -963,6 +965,9 @@ fn a_ribbon_wider_than_the_window_scrolls_with_arrow_buttons() {
 
 #[test]
 fn a_tab_strip_wider_than_the_window_scrolls_with_arrow_buttons() {
+    // Plugins' tabs follow Help, so one removed by a test running alongside while the strip is
+    // scrolled to its end shifts the tabs right, and a click on Help lands on Settings.
+    let _turn = PLUGINS.lock().unwrap_or_else(|e| e.into_inner());
     let mut h = harness();
     // Narrower than the tabs' text alone, whatever the system font: at 560 points the tabs just
     // fit on macOS once its semibold is drawn heavier (#591), so they didn't need to scroll.
