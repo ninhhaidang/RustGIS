@@ -15812,6 +15812,240 @@ fn geopackage_table_cap_is_reported() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// Attribute-only GeoPackage tables are counted once when a whole file is added (#1634).
+#[test]
+fn geopackage_omission_counts_match_unregistered_tables_with_bounded_kinds() {
+    let dir = std::env::temp_dir().join(format!("rustgis-gpkg-bounded-kinds-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("kinds.gpkg");
+    let _ = std::fs::remove_file(&path);
+    let mut writer = world();
+    writer.run("share.exportLayer", &json!({"layer":"Cities","path":path,"tableName":"A"})).unwrap();
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch("BEGIN; CREATE TABLE B AS SELECT * FROM A;
+        INSERT INTO gpkg_contents(table_name,data_type,srs_id) VALUES ('B','attributes',4326);
+        INSERT INTO gpkg_geometry_columns(table_name,column_name,geometry_type_name,srs_id,z,m) SELECT 'B',column_name,geometry_type_name,srs_id,z,m FROM gpkg_geometry_columns WHERE table_name='A';").unwrap();
+    for index in 0..1000 {
+        conn.execute_batch(&format!("CREATE TABLE unknown_{index}(value TEXT);")).unwrap();
+        conn.execute(
+            "INSERT INTO gpkg_contents(table_name,data_type) VALUES (?1,?2)",
+            [format!("unknown_{index}"), format!("unknown {index}\n\u{1b}[31m")],
+        )
+        .unwrap();
+    }
+    conn.execute_batch("COMMIT;").unwrap();
+    drop(conn);
+    let shared = rustgis_data::source::Shared(std::sync::Arc::new(std::fs::read(&path).unwrap()));
+    for counts in [
+        rustgis_data::source::gpkg::unsupported_table_counts(&path).unwrap(),
+        rustgis_data::source::gpkg_mem::unsupported_table_counts(shared).unwrap(),
+    ] {
+        assert!(counts.len() <= 5, "{} content kinds must be bounded", counts.len());
+        assert_eq!(counts, vec![("other".to_string(), 1000)], "registered B is added, regardless of its declared type");
+    }
+    let mut session = Session::new(Project::default());
+    session.run("layer.addData", &json!({"path":path})).unwrap();
+    assert_eq!(session.map().layers.len(), 2);
+    let notice = session.notices.iter().find(|n| n.text.contains("other table(s) not added")).unwrap();
+    assert!(
+        notice.text.contains("1000 other table(s)") && notice.text.len() < 512 && !notice.text.contains(['\n', '\u{1b}']),
+        "{}",
+        notice.text
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn geopackage_review_malformed_contents_are_not_silently_omitted() {
+    let dir = std::env::temp_dir().join(format!("rustgis-gpkg-malformed-catalog-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("bad.gpkg");
+    let _ = std::fs::remove_file(&path);
+    let mut writer = world();
+    writer.run("share.exportLayer", &json!({"layer":"Cities","path":path,"tableName":"A"})).unwrap();
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch("ALTER TABLE gpkg_contents RENAME TO original_catalog;
+        CREATE TABLE gpkg_contents(table_name,data_type,identifier,description,last_change,min_x,min_y,max_x,max_y,srs_id);
+        INSERT INTO gpkg_contents SELECT table_name,data_type,identifier,description,last_change,min_x,min_y,max_x,max_y,srs_id FROM original_catalog;
+        INSERT INTO gpkg_contents(table_name,data_type) VALUES ('broken',NULL);").unwrap();
+    drop(conn);
+    for invalid in [rusqlite::types::Value::Null, rusqlite::types::Value::Integer(42)] {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute("UPDATE gpkg_contents SET data_type=?1 WHERE table_name='broken'", [invalid]).unwrap();
+        drop(conn);
+        for bytes in [true, false] {
+            let mut session = Session::new(Project::default());
+            let result = if bytes {
+                crate::cmd::layer::add_source(
+                    &mut session,
+                    &json!({}),
+                    crate::cmd::layer::Origin::Bytes("bad.gpkg", std::sync::Arc::new(std::fs::read(&path).unwrap())),
+                    None,
+                )
+                .map(|_| ())
+            } else {
+                session.run("layer.addData", &json!({"path":path})).map(|_| ()).map_err(|e| e.to_string())
+            };
+            assert!(
+                result.is_err_and(|e| e.contains("1 invalid gpkg_contents")),
+                "bytes={bytes}: malformed catalog must be refused before adding layers"
+            );
+            assert!(session.map().layers.is_empty());
+        }
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn geopackage_virtual_catalog_columns_use_the_desktop_sqlite_reader() {
+    let dir = std::env::temp_dir().join(format!("rustgis-gpkg-virtual-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("virtual.gpkg");
+    world().run("share.exportLayer", &json!({"layer":"Cities","path":path,"tableName":"A"})).unwrap();
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch("ALTER TABLE gpkg_contents RENAME TO original_catalog;
+        CREATE TABLE gpkg_contents(table_name TEXT, data_type TEXT GENERATED ALWAYS AS ('features') VIRTUAL, identifier, description, last_change, min_x, min_y, max_x, max_y, srs_id);
+        INSERT INTO gpkg_contents(table_name,identifier,description,last_change,min_x,min_y,max_x,max_y,srs_id)
+        SELECT table_name,identifier,description,last_change,min_x,min_y,max_x,max_y,srs_id FROM original_catalog;").unwrap();
+    drop(conn);
+    let bytes = std::sync::Arc::new(std::fs::read(&path).unwrap());
+    assert!(
+        rustgis_data::source::gpkg_mem::unsupported_table_counts(rustgis_data::source::Shared(bytes.clone()))
+            .is_err_and(|error| error.to_string().contains("virtual generated"))
+    );
+    for uploaded in [false, true] {
+        let mut session = Session::new(Project::default());
+        if uploaded {
+            crate::cmd::layer::add_source(&mut session, &json!({}), crate::cmd::layer::Origin::Bytes("virtual.gpkg", bytes.clone()), None)
+                .unwrap();
+        } else {
+            session.run("layer.addData", &json!({"path":path})).unwrap();
+        }
+        assert_eq!(session.map().layers.len(), 1);
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn geopackage_catalog_is_required_for_empty_layer_lists() {
+    let dir = std::env::temp_dir().join(format!("rustgis-gpkg-empty-list-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("plain.gpkg");
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch("CREATE TABLE notes(value TEXT)").unwrap();
+    drop(conn);
+    for valid in [false, true] {
+        if valid {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch("CREATE TABLE gpkg_contents(table_name TEXT,data_type TEXT)").unwrap();
+        }
+        let mut session = Session::new(Project::default());
+        let result = session.run("info.fileLayers", &json!({"path":path}));
+        let shared = rustgis_data::source::Shared(std::sync::Arc::new(std::fs::read(&path).unwrap()));
+        let uploaded = rustgis_data::source::gpkg_mem::layers(shared);
+        if valid {
+            assert_eq!(result.unwrap()["count"], 0);
+            assert!(uploaded.unwrap().is_empty());
+        } else {
+            assert!(result.is_err_and(|error| error.to_string().contains("not a GeoPackage")));
+            assert!(uploaded.is_err_and(|error| error.to_string().contains("not a GeoPackage")));
+        }
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn geopackage_attribute_tables_are_not_silently_omitted() {
+    let dir = std::env::temp_dir().join(format!("rustgis-gpkg-attributes-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("mixed.gpkg");
+    let mut writer = world();
+    writer.run("share.exportLayer", &json!({"layer":"Cities", "path":path, "tableName":"A"})).unwrap();
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE B AS SELECT * FROM A;
+         INSERT INTO gpkg_contents (table_name, data_type, srs_id) VALUES ('B', 'features', 4326);
+         INSERT INTO gpkg_geometry_columns (table_name, column_name, geometry_type_name, srs_id, z, m)
+             SELECT 'B', column_name, geometry_type_name, srs_id, z, m FROM gpkg_geometry_columns WHERE table_name = 'A';
+         CREATE TABLE notes (fid INTEGER PRIMARY KEY, note TEXT);
+         INSERT INTO notes VALUES (1, 'Keep me');
+         CREATE TABLE owners (name TEXT);
+         INSERT INTO gpkg_contents (table_name, data_type) VALUES ('notes', 'attributes'), ('owners', 'attributes');
+         CREATE TABLE imagery (id INTEGER PRIMARY KEY, zoom_level INTEGER, tile_column INTEGER, tile_row INTEGER, tile_data BLOB);
+         INSERT INTO gpkg_contents (table_name, data_type) VALUES ('imagery', 'tiles'), ('unregistered', 'features');",
+    )
+    .unwrap();
+    drop(conn);
+    let skipped =
+        |s: &Session| s.notices.iter().filter(|n| n.text.contains("attribute-only table")).map(|n| n.text.clone()).collect::<Vec<_>>();
+    for bytes in [false, true] {
+        let mut s = Session::new(Project::default());
+        if bytes {
+            crate::cmd::layer::add_source(
+                &mut s,
+                &json!({}),
+                crate::cmd::layer::Origin::Bytes("mixed.gpkg", std::sync::Arc::new(std::fs::read(&path).unwrap())),
+                None,
+            )
+            .unwrap();
+        } else {
+            let answer = s.run("layer.addData", &json!({"path":path})).unwrap();
+            assert_eq!(answer["layers"].as_array().unwrap().len(), 2);
+        }
+        assert!(
+            s.notices.iter().any(|n| n.text.contains("1 feature table(s) not added: no geometry column is registered")),
+            "bytes={bytes}: {:?}",
+            s.notices
+        );
+        let notes = skipped(&s);
+        assert_eq!(notes.len(), 1, "bytes={bytes}: {notes:?}");
+        assert!(notes[0].contains("2 attribute-only tables") && notes[0].contains("mixed.gpkg"), "{notes:?}");
+        assert!(s.notices.iter().any(|n| n.text.contains("1 tiles table(s) not added")), "bytes={bytes}: {:?}", s.notices);
+    }
+    // Selecting one feature table deliberately does not claim to add the whole file.
+    let mut selected = Session::new(Project::default());
+    selected.run("layer.addData", &json!({"path":path, "layer":"A"})).unwrap();
+    assert!(skipped(&selected).is_empty());
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch("DELETE FROM gpkg_contents WHERE data_type <> 'features' OR table_name = 'unregistered'; DROP TABLE notes; DROP TABLE owners; DROP TABLE imagery;")
+        .unwrap();
+    drop(conn);
+    let mut clean = Session::new(Project::default());
+    clean.run("layer.addData", &json!({"path":path})).unwrap();
+    assert!(skipped(&clean).is_empty());
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "DELETE FROM gpkg_geometry_columns; DELETE FROM gpkg_contents;
+         CREATE TABLE notes (note TEXT);
+         INSERT INTO gpkg_contents (table_name, data_type) VALUES ('notes', 'attributes');",
+    )
+    .unwrap();
+    drop(conn);
+    for missing_geometry_table in [false, true] {
+        if missing_geometry_table {
+            rusqlite::Connection::open(&path).unwrap().execute_batch("DROP TABLE gpkg_geometry_columns").unwrap();
+        }
+        for bytes in [false, true] {
+            let mut s = Session::new(Project::default());
+            let error = if bytes {
+                crate::cmd::layer::add_source(
+                    &mut s,
+                    &json!({}),
+                    crate::cmd::layer::Origin::Bytes("mixed.gpkg", std::sync::Arc::new(std::fs::read(&path).unwrap())),
+                    None,
+                )
+                .unwrap_err()
+            } else {
+                s.run("layer.addData", &json!({"path":path})).unwrap_err().to_string()
+            };
+            assert!(error.contains("1 attribute-only table"), "bytes={bytes}: {error}");
+        }
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 #[test]
 fn notices_since_survives_the_cap() {
     let mut s = Session::new(Project::default());

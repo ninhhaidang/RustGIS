@@ -2033,7 +2033,37 @@ fn add_source_with(
     // and the AI Assistant know the file holds more than was added.
     let mut skipped: Vec<String> = Vec::new();
     let mut total = None;
-    let tables: Vec<Option<String>> = match (ps(p, "layer").map(str::trim).filter(|t| !t.is_empty()), &origin) {
+    let selected = ps(p, "layer").map(str::trim).filter(|t| !t.is_empty());
+    // Report unsupported contents for a whole-file add, not a deliberate table selection.
+    let contents = match (&origin, selected.is_none()) {
+        #[cfg(not(target_arch = "wasm32"))]
+        (Origin::Path(path), true) if path.to_ascii_lowercase().ends_with(".gpkg") => {
+            source::gpkg::unsupported_table_counts(Path::new(path)).map_err(err)?
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        (Origin::Bytes(name, bytes), true) if name.to_ascii_lowercase().ends_with(".gpkg") => {
+            source::gpkg::unsupported_table_counts_bytes(bytes.as_slice()).map_err(err)?
+        }
+        #[cfg(target_arch = "wasm32")]
+        (Origin::Bytes(name, bytes), true) if name.to_ascii_lowercase().ends_with(".gpkg") => {
+            source::gpkg_mem::unsupported_table_counts(source::Shared(bytes.clone())).map_err(err)?
+        }
+        _ => Vec::new(),
+    };
+    let omitted: Vec<String> = contents
+        .into_iter()
+        .map(|(kind, count)| {
+            if kind == "attributes" {
+                format!("{count} attribute-only tables not added: GeoPackage attribute tables are not supported")
+            } else if kind == "features" {
+                format!("{count} feature table(s) not added: no geometry column is registered")
+            } else {
+                format!("{count} {kind} table(s) not added: only GeoPackage feature tables are supported")
+            }
+        })
+        .collect();
+    let attribute_note = (!omitted.is_empty()).then(|| omitted.join("; "));
+    let tables: Vec<Option<String>> = match (selected, &origin) {
         (Some(t), _) => vec![Some(t.to_string())],
         (None, Origin::Path(path)) if path.to_ascii_lowercase().ends_with(".gpkg") => {
             let mut all = source::layers(Path::new(path)).map_err(err)?;
@@ -2058,7 +2088,10 @@ fn add_source_with(
         _ => vec![None],
     };
     if tables.is_empty() {
-        return Err(format!("{label}: no feature tables"));
+        return Err(match &attribute_note {
+            Some(note) => format!("{label}: no feature tables; {note}"),
+            None => format!("{label}: no feature tables"),
+        });
     }
     let empty_before = super::map_is_empty(s);
     let mut ids = Vec::new();
@@ -2074,7 +2107,10 @@ fn add_source_with(
                     Err(rustgis_data::DataError::Format("the table isn't open".into()))
                 }
             }
-            .map_err(err)?,
+            .map_err(|e| match &attribute_note {
+                Some(note) => format!("{}; {note}", err(e)),
+                None => err(e),
+            })?,
         };
         let info = src.info().clone();
         // A point cloud is always read in place, so a project keeps its file's path, not millions
@@ -2145,6 +2181,9 @@ fn add_source_with(
         if !e.is_empty() {
             s.zoom_to(&e);
         }
+    }
+    if let Some(note) = attribute_note {
+        s.notify(format!("{label}: {note}"), false);
     }
     let first = ids.first().copied();
     let mut out = json!({"layer": first, "layers": ids, "features": features, "streamed": streamed});

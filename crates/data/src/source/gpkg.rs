@@ -56,6 +56,46 @@ pub fn layers(path: &Path) -> Result<Vec<String>> {
     feature_tables(&conn)
 }
 
+/// Unsupported contents omitted when the GeoPackage is added as feature layers, by type.
+pub fn unsupported_table_counts(path: &Path) -> Result<Vec<(String, u64)>> {
+    let conn = open_db(path)?;
+    let invalid: i64 = conn
+        .query_row("SELECT count(*) FROM gpkg_contents WHERE typeof(table_name) <> 'text' OR typeof(data_type) <> 'text'", [], |row| {
+            row.get(0)
+        })
+        .map_err(not_gpkg)?;
+    if invalid > 0 {
+        return Err(DataError::Format(format!(
+            "GeoPackage: {invalid} invalid gpkg_contents entry/entries: table_name and data_type must be text"
+        )));
+    }
+    let registered_filter = if has_geometry_columns(&conn)? {
+        "WHERE lower(table_name) NOT IN (SELECT lower(table_name) FROM gpkg_geometry_columns WHERE table_name IS NOT NULL)"
+    } else {
+        ""
+    };
+    let query = format!(
+        "SELECT CASE WHEN data_type COLLATE NOCASE IN ('attributes','features','tiles','2d-gridded-coverage') THEN lower(data_type) ELSE 'other' END AS kind, count(*) FROM gpkg_contents {registered_filter} GROUP BY 1 ORDER BY 1"
+    );
+    let mut st = conn.prepare(&query).map_err(not_gpkg)?;
+    st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+        .map_err(err)?
+        .map(|r| {
+            let (kind, count) = r.map_err(err)?;
+            Ok((kind, u64::try_from(count).map_err(|_| DataError::Format("GeoPackage: invalid table count".into()))?))
+        })
+        .collect()
+}
+
+/// Count a desktop upload with SQLite, matching the reader used to open its feature table.
+pub fn unsupported_table_counts_bytes(bytes: &[u8]) -> Result<Vec<(String, u64)>> {
+    use std::io::Write;
+    let mut copy = tempfile::NamedTempFile::new()?;
+    copy.write_all(bytes)?;
+    copy.flush()?;
+    unsupported_table_counts(copy.path())
+}
+
 fn open_db(path: &Path) -> Result<Connection> {
     let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX).map_err(err)?;
     // A cap on SQLite's page cache, so a huge database can't take all the memory; and the file is
@@ -67,7 +107,27 @@ fn open_db(path: &Path) -> Result<Connection> {
     Ok(conn)
 }
 
+/// Attribute-only and tile-only packages need not declare any geometry columns.
+fn has_geometry_columns(conn: &Connection) -> Result<bool> {
+    has_table(conn, "gpkg_geometry_columns")
+}
+
+fn has_table(conn: &Connection, name: &str) -> Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name = ?1 COLLATE NOCASE AND type IN ('table','view'))",
+        [name],
+        |row| row.get(0),
+    )
+    .map_err(err)
+}
+
 fn feature_tables(conn: &Connection) -> Result<Vec<String>> {
+    if !has_geometry_columns(conn)? {
+        if !has_table(conn, "gpkg_contents")? {
+            return Err(DataError::Format("not a GeoPackage: no gpkg_contents table".into()));
+        }
+        return Ok(Vec::new());
+    }
     let mut st = conn.prepare("SELECT table_name FROM gpkg_geometry_columns ORDER BY table_name").map_err(not_gpkg)?;
     let rows = st.query_map([], |r| r.get::<_, String>(0)).map_err(err)?;
     Ok(rows.filter_map(std::result::Result::ok).collect())
