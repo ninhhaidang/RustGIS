@@ -120,7 +120,7 @@ fn listing(s: &mut Session, p: &Value) -> CmdResult {
     }
     if found.incomplete {
         return Err(
-            "the service lists collections RustGIS cannot read (more than 2000, or unreadable addresses); the group was not changed".into(),
+            "the service lists collections RustGIS cannot read (more than 2000, an address too long to read them all, or unreadable addresses); the group was not changed".into(),
         );
     }
     let previous = target(s, p)?;

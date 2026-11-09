@@ -15050,6 +15050,41 @@ fn a_layer_past_the_listing_is_added_by_name() {
     assert!(e.contains("more than 2000"), "{e}");
 }
 
+/// Each listed layer repeats its document's address (`source_url`), which nothing bounds: a long
+/// one lists fewer layers, said, and `service.add`'s refusal of a name counts those listed.
+#[test]
+fn a_long_document_address_lists_fewer_layers() {
+    let collections: Vec<Value> = (1..=600)
+        .map(|i| json!({"id": format!("c{i}"), "links": [{"rel": "items", "href": format!("https://api.example.org/c{i}/items")}]}))
+        .collect();
+    let text = json!({"collections": collections}).to_string();
+    let mut s = Session::new(Project::default());
+    let short = s.run("service.layers", &json!({"url": "https://api.example.org/collections", "text": text})).unwrap();
+    // (Other notes, such as how many features a collection is read up to here, aren't these.)
+    let says = |out: &Value, text: &str| out["notes"].as_array().unwrap().iter().any(|n| n == text);
+    assert_eq!(short["count"], 600);
+    assert!(short.get("listedNote").is_none() && !short["notes"].to_string().contains("repeats"), "{}", short["notes"]);
+    let url = format!("https://api.example.org/{}/collections", "a".repeat(16 << 10));
+    let long = s.run("service.layers", &json!({"url": url, "text": text})).unwrap();
+    let bytes = long["layers"][0]["source_url"].as_str().unwrap().len();
+    // The test build lists 8 MiB of addresses (its length doesn't divide them).
+    let listed = (8 << 20) / bytes;
+    assert!(listed < 600 && (8 << 20) % bytes != 0, "{bytes}");
+    assert_eq!((&long["count"], &long["total"]), (&json!(listed), &json!(600)));
+    let cut = format!("only the first {listed} of 600 layers are listed; service.add takes any of them by name");
+    assert_eq!(long["listedNote"], json!(cut));
+    let why = format!(
+        "each listed layer repeats its document's address, {bytes} bytes long here, and RustGIS lists at most 8 MiB of them (at least one layer)"
+    );
+    assert!(says(&long, &why) && says(&long, &cut), "{}", long["notes"]);
+    let e = s.run("service.add", &json!({"url": url, "layer": "nao", "text": text})).unwrap_err();
+    assert!(e.ends_with(&format!("no layer 'nao' (service.layers lists the first {listed} of 600 layers)")), "{e}");
+    // A service group would take them all, each with its address: it refuses the list instead.
+    let e = s.run("service.groupPlan", &json!({"url": url, "text": text})).unwrap_err();
+    assert!(e.contains("an address too long to read them all"), "{e}");
+    assert!(s.run("service.groupPlan", &json!({"url": "https://api.example.org/collections", "text": text})).is_ok());
+}
+
 /// A layer past what RustGIS reads of a document is refused for that reason, not as absent.
 #[test]
 fn a_layer_past_the_read_limit_is_refused_saying_so() {

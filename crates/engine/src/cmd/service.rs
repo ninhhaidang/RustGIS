@@ -89,9 +89,11 @@ pub(crate) fn without_token(p: &Value) -> Result<Option<Value>, String> {
     Ok(Some(owned))
 }
 
-/// One layer's exact capabilities document and the origin history used to reach it.
+/// One layer's exact capabilities document and the origin history used to reach it. The address
+/// is shared by the document's layers: nothing bounds its length, and a document has up to
+/// 100,000 of them, the most `rustgis_data::ogc` reads (#1519).
 struct CapabilitySource {
-    address: String,
+    address: std::sync::Arc<str>,
     crossed_origin: bool,
 }
 
@@ -126,6 +128,10 @@ const MAX_SERVICE_DOCUMENTS: usize = 4;
 /// A notice for legend pictures a service listed that its layer cannot keep (an address too long).
 const LEGENDS_LEFT_OUT_NOTICE: &str = "{n} legend picture(s) the service listed were left out: their addresses are too long";
 
+/// Most bytes of document addresses a listing repeats: each listed layer's `source_url` is its
+/// document's address, which nothing bounds (a landing page links to any collections address).
+const MAX_LISTED_ADDRESS_BYTES: usize = if cfg!(test) { 8 << 20 } else { 64 << 20 };
+
 /// Whether what this `service.add` would wait for is left off the frame: it is a plugin command's,
 /// run by the desktop app, which runs the command again when it has come (#1319).
 fn leaves_waits(s: &Session) -> bool {
@@ -144,8 +150,30 @@ fn capabilities(s: &mut Session, p: &Value) -> Result<Discovery, String> {
 }
 
 /// Reads a service's documents, fetching what `p` doesn't give: waiting for them, or with `left`,
-/// off the frame ([`Session::left_document`]), when a document not in yet is its `next`.
+/// off the frame ([`Session::left_document`]), when a document not in yet is its `next`. Long
+/// document addresses list fewer layers ([`MAX_LISTED_ADDRESS_BYTES`]), said in a note.
 fn discover(s: &mut Session, p: &Value, left: bool) -> Result<Discovery, String> {
+    let mut found = read_documents(s, p, left)?;
+    let listed = found.service.listed.unwrap_or(usize::MAX).min(found.sources.len());
+    let mut bytes = 0usize;
+    let cut = found.sources[..listed].iter().position(|source| {
+        bytes = bytes.saturating_add(source.address.len());
+        bytes > MAX_LISTED_ADDRESS_BYTES
+    });
+    // (At least one, whatever its address.)
+    if let Some((cut, long)) = cut.map(|cut| (cut.max(1), found.sources[cut].address.len())).filter(|&(cut, _)| cut < listed) {
+        found.service.listed = Some(cut);
+        // A service group takes every layer read, not those listed: it can't take part of this.
+        found.incomplete = true;
+        found.service.notes.push(format!(
+            "each listed layer repeats its document's address, {long} bytes long here, and RustGIS lists at most {} MiB of them (at least one layer)",
+            MAX_LISTED_ADDRESS_BYTES >> 20
+        ));
+    }
+    Ok(found)
+}
+
+fn read_documents(s: &mut Session, p: &Value, left: bool) -> Result<Discovery, String> {
     let original = url_of(p)?;
     let mut address =
         crate::render::rustgis_tiles::logins::inherit(original, &rustgis_data::ogc::capabilities_url(original, ps(p, "type")));
@@ -218,9 +246,10 @@ fn discover(s: &mut Session, p: &Value, left: bool) -> Result<Discovery, String>
         }
         // Parsers bound each document's collections/layers; visited documents bound the merge.
         // Distinct offers may share a name (including generated tile names and collection ids).
+        let shared: std::sync::Arc<str> = address.as_str().into();
         for layer in service.layers {
             result.service.layers.push(layer);
-            result.sources.push(CapabilitySource { address: address.clone(), crossed_origin });
+            result.sources.push(CapabilitySource { address: shared.clone(), crossed_origin });
         }
         result.service.withheld_addresses = result.service.withheld_addresses.saturating_add(service.withheld_addresses);
         result.service.past_read_limit = result.service.past_read_limit.take().or(service.past_read_limit);
@@ -712,7 +741,7 @@ fn layer_source(layer: &mut Value, source: CapabilitySource) {
         offer.get("type").and_then(Value::as_str) == Some("features")
             && ps(offer, "url").is_some_and(|url| crosses_origin(&source.address, url))
     });
-    layer["source_url"] = json!(source.address);
+    layer["source_url"] = json!(&*source.address);
     if source.crossed_origin || foreign_features {
         layer["anonymous"] = json!(true);
         if let Some(url) = layer.get_mut("offer").and_then(|o| o.get_mut("url"))
@@ -774,7 +803,7 @@ fn add_discovered(s: &mut Session, p: &Value, url: &str, want: &str, found: &Dis
             }
         })?;
     let capability_crossed = source.crossed_origin;
-    let source = source.address.as_str();
+    let source = &*source.address;
     // A time-enabled layer follows the time slider, at each of its steps, unless a time is asked
     // for: one of its times (the layer named with it), or "default" (`false`), the service's.
     // (`"time": true`, the slider, as for a Zarr variable, `layer.addZarr`'s.)
