@@ -327,6 +327,12 @@ pub fn redact_text(text: &str) -> String {
             let end = word.trim_end_matches([':', ',', ';', '.', ')', ']', '>', '"', '\'', '»', '›', '”', '’']).len().max(at + 3);
             let (before, address, after) =
                 (word.get(..start).unwrap_or(""), word.get(start..end).unwrap_or(""), word.get(end..).unwrap_or(""));
+            // A scheme alone names no address ("give an http:// or s3:// address"), nor does one
+            // with an ellipsis for the rest (a hint's `https://…`); the notice redaction keeps
+            // them too.
+            if rustgis_data::address::scheme_example(address.trim_end_matches('…')) {
+                return piece.to_string();
+            }
             format!("{before}{}{after}{}", redact(address), piece.get(word.len()..).unwrap_or(""))
         })
         .collect()
@@ -783,6 +789,36 @@ MIIE
         assert_eq!(s.extra, json!({"type": "wms"}));
         assert!(clean(Source { kind: "nope".into(), address: "x".into(), ..Source::default() }).is_err());
         assert!(clean(Source { kind: "file".into(), address: " ".into(), ..Source::default() }).is_err());
+    }
+
+    #[test]
+    fn a_scheme_alone_in_prose_is_no_address() {
+        for text in [
+            "give an http://, https:// or s3:// address",
+            "needs an http:// or https:// address",
+            "uses unencrypted http://. Tick the confirmation",
+            "only http:// and https:// addresses are fetched",
+            "for example https://…",
+            "(http://) or \"https://\" or 's3://'",
+            "HTTP:// and Https://",
+            "file:// and ftp://",
+        ] {
+            assert_eq!(redact_text(text), text);
+        }
+        // Anything after the scheme is an address, redacted as before.
+        for (text, kept) in [
+            ("see https://user:pw@host/x, or http://", "see https://host/x, or http://"),
+            ("https://user:pw@", "https:"),
+            ("https://user:pw@…", "https:"),
+            ("https://:pw@ failed", "https: failed"),
+            ("https://?token=x", "https:"),
+            ("https://#x", "https:"),
+            ("https://…?token=x", "https:"),
+            ("http:///", "http:"),
+            ("s3://bucket/a.tif?X-Amz-Signature=s", "s3://bucket/a.tif"),
+        ] {
+            assert_eq!(redact_text(text), kept, "{text}");
+        }
     }
 
     #[test]

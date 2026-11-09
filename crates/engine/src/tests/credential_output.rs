@@ -106,6 +106,13 @@ fn generated_errors_and_history_clean_addresses_before_active_patterns() {
     assert!(!s.project.saved_text(None).unwrap().0.contains(SECRET));
 }
 
+/// An error that names the schemes it wants keeps them whole: they are prose, not addresses.
+#[test]
+fn errors_keep_the_schemes_they_ask_for() {
+    let error = Session::new(Project::default()).run("layer.addUrl", &json!({"url": "C:/data/a.tif"})).unwrap_err();
+    assert_eq!(error, "C:/data/a.tif: give an http://, https:// or s3:// address (Add Data opens files)");
+}
+
 /// Invalid command/tool identifiers are executable slots too: an address there must not
 /// bypass cleaning through a null parameter or a malformed script line.
 #[test]

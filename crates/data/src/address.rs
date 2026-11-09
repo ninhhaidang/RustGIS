@@ -332,7 +332,7 @@ pub fn public_web_address(address: &str) -> Public {
 }
 
 /// A bare supported scheme is a prose example with no authority or credential to remove.
-pub(crate) fn scheme_example(text: &str) -> bool {
+pub fn scheme_example(text: &str) -> bool {
     ["http://", "https://", "s3://"].iter().any(|scheme| text.eq_ignore_ascii_case(scheme))
 }
 
