@@ -1226,7 +1226,27 @@ pub fn to_wkt(crs: Crs) -> Option<String> {
             (d.proj4.clone(), d.label.clone(), None)
         }
     };
-    let proj = proj4rs::Proj::from_proj_string(&def).ok()?;
+    def_wkt(&def, &name, code)
+}
+
+/// A PROJ definition as WKT1 named `name`, with no authority: a projection a map is drawn in that
+/// has no EPSG code (a preset, `local:`), as [`to_wkt`] would write it. `None` as there.
+pub fn proj4_to_wkt(def: &str, name: &str) -> Option<String> {
+    def_wkt(def, name, None)
+}
+
+/// A PROJ definition as WKT1, with `code` as its EPSG authority.
+fn def_wkt(def: &str, name: &str, code: Option<u16>) -> Option<String> {
+    // proj4rs doesn't project the world projections RustGIS computes itself (rustgis-map's
+    // `world`): their ellipsoid, prime meridian and unit are read from the definition as a
+    // geographic one.
+    let proj = proj4rs::Proj::from_proj_string(def).ok().or_else(|| {
+        let kind = def.split_whitespace().find_map(|t| t.strip_prefix("+proj="))?;
+        if !matches!(kind, "natearth" | "wintri" | "eck4") {
+            return None;
+        }
+        proj4rs::Proj::from_proj_string(&def.replacen(&format!("+proj={kind}"), "+proj=longlat", 1)).ok()
+    })?;
     let params: Vec<(&str, Option<&str>)> = def
         .split_whitespace()
         .filter_map(|t| t.strip_prefix('+'))
@@ -1245,7 +1265,7 @@ pub fn to_wkt(crs: Crs) -> Option<String> {
     // proj4rs computes `eqc` on a sphere of the semi-major axis and gives that sphere. Keep the
     // datum's original ellipsoid in the definition, as PROJ/GDAL do.
     let (a, b) = match text("proj") {
-        Some("eqc") => super::crs::eqc_geographic(&def).ok()?.ellipse_parameters(),
+        Some("eqc") => super::crs::eqc_geographic(def).ok()?.ellipse_parameters(),
         _ => proj.ellipse_parameters(),
     };
     // A named ellipsoid's flattening as published; else from its axes (PROJ keeps a and b).
@@ -1256,7 +1276,7 @@ pub fn to_wkt(crs: Crs) -> Option<String> {
     };
     let datum_name = match datum {
         Some(d) => d.1.to_string(),
-        None => match national_datum_name(&def, code) {
+        None => match national_datum_name(def, code) {
             Some(n) => n.to_string(),
             None => format!("Unknown based on {ellps_name} ellipsoid"),
         },
@@ -1467,6 +1487,22 @@ pub fn to_wkt(crs: Crs) -> Option<String> {
             ps = vec![("central_meridian", lon0)];
             "Equal_Earth"
         }
+        // Younger than WKT1 too, or never in it: the names GDAL and PROJ read (Esri's).
+        "natearth" => {
+            ps = vec![("central_meridian", lon0)];
+            "Natural_Earth"
+        }
+        "eck4" => {
+            ps = vec![("central_meridian", lon0)];
+            "Eckert_IV"
+        }
+        // Its standard parallel is PROJ's default, Aitoff's and Hammer's parallel of acos(2/π)
+        // (about 50.46°), unless the definition gives one.
+        "wintri" => {
+            let lat1 = get("lat_1").unwrap_or_else(|| std::f64::consts::FRAC_2_PI.acos().to_degrees());
+            ps = vec![("standard_parallel_1", lat1), ("central_meridian", lon0)];
+            "Winkel_Tripel"
+        }
         // Hotine's oblique Mercator by its azimuth, the general form proj4rs 0.3 projects (the
         // Swiss case is `somerc` above). EPSG's variant B puts the origin at the centre; its
         // variant A, PROJ's `+no_uoff`, at the natural origin on the centre line, which WKT1 says
@@ -1499,7 +1535,7 @@ pub fn to_wkt(crs: Crs) -> Option<String> {
     let parameters: String = ps.iter().map(|(n, v)| format!(",PARAMETER[{},{}]", quoted(n), num(*v))).collect();
     Some(format!(
         "PROJCS[{},{},PROJECTION[{}]{parameters},UNIT[{},{}],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH]{}]",
-        quoted(&name),
+        quoted(name),
         geogcs(""),
         quoted(method),
         quoted(unit),
@@ -1636,6 +1672,27 @@ mod tests {
             let (a, b) = (crs.transformer().unwrap().from_lonlat(c).unwrap(), read.transformer().unwrap().from_lonlat(c).unwrap());
             assert!((a.x - b.x).abs() < 0.001 && (a.y - b.y).abs() < 0.001, "{def}: {a:?} {b:?}\n{wkt}");
         }
+    }
+
+    /// The world projections RustGIS computes itself and proj4rs doesn't (Natural Earth, Winkel
+    /// Tripel, Eckert IV) are written as WKT, on their datum, with their centre and offsets
+    /// (#1191: a GeoPDF of a map drawn in one).
+    #[test]
+    fn world_projections_proj4rs_lacks_are_written() {
+        for (def, method) in [
+            ("+proj=natearth +lon_0=-60 +x_0=100 +y_0=-200 +datum=WGS84 +units=m +no_defs", "Natural_Earth"),
+            ("+proj=wintri +lon_0=-60 +x_0=100 +y_0=-200 +datum=WGS84 +units=m +no_defs", "Winkel_Tripel"),
+            ("+proj=eck4 +lon_0=-60 +x_0=100 +y_0=-200 +datum=WGS84 +units=m +no_defs", "Eckert_IV"),
+        ] {
+            let wkt = proj4_to_wkt(def, "World").unwrap_or_else(|| panic!("{def}"));
+            assert!(wkt.contains(&format!("PROJECTION[\"{method}\"]")), "{wkt}");
+            assert!(wkt.contains("PARAMETER[\"central_meridian\",-60]") && wkt.contains("PARAMETER[\"false_easting\",100]"), "{wkt}");
+            assert!(wkt.contains("SPHEROID[\"WGS 84\",6378137,298.257223563"), "{wkt}");
+        }
+        let wkt = proj4_to_wkt("+proj=wintri +lon_0=0 +datum=WGS84 +units=m +no_defs", "W").unwrap();
+        assert!(wkt.contains("PARAMETER[\"standard_parallel_1\",50.4597"), "{wkt}");
+        // Another projection proj4rs can't read still has none.
+        assert_eq!(proj4_to_wkt("+proj=nosuch +datum=WGS84 +units=m +no_defs", "X"), None);
     }
 
     #[test]

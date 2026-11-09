@@ -33445,6 +33445,262 @@ fn a_pdf_says_which_frames_and_pages_it_draws_as_pictures() {
     );
 }
 
+/// A layout's PDF georeferences its map frames (#1191): each as an ISO 32000 viewport with its
+/// corners and its map's coordinate system, so that the frame's corners, taken back to the map,
+/// make the frame's rectangle. A tilted frame is left out, and said.
+#[test]
+fn a_layout_pdf_georeferences_its_map_frames() {
+    let mut s = world();
+    s.run("map.projection", &json!({"type": "EPSG:31983"})).unwrap();
+    s.run("layout.new", &json!({"page": "a4", "orientation": "landscape", "template": "map"})).unwrap();
+    let frame = s.project.layouts[0].elements.iter().find(|e| e.kind.code() == "mapFrame").unwrap().clone();
+    s.run("layout.update", &json!({"element": frame.id, "center": [-45.0, -20.0], "scale": 2_000_000.0})).unwrap();
+    let path = std::env::temp_dir().join(format!("rustgis-geopdf-{}.pdf", std::process::id()));
+    let export = |s: &mut Session| {
+        let mark = s.notice_mark();
+        s.run("layout.export", &json!({"path": path, "dpi": 72})).unwrap();
+        let said: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+        (String::from_utf8_lossy(&std::fs::read(&path).unwrap()).into_owned(), said)
+    };
+    let (pdf, said) = export(&mut s);
+    assert!(pdf.starts_with("%PDF-1.7") && pdf.contains("/ExtensionLevel 3"), "{}", &pdf[..20]);
+    assert!(pdf.contains("/VP [<< /Type /Viewport") && pdf.contains("/Subtype /GEO"));
+    assert!(pdf.contains("/GCS << /Type /PROJCS /WKT (PROJCS[") && pdf.contains("/EPSG 31983 >>"), "{pdf}");
+    assert!(!said.iter().any(|t| t.contains("georeference")), "{said:?}");
+    // The corners, back on the map, are the frame's rectangle: its top and bottom level, its
+    // sides upright, and as wide as the frame at its scale.
+    let gpts = pdf.split("/GPTS [").nth(1).and_then(|r| r.split(']').next()).unwrap();
+    let n: Vec<f64> = gpts.split_whitespace().map(|v| v.parse().unwrap()).collect();
+    assert_eq!(n.len(), 8, "{gpts}");
+    let m: Vec<rustgis_geom::Coord> = n.chunks(2).map(|c| s.map().to_map(rustgis_geom::Coord::new(c[1], c[0])).unwrap()).collect();
+    let (tl, tr, br, bl) = (m[0], m[1], m[2], m[3]);
+    assert!((tl.y - tr.y).abs() < 0.01 && (bl.y - br.y).abs() < 0.01, "{m:?}");
+    assert!((tl.x - bl.x).abs() < 0.01 && (tr.x - br.x).abs() < 0.01, "{m:?}");
+    let wide = frame.w / 1000.0 * 2_000_000.0;
+    assert!(((tr.x - tl.x) / wide - 1.0).abs() < 1e-3, "{} m for {wide} m", tr.x - tl.x);
+    assert!(tl.y > bl.y, "north up");
+    // Tilted, it shows no flat map to measure on: left out, and said.
+    s.run("layout.update", &json!({"element": frame.id, "pitch": 30})).unwrap();
+    let (pdf, said) = export(&mut s);
+    assert!(pdf.starts_with("%PDF-1.4") && !pdf.contains("/VP ["));
+    assert!(said.iter().any(|t| t == &format!("The PDF doesn't georeference 1 map frame ({}: it is tilted)", frame.name)), "{said:?}");
+    // A world projection RustGIS computes itself (Winkel Tripel) is written as WKT too.
+    s.run("layout.update", &json!({"element": frame.id, "pitch": 0})).unwrap();
+    s.run("map.projection", &json!({"type": "winkelTripel"})).unwrap();
+    let (pdf, said) = export(&mut s);
+    assert!(pdf.contains("/GCS << /Type /PROJCS /WKT (PROJCS[") && pdf.contains("PROJECTION[\"Winkel_Tripel\"]"), "{pdf}");
+    assert!(!said.iter().any(|t| t.contains("georeference")), "{said:?}");
+    // A projection with no WKT form (the GOES-16 fixed grid): at a large scale its corners in
+    // longitude/latitude put every place within half a millimetre, so it is georeferenced by
+    // them, and said; at a small one they wouldn't, so it is left out: no viewports.
+    s.run("map.projection", &json!({"type": "ESRI:102498"})).unwrap();
+    s.run("layout.update", &json!({"element": frame.id, "center": [-60.0, -10.0], "scale": 50_000.0})).unwrap();
+    let (pdf, said) = export(&mut s);
+    assert!(pdf.contains("/GCS << /Type /GEOGCS /WKT (GEOGCS[") && pdf.contains("/EPSG 4326 >>"), "{said:?}");
+    let corners = said.iter().find(|t| t.starts_with("The PDF georeferences 1 map frame by its corners"));
+    assert!(corners.is_some_and(|t| t.ends_with(&format!("({})", frame.name))), "{said:?}");
+    let level = s.notices_since(0).iter().rev().find(|n| n.text.starts_with("The PDF georeferences")).unwrap().severity;
+    assert_eq!(level, rustgis_data::diagnostics::Severity::Info, "information, not a warning");
+    s.run("layout.update", &json!({"element": frame.id, "scale": 10_000_000.0})).unwrap();
+    let (pdf, said) = export(&mut s);
+    assert!(!pdf.contains("/Subtype /GEO") && !pdf.contains("/VP ["), "nothing to measure in, no viewports");
+    assert!(said.iter().any(|t| t.contains("its corners alone would put places more than 0.5 mm off")), "{said:?}");
+    // Turned off, nothing is georeferenced and nothing said.
+    s.run("map.projection", &json!({"type": "EPSG:31983"})).unwrap();
+    s.run("layout.update", &json!({"element": frame.id, "center": [-45.0, -20.0], "scale": 2_000_000.0})).unwrap();
+    let mark = s.notice_mark();
+    s.run("layout.export", &json!({"path": path, "dpi": 72, "georeference": false})).unwrap();
+    let plain = String::from_utf8_lossy(&std::fs::read(&path).unwrap()).into_owned();
+    assert!(plain.starts_with("%PDF-1.4") && !plain.contains("/VP ["));
+    assert!(!s.notices_since(mark).iter().any(|n| n.text.contains("georeference")));
+    // On SAD69 (shifted from WGS 84) the corners are on SAD69, tens of metres from WGS 84's, and
+    // moved as PROJ moves them: EPSG:4326 to EPSG:4618 takes this corner (-46.888358 E,
+    // -18.436173 N) 0.000447° east and 0.000468° north (QGIS 3.32.1's gdaltransform).
+    s.run("map.projection", &json!({"type": "EPSG:29193"})).unwrap();
+    let (pdf, _) = export(&mut s);
+    let gpts = pdf.split("/GPTS [").nth(1).and_then(|r| r.split(']').next()).unwrap();
+    let n: Vec<f64> = gpts.split_whitespace().map(|v| v.parse().unwrap()).collect();
+    let frame_now = s.project.layouts[0].element(frame.id).unwrap().clone();
+    let rustgis_map::layout::ElementKind::MapFrame { center, scale, .. } = &frame_now.kind else { panic!() };
+    let cam = rustgis_map::layout::frame_camera(s.map(), *center, *scale, 0.0, 0.0);
+    let wgs84 = s
+        .map()
+        .to_lonlat(cam.to_map(0.0, 0.0, frame.w * rustgis_map::layout::PT_PER_MM, frame.h * rustgis_map::layout::PT_PER_MM))
+        .unwrap();
+    let moved = ((n[1] - wgs84.x) * 104_600.0).hypot((n[0] - wgs84.y) * 110_600.0);
+    assert!(pdf.contains("/EPSG 29193 >>") && moved > 10.0 && moved < 200.0, "{moved} m");
+    let off = ((n[1] - wgs84.x - 0.000_447) * 104_600.0).hypot((n[0] - wgs84.y - 0.000_468) * 110_600.0);
+    assert!(off < 10.0, "{off} m from PROJ's shift");
+    // Across 180° in Web Mercator, a corner comes back on the other side of the world: left out.
+    s.run("map.projection", &json!({"type": "mercator"})).unwrap();
+    s.run("layout.update", &json!({"element": frame.id, "center": [180.0, 0.0]})).unwrap();
+    let (pdf, said) = export(&mut s);
+    assert!(!pdf.contains("/VP ["), "nothing georeferenced");
+    assert!(said.iter().any(|t| t.contains("crosses its projection's edge (the 180° meridian)")), "{said:?}");
+    // Another body's map isn't given an Earth system.
+    s.run("layout.update", &json!({"element": frame.id, "center": [-45.0, -20.0]})).unwrap();
+    s.run("map.body", &json!({"name": "mars", "basemap": false})).unwrap();
+    let (pdf, said) = export(&mut s);
+    assert!(!pdf.contains("/VP ["));
+    assert!(said.iter().any(|t| t.contains("it is on another body than the Earth")), "{said:?}");
+    let _ = std::fs::remove_file(&path);
+}
+
+/// What a PDF doesn't georeference is one notice for each kind, with a count (#1191): a frame
+/// once however many pages it is on, two frames sharing a name two. A frame so on some pages of a
+/// series only is named with them, so that one georeferenced on the others doesn't read as having
+/// no coordinates anywhere in the PDF.
+#[test]
+fn a_pdf_says_which_frames_it_doesnt_georeference() {
+    let mut s = Session::new(Project::default());
+    let mark = s.notice_mark();
+    crate::cmd::layout::georeference_notices(&mut s, &[], &[], 1);
+    assert!(s.notices_since(mark).is_empty(), "everything georeferenced, nothing said");
+    let left = [
+        (1, 1, "Main".to_string(), "it is tilted"),
+        (1, 1, "Main".to_string(), "it is tilted"),
+        (1, 4, "Main".to_string(), "it shows the globe"),
+    ];
+    crate::cmd::layout::georeference_notices(&mut s, &left, &[(1, 2, "Inset".to_string()), (1, 2, "Inset".to_string())], 1);
+    let said: Vec<&str> = s.notices_since(mark).iter().map(|n| n.text.as_str()).collect();
+    assert_eq!(said.len(), 2, "{said:?}");
+    assert_eq!(said[0], "The PDF doesn't georeference 2 map frames (Main: it is tilted, Main: it shows the globe)");
+    assert!(said[1].starts_with("The PDF georeferences 1 map frame by its corners") && said[1].ends_with("(Inset)"), "{}", said[1]);
+    // Information, not warnings: nothing wrong is written.
+    assert!(s.notices_since(mark).iter().all(|n| n.severity == rustgis_data::diagnostics::Severity::Info));
+    // A series of five pages: Main left out on pages 3 and 4 only (the first page's reason), the
+    // inset by its corners on every page, an overview by its corners on page 2 only.
+    let mark = s.notice_mark();
+    let left = [(3, 1, "Main".to_string(), "it crosses the 180° meridian"), (4, 1, "Main".to_string(), "it shows the globe")];
+    let mut corners: Vec<(usize, u32, String)> = (1..=5).map(|p| (p, 2, "Inset".to_string())).collect();
+    corners.push((2, 3, "Overview".to_string()));
+    crate::cmd::layout::georeference_notices(&mut s, &left, &corners, 5);
+    let said: Vec<&str> = s.notices_since(mark).iter().map(|n| n.text.as_str()).collect();
+    assert_eq!(said[0], "The PDF doesn't georeference 1 map frame (Main on pages 3 and 4: it crosses the 180° meridian)");
+    assert!(said[1].ends_with("(Inset, Overview on page 2)"), "{}", said[1]);
+    // Many pages are cut to ten, with how many more.
+    let mark = s.notice_mark();
+    let left: Vec<_> = (1..=13).map(|p| (p, 1, "Main".to_string(), "it is tilted")).collect();
+    crate::cmd::layout::georeference_notices(&mut s, &left, &[], 20);
+    let said = &s.notices_since(mark)[0].text;
+    assert!(said.contains("(Main on pages 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 and 3 more: it is tilted)"), "{said}");
+}
+
+/// Each page of a map series is georeferenced with its own view, not the first page's (#1191).
+#[test]
+fn a_map_series_pdf_georeferences_each_page_with_its_view() {
+    let mut s = world();
+    s.run("map.projection", &json!({"type": "EPSG:3857"})).unwrap();
+    s.run("layout.new", &json!({"page": "a4", "orientation": "landscape", "template": "map"})).unwrap();
+    let pages = s.run("layout.series", &json!({"layer": "Lakes", "nameField": "name"})).unwrap()["pages"].as_u64().unwrap();
+    let path = std::env::temp_dir().join(format!("rustgis-geopdf-series-{}.pdf", std::process::id()));
+    s.run("layout.export", &json!({"path": path, "dpi": 36})).unwrap();
+    let pdf = String::from_utf8_lossy(&std::fs::read(&path).unwrap()).into_owned();
+    let _ = std::fs::remove_file(&path);
+    let gpts: Vec<&str> = pdf.split("/GPTS [").skip(1).filter_map(|r| r.split(']').next()).collect();
+    assert_eq!(gpts.len() as u64, pages, "one viewport a page");
+    let mut distinct = gpts.clone();
+    distinct.sort_unstable();
+    distinct.dedup();
+    assert_eq!(distinct.len(), gpts.len(), "no page has another's corners");
+}
+
+/// A frame drawn over another (an inset on the main map) is cut out of the other's viewport, so
+/// that a reader shows the main map's coordinates around the inset and not in it: none there when
+/// the inset is left out of georeferencing (tilted), the inset's own when it isn't (#1191). No two
+/// viewports overlap, and none goes without coordinates, which Acrobat Reader doesn't take.
+#[test]
+fn a_frame_drawn_over_another_is_cut_out_of_its_viewport() {
+    let mut s = world();
+    s.run("map.projection", &json!({"type": "EPSG:31983"})).unwrap();
+    s.run("layout.new", &json!({"page": "a4", "orientation": "landscape", "template": "map"})).unwrap();
+    let frame = s.project.layouts[0].elements.iter().find(|e| e.kind.code() == "mapFrame").unwrap().clone();
+    s.run("layout.update", &json!({"element": frame.id, "center": [-45.0, -20.0], "scale": 2_000_000.0})).unwrap();
+    // The inset shows the main map's place, as it is once moved there.
+    let mut inset = s.project.layouts[0].elements.iter().find(|e| e.id == frame.id).unwrap().clone();
+    inset.id = 9_001;
+    inset.name = "Inset".into();
+    (inset.x, inset.y, inset.w, inset.h) = (frame.x + 10.0, frame.y + 10.0, 40.0, 30.0);
+    if let rustgis_map::layout::ElementKind::MapFrame { pitch, .. } = &mut inset.kind {
+        *pitch = 30.0;
+    }
+    s.project.layouts[0].elements.push(inset);
+    let inside = |v: &rustgis_render::pdf::Viewport, (x, y): (f64, f64)| {
+        let [vx, vy, w, h] = v.rect_mm;
+        x > vx && x < vx + w && y > vy && y < vy + h
+    };
+    let (in_inset, beside) = ((frame.x + 30.0, frame.y + 25.0), (frame.x + 5.0, frame.y + 5.0));
+    let geo = rustgis_render::layout::frame_viewports(&s.project.layouts[0], &s.project.maps, 72.0);
+    assert_eq!(geo.left_out.len(), 1, "{:?}", geo.left_out);
+    assert_eq!(geo.viewports.len(), 4, "the main frame around the inset: above, below, left and right of it");
+    assert!(geo.viewports.iter().all(|v| v.name == frame.name && v.measure.projected));
+    assert!(!geo.viewports.iter().any(|v| inside(v, in_inset)) && geo.viewports.iter().any(|v| inside(v, beside)));
+    // No two overlap.
+    for (i, a) in geo.viewports.iter().enumerate() {
+        for b in &geo.viewports[i + 1..] {
+            let ([ax, ay, aw, ah], [bx, by, bw, bh]) = (a.rect_mm, b.rect_mm);
+            let apart = ax + aw <= bx + 1e-9 || bx + bw <= ax + 1e-9 || ay + ah <= by + 1e-9 || by + bh <= ay + 1e-9;
+            assert!(apart, "{:?} {:?}", a.rect_mm, b.rect_mm);
+        }
+    }
+    let area: f64 = geo.viewports.iter().map(|v| v.rect_mm[2] * v.rect_mm[3]).sum();
+    let whole = frame.w * frame.h - 40.0 * 30.0;
+    assert!((area - whole).abs() < 0.02 * whole, "{area} {whole}");
+    // Where the main map's pieces meet, they give the same place: the band above the inset ends
+    // where the strip left of it starts.
+    let (top, left) = (&geo.viewports[0], &geo.viewports[2]);
+    let (a, b) = (top.measure.corners[3], left.measure.corners[0]);
+    assert!((a.0 - b.0).abs() < 1e-9 && (a.1 - b.1).abs() < 1e-9, "{a:?} {b:?}");
+    // An inset that is georeferenced has its own viewport, drawn last, over no other.
+    let inset = s.project.layouts[0].elements.iter_mut().find(|e| e.id == 9_001).unwrap();
+    if let rustgis_map::layout::ElementKind::MapFrame { pitch, .. } = &mut inset.kind {
+        *pitch = 0.0;
+    }
+    let geo = rustgis_render::layout::frame_viewports(&s.project.layouts[0], &s.project.maps, 72.0);
+    let names: Vec<&str> = geo.viewports.iter().map(|v| v.name.as_str()).collect();
+    assert_eq!(names, [frame.name.as_str(), frame.name.as_str(), frame.name.as_str(), frame.name.as_str(), "Inset"], "{:?}", geo.left_out);
+    assert!(geo.left_out.is_empty() && inside(&geo.viewports[4], in_inset));
+    // Exactly the frame without the inset, as both are placed on the page: the pieces fill the
+    // frame's box less the inset's, none reaches into the inset, and none overlaps another (above).
+    let [ix, iy, iw, ih] = geo.viewports[4].rect_mm;
+    let main = &geo.viewports[..4];
+    let (x0, y0) = main.iter().fold((f64::MAX, f64::MAX), |(x, y), v| (x.min(v.rect_mm[0]), y.min(v.rect_mm[1])));
+    let (x1, y1) =
+        main.iter().fold((f64::MIN, f64::MIN), |(x, y), v| (x.max(v.rect_mm[0] + v.rect_mm[2]), y.max(v.rect_mm[1] + v.rect_mm[3])));
+    let area: f64 = main.iter().map(|v| v.rect_mm[2] * v.rect_mm[3]).sum();
+    assert!((area - ((x1 - x0) * (y1 - y0) - iw * ih)).abs() < 1e-6, "{area}");
+    for v in main {
+        let [vx, vy, vw, vh] = v.rect_mm;
+        assert!(vx + vw <= ix + 1e-9 || ix + iw <= vx + 1e-9 || vy + vh <= iy + 1e-9 || iy + ih <= vy + 1e-9, "{:?}", v.rect_mm);
+    }
+    // Their box is the frame's own, as it is placed with nothing over it.
+    s.project.layouts[0].elements.iter_mut().find(|e| e.id == 9_001).unwrap().visible = false;
+    let alone = rustgis_render::layout::frame_viewports(&s.project.layouts[0], &s.project.maps, 72.0);
+    let [fx, fy, fw, fh] = alone.viewports[0].rect_mm;
+    assert_eq!(alone.viewports.len(), 1);
+    assert!([x0 - fx, y0 - fy, x1 - (fx + fw), y1 - (fy + fh)].iter().all(|d| d.abs() < 1e-9), "{:?}", (x0, y0, x1, y1));
+    // A round inset over it is left out, and said: its box would give its places around the circle,
+    // where the page shows the main map. The main map is still cut around that box.
+    let inset = s.project.layouts[0].elements.iter_mut().find(|e| e.id == 9_001).unwrap();
+    inset.visible = true;
+    if let rustgis_map::layout::ElementKind::MapFrame { shape, .. } = &mut inset.kind {
+        *shape = rustgis_map::layout::FrameShape::Circle;
+    }
+    let round = rustgis_render::layout::frame_viewports(&s.project.layouts[0], &s.project.maps, 72.0);
+    assert!(round.viewports.iter().all(|v| v.name == frame.name) && round.viewports.len() == 4, "{:?}", round.left_out);
+    assert!(round.left_out.iter().any(|(id, _, why)| *id == 9_001 && why.contains("isn't a rectangle")), "{:?}", round.left_out);
+    // Covered all over by a frame drawn over it, it has no viewport, and that is said.
+    let over = s.project.layouts[0].elements.iter_mut().find(|e| e.id == 9_001).unwrap();
+    (over.visible, over.x, over.y, over.w, over.h) = (true, frame.x - 1.0, frame.y - 1.0, frame.w + 2.0, frame.h + 2.0);
+    let covered = rustgis_render::layout::frame_viewports(&s.project.layouts[0], &s.project.maps, 72.0);
+    assert!(covered.viewports.iter().all(|v| v.name == "Inset"), "{:?}", covered.viewports.len());
+    assert!(
+        covered.left_out.contains(&(frame.id, frame.name.clone(), "the frames drawn over it cover all of it")),
+        "{:?}",
+        covered.left_out
+    );
+}
+
 #[test]
 fn layer_invert_ramp_reverses_the_class_colors() {
     // #1355: Invert Color Ramp reverses the order of a layer's class colours.

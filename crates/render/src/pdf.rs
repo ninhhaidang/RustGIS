@@ -1,7 +1,8 @@
 //! A PDF writer. A page is either one picture (a rendered page, at the page's size) or a
 //! [`Drawing`] kept as vectors: its paths, text and pictures become the page's content, its text
 //! set in fonts whose glyphs are their outlines (Type 3), searchable and copyable through each
-//! font's map back to Unicode.
+//! font's map back to Unicode. A page's map frames can be georeferenced ([`Viewport`]), which
+//! makes the document a GeoPDF.
 
 use tiny_skia::Pixmap;
 
@@ -16,6 +17,56 @@ pub struct Page {
     content: Content,
     pub width_mm: f64,
     pub height_mm: f64,
+    viewports: Vec<Viewport>,
+}
+
+/// A georeferenced map frame's place on a page, or the part of it no other frame is drawn over,
+/// and where on the Earth it shows, so that a reader can locate and measure in it: an ISO 32000
+/// geospatial viewport, which makes the document a GeoPDF (#1191). Every viewport has a
+/// geospatial measure: Acrobat Reader shows no coordinates on a page one of whose viewports has
+/// none, and stops when its pointer enters one measured otherwise (a rectilinear measure).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Viewport {
+    /// The frame's name.
+    pub name: String,
+    /// Its rectangle on the page, in millimetres from the page's top-left corner: x, y, width,
+    /// height.
+    pub rect_mm: [f64; 4],
+    /// Where on the Earth it shows.
+    pub measure: GeoMeasure,
+}
+
+/// Where a georeferenced frame shows on the Earth ([`Viewport`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct GeoMeasure {
+    /// Its corners' latitude and longitude, in degrees on its coordinate system's own datum,
+    /// clockwise from the top-left.
+    pub corners: [(f64, f64); 4],
+    /// Its coordinate system as WKT (1), projected or geographic, and its EPSG code when it has one.
+    pub wkt: String,
+    pub projected: bool,
+    pub epsg: Option<u16>,
+}
+
+impl Viewport {
+    /// As a PDF viewport dictionary on a page `page_h` points tall: the frame's box in points from
+    /// the page's bottom-left corner, its corners at the unit square's (the measure's `/LPTS`).
+    fn dictionary(&self, page_h: f64) -> String {
+        let k = 72.0 / 25.4;
+        let [x, y, w, h] = self.rect_mm;
+        let (x1, x2, top, bottom) = (x * k, (x + w) * k, page_h - y * k, page_h - (y + h) * k);
+        let m = &self.measure;
+        let gpts: Vec<String> = m.corners.iter().map(|(lat, lon)| format!("{lat:.9} {lon:.9}")).collect();
+        let kind = if m.projected { "PROJCS" } else { "GEOGCS" };
+        let epsg = m.epsg.map(|c| format!(" /EPSG {c}")).unwrap_or_default();
+        let measure = format!(
+            " /Measure << /Type /Measure /Subtype /GEO /Bounds [0 0 0 1 1 1 1 0] /GPTS [{}] /LPTS [0 1 1 1 1 0 0 0] \
+             /GCS << /Type /{kind} /WKT {}{epsg} >> /PDU [/M /SQM /DEG] >>",
+            gpts.join(" "),
+            literal(&m.wkt),
+        );
+        format!("<< /Type /Viewport /BBox [{x1:.3} {bottom:.3} {x2:.3} {top:.3}] /Name {}{measure} >>", literal(&self.name))
+    }
 }
 
 enum Content {
@@ -72,7 +123,13 @@ impl Page {
             Some(rgb_z) => Content::Picture { width: image.width(), height: image.height(), rgb_z },
             None => Content::Picture { width: 1, height: 1, rgb_z: miniz_oxide::deflate::compress_to_vec_zlib(&[255, 255, 255], 6) },
         };
-        Page { content, width_mm: page_mm(width_mm), height_mm: page_mm(height_mm) }
+        Page { content, width_mm: page_mm(width_mm), height_mm: page_mm(height_mm), viewports: Vec::new() }
+    }
+
+    /// The page with its map frames georeferenced ([`Viewport`]).
+    pub fn with_viewports(mut self, viewports: Vec<Viewport>) -> Page {
+        self.viewports = viewports;
+        self
     }
 
     /// A page drawn as `drawing`, stretched over it; nothing paints its background but the
@@ -84,6 +141,7 @@ impl Page {
             content: Content::Vector { width, height, items, cost, overflowed },
             width_mm: page_mm(width_mm),
             height_mm: page_mm(height_mm),
+            viewports: Vec::new(),
         }
     }
 }
@@ -103,7 +161,14 @@ pub(crate) struct Doc {
 impl Doc {
     /// A document with only its header written.
     fn new() -> Doc {
-        Doc { out: b"%PDF-1.4\n%\xE2\xE3\xCF\xD3\n".to_vec(), offsets: Vec::new() }
+        Doc::of_version("1.4")
+    }
+
+    /// A document of PDF version `version` with only its header written.
+    fn of_version(version: &str) -> Doc {
+        let mut out = format!("%PDF-{version}\n").into_bytes();
+        out.extend_from_slice(b"%\xE2\xE3\xCF\xD3\n");
+        Doc { out, offsets: Vec::new() }
     }
 
     /// A new object's number.
@@ -161,7 +226,10 @@ impl Doc {
 
 /// Writes the pages as a PDF document.
 pub fn write(pages: &[Page], title: &str) -> Vec<u8> {
-    let mut doc = Doc::new();
+    // Georeferenced frames make the document PDF 1.7 with Adobe's extension level 3, where
+    // geospatial measures are defined (since taken into ISO 32000-2); what else it holds is 1.4.
+    let geo = pages.iter().any(|p| !p.viewports.is_empty());
+    let mut doc = if geo { Doc::of_version("1.7") } else { Doc::new() };
     let (catalog, tree, info) = (doc.reserve(), doc.reserve(), doc.reserve());
     let ids: Vec<usize> = pages.iter().map(|_| doc.reserve()).collect();
     let mut fonts = fonts::Fonts::default();
@@ -185,18 +253,39 @@ pub fn write(pages: &[Page], title: &str) -> Vec<u8> {
                 (resources.0, format!("{} 0 R", resources.1))
             }
         };
+        let viewports = if p.viewports.is_empty() {
+            String::new()
+        } else {
+            let each: Vec<String> = p.viewports.iter().map(|v| v.dictionary(ph)).collect();
+            format!(" /VP [{}]", each.join(" "))
+        };
         doc.put(
             page,
-            format!("<< /Type /Page /Parent {tree} 0 R /MediaBox [0 0 {pw:.2} {ph:.2}] /Resources {resources} /Contents {contents} 0 R >>")
-                .as_bytes(),
+            format!(
+                "<< /Type /Page /Parent {tree} 0 R /MediaBox [0 0 {pw:.2} {ph:.2}] /Resources {resources} /Contents {contents} 0 R{viewports} >>"
+            )
+            .as_bytes(),
         );
     }
     fonts.write(&mut doc);
-    doc.put(catalog, format!("<< /Type /Catalog /Pages {tree} 0 R >>").as_bytes());
+    let extensions = if geo { " /Extensions << /ADBE << /BaseVersion /1.7 /ExtensionLevel 3 >> >>" } else { "" };
+    doc.put(catalog, format!("<< /Type /Catalog /Pages {tree} 0 R{extensions} >>").as_bytes());
     let kids: Vec<String> = ids.iter().map(|i| format!("{i} 0 R")).collect();
     doc.put(tree, format!("<< /Type /Pages /Kids [{}] /Count {} >>", kids.join(" "), pages.len()).as_bytes());
     doc.put(info, format!("<< /Title {} /Producer (RustGIS) >>", text_string(title)).as_bytes());
     doc.finish(catalog, info)
+}
+
+/// A PDF literal string of any length (a WKT): ASCII in parentheses, its backslashes and
+/// parentheses escaped; anything else as UTF-16BE hex.
+fn literal(s: &str) -> String {
+    if s.is_ascii() && !s.chars().any(|c| c.is_control()) {
+        let escaped: String = s.chars().flat_map(|c| if matches!(c, '(' | ')' | '\\') { vec!['\\', c] } else { vec![c] }).collect();
+        format!("({escaped})")
+    } else {
+        let hex: String = s.encode_utf16().map(|u| format!("{u:04X}")).collect();
+        format!("<FEFF{hex}>")
+    }
 }
 
 /// A PDF text string: plain ASCII in parentheses, anything else as UTF-16BE hex.
@@ -271,6 +360,71 @@ pub(crate) mod tests {
         assert_eq!(rgb.len(), 7 * 5 * 3);
         assert!(rgb.chunks(3).all(|c| c == [10, 200, 30]));
         assert_eq!((p.width_mm, p.height_mm), (210.0, 210.0));
+    }
+
+    /// A georeferenced frame is a viewport on its page (#1191): its box measured from the page's
+    /// bottom, its corners as latitude then longitude, its WKT whole and escaped.
+    #[test]
+    fn a_georeferenced_frame_is_a_viewport_on_its_page() {
+        let mut a = Pixmap::new(2, 2).unwrap();
+        a.fill(tiny_skia::Color::WHITE);
+        let wkt = format!("PROJCS[\"A (b)\\c\",{}]", "x".repeat(400));
+        let v = Viewport {
+            name: "Main map".into(),
+            rect_mm: [25.4, 25.4, 50.8, 25.4],
+            measure: GeoMeasure {
+                corners: [(-19.5, -45.5), (-19.5, -44.5), (-20.5, -44.5), (-20.5, -45.5)],
+                wkt: wkt.clone(),
+                projected: true,
+                epsg: Some(31983),
+            },
+        };
+        let page_h = 297.0 * 72.0 / 25.4;
+        let d = v.dictionary(page_h);
+        // An inch in from the left and the top, two inches wide and one tall.
+        assert!(d.contains(&format!("/BBox [72.000 {:.3} 216.000 {:.3}]", page_h - 144.0, page_h - 72.0)), "{d}");
+        assert!(d.contains("/GPTS [-19.500000000 -45.500000000 -19.500000000 -44.500000000 -20.500000000 -44.500000000"), "{d}");
+        assert!(d.contains("/LPTS [0 1 1 1 1 0 0 0]") && d.contains("/Type /PROJCS") && d.contains("/EPSG 31983"), "{d}");
+        assert!(d.contains(&format!("/WKT (PROJCS[\"A \\(b\\)\\\\c\",{}])", "x".repeat(400))), "{d}");
+        let pdf = write(&[Page::new(&a, 210.0, 297.0).with_viewports(vec![v]), Page::new(&a, 210.0, 297.0)], "Geo");
+        let text = String::from_utf8_lossy(&pdf);
+        assert!(text.starts_with("%PDF-1.7") && text.contains("/Extensions << /ADBE << /BaseVersion /1.7 /ExtensionLevel 3 >> >>"));
+        let objs = objects(&pdf);
+        let pages: Vec<&String> = objs.iter().map(|o| &o.0).filter(|d| d.contains("/Type /Page ")).collect();
+        assert!(pages[0].contains(" /VP [<< /Type /Viewport") && !pages[1].contains("/VP"), "{pages:?}");
+        // A document without a georeferenced frame stays as it was.
+        let plain = write(&[Page::new(&a, 210.0, 297.0)], "Plain");
+        assert!(plain.starts_with(b"%PDF-1.4") && !String::from_utf8_lossy(&plain).contains("/Extensions"));
+        assert_eq!(literal("é"), "<FEFF00E9>");
+        // A frame's name is written whole, however long.
+        let measure = GeoMeasure { corners: [(0.0, 0.0); 4], wkt: "W".into(), projected: true, epsg: None };
+        let long = Viewport { name: "n".repeat(300), rect_mm: [0.0, 0.0, 1.0, 1.0], measure };
+        assert!(long.dictionary(page_h).contains(&format!("/Name ({})", "n".repeat(300))));
+    }
+
+    /// A frame's viewport is where the page draws it: from the whole pixel it starts on at the
+    /// export's dpi, the page's pixels stretched over its paper (#1191).
+    #[test]
+    fn a_viewport_is_where_the_page_draws_its_frame() {
+        let mut layout: rustgis_map::layout::Layout = serde_json::from_value(serde_json::json!({
+            "name": "L", "width": 297.0, "height": 210.0,
+            "elements": [{"id": 1, "name": "Main", "x": 10.0, "y": 10.0, "w": 100.0, "h": 80.0,
+                "kind": {"MapFrame": {"map": "Map", "center": {"x": -45.0, "y": -20.0}, "scale": 50000.0}}}]
+        }))
+        .unwrap();
+        layout.clamp();
+        let maps = [rustgis_map::Map::new("Map")];
+        let geo = crate::layout::frame_viewports(&layout, &maps, 72.0);
+        let [x, y, w, _] = geo.viewports[0].rect_mm;
+        // At 72 dpi a millimetre is about 2.83 pixels: 10 mm falls inside pixel 28, where the frame starts.
+        let (wpx, _, k) = crate::layout::page_geometry(&layout, 72.0);
+        let sx = 297.0 / f64::from(wpx);
+        assert!((x - (10.0 * k).round() * sx).abs() < 1e-9 && (x - 10.0).abs() > 0.05, "{x}");
+        assert!((y - (10.0 * k).round() * (210.0 / f64::from(crate::layout::page_geometry(&layout, 72.0).1))).abs() < 1e-9, "{y}");
+        assert!((w - 100.0 * k * sx).abs() < 1e-9, "{w}");
+        // At 254 dpi, ten pixels to the millimetre, it is the frame's own box.
+        let geo = crate::layout::frame_viewports(&layout, &maps, 254.0);
+        assert!((geo.viewports[0].rect_mm[0] - 10.0).abs() < 1e-6, "{:?}", geo.viewports[0].rect_mm);
     }
 
     #[test]

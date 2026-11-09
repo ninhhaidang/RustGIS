@@ -423,8 +423,50 @@ pub(crate) fn transformer_of(def: &str) -> Result<Transformer, String> {
     Ok(Transformer { kind: Kind::Proj { native: Box::new(native), wgs84: Box::new(wgs84()?), geographic } })
 }
 
+#[cfg(test)]
+mod datum_tests {
+    use super::*;
+
+    /// A corner on a datum shifted from WGS 84 (SAD69) moves by the shift, tens of metres; on one
+    /// with none (SIRGAS 2000) it stays (#1191).
+    #[test]
+    fn a_point_moves_onto_a_shifted_datum_and_not_onto_an_unshifted_one() {
+        let c = Coord::new(-45.0, -20.0);
+        let sirgas = lonlat_on_datum_of(epsg_proj4(31983).unwrap(), c).unwrap();
+        assert!((sirgas.x - c.x).abs() < 1e-9 && (sirgas.y - c.y).abs() < 1e-9, "{sirgas:?}");
+        let sad69 = epsg_proj4(29193).unwrap();
+        assert!(sad69.contains("+towgs84="), "{sad69}");
+        let on = lonlat_on_datum_of(sad69, c).unwrap();
+        // About 40 m east and 40 m north at 20° S: well past a centimetre, short of a kilometre.
+        let (dx, dy) = ((on.x - c.x) * 111_320.0 * 20f64.to_radians().cos(), (on.y - c.y) * 110_574.0);
+        let moved = dx.hypot(dy);
+        assert!(moved > 10.0 && moved < 200.0, "{moved} m ({dx} m, {dy} m)");
+    }
+}
+
 fn wgs84() -> Result<proj4rs::Proj, String> {
     proj4rs::Proj::from_proj_string("+proj=longlat +datum=WGS84 +no_defs").map_err(|e| e.to_string())
+}
+
+/// A WGS 84 longitude/latitude on the datum of the PROJ definition `def`: where a reader that
+/// takes `def`'s own geographic system puts the point (a GeoPDF's corners, #1191). The same
+/// point where `def`'s datum has no shift from WGS 84.
+pub fn lonlat_on_datum_of(def: &str, c: Coord) -> Option<Coord> {
+    const DATUM: [&str; 9] = ["datum", "ellps", "towgs84", "a", "b", "rf", "f", "R", "pm"];
+    let mut geographic = String::from("+proj=longlat");
+    for t in def.split_whitespace() {
+        let key = t.trim_start_matches('+').split('=').next().unwrap_or("");
+        if DATUM.contains(&key) {
+            geographic.push(' ');
+            geographic.push_str(t);
+        }
+    }
+    geographic.push_str(" +no_defs");
+    let to = proj4rs::Proj::from_proj_string(&geographic).ok()?;
+    let mut p = (c.x.to_radians(), c.y.to_radians(), 0.0);
+    proj4rs::transform::transform(&wgs84().ok()?, &to, &mut p).ok()?;
+    let out = Coord::new(p.0.to_degrees(), p.1.to_degrees());
+    out.is_finite().then_some(out)
 }
 
 /// The transformer for a PROJ definition of an equidistant cylindrical projection on an

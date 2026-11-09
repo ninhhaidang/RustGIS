@@ -299,6 +299,20 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
   are pictures cut to their shape. The `dpi` also sets how fine the vectors' detail is kept, as a
   PNG at that resolution would show it. A frame or page whose vectors would pass 256 MB (64 MB
   in the browser) is drawn as a picture instead, and the export says which.
+  A PDF is also a GeoPDF: each map frame is georeferenced (an ISO 32000 geospatial viewport, the
+  form GDAL, QGIS, Acrobat and Avenza read), with its map's coordinate system as WKT and its EPSG
+  code when it has one, so a reader shows coordinates and measures in it, and GDAL or QGIS open the
+  page as a georeferenced raster. It carries coordinates only: no layers and no feature
+  attributes. A tilted frame, one on the globe, and one with a corner off the Earth aren't
+  georeferenced, and the export says which (in a map series, on which pages when not on all: each
+  page moves the frame). Where a frame is drawn over another, only the one on top carries
+  coordinates there (none when it isn't georeferenced), so a reader doesn't show the
+  other's through it. A viewport is a rectangle, so a shaped frame (circle, ellipse, polygon)
+  drawn over another is left out, and the frame under it has no coordinates in its box. A frame in a projection with no WKT form is
+  georeferenced by its corners in longitude/latitude when that puts the places on a 9 × 9 grid
+  over it within 0.5 mm of where they are drawn (measured there, not proven between them), and
+  left out otherwise. **Georeference PDF** in the Publish tab's
+  Export group (`"georeference": false` for `layout.export`) leaves the coordinates out.
   In SVG each element is a group (an Inkscape layer) named after it: text stays text and rectangles,
   ellipses and lines stay shapes, and map frames and the other surrounds are kept as vectors as in a
   PDF (their labels as the letters' shapes, each run labelled with its text), so the page can be
