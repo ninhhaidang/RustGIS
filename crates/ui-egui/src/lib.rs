@@ -99,6 +99,7 @@ mod stacui;
 mod table;
 mod textform;
 pub mod theme;
+mod threadsui;
 mod tilelayer;
 mod tilelegend;
 mod tilt_drape;
@@ -1339,6 +1340,8 @@ impl RustGisApp {
         }
         // Theme readers and startup notices keep translated text, so select the language before reading.
         i18n::set_current(self.chosen_lang());
+        // After the language, so a notice about the saved value is in it.
+        threadsui::load(&mut self);
         // A stored value that is neither `auto` nor a known worldview means `auto`.
         if let Some(w) = self.services.load_pref.as_ref().and_then(|load| load("worldview"))
             && rustgis_engine::sample::Worldview::from_code(&w).is_some()
@@ -2776,6 +2779,7 @@ impl RustGisApp {
                 self.apply_worldview();
             }
             "ui.autosave" => return autosave::command(self, p),
+            "ui.threads" => return threadsui::command(self, p),
             // Adds a file as a drop or Add Data does: one holding several layers asks which (#934).
             "ui.addFile" => {
                 let path = p.get("path").and_then(Value::as_str).map(str::trim).filter(|p| !p.is_empty()).ok_or("path is required")?;

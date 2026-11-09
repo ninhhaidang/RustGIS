@@ -3488,10 +3488,53 @@ fn settings_tab(app: &mut RustGisApp, ui: &mut Ui) {
         worldview_menu(app, ui);
     });
     group(ui, "Start-up", |ui| start_project_menu(app, ui));
+    // The browser has no threads to set.
+    if !cfg!(target_arch = "wasm32") {
+        group(ui, "Performance", |ui| threads_menu(app, ui));
+    }
     // Only a shell that keeps recovery copies (the desktop app) has autosave.
     if app.services.recovery.is_some() {
         group(ui, "Autosave", |ui| autosave_menu(app, ui));
     }
+}
+
+/// A thread setting's name: "Automatic (8)", with the threads it gives, or the number.
+fn threads_label(setting: Option<usize>) -> String {
+    use rustgis_engine::data::threads;
+    match setting {
+        None => crate::i18n::fmt("Automatic ({n})", &[("n", &threads::default_max().to_string())]),
+        Some(n) => n.min(threads::cores()).to_string(),
+    }
+}
+
+/// Settings › Threads: the most threads one piece of work uses (#1562), the computer's cores up
+/// to 16 by default.
+fn threads_menu(app: &mut RustGisApp, ui: &mut Ui) {
+    use rustgis_engine::data::threads;
+    let setting = threads::setting();
+    let label = format!("{}\n{}", tl!("Threads"), threads_label(setting));
+    let tip = "The most threads a tool, a raster read or a map drawing uses: fewer keep cores free for other work.";
+    big_menu(ui, app, "settings", &label, tip, move |ui, app| {
+        if ui.add(egui::Button::selectable(setting.is_none(), threads_label(None))).clicked() {
+            let _ = app.run("ui.threads", json!({"threads": null}));
+            ui.close();
+        }
+        let mut choices = crate::threadsui::choices(threads::cores());
+        // A setting made elsewhere (`gp.threads`, a script) is listed too, so it shows as chosen.
+        if let Some(s) = setting.map(|s| s.min(threads::cores()))
+            && !choices.contains(&s)
+        {
+            choices.push(s);
+            choices.sort_unstable();
+        }
+        for n in choices {
+            let on = setting.is_some_and(|s| s.min(threads::cores()) == n);
+            if ui.add(egui::Button::selectable(on, n.to_string())).clicked() {
+                let _ = app.run("ui.threads", json!({"threads": n}));
+                ui.close();
+            }
+        }
+    });
 }
 
 /// An interval's name: "Off" or "Every 5 min".

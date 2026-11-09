@@ -17,6 +17,11 @@ pub fn commands() -> Vec<C> {
         C::new("gp.env", "Environments", "Analyze › Geoprocessing", environments).inputs(environment_inputs).roles(&[]).effects(crate::policy::Effects::NONE).params(
             r#"{"extent"?: "view"|"full"|layer name|[minLon, minLat, maxLon, maxLat]|null, "cellSize"?: degrees|null}"#,
         ),
+        // A setting of the whole process, not of the project: no undo step, and `Reserved`, so the
+        // assistant asks first and agents, plugins and imported items can't change it.
+        C::new("gp.threads", "Threads", "Analyze › Geoprocessing", threads).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Reserved)).view().params(
+            r#"{"threads"?: the most threads one piece of work uses, 1–1024, for the whole process and not saved with the project (null: the default, the cores up to 16); without it, the setting is only said}"#,
+        ),
         C::new("gp.gallery", "Tool Gallery", "Analyze › Portal", gallery).roles(&[]).effects(crate::policy::Effects::NONE).view().params(r#"{"kind": "ready"|"feature"|"raster"}"#),
         C::new("model.new", "ModelBuilder", "Analyze › Geoprocessing", new_model).roles(&[crate::ParamRole { key: "steps", role: crate::Role::ModelSteps }, crate::ParamRole { key: "graph", role: crate::Role::ModelGraph }]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Reserved).with(crate::policy::Effect::Files)).params(
             r#"{"name"?: string, "graph"?: {"nodes": [{"id", "kind": "input"|"tool"|"output", "x", "y" (optional), an input's "layer", a tool's "tool" and "params", an output's "name"}], "edges": [{"from", "fromPort": "out", "to", "toPort": a tool's layer parameter | "in" (output)}]}, "steps"?: [{"tool": id, "params": {…, "%1" for step 1's output}}], "fromHistory"?: bool, "imported"?: bool (from a file: its tools may not touch files)}"#,
@@ -387,8 +392,25 @@ fn environments(s: &mut Session, p: &Value) -> CmdResult {
         "bufferBytes": rustgis_analysis::max_buffer_bytes(),
         "threadScratchBytes": rustgis_analysis::scratch_budget(),
         "projectBytes": crate::project::max_bytes(),
+        // The threads one piece of work uses now, and the cores they come from (#1562).
+        "threads": rustgis_data::threads::max(),
+        "cores": rustgis_data::threads::cores(),
     });
     Ok(json!({"extent": env.extent.map(|e| [e.min_x, e.min_y, e.max_x, e.max_y]), "cellSize": env.cell_size, "limits": limits}))
+}
+
+/// `gp.threads`: sets the most threads one piece of work uses (#1562), for the whole process
+/// (`null`: the default), and says the setting, the threads it gives now, the default's and the
+/// cores. The browser runs on one thread, so there it can't be set.
+fn threads(_: &mut Session, p: &Value) -> CmdResult {
+    use rustgis_data::threads;
+    if let Some(v) = p.get("threads") {
+        if cfg!(target_arch = "wasm32") {
+            return Err("the browser runs everything on one thread".into());
+        }
+        threads::set_max(threads::parse(v)?)?;
+    }
+    Ok(json!({"threads": threads::setting(), "max": threads::max(), "default": threads::default_max(), "cores": threads::cores()}))
 }
 
 /// Curated tool lists: everyday tools, feature analysis and raster analysis.

@@ -458,7 +458,7 @@ pub fn meshes(
             };
             let mut order: Vec<usize> = (0..missing.len()).collect();
             order.sort_by(|a, b| far(&missing[*a]).total_cmp(&far(&missing[*b])));
-            let round = if cfg!(target_arch = "wasm32") { 1 } else { std::thread::available_parallelism().map_or(1, |n| n.get()).min(16) };
+            let round = rustgis_data::threads::max();
             let mut made: Vec<Option<Arc<TileMesh>>> = vec![None; missing.len()];
             for (n, some) in order.chunks(round).enumerate() {
                 if n > 0 && web_time::Instant::now() >= until {
@@ -508,24 +508,27 @@ pub fn meshes(
 fn parallel<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<Option<R>> {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).min(items.len()).min(16);
+        let threads = rustgis_data::threads::for_items(items.len());
         if threads > 1 {
             let next = std::sync::atomic::AtomicUsize::new(0);
             let out: Mutex<Vec<Option<R>>> = Mutex::new((0..items.len()).map(|_| None).collect());
-            std::thread::scope(|scope| {
-                for _ in 0..threads {
-                    scope.spawn(|| {
-                        loop {
-                            let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            let Some(item) = items.get(i) else { break };
-                            // A tile that panics (hostile data) gives no mesh, rather than the frame.
-                            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(item))).ok();
-                            if let Some(slot) = out.lock().unwrap_or_else(|e| e.into_inner()).get_mut(i) {
-                                *slot = r;
-                            }
-                        }
-                    });
+            let work = || {
+                loop {
+                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some(item) = items.get(i) else { break };
+                    // A tile that panics (hostile data) gives no mesh, rather than the frame.
+                    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(item))).ok();
+                    if let Some(slot) = out.lock().unwrap_or_else(|e| e.into_inner()).get_mut(i) {
+                        *slot = r;
+                    }
                 }
+            };
+            std::thread::scope(|scope| {
+                // A thread the OS refuses costs speed, not the frame: this one takes items too.
+                for _ in 1..threads {
+                    let _ = std::thread::Builder::new().spawn_scoped(scope, work);
+                }
+                work();
             });
             return out.into_inner().unwrap_or_else(|e| e.into_inner());
         }

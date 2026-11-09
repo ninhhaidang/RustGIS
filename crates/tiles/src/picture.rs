@@ -474,7 +474,7 @@ fn draw_all(
     until: Option<Instant>,
 ) -> Vec<Option<DrawnPicture>> {
     let Some(until) = until else { return draw_some(r, squares, side, m_per_px, ppp, reach) };
-    let round = if cfg!(target_arch = "wasm32") { 1 } else { std::thread::available_parallelism().map_or(1, |n| n.get()).min(16) };
+    let round = rustgis_data::threads::max();
     let mut out = Vec::with_capacity(squares.len());
     for some in squares.chunks(round) {
         if !out.is_empty() && Instant::now() >= until {
@@ -491,23 +491,26 @@ fn draw_some(r: &Resolved, squares: &[Placed], side: u32, m_per_px: f64, ppp: f3
     let one = |p: &Placed| draw_one(r, p, side, m_per_px, ppp, reach);
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).min(squares.len()).min(16);
+        let threads = rustgis_data::threads::for_items(squares.len());
         if threads > 1 {
             let next = std::sync::atomic::AtomicUsize::new(0);
             let out: Mutex<Vec<Option<DrawnPicture>>> = Mutex::new((0..squares.len()).map(|_| None).collect());
-            std::thread::scope(|scope| {
-                for _ in 0..threads {
-                    scope.spawn(|| {
-                        loop {
-                            let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            let Some(p) = squares.get(i) else { break };
-                            let d = one(p);
-                            if let Some(slot) = out.lock().unwrap_or_else(|e| e.into_inner()).get_mut(i) {
-                                *slot = d;
-                            }
-                        }
-                    });
+            let work = || {
+                loop {
+                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some(p) = squares.get(i) else { break };
+                    let d = one(p);
+                    if let Some(slot) = out.lock().unwrap_or_else(|e| e.into_inner()).get_mut(i) {
+                        *slot = d;
+                    }
                 }
+            };
+            std::thread::scope(|scope| {
+                // A thread the OS refuses costs speed, not the frame: this one takes squares too.
+                for _ in 1..threads {
+                    let _ = std::thread::Builder::new().spawn_scoped(scope, work);
+                }
+                work();
             });
             return out.into_inner().unwrap_or_else(|e| e.into_inner());
         }

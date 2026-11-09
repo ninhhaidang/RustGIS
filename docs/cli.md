@@ -29,6 +29,11 @@ A data file is zoomed to its full extent; a project keeps its saved view.
 world outline, for `render`, `run` and the other subcommands. `auto` follows
 `RUSTGIS_WORLDVIEW`, else the system time zone and locale.
 
+`--threads N` sets the most threads one piece of work uses (1 to 1024, never more than the
+cores), as [`gp.threads`](user-guide/analysis.md#analysis-workflows) sets it. With `mcp --attach` the
+open app's own setting holds, so `--threads` is refused there. Without it, a run takes
+the computer's cores, up to 16.
+
 ## Chaining commands
 
 `run` starts with an empty project. `--sample` loads the World Atlas sample, `--project <path>`

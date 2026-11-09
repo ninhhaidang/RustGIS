@@ -704,12 +704,18 @@ fn chunks_or_empty(v: &mut [u8], n: usize) -> Box<dyn Iterator<Item = &mut [u8]>
     if v.is_empty() { Box::new(std::iter::repeat_with(|| &mut [][..])) } else { Box::new(v.chunks_mut(n.max(1))) }
 }
 
-/// How many threads to draw `pixels` with: one for a small image, and always one in the browser.
+/// The most threads a raster is drawn on. A frame's raster takes milliseconds, and #331 measured
+/// its speed-up up to 8 threads; whether more pays off past the cost of starting them is
+/// untested, so this keeps the cap it was tuned at, below the shared count.
+const MAX_DRAW_THREADS: usize = 8;
+
+/// How many threads to draw `pixels` with: one for a small image, and always one in the browser;
+/// the shared count ([`rustgis_data::threads::max`]) up to [`MAX_DRAW_THREADS`] for a large one.
 fn threads_for(pixels: usize) -> usize {
     if cfg!(target_arch = "wasm32") || pixels < 64 * 1024 {
         return 1;
     }
-    std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(1, 8)
+    rustgis_data::threads::max().min(MAX_DRAW_THREADS)
 }
 
 /// Runs `f` on each item, spread over `threads` threads (in turn on this one when it is one).

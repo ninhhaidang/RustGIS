@@ -33,6 +33,20 @@ fn read() -> Option<u64> {
     Some(s.cgroup_limits().map(|c| c.total_memory).filter(|m| *m > 0).map_or(total, |c| c.min(total)))
 }
 
+/// The scratch memory work's threads may take together beyond one thread's, in the browser and
+/// at least on the desktop ([`thread_scratch`]).
+pub const SCRATCH_FLOOR: usize = 256 << 20;
+/// The most [`thread_scratch`] allows, however much memory the computer has.
+pub const SCRATCH_CEILING: usize = 4 << 30;
+
+/// The scratch memory work's threads (a tool's, a GeoTIFF read's) may take together beyond one
+/// thread's: on the desktop a sixteenth of the computer's memory, on top of the quarter the input
+/// and output limits plan for, from [`SCRATCH_FLOOR`] up to [`SCRATCH_CEILING`] (#1291 step 2). It
+/// bounds the threads a high thread setting starts ([`crate::threads`]).
+pub fn thread_scratch() -> usize {
+    scaled(physical().map(|m| m / 4), SCRATCH_FLOOR, SCRATCH_CEILING, 1)
+}
+
 /// A limit of units costing `bytes` each: as many as [`SHARE`] of `memory` holds, within `floor`
 /// and `ceiling`; `floor` when the memory isn't known.
 pub fn scaled(memory: Option<u64>, floor: usize, ceiling: usize, bytes: u64) -> usize {

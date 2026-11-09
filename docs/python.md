@@ -237,6 +237,10 @@ The GeoLibre and Whitebox tools run as they do in the app, through the `geolibre
 (see [Analysis](user-guide/analysis.md)). `rustgis.load_plugins()`, or
 `Session(plugins=True)`, loads the [plugins](plugins.md) installed for the desktop app.
 
+`Session(threads=4)` sets the most threads one piece of work uses (1 to 1024, never more than the
+cores), for the whole process, every session in it included; `s.run("gp.threads", threads=None)`
+goes back to the default, the cores up to 16 (see [Environments](user-guide/analysis.md#analysis-workflows)).
+
 ### Saved connections and secrets
 
 `rustgis.Session(use_saved_secrets=True)` loads the desktop app's saved connection definitions

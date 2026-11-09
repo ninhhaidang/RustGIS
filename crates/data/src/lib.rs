@@ -43,6 +43,7 @@ pub mod sheets;
 pub mod source;
 pub mod source_layers;
 pub mod sqlite;
+pub mod threads;
 pub mod time;
 pub mod topojson;
 pub mod value;

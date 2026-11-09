@@ -6,8 +6,6 @@
 
 use crate::control::{self, Cancelled};
 
-/// The most threads a tool uses.
-const MAX_THREADS: usize = 16;
 /// The items a thread takes at a time: few enough that expensive items lying together are shared
 /// out, enough that taking them costs nothing.
 pub(crate) const BATCH: usize = 16;
@@ -18,17 +16,10 @@ const STACK_BYTES: usize = 8 << 20;
 /// cell-point pairs for IDW (about 30 ns each, so some 5 ms of it), the same plus each cell's
 /// system for kriging, ray steps for a viewshed. Starting a thread costs tens of microseconds.
 pub(crate) const MIN_ROW_WORK: usize = 200_000;
-/// The scratch memory a tool's threads may take together beyond one thread's, in the browser and
-/// at least on the desktop ([`scratch_budget`]).
-const SCRATCH_FLOOR: usize = 256 << 20;
-/// The most [`scratch_budget`] allows, however much memory the computer has.
-const SCRATCH_CEILING: usize = 4 << 30;
-
-/// The scratch memory a tool's threads may take together beyond one thread's: on the desktop a
-/// sixteenth of the computer's memory, on top of the quarter its input and output limits plan for,
-/// from [`SCRATCH_FLOOR`] up to [`SCRATCH_CEILING`] (#1291 step 2).
+/// The scratch memory a tool's threads may take together beyond one thread's
+/// ([`rustgis_data::memory::thread_scratch`], #1291 step 2).
 pub fn scratch_budget() -> usize {
-    rustgis_data::memory::scaled(rustgis_data::memory::physical().map(|m| m / 4), SCRATCH_FLOOR, SCRATCH_CEILING, 1)
+    rustgis_data::memory::thread_scratch()
 }
 
 /// How many threads to make `items` items on: one below `min_items`, always one in the browser,
@@ -74,9 +65,9 @@ pub(crate) const UNCAPPED_HINT: &str = if cfg!(target_arch = "wasm32") {
     " (or run it from its pane in the desktop app, which takes any amount of work and can be cancelled)"
 };
 
-/// The cores to use, at most [`MAX_THREADS`].
+/// The cores to use: the shared count ([`rustgis_data::threads::max`]), which follows the setting.
 fn cores() -> usize {
-    std::thread::available_parallelism().map_or(1, |n| n.get()).min(MAX_THREADS)
+    rustgis_data::threads::max()
 }
 
 /// `f` on each of a raster's `rows` (its output rows, `chunks_mut` of the bands it writes) with

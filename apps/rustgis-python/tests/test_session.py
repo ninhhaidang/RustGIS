@@ -382,3 +382,22 @@ def test_a_layer_of_another_session_is_refused(sample):
     with pytest.raises(rustgis.RustGISError, match="another session"):
         sample.remove_layer(stranger)
     assert "Cities" in sample
+
+
+def test_threads_set_the_count_for_the_process():
+    try:
+        s = rustgis.Session(threads=2)
+        t = s.run("gp.threads")
+        assert t["threads"] == 2
+        assert t["max"] == min(2, t["cores"])
+        # Every session of the process shares it.
+        assert rustgis.Session().run("gp.threads")["threads"] == 2
+        with pytest.raises(rustgis.RustGISError, match="1 to 1024"):
+            rustgis.Session(threads=0)
+        # A session that fails to start leaves the setting as it was.
+        with pytest.raises(rustgis.RustGISError):
+            rustgis.Session("/nonexistent/project.rgis", threads=3)
+        assert rustgis.Session().run("gp.threads")["threads"] == 2
+    finally:
+        rustgis.Session().run("gp.threads", threads=None)
+    assert rustgis.Session().run("gp.threads")["threads"] is None

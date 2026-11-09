@@ -35,8 +35,10 @@ pub fn commands() -> Vec<C> {
 
 /// The most cell values a cube is read into at once (cells × dates): 64 million, 256 MB, on the
 /// desktop; 16 million, 64 MB, in the browser's smaller memory. A run also takes, on each of its
-/// threads (up to 16 on the desktop, one in the browser), a cell's Sen slopes at a time (dates² ⁄ 2:
-/// at most 16 MB at [`MAX_DATES`], so up to 256 MB more at the peak), freed cell by cell; and its
+/// threads (the shared count on the desktop, by default up to 16, one in the browser), a cell's Sen
+/// slopes at a time (dates² ⁄ 2: at most 16 MB at [`MAX_DATES`], so up to 256 MB more at the peak
+/// on 16 threads; more threads are taken only as the threads' scratch budget holds them), freed
+/// cell by cell; and its
 /// four outputs, four values a cell, made once the block is dropped.
 pub const MAX_VALUES: u64 = if cfg!(target_arch = "wasm32") { 16_000_000 } else { 64_000_000 };
 /// The most pairs of dates a trend compares in all (cells × dates² ⁄ 2), which bounds the time
@@ -754,17 +756,32 @@ impl TrendRun {
                 }
             }
         };
-        // On the desktop, the cells in as many parts as there are cores; the browser has no
+        // On the desktop, the cells in as many parts as the shared thread count; the browser has no
         // threads, so there they are worked out here.
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let threads = std::thread::available_parallelism().map_or(1, |t| t.get()).clamp(1, 16);
+            // Each thread holds a cell's Sen slopes, `n² ⁄ 2` of them, as 8-byte floats: beyond one
+            // thread's, no more than the threads' scratch budget, so a high thread setting doesn't
+            // multiply the peak (16 threads at the most dates fit the smallest budget).
+            let slopes = n.saturating_mul(n).saturating_mul(4).max(1);
+            let threads = rustgis_data::threads::max().min(1 + rustgis_analysis::scratch_budget() / slopes);
             let part = cells.div_ceil(threads).max(1);
-            std::thread::scope(|scope| {
-                for (k, (block, out)) in block.chunks(part * n).zip(out.chunks_mut(part * OUTPUTS)).enumerate() {
-                    let work = &work;
-                    scope.spawn(move || work(first + k * part, block, out));
+            // The parts are taken from a list, by the threads started and by this one, so a
+            // thread the OS refuses leaves no part undone (and costs speed, not the run).
+            let parts = std::sync::Mutex::new(block.chunks(part * n).zip(out.chunks_mut(part * OUTPUTS)).enumerate().collect::<Vec<_>>());
+            let take = || {
+                loop {
+                    // The lock is let go before the part is worked out.
+                    let next = parts.lock().unwrap_or_else(|e| e.into_inner()).pop();
+                    let Some((k, (block, out))) = next else { break };
+                    work(first + k * part, block, out);
                 }
+            };
+            std::thread::scope(|scope| {
+                for _ in 1..threads {
+                    let _ = std::thread::Builder::new().spawn_scoped(scope, take);
+                }
+                take();
             });
         }
         #[cfg(target_arch = "wasm32")]

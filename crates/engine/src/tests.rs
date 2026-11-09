@@ -35282,3 +35282,47 @@ fn bundled_ca_roots_are_said_once_a_session() {
     other.say_bundled_roots(true);
     assert_eq!(said(&other), 1);
 }
+
+/// `gp.threads` sets the shared count every place that starts threads for CPU work takes (#1562),
+/// says it, the default's and the cores, refuses what it can't take, and `null` goes back to the
+/// default. No undo step and no change to the project: it is the process's, not the project's.
+/// In a process of its own, since the setting holds for the whole process.
+#[test]
+fn the_thread_setting_is_the_whole_process() {
+    #[cfg(not(target_arch = "wasm32"))]
+    if isolate_process_test("tests::the_thread_setting_is_the_whole_process") {
+        return;
+    }
+    let mut s = Session::new(Project::default());
+    let cores = rustgis_data::threads::cores();
+    let default = cores.min(rustgis_data::threads::DEFAULT_MAX);
+    let t = s.run("gp.threads", &json!({})).unwrap();
+    assert_eq!(t, json!({"threads": null, "max": default, "default": default, "cores": cores}));
+    let t = s.run("gp.threads", &json!({"threads": 2})).unwrap();
+    assert_eq!((t["threads"].clone(), t["max"].clone(), t["default"].clone()), (json!(2), json!(cores.min(2)), json!(default)), "{t}");
+    assert_eq!(rustgis_data::threads::max(), cores.min(2), "the count everything takes follows");
+    // `gp.env` says the threads it gives with the other limits (in another session: `gp.env` is
+    // a project command, with an undo step of its own).
+    let env = Session::new(Project::default()).run("gp.env", &json!({})).unwrap();
+    assert_eq!((env["limits"]["threads"].clone(), env["limits"]["cores"].clone()), (json!(cores.min(2)), json!(cores)), "{env}");
+    // Above the cores: all of them, the setting kept as given.
+    let t = s.run("gp.threads", &json!({"threads": 1024})).unwrap();
+    assert_eq!((t["threads"].clone(), t["max"].clone()), (json!(1024), json!(cores)), "{t}");
+    for bad in [json!(0), json!(1025), json!(-1), json!(2.5), json!("4")] {
+        let e = s.run("gp.threads", &json!({"threads": bad})).unwrap_err();
+        assert!(e.contains("1 to 1024"), "{bad}: {e}");
+        assert_eq!(rustgis_data::threads::setting(), Some(1024), "a refused value changes nothing");
+    }
+    assert_eq!(s.run("gp.threads", &json!({"threads": null})).unwrap()["threads"], Value::Null);
+    assert_eq!(rustgis_data::threads::max(), default);
+    assert!(!s.dirty() && !s.can_undo(), "nothing to undo, nothing to save");
+}
+
+/// Only the user changes the thread setting: the assistant asks, and agents, plugins and imported
+/// items can't (`Reserved`), since it reaches every session of the process.
+#[test]
+fn the_thread_setting_is_reserved() {
+    let spec = crate::cmd::all().into_iter().find(|c| c.id == "gp.threads").unwrap();
+    assert!(spec.effects.contains(crate::policy::Effect::Reserved));
+    assert!(!spec.mutates, "no undo step");
+}

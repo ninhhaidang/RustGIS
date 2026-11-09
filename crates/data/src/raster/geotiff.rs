@@ -936,6 +936,13 @@ impl Chunks {
         }
     }
 
+    /// The most one chunk holds while it is decoded: its samples as read (up to 8 bytes each),
+    /// as 32-bit floats, and which of them were rounded (a byte each).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn bytes(&self) -> usize {
+        (self.cw as usize).saturating_mul(self.ch as usize).saturating_mul(self.samples).saturating_mul(13)
+    }
+
     fn count(&self) -> u64 {
         u64::from(self.per_plane) * self.planes as u64
     }
@@ -1038,7 +1045,12 @@ fn decimate<R: Read + Seek>(
     if let Some((open, image, limits)) = open
         && chunks.count() >= PARALLEL_CHUNKS
     {
-        let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).min(16);
+        // Each thread decodes a chunk of its own. Up to the default count as before; past it (a
+        // high setting) no more than the threads' scratch budget holds, so the peak doesn't
+        // multiply with the setting.
+        let affordable = 1 + crate::memory::thread_scratch() / chunks.bytes().max(1);
+        let chunk_count = usize::try_from(chunks.count()).unwrap_or(usize::MAX);
+        let threads = crate::threads::max().min(affordable.max(crate::threads::default_max())).min(chunk_count);
         if threads > 1 {
             return decimate_parallel(chunks, bands, k, (ow, oh), nodata, threads, open, image, limits);
         }
@@ -1114,7 +1126,11 @@ fn decimate_parallel(
         }
     };
     std::thread::scope(|scope| {
-        let handles: Vec<_> = (0..threads).map(|_| scope.spawn(work)).collect();
+        // A thread the OS refuses costs speed, not the read: this one decodes chunks too.
+        let handles: Vec<_> = (1..threads).filter_map(|_| std::thread::Builder::new().spawn_scoped(scope, work).ok()).collect();
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)).is_err() {
+            fail(err("a chunk couldn't be decoded"));
+        }
         for h in handles {
             if h.join().is_err() {
                 fail(err("a chunk couldn't be decoded"));

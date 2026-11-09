@@ -9,6 +9,7 @@
 //!     --cmd 'gp.run={"tool":"buffer","params":{"input":"Cities","distance":100}}' \
 //!     --cmd 'share.exportMap={"path":"out.png"}' [--save out.rgis]
 //! rustgis-cli run … --use-saved-secrets            # use what the desktop app saved in the system keychain
+//! rustgis-cli run … --threads 4                    # the most threads one piece of work uses (default: the cores, up to 16)
 //! rustgis-cli ask [--sample | --project p.rgis | --data f.geojson …] "Which cities have over 10 million people?" \
 //!     [--provider anthropic|openai|chatgpt|gemini|openrouter|ollama|custom|requesty|trustedrouter] [--model M] [--base-url URL] [--yes] [--save out.rgis] [--trace log.txt]
 //! rustgis-cli ask --models [--provider P]                # list the provider's models
@@ -46,7 +47,7 @@ use serde_json::{Map, Value, json};
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage:\n  rustgis-cli commands | tools\n  rustgis-cli plugins [install <file|folder> | uninstall <id> | enable <id> | disable <id> | browse | get <id> | prepare <id>] [--registry URL]\n  rustgis-cli skills [add <SKILL.md|folder|.zip> | remove <name> | enable <name> | disable <name>]\n  rustgis-cli info <data>\n  rustgis-cli logo <out.png|out.ico|out.bmp> [--size N] [--canvas WxH --at X,Y (.bmp only)]\n  rustgis-cli render <data|project> <out.png> [--basemap NAME] [--tiles URL] [--width N] [--height N] [--dpi N] [--worldview auto|default|china]\n  rustgis-cli run [--sample] [--project P] [--data F]… --cmd 'id={{json}}'… [--save P] [--worldview auto|default|china]\n  rustgis-cli ask [--sample] [--project P] [--data F]… \"request\" [--provider P] [--model M] [--base-url URL] [--yes] [--save P]\n  rustgis-cli ask --models [--provider P]\n  rustgis-cli ask --login [--another-account] [--account CLIENT_ID] | --logout\n  rustgis-cli ask --accounts | --account CLIENT_ID | --remove-account CLIENT_ID\n  common options: --use-saved-secrets (use the connections, passwords, keys, ChatGPT sign-in and Earthdata Login token the RustGIS app saved; reads the system keychain)\n  rustgis-cli mcp [--sample] [--project P] [--data F]… [--yes] [--attach [PORT] [--token-file FILE] [--timeout SECONDS (5-600)]]\n  rustgis-cli mcp-register [--client claude] [--name NAME] [--port PORT]"
+        "usage:\n  rustgis-cli commands | tools\n  rustgis-cli plugins [install <file|folder> | uninstall <id> | enable <id> | disable <id> | browse | get <id> | prepare <id>] [--registry URL]\n  rustgis-cli skills [add <SKILL.md|folder|.zip> | remove <name> | enable <name> | disable <name>]\n  rustgis-cli info <data>\n  rustgis-cli logo <out.png|out.ico|out.bmp> [--size N] [--canvas WxH --at X,Y (.bmp only)]\n  rustgis-cli render <data|project> <out.png> [--basemap NAME] [--tiles URL] [--width N] [--height N] [--dpi N] [--worldview auto|default|china]\n  rustgis-cli run [--sample] [--project P] [--data F]… --cmd 'id={{json}}'… [--save P] [--worldview auto|default|china]\n  rustgis-cli ask [--sample] [--project P] [--data F]… \"request\" [--provider P] [--model M] [--base-url URL] [--yes] [--save P]\n  rustgis-cli ask --models [--provider P]\n  rustgis-cli ask --login [--another-account] [--account CLIENT_ID] | --logout\n  rustgis-cli ask --accounts | --account CLIENT_ID | --remove-account CLIENT_ID\n  common options: --use-saved-secrets (use the connections, passwords, keys, ChatGPT sign-in and Earthdata Login token the RustGIS app saved; reads the system keychain), --threads N (the most threads one piece of work uses, 1-1024; default: the cores, up to 16)\n  rustgis-cli mcp [--sample] [--project P] [--data F]… [--yes] [--attach [PORT] [--token-file FILE] [--timeout SECONDS (5-600)]]\n  rustgis-cli mcp-register [--client claude] [--name NAME] [--port PORT]"
     );
     ExitCode::from(2)
 }
@@ -262,6 +263,7 @@ fn ask(s: &mut Session, args: &[String], saved: Option<&Saved>, env: &Environmen
         "--plugin",
         "--registry",
         "--worldview",
+        "--threads",
         "--account",
         "--remove-account",
     ];
@@ -721,6 +723,22 @@ fn cli() -> ExitCode {
         return ExitCode::from(2);
     }
     rustgis_engine::sample::apply_worldview(worldview);
+    // `--threads N` (or `--threads=N`): the most threads one piece of work uses (#1562), as
+    // `gp.threads` sets it.
+    let joined = args.iter().find_map(|a| a.strip_prefix("--threads="));
+    if joined.is_some() || args.iter().any(|a| a == "--threads") {
+        let t = joined.or_else(|| opt(&args, "--threads")).unwrap_or("");
+        // `mcp --attach` runs the calls in the open app, whose own setting holds.
+        if cmd == "mcp" && args.iter().any(|a| a == "--attach") {
+            eprintln!("rustgis-cli: --threads doesn't reach the open app; set it there (Settings › Performance › Threads)");
+            return ExitCode::from(2);
+        }
+        let n = t.trim().parse::<usize>().ok();
+        if n.is_none_or(|n| rustgis_engine::data::threads::set_max(Some(n)).is_err()) {
+            eprintln!("rustgis-cli: --threads {t}: expected a whole number from 1 to {}", rustgis_engine::data::threads::MOST);
+            return ExitCode::from(2);
+        }
+    }
     let mut s = Session::new(Project::default());
     // `--use-saved-secrets`: the desktop app's saved connections, and the passwords, keys and
     // ChatGPT sign-in it keeps in the system keychain. Without it, nothing reads the keychain.

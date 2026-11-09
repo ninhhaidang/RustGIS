@@ -303,14 +303,10 @@ fn higher(max: f64, x: f64) -> f64 {
     if x > max { x } else { max }
 }
 
-/// The threads to count a band of `len` values on: at most 16, one per 256 Ki values, and one
-/// below [`PARALLEL_VALUES`] or in the browser.
+/// The threads to count a band of `len` values on: at most [`crate::threads::max`], one per
+/// 256 Ki values, and one below [`PARALLEL_VALUES`] or in the browser.
 fn threads_for(len: usize) -> usize {
-    if cfg!(target_arch = "wasm32") || len < PARALLEL_VALUES {
-        1
-    } else {
-        std::thread::available_parallelism().map_or(1, |n| n.get()).min(16).min(len / (PARALLEL_VALUES / 4))
-    }
+    if cfg!(target_arch = "wasm32") || len < PARALLEL_VALUES { 1 } else { crate::threads::max().min(len / (PARALLEL_VALUES / 4)) }
 }
 
 /// `f` over `threads` runs of `data` that cover it in order, its results in that order, the

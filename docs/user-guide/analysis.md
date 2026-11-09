@@ -97,7 +97,8 @@ work on one thread (a ray step, a cell-point pair), Kernel Density one whose poi
 too large for its raster; its training fits a share of the sampled pixels, or fewer epochs, instead
 (`dl.train` reports the epochs it ran). A task or model recorded from a pane run keeps these limits
 when it runs again in the app, so a step the pane took on can be refused there, and a model trained
-again can differ. On the desktop these limits grow with the cores the run takes (up to 16), as many
+again can differ. On the desktop these limits grow with the threads the run takes (the cores, up to 16 unless
+[`threads`](#analysis-workflows) says otherwise), as many
 times more work as the threads it runs on. Threads share cores and memory, so a run at that limit
 can take up to about twice as long as a one-thread run at its own (measured on one machine, a Xeon
 Silver 4114; it can be longer on others); in the web app, on one thread, the limits stay as they
@@ -1204,6 +1205,24 @@ clipping its geometry; an existing selection takes precedence and overlay inputs
 The Geostatistical Wizard uses the environment's extent and raster cell size (degrees).
 IDW Interpolation and Ordinary Kriging instead use their own `extent` and `pixelSize` parameters;
 the environment does not set their output grids.
+
+**Threads** (`gp.threads={"threads": 8}`) sets the most threads one piece of work uses, 1 to 1024
+(`null`: the default, the computer's cores up to 16). It is never more than the cores, holds for
+the whole process (every session in it), isn't saved with the project and leaves no undo step.
+Tools, GeoTIFF reads, raster statistics, data-cube trends and the drawing of tiles take their
+threads from it; drawing a raster on the map stays at 8 threads at most, and where each thread
+needs working memory (a tool's, a cube cell's) no more start than `threadScratchBytes` holds
+beyond the first thread's. A
+GeoTIFF read keeps the default count whatever that budget, as before; only a higher setting is
+bounded by it. **Settings › Performance › Threads** in the desktop app, the command
+line's `--threads` and Python's `Session(threads=…)` set the same count. A lower setting also
+lowers the work limits above that grow with the threads a run takes (Viewshed, IDW, Kriging and
+Kernel Density): a run that passes on 16 threads can be refused on 4. Only you change it: the AI
+Assistant asks first, and plugins, imported models and tasks, and MCP agents without full access
+can't. `gp.threads`
+returns the setting (`threads`), the threads it gives (`max`), the default's (`default`) and the
+cores; `gp.env` returns the threads and cores as `limits.threads` and `limits.cores`. The web app
+runs on one thread.
 
 `gp.env` also returns the memory limits on this computer (`limits`). On the desktop they follow the
 computer's memory, or a container's limit when it is lower: each plans for a quarter of it, never
