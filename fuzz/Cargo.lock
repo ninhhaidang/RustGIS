@@ -2378,7 +2378,7 @@ dependencies = [
 
 [[package]]
 name = "rustgis-analysis"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "a5",
  "geo",
@@ -2391,7 +2391,7 @@ dependencies = [
 
 [[package]]
 name = "rustgis-data"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -2436,7 +2436,7 @@ dependencies = [
 
 [[package]]
 name = "rustgis-engine"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "base64 0.23.1",
  "iana-time-zone",
@@ -2468,7 +2468,7 @@ dependencies = [
 
 [[package]]
 name = "rustgis-geom"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "geographiclib-rs",
  "serde",
@@ -2476,7 +2476,7 @@ dependencies = [
 
 [[package]]
 name = "rustgis-map"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "base64 0.23.1",
  "proj4rs",
@@ -2490,7 +2490,7 @@ dependencies = [
 
 [[package]]
 name = "rustgis-plugins"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "base64 0.23.1",
  "log",
@@ -2507,7 +2507,7 @@ dependencies = [
 
 [[package]]
 name = "rustgis-render"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "ab_glyph",
  "base64 0.23.1",
@@ -2529,7 +2529,7 @@ dependencies = [
 
 [[package]]
 name = "rustgis-tiles"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "base64 0.23.1",
  "brotli-decompressor",
@@ -3044,7 +3044,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

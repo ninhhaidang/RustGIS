@@ -496,7 +496,7 @@ duplication and nudging have their own [layout shortcuts](layouts.md#layouts).
 - **Plugins**: **Plugins › Plugin Manager** installs, updates and removes [plugins](../plugins.md)
   from the registry at [plugins.rustgis.app](https://plugins.rustgis.app) or from a file.
 - **Language**: **Settings › Language** switches the interface among
-  [20 languages](../i18n.md) and chooses the [worldview](maps.md#worldview) of the built-in
+  [21 languages](../i18n.md) and chooses the [worldview](maps.md#worldview) of the built-in
   borders.
 - **Theme**: **Settings › Theme** picks the interface colours, spacing and text sizes, from the
   built-in Light and Dark themes, a theme [file](../themes.md) in the desktop app’s themes folder, or

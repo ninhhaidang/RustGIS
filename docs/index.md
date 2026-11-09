@@ -35,16 +35,16 @@ Map operations are commands you can script from the command line, Python or the 
 
 -   **Cartography and 3D**
 
-    Graduated colours, symbols by expression, curved labels, stacked symbols, publication layouts
-    and map series; a 3D globe, projection presets, terrain and extrusions, and maps of the Moon,
+    Graduated colours, symbols and labels by expression, diagrams, curved labels, layouts as
+    vector PDF and SVG, and map series; a 3D globe, terrain and extrusions, and maps of the Moon,
     Mars and other worlds.
     [Cartography](user-guide/cartography.md) · [Maps](user-guide/maps.md) · [Layouts](user-guide/layouts.md)
 
 -   **Analysis**
 
-    SQL selection, overlay and proximity tools, guided workflows, ModelBuilder, imagery tools,
-    spatial join, kriging, zonal statistics, data-cube time series and trends, and over 1,000
-    tools through the optional GeoLibre/Whitebox suite.
+    Overlay and proximity tools, run in the background on several cores on the desktop; batch
+    runs, ModelBuilder, SQL selection, imagery tools, kriging, zonal statistics, data-cube trends,
+    and over 1,000 tools through the optional GeoLibre/Whitebox suite.
     [Analysis](user-guide/analysis.md) · [Expressions](user-guide/expressions.md)
 
 -   **Editing**

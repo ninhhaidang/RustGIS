@@ -1,6 +1,6 @@
 # Roadmap
 
-_Last reviewed: 2026-10-31 (v0.5.0). Reviewed weekly; if this date is old, trust the linked issues
+_Last reviewed: 2026-11-08 (v0.6.0). Reviewed weekly; if this date is old, trust the linked issues
 over this page._
 
 This page says where RustGIS is heading and where help is most useful. Details live in the linked
@@ -66,11 +66,10 @@ Correct, robust and recoverable, with the foundations other themes stand on.
   services).
 - Extend the OS keychain secret store to service connections (database passwords, S3 keys,
   AI provider keys and the ChatGPT sign-in's tokens are already kept there).
-- Vector tools, each writing a new layer: check and fix geometry _(open)_.
 
 ### Expressions and cartography
 Next on top of the expression language:
-- Expression labels, with rotation, case, priority and number formats.
+- Expression labels: case, priority and number formats (text, size, colour and angle are done).
 - Rule-based renderer: ordered rules with an expression, symbol and scale range, edited as such
   (QGIS's rules import as Unique Values by expression).
 - Quick filters in the attribute table; pop-up templates (chosen fields, formats for dates, links
@@ -79,8 +78,8 @@ Next on top of the expression language:
 And alongside it:
 - Kernel density (heat map) as a renderer; point clustering.
 - SVG and PNG markers, image fill patterns and a symbol library.
-- A legend and colour bar on the map. In layouts, legend entries reordered, renamed and set in
-  columns; several values grouped into one unique-value class.
+- A legend and colour bar on the map. In layouts, legend entries reordered and renamed; several
+  values grouped into one unique-value class.
 - Map series at a fixed scale, with the current feature highlighted and its attributes in the
   page's text.
 - Extend QGIS QML style import beyond the supported renderers; add SLD styles.
@@ -126,8 +125,7 @@ And alongside it:
 Built in means no runner download, the selection honoured, geodesic distances and attributes
 kept. Before adding a tool, check whether the GeoLibre suite already has it (`gp.tools`); a
 built-in version must justify itself on one of those.
-- Copy a layout to the clipboard.
-- UTM and MGRS grids and coordinate readouts.
+- UTM and MGRS grids drawn on the map (the readouts are done).
 - H3 grids built in, next to the A5 grids (the GeoLibre suite has H3 tools only when its runner
   is installed).
 - An on-map right-click menu: copy the coordinate, run a buffer or viewshed from the point.
@@ -149,105 +147,118 @@ Open questions rather than plans; discuss before building.
 
 ## Done
 
-- Export into an existing GeoPackage on desktop: a layer or table added as one more table, or
-  replacing one of its tables, leaving the others as they were (`mode` on `share.exportLayer` and
-  `share.exportTable`).
-- Polygon editing: Cut Polygon, Reshape (polygons and lines) and Trace along an edge while
-  drawing, on the map and through `edit.cutPolygon`, `edit.reshape` and `edit.trace`.
-- Geometry conversions: Polygon To Line, Split Line At Vertices, Feature Envelope To Polygon
-  and Unsplit Line, available in the Tools pane and through `gp.run`.
-- Summary fields (sum, mean, first… — every Summary Statistics statistic) on Dissolve, over each
-  dissolved group's records, and on Summarize Within, over the points in each polygon.
-- Customizable keyboard shortcuts with portable JSON import/export ([#562](https://github.com/opengeos/RustGIS/issues/562)).
+- Customizable keyboard shortcuts with portable JSON import/export
+  ([#562](https://github.com/opengeos/RustGIS/issues/562)).
 - Save edits back to existing GeoPackage and PostGIS tables on desktop, with atomic saves,
-  conflict detection and discard/reload ([#1041](https://github.com/opengeos/RustGIS/issues/1041)).
-- Projects that survive a move: local data paths relative to the project and undoable Repair
-  Data Source for layers and tile archives ([#879](https://github.com/opengeos/RustGIS/issues/879)).
-- Layered workspace, command registry with undo, project files (`.rgis`), `rustgis-cli`, the
-  web app (WebAssembly, installable with offline start, opened with a project or data by its
-  web address, self-hostable with the `Dockerfile`), 18 interface languages; a ribbon laid out in
-  the order of the work (Home, Data, Style, Edit, Analyze, View, Publish), start-up preferences,
-  Check for Updates, autosave and crash recovery in the desktop app, a native macOS menu bar, a
-  session log of every command run.
-- Data: files by their web address; GeoJSON, CSV/TSV (x/y in any EPSG system, or WKT), Excel
-  and OpenDocument spreadsheets, GeoRSS, LandXML, encoded polylines, Shapefile (zipped too,
-  with the coordinate system in its `.prj`), GeoPackage, GeoParquet, FlatGeobuf, KML/KMZ
-  (styles included), GPX, GML, MapInfo MIF, OSM PBF, TopoJSON, DXF and LiDAR (LAS/LAZ/COPC) in,
-  all of them in the web app too (large files read in place, a view at a time, and Shapefiles,
-  GeoPackage, FlatGeobuf and GeoParquet a chunk at a time); Esri File
-  Geodatabases without GDAL (desktop; 3D multipatches as footprints with their heights); the
-  vector formats GDAL reads when it is installed, PostGIS, MySQL, MariaDB and SQL Server tables
-  read live (desktop), and SQL queries and DuckDB databases (DuckDB Spatial) when DuckDB is;
-  GeoJSON, CSV, GeoPackage, GeoParquet, Shapefile, FlatGeobuf, KML/KMZ, GPX and WKT out;
-  standalone tables; geotagged photos and KML ground overlays; geocoding (Find Place, address
-  tables); a Data Sources pane (favourites, recent, saved services, a library, reusable
-  connections and dataset browsing) and an SQL pane (DuckDB Spatial); layer, map, style,
-  template, task and package files; supported QGIS `.qgs`/`.qgz` and GeoLibre `.geolibre` projects opened as maps,
-  with supported layer styles and notes on import differences.
+  conflict detection and discard/reload
+  ([#1041](https://github.com/opengeos/RustGIS/issues/1041)).
+- Projects that survive a move: local data paths relative to the project and undoable Repair Data
+  Source for layers and tile archives ([#879](https://github.com/opengeos/RustGIS/issues/879)).
+- Layered workspace, command registry with undo, project files (`.rgis`), `rustgis-cli`, the web
+  app (WebAssembly, installable with offline start, opened with a project or data by its web
+  address, self-hostable with the `Dockerfile`), 21 interface languages, custom themes as JSON
+  files and an interface scale; a ribbon laid out in the order of the work (Home, Data, Style,
+  Edit, Analyze, View, Publish), start-up preferences, Check for Updates (with Download and
+  Install for Windows `setup.exe` installs), autosave and crash recovery in the desktop app, a
+  native macOS menu bar, a History pane of tool runs and the session log (filtered, saved as CSV
+  or JSON Lines); attribute table columns hidden and reordered; files, rasters and projects too
+  large for the machine refused with a message, the memory limits following the computer's
+  memory.
+- Data: files by their web address; GeoJSON, CSV/TSV (x/y in any EPSG system, or WKT), Excel and
+  OpenDocument spreadsheets, GeoRSS, LandXML, encoded polylines, Shapefile (zipped too, with the
+  coordinate system in its `.prj`), GeoPackage, GeoParquet, FlatGeobuf, KML/KMZ (styles
+  included), GPX, GML, MapInfo MIF, OSM PBF, TopoJSON, DXF, CityJSON (footprints with their
+  heights) and LiDAR (LAS/LAZ/COPC) in, a Shapefile by its `.shp` address, all of them in the web
+  app too (large files read in place, a view at a time, and Shapefiles, GeoPackage, FlatGeobuf
+  and GeoParquet a chunk at a time); Esri File Geodatabases without GDAL (desktop; 3D
+  multipatches as footprints with their heights); the vector formats GDAL reads when it is
+  installed, PostGIS, MySQL, MariaDB and SQL Server tables read live (desktop), and SQL queries
+  and DuckDB databases (DuckDB Spatial) when DuckDB is; GeoJSON, CSV, GeoPackage (also as a table
+  added to or replacing one in an existing file), GeoParquet, Shapefile, FlatGeobuf, KML/KMZ, GPX
+  and WKT out; standalone tables; geotagged photos and KML ground overlays; geocoding (Find
+  Place, address tables; PDOK Locatieserver); a Data Sources pane (favourites, recent, saved
+  services, a library, reusable connections and dataset browsing) and an SQL pane (DuckDB
+  Spatial); layer, map, style, template, task and package files; supported QGIS `.qgs`/`.qgz` and
+  GeoLibre `.geolibre` projects opened as maps, with supported layer styles and notes on import
+  differences.
 - Open data: STAC search (Planetary Computer assets), NASA Earthdata (desktop), Hugging Face,
   Overture Maps, Source Cooperative, OpenStreetMap by area (Overpass), geoBoundaries, CKAN,
-  Socrata and ArcGIS Hub portals, S3 buckets with signed connections and a bucket browser, and
-  a Data Cubes pane with a catalog of cubes for the time slider.
-- Rasters: GeoTIFF/COG (by web address, read in place by range; Zstandard too) and ASCII grids,
-  Zarr 2 and 3 stores (a variable's step, by folder or web address), and JPEG 2000, NetCDF,
-  HDF, ERDAS Imagine… through GDAL, EPSG reprojection, stretch/RGB/classified/shaded-relief
-  symbology, raster functions, indices, change detection, classification, georeferencing;
-  cloud-optimised GeoTIFFs out; data cubes on a time slider, point time-series charts, temporal
-  and categorical summaries, and trends (Sen's slope, Mann–Kendall), including STAC bands read
-  in place.
+  Socrata and ArcGIS Hub portals, S3 buckets with signed connections and a bucket browser, and a
+  Data Cubes pane with a catalog of cubes for the time slider, static collections laid out by
+  date (JAXA Earth) among them.
+- Rasters: GeoTIFF/COG (by web address, read in place by range as raster layers, or a window of
+  one by bounding box; Zstandard too) and ASCII grids, Zarr 2 and 3 stores (a variable's step, by
+  folder or web address), and JPEG 2000, NetCDF, HDF, ERDAS Imagine… through GDAL, EPSG
+  reprojection, stretch/RGB/classified/shaded-relief symbology, raster functions, indices, change
+  detection, classification, georeferencing; cloud-optimised GeoTIFFs out; data cubes on a time
+  slider, point time-series charts, temporal and categorical summaries, and trends (Sen's slope,
+  Mann–Kendall), including STAC bands read in place.
 - Services: WMS, WMTS, WFS, WCS, OGC API Features and Tiles, and ArcGIS REST, listed from their
-  capabilities; CSW catalogue search; sign-in to ArcGIS Online and Enterprise (OAuth); WMS and
+  capabilities (ArcGIS feature services in protocol buffer pages); CSW catalogue search; sign-in
+  to ArcGIS Online and Enterprise (OAuth), basic-auth and API-key logins for a session; WMS and
   WMTS time on the time slider, legends, GetFeatureInfo and layers in other coordinate systems;
   feature services asked for an area only.
 - Maps: multiple maps, a GPU renderer (beta) with smooth zoom and pan, tilt, rotation and
   terrain, a 3D globe with the flat map draped over it, maps of the Moon, Mars and other
-  celestial bodies, projection presets and EPSG codes (features cut along the edge of world
-  projections), a search box for layers, places and coordinates, bookmarks, web tile layers
-  (XYZ/TMS/WMS, Mapbox Vector Tiles, MapLibre styles, PMTiles and MBTiles archives), a basemap
-  gallery (OpenFreeMap, USGS Imagery), worldviews.
+  celestial bodies, projection presets and EPSG codes (sinusoidal, Robinson, orthographic and
+  Mercator among them; features cut along the edge of world projections), a search box for
+  layers, places and coordinates, UTM and MGRS coordinate readouts, bookmarks, web tile layers
+  (XYZ/TMS/WMS, Mapbox Vector Tiles, MapLibre styles with their sprites and raster-dem hillshade
+  and colour relief, PMTiles and MBTiles archives), a basemap gallery (OpenFreeMap, USGS
+  Imagery), worldviews.
 - Cartography: single, unique values, graduated colours (natural breaks, equal interval,
   quantile, geometric interval, standard deviation, manual, arithmetic progression, head/tail
-  breaks) and proportional symbols; Unique Values by expression; symbol size, colours, outline width and angle by expression;
-  label text, size, colour and angle by expression; nested layer groups; label classes with SQL queries, managed in the Labeling pane; straight and
-  curved line placement, offsets, backgrounds, halos, wrapping, repeats, other positions round a
-  point, installed font families and annotation; stacked and dashed line strokes, markers and hash
-  marks along lines, stacked, shifted and turned point marks, font markers, hatch, marker, gradient
-  and shapeburst polygon fills, symbol levels, reference scales, polygon outlines without fill; the
-  full matplotlib colour maps; custom colour ramps (and QGIS, GDAL
-  and GMT palette files); masking, display filters, blend modes, aggregation, extrusion; graphics.
+  breaks), proportional symbols and pie and bar diagrams; Unique Values by expression; Invert
+  Color Ramp; symbol size, colours, outline width and angle by expression; label text, size,
+  colour and angle by expression; nested layer groups; label classes with SQL queries, managed in
+  the Labeling pane; straight and curved line placement, offsets, backgrounds, halos, wrapping,
+  repeats, other positions round a point and along a line, callouts, Show All Labels and a Move
+  Label tool, installed font families and annotation; stacked and dashed line strokes, markers
+  and hash marks along lines, stacked, shifted and turned point marks, font markers, hatch,
+  marker, gradient and shapeburst polygon fills, symbol levels, reference scales, polygon
+  outlines without fill; the full matplotlib colour maps; custom colour ramps (and QGIS, GDAL and
+  GMT palette files); masking, display filters, blend modes, aggregation, extrusion; graphics.
 - Merge vector layers: append matching geometry types, union attributes without type conversion,
-  honor selections and complete streamed inputs ([#1061](https://github.com/opengeos/RustGIS/issues/1061)).
-- Editing: create, move, rotate, scale, merge, split, explode, vertex editing; snapping,
-  templates, elevation, topology, coincident polygon vertices moved together; domains, subtypes,
-  attribute rules, contingent values,
-  relationships, archiving.
+  honor selections and complete streamed inputs
+  ([#1061](https://github.com/opengeos/RustGIS/issues/1061)).
+- Editing: create, move, rotate, scale, merge, split, explode, vertex editing, cut polygons,
+  reshape and trace along an edge while drawing; snapping, templates, elevation, topology,
+  coincident polygon vertices moved together; domains, subtypes, attribute rules, contingent
+  values, relationships, archiving.
 - Analysis: selection by attributes and location; polygon, lasso and radius on the map; overlay
   (clip, erase, split, intersect, identity, union, symmetrical difference, update), proximity
-  (buffer, near) and summary tools, pivot tables, tabulate intersection (class areas and totals
-  shared out to zones by overlap), spatial join by intersection, centre, largest
-  overlap, closest and distance with merge rules, join field (non-spatial attribute join), feature
-  vertices to points, points along lines, zonal statistics, kernel density, A5 grids, kriging,
-  Calculate Field with an expression language, Calculate Geometry with metric or imperial units,
-  Project Raster, and vector and raster PMTiles export (#557); guided workflows (viewshed, line of
-  sight, IDW, shortest path, suitability); ModelBuilder on a node canvas, scripts with command,
-  parameter and value completion, and history copied as code; the GeoLibre and Whitebox suite
-  (1,000+ tools) natively and in the browser.
+  (buffer, near) and summary tools (summary fields on Dissolve and Summarize Within), pivot
+  tables, check and repair geometry, geometry conversions (polygon to line, split line at
+  vertices, feature envelope to polygon, unsplit line), polygons burnt onto a grid, tabulate
+  intersection (class areas and totals shared out to zones by overlap), spatial join by
+  intersection, centre, largest overlap, closest and distance with merge rules, join field
+  (non-spatial attribute join), feature vertices to points, points along lines, zonal statistics,
+  kernel density, A5 grids, kriging, Calculate Field with an expression language, Calculate
+  Geometry with metric or imperial units, Project Raster, and vector and raster PMTiles export
+  (#557); guided workflows (viewshed, line of sight, IDW, shortest path, suitability); tools run
+  in the background with progress and Cancel, many on several cores on the desktop, and in
+  batches (`gp.batch`); measurements on the WGS 84 ellipsoid, in the attribute table, the measure tool
+  and expressions;
+  ModelBuilder on a node canvas, scripts with command, parameter and value completion, and
+  history copied as code; the GeoLibre and Whitebox suite (1,000+ tools) natively and in the
+  browser.
 - Layouts (map frames, surrounds, map series, publication sheets and figures in one command,
-  format panes, guides, snapping, element locking and order, measured grids, vector PDF and SVG),
+  format panes, guides, snapping, element locking and order, measured grids, legends in up to
+  three columns, publication arrangements, vector PDF and SVG, a page copied to the clipboard),
   reports, presentations and notebooks; the web app embeddable in a page (`?embed`).
-- Sharing as open formats (web maps, OGC API Features collections, MapLibre styles, glTF
-  scenes, locators), offline areas with sync, deep learning pixel classification, hosted
-  imagery tiles.
-- The AI Assistant (Anthropic, OpenAI, ChatGPT sign-in, Gemini, OpenRouter, Ollama,
-  OpenAI-compatible) in the app, the web app and `rustgis-cli ask`; an MCP server
-  (`rustgis-cli mcp`) for AI agents such as Claude Code, Cursor and VS Code, with the
+- Sharing as open formats (web maps, OGC API Features collections, MapLibre styles, glTF and STL
+  scenes, locators, the map view or a tile layer as a GeoTIFF placed on the ground), offline
+  areas with sync, deep learning pixel classification, hosted imagery tiles.
+- The AI Assistant (Anthropic, OpenAI, ChatGPT sign-in, Gemini, OpenRouter, Requesty,
+  TrustedRouter, Ollama, OpenAI-compatible) in the app, the web app and `rustgis-cli ask`; an MCP
+  server (`rustgis-cli mcp`) for AI agents such as Claude Code, Cursor and VS Code, with the
   documentation built in.
-- The AI Assistant's skills, subagents and ACP clients; MCP over HTTP, an audited loopback
-  relay and a file bridge, which let external AI clients drive the app. Database passwords, S3
-  keys, AI provider keys and the Earthdata Login token optionally remembered in the desktop OS
-  keychain, where the ChatGPT sign-in keeps its tokens.
-- Sandboxed WebAssembly plugins with a registry at plugins.rustgis.app; process plugins that
-  run as programs (with Python environments RustGIS makes), in the background with progress and
+- The AI Assistant's skills, subagents and ACP clients; MCP over HTTP, an audited loopback relay
+  and a file bridge, which let external AI clients drive the app. Database passwords, S3 keys, AI
+  provider keys and the Earthdata Login token optionally remembered in the desktop OS keychain,
+  where the ChatGPT sign-in keeps its tokens.
+- Sandboxed WebAssembly plugins with a registry at plugins.rustgis.app; process plugins that run
+  as programs (with Python environments RustGIS makes), in the background with progress and
   Cancel; panels with tree widgets, and compact ribbon columns and nested menus.
 - The `rustgis` Python package on PyPI: the engine in-process, `rustgis.Map` in Jupyter and
   `rustgis.qt.MapWidget` in Qt applications.
