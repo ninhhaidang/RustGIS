@@ -29,7 +29,7 @@ unicode-normalization = "0.1"
 sys-locale = { version = "0.3", features = ["js"] }
 
 # Pictures kept with features (photo thumbnails), shown in the identify popup.
-image = { workspace = true, features = ["jpeg", "webp"] }
+image = { workspace = true, features = ["gif", "jpeg", "webp"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rfd = { workspace = true }

@@ -327,19 +327,24 @@ fn header(bytes: &[u8]) -> Result<image::ImageReader<std::io::Cursor<&[u8]>>, Fa
     Ok(reader)
 }
 
-/// Decodes a fetched picture for the pop-up: refused when it isn't one, or when its header says
-/// it is larger than [`crate::mapview::decode_picture`] takes (before anything is decoded, so a
-/// small file can't unpack into a huge picture), and kept at most [`MAX_SIDE`] pixels a side.
+/// The picture formats the pop-up shows. A fixed list, not whatever decoders `image` happens to be
+/// built with: another crate in the build can add one (`arboard`, through the clipboard, adds BMP
+/// on Windows and TIFF on macOS), and the same file must give the same answer on every platform.
+const SHOWN: [image::ImageFormat; 4] =
+    [image::ImageFormat::Png, image::ImageFormat::Jpeg, image::ImageFormat::WebP, image::ImageFormat::Gif];
+
+/// Decodes a fetched picture for the pop-up: refused when it isn't one, or is in a format outside
+/// [`SHOWN`], or when its header says it is larger than [`crate::mapview::decode_picture`] takes
+/// (before anything is decoded, so a small file can't unpack into a huge picture), and kept at
+/// most [`MAX_SIDE`] pixels a side.
 pub(crate) fn decode(bytes: &[u8]) -> Result<image::RgbaImage, Failure> {
     let header = header(bytes)?;
     let Some(format) = header.format() else { return Err(Failure::NotPicture) };
-    // A picture whose format has no decoder here says so, rather than that it isn't one.
-    let (w, h) = header.into_dimensions().map_err(|e| match e {
-        image::ImageError::Unsupported(u) if matches!(u.kind(), image::error::UnsupportedErrorKind::Format(_)) => {
-            Failure::Unsupported(format!("{format:?}").to_uppercase())
-        }
-        _ => Failure::NotPicture,
-    })?;
+    // A picture in another format says so, rather than that it isn't one.
+    if !SHOWN.contains(&format) {
+        return Err(Failure::Unsupported(format!("{format:?}").to_uppercase()));
+    }
+    let (w, h) = header.into_dimensions().map_err(|_| Failure::NotPicture)?;
     if w > MAX_DECODED_SIDE || h > MAX_DECODED_SIDE {
         return Err(Failure::TooLarge(w, h));
     }
@@ -548,13 +553,17 @@ mod tests {
         assert_eq!(Failure::TooLarge(4000, 3000).line(), "Picture unavailable: 4000 × 3000 pixels is larger than 2048 × 2048");
         assert_eq!(decode(b"<html>Not found</html>"), Err(Failure::NotPicture));
         assert_eq!(decode(&[]), Err(Failure::NotPicture));
-        // A picture whose format isn't read here says so, not that it isn't a picture.
+        // A picture in a format the pop-up doesn't show says so, not that it isn't a picture, whatever
+        // decoders the build has (the clipboard adds BMP on Windows and TIFF on macOS).
         let mut bmp = b"BM".to_vec();
         bmp.resize(64, 0);
         assert_eq!(decode(&bmp), Err(Failure::Unsupported("BMP".into())));
         let mut tiff = b"II*\0".to_vec();
         tiff.resize(64, 0);
         assert_eq!(decode(&tiff), Err(Failure::Unsupported("TIFF".into())));
+        // A GIF is shown (a 1 × 1 one).
+        let gif = b"GIF89a\x01\0\x01\0\x80\0\0\0\0\0\xff\xff\xff!\xf9\x04\x01\0\0\0\0,\0\0\0\0\x01\0\x01\0\0\x02\x02D\x01\0;";
+        assert_eq!(decode(gif).unwrap().dimensions(), (1, 1));
         assert_eq!(Failure::Unsupported("BMP".into()).line(), "Picture unavailable: BMP pictures aren't supported");
         // A picture cut short doesn't decode.
         let whole = png(64, 64);
