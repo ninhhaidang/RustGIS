@@ -401,3 +401,46 @@ fn defaults_are_left_to_the_runner() {
         ]
     );
 }
+
+/// A default that isn't text, on a field the form shows as text, comes back as its JSON text and
+/// is still the default (#1517: `topo_render`'s list went to the runner, which refused it).
+#[test]
+fn a_default_sent_back_as_text_is_left_to_the_runner() {
+    let f = Fixture::new();
+    let manifest = json!({
+        "id": "render", "display_name": "Render", "category": "Terrain", "summary": "",
+        "defaults": {"colour": [255, 255, 255, 255], "reverse": false, "ambient": 0.2, "palette": "[soft]"},
+        "params": [
+            {"name": "dem", "io_role": "input", "data_kind": "raster", "required": true, "schema": {"kind": "input"}},
+            {"name": "colour", "data_kind": "string", "required": false, "schema": {"kind": "string"}},
+            {"name": "reverse", "data_kind": "string", "required": false, "schema": {"kind": "string"}},
+            {"name": "ambient", "data_kind": "string", "required": false, "schema": {"kind": "string"}},
+            {"name": "palette", "data_kind": "string", "required": false, "schema": {"kind": "string"}},
+            {"name": "output", "io_role": "output", "data_kind": "raster", "required": false, "schema": {"kind": "output"}}
+        ]
+    });
+    let (spec, meta) = spec_of(&manifest).unwrap();
+    let argv = |params: Value| {
+        let params = rustgis_analysis::resolve_params(&spec, &params).unwrap();
+        prepare_with(&spec, &meta, &f, &params).unwrap().argv("/work")
+    };
+    let bare = ["--dem=/work/in0-embedded.tif", "--output=/work/output.tif"];
+    // The form's text, the same list spaced out, and the JSON a script or the MCP gives.
+    let text = json!({"dem": "embedded", "colour": "[255,255,255,255]", "reverse": "false", "ambient": "0.2", "palette": "[soft]"});
+    assert_eq!(argv(text), bare);
+    assert_eq!(argv(json!({"dem": "embedded", "colour": "[255, 255, 255, 255]"})), bare);
+    assert_eq!(argv(json!({"dem": "embedded", "colour": [255, 255, 255, 255], "reverse": false, "ambient": 0.2})), bare);
+    // Changed values go. Text is compared as text: quoted, it isn't the text default.
+    let changed = json!({"dem": "embedded", "colour": "[0,0,0,255]", "reverse": "true", "ambient": "0.5", "palette": "\"[soft]\""});
+    assert_eq!(
+        argv(changed),
+        [
+            "--dem=/work/in0-embedded.tif",
+            "--colour=[0,0,0,255]",
+            "--reverse=true",
+            "--ambient=0.5",
+            "--palette=\"[soft]\"",
+            "--output=/work/output.tif"
+        ]
+    );
+}
