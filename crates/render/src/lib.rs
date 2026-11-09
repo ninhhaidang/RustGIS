@@ -2090,7 +2090,7 @@ fn render_tilted(map: &mut Map, view: &View, full_res_rasters: bool, sources_rea
         None => warp.finish(pm.pixels()),
     }
     drop(kept);
-    extrusions_tilted(map, view, pm.pixels());
+    extrusions_tilted(map, view, pm.pixels())?;
     markers_tilted(map, view, &mut pm);
     let placed = place_tilted_labels(map, view, candidates, ground.as_ref());
     for l in &placed.labels {
@@ -2592,6 +2592,7 @@ pub fn extruded_shapes(map: &mut Map, view: &View) -> Vec<ExtrudedShape> {
     let scale = map.ground_res_at(&view.camera) / rustgis_geom::PIXEL_M;
     // Layers a hidden or out-of-scale group holds aren't drawn, as in `render_frame`.
     let held = map.held_by_group(scale);
+    let group_opacity = map.group_opacities();
     // Only the features on the ground the view shows (grown by a moving drape's margin).
     let cull = view.camera.extent(view.width, view.height).padded(0.3, 0.0);
     let (flat, key) = (map.flat(), map.projection.code());
@@ -2614,6 +2615,12 @@ pub fn extruded_shapes(map: &mut Map, view: &View) -> Vec<ExtrudedShape> {
             continue;
         }
         let Some(x) = layer.extrusion.clone() else { continue };
+        // The layer's transparency and its groups' fade it as a whole, as in the flat map (#1669);
+        // the symbol's own fill alpha stays ignored.
+        let alpha = ((layer.opacity() * group_opacity.get(&layer.id).copied().unwrap_or(1.0)).clamp(0.0, 1.0) * 255.0).round() as u8;
+        if alpha == 0 {
+            continue;
+        }
         let rows = layer.drawn_rows(scale);
         layer.thinned_in(&flat, &key, tol);
         let layer: &rustgis_map::Layer = layer;
@@ -2648,7 +2655,7 @@ pub fn extruded_shapes(map: &mut Map, view: &View) -> Vec<ExtrudedShape> {
                 holes: polys.iter().flat_map(|p| p.iter().skip(1)).filter(|r| r.len() >= 3).cloned().collect(),
                 metres,
                 height,
-                fill: sym.fill.with_alpha(255),
+                fill: sym.fill.with_alpha(alpha),
                 stroke: sym.stroke,
                 face_culling: x.face_culling,
                 lighting: x.lighting,
@@ -2928,11 +2935,13 @@ fn markers_tilted(map: &mut Map, view: &View, pm: &mut Canvas) {
 }
 
 /// The extruded layers of a tilted view, stood up in perspective over its ground, bottom layer
-/// first (a drape of the moving view shows them flat).
-fn extrusions_tilted(map: &mut Map, view: &View, pm: &mut Pixmap) {
+/// first (a drape of the moving view shows them flat). `None` when a see-through layer's own
+/// pixmap can't be allocated, as the flat map's offscreen layers fail the render.
+fn extrusions_tilted(map: &mut Map, view: &View, pm: &mut Pixmap) -> Option<()> {
     let scale = map.ground_res_at(&view.camera) / rustgis_geom::PIXEL_M;
     // Layers a hidden or out-of-scale group holds aren't drawn, as in `render_frame`.
     let held = map.held_by_group(scale);
+    let group_opacity = map.group_opacities();
     let (flat, key) = (map.flat(), map.projection.code());
     // Heights are metres on the map's body.
     let body = map.body().ratio();
@@ -2950,14 +2959,42 @@ fn extrusions_tilted(map: &mut Map, view: &View, pm: &mut Pixmap) {
             continue;
         }
         let Some(x) = layer.extrusion.clone() else { continue };
+        // The layer's transparency and its groups' (#1669): the layer fades as a whole.
+        let opacity = (layer.opacity() * group_opacity.get(&layer.id).copied().unwrap_or(1.0)).clamp(0.0, 1.0);
+        if opacity <= 0.0 {
+            continue;
+        }
         let rows = layer.drawn_rows(scale);
         // Refreshes the projected copy for this projection.
         layer.projected_in(&flat, &key);
         let layer: &rustgis_map::Layer = layer;
         let styler = layer.styler(Some(scale));
         let geoms: Vec<Option<&Geometry>> = layer.projected_cache().iter().map(Option::as_ref).collect();
-        effects::extrude_tilted(pm, view, &layer.dataset, &geoms, &rows, &x, |c| flat.ground_per_unit(c) * body, fog, |r| styler.symbol(r));
+        let draw = |target: &mut Pixmap| {
+            effects::extrude_tilted(
+                target,
+                view,
+                &layer.dataset,
+                &geoms,
+                &rows,
+                &x,
+                |c| flat.ground_per_unit(c) * body,
+                fog,
+                |r| styler.symbol(r),
+            )
+        };
+        // Below 1, on a pixmap of its own laid over the map once, so the layer's back walls don't
+        // show through its roofs.
+        if opacity < 1.0 {
+            let mut own = Pixmap::new(pm.width(), pm.height())?;
+            draw(&mut own);
+            let over = PixmapPaint { opacity, ..PixmapPaint::default() };
+            pm.draw_pixmap(0, 0, own.as_ref(), &over, Transform::identity(), None);
+        } else {
+            draw(pm);
+        }
     }
+    Some(())
 }
 
 /// The most physical pixels a side of a tilted view's band is drawn with: past it, at a lower
@@ -8114,6 +8151,90 @@ mod tests {
         assert!(extruded_shapes(&mut m, &view).is_empty());
         let hidden = render(&mut m, &view).unwrap();
         assert_eq!(hidden.pixmap.pixel(200, 150), hidden.pixmap.pixel(5, 295));
+    }
+
+    /// A map with one extruded square seen tilted, and the layer's id (#1669).
+    fn tilted_extrusion() -> (Map, u32, View) {
+        let mut m = Map::new("Map");
+        m.basemap = rustgis_map::Basemap::Blank;
+        let mut d = Dataset::new("block", GeometryType::Polygon, vec![]);
+        let ring = vec![Coord::new(-2.0, -2.0), Coord::new(2.0, -2.0), Coord::new(2.0, 2.0), Coord::new(-2.0, 2.0), Coord::new(-2.0, -2.0)];
+        d.push(Some(Geometry::Polygon(vec![vec![ring]])), vec![]);
+        let id = m.add_dataset(d);
+        if let Some(l) = m.layer_mut(id) {
+            l.extrusion = Some(rustgis_map::effects::Extrusion {
+                field: None,
+                height: 200_000.0,
+                factor: 1.0,
+                face_culling: true,
+                lighting: true,
+                shadows: true,
+            });
+        }
+        let camera = Camera { center: Coord::new(0.0, 0.0), res: 2_000.0, bearing: 0.0, pitch: 60.0 };
+        (m, id, View { width: 400.0, height: 300.0, pixels_per_point: 1.0, camera, sky: false })
+    }
+
+    #[test]
+    fn a_tilted_extrusion_fades_with_its_layer_and_groups_transparency() {
+        let bytes = |m: &mut Map, v: &View| render(m, v).unwrap().pixmap.data().to_vec();
+        let (mut m, id, view) = tilted_extrusion();
+        let opaque = bytes(&mut m, &view);
+        // The layer not drawn at all: what 100% must show.
+        let set = |m: &mut Map, t: f32| m.layer_mut(id).map(|l| l.transparency = t);
+        if let Some(l) = m.layer_mut(id) {
+            l.visible = false;
+        }
+        let none = bytes(&mut m, &view);
+        assert_ne!(opaque, none);
+        if let Some(l) = m.layer_mut(id) {
+            l.visible = true;
+        }
+        // 0% is as if no transparency were set; 100% shows nothing of the layer; 50% is between.
+        set(&mut m, 0.0);
+        assert_eq!(bytes(&mut m, &view), opaque);
+        set(&mut m, 100.0);
+        assert_eq!(bytes(&mut m, &view), none);
+        set(&mut m, 50.0);
+        let half = bytes(&mut m, &view);
+        assert_ne!(half, opaque);
+        assert_ne!(half, none);
+        // A group's transparency multiplies in: 50% in a layer and in its group is 75% in all.
+        let mut g = rustgis_map::LayerGroup::new("g");
+        g.children = vec![id];
+        g.transparency = 50.0;
+        m.groups.push(g);
+        let both = bytes(&mut m, &view);
+        set(&mut m, 75.0);
+        m.groups.clear();
+        assert_eq!(both, bytes(&mut m, &view));
+        // A group at 100% hides it whatever the layer's own.
+        let mut g = rustgis_map::LayerGroup::new("g");
+        g.children = vec![id];
+        g.transparency = 100.0;
+        m.groups.push(g);
+        set(&mut m, 0.0);
+        assert_eq!(bytes(&mut m, &view), none);
+    }
+
+    #[test]
+    fn extruded_shapes_carry_the_effective_opacity() {
+        let (mut m, id, view) = tilted_extrusion();
+        let alpha = |m: &mut Map| extruded_shapes(m, &view).iter().map(|s| s.fill.a()).collect::<Vec<_>>();
+        assert_eq!(alpha(&mut m), vec![255]);
+        if let Some(l) = m.layer_mut(id) {
+            l.transparency = 50.0;
+        }
+        let mut g = rustgis_map::LayerGroup::new("g");
+        g.children = vec![id];
+        g.transparency = 50.0;
+        m.groups.push(g);
+        // 0.5 * 0.5 of 255, the symbol's own alpha ignored.
+        assert_eq!(alpha(&mut m), vec![64]);
+        if let Some(g) = m.groups.first_mut() {
+            g.transparency = 100.0;
+        }
+        assert!(extruded_shapes(&mut m, &view).is_empty());
     }
 
     #[test]

@@ -439,8 +439,8 @@ impl TiltDrape {
             .collect();
         let mut mesh = Mesh::default();
         // Shadows on the ground first, under every feature.
-        let shade = Color32::from_black_alpha(60);
         for (s, _, up, rings, _) in shapes.iter().filter(|x| x.0.shadows) {
+            let shade = Color32::from_black_alpha((60 * u16::from(s.fill.a()) / 255) as u8);
             for q in render::tilted_shadow_quads(cam, w, h, rings, *up) {
                 fan(&mut mesh, q.into_iter().map(|p| Some(pos(p))), shade);
             }
@@ -456,7 +456,8 @@ impl TiltDrape {
         }
         for (s, depth, up, rings, holes) in &shapes {
             let t = ((depth - FAR * 0.5) / (FAR * 0.5)).clamp(0.0, 1.0);
-            let base = s.fill.lerp(fog, t * t * (3.0 - 2.0 * t));
+            // Fog fades the colour, not the layer's transparency (the alpha stays).
+            let base = s.fill.lerp(fog, t * t * (3.0 - 2.0 * t)).with_alpha(s.fill.a());
             for wall in render::tilted_walls(cam, w, h, rings, holes, *up, s.face_culling, s.lighting) {
                 let (top, foot) = (c32(base.shade(wall.top)), c32(base.shade(wall.foot)));
                 let [fa, fb, tb, ta] = wall.quad;
