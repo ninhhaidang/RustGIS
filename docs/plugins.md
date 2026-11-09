@@ -452,7 +452,7 @@ Inside a request, `host::call(op, params)` sends one of these to RustGIS:
 | Request | Answer |
 |---|---|
 | `host.info` | `{rustgis, abi, plugin, permissions}`: version, ABI, plugin id and permissions |
-| `host.layers` | `[{id, name, raster, visible, geometry, features, selected, active, fields: [{name, type}]}]` |
+| `host.layers` | `[{id, name, raster, visible, geometry, features, selected, active, extent, transparency, group, fields: [{name, type}]}]`, top first: `extent` is `[west, south, east, north]` in longitude/latitude (`null` when empty or a raster not yet read), `transparency` the layer's own, 0 (opaque) to 100 (its groups' transparency applies on top), `group` the name of the group it is in or `null`. The web tile layers, groups, tables and layouts (with their page size) are in `info.project` |
 | `host.features` `{layer, selected?, limit?}` | the layer's features as GeoJSON; each feature has its `row` |
 | `host.view` | `{center: [lon, lat], scale, projection, bearing, pitch}` (bearing and pitch in degrees, 0 for a flat north-up map) |
 | `host.notify` `{text, error?}` | shows a message in the status bar |

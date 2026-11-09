@@ -316,6 +316,8 @@ fn layers_of(s: &Session) -> Value {
                     "id": l.id, "name": l.name, "raster": l.is_raster(), "visible": l.visible,
                     "geometry": format!("{:?}", l.dataset.geometry_type), "features": l.dataset.features.len(),
                     "selected": l.selection.len(), "active": Some(l.id) == active,
+                    "extent": super::project::bbox(l.extent()), "transparency": l.transparency,
+                    "group": s.map().group_of(l.id).map(|g| g.name.as_str()),
                     "fields": l.dataset.fields.iter().map(|f| json!({"name": f.name, "type": format!("{:?}", f.ty)})).collect::<Vec<_>>(),
                 })
             })
@@ -850,6 +852,19 @@ fn seen(s: &mut Session, view: &Value) -> Seen {
             // Which rows these are: an edit writes new ones and undo puts the old ones back, so it
             // changes even where undo brings `geometry_rev` back to the edit's number.
             (l.dataset.features.allocation_key().as_ptr() as usize).hash(h);
+            // A raster's bounds, which `host.layers` answers, are known once it's read.
+            l.raster
+                .as_ref()
+                .and_then(|r| r.data.as_ref())
+                .map(|d| {
+                    let e = d.extent();
+                    [e.min_x, e.min_y, e.max_x, e.max_y].map(f64::to_bits)
+                })
+                .hash(h);
+        }
+        // The group each layer is in, by name: renamed, regrouped or nested elsewhere.
+        for g in &map.groups {
+            (g.id, &g.name, &g.children, g.parent).hash(h);
         }
     });
     Seen { view, layers, selection, project: s.opened }
