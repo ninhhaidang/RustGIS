@@ -161,8 +161,8 @@ pub fn manifest(id: &str, permissions: &[&str]) -> String {
 }
 
 /// A manifest for the test module with a panel like the Historical Imagery plugin's: texts, a
-/// checkbox and a stepped slider running the echo command `q`, buttons, and `p` as its state
-/// command.
+/// checkbox and a stepped slider running the echo command `q`, a range kept by the host, buttons,
+/// and `p` as its state command.
 pub fn panel_manifest(id: &str) -> String {
     let mut m: serde_json::Value = serde_json::from_str(&manifest(id, &[])).unwrap_or_default();
     if let Some(c) = m["commands"].as_array_mut() {
@@ -181,6 +181,7 @@ pub fn panel_manifest(id: &str) -> String {
             {"kind": "text", "id": "selected", "label": "Selected release", "text": "None yet"},
             {"kind": "checkbox", "id": "local", "label": "Only versions with local changes", "command": "q"},
             {"kind": "slider", "id": "release", "label": "Release timeline", "min": 0, "max": 0, "steps": true, "command": "q"},
+            {"kind": "range", "id": "span", "label": "Year span", "min": 0, "max": 10, "default": [2, 8]},
             {"kind": "button", "command": "p-older", "id": "older"},
             {"kind": "button", "command": "q-newer", "id": "newer"},
             {"kind": "button", "command": "h", "id": "hello", "label": "Say Hello"},

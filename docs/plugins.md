@@ -318,7 +318,8 @@ an example.
 ### A panel
 
 A plugin can have a panel: a pane on the right of the map with texts, checkboxes, sliders,
-buttons and trees bound to its commands. Declare it in `plugin.json`:
+buttons, trees, dropdowns, date pickers and range sliders bound to its commands. Declare it in
+`plugin.json`:
 
 ```json
 "panel": {
@@ -350,13 +351,26 @@ buttons and trees bound to its commands. Declare it in `plugin.json`:
       to `0`; `default` is `min` unless given), with a caption, the value's label, and its two
       ends' labels. `steps: true` adds ‹ and › buttons that move it by one.
     - `button`: runs its `command`; its `label` is the command's unless given.
+    - `choice`: a dropdown. Its `options` (`[{"id": "dswx-hls", "label": "DSWx-HLS"}]`, at most
+      1,000, each `id` unique) come from `plugin.json` or the plugin; `default` is one of their
+      ids. Its value is the chosen option's id, or `null`. An option whose id and label are
+      those of one declared in `plugin.json` shows its label translated with its `i18n` (whether
+      the declaration or the plugin's answer gave it); any other label is shown as the plugin
+      words it. Only the first 1,000 options given are looked at.
+    - `date`: a box for a date written `YYYY-MM-DD`, with a calendar button beside it. `default`
+      is a date. Its value is the date, or `null`. A date typed runs the command when it is
+      confirmed (Enter, or leaving the box); one that isn't a real date is put back.
+    - `range`: a slider with two handles, low and high, over whole numbers from `min` to `max`,
+      as a slider's (with its `labels` and `steps`, which move both handles). Each handle also
+      takes the focus and moves with the arrow keys. `default` is `[low, high]` (both ends unless
+      given). Its value is `[low, high]`, low first.
     - `tree`: nodes the plugin gives (themes, their datasets, say), each branch opened or closed
       with its triangle or a double click. `search: true` adds a box above it that keeps the
       nodes whose label holds every word typed (case and accents aside), with the branches
       above them open; a branch found with nothing found below it opens to all its children.
-- A checkbox runs its `command` when it changes, a slider when it is let go, or stepped
-  (never while it is dragged, while the pane shows the label of the value it would take), and a
-  tree when a node is chosen. Without a `command`, a widget's value just goes with the plugin's
+- A checkbox runs its `command` when it changes, a slider or a range when it is let go, or
+  stepped (never while it is dragged, while the pane shows the label of the value it would take),
+  a tree or a dropdown when a node or an option is chosen, and a date when one is picked. Without a `command`, a widget's value just goes with the plugin's
   next request.
 - `state` (optional) is a command RustGIS runs each time the panel is opened, to answer its
   state.
@@ -372,8 +386,9 @@ button, a script or the command line):
 "panel": { "values": { "local": false, "release": 196 }, "changed": ["release"] }
 ```
 
-`values` has each checkbox (`true` or `false`), slider (a whole number) and tree (the chosen
-node's id, or `null`), and `changed` the ones this call set: the widget the user just moved. A
+`values` has each checkbox (`true` or `false`), slider (a whole number), range (`[low, high]`),
+tree and dropdown (the chosen node's or option's id, or `null`) and date (`"YYYY-MM-DD"`, or
+`null`), and `changed` the ones this call set: the widget the user just moved. A
 widget's command is run with `{"panel": {"release": 196}}` as its parameters, which sets the
 values before the call and is taken out of the request's `params`, so a script or `rustgis-cli`
 can do the same:
@@ -399,15 +414,16 @@ Any command can answer the panel's new state, beside the rest of its answer:
 ```
 
 - An item can set `label` (`null` brings back the declared one), `enabled` and `visible`; a text
-  its `text`; a slider its `min`, `max` and `labels`, one per value from `min` (the numbers when
-  there are none); a tree its `nodes`. What an answer leaves out stays as it was.
+  its `text`; a slider or a range its `min`, `max` and `labels`, one per value from `min` (the
+  numbers when there are none); a tree its `nodes`; a dropdown its `options`. What an answer leaves out stays as it was.
 - A tree's `nodes` are `[{"id": "env", "label": "Environment", "count": 67, "children": [...]}]`:
   `id` is the value the node gives when chosen, unique in the tree; `label` defaults to the id;
   `count` (a whole number) shows at the right of the row. The nodes come before the values in an
   answer, so one can give a tree and choose a node of it; a chosen node no longer among them
   leaves nothing chosen.
 - RustGIS checks the answer like any other: unknown ids and fields and values of the wrong type
-  are ignored, a slider's value stays within its ends and a tree's among its nodes, texts are
+  are ignored, a slider's or a range's value stays within its ends, a tree's among its nodes, a
+  dropdown's among its options (a repeated or missing id is left out) and a date is a real date, texts are
   clipped to 4,000 characters, labels to 200, and a slider has at most 2,000 labels of 80
   characters. A tree holds at most 5,000 nodes, 8 levels deep; a node without an id, or with one
   longer than 200 characters or taken already, is left out with its children.
@@ -425,7 +441,9 @@ Any command can answer the panel's new state, beside the rest of its answer:
   `values` or, with `"refresh": true`, runs the state command first. On the command line, which
   has no panes, the commands still run with the values given.
 - RustGIS versions before panels ignore `panel` (and refuse a tab that names it): keep the
-  commands usable from the ribbon too, or set `minRustgisVersion`.
+  commands usable from the ribbon too, or set `minRustgisVersion`. Versions before dropdowns,
+  dates and ranges refuse a panel that has one, so set `minRustgisVersion` to the first version
+  with them.
 
 ### What a plugin can ask for
 

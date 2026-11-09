@@ -32,7 +32,7 @@ pub fn commands() -> Vec<C> {
             .view()
             .params(r#"{"id": plugin id, "url"?: registry.json}"#),
         C::new("plugin.panel", "Plugin Panel State", "Plugins", panel).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Reserved)).view().params(
-            r#"{"id": plugin id, "values"?: {widget id: true/false, a whole number, or a tree node's id (null for none)}, "refresh"?: bool (run the panel's state command)}"#,
+            r#"{"id": plugin id, "values"?: {widget id: true/false, a whole number, [low, high] (a range), a tree node's or a dropdown option's id, or a date "YYYY-MM-DD" (null for none)}, "refresh"?: bool (run the panel's state command)}"#,
         ),
         C::new("plugin.prepare", "Prepare Plugin Environment", "Plugins › Manage", prepare).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Reserved))
             .view()
@@ -52,7 +52,11 @@ fn panel(s: &mut Session, p: &Value) -> CmdResult {
     let decl = plugin.manifest.panel.clone().ok_or_else(|| format!("{} has no panel", plugin.manifest.name))?;
     let before = s.panel_state(id, &decl).clone();
     if let Some(values) = p.get("values") {
-        s.panel_state(id, &decl).set_values(&decl, values);
+        let set = s.panel_state(id, &decl).set_values(&decl, values);
+        let dropped = rustgis_plugins::Dropped { values: rustgis_plugins::panel::not_taken(values, &set), nodes: 0 };
+        if let Some(text) = dropped.notice() {
+            s.warn(format!("{}: {text}", plugin.manifest.name));
+        }
     }
     if b(p, "refresh").unwrap_or(false) && !decl.state.is_empty() {
         // A failed refresh leaves the values as they were, as a failed command does.
@@ -559,6 +563,7 @@ impl Session {
         let given = params;
         let mut params = params;
         let mut stripped;
+        let mut refused = Vec::new();
         let (before, request) = match &panel {
             Some(decl) => {
                 let state = self.panel_state(&pid, decl);
@@ -566,6 +571,7 @@ impl Session {
                 let mut changed = Vec::new();
                 if let Some(given) = params.get("panel") {
                     changed = state.set_values(decl, given);
+                    refused = rustgis_plugins::panel::not_taken(given, &changed);
                     stripped = params.clone();
                     if let Some(o) = stripped.as_object_mut() {
                         o.remove("panel");
@@ -576,6 +582,12 @@ impl Session {
             }
             None => (None, None),
         };
+        // The values a widget's command was given that the panel couldn't take, and later what
+        // the plugin's answer left out, are said (as the plugin's).
+        let name = cmd.plugin.manifest.name.clone();
+        if let Some(text) = (rustgis_plugins::Dropped { values: refused, nodes: 0 }).notice() {
+            self.warn(format!("{name}: {text}"));
+        }
         // The panel's state command runs each time the panel opens: when nothing it asked for
         // could change the project, it is no undo step. Other commands keep theirs.
         let state_command = panel.as_ref().is_some_and(|d| !d.state.is_empty() && d.state == cmd.decl.id);
@@ -609,10 +621,11 @@ impl Session {
             res
         });
         if let Some(decl) = &panel {
+            let mut dropped = None;
             match (&res, self.plugin_panels.get_mut(&pid)) {
                 (Ok(answer), Some(state)) => {
                     if let Some(update) = answer.get("panel") {
-                        state.apply(decl, update);
+                        dropped = state.apply(decl, update).notice();
                     }
                 }
                 (Err(_), Some(state)) => {
@@ -621,6 +634,9 @@ impl Session {
                     }
                 }
                 _ => {}
+            }
+            if let Some(text) = dropped {
+                self.warn(format!("{name}: {text}"));
             }
         }
         self.call_requests = outer;

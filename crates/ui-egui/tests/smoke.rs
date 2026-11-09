@@ -3569,6 +3569,28 @@ fn plugin_panels_run_their_commands_when_a_slider_is_let_go() {
     h.get_by_label("Only versions with local changes").click();
     h.run_steps(3);
     assert!(h.state().session.plugin_panels["ui-panel"].checked("local"));
+    // A range runs nothing while a handle is dragged, and takes the values it shows when let go.
+    let span = |h: &egui_kittest::Harness<'_, RustGisApp>| h.state().session.plugin_panels["ui-panel"].range("span");
+    assert_eq!(span(&h), (2, 8));
+    let rect = h.query_all_by_label("Year span").map(|n| n.rect()).max_by(|a, b| a.width().total_cmp(&b.width())).unwrap();
+    let (from, to) = (egui::pos2(rect.max.x - 2.0, rect.center().y), egui::pos2(rect.center().x, rect.center().y));
+    h.event(egui::Event::PointerMoved(from));
+    h.event(egui::Event::PointerButton {
+        pos: from,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.step();
+    for i in 1..=6 {
+        h.event(egui::Event::PointerMoved(from + (to - from) * (i as f32 / 6.0)));
+        h.step();
+    }
+    assert_eq!(span(&h), (2, 8), "nothing sent while dragging");
+    h.event(egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+    h.run_steps(3);
+    let (lo, hi) = span(&h);
+    assert!(lo == 2 && (3..8).contains(&hi), "the high handle, sent when let go: {lo}–{hi}");
     // Its button closes it again; a disabled plugin's panel closes.
     h.state_mut().run("ui.pane.plugin", json!({"id": "ui-panel"})).unwrap();
     h.step();

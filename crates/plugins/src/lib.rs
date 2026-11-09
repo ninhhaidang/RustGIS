@@ -42,7 +42,7 @@ use serde_json::{Value, json};
 
 pub use manifest::{CommandDecl, Entry, GroupDecl, ItemDecl, Layout, Manifest, MenuDecl, Permission, Runtime, TabDecl, ToolDecl};
 pub use package::Package;
-pub use panel::{PanelDecl, PanelItemDecl, PanelState, TreeNode};
+pub use panel::{Dropped, PanelDecl, PanelItemDecl, PanelState, TreeNode};
 pub use runtime::{Host, NoHost};
 
 /// Plugin command and tool ids start with this: `plugin:<plugin>/<command>`.
