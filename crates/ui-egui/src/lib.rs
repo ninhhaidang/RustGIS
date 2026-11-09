@@ -66,6 +66,7 @@ mod panes;
 mod pluginpanel;
 mod pluginstart;
 mod pluginsui;
+mod popupmedia;
 mod portalsui;
 #[cfg(not(target_arch = "wasm32"))]
 mod readjob;

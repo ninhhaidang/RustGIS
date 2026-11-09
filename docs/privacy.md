@@ -38,6 +38,20 @@ still identify private data, so review copied diagnostics before sharing them.
 - Web basemaps and tile layers request tiles for the area you view; vector styles can also
   request their tile sources and sprites. These requests reveal the requested map area to the
   servers even when your local layers are not uploaded.
+- The identify pop-up can show a picture from a web address in the clicked feature's data (an
+  `image_url`, `photo` or similar field, or an address ending in `.jpg`, `.png` or `.webp`: see
+  [pop-ups](user-guide/editing.md)). Fetching it tells the server the address names, which the
+  data chooses, your IP address and that the picture was viewed, so it could be used to see who
+  opens a file. The pop-up fetches a picture as it opens only when the address is
+  `https://assets.rustgis.app/…`: exactly that host (in any case), over `https://`, with no port,
+  user name or subdomain. On the desktop a redirect that server answers with is followed, as for
+  any download; the web app refuses it, as it does every download's. Any other picture is fetched only when you click
+  **Show Picture** in the pop-up, which names the server first. Plain `http://` pictures and
+  pictures on this computer or the local network are never fetched; on the desktop that includes
+  a name, or a redirect, that resolves to one. A picture kept in the data itself (a
+  `data:image/…` value) needs no request. A fetched picture is kept in memory for the session, or
+  until a sign-out or a login that ends clears the cached web tiles; the web app also uses the
+  browser's own cache. Links in the pop-up open only when you click them.
 - Web data, remote rasters, cloud storage, database connections and online catalogs contact
   their configured servers. Searches may send keywords, coordinates, an area of interest,
   dates or filters; authenticated connections also send the credentials or tokens required by

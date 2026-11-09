@@ -164,6 +164,7 @@ fn lock() -> std::sync::MutexGuard<'static, Cache> {
 }
 
 static GENERATION: AtomicU64 = AtomicU64::new(0);
+static CLEARS: AtomicU64 = AtomicU64::new(0);
 static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
 
 fn fetcher() -> &'static Mutex<Option<Arc<Fetcher>>> {
@@ -377,6 +378,13 @@ pub fn generation() -> u64 {
         ring(Duration::from_millis(at.saturating_sub(now)));
     }
     GENERATION.load(Ordering::Relaxed)
+}
+
+/// How many times [`clear`] has run. What was read through the downloads before it and is kept
+/// elsewhere (the identify pop-up's pictures) goes too: it may have been read with a login that
+/// has since ended.
+pub fn clears() -> u64 {
+    CLEARS.load(Ordering::Relaxed)
 }
 
 /// Consumes every elapsed deadline together and returns the next one to rearm. Keeping the
@@ -681,7 +689,10 @@ pub fn clear() {
     crate::cog::forget();
     crate::warp::forget();
     rustgis_data::source::remote::forget();
-    GENERATION.fetch_add(1, Ordering::Relaxed);
+    CLEARS.fetch_add(1, Ordering::Relaxed);
+    // The map draws again (and the pop-up's pictures are forgotten): the waker wakes an idle app,
+    // as when a fetch ends, so a clear from a worker thread isn't left until the next input.
+    notify();
 }
 
 /// The resource a cache key reads: its address without a download budget, a byte range or a
@@ -1066,6 +1077,14 @@ pub fn split_download_limit(url: &str) -> (&str, Option<usize>) {
     }
 }
 
+/// Whether the browser gives up a fetch of `url` that stalls, as an installed fetcher is handed it
+/// with `ceiling`. Tiles and documents are given up. So is a download kept to internet addresses
+/// ([`download_public_limited`]): its address comes from data, like a picture for the pop-up.
+/// A download the user named is not given up.
+pub fn gives_up_when_stalled(url: &str, ceiling: crate::address::Reach) -> bool {
+    split_download_limit(url).1.is_none() || ceiling == crate::address::Reach::Public
+}
+
 fn download_address(url: &str, max: usize) -> String {
     if max >= MAX_DOWNLOAD { format!("{DOWNLOAD}{url}") } else { format!("{LIMITED_DOWNLOAD}{max}:{url}") }
 }
@@ -1238,9 +1257,32 @@ pub fn download_detailed(url: &str, max: usize, done: DoneDetailed) {
     download_detailed_within(url, max, DOWNLOAD_TIMEOUT, &[], done);
 }
 
+/// Like [`download_limited`], connecting natively only to internet addresses (as
+/// [`download_public_within`], off the frame): a name, or a redirect to one, that resolves to this
+/// computer or the local network is refused when it is resolved. For an address that comes from
+/// data rather than the user (a picture named in a feature's values), which mustn't be able to
+/// reach local services. An installed fetcher (the browser's) is handed the internet-only ceiling.
+pub fn download_public_limited(url: &str, max: usize, done: Done) {
+    download_reaching(url, max, DOWNLOAD_TIMEOUT, &[], Reaching::Public, Box::new(move |r| done(r.map_err(|f| f.message))));
+}
+
+/// Which addresses a native download may connect to.
+#[derive(Clone, Copy)]
+enum Reaching {
+    /// Wherever the address's name resolves (the user named it).
+    Any,
+    /// Only internet addresses, judged where names resolve and redirects lead.
+    Public,
+}
+
 /// Like [`download_detailed`], giving up after `timeout` natively; a status in `omit` isn't
 /// recorded as a failure.
 fn download_detailed_within(url: &str, max: usize, timeout: std::time::Duration, omit: &'static [u16], done: DoneDetailed) {
+    download_reaching(url, max, timeout, omit, Reaching::Any, done);
+}
+
+/// [`download_detailed_within`], natively connecting only where `reaching` allows.
+fn download_reaching(url: &str, max: usize, timeout: std::time::Duration, omit: &'static [u16], reaching: Reaching, done: DoneDetailed) {
     if let Err(e) = check_current() {
         done(Err(Failure::new(url, e)));
         return;
@@ -1264,11 +1306,17 @@ fn download_detailed_within(url: &str, max: usize, timeout: std::time::Duration,
     match f {
         Some(f) => f(
             marked.clone(),
-            crate::address::Reach::Local,
+            match reaching {
+                Reaching::Any => crate::address::Reach::Local,
+                Reaching::Public => crate::address::Reach::Public,
+            },
             Box::new(move |r| done(r.map(|fetched| fetched.bytes).map_err(|e| Failure::new(&marked, e)))),
             omit,
         ),
-        None => native::download_within(marked, timeout, omit, done),
+        None => match reaching {
+            Reaching::Any => native::download_within(marked, timeout, omit, done),
+            Reaching::Public => native::download_public_within(marked, timeout, done),
+        },
     }
 }
 
@@ -2393,6 +2441,20 @@ mod native {
         });
     }
 
+    /// Like [`download_within`], connecting only to internet addresses ([`public_agent`]).
+    pub(super) fn download_public_within(url: String, timeout: std::time::Duration, done: DoneDetailed) {
+        let capture = Capture::current();
+        let still = super::current_still();
+        std::thread::spawn(move || {
+            super::with_optional_still(still, || {
+                let _scope = capture.enter();
+                let r =
+                    super::check_current().map_err(Failure::from).and_then(|_| get_detailed_omitting(&public_agent(timeout), &url, &[]));
+                done(r);
+            })
+        });
+    }
+
     /// Dispatches each queued read through the pool matching its inherited IP ceiling.
     fn work() {
         let agent = shared_agent();
@@ -2762,6 +2824,10 @@ mod native {
     pub(super) fn download_within(url: String, _timeout: std::time::Duration, _omit: &'static [u16], done: DoneDetailed) {
         let message = format!("{url}: this build has no way to fetch tiles");
         done(Err(crate::failure::Failure::new(&url, message)));
+    }
+
+    pub(super) fn download_public_within(url: String, timeout: std::time::Duration, done: DoneDetailed) {
+        download_within(url, timeout, &[], done);
     }
 
     pub(super) fn post(url: String, _body: String, done: Done) {
@@ -3333,6 +3399,84 @@ mod tests {
         let _turn = turn();
         let err = download_public_within("http://localhost:9/doc.json", 1024, std::time::Duration::from_secs(5)).unwrap_err();
         assert!(err.contains("resolves to this computer or the local network"), "{err}");
+    }
+
+    /// The same off the frame ([`download_public_limited`] without a fetcher installed, called
+    /// directly: other tests here install theirs): one that resolves locally is refused there.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn public_downloads_off_the_frame_refuse_names_that_resolve_locally() {
+        let _turn = turn();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let url = download_address("http://localhost:9/picture.png", 1024);
+        native::download_public_within(url, std::time::Duration::from_secs(5), Box::new(move |r| drop(tx.send(r))));
+        let err = rx.recv_timeout(std::time::Duration::from_secs(30)).unwrap().unwrap_err().message;
+        assert!(err.contains("resolves to this computer or the local network"), "{err}");
+    }
+
+    /// A public download asked for by a request that has since ended sends nothing, as any
+    /// download off the frame doesn't.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn public_downloads_off_the_frame_send_nothing_once_their_request_ended() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let url = download_address("https://example.org/picture.png", 1024);
+        with_still(Arc::new(|| false), || {
+            native::download_public_within(url, std::time::Duration::from_secs(5), Box::new(move |r| drop(tx.send(r))));
+        });
+        let err = rx.recv_timeout(std::time::Duration::from_secs(30)).unwrap().unwrap_err().message;
+        assert!(err.contains("cancelled before it was sent"), "{err}");
+    }
+
+    /// An installed fetcher (the browser's) is handed the internet-only ceiling for a public
+    /// download, and an answer that came from the local network is refused.
+    #[test]
+    fn public_downloads_through_a_fetcher_keep_the_public_ceiling() {
+        use crate::address::{Origin, Reach};
+        let _turn = turn();
+        let ceilings = Arc::new(Mutex::new(Vec::new()));
+        let sent = ceilings.clone();
+        set_fetcher_with_origin(move |_, ceiling, done, _| {
+            sent.lock().unwrap().push(ceiling);
+            done(Ok(Fetched { bytes: vec![1], origin: Origin { url: "https://pictures.example/a.png".into(), reach: Reach::Local } }));
+        });
+        let (tx, rx) = std::sync::mpsc::channel();
+        let public = tx.clone();
+        download_public_limited("https://pictures.example/a.png", 1024, Box::new(move |r| drop(public.send(r))));
+        let err = rx.recv_timeout(std::time::Duration::from_secs(30)).unwrap().unwrap_err();
+        assert!(err.contains("exceeds its request's network reach"), "{err}");
+        download_limited("https://pictures.example/a.png", 1024, Box::new(move |r| drop(tx.send(r))));
+        assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(30)).unwrap().unwrap(), vec![1]);
+        assert_eq!(*ceilings.lock().unwrap(), [Reach::Public, Reach::Local]);
+    }
+
+    /// A picture for the pop-up is given up in the browser when it stalls, as a tile is; a
+    /// download the user named, with or without a smaller budget, is not.
+    #[test]
+    fn only_downloads_the_user_named_wait_out_a_stall() {
+        let _turn = turn();
+        let handed = Arc::new(Mutex::new(Vec::new()));
+        let sent = handed.clone();
+        set_fetcher_with_origin(move |url, ceiling, done, _| {
+            sent.lock().unwrap().push(gives_up_when_stalled(&url, ceiling));
+            done(Err("not fetched".into()));
+        });
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let answered = || -> Done {
+            let tx = tx.clone();
+            Box::new(move |_| {
+                let _ = tx.send(());
+            })
+        };
+        let url = "https://pictures.example/a.png";
+        download_public_limited(url, 1024, answered());
+        download_limited(url, 1024, answered());
+        download(url, answered());
+        for _ in 0..3 {
+            rx.recv_timeout(std::time::Duration::from_secs(30)).unwrap();
+        }
+        assert_eq!(*handed.lock().unwrap(), [true, false, false]);
+        assert!(gives_up_when_stalled("https://tiles.example/1/2/3.png", crate::address::Reach::Local));
     }
 
     #[test]

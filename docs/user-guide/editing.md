@@ -210,6 +210,33 @@ nothing. The pop-up lists every feature under the click in those layers, overlap
 the pop-up's header zooms to it. Long feature titles and layer names are shortened with an
 ellipsis to leave room for the header controls; hover over either name to read it in full.
 
+A value that is a web address is a link: click it to open the page in your browser (a new tab in the
+web app), or right-click it for **Copy Link**. It must be the whole value: `http://` or `https://`
+(in any case), a host name or IP address with no user name before it
+(`https://bank.example@other.example/` stays text), at most 2048 bytes, and no spaces, control
+characters, quotes or backticks, angle brackets, braces, backslashes or `^`. A picture kept with a
+feature (a geotagged photo's thumbnail, a `data:image/jpeg`, `png` or `webp` value) shows at the top
+of the pop-up. Without one, the pop-up can show a picture from the web: the `https://` address in a
+field named `image`, `image_url`, `photo`, `photo_url`, `picture`, `picture_url`, `thumbnail` or
+`thumbnail_url` (in any case, with or without `_`, `-` or spaces), or else the first address whose
+path ends in `.jpg`, `.jpeg`, `.png` or `.webp`, with fields taken in the order of their names. An
+address that can be fetched comes before a plain `http://` one or one on the local network. Fields
+such as `image_page_url` or `image_credit` stay links or text in the list.
+
+A picture from RustGIS's own asset server (`https://assets.rustgis.app/…`) is fetched as the pop-up
+opens. A picture from any other server isn't: the pop-up shows **Show Picture** and the server's
+name, and fetches nothing until you click it, because the request tells that server that someone
+opened the data (see [Privacy](../privacy.md)). A spinner shows while a picture is fetched. Pictures
+of up to 4 MB and 2048 × 2048 pixels are shown; the last 16 addresses' pictures are kept for the
+session, so opening the pop-up again shows the picture without asking again; they are forgotten with
+the web layers' cached tiles (signing out of ArcGIS, a login that ends, **Reload Web Layers**). When
+one can't be shown, the pop-up says why ("Picture unavailable: …": the server's answer, a network
+error, a server that stops sending it, not a picture, a picture format that isn't supported, too
+large) and doesn't ask again; its address stays a link. A plain `http://` picture, or one on this
+computer or the local network, is never fetched. In the web app the picture's server must allow it
+to be read from another site (CORS); many photo sites do, some don't. It must also give the picture
+at that address: the web app refuses a redirect, as it does for every download.
+
 The topmost and visible modes also identify the features of vector tile layers under the click:
 PMTiles and MBTiles archives and vector tiles added as data (not catalog basemaps or MapLibre
 styles), beneath the map's own layers. Each shows its tile layer and source layer (`firenze ›

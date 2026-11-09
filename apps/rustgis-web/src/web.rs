@@ -545,7 +545,8 @@ fn read_bitmap(bitmap: &web_sys::ImageBitmap, w: u32, h: u32) -> Result<Vec<u8>,
 /// How long a tile or document fetch may go without anything coming in: the answer's headers,
 /// or the next part of its body. A slow but steady answer is never cut off; one that stalls is
 /// given up, so it doesn't stay under way forever, holding its server's place in the queue.
-/// Downloads the user asked for have none.
+/// So is a picture the pop-up fetches. Downloads the user asked for have none
+/// (`cache::gives_up_when_stalled`).
 const STALL_MS: i32 = 30_000;
 
 /// What a step of a fetch waits for, or `None` once it has gone [`STALL_MS`] with nothing (the
@@ -619,6 +620,7 @@ async fn fetch_reached(
             &still,
             || async {
                 let window = web_sys::window().ok_or("no window")?;
+                let gives_up = cache::gives_up_when_stalled(url, ceiling);
                 // A data download carries its caller's budget (at most MAX_DOWNLOAD); other fetches use 64 MB.
                 let (url, limit) = cache::split_download_limit(url);
                 let max = limit.map(|n| n as u64).unwrap_or(64 << 20);
@@ -660,8 +662,8 @@ async fn fetch_reached(
                     (None, None) => None,
                 };
                 let init = web_sys::RequestInit::new();
-                // A tile or document that stalls is given up (see `STALL_MS`).
-                let abort = if limit.is_none() { web_sys::AbortController::new().ok() } else { None };
+                // A tile, document or picture that stalls is given up (see `STALL_MS`).
+                let abort = if gives_up { web_sys::AbortController::new().ok() } else { None };
                 if let Some(a) = &abort {
                     init.set_signal(Some(&a.signal()));
                 }

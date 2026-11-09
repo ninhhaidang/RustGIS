@@ -332,6 +332,8 @@ pub struct MapView {
     /// The picture an identified feature carries (a photo's thumbnail, a `data:image/…` value):
     /// a hash of the value, and its texture (or why it couldn't be read).
     picture: Option<(u64, Result<egui::TextureHandle, String>)>,
+    /// Pictures fetched from web addresses in features' values, by address, for the session.
+    pictures: crate::popupmedia::Pictures,
     /// The tile layers' credits, from the last render.
     attribution: Vec<String>,
     /// Tile layer errors already reported.
@@ -425,6 +427,7 @@ impl Default for MapView {
             snap: None,
             split: None,
             picture: None,
+            pictures: Default::default(),
             attribution: Vec::new(),
             tile_errors: std::collections::HashSet::new(),
             project: None,
@@ -590,6 +593,9 @@ fn now(ui: &Ui) -> f64 {
 /// Shows the active map workspace, discarding stale node gestures after map-tab changes and
 /// before rendering their overlays or consuming pointer releases.
 pub fn show(app: &mut RustGisApp, ui: &mut Ui) {
+    // Read before the cache was cleared (a sign-out), a picture goes with it: checked on every
+    // frame, whatever is shown (a view with no map frame, a catalog or a layout included).
+    app.map.pictures.forget_if_cleared(rustgis_engine::render::rustgis_tiles::cache::clears());
     app.map.follow_project(app.session.opened);
     let t = Tokens::get(ui.ctx());
     crate::modelbuilder::follow_view(app);
@@ -3588,6 +3594,22 @@ fn popup(app: &mut RustGisApp, ui: &mut Ui, rect: Rect) {
     // A picture value (a photo's thumbnail) shows as the picture, not as its text.
     let picture_key = attrs.iter().find(|(_, v)| v.as_str().is_some_and(is_picture)).map(|(k, _)| k.clone());
     let picture = picture_key.and_then(|k| attrs.remove(&k)).and_then(|v| v.as_str().map(|s| picture_texture(app, ui.ctx(), s)));
+    let picture_is_data = picture.is_some();
+    // Without one, a picture from a web address in the values (`image_url`, a `.jpg` address…):
+    // fetched as the pop-up opens only from RustGIS's own asset server, from anywhere else only
+    // once the user asks; kept for the session. Its address stays in the rows as a link.
+    let web_picture = if picture.is_none() {
+        crate::popupmedia::picture_link(attrs.iter().filter_map(|(k, v)| Some((k.as_str(), v.as_str()?)))).map(str::to_string)
+    } else {
+        None
+    };
+    let picture = match (picture, &web_picture) {
+        (Some(Ok(tex)), _) => Some(crate::popupmedia::Shown::Ready(tex)),
+        (Some(Err(e)), _) => Some(crate::popupmedia::Shown::Failed(crate::popupmedia::Failure::Fetch(e))),
+        (None, Some(url)) => Some(app.map.pictures.show(ui.ctx(), url, crate::popupmedia::fetch)),
+        (None, None) => None,
+    };
+    let mut load_picture = false;
     let title = if waiting {
         tl!("Asking the map service…").to_string()
     } else if info["raster"].as_bool() == Some(true) {
@@ -3670,17 +3692,65 @@ fn popup(app: &mut RustGisApp, ui: &mut Ui, rect: Rect) {
                             });
                         });
                     });
+                let mut picture_h = 0.0;
                 if let Some(picture) = &picture {
-                    egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 12, top: 8, bottom: 0 }).show(ui, |ui| match picture {
-                        Ok(tex) => {
-                            let size = tex.size_vec2();
-                            let scale = (ui.available_width() / size.x.max(1.0)).min(1.5);
-                            ui.add(egui::Image::new((tex.id(), size * scale)).corner_radius(CornerRadius::same(6)));
-                        }
-                        Err(e) => {
-                            ui.label(egui::RichText::new(e.as_str()).size(11.0).color(t.text_dim));
-                        }
-                    });
+                    let shown =
+                        egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 12, top: 8, bottom: 0 }).show(
+                            ui,
+                            |ui| match picture {
+                                crate::popupmedia::Shown::Ready(tex) => {
+                                    // As wide as the pop-up, up to half again its own size, and no taller
+                                    // than a thumbnail shown that way; one from the web leaves room for
+                                    // a few rows under it.
+                                    let size = tex.size_vec2();
+                                    // Within the limit too, past the header and the rows' minimum.
+                                    let room = (limit.y - header.response.rect.height() - 40.0).max(40.0);
+                                    let base: f32 = if picture_is_data { 240.0 } else { 180.0 };
+                                    let tallest = base.min(room);
+                                    let scale = (ui.available_width() / size.x.max(1.0)).min(tallest / size.y.max(1.0)).min(1.5);
+                                    ui.add(
+                                        egui::Image::new((tex.id(), size * scale))
+                                            .corner_radius(CornerRadius::same(6))
+                                            .alt_text(tl!("Picture")),
+                                    );
+                                }
+                                // From another server: fetched only when asked, naming who
+                                // would be asked.
+                                crate::popupmedia::Shown::Offered => {
+                                    let host = web_picture.as_deref().and_then(crate::popupmedia::authority).unwrap_or_default();
+                                    ui.horizontal_wrapped(|ui| {
+                                        let ask = ui.add(egui::Button::new(egui::RichText::new(tl!("Show Picture")).size(11.5)));
+                                        let tip = crate::i18n::fmt(
+                                            "Fetches the picture from {host}, which learns your IP address and that it was viewed",
+                                            &[("host", host)],
+                                        );
+                                        if ask.on_hover_text(tip).clicked() {
+                                            load_picture = true;
+                                        }
+                                        ui.label(
+                                            egui::RichText::new(crate::i18n::fmt("from {host}", &[("host", host)]))
+                                                .size(11.0)
+                                                .color(t.text_dim),
+                                        );
+                                    });
+                                }
+                                crate::popupmedia::Shown::Loading => {
+                                    ui.horizontal(|ui| {
+                                        ui.spinner();
+                                        ui.label(egui::RichText::new(tl!("Loading picture…")).size(11.0).color(t.text_dim));
+                                    });
+                                }
+                                // A picture kept in a value says why it can't be shown, as it always has.
+                                crate::popupmedia::Shown::Failed(crate::popupmedia::Failure::Fetch(e)) if picture_is_data => {
+                                    ui.label(egui::RichText::new(e.as_str()).size(11.0).color(t.text_dim));
+                                }
+                                crate::popupmedia::Shown::Failed(f) => {
+                                    ui.add(egui::Label::new(egui::RichText::new(f.line()).size(11.0).color(t.text_dim)).wrap());
+                                }
+                            },
+                        );
+                    // The rows below take what the picture leaves of the height limit.
+                    picture_h = shown.response.rect.height();
                 }
                 // A solid scroll bar in its own gutter, shown when the rows are taller than the
                 // limit (a floating one is invisible until hovered).
@@ -3690,7 +3760,7 @@ fn popup(app: &mut RustGisApp, ui: &mut Ui, rect: Rect) {
                 egui::ScrollArea::vertical()
                     .id_salt(("popup_rows", key))
                     .auto_shrink([false, true])
-                    .max_height((limit.y - header.response.rect.height()).max(40.0))
+                    .max_height((limit.y - header.response.rect.height() - picture_h).max(40.0))
                     .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::VisibleWhenNeeded)
                     .show(ui, |ui| {
                         egui::Frame::NONE.inner_margin(egui::Margin { left: 12, right: 14, top: 6, bottom: 12 }).show(ui, |ui| {
@@ -3708,7 +3778,24 @@ fn popup(app: &mut RustGisApp, ui: &mut Ui, rect: Rect) {
                                         // A fixed column: long values wrap, and the stripes span it.
                                         ui.set_min_width(value_w);
                                         ui.set_max_width(value_w);
-                                        ui.add(egui::Label::new(egui::RichText::new(v.as_str().unwrap_or("")).size(11.5)).wrap());
+                                        let text = v.as_str().unwrap_or("");
+                                        // A web address is a link that opens in the browser (a new
+                                        // tab on the web, so the map stays open).
+                                        if let Some(url) = crate::popupmedia::web_link(text) {
+                                            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+                                            ui.add(
+                                                egui::Hyperlink::from_label_and_url(egui::RichText::new(url).size(11.5), url)
+                                                    .open_in_new_tab(true),
+                                            )
+                                            .context_menu(|ui| {
+                                                if ui.button(tl!("Copy Link")).clicked() {
+                                                    ui.ctx().copy_text(url.to_string());
+                                                    ui.close();
+                                                }
+                                            });
+                                        } else {
+                                            ui.add(egui::Label::new(egui::RichText::new(text).size(11.5)).wrap());
+                                        }
                                     });
                                     ui.end_row();
                                 }
@@ -3733,6 +3820,10 @@ fn popup(app: &mut RustGisApp, ui: &mut Ui, rect: Rect) {
     });
     if let Some(l) = new_limit {
         ui.ctx().data_mut(|d| d.insert_temp(limit_id, l));
+    }
+    if let (true, Some(url)) = (load_picture, &web_picture) {
+        app.map.pictures.accept(url, crate::popupmedia::fetch);
+        ui.ctx().request_repaint();
     }
     // Zooms to the feature shown, found by its id, as Zoom To Selection does: the selection and
     // the undo history are left as they are.
@@ -3775,10 +3866,10 @@ fn select_shown(app: &mut RustGisApp) {
     app.session.revision = app.session.revision.wrapping_add(1);
 }
 
-/// Whether an attribute value is a picture (a `data:image/png` or `jpeg` address, as a photo's
-/// thumbnail is kept).
+/// Whether an attribute value is a picture (a `data:image/jpeg`, `png` or `webp` address, as a
+/// photo's thumbnail is kept).
 pub(crate) fn is_picture(v: &str) -> bool {
-    v.starts_with("data:image/jpeg;base64,") || v.starts_with("data:image/png;base64,")
+    ["data:image/jpeg;base64,", "data:image/png;base64,", "data:image/webp;base64,"].iter().any(|p| v.starts_with(p))
 }
 
 /// The texture of a picture value, decoded once and kept while the same value is shown.
@@ -3809,17 +3900,29 @@ fn picture_texture(app: &mut RustGisApp, ctx: &egui::Context, value: &str) -> Re
     decoded
 }
 
+/// The largest picture the identify popup decodes, pixels a side.
+pub(crate) const MAX_PICTURE_SIDE: u32 = 2048;
+/// The most memory decoding a picture for the identify popup may take, in bytes.
+pub(crate) const MAX_PICTURE_ALLOC: u64 = 64 << 20;
+
 /// A picture kept with a feature, decoded for the identify popup. A project's value is hostile:
 /// its size is checked before anything is decoded, so a small compressed picture can't unpack
 /// into a huge one.
 pub(crate) fn decode_picture(bytes: &[u8]) -> Result<image::RgbaImage, String> {
     let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().map_err(|e| e.to_string())?;
     let mut limits = image::Limits::default();
-    limits.max_image_width = Some(2048);
-    limits.max_image_height = Some(2048);
-    limits.max_alloc = Some(64 << 20);
+    limits.max_image_width = Some(MAX_PICTURE_SIDE);
+    limits.max_image_height = Some(MAX_PICTURE_SIDE);
+    limits.max_alloc = Some(MAX_PICTURE_ALLOC);
     reader.limits(limits);
-    Ok(reader.decode().map_err(|_| "the picture is too large to show, or isn't one".to_string())?.to_rgba8())
+    let bad = || "the picture is too large to show, or isn't one".to_string();
+    // The decoder keeps pixels as stored: the picture is turned as its Orientation tag says (a
+    // phone's photo is often stored sideways).
+    let mut decoder = reader.into_decoder().map_err(|_| bad())?;
+    let orientation = image::ImageDecoder::orientation(&mut decoder).map_err(|_| bad())?;
+    let mut img = image::DynamicImage::from_decoder(decoder).map_err(|_| bad())?;
+    img.apply_orientation(orientation);
+    Ok(img.to_rgba8())
 }
 
 /// The on-screen navigator: a north compass, zoom in and out, and four pan arrows.
