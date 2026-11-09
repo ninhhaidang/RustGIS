@@ -53,8 +53,8 @@ pub fn commands() -> Vec<C> {
             let (left_out, table) =
                 rustgis_data::io::write_path_to(&t.dataset, Path::new(path), Crs::LonLat, &gpkg).map_err(|e| e.to_string())?;
             s.check_continuation(&owner).map_err(|why| super::exports::completion_refused(Some(path), why))?;
-            if left_out > 0 {
-                s.notify(format!("{path}: {left_out} features without drawable geometry were left out"), false);
+            if let Some(note) = rustgis_data::io::left_out_note(path, &ext, left_out) {
+                s.notify(note, false);
             }
             for note in notes.into_iter().chain(dbf_notes) {
                 s.notify(note, false);
@@ -643,11 +643,9 @@ fn write_layer(l: &rustgis_map::Layer, path: &str, asked: Option<Crs>, gpkg: Gpk
         dbf_notes.extend(rustgis_data::io::shapefile_values_notes(ds, path));
     }
     // FlatGeobuf, KML, GPX and Shapefile hold features with geometry only (a Shapefile, only
-    // geometry it can draw).
+    // geometry it can draw, of the layer's kind).
     let mut said = Vec::new();
-    if left_out > 0 {
-        said.push(format!("{path}: {left_out} features without drawable geometry were left out"));
-    }
+    said.extend(rustgis_data::io::left_out_note(path, &ext, left_out));
     if skipped > 0 {
         said.push(format!("{path}: {skipped} rows couldn't be read and were left out"));
     }

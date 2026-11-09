@@ -37,17 +37,17 @@ pub(super) fn write_features(
     // records) into deletes elsewhere; a table referring to the replaced one is refused instead.
     conn.execute_batch("PRAGMA foreign_keys = OFF").map_err(err)?;
     conn.busy_timeout(Duration::from_secs(5)).map_err(err)?;
-    let (mut multi_points, mut keep_ids) = (None, true);
+    let (mut multi_points, mut mixed, mut keep_ids) = (None, false, true);
     // Each choice changes at most once; an export starting again rolls back what it wrote.
-    for _ in 0..3 {
+    for _ in 0..4 {
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(err)?;
         check_geopackage(&tx, &file)?;
         // An attribute table has no spatial reference system.
         let srs_id = if geometry_type == GeometryType::None { 0 } else { srs_id(&tx, crs)? };
         // The views and triggers naming a replaced table, when one is.
         let replaced = Cell::new(None);
-        let mut make = |multi| {
-            let layout = plan(name, geometry_type, fields, multi, srs_id);
+        let mut make = |multi, mixed| {
+            let layout = plan(name, geometry_type, fields, multi, mixed, srs_id);
             replaced.set(make_room(&tx, &file, &layout.table, replace)?);
             if layout.has_geom {
                 tx.execute_batch(FEATURE_METADATA).map_err(err)?;
@@ -62,8 +62,9 @@ pub(super) fn write_features(
             create_table(&tx, &layout)?;
             Ok(layout)
         };
-        match fill(&tx, multi_points, keep_ids, &mut make, feed)? {
+        match fill(&tx, multi_points, mixed, keep_ids, &mut make, feed)? {
             Err(Redo::MultiPoints) => multi_points = Some(true),
+            Err(Redo::Mixed) => mixed = true,
             Err(Redo::Renumber) => keep_ids = false,
             Ok((layout, extent)) => {
                 register(&tx, &layout, extent)?;

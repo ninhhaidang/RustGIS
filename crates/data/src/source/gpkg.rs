@@ -607,7 +607,7 @@ pub fn write_in(ds: &crate::Dataset, path: &Path, crs: Crs) -> Result<()> {
 pub fn write_table_in(ds: &crate::Dataset, path: &Path, crs: Crs, target: &GpkgTable) -> Result<GpkgWritten> {
     let name = target.name.as_deref().unwrap_or(&ds.name);
     if let Some(replace) = into_existing(path, target)? {
-        return add::write_features(path, name, ds.geometry_type, &ds.fields, crs, replace, &mut |put| put(&ds.features));
+        return add::write_features(path, name, table_kind(ds), &ds.fields, crs, replace, &mut |put| put(&ds.features));
     }
     check_new_destination(path)?;
     let tmp = temp_database_beside(path)?;
@@ -615,6 +615,24 @@ pub fn write_table_in(ds: &crate::Dataset, path: &Path, crs: Crs, target: &GpkgT
     let table = build(&conn, ds, name, crs)?;
     install(conn, tmp, path)?;
     Ok(GpkgWritten { table, replaced: false, dependents: Vec::new() })
+}
+
+/// The kind of geometry a GeoPackage table of `ds` is made for: its type or, for a layer that
+/// declares none but carries geometry, its first geometry's (as a streamed export takes it), so
+/// that geometry isn't dropped for want of a column. A layer holding other kinds as well gets a
+/// GEOMETRY column, which holds any kind ([`Redo::Mixed`]).
+fn table_kind(ds: &crate::Dataset) -> GeometryType {
+    match ds.geometry_type {
+        GeometryType::None => ds.features.iter().find_map(|f| f.geometry.as_ref()).map_or(GeometryType::None, crate::Geometry::kind),
+        t => t,
+    }
+}
+
+/// Whether a table made for geometry of `kind` can't hold `f`'s in a column of that type, so it
+/// needs a GEOMETRY column: a feature of another kind (a mixed layer's, as a GeoJSON of points
+/// and polygons is). One without geometry fits any table.
+fn other_kind(f: &crate::Feature, kind: GeometryType) -> bool {
+    kind != GeometryType::None && f.geometry.as_ref().is_some_and(|g| g.kind() != kind)
 }
 
 /// Whether an export goes into the existing GeoPackage at `path` (anything there, which opening
@@ -632,9 +650,10 @@ fn into_existing(path: &Path, target: &GpkgTable) -> Result<Option<bool>> {
 
 /// As [`write_table_in`], for a layer `name` of `geometry_type` with `fields`: the features `feed`
 /// hands to the function it is given, a run at a time, already in `crs`'s coordinates, so a
-/// whole layer needn't be held. A point layer's table type and whether ids are kept are chosen
-/// from the features so far; should a later one contradict that choice, the export starts
-/// again with it settled (feeding the features again), giving the file [`write_in`] would.
+/// whole layer needn't be held. A point layer's table type, whether the column holds any kind
+/// (a feature of another kind than `geometry_type`) and whether ids are kept are chosen from the
+/// features so far; should a later one contradict that choice, the export starts again with it
+/// settled (feeding the features again), giving the file [`write_in`] would.
 pub(crate) fn write_features_in(
     name: &str,
     geometry_type: GeometryType,
@@ -649,14 +668,15 @@ pub(crate) fn write_features_in(
         return add::write_features(path, name, geometry_type, fields, crs, replace, feed);
     }
     check_new_destination(path)?;
-    let (mut multi_points, mut keep_ids) = (None, true);
+    let (mut multi_points, mut mixed, mut keep_ids) = (None, false, true);
     // Each choice changes at most once.
-    for _ in 0..3 {
+    for _ in 0..4 {
         let tmp = temp_database_beside(path)?;
         let conn = Connection::open(&tmp).map_err(err)?;
-        let mut make = |multi| create(&conn, name, geometry_type, fields, crs, multi);
-        match fill(&conn, multi_points, keep_ids, &mut make, feed)? {
+        let mut make = |multi, mixed| create(&conn, name, geometry_type, fields, crs, multi, mixed);
+        match fill(&conn, multi_points, mixed, keep_ids, &mut make, feed)? {
             Err(Redo::MultiPoints) => multi_points = Some(true),
+            Err(Redo::Mixed) => mixed = true,
             Err(Redo::Renumber) => keep_ids = false,
             Ok((layout, extent)) => {
                 finish(&conn, &layout, extent)?;
@@ -669,21 +689,22 @@ pub(crate) fn write_features_in(
 }
 
 /// Feeds the features into the table `make` creates on `conn`, made once the first run shows
-/// whether a point layer holds multipoints (unless `multi_points` already says): the table and
-/// the extent of what went in, or what the export must start again for. With `keep_ids` each
-/// feature keeps its id.
+/// whether a point layer holds multipoints (unless `multi_points` already says), its column one
+/// for any kind of geometry when `mixed`: the table and the extent of what went in, or what the
+/// export must start again for. With `keep_ids` each feature keeps its id.
 fn fill(
     conn: &Connection,
     multi_points: Option<bool>,
+    mixed: bool,
     keep_ids: bool,
-    make: &mut dyn FnMut(bool) -> Result<Layout>,
+    make: &mut dyn FnMut(bool, bool) -> Result<Layout>,
     feed: &mut dyn FnMut(&mut dyn FnMut(&[crate::Feature]) -> Result<()>) -> Result<()>,
 ) -> Result<std::result::Result<(Layout, Extent), Redo>> {
     let (mut layout, mut extent, mut redo) = (None, Extent::EMPTY, None);
     let fed = feed(&mut |features| {
         if layout.is_none() {
             let multi = multi_points.unwrap_or_else(|| features.iter().any(|f| matches!(f.geometry, Some(crate::Geometry::MultiPoint(_)))));
-            layout = Some(make(multi)?);
+            layout = Some(make(multi, mixed)?);
         }
         let Some(l) = layout.as_ref() else { return Err(DataError::Format("GeoPackage: no table to write".into())) };
         for g in features.iter().filter_map(|f| f.geometry.as_ref()) {
@@ -702,7 +723,7 @@ fn fill(
         (Ok(()), None) => {
             let layout = match layout {
                 Some(l) => l,
-                None => make(multi_points.unwrap_or(false))?,
+                None => make(multi_points.unwrap_or(false), mixed)?,
             };
             Ok(Ok((layout, extent)))
         }
@@ -772,7 +793,9 @@ fn destination_error(path: &Path, error: std::io::Error) -> DataError {
 /// returns the table's name as written.
 fn build(conn: &Connection, ds: &crate::Dataset, name: &str, crs: Crs) -> Result<String> {
     let multi_points = ds.features.iter().any(|f| matches!(f.geometry, Some(crate::Geometry::MultiPoint(_))));
-    let layout = create(conn, name, ds.geometry_type, &ds.fields, crs, multi_points)?;
+    let kind = table_kind(ds);
+    let mixed = ds.features.iter().any(|f| other_kind(f, kind));
+    let layout = create(conn, name, kind, &ds.fields, crs, multi_points, mixed)?;
     // Feature ids are kept when they are unique and fit; otherwise SQLite numbers the rows.
     let mut seen = std::collections::HashSet::new();
     let keep_ids = ds.features.iter().all(|f| i64::try_from(f.id).is_ok() && seen.insert(f.id));
@@ -793,6 +816,9 @@ struct Layout {
     fields: Vec<Field>,
     has_geom: bool,
     multi_points: bool,
+    /// The kind of geometry the table is made for, and whether its column holds any kind.
+    kind: GeometryType,
+    mixed: bool,
     geom_type: &'static str,
     srs_id: i32,
     /// The table, geometry and id column, and spatial index, quoted for SQL.
@@ -823,14 +849,23 @@ const FEATURE_METADATA: &str = "CREATE TABLE IF NOT EXISTS gpkg_geometry_columns
 
 /// Creates the GeoPackage's tables and the empty feature table (and its spatial index) for a
 /// layer, in a transaction [`finish`] commits. A point layer holding any multipoint is a
-/// MULTIPOINT table, whose single points [`insert`] writes as one-point multipoints.
-fn create(conn: &Connection, name: &str, geometry_type: GeometryType, fields: &[Field], crs: Crs, multi_points: bool) -> Result<Layout> {
+/// MULTIPOINT table, whose single points [`insert`] writes as one-point multipoints; a `mixed`
+/// layer's is a GEOMETRY table.
+fn create(
+    conn: &Connection,
+    name: &str,
+    geometry_type: GeometryType,
+    fields: &[Field],
+    crs: Crs,
+    multi_points: bool,
+    mixed: bool,
+) -> Result<Layout> {
     // An EPSG system by its code; a custom one numbered as GDAL numbers them.
     let srs_id = match crs.epsg() {
         0 => 100_000,
         c => i32::from(c),
     };
-    let layout = plan(name, geometry_type, fields, multi_points, srs_id);
+    let layout = plan(name, geometry_type, fields, multi_points, mixed, srs_id);
     conn.execute_batch(&format!(
         "PRAGMA journal_mode = OFF; PRAGMA synchronous = OFF;
         PRAGMA application_id = 1196444487; PRAGMA user_version = 10400;
@@ -862,8 +897,9 @@ fn create(conn: &Connection, name: &str, geometry_type: GeometryType, fields: &[
 
 /// The names a layer's feature table is written with, in spatial reference system `srs_id`: the
 /// table named for the layer (not a reserved name, never empty), its id and geometry columns
-/// clear of its fields, and its fields' columns unique without regard to case.
-fn plan(name: &str, geometry_type: GeometryType, fields: &[Field], multi_points: bool, srs_id: i32) -> Layout {
+/// clear of its fields, and its fields' columns unique without regard to case. A `mixed` layer's
+/// geometry column is GEOMETRY, which holds every kind, its features written as they are.
+fn plan(name: &str, geometry_type: GeometryType, fields: &[Field], multi_points: bool, mixed: bool, srs_id: i32) -> Layout {
     let mut table: String = name.chars().filter(|c| !c.is_control()).collect::<String>().trim().to_string();
     if table.is_empty() {
         table = "layer".into();
@@ -889,7 +925,11 @@ fn plan(name: &str, geometry_type: GeometryType, fields: &[Field], multi_points:
             .unwrap_or_else(|| f.name.clone());
         columns.push(name);
     }
+    let mixed = mixed && has_geom;
+    // A GEOMETRY column holds single points as they are.
+    let multi_points = multi_points && !mixed;
     let geom_type = match geometry_type {
+        _ if mixed => "GEOMETRY",
         GeometryType::Point if multi_points => "MULTIPOINT",
         GeometryType::Point => "POINT",
         GeometryType::Polyline => "MULTILINESTRING",
@@ -905,6 +945,8 @@ fn plan(name: &str, geometry_type: GeometryType, fields: &[Field], multi_points:
         fields: fields.to_vec(),
         has_geom,
         multi_points,
+        kind: geometry_type,
+        mixed,
         geom_type,
         srs_id,
         table_q: t,
@@ -942,6 +984,8 @@ fn create_table(conn: &Connection, layout: &Layout) -> Result<()> {
 enum Redo {
     /// A multipoint in a POINT table: the table is MULTIPOINT.
     MultiPoints,
+    /// Geometry of another kind than the table's: its column is GEOMETRY, holding every kind.
+    Mixed,
     /// An id that doesn't fit or is taken: SQLite numbers every row.
     Renumber,
 }
@@ -949,7 +993,8 @@ enum Redo {
 /// Inserts features into the table [`create`] made, and their boxes into its spatial index.
 /// With `keep_ids` each keeps its id; otherwise SQLite numbers it. Stops at the first feature
 /// the table as made can't hold as the whole layer would have it (a multipoint in a POINT
-/// table, an id that doesn't fit or is taken), saying what to [`Redo`].
+/// table, geometry of another kind, an id that doesn't fit or is taken), saying what to
+/// [`Redo`].
 fn insert(conn: &Connection, layout: &Layout, features: &[crate::Feature], keep_ids: bool) -> Result<Option<Redo>> {
     use rusqlite::types::Value as Sql;
     let Layout { columns, fields, has_geom, multi_points, srs_id, table_q: t, geom_q: g, fid_q: i, rtree_q: rt, .. } = layout;
@@ -964,6 +1009,9 @@ fn insert(conn: &Connection, layout: &Layout, features: &[crate::Feature], keep_
         if has_geom { Some(conn.prepare_cached(&format!("INSERT INTO {rt} VALUES (?1, ?2, ?3, ?4, ?5)")).map_err(err)?) } else { None };
     for f in features {
         crate::progress::step(1)?;
+        if has_geom && !layout.mixed && other_kind(f, layout.kind) {
+            return Ok(Some(Redo::Mixed));
+        }
         if has_geom && !multi_points && matches!(f.geometry, Some(crate::Geometry::MultiPoint(_))) && layout.geom_type == "POINT" {
             return Ok(Some(Redo::MultiPoints));
         }

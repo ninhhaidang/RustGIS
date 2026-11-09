@@ -116,6 +116,7 @@ fn write_chunks_to(
     let left_out = match ext.as_str() {
         #[cfg(not(target_arch = "wasm32"))]
         "gpkg" => {
+            // Every feature is written: one of another kind makes the column GEOMETRY.
             table = Some(crate::source::gpkg::write_features_in(&layer.name, geometry_type, &layer.fields, path, crs, gpkg, &mut feed)?);
             0
         }

@@ -370,3 +370,138 @@ fn geoparquet_counts_values_written_as_null() {
     assert_eq!(note, format!("{want}, '{}…'", "x".repeat(40)));
     let _ = std::fs::remove_dir_all(d);
 }
+
+/// A streamed GeoPackage export of a layer holding another kind of geometry than its own writes
+/// every feature in a GEOMETRY column, as the export of the whole layer does, even when the
+/// other kind comes only in a late chunk (the export starts again for it): squares with points
+/// among them, a few features a chunk, give the same table.
+#[test]
+fn a_streamed_geopackage_of_a_mixed_layer_keeps_every_kind() {
+    let d = folder("mixed-kinds");
+    let mut mixed = squares();
+    mixed.name = "mixed".into();
+    for i in [0usize, 5, 6, 299] {
+        if let Some(f) = mixed.features.get_mut(i) {
+            f.geometry = Some(Geometry::Point(Coord::new(i as f64, 1.0)));
+        }
+    }
+    let layer = Dataset::new(mixed.name.clone(), mixed.geometry_type, mixed.fields.clone());
+    let (a, b) = (d.join("streamed.gpkg"), d.join("whole.gpkg"));
+    let streamed = write_chunks_in(&Runs::new(&mixed, 4), &layer, &a, Crs::LonLat, 1).unwrap();
+    assert_eq!((streamed.left_out, streamed.written), (0, 301));
+    assert_eq!(crate::io::write_path(&mixed, &b).unwrap(), 0);
+    let table = |p: &Path| {
+        let c = rusqlite::Connection::open(p).unwrap();
+        let kind = c.query_row("SELECT geometry_type_name FROM gpkg_geometry_columns", [], |r| r.get::<_, String>(0)).unwrap();
+        let blobs = c
+            .query_row("SELECT count(*) FROM mixed WHERE geom IS NOT NULL AND substr(hex(geom), 1, 4) = '4750'", [], |r| r.get::<_, i64>(0))
+            .unwrap();
+        (kind, blobs)
+    };
+    // Every geometry row is a GeoPackage blob: the 296 squares and the 4 points.
+    assert_eq!(table(&a), ("GEOMETRY".to_string(), 300));
+    assert_eq!(table(&b), ("GEOMETRY".to_string(), 300));
+    assert_eq!(read_back(&a).features, read_back(&b).features);
+    let points = read_back(&a).features.iter().filter(|f| matches!(f.geometry, Some(Geometry::Point(_)))).count();
+    assert_eq!(points, 4);
+    // A multipoint among them comes back a multipoint, with its members, streamed and whole.
+    let pair = Geometry::MultiPoint(vec![Coord::new(1.5, 2.5), Coord::new(3.5, 4.5)]);
+    if let Some(f) = mixed.features.get_mut(10) {
+        f.geometry = Some(pair.clone());
+    }
+    let (c, e) = (d.join("streamed-multi.gpkg"), d.join("whole-multi.gpkg"));
+    write_chunks_in(&Runs::new(&mixed, 4), &layer, &c, Crs::LonLat, 1).unwrap();
+    crate::io::write_path(&mixed, &e).unwrap();
+    for p in [&c, &e] {
+        let back = read_back(p);
+        let multis: Vec<_> =
+            back.features.iter().filter_map(|f| f.geometry.as_ref()).filter(|g| matches!(g, Geometry::MultiPoint(_))).collect();
+        assert_eq!(multis, [&pair], "{}", p.display());
+    }
+}
+
+/// A layer that declares no geometry type but carries geometry exports to the same GeoPackage
+/// streamed as whole: a table of its geometry's kind when it holds one, a GEOMETRY table when it
+/// holds several, nothing left out either way.
+#[test]
+fn a_typeless_layer_exports_the_same_geopackage_streamed_or_whole() {
+    let d = folder("typeless");
+    let mut ds = squares();
+    ds.name = "typeless".into();
+    ds.geometry_type = GeometryType::None;
+    let kind = |p: &Path| {
+        let c = rusqlite::Connection::open(p).unwrap();
+        c.query_row("SELECT geometry_type_name FROM gpkg_geometry_columns", [], |r| r.get::<_, String>(0)).unwrap()
+    };
+    let layer = Dataset::new(ds.name.clone(), ds.geometry_type, ds.fields.clone());
+    for (with_point, want) in [(false, "MULTIPOLYGON"), (true, "GEOMETRY")] {
+        if with_point && let Some(f) = ds.features.get_mut(3) {
+            f.geometry = Some(Geometry::Point(Coord::new(3.0, 1.0)));
+        }
+        let (a, b) = (d.join(format!("streamed-{with_point}.gpkg")), d.join(format!("whole-{with_point}.gpkg")));
+        assert_eq!(write_chunks_in(&Runs::new(&ds, 4), &layer, &a, Crs::LonLat, 1).unwrap().left_out, 0);
+        assert_eq!(crate::io::write_path(&ds, &b).unwrap(), 0);
+        assert_eq!((kind(&a), kind(&b)), (want.to_string(), want.to_string()));
+        assert_eq!(read_back(&a).features, read_back(&b).features);
+        assert_eq!(read_back(&a).features.len(), 300);
+    }
+}
+
+/// A projected streamed GeoPackage export of a mixed layer writes every feature, projected, in a
+/// GEOMETRY column, as the whole export does.
+#[test]
+fn a_projected_streamed_geopackage_of_a_mixed_layer_keeps_every_kind() {
+    let d = folder("mixed-projected");
+    let mut mixed = squares();
+    mixed.name = "mixed".into();
+    for i in [2usize, 7] {
+        if let Some(f) = mixed.features.get_mut(i) {
+            f.geometry = Some(Geometry::Point(Coord::new(3.0, 1.0)));
+        }
+    }
+    let utm = Crs::from_epsg(32631).unwrap();
+    let layer = Dataset::new(mixed.name.clone(), mixed.geometry_type, mixed.fields.clone());
+    let (a, b) = (d.join("streamed.gpkg"), d.join("whole.gpkg"));
+    let streamed = write_chunks_in(&Runs::new(&mixed, 4), &layer, &a, utm, 1).unwrap();
+    assert_eq!((streamed.left_out, streamed.written), (0, 301));
+    assert_eq!(crate::io::write_path_in(&mixed, &b, utm).unwrap(), 0);
+    assert_eq!(read_back(&a).features, read_back(&b).features);
+    assert_eq!(read_back(&a).features.len(), 300);
+}
+
+/// A mixed layer added as a table to an existing GeoPackage, streamed or whole, gets a GEOMETRY
+/// column holding every feature, the file's other table left as it was.
+#[test]
+fn a_mixed_layer_added_to_a_geopackage_keeps_every_kind() {
+    let d = folder("mixed-added");
+    let mut mixed = squares();
+    mixed.name = "mixed".into();
+    for i in [1usize, 298] {
+        if let Some(f) = mixed.features.get_mut(i) {
+            f.geometry = Some(Geometry::Point(Coord::new(i as f64, 1.0)));
+        }
+    }
+    let layer = Dataset::new(mixed.name.clone(), mixed.geometry_type, mixed.fields.clone());
+    let add = GpkgTable { mode: crate::io::GpkgMode::AddTable, name: None };
+    let mut other = squares();
+    other.name = "other".into();
+    other.features.truncate(3);
+    for (i, streamed) in [false, true].into_iter().enumerate() {
+        let path = d.join(format!("county-{i}.gpkg"));
+        crate::io::write_path(&other, &path).unwrap();
+        if streamed {
+            let (e, _) = write_chunks_to(&Runs::new(&mixed, 4), &layer, &path, Crs::LonLat, &add, 1).unwrap();
+            assert_eq!((e.left_out, e.written), (0, 301));
+        } else {
+            assert_eq!(crate::io::write_path_to(&mixed, &path, Crs::LonLat, &add).unwrap().0, 0);
+        }
+        let c = rusqlite::Connection::open(&path).unwrap();
+        let kind = |t: &str| {
+            c.query_row("SELECT geometry_type_name FROM gpkg_geometry_columns WHERE table_name = ?1", [t], |r| r.get::<_, String>(0))
+                .unwrap()
+        };
+        assert_eq!((kind("mixed"), kind("other")), ("GEOMETRY".to_string(), "MULTIPOLYGON".to_string()));
+        let rows: i64 = c.query_row("SELECT count(*) FROM mixed WHERE geom IS NOT NULL", [], |r| r.get(0)).unwrap();
+        assert_eq!(rows, 300);
+    }
+}

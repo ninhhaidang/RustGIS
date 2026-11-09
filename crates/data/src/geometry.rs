@@ -358,9 +358,17 @@ impl VertexId {
 /// How many vertices a path has: a closed ring's repeated last point doesn't count.
 fn open_len(path: &[Coord], ring: bool) -> usize {
     match (path.first(), path.last()) {
-        (Some(a), Some(b)) if ring && path.len() > 1 && a == b => path.len() - 1,
+        (Some(a), Some(b)) if ring && path.len() > 1 && same_point(a, b) => path.len() - 1,
         _ => path.len(),
     }
+}
+
+/// Whether two points are the same place. A NaN coordinate equals nothing as a number, so NaN is
+/// matched by its bits: a ring that repeats a NaN point closes on it.
+fn same_point(a: &Coord, b: &Coord) -> bool {
+    // Each coordinate on its own: equal as numbers (so 0 and −0 match), or a NaN by its bits.
+    let same = |p: f64, q: f64| p == q || p.to_bits() == q.to_bits();
+    same(a.x, b.x) && same(a.y, b.y)
 }
 
 impl Geometry {
@@ -784,6 +792,30 @@ mod tests {
         assert!(g.hit(Coord::new(5.0, 5.0), 1.5)); // near the hole's edge
         let lp = g.label_point().unwrap();
         assert!(polygon_contains(&[square(0.0, 0.0, 10.0), square(4.0, 4.0, 2.0)], lp));
+    }
+
+    /// A polygon ring that starts and ends on the same NaN point is closed on it (NaN equals
+    /// nothing as a number, so it's matched by its bits): its last point isn't a vertex of its own,
+    /// so every ring reader sees four vertices and four edges, and deleting the first vertex keeps
+    /// the ring closed on the next one. A line with the same ends isn't a ring: all three count.
+    #[test]
+    fn a_ring_closed_on_a_nan_point_counts_it_once() {
+        let gap = Coord::new(f64::NAN, 0.0);
+        let ring = vec![gap, Coord::new(1.0, 0.0), Coord::new(1.0, 1.0), Coord::new(0.0, 1.0), gap];
+        let g = Geometry::Polygon(vec![vec![ring]]);
+        assert_eq!((g.vertices().len(), g.edges().len()), (4, 4));
+        let Ok(Geometry::Polygon(after)) = g.delete_vertex(VertexId { part: 0, ring: 0, index: 0 }) else { panic!("not deleted") };
+        let ring = after.first().and_then(|rings| rings.first()).cloned().unwrap_or_default();
+        assert_eq!(ring.len(), 4);
+        assert_eq!((ring.first(), ring.last()), (Some(&Coord::new(1.0, 0.0)), Some(&Coord::new(1.0, 0.0))));
+        let line = Geometry::Line(vec![vec![gap, Coord::new(1.0, 0.0), gap]]);
+        assert_eq!(line.vertices().len(), 3);
+        // The same NaN point written once with 0 and once with −0 still closes the ring.
+        let signed = vec![Coord::new(f64::NAN, 0.0), Coord::new(1.0, 0.0), Coord::new(1.0, 1.0), Coord::new(f64::NAN, -0.0)];
+        assert_eq!(Geometry::Polygon(vec![vec![signed]]).vertices().len(), 3);
+        // And the other way round: a signed zero in x, the NaN in y.
+        let mirrored = vec![Coord::new(0.0, f64::NAN), Coord::new(1.0, 0.0), Coord::new(1.0, 1.0), Coord::new(-0.0, f64::NAN)];
+        assert_eq!(Geometry::Polygon(vec![vec![mirrored]]).vertices().len(), 3);
     }
 
     #[test]
