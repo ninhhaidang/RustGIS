@@ -286,6 +286,8 @@ pub struct MapView {
     pub split_mode: bool,
     /// The vertex chosen with the Edit Vertices tool (layer, row, vertex): Delete removes it.
     pub vertex: Option<(u32, usize, rustgis_engine::data::VertexId)>,
+    /// Source replacement identity captured when the vertex was chosen.
+    pub(crate) vertex_owner: Option<crate::vertexedit::VertexOwner>,
     /// The vertex being dragged with the Edit Vertices tool.
     pub vertex_drag: Option<crate::vertexedit::VertexDrag>,
     /// Non-owning source identity for the held vertex gesture; never persisted with the project.
@@ -400,6 +402,7 @@ impl Default for MapView {
             sketch_done: false,
             split_mode: false,
             vertex: None,
+            vertex_owner: None,
             vertex_drag: None,
             vertex_drag_owner: None,
             move_shared_vertices: false,
@@ -568,6 +571,7 @@ impl MapView {
     /// alone. The chosen node is cleared because its row/address may now belong to another shape.
     pub(crate) fn cancel_vertex_drag(&mut self) {
         self.vertex = None;
+        self.vertex_owner = None;
         self.vertex_drag = None;
         self.vertex_drag_owner = None;
         if self.drag.is_some_and(|(_, kind)| kind == DragKind::Vertex) {

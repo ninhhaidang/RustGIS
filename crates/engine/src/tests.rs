@@ -10492,7 +10492,7 @@ fn geopackage_plugin_writes_are_user_only_and_reload_needs_files() {
     use crate::cmd::plugins::{Reach, reaches};
     let mut s = world();
     plugin("eng-gpkg-edit", &["edit"]);
-    for id in ["gpkg.addLayer", "gpkg.discardEdits"] {
+    for id in ["gpkg.addLayer", "gpkg.discardEdits", "layer.reloadData"] {
         let spec = s.registry.get(id).copied().unwrap();
         assert_eq!(reaches(&spec, &json!({})), Some(Reach::Files));
         let e = forward(&mut s, "eng-gpkg-edit", id, json!({})).unwrap_err();
@@ -12129,6 +12129,27 @@ fn any_command_editing_a_streamed_layer_is_undone() {
     });
     assert!(r.unwrap_err().contains("Load All Features"));
     assert_eq!(s.map().layers[0].dataset.features, before);
+    // A registered non-edit command must not launder row edits by reopening its handle.
+    s.registry.commands.push(crate::CommandSpec::new("test.reopenAndEdit", "Reopen and edit", "Test", |s, _| {
+        let l = &mut s.map_mut().layers[0];
+        let reads = l.source.as_ref().unwrap().reads;
+        let mut reopened = l.source.as_ref().unwrap().clone();
+        reopened.reopen()?;
+        reopened.reads = reads;
+        l.source = Some(reopened);
+        l.dataset.features[0].attrs[0] = rustgis_data::Value::Int(-1);
+        Ok(Value::Null)
+    }));
+    let source = s.map().layers[0].source.clone().unwrap();
+    let depth = s.undo_depth();
+    let e = s.run("test.reopenAndEdit", &Value::Null).unwrap_err();
+    assert!(e.contains("Load All Features"), "{e}");
+    assert_eq!(s.map().layers[0].dataset.features, before);
+    assert!(s.map().layers[0].source.as_ref().unwrap().same_opening(&source));
+    assert_eq!(s.undo_depth(), depth);
+    s.run("layer.reloadData", &Value::Null).unwrap();
+    assert_eq!(s.map().layers[0].source.as_ref().unwrap().reads, source.reads + 1);
+    crate::render::render_png(s.map_mut(), &v).unwrap();
     // A command whose render reads the source again is fine.
     let r = s.guarded("Render", true, |s| {
         let v = view_of(s, rustgis_geom::Extent::new(0.0, 0.0, 20.0, 20.0));
@@ -12246,6 +12267,11 @@ fn duckdb_queries_and_databases() {
     let r = s.run("layer.addSql", &json!({"sql": query, "name": "Trip"})).unwrap();
     let names: Vec<String> = s.map().layers.iter().map(|l| l.name.clone()).collect();
     assert_eq!(names, vec!["Trip (points)", "Trip (lines)"], "{r}");
+    let point = s.map().layer_by_name("Trip (points)").unwrap();
+    assert_eq!(point.dataset.features[0].geometry, Some(rustgis_data::Geometry::Point(rustgis_data::Coord::new(7.0, 45.0))));
+    let line = s.map().layer_by_name("Trip (lines)").unwrap();
+    assert_eq!(line.dataset.geometry_type, rustgis_data::GeometryType::Polyline);
+    assert_eq!(line.dataset.features[0].geometry.as_ref().unwrap().extent().center(), rustgis_data::Coord::new(7.5, 45.5));
     // Streamed, a layer remembers its query; a project never runs it again when the result is gone
     // (a project file is hostile input), and says how to.
     let r = s
@@ -12359,7 +12385,7 @@ fn split_sources_keep_their_points_on_top() {
     let parts = Family::ALL.iter().map(|f| duckdb::Part { path: write("query", *f), family: *f, count: 1 }).collect();
     let origin =
         |family| rustgis_map::source::DuckdbOrigin { sql: Some("SELECT 1".into()), database: None, table: None, crs: None, family };
-    let parts = duckdb_parts(&mut s, "Trip", duckdb::Output { parts, skipped: 0 }, origin);
+    let parts = duckdb_parts(&mut s, "Trip", duckdb::Output { parts, skipped: 0, other_family: 0 }, origin);
     add_converted(&mut s, &json!({}), "the query", "DuckDB query", parts).unwrap();
     assert_eq!(names(&s), ["Trip (points)", "Trip (lines)", "Trip (polygons)"]);
 
@@ -16343,6 +16369,14 @@ fn rounded_raster_values_are_said_on_import_and_export() {
         assert_eq!(said(&s, mark, "3 values in it were rounded to 32-bit floats"), rounded, "{:?}", s.notices_since(mark));
         // The exported file holds the values as they were held: 16777217 is 16777216.
         assert_eq!(rustgis_data::raster::read_path(&out).unwrap().value(0, 0, 0), Some(16_777_216.0));
+        // A fresh candidate discloses the new file's losses, not the previous pixels' report.
+        let values = if rounded { "9 2\n3 4" } else { "16777217 100000001\n1234567.891 7" };
+        std::fs::write(&path, format!("ncols 2\nnrows 2\nxllcorner 10\nyllcorner 40\ncellsize 1\n{values}")).unwrap();
+        let mark = s.notice_mark();
+        s.run("layer.reloadData", &json!({"layer": id})).unwrap();
+        assert_eq!(said(&s, mark, "3 values were rounded as the file was read"), !rounded, "{:?}", s.notices_since(mark));
+        let pixel = s.map().layer(id as u32).unwrap().raster.as_ref().unwrap().data.as_ref().unwrap().value(0, 0, 0);
+        assert_eq!(pixel, Some(if rounded { 9.0 } else { 16_777_216.0 }));
     }
     std::fs::remove_dir_all(dir).unwrap();
 }
@@ -20830,6 +20864,64 @@ fn a_zarr_variable_follows_the_time_slider() {
     let _ = std::fs::remove_dir_all(dir3);
     let _ = std::fs::remove_dir_all(dir2);
     let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Manual reload reads changed chunks even when folder metadata is unchanged, and later time
+/// steps cannot revive a cached pre-reload slice.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn manual_zarr_reload_reads_fresh_chunks_and_keeps_the_time_variable() {
+    let _cache = zarr_cache_lock();
+    let (dir, path) = zarr_store_over_time("manual-reload");
+    let mut s = Session::new(Project::default());
+    let id = s.run("layer.addZarr", &json!({"path": path, "variable": "t", "time": true})).unwrap()["layer"].as_u64().unwrap() as u32;
+    let snapshot =
+        s.run("layer.addZarr", &json!({"path": path, "variable": "t[time=0]", "name": "Slice"})).unwrap()["layer"].as_u64().unwrap() as u32;
+    let first = |s: &Session, id| s.map().layer(id).unwrap().raster.as_ref().unwrap().data.as_ref().unwrap().bands[0].data[0];
+    assert_eq!(first(&s, id), 8.0);
+    s.run("time.goTo", &json!({"step": 1})).unwrap();
+    assert_eq!(first(&s, id), 108.0);
+    s.run("time.goTo", &json!({"step": 0})).unwrap();
+    let style = serde_json::to_value(&s.map().layer(id).unwrap().raster.as_ref().unwrap().style).unwrap();
+    let prior = s.map().layer(id).unwrap().raster.as_ref().unwrap().time_zarr.clone().unwrap();
+    crate::cmd::zarr::read_step(&prior, 2, crate::cmd::zarr::slice_key(&prior, 2)).unwrap();
+    for step in 0..3 {
+        let chunk: Vec<u8> = std::iter::repeat_n(500.0f32 + step as f32, 12).flat_map(|v| v.to_le_bytes()).collect();
+        std::fs::write(std::path::Path::new(&path).join(format!("t/{step}.0.0")), chunk).unwrap();
+    }
+    s.run("layer.reloadData", &json!({"layer": id})).unwrap();
+    assert_eq!(first(&s, id), 500.0);
+    assert_eq!(first(&s, snapshot), 8.0, "each target reloads independently");
+    let summary = s.run("zarr.reduce", &json!({"layer": id, "stat": "mean"})).unwrap()["layer"].as_u64().unwrap() as u32;
+    assert_eq!(first(&s, summary), 501.0, "summaries must not reuse pre-reload slices");
+    s.run("layer.reloadData", &json!({"layer": snapshot})).unwrap();
+    assert_eq!(first(&s, snapshot), 500.0);
+    for params in [json!({"layer": snapshot, "stat": "mean"}), json!({"path": path, "variable": "t", "stat": "mean"})] {
+        let summary = s.run("zarr.reduce", &params).unwrap()["layer"].as_u64().unwrap() as u32;
+        assert_eq!(first(&s, summary), 501.0, "ordinary and path analyses read fresh chunks");
+        let cube = s.run("cube.reduce", &params).unwrap()["layers"][0].as_u64().unwrap() as u32;
+        assert_eq!(first(&s, cube), 501.0, "cube analyses use the same fresh series policy");
+    }
+    // Reopening in this same process must not revive an older cached generation.
+    let saved = serde_json::to_string(&s.project).unwrap();
+    let mut reopened = Session::new(Project::default());
+    reopened.run("project.openText", &json!({"text": saved})).unwrap();
+    assert_eq!(first(&reopened, id), 500.0);
+    // An old in-flight read may finish after the project reopened, but cannot match it.
+    let key = crate::cmd::zarr::slice_key(&prior, 2);
+    crate::cmd::zarr::read_step(&prior, 2, key).unwrap();
+    reopened.run("time.goTo", &json!({"step": 2})).unwrap();
+    assert_eq!(first(&reopened, id), 502.0);
+    s.run("time.goTo", &json!({"step": 1})).unwrap();
+    assert_eq!(first(&s, id), 501.0);
+    let rl = s.map().layer(id).unwrap().raster.as_ref().unwrap();
+    assert_eq!(rl.time_zarr.as_ref().unwrap().variable, "t");
+    assert_eq!(serde_json::to_value(&rl.style).unwrap(), style);
+    let old = rl.data.clone().unwrap();
+    std::fs::write(std::path::Path::new(&path).join("t/1.0.0"), b"truncated").unwrap();
+    assert!(s.run("layer.reloadData", &json!({"layer": id})).is_err());
+    assert!(std::sync::Arc::ptr_eq(&old, s.map().layer(id).unwrap().raster.as_ref().unwrap().data.as_ref().unwrap()));
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 /// Step `k`'s cells of [`zarr_store_at`]'s variable (`100 k + cell`), as its chunk file holds them.
@@ -34604,6 +34696,403 @@ fn a_scripts_tools_run_ahead_are_taken_by_its_run() {
 
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
+fn reload_is_refused_by_imported_workflows_but_runs_in_a_trusted_task() {
+    let path = grid_fgb("workflow-reload", 2);
+    let mut s = Session::new(Project::default());
+    let id = s.run("layer.addData", &json!({"path": path, "stream": true})).unwrap()["layer"].clone();
+    let task = json!({"name": "Reload", "steps": [{"title": "Reload", "command": "layer.reloadData", "params": {"layer": id}}]});
+    assert!(s.run("task.import", &json!({"text": task.to_string()})).unwrap_err().contains("reads or writes files"));
+    s.run("task.new", &task).unwrap();
+    let mut untrusted = Session::new(s.project.clone());
+    assert!(untrusted.run("task.run", &json!({"task": "Reload"})).unwrap_err().contains("reads or writes files"));
+    let notebook = json!({
+        "nbformat": 4,
+        "metadata": {"language_info": {"name": "rustgis"}},
+        "cells": [{"cell_type": "code", "source": format!("layer.reloadData {{\"layer\": {id}}}")}]
+    });
+    s.run("notebook.open", &json!({"text": notebook.to_string()})).unwrap();
+    let result = s.run("notebook.run", &json!({"cell": 0})).unwrap();
+    assert_eq!(result["error"], 0);
+    let cell = &s.project.notebooks.last().unwrap().cells[0];
+    assert!(cell.error && cell.output.as_deref().is_some_and(|text| text.contains("reads or writes files")));
+    let source = s.map().layer(id.as_u64().unwrap() as u32).unwrap().source.clone().unwrap();
+    s.run("task.run", &json!({"task": "Reload"})).unwrap();
+    assert!(!s.map().layer(id.as_u64().unwrap() as u32).unwrap().source.as_ref().unwrap().same_opening(&source));
+    std::fs::remove_file(path).unwrap();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn zarr_reload_rejects_wholly_unreachable_dates_but_allows_a_reachable_current_gap() {
+    let _cache = zarr_cache_lock();
+    let (dir, path) = zarr_store_over_time("reload-dates");
+    let mut s = Session::new(Project::default());
+    let id = s.run("layer.addZarr", &json!({"path": path, "variable": "t", "time": true})).unwrap()["layer"].as_u64().unwrap() as u32;
+    s.run("time.set", &json!({"dates": ["2002-01-01", "2002-02-01", "2002-03-01"], "date": "2002-01-01"})).unwrap();
+    let before = serde_json::to_value(s.map().layer(id).unwrap()).unwrap();
+    let slider = s.map().time.clone();
+    let depth = s.undo_depth();
+    let error = s.run("layer.reloadData", &json!({"layer": id})).unwrap_err();
+    assert!(error.contains("adjust the time slider") && error.contains("retry"), "{error}");
+    assert_eq!(s.map().time, slider);
+    assert_eq!(s.undo_depth(), depth);
+    assert_eq!(serde_json::to_value(s.map().layer(id).unwrap()).unwrap(), before);
+    s.run("time.set", &json!({"dates": ["2000-01-01", "2001-01-01", "2001-02-01", "2001-03-01"], "date": "2000-01-01"})).unwrap();
+    let slider = s.map().time.clone();
+    s.run("layer.reloadData", &json!({"layer": id})).unwrap();
+    assert_eq!(s.map().time, slider);
+    assert!(s.map().layer(id).unwrap().raster.as_ref().unwrap().data.is_none());
+    s.run("time.goTo", &json!({"step": 1})).unwrap();
+    assert_eq!(s.map().layer(id).unwrap().raster.as_ref().unwrap().data.as_ref().unwrap().value(0, 0, 0), Some(8.0));
+    // A bounding range alone is insufficient: monthly windows can leave calendar gaps.
+    let (gap_dir, gap_path) = zarr_store_at("reload-calendar-dates", &[86, 87, 88]);
+    let mut s = Session::new(Project::default());
+    let id = s.run("layer.addZarr", &json!({"path": gap_path, "variable": "t", "time": true})).unwrap()["layer"].as_u64().unwrap() as u32;
+    s.run("time.set", &json!({"dates": [], "start": "2001-01-31", "end": "2001-03-31", "unit": "month", "interval": 1, "before": 0, "after": 1, "cumulative": false})).unwrap();
+    let slider = s.map().time.clone();
+    let error = s.run("layer.reloadData", &json!({"layer": id})).unwrap_err();
+    assert!(error.contains("outside every time slider window"), "{error}");
+    assert_eq!(s.map().time, slider);
+    std::fs::remove_dir_all(gap_dir).unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn zarr_reload_preserves_selected_dates_when_earlier_steps_are_inserted_and_refuses_changed_periods() {
+    let _cache = zarr_cache_lock();
+    let tag = "reload-selected-period";
+    let (dir, path) = zarr_store_over_time(tag);
+    let mut s = Session::new(Project::default());
+    let id = s
+        .run("layer.addZarr", &json!({"path": path, "variable": "t", "time": true, "start": "2001-02-01", "end": "2001-03-02"}))
+        .unwrap()["layer"]
+        .as_u64()
+        .unwrap() as u32;
+    let prior = s.map().layer(id).unwrap().raster.as_ref().unwrap().time_zarr.clone().unwrap();
+    assert_eq!(prior.offset, 1);
+    assert_eq!(prior.dates.len(), 2);
+    assert_eq!(s.map().layer(id).unwrap().raster.as_ref().unwrap().data.as_ref().unwrap().value(0, 0, 0), Some(108.0));
+    zarr_store_at(tag, &[-31, 0, 31, 59]);
+    let slider = s.map().time.clone();
+    s.run("layer.reloadData", &json!({"layer": id})).unwrap();
+    let raster = s.map().layer(id).unwrap().raster.as_ref().unwrap();
+    assert_eq!(raster.time_zarr.as_ref().unwrap().offset, 2);
+    assert_eq!(raster.time_zarr.as_ref().unwrap().dates, prior.dates);
+    assert_eq!(raster.data.as_ref().unwrap().value(0, 0, 0), Some(208.0), "February moved to the third chunk");
+    assert_eq!(s.map().time, slider);
+    s.run("time.goTo", &json!({"step": 1})).unwrap();
+    assert_eq!(s.map().layer(id).unwrap().raster.as_ref().unwrap().data.as_ref().unwrap().value(0, 0, 0), Some(308.0));
+    for days in [&[-31, 0, 32, 59][..], &[-31, 0, 31, 60][..], &[-31, 0, 31, 45, 59][..], &[-31, 0, 31][..]] {
+        zarr_store_at(tag, days);
+        let before = serde_json::to_value(s.map().layer(id).unwrap()).unwrap();
+        let raster = s.map().layer(id).unwrap().raster.as_ref().unwrap();
+        let pixels = raster.data.clone().unwrap();
+        let selected = raster.time_zarr.clone();
+        let slider = s.map().time.clone();
+        let depth = s.undo_depth();
+        let error = s.run("layer.reloadData", &json!({"layer": id})).unwrap_err();
+        assert!(error.contains("no longer contains the selected time period unchanged"), "{days:?}: {error}");
+        assert_eq!(serde_json::to_value(s.map().layer(id).unwrap()).unwrap(), before);
+        let raster = s.map().layer(id).unwrap().raster.as_ref().unwrap();
+        assert_eq!(raster.time_zarr, selected);
+        assert!(std::sync::Arc::ptr_eq(&pixels, raster.data.as_ref().unwrap()));
+        assert_eq!(s.map().time, slider);
+        assert_eq!(s.undo_depth(), depth);
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn prepared_reload_validates_live_presentation_and_refuses_stale_source_without_fallback() {
+    use rustgis_analysis::control::Control;
+    for change in ["camera", "presentation", "missing binding", "reopen", "path", "second reload"] {
+        let path = grid_fgb("prepared-reload", 2);
+        let mut s = Session::new(Project::default());
+        let id = s.run("layer.addData", &json!({"path": path, "stream": true})).unwrap()["layer"].as_u64().unwrap() as u32;
+        let p = json!({"layer": id});
+        let read = crate::cmd::reads::read_ahead(&mut s, "layer.reloadData", &p).unwrap().run(&Control::new()).unwrap();
+        match change {
+            "camera" => s.map_mut().camera.res *= 0.5,
+            "presentation" => s.map_mut().layer_mut(id).unwrap().transparency = 42.0,
+            "missing binding" => {
+                let l = s.map_mut().layer_mut(id).unwrap();
+                l.dataset.fields.push(rustgis_data::Field::new("new_field", rustgis_data::FieldType::Integer));
+                l.labels.default.field = "new_field".into();
+            }
+            "reopen" => s.map_mut().layer_mut(id).unwrap().source.as_mut().unwrap().reopen().unwrap(),
+            "path" => s.map_mut().layer_mut(id).unwrap().source.as_mut().unwrap().path = Some("missing.fgb".into()),
+            "second reload" => {
+                s.run("layer.reloadData", &p).unwrap();
+            }
+            _ => panic!("unexpected reload scenario"),
+        }
+        let before = serde_json::to_value(s.map().layer(id).unwrap()).unwrap();
+        let depth = s.undo_depth();
+        std::fs::remove_file(&path).unwrap();
+        let result = crate::cmd::reads::read_land(&mut s, read);
+        if matches!(change, "camera" | "presentation") {
+            result.unwrap();
+            if change == "presentation" {
+                assert_eq!(s.map().layer(id).unwrap().transparency, 42.0);
+            }
+        } else {
+            let error = result.unwrap_err();
+            assert!(
+                error.contains("changed while reading") || error.contains("source or account changed") || error.contains("new_field"),
+                "{change}: {error}"
+            );
+            assert_eq!(serde_json::to_value(s.map().layer(id).unwrap()).unwrap(), before);
+            assert_eq!(s.undo_depth(), depth);
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn prepared_reload_never_discards_geopackage_edits_or_baselines_changed_after_confirmation() {
+    use rustgis_analysis::control::Control;
+    use rustgis_data::{Coord, Dataset, Field, FieldType, Geometry, GeometryType, Value as Cell, raster::Crs, source::gpkg};
+    for change in ["new edit", "schema", "baseline", "source"] {
+        let path = std::env::temp_dir().join(format!("rustgis-prepared-gpkg-{}-{change}.gpkg", std::process::id()));
+        let mut ds = Dataset::new("Rows", GeometryType::Point, vec![Field::new("name", FieldType::Text)]);
+        ds.push(Some(Geometry::Point(Coord::new(2.0, 48.0))), vec![Cell::Text("original".into())]);
+        gpkg::write_in(&ds, &path, Crs::LonLat).unwrap();
+        let mut s = Session::new(Project::default());
+        let id = s.run("gpkg.addLayer", &json!({"path": path, "table": "Rows"})).unwrap()["layer"].as_u64().unwrap() as u32;
+        s.run("edit.setValue", &json!({"layer": id, "row": 0, "field": "name", "value": "confirmed edit"})).unwrap();
+        let p = json!({"layer": id, "discardEdits": true});
+        let read = crate::cmd::reads::read_ahead(&mut s, "layer.reloadData", &p).unwrap().run(&Control::new()).unwrap();
+        match change {
+            "new edit" => {
+                s.run("edit.setValue", &json!({"layer": id, "row": 0, "field": "name", "value": "unseen edit"})).unwrap();
+            }
+            "schema" => s.map_mut().layer_mut(id).unwrap().dataset.fields.push(Field::new("new_column", FieldType::Text)),
+            "baseline" => {
+                s.run("gpkg.discardEdits", &json!({"layer": id})).unwrap();
+            }
+            "source" => s.map_mut().layer_mut(id).unwrap().gpkg.as_mut().unwrap().table = "different".into(),
+            _ => panic!("unexpected reload scenario"),
+        }
+        let before = s.map().layer(id).unwrap().dataset.clone();
+        let edit = s.map().layer(id).unwrap().gpkg.clone();
+        let bytes = std::fs::read(&path).unwrap();
+        let depth = s.undo_depth();
+        let error = crate::cmd::reads::read_land(&mut s, read).unwrap_err();
+        assert!(error.contains("changed while reading") || error.contains("source or account changed"), "{change}: {error}");
+        assert_eq!(s.map().layer(id).unwrap().dataset, before);
+        assert_eq!(s.map().layer(id).unwrap().gpkg, edit);
+        assert_eq!(s.undo_depth(), depth);
+        assert_eq!(std::fs::read(&path).unwrap(), bytes, "a stale confirmation never writes");
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn prepared_editable_reload_preserves_a_name_changed_while_reading() {
+    use rustgis_analysis::control::Control;
+    use rustgis_data::{Coord, Dataset, Geometry, GeometryType, raster::Crs, source::gpkg};
+    let path = std::env::temp_dir().join(format!("rustgis-prepared-reload-renamed-{}.gpkg", std::process::id()));
+    let mut ds = Dataset::new("Rows", GeometryType::Point, vec![]);
+    ds.push(Some(Geometry::Point(Coord::new(2.0, 48.0))), vec![]);
+    gpkg::write_in(&ds, &path, Crs::LonLat).unwrap();
+    let mut s = Session::new(Project::default());
+    let id = s.run("gpkg.addLayer", &json!({"path": path, "table": "Rows"})).unwrap()["layer"].as_u64().unwrap() as u32;
+    let read = crate::cmd::reads::read_ahead(&mut s, "layer.reloadData", &json!({"layer": id})).unwrap().run(&Control::new()).unwrap();
+    s.run("layer.rename", &json!({"layer": id, "name": "Renamed while reading"})).unwrap();
+
+    crate::cmd::reads::read_land(&mut s, read).unwrap();
+
+    let layer = s.map().layer(id).unwrap();
+    assert_eq!(layer.name, "Renamed while reading");
+    assert_eq!(layer.dataset.name, "Renamed while reading");
+    assert_eq!(layer.dataset.features.len(), 1);
+    drop(s);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn prepared_zarr_reload_uses_worker_pixels_and_refuses_configuration_time_or_opening_drift() {
+    use rustgis_analysis::control::Control;
+    let _cache = zarr_cache_lock();
+    for change in ["camera", "style", "in place", "time", "second reload"] {
+        let (dir, path) = zarr_store_over_time(&format!("prepared-{change}"));
+        let mut s = Session::new(Project::default());
+        let id = s.run("layer.addZarr", &json!({"path": path, "variable": "t", "time": true})).unwrap()["layer"].as_u64().unwrap() as u32;
+        let p = json!({"layer": id});
+        let read = crate::cmd::reads::read_ahead(&mut s, "layer.reloadData", &p).unwrap().run(&Control::new()).unwrap();
+        match change {
+            "camera" => s.map_mut().camera.res *= 0.5,
+            "style" => s.map_mut().layer_mut(id).unwrap().raster.as_mut().unwrap().style.gamma = 1.7,
+            "in place" => s.map_mut().layer_mut(id).unwrap().raster.as_mut().unwrap().in_place = true,
+            "time" => {
+                s.run("time.goTo", &json!({"step": 1})).unwrap();
+            }
+            "second reload" => {
+                s.run("layer.reloadData", &p).unwrap();
+            }
+            _ => panic!("unexpected reload scenario"),
+        }
+        let before = s.map().layer(id).unwrap().raster.as_ref().unwrap().data.clone();
+        let depth = s.undo_depth();
+        std::fs::write(
+            std::path::Path::new(&path).join("t/0.0.0"),
+            std::iter::repeat_n(700.0f32, 12).flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>(),
+        )
+        .unwrap();
+        let result = crate::cmd::reads::read_land(&mut s, read);
+        if change == "camera" {
+            result.unwrap();
+            assert_eq!(s.map().layer(id).unwrap().raster.as_ref().unwrap().data.as_ref().unwrap().value(0, 0, 0), Some(8.0));
+        } else {
+            assert!(result.unwrap_err().contains("changed while reading"));
+            assert_eq!(s.undo_depth(), depth);
+            assert!(std::sync::Arc::ptr_eq(
+                before.as_ref().unwrap(),
+                s.map().layer(id).unwrap().raster.as_ref().unwrap().data.as_ref().unwrap()
+            ));
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn reopening_zarr_twice_does_not_reuse_cached_or_late_reads_from_the_previous_opening() {
+    use crate::render::rustgis_tiles::cache;
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+        mpsc,
+    };
+    let _cache = zarr_cache_lock();
+    let (dir, path) = zarr_store_over_time("reopen-generation");
+    let mut original = Session::new(Project::default());
+    let id =
+        original.run("layer.addZarr", &json!({"path": path, "variable": "t", "time": true})).unwrap()["layer"].as_u64().unwrap() as u32;
+    let saved = serde_json::to_string(&original.project).unwrap();
+    let mut s = Session::new(Project::default());
+    s.run("project.openText", &json!({"text": saved})).unwrap();
+    s.zarr_off_frame = true;
+    let prior = s.map().layer(id).unwrap().raster.as_ref().unwrap().time_zarr.clone().unwrap();
+    let cached_key = crate::cmd::zarr::slice_key(&prior, 1);
+    assert_eq!(crate::cmd::zarr::read_step(&prior, 1, cached_key.clone()).unwrap().value(0, 0, 0), Some(108.0));
+    let old_key = crate::cmd::zarr::slice_key(&prior, 2);
+    let caller = std::thread::current().id();
+    let checks = AtomicUsize::new(0);
+    let (started, entered) = mpsc::sync_channel(1);
+    let (release, released) = mpsc::sync_channel(1);
+    let released = Mutex::new(released);
+    let still: cache::Still = Arc::new(move || {
+        // The second check is after the old pixels were read, before they are published.
+        if std::thread::current().id() != caller && checks.fetch_add(1, Ordering::SeqCst) == 1 {
+            let _ = started.send(());
+            return released.lock().unwrap().recv_timeout(std::time::Duration::from_secs(10)).is_ok();
+        }
+        true
+    });
+    let mark = s.notice_mark();
+    cache::with_still(still.clone(), || s.run("time.goTo", &json!({"step": 2}))).unwrap();
+    entered.recv_timeout(std::time::Duration::from_secs(10)).expect("the old read holds its pixels before completion");
+    assert!(s.zarr_waiting());
+    assert!(crate::cmd::zarr::kept_slice(&old_key).is_none(), "the old step is genuinely pending, not cached");
+    let saved = serde_json::to_string(&s.project).unwrap();
+    for step in 0..3 {
+        std::fs::write(
+            std::path::Path::new(&path).join(format!("t/{step}.0.0")),
+            std::iter::repeat_n(500.0f32 + step as f32, 12).flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>(),
+        )
+        .unwrap();
+    }
+    // Reuse the same session and requesting lifetime: only the opening generation separates
+    // the new layer's request from the old pending completion in ReadWaits::shared.
+    cache::with_still(still, || s.run("project.openText", &json!({"text": saved}))).unwrap();
+    assert_ne!(s.map().layer(id).unwrap().raster.as_ref().unwrap().time_zarr.as_ref().unwrap().read_generation, prior.read_generation);
+    release.send(()).unwrap();
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while s.zarr_waiting() || crate::cmd::zarr::kept_slice(&old_key).is_none() {
+        assert!(std::time::Instant::now() < end, "the pending reads never completed");
+        s.follow_time_landed();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert_eq!(crate::cmd::zarr::kept_slice(&old_key).unwrap().value(0, 0, 0), Some(208.0), "the late completion contains old pixels");
+    assert_eq!(s.map().layer(id).unwrap().raster.as_ref().unwrap().data.as_ref().unwrap().value(0, 0, 0), Some(502.0));
+    s.run("time.goTo", &json!({"step": 1})).unwrap();
+    while s.zarr_waiting() {
+        assert!(std::time::Instant::now() < end, "the fresh cached-step replacement never landed");
+        s.follow_time_landed();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert_eq!(crate::cmd::zarr::kept_slice(&cached_key).unwrap().value(0, 0, 0), Some(108.0));
+    assert_eq!(s.map().layer(id).unwrap().raster.as_ref().unwrap().data.as_ref().unwrap().value(0, 0, 0), Some(501.0));
+    assert!(!s.notices_since(mark).iter().any(|notice| notice.error));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// A reload installs a new opening of the store: a layer asking for a step another read of the
+/// old opening still holds must read the rewritten chunks, not join that read.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_zarr_step_requested_after_reload_does_not_join_a_pending_read_of_the_old_store() {
+    use crate::render::rustgis_tiles::cache;
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+        mpsc,
+    };
+    let _cache = zarr_cache_lock();
+    let (dir, path) = zarr_store_over_time("reload-shared-read");
+    let mut s = Session::new(Project::default());
+    s.zarr_off_frame = true;
+    let id = s.run("layer.addZarr", &json!({"path": path, "variable": "t", "time": true})).unwrap()["layer"].as_u64().unwrap() as u32;
+    let first = |s: &Session| s.map().layer(id).unwrap().raster.as_ref().unwrap().data.as_ref().unwrap().value(0, 0, 0);
+    assert_eq!(first(&s), Some(8.0));
+    let caller = std::thread::current().id();
+    let checks = AtomicUsize::new(0);
+    let (started, entered) = mpsc::sync_channel(1);
+    let (release, released) = mpsc::sync_channel(1);
+    let released = Mutex::new(released);
+    let still: cache::Still = Arc::new(move || {
+        // The second check is after the old pixels were read, before they are published.
+        if std::thread::current().id() != caller && checks.fetch_add(1, Ordering::SeqCst) == 1 {
+            let _ = started.send(());
+            return released.lock().unwrap().recv_timeout(std::time::Duration::from_secs(10)).is_ok();
+        }
+        true
+    });
+    cache::with_still(still.clone(), || s.run("time.goTo", &json!({"step": 1}))).unwrap();
+    entered.recv_timeout(std::time::Duration::from_secs(10)).expect("the old read holds its pixels before completion");
+    assert!(s.zarr_waiting());
+    // The slider returns to the step shown, so only the held worker still owns the old read.
+    s.run("time.goTo", &json!({"step": 0})).unwrap();
+    assert!(!s.zarr_waiting());
+    for step in 0..3 {
+        std::fs::write(
+            std::path::Path::new(&path).join(format!("t/{step}.0.0")),
+            std::iter::repeat_n(500.0f32 + step as f32, 12).flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>(),
+        )
+        .unwrap();
+    }
+    s.run("layer.reloadData", &json!({"layer": id})).unwrap();
+    assert_eq!(first(&s), Some(500.0));
+    // The same step, store, selection and lifetime as the held read: only the reload separates them.
+    cache::with_still(still, || s.run("time.goTo", &json!({"step": 1}))).unwrap();
+    release.send(()).unwrap();
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while s.zarr_waiting() {
+        assert!(std::time::Instant::now() < end, "the step never landed");
+        s.follow_time_landed();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert_eq!(first(&s), Some(501.0), "the layer shows the rewritten chunks, not the pre-reload step");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
 fn a_scripts_batch_runs_ahead_and_stops_with_its_cancel() {
     if isolate_process_test("tests::a_scripts_batch_runs_ahead_and_stops_with_its_cancel") {
         return;
@@ -34659,7 +35148,6 @@ fn a_scripts_batch_runs_ahead_and_stops_with_its_cancel() {
     assert_eq!(s.map().layers.len(), 2);
     std::fs::remove_dir_all(&dir).ok();
 }
-
 #[test]
 fn topology_validate_says_when_a_polar_check_is_incomplete() {
     // A line winding round the North Pole about 19,000 times: its dangle check measures it coarsely,
@@ -35493,6 +35981,150 @@ fn bundled_ca_roots_are_said_once_a_session() {
     let mut other = Session::new(Project::default());
     other.say_bundled_roots(true);
     assert_eq!(said(&other), 1);
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn reload_streamed_unknown_geometry_gets_a_visible_default_and_known_geometry_keeps_style() {
+    use rustgis_data::GeometryType;
+    use rustgis_map::{Renderer, Symbol};
+    for (known, styled) in [(false, false), (false, true), (true, true)] {
+        let dir = std::env::temp_dir().join(format!("rustgis-reload-empty-stream-{}-{known}-{styled}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("points.geojson");
+        let points = json!({
+            "type": "FeatureCollection", "features": [{
+                "type": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [1, 2]}
+            }]
+        });
+        let initial = if known { points.clone() } else { json!({"type": "FeatureCollection", "features": []}) };
+        std::fs::write(&path, initial.to_string()).unwrap();
+        let mut s = Session::new(Project::default());
+        let id = s.run("layer.addData", &json!({"path": path, "stream": true})).unwrap()["layer"].as_u64().unwrap() as u32;
+        let layer = s.map_mut().layer_mut(id).unwrap();
+        assert!(layer.is_streamed());
+        assert_eq!(layer.dataset.geometry_type, if known { GeometryType::Point } else { GeometryType::None });
+        let mut custom = Symbol::default_for(layer.dataset.geometry_type, id);
+        custom.size = 31.0;
+        if styled {
+            layer.renderer = Renderer::Single(custom);
+        }
+        let revision = layer.replacement_revision();
+        std::fs::write(&path, points.to_string()).unwrap();
+        s.run("layer.reloadData", &json!({"layer": id})).unwrap();
+        let layer = s.map().layer(id).unwrap();
+        assert_eq!(layer.dataset.geometry_type, GeometryType::Point);
+        assert_ne!(layer.replacement_revision(), revision);
+        let expected = if styled { custom } else { Symbol::default_for(GeometryType::Point, id) };
+        assert_eq!(layer.renderer, Renderer::Single(expected));
+        assert!(expected.size > 0.0);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+/// A layer copied or added from a layer file gets a new id but keeps its renderer: an untouched
+/// no-geometry default seeded by its old id still becomes a visible default on reload.
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn reload_gives_a_visible_default_to_an_untyped_layer_whose_default_came_from_another_id() {
+    use rustgis_data::GeometryType;
+    use rustgis_map::{Renderer, Symbol};
+    let dir = std::env::temp_dir().join(format!("rustgis-reload-reid-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("points.geojson");
+    std::fs::write(&path, json!({"type": "FeatureCollection", "features": []}).to_string()).unwrap();
+    let mut s = Session::new(Project::default());
+    let id = s.run("layer.addData", &json!({"path": path, "stream": true})).unwrap()["layer"].as_u64().unwrap() as u32;
+    let old_seed = id + 3;
+    s.map_mut().layer_mut(id).unwrap().renderer = Renderer::Single(Symbol::default_for(GeometryType::None, old_seed));
+    let points = json!({"type": "FeatureCollection", "features": [{
+        "type": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [1, 2]}
+    }]});
+    std::fs::write(&path, points.to_string()).unwrap();
+    s.run("layer.reloadData", &json!({"layer": id})).unwrap();
+    let layer = s.map().layer(id).unwrap();
+    assert_eq!(layer.renderer, Renderer::Single(Symbol::default_for(GeometryType::Point, old_seed)));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn reload_editable_unknown_geometry_gets_a_visible_default_and_known_geometry_keeps_style() {
+    use rustgis_data::{Coord, Dataset, Geometry, GeometryType, raster::Crs, source::gpkg};
+    use rustgis_map::{Renderer, Symbol};
+    for (known, styled) in [(false, false), (false, true), (true, true)] {
+        let dir = std::env::temp_dir().join(format!("rustgis-reload-empty-editable-{}-{known}-{styled}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("points.gpkg");
+        let mut data = Dataset::new("points", GeometryType::Point, vec![]);
+        if known {
+            data.push(Some(Geometry::Point(Coord::new(1.0, 2.0))), vec![]);
+        }
+        gpkg::write_in(&data, &path, Crs::LonLat).unwrap();
+        if !known {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute("UPDATE gpkg_geometry_columns SET geometry_type_name = 'GEOMETRY' WHERE table_name = 'points'", []).unwrap();
+        }
+        let mut s = Session::new(Project::default());
+        let id = s.run("gpkg.addLayer", &json!({"path": path, "table": "points"})).unwrap()["layer"].as_u64().unwrap() as u32;
+        let layer = s.map_mut().layer_mut(id).unwrap();
+        assert_eq!(layer.dataset.geometry_type, if known { GeometryType::Point } else { GeometryType::None });
+        let mut custom = Symbol::default_for(layer.dataset.geometry_type, id);
+        custom.size = 31.0;
+        if styled {
+            layer.renderer = Renderer::Single(custom);
+        }
+        let revision = layer.replacement_revision();
+        data.push(Some(Geometry::Point(Coord::new(3.0, 4.0))), vec![]);
+        let replacement = dir.join("replacement.gpkg");
+        gpkg::write_in(&data, &replacement, Crs::LonLat).unwrap();
+        std::fs::copy(replacement, &path).unwrap();
+        s.run("layer.reloadData", &json!({"layer": id})).unwrap();
+        let layer = s.map().layer(id).unwrap();
+        assert_eq!(layer.dataset.geometry_type, GeometryType::Point);
+        assert_ne!(layer.replacement_revision(), revision);
+        let expected = if styled { custom } else { Symbol::default_for(GeometryType::Point, id) };
+        assert_eq!(layer.renderer, Renderer::Single(expected));
+        assert!(expected.size > 0.0);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+fn reload_failure_guidance_distinguishes_editable_geopackages_from_linked_files() {
+    use rustgis_data::{Coord, Dataset, Geometry, GeometryType, io, raster::Crs, source::gpkg};
+    let dir = std::env::temp_dir().join(format!("rustgis-reload-failure-guidance-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    for editable in [true, false] {
+        let path = dir.join(format!("points-{editable}.gpkg"));
+        let mut original = Dataset::new("points", GeometryType::Point, vec![]);
+        original.push(Some(Geometry::Point(Coord::new(1.0, 2.0))), vec![]);
+        gpkg::write_in(&original, &path, Crs::LonLat).unwrap();
+        let mut s = Session::new(Project::default());
+        let command = if editable { "gpkg.addLayer" } else { "layer.addData" };
+        let id = s.run(command, &json!({"path": path, "table": "points", "stream": true})).unwrap()["layer"].as_u64().unwrap() as u32;
+        assert_eq!(s.map().layer(id).unwrap().gpkg.is_some(), editable);
+        let before = serde_json::to_value(s.map().layer(id).unwrap()).unwrap();
+        let mut replacement = Dataset::new("points", GeometryType::Polyline, vec![]);
+        replacement.push(Some(Geometry::Line(vec![vec![Coord::new(1.0, 2.0), Coord::new(3.0, 4.0)]])), vec![]);
+        let target = io::GpkgTable { mode: io::GpkgMode::ReplaceTable, name: Some("points".into()) };
+        gpkg::write_table_in(&replacement, &path, Crs::LonLat, &target).unwrap();
+        let error = s.run("layer.reloadData", &json!({"layer": id})).unwrap_err();
+        assert!(error.contains("reload failed; existing data and configuration retained"), "{error}");
+        if editable {
+            assert!(error.contains("Correct the file and retry Reload Data, or add the table again with Add Data."), "{error}");
+            assert!(!error.contains("Repair Data Source"), "{error}");
+        } else {
+            assert!(error.contains("Retry Reload Data or use Repair Data Source."), "{error}");
+        }
+        assert_eq!(serde_json::to_value(s.map().layer(id).unwrap()).unwrap(), before);
+    }
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 /// `gp.threads` sets the shared count every place that starts threads for CPU work takes (#1562),

@@ -216,6 +216,8 @@ table is retained when available. Repair keeps the layer's identity and configur
 the project unsaved and can be undone or redone. A raster drawn with its own color table
 requires a replacement with a color table; incompatible rasters are rejected without changing
 the saved style.
+Vector repair also refuses a table containing only a different geometry family; for example,
+a Lines layer cannot be repaired to a points-only DuckDB table.
 If a tile archive is removed or reordered out of its captured slot while the dialog is open,
 the dialog closes rather than applying the replacement to another archive.
 It does not change embedded data, databases or web links. The web app cannot link to files
@@ -225,6 +227,78 @@ CLI and Python use the same commands: `layer.repairSource` with
 `{"layer":"Cities","path":"/data/towns.fgb"}` (and optional `"table"`), or `map.repairTiles`
 with `{"index":0,"path":"/data/tiles.pmtiles"}`. Tile archives can also be selected by
 `"name"` or catalog `"id"`.
+
+### Reload Data
+
+On the desktop, right-click a linked layer and choose **Reload Data**, beside **Repair Data
+Source…**. For the active layer, use **Data › Data Source › Reload Data**, or **Reload Data**
+in Command Search. Reload rereads the same local source, table or raster subdataset without
+adding other tables from its container. It retains the layer's name, identity, drawing order,
+group, visibility, opacity, styling, labels, filters and map camera.
+
+Supported targets are linked vectors, rasters (including time-following Zarr variables),
+GDAL/DuckDB file-backed layers and editable local GeoPackage tables. GDAL-linked File
+Geodatabases and Zarr folders can be reloaded manually. **This is manual reload only**:
+RustGIS does not detect or notify about changes on disk. Folder sources are not monitored;
+use Reload Data even when the folder's timestamp has not changed.
+Saved GDAL/DuckDB links reread their original selected table when restoring a disposable
+converted copy, including compatible empty tables. If the original cannot be read, RustGIS
+does not borrow another session's temporary conversion. A durable saved conversion outside the
+current cache can still open as a fallback, with one notice naming the original and its read
+error (or the layer count and first failure when several layers fall back). Losses found while
+converting a link again as a project opens (dropped Z or M values, clamped attributes) are
+reported once per kind, with a layer count. Counts are summed only when every layer's count is
+known and comparable; otherwise the notice identifies the first layer's count as its own, or
+reports an unknown total. Temporary reload folders left by a crash are cleaned up later, only
+when their lock file carries RustGIS's ownership marker and is unlocked after a 60-second grace
+period; folders RustGIS did not create are never removed, even in a shared cache folder.
+Reloading an existing DuckDB branch that has lost all its rows installs an empty layer of the
+same geometry family, even when rows of another family remain; the omitted rows are reported.
+
+Reload does not turn snapshots into live links. Embedded uploads, generated layers, ordinary
+imports without linked provenance, arbitrary SQL results and layers detached by **Load All
+Features** must be added again. A source name in a snapshot's history is not a live link.
+Server databases and remote URLs use their separate discard/refresh actions. The web app
+cannot reread a local file; add the file again with **Add Data**.
+
+For an editable GeoPackage with pending inserts, updates or deletions, reload first shows
+their counts. **Cancel** keeps the edits; **Discard Edits and Reload** explicitly abandons
+them and rereads the selected table, without writing to the file. A successful reload updates
+the baseline used to detect conflicts when subsequently saving edits.
+Close an already-open dialog before opening the discard confirmation; Reload Data does not
+discard another dialog's unfinished input.
+
+The desktop UI prepares the read or conversion in the background, with running status and
+Cancel in the status bar. Cancel installs nothing. If the source is repaired or the target is
+replaced, or GeoPackage edits change after confirmation while a reload is waiting or running,
+the reload is refused; review the current state and confirm again.
+
+Reload checks a fresh candidate before replacing the layer. Incompatible geometry, missing
+fields, incompatible numeric fields used by presentation settings, invalidated configured
+expressions, missing tables/subdatasets and insufficient raster bands or palettes are rejected.
+Saved labeling configuration is checked even when labels are disabled. A time-following Zarr
+replacement whose dates cannot be reached by any step of the current slider is rejected: adjust
+the slider and retry; reload does not silently change the shared slider for other layers.
+An unreadable or missing source leaves the existing configuration and retained in-memory data
+in place; correct the file and retry, or use **Repair Data Source…** if it moved.
+For streamed sources these opening and compatibility checks are not a full-file integrity scan.
+A streamed source may itself already be affected by an external overwrite: its retained handle
+is not a complete last-good copy.
+
+Replacing vector features resets selections and saved feature-specific label moves because
+feature IDs may now identify different data. It also clears map-wide label locks and line
+anchors: keeping a partial lock could hide the replacement's labels. Notices count reset saved
+moves, locked placements and anchors, including placements belonging to other layers, and
+report loader losses. Successful reload is one undo step; failure adds none.
+Undo restores in-memory edits and configuration, including saved label moves and locks, but
+cannot recover overwritten files or promise historical streamed features or pixels.
+
+CLI, Python, MCP and the Assistant use `layer.reloadData` with
+`{"layer":"Cities","discardEdits":false}`. Both parameters are optional: the active layer is
+the default and discarding edits defaults to false. Only an explicit
+`"discardEdits":true` permits losing pending GeoPackage edits. Success returns, for example,
+`{"layer":42,"path":"/data/cities.fgb","table":null}`; `table` is a string for a selected table
+or raster subdataset.
 
 ## Keyboard shortcuts
 

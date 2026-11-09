@@ -56,6 +56,15 @@ pub struct SourceLayer {
     pub embedded: Option<Arc<Vec<u8>>>,
     #[serde(skip)]
     handle: Option<Arc<dyn FeatureSource>>,
+    /// Runtime metadata from a fresh provenance conversion, including its loader diagnostics.
+    #[serde(skip)]
+    conversion_info: Option<SourceInfo>,
+    /// A successful saved-conversion fallback, consumed once when the project opens.
+    #[serde(skip)]
+    conversion_fallback: Option<String>,
+    /// Losses from a conversion actually performed while opening, consumed once by its caller.
+    #[serde(skip)]
+    conversion_notes_unsaid: Vec<String>,
     #[serde(skip)]
     window: Option<Window>,
     /// Whole-source thinning decisions shared by render snapshots, independent of view rows.
@@ -412,6 +421,19 @@ impl std::fmt::Debug for SourceLayer {
     }
 }
 
+/// Ordinary conversions live directly in the provider's reusable cache. Other linked copies
+/// (including reader-owned workspaces) must not borrow another source's artifact lifetime.
+#[cfg(not(target_arch = "wasm32"))]
+fn persistent_conversion(path: &std::path::Path, cache: Option<std::path::PathBuf>) -> bool {
+    if rustgis_data::source::gdal::ReloadWorkspace::contains_file(path) {
+        return false;
+    }
+    path.parent()
+        .and_then(|p| p.canonicalize().ok())
+        .zip(cache.and_then(|p| p.canonicalize().ok()))
+        .is_some_and(|(parent, cache)| parent == cache)
+}
+
 /// Converts a DuckDB layer's table again: the result's part of the layer's geometry family.
 /// A query is never run again here: a project file is hostile input, and a query can read any file
 /// and send it to any address. Its user runs it again.
@@ -594,6 +616,9 @@ impl SourceLayer {
         }
         let mut new =
             SourceLayer { shapefile_crs: self.shapefile_crs, limit: self.limit, byte_budget: self.byte_budget, ..Default::default() };
+        let mut conversion_notes = Vec::new();
+        let declared_empty;
+        let conversion_zm_dropped;
         if let Some(g) = &self.gdal {
             #[cfg(target_arch = "wasm32")]
             {
@@ -603,10 +628,15 @@ impl SourceLayer {
             #[cfg(not(target_arch = "wasm32"))]
             {
                 let layer = table.unwrap_or(&g.layer);
-                let fresh = rustgis_data::source::gdal::convert_one(std::path::Path::new(path), layer, g.family, g.crs.as_deref())
-                    .map_err(|e| format!("{path}: {e}"))?
-                    .ok_or_else(|| format!("{path}: {layer} has no features"))?;
-                new.path = Some(fresh.display().to_string());
+                let fresh = rustgis_data::source::gdal::convert_one_fresh(std::path::Path::new(path), layer, g.family, g.crs.as_deref())
+                    .map_err(|e| format!("{path}: {e}"))?;
+                conversion_notes = fresh.notes;
+                declared_empty = fresh.empty;
+                conversion_zm_dropped = fresh.zm_dropped;
+                new.path = Some(fresh.path.display().to_string());
+                let handle = rustgis_data::source::fgb::FgbSource::open_owned_path(&fresh.path, layer, fresh.workspace)
+                    .map_err(|e| format!("{path}: {e}"))?;
+                new.handle = Some(Arc::new(handle));
                 new.gdal = Some(GdalOrigin { path: path.into(), layer: layer.into(), ..g.clone() });
             }
         } else if let Some(d) = &self.duckdb {
@@ -619,10 +649,31 @@ impl SourceLayer {
             {
                 let d =
                     DuckdbOrigin { database: Some(path.into()), table: table.map(String::from).or_else(|| d.table.clone()), ..d.clone() };
-                new.path = Some(rerun(&d).map_err(|e| format!("{path}: {e}"))?.display().to_string());
+                use rustgis_data::source::duckdb;
+                let database = duckdb::Database::File(path.into());
+                let name = d.table.as_deref().ok_or_else(|| format!("{path}: the DuckDB layer has no table"))?;
+                let table = duckdb::find_table_of(&database, name).map_err(|e| format!("{path}: {e}"))?;
+                let fresh = duckdb::convert_table_fresh(std::path::Path::new(path), &table, d.family, d.crs.as_deref())
+                    .map_err(|e| format!("{path}: {e}"))?;
+                let out = fresh.output;
+                if out.skipped > 0 {
+                    conversion_notes.push(format!("DuckDB: {} rows without a geometry were left out", out.skipped));
+                }
+                if out.other_family > 0 {
+                    conversion_notes.push(format!("DuckDB: {} rows of another geometry type were left out", out.other_family));
+                }
+                let part = out.parts.first().ok_or_else(|| format!("{path}: the table returns no {}", d.family.label()))?;
+                declared_empty = part.count == 0;
+                new.path = Some(part.path.display().to_string());
+                let handle = rustgis_data::source::parquet::ParquetSource::open_owned_path(&part.path, name, fresh.workspace)
+                    .map_err(|e| format!("{path}: {e}"))?;
+                new.handle = Some(Arc::new(handle));
+                conversion_zm_dropped = false;
                 new.duckdb = Some(d);
             }
         } else {
+            declared_empty = false;
+            conversion_zm_dropped = false;
             new.path = Some(path.into());
             new.table = table.map(String::from).or_else(|| self.table.clone());
             if path.to_ascii_lowercase().ends_with(".gpkg")
@@ -639,7 +690,43 @@ impl SourceLayer {
                 }
             }
         }
-        new.open().map_err(|e| format!("{path}: {e}"))?;
+        if new.handle.is_none() {
+            new.open().map_err(|e| format!("{path}: {e}"))?;
+        }
+        // Opening a header alone doesn't establish that its payload is readable. Probe the
+        // candidate, never the live source, before the caller commits the replacement.
+        let handle = new.handle.as_deref().ok_or_else(|| format!("{path}: the replacement source didn't open"))?;
+        let probe = handle.read(&Request { extent: None, limit: 1 }).map_err(|e| format!("{path}: {e}"))?;
+        if probe.features.is_empty() && probe.skipped > 0 {
+            return Err(format!(
+                "{path}: no readable features found while checking the replacement ({} rows could not be read)",
+                probe.skipped
+            ));
+        }
+        if probe.skipped > 0 {
+            conversion_notes.push(format!("{} rows could not be read while checking the replacement", probe.skipped));
+        }
+        if let Some(info) = new.info() {
+            let mut info = info.clone();
+            info.notes.extend(conversion_notes);
+            info.zm_dropped |= conversion_zm_dropped;
+            if declared_empty && probe.complete && probe.features.is_empty() && probe.skipped == 0 {
+                info.count = Some(0);
+            }
+            // Empty GeoParquet has no observed geometry_types. Only an actual, complete zero-row
+            // conversion may inherit its selected family's declaration.
+            if info.count == Some(0)
+                && info.geometry_type == rustgis_data::GeometryType::None
+                && let Some(d) = &new.duckdb
+            {
+                info.geometry_type = match d.family {
+                    rustgis_data::source::Family::Points => rustgis_data::GeometryType::Point,
+                    rustgis_data::source::Family::Lines => rustgis_data::GeometryType::Polyline,
+                    rustgis_data::source::Family::Polygons => rustgis_data::GeometryType::Polygon,
+                };
+            }
+            new.conversion_info = Some(info);
+        }
         Ok(new)
     }
 
@@ -705,9 +792,35 @@ impl SourceLayer {
         }
     }
 
+    /// Installs only a successfully opened provenance conversion, preserving this layer's
+    /// settings and read generation while discarding state belonging to its previous reader.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn restored_conversion(&mut self, candidate: Result<SourceLayer, String>) -> Result<(), String> {
+        match candidate {
+            Ok(new) => {
+                self.path = new.path;
+                self.handle = new.handle;
+                self.conversion_info = new.conversion_info;
+                self.conversion_notes_unsaid = self.conversion_info.as_ref().map(|info| info.notes.clone()).unwrap_or_default();
+                self.opening = None;
+                self.reset();
+                self.error = None;
+                self.login = false;
+                Ok(())
+            }
+            Err(e) => {
+                self.error = Some(e.clone());
+                self.login = false;
+                Err(e)
+            }
+        }
+    }
+
     /// Opens the source again (after a project loads). A source by its web address is opened off
     /// the frame: `Ok` while it is (see [`SourceLayer::is_pending`]), open once it has landed.
     pub fn open(&mut self) -> Result<(), String> {
+        self.conversion_fallback = None;
+        self.conversion_notes_unsaid.clear();
         rustgis_data::source::remote::check_still(&rustgis_data::source::remote::current_still())?;
         if self.reconnect_required {
             self.error = Some(RECONNECT_REQUIRED.into());
@@ -716,6 +829,8 @@ impl SourceLayer {
         if let Some(url) = self.path.clone().filter(|p| rustgis_data::source::is_remote_name(p)) {
             return self.open_remote(&url);
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        let mut saved_conversion_note = None;
         let src = if let Some(pg) = &self.postgis {
             open_postgis(pg)
         } else if let Some(my) = &self.mysql {
@@ -726,6 +841,36 @@ impl SourceLayer {
             let name = self.file_name.as_deref().unwrap_or("layer.parquet");
             rustgis_data::source::open_shared(name, bytes.clone(), self.table.as_deref())
         } else if let Some(p) = &self.path {
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let path = std::path::Path::new(p);
+                if let Some(g) = &self.gdal
+                    && (!path.exists() || !persistent_conversion(path, rustgis_data::source::gdal::cache_dir()))
+                {
+                    let candidate = self.relinked(&g.path, None);
+                    if candidate.is_ok() || !path.exists() || rustgis_data::source::gdal::ReloadWorkspace::contains_file(path) {
+                        return self.restored_conversion(candidate);
+                    }
+                    if let Err(error) = candidate {
+                        saved_conversion_note = Some(format!("re-reading {} failed ({error}); showing the saved conversion", g.path));
+                    }
+                }
+                if let Some(d) = &self.duckdb
+                    && d.sql.is_none()
+                    && d.table.is_some()
+                    && let Some(database) = &d.database
+                    && matches!(rustgis_data::source::duckdb::Database::parse(database), rustgis_data::source::duckdb::Database::File(_))
+                    && (!path.exists() || !persistent_conversion(path, rustgis_data::source::duckdb::cache_dir()))
+                {
+                    let candidate = self.relinked(database, None);
+                    if candidate.is_ok() || !path.exists() || rustgis_data::source::duckdb::ReloadWorkspace::contains_file(path) {
+                        return self.restored_conversion(candidate);
+                    }
+                    if let Err(error) = candidate {
+                        saved_conversion_note = Some(format!("re-reading {database} failed ({error}); showing the saved conversion"));
+                    }
+                }
+            }
             #[cfg(not(target_arch = "wasm32"))]
             let overridden = self.shapefile_crs.filter(|_| p.to_ascii_lowercase().ends_with(".shp"));
             let opened = {
@@ -740,44 +885,32 @@ impl SourceLayer {
                 #[cfg(target_arch = "wasm32")]
                 rustgis_data::source::open_path(std::path::Path::new(p), self.table.as_deref())
             };
-            match (opened, &self.gdal) {
-                // The converted copy is gone (a cleared cache, another machine): convert again.
+            match (opened, &self.duckdb) {
+                // Queries and server origins retain their existing restoration restrictions.
                 #[cfg(not(target_arch = "wasm32"))]
-                // (Only when it is missing: a copy that's there but unreadable is reported as is.)
-                (Err(_), Some(g)) if !std::path::Path::new(p).exists() => {
-                    match rustgis_data::source::gdal::convert_one(std::path::Path::new(&g.path), &g.layer, g.family, g.crs.as_deref()) {
-                        Ok(Some(fresh)) => {
-                            let r = rustgis_data::source::open_path(&fresh, None);
-                            if r.is_ok() {
-                                self.path = Some(fresh.display().to_string());
-                            }
-                            r
+                (Err(_), Some(d)) if !std::path::Path::new(p).exists() => match rerun(d) {
+                    Ok(fresh) => {
+                        let r = rustgis_data::source::open_path(&fresh, None);
+                        if r.is_ok() {
+                            self.path = Some(fresh.display().to_string());
                         }
-                        Ok(None) => Err(rustgis_data::DataError::Format(format!("{}: the layer has no features", g.path))),
-                        Err(e) => Err(e),
+                        r
                     }
-                }
-                (r, _) => match (r, &self.duckdb) {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    (Err(_), Some(d)) if !std::path::Path::new(p).exists() => match rerun(d) {
-                        Ok(fresh) => {
-                            let r = rustgis_data::source::open_path(&fresh, None);
-                            if r.is_ok() {
-                                self.path = Some(fresh.display().to_string());
-                            }
-                            r
-                        }
-                        Err(e) => Err(e),
-                    },
-                    (r, _) => r,
+                    Err(e) => Err(e),
                 },
+                (r, _) => r,
             }
         } else {
             return Err("the layer has no source".into());
         };
         match src {
             Ok(s) => {
+                self.conversion_info = None;
                 self.handle = Some(Arc::from(s));
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    self.conversion_fallback = saved_conversion_note;
+                }
                 self.window = None;
                 self.error = None;
                 self.login = false;
@@ -931,7 +1064,17 @@ impl SourceLayer {
     }
 
     pub fn info(&self) -> Option<&SourceInfo> {
-        self.handle.as_deref().map(|h| h.info())
+        self.conversion_info.as_ref().or_else(|| self.handle.as_deref().map(|h| h.info()))
+    }
+
+    /// Takes the original-read failure once, only when a saved conversion opened instead.
+    pub fn take_conversion_fallback(&mut self) -> Option<String> {
+        self.conversion_fallback.take()
+    }
+
+    /// Takes diagnostics only from a fresh conversion performed by [`Self::open`].
+    pub fn take_conversion_notes(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.conversion_notes_unsaid)
     }
 
     /// Every feature of the source, up to the read limit (a source by its web address fetching
@@ -1296,6 +1439,9 @@ impl SourceLayer {
             reconnect_required: _,
             limit: _,
             reads: _,
+            conversion_info: _,
+            conversion_fallback: _,
+            conversion_notes_unsaid: _,
             gdal,
             duckdb,
             postgis,
@@ -1354,6 +1500,30 @@ impl SourceLayer {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn conversion_fallback_is_runtime_only_and_taken_once() {
+        let note = "re-reading original failed (missing); showing the saved conversion";
+        let mut source = super::SourceLayer { conversion_fallback: Some(note.into()), ..Default::default() };
+        let saved = serde_json::to_value(&source).unwrap();
+        assert!(saved.get("conversion_fallback").is_none());
+        let mut restored: super::SourceLayer = serde_json::from_value(saved).unwrap();
+        assert!(restored.take_conversion_fallback().is_none());
+        assert_eq!(source.take_conversion_fallback().as_deref(), Some(note));
+        assert!(source.take_conversion_fallback().is_none());
+    }
+
+    #[test]
+    fn opening_conversion_notes_are_runtime_only_and_taken_once() {
+        let note = "GDAL: 2 features of another geometry type were left out";
+        let mut source = super::SourceLayer { conversion_notes_unsaid: vec![note.into()], ..Default::default() };
+        let saved = serde_json::to_value(&source).unwrap();
+        assert!(saved.get("conversion_notes_unsaid").is_none());
+        let mut restored: super::SourceLayer = serde_json::from_value(saved).unwrap();
+        assert!(restored.take_conversion_notes().is_empty());
+        assert_eq!(source.take_conversion_notes(), vec![note]);
+        assert!(source.take_conversion_notes().is_empty());
+    }
+
     /// A later frame's whole-file fallback owns the opening's carrier through send and landing.
     #[test]
     fn permission_policy_opening_fallback_retains_owner_outside_ambient_context() {

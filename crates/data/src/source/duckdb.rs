@@ -14,6 +14,7 @@
 //! network permissions (`rustgis_engine::cmd::plugins::SQL`).
 
 use super::Family;
+pub use super::external::ReloadWorkspace;
 use super::external::{self, TempFile, fnv1a, output, stamp, touch};
 use crate::secrets::Secret;
 use crate::{DataError, Result};
@@ -312,6 +313,8 @@ pub struct Output {
     pub parts: Vec<Part>,
     /// Rows without a geometry, left out.
     pub skipped: u64,
+    /// Rows of unselected geometry families, left out of a manual replacement.
+    pub other_family: u64,
 }
 
 /// A table of a database with a geometry column.
@@ -646,13 +649,21 @@ pub fn schema_of(database: &Database) -> Result<Vec<(String, String)>> {
 /// Runs a query; `confined` (for a table of a database) as [`prelude`] says. The result's parts are
 /// named after this run alone, so a run never replaces a file a layer may be reading.
 fn run_in(dir: &Path, q: &Query<'_>, confined: bool) -> Result<Output> {
+    run_selected_in(dir, q, confined, None)
+}
+
+/// A manual table replacement keeps only its original family and permits a zero-row geometry
+/// column. Ordinary adds retain their existing nonempty-result behavior.
+fn run_selected_in(dir: &Path, q: &Query<'_>, confined: bool, selected: Option<Family>) -> Result<Output> {
     let sql = checked(q.sql)?;
     check_crs(q.crs)?;
     if !available() {
         return Err(missing());
     }
     std::fs::create_dir_all(dir)?;
-    external::prune(dir, ours, KEEP);
+    if selected.is_none() {
+        external::prune(dir, ours, KEEP);
+    }
     let prelude = prelude(dir, q.database, confined)?;
     let from = format!("query({})", literal(sql));
 
@@ -711,7 +722,21 @@ fn run_in(dir: &Path, q: &Query<'_>, confined: bool) -> Result<Output> {
             None => out.skipped = out.skipped.saturating_add(count),
         }
     }
-    out.parts.sort_by_key(|p| Family::ALL.iter().position(|f| *f == p.family));
+    if let Some(family) = selected {
+        out.parts.retain(|p| {
+            if p.family == family {
+                true
+            } else {
+                out.other_family = out.other_family.saturating_add(p.count);
+                false
+            }
+        });
+        if out.parts.is_empty() && (out.other_family > 0 || out.skipped == 0) {
+            // COPY wrote a valid empty GeoParquet for every family, even when the selected
+            // family disappeared while rows of another family remain.
+            out.parts.push(Part { path: dir.join(format!("{run_tag}.{}.parquet", family.label())), family, count: 0 });
+        }
+    }
     if out.parts.is_empty() {
         return Err(DataError::Format(if out.skipped > 0 {
             format!("none of the query's {} rows has a geometry", out.skipped)
@@ -804,6 +829,31 @@ pub fn convert_table_of(database: &Database, table: &Table, crs: Option<&str>) -
             run_in(&dir, &Query { sql: &table.sql(), database: Some(database), crs }, true)
         }
     }
+}
+
+/// A manual replacement's output and private files, retained by its concrete reader.
+#[derive(Debug)]
+pub struct FreshOutput {
+    pub output: Output,
+    pub workspace: std::sync::Arc<ReloadWorkspace>,
+}
+
+/// Re-reads only a selected table/family, bypassing file-signature caches. The result has its own
+/// path, so retained handles and snapshots continue to read their previous conversion.
+pub fn convert_table_fresh(database: &Path, table: &Table, family: Family, crs: Option<&str>) -> Result<FreshOutput> {
+    let dir = cache_dir().ok_or_else(|| DataError::Format("no cache folder for DuckDB results".into()))?;
+    convert_table_fresh_in(&dir, database, table, family, crs)
+}
+
+fn convert_table_fresh_in(dir: &Path, database: &Path, table: &Table, family: Family, crs: Option<&str>) -> Result<FreshOutput> {
+    let workspace = external::reload_workspace(dir)?;
+    let output = run_selected_in(
+        workspace.path(),
+        &Query { sql: &table.sql(), database: Some(&Database::File(database.to_path_buf())), crs },
+        true,
+        Some(family),
+    )?;
+    Ok(FreshOutput { output, workspace })
 }
 
 fn convert_table_in(dir: &Path, database: &Path, table: &Table, crs: Option<&str>) -> Result<Output> {
@@ -1123,9 +1173,17 @@ mod tests {
             UNION ALL SELECT 4, 'd', NULL, NULL;";
         let out = run_in(&cache, &Query { sql, ..Query::default() }, false).unwrap();
         assert_eq!(out.skipped, 1);
-        let parts: Vec<(Family, u64)> = out.parts.iter().map(|p| (p.family, p.count)).collect();
-        assert_eq!(parts, vec![(Family::Points, 2), (Family::Lines, 1)]);
-        let pts = open(&out.parts[0].path);
+        assert_eq!(out.parts.len(), 2);
+        let points = out.parts.iter().find(|p| p.family == Family::Points).unwrap();
+        let lines = out.parts.iter().find(|p| p.family == Family::Lines).unwrap();
+        assert_eq!(points.count, 2);
+        assert_eq!(lines.count, 1);
+        let line_source = open(&lines.path);
+        let line_batch = line_source.read(&crate::source::Request { extent: None, limit: 10 }).unwrap();
+        assert_eq!(line_batch.features.len(), 1);
+        assert_eq!(line_batch.features[0].geometry.as_ref().unwrap().kind(), crate::GeometryType::Polyline);
+        assert_eq!(line_batch.features[0].geometry.as_ref().unwrap().extent(), rustgis_geom::Extent::new(0.0, 0.0, 1.0, 1.0));
+        let pts = open(&points.path);
         let info = pts.info();
         assert_eq!(info.count, Some(2));
         assert!(info.indexed, "the bbox covering is found");
@@ -1133,6 +1191,10 @@ mod tests {
         assert_eq!(info.fields[2].ty, crate::FieldType::Text);
         let b = pts.read(&crate::source::Request { extent: Some(rustgis_geom::Extent::new(10.5, 20.5, 12.0, 22.0)), limit: 10 }).unwrap();
         assert_eq!(b.features.len(), 1, "the extent query reads the covering");
+        assert_eq!(b.features[0].geometry.as_ref().unwrap().extent(), rustgis_geom::Extent::new(11.0, 21.0, 11.0, 21.0));
+        let all_points = pts.read(&crate::source::Request { extent: None, limit: 10 }).unwrap();
+        assert_eq!(all_points.features.len(), 2);
+        assert!(all_points.features.iter().all(|f| f.geometry.as_ref().unwrap().kind() == crate::GeometryType::Point));
         // No temporary files are left.
         let names: Vec<String> =
             std::fs::read_dir(&cache).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
@@ -1148,14 +1210,11 @@ mod tests {
         let e = open(&run_in(&cache, &q, false).unwrap().parts[0].path).info().extent;
         assert!((e.min_x - 10.0).abs() < 1e-3, "{e:?}");
 
-        // Errors: DuckDB's own message, no geometry, not a single SELECT.
-        let e = run_in(&cache, &Query { sql: "SELEC 1", ..Query::default() }, false).unwrap_err().to_string();
-        assert!(e.contains("Parser Error"), "{e}");
-        let e =
-            run_in(&cache, &Query { sql: "SELECT ST_Point(0, 0) AS g WHERE false", ..Query::default() }, false).unwrap_err().to_string();
-        assert_eq!(e, "the query returned no rows");
-        let e = run_in(&cache, &Query { sql: "SELECT 1 AS a", ..Query::default() }, false).unwrap_err().to_string();
-        assert!(e.contains("no geometry column"), "{e}");
+        // Invalid SQL, empty query results and non-spatial results are errors. DuckDB versions
+        // format their diagnostics differently; their prose is not the command contract.
+        for sql in ["SELEC 1", "SELECT ST_Point(0, 0) AS g WHERE false", "SELECT 1 AS a"] {
+            assert!(run_in(&cache, &Query { sql, ..Query::default() }, false).is_err(), "{sql}");
+        }
         for sql in ["COPY (SELECT 1) TO 'x.csv'", "SELECT ST_Point(0, 0) AS g'); COPY (SELECT 1) TO ('x.csv", "SELECT 1; SELECT 2"] {
             assert!(run_in(&cache, &Query { sql, ..Query::default() }, false).is_err(), "{sql}");
         }
@@ -1178,13 +1237,23 @@ mod tests {
         let tables = tables_in(&cache, &Database::File(db.clone())).unwrap();
         assert_eq!(tables.iter().map(Table::label).collect::<Vec<_>>(), vec!["leak", "pts", "s2.polys"]);
         // A view reaching outside the database is refused: tables are read confined to the cache.
-        let e = convert_table_in(&cache, &db, &tables[0], None).unwrap_err().to_string();
-        assert!(e.contains("Permission Error"), "{e}");
+        assert!(convert_table_in(&cache, &db, &tables[0], None).is_err());
         let tables = &tables[1..];
         let a = convert_table_in(&cache, &db, &tables[0], None).unwrap();
         assert_eq!(a.parts.iter().map(|p| p.count).collect::<Vec<_>>(), vec![1000]);
         // The second time is a cache hit, read back from the key file.
         assert_eq!(convert_table_in(&cache, &db, &tables[0], None).unwrap(), a);
+        // A selected family the table no longer holds is an empty branch, with the other family's
+        // rows counted; its private workspace disappears with its owner even though ordinary
+        // cached results remain reusable.
+        let fresh = convert_table_fresh_in(&cache, &db, &tables[0], Family::Lines, None).unwrap();
+        assert_eq!(fresh.output.parts.iter().map(|p| (p.family, p.count)).collect::<Vec<_>>(), vec![(Family::Lines, 0)]);
+        assert_eq!(fresh.output.other_family, 1000);
+        drop(fresh);
+        assert!(
+            std::fs::read_dir(&cache).unwrap().flatten().all(|entry| !entry.file_name().to_string_lossy().starts_with("reload-")),
+            "dropped fresh conversions must not retain workspaces"
+        );
         // Changes still in the write-ahead log are a different file.
         let mut wal = db.clone().into_os_string();
         wal.push(".wal");

@@ -370,33 +370,10 @@ pub(crate) fn add_raster_after(s: &mut Session, name: &str, mut layer: RasterLay
         unique = format!("{name} ({i})");
     }
     let (w, h, n, overview) = layer.data.as_ref().map(|d| (d.width, d.height, d.band_count(), d.overview)).unwrap_or_default();
-    // What reading it left out (a colour table, names), said once the layer has its name.
-    let rounded = layer.data.as_deref().and_then(rounded_count);
-    // Said here for pixels added with the layer; for those landing later, by `notice_landed_rasters`.
-    let lost = layer.lost_unsaid();
-    let unsaid = layer.pixels_unsaid();
-    // Read in place, the map shows the full image as it draws, but statistics and tools read the
-    // overview held: said so.
-    let held = unsaid.filter(|_| layer.in_place).and_then(|d| crate::in_place_overview(&d));
-    let in_place = layer.in_place;
+    read_notices(s, &unique, &mut layer);
     let empty_before = super::map_is_empty(s);
     let id = s.map_mut().add_raster(unique.clone(), layer);
     s.active_layer = Some(id);
-    // Read in place, its own notice says the overview it holds (`held`); the result names the full
-    // size all the same.
-    if let Some((fw, fh)) = overview.filter(|_| !in_place) {
-        s.notify(format!("{unique}: showing a {w} × {h} overview of the {fw} × {fh} raster"), false);
-    }
-    for l in lost {
-        s.notify(format!("{unique}: {l}"), false);
-    }
-    if let Some(held) = held {
-        s.notify(format!("{unique}: {held}"), false);
-    }
-    if let Some(count) = rounded {
-        let held = "pixels are held as 32-bit floats, exact for whole numbers up to 16,777,216 and to about 7 significant digits";
-        s.notify(format!("{unique}: {count} rounded as the file was read: {held}, so an export writes the rounded values"), false);
-    }
     if zoom.unwrap_or(empty_before)
         && let Some(e) = s.map().layer(id).map(|l| l.extent())
     {
@@ -415,6 +392,29 @@ pub(crate) fn add_raster_after(s: &mut Session, name: &str, mut layer: RasterLay
         o.insert("overviewOf".into(), json!([fw, fh]));
     }
     Ok(v)
+}
+
+/// Discloses a newly read layer's losses once, whether added, reloaded or repaired.
+pub(super) fn read_notices(s: &mut Session, name: &str, layer: &mut RasterLayer) {
+    let lost = layer.lost_unsaid();
+    let pixels = layer.pixels_unsaid();
+    if let Some(r) = pixels.as_deref()
+        && let Some((fw, fh)) = r.overview.filter(|_| !layer.in_place)
+    {
+        s.notify(format!("{name}: showing a {} × {} overview of the {fw} × {fh} raster", r.width, r.height), false);
+    }
+    for loss in lost {
+        s.notify(format!("{name}: {loss}"), false);
+    }
+    if let Some(r) = pixels.as_deref() {
+        if let Some(held) = layer.in_place.then(|| crate::in_place_overview(r)).flatten() {
+            s.notify(format!("{name}: {held}"), false);
+        }
+        if let Some(count) = rounded_count(r) {
+            let held = "pixels are held as 32-bit floats, exact for whole numbers up to 16,777,216 and to about 7 significant digits";
+            s.notify(format!("{name}: {count} rounded as the file was read: {held}, so an export writes the rounded values"), false);
+        }
+    }
 }
 
 /// How many of a raster's values changed when read as 32-bit floats, as notices say it: "3 values

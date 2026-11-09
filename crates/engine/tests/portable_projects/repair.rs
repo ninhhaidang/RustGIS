@@ -279,8 +279,11 @@ fn replacing_source_resets_saved_label_moves_with_notice_and_undo() {
     assert!(s.map().layer(id).unwrap().labels.default.moved.is_empty());
     assert!(s.map().label_lock.is_none(), "old callout locks must not attach to replacement ids");
     let notices = s.notices_since(mark);
-    assert_eq!(notices.len(), 1);
-    assert!(notices[0].text.contains("1 saved label move(s) reset"));
+    let name = &s.map().layer(id).unwrap().name;
+    assert!(notices.iter().any(|n| n.text.contains("1 saved label move") && n.text.contains(name)));
+    assert!(notices.iter().any(|n| {
+        n.text.contains("1 locked label") && n.text.contains("0 line anchor") && n.text.contains(&s.map().name) && n.text.contains(name)
+    }));
     s.run("edit.undo", &json!({})).unwrap();
     assert_eq!(s.map().layer(id).unwrap().labels.default.moved[0].at, [12.0, 34.0]);
     s.run("edit.redo", &json!({})).unwrap();

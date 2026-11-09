@@ -64,6 +64,9 @@ pub struct RasterLayer {
     /// The initiating read's runtime lifetime, retained through queued application and retry.
     #[serde(skip)]
     read_still: Option<rustgis_data::source::remote::Still>,
+    /// Process-local opening identity; render and undo copies retain it, new reads do not.
+    #[serde(skip, default = "next_read_generation")]
+    read_generation: u64,
     /// The style is the file's own look once its pixels land (a layer added before they have;
     /// saved with a project saved before they did, so it opens in that look still).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -180,6 +183,28 @@ impl std::fmt::Debug for RasterLayer {
 }
 
 impl RasterLayer {
+    /// Whether a captured opening still owns the live source and any deferred address look.
+    pub fn same_opening(&self, other: &Self) -> bool {
+        self.read_generation == other.read_generation && self.restyle == other.restyle && self.look == other.look
+    }
+
+    /// Detaches a fully read replacement from the prior opening's pending reads and notices.
+    pub fn reset_replacement_read(&mut self) {
+        self.read_generation = next_read_generation();
+        self.masked = MaskedStats::default();
+        self.opening = None;
+        self.read_still = None;
+        self.restyle = false;
+        self.look = None;
+        self.pixels_said = false;
+        self.error_said = false;
+        self.failed_at = None;
+        self.failures = 0;
+        self.lost_said = false;
+        self.look_lost = None;
+        self.dropped.clear();
+    }
+
     /// Reads a replacement without silently changing the renderer or resetting its style.
     pub fn relinked(&self, path: &str, subdataset: Option<&str>) -> Result<RasterLayer, String> {
         if self.embedded.is_some() {
@@ -188,22 +213,14 @@ impl RasterLayer {
         if self.in_place {
             return Err("the raster is read in place by its address: add the address again to change it".into());
         }
+        if !crate::paths::is_local(path) {
+            return Err("give a raster file or Zarr store on this computer: web addresses aren't repaired here".into());
+        }
         let sub = subdataset.or(self.subdataset.as_deref());
         let r = rustgis_data::raster::read_path_with(std::path::Path::new(path), sub, self.crs.as_deref())
             .and_then(|r| placed(r, self.placement))
             .map_err(|e| format!("{path}: {e}"))?;
-        let need = self.style.renderer.bands().into_iter().max().map_or(1, |b| b.saturating_add(1));
-        if r.band_count() < need {
-            return Err(format!(
-                "{path} has {} band(s); the layer's style draws band {need}: choose a raster with at least {need} bands",
-                r.band_count()
-            ));
-        }
-        if matches!(self.style.renderer, RasterRenderer::Colormap) && !matches!(r.color, ColorHint::Palette(_)) {
-            return Err(format!(
-                "{path} has no color palette; the layer's Colormap style uses the file's palette: choose a raster with a color palette"
-            ));
-        }
+        self.validate_replacement(&r, path)?;
         let mut style = self.style.clone();
         style.repair(&r);
         Ok(RasterLayer {
@@ -221,6 +238,7 @@ impl RasterLayer {
             masked: MaskedStats::default(),
             opening: None,
             read_still: None,
+            read_generation: next_read_generation(),
             restyle: false,
             look: None,
             pixels_said: false,
@@ -231,6 +249,23 @@ impl RasterLayer {
             look_lost: None,
             dropped: Vec::new(),
         })
+    }
+
+    /// Checks a fresh candidate without changing the configured renderer or its palette.
+    pub fn validate_replacement(&self, r: &Raster, path: &str) -> Result<(), String> {
+        let need = self.style.renderer.bands().into_iter().max().map_or(1, |b| b.saturating_add(1));
+        if r.band_count() < need {
+            return Err(format!(
+                "{path} has {} band(s); the layer's style draws band {need}: choose a raster with at least {need} bands",
+                r.band_count()
+            ));
+        }
+        if matches!(self.style.renderer, RasterRenderer::Colormap) && !matches!(r.color, ColorHint::Palette(_)) {
+            return Err(format!(
+                "{path} has no color palette; the layer's Colormap style uses the file's palette: choose a raster with a color palette"
+            ));
+        }
+        Ok(())
     }
 
     /// A raster read from a file on disk.
@@ -251,6 +286,7 @@ impl RasterLayer {
             masked: MaskedStats::default(),
             opening: None,
             read_still: None,
+            read_generation: next_read_generation(),
             restyle: false,
             look: None,
             pixels_said: false,
@@ -281,6 +317,7 @@ impl RasterLayer {
             masked: MaskedStats::default(),
             opening: None,
             read_still: None,
+            read_generation: next_read_generation(),
             restyle: false,
             look: None,
             pixels_said: false,
@@ -316,6 +353,7 @@ impl RasterLayer {
             masked: MaskedStats::default(),
             opening: None,
             read_still: None,
+            read_generation: next_read_generation(),
             restyle: true,
             look: None,
             pixels_said: false,
@@ -416,6 +454,7 @@ impl RasterLayer {
             self.fail(e);
             return;
         }
+        self.read_generation = next_read_generation();
         if let Err(e) = remote::with_optional_still(still, || self.begin_in_place_read()) {
             self.land(Err(e));
         }
@@ -443,6 +482,7 @@ impl RasterLayer {
         use rustgis_data::source::remote;
         let still = remote::current_still();
         remote::check_still(&still)?;
+        self.read_generation = next_read_generation();
         self.read_still = still;
         self.opening = None;
         self.error = None;
@@ -695,7 +735,7 @@ pub const MAX_ZARR_STEPS: usize = crate::time::MAX_STEPS;
 
 /// A Zarr variable that follows the time slider: the store (a folder or a web address), the
 /// variable, the other dimensions' fixed steps, and its time dimension's steps as dates.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ZarrTime {
     /// The store's folder or web address.
@@ -717,6 +757,31 @@ pub struct ZarrTime {
     /// The step whose slice the layer holds (an index into `dates`); `None` when none is.
     #[serde(skip)]
     pub shown: Option<usize>,
+    /// Process-local read generation: explicit reload must not reuse old slices or pending reads.
+    #[serde(skip, default = "next_read_generation")]
+    pub read_generation: u64,
+}
+
+/// A process-local identity for a fresh Zarr opening or independent analysis invocation.
+pub fn next_read_generation() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+impl Default for ZarrTime {
+    fn default() -> Self {
+        Self {
+            store: String::new(),
+            variable: String::new(),
+            index: Vec::new(),
+            dim: String::new(),
+            offset: 0,
+            dates: Vec::new(),
+            crs: None,
+            shown: None,
+            read_generation: next_read_generation(),
+        }
+    }
 }
 
 fn is_zero(v: &u64) -> bool {
@@ -1612,6 +1677,7 @@ impl RasterLayer {
             masked: _,
             opening: _,
             read_still: _,
+            read_generation: _,
             in_place: _,
             restyle: _,
             look: _,
@@ -1627,7 +1693,9 @@ impl RasterLayer {
         if let Some(p) = path {
             out.push((crate::LayerRole::Raster, p.as_str(), true, embedded.is_none() && crate::paths::is_local(p)));
         }
-        if let Some(ZarrTime { store, variable: _, index: _, dim: _, offset: _, dates: _, crs: _, shown: _ }) = time_zarr {
+        if let Some(ZarrTime { store, variable: _, index: _, dim: _, offset: _, dates: _, crs: _, shown: _, read_generation: _ }) =
+            time_zarr
+        {
             out.push((crate::LayerRole::ZarrStore, store.as_str(), true, crate::paths::is_local(store)));
         }
         out
@@ -1724,6 +1792,7 @@ mod tests {
                 dates,
                 crs: None,
                 shown: Some(1),
+                read_generation: 0,
             };
             z.repair();
             z

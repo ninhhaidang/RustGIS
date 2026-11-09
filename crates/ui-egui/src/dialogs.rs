@@ -19,6 +19,8 @@ pub struct Dialogs {
     pub projection_map: Option<(u64, usize, String)>,
     pub geometry: Option<crate::geometrycalc::Form>,
     pub repair: Option<crate::repairsource::Form>,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub reload: Option<crate::reloaddata::Form>,
     pub open: Option<&'static str>,
     pub layer: String,
     /// GeoPackage save/discard targets use IDs because display names can repeat.
@@ -240,6 +242,11 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
     let Some(which) = app.dialogs.open else { return };
     if which == "calculateGeometry" {
         crate::geometrycalc::show(app, ctx);
+        return;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if which == "reloadData" {
+        crate::reloaddata::show(app, ctx);
         return;
     }
     if which == "repairSource" {

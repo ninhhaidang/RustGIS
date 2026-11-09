@@ -39,12 +39,23 @@ pub struct FgbSource {
     reproject: Reproject,
     /// The field each of the header's columns is read into, `None` for one left out (binary).
     slots: Vec<Option<usize>>,
+    /// Kept after the input so all readers close before the private workspace is removed.
+    #[cfg(not(target_arch = "wasm32"))]
+    _workspace: Option<Arc<super::gdal::ReloadWorkspace>>,
 }
 
 impl FgbSource {
     pub fn open_path(path: &Path, name: &str) -> Result<Self> {
         let f = BufReader::new(std::fs::File::open(path)?);
         Self::new(f, Input::Path(path.to_path_buf()), name)
+    }
+
+    /// Opens a private conversion, keeping its files alive for every shared reader.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn open_owned_path(path: &Path, name: &str, workspace: Arc<super::gdal::ReloadWorkspace>) -> Result<Self> {
+        let mut source = Self::open_path(path, name)?;
+        source._workspace = Some(workspace);
+        Ok(source)
     }
 
     pub fn open_bytes(bytes: Vec<u8>, name: &str) -> Result<Self> {
@@ -150,7 +161,14 @@ impl FgbSource {
         if h.has_z() || h.has_m() {
             info.drop_zm((count > 0).then_some(count));
         }
-        let mut src = FgbSource { info, input, reproject, slots };
+        let mut src = FgbSource {
+            info,
+            input,
+            reproject,
+            slots,
+            #[cfg(not(target_arch = "wasm32"))]
+            _workspace: None,
+        };
         if src.info.geometry_type == GeometryType::None {
             src.info.geometry_type = src.peek_kind();
         }

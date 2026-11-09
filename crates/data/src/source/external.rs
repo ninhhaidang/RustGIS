@@ -25,6 +25,72 @@ pub(crate) fn cache_dir(env: &str, sub: &str) -> Option<PathBuf> {
     crate::dirs::cache_dir().map(|b| b.join(sub))
 }
 
+const RELOAD_PREFIX: &str = "reload-";
+const RELOAD_OWNER_MARKER: &[u8] = b"RustGIS reload workspace v1\n";
+
+/// A private conversion directory and its live-owner lock. Close the lock before deleting the
+/// directory (including on Windows); concrete readers retain this owner until their last read.
+#[derive(Debug)]
+pub struct ReloadWorkspace {
+    _lock: std::fs::File,
+    dir: tempfile::TempDir,
+}
+
+impl ReloadWorkspace {
+    pub fn path(&self) -> &Path {
+        self.dir.path()
+    }
+
+    /// Whether a saved conversion belongs to a disposable workspace rather than a durable cache.
+    pub fn contains_file(path: &Path) -> bool {
+        path.parent().and_then(Path::file_name).is_some_and(|name| name.to_string_lossy().starts_with(RELOAD_PREFIX))
+    }
+}
+
+/// Reclaims a bounded number of crash-abandoned conversions before allocating a new workspace.
+pub(crate) fn reload_workspace(cache: &Path) -> std::io::Result<std::sync::Arc<ReloadWorkspace>> {
+    use std::io::{Read, Write};
+
+    std::fs::create_dir_all(cache)?;
+    if let Ok(entries) = std::fs::read_dir(cache) {
+        for entry in entries.take(4096).flatten() {
+            if !entry.file_name().to_string_lossy().starts_with(RELOAD_PREFIX) || !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                continue;
+            }
+            let path = entry.path();
+            let age = entry.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok());
+            // The creator installs owner.lock before locking it. A collector must not claim
+            // that unlocked file during installation; an unknown age is not safe to reclaim.
+            if !age.is_some_and(|age| age >= std::time::Duration::from_secs(60)) {
+                continue;
+            }
+            let lock_path = path.join("owner.lock");
+            let mut lock = match std::fs::File::options().read(true).write(true).open(&lock_path) {
+                Ok(lock) => lock,
+                Err(_) => continue,
+            };
+            // A matching name and age alone do not establish ownership in a shared cache.
+            // Read through the same handle we will lock, before Windows locks prevent reads.
+            let mut marker = [0; RELOAD_OWNER_MARKER.len()];
+            if lock.read_exact(&mut marker).is_err() || marker.as_slice() != RELOAD_OWNER_MARKER {
+                continue;
+            }
+            if lock.try_lock().is_ok() {
+                // Windows cannot remove an open lock file. No writer claims an existing
+                // workspace; once unlocked, only other collectors can race its removal.
+                drop(lock);
+                let _ = std::fs::remove_dir_all(path);
+            }
+        }
+    }
+    let dir = tempfile::Builder::new().prefix(RELOAD_PREFIX).tempdir_in(cache)?;
+    let mut lock = std::fs::File::options().read(true).write(true).create_new(true).open(dir.path().join("owner.lock"))?;
+    lock.try_lock().map_err(std::io::Error::other)?;
+    lock.write_all(RELOAD_OWNER_MARKER)?;
+    writeln!(lock, "{}", std::process::id())?;
+    Ok(std::sync::Arc::new(ReloadWorkspace { _lock: lock, dir }))
+}
+
 /// Runs a program, reading its output as it comes (so a chatty one can't block on a full pipe) and
 /// killing it if it runs past `timeout`. `what` names it in the timeout error.
 pub(crate) fn output(c: Command, timeout: std::time::Duration, what: &str) -> std::io::Result<std::process::Output> {
@@ -203,6 +269,79 @@ pub(crate) fn prune(dir: &Path, ours: fn(&str) -> bool, keep: std::time::Duratio
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn age_directory(path: &Path, seconds: u64) {
+        let mut options = std::fs::File::options();
+        options.read(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            options.access_mode(0x0100).custom_flags(0x0200_0000); // FILE_WRITE_ATTRIBUTES, FILE_FLAG_BACKUP_SEMANTICS.
+        }
+        options
+            .open(path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(seconds)))
+            .unwrap();
+    }
+
+    #[test]
+    fn reload_collection_preserves_a_new_unlocked_owner_lock_then_reclaims_it_after_grace() {
+        let cache = tempfile::tempdir().unwrap();
+        let abandoned = cache.path().join("reload-installing");
+        std::fs::create_dir(&abandoned).unwrap();
+        std::fs::write(abandoned.join("owner.lock"), RELOAD_OWNER_MARKER).unwrap();
+        std::fs::write(abandoned.join("converted.fgb"), b"saved conversion").unwrap();
+        let fresh = reload_workspace(cache.path()).unwrap();
+        assert!(abandoned.exists(), "the creator has 60 seconds to lock its newly installed lock file");
+        age_directory(&abandoned, 61);
+        let next = reload_workspace(cache.path()).unwrap();
+        assert!(!abandoned.exists(), "an old unlocked workspace is crash-abandoned");
+        assert!(fresh.path().exists() && next.path().exists(), "live owners remain untouched");
+    }
+
+    #[test]
+    fn reload_collection_keeps_old_unlocked_foreign_owner_locks_intact() {
+        let cache = tempfile::tempdir().unwrap();
+        let foreign = cache.path().join("reload-foreign");
+        std::fs::create_dir(&foreign).unwrap();
+        let lock_path = foreign.join("owner.lock");
+        std::fs::write(&lock_path, b"another application's workspace\n").unwrap();
+        let contents = foreign.join("not-rustgis.txt");
+        std::fs::write(&contents, b"unrelated data").unwrap();
+        age_directory(&foreign, 3601);
+
+        let live = reload_workspace(cache.path()).unwrap();
+
+        assert_eq!(std::fs::read(contents).unwrap(), b"unrelated data");
+        assert_eq!(std::fs::read(lock_path).unwrap(), b"another application's workspace\n");
+        // Read through the owner's own handle: on Windows its lock blocks reads through any other.
+        let mut marker = Vec::new();
+        let mut lock = &live._lock;
+        std::io::Seek::seek(&mut lock, std::io::SeekFrom::Start(0)).unwrap();
+        std::io::Read::read_to_end(&mut lock, &mut marker).unwrap();
+        assert!(marker.starts_with(RELOAD_OWNER_MARKER));
+        assert_eq!(&marker[RELOAD_OWNER_MARKER.len()..], format!("{}\n", std::process::id()).as_bytes());
+    }
+
+    #[test]
+    fn reload_collection_keeps_old_lockless_directories_intact_and_locked_workspaces() {
+        let cache = tempfile::tempdir().unwrap();
+        let missing = cache.path().join("reload-no-lock");
+        std::fs::create_dir(&missing).unwrap();
+        let contents = missing.join("not-rustgis.txt");
+        std::fs::write(&contents, b"unrelated data").unwrap();
+        age_directory(&missing, 61);
+        let live = reload_workspace(cache.path()).unwrap();
+        assert_eq!(std::fs::read(&contents).unwrap(), b"unrelated data");
+        assert!(!missing.join("owner.lock").exists(), "a collector must not claim an unowned directory");
+        age_directory(live.path(), 3601);
+        age_directory(&missing, 3601);
+        let _next = reload_workspace(cache.path()).unwrap();
+        assert_eq!(std::fs::read(&contents).unwrap(), b"unrelated data", "age does not establish RustGIS ownership");
+        assert!(!missing.join("owner.lock").exists(), "old lockless directories must remain untouched");
+        assert!(live.path().exists(), "even an old workspace belongs to its locked owner");
+    }
 
     #[test]
     fn workspace_budget_counts_source_output_and_nested_scratch() {

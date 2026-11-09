@@ -148,6 +148,12 @@ impl Symbol {
         }
     }
 
+    /// The seed whose `g` default this symbol is, untouched: a layer keeps its default when it is
+    /// copied or added from a layer file under another id, so any seed's default counts.
+    pub fn default_seed(&self, g: GeometryType) -> Option<u32> {
+        (0..LAYER_COLORS.len() as u32).find(|&seed| *self == Symbol::default_for(g, seed))
+    }
+
     pub fn with_fill(mut self, c: Rgba, g: GeometryType) -> Symbol {
         match g {
             GeometryType::Polyline => {

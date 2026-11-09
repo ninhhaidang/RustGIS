@@ -53,12 +53,23 @@ pub struct ParquetSource {
     exact: bool,
     /// The most rows read from one row group: `MAX_GROUP_ROWS`, lowered by tests.
     group_rows: usize,
+    /// Declared after `reader`: Windows must close its file before removing the workspace.
+    #[cfg(not(target_arch = "wasm32"))]
+    _workspace: Option<Arc<super::duckdb::ReloadWorkspace>>,
 }
 
 impl ParquetSource {
     pub fn open_path(path: &Path, name: &str) -> Result<Self> {
         let file = std::fs::File::open(path)?;
         Self::new(Arc::new(SerializedFileReader::new(file).map_err(err)?), name, None)
+    }
+
+    /// Opens a private conversion, keeping its files alive for every shared reader.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn open_owned_path(path: &Path, name: &str, workspace: Arc<super::duckdb::ReloadWorkspace>) -> Result<Self> {
+        let mut source = Self::open_path(path, name)?;
+        source._workspace = Some(workspace);
+        Ok(source)
     }
 
     pub fn open_bytes(bytes: Vec<u8>, name: &str) -> Result<Self> {
@@ -292,6 +303,8 @@ impl ParquetSource {
             remote,
             exact: false,
             group_rows: MAX_GROUP_ROWS,
+            #[cfg(not(target_arch = "wasm32"))]
+            _workspace: None,
         };
         if untyped {
             match src.peek_zm() {

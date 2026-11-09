@@ -24,6 +24,137 @@ fn pending(s: &Session, scope: &Scope, call: &Call) -> Pending {
     }
 }
 
+/// Reload's implicit local-file access uses the same grants as explicit file commands.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn permission_policy_reload_requires_file_authority_in_every_ingress() {
+    if isolate_process_test("tests::permission_policy::permission_policy_reload_requires_file_authority_in_every_ingress") {
+        return;
+    }
+    use crate::policy::{AgentAccess, Effect, command_effects};
+    let path = grid_fgb("policy-reload-grants", 2);
+    let mut s = Session::new(Project::default());
+    let id = s.run("layer.addData", &json!({"path":path,"stream":true})).unwrap()["layer"].as_u64().unwrap() as u32;
+    let params = json!({"layer":id});
+    let call = Call::command("layer.reloadData", params.clone());
+    assert!(command_effects(s.registry.get("layer.reloadData").unwrap(), &params).contains(Effect::Files));
+    let source = s.map().layer(id).unwrap().source.clone().unwrap();
+    let depth = s.undo_depth();
+    let (scope, _) = assistant(14770);
+    let approved = pending(&s, &scope, &call);
+    assert!(approved.review().steps.iter().any(|step| step.starts_with("layer.reloadData ")));
+    assert!(s.run_scoped(scope.clone(), &call).is_err());
+    assert!(s.map().layer(id).unwrap().source.as_ref().unwrap().same_opening(&source));
+    assert_eq!(s.undo_depth(), depth);
+    s.run_permitted(scope.clone(), approved.allow(), &call).unwrap();
+    assert!(!s.map().layer(id).unwrap().source.as_ref().unwrap().same_opening(&source));
+
+    let task = json!({"name":"Reload linked data","steps":[{"title":"Reload","command":"layer.reloadData","params":params}]});
+    s.run("task.new", &task).unwrap();
+    let task_call = Call::command("task.run", json!({"task":"Reload linked data"}));
+    let approved = pending(&s, &scope, &task_call);
+    assert!(s.run_scoped(scope.clone(), &task_call).is_err(), "a trusted task does not widen its assistant caller");
+    s.run_permitted(scope, approved.allow(), &task_call).unwrap();
+    let mut imported = task;
+    imported["name"] = json!("Imported reload");
+    imported["imported"] = json!(true);
+    s.run("task.new", &imported).unwrap();
+    let full = Scope::agent(AgentAccess::Full, false, "reload-imported-full", None, Arc::new(Live(AtomicBool::new(true))));
+    assert!(s.run_scoped(full, &Call::command("task.run", json!({"task":"Imported reload"}))).is_err());
+
+    plugin("policy-reload-edit", &["edit"]);
+    let source = s.map().layer(id).unwrap().source.clone().unwrap();
+    let error = forward(&mut s, "policy-reload-edit", "layer.reloadData", params.clone()).unwrap_err();
+    assert!(error.contains("'files' permission"), "{error}");
+    assert!(s.map().layer(id).unwrap().source.as_ref().unwrap().same_opening(&source));
+    plugin("policy-reload-files", &["edit", "files"]);
+    forward(&mut s, "policy-reload-files", "layer.reloadData", params.clone()).unwrap();
+    assert!(!s.map().layer(id).unwrap().source.as_ref().unwrap().same_opening(&source));
+    let source = s.map().layer(id).unwrap().source.clone().unwrap();
+    s.run("layer.reloadData", &params).unwrap();
+    assert!(!s.map().layer(id).unwrap().source.as_ref().unwrap().same_opening(&source), "native User dispatch remains trusted");
+    rustgis_plugins::unload("policy-reload-edit");
+    rustgis_plugins::unload("policy-reload-files");
+    std::fs::remove_file(path).unwrap();
+}
+
+/// Admission precedes preparation, and preparation itself cannot read a file before its worker.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn permission_policy_reload_preparation_requires_approval_before_file_work() {
+    use crate::cmd::reads::{read_ahead, read_land};
+    use crate::policy::AgentAccess;
+    use rustgis_analysis::control::Control;
+    let path = grid_fgb("policy-reload-preparation", 2);
+    let bytes = std::fs::read(&path).unwrap();
+    let mut s = Session::new(Project::default());
+    let id = s.run("layer.addData", &json!({"path":path,"stream":true})).unwrap()["layer"].as_u64().unwrap() as u32;
+    let params = json!({"layer":id});
+    let source = s.map().layer(id).unwrap().source.clone().unwrap();
+    let depth = s.undo_depth();
+    std::fs::remove_file(&path).unwrap();
+    let (scope, _) = assistant(14771);
+    let error = s.with_scope(scope, |s| read_ahead(s, "layer.reloadData", &params)).unwrap().err().unwrap();
+    assert!(error.contains("approval"), "{error}");
+    let refused = Scope::agent(AgentAccess::Refuse, false, "reload-refused", None, Arc::new(Live(AtomicBool::new(true))));
+    assert!(s.with_scope(refused, |s| read_ahead(s, "layer.reloadData", &params)).unwrap().is_err());
+    assert!(s.map().layer(id).unwrap().source.as_ref().unwrap().same_opening(&source));
+    assert_eq!(s.undo_depth(), depth);
+    // An authorized picker can capture its work while the file is absent; only the worker
+    // opens it, after publication below. An unapproved picker above cannot return any work.
+    let ahead = read_ahead(&mut s, "layer.reloadData", &params).unwrap();
+    assert!(ahead.reads());
+    std::fs::write(&path, bytes).unwrap();
+    read_land(&mut s, ahead.run(&Control::new()).unwrap()).unwrap();
+    assert!(!s.map().layer(id).unwrap().source.as_ref().unwrap().same_opening(&source));
+    std::fs::remove_file(path).unwrap();
+}
+
+/// A prepared reload retains its initiating scope and target through cancellation and delivery.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn permission_policy_reload_worker_keeps_its_owner_without_native_fallback() {
+    use crate::cmd::reads::{read_ahead, read_land};
+    use crate::policy::AgentAccess;
+    use rustgis_analysis::control::Control;
+    let path = grid_fgb("policy-reload-owner", 2);
+    let mut s = Session::new(Project::default());
+    let id = s.run("layer.addData", &json!({"path":path,"stream":true})).unwrap()["layer"].as_u64().unwrap() as u32;
+    let other = s.run("layer.addData", &json!({"path":path,"stream":true})).unwrap()["layer"].as_u64().unwrap() as u32;
+    let live = Arc::new(Live(AtomicBool::new(true)));
+    let scope = Scope::agent(AgentAccess::Allow, false, "reload-owner", None, live.clone());
+    let params = json!({"layer":id});
+    let source = s.map().layer(id).unwrap().source.clone().unwrap();
+    let depth = s.undo_depth();
+    let ahead = s.with_scope(scope.clone(), |s| read_ahead(s, "layer.reloadData", &params)).unwrap().unwrap();
+    live.0.store(false, Ordering::SeqCst);
+    assert!(ahead.run(&Control::new()).err().unwrap().contains("revoked"), "revocation refuses worker entry");
+    live.0.store(true, Ordering::SeqCst);
+    let ahead = s.with_scope(scope.clone(), |s| read_ahead(s, "layer.reloadData", &params)).unwrap().unwrap();
+    let control = Control::new();
+    control.cancel();
+    assert!(ahead.run(&control).err().unwrap().contains("cancelled"));
+    let read = s.with_scope(scope.clone(), |s| read_ahead(s, "layer.reloadData", &params)).unwrap().unwrap().run(&Control::new()).unwrap();
+    let (foreign, _) = assistant(14772);
+    assert!(s.with_scope(foreign, |s| read_land(s, read)).unwrap().unwrap_err().contains("another caller"));
+    let read = s.with_scope(scope.clone(), |s| read_ahead(s, "layer.reloadData", &params)).unwrap().unwrap().run(&Control::new()).unwrap();
+    live.0.store(false, Ordering::SeqCst);
+    assert!(read_land(&mut s, read).unwrap_err().contains("revoked"), "root delivery cannot replace the revoked owner");
+    assert!(s.map().layer(id).unwrap().source.as_ref().unwrap().same_opening(&source));
+    assert_eq!(s.undo_depth(), depth);
+    live.0.store(true, Ordering::SeqCst);
+    s.active_layer = Some(id);
+    let ahead = s.with_scope(scope.clone(), |s| read_ahead(s, "layer.reloadData", &json!({}))).unwrap().unwrap();
+    s.active_layer = Some(other);
+    let other_source = s.map().layer(other).unwrap().source.clone().unwrap();
+    let read = ahead.run(&Control::new()).unwrap();
+    s.with_scope(scope, |s| read_land(s, read)).unwrap().unwrap();
+    assert!(!s.map().layer(id).unwrap().source.as_ref().unwrap().same_opening(&source));
+    assert!(s.map().layer(other).unwrap().source.as_ref().unwrap().same_opening(&other_source));
+    assert_eq!(s.undo_depth(), depth + 1);
+    std::fs::remove_file(path).unwrap();
+}
+
 /// Training chooses its raster and polygons before a model exists; approval must use that branch.
 #[test]
 fn permission_policy_training_classification_binds_its_actual_inputs() {

@@ -496,6 +496,7 @@ fn import_maps(s: &mut Session, p: &Value) -> CmdResult {
     super::connections::resolve_project(s);
     crate::s3_connections::resolve_project_s3(s);
     s.wait_in_place_reads();
+    super::project::say_conversion_fallbacks(s);
     super::connections::note_waiting(s);
     if let Some(n) = names.last()
         && let Some(i) = s.project.maps.iter().position(|m| &m.name == n)

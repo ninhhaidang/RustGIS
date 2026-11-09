@@ -1,6 +1,6 @@
-//! Add Data's whole-file reads, Load All Features and a model's tools on the desktop run on a
-//! thread of their own (#1291 step 3), so a large raster, GeoJSON or table, a streamed layer
-//! loaded whole, or a long model doesn't hold the window: the status bar shows the run under way,
+//! Add Data's whole-file reads, layer reload, Load All Features and a model's tools on the desktop
+//! run on a thread of their own (#1291 step 3), so a large raster, GeoJSON or table, a streamed
+//! layer loaded whole, or a long model doesn't hold the window: the status bar shows the run under way,
 //! how far it has come and Cancel, and [`land`] then runs the command, which takes what was made
 //! ([`reads`]) and adds it as it does when it runs here. They go one at a time, in the order
 //! asked for: files dropped together wait for the one before, and so does a file added while one
@@ -25,8 +25,8 @@ pub struct Reads {
     waiting: VecDeque<Asked>,
 }
 
-/// A command asked for, with where it was asked: the project and map then open and, for Load All,
-/// the layer. Another project or map open by the time it runs, or the layer gone, leaves it.
+/// A command asked for, with where it was asked: the project, map and layer then open.
+/// A reload also retains its source and confirmed editable state until it lands.
 struct Asked {
     command: &'static str,
     params: Value,
@@ -37,6 +37,7 @@ struct Asked {
     opened: u64,
     map: u64,
     layer: Option<u64>,
+    reload: Option<crate::reloaddata::Form>,
     /// Given what the command answered when it runs, or why it didn't (cancelled, or left).
     then: Option<Then>,
 }
@@ -57,7 +58,7 @@ struct ReadJob {
     slot: crate::Slot<Result<reads::Read, String>>,
 }
 
-/// Runs `command` (`layer.addData`, `layer.loadAll`, `model.run` or `script.run`) with `p`: its
+/// Runs `command` (`layer.addData`, `layer.loadAll`, `layer.reloadData`, `model.run` or `script.run`) with `p`: its
 /// read on a thread of its own when the desktop app makes it so ([`reads::read_ahead`]), after
 /// any under way; here and now otherwise, as the command does. While one is under way or waiting
 /// it answers that, not what the command adds, which comes as it lands.
@@ -72,7 +73,7 @@ pub fn run_then(app: &mut RustGisApp, command: &'static str, mut p: Value, then:
         let r = app.run(command, p);
         return answered(app, then, r);
     }
-    let layer = (command == "layer.loadAll")
+    let layer = matches!(command, "layer.loadAll" | "layer.reloadData")
         .then(|| app.session.layer_id(&p).ok().and_then(|id| app.session.map().layer(id)).map(|l| (l.instance_id(), l.name.clone())))
         .flatten();
     let notice_mark = app.session.notice_mark();
@@ -98,9 +99,11 @@ pub fn run_then(app: &mut RustGisApp, command: &'static str, mut p: Value, then:
         }
     };
     // Load All asked again for a layer it is reading already.
-    if let Some((instance, _)) = &layer
+    if command == "layer.loadAll"
+        && let Some((instance, _)) = &layer
         // (One whose map or project went never loads it: a new request waits behind it.)
-        && app.reads.job.iter().filter(|j| j.gone.is_none()).map(|j| &j.asked).chain(&app.reads.waiting).any(|a| a.layer == Some(*instance))
+        && app.reads.job.iter().filter(|j| j.gone.is_none()).map(|j| &j.asked).chain(&app.reads.waiting)
+            .any(|a| a.command == command && a.layer == Some(*instance))
     {
         return Ok(json!({"reading": instance}));
     }
@@ -110,6 +113,17 @@ pub fn run_then(app: &mut RustGisApp, command: &'static str, mut p: Value, then:
         None if command == "model.run" => p.get("name").and_then(Value::as_str).map(str::trim).unwrap_or_default().to_string(),
         None => p.get("path").and_then(Value::as_str).map(|path| file_name(path).to_string()).unwrap_or_default(),
     };
+    let reload = if command == "layer.reloadData" {
+        match app.session.layer_id(&p).and_then(|id| crate::reloaddata::Form::for_read(&app.session, id)) {
+            Ok(form) => Some(form),
+            Err(why) => {
+                not_run(app, then, why.clone());
+                return Err(why);
+            }
+        }
+    } else {
+        None
+    };
     let asked = Asked {
         command,
         params: p,
@@ -118,6 +132,7 @@ pub fn run_then(app: &mut RustGisApp, command: &'static str, mut p: Value, then:
         opened: app.session.opened,
         map: app.session.map().instance_id(),
         layer: layer.map(|(instance, _)| instance),
+        reload,
         then,
     };
     if busy(app) {
@@ -182,6 +197,8 @@ enum Gone {
     Project,
     Map,
     Layer,
+    Source,
+    Data,
 }
 
 impl std::fmt::Display for Gone {
@@ -191,6 +208,8 @@ impl std::fmt::Display for Gone {
             Gone::Project => tl_raw!("another project was opened"),
             Gone::Map => tl_raw!("the map it was asked for isn't open"),
             Gone::Layer => tl_raw!("its layer was removed"),
+            Gone::Source => tl_raw!("its data source changed"),
+            Gone::Data => tl_raw!("its data or pending edits changed; confirm Reload Data again"),
         })
     }
 }
@@ -206,6 +225,12 @@ fn placed(app: &RustGisApp, asked: &Asked) -> Result<Value, Gone> {
     }
     let Some(instance) = asked.layer else { return Ok(asked.params.clone()) };
     let l = app.session.map().layers.iter().find(|l| l.instance_id() == instance).ok_or(Gone::Layer)?;
+    if asked.reload.as_ref().is_some_and(|reload| !reload.is_current(&app.session)) {
+        return Err(Gone::Source);
+    }
+    if asked.reload.as_ref().is_some_and(|reload| !reload.data_is_current(&app.session)) {
+        return Err(Gone::Data);
+    }
     let mut p = asked.params.clone();
     p["layer"] = json!(l.id);
     Ok(p)
@@ -331,7 +356,7 @@ pub fn land(app: &mut RustGisApp) -> bool {
         }
     }
     // Those left, one notice for each reason, with a count, naming the first.
-    for why in [Gone::Project, Gone::Map, Gone::Layer] {
+    for why in [Gone::Project, Gone::Map, Gone::Layer, Gone::Source, Gone::Data] {
         let of: Vec<&String> = left.iter().filter(|(_, w)| *w == why).map(|(what, _)| what).collect();
         let reason = why.to_string();
         match of.as_slice() {
@@ -495,5 +520,399 @@ mod tests {
         assert!(app.session.notices.iter().any(|n| n.text == notice), "{:?}", app.session.notices.last());
         assert!(app.session.project.maps[0].layer(id).unwrap().is_streamed());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn reload_fixture() -> (tempfile::TempDir, RustGisApp, u32, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("streamed.geojson");
+        publish_point(&path, 1.0);
+        let mut app = RustGisApp::new(rustgis_engine::Session::new(rustgis_engine::Project::default()));
+        app.reads_off_frame = true;
+        let id = app.run("layer.addData", json!({"path": path, "stream": true})).unwrap()["layer"].as_u64().unwrap() as u32;
+        (dir, app, id, path)
+    }
+
+    fn publish_point(path: &std::path::Path, x: f64) {
+        std::fs::write(
+            path,
+            json!({
+                "type": "FeatureCollection", "features": [{
+                    "type": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [x, 47]}
+                }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+
+    fn source_x(app: &RustGisApp, id: u32) -> f64 {
+        app.session.map().layer(id).unwrap().source.as_ref().unwrap().info().unwrap().extent.center().x
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn editable_reload_fixture() -> (tempfile::TempDir, egui_kittest::Harness<'static, RustGisApp>, u32) {
+        use rustgis_engine::data::{Coord, Dataset, Field, FieldType, Geometry, GeometryType, Value, raster::Crs, source::gpkg};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("places.gpkg");
+        let mut data = Dataset::new("places", GeometryType::Point, vec![Field::new("name", FieldType::Text)]);
+        data.push(Some(Geometry::Point(Coord::new(1.0, 20.0))), vec![Value::Text("original".into())]);
+        gpkg::write_in(&data, &path, Crs::LonLat).unwrap();
+        let mut app = RustGisApp::new(rustgis_engine::Session::new(rustgis_engine::Project::default()));
+        let id = app.run("gpkg.addLayer", json!({"path": path, "table": "places"})).unwrap()["layer"].as_u64().unwrap() as u32;
+        app.run("edit.enable", json!({"on": true})).unwrap();
+        app.run("edit.setValue", json!({"layer": id, "row": 0, "field": "name", "value": "pending"})).unwrap();
+        app.reads_off_frame = true;
+        let mut fonts = false;
+        let h = egui_kittest::Harness::builder().with_size(egui::vec2(700.0, 500.0)).with_max_steps(64).build_ui_state(
+            move |ui, app: &mut RustGisApp| {
+                if !fonts {
+                    crate::theme::install_fonts(ui.ctx(), &[], None);
+                    fonts = true;
+                    return;
+                }
+                // Drive the real confirmation without landing reads on the harness's frames.
+                // The tests hold the worker's completion slot and land explicitly below.
+                if app.dialogs.open == Some("reloadData") {
+                    crate::reloaddata::show(app, ui.ctx());
+                }
+            },
+            app,
+        );
+        (dir, h, id)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn confirm_reload(h: &mut egui_kittest::Harness<'_, RustGisApp>, id: u32) {
+        use egui_kittest::kittest::Queryable;
+        h.state_mut().run("ui.reloadData", json!({"layer": id})).unwrap();
+        h.run_steps(3);
+        h.get_by_label("Inserts: 0; updates: 1; deletes: 0.");
+        h.get_by_role_and_label(egui::accesskit::Role::Button, "Discard Edits and Reload").click();
+        h.run_steps(3);
+        assert_eq!(h.state().dialogs.open, None);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn edited_value(app: &RustGisApp, id: u32) -> rustgis_engine::data::Value {
+        app.session.map().layer(id).unwrap().dataset.features[0].attrs[0].clone()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn chosen_vertex_reload_fixture(off_frame: bool, dragging: bool) -> (tempfile::TempDir, RustGisApp, u32, std::path::PathBuf) {
+        use rustgis_engine::data::{Coord, Dataset, Geometry, GeometryType, VertexId, raster::Crs, source::gpkg};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("roads.gpkg");
+        let mut data = Dataset::new("roads", GeometryType::Polyline, vec![]);
+        data.push(Some(Geometry::Line(vec![vec![Coord::new(0.0, 0.0), Coord::new(1.0, 0.0), Coord::new(2.0, 1.0)]])), vec![]);
+        gpkg::write_in(&data, &path, Crs::LonLat).unwrap();
+        let mut app = RustGisApp::new(rustgis_engine::Session::new(rustgis_engine::Project::default()));
+        let id = app.run("gpkg.addLayer", json!({"path": path, "table": "roads"})).unwrap()["layer"].as_u64().unwrap() as u32;
+        app.run("edit.enable", json!({"on": true})).unwrap();
+        app.run("tool.set", json!({"tool": "editVertices"})).unwrap();
+        app.run("select.rows", json!({"layer": id, "rows": [0]})).unwrap();
+        app.reads_off_frame = off_frame;
+        if dragging {
+            app.session.map_mut().camera.res = 1000.0;
+            let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 800.0));
+            let from = crate::mapview::lonlat_to_screen(&app, rect, Coord::new(1.0, 0.0)).unwrap();
+            assert!(crate::vertexedit::drag_start(&mut app, rect, from));
+            assert!(app.map.vertex_drag_owner.is_some());
+        } else {
+            crate::vertexedit::choose(&mut app, Some((id, 0, VertexId::new(0, 0, 1))));
+        }
+        assert_eq!(app.map.vertex, Some((id, 0, VertexId::new(0, 0, 1))));
+        (dir, app, id, path)
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn successful_reload_clears_chosen_vertex_and_drag_only_for_the_replaced_layer() {
+        use rustgis_engine::data::{Coord, Dataset, Geometry, GeometryType, VertexId, raster::Crs, source::gpkg};
+        for off_frame in [false, true] {
+            for dragging in [false, true] {
+                let (dir, mut app, id, path) = chosen_vertex_reload_fixture(off_frame, dragging);
+                let replacement = Geometry::Line(vec![vec![Coord::new(10.0, 0.0), Coord::new(11.0, 0.0), Coord::new(12.0, 1.0)]]);
+                let mut data = Dataset::new("roads", GeometryType::Polyline, vec![]);
+                data.push(Some(replacement.clone()), vec![]);
+                let fresh = dir.path().join("replacement.gpkg");
+                gpkg::write_in(&data, &fresh, Crs::LonLat).unwrap();
+                std::fs::copy(fresh, &path).unwrap();
+                app.run("ui.reloadData", json!({"layer": id})).unwrap();
+                if off_frame {
+                    assert!(showing(&app));
+                    assert!(app.map.vertex.is_some(), "starting a read must not clear the vertex before it succeeds");
+                    assert_eq!(app.map.vertex_drag.is_some(), dragging);
+                    landed(&mut app, 60);
+                }
+                assert!(app.map.vertex.is_none());
+                assert!(app.map.vertex_drag.is_none());
+                assert!(app.map.vertex_drag_owner.is_none());
+                app.run("select.rows", json!({"layer": id, "rows": [0]})).unwrap();
+                let undo = app.session.undo_label().map(str::to_string);
+                assert!(!crate::vertexedit::delete_chosen(&mut app), "Delete has no chosen vertex on the replacement row");
+                crate::vertexedit::drag_stop(&mut app);
+                assert_eq!(app.session.map().layer(id).unwrap().dataset.features[0].geometry, Some(replacement));
+                assert_eq!(app.session.undo_label(), undo.as_deref(), "stale Delete and release create no edit");
+
+                let other = app.run("gpkg.addLayer", json!({"path": path, "table": "roads"})).unwrap()["layer"].as_u64().unwrap() as u32;
+                let chosen = Some((other, 0, VertexId::new(0, 0, 1)));
+                crate::vertexedit::choose(&mut app, chosen);
+                app.run("ui.reloadData", json!({"layer": id})).unwrap();
+                landed(&mut app, 60);
+                assert_eq!(app.map.vertex, chosen, "reloading another layer keeps this layer's chosen vertex");
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn nested_and_direct_reload_cannot_retarget_a_chosen_vertex_or_drag() {
+        use rustgis_engine::data::{Coord, Dataset, Geometry, GeometryType, raster::Crs, source::gpkg};
+        for dispatch in ["script", "session-delete", "session-frame", "discard"] {
+            for off_frame in [false, true] {
+                for dragging in [false, true] {
+                    let (dir, mut app, id, path) = chosen_vertex_reload_fixture(off_frame, dragging);
+                    let replacement = Geometry::Line(vec![vec![Coord::new(10.0, 0.0), Coord::new(11.0, 0.0), Coord::new(12.0, 1.0)]]);
+                    let mut data = Dataset::new("roads", GeometryType::Polyline, vec![]);
+                    data.push(Some(replacement.clone()), vec![]);
+                    let fresh = dir.path().join("replacement.gpkg");
+                    gpkg::write_in(&data, &fresh, Crs::LonLat).unwrap();
+                    std::fs::copy(fresh, &path).unwrap();
+                    if dispatch == "script" {
+                        let script = format!("layer.reloadData {}", json!({"layer": id}));
+                        app.run("script.run", json!({"script": script})).unwrap();
+                        if off_frame {
+                            landed(&mut app, 60);
+                        }
+                        assert!(app.map.vertex.is_none(), "a script's reload clears its chosen vertex on landing");
+                        assert!(app.map.vertex_drag.is_none());
+                    } else if dispatch == "discard" {
+                        app.run("gpkg.discardEdits", json!({"layer": id})).unwrap();
+                        assert!(app.map.vertex.is_none(), "discarding edits also replaces row identities");
+                        assert!(app.map.vertex_drag.is_none());
+                    } else {
+                        app.session.run("layer.reloadData", &json!({"layer": id})).unwrap();
+                    }
+                    // Selection can return before the UI epilogue or the next frame; Delete must
+                    // still recognize the replacement rather than editing the new row's vertex.
+                    app.session.run("select.rows", &json!({"layer": id, "rows": [0]})).unwrap();
+                    if dispatch == "session-frame" {
+                        crate::vertexedit::cancel_stale_drag(&mut app);
+                        assert!(app.map.vertex.is_none(), "the frame's ownership check sees direct session replacements");
+                        assert!(app.map.vertex_drag.is_none());
+                    }
+                    let undo = app.session.undo_label().map(str::to_string);
+                    assert!(!crate::vertexedit::delete_chosen(&mut app));
+                    assert!(app.map.vertex.is_none());
+                    assert!(app.map.vertex_owner.is_none());
+                    assert!(app.map.vertex_drag.is_none());
+                    assert!(app.map.vertex_drag_owner.is_none());
+                    crate::vertexedit::drag_stop(&mut app);
+                    assert_eq!(app.session.map().layer(id).unwrap().dataset.features[0].geometry, Some(replacement));
+                    assert_eq!(app.session.undo_label(), undo.as_deref(), "stale Delete and release create no edit");
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn ordinary_vertex_move_keeps_the_chosen_vertex() {
+        use rustgis_engine::data::Coord;
+        for dispatch in ["ui", "session", "drag"] {
+            let (_dir, mut app, id, _path) = chosen_vertex_reload_fixture(false, dispatch == "drag");
+            let chosen = app.map.vertex;
+            let revision = app.session.map().layer(id).unwrap().replacement_revision();
+            if dispatch == "drag" {
+                let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 800.0));
+                let to = crate::mapview::lonlat_to_screen(&app, rect, Coord::new(1.25, 0.25)).unwrap();
+                crate::vertexedit::drag_to(&mut app, rect, to);
+                crate::vertexedit::drag_stop(&mut app);
+            } else {
+                let p = json!({"layer": id, "row": 0, "action": "move", "part": 0, "ring": 0, "index": 1, "lon": 1.25, "lat": 0.25});
+                if dispatch == "ui" {
+                    app.run("edit.vertex", p).unwrap();
+                } else {
+                    app.session.run("edit.vertex", &p).unwrap();
+                }
+            }
+            crate::vertexedit::cancel_stale_drag(&mut app);
+            assert_eq!(app.map.vertex, chosen, "ordinary moves keep the chosen vertex for {dispatch}");
+            assert!(app.map.vertex_owner.is_some());
+            assert_eq!(app.session.map().layer(id).unwrap().replacement_revision(), revision);
+            assert!(crate::vertexedit::delete_chosen(&mut app), "the moved vertex remains usable");
+        }
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn failed_reload_retains_chosen_vertex_and_held_drag() {
+        for off_frame in [false, true] {
+            for dragging in [false, true] {
+                let (_dir, mut app, id, path) = chosen_vertex_reload_fixture(off_frame, dragging);
+                let chosen = app.map.vertex;
+                let geometry = app.session.map().layer(id).unwrap().dataset.features[0].geometry.clone();
+                let undo = app.session.undo_label().map(str::to_string);
+                std::fs::write(path, b"not a GeoPackage").unwrap();
+                let mark = app.session.notice_mark();
+                let result = app.run("ui.reloadData", json!({"layer": id}));
+                if off_frame {
+                    assert!(result.unwrap().get("started").is_some());
+                    landed(&mut app, 60);
+                } else {
+                    assert!(result.is_err());
+                }
+                assert_eq!(app.session.notices_since(mark).iter().filter(|notice| notice.error).count(), 1);
+                assert_eq!(app.map.vertex, chosen);
+                assert_eq!(app.map.vertex_drag.is_some(), dragging);
+                assert_eq!(app.map.vertex_drag_owner.is_some(), dragging);
+                assert_eq!(app.session.map().layer(id).unwrap().dataset.features[0].geometry, geometry);
+                assert_eq!(app.session.undo_label(), undo.as_deref());
+                assert!(crate::vertexedit::delete_chosen(&mut app), "the original chosen vertex remains usable");
+                assert_ne!(app.session.map().layer(id).unwrap().dataset.features[0].geometry, geometry);
+            }
+        }
+    }
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn queued_reload_retains_confirmed_rows_schema_and_edit_baseline() {
+        use rustgis_engine::data::Value as DataValue;
+        for change in ["unchanged", "value", "schema", "baseline"] {
+            let (dir, mut h, id) = editable_reload_fixture();
+            // A real failed read occupies the queue without introducing an unrelated undo step.
+            let blocker = dir.path().join("blocked.geojson");
+            std::fs::write(&blocker, b"not GeoJSON").unwrap();
+            assert_eq!(run(h.state_mut(), "layer.addData", json!({"path": blocker})).unwrap()["started"], "Add Data");
+            let slot = h.state().reads.job.as_ref().unwrap().slot.clone();
+            let held = slot.lock().unwrap();
+            confirm_reload(&mut h, id);
+            assert_eq!(h.state().reads.waiting.len(), 1);
+            let counts = h.state_mut().run("gpkg.pendingEdits", json!({"layer": id})).unwrap();
+            match change {
+                "value" => {
+                    h.state_mut().run("edit.setValue", json!({"layer": id, "row": 0, "field": "name", "value": "later"})).unwrap();
+                }
+                "schema" => h.state_mut().session.map_mut().layer_mut(id).unwrap().dataset.fields[0].name = "renamed".into(),
+                "baseline" => {
+                    let edit = h.state_mut().session.map_mut().layer_mut(id).unwrap().gpkg.as_mut().unwrap();
+                    // Equal baseline values with a new COW identity must also invalidate consent.
+                    edit.versions = edit.versions.iter().collect();
+                }
+                "unchanged" => {}
+                _ => panic!("unexpected reload scenario"),
+            }
+            assert_eq!(h.state_mut().run("gpkg.pendingEdits", json!({"layer": id})).unwrap(), counts, "{change}");
+            let before = h.state().session.undo_label().map(str::to_string);
+            drop(held);
+            landed(h.state_mut(), 60);
+            if change == "unchanged" {
+                assert_eq!(edited_value(h.state(), id), DataValue::Text("original".into()));
+                h.state_mut().run("edit.undo", Value::Null).unwrap();
+                assert_eq!(edited_value(h.state(), id), DataValue::Text("pending".into()), "one reload undo step");
+                continue;
+            }
+            let expected = if change == "value" { "later" } else { "pending" };
+            assert_eq!(edited_value(h.state(), id), DataValue::Text(expected.into()), "{change}");
+            assert_eq!(h.state().session.undo_label(), before.as_deref(), "refusal adds no reload undo step: {change}");
+            assert!(
+                h.state().session.notices.iter().any(|n| n.text.contains("its data or pending edits changed; confirm Reload Data again")),
+                "{change}"
+            );
+            if change == "value" {
+                h.state_mut().run("edit.undo", Value::Null).unwrap();
+                assert_eq!(edited_value(h.state(), id), DataValue::Text("pending".into()), "the later edit is still the latest undo step");
+                h.state_mut().run("edit.redo", Value::Null).unwrap();
+                assert_eq!(edited_value(h.state(), id), DataValue::Text("later".into()));
+            }
+            // The rejected request does not poison a new, explicit confirmation.
+            confirm_reload(&mut h, id);
+            landed(h.state_mut(), 60);
+            assert_eq!(edited_value(h.state(), id), DataValue::Text("original".into()), "{change}");
+            h.state_mut().run("edit.undo", Value::Null).unwrap();
+            assert_eq!(edited_value(h.state(), id), DataValue::Text(expected.into()), "one retry reload undo step: {change}");
+        }
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn running_reload_cannot_discard_a_later_same_count_edit() {
+        use rustgis_engine::data::Value as DataValue;
+        let (_dir, mut h, id) = editable_reload_fixture();
+        confirm_reload(&mut h, id);
+        let slot = h.state().reads.job.as_ref().unwrap().slot.clone();
+        let held = slot.lock().unwrap();
+        h.state_mut().run("edit.setValue", json!({"layer": id, "row": 0, "field": "name", "value": "later"})).unwrap();
+        let before = h.state().session.undo_label().map(str::to_string);
+        drop(held);
+        landed(h.state_mut(), 60);
+        assert_eq!(edited_value(h.state(), id), DataValue::Text("later".into()));
+        assert_eq!(h.state().session.undo_label(), before.as_deref());
+        confirm_reload(&mut h, id);
+        landed(h.state_mut(), 60);
+        assert_eq!(edited_value(h.state(), id), DataValue::Text("original".into()));
+    }
+
+    #[test]
+    fn reload_lands_once_and_cancel_retains_the_current_layer() {
+        let (_dir, mut app, id, path) = reload_fixture();
+        publish_point(&path, 9.0);
+        let before = app.session.undo_label().map(str::to_string);
+        assert!(app.run("ui.reloadData", json!({"layer": id})).unwrap().get("started").is_some());
+        assert_eq!(source_x(&app, id), 1.0, "the worker cannot install into the live session");
+        assert_eq!(app.session.undo_label(), before.as_deref());
+        landed(&mut app, 60);
+        assert_eq!(source_x(&app, id), 9.0);
+        let fresh = app.session.map().layer(id).unwrap().load_all_counted().unwrap().0;
+        assert_eq!(fresh.features[0].geometry, Some(rustgis_engine::data::Geometry::Point(rustgis_engine::data::Coord::new(9.0, 47.0))));
+        app.run("edit.undo", Value::Null).unwrap();
+        assert_eq!(source_x(&app, id), 1.0, "one undo restores the retained configuration");
+
+        app.run("ui.reloadData", json!({"layer": id})).unwrap();
+        app.reads.job.as_ref().unwrap().control.cancel();
+        landed(&mut app, 60);
+        assert_eq!(source_x(&app, id), 1.0);
+        assert_eq!(app.session.undo_label(), before.as_deref());
+    }
+
+    #[test]
+    fn queued_and_running_reload_cannot_target_a_repaired_source() {
+        let (dir, mut app, id, path) = reload_fixture();
+        publish_point(&path, 9.0);
+        app.run("ui.reloadData", json!({"layer": id})).unwrap();
+        assert_eq!(app.run("ui.reloadData", json!({"layer": id})).unwrap()["waiting"], 1);
+        let replacement = dir.path().join("replacement.geojson");
+        publish_point(&replacement, 5.0);
+        app.run("layer.repairSource", json!({"layer": id, "path": replacement})).unwrap();
+        let before = app.session.undo_label().map(str::to_string);
+        landed(&mut app, 60);
+        assert_eq!(source_x(&app, id), 5.0);
+        let fresh = app.session.map().layer(id).unwrap().load_all_counted().unwrap().0;
+        assert_eq!(fresh.features[0].geometry, Some(rustgis_engine::data::Geometry::Point(rustgis_engine::data::Coord::new(5.0, 47.0))));
+        assert_eq!(app.session.undo_label(), before.as_deref());
+    }
+
+    #[test]
+    fn queued_load_all_after_reload_is_refused_until_requested_for_the_new_source() {
+        let (_dir, mut app, id, path) = reload_fixture();
+        publish_point(&path, 9.0);
+        let original = app.session.map().layer(id).unwrap().source.clone().unwrap();
+        app.run("ui.reloadData", json!({"layer": id})).unwrap();
+        assert_eq!(run(&mut app, "layer.loadAll", json!({"layer": id})).unwrap()["waiting"], 1);
+        landed(&mut app, 60);
+        let layer = app.session.map().layer(id).unwrap();
+        assert!(layer.is_streamed(), "the queued Load All cannot silently retarget the new source");
+        let reloaded = layer.source.clone().unwrap();
+        assert!(!reloaded.same_opening(&original));
+        assert_eq!(source_x(&app, id), 9.0);
+        assert_eq!(app.session.undo_label(), Some("Reload Data"), "the stale Load All creates no undo step");
+        assert!(app.session.notices.iter().any(|n| n.text.contains("source changed")));
+        run(&mut app, "layer.loadAll", json!({"layer": id})).unwrap();
+        landed(&mut app, 60);
+        let layer = app.session.map().layer(id).unwrap();
+        assert!(!layer.is_streamed());
+        assert_eq!(
+            layer.dataset.features[0].geometry,
+            Some(rustgis_engine::data::Geometry::Point(rustgis_engine::data::Coord::new(9.0, 47.0)))
+        );
     }
 }

@@ -34,6 +34,43 @@ pub struct VertexDrag {
     pub snapped: bool,
 }
 
+/// The source chosen by a vertex click, without retaining rows or invalidating ordinary edits.
+#[derive(Clone, Copy)]
+pub(crate) struct VertexOwner {
+    project: u64,
+    map: usize,
+    layer: u64,
+    replacement: u64,
+}
+
+impl VertexOwner {
+    fn capture(app: &RustGisApp, layer: u32) -> Option<Self> {
+        let layer = app.session.map().layer(layer)?;
+        Some(Self {
+            project: app.session.opened,
+            map: app.session.project.active_map,
+            layer: layer.instance_id(),
+            replacement: layer.replacement_revision(),
+        })
+    }
+
+    fn matches(self, app: &RustGisApp, layer: u32) -> bool {
+        self.project == app.session.opened
+            && self.map == app.session.project.active_map
+            && app
+                .session
+                .map()
+                .layer(layer)
+                .is_some_and(|layer| self.layer == layer.instance_id() && self.replacement == layer.replacement_revision())
+    }
+}
+
+/// Chooses a vertex together with the live source identity its row belongs to.
+pub(crate) fn choose(app: &mut RustGisApp, vertex: Option<(u32, usize, VertexId)>) {
+    app.map.vertex_owner = vertex.and_then(|(layer, _, _)| VertexOwner::capture(app, layer));
+    app.map.vertex = vertex.filter(|_| app.map.vertex_owner.is_some());
+}
+
 /// The source of a held gesture, kept separately from its copyable preview. A weak row identity
 /// detects any mutable row access, including edits without `touch_geometry`, without retaining
 /// the rows or copying the geometry. A different project, map slot or map name also invalidates
@@ -79,9 +116,18 @@ impl DragOwner {
     }
 }
 
-/// Drops a stale preview and its pending pointer release before either can act on new source
-/// rows. This also runs when a map is shown without pointer movement; cancellation creates no edit.
+/// Drops stale chosen vertices, previews and pending pointer releases before they can act on
+/// replacement rows. Also runs each frame and before Delete, including after direct session calls.
 pub(crate) fn cancel_stale_drag(app: &mut RustGisApp) {
+    if let Some((layer, _, _)) = app.map.vertex
+        && !app.map.vertex_owner.is_some_and(|owner| owner.matches(app, layer))
+    {
+        app.map.cancel_vertex_drag();
+        return;
+    }
+    if app.map.vertex.is_none() {
+        app.map.vertex_owner = None;
+    }
     let Some(d) = app.map.vertex_drag else {
         app.map.vertex_drag_owner = None;
         return;
@@ -191,7 +237,7 @@ pub fn drag_start(app: &mut RustGisApp, rect: Rect, origin: Pos2) -> bool {
     };
     let Some(owner) = DragOwner::capture(app, drag) else { return false };
     app.map.vertex_drag_owner = Some(owner);
-    app.map.vertex = (!drag.insert).then_some((drag.layer, drag.row, drag.vertex));
+    choose(app, (!drag.insert).then_some((drag.layer, drag.row, drag.vertex)));
     app.map.vertex_drag = Some(drag);
     true
 }
@@ -260,7 +306,7 @@ fn commit(app: &mut RustGisApp, d: VertexDrag) {
     if let Ok(v) = app.run(command, p) {
         let num = |k: &str| v.get(k).and_then(serde_json::Value::as_u64).map(|n| n as usize);
         if let (Some(part), Some(ring), Some(index)) = (num("part"), num("ring"), num("index")) {
-            app.map.vertex = Some((d.layer, d.row, VertexId::new(part, ring, index)));
+            choose(app, Some((d.layer, d.row, VertexId::new(part, ring, index))));
         }
     }
 }
@@ -269,10 +315,10 @@ fn commit(app: &mut RustGisApp, d: VertexDrag) {
 /// the feature there (Shift adds it to the selection).
 pub fn click(app: &mut RustGisApp, rect: Rect, p: Pos2, c: Coord, shift: bool) {
     match handle_at(app, rect, p) {
-        Some(Handle::Vertex(layer, row, v, _)) => app.map.vertex = Some((layer, row, v)),
+        Some(Handle::Vertex(layer, row, v, _)) => choose(app, Some((layer, row, v))),
         Some(Handle::Edge(layer, row, vertex, at)) => commit(app, VertexDrag { layer, row, vertex, insert: true, at, snapped: false }),
         None => {
-            app.map.vertex = None;
+            choose(app, None);
             let mode = if shift { "add" } else { "new" };
             let _ = app.run("select.atPoint", json!({"lon": c.x, "lat": c.y, "tolerancePx": 5, "mode": mode}));
         }
@@ -281,17 +327,18 @@ pub fn click(app: &mut RustGisApp, rect: Rect, p: Pos2, c: Coord, shift: bool) {
 
 /// Delete removes the chosen vertex; `false` when none is chosen.
 pub fn delete_chosen(app: &mut RustGisApp) -> bool {
+    cancel_stale_drag(app);
     let Some((layer, row, v)) = app.map.vertex else { return false };
     // A vertex chosen before an undo, or on a feature no longer selected, is gone: Delete then
     // deletes the selected features as usual.
     if !targets(app).iter().any(|(l, r, g)| *l == layer && *r == row && g.vertex(v).is_some()) {
-        app.map.vertex = None;
+        choose(app, None);
         return false;
     }
     let p = json!({"layer": layer, "row": row, "action": "delete", "part": v.part, "ring": v.ring, "index": v.index});
     if app.run("edit.vertex", p).is_ok() {
         // The vertex before it is chosen next, so Delete can go on removing.
-        app.map.vertex = v.index.checked_sub(1).map(|i| (layer, row, VertexId::new(v.part, v.ring, i)));
+        choose(app, v.index.checked_sub(1).map(|i| (layer, row, VertexId::new(v.part, v.ring, i))));
     }
     true
 }

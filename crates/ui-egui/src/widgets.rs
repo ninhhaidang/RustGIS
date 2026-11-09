@@ -144,6 +144,9 @@ pub fn shortcut_text(ctx: &egui::Context, app: &RustGisApp, id: &str) -> String 
 
 /// Whether a command exists and is enabled now.
 pub fn enabled(app: &RustGisApp, id: &str) -> bool {
+    if matches!(id, "ui.reloadData" | "layer.reloadData") {
+        return why_disabled(app, id).is_none();
+    }
     match app.session.registry.get(id) {
         Some(s) => (s.enabled)(&app.session).is_none(),
         None => id.starts_with("ui.") || rustgis_engine::plugins::command(id).is_some(),
@@ -151,6 +154,17 @@ pub fn enabled(app: &RustGisApp, id: &str) -> bool {
 }
 
 pub fn why_disabled(app: &RustGisApp, id: &str) -> Option<&'static str> {
+    if matches!(id, "ui.reloadData" | "layer.reloadData") {
+        #[cfg(not(target_arch = "wasm32"))]
+        return app
+            .session
+            .active_layer
+            .and_then(|layer| app.session.map().layer(layer))
+            .is_none_or(|layer| !crate::reloaddata::supported(layer))
+            .then_some(tl_raw!("Select a layer linked to a local file or folder, or an editable GeoPackage layer."));
+        #[cfg(target_arch = "wasm32")]
+        return Some(tl_raw!("Reload Data from local files requires the desktop app."));
+    }
     app.session.registry.get(id).and_then(|s| (s.enabled)(&app.session))
 }
 

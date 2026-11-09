@@ -404,7 +404,7 @@ pub(crate) fn slice_key(zt: &ZarrTime, i: usize) -> String {
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map_or_else(String::new, |d| d.as_millis().to_string())
     };
-    format!("{}\u{0}{}\u{0}{}\u{0}{changed}", zt.store, zt.selection(i), zt.crs.as_deref().unwrap_or(""))
+    format!("{}\u{0}{}\u{0}{}\u{0}{changed}\u{0}{}", zt.store, zt.selection(i), zt.crs.as_deref().unwrap_or(""), zt.read_generation)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -599,18 +599,75 @@ pub(crate) fn read_slice(zt: &ZarrTime, i: usize) -> Result<Option<raster::Raste
 
 /// Reopens the same time-following variable from a replacement local store.
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn relink_following(s: &Session, rl: &RasterLayer, full: &str) -> Result<RasterLayer, String> {
+pub(crate) fn relink_following(
+    slider: Option<&rustgis_map::time::TimeSlider>,
+    rl: &RasterLayer,
+    full: &str,
+) -> Result<RasterLayer, String> {
     let zt = rl.time_zarr.as_ref().ok_or("the raster has no time-following variable")?;
     let store = zarr::read_metadata(Path::new(full)).map_err(|e| format!("{full}: {e}"))?;
     if !store.variables().iter().any(|v| v.path == zt.variable) {
         return Err(format!("{full} has no variable '{}': choose the store the layer was added from", zt.variable));
     }
-    let mut zt = ZarrTime { store: full.into(), shown: None, ..zt.clone() };
+    let coords = store_files(full, &zarr::coordinate_keys(&store, &zt.variable))?;
+    let (dim, dates) =
+        zarr::time_axis(&store, &zt.variable, &coords).ok_or_else(|| format!("{full}: {} no longer has a time axis", zt.variable))?;
+    if dim != zt.dim || !dates.iter().all(|d| d.is_finite()) || !dates.windows(2).all(|w| w[0] < w[1]) {
+        return Err(format!("{full}: {}'s time axis is incompatible with the layer", zt.variable));
+    }
+    let missing_period =
+        || format!("{full}: {} no longer contains the selected time period unchanged; existing layer retained", zt.variable);
+    // Preserve the selected dates, not their old numeric positions: earlier steps may have
+    // been inserted since the layer was opened.
+    let first = zt.dates.first().ok_or_else(missing_period)?;
+    let start = dates.binary_search_by(|date| date.total_cmp(first)).map_err(|_| missing_period())?;
+    let dates = dates.get(start..start.saturating_add(zt.dates.len())).ok_or_else(missing_period)?;
+    if dates != zt.dates {
+        return Err(missing_period());
+    }
+    let offset = u64::try_from(start).map_err(|_| missing_period())?;
+    let mut zt = ZarrTime {
+        store: full.into(),
+        offset,
+        shown: None,
+        read_generation: rustgis_map::raster::next_read_generation(),
+        dates: dates.to_vec(),
+        ..zt.clone()
+    };
     zt.repair();
-    let window = s.map().time.as_ref().map(rustgis_map::time::TimeSlider::window);
+    if let Some(slider) = slider {
+        // Binary search the sorted candidate axis for each window, not dates × steps.
+        // Calendar windows can have gaps (a month after Feb 28 precedes a Mar 31 step).
+        let intersects = |from: f64, to: f64| zt.dates.get(zt.dates.partition_point(|date| *date < from)).is_some_and(|date| *date < to);
+        let reachable = if slider.dates.is_empty() {
+            let k = i64::from(slider.interval.max(1));
+            slider.steps().iter().any(|current| {
+                let from = if slider.cumulative {
+                    f64::NEG_INFINITY
+                } else {
+                    rustgis_data::time::add(*current, slider.unit, -i64::from(slider.before) * k)
+                };
+                let to = rustgis_data::time::add(*current, slider.unit, i64::from(slider.after) * k);
+                intersects(from, to.max(from))
+            })
+        } else {
+            // Irregular windows end at a listed date: consecutive windows cover the axis.
+            let first = slider.dates.first().copied().unwrap_or(slider.start);
+            let last = slider.dates.last().copied().unwrap_or(slider.start);
+            intersects(if slider.cumulative { f64::NEG_INFINITY } else { first }, last + 1.0)
+        };
+        if !reachable {
+            return Err(format!(
+                "{full}: {}'s replacement dates are outside every time slider window; adjust the time slider's range or dates, then retry Reload Data or Repair Data Source",
+                zt.variable
+            ));
+        }
+    }
+    let window = slider.map(rustgis_map::time::TimeSlider::window);
     let want = zt.step_for(window);
     let i = want.unwrap_or(0);
     let r = read_step(&zt, i, slice_key(&zt, i))?;
+    rl.validate_replacement(&r, full)?;
     zt.shown = want;
     let mut new = rl.clone();
     new.path = Some(full.into());
@@ -642,6 +699,7 @@ impl ReadWaits {
             && read.zt.store == zt.store
             && read.zt.crs == zt.crs
             && read.zt.selection(i) == zt.selection(i)
+            && read.zt.read_generation == zt.read_generation
         {
             return read.clone();
         }
@@ -666,6 +724,15 @@ impl ReadWaits {
     fn retain(&mut self, waiting: &std::collections::HashSet<(u64, u64)>) {
         self.layers.retain(|owner, _| waiting.contains(owner));
         self.shared.retain(|_, read| read.strong_count() > 0);
+    }
+
+    /// Stops new requests joining reads begun before a reload (`Some(store)`) or a project
+    /// replacement (`None`): those read what the store held then. Their own layers still poll them.
+    pub(crate) fn forget_shared(&mut self, store: Option<&str>) {
+        match store {
+            Some(store) => self.shared.retain(|(s, ..), _| s != store),
+            None => self.shared.clear(),
+        }
     }
 }
 
@@ -1038,6 +1105,7 @@ fn add_following(s: &mut Session, p: &Value) -> CmdResult {
             dates: picked,
             crs,
             shown: None,
+            read_generation: rustgis_map::raster::next_read_generation(),
         };
         zt.repair();
         // The first step read before the slider is touched, so a store that can't be read leaves
@@ -1106,6 +1174,7 @@ struct SeriesSource {
     /// A layer's period of the axis (a following layer's offset and dates), else the whole axis.
     period: Option<(u64, usize)>,
     crs: Option<String>,
+    read_generation: u64,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1121,6 +1190,7 @@ fn series_source(s: &Session, p: &Value) -> Result<SeriesSource, String> {
                 sel: zarr::Selection { variable: zt.variable.clone(), index: zt.index.clone() },
                 period: Some((zt.offset, zt.dates.len())),
                 crs: zt.crs.clone(),
+                read_generation: zt.read_generation,
             });
         }
         // A slice: its store is its folder, or the address it was read from.
@@ -1130,13 +1200,19 @@ fn series_source(s: &Session, p: &Value) -> Result<SeriesSource, String> {
             .clone()
             .or_else(|| rl.data.as_ref().and_then(|d| d.source.clone()))
             .ok_or_else(|| format!("{}: its store isn't known", l.name))?;
-        return Ok(SeriesSource { root, sel: zarr::Selection::parse(&label), period: None, crs: rl.crs.clone() });
+        return Ok(SeriesSource {
+            root,
+            sel: zarr::Selection::parse(&label),
+            period: None,
+            crs: rl.crs.clone(),
+            read_generation: rustgis_map::raster::next_read_generation(),
+        });
     }
     let root = match source(p)? {
         Source::Dir(d) | Source::Url(d) => d,
     };
     let crs = ps(p, "crs").map(str::trim).filter(|c| !c.is_empty()).map(str::to_string);
-    Ok(SeriesSource { root, sel: selection(p), period: None, crs })
+    Ok(SeriesSource { root, sel: selection(p), period: None, crs, read_generation: rustgis_map::raster::next_read_generation() })
 }
 
 /// A store's metadata, and its files `keys`: a folder's read (files only, bounded), a web
@@ -1459,6 +1535,7 @@ pub fn zarr_cube(s: &Session, p: &Value) -> Result<ZarrCube, String> {
         dates,
         crs: src.crs.clone(),
         shown: None,
+        read_generation: src.read_generation,
     };
     Ok(ZarrCube { zt, period })
 }
