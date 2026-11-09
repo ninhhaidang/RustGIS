@@ -134,6 +134,40 @@ impl<T> Queue<T> {
         self.next(host, asked, latest)
     }
 
+    /// Cancels one active reservation for `host`. If no active reservations remain for `host`,
+    /// any remaining waiting jobs for `host` would be stranded without an active completion to
+    /// trigger them; they are drained and returned so they can be released safely.
+    pub fn cancel(&mut self, host: &str) -> Vec<Waiting<T>> {
+        let n = self.active.get_mut(host);
+        let became_zero = match n {
+            Some(n) => {
+                *n = n.saturating_sub(1);
+                if *n == 0 {
+                    self.active.remove(host);
+                    true
+                } else {
+                    false
+                }
+            }
+            None => true,
+        };
+        if became_zero {
+            let mut stranded = Vec::new();
+            let mut i = self.waiting.len();
+            while i > 0 {
+                i -= 1;
+                if self.waiting.get(i).is_some_and(|w| w.host == host) {
+                    stranded.push(self.waiting.remove(i));
+                }
+            }
+            if self.waiting.is_empty() {
+                self.sweep_at = SWEEP_AT;
+            }
+            return stranded;
+        }
+        Vec::new()
+    }
+
     /// The newest waiting tile of `host` to take the place it freed, and the stale tiles passed
     /// on the way to it (dropped). Only `host` has a place free (the others were full when their
     /// tiles waited), so the walk stops once it is taken: a long queue of tiles still wanted
@@ -266,5 +300,31 @@ mod tests {
             let _ = q.push(format!("https://export.example.com/{n}.png"), n, |_| Some(later), later, &mut kept);
         }
         assert!(kept.is_empty());
+    }
+
+    #[test]
+    fn cancel_releases_reservation_and_drains_stranded_waiting_when_active_empties() {
+        let mut q = Queue::default();
+        let mut overflow = Vec::new();
+        for n in 0..PER_HOST + 2 {
+            let _ = q.push(tile(n), n, |_| None, Instant::now(), &mut overflow);
+        }
+        assert_eq!(q.waiting(), 2);
+
+        // Active > 1: cancel does not drain waiting because other active fetches remain.
+        let stranded = q.cancel("tiles.example.com");
+        assert!(stranded.is_empty());
+        assert_eq!(q.waiting(), 2);
+
+        for _ in 0..PER_HOST - 2 {
+            let s = q.cancel("tiles.example.com");
+            assert!(s.is_empty());
+        }
+        assert_eq!(q.waiting(), 2);
+
+        // Last active reservation cancelled: active drops to 0. Remaining waiting jobs are drained.
+        let stranded = q.cancel("tiles.example.com");
+        assert_eq!(stranded.len(), 2);
+        assert_eq!(q.waiting(), 0);
     }
 }

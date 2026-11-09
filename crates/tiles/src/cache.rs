@@ -10,6 +10,7 @@
 //! map stopped asking for is dropped unfetched ([`crate::schedule`]). Natively they are fetched on
 //! worker threads; the browser app installs its own fetcher with [`set_fetcher`].
 
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -843,42 +844,71 @@ fn forget_dropped(c: &mut Cache, dropped: &[Waiting<Job>]) {
     IN_FLIGHT.fetch_sub(dropped.len(), Ordering::Release);
 }
 
+/// Releases tiles that were selected to start but never launched (e.g. when launch is unwound
+/// by a panic). Forgets their pending cache entries, frees their host reservations, safely releases
+/// any queued jobs that would otherwise remain stranded when all active reservations empty, and
+/// balances in_flight() accounting.
+fn release_unstarted(unstarted: Vec<Waiting<Job>>) {
+    if unstarted.is_empty() {
+        return;
+    }
+    let mut stranded = Vec::new();
+    {
+        let mut q = queue().lock().unwrap_or_else(|e| e.into_inner());
+        let mut c = lock();
+        for w in &unstarted {
+            if !crate::mbtiles::forgotten_since(&w.url, w.job.3) {
+                forget_pending(&mut c, &w.url);
+            }
+            stranded.extend(q.cancel(&w.host));
+        }
+        for s in &stranded {
+            if !crate::mbtiles::forgotten_since(&s.url, s.job.3) {
+                forget_pending(&mut c, &s.url);
+            }
+        }
+    }
+    let total_released = unstarted.len() + stranded.len();
+    IN_FLIGHT.fetch_sub(total_released, Ordering::Release);
+    notify();
+}
+
+thread_local! {
+    static TO_START: RefCell<Vec<Waiting<Job>>> = const { RefCell::new(Vec::new()) };
+    static STARTING: Cell<bool> = const { Cell::new(false) };
+}
+
 /// Starts fetches one after another, never inside each other: a fetch can be over at once (a
 /// local read, an archive that failed), and each one over starts the next waiting tile, so a
 /// long queue would otherwise go as deep into the stack as it is long.
 fn launch(jobs: Vec<Waiting<Job>>) {
-    static TO_START: Mutex<Vec<Waiting<Job>>> = Mutex::new(Vec::new());
-    static STARTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    let pop = || TO_START.lock().unwrap_or_else(|e| e.into_inner()).pop();
     if !jobs.is_empty() {
         // Newest first: `pop` takes from the end.
-        TO_START.lock().unwrap_or_else(|e| e.into_inner()).extend(jobs.into_iter().rev());
+        TO_START.with(|q| q.borrow_mut().extend(jobs.into_iter().rev()));
     }
-    loop {
-        // Another call (this thread further up, or another thread) is starting them already.
-        if STARTING.swap(true, Ordering::AcqRel) {
+    STARTING.with(|starting| {
+        // Another call further up this thread is starting them already.
+        if starting.replace(true) {
             return;
         }
-        {
-            // Lowered however this ends: a fetcher that panics must not stop every later fetch.
-            struct Lower;
-            impl Drop for Lower {
-                fn drop(&mut self) {
-                    STARTING.store(false, Ordering::Release);
-                }
-            }
-            let _lower = Lower;
-            while let Some(w) = pop() {
-                let (want, capture, omit, asked_at, still, ceiling) = w.job;
-                let _scope = capture.enter();
-                with_optional_still(still, || fetch_tile(w.url, w.host, want, omit, asked_at, ceiling));
+        // Lowered however this ends: a fetcher that panics must not stop every later fetch,
+        // and any selected but unstarted jobs must be released so pending states, host slots,
+        // and in_flight() stay consistent.
+        struct Lower<'a>(&'a Cell<bool>);
+        impl Drop for Lower<'_> {
+            fn drop(&mut self) {
+                self.0.set(false);
+                let unstarted = TO_START.with(|q| std::mem::take(&mut *q.borrow_mut()));
+                release_unstarted(unstarted);
             }
         }
-        // A tile queued after the last `pop` and before the flag went down is started here.
-        if TO_START.lock().unwrap_or_else(|e| e.into_inner()).is_empty() {
-            return;
+        let _lower = Lower(starting);
+        while let Some(w) = TO_START.with(|q| q.borrow_mut().pop()) {
+            let (want, capture, omit, asked_at, still, ceiling) = w.job;
+            let _scope = capture.enter();
+            with_optional_still(still, || fetch_tile(w.url, w.host, want, omit, asked_at, ceiling));
         }
-    }
+    });
 }
 
 /// A tile fetch's answer: stored once it comes, and however the fetch ends (answered, dropped
@@ -5073,6 +5103,10 @@ mod tests {
         });
         let g = generation();
         assert!(matches!(get("test://cache/ok.json", Want::Json), State::Pending));
+        let t = Instant::now();
+        while generation() <= g && t.elapsed() < Duration::from_secs(5) {
+            wait_for_news(g, Duration::from_secs(5));
+        }
         assert!(generation() > g);
         assert!(matches!(get("test://cache/ok.json", Want::Json), State::Ready(_)));
         assert!(peek("test://cache/ok.json").is_some());
@@ -5250,5 +5284,267 @@ mod tests {
         assert_eq!(omit("tile.pbf"), Some(&[404, 410][..]));
         assert_eq!(omit("picture.png"), Some(&[][..]));
         assert_eq!(omit("style.json"), Some(&[][..]));
+    }
+
+    #[test]
+    fn concurrent_fetch_starts_without_waiting_for_another_threads_launch() {
+        let _turn = crate::cache::turn();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let release_rx = Mutex::new(release_rx);
+        set_fetcher(move |url, done| {
+            if url.starts_with("test://slow/") {
+                started_tx.send(()).unwrap();
+                release_rx.lock().unwrap().recv_timeout(Duration::from_secs(5)).unwrap();
+                done(Ok(b"{\"slow\": true}".to_vec()));
+            } else {
+                done(Ok(b"{\"fast\": true}".to_vec()));
+            }
+        });
+        let thread_a = std::thread::spawn(|| {
+            assert!(matches!(get("test://slow/1.json", Want::Json), State::Pending));
+        });
+        started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+
+        assert!(matches!(get("test://fast/1.json", Want::Json), State::Pending));
+        let fast_ready_immediately = matches!(get("test://fast/1.json", Want::Json), State::Ready(_));
+
+        release_tx.send(()).unwrap();
+        thread_a.join().unwrap();
+
+        assert!(fast_ready_immediately, "fast fetch on thread B was parked behind thread A's in-flight launch");
+        assert!(matches!(get("test://fast/1.json", Want::Json), State::Ready(_)));
+    }
+
+    #[test]
+    fn fetcher_panic_unwinds_launch_and_releases_queued_replacement() {
+        let _turn = crate::cache::turn();
+        wait(Duration::from_secs(5));
+        assert_eq!(in_flight(), 0, "prior fetches should finish after wait");
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (panic_started_tx, panic_started_rx) = std::sync::mpsc::channel();
+        let (panic_trigger_tx, panic_trigger_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let release_rx = Arc::new(Mutex::new(release_rx));
+        let panic_trigger_rx = Arc::new(Mutex::new(panic_trigger_rx));
+
+        let cap = crate::schedule::PER_HOST;
+        let rx = release_rx.clone();
+        let p_rx = panic_trigger_rx.clone();
+        set_fetcher(move |url, done| {
+            if url.contains("/slow_") {
+                started_tx.send(()).unwrap();
+                rx.lock().unwrap().recv_timeout(Duration::from_secs(5)).unwrap();
+                done(Ok(b"{\"slow\": true}".to_vec()));
+            } else if url.contains("/panic.json") {
+                panic_started_tx.send(()).unwrap();
+                p_rx.lock().unwrap().recv_timeout(Duration::from_secs(5)).unwrap();
+                panic!("simulated fetcher panic during launch");
+            } else {
+                done(Ok(b"{\"replacement\": true}".to_vec()));
+            }
+        });
+
+        let mut threads = Vec::new();
+        for i in 0..(cap - 1) {
+            threads.push(std::thread::spawn(move || {
+                let _ = get(&format!("test://samehost/slow_{i}.json"), Want::Json);
+            }));
+            started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        }
+
+        let panic_thread = std::thread::spawn(|| {
+            let _ = get("test://samehost/panic.json", Want::Json);
+        });
+        panic_started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+
+        let waiting_url = "test://samehost/waiting.json";
+        assert!(matches!(get(waiting_url, Want::Json), State::Pending));
+
+        panic_trigger_tx.send(()).unwrap();
+        let _ = panic_thread.join();
+
+        assert!(!lock().slots.contains_key(waiting_url));
+        assert_eq!(in_flight(), cap - 1);
+
+        assert!(matches!(get(waiting_url, Want::Json), State::Pending));
+        assert!(matches!(get(waiting_url, Want::Json), State::Ready(_)));
+
+        for _ in 0..(cap - 1) {
+            release_tx.send(()).unwrap();
+        }
+        for t in threads {
+            t.join().unwrap();
+        }
+
+        assert_eq!(in_flight(), 0);
+    }
+
+    #[test]
+    fn release_unstarted_preserves_retained_outcome_and_bytes() {
+        let _turn = crate::cache::turn();
+        wait(Duration::from_secs(5));
+        assert_eq!(in_flight(), 0, "prior fetches should finish after wait");
+        clear();
+
+        let url = "test://retained/tile.json";
+        let payload = Arc::new(Payload::Json("{\"retained\": true}".into()));
+        let initial_bytes = payload_bytes(&payload);
+        {
+            let mut c = lock();
+            keep_for(&mut c, url, Entry::Ready(payload.clone(), initial_bytes, None), crate::address::Reach::Local);
+            assert_eq!(c.bytes, initial_bytes);
+        }
+
+        {
+            let mut c = lock();
+            keep_for(&mut c, url, Entry::Pending, crate::address::Reach::Public);
+            assert_eq!(c.bytes, initial_bytes);
+            let slot = c.slots.get(url).unwrap();
+            assert!(matches!(slot.entry, Entry::Pending));
+            assert!(slot.other.is_some());
+        }
+
+        let starting_in_flight = in_flight();
+        IN_FLIGHT.fetch_add(1, Ordering::Relaxed);
+        let mut swept = Vec::new();
+        let waiting = {
+            let mut q = queue().lock().unwrap_or_else(|e| e.into_inner());
+            let mut c = lock();
+            let latest = c.latest.unwrap_or_else(Instant::now);
+            let job = (Want::Json, Capture::current(), &[] as &'static [u16], 0u64, None, crate::address::Reach::Public);
+            let w = q
+                .push(url.to_string(), job, |u| c.slots.get(u).map(|s| s.asked), latest, &mut swept)
+                .expect("job should be scheduled immediately");
+            forget_dropped(&mut c, &swept);
+            w
+        };
+        assert_eq!(in_flight(), starting_in_flight + 1);
+
+        release_unstarted(vec![waiting]);
+        assert_eq!(in_flight(), starting_in_flight);
+
+        {
+            let c = lock();
+            let slot = c.slots.get(url).expect("slot should be preserved");
+            assert!(matches!(slot.entry, Entry::Ready(..)));
+            assert_eq!(slot.ceiling, crate::address::Reach::Local);
+            assert!(slot.other.is_none());
+            assert_eq!(c.bytes, initial_bytes);
+        }
+    }
+
+    #[test]
+    fn release_unstarted_preserves_newer_pending_mbtiles_request_after_forget() {
+        let _turn = crate::cache::turn();
+        wait(Duration::from_secs(5));
+        assert_eq!(in_flight(), 0, "prior fetches should finish after wait");
+        clear();
+
+        let archive = "/race-archive.mbtiles";
+        let key = crate::mbtiles::template(archive).replace("{z}", "0").replace("{x}", "0").replace("{y}", "0");
+        let old_epoch = crate::mbtiles::epoch();
+
+        // An older unstarted job requested through the queue's normal path before the archive was forgotten
+        let starting_in_flight = in_flight();
+        IN_FLIGHT.fetch_add(1, Ordering::Relaxed);
+        let mut swept = Vec::new();
+        let waiting = {
+            let mut q = queue().lock().unwrap_or_else(|e| e.into_inner());
+            let mut c = lock();
+            let latest = c.latest.unwrap_or_else(Instant::now);
+            let job = (Want::Vector, Capture::current(), &[] as &'static [u16], old_epoch, None, crate::address::Reach::Local);
+            let w = q
+                .push(key.clone(), job, |u| c.slots.get(u).map(|s| s.asked), latest, &mut swept)
+                .expect("job should be scheduled immediately");
+            forget_dropped(&mut c, &swept);
+            w
+        };
+        assert_eq!(in_flight(), starting_in_flight + 1);
+
+        // Forget the archive: epoch increments, and old archive tiles are recorded as forgotten
+        forget(archive);
+
+        // A newer request arrives after the archive was forgotten, planting a new Pending slot
+        {
+            let mut c = lock();
+            c.slots.insert(
+                key.clone(),
+                Slot { entry: Entry::Pending, ceiling: crate::address::Reach::Local, other: None, used: 0, asked: Instant::now() },
+            );
+        }
+
+        // Release the older unstarted job. It must NOT clear the newer Pending slot.
+        release_unstarted(vec![waiting]);
+        assert_eq!(in_flight(), starting_in_flight);
+
+        {
+            let c = lock();
+            let slot = c.slots.get(&key).expect("newer pending slot must be preserved");
+            assert!(matches!(slot.entry, Entry::Pending));
+        }
+    }
+
+    #[test]
+    fn release_unstarted_safely_releases_stranded_queued_jobs_when_active_empties() {
+        let _turn = crate::cache::turn();
+        wait(Duration::from_secs(5));
+        assert_eq!(in_flight(), 0, "prior fetches should finish after wait");
+        clear();
+
+        let starting_in_flight = in_flight();
+        let cap = crate::schedule::PER_HOST;
+        let mut swept = Vec::new();
+        let mut active_jobs = Vec::new();
+
+        let host = "strandedhost.test";
+        // Fill active reservations for this host
+        for i in 0..cap {
+            let url = format!("test://{host}/active_{i}.json");
+            IN_FLIGHT.fetch_add(1, Ordering::Relaxed);
+            let mut q = queue().lock().unwrap_or_else(|e| e.into_inner());
+            let mut c = lock();
+            let latest = c.latest.unwrap_or_else(Instant::now);
+            let job = (Want::Json, Capture::current(), &[] as &'static [u16], 0u64, None, crate::address::Reach::Public);
+            c.slots.insert(
+                url.clone(),
+                Slot { entry: Entry::Pending, ceiling: crate::address::Reach::Public, other: None, used: 0, asked: Instant::now() },
+            );
+            let w = q
+                .push(url, job, |u| c.slots.get(u).map(|s| s.asked), latest, &mut swept)
+                .expect("active job should be scheduled immediately");
+            forget_dropped(&mut c, &swept);
+            active_jobs.push(w);
+        }
+
+        // Push two more jobs that exceed host capacity and become queued in waiting
+        let waiting_1 = format!("test://{host}/waiting_1.json");
+        let waiting_2 = format!("test://{host}/waiting_2.json");
+        for url in [&waiting_1, &waiting_2] {
+            IN_FLIGHT.fetch_add(1, Ordering::Relaxed);
+            let mut q = queue().lock().unwrap_or_else(|e| e.into_inner());
+            let mut c = lock();
+            let latest = c.latest.unwrap_or_else(Instant::now);
+            let job = (Want::Json, Capture::current(), &[] as &'static [u16], 0u64, None, crate::address::Reach::Public);
+            c.slots.insert(
+                url.clone(),
+                Slot { entry: Entry::Pending, ceiling: crate::address::Reach::Public, other: None, used: 0, asked: Instant::now() },
+            );
+            let w = q.push(url.clone(), job, |u| c.slots.get(u).map(|s| s.asked), latest, &mut swept);
+            assert!(w.is_none(), "job should be queued in waiting because host is at capacity");
+            forget_dropped(&mut c, &swept);
+        }
+
+        assert_eq!(in_flight(), starting_in_flight + cap + 2);
+        assert_eq!(queue().lock().unwrap().waiting(), 2);
+
+        // When all active unstarted jobs unwind and are released, active reservations drop to 0.
+        // The remaining queued jobs must be safely drained and released, rather than stranded.
+        release_unstarted(active_jobs);
+
+        assert_eq!(in_flight(), starting_in_flight);
+        assert_eq!(queue().lock().unwrap().waiting(), 0);
+        assert!(!lock().slots.contains_key(&waiting_1));
+        assert!(!lock().slots.contains_key(&waiting_2));
     }
 }
