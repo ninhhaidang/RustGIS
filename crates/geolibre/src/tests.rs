@@ -134,6 +134,73 @@ fn inputs_of_several_layers_are_layer_lists() {
 }
 
 #[test]
+fn composite_bands_legacy_manifest_selects_and_stages_rasters_in_order() {
+    // The input/output subset of `geolibre manifests` in 1.8.0 and 1.8.1 (#1684).
+    // Unlike the generic list fixture above, the real input has no role or cardinality.
+    let manifest = json!({"id": "composite_bands", "params": [
+        {"name": "inputs", "data_kind": "string", "required": true, "schema": {"kind": "string"}},
+        {"name": "output", "io_role": "output", "data_kind": "raster", "schema": {"kind": "output"}}
+    ]});
+    let (spec, meta) = spec_of(&manifest).unwrap();
+    assert_eq!(spec.params[0].kind, ParamKind::RasterLayers);
+    let mut f = Fixture::new();
+    f.dem.bands[0].data.fill(14.3);
+    // An in-memory layer and an embedded file must both be staged, in the selected order.
+    for (names, values) in [
+        (json!("dem;embedded"), [14.3, 0.0]),
+        (json!("embedded;dem"), [0.0, 14.3]),
+        (json!(["dem", "embedded"]), [14.3, 0.0]),
+        (json!(["embedded", "dem"]), [0.0, 14.3]),
+    ] {
+        let params = rustgis_analysis::resolve_params(&spec, &json!({"inputs": names})).unwrap();
+        let job = prepare_with(&spec, &meta, &f, &params).unwrap();
+        assert_eq!(job.crs, f.dem.crs);
+        assert_eq!(job.files.len(), 2);
+        for ((name, bytes), value) in job.files.iter().zip(values) {
+            let raster = rustgis_data::raster::read_bytes(name, bytes).unwrap();
+            assert_eq!(raster.bands[0].data[0], value);
+        }
+        let staged = job.files.iter().map(|(name, _)| format!("/work/{name}")).collect::<Vec<_>>().join(";");
+        assert_eq!(job.argv("/work"), [format!("--inputs={staged}"), "--output=/work/output.tif".into()]);
+    }
+    // Refuse malformed arrays rather than silently dropping an entry or the entire input.
+    for invalid in [json!(["dem", 7]), json!([])] {
+        let error = prepare_with(&spec, &meta, &f, &json!({"inputs": invalid})).unwrap_err();
+        assert!(error.contains("input layer"), "{error}");
+    }
+    // Other tools' string options must not become raster inputs just because of their name.
+    let mut unrelated = manifest.clone();
+    unrelated["id"] = json!("other_tool");
+    assert_eq!(spec_of(&unrelated).unwrap().0.params[0].kind, ParamKind::Text);
+    // A newer runner's explicit metadata keeps its usual meaning.
+    let mut explicit = manifest;
+    explicit["params"][0] = json!({"name":"inputs", "io_role":"input", "data_kind":"vector", "schema":{"cardinality":"many"}});
+    assert_eq!(spec_of(&explicit).unwrap().0.params[0].kind, ParamKind::VectorLayers);
+}
+
+#[test]
+fn composite_bands_runner_preserves_selected_band_order() {
+    let Some(mut f) = setup() else { return };
+    f.dem.bands[0].data.fill(14.3);
+    for (names, values) in [
+        (json!("dem;embedded"), [14.3, 0.0]),
+        (json!("embedded;dem"), [0.0, 14.3]),
+        (json!(["dem", "embedded"]), [14.3, 0.0]),
+        (json!(["embedded", "dem"]), [0.0, 14.3]),
+    ] {
+        let result = rustgis_analysis::run("geolibre:composite_bands", &f, &json!({"inputs": names})).unwrap();
+        let Output::Layers(layers) = result.output else { panic!("layers") };
+        let Some(OutputLayer::Raster { bytes, file_name, .. }) = layers.first() else { panic!("a raster: {layers:?}") };
+        let raster = rustgis_data::raster::read_bytes(file_name, bytes).unwrap();
+        assert_eq!(raster.bands.len(), 2);
+        assert_eq!(raster.crs, f.dem.crs);
+        for (band, value) in raster.bands.iter().zip(values) {
+            assert!((band.data[0] - value).abs() < 1e-5, "{} != {value}", band.data[0]);
+        }
+    }
+}
+
+#[test]
 fn field_suggestions_keep_categorical_values_and_plural_lists() {
     let manifest = json!({"id": "field_forms", "params": [
         {"name": "input", "io_role": "input", "data_kind": "vector"},
