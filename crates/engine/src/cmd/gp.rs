@@ -6116,7 +6116,7 @@ mod batch_tests {
         .to_string();
         std::fs::write(&f1, content_inside).unwrap();
 
-        // f2 is outside extent [0, 0, 50, 50]
+        // f2 is outside extent [0, 0, 50, 50], with a latitude past the poles (a second reader warning)
         let f2 = root.join("f2.geojson");
         let content_outside = json!({
             "type": "FeatureCollection",
@@ -6154,9 +6154,14 @@ mod batch_tests {
 
         // Result retained diagnostics for both
         let warnings = res["warnings"].as_array().unwrap();
-        assert_eq!(warnings.len(), 2);
+        assert_eq!(warnings.len(), 3);
         assert!(warnings[0]["input"].as_str().unwrap().contains("f1.geojson"));
-        assert!(warnings[1]["input"].as_str().unwrap().contains("f2.geojson"));
+        for notice in ["Z or M", "latitude past ±90°"] {
+            assert!(
+                warnings.iter().any(|w| w["input"] == f2_str && w["warning"].as_str().is_some_and(|m| m.contains(notice))),
+                "{notice}: {warnings:?}"
+            );
+        }
 
         let errors = res["errors"].as_array().unwrap();
         assert_eq!(errors.len(), 1);
@@ -6179,6 +6184,7 @@ mod batch_tests {
         assert_eq!(rec2.params["input"], f2_str);
         assert!(rec2.messages.iter().any(|m| m.contains("environment's extent")));
         assert!(rec2.messages.iter().any(|m| m.contains("Z or M")));
+        assert!(rec2.messages.iter().any(|m| m.contains("latitude past ±90°")));
 
         let _ = std::fs::remove_dir_all(root);
     }

@@ -1156,6 +1156,8 @@ impl Collector {
         let mut unconverted = 0usize;
         // Only features kept count toward the heights dropped.
         let mut zm = 0usize;
+        // Features kept, as longitude/latitude, with a latitude past the poles.
+        let mut swapped = 0usize;
         for (n, (geom, values, had_z)) in self.features.into_iter().enumerate() {
             // A feature that can't be converted is dropped, and its id is not reused, as when the
             // file is read in place.
@@ -1176,6 +1178,9 @@ impl Collector {
                 }
             }
             zm += usize::from(had_z);
+            // Converted geometry is already within ±90.5° (or dropped above), so only what is read
+            // as longitude/latitude can be swapped.
+            swapped += usize::from(declared.is_none() && geom.as_ref().is_some_and(latitude_past_poles));
             ds.features.push(crate::Feature { id: n as u64 + 1, geometry: geom, attrs });
         }
         ds.geometry_type = dominant_type(&ds);
@@ -1191,6 +1196,7 @@ impl Collector {
             // What couldn't be converted can't come back by defining the projection again.
             ds.crs_incomplete = unconverted > 0;
         }
+        report.messages.extend(swapped_latitude_note(swapped));
         // Last, as a source read in place notes it.
         ds.drop_zm(&mut report, zm);
         Ok((ds, report))
@@ -1650,6 +1656,26 @@ pub(crate) fn read_rows(
         }
     }
     Ok((ds, report))
+}
+
+/// Whether a geometry has a position that could be longitude/latitude with the two swapped: its x
+/// within ±180.5° and its y past the poles (beyond ±90.5°, as the readers check). Eastings and
+/// northings, with x far past 180 too, aren't taken for that. Each position is judged on its own, so
+/// another position elsewhere doesn't hide it.
+pub(crate) fn latitude_past_poles(g: &Geometry) -> bool {
+    let mut past = false;
+    g.for_each_coord(|c| past |= c.x.abs() <= 180.5 && c.y.abs() > 90.5);
+    past
+}
+
+/// The notice for `n` features with a latitude past the poles (none for 0).
+pub(crate) fn swapped_latitude_note(n: usize) -> Option<String> {
+    let tail = "a latitude past ±90°: longitude and latitude may be swapped";
+    match n {
+        0 => None,
+        1 => Some(format!("1 feature has {tail}")),
+        n => Some(format!("{n} features have {tail}")),
+    }
 }
 
 /// Whether a geometry has coordinates outside longitude/latitude's range.
