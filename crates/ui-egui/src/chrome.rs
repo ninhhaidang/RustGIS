@@ -432,7 +432,7 @@ pub fn status_bar(app: &mut RustGisApp, ui: &mut Ui) {
                             sep(ui, &t);
                         }
                     }
-                    if ui.small_button(tl!("Diagnostics")).on_hover_text(tl!("Review messages and failed network requests")).clicked() {
+                    if ui.small_button(tl!("Messages")).on_hover_text(tl!("Review messages and failed network requests")).clicked() {
                         app.ui.open_right(crate::RightPane::DiagnosticLog);
                     }
                     // Cut to the room left (the whole notice on hover), so it doesn't run
@@ -446,7 +446,7 @@ pub fn status_bar(app: &mut RustGisApp, ui: &mut Ui) {
                                 .small()
                                 .truncate(),
                         )
-                        .on_hover_text(crate::i18n::fmt("{message}\n{open}", &[("message", &n.text), ("open", tl_raw!("Open Diagnostics"))]))
+                        .on_hover_text(crate::i18n::fmt("{message}\n{open}", &[("message", &n.text), ("open", tl_raw!("Open Messages"))]))
                         .clicked() {
                         app.ui.open_right(crate::RightPane::DiagnosticLog);
                     }
@@ -704,7 +704,7 @@ pub(crate) const UI_COMMANDS: &[(&str, &str, &str)] = &[
     ("ui.pane.geoprocessing", "Tools Pane", "View › Windows"),
     ("ui.pane.symbology", "Symbology Pane", "Style › Drawing"),
     ("ui.pane.labeling", "Labeling Pane", "View › Windows"),
-    ("ui.pane.diagnosticLog", "Diagnostics", "View › Windows"),
+    ("ui.pane.diagnosticLog", "Messages", "View › Windows"),
     ("ui.pane.assistant", "AI Assistant", "Analyze › AI"),
     ("ui.pane.sql", "SQL Pane", "Analyze › Workflows"),
     ("ui.pane.directions", "Directions", "Home › Navigate"),

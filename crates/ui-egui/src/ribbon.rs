@@ -2132,8 +2132,8 @@ fn view_tab(app: &mut RustGisApp, ui: &mut Ui) {
             small(
                 ui,
                 app,
-                "identify",
-                "Diagnostics",
+                "message_log",
+                "Messages",
                 "Review errors, warnings, information and failed network requests from this session.",
                 "ui.pane.diagnosticLog",
                 Value::Null,

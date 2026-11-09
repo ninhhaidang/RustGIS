@@ -60,7 +60,7 @@ previous owner; browser futures receive explicit captures and never hold a threa
 across an await. Unowned requests are not broadcast to other sessions. Transport metadata
 uses observed statuses and known timeout/connection causes only.
 
-The egui Diagnostics pane (`ui.pane.diagnosticLog`) filters and copies these sanitized records.
+The egui Messages pane (`ui.pane.diagnosticLog`) filters and copies these sanitized records.
 The existing Diagnostic Monitor (`ui.pane.diagnostics`) remains the performance view.
 
 ## Never crash

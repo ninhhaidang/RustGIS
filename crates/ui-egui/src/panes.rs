@@ -137,7 +137,7 @@ fn right_title(pane: RightPane) -> (&'static str, &'static str) {
         RightPane::Profile => ("Profile", "ui.pane.profile"),
         RightPane::TimeSeries => ("Time Series", "ui.pane.timeSeries"),
         RightPane::Diagnostics => ("Diagnostic Monitor", "ui.pane.diagnostics"),
-        RightPane::DiagnosticLog => ("Diagnostics", "ui.pane.diagnosticLog"),
+        RightPane::DiagnosticLog => ("Messages", "ui.pane.diagnosticLog"),
         RightPane::Infographics => ("Infographics", "ui.pane.infographics"),
         RightPane::Report => ("Report", "ui.pane.report"),
         RightPane::Presentation => ("Presentation", "ui.pane.presentation"),

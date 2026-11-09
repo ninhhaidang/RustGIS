@@ -388,6 +388,14 @@ pub fn paint(painter: &Painter, r: Rect, name: &str, ink: Color32, accent: Color
             p.circle(12.0, 7.5, 1.4, Some(Color32::WHITE), None);
             p.line(&[(12.0, 10.5), (12.0, 17.0)], 2.2, Color32::WHITE);
         }
+        "message_log" => {
+            // A message bubble containing a log's severity dots and text lines.
+            p.closed(&[(3.0, 3.0), (21.0, 3.0), (21.0, 17.0), (11.0, 17.0), (6.0, 21.0), (6.0, 17.0), (3.0, 17.0)], 1.4, ink);
+            for (y, color) in [(7.0, red), (10.5, amber), (14.0, accent)] {
+                p.circle(6.5, y, 1.0, Some(color), None);
+                p.line(&[(10.0, y), (18.0, y)], 1.3, ink);
+            }
+        }
         "help" => {
             p.circle(12.0, 12.0, 9.0, Some(accent), None);
             p.text(12.0, 12.3, "?", 12.0, Color32::WHITE);
@@ -1224,6 +1232,7 @@ pub const ALL: &[&str] = &[
     "measure",
     "measure_area",
     "identify",
+    "message_log",
     "about",
     "help",
     "label",

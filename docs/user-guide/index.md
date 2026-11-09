@@ -118,8 +118,8 @@ ribbon, arrows at its ends scroll it.
 
 ### Diagnostics
 
-Open **View › Windows › Diagnostics**, click the status-bar notice or **Diagnostics** button,
-or search for **Diagnostics** in Command Search (`ui.pane.diagnosticLog`). This troubleshooting
+Open **View › Windows › Messages**, click the status-bar notice or **Messages** button,
+or search for **Messages** in Command Search (`ui.pane.diagnosticLog`). This troubleshooting
 history is separate from **Help › Diagnostic Monitor**, which still shows performance metrics.
 
 Messages are collected even while the pane is closed. The newest entries appear first, with
