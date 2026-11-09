@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 #[derive(Clone)]
 pub(crate) struct Cache {
+    pub areas: super::AmbiguousAreas,
     pub projected: Arc<Vec<Option<Geometry>>>,
     pub extents: Arc<Vec<Extent>>,
     pub vertices: usize,
@@ -65,18 +66,24 @@ pub(super) fn read_mode(
         if full { Ok(whole(source.read(req)?, projection)) } else { read_with_fields(source, req, bytes, projection, estimate, fields) }
     };
     // A query that doesn't parse draws every feature, so the view is read as without one.
-    let Some((scratch, expr)) = query.and_then(|q| walked(source, q)) else { return read(source) };
+    let Some((scratch, expr)) = query.and_then(|q| parsed_query(source, q)) else { return read(source) };
     // A view read whole is filtered exactly by the layer. A sampled one would leave matches out
     // (#1456): the source is walked instead, keeping up to the view's limit of the matches.
     // Half the budget holds them; their projection and display levels take the rest.
     let first = read(source)?;
-    if first.0.complete {
+    if full {
+        check_areas(&expr, &first.0.features, &source.info().name, first.0.complete)?;
+    }
+    if first.0.complete || !source.visits_chunks() || numbers_rows(&expr) {
         return Ok(first);
     }
     drop(first);
-    let batch = read_filtered(source, req, if full { usize::MAX } else { bytes / 2 }, scratch, &expr)?;
+    let (batch, areas) = read_filtered(source, req, if full { usize::MAX } else { bytes / 2 }, scratch, &expr, full)?;
     let (batch, mut cache) = if full { whole(batch, projection) } else { fit(batch, bytes, projection, fields)? };
     cache.filtered = true;
+    if rustgis_data::query::uses_area(&expr) {
+        cache.areas = areas;
+    }
     Ok((batch, cache))
 }
 
@@ -88,10 +95,16 @@ pub(super) fn walked(source: &dyn FeatureSource, query: &Query) -> Option<(Datas
     if !source.visits_chunks() {
         return None;
     }
+    parsed_query(source, query).filter(|(_, expr)| !numbers_rows(expr))
+}
+
+/// Parse against metadata even when a source cannot be walked: its decoded view still needs
+/// validation before a geometry measurement expression is evaluated by the layer.
+fn parsed_query(source: &dyn FeatureSource, query: &Query) -> Option<(Dataset, Expr)> {
     let info = source.info();
     let scratch = Dataset::new(info.name.clone(), info.geometry_type, query.fields.clone());
     let expr = rustgis_data::query::parse(&query.text, &scratch).ok()?;
-    (!numbers_rows(&expr)).then_some((scratch, expr))
+    Some((scratch, expr))
 }
 
 /// Whether an expression reads `@row_number` anywhere.
@@ -118,11 +131,33 @@ fn numbers_rows(e: &Expr) -> bool {
 /// The features of `req` that `expr` keeps, walking every feature of its extent: an evenly
 /// spread sample of the matches when more than `req.limit` of them, or more than `bytes`, match.
 /// `scratch` holds each chunk, with the fields `expr` was parsed against.
-fn read_filtered(source: &dyn FeatureSource, req: &Request, bytes: usize, mut scratch: Dataset, expr: &Expr) -> Result<Batch> {
+fn read_filtered(
+    source: &dyn FeatureSource,
+    req: &Request,
+    bytes: usize,
+    mut scratch: Dataset,
+    expr: &Expr,
+    strict: bool,
+) -> Result<(Batch, super::AmbiguousAreas)> {
     let limit = req.limit.max(1);
     let (mut kept, mut kept_bytes, mut step, mut seen) = (Vec::new(), 0usize, 1u64, 0u64);
+    let mut areas = super::AmbiguousAreas::default();
+    let measures_area = rustgis_data::query::uses_area(expr);
     let summary = source.visit_chunks(req.extent, FILTER_CHUNK_BYTES, &mut |chunk| {
         scratch.features = chunk.into();
+        if strict
+            && measures_area
+            && let Some(message) = rustgis_data::ambiguous_area_message(scratch.features.iter().filter_map(|f| f.geometry.as_ref()))
+        {
+            return Err(DataError::Format(format!(
+                "Definition query: {}: {message}; count covers this decoded chunk of {} feature(s)",
+                scratch.name,
+                scratch.features.len()
+            )));
+        }
+        if measures_area && !strict {
+            areas.include(super::AmbiguousAreas::from_features(&scratch.features));
+        }
         let keep: Vec<bool> = (0..scratch.features.len()).map(|r| rustgis_data::query::eval(expr, &scratch, r)).collect();
         for (feature, _) in std::mem::take(&mut scratch.features).into_iter().zip(keep).filter(|(_, k)| *k) {
             seen += 1;
@@ -144,7 +179,18 @@ fn read_filtered(source: &dyn FeatureSource, req: &Request, bytes: usize, mut sc
         }
         Ok(())
     })?;
-    Ok(Batch { features: kept, matched: seen, complete: step == 1, skipped: summary.skipped })
+    Ok((Batch { features: kept, matched: seen, complete: step == 1, skipped: summary.skipped }, areas))
+}
+
+/// An expression parsed against source metadata still needs validation against decoded geometry.
+fn check_areas(expr: &Expr, features: &[rustgis_data::Feature], name: &str, complete: bool) -> Result<()> {
+    if rustgis_data::query::uses_area(expr)
+        && let Some(message) = rustgis_data::ambiguous_area_message(features.iter().filter_map(|f| f.geometry.as_ref()))
+    {
+        let scope = if complete { String::new() } else { format!("; count covers the {} feature(s) read for this view", features.len()) };
+        return Err(DataError::Format(format!("Definition query: {name}: {message}{scope}")));
+    }
+    Ok(())
 }
 
 /// A whole read's cache: every feature projected, without a byte budget.
@@ -152,6 +198,7 @@ fn whole(batch: Batch, projection: &crate::Projection) -> (Batch, Cache) {
     let flat = crate::projection::Flat::of(projection);
     let projected: Vec<_> = batch.features.iter().map(|f| f.geometry.as_ref().map(|g| flat.project(g))).collect();
     let cache = Cache {
+        areas: super::AmbiguousAreas::from_features(&batch.features),
         extents: Arc::new(projected.iter().map(|g| g.as_ref().map_or(Extent::EMPTY, Geometry::extent)).collect()),
         vertices: projected.iter().flatten().map(crate::lod::thinnable).sum(),
         mean_bytes: 0,
@@ -288,9 +335,11 @@ fn trim(mut batch: Batch, mut projected: Vec<Option<Geometry>>, bytes: usize, pr
     let mean_bytes = base_bytes(&batch, &projected).div_ceil(batch.features.len().max(1));
     let feature_bytes = memory::features_bytes(&batch.features);
     let projected_bytes = crate::lod::cache_bytes(&projected);
+    let areas = super::AmbiguousAreas::from_features(&batch.features);
     Ok((
         batch,
         Cache {
+            areas,
             projected: Arc::new(projected),
             extents,
             vertices,
@@ -308,6 +357,43 @@ mod tests {
     use super::*;
     use rustgis_data::{Dataset, Field, FieldType, GeometryType, Value};
     use rustgis_geom::Coord;
+
+    #[test]
+    fn ambiguous_polar_area_queries_fail_for_complete_and_chunked_sources() {
+        let c = Coord::new;
+        let bad = vec![c(-180.0, 90.0), c(180.0, 90.0), c(-90.0, -90.0), c(90.0, -80.0)];
+        let mut ds = Dataset::new("Polar", GeometryType::Polygon, vec![]);
+        ds.push(Some(Geometry::Polygon(vec![vec![bad.clone()]])), vec![]);
+        ds.push(Some(Geometry::Polygon(vec![vec![bad]])), vec![]);
+        let (bytes, _) = rustgis_data::io::write_bytes(&ds, "fgb").unwrap();
+        let source = rustgis_data::source::open_bytes("polar.fgb", bytes, None).unwrap();
+        let query = Query { text: "$area > 0".into(), fields: vec![] };
+        let req = Request::all();
+        let error =
+            read_mode(source.as_ref(), &req, usize::MAX, &crate::Projection::WebMercator, 0, true, None, Some(&query)).err().unwrap();
+        assert!(error.to_string().contains("2 ring(s) in 2 feature(s)"), "{error}");
+        let scratch = Dataset::new("Polar", GeometryType::Polygon, vec![]);
+        let expr = rustgis_data::query::parse(&query.text, &scratch).unwrap();
+        let error = read_filtered(source.as_ref(), &Request { extent: None, limit: 1 }, usize::MAX, scratch, &expr, true).unwrap_err();
+        assert!(error.to_string().contains("Polar") && error.to_string().contains("2 ring(s) in 2 feature(s)"), "{error}");
+        // Text mentioning $area is ordinary text, not a request to measure the geometry.
+        let text = Query { text: "'$area' = '$area'".into(), fields: vec![] };
+        let (batch, _) = read_mode(source.as_ref(), &req, usize::MAX, &crate::Projection::WebMercator, 0, true, None, Some(&text)).unwrap();
+        assert_eq!(batch.features.len(), 2);
+        struct Opaque(Box<dyn FeatureSource>);
+        impl FeatureSource for Opaque {
+            fn info(&self) -> &rustgis_data::source::SourceInfo {
+                self.0.info()
+            }
+            fn read(&self, req: &Request) -> Result<Batch> {
+                self.0.read(req)
+            }
+        }
+        let opaque = Opaque(source);
+        assert!(!opaque.visits_chunks());
+        let error = read_mode(&opaque, &req, usize::MAX, &crate::Projection::WebMercator, 0, true, None, Some(&query)).err().unwrap();
+        assert!(error.to_string().contains("2 ring(s) in 2 feature(s)"), "{error}");
+    }
 
     fn source() -> Box<dyn FeatureSource> {
         let mut ds = Dataset::new("complex", GeometryType::Polyline, vec![Field::new("text", FieldType::Text)]);

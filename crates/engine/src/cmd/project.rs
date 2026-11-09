@@ -562,7 +562,7 @@ fn info(s: &mut Session, p: &Value) -> CmdResult {
                     // The text expression it labels by while that reads, as the map draws, else its field.
                     "labels": l.labels.enabled.then(|| {
                         let d = &l.labels.default;
-                        d.by.text.as_deref().filter(|t| rustgis_data::query::parse(t, &l.dataset).is_ok())
+                        d.by.text.as_deref().filter(|t| rustgis_data::query::parse_fields(t, &l.dataset).is_ok())
                             .or(Some(d.field.as_str()).filter(|f| !f.is_empty()))
                     }).flatten(),
                     "labelClasses": label_classes_set(&l.labels)

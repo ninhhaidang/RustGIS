@@ -8,6 +8,21 @@ const LABEL_GRID_STEPS: usize = 64;
 // Prefix construction can shift by steps + 1, which must also fit in u128.
 const _: () = assert!(LABEL_GRID_STEPS > 0 && LABEL_GRID_STEPS < (u128::BITS - 1) as usize);
 
+/// A counted explanation when these features contain rings with no single enclosed area.
+pub fn ambiguous_area_message<'a>(geometries: impl Iterator<Item = &'a Geometry>) -> Option<String> {
+    let (mut features, mut rings) = (0usize, 0usize);
+    for geometry in geometries {
+        let count = geometry.ambiguous_area_rings();
+        if count > 0 {
+            features += 1;
+            rings += count;
+        }
+    }
+    (rings > 0).then(|| {
+        format!("area is ambiguous for {rings} ring(s) in {features} feature(s): a ring through both poles winds beyond one whole surface")
+    })
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum GeometryType {
     Point,
@@ -107,6 +122,14 @@ impl Geometry {
         }
     }
 
+    /// Rings whose polar winding encloses no single area, including holes.
+    pub fn ambiguous_area_rings(&self) -> usize {
+        match self {
+            Geometry::Polygon(polys) => polys.iter().flatten().filter(|r| rustgis_geom::ring_area_is_ambiguous(r)).count(),
+            _ => 0,
+        }
+    }
+
     /// `m` of this longitude/latitude geometry on the WGS 84 ellipsoid: what Calculate Geometry
     /// stores and `$area`, `$perimeter` and `$length` read. `None` for another kind of geometry,
     /// an empty one, or one whose coordinates aren't longitudes and latitudes (a shape drawn or
@@ -131,7 +154,8 @@ impl Geometry {
                             .sum::<f64>()
                     })
                     .sum(),
-            ),
+            )
+            .filter(|area: &f64| area.is_finite()),
             (Geometry::Polygon(polys), Measure::Perimeter) => Some(polys.iter().flatten().map(|r| wgs84_ring_perimeter_area_m2(r).0).sum()),
             (Geometry::Line(parts), Measure::Length) => Some(parts.iter().map(|r| wgs84_length_m(r)).sum()),
             _ => None,

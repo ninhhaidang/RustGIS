@@ -71,7 +71,7 @@ impl LabelExprs {
         if by.is_empty() {
             return None;
         }
-        let one = |t: &Option<String>| t.as_deref().and_then(|t| query::parse(t, ds).ok());
+        let one = |t: &Option<String>| t.as_deref().and_then(|t| query::parse_fields(t, ds).ok());
         let e = LabelExprs {
             text: one(&by.text),
             size: one(&by.size),

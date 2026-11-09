@@ -1566,7 +1566,14 @@ fn measure(s: &mut Session, p: &Value) -> CmdResult {
             if let Some(first) = pts.first() {
                 ring.push(*first);
             }
-            json!({"kind": "area", "squareMetres": body.area(rustgis_geom::geodesic_ring_area_m2(&ring)), "perimeterMetres": body.length(rustgis_geom::geodesic_ring_perimeter_m(&ring))})
+            if rustgis_geom::ring_area_is_ambiguous(&ring) {
+                return Err("the area is ambiguous: 1 ring winds beyond one whole surface".into());
+            }
+            let area = body.area(rustgis_geom::geodesic_ring_area_m2(&ring));
+            if !area.is_finite() {
+                return Err("the area cannot be measured from these coordinates".into());
+            }
+            json!({"kind": "area", "squareMetres": area, "perimeterMetres": body.length(rustgis_geom::geodesic_ring_perimeter_m(&ring))})
         }
         "height" => {
             let (Some(a), Some(c)) = (pts.first(), pts.get(1)) else { return Err("a height needs two points (base, top)".into()) };

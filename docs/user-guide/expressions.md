@@ -148,6 +148,20 @@ the layer's coordinate system (with the same
 full-turn edge, such as a globe-wide band, counts its whole parallels there too). On a feature with no geometry, or coordinates that aren't
 longitudes and latitudes, they are null. Measuring another kind of layer (`$area` on lines), or a
 unit that isn't one of those, is an error.
+An area expression is also refused if the layer contains a ring through both poles
+whose winding exceeds one whole surface. The error counts the affected rings and features;
+it does not store an impossible area or silently replace it with null. Perimeter expressions,
+ordinary polar caps and whole-world rectangles still work. Attribute rules check only the edited rows, so an unrelated ambiguous feature does not block a clean-row edit. Geometry edits that would invalidate a saved area filter, symbol or label expression are refused and rolled back.
+
+Saved display expressions are checked against the layer’s fields separately from current area values. When an opened project or refreshed layer contains an ambiguous area, the affected features’ area values are unavailable and a counted notice explains this; the expressions are retained and clean features still evaluate normally. Attribute-only edits can retain that existing geometry; new or changed geometry must pass the display check. Area constraints also guard archive restoration. An unrelated field deletion does not discard a valid area expression or rule, and source repair still checks its fields. Unique Values validates the rows kept by the definition query. Streamed display expressions report affected features once per installed window, with a count scoped to the decoded window. Interactive streamed area queries retain clean matches and report unavailable areas among decoded features, including rows their query omits. Full-resolution streamed exports still stop at the first ambiguous decoded chunk and state the scope of that count.
+
+Report filters are retained when a report is imported or fitted to another layer with the
+required fields. Building a report whose filter uses an ambiguous area returns a counted error
+instead of dropping the filter and listing every record.
+
+Live expression editors check fields and syntax while typing, so a retained area clause does
+not claim that clean features have lost their labels. **Check** and **Apply** still validate
+the data and report an ambiguous area.
 
 ## Limits
 

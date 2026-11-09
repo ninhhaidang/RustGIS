@@ -12,7 +12,7 @@
 //! when its bytes have.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use rustgis_data::source::{Batch, FeatureSource, Request, SourceInfo};
 use rustgis_geom::Extent;
@@ -35,6 +35,33 @@ pub const VIEW_LIMIT: usize = if cfg!(target_arch = "wasm32") { 100_000 } else {
 pub const REMOTE_VIEW_LIMIT: usize = if cfg!(target_arch = "wasm32") { 30_000 } else { 60_000 };
 
 const RECONNECT_REQUIRED: &str = "this database source came from a peer; reconnect explicitly before reading it";
+
+/// Ambiguous polygon areas among decoded features, including rows an area query could not keep.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AmbiguousAreas {
+    pub rings: usize,
+    pub features: usize,
+}
+
+impl AmbiguousAreas {
+    /// Count each affected feature once and all of its ambiguous rings.
+    pub fn from_features(features: &[rustgis_data::Feature]) -> Self {
+        let mut counts = Self::default();
+        for geometry in features.iter().filter_map(|feature| feature.geometry.as_ref()) {
+            let rings = geometry.ambiguous_area_rings();
+            if rings > 0 {
+                counts.rings = counts.rings.saturating_add(rings);
+                counts.features = counts.features.saturating_add(1);
+            }
+        }
+        counts
+    }
+
+    pub(crate) fn include(&mut self, other: Self) {
+        self.rings = self.rings.saturating_add(other.rings);
+        self.features = self.features.saturating_add(other.features);
+    }
+}
 
 /// A streamed layer's source.
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -113,6 +140,15 @@ pub struct SourceLayer {
     /// Reads installed so far: the features changing with it came from the source, not an edit.
     #[serde(skip)]
     pub reads: u64,
+    /// Last installed window examined by the session's display diagnostics.
+    #[serde(skip)]
+    display_read_said: u64,
+    /// Counts computed on the read worker, including unavailable rows removed by its query.
+    #[serde(skip)]
+    pub(crate) area_counts: AmbiguousAreas,
+    /// A public dataset mutation invalidates these counts just as it invalidates view caches.
+    #[serde(skip)]
+    pub(crate) area_features: Option<Weak<Vec<rustgis_data::Feature>>>,
     /// For a layer read through GDAL: the original file, converted again into the cache when the
     /// converted copy is gone (desktop only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -594,6 +630,18 @@ pub enum Polled {
 }
 
 impl SourceLayer {
+    /// Counts for the installed read, or `None` if its features have since been changed.
+    pub fn unavailable_areas(&self, features: &rustgis_data::Features) -> Option<AmbiguousAreas> {
+        self.area_features.as_ref().filter(|key| Weak::ptr_eq(key, &features.allocation_key())).map(|_| self.area_counts)
+    }
+    /// Whether another installed window needs its retained display expressions checked.
+    pub fn take_display_window(&mut self) -> bool {
+        if self.reads == self.display_read_said {
+            return false;
+        }
+        self.display_read_said = self.reads;
+        true
+    }
     /// The original local file, excluding embedded data, databases and query results.
     pub fn linked_file(&self) -> Option<&str> {
         if self.embedded.is_some() || self.postgis.is_some() || self.mysql.is_some() || self.sqlserver.is_some() {
@@ -1439,6 +1487,9 @@ impl SourceLayer {
             reconnect_required: _,
             limit: _,
             reads: _,
+            display_read_said: _,
+            area_counts: _,
+            area_features: _,
             conversion_info: _,
             conversion_fallback: _,
             conversion_notes_unsaid: _,

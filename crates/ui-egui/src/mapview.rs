@@ -3224,13 +3224,20 @@ fn overlays(app: &mut RustGisApp, ui: &mut Ui, p: &egui::Painter, rect: Rect, t:
                     ring.push(f);
                 }
                 let (perimeter, area) = measure_ring(&ring);
-                crate::i18n::fmt(
-                    "Area {area}   ·   Perimeter {perimeter}",
-                    &[
-                        ("area", &crate::measure_units::area(area, app.ui.measurement_imperial)),
-                        ("perimeter", &crate::measure_units::distance(perimeter, app.ui.measurement_imperial)),
-                    ],
-                )
+                if rustgis_engine::geom::ring_area_is_ambiguous(&ring) {
+                    crate::i18n::fmt(
+                        "Area cannot be measured: ring winds beyond one whole surface · Perimeter {perimeter}",
+                        &[("perimeter", &crate::measure_units::distance(perimeter, app.ui.measurement_imperial))],
+                    )
+                } else {
+                    crate::i18n::fmt(
+                        "Area {area}   ·   Perimeter {perimeter}",
+                        &[
+                            ("area", &crate::measure_units::area(area, app.ui.measurement_imperial)),
+                            ("perimeter", &crate::measure_units::distance(perimeter, app.ui.measurement_imperial)),
+                        ],
+                    )
+                }
             };
             let anchor = pos2(rect.center().x, rect.min.y + 22.0);
             let galley = p.layout_no_wrap(text, semibold(12.5), t.text);

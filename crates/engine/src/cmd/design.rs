@@ -36,6 +36,56 @@ pub struct EditCounts {
     pub deleted: usize,
 }
 
+/// Whether a retained display expression reads area; stale field references do not count.
+fn has_area_display(l: &rustgis_map::Layer) -> bool {
+    let uses_area =
+        |text: &str| rustgis_data::query::parse_fields(text, &l.dataset).is_ok_and(|expr| rustgis_data::query::uses_area(&expr));
+    let by = &l.symbol_by;
+    l.definition_query
+        .as_deref()
+        .into_iter()
+        .chain(l.display_filters.iter().map(|filter| filter.where_.as_str()))
+        .chain(l.renderer.expression())
+        .chain([&by.size, &by.fill, &by.stroke, &by.stroke_width, &by.angle].into_iter().filter_map(|text| text.as_deref()))
+        .chain(std::iter::once(&l.labels.default).chain(l.labels.classes.iter()).flat_map(|class| {
+            [&class.where_, &class.by.text, &class.by.size, &class.by.color, &class.by.angle].into_iter().filter_map(|text| text.as_deref())
+        }))
+        .any(uses_area)
+}
+
+/// Explain unavailable areas in retained display expressions without discarding their text.
+pub(crate) fn display_area_message(l: &rustgis_map::Layer) -> Option<String> {
+    display_area_messages(std::iter::once(l))
+}
+
+/// Count unavailable values across affected layers in one notice, naming the read scope.
+pub(crate) fn display_area_messages<'a>(layers: impl Iterator<Item = &'a rustgis_map::Layer>) -> Option<String> {
+    let (mut rings, mut features, mut names, mut windowed) = (0usize, 0usize, Vec::new(), false);
+    for layer in layers.filter(|layer| has_area_display(layer)) {
+        let before = features;
+        let counts = layer
+            .source
+            .as_ref()
+            .and_then(|source| source.unavailable_areas(&layer.dataset.features))
+            .unwrap_or_else(|| rustgis_map::source::AmbiguousAreas::from_features(&layer.dataset.features));
+        rings = rings.saturating_add(counts.rings);
+        features = features.saturating_add(counts.features);
+        if features > before {
+            names.push(layer.name.clone());
+            windowed |= layer.source.is_some();
+        }
+    }
+    if rings == 0 {
+        return None;
+    }
+    let scope = if windowed { "; streamed-layer counts cover only decoded features for the current views" } else { "" };
+    Some(format!(
+        "{} layer(s) ({}): area is ambiguous for {rings} ring(s) in {features} feature(s): a ring through both poles winds beyond one whole surface{scope}; area values for affected features are unavailable; saved display expressions are retained",
+        names.len(),
+        crate::names_said(&names)
+    ))
+}
+
 /// Editing is on and a feature layer is active.
 pub(crate) fn need_editable(s: &Session) -> Option<&'static str> {
     if !s.map().editing.settings.enabled {
@@ -131,13 +181,33 @@ pub(crate) fn apply_with(s: &mut Session, id: u32, changes: Vec<Change>, new_def
     // What each calculation rule's whole-number field cut: the rule and the field's name. Each
     // rule's cuts are said, even when a later rule writes the same field: it may read them.
     let mut cuts: Vec<(String, String, super::edit::Cuts)> = Vec::new();
+    // Parsing against the fields separates a measurement failure from a stale rule. The latter
+    // may still be skipped below, but an ambiguous area must never disable a valid rule.
+    let metadata = rustgis_data::Dataset::new(l.dataset.name.clone(), l.dataset.geometry_type, l.dataset.fields.clone());
+    let uses_area = |text: &str| rustgis_data::query::parse(text, &metadata).is_ok_and(|expr| rustgis_data::query::uses_area(&expr));
+    let display_area = has_area_display(l);
+    let rule_area = l
+        .design
+        .rules
+        .iter()
+        .any(|rule| (rule.kind == RuleKind::Constraint || l.dataset.field_index(&rule.field).is_some()) && uses_area(&rule.expression));
+    if (display_area || rule_area)
+        && let Some(message) = rustgis_data::ambiguous_area_message(changes.iter().filter_map(|change| {
+            let feature = l.dataset.features.get(change.row?)?;
+            (rule_area || change.before.as_ref().is_none_or(|before| before.geometry != feature.geometry))
+                .then_some(feature.geometry.as_ref())
+                .flatten()
+        }))
+    {
+        return Err(format!("{}: {message}", l.dataset.name));
+    }
     // Calculation rules, in order.
     for rule in l.design.rules.iter().filter(|r| r.kind == RuleKind::Calculation) {
         let Some(fi) = l.dataset.field_index(&rule.field) else { continue };
         let ty = l.dataset.fields.get(fi).map(|f| f.ty).unwrap_or(FieldType::Text);
         // A rule that no longer reads (its field was removed, or a hand-edited file) is skipped
         // rather than blocking every edit.
-        let Ok(calc) = super::edit::Calculation::parse(&rule.expression, &l.dataset) else { continue };
+        let Ok(calc) = super::edit::Calculation::parse(&rule.expression, &metadata) else { continue };
         let mut cut = super::edit::Cuts::default();
         for r in &rows {
             let (v, c) = super::edit::coerce_cut(calc.eval(&l.dataset, *r), ty);
@@ -157,7 +227,7 @@ pub(crate) fn apply_with(s: &mut Session, id: u32, changes: Vec<Change>, new_def
         .iter()
         .filter(|r| r.kind == RuleKind::Constraint)
         .filter_map(|rule| {
-            rustgis_data::query::parse(&rule.expression, &l.dataset).ok().map(|e| (rule.name.clone(), rule.expression.clone(), e))
+            rustgis_data::query::parse(&rule.expression, &metadata).ok().map(|e| (rule.name.clone(), rule.expression.clone(), e))
         })
         .collect();
     let changed_fields = |r: usize| -> Option<Vec<bool>> {
@@ -1688,6 +1758,17 @@ fn archive_restore(s: &mut Session, p: &Json) -> CmdResult {
             }
             (None, None) => {}
         }
+    }
+    if (has_area_display(l)
+        || l.design.rules.iter().any(|rule| {
+            rule.kind == RuleKind::Constraint
+                && rustgis_data::query::parse_fields(&rule.expression, &l.dataset).is_ok_and(|expr| rustgis_data::query::uses_area(&expr))
+        }))
+        && let Some(message) = rustgis_data::ambiguous_area_message(
+            touched.iter().filter_map(|(fid, _)| l.dataset.features.get(*index.get(fid)?)?.geometry.as_ref()),
+        )
+    {
+        return Err(format!("{}: {message}", l.dataset.name));
     }
     // The restore is itself archived and counted, so it can be restored past too.
     let time = now();

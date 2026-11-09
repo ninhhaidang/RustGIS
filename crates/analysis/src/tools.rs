@@ -4178,7 +4178,8 @@ fn merc_area_perimeter(mp: &MultiPolygon<f64>) -> (f64, f64) {
 
 /// Calculate Geometry Attributes: adds `area_km2` and `perimeter_km` to a polygon layer (see
 /// [`ground_area_perimeter`]), `length_km` to a line layer, and `point_x`/`point_y` (a label point)
-/// to any other, updating the layer in place.
+/// to any other, updating the layer in place. Polygon measurements and ambiguity counts check
+/// Cancel between features; measuring one feature's rings is an uninterruptible step.
 fn calculate_geometry(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
     use geo::{Geodesic, Length};
     let ds = input(inp, p, "input")?;
@@ -4193,9 +4194,24 @@ fn calculate_geometry(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> 
                 &ds.features,
                 PARALLEL_FEATURES,
                 || (),
-                |_, _, f| Ok::<_, String>(f.geometry.as_ref().map_or((0.0, 0.0), ground_area_perimeter)),
+                |_, _, f| {
+                    // Validate every winding, including ones without a full-turn edge, in the
+                    // cancellable worker pass. An unavailable area needs no further measurement.
+                    let rings = f.geometry.as_ref().map_or(0, Geometry::ambiguous_area_rings);
+                    let measures = if rings == 0 { f.geometry.as_ref().map_or((0.0, 0.0), ground_area_perimeter) } else { (f64::NAN, 0.0) };
+                    Ok::<_, String>((measures, rings))
+                },
             )?;
-            for (f, (a, per)) in out.features.iter_mut().zip(measured) {
+            let (rings, features) = measured.iter().fold((0usize, 0usize), |(rings, features), (_, count)| {
+                (rings.saturating_add(*count), features.saturating_add(usize::from(*count > 0)))
+            });
+            if rings > 0 {
+                return Err(format!(
+                    "Calculate Geometry Attributes: {}: area is ambiguous for {rings} ring(s) in {features} feature(s): a ring through both poles winds beyond one whole surface",
+                    ds.name
+                ));
+            }
+            for (f, ((a, per), _)) in out.features.iter_mut().zip(measured) {
                 if let Some(v) = f.attrs.get_mut(fa) {
                     *v = Value::Float(a / 1e6);
                 }
@@ -4765,6 +4781,13 @@ fn tabulate_intersection(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, Strin
     };
     let zone_rows = sorted_rows("zones", zones);
     let class_rows = sorted_rows("classes", classes);
+    for (dataset, rows) in [(zones, &zone_rows), (classes, &class_rows)] {
+        if let Some(message) = rustgis_data::ambiguous_area_message(
+            rows.iter().filter_map(|&row| dataset.features.get(row)?.geometry.as_ref()).filter(|g| has_shape(g)),
+        ) {
+            return Err(format!("Tabulate Intersection: {}: {message}", dataset.name));
+        }
+    }
     let (zones_shapeless, classes_shapeless) = (shapeless(zones, &zone_rows), shapeless(classes, &class_rows));
     // Features with a ring that jumps across the antimeridian unsplit: the overlay, like the map,
     // takes such a ring the long way round, while `area_km2` takes its ground shape.
@@ -4989,6 +5012,9 @@ fn tabulate_intersection(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, Strin
         };
         let mut row = zone.key.clone();
         row.extend(class.key.iter().cloned());
+        if let Some(message) = rustgis_data::ambiguous_area_message(std::iter::once(covered)) {
+            return Err(format!("Tabulate Intersection: {message}"));
+        }
         row.push(Value::Float(ground_area_perimeter(covered).0 / 1e6));
         let covered_area = map_area_m2(covered);
         row.push(if zone.map_area_m2 > 0.0 { Value::Float(covered_area / zone.map_area_m2 * 100.0) } else { Value::Null });
@@ -5726,6 +5752,15 @@ fn spatial_join(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
 
     let target_rows = rows(inp, p, "target", target);
     let join_rows = rows(inp, p, "join", join);
+    if mode == JoinMatch::LargestOverlap {
+        for (ds, selected) in [(target, &target_rows), (join, &join_rows)] {
+            if let Some(message) =
+                rustgis_data::ambiguous_area_message(selected.iter().filter_map(|&r| ds.features.get(r)?.geometry.as_ref()))
+            {
+                return Err(format!("Spatial Join: {}: {message}", ds.name));
+            }
+        }
+    }
 
     let mut join_geoms: Vec<Located<'_>> = Vec::with_capacity(join_rows.len());
     // The join features converted: Cancel looked at, and progress counted, feature by feature.
@@ -5827,6 +5862,13 @@ fn spatial_join(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
                             continue;
                         }
                         let o = overlap(&t_geo, &j.geo);
+                        if !o.is_finite() {
+                            return Err(format!(
+                                "Spatial Join: the overlap of target row {} and join row {} cannot be measured",
+                                tr + 1,
+                                j.row + 1
+                            ));
+                        }
                         if o > 0.0 && best.is_none_or(|(_, b)| o > b) {
                             best = Some((j.row, o));
                         }

@@ -1967,6 +1967,19 @@ impl Session {
     /// read, and why. Once for each layer's pixels or failure, one notice of each kind; the app
     /// calls it each frame.
     pub fn notice_landed_rasters(&mut self) {
+        // Streamed vector windows land after project opening too. Check each installed read
+        // once, keeping the same counted notice channel as retained resident expressions.
+        let mut landed = Vec::new();
+        for map in &mut self.project.maps {
+            for layer in &mut map.layers {
+                if layer.source.as_mut().is_some_and(|source| source.take_display_window()) {
+                    landed.push(&*layer);
+                }
+            }
+        }
+        if let Some(message) = cmd::design::display_area_messages(landed.into_iter()) {
+            self.notify(message, false);
+        }
         let (mut lost, mut held, mut failed, mut dropped) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         for m in &mut self.project.maps {
             for l in &mut m.layers {

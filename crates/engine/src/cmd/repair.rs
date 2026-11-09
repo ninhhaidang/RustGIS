@@ -433,8 +433,8 @@ fn compatible(
     let candidate = Dataset::new("", geometry, fields.to_vec());
     let check = |expression: &str| -> Result<(), String> {
         // Existing broken expressions are not newly invalidated by replacing the source.
-        if query::parse(expression, &l.dataset).is_ok()
-            && let Err(why) = query::parse(expression, &candidate)
+        if query::parse_fields(expression, &l.dataset).is_ok()
+            && let Err(why) = query::parse_fields(expression, &candidate)
         {
             return Err(format!(
                 "{path} doesn't fit {}'s configured expression `{expression}` ({why}): choose a file that has its fields",

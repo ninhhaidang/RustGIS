@@ -309,7 +309,7 @@ fn delete_field(s: &mut Session, p: &Json) -> CmdResult {
     let id = s.layer_id(p)?;
     let fi = field_index(s, id, ps(p, "field").ok_or("field is required")?)?;
     let l = s.map_mut().layer_mut(id).ok_or("no layer")?;
-    let read_before = l.renderer.expression().is_some_and(|e| rustgis_data::query::parse(e, &l.dataset).is_ok());
+    let read_before = l.renderer.expression().is_some_and(|e| rustgis_data::query::parse_fields(e, &l.dataset).is_ok());
     let removed = l.dataset.fields.remove(fi).name;
     for f in &mut l.dataset.features {
         if fi < f.attrs.len() {
@@ -318,7 +318,7 @@ fn delete_field(s: &mut Session, p: &Json) -> CmdResult {
     }
     // Nothing may keep referring to the deleted field.
     // (Classes by an expression that read until now go the same way.)
-    let unread = read_before && l.renderer.expression().is_some_and(|e| rustgis_data::query::parse(e, &l.dataset).is_err());
+    let unread = read_before && l.renderer.expression().is_some_and(|e| rustgis_data::query::parse_fields(e, &l.dataset).is_err());
     let mut single = None;
     if unread || l.renderer.field().is_some_and(|f| f.eq_ignore_ascii_case(&removed)) {
         l.renderer = rustgis_map::Renderer::Single(l.renderer.base_symbol());
@@ -330,7 +330,7 @@ fn delete_field(s: &mut Session, p: &Json) -> CmdResult {
     // field instead. A class clause naming it no longer reads, and takes no features, which go on
     // to the next class: it is kept to edit, not dropped with its text symbol.
     if l.labels.default.field.eq_ignore_ascii_case(&removed) {
-        let by_text = l.labels.default.by.text.as_deref().is_some_and(|t| rustgis_data::query::parse(t, &l.dataset).is_ok());
+        let by_text = l.labels.default.by.text.as_deref().is_some_and(|t| rustgis_data::query::parse_fields(t, &l.dataset).is_ok());
         if by_text {
             l.labels.default.field.clear();
         } else {
@@ -339,7 +339,7 @@ fn delete_field(s: &mut Session, p: &Json) -> CmdResult {
     }
     l.labels.repoint_missing_fields(&l.dataset);
     if let Some(q) = &l.definition_query
-        && rustgis_data::query::parse(q, &l.dataset).is_err()
+        && rustgis_data::query::parse_fields(q, &l.dataset).is_err()
     {
         l.definition_query = None;
     }
@@ -355,13 +355,13 @@ fn delete_field(s: &mut Session, p: &Json) -> CmdResult {
         }
     }
     d.contingent.retain(|c| !c.fields.iter().any(|f| f.eq_ignore_ascii_case(&removed)));
-    let ds = &l.dataset;
+    let ds = rustgis_data::Dataset::new(l.dataset.name.clone(), l.dataset.geometry_type, l.dataset.fields.clone());
     let before = d.rules.len();
     d.rules.retain(|r| {
         !r.field.eq_ignore_ascii_case(&removed)
             && match r.kind {
-                rustgis_map::design::RuleKind::Calculation => Calculation::parse(&r.expression, ds).is_ok(),
-                rustgis_map::design::RuleKind::Constraint => rustgis_data::query::parse(&r.expression, ds).is_ok(),
+                rustgis_map::design::RuleKind::Calculation => Calculation::parse(&r.expression, &ds).is_ok(),
+                rustgis_map::design::RuleKind::Constraint => rustgis_data::query::parse_fields(&r.expression, &ds).is_ok(),
             }
     });
     let removed_rules = before - d.rules.len();

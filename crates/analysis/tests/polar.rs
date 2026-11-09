@@ -61,6 +61,41 @@ fn run(m: &Map, tool: &str, params: serde_json::Value) -> Dataset {
 }
 
 #[test]
+fn calculate_geometry_refuses_winding_without_full_turn_edges_and_can_cancel() {
+    let c = Coord::new;
+    // Two traversals of the world's boundary, with every longitude edge only 90 degrees.
+    let boundary = [
+        c(-180.0, 90.0),
+        c(-90.0, 90.0),
+        c(0.0, 90.0),
+        c(90.0, 90.0),
+        c(180.0, 90.0),
+        c(180.0, -90.0),
+        c(90.0, -90.0),
+        c(0.0, -90.0),
+        c(-90.0, -90.0),
+        c(-180.0, -90.0),
+        c(-180.0, 90.0),
+    ];
+    let ring: Vec<_> = boundary.into_iter().cycle().take(boundary.len() * 2).collect();
+    assert!(ring.windows(2).all(|edge| (edge[1].x - edge[0].x).abs() <= 90.0));
+    let geometry = Geometry::Polygon(vec![vec![ring]]);
+    assert_eq!(geometry.ambiguous_area_rings(), 1);
+    let map = Map(HashMap::from([layer("winding", vec![geometry])]));
+    let params = serde_json::json!({"input":"winding"});
+    let error = rustgis_analysis::run("calculateGeometry", &map, &params).unwrap_err();
+    assert!(error.contains("1 ring(s) in 1 feature(s)"), "{error}");
+    assert_eq!(map.0["winding"].fields.len(), 1);
+    assert_eq!(map.0["winding"].value(0, 0), &Value::Text("a".into()));
+
+    // Cancellation must be checked before validating even the first feature's rings.
+    let control = rustgis_analysis::control::Control::cancelled_once_started();
+    let error = rustgis_analysis::run_with("calculateGeometry", &map, &params, &control).unwrap_err();
+    assert!(error.contains("cancelled"), "{error}");
+    assert!(control.looked() > 0);
+}
+
+#[test]
 fn polar_polygons_keep_their_shape_through_the_tools() {
     let m = polar();
     let between = |lats: &[f64]| !lats.is_empty() && lats.iter().all(|y| (-89.0 - 1e-9..=-87.0 + 1e-9).contains(y));

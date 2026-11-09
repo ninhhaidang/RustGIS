@@ -111,8 +111,9 @@ fn editor(
     }
     chips(ui, &mut d.text, ds);
     let text = d.text.trim().to_string();
-    // Only parsing runs each frame; counting waits for Check.
-    let reads = if text.is_empty() { Ok(()) } else { rustgis_engine::data::query::parse(&text, ds).map(|_| ()) };
+    // Live syntax and field checks must not scan geometry or invalidate a retained clause.
+    // Check and the command handling Apply perform the full data validation.
+    let reads = if text.is_empty() { Ok(()) } else { rustgis_engine::data::query::parse_fields(&text, ds).map(|_| ()) };
     let changed = text != stored.unwrap_or_default();
     let mut apply = None;
     ui.horizontal(|ui| {

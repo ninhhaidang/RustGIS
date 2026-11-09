@@ -846,7 +846,14 @@ impl Project {
     /// Takes the notices of what reading the project changed, keeping those of the parts given
     /// (an import says only what it takes); the rest are dropped.
     pub(crate) fn take_read_notices(&mut self, parts: &[ReadPart]) -> Vec<String> {
-        std::mem::take(&mut self.read_notices).into_iter().filter(|(part, _)| parts.contains(part)).map(|(_, n)| n).collect()
+        let mut notices: Vec<String> =
+            std::mem::take(&mut self.read_notices).into_iter().filter(|(part, _)| parts.contains(part)).map(|(_, n)| n).collect();
+        if parts.contains(&ReadPart::AreaExpressions)
+            && let Some(message) = crate::cmd::design::display_area_messages(self.maps.iter().flat_map(|map| map.layers.iter()))
+        {
+            notices.push(message);
+        }
+        notices
     }
 
     /// Repairs invariants after loading (at least one map; a valid active index). Returns a
@@ -1316,6 +1323,7 @@ pub const MAX_ITEMS: usize = 1000;
 /// The part of a project a read notice is about, so an import says only what it takes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ReadPart {
+    AreaExpressions,
     Labels,
     Diagrams,
     /// Diagrams that won't show for their layer's aggregation or extrusion (#1596).
@@ -1324,7 +1332,8 @@ pub(crate) enum ReadPart {
 }
 
 /// Every part: a whole project opened.
-pub(crate) const ALL_PARTS: [ReadPart; 4] = [ReadPart::Labels, ReadPart::Diagrams, ReadPart::HiddenDiagrams, ReadPart::Layouts];
+pub(crate) const ALL_PARTS: [ReadPart; 5] =
+    [ReadPart::AreaExpressions, ReadPart::Labels, ReadPart::Diagrams, ReadPart::HiddenDiagrams, ReadPart::Layouts];
 
 /// The most layouts a project keeps (`layout.*` commands refuse to make more).
 pub(crate) const MAX_LAYOUTS: usize = 200;

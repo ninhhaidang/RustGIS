@@ -524,3 +524,28 @@ fn geometry_is_measured_on_the_ellipsoid() {
     assert!(parse("$area > 1", &lines).is_err_and(|e| e.contains("polygon")));
     assert!(parse("$length > 1 AND line_length('mi') < 2", &lines).is_ok());
 }
+
+#[test]
+fn ambiguous_polar_area_is_a_counted_expression_error() {
+    use crate::{Geometry, Measure};
+    use rustgis_geom::Coord;
+    let c = Coord::new;
+    let bad = vec![c(-180.0, 90.0), c(180.0, 90.0), c(-90.0, -90.0), c(90.0, -80.0)];
+    let world = vec![c(-180.0, -90.0), c(180.0, -90.0), c(180.0, 90.0), c(-180.0, 90.0)];
+    let mut ds = Dataset::new("Polar", GeometryType::Polygon, vec![]);
+    ds.push(Some(Geometry::Polygon(vec![vec![bad.clone()]])), vec![]);
+    ds.push(Some(Geometry::Polygon(vec![vec![world.clone(), bad]])), vec![]);
+    for expression in ["$area", "area('km2')", "$area > 0"] {
+        let error = parse(expression, &ds).unwrap_err();
+        assert!(error.contains("Polar") && error.contains("2 ring(s) in 2 feature(s)") && error.contains("area is ambiguous"), "{error}");
+    }
+    let geometry = ds.features[0].geometry.as_ref().unwrap();
+    assert_eq!(geometry.wgs84_measure(Measure::Area), None);
+    assert!(geometry.wgs84_measure(Measure::Perimeter).is_some_and(f64::is_finite));
+    let perimeter = parse("$perimeter", &ds).unwrap();
+    assert!(value(&perimeter, &ds, 0, &Env::default()).as_f64().is_some_and(f64::is_finite));
+    let mut clean = Dataset::new("World", GeometryType::Polygon, vec![]);
+    clean.push(Some(Geometry::Polygon(vec![vec![world]])), vec![]);
+    let expression = parse("$area", &clean).unwrap();
+    assert!(value(&expression, &clean, 0, &Env::default()).as_f64().is_some_and(|area| area > 5e14));
+}

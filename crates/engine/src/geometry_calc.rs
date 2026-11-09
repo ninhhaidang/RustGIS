@@ -81,6 +81,12 @@ pub fn run(s: &mut Session, p: &Json) -> CmdResult {
     if rows.is_empty() {
         return Err("no features to calculate".into());
     }
+    if property == "area"
+        && let Some(message) =
+            rustgis_data::ambiguous_area_message(rows.iter().filter_map(|&r| l.dataset.features.get(r)?.geometry.as_ref()))
+    {
+        return Err(format!("{}: {message}", l.dataset.name));
+    }
     let measure = Measure::from_key(property);
     let divisor = match measure {
         Some(m) => m.unit(unit).ok_or("unit does not match the property")?,

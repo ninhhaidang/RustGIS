@@ -326,7 +326,7 @@ fn fit_to_layer(r: &mut Report, ds: &rustgis_data::Dataset) {
     if r.fields.is_empty() {
         r.fields = ds.fields.iter().take(MAX_ITEMS).map(|f| f.name.clone()).collect();
     }
-    if !r.where_clause.is_empty() && rustgis_data::query::parse(&r.where_clause, ds).is_err() {
+    if !r.where_clause.is_empty() && rustgis_data::query::parse_fields(&r.where_clause, ds).is_err() {
         r.where_clause.clear();
     }
 }

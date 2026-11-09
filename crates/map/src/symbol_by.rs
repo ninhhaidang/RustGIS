@@ -79,7 +79,7 @@ impl Compiled {
     /// None where nothing parses against the dataset (an expression naming a field since
     /// removed draws as if it weren't set).
     fn new(by: &SymbolBy, ds: &Dataset, env: Env, points: bool) -> Option<Compiled> {
-        let one = |t: &Option<String>| t.as_deref().and_then(|t| query::parse(t, ds).ok());
+        let one = |t: &Option<String>| t.as_deref().and_then(|t| query::parse_fields(t, ds).ok());
         let c = Compiled {
             size: one(&by.size),
             fill: one(&by.fill),

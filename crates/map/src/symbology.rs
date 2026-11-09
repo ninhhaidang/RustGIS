@@ -928,7 +928,7 @@ impl Renderer {
     pub fn classer(&self, ds: &Dataset, map_scale: Option<f64>) -> Classer {
         let Some(text) = self.expression() else { return Classer::default() };
         Classer {
-            expr: rustgis_data::query::parse(text, ds).ok(),
+            expr: rustgis_data::query::parse_fields(text, ds).ok(),
             env: rustgis_data::query::Env { map_scale: map_scale.filter(|s| s.is_finite() && *s > 0.0) },
         }
     }
@@ -1011,7 +1011,18 @@ impl Renderer {
         if text.chars().count() > rustgis_data::query::MAX_LEN {
             return Err(format!("the expression is longer than {} characters", rustgis_data::query::MAX_LEN));
         }
-        let e = rustgis_data::query::parse(text, ds)?;
+        let e = rustgis_data::query::parse_fields(text, ds)?;
+        if rustgis_data::query::uses_area(&e)
+            && let Some(message) = rustgis_data::ambiguous_area_message(
+                ds.features
+                    .iter()
+                    .enumerate()
+                    .filter(|(row, _)| rows.get(*row).copied().unwrap_or(true))
+                    .filter_map(|(_, feature)| feature.geometry.as_ref()),
+            )
+        {
+            return Err(message);
+        }
         let env = rustgis_data::query::Env::default();
         // The first values by text, and while every value reads as a number, by number too: the
         // order is known only once every feature is classed (`rustgis_data::value::numeric_classes`).
@@ -2920,7 +2931,7 @@ impl LabelClass {
     pub fn query(&self, ds: &Dataset) -> Option<Option<rustgis_data::query::Expr>> {
         match self.where_.as_deref().map(str::trim).filter(|w| !w.is_empty()) {
             None => Some(None),
-            Some(w) => rustgis_data::query::parse(w, ds).ok().map(Some),
+            Some(w) => rustgis_data::query::parse_fields(w, ds).ok().map(Some),
         }
     }
 }
@@ -3000,7 +3011,7 @@ impl Labeling {
         };
         // (A class whose text is an expression that still reads keeps its own, which it doesn't
         // label from.)
-        let by_text = |c: &LabelClass| c.by.text.as_deref().is_some_and(|t| rustgis_data::query::parse(t, ds).is_ok());
+        let by_text = |c: &LabelClass| c.by.text.as_deref().is_some_and(|t| rustgis_data::query::parse_fields(t, ds).is_ok());
         for c in self.classes.iter_mut().filter(|c| ds.field_index(&c.field).is_none() && !by_text(c)) {
             c.field.clone_from(&fallback);
         }

@@ -21,7 +21,7 @@
 
 use crate::{Dataset, Measure, Value};
 use std::borrow::Cow;
-use std::cell::Cell;
+use std::cell::{Cell, OnceCell};
 
 #[cfg(test)]
 mod legacy;
@@ -361,6 +361,8 @@ struct Parser<'a> {
     pos: usize,
     ds: &'a Dataset,
     depth: usize,
+    area_check: OnceCell<Option<String>>,
+    validate_areas: bool,
 }
 
 impl Parser<'_> {
@@ -614,6 +616,13 @@ impl Parser<'_> {
             let hint = if m == Measure::Length { " (use perimeter on polygons)" } else { "" };
             return Err(format!("'{name}' measures {} layers{hint}", want.label().to_ascii_lowercase()));
         }
+        if self.validate_areas
+            && m == Measure::Area
+            && let Some(message) =
+                self.area_check.get_or_init(|| crate::ambiguous_area_message(self.ds.features.iter().filter_map(|f| f.geometry.as_ref())))
+        {
+            return Err(format!("{}: {message}", self.ds.name));
+        }
         Ok(Expr::Var(Var::Measure(m, size)))
     }
     /// A value: a literal, a field, a variable (a measure only on a layer it fits), a call, a
@@ -767,11 +776,22 @@ fn show(t: Option<&Tok>) -> String {
 
 /// Parses an expression (a clause, or a value) against a dataset's schema.
 pub fn parse(text: &str, ds: &Dataset) -> Result<Expr, String> {
+    parse_expression(text, ds, true)
+}
+
+/// Parse retained expressions against fields and geometry type, without checking current areas.
+/// Drawing and stale-field checks use this path and report unavailable areas separately; new
+/// user calculations and filters use [`parse`] so ambiguous measurements are refused.
+pub fn parse_fields(text: &str, ds: &Dataset) -> Result<Expr, String> {
+    parse_expression(text, ds, false)
+}
+
+fn parse_expression(text: &str, ds: &Dataset, validate_areas: bool) -> Result<Expr, String> {
     let toks = lex(text)?;
     if toks.is_empty() {
         return Err("the expression is empty".into());
     }
-    let mut p = Parser { toks, pos: 0, ds, depth: 0 };
+    let mut p = Parser { toks, pos: 0, ds, depth: 0, area_check: OnceCell::new(), validate_areas };
     let e = p.or()?;
     if p.pos < p.toks.len() {
         return Err(format!("unexpected {}", show(p.toks.get(p.pos))));
@@ -870,6 +890,29 @@ fn like_steps(text: &str, pat: &str, left: &mut usize) -> Option<bool> {
         }
     }
     Some(p.get(pi..).is_some_and(|rest| rest.iter().all(|c| *c == '%')))
+}
+
+/// Whether any branch can read polygon area, including unit-converted area functions.
+/// Source workers use this after parsing against metadata, before evaluating actual chunks.
+pub fn uses_area(e: &Expr) -> bool {
+    let any = |es: &[Expr]| es.iter().any(uses_area);
+    match e {
+        Expr::Var(Var::Measure(Measure::Area, _)) => true,
+        Expr::And(es) | Expr::Or(es) | Expr::Concat(es) | Expr::Call(_, es) => any(es),
+        Expr::Not(e) | Expr::IsNullExpr { e, .. } => uses_area(e),
+        Expr::Compare(_, a, b) | Expr::LikeExpr { e: a, pattern: b, .. } => uses_area(a) || uses_area(b),
+        Expr::InExpr { e, list, .. } => uses_area(e) || any(list),
+        Expr::Between { e, lo, hi, .. } => uses_area(e) || uses_area(lo) || uses_area(hi),
+        Expr::Chain(first, rest) => uses_area(first) || rest.iter().any(|(_, e)| uses_area(e)),
+        Expr::Case { subject, arms, otherwise } => {
+            subject.as_deref().is_some_and(uses_area)
+                || arms.iter().any(|(w, t)| uses_area(w) || uses_area(t))
+                || otherwise.as_deref().is_some_and(uses_area)
+        }
+        Expr::Cmp { .. } | Expr::Like { .. } | Expr::IsNull { .. } | Expr::In { .. } | Expr::Lit(_) | Expr::Field(_) | Expr::Var(_) => {
+            false
+        }
+    }
 }
 
 /// Evaluates for one row: whether the row matches.

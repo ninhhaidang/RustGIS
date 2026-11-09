@@ -122,6 +122,8 @@ pub fn commands() -> Vec<C> {
             }
             l.labels.repoint_missing_fields(&l.dataset);
             l.transparency = st.transparency;
+            let area_notice = super::design::display_area_message(l);
+            if let Some(notice) = area_notice { s.notify(notice,false); }
             if relock {
                 s.map_mut().label_lock = None;
                 s.map_mut().label_lock_line_anchors.clear();
@@ -473,6 +475,7 @@ fn import_maps(s: &mut Session, p: &Value) -> CmdResult {
         },
     };
     let mut names = Vec::new();
+    let first_map = s.project.maps.len();
     for mut m in maps.into_iter().take(MAX_IMPORTED_MAPS) {
         // A binding in a file is no authority to use a login here.
         crate::s3_connections::clear_bindings(m.addresses_mut());
@@ -486,6 +489,9 @@ fn import_maps(s: &mut Session, p: &Value) -> CmdResult {
         names.push(m.name.clone());
         m.renew_instance_id();
         s.project.maps.push(m);
+    }
+    if let Some(message) = super::design::display_area_messages(s.project.maps.iter().skip(first_map).flat_map(|map| map.layers.iter())) {
+        s.notify(message, false);
     }
     // Repair what was read (rasters reopen, cameras clamp); the sources that read S3 wait for
     // the saved connection that is to read them.
