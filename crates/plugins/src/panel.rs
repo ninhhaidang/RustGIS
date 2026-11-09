@@ -175,7 +175,11 @@ impl PanelDecl {
             if kind != "choice" && !item.options.is_empty() {
                 return Err(what("options are for dropdowns (choice)"));
             }
-            let options = if kind == "choice" { choice_options(&item.options) } else { Vec::new() };
+            let mut option_changes = Dropped::default();
+            let options = if kind == "choice" { choice_options_reported(&item.options, &mut option_changes) } else { Vec::new() };
+            if let Some(notice) = option_changes.notice() {
+                return Err(what(&format!("option labels or fields are invalid: {notice}")));
+            }
             if options.len() != item.options.len() {
                 return Err(what(&format!(
                     "a dropdown's options are at most {MAX_CHOICES} objects, each with a unique id of 1 to {MAX_TREE_ID} characters"
@@ -217,9 +221,32 @@ fn clip(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
 }
 
+/// A bounded, single-line name for a diagnostic, without terminal control characters.
+fn diagnostic_name(s: &str) -> String {
+    s.chars()
+        .take(MAX_TREE_ID)
+        .map(|c| {
+            if c.is_control() || matches!(c,'\u{061c}'|'\u{200e}'|'\u{200f}'|'\u{2028}'..='\u{202e}'|'\u{2066}'..='\u{2069}') {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
 /// A whole number from an integer or a float with no fraction (JSON from other languages).
 fn whole(v: &Value) -> Option<i64> {
     v.as_i64().or_else(|| v.as_f64().filter(|x| x.is_finite() && x.fract() == 0.0 && x.abs() <= SLIDER_LIMIT as f64).map(|x| x as i64))
+}
+
+/// A nonnegative whole count, retaining exact u64 integers and accepting integral floats.
+fn node_count(v: &Value) -> Option<u64> {
+    v.as_u64().or_else(|| {
+        v.as_f64()
+            .filter(|value| value.is_finite() && value.fract() == 0.0 && *value >= 0.0 && *value < u64::MAX as f64)
+            .map(|value| value as u64)
+    })
 }
 
 /// `[low, high]`, whole numbers.
@@ -259,15 +286,26 @@ pub fn days_in_month(y: i32, m: u32) -> Option<u32> {
 /// defaults to the id and is kept to one line. Only the first [`MAX_CHOICES`] entries are looked
 /// at, those left out among them included.
 fn choice_options(v: &[Value]) -> Vec<TreeNode> {
+    choice_options_reported(v, &mut Dropped::default())
+}
+
+/// Dropdown options, with the fields changed while retaining an option reported too.
+fn choice_options_reported(v: &[Value], dropped: &mut Dropped) -> Vec<TreeNode> {
     let (mut left, mut seen) = (MAX_CHOICES, HashSet::new());
     let mut nodes = Vec::new();
     for o in v.iter().take(MAX_CHOICES).filter(|o| o.is_object()) {
         if left == 0 {
             break;
         }
+        if let Some(fields) = o.as_object() {
+            let id = o.get("id").and_then(Value::as_str).unwrap_or("option");
+            for key in fields.keys().filter(|key| !matches!(key.as_str(), "id" | "label")) {
+                dropped.field(format!("{id}.{key}"));
+            }
+        }
         // One at a time, without its children: a dropdown is flat.
         let flat = [json!({"id": o.get("id"), "label": o.get("label")})];
-        nodes.extend(tree_nodes(&flat, MAX_TREE_DEPTH, &mut left, &mut seen));
+        nodes.extend(tree_nodes(&flat, MAX_TREE_DEPTH, &mut left, &mut seen, dropped));
     }
     nodes
 }
@@ -275,32 +313,97 @@ fn choice_options(v: &[Value]) -> Vec<TreeNode> {
 /// The most value ids a notice names.
 const MAX_NAMED: usize = 10;
 
-/// What a panel update left out, for a notice: the widgets whose given value wasn't taken (no
-/// such widget, a value of the wrong kind, a date that isn't one, an option or node that isn't
-/// there), and how many options and tree nodes were left out (no id, one taken already or too
-/// long, too deep, or past the limit).
+/// Counts and bounded name samples for what a panel update left out or changed. `values`,
+/// `fields`, `clipped` and `label_fields` retain at most ten names, each at most 200 characters.
+/// The unlisted counters retain the remaining totals; `labels` is the full clipped-label count.
+/// Use `notice()` for the complete counts and sampled locations.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Dropped {
     pub values: Vec<String>,
     pub nodes: usize,
+    pub adjusted: Vec<String>,
+    pub fields: Vec<String>,
+    pub clipped: Vec<String>,
+    pub labels: usize,
+    pub label_fields: Vec<String>,
+    pub malformed: usize,
+    pub unlisted_fields: usize,
+    pub unlisted_clipped: usize,
+    pub unlisted_values: usize,
 }
 
 impl Dropped {
+    /// Count a clipped label and retain a bounded sample of its location.
+    fn clip_label(&mut self, id: &str) {
+        self.labels = self.labels.saturating_add(1);
+        if self.label_fields.len() < MAX_NAMED {
+            self.label_fields.push(diagnostic_name(&format!("{id}.label")));
+        }
+    }
+    /// Count every field, retaining only a bounded sample for diagnostics.
+    fn field(&mut self, name: String) {
+        if self.fields.len() < MAX_NAMED {
+            self.fields.push(diagnostic_name(&name));
+        } else {
+            self.unlisted_fields = self.unlisted_fields.saturating_add(1);
+        }
+    }
+
+    /// Count refused values while retaining only a bounded diagnostic sample.
+    fn rejected_value(&mut self, name: &str) {
+        if self.values.len() < MAX_NAMED {
+            self.values.push(diagnostic_name(name));
+        } else {
+            self.unlisted_values = self.unlisted_values.saturating_add(1);
+        }
+    }
+
+    /// Count every clipped field without retaining all names from an untrusted reply.
+    fn clip_field(&mut self, name: String) {
+        if self.clipped.len() < MAX_NAMED {
+            self.clipped.push(diagnostic_name(&name));
+        } else {
+            self.unlisted_clipped = self.unlisted_clipped.saturating_add(1);
+        }
+    }
     /// The notice for it; `None` when nothing was left out.
     pub fn notice(&self) -> Option<String> {
         let mut parts = Vec::new();
+        if self.malformed > 0 {
+            parts.push(format!("{} panel object(s) not taken: expected an object", self.malformed));
+        }
+        if self.labels > 0 {
+            let names = self.label_fields.iter().map(|name| diagnostic_name(name)).collect::<Vec<_>>().join(", ");
+            let more = if self.labels > self.label_fields.len() { ", …" } else { "" };
+            let location = if names.is_empty() { String::new() } else { format!(": {names}{more}") };
+            parts.push(format!("{} label(s) clipped to {MAX_STATE_LABEL} characters{location}", self.labels));
+        }
+        for (ids, unlisted, what) in [
+            (&self.fields, self.unlisted_fields, "item field(s) not taken (unknown, inapplicable, wrong type or invalid bounds)"),
+            (&self.clipped, self.unlisted_clipped, "item field(s) clipped or truncated"),
+            (&self.adjusted, 0, "value(s) adjusted (clamped or reordered, or choice cleared)"),
+        ] {
+            if !ids.is_empty() {
+                let names = ids.iter().take(MAX_NAMED).map(|s| diagnostic_name(s)).collect::<Vec<_>>().join(", ");
+                let more = if ids.len() > MAX_NAMED || unlisted > 0 { ", …" } else { "" };
+                parts.push(format!("{} {what}: {names}{more}", ids.len().saturating_add(unlisted)));
+            }
+        }
         if self.nodes > 0 {
             parts.push(format!(
                 "{} option(s) or tree node(s) left out (no id, one repeated or too long, too deep, or past the limit)",
                 self.nodes
             ));
         }
-        if !self.values.is_empty() {
-            let mut named = self.values.iter().take(MAX_NAMED).map(|v| clip(v, MAX_TREE_ID)).collect::<Vec<_>>().join(", ");
-            if self.values.len() > MAX_NAMED {
+        if !self.values.is_empty() || self.unlisted_values > 0 {
+            let mut named = self.values.iter().take(MAX_NAMED).map(|v| diagnostic_name(v)).collect::<Vec<_>>().join(", ");
+            if self.values.len() > MAX_NAMED || self.unlisted_values > 0 {
                 named.push_str(", …");
             }
-            parts.push(format!("{} value(s) not taken (no such widget, or not a value it holds): {named}", self.values.len()));
+            parts.push(format!(
+                "{} value(s) not taken (no such widget, or not a value it holds): {named}",
+                self.values.len().saturating_add(self.unlisted_values)
+            ));
         }
         (!parts.is_empty()).then(|| parts.join("; "))
     }
@@ -372,7 +475,7 @@ pub struct TreeNode {
 /// (counted down) and [`MAX_TREE_DEPTH`] deep below `depth`. A node without an id, or with one
 /// taken already or too long, is left out with its children; a label defaults to the id (when
 /// missing or blank), and is kept to one line (a row of the tree), control characters as spaces.
-fn tree_nodes(v: &[Value], depth: usize, left: &mut usize, seen: &mut HashSet<String>) -> Vec<TreeNode> {
+fn tree_nodes(v: &[Value], depth: usize, left: &mut usize, seen: &mut HashSet<String>, dropped: &mut Dropped) -> Vec<TreeNode> {
     let mut nodes = Vec::new();
     for n in v {
         if *left == 0 {
@@ -385,6 +488,19 @@ fn tree_nodes(v: &[Value], depth: usize, left: &mut usize, seen: &mut HashSet<St
             continue;
         }
         *left -= 1;
+        if let Some(fields) = n.as_object() {
+            for key in fields.keys().filter(|key| !matches!(key.as_str(), "id" | "label" | "count" | "children")) {
+                dropped.field(format!("{id}.{key}"));
+            }
+        }
+        if n.get("label").and_then(Value::as_str).is_some_and(|label| label.chars().any(char::is_control)) {
+            dropped.clip_field(format!("{id}.label (control characters replaced)"));
+        }
+        match n.get("label") {
+            Some(Value::String(label)) if label.chars().count() > MAX_STATE_LABEL => dropped.clip_label(id),
+            Some(label) if !label.is_null() && !label.is_string() => dropped.field(format!("{id}.label")),
+            _ => {}
+        }
         let label: String = n
             .get("label")
             .and_then(Value::as_str)
@@ -393,11 +509,18 @@ fn tree_nodes(v: &[Value], depth: usize, left: &mut usize, seen: &mut HashSet<St
             .chars()
             .map(|c| if c.is_control() { ' ' } else { c })
             .collect();
+        for key in ["count", "children"] {
+            if n.get(key)
+                .is_some_and(|value| !value.is_null() && if key == "count" { node_count(value).is_none() } else { !value.is_array() })
+            {
+                dropped.field(format!("{id}.{key}"));
+            }
+        }
         let children = match n.get("children").and_then(Value::as_array) {
-            Some(c) if depth + 1 < MAX_TREE_DEPTH => tree_nodes(c, depth + 1, left, seen),
+            Some(c) if depth + 1 < MAX_TREE_DEPTH => tree_nodes(c, depth + 1, left, seen, dropped),
             _ => Vec::new(),
         };
-        nodes.push(TreeNode { id: id.to_string(), label, count: n.get("count").and_then(Value::as_u64), children });
+        nodes.push(TreeNode { id: id.to_string(), label, count: n.get("count").and_then(node_count), children });
     }
     nodes
 }
@@ -541,6 +664,32 @@ impl PanelState {
         set
     }
 
+    /// Reports refused and adjusted values after [`Self::set_values`], comparing whole numbers
+    /// numerically so an integral JSON float is not a changed value.
+    pub fn value_report(&self, decl: &PanelDecl, values: &Value, set: &[String]) -> Dropped {
+        let mut dropped = Dropped::default();
+        let Some(given) = values.as_object() else {
+            dropped.malformed = usize::from(!values.is_null());
+            return dropped;
+        };
+        let accepted: HashSet<&str> = set.iter().map(String::as_str).collect();
+        for id in given.keys().filter(|id| !accepted.contains(id.as_str())) {
+            dropped.rejected_value(id);
+        }
+        for id in set {
+            let (Some(item), Some(input), Some(kept)) = (decl.item(id), given.get(id), self.values.get(id)) else { continue };
+            let changed = match item.kind.as_str() {
+                "slider" => whole(input) != whole(kept),
+                "range" => pair(input) != pair(kept),
+                _ => false,
+            };
+            if changed {
+                dropped.adjusted.push(id.clone());
+            }
+        }
+        dropped
+    }
+
     /// Takes in a plugin's answer about its panel: `{"values": {...}, "items": {"id": {...}}}`.
     /// An item may set `label` (`null` for the declared one), `text`, `enabled`, `visible`, for a
     /// slider or a range `min`, `max` and `labels`, for a tree `nodes`, and for a dropdown
@@ -549,19 +698,84 @@ impl PanelState {
     /// and a tree's chosen node among its nodes. Returns the values, options and nodes left out.
     pub fn apply(&mut self, decl: &PanelDecl, update: &Value) -> Dropped {
         let mut dropped = Dropped::default();
+        if !update.is_object() {
+            dropped.malformed = usize::from(!update.is_null());
+            return dropped;
+        }
+        if let Some(fields) = update.as_object() {
+            for key in fields.keys().filter(|key| !matches!(key.as_str(), "values" | "items" | "changed")) {
+                dropped.field(format!("panel.{key}"));
+            }
+        }
+        if update.get("items").is_some_and(|items| !items.is_null() && !items.is_object()) {
+            dropped.malformed += 1;
+        }
         let empty = Map::new();
         let items = update.get("items").and_then(Value::as_object).unwrap_or(&empty);
+        for (id, given) in items {
+            if given.is_null() {
+                continue;
+            }
+            let Some(item) = decl.items.iter().find(|item| item.key() == id) else {
+                dropped.field(id.clone());
+                continue;
+            };
+            if let Some(fields) = given.as_object() {
+                for key in fields.keys() {
+                    let applies = match key.as_str() {
+                        "label" | "enabled" | "visible" => true,
+                        "text" => item.kind == "text",
+                        "min" | "max" | "labels" => item.ranged(),
+                        "nodes" => item.kind == "tree",
+                        "options" => item.kind == "choice",
+                        _ => false,
+                    };
+                    if !applies {
+                        dropped.field(format!("{id}.{key}"));
+                    }
+                }
+            }
+        }
         for d in &decl.items {
             let id = d.key();
             let (Some(u), Some(st)) = (items.get(id), self.items.get_mut(id)) else { continue };
+            if u.is_null() {
+                continue;
+            }
+            if !u.is_object() {
+                dropped.field(id.to_string());
+                continue;
+            }
+            for (key, valid) in [
+                ("label", u.get("label").is_none_or(|v| v.is_null() || v.is_string())),
+                ("enabled", u.get("enabled").is_none_or(Value::is_boolean)),
+                ("visible", u.get("visible").is_none_or(Value::is_boolean)),
+                ("text", d.kind != "text" || u.get("text").is_none_or(Value::is_string)),
+                ("labels", !d.ranged() || u.get("labels").is_none_or(Value::is_array)),
+                ("nodes", d.kind != "tree" || u.get("nodes").is_none_or(Value::is_array)),
+                ("options", d.kind != "choice" || u.get("options").is_none_or(Value::is_array)),
+            ] {
+                if !valid {
+                    dropped.field(format!("{id}.{key}"));
+                }
+            }
             match u.get("label") {
-                Some(Value::String(l)) => st.label = Some(clip(l, MAX_STATE_LABEL)),
+                Some(Value::String(l)) => {
+                    if l.chars().count() > MAX_STATE_LABEL {
+                        dropped.clip_label(id);
+                    }
+                    st.label = Some(clip(l, MAX_STATE_LABEL));
+                }
                 Some(Value::Null) => st.label = None,
                 _ => {}
             }
             if d.kind == "text"
                 && let Some(t) = u.get("text").and_then(Value::as_str)
             {
+                let count = t.chars().count();
+                if count > MAX_STATE_TEXT {
+                    dropped.clip_field(format!("{id}.text ({count} to {MAX_STATE_TEXT} characters)"));
+                }
                 st.text = clip(t, MAX_STATE_TEXT);
             }
             if let Some(b) = u.get("enabled").and_then(Value::as_bool) {
@@ -571,12 +785,39 @@ impl PanelState {
                 st.visible = b;
             }
             if d.ranged() {
-                let min = u.get("min").and_then(whole).unwrap_or(st.min);
-                let max = u.get("max").and_then(whole).unwrap_or(st.max);
+                let bound = |value: &Value| whole(value).filter(|value| (-SLIDER_LIMIT..=SLIDER_LIMIT).contains(value));
+                let min = u.get("min").and_then(bound).unwrap_or(st.min);
+                let max = u.get("max").and_then(bound).unwrap_or(st.max);
+                for key in ["min", "max"] {
+                    if u.get(key).is_some_and(|v| bound(v).is_none()) {
+                        dropped.field(format!("{id}.{key}"));
+                    }
+                }
                 if min <= max && min >= -SLIDER_LIMIT && max <= SLIDER_LIMIT {
                     (st.min, st.max) = (min, max);
+                } else {
+                    for key in ["min", "max"] {
+                        if u.get(key).is_some_and(|value| bound(value).is_some()) {
+                            dropped.field(format!("{id}.{key}"));
+                        }
+                    }
                 }
                 if let Some(ls) = u.get("labels").and_then(Value::as_array) {
+                    if ls.len() > MAX_SLIDER_LABELS {
+                        dropped.clip_field(format!("{id}.labels ({} to {MAX_SLIDER_LABELS} labels)", ls.len()));
+                    }
+                    for (index, label) in ls.iter().take(MAX_SLIDER_LABELS).enumerate() {
+                        match label.as_str() {
+                            Some(label) if label.chars().count() > MAX_SLIDER_LABEL => {
+                                dropped.clip_field(format!(
+                                    "{id}.labels[{index}] ({} to {MAX_SLIDER_LABEL} characters)",
+                                    label.chars().count()
+                                ));
+                            }
+                            None => dropped.field(format!("{id}.labels[{index}]")),
+                            _ => {}
+                        }
+                    }
                     st.labels = ls
                         .iter()
                         .take(MAX_SLIDER_LABELS)
@@ -588,24 +829,29 @@ impl PanelState {
                 && let Some(nodes) = u.get("nodes").and_then(Value::as_array)
             {
                 let mut left = MAX_TREE_NODES;
-                st.nodes = Arc::new(tree_nodes(nodes, 0, &mut left, &mut Default::default()));
+                st.nodes = Arc::new(tree_nodes(nodes, 0, &mut left, &mut Default::default(), &mut dropped));
                 dropped.nodes = dropped.nodes.saturating_add(count_given(nodes, 0).saturating_sub(count_kept(&st.nodes)));
             }
             if d.kind == "choice"
                 && let Some(options) = u.get("options").and_then(Value::as_array)
             {
-                st.nodes = Arc::new(choice_options(options));
+                st.nodes = Arc::new(choice_options_reported(options, &mut dropped));
                 dropped.nodes = dropped.nodes.saturating_add(options.len().saturating_sub(st.nodes.len()));
             }
         }
         if let Some(values) = update.get("values") {
             let set = self.set_values(decl, values);
-            dropped.values = not_taken(values, &set);
+            let report = self.value_report(decl, values, &set);
+            dropped.values = report.values;
+            dropped.unlisted_values = report.unlisted_values;
+            dropped.adjusted = report.adjusted;
+            dropped.malformed += report.malformed;
         }
         // New ends keep the values within them, and new nodes or options the chosen one among them.
         for d in &decl.items {
             let id = d.key();
             let (Some(st), Some(v)) = (self.items.get(id), self.values.get_mut(id)) else { continue };
+            let before = v.clone();
             match d.kind.as_str() {
                 "slider" => *v = json!(v.as_i64().unwrap_or(st.min).clamp(st.min, st.max)),
                 "range" => {
@@ -615,6 +861,9 @@ impl PanelState {
                 }
                 "tree" | "choice" if v.as_str().is_some_and(|n| !holds(&st.nodes, n)) => *v = Value::Null,
                 _ => {}
+            }
+            if *v != before && !dropped.adjusted.iter().any(|given| given == id) {
+                dropped.adjusted.push(id.to_string());
             }
         }
         dropped

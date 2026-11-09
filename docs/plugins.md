@@ -416,17 +416,28 @@ Any command can answer the panel's new state, beside the rest of its answer:
 - An item can set `label` (`null` brings back the declared one), `enabled` and `visible`; a text
   its `text`; a slider or a range its `min`, `max` and `labels`, one per value from `min` (the
   numbers when there are none); a tree its `nodes`; a dropdown its `options`. What an answer leaves out stays as it was.
+  Fields belonging to another widget kind are ignored and reported: `text` outside a text widget,
+  `min`/`max`/`labels` outside a slider or range, `nodes` outside a tree, and `options` outside a
+  dropdown. Unknown item ids and field names are also ignored and reported. Unknown panel-answer keys are reported too; echoed `changed` request metadata is accepted.
 - A tree's `nodes` are `[{"id": "env", "label": "Environment", "count": 67, "children": [...]}]`:
   `id` is the value the node gives when chosen, unique in the tree; `label` defaults to the id;
   `count` (a whole number) shows at the right of the row. The nodes come before the values in an
   answer, so one can give a tree and choose a node of it; a chosen node no longer among them
   leaves nothing chosen.
 - RustGIS checks the answer like any other: unknown ids and fields and values of the wrong type
-  are ignored, a slider's or a range's value stays within its ends, a tree's among its nodes, a
+  are ignored with a warning, a slider's or a range's value stays within its ends, a tree's among its nodes, a
   dropdown's among its options (a repeated or missing id is left out) and a date is a real date, texts are
   clipped to 4,000 characters, labels to 200, and a slider has at most 2,000 labels of 80
   characters. A tree holds at most 5,000 nodes, 8 levels deep; a node without an id, or with one
   longer than 200 characters or taken already, is left out with its children.
+- Malformed panel, `items` or `values` objects, invalid numeric bounds and non-string node or
+  option labels produce counted warnings. So do values clamped or reordered to fit a widget,
+  choices cleared after options change, text cut to 4,000 characters, labels cut to 200,
+  slider labels cut to 80 characters or 2,000 entries, and wrong-type applicable item fields.
+  A malformed bound leaves that bound unchanged while a valid companion bound is applied.
+  Warnings name the
+  plugin and affected widgets or fields; clean input stays quiet. Diagnostic field and rejected-value names retain only ten samples of at most 200 characters, while counts include every field and value. Null entries in `items` mean no update; null values for selectable widgets still clear their selection. Control characters, line separators and bidi formatting controls in diagnostic names become spaces. A manifest's dropdown labels
+  must already be strings of at most 200 characters without control characters. Option objects allow only `id` and an optional `label`; declarations requiring fields to be discarded or labels to be changed are refused with the affected fields in the error.
 - A plugin words what it sets in the request's `lang`; RustGIS translates only what the
   manifest declares.
 - A command that fails leaves the values as they were. The panel's state command is no undo

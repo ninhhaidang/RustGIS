@@ -1732,6 +1732,127 @@ fn choice_date_range_panel() -> crate::PanelDecl {
     Manifest::parse(&m.to_string()).unwrap().panel.unwrap()
 }
 
+#[test]
+fn panel_review_node_metadata_and_unknown_fields_are_reported() {
+    let mut decl = choice_date_range_panel();
+    let tree = decl.items.iter_mut().find(|d| d.id == "selected").unwrap();
+    tree.kind = "tree".into();
+    tree.text.clear();
+    for update in [
+        json!({"items":{"selected":{"nodes":[{"id":"node","count":"67"}]}}}),
+        json!({"items":{"selected":{"nodes":[{"id":"node","children":5}]}}}),
+        json!({"items":{"unknown":{"label":"X"}}}),
+        json!({"items":{"months":{"options":[]}}}),
+        json!({"items":{"months":{"typo":5}}}),
+    ] {
+        let mut state = crate::PanelState::new(&decl);
+        assert!(state.apply(&decl, &update).notice().is_some(), "{update}");
+    }
+}
+
+#[test]
+fn panel_review_text_and_slider_label_losses_are_reported() {
+    let decl = choice_date_range_panel();
+    let mut state = crate::PanelState::new(&decl);
+    for update in [
+        json!({"items":{"selected":{"text":"界".repeat(4001)}}}),
+        json!({"items":{"months":{"labels":["界".repeat(81)]}}}),
+        json!({"items":{"months":{"labels":vec!["ok";2001]}}}),
+    ] {
+        assert!(state.apply(&decl, &update).notice().is_some(), "truncation must be reported");
+    }
+    assert!(state.apply(&decl, &json!({"items":{"months":{"labels":[5]}}})).notice().is_some());
+    assert!(state.apply(&decl, &json!({"items":{"selected":{"text":"Clean"},"months":{"labels":["One"]}}})).notice().is_none());
+}
+
+#[test]
+fn panel_review_partial_bounds_and_wrong_types_are_reported() {
+    let decl = choice_date_range_panel();
+    let mut state = crate::PanelState::new(&decl);
+    let report = state.apply(&decl, &json!({"items":{"months":{"min":null,"max":5}}}));
+    assert_eq!(state.items["months"].max, 5);
+    assert_eq!(report.fields, ["months.min"]);
+    for (id, field, value) in [
+        ("months", "label", json!(5)),
+        ("months", "enabled", json!(5)),
+        ("months", "visible", json!(5)),
+        ("months", "labels", json!(5)),
+        ("product", "options", json!(5)),
+    ] {
+        let report = state.apply(&decl, &json!({"items":{id:{field:value}}}));
+        assert!(report.fields.contains(&format!("{id}.{field}")), "{id}.{field}: {report:?}");
+    }
+}
+
+#[test]
+fn panel_reports_clamped_malformed_and_clipped_input() {
+    let mut decl = choice_date_range_panel();
+    let tree = decl.items.iter_mut().find(|item| item.id == "selected").unwrap();
+    tree.kind = "tree".into();
+    tree.text.clear();
+    for (update, expected) in [
+        (json!({"values":{"months":[-5,40]}}), "clamped or reordered"),
+        (json!({"values":{"months":[9,3]}}), "clamped or reordered"),
+        (json!({"values":{"release":999999}}), "clamped or reordered"),
+        (json!({"values":5}), "expected an object"),
+        (json!(false), "expected an object"),
+        (json!({"items":{"months":{"min":9,"max":3}}}), "field(s) not taken"),
+        (json!({"items":{"months":{"min":-1000000001_i64}}}), "field(s) not taken"),
+        (json!({"items":{"product":{"options":[{"id":"x","label":5}]}}}), "field(s) not taken"),
+        (json!({"items":{"product":{"options":[{"id":"x","label":"界".repeat(201)}]}}}), "200 characters"),
+        (json!({"items":{"selected":{"nodes":[{"id":"x","label":"界".repeat(201)}]}}}), "200 characters"),
+    ] {
+        let mut state = crate::PanelState::new(&decl);
+        let note = state.apply(&decl, &update).notice().unwrap_or_default();
+        assert!(note.contains(expected), "{update}: {note}");
+    }
+    let mut state = crate::PanelState::new(&decl);
+    assert!(state.apply(&decl, &json!({"values":{"months":[1.0,3.0],"end":"2024-02-29"}})).notice().is_none());
+    assert!(state.apply(&decl, &json!({"items":{"product":{"options":[{"id":"s1","label":"Sentinel"}]}}})).notice().is_none());
+    let choice = decl.items.iter_mut().find(|item| item.id == "product").unwrap();
+    choice.options = vec![json!({"id":"s1","label":"界".repeat(201)})];
+    assert!(decl.validate(&|_| true).is_err_and(|error| error.contains("200 characters")));
+}
+
+#[test]
+fn panel_review_out_of_range_bound_keeps_valid_sibling() {
+    let decl = choice_date_range_panel();
+    for (update, expected, refused) in
+        [(json!({"min":-2000000000_i64,"max":5}), (0, 5), "months.min"), (json!({"min":2,"max":2000000000_i64}), (2, 11), "months.max")]
+    {
+        let mut state = crate::PanelState::new(&decl);
+        let report = state.apply(&decl, &json!({"items":{"months":update}}));
+        assert_eq!((state.items["months"].min, state.items["months"].max), expected);
+        assert_eq!(report.fields, [refused]);
+    }
+}
+
+#[test]
+fn panel_review_clipped_labels_name_their_fields() {
+    let mut decl = choice_date_range_panel();
+    decl.items.iter_mut().find(|item| item.id == "selected").unwrap().kind = "tree".into();
+    let mut state = crate::PanelState::new(&decl);
+    for (update, field) in [
+        (json!({"items":{"months":{"label":"界".repeat(201)}}}), "months.label"),
+        (json!({"items":{"selected":{"nodes":[{"id":"branch","label":"界".repeat(201)}]}}}), "branch.label"),
+    ] {
+        let note = state.apply(&decl, &update).notice().unwrap();
+        assert!(note.contains(field) && note.contains("200 characters"), "{note}");
+    }
+}
+
+#[test]
+fn panel_review_node_counts_keep_whole_floats_and_large_integers() {
+    let mut decl = choice_date_range_panel();
+    decl.items.iter_mut().find(|item| item.id == "selected").unwrap().kind = "tree".into();
+    let mut state = crate::PanelState::new(&decl);
+    for (count, expected) in [(json!(67.0), Some(67)), (json!(u64::MAX), Some(u64::MAX)), (json!(1.5), None), (json!(-1.0), None)] {
+        let report = state.apply(&decl, &json!({"items":{"selected":{"nodes":[{"id":"branch","label":"Branch","count":count}]}}}));
+        assert_eq!(state.items["selected"].nodes[0].count, expected, "{count}: {report:?}");
+        assert_eq!(report.notice().is_none(), expected.is_some(), "{count}: {report:?}");
+    }
+}
+
 /// A dropdown takes its options from `plugin.json` or the plugin and the chosen option's id as its
 /// value; a date takes `YYYY-MM-DD`; a range takes `[low, high]` within its ends (#1622).
 #[test]
@@ -1760,7 +1881,8 @@ fn panel_dropdowns_dates_and_ranges_keep_their_values() {
     // The plugin replaces the options and the ends: the values follow.
     st.set_values(&decl, &json!({"product": "s1", "months": [8, 11]}));
     let clean = st.apply(&decl, &json!({"items": {"product": {"options": [{"id": "a", "label": "A"}, {"id": "b"}]}, "months": {"min": 0, "max": 9, "labels": ["Jan"]}}}));
-    assert_eq!((clean.notice(), clean), (None, crate::Dropped::default()), "nothing left out, nothing said");
+    assert_eq!(clean.adjusted, ["product", "months"], "a cleared choice and a clamped range are reported");
+    assert!(clean.notice().unwrap().contains("2 value(s) adjusted"));
     assert_eq!(st.chosen("product"), None, "the chosen option is gone");
     assert_eq!(st.range("months"), (8, 9), "within the new ends");
     assert_eq!(st.slider_label("months", 0), "Jan");
@@ -1770,7 +1892,7 @@ fn panel_dropdowns_dates_and_ranges_keep_their_values() {
     );
     assert_eq!((st.items["product"].nodes.len(), st.chosen("product")), (1, Some("a")), "repeated and id-less options are left out");
     // ... and said, with the values not taken.
-    assert_eq!(lossy, crate::Dropped { values: vec!["end".into(), "nope".into()], nodes: 3 });
+    assert_eq!(lossy, crate::Dropped { values: vec!["end".into(), "nope".into()], nodes: 3, ..Default::default() });
     let said = lossy.notice().unwrap();
     assert!(
         said.starts_with("3 option(s) or tree node(s) left out")
@@ -1796,4 +1918,86 @@ fn panel_dates_are_real_dates() {
     {
         assert_eq!(date(bad), None, "{bad}");
     }
+}
+
+#[test]
+fn panel_option_fields_and_label_sanitization_are_reported() {
+    let decl = choice_date_range_panel();
+    let mut state = crate::PanelState::new(&decl);
+    let report =
+        state.apply(&decl, &json!({"items":{"product":{"options":[{"id":"a","label":"A\nB","count":4,"children":[],"lable":"typo"}]}}}));
+    assert_eq!(state.items["product"].nodes[0].label, "A B");
+    for field in ["a.count", "a.children", "a.lable"] {
+        assert!(report.fields.iter().any(|f| f == field), "{report:?}");
+    }
+    assert_eq!(report.clipped, ["a.label (control characters replaced)"]);
+    let report = state.apply(&decl, &json!({"items":{"product":{"options":[{"id":"a","label":"A B"}]}}}));
+    assert!(report.notice().is_none(), "{report:?}");
+}
+
+#[test]
+fn panel_null_optional_objects_are_quiet() {
+    let decl = choice_date_range_panel();
+    let mut state = crate::PanelState::new(&decl);
+    for update in [Value::Null, json!({"items":null}), json!({"values":null})] {
+        assert!(state.apply(&decl, &update).notice().is_none(), "{update}");
+    }
+    assert!(state.value_report(&decl, &Value::Null, &[]).notice().is_none());
+}
+
+#[test]
+fn panel_diagnostic_field_samples_are_bounded_and_counts_are_complete() {
+    let decl = choice_date_range_panel();
+    let mut state = crate::PanelState::new(&decl);
+    let fields: serde_json::Map<String, Value> = (0..1000).map(|index| (format!("{index}{}", "界".repeat(256)), json!(false))).collect();
+    let report = state.apply(&decl, &json!({"items":fields}));
+    assert!(report.fields.len() <= 10);
+    assert!(report.fields.iter().all(|name| name.chars().count() <= 200));
+    let notice = report.notice().unwrap();
+    assert!(notice.contains("1000 item field(s)"), "{notice}");
+    assert!(notice.len() < 7000);
+}
+
+#[test]
+fn panel_unknown_answer_fields_are_reported_but_echoed_changes_are_quiet() {
+    let decl = choice_date_range_panel();
+    let mut state = crate::PanelState::new(&decl);
+    let report = state.apply(&decl, &json!({"itmes":{"selected":{"text":"lost"}}}));
+    assert_eq!(report.fields, ["panel.itmes"]);
+    assert!(state.apply(&decl, &json!({"changed":["product"]})).notice().is_none());
+}
+
+#[test]
+fn panel_diagnostic_names_cannot_inject_controls() {
+    let decl = choice_date_range_panel();
+    let mut state = crate::PanelState::new(&decl);
+    let key = "bad\n\u{1b}[31m\u{2028}\u{2029}\u{202e}\u{2069}";
+    let report = state.apply(&decl, &json!({"items":{key:false},"values":{key:true}}));
+    assert_eq!(report.fields.len(), 1);
+    assert!(report.fields.iter().all(|name| !name.chars().any(char::is_control)));
+    assert!(report.fields.iter().all(|name| !name.contains(['\u{2028}', '\u{2029}', '\u{202e}', '\u{2069}'])));
+    let notice = report.notice().unwrap();
+    assert!(!notice.chars().any(char::is_control), "{notice:?}");
+    let report = crate::Dropped { clipped: vec![key.into()], adjusted: vec![key.into()], ..Default::default() };
+    assert!(!report.notice().unwrap().chars().any(char::is_control));
+}
+
+#[test]
+fn panel_null_item_updates_leave_widgets_unchanged() {
+    let decl = choice_date_range_panel();
+    let mut state = crate::PanelState::new(&decl);
+    assert!(state.apply(&decl, &json!({"items":{"product":null,"unknown":null}})).notice().is_none());
+    assert_eq!(state.chosen("product"), Some("s1"));
+    assert!(state.apply(&decl, &json!({"values":{"product":null}})).notice().is_none());
+    assert_eq!(state.chosen("product"), None);
+}
+
+#[test]
+fn panel_rejected_value_names_are_sampled_without_losing_the_count() {
+    let decl = choice_date_range_panel();
+    let mut state = crate::PanelState::new(&decl);
+    let values: serde_json::Map<String, Value> = (0..1000).map(|index| (format!("unknown-{index}"), json!(false))).collect();
+    let report = state.apply(&decl, &json!({"values":values}));
+    assert!(report.values.len() <= 10);
+    assert!(report.notice().unwrap().contains("1000 value(s) not taken"));
 }

@@ -160,6 +160,34 @@ pub fn manifest(id: &str, permissions: &[&str]) -> String {
     m.to_string()
 }
 
+/// A test module that makes one fixed host call, independent of the panel request's layout.
+pub fn wasm_with_host_call(request: &serde_json::Value) -> Vec<u8> {
+    let request = request.to_string();
+    let encoded: String = request.bytes().map(|byte| format!("\\{byte:02x}")).collect();
+    let len = request.len();
+    wat::parse_str(format!(
+        r#"
+        (module
+            (import "rustgis" "call" (func $call (param i32 i32) (result i32)))
+            (import "rustgis" "result" (func $result (param i32)))
+            (memory (export "memory") 2)
+            (global $heap (mut i32) (i32.const 4096))
+            (data (i32.const 0) "{encoded}")
+            (func (export "rustgis_alloc") (param $n i32) (result i32)
+                (local $p i32)
+                (local.set $p (global.get $heap))
+                (global.set $heap (i32.add (global.get $heap) (local.get $n)))
+                (local.get $p))
+            (func (export "rustgis_call") (param i32 i32) (result i64)
+                (local $len i32)
+                (local.set $len (call $call (i32.const 0) (i32.const {len})))
+                (call $result (i32.const 8192))
+                (i64.or (i64.shl (i64.const 8192) (i64.const 32)) (i64.extend_i32_u (local.get $len)))))
+    "#
+    ))
+    .unwrap_or_default()
+}
+
 /// A manifest for the test module with a panel like the Historical Imagery plugin's: texts, a
 /// checkbox and a stepped slider running the echo command `q`, a range kept by the host, buttons,
 /// and `p` as its state command.

@@ -9889,6 +9889,35 @@ fn plugin_download_retries_keep_their_original_owner() {
 }
 
 #[test]
+fn panel_input_notices_are_not_repeated_after_a_download_retry() {
+    let id = "eng-panel-retry-notice";
+    let mut manifest: Value = serde_json::from_str(&rustgis_plugins::testing::panel_manifest(id)).unwrap();
+    manifest["permissions"] = json!(["edit", "network"]);
+    let host_call = json!({"op":"layer.addUrl","params":{"url":"https://x.org/panel.csv","name":"Panel download","x":"lon","y":"lat"}});
+    let wasm = rustgis_plugins::testing::wasm_with_host_call(&host_call);
+    assert!(!wasm.is_empty());
+    let package = rustgis_plugins::testing::zip_of(&[("plugin.json", manifest.to_string().as_bytes()), ("plugin.wasm", &wasm)]);
+    rustgis_plugins::load(rustgis_plugins::Package::from_zip(&package).unwrap(), "test").unwrap();
+    let mut session = world();
+    let mark = session.notice_mark();
+    let params = json!({"op":"layer.addUrl","params":{"url":"https://x.org/panel.csv","name":"Panel download","x":"lon","y":"lat"},"panel":{"span":[-5,40]}});
+    session.run_leaving_downloads(&format!("plugin:{id}/f"), &params).unwrap();
+    let asked = session.take_url_requests();
+    assert_eq!(asked.len(), 1);
+    let download = session.download_started_for(&asked[0]).unwrap();
+    assert!(session.download_landed(download, b"name,lon,lat\nA,10,50\n".to_vec()));
+    let mut add = asked[0].params().clone();
+    add["id"] = json!(download);
+    session.complete_download(download, &add).unwrap();
+    let ran = session.poll_plugin_retries();
+    assert_eq!(ran.len(), 1);
+    assert!(ran[0].1.is_ok(), "{ran:?}");
+    let notices = session.notices_since(mark).iter().filter(|notice| notice.text.contains("clamped or reordered")).collect::<Vec<_>>();
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    rustgis_plugins::unload(id);
+}
+
+#[test]
 fn plugin_panels_keep_their_state_between_calls() {
     let mut s = world();
     let pkg = rustgis_plugins::Package::from_zip(&rustgis_plugins::testing::panel_package("eng-panel")).unwrap();
@@ -9908,10 +9937,32 @@ fn plugin_panels_keep_their_state_between_calls() {
         s.notices_since(mark).iter().filter(|n| n.text.contains("not taken")).map(|n| n.text.clone()).collect::<Vec<_>>()
     };
     assert_eq!(refused(&s, 0), ["Test eng-panel: 1 value(s) not taken (no such widget, or not a value it holds): nope"]);
+    // Both host ingress paths report malformed objects and values adjusted to widget bounds.
+    for (command, key) in [("plugin.panel", "values"), ("plugin:eng-panel/q", "panel")] {
+        for (value, message) in [
+            (json!(5), "expected an object"),
+            (json!({"release":999}), "clamped or reordered"),
+            (json!({"span":[9,3]}), "clamped or reordered"),
+        ] {
+            let mut params = json!({"id":"eng-panel"});
+            params[key] = value;
+            let mark = s.notice_mark();
+            s.run(command, &params).unwrap();
+            let notes = s.notices_since(mark);
+            assert_eq!(notes.len(), 1, "{command}: {notes:?}");
+            assert!(notes[0].text.contains("Test eng-panel") && notes[0].text.contains(message), "{notes:?}");
+        }
+        let mut params = json!({"id":"eng-panel"});
+        params[key] = json!({"release":4,"span":[2,8]});
+        let mark = s.notice_mark();
+        s.run(command, &params).unwrap();
+        assert!(s.notices_since(mark).is_empty(), "clean input stays quiet");
+    }
     // Any command gets them, from the ribbon or a script, and widgets that run nothing set them.
     let mark = s.notice_mark();
     s.run("plugin.panel", &json!({"id": "eng-panel", "values": {"local": true, "release": 99}})).unwrap();
     assert!(refused(&s, mark).is_empty(), "values taken (kept within the ends) are not said");
+    assert!(s.notices_since(mark).iter().any(|n| n.text.contains("clamped or reordered") && n.text.contains("release")));
     s.run("plugin.panel", &json!({"id": "eng-panel", "values": {"span": [1, "x"]}})).unwrap();
     assert_eq!(refused(&s, mark), ["Test eng-panel: 1 value(s) not taken (no such widget, or not a value it holds): span"]);
     let got = s.run("plugin:eng-panel/h", &json!({})).unwrap();

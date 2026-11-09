@@ -1583,6 +1583,7 @@ mod tests {
 
     #[test]
     fn reviewed_grants_require_exact_run_scoped_approvals() {
+        let _plugins = crate::tests::PLUGIN_REGISTRY_TEST.lock().unwrap_or_else(|poison| poison.into_inner());
         let relay = Relay::start(0).unwrap();
         relay.set_allow_access(true); // The global checkbox must not bypass run-specific review.
         let grant = relay.grant_reviewed(false).unwrap();

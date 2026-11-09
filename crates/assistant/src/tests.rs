@@ -8,6 +8,9 @@ use crate::chatgpt;
 use crate::provider::*;
 use crate::tools;
 
+/// Plugin reloads invalidate the process-wide published tool schemas used by approval fixtures.
+pub(crate) static PLUGIN_REGISTRY_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Direct behavior fixtures explicitly accept a displayed engine review; Agent tests below
 /// still exercise their own pending/decision path.
 fn run_tool_call(s: &mut Session, call: &ToolCall) -> Result<String, String> {
@@ -3137,6 +3140,7 @@ fn zip_of(files: &[(&str, &str)]) -> Vec<u8> {
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn skills_are_added_switched_removed_shared_and_shipped_in_plugins() {
+    let _plugins = PLUGIN_REGISTRY_TEST.lock().unwrap_or_else(|poison| poison.into_inner());
     use crate::skills::{self, Places, Source};
     let skill = |name: &str| format!("---\nname: {name}\ndescription: >\n  The {name}\n  skill.\n---\n# {name}\nDo {name}.\n");
     let root = tempfile::tempdir().unwrap();
@@ -4650,6 +4654,7 @@ fn peer_replacement_cancels_approvals_and_stale_replies() {
 /// The existing real Wasm fixture crosses Agent pending/decide and MCP, by id and display name.
 #[test]
 fn permission_policy_real_plugin_approval_and_changed_first_card() {
+    let _plugins = PLUGIN_REGISTRY_TEST.lock().unwrap_or_else(|poison| poison.into_inner());
     use rustgis_engine::plugins;
     let mut s = sample();
     let mut package = plugins::Package::from_zip(&plugins::testing::package("assistant-policy-real", &["edit"])).unwrap();
