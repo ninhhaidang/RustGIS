@@ -519,6 +519,7 @@ pub(crate) fn entry(
         project: project.0,
         opened: project.1,
         partial,
+        plugin: None,
     }
 }
 
@@ -573,6 +574,10 @@ pub struct LogEntry {
     /// wouldn't run as they ran.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub partial: bool,
+    /// The plugin whose session program asked for it between its commands: it counts with the
+    /// plugins' commands toward [`LOG_PLUGIN_LIMIT`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin: Option<String>,
 }
 
 impl LogEntry {
@@ -623,7 +628,7 @@ impl SessionLog {
         if self.off && !matches!(e.command.as_str(), "project.logCommands" | "project.clearLog") {
             return;
         }
-        let plugin = |e: &LogEntry| e.command.starts_with(rustgis_plugins::PREFIX);
+        let plugin = |e: &LogEntry| e.command.starts_with(rustgis_plugins::PREFIX) || e.plugin.is_some();
         if plugin(&e)
             && self.plugin_entries >= LOG_PLUGIN_LIMIT
             && let Some(oldest) = self.entries.iter().position(plugin)
@@ -649,7 +654,8 @@ impl SessionLog {
     /// into the last undo step ([`crate::Session::merge_undo`]). The entry keeps when the first
     /// started, takes the last one's parameters, and adds up how long they took.
     pub fn join_last(&mut self, mut e: LogEntry) {
-        if let Some(last) = self.entries.back_mut().filter(|l| l.ok && l.command == e.command) {
+        // A session plugin's entry between the steps isn't the user's step to join.
+        if let Some(last) = self.entries.back_mut().filter(|l| l.ok && l.command == e.command && l.plugin == e.plugin) {
             e.at = last.at;
             e.millis = last.millis.saturating_add(e.millis);
             *last = e;
@@ -713,7 +719,7 @@ impl SessionLog {
     /// line). Entry by entry, so a long log isn't held as text first.
     pub fn write(&self, w: &mut dyn std::io::Write, csv: bool) -> std::io::Result<()> {
         if csv {
-            w.write_all(b"time_utc,at,command,ok,millis,error,params,project\n")?;
+            w.write_all(b"time_utc,at,command,ok,millis,error,params,plugin,project\n")?;
         }
         self.entries.iter().try_for_each(|e| write_entry(w, e, csv))
     }
@@ -740,7 +746,7 @@ fn write_entry(w: &mut dyn std::io::Write, e: &LogEntry, csv: bool) -> std::io::
     if csv {
         writeln!(
             w,
-            "{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{}",
             e.time_utc(),
             e.at,
             csv_cell(&e.command),
@@ -748,6 +754,7 @@ fn write_entry(w: &mut dyn std::io::Write, e: &LogEntry, csv: bool) -> std::io::
             e.millis,
             csv_cell(e.error.as_deref().unwrap_or("")),
             csv_cell(&e.params.to_string()),
+            csv_cell(e.plugin.as_deref().unwrap_or("")),
             csv_cell(&e.project)
         )
     } else {

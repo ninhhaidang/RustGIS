@@ -9,7 +9,8 @@
 //!
 //! A process plugin (`"runtime": "process"`, see [`process`]) is instead a program on the
 //! user's computer, not sandboxed, for the desktop and the command line: it speaks the same
-//! requests over its standard input and output, and the user is told it isn't sandboxed.
+//! requests over its standard input and output, and the user is told it isn't sandboxed. With
+//! `"session": true` its program is kept running between commands (see [`session`]).
 //!
 //! Loaded plugins live for the whole process (like the geoprocessing tools they add), in a
 //! list shared by every session. See `docs/plugins.md` for the format and the ABI.
@@ -24,6 +25,8 @@ pub mod process;
 pub mod pyenv;
 pub mod registry;
 pub mod runtime;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod session;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod store;
 #[cfg(any(test, feature = "testing"))]
@@ -111,6 +114,7 @@ impl Plugin {
             "panel": m.panel.as_ref().map(|p| p.title.clone()),
             "skills": m.skills.iter().map(|s| format!("{}:{s}", m.id)).collect::<Vec<_>>(),
             "runtime": match m.runtime { Runtime::Wasm => "wasm", Runtime::Process => "process", Runtime::Skills => "skills" },
+            "session": m.session,
             "enabled": self.enabled, "source": self.source, "sha256": self.sha256,
         })
     }
@@ -232,6 +236,7 @@ fn process_code(pkg: &Package) -> Result<Code, String> {
     let argv =
         pkg.manifest.run.as_ref().and_then(|r| r.for_this_platform()).ok_or_else(|| format!("{name} doesn't run on this platform"))?;
     let mut spec = process::Spec::new(argv, dir)?;
+    spec.session = pkg.manifest.session;
     // With a Python environment, `python` is that environment's interpreter.
     if let Some(check) = pyenv::EnvCheck::of(&pkg.manifest, &spec.dir).map_err(|e| format!("{name}: {e}"))? {
         if matches!(spec.program.as_str(), "python" | "python3" | "python.exe") {
@@ -251,6 +256,8 @@ fn process_code(pkg: &Package) -> Result<Code, String> {
 /// was enabled).
 pub fn register(mut plugin: Plugin) -> Arc<Plugin> {
     plugin.enabled = get(&plugin.manifest.id).is_none_or(|p| p.enabled);
+    // The program running is the version being replaced.
+    stop_session(&plugin.manifest.id);
     let plugin = Arc::new(plugin);
     if let Ok(mut v) = PLUGINS.write() {
         v.retain(|p| p.manifest.id != plugin.manifest.id);
@@ -263,6 +270,7 @@ pub fn register(mut plugin: Plugin) -> Arc<Plugin> {
 
 /// Removes a loaded plugin; returns whether there was one.
 pub fn unload(id: &str) -> bool {
+    stop_session(id);
     let removed = PLUGINS.write().map(|mut v| {
         let n = v.len();
         v.retain(|p| p.manifest.id != id);
@@ -293,8 +301,17 @@ pub fn set_enabled(id: &str, enabled: bool) -> Result<(), String> {
         changed(&v);
     }
     drop(v);
+    if !enabled {
+        stop_session(id);
+    }
     tools::reload();
     Ok(())
+}
+
+/// Stops a session plugin's program, if it's running.
+fn stop_session(_id: &str) {
+    #[cfg(not(target_arch = "wasm32"))]
+    session::stop(_id);
 }
 
 /// Replaces the blocklist; loaded plugins it names are unloaded. Returns their names.
@@ -397,6 +414,10 @@ pub fn run_command_with_panel(cmd: &PluginCommand, host: &mut dyn Host, params: 
 pub(crate) fn call(plugin: &Plugin, host: &mut dyn Host, request: &Value, tool: bool) -> Result<Value, String> {
     match &plugin.code {
         Code::Wasm(module) => runtime::call(module, host, request, if tool { runtime::TOOL_FUEL } else { runtime::COMMAND_FUEL }),
+        #[cfg(not(target_arch = "wasm32"))]
+        Code::Process(spec) if spec.session && !tool => {
+            session::command(&plugin.manifest.id, spec, host, request, process::COMMAND_TIMEOUT)
+        }
         #[cfg(not(target_arch = "wasm32"))]
         Code::Process(spec) => process::call(spec, host, request, (!tool).then_some(process::COMMAND_TIMEOUT)),
         Code::None => Err(format!("{} has only skills, nothing to run", plugin.manifest.name)),

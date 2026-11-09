@@ -342,6 +342,8 @@ impl eframe::App for App {
     fn on_exit(&mut self) {
         self.0.end_exports();
         self.0.end_autosave();
+        // Session plugins' programs end with the app, with what they started.
+        rustgis_engine::plugins::session::stop_all();
         // The installer starts before the marker goes, so a RustGIS started meanwhile finds this
         // one still running.
         #[cfg(windows)]

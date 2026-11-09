@@ -132,7 +132,9 @@ isn't itself an entry in the log, as a saved file is). **Clear Log** empties it 
   that waited for its downloads, when its last run started), `command`, `params`, `ok`, `error`
   when it failed, `millis`, how long it took, `project`, the name of the project open when it ran
   (the one it opened, for a command that opens one), and `partial`, true when its parameters were
-  cut short or had secrets taken out.
+  cut short or had secrets taken out, and, for what a session plugin's program asked
+  for between the plugin's commands, `plugin`, that plugin's id (left out of `project.log` and
+  JSON Lines for other entries; an empty cell in CSV).
 - **For the session only:** the log is kept in memory, across the projects opened or made in the
   session, until RustGIS closes or the log is cleared. A saved project, its recovery copy, a
   package or a template carries none of it, so sharing a project shares no log. Reading, writing

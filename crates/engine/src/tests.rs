@@ -10500,6 +10500,266 @@ fn process_plugins_reach_the_project_like_modules() {
 }
 
 #[test]
+fn session_plugins_ask_between_commands_and_hear_the_map() {
+    let _turn = session_plugins_turn();
+    let mut s = world();
+    let dir = std::env::temp_dir().join(format!("rustgis-test-eng-session-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let run = rustgis_plugins::testing::child_run("tests::plugin_process_child");
+    std::fs::write(dir.join("plugin.json"), rustgis_plugins::testing::session_manifest("eng-sess", &["edit"], &run)).unwrap();
+    rustgis_plugins::load(rustgis_plugins::Package::from_dir(&dir).unwrap(), "test").unwrap();
+    let poll_until = |s: &mut Session, done: &dyn Fn(&Session) -> bool| {
+        let t0 = std::time::Instant::now();
+        while !done(s) && t0.elapsed() < std::time::Duration::from_secs(20) {
+            s.poll_plugin_sessions();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    };
+    // Long enough for a request it sent to be answered.
+    let settle = |s: &mut Session| {
+        for _ in 0..25 {
+            s.poll_plugin_sessions();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    };
+    // Its first command starts it, and what that command changes is told to it too.
+    let point = json!({"type": "FeatureCollection", "features": [{"type": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [1, 2]}}]});
+    s.run("plugin:eng-sess/f", &json!({"op": "host.addLayer", "params": {"name": "First", "geojson": point}})).unwrap();
+    s.poll_plugin_sessions();
+    assert_eq!(s.run("plugin:eng-sess/v", &Value::Null).unwrap()["events"], json!(["layers"]));
+
+    // Reads between commands, a host request or a command that changes nothing, leave the project
+    // and the undo history as they were.
+    s.run("plugin:eng-sess/k", &json!({"op": "host.layers", "params": {}})).unwrap();
+    let (revision, steps) = (s.revision, s.undo_depth());
+    settle(&mut s);
+    assert_eq!((s.revision, s.undo_depth()), (revision, steps));
+    s.run("plugin:eng-sess/k", &json!({"op": "map.extent", "params": {}})).unwrap();
+    let (steps, top) = (s.undo_depth(), s.undo_label());
+    settle(&mut s);
+    assert_eq!((s.undo_depth(), s.undo_label()), (steps, top));
+    // An edit between commands goes through the same checks, as an undo step of its own.
+    let fc = json!({"type": "FeatureCollection", "features": [{"type": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [3, 4]}}]});
+    s.log.set_on(true);
+    s.run("plugin:eng-sess/k", &json!({"op": "host.addLayer", "params": {"name": "Later", "geojson": fc}})).unwrap();
+    poll_until(&mut s, &|s| s.map().layer_by_name("Later").is_some());
+    assert_eq!(s.undo_label(), Some("Test eng-sess"), "its own step");
+    assert!(
+        s.log.entries().any(|e| e.command == "host.addLayer" && e.plugin.as_deref() == Some("eng-sess")),
+        "in the session log, as the plugin's"
+    );
+    assert!(s.undo());
+    assert!(s.map().layer_by_name("Later").is_none());
+    assert!(s.redo());
+    assert!(s.map().layer_by_name("Later").is_some());
+    s.run("plugin:eng-sess/k", &json!({"op": "layer.addData", "params": {"path": "/etc/passwd"}})).unwrap();
+    settle(&mut s);
+    // A fetch would wait on the app's thread: only during commands.
+    s.run("plugin:eng-sess/k", &json!({"op": "host.fetch", "params": {"url": "https://example.org/a.json"}})).unwrap();
+    settle(&mut s);
+    // Told what changed: the layers (the one it added), the view, the selection.
+    s.map_mut().camera.pan_px(40.0, 0.0);
+    s.run("select.rows", &json!({"layer": "Cities", "rows": [0]})).unwrap();
+    s.poll_plugin_sessions();
+    let heard = s.run("plugin:eng-sess/v", &Value::Null).unwrap();
+    // (The undo and redo above count as layer changes too.)
+    let events: Vec<&str> = heard["events"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
+    assert!(events.first() == Some(&"layers") && events.ends_with(&["view", "selection"]), "{heard}");
+    let refused = heard["answers"].as_array().unwrap().iter().filter_map(|a| a["error"].as_str()).collect::<Vec<_>>();
+    assert!(refused.iter().any(|e| e.contains("'files' permission")), "{heard}");
+    assert!(refused.iter().any(|e| e.contains("'host.fetch' is for commands")), "{heard}");
+    // Restyled or made see-through counts as a layer change; another project is told too.
+    if let Some(l) = s.map_mut().layers.first_mut() {
+        l.transparency = 0.5;
+    }
+    s.poll_plugin_sessions();
+    assert_eq!(s.run("plugin:eng-sess/v", &Value::Null).unwrap()["events"], json!(["layers"]));
+    // Another layer made active is a layer change too: `host.layers` says which one is.
+    let other = s.map().layers.iter().map(|l| l.id).find(|id| Some(*id) != s.active_layer).unwrap();
+    s.active_layer = Some(other);
+    s.poll_plugin_sessions();
+    assert_eq!(s.run("plugin:eng-sess/v", &Value::Null).unwrap()["events"], json!(["layers"]));
+    s.run("project.new", &json!({})).unwrap();
+    s.poll_plugin_sessions();
+    let events = s.run("plugin:eng-sess/v", &Value::Null).unwrap()["events"].clone();
+    assert!(events.as_array().unwrap().contains(&json!("project")), "{events}");
+    // Turned off, it stops.
+    s.run("plugin.enable", &json!({"id": "eng-sess", "enabled": false})).unwrap();
+    assert!(!rustgis_plugins::session::is_running("eng-sess"));
+    rustgis_plugins::unload("eng-sess");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Session plugins' programs are the process's, and a session's poll answers every running one:
+/// the tests that run them take turns, so none answers another's in its session.
+fn session_plugins_turn() -> std::sync::MutexGuard<'static, ()> {
+    static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    TURN.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Waits (a few seconds at most) for a session plugin's program to exit, without answering it.
+fn wait_for_exit(plugin: &str) {
+    let t0 = std::time::Instant::now();
+    while !rustgis_plugins::session::has_exited(plugin) && t0.elapsed() < std::time::Duration::from_secs(10) {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+/// What a program sent as it exited, after many lines, is answered before the next command, as
+/// between commands: its edit is an undo step of its own, not part of that command's.
+#[test]
+fn a_session_programs_last_request_is_its_own_step_before_the_next_command() {
+    let _turn = session_plugins_turn();
+    let mut s = world();
+    let dir = std::env::temp_dir().join(format!("rustgis-test-eng-session-late-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let run = rustgis_plugins::testing::child_run("tests::plugin_process_child");
+    std::fs::write(dir.join("plugin.json"), rustgis_plugins::testing::session_manifest("eng-sess-late", &["edit"], &run)).unwrap();
+    rustgis_plugins::load(rustgis_plugins::Package::from_dir(&dir).unwrap(), "test").unwrap();
+    let fc = json!({"type": "FeatureCollection", "features": [{"type": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [3, 4]}}]});
+    s.run("plugin:eng-sess-late/y", &json!({"op": "host.addLayer", "params": {"name": "Late", "geojson": fc}})).unwrap();
+    wait_for_exit("eng-sess-late");
+    // No poll in between: the next command finds it exited.
+    assert_eq!(s.run("plugin:eng-sess-late/h", &Value::Null).unwrap(), json!({"hello": "world"}));
+    assert!(s.map().layer_by_name("Late").is_some());
+    assert_eq!(s.undo_label(), Some("Hello"));
+    assert!(s.undo());
+    assert!(s.map().layer_by_name("Late").is_some(), "not part of the next command's step");
+    assert_eq!(s.undo_label(), Some("Test eng-sess-late"));
+    assert!(s.notices_since(0).iter().all(|n| !n.text.contains("Test eng-sess-late")), "a clean exit says nothing");
+    rustgis_plugins::unload("eng-sess-late");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// On the command line (no app to leave downloads to), a download a session program asked for
+/// between commands is fetched when the next command answers it: never left `pending`.
+#[test]
+fn session_plugin_downloads_between_commands_are_fetched_without_an_app() {
+    let _turn = session_plugins_turn();
+    let mut s = world();
+    let dir = std::env::temp_dir().join(format!("rustgis-test-eng-session-cli-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let run = rustgis_plugins::testing::child_run("tests::plugin_process_child");
+    std::fs::write(dir.join("plugin.json"), rustgis_plugins::testing::session_manifest("eng-sess-cli", &["edit", "network"], &run))
+        .unwrap();
+    rustgis_plugins::load(rustgis_plugins::Package::from_dir(&dir).unwrap(), "test").unwrap();
+    s.run("plugin:eng-sess-cli/k", &json!({"op": "layer.addUrl", "params": {"url": "https://example.invalid/points.geojson"}})).unwrap();
+    // Each command first answers what the program sent since: `v` reports once it has.
+    let t0 = std::time::Instant::now();
+    let answer = loop {
+        let heard = s.run("plugin:eng-sess-cli/v", &Value::Null).unwrap();
+        if let Some(a) = heard["answers"].as_array().and_then(|a| a.first()).cloned() {
+            break a;
+        }
+        assert!(t0.elapsed() < std::time::Duration::from_secs(20), "no answer");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    assert!(answer["error"].is_string() && answer["ok"]["pending"].is_null(), "{answer}");
+    assert!(s.take_url_requests().is_empty(), "nothing left for an app that isn't there");
+    rustgis_plugins::unload("eng-sess-cli");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A program that exits while something it left running keeps writing into its output is ended
+/// by the next command, and the notice says the rest wasn't answered; one that ends cleanly
+/// gets no notice (`a_session_programs_last_request_is_its_own_step_before_the_next_command`).
+#[cfg(unix)]
+#[test]
+fn a_session_program_whose_output_kept_coming_is_said() {
+    let _turn = session_plugins_turn();
+    let mut s = world();
+    let dir = std::env::temp_dir().join(format!("rustgis-test-eng-session-flow-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let run = rustgis_plugins::testing::child_run("tests::plugin_process_child");
+    std::fs::write(dir.join("plugin.json"), rustgis_plugins::testing::session_manifest("eng-sess-flow", &[], &run)).unwrap();
+    rustgis_plugins::load(rustgis_plugins::Package::from_dir(&dir).unwrap(), "test").unwrap();
+    s.run("plugin:eng-sess-flow/r", &Value::Null).unwrap();
+    wait_for_exit("eng-sess-flow");
+    let mark = s.notice_mark();
+    assert_eq!(s.run("plugin:eng-sess-flow/h", &Value::Null).unwrap(), json!({"hello": "world"}));
+    let said: Vec<String> = s.notices_since(mark).iter().filter(|n| n.error).map(|n| n.text.clone()).collect();
+    assert!(said.iter().any(|t| t.contains("kept sending after it exited")), "{said:?}");
+    rustgis_plugins::session::stop("eng-sess-flow");
+    rustgis_plugins::unload("eng-sess-flow");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A program started again (the last one exited, no poll in between) takes the map as it is
+/// then: it isn't told of what changed before it started.
+#[test]
+fn a_restarted_session_program_starts_from_the_map_as_it_is() {
+    let _turn = session_plugins_turn();
+    let mut s = world();
+    let dir = std::env::temp_dir().join(format!("rustgis-test-eng-session-restart-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let run = rustgis_plugins::testing::child_run("tests::plugin_process_child");
+    std::fs::write(dir.join("plugin.json"), rustgis_plugins::testing::session_manifest("eng-sess-restart", &[], &run)).unwrap();
+    rustgis_plugins::load(rustgis_plugins::Package::from_dir(&dir).unwrap(), "test").unwrap();
+    s.run("plugin:eng-sess-restart/h", &Value::Null).unwrap();
+    s.poll_plugin_sessions();
+    // The view moves, and the program exits, with no poll between.
+    s.map_mut().camera.pan_px(40.0, 0.0);
+    assert_eq!(s.run("plugin:eng-sess-restart/z", &Value::Null).unwrap(), "bye");
+    wait_for_exit("eng-sess-restart");
+    // Its next command starts another, which hears nothing of the earlier move.
+    s.run("plugin:eng-sess-restart/h", &Value::Null).unwrap();
+    s.poll_plugin_sessions();
+    assert_eq!(s.run("plugin:eng-sess-restart/v", &Value::Null).unwrap()["events"], json!([]));
+    rustgis_plugins::session::stop("eng-sess-restart");
+    rustgis_plugins::unload("eng-sess-restart");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A program that failed after answering is said to have when the next command finds it, as
+/// the frame's poll would: the command line has no poll.
+#[test]
+fn a_session_program_found_failed_by_a_command_is_said() {
+    let _turn = session_plugins_turn();
+    let mut s = world();
+    let dir = std::env::temp_dir().join(format!("rustgis-test-eng-session-bad-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let run = rustgis_plugins::testing::child_run("tests::plugin_process_child");
+    std::fs::write(dir.join("plugin.json"), rustgis_plugins::testing::session_manifest("eng-sess-bad", &[], &run)).unwrap();
+    rustgis_plugins::load(rustgis_plugins::Package::from_dir(&dir).unwrap(), "test").unwrap();
+    assert_eq!(s.run("plugin:eng-sess-bad/b", &Value::Null).unwrap(), "bye");
+    wait_for_exit("eng-sess-bad");
+    let mark = s.notice_mark();
+    assert_eq!(s.run("plugin:eng-sess-bad/h", &Value::Null).unwrap(), json!({"hello": "world"}));
+    let said: Vec<String> = s.notices_since(mark).iter().filter(|n| n.error).map(|n| n.text.clone()).collect();
+    assert!(said.iter().any(|t| t.contains("Test eng-sess-bad stopped unexpectedly: boom")), "{said:?}");
+    rustgis_plugins::unload("eng-sess-bad");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A download a session plugin asks for between its commands is left to the app, as during its
+/// commands: the frame never waits for it.
+#[test]
+fn session_plugin_downloads_between_commands_are_left_to_the_app() {
+    let _turn = session_plugins_turn();
+    let mut s = world();
+    let dir = std::env::temp_dir().join(format!("rustgis-test-eng-session-url-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let run = rustgis_plugins::testing::child_run("tests::plugin_process_child");
+    std::fs::write(dir.join("plugin.json"), rustgis_plugins::testing::session_manifest("eng-sess-url", &["edit", "network"], &run))
+        .unwrap();
+    rustgis_plugins::load(rustgis_plugins::Package::from_dir(&dir).unwrap(), "test").unwrap();
+    let url = "https://example.invalid/points.geojson";
+    s.run("plugin:eng-sess-url/k", &json!({"op": "layer.addUrl", "params": {"url": url}})).unwrap();
+    let t0 = std::time::Instant::now();
+    while s.url_requests.is_empty() && t0.elapsed() < std::time::Duration::from_secs(20) {
+        s.poll_plugin_sessions();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let asked = s.take_url_requests();
+    let urls: Vec<&Value> = asked.iter().map(|q| &q.params()["url"]).collect();
+    assert!(urls.contains(&&json!(url)), "{urls:?}");
+    let heard = s.run("plugin:eng-sess-url/v", &Value::Null).unwrap();
+    assert_eq!(heard["answers"][0]["ok"]["pending"], true, "{heard}");
+    rustgis_plugins::unload("eng-sess-url");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn plugins_install_and_uninstall_from_files() {
     isolate_plugins();
     let mut s = Session::new(Project::default());
@@ -29514,7 +29774,7 @@ fn the_session_log_records_each_command_run_in_the_session() {
     if isolate_process_test("tests::the_session_log_records_each_command_run_in_the_session") {
         return;
     }
-    use crate::project_log::{LOG_LIMIT, LOG_PARAMS_BYTES, LogEntry};
+    use crate::project_log::{LOG_LIMIT, LOG_PARAMS_BYTES, LOG_PLUGIN_LIMIT, LogEntry};
     let mut s = world();
     // The sample project's making is its first entry: counted from after it.
     assert_eq!(s.log.clear(), 1);
@@ -29626,6 +29886,17 @@ fn the_session_log_records_each_command_run_in_the_session() {
         ..Default::default()
     };
     s.log.push(formula);
+    // A session plugin's request between its commands keeps its attribution in both.
+    s.log.push(LogEntry {
+        at: 3,
+        command: "host.addLayer".into(),
+        params: Value::Null,
+        ok: true,
+        error: None,
+        millis: 0,
+        plugin: Some("globe".into()),
+        ..Default::default()
+    });
     // Written out as CSV and JSON Lines.
     let dir = std::env::temp_dir().join(format!("rustgis-session-log-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -29633,14 +29904,22 @@ fn the_session_log_records_each_command_run_in_the_session() {
     s.run("project.exportLog", &json!({"path": csv.to_string_lossy()})).unwrap();
     let csv_text = std::fs::read_to_string(&csv).unwrap();
     assert!(
-        csv_text.starts_with("time_utc,at,command,ok,millis,error,params,project\n") && csv_text.contains("\"edit.undo\""),
+        csv_text.starts_with("time_utc,at,command,ok,millis,error,params,plugin,project\n") && csv_text.contains("\"edit.undo\""),
         "{csv_text}"
     );
     assert!(csv_text.contains("\"'=HYPERLINK(1)\"") && !csv_text.contains(",\"=HYPERLINK"), "{csv_text}");
+    // The plugin is the cell before the project's name, the last.
+    let plugin_cell = |l: &str| l.rsplit(',').nth(1).map(str::to_string);
+    assert!(csv_text.lines().any(|l| l.contains("\"host.addLayer\"") && plugin_cell(l).as_deref() == Some("\"globe\"")), "{csv_text}");
+    assert!(
+        csv_text.lines().any(|l| l.contains("\"edit.undo\"") && plugin_cell(l).as_deref() == Some("\"\"")),
+        "the user's own carry none: {csv_text}"
+    );
     let jsonl = dir.join("log.jsonl");
     s.run("project.exportLog", &json!({"path": jsonl.to_string_lossy()})).unwrap();
     let lines: Vec<LogEntry> = std::fs::read_to_string(&jsonl).unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
     assert_eq!(lines.len() + 1, s.log.len(), "every entry but the export's own");
+    assert!(lines.iter().any(|e| e.plugin.as_deref() == Some("globe")));
     let _ = std::fs::remove_dir_all(&dir);
     // Cleared, it says so; off, nothing goes in; on again, it does. Neither changes the project,
     // which holds no log, nor takes an undo step.
@@ -29690,6 +29969,24 @@ fn the_session_log_records_each_command_run_in_the_session() {
     }
     assert_eq!(s.log.len(), LOG_LIMIT);
     assert_eq!(s.log.entries().next().unwrap().at, 5);
+    // A session plugin's requests between its commands count with the plugins': past their limit
+    // they make room among themselves, not by pushing out the user's entries.
+    let user = s.log.entries().next().unwrap().at;
+    for i in 0..LOG_PLUGIN_LIMIT + 5 {
+        let e = LogEntry {
+            at: 1_000_000 + i as u64,
+            command: "host.addLayer".into(),
+            params: Value::Null,
+            ok: true,
+            error: None,
+            millis: 0,
+            plugin: Some("globe".into()),
+            ..Default::default()
+        };
+        s.log.push(e);
+    }
+    assert_eq!(s.log.entries().filter(|e| e.plugin.is_some()).count(), LOG_PLUGIN_LIMIT);
+    assert_eq!(s.log.entries().next().unwrap().at, user + LOG_PLUGIN_LIMIT as u64);
     // What was dropped is counted, and an export says so; a clear starts the count again.
     assert!(s.log.dropped() >= 5, "{}", s.log.dropped());
     let out = std::env::temp_dir().join(format!("rustgis-log-dropped-{}.csv", std::process::id()));

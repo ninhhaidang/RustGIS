@@ -15,6 +15,9 @@ impl Host for Recorder {
         self.ops.push(op.to_string());
         match op {
             "host.echo" => Ok(params.clone()),
+            // A host request that fails unexpectedly.
+            #[allow(clippy::panic)]
+            "host.panic" => panic!("a host request failed unexpectedly"),
             _ => Err(format!("no '{op}'")),
         }
     }
@@ -1179,6 +1182,203 @@ fn process_tools_show_progress_and_can_be_cancelled() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Whether a process is gone: not there, or (on Linux) a zombie nothing has reaped yet, as in a
+/// container with no init to reap orphans.
+#[cfg(unix)]
+fn gone(pid: rustix::process::Pid) -> bool {
+    rustix::process::test_kill_process(pid).is_err()
+        || std::fs::read_to_string(format!("/proc/{}/stat", pid.as_raw_nonzero()))
+            .ok()
+            .and_then(|s| s.rsplit_once(") ").map(|(_, rest)| rest.starts_with('Z')))
+            .unwrap_or(false)
+}
+
+/// A session test plugin played by this binary, prepared (not loaded).
+fn session_plugin(id: &str) -> (crate::Plugin, std::path::PathBuf) {
+    let dir = std::env::temp_dir().join(format!("rustgis-test-session-{id}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let run = testing::child_run("tests::process_child");
+    std::fs::write(dir.join("plugin.json"), testing::session_manifest(id, &[], &run)).unwrap();
+    (crate::prepare(Package::from_dir(&dir).unwrap(), "test").unwrap(), dir)
+}
+
+/// The request for the test plugin's command `id`, without parameters.
+fn command(id: &str) -> Value {
+    json!({"abi": 1, "kind": "command", "id": id, "params": {}, "lang": "en"})
+}
+
+/// Polls `plugin`'s program until `done` says so, for a few seconds at most.
+fn poll_until(plugin: &str, host: &mut Recorder, done: impl Fn(&crate::session::Polled, &Recorder) -> bool) -> crate::session::Polled {
+    let t0 = std::time::Instant::now();
+    loop {
+        let polled = crate::session::poll(plugin, host);
+        if done(&polled, host) || t0.elapsed() > std::time::Duration::from_secs(20) {
+            return polled;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+/// A program's error output past what is kept is counted, so the log can say so.
+#[test]
+fn error_output_past_what_is_kept_is_counted() {
+    let text: String = (0..25).map(|i| format!("line {i}\n")).collect();
+    let kept = crate::process::errors(std::io::Cursor::new(text.into_bytes()), None);
+    let t0 = std::time::Instant::now();
+    while kept.lock().unwrap().dropped < 5 && t0.elapsed() < std::time::Duration::from_secs(10) {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let k = kept.lock().unwrap();
+    assert_eq!((k.dropped, k.lines.len(), k.lines.front().map(String::as_str)), (5, 20, Some("line 5")));
+}
+
+#[test]
+fn session_plugins_keep_one_program_running() {
+    let (p, dir) = session_plugin("sess-keep");
+    assert_eq!(p.info()["session"], true);
+    let mut host = Recorder::default();
+    let pid = crate::call(&p, &mut host, &command("i"), false).unwrap();
+    assert!(crate::session::is_running("sess-keep"));
+    assert_eq!(crate::call(&p, &mut host, &command("h"), false).unwrap(), json!({"hello": "world"}));
+    assert_eq!(crate::call(&p, &mut host, &command("i"), false).unwrap(), pid, "the same program answers");
+    // A host request inside a command is answered as a per-call plugin's is.
+    let forward = json!({"abi": 1, "kind": "command", "id": "f", "params": {"op": "host.echo", "params": {"a": 1}}, "lang": "en"});
+    assert_eq!(crate::call(&p, &mut host, &forward, false).unwrap(), json!({"a": 1}));
+    assert_eq!(crate::call(&p, &mut host, &command("e"), false).unwrap_err(), "nope");
+
+    // Between commands it asks when it likes; the answer carries its id. It hears events.
+    let later = json!({"abi": 1, "kind": "command", "id": "k", "params": {"op": "host.echo", "params": {"a": 1}}, "lang": "en"});
+    assert_eq!(crate::call(&p, &mut host, &later, false).unwrap(), "asked");
+    let polled = poll_until("sess-keep", &mut host, |_, h| h.ops.len() >= 2);
+    assert_eq!(host.ops, ["host.echo", "host.echo"]);
+    assert!(polled.ended.is_none());
+    crate::session::event("sess-keep", &json!({"event": "selection"}));
+    let heard = crate::call(&p, &mut host, &command("v"), false).unwrap();
+    assert_eq!(heard["answers"], json!([{"ok": {"a": 1}, "id": "a2"}]));
+    assert_eq!(heard["events"], json!(["selection"]));
+
+    // A program that stops reading while the map moves gets the latest view when it reads again,
+    // not every one that came meanwhile.
+    assert_eq!(crate::call(&p, &mut host, &command("p"), false).unwrap(), "paused");
+    for i in 0..5_000 {
+        crate::session::event("sess-keep", &json!({"event": "view", "view": {"scale": i, "pad": "x".repeat(100)}}));
+    }
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    poll_until("sess-keep", &mut host, |_, _| true);
+    let heard = crate::call(&p, &mut host, &command("v"), false).unwrap();
+    let views = heard["events"].as_array().unwrap().len();
+    assert!(views < 5_000, "{views} views queued");
+    assert_eq!(heard["last_view"]["scale"], 4_999, "the latest view is the one kept");
+
+    // A host request that fails unexpectedly is an error answer; the program stays running.
+    let panics = json!({"abi": 1, "kind": "command", "id": "f", "params": {"op": "host.panic", "params": {}}, "lang": "en"});
+    let e = crate::call(&p, &mut host, &panics, false).unwrap_err();
+    assert!(e.contains("'host.panic' failed unexpectedly"), "{e}");
+    assert_eq!(crate::call(&p, &mut host, &command("i"), false).unwrap(), pid, "the same program still answers");
+
+    // Stopped, it's gone; the next command starts it again.
+    crate::session::stop("sess-keep");
+    assert!(!crate::session::is_running("sess-keep"));
+    #[cfg(unix)]
+    {
+        let old = rustix::process::Pid::from_raw(pid.as_i64().unwrap() as i32).unwrap();
+        assert!(rustix::process::test_kill_process(old).is_err(), "{old:?} still runs");
+    }
+    assert_ne!(crate::call(&p, &mut host, &command("i"), false).unwrap(), pid);
+    // A tool still runs a program of its own, once.
+    let tool = json!({"abi": 1, "kind": "tool", "id": "m", "params": {}, "layers": {}, "lang": "en"});
+    assert_eq!(crate::call(&p, &mut host, &tool, true).unwrap()["messages"], json!(["made"]));
+    crate::session::stop("sess-keep");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn session_plugins_that_end_or_fail_are_started_again() {
+    let (p, dir) = session_plugin("sess-end");
+    let mut host = Recorder::default();
+    // Exiting by itself (its window closed) is no failure, and it is no longer running.
+    assert_eq!(crate::call(&p, &mut host, &command("z"), false).unwrap(), "bye");
+    let polled = poll_until("sess-end", &mut host, |p, _| p.ended.is_some());
+    assert_eq!(polled.ended, Some(crate::session::Ended { failed: false, last_error: None, unread: false, reason: None }));
+    assert!(!crate::session::is_running("sess-end"));
+    // What a program left running when it exited is stopped with it (on Unix).
+    #[cfg(unix)]
+    {
+        let left = crate::call(&p, &mut host, &command("l"), false).unwrap();
+        assert!(poll_until("sess-end", &mut host, |p, _| p.ended.is_some()).ended.is_some(), "the session didn't end");
+        let pid = rustix::process::Pid::from_raw(left.as_i64().unwrap() as i32).unwrap();
+        let t0 = std::time::Instant::now();
+        while !gone(pid) && t0.elapsed() < std::time::Duration::from_secs(10) {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(gone(pid), "{pid:?} still runs");
+    }
+    // What it sent as it exited is still handled: a last request, a last log line.
+    let last = json!({"abi": 1, "kind": "command", "id": "w", "params": {"op": "host.echo", "params": {"last": true}}, "lang": "en"});
+    assert_eq!(crate::call(&p, &mut host, &last, false).unwrap(), "bye");
+    let polled = poll_until("sess-end", &mut host, |p, _| p.ended.is_some());
+    assert_eq!(polled.ended.map(|e| e.failed), Some(false));
+    assert!(host.ops.contains(&"host.echo".to_string()) && host.logs.contains(&"last words".to_string()), "{:?} {:?}", host.ops, host.logs);
+    // A crash is an error naming what it wrote last; the next command starts it again.
+    let e = crate::call(&p, &mut host, &command("c"), false).unwrap_err();
+    assert!(e.contains("exited without answering") && e.contains("boom"), "{e}");
+    assert!(!crate::session::is_running("sess-end"));
+    assert_eq!(crate::call(&p, &mut host, &command("h"), false).unwrap(), json!({"hello": "world"}));
+    // One that stops answering is stopped.
+    let spec =
+        crate::process::Spec { session: true, ..crate::process::Spec::new(&testing::child_run("tests::process_child"), &dir).unwrap() };
+    let t0 = std::time::Instant::now();
+    let e = crate::session::command("sess-spin", &spec, &mut host, &command("s"), std::time::Duration::from_secs(2)).unwrap_err();
+    assert!(e.contains("too long") && t0.elapsed() < std::time::Duration::from_secs(20), "{e}");
+    assert!(!crate::session::is_running("sess-spin"));
+    // Updated, the running program is the old version's: stopped. Turned off, it stops too.
+    let p = crate::register(p);
+    assert!(!crate::session::is_running("sess-end"));
+    crate::call(&p, &mut host, &command("h"), false).unwrap();
+    assert!(crate::session::is_running("sess-end"));
+    crate::set_enabled("sess-end", false).unwrap();
+    assert!(!crate::session::is_running("sess-end"));
+    // Removed, it stops as well.
+    crate::set_enabled("sess-end", true).unwrap();
+    let p = crate::get("sess-end").unwrap();
+    crate::call(&p, &mut host, &command("h"), false).unwrap();
+    assert!(crate::session::is_running("sess-end"));
+    assert!(crate::unload("sess-end"));
+    assert!(!crate::session::is_running("sess-end") && crate::get("sess-end").is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A program that exits while something it left running keeps writing into its output, faster
+/// than it's read, is still ended poll after poll, with what it left running.
+#[cfg(unix)]
+#[test]
+fn an_exited_session_whose_output_keeps_flowing_is_ended() {
+    let (p, dir) = session_plugin("sess-flow");
+    let mut host = Recorder::default();
+    let left = crate::call(&p, &mut host, &command("r"), false).unwrap();
+    let pid = rustix::process::Pid::from_raw(left.as_i64().unwrap() as i32).unwrap();
+    // Polled as frames would be, for a while at most: until it has exited there's nothing to
+    // count, and a poll with nothing new returns at once.
+    let mut ended = None;
+    let t0 = std::time::Instant::now();
+    while t0.elapsed() < std::time::Duration::from_secs(30) {
+        if let Some(e) = crate::session::poll("sess-flow", &mut host).ended {
+            ended = Some(e);
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    let ended = ended.expect("the session didn't end");
+    assert!(ended.unread, "{ended:?}");
+    assert!(!crate::session::is_running("sess-flow"));
+    let t0 = std::time::Instant::now();
+    while !gone(pid) && t0.elapsed() < std::time::Duration::from_secs(10) {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(gone(pid), "{pid:?} still runs");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn process_manifests_are_checked() {
     let base = |extra: Value| {
@@ -1195,6 +1395,9 @@ fn process_manifests_are_checked() {
     assert!(base(json!({"runtime": "process", "run": {"windos": ["x"]}})).unwrap_err().contains("names no program"));
     assert!(base(json!({"runtime": "process", "run": vec!["a"; 65]})).is_err());
     assert!(base(json!({"run": ["python3"]})).unwrap_err().contains("process plugins"));
+    // Only a process plugin keeps a program running.
+    assert!(base(json!({"runtime": "process", "run": ["x"], "session": true})).unwrap().session);
+    assert!(base(json!({"session": true})).unwrap_err().contains("process plugins"));
     assert!(base(json!({"runtime": "native"})).is_err());
     // A program by a relative path stays in the plugin's folder.
     assert!(base(json!({"runtime": "process", "run": ["bin/tool"]})).is_ok());

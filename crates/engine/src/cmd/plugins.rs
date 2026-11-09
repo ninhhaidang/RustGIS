@@ -300,6 +300,25 @@ pub fn reaches(spec: &C, params: &Value) -> Option<Reach> {
     }
 }
 
+/// The project's layers as `host.layers` answers them.
+fn layers_of(s: &Session) -> Value {
+    let active = s.active_layer;
+    Value::Array(
+        s.map()
+            .layers
+            .iter()
+            .map(|l| {
+                json!({
+                    "id": l.id, "name": l.name, "raster": l.is_raster(), "visible": l.visible,
+                    "geometry": format!("{:?}", l.dataset.geometry_type), "features": l.dataset.features.len(),
+                    "selected": l.selection.len(), "active": Some(l.id) == active,
+                    "fields": l.dataset.fields.iter().map(|f| json!({"name": f.name, "type": format!("{:?}", f.ty)})).collect::<Vec<_>>(),
+                })
+            })
+            .collect(),
+    )
+}
+
 /// Answers a running plugin's requests.
 struct Bridge<'a> {
     s: &'a mut Session,
@@ -328,22 +347,7 @@ impl Bridge<'_> {
     }
 
     fn layers(&self) -> Value {
-        let active = self.s.active_layer;
-        Value::Array(
-            self.s
-                .map()
-                .layers
-                .iter()
-                .map(|l| {
-                    json!({
-                        "id": l.id, "name": l.name, "raster": l.is_raster(), "visible": l.visible,
-                        "geometry": format!("{:?}", l.dataset.geometry_type), "features": l.dataset.features.len(),
-                        "selected": l.selection.len(), "active": Some(l.id) == active,
-                        "fields": l.dataset.fields.iter().map(|f| json!({"name": f.name, "type": format!("{:?}", f.ty)})).collect::<Vec<_>>(),
-                    })
-                })
-                .collect(),
-        )
+        layers_of(self.s)
     }
 
     /// A layer's features as GeoJSON: all of them, or its selection (`"selected": true`), at
@@ -455,6 +459,14 @@ impl Bridge<'_> {
     }
 }
 
+impl Bridge<'_> {
+    /// Whether host request `op` only reads (or says something): no undo step for it.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn reads_only(op: &str) -> bool {
+        matches!(op, "host.info" | "host.layers" | "host.features" | "host.view" | "host.notify")
+    }
+}
+
 impl Host for Bridge<'_> {
     fn call(&mut self, op: &str, params: &Value) -> Result<Value, String> {
         match op {
@@ -462,11 +474,7 @@ impl Host for Bridge<'_> {
                 "plugin": self.plugin.manifest.id, "permissions": self.plugin.manifest.permissions})),
             "host.layers" => Ok(self.layers()),
             "host.features" => self.features(params),
-            "host.view" => {
-                let c = &self.s.map().camera;
-                let center = c.center_lonlat();
-                Ok(json!({"center": [center.x, center.y], "scale": c.scale(), "projection": self.s.map().projection.code()}))
-            }
+            "host.view" => Ok(view_of(self.s)),
             "host.notify" => {
                 let text: String = ps(params, "text").unwrap_or_default().chars().take(500).collect();
                 let error = b(params, "error").unwrap_or(false);
@@ -506,6 +514,43 @@ impl Session {
         let label = leak(&cmd.decl.label);
         let mutates = cmd.mutates();
         let plugin = cmd.plugin.clone();
+        #[cfg(not(target_arch = "wasm32"))]
+        let (plugin_is_session, plugin_name) = (plugin.manifest.session, plugin.manifest.name.clone());
+        // A session's program may start with this command: what it changes from its first
+        // command on is told to it, so the map as it was is noted first.
+        // What its program sent since the last poll (after answering its last command, or as it
+        // exited) is answered as between its commands, each request its own undo step, not part
+        // of this command's.
+        // The command's own merge key (a held key repeating it) is the command's, not theirs.
+        #[cfg(not(target_arch = "wasm32"))]
+        let merge = self.merge.take();
+        #[cfg(not(target_arch = "wasm32"))]
+        for _ in 0..rustgis_plugins::session::DRAIN_BATCHES {
+            let id = &plugin.manifest.id;
+            if !(plugin.manifest.session && rustgis_plugins::session::is_running(id)) {
+                break;
+            }
+            let exited = rustgis_plugins::session::has_exited(id);
+            if self.poll_plugin_session(id, self.leave_downloads) == 0 && !exited {
+                break;
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.merge = merge;
+        }
+        // A program this command starts (none running, or the last one gone) takes the map as it
+        // is now, not what an earlier program was last told.
+        #[cfg(not(target_arch = "wasm32"))]
+        if plugin.manifest.session && !rustgis_plugins::session::is_running(&plugin.manifest.id) {
+            self.plugin_watch.seen.retain(|(p, _)| *p != plugin.manifest.id);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if plugin.manifest.session && !self.plugin_watch.seen.iter().any(|(p, _)| *p == plugin.manifest.id) {
+            let view = view_of(self);
+            let now = seen(self, &view);
+            self.plugin_watch.seen.push((plugin.manifest.id.clone(), now));
+        }
         // A plugin with a panel gets its values with every command (`panel` in the request),
         // after the ones `params` sets (`{"panel": {"id": value}}`, which is taken out of them),
         // and may answer the panel's new state. A failed command leaves the values as they were.
@@ -579,6 +624,12 @@ impl Session {
             }
         }
         self.call_requests = outer;
+        // A session's program this command found failed, and started again: the command line
+        // has no poll, so this is where it hears of it.
+        #[cfg(not(target_arch = "wasm32"))]
+        if plugin_is_session && let Some(ended) = rustgis_plugins::session::take_ended(&pid) {
+            self.say_session_ended(&plugin_name, ended);
+        }
         if pending.is_empty() && requested.is_empty() {
             return res;
         }
@@ -633,9 +684,293 @@ impl Session {
     }
 }
 
+/// Answers a session plugin's requests made between its commands: each one that can change the
+/// project is an undo step of its own; one that only reads runs as it is, leaving no step.
+#[cfg(not(target_arch = "wasm32"))]
+struct Between<'a> {
+    s: &'a mut Session,
+    plugin: Arc<Plugin>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Host for Between<'_> {
+    fn call(&mut self, op: &str, params: &Value) -> Result<Value, String> {
+        let plugin = self.plugin.clone();
+        let bridge = |s: &mut Session| {
+            let fetches = fetch::Calls::for_plugin(&plugin.manifest.id);
+            let mut bridge = Bridge { s, plugin: plugin.clone(), fetches, changed: false, requested: false };
+            let res = bridge.call(op, params);
+            (res, bridge.changed, bridge.requested)
+        };
+        // A fetch waits on the app's thread: between commands the program fetches for itself.
+        if op == "host.fetch" {
+            return Err("'host.fetch' is for commands; between them, a session's program fetches what it needs itself".into());
+        }
+        // An undo step only for what can change the project, as for an agent's command: a read
+        // leaves the user's undo and redo history alone.
+        let reads = Bridge::reads_only(op);
+        let mutates =
+            plugin.manifest.has(Permission::Edit) && (op == "host.addLayer" || self.s.registry.get(op).is_some_and(|c| c.mutates));
+        // With the plugin's authority, exactly as during one of its commands.
+        self.s
+            .as_session_plugin(plugin.clone(), |s| {
+                if reads {
+                    return std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| bridge(s).0))
+                        .unwrap_or_else(|_| Err(format!("'{op}' failed unexpectedly")));
+                }
+                let (at, start) = (crate::project_log::now_ms(), web_time::Instant::now());
+                let res = s.guarded(leak(&plugin.manifest.name), mutates, |s| {
+                    let (res, changed, requested) = bridge(s);
+                    // Only left downloads for the app (they add their layers when they land): no step.
+                    s.request_only = res.is_ok() && requested && !changed;
+                    // The answer goes to the program, which says what it makes of a refusal.
+                    s.quiet_failure = res.is_err();
+                    res
+                });
+                // No command of its own carries it into the session log: it goes in by itself, as
+                // a command run would.
+                if s.log.on() && (op == "host.addLayer" || crate::project_log::is_logged(s, op, params)) {
+                    let (kept, partial) = crate::project_log::kept_and_partial(params);
+                    let project = (crate::project_log::kept_name(&s.title()), s.opened);
+                    let mut e = crate::project_log::entry(project, op, kept, partial, &res, at, start.elapsed());
+                    e.plugin = Some(plugin.manifest.id.clone());
+                    s.log.push(e);
+                }
+                res
+            })
+            .and_then(|r| r)
+    }
+
+    fn log(&mut self, text: &str) {
+        log::info!("{}: {text}", self.plugin.manifest.id);
+    }
+}
+
+/// What session plugins were last told of the map, to tell them what changes.
+#[derive(Debug, Default)]
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub(crate) struct Watch {
+    /// Each running program's, by plugin id.
+    seen: Vec<(String, Seen)>,
+    /// The layers' symbology and fields and the web tile layers, fingerprinted, with the
+    /// project's [`Session::state`] and the time it was taken at. It's taken again when an edit
+    /// changes the state (a read or a move of the view doesn't), and at least every
+    /// [`RESTYLE_EVERY`] for what changes it without one: not every frame.
+    styled: Option<(u64, web_time::Instant, u64)>,
+    /// The selection, fingerprinted, with the [`Session::revision`] and the time it was taken
+    /// at: selecting changes no project state but runs a command, which bumps the revision; what
+    /// changes it without one (a streamed layer reading another window) is caught within
+    /// [`RESTYLE_EVERY`].
+    selected: Option<(u64, web_time::Instant, u64)>,
+}
+
+/// How often a session plugin's layer symbology is looked at again without a command.
+#[cfg(not(target_arch = "wasm32"))]
+const RESTYLE_EVERY: web_time::Duration = web_time::Duration::from_secs(1);
+
+/// Fingerprints of what a session plugin hears about.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub(crate) struct Seen {
+    view: u64,
+    /// Their list and order, which is active, names, visibility, opacity, symbology, fields and
+    /// features, and the web tile layers.
+    layers: u64,
+    selection: u64,
+    /// Bumped when another project replaces the open one ([`Session::opened`]).
+    project: u64,
+}
+
+/// What a session plugin would be told of the map now, `view` being [`view_of`] it.
+#[cfg(not(target_arch = "wasm32"))]
+fn seen(s: &mut Session, view: &Value) -> Seen {
+    use std::hash::{Hash, Hasher};
+    let hash = |f: &dyn Fn(&mut std::collections::hash_map::DefaultHasher)| {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        f(&mut h);
+        h.finish()
+    };
+    let styled = match s.plugin_watch.styled {
+        Some((state, at, styled)) if state == s.state() && at.elapsed() < RESTYLE_EVERY => styled,
+        _ => {
+            let map = s.map();
+            let styled = hash(&|h| {
+                for l in &map.layers {
+                    serde_json::to_string(&(&l.renderer, &l.labels, &l.line_strokes, &l.fill_layers, l.raster.as_ref().map(|r| &r.style)))
+                        .unwrap_or_default()
+                        .hash(h);
+                    for f in &l.dataset.fields {
+                        (&f.name, format!("{:?}", f.ty)).hash(h);
+                    }
+                }
+                serde_json::to_string(&map.tiles).unwrap_or_default().hash(h);
+            });
+            s.plugin_watch.styled = Some((s.state(), web_time::Instant::now(), styled));
+            styled
+        }
+    };
+    // A large selection is many rows to walk: again only after a command. Layers with nothing
+    // selected don't count: adding one changes no selection.
+    let selection = match s.plugin_watch.selected {
+        Some((revision, at, selection)) if revision == s.revision && at.elapsed() < RESTYLE_EVERY => selection,
+        _ => {
+            let map = s.map();
+            let selection = hash(&|h| {
+                for l in map.layers.iter().filter(|l| !l.selection.is_empty()) {
+                    (l.id, &l.selection).hash(h);
+                }
+            });
+            s.plugin_watch.selected = Some((s.revision, web_time::Instant::now(), selection));
+            selection
+        }
+    };
+    let map = s.map();
+    let view = hash(&|h| view.to_string().hash(h));
+    // The rest is a few numbers a layer: looked at every frame.
+    let layers = hash(&|h| {
+        (styled, s.active_layer).hash(h);
+        for l in &map.layers {
+            (l.id, &l.name, l.visible, l.transparency.to_bits(), l.geometry_rev, l.dataset.features.len()).hash(h);
+            // Which rows these are: an edit writes new ones and undo puts the old ones back, so it
+            // changes even where undo brings `geometry_rev` back to the edit's number.
+            (l.dataset.features.allocation_key().as_ptr() as usize).hash(h);
+        }
+    });
+    Seen { view, layers, selection, project: s.opened }
+}
+
+/// The view as `host.view` answers it.
+fn view_of(s: &Session) -> Value {
+    let c = &s.map().camera;
+    let center = c.center_lonlat();
+    json!({"center": [center.x, center.y], "scale": c.scale(), "projection": s.map().projection.code(), "bearing": c.bearing, "pitch": c.pitch})
+}
+
+impl Session {
+    /// Says that a session plugin's program failed; one that ended by itself (its window closed)
+    /// goes quietly.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn say_session_ended(&mut self, name: &str, ended: rustgis_plugins::session::Ended) {
+        if ended.unread {
+            self.notify(
+                format!("{name}: its program kept sending after it exited (something it left running), and the rest wasn't answered; it was stopped"),
+                true,
+            );
+        }
+        if let Some(reason) = ended.reason {
+            self.notify(format!("{name} was stopped: {reason}"), true);
+        } else if ended.failed {
+            let why = ended.last_error.map(|l| format!(": {l}")).unwrap_or_default();
+            self.notify(format!("{name} stopped unexpectedly{why}"), true);
+        }
+    }
+
+    /// Answers what plugin `id`'s program sent since the last call, between its commands (leaving
+    /// downloads to the app when `defer`), and says
+    /// if it failed, or if a command found it failed. Returns how many of its lines it handled.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn poll_plugin_session(&mut self, id: &str, defer: bool) -> usize {
+        use rustgis_plugins::session;
+        let Some(plugin) = rustgis_plugins::get(id).filter(|p| p.enabled) else {
+            session::stop(id);
+            return 0;
+        };
+        // A download it asks for is left to the app when there is one to take it (`defer`: the
+        // desktop's frame, or a command the app runs leaving its downloads); otherwise (the
+        // command line, Python) it's fetched now, as a command run there fetches it.
+        let polled = if defer {
+            self.with_deferred_downloads(|s| session::poll(id, &mut Between { s, plugin: plugin.clone() }))
+        } else {
+            session::poll(id, &mut Between { s: self, plugin: plugin.clone() })
+        };
+        for ended in polled.ended.into_iter().chain(session::take_ended(id)) {
+            self.say_session_ended(&plugin.manifest.name, ended);
+        }
+        polled.handled
+    }
+
+    /// Answers what session plugins' programs asked since the last call, and tells each what
+    /// changed on the map since it was last told. The desktop app calls it every frame. Returns
+    /// how many of their lines it handled.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn poll_plugin_sessions(&mut self) -> usize {
+        use rustgis_plugins::session;
+        session::polled();
+        let mut handled = 0;
+        for id in session::running() {
+            handled += self.poll_plugin_session(&id, true);
+        }
+        let running = session::running();
+        self.plugin_watch.seen.retain(|(id, _)| running.contains(id));
+        if running.is_empty() {
+            self.plugin_watch.styled = None;
+            self.plugin_watch.selected = None;
+            return handled;
+        }
+        let view = view_of(self);
+        let now = seen(self, &view);
+        for id in running {
+            let Some((_, was)) = self.plugin_watch.seen.iter_mut().find(|(p, _)| *p == id) else {
+                // Started without a command (none yet): it asks for what it needs first.
+                self.plugin_watch.seen.push((id, now));
+                continue;
+            };
+            let was = std::mem::replace(was, now);
+            if was.view != now.view {
+                session::event(&id, &json!({"event": "view", "view": view}));
+            }
+            if was.layers != now.layers {
+                session::event(&id, &json!({"event": "layers"}));
+            }
+            if was.project != now.project {
+                session::event(&id, &json!({"event": "project"}));
+            }
+            if was.selection != now.selection {
+                session::event(&id, &json!({"event": "selection"}));
+            }
+        }
+        handled
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Why a session plugin's program was stopped is said; one that ended by itself says nothing.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_stopped_session_program_says_why() {
+        use rustgis_plugins::session::Ended;
+        let mut s = Session::new(crate::Project::default());
+        let mark = s.notice_mark();
+        s.say_session_ended("Globe", Ended { failed: false, last_error: None, unread: false, reason: None });
+        assert!(s.notices_since(mark).is_empty(), "a clean end says nothing");
+        let why = "it sent a line longer than 256 MB";
+        s.say_session_ended("Globe", Ended { failed: true, last_error: Some("boom".into()), unread: false, reason: Some(why.into()) });
+        let said: Vec<&str> = s.notices_since(mark).iter().map(|n| n.text.as_str()).collect();
+        assert_eq!(said, [format!("Globe was stopped: {why}")], "the reason, not the last error line");
+    }
+
+    /// A geometry edit and its undo each change what a session plugin is told of the layers,
+    /// though undo, putting the old rows back, brings `geometry_rev` back to the edit's number.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn an_undone_geometry_edit_is_a_layer_change() {
+        let mut s = Session::new(crate::Project::default());
+        let fc = r#"{"type": "FeatureCollection", "features": [{"type": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [1, 2]}}]}"#;
+        let (ds, _) = rustgis_data::io::read_geojson(fc, "Pts").unwrap();
+        super::super::layer::add_dataset(&mut s, ds);
+        s.run("edit.enable", &json!({"on": true})).unwrap();
+        let view = view_of(&s);
+        let before = seen(&mut s, &view);
+        s.run("edit.setGeometry", &json!({"layer": "Pts", "row": 0, "geometry": {"type": "Point", "coordinates": [3, 4]}})).unwrap();
+        let edited = seen(&mut s, &view);
+        assert_ne!(before.layers, edited.layers);
+        assert!(s.undo());
+        let undone = seen(&mut s, &view);
+        assert_ne!(edited.layers, undone.layers);
+    }
 
     /// A command that only left a download for the front end changed nothing, and a later one
     /// doesn't hide an earlier edit: the plugin's command keeps its undo step.

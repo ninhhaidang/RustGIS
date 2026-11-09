@@ -527,7 +527,7 @@ mod tests {
         save(&mut app);
         let (name, text) = got.borrow_mut().take().expect("downloaded");
         assert_eq!(name, "session-log.csv");
-        assert!(text.starts_with("time_utc,at,command,ok,millis,error,params,project\n"), "{text}");
+        assert!(text.starts_with("time_utc,at,command,ok,millis,error,params,plugin,project\n"), "{text}");
         assert!(text.contains("\"map.new\",true"), "{text}");
         let dropped = |app: &RustGisApp| {
             app.session.notices.iter().any(|n| n.text.contains("session-log.csv: not in it: 4 oldest entries were dropped past"))

@@ -277,6 +277,20 @@ impl Session {
             Err(p) => std::panic::resume_unwind(p),
         }
     }
+    /// Runs what a session plugin's program asks between its commands with the plugin's own
+    /// authority, as its commands run: the exact load, still current, narrowing the scope the app
+    /// is in (none at the frame's root, the trusted native convention).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn as_session_plugin<T>(
+        &mut self,
+        plugin: Arc<rustgis_plugins::Plugin>,
+        f: impl FnOnce(&mut Session) -> T,
+    ) -> Result<T, String> {
+        if !rustgis_plugins::is_current(&plugin) {
+            return Err("the plugin was disabled, updated or removed".into());
+        }
+        self.narrowed(Narrow::Plugin(super::plan::PluginPin(plugin)), f)
+    }
     /// Intersects nested plugin/item authority with its initiating scope.
     pub(crate) fn narrowed<T>(&mut self, to: Narrow, f: impl FnOnce(&mut Session) -> T) -> Result<T, String> {
         let mut scope = self.scope();

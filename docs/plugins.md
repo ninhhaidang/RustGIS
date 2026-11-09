@@ -436,7 +436,7 @@ Inside a request, `host::call(op, params)` sends one of these to RustGIS:
 | `host.info` | `{rustgis, abi, plugin, permissions}`: version, ABI, plugin id and permissions |
 | `host.layers` | `[{id, name, raster, visible, geometry, features, selected, active, fields: [{name, type}]}]` |
 | `host.features` `{layer, selected?, limit?}` | the layer's features as GeoJSON; each feature has its `row` |
-| `host.view` | `{center: [lon, lat], scale, projection}` |
+| `host.view` | `{center: [lon, lat], scale, projection, bearing, pitch}` (bearing and pitch in degrees, 0 for a flat north-up map) |
 | `host.notify` `{text, error?}` | shows a message in the status bar |
 | `host.addLayer` `{name, geojson}` | adds a layer (`edit`) |
 | `host.fetch` `{url}` | `{url, text, json?}`: the document at a web address (`network`; see [Fetching a document](#fetching-a-document)) |
@@ -692,6 +692,64 @@ except Exception as e:
     result = {"error": str(e)}
 print(json.dumps(result), flush=True)
 ```
+
+### Session plugins
+
+A process plugin with `"session": true` keeps one program running between its commands, so it
+can ask RustGIS for things whenever it likes and hear when the map changes: a view of the map in
+a window of its own (a 3D globe linked with it) is one. The program talks to RustGIS only over
+its standard input and output: no port, no token, nothing another program can join.
+
+```json
+"runtime": "process",
+"session": true,
+"run": ["bin/globe"]
+```
+
+- RustGIS starts the program the first time one of the plugin's commands runs and writes a first
+  line `{"session": {"abi": 1, "plugin": "<id>", "rustgis": "<version>", "lang": "<code>"}}`.
+- Each command comes as `{"command": request, "id": n}`, where `request` is what a per-call
+  program gets. The program answers `{"ok": value, "id": n}` or `{"error": "text", "id": n}`,
+  within 2 minutes.
+- At any time, during a command or between commands, the program can send a host request
+  `{"call": {"op": "...", "params": {...}}, "id": "any"}`. RustGIS answers
+  `{"ok": value, "id": "any"}` or `{"error": "text", "id": "any"}`; the `id` is optional and comes
+  back as given. Requests go through the same checks as a command's, within the plugin's
+  permissions. Between commands, each request that can change the project is an undo step of its
+  own, named after the plugin, and an entry in the session log; `host.fetch` is refused: it would make the app wait, and the
+  program can fetch for itself. Whether a request is part of a command depends on when RustGIS handles
+  it, not when the program sent it: one handled before the command starts (by a poll, or as the
+  command is about to run) is answered as between commands; one handled while the command runs,
+  until the program answers, is part of that command (its undo step), even if it was sent just
+  before. Sending a request meant to stand alone after answering the command, and
+  waiting for its reply, makes that likely but not certain: if another of its commands starts
+  before RustGIS handles the request, the request is part of that command. The desktop app answers requests as they come; `rustgis-cli` and
+  the Python package only while one of the plugin's commands runs (or as the next one starts);
+  `rustgis-cli` ends the program after its last command, and what it asks after that isn't
+  answered.
+- When the map changes, the desktop app sends `{"event": "view", "view": {center, scale,
+  projection, bearing, pitch}}` (the view, as `host.view` answers it), `{"event": "layers"}` (layers added,
+  removed, reordered, made active, renamed, shown or hidden, restyled, made more or less transparent, their
+  fields or features changed, and web tile layers changed), `{"event": "selection"}` or `{"event": "project"}` (another project
+  opened). Ask for what changed with host requests. Changes the program made itself are told too: a view it set comes back as
+  a `view` event, so compare before following it. An event can arrive while the program waits
+  for an answer: match answers by their `id`. While the program is behind in reading its input,
+  events wait, and only the latest of each kind is sent.
+- `log` and `progress` lines work as for a per-call program.
+- The program RustGIS started is the session: keep it running, rather than starting another
+  program and exiting. RustGIS stops it, with what it started, when the plugin is turned off,
+  removed or updated and when the desktop app closes. Its input closing means it is being
+  stopped (RustGIS closing or gone, however it ended; the plugin turned off, removed or updated;
+  the program failed or stopped answering): the program should then exit, and stop what it
+  started. A program may also
+  exit by itself (its window closed); the plugin's next command starts it again. One that fails
+  or stops answering a command is stopped, and the error says so.
+- On Linux and macOS, while RustGIS runs, what a program left running when it exited is stopped
+  with it. Windows can't find what an exited program started, so there the program must stop it
+  itself, as every program must once RustGIS has gone.
+- The plugin's tools still start the program once per run, with the request as its first line.
+- RustGIS versions before sessions run the program once per command instead, so set
+  `minRustgisVersion` to the first version with them.
 
 ### Python environments
 

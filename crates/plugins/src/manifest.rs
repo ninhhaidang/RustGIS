@@ -318,6 +318,10 @@ pub struct Manifest {
     /// For a process plugin in Python: the environment RustGIS makes for it.
     #[serde(default)]
     pub python: Option<PythonDecl>,
+    /// For a process plugin: keep the program running between its commands (a session), so it
+    /// can ask RustGIS for things at any time and hear when the map changes. See the `session` module.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub session: bool,
     /// The plugin ABI the module was built for.
     #[serde(default = "default_abi")]
     pub abi: u32,
@@ -447,8 +451,8 @@ impl Manifest {
                 if !valid_path(&self.entry) || !self.entry.ends_with(".wasm") {
                     return Err("plugin.json: entry must be a relative path to a .wasm file inside the package".into());
                 }
-                if self.run.is_some() || self.python.is_some() {
-                    return Err("plugin.json: 'run' and 'python' are for process plugins (\"runtime\": \"process\")".into());
+                if self.run.is_some() || self.python.is_some() || self.session {
+                    return Err("plugin.json: 'run', 'python' and 'session' are for process plugins (\"runtime\": \"process\")".into());
                 }
             }
             Runtime::Process => {
@@ -487,8 +491,8 @@ impl Manifest {
                 }
             }
             Runtime::Skills => {
-                if self.run.is_some() || self.python.is_some() {
-                    return Err("plugin.json: 'run' and 'python' are for process plugins (\"runtime\": \"process\")".into());
+                if self.run.is_some() || self.python.is_some() || self.session {
+                    return Err("plugin.json: 'run', 'python' and 'session' are for process plugins (\"runtime\": \"process\")".into());
                 }
                 if !self.commands.is_empty()
                     || !self.tools.is_empty()
