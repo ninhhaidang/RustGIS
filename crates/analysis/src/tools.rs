@@ -1671,7 +1671,11 @@ fn erase(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
     let at_poles = AtPoles::new(zones.iter().map(|z| poles(&z.ext)));
     let mut out = copy_schema(ds, out_name(p, format!("{}_Erase", ds.name)), ds.geometry_type);
     keep_source_crs(&mut out, ds, er);
-    for r in rows(inp, p, "input", ds) {
+    let input_rows = rows(inp, p, "input", ds);
+    crate::control::begin(input_rows.len());
+    for (done, r) in input_rows.into_iter().enumerate() {
+        crate::control::check()?;
+        crate::control::reached(done);
         let Some(f) = ds.features.get(r) else { continue };
         if let Some(rest) = f.geometry.as_ref().and_then(|g| outside(g, &zones, (&index, &at_poles))) {
             out.push_next(Some(rest), f.attrs.clone());
@@ -1703,13 +1707,18 @@ fn overlay_zones<'a>(inp: &'a dyn Inputs, p: &Json, k: &str) -> Result<(&'a Data
     if ov.geometry_type != GeometryType::Polygon {
         return Err(format!("'{}' is not a polygon layer", ov.name));
     }
-    let zones = rows(inp, p, k, ov)
-        .into_iter()
-        .filter_map(|row| {
-            let g = ov.features.get(row)?.geometry.as_ref()?;
-            Some(Zone { row, ext: g.extent(), poly: mask_of(to_multipolygon(g)?) })
-        })
-        .collect();
+    // A zone of several parts is a union: Cancel is looked at, and progress counted, before each.
+    let zone_rows = rows(inp, p, k, ov);
+    crate::control::begin(zone_rows.len());
+    let mut zones = Vec::with_capacity(zone_rows.len());
+    for (done, row) in zone_rows.into_iter().enumerate() {
+        crate::control::check()?;
+        crate::control::reached(done);
+        let Some(g) = ov.features.get(row).and_then(|f| f.geometry.as_ref()) else { continue };
+        if let Some(poly) = to_multipolygon(g).map(mask_of) {
+            zones.push(Zone { row, ext: g.extent(), poly });
+        }
+    }
     Ok((ov, zones))
 }
 
@@ -1868,7 +1877,9 @@ fn outside(g: &Geometry, zones: &[Zone], index: (&ExtentIndex, &AtPoles)) -> Opt
 /// layer that overlap each other are not split against each other. Intersect leaves out input
 /// features without geometry; the others keep them, as they are, and an input feature no overlay
 /// polygon meets too, coordinates untouched (a feature that is cut comes out rebuilt, its
-/// overlapping parts unioned).
+/// overlapping parts unioned). Cancel is looked at per overlay polygon, input feature and
+/// remaining zone; the rest of an overlay polygon is one difference against the union of the
+/// input polygons covering it, and Cancel isn't looked at inside that step (#1562).
 fn overlay(inp: &dyn Inputs, p: &Json, op: Overlay) -> Result<ToolResult, String> {
     let ds = input(inp, p, "input")?;
     if ds.geometry_type == GeometryType::None {
@@ -1884,7 +1895,11 @@ fn overlay(inp: &dyn Inputs, p: &Json, op: Overlay) -> Result<ToolResult, String
     let zone_attrs = |z: &Zone| ov.features.get(z.row).map(|o| o.attrs.as_slice());
     // For Union and Symmetrical Difference, the rows of the input polygons that overlap each zone.
     let mut covering: Vec<Vec<usize>> = vec![Vec::new(); zones.len()];
-    for r in rows(inp, p, "input", ds) {
+    let input_rows = rows(inp, p, "input", ds);
+    crate::control::begin(input_rows.len());
+    for (done, r) in input_rows.into_iter().enumerate() {
+        crate::control::check()?;
+        crate::control::reached(done);
         let Some(f) = ds.features.get(r) else { continue };
         let Some(g) = &f.geometry else {
             // All but Intersect keep every input feature: one without geometry, as it is.
@@ -1909,7 +1924,10 @@ fn overlay(inp: &dyn Inputs, p: &Json, op: Overlay) -> Result<ToolResult, String
         }
     }
     if op.keeps_overlay_rest() {
-        for (z, inputs) in zones.iter().zip(&covering) {
+        crate::control::begin(zones.len());
+        for (done, (z, inputs)) in zones.iter().zip(&covering).enumerate() {
+            crate::control::check()?;
+            crate::control::reached(done);
             let rest = if inputs.is_empty() {
                 from_multipolygon(&z.poly)
             } else {
@@ -2010,7 +2028,11 @@ fn update(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
     let at_poles = AtPoles::new(zones.iter().map(|z| poles(&z.ext)));
     let mut out = copy_schema(ds, out_name(p, format!("{}_Update", ds.name)), GeometryType::Polygon);
     keep_source_crs(&mut out, ds, up);
-    for r in rows(inp, p, "input", ds) {
+    let input_rows = rows(inp, p, "input", ds);
+    crate::control::begin(input_rows.len());
+    for (done, r) in input_rows.into_iter().enumerate() {
+        crate::control::check()?;
+        crate::control::reached(done);
         let Some(f) = ds.features.get(r) else { continue };
         let rest = match &f.geometry {
             None => {
@@ -2024,7 +2046,10 @@ fn update(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
         }
     }
     let kept = out.features.len();
-    for z in &zones {
+    crate::control::begin(zones.len());
+    for (done, z) in zones.iter().enumerate() {
+        crate::control::check()?;
+        crate::control::reached(done);
         let Some(u) = up.features.get(z.row) else { continue };
         let attrs =
             ds.fields.iter().zip(&from).map(|(f, i)| i.and_then(|i| u.attrs.get(i)).map_or(Value::Null, |v| converted(v, f.ty))).collect();
@@ -2116,7 +2141,11 @@ fn split(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
     let mut layers = Vec::new();
     let mut empty = 0usize;
     let mut cand_buf = Vec::new();
-    for (name, members) in groups {
+    // A layer each: Cancel is looked at, and progress counted, layer by layer.
+    crate::control::begin(groups.len());
+    for (done, (name, members)) in groups.into_iter().enumerate() {
+        crate::control::check()?;
+        crate::control::reached(done);
         let polys: Vec<&Zone> = members.iter().filter_map(|zi| zones.get(*zi)).collect();
         let mask = match polys.as_slice() {
             [only] => std::borrow::Cow::Borrowed(&only.poly),
@@ -2129,6 +2158,8 @@ fn split(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
         index.candidates_into(&ext, &mut cand_buf);
         points_at_poles.add_to(reached, &mut cand_buf);
         for &li in &cand_buf {
+            // A layer can take most of the input: Cancel is looked at feature by feature too.
+            crate::control::check()?;
             let Some((r, e)) = located.get(li) else { continue };
             let Some(f) = ds.features.get(*r) else { continue };
             let meets = e.intersects(&ext) || (point(*r) && meet_at_a_pole(poles(e), reached));

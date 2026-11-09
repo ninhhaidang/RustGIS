@@ -36273,13 +36273,21 @@ fn long_commands_stop_when_cancelled_while_they_run() {
         note(command, run.run(&control).map(|_| ()), &control);
     }
 
-    // The tools whose work grows past a second or two on real data (and whose work caps follow
-    // the threads): run in the background as the Analysis pane runs them.
+    // The tools whose work grows past a second or two on real data: buffers, overlays, joins,
+    // densities and interpolation. Run in the background as the Analysis pane runs them; a new
+    // long tool is added here (AGENTS.md › Never hold the window).
     let tools = [
         ("buffer", json!({"input": "Cities", "distance": 100})),
         ("dissolve", json!({"input": "Countries"})),
         ("spatialJoin", json!({"target": "Cities", "join": "Countries"})),
         ("clip", json!({"input": "Rivers", "clip": "Countries"})),
+        ("erase", json!({"input": "Rivers", "erase": "Countries"})),
+        ("intersect", json!({"input": "Rivers", "overlay": "Countries"})),
+        ("identity", json!({"input": "Rivers", "overlay": "Countries"})),
+        ("union", json!({"input": "Lakes", "overlay": "Countries"})),
+        ("symmetricalDifference", json!({"input": "Lakes", "overlay": "Countries"})),
+        ("update", json!({"input": "Countries", "update": "Lakes"})),
+        ("split", json!({"input": "Rivers", "split": "Countries"})),
         ("kernelDensity", json!({"input": "Cities", "crs": "EPSG:3857"})),
         ("kriging", json!({"input": "Cities", "field": "pop_max"})),
     ];
