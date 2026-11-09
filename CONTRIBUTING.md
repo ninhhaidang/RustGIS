@@ -20,6 +20,8 @@ something on the roadmap (or not on it) interests you, propose it and open a pul
    - what you plan to build: the commands it adds, where it sits in the ribbon (following the
      [ribbon guidelines](docs/contributing.md#ribbon-guidelines)), which formats or tools are involved;
    - which crates it touches and whether it adds a dependency;
+   - for work that grows with the data, how it runs off the UI thread with progress and Cancel
+     (see [Never hold the window](AGENTS.md#never-hold-the-window));
    - how you will test it.
 
    Put it in an issue with the

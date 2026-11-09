@@ -35326,3 +35326,129 @@ fn the_thread_setting_is_reserved() {
     assert!(spec.effects.contains(crate::policy::Effect::Reserved));
     assert!(!spec.mutates, "no undo step");
 }
+
+/// A long command stops when it is cancelled while it runs (#1562): every command the app runs
+/// on another thread (its exports and the commands that make a raster) and the long-running tools
+/// look at the Cancel flag in their work, not only before it starts. Their control is cancelled
+/// as soon as the work starts ([`rustgis_analysis::control::Control::cancelled_once_started`]),
+/// so no timing is involved: a run that never looks finishes and is caught by its count of looks.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn long_commands_stop_when_cancelled_while_they_run() {
+    use rustgis_analysis::control::Control;
+    // Removed however the test ends.
+    struct Dir(std::path::PathBuf);
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let dir = Dir(std::env::temp_dir().join(format!("rustgis-cancel-{}", std::process::id())));
+    let _ = std::fs::remove_dir_all(&dir.0);
+    std::fs::create_dir_all(&dir.0).unwrap();
+    let out = |f: &str| dir.0.join(f).display().to_string();
+    let mut s = world();
+    s.run("layer.addDataBytes", &json!({"fileName": "dem.tif", "data": dem_b64()})).unwrap();
+    let dem = s.map().layers.iter().find(|l| l.is_raster()).unwrap().name.clone();
+    // What some of them read: a later DEM, a slope, training squares, an imagery workspace, a
+    // two-class scene with its training polygons, and a layout.
+    s.run("raster.function", &json!({"layer": dem, "function": "bandMath", "expression": "b1 + 10", "name": "dem_later"})).unwrap();
+    s.run("raster.function", &json!({"layer": dem, "function": "slope", "name": "dem_slope"})).unwrap();
+    s.run("layer.template", &json!({"template": "polygons", "name": "Squares"})).unwrap();
+    for (name, x) in [("low", 10.002), ("high", 10.018)] {
+        let square = [[x, 45.018], [x + 0.004, 45.018], [x + 0.004, 45.022], [x, 45.022], [x, 45.018]];
+        let geometry = json!({"type": "Polygon", "coordinates": [square]});
+        s.run("edit.addFeature", &json!({"layer": "Squares", "geometry": geometry, "attributes": {"name": name}})).unwrap();
+    }
+    s.run("imagery.workspace", &json!({"kind": "ortho", "name": "Valley", "images": [dem, "dem_later"]})).unwrap();
+    s.run("imagery.workspaceOptions", &json!({"name": "Valley", "cellSize": 0.002})).unwrap();
+    s.run("layer.addDataBytes", &json!({"fileName": "scene.tif", "data": two_class_b64()})).unwrap();
+    let training = json!({"type": "FeatureCollection", "features": [
+        {"type": "Feature", "properties": {"class": "water"}, "geometry": {"type": "Polygon", "coordinates": [[[10.002, 45.002], [10.015, 45.002], [10.015, 45.035], [10.002, 45.035], [10.002, 45.002]]]}},
+        {"type": "Feature", "properties": {"class": "field"}, "geometry": {"type": "Polygon", "coordinates": [[[10.025, 45.002], [10.038, 45.002], [10.038, 45.035], [10.025, 45.035], [10.025, 45.002]]]}}]});
+    s.run("layer.addDataText", &json!({"fileName": "training.geojson", "text": training.to_string()})).unwrap();
+    s.run("layout.new", &json!({"page": "a4", "orientation": "landscape", "template": "blank"})).unwrap();
+    s.run("layout.addFrame", &json!({"x": 20, "y": 20, "w": 150, "h": 150})).unwrap();
+
+    // What didn't stop, and how often it looked.
+    let mut kept_going = Vec::new();
+    let mut note = |what: &str, result: Result<(), String>, control: &Control| {
+        let stopped = result.as_ref().is_err_and(|e| e.contains("cancelled"));
+        if !stopped || control.looked() == 0 {
+            kept_going.push(format!("{what}: {result:?}, looked {} times", control.looked()));
+        }
+    };
+
+    let rasters = [
+        ("analysis.viewshed", json!({"layer": dem, "lon": 10.0055, "lat": 45.0395, "height": 2})),
+        ("analysis.interpolate", json!({"layer": "Cities", "field": "pop_max"})),
+        (
+            "analysis.suitability",
+            json!({"criteria": [
+                {"layer": dem, "ranges": [[0, 250, 1], [250, 1000, 10]], "weight": 2},
+                {"layer": "dem_slope", "ranges": [[0, 5, 10], [5, 90, 1]], "weight": 1}]}),
+        ),
+        ("raster.function", json!({"layer": dem, "function": "hillshade"})),
+        ("raster.functionChain", json!({"layer": dem, "steps": [{"function": "slope"}, {"function": "threshold", "value": 10}]})),
+        ("raster.classify", json!({"layer": dem, "classes": 3})),
+        ("raster.classifySupervised", json!({"layer": dem, "training": "Squares", "classField": "name"})),
+        ("raster.change", json!({"before": dem, "after": "dem_later", "method": "difference"})),
+        ("raster.index", json!({"layer": dem, "index": "ndvi", "nir": 1, "red": 1})),
+        ("raster.process", json!({"layer": dem, "operation": "resample", "factor": 4})),
+        ("imagery.mosaic", json!({"name": "Valley"})),
+        (
+            "dl.classify",
+            json!({"layer": "scene", "training": "training", "classField": "class", "bands": [1, 2], "epochs": 30, "model": "landcover"}),
+        ),
+    ];
+    // Every command that runs in the background is here, and only those.
+    fn listed<'a>(l: &[(&'a str, Value)]) -> std::collections::BTreeSet<&'a str> {
+        l.iter().map(|(c, _)| *c).collect()
+    }
+    let registered = crate::cmd::workflows::IN_BACKGROUND.iter().map(|(c, ..)| *c).collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(listed(&rasters), registered, "add a new background raster command here");
+    for (command, p) in &rasters {
+        let run = crate::cmd::workflows::raster_start(&mut s, command, p).unwrap_or_else(|e| panic!("{command}: {e}"));
+        let id = run.id;
+        let control = Control::cancelled_once_started();
+        note(command, run.run(&control).map(|_| ()), &control);
+        crate::cmd::workflows::raster_abandon(&mut s, id);
+    }
+
+    let exports = [
+        ("share.exportLayer", json!({"layer": "Cities", "path": out("cities.geojson")})),
+        ("share.exportRaster", json!({"layer": dem, "path": out("dem.tif")})),
+        ("share.exportMap", json!({"path": out("map.png"), "width": 320, "height": 200})),
+        ("layout.export", json!({"path": out("layout.pdf"), "dpi": 72})),
+    ];
+    let registered = crate::cmd::exports::IN_BACKGROUND.iter().map(|(c, ..)| *c).collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(listed(&exports), registered, "add a new background export here");
+    for (command, p) in &exports {
+        let run = crate::cmd::exports::export_start(&mut s, command, p).unwrap_or_else(|e| panic!("{command}: {e}"));
+        let control = Control::cancelled_once_started();
+        note(command, run.run(&control).map(|_| ()), &control);
+    }
+
+    // The tools whose work grows past a second or two on real data (and whose work caps follow
+    // the threads): run in the background as the Analysis pane runs them.
+    let tools = [
+        ("buffer", json!({"input": "Cities", "distance": 100})),
+        ("dissolve", json!({"input": "Countries"})),
+        ("spatialJoin", json!({"target": "Cities", "join": "Countries"})),
+        ("clip", json!({"input": "Rivers", "clip": "Countries"})),
+        ("kernelDensity", json!({"input": "Cities", "crs": "EPSG:3857"})),
+        ("kriging", json!({"input": "Cities", "field": "pop_max"})),
+    ];
+    for (tool, params) in &tools {
+        // The parameters are good: a run that isn't cancelled succeeds.
+        s.run("gp.run", &json!({"tool": tool, "params": params})).unwrap_or_else(|e| panic!("{tool}: {e}"));
+        let run = crate::cmd::gp::tool_start(&mut s, tool, params).unwrap_or_else(|e| panic!("{tool}: {e}"));
+        let id = run.id;
+        let control = Control::cancelled_once_started();
+        let done = run.run(&control);
+        // The result is kept, then `gp.finish` applies it (or says why it can't), as in the app.
+        let finished = crate::cmd::gp::tool_complete(&mut s, id, done).and_then(|()| s.run("gp.finish", &json!({"id": id})).map(|_| ()));
+        note(tool, finished, &control);
+    }
+    assert!(kept_going.is_empty(), "these ran on after Cancel:\n{}", kept_going.join("\n"));
+}

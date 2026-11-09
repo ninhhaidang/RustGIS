@@ -37,7 +37,7 @@ type Start = fn(&Session, &Value) -> Result<Work, String>;
 
 /// The exports the app writes on another thread ([`export_start`]), each with what it is called
 /// (in its progress, and a cancelled run's error) and what it reads of the session.
-const IN_BACKGROUND: &[(&str, &str, Start)] = &[
+pub(crate) const IN_BACKGROUND: &[(&str, &str, Start)] = &[
     ("share.exportLayer", "Export Features", super::share::layer_work),
     ("share.exportRaster", "Export Raster", super::raster::export_work),
     ("share.exportMap", "Export Map", super::share::map_work),

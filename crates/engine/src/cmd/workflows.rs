@@ -181,7 +181,7 @@ type Start = fn(&Session, &Value) -> Result<Work, String>;
 /// what it is called (in its progress, and a cancelled run's error) and what it reads of the
 /// session: their work grows with the raster, and most of their passes spread it over the cores
 /// from that thread. Run again with `{"ran": id}`, each adds the raster made (#1291 step 3).
-const IN_BACKGROUND: &[(&str, &str, Start)] = &[
+pub(crate) const IN_BACKGROUND: &[(&str, &str, Start)] = &[
     ("analysis.viewshed", "Viewshed", viewshed_work),
     ("analysis.interpolate", "Interpolate (IDW)", interpolate_work),
     ("analysis.suitability", "Suitability Modeler", suitability_work),

@@ -766,6 +766,8 @@ impl TrendRun {
             let slopes = n.saturating_mul(n).saturating_mul(4).max(1);
             let threads = rustgis_data::threads::max().min(1 + rustgis_analysis::scratch_budget() / slopes);
             let part = cells.div_ceil(threads).max(1);
+            // No more threads than there are parts (10 cells on 8 threads make 5).
+            let threads = cells.div_ceil(part);
             // The parts are taken from a list, by the threads started and by this one, so a
             // thread the OS refuses leaves no part undone (and costs speed, not the run).
             let parts = std::sync::Mutex::new(block.chunks(part * n).zip(out.chunks_mut(part * OUTPUTS)).enumerate().collect::<Vec<_>>());

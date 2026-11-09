@@ -696,6 +696,7 @@ pub fn run_under<T>(name: &str, control: &std::sync::Arc<control::Control>, work
     let _data = control::install_progress(Some(control.clone()));
     // No count until the work starts one: a control used before doesn't show that run's.
     control::begin(0);
+    control.cancel_if_started();
     let res = work();
     rustgis_data::source::remote::check_still(&still)?;
     if !control.is_cancelled() {

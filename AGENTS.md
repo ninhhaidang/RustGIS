@@ -25,6 +25,30 @@ Before picking work, read [ROADMAP.md](ROADMAP.md) (check Underway) and
   what this version couldn't read; a reader checks the version it is given
   ([saved files](docs/maintaining.md#saved-files-and-settings)).
 
+## Never hold the window
+On the desktop, a command whose work grows with its input (features, cells, tiles, files,
+requests) runs off the UI thread, with progress and Cancel (#1562). The browser has one thread and
+is out of scope.
+- Use an existing background path: tools go through `gp::tool_start`; exports through
+  `exports::runs_in_background`; commands that make a raster through
+  `workflows::runs_in_background`; models and scripts through the copy (`workflows::ahead_on_copy`),
+  with the command on `ON_A_COPY` when running it twice changes nothing outside the session.
+- The work looks at Cancel between items of its long loops (`control::check`, `Pace`,
+  `progress::check`) and counts its progress. Where progress can't be measured, a busy indicator
+  without a count is fine; Cancel is not optional.
+- Work that splits into independent parts runs on several threads where practical: the same
+  output as one thread, bit for bit; one thread below a size threshold and in the browser; the
+  shared helpers (`parallel::for_each_row`, `try_map`, `try_map_on`); the thread count from
+  `rustgis_data::threads` (it follows the user's setting), never `available_parallelism` or a
+  fixed number; scratch memory within `memory::thread_scratch`; a thread the OS refuses costs
+  speed, not the run (`Builder::spawn_scoped`).
+- A command that must run on the UI thread says why in its doc comment.
+- `crates/engine/src/tests.rs::long_commands_stop_when_cancelled_while_they_run` cancels each
+  background command as its work starts and fails one that never looks; its lists must match the
+  background registries, so a new background command is added there. Passing shows the work looks
+  at Cancel, not that it looks often: a long step without a check (one union, one read) is said in
+  its doc comment.
+
 ## Architecture
 | Layer | Crate | Job |
 |---|---|---|

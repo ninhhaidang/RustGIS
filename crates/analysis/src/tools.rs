@@ -1576,25 +1576,31 @@ fn part(g: &Geometry, mask: &MultiPolygon<f64>, inside: bool) -> Option<Geometry
 
 /// Clip each input feature to the union of only the selected clip polygons whose projected
 /// extents meet it. Union candidates together so overlapping masks never duplicate output.
+/// Cancel is looked at, and progress counted, mask by mask and feature by feature; one mask's
+/// union, and one feature's overlay, can't be stopped once started (#1562).
 fn clip(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
     let ds = input(inp, p, "input")?;
     let clip_ds = input(inp, p, "clip")?;
     if clip_ds.geometry_type != GeometryType::Polygon {
         return Err(format!("'{}' is not a polygon layer", clip_ds.name));
     }
-    let masks: Vec<_> = rows(inp, p, "clip", clip_ds)
-        .into_iter()
-        .filter_map(|r| clip_ds.features.get(r)?.geometry.as_ref().and_then(to_multipolygon))
-        .map(|m| {
-            let ext = merc_extent(&m);
-            // Union even one polygon: collapsed rings have no filled area. Keep the original
-            // bounds too: rounding an edge must not hide a line the boolean overlay clips to it.
-            let mask = union_all(m.0.iter());
-            let ext = ext.union(&merc_extent(&mask));
-            (mask, ext)
-        })
-        .filter(|(m, _)| !m.0.is_empty())
-        .collect();
+    let mut masks = Vec::new();
+    let mask_rows = rows(inp, p, "clip", clip_ds);
+    crate::control::begin(mask_rows.len());
+    for (done, r) in mask_rows.into_iter().enumerate() {
+        // Each mask is a union: Cancel is looked at, and progress counted, before each.
+        crate::control::check()?;
+        crate::control::reached(done);
+        let Some(m) = clip_ds.features.get(r).and_then(|f| f.geometry.as_ref()).and_then(to_multipolygon) else { continue };
+        let ext = merc_extent(&m);
+        // Union even one polygon: collapsed rings have no filled area. Keep the original
+        // bounds too: rounding an edge must not hide a line the boolean overlay clips to it.
+        let mask = union_all(m.0.iter());
+        let ext = ext.union(&merc_extent(&mask));
+        if !mask.0.is_empty() {
+            masks.push((mask, ext));
+        }
+    }
     let index = ExtentIndex::new(masks.iter().map(|(_, ext)| *ext));
     // The masks reaching each pole: a point at one is in them at any longitude (#1033).
     let at_poles = AtPoles::new(masks.iter().map(|(m, _)| plane_poles(m)));
@@ -1603,7 +1609,11 @@ fn clip(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
     const MAX_CACHED_MASKS: usize = 8;
     let mut cached_masks: std::collections::VecDeque<(Vec<usize>, MultiPolygon<f64>)> = std::collections::VecDeque::new();
     let mut out = copy_schema(ds, out_name(p, format!("{}_Clip", ds.name)), ds.geometry_type);
-    for r in rows(inp, p, "input", ds) {
+    let input_rows = rows(inp, p, "input", ds);
+    crate::control::begin(input_rows.len());
+    for (done, r) in input_rows.into_iter().enumerate() {
+        crate::control::check()?;
+        crate::control::reached(done);
         let Some(f) = ds.features.get(r) else { continue };
         let Some(g) = f.geometry.as_ref() else { continue };
         let ext = projected_extent(g);
@@ -2145,6 +2155,9 @@ fn split(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
 /// of the (selected) polygons holding it, with the value, `count` (the polygons merged) and the
 /// statistics asked for, as `<STAT>_<field>`, over exactly the records merged: a record without a
 /// polygon is left out of both.
+/// Dissolve: Cancel is looked at feature by feature while the groups are made, and group by group
+/// while each is merged. A group's merge is one union of all its polygons, which can't be stopped
+/// once it has started: with no field, the whole layer is one group (#1562).
 fn dissolve(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
     let ds = input(inp, p, "input")?;
     if ds.geometry_type != GeometryType::Polygon {
@@ -2156,7 +2169,11 @@ fn dissolve(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
     // Each group's key, polygons and records, in the order first met; found by its key's hash.
     let mut groups: Vec<(Value, Vec<MultiPolygon<f64>>, Vec<usize>)> = Vec::new();
     let mut index: HashMap<crate::stats::KeyPart<'_>, usize> = HashMap::new();
-    for r in each_once(rows(inp, p, "input", ds)) {
+    let input_rows = each_once(rows(inp, p, "input", ds));
+    crate::control::begin(input_rows.len());
+    for (done, r) in input_rows.into_iter().enumerate() {
+        crate::control::check()?;
+        crate::control::reached(done);
         let Some(mp) = ds.features.get(r).and_then(|f| f.geometry.as_ref()).and_then(to_multipolygon) else { continue };
         let value = fi.map_or(&Value::Null, |fi| ds.value(r, fi));
         // A NaN equals no value, so each one stays a group of its own; −0 is 0, as it compares.
@@ -2183,7 +2200,11 @@ fn dissolve(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
     fields.extend(added);
     let mut out = Dataset::new(out_name(p, format!("{}_Dissolve", ds.name)), GeometryType::Polygon, fields);
     let mut rounded = Rounded::new(requests.len());
-    for (key, parts, mut records) in groups {
+    // The unions are the work: counted, and Cancel looked at, group by group.
+    crate::control::begin(groups.len());
+    for (done, (key, parts, mut records)) in groups.into_iter().enumerate() {
+        crate::control::check()?;
+        crate::control::reached(done);
         let n = parts.len() as i64;
         let u = union_all(parts.iter().flat_map(|m| m.0.iter()));
         let mut attrs = if fi.is_some() { vec![key, Value::Int(n)] } else { vec![Value::Int(n)] };
@@ -5665,7 +5686,11 @@ fn spatial_join(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
     let join_rows = rows(inp, p, "join", join);
 
     let mut join_geoms: Vec<Located<'_>> = Vec::with_capacity(join_rows.len());
-    for &jr in &join_rows {
+    // The join features converted: Cancel looked at, and progress counted, feature by feature.
+    crate::control::begin(join_rows.len());
+    for (done, &jr) in join_rows.iter().enumerate() {
+        crate::control::check()?;
+        crate::control::reached(done);
         if let Some(f) = join.features.get(jr)
             && let Some(g) = f.geometry.as_ref()
         {
@@ -5710,7 +5735,10 @@ fn spatial_join(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
     let mut written_features = 0usize;
     let mut cand_buf = Vec::new();
 
-    for tr in target_rows {
+    crate::control::begin(target_rows.len());
+    for (done, tr) in target_rows.into_iter().enumerate() {
+        crate::control::check()?;
+        crate::control::reached(done);
         let Some(tf) = target.features.get(tr) else { continue };
         // The matches, in the order they're joined, with their distances when measured.
         let mut matches: Vec<(usize, Option<f64>)> = Vec::new();
