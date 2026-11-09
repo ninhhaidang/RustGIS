@@ -35,6 +35,13 @@ fn crosses(a: (f64, f64), b: (f64, f64), c: (f64, f64), d: (f64, f64)) -> bool {
 /// Triangles (indices into `outer` followed by each hole's vertices, in order) covering the polygon.
 /// Rings are open (no repeated closing vertex). `None` when the polygon is degenerate or too large.
 pub fn triangulate(outer: &[(f64, f64)], holes: &[Vec<(f64, f64)>]) -> Option<Vec<[usize; 3]>> {
+    triangulate_reporting(outer, holes).map(|(tris, _)| tris)
+}
+
+/// Like [`triangulate`], and also says whether the last-resort fan was used: a ring left with no
+/// ear to cut (self-touching or self-crossing) is finished as a fan from its first vertex, which can
+/// spill outside the polygon. Callers that report approximations should count those.
+pub fn triangulate_reporting(outer: &[(f64, f64)], holes: &[Vec<(f64, f64)>]) -> Option<(Vec<[usize; 3]>, bool)> {
     let total = outer.len() + holes.iter().map(Vec::len).sum::<usize>();
     if outer.len() < 3 || total > MAX_VERTICES || !outer.iter().chain(holes.iter().flatten()).all(|p| p.0.is_finite() && p.1.is_finite()) {
         return None;
@@ -107,6 +114,7 @@ pub fn triangulate(outer: &[(f64, f64)], holes: &[Vec<(f64, f64)>]) -> Option<Ve
     // Ear clipping: only reflex vertices can block an ear, and the search resumes where the
     // last ear was cut.
     let mut tris = Vec::with_capacity(ring.len());
+    let mut fanned = false;
     let mut start = 0usize;
     while ring.len() > 3 {
         let n = ring.len();
@@ -147,12 +155,13 @@ pub fn triangulate(outer: &[(f64, f64)], holes: &[Vec<(f64, f64)>]) -> Option<Ve
                 tris.push([ring[0], ring[i], ring[i + 1]]);
             }
             ring.clear();
+            fanned = true;
         }
     }
     if ring.len() == 3 {
         tris.push([ring[0], ring[1], ring[2]]);
     }
-    Some(tris)
+    Some((tris, fanned))
 }
 
 #[cfg(test)]
@@ -161,6 +170,27 @@ mod tests {
 
     fn area(pts: &[(f64, f64)], tris: &[[usize; 3]]) -> f64 {
         tris.iter().map(|t| cross(pts[t[0]], pts[t[1]], pts[t[2]]).abs() / 2.0).sum()
+    }
+
+    #[test]
+    fn a_ring_left_with_no_ear_is_finished_as_a_fan_and_says_so() {
+        // A 4×4 square with a triangular hole that shares the square's whole left side (a hole
+        // touching the outer ring along an edge, as shared boundaries in real data do). Bridging
+        // the hole in leaves a ring whose every vertex is reflex or blocked, so no ear can be cut
+        // and it ends as a fan from the first vertex.
+        let sq = vec![(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)];
+        let hole = vec![(0.0, 0.0), (3.0, 2.0), (0.0, 4.0)];
+        let (tris, fanned) = triangulate_reporting(&sq, std::slice::from_ref(&hole)).unwrap();
+        assert!(fanned);
+        assert_eq!(triangulate(&sq, &[hole]).unwrap(), tris, "triangulate gives the same triangles");
+        // Clean polygons are not fanned: convex, concave, and with holes.
+        let l = vec![(0.0, 0.0), (2.0, 0.0), (2.0, 1.0), (1.0, 1.0), (1.0, 2.0), (0.0, 2.0)];
+        assert!(!triangulate_reporting(&sq, &[]).unwrap().1);
+        assert!(!triangulate_reporting(&l, &[]).unwrap().1);
+        let inner = vec![vec![(1.0, 1.0), (2.0, 1.0), (2.0, 2.0), (1.0, 2.0)]];
+        assert!(!triangulate_reporting(&sq, &inner).unwrap().1);
+        // A hole that stays clear of the left side is fine.
+        assert!(!triangulate_reporting(&sq, &[vec![(0.0, 1.0), (2.0, 2.0), (0.0, 3.0)]]).unwrap().1);
     }
 
     #[test]

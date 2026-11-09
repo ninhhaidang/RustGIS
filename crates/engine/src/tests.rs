@@ -2,6 +2,10 @@ use serde_json::{Value, json};
 
 use crate::{Project, Session, sample};
 
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "tests/scene_losses.rs"]
+mod scene_losses;
+
 #[path = "tests/permission_policy.rs"]
 mod permission_policy;
 
@@ -33396,7 +33400,126 @@ fn stl_fans_a_cap_past_the_triangulator_limit_and_says_so() {
     assert!(!stl_triangles(&bytes).is_empty());
     let said = |part: &str| s.notices.iter().any(|n| n.text.contains(part));
     assert!(said("1 polygon cap(s) couldn't be triangulated"));
-    assert!(said("holes are filled"));
+    assert!(said("holes may be filled"));
+}
+
+/// A polygon the triangulator can only finish as a fan: a hole sharing the outer ring's whole left
+/// side (the geom crate's `a_ring_left_with_no_ear_is_finished_as_a_fan_and_says_so`), in degrees.
+fn fan_polygon() -> Value {
+    json!({"type": "Polygon", "coordinates": [
+        [[0.0, 0.0], [0.04, 0.0], [0.04, 0.04], [0.0, 0.04], [0.0, 0.0]],
+        [[0.0, 0.0], [0.03, 0.02], [0.0, 0.04], [0.0, 0.0]]]})
+}
+
+#[test]
+fn three_d_exports_count_internal_fans_with_the_others_and_clean_caps_say_nothing() {
+    for kind in ["obj", "stl"] {
+        // A cap the triangulator can only finish as a fan is reported like one it gave up on.
+        let mut s = mesh_session(json!([mesh_feature(fan_polygon(), 30.0), mesh_feature(square(0.0, false), 30.0)]));
+        crate::cmd::items::item_bytes(&mut s, kind, &json!({"heightField": "h"})).unwrap();
+        let said = |part: &str| s.notices.iter().any(|n| n.text.contains(part));
+        assert!(said("1 polygon cap(s) couldn't be triangulated"), "{kind}: {:?}", s.notices);
+        // Clean caps give no such notice.
+        let mut clean = mesh_session(json!([mesh_feature(square(0.0, false), 30.0)]));
+        crate::cmd::items::item_bytes(&mut clean, kind, &json!({"heightField": "h"})).unwrap();
+        assert!(!clean.notices.iter().any(|n| n.text.contains("couldn't be triangulated")), "{kind}: {:?}", clean.notices);
+    }
+}
+
+#[test]
+fn web_scene_fans_caps_it_cannot_triangulate_and_says_so() {
+    let dir = std::env::temp_dir().join(format!("rustgis-scene-fans-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("scene.gltf").display().to_string();
+    // One cap past the triangulator's limit (5001 vertices) and one it finishes as a fan: two caps, one notice.
+    let big: Vec<[f64; 2]> = (0..5001)
+        .map(|i| {
+            let a = i as f64 * std::f64::consts::TAU / 5001.0;
+            [0.01 * a.cos(), 0.01 * a.sin()]
+        })
+        .collect();
+    let mut s = mesh_session(json!([
+        mesh_feature(json!({"type": "Polygon", "coordinates": [big]}), 30.0),
+        mesh_feature(fan_polygon(), 30.0),
+        mesh_feature(square(0.0, false), 30.0),
+    ]));
+    s.run("share.webScene", &json!({"path": path})).unwrap();
+    let said: Vec<&str> = s.notices.iter().map(|n| n.text.as_str()).filter(|t| t.contains("couldn't be triangulated")).collect();
+    assert_eq!(said.len(), 1, "{:?}", s.notices);
+    assert!(said[0].starts_with("2 polygon cap(s) couldn't be triangulated"), "{said:?}");
+    // A clean scene says nothing about caps.
+    let mut clean = mesh_session(json!([mesh_feature(square(0.0, false), 30.0)]));
+    clean.run("share.webScene", &json!({"path": path})).unwrap();
+    assert!(!clean.notices.iter().any(|n| n.text.contains("couldn't be triangulated")), "{:?}", clean.notices);
+    // On its own (with a hole it can't use), the oversized polygon is in the scene as a fan over
+    // its outer ring: 4999 triangles, and only the ring's 5001 positions (the layer isn't extruded,
+    // so the cap's are all there are), all on the circle, none of the hole's.
+    let hole = [[0.001, 0.001], [0.002, 0.001], [0.0015, 0.002], [0.001, 0.001]];
+    let mut holed = mesh_session(json!([mesh_feature(json!({"type": "Polygon", "coordinates": [big, hole]}), 30.0)]));
+    holed.run("share.webScene", &json!({"path": path})).unwrap();
+    let said: Vec<&str> = holed.notices.iter().map(|n| n.text.as_str()).filter(|t| t.contains("couldn't be triangulated")).collect();
+    assert!(matches!(said[..], [t] if t.starts_with("1 polygon cap(s) couldn't be triangulated")), "{:?}", holed.notices);
+    let g: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let prim = &g["meshes"][0]["primitives"][0];
+    let accessor = |i: &Value| &g["accessors"][i.as_u64().unwrap() as usize];
+    assert_eq!(accessor(&prim["indices"])["count"], 4999 * 3);
+    let at = accessor(&prim["attributes"]["POSITION"]);
+    assert_eq!(at["count"], 5001);
+    let uri = g["buffers"][0]["uri"].as_str().unwrap();
+    let bytes = {
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD.decode(uri.split_once(",").unwrap().1).unwrap()
+    };
+    // The indices are the fan from the ring's first vertex, wound to face up (+y) for this
+    // counter-clockwise ring: (0, i, i + 1).
+    let ia = accessor(&prim["indices"]);
+    let iv = &g["bufferViews"][ia["bufferView"].as_u64().unwrap() as usize];
+    let istart = (iv["byteOffset"].as_u64().unwrap_or(0) + ia["byteOffset"].as_u64().unwrap_or(0)) as usize;
+    let indices: Vec<u32> = bytes[istart..istart + 4999 * 3 * 4].chunks(4).map(|b| u32::from_le_bytes(b.try_into().unwrap())).collect();
+    let fan: Vec<u32> = (1..5000u32).flat_map(|i| [0, i, i + 1]).collect();
+    assert_eq!(indices, fan);
+    let view = &g["bufferViews"][at["bufferView"].as_u64().unwrap() as usize];
+    let start = (view["byteOffset"].as_u64().unwrap_or(0) + at["byteOffset"].as_u64().unwrap_or(0)) as usize;
+    let xz: Vec<(f64, f64)> = bytes[start..start + 5001 * 12]
+        .chunks(12)
+        .map(|v| {
+            let f = |o: usize| f64::from(f32::from_le_bytes(v[o..o + 4].try_into().unwrap()));
+            (f(0), f(8))
+        })
+        .collect();
+    // Each position is its source vertex, in order: metres east (x) and south (z) of the map's centre.
+    let c = holed.map().center_lonlat();
+    let (origin, k) = (rustgis_geom::lonlat_to_merc(c), c.y.to_radians().cos().abs().max(0.01));
+    for (i, (x, z)) in xz.iter().enumerate() {
+        let q = rustgis_geom::lonlat_to_merc(rustgis_geom::Coord::new(big[i][0], big[i][1]));
+        let (ex, ez) = ((q.x - origin.x) * k, -(q.y - origin.y) * k);
+        assert!((x - ex).abs() < 0.125 && (z - ez).abs() < 0.125, "vertex {i}: ({x}, {z}), not ({ex}, {ez})");
+    }
+    // And every triangle faces up: its normal, (b - a) × (c - a), has a positive y.
+    for t in indices.chunks(3) {
+        let [a, b, c] = [t[0], t[1], t[2]].map(|n| xz[n as usize]);
+        let (u, v) = ((b.0 - a.0, b.1 - a.1), (c.0 - a.0, c.1 - a.1));
+        assert!(u.1 * v.0 - u.0 * v.1 > 0.0, "{t:?} faces down");
+    }
+    // Features too far from the centre for 32-bit positions (a polygon, a line) are left out and
+    // said, not written as infinity.
+    let far = json!({"type": "Polygon", "coordinates": [[[1e40, 0.0], [1e40, 0.01], [1.01e40, 0.0], [1e40, 0.0]]]});
+    let far_line = json!({"type": "LineString", "coordinates": [[0.0, 0.0], [1e40, 0.0]]});
+    let mut s = mesh_session(json!([mesh_feature(far, 30.0), mesh_feature(far_line, 30.0), mesh_feature(square(0.0, false), 30.0)]));
+    s.run("share.webScene", &json!({"path": path})).unwrap();
+    assert!(
+        s.notices.iter().any(|n| n.text == "2 feature(s) left out of the scene: a coordinate is too far from the map's centre"),
+        "{:?}",
+        s.notices
+    );
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(serde_json::from_str::<Value>(&text).is_ok() && !text.contains("null"), "{text}");
+    // A far ring the scene wouldn't draw anyway (two vertices) isn't counted as left out for it.
+    let flat_far = json!({"type": "Polygon", "coordinates": [[[1e40, 0.0], [0.0, 0.01], [1e40, 0.0]]]});
+    let mut s = mesh_session(json!([mesh_feature(flat_far, 30.0), mesh_feature(square(0.0, false), 30.0)]));
+    s.run("share.webScene", &json!({"path": path})).unwrap();
+    assert!(!s.notices.iter().any(|n| n.text.contains("left out of the scene")), "{:?}", s.notices);
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
