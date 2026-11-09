@@ -343,7 +343,7 @@ mod local {
             std::fs::create_dir_all(d).map_err(|e| format!("{}: {e}", d.display()))?;
         }
         let text = serde_json::to_string_pretty(&state).map_err(|e| e.to_string())?;
-        rustgis_engine::data::io::write_atomic(path, text.as_bytes()).map_err(|e| format!("{}: {e}", path.display()))
+        rustgis_engine::data::io::replace_atomic(path, text.as_bytes()).map_err(|e| format!("{}: {e}", path.display()))
     }
 
     /// Adds skills to the user's: a `SKILL.md`, a skill's folder, a folder of skill folders, or

@@ -685,7 +685,10 @@ fn write_new_with(path: &Path, write: impl FnOnce(&mut dyn std::io::Write) -> st
 }
 
 /// Writes through a temporary file that is synced and renamed into place, so an interrupted
-/// write never truncates an existing file. The temporary file is removed on failure.
+/// write never truncates an existing file. The temporary file is removed on failure. A symbolic
+/// link is written through, and an existing file keeps its permissions. For app-managed files
+/// whose destination link must be replaced instead, use [`replace_atomic`]. On Unix, failure to
+/// inspect or preserve an existing file's permissions is an error and leaves that file unchanged.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     write_atomic_with(path, |w| w.write_all(bytes))
@@ -698,12 +701,47 @@ pub fn write_atomic_with<T, E: From<std::io::Error>>(
     path: &Path,
     write: impl FnOnce(&mut std::io::BufWriter<std::fs::File>) -> std::result::Result<T, E>,
 ) -> std::result::Result<T, E> {
+    let path = link_target(path)?;
+    atomic_write_at(&path, write)
+}
+
+/// Atomically replaces an app-managed file, replacing a final symbolic link rather than
+/// writing through it. Parent directories must be trusted, as for [`write_atomic`]. Existing
+/// regular files keep their permissions; a replaced link uses a new file's permissions.
+pub fn replace_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    atomic_write_at(path, |out| out.write_all(bytes))
+}
+
+/// Stages content beside the chosen destination; errors and cancellation retain the old file.
+fn atomic_write_at<T, E: From<std::io::Error>>(
+    path: &Path,
+    write: impl FnOnce(&mut std::io::BufWriter<std::fs::File>) -> std::result::Result<T, E>,
+) -> std::result::Result<T, E> {
     use std::io::Write;
     let tmp = temp_beside(path)?;
     // Opened before the guard, so a name already taken is never removed.
     let file = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
     // Removes the file on an error and on a panic in `write` alike, unless it was moved into place.
     let staged = Staged(&tmp);
+    // The new file takes the old one's mode before any content is written, so a private file
+    // (0600) never becomes readable by others. On Windows a new file inherits its folder's access
+    // rules, and copying a read-only flag would only make the rename fail.
+    #[cfg(unix)]
+    match std::fs::symlink_metadata(path) {
+        Ok(old) if !old.file_type().is_symlink() => {
+            use std::os::unix::fs::PermissionsExt;
+            let permissions = old.permissions();
+            // Mounts that cannot chmod need no syscall when the mode already matches.
+            // If preserving a different mode fails, refuse the save instead of widening it.
+            if file.metadata()?.permissions().mode() != permissions.mode() {
+                file.set_permissions(permissions)?;
+            }
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
     let mut out = std::io::BufWriter::new(file);
     let value = write(&mut out)?;
     out.flush()?;
@@ -719,6 +757,32 @@ pub fn write_atomic_with<T, E: From<std::io::Error>>(
     std::mem::forget(staged);
     Ok(value)
 }
+
+/// The file a write to `path` replaces: `path` itself, or, when it is a symbolic link, the file
+/// its chain of links ends at (which need not exist yet). A link's relative target counts from
+/// the link's folder. More than [`MAX_LINKS`] links in a row, as in a loop, is an error.
+fn link_target(path: &Path) -> std::io::Result<std::path::PathBuf> {
+    let mut at = path.to_path_buf();
+    for _ in 0..=MAX_LINKS {
+        match std::fs::symlink_metadata(&at) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                let next = std::fs::read_link(&at)?;
+                // `join` keeps an absolute target as it is.
+                at = at.parent().map_or_else(|| next.clone(), |folder| folder.join(&next));
+            }
+            Ok(_) => return Ok(at),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(at),
+            Err(error) => return Err(error),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        format!("{} leads through more than {MAX_LINKS} symbolic links", path.display()),
+    ))
+}
+
+/// How many symbolic links in a row [`link_target`] follows, as many as Linux does.
+const MAX_LINKS: usize = 40;
 
 /// A file being written beside its destination: removed when dropped, as an export that
 /// failed or panicked leaves it. A finished export forgets it once the file is renamed.
@@ -2956,6 +3020,86 @@ mod tests {
         assert!(write_atomic(&destination, b"must not replace directory").is_err());
         assert_eq!(std::fs::read(marker)?, b"keep destination contents");
         assert_eq!(std::fs::read_dir(&root)?.count(), 1, "failed install left a staging file");
+        std::fs::remove_dir_all(root)
+    }
+
+    /// Saving through a link (a project kept in a synced folder, linked from elsewhere) updates
+    /// the file it leads to, relative or dangling, and leaves the link in place; a loop is an
+    /// error that changes nothing.
+    #[cfg(unix)]
+    #[test]
+    fn write_atomic_writes_through_symbolic_links() -> std::io::Result<()> {
+        let root = temp_beside(&std::env::temp_dir().join("rustgis-atomic-link"))?;
+        std::fs::create_dir(&root)?;
+        let real_dir = root.join("real");
+        std::fs::create_dir(&real_dir)?;
+        let real = real_dir.join("project.rgis");
+        std::fs::write(&real, b"old")?;
+        let link = root.join("project.rgis");
+        std::os::unix::fs::symlink("real/project.rgis", &link)?;
+        let chained = root.join("chained.rgis");
+        std::os::unix::fs::symlink(&link, &chained)?;
+        write_atomic(&chained, b"new")?;
+        assert_eq!(std::fs::read(&real)?, b"new");
+        assert!(std::fs::symlink_metadata(&link)?.file_type().is_symlink());
+        assert!(std::fs::symlink_metadata(&chained)?.file_type().is_symlink());
+        assert_eq!(std::fs::read_dir(&real_dir)?.count(), 1, "a temp file was left behind");
+        // A dangling link gets its file created.
+        let missing = real_dir.join("missing.rgis");
+        let dangling = root.join("dangling.rgis");
+        std::os::unix::fs::symlink(&missing, &dangling)?;
+        write_atomic(&dangling, b"made")?;
+        assert_eq!(std::fs::read(&missing)?, b"made");
+        assert!(std::fs::symlink_metadata(&dangling)?.file_type().is_symlink());
+        // A loop is refused without touching anything.
+        let (a, b) = (root.join("a.rgis"), root.join("b.rgis"));
+        std::os::unix::fs::symlink(&b, &a)?;
+        std::os::unix::fs::symlink(&a, &b)?;
+        assert!(write_atomic(&a, b"loop").is_err());
+        assert!(std::fs::symlink_metadata(&a)?.file_type().is_symlink());
+        assert_eq!(std::fs::read_dir(&root)?.count(), 6, "a temp file was left behind");
+        let mut target = real.clone();
+        for i in 0..MAX_LINKS {
+            let next = root.join(format!("chain-{i}"));
+            std::os::unix::fs::symlink(&target, &next)?;
+            target = next;
+        }
+        write_atomic(&target, b"forty links")?;
+        assert_eq!(std::fs::read(&real)?, b"forty links");
+        let too_many = root.join("chain-over-limit");
+        std::os::unix::fs::symlink(&target, &too_many)?;
+        assert!(write_atomic(&too_many, b"too many").is_err());
+        assert_eq!(std::fs::read(&real)?, b"forty links");
+        // Managed files replace the link itself, retaining the target's original contents.
+        replace_atomic(&link, b"managed file")?;
+        assert!(!std::fs::symlink_metadata(&link)?.file_type().is_symlink());
+        assert_eq!(std::fs::read(&link)?, b"managed file");
+        assert_eq!(std::fs::read(&real)?, b"forty links");
+        std::fs::remove_dir_all(root)
+    }
+
+    /// A private file stays private when saved over, and a new file still gets the usual mode.
+    #[cfg(unix)]
+    #[test]
+    fn write_atomic_keeps_permissions() -> std::io::Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        let root = temp_beside(&std::env::temp_dir().join("rustgis-atomic-mode"))?;
+        std::fs::create_dir(&root)?;
+        let private = root.join("private.rgis");
+        std::fs::write(&private, b"old")?;
+        std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o600))?;
+        write_atomic(&private, b"new")?;
+        assert_eq!(std::fs::read(&private)?, b"new");
+        assert_eq!(std::fs::metadata(&private)?.permissions().mode() & 0o7777, 0o600);
+        // A read-only file is still replaced, and stays read-only.
+        std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o400))?;
+        write_atomic(&private, b"newer")?;
+        assert_eq!(std::fs::read(&private)?, b"newer");
+        assert_eq!(std::fs::metadata(&private)?.permissions().mode() & 0o7777, 0o400);
+        // A new file is created as before: owner read-write, the rest by the umask.
+        let fresh = root.join("fresh.rgis");
+        write_atomic(&fresh, b"x")?;
+        assert_eq!(std::fs::metadata(&fresh)?.permissions().mode() & 0o600, 0o600);
         std::fs::remove_dir_all(root)
     }
 

@@ -680,7 +680,7 @@ mod folder {
         bytes.extend_from_slice(header.as_bytes());
         bytes.push(b'\n');
         bytes.extend_from_slice(text.as_bytes());
-        rustgis_engine::data::io::write_atomic(&dir.join(LIVE), &bytes).map_err(|e| e.to_string())
+        rustgis_engine::data::io::replace_atomic(&dir.join(LIVE), &bytes).map_err(|e| e.to_string())
     }
 
     /// Removes a copy; one already gone is no error.

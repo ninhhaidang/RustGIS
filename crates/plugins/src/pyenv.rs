@@ -173,7 +173,7 @@ pub fn uv(progress: &mut dyn FnMut(&str)) -> Result<PathBuf, String> {
         .read_to_end(&mut program)
         .map_err(|e| format!("{name}: {e}"))?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    rustgis_data::io::write_atomic(&exe, &program).map_err(|e| format!("{}: {e}", exe.display()))?;
+    rustgis_data::io::replace_atomic(&exe, &program).map_err(|e| format!("{}: {e}", exe.display()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -280,7 +280,7 @@ pub fn prepare(id: &str, progress: &mut dyn FnMut(&str)) -> Result<PathBuf, Stri
                 progress,
             )?;
         }
-        rustgis_data::io::write_atomic(&tmp.join(MADE_FOR), want.as_bytes()).map_err(|e| e.to_string())?;
+        rustgis_data::io::replace_atomic(&tmp.join(MADE_FOR), want.as_bytes()).map_err(|e| e.to_string())?;
         let old = parent.join(format!(".{id}-{nanos}-old"));
         let had_old = check.env.exists();
         if had_old {
