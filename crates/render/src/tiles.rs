@@ -280,6 +280,8 @@ pub struct Live {
     pub quads: Vec<TileQuad>,
     /// Tiles in view are still on their way.
     pub pending: bool,
+    /// What resolving or placing these tiles left out, reported just as for a full drawing.
+    pub error: Option<String>,
 }
 
 /// A live raster tile layer's tiles for `view` ([`DrawCmd::LiveTiles`]): over the view, fetching
@@ -307,7 +309,7 @@ pub fn live(spec: &Spec, opacity: f32, view: &View) -> Option<Live> {
     let coarse = Frame { m_per_px: frame.m_per_px * 8.0, ..frame };
     let _ = rustgis_tiles::place_raster(spec, opacity, &coarse, &fetch, &fetch);
     let origin = [view.camera.center.x, view.camera.center.y];
-    Some(Live { quads: p.tiles.iter().map(|q| quad(q, origin)).collect(), pending: p.pending })
+    Some(Live { quads: p.tiles.iter().map(|q| quad(q, origin)).collect(), pending: p.pending, error: p.error })
 }
 
 /// Draws the map's visible tile layers at `which` (indices, top first), bottom first. With
@@ -387,7 +389,7 @@ pub(crate) fn draw(
                 && let Some(p) = rustgis_tiles::place_raster(&s, t.opacity, &frame, &fetch, &reach)
                 && crate::flush_acc(pm, g.cmds, g.dirty).is_some()
             {
-                g.cmds.push(DrawCmd::LiveTiles { spec: s, opacity: t.opacity });
+                g.cmds.push(DrawCmd::LiveTiles { name: t.name.clone(), spec: s, opacity: t.opacity });
                 let d = rustgis_tiles::Drawn { labels: Vec::new(), attribution: p.attribution, pending: p.pending, error: p.error };
                 collect(d, t, &mut out);
                 continue;
@@ -911,6 +913,19 @@ pub(crate) mod tests {
             } else if url == "https://tiles.test/style.json" {
                 let style = r##"{"version": 8, "sources": {}, "layers": [{"id": "bg", "type": "background", "paint": {"background-color": "#2050e0"}}]}"##;
                 done(Ok(style.as_bytes().to_vec()));
+            } else if url == "https://tiles.test/missing-source-style.json" {
+                let style = serde_json::json!({"version": 8,
+                "sources": {
+                    "s": {"type": "raster", "tiles": ["https://tiles.test/red/{z}/{x}/{y}.png"]},
+                    "unsupported": {"type": "geojson", "data": {"type": "FeatureCollection", "features": []}}
+                },
+                "layers": [
+                    {"id": "valid", "type": "raster", "source": "s"},
+                    {"id": "no-source", "type": "raster"},
+                    {"id": "no-definition", "type": "raster", "source": "absent"},
+                    {"id": "no-reader", "type": "raster", "source": "unsupported"}
+                ]});
+                done(Ok(serde_json::to_vec(&style).unwrap()));
             } else {
                 done(Err("404".into()));
             }
@@ -1205,6 +1220,25 @@ pub(crate) mod tests {
         let r = crate::render_complete(&mut m, &view).unwrap();
         assert!(!r.tiles_pending);
         assert_eq!(r.tile_errors.len(), 1, "{:?}", r.tile_errors);
+    }
+
+    /// Both full drawings and per-frame placement retain the counted missing-source notice.
+    #[test]
+    fn missing_source_diagnostics_reach_full_and_live_drawings() {
+        serve();
+        let mut map = Map::new("Map");
+        map.tiles.push(TileLayer::new("Broken style", TileKind::Style, "https://tiles.test/missing-source-style.json"));
+        let camera = Camera { center: lonlat_to_merc(Coord::new(10.0, 50.0)), res: 2000.0, bearing: 0.0, pitch: 0.0 };
+        let view = View { width: 200.0, height: 100.0, pixels_per_point: 1.0, camera, sky: false };
+        let full = crate::render_complete(&mut map, &view).unwrap();
+        let live = super::live(&super::spec(&map.tiles[0]), 1.0, &view).unwrap();
+        let note = live.error.unwrap();
+        assert!(note.contains("3 style layer(s) skipped"), "{note}");
+        for id in ["no-source", "no-definition", "no-reader"] {
+            assert!(note.contains(id), "{note}");
+        }
+        assert_eq!(full.tile_errors, [format!("Broken style: {note}")]);
+        assert!(!live.quads.is_empty(), "the valid raster layer still draws");
     }
 
     /// A view across the antimeridian on the globe draws the tiles on both sides of it: the

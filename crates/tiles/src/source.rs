@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use web_time::Instant;
 
 use crate::cache::{self, Payload, State};
-use crate::style::{Source, Style};
+use crate::style::{LayerKind, Source, Style};
 use crate::{address, cog, mbtiles, pmtiles, template};
 
 /// The kind of address.
@@ -84,9 +84,11 @@ pub struct Resolved {
     pub attribution: Vec<String>,
     /// What of the style was left out and why, said with every drawing of it as its error.
     pub left_out: Vec<String>,
-    /// When it was resolved: one that left something out is resolved again once a failed
-    /// fetch may be tried again ([`cache::RETRY`]).
+    /// When it was resolved, used to wait before retrying a failed source.
     pub made: Mutex<Instant>,
+    /// A source failed to resolve and may recover on a later attempt. Structural warnings
+    /// alone never expire a style or its rendered meshes.
+    pub retry: bool,
     /// An elevation source is still on its way: the rest is drawn without it meanwhile, each
     /// drawing pending, and it is resolved again on the next one.
     pub waiting: bool,
@@ -100,7 +102,7 @@ impl Resolved {
 
     /// Whether it may still be used as it is.
     fn current(&self) -> bool {
-        !self.waiting && (self.left_out.is_empty() || self.made.lock().unwrap_or_else(|e| e.into_inner()).elapsed() < cache::RETRY)
+        !self.waiting && (!self.retry || self.made.lock().unwrap_or_else(|e| e.into_inner()).elapsed() < cache::RETRY)
     }
 }
 
@@ -110,6 +112,7 @@ impl Resolved {
 fn kept(old: Arc<Resolved>, new: Arc<Resolved>) -> Arc<Resolved> {
     if old.left_out != new.left_out
         || old.waiting != new.waiting
+        || old.retry != new.retry
         || old.style != new.style
         || old.sprites != new.sprites
         || old.attribution != new.attribution
@@ -275,7 +278,7 @@ fn resolve_anew(spec: &Spec, key: String) -> Resolve {
         style.layers.retain(|l| l.source_layer.as_ref().is_none_or(|s| !spec.hidden_layers.contains(s)));
     }
     // Sources given by a TileJSON address.
-    let Sources { mut left_out, waiting } = match resolve_sources(&mut style, spec, &base) {
+    let Sources { mut left_out, waiting, retry } = match resolve_sources(&mut style, spec, &base) {
         Ok(Some(sources)) => sources,
         Ok(None) => return Resolve::Pending,
         Err(e) => return Resolve::Failed(e),
@@ -303,6 +306,7 @@ fn resolve_anew(spec: &Spec, key: String) -> Resolve {
         left_out,
         made: Mutex::new(Instant::now()),
         waiting,
+        retry,
     });
     if let Err(e) = crate::logins::check(&spec.url) {
         return Resolve::Failed(e.to_string());
@@ -355,6 +359,8 @@ struct Sources {
     left_out: Vec<String>,
     /// An elevation source still on its way, left out until it comes (see [`Resolved::waiting`]).
     waiting: bool,
+    /// A used elevation source failed to resolve, rather than being structurally unsupported.
+    retry: bool,
 }
 
 /// Resolves the sources of `style` in place: what was left out of it, or `None` while some the
@@ -363,7 +369,40 @@ fn resolve_sources(style: &mut Style, spec: &Spec, base: &address::Origin) -> Re
     let mut pending = false;
     let mut left_out = Vec::new();
     let mut waiting = false;
+    let mut retry = false;
+    let skipped: Vec<&str> = style
+        .layers
+        .iter()
+        .filter(|l| {
+            let source = l.source.as_deref().and_then(|id| style.source(id));
+            match l.kind {
+                LayerKind::Background | LayerKind::Other => false,
+                LayerKind::Raster => !matches!(source, Some(Source::Raster { .. } | Source::RasterDem { .. })),
+                LayerKind::Hillshade | LayerKind::ColorRelief => !matches!(source, Some(Source::RasterDem { .. })),
+                LayerKind::Fill | LayerKind::FillExtrusion | LayerKind::Line | LayerKind::Circle | LayerKind::Symbol => {
+                    !matches!(source, Some(Source::Vector { .. }))
+                }
+            }
+        })
+        .map(|l| l.id.as_str())
+        .collect();
+    if !skipped.is_empty() {
+        let names = layer_names(&skipped);
+        left_out
+            .push(format!("{} style layer(s) skipped because their source is missing, undefined or unsupported: {names}", skipped.len()));
+    }
+    let unsupported: Vec<&str> = style.layers.iter().filter(|l| l.kind == LayerKind::Other).map(|l| l.id.as_str()).collect();
+    if !unsupported.is_empty() {
+        left_out.push(format!(
+            "{} style layer(s) skipped because their layer type is unsupported: {}",
+            unsupported.len(),
+            layer_names(&unsupported)
+        ));
+    }
     for (id, src) in &mut style.sources {
+        // A missing address or a Mapbox-only source cannot recover by fetching again.
+        let retryable = matches!(src, Source::RasterDem { url: Some(url), encoding, .. }
+            if !url.starts_with("mapbox://") && encoding.fits());
         let resolved = resolve_source(src, spec, base).and_then(|pending| match src {
             Source::RasterDem { tiles, encoding, .. } if !pending => {
                 if tiles.is_empty() {
@@ -389,13 +428,41 @@ fn resolve_sources(style: &mut Style, spec: &Spec, base: &address::Origin) -> Re
             Err(e) if matches!(src, Source::RasterDem { .. }) => {
                 if used {
                     left_out.push(format!("elevation source {id} left out, so its relief isn't drawn: {e}"));
+                    retry |= retryable;
                 }
                 *src = Source::Other;
             }
             Err(e) => return Err(e),
         }
     }
-    Ok((!pending).then_some(Sources { left_out, waiting }))
+    Ok((!pending).then_some(Sources { left_out, waiting, retry }))
+}
+
+/// A bounded list for diagnostics copied into every drawing, keeping the omitted count exact.
+fn layer_names(ids: &[&str]) -> String {
+    const MAX_NAMES: usize = 16;
+    const MAX_NAME_CHARS: usize = 80;
+    let mut shortened = false;
+    let mut names = ids
+        .iter()
+        .take(MAX_NAMES)
+        .map(|id| {
+            let mut label: String = id.chars().take(MAX_NAME_CHARS).collect();
+            if id.chars().nth(MAX_NAME_CHARS).is_some() {
+                label.push('…');
+                shortened = true;
+            }
+            label
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    if ids.len() > MAX_NAMES {
+        names.push_str(&format!(", … ({} more)", ids.len() - MAX_NAMES));
+    }
+    if shortened {
+        names.push_str(" (names shortened)");
+    }
+    names
 }
 
 /// Fills in a style source's tile addresses: from its TileJSON address when it gives no tiles
@@ -897,6 +964,7 @@ mod tests {
                 let spec = spec(Kind::Style, &format!("{base}?{kind}-{case}"));
                 let sources = resolve_sources(&mut style, &spec, &address::Origin::named(base)).unwrap().unwrap();
                 let r = Resolved {
+                    retry: false,
                     style,
                     sprites: Vec::new(),
                     from: None,
@@ -973,6 +1041,7 @@ mod tests {
             let spec = spec(Kind::Style, &format!("{}?{}", from.url, tiles.len()));
             let sources = resolve_sources(&mut style, &spec, &from).unwrap().unwrap();
             let r = Resolved {
+                retry: false,
                 style,
                 from: Some(from.clone()),
                 sprites: Vec::new(),
@@ -1109,6 +1178,7 @@ mod tests {
             let spec = spec(Kind::Style, &format!("https://background-style.example/{case}"));
             let sources = resolve_sources(&mut style, &spec, &from).unwrap().unwrap();
             let ready = Arc::new(Resolved {
+                retry: false,
                 style,
                 from: Some(from.clone()),
                 sprites: Vec::new(),
@@ -1151,6 +1221,7 @@ mod tests {
             resolved().lock().unwrap().insert(
                 spec.key(),
                 Arc::new(Resolved {
+                    retry: false,
                     style,
                     from: Some(from),
                     sprites: Vec::new(),
@@ -1340,6 +1411,7 @@ mod tests {
             resolved().lock().unwrap().insert(
                 spec.key(),
                 Arc::new(Resolved {
+                    retry: false,
                     style,
                     from: None,
                     sprites: Vec::new(),
@@ -1382,6 +1454,7 @@ mod tests {
             let mut style = Style::parse(&doc).unwrap();
             if let Some(sources) = resolve_sources(&mut style, &s, &address::Origin::named(base)).unwrap() {
                 ready = Some(Resolved {
+                    retry: false,
                     style,
                     sprites: Vec::new(),
                     from: None,
@@ -1403,6 +1476,80 @@ mod tests {
     }
 
     #[test]
+    fn layers_without_a_defined_source_are_counted_and_named() {
+        let base = "https://t.example.com/style.json";
+        let notes = |layers: serde_json::Value| {
+            let mut style = Style::parse(&serde_json::json!({"version": 8,
+                "sources": {"s": {"type": "vector", "tiles": ["https://t.example.com/{z}/{x}/{y}.pbf"]},
+                    "unsupported": {"type": "geojson", "data": {"type": "FeatureCollection", "features": []}}},
+                "layers": layers}))
+            .unwrap();
+            resolve_sources(&mut style, &spec(Kind::Style, base), &address::Origin::named(base)).unwrap().unwrap().left_out
+        };
+        assert!(
+            notes(serde_json::json!([
+                {"id": "bg", "type": "background"},
+                {"id": "roads", "type": "line", "source": "s"}
+            ]))
+            .is_empty()
+        );
+        for kind in ["fill", "line", "circle", "symbol", "raster", "hillshade", "color-relief", "fill-extrusion"] {
+            let said = notes(serde_json::json!([
+                {"id": "absent", "type": kind},
+                {"id": "unknown", "type": kind, "source": "missing"},
+                {"id": "unsupported", "type": kind, "source": "unsupported"},
+                {"id": "valid", "type": "line", "source": "s"},
+                {"id": "bg", "type": "background"}
+            ]));
+            assert_eq!(
+                said,
+                ["3 style layer(s) skipped because their source is missing, undefined or unsupported: absent, unknown, unsupported"],
+                "{kind}"
+            );
+        }
+        let long = "名".repeat(2000);
+        let layers: Vec<_> = (0..20).map(|i| json!({"id": format!("{i}-{long}"), "type": "line"})).collect();
+        let said = notes(json!(layers)).join("; ");
+        assert!(said.starts_with("20 style layer(s) skipped"), "{said}");
+        assert!(said.contains("4 more") && said.contains("names shortened"), "{said}");
+        assert!(said.len() < 6000, "diagnostic must not copy every full layer name: {} bytes", said.len());
+        let said = notes(json!([
+            {"id": "sky", "type": "sky"},
+            {"id": "custom", "type": "custom"},
+            {"id": "heat", "type": "heatmap", "source": "s"}
+        ]));
+        assert_eq!(said, ["3 style layer(s) skipped because their layer type is unsupported: sky, custom, heat"]);
+    }
+
+    #[test]
+    fn layers_with_incompatible_source_kinds_are_counted() {
+        for kind in ["fill", "line", "circle", "symbol", "fill-extrusion", "hillshade", "color-relief", "raster"] {
+            for source in ["v", "r", "d"] {
+                let doc = json!({"version":8,"sources":{
+                    "v":{"type":"vector","tiles":["https://types.example/{z}/{x}/{y}.pbf"]},
+                    "r":{"type":"raster","tiles":["https://types.example/{z}/{x}/{y}.png"]},
+                    "d":{"type":"raster-dem","tiles":["https://types.example/{z}/{x}/{y}.png"]}},
+                    "layers":[{"id":"test","type":kind,"source":source,
+                        "paint":{"color-relief-color":["interpolate",["linear"],["elevation"],0,"#00f",10,"#f00"]}}]});
+                let mut style = Style::parse(&doc).unwrap();
+                let base = "https://types.example/style.json";
+                let notes = resolve_sources(&mut style, &spec(Kind::Style, base), &address::Origin::named(base)).unwrap().unwrap().left_out;
+                let compatible = match kind {
+                    "raster" => source != "v", // Both raster sources provide drawable images.
+                    "hillshade" | "color-relief" => source == "d",
+                    _ => source == "v",
+                };
+                if compatible {
+                    assert!(notes.is_empty(), "{kind}/{source}: {notes:?}");
+                } else {
+                    assert_eq!(notes.len(), 1, "{kind}/{source}: {notes:?}");
+                    assert!(notes[0].starts_with("1 style layer(s) skipped") && notes[0].ends_with(": test"), "{notes:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn an_unreadable_elevation_source_is_left_out_and_said() {
         let doc = serde_json::json!({"version": 8, "sources": {
             "dem": {"type": "raster-dem", "url": "http://169.254.169.254/dem.json"},
@@ -1410,7 +1557,9 @@ mod tests {
             "layers": [{"id": "shade", "type": "hillshade", "source": "dem"}, {"id": "sat", "type": "raster", "source": "sat"}]});
         let mut style = Style::parse(&doc).unwrap();
         let base = "https://t.example.com/style.json";
-        let left_out = resolve_sources(&mut style, &spec(Kind::Style, base), &address::Origin::named(base)).unwrap().unwrap().left_out;
+        let sources = resolve_sources(&mut style, &spec(Kind::Style, base), &address::Origin::named(base)).unwrap().unwrap();
+        assert!(sources.retry, "a failed elevation source is retried");
+        let left_out = sources.left_out;
         assert_eq!(left_out.len(), 1);
         assert!(left_out[0].starts_with("elevation source dem left out"), "{left_out:?}");
         assert!(matches!(style.sources.iter().find(|s| s.0 == "dem").map(|s| &s.1), Some(Source::Other)));
@@ -1440,6 +1589,51 @@ mod tests {
     }
 
     #[test]
+    fn permanent_dem_failures_do_not_retry() {
+        let base = "https://permanent-dem.example.com/style.json";
+        for dem in [json!({"type":"raster-dem"}), json!({"type":"raster-dem","url":"mapbox://dem/a"})] {
+            let doc = json!({"version":8,"sources":{"dem":dem},"layers":[{"id":"shade","type":"hillshade","source":"dem"}]});
+            let mut style = Style::parse(&doc).unwrap();
+            let sources = resolve_sources(&mut style, &spec(Kind::Style, base), &address::Origin::named(base)).unwrap().unwrap();
+            assert_eq!(sources.left_out.len(), 1);
+            assert!(!sources.retry && !sources.waiting, "{sources:?}");
+        }
+    }
+
+    #[test]
+    fn permanent_style_notices_do_not_expire_resolved_styles() {
+        let _turn = crate::cache::turn();
+        let doc = json!({"version":8, "sources":{}, "sprite":"mapbox://sprites/a", "layers":[
+            {"id":"missing", "type":"symbol", "layout":{"icon-image":"x"}},
+            {"id":"sky", "type":"sky"}
+        ]});
+        let mut style = Style::parse(&doc).unwrap();
+        let s = spec(Kind::Style, "https://permanent-notices.example.com/style.json");
+        let base = address::Origin::named(&s.url);
+        let sources = resolve_sources(&mut style, &s, &base).unwrap().unwrap();
+        assert!(!sources.retry && !sources.waiting);
+        let (sprites, sprite_notes) = resolve_sprites(&style, &base);
+        assert_eq!(sources.left_out.len(), 2);
+        assert_eq!(sprite_notes.len(), 1);
+        let Some(long_ago) = Instant::now().checked_sub(cache::RETRY * 2) else { return };
+        let r = Arc::new(Resolved {
+            style,
+            from: Some(base),
+            sprites,
+            attribution: Vec::new(),
+            left_out: sources.left_out.into_iter().chain(sprite_notes).collect(),
+            made: Mutex::new(long_ago),
+            waiting: sources.waiting,
+            retry: sources.retry,
+        });
+        assert!(r.current(), "permanent diagnostics never schedule a refetch");
+        resolved().lock().unwrap().insert(s.key(), r.clone());
+        let Resolve::Ready(again) = resolve(&s) else { panic!("a cached style became unavailable") };
+        assert!(Arc::ptr_eq(&r, &again));
+        assert_eq!(*r.made.lock().unwrap(), long_ago, "kept without resolving or renewing");
+    }
+
+    #[test]
     fn a_readable_elevation_source_is_kept() {
         let doc = serde_json::json!({"version": 8, "sources": {"dem": {"type": "raster-dem", "tiles": ["https://t.example.com/{z}/{x}/{y}.png"]}},
             "layers": [{"id": "shade", "type": "hillshade", "source": "dem"}]});
@@ -1464,7 +1658,7 @@ mod tests {
         let sources = resolve_sources(&mut style, &spec(Kind::Style, base), &address::Origin::named(base))
             .unwrap()
             .expect("drawn without it meanwhile");
-        assert_eq!(sources, Sources { left_out: Vec::new(), waiting: true }, "nothing lost, only waited for");
+        assert_eq!(sources, Sources { left_out: Vec::new(), waiting: true, retry: false }, "nothing lost, only waited for");
         assert!(matches!(style.source("dem"), Some(Source::Other)));
         assert!(matches!(style.source("sat"), Some(Source::Raster { .. })));
         // One no layer draws from isn't waited for.
@@ -1483,6 +1677,7 @@ mod tests {
             left_out: Vec::new(),
             made: Mutex::new(Instant::now()),
             waiting: true,
+            retry: false,
         };
         assert!(!r.current());
         let s = spec(Kind::Style, "https://waiting.example.com/style.json");
@@ -1517,6 +1712,7 @@ mod tests {
             left_out: sources.left_out,
             made: Mutex::new(Instant::now()),
             waiting: false,
+            retry: sources.retry,
         };
         let s = spec(Kind::Style, "https://relief-left-out.example.com/style.json");
         resolved().lock().unwrap().insert(s.key(), Arc::new(r));
@@ -1542,6 +1738,7 @@ mod tests {
                 left_out: Vec::new(),
                 made: Mutex::new(Instant::now()),
                 waiting: false,
+                retry: false,
             };
             let s = spec(Kind::Style, &format!("https://{host}.example.com/style.json"));
             resolved().lock().unwrap().insert(s.key(), Arc::new(r));
@@ -1570,6 +1767,7 @@ mod tests {
             left_out,
             made: Mutex::new(Instant::now()),
             waiting: false,
+            retry: true,
         };
         assert!(r.current());
         let s = spec(Kind::Style, "https://left-out.example.com/style.json");
@@ -1589,6 +1787,7 @@ mod tests {
             left_out: vec!["x".into()],
             made: Mutex::new(long_ago),
             waiting: false,
+            retry: true,
         };
         assert!(!stale.current());
         let complete = Resolved {
@@ -1599,6 +1798,7 @@ mod tests {
             left_out: Vec::new(),
             made: Mutex::new(long_ago),
             waiting: false,
+            retry: false,
         };
         assert!(complete.current());
         // Through `resolve`: an expired one is resolved again (a raster layer's at once)…
@@ -1611,6 +1811,7 @@ mod tests {
             left_out: vec!["x".into()],
             made: Mutex::new(long_ago),
             waiting: false,
+            retry: true,
         });
         resolved().lock().unwrap().insert(s.key(), expired.clone());
         let Resolve::Ready(r) = resolve(&s) else { panic!("not resolved again") };
@@ -1644,6 +1845,7 @@ mod tests {
                 left_out: left_out.iter().map(|s| s.to_string()).collect(),
                 made: Mutex::new(at),
                 waiting: false,
+                retry: !left_out.is_empty(),
             })
         };
         // Left out as before: the same style, current again, so its pictures stay.
@@ -1670,6 +1872,7 @@ mod tests {
             left_out: vec!["dem: gone".into()],
             made: Mutex::new(Instant::now()),
             waiting: false,
+            retry: true,
         });
         assert!(Arc::ptr_eq(&kept(old.clone(), other.clone()), &other));
         // Still waiting for an elevation source, or no longer: the new one.
@@ -1681,6 +1884,7 @@ mod tests {
             left_out: vec!["dem: gone".into()],
             made: Mutex::new(Instant::now()),
             waiting: true,
+            retry: true,
         });
         assert!(Arc::ptr_eq(&kept(old.clone(), arrived.clone()), &arrived));
         // Only its credits changed: the new one too.
@@ -1692,6 +1896,7 @@ mod tests {
             left_out: vec!["dem: gone".into()],
             made: Mutex::new(Instant::now()),
             waiting: false,
+            retry: true,
         });
         assert!(Arc::ptr_eq(&kept(old, recredited.clone()), &recredited));
     }

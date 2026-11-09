@@ -1011,7 +1011,7 @@ pub(crate) struct SceneBuffers {
     /// A turned or tilted scene: the camera it was drawn for, its sky and fog.
     pub tilt: Option<SceneTilt>,
     /// Its live raster tile layers, in order, placed for each frame shown ([`LiveFrame`]).
-    pub live: Vec<(rustgis_engine::render::rustgis_tiles::Spec, f32)>,
+    pub live: Vec<(String, rustgis_engine::render::rustgis_tiles::Spec, f32)>,
     /// Every tile layer of the scene is live: a tile arriving needs no new scene.
     pub tiles_live: bool,
     /// The farthest a vertex lies from its origin (map units, [`gpu_scene::reach`]): zoomed in
@@ -1024,6 +1024,8 @@ pub(crate) struct LiveFrame {
     pub camera: Camera,
     /// Per live layer, its tiles from the camera's centre, bottom first.
     pub layers: Vec<Vec<TileQuad>>,
+    /// Placement diagnostics, prefixed with their layer's name as in a full scene.
+    pub tile_errors: Vec<String>,
 }
 
 impl SceneBuffers {
@@ -1042,12 +1044,16 @@ impl SceneBuffers {
             sky: false,
         };
         let (mut pending, mut declined) = (false, false);
+        let mut tile_errors = Vec::new();
         let layers = self
             .live
             .iter()
-            .map(|(spec, opacity)| match rustgis_engine::render::live_tiles(spec, *opacity, &view) {
+            .map(|(name, spec, opacity)| match rustgis_engine::render::live_tiles(spec, *opacity, &view) {
                 Some(l) => {
                     pending |= l.pending;
+                    if let Some(error) = l.error {
+                        tile_errors.push(format!("{name}: {error}"));
+                    }
                     l.quads
                 }
                 None => {
@@ -1056,7 +1062,7 @@ impl SceneBuffers {
                 }
             })
             .collect();
-        Some((LiveFrame { camera, layers }, pending, declined))
+        Some((LiveFrame { camera, layers, tile_errors }, pending, declined))
     }
 }
 
@@ -1338,9 +1344,9 @@ impl SceneBuffers {
                     draws.push(SceneDraw::Image { bind, _texture: texture });
                     has_images = true;
                 }
-                DrawCmd::LiveTiles { spec, opacity } => {
+                DrawCmd::LiveTiles { name, spec, opacity } => {
                     draws.push(SceneDraw::LiveTiles { n: live.len() });
-                    live.push((spec.clone(), *opacity));
+                    live.push((name.clone(), spec.clone(), *opacity));
                 }
                 DrawCmd::Tiles { origin, tiles } => {
                     let mut vertices = Vec::with_capacity(tiles.len() * 6);

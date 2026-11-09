@@ -4236,6 +4236,7 @@ mod tests {
             *origin = Some(from.clone());
         }
         let resolved = crate::source::Resolved {
+            retry: false,
             style,
             from: Some(from),
             sprites: Vec::new(),

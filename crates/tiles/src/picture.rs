@@ -618,6 +618,7 @@ mod tests {
                 "layers":[{"id":"fill","type":"fill","source":"s","source-layer":"l"}]}))
             .unwrap();
             let r = Arc::new(Resolved {
+                retry: false,
                 style,
                 from: None,
                 sprites: Vec::new(),
@@ -667,6 +668,7 @@ mod tests {
             }
         }
         let r = Resolved {
+            retry: false,
             style,
             from: None,
             sprites: Vec::new(),
@@ -696,6 +698,7 @@ mod tests {
             *selected = Some(from.clone());
         }
         let r = Arc::new(Resolved {
+            retry: false,
             style,
             from: Some(from),
             sprites: Vec::new(),
@@ -766,6 +769,7 @@ mod tests {
                     *selected = from.clone();
                 }
                 let r = Arc::new(Resolved {
+                    retry: false,
                     style,
                     from,
                     sprites: Vec::new(),
@@ -828,6 +832,7 @@ mod tests {
                 "layers":[{"id":"fill","type":"fill","source":"s","source-layer":"l","paint":{"fill-color":"#ff0000"}}]}))
             .unwrap();
             let r = Arc::new(Resolved {
+                retry: false,
                 style,
                 from: None,
                 sprites: Vec::new(),
