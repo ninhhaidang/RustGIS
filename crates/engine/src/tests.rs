@@ -7545,6 +7545,52 @@ fn a_publication_legend_takes_the_columns_that_fit_the_free_rectangle() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// `"colorbar": "none"` leaves a raster's colorbar out of a publication, and its room in the
+/// legend's box with it: the box is the legend's height plus its padding (#1680). An unknown
+/// choice is refused.
+#[test]
+fn a_publication_without_a_colorbar_sizes_the_legend_box_to_the_legend() {
+    use rustgis_data::raster::{ColorHint, Crs, GeoTransform, Raster, geotiff};
+    let mut s = Session::new(Project::default());
+    // A classified raster (four values, each a class), over a polygon layer the legend lists.
+    let (w, h) = (20u32, 20u32);
+    let z: Vec<f32> = (0..w * h).map(|i| (i % 4) as f32 + 1.0).collect();
+    let gt = GeoTransform { origin_x: 0.0, origin_y: 10.0, pixel_width: 0.5, pixel_height: -0.5 };
+    let r = Raster::new("classes", w, h, vec![z], gt, Crs::LonLat, None, ColorHint::Gray, "Byte").unwrap();
+    let bytes = geotiff::write(&r, 0).unwrap();
+    crate::cmd::raster::add_raster(&mut s, "classes", rustgis_map::RasterLayer::from_bytes(r, "classes.tif".to_string(), bytes)).unwrap();
+    s.run("raster.symbology", &json!({"type": "unique"})).unwrap();
+    let path = std::env::temp_dir().join(format!("rustgis-1680-{}.geojson", std::process::id()));
+    std::fs::write(
+        &path,
+        r#"{"type": "FeatureCollection", "features": [{"type": "Feature", "properties": {}, "geometry": {"type": "Polygon", "coordinates": [[[4,4],[6,4],[6,6],[4,6],[4,4]]]}}]}"#,
+    )
+    .unwrap();
+    s.run("layer.addData", &json!({"path": path.display().to_string()})).unwrap();
+    let boxes = |s: &mut Session, p: Value| {
+        let r = s.run("layout.publication", &p).unwrap();
+        let l = s.project.layouts.last().unwrap();
+        let el = |name: &str| l.elements.iter().find(|e| e.name == name).map(|e| e.h);
+        (el("Legend Box"), el("Legend"), el("Colorbar"), r)
+    };
+    let base = json!({"profile": "a4-portrait", "extent": [0, 0, 10, 10], "author": "", "locator": "none"});
+    let (bx, legend, bar, r) = boxes(&mut s, base.clone());
+    assert!(bar.is_some(), "{r}");
+    assert!(bx.unwrap() > legend.unwrap() + 4.0 + 10.0, "room for the colorbar: {r}");
+    let with_bar = bx.unwrap();
+    let mut none = base.clone();
+    none["colorbar"] = json!("none");
+    let (bx, legend, bar, r) = boxes(&mut s, none);
+    assert_eq!(bar, None, "{r}");
+    assert!((bx.unwrap() - legend.unwrap() - 4.0).abs() < 1e-6, "{bx:?} {legend:?}: {r}");
+    // A legend stretched to its box would pass the line above; the box itself is smaller.
+    assert!(bx.unwrap() < with_bar, "{bx:?} against {with_bar}: {r}");
+    let mut bad = base;
+    bad["colorbar"] = json!("hidden");
+    assert!(s.run("layout.publication", &bad).unwrap_err().contains("colorbar is"));
+    let _ = std::fs::remove_file(&path);
+}
+
 #[test]
 fn a_publication_legend_too_long_goes_into_columns() {
     use rustgis_map::layout::ElementKind;
