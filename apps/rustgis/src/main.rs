@@ -2,6 +2,7 @@
 //!
 //! `rustgis [project.rgis | data.geojson|csv|shp …] [--sample] [--backend dx12|vulkan|gl|metal]`
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![cfg_attr(not(target_os = "macos"), forbid(unsafe_code))]
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 use eframe::wgpu;
@@ -12,10 +13,14 @@ use serde_json::json;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "macos")]
+mod macos_documents;
+#[cfg(target_os = "macos")]
 mod menu;
+#[cfg(any(target_os = "macos", test))]
+mod open_documents;
 
 /// The app, and this run's marker (see [`running`]), cleared when eframe closes it.
-struct App(RustGisApp, running::Shared, Menus);
+struct App(RustGisApp, running::Shared, Menus, #[cfg(target_os = "macos")] open_documents::Inbox);
 
 /// macOS: the menu bar (built once the app runs), the ids of the items chosen from it, and
 /// the commands chosen and not run yet.
@@ -339,6 +344,49 @@ mod running {
     }
 }
 
+/// Deliver native paths and counted notices in the app's selected language.
+/// A frame keeps its first project so a second clean project cannot silently replace it;
+/// other files still use the existing drop flow. This handoff only classifies path suffixes.
+#[cfg(any(target_os = "macos", test))]
+fn append_documents(app: &mut RustGisApp, inbox: &open_documents::Inbox, raw_input: &mut egui::RawInput) {
+    let (unreadable, excess) = inbox.append(raw_input);
+    let mut project_seen = false;
+    let mut additional_projects = 0usize;
+    raw_input.dropped_files.retain(|file| {
+        if !file.path().to_str().is_some_and(rustgis_engine::project::opens_as_project) {
+            return true;
+        }
+        if project_seen {
+            additional_projects += 1;
+            false
+        } else {
+            project_seen = true;
+            true
+        }
+    });
+    rustgis_ui_egui::i18n::set_current(app.chosen_lang());
+    for (n, message) in [
+        (unreadable, "macOS supplied {n} file references whose paths couldn't be read. Those files weren't opened."),
+        (
+            excess,
+            "{n} files requested by macOS weren't queued because too many requests are waiting. Open them again after the current files finish opening.",
+        ),
+    ] {
+        if n != 0 {
+            app.session.notify(rustgis_ui_egui::i18n::fmt(message, &[("n", &n.to_string())]), true);
+        }
+    }
+    if additional_projects != 0 {
+        app.session.notify(
+            rustgis_ui_egui::i18n::fmt(
+                "Additional project files not opened: {n}. Open projects one at a time.",
+                &[("n", &additional_projects.to_string())],
+            ),
+            false,
+        );
+    }
+}
+
 impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         // The GPU map backend draws inside egui's wgpu pass; hand over the render state.
@@ -379,6 +427,7 @@ impl eframe::App for App {
     #[cfg(target_os = "macos")]
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         self.0.drop_stale_clicks(raw_input);
+        append_documents(&mut self.0, &self.3, raw_input);
         let Some(bar) = &self.2.bar else { return };
         let capturing = self.0.capturing_shortcut();
         let press = |events: &mut Vec<egui::Event>, k: egui::KeyboardShortcut| {
@@ -548,6 +597,7 @@ fn run_installer(app: &RustGisApp) {
     }
 }
 
+/// Run the desktop event loop, retaining native document callbacks and the crash marker until exit.
 fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--version" || a == "-V") {
@@ -560,6 +610,10 @@ fn main() -> eframe::Result {
     // crashed, and reopening it on every launch would leave no way into Settings).
     let (marker, unclean) = running::start(prefs::dir().as_deref());
     crash::install(prefs::dir());
+    // Finder can supply documents before eframe creates the app. Keep the native target alive
+    // through run_native and attach its wakeup when the app's egui context becomes available.
+    #[cfg(target_os = "macos")]
+    let (_documents, document_inbox) = macos_documents::Registration::install().map_err(|e| eframe::Error::AppCreation(e.into()))?;
     let backend = flag(&args, "--backend");
     // Options and the value after `--backend` aren't files.
     let files: Vec<&String> = args
@@ -695,7 +749,15 @@ fn main() -> eframe::Result {
             // The menu's choices wake the app: egui draws only on events.
             #[cfg(target_os = "macos")]
             menu::listen(menus.chosen.clone(), _cc.egui_ctx.clone());
-            Ok(Box::new(App(app, held, menus)))
+            #[cfg(target_os = "macos")]
+            document_inbox.set_context(&_cc.egui_ctx);
+            Ok(Box::new(App(
+                app,
+                held,
+                menus,
+                #[cfg(target_os = "macos")]
+                document_inbox,
+            )))
         }),
     );
     running::close(&marker);
@@ -707,6 +769,68 @@ fn main() -> eframe::Result {
 mod tests {
     use super::{backends, crash, flag, prefs, running};
     use eframe::wgpu::Backends;
+
+    /// The UI handoff reports each loss kind once, with counts, and stays quiet for clean input.
+    #[test]
+    fn native_documents_say_what_was_lost_and_clean_input_is_quiet() {
+        let mut app = super::RustGisApp::new(rustgis_engine::Session::new(rustgis_engine::Project::default()));
+        app.ui.language = "en".into();
+        app.session.notices.clear();
+        let inbox = super::open_documents::Inbox::default();
+        inbox.receive(super::open_documents::Batch { paths: vec!["project.rgis".into()], unreadable: 2, excess: 7 });
+        let mut input = egui::RawInput::default();
+        super::append_documents(&mut app, &inbox, &mut input);
+        assert_eq!(input.dropped_files.len(), 1);
+        assert_eq!(app.session.notices.len(), 2);
+        assert!(app.session.notices.iter().all(|notice| notice.error));
+        assert!(app.session.notices[0].text.starts_with("macOS supplied 2 file references"));
+        assert!(app.session.notices[1].text.starts_with("7 files requested by macOS"));
+
+        app.session.notices.clear();
+        super::append_documents(&mut app, &inbox, &mut egui::RawInput::default());
+        assert!(app.session.notices.is_empty(), "the drained loss counts must not be repeated");
+        inbox.receive(super::open_documents::Batch { paths: vec!["clean.csv".into()], ..Default::default() });
+        let mut clean = egui::RawInput::default();
+        super::append_documents(&mut app, &inbox, &mut clean);
+        assert_eq!(clean.dropped_files.len(), 1);
+        assert!(app.session.notices.is_empty(), "accepted files must not report a loss");
+    }
+
+    /// One native frame must not open and immediately replace a clean project without warning.
+    #[test]
+    fn native_requests_keep_first_project_and_report_remaining() {
+        let dir = std::env::temp_dir().join(format!("rustgis-native-projects-{}", std::process::id()));
+        std::fs::create_dir(&dir).unwrap();
+        let _cleanup = TempDir(dir.clone());
+        let first = dir.join("first.rgis");
+        let second = dir.join("second.rgisx");
+        let mut source = rustgis_engine::Session::new(rustgis_engine::Project::default());
+        source.run("project.saveAs", &serde_json::json!({"path": first.display().to_string()})).unwrap();
+        std::fs::copy(&first, &second).unwrap();
+        let mut app = super::RustGisApp::new(rustgis_engine::Session::new(rustgis_engine::Project::default()));
+        app.ui.language = "en".into();
+        let inbox = super::open_documents::Inbox::default();
+        inbox.receive(super::open_documents::Batch { paths: vec![first.clone(), second.clone()], ..Default::default() });
+        let mut input = egui::RawInput::default();
+        super::append_documents(&mut app, &inbox, &mut input);
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(input, |ui| app.logic(ui.ctx()));
+        output.textures_delta.clear();
+        assert_eq!(app.session.path.as_deref(), Some(first.as_path()), "the first project must remain visible");
+        let notices: Vec<_> = app.session.notices.iter().filter(|n| n.text.starts_with("Additional project files not opened:")).collect();
+        assert_eq!(notices.len(), 1);
+        assert!(notices[0].text.contains(": 1."));
+
+        // A later, single-project request is a normal replacement and gives no omission notice.
+        app.session.notices.clear();
+        inbox.receive(super::open_documents::Batch { paths: vec![second.clone()], ..Default::default() });
+        let mut input = egui::RawInput::default();
+        super::append_documents(&mut app, &inbox, &mut input);
+        let mut output = ctx.run_ui(input, |ui| app.logic(ui.ctx()));
+        output.textures_delta.clear();
+        assert_eq!(app.session.path.as_deref(), Some(second.as_path()));
+        assert!(!app.session.notices.iter().any(|n| n.text.starts_with("Additional project files not opened:")));
+    }
 
     #[test]
     fn windows_starts_without_vulkan_unless_asked() {

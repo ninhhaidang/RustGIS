@@ -7,8 +7,16 @@ publish = false
 default-run = "rustgis"
 description = "RustGIS desktop app"
 
-[lints]
-workspace = true
+# #1706: only macos_documents may implement native callbacks. Cargo cannot override an
+# inherited `forbid`, so keep the desktop target's other workspace lints in step here.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+too_many_arguments = "allow"
+type_complexity = "allow"
 
 [dependencies]
 rustgis-engine = { workspace = true, features = ["geolibre"] }
@@ -30,7 +38,7 @@ embed-resource = "3"
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSWindow", "NSButton", "NSControl", "NSView", "NSResponder", "NSPasteboard"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSUserDefaults"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSUserDefaults", "NSObject", "NSNotification", "NSAppleEventDescriptor", "NSAppleEventManager", "NSURL", "NSData", "NSError", "NSArray"] }
 # The native menu bar (#1077). Its own unsafe code stays in the crate.
 muda = { version = "0.21", default-features = false }
 # Turns winit's default menu off: keep the version in step with eframe's, as for Linux below.
