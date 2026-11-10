@@ -136,9 +136,9 @@ pub(crate) fn bands_param(p: &Value, r: &Raster) -> Result<Vec<usize>, String> {
     }
 }
 
-/// Embeds a raster as GeoTIFF bytes (colour rasters keep their bands; others band 1).
+/// Embeds a raster as GeoTIFF bytes holding every band, so the project keeps them all.
 fn layer_of(r: Raster) -> Result<rustgis_map::RasterLayer, String> {
-    let bytes = rustgis_data::raster::geotiff::write(&r, 0).map_err(|e| e.to_string())?;
+    let bytes = rustgis_data::raster::geotiff::write_all(&r).map_err(|e| e.to_string())?;
     let fname = format!("{}.tif", r.name);
     Ok(rustgis_map::RasterLayer::from_bytes(r, fname, bytes))
 }
@@ -1471,12 +1471,12 @@ fn mosaic_matches(first: &Raster, r: &Raster) -> Result<(), String> {
     if r.band_count() != first.band_count() {
         return Err(format!("{} has {} bands, {} {}", r.name, r.band_count(), first.name, first.band_count()));
     }
-    // The mosaic takes the first input's colour, so a last band that is alpha in one input and
-    // data in another (RGBA and RGB with near-infrared) would take one role for both.
+    // The mosaic takes the first input's colour, so a band that is alpha in one input and data in
+    // another (RGBA and RGB with near-infrared) would take one role for both.
     let alpha = |r: &Raster| matches!(r.color, ColorHint::Rgb { alpha: true } | ColorHint::GrayAlpha);
     if alpha(r) != alpha(first) {
         let (with, without) = if alpha(r) { (r, first) } else { (first, r) };
-        return Err(format!("{}'s last band is transparency, {}'s is data: use rasters with matching band roles", with.name, without.name));
+        return Err(format!("{} has a transparency band and {} doesn't: use rasters with matching band roles", with.name, without.name));
     }
     Ok(())
 }

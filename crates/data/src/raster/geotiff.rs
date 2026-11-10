@@ -48,12 +48,11 @@ pub(super) fn extra_alpha<R: Read + Seek>(dec: &mut Decoder<R>) -> bool {
 }
 
 /// How `n` samples of a grey image the decoder calls multiband are shown: grey with alpha when
-/// there are two and the second is declared alpha (extra sample 1, associated, or 2, unassociated),
-/// else grey. GDAL marks the second band of an ordinary two-band file as 0, unspecified data.
+/// the second is declared alpha (extra sample 1, associated, or 2, unassociated), whatever data
+/// bands follow it, else grey. GDAL marks the second band of an ordinary two-band file as 0,
+/// unspecified data.
 pub(super) fn multiband_color<R: Read + Seek>(dec: &mut Decoder<R>, n: u16) -> ColorHint {
-    let alpha =
-        n == 2 && dec.find_tag_unsigned_vec::<u16>(Tag::ExtraSamples).ok().flatten().is_some_and(|v| matches!(v.first(), Some(1 | 2)));
-    if alpha { ColorHint::GrayAlpha } else { ColorHint::Gray }
+    if n >= 2 && extra_alpha(dec) { ColorHint::GrayAlpha } else { ColorHint::Gray }
 }
 
 fn geo_tags<R: Read + Seek>(dec: &mut Decoder<R>) -> Result<Geo> {
@@ -1622,7 +1621,19 @@ pub fn written_bands(r: &Raster, band: usize) -> Vec<usize> {
 /// raster always writes its colour bands, as its 8-bit form did before. A cancelled run stops
 /// it (with [`DataError::Cancelled`]) within a strip.
 pub fn write(r: &Raster, band: usize) -> Result<Vec<u8>> {
-    match encode(r, band) {
+    finish(encode(r, band, false))
+}
+
+/// Writes every band of a raster, for a layer whose pixels the project keeps: as [`write`] does
+/// when that keeps them all, otherwise as 32-bit float samples (RGB first for a colour raster,
+/// and alpha after them when it has one), which [`read`] reads back as the same bands.
+pub fn write_all(r: &Raster) -> Result<Vec<u8>> {
+    finish(encode(r, 0, true))
+}
+
+/// The encoder's answer, a cancel during it as [`DataError::Cancelled`].
+fn finish(encoded: Result<Vec<u8>>) -> Result<Vec<u8>> {
+    match encoded {
         Ok(bytes) => Ok(bytes),
         // The encoder's error for a cancel only says the write stopped.
         Err(e) => crate::progress::check().and(Err(e)),
@@ -1650,8 +1661,8 @@ impl<W: Seek> Seek for Probed<W> {
     }
 }
 
-/// [`write`], a cancel failing as any write error does.
-fn encode(r: &Raster, band: usize) -> Result<Vec<u8>> {
+/// [`write`] (or with `every`, [`write_all`]), a cancel failing as any write error does.
+fn encode(r: &Raster, band: usize, every: bool) -> Result<Vec<u8>> {
     use tiff::encoder::{Compression, DeflateLevel, TiffEncoder, colortype};
     // A scan's place is only where it was laid on the view: not coordinates to write into a file.
     r.require_coordinates().map_err(err)?;
@@ -1665,6 +1676,10 @@ fn encode(r: &Raster, band: usize) -> Result<Vec<u8>> {
     let tie = [0.0, 0.0, 0.0, gt.origin_x, gt.origin_y, 0.0];
     let GeoKeys { keys, custom } = geo_keys(r)?;
     let (w, h) = (r.width, r.height);
+    // Every band holds width × height values; one that doesn't is refused rather than padded.
+    if r.bands.iter().any(|b| b.data.len() != (w as usize) * (h as usize)) {
+        return Err(err(format!("a band of the raster doesn't hold its {w} × {h} values")));
+    }
     let bytes = |b: usize| -> Option<Vec<u8>> {
         let band = r.bands.get(b)?;
         // No-data pixels keep the no-data value, so the written GDAL_NODATA tag still matches.
@@ -1715,7 +1730,58 @@ fn encode(r: &Raster, band: usize) -> Result<Vec<u8>> {
     let byte_holes = r.nodata.is_none()
         && matches!(r.color, ColorHint::Rgb { alpha: false })
         && written_bands(r, band).iter().any(|b| r.bands.get(*b).is_some_and(|b| b.stats.count < (w as usize) * (h as usize)));
-    if rgb
+    let all: Vec<usize> = (0..r.bands.len()).collect();
+    if every && written_bands(r, band).len() < all.len() {
+        // More bands than colour (or one grey band) takes: each a 32-bit float sample, the first
+        // past the colour (or grey) ones alpha when the raster says it is.
+        use tiff::tags::ExtraSamples;
+        // Alpha follows the colour (or grey) samples it belongs to: RGB's is the fourth band, grey's
+        // the second, so a colour hint on too few bands for colour marks none.
+        let alpha = if rgb { matches!(r.color, ColorHint::Rgb { alpha: true }) } else { matches!(r.color, ColorHint::GrayAlpha) };
+        let extras: Vec<ExtraSamples> = (0..all.len() - if rgb { 3 } else { 1 })
+            .map(|i| if i == 0 && alpha { ExtraSamples::UnassociatedAlpha } else { ExtraSamples::Unspecified })
+            .collect();
+        // The samples interleaved, as large as the raster: reserved first, so a raster this
+        // machine can't hold twice is an error, and a cancel is heard while they are copied.
+        // Bytes when every band is whole bytes (and an empty cell can be written as no-data),
+        // so an 8-bit image reads back as one; otherwise 32-bit floats.
+        let n = (w as usize) * (h as usize);
+        let samples = n.checked_mul(all.len()).ok_or_else(|| err("the raster is too large to write"))?;
+        // Decided from the values, not the statistics (a raster read in part has none): every
+        // valid value a whole number in 0–255, and an empty cell only where no-data can mark it.
+        // An 8-bit raster can hold fractions after resampling; those stay floats.
+        let in_bytes = |v: &f32| !r.is_valid(*v) || (v.fract() == 0.0 && (0.0..=255.0).contains(v));
+        let marked = |v: &f32| r.nodata.is_some() || r.is_valid(*v);
+        // Only an 8-bit raster: a float one holding byte-range values keeps its type and range.
+        let as_bytes = r.data_type == "UInt8"
+            && all.iter().all(|b| fits_bytes(r, *b))
+            && r.bands.iter().all(|b| b.data.iter().all(|v| in_bytes(v) && marked(v)));
+        macro_rules! wide {
+            ($colour:ty, $sample:expr) => {{
+                let mut data = super::room(samples, w as usize, h as usize)?;
+                for i in 0..n {
+                    if i % (1 << 20) == 0 {
+                        crate::progress::check()?;
+                    }
+                    // Every band holds `n` values (checked above), so none is filled in.
+                    data.extend(r.bands.iter().map(|b| $sample(b.data.get(i).copied().unwrap_or(f32::NAN))));
+                }
+                let mut img = enc.new_image::<$colour>(w, h).map_err(err)?;
+                img.extra_samples(&extras).map_err(err)?;
+                tags!(img, &all[..]);
+                img.write_data(&data).map_err(err)?;
+            }};
+        }
+        if as_bytes {
+            let nodata = r.nodata.map_or(0, |d| d as u8);
+            let byte = |v: f32| if r.is_valid(v) { v.clamp(0.0, 255.0) as u8 } else { nodata };
+            if rgb { wide!(colortype::RGB8, byte) } else { wide!(colortype::Gray8, byte) }
+        } else if rgb {
+            wide!(colortype::RGB32Float, |v: f32| v)
+        } else {
+            wide!(colortype::Gray32Float, |v: f32| v)
+        }
+    } else if rgb
         && !byte_holes
         && (!written_bands(r, band).contains(&3) || fits_bytes(r, 3))
         && let (Some(red), Some(green), Some(blue)) = (bytes(0), bytes(1), bytes(2))
@@ -1976,6 +2042,56 @@ mod tests {
         assert_eq!((back.band_count(), back.color.clone()), (4, ColorHint::Rgb { alpha: false }));
         assert_eq!(back.value(0, 0, 0), Some(200.0));
         assert_eq!(back.value(3, 0, 0), Some(0.0));
+    }
+
+    /// `write_all` keeps the bands `write` leaves out: every band of a grey raster, grey and its
+    /// alpha (with a data band after it too), and a colour raster's bands past RGB and alpha, each
+    /// read back as written, with its colour; 8-bit bands stay 8-bit.
+    #[test]
+    fn write_all_keeps_every_band() {
+        let gt = GeoTransform { origin_x: 0.0, origin_y: 2.0, pixel_width: 1.0, pixel_height: -1.0 };
+        let raster = |n: usize, color: ColorHint| {
+            let bands = (0..n).map(|b| (0..6).map(|i| (b * 10 + i) as f32 + 0.5).collect()).collect();
+            Raster::new("r", 3, 2, bands, gt, Crs::LonLat, None, color, "Float32").unwrap()
+        };
+        for r in [
+            raster(3, ColorHint::Gray),
+            raster(2, ColorHint::GrayAlpha),
+            raster(3, ColorHint::GrayAlpha),
+            raster(6, ColorHint::Rgb { alpha: true }),
+        ] {
+            assert!(written_bands(&r, 0).len() < r.band_count());
+            let back = read(std::io::Cursor::new(write_all(&r).unwrap()), "r").unwrap();
+            assert_eq!((back.band_count(), &back.color), (r.band_count(), &r.color));
+            assert!((0..r.band_count()).all(|b| back.bands[b].data == r.bands[b].data), "{:?}", r.color);
+        }
+        // Two bands hinted as colour with alpha are too few for colour: neither is marked alpha.
+        let two = raster(2, ColorHint::Rgb { alpha: true });
+        let back = read(std::io::Cursor::new(write_all(&two).unwrap()), "r").unwrap();
+        assert_eq!((back.band_count(), &back.color), (2, &ColorHint::Gray));
+        // An 8-bit colour image with more bands stays 8-bit, so it reads back with the same range.
+        let bytes = (0..5).map(|b| (0..6).map(|i| (b * 40 + i) as f32).collect()).collect();
+        let rgbi = Raster::new("b", 3, 2, bytes, gt, Crs::LonLat, None, ColorHint::Rgb { alpha: false }, "UInt8").unwrap();
+        let back = read(std::io::Cursor::new(write_all(&rgbi).unwrap()), "b").unwrap();
+        assert_eq!((back.band_count(), &back.color, back.data_type.as_str()), (5, &rgbi.color, "UInt8"));
+        assert!((0..5).all(|b| back.bands[b].data == rgbi.bands[b].data));
+        // A float raster holding byte-range whole values stays float, with its own range.
+        let floats = vec![vec![0.0, 1.0, 7.0, 9.0, 4.0, 3.0], vec![1.0; 6]];
+        let floats = Raster::unmeasured("f", 3, 2, floats, gt, Crs::LonLat, None, ColorHint::Gray, "Float32").unwrap();
+        assert_eq!(read(std::io::Cursor::new(write_all(&floats).unwrap()), "f").unwrap().data_type, "Float32");
+        // An 8-bit raster holding a fraction (a resampled mean) keeps it: written as floats.
+        let mean = vec![vec![0.0, 1.5, 7.0, 9.0, 0.0, 3.0], vec![1.0; 6]];
+        let means = Raster::new("m", 3, 2, mean, gt, Crs::LonLat, Some(0.0), ColorHint::Gray, "UInt8").unwrap();
+        let back = read(std::io::Cursor::new(write_all(&means).unwrap()), "m").unwrap();
+        assert_eq!(back.value(0, 1, 0), Some(1.5));
+        // A raster without statistics (read in part) is judged by its values: 1200 isn't a byte.
+        let tall = vec![vec![1200.0, 0.0, 300.0, 1.0, 2.0, 3.0], vec![1.0; 6]];
+        let tall = Raster::unmeasured("t", 3, 2, tall, gt, Crs::LonLat, Some(0.0), ColorHint::Gray, "UInt8").unwrap();
+        let back = read(std::io::Cursor::new(write_all(&tall).unwrap()), "t").unwrap();
+        assert_eq!((back.value(0, 0, 0), back.value(0, 2, 0)), (Some(1200.0), Some(300.0)));
+        // What `write` keeps whole is written as `write` writes it.
+        let rgb = raster(3, ColorHint::Rgb { alpha: false });
+        assert_eq!(write_all(&rgb).unwrap(), write(&rgb, 0).unwrap());
     }
 
     /// An Equi7 tile (a Sentinel-1 product on TU Wien's grid, say) names its system by its EPSG

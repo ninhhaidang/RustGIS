@@ -1115,7 +1115,7 @@ pub fn add_outputs(s: &mut Session, rasters: Vec<Raster>, dates: usize) -> CmdRe
     let mut layers = Vec::new();
     for r in rasters {
         let name = r.name.clone();
-        let tif = raster::geotiff::write(&r, 0).map_err(|e| e.to_string())?;
+        let tif = raster::geotiff::write_all(&r).map_err(|e| e.to_string())?;
         let file: String = name.chars().map(|c| if c.is_alphanumeric() || matches!(c, '-' | '_' | '.') { c } else { '_' }).collect();
         let layer = rustgis_map::raster::RasterLayer::from_bytes(r, format!("{file}.tif"), tif);
         let out = super::raster::add_raster(s, &name, layer)?;
