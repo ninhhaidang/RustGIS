@@ -68,6 +68,9 @@ base64 = "0.23"
 # Deflate for PDF image streams.
 miniz_oxide = "0.9"
 roxmltree = "0.21"
+# CityGML: where each city object lies in a document, found without building its tree (already in
+# the tree through calamine).
+quick-xml = "0.42"
 url = "2.5.8"
 epaint_default_fonts = "0.37"
 # Vector data providers: GeoParquet (pure Rust, so the browser reads it too), FlatGeobuf and

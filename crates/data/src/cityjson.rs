@@ -210,7 +210,9 @@ fn read_with(file_name: &str, bytes: &[u8], given: Option<Crs>, keep_named: bool
     let mut notes = Vec::new();
     let named = named_system(doc.metadata.as_ref());
     let given = given.filter(|_| !keep_named || named.and_then(known_system).is_none());
-    let crs = coordinate_system(file_name, given, named, &vertices, &mut notes)?;
+    let mut reach = Reach::default();
+    vertices.iter().for_each(|v| reach.add(v));
+    let crs = coordinate_system(file_name, given, named, &reach, &mut notes)?;
     notes.extend(doc.appearance.and_then(appearance_note));
     let Some(objects) = doc.objects else {
         return Err(DataError::Format(format!("{file_name}: no CityObjects")));
@@ -220,7 +222,11 @@ fn read_with(file_name: &str, bytes: &[u8], given: Option<Crs>, keep_named: bool
     let mut budget = MAX_FILE_FACES;
     let mut built: Vec<Built> = Vec::with_capacity(objects.len());
     let mut rows: Vec<Row> = Vec::new();
+    // Counted an object at a time, and stopped between objects when its run is cancelled (in the
+    // desktop app's background read); parsing the document before is one step, with no check.
+    crate::progress::begin(objects.len());
     for (id, raw) in &objects {
+        crate::progress::step(1)?;
         let Ok(object) = serde_json::from_str::<RawObject>(raw.get()) else {
             counts.skipped += 1;
             continue;
@@ -244,15 +250,7 @@ fn read_with(file_name: &str, bytes: &[u8], given: Option<Crs>, keep_named: bool
         if made.rows.is_empty() {
             // Its attributes stay: its children, in their own rows, are where it is drawn.
             counts.no_geometry += 1;
-            rows.push(Row {
-                family: Family::Polygon,
-                geometry: None,
-                object: at_row,
-                lod: None,
-                z_dropped: false,
-                unconverted: false,
-                draws: false,
-            });
+            rows.push(Row::without_geometry(at_row));
         }
         rows.extend(made.rows);
         built.push(Built {

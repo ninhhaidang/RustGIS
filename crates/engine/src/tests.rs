@@ -14437,6 +14437,179 @@ fn cityjson_layers_and_the_coordinate_system_given() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// A CityGML model through Add Data, as a CityJSON one: every layer, in the coordinate system given
+/// when it names none, by path, text and zip; a layer picked keeps what the file as a whole says.
+#[test]
+fn citygml_layers_and_the_coordinate_system_given() {
+    let dir = std::env::temp_dir().join(format!("rustgis-citygml-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let object = |ty: &str, x: u32| {
+        format!(
+            "<core:cityObjectMember><bldg:{ty}><bldg:lod1MultiSurface><gml:MultiSurface><gml:surfaceMember><gml:Polygon><gml:exterior>\
+             <gml:LinearRing><gml:posList>{x} 447000 0 {} 447000 0 {} 447100 0 {x} 447000 0</gml:posList></gml:LinearRing>\
+             </gml:exterior></gml:Polygon></gml:surfaceMember></gml:MultiSurface></bldg:lod1MultiSurface></bldg:{ty}></core:cityObjectMember>",
+            x + 100,
+            x + 100
+        )
+    };
+    let model = format!(
+        r#"<core:CityModel xmlns:core="http://www.opengis.net/citygml/2.0" xmlns:bldg="http://www.opengis.net/citygml/building/2.0" xmlns:gml="http://www.opengis.net/gml">{}{}<core:appearanceMember/></core:CityModel>"#,
+        object("Building", 85000),
+        object("BuildingPart", 86000)
+    );
+    let gml = dir.join("model.gml");
+    std::fs::write(&gml, &model).unwrap();
+    let path = gml.display().to_string();
+    let both = |s: &Session, stem: &str| {
+        (s.map().layer_by_name(&format!("{stem} Building")).is_some(), s.map().layer_by_name(&format!("{stem} BuildingPart")).is_some())
+    };
+    // Placed in the Netherlands, as EPSG:28992 puts (85000, 447000).
+    let placed = |s: &Session, name: &str| {
+        let e = s.map().layer_by_name(name).map(|l| l.dataset.extent()).unwrap();
+        assert!((4.0..5.0).contains(&e.min_x) && (51.5..52.5).contains(&e.min_y), "{name}: {e:?}");
+    };
+
+    let mut s = Session::new(Project::default());
+    let e = s.run("layer.addData", &json!({"path": path})).unwrap_err();
+    assert!(e.contains("names no coordinate system") && e.contains("crs"), "{e}");
+    let mut s = Session::new(Project::default());
+    s.run("layer.addData", &json!({"path": path, "crs": "EPSG:28992"})).unwrap();
+    assert_eq!(both(&s, "model"), (true, true));
+    placed(&s, "model Building");
+
+    // A layer picked, by path and as text: that layer, with the file's own notices.
+    for pick in ["Building", "BuildingPart"] {
+        let mut s = Session::new(Project::default());
+        let mark = s.notice_mark();
+        s.run("layer.addData", &json!({"path": path, "crs": "EPSG:28992", "layer": pick})).unwrap();
+        let text = json!({"fileName": "text.gml", "text": model, "crs": "EPSG:28992", "layer": pick});
+        s.run("layer.addDataText", &text).unwrap();
+        assert!(s.map().layer_by_name(&format!("model {pick}")).is_some() && s.map().layer_by_name(&format!("text {pick}")).is_some());
+        placed(&s, &format!("model {pick}"));
+        placed(&s, &format!("text {pick}"));
+        assert_eq!(s.map().layers.len(), 2, "only the layer picked");
+        let said = s.notices_since(mark).iter().filter(|n| n.text.contains("appearances")).count();
+        assert_eq!(said, 2, "{:?}", s.notices_since(mark));
+    }
+
+    // As text with no layer picked, every layer; named .xml, the same.
+    let mut s = Session::new(Project::default());
+    s.run("layer.addDataText", &json!({"fileName": "t.xml", "text": model, "crs": "EPSG:28992"})).unwrap();
+    assert_eq!(both(&s, "t"), (true, true));
+    placed(&s, "t Building");
+
+    // Listed in the coordinate system given, and zipped.
+    let mut s = Session::new(Project::default());
+    assert!(s.run("info.fileLayers", &json!({"path": path})).is_err(), "no system to place it by");
+    let listed = s.run("info.fileLayers", &json!({"path": path, "crs": "EPSG:28992"})).unwrap();
+    let mut layers: Vec<String> = serde_json::from_value(listed["layers"].clone()).unwrap();
+    layers.sort();
+    assert_eq!(layers, ["model Building", "model BuildingPart"]);
+    let archive = dir.join("models.zip");
+    std::fs::write(&archive, rustgis_data::zip::write(&[("d/m.gml".to_string(), model.clone().into_bytes())]).unwrap()).unwrap();
+    s.run("layer.addData", &json!({"path": archive.display().to_string(), "crs": "EPSG:28992"})).unwrap();
+    assert_eq!(both(&s, "m"), (true, true));
+    placed(&s, "m Building");
+
+    // A model naming its system: as text with no options, every layer; zipped with another system
+    // given, the one it names.
+    let named = model.replace("<gml:MultiSurface>", r#"<gml:MultiSurface srsName="EPSG:28992">"#);
+    let mut s = Session::new(Project::default());
+    s.run("layer.addDataText", &json!({"fileName": "n.gml", "text": named})).unwrap();
+    assert_eq!(both(&s, "n"), (true, true));
+    placed(&s, "n Building");
+    let archive = dir.join("named.zip");
+    std::fs::write(&archive, rustgis_data::zip::write(&[("d/z.gml".to_string(), named.clone().into_bytes())]).unwrap()).unwrap();
+    let mut s = Session::new(Project::default());
+    s.run("layer.addData", &json!({"path": archive.display().to_string(), "crs": "EPSG:3857"})).unwrap();
+    assert_eq!(both(&s, "z"), (true, true));
+    placed(&s, "z Building");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A city model through Add Data on the desktop is read on a thread of its own, and the command
+/// takes that read: the same layers and notices as when it reads as it runs, with a layer picked
+/// and a coordinate system given too. A CityJSON `.json` with options given reads as it runs.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn city_models_are_read_ahead_as_they_read_inline() {
+    if isolate_process_test("tests::city_models_are_read_ahead_as_they_read_inline") {
+        return;
+    }
+    use rustgis_analysis::control::Control;
+    let dir = std::env::temp_dir().join(format!("rustgis-city-ahead-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let object = |ty: &str, x: u32| {
+        format!(
+            "<core:cityObjectMember><bldg:{ty}><bldg:lod1MultiSurface><gml:MultiSurface><gml:surfaceMember><gml:Polygon><gml:exterior>\
+             <gml:LinearRing><gml:posList>{x} 447000 0 {} 447000 0 {} 447100 0 {x} 447000 0</gml:posList></gml:LinearRing>\
+             </gml:exterior></gml:Polygon></gml:surfaceMember></gml:MultiSurface></bldg:lod1MultiSurface></bldg:{ty}></core:cityObjectMember>",
+            x + 100,
+            x + 100
+        )
+    };
+    let gml = format!(
+        r#"<core:CityModel xmlns:core="http://www.opengis.net/citygml/2.0" xmlns:bldg="http://www.opengis.net/citygml/building/2.0" xmlns:gml="http://www.opengis.net/gml">{}{}<core:appearanceMember/></core:CityModel>"#,
+        object("Building", 85000),
+        object("BuildingPart", 86000)
+    );
+    let surface = |ty: &str| json!({"type": ty, "geometry": [{"type": "MultiSurface", "lod": "1", "boundaries": [[[0, 1, 2]]]}]});
+    let cityjson = json!({
+        "type": "CityJSON",
+        "version": "2.0",
+        "transform": {"scale": [1.0, 1.0, 1.0], "translate": [0.0, 0.0, 0.0]},
+        "vertices": [[85000, 447000, 0], [85100, 447000, 0], [85100, 447100, 0]],
+        "CityObjects": {"a": surface("Bridge"), "b": surface("Road")},
+    })
+    .to_string();
+    let files = [("model.gml", gml.clone()), ("model.xml", gml), ("model.city.json", cityjson.clone())];
+    // What a session holds after Add Data: its layers' names and features, and what it said.
+    let outcome = |s: &Session, mark: u64| {
+        let layers: Vec<(String, usize)> = s.map().layers.iter().map(|l| (l.name.clone(), l.dataset.features.len())).collect();
+        let said: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+        (layers, said)
+    };
+    for (name, text) in files {
+        let path = dir.join(name);
+        for options in [
+            json!({"crs": "EPSG:28992"}),
+            json!({"crs": "EPSG:28992", "layer": "Building"}),
+            json!({"crs": "EPSG:28992", "layer": "Bridge"}),
+            json!({"crs": "EPSG:bogus"}),
+            json!({}),
+        ] {
+            std::fs::write(&path, &text).unwrap();
+            let mut p = options.clone();
+            p["path"] = json!(path.display().to_string());
+            let mut inline = Session::new(Project::default());
+            let mark = inline.notice_mark();
+            let expected = inline.run("layer.addData", &p).map(|_| outcome(&inline, mark));
+
+            let mut s = Session::new(Project::default());
+            let mark = s.notice_mark();
+            let ahead = crate::cmd::reads::read_ahead(&mut s, "layer.addData", &p).unwrap();
+            assert!(ahead.reads(), "{name} {options}: read ahead");
+            let read = ahead.run(&Control::new()).unwrap();
+            // The file gone: what the command adds can only come from the read.
+            std::fs::remove_file(&path).unwrap();
+            let got = crate::cmd::reads::read_land(&mut s, read).map(|_| outcome(&s, mark));
+            assert!(s.read_ahead.is_none(), "{name} {options}: the read was taken");
+            assert_eq!(got, expected, "{name} {options}");
+        }
+    }
+    // A CityJSON model named .json with a coordinate system given is read as the command runs.
+    let json_path = dir.join("model.json");
+    std::fs::write(&json_path, &cityjson).unwrap();
+    let mut s = Session::new(Project::default());
+    let p = json!({"path": json_path.display().to_string(), "crs": "EPSG:28992"});
+    assert!(!crate::cmd::reads::read_ahead(&mut s, "layer.addData", &p).unwrap().reads());
+    // Other GML and XML are read as the command runs.
+    let other = dir.join("other.gml");
+    std::fs::write(&other, r#"<gml:FeatureCollection xmlns:gml="http://www.opengis.net/gml"/>"#).unwrap();
+    assert!(!crate::cmd::reads::read_ahead(&mut s, "layer.addData", &json!({"path": other.display().to_string()})).unwrap().reads());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// GML, MapInfo MIF/MID and TopoJSON through the commands, by path, text and zip.
 #[test]
 fn gml_mapinfo_and_topojson() {

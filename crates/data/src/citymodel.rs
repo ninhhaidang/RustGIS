@@ -1,7 +1,7 @@
 //! City models (the CityGML data model, whatever its encoding) read as 2D, the part each reader shares:
 //! from an object's faces, lines and points to its rows, from the rows to a layer per object type
 //! and geometry family, and the notices. A reader turns its own encoding into [`Faces`] and parts
-//! ([`ObjectParts`]) and its objects into [`Built`]; see [`crate::cityjson`].
+//! ([`ObjectParts`]) and its objects into [`Built`]; see [`crate::cityjson`] and [`crate::citygml`].
 //!
 //! Surfaces and solids become footprints, from the first source that gives one: LoD 0, the surfaces
 //! marked `GroundSurface`, then the union of the faces of the highest LoD (see [`crate::footprint`]).
@@ -66,6 +66,14 @@ pub(crate) struct Row {
     pub(crate) unconverted: bool,
     /// It draws something: a geometry, and for lines one of two different points.
     pub(crate) draws: bool,
+}
+
+impl Row {
+    /// The row of an object with no geometry of its own: its attributes stay, and its children, in
+    /// their own rows, are where it is drawn.
+    pub(crate) fn without_geometry(object: usize) -> Row {
+        Row { family: Family::Polygon, geometry: None, object, lod: None, z_dropped: false, unconverted: false, draws: false }
+    }
 }
 
 /// An object's values, one per object whatever rows it makes.
@@ -324,17 +332,37 @@ pub(crate) fn known_system(system: &str) -> Option<Crs> {
     crate::ogc::warp::epsg_of(system).and_then(|c| Crs::from_epsg(horizontal_epsg(c)))
 }
 
+/// How far a file's X and Y go from 0, taken in as its points are read, so a reader that streams its
+/// objects needs no list of every vertex. A coordinate that isn't a number goes past every bound.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Reach {
+    x: f64,
+    y: f64,
+}
+
+impl Reach {
+    /// Takes in a point's X and Y.
+    pub(crate) fn add(&mut self, p: &P3) {
+        let far = |reach: f64, v: f64| if v.is_nan() { f64::INFINITY } else { reach.max(v.abs()) };
+        (self.x, self.y) = (far(self.x, p[0]), far(self.y, p[1]));
+    }
+
+    /// Whether every X is within `x` of 0 and every Y within `y`.
+    fn within(&self, x: f64, y: f64) -> bool {
+        self.x <= x && self.y <= y
+    }
+}
+
 /// The coordinate system: the one given, the one the file names (`named`), or longitude/latitude
-/// when it names none and every vertex can be one. Anything else is an error, not a guess. A file
-/// only names EPSG codes: what it says is never registered as a new definition.
+/// when it names none and every point (`reach`) can be one. Anything else is an error, not a guess.
+/// A file only names EPSG codes: what it says is never registered as a new definition.
 pub(crate) fn coordinate_system(
     file_name: &str,
     given: Option<Crs>,
     named: Option<&str>,
-    vertices: &[P3],
+    reach: &Reach,
     notes: &mut Vec<String>,
 ) -> Result<Crs> {
-    let within = |x: f64, y: f64| vertices.iter().all(|p| p[0].abs() <= x && p[1].abs() <= y);
     let crs = match (given, named) {
         (Some(crs), named) => {
             // What the file names is said whenever the system given takes its place, known or not.
@@ -357,7 +385,7 @@ pub(crate) fn coordinate_system(
             let system: String = system.chars().take(80).collect();
             DataError::Format(format!("{file_name}: it names a coordinate system RustGIS doesn't know ({system}); give one with the crs parameter of layer.addData (from the command line, Python or the AI Assistant)"))
         })?,
-        (None, None) if within(180.0, 90.0) => {
+        (None, None) if reach.within(180.0, 90.0) => {
             notes.push("the file names no coordinate system: its coordinates are read as longitude/latitude".into());
             return Ok(Crs::LonLat);
         }
@@ -370,7 +398,7 @@ pub(crate) fn coordinate_system(
     if crs.is_geocentric() {
         return Err(DataError::Format(format!("{file_name}: {} is a geocentric coordinate system, which isn't a map's", crs.label())));
     }
-    if crs == Crs::LonLat && !within(180.5, 90.5) {
+    if crs == Crs::LonLat && !reach.within(180.5, 90.5) {
         notes.push("coordinates are not longitude/latitude; RustGIS reads them as WGS 84 and they may draw out of place".into());
     }
     if let Some(unit) = crs.height_unit_not_metre() {

@@ -30,7 +30,7 @@ pub fn is_gml_name(name: &str) -> bool {
     EXTENSIONS.contains(&ext.as_str())
 }
 
-fn local<'a>(n: &Node<'a, '_>) -> &'a str {
+pub(crate) fn local<'a>(n: &Node<'a, '_>) -> &'a str {
     n.tag_name().name()
 }
 
@@ -51,10 +51,28 @@ fn srs(name: &str) -> Option<(Crs, bool)> {
     }
     let code: u32 = n.rsplit([':', '/', '#']).next()?.trim().parse().ok()?;
     let crs = Crs::from_epsg(code)?;
-    // `EPSG:4326` and the old `…epsg.xml#4326` are longitude first; URNs and the
-    // opengis.net/def URLs follow the EPSG axis order, latitude first for geographic systems.
-    let official = up.starts_with("URN:") || up.contains("OPENGIS.NET/DEF/CRS");
-    Some((crs, official && crs.is_geographic()))
+    Some((crs, lat_first(n, crs)))
+}
+
+/// Whether coordinates named by `name`, a name of `crs`, are latitude first. `EPSG:4326` and the
+/// old `…epsg.xml#4326` are longitude first; URNs and the opengis.net/def URLs follow the EPSG axis
+/// order, latitude first for geographic systems, but for OGC's CRS84, longitude first by definition.
+/// A compound system's order is its horizontal part's.
+pub(crate) fn lat_first(name: &str, crs: Crs) -> bool {
+    let up = name.trim().to_ascii_uppercase();
+    (up.starts_with("URN:") || up.contains("OPENGIS.NET/DEF/CRS")) && crs.is_geographic() && !crate::ogc::warp::is_crs84(horizontal(name))
+}
+
+/// The horizontal system of a compound URN (`urn:ogc:def:crs,crs:EPSG::25832,crs:EPSG::5783`, its
+/// first part), or the name as it is.
+pub(crate) fn horizontal(name: &str) -> &str {
+    let name = name.trim();
+    match name.get(..16) {
+        Some(head) if head.eq_ignore_ascii_case("urn:ogc:def:crs,") => {
+            name.get(16..).and_then(|rest| rest.split(',').next()).unwrap_or(name)
+        }
+        _ => name,
+    }
 }
 
 /// GML geometry elements read.

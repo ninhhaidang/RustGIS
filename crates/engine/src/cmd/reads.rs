@@ -1,6 +1,6 @@
 //! Reads the desktop app makes on a thread of its own before a command adds what they read
 //! (#1291 step 3): Add Data's whole-file reads (a raster, a raster GDAL converts, a GeoJSON,
-//! delimited text or spreadsheet read whole), Reload Data, Load All Features and native models or scripts. [`read_ahead`]
+//! delimited text or spreadsheet read whole, a CityJSON or CityGML model's layers), Reload Data, Load All Features and native models or scripts. [`read_ahead`]
 //! takes what the read needs of the session, [`ReadAhead::run`] reads on the thread, and [`read_land`]
 //! runs the admitted command under its initiating owner: the command takes
 //! it instead of reading again, so what it adds, says, logs and puts in Undo is the same as when

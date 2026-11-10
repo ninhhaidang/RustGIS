@@ -1357,3 +1357,23 @@ fn a_line_starting_at_nan_is_said_when_lost() {
     assert_eq!(made.rows.first().and_then(|r| r.lod.as_deref()), Some("2"));
     assert_eq!(counts.unusable_lost, 0);
 }
+
+/// A read counts its objects and stops between them once its run is cancelled; without a run to
+/// answer to it reads them all.
+#[test]
+fn a_cancelled_read_stops_between_objects() {
+    use crate::progress::tests::Counted;
+    use std::sync::atomic::Ordering;
+    let objects: serde_json::Map<String, Json> = (0..5)
+        .map(|i| (format!("b{i}"), json!({"type": "Building", "geometry": [{"type": "Solid", "lod": "1", "boundaries": box_shell()}]})))
+        .collect();
+    let bytes = doc(box_vertices(), Json::Object(objects));
+    let probe = Counted::cancelling_after(2);
+    let res = {
+        let _g = crate::progress::install(Some(probe.clone()));
+        read("model.city.json", &bytes, None)
+    };
+    assert!(matches!(res, Err(DataError::Cancelled)), "{:?}", res.map(|o| o.len()));
+    assert_eq!(probe.total.load(Ordering::Relaxed), 5);
+    assert_eq!(read("model.city.json", &bytes, None).unwrap()[0].0.features.len(), 5);
+}

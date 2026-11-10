@@ -4762,6 +4762,7 @@ dependencies = [
  "parquet",
  "postgres",
  "proj4rs",
+ "quick-xml 0.42.0",
  "roxmltree",
  "rusqlite",
  "rustgis-geom",

@@ -24,6 +24,7 @@ proj4rs = { workspace = true }
 crs-definitions = { workspace = true }
 miniz_oxide = { workspace = true }
 roxmltree = { workspace = true }
+quick-xml = { workspace = true }
 # zstd, the usual compression of GeoParquet, compiles to WebAssembly like the GeoTIFF one above.
 parquet = { workspace = true, features = ["zstd"] }
 url = { workspace = true }
