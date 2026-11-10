@@ -25484,6 +25484,263 @@ fn map_rename_names_any_map_and_what_shows_it_follows() {
     assert_eq!(s.map().name, "Second");
 }
 
+/// Compares all project state except the geometry cache revision invalidated by undo.
+fn renamed_project_state(s: &Session) -> Value {
+    let mut value = serde_json::to_value(&s.project).unwrap();
+    for map in value["maps"].as_array_mut().unwrap() {
+        for layer in map["layers"].as_array_mut().unwrap() {
+            layer.as_object_mut().unwrap().remove("geometry_rev");
+        }
+    }
+    value
+}
+
+/// Everything a project keeps that names a layer follows the layer's rename, as the map frames
+/// follow a map's.
+#[test]
+fn what_names_a_layer_follows_its_rename() {
+    /// Collects reference spellings from each typed item's JSON without depending on its shape.
+    fn strings(v: &Value, out: &mut Vec<String>) {
+        match v {
+            Value::String(t) => out.push(t.clone()),
+            Value::Array(a) => a.iter().for_each(|v| strings(v, out)),
+            Value::Object(o) => o.values().for_each(|v| strings(v, out)),
+            _ => {}
+        }
+    }
+    let mut s = world();
+    s.run("layer.addDataBytes", &json!({"fileName": "dem.tif", "data": dem_b64()})).unwrap();
+    s.run("layout.new", &json!({"page": "a4"})).unwrap();
+    let li = s.active_layout.unwrap();
+    let mut elements = vec![("legend exclude", s.project.layouts[li].elements.iter().find(|e| e.name == "Legend").unwrap().id)];
+    s.run("layout.update", &json!({"element": elements[0].1, "exclude": ["Countries"]})).unwrap();
+    for (what, el) in [
+        ("layout table", json!({"kind": "table", "layer": "Countries"})),
+        ("layout chart", json!({"kind": "chart", "layer": "Countries", "field": "pop_est", "label": "name"})),
+        ("layout colorbar", json!({"kind": "colorbar", "layer": "dem"})),
+    ] {
+        let id = s.run("layout.addElement", &el).unwrap()["element"].as_u64().unwrap() as u32;
+        elements.push((what, id));
+    }
+    s.run("layout.series", &json!({"layer": "Countries", "nameField": "name"})).unwrap();
+    s.run("layer.mask", &json!({"layer": "Cities", "mask": "Countries"})).unwrap();
+    s.run("map.terrain", &json!({"layer": "dem"})).unwrap();
+    s.run("report.new", &json!({"layer": "Countries", "name": "Report", "fields": ["name"]})).unwrap();
+    let graph = json!({
+        "nodes": [
+            {"id": "i1", "kind": "input", "x": 0, "y": 0, "layer": "Countries"},
+            {"id": "o1", "kind": "output", "x": 240, "y": 0, "name": "Kept"}
+        ],
+        "edges": [{"from": "i1", "fromPort": "out", "to": "o1", "toPort": "in"}]
+    });
+    s.run("model.new", &json!({"name": "Model", "graph": graph})).unwrap();
+    s.run("data.relate", &json!({"name": "Country of city", "origin": "Countries", "originKey": "name", "destination": "Cities", "destinationKey": "adm0name"}))
+        .unwrap();
+    s.run("topology.rules", &json!({"add": {"rule": "mustBeCoveredBy", "layer": "Cities", "by": "Countries"}})).unwrap();
+    s.run("edit.elevation", &json!({"mode": "surface", "surface": "dem"})).unwrap();
+    s.run("imagery.workspace", &json!({"kind": "reality", "name": "Heights", "images": ["dem"]})).unwrap();
+
+    let before = renamed_project_state(&s);
+    s.run("layer.rename", &json!({"layer": "Countries", "name": "Nations"})).unwrap();
+    s.run("layer.rename", &json!({"layer": "dem", "name": "Elevation"})).unwrap();
+
+    let mut refs: Vec<(&str, Value)> = Vec::new();
+    for (what, id) in &elements {
+        let e = s.project.layouts[li].elements.iter().find(|e| e.id == *id).unwrap();
+        // A colorbar's title is literal display text, not a layer reference.
+        let reference = match &e.kind {
+            rustgis_map::layout::ElementKind::Colorbar { layer, .. } => json!(layer),
+            _ => serde_json::to_value(&e.kind).unwrap(),
+        };
+        refs.push((what, reference));
+    }
+    let series = s.project.layouts[li].series.as_ref().map(|m| m.layer.clone());
+    refs.push(("map series", json!(series)));
+    refs.push(("mask", json!(s.map().layer_by_name("Cities").unwrap().mask)));
+    refs.push(("terrain", serde_json::to_value(&s.map().view.terrain).unwrap()));
+    refs.push(("report", json!(s.project.reports[0].layer)));
+    let model = s.project.models.iter().find(|m| m.name == "Model").unwrap();
+    refs.push(("model input", serde_json::to_value(&model.graph.as_ref().unwrap().nodes[0]).unwrap()));
+    refs.push(("relationship", serde_json::to_value(&s.map().editing.relationships[0]).unwrap()));
+    refs.push(("topology rule", serde_json::to_value(&s.map().editing.topology).unwrap()));
+    refs.push(("edit elevation", serde_json::to_value(&s.map().editing.settings.elevation).unwrap()));
+    refs.push(("imagery workspace", json!(s.project.workspaces[0].images)));
+
+    let stale: Vec<String> = refs
+        .iter()
+        .filter_map(|(what, v)| {
+            let mut names = Vec::new();
+            strings(v, &mut names);
+            let old = names.iter().find(|n| *n == "Countries" || *n == "dem")?;
+            Some(format!("{what} still names '{old}'"))
+        })
+        .collect();
+    assert!(stale.is_empty(), "{} of {} references kept the old name:\n{}", stale.len(), refs.len(), stale.join("\n"));
+    s.run("edit.undo", &Value::Null).unwrap();
+    s.run("edit.undo", &Value::Null).unwrap();
+    assert_eq!(renamed_project_state(&s), before, "undo restores every reference with its layer name");
+}
+
+/// A layout reference follows only the map its frame shows; a project-wide reference without
+/// a map stays put, with a notice, when the old name also exists in a second map.
+#[test]
+fn layer_rename_keeps_references_in_their_maps() {
+    use rustgis_map::layout::ElementKind;
+    let mut s = world();
+    s.run("layout.new", &json!({"page": "a4"})).unwrap();
+    s.run("layout.addElement", &json!({"kind": "table", "layer": "Countries"})).unwrap();
+    s.run("layout.series", &json!({"layer": "Countries", "nameField": "name"})).unwrap();
+    s.run("report.new", &json!({"layer": "Countries", "name": "Report", "fields": ["name"]})).unwrap();
+    let mut second = s.map().clone();
+    second.name = "Second".into();
+    s.project.maps.push(second);
+    let mut second_layout = s.project.layouts[0].clone();
+    second_layout.name = "Second layout".into();
+    for element in &mut second_layout.elements {
+        if let ElementKind::MapFrame { map, .. } = &mut element.kind {
+            *map = "Second".into();
+        }
+    }
+    s.project.layouts.push(second_layout);
+    let mark = s.notice_mark();
+    s.run("layer.rename", &json!({"layer": "Countries", "name": "Nations"})).unwrap();
+    for (layout, expected) in s.project.layouts.iter().zip(["Nations", "Countries"]) {
+        assert_eq!(layout.series.as_ref().unwrap().layer, expected);
+        for element in &layout.elements {
+            if let ElementKind::Table { layer, .. } = &element.kind {
+                assert_eq!(layer, expected);
+            }
+        }
+    }
+    assert_eq!(s.project.reports[0].layer, "Countries");
+    assert!(s.notices_since(mark).iter().any(|n| n.text.contains("another map has a layer of the old or new name")));
+}
+
+#[test]
+fn layer_rename_never_redirects_a_table_to_another_layer_of_the_new_name() {
+    use rustgis_map::layout::ElementKind;
+    let mut s = world();
+    let cities = s.map().layer_by_name("Cities").unwrap().id;
+    s.run("layout.new", &json!({"page": "a4"})).unwrap();
+    let id = s.run("layout.addElement", &json!({"kind": "table", "layer": "Cities"})).unwrap()["element"].as_u64().unwrap() as u32;
+    let before = renamed_project_state(&s);
+    let mark = s.notice_mark();
+    s.run("layer.rename", &json!({"layer": cities, "name": "Countries"})).unwrap();
+    let table = s.project.layouts[0].elements.iter().find(|e| e.id == id).unwrap();
+    let ElementKind::Table { layer, .. } = &table.kind else { panic!("not a table") };
+    assert_eq!(layer, "Cities");
+    assert!(s.map().layer_by_name(layer).is_none(), "a stale reference must never display another layer's rows");
+    assert!(s.notices_since(mark).iter().any(|n| n.text.contains("two layers are now called 'Countries'")));
+    s.run("edit.undo", &Value::Null).unwrap();
+    assert_eq!(renamed_project_state(&s), before);
+    assert_eq!(s.map().layer_by_name("Cities").unwrap().id, cities);
+}
+
+/// Case-only renames keep exact-spelling selectors current without changing other maps.
+#[test]
+fn layer_rename_keeps_case_sensitive_selectors_current() {
+    use rustgis_map::design::Elevation;
+    let mut s = world();
+    s.run("layout.new", &json!({"page": "a4"})).unwrap();
+    s.run("layout.series", &json!({"layer": "Countries", "nameField": "name"})).unwrap();
+    let mut other_layout = s.project.layouts[0].clone();
+    for element in &mut other_layout.elements {
+        if let rustgis_map::layout::ElementKind::MapFrame { map, .. } = &mut element.kind {
+            *map = "Second".into();
+        }
+    }
+    s.project.layouts.push(other_layout);
+    s.map_mut().editing.settings.elevation = Elevation::Surface("Countries".into());
+    let before = renamed_project_state(&s);
+    let mark = s.notice_mark();
+    s.run("layer.rename", &json!({"layer": "Countries", "name": "countries"})).unwrap();
+    assert_eq!(s.map().editing.settings.elevation, Elevation::Surface("countries".into()));
+    assert_eq!(s.project.layouts[0].series.as_ref().unwrap().layer, "countries");
+    assert_eq!(s.project.layouts[1].series.as_ref().unwrap().layer, "Countries");
+    assert!(s.notices_since(mark).is_empty());
+    s.run("edit.undo", &Value::Null).unwrap();
+    assert_eq!(renamed_project_state(&s), before);
+}
+
+/// References already using the destination name need a notice when lookup becomes ambiguous.
+#[test]
+fn layer_rename_reports_references_already_using_a_duplicate_destination() {
+    for other_map in [false, true] {
+        let mut s = world();
+        let (layer, new, expected) = if other_map {
+            let mut second = s.map().clone();
+            second.name = "Second".into();
+            second.layers.iter_mut().find(|l| l.name == "Countries").unwrap().name = "Nations".into();
+            s.project.maps.push(second);
+            ("Countries", "Nations", 1)
+        } else {
+            s.run("layer.mask", &json!({"layer": "Rivers", "mask": "Countries"})).unwrap();
+            s.run("layout.new", &json!({"page": "a4"})).unwrap();
+            s.run("layout.addElement", &json!({"kind": "table", "layer": "Countries"})).unwrap();
+            ("Cities", "Countries", 3)
+        };
+        s.run("report.new", &json!({"layer": new, "name": "Report", "fields": ["name"]})).unwrap();
+        let before = renamed_project_state(&s);
+        let mark = s.notice_mark();
+        s.run("layer.rename", &json!({"layer": layer, "name": new})).unwrap();
+        let notices: Vec<_> = s.notices_since(mark).iter().filter(|n| n.text.contains("already name")).collect();
+        assert_eq!(notices.len(), 1);
+        assert!(notices[0].text.starts_with(&format!("{expected} layer or project reference(s)")), "{}", notices[0].text);
+        assert_eq!(s.project.reports[0].layer, new);
+        s.run("edit.undo", &Value::Null).unwrap();
+        assert_eq!(renamed_project_state(&s), before);
+        let mark = s.notice_mark();
+        s.run("layer.rename", &json!({"layer": layer, "name": "Unique Name"})).unwrap();
+        assert!(s.notices_since(mark).iter().all(|n| !n.text.contains("already name")));
+    }
+}
+
+/// A project-wide report must not begin resolving to a different map after a rename.
+#[test]
+fn layer_rename_keeps_project_references_when_another_map_has_the_new_name() {
+    let mut s = world();
+    s.run("report.new", &json!({"layer": "Countries", "name": "Report", "fields": ["name"]})).unwrap();
+    let mut second = s.map().clone();
+    second.name = "Second".into();
+    for layer in &mut second.layers {
+        if layer.name == "Countries" {
+            layer.name = "Nations".into();
+        }
+    }
+    s.project.maps.push(second);
+    let before = renamed_project_state(&s);
+    let mark = s.notice_mark();
+    s.run("layer.rename", &json!({"layer": "Countries", "name": "Nations"})).unwrap();
+    assert_eq!(s.project.reports[0].layer, "Countries");
+    assert!(s.notices_since(mark).iter().any(|n| n.text.contains("1 project reference(s)") && n.text.contains("old or new name")));
+    s.project.active_map = 1;
+    assert!(s.project.maps.iter().all(|map| map.layer_by_name(&s.project.reports[0].layer).is_none()));
+    s.project.active_map = 0;
+    s.run("edit.undo", &Value::Null).unwrap();
+    assert_eq!(renamed_project_state(&s), before);
+}
+
+/// References left on a duplicate old name need a notice because the intended layer is unknown.
+#[test]
+fn layer_rename_says_when_references_keep_a_duplicate_old_name() {
+    let mut s = world();
+    s.run("layer.mask", &json!({"layer": "Rivers", "mask": "Countries"})).unwrap();
+    let countries = s.map().layer_by_name("Countries").unwrap().id;
+    s.run("layout.new", &json!({"page": "a4"})).unwrap();
+    let table = s.run("layout.addElement", &json!({"kind": "table", "layer": "Countries"})).unwrap()["element"].as_u64().unwrap() as u32;
+    s.map_mut().layers.iter_mut().find(|layer| layer.name == "Cities").unwrap().name = "Countries".into();
+    let before = renamed_project_state(&s);
+    let mark = s.notice_mark();
+    s.run("layer.rename", &json!({"layer": countries, "name": "Nations"})).unwrap();
+    let element = s.project.layouts[0].elements.iter().find(|element| element.id == table).unwrap();
+    let rustgis_map::layout::ElementKind::Table { layer, .. } = &element.kind else { panic!("not a table") };
+    assert_eq!(layer, "Countries");
+    assert_eq!(s.map().layer_by_name("Rivers").unwrap().mask.as_deref(), Some("Countries"));
+    assert!(s.notices_since(mark).iter().any(|n| n.text.contains("2 layer reference(s)") && n.text.contains("another layer in this map")));
+    s.run("edit.undo", &Value::Null).unwrap();
+    assert_eq!(renamed_project_state(&s), before);
+}
+
 #[test]
 fn layout_elements_are_brought_to_the_front_and_sent_to_the_back() {
     let mut s = world();
