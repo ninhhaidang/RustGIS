@@ -57,6 +57,11 @@ fn token_store() -> &'static Mutex<Option<String>> {
     &T
 }
 
+/// Whether the token kept is the one [`restore`] read and nothing has set, replaced or forgotten
+/// it since. Never holds the token itself. Read and written only while holding the `token_store`
+/// lock, so it never disagrees with the token.
+static RESTORED: AtomicBool = AtomicBool::new(false);
+
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -74,6 +79,18 @@ impl AccountIdentity {
     /// An unavailable or poisoned relevant store returns false.
     pub fn is_current(&self) -> bool {
         identity_in(token_store(), self.relevant).is_ok_and(|current| *self == current)
+    }
+
+    /// Whether this identity, taken with no token, is stale only because the token remembered on
+    /// this computer was read since ([`restore`]) and nothing was given, forgotten or replaced
+    /// after. For telling a cancelled request why; it never makes a stale identity current.
+    pub fn restored_since(&self) -> bool {
+        if !self.relevant || self.token.is_some() {
+            return false;
+        }
+        // Not `is_current`, which locks too: with no token in the snapshot, stale means one is active.
+        let token = lock(token_store());
+        RESTORED.load(Ordering::SeqCst) && token.is_some()
     }
 }
 
@@ -116,7 +133,9 @@ pub fn set_token(token: Option<&str>) -> Result<(), String> {
         Some(t) => checked(t)?,
         None => None,
     };
-    *lock(token_store()) = token;
+    let mut kept = lock(token_store());
+    RESTORED.store(false, Ordering::SeqCst);
+    *kept = token;
     Ok(())
 }
 
@@ -169,7 +188,8 @@ fn secret_store() -> Option<Arc<dyn SecretStore>> {
 }
 
 /// Gives the credential store a token is remembered in (the desktop's keychain; the command
-/// line's and Python's when they opt in to saved secrets). It is read when first needed.
+/// line's and Python's when they opt in to saved secrets). The app reads it at launch, the command
+/// line and Python when a command first needs it.
 pub fn set_secret_store(store: Option<Arc<dyn SecretStore>>) {
     let mut read = lock(&REMEMBERED.read);
     *lock(&REMEMBERED.store) = store;
@@ -192,7 +212,8 @@ pub enum Restored {
 /// this session first wins: the store then only tells whether it holds that token (another session
 /// of the process may have remembered it). An expired or damaged one is deleted. Reading may ask
 /// the system to unlock its store: the app calls this off the frame (requests to data hosts call
-/// it themselves).
+/// it themselves, and the command line and Python before a command that names one binds its
+/// accounts).
 pub fn restore() -> Restored {
     let mut read = lock(&REMEMBERED.read);
     if *read {
@@ -201,23 +222,27 @@ pub fn restore() -> Restored {
     *read = true;
     let Some(store) = secret_store() else { return Restored::Nothing };
     let Ok(Some(secret)) = store.load(ACCOUNT) else { return Restored::Nothing };
-    if let Some(session) = lock(token_store()).as_deref() {
+    let mut kept = lock(token_store());
+    if let Some(session) = kept.as_deref() {
         REMEMBERED.kept.store(checked(secret.expose()).ok().flatten().as_deref() == Some(session), Ordering::SeqCst);
         return Restored::Nothing;
     }
     match checked(secret.expose()) {
         Ok(Some(token)) if !expired(&token, now_secs()) => {
-            *lock(token_store()) = Some(token);
+            RESTORED.store(true, Ordering::SeqCst);
+            *kept = Some(token);
             REMEMBERED.kept.store(true, Ordering::SeqCst);
             Restored::Token
         }
         Ok(Some(_)) => {
+            drop(kept);
             REMEMBERED.kept.store(store.delete(ACCOUNT).is_err(), Ordering::SeqCst);
             REMEMBERED.expired.store(true, Ordering::SeqCst);
             Restored::Expired
         }
         // Damaged: of no use to anyone.
         _ => {
+            drop(kept);
             REMEMBERED.kept.store(store.delete(ACCOUNT).is_err(), Ordering::SeqCst);
             Restored::Nothing
         }
@@ -232,6 +257,7 @@ pub fn forget_if_expired() -> bool {
         let mut token = lock(token_store());
         let gone = token.as_deref().is_some_and(|t| expired(t, now_secs()));
         if gone {
+            RESTORED.store(false, Ordering::SeqCst);
             *token = None;
         }
         gone
@@ -257,7 +283,11 @@ pub fn login(token: &str, remember: bool) -> Result<Option<&'static str>, String
     let mut read = lock(&REMEMBERED.read);
     *read = true;
     REMEMBERED.expired.store(false, Ordering::SeqCst);
-    *lock(token_store()) = Some(token.clone());
+    {
+        let mut kept = lock(token_store());
+        RESTORED.store(false, Ordering::SeqCst);
+        *kept = Some(token.clone());
+    }
     let Some(store) = secret_store() else { return Ok(remember.then_some(NO_STORE)) };
     let kept = REMEMBERED.kept.load(Ordering::SeqCst);
     if remember && store.save(ACCOUNT, &Secret::new(token)).is_ok() {
@@ -283,7 +313,11 @@ pub fn logout() -> Result<(), &'static str> {
     let mut read = lock(&REMEMBERED.read);
     *read = true;
     REMEMBERED.expired.store(false, Ordering::SeqCst);
-    *lock(token_store()) = None;
+    {
+        let mut kept = lock(token_store());
+        RESTORED.store(false, Ordering::SeqCst);
+        *kept = None;
+    }
     // Deleted even when this session didn't read it: forgetting is asked for. A system without
     // a credential store had nowhere to keep one, unless this session saw it there.
     match secret_store().map_or(Ok(()), |store| store.delete(ACCOUNT)) {
@@ -890,6 +924,40 @@ mod tests {
     fn remembered_tokens() {
         use rustgis_data::secrets::{MemorySecrets, SecretError};
         let store = Arc::new(MemorySecrets::new());
+
+        // Reading the remembered token is told apart from a login, a replacement or a logout.
+        relaunch(&store);
+        login(LASTING, true).unwrap();
+        relaunch(&store);
+        let before = account_identity().unwrap();
+        assert!(!before.restored_since());
+        assert_eq!(restore(), Restored::Token);
+        assert!(!before.is_current() && before.restored_since());
+        assert!(account_identity().unwrap().is_current(), "a snapshot taken after the read is current");
+        for change in [|| drop(login("synthetic-typed", false)), || set_token(Some("synthetic-typed")).unwrap()] {
+            relaunch(&store);
+            login(LASTING, true).unwrap();
+            relaunch(&store);
+            let before = account_identity().unwrap();
+            assert_eq!(restore(), Restored::Token);
+            change();
+            assert!(!before.is_current() && !before.restored_since());
+        }
+        // A logout puts the identity back as it was: current, with nothing to say.
+        relaunch(&store);
+        login(LASTING, true).unwrap();
+        relaunch(&store);
+        let before = account_identity().unwrap();
+        assert_eq!(restore(), Restored::Token);
+        logout().unwrap();
+        assert!(before.is_current() && !before.restored_since());
+        // Login or logout first leaves nothing to restore.
+        relaunch(&store);
+        let before = account_identity().unwrap();
+        login(LASTING, true).unwrap();
+        assert_eq!(restore(), Restored::Nothing);
+        assert!(!before.is_current() && !before.restored_since());
+        relaunch(&store);
 
         // Remembered, then read back by the next run's first request to a data host only.
         relaunch(&store);

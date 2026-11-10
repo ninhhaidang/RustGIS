@@ -82,6 +82,7 @@ pub fn opt_in(
     });
     let store: Arc<dyn SecretStore> = Arc::new(store);
     crate::render::rustgis_tiles::earthdata::set_secret_store(Some(store.clone()));
+    s.saved_secrets_opted_in = true;
     use_saved_secrets(s, &prefs, store);
     prefs
 }

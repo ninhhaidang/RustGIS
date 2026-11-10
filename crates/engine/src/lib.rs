@@ -853,6 +853,9 @@ pub struct Session {
     /// Set by [`Session::run_leaving_downloads`]: `layer.addUrl` leaves what it would wait for
     /// to the front end ([`Session::request_url`]), as in the browser.
     leave_downloads: bool,
+    /// Set by [`prefs::opt_in`]: the command line and Python read the remembered Earthdata token
+    /// for a command that names a data host, before it binds its accounts.
+    saved_secrets_opted_in: bool,
     /// Plugin commands waiting for their `host.fetch` answers, or the downloads their
     /// `layer.addUrl` left to the app, to run again.
     pub(crate) plugin_retries: Vec<cmd::plugins::fetch::Retry>,
@@ -1198,6 +1201,7 @@ impl Session {
             queue_gp_files: false,
             request_only: false,
             leave_downloads: false,
+            saved_secrets_opted_in: false,
             plugin_retries: Vec::new(),
             url_waits: cmd::plugins::fetch::UrlWaits::default(),
             next_request: 0,

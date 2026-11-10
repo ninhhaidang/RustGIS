@@ -600,8 +600,13 @@ impl Host for Bridge<'_> {
                 // The address, and what the plugin answers, can carry what it read from the project.
                 self.need(Permission::Network, "fetch from the web")?;
                 let c = self.s.continuation()?;
+                // Says why, where the still below would only cancel.
+                c.check()?;
+                let after = c.clone();
                 let still = Arc::new(move || c.check().is_ok());
+                // A restore during the fetch ends it as the still's generic cancellation: say why.
                 crate::render::rustgis_tiles::cache::with_still(still, || self.fetches.fetch(params))
+                    .map_err(|e| after.check().err().unwrap_or(e))
             }
             _ if op.starts_with("host.") => Err(format!("unknown request '{op}'")),
             _ => self.command(op, params),

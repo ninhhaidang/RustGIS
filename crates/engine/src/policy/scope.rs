@@ -24,6 +24,10 @@ impl RuntimeAccounts {
     pub(super) fn is_current(&self) -> bool {
         self.arcgis.is_current() && self.earthdata.is_current() && self.web.is_current()
     }
+    /// Whether the only account that changed is Earthdata's, by its remembered token being read.
+    pub(super) fn restored_since(&self) -> bool {
+        self.arcgis.is_current() && self.web.is_current() && self.earthdata.restored_since()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
