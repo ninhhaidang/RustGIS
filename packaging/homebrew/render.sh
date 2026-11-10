@@ -53,7 +53,7 @@ cask "rustgis" do
   desc "GIS platform"
   homepage "https://rustgis.app/"
 
-  depends_on macos: :big_sur
+  depends_on :macos
 
   app "RustGIS.app"
 
