@@ -113,6 +113,11 @@ or other WKT:
   rotations could be off by a centimetre.
 - A UTM name (`WGS_1984_UTM_Zone_31N`) gives its EPSG code only when the parameters are that
   zone's.
+- Transverse Mercator (South Orientated), the method GDAL and Esri write South Africa's Lo grids
+  with, counts westings and southings, and is read so, its false easting and northing as a false
+  westing and southing. Read from its parameters, a system declaring other axes is refused; one
+  with an EPSG code (EPSG:2048, say) is read by the code, as the code defines it, whatever axes
+  its WKT declares.
 - Projected axes pointing west or south, as in South Africa's Lo grids, are read as such, or
   refused where they can't be (Web Mercator, Krovak, sinusoidal, or such axes declared northing
   first, as in Austria's Ferro grids).

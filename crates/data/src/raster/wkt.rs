@@ -568,6 +568,7 @@ enum Measure {
 /// WKT2's projection methods by EPSG code and EPSG name, with the WKT1 name they're read by.
 const METHODS: &[(u32, &str, &str)] = &[
     (9807, "TRANSVERSE_MERCATOR", "Transverse_Mercator"),
+    (9808, "TRANSVERSE_MERCATOR_SOUTH_ORIENTATED", "Transverse_Mercator_South_Orientated"),
     (9804, "MERCATOR_VARIANT_A", "Mercator_1SP"),
     (1026, "MERCATOR_SPHERICAL", "Mercator_Spherical"),
     (9840, "ORTHOGRAPHIC", "Orthographic"),
@@ -979,7 +980,7 @@ fn is_utm_zone(p: &Node, method: &str, code: u32) -> bool {
         && axis_flip(p) == Ok(None)
         && near(get(&CENTRAL_MERIDIAN, 0.0), utm_central_meridian(f64::from(zone)))
         && near(get(&LATITUDE_OF_ORIGIN, 0.0), 0.0)
-        && near(get(&["SCALE_FACTOR"], 1.0), UTM_SCALE)
+        && near(get(&SCALE_FACTOR, 1.0), UTM_SCALE)
         && near(get(&["FALSE_EASTING"], 0.0), UTM_FALSE_EASTING)
         && near(get(&["FALSE_NORTHING"], 0.0), if north { 0.0 } else { UTM_SOUTH_FALSE_NORTHING })
 }
@@ -1051,6 +1052,9 @@ fn parameter(params: &[(String, f64)], names: &[&str]) -> Option<f64> {
 /// with EPSG's parameter names: `Latitude of natural origin`.)
 const LATITUDE_OF_ORIGIN: [&str; 3] = ["LATITUDE_OF_ORIGIN", "LATITUDE_OF_CENTER", "LATITUDE_OF_NATURAL_ORIGIN"];
 const CENTRAL_MERIDIAN: [&str; 4] = ["CENTRAL_MERIDIAN", "LONGITUDE_OF_CENTER", "LONGITUDE_OF_ORIGIN", "LONGITUDE_OF_NATURAL_ORIGIN"];
+/// The names a scale factor goes by (`Scale factor at natural origin`, as GDAL writes some methods
+/// in Esri WKT).
+const SCALE_FACTOR: [&str; 2] = ["SCALE_FACTOR", "SCALE_FACTOR_AT_NATURAL_ORIGIN"];
 
 /// PROJ's `+axis` for a projected system's own axes when they point west or south (South Africa's
 /// Lo grids count westings and southings): `wnu`, `esu` or `wsu`, in the easting-then-northing
@@ -1128,7 +1132,7 @@ fn custom(p: &Node, method: &str) -> Result<Crs, String> {
     let lon0 = get(&CENTRAL_MERIDIAN).unwrap_or(0.0);
     let x0 = get(&["FALSE_EASTING"]).unwrap_or(0.0) * to_m;
     let y0 = get(&["FALSE_NORTHING"]).unwrap_or(0.0) * to_m;
-    let k0 = get(&["SCALE_FACTOR"]).unwrap_or(1.0);
+    let k0 = get(&SCALE_FACTOR).unwrap_or(1.0);
     let lat1 = get(&["STANDARD_PARALLEL_1"]);
     let lat2 = get(&["STANDARD_PARALLEL_2"]);
     let at = format!("+lon_0={lon0} +x_0={x0} +y_0={y0}");
@@ -1159,6 +1163,14 @@ fn custom(p: &Node, method: &str) -> Result<Crs, String> {
     };
     let proj = match method {
         "TRANSVERSE_MERCATOR" | "GAUSS_KRUGER" => format!("+proj=tmerc +lat_0={lat0} +k_0={k0} {at}"),
+        // South Orientated (EPSG's method 9808, South Africa's Lo grids) counts westings and
+        // southings: the same projection, given `+axis=wsu` below. Its false easting and northing
+        // add to the westing and southing at the natural origin (EPSG Guidance Note 7-2: a false
+        // westing and southing), and `+axis=wsu` negates what `+x_0` and `+y_0` give, so they go
+        // in negated (`0.0 -` keeps a zero one from reading `-0`).
+        "TRANSVERSE_MERCATOR_SOUTH_ORIENTATED" => {
+            format!("+proj=tmerc +lat_0={lat0} +k_0={k0} +lon_0={lon0} +x_0={} +y_0={}", 0.0 - x0, 0.0 - y0)
+        }
         // proj4rs supports the Swiss special case and, since 0.3, the azimuth forms in general;
         // the two-point one (no AZIMUTH) isn't supported. The Swiss system is the azimuth-90°
         // Hotine on a Swiss datum — the one azimuth the guard below refuses, because an oblique
@@ -1260,7 +1272,18 @@ fn custom(p: &Node, method: &str) -> Result<Crs, String> {
         _ => return Err(format!("the {} projection isn't supported", p.child("PROJECTION").map_or("", Node::title))),
     };
     let units = if (to_m - 1.0).abs() > 1e-12 { format!("+to_meter={to_m}") } else { "+units=m".to_string() };
-    let axis = match axis_flip(p)? {
+    let mut flip = axis_flip(p)?;
+    // A South Orientated system's westings and southings are its method's (PROJ writes it as
+    // `+axis=wsu`). Axes that say so agree and no axes leave it to the method; any others
+    // contradict it, and which one is meant can't be told.
+    if method == "TRANSVERSE_MERCATOR_SOUTH_ORIENTATED" {
+        let declared = p.nodes().any(|a| a.name.eq_ignore_ascii_case("AXIS"));
+        if flip != Some("wsu") && (flip.is_some() || declared) {
+            return Err("Transverse Mercator (South Orientated) with axes other than west and south isn't supported".into());
+        }
+        flip = Some("wsu");
+    }
+    let axis = match flip {
         // The projections RustGIS computes itself (sinusoidal, and equidistant cylindrical on an
         // ellipsoid) don't take `+axis`, and `Crs::custom` would refuse their definition.
         Some(_) if proj.starts_with("+proj=sinu") || (proj.starts_with("+proj=eqc") && !sphere) => return Err(REVERSED_AXES.into()),
@@ -2545,6 +2568,53 @@ pub(crate) mod tests {
             assert!(note.is_none(), "{what}: {note:?}");
             let ll = crs.transformer().unwrap().to_lonlat(xy).unwrap();
             assert!(metres_apart(ll, lonlat) < 0.001, "{what}: {} m off", metres_apart(ll, lonlat));
+        }
+    }
+
+    /// Transverse Mercator (South Orientated), EPSG's method 9808, as PROJ 9.8.1 writes South
+    /// Africa's Lo19 (EPSG:2048) without its code: in WKT1 (GDAL's, without axes), in Esri WKT
+    /// (with EPSG's parameter names) and in WKT2 (westings and southings), it is PROJ's
+    /// `+proj=tmerc +axis=wsu`, and places the point where PROJ does. Axes that contradict the
+    /// method are refused (#1693).
+    #[test]
+    fn transverse_mercator_south_orientated_is_read() {
+        const GDAL: &str = r#"PROJCS["Hartebeesthoek94 / Lo19",GEOGCS["Hartebeesthoek94",DATUM["Hartebeesthoek94",SPHEROID["WGS 84",6378137,298.257223563,AUTHORITY["EPSG","7030"]],AUTHORITY["EPSG","6148"]],PRIMEM["Greenwich",0,AUTHORITY["EPSG","8901"]],UNIT["degree",0.0174532925199433,AUTHORITY["EPSG","9122"]],AUTHORITY["EPSG","4148"]],PROJECTION["Transverse_Mercator_South_Orientated"],PARAMETER["latitude_of_origin",0],PARAMETER["central_meridian",19],PARAMETER["scale_factor",1],PARAMETER["false_easting",0],PARAMETER["false_northing",0],UNIT["metre",1,AUTHORITY["EPSG","9001"]]]"#;
+        const ESRI: &str = r#"PROJCS["Hartebeesthoek94_Lo19",GEOGCS["GCS_Hartebeesthoek_1994",DATUM["D_Hartebeesthoek_1994",SPHEROID["WGS_1984",6378137.0,298.257223563]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Transverse_Mercator_South_Orientated"],PARAMETER["Latitude of natural origin",0.0],PARAMETER["Longitude of natural origin",19.0],PARAMETER["Scale factor at natural origin",1.0],PARAMETER["False easting",0.0],PARAMETER["False northing",0.0],UNIT["Meter",1.0]]"#;
+        const WKT2: &str = r#"PROJCRS["Hartebeesthoek94 / Lo19",BASEGEOGCRS["Hartebeesthoek94",DATUM["Hartebeesthoek94",ELLIPSOID["WGS 84",6378137,298.257223563,LENGTHUNIT["metre",1]]],PRIMEM["Greenwich",0,ANGLEUNIT["degree",0.0174532925199433]],ID["EPSG",4148]],CONVERSION["South African Survey Grid zone 19",METHOD["Transverse Mercator (South Orientated)",ID["EPSG",9808]],PARAMETER["Latitude of natural origin",0,ANGLEUNIT["degree",0.0174532925199433],ID["EPSG",8801]],PARAMETER["Longitude of natural origin",19,ANGLEUNIT["degree",0.0174532925199433],ID["EPSG",8802]],PARAMETER["Scale factor at natural origin",1,SCALEUNIT["unity",1],ID["EPSG",8805]],PARAMETER["False easting",0,LENGTHUNIT["metre",1],ID["EPSG",8806]],PARAMETER["False northing",0,LENGTHUNIT["metre",1],ID["EPSG",8807]]],CS[Cartesian,2],AXIS["westing (Y)",west,ORDER[1],LENGTHUNIT["metre",1]],AXIS["southing (X)",south,ORDER[2],LENGTHUNIT["metre",1]]]"#;
+        let proj4 = |wkt: &str| crs_from_wkt(wkt).map(|c| c.custom_def().map(|d| d.proj4.clone()).unwrap_or_default());
+        // PROJ 9.8.1 places 46 246.675 m, 3 752 681.8425 m on Lo19 at 18.5°E 33.9°S.
+        let (xy, lonlat) = LO19_POINT;
+        // WKT2 may name the method otherwise: its code says which it is.
+        let by_code = WKT2.replace("Transverse Mercator (South Orientated)", "TM (South Orientated)");
+        for (what, wkt) in [("WKT1", GDAL), ("Esri", ESRI), ("WKT2", WKT2), ("WKT2 by code", &by_code)] {
+            let p = proj4(wkt).unwrap_or_else(|e| panic!("{what}: {e}"));
+            assert!(p.starts_with("+proj=tmerc ") && p.contains(" +axis=wsu "), "{what}: {p}");
+            let ll = crs_from_wkt(wkt).unwrap().transformer().unwrap().to_lonlat(xy).unwrap();
+            assert!(metres_apart(ll, lonlat) < 0.001, "{what}: {ll:?} is {} m off", metres_apart(ll, lonlat));
+        }
+        // Axes that count east and north (or east and south) contradict the method: refused.
+        for axes in [r#"AXIS["Easting",EAST],AXIS["Northing",NORTH]"#, r#"AXIS["Easting",EAST],AXIS["Southing",SOUTH]"#] {
+            let wkt = GDAL.replace(r#"AUTHORITY["EPSG","9001"]]]"#, &format!(r#"AUTHORITY["EPSG","9001"]],{axes}]"#));
+            assert!(wkt.contains(axes) && crs_from_wkt(&wkt).is_err(), "{wkt}");
+        }
+        // The scale factor under EPSG's name, as GDAL writes this method in Esri WKT, is read.
+        let scaled = ESRI.replace(r#""Scale factor at natural origin",1.0"#, r#""Scale factor at natural origin",0.9999"#);
+        assert!(proj4(&scaled).unwrap().contains("+k_0=0.9999 "), "{scaled}");
+        // The false easting and northing add to the westing and southing at the natural origin
+        // (EPSG's method 9808: a false westing and southing). With 1000 m and 2000 m, the origin,
+        // 19°E on the equator, is at 1000 m, 2000 m, and the point 1000 m and 2000 m further on.
+        // (PROJ 9.8.1 refuses this method with offsets other than 0.)
+        let offset = GDAL
+            .replace(r#""false_easting",0]"#, r#""false_easting",1000]"#)
+            .replace(r#""false_northing",0]"#, r#""false_northing",2000]"#);
+        assert!(offset.contains(r#""false_easting",1000]"#) && offset.contains(r#""false_northing",2000]"#), "{offset}");
+        let t = crs_from_wkt(&offset).unwrap().transformer().unwrap();
+        for (what, at, ll) in [
+            ("the natural origin", Coord::new(1000.0, 2000.0), Coord::new(19.0, 0.0)),
+            ("the point", Coord::new(xy.x + 1000.0, xy.y + 2000.0), lonlat),
+        ] {
+            let got = t.to_lonlat(at).unwrap();
+            assert!(metres_apart(got, ll) < 0.001, "{what}: {got:?} is {} m off", metres_apart(got, ll));
         }
     }
 
