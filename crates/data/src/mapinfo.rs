@@ -403,7 +403,7 @@ pub fn read(mif: &str, mid: Option<&str>, name: &str) -> Result<(Dataset, ReadRe
             .fields
             .iter()
             .enumerate()
-            .map(|(c, f)| Value::parse(row.and_then(|r| r.get(c)).map(String::as_str).unwrap_or(""), f.ty))
+            .map(|(c, f)| Value::parse_source(row.and_then(|r| r.get(c)).map(String::as_str).unwrap_or(""), f.ty))
             .collect();
         ds.push_next(g, attrs);
     }
@@ -420,6 +420,17 @@ mod tests {
 
     const MIF: &str = "Version 300\nCharset \"WindowsLatin1\"\nDelimiter \",\"\nCoordSys Earth Projection 1, 104\nColumns 3\n  name Char(20)\n  pop Integer\n  area Decimal(10,2)\nData\n\nPoint 10 20\n    Symbol (35,0,12)\nPline 3\n10 20\n11 21\n12 20\n    Pen (1,2,0)\nRegion 2\n  5\n0 0\n10 0\n10 10\n0 10\n0 0\n  4\n2 2\n4 2\n3 4\n2 2\n    Pen (1,2,0)\n    Brush (2,16777215,16777215)\n    Center 5 5\nPline Multiple 2\n  2\n0 0\n1 1\n  2\n2 2\n3 3\nText \"Hello world\"\n 1 1 2 2\nNone\nRect 0 0 1 1\n";
     const MID: &str = "\"A\",1,1.5\n\"B, c\",2,2.5\n\"C\",3,3.5\n\"D\",4,4.5\n\"E\",5,5.5\n\"F\",6,6.5\n\"G\",7,7.5\n";
+
+    #[test]
+    fn integer_source_numbers_are_not_truncated_or_clamped() {
+        let mif = "Version 300\nCoordSys Earth Projection 1, 104\nColumns 1\n n Integer\nData\nPoint 0 0\nPoint 1 1\nPoint 2 2\n";
+        let (ds, report) = read(mif, Some("2.7\n1e30\n3\n"), "numbers").unwrap();
+        assert_eq!(ds.fields[0].ty, FieldType::Integer);
+        assert_eq!(ds.value(0, 0), &Value::Float(2.7));
+        assert_eq!(ds.value(1, 0), &Value::Float(1e30));
+        assert_eq!(ds.value(2, 0), &Value::Int(3));
+        assert!(report.messages.is_empty(), "{:?}", report.messages);
+    }
 
     #[test]
     fn widths_with_spaces_and_bad_mid_rows() {

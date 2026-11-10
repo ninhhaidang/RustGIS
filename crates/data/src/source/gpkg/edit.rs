@@ -267,7 +267,9 @@ impl EditTable {
                 let field = fields.get(i).ok_or_else(|| self.shape_error())?;
                 let old = row.get(c).ok_or_else(|| self.shape_error())?;
                 let attr = f.attrs.get(i).unwrap_or(&Value::Null);
-                if value(ValueRef::from(old), field.ty) != *attr {
+                let previous = value(ValueRef::from(old), field.ty);
+                let same_nan = matches!((&previous, attr), (Value::Float(a), Value::Float(b)) if a.is_nan() && b.is_nan());
+                if previous != *attr && !same_nan {
                     sets.push(format!("{} = ?", quote(columns.get(c).ok_or_else(|| self.shape_error())?)));
                     args.push(sql_value(attr, field.ty));
                 }
@@ -793,6 +795,32 @@ mod tests {
     use rustgis_geom::Coord;
 
     const REVISION: &str = "2026-01-01T00:00:00.000Z";
+
+    #[test]
+    fn gpkg_editing_another_field_preserves_an_unchanged_nan() {
+        let (_dir, path) = fixture();
+        let conn = Connection::open(&path).unwrap();
+        conn.execute("UPDATE roads SET lanes = 'NaN'", []).unwrap();
+        let table = EditTable::open(&path, "roads").unwrap();
+        let read = table.read_editable(MAX_EDITABLE).unwrap();
+        let lane = table.info().fields.iter().position(|f| f.name == "lanes").unwrap();
+        let name = table.info().fields.iter().position(|f| f.name == "name").unwrap();
+        assert!(matches!(read.features[0].attrs[lane], Value::Float(v) if v.is_nan()));
+        let mut changed = read.features[0].clone();
+        changed.attrs[name] = Value::Text("edited".into());
+        let edits = Edits { updates: vec![(changed, read.versions[0].1)], ..Default::default() };
+        let saved = table.save(&edits, &table.info().fields, std::iter::empty(), &read.revision).unwrap().unwrap();
+        assert_eq!(saved.changes.updated, 1);
+        let stored: (String, String) = conn.query_row("SELECT name, lanes FROM roads", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!(stored, ("edited".into(), "NaN".into()));
+        // An explicit clear still writes SQL NULL.
+        let read = table.read_editable(MAX_EDITABLE).unwrap();
+        let mut cleared = read.features[0].clone();
+        cleared.attrs[lane] = Value::Null;
+        let edits = Edits { updates: vec![(cleared, read.versions[0].1)], ..Default::default() };
+        table.save(&edits, &table.info().fields, std::iter::empty(), &saved.revision).unwrap().unwrap();
+        assert!(conn.query_row("SELECT lanes IS NULL FROM roads", [], |r| r.get::<_, bool>(0)).unwrap());
+    }
 
     #[test]
     fn gpkg_insert_revision_is_durable_and_strictly_advances() {

@@ -1888,6 +1888,7 @@ impl Durable for Table {
         if let Some(v) = provenance {
             p.string(Leaf::Table, v, true, rustgis_map::paths::is_local(v));
         }
+        p.count_numbers(dataset);
     }
 
     /// Resolves a prepared location through owned fields, without allocation or policy.

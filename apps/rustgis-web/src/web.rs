@@ -414,9 +414,7 @@ impl Embed {
             (true, _) => match app.session.peer_text(rustgis_engine::Peer::Embedder) {
                 Ok((text, report)) => {
                     self.answer(&crate::embed::project(&text));
-                    for notice in report.notices() {
-                        app.session.notify(notice, false);
-                    }
+                    report.notify(&mut app.session);
                 }
                 Err(e) => app.session.notify(e, true),
             },

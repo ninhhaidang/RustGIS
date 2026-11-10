@@ -330,6 +330,18 @@ pub struct Dataset {
     pub windowed: bool,
 }
 
+impl Dataset {
+    /// How many of its values a saved project holds as null, not as they are: numbers that aren't
+    /// finite (NaN, infinity), which JSON can't write ([`Value`]'s `Serialize`). None for a window
+    /// onto a source, whose rows aren't saved.
+    pub fn unsaved_numbers(&self) -> usize {
+        if self.windowed {
+            return 0;
+        }
+        self.features.iter().flat_map(|f| &f.attrs).filter(|v| v.is_non_finite()).count()
+    }
+}
+
 impl Serialize for Dataset {
     /// Saves CRS recovery and dropped Z/M state with the dataset, but omits disposable streamed rows.
     fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {

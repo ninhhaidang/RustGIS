@@ -585,7 +585,7 @@ pub fn read(file_name: &str, bytes: &[u8]) -> Result<Vec<(Dataset, ReadReport)>>
                 let e = g.extent();
                 outside |= e.min_x < -180.0 || e.max_x > 180.0 || e.min_y < -90.0 || e.max_y > 90.0;
             }
-            let row = ds.fields.iter().map(|f| attrs.get(&f.name).map(|v| Value::parse(v, f.ty)).unwrap_or_default()).collect();
+            let row = ds.fields.iter().map(|f| attrs.get(&f.name).map(|v| Value::parse_source(v, f.ty)).unwrap_or_default()).collect();
             ds.push_next(g, row);
         }
         ds.geometry_type = crate::io::dominant_type(&ds);

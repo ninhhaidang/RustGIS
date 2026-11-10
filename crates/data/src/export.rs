@@ -9,7 +9,7 @@ use std::path::Path;
 use crate::io::{CsvWriter, GeoJsonWriter, GpkgTable, GpkgWritten, PROJECTED_FORMATS, check_projected, project_each, write_atomic_with};
 use crate::raster::Crs;
 use crate::source::FeatureSource;
-use crate::{DataError, Dataset, Feature, GeometryType, Result};
+use crate::{DataError, Dataset, Feature, Field, GeometryType, Result, Value};
 
 /// The feature storage one chunk of an export holds.
 const CHUNK_BYTES: usize = 32 << 20;
@@ -32,6 +32,8 @@ pub struct Exported {
     pub left_out: usize,
     /// Rows of the source that couldn't be read, so aren't in the export.
     pub skipped: usize,
+    /// Non-finite attributes written as null in GeoJSON or GeoPackage, counted over all chunks.
+    pub null_numbers: usize,
     /// Per field of the layer, values written as null because the field's type couldn't hold
     /// them (GeoParquet; empty for the other formats). See
     /// [`crate::source::parquet::unfit_note`].
@@ -95,9 +97,11 @@ fn write_chunks_to(
     let t = if crs == Crs::LonLat { None } else { Some(crs.transformer().map_err(DataError::Format)?) };
     let mut total = 0usize;
     let mut skipped = 0usize;
+    let mut null_numbers = 0usize;
     let mut feed = |add: &mut dyn FnMut(&[Feature]) -> Result<()>| -> Result<()> {
         // A GeoPackage export that starts again feeds the features again, and counts them again.
         total = 0;
+        null_numbers = 0;
         // The writers count the features; a source that doesn't know how many leaves the total at 0.
         crate::progress::begin(src.info().count.map_or(0, |n| usize::try_from(n).unwrap_or(usize::MAX)));
         let batch = src.visit_chunks(None, bytes, &mut |mut chunk| {
@@ -106,6 +110,7 @@ fn write_chunks_to(
                 project_each(&mut chunk, t, crs, false)?;
             }
             total = total.saturating_add(chunk.len());
+            null_numbers = null_numbers.saturating_add(numbers_written_as_null(&chunk, &layer.fields, &ext));
             add(&chunk)
         })?;
         skipped = batch.skipped;
@@ -146,7 +151,25 @@ fn write_chunks_to(
             Ok::<_, DataError>(0)
         })?,
     };
-    Ok((Exported { written: total.saturating_sub(left_out), left_out, skipped, unfit }, table))
+    Ok((Exported { written: total.saturating_sub(left_out), left_out, skipped, null_numbers, unfit }, table))
+}
+
+/// Counts attributes a GeoJSON or GeoPackage writer replaces with null. Other formats have
+/// their own loss reports or keep the number as text. Only fields the writer exports count.
+pub fn numbers_written_as_null(features: &[Feature], fields: &[Field], ext: &str) -> usize {
+    if !matches!(ext, "geojson" | "json" | "gpkg") {
+        return 0;
+    }
+    features
+        .iter()
+        .flat_map(|f| f.attrs.iter().zip(fields))
+        .filter(|(v, field)| {
+            v.is_non_finite()
+                || (ext == "gpkg"
+                    && field.ty.is_numeric()
+                    && matches!(v, Value::Text(t) if Value::parse_source(t, field.ty).is_non_finite()))
+        })
+        .count()
 }
 
 /// The kind of a source's first geometry, read up to it; `None` for a source without any (read

@@ -40,6 +40,7 @@ pub fn commands() -> Vec<C> {
             let gpkg = gpkg_table(p, &ext)?;
             let t = s.project.tables.get(s.table_index(p)?).ok_or("no such table")?;
             let default = t.dataset.name.clone();
+            let null_numbers = rustgis_data::export::numbers_written_as_null(&t.dataset.features, &t.dataset.fields, &ext);
             // Tables may retain geometry and its import losses, just as feature layers do.
             let notes = rustgis_data::export_notes([(&t.dataset, t.dataset.extent())], path, Crs::LonLat);
             let mut dbf_notes = Vec::new();
@@ -59,6 +60,7 @@ pub fn commands() -> Vec<C> {
             for note in notes.into_iter().chain(dbf_notes) {
                 s.notify(note, false);
             }
+            notify_null_numbers(s, path, null_numbers);
             let mut out = json!({"path": path});
             report_table(s, path, &gpkg, &default, table, &mut out);
             Ok(out)
@@ -625,18 +627,19 @@ fn write_layer(l: &rustgis_map::Layer, path: &str, asked: Option<Crs>, gpkg: Gpk
         return Err(format!("{path}: {e}"));
     }
     let parquet = matches!(ext.as_str(), "parquet" | "geoparquet");
-    let (written, left_out, skipped, table, unfit) = match &chunks {
+    let (written, left_out, skipped, table, unfit, null_numbers) = match &chunks {
         Some((src, layer)) => {
             let (e, table) =
                 rustgis_data::export::write_source_to(src.as_ref(), layer, Path::new(&path), crs, &gpkg).map_err(|e| e.to_string())?;
             // Counted as the chunks were written, as the layer holds none of them.
             let unfit = rustgis_data::source::parquet::unfit_note(&layer.fields, &e.unfit, path);
-            (e.written, e.left_out, e.skipped, table, unfit)
+            (e.written, e.left_out, e.skipped, table, unfit, e.null_numbers)
         }
         None => {
             let (left_out, table) = rustgis_data::io::write_path_to(ds, Path::new(&path), crs, &gpkg).map_err(|e| e.to_string())?;
             let unfit = if parquet { rustgis_data::source::parquet::values_note(ds, path) } else { None };
-            (ds.features.len().saturating_sub(left_out), left_out, unread, table, unfit)
+            let null_numbers = rustgis_data::export::numbers_written_as_null(&ds.features, &ds.fields, &ext);
+            (ds.features.len().saturating_sub(left_out), left_out, unread, table, unfit, null_numbers)
         }
     };
     // A streamed layer's extent is its whole source's.
@@ -668,12 +671,17 @@ fn write_layer(l: &rustgis_map::Layer, path: &str, asked: Option<Crs>, gpkg: Gpk
     let written_path = Some(path.to_string());
     let path = path.to_string();
     let default = ds.name.clone();
-    let then: Option<super::exports::Then> = table.map(|t| {
-        Box::new(move |s: &mut Session, out: &mut Value| {
-            report_table(s, &path, &gpkg, &default, Some(t), out);
+    let then: Option<super::exports::Then> = if table.is_some() || null_numbers > 0 {
+        Some(Box::new(move |s: &mut Session, out: &mut Value| {
+            notify_null_numbers(s, &path, null_numbers);
+            if let Some(t) = table {
+                report_table(s, &path, &gpkg, &default, Some(t), out);
+            }
             Ok(())
-        }) as super::exports::Then
-    });
+        }) as super::exports::Then)
+    } else {
+        None
+    };
     Ok(Wrote {
         answer,
         notes: said,
@@ -682,6 +690,20 @@ fn write_layer(l: &rustgis_map::Layer, path: &str, asked: Option<Crs>, gpkg: Gpk
         #[cfg(not(target_arch = "wasm32"))]
         owner: None,
     })
+}
+
+/// Reports numeric loss after the file has been written, keeping the output path literal in
+/// translated interface text. A clean export emits no loss notice.
+fn notify_null_numbers(s: &mut Session, path: &str, count: usize) {
+    if count > 0 {
+        s.notify_text(
+            crate::notice_text::NoticeText::format(
+                "{path}: {count} attribute value(s) that aren't finite numbers (NaN or infinity) were written as null",
+                [("path", path.to_string().into()), ("count", count.to_string().into())],
+            ),
+            false,
+        );
+    }
 }
 
 /// Whether `a` and `b` are the same existing file.

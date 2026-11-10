@@ -1151,7 +1151,7 @@ fn sql_value(v: &Value, ty: FieldType) -> rusqlite::types::Value {
         (Value::Float(_), _) => Sql::Null,
         (Value::Bool(b), _) => Sql::Integer(i64::from(*b)),
         (Value::Text(s), FieldType::Text) => Sql::Text(s.clone()),
-        (v, ty) => match Value::parse(&v.to_string(), ty) {
+        (v, ty) => match Value::parse_source(&v.to_string(), ty) {
             Value::Int(x) => Sql::Integer(x),
             Value::Float(x) if x.is_finite() => Sql::Real(x),
             Value::Bool(b) => Sql::Integer(i64::from(b)),
@@ -1169,7 +1169,7 @@ fn value(v: ValueRef<'_>, ty: FieldType) -> Value {
         (ValueRef::Real(f), FieldType::Integer) if f.fract() == 0.0 && f.abs() < 9e15 => Value::Int(f as i64),
         (ValueRef::Real(f), _) => Value::Float(f),
         (ValueRef::Text(t), FieldType::Text) => Value::Text(String::from_utf8_lossy(t).into_owned()),
-        (ValueRef::Text(t), ty) => Value::parse(&String::from_utf8_lossy(t), ty),
+        (ValueRef::Text(t), ty) => Value::parse_source(&String::from_utf8_lossy(t), ty),
         (ValueRef::Blob(_), _) => Value::Null,
     }
 }

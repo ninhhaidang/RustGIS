@@ -1,7 +1,7 @@
 //! Deferred interface text. The engine keeps English diagnostics; a front end translates
 //! trusted templates while treating project names and other file contents as literal data.
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum NoticeText {
     Plain(String),
     Format { key: &'static str, args: Vec<(&'static str, NoticeText)> },

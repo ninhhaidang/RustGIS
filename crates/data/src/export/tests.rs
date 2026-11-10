@@ -130,11 +130,42 @@ fn a_streamed_export_writes_what_a_whole_export_writes() {
                 let what = format!("{format} to .{ext} in {}", crs.label());
                 let unfit = streamed.unfit.clone();
                 assert!(unfit.iter().all(|n| *n == 0), "{what}: {unfit:?}");
-                assert_eq!(streamed, Exported { written: whole.features.len() - left_out, left_out, skipped: 0, unfit }, "{what}");
+                assert_eq!(
+                    streamed,
+                    Exported { written: whole.features.len() - left_out, left_out, skipped: 0, null_numbers: 0, unfit },
+                    "{what}"
+                );
                 let (a, b) = (read_back(&a), read_back(&b));
                 assert_eq!((&a.fields, a.geometry_type, a.crs), (&b.fields, b.geometry_type, b.crs), "{what}");
                 assert_eq!(a.features, b.features, "{what}");
                 assert!(!a.features.is_empty(), "{what}");
+            }
+        }
+    }
+}
+
+/// Every chunk contributes to the loss count; a finite export remains quiet.
+#[test]
+fn nonfinite_numbers_are_counted_across_export_chunks() {
+    let d = folder("nonfinite");
+    for ext in ["geojson", "gpkg"] {
+        for lossy in [false, true] {
+            let mut ds = squares();
+            if lossy {
+                ds.features[0].attrs[2] = Value::Float(f64::NAN);
+                ds.features[1].attrs[2] = Value::Float(f64::INFINITY);
+            }
+            let src = Runs::new(&ds, 1);
+            let out = d.join(format!("numbers-{lossy}.{ext}"));
+            let exported = write_chunks_in(&src, &ds, &out, Crs::LonLat, 2048).unwrap();
+            assert_eq!(exported.null_numbers, if lossy { 2 } else { 0 });
+            let read = read_back(&out);
+            let share = read.field_index("share").unwrap();
+            if lossy {
+                assert_eq!(read.features[0].attrs[share], Value::Null);
+                assert_eq!(read.features[1].attrs[share], Value::Null);
+            } else {
+                assert_eq!(read.features[0].attrs[share], ds.features[0].attrs[2]);
             }
         }
     }

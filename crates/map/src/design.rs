@@ -121,6 +121,32 @@ pub struct Design {
 }
 
 impl Design {
+    /// Counts typed values written as Null in the saved design, including archived feature
+    /// snapshots, template/subtype defaults, domain codes and contingent combinations.
+    pub fn unsaved_numbers(&self) -> usize {
+        let mut count = 0;
+        for domain in &self.domains {
+            if let DomainKind::Coded(codes) = &domain.kind {
+                count += codes.iter().filter(|(value, _)| value.is_non_finite()).count();
+            }
+        }
+        if let Some(subtypes) = &self.subtypes {
+            count += subtypes.subtypes.iter().flat_map(|subtype| &subtype.defaults).filter(|(_, value)| value.is_non_finite()).count();
+        }
+        count += self.contingent.iter().flat_map(|set| &set.combos).flatten().filter(|value| value.is_non_finite()).count();
+        count += self.templates.iter().flat_map(|template| &template.defaults).filter(|(_, value)| value.is_non_finite()).count();
+        count += self
+            .archive
+            .iter()
+            .flatten()
+            .flat_map(|entry| [&entry.before, &entry.after])
+            .flatten()
+            .flat_map(|feature| &feature.attrs)
+            .filter(|value| value.is_non_finite())
+            .count();
+        count
+    }
+
     pub fn is_empty(&self) -> bool {
         *self == Design::default()
     }

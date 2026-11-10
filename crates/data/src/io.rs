@@ -1698,7 +1698,7 @@ pub(crate) fn read_rows(
         let attrs = columns
             .iter()
             .zip(&ds.fields)
-            .map(|(&i, f)| Value::parse(&unguard(r.get(i).map(|s| s.as_str()).unwrap_or("")), f.ty))
+            .map(|(&i, f)| Value::parse_source(&unguard(r.get(i).map(|s| s.as_str()).unwrap_or("")), f.ty))
             .collect();
         ds.push_next(geom, attrs);
     }
@@ -1837,7 +1837,7 @@ pub(crate) fn type_text_columns(ds: &mut Dataset, keep: &[&str]) {
             if let Some(v) = f.attrs.get_mut(i)
                 && let Value::Text(t) = v
             {
-                *v = if t.trim().is_empty() { Value::Null } else { Value::parse(t, ty) };
+                *v = if t.trim().is_empty() { Value::Null } else { Value::parse_source(t, ty) };
             }
         }
     }

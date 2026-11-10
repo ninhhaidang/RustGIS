@@ -42,7 +42,7 @@ impl Field {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 pub enum Value {
     #[default]
     Null,
@@ -52,7 +52,43 @@ pub enum Value {
     Bool(bool),
 }
 
+impl Serialize for Value {
+    /// As its variant, except that a number that isn't finite (NaN, infinity), which JSON can't
+    /// write, is written as null: JSON writes it as `null` in its place, which a number can't be
+    /// read from, so the file holding it wouldn't open. Saving says how many
+    /// ([`crate::Dataset::unsaved_numbers`]).
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Value::Float(f) if !f.is_finite() && s.is_human_readable() => s.serialize_unit_variant("Value", 0, "Null"),
+            Value::Null => s.serialize_unit_variant("Value", 0, "Null"),
+            Value::Int(i) => s.serialize_newtype_variant("Value", 1, "Int", i),
+            Value::Float(f) => s.serialize_newtype_variant("Value", 2, "Float", f),
+            Value::Text(t) => s.serialize_newtype_variant("Value", 3, "Text", t),
+            Value::Bool(b) => s.serialize_newtype_variant("Value", 4, "Bool", b),
+        }
+    }
+}
+
 impl Value {
+    /// Whether human-readable output must substitute Null for this numeric value.
+    pub fn is_non_finite(&self) -> bool {
+        matches!(self, Value::Float(value) if !value.is_finite())
+    }
+
+    /// Parses a typed numeric source field without truncating or clamping its numbers. Integer
+    /// text is kept as an integer when exact; other numeric text is kept as a float, as native
+    /// real source cells are. Non-finite values stay available until counted output conversion.
+    /// Interactive edits use [`Self::parse`] and refuse non-finite input at command ingress.
+    pub fn parse_source(text: &str, ty: FieldType) -> Value {
+        if ty.is_numeric()
+            && let Ok(number) = text.trim().parse::<f64>()
+            && (ty == FieldType::Double || text.trim().parse::<i64>().is_err())
+        {
+            return Value::Float(number);
+        }
+        Self::parse(text, ty)
+    }
+
     pub fn as_f64(&self) -> Option<f64> {
         match self {
             Value::Int(i) => Some(*i as f64),
@@ -87,17 +123,20 @@ impl Value {
             Value::Bool(b) => (*b).into(),
         }
     }
-    /// Parses user text into a value of `ty` (empty → Null).
+    /// Parses user text into a value of `ty` (empty → Null). Text a number field can't hold,
+    /// including a non-finite Double (`NaN`, `inf`), is Null.
     pub fn parse(text: &str, ty: FieldType) -> Value {
         let t = text.trim();
         if t.is_empty() || t.eq_ignore_ascii_case("<null>") {
             return Value::Null;
         }
         match ty {
-            FieldType::Integer => {
-                t.parse::<i64>().map(Value::Int).or_else(|_| t.parse::<f64>().map(|f| Value::Int(f as i64))).unwrap_or(Value::Null)
-            }
-            FieldType::Double => t.parse::<f64>().map(Value::Float).unwrap_or(Value::Null),
+            FieldType::Integer => t
+                .parse::<i64>()
+                .ok()
+                .or_else(|| t.parse::<f64>().ok().filter(|f| f.is_finite()).map(|f| f as i64))
+                .map_or(Value::Null, Value::Int),
+            FieldType::Double => t.parse::<f64>().ok().filter(|f| f.is_finite()).map_or(Value::Null, Value::Float),
             FieldType::Boolean => Value::Bool(matches!(t.to_ascii_lowercase().as_str(), "true" | "yes" | "1" | "y")),
             FieldType::Text => Value::Text(t.to_string()),
         }
@@ -385,6 +424,39 @@ pub fn sort_class_values(values: &mut Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Interactive Double text rejects non-finite numbers, while source parsing preserves them
+    /// for the counted output notice. Exact integer text stays integer; source decimals stay real.
+    #[test]
+    fn a_number_field_reads_text_that_is_not_a_finite_number_as_null() {
+        for text in ["NaN", "inf", "-inf", "infinity", "1e400"] {
+            assert_eq!(Value::parse(text, FieldType::Double), Value::Null, "{text}");
+            assert_eq!(Value::parse(text, FieldType::Integer), Value::Null, "{text}");
+            assert!(matches!(Value::parse_source(text, FieldType::Integer), Value::Float(f) if !f.is_finite()));
+            assert!(matches!(Value::parse_source(text, FieldType::Double), Value::Float(f) if !f.is_finite()));
+        }
+        assert_eq!(Value::parse("2.5", FieldType::Double), Value::Float(2.5));
+        assert_eq!(Value::parse("2.5", FieldType::Integer), Value::Int(2));
+        assert_eq!(Value::parse("1e3", FieldType::Integer), Value::Int(1000));
+        assert_eq!(Value::parse_source("3", FieldType::Integer), Value::Int(3));
+        assert_eq!(Value::parse_source("2.7", FieldType::Integer), Value::Float(2.7));
+        assert_eq!(Value::parse_source("1e30", FieldType::Integer), Value::Float(1e30));
+    }
+
+    /// JSON cannot represent non-finite numbers; output uses a null value with the save report.
+    /// Finite values keep their established encoding.
+    #[test]
+    fn a_value_that_is_not_finite_is_written_and_read_as_null() {
+        for f in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(serde_json::to_string(&Value::Float(f)).ok().as_deref(), Some(r#""Null""#));
+        }
+        for v in [Value::Null, Value::Int(-3), Value::Float(0.1), Value::Text("NaN".into()), Value::Bool(true)] {
+            let text = serde_json::to_string(&v).unwrap_or_default();
+            assert_eq!(serde_json::from_str::<Value>(&text).ok(), Some(v.clone()), "{text}");
+        }
+        assert_eq!(serde_json::to_string(&Value::Float(0.1)).ok().as_deref(), Some(r#"{"Float":0.1}"#), "the format is unchanged");
+        assert!(serde_json::from_str::<Value>(r#"{"Date":"2026-01-01"}"#).is_err_and(|e| e.to_string().contains("unknown variant")));
+    }
 
     fn sorted(values: &[&str]) -> Vec<String> {
         let mut v: Vec<String> = values.iter().map(|s| s.to_string()).collect();

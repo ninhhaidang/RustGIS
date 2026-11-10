@@ -239,13 +239,20 @@ pub struct GpkgEdit {
 }
 
 /// How a loaded row is told apart from the same row edited: a hash of its geometry and
-/// attributes (FNV-1a over their JSON, the same in every build).
+/// attributes (FNV-1a over their JSON, the same in every build). Non-finite attributes also
+/// contribute their position and native bits, since output JSON substitutes Null for them.
 pub fn row_hash(f: &rustgis_data::Feature) -> u64 {
     /// FNV-1a over the bytes written to it, kept as they come (no buffer per row).
     struct Fnv(u64);
+    impl Fnv {
+        /// Feeds bytes without buffering; also used for values JSON cannot distinguish.
+        fn bytes(&mut self, buf: &[u8]) {
+            self.0 = buf.iter().fold(self.0, |h, b| (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3));
+        }
+    }
     impl std::io::Write for Fnv {
         fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0 = buf.iter().fold(self.0, |h, b| (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3));
+            self.bytes(buf);
             Ok(buf.len())
         }
         fn flush(&mut self) -> std::io::Result<()> {
@@ -256,6 +263,15 @@ pub fn row_hash(f: &rustgis_data::Feature) -> u64 {
     // As before, a row that can't be written hashes as no bytes.
     if serde_json::to_writer(&mut h, &(&f.geometry, &f.attrs)).is_err() {
         return 0xcbf2_9ce4_8422_2325;
+    }
+    for (index, value) in f.attrs.iter().enumerate() {
+        if let rustgis_data::Value::Float(number) = value
+            && !number.is_finite()
+        {
+            h.bytes(b"\xffnon-finite:");
+            h.bytes(&(index as u64).to_le_bytes());
+            h.bytes(&number.to_bits().to_le_bytes());
+        }
     }
     h.0
 }
@@ -1696,6 +1712,21 @@ mod tests {
         assert_eq!(super::row_hash(&f), fnv);
         // And the value itself: a change in how rows are written would show every saved row edited.
         assert_eq!(super::row_hash(&f), 8_547_063_913_914_077_080);
+    }
+
+    /// Clearing a non-finite source cell is a write-back update even though output JSON uses Null.
+    #[test]
+    fn clearing_nonfinite_source_values_is_a_row_update() {
+        use rustgis_data::{Feature, Value};
+        for number in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let loaded = Feature { id: 1, geometry: None, attrs: vec![Value::Float(number)] };
+            let versions: super::Versions = [(1, super::RowVersion { version: 7, hash: super::row_hash(&loaded) })].into_iter().collect();
+            assert!(versions.changes(std::slice::from_ref(&loaded)).is_empty());
+            let cleared = Feature { attrs: vec![Value::Null], ..loaded };
+            let changes = versions.changes(std::slice::from_ref(&cleared));
+            assert_eq!(changes.updates.iter().map(|(feature, version)| (feature.id, *version)).collect::<Vec<_>>(), [(1, 7)]);
+            assert_eq!(changes.updates[0].0.attrs, [Value::Null]);
+        }
     }
 
     #[test]

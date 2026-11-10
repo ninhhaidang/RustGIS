@@ -162,6 +162,9 @@ pub(crate) fn apply_with(s: &mut Session, id: u32, changes: Vec<Change>, new_def
                     && let Some(cell) = l.dataset.features.get_mut(*r).and_then(|f| f.attrs.get_mut(fi))
                     && cell.is_null()
                 {
+                    if super::edit::non_finite_input(v, ty) {
+                        return Err(format!("field '{field}' requires a finite number"));
+                    }
                     *cell = super::edit::coerce(v.clone(), ty);
                 }
             }
@@ -1572,11 +1575,18 @@ fn subtypes(s: &mut Session, p: &Json) -> CmdResult {
     for v in list.iter().take(1000) {
         let code = v.get("code").and_then(Json::as_i64).ok_or("each subtype has an integer code")?;
         let name = v.get("name").and_then(Json::as_str).ok_or("each subtype has a name")?.chars().take(200).collect();
-        let defaults = v
+        let defaults: Vec<(String, Value)> = v
             .get("defaults")
             .and_then(Json::as_object)
             .map(|o| o.iter().map(|(k, v)| (k.clone(), Value::from_json(v))).collect())
             .unwrap_or_default();
+        for (field, value) in &defaults {
+            if let Some(ty) = l.dataset.field_index(field).and_then(|i| l.dataset.fields.get(i)).map(|f| f.ty)
+                && super::edit::non_finite_input(value, ty)
+            {
+                return Err(format!("field '{field}' requires a finite number"));
+            }
+        }
         if subs.iter().any(|x: &Subtype| x.code == code) {
             return Err(format!("subtype code {code} is used twice"));
         }
@@ -1853,6 +1863,7 @@ fn related(s: &mut Session, p: &Json) -> CmdResult {
     Ok(json!({"related": total, "layers": names}))
 }
 
+/// Validates defaults before replacing a template; a refused numeric value leaves it intact.
 fn template(s: &mut Session, p: &Json) -> CmdResult {
     let id = s.layer_id(p)?;
     let name = ps(p, "name").map(str::trim).filter(|n| !n.is_empty()).ok_or("name is required")?.to_string();
@@ -1867,8 +1878,11 @@ fn template(s: &mut Session, p: &Json) -> CmdResult {
         for (k, v) in o {
             let fi = l.dataset.field_index(k).ok_or_else(|| format!("no field named '{k}'"))?;
             let ty = l.dataset.fields.get(fi).map(|f| f.ty).unwrap_or(FieldType::Text);
-            defaults
-                .push((l.dataset.fields.get(fi).map(|f| f.name.clone()).unwrap_or_default(), super::edit::coerce(Value::from_json(v), ty)));
+            let value = Value::from_json(v);
+            if super::edit::non_finite_input(&value, ty) {
+                return Err(format!("field '{k}' requires a finite number"));
+            }
+            defaults.push((l.dataset.fields.get(fi).map(|f| f.name.clone()).unwrap_or_default(), super::edit::coerce(value, ty)));
         }
     }
     l.design.templates.retain(|t| !t.name.eq_ignore_ascii_case(&name));

@@ -1784,9 +1784,7 @@ impl RustGisApp {
             crate::i18n::fmt("Download offered: {name}. The browser doesn't say whether it saved the file.", &[("name", &file)]),
             false,
         );
-        for notice in report.notices() {
-            self.session.notify(notice, false);
-        }
+        report.notify(&mut self.session);
         self.ui.web_file = Some(file);
         Ok(())
     }
