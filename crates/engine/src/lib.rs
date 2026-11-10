@@ -2311,7 +2311,8 @@ impl Session {
         self.state
     }
 
-    /// The project as it is now is saved (written to its file, or downloaded in the browser).
+    /// The project as it is now is saved: written to its file. A browser download doesn't
+    /// count, as the page can't tell whether the browser saved it.
     pub fn mark_saved(&mut self) {
         self.saved = Some(self.state);
     }

@@ -133,7 +133,10 @@ RustGIS also runs in the browser, compiled to WebAssembly: open
 - **Save** and **Export** download the file. **Save As**, and the first **Save** of a project,
   ask for the file name first; the browser decides which folder downloads go to (Firefox, for
   one, saves to its Downloads folder unless told to ask). A project opened from a file is named
-  after it, and **Save** downloads it under that name again.
+  after it, and **Save** downloads it under that name again. The browser doesn't tell RustGIS
+  whether it saved a download (its save prompt can be cancelled), so **Save** keeps any unsaved
+  changes, and **Save As** to a different name makes the project unsaved. Closing or leaving
+  the tab asks first while there are unsaved changes; an unchanged project stays clean.
 - The interface uses the built-in font, because a web page can't read installed fonts. Choosing
   Chinese, Japanese, Korean or Persian downloads a font for that script.
 - Process plugins (including Python plugins), and the formats read through GDAL or DuckDB,
