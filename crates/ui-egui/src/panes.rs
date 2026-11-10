@@ -2260,7 +2260,7 @@ fn layer_menu(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, reorder: bool) {
     if !l.is_raster()
         && ui.button(tl!("Convert To Annotation")).on_hover_text(tl!("Convert this layer's labels into an annotation layer.")).clicked()
     {
-        if let Err(e) = app.run("labels.convert", json!({"layer": l.id})) {
+        if let Err(e) = app.run_by_user("labels.convert", json!({"layer": l.id})) {
             app.session.notify(e, true);
         }
         ui.close();

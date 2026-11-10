@@ -2980,23 +2980,12 @@ fn define_projection(s: &mut Session, p: &Value) -> CmdResult {
 /// Loads a streamed layer's features into memory, so it can be edited like any other layer.
 fn load_all(s: &mut Session, p: &Value) -> CmdResult {
     let id = s.layer_id(p)?;
-    let key = load_all_key(s.map().layer(id).ok_or("no such layer")?);
-    let ahead = super::reads::take::<LoadedAll>(s, &key);
+    let (mut ds, unread) = super::whole::take_or_read(s, id)?;
     let l = s.map().layer(id).ok_or("no such layer")?;
-    let (mut ds, unread) = match ahead {
-        // Read (or failed) from the source the layer still reads, listing the fields it lists
-        // now: one opened afresh since, or with other fields, is read again.
-        Some((copied, fields, read)) if l.source.as_ref().is_some_and(|src| src.same_opening(&copied)) && fields == l.dataset.fields => {
-            read?
-        }
-        _ => l.load_all_counted()?,
-    };
     // Named as the layer is now: it may have been renamed while the read ran.
     ds.name = l.dataset.name.clone();
-    let (n, name) = (ds.features.len(), l.name.clone());
-    if unread > 0 {
-        s.warn(super::whole::unread_notice(&name, unread));
-    }
+    let n = ds.features.len();
+    unread.say(s);
     let l = s.map_mut().layer_mut(id).ok_or("no such layer")?;
     l.dataset = ds;
     l.dataset.windowed = false;
@@ -3006,25 +2995,10 @@ fn load_all(s: &mut Session, p: &Value) -> CmdResult {
     Ok(json!({"layer": id, "features": n}))
 }
 
-/// Load All's read made before it runs: the source it read, the fields the layer listed then, and
-/// what it read with the number of rows that couldn't be read.
-type LoadedAll = (rustgis_map::source::SourceLayer, Vec<rustgis_data::Field>, Result<(rustgis_data::Dataset, usize), String>);
-
-/// The key Load All's read of `l` is taken by (see [`super::reads`]).
-fn load_all_key(l: &rustgis_map::Layer) -> String {
-    format!("loadAll:{}", l.instance_id())
-}
-
 /// Load All's read of the streamed layer `p` names, made before it runs ([`super::reads`]), on a
 /// copy of the layer.
 pub(crate) fn load_all_ahead(s: &Session, p: &Value) -> Option<super::reads::ReadWork> {
-    let l = s.map().layer(s.layer_id(p).ok()?)?;
-    let mut copy = l.clone();
-    let source = copy.source.as_mut()?;
-    // Its own read: the live layer keeps the one under way.
-    source.detach_read();
-    let (copied, fields) = (source.clone(), l.dataset.fields.clone());
-    Some(super::reads::ahead("Load All Features", load_all_key(l), move || (copied, fields, copy.load_all_counted())))
+    super::whole::ahead(s, p, "Load All Features")
 }
 
 /// Adds a layer file: a layer with its data, symbology and labels.

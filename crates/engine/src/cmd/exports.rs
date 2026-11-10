@@ -42,6 +42,7 @@ pub(crate) const IN_BACKGROUND: &[(&str, &str, Start)] = &[
     ("share.exportRaster", "Export Raster", super::raster::export_work),
     ("share.exportMap", "Export Map", super::share::map_work),
     ("layout.export", "Export Layout", super::layout::export_work),
+    ("report.export", "Export Report", super::report::export_work),
 ];
 
 /// `command` and what it is called, when the app writes its file on another thread (see
@@ -125,14 +126,7 @@ pub(crate) fn drawn(
     let written_path = written.is_ok().then(|| path.clone());
     let answer = written.as_ref().map_or(Value::Null, Value::clone);
     let then: Then = Box::new(move |s: &mut Session, _: &mut Value| {
-        use rustgis_data::diagnostics::Severity;
-        for (severity, text) in notices {
-            match severity {
-                Severity::Error => s.notify(text, true),
-                Severity::Warning => s.warn(text),
-                Severity::Info => s.notify(text, false),
-            }
-        }
+        say(s, notices);
         let mut missing = Vec::new();
         for (instance, name, error, copied) in failed {
             let live = s.project.maps.iter_mut().flat_map(|m| m.layers.iter_mut()).find(|l| l.instance_id() == instance);
@@ -165,6 +159,35 @@ pub(crate) fn drawn(
         #[cfg(not(target_arch = "wasm32"))]
         owner: None,
     })
+}
+
+/// What drawing an export on `copy` (a copy of the session) said, each notice with its severity,
+/// to say again where the export lands; past the notices a session keeps, how many earlier ones
+/// there were. `path` names the file in that count.
+pub(crate) fn copy_notices(copy: &mut Session, path: &str) -> Vec<(rustgis_data::diagnostics::Severity, String)> {
+    let kept = std::mem::take(&mut copy.notices);
+    let earlier = copy.notices_given().saturating_sub(kept.len() as u64);
+    let mut said = Vec::new();
+    if earlier > 0 {
+        said.push((
+            rustgis_data::diagnostics::Severity::Warning,
+            format!("{path}: {earlier} earlier notices from drawing it aren't shown"),
+        ));
+    }
+    said.extend(kept.into_iter().map(|n| (n.severity, n.text)));
+    said
+}
+
+/// Says `notices` (what an export said on a copy of the session) in `s`, each as it was said.
+pub(crate) fn say(s: &mut Session, notices: Vec<(rustgis_data::diagnostics::Severity, String)>) {
+    use rustgis_data::diagnostics::Severity;
+    for (severity, text) in notices {
+        match severity {
+            Severity::Error => s.notify(text, true),
+            Severity::Warning => s.warn(text),
+            Severity::Info => s.notify(text, false),
+        }
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]

@@ -1820,6 +1820,49 @@ fn permission_policy_training_read_whole_reaches_its_source() {
     }
 }
 
+/// Converting the labels of, or exporting a report of, a layer read in place reads it whole, so
+/// the call reaches its source; the same layer in memory reaches no network.
+#[test]
+fn permission_policy_labels_and_reports_read_whole_reach_their_source() {
+    let mut s = world();
+    s.run("report.new", &json!({"layer":"Cities"})).unwrap();
+    let (scope, _) = assistant(3603);
+    let convert = Call::command("labels.convert", json!({"layer":"Cities"}));
+    let export = Call::command("report.export", json!({"path":"/tmp/report.pdf"}));
+    let internet = |s: &Session, call: &Call| match s.review(&scope, call) {
+        Outcome::NeedsApproval(p) => p.review().why.contains("internet"),
+        _ => false,
+    };
+    assert!(!internet(&s, &convert) && !internet(&s, &export), "in memory: no network");
+    let id = s.map().layer_by_name("Cities").unwrap().id;
+    let mut source = rustgis_map::source::SourceLayer::default();
+    source.path = Some("https://example.invalid/cities.fgb".into());
+    s.map_mut().layer_mut(id).unwrap().source = Some(source);
+    assert!(internet(&s, &convert), "labels.convert");
+    assert!(internet(&s, &export), "report.export");
+
+    // The report's own layer in memory, the web source only under its records (a subreport) or
+    // in a report it appends: the export reads those whole too.
+    for under in ["subreport", "appended"] {
+        let mut s = world();
+        s.run("report.new", &json!({"layer":"Countries","name":"Main"})).unwrap();
+        if under == "subreport" {
+            s.run("data.relate", &json!({"name":"Country of city","origin":"Countries","originKey":"name","destination":"Cities","destinationKey":"adm0name"})).unwrap();
+            s.run("report.subreport", &json!({"report":"Main","relationship":"Country of city"})).unwrap();
+        } else {
+            s.run("report.new", &json!({"layer":"Cities","name":"Appended"})).unwrap();
+            s.run("report.relatedReport", &json!({"report":"Main","related":"Appended"})).unwrap();
+        }
+        let export = Call::command("report.export", json!({"report":"Main","path":"/tmp/report.pdf"}));
+        assert!(!internet(&s, &export), "{under}: in memory");
+        let id = s.map().layer_by_name("Cities").unwrap().id;
+        let mut source = rustgis_map::source::SourceLayer::default();
+        source.path = Some("https://example.invalid/cities.fgb".into());
+        s.map_mut().layer_mut(id).unwrap().source = Some(source);
+        assert!(internet(&s, &export), "{under}: its layer read whole from the web");
+    }
+}
+
 /// In-memory range reads need Network, while local paths and external drivers retain Files.
 #[test]
 fn permission_policy_remote_range_reads_need_only_network() {

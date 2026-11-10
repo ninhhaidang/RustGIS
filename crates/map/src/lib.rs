@@ -579,6 +579,15 @@ impl Layer {
         self.source.as_ref().is_some_and(|s| s.is_pending())
     }
 
+    /// The ids of the selected features: those of the selected rows, and for a layer read in place
+    /// those parked for its next read (a project just opened, its view not yet read).
+    pub fn selected_ids(&self) -> std::collections::HashSet<u64> {
+        let mut ids: std::collections::HashSet<u64> =
+            self.selection.iter().filter_map(|r| self.dataset.features.get(*r)).map(|f| f.id).collect();
+        ids.extend(self.source.iter().flat_map(|src| src.saved_selection.iter().copied()));
+        ids
+    }
+
     /// Replaces a streamed layer's features, keeping the selection (by feature id).
     fn install(&mut self, features: Vec<rustgis_data::Feature>) {
         let areas = self.source.as_ref().and_then(|source| source.ready_cache.as_ref()).map(|cache| cache.areas).unwrap_or_default();

@@ -80,6 +80,63 @@ impl Unread {
     }
 }
 
+/// A whole read made before its command runs ([`super::reads`]): the source it read, the fields
+/// the layer listed then, and what it read with the number of rows that couldn't be read.
+type ReadAhead = (rustgis_map::source::SourceLayer, Vec<rustgis_data::Field>, Result<(Dataset, usize), String>);
+
+/// The key the whole read of `l` made ahead is taken by.
+fn ahead_key(l: &Layer) -> String {
+    format!("whole:{}", l.instance_id())
+}
+
+/// The whole read of the layer read in place that `p` names, made before `name` (the command that
+/// takes it with [`take_or_read`]) runs, on a copy of the layer: `None` for a layer in memory.
+pub(crate) fn ahead(s: &Session, p: &serde_json::Value, name: &'static str) -> Option<super::reads::ReadWork> {
+    let l = s.map().layer(s.layer_id(p).ok()?)?;
+    let mut copy = l.clone();
+    let source = copy.source.as_mut()?;
+    // Its own read: the live layer keeps the one under way.
+    source.detach_read();
+    let (copied, fields) = (source.clone(), l.dataset.fields.clone());
+    Some(super::reads::ahead(name, ahead_key(l), move || (copied, fields, copy.load_all_counted())))
+}
+
+/// Every feature of layer `id` read in place, with the rows of its source that couldn't be read:
+/// the read made ahead ([`ahead`]) when there is one from the source the layer still reads,
+/// listing the fields it lists now; read here otherwise (one opened afresh since, or with other
+/// fields, is read again).
+pub(crate) fn take_or_read(s: &mut Session, id: u32) -> Result<(Dataset, Unread), String> {
+    let key = ahead_key(s.map().layer(id).ok_or("no such layer")?);
+    let ahead = super::reads::take::<ReadAhead>(s, &key);
+    let l = s.map().layer(id).ok_or("no such layer")?;
+    let (ds, rows) = match ahead {
+        Some((copied, fields, read)) if l.source.as_ref().is_some_and(|src| src.same_opening(&copied)) && fields == l.dataset.fields => {
+            read?
+        }
+        _ => l.load_all_counted()?,
+    };
+    Ok((ds, Unread { layer: l.name.clone(), rows }))
+}
+
+/// Loads a layer read in place whole, in place of its view, as an export's copy of the project
+/// needs it: its features are then all of its source's, its selection is kept (by feature id),
+/// and it no longer reads its source. A layer in memory is left as it is. The read looks at
+/// Cancel as [`Whole::read`] does.
+pub(crate) fn load_into(l: &mut Layer) -> Result<Unread, String> {
+    let name = l.name.clone();
+    if !l.is_streamed() {
+        return Ok(Unread { layer: name, rows: 0 });
+    }
+    let selected = l.selected_ids();
+    let (ds, rows) = l.load_all_counted().map_err(|e| format!("{name}: {e}"))?;
+    l.dataset = ds;
+    l.dataset.windowed = false;
+    l.source = None;
+    l.selection = l.dataset.features.iter().enumerate().filter(|(_, f)| selected.contains(&f.id)).map(|(i, _)| i).collect();
+    l.touch_geometry();
+    Ok(Unread { layer: name, rows })
+}
+
 /// The notice for `unread` rows of `layer`'s source that couldn't be read.
 pub(crate) fn unread_notice(layer: &str, unread: usize) -> String {
     match unread {
@@ -91,9 +148,18 @@ pub(crate) fn unread_notice(layer: &str, unread: usize) -> String {
 /// The layers read in place that `command` with `params` reads whole from their sources (for its
 /// permission effects, which then reach those sources as Load All Features does).
 pub(crate) fn layers_read_whole<'a>(s: &super::InputContext<'a>, command: &str, params: &serde_json::Value) -> Vec<&'a Layer> {
-    let names: Vec<&str> = match command {
-        "dl.train" | "dl.classify" | "raster.classifySupervised" => super::ps(params, "training").into_iter().collect(),
+    let layers: Vec<&'a Layer> = match command {
+        "dl.train" | "dl.classify" | "raster.classifySupervised" => {
+            super::ps(params, "training").and_then(|n| s.map().layer_by_name(n)).into_iter().collect()
+        }
+        "labels.convert" => s.layer_id(params).ok().and_then(|id| s.map().layer(id)).into_iter().collect(),
+        "report.export" => super::report::index(s, params)
+            .map(|i| super::report::reported_layers(s, i))
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(m, id)| s.project.maps.get(m)?.layer(id))
+            .collect(),
         _ => Vec::new(),
     };
-    names.into_iter().filter_map(|n| s.map().layer_by_name(n)).filter(|l| l.is_streamed()).collect()
+    layers.into_iter().filter(|l| l.is_streamed()).collect()
 }

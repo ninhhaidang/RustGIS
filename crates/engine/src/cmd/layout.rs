@@ -3769,17 +3769,8 @@ pub(crate) fn export_work(s: &Session, p: &Value) -> Result<super::exports::Work
             Ok(json!({"path": path, "bytes": bytes.len()}))
         })();
         // What drawing it said (frames drawn as pictures, fonts it lacks), as the command says it
-        // here; past the notices a session keeps, how many earlier ones there were.
-        let kept = std::mem::take(&mut copy.notices);
-        let earlier = copy.notices_given().saturating_sub(kept.len() as u64);
-        let mut said: Vec<_> = Vec::new();
-        if earlier > 0 {
-            said.push((
-                rustgis_data::diagnostics::Severity::Warning,
-                format!("{path}: {earlier} earlier notices from drawing it aren't shown"),
-            ));
-        }
-        said.extend(kept.into_iter().map(|n| (n.severity, n.text)));
+        // here.
+        let said = super::exports::copy_notices(&mut copy, &path);
         super::exports::drawn(&copy.project.maps, said, written, path)
     }))
 }

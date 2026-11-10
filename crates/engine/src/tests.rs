@@ -11952,6 +11952,122 @@ fn two_class_b64() -> String {
     base64::engine::general_purpose::STANDARD.encode(geotiff::write(&r, 0).unwrap())
 }
 
+/// The layers a report export reads whole are those its pages list: its own, and those of the
+/// reports it appends as far as they are drawn, not one appended past the depth drawn.
+#[test]
+fn a_report_export_reads_only_the_layers_it_draws() {
+    let mut s = world();
+    let point = json!({"type": "FeatureCollection", "features": [{"type": "Feature", "properties": {"name": "a"}, "geometry": {"type": "Point", "coordinates": [0, 0]}}]});
+    s.run("layer.addDataText", &json!({"fileName": "deep.geojson", "text": point.to_string()})).unwrap();
+    let layers = ["Cities", "Countries", "Rivers", "Lakes", "deep"];
+    for (k, layer) in layers.iter().enumerate() {
+        s.run("report.new", &json!({"layer": layer, "name": format!("r{k}")})).unwrap();
+    }
+    // Each appends the next: r0 draws r1 to r3, and r3 is too deep to draw r4.
+    for k in 0..4 {
+        s.run("report.relatedReport", &json!({"report": format!("r{k}"), "related": format!("r{}", k + 1)})).unwrap();
+    }
+    let mut read: Vec<_> =
+        crate::cmd::report::reported_layers(&s, 0).into_iter().map(|(m, id)| s.project.maps[m].layer(id).unwrap().name.clone()).collect();
+    read.sort();
+    assert_eq!(read, ["Cities", "Countries", "Lakes", "Rivers"]);
+}
+
+/// A layer read in place a view at a time, its view holding one of its three points: its labels
+/// convert to an annotation for every point, read here or ahead as the app reads it, and a
+/// report's export lists every record (its selection kept by feature) while its preview says it
+/// shows those of the view. Rows the source can't give are said once; clean sources say nothing.
+#[test]
+fn labels_and_reports_of_a_layer_read_in_place_use_its_whole_source() {
+    use rustgis_analysis::control::Control;
+    use rustgis_map::report::Block;
+    // Removed however the test ends.
+    struct Dir(std::path::PathBuf);
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    // Its own each run (the process id alone can repeat).
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    let dir = Dir(std::env::temp_dir().join(format!("rustgis-whole-labels-{}-{nanos}", std::process::id())));
+    std::fs::create_dir_all(&dir.0).unwrap();
+    let dir = &dir.0;
+    let point = |name: &str, x: f64, y: f64| json!({"type": "Feature", "properties": {"name": name}, "geometry": {"type": "Point", "coordinates": [x, y]}});
+    let bad = json!({"type": "Feature", "properties": {"name": "Bad"}, "geometry": {"type": "Point", "coordinates": "x"}});
+    // The notice for the one row of the layer its source can't give.
+    let one_unread = crate::cmd::whole::unread_notice("places", 1);
+    let unread = |s: &Session| s.notices.iter().filter(|n| n.text == one_unread).count();
+    let view = rustgis_geom::Extent::new(113.0, 22.0, 115.0, 24.0);
+    let records = |doc: &rustgis_map::report::Doc| {
+        doc.blocks
+            .iter()
+            .find_map(|b| match b {
+                Block::Text(t) if t.contains(" records from ") => Some(t.clone()),
+                _ => None,
+            })
+            .unwrap()
+    };
+    for (file, extra) in [("clean.geojson", None), ("bad.geojson", Some(bad))] {
+        let mut features = vec![point("Lima", -77.0, -12.0), point("Oslo", 10.7, 59.9), point("Hong Kong", 114.17, 22.3)];
+        features.extend(extra.clone());
+        let path = dir.join(file);
+        std::fs::write(&path, json!({"type": "FeatureCollection", "features": features}).to_string()).unwrap();
+        let said = usize::from(extra.is_some());
+        for ahead in [false, true] {
+            let mut s = Session::new(Project::default());
+            let id =
+                s.run("layer.addData", &json!({"path": path.display().to_string(), "stream": true, "name": "places"})).unwrap()["layer"]
+                    .as_u64()
+                    .unwrap() as u32;
+            s.map_mut().sync_sources(&view, 1000.0, true);
+            assert_eq!(s.map().layer(id).unwrap().dataset.features.len(), 1, "{file}: the view holds Hong Kong only");
+            let p = json!({"layer": id});
+            let r = if ahead {
+                let read = crate::cmd::reads::read_ahead(&mut s, "labels.convert", &p).unwrap();
+                assert!(read.reads(), "{file}: read ahead");
+                crate::cmd::reads::read_land(&mut s, read.run(&Control::new()).unwrap())
+            } else {
+                s.run("labels.convert", &p)
+            }
+            .unwrap_or_else(|e| panic!("{file}: {e}"));
+            assert_eq!(r["annotations"], 3, "{file}, ahead {ahead}: {r}");
+            assert_eq!(unread(&s), said, "{file}, ahead {ahead}: labels.convert");
+            let l = s.map().layer(id).unwrap();
+            assert!(l.is_streamed() && !l.labels.enabled, "{file}: still read in place, its own labels off");
+        }
+
+        // A report of it, then of only its selection (Hong Kong, the view's first row but not the
+        // source's first).
+        let mut s = Session::new(Project::default());
+        let id = s.run("layer.addData", &json!({"path": path.display().to_string(), "stream": true, "name": "places"})).unwrap()["layer"]
+            .as_u64()
+            .unwrap() as u32;
+        s.map_mut().sync_sources(&view, 1000.0, true);
+        s.run("report.new", &json!({"layer": "places"})).unwrap();
+        let preview = records(&crate::cmd::report::build(&s, 0).unwrap());
+        assert!(preview.starts_with("1 records") && preview.contains("only the records in the map's view"), "{preview}");
+        let mut copy = Session::new(s.project.clone());
+        crate::cmd::report::whole_copy(&mut copy, 0).unwrap();
+        let whole = records(&crate::cmd::report::build(&copy, 0).unwrap());
+        assert!(whole.starts_with("3 records") && !whole.contains("view"), "{whole}");
+        let before = unread(&s);
+        let r = s.run("report.export", &json!({"path": dir.join("report.pdf").display().to_string(), "dpi": 72})).unwrap();
+        assert!(r["pages"].as_u64().unwrap() >= 1, "{r}");
+        assert_eq!(unread(&s), before + said, "{file}: report.export");
+        s.run("select.byAttributes", &json!({"layer": id, "where": "name = 'Hong Kong'"})).unwrap();
+        s.run("report.update", &json!({"selectedOnly": true})).unwrap();
+        let mut copy = Session::new(s.project.clone());
+        crate::cmd::report::whole_copy(&mut copy, 0).unwrap();
+        let doc = crate::cmd::report::build(&copy, 0).unwrap();
+        assert!(records(&doc).starts_with("1 records"), "{}", records(&doc));
+        let rows: Vec<_> = doc.blocks.iter().filter_map(|b| if let Block::Row(r) = b { Some(r.clone()) } else { None }).collect();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert!(rows[0].iter().any(|c| c == "Hong Kong"), "{rows:?}");
+        assert!(s.map().layer(id).unwrap().is_streamed());
+    }
+}
+
 /// Training read in place a view at a time: the view holds none of the training polygons, yet
 /// a model and a supervised classification learn from all of them, read from the source, and the
 /// rows the source can't give are said once.
@@ -38893,7 +39009,9 @@ fn long_commands_stop_when_cancelled_while_they_run() {
         ("share.exportRaster", json!({"layer": dem, "path": out("dem.tif")})),
         ("share.exportMap", json!({"path": out("map.png"), "width": 320, "height": 200})),
         ("layout.export", json!({"path": out("layout.pdf"), "dpi": 72})),
+        ("report.export", json!({"path": out("report.pdf"), "dpi": 72})),
     ];
+    s.run("report.new", &json!({"layer": "Cities"})).unwrap();
     let registered = crate::cmd::exports::IN_BACKGROUND.iter().map(|(c, ..)| *c).collect::<std::collections::BTreeSet<_>>();
     assert_eq!(listed(&exports), registered, "add a new background export here");
     for (command, p) in &exports {
