@@ -1151,8 +1151,8 @@ fn writes_geopackage_geoparquet_and_shapefile() {
         let holds_all = matches!(ext, "gpkg" | "parquet");
         assert_eq!(left_out, if holds_all { 0 } else { 1 }, "{ext}");
         let (back, _) = crate::io::read_path(&p).unwrap();
-        // GeoParquet retains nullable geometry; the other readers omit rows without a shape.
-        assert_eq!(back.features.len(), if ext == "parquet" { 3 } else { 2 }, "{ext}");
+        // GeoParquet and GeoPackage keep a row without a shape; the other formats can't hold it.
+        assert_eq!(back.features.len(), if holds_all { 3 } else { 2 }, "{ext}");
         assert_eq!(back.geometry_type, GeometryType::Polygon, "{ext}");
         let e = back.extent();
         assert_eq!((e.min_x, e.min_y, e.max_x, e.max_y), (-30.0, -40.0, 21.0, 21.0), "{ext}");
@@ -2532,6 +2532,48 @@ fn shapefile_complete_chunks_keep_all_rows_order_attributes_and_budget() {
     assert_eq!(rows, expected.features);
 }
 
+/// GeoPackage rows without geometry (NULL, or an empty geometry) keep their row and attributes in
+/// whole reads and visits, with and without the R-tree and in the browser's reader, and are left
+/// out of a read of an extent; one flagged empty with an unreadable header is skipped and counted.
+#[test]
+fn geopackage_keeps_rows_without_geometry() {
+    let d = dir().join("geometryless");
+    std::fs::create_dir_all(&d).unwrap();
+    let (indexed, scan) = (d.join("indexed.gpkg"), d.join("scan.gpkg"));
+    for (p, rtree) in [(&indexed, true), (&scan, false)] {
+        write_gpkg(p, rtree);
+        let c = rusqlite::Connection::open(p).unwrap();
+        let empty = b"GP\x00\x11\x11\x0f\x00\x00".to_vec();
+        c.execute("INSERT INTO \"grid \"\"q\"\"\" VALUES (601, NULL, 'no place', 7, 1)", []).unwrap();
+        c.execute("INSERT INTO \"grid \"\"q\"\"\" VALUES (602, ?1, 'empty', 8, 0)", [empty]).unwrap();
+        // Flagged empty but unreadable, each skipped and counted: cut off before its header ends,
+        // with an envelope code the standard doesn't define, an envelope declared but missing, and a
+        // header version the standard doesn't define.
+        for (fid, blob) in [(603, "47500011"), (604, "4750001b0f000000"), (605, "475000130f000000"), (606, "475001110f000000")] {
+            c.execute(&format!("INSERT INTO \"grid \"\"q\"\"\" VALUES ({fid}, X'{blob}', 'cut', 9, 1)"), []).unwrap();
+        }
+    }
+    let sources: Vec<Box<dyn FeatureSource>> = vec![
+        open_path(&indexed, None).unwrap(),
+        open_path(&scan, None).unwrap(),
+        Box::new(gpkg_mem::GpkgMemSource::open_shared(Shared(Arc::new(std::fs::read(&scan).unwrap())), None).unwrap()),
+    ];
+    for src in &sources {
+        let format = src.info().format;
+        assert_eq!(src.info().count, Some(606), "{format}");
+        let whole = src.read(&Request::all()).unwrap();
+        assert_eq!((whole.features.len(), whole.skipped), (602, 4), "{format}");
+        let bare: Vec<_> = whole.features.iter().filter(|f| f.geometry.is_none()).map(|f| (f.id, f.attrs[0].clone())).collect();
+        assert_eq!(bare, vec![(601, Value::Text("no place".into())), (602, Value::Text("empty".into()))], "{format}");
+        let (rows, summary, _) = visit_all(src.as_ref(), None, 1024);
+        assert_eq!((rows, summary.matched, summary.skipped), (whole.features, 602, 4), "{format}");
+        let world = Extent::new(-180.0, -85.0, 180.0, 85.0);
+        let part = src.read(&Request { extent: Some(world), limit: 10_000 }).unwrap();
+        assert_eq!(part.features.len(), 600, "{format}");
+        assert_eq!(visit_all(src.as_ref(), Some(world), 1024).0.len(), 600, "{format}");
+    }
+}
+
 /// Every feature of a complete traversal, in order, checking each chunk against the budget.
 fn visit_all(src: &dyn FeatureSource, extent: Option<Extent>, budget: usize) -> (Vec<Feature>, Batch, usize) {
     let (mut rows, mut calls) = (Vec::new(), 0);
@@ -2641,20 +2683,20 @@ fn geopackage_flatgeobuf_and_geoparquet_visit_what_a_whole_read_gives() {
         let error = src.visit_chunks(None, 4096, &mut |_| Ok(())).unwrap_err();
         assert!(matches!(&error, crate::DataError::Io(e) if e.kind() == std::io::ErrorKind::NotFound), "{error}");
     }
-    // An unreadable geometry is skipped and counted, and a row without one left out, as a read does.
+    // An unreadable geometry is skipped and counted, and a row without one kept, as a read does.
     drop(sources);
     let c = rusqlite::Connection::open(&gpkg_scan).unwrap();
     c.execute_batch("INSERT INTO \"grid \"\"q\"\"\" (geom, name) VALUES (X'4750000300000000DEAD', 'bad'), (NULL, 'none');").unwrap();
     drop(c);
     let src = open_path(&gpkg_scan, None).unwrap();
     let whole = src.read(&Request::all()).unwrap();
-    assert_eq!((whole.features.len(), whole.skipped), (600, 1));
+    assert_eq!((whole.features.len(), whole.skipped), (601, 1));
     let (rows, summary, _) = visit_all(src.as_ref(), None, 4096);
     assert_eq!((rows, summary.skipped), (whole.features, 1));
-    // The browser's reader of the same file skips and leaves out the same rows.
+    // The browser's reader of the same file skips and keeps the same rows.
     let mem = gpkg_mem::GpkgMemSource::open_shared(Shared(Arc::new(std::fs::read(&gpkg_scan).unwrap())), None).unwrap();
     let whole = mem.read(&Request::all()).unwrap();
-    assert_eq!((whole.features.len(), whole.skipped), (600, 1));
+    assert_eq!((whole.features.len(), whole.skipped), (601, 1));
     let (rows, summary, _) = visit_all(&mem, None, 4096);
     assert_eq!((rows, summary.skipped), (whole.features, 1));
 }

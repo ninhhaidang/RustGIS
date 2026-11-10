@@ -9,6 +9,24 @@ pub(crate) fn is_empty_blob(b: &[u8]) -> bool {
     b.starts_with(b"GP") && b.get(3).is_some_and(|f| f & 0b1_0000 != 0)
 }
 
+/// A blob flagged empty whose header is whole (version 0, the one GeoPackage defines; 8 bytes and
+/// the envelope its flags give): a row the readers keep without geometry. Any other is unreadable,
+/// not empty.
+pub(crate) fn is_whole_empty_blob(b: &[u8]) -> bool {
+    is_empty_blob(b) && b.get(2) == Some(&0) && b.get(3).and_then(|&f| envelope_len(f)).is_some_and(|n| b.len() >= 8 + n)
+}
+
+/// The length of the envelope a header's flags give; `None` for a code the standard doesn't define.
+fn envelope_len(flags: u8) -> Option<usize> {
+    match (flags >> 1) & 0b111 {
+        0 => Some(0),
+        1 => Some(32),
+        2 | 3 => Some(48),
+        4 => Some(64),
+        _ => None,
+    }
+}
+
 /// A GeoPackage geometry blob: the header's envelope (if any) and the WKB after it.
 pub(crate) fn split_blob(b: &[u8]) -> Option<(Option<Extent>, &[u8])> {
     let (magic, rest) = b.split_at_checked(2)?;
@@ -18,13 +36,7 @@ pub(crate) fn split_blob(b: &[u8]) -> Option<(Option<Extent>, &[u8])> {
     }
     let &flags = rest.get(1)?;
     let little = flags & 1 == 1;
-    let env_len = match (flags >> 1) & 0b111 {
-        0 => 0,
-        1 => 32,
-        2 | 3 => 48,
-        4 => 64,
-        _ => return None,
-    };
+    let env_len = envelope_len(flags)?;
     if flags & 0b1_0000 != 0 {
         // The empty flag.
         return None;

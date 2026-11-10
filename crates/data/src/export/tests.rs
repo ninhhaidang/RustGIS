@@ -443,7 +443,8 @@ fn a_typeless_layer_exports_the_same_geopackage_streamed_or_whole() {
         assert_eq!(crate::io::write_path(&ds, &b).unwrap(), 0);
         assert_eq!((kind(&a), kind(&b)), (want.to_string(), want.to_string()));
         assert_eq!(read_back(&a).features, read_back(&b).features);
-        assert_eq!(read_back(&a).features.len(), 300);
+        // Every square and the feature without geometry, which a GeoPackage keeps.
+        assert_eq!(read_back(&a).features.len(), 301);
     }
 }
 
@@ -466,7 +467,8 @@ fn a_projected_streamed_geopackage_of_a_mixed_layer_keeps_every_kind() {
     assert_eq!((streamed.left_out, streamed.written), (0, 301));
     assert_eq!(crate::io::write_path_in(&mixed, &b, utm).unwrap(), 0);
     assert_eq!(read_back(&a).features, read_back(&b).features);
-    assert_eq!(read_back(&a).features.len(), 300);
+    // Every feature, the one without geometry included.
+    assert_eq!(read_back(&a).features.len(), 301);
 }
 
 /// A mixed layer added as a table to an existing GeoPackage, streamed or whole, gets a GEOMETRY

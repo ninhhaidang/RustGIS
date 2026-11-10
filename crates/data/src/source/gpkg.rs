@@ -3,7 +3,7 @@
 //! Extent queries use the table's R-tree spatial index (`rtree_<table>_<column>`) when it has one,
 //! and otherwise scan, testing the envelope in each geometry's header before decoding it.
 
-use super::gpkg_blob::{field_type, is_empty_blob, split_blob};
+use super::gpkg_blob::{field_type, is_empty_blob, is_whole_empty_blob, split_blob};
 use super::{Batch, FeatureSource, Reproject, Request, Sampler, SourceInfo, clamp_limit, in_request, stride};
 use crate::raster::Crs;
 use crate::{DataError, Feature, Field, FieldType, GeometryType, Result, Value, wkb};
@@ -372,14 +372,18 @@ impl GpkgSource {
     fn feature(&self, r: &rusqlite::Row<'_>, native: Option<&Extent>, req: &Request) -> rusqlite::Result<Row> {
         // Integer keys, negative ones too, map to distinct ids.
         let Some(id) = r.get::<_, Option<i64>>(0)?.map(|i| i as u64) else { return Ok(Row::Bad) };
+        let attrs =
+            || self.info.fields.iter().enumerate().map(|(i, f)| r.get_ref(i + 2).map(|v| value(v, f.ty)).unwrap_or(Value::Null)).collect();
         let blob = match r.get_ref(1)? {
-            ValueRef::Blob(b) => b,
-            ValueRef::Null => return Ok(Row::Skip),
+            ValueRef::Blob(b) if !is_whole_empty_blob(b) => b,
+            // A row without geometry (NULL, or an empty one) is kept in a whole read; it has no
+            // place to match an extent.
+            ValueRef::Null | ValueRef::Blob(_) if req.extent.is_none() => {
+                return Ok(Row::Feature(Feature { id, geometry: None, attrs: attrs() }));
+            }
+            ValueRef::Null | ValueRef::Blob(_) => return Ok(Row::Skip),
             _ => return Ok(Row::Bad),
         };
-        if is_empty_blob(blob) {
-            return Ok(Row::Skip);
-        }
         let Some((envelope, body)) = split_blob(blob) else { return Ok(Row::Bad) };
         if let (Some(q), Some(e)) = (native, envelope)
             && !e.intersects(q)
@@ -390,15 +394,13 @@ impl GpkgSource {
         if !in_request(&geometry, req) {
             return Ok(Row::Skip);
         }
-        let attrs =
-            self.info.fields.iter().enumerate().map(|(i, f)| r.get_ref(i + 2).map(|v| value(v, f.ty)).unwrap_or(Value::Null)).collect();
-        Ok(Row::Feature(Feature { id, geometry: Some(geometry), attrs }))
+        Ok(Row::Feature(Feature { id, geometry: Some(geometry), attrs: attrs() }))
     }
 }
 
 enum Row {
     Feature(Feature),
-    /// Outside the request, or without geometry.
+    /// Outside the request (a row without geometry is, when an extent is asked for).
     Skip,
     /// Unreadable.
     Bad,

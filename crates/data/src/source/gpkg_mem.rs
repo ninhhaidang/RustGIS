@@ -329,6 +329,7 @@ impl FeatureSource for GpkgMemSource {
         &self.info
     }
 
+    /// Keeps rows without geometry in whole reads; they have no location to match an extent.
     fn read(&self, req: &Request) -> Result<Batch> {
         let limit = clamp_limit(req.limit);
         let native = req.extent.map(|e| self.reproject.extent_from_lonlat(&e));
@@ -337,16 +338,20 @@ impl FeatureSource for GpkgMemSource {
         self.db
             .rows(&self.table, |rowid, r| {
                 let blob = match r.get(self.geom_col) {
-                    Some(Val::Blob(b)) => b,
-                    Some(Val::Null) | None => return ControlFlow::Continue(()),
+                    Some(Val::Blob(b)) if !super::gpkg_blob::is_whole_empty_blob(b) => b,
+                    // A row without geometry (NULL, or an empty one) is kept in a whole read; it
+                    // has no place to match an extent.
+                    Some(Val::Null | Val::Blob(_)) | None => {
+                        if native.is_none() && sample.wants() {
+                            sample.keep(Feature { id: rowid as u64, geometry: None, attrs: self.attrs(r) });
+                        }
+                        return ControlFlow::Continue(());
+                    }
                     Some(_) => {
                         skipped += 1;
                         return ControlFlow::Continue(());
                     }
                 };
-                if super::gpkg_blob::is_empty_blob(blob) {
-                    return ControlFlow::Continue(());
-                }
                 let Some((envelope, body)) = super::gpkg_blob::split_blob(blob) else {
                     skipped += 1;
                     return ControlFlow::Continue(());
@@ -392,35 +397,36 @@ impl FeatureSource for GpkgMemSource {
         let mut failed = None;
         self.db
             .rows(&self.table, |rowid, r| {
-                let blob = match r.get(self.geom_col) {
-                    Some(Val::Blob(b)) => b,
-                    Some(Val::Null) | None => return ControlFlow::Continue(()),
+                let geometry = match r.get(self.geom_col) {
+                    Some(Val::Blob(b)) if !super::gpkg_blob::is_whole_empty_blob(b) => {
+                        let Some((envelope, body)) = super::gpkg_blob::split_blob(b) else {
+                            out.skipped += 1;
+                            return ControlFlow::Continue(());
+                        };
+                        if let (Some(q), Some(e)) = (&native, envelope)
+                            && !e.intersects(q)
+                        {
+                            return ControlFlow::Continue(());
+                        }
+                        let Some(geometry) = wkb::decode(body).and_then(|g| self.reproject.geometry(g)) else {
+                            out.skipped += 1;
+                            return ControlFlow::Continue(());
+                        };
+                        if !in_request(&geometry, &req) {
+                            return ControlFlow::Continue(());
+                        }
+                        Some(geometry)
+                    }
+                    // Without geometry (NULL, or an empty one): kept unless an extent is asked for.
+                    Some(Val::Null | Val::Blob(_)) | None if native.is_none() => None,
+                    Some(Val::Null | Val::Blob(_)) | None => return ControlFlow::Continue(()),
                     Some(_) => {
                         out.skipped += 1;
                         return ControlFlow::Continue(());
                     }
                 };
-                if super::gpkg_blob::is_empty_blob(blob) {
-                    return ControlFlow::Continue(());
-                }
-                let Some((envelope, body)) = super::gpkg_blob::split_blob(blob) else {
-                    out.skipped += 1;
-                    return ControlFlow::Continue(());
-                };
-                if let (Some(q), Some(e)) = (&native, envelope)
-                    && !e.intersects(q)
-                {
-                    return ControlFlow::Continue(());
-                }
-                let Some(geometry) = wkb::decode(body).and_then(|g| self.reproject.geometry(g)) else {
-                    out.skipped += 1;
-                    return ControlFlow::Continue(());
-                };
-                if !in_request(&geometry, &req) {
-                    return ControlFlow::Continue(());
-                }
                 out.matched += 1;
-                match chunks.push(Feature { id: rowid as u64, geometry: Some(geometry), attrs: self.attrs(r) }) {
+                match chunks.push(Feature { id: rowid as u64, geometry, attrs: self.attrs(r) }) {
                     Ok(()) => ControlFlow::Continue(()),
                     Err(e) => {
                         failed = Some(e);
