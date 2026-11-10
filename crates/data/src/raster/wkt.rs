@@ -1,7 +1,8 @@
 //! Coordinate systems from WKT, the text of a `.prj` file next to a Shapefile or a grid, and to
 //! WKT for the files RustGIS writes ([`to_wkt`]).
 //!
-//! WKT1 (OGC and Esri) is read directly. WKT2 (`PROJCRS`, `GEOGCRS`, as PROJ 6 and later write
+//! WKT1 (OGC and Esri) is read directly, a projection's angular parameters folded from its
+//! geographic system's unit into degrees. WKT2 (`PROJCRS`, `GEOGCRS`, as PROJ 6 and later write
 //! it) is first rewritten as the WKT1 it corresponds to, its units folded into degrees and the
 //! system's own linear unit.
 //!
@@ -107,6 +108,14 @@ impl Node {
                 _ => None,
             })
             .collect()
+    }
+
+    /// The first number among the node's values, to change.
+    fn num_mut(&mut self) -> Option<&mut f64> {
+        self.items.iter_mut().find_map(|i| match i {
+            Item::Num(v) => Some(v),
+            _ => None,
+        })
     }
 }
 
@@ -468,8 +477,49 @@ fn wkt1(n: Node, depth: usize) -> Result<Node, String> {
             None => Err("the compound coordinate system has no horizontal part".into()),
         },
         "BOUNDCRS" => bound(n, depth),
+        "PROJCS" => Ok(projected1(n)),
         _ => Ok(n),
     }
+}
+
+/// The Paris meridian in degrees as GDAL and Esri write it (EPSG's 2.5969213 grads).
+const PARIS_IN_DEGREES: f64 = 2.337_229_17;
+
+/// A WKT1 projected system with its angles in degrees, as [`projected2`] gives a WKT2 one. WKT1
+/// gives its projection's angular parameters and its prime meridian in its `GEOGCS`'s angle unit:
+/// NTF (Paris) / Lambert zone II has its latitude of origin at 52 grads, which is 46.8°. GDAL and
+/// Esri write the Paris meridian in degrees all the same (2.33722917 beside grads), and that is
+/// kept, as PROJ keeps it, without a notice: read in grads, 2.33722917 is 2.1035°E, not Paris
+/// (2.5969213 grads), so a meridian named Paris with that value agrees with its name only in
+/// degrees, and a notice would come with every NTF file GDAL and Esri write. Paris in grads, or
+/// another meridian, is converted. A system in degrees is unchanged.
+fn projected1(mut p: Node) -> Node {
+    let f = factor(p.child("GEOGCS").and_then(|g| g.child("UNIT")));
+    let paris_in_degrees = |pm: &Node| norm(pm.title()) == "PARIS" && pm.num(0).is_some_and(|v| (v - PARIS_IN_DEGREES).abs() < 1e-7);
+    if let Some(pm) = p.child_mut("GEOGCS").and_then(|g| g.child_mut("PRIMEM"))
+        && !paris_in_degrees(pm)
+        && let Some(v) = pm.num_mut()
+    {
+        *v = convert(*v, f, 1f64.to_radians());
+    }
+    let angles = p.items.iter_mut().filter_map(|i| match i {
+        Item::Node(n) if n.name.eq_ignore_ascii_case("PARAMETER") && angular(&norm(n.title())) => Some(n),
+        _ => None,
+    });
+    for v in angles.filter_map(Node::num_mut) {
+        *v = convert(*v, f, 1f64.to_radians());
+    }
+    p
+}
+
+/// Whether a WKT1 projection parameter, by its [`norm`]alized name, is an angle: a latitude, a
+/// longitude, a meridian, a parallel, an azimuth or another angle (`Rectified_Grid_Angle`,
+/// Krovak's `XY_Plane_Rotation`). False eastings and northings, scale factors and heights aren't,
+/// a scale factor not even with a parallel in its name (EPSG's `Scale factor on pseudo standard
+/// parallel`, Krovak's).
+fn angular(name: &str) -> bool {
+    !name.contains("SCALE")
+        && ["LATITUDE", "LONGITUDE", "MERIDIAN", "PARALLEL", "AZIMUTH", "ANGLE", "ROTATION"].iter().any(|w| name.contains(w))
 }
 
 /// The parts of a compound system that can be its horizontal one.
@@ -1243,7 +1293,7 @@ fn custom(p: &Node, method: &str) -> Result<Crs, String> {
                 && get(&["PSEUDO_STANDARD_PARALLEL_1"]).is_some_and(|v| (v - 78.5).abs() < 1e-10)
                 && get(&["X_SCALE"]).is_none_or(|v| v == -1.0)
                 && get(&["Y_SCALE"]).is_none_or(|v| v == 1.0)
-                && get(&["XY_PLANE_ROTATION"]).is_none_or(|v| v == 90.0) =>
+                && get(&["XY_PLANE_ROTATION"]).is_none_or(|v| (v - 90.0).abs() < 1e-10) =>
         {
             format!("+proj=krovak +lat_0={lat0} +k_0={k0} {at}")
         }
@@ -2610,6 +2660,80 @@ pub(crate) mod tests {
             let ll = crs.transformer().unwrap().to_lonlat(xy).unwrap();
             assert!(metres_apart(ll, lonlat) < 0.001, "{what}: {} m off", metres_apart(ll, lonlat));
         }
+    }
+
+    /// A WKT1 projection's angles are in its geographic system's unit: NTF (Paris) / Lambert zone
+    /// II, in grads, as PROJ 9.8.1 writes it in WKT1 (GDAL's) and Esri WKT, without its code,
+    /// places a point where PROJ does, as its WKT2 form does. Read as degrees, its latitude of
+    /// origin of 52 grads put the point 578 km north (#1692).
+    #[test]
+    fn wkt1_angles_are_in_the_geographic_systems_unit() {
+        const GDAL: &str = r#"PROJCS["NTF (Paris) / Lambert zone II",GEOGCS["NTF (Paris)",DATUM["Nouvelle_Triangulation_Francaise_Paris",SPHEROID["Clarke 1880 (IGN)",6378249.2,293.466021293627,AUTHORITY["EPSG","7011"]],AUTHORITY["EPSG","6807"]],PRIMEM["Paris",2.33722917,AUTHORITY["EPSG","8903"]],UNIT["grad",0.0157079632679489,AUTHORITY["EPSG","9105"]],AUTHORITY["EPSG","4807"]],PROJECTION["Lambert_Conformal_Conic_1SP"],PARAMETER["latitude_of_origin",52],PARAMETER["central_meridian",0],PARAMETER["scale_factor",0.99987742],PARAMETER["false_easting",600000],PARAMETER["false_northing",2200000],UNIT["metre",1,AUTHORITY["EPSG","9001"]],AXIS["Easting",EAST],AXIS["Northing",NORTH]]"#;
+        const ESRI: &str = r#"PROJCS["NTF_Paris_Lambert_Zone_II",GEOGCS["GCS_NTF_Paris",DATUM["Nouvelle_Triangulation_Francaise_(Paris)",SPHEROID["Clarke_1880_IGN",6378249.2,293.466021293627]],PRIMEM["Paris",2.33722917],UNIT["Grad",0.0157079632679489]],PROJECTION["Lambert_Conformal_Conic"],PARAMETER["False_Easting",600000.0],PARAMETER["False_Northing",2200000.0],PARAMETER["Central_Meridian",0.0],PARAMETER["Standard_Parallel_1",52.0],PARAMETER["Scale_Factor",0.99987742],PARAMETER["Latitude_Of_Origin",52.0],UNIT["Meter",1.0]]"#;
+        const WKT2: &str = r#"PROJCRS["NTF (Paris) / Lambert zone II",BASEGEOGCRS["NTF (Paris)",DATUM["Nouvelle Triangulation Francaise (Paris)",ELLIPSOID["Clarke 1880 (IGN)",6378249.2,293.466021293627,LENGTHUNIT["metre",1]]],PRIMEM["Paris",2.5969213,ANGLEUNIT["grad",0.0157079632679489]],ID["EPSG",4807]],CONVERSION["Lambert zone II",METHOD["Lambert Conic Conformal (1SP)",ID["EPSG",9801]],PARAMETER["Latitude of natural origin",52,ANGLEUNIT["grad",0.0157079632679489],ID["EPSG",8801]],PARAMETER["Longitude of natural origin",0,ANGLEUNIT["grad",0.0157079632679489],ID["EPSG",8802]],PARAMETER["Scale factor at natural origin",0.99987742,SCALEUNIT["unity",1],ID["EPSG",8805]],PARAMETER["False easting",600000,LENGTHUNIT["metre",1],ID["EPSG",8806]],PARAMETER["False northing",2200000,LENGTHUNIT["metre",1],ID["EPSG",8807]]],CS[Cartesian,2],AXIS["easting (X)",east,ORDER[1],LENGTHUNIT["metre",1]],AXIS["northing (Y)",north,ORDER[2],LENGTHUNIT["metre",1]]]"#;
+        let xy = Coord::new(549_826.63, 2_192_990.71);
+        // PROJ 9.8.1's position on NTF itself (EPSG:4275, from Greenwich): these systems have no
+        // shift to WGS 84 here, so RustGIS reads them on NTF.
+        let ntf = Coord::new(1.680_720_205, 46.735_054_487);
+        // The prime meridian is in that unit too, as PROJ reads it, but for Paris at 2.33722917,
+        // the degrees GDAL and Esri write: Paris in grads (2.5969213, as WKT1 defines it) is the
+        // same place, and another meridian at 2.33722917 is 2.33722917 grads, 0.233722917° west
+        // of Paris.
+        let paris_in_grads = GDAL.replace(r#"PRIMEM["Paris",2.33722917"#, r#"PRIMEM["Paris",2.5969213"#);
+        let another = GDAL.replace(r#"PRIMEM["Paris""#, r#"PRIMEM["Another""#);
+        let west = Coord::new(1.446_997_288, 46.735_054_487);
+        // A central meridian of 10 grads is 9° east of Paris's (PROJ 9.8.1 places the point there).
+        let ten = GDAL.replace(r#"PARAMETER["central_meridian",0]"#, r#"PARAMETER["central_meridian",10]"#);
+        let east = Coord::new(10.680_720_205, 46.735_054_487);
+        let cases = [
+            ("WKT1", GDAL, ntf),
+            ("Esri", ESRI, ntf),
+            ("WKT2", WKT2, ntf),
+            ("Paris in grads", &paris_in_grads, ntf),
+            ("another", &another, west),
+            ("a central meridian of 10 grads", &ten, east),
+        ];
+        for (what, wkt, at) in cases {
+            let crs = crs_from_wkt(wkt).unwrap_or_else(|e| panic!("{what}: {e}"));
+            let ll = crs.transformer().unwrap().to_lonlat(xy).unwrap();
+            assert!(metres_apart(ll, at) < 0.01, "{what}: {ll:?} is {} m off", metres_apart(ll, at));
+        }
+        // A system in degrees keeps its parameters as written.
+        let degrees = GDAL.replace(r#"UNIT["grad",0.0157079632679489"#, r#"UNIT["degree",0.0174532925199433"#);
+        let proj4 = crs_from_wkt(&degrees).unwrap().custom_def().map(|d| d.proj4.clone()).unwrap_or_default();
+        assert!(proj4.contains("+lat_0=52 ") && proj4.contains("+k_0=0.99987742 ") && proj4.contains("+x_0=600000 "), "{proj4}");
+        // A scale factor stays a scale, though its name has a parallel in it (EPSG's name for
+        // Krovak's scale), and the parallel itself is an angle.
+        assert!(!angular(&norm("Scale_Factor_On_Pseudo_Standard_Parallel")));
+        assert!(angular(&norm("Pseudo_Standard_Parallel_1")));
+    }
+
+    /// Krovak East North (EPSG:5514) in Esri WKT with its angles in grads, as WKT1 allows, places
+    /// the corpus's point as in degrees: its plane rotation of 100 grads converts to 90° but for
+    /// the last bit, which the check for Krovak's fixed rotation allows. Another rotation is
+    /// still refused.
+    #[test]
+    fn wkt1_krovak_in_grads_is_read_as_in_degrees() {
+        let row = include_str!("esri_datum_corpus.tsv").lines().find(|l| l.starts_with("5514\t")).unwrap();
+        let cols: Vec<&str> = row.split('\t').collect();
+        let (xy, lonlat) = (
+            Coord::new(cols[1].parse().unwrap(), cols[2].parse().unwrap()),
+            Coord::new(cols[3].parse().unwrap(), cols[4].parse().unwrap()),
+        );
+        let grads = cols[5]
+            .replace(r#"UNIT["Degree",0.0174532925199433]"#, r#"UNIT["Grad",0.01570796326794897]"#)
+            .replace(r#""Pseudo_Standard_Parallel_1",78.5]"#, r#""Pseudo_Standard_Parallel_1",87.22222222222223]"#)
+            .replace(r#""Azimuth",30.28813975277778]"#, r#""Azimuth",33.65348861419753]"#)
+            .replace(r#""Longitude_Of_Center",24.83333333333333]"#, r#""Longitude_Of_Center",27.59259259259259]"#)
+            .replace(r#""Latitude_Of_Center",49.5]"#, r#""Latitude_Of_Center",55.0]"#)
+            .replace(r#""XY_Plane_Rotation",90.0]"#, r#""XY_Plane_Rotation",100.0]"#);
+        assert_eq!(grads.matches("Grad").count() + grads.matches("100.0]").count(), 2, "{grads}");
+        for wkt in [cols[5], grads.as_str()] {
+            let crs = crs_from_wkt(wkt).unwrap_or_else(|e| panic!("{e}: {wkt}"));
+            let ll = crs.transformer().unwrap().to_lonlat(xy).unwrap();
+            assert!(metres_apart(ll, lonlat) < 0.001, "{ll:?} is {} m off: {wkt}", metres_apart(ll, lonlat));
+        }
+        assert!(crs_from_wkt(&grads.replace(r#""XY_Plane_Rotation",100.0]"#, r#""XY_Plane_Rotation",101.0]"#)).is_err());
     }
 
     /// Transverse Mercator (South Orientated), EPSG's method 9808, as PROJ 9.8.1 writes South
