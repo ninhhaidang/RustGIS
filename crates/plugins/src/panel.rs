@@ -1,4 +1,4 @@
-//! A plugin's panel: a pane of simple widgets (text, checkboxes, sliders, buttons, trees,
+//! A plugin's panel: a pane of simple widgets (text, checkboxes, sliders, buttons, trees, forms,
 //! dropdowns, date pickers, range sliders and picks on the map) bound to its commands, declared
 //! in `plugin.json` (`panel`).
 //!
@@ -33,10 +33,14 @@ pub const MAX_DECLARED: usize = 2_000;
 pub const MAX_TREE_NODES: usize = 5_000;
 pub const MAX_TREE_DEPTH: usize = 8;
 pub const MAX_TREE_ID: usize = 200;
+/// The most fields a form holds, and a field's id and choices.
+pub const MAX_FORM_FIELDS: usize = 64;
+pub const MAX_FORM_FIELD_ID: usize = 64;
+pub const MAX_FORM_CHOICES: usize = 256;
 /// The most options a dropdown (`choice`) holds.
 pub const MAX_CHOICES: usize = 1_000;
 /// The widget kinds.
-pub const KINDS: &[&str] = &["text", "checkbox", "slider", "button", "tree", "choice", "date", "range", "pick"];
+pub const KINDS: &[&str] = &["text", "checkbox", "slider", "button", "tree", "form", "choice", "date", "range", "pick"];
 /// What a pick asks for on the map: a point (the default) or a box.
 pub const PICK_SHAPES: &[&str] = &["point", "box"];
 /// The longest coordinate system a pick's value names, in characters (a PROJ definition).
@@ -61,9 +65,9 @@ pub struct PanelDecl {
     pub items: Vec<PanelItemDecl>,
 }
 
-/// A widget. `kind` is `text`, `checkbox`, `slider`, `button`, `tree`, `choice` (a dropdown),
-/// `date` (a date picker), `range` (a slider with two handles) or `pick` (a place on the map);
-/// the other fields apply to some.
+/// A widget. `kind` is `text`, `checkbox`, `slider`, `button`, `tree`, `form`, `choice` (a
+/// dropdown), `date` (a date picker), `range` (a slider with two handles) or `pick` (a place on
+/// the map); the other fields apply to some.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PanelItemDecl {
@@ -81,11 +85,10 @@ pub struct PanelItemDecl {
     /// A text's first contents, until the plugin sets them.
     #[serde(default)]
     pub text: String,
-    /// The command it runs: a button's when clicked; a checkbox's when ticked or cleared; a
     /// slider's or a range's when let go (or stepped); a tree's or a dropdown's when a node or an
-    /// option is chosen; a date's when a date is picked; a pick's when the place is picked on the
-    /// map. Optional for all but buttons, whose
-    /// values then just go with the plugin's next request.
+    /// option is chosen; a form's when one of its fields changes; a date's when a date is picked;
+    /// a pick's when the place is picked on the map. Optional for all but buttons, whose values
+    /// then just go with the plugin's next request.
     #[serde(default)]
     pub command: String,
     /// A checkbox's first value (a bool), a slider's (a whole number; its `min` if unset), a
@@ -118,10 +121,10 @@ impl PanelItemDecl {
         if self.id.is_empty() && self.kind == "button" { &self.command } else { &self.id }
     }
 
-    /// Whether it has a value (a checkbox, a slider, a tree, a dropdown, a date, a range or a
-    /// pick).
+    /// Whether it has a value (a checkbox, a slider, a tree, a form, a dropdown, a date, a range or
+    /// a pick).
     pub fn has_value(&self) -> bool {
-        matches!(self.kind.as_str(), "checkbox" | "slider" | "tree" | "choice" | "date" | "range" | "pick")
+        matches!(self.kind.as_str(), "checkbox" | "slider" | "tree" | "form" | "choice" | "date" | "range" | "pick")
     }
 
     /// Whether it is a pick that asks for a box (a pick with no shape asks for a point).
@@ -133,6 +136,102 @@ impl PanelItemDecl {
     fn ranged(&self) -> bool {
         matches!(self.kind.as_str(), "slider" | "range")
     }
+}
+
+/// One field of a form, as the plugin gave it. Its value is kept with the form's, by field id.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FormField {
+    /// How the plugin names it in the form's value. Unique in the form.
+    pub id: String,
+    /// `text`, `number`, `checkbox`, `select` (one of `choices`) or `multi` (several of them).
+    pub kind: String,
+    pub label: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub help: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub choices: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default: Option<Value>,
+    #[serde(skip_serializing_if = "not_true")]
+    pub required: bool,
+    /// A number that is a whole number.
+    #[serde(skip_serializing_if = "not_true")]
+    pub integer: bool,
+}
+
+fn not_true(b: &bool) -> bool {
+    !*b
+}
+
+impl FormField {
+    /// The value `v` takes, made to this field's shape, or `None` when it doesn't.
+    fn value_of(&self, v: &Value) -> Option<Value> {
+        match self.kind.as_str() {
+            "text" => v.as_str().map(|s| Value::String(clip(s, MAX_STATE_TEXT))),
+            "number" => number(v, self.integer),
+            "checkbox" => v.as_bool().map(Value::Bool),
+            "select" => v.as_str().map(|s| clip(s, MAX_STATE_LABEL)).filter(|s| self.choices.contains(s)).map(Value::String),
+            "multi" => {
+                let parts: Vec<&str> = match v {
+                    Value::Array(a) => a.iter().filter_map(Value::as_str).collect(),
+                    Value::String(s) => s.split(',').map(str::trim).collect(),
+                    _ => return None,
+                };
+                let mut out: Vec<Value> = Vec::new();
+                for s in parts {
+                    // Matched as clipped, like the choices (see `form_fields`).
+                    let s = clip(s, MAX_STATE_LABEL);
+                    if !self.choices.contains(&s) {
+                        continue;
+                    }
+                    if !out.iter().any(|v| v.as_str() == Some(s.as_str())) {
+                        out.push(Value::String(s));
+                    }
+                }
+                Some(Value::Array(out))
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether taking `v` loses part of it: a text clipped, or a choice not among `choices`
+    /// left out of a set of them.
+    fn lossy(&self, v: &Value) -> bool {
+        match self.kind.as_str() {
+            "text" => v.as_str().is_some_and(|s| s.chars().count() > MAX_STATE_TEXT),
+            "multi" => {
+                let parts: Vec<Option<&str>> = match v {
+                    Value::Array(a) => a.iter().map(Value::as_str).collect(),
+                    Value::String(s) => s.split(',').map(|p| Some(p.trim())).collect(),
+                    _ => return false,
+                };
+                parts.into_iter().any(|p| p.is_none_or(|p| !self.choices.contains(&clip(p, MAX_STATE_LABEL))))
+            }
+            _ => false,
+        }
+    }
+
+    /// The value it has when the plugin gave none: its default, or an empty one of its kind.
+    fn initial(&self) -> Value {
+        self.default.as_ref().and_then(|d| self.value_of(d)).unwrap_or_else(|| match self.kind.as_str() {
+            "number" => json!(0),
+            "checkbox" => Value::Bool(false),
+            "select" => json!(self.choices.first().cloned().unwrap_or_default()),
+            "multi" => Value::Array(Vec::new()),
+            _ => json!(""),
+        })
+    }
+}
+
+/// A whole or fractional number from JSON, as this field takes it.
+fn number(v: &Value, integer: bool) -> Option<Value> {
+    // A whole number is checked as it came: converting it to a float first would round it.
+    if integer && let Some(i) = v.as_i64() {
+        return (i.unsigned_abs() <= 9_007_199_254_740_992).then(|| json!(i));
+    }
+    let f = v.as_f64().filter(|x| x.is_finite())?;
+    if integer { (f.fract() == 0.0 && f.abs() <= 9_007_199_254_740_992.0).then(|| json!(f as i64)) } else { Some(json!(f)) }
 }
 
 impl PanelDecl {
@@ -160,7 +259,7 @@ impl PanelDecl {
             let kind = item.kind.as_str();
             if !KINDS.contains(&kind) {
                 return Err(format!(
-                    "plugin.json: panel item kind '{}' isn't text, checkbox, slider, button, tree, choice, date, range or pick",
+                    "plugin.json: panel item kind '{}' isn't text, checkbox, slider, button, tree, form, choice, date, range or pick",
                     clip(kind, 40)
                 ));
             }
@@ -517,6 +616,17 @@ pub struct ItemState {
     /// front end copies the state every frame it shows).
     #[serde(skip_serializing_if = "no_nodes", serialize_with = "shared_nodes")]
     pub nodes: Arc<Vec<TreeNode>>,
+    /// A form's fields, in the order they show (shared as the nodes are).
+    #[serde(skip_serializing_if = "no_fields", serialize_with = "shared_fields")]
+    pub fields: Arc<Vec<FormField>>,
+}
+
+fn no_fields(f: &Arc<Vec<FormField>>) -> bool {
+    f.is_empty()
+}
+
+fn shared_fields<S: serde::Serializer>(f: &Arc<Vec<FormField>>, s: S) -> Result<S::Ok, S::Error> {
+    f.as_slice().serialize(s)
 }
 
 fn no_nodes(n: &Arc<Vec<TreeNode>>) -> bool {
@@ -599,6 +709,105 @@ fn holds(nodes: &[TreeNode], id: &str) -> bool {
     nodes.iter().any(|n| n.id == id || holds(&n.children, id))
 }
 
+/// The fields in `given` (`[{"id", "kind", "label"?, "help"?, "choices"?, "default"?,
+/// "required"?, "integer"?}]`), at most [`MAX_FORM_FIELDS`] of them, for form `item`. A field
+/// that isn't an object, has no valid id or one taken already, an unknown kind, or no choices
+/// when it needs them is left out; past the limits, fields and choices are left out, and long
+/// labels, choices and help clipped. Each is counted in `dropped`.
+fn form_fields(item: &str, given: &[Value], dropped: &mut Dropped) -> Vec<FormField> {
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    for (i, f) in given.iter().enumerate() {
+        let id = f.get("id").and_then(Value::as_str);
+        // Named by its id where it has one, else by its place in the list.
+        let name = id.map_or_else(|| format!("{item}.fields[{i}]"), |id| format!("{item}.fields.{id}"));
+        if i >= MAX_FORM_FIELDS {
+            dropped.field(name);
+            continue;
+        }
+        let Some(id) = id.filter(|i| i.chars().count() <= MAX_FORM_FIELD_ID) else {
+            dropped.field(name);
+            continue;
+        };
+        if !crate::manifest::valid_id(id, true) || !seen.insert(id.to_string()) {
+            dropped.field(name);
+            continue;
+        }
+        let Some(kind) =
+            f.get("kind").and_then(Value::as_str).filter(|k| matches!(*k, "text" | "number" | "checkbox" | "select" | "multi"))
+        else {
+            dropped.field(name);
+            continue;
+        };
+        let mut choices: Vec<String> = Vec::new();
+        if matches!(kind, "select" | "multi") {
+            let Some(list) = f.get("choices").and_then(Value::as_array) else {
+                dropped.field(name);
+                continue;
+            };
+            let mut lost = list.len() > MAX_FORM_CHOICES;
+            for c in list.iter().take(MAX_FORM_CHOICES) {
+                let Some(c) = c.as_str() else {
+                    lost = true;
+                    continue;
+                };
+                if c.chars().count() > MAX_STATE_LABEL {
+                    dropped.clip_label(&format!("{name}.choices"));
+                }
+                let c = clip(c, MAX_STATE_LABEL);
+                if !choices.contains(&c) {
+                    choices.push(c);
+                }
+            }
+            if lost {
+                dropped.field(format!("{name}.choices"));
+            }
+            if choices.is_empty() {
+                dropped.field(name);
+                continue;
+            }
+        }
+        let label = f.get("label").and_then(Value::as_str).filter(|l| !l.trim().is_empty());
+        if label.is_some_and(|l| l.chars().count() > MAX_STATE_LABEL) {
+            dropped.clip_label(&name);
+        }
+        let help = f.get("help").and_then(Value::as_str).unwrap_or_default();
+        if help.chars().count() > MAX_DECLARED {
+            dropped.clip_field(format!("{name}.help"));
+        }
+        let mut field = FormField {
+            id: id.to_string(),
+            kind: kind.to_string(),
+            label: label.map_or_else(|| id.to_string(), |l| clip(l, MAX_STATE_LABEL)),
+            help: clip(help, MAX_DECLARED),
+            choices,
+            default: None,
+            required: f.get("required").and_then(Value::as_bool).unwrap_or(false),
+            integer: f.get("integer").and_then(Value::as_bool).unwrap_or(false),
+        };
+        if let Some(d) = f.get("default").filter(|d| !d.is_null()) {
+            field.default = field.value_of(d);
+            if field.default.is_none() || field.lossy(d) {
+                dropped.field(format!("{name}.default"));
+            }
+        }
+        out.push(field);
+    }
+    out
+}
+
+/// A form's value with exactly `fields` in it, in order: what it had for a field that is still
+/// there, or the field's first value.
+fn normalized_form(fields: &[FormField], value: &Value) -> Value {
+    let current = value.as_object();
+    let mut out = Map::new();
+    for f in fields {
+        let v = current.and_then(|m| m.get(&f.id)).and_then(|raw| f.value_of(raw)).unwrap_or_else(|| f.initial());
+        out.insert(f.id.clone(), v);
+    }
+    Value::Object(out)
+}
+
 /// A panel's state, kept by the host between the plugin's calls.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct PanelState {
@@ -643,6 +852,9 @@ impl PanelState {
                 "tree" | "choice" | "date" => {
                     values.insert(id.clone(), d.default.clone().filter(Value::is_string).unwrap_or(Value::Null));
                 }
+                "form" => {
+                    values.insert(id.clone(), Value::Object(Map::new()));
+                }
                 "pick" => {
                     values.insert(id.clone(), Value::Null);
                 }
@@ -659,6 +871,7 @@ impl PanelState {
                     max: d.max.max(d.min),
                     labels: Vec::new(),
                     nodes: Arc::new(if d.kind == "choice" { choice_options(&d.options) } else { Vec::new() }),
+                    fields: Arc::default(),
                 },
             );
         }
@@ -678,6 +891,16 @@ impl PanelState {
     /// A tree's chosen node, a dropdown's chosen option or a date (`YYYY-MM-DD`), if any.
     pub fn chosen(&self, id: &str) -> Option<&str> {
         self.values.get(id).and_then(Value::as_str)
+    }
+
+    /// A form's values, by field id.
+    pub fn form(&self, id: &str) -> Option<&Map<String, Value>> {
+        self.values.get(id).and_then(Value::as_object)
+    }
+
+    /// One field's value in a form.
+    pub fn form_value(&self, id: &str, field: &str) -> Option<&Value> {
+        self.form(id).and_then(|f| f.get(field))
     }
 
     /// A range's low and high values.
@@ -704,8 +927,9 @@ impl PanelState {
     /// Sets widget values from `values` (`{"id": value}`): a checkbox takes a bool, a slider a
     /// whole number (kept within its ends), a range `[low, high]` (kept within its ends, low
     /// first), a tree one of its nodes' ids and a dropdown one of its options' ids (`null` for
-    /// none), a date `YYYY-MM-DD` (`null` for none), a pick a place ([`pick_value`]) or `null`.
-    /// Anything else is ignored. Returns the ids set.
+    /// none), a date `YYYY-MM-DD` (`null` for none), a form an object of field values (merged
+    /// into the ones it had), a pick a place ([`pick_value`]) or `null`. Anything else is ignored.
+    /// Returns the ids set.
     pub fn set_values(&mut self, decl: &PanelDecl, values: &Value) -> Vec<String> {
         let Some(given) = values.as_object() else { return Vec::new() };
         let mut set = Vec::new();
@@ -719,6 +943,23 @@ impl PanelState {
                     Value::String(n) if self.items.get(id).is_some_and(|s| holds(&s.nodes, n)) => Some(v.clone()),
                     _ => None,
                 },
+                "form" => {
+                    // A form takes the fields it holds, merged into what it had: a caller may
+                    // set one without repeating the rest.
+                    let Some(given) = v.as_object() else { continue };
+                    let fields = self.items.get(id).map_or(&[][..], |s| s.fields.as_slice());
+                    let mut merged = self.values.get(id).and_then(Value::as_object).cloned().unwrap_or_default();
+                    let mut any = false;
+                    for f in fields {
+                        if let Some(raw) = given.get(&f.id)
+                            && let Some(val) = f.value_of(raw)
+                        {
+                            merged.insert(f.id.clone(), val);
+                            any = true;
+                        }
+                    }
+                    any.then_some(Value::Object(merged))
+                }
                 "date" => match v {
                     Value::Null => Some(Value::Null),
                     Value::String(d) if date(d).is_some() => Some(v.clone()),
@@ -757,6 +998,22 @@ impl PanelState {
         }
         for id in set {
             let (Some(item), Some(input), Some(kept)) = (decl.item(id), given.get(id), self.values.get(id)) else { continue };
+            // A form takes what it can field by field: one it doesn't hold, or a value that
+            // isn't that field's, is not taken; one taken in part is adjusted.
+            if item.kind == "form" {
+                let fields = self.items.get(id.as_str()).map_or(&[][..], |s| s.fields.as_slice());
+                for (name, raw) in input.as_object().into_iter().flatten() {
+                    match fields.iter().find(|f| f.id == *name) {
+                        Some(f) if f.value_of(raw).is_some() => {
+                            if f.lossy(raw) {
+                                dropped.adjusted.push(format!("{id}.{name}"));
+                            }
+                        }
+                        _ => dropped.rejected_value(&format!("{id}.{name}")),
+                    }
+                }
+                continue;
+            }
             let changed = match item.kind.as_str() {
                 "slider" => whole(input) != whole(kept),
                 "range" => pair(input) != pair(kept),
@@ -777,11 +1034,12 @@ impl PanelState {
 
     /// Takes in a plugin's answer about its panel: `{"values": {...}, "items": {"id": {...}}}`.
     /// An item may set `label` (`null` for the declared one), `text`, `enabled`, `visible`, for a
-    /// slider or a range `min`, `max` and `labels`, for a tree `nodes`, and for a dropdown
-    /// `options`. Unknown ids and fields, and values
-    /// of the wrong type, are ignored; texts are clipped, sliders' values kept within their ends
-    /// and a tree's chosen node among its nodes. A pick's value can only be cleared (`null`): the
-    /// place is the user's to pick. Returns the values, options and nodes left out.
+    /// slider or a range `min`, `max` and `labels`, for a tree `nodes`, for a dropdown `options`,
+    /// and for a form `fields`. Unknown ids and fields, and values of the wrong type, are ignored;
+    /// texts are clipped, sliders' values kept within their ends, a tree's chosen node among its
+    /// nodes, and a form's value to its fields (a field the plugin no longer gives is dropped; a
+    /// new one starts at its default). A pick's value can only be cleared (`null`): the place is
+    /// the user's to pick. Returns the values, options and nodes left out.
     pub fn apply(&mut self, decl: &PanelDecl, update: &Value) -> Dropped {
         let mut dropped = Dropped::default();
         if !update.is_object() {
@@ -814,6 +1072,7 @@ impl PanelState {
                         "min" | "max" | "labels" => item.ranged(),
                         "nodes" => item.kind == "tree",
                         "options" => item.kind == "choice",
+                        "fields" => item.kind == "form",
                         _ => false,
                     };
                     if !applies {
@@ -840,6 +1099,7 @@ impl PanelState {
                 ("labels", !d.ranged() || u.get("labels").is_none_or(Value::is_array)),
                 ("nodes", d.kind != "tree" || u.get("nodes").is_none_or(Value::is_array)),
                 ("options", d.kind != "choice" || u.get("options").is_none_or(Value::is_array)),
+                ("fields", d.kind != "form" || u.get("fields").is_none_or(Value::is_array)),
             ] {
                 if !valid {
                     dropped.field(format!("{id}.{key}"));
@@ -924,6 +1184,11 @@ impl PanelState {
                 st.nodes = Arc::new(choice_options_reported(options, &mut dropped));
                 dropped.nodes = dropped.nodes.saturating_add(options.len().saturating_sub(st.nodes.len()));
             }
+            if d.kind == "form"
+                && let Some(fields) = u.get("fields").and_then(Value::as_array)
+            {
+                st.fields = Arc::new(form_fields(id, fields, &mut dropped));
+            }
         }
         if let Some(values) = update.get("values") {
             // A plugin can clear a pick, not pick a place itself: the others are refused, but for
@@ -964,6 +1229,20 @@ impl PanelState {
                     *v = json!([a.min(b), a.max(b)]);
                 }
                 "tree" | "choice" if v.as_str().is_some_and(|n| !holds(&st.nodes, n)) => *v = Value::Null,
+                "form" => {
+                    // A field the plugin added starts at its default and one it removed goes
+                    // with it: neither is a value changed. One kept but no longer fitting is.
+                    let after = normalized_form(&st.fields, v);
+                    let kept_changed = before
+                        .as_object()
+                        .zip(after.as_object())
+                        .is_some_and(|(b, a)| b.iter().any(|(k, x)| a.get(k).is_some_and(|y| y != x)));
+                    *v = after;
+                    if kept_changed && !dropped.adjusted.iter().any(|given| given == id) {
+                        dropped.adjusted.push(id.to_string());
+                    }
+                    continue;
+                }
                 _ => {}
             }
             if *v != before && !dropped.adjusted.iter().any(|given| given == id) {
@@ -977,5 +1256,170 @@ impl PanelState {
     /// naming the widgets this call set (the one the user just moved, say).
     pub fn request(&self, changed: &[String]) -> Value {
         json!({"values": self.values, "changed": changed})
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn form_decl() -> PanelDecl {
+        PanelDecl {
+            title: "Test".into(),
+            icon: String::new(),
+            help: String::new(),
+            state: String::new(),
+            items: vec![PanelItemDecl {
+                kind: "form".into(),
+                id: "form".into(),
+                label: "Form".into(),
+                help: String::new(),
+                text: String::new(),
+                command: String::new(),
+                default: None,
+                options: Vec::new(),
+                min: 0,
+                max: 0,
+                steps: false,
+                search: false,
+                shape: String::new(),
+            }],
+        }
+    }
+
+    fn fields() -> Value {
+        json!({
+            "items": {"form": {"fields": [
+                {"id": "method", "kind": "select", "label": "Method",
+                 "choices": ["fast", "careful"], "default": "careful"},
+                {"id": "count", "kind": "number", "integer": true, "default": 3.0},
+                {"id": "label", "kind": "text", "default": "untitled"},
+                {"id": "on", "kind": "checkbox", "default": true},
+                {"id": "vars", "kind": "multi", "choices": ["a", "b"], "default": "a,b"}
+            ]}}
+        })
+    }
+
+    #[test]
+    fn a_form_takes_the_fields_its_plugin_gives_and_starts_at_their_defaults() {
+        let d = form_decl();
+        let mut s = PanelState::new(&d);
+        assert_eq!(s.form("form"), Some(&Map::new()));
+        s.apply(&d, &fields());
+        let f = s.form("form").unwrap();
+        assert_eq!(f["method"], json!("careful"));
+        assert_eq!(f["count"], json!(3));
+        assert_eq!(f["label"], json!("untitled"));
+        assert_eq!(f["on"], json!(true));
+        assert_eq!(f["vars"], json!(["a", "b"]));
+        // A value set for one field keeps the others.
+        s.set_values(&d, &json!({"form": {"label": "new", "count": 7.0}}));
+        let f = s.form("form").unwrap();
+        assert_eq!(f["label"], json!("new"));
+        assert_eq!(f["count"], json!(7));
+        assert_eq!(f["method"], json!("careful"));
+        // A form whose fields changed keeps what still fits, drops the rest and starts new ones.
+        s.apply(
+            &d,
+            &json!({"items": {"form": {"fields": [
+                {"id": "label", "kind": "text", "default": "other"},
+                {"id": "level", "kind": "select", "choices": ["1", "2"], "default": "2"}
+            ]}}}),
+        );
+        let f = s.form("form").unwrap();
+        assert_eq!(f.len(), 2);
+        assert_eq!(f["label"], json!("new"), "a field still there keeps its value");
+        assert_eq!(f["level"], json!("2"), "a new field starts at its default");
+    }
+
+    #[test]
+    fn a_form_says_what_it_leaves_out_and_nothing_when_it_takes_all() {
+        let d = form_decl();
+        let mut s = PanelState::new(&d);
+        // Fields given for the first time, without values, start at their defaults quietly.
+        assert_eq!(s.apply(&d, &fields()).notice(), None);
+        // As do fields replaced by others (a module switched).
+        let other = json!({"items": {"form": {"fields": [{"id": "level", "kind": "number"}]}}});
+        assert_eq!(s.apply(&d, &other).notice(), None);
+        assert_eq!(s.apply(&d, &json!({"values": {"form": {"level": 4}}})).notice(), None);
+        // Fields it can't take are named.
+        let bad = json!({"items": {"form": {"fields": [
+            {"id": "ok", "kind": "text"},
+            {"id": "ok", "kind": "text"},
+            {"id": "what", "kind": "unknown"},
+            {"kind": "text"},
+            {"id": "pick", "kind": "select", "choices": ["a", 7], "default": "zzz"}
+        ]}}});
+        let notice = s.apply(&d, &bad).notice().unwrap_or_default();
+        for name in ["form.fields.ok", "form.fields.what", "form.fields[3]", "form.fields.pick.choices", "form.fields.pick.default"] {
+            assert!(notice.contains(name), "{name} in {notice}");
+        }
+        // So are values it can't take, field by field, and one taken in part.
+        let notice = s.apply(&d, &json!({"values": {"form": {"ok": "x", "nope": 1, "pick": 3}}})).notice().unwrap_or_default();
+        assert!(notice.contains("form.nope") && notice.contains("form.pick"), "{notice}");
+        assert!(!notice.contains("form.ok"), "{notice}");
+        assert_eq!(s.form("form").unwrap()["ok"], json!("x"));
+        let long = "x".repeat(MAX_STATE_TEXT + 1);
+        let notice = s.apply(&d, &json!({"values": {"form": {"ok": long}}})).notice().unwrap_or_default();
+        assert!(notice.contains("adjusted") && notice.contains("form.ok"), "{notice}");
+        // Past the limit, fields are left out and counted.
+        let many: Vec<Value> = (0..MAX_FORM_FIELDS + 3).map(|i| json!({"id": format!("f{i}"), "kind": "text"})).collect();
+        let mut dropped = Dropped::default();
+        assert_eq!(form_fields("form", &many, &mut dropped).len(), MAX_FORM_FIELDS);
+        assert_eq!(dropped.fields.len() + dropped.unlisted_fields, 3);
+    }
+
+    #[test]
+    fn a_form_ignores_fields_and_values_it_cannot_take() {
+        let d = form_decl();
+        let mut s = PanelState::new(&d);
+        s.apply(
+            &d,
+            &json!({"items": {"form": {"fields": [
+                {"id": "no choices", "kind": "select"},
+                {"id": "kind", "kind": "unknown"},
+                {"id": "pick", "kind": "select", "choices": ["a", "a", "b"]},
+                {"id": "pick", "kind": "text"},
+                {"id": "num", "kind": "number", "integer": true, "default": 1.5},
+                {"id": "text", "kind": "text"}
+            ]}}}),
+        );
+        let st = s.items.get("form").unwrap();
+        assert_eq!(st.fields.iter().map(|f| f.id.as_str()).collect::<Vec<_>>(), ["pick", "num", "text"]);
+        assert_eq!(st.fields[0].choices, ["a", "b"]);
+        assert_eq!(st.fields[1].default, None, "1.5 is no whole number");
+        assert_eq!(s.form("form").unwrap()["num"], json!(0));
+        // Values of the wrong type or not among the choices are ignored; text is clipped.
+        s.set_values(&d, &json!({"form": {"pick": "zzz", "num": "many", "text": 7, "unknown": "x"}}));
+        let f = s.form("form").unwrap();
+        assert_eq!(f["pick"], json!("a"));
+        assert_eq!(f["num"], json!(0));
+        assert_eq!(f["text"], json!(""));
+        assert!(!f.contains_key("unknown"));
+        let long = "x".repeat(MAX_STATE_TEXT + 10);
+        s.set_values(&d, &json!({"form": {"text": long}}));
+        assert_eq!(s.form("form").unwrap()["text"].as_str().unwrap().chars().count(), MAX_STATE_TEXT);
+    }
+
+    #[test]
+    fn long_choices_match_as_clipped_and_whole_numbers_are_bounded_as_given() {
+        let long = "c".repeat(MAX_STATE_LABEL + 20);
+        let clipped = "c".repeat(MAX_STATE_LABEL);
+        let mut dropped = Dropped::default();
+        let fields = form_fields(
+            "form",
+            &[
+                json!({"id": "pick", "kind": "select", "choices": [long.clone()], "default": long.clone()}),
+                json!({"id": "many", "kind": "multi", "choices": [long.clone()]}),
+            ],
+            &mut dropped,
+        );
+        assert_eq!(dropped.labels, 2, "each long choice is said to be clipped");
+        assert_eq!(fields[0].default, Some(json!(clipped)), "a default longer than its choice still matches");
+        assert_eq!(fields[0].value_of(&json!(long)), Some(json!(clipped)));
+        assert_eq!(fields[1].value_of(&json!([long])), Some(json!([clipped])), "a selection longer than its choice is kept");
+        // A whole number is bounded as it came, not after a float has rounded it.
+        assert_eq!(number(&json!(9_007_199_254_740_993_i64), true), None);
+        assert_eq!(number(&json!(9_007_199_254_740_992_i64), true), Some(json!(9_007_199_254_740_992_i64)));
     }
 }

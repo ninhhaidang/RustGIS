@@ -399,11 +399,11 @@ pub fn command(plugin: &str, spec: &Spec, host: &mut dyn Host, request: &Value, 
         }
         // Checked whatever it sends: a program that keeps talking still runs out of time.
         if Instant::now() >= deadline {
-            break Err("it ran too long and was stopped".to_string());
+            break Err(crate::RAN_TOO_LONG.to_string());
         }
         let line = match r.rx.recv_timeout(deadline.saturating_duration_since(Instant::now()).min(CANCEL_POLL)) {
             Ok(l) => l,
-            Err(RecvTimeoutError::Timeout) if Instant::now() >= deadline => break Err("it ran too long and was stopped".to_string()),
+            Err(RecvTimeoutError::Timeout) if Instant::now() >= deadline => break Err(crate::RAN_TOO_LONG.to_string()),
             Err(RecvTimeoutError::Timeout) => continue,
             Err(RecvTimeoutError::Disconnected) => Line::End,
         };

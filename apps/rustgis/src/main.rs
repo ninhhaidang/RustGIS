@@ -495,6 +495,8 @@ fn main() -> eframe::Result {
     // Commands run on the window's own thread: a raster read in place lands as the map draws
     // rather than holding the window for a slow host.
     app.session.in_place_wait = false;
+    // Nor may a plugin command hold it past the usual two minutes.
+    app.session.on_window_thread = true;
     let mut services = prefs::services();
     // Autosave, in a recovery folder only the copy holding the run marker uses: a second copy
     // running alongside would offer, or overwrite, the first one's unsaved work.

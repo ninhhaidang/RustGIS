@@ -25,6 +25,8 @@ const MAX_TAB_ITEMS: usize = 16_384;
 const MAX_TAB_LABEL: usize = 32;
 const MAX_RUN_ARGS: usize = 64;
 const MAX_SKILLS: usize = 32;
+/// A command may run for at most a day before RustGIS stops it.
+const MAX_COMMAND_TIMEOUT: u64 = 86_400;
 
 /// RustGIS's own ribbon tabs (and the Project button), and the names they had before: a plugin's
 /// tab can't take them.
@@ -173,6 +175,10 @@ pub struct CommandDecl {
     /// Parameter description for scripts and agents, like a built-in command's.
     #[serde(default = "no_params")]
     pub params: String,
+    /// Seconds the command may run before it is stopped; unset is 120. Set it for work
+    /// that takes longer, such as downloading a dataset.
+    #[serde(default)]
+    pub timeout: Option<u64>,
 }
 
 fn no_params() -> String {
@@ -544,6 +550,14 @@ impl Manifest {
             check_text("command help", &c.help, false)?;
             check_text("command params", &c.params, false)?;
             check_text("command icon", &c.icon, false)?;
+            if let Some(seconds) = c.timeout
+                && (seconds == 0 || seconds > MAX_COMMAND_TIMEOUT)
+            {
+                return Err(format!(
+                    "plugin.json: command '{}' has a timeout of {seconds} seconds; it must be 1 to {MAX_COMMAND_TIMEOUT}",
+                    c.id
+                ));
+            }
         }
         for t in &self.tools {
             if !valid_id(&t.id, false) || !seen.insert(("t", t.id.as_str())) {

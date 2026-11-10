@@ -177,7 +177,7 @@ pub fn call(module: &Module, host: &mut dyn Host, request: &Value, fuel: u64) ->
     link(&mut linker)?;
     let trap = |e: wasmi::Error| {
         if matches!(e.as_trap_code(), Some(wasmi::TrapCode::OutOfFuel)) {
-            "it ran too long and was stopped".to_string()
+            crate::RAN_TOO_LONG.to_string()
         } else {
             format!("it stopped with an error ({e})")
         }

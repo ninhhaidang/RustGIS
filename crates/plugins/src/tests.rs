@@ -216,6 +216,46 @@ fn plugin_tool_and_parameter_limits_stay_bounded() {
     assert!(e.contains("more than 32 parameters"), "{e}");
 }
 
+/// A command may ask for more time than the two minutes a command normally gets.
+#[test]
+fn command_timeouts_are_bounded() {
+    let manifest = |timeout: Value| {
+        json!({"id": "timed", "name": "Timed", "version": "1.0.0",
+            "commands": [{"id": "c", "label": "C", "timeout": timeout}]})
+    };
+    let m = Manifest::parse(&manifest(json!(600)).to_string()).unwrap();
+    assert_eq!(m.commands[0].timeout, Some(600));
+    assert_eq!(Manifest::parse(&manifest(Value::Null).to_string()).unwrap().commands[0].timeout, None);
+    let e = Manifest::parse(&manifest(json!(0)).to_string()).unwrap_err();
+    assert!(e.contains("timeout of 0 seconds"), "{e}");
+    let e = Manifest::parse(&manifest(json!(86_401)).to_string()).unwrap_err();
+    assert!(e.contains("timeout of 86401 seconds"), "{e}");
+}
+
+/// A WebAssembly command's host requests are refused once its time limit has passed.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn wasm_host_requests_stop_at_the_time_limit() {
+    struct Slow(u32);
+    impl Host for Slow {
+        fn call(&mut self, _: &str, _: &Value) -> Result<Value, String> {
+            self.0 += 1;
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            Ok(json!(1))
+        }
+    }
+    let mut host = Slow(0);
+    // The limit is far off for the first request, so no scheduling delay can end it early; the
+    // deadline then passes before the second.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let mut timed = crate::Timed { host: &mut host, deadline };
+    assert!(timed.call("a", &json!({})).is_ok());
+    timed.deadline = std::time::Instant::now();
+    let e = timed.call("b", &json!({})).unwrap_err();
+    assert!(e.contains("too long"), "{e}");
+    assert_eq!(host.0, 1, "the request after the limit never reached the host");
+}
+
 /// Enabled plugin tools register with geoprocessing and return layers or selections.
 #[test]
 fn tools_join_the_geoprocessing_tools() {
@@ -676,7 +716,7 @@ fn plugin_panels_are_checked() {
             "1 to 32 items",
         ),
         (json!({"title": "P", "state": "nope", "items": [{"kind": "button", "command": "h"}]}), "state command"),
-        (item(json!({"kind": "dial", "id": "d"})), "isn't text, checkbox, slider, button, tree, choice, date, range or pick"),
+        (item(json!({"kind": "dial", "id": "d"})), "isn't text, checkbox, slider, button, tree, form, choice, date, range or pick"),
         (item(json!({"kind": "pick", "id": "p"})), "needs a label or a command"),
         (item(json!({"kind": "pick", "label": "P"})), "invalid or repeated"),
         (item(json!({"kind": "pick", "id": "p", "command": "zz"})), "isn't one of the plugin's commands"),

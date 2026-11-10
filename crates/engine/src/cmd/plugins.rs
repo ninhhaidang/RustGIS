@@ -622,7 +622,18 @@ impl Session {
     /// Runs a plugin command (`plugin:<plugin>/<command>`) as one undoable step.
     pub(crate) fn run_plugin(&mut self, op: crate::policy::Authorized<crate::policy::CommandOp>) -> CmdResult {
         let crate::policy::CommandOp::Plugin { cmd, pin, params } = op.op() else { return Err("not a plugin command".into()) };
-        let cmd = cmd.clone();
+        #[allow(unused_mut)]
+        let mut cmd = cmd.clone();
+        // On the desktop a command runs on the window's own thread, which draws nothing and can't
+        // be cancelled until the command answers: a `timeout` longer than the usual two minutes
+        // holds there for the command line, Python and scripts only, and a command stopped at the
+        // two minutes says so (#1562).
+        #[cfg(not(target_arch = "wasm32"))]
+        let capped = window_capped(self.on_window_thread, cmd.decl.timeout);
+        #[cfg(not(target_arch = "wasm32"))]
+        if capped.is_some() {
+            cmd.decl.timeout = None;
+        }
         if !rustgis_plugins::is_current(pin.plugin()) {
             return Err("the plugin was disabled, updated or removed".into());
         }
@@ -718,6 +729,11 @@ impl Session {
             let fetches = fetch::Calls::for_plugin(&plugin.manifest.id);
             let mut bridge = Bridge { s, plugin, fetches, changed: false, requested: false };
             let res = rustgis_plugins::run_command_with_panel(&cmd, &mut bridge, params, request);
+            #[cfg(not(target_arch = "wasm32"))]
+            let res = res.map_err(|e| match capped {
+                Some(t) if e.ends_with(rustgis_plugins::RAN_TOO_LONG) => capped_error(&e, t),
+                _ => e,
+            });
             let asked = bridge.s.call_requests.as_mut().map(std::mem::take).unwrap_or_default();
             if res.is_ok() && (!bridge.fetches.pending.is_empty() || !asked.is_empty()) {
                 // Waiting for a fetch (the browser) or a download left to the app: whatever the
@@ -1083,6 +1099,23 @@ impl Session {
     }
 }
 
+/// The `timeout` a plugin command declares that the desktop window's thread doesn't give it:
+/// longer than the usual two minutes ([`Session::on_window_thread`]).
+#[cfg(not(target_arch = "wasm32"))]
+fn window_capped(on_window_thread: bool, timeout: Option<u64>) -> Option<u64> {
+    timeout.filter(|t| on_window_thread && *t > rustgis_plugins::process::COMMAND_TIMEOUT.as_secs())
+}
+
+/// A command's error when it was stopped at the desktop's two minutes, not its own `timeout`.
+#[cfg(not(target_arch = "wasm32"))]
+fn capped_error(error: &str, timeout: u64) -> String {
+    format!(
+        "{error} after {} seconds: in the app a plugin command may run for {0} seconds at most (its own limit of {timeout} \
+         seconds holds on the command line and in Python); a plugin tool runs longer work in the background",
+        rustgis_plugins::process::COMMAND_TIMEOUT.as_secs()
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1184,5 +1217,19 @@ mod tests {
         s.rerun_landed = vec![(asked.clone(), Ok(json!({"layer": 4_000_000})), Default::default())];
         let e = s.run("layer.addUrl", &asked).unwrap_err();
         assert!(e.contains("removed or undone"), "{e}");
+    }
+
+    /// On the desktop window's thread a plugin command keeps the usual two minutes, and a command
+    /// stopped there says its longer limit holds elsewhere; off it, the declared limit holds.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_long_timeout_is_capped_on_the_window_thread() {
+        assert_eq!(window_capped(true, Some(600)), Some(600));
+        assert_eq!(window_capped(true, Some(120)), None);
+        assert_eq!(window_capped(true, Some(30)), None);
+        assert_eq!(window_capped(true, None), None);
+        assert_eq!(window_capped(false, Some(600)), None);
+        let e = capped_error(&format!("Download: {}", rustgis_plugins::RAN_TOO_LONG), 600);
+        assert!(e.contains("after 120 seconds") && e.contains("600 seconds holds on the command line"), "{e}");
     }
 }

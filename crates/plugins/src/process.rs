@@ -415,19 +415,24 @@ fn converse(stdin: &Writer, rx: &Receiver<Line>, host: &mut dyn Host, request: &
             }
             // Checked whatever it sends: a program that keeps talking still runs out of time.
             if deadline.is_some_and(|d| Instant::now() >= d) {
-                return Err("it ran too long and was stopped".into());
+                return Err(crate::RAN_TOO_LONG.into());
             }
             let wait = deadline.map_or(CANCEL_POLL, |d| d.saturating_duration_since(Instant::now()).min(CANCEL_POLL));
             match rx.recv_timeout(wait) {
                 Ok(l) => break l,
                 Err(RecvTimeoutError::Timeout) if deadline.is_some_and(|d| Instant::now() >= d) => {
-                    return Err("it ran too long and was stopped".into());
+                    return Err(crate::RAN_TOO_LONG.into());
                 }
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => break Line::End,
             }
         };
         let bytes = match line {
+            // A line that comes after the deadline is not processed: a program that keeps
+            // printing gets no more host requests or success.
+            Line::Text(_) if deadline.is_some_and(|d| Instant::now() >= d) => {
+                return Err(crate::RAN_TOO_LONG.into());
+            }
             Line::Text(b) => b,
             Line::End => return Err("it exited without answering".into()),
             Line::TooLong => return Err(format!("it sent a line longer than {} MB", MAX_LINE / (1024 * 1024))),
@@ -448,6 +453,10 @@ fn converse(stdin: &Writer, rx: &Receiver<Line>, host: &mut dyn Host, request: &
                 continue;
             }
         };
+        // Reading a long line takes time too: what it says is not acted on past the deadline.
+        if deadline.is_some_and(|d| Instant::now() >= d) {
+            return Err(crate::RAN_TOO_LONG.into());
+        }
         if let Some(c) = msg.get("call") {
             calls += 1;
             if calls > MAX_HOST_CALLS {
@@ -455,6 +464,10 @@ fn converse(stdin: &Writer, rx: &Receiver<Line>, host: &mut dyn Host, request: &
             }
             let op = c.get("op").and_then(Value::as_str).unwrap_or_default();
             let params = c.get("params").cloned().unwrap_or(Value::Null);
+            // Copying a large request takes time: a request is not started past the deadline.
+            if deadline.is_some_and(|d| Instant::now() >= d) {
+                return Err(crate::RAN_TOO_LONG.into());
+            }
             let reply = match host.call(op, &params) {
                 Ok(v) => json!({"ok": v}),
                 Err(e) => json!({"error": e}),
