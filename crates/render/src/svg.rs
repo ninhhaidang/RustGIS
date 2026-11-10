@@ -17,8 +17,18 @@ use rustgis_map::layout::{ElementKind, FontFamily, Layout, LineHead, PT_PER_MM, 
 use crate::layout::{MAX_PIXELS, PageInfo, expand, page_geometry, record_element, render_element};
 
 /// Writes `layout` as an SVG document, pictures drawn at `dpi`, and the elements (id and name)
-/// drawn as pictures because their vectors would pass the budget; `None` when the page can't be drawn.
-pub fn layout_svg(layout: &Layout, maps: &mut [Map], dpi: f64, info: &PageInfo) -> Option<(String, Vec<(u32, String)>)> {
+/// drawn as pictures because their vectors would pass the budget. Refuses a source changed during drawing.
+pub fn layout_svg(layout: &Layout, maps: &mut [Map], dpi: f64, info: &PageInfo) -> Result<(String, Vec<(u32, String)>), String> {
+    let revisions = crate::layout::archive_revisions(layout, maps);
+    let result = layout_svg_inner(layout, maps, dpi, info);
+    revisions.finish_revision(
+        crate::layout::archive_revisions(layout, maps),
+        result,
+        "could not draw the page; check its map sources and export size",
+    )
+}
+
+fn layout_svg_inner(layout: &Layout, maps: &mut [Map], dpi: f64, info: &PageInfo) -> Option<(String, Vec<(u32, String)>)> {
     let mut defs = vectors::Defs::default();
     let mut pictured = Vec::new();
     let mut body = elements(layout, maps, dpi, info, &mut defs, &mut pictured)?;
@@ -438,7 +448,7 @@ mod tests {
         assert!(svg.contains(&format!(r#"<g transform="translate({} {}) scale("#, num(x), num(y))), "{svg}");
         layout.element_mut(id).unwrap().x = 110.0;
         assert!(render_element(&layout, id, &mut maps, 36.0, &info).unwrap().is_none());
-        assert!(layout_svg(&layout, &mut maps, 36.0, &info).is_some(), "an off-page image is harmless");
+        assert!(layout_svg(&layout, &mut maps, 36.0, &info).is_ok(), "an off-page image is harmless");
     }
 
     #[test]
@@ -450,7 +460,7 @@ mod tests {
         let mut source = rustgis_map::source::SourceLayer::default();
         source.path = Some(dir.path().join("missing.shp").display().to_string());
         maps[0].layers[0].source = Some(source);
-        assert!(layout_svg(&layout, &mut maps, 72.0, &PageInfo::default()).is_none());
+        assert!(layout_svg(&layout, &mut maps, 72.0, &PageInfo::default()).is_err());
     }
 
     #[test]

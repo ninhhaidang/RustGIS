@@ -276,6 +276,14 @@ Ocean, Atlas, Blank), which need no network, and web tile layers over them:
   A style's root `center`, `zoom`, `bearing` and `pitch` say where it opens: `map.addTiles` with
   `"view": true` takes the map there once the style has loaded.
 
+Present PMTiles metadata must be complete, decodable and a JSON object; malformed metadata or a
+stored metadata section over **16 MiB** refuses ordinary loading, repair and reload rather than
+silently losing credits or source-layer information. RustGIS's PMTiles writer enforces the same
+metadata limit. This is not a limit on the archive's total size; absent metadata remains supported.
+MBTiles metadata names and values must be text: unreadable or NULL metadata cells also produce an
+error rather than being silently skipped. Native MBTiles loading, repair and reload refuse more
+than **1,000 metadata rows** rather than silently omitting later rows.
+
 HTTPS tiles use [platform certificate trust](data.md#https-certificates) on desktop and the
 command line, including private CAs trusted by the operating system. The web app uses the browser.
 
@@ -339,6 +347,58 @@ alone, whichever it is (a WMS layer too). Tiles are not
 selectable or editable; a tile not yet loaded may need another click once it arrives.
 **Reload** in the Basemap gallery (`map.reloadWebLayers`) clears cached tiles and styles and
 fetches them again.
+
+**Reloading a local tile archive (desktop).** After changing a PMTiles or MBTiles file on disk,
+right-click its row in Layers and choose **Reload Data** (**Reload Tile Archive** in Command
+Search). CLI, Python, MCP and the Assistant use
+`map.reloadTiles={"index":0}`; `"name"` or catalog `"id"` can select the archive instead.
+No replacement path is accepted. This is a manual action: RustGIS does not watch the file for changes.
+It rereads that archive's metadata and tiles without clearing other archives or web layers.
+The layer keeps its name, visibility, opacity, blend, drawing order, source-layer visibility,
+style and other presentation settings; the map's view stays where it is. Undo cannot restore
+file contents that another program has overwritten.
+
+On the desktop, menu actions and direct attached MCP `run_command` calls validate reload and
+repair on a background worker; the status bar shows the work and **Cancel**. Only one read runs
+at a time. If its project, map, archive or presentation changes before it lands, the result is
+left unapplied: retry on the intended target. A paused attached batch also rejects its remaining
+commands if the project or selected map changes. Notebook cells, task steps, scripts (the Script
+pane and attached MCP `run`) and file-bridge scripts validate inline on the window thread, without
+reload status or cancellation during validation.
+Cancelling MBTiles validation also interrupts SQLite queries used to infer missing zoom metadata.
+It cannot preempt a filesystem operation blocked inside the operating system.
+
+Approval binds the selected archive's owning map, stack position and source route, not just its
+name or index. Retargeting or reordering it requires reviewing the operation again.
+
+Each operation observes file size and modification time before validation, checks them again
+after validation and immediately before applying the result, and rejects observable changes.
+It also checks file identity and change time where the platform exposes them, plus MBTiles
+`-wal` and `-journal` existence and revisions (not the reader-coordination `-shm` file).
+Metadata that cannot be read is an error, not permission to apply an unchecked result.
+These checks are not an immutable snapshot: a rewrite that leaves the same observations, or a
+write after the final check, may escape detection. Finish writing before reloading or repairing.
+If an archive is reloaded during a map or layout export, the export refuses a mixed-version
+result. Wait for the reload to finish and retry the export.
+
+Reload first checks that the file can be read. If it is missing, unreadable or invalid, a notice
+explains the failure and the existing layer and retained cached data are left unchanged.
+Finish writing or restore the file, then choose **Reload Data** again. If the file has moved,
+choose **Repair Data Source…** instead and select its new location. Repair also checks the
+replacement before changing the source; cancelling or choosing an unreadable or invalid archive
+leaves the existing source and layer unchanged, so you can retry with a valid file.
+
+Validation reads one size-bounded raster sample from a fresh MBTiles connection and decodes it
+before dropping retained caches. PMTiles validation checks all reachable index directories, not
+every tile payload. It allows at most **64 MiB stored and 64 MiB decoded index bytes**, **1,048,576
+index entries**, **4,096 unique directories** (including the root), and **four leaf levels**;
+each stored directory read is limited to **16 MiB**. An invalid index or an exceeded validation
+budget is an explicit error without eviction, even if an unusually large index is otherwise valid.
+
+Neither action is available for local archives in the web app, or for remote tile services.
+On Windows, an open MBTiles file may not be replaceable while RustGIS holds it open: reload
+does not bypass that operating-system restriction. Close RustGIS before replacing the file,
+then reopen the project, or write to a different path and use **Repair Data Source…**.
 
 **Source layers.** A vector PMTiles or MBTiles archive lists its source layers (the
 `vector_layers` its metadata names: `water`, `roads`, `pois`…) under its row in the Layers pane:

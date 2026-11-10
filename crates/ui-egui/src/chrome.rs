@@ -679,7 +679,17 @@ pub fn shortcuts(app: &mut RustGisApp, ctx: &egui::Context) {
 
 /// Whether a UI command is available on the current platform.
 pub(crate) fn command_available(id: &str, web: bool) -> bool {
-    !web || !matches!(id, "ui.checkUpdate" | "ui.mcpRelay" | "ui.themeLoad" | "ui.themeReload" | "ui.reloadData" | "layer.reloadData")
+    !web || !matches!(
+        id,
+        "ui.checkUpdate"
+            | "ui.mcpRelay"
+            | "ui.themeLoad"
+            | "ui.themeReload"
+            | "ui.reloadData"
+            | "layer.reloadData"
+            | "map.reloadTiles"
+            | "map.repairTiles"
+    )
 }
 
 /// The `ui.*` commands Command Search lists: (id, label, ribbon location).

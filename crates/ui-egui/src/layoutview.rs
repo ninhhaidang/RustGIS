@@ -655,8 +655,7 @@ pub fn show(app: &mut RustGisApp, ui: &mut Ui) {
     });
     if (app.layout.key != Some(key) || due) && size[0] > 2 && size[1] > 2 {
         let info = page_info(app, li);
-        if let Some((pm, frames_pending)) =
-            rustgis_engine::render::layout::render_pending(&layout, &mut app.session.project.maps, dpi, &info)
+        if let Ok((pm, frames_pending)) = rustgis_engine::render::layout::render_pending(&layout, &mut app.session.project.maps, dpi, &info)
         {
             let img = egui::ColorImage::from_rgba_premultiplied([pm.width() as usize, pm.height() as usize], pm.data());
             match &mut app.layout.texture {

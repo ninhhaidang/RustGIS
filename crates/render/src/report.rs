@@ -267,15 +267,24 @@ const MAX_PIXELS: f64 = if cfg!(target_arch = "wasm32") { 25_000_000.0 } else { 
 
 /// Draws page `n` (0-based) at `dpi`, returning it and its size in millimetres. `layouts` and
 /// `maps` are the project's, for layout pages.
-pub fn draw_page(doc: &Doc, pages: &[Page], n: usize, dpi: f64, layouts: &[Layout], maps: &mut [Map]) -> Option<(Pixmap, f64, f64)> {
-    let page = pages.get(n)?;
+pub fn draw_page(
+    doc: &Doc,
+    pages: &[Page],
+    n: usize,
+    dpi: f64,
+    layouts: &[Layout],
+    maps: &mut [Map],
+) -> Result<(Pixmap, f64, f64), String> {
+    let page = pages.get(n).ok_or("no such report page")?;
     let dpi = if dpi.is_finite() { dpi.clamp(24.0, 600.0) } else { 96.0 };
     if let Page::Layout(li) = page {
-        let l = layouts.get(*li)?;
+        let l = layouts.get(*li).ok_or("no such report layout")?;
         let info = crate::layout::PageInfo { page: n + 1, pages: pages.len(), page_name: String::new() };
         return crate::layout::render(l, maps, dpi, &info).map(|pm| (pm, l.width, l.height));
     }
-    flow_canvas(doc, pages, n, dpi, false).map(|(pm, w, h)| (pm.into_pixmap(), w, h))
+    flow_canvas(doc, pages, n, dpi, false)
+        .map(|(pm, w, h)| (pm.into_pixmap(), w, h))
+        .ok_or_else(|| "the page is too large to draw".to_string())
 }
 
 /// Page `n` as a vector PDF page: a layout's as [`crate::layout::render_drawing`] keeps it, a
@@ -288,17 +297,17 @@ pub fn pdf_page(
     dpi: f64,
     layouts: &[Layout],
     maps: &mut [Map],
-) -> Option<(crate::pdf::Page, Vec<(u32, String)>)> {
-    let page = pages.get(n)?;
+) -> Result<(crate::pdf::Page, Vec<(u32, String)>), String> {
+    let page = pages.get(n).ok_or("no such report page")?;
     let dpi = if dpi.is_finite() { dpi.clamp(24.0, 600.0) } else { 96.0 };
     if let Page::Layout(li) = page {
-        let l = layouts.get(*li)?;
+        let l = layouts.get(*li).ok_or("no such report layout")?;
         let info = crate::layout::PageInfo { page: n + 1, pages: pages.len(), page_name: String::new() };
         return crate::layout::render_drawing(l, maps, dpi, &info)
             .map(|(d, pictured)| (crate::pdf::Page::drawing(d, l.width, l.height), pictured));
     }
-    let (pm, w, h) = flow_canvas(doc, pages, n, dpi, true)?;
-    pm.into_drawing().map(|d| (crate::pdf::Page::drawing(d, w, h), Vec::new()))
+    let (pm, w, h) = flow_canvas(doc, pages, n, dpi, true).ok_or("the page is too large to draw")?;
+    pm.into_drawing().map(|d| (crate::pdf::Page::drawing(d, w, h), Vec::new())).ok_or_else(|| "the page is too large to draw".to_string())
 }
 
 /// Flowing page `n` on a canvas `dpi` dots an inch (recording when `record`), and its size in
@@ -540,7 +549,7 @@ mod tests {
         let (pm, w, _) = draw_page(&d, &pages, 0, 72.0, &[], &mut []).unwrap();
         assert_eq!(w, 215.9);
         assert!(pm.pixels().iter().any(|p| p.red() < 100), "the page has text");
-        assert!(draw_page(&d, &pages, 10_000, 72.0, &[], &mut []).is_none());
+        assert!(draw_page(&d, &pages, 10_000, 72.0, &[], &mut []).is_err());
     }
 
     #[test]
@@ -550,7 +559,7 @@ mod tests {
         assert!(!pages.is_empty() && pages.len() <= MAX_PAGES);
         let d = Doc { title: "Empty".into(), width: 100.0, height: 100.0, blocks: Vec::new() };
         assert_eq!(paginate(&d).len(), 1);
-        assert!(draw_page(&d, &paginate(&d), 0, 1e9, &[], &mut []).is_some());
+        assert!(draw_page(&d, &paginate(&d), 0, 1e9, &[], &mut []).is_ok());
     }
 
     #[test]

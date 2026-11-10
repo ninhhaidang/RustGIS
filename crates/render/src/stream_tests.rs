@@ -554,7 +554,7 @@ fn layout_export_keeps_all_drawn_legend_classes() {
     }
     let mut failed = base.clone();
     failed.layers[0] = streamed(&base.layers[0], 0);
-    assert!(layout::render(&page, &mut [failed], 96.0, &layout::PageInfo::default()).is_none());
+    assert!(layout::render(&page, &mut [failed], 96.0, &layout::PageInfo::default()).is_err());
 }
 
 #[test]
@@ -1163,7 +1163,7 @@ fn layout_export_rejects_unopened_local_shapefiles_and_required_masks() {
                 map.layer_mut(point).unwrap().mask = Some("MASK".into());
             }
             assert!(
-                layout::render(&page, std::slice::from_mut(&mut map), 96.0, &layout::PageInfo::default()).is_none(),
+                layout::render(&page, std::slice::from_mut(&mut map), 96.0, &layout::PageInfo::default()).is_err(),
                 "missing complete source must fail the page: pitch {pitch}, masked {masked}"
             );
             assert!(map.layer(owner).unwrap().source.as_ref().unwrap().error.is_some());
@@ -1173,7 +1173,7 @@ fn layout_export_rejects_unopened_local_shapefiles_and_required_masks() {
         source.path = Some(dir.path().join("unused.shp").display().to_string());
         unused.layer_mut(mask).unwrap().source = Some(source);
         assert!(
-            layout::render(&page, &mut [unused], 96.0, &layout::PageInfo::default()).is_some(),
+            layout::render(&page, &mut [unused], 96.0, &layout::PageInfo::default()).is_ok(),
             "an unused hidden Shapefile must not fail export"
         );
 
@@ -1182,7 +1182,7 @@ fn layout_export_rejects_unopened_local_shapefiles_and_required_masks() {
         source.path = Some(dir.path().join("missing.gpkg").display().to_string());
         ordinary.layer_mut(point).unwrap().source = Some(source);
         assert!(
-            layout::render(&page, &mut [ordinary], 96.0, &layout::PageInfo::default()).is_some(),
+            layout::render(&page, &mut [ordinary], 96.0, &layout::PageInfo::default()).is_ok(),
             "ordinary sources retain upstream best-effort behavior"
         );
     }

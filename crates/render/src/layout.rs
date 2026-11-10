@@ -51,15 +51,33 @@ pub(crate) fn frame_requires_complete(map: &Map, view: &View) -> bool {
     })
 }
 
+/// Only maps placed in visible frames participate in this page's archive revision.
+pub fn archive_revisions(layout: &Layout, maps: &[Map]) -> crate::ArchiveRevision {
+    crate::archive_revisions(layout.elements.iter().filter_map(|e| {
+        if !e.visible {
+            return None;
+        }
+        let ElementKind::MapFrame { map, .. } = &e.kind else { return None };
+        map_index(maps, map).and_then(|i| maps.get(i))
+    }))
+}
+
 /// Renders a layout at `dpi` (dots per inch). `maps` are the project's maps, found by name.
-pub fn render(layout: &Layout, maps: &mut [Map], dpi: f64, info: &PageInfo) -> Option<Pixmap> {
+/// Refuses a linked archive changed while composing the page, including its different map frames.
+pub fn render(layout: &Layout, maps: &mut [Map], dpi: f64, info: &PageInfo) -> Result<Pixmap, String> {
     render_pending(layout, maps, dpi, info).map(|(pm, _)| pm)
 }
 
 /// [`render`], and whether a map frame on the page drew while some of its tiles, or a read of its
 /// streamed layers or rasters, were still on their way: in the browser, which doesn't wait for
 /// them, the page is drawn again once they land.
-pub fn render_pending(layout: &Layout, maps: &mut [Map], dpi: f64, info: &PageInfo) -> Option<(Pixmap, bool)> {
+pub fn render_pending(layout: &Layout, maps: &mut [Map], dpi: f64, info: &PageInfo) -> Result<(Pixmap, bool), String> {
+    let revisions = archive_revisions(layout, maps);
+    let result = render_pending_inner(layout, maps, dpi, info);
+    revisions.finish_revision(archive_revisions(layout, maps), result, "the page is too large to draw")
+}
+
+fn render_pending_inner(layout: &Layout, maps: &mut [Map], dpi: f64, info: &PageInfo) -> Option<(Pixmap, bool)> {
     let (w, h, k) = page_geometry(layout, dpi);
     let bounds = tiny_skia::IntRect::from_xywh(0, 0, w, h)?;
     let mut pending = false;
@@ -74,6 +92,17 @@ pub fn render_pending(layout: &Layout, maps: &mut [Map], dpi: f64, info: &PageIn
 /// [`crate::vector::MAX_COST`]. A drawing that overflowed all the same (its surrounds) is
 /// incomplete: [`crate::vector::Drawing::overflowed`] says so.
 pub fn render_drawing(
+    layout: &Layout,
+    maps: &mut [Map],
+    dpi: f64,
+    info: &PageInfo,
+) -> Result<(crate::vector::Drawing, Vec<(u32, String)>), String> {
+    let revisions = archive_revisions(layout, maps);
+    let result = render_drawing_inner(layout, maps, dpi, info);
+    revisions.finish_revision(archive_revisions(layout, maps), result, "the page is too large to draw")
+}
+
+fn render_drawing_inner(
     layout: &Layout,
     maps: &mut [Map],
     dpi: f64,
@@ -435,9 +464,11 @@ fn draw_page(
 
 /// A map frame's map, `w` × `h` points at `ppp` pixels a point, labels and attribution included:
 /// what a frame shows before its grid, indicator and outline. It waits for the map's tiles, as a
-/// page needs them all.
-pub fn frame_map(map: &mut Map, camera: rustgis_map::Camera, w: f64, h: f64, ppp: f64) -> Option<Pixmap> {
-    frame_canvas(map, camera, w, h, ppp, false, &mut false).map(Canvas::into_pixmap)
+/// page needs them all. Refuses a linked archive changed during the complete frame.
+pub fn frame_map(map: &mut Map, camera: rustgis_map::Camera, w: f64, h: f64, ppp: f64) -> Result<Pixmap, String> {
+    let revisions = crate::archive_revisions([&*map]);
+    let result = frame_canvas(map, camera, w, h, ppp, false, &mut false).map(Canvas::into_pixmap);
+    revisions.finish([&*map], result, "could not draw the map frame")
 }
 
 /// [`frame_map`] on a canvas: one that records (see [`crate::canvas`]) when `record` and the

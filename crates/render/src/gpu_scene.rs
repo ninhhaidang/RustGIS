@@ -119,7 +119,8 @@ pub enum DrawCmd {
     /// One raster tile layer the GPU map places again for every frame it shows, from the tile
     /// cache, for the camera of that frame (see [`crate::tiles::live`]): the scene holds only
     /// which layer, so panning and zooming never draw the scene again for its tiles (#635).
-    LiveTiles { name: String, spec: rustgis_tiles::Spec, opacity: f32 },
+    /// The archive revision binds later live tile acquisition to this scene's credits.
+    LiveTiles { name: String, spec: rustgis_tiles::Spec, opacity: f32, archive_revision: u64 },
     /// One vector tile layer's tiles as meshes (see `tile_mesh`): the GPU keeps each mesh's
     /// buffers across frames, shows the layers of its runs that show at the camera's zoom and
     /// clips each tile to its square, as MapLibre draws its tiles.

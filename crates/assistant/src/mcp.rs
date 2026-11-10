@@ -88,6 +88,132 @@ pub(crate) fn request_key(root: &str, position: usize) -> String {
     format!("{root}/{position}")
 }
 
+/// A relay message paused at an admitted standalone archive command. Batch positions and
+/// one-use permits remain owned here; no suffix entry runs until the actual command lands.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) struct ArchiveBatch {
+    server: Server,
+    scope: Scope,
+    permits: Vec<(String, Permit)>,
+    request: String,
+    messages: std::vec::IntoIter<Value>,
+    position: usize,
+    batch: bool,
+    replies: Vec<Value>,
+    pending: Option<(Value, tools::CommandCompletion)>,
+    ahead: Option<rustgis_engine::cmd::reads::ReadAhead>,
+    /// Successful explicit selections in the current uninterrupted execution segment.
+    picked: bool,
+}
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) enum ArchiveStep {
+    Done(Option<String>, bool),
+    Read(Box<ArchiveBatch>),
+}
+#[cfg(not(target_arch = "wasm32"))]
+impl ArchiveBatch {
+    pub(crate) fn take_read(&mut self) -> Option<rustgis_engine::cmd::reads::ReadAhead> {
+        self.ahead.take()
+    }
+    pub(crate) fn picked(&self) -> bool {
+        self.picked
+    }
+    /// The command's reply reports changes made from the moment it actually runs, not from its
+    /// admission: the queue may run user work or other reads first.
+    pub(crate) fn begin_landing(&mut self, s: &Session) {
+        if let Some((_, completion)) = &mut self.pending {
+            *completion = tools::CommandCompletion::capture(s);
+        }
+    }
+    pub(crate) fn finish(mut self, s: &mut Session, result: Result<Value, String>) -> ArchiveStep {
+        self.finish_pending(s, result);
+        self.advance(s)
+    }
+    /// A changed project or map invalidates the suffix, not the command's actual result; so does
+    /// the app closing. Complete every remaining request with `remaining` as its error, without
+    /// dispatching even a read-only tool.
+    pub(crate) fn cancel_remaining(mut self, s: &mut Session, result: Result<Value, String>, remaining: &str) -> ArchiveStep {
+        self.finish_pending(s, result);
+        for msg in self.messages.by_ref() {
+            match request_identity(&msg) {
+                Ok(Some((_, id))) => {
+                    self.replies.push(error_value(&id, -32000, remaining));
+                }
+                Ok(None) => {}
+                Err(reply) => self.replies.push(reply),
+            }
+        }
+        self.done()
+    }
+    fn finish_pending(&mut self, s: &mut Session, result: Result<Value, String>) {
+        self.picked = false;
+        if let Some((id, completion)) = self.pending.take() {
+            self.replies.push(archive_reply(id, completion.finish(s, result)));
+        }
+    }
+    fn advance(mut self, s: &mut Session) -> ArchiveStep {
+        while let Some(msg) = self.messages.next() {
+            let request = request_key(&self.request, self.position);
+            self.position += 1;
+            let archive = (|| {
+                let id = msg.get("id")?;
+                if !matches!(id, Value::String(_) | Value::Number(_)) || msg.get("method").and_then(Value::as_str) != Some("tools/call") {
+                    return None;
+                }
+                let (name, args) = tool_request(msg.get("params")?).ok()?;
+                if name != "run_command"
+                    || !matches!(args.get("command").and_then(Value::as_str).map(str::trim), Some("map.reloadTiles" | "map.repairTiles"))
+                {
+                    return None;
+                }
+                Some((id.clone(), ToolCall { id: request.clone(), name: name.into(), args }))
+            })();
+            if let Some((id, call)) = archive {
+                let permit = self.permits.iter().position(|(key, _)| key == &request).map(|i| self.permits.remove(i).1);
+                let completion = tools::CommandCompletion::capture(s);
+                let admitted = tools::policy_call(&call)
+                    .and_then(|call| call.ok_or_else(|| "missing archive adapter".to_string()))
+                    .and_then(|call| s.start_scoped_archive_read(self.scope.clone(), &call, permit));
+                match admitted {
+                    Ok(ahead) => {
+                        self.pending = Some((id, completion));
+                        self.ahead = Some(ahead);
+                        return ArchiveStep::Read(Box::new(self));
+                    }
+                    Err(error) => self.replies.push(archive_reply(id, completion.finish(s, Err(error)))),
+                }
+            } else if let Some(reply) = self.server.handle_value(s, &msg, &self.scope, &mut self.permits, &request) {
+                if reply.get("error").is_none() && reply.pointer("/result/isError") == Some(&Value::Bool(false)) {
+                    self.picked |= msg.get("params").is_some_and(|params| {
+                        let Some(name) = params.get("name").and_then(Value::as_str) else { return false };
+                        params.get("arguments").is_some_and(|args| tools::selects_layer(name, args))
+                    });
+                }
+                self.replies.push(reply);
+            }
+        }
+        self.done()
+    }
+    fn done(mut self) -> ArchiveStep {
+        let reply = if self.replies.is_empty() {
+            None
+        } else if self.batch {
+            Some(Value::Array(self.replies).to_string())
+        } else {
+            self.replies.pop().map(|reply| reply.to_string())
+        };
+        ArchiveStep::Done(reply, self.picked)
+    }
+}
+#[cfg(not(target_arch = "wasm32"))]
+fn archive_reply(id: Value, result: Result<String, String>) -> Value {
+    let (text, failed) = match result {
+        Ok(text) => (text, false),
+        Err(error) => (error, true),
+    };
+    json!({"jsonrpc":"2.0","id":id,"result":{"content":[{"type":"text","text":text}],"isError":failed}})
+}
+
 impl Server {
     /// A server with the built-in skills. `rustgis-cli mcp` and the desktop's relay replace them
     /// with the skills switched on (`skills::installed`): the user's, the plugins' and shared ones.
@@ -99,6 +225,38 @@ impl Server {
     /// a response.
     pub fn handle(&self, s: &mut Session, message: &str) -> Option<String> {
         self.handle_scoped(s, message, self.scope(s), Vec::new(), "")
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    /// Desktop relay ingress; only direct archive commands pause. Scripts and other transports
+    /// retain their synchronous contract, and malformed messages keep normal JSON-RPC handling.
+    pub(crate) fn start_archive_batch(
+        self,
+        s: &mut Session,
+        message: &str,
+        scope: Scope,
+        permits: Vec<(String, Permit)>,
+        request: &str,
+    ) -> ArchiveStep {
+        let parsed = serde_json::from_str::<Value>(message);
+        let (messages, batch) = match parsed {
+            Ok(Value::Array(batch)) if !batch.is_empty() && batch.len() <= MAX_BATCH => (batch, true),
+            Ok(msg) if !msg.is_array() => (vec![msg], false),
+            _ => return ArchiveStep::Done(self.handle_scoped(s, message, scope, permits, request), false),
+        };
+        ArchiveBatch {
+            server: self,
+            scope,
+            permits,
+            request: request.into(),
+            messages: messages.into_iter(),
+            position: 0,
+            batch,
+            replies: Vec::new(),
+            pending: None,
+            ahead: None,
+            picked: false,
+        }
+        .advance(s)
     }
     /// Named relay/file-bridge ingress; permits are engine plans stored when approval was shown.
     pub(crate) fn handle_scoped(
@@ -145,22 +303,12 @@ impl Server {
         permits: &mut Vec<(String, Permit)>,
         request: &str,
     ) -> Option<Value> {
-        let Some(obj) = msg.as_object() else {
-            return Some(error_value(&Value::Null, INVALID_REQUEST, "expected a JSON-RPC object"));
+        let (method, id) = match request_identity(msg) {
+            Ok(Some(request)) => request,
+            Ok(None) => return None,
+            Err(reply) => return Some(reply),
         };
-        let id = obj.get("id").cloned();
-        let Some(method) = obj.get("method").and_then(Value::as_str) else {
-            // A response to a request of ours (we send none), or junk.
-            return id
-                .filter(|_| !obj.contains_key("result") && !obj.contains_key("error"))
-                .map(|id| error_value(&id, INVALID_REQUEST, "expected a method"));
-        };
-        // Notifications (no id) get no reply.
-        let id = id?;
-        if !matches!(id, Value::String(_) | Value::Number(_)) {
-            return Some(error_value(&Value::Null, INVALID_REQUEST, "id must be a string or a number"));
-        }
-        let params = obj.get("params").cloned().unwrap_or(Value::Null);
+        let params = msg.get("params").cloned().unwrap_or(Value::Null);
         Some(match self.call(s, method, &params, scope, permits, request) {
             Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
             Err((code, message)) => error_value(&id, code, &message),
@@ -535,6 +683,27 @@ pub fn expects_reply(message: &str) -> bool {
         // Not JSON: the server answers with a parse error.
         Err(_) => true,
     }
+}
+
+/// Applies JSON-RPC identity rules without executing a request.
+fn request_identity(msg: &Value) -> Result<Option<(&str, Value)>, Value> {
+    let Some(obj) = msg.as_object() else {
+        return Err(error_value(&Value::Null, INVALID_REQUEST, "expected a JSON-RPC object"));
+    };
+    let id = obj.get("id").cloned();
+    let Some(method) = obj.get("method").and_then(Value::as_str) else {
+        // A response to a request of ours (we send none), or junk.
+        return match id.filter(|_| !obj.contains_key("result") && !obj.contains_key("error")) {
+            Some(id) => Err(error_value(&id, INVALID_REQUEST, "expected a method")),
+            None => Ok(None),
+        };
+    };
+    // Notifications (no id) get no reply.
+    let Some(id) = id else { return Ok(None) };
+    if !matches!(id, Value::String(_) | Value::Number(_)) {
+        return Err(error_value(&Value::Null, INVALID_REQUEST, "id must be a string or a number"));
+    }
+    Ok(Some((method, id)))
 }
 
 /// Projects generated RPC error text while retaining the exact correlation id and code.

@@ -2248,6 +2248,17 @@ impl RustGisApp {
 
     /// Runs a command by id: `ui.*` here, everything else in the engine.
     pub fn run(&mut self, id: &str, params: Value) -> Result<Value, String> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.reads_off_frame {
+            let archive = match id {
+                "map.reloadTiles" => Some("map.reloadTiles"),
+                "map.repairTiles" => Some("map.repairTiles"),
+                _ => None,
+            };
+            if let Some(command) = archive {
+                return readjob::run(self, command, params);
+            }
+        }
         self.run_with_prepared(id, params, AppDispatch::Direct)
     }
 
@@ -5020,7 +5031,7 @@ impl RustGisApp {
             self.frame_ctx = Some(ctx.clone());
             // Agents the user turned on last time: the relay starts with the app.
             connectui::resume(self);
-            if let Some(relay) = &self.relay {
+            if let Some(relay) = self.relay.clone() {
                 // A relay started before the first frame has no wake yet; now there is a context
                 // to ask for repaints with.
                 if self.relay_wake_pending {
@@ -5032,8 +5043,12 @@ impl RustGisApp {
                 relay.set_screen(relayshot::map_shown(self, ctx));
                 // Only a request that changed the project ends a label move: a read-only one leaves it.
                 let state = self.session.state();
-                if relay.poll(&mut self.session) > 0 && self.session.state() != state {
+                relay.poll(&mut self.session);
+                if self.session.state() != state {
                     self.map.cancel_label_drag();
+                }
+                if let Some(ahead) = relay.take_archive_read() {
+                    readjob::admitted(self, ahead, relay);
                 }
             }
             relayshot::drive(self, ctx);

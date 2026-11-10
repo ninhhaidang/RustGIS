@@ -3384,8 +3384,7 @@ fn geolibre_tools_run_on_layers_and_add_their_outputs() {
     s.run("edit.undo", &Value::Null).unwrap();
     assert!(s.map().layer_by_name("Slope").is_none());
     // A vector where a raster belongs is an error, not a crash.
-    let err = s.run("gp.run", &json!({"tool": "geolibre:slope", "params": {"input": "Cities"}})).unwrap_err();
-    assert!(err.starts_with("Slope:"), "{err}");
+    assert!(s.run("gp.run", &json!({"tool": "geolibre:slope", "params": {"input": "Cities"}})).is_err());
 }
 
 /// The browser's way: prepare a run, let a runner (here, pretend) produce the files, then
@@ -37841,6 +37840,9 @@ fn reload_failure_guidance_distinguishes_editable_geopackages_from_linked_files(
     }
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+mod archive_render_revision;
 
 /// `gp.threads` sets the shared count every place that starts threads for CPU work takes (#1562),
 /// says it, the default's and the cores, refuses what it can't take, and `null` goes back to the

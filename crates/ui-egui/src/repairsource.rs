@@ -258,8 +258,10 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
                         Target::Tiles(index) => app.run("map.repairTiles", json!({"index": index, "path": f.path.trim()})),
                     };
                     match result {
-                        Ok(_) => {
-                            app.session.notify(crate::i18n::fmt("Repaired {name}", &[("name", &f.name)]), false);
+                        Ok(result) => {
+                            if result.get("started").is_none() && result.get("waiting").is_none() {
+                                app.session.notify(crate::i18n::fmt("Repaired {name}", &[("name", &f.name)]), false);
+                            }
                             close = true;
                         }
                         Err(error) => f.error = Some(error),

@@ -1760,9 +1760,20 @@ fn tile_row(app: &mut RustGisApp, ui: &mut Ui, i: usize, moves: [bool; 2], reord
             action = Some(("ui.exportRaster", json!({"tiles": i})));
             ui.close();
         }
-        if tile.archive_file().is_some() && ui.button(tl!("Repair Data Source…")).clicked() {
-            action = Some(("ui.dialog", json!({"name": "repairTiles", "index": i})));
-            ui.close();
+        #[cfg(not(target_arch = "wasm32"))]
+        if tile.archive_file().is_some() {
+            if ui
+                .button(tl!("Reload Data"))
+                .on_hover_text(tl!("Manually reread this archive from disk without changing its presentation. Undo cannot restore overwritten file contents."))
+                .clicked()
+            {
+                action = Some(("map.reloadTiles", json!({"index": i})));
+                ui.close();
+            }
+            if ui.button(tl!("Repair Data Source…")).clicked() {
+                action = Some(("ui.dialog", json!({"name": "repairTiles", "index": i})));
+                ui.close();
+            }
         }
         if ui.button(tl!("Remove")).clicked() {
             action = Some(("map.removeTiles", json!({"index": i})));

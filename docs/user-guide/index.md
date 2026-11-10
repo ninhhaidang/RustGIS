@@ -234,7 +234,9 @@ On the desktop, right-click a linked layer and choose **Reload Data**, beside **
 Source…**. For the active layer, use **Data › Data Source › Reload Data**, or **Reload Data**
 in Command Search. Reload rereads the same local source, table or raster subdataset without
 adding other tables from its container. It retains the layer's name, identity, drawing order,
-group, visibility, opacity, styling, labels, filters and map camera.
+group, visibility, opacity, styling, labels, filters and map camera. Local PMTiles and MBTiles
+tile archives have their own **Reload Data** on their Layers row; see
+[Maps › Reloading a local tile archive](maps.md).
 
 Supported targets are linked vectors, rasters (including time-following Zarr variables),
 GDAL/DuckDB file-backed layers and editable local GeoPackage tables. GDAL-linked File

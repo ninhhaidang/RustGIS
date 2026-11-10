@@ -1012,6 +1012,8 @@ pub(crate) struct SceneBuffers {
     pub tilt: Option<SceneTilt>,
     /// Its live raster tile layers, in order, placed for each frame shown ([`LiveFrame`]).
     pub live: Vec<(String, rustgis_engine::render::rustgis_tiles::Spec, f32)>,
+    /// The archive revision of the scene that owns the live layers' attribution.
+    live_archive_revision: u64,
     /// Every tile layer of the scene is live: a tile arriving needs no new scene.
     pub tiles_live: bool,
     /// The farthest a vertex lies from its origin (map units, [`gpu_scene::reach`]): zoomed in
@@ -1035,6 +1037,15 @@ impl SceneBuffers {
     pub(crate) fn live_frame(&self, camera: Camera) -> Option<(LiveFrame, bool, bool)> {
         if self.live.is_empty() {
             return None;
+        }
+        let revision = || {
+            use rustgis_engine::render::rustgis_tiles::{Kind, cache};
+            cache::archive_revision(
+                self.live.iter().filter_map(|(_, spec, _)| matches!(spec.kind, Kind::PmTiles | Kind::MbTiles).then_some(spec.url.as_str())),
+            )
+        };
+        if revision() != self.live_archive_revision {
+            return Some((LiveFrame { camera, layers: Vec::new(), tile_errors: Vec::new() }, false, true));
         }
         let view = rustgis_engine::render::View {
             width: self.size[0],
@@ -1062,6 +1073,9 @@ impl SceneBuffers {
                 }
             })
             .collect();
+        if revision() != self.live_archive_revision {
+            return Some((LiveFrame { camera, layers: Vec::new(), tile_errors: Vec::new() }, false, true));
+        }
         Some((LiveFrame { camera, layers, tile_errors }, pending, declined))
     }
 }
@@ -1151,6 +1165,7 @@ impl SceneBuffers {
         let mut has_images = false;
         let mut has_tiles = false;
         let mut live = Vec::new();
+        let mut live_archive_revision = 0;
         let tilt = scene.tilt.as_ref();
         let mut tile_textures = r.tile_textures.lock().unwrap_or_else(|e| e.into_inner());
         let mut tile_meshes = r.tile_meshes.lock().unwrap_or_else(|e| e.into_inner());
@@ -1344,9 +1359,10 @@ impl SceneBuffers {
                     draws.push(SceneDraw::Image { bind, _texture: texture });
                     has_images = true;
                 }
-                DrawCmd::LiveTiles { name, spec, opacity } => {
+                DrawCmd::LiveTiles { name, spec, opacity, archive_revision } => {
                     draws.push(SceneDraw::LiveTiles { n: live.len() });
                     live.push((name.clone(), spec.clone(), *opacity));
+                    live_archive_revision = live_archive_revision.max(*archive_revision);
                 }
                 DrawCmd::Tiles { origin, tiles } => {
                     let mut vertices = Vec::with_capacity(tiles.len() * 6);
@@ -1428,7 +1444,19 @@ impl SceneBuffers {
         let tiles_live =
             !live.is_empty() && !has_images && !has_tiles && !scene.cmds.iter().any(|c| matches!(c, DrawCmd::TileMeshes { .. }));
         let reach = gpu_scene::reach(&scene.cmds);
-        Some(SceneBuffers { draws, clear: scene.clear, size, ppp, has_images, has_tiles, tilt: scene.tilt, live, tiles_live, reach })
+        Some(SceneBuffers {
+            draws,
+            clear: scene.clear,
+            size,
+            ppp,
+            has_images,
+            has_tiles,
+            tilt: scene.tilt,
+            live,
+            tiles_live,
+            reach,
+            live_archive_revision,
+        })
     }
 
     /// Rewrites every command's camera uniforms for a moved camera — pan/zoom without
@@ -1689,6 +1717,32 @@ mod tests {
             egui_wgpu::RendererOptions::PREDICTABLE,
         ))
         .ok()
+    }
+
+    #[test]
+    fn live_archive_pixels_cannot_outlive_their_scenes_credits() {
+        use rustgis_engine::{
+            map::{TileKind, TileLayer},
+            render,
+        };
+        let layer = TileLayer::new("Archive", TileKind::PmTiles, "/live-scene-revision.pmtiles");
+        let revision = render::rustgis_tiles::cache::archive_revision([layer.url.as_str()]);
+        let scene = SceneBuffers {
+            draws: Vec::new(),
+            clear: [0.0; 4],
+            size: [128.0, 128.0],
+            ppp: 1.0,
+            has_images: false,
+            has_tiles: false,
+            tilt: None,
+            live: vec![(layer.name.clone(), render::tile_spec(&layer), 1.0)],
+            tiles_live: true,
+            reach: 0.0,
+            live_archive_revision: revision,
+        };
+        render::rustgis_tiles::cache::reload_archive(&layer.url);
+        let (frame, pending, declined) = scene.live_frame(Camera::world()).unwrap();
+        assert!(declined && !pending && frame.layers.is_empty(), "redraw the scene instead of placing new pixels under its old credits");
     }
 
     #[test]

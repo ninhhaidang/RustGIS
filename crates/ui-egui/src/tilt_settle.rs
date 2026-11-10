@@ -21,6 +21,7 @@ pub(crate) struct Done {
     pub ms: u64,
     /// Tile pictures stand in for others, or are still to be drawn: it is drawn again.
     pub incomplete: bool,
+    pub archives: render::ArchiveRevision,
 }
 
 /// The frame being drawn (at most one at a time), and what it is for.
@@ -47,6 +48,7 @@ impl<K> Default for TiltSettle<K> {
 
 fn draw(mut map: Map, view: View, backend: Backend) -> Done {
     let t0 = web_time::Instant::now();
+    let archives = render::archive_revisions([&map]);
     // On the UI thread in the browser, a frame's worth of tile pictures at a time; on a worker
     // natively, all of them.
     #[cfg(target_arch = "wasm32")]
@@ -57,7 +59,7 @@ fn draw(mut map: Map, view: View, backend: Backend) -> Done {
     };
     #[cfg(not(target_arch = "wasm32"))]
     let (rendered, incomplete) = (render::render_backend(&mut map, &view, backend), false);
-    Done { rendered, view, map, ms: t0.elapsed().as_millis() as u64, incomplete }
+    Done { rendered, view, map, ms: t0.elapsed().as_millis() as u64, incomplete, archives }
 }
 
 impl<K: Copy + PartialEq> TiltSettle<K> {
@@ -145,6 +147,7 @@ impl<K: Copy + PartialEq> TiltSettle<K> {
         let done = self.ready.take();
         if let Some((k, d)) = &done
             && d.rendered.is_none()
+            && d.archives.current([&d.map])
         {
             self.failed = Some(*k);
         }

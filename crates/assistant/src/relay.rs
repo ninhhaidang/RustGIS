@@ -196,6 +196,8 @@ struct Shared {
     /// The screen snapshot the app is capturing ([`Relay::screen_request`]); nothing else runs
     /// until it is done.
     shot: Mutex<Option<Shot>>,
+    /// A desktop archive command holds its complete message, including any ordered batch suffix.
+    archive: Mutex<Option<Archive>>,
 }
 
 /// What the relay keeps for one agent between its calls.
@@ -228,6 +230,15 @@ struct Shot {
     wait: Duration,
 }
 
+struct Archive {
+    req: Request,
+    batch: Box<crate::mcp::ArchiveBatch>,
+    started: Instant,
+    /// The project and selected map at this pause, after the preceding batch segment ran.
+    opened: u64,
+    map: u64,
+}
+
 impl Shared {
     /// Wakes the UI thread so it draws a frame to run queued messages or repaint the client
     /// count. Does nothing when the app never set a callback with [`Relay::set_wake`].
@@ -250,6 +261,9 @@ impl Shared {
         lock(&self.approvals).clear();
         if let Some(shot) = lock(&self.shot).take() {
             shot.req.state.store(CANCELLED, SeqCst);
+        }
+        if let Some(archive) = lock(&self.archive).take() {
+            archive.req.state.store(CANCELLED, SeqCst);
         }
         // Pending requests are cancelled before they are dropped, so none can run after stop.
         for req in lock(&self.requests).drain(..) {
@@ -592,6 +606,7 @@ impl Relay {
             agents: Mutex::new(HashMap::new()),
             screen: AtomicBool::new(false),
             shot: Mutex::new(None),
+            archive: Mutex::new(None),
         });
         let owner = Arc::new(Owner { shared, port, audit: Mutex::new(None), last: Mutex::new(None) });
         let accepting = Arc::clone(&owner.shared);
@@ -716,6 +731,69 @@ impl Relay {
         let _ = req.reply.send(Some(reply));
         self.owner.shared.notify();
     }
+    /// Takes the already-admitted archive read once. The desktop uses its single read worker;
+    /// dropping or recreating the invocation is never a native redispatch.
+    pub fn take_archive_read(&self) -> Option<rustgis_engine::cmd::reads::ReadAhead> {
+        lock(&self.owner.shared.archive).as_mut()?.batch.take_read()
+    }
+
+    /// Starts the reply's change report at the moment the admitted command actually runs (or is
+    /// known never to run), so work the queue ran meanwhile is not attributed to the agent.
+    pub fn begin_archive_landing(&self, s: &Session) {
+        if let Some(archive) = lock(&self.owner.shared.archive).as_mut() {
+            archive.batch.begin_landing(s);
+        }
+    }
+
+    /// Completes the real archive command before running its batch suffix or issuing its reply
+    /// and audit. A suffix may resume only in the project and map selected at its latest pause.
+    pub fn finish_archive_read(&self, s: &mut Session, result: Result<Value, String>) {
+        self.complete_archive_read(s, result, None);
+    }
+
+    /// Ends the admitted archive command for good because RustGIS is closing: `why` answers it
+    /// and every remaining request of its message, none of which runs, and the slot is cleared.
+    pub fn abandon_archive_read(&self, s: &mut Session, why: String) {
+        self.complete_archive_read(s, Err(why.clone()), Some(&why));
+    }
+
+    /// [`Relay::finish_archive_read`], or with `abandon` set the suffix is cancelled with that error.
+    fn complete_archive_read(&self, s: &mut Session, result: Result<Value, String>, abandon: Option<&str>) {
+        let Some(archive) = lock(&self.owner.shared.archive).take() else { return };
+        let Archive { req, batch, started, opened, map } = archive;
+        // Check before entering the agent: its remembered layer ID is only map-local, and a
+        // stale continuation must not change the current actor, selection or stored agent state.
+        let same_context = abandon.is_none() && s.opened == opened && s.map().instance_id() == map;
+        let layers = same_context.then(|| self.enter_agent(s, &req.token));
+        let step = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if same_context {
+                (*batch).finish(s, result)
+            } else {
+                (*batch).cancel_remaining(s, result, abandon.unwrap_or("archive batch context changed; remaining request cancelled"))
+            }
+        }))
+        .unwrap_or_else(|_| crate::mcp::ArchiveStep::Done(Some(internal_error(&req.line)), false));
+        let (out, picked) = match step {
+            crate::mcp::ArchiveStep::Read(batch) => {
+                if let Some(layers) = layers {
+                    self.leave_agent(s, &req.token, layers, batch.picked());
+                }
+                *lock(&self.owner.shared.archive) = Some(Archive { req, batch, started, opened: s.opened, map: s.map().instance_id() });
+                self.owner.shared.notify();
+                return;
+            }
+            crate::mcp::ArchiveStep::Done(out, picked) => (out, picked),
+        };
+        if let Some(layers) = layers {
+            self.leave_agent(s, &req.token, layers, picked);
+        }
+        self.audit(&req.line, out.as_deref(), started.elapsed());
+        if let Some(action) = action(&req.line, out.as_deref()) {
+            *lock(&self.owner.last) = Some(action);
+        }
+        let _ = req.reply.send(out);
+        self.owner.shared.notify();
+    }
 
     /// The last tool call an attached agent ran, if any has run since the relay started.
     pub fn last_action(&self) -> Option<Action> {
@@ -788,13 +866,14 @@ impl Relay {
         Ok(grant)
     }
 
-    /// Runs the messages that arrived since the last call, on `s`. Returns how many ran. The
-    /// calls go through [`Session::run`], so each is one undo step as everywhere else. A message
-    /// whose connection already gave up is skipped, never run.
+    /// Runs queued messages on `s`, returning how many completed. Direct archive commands pause
+    /// at admission for the app's existing read queue: take_archive_read and finish_archive_read
+    /// carry them through their real completion, holding their batch suffix and later messages.
+    /// Commands retain ordinary undo bookkeeping; abandoned queued requests never run.
     pub fn poll(&self, s: &mut Session) -> usize {
         *lock(&self.owner.shared.last_poll) = Instant::now();
         // One request at a time: a screen snapshot being captured holds the rest back.
-        if lock(&self.owner.shared.shot).is_some() {
+        if lock(&self.owner.shared.shot).is_some() || lock(&self.owner.shared.archive).is_some() {
             return 0;
         }
         let pending: Vec<Request> = lock(&self.owner.shared.requests).drain(..).collect();
@@ -952,11 +1031,21 @@ impl Relay {
                 if reviewed { std::mem::take(&mut req.plans).into_iter().map(|(id, p)| (id, p.allow())).collect() } else { Vec::new() };
             let started = Instant::now();
             let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                server.handle_scoped(s, &req.line, scope, permits, &req.id.to_string())
+                server.start_archive_batch(s, &req.line, scope, permits, &req.id.to_string())
             }))
-            .unwrap_or_else(|_| Some(internal_error(&req.line)));
-            // A layer.select that failed (an unknown layer, a refusal) chose nothing.
-            let picked = selects_layer(&req.line) && reply_ok(out.as_deref());
+            .unwrap_or_else(|_| crate::mcp::ArchiveStep::Done(Some(internal_error(&req.line)), false));
+            let (out, picked) = match out {
+                crate::mcp::ArchiveStep::Done(out, picked) => (out, picked),
+                crate::mcp::ArchiveStep::Read(batch) => {
+                    self.leave_agent(s, &req.token, layers, batch.picked());
+                    *lock(&self.owner.shared.archive) = Some(Archive { req, batch, started, opened: s.opened, map: s.map().instance_id() });
+                    let mut queue = lock(&self.owner.shared.requests);
+                    for rest in pending.rev() {
+                        queue.push_front(rest);
+                    }
+                    return ran;
+                }
+            };
             self.leave_agent(s, &req.token, layers, picked);
             self.audit(&req.line, out.as_deref(), started.elapsed());
             if let Some(a) = action(&req.line, out.as_deref()) {
@@ -1027,11 +1116,9 @@ pub(crate) fn reply_ok(reply: Option<&str>) -> bool {
 pub(crate) fn selects_layer(line: &str) -> bool {
     let Ok(msg) = serde_json::from_str::<Value>(line) else { return false };
     let messages = msg.as_array().map(Vec::as_slice).unwrap_or_else(|| std::slice::from_ref(&msg));
-    messages.iter().filter_map(|m| m.get("params").and_then(|p| p.get("arguments"))).any(|a| {
-        a.get("command").and_then(Value::as_str) == Some("layer.select")
-            || a.get("script").and_then(Value::as_str).is_some_and(|s| {
-                rustgis_engine::cmd::workflows::script_commands(s).is_ok_and(|lines| lines.iter().any(|(_, id, _)| id == "layer.select"))
-            })
+    messages.iter().filter_map(|m| m.get("params")).any(|params| {
+        let Some(name) = params.get("name").and_then(Value::as_str) else { return false };
+        params.get("arguments").is_some_and(|args| crate::tools::selects_layer(name, args))
     })
 }
 
@@ -1556,6 +1643,10 @@ impl Revocation for GrantLive {
         true
     }
 }
+
+#[cfg(test)]
+#[path = "relay/archive_tests.rs"]
+mod archive_tests;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic)]

@@ -55,8 +55,9 @@ pub struct Spec {
 impl Spec {
     fn key(&self) -> String {
         format!(
-            "{:?}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+            "{:?}|{}:{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
             self.kind,
+            self.url.len(),
             self.url,
             self.subdomains.join(","),
             self.min_zoom,
@@ -148,6 +149,13 @@ pub(crate) fn forget() {
     resolved().lock().unwrap_or_else(|e| e.into_inner()).clear();
 }
 
+/// Drops only styles resolved directly from this archive.
+pub(crate) fn forget_archive(archive: &str) {
+    let pm = format!("{:?}|{}:{archive}|", Kind::PmTiles, archive.len());
+    let mb = format!("{:?}|{}:{archive}|", Kind::MbTiles, archive.len());
+    resolved().lock().unwrap_or_else(|e| e.into_inner()).retain(|key, _| !key.starts_with(&pm) && !key.starts_with(&mb));
+}
+
 /// The built-in style for vector tiles without one: it knows the OpenMapTiles, Protomaps and
 /// Shortbread layer names, and draws water, land use, parks, buildings, roads, boundaries and
 /// place names from whichever of them the tiles have.
@@ -159,6 +167,7 @@ pub fn resolve(spec: &Spec) -> Resolve {
         return Resolve::Failed(e.to_string());
     }
     let key = spec.key();
+    let epoch = cache::archive_epoch(&spec.url);
     // A PMTiles archive on this computer is a path, not a web address.
     let local = spec.kind == Kind::PmTiles && pmtiles::is_local(&spec.url);
     let checked = if spec.kind == Kind::MbTiles {
@@ -175,7 +184,8 @@ pub fn resolve(spec: &Spec) -> Resolve {
     if let Some(r) = cached.as_ref().filter(|r| r.current()) {
         return Resolve::Ready(r.clone());
     }
-    settle(resolve_anew(spec, key.clone()), cached, spec, key)
+    let anew = resolve_anew(spec, key.clone(), epoch);
+    cache::if_archive_current(&spec.url, epoch, || settle(anew, cached, spec, key)).unwrap_or(Resolve::Pending)
 }
 
 /// What resolving `spec` again (`anew`) gives, with `cached`, the expired one under `key`.
@@ -199,7 +209,7 @@ fn settle(anew: Resolve, cached: Option<Arc<Resolved>>, spec: &Spec, key: String
 }
 
 /// Reads `spec`'s style and resolves its sources, keeping the result under `key`.
-fn resolve_anew(spec: &Spec, key: String) -> Resolve {
+fn resolve_anew(spec: &Spec, key: String, epoch: u64) -> Resolve {
     let mut base = address::Origin::named(&spec.url);
     let doc = match spec.kind {
         Kind::Raster => raster_style(spec),
@@ -311,13 +321,16 @@ fn resolve_anew(spec: &Spec, key: String) -> Resolve {
     if let Err(e) = crate::logins::check(&spec.url) {
         return Resolve::Failed(e.to_string());
     }
-    let mut all = resolved().lock().unwrap_or_else(|e| e.into_inner());
-    // A few layers are in use at a time: past that many, start again rather than grow.
-    if all.len() >= MAX_RESOLVED {
-        all.clear();
-    }
-    all.insert(key, r.clone());
-    Resolve::Ready(r)
+    cache::if_archive_current(&spec.url, epoch, || {
+        let mut all = resolved().lock().unwrap_or_else(|e| e.into_inner());
+        // A few layers are in use at a time: past that many, start again rather than grow.
+        if all.len() >= MAX_RESOLVED {
+            all.clear();
+        }
+        all.insert(key, r.clone());
+        Resolve::Ready(r)
+    })
+    .unwrap_or(Resolve::Pending)
 }
 
 /// A style's sprites with their addresses resolved against `base`, those RustGIS can fetch, and

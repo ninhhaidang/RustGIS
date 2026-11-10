@@ -83,7 +83,7 @@ arrow-schema = { version = "60", default-features = false }
 bytes = "1"
 flatgeobuf = { version = "6", default-features = false }
 geozero = { version = "0.15", default-features = false, features = ["with-wkb"] }
-rusqlite = { version = "0.41", features = ["bundled", "functions"] }
+rusqlite = { version = "0.41", features = ["bundled", "functions", "hooks"] }
 # PostgreSQL/PostGIS, in pure Rust: the client, and TLS through rustls (ring, as ureq has it).
 postgres = { version = "0.19", default-features = false }
 tokio-postgres-rustls = { version = "0.14", default-features = false, features = ["ring"] }

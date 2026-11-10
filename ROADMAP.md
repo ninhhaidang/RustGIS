@@ -57,7 +57,8 @@ Correct, robust and recoverable, with the foundations other themes stand on.
   GDA94↔GDA2020 and OSGB36, and a notice whenever a layer is read without its shift; GDA94
   ([#730](https://github.com/opengeos/RustGIS/issues/730)) is one case. _Coordinate first._
 - Reloading files changed on disk ([#1477](https://github.com/opengeos/RustGIS/issues/1477)):
-  manual Reload Data for linked layers; automatic detection and notifications remain open.
+  manual Reload Data for linked layers and local PMTiles/MBTiles archives; automatic detection and
+  notifications remain open.
 - Autosave and crash recovery in the browser: reopen unsaved work after a crash. The desktop app
   has them ([#873](https://github.com/opengeos/RustGIS/issues/873)).
 - Signed Windows builds (no SmartScreen warning), then a signature check, by publisher name, in

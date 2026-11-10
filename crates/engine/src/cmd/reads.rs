@@ -45,6 +45,13 @@ pub struct ReadAhead {
 }
 
 impl ReadAhead {
+    /// The immutable registered invocation retained by this read, for queue presentation only.
+    pub fn command(&self) -> Option<(&'static str, &Value)> {
+        match self.op.op() {
+            CommandOp::Registered { spec, params } => Some((spec.id, params)),
+            _ => None,
+        }
+    }
     /// Whether this command has a read to make before it lands; otherwise landing runs it inline.
     pub fn reads(&self) -> bool {
         self.work.is_some()
@@ -113,7 +120,15 @@ pub(crate) fn prepare(s: &Session, op: Authorized<CommandOp>, owner: Continuatio
             let work = None;
             ("Run Script", work, None)
         }
-        _ => return Err("only Add Data, Reload Data, Load All, models and scripts can prepare background work".into()),
+        "map.reloadTiles" | "map.repairTiles" => {
+            #[cfg(not(target_arch = "wasm32"))]
+            let work = Some(super::repair::archive_ahead(s, spec.id, params));
+            #[cfg(target_arch = "wasm32")]
+            let work = None;
+            let name = if spec.id == "map.repairTiles" { "Repair Data Source" } else { "Reload Data" };
+            (name, work, None)
+        }
+        _ => return Err("only Add Data, Reload Data, Load All, local tile archives, models and scripts can prepare background work".into()),
     };
     let name = work.as_ref().map_or(name, |work| work.name);
     Ok(ReadAhead { name, op, owner, source, work })
@@ -122,6 +137,15 @@ pub(crate) fn prepare(s: &Session, op: Authorized<CommandOp>, owner: Continuatio
 /// Consumes a completed read under its initiating owner, with ordinary command history and undo.
 pub fn read_land(s: &mut Session, read: Read) -> CmdResult {
     s.finish_read(read)
+}
+
+/// Captures the archive selected now, so a queued UI read cannot retarget an index or name.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn archive_target(s: &Session, p: &Value) -> Option<(usize, rustgis_map::TileLayer)> {
+    let i = super::tiles::find(s, p).ok()??;
+    let tile = s.map().tiles.get(i)?;
+    tile.archive_file()?;
+    Some((i, tile.clone()))
 }
 
 /// `work` as a read for the command to take under `key`.

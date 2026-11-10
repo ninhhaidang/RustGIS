@@ -290,6 +290,13 @@ pub struct Live {
 /// `None` when the layer draws anything but raster tiles (its style changed since the scene was
 /// drawn). Cheap: cache lookups.
 pub fn live(spec: &Spec, opacity: f32, view: &View) -> Option<Live> {
+    let archive = matches!(spec.kind, Kind::PmTiles | Kind::MbTiles).then_some(spec.url.as_str());
+    let revision = rustgis_tiles::cache::archive_revision(archive);
+    let output = live_inner(spec, opacity, view);
+    (revision == rustgis_tiles::cache::archive_revision(archive)).then_some(output).flatten()
+}
+
+fn live_inner(spec: &Spec, opacity: f32, view: &View) -> Option<Live> {
     let res = view.camera.res;
     let ppp = view.pixels_per_point as f32;
     let frame = Frame {
@@ -389,7 +396,12 @@ pub(crate) fn draw(
                 && let Some(p) = rustgis_tiles::place_raster(&s, t.opacity, &frame, &fetch, &reach)
                 && crate::flush_acc(pm, g.cmds, g.dirty).is_some()
             {
-                g.cmds.push(DrawCmd::LiveTiles { name: t.name.clone(), spec: s, opacity: t.opacity });
+                let archive_revision = if matches!(s.kind, Kind::PmTiles | Kind::MbTiles) {
+                    rustgis_tiles::cache::archive_revision([s.url.as_str()])
+                } else {
+                    0
+                };
+                g.cmds.push(DrawCmd::LiveTiles { name: t.name.clone(), spec: s, opacity: t.opacity, archive_revision });
                 let d = rustgis_tiles::Drawn { labels: Vec::new(), attribution: p.attribution, pending: p.pending, error: p.error };
                 collect(d, t, &mut out);
                 continue;
@@ -1493,8 +1505,8 @@ pub(crate) mod tests {
         for done in std::mem::take(&mut *HELD.lock().unwrap()) {
             done(Ok(tiny_skia::Pixmap::new(256, 256).unwrap().encode_png().unwrap()));
         }
-        assert_eq!(short, Some(true), "drawn before its tiles landed");
+        assert_eq!(short, Ok(true), "drawn before its tiles landed");
         let whole = crate::layout::render_pending(&page, &mut maps, 72.0, &info).map(|(_, pending)| pending);
-        assert_eq!(whole, Some(false), "drawn once they have");
+        assert_eq!(whole, Ok(false), "drawn once they have");
     }
 }

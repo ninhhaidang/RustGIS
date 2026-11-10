@@ -570,6 +570,17 @@ impl MapView {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn label_dragging_for_tests(&self) -> bool {
+        self.moving_label.is_some()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn label_position_for_tests(&self, text: &str) -> Option<Pos2> {
+        let label = self.labels.iter().find(|label| label.text == text)?;
+        Some(self.view_rect?.0.min + vec2(label.x, label.y))
+    }
+
     /// Cancels a vertex preview and its pending release together, leaving other map gestures
     /// alone. The chosen node is cleared because its row/address may now belong to another shape.
     pub(crate) fn cancel_vertex_drag(&mut self) {
@@ -957,12 +968,13 @@ fn main_view(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
         if let Some((k, done)) = app.map.tilt_settle.take() {
             app.session.map_mut().adopt_caches(&done.map);
             // A frame of this view that couldn't be drawn isn't tried again: nothing is to fill.
-            if same_view(k, key) && done.rendered.is_none() {
+            if same_view(k, key) && done.rendered.is_none() && done.archives.current([&done.map]) {
                 app.map.filling = false;
             }
             // One drawn before tiles or data arrived still shows; the next follows. So does one
             // of a change made since, for a view whose frame on screen is older still.
             if (same_view(k, key) || (tiled_flat && shows_finished(k, key, app.map.key)))
+                && done.archives.current([&done.map])
                 && let Some(r) = done.rendered
             {
                 // With tile pictures still to draw, a draft: the next frame draws more.
@@ -4422,6 +4434,25 @@ mod tile_redraw_tests {
         assert!(!keeps_frame(None, changed, 40));
         // Nothing changed: nothing to keep.
         assert!(!keeps_frame(Some(key(3)), key(3), 40));
+    }
+
+    #[test]
+    fn an_eligible_finished_frame_cannot_cross_its_archive_reload() {
+        use rustgis_engine::{
+            map::{Map, TileKind, TileLayer},
+            render,
+        };
+        let mut map = Map::new("Archive publication");
+        map.tiles.push(TileLayer::new("Target", TileKind::PmTiles, "/finished-frame-revision.pmtiles"));
+        let archives = render::archive_revisions([&map]);
+        let (shown, done, now) = (Key { rev: 4, ..key(0) }, Key { rev: 6, ..key(0) }, Key { rev: 9, ..key(0) });
+        let eligible = || shows_finished(done, now, Some(shown)) && archives.current([&map]);
+        assert!(eligible(), "ordinary progressive finished frames still show");
+        render::rustgis_tiles::cache::reload_archive("/finished-frame-unrelated.mbtiles");
+        assert!(eligible(), "another source does not revoke this worker's frame");
+        render::rustgis_tiles::cache::reload_archive(&map.tiles[0].url);
+        assert!(shows_finished(done, now, Some(shown)), "the permissive revision fallback alone still accepts it");
+        assert!(!eligible(), "archive coherence is also required at adoption");
     }
 
     #[test]

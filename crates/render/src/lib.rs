@@ -318,6 +318,7 @@ pub enum RenderOutput {
 /// [`render`]; `Backend::Gpu` draws what it can as tessellated meshes and everything else
 /// (basemap, tiles, rasters, masked/blended/transparent layers) as CPU-rasterized images in
 /// the same z-order.
+/// A pass spanning a linked archive reload returns `None`; redraw against the new source.
 pub fn render_backend(map: &mut Map, view: &View, backend: Backend) -> Option<RenderOutput> {
     render_with_backend(map, view, false, backend)
 }
@@ -1615,8 +1616,44 @@ pub fn view_lonlat(map: &Map, view: &View) -> Extent {
     if out.is_empty() { Extent::WORLD_LONLAT } else { out }
 }
 
+/// A source-specific render revision, independent of ordinary tile arrivals.
+#[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ArchiveRevision(u64);
+
+impl ArchiveRevision {
+    /// Checks against the same maps whose linked archives were captured.
+    pub fn current<'a>(self, maps: impl IntoIterator<Item = &'a Map>) -> bool {
+        self.0 == archive_revisions(maps).0
+    }
+
+    /// Refuses a spanning render before reporting any ordinary drawing failure.
+    pub(crate) fn finish<'a, T>(self, maps: impl IntoIterator<Item = &'a Map>, result: Option<T>, failure: &str) -> Result<T, String> {
+        self.finish_revision(archive_revisions(maps), result, failure)
+    }
+
+    /// Checks a composed output against a newly captured revision of the same source set.
+    pub fn finish_revision<T>(self, current: Self, result: Option<T>, failure: &str) -> Result<T, String> {
+        if self.0 != current.0 {
+            return Err("a tile archive changed during rendering; export again after the reload finishes".to_string());
+        }
+        result.ok_or_else(|| failure.to_string())
+    }
+}
+
+/// Captures only linked tile archives used by these maps, before styles or tiles are read.
+/// The token is allocation-free; retain the maps for a check at worker publication.
+pub fn archive_revisions<'a>(maps: impl IntoIterator<Item = &'a Map>) -> ArchiveRevision {
+    ArchiveRevision(rustgis_tiles::cache::archive_revision(maps.into_iter().flat_map(|map| {
+        map.tiles
+            .iter()
+            .filter(|t| t.draws() && t.opacity > 0.0 && matches!(t.kind, rustgis_map::TileKind::PmTiles | rustgis_map::TileKind::MbTiles))
+            .map(|t| t.url.as_str())
+    })))
+}
+
 /// Draws the map for the screen. Layers are drawn bottom-up (the last layer in the list first).
 /// On high-density screens rasters are computed at logical-pixel resolution, for speed.
+/// A pass spanning a linked archive reload returns `None`, without publishing its mixed pixels.
 pub fn render(map: &mut Map, view: &View) -> Option<Rendered> {
     render_with(map, view, false)
 }
@@ -1660,6 +1697,13 @@ fn render_with_backend(map: &mut Map, view: &View, full_res_rasters: bool, backe
 /// [`render_with_backend`], `record` keeping a flat, north-up frame as vectors where it can
 /// ([`render_frame`]).
 fn render_any(map: &mut Map, view: &View, full_res_rasters: bool, backend: Backend, record: bool) -> Option<RenderOutput> {
+    let revisions = archive_revisions([&*map]);
+    let output = render_pass(map, view, full_res_rasters, backend, record);
+    revisions.current([&*map]).then_some(output).flatten()
+}
+
+/// One entire pass, including all bands and backend fallbacks, under `render_any`'s guard.
+fn render_pass(map: &mut Map, view: &View, full_res_rasters: bool, backend: Backend, record: bool) -> Option<RenderOutput> {
     // A bearing or pitch set directly on the camera may be unnormalised (or no number, which
     // faces north and looks straight down).
     let mut camera = view.camera;
@@ -5000,6 +5044,7 @@ pub struct DrapePatch {
 /// ([`rustgis_map::Globe::drape_mesh`]) while it turns, with no drawing per frame. Labels are
 /// left out (the view hides them while it moves).
 pub fn render_globe_drape(map: &mut Map, view: &View, boxes: &[Extent], max_side: u32) -> Vec<DrapePatch> {
+    let revisions = archive_revisions([&*map]);
     // A coarse drape may have far fewer pixels than points: it shows the map blurrier, but at
     // the view's scale.
     let ppp = if view.pixels_per_point.is_finite() { view.pixels_per_point.clamp(1.0 / 64.0, 4.0) } else { 1.0 };
@@ -5039,7 +5084,7 @@ pub fn render_globe_drape(map: &mut Map, view: &View, boxes: &[Extent], max_side
     map.label_display = display;
     map.label_lock = lock;
     map.label_lock_line_anchors = anchors;
-    out
+    if revisions.current([&*map]) { out } else { Vec::new() }
 }
 
 /// A band of a tilted view drawn flat, to lay over the tilted ground while the view moves.
@@ -5057,6 +5102,7 @@ pub struct TiltPatch {
 /// band, square, over the circle round the view and without the margin: it is laid over the view
 /// the same way while it turns.
 pub fn render_tilt_drape(map: &mut Map, view: &View, margin: f64, max_side: u32) -> Vec<TiltPatch> {
+    let revisions = archive_revisions([&*map]);
     let ppp = if view.pixels_per_point.is_finite() { view.pixels_per_point.clamp(0.25, 4.0) } else { 1.0 };
     let max_side = f64::from(max_side.clamp(64, 8192));
     let cam = view.camera;
@@ -5091,7 +5137,7 @@ pub fn render_tilt_drape(map: &mut Map, view: &View, margin: f64, max_side: u32)
     map.label_display = display;
     map.label_lock = lock;
     map.label_lock_line_anchors = anchors;
-    out
+    if revisions.current([&*map]) { out } else { Vec::new() }
 }
 
 /// A line's longest stretch in view, in points (`None` when none has two points in sight): the
@@ -5776,7 +5822,14 @@ fn complete(map: &mut Map, view: &View, record: bool) -> Option<Rendered> {
 
 /// [`render_png`]'s map kept as vectors (for a vector PDF) where it can be: flat, north up,
 /// without view effects; anything else, and what is pixels by nature, as pictures.
-pub fn render_drawing(map: &mut Map, view: &View) -> Option<vector::Drawing> {
+/// Returns an actionable error if a linked archive changes during the complete drawing.
+pub fn render_drawing(map: &mut Map, view: &View) -> Result<vector::Drawing, String> {
+    let revisions = archive_revisions([&*map]);
+    let result = render_drawing_inner(map, view);
+    revisions.finish([&*map], result, "could not draw the map")
+}
+
+fn render_drawing_inner(map: &mut Map, view: &View) -> Option<vector::Drawing> {
     let r = render_complete_recorded(map, view)?;
     let mut pm = match r.recorded {
         Some(c) => c,
@@ -5796,7 +5849,9 @@ pub fn render_drawing(map: &mut Map, view: &View) -> Option<vector::Drawing> {
 }
 
 /// Renders a map with its labels, a scale bar and a north arrow to PNG bytes.
+/// Refuses an archive changed during rendering or encoding; a caller must not write a destination on error.
 pub fn render_png(map: &mut Map, view: &View) -> Result<Vec<u8>, String> {
+    let revisions = archive_revisions([&*map]);
     let r = render_exported(map, view)?;
     let mut pm = Canvas::from_pixmap(r.pixmap);
     for l in r.unplaced.iter().chain(&r.labels) {
@@ -5804,7 +5859,8 @@ pub fn render_png(map: &mut Map, view: &View) -> Result<Vec<u8>, String> {
     }
     text::scale_bar(&mut pm, view, map.ground_res_at(&view.camera));
     draw_attribution(&mut pm, &r.attribution, view.pixels_per_point as f32);
-    pm.into_pixmap().encode_png().map_err(|e| e.to_string())
+    let png = pm.into_pixmap().encode_png().map_err(|e| e.to_string())?;
+    revisions.finish([&*map], Some(png), "could not encode the image")
 }
 
 /// A map drawn as data ([`render_placed`]), with what it holds besides its pixels.
@@ -5824,6 +5880,7 @@ pub struct Placed {
 /// without the scale bar and the credits, which sit on the screen, not the ground. Refuses what
 /// [`render_png`] refuses.
 pub fn render_placed(map: &mut Map, view: &View) -> Result<Placed, String> {
+    let revisions = archive_revisions([&*map]);
     let r = render_exported(map, view)?;
     let mut gaps = Vec::new();
     if r.tiles_pending {
@@ -5847,13 +5904,15 @@ pub fn render_placed(map: &mut Map, view: &View) -> Result<Placed, String> {
     for l in r.unplaced.iter().chain(&r.labels) {
         text::draw(&mut pm, l, view.pixels_per_point as f32);
     }
-    Ok(Placed { pixmap: pm.into_pixmap(), credits: r.attribution, gaps })
+    revisions.finish([&*map], Some(Placed { pixmap: pm.into_pixmap(), credits: r.attribution, gaps }), "could not draw the map")
 }
 
 /// The map drawn whole for an export, or why it can't be written: a raster read in place whose
 /// tiles haven't come, or that is drawn from less than the view needs.
 fn render_exported(map: &mut Map, view: &View) -> Result<Rendered, String> {
-    let r = render_complete(map, view).ok_or("could not allocate the image")?;
+    let revisions = archive_revisions([&*map]);
+    let result = render_complete(map, view);
+    let r = revisions.finish([&*map], result, "could not draw the map")?;
     // A raster read in place drawn from less than the view needs isn't written: its tiles still
     // on their way (the browser can't wait; natively the wait ran out), or a coarser level or
     // tiles it couldn't read (`partial`).

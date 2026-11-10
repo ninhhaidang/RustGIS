@@ -287,8 +287,7 @@ mod file {
 
     use std::collections::HashMap;
     use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::{Mutex, OnceLock};
+    use std::sync::Mutex;
 
     use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 
@@ -296,12 +295,16 @@ mod file {
 
     /// Open connections kept per file, for the tile readers to share.
     const POOL: usize = 4;
-    /// Goes up when connections are closed, so one in use then isn't put back for reuse.
-    static GENERATION: AtomicU64 = AtomicU64::new(0);
+    #[derive(Default)]
+    struct Pool {
+        connections: HashMap<PathBuf, Vec<Connection>>,
+        epochs: HashMap<PathBuf, u64>,
+        generation: u64,
+    }
 
-    fn pool() -> &'static Mutex<HashMap<PathBuf, Vec<Connection>>> {
-        static P: OnceLock<Mutex<HashMap<PathBuf, Vec<Connection>>>> = OnceLock::new();
-        P.get_or_init(Mutex::default)
+    fn pool() -> &'static Mutex<Pool> {
+        static P: std::sync::LazyLock<Mutex<Pool>> = std::sync::LazyLock::new(Mutex::default);
+        &P
     }
 
     fn open(path: &Path) -> Result<Connection, String> {
@@ -316,8 +319,18 @@ mod file {
 
     /// Runs `f` with a connection to `path`, from the pool or newly opened, and puts it back.
     fn with<T>(path: &Path, f: impl FnOnce(&Connection) -> Result<T, String>) -> Result<T, String> {
-        let generation = GENERATION.load(Ordering::SeqCst);
-        let pooled = pool().lock().unwrap_or_else(|e| e.into_inner()).get_mut(path).and_then(Vec::pop);
+        let (generation, epoch, pooled) = {
+            let mut all = pool().lock().unwrap_or_else(|e| e.into_inner());
+            // Track checked-out files too: close_unless must invalidate a handle even while no
+            // idle connection to its file remains. Bound both this record and the idle pool.
+            if all.epochs.len() >= 16 && !all.epochs.contains_key(path) {
+                all.generation = all.generation.wrapping_add(1);
+                all.connections.clear();
+                all.epochs.clear();
+            }
+            let epoch = *all.epochs.entry(path.to_path_buf()).or_default();
+            (all.generation, epoch, all.connections.get_mut(path).and_then(Vec::pop))
+        };
         let conn = match pooled {
             Some(c) => c,
             None => open(path)?,
@@ -325,14 +338,10 @@ mod file {
         let r = f(&conn);
         let mut all = pool().lock().unwrap_or_else(|e| e.into_inner());
         // Closed while in use (the file changed, or the cache was cleared): not reused.
-        if GENERATION.load(Ordering::SeqCst) != generation {
+        if all.generation != generation || all.epochs.get(path).copied().unwrap_or(0) != epoch {
             return r;
         }
-        // A few files are open at a time: past that many, start again rather than grow.
-        if all.len() >= 16 && !all.contains_key(path) {
-            all.clear();
-        }
-        let slot = all.entry(path.to_path_buf()).or_default();
+        let slot = all.connections.entry(path.to_path_buf()).or_default();
         if slot.len() < POOL {
             slot.push(conn);
         }
@@ -342,70 +351,155 @@ mod file {
     /// Forgets the open connections to `path` (it changed on disk, or was closed).
     pub fn close(path: &Path) {
         let mut all = pool().lock().unwrap_or_else(|e| e.into_inner());
-        GENERATION.fetch_add(1, Ordering::SeqCst);
-        all.remove(path);
+        if let Some(epoch) = all.epochs.get_mut(path) {
+            *epoch = epoch.wrapping_add(1);
+        }
+        all.connections.remove(path);
     }
 
     /// Forgets every open connection.
     pub fn close_all() {
         let mut all = pool().lock().unwrap_or_else(|e| e.into_inner());
-        GENERATION.fetch_add(1, Ordering::SeqCst);
-        all.clear();
+        all.generation = all.generation.wrapping_add(1);
+        all.connections.clear();
+        all.epochs.clear();
     }
 
     /// Forgets the open connections to the files `keep` says no to. Windows won't move or delete a
     /// file SQLite has open, so a file nothing reads any more mustn't stay in the pool.
     pub fn close_unless(keep: impl Fn(&Path) -> bool) {
         let mut all = pool().lock().unwrap_or_else(|e| e.into_inner());
-        if !all.keys().all(|path| keep(path)) {
-            GENERATION.fetch_add(1, Ordering::SeqCst);
-            all.retain(|path, _| keep(path));
+        for (path, epoch) in &mut all.epochs {
+            if !keep(path) {
+                *epoch = epoch.wrapping_add(1);
+            }
         }
+        all.connections.retain(|path, _| keep(path));
     }
 
     /// Whether a connection to `path` is kept open.
     pub fn is_open(path: &Path) -> bool {
-        pool().lock().unwrap_or_else(|e| e.into_inner()).get(path).is_some_and(|open| !open.is_empty())
+        pool().lock().unwrap_or_else(|e| e.into_inner()).connections.get(path).is_some_and(|open| !open.is_empty())
     }
 
     /// The metadata of the MBTiles file at `path`.
     pub fn open_path(path: &Path) -> Result<Info, String> {
-        with(path, |c| {
-            let sql = |e: rusqlite::Error| format!("{}: not a readable MBTiles file ({e})", path.display());
-            let mut meta = Vec::new();
-            if let Ok(mut st) = c.prepare("SELECT name, value FROM metadata LIMIT 1000") {
-                let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).map_err(sql)?;
-                meta.extend(rows.filter_map(Result::ok));
+        with(path, |c| read_info(c, path))
+    }
+
+    /// Reads metadata and one bounded raster sample on a fresh connection, retaining nothing.
+    /// Vector archives get only a tile-page readability probe; an empty archive has no sample.
+    /// The current progress probe and request predicate cancel SQLite scans on this connection.
+    pub fn read_info_path(path: &Path) -> Result<(Info, Option<Vec<u8>>), String> {
+        let still = crate::source::remote::current_still();
+        let cancelled = move || crate::progress::check().is_err() || still.as_ref().is_some_and(|s| !s());
+        if cancelled() {
+            return Err(crate::DataError::Cancelled.to_string());
+        }
+        // Latch callback cancellation: SQLite's "interrupted" error is not archive damage,
+        // even if a request predicate has changed again before the query unwinds.
+        let interrupted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let result = (|| {
+            let mut c = open(path)?;
+            let poll = cancelled.clone();
+            let stopped = interrupted.clone();
+            c.progress_handler(
+                1000,
+                Some(move || {
+                    let stop = poll();
+                    if stop {
+                        stopped.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    stop
+                }),
+            )
+            .map_err(|e| format!("{}: cannot install MBTiles cancellation handler ({e})", path.display()))?;
+            let info = read_info(&c, path)?;
+            if cancelled() {
+                return Err(crate::DataError::Cancelled.to_string());
             }
-            // That it is an MBTiles file: the tiles table (or view) has its columns. Nothing is read.
-            c.prepare("SELECT zoom_level, tile_column, tile_row, tile_data FROM tiles LIMIT 0").map_err(sql)?;
-            // What the metadata says, if it is usable: a zoom that reads as a number, a format
-            // RustGIS knows.
-            let says = |k: &str, ok: &dyn Fn(&str) -> bool| {
-                meta.iter().find(|(n, _)| n.eq_ignore_ascii_case(k)).is_some_and(|(_, v)| ok(v.trim()))
-            };
-            let zoom = |v: &str| v.parse::<f64>().is_ok_and(f64::is_finite);
-            let format = |v: &str| super::Format::from_name(v) != super::Format::Unknown;
-            // The tiles are looked at only for what the metadata leaves out: finding the zooms can
-            // scan the whole table (or join a deduplicated layout's view).
-            let zooms = if says("minzoom", &zoom) && says("maxzoom", &zoom) {
+            let sql = |e: rusqlite::Error| format!("{}: not a readable MBTiles file ({e})", path.display());
+            // Even complete metadata must not hide a damaged first tile page. Vector payloads are
+            // not decoded here; the tiles layer decodes the raster sample before accepting a reload.
+            let sample = if info.format.is_vector() {
+                let _: Option<Option<Vec<u8>>> =
+                    c.query_row("SELECT substr(tile_data, 1, 16) FROM tiles LIMIT 1", [], |row| row.get(0)).optional().map_err(sql)?;
                 None
             } else {
-                let z: (Option<i64>, Option<i64>) =
-                    c.query_row("SELECT min(zoom_level), max(zoom_level) FROM tiles", [], |r| Ok((r.get(0)?, r.get(1)?))).map_err(sql)?;
-                match z {
-                    (Some(a), Some(b)) => Some((a.clamp(0, 24) as u8, b.clamp(0, 24) as u8)),
-                    _ => None,
+                // Check the size before materializing a blob, as the normal tile reader does.
+                let tile: Option<(i64, Option<Vec<u8>>)> = c
+                    .query_row(
+                        "SELECT length(tile_data), CASE WHEN length(tile_data) <= ?1 THEN tile_data END FROM tiles LIMIT 1",
+                        [MAX_TILE_BYTES as i64],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .optional()
+                    .map_err(sql)?;
+                match tile {
+                    Some((len, _)) if len > MAX_TILE_BYTES as i64 => {
+                        return Err(format!(
+                            "{}: raster sample of {len} bytes exceeds the {MAX_TILE_BYTES}-byte tile limit",
+                            path.display()
+                        ));
+                    }
+                    Some((_, bytes)) => bytes,
+                    None => None,
                 }
             };
-            // A tile's first bytes say its format when the metadata doesn't.
-            let first: Option<Vec<u8>> = if says("format", &format) {
-                None
-            } else {
-                c.query_row("SELECT substr(tile_data, 1, 16) FROM tiles LIMIT 1", [], |r| r.get(0)).optional().map_err(sql)?
-            };
-            Ok(Info::from_metadata(&meta, zooms, first.as_deref()))
-        })
+            Ok((info, sample))
+        })();
+        // Tiny queries may finish before the first SQLite callback; check success and error
+        // boundaries too, including a failed open. No fresh handle or hook enters the pool.
+        if interrupted.load(std::sync::atomic::Ordering::Relaxed) || cancelled() {
+            Err(crate::DataError::Cancelled.to_string())
+        } else {
+            result
+        }
+    }
+
+    fn read_info(c: &Connection, path: &Path) -> Result<Info, String> {
+        let sql = |e: rusqlite::Error| format!("{}: not a readable MBTiles file ({e})", path.display());
+        let mut meta = Vec::new();
+        let has_metadata: bool = c
+            .query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name = 'metadata' COLLATE NOCASE)", [], |r| r.get(0))
+            .map_err(sql)?;
+        if has_metadata {
+            let mut st = c.prepare("SELECT name, value FROM metadata LIMIT 1001").map_err(sql)?;
+            let mut rows = st.query([]).map_err(sql)?;
+            while let Some(row) = rows.next().map_err(sql)? {
+                if meta.len() == 1000 {
+                    return Err(format!("{}: MBTiles metadata exceeds the 1000-row limit; refusing to omit metadata", path.display()));
+                }
+                meta.push((row.get::<_, String>(0).map_err(sql)?, row.get::<_, String>(1).map_err(sql)?));
+            }
+        }
+        // That it is an MBTiles file: the tiles table (or view) has its columns. Nothing is read.
+        c.prepare("SELECT zoom_level, tile_column, tile_row, tile_data FROM tiles LIMIT 0").map_err(sql)?;
+        // What the metadata says, if it is usable: a zoom that reads as a number, a format
+        // RustGIS knows.
+        let says =
+            |k: &str, ok: &dyn Fn(&str) -> bool| meta.iter().find(|(n, _)| n.eq_ignore_ascii_case(k)).is_some_and(|(_, v)| ok(v.trim()));
+        let zoom = |v: &str| v.parse::<f64>().is_ok_and(f64::is_finite);
+        let format = |v: &str| super::Format::from_name(v) != super::Format::Unknown;
+        // The tiles are looked at only for what the metadata leaves out: finding the zooms can
+        // scan the whole table (or join a deduplicated layout's view).
+        let zooms = if says("minzoom", &zoom) && says("maxzoom", &zoom) {
+            None
+        } else {
+            let z: (Option<i64>, Option<i64>) =
+                c.query_row("SELECT min(zoom_level), max(zoom_level) FROM tiles", [], |r| Ok((r.get(0)?, r.get(1)?))).map_err(sql)?;
+            match z {
+                (Some(a), Some(b)) => Some((a.clamp(0, 24) as u8, b.clamp(0, 24) as u8)),
+                _ => None,
+            }
+        };
+        // A tile's first bytes say its format when the metadata doesn't.
+        let first: Option<Vec<u8>> = if says("format", &format) {
+            None
+        } else {
+            c.query_row("SELECT substr(tile_data, 1, 16) FROM tiles LIMIT 1", [], |r| r.get(0)).optional().map_err(sql)?
+        };
+        Ok(Info::from_metadata(&meta, zooms, first.as_deref()))
     }
 
     /// The tile at z/x/y (`y` from the north) of the file at `path`, `None` when it has none.
@@ -431,6 +525,336 @@ mod file {
     }
 
     #[cfg(test)]
+    mod reload_tests {
+        use super::*;
+
+        struct CancelAfterPolls {
+            polls: std::sync::atomic::AtomicUsize,
+            after: usize,
+        }
+
+        impl CancelAfterPolls {
+            fn new(after: usize) -> std::sync::Arc<Self> {
+                std::sync::Arc::new(Self { polls: std::sync::atomic::AtomicUsize::new(0), after })
+            }
+
+            fn polls(&self) -> usize {
+                self.polls.load(std::sync::atomic::Ordering::Relaxed)
+            }
+        }
+
+        impl crate::progress::Probe for CancelAfterPolls {
+            fn cancelled(&self) -> bool {
+                self.polls.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1 >= self.after
+            }
+
+            fn begin(&self, _: u64) {}
+
+            fn advance(&self, _: u64) {}
+        }
+
+        #[test]
+        fn candidate_missing_zoom_scan_cancels_inside_sql_and_retries_cleanly() {
+            let path = std::env::temp_dir().join(format!("rustgis-mbtiles-cancel-scan-{}.mbtiles", std::process::id()));
+            let _ = std::fs::remove_file(&path);
+            let c = Connection::open(&path).unwrap();
+            c.execute_batch(
+                "CREATE TABLE metadata(name TEXT,value TEXT);
+                 CREATE TABLE tiles(zoom_level INTEGER,tile_column INTEGER,tile_row INTEGER,tile_data BLOB);
+                 INSERT INTO metadata VALUES('format','png'),('minzoom','2'),('maxzoom','7');
+                 WITH RECURSIVE n(i) AS (VALUES(0) UNION ALL SELECT i+1 FROM n WHERE i<1023)
+                 INSERT INTO tiles SELECT 2+i%6,i,0,x'89504e470d0a1a0a' FROM n;",
+            )
+            .unwrap();
+            drop(c);
+
+            // The same small archive with complete zoom metadata needs only the entry and
+            // completion checks. Cancelling at poll four therefore requires SQLite's hook.
+            let complete = CancelAfterPolls::new(4);
+            {
+                let _installed = crate::progress::install(Some(complete.clone()));
+                let (info, _) = read_info_path(&path).unwrap();
+                assert_eq!((info.min_zoom, info.max_zoom), (2, 7));
+            }
+            assert!(complete.polls() < 4, "complete metadata unexpectedly ran a scan");
+            let c = Connection::open(&path).unwrap();
+            c.execute("DELETE FROM metadata WHERE name IN ('minzoom','maxzoom')", []).unwrap();
+            drop(c);
+
+            let scan = CancelAfterPolls::new(4);
+            {
+                let _installed = crate::progress::install(Some(scan.clone()));
+                assert_eq!(read_info_path(&path).unwrap_err(), crate::DataError::Cancelled.to_string());
+            }
+            assert_eq!(scan.polls(), 4, "the SQL callback must stop at the first cancelled poll");
+            assert!(!is_open(&path), "a cancelled fresh validator must not populate the pool");
+
+            let clean = CancelAfterPolls::new(usize::MAX);
+            {
+                let _installed = crate::progress::install(Some(clean.clone()));
+                let (info, sample) = read_info_path(&path).unwrap();
+                assert_eq!((info.min_zoom, info.max_zoom, info.format), (2, 7, super::super::Format::Png));
+                assert_eq!(sample.as_deref(), Some(b"\x89PNG\r\n\x1a\n".as_slice()));
+            }
+            assert!(clean.polls() > complete.polls() + 3, "the fixed scan must cross several SQLite callback intervals");
+            assert!(!is_open(&path), "a successful fresh validator must not populate the pool");
+            // A request revoked only during SQL must also latch cancellation, not relabel the
+            // interruption as a damaged archive when its predicate is live again afterwards.
+            let request_polls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let polled = request_polls.clone();
+            crate::source::remote::with_still(
+                std::sync::Arc::new(move || polled.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1 != 4),
+                || assert_eq!(read_info_path(&path).unwrap_err(), crate::DataError::Cancelled.to_string()),
+            );
+            assert_eq!(request_polls.load(std::sync::atomic::Ordering::Relaxed), 4);
+            assert!(!is_open(&path));
+            std::fs::remove_file(path).unwrap();
+        }
+
+        #[test]
+        fn candidate_already_cancelled_stops_before_opening_the_file() {
+            let path = std::env::temp_dir().join(format!("rustgis-mbtiles-cancel-missing-{}.mbtiles", std::process::id()));
+            let _ = std::fs::remove_file(&path);
+            let cancelled = CancelAfterPolls::new(1);
+            {
+                let _installed = crate::progress::install(Some(cancelled.clone()));
+                assert_eq!(read_info_path(&path).unwrap_err(), crate::DataError::Cancelled.to_string());
+            }
+            assert_eq!(cancelled.polls(), 1);
+            assert!(!is_open(&path));
+            assert!(
+                read_info_path(&path).unwrap_err().contains(&path.display().to_string()),
+                "a clean retry must report the real missing-file error"
+            );
+
+            let during_open = CancelAfterPolls::new(2);
+            {
+                let _installed = crate::progress::install(Some(during_open.clone()));
+                assert_eq!(read_info_path(&path).unwrap_err(), crate::DataError::Cancelled.to_string());
+            }
+            assert_eq!(during_open.polls(), 2, "a failed open still checks cancellation at its error boundary");
+        }
+
+        #[test]
+        fn candidate_small_queries_check_cancellation_at_completion() {
+            let path = std::env::temp_dir().join(format!("rustgis-mbtiles-cancel-small-{}.mbtiles", std::process::id()));
+            let _ = std::fs::remove_file(&path);
+            let c = Connection::open(&path).unwrap();
+            c.execute_batch(
+                "CREATE TABLE metadata(name TEXT,value TEXT);
+                 CREATE TABLE tiles(zoom_level INTEGER,tile_column INTEGER,tile_row INTEGER,tile_data BLOB);
+                 INSERT INTO metadata VALUES('format','pbf'),('minzoom','2'),('maxzoom','7');",
+            )
+            .unwrap();
+            drop(c);
+            // Neither short query reaches 1,000 VM instructions. Cancel after metadata and
+            // after the sample query must still refuse to publish a successful candidate.
+            for after in [2, 3] {
+                let cancelled = CancelAfterPolls::new(after);
+                let _installed = crate::progress::install(Some(cancelled));
+                assert_eq!(read_info_path(&path).unwrap_err(), crate::DataError::Cancelled.to_string());
+                assert!(!is_open(&path));
+            }
+            let (info, sample) = read_info_path(&path).unwrap();
+            assert_eq!((info.min_zoom, info.max_zoom), (2, 7));
+            assert!(sample.is_none());
+            std::fs::remove_file(path).unwrap();
+        }
+
+        #[test]
+        fn metadata_row_limit_is_explicit_and_retryable_for_both_readers() {
+            let path = std::env::temp_dir().join(format!("rustgis-mbtiles-metadata-limit-{}.mbtiles", std::process::id()));
+            let _ = std::fs::remove_file(&path);
+            let c = Connection::open(&path).unwrap();
+            c.execute_batch(
+                "CREATE TABLE metadata(name TEXT,value TEXT);
+                 CREATE TABLE tiles(zoom_level INTEGER,tile_column INTEGER,tile_row INTEGER,tile_data BLOB);
+                 INSERT INTO metadata VALUES('format','png'),('minzoom','0'),('maxzoom','0');",
+            )
+            .unwrap();
+            let tx = c.unchecked_transaction().unwrap();
+            {
+                let mut insert = tx.prepare("INSERT INTO metadata VALUES(?1,'unused')").unwrap();
+                for n in 0..996 {
+                    insert.execute([format!("unused-{n}")]).unwrap();
+                }
+            }
+            tx.execute("INSERT INTO metadata VALUES('attribution','last allowed attribution')", []).unwrap();
+            tx.commit().unwrap();
+
+            let assert_exact_limit = || {
+                let ordinary = open_path(&path).unwrap();
+                let (candidate, sample) = read_info_path(&path).unwrap();
+                for info in [&ordinary, &candidate] {
+                    assert_eq!(info.format, super::super::Format::Png);
+                    assert_eq!(info.attribution, "last allowed attribution", "the thousandth metadata row must survive");
+                }
+                assert!(sample.is_none(), "the fixture has no tiles");
+            };
+            assert_exact_limit();
+
+            c.execute("INSERT INTO metadata VALUES('json',?1)", [r#"{"vector_layers":[{"id":"overflow"}]}"#]).unwrap();
+            for error in [open_path(&path).unwrap_err(), read_info_path(&path).unwrap_err()] {
+                assert!(error.contains(&path.display().to_string()), "{error}");
+                assert!(error.contains("1000-row limit"), "{error}");
+            }
+            c.execute("DELETE FROM metadata WHERE name='json'", []).unwrap();
+            assert_exact_limit();
+
+            close(&path);
+            drop(c);
+            std::fs::remove_file(path).unwrap();
+        }
+
+        #[test]
+        fn ordinary_open_refuses_null_and_non_text_metadata_rows() {
+            let path = std::env::temp_dir().join(format!("rustgis-mbtiles-metadata-types-{}.mbtiles", std::process::id()));
+            let _ = std::fs::remove_file(&path);
+            let c = Connection::open(&path).unwrap();
+            c.execute_batch(
+                "CREATE TABLE metadata(name,value);
+                 CREATE TABLE tiles(zoom_level INTEGER,tile_column INTEGER,tile_row INTEGER,tile_data BLOB);
+                 INSERT INTO metadata VALUES('format','png'),('minzoom','0'),('maxzoom','0');",
+            )
+            .unwrap();
+            assert_eq!(open_path(&path).unwrap().format, super::super::Format::Png);
+            for row in ["(NULL,'unused')", "('unused',NULL)", "(7,'unused')", "('unused',7)", "(x'01','unused')", "('unused',x'01')"] {
+                c.execute_batch(&format!("INSERT INTO metadata VALUES {row}")).unwrap();
+                let error = open_path(&path).unwrap_err();
+                assert!(error.contains(&path.display().to_string()), "{error}");
+                assert!(error.contains("not a readable MBTiles file"), "{error}");
+                c.execute("DELETE FROM metadata WHERE rowid = (SELECT max(rowid) FROM metadata)", []).unwrap();
+                assert!(open_path(&path).is_ok(), "valid text rows must remain usable after {row}");
+            }
+            close(&path);
+            drop(c);
+            std::fs::remove_file(path).unwrap();
+        }
+
+        #[test]
+        fn candidate_raster_sample_is_bounded_and_unpooled() {
+            let path = std::env::temp_dir().join(format!("rustgis-mbtiles-raster-sample-{}.mbtiles", std::process::id()));
+            let _ = std::fs::remove_file(&path);
+            let c = Connection::open(&path).unwrap();
+            c.execute_batch(
+                "CREATE TABLE metadata(name TEXT,value TEXT);
+                 CREATE TABLE tiles(zoom_level INTEGER,tile_column INTEGER,tile_row INTEGER,tile_data BLOB);
+                 INSERT INTO metadata VALUES('format','png'),('minzoom','0'),('maxzoom','0');",
+            )
+            .unwrap();
+            assert!(read_info_path(&path).unwrap().1.is_none(), "an empty archive remains valid");
+            let invalid_png = b"\x89PNG\r\n\x1a\n";
+            c.execute("INSERT INTO tiles VALUES(0,0,0,?1)", [invalid_png.as_slice()]).unwrap();
+            let (info, sample) = read_info_path(&path).unwrap();
+            assert_eq!(info.format, super::super::Format::Png);
+            assert_eq!(sample.as_deref(), Some(invalid_png.as_slice()), "the tiles layer must see more than a discarded signature probe");
+            c.execute("UPDATE tiles SET tile_data=zeroblob(?1)", [MAX_TILE_BYTES as i64 + 1]).unwrap();
+            let error = read_info_path(&path).unwrap_err();
+            assert!(error.contains(&path.display().to_string()), "{error}");
+            assert!(error.contains("exceeds") && error.contains(&MAX_TILE_BYTES.to_string()), "{error}");
+            c.execute_batch("UPDATE metadata SET value='pbf' WHERE name='format'; UPDATE tiles SET tile_data=x'01';").unwrap();
+            assert!(read_info_path(&path).unwrap().1.is_none(), "vector payloads get a readability probe, not image validation");
+            assert!(!pool().lock().unwrap().connections.contains_key(&path), "candidate validation must not populate the retained pool");
+            drop(c);
+            std::fs::remove_file(path).unwrap();
+        }
+
+        #[test]
+        fn candidate_probe_reads_tile_pages_even_with_complete_metadata() {
+            let path = std::env::temp_dir().join(format!("rustgis-mbtiles-damaged-tile-page-{}.mbtiles", std::process::id()));
+            let _ = std::fs::remove_file(&path);
+            let c = Connection::open(&path).unwrap();
+            c.execute_batch(
+                "CREATE TABLE metadata(name TEXT,value TEXT);
+                 CREATE TABLE tiles(zoom_level INTEGER,tile_column INTEGER,tile_row INTEGER,tile_data BLOB);
+                 INSERT INTO metadata VALUES('format','pbf'),('minzoom','0'),('maxzoom','0');
+                 INSERT INTO tiles VALUES(0,0,0,x'01');",
+            )
+            .unwrap();
+            let page = c.query_row("SELECT rootpage FROM sqlite_master WHERE name='tiles'", [], |r| r.get::<_, u32>(0)).unwrap() as usize;
+            let size = c.query_row("PRAGMA page_size", [], |r| r.get::<_, u32>(0)).unwrap() as usize;
+            drop(c);
+            assert!(read_info_path(&path).is_ok());
+            let mut bytes = std::fs::read(&path).unwrap();
+            bytes[(page - 1) * size] = 0;
+            std::fs::write(&path, bytes).unwrap();
+            assert!(open_path(&path).is_ok(), "complete metadata alone does not step the damaged tile table");
+            let error = read_info_path(&path).unwrap_err();
+            assert!(error.contains(&path.display().to_string()), "{error}");
+            assert!(error.contains("not a readable MBTiles file"), "{error}");
+            close(&path);
+            std::fs::remove_file(path).unwrap();
+        }
+
+        #[test]
+        fn closing_one_file_rejects_its_old_connection_but_keeps_another_file() {
+            let root = std::env::temp_dir().join(format!("rustgis-mbtiles-pool-reload-{}", std::process::id()));
+            std::fs::create_dir_all(&root).unwrap();
+            let path = root.join("reload.mbtiles");
+            let other = root.join("other.mbtiles");
+            for p in [&path, &other] {
+                let c = Connection::open(p).unwrap();
+                c.execute_batch(
+                    "CREATE TABLE IF NOT EXISTS tiles(zoom_level INTEGER,tile_column INTEGER,tile_row INTEGER,tile_data BLOB);
+                    DELETE FROM tiles; INSERT INTO tiles VALUES(0,0,0,x'01');",
+                )
+                .unwrap();
+            }
+            // Another test's new path can clear the process-global pool when 16 are tracked: the
+            // other file is only expected to survive `close` if no clear happened around it.
+            let generation = pool().lock().unwrap().generation;
+            assert_eq!(tile_path(&other, 0, 0, 0).unwrap(), Some(vec![1]));
+            let (started_tx, started_rx) = std::sync::mpsc::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            let read_path = path.clone();
+            let worker = std::thread::spawn(move || {
+                with(&read_path, |c| {
+                    let tile: Vec<u8> = c.query_row("SELECT tile_data FROM tiles LIMIT 1", [], |r| r.get(0)).map_err(|e| e.to_string())?;
+                    started_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                    Ok(tile)
+                })
+                .unwrap()
+            });
+            started_rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+            close(&path);
+            let mut kept = {
+                let all = pool().lock().unwrap();
+                (all.generation == generation).then(|| all.connections.get(&other).is_some_and(|v| !v.is_empty()))
+            };
+            for _ in 0..8 {
+                if kept.is_some() {
+                    break;
+                }
+                // The pool was cleared by a concurrent test: seed both files again and close
+                // `path` once more, so the retry still shows `close` drops only its own file.
+                let generation = pool().lock().unwrap().generation;
+                assert_eq!(tile_path(&other, 0, 0, 0).unwrap(), Some(vec![1]));
+                assert_eq!(tile_path(&path, 0, 0, 0).unwrap(), Some(vec![1]));
+                close(&path);
+                let all = pool().lock().unwrap();
+                kept = (all.generation == generation).then(|| {
+                    all.connections.get(&other).is_some_and(|v| !v.is_empty()) && all.connections.get(&path).is_none_or(Vec::is_empty)
+                });
+            }
+            assert_eq!(kept, Some(true), "closing one file must keep another file's connection");
+            release_tx.send(()).unwrap();
+            assert_eq!(worker.join().unwrap(), vec![1]);
+            assert!(
+                pool().lock().unwrap().connections.get(&path).is_none_or(Vec::is_empty),
+                "a read admitted before close returned its obsolete connection"
+            );
+            let c = Connection::open(&path).unwrap();
+            c.execute_batch("UPDATE tiles SET tile_data=x'02'").unwrap();
+            drop(c);
+            assert_eq!(tile_path(&path, 0, 0, 0).unwrap(), Some(vec![2]));
+            close(&path);
+            close(&other);
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[cfg(test)]
     mod tests {
         use super::*;
 
@@ -451,9 +875,15 @@ mod file {
             let (kept, gone) = (dir.join("kept.mbtiles"), dir.join("gone.mbtiles"));
             for path in [&kept, &gone] {
                 std::fs::write(path, b"").unwrap();
-                pool().lock().unwrap().entry(path.clone()).or_default().push(open(path).unwrap());
+                with(path, |_| Ok(())).unwrap();
             }
-            close_unless(|path| path != gone);
+            with(&kept, |_| {
+                with(&gone, |_| {
+                    close_unless(|path| path != gone);
+                    Ok(())
+                })
+            })
+            .unwrap();
             assert!(is_open(&kept));
             assert!(!is_open(&gone));
             std::fs::remove_file(&gone).unwrap();
@@ -462,7 +892,7 @@ mod file {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use file::{close, close_all, close_unless, is_open, open_path, tile_path};
+pub use file::{close, close_all, close_unless, is_open, open_path, read_info_path, tile_path};
 
 #[cfg(test)]
 mod tests {

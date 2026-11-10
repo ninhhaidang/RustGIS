@@ -330,8 +330,7 @@ fn preview(app: &mut RustGisApp, ui: &mut Ui, i: usize, t: &Tokens) {
         let (s, page) = (&mut app.session, app.reports.page);
         let drawn = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<_, String> {
             let page = page.min(pages.len().saturating_sub(1));
-            let (pm, _, _) = rustgis_engine::render::report::draw_page(doc, pages, page, 60.0, &s.project.layouts, &mut s.project.maps)
-                .ok_or("the page is too large to draw")?;
+            let (pm, _, _) = rustgis_engine::render::report::draw_page(doc, pages, page, 60.0, &s.project.layouts, &mut s.project.maps)?;
             Ok((pm, page, pages.len()))
         }))
         .unwrap_or_else(|_| Err("the preview failed unexpectedly".into()));

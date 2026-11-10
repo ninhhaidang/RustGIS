@@ -130,8 +130,16 @@ Attached calls run on the open app's session through the same tools and refusal 
 private server. `snapshot` additionally supports a real window capture with `mode: "screen"`.
 If the map is not on screen, it falls back to an offscreen render and explains why in `note`.
 The relay holds a screen request until the app has taken the picture, and runs nothing else
-meanwhile. File and network commands need `--yes`, unless **Let your Agents Control RustGIS**
-is ticked.
+meanwhile. Direct `run_command` calls to `map.reloadTiles` and `map.repairTiles` validate local
+PMTiles/MBTiles archives on the desktop's existing background-read worker after admission and,
+when required, approval. Their replies and audit entries wait for the command to actually land;
+later entries in the same JSON-RPC batch and later relay requests wait too. Cancelling, revoking
+the caller or changing the original archive target prevents installation. The original agent
+still owns the resulting undo step. Arbitrary `run` scripts and file-bridge scripts retain their
+existing synchronous execution contract; this does not move their child commands to the worker.
+Notebook cells, task steps and Script pane scripts validate reload and repair inline on the window
+thread, without reload status or cancellation during validation.
+File and network commands need `--yes`, unless **Let your Agents Control RustGIS** is ticked.
 
 Without **Full access**, an attached agent cannot replace the open project:
 `project.new`, `project.open`, `project.openText`, `project.sample` and `project.fromTemplate`

@@ -400,7 +400,7 @@ pub fn draw_page(s: &mut Session, i: usize, k: usize, dpi: f64) -> Result<rustgi
     let page = pres.pages.get(k).ok_or_else(|| format!("no page {k}"))?;
     let layout = page_layout(s, pres, page);
     let info = rustgis_render::layout::PageInfo { page: k + 1, pages: n, page_name: page.title.clone() };
-    rustgis_render::layout::render(&layout, &mut s.project.maps, dpi, &info).ok_or_else(|| "the page is too large to draw".to_string())
+    rustgis_render::layout::render(&layout, &mut s.project.maps, dpi, &info)
 }
 
 /// Page `k` of presentation `i` as a vector PDF page at `dpi` (see
@@ -417,8 +417,7 @@ fn pdf_page(
     let page = pres.pages.get(k).ok_or_else(|| format!("no page {k}"))?;
     let layout = page_layout(s, pres, page);
     let info = rustgis_render::layout::PageInfo { page: k + 1, pages: n, page_name: page.title.clone() };
-    let (drawing, pictured) =
-        rustgis_render::layout::render_drawing(&layout, &mut s.project.maps, dpi, &info).ok_or("the page is too large to draw")?;
+    let (drawing, pictured) = rustgis_render::layout::render_drawing(&layout, &mut s.project.maps, dpi, &info)?;
     Ok((rustgis_render::pdf::Page::drawing(drawing, width, height), pictured))
 }
 
@@ -441,6 +440,20 @@ pub(crate) fn playable(source: &str) -> &str {
 /// The presentation as a PDF, a self-contained HTML slideshow or a PNG of its first page, and
 /// the number of pages written.
 pub fn export_bytes(s: &mut Session, i: usize, format: &str, dpi: f64) -> Result<(Vec<u8>, usize), String> {
+    let revision = |s: &Session| {
+        rustgis_render::archive_revisions(s.project.presentations.get(i).into_iter().flat_map(|p| {
+            p.pages
+                .iter()
+                .take(if format == "png" { 1 } else { usize::MAX })
+                .filter_map(|page| if let PageKind::Map { map, .. } = &page.kind { Some(page_map(s, map)) } else { None })
+        }))
+    };
+    let before = revision(s);
+    let result = export_bytes_inner(s, i, format, dpi);
+    before.finish_revision(revision(s), Some(result), "could not draw the presentation")?
+}
+
+fn export_bytes_inner(s: &mut Session, i: usize, format: &str, dpi: f64) -> Result<(Vec<u8>, usize), String> {
     // Only the size and name are copied: the pages can hold many megabytes of pictures, so each
     // is read in place after it's drawn.
     let (name, width, height, n) =
