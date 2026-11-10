@@ -40,8 +40,11 @@ from qgis.core import (
     QgsPointClusterRenderer, QgsPointDisplacementRenderer, QgsNullSymbolRenderer,
     QgsEmbeddedSymbolRenderer, QgsEffectStack, QgsVectorLayerTemporalProperties,
     QgsDateTimeRange, QgsStyle, QgsGradientColorRamp, QgsLayerTreeLayer,
+    QgsDiagramSettings, QgsDiagramLayerSettings, QgsSingleCategoryDiagramRenderer,
+    QgsLinearlyInterpolatedDiagramRenderer, QgsPieDiagram, QgsHistogramDiagram,
+    QgsStackedBarDiagram, QgsTextDiagram,
 )
-from qgis.PyQt.QtCore import QVariant, QMetaType, QDateTime, QDate, QTime
+from qgis.PyQt.QtCore import QVariant, QMetaType, QDateTime, QDate, QTime, QSizeF
 from qgis.PyQt.QtGui import QColor
 
 OUT = os.path.abspath(sys.argv[1])
@@ -279,6 +282,60 @@ def data_defined():
 
 
 attempt("data-defined", data_defined)
+
+
+# ---------------------------------------------------------------------------------------------
+# Diagrams: pie by fields and by expressions, a histogram, a stacked bar and a text diagram; a pie
+# and a histogram sized between two values (by an expression, and by a field).
+
+def diagrams():
+    def settings(attrs):
+        s = QgsDiagramSettings()
+        s.enabled = True
+        s.categoryAttributes = attrs
+        s.categoryColors = [QColor(c) for c in ("#e41a1c", "#377eb8", "#4daf4a", "#984ea3")[:len(attrs)]]
+        s.categoryLabels = [a.strip('"') for a in attrs]
+        s.size = QSizeF(12, 12)
+        s.sizeType = Qgis.RenderUnit.Millimeters
+        s.backgroundColor = QColor(255, 255, 255, 255)
+        s.penColor = QColor("#333333")
+        s.penWidth = 0.3
+        s.barWidth = 3
+        return s
+
+    for name, kind, attrs, scaled in [
+        ("pie", QgsPieDiagram, ['"value"', '"angle"'], False),
+        ("pie-expression", QgsPieDiagram, ['"value"', '"angle" / 2', '"id"'], False),
+        ("pie-scaled", QgsPieDiagram, ['"value"', '"angle"'], True),
+        ("histogram-scaled", QgsHistogramDiagram, ['"value"', '"angle"'], True),
+        ("histogram", QgsHistogramDiagram, ['"value"', '"angle"', '"id"'], False),
+        ("stackedbar", QgsStackedBarDiagram, ['"value"', '"angle"'], False),
+        ("text", QgsTextDiagram, ['"value"', '"angle"'], False),
+    ]:
+        vl = layer("polygons")
+        s = settings(attrs)
+        if scaled:
+            r = QgsLinearlyInterpolatedDiagramRenderer()
+            r.setLowerValue(0)
+            r.setUpperValue(400)
+            r.setLowerSize(QSizeF(0, 0))
+            r.setUpperSize(QSizeF(20, 20))
+            if name == "pie-scaled":
+                r.setClassificationAttributeIsExpression(True)
+                r.setClassificationAttributeExpression('"value" + "angle"')
+            else:
+                r.setClassificationField("value")
+            s.scaleByArea = True
+        else:
+            r = QgsSingleCategoryDiagramRenderer()
+        r.setDiagram(kind())
+        r.setDiagramSettings(s)
+        vl.setDiagramRenderer(r)
+        vl.setDiagramLayerSettings(QgsDiagramLayerSettings())
+        save_qml(vl, f"diagram-{name}")
+
+
+attempt("diagrams", diagrams)
 
 
 # ---------------------------------------------------------------------------------------------

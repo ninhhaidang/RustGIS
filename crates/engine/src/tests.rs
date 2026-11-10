@@ -1216,6 +1216,73 @@ fn qgis_measures_in_project_units_are_left_out() {
     assert!(!r["notes"].to_string().contains("project's units"), "{r}");
 }
 
+/// A QGIS diagram reaches the layer through `style.importQgis`; categories on fields the layer
+/// hasn't are left out, and a diagram left with none removed, each noted with the fields. Undo
+/// takes it back.
+#[test]
+fn qgis_diagrams_import_on_the_fields_the_layer_has() {
+    let mut s = world();
+    let qml = |attrs: &str| {
+        format!(
+            r##"<qgis version="3.40.0"><SingleCategoryDiagramRenderer diagramType="Pie"><DiagramCategory enabled="1" direction="0" width="10" sizeType="MM">{attrs}</DiagramCategory></SingleCategoryDiagramRenderer></qgis>"##
+        )
+    };
+    let notes =
+        |r: &serde_json::Value| r["notes"].as_array().unwrap().iter().map(|n| n["text"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    let both = r##"<attribute field="&quot;POP_EST&quot;" color="#ff0000"/><attribute field="gdp_md" color="#0000ff"/>"##;
+    let r = s.run("style.importQgis", &json!({"layer": "Countries", "text": qml(both)})).unwrap();
+    assert!(notes(&r).is_empty(), "{:?}", notes(&r));
+    let fields = |s: &Session| {
+        s.map()
+            .layer_by_name("Countries")
+            .unwrap()
+            .diagram
+            .as_ref()
+            .map(|d| d.categories.iter().map(|c| c.field.clone()).collect::<Vec<_>>())
+    };
+    assert_eq!(fields(&s), Some(vec!["POP_EST".to_string(), "gdp_md".to_string()]));
+    // One undo step takes it back.
+    s.run("edit.undo", &Value::Null).unwrap();
+    assert_eq!(fields(&s), None);
+    // A category on a field the layer hasn't is left out.
+    let r = s
+        .run(
+            "style.importQgis",
+            &json!({"layer": "Countries", "text": qml(&format!(r##"{both}<attribute field="nosuch" color="#00ff00"/>"##))}),
+        )
+        .unwrap();
+    assert!(notes(&r).iter().any(|n| n == "its diagram categories on fields the layer hasn't (nosuch)"), "{:?}", notes(&r));
+    assert_eq!(fields(&s), Some(vec!["POP_EST".to_string(), "gdp_md".to_string()]));
+    // None left: no diagram, noted.
+    let r =
+        s.run("style.importQgis", &json!({"layer": "Countries", "text": qml(r##"<attribute field="nosuch" color="#00ff00"/>"##)})).unwrap();
+    assert!(notes(&r).iter().any(|n| n == "its diagrams, whose fields the layer hasn't (nosuch)"), "{:?}", notes(&r));
+    assert_eq!(fields(&s), None);
+    // Sized between two values, a pie losing a category is sized by the rest: noted. One of a
+    // fixed size says nothing of its size.
+    let scaled = |attrs: &str| {
+        format!(
+            r##"<qgis version="3.40.0"><LinearlyInterpolatedDiagramRenderer diagramType="Pie" lowerValue="0" upperValue="1000" lowerWidth="0" upperWidth="20" classificationAttributeExpression="&quot;pop_est&quot; + &quot;nosuch&quot;"><DiagramCategory enabled="1" direction="0">{attrs}</DiagramCategory></LinearlyInterpolatedDiagramRenderer></qgis>"##
+        )
+    };
+    let sized = "its diagrams sized by the sum of the categories left, without those on fields the layer hasn't";
+    let pair = r##"<attribute field="pop_est" color="#ff0000"/><attribute field="nosuch" color="#00ff00"/>"##;
+    let r = s.run("style.importQgis", &json!({"layer": "Countries", "text": scaled(pair)})).unwrap();
+    assert!(notes(&r).iter().any(|n| n == sized), "{:?}", notes(&r));
+    assert!(!notes(&r).iter().any(|n| n.contains("not by")), "the sum QGIS sizes by is the categories': {:?}", notes(&r));
+    let r = s.run("style.importQgis", &json!({"layer": "Countries", "text": qml(pair)})).unwrap();
+    assert!(!notes(&r).iter().any(|n| n == sized), "{:?}", notes(&r));
+    let r = s
+        .run("style.importQgis", &json!({"layer": "Countries", "text": scaled(r##"<attribute field="pop_est" color="#ff0000"/>"##)}))
+        .unwrap();
+    assert!(!notes(&r).iter().any(|n| n == sized), "nothing dropped: {:?}", notes(&r));
+    // A graphics layer takes none: noted as left out.
+    s.run("graphics.newLayer", &json!({"name": "Sketch"})).unwrap();
+    let r = s.run("style.importQgis", &json!({"layer": "Sketch", "text": qml(both)})).unwrap();
+    assert!(notes(&r).iter().any(|n| n == "its diagrams (a graphics layer draws none)"), "{:?}", notes(&r));
+    assert!(s.map().layer_by_name("Sketch").unwrap().diagram.is_none());
+}
+
 /// A QGIS categorized renderer by an expression classes by it where the expression reads on the
 /// layer; where it doesn't, every feature draws with the first category's symbol, noted, as before.
 #[test]

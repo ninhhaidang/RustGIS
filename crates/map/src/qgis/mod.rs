@@ -9,6 +9,7 @@
 //! writing a symbol layer's settings are read: the `<Option type="Map">` of QGIS 3.26 and later,
 //! and the `<prop k="…" v="…">` before it.
 
+mod diagram;
 mod expr;
 mod labels;
 mod raster;
@@ -113,6 +114,8 @@ pub struct Style {
     pub symbol_by: Option<crate::symbol_by::SymbolBy>,
     pub reference_scale: Option<f64>,
     pub labels: Option<Labeling>,
+    /// Its diagram: a pie or bar chart on each feature.
+    pub diagram: Option<crate::DiagramSettings>,
     /// 0 opaque to 100 invisible.
     pub transparency: Option<f32>,
     pub blend: Option<Blend>,
@@ -373,6 +376,10 @@ impl Style {
         if let Some(l) = &self.labels {
             layer.labels = l.clone();
         }
+        // (A graphics layer takes no diagram.)
+        if let Some(d) = self.diagram.as_ref().filter(|_| !layer.graphics) {
+            layer.diagram = Some(d.clone());
+        }
     }
 
     /// Why this style's raster colouring doesn't fit the raster `r` (it reads a band the file
@@ -549,6 +556,7 @@ fn read_style_node(node: Node, layer: &str, report: &mut Report) -> Style {
     if let Some(r) = child(node, "renderer-v2") {
         renderer::read(r, layer, &mut style, report);
     }
+    style.diagram = diagram::read(node, layer, style.reference_scale, report);
     // A raster's renderer: its opacity, and its colouring as RustGIS's raster style.
     if let Some(r) = child(node, "pipe").and_then(|p| child(p, "rasterrenderer")) {
         if let Some(o) = r.attribute("opacity").and_then(|o| o.trim().parse::<f32>().ok()).filter(|o| o.is_finite() && *o < 1.0) {
@@ -583,13 +591,6 @@ fn old_labels(node: Node) -> bool {
 fn layer_notes(node: Node, layer: &str, report: &mut Report) {
     if child(node, "temporal").is_some_and(|t| t.attribute("enabled") == Some("1")) {
         report.skipped(layer, "its time settings");
-    }
-    let diagrams = node
-        .children()
-        .filter(|c| c.tag_name().name().ends_with("DiagramRenderer"))
-        .any(|r| r.descendants().any(|d| d.has_tag_name("DiagramCategory") && d.attribute("enabled") == Some("1")));
-    if diagrams {
-        report.skipped(layer, "its diagrams");
     }
     if let Some(m) = child(node, "map-layer-style-manager") {
         let current = m.attribute("current").unwrap_or_default();

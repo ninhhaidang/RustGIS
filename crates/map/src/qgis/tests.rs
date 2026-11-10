@@ -870,7 +870,7 @@ fn every_corpus_file_reads() {
     };
     // Pin the corpus sizes so a regeneration cannot silently drop fixtures.
     let styles = files("generated/qml", &["qml"]);
-    assert_eq!(styles.len(), 90, "style corpus changed: {styles:?}");
+    assert_eq!(styles.len(), 97, "style corpus changed: {styles:?}");
     for path in &styles {
         let text = std::fs::read_to_string(path).unwrap();
         let mut report = Report::default();
@@ -1897,4 +1897,186 @@ fn a_subset_string_reading_the_scale_is_left_out() {
         assert_eq!(p.layers[0].definition_query.is_some(), kept, "{subset}");
         assert_eq!(report.notes.iter().any(|n| n.text.contains("reads the map's scale")), !kept, "{subset}: {:?}", report.notes);
     }
+}
+
+#[test]
+fn diagrams_carry_over_as_pie_diagrams() {
+    use crate::{DiagramKind, DiagramSize};
+    let read = |name: &str| {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("testdata/qgis/generated/qml/diagram-{name}.qml"));
+        let mut report = Report::default();
+        let s = read_style(&std::fs::read_to_string(path).unwrap(), "polygons", &mut report).unwrap();
+        (s, report)
+    };
+    let fields = |d: &crate::DiagramSettings| d.categories.iter().map(|c| c.field.clone()).collect::<Vec<_>>();
+    let mm = |v: f32| v * 96.0 / 25.4;
+    let said = |r: &Report, part: &str| r.notes.iter().any(|n| n.text.contains(part));
+
+    // A pie as QGIS writes it: 12 mm across, its slices counterclockwise from 12 o'clock (drawn
+    // clockwise in reverse order), a white background and a 0.3 mm grey outline. Nothing noted.
+    let (s, report) = read("pie");
+    let d = s.diagram.clone().unwrap();
+    assert_eq!(d.kind, DiagramKind::Pie);
+    assert_eq!(fields(&d), ["angle", "value"]);
+    assert_eq!(d.categories[1].colour, Rgba::rgb(0xe4, 0x1a, 0x1c));
+    assert!(matches!(d.size, DiagramSize::Fixed(r) if (r - mm(6.0)).abs() < 1e-3), "{:?}", d.size);
+    assert_eq!(d.start_angle, 0.0);
+    assert_eq!(d.background, Some(Rgba::rgb(255, 255, 255)));
+    assert_eq!(d.stroke, Rgba::rgb(0x33, 0x33, 0x33));
+    assert!((d.stroke_width - mm(0.3)).abs() < 1e-3);
+    assert!(report.notes.is_empty(), "{:?}", report.notes);
+    // Applied, the layer draws it.
+    let ds = rustgis_data::Dataset::new("polygons", rustgis_data::GeometryType::Polygon, Vec::new());
+    let mut layer = crate::Layer::new(1, ds);
+    s.apply(&mut layer);
+    assert_eq!(layer.diagram, Some(d));
+    // A style with no diagram RustGIS draws (here a text diagram) leaves the layer's own.
+    read("text").0.apply(&mut layer);
+    assert!(layer.diagram.is_some());
+
+    // A category by an expression is left out, noted once with it.
+    let (s, report) = read("pie-expression");
+    assert_eq!(fields(&s.diagram.unwrap()), ["id", "value"]);
+    assert!(said(&report, r#"1 diagram category by an expression (the first: `"angle" / 2`)"#), "{:?}", report.notes);
+
+    // Sized between two values by the sum of its categories, as RustGIS sizes it: not noted.
+    let (s, report) = read("pie-scaled");
+    let DiagramSize::Scaled { min_size, max_size, min, max } = s.diagram.unwrap().size else { panic!("not scaled") };
+    assert!(min_size == crate::diagram::MIN_SIZE && (max_size - mm(10.0)).abs() < 1e-3 && min == 0.0 && max == 400.0);
+    assert!(report.notes.is_empty(), "{:?}", report.notes);
+
+    // Histograms and stacked bars are left out, noted: RustGIS's bars draw shares, not values.
+    for (name, part) in [
+        ("histogram", "its histogram diagrams"),
+        ("histogram-scaled", "its histogram diagrams"),
+        ("stackedbar", "its stacked bar diagrams"),
+    ] {
+        let (s, report) = read(name);
+        assert!(s.diagram.is_none(), "{name}");
+        assert!(said(&report, part), "{name}: {:?}", report.notes);
+    }
+    // Sized by a field rather than the sum of its categories: noted.
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/qgis/generated/qml/diagram-pie-scaled.qml");
+    let text = std::fs::read_to_string(path)
+        .unwrap()
+        .replace(r#"classificationAttributeExpression="&quot;value&quot; + &quot;angle&quot;""#, r#"classificationField="value""#);
+    let mut report = Report::default();
+    assert!(read_style(&text, "polygons", &mut report).unwrap().diagram.is_some());
+    assert!(said(&report, "sized by the sum of their categories, not by `value`"), "{:?}", report.notes);
+    // A text diagram has no RustGIS counterpart.
+    let (s, report) = read("text");
+    assert!(s.diagram.is_none());
+    assert!(said(&report, "its diagrams (of the kind Text)"), "{:?}", report.notes);
+
+    // Written by hand: clockwise from 3 o'clock, half opaque, no background, its settings noted.
+    let attrs: String = (0..18).map(|i| format!(r##"<attribute field="f{i}" color="#ff0000" colorOpacity="0.5"/>"##)).collect();
+    let qml = |category: &str, settings: &str| {
+        format!(
+            r#"<qgis version="3.40.0"><SingleCategoryDiagramRenderer diagramType="Pie">{category}</SingleCategoryDiagramRenderer>{settings}</qgis>"#
+        )
+    };
+    let style = |text: &str| {
+        let mut report = Report::default();
+        let s = read_style(text, "A", &mut report).unwrap();
+        (s.diagram, report)
+    };
+    let (d, report) = style(&qml(
+        &format!(
+            r##"<DiagramCategory enabled="1" opacity="0.5" rotationOffset="0" direction="0" width="4" sizeType="Point" backgroundColor="#ffffff" backgroundAlpha="0" penColor="#000000" penWidth="1" lineSizeType="Pixel" scaleBasedVisibility="1">{attrs}</DiagramCategory>"##
+        ),
+        r#"<DiagramLayerSettings dist="3" showAll="0"><properties><Option type="Map"><Option name="properties" type="Map"><Option name="show" type="Map"><Option name="active" type="bool" value="true"/></Option></Option></Option></properties></DiagramLayerSettings>"#,
+    ));
+    let d = d.unwrap();
+    assert_eq!(d.start_angle, 90.0);
+    assert_eq!(fields(&d)[..2], ["f0", "f1"]);
+    assert_eq!(d.categories.len(), crate::diagram::MAX_CATEGORIES);
+    assert_eq!(d.categories[0].colour, Rgba::new(255, 0, 0, 64));
+    assert_eq!(d.background, None);
+    assert!(matches!(d.size, DiagramSize::Fixed(r) if (r - 2.0 * 96.0 / 72.0).abs() < 1e-3));
+    assert_eq!(d.stroke, Rgba::new(0, 0, 0, 128));
+    assert_eq!(d.stroke_width, 1.0);
+    for part in [
+        "2 diagram categories past the first 16",
+        "scale range",
+        "distance from their features",
+        "where they overlap",
+        "data-defined settings",
+    ] {
+        assert!(said(&report, part), "{part}: {:?}", report.notes);
+    }
+    // Switched off: none, and nothing to say.
+    let (d, report) = style(&qml(r##"<DiagramCategory enabled="0"><attribute field="a" color="#ff0000"/></DiagramCategory>"##, ""));
+    assert!(d.is_none() && report.notes.is_empty(), "{:?}", report.notes);
+    // Only categories by expressions: none, noted.
+    let (d, report) =
+        style(&qml(r##"<DiagramCategory enabled="1"><attribute field="&quot;a&quot; * 2" color="#ff0000"/></DiagramCategory>"##, ""));
+    assert!(d.is_none());
+    assert!(said(&report, "no category from a field"), "{:?}", report.notes);
+    // Too large, or too wide an outline: drawn at RustGIS's largest, noted.
+    let (d, report) = style(&qml(
+        r##"<DiagramCategory enabled="1" width="150" penWidth="5"><attribute field="a" color="#ff0000"/></DiagramCategory>"##,
+        "",
+    ));
+    assert!(matches!(d.unwrap().size, DiagramSize::Fixed(r) if r == crate::diagram::MAX_SIZE));
+    assert!(said(&report, "larger than RustGIS draws them") && said(&report, "outline, wider"), "{:?}", report.notes);
+    // Between two values from a lower value other than 0: noted; from 0, as the corpus' pie, not.
+    let scaled = |lower: &str| {
+        format!(
+            r##"<qgis version="3.40.0"><LinearlyInterpolatedDiagramRenderer diagramType="Pie" lowerValue="{lower}" upperValue="400" lowerWidth="0" upperWidth="20" classificationField="a"><DiagramCategory enabled="1"><attribute field="a" color="#ff0000"/></DiagramCategory></LinearlyInterpolatedDiagramRenderer></qgis>"##
+        )
+    };
+    let (_, report) = style(&scaled("100"));
+    assert!(said(&report, "from a lower value other than 0"), "{:?}", report.notes);
+    let (_, report) = style(&scaled("0"));
+    assert!(report.notes.is_empty(), "{:?}", report.notes);
+    // Several diagrams of a kind left out: only that is said.
+    let two = r##"<DiagramCategory enabled="1"><attribute field="a" color="#ff0000"/></DiagramCategory><DiagramCategory enabled="1"><attribute field="b" color="#ff0000"/></DiagramCategory>"##;
+    let (d, report) = style(&qml(two, "").replace(r#"diagramType="Pie""#, r#"diagramType="Histogram""#));
+    assert!(d.is_none() && !said(&report, "only the first"), "{:?}", report.notes);
+    let (d, report) = style(&qml(two, ""));
+    assert!(d.is_some() && said(&report, "only the first"), "{:?}", report.notes);
+    // Without a direction, counterclockwise as QGIS draws it (reversed); without an offset, from
+    // 3 o'clock; an older file's angleOffset (sixteenths, counterclockwise) over rotationOffset.
+    let pie = |attrs: &str| {
+        let (d, report) = style(&qml(
+            &format!(
+                r##"<DiagramCategory enabled="1" {attrs}><attribute field="a" color="#ff0000"/><attribute field="b" color="#0000ff"/></DiagramCategory>"##
+            ),
+            "",
+        ));
+        let d = d.unwrap();
+        (d.categories.iter().map(|c| c.field.clone()).collect::<Vec<_>>(), d.start_angle, report)
+    };
+    assert_eq!(pie("").0, ["b", "a"]);
+    assert_eq!(pie(r#"direction="0""#).0, ["a", "b"]);
+    assert_eq!(pie(r#"direction="1""#).0, ["b", "a"]);
+    assert_eq!(pie("").1, 90.0);
+    assert_eq!(pie(r#"rotationOffset="270" angleOffset="2880""#).1, 270.0);
+    assert_eq!(pie(r#"angleOffset="1440""#).1, 0.0);
+    assert_eq!(pie(r#"rotationOffset="-90""#).1, 0.0);
+    assert_eq!(pie(r#"angleOffset="-1440""#).1, 180.0);
+    assert!((0.0..360.0).contains(&pie(r#"rotationOffset="1e300""#).1));
+    // A category QGIS labels other than its field is noted; one labelled by its field isn't.
+    let (_, report) = style(&qml(
+        r##"<DiagramCategory enabled="1"><attribute field="a" label="Apples" color="#ff0000"/><attribute field="b" label="b" color="#0000ff"/></DiagramCategory>"##,
+        "",
+    ));
+    assert!(
+        said(
+            &report,
+            r#"1 diagram category with a label of its own, which RustGIS's legend shows by its field (the first: a as "Apples")"#
+        ),
+        "{:?}",
+        report.notes
+    );
+    let (_, report) = style(&qml(
+        r##"<DiagramCategory enabled="1"><attribute field="a" label="Apples" color="#ff0000"/><attribute field="b" label="Bananas" color="#0000ff"/></DiagramCategory>"##,
+        "",
+    ));
+    assert!(
+        said(&report, "2 diagram categories with a label of their own, which RustGIS's legend shows by their fields"),
+        "{:?}",
+        report.notes
+    );
+    assert!(pie("").2.notes.is_empty());
 }

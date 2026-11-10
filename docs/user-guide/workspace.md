@@ -253,6 +253,17 @@ Each layer keeps its look:
   and random fills as a tint of their colour).
 - **Layer settings**: opacity, blending, visibility range, filter (subset string), and the
   reference scale.
+- **Diagrams**: pie charts as pie [diagrams](cartography.md#diagrams), their slices in QGIS's order and
+  direction from its start angle, with the categories' colours, the background, outline,
+  opacity and size (fixed, or between two values, which RustGIS takes as the sum of the
+  categories, noted when QGIS sizes by something else). A pie QGIS lays counterclockwise lists
+  its categories in reverse in RustGIS's legend, the order its slices run clockwise; the legend names
+  each category by its field, and a label QGIS gives it otherwise is noted. Sizes and
+  outlines past RustGIS's largest, and diagrams QGIS leaves out where they overlap, are noted.
+  A category by an expression, or on a
+  field the layer hasn't, is left out, noted. Histograms, stacked bars and text diagrams are
+  left out (RustGIS's bar diagrams draw each category's share, QGIS's histograms its value), and
+  scale ranges, distances from the feature and data-defined diagram settings noted.
 - **Rasters**: singleband grey as a stretch from black to white, singleband pseudocolour as a
   stretch along its colour map (interpolated), as Classify (discrete) or as Unique Values (exact),
   paletted as Unique Values, multiband colour as RGB and hillshade as Shaded Relief; with the
@@ -304,7 +315,7 @@ length or justified, values outside a graduated renderer's ranges in its first o
 such as `layerid` that RustGIS doesn't read) and what was skipped (arrow lines, other data-defined
 settings, draw effects, label callouts, contours and other raster
 renderers RustGIS has no match for, PostGIS, WFS
-and other sources RustGIS doesn't read, diagrams, joins, virtual fields, a layer's other styles,
+and other sources RustGIS doesn't read, histogram, stacked bar and text diagrams, joins, virtual fields, a layer's other styles,
 and the project's print layouts, annotations, bookmarks, map themes and relations). A database
 password in a project never reaches the notes.
 

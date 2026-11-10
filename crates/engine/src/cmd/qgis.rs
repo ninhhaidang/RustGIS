@@ -218,7 +218,40 @@ fn add_layer(s: &mut Session, layer: &qgis::ProjectLayer, has_dir: bool, report:
         }
     }
     check_fields(l, name, &layer.style.rules, layer.style.categories_by.as_ref(), &layer.style.bool_classes, report);
+    if layer.style.diagram.is_some() {
+        check_diagram(l, name, report);
+    }
     Ok(Some(added_name))
+}
+
+/// Checks the diagram a style set against the layer's fields: a category on a field the layer
+/// hasn't is left out, and a diagram left with none is removed, noted with the fields. On a
+/// graphics layer, which takes none, the style's is noted as left out.
+fn check_diagram(l: &mut rustgis_map::Layer, name: &str, report: &mut Report) {
+    // A graphics layer takes none (`Style::apply` leaves it out), and its own is left alone.
+    if l.graphics {
+        report.skipped(name, "its diagrams (a graphics layer draws none)");
+        return;
+    }
+    let Some(d) = l.diagram.as_mut() else { return };
+    let missing: Vec<String> = d.categories.iter().filter(|c| l.dataset.field_index(&c.field).is_none()).map(|c| c.field.clone()).collect();
+    if missing.is_empty() {
+        return;
+    }
+    d.categories.retain(|c| l.dataset.field_index(&c.field).is_some());
+    let none_left = d.categories.is_empty();
+    if none_left {
+        l.diagram = None;
+    }
+    let shown: Vec<&str> = missing.iter().take(8).map(String::as_str).collect();
+    let more = if missing.len() > shown.len() { ", …" } else { "" };
+    let what = if none_left { "its diagrams, whose fields the layer hasn't" } else { "its diagram categories on fields the layer hasn't" };
+    report.skipped(name, format!("{what} ({}{more})", shown.join(", ")));
+    // A pie sized between two values is sized by the sum of the categories left, not of all of
+    // those QGIS adds up.
+    if l.diagram.as_ref().is_some_and(|d| matches!(d.size, rustgis_map::DiagramSize::Scaled { .. })) {
+        report.approximated(name, "its diagrams sized by the sum of the categories left, without those on fields the layer hasn't");
+    }
 }
 
 /// An imported QGIS expression read on `ds`. QGIS measures `$area`, `$perimeter` and `$length`
@@ -629,6 +662,9 @@ fn import_style(s: &mut Session, p: &Value) -> CmdResult {
         }
         style.apply(l);
         check_fields(l, &name, &style.rules, style.categories_by.as_ref(), &style.bool_classes, &mut report);
+        if style.diagram.is_some() {
+            check_diagram(l, &name, &mut report);
+        }
     }
     Ok(json!({"notes": report.notes.iter().map(note_json).collect::<Vec<_>>()}))
 }
