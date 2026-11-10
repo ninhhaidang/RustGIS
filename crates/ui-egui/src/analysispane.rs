@@ -902,12 +902,14 @@ pub fn workflows(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
             ui.horizontal(|ui| {
                 ui.add(egui::TextEdit::singleline(&mut app.workflow.number).hint_text(tl!("epochs")).desired_width(60.0));
                 if ui.button(tl!("Train And Classify")).clicked() {
-                    let epochs = app.workflow.number.trim().parse::<f64>().unwrap_or(60.0);
-                    run(
-                        app,
-                        "dl.classify",
-                        json!({"layer": app.workflow.layer, "training": app.workflow.layer2, "classField": app.workflow.field, "epochs": epochs}),
-                    );
+                    // A blank box is the default; what is typed goes as it is, for the command to
+                    // read or refuse (a fraction or text isn't cut or replaced without a word).
+                    let mut p = json!({"layer": app.workflow.layer, "training": app.workflow.layer2, "classField": app.workflow.field});
+                    let typed = app.workflow.number.trim();
+                    if !typed.is_empty() {
+                        p["epochs"] = json!(typed);
+                    }
+                    run(app, "dl.classify", p);
                 }
             });
             let models: Vec<(String, f64)> = app.session.project.dl_models.iter().map(|m| (m.name.clone(), m.accuracy)).collect();

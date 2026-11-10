@@ -94,8 +94,8 @@ run` called from another program, such as an agent or a CI job, which may wait w
 Viewshed, IDW Interpolation and Kriging refuse a run that would take more than a second or two of
 work on one thread (a ray step, a cell-point pair), Kernel Density one whose points' search windows
 (the square around each point's radius) cover more than 50 million cells, and Deep Learning a model
-too large for its raster; its training fits a share of the sampled pixels, or fewer epochs, instead
-(`dl.train` reports the epochs it ran). A task or model recorded from a pane run keeps these limits
+too large for its raster; its training fits a share of the sampled pixels, or fewer epochs, instead,
+and says how many of each it trained on (`"limited"` in `dl.train`'s and `dl.classify`'s answer). A task or model recorded from a pane run keeps these limits
 when it runs again in the app, so a step the pane took on can be refused there, and a model trained
 again can differ. On the desktop these limits grow with the threads the run takes (the cores, up to 16 unless
 [`threads`](#analysis-workflows) says otherwise), as many
