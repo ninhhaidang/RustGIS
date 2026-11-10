@@ -3000,7 +3000,7 @@ fn load_all(s: &mut Session, p: &Value) -> CmdResult {
     ds.name = l.dataset.name.clone();
     let (n, name) = (ds.features.len(), l.name.clone());
     if unread > 0 {
-        s.warn(format!("{name}: {unread} rows couldn't be read and were left out"));
+        s.warn(super::whole::unread_notice(&name, unread));
     }
     let l = s.map_mut().layer_mut(id).ok_or("no such layer")?;
     l.dataset = ds;

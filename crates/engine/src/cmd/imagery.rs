@@ -1008,24 +1008,29 @@ pub(crate) fn supervised_work(s: &Session, p: &Value) -> Result<super::workflows
         .filter(|l| l.geometry_type() == GeometryType::Polygon)
         .ok_or_else(|| format!("no polygon layer '{tl}'"))?;
     let fi = l.dataset.field_index(ps(p, "classField").ok_or("classField is required")?).ok_or("no such class field")?;
-    let mut polygons = Vec::new();
-    for (row, ft) in l.dataset.features.iter().enumerate() {
-        let Some(Geometry::Polygon(polys)) = &ft.geometry else { continue };
-        let key = l.dataset.value(row, fi).to_string();
-        polygons.extend(polys.iter().map(|rings| (key.clone(), rings.clone())));
-    }
+    // All the training polygons: a layer read in place is read whole as the work runs.
+    let rows = super::whole::Whole::of(l);
     let out = name(p, format!("{}_classified", r.name));
     Ok(Box::new(move || {
+        let (ds, unread) = rows.read()?;
+        let explain = |e: String| unread.explain(e);
+        let mut polygons = Vec::new();
+        for (row, ft) in ds.features.iter().enumerate() {
+            let Some(Geometry::Polygon(polys)) = &ft.geometry else { continue };
+            let key = ds.value(row, fi).to_string();
+            polygons.extend(polys.iter().map(|rings| (key.clone(), rings.clone())));
+        }
         // Mean of each class's training pixels.
-        let classes = rasterops::class_means(&r, &bands, &polygons)?;
+        let classes = rasterops::class_means(&r, &bands, &polygons).map_err(explain)?;
         if classes.len() < 2 {
-            return Err("the training polygons need at least two classes with pixels under them".into());
+            return Err(explain("the training polygons need at least two classes with pixels under them".into()));
         }
         let means: Vec<(f32, Vec<f64>)> = classes.iter().enumerate().map(|(i, c)| ((i + 1) as f32, c.1.clone())).collect();
         let pixels = rasterops::classify_min_distance(&r, &bands, &means)?;
         let layer = class_layer(rasterops::derive(&r, &out, vec![pixels])?)?;
         let legend: Vec<Value> = classes.iter().enumerate().map(|(i, c)| json!({"value": i + 1, "class": c.0, "pixels": c.2})).collect();
-        Ok(super::workflows::made_layer(out, layer, Some(json!({"classes": legend})), None))
+        let then: Option<super::workflows::Then> = Some(Box::new(move |s: &mut Session, _: &mut Value| unread.say(s)));
+        Ok(super::workflows::made_layer(out, layer, Some(json!({"classes": legend})), then))
     }))
 }
 

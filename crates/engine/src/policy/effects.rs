@@ -116,6 +116,9 @@ pub(super) fn command(s: &crate::cmd::InputContext<'_>, spec: &CommandSpec, para
     {
         effects = effects.union(source_reach(source));
     }
+    for source in crate::cmd::whole::layers_read_whole(s, spec.id, params).into_iter().filter_map(|l| l.source.as_ref()) {
+        effects = effects.union(source_reach(source));
+    }
     if crate::cmd::time::follows_sources(spec.id) {
         for (_, _, source) in crate::cmd::time::following_sources(s) {
             effects = effects.with(Effect::Files);

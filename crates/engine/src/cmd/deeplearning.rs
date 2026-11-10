@@ -48,7 +48,8 @@ fn need_model(s: &Session) -> Option<&'static str> {
 pub fn commands() -> Vec<C> {
     vec![
         C::new("dl.train", "Train Deep Learning Model", "Analyze › Image Classification", |s, p| {
-            let m = train(s, p)?;
+            let (m, unread) = train(s, p)?;
+            unread.say(s);
             let mut r = json!({"model": m.name, "accuracy": m.accuracy, "classes": m.model.classes, "epochs": m.epochs});
             r["replaced"] = json!(store(s, m));
             Ok(r)
@@ -144,10 +145,15 @@ fn model_index(input: &impl super::InputSource, p: &Value) -> Result<usize, Stri
     }
 }
 
-/// Trains a model from the pixels under training polygons. Where a person at a terminal can stop
-/// it with Ctrl-C ([`Session::stoppable`](crate::Session::stoppable)), it takes no work cap, as
-/// from the pane.
-fn train(s: &Session, p: &Value) -> Result<DlModel, String> {
+/// Trains a model from the pixels under training polygons, with the rows of the training layer's
+/// source that couldn't be read. Where a person at a terminal can stop it with Ctrl-C
+/// ([`Session::stoppable`](crate::Session::stoppable)), it takes no work cap, as from the pane.
+/// It runs where it is called, reading of a layer read in place, training and all: the app's
+/// Deep Learning Tools train through `dl.classify`, which runs on a thread of its own; this is
+/// the scripts', command line's and assistant's way to train without classifying. Called on the
+/// app's thread (by the assistant), it holds the window while it reads: a training layer read
+/// from a database or a web address is read whole first, for as long as that takes.
+fn train(s: &Session, p: &Value) -> Result<(DlModel, super::whole::Unread), String> {
     let t = training(s, p)?;
     if s.stoppable {
         rustgis_analysis::run_under("Train Deep Learning Model", &rustgis_analysis::control::Control::stoppable(), || t.fit())
@@ -156,15 +162,17 @@ fn train(s: &Session, p: &Value) -> Result<DlModel, String> {
     }
 }
 
-/// A model to train: the raster, the training polygons and their classes, read of the session, and
-/// how to train it ([`Training::fit`], which reads nothing more and runs on any thread: the pixels
-/// under the polygons are sampled there, as the network learns).
+/// A model to train: the raster and the training layer, taken of the session, and how to train it
+/// ([`Training::fit`], which reads nothing more of the session and runs on any thread: the
+/// training layer is read whole and the pixels under its polygons sampled there, as the network
+/// learns).
 struct Training {
     raster: std::sync::Arc<rustgis_data::raster::Raster>,
     bands: Vec<usize>,
-    classes: Vec<String>,
-    /// Each polygon's outline, its class and its share of the class's samples.
-    polygons: Vec<(Vec<Vec<Coord>>, usize, usize)>,
+    /// The training layer's rows, read whole in [`Training::fit`].
+    rows: super::whole::Whole,
+    /// The class field's index.
+    field: usize,
     hidden: Vec<usize>,
     epochs: usize,
     name: String,
@@ -174,44 +182,53 @@ struct Training {
 }
 
 impl Training {
-    fn fit(self) -> Result<DlModel, String> {
-        let Training { raster, bands, classes, polygons, hidden, epochs, name, .. } = self;
-        let (samples, per_class) = neural::training_samples(&raster, &bands, &polygons, classes.len(), MAX_SAMPLES_PER_CLASS)?;
+    /// Reads the training layer whole and trains the model: the model, with the rows of the
+    /// training layer's source that couldn't be read (named in an error, as they may be its
+    /// cause).
+    fn fit(self) -> Result<(DlModel, super::whole::Unread), String> {
+        let Training { raster, bands, rows, field, hidden, epochs, name, .. } = self;
+        let (ds, unread) = rows.read()?;
+        let model = Self::learn(&ds, field, &raster, &bands, &hidden, epochs, name).map_err(|e| unread.explain(e))?;
+        Ok((model, unread))
+    }
+
+    /// The model learnt from the polygons of `ds` (their classes in field `field`) over `raster`.
+    fn learn(
+        ds: &rustgis_data::Dataset,
+        field: usize,
+        raster: &rustgis_data::raster::Raster,
+        bands: &[usize],
+        hidden: &[usize],
+        epochs: usize,
+        name: String,
+    ) -> Result<DlModel, String> {
+        let (classes, polygons) = training_polygons(ds, field)?;
+        let (samples, per_class) = neural::training_samples(raster, bands, &polygons, classes.len(), MAX_SAMPLES_PER_CLASS)?;
         // Every class needs pixels of its own (its polygons may miss the raster or cover no data).
         if let Some((c, _)) = classes.iter().zip(&per_class).find(|(_, n)| **n < 5) {
             return Err(format!("the class '{c}' has fewer than 5 pixels with data under its polygons"));
         }
-        let t = neural::train(&bands, classes, &samples, &hidden, epochs)?;
+        let t = neural::train(bands, classes, &samples, hidden, epochs)?;
         Ok(DlModel { name, model: t.model, accuracy: t.accuracy, epochs: t.epochs })
     }
 }
 
-/// What training reads of the session: the training polygons and their classes, and the model's
-/// name.
-fn training(s: &Session, p: &Value) -> Result<Training, String> {
-    let r = raster(s, p)?;
-    r.require_coordinates()?;
-    let bands = bands_param(p, &r)?;
-    let tl = super::imagery::training_name(p)?;
-    let l = s
-        .map()
-        .layer_by_name(tl)
-        .filter(|l| l.geometry_type() == GeometryType::Polygon)
-        .ok_or_else(|| format!("no polygon layer '{tl}'"))?;
-    let fi = l.dataset.field_index(ps(p, "classField").ok_or("classField is required")?).ok_or("no such class field")?;
+/// The classes of a training layer's polygons, in the order they come, and each polygon's outline
+/// with its class and its share of the class's samples. A polygon with no class value trains
+/// nothing.
+fn training_polygons(ds: &rustgis_data::Dataset, fi: usize) -> Result<(Vec<String>, Vec<(Vec<Vec<Coord>>, usize, usize)>), String> {
     let mut classes: Vec<String> = Vec::new();
     let mut parts: Vec<(Vec<Vec<Coord>>, usize, usize)> = Vec::new();
     // Polygons per class, so each polygon of a class gets a fair share of its samples.
     let mut polygons: HashMap<String, usize> = HashMap::new();
-    for (row, ft) in l.dataset.features.iter().enumerate() {
+    for (row, ft) in ds.features.iter().enumerate() {
         if let Some(Geometry::Polygon(polys)) = &ft.geometry {
-            *polygons.entry(l.dataset.value(row, fi).to_string()).or_default() += polys.len();
+            *polygons.entry(ds.value(row, fi).to_string()).or_default() += polys.len();
         }
     }
-    for (row, ft) in l.dataset.features.iter().enumerate() {
+    for (row, ft) in ds.features.iter().enumerate() {
         let Some(Geometry::Polygon(polys)) = &ft.geometry else { continue };
-        // A polygon with no class value trains nothing.
-        let v = l.dataset.value(row, fi);
+        let v = ds.value(row, fi);
         if matches!(v, rustgis_data::Value::Null) || v.to_string().trim().is_empty() {
             continue;
         }
@@ -227,6 +244,23 @@ fn training(s: &Session, p: &Value) -> Result<Training, String> {
         };
         parts.extend(polys.iter().map(|rings| (rings.clone(), ci, share)));
     }
+    Ok((classes, parts))
+}
+
+/// What training takes of the session: the raster, the training layer (read whole when the model
+/// is fitted), and the model's name.
+fn training(s: &Session, p: &Value) -> Result<Training, String> {
+    let r = raster(s, p)?;
+    r.require_coordinates()?;
+    let bands = bands_param(p, &r)?;
+    let tl = super::imagery::training_name(p)?;
+    let l = s
+        .map()
+        .layer_by_name(tl)
+        .filter(|l| l.geometry_type() == GeometryType::Polygon)
+        .ok_or_else(|| format!("no polygon layer '{tl}'"))?;
+    let field = l.dataset.field_index(ps(p, "classField").ok_or("classField is required")?).ok_or("no such class field")?;
+    let rows = super::whole::Whole::of(l);
     let hidden: Vec<usize> = match p.get("hidden").and_then(Value::as_array) {
         Some(a) => a.iter().filter_map(Value::as_u64).map(|u| u as usize).take(neural::MAX_LAYERS).collect(),
         None => vec![32, 16],
@@ -240,7 +274,7 @@ fn training(s: &Session, p: &Value) -> Result<Training, String> {
             (free_name(s, &base), Some(base))
         }
     };
-    Ok(Training { raster: r, bands, classes, polygons: parts, hidden, epochs, name, auto })
+    Ok(Training { raster: r, bands, rows, field, hidden, epochs, name, auto })
 }
 
 /// `base`, or `base 2`, `base 3`… : the first no model of the project has (whatever its case).
@@ -283,7 +317,8 @@ pub(crate) fn classify_work(s: &Session, p: &Value) -> Result<super::workflows::
             Model::Saved(m) => (m, None),
             Model::Train(t) => {
                 let auto = t.auto.clone();
-                (t.fit()?, Some(auto))
+                let (m, unread) = t.fit()?;
+                (m, Some((auto, unread)))
             }
         };
         let (class, prob) = neural::classify(&r, &m.model, rasterops::NODATA)?;
@@ -299,8 +334,9 @@ pub(crate) fn classify_work(s: &Session, p: &Value) -> Result<super::workflows::
         let extra = json!({"model": m.name, "accuracy": m.accuracy, "classes": legend});
         // Kept once its classes are added. One that was given no name is named then, so it never
         // replaces a model kept while it trained.
-        let then: Option<super::workflows::Then> = trained.map(|auto| {
+        let then: Option<super::workflows::Then> = trained.map(|(auto, unread)| {
             Box::new(move |s: &mut Session, v: &mut Value| {
+                unread.say(s);
                 let mut m = m;
                 if let Some(base) = auto {
                     m.name = free_name(s, &base);

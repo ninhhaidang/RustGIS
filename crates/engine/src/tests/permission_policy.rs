@@ -1688,6 +1688,30 @@ fn permission_policy_renamed_streamed_inputs_keep_their_reach() {
     assert!(outcomes.iter().all(|(_, asks, shown)| *asks && *shown), "{outcomes:?}");
 }
 
+/// Training read whole from a layer read in place reaches its source, as Load All does; the
+/// same layer in memory reaches nothing.
+#[test]
+fn permission_policy_training_read_whole_reaches_its_source() {
+    let mut s = world();
+    s.run("layer.addDataBytes", &json!({"fileName":"scene.tif","data":two_class_b64()})).unwrap();
+    let (scope, _) = assistant(3602);
+    let calls = [
+        Call::command("dl.train", json!({"layer":"scene","training":"Countries","classField":"name"})),
+        Call::command("dl.classify", json!({"layer":"scene","training":"Countries","classField":"name"})),
+        Call::command("raster.classifySupervised", json!({"layer":"scene","training":"Countries","classField":"name"})),
+    ];
+    let reaches = |s: &Session, call: &Call| matches!(s.review(&scope, call), Outcome::NeedsApproval(_));
+    assert!(calls.iter().all(|call| !reaches(&s, call)), "in memory: nothing to approve");
+    let id = s.map().layer_by_name("Countries").unwrap().id;
+    let mut source = rustgis_map::source::SourceLayer::default();
+    source.path = Some("https://example.invalid/countries.fgb".into());
+    s.map_mut().layer_mut(id).unwrap().source = Some(source);
+    for call in &calls {
+        let approved = pending(&s, &scope, call);
+        assert!(approved.review().why.contains("internet"), "{:?}", approved.review().why);
+    }
+}
+
 /// In-memory range reads need Network, while local paths and external drivers retain Files.
 #[test]
 fn permission_policy_remote_range_reads_need_only_network() {
