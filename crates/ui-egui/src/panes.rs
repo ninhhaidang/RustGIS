@@ -6161,7 +6161,7 @@ fn line_strokes_editor(app: &mut RustGisApp, ui: &mut Ui, l: &rustgis_engine::ma
 // History and Details
 
 pub(crate) fn history(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
-    if crate::sessionlog::tabs(app, ui) {
+    if crate::sessionlog::tabs(app, ui, t) {
         return crate::sessionlog::pane(app, ui, t);
     }
     let hist = app.session.project.gp_history.clone();

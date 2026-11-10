@@ -69,17 +69,51 @@ pub struct State {
     cache: Option<(Key, Vec<Row>, usize, usize)>,
 }
 
-/// The switch at the top of the History pane, between its two records (named as Mavrick-F
-/// proposed on opengeos/RustGIS#1216): the tool runs and the session log; whether the log is the
-/// one shown.
-pub fn tabs(app: &mut RustGisApp, ui: &mut Ui) -> bool {
-    ui.horizontal(|ui| {
-        let s = &mut app.ui.session_log;
-        ui.selectable_value(&mut s.open, false, tl!("Tool runs"))
-            .on_hover_text(tl!("The tools run on this project: saved with it, and each can run again"));
-        ui.selectable_value(&mut s.open, true, tl!("Session log"))
-            .on_hover_text(tl!("Everything done in this session, from the app, scripts, the AI Assistant or plugins"));
-    });
+/// Which of the History pane's three records its top tabs show.
+#[derive(Clone, Copy, PartialEq)]
+enum View {
+    ToolRuns,
+    SessionLog,
+    ThisProject,
+}
+
+/// The tabs at the top of the History pane, between its records (named as Mavrick-F proposed on
+/// opengeos/RustGIS#1216): the tool runs, the whole session log, and the session log's entries
+/// for the project open now; whether a log view (not the tool runs) is shown.
+pub fn tabs(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) -> bool {
+    let s = &mut app.ui.session_log;
+    let mut view = if s.open { if s.this_project { View::ThisProject } else { View::SessionLog } } else { View::ToolRuns };
+    crate::widgets::tabs(
+        ui,
+        t,
+        egui::Id::unique("session_log_tabs"),
+        &mut view,
+        &[
+            crate::widgets::Tab {
+                label: "Tool runs",
+                icon: "toolbox",
+                hover: Some("The tools run on this project: saved with it, and each can run again"),
+                value: View::ToolRuns,
+            },
+            crate::widgets::Tab {
+                label: "This project",
+                icon: "filter",
+                hover: Some("Only the commands run in the project open now"),
+                value: View::ThisProject,
+            },
+            crate::widgets::Tab {
+                label: "Session log",
+                icon: "history",
+                hover: Some("Everything done in this session, from the app, scripts, the AI Assistant or plugins"),
+                value: View::SessionLog,
+            },
+        ],
+    );
+    (s.open, s.this_project) = match view {
+        View::ToolRuns => (false, false),
+        View::SessionLog => (true, false),
+        View::ThisProject => (true, true),
+    };
     ui.add_space(4.0);
     app.ui.session_log.open
 }
@@ -97,7 +131,6 @@ pub fn pane(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
         let s = &mut app.ui.session_log;
         ui.add(egui::TextEdit::singleline(&mut s.query).hint_text(tl!("Filter by command")).desired_width(170.0))
             .on_hover_text(tl!("Words in the command's id, such as layer. or export"));
-        ui.toggle_value(&mut s.this_project, tl!("This project")).on_hover_text(tl!("Only the commands run in the project open now"));
         ui.checkbox(&mut s.failed, tl!("Failed only"));
     });
     // Compared in place, so a repaint that changes nothing picks, formats and clones nothing;
@@ -321,7 +354,7 @@ fn save(app: &mut RustGisApp) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use egui_kittest::kittest::Queryable;
+    use egui_kittest::kittest::{NodeT, Queryable};
 
     fn harness(app: RustGisApp) -> egui_kittest::Harness<'static, RustGisApp> {
         let mut fonts = false;
@@ -332,7 +365,7 @@ mod tests {
                     fonts = true;
                     return;
                 }
-                // The History pane as the app draws it: its two views.
+                // The History pane as the app draws it: its three tabs.
                 let t = crate::theme::Tokens::light();
                 crate::panes::history(app, ui, &t);
             },
@@ -390,6 +423,31 @@ mod tests {
         h.run();
         assert!(h.query_by_label("Buffer").is_some() && h.query_by_label("Made 3 features").is_some());
         assert!(h.query_by_label("Tools you run appear here.").is_none());
+    }
+
+    /// Each tab clicked shows its view (`open`, `this_project`), and the tabs tell assistive
+    /// technology their real state: the chosen one toggled on, the others toggled off, and none
+    /// disabled (they are all clickable).
+    #[test]
+    fn tabs_expose_their_real_selected_state_to_assistive_technology() {
+        use egui::accesskit::{Role, Toggled};
+        const TABS: [&str; 3] = ["Tool runs", "This project", "Session log"];
+        let mut h = harness(RustGisApp::with_sample());
+        h.run();
+        let clicks =
+            [("Session log", (true, false)), ("This project", (true, true)), ("Tool runs", (false, false)), ("Session log", (true, false))];
+        for (chosen, state) in clicks {
+            h.get_by_role_and_label(Role::Button, chosen).click();
+            h.run();
+            let s = &h.state().ui.session_log;
+            assert_eq!((s.open, s.this_project), state, "{chosen} shows its view");
+            for tab in TABS {
+                let node = h.get_by_role_and_label(Role::Button, tab).accesskit_node();
+                let on = if tab == chosen { Toggled::True } else { Toggled::False };
+                assert_eq!(node.toggled(), Some(on), "{tab} announced as chosen only when {chosen} is chosen");
+                assert!(!node.is_disabled(), "tabs are always clickable");
+            }
+        }
     }
 
     /// A step joined to the newest entry (a held key's nudges) shows in the pane at once, though

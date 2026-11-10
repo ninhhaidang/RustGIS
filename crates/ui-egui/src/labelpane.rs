@@ -6,7 +6,7 @@
 //! ribbon's label groups edit and choose the same one (#858). The map-wide settings (Lock, Pause,
 //! View Unplaced) are on the ribbon only, and Convert on the ribbon and the layer's menu.
 
-use egui::{Align2, CornerRadius, Rect, RichText, Sense, Stroke, Ui, pos2, vec2};
+use egui::{CornerRadius, RichText, Ui, vec2};
 use rustgis_engine::map::symbology::{
     DEFAULT_LABEL_CLASS, HALO_WIDTH, LABEL_SIZE, LabelClass, Labeling, MAX_LABEL_CLASSES, label_class_name,
 };
@@ -16,8 +16,7 @@ use serde_json::{Value, json};
 
 use crate::RustGisApp;
 use crate::textform::LABEL_W;
-use crate::theme::{Tokens, c32, regular, rgba, semibold};
-use crate::widgets::text_w;
+use crate::theme::{Tokens, c32, rgba, semibold};
 
 /// The placements as they sit around a feature, row by row; Automatic sits apart, above them.
 const GRID: [[LabelPlacement; 3]; 3] = [
@@ -81,72 +80,18 @@ enum Topic {
 fn topic(ui: &mut Ui, t: &Tokens) -> Topic {
     let key = egui::Id::unique("label_pane_topic");
     let mut tab = ui.data(|d| d.get_temp::<Topic>(key)).unwrap_or(Topic::Content);
-    let tabs = [
-        ("Content", "unique", Topic::Content),
-        ("Symbol", "g_text", Topic::Symbol),
-        ("Position", "placement", Topic::Position),
-        ("Range", "scale_label", Topic::Range),
-    ];
-    let font = |on: bool| if on { semibold(12.5) } else { regular(12.5) };
-    let (pad, icon, gap, h) = (8.0, 16.0, 5.0, 30.0);
-    // Measured in the chosen tab's font, so the tabs don't move as another is chosen.
-    let text = tabs.map(|(label, _, _)| text_w(ui, tl!(label), semibold(12.5)));
-    let room = ui.available_width() - 2.0 * (tabs.len() as f32 - 1.0);
-    // A tab's room besides its name, with or without its icon.
-    let extra = |icons: bool| 2.0 * pad + if icons { icon + gap } else { 0.0 };
-    let fits = |icons: bool| text.iter().map(|w| w + extra(icons)).sum::<f32>() <= room;
-    let (icons, names) = if fits(true) {
-        (true, true)
-    } else if fits(false) {
-        (false, true)
-    } else {
-        (true, false)
-    };
-    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::hover());
-    let base = row.max.y - 0.5;
-    ui.painter().hline(row.x_range(), base, Stroke::new(1.0, t.border));
-    let mut x = row.min.x;
-    for ((label, name, it), w) in tabs.into_iter().zip(text) {
-        let shown = tl!(label);
-        let on = it == tab;
-        let w = if names { extra(icons) + w } else { 36.0 };
-        let r = Rect::from_min_size(pos2(x, row.min.y), vec2(w, h));
-        x = r.max.x + 2.0;
-        let mut resp = ui.interact(r, key.with(label), Sense::click());
-        resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, on, shown));
-        let p = ui.painter();
-        let body = Rect::from_min_max(pos2(r.min.x, r.min.y + 3.0), r.max);
-        let round = CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 };
-        if on {
-            p.rect_filled(body, round, t.pane);
-            p.rect_stroke(body, round, Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
-            // Open onto the pane: the line under the tabs stops at the chosen one.
-            p.rect_filled(Rect::from_min_max(pos2(r.min.x + 1.0, base - 1.0), pos2(r.max.x - 1.0, row.max.y + 1.0)), 0.0, t.pane);
-            p.rect_filled(
-                Rect::from_min_max(pos2(r.min.x + 8.0, r.max.y - 3.0), pos2(r.max.x - 8.0, r.max.y - 1.0)),
-                CornerRadius::same(1),
-                t.accent,
-            );
-        } else if resp.hovered() {
-            p.rect_filled(body.shrink2(vec2(1.0, 2.0)), CornerRadius::same(5), t.hover);
-        }
-        let cy = body.center().y - 1.0;
-        if !names {
-            crate::icons::paint(p, Rect::from_center_size(pos2(r.center().x, cy), vec2(icon, icon)), name, t.icon, t.accent);
-            resp = resp.on_hover_text(shown);
-        } else {
-            let mut tx = r.min.x + pad;
-            if icons {
-                crate::icons::paint(p, Rect::from_min_size(pos2(tx, cy - icon / 2.0), vec2(icon, icon)), name, t.icon, t.accent);
-                tx += icon + gap;
-            }
-            let ink = if on { t.text } else { t.text_dim };
-            p.text(pos2(tx, cy), Align2::LEFT_CENTER, shown, font(on), ink);
-        }
-        if resp.clicked() {
-            tab = it;
-        }
-    }
+    crate::widgets::tabs(
+        ui,
+        t,
+        key,
+        &mut tab,
+        &[
+            crate::widgets::Tab { label: "Content", icon: "unique", hover: None, value: Topic::Content },
+            crate::widgets::Tab { label: "Symbol", icon: "g_text", hover: None, value: Topic::Symbol },
+            crate::widgets::Tab { label: "Position", icon: "placement", hover: None, value: Topic::Position },
+            crate::widgets::Tab { label: "Range", icon: "scale_label", hover: None, value: Topic::Range },
+        ],
+    );
     ui.data_mut(|d| d.insert_temp(key, tab));
     ui.add_space(4.0);
     tab

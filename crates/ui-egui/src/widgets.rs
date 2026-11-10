@@ -136,6 +136,88 @@ pub fn text_w(ui: &Ui, s: &str, font: egui::FontId) -> f32 {
     ui.ctx().fonts_mut(|f| f.layout_no_wrap(s.to_string(), font, egui::Color32::WHITE).size().x)
 }
 
+/// One tab in [`tabs`]: its label and hover text as interface keys ([`tl!`](crate::tl) translates
+/// them), its icon's name (empty for none), and the value choosing it sets.
+pub(crate) struct Tab<T> {
+    pub(crate) label: &'static str,
+    pub(crate) icon: &'static str,
+    pub(crate) hover: Option<&'static str>,
+    pub(crate) value: T,
+}
+
+/// A row of tabs drawn as the ribbon's: the chosen one open onto the pane below with its accent
+/// bar, a base line and a hover fill; as the pane narrows, each tab drops its icon, then its name
+/// (the icon alone, its hover text — or its name — on hover). `current` becomes the chosen tab's
+/// value; returns whether it changed.
+pub(crate) fn tabs<T: Copy + PartialEq>(ui: &mut Ui, t: &Tokens, id: egui::Id, current: &mut T, tabs: &[Tab<T>]) -> bool {
+    let font = |on: bool| if on { semibold(12.5) } else { regular(12.5) };
+    let (pad, icon, gap, h) = (8.0, 16.0, 5.0, 30.0);
+    // Measured in the chosen tab's font, so the tabs don't move as another is chosen.
+    let text: Vec<f32> = tabs.iter().map(|tab| text_w(ui, tl!(tab.label), semibold(12.5))).collect();
+    let room = ui.available_width() - 2.0 * (tabs.len() as f32 - 1.0);
+    // A tab's room besides its name, with or without its icon.
+    let extra = |icons: bool| 2.0 * pad + if icons { icon + gap } else { 0.0 };
+    let fits = |icons: bool| text.iter().map(|w| w + extra(icons)).sum::<f32>() <= room;
+    let (icons, names) = if fits(true) {
+        (true, true)
+    } else if fits(false) {
+        (false, true)
+    } else {
+        (true, false)
+    };
+    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::hover());
+    let base = row.max.y - 0.5;
+    ui.painter().hline(row.x_range(), base, Stroke::new(1.0, t.border));
+    let mut x = row.min.x;
+    let mut changed = false;
+    for (tab, w) in tabs.iter().zip(text) {
+        let shown = tl!(tab.label);
+        let on = tab.value == *current;
+        let w = if names { extra(icons) + w } else { 36.0 };
+        let r = Rect::from_min_size(pos2(x, row.min.y), vec2(w, h));
+        x = r.max.x + 2.0;
+        let mut resp = ui.interact(r, id.with(tab.label), Sense::click());
+        resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, on, shown));
+        let p = ui.painter();
+        let body = Rect::from_min_max(pos2(r.min.x, r.min.y + 3.0), r.max);
+        let round = CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 };
+        if on {
+            p.rect_filled(body, round, t.pane);
+            p.rect_stroke(body, round, Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
+            // Open onto the pane: the line under the tabs stops at the chosen one.
+            p.rect_filled(Rect::from_min_max(pos2(r.min.x + 1.0, base - 1.0), pos2(r.max.x - 1.0, row.max.y + 1.0)), 0.0, t.pane);
+            p.rect_filled(
+                Rect::from_min_max(pos2(r.min.x + 8.0, r.max.y - 3.0), pos2(r.max.x - 8.0, r.max.y - 1.0)),
+                CornerRadius::same(1),
+                t.accent,
+            );
+        } else if resp.hovered() {
+            p.rect_filled(body.shrink2(vec2(1.0, 2.0)), CornerRadius::same(5), t.hover);
+        }
+        let cy = body.center().y - 1.0;
+        if !names {
+            icons::paint(p, Rect::from_center_size(pos2(r.center().x, cy), vec2(icon, icon)), tab.icon, t.icon, t.accent);
+            resp = resp.on_hover_text(tab.hover.map_or(shown, |h| tl!(h)));
+        } else {
+            let mut tx = r.min.x + pad;
+            if icons {
+                icons::paint(p, Rect::from_min_size(pos2(tx, cy - icon / 2.0), vec2(icon, icon)), tab.icon, t.icon, t.accent);
+                tx += icon + gap;
+            }
+            let ink = if on { t.text } else { t.text_dim };
+            p.text(pos2(tx, cy), Align2::LEFT_CENTER, shown, font(on), ink);
+            if let Some(hover) = tab.hover {
+                resp = resp.on_hover_text(tl!(hover));
+            }
+        }
+        if resp.clicked() && *current != tab.value {
+            *current = tab.value;
+            changed = true;
+        }
+    }
+    changed
+}
+
 /// The shortcut of a command run without parameters (`⌘S` on a Mac, as egui reads the keys,
 /// `Ctrl+S` elsewhere), or empty for none.
 pub fn shortcut_text(ctx: &egui::Context, app: &RustGisApp, id: &str) -> String {
