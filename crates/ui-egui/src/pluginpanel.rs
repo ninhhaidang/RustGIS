@@ -1272,6 +1272,57 @@ mod tests {
         plugins::unload("ui-scan");
     }
 
+    /// A plugin's command asking for a window of a cloud-optimised GeoTIFF doesn't wait for it:
+    /// the app reads it off the frame, adds it when it lands, and runs the command again, whose
+    /// `layer.addUrl` answers what was added (#1330).
+    #[test]
+    fn a_plugin_reads_a_window_off_the_frame() {
+        let _turn = crate::fetching::turn();
+        use rustgis_engine::plugins;
+        use std::sync::atomic::Ordering;
+        let slow = crate::fetching::slow_ranges(rustgis_engine::data::raster::cog::example(1024, 256));
+        let pkg = plugins::Package::from_zip(&plugins::testing::package("ui-window", &["edit", "network"])).unwrap();
+        plugins::load(pkg, "test").unwrap();
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1400.0, 860.0)).with_step_dt(0.05).build_ui_state(
+            |ui, app: &mut RustGisApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            RustGisApp::with_sample(),
+        );
+        let url = format!("{}/scene.tif", slow.origin);
+        // The header in hand, so only the window's tiles wait.
+        rustgis_engine::render::rustgis_tiles::cog::info_blocking(&url).unwrap();
+        slow.open.store(false, Ordering::Relaxed);
+        let params = json!({"url": url, "bbox": [10.25, 45.5, 10.5, 45.75], "name": "Window"});
+        let r = h.state_mut().run("plugin:ui-window/f", json!({"op": "layer.addUrl", "params": params})).unwrap();
+        assert_eq!(r["pending"], true);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while slow.held.load(Ordering::Relaxed) == 0 {
+            assert!(std::time::Instant::now() < deadline, "no request held");
+            let frame = std::time::Instant::now();
+            h.step();
+            assert!(frame.elapsed() < std::time::Duration::from_secs(5), "the read held the frame");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(h.state().session.map().layer_by_name("Window").is_none(), "nothing waited");
+        assert!(h.state().session.plugin_retries_waiting());
+        slow.open.store(true, Ordering::Relaxed);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let landed = |app: &RustGisApp| app.session.map().layer_by_name("Window").is_some() && !app.session.plugin_retries_waiting();
+        while !landed(h.state()) {
+            assert!(std::time::Instant::now() < deadline, "timed out waiting: {:?}", h.state().session.notices);
+            h.step();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let app = h.state();
+        assert!(app.session.map().layer_by_name("Window").is_some_and(|l| l.is_raster()));
+        assert!(app.session.map().layer_by_name("Window (2)").is_none(), "added once");
+        assert!(app.session.notices.iter().all(|n| !n.error), "{:?}", app.session.notices);
+        plugins::unload("ui-window");
+    }
+
     /// A download that lands after its plugin command stopped waiting for it isn't added, and
     /// that is said once, with its address, whether or not that holds a key (#1202).
     #[test]

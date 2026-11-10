@@ -51,10 +51,17 @@ pub struct UrlRequest {
     key: u64,
     params: Value,
     authority: std::sync::Arc<policy::Continuation>,
+    /// For a window asked with `"bbox": "view"`: the box the view was then, kept apart from its
+    /// parameters, which a caller gives and a command run again is matched by.
+    view: Option<[f64; 4]>,
 }
 impl UrlRequest {
     pub fn params(&self) -> &Value {
         &self.params
+    }
+    /// The box `"bbox": "view"` was when the command asked (`cmd::layer::window_asked_in`).
+    pub fn view_asked(&self) -> Option<[f64; 4]> {
+        self.view
     }
 }
 
@@ -838,6 +845,8 @@ pub struct Session {
     /// Downloads a command asked for where nothing may wait (the browser): the parameters of
     /// `layer.addUrl` calls, for the front end to fetch and add (see [`Session::take_url_requests`]).
     pub(crate) url_requests: Vec<UrlRequest>,
+    /// The view's box a window request being queued keeps ([`UrlRequest::view_asked`]).
+    pub(crate) window_view: Option<[f64; 4]>,
     /// Set by [`Session::request_url`] for [`Session::guarded`]: the command running changed
     /// nothing, it only left a request (a plugin's own answer can't claim that).
     request_only: bool,
@@ -1183,6 +1192,7 @@ impl Session {
             #[cfg(not(target_arch = "wasm32"))]
             landed_windows: Vec::new(),
             url_requests: Vec::new(),
+            window_view: None,
             file_outputs: Vec::new(),
             #[cfg(test)]
             queue_gp_files: false,

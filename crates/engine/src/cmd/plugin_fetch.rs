@@ -321,11 +321,19 @@ pub(crate) struct Retry {
     tries: u32,
 }
 
+/// The key a window of the view is told apart by when a command run again is answered
+/// ([`Session::with_view`]): matched only, never read as a parameter.
+const VIEW_ASKED: &str = "viewAsked";
+
 /// The downloads plugin commands wait for (#1202): those the app is making, with what was
 /// asked and since when, and those added, with what adding them answered, until the command
 /// waiting for them runs again.
 #[derive(Clone, Default)]
 pub(crate) struct UrlWaits {
+    /// The view's boxes of the window requests asked with `"bbox": "view"`, by their numbers: a
+    /// request for the view joins one being made only when it was asked in the same view. Kept
+    /// here, they go aside with a project and back on a rollback as the waits do.
+    pub(crate) views: std::collections::BTreeMap<u64, [f64; 4]>,
     owners: std::collections::BTreeMap<u64, crate::policy::Continuation>,
     in_flight: Vec<(u64, Value, Instant)>,
     landed: Vec<(u64, Value, CmdResult, Added)>,
@@ -616,11 +624,18 @@ impl UrlWaits {
         }
     }
 
+    /// Keeps the views of the requests still being made or landed only.
+    fn prune_views(&mut self) {
+        let live: Vec<u64> = self.in_flight.iter().map(|(n, ..)| *n).chain(self.landed.iter().map(|(n, ..)| *n)).collect();
+        self.views.retain(|n, _| live.contains(n));
+    }
+
     /// Only what `waiting` still waits for is kept.
     fn keep_only(&mut self, waiting: &[Retry]) {
         let wanted = |n: &u64| waiting.iter().any(|r| r.requests.contains(n));
         self.in_flight.retain(|(n, ..)| wanted(n));
         self.landed.retain(|(n, ..)| wanted(n));
+        self.views.retain(|n, _| wanted(n));
         let retained: Vec<u64> = self
             .in_flight
             .iter()
@@ -667,10 +682,13 @@ impl Session {
     /// eventual `layer.addDownload`; a command run again asks for the same.
     pub(crate) fn asked_for(&self, p: &Value) -> Value {
         let mut asked = without_request(p);
-        if self.web_logins.is_anonymous()
-            && let Some(o) = asked.as_object_mut()
-        {
-            o.insert("anonymous".into(), json!(true));
+        if let Some(o) = asked.as_object_mut() {
+            // Only the session tells windows of the view apart ([`Session::with_view`]): a caller's
+            // own `viewAsked` is left out.
+            o.remove(VIEW_ASKED);
+            if self.web_logins.is_anonymous() {
+                o.insert("anonymous".into(), json!(true));
+            }
         }
         asked
     }
@@ -731,6 +749,17 @@ impl Session {
             asked_now.push((number, asked));
         }
         Ok(None)
+    }
+
+    /// What a window of the view was asked as, for a command run again to be answered by: `asked`
+    /// with the box the view was then (`UrlWaits::views`), so two windows of the view asked in
+    /// two views are told apart. Others are `asked` as it is.
+    pub(crate) fn with_view(asked: &Value, view: Option<[f64; 4]>) -> Value {
+        let mut asked = asked.clone();
+        if let (Some(v), Some(o)) = (view, asked.as_object_mut()) {
+            o.insert(VIEW_ASKED.into(), json!(v));
+        }
+        asked
     }
 
     /// Whether a command run again has an answer for `wanted`.
@@ -886,6 +915,7 @@ impl Session {
     fn poll_plugin_retries_at(&mut self, now: Instant) -> Vec<(String, CmdResult)> {
         self.url_waits.documents_in();
         if self.plugin_retries.is_empty() {
+            self.url_waits.prune_views();
             return Vec::new();
         }
         // Said here too: the command may go on without it, and what it answers goes nowhere.
@@ -917,12 +947,9 @@ impl Session {
                 // runs, and the ones it waited for. These stay in `landed` until no command waits
                 // for them (`keep_only`, below), so another command waiting for the same download
                 // gets the answer too.
-                let mine = self
-                    .url_waits
-                    .landed
-                    .iter()
-                    .filter(|(n, ..)| r.requests.contains(n))
-                    .map(|(_, asked, answer, added)| (asked.clone(), answer.clone(), added.clone()));
+                let mine = self.url_waits.landed.iter().filter(|(n, ..)| r.requests.contains(n)).map(|(n, asked, answer, added)| {
+                    (Self::with_view(asked, self.url_waits.views.get(n).copied()), answer.clone(), added.clone())
+                });
                 self.rerun_landed = r.answered.iter().cloned().chain(mine).collect();
                 self.rerun_said = r.said;
                 self.retry_tries = r.tries;

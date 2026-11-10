@@ -545,7 +545,8 @@ download a file whole it answers `{"pending": true, "url": …}`: RustGIS downlo
 frame, saying so in the status bar, and adds the layer when it lands (its own undo step), as
 **Home › Add › Add Data › From URL** does. On the desktop that goes for reading a GeoTIFF's,
 FlatGeobuf's or GeoParquet's header too; in the web app a PMTiles archive, a cloud-optimised
-GeoTIFF or a FlatGeobuf or GeoParquet whose header was fetched already is added at once. Up to 16
+GeoTIFF or a FlatGeobuf or GeoParquet whose header was fetched already is added at once. A window
+of a cloud-optimised GeoTIFF (`"bbox"`, on the desktop) is read and added the same way. Up to 16
 downloads wait at a time: a request past 16 fails, and if the command then fails too, none of its
 downloads start. Run by
 `rustgis-cli`, a script or a task, the command waits and answers what was added.

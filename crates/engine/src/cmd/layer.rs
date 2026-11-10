@@ -3361,6 +3361,15 @@ fn add_url_as_given(s: &mut Session, p: &Value) -> CmdResult {
     // adding it answered, as often as the run asks for it (the app downloaded and added it once).
     // Answering it changes nothing (the layer is its own undo step).
     let wanted = s.asked_for(p);
+    // A window of the view is answered by the one asked in the view the command sees now.
+    #[cfg(not(target_arch = "wasm32"))]
+    let wanted = match p.get("bbox") {
+        Some(b) if s.leave_downloads && is_view(Some(b)) => {
+            let at = ps(p, "url").map(str::trim).unwrap_or_default();
+            Session::with_view(&wanted, Some(window_settled(s, p, at, None)?.bbox))
+        }
+        _ => wanted,
+    };
     if s.leave_downloads
         && let Some((answer, added)) = s.rerun_answer(&wanted)
     {
@@ -3411,13 +3420,20 @@ fn add_url_as_given(s: &mut Session, p: &Value) -> CmdResult {
     }
     if window {
         window_checks(p, url, scan)?;
-        // A plugin's command run by the app leaves what would wait to the app, off the frame; a
-        // window waits for its header and tiles, which the app doesn't take over yet.
+        // A plugin's command run by the app leaves what would wait to the app, off the frame
+        // ([`read_cog_window`]); a box that can't be read is refused now, while the command runs.
         #[cfg(not(target_arch = "wasm32"))]
         if s.leave_downloads {
-            return Err(format!(
-                "{url}: a window (\"bbox\") waits for its tiles, which a plugin's command can't do in the app yet: run layer.addUrl from the command line or a script, or leave out \"bbox\" to draw the file in place"
-            ));
+            let settled = window_settled(s, p, url, None)?;
+            let mut asked = p.clone();
+            asked["url"] = json!(url);
+            // `"view"` is the view now: the app reads the window on a later frame, and a command
+            // run again after a download sees the view it first ran with only while it runs. The
+            // request keeps the box beside what was asked, by which a run again is answered.
+            s.window_view = is_view(p.get("bbox")).then_some(settled.bbox);
+            let queued = s.request_url(&asked);
+            s.window_view = None;
+            return queued;
         }
         return add_cog_window(s, p, url);
     }
@@ -4137,6 +4153,13 @@ pub struct WindowAsked {
     name: Option<String>,
 }
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+impl WindowAsked {
+    pub(crate) fn bbox(&self) -> [f64; 4] {
+        self.bbox
+    }
+}
+
 /// A window read by [`read_cog_window`], waiting to be added to the project: its raster made and
 /// its GeoTIFF written, so that adding it holds no frame for long.
 #[cfg(not(target_arch = "wasm32"))]
@@ -4153,9 +4176,9 @@ pub struct CogWindow {
 
 /// `p`'s box and cell size, read on the frame, which holds the view.
 #[cfg(not(target_arch = "wasm32"))]
-fn window_settled(s: &Session, p: &Value, url: &str) -> Result<WindowAsked, String> {
+fn window_settled(s: &Session, p: &Value, url: &str, seen: Option<[f64; 4]>) -> Result<WindowAsked, String> {
     let named = |e: String| if e.starts_with(url) { e } else { format!("{url}: {e}") };
-    let bbox = window_box(s, p).map_err(named)?;
+    let bbox = window_box(s, p, seen).map_err(named)?;
     let cell = match p.get("cellSize").filter(|v| !v.is_null()) {
         None => None,
         Some(v) => Some(v.as_f64().filter(|c| c.is_finite() && *c > 0.0).ok_or_else(|| named("cellSize is a size above 0".into()))?),
@@ -4168,18 +4191,25 @@ fn window_settled(s: &Session, p: &Value, url: &str) -> Result<WindowAsked, Stri
 /// to its login, checked as the command checks it. Errors quote the address without its keys.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn window_asked(s: &Session, p: &Value) -> Result<WindowAsked, String> {
+    window_asked_in(s, p, None)
+}
+
+/// [`window_asked`], `"bbox": "view"` being `seen` when given: the box the view was when a request
+/// was queued ([`crate::UrlRequest::view_asked`]).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn window_asked_in(s: &Session, p: &Value, seen: Option<[f64; 4]>) -> Result<WindowAsked, String> {
     let url = ps(p, "url").map(str::trim).filter(|u| !u.is_empty()).ok_or("url is required")?;
     let checked = web_address(url)
         .and_then(|_| super::raster::as_scan(p))
         .and_then(|scan| window_checks(p, url, scan))
-        .and_then(|()| window_settled(s, p, url));
+        .and_then(|()| window_settled(s, p, url, seen));
     checked.map_err(|e| crate::sources::message_with_address(url, &e))
 }
 
 /// `layer.addUrl` with `"bbox"`, for those that wait: read here and added.
 #[cfg(not(target_arch = "wasm32"))]
 fn add_cog_window(s: &mut Session, p: &Value, url: &str) -> CmdResult {
-    let read = read_cog_window(&window_settled(s, p, url)?)?;
+    let read = read_cog_window(&window_settled(s, p, url, None)?)?;
     add_window(s, p, read)
 }
 
@@ -4512,21 +4542,25 @@ pub(crate) fn box_in_file_longitudes(x0: f64, x1: f64, fx0: f64, fx1: f64) -> Re
 
 /// A window's box: `[west, south, east, north]` in degrees, or `"view"`, the map's extent.
 #[cfg(not(target_arch = "wasm32"))]
-fn window_box(s: &Session, p: &Value) -> Result<[f64; 4], String> {
+fn window_box(s: &Session, p: &Value, seen: Option<[f64; 4]>) -> Result<[f64; 4], String> {
     const NEED: &str = "bbox is [west, south, east, north] in degrees, or \"view\"";
     let [w, so, e, n] = match p.get("bbox") {
-        Some(Value::String(v)) if v.trim().eq_ignore_ascii_case("view") => {
-            let e = super::workspace::view_extent(s);
-            if e.is_empty() {
-                return Err("the map's extent isn't known; give bbox".into());
+        Some(v) if is_view(Some(v)) => match seen {
+            // The view a request was asked in ([`crate::UrlRequest::view_asked`]).
+            Some(b) => b,
+            None => {
+                let e = super::workspace::view_extent(s);
+                if e.is_empty() {
+                    return Err("the map's extent isn't known; give bbox".into());
+                }
+                // A view past 180° (across the antimeridian, or the world more than once) isn't
+                // cut to fit: what it shows past there would be left out.
+                if e.min_x < -180.0 || e.max_x > 180.0 {
+                    return Err("the view reaches past 180° of longitude; give bbox".into());
+                }
+                [e.min_x, e.min_y.max(-90.0), e.max_x, e.max_y.min(90.0)]
             }
-            // A view past 180° (across the antimeridian, or the world more than once) isn't cut
-            // to fit: what it shows past there would be left out.
-            if e.min_x < -180.0 || e.max_x > 180.0 {
-                return Err("the view reaches past 180° of longitude; give bbox".into());
-            }
-            [e.min_x, e.min_y.max(-90.0), e.max_x, e.max_y.min(90.0)]
-        }
+        },
         Some(Value::Array(a)) => {
             let v: Option<Vec<f64>> = a.iter().map(|x| x.as_f64().filter(|x| x.is_finite())).collect();
             match v.as_deref() {
@@ -4538,6 +4572,12 @@ fn window_box(s: &Session, p: &Value) -> Result<[f64; 4], String> {
     };
     let (lon, lat) = (|x: f64| (-180.0..=180.0).contains(&x), |y: f64| (-90.0..=90.0).contains(&y));
     if w < e && so < n && lon(w) && lon(e) && lat(so) && lat(n) { Ok([w, so, e, n]) } else { Err(NEED.into()) }
+}
+
+/// `"bbox": "view"`, in any case or spacing.
+#[cfg(not(target_arch = "wasm32"))]
+fn is_view(bbox: Option<&Value>) -> bool {
+    bbox.and_then(Value::as_str).is_some_and(|v| v.trim().eq_ignore_ascii_case("view"))
 }
 
 /// A GeoTIFF's name from its address: the file name without its extension, or for a dated

@@ -33432,6 +33432,175 @@ fn a_windows_bands_are_started_within_its_wait() {
     assert_eq!(e, "2 of 4 bands read in 5 minutes, so the window is given up: take a smaller box or a larger cellSize");
 }
 
+/// A script or model the desktop app runs off the frame, as a plugin's command, leaves a window to
+/// the app: answered pending, and queued, not refused (#1330).
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_script_run_by_the_app_leaves_a_window_to_it() {
+    let mut s = world();
+    let p = json!({"url": "https://x.org/scene.tif", "bbox": [10.25, 45.5, 10.5, 45.75]});
+    let answer = s.with_deferred_downloads(|s| s.run("layer.addUrl", &p)).unwrap();
+    assert_eq!(answer["pending"], true, "{answer}");
+    let asked = s.take_url_requests();
+    assert_eq!(asked.len(), 1);
+    assert_eq!(asked[0].params()["bbox"], p["bbox"]);
+}
+
+/// A command run again that asks for windows of the view in two views is answered each by the
+/// window asked in that view, not twice by the first (#1330).
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_command_run_again_gets_each_view_s_own_window() {
+    let mut s = world();
+    let p = json!({"url": "https://x.org/scene.tif", "bbox": "view"});
+    let asked = s.asked_for(&p);
+    let mut views = Vec::new();
+    for (extent, marker) in [([10.0, 45.0, 11.0, 46.0], "A"), ([20.0, 45.0, 21.0, 46.0], "B")] {
+        s.run("map.zoomToExtent", &json!({"extent": extent})).unwrap();
+        let e = crate::cmd::workspace::view_extent(&s);
+        let view = [e.min_x, e.min_y, e.max_x, e.max_y];
+        s.rerun_landed.push((Session::with_view(&asked, Some(view)), Ok(json!({"marker": marker})), Default::default()));
+        views.push(extent);
+    }
+    let answer = |s: &mut Session, extent: [f64; 4]| {
+        s.run("map.zoomToExtent", &json!({"extent": extent})).unwrap();
+        s.with_deferred_downloads(|s| s.run("layer.addUrl", &p)).unwrap()["marker"].clone()
+    };
+    assert_eq!(answer(&mut s, views[1]), "B");
+    assert_eq!(answer(&mut s, views[0]), "A");
+    // A caller can't write the key the view is told apart by.
+    let written = s.asked_for(&json!({"url": "https://x.org/scene.tif", "bbox": "view", "viewAsked": [0, 0, 1, 1]}));
+    assert_eq!(written, asked);
+}
+
+/// A request for the view's window joins one queued only when it was asked in the same view:
+/// asked in another, it is another request, read for its own view (#1330).
+#[test]
+fn a_window_of_the_view_joins_only_one_asked_in_the_same_view() {
+    let mut s = Session::new(Project::default());
+    let p = json!({"url": "https://x.org/scene.tif", "bbox": "view"});
+    let (a, b) = ([10.0, 45.0, 11.0, 46.0], [20.0, 45.0, 21.0, 46.0]);
+    for view in [Some(a), Some(a), Some(b), None] {
+        s.window_view = view;
+        s.request_url(&p).unwrap();
+        s.window_view = None;
+    }
+    let views: Vec<Option<[f64; 4]>> = s.take_url_requests().iter().map(crate::UrlRequest::view_asked).collect();
+    assert_eq!(views, [Some(a), Some(b), None], "the same view's asked once");
+    assert_eq!(s.url_waits.views.len(), 2, "kept by request number");
+}
+
+/// A window of the view that is being read joins a command asking for it again in the same view;
+/// asked in another view, or with a box, it is another request (#1330).
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_window_of_the_view_being_read_joins_only_the_same_view() {
+    let mut s = world();
+    plugin("eng-window-flight", &["edit", "network"]);
+    let ask = |s: &mut Session, bbox: Value| {
+        let p = json!({"op": "layer.addUrl", "params": {"url": "https://x.org/scene.tif", "bbox": bbox, "name": "Window"}});
+        s.run_leaving_downloads("plugin:eng-window-flight/f", &p).unwrap();
+        s.take_url_requests()
+    };
+    s.run("map.zoomToExtent", &json!({"extent": [10.0, 45.0, 11.0, 46.0]})).unwrap();
+    let first = ask(&mut s, json!("view"));
+    assert_eq!(first.len(), 1);
+    s.download_started_for(&first[0]).unwrap();
+    // While it is read: the same view joins it.
+    assert!(ask(&mut s, json!("view")).is_empty(), "the same view's window is read once");
+    // Another view: another request, for that view.
+    s.run("map.zoomToExtent", &json!({"extent": [20.0, 45.0, 21.0, 46.0]})).unwrap();
+    let other = ask(&mut s, json!("view"));
+    assert_eq!(other.len(), 1);
+    assert!(other[0].view_asked().is_some() && other[0].view_asked() != first[0].view_asked());
+    // A box: another request, with no view.
+    let boxed = ask(&mut s, json!([10.25, 45.5, 10.5, 45.75]));
+    assert_eq!(boxed.len(), 1);
+    assert_eq!(boxed[0].view_asked(), None);
+}
+
+/// A plugin's command asking for the view's window is read for the view it was asked in, though the
+/// app reads it on a later frame, when the map may show another (#1330): a command run again after
+/// a download sees the view it first ran with only while it runs. The box is kept beside the
+/// request, not in what it asks, so the command run again is answered the raster added.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_window_asked_for_the_view_keeps_the_view_it_was_asked_in() {
+    use crate::cmd::layer::{read_cog_window, window_asked, window_asked_in};
+    use rustgis_data::raster::cog::example;
+    let (base, _) = serve_ranges(example(1024, 256));
+    let mut s = world();
+    plugin("eng-window-view", &["edit", "network"]);
+    let layers = s.map().layers.len();
+    s.run("map.zoomToExtent", &json!({"extent": [10.3, 45.55, 10.45, 45.7]})).unwrap();
+    let seen = crate::cmd::workspace::view_extent(&s);
+    let p = json!({"op": "layer.addUrl", "params": {"url": format!("{base}/scene.tif"), "bbox": "view", "name": "Window"}});
+    s.run_leaving_downloads("plugin:eng-window-view/f", &p).unwrap();
+    let asked = s.take_url_requests();
+    assert_eq!(asked.len(), 1);
+    assert_eq!(asked[0].params()["bbox"], "view", "what it asks is as it asked it");
+    let close =
+        |a: [f64; 4], b: rustgis_geom::Extent| a.iter().zip([b.min_x, b.min_y, b.max_x, b.max_y]).all(|(a, b)| (a - b).abs() < 1e-9);
+    s.run("map.zoomToExtent", &json!({"extent": [-50.0, -20.0, -40.0, -10.0]})).unwrap();
+    let window = window_asked_in(&s, asked[0].params(), asked[0].view_asked()).unwrap();
+    assert!(close(window.bbox(), seen), "{:?} {seen:?}", window.bbox());
+    // Without the request's box, `"view"` is the view now.
+    let now = crate::cmd::workspace::view_extent(&s);
+    assert!(close(window_asked(&s, asked[0].params()).unwrap().bbox(), now));
+    // Read and added: the command run again is answered the raster added, and asks nothing more.
+    let id = s.download_started_for(&asked[0]).unwrap();
+    assert!(s.download_landed_window(id, read_cog_window(&window).unwrap()));
+    let mut add = asked[0].params().clone();
+    add["id"] = json!(id);
+    add["window"] = json!({"bbox": "view"});
+    s.complete_download(id, &add).unwrap();
+    let added = s.map().layer_by_name("Window").filter(|l| l.is_raster()).unwrap().id;
+    let ran = s.poll_plugin_retries();
+    assert_eq!(ran.len(), 1, "{ran:?}");
+    assert_eq!(ran[0].1.as_ref().unwrap()["layer"], json!(added), "{ran:?}");
+    assert_eq!(s.map().layers.len(), layers + 1, "added once");
+    assert!(s.take_url_requests().is_empty() && !s.plugin_retries_waiting());
+}
+
+/// A plugin's command asking for a window runs again once the app has read it and added it, and
+/// its `layer.addUrl` then answers the raster added (#1330): the window it lands with is the one
+/// the command asked for, so its claim takes it.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_plugin_command_runs_again_when_its_window_is_added() {
+    use crate::cmd::layer::{read_cog_window, window_asked};
+    use rustgis_data::raster::cog::example;
+    let (base, _) = serve_ranges(example(1024, 256));
+    let mut s = world();
+    plugin("eng-window", &["edit", "network"]);
+    let layers = s.map().layers.len();
+    let url = format!("{base}/scene.tif");
+    let bbox = json!([10.25, 45.5, 10.5, 45.75]);
+    let p = json!({"op": "layer.addUrl", "params": {"url": url, "bbox": bbox, "name": "Window"}});
+    s.run_leaving_downloads("plugin:eng-window/f", &p).unwrap();
+    let asked = s.take_url_requests();
+    assert_eq!(asked.len(), 1);
+    assert_eq!(s.map().layers.len(), layers, "nothing added while it is read");
+    // The app reads it apart from the session and adds it with the request's number, and with
+    // what a task needs to read it again, as `start_window_read` does.
+    let id = s.download_started_for(&asked[0]).unwrap();
+    let read = read_cog_window(&window_asked(&s, asked[0].params()).unwrap()).unwrap();
+    assert!(s.download_landed_window(id, read));
+    let mut add = asked[0].params().clone();
+    add["id"] = json!(id);
+    add["window"] = json!({"bbox": bbox});
+    s.complete_download(id, &add).unwrap();
+    assert_eq!(s.map().layers.len(), layers + 1);
+    let added = s.map().layer_by_name("Window").filter(|l| l.is_raster()).unwrap().id;
+    let ran = s.poll_plugin_retries();
+    assert_eq!(ran.len(), 1, "{ran:?}");
+    let (cmd, answer) = &ran[0];
+    assert_eq!(cmd, "plugin:eng-window/f");
+    assert_eq!(answer.as_ref().unwrap()["layer"], json!(added), "{answer:?}");
+    assert_eq!(s.map().layers.len(), layers + 1, "added once");
+    assert!(s.take_url_requests().is_empty() && !s.plugin_retries_waiting());
+}
+
 /// A window's read needs no session: on a thread, as the app reads it, then added when it lands
 /// (#1330). What can't be a window is refused before the read starts, and an error names the
 /// address without its keys.
@@ -33699,11 +33868,19 @@ fn a_cog_window_comes_in_as_a_raster() {
     assert!(e.contains("names a .geojson file"), "{e}");
     let e = s.run("layer.addUrl", &json!({"url": wrapped("https://data.example.com"), "bbox": [10.25, 45.5, 10.5, 45.75]})).unwrap_err();
     assert!(!e.contains("names a .com file"), "{e}");
-    // A plugin's command run by the app doesn't wait for a window: refused, and said.
+    // A plugin's command run by the app leaves a window to the app (#1330): asked for with its
+    // box and nothing fetched; a box that can't be read is refused as the command runs.
+    let before = sent.load(std::sync::atomic::Ordering::Relaxed);
+    let asked = json!({"url": format!("{base}/scene.tif"), "bbox": [10.25, 45.5, 10.5, 45.75], "name": "Left"});
     s.leave_downloads = true;
-    let e = s.run("layer.addUrl", &json!({"url": format!("{base}/scene.tif"), "bbox": [10.25, 45.5, 10.5, 45.75]})).unwrap_err();
+    assert_eq!(s.run("layer.addUrl", &asked).unwrap()["pending"], true);
+    let e = s.run("layer.addUrl", &json!({"url": format!("{base}/scene.tif"), "bbox": "here"})).unwrap_err();
     s.leave_downloads = false;
-    assert!(e.contains("a plugin's command can't do in the app yet"), "{e}");
+    assert!(e.contains("bbox is"), "{e}");
+    assert_eq!(sent.load(std::sync::atomic::Ordering::Relaxed), before, "nothing fetched");
+    let taken = s.take_url_requests();
+    assert_eq!(taken.len(), 1);
+    assert_eq!(taken[0].params()["bbox"], asked["bbox"]);
     // Byte windows round nothing, and say nothing of it; an Int32 window of 16,777,216 plus the
     // byte value says how many `f32` rounded: the odd ones, half of its 65,536 cells.
     assert!(s.notices_since(mark0).iter().all(|n| !n.text.contains("rounded")), "{:?}", s.notices_since(mark0));
