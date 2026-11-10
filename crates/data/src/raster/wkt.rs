@@ -658,7 +658,11 @@ fn projected2(p: &Node) -> Result<Node, String> {
         let method_id = mapped.map(|&(code, _, _)| Item::Node(Node::new("AUTHORITY", "EPSG", [Item::Num(f64::from(code))])));
         items.push(Item::Node(Node::new("PROJECTION", name, method_id)));
         for param in conv.nodes().filter(|n| n.name.eq_ignore_ascii_case("PARAMETER")) {
-            let Some(v) = param.num(0) else { continue };
+            let Some(v) = param.num(0) else {
+                // Kept with no number, so it can be told from a parameter not given.
+                items.push(Item::Node(Node::new("PARAMETER", param.title(), None)));
+                continue;
+            };
             let (name, measure) = match lookup(param, PARAMETERS, |r| (r.0, r.1)) {
                 Some(&(_, _, wkt1, m)) => (wkt1, Some(m)),
                 None => (param.title(), None),
@@ -914,15 +918,29 @@ fn geographic(g: &Node) -> Result<Crs, String> {
 fn projected(p: &Node) -> Result<Crs, String> {
     let name = norm(p.title());
     let method = norm(p.child("PROJECTION").map_or("", Node::title));
-    if name.contains("WEB_MERCATOR")
-        || name.contains("PSEUDO_MERCATOR")
-        || method == "MERCATOR_AUXILIARY_SPHERE"
-        || method == "POPULAR_VISUALISATION_PSEUDO_MERCATOR"
-    {
-        if axis_flip(p)?.is_some() {
-            return Err(REVERSED_AXES.into());
+    let pseudo = method == "MERCATOR_AUXILIARY_SPHERE" || method == "POPULAR_VISUALISATION_PSEUDO_MERCATOR";
+    if name.contains("WEB_MERCATOR") || name.contains("PSEUDO_MERCATOR") || pseudo {
+        // `parameters` leaves out a value that isn't a finite number, and one left out counts as
+        // Web Mercator's default.
+        let unusable = |i: &Item| matches!(i, Item::Node(n) if n.name.eq_ignore_ascii_case("PARAMETER") && n.num(0).is_none());
+        if p.items.iter().any(unusable) {
+            return Err("a Web Mercator system with a parameter that isn't a finite number isn't supported".into());
         }
-        return Ok(Crs::WebMercator);
+        if is_web_mercator(p, &method) {
+            if axis_flip(p)?.is_some() {
+                return Err(REVERSED_AXES.into());
+            }
+            return Ok(Crs::WebMercator);
+        }
+        // The name is Web Mercator's, the parameters aren't: a named Mercator method is read from
+        // them below, but these two methods are Web Mercator's alone and `custom` has no sphere
+        // to put them on, and an EXTENSION says the sphere in a form `custom` doesn't read, so
+        // refuse instead of placing points at Web Mercator's origin or on the wrong ellipsoid.
+        if pseudo || p.child("EXTENSION").is_some() {
+            return Err(
+                "a Web Mercator system with parameters of its own (a shifted origin, scale, auxiliary sphere, unit or datum radius) isn't supported".into()
+            );
+        }
     }
     // The name gives a UTM zone's EPSG code, but the parameters say where the coordinates are.
     if let Some(code) = utm(&name)
@@ -932,6 +950,29 @@ fn projected(p: &Node) -> Result<Crs, String> {
         return Ok(crs);
     }
     custom(p, &method)
+}
+
+/// Whether a system named or projected as Web Mercator has Web Mercator's parameters: a Mercator
+/// method, in metres, with central meridian, origin latitude, standard parallel, false easting and
+/// northing 0, scale 1 and auxiliary sphere type 0 (the datum's semi-major axis), on a datum with
+/// Web Mercator's radius. A parameter that isn't given counts as the default.
+fn is_web_mercator(p: &Node, method: &str) -> bool {
+    let params = parameters(p);
+    let is_default = |names: &[&str], to: f64| parameter(&params, names).is_none_or(|v| (v - to).abs() <= 1e-9);
+    (method.is_empty() || method.starts_with("MERCATOR") || method.ends_with("PSEUDO_MERCATOR"))
+        && p.child("UNIT").and_then(|u| u.num(0)).is_none_or(|m| (m - 1.0).abs() <= 1e-9)
+        && p.child("GEOGCS")
+            .and_then(|g| g.child("DATUM"))
+            .and_then(|d| d.child_of(&["SPHEROID", "ELLIPSOID"]))
+            .and_then(|s| s.num(0))
+            .is_none_or(|a| (a - 6_378_137.0).abs() <= 0.01)
+        && is_default(&CENTRAL_MERIDIAN, 0.0)
+        && is_default(&LATITUDE_OF_ORIGIN, 0.0)
+        && is_default(&["STANDARD_PARALLEL_1"], 0.0)
+        && is_default(&["FALSE_EASTING"], 0.0)
+        && is_default(&["FALSE_NORTHING"], 0.0)
+        && is_default(&["SCALE_FACTOR"], 1.0)
+        && is_default(&["AUXILIARY_SPHERE_TYPE"], 0.0)
 }
 
 /// UTM's scale on the central meridian.
@@ -3033,6 +3074,80 @@ pub(crate) mod tests {
         assert_eq!(read_wkt(ESRI_3857), Ok((Crs::WebMercator, None)));
         let zero = ESRI_3857.replace("6378137.0,298.257223563]]", "6378137.0,298.257223563],TOWGS84[0,0,0]]");
         assert_eq!(read_wkt(&zero), Ok((Crs::WebMercator, None)));
+    }
+
+    /// A Web Mercator name or method gives `Crs::WebMercator` only with Web Mercator's parameters.
+    #[test]
+    fn a_web_mercator_name_gives_web_mercator_only_with_its_parameters() {
+        assert_eq!(crs_from_wkt(ESRI_3857), Ok(Crs::WebMercator));
+        let gdal = WEB_MERCATOR;
+        assert_eq!(crs_from_wkt(gdal), Ok(Crs::WebMercator));
+        // Esri's method: a parameter off is refused, never placed at Web Mercator's origin.
+        for (from, to) in [
+            (r#""False_Easting",0.0"#, r#""False_Easting",1000.0"#),
+            (r#""False_Northing",0.0"#, r#""False_Northing",1000.0"#),
+            (r#""Central_Meridian",0.0"#, r#""Central_Meridian",10.0"#),
+            (r#""Auxiliary_Sphere_Type",0.0"#, r#""Auxiliary_Sphere_Type",1.0"#),
+            (r#"UNIT["Meter",1.0]]"#, r#"UNIT["Foot_US",0.3048006096012192]]"#),
+        ] {
+            let off = ESRI_3857.replace(from, to);
+            assert_ne!(off, ESRI_3857, "{from}");
+            assert!(crs_from_wkt(&off).is_err(), "{from}: {:?}", crs_from_wkt(&off));
+        }
+        // The same name on a Mercator method is read from its parameters: 1 km east here. Not
+        // with GDAL's EXTENSION, which says the sphere in a form the parameters don't. (Without
+        // the EPSG code: a file's own code is trusted over its parameters.)
+        let shift = |east: &str| {
+            gdal.replace(r#"PARAMETER["false_easting",0]"#, &format!(r#"PARAMETER["false_easting",{east}]"#))
+                .replace(r#",AUTHORITY["EPSG","3857"]]"#, "]")
+        };
+        let no_ext = |east: &str| {
+            let w = shift(east);
+            let from = w.find(",EXTENSION[").unwrap();
+            let to = from + w[from..].find(r#""]"#).unwrap() + 2;
+            format!("{}{}", &w[..from], &w[to..])
+        };
+        let e = crs_from_wkt(&shift("1000")).unwrap_err();
+        assert!(e.contains("isn't supported"), "{e}");
+        let shifted = no_ext("1000");
+        assert!(!shifted.contains("EXTENSION") && !shifted.contains("3857") && shifted.contains("1000"), "{shifted}");
+        let crs = crs_from_wkt(&shifted).unwrap();
+        assert!(matches!(crs, Crs::Custom(_)), "{crs:?}");
+        let ll = Coord::new(60.0, 45.0);
+        let xy = crs.transformer().unwrap().from_lonlat(ll).unwrap();
+        // The same system 2 km east of the origin: 1 km further than the first, on the file's
+        // ellipsoid as written.
+        let web = crs_from_wkt(&no_ext("2000")).unwrap().transformer().unwrap().from_lonlat(ll).unwrap();
+        assert!((web.x - xy.x - 1000.0).abs() < 0.001 && (xy.y - web.y).abs() < 0.001, "{xy:?} {web:?}");
+        // A datum with another radius isn't Web Mercator's: Esri's method is refused, and a
+        // Mercator method is read from its parameters.
+        let clarke = ESRI_3857.replace("6378137.0,298.257223563", "6378206.4,294.978698213898");
+        assert_ne!(clarke, ESRI_3857);
+        assert!(crs_from_wkt(&clarke).is_err(), "{:?}", crs_from_wkt(&clarke));
+        let mercator = no_ext("0").replace("6378137,298.257223563", "6378206.4,294.978698213898");
+        assert!(mercator.contains("6378206.4"));
+        assert!(matches!(crs_from_wkt(&mercator), Ok(Crs::Custom(_))), "{:?}", crs_from_wkt(&mercator));
+        // WKT2's method: Web Mercator without a shift, refused with one.
+        let wkt2 = include_str!("wkt2_corpus.tsv")
+            .lines()
+            .find(|l| l.contains("Popular Visualisation Pseudo Mercator"))
+            .and_then(|l| l.rsplit('\t').next())
+            .unwrap();
+        assert_eq!(crs_from_wkt(wkt2), Ok(Crs::WebMercator));
+        let east = wkt2.replace(r#"PARAMETER["False easting",0,"#, r#"PARAMETER["False easting",1000,"#);
+        assert_ne!(east, wkt2);
+        let e = crs_from_wkt(&east).unwrap_err();
+        assert!(e.contains("a Web Mercator system with parameters of its own") && e.contains("isn't supported"), "{e}");
+        // A parameter that isn't a finite number isn't a default: refused, never read as one.
+        for huge in [
+            ESRI_3857.replace(r#""False_Easting",0.0"#, r#""False_Easting",1e400"#),
+            no_ext("1e400"),
+            wkt2.replace(r#"PARAMETER["False easting",0,"#, r#"PARAMETER["False easting",1e400,"#),
+        ] {
+            assert!(huge.contains("1e400"), "{huge}");
+            let e = crs_from_wkt(&huge).unwrap_err();
+            assert!(e.contains("isn't a finite number"), "{e}");
+        }
     }
 
     /// PROJ's `+towgs84` as WKT2: a `BOUNDCRS` with the shift to WGS 84 as its transformation.
