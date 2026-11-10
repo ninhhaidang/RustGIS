@@ -22,6 +22,188 @@ fn header(address: &str) -> Option<(String, String)> {
     logins::apply(address).unwrap().and_then(|a| a.header)
 }
 
+fn probe_connection(kind: &str, address: &str, auth: &str, user: &str, key_name: &str) -> crate::connections::Connection {
+    crate::connections::Connection {
+        kind: kind.trim().into(),
+        address: address.into(),
+        auth: auth.into(),
+        user: user.into(),
+        key_name: key_name.into(),
+        ..crate::connections::Connection::default()
+    }
+}
+
+#[test]
+fn temporary_probes_use_cleaned_basic_inputs_and_revoke_on_unwind() {
+    let origin = "https://temporary-basic757.example.org";
+    let url = format!("{origin}/wmts?SERVICE=WMTS&REQUEST=GetCapabilities");
+    let definition = probe_connection("wmts", &format!(" {origin}/wmts "), " BASIC ", " ana ", "ignored");
+    let (address, guard) = web::temporary_probe(&definition, "temporary-password-757", false, &url).unwrap();
+    assert_eq!(header(&address), Some(("Authorization".into(), logins::basic("ana", "temporary-password-757"))));
+    assert_eq!(logins::inner(&address), url);
+    assert!(!address.contains("temporary-password-757"));
+    assert!(header(&url).is_none(), "the ordinary URL must stay anonymous");
+    let inherited = logins::inherit(&address, &format!("{origin}/legend"));
+    assert!(header(&inherited).is_some());
+    for foreign in [
+        "http://temporary-basic757.example.org/legend",
+        "https://temporary-basic757.example.org:444/legend",
+        "https://temporary-basic757.example.org.evil.test/legend",
+    ] {
+        assert!(header(&logins::inherit(&address, foreign)).is_none());
+    }
+    let unwound = std::panic::catch_unwind(move || {
+        let _guard = guard;
+        panic!("simulated test cancellation");
+    });
+    assert!(unwound.is_err());
+    assert!(logins::apply(&address).is_err());
+    assert!(logins::apply(&inherited).is_err());
+    assert!(rustgis_data::login_address::check(&address).is_err());
+    assert_eq!(logins::scrub("temporary-password-757"), "temporary-password-757", "revocation must also discard the credential");
+}
+
+#[test]
+fn temporary_probes_never_replace_saved_logins_or_connection_selections() {
+    let origin = "https://temporary-saved757.example.org";
+    let url = format!("{origin}/wmts");
+    let mut s = session(Some(Arc::new(MemorySecrets::new())));
+    let id = new(&mut s, json!({"kind":"wmts","address":url,"auth":"header","keyName":"X-Key"}));
+    s.run("connection.login", &json!({"id":id,"apiKey":"saved-temporary-757"})).unwrap();
+    let saved = bound(&mut s, &id, &url);
+    let definitions = s.connections.clone();
+    let pending = requests(&mut s);
+    assert!(web::temporary_probe(&s.connections.connections[0], "must-not-replace-saved-757", false, &url).is_err());
+    let (first, first_guard) =
+        web::temporary_probe(&probe_connection("wmts", &url, "header", "", " X-Key "), "first-temporary-757", false, &url).unwrap();
+    let (second, second_guard) =
+        web::temporary_probe(&probe_connection("wmts", &url, "header", "", "X-Key"), "second-temporary-757", false, &url).unwrap();
+    assert_ne!(saved, first);
+    assert_ne!(first, second, "each test needs an isolated cache identity");
+    assert_eq!(header(&first).unwrap().1, "first-temporary-757");
+    assert_eq!(header(&second).unwrap().1, "second-temporary-757");
+    assert_eq!(header(&saved).unwrap().1, "saved-temporary-757");
+    assert_eq!(web::request(&mut s, None, &url).unwrap(), saved);
+    assert_eq!(web::request(&mut s, None, &first).unwrap_err(), web::NOT_THIS_SESSION);
+    drop(first_guard);
+    assert!(logins::apply(&first).is_err());
+    assert_eq!(header(&second).unwrap().1, "second-temporary-757");
+    assert_eq!(header(&saved).unwrap().1, "saved-temporary-757");
+    drop(second_guard);
+    assert_eq!(s.connections, definitions);
+    assert_eq!(s.database_logins.selection(crate::connections::WEB, origin), Some(id.as_str()));
+    assert_eq!(requests(&mut s), pending);
+    assert_eq!(web::known_secret(&s, &s.connections.connections[0]).unwrap().expose(), "saved-temporary-757");
+    assert_eq!(bound(&mut s, &id, &url), saved);
+}
+
+#[test]
+fn temporary_probes_reject_unsafe_definitions_credentials_and_mismatched_origins() {
+    let url = "https://temporary-validation757.example.org/wmts";
+    let secret = "temporary-validation-secret-757";
+    for (auth, user, key) in [("basic", "ana", ""), ("header", "", "X-Key")] {
+        let definition = probe_connection("wmts", url, auth, user, key);
+        assert_eq!(web::temporary_probe(&definition, "", false, url).err().unwrap(), web::REQUIRED);
+        assert_eq!(web::temporary_probe(&definition, "bad\nsecret", false, url).err().unwrap(), web::BAD_SECRET);
+    }
+    let invalid = [
+        ("s3", url, "header", "", "X-Key", secret, false, url),
+        ("postgres", url, "header", "", "X-Key", secret, false, url),
+        ("wmts", url, "none", "", "", secret, false, url),
+        ("wmts", url, "unknown-auth-secret-757", "", "", secret, false, url),
+        ("wmts", url, "basic", "", "", secret, false, url),
+        ("wmts", url, "basic", "bad:user", "", secret, false, url),
+        ("wmts", url, "header", "", "Cookie", secret, false, url),
+        ("wmts", url, "header", "", "Sec-Key", secret, false, url),
+        ("wmts", url, "header", "", "X-Key", "", false, url),
+        ("wmts", url, "header", "", "X-Key", "injected\r\nX-Leak: secret", false, url),
+        ("wmts", url, "header", "", "X-Key", "non-ASCII-é", false, url),
+        ("wmts", "https://user:secret@temporary-validation757.example.org/wmts", "header", "", "X-Key", secret, false, url),
+        ("wmts", "https://temporary-validation757.example.org/wmts?token=secret", "header", "", "X-Key", secret, false, url),
+        ("wmts", "https://temporary-validation757.example.org\\evil/wmts", "header", "", "X-Key", secret, false, url),
+        ("wmts", url, "header", "", "X-Key", secret, false, "http://temporary-validation757.example.org/wmts"),
+        ("wmts", url, "header", "", "X-Key", secret, false, "https://temporary-validation757.example.org:444/wmts"),
+        ("wmts", url, "header", "", "X-Key", secret, false, "https://temporary-validation757.example.org.evil.test/wmts"),
+        ("wmts", url, "header", "", "X-Key", secret, false, "https://user:secret@temporary-validation757.example.org/wmts"),
+        ("wmts", url, "header", "", "X-Key", secret, false, "https://temporary-validation757.example.org/wmts?api_key=secret"),
+        ("wmts", url, "header", "", "X-Key", secret, false, "https://temporary-validation757.example.org/wmts#token=secret"),
+        ("wmts", url, "header", "", "X-Key", secret, false, "https://temporary-validation757.example.org/wm ts"),
+        ("wmts", url, "header", "", "X-Key", secret, false, "https://temporary-validation757.example.org\\evil/wmts"),
+    ];
+    for (kind, address, auth, user, key, credential, insecure, probe) in invalid {
+        let error = web::temporary_probe(&probe_connection(kind, address, auth, user, key), credential, insecure, probe).err().unwrap();
+        assert!(!error.contains(secret));
+        assert!(!error.contains("unknown-auth-secret-757"));
+        assert!(!error.contains("injected"));
+    }
+    for (auth, user, key, credential) in [("basic", "ana", "", "x".repeat(4090)), ("header", "", "X-Key", "x".repeat(4097))] {
+        assert!(web::temporary_probe(&probe_connection("wmts", url, auth, user, key), &credential, false, url).is_err());
+    }
+    let (wrapped, guard) = web::temporary_probe(&probe_connection("wmts", url, "header", "", "X-Key"), secret, false, url).unwrap();
+    assert!(web::temporary_probe(&probe_connection("wmts", url, "header", "", "X-Key"), secret, false, &wrapped).is_err());
+    drop(guard);
+    let oversized = format!("{url}?filter={}", "x".repeat(17000));
+    assert!(web::temporary_probe(&probe_connection("wmts", url, "header", "", "X-Key"), secret, false, &oversized).is_err());
+    assert_eq!(logins::scrub(secret), secret, "a failure after activation must not leave a binding alive");
+}
+
+#[test]
+fn temporary_http_probes_require_explicit_consent_each_time() {
+    let url = "http://temporary-consent757.example.org/wmts";
+    assert_eq!(
+        web::temporary_probe(&probe_connection("wmts", url, "header", "", "X-Key"), "temporary-consent-757", false, url).err().unwrap(),
+        web::INSECURE
+    );
+    let (address, guard) =
+        web::temporary_probe(&probe_connection("wmts", url, "header", "", "X-Key"), "temporary-consent-757", true, url).unwrap();
+    assert_eq!(header(&address).unwrap().1, "temporary-consent-757");
+    assert!(web::temporary_probe(&probe_connection("wmts", url, "header", "", "X-Key"), "temporary-consent-757", false, url).is_err());
+    assert_eq!(header(&address).unwrap().1, "temporary-consent-757", "a failed test must not replace a live test");
+    drop(guard);
+    assert!(logins::apply(&address).is_err());
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn temporary_probe_caches_are_isolated_and_revoked_data_cannot_be_read() {
+    use crate::render::rustgis_tiles::cache::{self, Payload, State, Want};
+    let server = LoginFile::new(br#"{"temporaryProbe":true}"#.to_vec());
+    let url = format!("{}/wmts", server.base);
+    let definition = probe_connection("wmts", &url, "header", "", "X-Key");
+    let (allowed, allowed_guard) = web::temporary_probe(&definition, "fixture-login-757", true, &url).unwrap();
+    let (denied, denied_guard) = web::temporary_probe(&definition, "wrong-temporary-cache-757", true, &url).unwrap();
+    let fetch = |address: &str| {
+        let started = std::time::Instant::now();
+        loop {
+            match cache::get(address, Want::Json) {
+                State::Pending => {
+                    assert!(started.elapsed() < std::time::Duration::from_secs(10), "temporary probe fetch timed out");
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+                state => break state,
+            }
+        }
+    };
+    match fetch(&allowed) {
+        State::Ready(payload) => match payload.as_ref() {
+            Payload::Json(value) => assert_eq!(value["temporaryProbe"], true),
+            _ => panic!("expected the authenticated JSON response"),
+        },
+        _ => panic!("the typed test login did not authenticate"),
+    }
+    assert!(matches!(fetch(&denied), State::Failed(_)), "another test must not inherit cached authenticated data");
+    assert!(matches!(fetch(&url), State::Failed(_)), "a bare URL must not inherit a temporary credential or its cache");
+    let sent = server.requests.lock().unwrap().len();
+    drop(allowed_guard);
+    assert!(cache::peek(&allowed).is_none());
+    assert!(matches!(cache::get(&allowed, Want::Json), State::Failed(_)));
+    assert!(cache::download_blocking(&allowed).is_err());
+    assert_eq!(server.requests.lock().unwrap().len(), sent, "revocation must fail before a network request");
+    assert!(logins::check(&denied).is_ok(), "dropping one test must not revoke another");
+    drop(denied_guard);
+    assert!(logins::check(&denied).is_err());
+}
+
 fn project(origin: &str, id: &str) -> String {
     let mut p = Project::default();
     let mut t = rustgis_map::TileLayer::new("Secured", rustgis_map::TileKind::Raster, format!("{origin}/tiles/{{z}}/{{x}}/{{y}}.png"));

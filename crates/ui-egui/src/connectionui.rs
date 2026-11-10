@@ -38,7 +38,7 @@ pub struct State {
     pub access_key: String,
     pub secret_key: String,
     pub session_token: String,
-    pub test: Option<(Value, Slot<Result<Vec<u8>, String>>)>,
+    pub test: Option<(Value, Slot<Result<Vec<u8>, String>>, TestContext)>,
     /// The form was opened to log in (Log In…): Save logs in even with no secret typed,
     /// using the connection's existing session login (or saved DB/S3 credentials).
     pub login: bool,
@@ -48,6 +48,16 @@ pub struct State {
     /// A project's S3 source waiting for this connection (the chooser's), as (source address,
     /// connection id): its choice is made again once that connection has logged in.
     pub resolving: Option<(String, String)>,
+}
+
+/// Authority and form identity for one off-frame Test. Dropping the pending Test revokes its
+/// temporary login, including when a late download still owns the detached result slot.
+pub struct TestContext {
+    opened: u64,
+    form: Value,
+    /// Capture the displayed translation so a language change cannot orphan this Test's status.
+    status: &'static str,
+    _login: Option<web::TemporaryProbe>,
 }
 
 /// The chooser of the saved S3 connection that reads a project's S3 sources (Data Sources ›
@@ -89,6 +99,12 @@ pub(crate) fn translated(e: &str) -> String {
         web::NOT_THIS_SESSION => tl!("This request's login does not belong to this session."),
         web::CHOOSE_CONNECTION => tl!("Several saved connections match this address. Choose a connection explicitly."),
         web::NO_SUCH_CONNECTION => tl!("No saved web-service connection with this id."),
+        "The service test requires a valid web-service connection and login." => {
+            tl!("The service test requires a valid web-service connection and login.")
+        }
+        "The service test requires a credential-free HTTP or HTTPS address at the connection's origin." => {
+            tl!("The service test requires a credential-free HTTP or HTTPS address at the connection's origin.")
+        }
         web::CONNECTION_TEXT => tl!("connection must be a saved web-service connection id (text)"),
         other => other,
     }
@@ -328,7 +344,7 @@ fn secrets(st: &State, p: &mut Value) {
 }
 
 /// A saved service Test uses its saved login-relevant definition, never an edited endpoint
-/// with an old id. A new anonymous endpoint can still be tested without saving it.
+/// with an old id. A new endpoint uses only credentials explicitly typed into its form.
 fn test_blocked(app: &RustGisApp) -> Option<&'static str> {
     let st = &app.ui.connection;
     let saved = st.id.as_deref().and_then(|id| app.session.connections.find(id));
@@ -336,9 +352,7 @@ fn test_blocked(app: &RustGisApp) -> Option<&'static str> {
         return None;
     }
     let auth = if st.auth == "none" { "" } else { &st.auth };
-    if st.id.is_none() && auth.is_empty() {
-        return None;
-    }
+    st.id.as_ref()?;
     let matches = saved.is_some_and(|c| {
         c.kind == st.kind
             && c.address == st.address.trim()
@@ -366,7 +380,14 @@ pub fn start_test(app: &mut RustGisApp) {
     if service && let Some(id) = &app.ui.connection.id {
         p["id"] = json!(id);
     }
-    secrets(&app.ui.connection, &mut p);
+    let temporary = service && app.ui.connection.id.is_none() && !matches!(app.ui.connection.auth.as_str(), "" | "none");
+    if temporary {
+        // Public commands remain anonymous. The typed secret is passed directly to the helper,
+        // never through command parameters, command history or a saved connection.
+        p["auth"] = json!("none");
+    } else {
+        secrets(&app.ui.connection, &mut p);
+    }
     if DATABASE_KINDS.contains(&app.ui.connection.kind.as_str()) {
         match app.run("connection.test", p) {
             Ok(v) => app.dialogs.info = Some(summary(&app.ui.connection.kind, &v["result"])),
@@ -376,29 +397,61 @@ pub fn start_test(app: &mut RustGisApp) {
     }
     p["probe"] = json!(true);
     let result = app.run("connection.test", p);
-    if service {
+    if service && !temporary {
         clear_secrets(&mut app.ui.connection);
     }
     let v = match result {
         Ok(v) => v,
         Err(e) => {
+            if temporary {
+                clear_secrets(&mut app.ui.connection);
+            }
             app.dialogs.error = Some(translated(&e));
             return;
         }
     };
     let Some(url) = v["fetch"].as_str() else {
+        if temporary {
+            clear_secrets(&mut app.ui.connection);
+        }
         app.dialogs.error = Some(tl!("Nothing to test").into());
         return;
     };
     let mut q = definition(&app.ui.connection);
+    let (url, login) = if temporary {
+        q["auth"] = json!("none");
+        let st = &app.ui.connection;
+        let secret = if st.auth == "basic" { &st.password } else { &st.api_key };
+        let connection = Connection {
+            kind: st.kind.clone(),
+            address: st.address.clone(),
+            auth: st.auth.clone(),
+            user: st.user.clone(),
+            key_name: st.key_name.clone(),
+            ..Default::default()
+        };
+        let result = web::temporary_probe(&connection, secret, st.allow_insecure, url);
+        clear_secrets(&mut app.ui.connection);
+        match result {
+            Ok((url, login)) => (url, Some(login)),
+            Err(e) => {
+                app.dialogs.error = Some(translated(&e));
+                return;
+            }
+        }
+    } else {
+        (url.to_string(), None)
+    };
     if service && let Some(id) = &app.ui.connection.id {
         q["id"] = json!(id);
     }
+    let status = tl!("Testing…");
+    let context = TestContext { opened: app.session.opened, form: definition(&app.ui.connection), status, _login: login };
     let slot: Slot<Result<Vec<u8>, String>> = Slot::default();
     let land = slot.clone();
-    cache::download(url, Box::new(move |r| *land.lock().unwrap_or_else(|e| e.into_inner()) = Some(r)));
-    app.ui.connection.test = Some((q, slot));
-    app.dialogs.info = Some(tl!("Testing…").into());
+    cache::download(&url, Box::new(move |r| *land.lock().unwrap_or_else(|e| e.into_inner()) = Some(r)));
+    app.ui.connection.test = Some((q, slot, context));
+    app.dialogs.info = Some(status.into());
 }
 
 /// A request remains authorized only for its original project and exact saved definitions.
@@ -561,28 +614,48 @@ fn poll_requests(app: &mut RustGisApp) {
 pub fn poll(app: &mut RustGisApp, ctx: &egui::Context) {
     poll_requests(app);
     if !matches!(app.dialogs.open, Some("newConnection" | "editConnection")) {
-        app.ui.connection.test = None;
+        if let Some((_, _, context)) = app.ui.connection.test.take() {
+            if app.dialogs.open.is_none() {
+                app.dialogs.info = None;
+                app.dialogs.error = None;
+            } else if app.dialogs.info.as_deref() == Some(context.status) {
+                app.dialogs.info = None;
+            }
+        }
         return;
     }
-    let Some((q, slot)) = app.ui.connection.test.as_mut() else { return };
+    let stale = app
+        .ui
+        .connection
+        .test
+        .as_ref()
+        .is_some_and(|(_, _, context)| context.opened != app.session.opened || context.form != definition(&app.ui.connection));
+    if stale {
+        app.ui.connection.test = None;
+        app.dialogs.info = None;
+        app.dialogs.error = None;
+        return;
+    }
+    let Some((_, slot, _)) = app.ui.connection.test.as_mut() else { return };
     let result = slot.lock().unwrap_or_else(|e| e.into_inner()).take();
     let Some(result) = result else {
         ctx.request_repaint_after(std::time::Duration::from_millis(100));
         return;
     };
-    let mut q = q.take();
-    app.ui.connection.test = None;
+    // Hold the temporary login while the answer is parsed too: response/error redaction still
+    // needs it, and no saved login may be substituted during this anonymous command.
+    let Some((mut q, _, _context)) = app.ui.connection.test.take() else { return };
     app.dialogs.info = None;
     match result {
         Ok(bytes) => {
             q["answer"] = json!(String::from_utf8_lossy(&bytes));
             let kind = q["kind"].as_str().unwrap_or("").to_owned();
             match app.run("connection.test", q) {
-                Ok(v) => app.dialogs.info = Some(summary(&kind, &v["result"])),
-                Err(e) => app.dialogs.error = Some(e),
+                Ok(v) => app.dialogs.info = Some(rustgis_engine::render::rustgis_tiles::logins::scrub(&summary(&kind, &v["result"]))),
+                Err(e) => app.dialogs.error = Some(rustgis_engine::render::rustgis_tiles::logins::scrub(&e)),
             }
         }
-        Err(e) => app.dialogs.error = Some(e),
+        Err(e) => app.dialogs.error = Some(rustgis_engine::render::rustgis_tiles::logins::scrub(&e)),
     }
 }
 
@@ -1030,7 +1103,12 @@ pub fn dialog(app: &mut RustGisApp, ui: &mut egui::Ui) -> bool {
     }
     let close = crate::dialogs::buttons(app, ui, "Save", save);
     // A warning to read keeps it open.
-    close && app.ui.connection.warned.is_none()
+    let close = close && app.ui.connection.warned.is_none();
+    if close && app.ui.connection.test.take().is_some() {
+        app.dialogs.info = None;
+        app.dialogs.error = None;
+    }
+    close
 }
 
 pub fn open_connection(app: &mut RustGisApp, c: &Connection) -> Result<(), String> {
@@ -1278,6 +1356,91 @@ fn open_chosen(app: &mut RustGisApp) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_unsaved_service_probe_clears_credentials() {
+        let mut app = RustGisApp::with_sample();
+        for auth in ["basic", "header"] {
+            open_new(&mut app, "wmts").unwrap();
+            let st = &mut app.ui.connection;
+            st.address = String::new();
+            st.auth = auth.into();
+            st.user = "reader".into();
+            st.key_name = "X-Key".into();
+            st.password = "probe-failure-password".into();
+            st.api_key = "probe-failure-key".into();
+            st.allow_insecure = true;
+            start_test(&mut app);
+            assert!(app.dialogs.error.is_some());
+            assert!(app.ui.connection.test.is_none());
+            assert!(app.ui.connection.password.is_empty());
+            assert!(app.ui.connection.api_key.is_empty());
+            assert!(!app.ui.connection.allow_insecure);
+        }
+    }
+
+    #[test]
+    fn abandoned_probe_clears_only_its_own_status_in_a_replacement_dialog() {
+        // A captured translation differs from the current language without changing global state.
+        let status = "Prüfung läuft…";
+        for (dialog, info, expected_info, expected_error) in [
+            (Some("addDelimited"), Some(status), None, Some("replacement file read failed")),
+            (Some("addDelimited"), Some("replacement file loaded"), Some("replacement file loaded"), Some("replacement file read failed")),
+            (Some("addDelimited"), None, None, Some("replacement file read failed")),
+            (None, Some(status), None, None),
+            (None, Some("previous info"), None, None),
+        ] {
+            let mut app = RustGisApp::with_sample();
+            open_new(&mut app, "wmts").unwrap();
+            let context = TestContext { opened: app.session.opened, form: definition(&app.ui.connection), status, _login: None };
+            app.ui.connection.test = Some((json!({}), Slot::default(), context));
+            app.dialogs.open = dialog;
+            app.dialogs.info = info.map(str::to_owned);
+            app.dialogs.error = Some("replacement file read failed".into());
+            poll(&mut app, &egui::Context::default());
+            assert!(app.ui.connection.test.is_none());
+            assert_eq!(app.dialogs.open, dialog);
+            assert_eq!(app.dialogs.info.as_deref(), expected_info);
+            assert_eq!(app.dialogs.error.as_deref(), expected_error);
+        }
+    }
+
+    #[test]
+    fn unsaved_service_test_requires_valid_typed_credentials_not_a_saved_login() {
+        let mut app = RustGisApp::with_sample();
+        let address = "https://unsaved-test-validation.example/wmts";
+        let made = app.run("connection.new", json!({"kind":"wmts","address":address,"auth":"header","keyName":"X-Api-Key"})).unwrap();
+        let id = made["id"].as_str().unwrap();
+        app.run("connection.login", json!({"id":id,"apiKey":"saved-validation-key"})).unwrap();
+        let saved = app.session.connections.find(id).unwrap().clone();
+        for auth in ["basic", "header"] {
+            for secret in ["", "invalid\ncredential"] {
+                open_new(&mut app, "wmts").unwrap();
+                let st = &mut app.ui.connection;
+                st.address = address.into();
+                st.auth = auth.into();
+                st.user = "reader".into();
+                st.key_name = "X-Api-Key".into();
+                if auth == "basic" {
+                    st.password = secret.into();
+                } else {
+                    st.api_key = secret.into();
+                }
+                assert!(test_blocked(&app).is_none());
+                start_test(&mut app);
+                let reason = if secret.is_empty() { web::REQUIRED } else { web::BAD_SECRET };
+                assert_eq!(app.dialogs.error, Some(translated(reason)), "{auth}");
+                assert!(app.ui.connection.test.is_none());
+                assert!(app.ui.connection.id.is_none());
+                assert_eq!(app.session.connections.connections, vec![saved.clone()]);
+                assert_eq!(web::known_secret(&app.session, &saved).unwrap().expose(), "saved-validation-key");
+                for entry in app.session.log.entries().filter(|e| e.command == "connection.test") {
+                    assert!(entry.params.get("apiKey").is_none());
+                    assert!(entry.params.get("password").is_none());
+                }
+            }
+        }
+    }
 
     #[test]
     fn edited_service_test_is_blocked_without_sending_or_saving_the_key() {

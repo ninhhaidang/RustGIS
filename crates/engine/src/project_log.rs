@@ -67,20 +67,21 @@ pub(crate) fn is_logged(s: &Session, id: &str, params: &Value) -> bool {
     mutates || crate::cmd::items::names_place(params, crate::cmd::plugins::PLACE_KEYS, 0)
 }
 
-/// `params` as the log keeps them: a document given as text (a map, a project, a capabilities
-/// answer, GeoJSON) as its size only, since one may hold secrets no redaction finds in it (an S3
-/// source's token inside a map's JSON); the rest clipped (so a long script costs little), then
-/// without secrets (as History's Copy as code takes them out). A secret cut short is still taken
+/// `params` as the log keeps them: response bodies (`answer`) and documents given as text
+/// (maps, projects, capabilities, GeoJSON) as their sizes only, since they may hold secrets no
+/// field-name redaction finds; the rest clipped (so a long script costs little), then without
+/// secrets (as History's Copy as code takes them out). A secret cut short is still taken
 /// out: what is left of it follows its name. Within [`LOG_PARAMS_BYTES`] of JSON in three tries,
 /// each giving up more: texts at that bound and lists at their first [`LOG_LIST_ITEMS`]; then
 /// texts at 512 characters; then the first keys with their short values only.
 pub(crate) fn kept_params(params: &Value) -> Value {
-    let v = redacted(&clip(params, LOG_PARAMS_BYTES, LOG_LIST_ITEMS, 0));
+    let v = redacted(&clip(params, LOG_PARAMS_BYTES, LOG_LIST_ITEMS, 0, true));
     if serde_json::to_vec(&v).map_or(0, |b| b.len()) <= LOG_PARAMS_BYTES {
         return v;
     }
-    // Texts shorter; lists as they are (already cut, their "… N items in all" kept).
-    let clipped = clip(&v, 512, usize::MAX, 0);
+    // Texts shorter; lists as they are (already cut, their "… N items in all" kept); responses
+    // already given as their sizes.
+    let clipped = clip(&v, 512, usize::MAX, 0, false);
     if serde_json::to_vec(&clipped).map_or(0, |b| b.len()) <= LOG_PARAMS_BYTES {
         return clipped;
     }
@@ -457,10 +458,10 @@ fn is_base64(t: &str) -> bool {
 }
 
 /// `v` with each text cut to `chars` characters (a key to 200), a text that reads as a document
-/// (JSON or XML past [`DOCUMENT_CHARS`]) or as a file's contents in base64 given as its size, and
-/// each list cut to its first `items` (and how many there were); nesting past eight levels is
-/// left out.
-fn clip(v: &Value, chars: usize, items: usize, depth: usize) -> Value {
+/// (JSON or XML past [`DOCUMENT_CHARS`]) or as a file's contents in base64 given as its size, a
+/// response (`answer`) given as its size when `answers`, and each list cut to its first `items`
+/// (and how many there were); nesting past eight levels is left out.
+fn clip(v: &Value, chars: usize, items: usize, depth: usize, answers: bool) -> Value {
     match v {
         // A byte-order mark before it is still a document's start.
         Value::String(t)
@@ -471,7 +472,7 @@ fn clip(v: &Value, chars: usize, items: usize, depth: usize) -> Value {
         Value::String(t) if is_base64(t) => Value::String(format!("(file contents of {} characters, base64)", t.len())),
         Value::String(t) if t.chars().nth(chars).is_some() => Value::String(format!("{}…", t.chars().take(chars).collect::<String>())),
         Value::Array(a) if depth < 8 => {
-            let mut out: Vec<Value> = a.iter().take(items).map(|x| clip(x, chars, items, depth + 1)).collect();
+            let mut out: Vec<Value> = a.iter().take(items).map(|x| clip(x, chars, items, depth + 1, answers)).collect();
             if a.len() > items {
                 out.push(Value::String(format!("… {} items in all", a.len())));
             }
@@ -483,7 +484,18 @@ fn clip(v: &Value, chars: usize, items: usize, depth: usize) -> Value {
             // goes.
             let mut out = serde_json::Map::new();
             for (k, x) in o {
-                let value = || if k.chars().nth(200).is_some() { Value::String("…".into()) } else { clip(x, chars, items, depth + 1) };
+                let value = || {
+                    if k.chars().nth(200).is_some() {
+                        Value::String("…".into())
+                    } else if answers
+                        && k == "answer"
+                        && let Some(text) = x.as_str()
+                    {
+                        Value::String(format!("(a response of {} characters)", text.chars().count()))
+                    } else {
+                        clip(x, chars, items, depth + 1, answers)
+                    }
+                };
                 out.entry(k.chars().take(200).collect::<String>()).or_insert_with(value);
             }
             Value::Object(out)

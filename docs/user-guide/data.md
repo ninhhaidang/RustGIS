@@ -739,6 +739,16 @@ database tests run synchronously on desktop. The web app doesn't offer database 
 connections; saved database rows remain visible but cannot be opened or tested there. Earth
 Search and Planetary Computer remain available under **Library**.
 
+For a new web-service connection, enter its Basic password or header API key to test it before
+saving. The test uses only the entered login, not a saved service login or an S3 session login
+at the same address.
+For an `http://` address, tick the confirmation before sending the login unencrypted. After a test
+starts, RustGIS clears the password or key and the confirmation from the form; enter them again
+if you want to save a session login. The test does not save the connection or retain its login.
+Test status masks echoed login credentials, and the command log keeps response sizes rather than
+response bodies.
+For an existing service connection, save changes to its address or login definition before testing.
+
 **From Service…** (including **Catalogue search (CSW)**), **Database…**, **STAC Search…** and
 **S3…** can use saved connections directly. Service, database and S3 dialogs offer a **Saved
 connection** picker; STAC includes saved connections in its existing API/catalog list.

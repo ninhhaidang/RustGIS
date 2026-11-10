@@ -1613,6 +1613,18 @@ pub fn head(url: &str, done: HeadDone) {
     }
 }
 
+/// Resolves a GET's destination and S3 headers for both native and browser transports.
+/// A validated explicit service login takes precedence over an implicit endpoint signer.
+/// Its credential is still applied separately at send time, so revocation cannot fall back
+/// to anonymous access or ambient S3 credentials.
+pub fn prepare_get(url: &str) -> Result<crate::s3::Prepared, String> {
+    crate::logins::check(url).map_err(str::to_string)?;
+    if rustgis_data::login_address::is_wrapper(url) {
+        return Ok(crate::s3::Prepared { url: crate::logins::inner(url).to_string(), headers: Vec::new(), signed: false });
+    }
+    crate::s3::prepare(url)
+}
+
 /// Fetches an address's bytes, uncached (through the browser's fetcher, or the worker threads).
 /// A status in `omit` is an expected answer: its failure isn't recorded, only noted once per
 /// server (a tile past a map's edge).
@@ -2722,10 +2734,8 @@ mod native {
             let (url, mut range) = super::split_range(url);
             // The last bytes asked for, while the file's length is asked for instead (see below).
             let mut measuring: Option<u64> = None;
-            // An `s3://` address becomes its web address, and a request to an S3 connection's
-            // endpoint is signed.
-            crate::logins::check(url)?;
-            let prepared = crate::s3::prepare(crate::logins::inner(url))?;
+            // Explicit service logins outrank implicit S3 endpoint signing.
+            let prepared = super::prepare_get(url)?;
             Origin { url: prepared.url.clone(), reach: initial }.check(&prepared.url)?;
             let mut at = prepared.url.clone();
             let mut ceiling = initial;
@@ -2811,9 +2821,9 @@ mod native {
                     }
                 }
                 if status >= 400 {
-                    // A signed or logged-in request's refusal is told by its status alone: a server
-                    // may echo its credentials in the answer's headers or body.
-                    return Err(if detail && !prepared.signed && login.is_none() {
+                    // A signed request or any hop carrying a login makes the refusal status-only:
+                    // a server may echo credentials even after a cross-origin redirect or revocation.
+                    return Err(if detail && !prepared.signed && !carried_login {
                         refused(&mut resp)
                     } else {
                         Failure::without_answer(
@@ -2841,11 +2851,18 @@ mod native {
                 if crate::earthdata::is_data_host(&at) && crate::earthdata::is_login(&next) {
                     return Err(Failure::without_answer("", crate::earthdata::refused_message(url), Reason::Status(401)));
                 }
-                // Where a redirect leads is the server's choice, not the user's.
-                Origin { url: at.clone(), reach: ceiling }.check(&next)?;
+                // Where a redirect leads is the server's choice, not the user's. A server can echo
+                // a login in its chosen destination, even after revocation.
+                Origin { url: at.clone(), reach: ceiling }
+                    .check(&next)
+                    .map_err(|e| if carried_login { "redirect destination is not allowed".to_string() } else { e })?;
                 // Never from HTTPS down to plain HTTP, however either scheme is written.
                 if crate::address::is_https(&at) && !crate::address::is_https(&next) {
-                    return Err(rustgis_data::diagnostics::message_with_address(&next, "a redirect from https to http").into());
+                    return Err(if carried_login {
+                        "a redirect from https to http".into()
+                    } else {
+                        rustgis_data::diagnostics::message_with_address(&next, "a redirect from https to http").into()
+                    });
                 }
                 redirects += 1;
                 if redirects > 5 {
@@ -4110,6 +4127,102 @@ mod tests {
         (format!("http://{addr}"), received)
     }
 
+    #[test]
+    fn get_preparation_keeps_explicit_service_authority_over_ambient_s3() {
+        let _turn = crate::cache::turn();
+        use crate::{
+            logins::{self, Method},
+            s3,
+        };
+        let base = "https://get-preparation-login.example";
+        let name = "get-preparation-ambient-s3";
+        s3::connect(s3::Connection {
+            name: name.into(),
+            endpoint: Some(base.into()),
+            region: s3::DEFAULT_REGION.into(),
+            buckets: Vec::new(),
+            credentials: Some(s3::Credentials {
+                access_key_id: "PREPARATIONKEY".into(),
+                secret_access_key: "preparation-s3-secret".into(),
+                session_token: Some("preparation-s3-token".into()),
+            }),
+        })
+        .unwrap();
+        let plain = format!("{base}/service%2Fpath?query=a%20b");
+        assert!(prepare_get(&plain).unwrap().signed);
+        let binding =
+            logins::activate(base, "get-preparation/service", Method::Header("Authorization".into()), "Bearer service-secret", false)
+                .unwrap();
+        let bound = logins::bind(&binding, &plain).unwrap();
+        // This is the shared preparation used before browser RequestInit construction:
+        // no S3 canonicalization or signing headers survive the explicit binding.
+        let prepared = prepare_get(&bound).unwrap();
+        assert_eq!(prepared.url, plain);
+        assert!(!prepared.signed);
+        assert!(prepared.headers.is_empty());
+        let target = logins::inherit(&bound, &prepared.url);
+        let login = logins::apply(&target).unwrap().unwrap();
+        assert_eq!(login.url, plain);
+        assert_eq!(login.header, Some(("Authorization".into(), "Bearer service-secret".into())));
+        // Preparation itself carries no credential or authority: after revocation both
+        // fresh preparation and send-time application fail instead of using ambient S3.
+        assert!(logins::deactivate(&binding));
+        assert!(prepare_get(&bound).unwrap_err().contains("no longer active"));
+        assert!(logins::apply(&target).is_err());
+        assert!(prepare_get(&plain).unwrap().signed);
+        assert!(s3::disconnect(name));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn explicit_service_login_beats_ambient_s3_on_native_get_and_redirect() {
+        let _turn = crate::cache::turn();
+        use crate::{
+            logins::{self, Method},
+            s3,
+        };
+        let ok = b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\ntile".to_vec();
+        let redirect = b"HTTP/1.1 302 Found\r\nLocation: /next\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec();
+        let (base, asked) = serve_recorded(vec![ok.clone(), redirect.clone(), ok.clone(), redirect, ok]);
+        let name = "native-get-ambient-s3";
+        s3::connect(s3::Connection {
+            name: name.into(),
+            endpoint: Some(base.clone()),
+            region: s3::DEFAULT_REGION.into(),
+            buckets: Vec::new(),
+            credentials: Some(s3::Credentials {
+                access_key_id: "NATIVEGETKEY".into(),
+                secret_access_key: "native-get-s3-secret".into(),
+                session_token: Some("native-get-s3-token".into()),
+            }),
+        })
+        .unwrap();
+        let agent = native::agent();
+        let plain = format!("{base}/start");
+        assert_eq!(native::get(&agent, &plain, &[]).unwrap(), b"tile");
+        let received = asked.recv_timeout(Duration::from_secs(5)).unwrap().to_ascii_lowercase();
+        assert!(received.contains("authorization: aws4-hmac-sha256 credential=nativegetkey/"));
+        assert!(received.contains("x-amz-security-token: native-get-s3-token\r\n"));
+        for (header, value) in
+            [("Authorization", logins::basic("service-user", "service-password")), ("X-Service-Key", "explicit-service-key".to_string())]
+        {
+            let binding = logins::activate(&base, "native-get/service", Method::Header(header.into()), &value, true).unwrap();
+            let bound = logins::bind(&binding, &plain).unwrap();
+            assert_eq!(native::get(&agent, &bound, &[]).unwrap(), b"tile");
+            for path in ["/start", "/next"] {
+                let received = asked.recv_timeout(Duration::from_secs(5)).unwrap().to_ascii_lowercase();
+                assert!(received.starts_with(&format!("get {path} http/1.1\r\n")), "{received}");
+                assert!(received.contains(&format!("{}: {}\r\n", header.to_ascii_lowercase(), value.to_ascii_lowercase())), "{received}");
+                assert!(!received.contains("aws4-hmac-sha256") && !received.contains("x-amz-"), "{received}");
+                assert!(!received.contains("nativegetkey") && !received.contains("native-get-s3-token"), "{received}");
+            }
+            assert!(logins::deactivate(&binding));
+            let failure = native::get(&agent, &bound, &[]).unwrap_err();
+            assert!(failure.contains("no longer active"), "{failure}");
+        }
+        assert!(s3::disconnect(name));
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn logins_headers_follow_same_origin_redirects() {
@@ -4262,6 +4375,165 @@ mod tests {
         assert!(text.contains("403"));
         assert!(!text.contains(secret) && !text.contains("x-request-id") && !text.contains("foreign-head-secret"));
         assert!(logins::deactivate(&foreign));
+    }
+
+    /// GET keeps refusals private after an authenticated redirect, even after login revocation.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn delayed_get_refusal_after_cross_origin_redirect_is_status_only() {
+        if isolate_cache_fixture("cache::tests::delayed_get_refusal_after_cross_origin_redirect_is_status_only") {
+            return;
+        }
+        let _turn = crate::cache::turn();
+        use crate::failure::Reason;
+        use crate::logins::{self, Method};
+        use rustgis_data::diagnostics::{Capture, Filter, History};
+        use std::io::Write;
+        use std::sync::mpsc::channel;
+        use std::time::Duration;
+
+        for revoke in [false, true] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let other = format!("http://{}", listener.local_addr().unwrap());
+            let secret = "redirect-get-sentinel-8430";
+            let body = format!("private refusal echoed {secret}");
+            let response = format!(
+                "HTTP/1.1 403 Forbidden\r\nx-request-id: {secret}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let (received_tx, received_rx) = channel();
+            let (release_tx, release_rx) = channel();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let request = read_request(&mut stream);
+                assert!(request.starts_with("GET /refused HTTP/1.1\r\n"), "{request}");
+                assert!(!request.to_ascii_lowercase().contains("x-key:") && !request.contains(secret), "{request}");
+                received_tx.send(()).unwrap();
+                release_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+                stream.write_all(response.as_bytes()).unwrap();
+            });
+            let (base, asked) = serve_recorded(vec![
+                format!("HTTP/1.1 302 Found\r\nLocation: {other}/refused\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").into_bytes(),
+            ]);
+            let binding = logins::activate(&base, "redirect-get", Method::Header("X-Key".into()), secret, true).unwrap();
+            let plain = format!("{base}/start");
+            let url = logins::bind(&binding, &plain).unwrap();
+            let history = History::default();
+            let _scope = history.enter();
+            let capture = Capture::current();
+            let worker = std::thread::spawn(move || {
+                let _scope = capture.enter();
+                native::get_detailed(&native::agent(), &url)
+            });
+            let request = asked.recv_timeout(Duration::from_secs(10)).unwrap();
+            assert!(request.to_ascii_lowercase().contains(&format!("x-key: {secret}\r\n")), "{request}");
+            received_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+            if revoke {
+                assert!(logins::deactivate(&binding));
+            }
+            release_tx.send(()).unwrap();
+            let failure = worker.join().unwrap().unwrap_err();
+            server.join().unwrap();
+            assert!(failure.answer.is_none(), "{failure:?}");
+            if revoke {
+                assert!(failure.message.contains("no longer active"), "{failure:?}");
+            } else {
+                assert_eq!(failure.reason, Reason::Status(403));
+                assert_eq!(failure.message, "http status: 403");
+                assert!(logins::deactivate(&binding));
+            }
+            let records = network_records(&history, &plain);
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0].network.as_ref().unwrap().status, Some(403));
+            assert!(records[0].details.is_empty(), "{records:?}");
+            let text = format!("{failure:?}\n{records:?}\n{}", history.report(Filter::All));
+            for private in [secret, "x-request-id", "private refusal echoed", binding.as_str()] {
+                assert!(!text.contains(private), "{private} reached the failure or diagnostics: {text}");
+            }
+        }
+
+        // A genuinely anonymous redirect still retains useful refusal headers and body.
+        let body = "useful anonymous refusal";
+        let (other, asked) = serve_recorded(vec![
+            format!(
+                "HTTP/1.1 403 Forbidden\r\nx-request-id: anonymous-trace-8430\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .into_bytes(),
+        ]);
+        let base =
+            serve(vec![format!("HTTP/1.1 302 Found\r\nLocation: {other}/refused\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")]);
+        let url = format!("{base}/anonymous");
+        let history = History::default();
+        let _scope = history.enter();
+        let failure = native::get_detailed(&native::agent(), &url).unwrap_err();
+        let request = asked.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(request.starts_with("GET /refused HTTP/1.1\r\n"), "{request}");
+        assert!(!request.to_ascii_lowercase().contains("x-key:"), "{request}");
+        assert_eq!(failure.reason, Reason::Status(403));
+        assert_eq!(failure.excerpt(), Some(body));
+        assert!(
+            failure.answer.as_ref().unwrap().headers.iter().any(|(name, value)| name == "x-request-id" && value == "anonymous-trace-8430")
+        );
+        let records = network_records(&history, &url);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].network.as_ref().unwrap().status, Some(403));
+        assert!(records[0].details.contains("x-request-id: anonymous-trace-8430"), "{records:?}");
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn delayed_rejected_redirect_after_revocation_does_not_record_login() {
+        if isolate_cache_fixture("cache::tests::delayed_rejected_redirect_after_revocation_does_not_record_login") {
+            return;
+        }
+        let _turn = crate::cache::turn();
+        use crate::logins::{self, Method};
+        use rustgis_data::diagnostics::{Capture, Filter, History};
+        use std::io::Write;
+        use std::sync::mpsc::channel;
+        use std::time::Duration;
+
+        let secret = "redirect-rejection-sentinel";
+        let destination = format!("ftp://example.com/{secret}");
+        let response = format!("HTTP/1.1 302 Found\r\nLocation: {destination}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let (received_tx, received_rx) = channel();
+        let (release_tx, release_rx) = channel();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request = read_request(&mut stream);
+            assert!(request.to_ascii_lowercase().contains(&format!("x-key: {secret}\r\n")), "{request}");
+            received_tx.send(()).unwrap();
+            release_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+        let binding = logins::activate(&base, "rejected-redirect", Method::Header("X-Key".into()), secret, true).unwrap();
+        let plain = format!("{base}/start");
+        let url = logins::bind(&binding, &plain).unwrap();
+        let history = History::default();
+        let _scope = history.enter();
+        let capture = Capture::current();
+        let worker = std::thread::spawn(move || {
+            let _scope = capture.enter();
+            native::get_detailed(&native::agent(), &url)
+        });
+        received_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(logins::deactivate(&binding));
+        release_tx.send(()).unwrap();
+        let failure = worker.join().unwrap().unwrap_err();
+        server.join().unwrap();
+        let records = network_records(&history, &plain);
+        assert_eq!(records.len(), 1);
+        let text = format!("{failure:?}\n{records:?}\n{}", history.report(Filter::All));
+        assert!(!text.contains(secret), "credential reached failure or diagnostics: {text}");
+
+        let (base, _) = serve_recorded(vec![
+            format!("HTTP/1.1 302 Found\r\nLocation: {destination}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").into_bytes(),
+        ]);
+        let failure = native::get_detailed(&native::agent(), &format!("{base}/anonymous")).unwrap_err();
+        assert!(failure.message.contains(&destination), "{failure:?}");
     }
 
     #[cfg(not(target_arch = "wasm32"))]

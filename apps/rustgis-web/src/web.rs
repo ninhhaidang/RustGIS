@@ -626,11 +626,9 @@ async fn fetch_reached(
                 let max = limit.map(|n| n as u64).unwrap_or(64 << 20);
                 let (url, tail) = cache::split_tail(url);
                 let (url, range) = cache::split_range(url);
-                // An `s3://` address becomes its web address, and a request to an S3 connection's endpoint
-                // is signed (the bucket's CORS rules must allow the Authorization and x-amz-* headers).
-                logins::check(url).map_err(str::to_string)?;
+                // Share native GET routing: explicit service logins outrank implicit S3 endpoint signing.
                 let bound = url;
-                let prepared = rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::s3::prepare(logins::inner(url))?;
+                let prepared = cache::prepare_get(url)?;
                 let url = prepared.url.as_str();
                 let destination = check_destination(url, ceiling)?;
                 // An ArcGIS sign-in's token, for the portal and the servers it covers, renewed first when it

@@ -32532,6 +32532,13 @@ fn the_session_log_keeps_parameters_bounded_and_without_secrets() {
         let kept = crate::project_log::kept_params(&json!({"script": line}));
         assert!(!kept.to_string().contains("S3CRET") && kept.to_string().contains("s3.connect"), "{kept}");
     }
+    // A response is logged as its own size, also when the rest makes the entry large.
+    let answer = "a".repeat(41);
+    let notes: Vec<Value> = (0..50).map(|_| json!("n".repeat(200))).collect();
+    let kept = crate::project_log::kept_params(&json!({"answer": answer, "notes": notes}));
+    assert_eq!(kept["answer"], json!("(a response of 41 characters)"), "{kept}");
+    let kept = crate::project_log::kept_params(&json!({"answer": "short"}));
+    assert_eq!(kept["answer"], json!("(a response of 5 characters)"), "{kept}");
 }
 
 /// Plugins can neither empty the session log nor turn it off, nor push the user's entries out of

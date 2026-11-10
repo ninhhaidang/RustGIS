@@ -95,6 +95,58 @@ pub fn check_login_secret(c: &Connection, secret: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// A form test owns its login independently of every saved connection and session.
+/// Keep this guard alive until the fetch (including its asynchronous callback) has finished.
+/// It is deliberately neither cloneable nor printable, and exposes no credential or binding.
+#[must_use = "keep the temporary login alive until the service test fetch has finished"]
+pub struct TemporaryProbe {
+    binding: String,
+}
+
+impl Drop for TemporaryProbe {
+    fn drop(&mut self) {
+        // The networking registry also clears authenticated caches on revocation. Cache reads
+        // and responses arriving after this drop recheck the binding and cannot reuse it.
+        logins::deactivate(&self.binding);
+    }
+}
+
+/// Binds an anonymous form-test probe to the login just typed in that form. This never reads
+/// saved logins, selects a connection, or retains the typed credential in a session.
+///
+/// `url` is the address returned by the existing anonymous `connection.test` probe. Only a
+/// plain, credential-free address at the cleaned definition's exact origin may carry it.
+pub fn temporary_probe(c: &Connection, secret: &str, insecure: bool, url: &str) -> Result<(String, TemporaryProbe), String> {
+    const BAD_DEFINITION: &str = "The service test requires a valid web-service connection and login.";
+    const BAD_ADDRESS: &str = "The service test requires a credential-free HTTP or HTTPS address at the connection's origin.";
+    if !c.id.is_empty() || !is_service(c) {
+        return Err(BAD_DEFINITION.into());
+    }
+    let (c, stripped) = crate::connections::clean(c.clone()).map_err(|_| BAD_DEFINITION.to_string())?;
+    if stripped || crate::sources::redact(url) != url {
+        return Err(BAD_ADDRESS.into());
+    }
+    let origin = login_origin(&c).ok_or(BAD_ADDRESS)?;
+    if rustgis_data::login_address::is_wrapper(url) || logins::origin(url).as_deref() != Some(origin.as_str()) {
+        return Err(BAD_ADDRESS.into());
+    }
+    if c.auth.is_empty() {
+        return Err(BAD_DEFINITION.into());
+    }
+    if secret.is_empty() {
+        return Err(REQUIRED.into());
+    }
+    check_login_secret(&c, secret)?;
+    if origin.starts_with("http://") && !insecure {
+        return Err(INSECURE.into());
+    }
+    let (method, value) = method(&c, secret).ok_or(BAD_DEFINITION)?;
+    let guard = TemporaryProbe { binding: logins::activate(&origin, "temporary-probe", method, &value, insecure).map_err(str::to_string)? };
+    // Construct the guard before binding: even a too-long URL cannot leak a live login.
+    let bound = logins::bind(&guard.binding, url).map_err(|_| BAD_ADDRESS.to_string())?;
+    Ok((bound, guard))
+}
+
 /// An active login belongs to one connection in one session; the token is not a secret, but
 /// saved projects must never treat it as authority to use another session's login.
 struct ActiveLogin {
