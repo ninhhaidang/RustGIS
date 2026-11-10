@@ -920,6 +920,13 @@ fn spectral_points(s: &mut Session, r: &Raster, points: &Value) -> Result<Vec<Va
 
 /// Every band's value at a point, at several points (`points`, a profile each), or their mean
 /// in a polygon (`zone`), with the bands' names and wavelengths.
+///
+/// It runs where it is called, on the session's thread (#1562). The point forms read at most
+/// [`MAX_SPECTRAL_POINTS`] pixels, and the Image Analysis pane asks only for points. A zone reads
+/// the cells in the zone's window, row by row, and looks at Cancel between rows, but nothing in
+/// the app runs this command under a control yet: a script, model or the assistant asking for a
+/// large zone holds the window until the means are read. Moving it to a background read is left
+/// for when that is asked for.
 fn spectral(s: &mut Session, p: &Value) -> CmdResult {
     let r = raster(s, p)?;
     // A zone is read before points, and points before one point: what isn't read is said, once
@@ -970,7 +977,7 @@ fn spectral_read(s: &mut Session, p: &Value, r: &Raster, zone: Option<&str>) -> 
             return Err("the zone has no polygon".into());
         };
         let rings = polys.first().ok_or("the zone has no polygon")?;
-        let (means, n) = rasterops::zonal_means(r, &all, rings).ok_or("no pixels fall in the zone")?;
+        let (means, n) = rasterops::zonal_means(r, &all, rings)?.ok_or("no pixels fall in the zone")?;
         return answer(json!({"bands": names, "values": means, "pixels": n}));
     }
     let c = Coord::new(f(p, "lon").ok_or("give lon and lat, points or a zone")?, f(p, "lat").ok_or("lat is required")?);

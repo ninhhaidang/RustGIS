@@ -38273,3 +38273,23 @@ fn long_commands_stop_when_cancelled_while_they_run() {
     }
     assert!(kept_going.is_empty(), "these ran on after Cancel:\n{}", kept_going.join("\n"));
 }
+
+/// A GeoLibre step of a model is worked out on the copy and taken by the run here, as a built-in
+/// tool's is (#1562): its program works in a scratch folder of its own, so running it ahead writes
+/// nothing twice. Skipped without a GeoLibre runner (set RUSTGIS_GEOLIBRE).
+#[cfg(all(feature = "geolibre", not(target_arch = "wasm32")))]
+#[test]
+fn a_models_geolibre_step_runs_ahead_and_is_taken() {
+    use crate::cmd::reads::{read_ahead, read_land};
+    use rustgis_analysis::control::Control;
+    let mut s = with_raster();
+    if s.run("gp.geolibre", &Value::Null).unwrap()["available"] != true {
+        eprintln!("skipped: no GeoLibre runner (set RUSTGIS_GEOLIBRE)");
+        return;
+    }
+    s.run("model.new", &json!({"name": "Relief", "steps": [{"tool": "geolibre:slope", "params": {"input": "scene"}}]})).unwrap();
+    let read = read_ahead(&mut s, "model.run", &json!({"name": "Relief"})).unwrap().run(&Control::stoppable()).unwrap();
+    read_land(&mut s, read).unwrap();
+    assert_eq!(s.tools_taken, 1, "the GeoLibre step was taken, not run again here");
+    assert!(s.map().layer_by_name("Slope").is_some());
+}

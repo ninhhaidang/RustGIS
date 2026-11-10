@@ -750,9 +750,17 @@ pub fn classify_min_distance(r: &Raster, bands: &[usize], means: &[(f32, Vec<f64
     )
 }
 
-/// The mean of each band over the pixels whose centres fall in a polygon (lon/lat rings).
-pub fn zonal_means(r: &Raster, bands: &[usize], rings: &[Vec<Coord>]) -> Option<(Vec<f64>, usize)> {
-    means_under(r, bands, rings, |_| Ok(())).unwrap_or(None)
+/// The mean of each band over the pixels whose centres fall in a polygon (lon/lat rings). Its rows
+/// count toward the run's progress, and a run cancelled under a control stops between rows
+/// (#1562); without one it runs to the end. The rows are summed in order on one thread, so the
+/// means are the same on every machine.
+pub fn zonal_means(r: &Raster, bands: &[usize], rings: &[Vec<Coord>]) -> Result<Option<(Vec<f64>, usize)>, crate::control::Cancelled> {
+    crate::control::begin(r.height as usize);
+    means_under(r, bands, rings, |rows| {
+        crate::control::check()?;
+        crate::control::advance(rows);
+        Ok(())
+    })
 }
 
 /// [`zonal_means`], `each_rows(n)` asked as the raster's rows go by, `n` at a time (each row
@@ -1656,7 +1664,7 @@ mod tests {
         ];
         for r in &rasters {
             for (z, rings) in zones.iter().enumerate() {
-                let got = zonal_means(r, &[0, 1], rings).map(|(m, n)| (m.iter().map(|v| v.to_bits()).collect::<Vec<_>>(), n));
+                let got = zonal_means(r, &[0, 1], rings).unwrap().map(|(m, n)| (m.iter().map(|v| v.to_bits()).collect::<Vec<_>>(), n));
                 let want = every_cell(r, rings);
                 assert!(want.as_ref().is_some_and(|(_, n)| *n > 100), "{} zone {z}: {want:?}", r.name);
                 assert_eq!(got, want, "{} zone {z}", r.name);
@@ -1670,12 +1678,16 @@ mod tests {
         let gt = GeoTransform { origin_x: top.x - 20_000.0, origin_y: top.y + 15_000.0, pixel_width: 100.0, pixel_height: -100.0 };
         let r = Raster::new("polar", w, h, vec![band(0), band(1)], gt, polar, None, ColorHint::Gray, "Float32").unwrap();
         let wide = vec![ring(&[(-61.0, -70.0), (59.0, -70.0), (59.0, -60.0), (-61.0, -60.0)])];
-        let got = zonal_means(&r, &[0, 1], &wide).map(|(m, n)| (m.iter().map(|v| v.to_bits()).collect::<Vec<_>>(), n));
+        let got = zonal_means(&r, &[0, 1], &wide).unwrap().map(|(m, n)| (m.iter().map(|v| v.to_bits()).collect::<Vec<_>>(), n));
         let want = every_cell(&r, &wide);
         assert!(want.as_ref().is_some_and(|(_, n)| *n > 1000 && *n < (w * h) as usize), "{want:?}");
         assert_eq!(got, want, "polar");
         // A zone off the raster has none.
-        assert!(zonal_means(&rasters[0], &[0, 1], &[ring(&[(20.0, 10.0), (21.0, 10.0), (21.0, 11.0)])]).is_none());
+        assert!(zonal_means(&rasters[0], &[0, 1], &[ring(&[(20.0, 10.0), (21.0, 10.0), (21.0, 11.0)])]).unwrap().is_none());
+        // Under a control cancelled once it starts, a zone stops between rows (#1562).
+        let control = crate::control::Control::cancelled_once_started();
+        let res = crate::run_under("Zone", &control, || zonal_means(&rasters[0], &[0, 1], &zones[0]).map_err(String::from));
+        assert!(res.is_err() && control.looked() > 0, "{res:?}, looked {}", control.looked());
     }
 
     /// The single passes the Analysis pane runs on a thread stop when their run is cancelled
@@ -1716,7 +1728,7 @@ mod tests {
         // The class means equal the zonal means they are made of.
         let _none = crate::control::install(None);
         let c = class_means(&r, &[0, 1], &polygons[..1]).unwrap();
-        assert_eq!(Some((c[0].1.clone(), c[0].2)), zonal_means(&r, &[0, 1], &polygons[0].1));
+        assert_eq!(Some((c[0].1.clone(), c[0].2)), zonal_means(&r, &[0, 1], &polygons[0].1).unwrap());
     }
 
     /// Band math and per-cell rows made on several threads give the same cells, bit for bit, as

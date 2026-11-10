@@ -53,8 +53,15 @@ fn command(exe: &Path) -> Command {
 /// Runs `c` to completion, or kills it after `limit`. For the quick queries (version,
 /// manifests): a program that only happens to be called `geolibre` mustn't hang the app. Tool
 /// runs have no limit, since a large raster can legitimately take a long time.
-fn output_within(mut c: Command, limit: Duration) -> Option<Output> {
-    let mut child = c.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().ok()?;
+fn output_within(c: Command, limit: Duration) -> Option<Output> {
+    let start = Instant::now();
+    output_until(c, &|| (start.elapsed() >= limit).then(|| "timed out".to_string())).ok()
+}
+
+/// Runs `c` to completion, unless `stop` gives a reason first (looked at every 20 ms): then the
+/// process is killed and the reason is the error. Both pipes are drained while it runs.
+fn output_until(mut c: Command, stop: &dyn Fn() -> Option<String>) -> Result<Output, String> {
+    let mut child = c.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(|e| e.to_string())?;
     // Drain both pipes on threads while the process runs: a full pipe (large manifests, or
     // many warnings) would otherwise block it until the time limit.
     fn drain(mut pipe: impl std::io::Read + Send + 'static) -> std::thread::JoinHandle<Vec<u8>> {
@@ -68,24 +75,25 @@ fn output_within(mut c: Command, limit: Duration) -> Option<Output> {
         // Not expected with piped output, but never leave the process running.
         let _ = child.kill();
         let _ = child.wait();
-        return None;
+        return Err("the program's output couldn't be read".into());
     };
     let (out_reader, err_reader) = (drain(out), drain(err));
-    let start = Instant::now();
     let status = loop {
-        match child.try_wait() {
+        let why = match child.try_wait() {
             Ok(Some(status)) => break status,
-            Ok(None) if start.elapsed() < limit => std::thread::sleep(Duration::from_millis(20)),
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
+            Ok(None) => stop(),
+            Err(e) => Some(e.to_string()),
+        };
+        if let Some(why) = why {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(why);
         }
+        std::thread::sleep(Duration::from_millis(20));
     };
-    let stdout = out_reader.join().ok()?;
+    let stdout = out_reader.join().map_err(|_| "the program's output couldn't be read".to_string())?;
     let stderr = err_reader.join().unwrap_or_default();
-    Some(Output { status, stdout, stderr })
+    Ok(Output { status, stdout, stderr })
 }
 
 /// The runner's version, if `exe` is a GeoLibre runner (not some other program called geolibre).
@@ -220,10 +228,11 @@ pub(crate) fn run_pinned(
     pin.check()?;
     let exe = &pin.exe;
     let mut c = command(exe);
-    c.current_dir(dir).stdin(Stdio::null()).arg(id).args(argv);
+    c.current_dir(dir).arg(id).args(argv);
     live()?;
     pin.check()?;
-    let out = c.output().map_err(|e| format!("{}: {e}", exe.display()))?;
+    let stop = || stop_reason(live);
+    let out = output_until(c, &stop).map_err(|e| if e == "cancelled" || e == CLOSED { e } else { format!("{}: {e}", exe.display()) })?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
         let err = err.trim();
@@ -231,4 +240,69 @@ pub(crate) fn run_pinned(
         return Err(err.lines().take(20).collect::<Vec<_>>().join("\n"));
     }
     Ok(String::from_utf8_lossy(&out.stdout).lines().map(str::to_string).collect())
+}
+
+/// Why a program started for a project is stopped once another is open.
+const CLOSED: &str = "its project was closed while the tool ran";
+
+/// Why a running program is stopped rather than waited for (#1562): its run was cancelled (the
+/// Cancel of a model or script run in the background), the project it was started for is no
+/// longer the one open (the predicate a background read installs), or `live` fails.
+fn stop_reason(live: &dyn Fn() -> Result<(), String>) -> Option<String> {
+    if rustgis_analysis::control::current().is_some_and(|c| c.is_cancelled()) {
+        return Some("cancelled".to_string());
+    }
+    if rustgis_data::source::remote::check_still(&rustgis_data::source::remote::current_still()).is_err() {
+        return Some(CLOSED.to_string());
+    }
+    live().err()
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    /// A program asked to stop is killed at once, not waited for (#1562): a GeoLibre step of a
+    /// model run in the background stops with its Cancel.
+    #[test]
+    fn a_program_asked_to_stop_is_killed() {
+        let mut c = Command::new("sleep");
+        c.arg("30");
+        let start = Instant::now();
+        let e = output_until(c, &|| Some("cancelled".to_string())).unwrap_err();
+        assert_eq!(e, "cancelled");
+        assert!(start.elapsed() < Duration::from_secs(5), "{:?}", start.elapsed());
+        // One that ends first gives its output.
+        let mut c = Command::new("echo");
+        c.arg("done");
+        let out = output_until(c, &|| None).unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "done");
+    }
+
+    /// A program is stopped once its run is cancelled or its project closed, without a GeoLibre
+    /// runner: the path from the run's control and the installed predicate to the kill.
+    #[test]
+    fn a_cancelled_run_or_a_closed_project_stops_the_program() {
+        use rustgis_analysis::control::Control;
+        use rustgis_data::source::remote::with_still;
+        let fine = || Ok(());
+        assert_eq!(stop_reason(&fine), None);
+        assert_eq!(stop_reason(&|| Err("gone".to_string())), Some("gone".to_string()));
+        let control = Control::new();
+        let run = rustgis_analysis::run_under("Tool", &control, || {
+            assert_eq!(stop_reason(&fine), None);
+            control.cancel();
+            let started = std::time::Instant::now();
+            let mut c = Command::new("sleep");
+            c.arg("30");
+            let res = output_until(c, &|| stop_reason(&fine));
+            assert!(started.elapsed() < Duration::from_secs(10), "the program was waited for");
+            assert_eq!(res.err().as_deref(), Some("cancelled"));
+            Ok(())
+        });
+        assert!(run.is_err(), "the run ends cancelled");
+        let closed = with_still(std::sync::Arc::new(|| false), || stop_reason(&fine));
+        assert_eq!(closed.as_deref(), Some(CLOSED), "a program started for a project no longer open is stopped, and says so");
+        assert_eq!(with_still(std::sync::Arc::new(|| true), || stop_reason(&fine)), None);
+    }
 }

@@ -623,8 +623,13 @@ pub(crate) enum Ahead {
 
 #[cfg(not(target_arch = "wasm32"))]
 /// What a model's or script's run on a copy of the session stops at, as its run here does them: a
-/// tool that writes files (which would be written twice), plugin and GeoLibre tools, which run as
-/// they always have, and a script's line that may reach outside the session.
+/// tool that writes files (which would be written twice), a plugin tool (a plugin's program may do
+/// more than hand back its layers, so it runs once, where the user ran it), and a script's line that may reach outside the session. A
+/// GeoLibre tool runs ahead like a built-in one (#1562): the outputs it declares are written to a
+/// scratch folder of its own and handed back, so the run here takes the result instead of running
+/// it again, and Cancel stops its program. (The runner is trusted like any program the user
+/// installs: a tool asked to write elsewhere through its parameters would, and would again if its
+/// result isn't taken.)
 pub(crate) const NOT_AHEAD: &str = "runs where the model or script runs";
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -2224,7 +2229,7 @@ pub(crate) fn execute(
         Some(ran) => ran,
         None => {
             #[cfg(not(target_arch = "wasm32"))]
-            if recording && (pin.resolved().source().is_some() || writes_files(spec)) {
+            if recording && (pin.plugin().is_some() || writes_files(spec)) {
                 return Err(NOT_AHEAD.into());
             }
             #[cfg(not(target_arch = "wasm32"))]

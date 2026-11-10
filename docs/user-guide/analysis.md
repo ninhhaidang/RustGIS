@@ -1192,7 +1192,7 @@ same trust as installing that package. Tools that read files by path (LiDAR file
 since a web page has no file system.
 
 In the desktop app the Tools pane runs a GeoLibre tool in the background like any other; its
-**Cancel** takes effect when the GeoLibre program ends, and the result is then dropped. On the
+**Cancel** stops the GeoLibre program at once, and nothing is added. On the
 command line RustGIS waits while a tool runs. In the web app the run
 is started in the background and the result is added when it ends, but the tool itself runs
 in the page, so the page is busy while it computes.
@@ -1288,7 +1288,7 @@ renames and definition queries, the environment and the projection between them,
 in the background first, so the map and the rest of the window stay in use: the status bar shows
 **Run Script** and **Cancel**, and the results say **Running…** until the run is added. From the
 first line of any other kind (an edit, Add Data, a save, an export, a style or a zoom, a plugin
-or GeoLibre tool, a tool that writes a file) the rest runs as a script always has, holding the
+tool, a tool that writes a file) the rest runs as a script always has, holding the
 window until it finishes. A tool whose inputs change meanwhile runs again as the
 results are added, as in a model's run. It colours the commands as you type, in both
 themes: `#` comments in green italics, the command id, and the JSON's strings, numbers and
@@ -1365,8 +1365,11 @@ their name.
   **Running…** until the results are added, as one step to undo. What a tool reads that changes
   meanwhile (an edit, a selection, a layer added or reordered, the environment, the projection)
   has that tool and those after it run again as the results are added, and so does a tool that
-  writes a file, a plugin tool or a GeoLibre tool, with those after it. Those run as a model
-  always has, holding the window until they finish, with the work limits of a run that can't
+  writes a file or a plugin tool, with those after it. GeoLibre tools are worked out in the
+  background like the built-in ones: their outputs go to a folder of their own until they are
+  added. A GeoLibre option that names a file for the program to write isn't an output, so a
+  tool given one writes it in the background, and again if the tool runs again. Those that run again run as a model always has, holding the
+  window until they finish, with the work limits of a run that can't
   be cancelled. The tools worked out in the background take no work limit, as a run that can
   be stopped takes none. Tools that run holding the window or from the command line keep it, so
   the same model can finish in the background and stop at the limit there. A file a tool reads
