@@ -17,7 +17,8 @@
 //! `{"scroll": [x, y, dy]}` turns the mouse wheel by `dy` points over (x, y) (negative zooms
 //! out) and runs one frame (shots then catch the map mid-zoom),
 //! `{"plugin": path}` loads a `.rgplugin` or a plugin folder for the run (as `rustgis-cli run
-//! --plugin` does), and `{"testPlugin": "panel"}` the plugin tests use, with a panel,
+//! --plugin` does), and `{"testPlugin": "panel"}` the plugin tests use, with a panel
+//! (`"pick"`: one of picks on the map),
 //! `{"titlebar": {"left_inset": 80, "height": 34}}`
 //! draws the header as a macOS unified title bar (`null` turns it off), and
 //! `{"width": w, "height": h}` on the first line sets the size (default 1480×900),
@@ -261,6 +262,7 @@ fn main() {
         } else if let Some(which) = l.get("testPlugin").and_then(|v| v.as_str()) {
             let bytes = match which {
                 "panel" => rustgis_plugins::testing::panel_package("test-panel"),
+                "pick" => rustgis_plugins::testing::pick_package("test-pick"),
                 _ => rustgis_plugins::testing::package("test-plugin", &[]),
             };
             if let Err(e) = rustgis_plugins::Package::from_zip(&bytes).and_then(|pkg| rustgis_plugins::load(pkg, "test")) {

@@ -676,7 +676,13 @@ fn plugin_panels_are_checked() {
             "1 to 32 items",
         ),
         (json!({"title": "P", "state": "nope", "items": [{"kind": "button", "command": "h"}]}), "state command"),
-        (item(json!({"kind": "dial", "id": "d"})), "isn't text, checkbox"),
+        (item(json!({"kind": "dial", "id": "d"})), "isn't text, checkbox, slider, button, tree, choice, date, range or pick"),
+        (item(json!({"kind": "pick", "id": "p"})), "needs a label or a command"),
+        (item(json!({"kind": "pick", "label": "P"})), "invalid or repeated"),
+        (item(json!({"kind": "pick", "id": "p", "command": "zz"})), "isn't one of the plugin's commands"),
+        (item(json!({"kind": "pick", "id": "p", "command": "h", "shape": "polygon"})), "isn't point or box"),
+        (item(json!({"kind": "pick", "id": "p", "command": "h", "default": {"lon": 1, "lat": 2}})), "only checkboxes, sliders"),
+        (item(json!({"kind": "button", "command": "h", "shape": "box"})), "shape is for picks"),
         (item(json!({"kind": "text"})), "invalid or repeated"),
         (item(json!({"kind": "text", "id": "Bad Id"})), "invalid or repeated"),
         (json!({"title": "P", "items": [{"kind": "text", "id": "t"}, {"kind": "text", "id": "t"}]}), "invalid or repeated"),
@@ -857,6 +863,91 @@ fn hostile_panel_states_are_tamed() {
     assert_eq!(st.items["local"].label.as_deref(), Some("Mine"));
     st.apply(&decl, &json!({"items": {"local": {"label": null}}}));
     assert_eq!(st.items["local"].label, None);
+}
+
+/// A pick's value is a place: a point's degrees, a box's, with the map's coordinates the host
+/// worked out; anything else is ignored, and a plugin can only clear it, never pick one.
+#[test]
+fn panel_picks_take_a_place_on_the_map() {
+    use crate::PanelState;
+    let m = Manifest::parse(&testing::pick_manifest("pick-panel")).unwrap();
+    let decl = m.panel.unwrap();
+    let (seed, area, spot) = (decl.item("seed").unwrap(), decl.item("area").unwrap(), decl.item("spot").unwrap());
+    assert!(!seed.picks_box() && area.picks_box() && !spot.picks_box(), "a point unless it says box");
+    assert!(seed.has_value() && spot.command.is_empty(), "a pick needs no command");
+    let mut st = PanelState::new(&decl);
+    assert_eq!((&st.values["seed"], &st.values["area"], &st.values["spot"]), (&Value::Null, &Value::Null, &Value::Null));
+    // A point: its degrees, and what the host adds; nothing else.
+    let point = json!({"lon": -42.8, "lat": -5.09, "x": -4764474.2, "y": -567363.0, "crs": "EPSG:3857", "junk": 1});
+    let given = json!({"seed": point});
+    let set = st.set_values(&decl, &given);
+    assert_eq!(set, ["seed"]);
+    assert_eq!(st.values["seed"], json!({"lon": -42.8, "lat": -5.09, "x": -4764474.2, "y": -567363.0, "crs": "EPSG:3857"}));
+    assert_eq!(st.value_report(&decl, &given, &set).adjusted, ["seed"], "the field left out is said");
+    let clean = json!({"seed": st.values["seed"].clone()});
+    let set = st.clone().set_values(&decl, &clean);
+    assert_eq!(st.value_report(&decl, &clean, &set).notice(), None, "a clean place stays quiet");
+    assert_eq!(st.request(&["seed".into()])["values"]["seed"]["lon"], -42.8, "it goes with the request");
+    // Degrees alone are a place (a script's); half a pair of map coordinates is left out.
+    st.set_values(&decl, &json!({"spot": {"lon": 10, "lat": 20, "x": 5}}));
+    assert_eq!(st.values["spot"], json!({"lon": 10.0, "lat": 20.0}));
+    // A box: west, south, east and north; one whose west is greater than its east crosses the
+    // antimeridian.
+    assert_eq!(
+        st.set_values(&decl, &json!({"area": {"bbox": [170, -10, -170, 10], "extent": [1, 2, 3, 4], "crs": "EPSG:3857"}})),
+        ["area"]
+    );
+    assert_eq!(st.values["area"], json!({"bbox": [170.0, -10.0, -170.0, 10.0], "extent": [1.0, 2.0, 3.0, 4.0], "crs": "EPSG:3857"}));
+    // Junk is ignored: the places stay.
+    let long = "x".repeat(crate::panel::MAX_PICK_CRS + 1);
+    for junk in [
+        json!({"seed": {"lon": 200, "lat": 0}}),
+        json!({"seed": {"lon": 0, "lat": -91}}),
+        json!({"seed": {"lon": "1", "lat": 2}}),
+        json!({"seed": {"lon": 1}}),
+        json!({"seed": [1, 2]}),
+        json!({"seed": "here"}),
+        json!({"seed": {"bbox": [0, 0, 1, 1]}}),
+        json!({"area": {"lon": 1, "lat": 2}}),
+        json!({"area": {"bbox": [0, 0, 1]}}),
+        json!({"area": {"bbox": [0, 10, 1, -10]}}),
+        json!({"area": {"bbox": [0, 0, 1e300, 1]}}),
+        json!({"area": {"bbox": [0, 0, "1", 1]}}),
+    ] {
+        let mut kept = st.clone();
+        let set = kept.set_values(&decl, &junk);
+        assert!(set.is_empty(), "{junk}");
+        assert_eq!(kept.values, st.values, "{junk}");
+        assert!(kept.value_report(&decl, &junk, &set).notice().is_some_and(|n| n.contains("not taken")), "said: {junk}");
+    }
+    // Map coordinates that aren't right are left out, as is a coordinate system too long.
+    let given = json!({"area": {"bbox": [0, 0, 1, 1], "extent": [3, 0, 1, 1], "crs": long}});
+    let set = st.set_values(&decl, &given);
+    assert_eq!(st.values["area"], json!({"bbox": [0.0, 0.0, 1.0, 1.0]}));
+    let notice = st.value_report(&decl, &given, &set).notice().unwrap_or_default();
+    assert!(notice.contains("adjusted") && notice.contains("area"), "{notice}");
+    // A plugin's answer can't pick a place, only clear one; the place it gave is said.
+    let dropped = st.apply(&decl, &json!({"values": {"seed": {"lon": 1, "lat": 2}, "area": null}}));
+    assert_eq!(dropped.values, ["seed"]);
+    assert_eq!(st.picked("seed").and_then(|p| p["lon"].as_f64()), Some(-42.8));
+    // An answer that gives back the place held is no refusal: the place stays, quietly.
+    let held = st.values["seed"].clone();
+    let dropped = st.apply(&decl, &json!({"values": {"seed": held.clone()}}));
+    assert_eq!(dropped.notice(), None, "{dropped:?}");
+    assert_eq!(st.values["seed"], held);
+    // Given back with its numbers written otherwise (whole degrees as integers), it is the same
+    // place, and as quiet.
+    assert_eq!(st.set_values(&decl, &json!({"seed": {"lon": 10, "lat": 0}, "area": {"bbox": [-180, -10, 180, 10]}})), ["seed", "area"]);
+    let held = (st.values["seed"].clone(), st.values["area"].clone());
+    let dropped = st.apply(&decl, &json!({"values": {"seed": {"lon": 10, "lat": 0}, "area": {"bbox": [-180, -10, 180, 10]}}}));
+    assert_eq!(dropped.notice(), None, "{dropped:?}");
+    assert_eq!((st.values["seed"].clone(), st.values["area"].clone()), held);
+    st.apply(&decl, &json!({"values": {"area": null}}));
+    assert_eq!(st.values["area"], Value::Null);
+    assert_eq!(st.picked("area"), None);
+    // The user's own values clear it too.
+    assert_eq!(st.set_values(&decl, &json!({"seed": null})), ["seed"]);
+    assert_eq!(st.values["seed"], Value::Null);
 }
 
 /// The test panel with a catalogue tree added.

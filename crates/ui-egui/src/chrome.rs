@@ -439,6 +439,9 @@ pub fn status_bar(app: &mut RustGisApp, ui: &mut Ui) {
                     // over the selection count and coordinates. A click opens its history.
                     if let Some(running) = crate::pluginstart::running(app) {
                         ui.add(egui::Label::new(egui::RichText::new(running).size(11.5).color(t.accent)).truncate());
+                    } else if let Some(waiting) = crate::pluginpanel::pick_hint(app) {
+                        // A plugin's pick says what it waits for on the map.
+                        ui.add(egui::Label::new(egui::RichText::new(waiting).size(11.5).color(t.accent)).truncate());
                     } else if let Some((n, text)) = app.session.notices.last().map(|n| (n, notice_text(n)))
                         && ui.add(
                             egui::Button::new(egui::RichText::new(&text).size(11.5).color(if n.error { t.red } else { t.text_dim }))

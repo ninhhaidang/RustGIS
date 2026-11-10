@@ -21,8 +21,9 @@
 //! - `q` (echo): returns the request itself, so a test sees what the plugin was sent; its
 //!   `panel` (the panel's values) is then the answer's, and is taken in again.
 //!
-//! [`panel_manifest`] declares a panel over `p` and `q`. With a panel, requests carry `panel`
-//! before `params`, so `f` reads them only from plugins without one.
+//! [`panel_manifest`] declares a panel over `p` and `q`, and [`pick_manifest`] one of picks on
+//! the map over `q`. With a panel, requests carry `panel` before `params`, so `f` reads them only
+//! from plugins without one.
 
 use std::io::Write;
 
@@ -219,6 +220,36 @@ pub fn panel_manifest(id: &str) -> String {
     m["i18n"] =
         serde_json::json!({"de": {"Hello": "Hallo", "Historical Imagery": "Historische Luftbilder", "Release timeline": "Zeitleiste"}});
     m.to_string()
+}
+
+/// A manifest for the test module with a panel of picks on the map, as a classification plugin's
+/// might be: a point that runs the echo command `q` (a seed to grow a sample from), a box that
+/// runs it too, and a point that runs nothing (its place goes with the next request). With `edit`,
+/// as such a plugin needs to add its samples.
+pub fn pick_manifest(id: &str) -> String {
+    let mut m: serde_json::Value = serde_json::from_str(&manifest(id, &["edit"])).unwrap_or_default();
+    if let Some(c) = m["commands"].as_array_mut() {
+        c.push(serde_json::json!({"id": "q", "label": "Echo"}));
+        c.push(serde_json::json!({"id": "q-grow", "label": "Grow a Sample", "help": "Grows a training sample from the pixel clicked."}));
+    }
+    m["panel"] = serde_json::json!({
+        "title": "Training Samples",
+        "icon": "identify",
+        "help": "Pick places on the map for the plugin.",
+        "items": [
+            {"kind": "text", "id": "about", "label": "Samples", "text": "Pick a pixel to grow a sample from it."},
+            {"kind": "pick", "id": "seed", "command": "q-grow"},
+            {"kind": "pick", "id": "area", "label": "Classify Inside a Box", "shape": "box", "command": "q"},
+            {"kind": "pick", "id": "spot", "label": "Mark a Spot", "shape": "point"}
+        ]
+    });
+    m["i18n"] = serde_json::json!({"de": {"Grow a Sample": "Probe wachsen lassen"}});
+    m.to_string()
+}
+
+/// A `.rgplugin` package of the test module with [`pick_manifest`].
+pub fn pick_package(id: &str) -> Vec<u8> {
+    zip_of(&[("plugin.json", pick_manifest(id).as_bytes()), ("plugin.wasm", &wasm())])
 }
 
 /// A `.rgplugin` package of the test module with [`panel_manifest`].

@@ -562,6 +562,14 @@ impl MapView {
         self.cancel_label_drag();
     }
 
+    /// Drops a box being dragged: letting go of it does nothing (a plugin's pick it was drawn
+    /// for has ended).
+    pub(crate) fn cancel_box_drag(&mut self) {
+        if self.drag.is_some_and(|(_, kind)| kind == DragKind::Box) {
+            self.drag = None;
+        }
+    }
+
     /// Drops a label being moved with the Move Label tool, leaving it where it was.
     pub(crate) fn cancel_label_drag(&mut self) {
         self.moving_label = None;
@@ -2507,6 +2515,8 @@ fn interact(app: &mut RustGisApp, ui: &mut Ui, resp: &egui::Response, rect: Rect
             DragKind::Vertex
         } else {
             match tool {
+                // A plugin's pick waiting for a box draws it.
+                Tool::Explore if crate::pluginpanel::picks_box(app) => DragKind::Box,
                 Tool::Explore if shift => DragKind::Box,
                 // Ctrl+drag turns and tilts the map, as the right button does.
                 Tool::Explore if ctrl => DragKind::Turn,
@@ -2674,17 +2684,28 @@ fn interact(app: &mut RustGisApp, ui: &mut Ui, resp: &egui::Response, rect: Rect
             // one whose corners all miss it) uses the part that is on it.
             let r = Rect::from_two_pos(start, end);
             let mut e = Extent::EMPTY;
+            let mut grid = Vec::new();
             let n = 12;
             for i in 0..=n {
                 for j in 0..=n {
                     let q = pos2(r.min.x + r.width() * i as f32 / n as f32, r.min.y + r.height() * j as f32 / n as f32);
-                    if let Some(c) = screen_to_lonlat(app, rect, q) {
+                    let c = screen_to_lonlat(app, rect, q);
+                    if let Some(c) = c {
                         e.expand(c);
                     }
+                    grid.push(c);
                 }
             }
+            // A pole inside a box on the globe: the box goes all the way round it.
+            let pole = (app.session.map().projection == Projection::Globe)
+                .then(|| {
+                    [90.0, -90.0].into_iter().find(|&lat| lonlat_to_screen(app, rect, Coord::new(0.0, lat)).is_some_and(|p| r.contains(p)))
+                })
+                .flatten();
             if e.is_empty() {
                 // Nothing on the globe.
+            } else if (start - end).length() > 6.0 && crate::pluginpanel::box_picked(app, &grid, n + 1, pole) {
+                // A plugin's pick took it.
             } else if tool == Tool::Select {
                 let mode = ui.input(|i| {
                     if i.modifiers.shift {
@@ -2738,6 +2759,10 @@ fn interact(app: &mut RustGisApp, ui: &mut Ui, resp: &egui::Response, rect: Rect
             app.map.popup = None;
             return;
         };
+        // A plugin's pick waiting for the map takes the click.
+        if crate::pluginpanel::map_click(app, c) {
+            return;
+        }
         // Directions waiting for a place, or a click on another route, takes the click.
         let nav = &app.ui.nav;
         let other = (nav.routes.len() > 1 && app.ui.right == Some(crate::RightPane::Directions))
@@ -3105,6 +3130,8 @@ fn overlays(app: &mut RustGisApp, ui: &mut Ui, p: &egui::Painter, rect: Rect, t:
     }
     // The NLDI's point, while its pane is open.
     crate::nldiui::paint(app, p, rect, t, |c| lonlat_to_screen(app, rect, c));
+    // The places a plugin's panel holds.
+    crate::pluginpanel::paint(app, p, t, |c| lonlat_to_screen(app, rect, c));
     // The spectral profile's points, while its section shows.
     crate::spectralui::paint(app, p, t, |c| lonlat_to_screen(app, rect, c));
     // Points picked for a workflow.
@@ -3297,10 +3324,11 @@ fn overlays(app: &mut RustGisApp, ui: &mut Ui, p: &egui::Painter, rect: Rect, t:
         Tool::Graphic(_) => Some("Drag a box"),
         Tool::Explore => None,
     };
-    if let Some(h) = hint
-        && (app.map.sketch.is_empty() || !matches!(app.session.tool, Tool::Measure | Tool::MeasureArea))
-    {
-        let g = p.layout_no_wrap(tl!(h).to_string(), regular(12.0), Color32::WHITE);
+    let measuring = !app.map.sketch.is_empty() && matches!(app.session.tool, Tool::Measure | Tool::MeasureArea);
+    // A plugin's pick waiting for the map says what it waits for instead.
+    let hint = crate::pluginpanel::pick_hint(app).or_else(|| hint.filter(|_| !measuring).map(|h| tl!(h).to_string()));
+    if let Some(h) = hint {
+        let g = p.layout_no_wrap(h, regular(12.0), Color32::WHITE);
         let bg = Rect::from_center_size(pos2(rect.center().x, rect.max.y - 26.0), g.size() + vec2(22.0, 10.0));
         p.rect_filled(bg, CornerRadius::same(12), Color32::from_black_alpha(160));
         p.galley(bg.center() - g.size() / 2.0, g, Color32::WHITE);

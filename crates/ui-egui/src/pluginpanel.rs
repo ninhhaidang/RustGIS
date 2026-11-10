@@ -1,5 +1,6 @@
 //! A plugin's panel (`panel` in its `plugin.json`): a right pane of texts, checkboxes, sliders,
-//! buttons, trees, dropdowns, date pickers and range sliders bound to the plugin's commands.
+//! buttons, trees, dropdowns, date pickers, range sliders and picks bound to the plugin's
+//! commands.
 //!
 //! The session keeps the panel's state ([`rustgis_engine::plugins::PanelState`]); this draws it
 //! and turns the user's changes into commands: a widget with a command runs
@@ -7,11 +8,14 @@
 //! with `plugin.panel`. A slider or a range runs its command when it is let go (or stepped, or
 //! moved with the keys), never while it is dragged: until then the pane shows the value it would
 //! take. A date runs its command when a day is picked in its calendar, or a date typed is
-//! confirmed (Enter, or leaving the box).
+//! confirmed (Enter, or leaving the box). A pick waits for the map: the next click there (or a
+//! box dragged) is its value, and Esc, another tool, or the panel closing stops it waiting.
 
 use egui::{Align2, CornerRadius, RichText, Sense, Stroke, Ui, pos2, vec2};
 use std::collections::{HashMap, HashSet};
 
+use rustgis_engine::Tool;
+use rustgis_engine::geom::{Coord, Extent};
 use rustgis_engine::plugins::{Manifest, PanelItemDecl, PanelState, TreeNode, command_id};
 use serde_json::{Value, json};
 
@@ -42,6 +46,8 @@ pub struct State {
     /// since, or moved (by the plugin or a script), opens the branches above it, once, so it
     /// shows and they can still be closed.
     revealed: HashMap<String, Vec<String>>,
+    /// A pick waiting for the map: plugin and widget.
+    picking: Option<(String, String)>,
 }
 
 /// The panel's title (its tab), in the interface language.
@@ -157,6 +163,7 @@ pub fn show(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
             continue;
         }
         match item.kind.as_str() {
+            "pick" => pick_item(app, ui, &pid, m, item, &state, &tr, t),
             "text" => text(ui, item, &state, &tr, t),
             "checkbox" => checkbox(app, ui, &pid, item, &state, &tr),
             "slider" => slider(app, ui, &pid, item, &state, &tr, t),
@@ -202,15 +209,9 @@ fn checkbox(app: &mut RustGisApp, ui: &mut Ui, pid: &str, item: &PanelItemDecl, 
     }
 }
 
-fn button(
-    app: &mut RustGisApp,
-    ui: &mut Ui,
-    pid: &str,
-    m: &Manifest,
-    item: &PanelItemDecl,
-    state: &PanelState,
-    tr: &dyn Fn(&str) -> String,
-) {
+/// A button's or a pick's label, on one line: what the plugin set, the declared one, or its
+/// command's; and its help: the declared one or its command's.
+fn button_label(m: &Manifest, item: &PanelItemDecl, state: &PanelState, tr: &dyn Fn(&str) -> String) -> (String, String) {
     let cmd = m.commands.iter().find(|c| c.id == item.command);
     let label = state
         .items
@@ -221,10 +222,252 @@ fn button(
         .unwrap_or_default()
         .replace('\n', " ");
     let help = if item.help.is_empty() { cmd.as_ref().map(|c| tr(&c.help)).unwrap_or_default() } else { tr(&item.help) };
+    (label, help)
+}
+
+fn button(
+    app: &mut RustGisApp,
+    ui: &mut Ui,
+    pid: &str,
+    m: &Manifest,
+    item: &PanelItemDecl,
+    state: &PanelState,
+    tr: &dyn Fn(&str) -> String,
+) {
+    let (label, help) = button_label(m, item, state, tr);
     let resp = ui.add_enabled(enabled(item, state), egui::Button::new(label).min_size(vec2(64.0, 26.0)));
     let resp = if help.is_empty() { resp } else { resp.on_hover_text(help) };
     if resp.clicked() {
         run(app, &command_id(pid, &item.command), Value::Null);
+    }
+}
+
+/// Where a pick's value is, in words: a point's degrees, or a box's south-west and north-east
+/// corners.
+fn place_text(v: &serde_json::Map<String, Value>) -> Option<String> {
+    let n = |v: Option<&Value>| v.and_then(Value::as_f64);
+    if let Some(b) = v.get("bbox").and_then(Value::as_array) {
+        let (w, s, e, north) = (n(b.first())?, n(b.get(1))?, n(b.get(2))?, n(b.get(3))?);
+        let (sw, ne) = (rustgis_engine::geom::format_lonlat(Coord::new(w, s)), rustgis_engine::geom::format_lonlat(Coord::new(e, north)));
+        return Some(crate::i18n::fmt("{southwest} to {northeast}", &[("southwest", &sw), ("northeast", &ne)]));
+    }
+    Some(rustgis_engine::geom::format_lonlat(Coord::new(n(v.get("lon"))?, n(v.get("lat"))?)))
+}
+
+/// A pick: a button that waits for a place on the map (a click, or a box dragged for a box), then
+/// runs the widget's command with it. Clicked again while it waits, it stops waiting. Under it,
+/// what it waits for, or the place picked last.
+#[allow(clippy::too_many_arguments)]
+fn pick_item(
+    app: &mut RustGisApp,
+    ui: &mut Ui,
+    pid: &str,
+    m: &Manifest,
+    item: &PanelItemDecl,
+    state: &PanelState,
+    tr: &dyn Fn(&str) -> String,
+    t: &crate::theme::Tokens,
+) {
+    let id = item.key();
+    let waiting = app.ui.plugin_panel.picking.as_ref().is_some_and(|(p, i)| p == pid && i == id);
+    let (label, help) = button_label(m, item, state, tr);
+    let on = enabled(item, state);
+    let resp = ui.add_enabled(on, egui::Button::new(format!("⌖ {label}")).selected(waiting).min_size(vec2(64.0, 26.0)));
+    let resp = if help.is_empty() { resp } else { resp.on_hover_text(help) };
+    if resp.clicked() {
+        if waiting {
+            app.ui.plugin_panel.picking = None;
+        } else {
+            // Clicks and drags on the map are the pick's, not another tool's: Explore, whose
+            // drags still pan the map to find the place (for a point).
+            if app.session.tool != Tool::Explore
+                && let Err(e) = app.run("tool.set", json!({"tool": "explore"}))
+            {
+                app.session.notify(e, true);
+                return;
+            }
+            app.map.popup = None;
+            app.ui.plugin_panel.picking = Some((pid.to_string(), id.to_string()));
+        }
+    }
+    let (line, color) = if waiting {
+        let asks = if item.picks_box() { tl!("Drag a box on the map · Esc cancels") } else { tl!("Click the map · Esc cancels") };
+        (Some(asks.to_string()), t.accent_text)
+    } else {
+        (state.picked(id).and_then(place_text), t.text_dim)
+    };
+    if let Some(line) = line {
+        ui.add(egui::Label::new(RichText::new(line).size(11.0).color(color)).wrap());
+    }
+}
+
+/// The pick waiting for the map, while it still can: its plugin's panel is open and the plugin
+/// on, the widget is a pick that shows and is enabled, and the Explore tool is on (any other
+/// tool, Esc among the ways to choose one, ends it). Anything else ends it.
+fn waiting_pick(app: &mut RustGisApp) -> Option<(String, PanelItemDecl)> {
+    let (pid, id) = app.ui.plugin_panel.picking.clone()?;
+    let open = app.ui.right == Some(RightPane::Plugin) && app.ui.plugin_panel.plugin.as_deref() == Some(pid.as_str());
+    let item = (open && app.session.tool == Tool::Explore)
+        .then(|| rustgis_engine::plugins::get(&pid))
+        .flatten()
+        .filter(|p| p.enabled)
+        .and_then(|p| p.manifest.panel.as_ref().and_then(|d| d.item(&id)).filter(|d| d.kind == "pick").cloned())
+        .filter(|_| app.session.plugin_panels.get(&pid).and_then(|s| s.items.get(&id)).is_none_or(|s| s.enabled && s.visible));
+    if item.is_none() {
+        app.ui.plugin_panel.picking = None;
+    }
+    item.map(|i| (pid, i))
+}
+
+/// Ends a pick waiting for the map (another tool was chosen: Esc chooses Explore), dropping a box
+/// being dragged for it.
+pub(crate) fn cancel_pick(app: &mut RustGisApp) {
+    if app.ui.plugin_panel.picking.take().is_some() {
+        app.map.cancel_box_drag();
+    }
+}
+
+/// What a pick waiting for the map asks for, for the map's hint and the status bar.
+pub(crate) fn pick_hint(app: &mut RustGisApp) -> Option<String> {
+    let (pid, item) = waiting_pick(app)?;
+    let plugin = rustgis_engine::plugins::get(&pid)?;
+    let state = app.session.plugin_panels.get(&pid)?;
+    let lang = app.lang().code();
+    let tr = |s: &str| plugin.manifest.translate(lang, s).to_string();
+    let (label, _) = button_label(&plugin.manifest, &item, state, &tr);
+    Some(if item.picks_box() {
+        crate::i18n::fmt("{pick}: drag a box on the map · Esc cancels", &[("pick", &label)])
+    } else {
+        crate::i18n::fmt("{pick}: click the map · Esc cancels", &[("pick", &label)])
+    })
+}
+
+/// Whether a pick waits for a box: a drag on the map draws one.
+pub(crate) fn picks_box(app: &mut RustGisApp) -> bool {
+    waiting_pick(app).is_some_and(|(_, i)| i.picks_box())
+}
+
+/// A longitude in -180..180.
+fn wrap(lon: f64) -> f64 {
+    let l = (lon + 180.0).rem_euclid(360.0) - 180.0;
+    if l == -180.0 && lon > 0.0 { 180.0 } else { l }
+}
+
+/// The place picked: the pick stops waiting and runs its command with it (or keeps it for the
+/// plugin's next one).
+fn picked(app: &mut RustGisApp, pid: &str, item: &PanelItemDecl, value: Value) {
+    app.ui.plugin_panel.picking = None;
+    send(app, pid, item, value);
+}
+
+/// A click on the map at `c`, for a pick waiting for a point. A pick waiting for a box takes the
+/// click too, and goes on waiting for a drag. False when no pick waits.
+pub(crate) fn map_click(app: &mut RustGisApp, c: Coord) -> bool {
+    let Some((pid, item)) = waiting_pick(app) else { return false };
+    if !item.picks_box() {
+        picked(app, &pid, &item, json!({"lon": wrap(c.x), "lat": c.y.clamp(-90.0, 90.0)}));
+    }
+    true
+}
+
+/// A box dragged on the map, `grid` the places on a `side` by `side` grid over it in degrees
+/// (column by column, `None` off the globe) and `pole` the latitude of a pole inside it (the
+/// globe's), for a pick waiting for one; false when none waits.
+pub(crate) fn box_picked(app: &mut RustGisApp, grid: &[Option<Coord>], side: usize, pole: Option<f64>) -> bool {
+    let Some((pid, item)) = waiting_pick(app).filter(|(_, i)| i.picks_box()) else { return false };
+    let globe = app.session.map().projection == rustgis_engine::map::Projection::Globe;
+    let Some(bbox) = box_of(grid, side, globe, pole) else { return false };
+    picked(app, &pid, &item, json!({"bbox": bbox}));
+    true
+}
+
+/// The box `[west, south, east, north]` around the places on `grid` (degrees, `side` by `side`,
+/// column by column, `None` off the globe): a box wider than the world is the world, and one
+/// across the antimeridian has a west longitude greater than its east. A flat map gives
+/// longitudes past ±180 across it (its copies of the world); the globe wraps them, so there each
+/// place's is read from a neighbour's already read, and a box over more than 180° of longitude
+/// keeps its side. A box around a pole (`pole`, its latitude) reaches it, all the way round.
+fn box_of(grid: &[Option<Coord>], side: usize, globe: bool, pole: Option<f64>) -> Option<[f64; 4]> {
+    if grid.len() != side * side {
+        return None;
+    }
+    let start = grid.iter().position(Option::is_some)?;
+    let first = grid[start]?.x;
+    let mut read: Vec<Option<f64>> = vec![None; grid.len()];
+    if globe {
+        read[start] = Some(first);
+        let mut todo = vec![start];
+        while let Some(k) = todo.pop() {
+            let Some(at) = read[k] else { continue };
+            let (i, j) = (k / side, k % side);
+            let near = [(i > 0).then(|| k - side), (i + 1 < side).then(|| k + side), (j > 0).then(|| k - 1), (j + 1 < side).then(|| k + 1)];
+            for m in near.into_iter().flatten() {
+                if let (Some(c), None) = (grid[m], read[m]) {
+                    read[m] = Some(at + wrap(c.x - at));
+                    todo.push(m);
+                }
+            }
+        }
+    }
+    let mut e = Extent::EMPTY;
+    for (k, c) in grid.iter().enumerate() {
+        let Some(c) = c else { continue };
+        let x = if globe { read[k].unwrap_or_else(|| first + wrap(c.x - first)) } else { c.x };
+        e.expand(Coord::new(x, c.y));
+    }
+    if let Some(lat) = pole {
+        e.expand(Coord::new(first, lat));
+        e.min_x = first - 180.0;
+        e.max_x = first + 180.0;
+    }
+    let (west, east) = if e.width() >= 360.0 { (-180.0, 180.0) } else { (wrap(e.min_x), wrap(e.max_x)) };
+    Some([west, e.min_y.clamp(-90.0, 90.0), east, e.max_y.clamp(-90.0, 90.0)])
+}
+
+/// The places the open panel's picks hold, on the map: a point's marker, a box's outline.
+pub(crate) fn paint(app: &RustGisApp, p: &egui::Painter, t: &crate::theme::Tokens, to_screen: impl Fn(Coord) -> Option<egui::Pos2>) {
+    if app.ui.right != Some(RightPane::Plugin) {
+        return;
+    }
+    let Some(pid) = app.ui.plugin_panel.plugin.as_deref() else { return };
+    let (Some(plugin), Some(state)) = (rustgis_engine::plugins::get(pid).filter(|p| p.enabled), app.session.plugin_panels.get(pid)) else {
+        return;
+    };
+    let Some(decl) = plugin.manifest.panel.as_ref() else { return };
+    let n = |v: Option<&Value>| v.and_then(Value::as_f64);
+    let ring = Stroke::new(1.5, egui::Color32::WHITE);
+    for d in decl.items.iter().filter(|d| d.kind == "pick" && state.items.get(d.key()).is_none_or(|s| s.visible)) {
+        let Some(v) = state.picked(d.key()) else { continue };
+        if let Some(b) = v.get("bbox").and_then(Value::as_array) {
+            let (Some(w), Some(s), Some(e), Some(north)) = (n(b.first()), n(b.get(1)), n(b.get(2)), n(b.get(3))) else { continue };
+            let e = if e < w { e + 360.0 } else { e };
+            // Its edges followed, so a curved projection draws them curved.
+            let steps = 24;
+            let mut edge = Vec::new();
+            for (a, z) in [((w, s), (e, s)), ((e, s), (e, north)), ((e, north), (w, north)), ((w, north), (w, s))] {
+                for i in 0..steps {
+                    let f = i as f64 / steps as f64;
+                    edge.push(Coord::new(a.0 + (z.0 - a.0) * f, a.1 + (z.1 - a.1) * f));
+                }
+            }
+            // The parts on show: a box partly on the globe's far side keeps the rest.
+            let pts: Vec<Option<egui::Pos2>> = edge.into_iter().map(&to_screen).collect();
+            if pts.iter().all(Option::is_some) {
+                p.add(egui::Shape::closed_line(pts.into_iter().flatten().collect(), Stroke::new(2.0, t.accent)));
+            } else {
+                let closed = pts.iter().chain(pts.first());
+                for run in closed.copied().collect::<Vec<_>>().split(Option::is_none) {
+                    if run.len() > 1 {
+                        p.add(egui::Shape::line(run.iter().flatten().copied().collect(), Stroke::new(2.0, t.accent)));
+                    }
+                }
+            }
+        } else if let (Some(lon), Some(lat)) = (n(v.get("lon")), n(v.get("lat")))
+            && let Some(sp) = to_screen(Coord::new(lon, lat))
+        {
+            p.circle_filled(sp, 6.0, t.accent);
+            p.circle_stroke(sp, 6.0, ring);
+        }
     }
 }
 
@@ -750,6 +993,50 @@ fn range(app: &mut RustGisApp, ui: &mut Ui, pid: &str, item: &PanelItemDecl, sta
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A box dragged across the antimeridian is the narrow box there, on the globe (longitudes
+    /// wrapped) and on a flat map (past 180); a wide one stays wide, on a flat map and on the
+    /// globe (a band under the pole over more than 180° of longitude), and one around a pole is
+    /// the world's width.
+    #[test]
+    fn a_box_across_the_antimeridian_is_the_narrow_one() {
+        const SIDE: usize = 13;
+        // The places on a grid over the box, `at(u, v)` for u, v from 0 to 1, column by column.
+        let grid = |at: &dyn Fn(f64, f64) -> Option<Coord>| -> Vec<Option<Coord>> {
+            let t = |k: usize| k as f64 / (SIDE - 1) as f64;
+            (0..SIDE).flat_map(|i| (0..SIDE).map(move |j| (t(i), t(j)))).map(|(u, v)| at(u, v)).collect()
+        };
+        let c = |x: f64, y: f64| Some(Coord::new(x, y));
+        let globe = grid(&|u, v| c(wrap(179.0 + 2.0 * u), -1.0 + 2.0 * v));
+        assert_eq!(box_of(&globe, SIDE, true, None), Some([179.0, -1.0, -179.0, 1.0]));
+        let flat = grid(&|u, v| c(179.0 + 2.0 * u, -1.0 + 2.0 * v));
+        assert_eq!(box_of(&flat, SIDE, false, None), Some([179.0, -1.0, -179.0, 1.0]));
+        let wide = grid(&|u, v| c(-170.0 + 340.0 * u, 5.0 * v));
+        assert_eq!(box_of(&wide, SIDE, false, None), Some([-170.0, 0.0, 170.0, 5.0]));
+        assert_eq!(box_of(&wide, SIDE, true, None), Some([-170.0, 0.0, 170.0, 5.0]), "wide on the globe");
+        // An orthographic globe centred on 30°N 0° (unit radius, y up), and a band across it
+        // just under the north pole: its longitudes run from about -111 to 111 by way of 0.
+        let (lat0, r) = (30f64.to_radians(), |x: f64, y: f64| (x * x + y * y).sqrt());
+        let ortho = |x: f64, y: f64| {
+            let rho = r(x, y);
+            let s = rho.asin();
+            let lat = (s.cos() * lat0.sin() + y * s.sin() * lat0.cos() / rho).asin();
+            let lon = (x * s.sin()).atan2(rho * s.cos() * lat0.cos() - y * s.sin() * lat0.sin());
+            (rho <= 1.0).then(|| Coord::new(wrap(lon.to_degrees()), lat.to_degrees()))
+        };
+        let band = grid(&|u, v| ortho(-1.0 + 2.0 * u, 0.6 + 0.2 * v));
+        let b = box_of(&band, SIDE, true, None).unwrap_or_default();
+        assert!(b[0] < -100.0 && b[2] > 100.0, "the band's own side, not the far one: {b:?}");
+        // Off the globe on its left: the rest still reads.
+        let part = grid(&|u, v| (u > 0.4).then(|| Coord::new(wrap(170.0 + 20.0 * u), v)));
+        assert_eq!(box_of(&part, SIDE, true, None).map(|b| b[2]), Some(-170.0));
+        let pole = grid(&|u, v| c(wrap(360.0 * u), 80.0 + 5.0 * v));
+        assert_eq!(box_of(&pole, SIDE, true, Some(90.0)), Some([-180.0, 80.0, 180.0, 90.0]), "around a pole");
+        let world = grid(&|u, _| c(-200.0 + 400.0 * u, 0.0));
+        assert_eq!(box_of(&world, SIDE, false, None), Some([-180.0, 0.0, 180.0, 0.0]), "wider than the world");
+        assert_eq!(box_of(&grid(&|_, _| None), SIDE, true, None), None, "nothing on the globe");
+        assert_eq!(box_of(&globe, SIDE - 1, true, None), None, "a grid of another size");
+    }
 
     fn node(id: &str, label: &str, children: Vec<TreeNode>) -> TreeNode {
         TreeNode { id: id.into(), label: label.into(), count: None, children }

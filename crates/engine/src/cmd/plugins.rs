@@ -32,7 +32,7 @@ pub fn commands() -> Vec<C> {
             .view()
             .params(r#"{"id": plugin id, "url"?: registry.json}"#),
         C::new("plugin.panel", "Plugin Panel State", "Plugins", panel).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Reserved)).view().params(
-            r#"{"id": plugin id, "values"?: {widget id: true/false, a whole number, [low, high] (a range), a tree node's or a dropdown option's id, or a date "YYYY-MM-DD" (null for none)}, "refresh"?: bool (run the panel's state command)}"#,
+            r#"{"id": plugin id, "values"?: {widget id: true/false, a whole number, [low, high] (a range), a tree node's or a dropdown option's id, a date "YYYY-MM-DD", or a pick's place: {"lon", "lat"} or {"bbox": [west, south, east, north]} in degrees (null for none)}, "refresh"?: bool (run the panel's state command)}"#,
         ),
         C::new("plugin.prepare", "Prepare Plugin Environment", "Plugins › Manage", prepare).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Reserved))
             .view()
@@ -52,10 +52,11 @@ fn panel(s: &mut Session, p: &Value) -> CmdResult {
     let decl = plugin.manifest.panel.clone().ok_or_else(|| format!("{} has no panel", plugin.manifest.name))?;
     let before = s.panel_state(id, &decl).clone();
     if let Some(values) = p.get("values") {
+        let (values, moved) = placed(s, &decl, values);
         let state = s.panel_state(id, &decl);
-        let set = state.set_values(&decl, values);
-        let dropped = state.value_report(&decl, values, &set);
-        if let Some(text) = dropped.notice() {
+        let set = state.set_values(&decl, &values);
+        let dropped = state.value_report(&decl, &values, &set);
+        for text in [dropped.notice(), moved].into_iter().flatten() {
             s.warn(format!("{}: {text}", plugin.manifest.name));
         }
     }
@@ -68,6 +69,112 @@ fn panel(s: &mut Session, p: &Value) -> CmdResult {
     }
     let state = s.plugin_panel(id).ok_or("the panel is unavailable")?;
     serde_json::to_value(state).map_err(|e| e.to_string())
+}
+
+/// Panel values given (`{"<widget>": value}`) with each pick's place also in the active map's
+/// coordinates, worked out here whatever was given for them: `x` and `y` for a point, `extent`
+/// (`[xmin, ymin, xmax, ymax]`, the box around it) for a box, and `crs`, the map's coordinate
+/// system (`EPSG:3857` for Web Mercator and the globe). A place the projection can't show, or one
+/// on another body's map, keeps only its degrees. Both are said, in the notice beside the values
+/// (`None` when there is nothing to say), as are map coordinates given other than the map's,
+/// which the map's replace. A place the panel can't read is left to its own report.
+fn placed(s: &Session, decl: &rustgis_plugins::PanelDecl, given: &Value) -> (Value, Option<String>) {
+    use rustgis_map::projection::Flat;
+    let Some(given) = given.as_object() else { return (given.clone(), None) };
+    if !decl.items.iter().any(|d| d.kind == "pick" && given.contains_key(d.key())) {
+        return (Value::Object(given.clone()), None);
+    }
+    let (mut replaced, mut unplaced, mut clamped) = (Vec::new(), Vec::new(), Vec::new());
+    let mut out = given.clone();
+    let map = s.map();
+    let flat = Flat::of(&map.projection);
+    let crs = match (&map.projection, &flat) {
+        (rustgis_map::Projection::Custom(code), Flat::Custom(_)) => match rustgis_map::projection::lookup(code) {
+            Ok((_, label)) if label.starts_with("EPSG:") || label.starts_with("ESRI:") => label,
+            Ok((proj4, _)) => proj4,
+            Err(_) => code.clone(),
+        },
+        _ => "EPSG:3857".to_string(),
+    };
+    for d in decl.items.iter().filter(|d| d.kind == "pick") {
+        let Some(v) = out.get_mut(d.key()).and_then(Value::as_object_mut) else { continue };
+        let was: Vec<(&str, Value)> = ["x", "y", "extent", "crs"].into_iter().filter_map(|k| Some((k, v.remove(k)?))).collect();
+        let num = |v: Option<&Value>| v.and_then(Value::as_f64).filter(|x| x.is_finite());
+        let mut add = Vec::new();
+        if !map.body().is_earth() {
+            // Another body's map: no coordinates of Earth's to give.
+        } else if d.picks_box() {
+            let b: Option<Vec<f64>> = v.get("bbox").and_then(Value::as_array).map(|a| a.iter().filter_map(|x| num(Some(x))).collect());
+            if let Some(&[west, south, east, north]) = b.as_deref() {
+                // A box across the antimeridian is measured through it.
+                let east = if east < west { east + 360.0 } else { east };
+                let e = flat.extent(&crate::geom::Extent::new(west, south, east, north));
+                if !e.is_empty() && [e.min_x, e.min_y, e.max_x, e.max_y].iter().all(|x| x.is_finite()) {
+                    add.push(("extent", json!([e.min_x, e.min_y, e.max_x, e.max_y])));
+                }
+            }
+        } else if let (Some(lon), Some(lat)) = (num(v.get("lon")), num(v.get("lat")))
+            && let Some(m) = flat.forward_checked(crate::geom::Coord::new(lon, lat)).filter(|m| m.is_finite())
+        {
+            add.push(("x", json!(m.x)));
+            add.push(("y", json!(m.y)));
+        }
+        if !add.is_empty() {
+            add.push(("crs", json!(crs)));
+        }
+        if rustgis_plugins::panel::pick_value(d, &Value::Object(v.clone())).is_some_and(|p| !p.is_null()) {
+            if add.is_empty() {
+                unplaced.push(d.key().to_string());
+            }
+            // Web Mercator (the globe's map coordinates too) stops at about 85° of latitude: a
+            // place past it has its map coordinates at that edge.
+            let lats: Vec<f64> = match v.get("bbox").and_then(Value::as_array) {
+                Some(b) if d.picks_box() => [b.get(1), b.get(3)].into_iter().filter_map(num).collect(),
+                _ => num(v.get("lat")).into_iter().collect(),
+            };
+            if matches!(flat, Flat::Mercator) && !add.is_empty() && lats.iter().any(|l| l.abs() > crate::geom::MAX_LAT) {
+                clamped.push(d.key().to_string());
+            }
+            let kept = |k: &str, a: &Value| add.iter().any(|(n, b)| *n == k && same_value(a, b));
+            // With nothing of the map's to put there, given ones are left out: said as unplaced.
+            if !add.is_empty() && was.iter().any(|(k, a)| !kept(k, a)) {
+                replaced.push(d.key().to_string());
+            }
+        }
+        for (k, value) in add {
+            v.insert(k.to_string(), value);
+        }
+    }
+    let mut said = Vec::new();
+    if !replaced.is_empty() {
+        let n = replaced.len();
+        said.push(format!(
+            "{n} pick(s) given map coordinates (x, y, extent or crs) other than the active map's, replaced by the map's: {}",
+            replaced.join(", ")
+        ));
+    }
+    if !unplaced.is_empty() {
+        let why = if map.body().is_earth() { "the map's projection can't show them" } else { "the map is of another body" };
+        let n = unplaced.len();
+        said.push(format!("{n} pick(s) kept in degrees only, with no map coordinates ({why}): {}", unplaced.join(", ")));
+    }
+    if !clamped.is_empty() {
+        let n = clamped.len();
+        said.push(format!("{n} pick(s) past Web Mercator's ±85.05° latitude, their map coordinates at its edge: {}", clamped.join(", ")));
+    }
+    (Value::Object(out), (!said.is_empty()).then(|| said.join("; ")))
+}
+
+/// Whether a given map coordinate is the map's: numbers to a billionth (of themselves, or of 1
+/// near 0), arrays item by item, anything else as it is.
+fn same_value(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Number(_), Value::Number(_)) => {
+            a.as_f64().zip(b.as_f64()).is_some_and(|(a, b)| (a - b).abs() <= 1e-9 * a.abs().max(b.abs()).max(1.0))
+        }
+        (Value::Array(a), Value::Array(b)) => a.len() == b.len() && a.iter().zip(b).all(|(a, b)| same_value(a, b)),
+        _ => a == b,
+    }
 }
 
 /// Makes a Python plugin's environment (it can take minutes: downloads).
@@ -567,12 +674,16 @@ impl Session {
         let mut params = params;
         let mut stripped;
         let mut refused = rustgis_plugins::Dropped::default();
+        let mut moved = None;
         let (before, request) = match &panel {
             Some(decl) => {
+                // A pick's place in the map's coordinates too, from the map it was picked on.
+                let given = params.get("panel").map(|g| placed(self, decl, g));
                 let state = self.panel_state(&pid, decl);
                 let before = state.clone();
                 let mut changed = Vec::new();
-                if let Some(given) = params.get("panel") {
+                if let Some((given, said)) = &given {
+                    moved.clone_from(said);
                     changed = state.set_values(decl, given);
                     refused = state.value_report(decl, given, &changed);
                     stripped = params.clone();
@@ -649,7 +760,7 @@ impl Session {
         if pending.is_empty() && requested.is_empty() {
             // Suspended attempts restore their input state and run again. Publish its losses
             // only when this attempt is terminal, so a download retry cannot repeat them.
-            if let Some(text) = refused.notice() {
+            for text in [refused.notice(), moved].into_iter().flatten() {
                 self.warn(format!("{name}: {text}"));
             }
             return res;
