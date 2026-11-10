@@ -38355,3 +38355,62 @@ fn a_models_geolibre_step_runs_ahead_and_is_taken() {
     assert_eq!(s.tools_taken, 1, "the GeoLibre step was taken, not run again here");
     assert!(s.map().layer_by_name("Slope").is_some());
 }
+
+/// A script's zone of spectral means is read on the script's copy of the session, off the UI
+/// thread (#1562), and the run here takes it: the same answer as read here. A zone changed
+/// meanwhile is read again here, and a cancelled run looks at Cancel as it reads the zone.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_scripts_spectral_zone_is_read_on_its_copy() {
+    use crate::cmd::reads::{read_ahead, read_land};
+    use base64::Engine;
+    use rustgis_analysis::control::Control;
+    use rustgis_data::raster::{ColorHint, Crs, GeoTransform, Raster, geotiff};
+    let enc = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+    let gt = GeoTransform { origin_x: 10.0, origin_y: 45.0, pixel_width: 0.01, pixel_height: -0.01 };
+    let bands = (0..3).map(|b| (0..16).map(|i| (30 - b * 10 + i) as f32).collect()).collect();
+    let r = Raster::new("scene", 4, 4, bands, gt, Crs::LonLat, None, ColorHint::Rgb { alpha: false }, "UInt8").unwrap();
+    let tiff = enc(&geotiff::write(&r, 0).unwrap());
+    let zone = |x1: f64| {
+        enc(json!({"type": "FeatureCollection", "features": [{"type": "Feature", "properties": {}, "geometry":
+            {"type": "Polygon", "coordinates": [[[10.0, 45.0], [x1, 45.0], [x1, 44.98], [10.0, 44.98], [10.0, 45.0]]]}}]})
+        .to_string()
+        .as_bytes())
+    };
+    let session = || {
+        let mut s = Session::new(Project::default());
+        s.run("layer.addDataBytes", &json!({"fileName": "scene.tif", "data": tiff})).unwrap();
+        s.run("layer.addDataBytes", &json!({"fileName": "zone.geojson", "data": zone(10.02)})).unwrap();
+        s
+    };
+    let p = json!({"layer": "scene", "zone": "zone"});
+    let here = session().run("raster.spectral", &p).unwrap();
+    assert_eq!(here["pixels"], 4, "{here}");
+
+    let script = json!({"script": format!("raster.spectral {p}")});
+    let mut s = session();
+    let ahead = read_ahead(&mut s, "script.run", &script).unwrap();
+    assert!(ahead.reads(), "the script runs on a copy");
+    let read = ahead.run(&Control::stoppable()).unwrap();
+    let v = read_land(&mut s, read).unwrap();
+    assert_eq!(s.zones_taken, 1);
+    assert!(s.zones_ahead.is_none());
+    assert_eq!(v["ran"][0]["result"], here, "{v}");
+
+    // The zone changed while the copy ran: read again here, on the zone as it is now.
+    let mut s = session();
+    let read = read_ahead(&mut s, "script.run", &script).unwrap().run(&Control::stoppable()).unwrap();
+    s.run("layer.remove", &json!({"layer": "zone"})).unwrap();
+    s.run("layer.addDataBytes", &json!({"fileName": "zone.geojson", "data": zone(10.04)})).unwrap();
+    let now = read_land(&mut s, read).unwrap();
+    assert_eq!(s.zones_taken, 0);
+    let direct = s.run("raster.spectral", &p).unwrap();
+    assert_eq!(direct["pixels"], 8, "{direct}");
+    assert_eq!(now["ran"][0]["result"], direct, "the zone as it is now");
+
+    // Cancelled as the copy starts: the zone's read looks at it, and nothing lands.
+    let mut s = session();
+    let control = Control::cancelled_once_started();
+    assert!(read_ahead(&mut s, "script.run", &script).unwrap().run(&control).is_err());
+    assert!(control.looked() > 0, "the zone's read looked at Cancel");
+}

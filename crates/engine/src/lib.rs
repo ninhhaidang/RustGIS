@@ -909,6 +909,10 @@ pub struct Session {
     /// ([`cmd::gp::FilesAhead`]).
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) files_ahead: Option<cmd::gp::FilesAhead>,
+    /// The zones' spectral means a script read on that copy, which its run here takes
+    /// ([`cmd::imagery::ZonesAhead`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) zones_ahead: Option<cmd::imagery::ZonesAhead>,
     /// Where the requests a copy of the session makes for a model's run ahead go
     /// ([`cmd::workflows::ahead_on_copy`]): the session's own Diagnostics, as when they're made
     /// there. Its notices stay its own: the run there says them.
@@ -917,6 +921,9 @@ pub struct Session {
     /// The tools run ahead that a model's run took, for the tests.
     #[cfg(test)]
     pub(crate) tools_taken: usize,
+    /// The zones' means read ahead that a command took, for the tests.
+    #[cfg(test)]
+    pub(crate) zones_taken: usize,
     /// Set where a person at a terminal waits on a command (`rustgis-cli run` with stdin and
     /// stderr a terminal), who can stop it with Ctrl-C: tools and rasters take no work cap
     /// ([`rustgis_analysis::control::Control::stoppable`]). A program that calls it (an agent, a
@@ -1207,9 +1214,13 @@ impl Session {
             #[cfg(not(target_arch = "wasm32"))]
             files_ahead: None,
             #[cfg(not(target_arch = "wasm32"))]
+            zones_ahead: None,
+            #[cfg(not(target_arch = "wasm32"))]
             requests_into: None,
             #[cfg(test)]
             tools_taken: 0,
+            #[cfg(test)]
+            zones_taken: 0,
             stoppable: false,
         };
         for text in label_notices {

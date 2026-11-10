@@ -921,12 +921,15 @@ fn spectral_points(s: &mut Session, r: &Raster, points: &Value) -> Result<Vec<Va
 /// Every band's value at a point, at several points (`points`, a profile each), or their mean
 /// in a polygon (`zone`), with the bands' names and wavelengths.
 ///
-/// It runs where it is called, on the session's thread (#1562). The point forms read at most
-/// [`MAX_SPECTRAL_POINTS`] pixels, and the Image Analysis pane asks only for points. A zone reads
-/// the cells in the zone's window, row by row, and looks at Cancel between rows, but nothing in
-/// the app runs this command under a control yet: a script, model or the assistant asking for a
-/// large zone holds the window until the means are read. Moving it to a background read is left
-/// for when that is asked for.
+/// The point forms read at most [`MAX_SPECTRAL_POINTS`] pixels where the command is called. A
+/// zone's means grow with the zone. A script's line reads them on the script's copy of the session
+/// (it is on `ON_A_COPY`), off the UI thread with **Run Script**'s progress and **Cancel**, and the
+/// run here takes them (#1562); from the first line that stops the copy, a script's zones are read
+/// here, as its tools run here. No pane of the app asks for a zone. The assistant, tasks and the
+/// command line call commands one at a time on the session itself and use each answer before the
+/// next call, so there is no copy to read on: a zone they ask for is read where they ask, looking at
+/// Cancel between rows when it runs under a control. Giving those callers a background path is their
+/// work, for every command they call, not this command's.
 fn spectral(s: &mut Session, p: &Value) -> CmdResult {
     let r = raster(s, p)?;
     // A zone is read before points, and points before one point: what isn't read is said, once
@@ -950,7 +953,7 @@ fn spectral(s: &mut Session, p: &Value) -> CmdResult {
 
 /// [`spectral`]'s answer: the mean in the polygon layer `zone` when given, else the points'
 /// profiles, else one point's.
-fn spectral_read(s: &mut Session, p: &Value, r: &Raster, zone: Option<&str>) -> CmdResult {
+fn spectral_read(s: &mut Session, p: &Value, r: &Arc<Raster>, zone: Option<&str>) -> CmdResult {
     let all: Vec<usize> = (0..r.band_count()).collect();
     let names: Vec<String> = r.bands.iter().map(|b| b.name.clone()).collect();
     // The bands' wavelengths, when the file gives any (`null` for a band without one).
@@ -967,23 +970,74 @@ fn spectral_read(s: &mut Session, p: &Value, r: &Raster, zone: Option<&str>) -> 
         return answer(json!({"bands": names, "profiles": profiles}));
     }
     if let Some(z) = zone {
-        let l = s
-            .map()
-            .layer_by_name(z)
-            .filter(|l| l.geometry_type() == GeometryType::Polygon)
-            .ok_or_else(|| format!("no polygon layer '{z}'"))?;
-        let row = l.selection.first().copied().unwrap_or(0);
-        let Some(Geometry::Polygon(polys)) = l.dataset.features.get(row).and_then(|f| f.geometry.as_ref()) else {
-            return Err("the zone has no polygon".into());
-        };
-        let rings = polys.first().ok_or("the zone has no polygon")?;
-        let (means, n) = rasterops::zonal_means(r, &all, rings)?.ok_or("no pixels fall in the zone")?;
+        let rings = zone_rings(s, z)?;
+        // Read on a thread of its own as the app sent the command, when still of this raster and
+        // this polygon; here otherwise.
+        let (means, n) = zone_means(s, r, rings)?.ok_or("no pixels fall in the zone")?;
         return answer(json!({"bands": names, "values": means, "pixels": n}));
     }
     let c = Coord::new(f(p, "lon").ok_or("give lon and lat, points or a zone")?, f(p, "lat").ok_or("lat is required")?);
     let (col, row) = r.pixel_at(c).ok_or("the point is outside the raster")?;
     let vals: Vec<Option<f32>> = all.iter().map(|b| r.value(*b, col, row)).collect();
     answer(json!({"bands": names, "values": vals, "pixel": [col, row]}))
+}
+
+/// The polygon a spectral zone names: the polygon layer `z`'s selected feature, or its first.
+fn zone_rings(s: &Session, z: &str) -> Result<Vec<Vec<Coord>>, String> {
+    let l =
+        s.map().layer_by_name(z).filter(|l| l.geometry_type() == GeometryType::Polygon).ok_or_else(|| format!("no polygon layer '{z}'"))?;
+    let row = l.selection.first().copied().unwrap_or(0);
+    let Some(Geometry::Polygon(polys)) = l.dataset.features.get(row).and_then(|f| f.geometry.as_ref()) else {
+        return Err("the zone has no polygon".into());
+    };
+    polys.first().cloned().ok_or_else(|| "the zone has no polygon".into())
+}
+
+/// A zone's means, every band's: those a script's copy of the session read, when of this raster
+/// and this polygon; read here otherwise (and recorded, on that copy, for the script's run here to
+/// take). A raster a tool made earlier in the script is decoded apart on each side, so its zones
+/// are read again here.
+#[cfg_attr(target_arch = "wasm32", allow(unused_variables))]
+fn zone_means(s: &mut Session, r: &Arc<Raster>, rings: Vec<Vec<Coord>>) -> Result<Option<(Vec<f64>, usize)>, String> {
+    #[cfg(not(target_arch = "wasm32"))]
+    let same = |z: &ZoneMeans| Arc::ptr_eq(&z.raster, r) && z.rings == rings;
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(ZonesAhead::Taking(zones)) = &mut s.zones_ahead {
+        match zones.pop_front() {
+            Some(next) if same(&next) => {
+                #[cfg(test)]
+                {
+                    s.zones_taken += 1;
+                }
+                return next.means;
+            }
+            _ => s.zones_ahead = None,
+        }
+    }
+    let all: Vec<usize> = (0..r.band_count()).collect();
+    let means = rasterops::zonal_means(r, &all, &rings).map_err(String::from);
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(ZonesAhead::Recording(zones)) = &mut s.zones_ahead {
+        zones.push(ZoneMeans { raster: r.clone(), rings, means: means.clone() });
+    }
+    means
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// The zones' means a script's run on a copy of the session read: recorded on the copy, then
+/// taken in order by the run here, as its tools' results are ([`super::gp::Ahead`]).
+pub(crate) enum ZonesAhead {
+    Recording(Vec<ZoneMeans>),
+    Taking(std::collections::VecDeque<ZoneMeans>),
+}
+
+/// A zone's means read on a script's copy of the session, with what they were read from, so the
+/// run here takes them only for the same raster and polygon.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) struct ZoneMeans {
+    raster: Arc<Raster>,
+    rings: Vec<Vec<Coord>>,
+    means: Result<Option<(Vec<f64>, usize)>, String>,
 }
 
 fn supervised(s: &mut Session, p: &Value) -> CmdResult {

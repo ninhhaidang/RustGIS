@@ -643,6 +643,7 @@ pub(crate) fn ahead_on_copy(s: &Session, command: &'static str, p: &Value) -> su
         copy.active_layer = active_layer;
         copy.tools_ahead = Some(super::gp::Ahead::Recording(Vec::new()));
         copy.files_ahead = Some(super::gp::FilesAhead::Recording(Vec::new()));
+        copy.zones_ahead = Some(super::imagery::ZonesAhead::Recording(Vec::new()));
         let _ = copy.run(command, &p);
         super::gp::ran_ahead(&mut copy)
     })
@@ -685,6 +686,7 @@ pub(crate) const ON_A_COPY: &[&str] = &[
     "layer.definitionQuery",
     "layer.select",
     "map.projection",
+    "raster.spectral",
 ];
 
 #[cfg(not(target_arch = "wasm32"))]

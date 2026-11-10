@@ -1284,7 +1284,7 @@ project (New, Open, the sample, a template, or the same one again), from the app
 assistant or an agent, starts the pane blank: the script, its results, the count and the Details
 window go with the old project. A script that opens a project itself stays, with its results, as
 the new project's Run #1. On the desktop, a script's tools, models and batches, with selections, layer
-renames and definition queries, the environment and the projection between them, are worked out
+renames and definition queries, the environment, the projection and spectral zones between them, are worked out
 in the background first, so the map and the rest of the window stay in use: the status bar shows
 **Run Script** and **Cancel**, and the results say **Running…** until the run is added. From the
 first line of any other kind (an edit, Add Data, a save, an export, a style or a zoom, a plugin
@@ -1462,7 +1462,9 @@ The Analyze tab's imagery groups open their tools in the Workflows pane:
   (desktop) writes a row per band (its number, name and wavelength) and a column per point. From
   scripts, `{"layer": "scene", "points": [[-43.95, -19.92], [-43.96, -19.93]]}` gives one profile
   per point (up to 1,000; a point off the raster keeps its place with null values, and is said),
-  `{"lon", "lat"}` one pixel and `{"zone": "polygons"}` the mean in the selected or first polygon;
+  `{"lon", "lat"}` one pixel and `{"zone": "polygons"}` the mean in the selected or first polygon
+  (on the desktop, a script's zone is worked out in the background with the script, up to the
+  first line that stops it, as said under **Script**; one after it holds the window);
   every answer has the band names and, when the file gives any, `"wavelengths"` in nanometres.
   After GeoLibre's spectral profile.
 - **Change Detection** (difference, ratio, percent), **Indices** (NDVI, NDWI, SAVI, NBR, NDBI,

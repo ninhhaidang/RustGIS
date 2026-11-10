@@ -663,6 +663,7 @@ pub(crate) enum FilesAhead {
 pub(crate) struct RanAheads {
     tools: Vec<RanAhead>,
     files: Vec<FileAhead>,
+    zones: Vec<super::imagery::ZoneMeans>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -673,9 +674,11 @@ pub(crate) struct RanAheads {
 pub(crate) fn taking<T>(s: &mut Session, ran: RanAheads, run: impl FnOnce(&mut Session) -> T) -> T {
     s.tools_ahead = Some(Ahead::Taking(ran.tools.into()));
     s.files_ahead = Some(FilesAhead::Taking(ran.files.into()));
+    s.zones_ahead = Some(super::imagery::ZonesAhead::Taking(ran.zones.into()));
     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(s)));
     s.tools_ahead = None;
     s.files_ahead = None;
+    s.zones_ahead = None;
     r.unwrap_or_else(|p| std::panic::resume_unwind(p))
 }
 
@@ -690,7 +693,11 @@ pub(crate) fn ran_ahead(s: &mut Session) -> RanAheads {
         Some(FilesAhead::Recording(read)) => read,
         _ => Vec::new(),
     };
-    RanAheads { tools, files }
+    let zones = match s.zones_ahead.take() {
+        Some(super::imagery::ZonesAhead::Recording(read)) => read,
+        _ => Vec::new(),
+    };
+    RanAheads { tools, files, zones }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
