@@ -191,7 +191,7 @@ fn review_value(v: &Value, depth: usize) -> Result<Value, String> {
                 }
             }
             out.push_str(rest);
-            Value::String(crate::cmd::history::redacted_text(&sql_secrets_removed(&out)))
+            Value::String(crate::cmd::history::redacted_parameter(&sql_secrets_removed(&out)))
         }
         other => other.clone(),
     })

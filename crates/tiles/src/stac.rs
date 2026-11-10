@@ -629,7 +629,10 @@ pub fn sas_token_url(href: &str) -> Result<String, String> {
     let ok =
         |s: &str, max: usize| (3..=max).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
     if !ok(account, 24) || !ok(container, 63) {
-        return Err(format!("{href}: not an Azure Blob Storage address the Planetary Computer signs"));
+        return Err(rustgis_data::diagnostics::message_with_address(
+            href,
+            "not an Azure Blob Storage address the Planetary Computer signs",
+        ));
     }
     Ok(format!("{SAS_API}/{account}/{container}"))
 }
@@ -911,7 +914,9 @@ mod tests {
             assert!(parse_sas(bad).is_err());
         }
         assert!(sas_token_url("https://evil.org/x.blob.core.windows.net/c/x.tif").is_err());
-        assert!(sas_token_url("https://a.blob.core.windows.net/").is_err());
+        let error = sas_token_url("https://a.blob.core.windows.net/?token=hidden unescaped hidden").unwrap_err();
+        let error = rustgis_data::diagnostics::redact(&error);
+        assert!(error.contains("not an Azure Blob Storage address") && !error.contains("hidden"), "{error}");
         remember_token("k", "sig=1");
         assert_eq!(cached_token("k").as_deref(), Some("sig=1"));
         // A web item can't point into the local network.

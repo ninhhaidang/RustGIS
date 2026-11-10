@@ -238,7 +238,10 @@ pub(crate) fn fetch(app: &RustGisApp, url: &str, limit: usize, ctx: Option<egui:
     // The same rule on every platform: HTTPS, or plain HTTP to this computer.
     if !rp::registry::allowed_url(url) {
         if let Ok(mut s) = slot.lock() {
-            *s = Some(Err(crate::i18n::fmt("{url}: only HTTPS addresses are allowed", &[("url", url)])));
+            *s = Some(Err(crate::i18n::fmt(
+                "{url}: only HTTPS addresses are allowed",
+                &[("url", &rustgis_engine::sources::address_in_message(url))],
+            )));
         }
         return slot;
     }

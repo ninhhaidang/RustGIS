@@ -232,7 +232,10 @@ pub(crate) fn add_with_metadata_wait(s: &mut Session, p: &Value, metadata_wait: 
     // (`start`, `end`) turns on when it is off.
     let dated = rustgis_data::time::is_template(url);
     if dated && !matches!(kind, TileKind::Raster | TileKind::Vector | TileKind::Cog) {
-        return Err(format!("{url}: dated addresses work for raster, vector and GeoTIFF tile layers, not {}", kind.code()));
+        return Err(crate::sources::message_with_address(
+            url,
+            &format!("dated addresses work for raster, vector and GeoTIFF tile layers, not {}", kind.code()),
+        ));
     }
     let at = if dated { dated_start(s, p)? } else { 0.0 };
     let mut t = TileLayer::new(
@@ -487,7 +490,7 @@ pub(crate) fn follow_style_view(s: &mut Session, wait: web_time::Duration) -> bo
             Ok(None) => return false,
             Err(e) => {
                 s.style_view = None;
-                s.notify(format!("{url}: {e}"), true);
+                s.notify(crate::sources::message_with_address(&url, &e), true);
                 return false;
             }
         }
@@ -500,7 +503,7 @@ pub(crate) fn follow_style_view(s: &mut Session, wait: web_time::Duration) -> bo
     match super::navigate::go_to_view(s, center, view.zoom, view.bearing, view.pitch) {
         Ok(()) => true,
         Err(e) => {
-            s.notify(format!("{url}: {e}"), true);
+            s.notify(crate::sources::message_with_address(&url, &e), true);
             false
         }
     }
@@ -870,8 +873,11 @@ fn legends(s: &mut Session, connection: Option<&str>, v: &Value) -> Result<Vec<r
         }
         // Kept as a tile layer keeps it, or refused: an address the layer wouldn't keep.
         rustgis_map::tiles::checked_legends([legend.clone()]).pop().ok_or_else(|| {
-            let url: String = legend.url.chars().take(200).collect();
-            format!("{url}: a legend is a web address (http or https) of at most {} bytes", rustgis_map::tiles::MAX_LEGEND_URL)
+            crate::sources::shortened_message_with_address(
+                &legend.url,
+                200,
+                &format!("a legend is a web address (http or https) of at most {} bytes", rustgis_map::tiles::MAX_LEGEND_URL),
+            )
         })
     };
     let list = match v {
@@ -1073,6 +1079,26 @@ mod tests {
         let p = Project::from_json(&text).unwrap();
         assert_eq!(p.map().tiles[0].blend, Blend::Multiply);
         assert_eq!(text.matches("\"blend\"").count(), 1, "{text}");
+    }
+
+    /// A refused legend's address is shortened for the error without cutting its omission
+    /// marker in half: the address before it is cut instead, and the query stays out.
+    #[test]
+    fn a_refused_legend_keeps_whole_omission_markers() {
+        let mut s = Session::new(Project::default());
+        let tail = ": a legend is a web address (http or https) of at most 4096 bytes";
+        // A kept query and a secret one (source redaction removes it first) both say they went.
+        for query in ["page=2&layer=x", "token=hidden"] {
+            let legend = format!("ftp://h.example/{}?{query}", "a".repeat(190));
+            let tiles = json!({"url": "https://basemap.example.org/{z}/{x}/{y}.png", "name": "T", "legend": legend});
+            let error = s.run("map.addTiles", &tiles).unwrap_err();
+            assert!(!error.contains(query) && error.ends_with(&format!("a…[query omitted]{tail}")), "{error}");
+            assert_eq!(error.split(": a legend").next().map(|a| a.chars().count()), Some(200), "{error}");
+            assert_eq!(Session::redacted(&error).as_str(), error);
+        }
+        // Shorter, the same secret query is still said to have gone.
+        let tiles = json!({"url": "https://basemap.example.org/{z}/{x}/{y}.png", "name": "T", "legend": "ftp://h.example/a?token=hidden"});
+        assert_eq!(s.run("map.addTiles", &tiles).unwrap_err(), format!("ftp://h.example/a[query omitted]{tail}"));
     }
 
     /// A login wrapper given as a legend or a download's address is that session's own, or refused.

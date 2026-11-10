@@ -251,7 +251,7 @@ pub fn fetch_with_progress(
 ) -> Result<Vec<u8>, String> {
     use std::io::Read;
     if !allowed_url(url) {
-        return Err(format!("{url}: only HTTPS addresses are allowed"));
+        return Err(rustgis_data::diagnostics::message_with_address(url, "only HTTPS addresses are allowed"));
     }
     // Redirects stay on HTTPS (a local test registry may use plain HTTP, and only locally). A
     // server that stops sending ends the download after a minute, not at `timeout`: until a read
@@ -264,8 +264,11 @@ pub fn fetch_with_progress(
         .tls_config(rustgis_data::http::tls_config())
         .build()
         .into();
-    let mut resp =
-        agent.get(url).header("User-Agent", concat!("RustGIS/", env!("CARGO_PKG_VERSION"))).call().map_err(|e| format!("{url}: {e}"))?;
+    let mut resp = agent
+        .get(url)
+        .header("User-Agent", concat!("RustGIS/", env!("CARGO_PKG_VERSION")))
+        .call()
+        .map_err(|e| rustgis_data::diagnostics::message_with_address(url, &e.to_string()))?;
     let total = resp.headers().get("content-length").and_then(|v| v.to_str().ok()).and_then(|v| v.trim().parse::<u64>().ok());
     let mut reader = resp.body_mut().with_config().limit(limit as u64 + 1).reader();
     let mut buf = Vec::new();
@@ -274,17 +277,17 @@ pub fn fetch_with_progress(
         let n = match reader.read(&mut piece) {
             Ok(n) => n,
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(e) => return Err(format!("{url}: {e}")),
+            Err(e) => return Err(rustgis_data::diagnostics::message_with_address(url, &e.to_string())),
         };
         if n == 0 {
             break;
         }
         buf.extend_from_slice(piece.get(..n).unwrap_or_default());
         if buf.len() > limit {
-            return Err(format!("{url} is larger than {} MB", limit / (1024 * 1024)));
+            return Err(rustgis_data::diagnostics::message_with_address(url, &format!("is larger than {} MB", limit / (1024 * 1024))));
         }
         if !progress(buf.len() as u64, total) {
-            return Err(format!("{url}: cancelled"));
+            return Err(rustgis_data::diagnostics::message_with_address(url, "cancelled"));
         }
     }
     Ok(buf)
@@ -296,6 +299,14 @@ mod fetch_tests {
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::time::Duration;
+
+    #[test]
+    fn rejected_secret_addresses_keep_the_policy_reason() {
+        let error = fetch("ftp://plugins.test/a?token=secret value", 1024).unwrap_err();
+        let error = rustgis_data::diagnostics::redact(&rustgis_data::diagnostics::redact(&error));
+        assert!(error.contains("only HTTPS addresses are allowed"), "{error}");
+        assert!(!error.contains("secret") && !error.contains("value"), "{error}");
+    }
 
     /// Serves `body` once on this computer, as an HTTP answer that gives its length.
     fn serve(body: Vec<u8>) -> std::io::Result<String> {

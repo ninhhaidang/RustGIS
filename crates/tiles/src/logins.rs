@@ -322,6 +322,9 @@ pub fn scrub(text: &str) -> String {
 /// Runtime request bindings and successful data values must not use this output projection.
 pub fn scrub_error(text: &str) -> String {
     let unbound = scrub_patterns(text, &[]);
+    if let Some(strict) = rustgis_data::diagnostics::secret_continuation_cut(&unbound) {
+        return scrub(&strict);
+    }
     let (public, _) = rustgis_data::address::scrub_addresses(&unbound);
     scrub(&public)
 }

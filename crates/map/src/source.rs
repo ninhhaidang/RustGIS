@@ -522,7 +522,10 @@ fn open_postgis(pg: &PostgisOrigin) -> rustgis_data::Result<Box<dyn FeatureSourc
     {
         use rustgis_data::source::{duckdb::Database, postgis};
         let Database::Postgres(dsn) = Database::parse(&pg.database) else {
-            return Err(rustgis_data::DataError::Format(format!("{}: not a PostgreSQL connection", pg.database)));
+            return Err(rustgis_data::DataError::Format(rustgis_data::diagnostics::message_with_address(
+                &pg.database,
+                "not a PostgreSQL connection",
+            )));
         };
         let conn = postgis::connect(&dsn, false).map_err(database_open_error)?;
         let table = postgis::find_table(&conn, &pg.table)?;
@@ -542,7 +545,10 @@ fn open_mysql(my: &MysqlOrigin) -> rustgis_data::Result<Box<dyn FeatureSource>> 
     {
         use rustgis_data::source::{duckdb::Database, mysql};
         let Database::Mysql(address) = Database::parse(&my.database) else {
-            return Err(rustgis_data::DataError::Format(format!("{}: not a MySQL or MariaDB connection", my.database)));
+            return Err(rustgis_data::DataError::Format(rustgis_data::diagnostics::message_with_address(
+                &my.database,
+                "not a MySQL or MariaDB connection",
+            )));
         };
         let conn = mysql::connect(&address, false).map_err(database_open_error)?;
         let table = mysql::find_table(&conn, &my.table)?;
@@ -562,7 +568,10 @@ fn open_sqlserver(ms: &SqlServerOrigin) -> rustgis_data::Result<Box<dyn FeatureS
     {
         use rustgis_data::source::{duckdb::Database, sqlserver};
         let Database::Sqlserver(address) = Database::parse(&ms.database) else {
-            return Err(rustgis_data::DataError::Format(format!("{}: not a SQL Server connection", ms.database)));
+            return Err(rustgis_data::DataError::Format(rustgis_data::diagnostics::message_with_address(
+                &ms.database,
+                "not a SQL Server connection",
+            )));
         };
         let conn = sqlserver::connect(&address, false).map_err(database_open_error)?;
         let table = sqlserver::find_table(&conn, &ms.table)?;
@@ -738,18 +747,19 @@ impl SourceLayer {
                 }
             }
         }
+        let named = |e: &str| rustgis_data::diagnostics::message_with_address(path, e);
         if new.handle.is_none() {
-            new.open().map_err(|e| format!("{path}: {e}"))?;
+            new.open().map_err(|e| named(&e))?;
         }
         // Opening a header alone doesn't establish that its payload is readable. Probe the
         // candidate, never the live source, before the caller commits the replacement.
-        let handle = new.handle.as_deref().ok_or_else(|| format!("{path}: the replacement source didn't open"))?;
-        let probe = handle.read(&Request { extent: None, limit: 1 }).map_err(|e| format!("{path}: {e}"))?;
+        let handle = new.handle.as_deref().ok_or_else(|| named("the replacement source didn't open"))?;
+        let probe = handle.read(&Request { extent: None, limit: 1 }).map_err(|e| named(&e.to_string()))?;
         if probe.features.is_empty() && probe.skipped > 0 {
-            return Err(format!(
-                "{path}: no readable features found while checking the replacement ({} rows could not be read)",
+            return Err(named(&format!(
+                "no readable features found while checking the replacement ({} rows could not be read)",
                 probe.skipped
-            ));
+            )));
         }
         if probe.skipped > 0 {
             conversion_notes.push(format!("{} rows could not be read while checking the replacement", probe.skipped));
@@ -1044,9 +1054,11 @@ impl SourceLayer {
                     let r = match r {
                         Ok(bytes) => rustgis_data::source::open_shared(&name, Arc::new(bytes), table.as_deref())
                             .map(Arc::from)
-                            .map_err(|e| format!("{url}: {e}")),
-                        Err(rustgis_data::source::remote::Failed::Other(e)) => Err(format!("{url}: {e}")),
-                        Err(e) => Err(format!("{url}: couldn't be downloaded ({e:?})")),
+                            .map_err(|e| rustgis_data::diagnostics::message_with_address(&url, &e.to_string())),
+                        Err(rustgis_data::source::remote::Failed::Other(e)) => {
+                            Err(rustgis_data::diagnostics::message_with_address(&url, &e))
+                        }
+                        Err(e) => Err(rustgis_data::diagnostics::message_with_address(&url, &format!("couldn't be downloaded ({e:?})"))),
                     };
                     if let Ok(mut s) = land.lock() {
                         *s = Some(r);

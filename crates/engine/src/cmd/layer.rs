@@ -3340,7 +3340,8 @@ pub(crate) fn fixed_download_urls(p: &Value) -> Option<Vec<String>> {
 /// they are.
 pub(crate) fn add_url(s: &mut Session, p: &Value) -> CmdResult {
     let owner = s.continuation()?;
-    let out = add_url_as_given(s, p).map_err(|e| crate::sources::redact_text(&e))?;
+    let url = ps(p, "url").map(str::trim).unwrap_or("");
+    let out = add_url_as_given(s, p).map_err(|e| crate::sources::message_with_address(url, &e))?;
     s.check_continuation(&owner)?;
     Ok(out)
 }
@@ -3384,10 +3385,16 @@ fn add_url_as_given(s: &mut Session, p: &Value) -> CmdResult {
             .and_then(Value::as_u64)
             .is_some_and(|id| u32::try_from(id).ok().and_then(|id| s.map().layer(id)).is_none());
         if missing || added.gone(s.map()) {
-            return Err(format!("{url}: the layer its download added was removed or undone before the command ran again"));
+            return Err(crate::sources::message_with_address(
+                url,
+                "the layer its download added was removed or undone before the command ran again",
+            ));
         }
         if super::plugins::fetch::table_gone(&answer, &s.project) {
-            return Err(format!("{url}: the table its download added was removed or undone before the command ran again"));
+            return Err(crate::sources::message_with_address(
+                url,
+                "the table its download added was removed or undone before the command ran again",
+            ));
         }
         return added.answer_now(s.map(), &answer);
     }
@@ -3488,13 +3495,9 @@ fn add_url_as_given(s: &mut Session, p: &Value) -> CmdResult {
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
-        // Errors name the address without its keys, and any address they quote (a redirect's)
-        // without its keys too; those about the address itself name it already.
-        let shown = crate::sources::redact(url);
-        let named = |e: String| match e.strip_prefix(url).or_else(|| e.strip_prefix(shown.as_str())) {
-            Some(rest) => format!("{shown}{}", crate::sources::redact_text(rest)),
-            None => format!("{shown}: {}", crate::sources::redact_text(&e)),
-        };
+        // Redact the known address before composing any reason: a query value can contain
+        // unescaped whitespace, so splitting an arbitrary error into URL words is not safe.
+        let named = |e: String| crate::sources::message_with_address(url, &e);
         // An address without a file name may be a GeoTIFF too: its first bytes are read to see,
         // and anything that doesn't answer as one is downloaded whole, as before.
         let unnamed = !tiff && is_unnamed_url(url);
@@ -3581,8 +3584,8 @@ fn is_zip(bytes: &[u8]) -> bool {
 /// A Shapefile's `.shp` or part that failed, named by its address without its keys or signature
 /// (the `.shp`'s query, which the parts carry too).
 fn part_failed(url: &str, e: String) -> String {
-    let e = e.strip_prefix(url).map(|r| r.trim_start_matches(": ").to_string()).unwrap_or(e);
-    format!("{}: {}{}", crate::sources::redact(url), crate::sources::redact_text(&e), status_hint(url, &e))
+    let why = status_hint(url, &e);
+    format!("{}{why}", crate::sources::message_with_address(url, &e))
 }
 
 /// What a Shapefile's 403 may mean: S3 answers a signed request for a file that isn't there as it
@@ -3707,10 +3710,10 @@ pub fn download_data(url: &str, max: usize, done: crate::render::rustgis_tiles::
                 let left = max.saturating_sub(shp.len());
                 download_parts(name, shp, parts.into_iter(), Vec::new(), left, done);
             }
-            // The app names the address it asked for (redacted), as for any download.
+            // Name the complete known address before the app or session redacts this again.
             Err(e) => {
                 let why = status_hint(&shp_url, &e);
-                done(Err(format!("{}{why}", crate::sources::redact_text(&e))))
+                done(Err(format!("{}{why}", crate::sources::message_with_address(&shp_url, &e))))
             }
         }),
     );
@@ -3921,15 +3924,10 @@ pub(crate) fn add_cog_with(s: &mut Session, p: &Value, url: &str, strict: bool, 
             s.notify(format!("{shown}: {line}"), false);
         }
     } else if probed || why.is_some() || r.get("dated").is_some() {
-        // Added, but its (first date's) file couldn't be read: the view stays where it was, and
-        // the answer says why when the read said (its keys left out).
+        // Added, but its (first date's) file couldn't be read: the view stays where it was.
         r["warning"] = json!(match why {
-            Some(e) => format!(
-                "{} couldn't be read ({}), so the map wasn't moved to it",
-                crate::sources::redact(&url),
-                crate::sources::redact_text(&e)
-            ),
-            None => format!("{} couldn't be read yet, so the map wasn't moved to it", crate::sources::redact(&url)),
+            Some(e) => crate::sources::message_with_address(&url, &format!("couldn't be read ({e}), so the map wasn't moved to it"),),
+            None => crate::sources::message_with_address(&url, "couldn't be read yet, so the map wasn't moved to it"),
         });
     }
     r["inPlace"] = json!(true);
@@ -3989,11 +3987,8 @@ fn add_in_place(
     // Its header couldn't be read (a failure recorded and not tried again yet, or now): the view
     // stays where it was, and the answer says why (the layer says so too, once its read fails).
     if let Err(e) = &info {
-        r["warning"] = json!(format!(
-            "{} couldn't be read ({}), so the map wasn't moved to it",
-            crate::sources::redact(file),
-            crate::sources::redact_text(e)
-        ));
+        r["warning"] =
+            json!(crate::sources::message_with_address(file, &format!("couldn't be read ({e}), so the map wasn't moved to it"),));
     }
     if let Ok(Some(info)) = info {
         let [w, so, e, n] = info.bounds;
@@ -4178,7 +4173,7 @@ pub fn window_asked(s: &Session, p: &Value) -> Result<WindowAsked, String> {
         .and_then(|_| super::raster::as_scan(p))
         .and_then(|scan| window_checks(p, url, scan))
         .and_then(|()| window_settled(s, p, url));
-    checked.map_err(|e| crate::sources::redact_text(&e))
+    checked.map_err(|e| crate::sources::message_with_address(url, &e))
 }
 
 /// `layer.addUrl` with `"bbox"`, for those that wait: read here and added.
@@ -4204,7 +4199,7 @@ pub fn read_cog_window(asked: &WindowAsked) -> Result<CogWindow, String> {
     use crate::render::rustgis_tiles::cog;
     use rustgis_data::raster::cog::Level;
     let url = asked.url.as_str();
-    let named = |e: String| crate::sources::redact_text(&if e.starts_with(url) { e } else { format!("{url}: {e}") });
+    let named = |e: String| crate::sources::message_with_address(url, &e);
     let [west, south, east, north] = asked.bbox;
     let cell = asked.cell;
     // The five minutes count from the header's read.
@@ -4624,17 +4619,18 @@ fn add_download(s: &mut Session, p: &Value) -> CmdResult {
     // A service's features (Add From Service): its answer's axes (against its layer's bounds) and
     // paging.
     let bytes = if service {
-        let label = ps(p, "name").unwrap_or(&url).to_string();
+        let label = ps(p, "name").map(str::to_string).unwrap_or_else(|| crate::sources::address_in_message(&url));
         super::service::features_answer(s, &label, bytes, bounds)
     } else {
         bytes
     };
     // A WCS coverage (Add From Service): a GeoTIFF, or the service's error said as such.
     let name = if coverage {
-        super::service::coverage_check(ps(p, "name").unwrap_or(&url), &bytes)?;
+        let label = ps(p, "name").map(str::to_string).unwrap_or_else(|| crate::sources::address_in_message(&url));
+        super::service::coverage_check(&label, &bytes)?;
         "coverage.tif".to_string()
     } else {
-        url_file_name(&url, &bytes).map_err(|e| format!("{url}: {e}"))?
+        url_file_name(&url, &bytes).map_err(|e| crate::sources::message_with_address(&url, &e))?
     };
     let left_out = parts_left_out(&url, &bytes, p);
     let r = super::raster::add_named_bytes(s, p, name, bytes, b(p, "zoom"))?;

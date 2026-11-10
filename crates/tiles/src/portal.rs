@@ -176,7 +176,10 @@ impl Portal {
                     Some(u) => {
                         let host = host_of(u).to_ascii_lowercase();
                         if !host_ok(&host) {
-                            return Err(format!("'{u}': a Socrata site is its domain, such as data.cityofnewyork.us"));
+                            return Err(rustgis_data::diagnostics::message_with_address(
+                                u,
+                                "a Socrata site is its domain, such as data.cityofnewyork.us",
+                            ));
                         }
                         web(&host)?;
                         // A discovery API itself searches every site; a site keeps the search to it.
@@ -194,7 +197,10 @@ impl Portal {
                     Some(u) => {
                         let host = host_of(u).to_ascii_lowercase();
                         if !host_ok(&host) {
-                            return Err(format!("'{u}': an ArcGIS Hub site is its address, such as hub.arcgis.com"));
+                            return Err(rustgis_data::diagnostics::message_with_address(
+                                u,
+                                "an ArcGIS Hub site is its address, such as hub.arcgis.com",
+                            ));
                         }
                         web(&host)?
                     }

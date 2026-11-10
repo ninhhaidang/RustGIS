@@ -91,7 +91,8 @@ pub fn portal_base(input: &str) -> Result<String, String> {
     if raw.is_empty() {
         return Ok(ONLINE.to_string());
     }
-    let (origin, path) = split(raw).ok_or_else(|| format!("{raw}: a portal is given by its https:// address"))?;
+    let (origin, path) =
+        split(raw).ok_or_else(|| rustgis_data::diagnostics::message_with_address(raw, "a portal is given by its https:// address"))?;
     if origin == "https://arcgis.com" {
         return Ok(ONLINE.to_string());
     }
@@ -496,7 +497,10 @@ pub fn add_token(url: &str, token: &str) -> Result<String, String> {
         return Err("an ArcGIS token is one word of letters, digits and - _ . ~ + / =".into());
     }
     let root = server_root(url).ok_or_else(|| {
-        format!("{}: a token is given with an ArcGIS REST address on https:// (…/rest/services/… or …/sharing/rest)", url.trim())
+        rustgis_data::diagnostics::message_with_address(
+            url.trim(),
+            "a token is given with an ArcGIS REST address on https:// (…/rest/services/… or …/sharing/rest)",
+        )
     })?;
     let scopes = Scope::prefix(&root).into_iter().collect();
     keep(Session {

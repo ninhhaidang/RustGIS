@@ -127,7 +127,8 @@ pub fn poll(app: &mut RustGisApp, ctx: &egui::Context) {
         Phase::Meta => {
             let docs: Vec<(String, Vec<u8>)> = std::mem::take(&mut st.got).into_iter().collect();
             if docs.is_empty() && st.forbidden > 0 {
-                st.error = Some(i18n::fmt("{url}: access denied (HTTP 403)", &[("url", &st.root)]));
+                st.error =
+                    Some(i18n::fmt("{url}: access denied (HTTP 403)", &[("url", &rustgis_engine::sources::address_in_message(&st.root))]));
                 return;
             }
             match zarr::parse_store(&docs) {

@@ -2239,7 +2239,7 @@ impl RustGisApp {
     fn retire_cog_probes(&mut self) {
         for (p, _, _) in std::mem::take(&mut self.ui.cog_probes) {
             let url = p.get("url").and_then(Value::as_str).unwrap_or("");
-            let url = serviceui::address_in_message(rustgis_engine::data::s3_address::inner(url));
+            let url = rustgis_engine::sources::address_in_message(url);
             let why = i18n::fmt("{url}: its project was closed while it was read, so it wasn't added", &[("url", &url)]);
             self.landed_in_dialog(&p, Err(&why));
             self.session.notify(why, false);
@@ -3196,7 +3196,7 @@ impl RustGisApp {
                     },
                     Box::new(move |r| *land.lock().unwrap_or_else(|e| e.into_inner()) = Some(r)),
                 );
-                self.session.notify(i18n::fmt("Opening {url}…", &[("url", url)]), false);
+                self.session.notify(i18n::fmt("Opening {url}…", &[("url", &rustgis_engine::sources::address_in_message(url))]), false);
                 let id = self.session.download_started();
                 if let Some((old, ..)) = self.ui.project_download.replace((id, url.to_string(), slot)) {
                     self.session.download_failed(old);
@@ -4293,14 +4293,17 @@ impl RustGisApp {
             if !self.session.download_done(id) {
                 if r.is_ok() {
                     self.session.notify(
-                        i18n::fmt("{url}: downloaded after another project was opened, so it wasn't opened", &[("url", &url)]),
+                        i18n::fmt(
+                            "{url}: downloaded after another project was opened, so it wasn't opened",
+                            &[("url", &rustgis_engine::sources::address_in_message(&url))],
+                        ),
                         false,
                     );
                 }
                 return self.poll_data_downloads();
             }
             if let Err(e) = r.and_then(|bytes| self.open_project_bytes(project_file_name(&url), &bytes)) {
-                self.session.notify(if e.starts_with(&url) { e } else { format!("{url}: {e}") }, true);
+                self.session.notify(rustgis_engine::sources::message_with_address(&url, &e), true);
             }
         }
         self.poll_data_downloads();
@@ -4437,8 +4440,8 @@ impl RustGisApp {
                     );
                 }
                 // An address read through a saved S3 connection is said as the address it wraps.
-                let shown = rustgis_engine::data::s3_address::inner(url);
-                self.session.notify(i18n::fmt("Reading {url}…", &[("url", shown)]), false);
+                let shown = rustgis_engine::sources::address_in_message(url);
+                self.session.notify(i18n::fmt("Reading {url}…", &[("url", &shown)]), false);
                 let mut probe = p.clone();
                 probe["url"] = json!(address);
                 if let Some(o) = probe.as_object_mut() {
@@ -4499,8 +4502,8 @@ impl RustGisApp {
             if window {
                 return self.start_window_read(p, url, q, claim);
             }
-            let shown = rustgis_engine::data::s3_address::inner(&url);
-            self.session.notify(i18n::fmt("Downloading {url}…", &[("url", shown)]), false);
+            let shown = rustgis_engine::sources::address_in_message(&url);
+            self.session.notify(i18n::fmt("Downloading {url}…", &[("url", &shown)]), false);
             let id = claim.unwrap_or_else(|| self.session.download_started());
             // A service's features: read page by page from the start, off the frame (an ArcGIS
             // layer's description first).
@@ -4591,10 +4594,9 @@ impl RustGisApp {
                     }
                 }
                 Err(e) => {
-                    // A waiting command's error names the address, as the notice does.
-                    // Redacted whole, as the notice is: a key with a space in it isn't left half there.
-                    let e = if e.starts_with(&url) { e } else { format!("{url}: {e}") };
-                    let e = rustgis_engine::Session::redacted(&e).into_string();
+                    // A waiting command's error names the address, as the notice does: sanitized
+                    // on its own first, so a key in its query doesn't take the reason with it.
+                    let e = rustgis_engine::sources::message_with_address(&url, &e);
                     self.session.request_failed(&p, &e);
                     if let Some(id) = claim {
                         self.session.download_failed(id);
@@ -4652,12 +4654,7 @@ impl RustGisApp {
         self.session.request_failed(p, &e);
         self.session.download_failed(id);
         rustgis_engine::cmd::geolibre::discard_pending(&mut self.session, p);
-        // Named without the address's keys, token or signature.
-        let e = e.strip_prefix(url).map(|r| r.trim_start_matches(": ").to_string()).unwrap_or(e);
-        let why = rustgis_engine::sources::redact_text(&e);
-        // An error that names its own address (a Shapefile's part) isn't named again.
-        let named = why.split_once(": ").is_some_and(|(head, _)| head.contains("://") && !head.contains(' '));
-        let why = if named { why } else { format!("{}: {why}", rustgis_engine::sources::redact(url)) };
+        let why = rustgis_engine::sources::message_with_address(url, &e);
         self.landed_in_dialog(p, Err(&why));
         self.session.notify(why, true);
     }
@@ -4671,7 +4668,7 @@ impl RustGisApp {
             if self.ui.window_reads.len() >= MAX_WINDOW_READS {
                 return Err(i18n::fmt(
                     "{url}: {count} windows are being read already: ask again once one has been added",
-                    &[("url", &rustgis_engine::sources::redact(&url)), ("count", &MAX_WINDOW_READS.to_string())],
+                    &[("url", &rustgis_engine::sources::address_in_message(&url)), ("count", &MAX_WINDOW_READS.to_string())],
                 ));
             }
             Ok(asked)
@@ -4719,7 +4716,7 @@ impl RustGisApp {
             // Answered and given back as a refused window is.
             let e = i18n::fmt(
                 "{url}: its read didn't start: {error}",
-                &[("url", &rustgis_engine::sources::redact(&url)), ("error", &e.to_string())],
+                &[("url", &rustgis_engine::sources::address_in_message(&url)), ("error", &e.to_string())],
             );
             self.session.request_failed(p, &e);
             if let Some(id) = claim {
@@ -4728,7 +4725,7 @@ impl RustGisApp {
             return Err(e);
         }
         // Named redacted, and by the address an S3 connection's wraps.
-        let shown = rustgis_engine::sources::redact(rustgis_engine::data::s3_address::inner(&url));
+        let shown = rustgis_engine::sources::address_in_message(&url);
         self.session.notify(i18n::fmt("Reading {url}…", &[("url", &shown)]), false);
         let id = claim.unwrap_or_else(|| self.session.download_started());
         self.ui.window_reads.push((id, url, q, slot, left));
@@ -4758,15 +4755,13 @@ impl RustGisApp {
     fn add_download(&mut self, landed: serviceui::Landed, current: bool) {
         let serviceui::Landed { id, url, params: mut p, origin } = landed;
         if !current {
-            let shown = serviceui::address_in_message(&url);
+            let shown = rustgis_engine::sources::address_in_message(&url);
             let why = i18n::fmt("{url}: downloaded after its project was closed, so it wasn't added", &[("url", &shown)]);
             self.session.request_failed(&p, &why);
             self.landed_in_dialog(&p, Err(&why));
             self.session.notify(why, false);
             return;
         }
-        // Named redacted: a notice with a key in it loses what follows it.
-        let shown = rustgis_engine::sources::redact(&url);
         p["id"] = json!(id);
         p["url"] = json!(url);
         let zoom = p.get("zoom").and_then(rustgis_engine::cmd::bool_value) == Some(true);
@@ -4787,11 +4782,9 @@ impl RustGisApp {
             Err(e) => {
                 self.session.request_failed(&pending, &e);
                 rustgis_engine::cmd::geolibre::discard_pending(&mut self.session, &pending);
-                // Running it said the error already: again only to name the address it lacks. An
-                // error may name it redacted.
-                let named = e.starts_with(&url) || e.starts_with(&shown);
-                let e = if named { e } else { format!("{shown}: {e}") };
-                self.landed_in_dialog(&pending, Err(&e));
+                // Running it said the error already; the dialog alone needs the address.
+                let why = rustgis_engine::sources::message_with_address(&url, &e);
+                self.landed_in_dialog(&pending, Err(&why));
             }
         }
     }
@@ -4851,7 +4844,7 @@ impl RustGisApp {
         if opened == self.session.opened {
             return true;
         }
-        let url = serviceui::address_in_message(address);
+        let url = rustgis_engine::sources::address_in_message(address);
         let why = i18n::fmt("{url}: its project was closed while it was read, so it wasn't added", &[("url", &url)]);
         if pending.is_some() && self.dialogs.info.as_deref() == pending {
             self.dialogs.info = None;
@@ -6213,9 +6206,14 @@ mod record_tests {
         let failed = add("404 Not Found", crate::serviceui::downloading("Roads"));
         assert!(!failed.session.map().layers.iter().any(|l| l.name == "Roads"));
         assert_eq!(failed.dialogs.info, None);
-        // Why, redacted as the notice is: the address, not its token.
+        // The failure's HTTP status survives redaction in the dialog as well as the notice.
         let why = failed.dialogs.error.as_deref().unwrap_or("");
-        assert!(why.contains("roads.geojson") && !why.contains("hidden-757"), "{why}");
+        assert!(why.contains("roads.geojson") && why.contains("404") && !why.contains("hidden-757"), "{why}");
+        assert!(
+            failed.session.notices.iter().any(|notice| notice.error && notice.text.contains("404") && !notice.text.contains("hidden-757")),
+            "{:?}",
+            failed.session.notices
+        );
         // The line has moved on to another layer (or another dialog): it stays as it is.
         let other = add("200 OK", crate::serviceui::downloading("Rivers"));
         assert_eq!(other.dialogs.info, Some(crate::serviceui::downloading("Rivers")));

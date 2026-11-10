@@ -531,11 +531,17 @@ fn step_in<T: Send + 'static>(
     // Readers plan within READ_BUDGET; a round asking for far more is a hostile file's offsets.
     let asked: u64 = wants.iter().map(|w| if let Want::Range(a, b) = w { b - a } else { 0 }).fold(0, u64::saturating_add);
     if asked > ROUND_BUDGET {
-        done(Err(DataError::Format(format!("{}: a read asked for {} MB of the file at once", remote.url, asked >> 20))));
+        done(Err(DataError::Format(crate::diagnostics::message_with_address(
+            &remote.url,
+            &format!("a read asked for {} MB of the file at once", asked >> 20),
+        ))));
         return;
     }
     if rounds >= MAX_ROUNDS {
-        done(Err(DataError::Format(format!("{}: still needed more of the file after {MAX_ROUNDS} rounds of reading", remote.url))));
+        done(Err(DataError::Format(crate::diagnostics::message_with_address(
+            &remote.url,
+            &format!("still needed more of the file after {MAX_ROUNDS} rounds of reading"),
+        ))));
         return;
     }
     let Some(fetch) = fetcher().lock().unwrap_or_else(|e| e.into_inner()).clone() else {
@@ -582,9 +588,7 @@ fn step_in<T: Send + 'static>(
                 };
                 if let Some((Some(done), failed)) = next {
                     match failed {
-                        Some(e) => {
-                            done(Err(DataError::Format(if e.starts_with(remote2.url()) { e } else { format!("{}: {e}", remote2.url()) })))
-                        }
+                        Some(e) => done(Err(DataError::Format(crate::diagnostics::message_with_address(remote2.url(), &e)))),
                         None => step(remote2, work2, done, drive, rounds + 1, context),
                     }
                 }
@@ -610,7 +614,7 @@ pub fn drive_blocking<T: Send + 'static>(remote: Arc<Remote>, work: Arc<dyn Fn()
         }),
     );
     rx.recv_timeout(std::time::Duration::from_secs(120))
-        .unwrap_or_else(|_| Err(DataError::Format(format!("{url}: no answer in two minutes"))))
+        .unwrap_or_else(|_| Err(DataError::Format(crate::diagnostics::message_with_address(&url, "no answer in two minutes"))))
 }
 
 /// A file by its address, read and seeked through what is held of it: a read of bytes not held
@@ -814,6 +818,27 @@ mod tests {
         drive(r, work, Box::new(move |res| tx.send(res.map_err(|e| e.to_string())).unwrap_or_default()));
         let v = rx.recv().unwrap_or(Err("no answer".into()));
         assert_eq!(v, Ok(u64::from(file[200_000]) + u64::from(file[5000])));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn failed_remote_reads_preserve_http_reason_without_known_query_secrets() {
+        testing::serve("test:diagnostic-fetcher", Vec::new());
+        let address = "https://remote-diagnostic.test/missing.fgb?%2574oken=hidden unescaped hidden";
+        let remote = Arc::new(Remote::new(address));
+        let read_remote = remote.clone();
+        let work: Arc<dyn Fn() -> Result<()> + Send + Sync> = Arc::new(move || {
+            read_remote.bytes(0, 8).ok_or_else(need)?;
+            Ok(())
+        });
+        let error = drive_blocking(remote, work).unwrap_err().to_string();
+        assert!(error.contains("HTTP 404"), "{error}");
+        assert!(!error.contains("hidden"), "{error}");
+        assert_eq!(crate::diagnostics::redact(&error), error);
+        let history = crate::diagnostics::History::default();
+        history.push(crate::diagnostics::Severity::Error, "Data", &error, "");
+        let report = history.report(crate::diagnostics::Filter::All);
+        assert!(report.contains("HTTP 404") && !report.contains("hidden"), "{report}");
     }
 
     #[test]

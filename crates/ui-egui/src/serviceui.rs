@@ -402,12 +402,6 @@ pub fn poll(app: &mut RustGisApp, ctx: &egui::Context) {
     }
 }
 
-/// An address as a message names it: redacted on its own first, so a query naming a secret takes
-/// only itself away when the whole message is redacted, not the reason that follows it.
-pub(crate) fn address_in_message(url: &str) -> String {
-    rustgis_engine::Session::redacted(url).as_str().to_string()
-}
-
 /// The add-service dialog's line for a layer on its way: what the dialog shows when a layer's
 /// download starts, and what [`RustGisApp::landed_in_dialog`] looks for when it lands (#1453).
 pub(crate) fn downloading(name: &str) -> String {
@@ -472,8 +466,8 @@ pub fn poll_pages(app: &mut RustGisApp, ctx: &egui::Context) {
     }
     for read in std::mem::take(&mut app.ui.service_pages) {
         if !app.session.download_is_pending(read.landed.id) {
-            let url = &address_in_message(&read.landed.url);
-            let why = i18n::fmt("{url}: downloaded after its project was closed, so it wasn't added", &[("url", url)]);
+            let url = rustgis_engine::sources::address_in_message(&read.landed.url);
+            let why = i18n::fmt("{url}: downloaded after its project was closed, so it wasn't added", &[("url", &url)]);
             app.session.request_failed(&read.landed.params, &why);
             app.landed_in_dialog(&read.landed.params, Err(&why));
             app.session.notify(why, false);
@@ -534,7 +528,7 @@ pub(crate) fn go_on(app: &mut RustGisApp, landed: Landed, left: usize, step: Ste
                 app.session.request_failed(&landed.params, &e);
                 app.session.download_failed(landed.id);
                 let url = &landed.url;
-                let e = if e.starts_with(url.as_str()) { e } else { format!("{url}: {e}") };
+                let e = rustgis_engine::sources::message_with_address(url, &e);
                 app.landed_in_dialog(&landed.params, Err(&e));
                 app.session.notify(e, true);
             }
@@ -559,8 +553,9 @@ pub(crate) fn go_on(app: &mut RustGisApp, landed: Landed, left: usize, step: Ste
 /// Says what was left unread of a service layer's features, by its name.
 fn noted(app: &mut RustGisApp, landed: &Landed, note: Option<String>) {
     if let Some(note) = note {
-        let name = landed.params.get("name").and_then(Value::as_str).filter(|n| !n.is_empty()).unwrap_or(&landed.url);
-        app.session.notify(format!("{name}: {note}"), false);
+        let name = landed.params.get("name").and_then(Value::as_str).filter(|n| !n.is_empty());
+        let shown = name.map(str::to_string).unwrap_or_else(|| rustgis_engine::sources::address_in_message(&landed.url));
+        app.session.notify(i18n::fmt("{name}: {note}", &[("name", &shown), ("note", &note)]), false);
     }
 }
 

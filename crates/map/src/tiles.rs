@@ -611,13 +611,16 @@ pub fn check_url(url: &str) -> Result<(), String> {
     }
     let lower = url.to_ascii_lowercase();
     if !(lower.starts_with("https://") || lower.starts_with("http://") || lower.starts_with("s3://")) {
-        return Err(format!("'{url}': tile addresses start with https://, http:// or s3://"));
+        return Err(format!(
+            "'{}': tile addresses start with https://, http:// or s3://",
+            rustgis_data::diagnostics::address_in_message(url)
+        ));
     }
     if host_of(url).is_none_or(str::is_empty) {
-        return Err(format!("'{url}' has no host"));
+        return Err(format!("'{}' has no host", rustgis_data::diagnostics::address_in_message(url)));
     }
     if url.chars().any(|c| c.is_whitespace() || c.is_control()) {
-        return Err(format!("'{url}' has spaces in it"));
+        return Err(format!("'{}' has spaces in it", rustgis_data::diagnostics::address_in_message(url)));
     }
     Ok(())
 }
@@ -695,6 +698,21 @@ impl TileLayer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn invalid_secret_tile_addresses_keep_the_validation_reason() {
+        for (url, reason) in [
+            ("ftp://tiles.test/a?token=secret value", "tile addresses start with"),
+            ("https://?token=secret value", "has no host"),
+            ("https://tiles.test/a?token=secret value", "has spaces in it"),
+            ("https://tiles.test/a#token=secret value", "has spaces in it"),
+        ] {
+            let error = check_url(url).unwrap_err();
+            let error = rustgis_data::diagnostics::redact(&rustgis_data::diagnostics::redact(&error));
+            assert!(error.contains(reason), "{error}");
+            assert!(!error.contains("secret") && !error.contains("value"), "{error}");
+        }
+    }
 
     #[test]
     fn runtime_bound_tile_and_legend_addresses_are_web_addresses() {

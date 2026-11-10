@@ -424,7 +424,10 @@ fn open_file_now(file: std::sync::Arc<remote::Remote>) -> Result<Box<dyn Feature
     } else if path.ends_with(".parquet") || path.ends_with(".geoparquet") {
         Ok(Box::new(parquet::ParquetSource::open_remote(file, &name)?))
     } else {
-        Err(DataError::Unsupported(format!("{url}: only FlatGeobuf and GeoParquet are read in place by address")))
+        Err(DataError::Unsupported(crate::diagnostics::message_with_address(
+            url,
+            "only FlatGeobuf and GeoParquet are read in place by address",
+        )))
     }
 }
 

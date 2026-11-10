@@ -21,6 +21,21 @@ After `Basic` (without a colon) at the start of a line, the rest of the text is 
 when the next word looks like base64: it has a digit or punctuation (a sentence-ending mark
 `.,!?;:)` at its end doesn't count), has 16 characters or more, or has 8 or more with a capital
 after the first letter. So a very short Basic credential such as `YTpi` is kept.
+
+Notices and request errors redact a known address before attaching its failure reason, so a
+token or signature does not hide the HTTP status or other explanation. The complete query and
+fragment are omitted, including values with unescaped spaces. For an unknown URL embedded in
+free text, a secret-named query or fragment still omits the rest of that text: those later
+words might be part of the credential, not an explanation. The same rule applies to copied
+history errors, saved run messages and notebook cell output. Ambiguous slash-containing userinfo
+is omitted rather than guessed to be a host, port and path. A root address is shown with `/`
+before an omission marker or reason, so repeated redaction keeps its host.
+
+Copied run parameters are sanitized as data, without blanket-omitting JSON/XML syntax.
+Typed addresses lose their keys and credential fields are emptied, but opaque text and nested
+values a tool doesn't describe are kept for replay and flagged with a notice: they can still
+hold credentials, so review copied code before sharing it.
+
 Request and response bodies are not captured by network diagnostics.
 Background requests carry their originating session's weak capture token; failures are not
 broadcast to other embedded or Python sessions. Layer names, file paths and URL paths can

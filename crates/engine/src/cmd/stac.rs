@@ -716,7 +716,7 @@ pub fn stac_cube(s: &mut Session, p: &Value) -> Result<StacCube, String> {
     let info = cog::info_blocking(&first)?;
     let layout = &info.layout;
     if layout.transform.pixel_height > 0.0 {
-        return Err(format!("{first} is stored bottom up, which a trend doesn't read yet"));
+        return Err(crate::sources::message_with_address(&first, "stored bottom up, which a trend doesn't read yet"));
     }
     // The level whose cells are nearest the size asked, by ratio (`1000` takes MODIS's 926.6 m
     // overview, not its 463 m one); the full images by default.
@@ -736,9 +736,12 @@ pub fn stac_cube(s: &mut Session, p: &Value) -> Result<StacCube, String> {
         // image's size divided by `f` (rounded up), or its cells aren't those blocks.
         let fits = |full: u32, ov: u32| ov.checked_mul(f as u32) == Some(full);
         if !(1.0..=64.0).contains(&f) || !fits(full.width, lv.width) || !fits(full.height, lv.height) {
-            return Err(format!(
-                "{first}'s overview ({} × {}) isn't its full image ({} × {}) divided by a whole number, so its cells can't be averaged from it: take \"resampling\": \"nearest\"",
-                lv.width, lv.height, full.width, full.height
+            return Err(crate::sources::message_with_address(
+                &first,
+                &format!(
+                    "its overview ({} × {}) isn't its full image ({} × {}) divided by a whole number, so its cells can't be averaged from it: take \"resampling\": \"nearest\"",
+                    lv.width, lv.height, full.width, full.height
+                ),
             ));
         }
         (0, f as u32)
@@ -886,15 +889,23 @@ impl super::cube::TimeCube for StacCube {
             // file's header is fetched once however many pieces and dates read it.
             let info = cog::info_blocking(href)?;
             if info.layout.crs != self.crs {
-                return Err(format!("{href} is in another coordinate system than the first file"));
+                return Err(crate::sources::message_with_address(href, "in another coordinate system than the first file"));
             }
-            let lv = info.layout.levels.get(self.level).ok_or_else(|| format!("{href} has fewer overviews than the first file"))?;
+            let lv = info
+                .layout
+                .levels
+                .get(self.level)
+                .ok_or_else(|| crate::sources::message_with_address(href, "has fewer overviews than the first file"))?;
             let lt = info.layout.transform_of(lv);
-            let (dx, dy) = offset_in(&grid, &lt).ok_or_else(|| format!("{href} is on another grid of pixels than the first file"))?;
+            let (dx, dy) = offset_in(&grid, &lt)
+                .ok_or_else(|| crate::sources::message_with_address(href, "on another grid of pixels than the first file"))?;
             // Averaged, a cell is a block of `f` × `f` of the file's pixels: the file's corner
             // has to fall on a block's, or the blocks would straddle cells.
             if dx.rem_euclid(i64::from(f)) != 0 || dy.rem_euclid(i64::from(f)) != 0 {
-                return Err(format!("{href}'s pixels don't fall in whole cells of the area: take \"resampling\": \"nearest\""));
+                return Err(crate::sources::message_with_address(
+                    href,
+                    "its pixels don't fall in whole cells of the area: take \"resampling\": \"nearest\"",
+                ));
             }
             // The piece's columns and rows in the file's pixels, within the file.
             let (fc0, fc1) = (dx.max(0), (dx + wf).min(i64::from(lv.width)));

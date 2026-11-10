@@ -122,7 +122,11 @@ fn agent() -> ureq::Agent {
 }
 
 fn get(agent: &ureq::Agent, url: &str) -> Result<ureq::http::Response<ureq::Body>, String> {
-    agent.get(url).header("User-Agent", concat!("RustGIS/", env!("CARGO_PKG_VERSION"))).call().map_err(|e| format!("{url}: {e}"))
+    agent
+        .get(url)
+        .header("User-Agent", concat!("RustGIS/", env!("CARGO_PKG_VERSION")))
+        .call()
+        .map_err(|e| rustgis_data::diagnostics::message_with_address(url, &e.to_string()))
 }
 
 /// uv: the one [`UV_ENV`] names, else the one downloaded before, else a fresh download.
@@ -156,9 +160,14 @@ pub fn uv(progress: &mut dyn FnMut(&str)) -> Result<PathBuf, String> {
         .ok_or_else(|| format!("PyPI has no uv {UV_VERSION} for {tag}"))?
         .to_string();
     let mut bytes = Vec::new();
-    get(&agent, &url)?.body_mut().as_reader().take(MAX_WHEEL + 1).read_to_end(&mut bytes).map_err(|e| format!("{url}: {e}"))?;
+    get(&agent, &url)?
+        .body_mut()
+        .as_reader()
+        .take(MAX_WHEEL + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| rustgis_data::diagnostics::message_with_address(&url, &e.to_string()))?;
     if bytes.len() as u64 > MAX_WHEEL {
-        return Err(format!("{url} is unexpectedly large"));
+        return Err(rustgis_data::diagnostics::message_with_address(&url, "is unexpectedly large"));
     }
     let actual: String = Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
     if actual != *sha256 {

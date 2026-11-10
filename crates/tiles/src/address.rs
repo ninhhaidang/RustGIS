@@ -232,14 +232,16 @@ pub fn check_reach(url: &str, ceiling: Reach) -> Result<(), String> {
     }
     let lower = url.to_ascii_lowercase();
     if !(lower.starts_with("https://") || lower.starts_with("http://")) {
-        return Err(format!("{url}: only http:// and https:// addresses are fetched"));
+        return Err(rustgis_data::diagnostics::message_with_address(url, "only http:// and https:// addresses are fetched"));
     }
     if url.chars().any(|c| c.is_whitespace() || c.is_control()) {
-        return Err(format!("{url}: the address has spaces in it"));
+        return Err(rustgis_data::diagnostics::message_with_address(url, "the address has spaces in it"));
     }
     match reach(url) {
-        Reach::Forbidden => Err(format!("{url}: that address is never fetched")),
-        Reach::Local if ceiling == Reach::Public => Err(format!("{url}: a document on the web can't point into the local network")),
+        Reach::Forbidden => Err(rustgis_data::diagnostics::message_with_address(url, "that address is never fetched")),
+        Reach::Local if ceiling == Reach::Public => {
+            Err(rustgis_data::diagnostics::message_with_address(url, "a document on the web can't point into the local network"))
+        }
         _ => Ok(()),
     }
 }

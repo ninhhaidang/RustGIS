@@ -313,29 +313,69 @@ pub fn holds_plain_key(params: &serde_json::Value) -> bool {
     walk(params, 0)
 }
 
-/// Text with every web address in it redacted (`sources::redact`): an error's text may quote the
-/// address asked for, or one a redirect led to, keys and all. Each address is redacted alone, so
-/// the words around it stay; punctuation that ends a sentence isn't taken as part of it.
-pub fn redact_text(text: &str) -> String {
-    text.split_inclusive(char::is_whitespace)
-        .map(|piece| {
-            let word = piece.trim_end();
-            let Some(at) = word.find("://") else { return piece.to_string() };
-            // The address starts at its scheme, after any quote or bracket before it.
-            let scheme = |c: &char| c.is_ascii_alphanumeric() || "+.-".contains(*c);
-            let start = word.get(..at).and_then(|b| b.char_indices().rev().find(|(_, c)| !scheme(c))).map_or(0, |(i, c)| i + c.len_utf8());
-            let end = word.trim_end_matches([':', ',', ';', '.', ')', ']', '>', '"', '\'', '»', '›', '”', '’']).len().max(at + 3);
-            let (before, address, after) =
-                (word.get(..start).unwrap_or(""), word.get(start..end).unwrap_or(""), word.get(end..).unwrap_or(""));
-            // A scheme alone names no address ("give an http:// or s3:// address"), nor does one
-            // with an ellipsis for the rest (a hint's `https://…`); the notice redaction keeps
-            // them too.
-            if rustgis_data::address::scheme_example(address.trim_end_matches('…')) {
-                return piece.to_string();
-            }
-            format!("{before}{}{after}{}", redact(address), piece.get(word.len()..).unwrap_or(""))
-        })
-        .collect()
+/// A known source address safe to compose into a repeatedly redacted diagnostic, without
+/// publishing a web-login runtime binding or the credentials inside a source wrapper.
+pub fn address_in_message(address: &str) -> String {
+    let mut shown = rustgis_data::diagnostics::address_in_message(&redact(address));
+    // Source redaction can take out a secret query whole; the diagnostic label still says one went.
+    let raw = rustgis_data::diagnostics::address_in_message(address);
+    if let Some(marker) = ["[query omitted]", "[fragment omitted]"].into_iter().find(|m| raw.ends_with(m))
+        && !shown.ends_with(marker)
+        && !shown.ends_with("omitted]")
+    {
+        shown.push_str(marker);
+    }
+    shown
+}
+
+/// An error naming a long known address shortened to `limit` characters, then `reason` (fixed
+/// prose, not from the network). A trailing omission marker (`[query omitted]`) is kept whole
+/// and the address before it is cut instead, marked `…`; a cut never leaves half a marker. The
+/// shortened address is already sanitized, so it isn't parsed again as an address.
+pub fn shortened_message_with_address(address: &str, limit: usize, reason: &str) -> String {
+    let full = address_in_message(address);
+    if full.chars().count() <= limit {
+        return message_with_address(address, reason);
+    }
+    let (head, marker) = match full.rfind('[') {
+        Some(at) if full.ends_with(']') => full.split_at(at),
+        _ => (full.as_str(), ""),
+    };
+    let mut shown: String = head.chars().take(limit.saturating_sub(marker.chars().count() + 1)).collect();
+    if let Some(at) = shown.rfind('[').filter(|&at| !shown.get(at..).unwrap_or("").contains(']')) {
+        shown.truncate(at);
+    }
+    shown.push('…');
+    shown.push_str(marker);
+    format!("{shown}: {reason}")
+}
+
+/// Names a known source while keeping its failure reason. Exact address occurrences are
+/// sanitized before the conservative free-text redactor sees any unescaped secret whitespace.
+pub fn message_with_address(address: &str, reason: &str) -> String {
+    let message = rustgis_data::diagnostics::message_with_address(address, reason);
+    let raw_shown = rustgis_data::diagnostics::address_in_message(address);
+    let shown = address_in_message(address);
+    let message = if raw_shown.is_empty() || raw_shown == shown { message } else { message.replace(&raw_shown, &shown) };
+    // Reusing this helper must not prepend the same safe source label on every hop.
+    // Only a verified companion belongs to the same download; unrelated targets keep their origin.
+    let reason = message.strip_prefix(&shown).and_then(|tail| tail.strip_prefix(": "));
+    let message = match reason.filter(|reason| {
+        reason.strip_prefix(&shown).is_some_and(|tail| tail.is_empty() || tail.starts_with(": "))
+            || reason.split_once(": ").is_some_and(|(label, _)| {
+                label.contains("://")
+                    && rustgis_data::io::shapefile_part_urls(address).is_some_and(|parts| {
+                        // The part's label may come from either layer's composition.
+                        parts.iter().any(|(_, part)| {
+                            address_in_message(part) == label || rustgis_data::diagnostics::address_in_message(part) == label
+                        })
+                    })
+            })
+    }) {
+        Some(reason) => reason,
+        None => &message,
+    };
+    crate::render::rustgis_tiles::logins::scrub(message)
 }
 
 /// A PMTiles or COG tile template (`pmtiles:{z}/{x}/{y}@archive`, `cog:…@archive`): what comes
@@ -702,6 +742,50 @@ MIIE
     }
 
     #[test]
+    fn address_messages_stay_private_and_named_once_across_hops() {
+        for address in [
+            "https://alice:hidden@host.example/data?token=hidden hidden-tail",
+            "https://host.example/data?page=2&token=hidden",
+            "https://host.example/data?custom=hidden hidden-tail",
+        ] {
+            let mut message = message_with_address(address, "HTTP 503 Service Unavailable");
+            for _ in 0..3 {
+                message = message_with_address(address, &message);
+                let clean = crate::Session::redacted(&message);
+                assert!(clean.as_str().contains("HTTP 503 Service Unavailable"), "{clean:?}");
+                assert_eq!(clean.as_str().matches("host.example/data").count(), 1, "{clean:?}");
+                assert!(!clean.as_str().contains("hidden") && !clean.as_str().contains("alice"), "{clean:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn unrelated_target_failures_retain_the_requested_source() {
+        let requested = "https://source.example/roads.shp?token=hidden-source";
+        let target = "http://127.0.0.1/elsewhere.dbf?token=hidden-target";
+        let cause = crate::render::rustgis_tiles::address::check(target, Some(requested)).unwrap_err();
+        let mut message = message_with_address(requested, &cause);
+        for _ in 0..3 {
+            assert!(message.contains("source.example/roads.shp") && message.contains("127.0.0.1/elsewhere.dbf"), "{message}");
+            assert!(message.contains(&cause) && !message.contains("hidden"), "{message}");
+            assert_eq!(message.matches("source.example/roads.shp").count(), 1, "{message}");
+            assert_eq!(crate::Session::redacted(&message).as_str(), message);
+            message = message_with_address(requested, &message);
+        }
+    }
+
+    #[test]
+    fn shapefile_parts_with_secret_queries_are_named_once() {
+        let shp = "https://h.example/roads.shp?token=hidden";
+        let part = "https://h.example/roads.dbf?token=hidden";
+        // A part failure as the data layer writes it, passed back through the source's helper.
+        let label = rustgis_data::diagnostics::message_with_address(part, "http status: 404");
+        let message = message_with_address(shp, &label);
+        assert!(message.contains("roads.dbf") && message.contains("404") && !message.contains("hidden"), "{message}");
+        assert_eq!(message.matches("://").count(), 1, "{message}");
+    }
+
+    #[test]
     fn secrets_are_never_kept() {
         assert_eq!(redact("https://me:pw@host.example/a?token=abc&layer=x&X-Amz-Signature=1#k"), "https://host.example/a?layer=x");
         // A port and an `@` later in the address: an ordinary address, left whole.
@@ -793,31 +877,38 @@ MIIE
 
     #[test]
     fn a_scheme_alone_in_prose_is_no_address() {
+        // Notices and errors go through the one diagnostic redactor: a supported scheme alone in
+        // prose names no address and is kept.
         for text in [
             "give an http://, https:// or s3:// address",
             "needs an http:// or https:// address",
             "uses unencrypted http://. Tick the confirmation",
             "only http:// and https:// addresses are fetched",
-            "for example https://…",
             "(http://) or \"https://\" or 's3://'",
             "HTTP:// and Https://",
-            "file:// and ftp://",
         ] {
-            assert_eq!(redact_text(text), text);
+            assert_eq!(crate::Session::redacted(text).as_str(), text);
+            // An error naming the address it refused keeps those words, and its key stays out.
+            let error = message_with_address("https://h.example/a?token=hidden", text);
+            assert_eq!(error, format!("https://h.example/a[query omitted]: {text}"));
+            assert_eq!(crate::Session::redacted(&error).as_str(), error);
         }
-        // Anything after the scheme is an address, redacted as before.
+        // Anything after the scheme is an address: what can hold a credential goes. A hint's
+        // `https://…` is read as its scheme; other schemes are taken for addresses.
         for (text, kept) in [
+            ("for example https://…", "for example https:"),
+            ("file:// and ftp://", "[address omitted] and [address omitted]"),
             ("see https://user:pw@host/x, or http://", "see https://host/x, or http://"),
             ("https://user:pw@", "https:"),
             ("https://user:pw@…", "https:"),
             ("https://:pw@ failed", "https: failed"),
-            ("https://?token=x", "https:"),
+            ("https://?token=x", "[address omitted][query and the rest omitted]"),
             ("https://#x", "https:"),
-            ("https://…?token=x", "https:"),
+            ("https://…?token=x", "[address omitted][query and the rest omitted]"),
             ("http:///", "http:"),
-            ("s3://bucket/a.tif?X-Amz-Signature=s", "s3://bucket/a.tif"),
+            ("s3://bucket/a.tif?X-Amz-Signature=s", "s3://bucket/a.tif[query and the rest omitted]"),
         ] {
-            assert_eq!(redact_text(text), kept, "{text}");
+            assert_eq!(crate::Session::redacted(text).as_str(), kept, "{text}");
         }
     }
 

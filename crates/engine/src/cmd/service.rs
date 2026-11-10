@@ -51,7 +51,7 @@ fn url_of(p: &Value) -> Result<&str, String> {
     let url = ps(p, "url").map(str::trim).filter(|u| !u.is_empty()).ok_or("url is required")?;
     let lower = crate::render::rustgis_tiles::logins::inner(url).to_ascii_lowercase();
     if !(lower.starts_with("https://") || lower.starts_with("http://")) {
-        return Err(format!("{url}: a service is given by its http:// or https:// address"));
+        return Err(crate::sources::message_with_address(url, "a service is given by its http:// or https:// address"));
     }
     Ok(url)
 }
@@ -216,13 +216,14 @@ fn read_documents(s: &mut Session, p: &Value, left: bool) -> Result<Discovery, S
                 result.next = Some(address);
                 return Ok(result);
             };
-            rustgis_data::ogc::parse(&address, text.as_bytes())
+            rustgis_data::ogc::parse(&address, text.as_bytes()).map_err(|e| crate::sources::message_with_address(&address, &e))
         } else if left {
-            let Some(read) = s.left_document(&address).map_err(|e| format!("{original}: {e}"))? else {
+            let Some(read) = s.left_document(&address).map_err(|e| crate::sources::message_with_address(original, &e))? else {
                 result.next = Some(address);
                 return Ok(result);
             };
-            read.and_then(|bytes| rustgis_data::ogc::parse(&address, &bytes)).map_err(|e| format!("{original}: {e}"))
+            read.and_then(|bytes| rustgis_data::ogc::parse(&address, &bytes))
+                .map_err(|e| crate::sources::message_with_address(original, &e))
         } else {
             fetch_capabilities(original, &address)
         };
@@ -272,13 +273,13 @@ fn read_documents(s: &mut Session, p: &Value, left: bool) -> Result<Discovery, S
 
 #[cfg(target_arch = "wasm32")]
 fn fetch_capabilities(url: &str, _caps: &str) -> Result<Service, String> {
-    Err(format!("{url}: in the web app, use Home › Add › Add Data › From Service"))
+    Err(crate::sources::message_with_address(url, "in the web app, use Home › Add › Add Data › From Service"))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 fn fetch_capabilities(url: &str, caps: &str) -> Result<Service, String> {
-    let bytes = crate::render::rustgis_tiles::cache::download_blocking(caps).map_err(|e| format!("{url}: {e}"))?;
-    rustgis_data::ogc::parse(caps, &bytes).map_err(|e| format!("{url}: {e}"))
+    let bytes = crate::render::rustgis_tiles::cache::download_blocking(caps).map_err(|e| crate::sources::message_with_address(url, &e))?;
+    rustgis_data::ogc::parse(caps, &bytes).map_err(|e| crate::sources::message_with_address(url, &e))
 }
 
 /// Leaves out the layers whose addresses a document on the web may not send RustGIS to: the
@@ -360,7 +361,7 @@ pub(crate) fn download_features(s: &mut Session, name: &str, url: &str, max: usi
     match download_layer(s, name, url, max, false)? {
         Downloaded::Bytes(bytes) => Ok(bytes),
         // Not given without protocol buffer pages.
-        Downloaded::Read(..) => Err(format!("{url}: the pages were read as protocol buffers")),
+        Downloaded::Read(..) => Err(crate::sources::message_with_address(url, "the pages were read as protocol buffers")),
     }
 }
 
@@ -388,7 +389,7 @@ pub(crate) fn download_layer(s: &mut Session, name: &str, url: &str, max: usize,
             Step::Done(bytes, note) => break (Downloaded::Bytes(bytes), note),
             Step::Decoded(dataset, report, note) => break (Downloaded::Read(Box::new((*dataset, report))), note),
             // A first answer that timed out says how to add a large layer instead.
-            Step::Failed(e) => return Err(format!("{url}: {}", cache::large_file_hint(e))),
+            Step::Failed(e) => return Err(crate::sources::message_with_address(url, &cache::large_file_hint(e))),
             Step::Fetch(pages) => pages,
         };
         let describing = pages.describing();
@@ -431,7 +432,7 @@ pub(crate) fn download_layer(s: &mut Session, name: &str, url: &str, max: usize,
 fn checked_template(service: &str, t: &str) -> Result<String, String> {
     let t = t.trim();
     if !(t.contains("{z}") && t.contains("{x}") && t.contains("{y}")) || t.len() > 2000 {
-        return Err(format!("{t}: not a tile template"));
+        return Err(crate::sources::message_with_address(t, "not a tile template"));
     }
     crate::render::rustgis_tiles::address::check(t, Some(service))?;
     // The resolver already chose the destination's login, including its absence after a
@@ -477,14 +478,14 @@ fn advertised_template_with(
     for _ in 0..2 {
         let shown = crate::sources::redact(&doc);
         if let Err(e) = crate::render::rustgis_tiles::address::check(&doc, Some(list)) {
-            let e = crate::sources::redact_text(&e);
+            let e = crate::sources::message_with_address(&doc, &e);
             out.fallback = Some(format!("{shown}: this tile set document was refused, so the standard tile address is used: {e}"));
             return out;
         }
         let body = match read(&doc) {
             Ok(body) => body,
             Err(e) => {
-                let e = crate::sources::redact_text(&e);
+                let e = crate::sources::message_with_address(&doc, &e);
                 out.fallback = Some(format!("{shown}: its tile sets couldn't be read, so the standard tile address is used: {e}"));
                 return out;
             }
@@ -501,7 +502,7 @@ fn advertised_template_with(
                     Ok(t) => out.template = Some(t),
                     // (Its error names the template, which may carry keys.)
                     Err(e) => {
-                        let e = crate::sources::redact_text(&e);
+                        let e = crate::sources::message_with_address(&t, &e);
                         out.fallback = Some(format!("{shown}: its tile template was refused, so the standard tile address is used: {e}"));
                     }
                 }
@@ -536,7 +537,7 @@ fn left_template(s: &mut Session, source: &str, list: &str, vector: bool, withhe
     for _ in 0..2 {
         let shown = crate::sources::redact(&doc);
         if let Err(e) = crate::render::rustgis_tiles::address::check(&doc, Some(list)) {
-            let e = crate::sources::redact_text(&e);
+            let e = crate::sources::message_with_address(&doc, &e);
             s.notify(format!("{shown}: this tile set document was refused, so the standard tile address is used: {e}"), false);
             return Ok(LeftTemplate::Read(out));
         }
@@ -560,7 +561,7 @@ fn left_template(s: &mut Session, source: &str, list: &str, vector: bool, withhe
                     Ok(t) => out.template = Some(t),
                     // (Its error names the template, which may carry keys.)
                     Err(e) => {
-                        let e = crate::sources::redact_text(&e);
+                        let e = crate::sources::message_with_address(&t, &e);
                         s.notify(format!("{shown}: its tile template was refused, so the standard tile address is used: {e}"), false);
                     }
                 }
@@ -730,8 +731,8 @@ fn not_listed(url: &str, what: &str, want: &str, service: &Service) -> String {
         (None, None) => "service.layers lists them".to_string(),
     };
     match past_limit {
-        Some(why) => format!("{url}: no {what} '{want}' ({listing}; {why})"),
-        None => format!("{url}: no {what} '{want}' ({listing})"),
+        Some(why) => crate::sources::message_with_address(url, &format!("no {what} '{want}' ({listing}; {why})")),
+        None => crate::sources::message_with_address(url, &format!("no {what} '{want}' ({listing})")),
     }
 }
 
@@ -798,7 +799,7 @@ fn add_discovered(s: &mut Session, p: &Value, url: &str, want: &str, found: &Dis
             let quoted = format!("'{}'", want.to_lowercase());
             let left_out = |n: &&String| n.contains(rustgis_data::ogc::LEFT_OUT_3D) && n.to_lowercase().contains(&quoted);
             match found.service.notes.iter().find(left_out) {
-                Some(why) => format!("{url}: no layer '{want}': {why}"),
+                Some(why) => crate::sources::message_with_address(url, &format!("no layer '{want}': {why}")),
                 None => not_listed(url, "layer", want, &found.service),
             }
         })?;
@@ -1002,9 +1003,13 @@ fn add_discovered(s: &mut Session, p: &Value, url: &str, want: &str, found: &Dis
             zoom(s);
             Ok(r)
         }
-        Offer::Service { url: open } => {
-            Err(format!("{url}: '{want}' is a folder or service the directory lists: list its layers (service.layers with url {open})"))
-        }
+        Offer::Service { url: open } => Err(crate::sources::message_with_address(
+            url,
+            &format!(
+                "'{want}' is a folder or service the directory lists: list its layers (service.layers with url {})",
+                crate::sources::address_in_message(open)
+            ),
+        )),
         Offer::Coverage(c) => {
             let anonymous = capability_crossed || crosses_origin(source, &c.endpoint) || s.web_logins.is_anonymous();
             let (get, _, _) = match ps(p, "describe") {
@@ -1025,7 +1030,10 @@ fn add_discovered(s: &mut Session, p: &Value, url: &str, want: &str, found: &Dis
             #[cfg(target_arch = "wasm32")]
             {
                 let _ = get;
-                Err(format!("{url}: in the web app, Home › Add › Add Data › From Service downloads the coverage"))
+                Err(crate::sources::message_with_address(
+                    &url,
+                    "in the web app, Home › Add › Add Data › From Service downloads the coverage",
+                ))
             }
             #[cfg(not(target_arch = "wasm32"))]
             {
@@ -1049,7 +1057,10 @@ fn add_discovered(s: &mut Session, p: &Value, url: &str, want: &str, found: &Dis
             #[cfg(target_arch = "wasm32")]
             {
                 let _ = (items, asked);
-                Err(format!("{url}: in the web app, Home › Add › Add Data › From Service downloads the features"))
+                Err(crate::sources::message_with_address(
+                    &url,
+                    "in the web app, Home › Add › Add Data › From Service downloads the features",
+                ))
             }
             #[cfg(not(target_arch = "wasm32"))]
             {
@@ -1226,7 +1237,9 @@ fn coverage(s: &mut Session, p: &Value) -> CmdResult {
         .filter(|(_, source)| ps(p, "source_url").is_none_or(|s| same_address(s, &source.address)))
         .find(|(l, _)| l.name == want || l.name.eq_ignore_ascii_case(want))
         .ok_or_else(|| not_listed(&url, "coverage", want, &found.service))?;
-    let Offer::Coverage(c) = &layer.offer else { return Err(format!("{url}: '{want}' isn't a WCS coverage")) };
+    let Offer::Coverage(c) = &layer.offer else {
+        return Err(crate::sources::message_with_address(&url, &format!("'{want}' isn't a WCS coverage")));
+    };
     let anonymous = source.crossed_origin
         || crosses_origin(&source.address, &c.endpoint)
         || s.web_logins.is_anonymous()
@@ -1271,7 +1284,9 @@ pub(super) fn catalog_search(s: &mut Session, p: &Value) -> CmdResult {
     let url = url_of(p)?;
     let request = records_request(s, p)?;
     let page = match ps(p, "text") {
-        Some(text) => rustgis_data::ogc::parse_records(&request, text.as_bytes()).map_err(|e| format!("{url}: {e}"))?,
+        Some(text) => {
+            rustgis_data::ogc::parse_records(&request, text.as_bytes()).map_err(|e| crate::sources::message_with_address(url, &e))?
+        }
         None => fetch_records(url, &request)?,
     };
     let mut dropped = 0usize;
@@ -1302,13 +1317,14 @@ pub(super) fn catalog_search(s: &mut Session, p: &Value) -> CmdResult {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn fetch_records(url: &str, request: &str) -> Result<rustgis_data::ogc::RecordPage, String> {
-    let bytes = crate::render::rustgis_tiles::cache::download_blocking(request).map_err(|e| format!("{url}: {e}"))?;
-    rustgis_data::ogc::parse_records(request, &bytes).map_err(|e| format!("{url}: {e}"))
+    let bytes =
+        crate::render::rustgis_tiles::cache::download_blocking(request).map_err(|e| crate::sources::message_with_address(url, &e))?;
+    rustgis_data::ogc::parse_records(request, &bytes).map_err(|e| crate::sources::message_with_address(url, &e))
 }
 
 #[cfg(target_arch = "wasm32")]
 fn fetch_records(url: &str, _: &str) -> Result<rustgis_data::ogc::RecordPage, String> {
-    Err(format!("{url}: in the web app, use Home › Add › Add Data › From Service › Search Catalogue"))
+    Err(crate::sources::message_with_address(url, "in the web app, use Home › Add › Add Data › From Service › Search Catalogue"))
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

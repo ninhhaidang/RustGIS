@@ -10135,15 +10135,26 @@ B,11,51
     assert_eq!((s.map().layers.len(), s.undo.len()), (layers + 1, undo), "added once");
     assert!(s.take_url_requests().is_empty() && !s.plugin_retries_waiting());
     assert!(s.poll_plugin_retries().is_empty(), "run once");
-    // A download that fails: the command runs again, and its `layer.addUrl` answers the error.
-    let q = json!({"op": "layer.addUrl", "params": {"url": "https://x.org/gone.csv"}});
-    s.run_leaving_downloads("plugin:eng-rerun/f", &q).unwrap();
-    let asked = s.take_url_requests();
-    s.request_failed(asked[0].params(), "https://x.org/gone.csv?token=hunter2: 404 Not Found");
-    let ran = s.poll_plugin_retries();
-    let e = ran[0].1.as_ref().unwrap_err();
-    assert!(e.contains("404") && !e.contains("hunter2"), "{ran:?}");
-    assert!(!s.plugin_retries_waiting());
+    // A failed download runs the command again. A known address keeps its status, even with
+    // unescaped query whitespace; an unknown URL's secret tail is not safe to retain.
+    for (url, reason, keeps_status) in [
+        // The reason adds an unknown secret query to the requested address: its value may continue.
+        ("https://x.org/gone.csv", "https://x.org/gone.csv?token=hunter2: 404 Not Found", false),
+        ("https://x.org/gone.csv?token=hunter2 hidden-tail", "https://x.org/gone.csv?token=hunter2 hidden-tail: 404 Not Found", true),
+        ("https://x.org/gone.csv", "https://x.org/gone.csv?token=hunter2 hidden-tail: 404 Not Found", false),
+    ] {
+        let q = json!({"op":"layer.addUrl","params":{"url":url}});
+        s.run_leaving_downloads("plugin:eng-rerun/f", &q).unwrap();
+        let asked = s.take_url_requests();
+        s.request_failed(asked[0].params(), reason);
+        let ran = s.poll_plugin_retries();
+        let e = ran[0].1.as_ref().unwrap_err();
+        assert!(!e.contains("hunter2") && !e.contains("hidden-tail"), "{ran:?}");
+        if keeps_status {
+            assert!(e.contains("404"), "{ran:?}");
+        }
+        assert!(!s.plugin_retries_waiting());
+    }
     // A native request and a plugin request get distinct engine routing numbers.
     let next = s.next_request + 1;
     s.request_url(&json!({"url": "https://x.org/other.csv", "request": next})).unwrap();
@@ -13939,6 +13950,46 @@ fn url_requests_wait_for_the_front_end() {
     assert!(s.request_url(&json!({"url": "https://x.org/16"})).is_ok(), "room again once abandoned");
 }
 
+#[test]
+fn url_validation_keeps_its_reason_without_unescaped_query_tails() {
+    let mut s = Session::new(Project::default());
+    for suffix in ["?token=hidden hidden-tail", "?%2574oken=hidden hidden-tail", "?custom=hidden hidden-tail", "#hidden hidden-tail"] {
+        let url = format!("https://validation.example/data.tif{suffix}");
+        let mark = s.notice_mark();
+        let error = s.run("layer.addUrl", &json!({"url":url, "cellSize":10})).unwrap_err();
+        assert!(error.contains("\"cellSize\" goes with \"bbox\""), "{error}");
+        assert!(!error.contains("hidden"), "{error}");
+        let notice = s.notices_since(mark).last().unwrap().text.clone();
+        assert!(notice.contains("\"cellSize\" goes with \"bbox\"") && !notice.contains("hidden"), "{notice}");
+        let clean = Session::redacted(&Session::redacted(&error).into_string());
+        assert!(clean.as_str().contains("\"cellSize\" goes with \"bbox\"") && !clean.as_str().contains("hidden"), "{clean:?}");
+    }
+    let report = s.diagnostics.report(rustgis_data::diagnostics::Filter::All);
+    assert!(report.contains("\"cellSize\" goes with \"bbox\"") && !report.contains("hidden"), "{report}");
+}
+
+#[test]
+fn full_download_queue_keeps_its_reason_through_session_notices() {
+    let mut s = Session::new(Project::default());
+    for i in 0..16 {
+        s.request_url(&json!({"url": format!("https://queue.example/{i}")})).unwrap();
+    }
+    for suffix in ["?token=queue-secret", "#queue-secret", "?token=queue-secret secret-tail", "#queue-secret secret-tail"] {
+        let url = format!("https://queue.example/refused.geojson{suffix}");
+        let mark = s.notice_mark();
+        let error = s.guarded("Add Data From URL", true, |s| s.request_url(&json!({"url": url}))).unwrap_err();
+        assert!(error.contains("16 downloads are already waiting; try again when they have landed"), "{error}");
+        assert!(!error.contains("queue-secret") && !error.contains("secret-tail"), "{error}");
+        assert_eq!(Session::redacted(&error).as_str(), error);
+        assert_eq!(s.notices_since(mark).iter().map(|n| n.text.as_str()).collect::<Vec<_>>(), [error.as_str()]);
+        s.notify(error.clone(), true);
+        assert_eq!(s.notices_since(mark).last().unwrap().text, error);
+        assert!(s.diagnostics.records().iter().any(|r| r.message == error));
+    }
+    let report = s.diagnostics.report(rustgis_data::diagnostics::Filter::All);
+    assert!(!report.contains("queue-secret") && !report.contains("secret-tail"), "{report}");
+}
+
 /// A mutating command that only left a request for the front end (the browser's `layer.addUrl`)
 /// leaves no undo step and nothing to save; one that changed the project still does, and so
 /// does one that merely answers "pending" (a plugin's command can't claim it changed nothing).
@@ -17100,6 +17151,35 @@ fn notices_since_survives_the_cap() {
     s.notify("last", false);
     assert_eq!(s.notices_since(mark).iter().map(|n| n.text.as_str()).collect::<Vec<_>>(), ["last"]);
     assert_eq!(s.notices_since(0).len(), 200);
+}
+
+#[test]
+fn service_command_keeps_missing_layer_reason_and_scrubs_every_known_address() {
+    const WMS: &str = r#"<WMS_Capabilities version="1.3.0" xmlns="http://www.opengis.net/wms" xmlns:xlink="http://www.w3.org/1999/xlink">
+<Service><Title>Test WMS</Title></Service><Capability>
+<Request><GetMap><Format>image/png</Format><DCPType><HTTP><Get><OnlineResource xlink:href="https://maps.example.com/wms?"/></Get></HTTP></DCPType></GetMap></Request>
+<Layer><Title>Root</Title>
+<Layer><Name>roads</Name><Title>Roads</Title></Layer></Layer></Capability></WMS_Capabilities>"#;
+    let mut s = Session::new(Project::default());
+    for suffix in ["?token=service-secret", "#service-secret", "?token=service-secret secret-tail", "#service-secret secret-tail"] {
+        let url = format!("https://maps.example.com/wms{suffix}");
+        let missing = format!("{url} again {url}");
+        let mark = s.notice_mark();
+        let error = s.run("service.add", &json!({"url": url, "type": "wms", "layer": missing, "text": WMS})).unwrap_err();
+        if suffix.contains(' ') {
+            // Invalid addresses are refused before capabilities are read.
+            assert!(error.contains("the address has spaces in it"), "{error}");
+        } else {
+            assert!(error.contains("no layer '") && error.ends_with("(service.layers lists them)"), "{error}");
+            assert_eq!(error.matches("maps.example.com/wms").count(), 3, "{error}");
+        }
+        assert!(!error.contains("service-secret") && !error.contains("secret-tail"), "{error}");
+        assert_eq!(Session::redacted(&error).as_str(), error);
+        assert_eq!(s.notices_since(mark).iter().map(|n| n.text.as_str()).collect::<Vec<_>>(), [error.as_str()]);
+        assert!(s.diagnostics.records().iter().any(|r| r.source == "service.add" && r.message == error));
+    }
+    let report = s.diagnostics.report(rustgis_data::diagnostics::Filter::All);
+    assert!(!report.contains("service-secret") && !report.contains("secret-tail"), "{report}");
 }
 
 #[test]
@@ -21042,6 +21122,51 @@ fn zarr_store_at(tag: &str, days: &[i32]) -> (std::path::PathBuf, String) {
     }
     let path = store.display().to_string();
     (dir, path)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn timed_zarr_open_failures_keep_status_without_store_credentials() {
+    use ogc_server::{Route, Server};
+    let _cache = zarr_cache_lock();
+    let (dir, path) = zarr_store_over_time("private-open-errors");
+    let store = std::path::Path::new(&path);
+    let mut routes = Vec::new();
+    for case in ["first", "selected"] {
+        let root = format!("/{case}?token=hidden-zarr-open");
+        for key in [".zmetadata", "lat/0", "lon/0", "time/0"] {
+            routes.push(Route::bytes(&format!("{root}/{key}"), std::fs::read(store.join(key)).unwrap()));
+        }
+        if case == "selected" {
+            routes.push(Route::bytes(&format!("{root}/t/0.0.0"), std::fs::read(store.join("t/0.0.0")).unwrap()));
+        }
+        let step = if case == "first" { 0 } else { 1 };
+        routes.push(Route { status: 503, ..Route::new(&format!("{root}/t/{step}.0.0"), "") });
+    }
+    let server = Server::new(routes);
+    for case in ["first", "selected"] {
+        let mut s = Session::new(Project::default());
+        if case == "selected" {
+            s.run("time.set", &json!({"dates":["2001-01-01","2001-02-01","2001-03-01"],"date":"2001-02-01"})).unwrap();
+        }
+        let url = format!("{}/{case}?token=hidden-zarr-open", server.base);
+        let error = s.run("layer.addZarr", &json!({"url":url,"variable":"t","time":true})).unwrap_err();
+        assert!(error.contains("503") && !error.contains("hidden-zarr-open"), "{case}: {error}");
+        assert!(s.map().layers.is_empty(), "an unreadable initial slice must not add a layer");
+        let mark = s.notice_mark();
+        s.notify(error, true);
+        let notices = s.notices_since(mark);
+        assert!(notices.iter().any(|n| n.error && n.text.contains("503")), "{case}: {notices:?}");
+        assert!(notices.iter().all(|n| !n.text.contains("hidden-zarr-open")), "{case}: {notices:?}");
+    }
+    let requests = server.requests();
+    for (case, chunk) in [("/first", "t/0.0.0"), ("/selected", "t/0.0.0"), ("/selected", "t/1.0.0")] {
+        assert!(
+            requests.iter().any(|r| r.path == case && r.query.iter().any(|(key, value)| key == "token" && value.ends_with(chunk))),
+            "the first and selected slices must actually be read: {requests:?}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// A Zarr variable's series at a point (#555): the values along its time dimension at the cell
@@ -26107,7 +26232,11 @@ fn a_run_is_copied_from_the_history_as_code() {
     let text = out["text"].as_str().unwrap();
     assert!(text.contains("import rustgis\n\ns = rustgis.Session(") && text.contains("# 1. Buffer ("), "{text}");
     assert!(text.contains("UTC)\ns.run(\n    \"gp.run\""), "{text}");
-    assert!(text.contains("# 3. Buffer: failed when it ran (no layer https://h.example/a)\n# s.run("), "{text}");
+    assert_eq!(
+        text.lines().filter(|line| line.starts_with("s.run(")).count(),
+        2,
+        "failed or unrecognized runs must not become executable Python: {text}"
+    );
     assert!(text.contains("# 4. Mystery: Mystery can't be run again"), "{text}");
     assert!(text.contains("# 5. Buffer: Buffer can't be run again") && !text.contains("file.delete"), "{text}");
     // Text from the file stays in its comment, whatever line break it holds (a lone `\r` ends a
@@ -26186,6 +26315,78 @@ fn secrets_in_a_query_or_a_run_s_error_stay_out_of_copied_code() {
             && !text.contains("mp3"),
         "{text}"
     );
+}
+
+#[test]
+fn history_exports_never_keep_unknown_url_credential_continuations() {
+    let mut s = world();
+    let raw = "GET https://history.example/data?token=hidden hidden-tail: HTTP 503";
+    s.project.gp_history.push(crate::GpRecord {
+        tool: "Buffer".into(),
+        id: "buffer".into(),
+        params: json!({
+            "input":"Cities",
+            "note":raw,
+            "url":"https://history.example/data?page=2&token=hidden",
+            "markup":"<Password>hidden hidden-tail</Password> https://history.example/data",
+            "payload":r#"{"password":"hidden hidden-tail","link":"https://history.example/data"}"#,
+            "compact":r#"{"password":"hidden"}"#,
+            "markupWithoutUrl":"<Password>hidden</Password>",
+        }),
+        command: None,
+        at: 0,
+        ok: false,
+        messages: vec![raw.into()],
+        millis: 0,
+        outputs: Vec::new(),
+    });
+    // Upstream copied code keeps opaque step text replayable and says so; typed addresses and the
+    // failed run's diagnostic still lose their credentials.
+    let code = s.run("gp.historyCode", &json!({"run":0})).unwrap()["code"].as_str().unwrap().to_string();
+    assert!(code.contains("https://history.example/data?page=2") && !code.contains("page=2&token"), "{code}");
+    assert!(s.notices.iter().any(|n| n.text.contains("opaque parameters")));
+    let script = s.run("gp.historyScript", &Value::Null).unwrap()["text"].as_str().unwrap().to_string();
+    let failure = script.lines().find(|l| l.contains("failed when it ran")).unwrap_or_default();
+    assert!(failure.contains("GET https://history.example/data") && !failure.contains("hidden"), "{script}");
+    // The parameter sanitizer used for review/redacted output removes every structured secret.
+    let clean = serde_json::to_string(&crate::cmd::history::redacted(&s.project.gp_history[0].params)).unwrap();
+    assert!(!clean.contains("hidden") && clean.contains("https://history.example/data?page=2"), "{clean}");
+}
+
+#[test]
+fn copied_history_replays_public_structured_parameters_without_changing_results() {
+    let mut s = Session::new(Project::default());
+    s.run(
+        "layer.addDataText",
+        &json!({
+            "fileName":"Words.geojson",
+            "text":r#"{"type":"FeatureCollection","features":[
+            {"type":"Feature","geometry":{"type":"Point","coordinates":[0,0]},"properties":{"word":"A"}},
+            {"type":"Feature","geometry":{"type":"Point","coordinates":[1,1]},"properties":{"word":"B"}}
+        ]}"#,
+        }),
+    )
+    .unwrap();
+    for separator in ["<div> https://example.org </div>", r#"{"label":"public","link":"https://example.org?format=json"}"#] {
+        s.run(
+            "gp.run",
+            &json!({
+                "tool":"summaryStatistics",
+                "params":{"input":"Words","statistics":[{"field":"word","statistic":"CONCATENATE"}],"separator":separator}
+            }),
+        )
+        .unwrap();
+        let run = s.project.gp_history.len() - 1;
+        let copied = s.run("gp.historyCode", &json!({"run":run,"as":"command"})).unwrap();
+        let (command, params) = copied["code"].as_str().unwrap().split_once(' ').unwrap();
+        let params: Value = serde_json::from_str(params).unwrap();
+        s.run(command, &params).unwrap();
+        let replayed = s.project.tables.last().unwrap();
+        assert_eq!(
+            replayed.value(0, replayed.field_index("CONCATENATE_word").unwrap()),
+            &rustgis_data::Value::Text(format!("A{separator}B"))
+        );
+    }
 }
 
 #[path = "../../../tests/support/ogc_server.rs"]

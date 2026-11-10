@@ -1136,10 +1136,10 @@ mod native {
             return Err(Error {
                 status: Some(r.status),
                 request_id: r.request_id().map(str::to_string),
-                ..Error::auth(format!("{url}: HTTP {}", r.status))
+                ..Error::auth(rustgis_engine::data::diagnostics::message_with_address(url, &format!("HTTP {}", r.status)))
             });
         }
-        serde_json::from_slice(&r.body).map_err(|_| Error::auth(format!("{url}: not JSON")))
+        serde_json::from_slice(&r.body).map_err(|_| Error::auth(rustgis_engine::data::diagnostics::message_with_address(url, "not JSON")))
     }
 
     /// Verifies a new id token with OpenAI's published keys.

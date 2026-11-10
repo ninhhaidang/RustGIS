@@ -35,10 +35,11 @@ pub(crate) async fn prepare_and_send<T, R, F: Future<Output = Result<T, String>>
     Ok(send(prepared))
 }
 
-/// Formats a fetch failure without exposing the authenticated request's credentials.
+/// Formats a fetch failure without exposing the authenticated request's credentials. The
+/// address is sanitized on its own first, so a secret query doesn't take the reason with it.
 pub(crate) fn fetch_error(url: &str, error: String, authenticated: bool) -> String {
-    use rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::logins;
-    if authenticated && cache::http_status(&error).is_none() { logins::scrub_error(&format!("{url}: {error}")) } else { error }
+    use rustgis_ui_egui::rustgis_engine::{data::diagnostics::message_with_address, render::rustgis_tiles::logins};
+    if authenticated && cache::http_status(&error).is_none() { logins::scrub_error(&message_with_address(url, &error)) } else { error }
 }
 
 /// Checks the browser's normalized destination under the caller's inherited ceiling.

@@ -2011,6 +2011,75 @@ fn data_from_a_web_address_lands_later() {
     assert!(h.state().ui.downloads.is_empty());
 }
 
+/// A failed header probe, ordinary download and project download retain their HTTP reason after
+/// notices and diagnostic history redact the message again (#1475).
+#[test]
+fn address_failures_keep_status_without_credentials() {
+    use ogc_server::{Route, Server};
+    let server = Server::new(
+        ["probe.tif", "remote.fgb", "download.geojson", "project.rgis"]
+            .into_iter()
+            .map(|name| Route { status: 503, ..Route::new(&format!("/{name}"), "") })
+            .collect(),
+    );
+    let mut h = harness();
+    h.step();
+    for (command, file, query) in [
+        ("ui.addUrl", "probe.tif", "sig=hidden-probe"),
+        ("ui.addUrl", "remote.fgb", "token=hidden-remote"),
+        ("ui.addUrl", "download.geojson", "key=hidden-download"),
+        ("ui.openUrl", "project.rgis", "%74oken=hidden-project"),
+    ] {
+        let url = format!("{}/{file}?{query}#hidden-fragment", server.base);
+        h.state_mut().session.notices.clear();
+        h.state_mut().run(command, json!({"url": url})).unwrap();
+        for _ in 0..200 {
+            h.step();
+            if h.state().session.notices.iter().any(|n| n.error) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let notices = &h.state().session.notices;
+        let failure = notices.iter().find(|n| n.error).unwrap_or_else(|| panic!("{file}: no failure notice"));
+        assert!(failure.text.contains(file) && failure.text.contains("503"), "{failure:?}");
+        assert!(notices.iter().all(|n| !n.text.contains("hidden")), "{notices:?}");
+        let report = h.state().session.diagnostics.report(rustgis_engine::data::diagnostics::Filter::All);
+        assert!(!report.contains("hidden"), "{report}");
+        assert!(report.lines().any(|line| line.contains(file) && line.contains("503")), "{report}");
+    }
+}
+
+/// A required Shapefile part is the failed resource, not a second name for its parent.
+#[test]
+fn shapefile_part_failures_keep_one_address_and_the_http_reason() {
+    use ogc_server::{Route, Server};
+    let server = Server::new(vec![Route::new("/secret.shp", "shape-fixture"), Route::new("/versioned.shp", "shape-fixture")]);
+    let mut h = harness();
+    h.step();
+    for (name, query) in [("secret", "token=hidden-part"), ("versioned", "page=2")] {
+        h.state_mut().session.notices.clear();
+        h.state_mut().run("ui.addUrl", json!({"url":format!("{}/{name}.shp?{query}",server.base)})).unwrap();
+        for _ in 0..200 {
+            h.step();
+            if h.state().session.notices.iter().any(|notice| notice.error) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let failure = h.state().session.notices.iter().find(|notice| notice.error).unwrap();
+        assert!(failure.text.contains(&format!("/{name}.dbf")) && failure.text.contains("404"), "{failure:?}");
+        assert!(!failure.text.contains(".shp") && !failure.text.contains("hidden"), "{failure:?}");
+        assert_eq!(failure.text.matches("://").count(), 1, "{failure:?}");
+        let redacted = rustgis_engine::Session::redacted(&failure.text);
+        assert_eq!(redacted.as_str(), failure.text);
+    }
+    assert_eq!(
+        server.requests().iter().map(|request| request.path.as_str()).collect::<Vec<_>>(),
+        ["/secret.shp", "/secret.dbf", "/versioned.shp", "/versioned.dbf"]
+    );
+}
+
 /// A local server answering with a small cloud-optimised GeoTIFF by range, its HEAD answers
 /// announcing the TIFF header's length as Vantor's Transform API does: its address, the bytes it
 /// has sent and the file's length.

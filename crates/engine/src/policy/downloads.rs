@@ -121,7 +121,11 @@ impl Session {
             return;
         }
         if self.url_waits.holds(n, p) {
-            self.url_waits.land(n, Err(crate::sources::redact_text(error)), crate::cmd::plugins::fetch::Added::default());
+            let error = p
+                .get("url")
+                .and_then(Value::as_str)
+                .map_or_else(|| Self::redacted(error).into_string(), |url| crate::sources::message_with_address(url, error));
+            self.url_waits.land(n, Err(error), crate::cmd::plugins::fetch::Added::default());
         }
         if self.url_waits.given_up(n, p) {
             self.url_waits.refused(n);
@@ -145,7 +149,7 @@ impl Session {
         self.landed_reads.retain(|(k, _)| *k != id);
         #[cfg(not(target_arch = "wasm32"))]
         self.landed_windows.retain(|(k, _)| *k != id);
-        let url = crate::sources::redact_text(p.get("url").and_then(Value::as_str).unwrap_or("download"));
+        let url = crate::sources::address_in_message(p.get("url").and_then(Value::as_str).unwrap_or("download"));
         if added {
             Ok(Some(format!("{url}: it was added already for its plugin command, so it wasn't added again")))
         } else {
@@ -261,7 +265,11 @@ impl Session {
         };
         if (given.is_some() && waiting != Some(number)) || (waiting.is_none() && !self.url_waits.has(number)) {
             if self.policy.work.queued.len() >= crate::MAX_URL_REQUESTS {
-                return Err(format!("{} downloads are already waiting; try again when they have landed", crate::MAX_URL_REQUESTS));
+                let reason = format!("{} downloads are already waiting; try again when they have landed", crate::MAX_URL_REQUESTS);
+                return Err(p
+                    .get("url")
+                    .and_then(Value::as_str)
+                    .map_or_else(|| Self::redacted(&reason).into_string(), |url| crate::sources::message_with_address(url, &reason)));
             }
             let mut params = asked.clone();
             params.as_object_mut().ok_or("download parameters must be an object")?.insert("request".into(), json!(number));
@@ -481,7 +489,12 @@ impl Session {
         if let Some(number) = claim.params.get("request").and_then(Value::as_u64)
             && self.url_waits.holds(number, &claim.params)
         {
-            self.url_waits.land(number, Err(crate::sources::redact_text(error)), crate::cmd::plugins::fetch::Added::default());
+            let error = claim
+                .params
+                .get("url")
+                .and_then(Value::as_str)
+                .map_or_else(|| Self::redacted(error).into_string(), |url| crate::sources::message_with_address(url, error));
+            self.url_waits.land(number, Err(error), crate::cmd::plugins::fetch::Added::default());
         }
         if claim.import {
             crate::cmd::geolibre::discard_pending(self, &claim.params);

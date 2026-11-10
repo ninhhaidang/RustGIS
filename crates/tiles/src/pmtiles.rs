@@ -609,7 +609,7 @@ pub(crate) fn fetch(url: &str, done: Done) {
         return;
     }
     let Some((z, x, y, archive)) = parse_url(url) else {
-        done(Err(format!("{url}: not a PMTiles tile address")));
+        done(Err(rustgis_data::diagnostics::message_with_address(url, "not a PMTiles tile address")));
         return;
     };
     let a = archive.clone();

@@ -1069,7 +1069,7 @@ fn fetch_tile(url: String, host: String, want: Want, omit: &'static [u16], epoch
                 // The browser's decoder may answer after the initiating owner was retired.
                 Err(e) if !keep_failure(&e, &still) => return,
                 Err(e) => {
-                    log::debug!("{}", crate::logins::scrub_error(&format!("{}: {e}", answer.key)));
+                    log::debug!("{}", crate::logins::scrub_error(&rustgis_data::diagnostics::message_with_address(&answer.key, &e)));
                     // Refused until a time its server gave: the map draws again then.
                     if let Some(wait) = retry_after(&e) {
                         notify_at(Instant::now() + wait);
@@ -1306,6 +1306,8 @@ impl<'a> RequestDiagnostics<'a> {
                 _ => NetworkKind::Other,
             }
         };
+        let message = failure.message.contains(url).then(|| rustgis_data::diagnostics::with_address_sanitized(url, &failure.message));
+        let message = clean(message.as_deref().unwrap_or(&failure.message));
         let network = Network {
             url: url.to_string(),
             method: self.method.to_string(),
@@ -1314,9 +1316,9 @@ impl<'a> RequestDiagnostics<'a> {
             kind,
         };
         if self.once {
-            self.capture.network_failure_once("Network", &clean(&failure.message), &clean(&details), network);
+            self.capture.network_failure_once("Network", &message, &clean(&details), network);
         } else {
-            self.capture.network_failure("Network", &clean(&failure.message), &clean(&details), network);
+            self.capture.network_failure("Network", &message, &clean(&details), network);
         }
     }
 }
@@ -2436,7 +2438,7 @@ mod native {
                     let next = crate::template::join(&at, header("location").ok_or("a redirect with no Location")?);
                     Origin { url: at.clone(), reach: ceiling }.check(&next)?;
                     if crate::address::is_https(&at) && !crate::address::is_https(&next) {
-                        return Err(format!("{next}: a redirect from https to http").into());
+                        return Err(rustgis_data::diagnostics::message_with_address(&next, "a redirect from https to http").into());
                     }
                     same_origin &= crate::logins::origin(&next) == first_origin;
                     at = next;
@@ -2805,7 +2807,7 @@ mod native {
                             let _ = resp.body_mut().with_config().limit(64).read_to_vec();
                             continue;
                         }
-                        None => return Err(format!("{url}: {}", super::NO_RANGES).into()),
+                        None => return Err(rustgis_data::diagnostics::message_with_address(url, super::NO_RANGES).into()),
                     }
                 }
                 if status >= 400 {
@@ -2843,7 +2845,7 @@ mod native {
                 Origin { url: at.clone(), reach: ceiling }.check(&next)?;
                 // Never from HTTPS down to plain HTTP, however either scheme is written.
                 if crate::address::is_https(&at) && !crate::address::is_https(&next) {
-                    return Err(format!("{next}: a redirect from https to http").into());
+                    return Err(rustgis_data::diagnostics::message_with_address(&next, "a redirect from https to http").into());
                 }
                 redirects += 1;
                 if redirects > 5 {
@@ -2864,7 +2866,7 @@ mod native {
             if let Some((a, _)) = range.filter(|_| whole)
                 && a > 0
             {
-                return Err(format!("{url}: {}", super::NO_RANGES).into());
+                return Err(rustgis_data::diagnostics::message_with_address(url, super::NO_RANGES).into());
             }
             let mut buf = Vec::new();
             if !resp.status().is_success() {
@@ -2883,7 +2885,7 @@ mod native {
                     .read_to_end(&mut buf)
                     .map_err(|e| e.to_string())?;
                 if buf.len() as u64 > n {
-                    return Err(format!("{url}: {}", super::NO_RANGES).into());
+                    return Err(rustgis_data::diagnostics::message_with_address(url, super::NO_RANGES).into());
                 }
                 if buf.len() > max {
                     return Err(format!("larger than {max} bytes").into());
@@ -2903,7 +2905,7 @@ mod native {
             }
             if let Some((a, b)) = range.filter(|_| whole) {
                 if buf.len() as u64 > b - a + 1 {
-                    return Err(format!("{url}: {}", super::NO_RANGES).into());
+                    return Err(rustgis_data::diagnostics::message_with_address(url, super::NO_RANGES).into());
                 }
                 buf.truncate(usize::try_from(b - a + 1).unwrap_or(usize::MAX));
             }
@@ -2927,15 +2929,15 @@ mod native {
 
     /// Keeps the destination ceiling with queued work; the web build requires its own fetcher.
     pub(super) fn fetch_reached(url: String, _ceiling: crate::address::Reach, done: super::FetchedDone, _omit: &'static [u16]) {
-        done(Err(format!("{url}: this build has no way to fetch tiles")));
+        done(Err(rustgis_data::diagnostics::message_with_address(&url, "this build has no way to fetch tiles")));
     }
 
     pub(super) fn fetch(url: String, done: Done, _omit: &'static [u16]) {
-        done(Err(format!("{url}: this build has no way to fetch tiles")));
+        done(Err(rustgis_data::diagnostics::message_with_address(&url, "this build has no way to fetch tiles")));
     }
 
     pub(super) fn download_within(url: String, _timeout: std::time::Duration, _omit: &'static [u16], done: DoneDetailed) {
-        let message = format!("{url}: this build has no way to fetch tiles");
+        let message = rustgis_data::diagnostics::message_with_address(&url, "this build has no way to fetch tiles");
         done(Err(crate::failure::Failure::new(&url, message)));
     }
 
@@ -2944,11 +2946,11 @@ mod native {
     }
 
     pub(super) fn post(url: String, _body: String, done: Done) {
-        done(Err(format!("{url}: this build has no way to send requests")));
+        done(Err(rustgis_data::diagnostics::message_with_address(&url, "this build has no way to send requests")));
     }
 
     pub(super) fn head(url: String, done: super::HeadDone) {
-        done(Err(format!("{url}: this build has no way to send requests")));
+        done(Err(rustgis_data::diagnostics::message_with_address(&url, "this build has no way to send requests")));
     }
 
     pub(super) fn fetch_local(url: String, done: Done) {
@@ -3423,6 +3425,29 @@ mod tests {
         RequestDiagnostics::with_capture(url, "GET", capture).failed(&Failure::new(url, "owner closed"));
         assert_eq!(network_records(&first, url).len(), 1);
         assert!(second.records().is_empty());
+    }
+
+    #[test]
+    fn network_diagnostics_preserve_known_secret_address_failure_reasons() {
+        use rustgis_data::diagnostics::{Filter, History};
+        for url in [
+            "https://diagnostics-secret.test/data?token=hidden",
+            "https://diagnostics-secret.test/data?%2573ig=hidden unescaped hidden",
+            "https://alice:hidden@diagnostics-secret.test/data#%256bey=hidden unescaped hidden",
+        ] {
+            let history = History::default();
+            let _scope = history.enter();
+            let mut diagnostics = RequestDiagnostics::new(url, "GET");
+            diagnostics.answered(503);
+            diagnostics.failed(&Failure::new(url, format!("{url}: HTTP 503 Service Unavailable")));
+            let records = history.records();
+            assert_eq!(records.len(), 1);
+            assert!(records[0].message.contains("HTTP 503 Service Unavailable"), "{records:?}");
+            assert_eq!(rustgis_data::diagnostics::redact(&records[0].message), records[0].message);
+            let report = history.report(Filter::All);
+            assert!(report.contains("HTTP 503 Service Unavailable"), "{report}");
+            assert!(!report.contains("hidden") && !report.contains("alice"), "{report}");
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -4490,8 +4515,10 @@ mod tests {
         let f = native::get_detailed(&agent, &format!("{base}/f.parquet{TAIL}4")).unwrap_err();
         assert_eq!(f.status(), Some(404), "{}", f.message);
         let base = serve(vec![no_suffix, "HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\n0123456789".into()]);
-        let f = native::get_detailed(&agent, &format!("{base}/f.parquet{TAIL}4")).unwrap_err();
+        let f = native::get_detailed(&agent, &format!("{base}/f.parquet?token=private-range-token{TAIL}4")).unwrap_err();
         assert!(f.message.contains(super::NO_RANGES), "{}", f.message);
+        assert!(!f.message.contains("private-range-token"), "{}", f.message);
+        assert!(rustgis_data::diagnostics::redact(&f.message).contains(super::NO_RANGES), "{}", f.message);
         // More last bytes asked for than the file holds: the whole file.
         let base = serve(vec![
             "HTTP/1.1 501 Not Implemented\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".into(),

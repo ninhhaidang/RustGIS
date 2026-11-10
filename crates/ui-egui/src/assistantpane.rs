@@ -414,7 +414,10 @@ fn dispatch(app: &mut RustGisApp, req: HttpRequest, login: Option<chatgpt::Bindi
     if !provider::allowed_url(&req.url) {
         fail(
             &slot,
-            crate::i18n::fmt("{url}: only HTTPS addresses, or plain HTTP on this computer or network, are allowed", &[("url", &req.url)]),
+            crate::i18n::fmt(
+                "{url}: only HTTPS addresses, or plain HTTP on this computer or network, are allowed",
+                &[("url", &rustgis_engine::sources::address_in_message(&req.url))],
+            ),
         );
         return slot;
     }

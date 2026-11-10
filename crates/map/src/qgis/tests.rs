@@ -860,6 +860,7 @@ fn raster_renderers_read_as_rustgis_raster_styles() {
 /// Every generated style and project in `testdata/qgis` reads, each project with its layers.
 #[test]
 fn every_corpus_file_reads() {
+    const PASSWORD: &str = "qgis-corpus-private-password-73194";
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdata/qgis");
     let files = |dir: &str, extensions: &[&str]| {
         let mut paths: Vec<_> = std::fs::read_dir(root.join(dir)).unwrap().map(|e| e.unwrap().path()).collect();
@@ -885,12 +886,14 @@ fn every_corpus_file_reads() {
         } else {
             String::from_utf8(bytes).unwrap()
         };
+        // The worktree path itself may contain "secret"; use a distinct credential sentinel.
+        let text = text.replace("password='secret'", &format!("password='{PASSWORD}'"));
         let dir = path.parent().unwrap().to_string_lossy().to_string();
         let mut report = Report::default();
         let project = read_project(&text, &dir, &mut report).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
         assert!(!project.layers.is_empty(), "{}: no layers", path.display());
         // The PostGIS and SQL Server projects' made-up password reaches neither the layers nor the notes.
-        assert!(!format!("{project:?} {report:?}").contains("secret"), "{}: the password came through", path.display());
+        assert!(!format!("{project:?} {report:?}").contains(PASSWORD), "{}: the password came through", path.display());
     }
 }
 

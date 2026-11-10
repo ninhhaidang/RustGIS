@@ -110,7 +110,7 @@ impl Read {
             if self.forbidden > 0 {
                 return Some(Err(crate::i18n::fmt(
                     "{url}: access denied (HTTP 403) to {count} of the slice’s chunks",
-                    &[("url", &self.root), ("count", &self.forbidden.to_string())],
+                    &[("url", &rustgis_engine::sources::address_in_message(&self.root)), ("count", &self.forbidden.to_string())],
                 )));
             }
             let name = self.params.get("name").and_then(Value::as_str).unwrap_or("Zarr");
@@ -121,7 +121,10 @@ impl Read {
             );
         }
         if self.got.is_empty() && self.forbidden > 0 {
-            return Some(Err(crate::i18n::fmt("{url}: access denied (HTTP 403)", &[("url", &self.root)])));
+            return Some(Err(crate::i18n::fmt(
+                "{url}: access denied (HTTP 403)",
+                &[("url", &rustgis_engine::sources::address_in_message(&self.root))],
+            )));
         }
         self.forbidden = 0;
         let docs = std::mem::take(&mut self.got).into_iter().collect::<Vec<_>>();
@@ -167,7 +170,7 @@ pub fn poll(app: &mut RustGisApp, ctx: &egui::Context) {
             Err(e) => {
                 app.session.download_failed(id);
                 rustgis_engine::cmd::geolibre::discard_pending(&mut app.session, &params);
-                app.session.notify(crate::i18n::fmt("{url}: {e}", &[("url", &url), ("e", &e)]), true);
+                app.session.notify(rustgis_engine::sources::message_with_address(&url, &e), true);
             }
         }
     }

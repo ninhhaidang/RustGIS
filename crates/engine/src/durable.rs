@@ -348,6 +348,10 @@ impl<'a> Prepare<'a> {
 pub(crate) fn generated_text(source: &str) -> String {
     let public = crate::project::without_recorded_login_bindings(source);
     let source = public.as_deref().unwrap_or(source);
+    // Address scrubbing keeps later prose, but an unknown secret value may run past whitespace.
+    if let Some(strict) = rustgis_data::diagnostics::secret_continuation_cut(source) {
+        return crate::render::rustgis_tiles::logins::scrub(&strict);
+    }
     let (clean, _) = rustgis_data::address::scrub_addresses(source);
     crate::render::rustgis_tiles::logins::scrub(&clean)
 }

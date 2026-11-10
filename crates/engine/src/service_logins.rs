@@ -282,8 +282,12 @@ pub(crate) fn bind_logged_in(s: &Session, connection: &str, url: &str) -> Result
         return Ok(url.to_string());
     }
     let Some(active) = s.web_logins.active.get(&c.id) else { return Ok(url.to_string()) };
-    logins::bind(&active.binding, url)
-        .map_err(|_| format!("{url}: this address can't carry the connection's login (it has a space, a control character or a backslash)"))
+    logins::bind(&active.binding, url).map_err(|_| {
+        crate::sources::message_with_address(
+            url,
+            "this address can't carry the connection's login (it has a space, a control character or a backslash)",
+        )
+    })
 }
 
 pub fn known_secret(s: &Session, c: &Connection) -> Result<Secret, String> {

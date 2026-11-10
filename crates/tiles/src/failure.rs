@@ -69,6 +69,13 @@ impl Failure {
     pub fn new(url: &str, message: impl Into<String>) -> Self {
         let message = message.into();
         let reason = crate::cache::http_status(&message).filter(|s| *s >= 400).map_or(Reason::Other, Reason::Status);
+        // Known address occurrences, wherever they are, are sanitized whole first, so an
+        // unescaped secret value can't be mistaken for the reason or force the cut that drops it.
+        let message = if !url.is_empty() && message.contains(url) {
+            rustgis_data::diagnostics::with_address_sanitized(url, &message)
+        } else {
+            message
+        };
         let message = crate::logins::scrub_error(&message);
         let url = if url.contains(rustgis_data::login_address::PREFIX) { crate::logins::scrub_error(url) } else { url.to_string() };
         Failure { url, message, reason, answer: None }

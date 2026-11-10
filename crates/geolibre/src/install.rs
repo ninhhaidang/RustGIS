@@ -44,7 +44,11 @@ fn agent() -> ureq::Agent {
 }
 
 fn get(agent: &ureq::Agent, url: &str) -> Result<ureq::http::Response<ureq::Body>, String> {
-    agent.get(url).header("User-Agent", concat!("RustGIS/", env!("CARGO_PKG_VERSION"))).call().map_err(|e| format!("{url}: {e}"))
+    agent
+        .get(url)
+        .header("User-Agent", concat!("RustGIS/", env!("CARGO_PKG_VERSION")))
+        .call()
+        .map_err(|e| rustgis_data::diagnostics::message_with_address(url, &e.to_string()))
 }
 
 /// The latest release's tag and the archive and checksum URLs for `target`.

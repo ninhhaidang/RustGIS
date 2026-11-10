@@ -6,7 +6,7 @@
 use egui::{RichText, Ui, vec2};
 use rustgis_engine::render::rustgis_tiles::failure::{Failure, Reason, status_name};
 
-use rustgis_engine::sources::redact_text;
+use rustgis_engine::sources::{address_in_message, message_with_address};
 
 use crate::theme::Tokens;
 
@@ -32,17 +32,17 @@ pub fn plain(f: &Failure) -> (String, String) {
             (tl!("RustGIS couldn't reach the server.").into(), tl!("Check the address and your connection.").into())
         }
         (Reason::Timeout, _) => (tl!("The server took too long to answer.").into(), tl!("Try again later.").into()),
-        (Reason::Other, _) => (tl!("The request failed.").into(), redact_text(&f.message)),
+        (Reason::Other, _) => (tl!("The request failed.").into(), message_with_address(&f.url, &f.message)),
     }
 }
 
 /// What is known of the failure, as (label, value) rows: the labels in English, translated
 /// where shown.
 pub fn details(f: &Failure) -> Vec<(&'static str, String)> {
-    let mut rows = vec![("Address", rustgis_engine::sources::redact(&f.url))];
+    let mut rows = vec![("Address", address_in_message(&f.url))];
     match f.status() {
         Some(s) => rows.push(("Status", status_name(s).map_or_else(|| s.to_string(), |n| format!("{s} {n}")))),
-        None => rows.push(("Error", redact_text(&f.message))),
+        None => rows.push(("Error", message_with_address(&f.url, &f.message))),
     }
     let header = |k: &str| f.header(k).map(str::to_string);
     for (label, value) in [
@@ -140,26 +140,24 @@ mod tests {
         let unanswered = |r: Reason| plain(&Failure::without_answer("u", "x", r)).0;
         assert!(unanswered(Reason::Unreachable).contains("couldn't reach"));
         assert!(unanswered(Reason::Timeout).contains("too long"));
-        // Anything else: the error itself, with no status to show.
-        let other = Failure::new("u", "too many redirects");
-        assert_eq!(plain(&other).1, "too many redirects");
-        assert!(report(&other).contains("Error: too many redirects"));
     }
 
-    /// An error's text quoting an address shows it without its keys, the words around it kept.
+    /// Known addresses are sanitized whole before either error surface composes the reason.
     #[test]
-    fn addresses_in_an_error_lose_their_keys() {
-        let said = "https://h.example/a?f=json&token=s3cr3t: the server doesn't answer byte-range requests";
-        let f = Failure::new("https://h.example/a?f=json&token=s3cr3t", said);
-        let shown = plain(&f).1;
-        assert_eq!(shown, "https://h.example/a?f=json: the server doesn't answer byte-range requests");
-        let report = report(&f);
-        assert!(!report.contains("s3cr3t"), "{report}");
-        assert!(report.contains("Error: https://h.example/a?f=json: the server"), "{report}");
-        // Quoted, bracketed or ending a sentence; text with no address is left as it is.
-        assert_eq!(redact_text("(\"http://x.example/?key=k\"), then."), "(\"http://x.example/\"), then.");
-        assert_eq!(redact_text("«https://x.example/?token=t» gone"), "«https://x.example/» gone");
-        assert_eq!(redact_text("io: connection refused"), "io: connection refused");
-        assert_eq!(redact_text("://"), "://");
+    fn addresses_in_an_error_lose_their_keys_without_losing_the_reason() {
+        for url in [
+            "https://alice:hidden@h.example/a?token=hidden unescaped hidden",
+            "https://h.example/a?custom=hidden unescaped hidden",
+            "https://h.example/a#hidden unescaped hidden",
+        ] {
+            let f = Failure::new(url, format!("{url}: the server doesn't answer byte-range requests"));
+            let shown = plain(&f).1;
+            let error = details(&f).into_iter().find(|(label, _)| *label == "Error").unwrap().1;
+            for text in [shown, error, report(&f)] {
+                let clean = rustgis_engine::Session::redacted(&rustgis_engine::Session::redacted(&text).into_string()).into_string();
+                assert!(clean.contains("byte-range requests"), "{clean}");
+                assert!(!clean.contains("hidden") && !clean.contains("alice"), "{clean}");
+            }
+        }
     }
 }

@@ -105,19 +105,17 @@ fn fetch(root: &str, keys: &[String]) -> Result<(HashMap<String, Vec<u8>>, usize
                         if failure.lock().is_ok_and(|f| f.is_some()) {
                             break;
                         }
-                        // A missing file is an expected answer here (see `is_absent`), not a failure: its 404
-                        // or 403 isn't recorded one by one (one note per server says the
-                        // omission, and a store refusing everything still says "access denied"), while
-                        // a real one (a 500, a timeout) does, with its address, status and duration.
+                        // A missing file is an expected answer here (see `is_absent`), not a failure:
+                        // one omission note replaces its 404/403 diagnostics; real failures still say why.
                         let got = crate::render::rustgis_tiles::cache::download_blocking_omitting(&format!("{root}/{k}"), &[404, 403]);
                         match got {
                             Ok(b) => {
                                 let len = b.len() as u64;
                                 if total.fetch_add(len, std::sync::atomic::Ordering::Relaxed).saturating_add(len) > zarr::MAX_READ {
                                     if let Ok(mut f) = failure.lock() {
-                                        f.get_or_insert(format!(
-                                            "{root}: more than {} GB to read: take a smaller part",
-                                            zarr::MAX_READ >> 30
+                                        f.get_or_insert(crate::sources::message_with_address(
+                                            root,
+                                            &format!("more than {} GB to read: take a smaller part", zarr::MAX_READ >> 30),
                                         ));
                                     }
                                     break;
@@ -133,7 +131,7 @@ fn fetch(root: &str, keys: &[String]) -> Result<(HashMap<String, Vec<u8>>, usize
                             }
                             Err(e) => {
                                 if let Ok(mut f) = failure.lock() {
-                                    f.get_or_insert(format!("{root}/{k}: {e}"));
+                                    f.get_or_insert(crate::sources::message_with_address(&format!("{root}/{k}"), &e));
                                 }
                             }
                         }
@@ -208,10 +206,10 @@ fn store_at(url: &str) -> Result<zarr::Store, String> {
     let (got, forbidden) = fetch(url, &keys)?;
     // Every metadata file refused: access is denied, not a store without metadata.
     if got.is_empty() && forbidden > 0 {
-        return Err(format!("{url}: access denied (HTTP 403)"));
+        return Err(crate::sources::message_with_address(url, "access denied (HTTP 403)"));
     }
     let docs: Vec<(String, Vec<u8>)> = got.into_iter().collect();
-    zarr::parse_store(&docs).map_err(|e| format!("{url}: {e}"))
+    zarr::parse_store(&docs).map_err(|e| crate::sources::message_with_address(url, &e.to_string()))
 }
 
 fn info(_s: &mut Session, p: &Value) -> CmdResult {
@@ -327,13 +325,17 @@ pub(crate) fn add(s: &mut Session, p: &Value) -> CmdResult {
         Source::Url(u) => {
             let store = store_at(&u)?;
             pick_variable(&store, &mut sel)?;
-            let plan = zarr::plan(&store, &sel).map_err(|e| format!("{u}: {e}"))?;
+            let plan = zarr::plan(&store, &sel).map_err(|e| crate::sources::message_with_address(&u, &e.to_string()))?;
             let (chunks, forbidden) = fetch(&u, &plan.keys)?;
             if forbidden > 0 {
-                return Err(format!("{u}: access denied (HTTP 403) to {forbidden} of the slice's chunks"));
+                return Err(crate::sources::message_with_address(
+                    &u,
+                    &format!("access denied (HTTP 403) to {forbidden} of the slice's chunks"),
+                ));
             }
             let name = ps(p, "name").map(str::to_string).unwrap_or_else(|| layer_name(&u, &sel, &[]));
-            let mut r = zarr::assemble(&store, &plan, &chunks, &name, crs_parsed).map_err(|e| format!("{u}: {e}"))?;
+            let mut r = zarr::assemble(&store, &plan, &chunks, &name, crs_parsed)
+                .map_err(|e| crate::sources::message_with_address(&u, &e.to_string()))?;
             crs_lost(&mut r, crs);
             r.source = Some(u.clone());
             // Kept in the project as a GeoTIFF: a web store isn't fetched again when it opens.
@@ -542,7 +544,9 @@ pub(crate) fn read_step(zt: &ZarrTime, i: usize, key: String) -> Result<std::syn
         cache::check_still(&still)?;
         return Ok(r);
     }
-    let r = std::sync::Arc::new(read_slice(zt, i)?.ok_or_else(|| format!("{}: step {i} has no data written", zt.store))?);
+    let r = std::sync::Arc::new(
+        read_slice(zt, i)?.ok_or_else(|| crate::sources::message_with_address(&zt.store, &format!("step {i} has no data written")))?,
+    );
     // Validate outside shared locks: a predicate may consult other runtime state.
     cache::check_still(&still)?;
     if let Ok(mut f) = failed_ahead().lock() {
@@ -578,7 +582,10 @@ pub(crate) fn read_slice(zt: &ZarrTime, i: usize) -> Result<Option<raster::Raste
         let (chunks, forbidden) = fetch(&zt.store, &plan.keys)?;
         // A chunk refused (HTTP 403) isn't one never written: it's said, not read as fill.
         if forbidden > 0 {
-            return Err(format!("{}: access denied (HTTP 403) to {forbidden} of the slice's chunks", zt.store));
+            return Err(crate::sources::message_with_address(
+                &zt.store,
+                &format!("access denied (HTTP 403) to {forbidden} of the slice's chunks"),
+            ));
         }
         let crs = crs.map(Crs::parse).transpose()?;
         zarr::assemble(&st, &plan, &chunks, &sel, crs)
@@ -1110,7 +1117,7 @@ fn add_following(s: &mut Session, p: &Value) -> CmdResult {
         zt.repair();
         // The first step read before the slider is touched, so a store that can't be read leaves
         // the map as it was.
-        let first = read_step(&zt, 0, slice_key(&zt, 0)).map_err(|e| format!("{root}: {e}"))?;
+        let first = read_step(&zt, 0, slice_key(&zt, 0)).map_err(|e| crate::sources::message_with_address(&root, &e))?;
         // The slider, on over the variable's dates when it is off.
         if s.map().time.is_none() {
             let dates: Vec<Value> = zt.dates.iter().map(|d| serde_json::json!(d)).collect();
@@ -1120,7 +1127,7 @@ fn add_following(s: &mut Session, p: &Value) -> CmdResult {
         let want = zt.step_for(window);
         // The first slice the layer shows sets its style; with no step in the window, the first step's.
         let r = match want {
-            Some(i) if i != 0 => read_step(&zt, i, slice_key(&zt, i)).map_err(|e| format!("{root}: {e}"))?,
+            Some(i) if i != 0 => read_step(&zt, i, slice_key(&zt, i)).map_err(|e| crate::sources::message_with_address(&root, &e))?,
             _ => first,
         };
         let mut layer = RasterLayer::from_path((*r).clone(), root.clone());
@@ -1228,12 +1235,12 @@ fn store_files(root: &str, keys: &[String]) -> Result<HashMap<String, Vec<u8>>, 
             let (got, forbidden) = fetch(root, batch)?;
             // A file refused (HTTP 403) isn't one never written: said, not read as missing.
             if forbidden > 0 {
-                return Err(format!("{root}: access denied (HTTP 403) to {forbidden} of its files"));
+                return Err(crate::sources::message_with_address(root, &format!("access denied (HTTP 403) to {forbidden} of its files")));
             }
             for (k, b) in got {
                 total = total.saturating_add(b.len() as u64);
                 if total > zarr::MAX_READ {
-                    return Err(format!("{root}: the series is too large to read: take a shorter period"));
+                    return Err(crate::sources::message_with_address(root, "the series is too large to read: take a shorter period"));
                 }
                 out.insert(k, b);
             }
