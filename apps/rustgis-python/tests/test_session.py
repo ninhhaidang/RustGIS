@@ -375,6 +375,33 @@ def test_a_layer_named_like_another_layers_id_reads_its_own_features(sample):
     assert True not in sample
 
 
+def test_a_layer_read_in_place_exports_its_whole_source(tmp_path):
+    session = rustgis.Session()
+    far = {"type": "Feature", "geometry": {"type": "Point", "coordinates": [-70.0, -30.0]}, "properties": {"name": "Far"}}
+    path = tmp_path / "streamed.geojson"
+    path.write_text(json.dumps({"type": "FeatureCollection", "features": POINTS["features"] + [far]}))
+    layer = session.add_data(path, stream=True)
+    # The view holds Hong Kong and Guangzhou, not Far.
+    session.zoom_to((113, 22, 115, 24))
+    session.to_png(width=64, height=64)
+    assert {f["properties"]["name"] for f in layer.to_geojson()["features"]} == {"Hong Kong", "Guangzhou", "Far"}
+    try:
+        import geopandas  # noqa: F401
+    except ImportError:
+        pass
+    else:
+        assert len(layer.to_geopandas()) == 3
+    assert not any("couldn't be read" in text for text, _ in session.notices())
+    # A row that can't be read is left out and said.
+    bad = {"type": "Feature", "geometry": {"type": "Point", "coordinates": "x"}, "properties": {"name": "Bad"}}
+    path = tmp_path / "bad.geojson"
+    path.write_text(json.dumps({"type": "FeatureCollection", "features": POINTS["features"] + [bad]}))
+    layer = session.add_data(path, stream=True)
+    session.notices()
+    assert len(layer.to_geojson()["features"]) == 2
+    assert [text for text, _ in session.notices() if "1 row couldn't be read and was left out" in text]
+
+
 def test_a_layer_of_another_session_is_refused(sample):
     other = rustgis.Session(sample=True)
     stranger = other["Cities"]

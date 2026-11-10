@@ -240,19 +240,29 @@ class Layer:
     def to_geojson(self, selected: bool = False) -> Dict[str, Any]:
         """The layer's features as a GeoJSON FeatureCollection, in longitude and latitude.
 
-        A large file read in place holds the features of the last view; run
-        ``session.run("layer.loadAll", layer=name)`` first to get all of them.
+        All of a layer read in place (a large file, a database table) is read from its source on
+        each call, into memory, as Load All Features reads it and within its limits; rows that
+        can't be read are left out and said in ``session.notices()``. With ``selected``, only the
+        selected features are returned, from memory.
+        :meth:`to_file` can be cheaper for a large layer: to GeoJSON, CSV, FlatGeobuf, GeoPackage
+        or GeoParquet it writes a chunk at a time where the source allows; otherwise it reads the
+        layer whole too.
 
         Args:
             selected: Only the selected features.
 
         Returns:
             The FeatureCollection as a dict.
+
+        Raises:
+            RustGISError: When the layer isn't found, or a layer read in place can't be read
+                whole from its source.
         """
         return json.loads(self.session._layer_geojson(self.id, selected))
 
     def to_geopandas(self, selected: bool = False) -> Any:
-        """The layer as a ``geopandas.GeoDataFrame`` in EPSG:4326.
+        """The layer as a ``geopandas.GeoDataFrame`` in EPSG:4326: its features as
+        :meth:`to_geojson` gives them.
 
         Args:
             selected: Only the selected features.
