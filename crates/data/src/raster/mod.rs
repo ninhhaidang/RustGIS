@@ -1794,6 +1794,28 @@ pub(crate) mod tests {
         assert!(read_bytes("x.asc", &[0xff, 0xfe]).is_err());
         assert!(read_bytes("x.png", b"").is_err());
     }
+
+    /// #1486: the placement cases, as an ASCII grid's `.prj`: its lower left corner, at the case's
+    /// point, is where the case says.
+    #[test]
+    fn placement_cases_are_placed_from_a_grids_prj() {
+        let dir = std::env::temp_dir().join(format!("rustgis-placement-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for wkt::tests::PlacementCase { what, wkt, xy, lonlat } in wkt::tests::placement_cases() {
+            let asc = dir.join("grid.asc");
+            std::fs::write(&asc, format!("ncols 1\nnrows 1\nxllcorner {}\nyllcorner {}\ncellsize 1\n7\n", xy.x, xy.y)).unwrap();
+            std::fs::write(dir.join("grid.prj"), &wkt).unwrap();
+            let r = read_path(&asc).unwrap();
+            assert!(r.lost.is_empty(), "{what}: {:?}", r.lost);
+            // The origin is the upper left corner; `pixel_height` is negative, so this is the lower
+            // left.
+            let corner = Coord::new(r.transform.origin_x, r.transform.origin_y + r.transform.pixel_height);
+            let ll = r.crs.transformer().unwrap().to_lonlat(corner).unwrap();
+            let off = wkt::tests::metres_apart(ll, lonlat);
+            assert!(off < 0.01, "{what}: {off} m off");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 #[cfg(test)]

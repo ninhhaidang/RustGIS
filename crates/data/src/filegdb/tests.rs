@@ -1,4 +1,5 @@
 use super::*;
+use crate::raster::wkt::tests::{PlacementCase, metres_apart, placement_cases};
 
 fn varuint(mut v: u64) -> Vec<u8> {
     let mut out = Vec::new();
@@ -682,4 +683,27 @@ fn planetary_systems_are_said_or_refused() {
     let (crs, t) = esri_crs(None, Some(&bonne(earth)), &mut report).unwrap();
     assert!(crs.is_none() && t.is_none());
     assert!(report.messages.iter().any(|m| m.contains("Bonne")) && !report.messages.iter().any(body), "{:?}", report.messages);
+}
+
+/// #1486: the projected placement cases, as a feature class's WKT. (A File Geodatabase holds Esri
+/// WKT1, which has no bound systems.)
+#[test]
+fn placement_cases_are_placed() {
+    for PlacementCase { what, wkt, xy, lonlat } in placement_cases() {
+        if !wkt.starts_with("PROJCS[") {
+            continue;
+        }
+        // `F::Shape` takes a `&'static str`, as its other uses are constants: the few cases' text
+        // is leaked for the test's run.
+        let fields = [F::Oid, F::Shape { z: false, wkt: wkt.leak() }];
+        let rows = vec![vec![V::Blob(polygon(&square(xy.x, xy.y, 1.0)))]];
+        let files = geodatabase(vec![("T", table(4, &fields, &rows))]);
+        let layers = read_files(&files).unwrap();
+        let (ds, report) = &layers[0];
+        assert!(report.messages.is_empty(), "{what}: {:?}", report.messages);
+        let Some(Geometry::Polygon(p)) = &ds.features[0].geometry else { panic!("{what}: {:?}", ds.features[0].geometry) };
+        // The corner at the point (stored to the millimetre) is within a centimetre of it.
+        let off = p[0][0].iter().map(|c| metres_apart(*c, lonlat)).fold(f64::INFINITY, f64::min);
+        assert!(off < 0.01, "{what}: {off} m off");
+    }
 }

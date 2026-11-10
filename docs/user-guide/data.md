@@ -98,16 +98,34 @@ coordinate system and are reprojected as they draw. The map uses Web Mercator by
 
 ESRI `.prj` files without an EPSG code use their projection parameters and, for ED50,
 Monte Mario (from Greenwich or from Rome), OSGB36, DHDN, Amersfoort, GGRS87, CH1903/CH1903+
-and S-JTSK, the same built-in Helmert datum transformation as the EPSG definition. A `TOWGS84`
-transformation in the file takes precedence. RDN2008 and IGM95 are treated as WGS 84-like
-datums. These transformations do not replace regional grid corrections for survey accuracy. An
-unrecognized datum keeps its ellipsoid and produces a notice when no transformation is
-available. Swiss oblique Mercator, the standard Krovak East/North variant, the oblique
-Mercator in its azimuth forms (the two-point form, with no azimuth, is refused), and the
-Cassini-Soldner, polyconic and Equal Earth methods are supported from their parameters, as are sinusoidal (MODIS), Robinson, orthographic and Mercator (variant A), in `.prj`
-files and in GeoTIFF keys. Esri's orthographic is a spherical projection: on an ellipsoid it is
-refused, with a notice, rather than computed as EPSG's ellipsoidal one. The equidistant
-cylindrical projection (EPSG:4087, World Equidistant Cylindrical) uses a sphere of its datum's
+and S-JTSK, the same built-in Helmert datum transformation as the EPSG definition. In a `.prj`
+or other WKT:
+
+- A transformation in the file (a `TOWGS84`, or a WKT2 `BOUNDCRS`'s) takes precedence, also over
+  the built-in one of an EPSG code in the WKT, as in PROJ and GDAL. A system RustGIS can read
+  only by that code keeps the code's transformation, with a notice. Web Mercator is on WGS 84, so
+  a transformation its file gives is set aside, with a notice.
+- A `BOUNDCRS` whose transformation goes to another datum than WGS 84 continues with that
+  datum's own transformation to WGS 84: the one the file gives it, else none for a datum treated
+  as WGS 84 (such as RDN2008, IGM95 or NAD 83), else the built-in one. It is refused when there is
+  none of these, when the target gives a zero transformation where its datum has another (a
+  writer's placeholder, as for ED50 or NAD 27), or when combining the two transformations'
+  rotations could be off by a centimetre.
+- A UTM name (`WGS_1984_UTM_Zone_31N`) gives its EPSG code only when the parameters are that
+  zone's.
+- Projected axes pointing west or south, as in South Africa's Lo grids, are read as such, or
+  refused where they can't be (Web Mercator, Krovak, sinusoidal, or such axes declared northing
+  first, as in Austria's Ferro grids).
+
+RDN2008 and IGM95 are treated as WGS 84-like datums. These transformations do not replace
+regional grid corrections for survey accuracy. An unrecognized datum keeps its ellipsoid and
+produces a notice when no transformation is available. Swiss oblique Mercator, the standard
+Krovak East/North variant, the oblique Mercator in its azimuth forms (the two-point form, with
+no azimuth, is refused), and the Cassini-Soldner, polyconic and Equal Earth methods are
+supported from their parameters, as are sinusoidal (MODIS), Robinson, orthographic and Mercator
+(variant A), in `.prj` files and in GeoTIFF keys. Esri's orthographic is a spherical projection:
+on an ellipsoid it is refused, with a notice, rather than computed as EPSG's ellipsoidal one.
+The equidistant cylindrical projection (EPSG:4087, World Equidistant Cylindrical) uses a sphere of its datum's
 semi-major axis, matching legacy PROJ/GDAL coordinates (verified with PROJ 9.7.1), both for data
 and for a map drawn in it (including the
 Equirectangular preset). This also applies to planetary Equirectangular systems and definitions

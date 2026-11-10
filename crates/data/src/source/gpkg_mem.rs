@@ -175,6 +175,7 @@ impl GpkgMemSource {
             organization: text(get(r, "organization")),
             code: int(get(r, "organization_coordsys_id")),
             definition: text(get(r, "definition")),
+            definition_12_063: text(get(r, "definition_12_063")),
         });
         let reproject = super::gpkg_reproject(srs_id, row, &mut notes)?;
 

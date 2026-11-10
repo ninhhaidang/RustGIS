@@ -258,6 +258,70 @@ fn planetographic_systems_without_east_axes_are_refused() {
     assert!(e.contains(ANOTHER_BODY) && e.contains("planetographic"), "{e}");
     let e = mem(&path).err().unwrap().to_string();
     assert!(e.contains(ANOTHER_BODY) && e.contains("planetographic"), "{e}");
+    // So it is beside a WKT2 definition that can't be read, which gives way to it (without the
+    // IAU code, which would say it too).
+    let path = geopackage(dir.path(), "ographic_wkt2", LONLAT, ("NONE", 1, MARS_OGRAPHIC_ESRI));
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute("ALTER TABLE gpkg_spatial_ref_sys ADD COLUMN definition_12_063 TEXT", []).unwrap();
+    conn.execute(r#"UPDATE gpkg_spatial_ref_sys SET definition_12_063 = 'PROJCRS["x"]' WHERE srs_id = 990001"#, []).unwrap();
+    drop(conn);
+    let e = io::read_path(&path).unwrap_err().to_string();
+    assert!(e.contains(ANOTHER_BODY) && e.contains("planetographic"), "{e}");
+    let e = mem(&path).err().unwrap().to_string();
+    assert!(e.contains(ANOTHER_BODY) && e.contains("planetographic"), "{e}");
+    // And when the WKT2 is the refused one and the WKT1 can't be read either.
+    let path = geopackage(dir.path(), "ographic_wkt1_broken", LONLAT, ("NONE", 1, "GEOGCS["));
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute("ALTER TABLE gpkg_spatial_ref_sys ADD COLUMN definition_12_063 TEXT", []).unwrap();
+    conn.execute("UPDATE gpkg_spatial_ref_sys SET definition_12_063 = ?1 WHERE srs_id = 990001", [MARS_OGRAPHIC_ESRI]).unwrap();
+    drop(conn);
+    let e = io::read_path(&path).unwrap_err().to_string();
+    assert!(e.contains(ANOTHER_BODY) && e.contains("planetographic"), "{e}");
+    let e = mem(&path).err().unwrap().to_string();
+    assert!(e.contains(ANOTHER_BODY) && e.contains("planetographic"), "{e}");
+    // And when the WKT1 is an Earth system: the WKT2 counts, so it is still refused.
+    let wgs84 = r#"GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433]]"#;
+    let path = geopackage(dir.path(), "ographic_wkt1_earth", LONLAT, ("NONE", 1, wgs84));
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute("ALTER TABLE gpkg_spatial_ref_sys ADD COLUMN definition_12_063 TEXT", []).unwrap();
+    conn.execute("UPDATE gpkg_spatial_ref_sys SET definition_12_063 = ?1 WHERE srs_id = 990001", [MARS_OGRAPHIC_ESRI]).unwrap();
+    drop(conn);
+    let e = io::read_path(&path).unwrap_err().to_string();
+    assert!(e.contains(ANOTHER_BODY) && e.contains("planetographic"), "{e}");
+    let e = mem(&path).err().unwrap().to_string();
+    assert!(e.contains(ANOTHER_BODY) && e.contains("planetographic"), "{e}");
+    // So it is with a WKT2 one, longitudes counted west.
+    let path = geopackage(dir.path(), "west_wkt2_wkt1_earth", LONLAT, ("NONE", 1, wgs84));
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute("ALTER TABLE gpkg_spatial_ref_sys ADD COLUMN definition_12_063 TEXT", []).unwrap();
+    conn.execute("UPDATE gpkg_spatial_ref_sys SET definition_12_063 = ?1 WHERE srs_id = 990001", [MARS_WEST]).unwrap();
+    drop(conn);
+    let e = io::read_path(&path).unwrap_err().to_string();
+    assert!(e.contains(ANOTHER_BODY), "{e}");
+    let e = mem(&path).err().unwrap().to_string();
+    assert!(e.contains(ANOTHER_BODY), "{e}");
+    // A WKT2 that can't be parsed gives way to the WKT1, also under another body's code.
+    let path = geopackage(dir.path(), "ocentric_wkt2_broken", LONLAT, ("IAU_2015", 49900, MARS_ESRI));
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute("ALTER TABLE gpkg_spatial_ref_sys ADD COLUMN definition_12_063 TEXT", []).unwrap();
+    conn.execute("UPDATE gpkg_spatial_ref_sys SET definition_12_063 = ?1 WHERE srs_id = 990001", ["GEOGCRS[\"Mars\""]).unwrap();
+    drop(conn);
+    let (ds, report) = io::read_path(&path).unwrap();
+    assert_eq!(points(&ds), LONLAT.map(|(x, y)| Coord::new(x, y)).to_vec());
+    assert!(report.messages.iter().any(|m| m.contains("its WKT1 definition is used")), "{:?}", report.messages);
+    assert!(mem(&path).unwrap().info().notes.iter().any(|m| m.contains("its WKT1 definition is used")));
+    // So it does under a projected IAU code, which alone would be refused: the WKT1 reads.
+    let path = geopackage(dir.path(), "eqc_wkt2_broken", metres, ("IAU_2015", 49910, MARS_EQC));
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute("ALTER TABLE gpkg_spatial_ref_sys ADD COLUMN definition_12_063 TEXT", []).unwrap();
+    conn.execute("UPDATE gpkg_spatial_ref_sys SET definition_12_063 = ?1 WHERE srs_id = 990001", [r#"PROJCRS["Mars""#]).unwrap();
+    drop(conn);
+    let (ds, report) = io::read_path(&path).unwrap();
+    for (got, (lon, lat)) in points(&ds).into_iter().zip(LONLAT) {
+        assert!((got.x - lon).abs() < 1e-9 && (got.y - lat).abs() < 1e-9, "{got:?}");
+    }
+    assert!(report.messages.iter().any(|m| m.contains("its WKT1 definition is used")), "{:?}", report.messages);
+    assert!(mem(&path).unwrap().info().notes.iter().any(|m| m.contains("its WKT1 definition is used")));
     let east = with_axes(MARS_OGRAPHIC_ESRI, east_north);
     let path = geopackage(dir.path(), "ographic_east", LONLAT, ("IAU_2015", 49901, &east));
     let (ds, report) = io::read_path(&path).unwrap();

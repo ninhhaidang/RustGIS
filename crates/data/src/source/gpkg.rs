@@ -215,7 +215,12 @@ impl GpkgSource {
                     Ok(ValueRef::Real(x)) if x.fract() == 0.0 && x.abs() < 9e15 => Some(x as i64),
                     _ => None,
                 };
-                Ok(super::GpkgSrs { organization: text("organization"), code, definition: text("definition") })
+                Ok(super::GpkgSrs {
+                    organization: text("organization"),
+                    code,
+                    definition: text("definition"),
+                    definition_12_063: text("definition_12_063"),
+                })
             })
             .ok();
         let reproject = super::gpkg_reproject(srs_id, row, &mut notes)?;
