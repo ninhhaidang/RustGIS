@@ -65,7 +65,7 @@ pub struct VariogramParams {
     pub nugget: f64,
     /// Sill (c₀ + c): asymptotic variance at large distances.
     pub sill: f64,
-    /// Range a: spatial correlation distance (lag) in degrees (longitude/latitude).
+    /// Range a: spatial correlation distance (lag), in the units of the grid's coordinate system.
     /// Semivariance reaches or approaches the sill at this distance.
     pub range: f64,
 }
@@ -206,7 +206,8 @@ fn solve_linear_system(n: usize, a: &mut [f64], b: &mut [f64], x: &mut [f64]) ->
 
 /// Performs Ordinary Kriging interpolation for a query point given its nearest neighbors.
 /// `near`: slice of `(distance, value, point_coord)` sorted or unsorted.
-/// `kx`: cosine of query latitude for metric consistency across both system sides.
+/// `kx`: cosine of query latitude for metric consistency across both system sides (1 in a
+/// projected system).
 /// `buffers`: reusable linear system buffers to eliminate per-pixel heap allocations.
 /// Returns `(predicted_value, estimation_variance)`.
 pub fn ordinary_kriging_point(
@@ -304,44 +305,50 @@ pub fn ordinary_kriging_point(
     }
 }
 
-/// Ordinary Kriging interpolation of point values onto a longitude/latitude raster grid.
-/// Returns a 2-band raster:
+/// Ordinary Kriging interpolation of point values onto a raster grid in `crs`. The points, extent,
+/// cell size and variogram range are in `crs`: degrees for longitude/latitude, where east-west
+/// distances shrink with latitude, or the projected system's units, where they are measured as
+/// they are. Returns a 2-band raster:
 /// - Band 1: Prediction
 /// - Band 2: Variance
 pub fn kriging(
     points: &[(Coord, f64)],
     extent: &Extent,
-    cell_deg: f64,
+    cell: f64,
     params: &VariogramParams,
     neighbours: usize,
     name: &str,
+    crs: Crs,
 ) -> Result<Raster, String> {
-    kriging_on(None, points, extent, cell_deg, params, neighbours, name)
+    kriging_on(None, points, extent, cell, params, neighbours, name, crs)
 }
 
 /// [`kriging`] on `threads` threads, or as many as its work calls for.
+#[allow(clippy::too_many_arguments)]
 fn kriging_on(
     threads: Option<usize>,
     points: &[(Coord, f64)],
     extent: &Extent,
-    cell_deg: f64,
+    cell: f64,
     params: &VariogramParams,
     neighbours: usize,
     name: &str,
+    crs: Crs,
 ) -> Result<Raster, String> {
     if points.len() < 2 {
         return Err("kriging needs at least two points with values".into());
     }
-    if !(cell_deg.is_finite() && cell_deg > 0.0) {
+    if !(cell.is_finite() && cell > 0.0) {
         return Err("the cell size must be positive".into());
     }
     if extent.is_empty() {
         return Err("the area to interpolate over is empty".into());
     }
-    let (w, h) = ((extent.width() / cell_deg).ceil().max(1.0) as usize, (extent.height() / cell_deg).ceil().max(1.0) as usize);
+    let (w, h) = ((extent.width() / cell).ceil().max(1.0) as usize, (extent.height() / cell).ceil().max(1.0) as usize);
     if w.saturating_mul(h) > max_pixels() / 4 {
         return Err(format!("{w} × {h} cells is too many, more than this computer's {}; use a larger cell size", max_pixels() / 4));
     }
+    let geographic = crs.is_geographic();
     let k = if neighbours == 0 { 12.min(points.len()) } else { neighbours.clamp(2, points.len().min(32)) };
     let k3 = (k * k * k) / 3;
     let work_per_cell = points.len().saturating_add(k3);
@@ -364,13 +371,14 @@ fn kriging_on(
     let rows = pred_data.chunks_mut(w).zip(var_data.chunks_mut(w));
     crate::control::begin(h);
     crate::parallel::for_each_row(rows, threads, scratch, |(near, buffers, pace), row, (pred, var): (&mut [f32], &mut [f32])| {
-        let kx = (extent.max_y - (row as f64 + 0.5) * cell_deg).to_radians().cos().abs().max(1e-6);
+        // East-west degrees shrink with latitude; a projected system's units don't.
+        let kx = if geographic { (extent.max_y - (row as f64 + 0.5) * cell).to_radians().cos().abs().max(1e-6) } else { 1.0 };
         for (col, (pred, var)) in pred.iter_mut().zip(var.iter_mut()).enumerate() {
             // A wide row of many points takes long without a cap: Cancel is looked at within it.
             if pace.stop(work_per_cell) {
                 return;
             }
-            let c = Coord::new(extent.min_x + (col as f64 + 0.5) * cell_deg, extent.max_y - (row as f64 + 0.5) * cell_deg);
+            let c = Coord::new(extent.min_x + (col as f64 + 0.5) * cell, extent.max_y - (row as f64 + 0.5) * cell);
             near.clear();
             near.extend(points.iter().map(|(p, v)| {
                 let dx = (p.x - c.x) * kx;
@@ -390,8 +398,8 @@ fn kriging_on(
         }
     })?;
 
-    let gt = GeoTransform { origin_x: extent.min_x, origin_y: extent.max_y, pixel_width: cell_deg, pixel_height: -cell_deg };
-    Raster::new(name, w as u32, h as u32, vec![pred_data, var_data], gt, Crs::LonLat, Some(NODATA as f64), ColorHint::Gray, "Float32")
+    let gt = GeoTransform { origin_x: extent.min_x, origin_y: extent.max_y, pixel_width: cell, pixel_height: -cell };
+    Raster::new(name, w as u32, h as u32, vec![pred_data, var_data], gt, crs, Some(NODATA as f64), ColorHint::Gray, "Float32")
         .map_err(|e| e.to_string())
 }
 
@@ -409,12 +417,12 @@ mod tests {
             (0..300).map(|i| (Coord::new((i % 20) as f64 / 2.0, 40.0 + (i / 20) as f64 / 1.5), i as f64)).collect();
         let extent = Extent::new(0.0, 40.0, 10.0, 50.0);
         let params = auto_variogram(&pts, &extent, VariogramModel::Spherical);
-        let e = kriging_on(Some(1), &pts, &extent, 0.02, &params, 12, "k").unwrap_err();
+        let e = kriging_on(Some(1), &pts, &extent, 0.02, &params, 12, "k", Crs::LonLat).unwrap_err();
         assert!(e.contains("too much work") && e.contains("on 1 thread(s)"), "{e}");
         let run = crate::control::Control::stoppable();
         run.cancel();
         let _installed = crate::control::install(Some(run));
-        assert_eq!(kriging_on(Some(1), &pts, &extent, 0.02, &params, 12, "k").unwrap_err(), crate::control::CANCELLED);
+        assert_eq!(kriging_on(Some(1), &pts, &extent, 0.02, &params, 12, "k", Crs::LonLat).unwrap_err(), crate::control::CANCELLED);
     }
 
     #[test]
@@ -493,9 +501,9 @@ mod tests {
             .collect();
         let extent = Extent::new(0.0, 40.0, 10.0, 50.0);
         let params = auto_variogram(&pts, &extent, VariogramModel::Spherical);
-        let one = kriging_on(Some(1), &pts, &extent, 0.2, &params, 12, "k").unwrap();
+        let one = kriging_on(Some(1), &pts, &extent, 0.2, &params, 12, "k", Crs::LonLat).unwrap();
         for threads in [2, 7, 16] {
-            let many = kriging_on(Some(threads), &pts, &extent, 0.2, &params, 12, "k").unwrap();
+            let many = kriging_on(Some(threads), &pts, &extent, 0.2, &params, 12, "k", Crs::LonLat).unwrap();
             for (a, b) in one.bands.iter().zip(&many.bands) {
                 assert!(a.data.iter().map(|v| v.to_bits()).eq(b.data.iter().map(|v| v.to_bits())), "{threads} threads");
             }
@@ -508,7 +516,7 @@ mod tests {
         let pts = vec![(Coord::new(0.0, lat), 10.0), (Coord::new(1.0, lat), 20.0), (Coord::new(0.0, lat + 1.0), 30.0)];
         let extent = Extent::new(0.0, lat, 1.0, lat + 1.0);
         let params = auto_variogram(&pts, &extent, VariogramModel::Spherical);
-        let r = kriging(&pts, &extent, 0.25, &params, 3, "kriging_hi_lat").unwrap();
+        let r = kriging(&pts, &extent, 0.25, &params, 3, "kriging_hi_lat", Crs::LonLat).unwrap();
         assert_eq!(r.bands.len(), 2);
         for band in &r.bands {
             for v in &band.data {
@@ -537,7 +545,7 @@ mod tests {
             vec![(Coord::new(0.0, 0.0), 10.0), (Coord::new(2.0, 0.0), 20.0), (Coord::new(0.0, 2.0), 15.0), (Coord::new(2.0, 2.0), 25.0)];
         let extent = Extent::new(0.0, 0.0, 2.0, 2.0);
         let params = auto_variogram(&pts, &extent, VariogramModel::Spherical);
-        let r = kriging(&pts, &extent, 0.5, &params, 4, "test_kriging").unwrap();
+        let r = kriging(&pts, &extent, 0.5, &params, 4, "test_kriging", Crs::LonLat).unwrap();
         assert_eq!(r.bands.len(), 2, "Kriging should produce Prediction and Variance bands");
         assert_eq!(r.width, 4);
         assert_eq!(r.height, 4);
@@ -554,15 +562,15 @@ mod tests {
         let extent = Extent::new(0.0, 0.0, 2.0, 2.0);
         let params = VariogramParams { model: VariogramModel::Spherical, nugget: 0.0, sill: 1.0, range: 1.0 };
         // Less than 2 points
-        assert!(kriging(&[], &extent, 0.5, &params, 4, "t").is_err());
-        assert!(kriging(&[(Coord::new(0.0, 0.0), 1.0)], &extent, 0.5, &params, 4, "t").is_err());
+        assert!(kriging(&[], &extent, 0.5, &params, 4, "t", Crs::LonLat).is_err());
+        assert!(kriging(&[(Coord::new(0.0, 0.0), 1.0)], &extent, 0.5, &params, 4, "t", Crs::LonLat).is_err());
         // Negative / invalid cell size
         let pts = vec![(Coord::new(0.0, 0.0), 1.0), (Coord::new(1.0, 1.0), 2.0)];
-        assert!(kriging(&pts, &extent, -1.0, &params, 4, "t").is_err());
-        assert!(kriging(&pts, &extent, 0.0, &params, 4, "t").is_err());
-        assert!(kriging(&pts, &extent, f64::NAN, &params, 4, "t").is_err());
+        assert!(kriging(&pts, &extent, -1.0, &params, 4, "t", Crs::LonLat).is_err());
+        assert!(kriging(&pts, &extent, 0.0, &params, 4, "t", Crs::LonLat).is_err());
+        assert!(kriging(&pts, &extent, f64::NAN, &params, 4, "t", Crs::LonLat).is_err());
         // Empty extent
-        assert!(kriging(&pts, &Extent::EMPTY, 0.5, &params, 4, "t").is_err());
+        assert!(kriging(&pts, &Extent::EMPTY, 0.5, &params, 4, "t", Crs::LonLat).is_err());
     }
 
     #[test]
@@ -571,12 +579,12 @@ mod tests {
             vec![(Coord::new(0.0, 0.0), 10.0), (Coord::new(2.0, 0.0), 20.0), (Coord::new(0.0, 2.0), 15.0), (Coord::new(2.0, 2.0), 25.0)];
         let extent = Extent::new(0.0, 0.0, 2.0, 2.0);
         let params = auto_variogram(&pts, &extent, VariogramModel::Spherical);
-        let r_orig = kriging(&pts, &extent, 0.5, &params, 4, "orig").unwrap();
+        let r_orig = kriging(&pts, &extent, 0.5, &params, 4, "orig", Crs::LonLat).unwrap();
 
         let scale = 1e-6_f64;
         let scaled_pts: Vec<(Coord, f64)> = pts.iter().map(|(c, v)| (*c, v * scale)).collect();
         let scaled_params = auto_variogram(&scaled_pts, &extent, VariogramModel::Spherical);
-        let r_scaled = kriging(&scaled_pts, &extent, 0.5, &scaled_params, 4, "scaled").unwrap();
+        let r_scaled = kriging(&scaled_pts, &extent, 0.5, &scaled_params, 4, "scaled", Crs::LonLat).unwrap();
 
         for (v_orig, v_scaled) in r_orig.bands[0].data.iter().zip(&r_scaled.bands[0].data) {
             let expected = *v_orig * (scale as f32);

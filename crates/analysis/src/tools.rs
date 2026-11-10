@@ -7,7 +7,7 @@ mod repair_geometry;
 use geo::{
     BooleanOps, Contains, ConvexHull, CoordsIter, InteriorPoint, Intersects, MultiPolygon, Orient, Relate, Simplify, orient::Direction,
 };
-use rustgis_data::raster::Crs;
+use rustgis_data::raster::{Crs, Transformer};
 use rustgis_data::{Coord, Dataset, Feature, Field, FieldType, Geometry, GeometryType, Value};
 use rustgis_geom::Extent;
 use serde_json::Value as Json;
@@ -722,15 +722,23 @@ pub static TOOLS: &[ToolSpec] = &[
                 kind: K::Text,
                 required: false,
                 default: "",
-                help: "xmin,ymin,xmax,ymax in degrees; the input's extent when empty.",
+                help: "xmin,ymin,xmax,ymax in the coordinate system's units (degrees when it is empty); the input's extent when empty.",
             },
             P {
                 name: "pixelSize",
-                label: "Pixel Size (°)",
+                label: "Pixel Size",
                 kind: K::Number,
                 required: false,
                 default: "",
-                help: "The output cell size in degrees; 300 cells across the extent when empty.",
+                help: "The output cell size in the coordinate system's units (degrees when it is empty); 300 cells across the extent when empty.",
+            },
+            P {
+                name: "crs",
+                label: "Coordinate System",
+                kind: K::Text,
+                required: false,
+                default: "",
+                help: "A projected coordinate system (e.g. EPSG:32618) to make the raster in, its units for the extent and pixel size; longitude/latitude in degrees when empty.",
             },
             P { name: "output", label: "Output Name", kind: K::Text, required: false, default: "", help: "" },
         ],
@@ -868,11 +876,11 @@ pub static TOOLS: &[ToolSpec] = &[
             },
             P {
                 name: "range",
-                label: "Range (Degrees)",
+                label: "Range",
                 kind: K::Number,
                 required: false,
                 default: "",
-                help: "Spatial correlation distance in degrees (defaults to 1/3 extent diagonal).",
+                help: "Spatial correlation distance in the coordinate system's units, degrees when it is empty (defaults to 1/3 extent diagonal).",
             },
             P {
                 name: "extent",
@@ -880,15 +888,23 @@ pub static TOOLS: &[ToolSpec] = &[
                 kind: K::Text,
                 required: false,
                 default: "",
-                help: "xmin,ymin,xmax,ymax in degrees; the input's extent when empty.",
+                help: "xmin,ymin,xmax,ymax in the coordinate system's units (degrees when it is empty); the input's extent when empty.",
             },
             P {
                 name: "pixelSize",
-                label: "Pixel Size (°)",
+                label: "Pixel Size",
                 kind: K::Number,
                 required: false,
                 default: "",
-                help: "The output cell size in degrees; up to 250 cells across the extent when empty.",
+                help: "The output cell size in the coordinate system's units (degrees when it is empty); up to 250 cells across the extent when empty.",
+            },
+            P {
+                name: "crs",
+                label: "Coordinate System",
+                kind: K::Text,
+                required: false,
+                default: "",
+                help: "A projected coordinate system (e.g. EPSG:32618) to make the raster in, its units for the extent, pixel size and range; longitude/latitude in degrees when empty.",
             },
             P { name: "output", label: "Output Name", kind: K::Text, required: false, default: "", help: "" },
         ],
@@ -3590,12 +3606,14 @@ fn idw_interpolation(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
             }
         });
     }
+    let (crs, crs_note) = interpolation_crs(ds, p, "IDW Interpolation")?;
+    let (pts, beyond_note) = points_in(crs, pts)?;
     let extent = match s(p, "extent").trim() {
         "" => {
             let mut e = Extent::EMPTY;
             pts.iter().for_each(|(c, _)| e.expand(*c));
             // Points in a row span no area: give the grid some.
-            if e.width() > 0.0 && e.height() > 0.0 { e } else { e.padded(0.05, 0.01) }
+            if e.width() > 0.0 && e.height() > 0.0 { e } else { e.padded(0.05, min_pad(crs)) }
         }
         t => {
             // Every component must parse: dropping a bad one would shift the rest.
@@ -3619,12 +3637,12 @@ fn idw_interpolation(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
         None => 2.0,
     };
     let name = out_name(p, format!("{}_{field}_idw", ds.name));
-    let r = crate::rasterops::idw(&pts, &extent, cell, power, 0, &name)?;
+    let r = crate::rasterops::idw(&pts, &extent, cell, power, 0, &name, crs).map_err(|e| with_note(e, &beyond_note))?;
     let bytes = rustgis_data::raster::geotiff::write(&r, 0).map_err(|e| e.to_string())?;
     let msg = format!("IDW Interpolation: {} × {} cells from {} points", r.width, r.height, pts.len());
     Ok(ToolResult {
         output: Output::Layers(vec![OutputLayer::Raster { file_name: format!("{name}.tif"), name, bytes }]),
-        messages: vec![msg],
+        messages: std::iter::once(msg).chain(beyond_note).chain(crs_note).collect(),
     })
 }
 
@@ -3675,6 +3693,8 @@ fn kriging_interpolation(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, Strin
             }
         }
     }
+    let (crs, crs_note) = interpolation_crs(ds, p, "Ordinary Kriging")?;
+    let (mut raw_pts, beyond_note) = points_in(crs, raw_pts)?;
     // Deduplicate sample points by coordinate to prevent singular kriging matrix
     raw_pts.sort_by(|a, b| a.0.x.total_cmp(&b.0.x).then_with(|| a.0.y.total_cmp(&b.0.y)));
     let mut accum: Vec<(Coord, f64, usize)> = Vec::with_capacity(raw_pts.len());
@@ -3700,14 +3720,14 @@ fn kriging_interpolation(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, Strin
     }
     let pts: Vec<(Coord, f64)> = accum.into_iter().map(|(c, sum, count)| (c, sum / count as f64)).collect();
     if pts.len() < 2 {
-        return Err("kriging needs at least two points with values".into());
+        return Err(with_note("kriging needs at least two points with values".into(), &beyond_note));
     }
 
     let extent = match s(p, "extent").trim() {
         "" => {
             let mut e = Extent::EMPTY;
             pts.iter().for_each(|(c, _)| e.expand(*c));
-            if e.width() > 0.0 && e.height() > 0.0 { e } else { e.padded(0.05, 0.01) }
+            if e.width() > 0.0 && e.height() > 0.0 { e } else { e.padded(0.05, min_pad(crs)) }
         }
         t => {
             let v: Option<Vec<f64>> = t.split(',').map(|x| x.trim().parse().ok().filter(|x: &f64| x.is_finite())).collect();
@@ -3754,7 +3774,7 @@ fn kriging_interpolation(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, Strin
     }
 
     let name = out_name(p, format!("{}_{field}_kriging", ds.name));
-    let r = crate::kriging::kriging(&pts, &extent, cell, &params, neighbours, &name)?;
+    let r = crate::kriging::kriging(&pts, &extent, cell, &params, neighbours, &name, crs).map_err(|e| with_note(e, &beyond_note))?;
     let pred_bytes = rustgis_data::raster::geotiff::write(&r, 0).map_err(|e| e.to_string())?;
     let var_bytes = rustgis_data::raster::geotiff::write(&r, 1).map_err(|e| e.to_string())?;
     let var_name = format!("{name}_variance");
@@ -3764,8 +3784,81 @@ fn kriging_interpolation(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, Strin
             OutputLayer::Raster { file_name: format!("{name}.tif"), name, bytes: pred_bytes },
             OutputLayer::Raster { file_name: format!("{var_name}.tif"), name: var_name, bytes: var_bytes },
         ]),
-        messages: vec![msg],
+        messages: std::iter::once(msg).chain(beyond_note).chain(crs_note).collect(),
     })
+}
+
+/// The coordinate system IDW Interpolation and Ordinary Kriging make their grid in: the projected
+/// system given as `crs`, or longitude/latitude in degrees when it is empty, as before `crs` was
+/// there. The note says what the run used where that could surprise: the compatibility note on
+/// the system given, or degrees for a layer read from a projected file.
+fn interpolation_crs(ds: &Dataset, p: &Json, tool: &str) -> Result<(Crs, Option<String>), String> {
+    if p.get("crs").is_some_and(|v| !v.is_null() && !v.is_string()) {
+        return Err("crs must be text".into());
+    }
+    match s(p, "crs").trim() {
+        "" => Ok((
+            Crs::LonLat,
+            ds.crs.filter(|c| !c.is_geographic()).map(|c| {
+                format!(
+                    "{tool}: made in degrees of longitude and latitude, though {} was read in {}; set its coordinate system (crs) to make it in that system's units",
+                    ds.name,
+                    c.label()
+                )
+            }),
+        )),
+        text => {
+            let (crs, note) = crs_with_compatibility_note(text)?;
+            if crs.is_geographic() {
+                return Err("crs must be a projected coordinate system with linear units (such as UTM or State Plane, e.g. EPSG:32618); leave it empty to work in degrees".into());
+            }
+            Ok((crs, note.map(|note| format!("{tool}: its coordinate system: {note}"))))
+        }
+    }
+}
+
+/// `pts` (longitude/latitude) in `crs`, and a note counting those left out because the system
+/// can't hold them (see [`in_projected`]).
+fn points_in(crs: Crs, pts: Vec<(Coord, f64)>) -> Result<(Vec<(Coord, f64)>, Option<String>), String> {
+    if crs == Crs::LonLat {
+        return Ok((pts, None));
+    }
+    let to = crs.transformer()?;
+    let n = pts.len();
+    let kept: Vec<(Coord, f64)> = pts.into_iter().filter_map(|(c, v)| in_projected(crs, &to, c).map(|c| (c, v))).collect();
+    let beyond = n - kept.len();
+    Ok((kept, beyond_note(crs, beyond)))
+}
+
+/// The note on `beyond` points left out because `crs` can't hold them (see [`in_projected`]).
+fn beyond_note(crs: Crs, beyond: usize) -> Option<String> {
+    // Only Web Mercator's limit is known to be a latitude.
+    let why = if crs == Crs::WebMercator { " (past 85.05° of latitude)" } else { "" };
+    (beyond > 0).then(|| format!("{beyond} point(s) beyond what {} can hold{why} were left out", crs.label()))
+}
+
+/// The least an interpolation grid reaches past points in a row, which span no area: 0.01° in
+/// degrees, or about as far (1 km) in a projected system's units.
+fn min_pad(crs: Crs) -> f64 {
+    if crs.is_geographic() { 0.01 } else { 1000.0 }
+}
+
+/// `c` (longitude/latitude) in the projected `crs` through its transformer `to`, or `None` where
+/// the system can't hold it: past Web Mercator's latitude limit, which would land on the map's edge
+/// rather than where it is (#1033), or where it doesn't come back to its latitude.
+fn in_projected(crs: Crs, to: &Transformer, c: Coord) -> Option<Coord> {
+    // Web Mercator's limit is known exactly: the round trip alone would let a latitude a hair
+    // past it through, onto the edge.
+    let held = crs != Crs::WebMercator || c.y.abs() <= rustgis_geom::MAX_LAT;
+    held.then(|| to.from_lonlat(c)).flatten().filter(|p| p.is_finite() && to.to_lonlat(*p).is_some_and(|back| (back.y - c.y).abs() < 1e-4))
+}
+
+/// `e` with `note` after it, when there is one: what was left out can be why a run failed.
+fn with_note(e: String, note: &Option<String>) -> String {
+    match note {
+        Some(n) => format!("{e} ({n})"),
+        None => e,
+    }
 }
 
 fn kriging_auto_cell(extent: &Extent, n: usize, neighbours: usize) -> f64 {
@@ -3872,13 +3965,7 @@ fn kernel_density_tool(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String>
     // feature with none is counted in `skipped`).
     let (mut non_finite, mut non_finite_features) = (0usize, 0usize);
     let project = |c: Coord, beyond: &mut usize| {
-        // Web Mercator's limit is known exactly: the round trip alone would let a latitude a hair
-        // past it through, onto the edge.
-        let held = crs != Crs::WebMercator || c.y.abs() <= rustgis_geom::MAX_LAT;
-        let p = held
-            .then(|| transformer.from_lonlat(c))
-            .flatten()
-            .filter(|p| p.is_finite() && transformer.to_lonlat(*p).is_some_and(|back| (back.y - c.y).abs() < 1e-4));
+        let p = in_projected(crs, &transformer, c);
         *beyond += usize::from(p.is_none());
         p
     };
@@ -3931,9 +4018,7 @@ fn kernel_density_tool(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String>
         }
     }
 
-    // Only Web Mercator's limit is known to be a latitude.
-    let why = if crs == Crs::WebMercator { " (past 85.05° of latitude)" } else { "" };
-    let beyond_note = (beyond > 0).then(|| format!("{beyond} point(s) beyond what {} can hold{why} were left out", crs.label()));
+    let beyond_note = beyond_note(crs, beyond);
     let non_finite_note = (non_finite > 0).then(|| {
         format!("{non_finite} point(s) with non-finite coordinates were left out of {non_finite_features} multipoint feature(s) that have other points")
     });
@@ -9103,6 +9188,58 @@ mod tests {
         }
     }
 
+    /// Points around Memphis, read in UTM zone 16N: IDW and Kriging with `crs` make their raster in
+    /// that system, with the extent and pixel size in its metres; a geographic `crs` is refused.
+    #[test]
+    fn interpolation_in_a_projected_crs_makes_its_raster_there() {
+        let mut pts = Dataset::new("wells", GeometryType::Point, vec![Field::new("v", FieldType::Double)]);
+        for (x, y, v) in [(-90.05, 35.10, 1.0), (-89.95, 35.10, 2.0), (-90.05, 35.20, 3.0), (-89.95, 35.20, 4.0)] {
+            pts.push(Some(Geometry::Point(Coord::new(x, y))), vec![Value::Float(v)]);
+        }
+        pts.crs = Some(Crs::Epsg(32616));
+        let m = Map(HashMap::from([("wells".to_string(), pts)]));
+        let utm = Crs::Epsg(32616).transformer().unwrap_or_else(|e| panic!("{e}"));
+        let Some(sw) = utm.from_lonlat(Coord::new(-90.05, 35.10)) else { panic!("south-west corner") };
+        for tool in ["idwInterpolation", "kriging"] {
+            let p = serde_json::json!({"input": "wells", "field": "v", "pixelSize": 500, "crs": "EPSG:32616"});
+            let r = crate::run(tool, &m, &p).unwrap_or_else(|e| panic!("{tool}: {e}"));
+            assert!(!r.messages.iter().any(|m| m.contains("made in degrees") || m.contains("beyond what")), "{tool}: {:?}", r.messages);
+            let Output::Layers(out) = r.output else { panic!("{tool}: expected layers") };
+            let Some(OutputLayer::Raster { file_name, bytes, .. }) = out.first() else { panic!("{tool}: expected a raster") };
+            let g = rustgis_data::raster::read_bytes(file_name, bytes).unwrap_or_else(|e| panic!("{tool}: {e}"));
+            assert_eq!(g.crs, Crs::Epsg(32616), "{tool}");
+            assert_eq!((g.transform.pixel_width, g.transform.pixel_height), (500.0, -500.0), "{tool}");
+            // About 9 km by 11 km of 500 m cells, starting at the south-west well in metres.
+            assert!((18..=20).contains(&g.width) && (22..=24).contains(&g.height), "{tool}: {} × {}", g.width, g.height);
+            assert!((g.transform.origin_x - sw.x).abs() < 1.0, "{tool}: {} against {}", g.transform.origin_x, sw.x);
+            let d = &g.bands[0].data;
+            assert!(d.iter().all(|v| (1.0..=4.0).contains(v)), "{tool}: {d:?}");
+            assert!(d[d.len() - g.width as usize] < d[g.width as usize - 1], "{tool}: south-west below north-east");
+
+            for (crs, why) in [(serde_json::json!("EPSG:4326"), "geographic"), (serde_json::json!(32616), "not text")] {
+                let p = serde_json::json!({"input": "wells", "field": "v", "crs": crs});
+                assert!(crate::run(tool, &m, &p).is_err(), "{tool}: {why}");
+            }
+            // Without `crs`, a layer read in UTM is made in degrees, and the run names its system.
+            let r = crate::run(tool, &m, &serde_json::json!({"input": "wells", "field": "v"})).unwrap_or_else(|e| panic!("{tool}: {e}"));
+            let label = Crs::Epsg(32616).label();
+            assert!(r.messages.iter().any(|m| m.contains("made in degrees") && m.contains(&label)), "{tool}: {:?}", r.messages);
+        }
+
+        // A point Web Mercator can't hold is left out and counted; the others make the raster.
+        let mut polar = Dataset::new("polar", GeometryType::Point, vec![Field::new("v", FieldType::Double)]);
+        for (x, y, v) in [(-90.05, 35.10, 1.0), (-89.95, 35.20, 2.0), (-90.0, 35.15, 3.0), (0.0, 89.0, 4.0)] {
+            polar.push(Some(Geometry::Point(Coord::new(x, y))), vec![Value::Float(v)]);
+        }
+        let m = Map(HashMap::from([("polar".to_string(), polar)]));
+        for tool in ["idwInterpolation", "kriging"] {
+            let p = serde_json::json!({"input": "polar", "field": "v", "crs": "EPSG:3857"});
+            let r = crate::run(tool, &m, &p).unwrap_or_else(|e| panic!("{tool}: {e}"));
+            assert!(r.messages.iter().any(|m| m.starts_with("1 point(s) beyond what")), "{tool}: {:?}", r.messages);
+            assert!(!r.messages.iter().any(|m| m.contains("made in degrees")), "{tool}: {:?}", r.messages);
+        }
+    }
+
     #[test]
     fn kriging_interpolation_writes_prediction_and_variance_rasters() {
         let m = inputs();
@@ -9161,6 +9298,10 @@ mod tests {
         let projected =
             crate::run("kriging", &m_proj, &serde_json::json!({"input": "proj_pts", "field": "v", "extent": "0,0,2,2", "pixelSize": 0.5}))
                 .unwrap();
+        // Without `crs` it is still made in degrees, and says so for a layer read in metres.
+        let degrees_note = |messages: &[String]| messages.iter().any(|m| m.contains("made in degrees"));
+        assert!(degrees_note(&projected.messages), "{:?}", projected.messages);
+        assert!(!degrees_note(&r.messages), "{:?}", r.messages);
         let Output::Layers(projected_layers) = projected.output else { panic!("expected layers") };
         assert_eq!(projected_layers.len(), out.len());
         for (actual, expected) in projected_layers.iter().zip(&out) {

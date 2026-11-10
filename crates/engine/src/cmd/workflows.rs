@@ -3,7 +3,7 @@
 //! neighbourhoods, simulation, data profiles, exploration, similarity and format conversion).
 
 use rustgis_analysis::{network, rasterops};
-use rustgis_data::raster::Raster;
+use rustgis_data::raster::{Crs, Raster};
 use rustgis_data::{Dataset, Field, FieldType, Geometry, GeometryType, Value as Attr};
 use rustgis_geom::{Coord, Extent};
 use serde_json::{Value, json};
@@ -1172,7 +1172,7 @@ fn interpolate_work(s: &Session, p: &Value) -> Result<Work, String> {
             }
             if why.is_empty() { e } else { format!("{e} ({} left out)", why.join(", ")) }
         };
-        let m = made(rasterops::idw(&pts, &e, cell, power, neighbors, &name).map_err(left_out)?, None)?;
+        let m = made(rasterops::idw(&pts, &e, cell, power, neighbors, &name, Crs::LonLat).map_err(left_out)?, None)?;
         if no_point == 0 && no_value == 0 {
             return Ok(m);
         }

@@ -517,32 +517,44 @@ fn viewshed_on(threads: Option<usize>, r: &Raster, b: usize, observer: Coord, he
     Ok(out)
 }
 
-/// Inverse distance weighted interpolation of point values onto a longitude/latitude grid, from
-/// each cell's `neighbours` nearest points, or from every point (as QGIS does) when it is 0.
-pub fn idw(points: &[(Coord, f64)], extent: &Extent, cell_deg: f64, power: f64, neighbours: usize, name: &str) -> Result<Raster, String> {
-    idw_on(None, points, extent, cell_deg, power, neighbours, name)
+/// Inverse distance weighted interpolation of point values onto a grid in `crs`, from each cell's
+/// `neighbours` nearest points, or from every point (as QGIS does) when it is 0. The points,
+/// extent and cell size are in `crs`: degrees for longitude/latitude, where east-west distances
+/// shrink with latitude, or the projected system's units, where they are measured as they are.
+pub fn idw(
+    points: &[(Coord, f64)],
+    extent: &Extent,
+    cell: f64,
+    power: f64,
+    neighbours: usize,
+    name: &str,
+    crs: Crs,
+) -> Result<Raster, String> {
+    idw_on(None, points, extent, cell, power, neighbours, name, crs)
 }
 
 /// [`idw`] on `threads` threads, or as many as its work calls for.
+#[allow(clippy::too_many_arguments)]
 fn idw_on(
     threads: Option<usize>,
     points: &[(Coord, f64)],
     extent: &Extent,
-    cell_deg: f64,
+    cell: f64,
     power: f64,
     neighbours: usize,
     name: &str,
+    crs: Crs,
 ) -> Result<Raster, String> {
     if points.len() < 2 {
         return Err("interpolation needs at least two points with values".into());
     }
-    if !(cell_deg.is_finite() && cell_deg > 0.0) {
+    if !(cell.is_finite() && cell > 0.0) {
         return Err("the cell size must be positive".into());
     }
     if extent.is_empty() {
         return Err("the area to interpolate over is empty".into());
     }
-    let (w, h) = ((extent.width() / cell_deg).ceil().max(1.0) as usize, (extent.height() / cell_deg).ceil().max(1.0) as usize);
+    let (w, h) = ((extent.width() / cell).ceil().max(1.0) as usize, (extent.height() / cell).ceil().max(1.0) as usize);
     if w.saturating_mul(h) > max_pixels() / 4 {
         return Err(format!("{w} × {h} cells is too many, more than this computer's {}; use a larger cell size", max_pixels() / 4));
     }
@@ -554,6 +566,7 @@ fn idw_on(
     // or power per cell and point, as GDAL's IDW does it. Squaring keeps the distances' order, so
     // the nearest points are the same.
     let squared = power == 2.0;
+    let geographic = crs.is_geographic();
     let exact = if squared { 1e-24 } else { 1e-12 };
     // Each row on its own, on several threads when the work is large (#1252); a thread's
     // distances go into its own buffer.
@@ -576,15 +589,16 @@ fn idw_on(
         threads,
         || (Vec::with_capacity(points.len()), crate::control::Pace::default()),
         |(near, pace): &mut (Vec<(f64, f64)>, crate::control::Pace), row, out: &mut [f32]| {
-            // East-west degrees shrink with latitude, which only changes by row.
-            let kx = (extent.max_y - (row as f64 + 0.5) * cell_deg).to_radians().cos();
+            // East-west degrees shrink with latitude, which only changes by row; a projected
+            // system's units don't.
+            let kx = if geographic { (extent.max_y - (row as f64 + 0.5) * cell).to_radians().cos() } else { 1.0 };
             for (col, o) in out.iter_mut().enumerate() {
                 // Each cell weighs every point, so a wide row of many points takes long without a
                 // cap: Cancel is looked at within it.
                 if pace.stop(points.len()) {
                     return;
                 }
-                let c = Coord::new(extent.min_x + (col as f64 + 0.5) * cell_deg, extent.max_y - (row as f64 + 0.5) * cell_deg);
+                let c = Coord::new(extent.min_x + (col as f64 + 0.5) * cell, extent.max_y - (row as f64 + 0.5) * cell);
                 near.clear();
                 let d2 = |p: &Coord| {
                     let dx = (p.x - c.x) * kx;
@@ -616,9 +630,8 @@ fn idw_on(
             }
         },
     )?;
-    let gt = GeoTransform { origin_x: extent.min_x, origin_y: extent.max_y, pixel_width: cell_deg, pixel_height: -cell_deg };
-    Raster::new(name, w as u32, h as u32, vec![data], gt, Crs::LonLat, Some(NODATA as f64), ColorHint::Gray, "Float32")
-        .map_err(|e| e.to_string())
+    let gt = GeoTransform { origin_x: extent.min_x, origin_y: extent.max_y, pixel_width: cell, pixel_height: -cell };
+    Raster::new(name, w as u32, h as u32, vec![data], gt, crs, Some(NODATA as f64), ColorHint::Gray, "Float32").map_err(|e| e.to_string())
 }
 
 /// Unsupervised k-means classes (1..=k) of the pixels over the given bands.
@@ -1794,7 +1807,7 @@ mod tests {
         // 1000 × 1000 cells from 500 points: 500 million pairs, past one thread's 400 million.
         let pts: Vec<(Coord, f64)> = (0..500).map(|i| (Coord::new((i % 25) as f64 / 2.5, (i / 25) as f64 / 2.0), i as f64)).collect();
         let extent = Extent::new(0.0, 0.0, 10.0, 10.0);
-        let e = idw_on(Some(1), &pts, &extent, 0.01, 2.0, 0, "idw").unwrap_err();
+        let e = idw_on(Some(1), &pts, &extent, 0.01, 2.0, 0, "idw", Crs::LonLat).unwrap_err();
         assert!(
             e.contains("too much work") && e.contains(&format!("{MAX_IDW_WORK} cell-point pairs")) && e.contains("on 1 thread(s)"),
             "{e}"
@@ -1803,7 +1816,7 @@ mod tests {
         let run = crate::control::Control::stoppable();
         run.cancel();
         let _installed = crate::control::install(Some(run));
-        assert_eq!(idw_on(Some(1), &pts, &extent, 0.01, 2.0, 0, "idw").unwrap_err(), crate::control::CANCELLED);
+        assert_eq!(idw_on(Some(1), &pts, &extent, 0.01, 2.0, 0, "idw", Crs::LonLat).unwrap_err(), crate::control::CANCELLED);
     }
 
     /// Rows made on several threads give the same surface, bit for bit, as one thread (#1252),
@@ -1819,9 +1832,10 @@ mod tests {
         let extent = Extent::new(0.0, 40.0, 10.0, 50.0);
         // At a power of 2 (squared distances) and another (the general path).
         for (power, neighbours) in [(2.0, 0), (2.0, 8), (3.0, 0), (3.0, 8)] {
-            let one = idw_on(Some(1), &pts, &extent, 0.1, power, neighbours, "idw").unwrap_or_else(|e| panic!("{e}"));
+            let one = idw_on(Some(1), &pts, &extent, 0.1, power, neighbours, "idw", Crs::LonLat).unwrap_or_else(|e| panic!("{e}"));
             for threads in [2, 7, 16] {
-                let many = idw_on(Some(threads), &pts, &extent, 0.1, power, neighbours, "idw").unwrap_or_else(|e| panic!("{e}"));
+                let many =
+                    idw_on(Some(threads), &pts, &extent, 0.1, power, neighbours, "idw", Crs::LonLat).unwrap_or_else(|e| panic!("{e}"));
                 let bits = |r: &Raster| r.bands[0].data.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
                 assert_eq!(bits(&one), bits(&many), "power {power}, {threads} threads, {neighbours} neighbours");
             }
@@ -1842,7 +1856,7 @@ mod tests {
             .collect();
         let extent = Extent::new(0.0, 40.0, 10.0, 50.0);
         for neighbours in [0, 8] {
-            let fast = idw_on(Some(1), &pts, &extent, 0.1, 2.0, neighbours, "idw").unwrap_or_else(|e| panic!("{e}"));
+            let fast = idw_on(Some(1), &pts, &extent, 0.1, 2.0, neighbours, "idw", Crs::LonLat).unwrap_or_else(|e| panic!("{e}"));
             // The general path can't be asked for at a power of 2, and one near 2 has other
             // weights: the reference is made here, as the general path made it at 2.
             let k = if neighbours == 0 { pts.len() } else { neighbours };
@@ -2144,19 +2158,35 @@ mod tests {
         let (seen, prof) =
             line_of_sight(&wall, 0, Coord::new(0.0025, 0.0105), Coord::new(0.0175, 0.0105), 2.0, 0.0, 50).unwrap_or((true, vec![]));
         assert!(!seen && !prof.is_empty());
-        let g = idw(&[(Coord::new(0.0, 0.0), 0.0), (Coord::new(1.0, 0.0), 10.0)], &Extent::new(0.0, -0.5, 1.0, 0.5), 0.1, 2.0, 8, "idw")
-            .unwrap_or_else(|e| panic!("{e}"));
+        let g = idw(
+            &[(Coord::new(0.0, 0.0), 0.0), (Coord::new(1.0, 0.0), 10.0)],
+            &Extent::new(0.0, -0.5, 1.0, 0.5),
+            0.1,
+            2.0,
+            8,
+            "idw",
+            Crs::LonLat,
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
         assert_eq!((g.width, g.height), (10, 10));
         let row = &g.bands[0].data[50..60];
         assert!(row[0] < row[9] && row[0] > 0.0 && row[9] < 10.0, "{row:?}");
         // Every point (0), and a power high enough to overflow 1/dᵖ, still give finite values.
-        let all = idw(&[(Coord::new(0.0, 0.0), 0.0), (Coord::new(1.0, 0.0), 10.0)], &Extent::new(0.0, -0.5, 1.0, 0.5), 0.1, 99.0, 0, "idw")
-            .unwrap_or_else(|e| panic!("{e}"));
+        let all = idw(
+            &[(Coord::new(0.0, 0.0), 0.0), (Coord::new(1.0, 0.0), 10.0)],
+            &Extent::new(0.0, -0.5, 1.0, 0.5),
+            0.1,
+            99.0,
+            0,
+            "idw",
+            Crs::LonLat,
+        )
+        .unwrap_or_else(|e| panic!("{e}"));
         let row = &all.bands[0].data[50..60];
         assert!(row.iter().all(|v| (0.0..=10.0).contains(v)) && row[0] < 1e-3 && row[9] > 10.0 - 1e-3, "{row:?}");
         // With every point, a far one still pulls each cell off the two near ones' value.
         let pts = [(Coord::new(0.0, 0.0), 0.0), (Coord::new(1.0, 0.0), 0.0), (Coord::new(5.0, 0.0), 100.0)];
-        let all = idw(&pts, &Extent::new(0.0, -0.5, 1.0, 0.5), 0.1, 1.0, 0, "idw").unwrap_or_else(|e| panic!("{e}"));
+        let all = idw(&pts, &Extent::new(0.0, -0.5, 1.0, 0.5), 0.1, 1.0, 0, "idw", Crs::LonLat).unwrap_or_else(|e| panic!("{e}"));
         assert!(all.bands[0].data.iter().all(|v| *v > 0.0 && *v < 100.0), "{:?}", all.bands[0].data);
         let p = profile(&r, 0, &[Coord::new(0.0005, 0.01), Coord::new(0.0195, 0.01)], 20);
         assert_eq!(p.len(), 20);

@@ -529,20 +529,27 @@ gp.run={"tool":"pointsAlongLines","params":{"input":"Rivers","distance":500,"uni
 **IDW Interpolation** works like the QGIS tool of the same name: every point weighs on every
 cell by 1/distanceᴾ, where P is the distance coefficient (2 by default). Lines and polygons
 contribute their vertices. Leave the extent empty to use the input's, or give it as
-`xmin,ymin,xmax,ymax` in degrees. `pixelSize` sets the cell size in degrees; when omitted it
-starts at 300 cells across the extent and coarsens for large inputs. The result is a Float32
-GeoTIFF layer. The **Geostatistical Wizard** is a separate IDW workflow: it uses 12 nearest
-neighbours by default (`neighbors`), rather than every point.
+`xmin,ymin,xmax,ymax`. `pixelSize` sets the cell size; when omitted it starts at 300 cells
+across the extent and coarsens for large inputs. The result is a Float32 GeoTIFF layer. The
+**Geostatistical Wizard** is a separate IDW workflow, in degrees: it uses 12 nearest neighbours
+by default (`neighbors`), rather than every point.
+
+IDW Interpolation and Ordinary Kriging make their raster in the projected coordinate system given
+as `crs` (such as `EPSG:32616` for UTM zone 16N, or a State Plane code), and then take the
+extent, pixel size and Kriging's `range` in its units, usually metres or feet. Without `crs`
+they work in longitude and latitude, with all three in degrees, as they did before `crs` was
+there; for a layer read from a projected file they then say so, naming its system. A geographic
+`crs` is refused, and points the system can't hold are left out and counted.
 
 **Ordinary Kriging** (`kriging`) estimates both a value and its uncertainty. Set `input` and a
 numeric `field`, then choose a `model`: **Spherical** (default), **Exponential** or **Gaussian**.
 `neighbours` defaults to 12 (minimum 2, capped at 32). Optional `nugget`, `sill` and `range`
 override the defaults: zero nugget, the sample variance (1 for near-constant values), and a
-third of the extent's diagonal. Coordinates, `range`, `extent` and `pixelSize` are in degrees
-(WGS 84). Points at the same location are averaged; multipoints contribute their points, while
-lines and polygons contribute their bounding-box centres. At least two distinct locations with
-numeric values are needed. It adds **two separate Float32 GeoTIFF layers**: the prediction,
-named by `output`, and `<output>_variance`.
+third of the extent's diagonal. `range`, `extent` and `pixelSize` are in the units of `crs`, or
+in degrees without it (see above). Points at the same location are averaged; multipoints
+contribute their points, while lines and polygons contribute their bounding-box centres. At least
+two distinct locations with numeric values are needed. It adds **two separate Float32 GeoTIFF
+layers**: the prediction, named by `output`, and `<output>_variance`.
 
 **Erase** (`erase`) removes from `input` features (points, lines or polygons) their parts inside
 the `erase` polygons. An erase polygon's edge counts as inside it, as for Clip, so a point on the
