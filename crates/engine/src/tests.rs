@@ -38748,3 +38748,73 @@ fn a_scripts_spectral_zone_is_read_on_its_copy() {
     assert!(read_ahead(&mut s, "script.run", &script).unwrap().run(&control).is_err());
     assert!(control.looked() > 0, "the zone's read looked at Cancel");
 }
+
+/// The Error Inspector's topology check runs ahead on a thread of its own in the desktop app
+/// (#1291): the command takes it as it lands, with the same answer and errors as checked here; a
+/// layer changed meanwhile is checked again; a cancelled check looks at Cancel and lands nothing.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_topology_check_runs_ahead_and_is_taken() {
+    use crate::cmd::reads::{read_ahead, read_land};
+    use rustgis_analysis::control::Control;
+    let square = |x: f64| {
+        json!({"type": "Feature", "properties": {}, "geometry": {"type": "Polygon",
+        "coordinates": [[[x, 0.0], [x + 1.0, 0.0], [x + 1.0, 1.0], [x, 1.0], [x, 0.0]]]}})
+    };
+    let parcels =
+        |xs: &[f64]| json!({"type": "FeatureCollection", "features": xs.iter().map(|x| square(*x)).collect::<Vec<_>>()}).to_string();
+    let session = || {
+        let mut s = Session::new(Project::default());
+        s.run("layer.addDataText", &json!({"fileName": "parcels.geojson", "text": parcels(&[0.0, 0.5, 3.0])})).unwrap();
+        s.run("topology.rules", &json!({"add": {"rule": "mustNotOverlap", "layer": "parcels"}})).unwrap();
+        s
+    };
+    let mut here = session();
+    let expected = here.run("topology.validate", &Value::Null).unwrap();
+    assert_eq!(expected["errors"], 1, "{expected}");
+
+    let mut s = session();
+    let ahead = read_ahead(&mut s, "topology.validate", &json!({})).unwrap();
+    assert!(ahead.reads());
+    let read = ahead.run(&Control::stoppable()).unwrap();
+    assert!(s.topology_errors.is_empty(), "nothing is kept before it lands");
+    assert_eq!(read_land(&mut s, read).unwrap(), expected);
+    assert!(s.read_ahead.is_none(), "the check was taken");
+    assert_eq!(s.topology_errors.len(), here.topology_errors.len());
+
+    // The layer changed while it was checked: said, not checked again here (which would hold the
+    // window), and the errors it had are kept.
+    let mut s = session();
+    s.topology_errors = here.topology_errors.clone();
+    let read = read_ahead(&mut s, "topology.validate", &json!({})).unwrap().run(&Control::stoppable()).unwrap();
+    s.run("layer.remove", &json!({"layer": "parcels"})).unwrap();
+    s.run("layer.addDataText", &json!({"fileName": "parcels.geojson", "text": parcels(&[0.0, 2.0, 3.0])})).unwrap();
+    let e = read_land(&mut s, read).unwrap_err();
+    assert!(e.contains("changed while they were checked"), "{e}");
+    assert!(s.read_ahead.is_none());
+    assert_eq!(s.topology_errors.len(), 1, "the errors it had are kept");
+    // Checked where it is asked (a script, the assistant), it checks the layer as it is now.
+    assert_eq!(s.run("topology.validate", &Value::Null).unwrap()["errors"], 0);
+
+    // A rule whose covering layer is gone still has its layer's latitudes checked.
+    let mut s = session();
+    s.run("layer.addDataText", &json!({"fileName": "cover.geojson", "text": parcels(&[0.0])})).unwrap();
+    let points = json!({"type": "FeatureCollection", "features": [{"type": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [0.5, 0.5]}}]});
+    s.run("layer.addDataText", &json!({"fileName": "wells.geojson", "text": points.to_string()})).unwrap();
+    s.run("topology.rules", &json!({"add": {"rule": "mustBeCoveredBy", "layer": "wells", "by": "cover"}})).unwrap();
+    s.run("layer.remove", &json!({"layer": "cover"})).unwrap();
+    let mark = s.notice_mark();
+    assert_eq!(s.run("topology.validate", &Value::Null).unwrap()["errors"], 1, "the overlap rule's error, the other rule's none");
+    let said: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+    assert!(said.iter().any(|t| t.contains("1 topology rule(s) weren't checked") && t.contains("'wells'")), "{said:?}");
+
+    // Cancelled as it starts: the check looks at it, and nothing lands.
+    let mut s = session();
+    let control = Control::cancelled_once_started();
+    assert!(read_ahead(&mut s, "topology.validate", &json!({})).unwrap().run(&control).is_err());
+    assert!(control.looked() > 0, "the check looked at Cancel");
+
+    // No rules: nothing to read ahead.
+    let mut s = Session::new(Project::default());
+    assert!(!read_ahead(&mut s, "topology.validate", &json!({})).unwrap().reads());
+}

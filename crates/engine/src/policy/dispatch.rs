@@ -142,9 +142,16 @@ impl Session {
     fn capture_read(&mut self, command: &str, params: &Value) -> Result<crate::cmd::reads::ReadAhead, String> {
         if !matches!(
             command,
-            "layer.addData" | "layer.loadAll" | "layer.reloadData" | "model.run" | "script.run" | "map.reloadTiles" | "map.repairTiles"
+            "layer.addData"
+                | "layer.loadAll"
+                | "layer.reloadData"
+                | "model.run"
+                | "script.run"
+                | "map.reloadTiles"
+                | "map.repairTiles"
+                | "topology.validate"
         ) {
-            return Err("only Add Data, Load All, Reload Data, models, scripts and local tile archives can prepare background work".into());
+            return Err("only Add Data, Load All, Reload Data, models, scripts, tile archives and topology prepare background work".into());
         }
         let mut params = params.as_object().cloned().ok_or("read parameters must be an object")?;
         if matches!(command, "layer.loadAll" | "layer.reloadData") {

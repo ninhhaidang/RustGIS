@@ -1,6 +1,7 @@
 //! Reads the desktop app makes on a thread of its own before a command adds what they read
 //! (#1291 step 3): Add Data's whole-file reads (a raster, a raster GDAL converts, a GeoJSON,
-//! delimited text or spreadsheet read whole, a CityJSON or CityGML model's layers), Reload Data, Load All Features and native models or scripts. [`read_ahead`]
+//! delimited text or spreadsheet read whole, a CityJSON or CityGML model's layers), Reload Data, Load All Features, native models or scripts and
+//! the Error Inspector's topology check (#1291). [`read_ahead`]
 //! takes what the read needs of the session, [`ReadAhead::run`] reads on the thread, and [`read_land`]
 //! runs the admitted command under its initiating owner: the command takes
 //! it instead of reading again, so what it adds, says, logs and puts in Undo is the same as when
@@ -128,7 +129,8 @@ pub(crate) fn prepare(s: &Session, op: Authorized<CommandOp>, owner: Continuatio
             let name = if spec.id == "map.repairTiles" { "Repair Data Source" } else { "Reload Data" };
             (name, work, None)
         }
-        _ => return Err("only Add Data, Reload Data, Load All, local tile archives, models and scripts can prepare background work".into()),
+        "topology.validate" => ("Error Inspector", super::design::topology_ahead(s, params), None),
+        _ => return Err("only Add Data, Reload Data, Load All, tile archives, models, scripts and topology prepare background work".into()),
     };
     let name = work.as_ref().map_or(name, |work| work.name);
     Ok(ReadAhead { name, op, owner, source, work })

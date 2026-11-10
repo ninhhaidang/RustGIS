@@ -62,10 +62,10 @@ struct ReadJob {
     slot: crate::Slot<Result<reads::Read, String>>,
 }
 
-/// Runs Add Data, Load All, Reload Data, archive reload/repair or model/script tools with `p`: its
-/// read on a thread of its own when the desktop app makes it so ([`reads::read_ahead`]), after
-/// any under way; here and now otherwise. While one is under way or waiting it answers that, not
-/// what the command installs, which comes as it lands.
+/// Runs Add Data, Load All, Reload Data, archive reload/repair, model/script tools or the topology
+/// check with `p`: its read on a thread of its own when the desktop app makes it so
+/// ([`reads::read_ahead`]), after any under way; here and now otherwise. While one is under way or
+/// waiting it answers that, not what the command installs, which comes as it lands.
 pub fn run(app: &mut RustGisApp, command: &'static str, p: Value) -> Result<Value, String> {
     run_then(app, command, p, None)
 }
@@ -242,6 +242,7 @@ fn called<'a>(command: &str, what: &'a str) -> &'a str {
     match (what.is_empty(), command) {
         (false, _) => what,
         (true, "script.run") => tl_raw!("Run Script"),
+        (true, "topology.validate") => tl_raw!("Error Inspector"),
         (true, _) => tl_raw!("Run Model"),
     }
 }
@@ -345,6 +346,9 @@ fn start(app: &mut RustGisApp, mut asked: Asked, p: Value) -> Result<Value, Stri
             return Err(why);
         }
         log::warn!("{name} reads here: its thread didn't start: {e}");
+        // Here, where its Cancel can't be clicked, the topology check takes the work limit of a
+        // run that can't be cancelled; it has none on its thread.
+        let control = if asked.command == "topology.validate" { Control::new() } else { control };
         let read = held
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -785,6 +789,27 @@ mod tests {
         stop(&mut app, std::time::Duration::from_secs(60));
         assert!(!busy(&app));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The Error Inspector's check runs on a thread of its own (#1291), and its errors are kept as
+    /// it lands.
+    #[test]
+    fn a_topology_check_runs_on_a_thread() {
+        let mut app = RustGisApp::new(rustgis_engine::Session::new(rustgis_engine::Project::default()));
+        app.reads_off_frame = true;
+        let square = |x: f64| {
+            json!({"type": "Feature", "properties": {}, "geometry": {"type": "Polygon",
+            "coordinates": [[[x, 0.0], [x + 1.0, 0.0], [x + 1.0, 1.0], [x, 1.0], [x, 0.0]]]}})
+        };
+        let parcels = json!({"type": "FeatureCollection", "features": [square(0.0), square(0.5)]});
+        app.run("layer.addDataText", json!({"fileName": "parcels.geojson", "text": parcels.to_string()})).unwrap();
+        app.run("topology.rules", json!({"add": {"rule": "mustNotOverlap", "layer": "parcels"}})).unwrap();
+        let mark = app.session.notice_mark();
+        let started = app.run("topology.validate", Value::Null).unwrap();
+        assert_eq!(started["started"], "Error Inspector", "{started}");
+        landed(&mut app, 60);
+        assert_eq!(app.session.topology_errors.len(), 1);
+        assert!(app.session.notices_since(mark).iter().all(|n| !n.error), "it landed without an error");
     }
 
     #[test]
