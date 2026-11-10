@@ -312,23 +312,87 @@ fn add_section(s: &mut Session, p: &Value, sec: Section) -> CmdResult {
     Ok(json!({"report": i, "sections": r.sections.len()}))
 }
 
-/// Drops what a layer lacks from a report (fields, groups, statistics, sort, picture,
-/// attachments, chart, and a where clause it can't read), so the report draws on that layer.
-fn fit_to_layer(r: &mut Report, ds: &rustgis_data::Dataset) {
+/// Counted changes needed to fit a report to a different layer's schema.
+#[derive(Default)]
+struct Fitted {
+    fields: usize,
+    groups: usize,
+    statistics: usize,
+    settings: usize,
+    filter_cleared: bool,
+    columns_replaced: bool,
+    subreports: usize,
+    subreport_fields: usize,
+}
+
+impl Fitted {
+    /// Publishes only completed changes, with literal report names and translated operation text.
+    fn notify(self, s: &mut Session, name: &str, when: &'static str) {
+        use crate::notice_text::NoticeText;
+        for (n, key) in [
+            (self.fields, "{name}: {n} report column(s) missing from the layer removed {when}"),
+            (self.groups, "{name}: {n} report grouping field(s) missing from the layer removed {when}"),
+            (self.statistics, "{name}: {n} report statistic(s) whose fields are missing removed {when}"),
+            (self.settings, "{name}: {n} report sort, picture, attachment or chart setting(s) whose fields are missing removed {when}"),
+            (
+                usize::from(self.columns_replaced),
+                "{name}: {n} report column set(s) replaced with the layer's default columns because none of the requested columns exist {when}",
+            ),
+            (self.subreports, "{name}: {n} subreport(s) whose relationship no longer involves the layer removed {when}"),
+            (self.subreport_fields, "{name}: {n} subreport field(s) missing from the related layer removed {when}"),
+        ] {
+            if n > 0 {
+                s.notify_text(
+                    NoticeText::format(
+                        key,
+                        [("name", name.to_string().into()), ("n", n.to_string().into()), ("when", NoticeText::term(when))],
+                    ),
+                    false,
+                );
+            }
+        }
+        if self.filter_cleared {
+            s.notify_text(NoticeText::format(
+                "{name}: 1 report filter that could not be read for its layer removed {when}; that filter no longer limits included records",
+                [("name", name.to_string().into()), ("when", NoticeText::term(when))],
+            ), false);
+        }
+    }
+}
+
+/// Drops what a layer lacks so the report draws on that layer, returning every removed binding
+/// and whether missing columns were replaced with the default field list.
+fn fit_to_layer(r: &mut Report, ds: &rustgis_data::Dataset) -> Fitted {
     let has = |n: &str| ds.field_index(n).is_some();
+    let mut fitted = Fitted { fields: r.fields.len(), groups: r.groups.len(), statistics: r.stats.len(), ..Fitted::default() };
+    let settings = usize::from(r.sort.is_some())
+        + usize::from(r.picture_field.is_some())
+        + usize::from(r.attachments_field.is_some())
+        + usize::from(r.chart.is_some());
     r.fields.retain(|f| has(f));
     r.groups.retain(|f| has(f));
     r.stats.retain(|x| has(&x.field));
+    fitted.fields -= r.fields.len();
+    fitted.groups -= r.groups.len();
+    fitted.statistics -= r.stats.len();
     r.sort = r.sort.take().filter(|f| has(f));
     r.picture_field = r.picture_field.take().filter(|f| has(f));
     r.attachments_field = r.attachments_field.take().filter(|f| has(f));
     r.chart = r.chart.take().filter(|c| has(&c.category) && c.value.as_deref().is_none_or(has));
+    fitted.settings = settings
+        - usize::from(r.sort.is_some())
+        - usize::from(r.picture_field.is_some())
+        - usize::from(r.attachments_field.is_some())
+        - usize::from(r.chart.is_some());
     if r.fields.is_empty() {
+        fitted.columns_replaced = fitted.fields > 0;
         r.fields = ds.fields.iter().take(MAX_ITEMS).map(|f| f.name.clone()).collect();
     }
-    if !r.where_clause.is_empty() && rustgis_data::query::parse_fields(&r.where_clause, ds).is_err() {
+    fitted.filter_cleared = !r.where_clause.is_empty() && rustgis_data::query::parse_fields(&r.where_clause, ds).is_err();
+    if fitted.filter_cleared {
         r.where_clause.clear();
     }
+    fitted
 }
 
 /// A join key: numbers by value (so 1 and 1.0 match), anything else as text; empty for none.
@@ -420,6 +484,7 @@ fn update(s: &mut Session, p: &Value) -> CmdResult {
     let mut r = s.project.reports.get(i).cloned().ok_or("no report")?;
     let old_name = r.name.clone();
     let mut renamed = None;
+    let mut fitted = Fitted::default();
     if let Some(n) = ps(p, "layer") {
         let l = find_layer(s, n).ok_or_else(|| format!("no layer named '{n}'"))?;
         if l.is_raster() {
@@ -429,16 +494,21 @@ fn update(s: &mut Session, p: &Value) -> CmdResult {
         // What the new layer lacks is dropped, so the report doesn't show blank columns, and so
         // are subreports through relationships that don't involve it. A kept subreport may now
         // list the other end of its relationship, so its fields are fitted to that layer.
-        fit_to_layer(&mut r, &l.dataset);
+        fitted = fit_to_layer(&mut r, &l.dataset);
         let name = l.name.clone();
         r.sections.retain_mut(|x| match x {
             Section::Subreport { relationship, fields } => {
                 let other = update_other(s, relationship, &name);
-                let Some(other) = other else { return false };
+                let Some(other) = other else {
+                    fitted.subreports += 1;
+                    return false;
+                };
+                let before = fields.len();
                 match find_layer(s, &other) {
                     Some(o) => fields.retain(|f| o.dataset.field_index(f).is_some()),
                     None => fields.clear(),
                 }
+                fitted.subreport_fields += before - fields.len();
                 true
             }
             _ => true,
@@ -493,6 +563,10 @@ fn update(s: &mut Session, p: &Value) -> CmdResult {
             }
         }
     }
+    if ps(p, "where").is_some() {
+        fitted.filter_cleared = false;
+    }
+    fitted.notify(s, &name, "while changing the report layer");
     Ok(json!({"report": i, "name": name}))
 }
 
@@ -538,12 +612,10 @@ pub fn report_file(s: &Session, i: usize, template: bool) -> Result<Vec<u8>, Str
 fn open(s: &mut Session, p: &Value) -> CmdResult {
     let text = super::items::read_text(p)?;
     let mut r: Report = serde_json::from_str(&text).map_err(|e| format!("not a RustGIS report: {e}"))?;
-    r.clamp();
+    let repairs = r.clamp();
     import_layer(s, p, &mut r)?;
     // Drop what the layer lacks, so the report still draws.
-    if let Some(l) = find_layer(s, &r.layer) {
-        fit_to_layer(&mut r, &l.dataset);
-    }
+    let fitted = find_layer(s, &r.layer).map(|l| fit_to_layer(&mut r, &l.dataset)).unwrap_or_default();
     r.name = unique_name(s, &r.name, None);
     let name = r.name.clone();
     if s.project.reports.len() >= crate::project::MAX_ITEMS {
@@ -552,6 +624,10 @@ fn open(s: &mut Session, p: &Value) -> CmdResult {
     s.project.reports.push(r);
     let i = s.project.reports.len() - 1;
     s.active_report = Some(i);
+    for notice in crate::project::content_notices(repairs, &name) {
+        s.notify_text(notice, false);
+    }
+    fitted.notify(s, &name, "while importing the report");
     Ok(json!({"report": i, "name": name}))
 }
 

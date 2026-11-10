@@ -297,7 +297,7 @@ pub(crate) fn add_with_metadata_wait(s: &mut Session, p: &Value, metadata_wait: 
     if let Some(v) = p.get("legend").filter(|v| !v.is_null()) {
         t.legends = legends(s, ps(p, "connection"), v)?;
     }
-    t.repair()?;
+    let repairs = t.repair_counted()?;
     // A layer its service draws on request: one picture of the view, or tiles of the size given
     // (#1162). Added by its address as from its service: one picture unless tiles are asked for
     // (`singleImage: false`, or a tile size).
@@ -344,6 +344,7 @@ pub(crate) fn add_with_metadata_wait(s: &mut Session, p: &Value, metadata_wait: 
     let pmtiles = t.kind == TileKind::PmTiles && t.id.is_empty();
     let archive = pmtiles || (t.kind == TileKind::MbTiles && t.id.is_empty());
     let frame_tile = (view || archive).then(|| t.clone());
+    let repaired_name = t.name.clone();
     m.tiles.insert(at, t);
     // A file's header is read now (natively), so a script's next command sees the map moved; a
     // file slower than a second to answer (a network mount) is framed when it does, as a web
@@ -365,6 +366,9 @@ pub(crate) fn add_with_metadata_wait(s: &mut Session, p: &Value, metadata_wait: 
         if archive {
             out["zoomed"] = json!(zoomed);
         }
+    }
+    for notice in crate::project::tile_notices(repairs, &repaired_name) {
+        s.notify_text(notice, false);
     }
     Ok(out)
 }
@@ -716,6 +720,17 @@ fn blend(p: &Value) -> Result<Option<Blend>, String> {
     ps(p, "blend").map(|m| Blend::from_code(m).ok_or_else(|| format!("unknown blend mode '{m}'"))).transpose()
 }
 
+/// Whether opening this repaired tile converts it to a raster, outside the retained-tile cap.
+pub(crate) fn cog_tile_is_raster(t: &TileLayer) -> bool {
+    let (file, look) = cog::split(&t.url);
+    t.kind == TileKind::Cog
+        && t.time_url.is_none()
+        && t.time_urls.is_empty()
+        && !look.aef
+        && !look.cube
+        && !rustgis_data::time::is_template(file)
+}
+
 /// Turns a map's plain COG tile layers into raster layers read in place, each where it was drawn,
 /// with its name, visibility, opacity, blend, look, connection and anonymity: those of projects saved before GeoTIFFs read
 /// in place were raster layers, and those `map.addTiles` (kind `cog`) still adds, as a project or
@@ -727,14 +742,7 @@ pub(crate) fn cog_tiles_to_rasters(m: &mut rustgis_map::Map) {
     use rustgis_map::raster::RasterLayer;
     let mut i = 0;
     while let Some(t) = m.tiles.get(i) {
-        let (file, look) = cog::split(&t.url);
-        if t.kind != TileKind::Cog
-            || t.time_url.is_some()
-            || !t.time_urls.is_empty()
-            || look.aef
-            || look.cube
-            || rustgis_data::time::is_template(file)
-        {
+        if !cog_tile_is_raster(t) {
             i += 1;
             continue;
         }

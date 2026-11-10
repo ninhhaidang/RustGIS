@@ -436,8 +436,8 @@ impl Session {
             }
         }
         crate::cmd::connections::clear_active();
-        let layout_notices = p.normalize_opened();
-        p.read_notices.extend(layout_notices.into_iter().map(|n| (crate::project::ReadPart::Layouts, n)));
+        let repair_notices = p.normalize_opened();
+        p.read_notices.extend(repair_notices);
         let mut report = Report::default();
 
         if let (Some(exchange), Some(raw)) = (exchange, raw) {

@@ -4,6 +4,7 @@
 pub mod antimeridian;
 pub mod camera;
 pub mod color;
+pub mod content;
 pub mod design;
 pub mod diagram;
 pub mod effects;
@@ -2112,11 +2113,14 @@ impl Map {
     /// Makes a project file's groups whole (#836): a parent that is the group itself, missing,
     /// in a loop or past [`MAX_GROUP_DEPTH`] levels is dropped (the group goes to the top
     /// level), and each group's layers are gathered together, the outermost groups first.
-    pub fn tidy_groups(&mut self) {
+    /// Returns the number of invalid parent links removed.
+    pub fn tidy_groups(&mut self) -> usize {
+        let mut removed = 0;
         let ids: std::collections::HashSet<u32> = self.groups.iter().map(|g| g.id).collect();
         for g in &mut self.groups {
             if g.parent.is_some_and(|p| p == g.id || !ids.contains(&p)) {
                 g.parent = None;
+                removed += 1;
             }
         }
         let mut parent: std::collections::HashMap<u32, Option<u32>> = self.groups.iter().map(|g| (g.id, g.parent)).collect();
@@ -2126,6 +2130,7 @@ impl Map {
             while let Some(p) = next {
                 if seen.contains(&p) || seen.len() >= MAX_GROUP_DEPTH {
                     g.parent = None;
+                    removed += 1;
                     parent.insert(g.id, None);
                     break;
                 }
@@ -2138,6 +2143,7 @@ impl Map {
         for (_, id) in order {
             self.gather_group(id);
         }
+        removed
     }
 
     /// The map's layers as they stand (their ids in order, and the next id), cheap to take before

@@ -100,13 +100,18 @@ impl Notebook {
         Some(chars.next().into_iter().flat_map(char::to_uppercase).chain(chars).collect())
     }
 
-    pub(crate) fn clamp(&mut self) {
-        self.name = self.name.chars().take(200).collect();
-        self.cells.truncate(MAX_CELLS);
+    /// Bounds retained notebook content and reports each field or cell that lost data.
+    pub(crate) fn clamp(&mut self) -> rustgis_map::content::ContentRepairs {
+        let mut repairs = rustgis_map::content::ContentRepairs::default();
+        repairs.cut(&mut self.name, 200);
+        repairs.truncate(&mut self.cells, MAX_CELLS);
         for c in &mut self.cells {
-            c.source = c.source.chars().take(MAX_SOURCE).collect();
-            c.output = c.output.as_ref().map(|o| o.chars().take(MAX_OUTPUT).collect());
+            repairs.cut(&mut c.source, MAX_SOURCE);
+            if let Some(output) = &mut c.output {
+                repairs.cut(output, MAX_OUTPUT);
+            }
         }
+        repairs
     }
 }
 
@@ -139,11 +144,16 @@ pub fn commands() -> Vec<C> {
             let fallback =
                 ps(p, "path").map(|x| Path::new(x).file_stem().map_or_else(|| x.to_string(), |n| n.to_string_lossy().into_owned()));
             let mut nb = parse(&text, fallback.as_deref().unwrap_or("Notebook"))?;
-            nb.clamp();
+            let repairs = nb.clamp();
             nb.name = unique_name(s, &nb.name);
             // Trust left over from a removed or undone notebook of this name doesn't carry over.
             s.trusted_notebooks.remove(&nb.name.to_ascii_lowercase());
-            push(s, nb)
+            let name = nb.name.clone();
+            let result = push(s, nb)?;
+            for notice in crate::project::content_notices(repairs, &name) {
+                s.notify_text(notice, false);
+            }
+            Ok(result)
         })
         .roles(&[crate::ParamRole { key: "text", role: crate::Role::Document(crate::Document::Notebook) }])
         .effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))

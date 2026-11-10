@@ -456,10 +456,11 @@ fn import_maps(s: &mut Session, p: &Value) -> CmdResult {
             }
             vec![m]
         }
-        Err(_) => match Project::from_import_json(&text, dir.as_deref()) {
+        Err(_) => match Project::from_import_maps_json(&text, dir.as_deref(), MAX_IMPORTED_MAPS) {
             Ok(mut project) => {
-                for notice in project.take_read_notices(&[crate::project::ReadPart::Labels, crate::project::ReadPart::Diagrams]) {
-                    s.notify(notice, false);
+                let parts = [crate::project::ReadPart::Labels, crate::project::ReadPart::Diagrams, crate::project::ReadPart::Maps];
+                for notice in project.take_read_notices(&parts) {
+                    s.notify_text(notice, false);
                 }
                 // Hidden diagrams of the maps imported only.
                 let imported = project.maps.iter().take(MAX_IMPORTED_MAPS).flat_map(|m| &m.layers);
@@ -495,8 +496,8 @@ fn import_maps(s: &mut Session, p: &Value) -> CmdResult {
     }
     // Repair what was read (rasters reopen, cameras clamp); the sources that read S3 wait for
     // the saved connection that is to read them.
-    for notice in s.project.normalize() {
-        s.notify(notice, false);
+    for notice in s.project.normalize_text() {
+        s.notify_text(notice, false);
     }
     super::connections::restore_active(s);
     super::connections::resolve_project(s);
@@ -554,7 +555,7 @@ fn import_styles(s: &mut Session, p: &Value) -> CmdResult {
         let mut project = project.map_err(|e| not_a(e, "layer file, map file or project"))?;
         // Styles take the layers' renderers and labels, not their diagrams or the layouts.
         for notice in project.take_read_notices(&[crate::project::ReadPart::Labels]) {
-            s.notify(notice, false);
+            s.notify_text(notice, false);
         }
         project.maps.into_iter().flat_map(|m| m.layers).collect()
     };

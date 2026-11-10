@@ -48,7 +48,7 @@ pub fn commands() -> Vec<C> {
         C::new("presentation.import", "Import Presentation", "Publish › Presentation", |s, p| {
             let text = super::items::read_text(p)?;
             let mut pres: Presentation = serde_json::from_str(&text).map_err(|e| format!("not a RustGIS presentation: {e}"))?;
-            pres.clamp();
+            let repairs = pres.clamp();
             pres.name = unique_name(s, &pres.name);
             let name = pres.name.clone();
             if s.project.presentations.len() >= crate::project::MAX_ITEMS {
@@ -57,6 +57,9 @@ pub fn commands() -> Vec<C> {
             s.project.presentations.push(pres);
             let i = s.project.presentations.len() - 1;
             s.active_presentation = Some(i);
+            for notice in crate::project::content_notices(repairs, &name) {
+                s.notify_text(notice, false);
+            }
             Ok(json!({"presentation": i, "name": name}))
         }).roles(&[crate::ParamRole { key: "text", role: crate::Role::Document(crate::Document::Presentation) }]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
         .params(r#"{"path"?: "*.rgispres", "text"?: presentation JSON, "data"?: base64 file}"#),

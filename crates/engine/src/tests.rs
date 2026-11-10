@@ -4232,6 +4232,227 @@ fn a_new_feature_doesnt_take_the_moved_label_of_a_deleted_one() {
     assert!(s.map().layer(layer).unwrap().labels.default.moved.is_empty());
 }
 
+/// Opening a hand-edited project says once per kind what its repair removed, cut or renamed
+/// (lists past their limit, repeated or built-in names, bad groups, an unusable projection or
+/// tile address, extra attribute values); the sample saved and opened again says nothing.
+#[test]
+fn opening_projects_reports_repairs() {
+    use crate::project::MAX_ITEMS;
+    use rustgis_map::tiles::{TileKind, TileLayer};
+    let clean = serde_json::to_string(&sample::world_project()).unwrap();
+    let reopened = Session::new(Project::from_json(&clean).unwrap());
+    assert!(reopened.notices.is_empty(), "{:?}", reopened.notices);
+    let mut p = Project::from_json(&clean).unwrap();
+    // A saved name equal to a translation key is still literal project data.
+    p.name = "while opening the project".into();
+    let m = &mut p.maps[0];
+    m.projection = rustgis_map::Projection::Custom("no such projection".into());
+    m.groups.push(rustgis_map::LayerGroup::new("No id"));
+    m.tiles.push(TileLayer::new("Bad address", TileKind::Raster, "ftp://x/{z}"));
+    m.layers[0].dataset.features[0].attrs.push(rustgis_data::Value::Null);
+    let layer = m.layers[0].name.clone();
+    let mut v: Value = serde_json::to_value(&p).unwrap();
+    v["data_stores"] = (0..=MAX_ITEMS).map(|i| json!({"name": format!("Store {i}"), "path": "/data"})).collect();
+    v["notebooks"] = json!([{"name": "Tour"}, {"name": "tour"}]);
+    v["ramps"] = json!([{"name": "Ember", "stops": ["#000000", "#ffffff"]}]);
+    let opened = Session::new(Project::from_json(&v.to_string()).unwrap());
+    let said = |text: &str| opened.notices.iter().filter(|n| n.text.contains(text)).count();
+    assert_eq!(said("while opening the project"), 7, "{:?}", opened.notices);
+    for notice in &opened.notices {
+        let translated = notice
+            .translated(|key, args| {
+                let key = if key == "while opening the project" { "pendant l'ouverture du projet" } else { key };
+                args.iter().fold(key.to_string(), |text, (name, value)| text.replace(&format!("{{{name}}}"), value))
+            })
+            .unwrap();
+        assert!(translated.starts_with("while opening the project: "), "the saved project name is never translated");
+        assert!(translated.contains("pendant l'ouverture du projet"), "repair timing is translatable");
+    }
+    assert_eq!(said(&format!("1 data store(s) beyond the {MAX_ITEMS} of each a project holds removed")), 1);
+    assert_eq!(said("renamed with a number while opening the project: 1 notebook(s)"), 1);
+    assert_eq!(said("1 color ramp(s) named like a built-in ramp renamed with \" (custom)\""), 1);
+    assert_eq!(said("1 layer group(s) with no id"), 1);
+    assert_eq!(said("1 map(s) with a projection this version can't use drawn in Web Mercator"), 1);
+    assert_eq!(said("1 tile layer(s) with an address that can't be used removed while opening the project (\"Bad address\")"), 1);
+    assert_eq!(
+        said(&format!(
+            "1 feature(s) with more attribute values than their layer has fields lost the extra values while opening the project (in \"{layer}\")"
+        )),
+        1
+    );
+    // What was repaired is saved repaired: opened again, it says nothing.
+    let again = Session::new(Project::from_json(&serde_json::to_string(&opened.project).unwrap()).unwrap());
+    assert!(again.notices.is_empty(), "{:?}", again.notices);
+}
+
+/// Content clamps and invalid group settings report their losses, then reopen quietly once repaired.
+#[test]
+fn opening_projects_reports_content_cuts_and_changed_group_settings() {
+    let clean = serde_json::to_string(&Project::default()).unwrap();
+    assert!(Session::new(Project::from_json(&clean).unwrap()).notices.is_empty());
+    let mut project = Project::default();
+    let mut group = rustgis_map::LayerGroup::new("Broken parent");
+    group.id = 7;
+    group.parent = Some(999);
+    group.transparency = 150.0;
+    group.min_scale = Some(0.0);
+    group.max_scale = Some(-1.0);
+    project.maps[0].groups.push(group);
+    let mut value = serde_json::to_value(project).unwrap();
+    value["reports"] = json!([{
+        "name": "Survey", "title": "t".repeat(501), "width": 3000,
+        "where": format!("name = '{}'", "x".repeat(2000)),
+        "fields": vec!["name"; 65]
+    }]);
+    value["presentations"] = json!([{"name": "Slides", "width": 3000, "pages": [{
+        "title": "View", "notes": "n".repeat(20001), "seconds": 5,
+        "kind": {"type": "blank", "text": "", "background": [255, 255, 255, 255]}
+    }]}]);
+    value["notebooks"] = json!([{"name": "Analysis", "cells": [{
+        "kind": "code", "source": "s".repeat(200001), "output": "o".repeat(20001)
+    }]}]);
+    let opened = Session::new(Project::from_json(&value.to_string()).unwrap());
+    for message in [
+        "2 report or presentation page-size, timing or map-view setting(s)",
+        "4 report, presentation or notebook text field(s) shortened",
+        "1 report filter(s) shortened to 2000 characters",
+        "1 report field(s), group(s), statistic(s), section(s)",
+        "3 group transparency or scale-range setting(s)",
+        "1 group(s) with an invalid parent moved to the top level",
+    ] {
+        assert_eq!(opened.notices.iter().filter(|n| n.text.contains(message)).count(), 1, "{message}: {:?}", opened.notices);
+    }
+    assert_eq!(opened.project.reports[0].where_clause.chars().count(), 2000);
+    assert_eq!(opened.project.reports[0].fields.len(), 64);
+    assert_eq!(opened.project.notebooks[0].cells[0].output.as_ref().unwrap().len(), 20000);
+    let group = &opened.map().groups[0];
+    assert_eq!((group.parent, group.transparency, group.min_scale, group.max_scale), (None, 100.0, None, None));
+    let again = Session::new(Project::from_json(&serde_json::to_string(&opened.project).unwrap()).unwrap());
+    assert!(again.notices.is_empty(), "{:?}", again.notices);
+}
+
+/// Standalone content imports publish clamp losses after success and leave clean imports quiet.
+#[test]
+fn imported_items_report_content_cuts() {
+    for (command, clean, damaged) in [
+        (
+            "notebook.open",
+            json!({"name": "Analysis", "cells": [{"kind": "code", "source": "", "output": "ok"}]}),
+            json!({"name": "Analysis", "cells": [{"kind": "code", "source": "", "output": "o".repeat(20001)}]}),
+        ),
+        (
+            "presentation.import",
+            json!({"name": "Slides"}),
+            json!({"name": "Slides", "pages": [{"title": "View", "notes": "n".repeat(20001), "seconds": 5,
+                "kind": {"type": "blank", "text": "", "background": [255,255,255,255]}}]}),
+        ),
+        (
+            "report.open",
+            json!({"name": "Survey", "layer": "Countries"}),
+            json!({"name": "Survey", "layer": "Countries", "title": "t".repeat(501), "where": "missing_column = 1",
+                "fields": ["missing_column"], "groups": ["missing_group"], "stats": [{"field": "missing_stat", "kind": "sum"}],
+                "sort": "missing_sort", "pictureField": "missing_picture", "attachmentsField": "missing_attachment",
+                "chart": {"category": "missing_category"}}),
+        ),
+    ] {
+        for (value, expected) in [(clean, 0), (damaged, 1)] {
+            let mut s = Session::new(sample::world_project());
+            s.notices.clear();
+            s.run(command, &json!({"text": value.to_string()})).unwrap();
+            assert_eq!(
+                s.notices.iter().filter(|n| n.text.contains("text field(s) shortened")).count(),
+                expected,
+                "{command}: {:?}",
+                s.notices
+            );
+            if expected == 0 {
+                assert!(s.notices.is_empty(), "{command}: {:?}", s.notices);
+            }
+            if command == "report.open" && expected == 1 {
+                assert_eq!(s.notices.iter().filter(|n| n.text.contains("1 report filter that could not be read")).count(), 1);
+                for text in [
+                    "1 report column(s) missing",
+                    "1 report grouping field(s) missing",
+                    "1 report statistic(s)",
+                    "4 report sort, picture, attachment or chart setting(s)",
+                    "1 report column set(s) replaced",
+                ] {
+                    assert_eq!(s.notices.iter().filter(|n| n.text.contains(text)).count(), 1, "{text}: {:?}", s.notices);
+                }
+                let report = s.project.reports.last().unwrap();
+                assert!(report.where_clause.is_empty() && report.groups.is_empty() && report.stats.is_empty());
+                assert!(
+                    report.sort.is_none() && report.picture_field.is_none() && report.attachments_field.is_none() && report.chart.is_none()
+                );
+                assert_eq!(
+                    report.fields,
+                    s.map().layer_by_name("Countries").unwrap().dataset.fields.iter().take(64).map(|f| f.name.clone()).collect::<Vec<_>>()
+                );
+                // The same fitting helper also runs after an existing report changes layer.
+                let report = s.project.reports.last_mut().unwrap();
+                report.fields = vec!["missing_again".into()];
+                report.where_clause = "missing_again = 1".into();
+                s.notices.clear();
+                s.run("report.update", &json!({"layer": "Countries"})).unwrap();
+                assert_eq!(s.notices.iter().filter(|n| n.text.contains("1 report column(s) missing")).count(), 1);
+                assert_eq!(s.notices.iter().filter(|n| n.text.contains("1 report filter that could not be read")).count(), 1);
+                s.notices.clear();
+                s.run("report.update", &json!({"layer": "Countries"})).unwrap();
+                assert!(s.notices.is_empty(), "a fitted report stays quiet: {:?}", s.notices);
+            }
+        }
+    }
+}
+
+/// Map imports audit retained maps only, and a usable tile still reports discarded dated content.
+#[test]
+fn imported_maps_scope_repairs_and_tiles_report_content_cuts() {
+    use rustgis_map::tiles::{TileKind, TileLayer};
+    let mut p = Project::default();
+    p.maps = (0..101)
+        .map(|i| {
+            let mut m = p.maps[0].clone();
+            m.name = format!("Map {i}");
+            m
+        })
+        .collect();
+    p.maps[100].groups.push(rustgis_map::LayerGroup::new("Excluded broken group"));
+    let mut s = Session::new(Project::default());
+    s.run("map.import", &json!({"text": serde_json::to_string(&p).unwrap()})).unwrap();
+    assert_eq!(s.project.maps.len(), 101);
+    assert!(!s.notices.iter().any(|n| n.text.contains("layer group(s)")), "{:?}", s.notices);
+    assert_eq!(s.notices.iter().filter(|n| n.text.contains("1 map(s) beyond the import limit left out")).count(), 1);
+    let mut p = Project::default();
+    let mut tile = TileLayer::new("Dated", TileKind::Raster, "https://example.com/{z}/{x}/{y}.png");
+    tile.time_url = Some("ftp://invalid/{date}".into());
+    tile.time_urls = vec![(1.0, "https://example.com/one".into()), (1.0, "https://example.com/repeated".into())];
+    p.maps[0].tiles.push(tile);
+    let opened = Session::new(Project::from_json(&serde_json::to_string(&p).unwrap()).unwrap());
+    assert_eq!(opened.map().tiles.len(), 1);
+    assert_eq!(
+        opened.notices.iter().filter(|n| n.text.contains("2 invalid, repeated or excess dated tile address(es) removed")).count(),
+        1,
+        "{:?}",
+        opened.notices
+    );
+    let again = Session::new(Project::from_json(&serde_json::to_string(&opened.project).unwrap()).unwrap());
+    assert!(again.notices.is_empty(), "{:?}", again.notices);
+    let mut clean = Session::new(Project::default());
+    clean.run("map.addTiles", &json!({"url": "https://example.com/{z}/{x}/{y}.png"})).unwrap();
+    assert!(clean.notices.is_empty(), "an omitted optional name is a default: {:?}", clean.notices);
+    let mut capped = Project::default();
+    capped.maps[0].tiles =
+        vec![TileLayer::new("Clean", TileKind::Raster, "https://example.com/{z}/{x}/{y}.png"); rustgis_map::tiles::MAX_TILE_LAYERS];
+    let mut excluded = capped.maps[0].tiles[0].clone();
+    excluded.name = "Excluded dated tile".into();
+    excluded.time_url = Some("ftp://invalid/{date}".into());
+    capped.maps[0].tiles.push(excluded);
+    let capped = Session::new(Project::from_json(&serde_json::to_string(&capped).unwrap()).unwrap());
+    assert_eq!(capped.map().tiles.len(), rustgis_map::tiles::MAX_TILE_LAYERS);
+    assert_eq!(capped.notices.iter().filter(|n| n.text.contains("1 tile layer(s) beyond")).count(), 1);
+    assert!(!capped.notices.iter().any(|n| n.text.contains("dated tile address(es)")), "{:?}", capped.notices);
+}
+
 /// Project opening reports discarded label settings once per kind; clean settings stay quiet.
 #[test]
 fn opening_projects_reports_moved_label_and_callout_adjustments() {

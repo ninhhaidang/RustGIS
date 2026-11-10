@@ -439,14 +439,14 @@ pub fn status_bar(app: &mut RustGisApp, ui: &mut Ui) {
                     // over the selection count and coordinates. A click opens its history.
                     if let Some(running) = crate::pluginstart::running(app) {
                         ui.add(egui::Label::new(egui::RichText::new(running).size(11.5).color(t.accent)).truncate());
-                    } else if let Some(n) = app.session.notices.last()
+                    } else if let Some((n, text)) = app.session.notices.last().map(|n| (n, notice_text(n)))
                         && ui.add(
-                            egui::Button::new(egui::RichText::new(&n.text).size(11.5).color(if n.error { t.red } else { t.text_dim }))
+                            egui::Button::new(egui::RichText::new(&text).size(11.5).color(if n.error { t.red } else { t.text_dim }))
                                 .frame(false)
                                 .small()
                                 .truncate(),
                         )
-                        .on_hover_text(crate::i18n::fmt("{message}\n{open}", &[("message", &n.text), ("open", tl_raw!("Open Messages"))]))
+                        .on_hover_text(notice_hover(n))
                         .clicked() {
                         app.ui.open_right(crate::RightPane::DiagnosticLog);
                     }
@@ -1230,6 +1230,22 @@ pub fn about(app: &mut RustGisApp, ctx: &egui::Context) {
     }
 }
 
+/// Translates deferred engine text in logical order, then shapes the completed message once.
+/// Ordinary notices have already reached their final display form and pass through unchanged.
+fn notice_text(notice: &rustgis_engine::Notice) -> String {
+    notice
+        .translated(crate::i18n::fmt_raw)
+        .map(|message| crate::i18n::fmt("{message}", &[("message", &message)]))
+        .unwrap_or_else(|| notice.text.clone())
+}
+
+/// A deferred message stays in logical order until the complete tooltip is shaped, including
+/// its translated action label. Feeding status-bar display text back into fmt would shape twice.
+fn notice_hover(notice: &rustgis_engine::Notice) -> String {
+    let message = notice.translated(crate::i18n::fmt_raw).unwrap_or_else(|| notice.text.clone());
+    crate::i18n::fmt("{message}\n{open}", &[("message", &message), ("open", tl_raw!("Open Messages"))])
+}
+
 /// Toasts for recent notices (errors stay longer, and any stays while the pointer is on it, so
 /// its text can be selected and copied).
 pub fn notices(app: &mut RustGisApp, ctx: &egui::Context) {
@@ -1239,7 +1255,7 @@ pub fn notices(app: &mut RustGisApp, ctx: &egui::Context) {
     if total > app.map.notices_seen {
         for n in app.session.notices.iter().skip(app.map.notices_seen) {
             app.map.toasts_made += 1;
-            app.map.toasts.push(Toast { text: n.text.clone(), error: n.error, at: now, id: app.map.toasts_made });
+            app.map.toasts.push(Toast { text: notice_text(n), error: n.error, at: now, id: app.map.toasts_made });
         }
         app.map.notices_seen = total;
     }

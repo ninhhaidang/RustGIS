@@ -316,7 +316,7 @@ pub(crate) fn public_login_params(value: &serde_json::Value) -> Option<serde_jso
 pub struct Project {
     /// Read-time adjustments (labels, diagrams, layouts), consumed by the session and never saved.
     #[serde(skip)]
-    pub(crate) read_notices: Vec<(ReadPart, String)>,
+    pub(crate) read_notices: Vec<(ReadPart, NoticeText)>,
     /// The format read from disk; serialization always declares the current writer's format.
     #[serde(default = "format", serialize_with = "write_format")]
     pub format: u32,
@@ -845,35 +845,43 @@ impl Project {
 
     /// Takes the notices of what reading the project changed, keeping those of the parts given
     /// (an import says only what it takes); the rest are dropped.
-    pub(crate) fn take_read_notices(&mut self, parts: &[ReadPart]) -> Vec<String> {
-        let mut notices: Vec<String> =
+    pub(crate) fn take_read_notices(&mut self, parts: &[ReadPart]) -> Vec<NoticeText> {
+        let mut notices: Vec<NoticeText> =
             std::mem::take(&mut self.read_notices).into_iter().filter(|(part, _)| parts.contains(part)).map(|(_, n)| n).collect();
         if parts.contains(&ReadPart::AreaExpressions)
             && let Some(message) = crate::cmd::design::display_area_messages(self.maps.iter().flat_map(|map| map.layers.iter()))
         {
-            notices.push(message);
+            notices.push(message.into());
         }
         notices
     }
 
     /// Repairs invariants after loading (at least one map; a valid active index). Returns a
-    /// notice for each kind of change made to the project's layouts, for the session to show.
+    /// notice for each kind of change that removed, cut or renamed something, for the session
+    /// to show.
     #[must_use]
     pub fn normalize(&mut self) -> Vec<String> {
-        self.repair(false)
+        self.normalize_text().into_iter().map(|n| n.english()).collect()
+    }
+
+    /// The same repairs with deferred translation for session-owned interface notices.
+    pub(crate) fn normalize_text(&mut self) -> Vec<NoticeText> {
+        self.repair(false).into_iter().map(|(_, n)| n).collect()
     }
 
     /// [`Project::normalize`] for a project read from its file, which also opens its plain COG
     /// tile layers (a project saved before GeoTIFFs read in place were raster layers, or with
     /// those `map.addTiles` adds) as raster layers read in place: as the project opens only. A
     /// later repair (a layer file added, maps imported) leaves a tile layer added this session
-    /// as it is. Returns a notice for each kind of change made to the project's layouts.
-    pub(crate) fn normalize_opened(&mut self) -> Vec<String> {
+    /// as it is. Returns a notice for each kind of change that removed, cut or renamed
+    /// something, with the part of the project it is about.
+    pub(crate) fn normalize_opened(&mut self) -> Vec<(ReadPart, NoticeText)> {
         self.repair(true)
     }
 
-    /// Repairs the project; returns a notice per kind of change made to its layouts.
-    fn repair(&mut self, opened: bool) -> Vec<String> {
+    /// Reports removed or shortened content, renamed items and repaired group display settings
+    /// with their affected part. Table ids absent from older formats are filled in for compatibility.
+    fn repair(&mut self, opened: bool) -> Vec<(ReadPart, NoticeText)> {
         if self.maps.is_empty() {
             self.maps.push(Map::new("Map"));
         }
@@ -907,40 +915,65 @@ impl Project {
             }
         }
         let when = if opened { "while opening the project" } else { "while checking the project" };
-        let notices = layout_notices(&self.name, when, layouts_dropped, &repairs);
+        let mut notices: Vec<(ReadPart, NoticeText)> =
+            layout_notices(&self.name, when, layouts_dropped, &repairs).into_iter().map(|n| (ReadPart::Layouts, n.into())).collect();
+        let mut done = Repaired::default();
         // Files skip the commands' limits, and notebooks and presentations are found (and
         // notebooks trusted) by name, so names are made unique.
-        for r in &mut self.reports {
-            r.clamp();
+        for (what, len) in [
+            ("report(s)", self.reports.len()),
+            ("presentation(s)", self.presentations.len()),
+            ("notebook(s)", self.notebooks.len()),
+            ("deep-learning model(s)", self.dl_models.len()),
+            ("shared item(s)", self.shared.len()),
+            ("data store(s)", self.data_stores.len()),
+            ("color ramp(s)", self.ramps.len()),
+        ] {
+            done.over_limit.add_kind(len.saturating_sub(MAX_ITEMS), what);
         }
         self.reports.truncate(MAX_ITEMS);
         self.presentations.truncate(MAX_ITEMS);
         self.notebooks.truncate(MAX_ITEMS);
         self.dl_models.truncate(MAX_ITEMS);
-        self.dl_models.retain(|m| m.model.validate().is_ok());
+        self.dl_models.retain(|m| {
+            let valid = m.model.validate().is_ok();
+            if !valid {
+                done.models_removed.add(1, &m.name);
+            }
+            valid
+        });
         self.shared.truncate(MAX_ITEMS);
         self.data_stores.truncate(MAX_ITEMS);
+        for r in &mut self.reports {
+            let repairs = r.clamp();
+            done.content(repairs, &r.name);
+        }
         for p in &mut self.presentations {
-            p.clamp();
+            let repairs = p.clamp();
+            done.content(repairs, &p.name);
         }
         for nb in &mut self.notebooks {
-            nb.clamp();
+            let repairs = nb.clamp();
+            done.content(repairs, &nb.name);
         }
-        unique_names(self.presentations.iter_mut().map(|p| &mut p.name));
-        unique_names(self.notebooks.iter_mut().map(|nb| &mut nb.name));
-        unique_names(self.dl_models.iter_mut().map(|m| &mut m.name));
+        done.renamed.add_kind(unique_names(self.presentations.iter_mut().map(|p| &mut p.name)), "presentation(s)");
+        done.renamed.add_kind(unique_names(self.notebooks.iter_mut().map(|nb| &mut nb.name)), "notebook(s)");
+        done.renamed.add_kind(unique_names(self.dl_models.iter_mut().map(|m| &mut m.name)), "deep-learning model(s)");
         // Custom ramps are found by name, before them the built-in schemes: a hand edit's repeated
         // or built-in name gets a suffix, so every ramp stays reachable.
         self.ramps.truncate(MAX_ITEMS);
         for r in &mut self.ramps {
             if rustgis_map::Ramp::from_name(r.name()).is_some() {
+                done.ramps_suffixed.add(1, r.name());
                 r.name_mut().push_str(" (custom)");
             }
         }
-        unique_names(self.ramps.iter_mut().map(|r| r.name_mut()));
+        done.renamed.add_kind(unique_names(self.ramps.iter_mut().map(|r| r.name_mut())), "color ramp(s)");
         for m in &mut self.maps {
             // Groups from project files must stay shallow, bounded and unambiguous. Children
             // refer to existing ordinary layers; no layer belongs to two groups.
+            let groups_before = m.service_groups.len() + m.groups.len();
+            let (mut members_removed, mut names_cut) = (0usize, 0usize);
             m.service_groups.truncate(2000);
             let layer_ids: std::collections::HashSet<u32> = m.layers.iter().map(|l| l.id).collect();
             let mut ids = layer_ids.clone();
@@ -949,9 +982,12 @@ impl Project {
                 if g.id == 0 || g.url.len() > 8192 || !ids.insert(g.id) {
                     return false;
                 }
+                names_cut += usize::from(g.name.chars().nth(200).is_some());
                 g.name = g.name.chars().take(200).collect();
+                let members = g.children.len();
                 g.children.truncate(2000);
                 g.children.retain(|c| layer_ids.contains(&c.layer) && children.insert(c.layer));
+                members_removed += members - g.children.len();
                 true
             });
             // Layer groups likewise: ids of their own, children that exist and are in no other
@@ -962,20 +998,35 @@ impl Project {
                 if g.id == 0 || !ids.insert(g.id) {
                     return false;
                 }
+                names_cut += usize::from(g.name.chars().nth(200).is_some());
                 g.name = g.name.chars().take(200).collect();
+                let (transparency, min_scale, max_scale) = (g.transparency, g.min_scale, g.max_scale);
                 g.transparency = if g.transparency.is_finite() { g.transparency.clamp(0.0, 100.0) } else { 0.0 };
                 g.min_scale = g.min_scale.filter(|v| v.is_finite() && *v > 0.0);
                 g.max_scale = g.max_scale.filter(|v| v.is_finite() && *v > 0.0);
+                done.group_settings.add(
+                    usize::from(transparency != g.transparency)
+                        + usize::from(min_scale != g.min_scale)
+                        + usize::from(max_scale != g.max_scale),
+                    &m.name,
+                );
+                let members = g.children.len();
                 g.children.retain(|c| layer_ids.contains(c) && children.insert(*c));
+                members_removed += members - g.children.len();
                 true
             });
-            m.tidy_groups();
+            done.groups_removed.add(groups_before - m.service_groups.len() - m.groups.len(), &m.name);
+            done.members_removed.add(members_removed, &m.name);
+            done.group_names_cut.add(names_cut, &m.name);
+            done.group_parents.add(m.tidy_groups(), &m.name);
             // A projection this version can't use (a hand edit, or a newer file) falls back to
             // Web Mercator rather than being named while another is drawn.
             if let rustgis_map::Projection::Custom(code) = &m.projection
                 && let Err(e) = rustgis_map::projection::Projector::new(code)
             {
                 log::warn!("{}: {e}; using Web Mercator", m.name);
+                done.projection_lost.add(1, &m.name);
+                done.bookmarks_kept |= !m.bookmarks.is_empty();
                 m.projection = rustgis_map::Projection::WebMercator;
                 // The camera is in the lost projection's units: start from the whole world.
                 m.camera = rustgis_map::Camera::world();
@@ -989,7 +1040,24 @@ impl Project {
                 }
             }
             // Tile layers with an address that can't be fetched (a hand edit) are dropped.
-            m.tiles.retain_mut(|t| t.repair().map_err(|e| log::warn!("{}: {e}", m.name)).is_ok());
+            let mut kept_tiles = 0usize;
+            m.tiles.retain_mut(|t| match t.repair_counted() {
+                Ok(repairs) => {
+                    let converted = opened && crate::cmd::tiles::cog_tile_is_raster(t);
+                    if converted || kept_tiles < rustgis_map::tiles::MAX_TILE_LAYERS {
+                        done.tile(repairs, &t.name);
+                    }
+                    if !converted {
+                        kept_tiles += 1;
+                    }
+                    true
+                }
+                Err(e) => {
+                    log::warn!("{}: {e}", m.name);
+                    done.tiles_removed.add(1, &t.name);
+                    false
+                }
+            });
             // GeoTIFFs read in place are raster layers (a project from before saved tile layers),
             // so they don't count toward the tile layers kept. As the project opens only: a tile
             // layer added this session stays one until the project is opened again.
@@ -1012,6 +1080,7 @@ impl Project {
                     }
                 }
             }
+            done.tiles_over_limit.add(m.tiles.len().saturating_sub(rustgis_map::tiles::MAX_TILE_LAYERS), &m.name);
             m.tiles.truncate(rustgis_map::tiles::MAX_TILE_LAYERS);
             #[cfg(not(target_arch = "wasm32"))]
             for t in &mut m.tiles {
@@ -1067,6 +1136,8 @@ impl Project {
                 }
                 l.normalize_selection();
                 let fields = l.dataset.fields.len();
+                let extra = l.dataset.features.iter().filter(|f| f.attrs.len() > fields).count();
+                done.values_cut.add(extra, &l.name);
                 for f in &mut l.dataset.features {
                     f.attrs.resize(fields, rustgis_data::Value::Null);
                 }
@@ -1074,6 +1145,7 @@ impl Project {
             }
             read_in_place(m);
         }
+        notices.extend(done.notices(&self.name, when));
         notices
     }
 
@@ -1176,23 +1248,28 @@ impl Project {
 
     /// Reads a project from its JSON text (a browser upload).
     pub fn from_json(text: &str) -> Result<Project, String> {
-        Self::read_json(text, true, None, true)
+        Self::read_json(text, true, None, true, None)
     }
 
     /// Reads imported JSON (including package contents) without restoring a saved file's secrets.
     pub(crate) fn from_import_json(text: &str, dir: Option<&Path>) -> Result<Project, String> {
-        Self::read_json(text, false, dir, true)
+        Self::read_json(text, false, dir, true, None)
+    }
+
+    /// Repairs only the maps the import will retain, so excluded maps produce no notices.
+    pub(crate) fn from_import_maps_json(text: &str, dir: Option<&Path>, limit: usize) -> Result<Project, String> {
+        Self::read_json(text, false, dir, true, Some(limit))
     }
 
     /// Peer census must precede normalization: duplicate ids cannot become proof of a unique
     /// matching slot after the normalizer renumbers or drops them. Saved-text restore is absent.
     pub(crate) fn from_peer_raw(text: &str) -> Result<Project, String> {
-        Self::read_json(text, false, None, false)
+        Self::read_json(text, false, None, false, None)
     }
 
     /// Validates compatibility before typed decoding. Saved files may restore exact fields;
     /// peer input stays unnormalized until its slot census has rejected ambiguous identities.
-    fn read_json(text: &str, restore: bool, dir: Option<&Path>, normalize: bool) -> Result<Project, String> {
+    fn read_json(text: &str, restore: bool, dir: Option<&Path>, normalize: bool, map_limit: Option<usize>) -> Result<Project, String> {
         check_format(text, "project")?;
         let mut p: Project = serde_json::from_str(text).map_err(|e| {
             let msg = e.to_string();
@@ -1217,9 +1294,20 @@ impl Project {
         if let Some(d) = dir.and_then(Path::to_str) {
             p.resolve_paths(d);
         }
-        let layout_notices = if normalize { p.normalize_opened() } else { Vec::new() };
-        p.read_notices = label_losses::notices(text, &p)?;
-        p.read_notices.extend(layout_notices.into_iter().map(|n| (ReadPart::Layouts, n)));
+        let excluded_maps = map_limit.map_or(0, |limit| p.maps.len().saturating_sub(limit));
+        if let Some(limit) = map_limit {
+            p.maps.truncate(limit);
+        }
+        let repair_notices = if normalize { p.normalize_opened() } else { Vec::new() };
+        p.read_notices =
+            label_losses::notices_for_maps(text, &p, map_limit.is_some())?.into_iter().map(|(part, text)| (part, text.into())).collect();
+        p.read_notices.extend(repair_notices);
+        if excluded_maps > 0 {
+            p.read_notices.push((
+                ReadPart::Maps,
+                NoticeText::format("{n} map(s) beyond the import limit left out", [("n", excluded_maps.to_string().into())]),
+            ));
+        }
         Ok(p)
     }
 
@@ -1256,7 +1344,7 @@ impl Project {
         let bytes = read_file(path, max)?;
         let text = String::from_utf8(bytes).map_err(|_| format!("{} isn't a RustGIS project", path.display()))?;
         let dir = std::path::absolute(path).ok().and_then(|p| p.parent().map(Path::to_path_buf));
-        Self::read_json(&text, true, dir.as_deref(), true)
+        Self::read_json(&text, true, dir.as_deref(), true, None)
     }
 }
 
@@ -1329,11 +1417,22 @@ pub(crate) enum ReadPart {
     /// Diagrams that won't show for their layer's aggregation or extrusion (#1596).
     HiddenDiagrams,
     Layouts,
+    /// The maps' groups, projections, tile layers and attribute values.
+    Maps,
+    /// The project's other lists: reports, presentations, notebooks, models, ramps and the like.
+    Items,
 }
 
 /// Every part: a whole project opened.
-pub(crate) const ALL_PARTS: [ReadPart; 5] =
-    [ReadPart::AreaExpressions, ReadPart::Labels, ReadPart::Diagrams, ReadPart::HiddenDiagrams, ReadPart::Layouts];
+pub(crate) const ALL_PARTS: [ReadPart; 7] = [
+    ReadPart::AreaExpressions,
+    ReadPart::Labels,
+    ReadPart::Diagrams,
+    ReadPart::HiddenDiagrams,
+    ReadPart::Layouts,
+    ReadPart::Maps,
+    ReadPart::Items,
+];
 
 /// The most layouts a project keeps (`layout.*` commands refuse to make more).
 pub(crate) const MAX_LAYOUTS: usize = 200;
@@ -1353,11 +1452,265 @@ fn layout_names(
     of: impl Fn(&rustgis_map::layout::LayoutRepairs) -> usize,
 ) -> String {
     let names: Vec<&str> = repairs.iter().filter(|(_, r)| of(r) > 0).map(|(n, _)| n.as_str()).collect();
-    let mut text = names.iter().take(3).map(|n| format!("\"{}\"", short_name(n))).collect::<Vec<_>>().join(", ");
-    if names.len() > 3 {
-        text.push_str(&format!(" and {} more", names.len() - 3));
+    quoted_names(names.len(), names.iter().take(3).copied())
+}
+
+/// The first three of `total` names, quoted and shortened, then how many more there are.
+fn quoted_names<'a>(total: usize, first: impl Iterator<Item = &'a str>) -> String {
+    let mut text = first.take(3).map(|n| format!("\"{}\"", short_name(n))).collect::<Vec<_>>().join(", ");
+    if total > 3 {
+        text.push_str(&format!(" and {} more", total - 3));
     }
     text
+}
+
+/// A count of one kind of repair and where it was made: the first few names (of maps, layers or
+/// items) and how many there were in all.
+#[derive(Default)]
+struct Tally {
+    count: usize,
+    names: Vec<String>,
+    places: usize,
+    kinds: Vec<(usize, &'static str)>,
+}
+
+impl Tally {
+    /// Adds `n` repairs made in `place`; nothing when `n` is 0.
+    fn add(&mut self, n: usize, place: &str) {
+        if n == 0 {
+            return;
+        }
+        self.count = self.count.saturating_add(n);
+        self.places += 1;
+        if self.names.len() < 3 {
+            self.names.push(place.to_string());
+        }
+    }
+
+    /// Adds `n` repairs of the kind of item `what` (as "notebook(s)"); nothing when `n` is 0.
+    /// Every kind is named: a tally has a few kinds at most.
+    fn add_kind(&mut self, n: usize, what: &'static str) {
+        if n > 0 {
+            self.count = self.count.saturating_add(n);
+            self.places += 1;
+            self.kinds.push((n, what));
+        }
+    }
+
+    /// Literal project names and a translatable count of places beyond the first three.
+    fn places(&self) -> NoticeText {
+        let names: NoticeText = self.names.iter().map(|name| format!("\"{}\"", short_name(name))).collect::<Vec<_>>().join(", ").into();
+        if self.places > 3 {
+            NoticeText::format("{names} and {n} more", [("names", names), ("n", (self.places - 3).to_string().into())])
+        } else {
+            names
+        }
+    }
+
+    /// A counted list whose item-kind labels are translated independently of saved names.
+    fn kinds(&self) -> NoticeText {
+        NoticeText::list(
+            self.kinds
+                .iter()
+                .map(|(n, kind)| NoticeText::format("{n} {kind}", [("n", n.to_string().into()), ("kind", NoticeText::term(kind))])),
+        )
+    }
+}
+
+/// The same content notices for a standalone import, published only after it succeeds.
+pub(crate) fn content_notices(repairs: rustgis_map::content::ContentRepairs, name: &str) -> Vec<NoticeText> {
+    let mut done = Repaired::default();
+    done.content(repairs, name);
+    done.notices(name, "while importing the item").into_iter().map(|(_, n)| n).collect()
+}
+
+/// Successful tile additions use the same counted, redacted notices as project reads.
+pub(crate) fn tile_notices(repairs: rustgis_map::tiles::TileRepairs, name: &str) -> Vec<NoticeText> {
+    let mut done = Repaired::default();
+    done.tile(repairs, name);
+    done.notices(name, "while checking the tile layer").into_iter().map(|(_, n)| n).collect()
+}
+
+/// What [`Project::repair`] removed, cut or renamed outside the layouts, for its notices.
+#[derive(Default)]
+struct Repaired {
+    over_limit: Tally,
+    models_removed: Tally,
+    renamed: Tally,
+    ramps_suffixed: Tally,
+    groups_removed: Tally,
+    members_removed: Tally,
+    group_names_cut: Tally,
+    group_settings: Tally,
+    group_parents: Tally,
+    content_text: Tally,
+    content_filters: Tally,
+    content_entries: Tally,
+    content_images: Tally,
+    content_settings: Tally,
+    projection_lost: Tally,
+    /// A map whose projection was lost has bookmarks, which stay in that projection's units.
+    bookmarks_kept: bool,
+    tile_addresses: Tally,
+    tile_entries: Tally,
+    tile_styles: Tally,
+    tile_text: Tally,
+    tile_settings: Tally,
+    tiles_removed: Tally,
+    tiles_over_limit: Tally,
+    values_cut: Tally,
+}
+
+impl Repaired {
+    /// Groups successful tile repairs by kind without keeping any saved addresses.
+    fn tile(&mut self, repairs: rustgis_map::tiles::TileRepairs, name: &str) {
+        self.tile_addresses.add(repairs.addresses, name);
+        self.tile_entries.add(repairs.entries, name);
+        self.tile_styles.add(repairs.styles, name);
+        self.tile_text.add(repairs.text, name);
+        self.tile_settings.add(repairs.settings, name);
+    }
+
+    /// Keeps loss kinds separate while aggregating affected item names across their clamps.
+    fn content(&mut self, repairs: rustgis_map::content::ContentRepairs, name: &str) {
+        self.content_text.add(repairs.text, name);
+        self.content_filters.add(repairs.filters, name);
+        self.content_entries.add(repairs.entries, name);
+        self.content_images.add(repairs.images, name);
+        self.content_settings.add(repairs.settings, name);
+    }
+
+    /// One deferred notice per kind: only trusted templates and kind labels are translated.
+    fn notices(&self, name: &str, when: &'static str) -> Vec<(ReadPart, NoticeText)> {
+        let name = short_name(name);
+        let mut notices = Vec::new();
+        let mut say = |part, tally: &Tally, text: NoticeText| {
+            if tally.count > 0 {
+                notices.push((part, NoticeText::format("{name}: {message}", [("name", name.clone().into()), ("message", text)])));
+            }
+        };
+        let message = |key, t: &Tally, extra: Vec<(&'static str, NoticeText)>| {
+            let mut args = vec![("n", t.count.to_string().into()), ("places", t.places()), ("when", NoticeText::term(when))];
+            args.extend(extra);
+            NoticeText::format(key, args)
+        };
+        let t = &self.over_limit;
+        say(
+            ReadPart::Items,
+            t,
+            message(
+                "{kinds} beyond the {limit} of each a project holds removed {when}",
+                t,
+                vec![("kinds", t.kinds()), ("limit", MAX_ITEMS.to_string().into())],
+            ),
+        );
+        for (t, key) in [
+            (&self.content_text, "{n} report, presentation or notebook text field(s) shortened to supported limits {when} ({places})"),
+            (&self.content_filters, "{n} report filter(s) shortened to 2000 characters; included records may change {when} ({places})"),
+            (
+                &self.content_entries,
+                "{n} report field(s), group(s), statistic(s), section(s), presentation page(s) or notebook cell(s) beyond supported limits removed {when} ({places})",
+            ),
+            (&self.content_images, "{n} presentation picture(s) or video poster(s) beyond the size limit removed {when} ({places})"),
+            (
+                &self.content_settings,
+                "{n} report or presentation page-size, timing or map-view setting(s) brought into supported ranges {when} ({places})",
+            ),
+        ] {
+            say(ReadPart::Items, t, message(key, t, vec![]));
+        }
+        let t = &self.models_removed;
+        say(ReadPart::Items, t, message("{n} deep-learning model(s) this version can't use removed {when} ({places})", t, vec![]));
+        let t = &self.renamed;
+        say(ReadPart::Items, t, message("names used more than once renamed with a number {when}: {kinds}", t, vec![("kinds", t.kinds())]));
+        let t = &self.ramps_suffixed;
+        say(
+            ReadPart::Items,
+            t,
+            message("{n} color ramp(s) named like a built-in ramp renamed with \" (custom)\" {when} ({places})", t, vec![]),
+        );
+        let t = &self.groups_removed;
+        say(
+            ReadPart::Maps,
+            t,
+            message(
+                "{n} layer group(s) with no id, a repeated id, an over-long address or beyond the limit removed {when} (in {places})",
+                t,
+                vec![],
+            ),
+        );
+        let t = &self.members_removed;
+        say(
+            ReadPart::Maps,
+            t,
+            message(
+                "{n} group member(s) for a missing layer, a layer already in another group or beyond the limit removed {when} (in {places})",
+                t,
+                vec![],
+            ),
+        );
+        let t = &self.group_names_cut;
+        say(ReadPart::Maps, t, message("{n} group name(s) cut to 200 characters {when} (in {places})", t, vec![]));
+        let t = &self.group_settings;
+        say(
+            ReadPart::Maps,
+            t,
+            message(
+                "{n} group transparency or scale-range setting(s) replaced or removed to fit supported values {when} (in {places})",
+                t,
+                vec![],
+            ),
+        );
+        let t = &self.group_parents;
+        say(ReadPart::Maps, t, message("{n} group(s) with an invalid parent moved to the top level {when} (in {places})", t, vec![]));
+        let t = &self.projection_lost;
+        let bookmarks = if self.bookmarks_kept {
+            NoticeText::term("; their bookmarks are still in the old projection's units")
+        } else {
+            String::new().into()
+        };
+        say(
+            ReadPart::Maps,
+            t,
+            message(
+                "{n} map(s) with a projection this version can't use drawn in Web Mercator from the whole world {when} ({places}){bookmarks}",
+                t,
+                vec![("bookmarks", bookmarks)],
+            ),
+        );
+        for (t, key) in [
+            (&self.tile_addresses, "{n} invalid, repeated or excess dated tile address(es) removed {when} ({places})"),
+            (&self.tile_entries, "{n} invalid or excess tile layer-name or subdomain entry(ies) removed {when} ({places})"),
+            (&self.tile_styles, "{n} unreadable tile style definition(s) removed {when}; the tiles keep their colours ({places})"),
+            (&self.tile_text, "{n} tile address, name, attribution or identifier field(s) shortened or replaced {when} ({places})"),
+            (&self.tile_settings, "{n} tile coverage or numeric setting(s) removed or brought into range {when} ({places})"),
+        ] {
+            say(ReadPart::Maps, t, message(key, t, vec![]));
+        }
+        let t = &self.tiles_removed;
+        say(ReadPart::Maps, t, message("{n} tile layer(s) with an address that can't be used removed {when} ({places})", t, vec![]));
+        let t = &self.tiles_over_limit;
+        say(
+            ReadPart::Maps,
+            t,
+            message(
+                "{n} tile layer(s) beyond the {limit} a map holds removed {when} (in {places})",
+                t,
+                vec![("limit", rustgis_map::tiles::MAX_TILE_LAYERS.to_string().into())],
+            ),
+        );
+        let t = &self.values_cut;
+        say(
+            ReadPart::Maps,
+            t,
+            message(
+                "{n} feature(s) with more attribute values than their layer has fields lost the extra values {when} (in {places})",
+                t,
+                vec![],
+            ),
+        );
+        notices
+    }
 }
 
 /// One notice per kind of change [`Project::repair`] made to the layouts of a project read from
@@ -1415,13 +1768,16 @@ pub(crate) fn layout_notices(
 
 /// Renames names repeated (ignoring case) after their first use: "Tour", "Tour 2", …. Each base
 /// name remembers the last number it gave, so many repeats cost no more than a few each.
-fn unique_names<'a>(names: impl Iterator<Item = &'a mut String>) {
+/// Returns how many it renamed.
+fn unique_names<'a>(names: impl Iterator<Item = &'a mut String>) -> usize {
     let mut seen = std::collections::HashSet::new();
     let mut next: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut renamed = 0;
     for name in names {
         if seen.insert(name.to_ascii_lowercase()) {
             continue;
         }
+        renamed += 1;
         let base = name.clone();
         let k = next.entry(base.to_ascii_lowercase()).or_insert(1);
         loop {
@@ -1432,10 +1788,12 @@ fn unique_names<'a>(names: impl Iterator<Item = &'a mut String>) {
             }
         }
     }
+    renamed
 }
 
 // Durable ownership is classified here so private fields cannot disappear from the inventory.
 use crate::durable::{Durable, FieldMut, Leaf, Owner, Prepare};
+use crate::notice_text::NoticeText;
 
 impl Durable for Project {
     /// Offers classified whole fields once, before any live mutation.

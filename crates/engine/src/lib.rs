@@ -10,6 +10,7 @@ pub mod connections;
 pub mod durable;
 pub mod geometry_calc;
 pub mod model;
+mod notice_text;
 pub mod peer;
 pub mod policy;
 #[cfg(not(target_arch = "wasm32"))]
@@ -527,8 +528,19 @@ pub struct TopologyIssue {
 pub struct Notice {
     pub text: String,
     pub error: bool,
+    /// Trusted templates with already-redacted arguments; ordinary notices have no payload.
+    localized: Option<notice_text::NoticeText>,
     /// How the troubleshooting history files it (an error, a warning or information).
     pub(crate) severity: rustgis_data::diagnostics::Severity,
+}
+
+impl Notice {
+    /// Deferred interface text, or `None` for an ordinary notice whose text is already final.
+    /// The formatter returns logical-order text; the front end shapes the complete result once.
+    /// Arguments are redacted before retention, and the result has the ordinary notice limits.
+    pub fn translated(&self, format: impl Fn(&str, &[(&str, &str)]) -> String) -> Option<String> {
+        self.localized.as_ref().map(|text| Session::redacted(&text.render(&format)).into_string())
+    }
 }
 
 /// One counted, already-redacted loss, independent of the changes a command can roll back.
@@ -1201,7 +1213,7 @@ impl Session {
             stoppable: false,
         };
         for text in label_notices {
-            session.notify(text, false);
+            session.notify_text(text, false);
         }
         session
     }
@@ -2131,6 +2143,18 @@ impl Session {
         self.notice(text.into(), if error { Severity::Error } else { Severity::Info });
     }
 
+    /// Publishes English diagnostics and retains redacted templates for translated interfaces.
+    pub(crate) fn notify_text(&mut self, text: notice_text::NoticeText, error: bool) {
+        let text = text.redacted();
+        let mark = self.notices_given;
+        self.notify(text.english(), error);
+        if self.notices_given != mark
+            && let Some(notice) = self.notices.last_mut()
+        {
+            notice.localized = Some(text);
+        }
+    }
+
     /// Runs `f`, then says the true/false parameters it could not read: text taken as false,
     /// other values ignored (#1600), as `source`'s notice. Inside another such run (a command's
     /// script, a command run by a command) they are left for the outer one to say.
@@ -2234,7 +2258,12 @@ impl Session {
             return;
         }
         self.diagnostics.push_redacted(severity, source.unwrap_or("Application"), &text);
-        self.notices.push(Notice { text: text.into_string(), error: severity == rustgis_data::diagnostics::Severity::Error, severity });
+        self.notices.push(Notice {
+            text: text.into_string(),
+            error: severity == rustgis_data::diagnostics::Severity::Error,
+            localized: None,
+            severity,
+        });
         self.notices_given += 1;
         if self.notices.len() > 200 {
             self.notices.remove(0);

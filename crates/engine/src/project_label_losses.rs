@@ -240,8 +240,15 @@ fn diagram_messages(d: rustgis_map::diagram::DiagramAudit, name: &str, what: &st
 }
 
 /// Compare raw record counts with retained state, including offline snapshots; one notice per kind.
-pub(super) fn notices(text: &str, project: &Project) -> Result<Vec<(ReadPart, String)>, String> {
+pub(super) fn notices_for_maps(text: &str, project: &Project, maps_only: bool) -> Result<Vec<(ReadPart, String)>, String> {
     let file: File = serde_json::from_str(text).map_err(|e| format!("could not read project label settings: {e}"))?;
+    if maps_only {
+        let raw = file.maps.iter().take(project.maps.len()).flat_map(|m| &m.layers);
+        let retained = project.maps.iter().flat_map(|m| &m.layers).map(|l| &l.labels);
+        let mut notices = count(raw, retained, &project.name, "the imported maps");
+        notices.extend(hidden(project.maps.iter().flat_map(|m| &m.layers)));
+        return Ok(notices);
+    }
     let raw = file.maps.iter().chain(file.offline_areas.iter().map(|a| &a.data)).flat_map(|m| &m.layers).chain(file.styles.iter());
     let retained = project
         .maps

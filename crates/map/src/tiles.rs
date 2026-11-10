@@ -346,6 +346,21 @@ fn sizable(base: &str) -> bool {
     })
 }
 
+/// Content discarded or settings changed while checking a tile layer read from a file.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TileRepairs {
+    /// Invalid, repeated or excess dated addresses removed.
+    pub addresses: usize,
+    /// Invalid or excess layer names and subdomain entries removed.
+    pub entries: usize,
+    /// Unreadable style definitions removed.
+    pub styles: usize,
+    /// Address, name, attribution or identifier fields shortened or replaced.
+    pub text: usize,
+    /// Coverage or numeric settings removed or brought into range.
+    pub settings: usize,
+}
+
 impl TileLayer {
     /// The local archive that Repair Data Source replaces.
     pub fn archive_file(&self) -> Option<&str> {
@@ -458,6 +473,14 @@ impl TileLayer {
     /// Checks the address and brings the numbers into range, after reading one from a project
     /// file or a command.
     pub fn repair(&mut self) -> Result<(), String> {
+        self.repair_counted().map(|_| ())
+    }
+
+    /// Applies the same checks, returning losses for a reader or command to report on success.
+    pub fn repair_counted(&mut self) -> Result<TileRepairs, String> {
+        let mut repairs = TileRepairs::default();
+        repairs.text += usize::from(self.url.trim().len() != self.url.len());
+        let dated = self.time_urls.len() + usize::from(self.time_url.is_some());
         self.url = self.url.trim().to_string();
         // A dated address is a web address whose date is filled in after the scheme and host.
         if self.time_url.as_ref().is_some_and(|u| !is_web(u) || rustgis_data::login_address::inner(u).len() > 4096) {
@@ -469,6 +492,7 @@ impl TileLayer {
         self.time_urls.sort_by(|a, b| a.0.total_cmp(&b.0));
         self.time_urls.dedup_by(|a, b| a.0 == b.0);
         self.time_urls.truncate(MAX_TIME_URLS);
+        repairs.addresses = dated - self.time_urls.len() - usize::from(self.time_url.is_some());
         let local = matches!(self.kind, TileKind::PmTiles | TileKind::MbTiles) && is_local_archive(&self.url);
         if let Some(name) = self.url.strip_prefix(UPLOAD).filter(|_| self.kind == TileKind::MbTiles) {
             if name.is_empty() || name.len() > 512 || name.chars().any(char::is_control) {
@@ -481,6 +505,7 @@ impl TileLayer {
         } else {
             check_url(&self.url)?;
         }
+        repairs.text += usize::from(self.name.trim().len() != self.name.len() || self.name.chars().nth(120).is_some());
         self.name = self.name.trim().chars().take(120).collect();
         if self.name.is_empty() {
             let file = || {
@@ -492,14 +517,17 @@ impl TileLayer {
             self.name = if local { file() } else { host_of(&self.url).map(str::to_string) }.unwrap_or_else(|| "Tiles".into());
         }
         // Layer names (a project file is hostile input): at most 64, each short and printable.
+        let entries = self.layers.len() + self.subdomains.len();
         self.layers.retain(|l| !l.trim().is_empty() && l.len() <= 200 && !l.chars().any(char::is_control));
         self.layers.truncate(64);
         // A project file's style layers that don't read are dropped: the tiles keep their colours.
         if !self.style_layers.is_empty() && checked_style_layers(&self.style_layers).is_err() {
             self.style_layers.clear();
+            repairs.styles += 1;
         }
         // Bounds from a project must describe a finite geographic rectangle. Invalid metadata
         // doesn't make the tiles unreadable; it only leaves their coverage unknown.
+        let settings = (self.bounds, self.min_zoom, self.max_zoom, self.tile_size, self.opacity);
         self.bounds = self.bounds.filter(valid_bounds);
         self.max_zoom = self.max_zoom.min(MAX_ZOOM);
         self.min_zoom = self.min_zoom.min(self.max_zoom);
@@ -515,9 +543,19 @@ impl TileLayer {
         self.opacity = self.opacity.clamp(0.0, 1.0);
         self.subdomains.retain(|s| !s.is_empty() && s.len() <= 32 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'));
         self.subdomains.truncate(16);
+        repairs.entries = entries - self.layers.len() - self.subdomains.len();
+        repairs.settings = usize::from(settings.0 != self.bounds)
+            + usize::from(settings.1 != self.min_zoom)
+            + usize::from(settings.2 != self.max_zoom)
+            + usize::from(settings.3 != self.tile_size)
+            + usize::from(settings.4 != self.opacity);
+        repairs.text += usize::from(self.attribution.chars().nth(500).is_some());
+        repairs.text += usize::from(
+            self.id.chars().any(|c| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))) || self.id.chars().nth(80).is_some(),
+        );
         self.attribution = self.attribution.chars().take(500).collect();
         self.id = self.id.chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')).take(80).collect();
-        Ok(())
+        Ok(repairs)
     }
 }
 

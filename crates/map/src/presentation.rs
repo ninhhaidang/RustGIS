@@ -36,49 +36,54 @@ impl Default for Presentation {
 }
 
 impl Presentation {
-    /// Makes a presentation read from a file safe to use.
-    pub fn clamp(&mut self) {
+    /// Bounds a presentation read from a file, returning counts of discarded content.
+    pub fn clamp(&mut self) -> crate::content::ContentRepairs {
+        let mut repairs = crate::content::ContentRepairs::default();
         let side = |v: f64, d: f64| if v.is_finite() { v.clamp(50.0, 2000.0) } else { d };
+        let dimensions = (self.width, self.height);
         self.width = side(self.width, WIDTH);
         self.height = side(self.height, HEIGHT);
-        self.name = self.name.chars().take(200).collect();
-        self.pages.truncate(MAX_PAGES);
+        repairs.settings += usize::from(dimensions.0 != self.width) + usize::from(dimensions.1 != self.height);
+        repairs.cut(&mut self.name, 200);
+        repairs.truncate(&mut self.pages, MAX_PAGES);
         for p in &mut self.pages {
-            let cut = |s: &mut String, n: usize| {
-                if s.chars().nth(n).is_some() {
-                    *s = s.chars().take(n).collect();
-                }
-            };
-            cut(&mut p.title, MAX_TITLE);
-            cut(&mut p.notes, MAX_TEXT);
+            repairs.cut(&mut p.title, MAX_TITLE);
+            repairs.cut(&mut p.notes, MAX_TEXT);
+            let seconds = p.seconds;
             p.seconds = if p.seconds.is_finite() { p.seconds.clamp(0.5, 3600.0) } else { 5.0 };
+            repairs.settings += usize::from(seconds != p.seconds);
             match &mut p.kind {
                 PageKind::Map { map, center, width_m } => {
-                    cut(map, MAX_TITLE);
+                    repairs.cut(map, MAX_TITLE);
+                    let view = (center.x, center.y, *width_m);
                     if !(center.x.is_finite() && center.y.is_finite()) {
                         *center = Coord::new(0.0, 0.0);
                     }
                     center.x = center.x.clamp(-180.0, 180.0);
                     center.y = center.y.clamp(-85.0, 85.0);
                     *width_m = if width_m.is_finite() { width_m.clamp(10.0, 4e7) } else { 4e7 };
+                    repairs.settings += usize::from(view.0 != center.x) + usize::from(view.1 != center.y) + usize::from(view.2 != *width_m);
                 }
-                PageKind::Blank { text, .. } => cut(text, MAX_TEXT),
+                PageKind::Blank { text, .. } => repairs.cut(text, MAX_TEXT),
                 // A picture too large to be one the commands accept is dropped.
                 PageKind::Image { image, caption } => {
                     if image.len() > MAX_IMAGE {
                         image.clear();
+                        repairs.images += 1;
                     }
-                    cut(caption, MAX_CAPTION);
+                    repairs.cut(caption, MAX_CAPTION);
                 }
                 PageKind::Video { source, poster, caption } => {
-                    cut(source, MAX_SOURCE);
+                    repairs.cut(source, MAX_SOURCE);
                     if poster.as_ref().is_some_and(|x| x.len() > MAX_IMAGE) {
                         *poster = None;
+                        repairs.images += 1;
                     }
-                    cut(caption, MAX_CAPTION);
+                    repairs.cut(caption, MAX_CAPTION);
                 }
             }
         }
+        repairs
     }
 }
 
@@ -162,7 +167,8 @@ mod tests {
             notes: String::new(),
             seconds: 5.0,
         });
-        p.clamp();
+        let repairs = p.clamp();
+        assert_eq!((repairs.text, repairs.images), (1, 1));
         assert!(
             matches!(&p.pages[1].kind, PageKind::Video { source, poster: None, .. } if source.len() == MAX_SOURCE),
             "long sources are cut and oversized posters dropped"
