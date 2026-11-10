@@ -305,10 +305,24 @@ fn add_field(s: &mut Session, p: &Json) -> CmdResult {
     Ok(Json::Null)
 }
 
+/// `edit.deleteField`: removes a field and every reference to it (symbology, labels, the data
+/// design), or refuses while the definition query or a display filter reads it.
 fn delete_field(s: &mut Session, p: &Json) -> CmdResult {
     let id = s.layer_id(p)?;
     let fi = field_index(s, id, ps(p, "field").ok_or("field is required")?)?;
     let l = s.map_mut().layer_mut(id).ok_or("no layer")?;
+    // A definition query or display filter that reads the field would stop reading without it,
+    // and the layer would then draw and export the rows it leaves out: refused, naming it. What a
+    // filter reads is the field its parse resolves to, so a name matching another but for case,
+    // or a field named like a keyword, is judged by the field it actually reads.
+    let name = l.dataset.fields.get(fi).map(|f| f.name.clone()).unwrap_or_default();
+    let needs = |q: &str| rustgis_data::query::parse_fields(q, &l.dataset).is_ok_and(|e| rustgis_data::query::reads_field(&e, fi));
+    if let Some(q) = l.definition_query.as_deref().filter(|q| needs(q)) {
+        return Err(format!("the definition query ({q}) uses '{name}': change or clear it first"));
+    }
+    if let Some(f) = l.display_filters.iter().find(|f| needs(&f.where_)) {
+        return Err(format!("display filter '{}' uses '{name}': change or remove it first", f.name));
+    }
     let read_before = l.renderer.expression().is_some_and(|e| rustgis_data::query::parse_fields(e, &l.dataset).is_ok());
     let removed = l.dataset.fields.remove(fi).name;
     for f in &mut l.dataset.features {
@@ -338,11 +352,8 @@ fn delete_field(s: &mut Session, p: &Json) -> CmdResult {
         }
     }
     l.labels.repoint_missing_fields(&l.dataset);
-    if let Some(q) = &l.definition_query
-        && rustgis_data::query::parse_fields(q, &l.dataset).is_err()
-    {
-        l.definition_query = None;
-    }
+    // A definition query that reads the field was refused above; one that already didn't read is
+    // kept as it is, so its text isn't lost.
     // Nor its data design: domains, subtypes, contingent values, and rules that used it.
     let d = &mut l.design;
     d.domains.retain(|x| !x.field.eq_ignore_ascii_case(&removed));

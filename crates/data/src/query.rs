@@ -779,6 +779,30 @@ pub fn parse(text: &str, ds: &Dataset) -> Result<Expr, String> {
     parse_expression(text, ds, true)
 }
 
+/// Whether `e` reads field `field` (by its index in the dataset it was parsed against) anywhere.
+pub fn reads_field(e: &Expr, field: usize) -> bool {
+    let any = |es: &[Expr]| es.iter().any(|e| reads_field(e, field));
+    match e {
+        Expr::Field(f)
+        | Expr::Cmp { field: f, .. }
+        | Expr::Like { field: f, .. }
+        | Expr::IsNull { field: f, .. }
+        | Expr::In { field: f, .. } => *f == field,
+        Expr::Lit(_) | Expr::Var(_) => false,
+        Expr::And(es) | Expr::Or(es) | Expr::Concat(es) | Expr::Call(_, es) => any(es),
+        Expr::Not(e) | Expr::IsNullExpr { e, .. } => reads_field(e, field),
+        Expr::Compare(_, a, b) | Expr::LikeExpr { e: a, pattern: b, .. } => reads_field(a, field) || reads_field(b, field),
+        Expr::InExpr { e, list, .. } => reads_field(e, field) || any(list),
+        Expr::Between { e, lo, hi, .. } => reads_field(e, field) || reads_field(lo, field) || reads_field(hi, field),
+        Expr::Chain(first, rest) => reads_field(first, field) || rest.iter().any(|(_, e)| reads_field(e, field)),
+        Expr::Case { subject, arms, otherwise } => {
+            subject.as_deref().is_some_and(|e| reads_field(e, field))
+                || arms.iter().any(|(w, t)| reads_field(w, field) || reads_field(t, field))
+                || otherwise.as_deref().is_some_and(|e| reads_field(e, field))
+        }
+    }
+}
+
 /// Parse retained expressions against fields and geometry type, without checking current areas.
 /// Drawing and stale-field checks use this path and report unavailable areas separately; new
 /// user calculations and filters use [`parse`] so ambiguous measurements are refused.
