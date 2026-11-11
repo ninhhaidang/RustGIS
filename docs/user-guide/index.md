@@ -159,14 +159,49 @@ Review copied diagnostics for private layer names or file paths before sharing t
 | **Style** | For the layer selected in Layers. A feature layer: Visibility Range, Effects, Drawing, Drawing Effects, Extrusion for polygons (with Faces and Light and Shadow once on) and Layer. A raster layer: Visibility Range, Effects, Compare, Raster Effects, Rendering, Enhancement and Layer. Both: Styles |
 | **Labeling** | For the feature layer selected in Layers: Labels (Label, Properties), Label Class (Class, Field), Text Symbol (Size, Color, Bold, Halo), Label Placement and Label Range. Whatever is selected: Map Labeling (Lock, Pause, View Unplaced, Convert) |
 | **Edit** | Manage Edits (Edit, Save, Undo, Redo, Status, Save to PostGIS and Discard PostGIS Edits on the desktop while a [PostGIS layer is loaded for editing](data.md#editing-postgis-tables), Settings, Templates, Topology), Snapping, Features (Create, Delete, Edit Vertices, Modify), Tools, Elevation, Corrections, Graphics, Graphics and Text, Clipboard |
-| **Analyze** | Geoprocessing (History, Tools, Model Builder, Script, SQL, Environments), Tasks (the Tasks pane; Task: Record Task, New Task From History, Import Task, run a task), AI (AI Assistant), Portal (Feature Analysis, Raster Analysis), Workflows, Raster (Raster Functions, Function Editor), Tools (the tool gallery), Selection, Notebook, the imagery groups (Ortho Mapping, Reality Mapping, Alignment, Image Analysis, Image Classification, Imagery Sharing, Mensuration, Imagery Tools) |
+| **Analyze** | Geoprocessing (History, Tools, Model Builder, Script, SQL, Environments), Tasks (the Tasks pane; Task: Record Task, New Task From History, Import Task, run a task), AI (AI Assistant), Portal (Feature Analysis, Raster Analysis), Workflows, Raster (Raster Functions, Function Editor), Tools (the tool gallery), Selection, Notebook |
 | **View** | Display (Graticule, GPU Rendering), View (Globe, Projection, Global; Local on the desktop), Effects, Scene, Windows, Navigation, Link, Workspace, Animation, Time (Time Slider), Profile (Profile; Time Series on the desktop) |
 | **Publish** | While a layout is open, its groups first (Page, Map Frames, Map Surrounds, Shapes, Text, Export); then Report, Presentation, Output (Export Map, Export Features, Print Map, Capture To Clipboard, Report, Presentation, Export To 3D), Package, Share As, Layout, Save As, Thumbnail |
-| **Plugins** | Plugins (Plugin Manager, Install From File, Browse Plugins), plus a group for each enabled [plugin](../plugins.md) with commands or tools; a plugin with its own tab adds that tab instead |
+| **Plugins** | Plugins (Plugin Manager, Install From File, Browse Plugins), Extensions (the [Extensions](#extensions) window), plus a group for each enabled [plugin](../plugins.md) with commands or tools; a plugin with its own tab adds that tab instead |
 | **Settings** | Theme (the theme list, Follow the System, Interface Scale), Customize (Ribbon, Quick Access), Language (interface language and worldview), Start-up (Start With, Projection, Extent), Autosave on the desktop |
 | **Help** | Performance (Diagnostic Monitor), Learn (Learning Resources), Help (About, Check for Updates on the desktop, Command Search, Shortcuts) |
+| **Imagery** | The [Imagery extension](#extensions)'s tab, after Help, while it is on (it is off until you turn it on): Ortho Mapping, Reality Mapping, Alignment, Image Analysis, Image Classification, Imagery Sharing, Mensuration, Imagery Tools |
 
 The tabs stay the same whatever is selected: Style, Labeling and Data act on the layer selected in Layers.
+
+### Extensions
+
+Extensions are optional parts of RustGIS that you turn on or off. Unlike a
+[plugin](../plugins.md), an extension ships with RustGIS: there is nothing to download or install.
+**Plugins › Extensions** opens the Extensions window, which lists each extension with a switch,
+what it adds and where it shows. An extension with a tab of its own adds that tab after Help
+(before plugins' own tabs) while it is on; one without a tab adds a group to the Plugins tab.
+
+| Extension | Default | Adds |
+| --- | --- | --- |
+| **Imagery** (`imagery`) | Off | The Imagery tab: Ortho Mapping, Reality Mapping, Alignment (Georeference), Image Analysis, Image Classification (with Deep Learning Tools), Imagery Sharing, Mensuration and Imagery Tools, and their commands (`imagery.*`, `dl.*`, and the `raster.*` commands those groups run) |
+
+While an extension is off, its tab, its buttons, its Workflows pane sections and its commands in
+Command Search and the AI Assistant's command search are hidden. Its commands are refused with a
+message naming the extension, whoever runs them: a script, a model, the command line, Python or
+the assistant. Hiding the extension's tab in Settings › Customize › Ribbon only hides the tab; the
+commands still run.
+
+The desktop and web apps start each extension at its default and remember your choices (the
+`extensions` setting). A setting saved by a newer RustGIS that names extensions this version
+doesn't have keeps them unchanged, and so do entries that can't be read (each kind is reported
+in Messages). A setting that can't be read at all is reported, leaves every extension at its
+default and is never written over. The command line and Python start with every extension
+on, so scripts that use its commands keep working; models and scripts run in the apps follow the
+apps' choices. Turn one off or on in a run with:
+
+```bash
+rustgis-cli run --sample --cmd extension.list \
+  --cmd 'extension.disable={"id":"imagery"}' \
+  --cmd 'extension.enable={"id":"imagery","enabled":true}'
+```
+
+`extension.enable` takes `"enabled": true` or `false` (default `true`) and refuses other values.
 
 Menus with checkboxes stay open while you change options: stack or show web basemaps, combine
 Visual and Camera Effects, or customize Ribbon tabs and Quick Access buttons. Click outside

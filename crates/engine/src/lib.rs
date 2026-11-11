@@ -8,6 +8,7 @@
 pub mod cmd;
 pub mod connections;
 pub mod durable;
+pub mod extensions;
 pub mod geometry_calc;
 pub mod model;
 mod notice_text;
@@ -663,6 +664,8 @@ pub struct Session {
     /// Favourite, recent and saved data sources (kept with the app's preferences, not the
     /// project).
     pub sources: sources::Sources,
+    /// Which extensions are on (#1752): the commands of one that is off are refused.
+    extensions: extensions::State,
     /// Saved connections (`connection.*`): kept with the app's preferences, not the project; never a secret.
     pub connections: connections::Connections,
     /// The runtime token of each saved S3 connection's login in this session, by saved id (see
@@ -747,7 +750,7 @@ pub struct Session {
     pub(crate) saved_over: Vec<rustgis_map::source::Versions>,
     /// The feature cache fills itself after projection changes (Data › Feature Cache).
     pub auto_cache: bool,
-    /// Mensuration results (Analyze › Mensuration › Results).
+    /// Mensuration results (Imagery › Mensuration › Results).
     pub measurements: Vec<serde_json::Value>,
     /// The last topology check's errors (Edit › Error Inspector).
     pub topology_errors: Vec<TopologyIssue>,
@@ -1124,6 +1127,7 @@ impl Session {
             states: 0,
             saved: Some(0),
             sources: sources::Sources::default(),
+            extensions: extensions::State::default(),
             connections: connections::Connections::default(),
             s3_bindings: std::collections::BTreeMap::new(),
             s3_pending: Vec::new(),
@@ -1604,6 +1608,11 @@ impl Session {
             return self.invoke(op, policy::Txn::Own);
         }
         let Some(&spec) = self.registry.get(id) else { return Err(format!("unknown command '{}'", project_log::log_identifier(id))) };
+        // A command of an extension that is off says so before anything else about it (before
+        // its parameters are read or a layer is made active for its conditions).
+        if let Some(why) = self.extensions.blocks(id) {
+            return Err(why);
+        }
         // Keys the command does not read: said, so a script or an agent can correct itself.
         if let (Value::Object(given), Some(known)) = (params, spec.param_keys()) {
             // Bounded: the keys come from the caller (the first few, each clipped).
@@ -2659,6 +2668,33 @@ impl Session {
                     .map(|r| rustgis_map::Ramp::Custom(Box::new(r.clone())))
             })
             .ok_or_else(|| format!("unknown colour scheme '{name}'"))
+    }
+
+    /// Which extensions are on (#1752).
+    pub fn extensions(&self) -> &extensions::State {
+        &self.extensions
+    }
+
+    /// Takes the saved `extensions` setting (the desktop and web apps, at start), over each
+    /// extension's default where it says nothing: what of it couldn't be read is said as a notice.
+    pub fn load_extensions(&mut self, setting: Option<&str>) {
+        let (state, said) = extensions::State::from_setting(setting);
+        self.extensions = state;
+        if let Some(said) = said {
+            self.warn(said);
+        }
+    }
+
+    /// Takes another session's extension choices (a copy that runs a model or script ahead, on
+    /// the desktop only).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn set_extensions(&mut self, state: extensions::State) {
+        self.extensions = state;
+    }
+
+    /// Turns extension `id` on or off (`extension.enable` and `extension.disable`).
+    pub(crate) fn set_extension(&mut self, id: &str, on: bool) -> Result<&'static extensions::Extension, String> {
+        self.extensions.set(id, on)
     }
 
     /// Resolves a `layer` parameter (name or id), defaulting to the active layer.

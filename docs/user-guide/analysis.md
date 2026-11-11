@@ -1438,7 +1438,8 @@ save and run models without the canvas:
 
 ## Imagery
 
-The Analyze tab's imagery groups open their tools in the Workflows pane:
+The Imagery tab's groups open their tools in the Workflows pane. The tab belongs to the Imagery
+[extension](index.md#extensions): turn it on in Plugins › Extensions to show the tab:
 
 - **Ortho Mapping** and **Reality Mapping** workspaces mosaic georeferenced images into an
   orthomosaic, or elevation rasters into a surface model that exports as a 3D mesh (OBJ).
@@ -1755,11 +1756,11 @@ the wrong field.
 
 ## Deep learning and hosted imagery
 
-**Analyze › Deep Learning Tools** trains a neural network (a multilayer perceptron) on the pixels
+**Imagery › Deep Learning Tools** trains a neural network (a multilayer perceptron) on the pixels
 under training polygons and classifies every pixel, adding a class raster with a confidence band
 and reporting the accuracy on held-back pixels. Run from its pane in the desktop app, it trains
 on every sampled pixel for all the epochs asked, however long that takes, and can be cancelled;
 elsewhere it keeps to a few seconds of work (see the limits above). Trained models stay in the project; **Publish ›
-Share As › Deep Learning** saves one as a package to apply in other projects. **Analyze › Create
+Share As › Deep Learning** saves one as a package to apply in other projects. **Imagery › Create
 Hosted Imagery** cuts a raster into XYZ web map tiles (PNG, transparent outside the raster) with
 a TileJSON file and a viewer page.

@@ -631,6 +631,8 @@ const SCRIPT_AHEAD: &str = "script.run";
 pub(crate) fn ahead_on_copy(s: &Session, command: &'static str, p: &Value) -> super::reads::ReadWork {
     let name = if command == SCRIPT_AHEAD { "Run Script" } else { "Run Model" };
     let (project, trusted) = (s.project.clone(), s.trusted_models.clone());
+    // The copy follows the extensions turned on or off here (#1752).
+    let extensions = s.extensions().clone();
     let (view_size, active_layer, p) = (s.view_size, s.active_layer, p.clone());
     // What its tools ask of servers and files goes in this session's Diagnostics, as when they
     // run here: the run here takes their results and asks nothing.
@@ -639,6 +641,7 @@ pub(crate) fn ahead_on_copy(s: &Session, command: &'static str, p: &Value) -> su
         let mut copy = Session::new(project);
         copy.requests_into = Some(requests);
         copy.trusted_models = trusted;
+        copy.set_extensions(extensions);
         copy.view_size = view_size;
         copy.active_layer = active_layer;
         copy.tools_ahead = Some(super::gp::Ahead::Recording(Vec::new()));

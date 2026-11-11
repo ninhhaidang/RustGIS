@@ -4,6 +4,8 @@ Plugins add commands, geoprocessing tools and assistant skills to RustGIS. A plu
 `plugin.json` manifest and is packaged as a `.rgplugin` file. WebAssembly plugins run sandboxed
 in the desktop app, on the command line and in the web app. [Process plugins](#process-plugins)
 run a local program instead and need the desktop app or command line.
+Parts of RustGIS itself that you can turn on or off without installing anything are
+[extensions](user-guide/index.md#extensions).
 
 Browse the [plugin catalog](https://plugins.rustgis.app/catalog/).
 [opengeos/rustgis-plugins](https://github.com/opengeos/rustgis-plugins) holds the registry,

@@ -779,6 +779,7 @@ pub(crate) const UI_COMMANDS: &[(&str, &str, &str)] = &[
     ("ui.stac.usgsLidar", "USGS LiDAR…", "Home › Add › Web Data › United States"),
     ("ui.pane.sources", "Data Sources", "Home › Add"),
     ("ui.plugins", "Plugin Manager…", "Plugins"),
+    ("ui.extensions", "Extensions…", "Plugins › Extensions"),
     ("ui.mcpRelay", "MCP Relay", "Help › Help"),
     ("ui.pane.geoprocessing", "Tools Pane", "View › Windows"),
     ("ui.pane.symbology", "Symbology Pane", "Style › Drawing"),
@@ -1046,7 +1047,8 @@ pub fn command_search(app: &mut RustGisApp, ctx: &egui::Context) {
         // Workflow titles are searchable even when they differ from the engine command's label.
         // A command with the same title that routes to the workflow is listed instead, if it matches.
         if !ql.is_empty() {
-            for &(section, label) in crate::analysispane::SECTIONS {
+            for &(section, label) in crate::analysispane::SECTIONS.iter().filter(|s| crate::analysispane::section_shown(&app.session, s.0))
+            {
                 if (label.to_lowercase().contains(&ql) || section.to_lowercase().contains(&ql) || tl!(label).to_lowercase().contains(&ql))
                     && !app.session.registry.commands.iter().any(|c| {
                         c.label == label
@@ -1059,7 +1061,11 @@ pub fn command_search(app: &mut RustGisApp, ctx: &egui::Context) {
             }
         }
         for c in &app.session.registry.commands {
-            if command_available(c.id, cfg!(target_arch = "wasm32")) && command_matches(c, &ql) {
+            // A command of an extension that is off isn't offered (#1752).
+            if command_available(c.id, cfg!(target_arch = "wasm32"))
+                && app.session.extensions().blocks(c.id).is_none()
+                && command_matches(c, &ql)
+            {
                 hits.push((c.id.to_string(), tl!(c.label).to_string(), crate::i18n::location(c.location)));
             }
         }

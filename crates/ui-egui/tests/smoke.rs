@@ -1810,7 +1810,8 @@ fn show_me_points_at_where_a_steps_command_is() {
 fn old_and_unknown_tab_names_open_a_current_tab() {
     let mut h = harness();
     for (asked, opened) in [
-        ("Imagery", "Analyze"),
+        // The imagery groups are on the Imagery extension's tab (#1752).
+        ("Imagery", "extension:imagery"),
         ("Feature Layer", "Style"),
         ("Labeling", "Labeling"),
         ("Share", "Publish"),

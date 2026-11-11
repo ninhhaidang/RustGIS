@@ -657,6 +657,8 @@ fn search_commands(s: &Session, a: &Value) -> Result<Value, String> {
         .iter()
         // Internal plumbing the model has no use for.
         .filter(|c| !matches!(c.id, "gp.finish" | "info.commands"))
+        // Commands of an extension the user turned off (#1752).
+        .filter(|c| s.extensions().blocks(c.id).is_none())
         .filter_map(|c| {
             let (id, label, loc, params) =
                 (c.id.to_lowercase(), c.label.to_lowercase(), c.location.to_lowercase(), c.params.to_lowercase());

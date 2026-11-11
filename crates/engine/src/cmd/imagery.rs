@@ -38,45 +38,45 @@ fn first() -> String {
 
 pub fn commands() -> Vec<C> {
     vec![
-        C::new("raster.georeference", "Georeference", "Analyze › Alignment", georeference).inputs(raster_inputs).roles(&[]).effects(crate::policy::Effects::NONE).params(
+        C::new("raster.georeference", "Georeference", "Imagery › Alignment", georeference).inputs(raster_inputs).roles(&[]).effects(crate::policy::Effects::NONE).params(
             r#"{"layer": raster, "points"?: [[column, row, lon, lat], …] (two or more; with "transform": [column, row, x, y, on?]), "extent"?: [minLon, minLat, maxLon, maxLat], "transform"?: "similarity"|"affine"|"projective"|"polynomial2"|"polynomial3"|"spline" (fits the points and warps the raster onto a north-up grid covering the warped image; without it the points and extent only shift and scale the grid), "pointsCrs"?: EPSG code or "EPSG:n" of the points' x and y (default 4326), "crs"?: the output's (default pointsCrs), "resampling"?: "nearest"|"bilinear"|"cubic" (default bilinear), "cellSize"?: output units (default about the source pixel's size on the ground), "name"?: new layer for the result (default replaces the layer's raster), "path"?: "*.tif" (also writes the warp as a cloud-optimised GeoTIFF)}"#,
         ),
-        C::new("raster.project", "Project Raster", "Analyze › Alignment", project_raster).inputs(project_inputs).roles(&[]).effects(crate::policy::Effects::NONE).params(
+        C::new("raster.project", "Project Raster", "Analyze › Raster", project_raster).inputs(project_inputs).roles(&[]).effects(crate::policy::Effects::NONE).params(
             r#"{"layer": raster, "crs"?: EPSG code or "EPSG:n" of the output (default the layer's), "cellSize"?: number or [x, y] in the output's units (default about the layer's pixel there), "origin"?: [x, y] a cell corner falls on (default [0, 0], so grids of the same cellSize line up), "extent"?: polygon layer (its selected or all features' bounds) | [west, south, east, north] in degrees | "view" (default the layer's footprint), "grid"?: raster layer whose coordinate system, cells and extent are taken exactly (instead of crs, cellSize, origin and extent), "resampling"?: "nearest" (default) | "bilinear" | "cubic" | "average" (the mean of the pixels whose centres fall in a cell) | "mode" (their most frequent value, the least of those tied), "name"?: new layer (default "<layer> projected"), "path"?: GeoTIFF to write it to}"#,
         ),
-        C::new("raster.rasterize", "Polygons to Raster", "Analyze › Alignment", rasterize).inputs(rasterize_inputs).roles(&[]).effects(crate::policy::Effects::NONE).params(
+        C::new("raster.rasterize", "Polygons to Raster", "Analyze › Raster", rasterize).inputs(rasterize_inputs).roles(&[]).effects(crate::policy::Effects::NONE).params(
             r#"{"layer": polygon layer (its selected or all features; a later one over an earlier), "field"?: numeric field (its values) or text field (codes 1 to n in sorted order of its values, listed in a table named after the result with classes), "value"?: number every polygon gives when there is no field (default 1), "nodata"?: number of the cells under no polygon (default 0), "crs"?: EPSG code or "EPSG:n" of the output (default the layer's), "cellSize"?: number or [x, y] in the output's units (required without grid), "origin"?: [x, y] a cell corner falls on (default [0, 0], so grids of the same cellSize line up), "extent"?: polygon layer (its selected or all features' bounds) | [west, south, east, north] in degrees | "view"; default the polygons' bounds, "grid"?: raster layer whose coordinate system, cells and extent are taken exactly (instead of crs, cellSize, origin and extent), "name"?: new layer (default "<layer> raster"), "path"?: GeoTIFF to write it to}"#,
         ),
         // A fit is a measurement of the points, not a project change: no undo step.
-        C::new("raster.gcpFit", "Control Point Fit", "Analyze › Alignment", gcp_fit).roles(&[]).effects(crate::policy::Effects::NONE).view().params(
+        C::new("raster.gcpFit", "Control Point Fit", "Imagery › Alignment", gcp_fit).roles(&[]).effects(crate::policy::Effects::NONE).view().params(
             r#"{"points": [[column, row, x, y, on?], …] (on: 1/0 or true/false, default on), "transform"?: "similarity"|"affine"|"projective"|"polynomial2"|"polynomial3"|"spline" (default: similarity under 3 points, else affine), "compare"?: bool (fit every transform and recommend one; transform and leaveOneOut are then ignored), "leaveOneOut"?: bool (default true)}"#,
         ),
-        C::new("raster.change", "Change Detection", "Analyze › Image Analysis", change).inputs(change_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
+        C::new("raster.change", "Change Detection", "Imagery › Image Analysis", change).inputs(change_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
             .params(r#"{"before": raster, "after": raster, "band"?: 1-based, "method"?: "difference"|"ratio"|"percent", "name"?, "ran"?: (internal: a raster the app has worked out)}"#),
-        C::new("raster.spectral", "Spectral Analysis", "Analyze › Image Analysis", spectral).inputs(spectral_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
+        C::new("raster.spectral", "Spectral Analysis", "Imagery › Image Analysis", spectral).inputs(spectral_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
             .view()
             .params(r#"{"layer": raster, "lon"?, "lat"?, "points"?: [[lon, lat], …] (up to 1000: a profile each, in "profiles"; one off the raster has a null pixel and values, and is said), "zone"?: polygon layer (the mean of its selected or first polygon's pixels)}"#),
-        C::new("raster.classify", "Classification Wizard", "Analyze › Image Classification", |s, p| {
+        C::new("raster.classify", "Classification Wizard", "Imagery › Image Classification", |s, p| {
             super::workflows::made_or_ran(s, p, "raster.classify")
         }).inputs(raster_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
         .params(r#"{"layer": raster, "classes"?: 2..50, "bands"?: [1-based], "name"?: output, "ran"?: (internal: classes the app has worked out)}"#),
-        C::new("raster.classifySupervised", "Classification Tools", "Analyze › Image Classification", supervised).inputs(supervised_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
+        C::new("raster.classifySupervised", "Classification Tools", "Imagery › Image Classification", supervised).inputs(supervised_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
             .params(r#"{"layer": raster, "training": polygon layer, "classField": field, "bands"?: [1-based], "name"?: output, "ran"?: (internal: a raster the app has worked out)}"#),
-        C::new("raster.index", "Indices", "Analyze › Imagery Tools", index).inputs(raster_inputs).roles(&[]).effects(crate::policy::Effects::NONE).params(
+        C::new("raster.index", "Indices", "Imagery › Imagery Tools", index).inputs(raster_inputs).roles(&[]).effects(crate::policy::Effects::NONE).params(
             r#"{"layer": raster, "index": "ndvi"|"ndwi"|"savi"|"nbr"|"ndbi"|"evi", "red"?, "green"?, "blue"?, "nir"?, "swir"?: band numbers, "name"?: output, "ran"?: (internal: a raster the app has worked out)}"#,
         ),
-        C::new("raster.process", "Process", "Analyze › Imagery Tools", process).inputs(process_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
+        C::new("raster.process", "Process", "Imagery › Imagery Tools", process).inputs(process_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
             .params(r#"{"layer": raster, "operation": "clip"|"resample", "extent"?: [minLon, minLat, maxLon, maxLat] (clip; the view when omitted), "polygon"?: polygon layer (clip to its selected or all polygons; cells outside become no-data), "selectedOnly"?: bool (clip to selected polygons when true, all when false), "factor"?: n (resample: n×n pixels become one), "name"?: output, "ran"?: (internal: a raster the app has worked out)}"#),
-        C::new("raster.mosaic", "Mosaic Rasters", "Analyze › Imagery Tools", raster_mosaic).inputs(mosaic_inputs).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files)).params(
+        C::new("raster.mosaic", "Mosaic Rasters", "Imagery › Imagery Tools", raster_mosaic).inputs(mosaic_inputs).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files)).params(
             r#"{"inputs": [raster layer or file path, …] (two or more, in one coordinate system and cell size; where they overlap the first wins), "name"?: output, "path"?: GeoTIFF to write the mosaic to}"#,
         ),
-        C::new("raster.editPixels", "Pixel Editor", "Analyze › Imagery Tools", edit_pixels).inputs(raster_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
+        C::new("raster.editPixels", "Pixel Editor", "Imagery › Imagery Tools", edit_pixels).inputs(raster_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
             .params(r#"{"layer": raster, "polygon": [[lon, lat], …], "value"?: number (no-data when omitted), "band"?: 1-based (all when omitted)}"#),
         // Measurements are session results, not project changes: no undo step.
-        C::new("raster.measure", "Mensuration Tools", "Analyze › Mensuration", measure).inputs(measure_inputs).roles(&[]).effects(crate::policy::Effects::NONE).view().params(
+        C::new("raster.measure", "Mensuration Tools", "Imagery › Mensuration", measure).inputs(measure_inputs).roles(&[]).effects(crate::policy::Effects::NONE).view().params(
             r#"{"layer"?: elevation raster, "kind": "distance"|"area"|"height"|"volume", "points": [[lon, lat], …], "base"?: metres (volume)}"#,
         ),
-        C::new("raster.measurements", "Results", "Analyze › Mensuration", |s, p| {
+        C::new("raster.measurements", "Results", "Imagery › Mensuration", |s, p| {
             if b(p, "clear").unwrap_or(false) {
                 s.measurements.clear();
             }
@@ -84,10 +84,10 @@ pub fn commands() -> Vec<C> {
         }).roles(&[]).effects(crate::policy::Effects::NONE)
         .view()
         .params(r#"{"clear"?: bool}"#),
-        C::new("imagery.workspace", "New Workspace", "Analyze › Ortho Mapping", new_workspace).inputs(workspace_inputs).roles(&[]).effects(crate::policy::Effects::NONE).params(
+        C::new("imagery.workspace", "New Workspace", "Imagery › Ortho Mapping", new_workspace).inputs(workspace_inputs).roles(&[]).effects(crate::policy::Effects::NONE).params(
             r#"{"kind": "ortho"|"reality", "name"?: string, "images": [raster layers], "cellSize"?: degrees, "method"?: "first"|"mean"}"#,
         ),
-        C::new("imagery.workspaceOptions", "Workspace Options", "Analyze › Ortho Mapping", |s, p| {
+        C::new("imagery.workspaceOptions", "Workspace Options", "Imagery › Ortho Mapping", |s, p| {
             let n = ps(p, "name").ok_or("name is required")?;
             let w = s.project.workspaces.iter_mut().find(|w| w.name.eq_ignore_ascii_case(n)).ok_or_else(|| format!("no workspace '{n}'"))?;
             if p.get("cellSize").is_some() {
@@ -99,8 +99,8 @@ pub fn commands() -> Vec<C> {
             serde_json::to_value(&*w).map_err(|e| e.to_string())
         }).roles(&[]).effects(crate::policy::Effects::NONE)
         .params(r#"{"name": workspace, "cellSize"?: degrees|null, "method"?: "first"|"mean"}"#),
-        C::new("imagery.mosaic", "Build Mosaic", "Analyze › Ortho Mapping", mosaic).inputs(workspace_mosaic_inputs).roles(&[]).effects(crate::policy::Effects::NONE).params(r#"{"name": workspace, "ran"?: (internal: a raster the app has worked out)}"#),
-        C::new("imagery.mesh", "Export Mesh", "Analyze › Reality Mapping", mesh).inputs(raster_inputs).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
+        C::new("imagery.mosaic", "Build Mosaic", "Imagery › Ortho Mapping", mosaic).inputs(workspace_mosaic_inputs).roles(&[]).effects(crate::policy::Effects::NONE).params(r#"{"name": workspace, "ran"?: (internal: a raster the app has worked out)}"#),
+        C::new("imagery.mesh", "Export Mesh", "Imagery › Reality Mapping", mesh).inputs(raster_inputs).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
             .view()
             .params(r#"{"layer": elevation raster, "path"?: "*.obj" (the text is returned without one), "step"?: pixels between vertices}"#),
     ]

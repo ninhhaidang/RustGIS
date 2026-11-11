@@ -52,6 +52,10 @@ pub fn start(app: &mut RustGisApp, st: &TaskStep) -> String {
         app.ui.open_right(RightPane::Symbology);
         return tl!("It's in the Symbology pane, open on the step's layer.").to_string();
     }
+    // A command of an extension that is off isn't on the ribbon: say how to turn it on.
+    if let Some(why) = app.session.extensions().blocks(id) {
+        return why;
+    }
     let spec = app.session.registry.get(id);
     let label = spec.map_or_else(|| id.to_string(), |c| tl!(c.label).to_string());
     let (target, key, fallback) = match id {
@@ -66,8 +70,13 @@ pub fn start(app: &mut RustGisApp, st: &TaskStep) -> String {
             None => (id, None, None),
         },
     };
-    if let Some(tab) = spec.and_then(|c| c.location.split(" › ").next()).filter(|t| ribbon::TABS.contains(t)) {
-        app.ui.tab = tab.to_string();
+    // A command of an extension with a tab of its own is on that tab (#1752).
+    let tab = match rustgis_engine::extensions::owner(id).filter(|e| e.tab.is_some()) {
+        Some(e) => Some(rustgis_engine::extensions::tab_id(e.id)),
+        None => spec.and_then(|c| c.location.split(" › ").next()).filter(|t| ribbon::TABS.contains(t)).map(str::to_string),
+    };
+    if let Some(tab) = tab.filter(|t| ribbon::tab_exists(app, t)) {
+        app.ui.tab = tab;
         app.ui.backstage = false;
         // A minimized ribbon draws no buttons: show it, as a click on a tab does.
         if app.ui.ribbon_minimized {

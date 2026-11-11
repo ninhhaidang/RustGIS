@@ -15,6 +15,7 @@ pub mod edit;
 pub mod effects;
 pub mod embeddings;
 pub mod exports;
+pub mod extensions;
 pub mod geocode;
 pub mod geolibre;
 pub mod gp;
@@ -113,6 +114,7 @@ pub fn all() -> Vec<CommandSpec> {
     v.extend(pg::commands());
     v.extend(gpkg::commands());
     v.extend(plugins::commands());
+    v.extend(extensions::commands());
     v.extend(sharing::commands());
     v.extend(stac::commands());
     v.extend(portals::commands());

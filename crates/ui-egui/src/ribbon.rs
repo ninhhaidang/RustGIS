@@ -28,11 +28,15 @@ pub fn current_tab(name: &str) -> &str {
         "Map" => "Home",
         "Insert" | "Raster Data" => "Data",
         "Feature Layer" | "Raster Layer" => "Style",
-        "Analysis" | "Imagery" => "Analyze",
+        "Analysis" => "Analyze",
         "Share" | "Layout" => "Publish",
         _ => name,
     };
-    if TABS.contains(&tab) || tab.starts_with("plugin:") { tab } else { "Home" }
+    // The imagery groups were on Analyze, then moved to the Imagery extension's tab (#1752).
+    if tab == "Imagery" {
+        return "extension:imagery";
+    }
+    if TABS.contains(&tab) || tab.starts_with("plugin:") || tab.starts_with("extension:") { tab } else { "Home" }
 }
 
 /// Saved hidden tabs under the current names: renamed tabs carry over, and names of tabs whose
@@ -47,7 +51,10 @@ pub fn current_hidden_tabs(saved: Vec<String>) -> Vec<String> {
             "Share" => "Publish",
             n => n,
         };
-        if (TABS.contains(&tab) || tab.starts_with("plugin:")) && !FIXED_TABS.contains(&tab) && !out.iter().any(|t| t == tab) {
+        if (TABS.contains(&tab) || tab.starts_with("plugin:") || tab.starts_with("extension:"))
+            && !FIXED_TABS.contains(&tab)
+            && !out.iter().any(|t| t == tab)
+        {
             out.push(tab.to_string());
         }
     }
@@ -69,10 +76,40 @@ fn plugin_tabs(app: &RustGisApp) -> Vec<(String, String)> {
         .collect()
 }
 
+/// The extensions that are on with a tab of their own (#1752): (tab id, caption in the interface
+/// language).
+fn extension_tabs(app: &RustGisApp) -> Vec<(String, String)> {
+    rustgis_engine::extensions::ALL
+        .iter()
+        .filter(|e| app.session.extensions().is_on(e.id))
+        .filter_map(|e| e.tab.map(|caption| (rustgis_engine::extensions::tab_id(e.id), tl_raw!(caption).to_string())))
+        .collect()
+}
+
+/// RustGIS's tabs, then the tabs of extensions that are on (after Help), then plugins' own tabs:
+/// (tab id, caption in the interface language).
+pub(crate) fn all_tabs(app: &RustGisApp) -> Vec<(String, String)> {
+    let mut tabs: Vec<(String, String)> = TABS.iter().map(|t| (t.to_string(), tl!(*t).to_string())).collect();
+    tabs.extend(extension_tabs(app));
+    tabs.extend(plugin_tabs(app));
+    tabs
+}
+
+/// Whether tab `tab` (one of RustGIS's, an extension's or a plugin's) is there to show.
+pub fn tab_exists(app: &RustGisApp, tab: &str) -> bool {
+    if tab.starts_with("plugin:") {
+        plugin_tabs(app).iter().any(|(id, _)| id == tab)
+    } else if tab.starts_with("extension:") {
+        extension_tabs(app).iter().any(|(id, _)| id == tab)
+    } else {
+        TABS.contains(&tab)
+    }
+}
+
 pub fn show(app: &mut RustGisApp, ui: &mut Ui) {
     let t = Tokens::get(ui.ctx());
-    // A plugin's tab whose plugin was turned off or removed.
-    if app.ui.tab.starts_with("plugin:") && !plugin_tabs(app).iter().any(|(id, _)| *id == app.ui.tab) {
+    // A tab whose plugin or extension was turned off or removed.
+    if !tab_exists(app, &app.ui.tab) {
         app.ui.tab = "Plugins".into();
     }
     egui::Panel::top("tabs")
@@ -102,6 +139,7 @@ pub fn show(app: &mut RustGisApp, ui: &mut Ui) {
                     let tab = app.ui.tab.clone();
                     match tab.as_str() {
                         t if t.starts_with("plugin:") => plugin_tab(app, ui, t.trim_start_matches("plugin:")),
+                        t if t.starts_with("extension:") => extension_groups(app, ui, t.trim_start_matches("extension:")),
                         "Data" => data_tab(app, ui),
                         "Style" => style_tab(app, ui),
                         "Labeling" => labeling_tab(app, ui),
@@ -214,9 +252,8 @@ fn tab_strip(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
             app.ui.backstage = true;
         }
         ui.add_space(6.0);
-        // RustGIS's tabs, then plugins' own tabs; the user can hide any of them.
-        let mut tabs: Vec<(String, String)> = TABS.iter().map(|t| (t.to_string(), tl!(*t).to_string())).collect();
-        tabs.extend(plugin_tabs(app));
+        // RustGIS's tabs, extensions' and plugins' own tabs; the user can hide any of them.
+        let mut tabs = all_tabs(app);
         tabs.retain(|(id, _)| !app.ui.hidden_tabs.iter().any(|h| h == id));
         // The tabs scroll between the Project button and the right-side controls (the collapse
         // button and the active tool indicator) when the window is too narrow for them.
@@ -1689,10 +1726,14 @@ fn analysis_groups(app: &mut RustGisApp, ui: &mut Ui) {
             "Workflows",
             "Guided analysis: suitability, visibility, networks, interpolation and more.",
             |ui, app| {
-                for (id, title) in crate::analysispane::SECTIONS
+                let shown: Vec<&(&str, &str)> = crate::analysispane::SECTIONS
                     .iter()
-                    .filter(|s| !matches!(s.0, "rasterFunctions" | "functionEditor" | "environments" | "models"))
-                {
+                    .filter(|s| {
+                        !matches!(s.0, "rasterFunctions" | "functionEditor" | "environments" | "models")
+                            && crate::analysispane::section_shown(&app.session, s.0)
+                    })
+                    .collect();
+                for (id, title) in shown {
                     menu_item(ui, app, "geoprocessing", title, "ui.pane.workflows", json!({"section": id}));
                 }
             },
@@ -2371,11 +2412,21 @@ fn layer_hint(ui: &mut Ui, text: &str) {
     });
 }
 
-/// The Analyze tab: geoprocessing, workflows, imagery and notebooks.
+/// The Analyze tab: geoprocessing, workflows and notebooks. Its imagery groups are on the Imagery extension's tab (#1752).
 fn analyze_tab(app: &mut RustGisApp, ui: &mut Ui) {
     analysis_groups(app, ui);
     notebook_group(app, ui);
-    imagery_groups(app, ui);
+}
+
+/// An extension's groups (#1752), on its own tab or, for one without a tab, on the Plugins tab.
+/// Nothing while it is off.
+fn extension_groups(app: &mut RustGisApp, ui: &mut Ui, id: &str) {
+    if !app.session.extensions().is_on(id) {
+        return;
+    }
+    if id == rustgis_engine::extensions::IMAGERY.id {
+        imagery_groups(app, ui);
+    }
 }
 
 /// The Publish tab: the open layout's groups first, then reports, presentations, export and
@@ -2835,16 +2886,19 @@ fn share_groups(app: &mut RustGisApp, ui: &mut Ui) {
                 Value::Null,
                 app.ui.right == Some(RightPane::Shares),
             );
-            small(
-                ui,
-                app,
-                "modelbuilder",
-                "Deep Learning",
-                "Package a trained deep learning model.",
-                "ui.saveItem",
-                json!({"kind": "dlPackage"}),
-                false,
-            );
+            // Deep learning packages are the Imagery extension's (#1752).
+            if app.session.extensions().is_on(rustgis_engine::extensions::IMAGERY.id) {
+                small(
+                    ui,
+                    app,
+                    "modelbuilder",
+                    "Deep Learning",
+                    "Package a trained deep learning model.",
+                    "ui.saveItem",
+                    json!({"kind": "dlPackage"}),
+                    false,
+                );
+            }
         });
     });
     group(ui, "Layout", |ui| {
@@ -3262,6 +3316,23 @@ fn plugins_tab(app: &mut RustGisApp, ui: &mut Ui) {
             );
         });
     });
+    group(ui, "Extensions", |ui| {
+        big(
+            ui,
+            app,
+            "extension",
+            "Extensions",
+            "Turn on or off the optional parts of RustGIS, such as Imagery.",
+            "ui.extensions",
+            Value::Null,
+            app.extensions.open,
+            false,
+        );
+    });
+    // The groups of the extensions that are on and have no tab of their own.
+    for e in rustgis_engine::extensions::ALL.iter().filter(|e| e.tab.is_none()) {
+        extension_groups(app, ui, e.id);
+    }
     // A group per enabled plugin with commands, in the interface language when it has one
     // (plugins with a tab of their own are on that tab instead).
     let lang = app.lang().code();
@@ -3474,10 +3545,9 @@ fn settings_tab(app: &mut RustGisApp, ui: &mut Ui) {
     });
     group(ui, "Customize", |ui| {
         let hidden = app.ui.hidden_tabs.clone();
-        // RustGIS's tabs and plugins' tabs.
-        let mut all: Vec<(String, String)> =
-            TABS.iter().filter(|t| !FIXED_TABS.contains(*t)).map(|t| (t.to_string(), tl!(*t).to_string())).collect();
-        all.extend(plugin_tabs(app));
+        // RustGIS's tabs, extensions' and plugins' tabs.
+        let mut all = all_tabs(app);
+        all.retain(|(id, _)| !FIXED_TABS.contains(&id.as_str()));
         big_form_menu(ui, app, "settings", "Ribbon", "Choose which tabs the ribbon shows.", move |ui, app| {
             for (tab, caption) in &all {
                 let mut on = !hidden.iter().any(|h| h == tab);

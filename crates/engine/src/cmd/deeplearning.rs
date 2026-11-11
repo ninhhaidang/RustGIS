@@ -1,5 +1,5 @@
-//! Analyze › Image Classification (Deep Learning Tools), Publish › Package (Deep Learning) and
-//! Analyze › Imagery Sharing (Create Hosted Imagery): neural-network pixel classification with models kept
+//! Imagery › Image Classification (Deep Learning Tools), Publish › Package (Deep Learning) and
+//! Imagery › Imagery Sharing (Create Hosted Imagery): neural-network pixel classification with models kept
 //! in the project and shared as packages, and rasters cut into web map tiles.
 
 use std::collections::HashMap;
@@ -62,7 +62,7 @@ fn need_model(s: &Session) -> Option<&'static str> {
 
 pub fn commands() -> Vec<C> {
     vec![
-        C::new("dl.train", "Train Deep Learning Model", "Analyze › Image Classification", |s, p| {
+        C::new("dl.train", "Train Deep Learning Model", "Imagery › Image Classification", |s, p| {
             let (m, unread) = train(s, p)?;
             unread.say(s);
             let mut r = json!({"model": m.name, "accuracy": m.accuracy, "classes": m.model.classes, "epochs": m.epochs});
@@ -72,7 +72,7 @@ pub fn commands() -> Vec<C> {
         }).inputs(training_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
         .when(need_raster)
         .params(r#"{"layer": raster, "training": polygon layer, "classField": field naming each polygon's class, "bands"?: [1-based], "hidden"?: [units per hidden layer] (default [32, 16]), "epochs"?: 1..500 (default 60), "model"?: name}"#),
-        C::new("dl.classify", "Deep Learning Tools", "Analyze › Image Classification", classify).inputs(classify_inputs).roles(&[]).effects(crate::policy::Effects::NONE).when(need_raster).params(
+        C::new("dl.classify", "Deep Learning Tools", "Imagery › Image Classification", classify).inputs(classify_inputs).roles(&[]).effects(crate::policy::Effects::NONE).when(need_raster).params(
             r#"{"layer": raster, "model"?: a trained model's name, "training"?: polygon layer, "classField"?: field, "bands"?: [1-based], "hidden"?: [units], "epochs"?: 1..500 (without a model: train one first, as dl.train), "name"?: output, "ran"?: (internal: classes the app has worked out)}"#,
         ),
         C::new("dl.package", "Deep Learning Package", "Publish › Package", |s, p| {
@@ -84,7 +84,7 @@ pub fn commands() -> Vec<C> {
         .view()
         .when(need_model)
         .params(r#"{"model"?: name (default: the last trained), "path": "*.rgisdlpk"}"#),
-        C::new("dl.import", "Import Deep Learning Package", "Analyze › Image Classification", |s, p| {
+        C::new("dl.import", "Import Deep Learning Package", "Imagery › Image Classification", |s, p| {
             let bytes = read_bytes(p)?;
             // Only the model is inflated, whatever else the package holds.
             let entries = rustgis_data::zip::read_matching(&bytes, |n| n == "model.json")?;
@@ -110,14 +110,14 @@ pub fn commands() -> Vec<C> {
             Ok(json!({"model": name}))
         }).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
         .params(r#"{"path"?: "*.rgisdlpk", "data"?: base64}"#),
-        C::new("dl.remove", "Delete Model", "Analyze › Image Classification", |s, p| {
+        C::new("dl.remove", "Delete Model", "Imagery › Image Classification", |s, p| {
             let i = model_index(s, p)?;
             s.project.dl_models.remove(i);
             Ok(Value::Null)
         }).roles(&[]).effects(crate::policy::Effects::NONE)
         .when(need_model)
         .params(r#"{"model": name}"#),
-        C::new("imagery.hostedImagery", "Create Hosted Imagery", "Analyze › Imagery Sharing", hosted).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files)).view().when(need_raster).params(
+        C::new("imagery.hostedImagery", "Create Hosted Imagery", "Imagery › Imagery Sharing", hosted).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files)).view().when(need_raster).params(
             r#"{"layer": raster, "path": "*.zip" (z/x/y.png tiles, tiles.json and a viewer page), "minZoom"?: 0..22, "maxZoom"?: 0..22 (default: the raster's resolution)}"#,
         ),
     ]

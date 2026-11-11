@@ -433,6 +433,32 @@ pub const SECTIONS: &[(&str, &str)] = &[
     ("reality", "Reality Mapping"),
 ];
 
+/// The extension (#1752) that owns Workflows section `section`: it is hidden while that
+/// extension is off.
+pub fn section_extension(section: &str) -> Option<&'static str> {
+    match section {
+        "georeference" | "change" | "spectral" | "classify" | "supervised" | "deepLearning" | "hosted" | "indices" | "process"
+        | "pixels" | "mensuration" | "ortho" | "reality" => Some(rustgis_engine::extensions::IMAGERY.id),
+        _ => None,
+    }
+}
+
+/// Whether Workflows section `section` shows: its extension, if it has one, is on.
+pub fn section_shown(session: &rustgis_engine::Session, section: &str) -> bool {
+    section_extension(section).is_none_or(|e| session.extensions().is_on(e))
+}
+
+/// Why Workflows section `section` can't open: its extension is off. `None` when it can.
+pub fn section_blocked(session: &rustgis_engine::Session, section: &str) -> Option<String> {
+    let e = section_extension(section).and_then(rustgis_engine::extensions::get)?;
+    (!session.extensions().is_on(e.id)).then(|| {
+        crate::i18n::fmt(
+            "{section} is part of the {name} extension, which is off; turn it on in Plugins › Extensions",
+            &[("section", tl_raw!(SECTIONS.iter().find(|s| s.0 == section).map_or(section, |s| s.1))), ("name", tl_raw!(e.name))],
+        )
+    })
+}
+
 /// Starts picking `needed` map points for a workflow.
 fn pick_button(app: &mut RustGisApp, ui: &mut Ui, purpose: &'static str, needed: usize, label: &str) {
     let active = app.workflow.pick.as_ref().is_some_and(|p| p.purpose == purpose);
@@ -448,14 +474,15 @@ fn picked(app: &mut RustGisApp, purpose: &str) -> Option<Vec<rustgis_engine::geo
 }
 
 pub fn workflows(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
-    if app.workflow.section.is_empty() {
+    // A section whose extension was turned off while it was open: back to the first.
+    if app.workflow.section.is_empty() || !section_shown(&app.session, app.workflow.section) {
         app.workflow.section = "rasterFunctions";
     }
     egui::ComboBox::from_id_salt("wf_section")
         .selected_text(tl!(SECTIONS.iter().find(|s| s.0 == app.workflow.section).map_or("", |s| s.1)))
         .width(ui.available_width() - 8.0)
         .show_ui(ui, |ui| {
-            for (id, title) in SECTIONS {
+            for (id, title) in SECTIONS.iter().filter(|s| section_shown(&app.session, s.0)) {
                 if ui.selectable_label(app.workflow.section == *id, tl!(*title)).clicked() {
                     app.workflow.section = id;
                     app.workflow.result = None;
