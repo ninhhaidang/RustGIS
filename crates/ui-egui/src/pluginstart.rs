@@ -92,8 +92,18 @@ pub(crate) fn run_next(app: &mut RustGisApp, ctx: &egui::Context) {
     let Some(start) = app.ui.plugin_start.waiting.pop_front() else { return };
     let held = ctx.input(|i| i.pointer.any_down());
     let began = web_time::Instant::now();
-    let _ = app.run_prepared(&start.id, start.params, start.prepared);
+    let dialog = crate::plugindialog::asked(app, &start.id, &start.params);
+    let answer = app.run_prepared(&start.id, start.params, start.prepared);
+    if dialog {
+        crate::plugindialog::answered(app, &start.id, &answer);
+    }
     app.ui.plugin_start.clicks_stale = !held && began.elapsed() >= STALE_AFTER;
+}
+
+/// Whether plugin command `id` with `params` waits to start, or waits off the frame for what it
+/// asked of the web.
+pub(crate) fn waits(app: &RustGisApp, id: &str, params: &Value) -> bool {
+    app.ui.plugin_start.waiting.iter().any(|s| s.id == id && s.params == *params) || app.session.plugin_command_waits(id, params)
 }
 
 /// Runs again the commands whose downloads have come in. A long run holds clicks too, and one of
@@ -102,8 +112,11 @@ pub(crate) fn run_next(app: &mut RustGisApp, ctx: &egui::Context) {
 pub(crate) fn run_again(app: &mut RustGisApp, ctx: &egui::Context) {
     let held = ctx.input(|i| i.pointer.any_down());
     let began = web_time::Instant::now();
-    let ran = !app.session.poll_plugin_retries().is_empty();
-    if ran && !held && began.elapsed() >= STALE_AFTER {
+    let ran = app.session.poll_plugin_retries();
+    for (id, answer) in &ran {
+        crate::plugindialog::answered(app, id, answer);
+    }
+    if !ran.is_empty() && !held && began.elapsed() >= STALE_AFTER {
         app.ui.plugin_start.clicks_stale = true;
         ctx.request_repaint();
     }

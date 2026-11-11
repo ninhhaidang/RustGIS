@@ -216,6 +216,86 @@ fn plugin_tool_and_parameter_limits_stay_bounded() {
     assert!(e.contains("more than 32 parameters"), "{e}");
 }
 
+/// A command's dialog fields are checked like a tool's parameters, take raster layers, and
+/// refuse files; a command without one still parses.
+#[test]
+fn command_dialog_fields_are_checked() {
+    let mut m = json!({"id": "dialogs", "name": "Dialogs", "version": "1.0.0", "permissions": ["files"],
+        "commands": [{"id": "classify", "label": "Classify", "form": [
+            {"name": "image", "label": "Image", "kind": "rasterLayer", "required": true},
+            {"name": "samples", "label": "Samples", "kind": "polygonLayer"},
+            {"name": "field", "label": "Class field", "kind": "field", "default": "class"},
+            {"name": "method", "label": "Method", "kind": "choice", "choices": ["Random Forest", "Minimum distance"]},
+            {"name": "trees", "label": "Trees", "kind": "number", "default": 50}
+        ]}, {"id": "plain", "label": "Plain"}]});
+    let parsed = Manifest::parse(&m.to_string()).unwrap();
+    assert_eq!(parsed.commands[0].form.len(), 5);
+    assert!(parsed.commands[1].form.is_empty());
+    m["commands"][0]["form"][1]["kind"] = json!("file");
+    let e = Manifest::parse(&m.to_string()).unwrap_err();
+    assert!(e.contains("unknown parameter kind 'file'"), "{e}");
+    m["commands"][0]["form"][1] = json!({"name": "image", "label": "Again", "kind": "text"});
+    let e = Manifest::parse(&m.to_string()).unwrap_err();
+    assert!(e.contains("parameter 'image' is invalid or repeated"), "{e}");
+    // Tools still refuse raster layers: they get features, not rasters.
+    let tool = json!({"id": "t", "name": "Tool", "version": "1.0.0",
+        "tools": [{"id": "t", "name": "Tool", "params": [{"name": "image", "label": "Image", "kind": "rasterLayer"}]}]});
+    let e = Manifest::parse(&tool.to_string()).unwrap_err();
+    assert!(e.contains("unknown parameter kind 'rasterLayer'"), "{e}");
+    // A dialog field's default must be one it can show, or the plugin is refused, naming it;
+    // a number written as text is a number.
+    m["commands"][0]["form"][1] = json!({"name": "samples", "label": "Samples", "kind": "polygonLayer"});
+    m["commands"][0]["form"][4]["default"] = json!("50");
+    assert!(Manifest::parse(&m.to_string()).is_ok());
+    // An integer past i64, as text or as a number, would be rounded or dropped: refused like
+    // other wrong defaults.
+    for (i, wrong) in [
+        (4, json!("many")),
+        (2, json!(5)),
+        (4, json!(true)),
+        (4, json!("99999999999999999999")),
+        (4, json!(u64::MAX)),
+        (4, json!("9007199254740993.0")),
+    ] {
+        let mut m = m.clone();
+        m["commands"][0]["form"][i]["default"] = wrong;
+        let e = Manifest::parse(&m.to_string()).unwrap_err();
+        assert!(e.contains("default") && e.contains("Classify"), "{e}");
+    }
+    let mut s = m.clone();
+    s["commands"][0]["form"].as_array_mut().unwrap().push(json!({"name": "save", "label": "Save", "kind": "bool", "default": "yes"}));
+    let e = Manifest::parse(&s.to_string()).unwrap_err();
+    assert!(e.contains("'save' has a default of another kind"), "{e}");
+    // A choice's default is one of its choices.
+    let mut c = m.clone();
+    c["commands"][0]["form"][3]["default"] = json!("Maximum likelihood");
+    let e = Manifest::parse(&c.to_string()).unwrap_err();
+    assert!(e.contains("'method' has a default of another kind"), "{e}");
+    // A field lists the fields of a vector layer picked above it: none, or a field that may pick
+    // a raster, is refused.
+    for form in [
+        json!([{"name": "col", "label": "Column", "kind": "field", "required": true}]),
+        json!([{"name": "image", "label": "Image", "kind": "rasterLayer"}, {"name": "col", "label": "Column", "kind": "numericField"}]),
+        // `layer` takes rasters too.
+        json!([{"name": "any", "label": "Any", "kind": "layer"}, {"name": "col", "label": "Column", "kind": "field", "required": true}]),
+    ] {
+        let mut c = m.clone();
+        c["commands"][0]["form"] = form;
+        let e = Manifest::parse(&c.to_string()).unwrap_err();
+        assert!(e.contains("'col' lists the fields of a layer"), "{e}");
+    }
+    // A required field lists those of a layer that must be picked too.
+    let mut c = m.clone();
+    c["commands"][0]["form"] = json!([
+        {"name": "samples", "label": "Samples", "kind": "polygonLayer"},
+        {"name": "col", "label": "Column", "kind": "field", "required": true}
+    ]);
+    let e = Manifest::parse(&c.to_string()).unwrap_err();
+    assert!(e.contains("'col' is required, so the layer field above it must be too"), "{e}");
+    c["commands"][0]["form"][0]["required"] = json!(true);
+    assert!(Manifest::parse(&c.to_string()).is_ok());
+}
+
 /// A command may ask for more time than the two minutes a command normally gets.
 #[test]
 fn command_timeouts_are_bounded() {

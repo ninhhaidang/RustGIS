@@ -175,6 +175,12 @@ pub struct CommandDecl {
     /// Parameter description for scripts and agents, like a built-in command's.
     #[serde(default = "no_params")]
     pub params: String,
+    /// The command's dialog: when given, its button opens a dialog with these fields, and
+    /// **Run** runs the command with their values as parameters and shows what it answers (its
+    /// `report` text). Fields are declared as tool parameters, plus `rasterLayer` and without
+    /// `file`; a `field` lists the fields of the layer field above it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub form: Vec<ParamDecl>,
     /// Seconds the command may run before it is stopped; unset is 120. Set it for work
     /// that takes longer, such as downloading a dataset.
     #[serde(default)]
@@ -272,6 +278,12 @@ pub enum Entry<'a> {
 /// The parameter kinds a tool may use.
 pub const PARAM_KINDS: &[&str] =
     &["layer", "vectorLayer", "polygonLayer", "pointLayer", "field", "numericField", "number", "text", "choice", "bool", "file"];
+
+/// The field kinds a command's dialog may use: a tool's, and raster layers (a command reads
+/// layers itself, by name, so a dialog can offer rasters too), but no `file` (a command that
+/// wants a file has host calls for it, behind the `files` permission).
+pub const FORM_KINDS: &[&str] =
+    &["layer", "vectorLayer", "polygonLayer", "pointLayer", "rasterLayer", "field", "numericField", "number", "text", "choice", "bool"];
 
 /// The most extensions a `file` parameter may list.
 const MAX_EXTENSIONS: usize = 16;
@@ -428,6 +440,81 @@ fn check_text(what: &str, s: &str, required: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// The number in `text`, as a command dialog's number field reads it and sends it: an integer
+/// exactly, as one (for commands that read integers); a whole number written otherwise (`2.0`,
+/// `1e3`) as an integer too; others as floats. `None` when empty, not a number, an integer past
+/// `i64`, a number written otherwise from 2^52 (`1e16`, `9007199254740993.0`,
+/// `4503599627370496.5`), where a float holds no fraction and soon not every whole number, or a
+/// number too small for a float (`1e-400`): a float would round those unseen.
+pub fn form_number(text: &str) -> Option<serde_json::Value> {
+    let t = text.trim();
+    if let Ok(i) = t.parse::<i64>() {
+        return Some(serde_json::json!(i));
+    }
+    if t.strip_prefix(['-', '+']).unwrap_or(t).bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let x = t.parse::<f64>().ok().filter(|x| x.is_finite())?;
+    // Too small for a float, a number other than zero reads as zero: not taken.
+    if x == 0.0 && t.split(['e', 'E']).next().is_some_and(|m| m.bytes().any(|b| (b'1'..=b'9').contains(&b))) {
+        return None;
+    }
+    // From 2^52 a float holds no fraction: a number written otherwise may already be rounded.
+    if x.abs() >= 4_503_599_627_370_496.0 {
+        return None;
+    }
+    Some(if x.fract() == 0.0 { serde_json::json!(x as i64) } else { serde_json::json!(x) })
+}
+
+/// [`form_number`] for a JSON value, a number or a number written as text: an integer past `i64`
+/// is `None` either way.
+pub fn form_number_value(v: &serde_json::Value) -> Option<serde_json::Value> {
+    match v {
+        serde_json::Value::String(t) => form_number(t),
+        serde_json::Value::Number(n) => form_number(&n.to_string()),
+        _ => None,
+    }
+}
+
+/// Checks what a dialog's fields need beyond a tool parameter's, so that nothing is lost unseen:
+/// a default the field can show and send (a number, or a number written as text, for `number`;
+/// `true` or `false` for `bool`; one of its choices for `choice`; text for the other kinds), and
+/// a vector layer field (`vectorLayer`, `polygonLayer` or `pointLayer`) above each `field` or
+/// `numericField`, whose fields it lists, and required when the field is.
+fn check_form(owner: &str, form: &[ParamDecl]) -> Result<(), String> {
+    // The nearest layer field above: its kind, and whether it is required.
+    let mut layer: Option<(&str, bool)> = None;
+    for p in form {
+        if let Some(d) = &p.default {
+            let fits = match p.kind.as_str() {
+                "number" => form_number_value(d).is_some(),
+                "bool" => d.is_boolean(),
+                "choice" => d.as_str().is_some_and(|t| p.choices.iter().any(|c| c == t)),
+                _ => d.is_string(),
+            };
+            if !fits {
+                return Err(format!("plugin.json: {owner}: '{}' has a default of another kind than its field ({})", p.name, p.kind));
+            }
+        }
+        match p.kind.as_str() {
+            "layer" | "vectorLayer" | "polygonLayer" | "pointLayer" | "rasterLayer" => layer = Some((p.kind.as_str(), p.required)),
+            // `layer` may pick a raster too, which has no fields.
+            "field" | "numericField" if !matches!(layer, Some(("vectorLayer" | "polygonLayer" | "pointLayer", _))) => {
+                return Err(format!(
+                    "plugin.json: {owner}: '{}' lists the fields of a layer, so it needs a vector layer field above it",
+                    p.name
+                ));
+            }
+            // Left at `—`, an optional layer would leave a required field nothing to pick.
+            "field" | "numericField" if p.required && layer.is_some_and(|(_, required)| !required) => {
+                return Err(format!("plugin.json: {owner}: '{}' is required, so the layer field above it must be too", p.name));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 impl Manifest {
     /// Reads and checks `plugin.json`.
     pub fn parse(text: &str) -> Result<Manifest, String> {
@@ -550,6 +637,8 @@ impl Manifest {
             check_text("command help", &c.help, false)?;
             check_text("command params", &c.params, false)?;
             check_text("command icon", &c.icon, false)?;
+            self.check_params(&c.label, &c.form, FORM_KINDS)?;
+            check_form(&c.label, &c.form)?;
             if let Some(seconds) = c.timeout
                 && (seconds == 0 || seconds > MAX_COMMAND_TIMEOUT)
             {
@@ -566,43 +655,7 @@ impl Manifest {
             check_text("tool name", &t.name, true)?;
             check_text("tool summary", &t.summary, false)?;
             check_text("toolbox", &t.toolbox, false)?;
-            if t.params.len() > MAX_PARAMS {
-                return Err(format!("plugin.json: {} has more than {MAX_PARAMS} parameters", t.name));
-            }
-            let mut names = std::collections::HashSet::new();
-            for p in &t.params {
-                if !valid_id(&p.name, true) || !names.insert(p.name.as_str()) {
-                    return Err(format!("plugin.json: {}: parameter '{}' is invalid or repeated", t.name, p.name));
-                }
-                check_text("parameter label", &p.label, true)?;
-                check_text("parameter help", &p.help, false)?;
-                if !PARAM_KINDS.contains(&p.kind.as_str()) {
-                    return Err(format!("plugin.json: {}: unknown parameter kind '{}'", t.name, p.kind));
-                }
-                if p.kind == "choice" && (p.choices.is_empty() || p.choices.len() > MAX_CHOICES) {
-                    return Err(format!("plugin.json: {}: '{}' needs 1 to {MAX_CHOICES} choices", t.name, p.name));
-                }
-                for c in &p.choices {
-                    check_text("choice", c, true)?;
-                }
-                // A file parameter hands the tool a file's contents: only with `files`.
-                if p.kind == "file" && !self.has(Permission::Files) {
-                    return Err(format!("plugin.json: {}: '{}' is a file, which needs the 'files' permission", t.name, p.name));
-                }
-                if p.extensions.len() > MAX_EXTENSIONS
-                    || p.extensions.iter().any(|e| e.is_empty() || e.len() > 16 || !e.chars().all(|c| c.is_ascii_alphanumeric()))
-                {
-                    return Err(format!(
-                        "plugin.json: {}: '{}' has invalid extensions (at most {MAX_EXTENSIONS}, letters and digits without the dot)",
-                        t.name, p.name
-                    ));
-                }
-                if let Some(d) = &p.default
-                    && d.to_string().len() > MAX_TEXT
-                {
-                    return Err(format!("plugin.json: {}: '{}' has too long a default", t.name, p.name));
-                }
-            }
+            self.check_params(&t.name, &t.params, PARAM_KINDS)?;
         }
         // Before the tab, which may name it.
         if let Some(panel) = &self.panel {
@@ -624,6 +677,48 @@ impl Manifest {
             for (k, v) in strings {
                 check_text("translated string", k, true)?;
                 check_text("translation", v, false)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Checks a tool's parameters or a command's dialog fields (`owner` names it in errors).
+    fn check_params(&self, owner: &str, params: &[ParamDecl], kinds: &[&str]) -> Result<(), String> {
+        if params.len() > MAX_PARAMS {
+            return Err(format!("plugin.json: {owner} has more than {MAX_PARAMS} parameters"));
+        }
+        let mut names = std::collections::HashSet::new();
+        for p in params {
+            if !valid_id(&p.name, true) || !names.insert(p.name.as_str()) {
+                return Err(format!("plugin.json: {owner}: parameter '{}' is invalid or repeated", p.name));
+            }
+            check_text("parameter label", &p.label, true)?;
+            check_text("parameter help", &p.help, false)?;
+            if !kinds.contains(&p.kind.as_str()) {
+                return Err(format!("plugin.json: {owner}: unknown parameter kind '{}'", p.kind));
+            }
+            if p.kind == "choice" && (p.choices.is_empty() || p.choices.len() > MAX_CHOICES) {
+                return Err(format!("plugin.json: {owner}: '{}' needs 1 to {MAX_CHOICES} choices", p.name));
+            }
+            for c in &p.choices {
+                check_text("choice", c, true)?;
+            }
+            // A file parameter hands the tool a file's contents: only with `files`.
+            if p.kind == "file" && !self.has(Permission::Files) {
+                return Err(format!("plugin.json: {owner}: '{}' is a file, which needs the 'files' permission", p.name));
+            }
+            if p.extensions.len() > MAX_EXTENSIONS
+                || p.extensions.iter().any(|e| e.is_empty() || e.len() > 16 || !e.chars().all(|c| c.is_ascii_alphanumeric()))
+            {
+                return Err(format!(
+                    "plugin.json: {owner}: '{}' has invalid extensions (at most {MAX_EXTENSIONS}, letters and digits without the dot)",
+                    p.name
+                ));
+            }
+            if let Some(d) = &p.default
+                && d.to_string().len() > MAX_TEXT
+            {
+                return Err(format!("plugin.json: {owner}: '{}' has too long a default", p.name));
             }
         }
         Ok(())

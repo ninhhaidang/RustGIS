@@ -186,6 +186,28 @@ cargo build --release --target wasm32-unknown-unknown
   not a JSON object or a form definition; it defaults to `"{}"`.
 - `commands[].icon`: the name of one of RustGIS's own icons (`stats`, `zoom_full`, `bookmark`,
   `buffer`…), or a puzzle piece when it isn't one.
+- `commands[].form` (optional) gives the command a dialog of its own: its ribbon button (tab
+  entry, panel button, Command Search entry, shortcut) opens a window with these fields instead of
+  running it, and **Run** runs the command with their values as its parameters, by their `name`s.
+  Fields are declared like tool parameters (below), with `rasterLayer` added and `file` left out
+  (a command that reads a file asks for it with host calls, behind the `files` permission); a
+  `field` or `numericField` lists the fields of the nearest layer field above it, which must be a
+  vector one (`vectorLayer`, `polygonLayer` or `pointLayer`), and required when the field is. A
+  required layer starts at the active layer when it is of the kind, an optional one offers `—` to
+  leave it out (a `choice` with a `default` counts as required and offers no `—`), and **Run**
+  waits until the required fields are filled in. An optional number left empty, or an optional
+  checkbox without a `default` never ticked, is left out of the parameters; a required checkbox is
+  sent unticked as `false`. A text box sends what it holds once typed in, empty text too. A
+  field's `default` must be of its kind (a number, or a number written as text, for `number`;
+  `true` or `false` for `bool`; one of its choices for `choice`; text for the others), or the
+  plugin is refused. The dialog shows what the command answers: its `report` text when it answers
+  `{"report": "…"}`, or else the answer itself without its `panel` state (which the plugin's panel
+  takes in), up to its first 64 KB, saying how much more there is. Its values are kept, for each
+  dialog, until RustGIS closes. Scripts and agents run the command as before, with the parameters
+  they give, so describe the form's parameters in `commands[].params` too. RustGIS versions before
+  dialogs ignore `form` and run the command when its button is clicked, without these parameters:
+  set `minRustgisVersion` to the first version with them, or have the command answer what it needs
+  then.
 - `commands[].timeout`: seconds the command may run, from 1 to 86400; unset is 120. It holds on
   the command line, in Python and in scripts. The desktop app runs commands on its window's own
   thread, which can't draw or cancel until a command answers, so there a command still stops
@@ -208,7 +230,7 @@ cargo build --release --target wasm32-unknown-unknown
 - `skills` (optional) lists skills for the AI Assistant that the package carries. See
   [Skills](#skills).
 
-A manifest can declare at most 256 commands, 64 tools and 32 parameters per tool.
+A manifest can declare at most 256 commands, 64 tools and 32 parameters per tool or command dialog.
 
 A package is a zip archive, conventionally named `<id>-<version>.rgplugin`. It holds
 `plugin.json` at its root or inside one top-level folder; `entry` is relative to that manifest.
