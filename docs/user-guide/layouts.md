@@ -218,6 +218,20 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
     (a mask, a highlight, a basemap-like layer). Scripts give the same with
     `"exclude": ["Graticule"]` on `layout.addElement` or `layout.update` (`[]` lists every layer
     again); a renamed layer stays left out.
+  - **Labels**: a legend can show a layer under a label instead of its name, so a layer named for
+    a plugin or a script (`BrasilData: Setores censitários 2022 (MG)`, `setores_mg_2022_clip`)
+    reads well on the page while it keeps its name everywhere else. Scripts give
+    `"labels": {"BrasilData: Setores censitários 2022 (MG)": "Setores censitários"}` on
+    `layout.addElement` or `layout.update`: the layer by its name (any case), as `exclude` names
+    it, and a layer the map hasn't is refused. Each entry replaces that layer's label and leaves
+    the others; `null` or a blank label shows the layer's name again, and `{}` every layer's. The
+    label goes in the layer's row, or over its classes; a WMS or WMTS layer's goes over its
+    picture. It is up to 200 characters (a longer one is refused), and the legend measures it, not
+    the name, so sizing a legend to its content and the warnings on its fit follow the label. Two
+    legends can label a layer differently (in two languages, say). A renamed layer keeps its label
+    (not when another layer has its new name, which is said); a removed one's is dropped, so a later
+    layer of that name isn't labelled unasked. Labels are saved with the layout, in the project and
+    in a `.rgislayout` file.
 - **Colorbar**: the colour scale of a raster layer in the frame's map, as the map draws it (its
   stretch, colour ramp and enhancement): a gradient bar for a stretch or a tinted hillshade,
   steps labelled at their breaks for Classify, and a block per value for Unique Values and colour

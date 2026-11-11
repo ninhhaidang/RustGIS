@@ -4,6 +4,8 @@
 //! Element positions are in millimetres from the page's top-left corner. A map frame shows a map
 //! of the project at its own centre and scale, independent of the map view.
 
+use std::collections::BTreeMap;
+
 use rustgis_geom::Coord;
 use serde::{Deserialize, Serialize};
 
@@ -461,6 +463,12 @@ fn is_left(a: &TextAlign) -> bool {
 
 /// The most layers a legend leaves out.
 pub const MAX_LEGEND_EXCLUDED: usize = 1000;
+
+/// The most layers a legend labels.
+pub const MAX_LEGEND_LABELS: usize = 1000;
+
+/// The most characters of a legend's label for a layer.
+pub const MAX_LEGEND_LABEL_CHARS: usize = 200;
 
 /// Which way a line element runs across its box.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -927,6 +935,11 @@ pub enum ElementKind {
         /// as they can be, a layer's name staying with the row under it.
         #[serde(default = "one_column", skip_serializing_if = "is_one_column")]
         columns: usize,
+        /// The label it shows for a layer instead of the layer's name, by the layer's name (any
+        /// case, as the map spells it): its row, or the name over its classes (#1654). The layer
+        /// keeps its name everywhere else. A layer not in it shows its name.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        labels: BTreeMap<String, String>,
     },
     /// The colour scale of a raster layer in a frame's map: a gradient bar for a stretch, steps
     /// for classes, a block per value for unique values and colour tables (#326).
@@ -1359,12 +1372,29 @@ impl Layout {
                         g.width = finite_or(g.width, grid_width()).clamp(0.0, MAX_GRID_WIDTH);
                     }
                 }
-                ElementKind::Legend { exclude, columns, .. } => {
+                ElementKind::Legend { exclude, columns, labels, .. } => {
                     // Names stay whole: a layer's own name isn't cut, and a cut one would no
                     // longer match it.
                     cut |= exclude.len() > MAX_LEGEND_EXCLUDED;
                     exclude.truncate(MAX_LEGEND_EXCLUDED);
                     *columns = (*columns).clamp(1, MAX_LEGEND_COLUMNS);
+                    // The same for the names labelled; a label is cut to its length, and a blank
+                    // one shows the name, as it would without.
+                    labels.retain(|_, label| !label.trim().is_empty());
+                    let labelled = labels.len();
+                    // One label per layer, as a command keeps: of two spellings of a name (any
+                    // case), the first in order stays and the other is cut.
+                    let mut seen = std::collections::HashSet::new();
+                    labels.retain(|name, _| seen.insert(name.to_ascii_lowercase()));
+                    while labels.len() > MAX_LEGEND_LABELS {
+                        labels.pop_last();
+                    }
+                    cut |= labels.len() < labelled;
+                    for label in labels.values_mut() {
+                        let end = label.char_indices().nth(MAX_LEGEND_LABEL_CHARS).map_or(label.len(), |(i, _)| i);
+                        cut |= end < label.len();
+                        label.truncate(end);
+                    }
                 }
                 ElementKind::Text { text, size, letter_spacing, .. } => {
                     *size = finite_or(*size, 12.0).clamp(*crate::graphics::FONT_SIZE.start(), *crate::graphics::FONT_SIZE.end());
@@ -1435,8 +1465,8 @@ impl Layout {
 pub struct LayoutRepairs {
     /// Elements kept with a value brought into range, a new id, or a reference cleared.
     pub elements_adjusted: usize,
-    /// Elements with a name, text, polygon points or legend exclusions cut to their limits (the
-    /// same element may count as adjusted too).
+    /// Elements with a name, text, polygon points, legend exclusions or legend labels cut to their
+    /// limits (the same element may count as adjusted too).
     pub elements_cut: usize,
     /// Elements removed: beyond the 500 a layout holds, or tied to a map frame it doesn't have.
     pub elements_removed: usize,

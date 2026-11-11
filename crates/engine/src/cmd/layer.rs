@@ -5050,12 +5050,13 @@ fn add_sample(s: &mut Session, p: &Value) -> CmdResult {
     Ok(json!({"layer": id}))
 }
 
-/// Legends that leave out layer `old` of the active map, in the frames that show it, follow it:
-/// to its new name, or (`None`, the layer deleted) by dropping it, so a later layer of that name
-/// isn't left out unasked. Called once the layer is renamed or gone: while another layer still
-/// bears `old` (names may repeat), the legends keep it for that one. Renamed onto the name of
-/// another layer a legend lists, the layer is listed with it rather than taking that one out.
-/// A WMS or WMTS layer's name counts as a layer's: legends list those too.
+/// Legends that leave out or label layer `old` of the active map, in the frames that show it,
+/// follow it: to its new name, or (`None`, the layer deleted) by dropping it, so a later layer of
+/// that name isn't left out or labelled unasked. Called once the layer is renamed or gone: while
+/// another layer still bears `old` (names may repeat), the legends keep it for that one. Renamed
+/// onto the name of another layer a legend lists, the layer is listed with it rather than taking
+/// that one out, and under that one's label rather than giving it its own, which is said. A WMS or
+/// WMTS layer's name counts as a layer's: legends list those too.
 pub(crate) fn legends_follow_layer(s: &mut Session, old: &str, new: Option<&str>) {
     let named = |s: &Session, n: &str| {
         let m = s.map();
@@ -5066,6 +5067,7 @@ pub(crate) fn legends_follow_layer(s: &mut Session, old: &str, new: Option<&str>
     }
     let shared = new.is_some_and(|n| named(s, n) > 1);
     let map = s.map().name.clone();
+    let mut unlabelled = 0usize;
     for layout in &mut s.project.layouts {
         let frames: Vec<u32> = layout
             .elements
@@ -5074,9 +5076,21 @@ pub(crate) fn legends_follow_layer(s: &mut Session, old: &str, new: Option<&str>
             .map(|e| e.id)
             .collect();
         for e in &mut layout.elements {
-            if let rustgis_map::layout::ElementKind::Legend { frame, exclude, .. } = &mut e.kind
+            if let rustgis_map::layout::ElementKind::Legend { frame, exclude, labels, .. } = &mut e.kind
                 && frames.contains(frame)
             {
+                // Its label (#1654), taken off the old name; onto the new one unless another layer
+                // bears that name, whose label (or none) the renamed layer then shares.
+                let keys: Vec<String> = labels.keys().filter(|n| n.eq_ignore_ascii_case(old)).cloned().collect();
+                let label = keys.iter().filter_map(|k| labels.remove(k)).last();
+                match (new, label, shared) {
+                    (Some(n), Some(l), false) => {
+                        labels.retain(|x, _| !x.eq_ignore_ascii_case(n));
+                        labels.insert(n.to_string(), l);
+                    }
+                    (Some(_), Some(_), true) => unlabelled += 1,
+                    _ => {}
+                }
                 match new {
                     // Another layer the legend lists bears the new name: carrying the exclusion
                     // over would take that one out too, so the renamed layer is listed with it.
@@ -5099,6 +5113,14 @@ pub(crate) fn legends_follow_layer(s: &mut Session, old: &str, new: Option<&str>
                 }
             }
         }
+    }
+    // The text given for the layer goes while the layer stays: said. (A removed layer's goes
+    // with its row.)
+    if let Some(n) = new.filter(|_| unlabelled > 0) {
+        s.notify(
+            format!("'{old}', renamed '{n}', lost its label in {unlabelled} legend(s): another layer is called '{n}', and a legend labels layers by name"),
+            false,
+        );
     }
 }
 
