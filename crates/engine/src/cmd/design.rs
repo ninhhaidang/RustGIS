@@ -1599,6 +1599,7 @@ fn subtypes(s: &mut Session, p: &Json) -> CmdResult {
     let l = s.map_mut().layer_mut(id).ok_or("no such layer")?;
     // Unique values by subtype code.
     let mut past = PastClasses::default();
+    let mut no_fill_dropped = None;
     if symbolize {
         let base = l.renderer.base_symbol();
         // The classes come from every feature, so a definition query doesn't drop any; the
@@ -1607,10 +1608,15 @@ fn subtypes(s: &mut Session, p: &Json) -> CmdResult {
         let rows = l.visible_rows();
         past = PastClasses { features: drawn_past(&l.dataset, &r, &fname, &rows), ..rest };
         l.renderer = r;
+        // The new classes' fills are drawn, as with a new symbology (#1301).
+        no_fill_dropped = super::layer::end_no_fill_for_new_renderer(l);
     }
     let n = subs.len();
     let name = l.name.clone();
     l.design.subtypes = Some(Subtypes { field: fname.clone(), subtypes: subs });
+    if let Some(notice) = no_fill_dropped {
+        s.notify(notice, false);
+    }
     if past.features > 0 {
         let (max, order) = (rustgis_map::symbology::MAX_UNIQUE, if past.by_number { "by number" } else { "in text order" });
         s.notify(

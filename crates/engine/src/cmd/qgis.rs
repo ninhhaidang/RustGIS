@@ -660,10 +660,17 @@ fn import_style(s: &mut Session, p: &Value) -> CmdResult {
         if style.raster.is_some() && style.renderer.is_none() {
             report.skipped(&name, "a raster's colouring, which a feature layer hasn't (only its opacity and scale range are taken)");
         }
+        // Its symbols' own fills are drawn, as with Apply Style; a style without symbols leaves
+        // No Fill on.
+        let no_fill_dropped = style.renderer.as_ref().and_then(|_| super::layer::end_no_fill_for_new_renderer(l));
         style.apply(l);
         check_fields(l, &name, &style.rules, style.categories_by.as_ref(), &style.bool_classes, &mut report);
         if style.diagram.is_some() {
             check_diagram(l, &name, &mut report);
+        }
+        // Last: `l` borrows `s`, so the notice waits until the layer's last use.
+        if let Some(notice) = no_fill_dropped {
+            s.notify(notice, false);
         }
     }
     Ok(json!({"notes": report.notes.iter().map(note_json).collect::<Vec<_>>()}))

@@ -836,7 +836,7 @@ pub const OTHER_FILL: Rgba = Rgba::rgb(0xB0, 0xB0, 0xB0);
 pub const MAX_LABEL: usize = 200;
 
 /// One class of a Unique Values or Graduated Colors renderer, as a command names it.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ClassRef {
     /// A Unique Values class, by its value.
     Value(String),
@@ -1913,7 +1913,7 @@ impl Renderer {
     }
 
     /// Applies `f` to every symbol.
-    pub fn map_symbols(&mut self, f: impl Fn(&mut Symbol)) {
+    pub fn map_symbols(&mut self, mut f: impl FnMut(&mut Symbol)) {
         match self {
             Renderer::Single(s) => f(s),
             Renderer::Unique { classes, other, .. } => {

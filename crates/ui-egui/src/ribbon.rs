@@ -4355,13 +4355,18 @@ fn drawing_group(app: &mut RustGisApp, ui: &mut Ui, layer: &rustgis_engine::map:
                 });
             }
             if layer.has_geometry(GeometryType::Polygon) && !layer.graphics {
+                let hidden = layer.no_fill.is_some();
                 small(
                     ui,
                     app,
-                    "no_fill",
-                    "No Fill",
-                    "Draw only polygon outlines, keeping their colors and widths.",
-                    "layer.noFill",
+                    if hidden { "symbology" } else { "no_fill" },
+                    if hidden { "Restore Fill" } else { "No Fill" },
+                    if hidden {
+                        "Restore polygon fills hidden by No Fill, keeping their colors and outlines."
+                    } else {
+                        "Draw only polygon outlines, keeping their colors and widths."
+                    },
+                    if hidden { "layer.restoreFill" } else { "layer.noFill" },
                     Value::Null,
                     false,
                 );
@@ -5175,6 +5180,23 @@ mod tests {
         );
         h.run();
         h
+    }
+
+    #[test]
+    fn drawing_restores_polygon_fills_without_reclassifying() {
+        let mut h = drawing_harness();
+        h.state_mut().run("layer.select", json!({"layer": "Countries"})).unwrap();
+        h.run();
+        let renderer = h.state().session.map().layer_by_name("Countries").unwrap().renderer.clone();
+        h.get_by_label("No Fill").click();
+        h.run();
+        assert!(h.state().session.map().layer_by_name("Countries").unwrap().no_fill.is_some());
+        h.get_by_label("Restore Fill").click();
+        h.run();
+        let layer = h.state().session.map().layer_by_name("Countries").unwrap();
+        assert!(layer.no_fill.is_none());
+        assert_eq!(layer.renderer, renderer);
+        assert!(h.query_by_label("No Fill").is_some());
     }
 
     /// Drags a number of the harness from `at` by 16, 32 and 48 points, calling `each` between.

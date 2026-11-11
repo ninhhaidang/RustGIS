@@ -5698,6 +5698,8 @@ const DEFAULTS_TO_ACTIVE_LAYER: &[&str] = &[
     "data.similar",
     "layer.geocode",
     "layer.repairSource",
+    // Enabled only while No Fill is on, which the sample has on no layer.
+    "layer.restoreFill",
     "layer.reloadData",
     "report.new",
     "report.open",

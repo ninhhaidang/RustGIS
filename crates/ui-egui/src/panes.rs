@@ -4301,8 +4301,17 @@ fn symbology(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
         ui.add_space(6.0);
     }
     if l.has_geometry(GeometryType::Polygon) && !l.graphics {
-        if ui.button(tl!("No Fill")).on_hover_text(tl!("Draw only polygon outlines, keeping their colors and widths.")).clicked() {
-            let _ = app.run("layer.noFill", Value::Null);
+        let hidden = l.no_fill.is_some();
+        if ui
+            .button(tl!(if hidden { "Restore Fill" } else { "No Fill" }))
+            .on_hover_text(tl!(if hidden {
+                "Restore polygon fills hidden by No Fill, keeping their colors and outlines."
+            } else {
+                "Draw only polygon outlines, keeping their colors and widths."
+            }))
+            .clicked()
+        {
+            let _ = app.run(if hidden { "layer.restoreFill" } else { "layer.noFill" }, Value::Null);
         }
         ui.add_space(6.0);
     }
@@ -7921,6 +7930,14 @@ mod tests {
         assert!(l.fill_layers.iter().all(|f| !f.draws(l.symbol(2).fill)));
         assert!(!l.fill_layers.is_empty());
         assert!(h.query_by_label("Add Fill").is_some());
+        h.get_by_label("Restore Fill").click();
+        h.run_steps(2);
+        let s = &h.state().session;
+        let l = s.map().layer(s.active_layer.unwrap()).unwrap();
+        assert!(l.no_fill.is_none());
+        assert!(l.fill_layers.is_empty());
+        assert!(l.symbol(2).fill.a() > 0);
+        assert!(h.query_by_label("No Fill").is_some());
     }
 
     fn symbology_retry_harness() -> egui_kittest::Harness<'static, RustGisApp> {
