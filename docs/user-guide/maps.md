@@ -484,8 +484,10 @@ app downloads it again in each session. **Detail**, at the top of the same menu,
 
 - **Simplified** (the default): borders at 1:110m, like the built-in ones; about 250 KB.
 - **Original**: Natural Earth's 1:10m borders with every island and territory; a 3 MB download,
-  10 MB once unpacked, so maps with it draw more slowly. With the default worldview, this
-  downloads the detailed version of the built-in borders.
+  10 MB once unpacked, so maps with it draw more slowly. On a flat Web Mercator map the
+  basemap's land outline is drawn simplified to within a pixel at each zoom, which keeps most of
+  that cost away from it; the globe and other projections draw it in full. With the default
+  worldview, this downloads the detailed version of the built-in borders.
 
 `rustgis-cli` takes `--worldview-detail original`. The map keeps the borders it shows until the
 download arrives, and says so if it fails. Until

@@ -225,6 +225,139 @@ fn thin_run(run: &[Coord], tol: f64) -> Vec<Coord> {
     out
 }
 
+/// A copy of `g` simplified by Douglas–Peucker (Douglas and Peucker, "Algorithms for the
+/// reduction of the number of points required to represent a digitized line or its caricature",
+/// The Canadian Cartographer 10(2), 1973): along each line and ring, every dropped vertex is
+/// within `tol` (projection units, Euclidean) of the simplified line, and the first and last are
+/// kept. Unlike [`thin`], which keeps a vertex every `tol` along a shape, it keeps only the ones
+/// its shape needs, so a detailed coastline keeps far fewer at the same error. A ring keeps at
+/// least a triangle (or stays whole when it has no more), so a small polygon still has an area to
+/// fill; a point the projection couldn't show (not finite) is kept, and the stretches either side
+/// of it are simplified apart. A tolerance that is not a positive number keeps `g` as it is.
+pub fn simplify(g: &Geometry, tol: f64) -> Geometry {
+    if !tol.is_finite() || tol <= 0.0 {
+        return g.clone();
+    }
+    match g {
+        Geometry::Point(_) | Geometry::MultiPoint(_) => g.clone(),
+        Geometry::Line(parts) => Geometry::Line(parts.iter().map(|p| simplify_run(p, tol)).collect()),
+        Geometry::Polygon(polys) => {
+            Geometry::Polygon(polys.iter().map(|rings| rings.iter().map(|r| simplify_ring(r, tol)).collect()).collect())
+        }
+    }
+}
+
+/// One ring simplified, kept to at least a closed triangle.
+fn simplify_ring(ring: &[Coord], tol: f64) -> Vec<Coord> {
+    let kept = simplify_run(ring, tol);
+    if kept.len() >= 4 || ring.len() <= 4 {
+        return if kept.len() >= 4 { kept } else { ring.to_vec() };
+    }
+    // Too few kept: the first vertex, the one farthest from it, and the one farthest from the
+    // line between them make the triangle that covers the most of it.
+    let (Some(&first), Some(&last)) = (ring.first(), ring.last()) else { return ring.to_vec() };
+    let far = |from: &dyn Fn(Coord) -> f64| {
+        ring.iter().enumerate().filter(|(_, c)| c.is_finite()).fold((0, -1.0f64), |best, (i, c)| {
+            let d = from(*c);
+            if d > best.1 { (i, d) } else { best }
+        })
+    };
+    let (a, _) = far(&|c| (c.x - first.x).hypot(c.y - first.y));
+    let Some(&pa) = ring.get(a) else { return ring.to_vec() };
+    let (b, _) = far(&|c| segment_distance(c, first, pa));
+    let mut corners = [a, b];
+    corners.sort_unstable();
+    let mut out = vec![first];
+    out.extend(corners.iter().filter(|&&i| i != 0 && i + 1 != ring.len()).filter_map(|&i| ring.get(i).copied()));
+    out.dedup();
+    out.push(last);
+    if out.len() >= 4 { out } else { ring.to_vec() }
+}
+
+/// The vertices of one line or ring kept by Douglas–Peucker, each finite stretch on its own.
+fn simplify_run(run: &[Coord], tol: f64) -> Vec<Coord> {
+    let mut keep = vec![false; run.len()];
+    let mut start = 0;
+    for (i, c) in run.iter().enumerate() {
+        if !c.is_finite() {
+            if let Some(k) = keep.get_mut(i) {
+                *k = true;
+            }
+            if i > start {
+                douglas_peucker(run, start, i - 1, tol, &mut keep);
+            }
+            start = i + 1;
+        }
+    }
+    if start < run.len() {
+        douglas_peucker(run, start, run.len() - 1, tol, &mut keep);
+    }
+    run.iter().zip(keep).filter_map(|(c, k)| k.then_some(*c)).collect()
+}
+
+/// Marks the vertices of `run[first..=last]` (all finite) Douglas–Peucker keeps at `tol`. It works
+/// from a stack, not by recursion, so a long run can't overflow the thread's stack, and its work is
+/// bounded: Douglas–Peucker is quadratic on a shape that splits unevenly at every step (a zigzag),
+/// so past [`DP_WORK`] distances a vertex the spans still open are thinned by distance instead
+/// ([`thin_run`]'s rule), which keeps every dropped vertex within `tol` too.
+fn douglas_peucker(run: &[Coord], first: usize, last: usize, tol: f64, keep: &mut [bool]) {
+    for i in [first, last] {
+        if let Some(k) = keep.get_mut(i) {
+            *k = true;
+        }
+    }
+    let mut stack = vec![(first, last)];
+    let mut budget = (last - first + 1).saturating_mul(DP_WORK);
+    while let Some((a, b)) = stack.pop() {
+        if b <= a + 1 {
+            continue;
+        }
+        let (Some(&pa), Some(&pb)) = (run.get(a), run.get(b)) else { continue };
+        if budget < b - a {
+            // Out of work: keep a vertex each `tol` (|dx| + |dy|) from the last kept, as `thin` does.
+            let mut kept = pa;
+            for i in a + 1..b {
+                let Some(&c) = run.get(i) else { break };
+                if (c.x - kept.x).abs() + (c.y - kept.y).abs() >= tol {
+                    if let Some(k) = keep.get_mut(i) {
+                        *k = true;
+                    }
+                    kept = c;
+                }
+            }
+            continue;
+        }
+        budget -= b - a;
+        let mut far = (a, tol);
+        for (i, c) in run.iter().enumerate().take(b).skip(a + 1) {
+            let d = segment_distance(*c, pa, pb);
+            if d > far.1 {
+                far = (i, d);
+            }
+        }
+        if far.0 != a {
+            if let Some(k) = keep.get_mut(far.0) {
+                *k = true;
+            }
+            stack.push((a, far.0));
+            stack.push((far.0, b));
+        }
+    }
+}
+
+/// How many distances a vertex Douglas–Peucker may work out, on average, before it thins the rest of
+/// a run by distance: an even split takes about log2 of the run's length (under 32).
+const DP_WORK: usize = 48;
+
+/// The distance from `p` to the segment `a`–`b` (to `a` when they are the same point, as a
+/// closed ring's ends are).
+fn segment_distance(p: Coord, a: Coord, b: Coord) -> f64 {
+    let (dx, dy) = (b.x - a.x, b.y - a.y);
+    let len2 = dx * dx + dy * dy;
+    let t = if len2 > 0.0 { (((p.x - a.x) * dx + (p.y - a.y) * dy) / len2).clamp(0.0, 1.0) } else { 0.0 };
+    (p.x - (a.x + t * dx)).hypot(p.y - (a.y + t * dy))
+}
+
 /// The number of vertices thinning can drop: those of its lines and rings (points are drawn
 /// as they are).
 pub fn thinnable(g: &Geometry) -> usize {
@@ -361,6 +494,97 @@ mod tests {
         let g = Geometry::Polygon(vec![vec![ring.clone()]]);
         assert_eq!(thin(&g, 1.0), g);
         assert_eq!(thinnable(&Geometry::MultiPoint(ring)), 0);
+    }
+
+    /// Every dropped vertex of `full` is within `tol` of the simplified run `kept`.
+    fn within(full: &[Coord], kept: &[Coord], tol: f64) -> bool {
+        full.iter().all(|c| kept.windows(2).any(|w| segment_distance(*c, w[0], w[1]) <= tol + 1e-9))
+    }
+
+    #[test]
+    fn simplifying_keeps_the_shape_within_tolerance_with_fewer_vertices_than_thinning() {
+        // A wiggly coastline: a sine wave with a little noise, finely sampled.
+        let run: Vec<Coord> =
+            (0..20_000).map(|i| i as f64 * 0.01).map(|x| Coord::new(x, (x * 0.3).sin() * 20.0 + ((x * 37.0).sin() * 0.05))).collect();
+        let g = Geometry::Line(vec![run.clone()]);
+        let Geometry::Line(dp) = simplify(&g, 0.5) else { panic!("a line") };
+        let Geometry::Line(thinned) = thin(&g, 0.5) else { panic!("a line") };
+        assert_eq!(dp[0].first(), run.first());
+        assert_eq!(dp[0].last(), run.last());
+        assert!(within(&run, &dp[0], 0.5));
+        assert!(dp[0].len() * 4 < thinned[0].len(), "{} against {}", dp[0].len(), thinned[0].len());
+        // A closed ring keeps its shape, and a tiny ring still a triangle to fill.
+        let ring: Vec<Coord> = (0..=1000)
+            .map(|i| f64::from(i) * std::f64::consts::TAU / 1000.0)
+            .map(|t| Coord::new(t.cos() * 100.0, t.sin() * 100.0))
+            .collect();
+        let ring = [&ring[..1000], &ring[..1]].concat();
+        let Geometry::Polygon(p) = simplify(&Geometry::Polygon(vec![vec![ring.clone()]]), 1.0) else { panic!("a polygon") };
+        let kept = &p[0][0];
+        assert!(kept.len() >= 4 && kept.len() < 100 && kept.first() == kept.last(), "{}", kept.len());
+        assert!(within(&ring, kept, 1.0));
+        let Geometry::Polygon(p) = simplify(&Geometry::Polygon(vec![vec![ring.clone()]]), 1e6) else { panic!("a polygon") };
+        let tri = &p[0][0];
+        assert_eq!(tri.len(), 4);
+        assert_eq!(tri.first(), tri.last());
+        let area = ((tri[1].x - tri[0].x) * (tri[2].y - tri[0].y) - (tri[2].x - tri[0].x) * (tri[1].y - tri[0].y)).abs() / 2.0;
+        assert!(area > 1000.0, "{area}");
+    }
+
+    #[test]
+    fn simplifying_breaks_at_unprojectable_points_and_ignores_bad_tolerances() {
+        let run = vec![
+            Coord::new(0.0, 0.0),
+            Coord::new(1.0, 0.0),
+            Coord::new(2.0, 0.0),
+            Coord::new(f64::NAN, f64::NAN),
+            Coord::new(3.0, 0.0),
+            Coord::new(4.0, 0.0),
+            Coord::new(5.0, 0.0),
+        ];
+        let g = Geometry::Line(vec![run]);
+        let Geometry::Line(parts) = simplify(&g, 0.1) else { panic!("a line") };
+        let kept = &parts[0];
+        assert_eq!(kept.len(), 5);
+        assert!(kept[2].x.is_nan());
+        assert_eq!((kept[1], kept[3]), (Coord::new(2.0, 0.0), Coord::new(3.0, 0.0)));
+        for tol in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            assert_eq!(format!("{:?}", simplify(&g, tol)), format!("{g:?}"));
+        }
+        let points = Geometry::MultiPoint(vec![Coord::new(0.0, 0.0), Coord::new(0.0, 0.0)]);
+        assert_eq!(simplify(&points, 1.0), points);
+        assert_eq!(
+            simplify(&Geometry::Line(vec![vec![], vec![Coord::new(1.0, 1.0)]]), 1.0),
+            Geometry::Line(vec![vec![], vec![Coord::new(1.0, 1.0)]])
+        );
+    }
+
+    /// A long run is simplified without recursion: a zigzag that keeps every vertex.
+    #[test]
+    fn simplifying_a_long_run_does_not_overflow_the_stack() {
+        let run: Vec<Coord> = (0..200_000).map(|i| Coord::new(f64::from(i), if i % 2 == 0 { 0.0 } else { 10.0 })).collect();
+        let Geometry::Line(parts) = simplify(&Geometry::Line(vec![run.clone()]), 1.0) else { panic!("a line") };
+        assert_eq!(parts[0].len(), 200_000);
+        // One that splits as unevenly as it can at every step (each vertex a little farther out)
+        // takes bounded work, and still keeps within the tolerance.
+        let run: Vec<Coord> =
+            (0..200_000).map(|i| Coord::new(f64::from(i), f64::from(i).powi(2) * 1e-6 * if i % 2 == 0 { 1.0 } else { -1.0 })).collect();
+        let started = std::time::Instant::now();
+        let Geometry::Line(parts) = simplify(&Geometry::Line(vec![run.clone()]), 0.5) else { panic!("a line") };
+        assert!(started.elapsed().as_secs() < 20, "{:?}", started.elapsed());
+        assert!(parts[0].first() == run.first() && parts[0].last() == run.last());
+        // Every dropped vertex (one in a hundred checked, against the kept vertices either side of
+        // it) is within the tolerance of the simplified line.
+        let mut at = 0;
+        for (i, c) in run.iter().enumerate() {
+            if parts[0].get(at + 1) == Some(c) {
+                at += 1;
+            }
+            if i % 100 == 0 {
+                let next = parts[0].get(at + 1).unwrap_or(&parts[0][at]);
+                assert!(segment_distance(*c, parts[0][at], *next) <= 0.5 + 1e-9, "vertex {i}");
+            }
+        }
     }
 
     #[test]

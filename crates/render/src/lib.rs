@@ -593,7 +593,8 @@ pub fn viewing_distance(ground_res: f64, view_height: f64) -> f64 {
 }
 
 /// The built-in world outline used by every basemap (Natural Earth 1:110m, public domain), in the
-/// current worldview.
+/// current worldview (the renderer reads the worldview once a frame and calls `world_of`).
+#[cfg(test)]
 fn world() -> &'static Vec<Geometry> {
     world_of(sample_data::view())
 }
@@ -616,10 +617,120 @@ fn world_of(wv: sample_data::View) -> &'static Vec<Geometry> {
 /// time (the desktop app does it on the download's thread), so none of it is done on the UI
 /// thread when the view is shown. A map in another projection still projects the outline once,
 /// on the first frame drawn in it.
+///
+/// A detailed outline's levels of detail are built here too, eagerly: a flat map shown at any zoom
+/// then finds its level ready, never building one on the UI thread. They are independent, so they
+/// are built on several threads (the user's thread setting, [`rustgis_data::threads::max`]; one in
+/// the browser), about 280 ms and 15 MB on one thread for a 1:10m worldview.
 pub fn prepare_world(v: sample_data::View) {
     let _ = sample_data::dataset(v);
     let _ = world_of(v);
     let _ = world_lonlat_of(v);
+    // An outline small enough to draw whole has no levels: no threads for it.
+    if outline_level(v, 0).is_none() {
+        return;
+    }
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let work = || {
+        loop {
+            let level = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if level > OUTLINE_LEVELS {
+                break;
+            }
+            let _ = outline_level(v, level);
+        }
+    };
+    let threads = if cfg!(target_arch = "wasm32") { 1 } else { rustgis_data::threads::max().min(OUTLINE_LEVELS + 1) };
+    std::thread::scope(|scope| {
+        // A thread the system refuses costs speed: the others, and this one, build its levels.
+        for _ in 1..threads {
+            let _ = std::thread::Builder::new().name("rustgis-outline-levels".into()).spawn_scoped(scope, work);
+        }
+        work();
+    });
+}
+
+/// How many simplified levels a detailed world outline has, after its full-detail one (level 0):
+/// level `k` is simplified to `2^(OUTLINE_FINEST + k - 1)` metres.
+const OUTLINE_LEVELS: usize = 7;
+
+/// The tolerance (log2 metres) of the finest simplified outline level: 512 m, a device pixel at
+/// regional zoom. Finer levels would keep most of a 1:10m outline's vertices for their memory;
+/// zoomed in further the outline is drawn at full detail, only its parts in view.
+const OUTLINE_FINEST: i32 = 9;
+
+/// A world outline with more vertices than this is drawn from levels of detail, part by part
+/// (#1750); a smaller one (the built-in 1:110m countries, every simplified worldview) is drawn
+/// whole, as it is.
+const OUTLINE_LEVELS_ABOVE: usize = rustgis_map::lod::THIN_ABOVE;
+
+/// One country of a world outline level: its extent, each part's, and its parts simplified
+/// (`None` at full detail, drawn from the outline itself).
+struct OutlineCountry {
+    index: usize,
+    extent: Extent,
+    parts: Vec<Extent>,
+    simplified: Option<Vec<Vec<Vec<Coord>>>>,
+}
+
+/// A detailed world outline at one level of detail: level 0 is full detail, level `k` is
+/// simplified with Douglas–Peucker to `2^(OUTLINE_FINEST + k - 1)` metres. `None` for an outline
+/// small enough to draw whole (or not at hand). Each level is built once per view, on first use;
+/// the desktop app builds them all on the download's thread ([`prepare_world`]).
+fn outline_level(wv: sample_data::View, level: usize) -> Option<&'static [OutlineCountry]> {
+    type Levels = [OnceLock<Vec<OutlineCountry>>; OUTLINE_LEVELS + 1];
+    static L: [Levels; sample_data::VIEW_COUNT] = [const { [const { OnceLock::new() }; OUTLINE_LEVELS + 1] }; sample_data::VIEW_COUNT];
+    static BIG: [OnceLock<bool>; sample_data::VIEW_COUNT] = [const { OnceLock::new() }; sample_data::VIEW_COUNT];
+    let world = world_of(wv);
+    if world.is_empty() {
+        return None;
+    }
+    let big = BIG.get(wv.index())?;
+    if !*big.get_or_init(|| world.iter().map(rustgis_map::lod::vertices).sum::<usize>() > OUTLINE_LEVELS_ABOVE) {
+        return None;
+    }
+    let cell = L.get(wv.index())?.get(level)?;
+    let tol = (level > 0).then(|| 2f64.powi(OUTLINE_FINEST + level as i32 - 1));
+    Some(cell.get_or_init(|| {
+        world
+            .iter()
+            .enumerate()
+            .filter_map(|(index, g)| {
+                let simplified = match tol {
+                    Some(t) => match rustgis_map::lod::simplify(g, t) {
+                        Geometry::Polygon(p) => Some(p),
+                        _ => return None,
+                    },
+                    None => None,
+                };
+                let polys = match (&simplified, g) {
+                    (Some(p), _) => p,
+                    (None, Geometry::Polygon(p)) => p,
+                    _ => return None,
+                };
+                // A part's outer ring bounds it.
+                let parts: Vec<Extent> = polys
+                    .iter()
+                    .map(|rings| {
+                        let mut e = Extent::EMPTY;
+                        rings.first().into_iter().flatten().filter(|c| c.is_finite()).for_each(|c| e.expand(*c));
+                        e
+                    })
+                    .collect();
+                let extent = parts.iter().fold(Extent::EMPTY, |e, p| e.union(p));
+                Some(OutlineCountry { index, extent, parts, simplified })
+            })
+            .collect()
+    }))
+}
+
+/// The level of a detailed world outline to draw at `map_per_px` metres a device pixel: the most
+/// simplified one whose tolerance is within [`rustgis_map::lod::THIN_PX`] device pixels.
+fn outline_level_for(map_per_px: f64) -> usize {
+    match rustgis_map::lod::level(map_per_px * rustgis_map::lod::THIN_PX) {
+        Some(l) if l >= OUTLINE_FINEST => ((l - OUTLINE_FINEST + 1) as usize).min(OUTLINE_LEVELS),
+        _ => 0,
+    }
 }
 
 /// The built-in world outline in longitude/latitude, for the globe.
@@ -3598,12 +3709,51 @@ fn render_frame(
     if map.draws_world_outline() {
         let fill = paint(land, 1.0);
         let stroke = (outline.a() > 0).then(|| (paint(outline, 1.0), 0.6));
+        // The worldview read once: the outline and its level must be of the same one, though
+        // another thread may switch it mid-frame.
+        let worldview = sample_data::view();
         let custom_world = custom.then(|| world_in(&flat, &key));
         let outlines: &Vec<Geometry> = match (&globe, &custom_world) {
             (Some(_), _) => world_lonlat(),
             (None, Some(w)) => w,
-            (None, None) => world(),
+            (None, None) => world_of(worldview),
         };
+        // A detailed outline on the flat map is drawn at the level of detail for the zoom, and
+        // only its parts in view (#1750).
+        // An outline not at hand yet (`world_of` said so) isn't looked up again.
+        let levelled =
+            (globe.is_none() && !custom && !outlines.is_empty()).then(|| outline_level(worldview, outline_level_for(map_per_px))).flatten();
+        for c in levelled.unwrap_or_default() {
+            if !visible(&c.extent) {
+                continue;
+            }
+            let polys: &[Vec<Vec<Coord>>] = match (&c.simplified, outlines.get(c.index)) {
+                (Some(p), _) => p,
+                (None, Some(Geometry::Polygon(p))) => p,
+                _ => continue,
+            };
+            // The GPU backend tessellates a country in view whole (its mesh moves with the camera,
+            // `GPU_CULL_MARGIN`): the level's fewer vertices help it, the per-part culling doesn't.
+            if gpu {
+                flush_acc(pm.pixels(), &mut cmds, &mut cpu_dirty)?;
+                if mesh::collect_basemap(&mut cmds, polys, &c.extent, land, outline, ctx.ppp, map_per_px).is_ok() {
+                    continue;
+                }
+                // Lyon refused, or it's too large for f32 this far in: tiny-skia still draws it.
+                cpu_dirty = true;
+            }
+            // A country whose parts are all in view is one path; otherwise only those in view are drawn.
+            if c.parts.iter().all(&visible) {
+                ctx.polygon(&mut pm, polys, Some(fill.clone()), stroke.clone());
+                continue;
+            }
+            for (part, e) in polys.iter().zip(&c.parts) {
+                if visible(e) {
+                    ctx.polygon(&mut pm, std::slice::from_ref(part), Some(fill.clone()), stroke.clone());
+                }
+            }
+        }
+        let outlines: &[Geometry] = if levelled.is_some() { &[] } else { outlines };
         for g in outlines {
             if let Geometry::Polygon(polys) = g
                 && visible(&g.extent())
@@ -6970,6 +7120,83 @@ mod tests {
         let default_original = View::new(Worldview::DEFAULT, Detail::Original);
         install(default_original, sample_data::COUNTRIES.to_string()).unwrap();
         assert_eq!(sample_data::view(), View::DEFAULT);
+    }
+
+    /// A detailed world outline is drawn from Douglas–Peucker levels, part by part (#1750); the
+    /// built-in one, small enough to draw whole, isn't.
+    #[test]
+    fn a_detailed_world_outline_has_levels_of_detail() {
+        use sample_data::{Detail, View, Worldview, install};
+        assert!(outline_level(View::DEFAULT, 0).is_none());
+        // The built-in countries with 24 vertices along each edge: the same borders, over the
+        // vertex count that calls for levels. Vietnam's view, which no other test uses.
+        let mut dense: serde_json::Value = serde_json::from_str(sample_data::COUNTRIES).unwrap();
+        let densify = |ring: &mut serde_json::Value| {
+            let pts: Vec<(f64, f64)> = ring.as_array().unwrap().iter().map(|p| (p[0].as_f64().unwrap(), p[1].as_f64().unwrap())).collect();
+            let mut out = Vec::new();
+            for w in pts.windows(2) {
+                for k in 0..24 {
+                    let t = k as f64 / 24.0;
+                    out.push(serde_json::json!([w[0].0 + (w[1].0 - w[0].0) * t, w[0].1 + (w[1].1 - w[0].1) * t]));
+                }
+            }
+            out.push(serde_json::json!([pts.last().unwrap().0, pts.last().unwrap().1]));
+            *ring = serde_json::Value::Array(out);
+        };
+        for f in dense["features"].as_array_mut().unwrap() {
+            let g = &mut f["geometry"];
+            let polys = if g["type"] == "Polygon" {
+                vec![&mut g["coordinates"]]
+            } else {
+                g["coordinates"].as_array_mut().unwrap().iter_mut().collect()
+            };
+            for rings in polys {
+                rings.as_array_mut().unwrap().iter_mut().for_each(densify);
+            }
+        }
+        let v = View::new(Worldview::from_code("vnm").unwrap(), Detail::Original);
+        install(v, dense.to_string()).unwrap();
+        let full: usize = world_of(v).iter().map(rustgis_map::lod::vertices).sum();
+        assert!(full > OUTLINE_LEVELS_ABOVE, "{full}");
+        let built_in: usize = world_of(View::DEFAULT).iter().map(rustgis_map::lod::vertices).sum();
+        let count = |l: &[OutlineCountry]| l.iter().flat_map(|c| c.simplified.iter().flatten().flatten()).map(Vec::len).sum::<usize>();
+        // Full detail keeps the outline's own geometry, with an extent for each part.
+        let level0 = outline_level(v, 0).unwrap();
+        assert!(level0.iter().all(|c| c.simplified.is_none() && !c.parts.is_empty() && !c.extent.is_empty()));
+        assert_eq!(
+            level0.iter().map(|c| c.parts.len()).sum::<usize>(),
+            world_of(v)
+                .iter()
+                .map(|g| match g {
+                    Geometry::Polygon(p) => p.len(),
+                    _ => 0,
+                })
+                .sum::<usize>()
+        );
+        // The straight runs (in degrees; a little curved in Mercator) go at the finest level, and
+        // each level keeps at most the one finer.
+        let mut last = full;
+        for level in 1..=OUTLINE_LEVELS {
+            let n = count(outline_level(v, level).unwrap());
+            assert!(n <= built_in * 11 / 10 && n <= last, "level {level}: {n} vertices of {full}");
+            last = n;
+        }
+        assert!(last * 30 < full && last < built_in, "{last} of {full}");
+        // Each part's extent is at most its full one (a simplified ring can lose an extreme
+        // vertex, within the tolerance).
+        for (c, f) in outline_level(v, 1).unwrap().iter().zip(level0) {
+            assert_eq!(c.index, f.index);
+            for (a, b) in c.parts.iter().zip(&f.parts) {
+                assert!(a.width() <= b.width() + 1e-6 && a.height() <= b.height() + 1e-6);
+            }
+        }
+        // The level for a zoom: within a device pixel, full detail zoomed in, the coarsest out.
+        assert_eq!(outline_level_for(100.0), 0);
+        assert_eq!(outline_level_for(f64::NAN), 0);
+        assert_eq!(outline_level_for(512.0), 1);
+        assert_eq!(outline_level_for(1000.0), 1);
+        assert_eq!(outline_level_for(1024.0), 2);
+        assert_eq!(outline_level_for(1e9), OUTLINE_LEVELS);
     }
 
     #[test]
