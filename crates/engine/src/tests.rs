@@ -40275,8 +40275,8 @@ fn long_commands_stop_when_cancelled_while_they_run() {
     }
 
     // The tools whose work grows past a second or two on real data: buffers, overlays, joins,
-    // densities and interpolation. Run in the background as the Analysis pane runs them; a new
-    // long tool is added here (AGENTS.md › Never hold the window).
+    // hulls, densities and interpolation. Run in the background as the Analysis pane runs them; a
+    // new long tool is added here (AGENTS.md › Never hold the window).
     let tools = [
         ("buffer", json!({"input": "Cities", "distance": 100})),
         ("dissolve", json!({"input": "Countries"})),
@@ -40289,6 +40289,8 @@ fn long_commands_stop_when_cancelled_while_they_run() {
         ("symmetricalDifference", json!({"input": "Lakes", "overlay": "Countries"})),
         ("update", json!({"input": "Countries", "update": "Lakes"})),
         ("split", json!({"input": "Rivers", "split": "Countries"})),
+        ("convexHull", json!({"input": "Countries", "group": "None", "output": "Hulls_each"})),
+        ("convexHull", json!({"input": "Countries", "group": "All", "output": "Hulls_all"})),
         ("kernelDensity", json!({"input": "Cities", "crs": "EPSG:3857"})),
         ("kriging", json!({"input": "Cities", "field": "pop_max"})),
     ];
@@ -40301,7 +40303,8 @@ fn long_commands_stop_when_cancelled_while_they_run() {
         let done = run.run(&control);
         // The result is kept, then `gp.finish` applies it (or says why it can't), as in the app.
         let finished = crate::cmd::gp::tool_complete(&mut s, id, done).and_then(|()| s.run("gp.finish", &json!({"id": id})).map(|_| ()));
-        note(tool, finished, &control);
+        // With its parameters: a tool listed twice (convexHull) is told apart.
+        note(&format!("{tool} {params}"), finished, &control);
     }
     assert!(kept_going.is_empty(), "these ran on after Cancel:\n{}", kept_going.join("\n"));
 }

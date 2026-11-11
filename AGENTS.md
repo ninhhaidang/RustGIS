@@ -47,7 +47,7 @@ is out of scope.
   background command as its work starts and fails one that never looks; its lists must match the
   background registries, so a new background command is added there. It also runs the long tools
   (Buffer, Dissolve, Spatial Join, Clip, Erase, Intersect, Identity, Union, Symmetrical
-  Difference, Update, Split, Kernel Density, Kriging); a new tool
+  Difference, Update, Split, Minimum Bounding Geometry, Kernel Density, Kriging); a new tool
   whose work grows with its input is added to that list. Passing shows the work looks
   at Cancel, not that it looks often: a long step without a check (one union, one read) is said in
   its doc comment.
