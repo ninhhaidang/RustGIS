@@ -10,8 +10,8 @@
 //! The file is hostile: no DTD is read, the node count is capped, and features whose geometry
 //! can't be read are counted.
 
-use std::cell::Cell;
-use std::collections::BTreeMap;
+use std::cell::{Cell, OnceCell};
+use std::collections::{BTreeMap, HashSet};
 
 use roxmltree::{Node, ParsingOptions};
 use rustgis_geom::Coord;
@@ -212,28 +212,34 @@ fn ring(mut r: Vec<Coord>) -> Option<Vec<Coord>> {
     (r.len() >= 4).then_some(r)
 }
 
-/// The rings of a polygon or surface patch: exterior (outerBoundaryIs) first. `lost` counts the
-/// rings left out: too few points or unreadable, and exterior rings past the first.
-fn polygon(p: &Node, zm: &Cell<bool>, lost: &Cell<usize>) -> Option<Vec<Vec<Coord>>> {
-    // Each ring `ring` keeps (at least four positions once closed, closed if it wasn't), and whether
-    // it had Z or M.
-    let boundary = |names: &[&str]| -> Vec<(Vec<Coord>, bool)> {
+/// The rings kept of a polygon or surface patch: the first exterior (outerBoundaryIs) ring, `None`
+/// without one, then the interiors. Each comes with its boundary element and whether it had Z or M.
+/// `lost` counts the rings left out: too few points or unreadable, and exterior rings past the first.
+fn kept_rings(p: &Node, lost: &Cell<usize>) -> Option<Vec<(roxmltree::NodeId, Vec<Coord>, bool)>> {
+    // Each ring `ring` keeps: at least four positions once closed, closed if it wasn't.
+    let boundary = |names: &[&str]| -> Vec<(roxmltree::NodeId, Vec<Coord>, bool)> {
         let kept = |b: Node| {
             let dims = Cell::new(false);
-            let r = coords(&b, &dims).and_then(ring).map(|r| (r, dims.get()));
+            let r = coords(&b, &dims).and_then(ring).map(|r| (b.id(), r, dims.get()));
             lost.set(lost.get() + usize::from(r.is_none()));
             r
         };
         p.descendants().filter(|d| d.is_element() && is_gml(d) && names.contains(&local(d))).filter_map(kept).collect()
     };
-    // The first exterior ring, then the interiors: only the rings kept mark Z or M.
     let mut outers = boundary(&["exterior", "outerBoundaryIs"]).into_iter();
     let outer = outers.next()?;
     lost.set(lost.get() + outers.count());
     let mut rings = vec![outer];
     rings.extend(boundary(&["interior", "innerBoundaryIs"]));
-    zm.set(zm.get() || rings.iter().any(|(_, d)| *d));
-    Some(rings.into_iter().map(|(r, _)| r).collect())
+    Some(rings)
+}
+
+/// The rings of a polygon or surface patch, exterior first. Only the rings kept mark Z or M; `lost`
+/// counts the others ([`kept_rings`]).
+fn polygon(p: &Node, zm: &Cell<bool>, lost: &Cell<usize>) -> Option<Vec<Vec<Coord>>> {
+    let rings = kept_rings(p, lost)?;
+    zm.set(zm.get() || rings.iter().any(|(_, _, d)| *d));
+    Some(rings.into_iter().map(|(_, r, _)| r).collect())
 }
 
 /// A GML geometry element as a geometry; `zm` is set when Z or M values are dropped, and `lost`
@@ -366,6 +372,44 @@ fn parts_lost(g: &Node) -> usize {
         .sum()
 }
 
+/// The kinds of curve segment (an `Arc`, a `BSpline`…) under the curves a geometry keeps, which are
+/// read as their control points (a segment given by a centre point, as that centre). Only segments
+/// other than `LineStringSegment` count. The curves of a ring or a multi-curve part that isn't kept
+/// don't: those are said as lost.
+fn approximated(g: &Node) -> Vec<String> {
+    let scratch = Cell::new(false);
+    let surface = matches!(local(g), "Polygon" | "Surface" | "MultiPolygon" | "MultiSurface");
+    let multi = matches!(local(g), "MultiCurve" | "MultiLineString");
+    let is = |n: &Node, name: &str| n.is_element() && is_gml(n) && local(n) == name;
+    // The boundaries of the rings kept: worked out once, and only for a geometry with such a curve.
+    let rings = OnceCell::new();
+    let kept_boundaries = || -> HashSet<roxmltree::NodeId> {
+        let polygons = g.descendants().filter(|p| is(p, "Polygon") || is(p, "PolygonPatch"));
+        polygons.filter_map(|p| kept_rings(&p, &Cell::new(0))).flatten().map(|(boundary, ..)| boundary).collect()
+    };
+    // Whether the curve is kept: under the nearest ring boundary if that ring is, or else, in a
+    // multi-curve, with at least two coordinates. (`ancestors` starts at the node itself.)
+    let kept = |c: &Node| {
+        if !surface {
+            return !multi || coords(c, &scratch).is_some_and(|v| v.len() >= 2);
+        }
+        let boundary = c
+            .ancestors()
+            .take_while(|a| a != g)
+            .find(|a| a.is_element() && is_gml(a) && matches!(local(a), "exterior" | "outerBoundaryIs" | "interior" | "innerBoundaryIs"));
+        boundary.is_some_and(|b| rings.get_or_init(kept_boundaries).contains(&b.id()))
+    };
+    let mut names = Vec::new();
+    for c in g.descendants().filter(|c| is(c, "Curve")) {
+        let segments = c.children().filter(|s| is(s, "segments")).flat_map(|s| s.children()).filter(|x| x.is_element() && is_gml(x));
+        let curved: Vec<String> = segments.map(|x| local(&x).to_string()).filter(|n| n != "LineStringSegment").collect();
+        if !curved.is_empty() && kept(&c) {
+            names.extend(curved);
+        }
+    }
+    names
+}
+
 /// The first few distinct names of what a notice counts; more are said as `…`.
 #[derive(Default)]
 struct Names(Vec<String>, bool);
@@ -411,6 +455,11 @@ struct Kind {
     parts_lost: usize,
     /// Rings and surface patches of its geometries left out.
     lost: usize,
+    /// Features with curve segments read as their control points: how many, and the first few kinds.
+    approximated: usize,
+    approximated_names: Names,
+    /// Features with curve segments given by a centre point, which is read as a vertex.
+    centred: usize,
 }
 
 /// Reads a GML file into a layer per feature type (those with features).
@@ -488,6 +537,13 @@ pub fn read(file_name: &str, bytes: &[u8]) -> Result<Vec<(Dataset, ReadReport)>>
                         rings_lost += lost.get();
                         geom = Some(gm);
                         kind.parts_lost += parts_lost(&g);
+                        let (centred, approx): (Vec<String>, Vec<String>) =
+                            approximated(&g).into_iter().partition(|n| n.ends_with("ByCenterPoint"));
+                        kind.centred += usize::from(!centred.is_empty());
+                        kind.approximated += usize::from(!approx.is_empty());
+                        for n in approx {
+                            kind.approximated_names.add(n);
+                        }
                     }
                     None => {
                         bad = true;
@@ -618,6 +674,22 @@ pub fn read(file_name: &str, bytes: &[u8]) -> Result<Vec<(Dataset, ReadReport)>>
             rep.messages.push(format!(
                 "{}: {parts} {what} of multi-geometries not read (a reference, too short, invalid coordinates, or of a kind not read)",
                 ds.name
+            ));
+        }
+        if kind.approximated > 0 {
+            let what = if kind.approximated == 1 { "feature" } else { "features" };
+            rep.messages.push(format!(
+                "{}: {} {what} had curve segments approximated by their control points ({})",
+                ds.name,
+                kind.approximated,
+                kind.approximated_names.said()
+            ));
+        }
+        if kind.centred > 0 {
+            let what = if kind.centred == 1 { "feature" } else { "features" };
+            rep.messages.push(format!(
+                "{}: {} {what} had curve segments given by a centre point (ArcByCenterPoint or CircleByCenterPoint): the centre was read as a vertex, so the line doesn't follow the curve there",
+                ds.name, kind.centred
             ));
         }
         if unread > 0 {
@@ -1018,6 +1090,107 @@ mod tests {
         ));
         let layers = read("n.gml", gml.as_bytes()).unwrap();
         assert!(!said(&layers[0], "multi-geometries"), "{:?}", layers[0].1.messages);
+    }
+
+    /// #1700: a curve segment that isn't a line string segment is read as its control points, and
+    /// said per feature type; a curve of line string segments says nothing.
+    #[test]
+    fn approximated_curve_segments_are_said_on_their_own_feature_type() {
+        let arc = "<gml:Arc><gml:posList>10 48 10.5 48.5 11 48</gml:posList></gml:Arc>";
+        let seg = "<gml:LineStringSegment><gml:posList>10 48 11 49</gml:posList></gml:LineStringSegment>";
+        let curve = |s: &str| format!("<gml:Curve><gml:segments>{s}</gml:segments></gml:Curve>");
+        let member = |kind: &str, g: &str| format!("<wfs:member><app:{kind}><app:g>{g}</app:g></app:{kind}></wfs:member>");
+        let gml = doc(&format!(
+            "{}{}{}{}",
+            member("roads", &curve(&format!("{seg}{arc}"))),
+            member("roads", &curve(&format!("{arc}<gml:Circle><gml:posList>1 1 2 2 3 1</gml:posList></gml:Circle>"))),
+            member("roads", &curve(seg)),
+            member("rails", &curve(seg)),
+        ));
+        let layers = read("a.gml", gml.as_bytes()).unwrap();
+        assert!(layers[0].0.features.iter().all(|f| f.geometry.is_some()));
+        assert!(
+            said(&layers[0], "a roads: 2 features had curve segments approximated by their control points (Arc, Circle)"),
+            "{:?}",
+            layers[0].1.messages
+        );
+        assert!(!said(&layers[1], "approximated"), "{:?}", layers[1].1.messages);
+        assert!(!said(&layers[0], "centre point") && !said(&layers[1], "centre point"), "{:?}", layers[0].1.messages);
+        // A segment given by a centre point gets that centre as a vertex, which is said for what it is.
+        let centred =
+            "<gml:ArcByCenterPoint numArc=\"1\"><gml:pos>10.5 48.5</gml:pos><gml:radius uom=\"m\">5</gml:radius></gml:ArcByCenterPoint>";
+        let gml = doc(&format!("{}{}", member("c", &curve(&format!("{seg}{centred}"))), member("c", &curve(seg))));
+        let layers = read("a.gml", gml.as_bytes()).unwrap();
+        assert!(layers[0].0.features.iter().all(|f| f.geometry.is_some()));
+        assert!(said(&layers[0], "a: 1 feature had curve segments given by a centre point"), "{:?}", layers[0].1.messages);
+        assert!(said(&layers[0], "the centre was read as a vertex"), "{:?}", layers[0].1.messages);
+        assert!(!said(&layers[0], "approximated"), "{:?}", layers[0].1.messages);
+        // A circle by centre point with one position makes no line: the feature isn't read, and the
+        // approximation isn't said a second time.
+        let gml = doc(&member(
+            "c",
+            &curve("<gml:CircleByCenterPoint><gml:pos>10 48</gml:pos><gml:radius uom=\"m\">5</gml:radius></gml:CircleByCenterPoint>"),
+        ));
+        let layers = read("a.gml", gml.as_bytes()).unwrap();
+        assert_eq!(layers[0].1.skipped, 1, "{:?}", layers[0].1.messages);
+        assert!(!said(&layers[0], "approximated"), "{:?}", layers[0].1.messages);
+        // In a multi-curve the same part is lost (said as such), not approximated.
+        let line = "<gml:LineString><gml:posList>10 48 11 48</gml:posList></gml:LineString>";
+        let gml = doc(&member(
+            "m",
+            &format!(
+                "<gml:MultiCurve><gml:curveMember>{}</gml:curveMember><gml:curveMember>{line}</gml:curveMember></gml:MultiCurve>",
+                curve("<gml:CircleByCenterPoint><gml:pos>10 48</gml:pos></gml:CircleByCenterPoint>")
+            ),
+        ));
+        let layers = read("a.gml", gml.as_bytes()).unwrap();
+        assert!(said(&layers[0], "a: 1 part of multi-geometries not read"), "{:?}", layers[0].1.messages);
+        assert!(!said(&layers[0], "approximated"), "{:?}", layers[0].1.messages);
+    }
+
+    /// #1700: the curves of a ring are approximated only when the ring is kept.
+    #[test]
+    fn curves_of_rings_are_said_only_when_the_ring_is_kept() {
+        let ring = |pos: &str| {
+            format!(
+                "<gml:Ring><gml:curveMember><gml:Curve><gml:segments><gml:Arc><gml:posList>{pos}</gml:posList></gml:Arc></gml:segments></gml:Curve></gml:curveMember></gml:Ring>"
+            )
+        };
+        let good = ring("10 48 10.5 47.5 11 48 11 49 10 48");
+        let member = |g: &str| doc(&format!("<wfs:member><app:p><app:g>{g}</app:g></app:p></wfs:member>"));
+        for (open, close) in
+            [("Polygon", "Polygon"), ("Surface><gml:patches><gml:PolygonPatch", "PolygonPatch></gml:patches></gml:Surface")]
+        {
+            let gml = member(&format!("<gml:{open}><gml:exterior>{good}</gml:exterior></gml:{close}>"));
+            let layers = read("a.gml", gml.as_bytes()).unwrap();
+            assert!(layers[0].0.features[0].geometry.is_some(), "{:?}", layers[0].1.messages);
+            assert!(said(&layers[0], "approximated by their control points (Arc)"), "{:?}", layers[0].1.messages);
+        }
+        // An interior ring too short to keep is left out, so its arc is not approximated (the exterior
+        // has no curve).
+        let gml = member(&format!(
+            "<gml:Polygon><gml:exterior><gml:LinearRing><gml:posList>10 48 11 48 11 49 10 48</gml:posList></gml:LinearRing></gml:exterior><gml:interior>{}</gml:interior></gml:Polygon>",
+            ring("10 48 11 48 10 48")
+        ));
+        let layers = read("a.gml", gml.as_bytes()).unwrap();
+        assert!(layers[0].0.features[0].geometry.is_some(), "{:?}", layers[0].1.messages);
+        assert!(said(&layers[0], "1 ring or surface patch of a geometry was left out"), "{:?}", layers[0].1.messages);
+        assert!(!said(&layers[0], "approximated"), "{:?}", layers[0].1.messages);
+        // Only the first exterior ring is kept, so an arc in the second is not approximated.
+        let plain = "<gml:LinearRing><gml:posList>10 48 11 48 11 49 10 48</gml:posList></gml:LinearRing>";
+        let gml = member(&format!("<gml:Polygon><gml:exterior>{plain}</gml:exterior><gml:exterior>{good}</gml:exterior></gml:Polygon>"));
+        let layers = read("a.gml", gml.as_bytes()).unwrap();
+        assert!(layers[0].0.features[0].geometry.is_some(), "{:?}", layers[0].1.messages);
+        assert!(said(&layers[0], "1 ring or surface patch of a geometry was left out"), "{:?}", layers[0].1.messages);
+        assert!(!said(&layers[0], "approximated"), "{:?}", layers[0].1.messages);
+        // A polygon with no exterior ring is left out whole, with the arc of its interior.
+        let gml = member(&format!(
+            "<gml:MultiSurface><gml:surfaceMember><gml:Polygon><gml:interior>{good}</gml:interior></gml:Polygon></gml:surfaceMember><gml:surfaceMember><gml:Polygon><gml:exterior>{plain}</gml:exterior></gml:Polygon></gml:surfaceMember></gml:MultiSurface>"
+        ));
+        let layers = read("a.gml", gml.as_bytes()).unwrap();
+        assert!(layers[0].0.features[0].geometry.is_some(), "{:?}", layers[0].1.messages);
+        assert_eq!(layers[0].1.messages.len(), 1, "{:?}", layers[0].1.messages);
+        assert!(said(&layers[0], "1 part of multi-geometries not read"), "{:?}", layers[0].1.messages);
     }
 
     /// A GML 2 feature whose only shape is a GeometryCollection had geometry that couldn't be read.
