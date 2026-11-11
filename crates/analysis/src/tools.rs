@@ -3554,23 +3554,44 @@ pub fn simplify_geometry(g: &Geometry, tol_m: f64) -> Geometry {
 }
 
 fn simplify(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
+    simplify_on(inp, p, None)
+}
+
+/// [`simplify`] on `threads` threads (by the number of features when `None`): each feature is
+/// simplified on its own (#1252), and the rows and vertex counts are made in input order, as on
+/// one thread. Cancel is looked at, and progress counted, between features.
+fn simplify_on(inp: &dyn Inputs, p: &Json, threads: Option<usize>) -> Result<ToolResult, String> {
     let ds = input(inp, p, "input")?;
     let tol = num(p, "tolerance").ok_or("Tolerance must be a number")?.abs() * 1000.0;
     let mut out = copy_schema(ds, out_name(p, format!("{}_Simplified", ds.name)), ds.geometry_type);
     let (mut before, mut after, mut polar) = (0usize, 0usize, 0usize);
-    for r in rows(inp, p, "input", ds) {
+    let input_rows = rows(inp, p, "input", ds);
+    crate::control::begin(input_rows.len());
+    let threads = threads.unwrap_or_else(|| crate::parallel::threads_for(input_rows.len(), PARALLEL_FEATURES));
+    let simplified = crate::parallel::try_map_on(
+        &input_rows,
+        threads,
+        || (),
+        |_, _, &r| {
+            let made = ds.features.get(r).and_then(|f| f.geometry.as_ref()).map(|g| {
+                // A line or polygon reaching beyond 85.05° has its tolerance taken east–west at the
+                // scale of its label point's latitude, at most 85° (`merc_scale`), where the ground
+                // beyond is far narrower: less is taken out there than asked (#1033). Points aren't
+                // simplified.
+                let mut beyond = false;
+                if !matches!(g, Geometry::Point(_) | Geometry::MultiPoint(_)) {
+                    g.for_each_coord(|c| beyond |= c.y.is_finite() && c.y.abs() > rustgis_geom::MAX_LAT);
+                }
+                (g.coord_count(), beyond, simplify_geometry(g, tol))
+            });
+            Ok::<_, String>(made)
+        },
+    )?;
+    for (r, made) in input_rows.into_iter().zip(simplified) {
         let Some(f) = ds.features.get(r) else { continue };
-        let Some(g) = &f.geometry else { continue };
-        before += g.coord_count();
-        // A line or polygon reaching beyond 85.05° has its tolerance taken east–west at the scale
-        // of its label point's latitude, at most 85° (`merc_scale`), where the ground beyond is far
-        // narrower: less is taken out there than asked (#1033). Points aren't simplified.
-        let mut beyond = false;
-        if !matches!(g, Geometry::Point(_) | Geometry::MultiPoint(_)) {
-            g.for_each_coord(|c| beyond |= c.y.is_finite() && c.y.abs() > rustgis_geom::MAX_LAT);
-        }
+        let Some((count, beyond, sg)) = made else { continue };
+        before += count;
         polar += usize::from(beyond && tol > 0.0);
-        let sg = simplify_geometry(g, tol);
         after += sg.coord_count();
         out.push(Some(sg), f.attrs.clone());
     }
@@ -4273,6 +4294,19 @@ fn merc_extent(g: &impl geo::CoordsIter<Scalar = f64>) -> Extent {
 /// asked for, of the point layer's fields, are over the same points, as `<STAT>_<field>` after
 /// `point_count`.
 fn count_points(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
+    count_points_on(inp, p, None)
+}
+
+/// The most points whose polygons [`count_points_on`] finds before it counts them: each point's
+/// list of polygons, usually a few, is kept until then. Small in tests, so they cross from one
+/// batch to the next.
+const POINT_BATCH: usize = if cfg!(test) { 256 } else { 65_536 };
+
+/// [`count_points`] on `threads` threads (by the number of points when `None`): the polygons each
+/// point meets are found on their own (#1252), [`POINT_BATCH`] points at a time, and counted in
+/// point order, so the counts, each polygon's points and the statistics are as on one thread.
+/// Cancel is looked at, and progress counted, between points.
+fn count_points_on(inp: &dyn Inputs, p: &Json, threads: Option<usize>) -> Result<ToolResult, String> {
     let polys = input(inp, p, "polygons")?;
     let pts = input(inp, p, "points")?;
     let (requests, separator) = summary_requests(pts, p)?;
@@ -4301,22 +4335,43 @@ fn count_points(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
     let mut members: Vec<Vec<usize>> = if requests.is_empty() { Vec::new() } else { vec![Vec::new(); out.features.len()] };
     // The points in at least one polygon, each once: the ones the statistics read.
     let mut summarised: Vec<usize> = Vec::new();
-    let mut cand_buf = Vec::new();
-    for r in each_once(rows(inp, p, "points", pts)) {
-        let Some(g) = pts.features.get(r).and_then(|f| f.geometry.as_ref()) else { continue };
-        let pg = to_geo(g);
-        let ext = merc_extent(&pg);
-        let mut met = false;
-        index.candidates_into(&ext, &mut cand_buf);
-        // A point at a pole touches a polygon reaching it, at whatever longitude (a line or
-        // polygon passed as points, meeting one only there, has no part in it).
-        let at = if matches!(g, Geometry::Point(_) | Geometry::MultiPoint(_)) { poles(&g.extent()) } else { (false, false) };
-        at_poles.add_to(at, &mut cand_buf);
-        for &zi in &cand_buf {
-            let Some((row, mp, z_ext, z_at)) = zones.get(zi) else { continue };
-            if (meet_at_a_pole(at, *z_at) || (z_ext.intersects(&ext) && mp.intersects(&pg)))
-                && let Some(c) = counts.get_mut(*row)
-            {
+    let point_rows = each_once(rows(inp, p, "points", pts));
+    crate::control::begin(point_rows.len());
+    // A thread's candidate list can hold every polygon (the index scans them all when it has no
+    // grid), so that scratch bounds the threads too.
+    let cand_bytes = zones.len().saturating_mul(std::mem::size_of::<usize>());
+    let threads = threads.unwrap_or_else(|| crate::parallel::threads_for_scratch(point_rows.len(), PARALLEL_FEATURES, cand_bytes));
+    for batch in point_rows.chunks(POINT_BATCH) {
+        // Each point's polygons, by their place in `zones`, in the order the index gives them.
+        let met_by = crate::parallel::try_map_on(batch, threads, Vec::new, |cand_buf, _, &r| {
+            let Some(g) = pts.features.get(r).and_then(|f| f.geometry.as_ref()) else { return Ok::<_, String>(Vec::new()) };
+            let pg = to_geo(g);
+            let ext = merc_extent(&pg);
+            index.candidates_into(&ext, cand_buf);
+            // A point at a pole touches a polygon reaching it, at whatever longitude (a line or
+            // polygon passed as points, meeting one only there, has no part in it).
+            let at = if matches!(g, Geometry::Point(_) | Geometry::MultiPoint(_)) { poles(&g.extent()) } else { (false, false) };
+            at_poles.add_to(at, cand_buf);
+            // Grown fallibly, one match at a time: a point in very many overlapping polygons is an
+            // error, as the polygons' lists of points below are, not an abort, and the list holds
+            // what the point meets, not every candidate the index returned.
+            let mut met = Vec::new();
+            for &zi in cand_buf.iter() {
+                let meets = zones
+                    .get(zi)
+                    .is_some_and(|(_, mp, z_ext, z_at)| meet_at_a_pole(at, *z_at) || (z_ext.intersects(&ext) && mp.intersects(&pg)));
+                if meets {
+                    met.try_reserve(1).map_err(|e| format!("Summarize Within: not enough memory to keep each point's polygons: {e}"))?;
+                    met.push(zi);
+                }
+            }
+            Ok(met)
+        })?;
+        for (&r, met_zones) in batch.iter().zip(met_by) {
+            let mut met = false;
+            for zi in met_zones {
+                let Some((row, ..)) = zones.get(zi) else { continue };
+                let Some(c) = counts.get_mut(*row) else { continue };
                 *c += 1;
                 met = true;
                 if let Some(m) = members.get_mut(*row) {
@@ -4329,9 +4384,9 @@ fn count_points(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
                     m.push(r);
                 }
             }
-        }
-        if met && !requests.is_empty() {
-            summarised.push(r);
+            if met && !requests.is_empty() {
+                summarised.push(r);
+            }
         }
     }
     let total: i64 = counts.iter().sum();
@@ -6118,6 +6173,21 @@ fn near_on(inp: &dyn Inputs, p: &Json, threads: Option<usize>) -> Result<ToolRes
 
 /// Joins normalized lon/lat geometries, retaining the target's source CRS for export.
 fn spatial_join(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
+    spatial_join_on(inp, p, None)
+}
+
+/// The targets each thread takes per batch in [`spatial_join_on`]: each target's matches are kept
+/// until the batch's rows are made, and a target can match thousands, so batches of `threads` ×
+/// this bound how many lists are held at once (on one thread, this many). Small in tests, so they
+/// cross from one batch to the next.
+const FEATURE_BATCH: usize = if cfg!(test) { 16 } else { 256 };
+
+/// [`spatial_join`] on `threads` threads (by the number of features in each step when `None`): the
+/// join features are converted, and each target's matches found, on their own (#1252); the rows
+/// and merge rules are then made in target order, as on one thread. Cancel is looked at, and
+/// progress counted, feature by feature. An overlap that can't be measured fails the run once its
+/// batch of targets is done, at the same row on any thread count.
+fn spatial_join_on(inp: &dyn Inputs, p: &Json, threads: Option<usize>) -> Result<ToolResult, String> {
     let target = input(inp, p, "target")?;
     let join = input(inp, p, "join")?;
 
@@ -6180,19 +6250,24 @@ fn spatial_join(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
         }
     }
 
-    let mut join_geoms: Vec<Located<'_>> = Vec::with_capacity(join_rows.len());
+    let threads_for = |n: usize| threads.unwrap_or_else(|| crate::parallel::threads_for(n, PARALLEL_FEATURES));
     // The join features converted: Cancel looked at, and progress counted, feature by feature.
     crate::control::begin(join_rows.len());
-    for (done, &jr) in join_rows.iter().enumerate() {
-        crate::control::check()?;
-        crate::control::reached(done);
-        if let Some(f) = join.features.get(jr)
-            && let Some(g) = f.geometry.as_ref()
-        {
-            let geo = if mode == JoinMatch::LargestOverlap { oriented(g) } else { to_geo(g) };
-            join_geoms.push(Located { row: jr, ext: g.extent(), geo, geom: g });
-        }
-    }
+    let join_geoms: Vec<Located<'_>> = crate::parallel::try_map_on(
+        &join_rows,
+        threads_for(join_rows.len()),
+        || (),
+        |_, _, &jr| {
+            let located = join.features.get(jr).and_then(|f| f.geometry.as_ref()).map(|g| {
+                let geo = if mode == JoinMatch::LargestOverlap { oriented(g) } else { to_geo(g) };
+                Located { row: jr, ext: g.extent(), geo, geom: g }
+            });
+            Ok::<_, String>(located)
+        },
+    )?
+    .into_iter()
+    .flatten()
+    .collect();
 
     let mut out = copy_schema(target, out_name(p, format!("{}_SpatialJoin", target.name)), target.geometry_type);
     out.source = None;
@@ -6228,144 +6303,155 @@ fn spatial_join(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
 
     let mut total_matches = 0usize;
     let mut written_features = 0usize;
-    let mut cand_buf = Vec::new();
-
+    // Each target's matches, in the order they're joined, with their distances when measured:
+    // found on their own, on several threads when there are many (#1252), in batches of
+    // [`FEATURE_BATCH`] targets a thread, so the lists held at once stay bounded (a target can
+    // match thousands). `None` for a row with no feature. An overlap that can't be measured is
+    // that target's result, raised here in target order, so a threaded run fails at the same
+    // row as one thread does.
     crate::control::begin(target_rows.len());
-    for (done, tr) in target_rows.into_iter().enumerate() {
-        crate::control::check()?;
-        crate::control::reached(done);
-        let Some(tf) = target.features.get(tr) else { continue };
-        // The matches, in the order they're joined, with their distances when measured.
-        let mut matches: Vec<(usize, Option<f64>)> = Vec::new();
+    // A thread's candidate list can hold every join feature (the index scans them all when it has
+    // no grid), so that scratch bounds the threads too.
+    let cand_bytes = join_geoms.len().saturating_mul(std::mem::size_of::<usize>());
+    let target_threads = threads.unwrap_or_else(|| crate::parallel::threads_for_scratch(target_rows.len(), PARALLEL_FEATURES, cand_bytes));
+    for batch in target_rows.chunks(target_threads.max(1).saturating_mul(FEATURE_BATCH)) {
+        let found = crate::parallel::try_map_on(batch, target_threads, Vec::new, |cand_buf, _, &tr| {
+            let Some(tf) = target.features.get(tr) else { return Ok(Ok(None)) };
+            let mut matches: Vec<(usize, Option<f64>)> = Vec::new();
+            if let Some(tg) = tf.geometry.as_ref() {
+                let t_ext = tg.extent();
+                let t_geo = if mode == JoinMatch::LargestOverlap { oriented(tg) } else { to_geo(tg) };
+                let at = |idx: usize| join_geoms.get(idx);
 
-        if let Some(tg) = tf.geometry.as_ref() {
-            let t_ext = tg.extent();
-            let t_geo = if mode == JoinMatch::LargestOverlap { oriented(tg) } else { to_geo(tg) };
-            let at = |idx: usize| join_geoms.get(idx);
-
-            match mode {
-                JoinMatch::Intersects | JoinMatch::Contains | JoinMatch::Within => {
-                    index.candidates_into(&t_ext, &mut cand_buf);
-                    let t_poles = poles(&t_ext);
-                    joins_at_poles.add_to(t_poles, &mut cand_buf);
-                    for j in cand_buf.iter().copied().filter_map(at) {
-                        let hit = match mode {
-                            JoinMatch::Contains => extent_contains(&t_ext, &j.ext) && Contains::contains(&t_geo, &j.geo),
-                            JoinMatch::Within => extent_contains(&j.ext, &t_ext) && Contains::contains(&j.geo, &t_geo),
-                            _ => meet_at_a_pole(t_poles, poles(&j.ext)) || (t_ext.intersects(&j.ext) && t_geo.intersects(&j.geo)),
-                        };
-                        if hit {
-                            matches.push((j.row, None));
-                        }
-                    }
-                }
-                JoinMatch::CentreIn => {
-                    if let Some(pt) = interior_point(tg) {
-                        let (p_ext, p_geo) = (pt.extent(), to_geo(&pt));
-                        index.candidates_into(&p_ext, &mut cand_buf);
-                        let p_poles = poles(&p_ext);
-                        joins_at_poles.add_to(p_poles, &mut cand_buf);
+                match mode {
+                    JoinMatch::Intersects | JoinMatch::Contains | JoinMatch::Within => {
+                        index.candidates_into(&t_ext, cand_buf);
+                        let t_poles = poles(&t_ext);
+                        joins_at_poles.add_to(t_poles, cand_buf);
                         for j in cand_buf.iter().copied().filter_map(at) {
-                            if meet_at_a_pole(p_poles, poles(&j.ext)) || (j.ext.intersects(&p_ext) && j.geo.intersects(&p_geo)) {
+                            let hit = match mode {
+                                JoinMatch::Contains => extent_contains(&t_ext, &j.ext) && Contains::contains(&t_geo, &j.geo),
+                                JoinMatch::Within => extent_contains(&j.ext, &t_ext) && Contains::contains(&j.geo, &t_geo),
+                                _ => meet_at_a_pole(t_poles, poles(&j.ext)) || (t_ext.intersects(&j.ext) && t_geo.intersects(&j.geo)),
+                            };
+                            if hit {
                                 matches.push((j.row, None));
                             }
                         }
                     }
-                }
-                JoinMatch::LargestOverlap => {
-                    let mut best: Option<(usize, f64)> = None;
-                    index.candidates_into(&t_ext, &mut cand_buf);
-                    for j in cand_buf.iter().copied().filter_map(at) {
-                        if !t_ext.intersects(&j.ext) {
-                            continue;
-                        }
-                        let o = overlap(&t_geo, &j.geo);
-                        if !o.is_finite() {
-                            return Err(format!(
-                                "Spatial Join: the overlap of target row {} and join row {} cannot be measured",
-                                tr + 1,
-                                j.row + 1
-                            ));
-                        }
-                        if o > 0.0 && best.is_none_or(|(_, b)| o > b) {
-                            best = Some((j.row, o));
+                    JoinMatch::CentreIn => {
+                        if let Some(pt) = interior_point(tg) {
+                            let (p_ext, p_geo) = (pt.extent(), to_geo(&pt));
+                            index.candidates_into(&p_ext, cand_buf);
+                            let p_poles = poles(&p_ext);
+                            joins_at_poles.add_to(p_poles, cand_buf);
+                            for j in cand_buf.iter().copied().filter_map(at) {
+                                if meet_at_a_pole(p_poles, poles(&j.ext)) || (j.ext.intersects(&p_ext) && j.geo.intersects(&p_geo)) {
+                                    matches.push((j.row, None));
+                                }
+                            }
                         }
                     }
-                    matches.extend(best.map(|(row, _)| (row, None)));
-                }
-                JoinMatch::Closest | JoinMatch::WithinDistance => {
-                    let near = match (mode, limit) {
-                        (JoinMatch::WithinDistance, Some(l)) => nearby.all_within(tg, &t_ext, &t_geo, l),
-                        (JoinMatch::WithinDistance, None) => Vec::new(),
-                        _ => nearby.closest(tg, &t_ext, &t_geo, limit, None).into_iter().collect(),
-                    };
-                    matches.extend(near.into_iter().filter_map(|(idx, d)| Some((at(idx)?.row, Some(d)))));
+                    JoinMatch::LargestOverlap => {
+                        let mut best: Option<(usize, f64)> = None;
+                        index.candidates_into(&t_ext, cand_buf);
+                        for j in cand_buf.iter().copied().filter_map(at) {
+                            if !t_ext.intersects(&j.ext) {
+                                continue;
+                            }
+                            let o = overlap(&t_geo, &j.geo);
+                            if !o.is_finite() {
+                                return Ok(Err(format!(
+                                    "Spatial Join: the overlap of target row {} and join row {} cannot be measured",
+                                    tr + 1,
+                                    j.row + 1
+                                )));
+                            }
+                            if o > 0.0 && best.is_none_or(|(_, b)| o > b) {
+                                best = Some((j.row, o));
+                            }
+                        }
+                        matches.extend(best.map(|(row, _)| (row, None)));
+                    }
+                    JoinMatch::Closest | JoinMatch::WithinDistance => {
+                        let near = match (mode, limit) {
+                            (JoinMatch::WithinDistance, Some(l)) => nearby.all_within(tg, &t_ext, &t_geo, l),
+                            (JoinMatch::WithinDistance, None) => Vec::new(),
+                            _ => nearby.closest(tg, &t_ext, &t_geo, limit, None).into_iter().collect(),
+                        };
+                        matches.extend(near.into_iter().filter_map(|(idx, d)| Some((at(idx)?.row, Some(d)))));
+                    }
                 }
             }
-        }
+            Ok::<_, String>(Ok::<_, String>(Some(matches)))
+        })?;
 
-        let m_count = matches.len();
-        total_matches += m_count;
+        for (&tr, matches) in batch.iter().zip(found) {
+            let Some(tf) = target.features.get(tr) else { continue };
+            let Some(matches) = matches? else { continue };
+            let m_count = matches.len();
+            total_matches += m_count;
 
-        let mut push_row = |count: i64, joined: Option<Vec<Value>>, metres: Option<f64>| {
-            let mut attrs = Vec::with_capacity(out.fields.len());
-            for i in 0..target_fields_len {
-                attrs.push(tf.attrs.get(i).cloned().unwrap_or(Value::Null));
-            }
-            attrs.push(Value::Int(count));
-            match joined {
-                Some(values) => attrs.extend(values),
-                None => attrs.resize(attrs.len() + join_fields_len, Value::Null),
-            }
-            if !distance_field.is_empty() {
-                attrs.push(metres.map_or(Value::Null, |m| Value::Float(m / unit_m)));
-            }
-            out.push_next(tf.geometry.clone(), attrs);
-            written_features += 1;
-        };
-        let values_of = |jr: usize| -> Vec<Value> {
-            let f = join.features.get(jr);
-            join_field_indices.iter().map(|&ji| f.and_then(|f| f.attrs.get(ji)).cloned().unwrap_or(Value::Null)).collect()
-        };
+            let mut push_row = |count: i64, joined: Option<Vec<Value>>, metres: Option<f64>| {
+                let mut attrs = Vec::with_capacity(out.fields.len());
+                for i in 0..target_fields_len {
+                    attrs.push(tf.attrs.get(i).cloned().unwrap_or(Value::Null));
+                }
+                attrs.push(Value::Int(count));
+                match joined {
+                    Some(values) => attrs.extend(values),
+                    None => attrs.resize(attrs.len() + join_fields_len, Value::Null),
+                }
+                if !distance_field.is_empty() {
+                    attrs.push(metres.map_or(Value::Null, |m| Value::Float(m / unit_m)));
+                }
+                out.push_next(tf.geometry.clone(), attrs);
+                written_features += 1;
+            };
+            let values_of = |jr: usize| -> Vec<Value> {
+                let f = join.features.get(jr);
+                join_field_indices.iter().map(|&ji| f.and_then(|f| f.attrs.get(ji)).cloned().unwrap_or(Value::Null)).collect()
+            };
 
-        if m_count == 0 {
-            if keep_all {
-                // A count of no matches is 0; every other value is null.
-                let counted = |ji: &usize| merges.iter().any(|m| m.field == *ji && m.rule == crate::join::Rule::Count);
-                let none = merges
-                    .iter()
-                    .any(|m| m.rule == crate::join::Rule::Count)
-                    .then(|| join_field_indices.iter().map(|ji| if counted(ji) { Value::Int(0) } else { Value::Null }).collect());
-                push_row(0, none, None);
+            if m_count == 0 {
+                if keep_all {
+                    // A count of no matches is 0; every other value is null.
+                    let counted = |ji: &usize| merges.iter().any(|m| m.field == *ji && m.rule == crate::join::Rule::Count);
+                    let none = merges
+                        .iter()
+                        .any(|m| m.rule == crate::join::Rule::Count)
+                        .then(|| join_field_indices.iter().map(|ji| if counted(ji) { Value::Int(0) } else { Value::Null }).collect());
+                    push_row(0, none, None);
+                }
+            } else if op_many {
+                for &(jr, d) in &matches {
+                    push_row(m_count as i64, Some(values_of(jr)), d);
+                }
+            } else {
+                let Some(&(first, d)) = matches.first() else { continue };
+                let mut values = values_of(first);
+                for (k, m) in merges.iter().enumerate() {
+                    let column: Vec<&Value> = matches
+                        .iter()
+                        .map(|(jr, _)| join.features.get(*jr).and_then(|f| f.attrs.get(m.field)).unwrap_or(&Value::Null))
+                        .collect();
+                    let ty = join.fields.get(m.field).map_or(FieldType::Text, |f| f.ty);
+                    let (merged, lost) = m.apply(ty, &column);
+                    if let Some(slot) = join_field_indices.iter().position(|&ji| ji == m.field).and_then(|k| values.get_mut(k)) {
+                        *slot = merged;
+                    }
+                    if let Some(n) = overflowed.get_mut(k) {
+                        *n += usize::from(lost.overflowed);
+                    }
+                    if let Some(n) = left_out.get_mut(k) {
+                        *n += lost.left_out;
+                    }
+                    if let Some(n) = rounded.results.get_mut(k) {
+                        *n += usize::from(lost.rounded);
+                    }
+                }
+                push_row(m_count as i64, Some(values), d);
             }
-        } else if op_many {
-            for &(jr, d) in &matches {
-                push_row(m_count as i64, Some(values_of(jr)), d);
-            }
-        } else {
-            let Some(&(first, d)) = matches.first() else { continue };
-            let mut values = values_of(first);
-            for (k, m) in merges.iter().enumerate() {
-                let column: Vec<&Value> = matches
-                    .iter()
-                    .map(|(jr, _)| join.features.get(*jr).and_then(|f| f.attrs.get(m.field)).unwrap_or(&Value::Null))
-                    .collect();
-                let ty = join.fields.get(m.field).map_or(FieldType::Text, |f| f.ty);
-                let (merged, lost) = m.apply(ty, &column);
-                if let Some(slot) = join_field_indices.iter().position(|&ji| ji == m.field).and_then(|k| values.get_mut(k)) {
-                    *slot = merged;
-                }
-                if let Some(n) = overflowed.get_mut(k) {
-                    *n += usize::from(lost.overflowed);
-                }
-                if let Some(n) = left_out.get_mut(k) {
-                    *n += lost.left_out;
-                }
-                if let Some(n) = rounded.results.get_mut(k) {
-                    *n += usize::from(lost.rounded);
-                }
-            }
-            push_row(m_count as i64, Some(values), d);
         }
     }
 
@@ -11822,6 +11908,92 @@ mod tests {
             assert!(one.features.len() > 100, "{name}: {}", one.features.len());
             for threads in [2, 7, 16] {
                 let many = layer(run(&m, &p, Some(threads)).unwrap());
+                assert_eq!(many.features.len(), one.features.len(), "{name}, {threads} threads");
+                for (a, b) in one.features.iter().zip(&many.features) {
+                    assert_eq!(
+                        format!("{:?}", (&a.geometry, &a.attrs)),
+                        format!("{:?}", (&b.geometry, &b.attrs)),
+                        "{name}, {threads} threads"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Spatial Join (every match mode, one to one with merge rules, one to many, and only the
+    /// matching targets), Summarize Within (with statistics) and Simplify give the same rows, bit
+    /// for bit, on several threads as on one (#1252), with features without geometry among them
+    /// and, at the tests' [`FEATURE_BATCH`] and [`POINT_BATCH`], several batches of targets and
+    /// points.
+    #[test]
+    fn join_count_and_simplify_on_several_threads_are_on_one() {
+        let mut polys = Dataset::new("polys", GeometryType::Polygon, vec![Field::new("k", FieldType::Integer)]);
+        let mut pts = Dataset::new("pts", GeometryType::Point, vec![Field::new("v", FieldType::Double)]);
+        let mut lines = Dataset::new("lines", GeometryType::Polyline, vec![Field::new("v", FieldType::Integer)]);
+        for i in 0..400i64 {
+            let (x, y) = ((i * 37 % 300) as f64 * 0.1, (i * 53 % 120) as f64 * 0.1);
+            // A circle of 48 vertices, so Simplify has something to take out.
+            let ring: Vec<Coord> = (0..=48)
+                .map(|k| {
+                    let a = std::f64::consts::TAU * f64::from(k % 48) / 48.0;
+                    Coord::new(x + 0.4 * a.cos(), y + 0.4 * a.sin())
+                })
+                .collect();
+            polys.push(if i % 97 == 0 { None } else { Some(Geometry::Polygon(vec![vec![ring]])) }, vec![Value::Int(i)]);
+            let wiggle: Vec<Coord> =
+                (0..30).map(|k| Coord::new(x + f64::from(k) * 0.02, y + if k % 2 == 0 { 0.0 } else { 0.001 })).collect();
+            lines.push(if i % 89 == 0 { None } else { Some(Geometry::Line(vec![wiggle])) }, vec![Value::Int(i)]);
+        }
+        for i in 0..1500i64 {
+            let (x, y) = ((i * 71 % 310) as f64 * 0.097, (i * 29 % 125) as f64 * 0.097);
+            pts.push(if i % 101 == 0 { None } else { Some(Geometry::Point(Coord::new(x, y))) }, vec![Value::Float(i as f64 * 0.5)]);
+        }
+        let m = Map(HashMap::from([("polys".to_string(), polys), ("pts".to_string(), pts), ("lines".to_string(), lines)]));
+        type On = fn(&dyn Inputs, &Json, Option<usize>) -> Result<ToolResult, String>;
+        let mut runs: Vec<(String, On, Json)> = Vec::new();
+        for mode in ["Intersects", "Contains", "Within", "Have their center in", "Largest overlap", "Closest", "Within a distance"] {
+            let (target, join) = match mode {
+                "Contains" | "Largest overlap" => ("polys", "polys"),
+                "Within" | "Have their center in" => ("pts", "polys"),
+                _ => ("polys", "pts"),
+            };
+            let mut one = serde_json::json!({"target": target, "join": join, "match": mode, "distanceField": "d"});
+            let mut many = one.clone();
+            many["operation"] = "Join one to many".into();
+            one["merge"] = serde_json::json!([{"field": if join == "pts" { "v" } else { "k" }, "rule": "sum"}]);
+            if mode.starts_with("Within a") || mode == "Closest" {
+                one["distance"] = 30.into();
+                many["distance"] = 30.into();
+                one["units"] = "Kilometers".into();
+                many["units"] = "Kilometers".into();
+            } else {
+                one.as_object_mut().map(|o| o.remove("distanceField"));
+                many.as_object_mut().map(|o| o.remove("distanceField"));
+            }
+            let mut matching = one.clone();
+            matching["keepAll"] = "Keep only matching".into();
+            runs.push((format!("join {mode}"), spatial_join_on, one));
+            runs.push((format!("join {mode}, one to many"), spatial_join_on, many));
+            runs.push((format!("join {mode}, only matching"), spatial_join_on, matching));
+        }
+        runs.push((
+            "summarize".into(),
+            count_points_on,
+            serde_json::json!({"polygons": "polys", "points": "pts", "statistics": [{"field": "v", "statistic": "SUM"}, {"field": "v", "statistic": "CONCATENATE"}]}),
+        ));
+        runs.push(("simplify polygons".into(), simplify_on, serde_json::json!({"input": "polys", "tolerance": 5})));
+        runs.push(("simplify lines".into(), simplify_on, serde_json::json!({"input": "lines", "tolerance": 0.5})));
+        for (name, run, p) in runs {
+            let one = run(&m, &p, Some(1)).unwrap_or_else(|e| panic!("{name}: {e}"));
+            let one_messages = one.messages.clone();
+            // Every join mode matches something: an empty join would compare equal too.
+            assert!(!one_messages.iter().any(|m| m.contains("(0 matches)")), "{name}: {one_messages:?}");
+            let one = layer(one);
+            assert!(one.features.len() > 50, "{name}: {}", one.features.len());
+            for threads in [2, 7, 16] {
+                let many = run(&m, &p, Some(threads)).unwrap();
+                assert_eq!(many.messages, one_messages, "{name}, {threads} threads");
+                let many = layer(many);
                 assert_eq!(many.features.len(), one.features.len(), "{name}, {threads} threads");
                 for (a, b) in one.features.iter().zip(&many.features) {
                     assert_eq!(
