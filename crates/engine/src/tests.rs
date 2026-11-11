@@ -6754,9 +6754,12 @@ fn publication_layouts_fit_their_pages() {
             assert!(reference.contains("Web Mercator") && reference.contains("WGS 84") && reference.contains("2°"), "{reference}");
             assert!(text("Author").unwrap().contains("{date}"), "the date stays a token the layout fills");
             // Nothing said but, over the sample world's land, the surrounds sharing its one corner
-            // of sea (placement has its own test).
+            // of sea, or the map moved in its frame for the legend (placement has its own tests).
             let said: Vec<&str> = r["warnings"].as_array().unwrap().iter().filter_map(|w| w.as_str()).collect();
-            assert!(said.len() <= 1 && said.iter().all(|w| w.contains("on what the map shows")), "{profile}: {r}");
+            assert!(
+                said.len() <= 2 && said.iter().all(|w| w.contains("on what the map shows") || w.contains("in its frame")),
+                "{profile}: {r}"
+            );
         } else {
             assert!(text("Title").is_none() && text("Sources").is_none(), "{profile}: a figure's texts are its caption's");
             assert!(r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("caption")), "{r}");
@@ -7698,6 +7701,352 @@ fn a_publication_without_a_colorbar_sizes_the_legend_box_to_the_legend() {
     bad["colorbar"] = json!("hidden");
     assert!(s.run("layout.publication", &bad).unwrap_err().contains("colorbar is"));
     let _ = std::fs::remove_file(&path);
+}
+
+/// A smaller scale whose legend can't be measured (a streamed layer shown only there, whose file is
+/// gone) isn't tried, and the result says so.
+#[test]
+fn a_publication_says_a_smaller_scale_whose_legend_cant_be_measured() {
+    let dir = std::env::temp_dir().join(format!("rustgis-unmeasured-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (fill, gone) = (dir.join("fill.geojson"), dir.join("gone.shp"));
+    let square = |w: f64, s0: f64, e: f64, n: f64| {
+        json!({"type": "FeatureCollection", "features": [{"type": "Feature", "properties": {"k": "a"}, "geometry":
+            {"type": "Polygon", "coordinates": [[[w, s0], [e, s0], [e, n], [w, n], [w, s0]]]}}]})
+    };
+    std::fs::write(&fill, square(0.0, 0.0, 15.0, 10.0).to_string()).unwrap();
+    // A shapefile: its legend is read from the whole source, a chunk at a time.
+    {
+        use rustgis_data::{Dataset, Field, FieldType, Geometry, GeometryType, Value};
+        use rustgis_geom::Coord;
+        let mut d = Dataset::new("gone", GeometryType::Polygon, vec![Field::new("k", FieldType::Text)]);
+        let ring = [(1.0, 1.0), (14.0, 1.0), (14.0, 9.0), (1.0, 9.0), (1.0, 1.0)];
+        d.push(Some(Geometry::Polygon(vec![vec![ring.map(|(x, y)| Coord::new(x, y)).to_vec()]])), vec![Value::Text("a".into())]);
+        rustgis_data::io::write_path(&d, &gone).unwrap();
+    }
+    let mut s = Session::new(Project::default());
+    for _ in 0..12 {
+        s.run("layer.addData", &json!({"path": fill.display().to_string()})).unwrap();
+    }
+    let p = json!({"profile": "a4-landscape", "extent": [5, 4, 8.7, 6], "author": "", "locator": "none"});
+    let asked = s
+        .run(
+            "layout.publication",
+            &json!({"profile": "a4-landscape", "extent": [5, 4, 8.7, 6], "author": "", "locator": "none", "veil": false}),
+        )
+        .unwrap()["scale"]
+        .as_f64()
+        .unwrap();
+    let id = s.run("layer.addData", &json!({"path": gone.display().to_string(), "stream": true, "name": "Gone"})).unwrap()["layer"]
+        .as_u64()
+        .unwrap();
+    // Drawn by classes, which the legend reads the whole source for; shown only at scales smaller
+    // than the one asked for; then its files are gone.
+    s.run("layer.symbology", &json!({"layer": id, "type": "unique", "field": "k"})).unwrap();
+    s.run("layer.scaleRange", &json!({"layer": id, "max": asked * 1.1})).unwrap();
+    for ext in ["shp", "shx", "dbf"] {
+        let _ = std::fs::remove_file(gone.with_extension(ext));
+    }
+    assert!(!gone.exists(), "the shapefile is gone");
+    let r = s.run("layout.publication", &p).unwrap();
+    let said = r["warnings"].as_array().unwrap().iter().filter_map(|w| w.as_str()).any(|w| w.contains("isn't moved or veiled at 1:"));
+    assert!(said, "the scale not tried is said: {r}");
+    assert!(r["warnings"].to_string().contains("can't be read through"), "and why: {r}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A moved frame is drawn at its own centre's ground scale (Web Mercator's changes with the
+/// latitude), so the extent drawn there is where the search placed it: whole in the frame, under
+/// its outline, north and south of the equator.
+#[test]
+fn a_publication_map_moved_off_its_latitude_draws_the_extent_where_it_was_placed() {
+    use rustgis_geom::{Coord, Extent};
+    let dir = std::env::temp_dir().join(format!("rustgis-move-latitude-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for (name, fill, extent) in [
+        ("north", [-30.0, 35.0, 70.0, 82.0], [10.0, 57.0, 30.0, 61.0]),
+        ("south", [-75.0, -40.0, -25.0, 5.0], [-52.0, -23.0, -40.0, -19.0]),
+    ] {
+        let path = dir.join(format!("{name}.geojson"));
+        let [w, s0, e, n] = fill;
+        let ring = json!([[[w, s0], [e, s0], [e, n], [w, n], [w, s0]]]);
+        let fc = json!({"type": "FeatureCollection", "features": [{"type": "Feature", "properties": {}, "geometry": {"type": "Polygon", "coordinates": ring}}]});
+        std::fs::write(&path, fc.to_string()).unwrap();
+        let mut s = Session::new(Project::default());
+        for _ in 0..30 {
+            s.run("layer.addData", &json!({"path": path.display().to_string()})).unwrap();
+        }
+        // A streamed column of points down the middle, every quarter degree.
+        let lon = (extent[0] + extent[2]) / 2.0;
+        let column: Vec<f64> = (0..).map(|i| s0 + 0.25 * f64::from(i)).take_while(|lat| *lat <= n).collect();
+        let points = dir.join(format!("{name}_points.geojson"));
+        let features: Vec<Value> = column
+            .iter()
+            .map(|lat| json!({"type": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [lon, lat]}}))
+            .collect();
+        std::fs::write(&points, json!({"type": "FeatureCollection", "features": features}).to_string()).unwrap();
+        s.run("layer.addData", &json!({"path": points.display().to_string(), "stream": true, "name": "Column"})).unwrap();
+        let r = s.run("layout.publication", &json!({"profile": "a4-portrait", "extent": extent, "author": "", "locator": "none"})).unwrap();
+        // Both move far up or down, off the asked centre's latitude, and are veiled.
+        assert!(r["mapShift"][1].as_f64().unwrap().abs() > 40.0 && r["veiled"] == json!(true), "{name}: moved up or down, veiled: {r}");
+        let l = s.project.layouts.last().unwrap();
+        let frame = l.elements.iter().find(|e| e.name == "Map Frame").unwrap();
+        let rustgis_map::layout::ElementKind::MapFrame { center, scale, .. } = &frame.kind else {
+            panic!("{name}: the Map Frame is no map frame")
+        };
+        let pt = rustgis_map::layout::PT_PER_MM;
+        let cam = rustgis_map::layout::frame_camera(s.map(), *center, *scale, 0.0, 0.0);
+        // Every streamed point the frame draws was read before the search drew it.
+        let held: Vec<f64> = s
+            .map()
+            .layers
+            .iter()
+            .find(|l| l.name == "Column")
+            .unwrap()
+            .dataset
+            .features
+            .iter()
+            .filter_map(|f| f.geometry.as_ref())
+            .map(|g| g.extent().min_y)
+            .collect();
+        for lat in &column {
+            let Some(m) = s.map().to_map(Coord::new(lon, *lat)) else { continue };
+            let (_, sy) = cam.to_screen(m, frame.w * pt, frame.h * pt);
+            if (0.0..=frame.h * pt).contains(&sy) {
+                assert!(held.contains(lat), "{name}: the point at {lat}°, {:.1} mm down the frame, isn't read: {held:?}", sy / pt);
+            }
+        }
+        // The extent's edges as the frame draws them, in mm on the page.
+        let asked = Extent::new(extent[0], extent[1], extent[2], extent[3]);
+        let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+        for i in 0..=32 {
+            let t = f64::from(i) / 32.0;
+            let (x, y) = (asked.min_x + asked.width() * t, asked.min_y + asked.height() * t);
+            for c in [Coord::new(x, asked.min_y), Coord::new(x, asked.max_y), Coord::new(asked.min_x, y), Coord::new(asked.max_x, y)] {
+                let Some(m) = s.map().to_map(c) else { continue };
+                let (sx, sy) = cam.to_screen(m, frame.w * pt, frame.h * pt);
+                (x0, y0, x1, y1) = (x0.min(sx / pt), y0.min(sy / pt), x1.max(sx / pt), y1.max(sy / pt));
+            }
+        }
+        let drawn = (frame.x + x0, frame.y + y0, frame.x + x1, frame.y + y1);
+        assert!(
+            drawn.0 >= frame.x - 0.5
+                && drawn.1 >= frame.y - 0.5
+                && drawn.2 <= frame.x + frame.w + 0.5
+                && drawn.3 <= frame.y + frame.h + 0.5,
+            "{name}: the extent drawn at {drawn:?} isn't whole in the frame ({}, {}, {}, {}): {r}",
+            frame.x,
+            frame.y,
+            frame.w,
+            frame.h
+        );
+        // The outline follows the extent as drawn, but where the margins clip it.
+        {
+            let o = l.elements.iter().find(|e| e.name == "Extent Outline").unwrap_or_else(|| panic!("{name}: no Extent Outline: {r}"));
+            let margin = 15.0;
+            for (side, at, want, edge) in [
+                ("left", o.x, drawn.0, frame.x),
+                ("top", o.y, drawn.1, frame.y),
+                ("right", o.x + o.w, drawn.2, frame.x + frame.w),
+                ("bottom", o.y + o.h, drawn.3, frame.y + frame.h),
+            ] {
+                assert!(
+                    (at - want).abs() <= 0.5 || (at - edge).abs() <= margin,
+                    "{name}: the outline's {side} at {at:.1}, the extent's at {want:.1}: {r}"
+                );
+            }
+        }
+        eprintln!("{name}: shift {} veiled {} scale {}", r["mapShift"], r["veiled"], r["scale"]);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A moved frame's coverage cut from one drawn wide enough for every move is the coverage of the
+/// moved frame drawn on its own, give or take the cells along the edges of what it draws.
+#[test]
+fn a_moved_frames_coverage_is_cut_from_the_wide_one() {
+    use crate::cmd::layout::crop_cells;
+    use crate::render::layout::frame_coverage;
+    use rustgis_data::{Dataset, Geometry, GeometryType};
+    use rustgis_geom::Coord;
+    let mut map = rustgis_map::Map::new("m");
+    let mut d = Dataset::new("shape", GeometryType::Polygon, Vec::new());
+    // An L, so a cut from the wrong side or the wrong way up doesn't match.
+    let ring = [(-0.3, -0.3), (0.4, -0.3), (0.4, -0.1), (-0.1, -0.1), (-0.1, 0.35), (-0.3, 0.35), (-0.3, -0.3)];
+    d.push(Some(Geometry::Polygon(vec![vec![ring.map(|(x, y)| Coord::new(x, y)).to_vec()]])), Vec::new());
+    map.add_dataset(d);
+    let (scale, (fw, fh), (sx, sy)): (f64, (f64, f64), (f64, f64)) = (1_000_000.0, (60.0, 40.0), (20.0, 15.0));
+    let wide = (fw + 2.0 * sx, fh + 2.0 * sy);
+    let centre = Coord::new(0.0, 0.0);
+    let cells = (384.0 * wide.0.max(wide.1) / fw.max(fh)).round() as u32;
+    let whole = frame_coverage(&mut map, centre, scale, wide.0, wide.1, cells).unwrap();
+    let flat = map.flat();
+    let at = flat.forward_checked(centre).unwrap();
+    let mm = 1000.0 * flat.ground_per_unit(at) * map.body().ratio() / scale;
+    for (dx, dy) in [(sx, 0.0), (-sx, 0.0), (0.0, sy), (0.0, -sy)] {
+        let cut = crop_cells(&whole, wide, (sx - dx, sy - dy), (fw, fh));
+        let there = flat.inverse(Coord::new(at.x - dx / mm, at.y + dy / mm)).unwrap();
+        let own = frame_coverage(&mut map, there, scale, fw, fh, 384).unwrap();
+        assert_eq!((cut.0, cut.1), (own.0, own.1), "the same grid");
+        let drawn = own.2.iter().filter(|c| **c).count();
+        let differ = cut.2.iter().zip(&own.2).filter(|(a, b)| a != b).count();
+        assert!(drawn > 100 && differ * 10 < drawn, "moved by {dx}, {dy}: {differ} of {drawn} cells differ");
+    }
+    // A frame reaching past the wide page is held inside it.
+    let held = crop_cells(&whole, wide, (-50.0, 1e9), (fw, fh));
+    assert_eq!(held.2.len(), (held.0 * held.1) as usize);
+}
+
+/// The move search draws the map wider than its frame, at the asked scale too, and a streamed
+/// layer is read for all of that: read for the frame alone (half as wide again on each side, in
+/// degrees), it misses what a move shows past that, as in Web Mercator far from the equator.
+#[test]
+fn a_publication_reads_streamed_layers_for_the_move_searchs_wide_drawing() {
+    let dir = std::env::temp_dir().join(format!("rustgis-wide-read-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (fill, points) = (dir.join("fill.geojson"), dir.join("far.geojson"));
+    let square = json!({"type": "FeatureCollection", "features": [{"type": "Feature", "properties": {}, "geometry":
+        {"type": "Polygon", "coordinates": [[[-20.0, 10.0], [60.0, 10.0], [60.0, 85.0], [-20.0, 85.0], [-20.0, 10.0]]]}}]});
+    std::fs::write(&fill, square.to_string()).unwrap();
+    let point = |lat: f64| json!({"type": "Feature", "properties": {}, "geometry": {"type": "Point", "coordinates": [20.0, lat]}});
+    std::fs::write(&points, json!({"type": "FeatureCollection", "features": [point(60.0), point(17.0)]}).to_string()).unwrap();
+    let mut s = Session::new(Project::default());
+    for _ in 0..30 {
+        s.run("layer.addData", &json!({"path": fill.display().to_string()})).unwrap();
+    }
+    s.run("layer.addData", &json!({"path": points.display().to_string(), "stream": true, "name": "Far"})).unwrap();
+    let p = json!({"profile": "a4-portrait", "extent": [0, 58, 40, 62], "author": "", "locator": "none", "veil": false});
+    let r = s.run("layout.publication", &p).unwrap();
+    let far = s.map().layers.iter().find(|l| l.name == "Far").unwrap();
+    // The frame (180 × 243.5 mm at 1:16,000,000) is read down to 20°N; the wide drawing, with the
+    // room to move the extent up, reaches about 13°N.
+    let held: Vec<f64> = far.dataset.features.iter().filter_map(|f| f.geometry.as_ref()).map(|g| g.extent().min_y).collect();
+    assert!(held.contains(&17.0), "the point at 17°N, in the wide drawing, is read: {held:?} {r}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A veiled map's surrounds group in a band: beside each other in a wide one, one over the other in
+/// a tall one, nowhere when they don't fit.
+#[test]
+fn a_veil_panel_groups_the_surrounds_by_the_bands_shape() {
+    use crate::cmd::layout::veil_panel;
+    let (legend, arrow, scale) = ((80.0, 50.0), (8.0, 12.0), (60.0, 10.0));
+    let (l, locator, a, b) = veil_panel((0.0, 0.0, 160.0, 70.0), legend, Some(40.0), arrow, scale, 3.0).unwrap();
+    assert!(l.0 + l.2 <= locator.unwrap().0, "beside it: {l:?} {locator:?}");
+    assert!(a.0 + a.2 <= 160.0 && b.1 >= locator.unwrap().1 + 40.0, "{a:?} {b:?}");
+    let apart =
+        |p: (f64, f64, f64, f64), q: (f64, f64, f64, f64)| p.0 + p.2 <= q.0 || q.0 + q.2 <= p.0 || p.1 + p.3 <= q.1 || q.1 + q.3 <= p.1;
+    assert!(apart(a, l) && apart(a, (locator.unwrap().0, locator.unwrap().1, 40.0, 40.0)), "the arrow clear: {a:?} {l:?} {locator:?}");
+    let (l, locator, _, b) = veil_panel((0.0, 0.0, 90.0, 130.0), legend, Some(40.0), arrow, scale, 3.0).unwrap();
+    assert!(l.1 >= b.1 + b.3 && locator.unwrap().0 == b.0, "under it: {l:?} {b:?}");
+    assert!(veil_panel((0.0, 0.0, 60.0, 60.0), legend, Some(40.0), arrow, scale, 3.0).is_none());
+    assert!(veil_panel((0.0, 0.0, 160.0, 70.0), legend, None, arrow, scale, 3.0).unwrap().1.is_none());
+}
+
+/// With no room for any shape of the legend on either side of a centred map, the map moves towards
+/// an edge, the asked extent still in the frame, and the legend takes the room that joins. With room
+/// already, it stays centred.
+#[test]
+fn a_publication_map_moves_aside_for_a_legend_with_no_room() {
+    let dir = std::env::temp_dir().join(format!("rustgis-map-shift-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("a_layer_name.geojson");
+    let json = json!({"type": "FeatureCollection", "features": [{"type": "Feature", "properties": {}, "geometry":
+        {"type": "Polygon", "coordinates": [[[0.0, 0.0], [15.0, 0.0], [15.0, 10.0], [0.0, 10.0], [0.0, 0.0]]]}}]});
+    std::fs::write(&path, json.to_string()).unwrap();
+    let mut checked = 0;
+    let laid = |layers: usize, extent: Value| {
+        let mut s = Session::new(Project::default());
+        for _ in 0..layers {
+            s.run("layer.addData", &json!({"path": path.display().to_string()})).unwrap();
+        }
+        let r =
+            s.run("layout.publication", &json!({"profile": "a4-landscape", "extent": extent, "author": "", "locator": "none"})).unwrap();
+        let said =
+            r["warnings"].as_array().unwrap().iter().filter_map(|w| w.as_str()).find(|w| w.contains("in its frame")).map(String::from);
+        (r["legendColumns"].as_u64().unwrap(), r["mapShift"][0].as_f64().unwrap(), r["mapShift"][1].as_f64().unwrap(), said)
+    };
+    let (_, x, y, said) = laid(3, json!([-5, -5, 20, 15]));
+    assert_eq!((x, y), (0.0, 0.0), "a short legend has room");
+    assert_eq!(said, None, "a map left centred isn't said to move");
+    let (columns, x, y, said) = laid(30, json!([0, 0, 15, 10]));
+    assert!(x.abs() > 5.0 && y == 0.0, "moved sideways: {x}, {y}");
+    let said = said.expect("a move is said");
+    assert!(said.contains(&format!("{:.0} mm {}", x.abs(), if x > 0.0 { "right" } else { "left" })), "{said}");
+    assert_eq!(columns, 1, "one column beside the map");
+    // A map running on past the extent: what is outside it is veiled, at the asked scale while the
+    // frame leaves a band of it wide enough, and at a smaller one otherwise.
+    let on_past = |extent: Value, veil: Value| {
+        let mut s = Session::new(Project::default());
+        for _ in 0..12 {
+            s.run("layer.addData", &json!({"path": path.display().to_string()})).unwrap();
+        }
+        let p = json!({"profile": "a4-landscape", "extent": extent, "author": "", "locator": "none", "veil": veil});
+        let r = s.run("layout.publication", &p).unwrap();
+        let smaller = r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("the map is drawn at 1:"));
+        let veils = r["elements"].as_array().unwrap().iter().filter(|e| e["name"].as_str().unwrap().starts_with("Veil")).count();
+        assert_eq!(r["arrangement"] == "veil", r["veiled"].as_bool().unwrap(), "{r}");
+        let said = r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("outside the extent is veiled"));
+        assert_eq!(said, r["veiled"].as_bool().unwrap(), "the veil is said, and only then: {r}");
+        // The surrounds grouped in the veil's band left their corners, and "moved" names them.
+        if r["veiled"] == json!(true) {
+            assert!(!r["moved"].as_array().unwrap().is_empty(), "the grouped surrounds are named as moved: {r}");
+        }
+        (r["veiled"].as_bool().unwrap(), smaller, veils > 0, r["scale"].as_f64().unwrap())
+    };
+    let (veiled, smaller, veils, _) = on_past(json!([7, 4, 9, 6]), Value::Null);
+    assert_eq!((veiled, smaller, veils), (true, false, true), "a narrow extent in a wide frame");
+    let (veiled, smaller, veils, scale) = on_past(json!([5, 4, 8.7, 6]), Value::Null);
+    assert_eq!((veiled, smaller, veils), (true, true, true), "an extent the frame's shape");
+    // `"veil": false` keeps the map as it is drawn: no veil, and the scale it was asked at.
+    let (veiled, smaller, veils, asked) = on_past(json!([5, 4, 8.7, 6]), json!(false));
+    assert_eq!((veiled, smaller, veils), (false, false, false));
+    assert!(asked < scale, "1:{asked} against the veil's 1:{scale}");
+    assert!(on_past(json!([7, 4, 9, 6]), json!(true)).0, "true, as by default");
+    let mut s = Session::new(Project::default());
+    s.run("layer.addData", &json!({"path": path.display().to_string()})).unwrap();
+    let bad = s.run("layout.publication", &json!({"profile": "a4-landscape", "veil": "no"})).unwrap_err();
+    assert!(bad.contains("veil is true or false"), "{bad}");
+    // A figure labels only its left and bottom edges, so its margins differ side to side: a move
+    // keeps the extent inside each side's own margin, off the graticule's labels, whatever the
+    // other side's.
+    for (profile, extent) in
+        [("figure-2col", json!([7, 4, 9, 6])), ("figure-2col", json!([6, 4, 9, 6])), ("thesis-half", json!([7, 4, 9, 6]))]
+    {
+        let mut s = Session::new(Project::default());
+        for _ in 0..12 {
+            s.run("layer.addData", &json!({"path": path.display().to_string()})).unwrap();
+        }
+        let r = s.run("layout.publication", &json!({"profile": profile, "extent": extent, "author": ""})).unwrap();
+        let l = s.project.layouts.last().unwrap();
+        let el = |name: &str| l.elements.iter().find(|e| e.name == name).map(|e| (e.x, e.y, e.w, e.h));
+        // An unveiled map has no outline of its extent; a veiled one has both.
+        if r["veiled"] == json!(false) {
+            assert!(el("Extent Outline").is_none(), "{profile} {extent}: an outline with no veil: {r}");
+            continue;
+        }
+        let (Some(frame), Some(outline)) = (el("Map Frame"), el("Extent Outline")) else {
+            panic!("{profile} {extent}: veiled, with no Map Frame or Extent Outline: {r}");
+        };
+        let (left, bottom) = (2.0 + 9.0, 2.0 + 6.0);
+        assert!(outline.0 >= frame.0 + left - 0.5, "{profile} {extent}: {outline:?} in the left labels' room of {frame:?}: {r}");
+        assert!(
+            outline.1 + outline.3 <= frame.1 + frame.3 - bottom + 0.5,
+            "{profile} {extent}: {outline:?} in the bottom labels' room: {r}"
+        );
+        // The veil stops at the graticule's labels, so they stay as dark as on an unveiled map.
+        for veil in l.elements.iter().filter(|e| e.name.starts_with("Veil")) {
+            assert!(
+                veil.x >= frame.0 + left - 1e-6 && veil.y + veil.h <= frame.1 + frame.3 - bottom + 1e-6,
+                "{profile}: {} over the labels: {:?} in {frame:?}",
+                veil.name,
+                (veil.x, veil.y, veil.w, veil.h)
+            );
+        }
+        checked += 1;
+    }
+    assert_eq!(checked, 2, "both figures of the narrow extent are veiled");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

@@ -63,8 +63,26 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
     when that shows more of it, or as much while covering at least a quarter less of what the map
     draws (the answer's `legendColumns`); in a side column it stays in one. Polygon layers with no
     fill and no labels, such as neighbouring borders, don't count as what the map draws here, unless
-    nothing else is shown. If the legend or colorbar cannot fit, the result warns about clipping or
-    resizing. A streamed layer still loading gets a fixed-size legend to adjust by hand.
+    nothing else is shown, nor do polygon layers in one colour with no labels that run on past the
+    frame, such as neighbouring states, beside a layer drawn by classes or a raster. When no shape
+    of the legend fits, the map is first moved towards an edge, as far as the asked extent stays in
+    the frame, so the room on both its sides joins (the answer's `mapShift`, in mm right and down,
+    and a warning). Where the projection stretches, as Web Mercator does away from the equator, the
+    moved frame is drawn at its new centre's ground scale, and the extent has to stay whole at that
+    scale. Only when no move makes room for it, a continuous map with a long legend is veiled: at
+    the asked scale, at least 80% of the extent's part of the frame and 30% of the rest are drawn
+    (not counting the layers just named), and the legend's box in one column, its colorbar included,
+    is taller than a quarter of the frame; a sparser map stays unveiled. The veil covers what is
+    outside the extent's bounding box in the map's projection, but for the strips under the
+    graticule's labels (so an extent whose edges curve there, as in a conic or polar projection,
+    keeps the box's corners outside it unveiled), and the surrounds group in its widest band (the
+    answer's `veiled`, `arrangement` `"veil"` and `moved`, and a warning), at up to about half the
+    scale on a sheet (each scale tried is rounded up to two significant figures) when the frame
+    leaves too little of it, which the result says too. When neither makes room, the map stays
+    centred and unveiled, and the legend is laid out as above. The veil and the surrounds are
+    ordinary elements, to move or delete as any other; `"veil": false` leaves the map unveiled and
+    at its scale. If the legend or colorbar cannot fit, the result warns about clipping or resizing.
+    A streamed layer still loading gets a fixed-size legend to adjust by hand.
   - **Decimal comma**: `"decimal": ","` prints the graticule, scale bar and colorbar numbers and
     `{scale}` with a decimal comma and points between thousands (`0,05`, `1:6.300.000`).
     `layout.page={"decimal": ","}` sets it on any layout; `"."` restores decimal points.
