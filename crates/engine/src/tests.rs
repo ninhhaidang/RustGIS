@@ -35766,6 +35766,77 @@ fn shapefile_exports_say_which_field_names_they_changed() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// Exporting to Web Mercator says how many vertices beyond 85.05° it writes at 85.05°, where Web
+/// Mercator ends: the World Atlas's countries reach the South Pole, and the file's stop at 85.05°
+/// south. In longitude/latitude nothing is said of it.
+#[test]
+fn web_mercator_exports_say_what_they_write_at_85_degrees() {
+    let dir = std::env::temp_dir().join(format!("rustgis-engine-merc-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut s = world();
+    let said = |s: &Session, mark| -> Vec<String> {
+        s.notices_since(mark).iter().filter(|n| n.text.contains("where Web Mercator ends")).map(|n| n.text.clone()).collect()
+    };
+    let south = |s: &Session, id: u32| s.map().layer(id).unwrap().dataset.extent().min_y;
+    let mut beyond = 0;
+    for g in
+        s.map().layers.iter().filter(|l| l.name == "Countries").flat_map(|l| l.dataset.features.iter()).filter_map(|f| f.geometry.as_ref())
+    {
+        g.for_each_coord(|c| beyond += usize::from(c.y.abs() > rustgis_geom::MAX_LAT));
+    }
+    assert!(beyond > 0);
+    let out = dir.join("countries.shp").display().to_string();
+    let mark = s.notice_mark();
+    s.run("share.exportLayer", &json!({"layer": "Countries", "path": out, "crs": "EPSG:3857"})).unwrap();
+    assert_eq!(
+        said(&s, mark),
+        [format!("{out}: {beyond} vertices of Countries are beyond 85.05° north or south, and written at 85.05°, where Web Mercator ends")],
+        "{:?}",
+        s.notices_since(mark)
+    );
+    let back = s.run("layer.addData", &json!({"path": out})).unwrap()["layer"].as_u64().unwrap() as u32;
+    assert!((south(&s, back) + rustgis_geom::MAX_LAT).abs() < 1e-6, "{}", south(&s, back));
+    // In longitude/latitude, the layer's southern edge is kept as it is, and nothing is said of it.
+    let source_south = s.map().layers.iter().find(|l| l.name == "Countries").unwrap().dataset.extent().min_y;
+    assert!(source_south < -rustgis_geom::MAX_LAT, "{source_south}");
+    let mark = s.notice_mark();
+    let lonlat = dir.join("countries-4326.shp");
+    s.run("share.exportLayer", &json!({"layer": "Countries", "path": lonlat, "crs": "EPSG:4326"})).unwrap();
+    assert!(said(&s, mark).is_empty(), "{:?}", s.notices_since(mark));
+    let back = s.run("layer.addData", &json!({"path": lonlat})).unwrap()["layer"].as_u64().unwrap() as u32;
+    assert!((south(&s, back) - source_south).abs() < 1e-6, "{} for {source_south}", south(&s, back));
+    // A raster layer reaching the poles writes no vertices: nothing is said of 85.05°.
+    let world_tif = {
+        use base64::Engine;
+        use rustgis_data::raster::{ColorHint, Crs, GeoTransform, Raster, geotiff};
+        let gt = GeoTransform { origin_x: -180.0, origin_y: 90.0, pixel_width: 45.0, pixel_height: -45.0 };
+        let bands = (0..3).map(|b| (0..32).map(|i| ((i * 7 + b * 40) % 256) as f32).collect()).collect();
+        let r = Raster::new("globe", 8, 4, bands, gt, Crs::LonLat, None, ColorHint::Rgb { alpha: false }, "UInt8").unwrap();
+        base64::engine::general_purpose::STANDARD.encode(geotiff::write(&r, 0).unwrap())
+    };
+    let globe = s.run("layer.addDataBytes", &json!({"fileName": "globe.tif", "data": world_tif})).unwrap()["layer"].as_u64().unwrap();
+    assert!(s.map().layer(globe as u32).unwrap().is_raster());
+    let mark = s.notice_mark();
+    let out = dir.join("globe.gpkg").display().to_string();
+    s.run("share.exportLayer", &json!({"layer": globe, "path": out, "crs": "EPSG:3857"})).unwrap();
+    assert!(said(&s, mark).is_empty(), "{:?}", s.notices_since(mark));
+    // Streamed, the countries are counted as they're written a chunk at a time (to a GeoPackage),
+    // whatever extent the source declares, and read whole (for a Shapefile), from their features.
+    let gpkg = dir.join("countries.gpkg").display().to_string();
+    s.run("share.exportLayer", &json!({"layer": "Countries", "path": gpkg, "crs": "EPSG:4326"})).unwrap();
+    s.run("layer.addData", &json!({"path": gpkg, "stream": true, "name": "Streamed"})).unwrap();
+    let notice = format!("{beyond} vertices of Streamed are beyond 85.05° north or south, and written at 85.05°, where Web Mercator ends");
+    for file in ["streamed.gpkg", "streamed.shp"] {
+        let out = dir.join(file).display().to_string();
+        let mark = s.notice_mark();
+        s.run("share.exportLayer", &json!({"layer": "Streamed", "path": out, "crs": "EPSG:3857"})).unwrap();
+        assert_eq!(said(&s, mark), [format!("{out}: {notice}")], "{:?}", s.notices_since(mark));
+    }
+    // The streamed layer holds its GeoPackage open (Windows won't delete it till it's closed).
+    drop(s);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 /// Exporting to a Shapefile says how many vertices with a missing or infinite coordinate it left
 /// out, from a layer and from a standalone table; clean geometry gives no such notice (#1687).
 #[test]
@@ -35806,8 +35877,8 @@ fn shapefile_exports_say_which_vertices_they_leave_out() {
     let mark = s.notice_mark();
     s.run("share.exportLayer", &json!({"layer": clean, "path": dir.join("clean.shp")})).unwrap();
     assert!(said(&s, mark).is_empty(), "{:?}", s.notices_since(mark));
-    // Projected, an infinite latitude is written (Web Mercator puts it at 85.05°), and nothing is
-    // said of it; in longitude/latitude it's left out, and said.
+    // Projected, an infinite latitude is written (Web Mercator puts it at 85.05°, which the 85.05°
+    // notice says), and isn't said to be left out; in longitude/latitude it's left out, and said.
     let mut polar = Dataset::new("polar", GeometryType::Point, vec![]);
     polar.push(Some(Geometry::MultiPoint(vec![Coord::new(0.0, 0.0), Coord::new(1.0, f64::INFINITY), Coord::new(2.0, 2.0)])), vec![]);
     let polar = s.map_mut().add_layer(rustgis_map::Layer::new(0, polar));

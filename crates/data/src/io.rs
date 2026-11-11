@@ -2686,6 +2686,26 @@ fn shapefile_keeps(g: Option<&Geometry>, gt: GeometryType) -> bool {
     }
 }
 
+/// Calls `f` with each vertex of `g` that [`shapefile_parts_in`] writes, in a layer of type `gt`,
+/// once a projected export has made every coordinate finite (`project` refuses one it can't):
+/// none of another kind than the layer's, and of a line or a polygon only the parts it can draw,
+/// a line part of two vertices, a ring of three (a polygon's holes go with its outer ring).
+pub(crate) fn shapefile_vertices(g: &Geometry, gt: GeometryType, f: impl FnMut(Coord)) {
+    match (g, gt) {
+        (Geometry::Point(_) | Geometry::MultiPoint(_), GeometryType::Point) => g.for_each_coord(f),
+        (Geometry::Line(parts), GeometryType::Polyline) => parts.iter().filter(|p| p.len() >= 2).flatten().copied().for_each(f),
+        (Geometry::Polygon(polys), GeometryType::Polygon) => polys
+            .iter()
+            .filter(|p| p.first().is_some_and(|outer| outer.len() >= 3))
+            .flatten()
+            .filter(|r| r.len() >= 3)
+            .flatten()
+            .copied()
+            .for_each(f),
+        _ => {}
+    }
+}
+
 /// What [`shapefile_parts_in`] leaves out of geometry `g` it writes to a layer of type `gt`, as
 /// (vertices, parts), `drawable` telling the vertices it writes: the vertices that aren't, and the
 /// line parts and polygon rings with too few drawable vertices (a part needs two, a ring three),
@@ -3692,6 +3712,132 @@ mod tests {
                 "map.json: the positions of 2 layers (parcels, roads) are approximate, possibly a few hundred metres off: their coordinate systems have no shift to WGS 84"
             ]
         );
+    }
+
+    /// An export in Web Mercator writes a latitude beyond 85.05°, an infinite one too, at 85.05°,
+    /// where Web Mercator ends, and says how many vertices it moved; for a streamed layer, its
+    /// source's extent tells. Within 85.05°, or in another system, nothing is said of it.
+    #[test]
+    fn a_web_mercator_export_says_what_it_writes_at_85_degrees() {
+        use rustgis_geom::{Extent, MAX_LAT, lonlat_to_merc, merc_to_lonlat};
+        let c = Coord::new;
+        let ext = |ds: &Dataset| ds.extent();
+        let layer = |name: &str, points: &[Coord]| {
+            let mut ds = Dataset::new(name, GeometryType::Point, vec![]);
+            for p in points {
+                ds.push(Some(Geometry::Point(*p)), vec![]);
+            }
+            ds
+        };
+        let polar = layer("polar", &[c(10.0, 89.0), c(20.0, -90.0), c(30.0, 60.0), c(40.0, f64::INFINITY)]);
+        // What the export writes: each latitude beyond at 85.05°.
+        let merc = project(&polar, Crs::WebMercator).unwrap();
+        let written: Vec<Coord> = merc
+            .features
+            .iter()
+            .filter_map(|f| match f.geometry {
+                Some(Geometry::Point(p)) => Some(merc_to_lonlat(p)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(written.len(), 4);
+        for (w, lat) in written.iter().zip([MAX_LAT, -MAX_LAT, 60.0, MAX_LAT]) {
+            assert!((w.y - lat).abs() < 1e-9, "{w:?}");
+        }
+        assert_eq!(merc.features[0].geometry, Some(Geometry::Point(lonlat_to_merc(c(10.0, MAX_LAT)))));
+        assert_eq!(
+            crate::export_notes([(&polar, ext(&polar))], "polar.shp", Crs::WebMercator),
+            ["polar.shp: 3 vertices of polar are beyond 85.05° north or south, and written at 85.05°, where Web Mercator ends"]
+        );
+        // In another system, or within 85.05°: nothing.
+        for crs in [Crs::LonLat, Crs::Epsg(32631)] {
+            assert!(crate::export_notes([(&polar, ext(&polar))], "polar.shp", crs).is_empty(), "{crs:?}");
+        }
+        let within = layer("within", &[c(30.0, 60.0), c(0.0, -MAX_LAT)]);
+        assert!(crate::export_notes([(&within, ext(&within))], "within.shp", Crs::WebMercator).is_empty());
+        // One vertex; and several layers in one notice, counting the vertices of all.
+        let one = layer("one", &[c(0.0, 86.0)]);
+        assert_eq!(
+            crate::export_notes([(&one, ext(&one))], "one.gpkg", Crs::WebMercator),
+            ["one.gpkg: 1 vertex of one is beyond 85.05° north or south, and written at 85.05°, where Web Mercator ends"]
+        );
+        assert_eq!(
+            crate::export_notes([(&polar, ext(&polar)), (&within, ext(&within)), (&one, ext(&one))], "map.gpkg", Crs::WebMercator),
+            [
+                "map.gpkg: 4 vertices of 2 layers (polar, one) are beyond 85.05° north or south, and written at 85.05°, where Web Mercator ends"
+            ]
+        );
+        // A streamed layer's features are only those in view: its source's extent tells, without
+        // a count, and only that it reaches beyond, as a source can declare a wider one than its
+        // data's.
+        let mut window = layer("tiles", &[c(0.0, 0.0)]);
+        window.windowed = true;
+        assert_eq!(
+            crate::export_notes([(&window, Extent::new(-180.0, -90.0, 180.0, 84.0))], "tiles.gpkg", Crs::WebMercator),
+            [
+                "tiles.gpkg: the extent of tiles reaches beyond 85.05° north or south, and what lies beyond is written at 85.05°, where Web Mercator ends"
+            ]
+        );
+        assert!(crate::export_notes([(&window, Extent::new(-180.0, -80.0, 180.0, 84.0))], "tiles.gpkg", Crs::WebMercator).is_empty());
+        // A layer counted and a window told by its extent: one notice, saying both.
+        assert_eq!(
+            crate::export_notes([(&polar, ext(&polar)), (&window, Extent::new(-180.0, -90.0, 180.0, 84.0))], "map.gpkg", Crs::WebMercator),
+            [
+                "map.gpkg: 3 vertices of polar are beyond 85.05° north or south, and written at 85.05°; the extent of tiles reaches beyond 85.05° north or south, and what lies beyond is written at 85.05°, where Web Mercator ends"
+            ]
+        );
+        // A layer without features that isn't a window (a raster layer's, or a streamed layer's
+        // written a chunk at a time, whose export counts as it writes) has no extent tell.
+        let empty = Dataset::new("empty", GeometryType::Point, vec![]);
+        assert!(crate::export_notes([(&empty, Extent::new(-180.0, -90.0, 180.0, 90.0))], "empty.gpkg", Crs::WebMercator).is_empty());
+        // A Shapefile holds only geometry of the layer's kind, and of it only parts it can draw:
+        // the vertices it leaves out aren't counted, though a GeoPackage holds them. Of the lines,
+        // the 2 vertices of the first are written, not the one-vertex part or the point. Of the
+        // polygons, the 4 of the first one's three-vertex hole, not its two-vertex one, nor the
+        // second polygon, whose outer ring has 2 vertices, with its hole.
+        let mut lines = Dataset::new("lines", GeometryType::Polyline, vec![]);
+        lines.push(Some(Geometry::Line(vec![vec![c(0.0, 88.0), c(10.0, 88.0)]])), vec![]);
+        lines.push(Some(Geometry::Line(vec![vec![c(0.0, 89.0)], vec![c(0.0, 0.0), c(1.0, 0.0)]])), vec![]);
+        lines.push(Some(Geometry::Point(c(5.0, 89.0))), vec![]);
+        let mut polys = Dataset::new("polys", GeometryType::Polygon, vec![]);
+        let ring = |r: &[(f64, f64)]| r.iter().map(|&(x, y)| c(x, y)).collect::<Vec<_>>();
+        polys.push(
+            Some(Geometry::Polygon(vec![vec![
+                ring(&[(0.0, 0.0), (0.0, 10.0), (10.0, 10.0), (0.0, 0.0)]),
+                ring(&[(1.0, 86.0), (2.0, 86.0), (1.5, 87.0), (1.0, 86.0)]),
+                ring(&[(3.0, 89.0), (3.0, 89.0)]),
+            ]])),
+            vec![],
+        );
+        polys.push(
+            Some(Geometry::Polygon(vec![vec![
+                ring(&[(0.0, 89.0), (1.0, 89.0)]),
+                ring(&[(0.0, 86.0), (1.0, 86.0), (1.0, 87.0), (0.0, 86.0)]),
+            ]])),
+            vec![],
+        );
+        for (ds, in_shapefile, in_geopackage) in [(&lines, 2, 4), (&polys, 4, 12)] {
+            let name = ds.name.as_str();
+            for (target, n) in
+                [(format!("{name}.shp"), in_shapefile), (format!("{name}.zip"), in_shapefile), (format!("{name}.gpkg"), in_geopackage)]
+            {
+                assert_eq!(
+                    crate::export_notes([(ds, ext(ds))], &target, Crs::WebMercator),
+                    [format!(
+                        "{target}: {n} vertices of {name} are beyond 85.05° north or south, and written at 85.05°, where Web Mercator ends"
+                    )]
+                );
+            }
+            // As many as the Shapefile written holds at 85.05°.
+            let (zip, _) = write_bytes_in(ds, "shp", Crs::WebMercator).unwrap();
+            let mut at_edge = 0;
+            for (back, _) in read_zip(&format!("{name}.zip"), &zip).unwrap() {
+                for g in back.features.iter().filter_map(|f| f.geometry.as_ref()) {
+                    g.for_each_coord(|c| at_edge += usize::from((c.y.abs() - MAX_LAT).abs() < 1e-6));
+                }
+            }
+            assert_eq!(at_edge, in_shapefile, "{name}");
+        }
     }
 
     #[test]

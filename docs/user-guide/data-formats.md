@@ -620,7 +620,10 @@ coordinate system defined in a file whose datum has no shift to WGS 84 (a NAD 27
 another system says so; written back in that same system they are exact, and nothing is said.
 Coordinates beyond ±180.5° longitude or ±90.5° latitude (a CSV of eastings and northings without its
 `"crs"`, a Shapefile without its `.prj`) aren't longitude/latitude: an export says they're out of
-place, and Define Projection, below, places them.
+place, and Define Projection, below, places them. Web Mercator (EPSG:3857) ends at 85.05° north and
+south: an export in it writes a latitude beyond (Antarctica near the South Pole, say, or an infinite
+one) at 85.05°, and says how many of the vertices the file holds it moved; a layer read in place and
+written a chunk at a time is counted as it's written.
 
 Coordinate systems of other bodies than the Earth (Mars, the Moon and the rest of the IAU's
 `IAU_2015` codes, or any datum whose ellipsoid isn't the Earth's) aren't read as such yet: every

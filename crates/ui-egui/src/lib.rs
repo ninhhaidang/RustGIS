@@ -4041,7 +4041,9 @@ impl RustGisApp {
                 };
                 let ext = if ext == "shp" { "zip".to_string() } else { ext };
                 let name = format!("{}.{ext}", l.name);
-                let notes = rustgis_engine::data::export_notes([(ds, l.extent())], &name, crs);
+                // The features written, read whole, give their own extent (not a raster's, or the
+                // one a streamed layer's source declares).
+                let notes = rustgis_engine::data::export_notes([(ds, ds.extent())], &name, crs);
                 let mut dbf_notes = Vec::new();
                 if ext == "zip" {
                     dbf_notes.extend(io::shapefile_names_note(&ds.fields, &name));

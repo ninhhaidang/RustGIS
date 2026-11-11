@@ -103,6 +103,40 @@ impl FeatureSource for Runs {
     }
 }
 
+/// An export in Web Mercator written a chunk at a time counts the vertices beyond 85.05° it
+/// writes at 85.05°, as it writes them: from a source that declares no extent, whose features
+/// beyond aren't in its first chunk. In longitude/latitude, or within 85.05°, it counts none.
+#[test]
+fn a_streamed_web_mercator_export_counts_what_it_writes_at_85_degrees() {
+    let d = folder("merc");
+    let mut ds = Dataset::new("polar", GeometryType::Point, vec![]);
+    for (x, y) in [(0.0, 0.0), (1.0, 10.0), (2.0, 89.0), (3.0, -90.0), (4.0, 60.0), (5.0, 86.0)] {
+        ds.push_next(Some(Geometry::Point(Coord::new(x, y))), vec![]);
+    }
+    ds.push_next(None, vec![]);
+    let mut src = Runs::new(&ds, 2);
+    src.info.extent = rustgis_geom::Extent::EMPTY;
+    for ext in ["gpkg", "fgb"] {
+        for (crs, n) in [(Crs::WebMercator, 3), (Crs::LonLat, 0)] {
+            let path = d.join(format!("polar-{}.{ext}", crs.epsg()));
+            let e = write_chunks_in(&src, &ds, &path, crs, 1).unwrap();
+            assert_eq!(e.beyond_web_mercator, n, ".{ext} in {}", crs.label());
+            // As many as the file holds at 85.05°.
+            let mut at_edge = 0;
+            for g in read_back(&path).features.iter().filter_map(|f| f.geometry.as_ref()) {
+                g.for_each_coord(|c| at_edge += usize::from((c.y.abs() - rustgis_geom::MAX_LAT).abs() < 1e-6));
+            }
+            assert_eq!(at_edge, n, ".{ext} in {}", crs.label());
+        }
+    }
+    assert_eq!(
+        crate::web_mercator_moved_note("polar.gpkg", "polar", 3).as_deref(),
+        Some("polar.gpkg: 3 vertices of polar are beyond 85.05° north or south, and written at 85.05°, where Web Mercator ends")
+    );
+    assert_eq!(crate::web_mercator_moved_note("polar.gpkg", "polar", 0), None);
+    let _ = std::fs::remove_dir_all(d);
+}
+
 /// Every streamed format, from a source read in place a few features a chunk, holds what the
 /// same export of the whole layer holds, in longitude/latitude and in a projected system.
 #[test]
@@ -130,11 +164,15 @@ fn a_streamed_export_writes_what_a_whole_export_writes() {
                 let what = format!("{format} to .{ext} in {}", crs.label());
                 let unfit = streamed.unfit.clone();
                 assert!(unfit.iter().all(|n| *n == 0), "{what}: {unfit:?}");
-                assert_eq!(
-                    streamed,
-                    Exported { written: whole.features.len() - left_out, left_out, skipped: 0, null_numbers: 0, unfit },
-                    "{what}"
-                );
+                let expected = Exported {
+                    written: whole.features.len() - left_out,
+                    left_out,
+                    skipped: 0,
+                    null_numbers: 0,
+                    unfit,
+                    beyond_web_mercator: 0,
+                };
+                assert_eq!(streamed, expected, "{what}");
                 let (a, b) = (read_back(&a), read_back(&b));
                 assert_eq!((&a.fields, a.geometry_type, a.crs), (&b.fields, b.geometry_type, b.crs), "{what}");
                 assert_eq!(a.features, b.features, "{what}");
