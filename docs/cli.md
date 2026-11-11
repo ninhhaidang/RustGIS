@@ -25,9 +25,18 @@ It defaults to 1600 × 900 pixels at 96 DPI; `--width`, `--height` and `--dpi` c
 A data file is zoomed to its full extent; a project keeps its saved view.
 `--tiles` accepts an XYZ template, vector tiles or a MapLibre-style address.
 
-`--worldview auto|default|china` chooses the disputed borders in the built-in countries and
-world outline, for `render`, `run` and the other subcommands. `auto` follows
-`RUSTGIS_WORLDVIEW`, else the system time zone and locale.
+`--worldview auto|default|CODE` chooses the disputed borders in the built-in countries and
+world outline, for `render`, `run`, `ask` and `mcp`: the default borders, or a
+[worldview](user-guide/maps.md#worldview)'s code, such as `chn`, `ind` or `usa`. A worldview
+other than the default is downloaded once and kept in the cache folder; if the download fails,
+a named one is an error. `auto` follows `RUSTGIS_WORLDVIEW`, else the system time zone and
+locale (China's view in mainland China, falling back to the default borders with a warning when
+it can't be downloaded). `--worldview-detail simplified|original` chooses how detailed: the
+simplified borders (the default, about 250 KB) or Natural Earth's 1:10m ones (a 3 MB download),
+which `--worldview default` also downloads. Given explicitly, it makes a failed download an
+error even with `auto`. Nothing is downloaded by `ask`'s model and sign-in options, by `ask`
+with no request unless it reads or saves a project (with `--account` and no request, not even
+then), nor by `mcp --attach`.
 
 `--threads N` sets the most threads one piece of work uses (1 to 1024, never more than the
 cores), as [`gp.threads`](user-guide/analysis.md#analysis-workflows) sets it. With `mcp --attach` the

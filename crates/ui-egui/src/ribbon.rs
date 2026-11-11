@@ -4998,29 +4998,51 @@ fn other_name(ui: &Ui, l: crate::i18n::Lang) -> &'static str {
     if shown == l.english() && drawable(ui, l.name()) { l.name() } else { l.english() }
 }
 
-/// Whose view of disputed borders the built-in countries and world outline show (Settings › Language).
+/// Whose view of disputed borders the built-in countries and world outline show (Settings ›
+/// Language): the built-in default or one of Natural Earth's points of view, downloaded when
+/// chosen. Until one is chosen, a system in mainland China shows China's.
 fn worldview_menu(app: &mut RustGisApp, ui: &mut Ui) {
-    use rustgis_engine::sample::Worldview;
-    let name = |w: Worldview| match w {
-        Worldview::Default => tl!("Default"),
-        Worldview::China => tl!("China"),
+    use crate::worldviewui::name;
+    use rustgis_engine::sample::{self, Detail, View, Worldview};
+    let label = match crate::worldviewui::downloading(app) {
+        Some(w) => crate::i18n::fmt("{name} (downloading…)", &[("name", name(w))]),
+        None => name(sample::worldview()).to_string(),
     };
-    let auto = app.ui.worldview == crate::i18n::AUTO;
-    let current = rustgis_engine::sample::worldview();
-    let label = if auto { format!("{} ({})", tl!("Automatic"), name(current)) } else { name(current).to_string() };
     let label = format!("{}\n{label}", tl!("Worldview"));
     big_menu(ui, app, "globe_view", &label, "Whose borders the sample countries and the basemap outline show.", move |ui, app| {
-        if ui.selectable_label(auto, tl!("Automatic (system time zone and region)")).clicked() {
-            let _ = app.run("ui.worldview", json!({"worldview": crate::i18n::AUTO}));
-            ui.close();
-        }
-        ui.separator();
-        for w in [Worldview::Default, Worldview::China] {
-            if ui.selectable_label(!auto && w == current, name(w)).clicked() {
-                let _ = app.run("ui.worldview", json!({"worldview": w.code()}));
-                ui.close();
+        // Looked up only while the menu is open: `auto` reads the system's time zone and locale.
+        let wanted = crate::worldviewui::wanted(app);
+        ui.label(egui::RichText::new(tl!("Detail")).small().weak());
+        for (d, text, tip) in [
+            (Detail::Simplified, tl!("Simplified"), tl!("Borders at 1:110m, a small download (about 250 KB)")),
+            (
+                Detail::Original,
+                tl!("Original"),
+                tl!("Natural Earth's 1:10m borders with every island, a larger download (about 3 MB, 10 MB unpacked)"),
+            ),
+        ] {
+            if ui.selectable_label(wanted.detail == d, text).on_hover_text(tip).clicked() {
+                let _ = app.run("ui.worldview", json!({"detail": d.code()}));
             }
         }
+        ui.separator();
+        let detail = Detail::from_code(&app.ui.worldview_detail).unwrap_or_default();
+        egui::ScrollArea::vertical().max_height(ui.ctx().content_rect().height() * 0.6).show(ui, |ui| {
+            for w in Worldview::all() {
+                let text = if sample::text(View::new(w, detail)).is_some() {
+                    name(w).to_string()
+                } else {
+                    crate::i18n::fmt("{name} (download)", &[("name", name(w))])
+                };
+                if ui.selectable_label(w == wanted.worldview, text).clicked() {
+                    let _ = app.run("ui.worldview", json!({"worldview": w.code()}));
+                    ui.close();
+                }
+                if w.built_in() {
+                    ui.separator();
+                }
+            }
+        });
     });
 }
 

@@ -279,7 +279,15 @@ fn is_zlib(b: &[u8]) -> bool {
 
 /// Strips the gzip header (RFC 1952, all flags) and inflates the deflate body; the trailer is ignored.
 fn gunzip(b: &[u8]) -> Result<Vec<u8>, String> {
+    gunzip_within(b, MAX_INFLATE)
+}
+
+/// Inflates gzip bytes to at most `max` bytes (more is an error, not a truncation).
+pub fn gunzip_within(b: &[u8], max: usize) -> Result<Vec<u8>, String> {
     const TRUNC: &str = "truncated gzip header";
+    if !b.starts_with(&[0x1f, 0x8b]) {
+        return Err("not gzip".into());
+    }
     if b.get(2) != Some(&8) {
         return Err("unsupported gzip compression method".into());
     }
@@ -300,7 +308,7 @@ fn gunzip(b: &[u8]) -> Result<Vec<u8>, String> {
         pos += 2;
     }
     let body = b.get(pos..).ok_or(TRUNC)?;
-    inflate::decompress_to_vec_with_limit(body, MAX_INFLATE).map_err(|e| format!("gzip: {:?}", e.status))
+    inflate::decompress_to_vec_with_limit(body, max).map_err(|e| format!("gzip: {:?}", e.status))
 }
 
 /// Minimal protobuf wire reader.

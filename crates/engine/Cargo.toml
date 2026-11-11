@@ -33,6 +33,7 @@ geolibre = ["dep:rustgis-geolibre"]
 testing = ["rustgis-plugins/testing"]
 
 [dev-dependencies]
+miniz_oxide = { workspace = true }
 # Writing sample GeoPackages.
 rusqlite = { workspace = true }
 rustgis-plugins = { workspace = true, features = ["testing"] }

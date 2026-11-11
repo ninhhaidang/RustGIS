@@ -4796,6 +4796,7 @@ dependencies = [
  "iana-time-zone",
  "image",
  "log",
+ "miniz_oxide 0.9.1",
  "postgres",
  "rusqlite",
  "rustgis-analysis",

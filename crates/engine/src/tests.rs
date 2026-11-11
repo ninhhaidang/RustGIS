@@ -69,30 +69,103 @@ pub(crate) fn isolate_process_test(name: &str) -> bool {
 
 #[test]
 fn worldview_swaps_only_untouched_sample_countries() {
-    use sample::{Worldview, swap_countries};
+    use sample::{Detail, View, Worldview, swap_countries};
     let countries = |s: &Session| s.map().layer_by_name("Countries").unwrap().dataset.features.len();
+    // Japan's view, which no other test uses, given countries that differ from the built-in ones
+    // (every country but the first) as if downloaded.
+    let japan = View::new(Worldview::from_code("jpn").unwrap(), Detail::Original);
+    let mut fewer: Value = serde_json::from_str(sample::COUNTRIES).unwrap();
+    fewer["features"].as_array_mut().unwrap().remove(0);
     let mut s = world();
     s.mark_saved();
     let n = countries(&s);
-    // The layer holds the default countries, not China's.
-    assert!(!swap_countries(&mut s, Worldview::China, Worldview::Default));
-    assert!(swap_countries(&mut s, Worldview::Default, Worldview::China));
-    assert_ne!(countries(&s), n);
+    // Not before the view's countries are at hand.
+    assert!(!sample::ready(japan));
+    assert!(!swap_countries(&mut s, View::DEFAULT, japan));
+    sample::accept(japan, fewer.to_string().into_bytes()).unwrap();
+    assert!(sample::ready(japan));
+    // The layer holds the default countries, not Japan's.
+    assert!(!swap_countries(&mut s, japan, View::DEFAULT));
+    assert!(swap_countries(&mut s, View::DEFAULT, japan));
+    assert_eq!(countries(&s), n - 1);
     assert!(!s.dirty());
-    assert!(swap_countries(&mut s, Worldview::China, Worldview::Default));
+    assert!(swap_countries(&mut s, japan, View::DEFAULT));
     assert_eq!(countries(&s), n);
-    // Not in a project with changes, or a saved one.
+    // Not in a project with changes, or a saved one; it still holds the sample's countries (the
+    // app then says they're kept).
     s.mark_unsaved();
-    assert!(!swap_countries(&mut s, Worldview::Default, Worldview::China));
+    assert!(!swap_countries(&mut s, View::DEFAULT, japan));
+    assert!(sample::holds_countries(&s, View::DEFAULT));
+    assert!(!sample::holds_countries(&s, japan));
     s.mark_saved();
     s.path = Some("atlas.rgis".into());
-    assert!(!swap_countries(&mut s, Worldview::Default, Worldview::China));
+    assert!(!swap_countries(&mut s, View::DEFAULT, japan));
     // Not someone else's layer named Countries.
     let mut t = world();
     t.mark_saved();
     t.run("edit.deleteField", &json!({"layer": "Countries", "field": "pop_est"})).unwrap();
     t.mark_saved();
-    assert!(!swap_countries(&mut t, Worldview::Default, Worldview::China));
+    // With nothing to undo, so only the layer's own countries stop the swap.
+    t.clear_history();
+    assert!(!t.can_undo());
+    assert!(!swap_countries(&mut t, View::DEFAULT, japan));
+    assert!(!sample::holds_countries(&t, View::DEFAULT));
+}
+
+#[test]
+fn a_worldview_download_that_isnt_countries_is_refused() {
+    use sample::{Detail, View, Worldview};
+    let korea = View::new(Worldview::from_code("kor").unwrap(), Detail::Simplified);
+    for bad in [b"\xff\xfe".to_vec(), b"<html>404</html>".to_vec(), sample::CITIES.as_bytes().to_vec()] {
+        assert!(sample::accept(korea, bad).is_err());
+    }
+    assert!(!sample::ready(korea));
+    // Nor is a download over the size allowed at its detail.
+    assert!(sample::accept(korea, vec![b' '; Detail::Simplified.max_bytes() + 1]).unwrap_err().contains("more than"));
+    // Applying it before then keeps the current view and says which one was asked for.
+    assert_eq!(sample::apply_view("kor", "simplified"), korea);
+    assert_ne!(sample::view(), korea);
+    assert_eq!(sample::wanted_view("kor", "nonsense"), korea);
+    // The default is built in.
+    assert!(sample::ready(View::DEFAULT));
+    assert!(sample::download_blocking(View::DEFAULT).is_ok());
+}
+
+#[test]
+fn an_original_worldview_downloads_gzipped() {
+    use sample::{Detail, View, Worldview};
+    let gzip = |text: &[u8]| {
+        let mut out = vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff];
+        out.extend(miniz_oxide::deflate::compress_to_vec(text, 6));
+        out.extend([0; 8]);
+        out
+    };
+    // Vietnam's view, original detail, which no other test uses.
+    let v = View::new(Worldview::from_code("vnm").unwrap(), Detail::Original);
+    // Something that unpacks to more than the original detail allows is refused, not cut.
+    let huge = gzip(&vec![b' '; Detail::Original.max_bytes() + 1]);
+    assert!(sample::accept(v, huge).unwrap_err().contains("can't be unpacked"));
+    assert!(sample::accept(v, vec![0x1f, 0x8b, 8]).is_err());
+    assert!(sample::text(v).is_none());
+    sample::accept(v, gzip(sample::COUNTRIES.as_bytes())).unwrap();
+    assert_eq!(sample::text(v), Some(sample::COUNTRIES));
+    // The default worldview's original detail is a download too.
+    assert!(!sample::ready(View::new(Worldview::DEFAULT, Detail::Original)));
+}
+
+#[test]
+fn a_failed_worldview_download_doesnt_name_the_worldview_twice() {
+    use sample::{Detail, View, Worldview};
+    // Never the computer's own cache folder.
+    sample::keep_downloads(false);
+    // Greece's view, original detail, which no other test uses.
+    let v = View::new(Worldview::from_code("grc").unwrap(), Detail::Original);
+    let (tx, rx) = std::sync::mpsc::channel();
+    sample::fetch_with(v, Box::new(move |r| drop(tx.send(r))), |_, _| Err("http status: 404".to_string()));
+    let e = rx.recv_timeout(std::time::Duration::from_secs(30)).unwrap().unwrap_err();
+    // The app's notice names the worldview; the error is only why.
+    assert_eq!(e, "http status: 404");
+    assert!(sample::text(v).is_none());
 }
 
 #[test]
