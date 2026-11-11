@@ -23,8 +23,6 @@ serde_json = { workspace = true }
 base64 = { workspace = true }
 log = { workspace = true }
 web-time = { workspace = true }
-# Search with accents aside (a plugin panel's tree): letters decomposed, their marks dropped.
-unicode-normalization = "0.1"
 # The system's preferred interface languages (the browser's on the web).
 sys-locale = { version = "0.3", features = ["js"] }
 

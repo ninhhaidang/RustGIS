@@ -13,6 +13,8 @@ rustgis-data = { workspace = true }
 rustgis-analysis = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# A panel tree's labels searched with accents aside: letters decomposed, their marks dropped.
+unicode-normalization = "0.1"
 # A tool's files travel in its request as base64.
 base64 = { workspace = true }
 log = { workspace = true }

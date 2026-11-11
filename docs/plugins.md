@@ -478,8 +478,12 @@ Any command can answer the panel's new state, beside the rest of its answer:
   its nodes, a dropdown's among its options (a repeated or missing id is left out), a form's among
   its fields and their choices, and a date is a real date. Texts are clipped to 4,000 characters,
   labels to 200, and a slider has at most 2,000 labels of 80 characters. A tree holds at most
-  5,000 nodes, 8 levels deep; a node without an id, or with one longer than 200 characters or taken
-  already, is left out with its children.
+  20,000 nodes (a country's municipalities with the levels above them), 8 levels deep; a node
+  without an id, or with one longer than 200 characters or taken already, is left out with its
+  children. A tree given more nodes keeps the first 20,000, in the order given, depth first: the
+  warning names the tree and how many nodes it was given, and the panel says so under the tree,
+  where a search can't find what was left out. Keep larger lists (France's 34,900 communes) in
+  parts the user chooses, a level at a time.
 - Malformed panel, `items` or `values` objects, invalid numeric bounds and non-string node or
   option labels produce counted warnings. So do values clamped or reordered to fit a widget,
   choices cleared after options change, text cut to 4,000 characters, labels cut to 200,
@@ -503,7 +507,8 @@ Any command can answer the panel's new state, beside the rest of its answer:
   plugin, a project opened. A state command that reads what it shows from the map (which
   release is on it) puts the panel right when it is opened again.
 - The values are kept while RustGIS runs, not saved with the project.
-- `plugin.panel {"id": "<plugin>"}` answers a panel's state (`values` and `items`), and sets
+- `plugin.panel {"id": "<plugin>"}` answers a panel's state (`values` and `items`; a tree cut at
+  20,000 nodes has `"cut"`, how many it was given), and sets
   `values` or, with `"refresh": true`, runs the state command first. On the command line, which
   has no panes, the commands still run with the values given.
 - RustGIS versions before panels ignore `panel` (and refuse a tab that names it): keep the

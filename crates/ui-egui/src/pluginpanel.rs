@@ -17,6 +17,7 @@ use std::collections::{HashMap, HashSet};
 
 use rustgis_engine::Tool;
 use rustgis_engine::geom::{Coord, Extent};
+use rustgis_engine::plugins::panel::{ItemState, MAX_TREE_NODES};
 use rustgis_engine::plugins::{FormField, Manifest, PanelItemDecl, PanelState, TreeNode, command_id};
 use serde_json::{Value, json};
 
@@ -753,14 +754,6 @@ struct TreeRow<'a> {
     held: bool,
 }
 
-/// Lower case without accents, so that "arbol" finds "Árboles".
-/// Letters are decomposed and their marks dropped, whether the text came with them composed or not;
-/// lower case first, since some letters lower-case into a letter and a mark (`İ`).
-fn fold(s: &str) -> String {
-    use unicode_normalization::{UnicodeNormalization, char::is_combining_mark};
-    s.to_lowercase().nfd().filter(|c| !is_combining_mark(*c)).collect()
-}
-
 /// The ids of the branches above node `id` in `nodes`, the top one first; false when it isn't
 /// among them.
 fn ancestors<'a>(nodes: &'a [TreeNode], id: &str, out: &mut Vec<&'a str>) -> bool {
@@ -777,15 +770,10 @@ fn ancestors<'a>(nodes: &'a [TreeNode], id: &str, out: &mut Vec<&'a str>) -> boo
     false
 }
 
-/// Whether `label` holds every word of a search (folded as [`fold`] folds them).
-fn holds_words(label: &str, words: &[String]) -> bool {
-    let label = fold(label);
-    words.iter().all(|w| label.contains(w.as_str()))
-}
-
 /// The rows of `nodes`: with no `words`, each node and, when open, its children. Searching, the
-/// nodes whose label holds every word, and every branch above one held open, a branch found too;
-/// a branch found with nothing found below it shows as it is, opening as ever.
+/// nodes whose label holds every word (folded as [`TreeNode::fold`] folds them, against the label
+/// folded when the node came: nothing is folded per frame), and every branch above one held open,
+/// a branch found too; a branch found with nothing found below it shows as it is, opening as ever.
 fn tree_rows<'a>(nodes: &'a [TreeNode], depth: usize, words: &[String], open: &HashSet<String>, out: &mut Vec<TreeRow<'a>>) {
     for n in nodes {
         let at = out.len();
@@ -799,7 +787,7 @@ fn tree_rows<'a>(nodes: &'a [TreeNode], depth: usize, words: &[String], open: &H
                 }
                 continue;
             }
-            if !holds_words(&n.label, words) {
+            if !n.holds_words(words) {
                 out.pop();
                 continue;
             }
@@ -834,7 +822,7 @@ fn tree(app: &mut RustGisApp, ui: &mut Ui, pid: &str, item: &PanelItemDecl, stat
     }
     // (Only with its box: a plugin updated without one leaves no search behind that can't be cleared.)
     let mut words: Vec<String> = match app.ui.plugin_panel.search.get(id) {
-        Some(q) if item.search => fold(q).split_whitespace().map(String::from).collect(),
+        Some(q) if item.search => TreeNode::fold(q).split_whitespace().map(String::from).collect(),
         _ => Vec::new(),
     };
     words.sort_unstable();
@@ -860,6 +848,7 @@ fn tree(app: &mut RustGisApp, ui: &mut Ui, pid: &str, item: &PanelItemDecl, stat
     if rows.is_empty() {
         let empty = if words.is_empty() { "—" } else { tl!("Nothing matches.") };
         ui.label(RichText::new(empty).size(12.5).color(t.text_dim));
+        cut_note(ui, st, t);
         return;
     }
     let (mut toggle, mut pick) = (None, None);
@@ -928,8 +917,22 @@ fn tree(app: &mut RustGisApp, ui: &mut Ui, pid: &str, item: &PanelItemDecl, stat
             open.insert(n);
         }
     }
+    cut_note(ui, st, t);
     if let Some(n) = pick {
         send(app, pid, item, json!(n));
+    }
+}
+
+/// Under a tree the plugin gave more nodes than it holds, how many it shows of how many: what a
+/// search doesn't find may be among those left out.
+fn cut_note(ui: &mut Ui, st: &ItemState, t: &Tokens) {
+    if let Some(given) = st.cut {
+        let kept = MAX_TREE_NODES.to_string();
+        let note = crate::i18n::fmt(
+            "Only the first {kept} of the {given} nodes the plugin gave are shown: a tree holds at most {kept}.",
+            &[("kept", &kept), ("given", &given.to_string())],
+        );
+        ui.label(RichText::new(note).size(11.0).color(t.text_dim));
     }
 }
 
@@ -1232,13 +1235,13 @@ mod tests {
     }
 
     fn node(id: &str, label: &str, children: Vec<TreeNode>) -> TreeNode {
-        TreeNode { id: id.into(), label: label.into(), count: None, children }
+        TreeNode::new(id.into(), label.into(), None, children)
     }
 
     /// The rows shown for `query` with `open` branches: each id indented by its depth, `/` when
     /// its children show, `*` when a search holds it open.
     fn shown(nodes: &[TreeNode], query: &str, open: &[&str]) -> Vec<String> {
-        let words: Vec<String> = fold(query).split_whitespace().map(String::from).collect();
+        let words: Vec<String> = TreeNode::fold(query).split_whitespace().map(String::from).collect();
         let open: HashSet<String> = open.iter().map(|s| s.to_string()).collect();
         let mut rows = Vec::new();
         tree_rows(nodes, 0, &words, &open, &mut rows);
@@ -1285,7 +1288,7 @@ mod tests {
         let nested = vec![node("cul", "Cultura", vec![node("live", "Cultura viva", vec![]), node("c1", "Teatro", vec![])])];
         assert_eq!(shown(&nested, "cultura", &[]), ["cul/*", "  live"]);
         assert!(shown(&tree, "zzz", &["env"]).is_empty());
-        assert_eq!(fold("Ñandú Çà Åland İzmir"), "nandu ca aland izmir");
+        assert_eq!(TreeNode::fold("Ñandú Çà Åland İzmir"), "nandu ca aland izmir");
         // A node chosen elsewhere opens the branches above it.
         let mut above = Vec::new();
         assert!(ancestors(&tree, "601", &mut above));

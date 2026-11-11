@@ -30,7 +30,7 @@ pub const MAX_STATE_LABEL: usize = 200;
 /// The longest declared label, text or help, in characters.
 pub const MAX_DECLARED: usize = 2_000;
 /// The most nodes a tree holds, how deep they go, and the longest node id, in characters.
-pub const MAX_TREE_NODES: usize = 5_000;
+pub const MAX_TREE_NODES: usize = 20_000;
 pub const MAX_TREE_DEPTH: usize = 8;
 pub const MAX_TREE_ID: usize = 200;
 /// The most fields a form holds, and a field's id and choices.
@@ -469,7 +469,7 @@ fn choice_options_reported(v: &[Value], dropped: &mut Dropped) -> Vec<TreeNode> 
         }
         // One at a time, without its children: a dropdown is flat.
         let flat = [json!({"id": o.get("id"), "label": o.get("label")})];
-        nodes.extend(tree_nodes(&flat, MAX_TREE_DEPTH, &mut left, &mut seen, dropped));
+        nodes.extend(tree_nodes(&flat, MAX_TREE_DEPTH, &mut left, &mut 0, &mut seen, dropped));
     }
     nodes
 }
@@ -494,6 +494,8 @@ pub struct Dropped {
     pub unlisted_fields: usize,
     pub unlisted_clipped: usize,
     pub unlisted_values: usize,
+    /// The trees cut at [`MAX_TREE_NODES`]: the widget's id and how many nodes it was given.
+    pub cut: Vec<(String, usize)>,
 }
 
 impl Dropped {
@@ -557,9 +559,15 @@ impl Dropped {
                 parts.push(format!("{} {what}: {names}{more}", ids.len().saturating_add(unlisted)));
             }
         }
+        for (id, given) in &self.cut {
+            parts.push(format!(
+                "tree {} was given {given} nodes: only the first {MAX_TREE_NODES} are kept, the most a tree holds",
+                diagnostic_name(id)
+            ));
+        }
         if self.nodes > 0 {
             parts.push(format!(
-                "{} option(s) or tree node(s) left out (no id, one repeated or too long, too deep, or past the limit)",
+                "{} option(s) or tree node(s) left out (no id, one repeated or too long, too deep, or past a dropdown's limit)",
                 self.nodes
             ));
         }
@@ -616,6 +624,10 @@ pub struct ItemState {
     /// front end copies the state every frame it shows).
     #[serde(skip_serializing_if = "no_nodes", serialize_with = "shared_nodes")]
     pub nodes: Arc<Vec<TreeNode>>,
+    /// A tree whose last nodes went past [`MAX_TREE_NODES`]: how many it was given (the first
+    /// [`MAX_TREE_NODES`] are kept). The panel says so under the tree.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cut: Option<usize>,
     /// A form's fields, in the order they show (shared as the nodes are).
     #[serde(skip_serializing_if = "no_fields", serialize_with = "shared_fields")]
     pub fields: Arc<Vec<FormField>>,
@@ -648,16 +660,52 @@ pub struct TreeNode {
     pub count: Option<u64>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<TreeNode>,
+    /// The label as [`TreeNode::fold`] folds it, once, when the node is made: a search compares
+    /// against it every frame it is typed.
+    #[serde(skip)]
+    pub(crate) folded: String,
+}
+
+impl TreeNode {
+    /// A node, its label folded for a search.
+    pub fn new(id: String, label: String, count: Option<u64>, children: Vec<TreeNode>) -> TreeNode {
+        let folded = Self::fold(&label);
+        TreeNode { id, label, count, children, folded }
+    }
+
+    /// Whether its label holds every word of a search, the words folded as [`Self::fold`] folds
+    /// them. It allocates nothing: the label was folded when the node was made.
+    pub fn holds_words(&self, words: &[String]) -> bool {
+        words.iter().all(|w| self.folded.contains(w.as_str()))
+    }
+
+    /// Lower case without accents, so that "arbol" finds "Árboles": what a tree's search compares.
+    /// Letters are decomposed and their marks dropped, whether the text came with them composed or
+    /// not; lower case first, since some letters lower-case into a letter and a mark (`İ`).
+    pub fn fold(s: &str) -> String {
+        use unicode_normalization::{UnicodeNormalization, char::is_combining_mark};
+        s.to_lowercase().nfd().filter(|c| !is_combining_mark(*c)).collect()
+    }
 }
 
 /// The nodes in `v` (`[{"id", "label"?, "count"?, "children"?}]`), at most `left` of them
-/// (counted down) and [`MAX_TREE_DEPTH`] deep below `depth`. A node without an id, or with one
-/// taken already or too long, is left out with its children; a label defaults to the id (when
-/// missing or blank), and is kept to one line (a row of the tree), control characters as spaces.
-fn tree_nodes(v: &[Value], depth: usize, left: &mut usize, seen: &mut HashSet<String>, dropped: &mut Dropped) -> Vec<TreeNode> {
+/// (counted down) and [`MAX_TREE_DEPTH`] deep below `depth`; those past `left`, with their
+/// children, are counted in `past`. A node without an id, or with one taken already or too long,
+/// is left out with its children; a label defaults to the id (when missing or blank), and is kept
+/// to one line (a row of the tree), control characters as spaces.
+fn tree_nodes(
+    v: &[Value],
+    depth: usize,
+    left: &mut usize,
+    past: &mut usize,
+    seen: &mut HashSet<String>,
+    dropped: &mut Dropped,
+) -> Vec<TreeNode> {
     let mut nodes = Vec::new();
-    for n in v {
+    for (i, n) in v.iter().enumerate() {
         if *left == 0 {
+            // The rest of this level, and below it; the levels above count their own rest.
+            *past = past.saturating_add(count_given(v.get(i..).unwrap_or_default(), depth));
             break;
         }
         let Some(id) = n.get("id").and_then(Value::as_str).filter(|i| !i.is_empty() && i.chars().count() <= MAX_TREE_ID) else {
@@ -696,10 +744,10 @@ fn tree_nodes(v: &[Value], depth: usize, left: &mut usize, seen: &mut HashSet<St
             }
         }
         let children = match n.get("children").and_then(Value::as_array) {
-            Some(c) if depth + 1 < MAX_TREE_DEPTH => tree_nodes(c, depth + 1, left, seen, dropped),
+            Some(c) if depth + 1 < MAX_TREE_DEPTH => tree_nodes(c, depth + 1, left, past, seen, dropped),
             _ => Vec::new(),
         };
-        nodes.push(TreeNode { id: id.to_string(), label, count: n.get("count").and_then(node_count), children });
+        nodes.push(TreeNode::new(id.to_string(), label, n.get("count").and_then(node_count), children));
     }
     nodes
 }
@@ -871,6 +919,7 @@ impl PanelState {
                     max: d.max.max(d.min),
                     labels: Vec::new(),
                     nodes: Arc::new(if d.kind == "choice" { choice_options(&d.options) } else { Vec::new() }),
+                    cut: None,
                     fields: Arc::default(),
                 },
             );
@@ -1174,9 +1223,15 @@ impl PanelState {
             if d.kind == "tree"
                 && let Some(nodes) = u.get("nodes").and_then(Value::as_array)
             {
-                let mut left = MAX_TREE_NODES;
-                st.nodes = Arc::new(tree_nodes(nodes, 0, &mut left, &mut Default::default(), &mut dropped));
-                dropped.nodes = dropped.nodes.saturating_add(count_given(nodes, 0).saturating_sub(count_kept(&st.nodes)));
+                let (mut left, mut past) = (MAX_TREE_NODES, 0);
+                st.nodes = Arc::new(tree_nodes(nodes, 0, &mut left, &mut past, &mut Default::default(), &mut dropped));
+                let given = count_given(nodes, 0);
+                // Those past the limit are said apart, with the tree and how many it was given.
+                dropped.nodes = dropped.nodes.saturating_add(given.saturating_sub(count_kept(&st.nodes)).saturating_sub(past));
+                st.cut = (past > 0).then_some(given);
+                if past > 0 {
+                    dropped.cut.push((id.to_string(), given));
+                }
             }
             if d.kind == "choice"
                 && let Some(options) = u.get("options").and_then(Value::as_array)

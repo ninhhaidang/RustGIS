@@ -1175,6 +1175,99 @@ fn hostile_panel_trees_are_tamed() {
     assert!(Manifest::parse(&m.to_string()).unwrap_err().contains("dates have a default"));
 }
 
+/// A tree holds [`MAX_TREE_NODES`](crate::panel::MAX_TREE_NODES) nodes, a country's
+/// municipalities with the levels above them (#1546). Past them, at any depth, it is cut, and the
+/// cut is said once, naming the tree and how many nodes it was given, apart from the nodes left
+/// out for other reasons; the panel's state keeps it for a note under the tree.
+#[test]
+fn a_tree_cut_at_its_limit_says_so() {
+    use crate::PanelState;
+    use crate::panel::{MAX_TREE_NODES, TreeNode};
+    fn count(n: &[TreeNode]) -> usize {
+        n.iter().map(|n| 1 + count(&n.children)).sum()
+    }
+    let flat = |n: usize| -> Vec<Value> { (0..n).map(|i| json!({"id": i.to_string()})).collect() };
+    let decl = tree_panel();
+    let mut st = PanelState::new(&decl);
+    let full = st.apply(&decl, &json!({"items": {"catalogue": {"nodes": flat(MAX_TREE_NODES)}}}));
+    assert_eq!(count(&st.items["catalogue"].nodes), MAX_TREE_NODES, "all of them kept");
+    assert_eq!(full.notice(), None, "and nothing said");
+    assert_eq!(st.items["catalogue"].cut, None);
+
+    let over = st.apply(&decl, &json!({"items": {"catalogue": {"nodes": flat(MAX_TREE_NODES + 1)}}}));
+    assert_eq!(count(&st.items["catalogue"].nodes), MAX_TREE_NODES, "the first ones kept");
+    assert_eq!(over.cut, [("catalogue".to_string(), MAX_TREE_NODES + 1)]);
+    assert_eq!(over.nodes, 0, "not counted again among the nodes left out");
+    let notice = over.notice().unwrap();
+    assert_eq!(notice.matches("catalogue").count(), 1, "{notice}");
+    assert!(notice.contains(&format!("{} nodes", MAX_TREE_NODES + 1)) && notice.contains(&format!("first {MAX_TREE_NODES}")), "{notice}");
+    assert_eq!(st.items["catalogue"].cut, Some(MAX_TREE_NODES + 1));
+    assert_eq!(serde_json::to_value(&st.items["catalogue"]).unwrap()["cut"], MAX_TREE_NODES + 1);
+
+    // Nested, as regions and their municipalities: the last ones of a branch are cut, and the
+    // branches after it with what they hold. A node without an id is left out for that.
+    let tail: Vec<Value> = (0..MAX_TREE_NODES - 1).map(|i| json!({"id": format!("m{i}")})).collect();
+    let nested = json!([
+        {"label": "no id", "children": [{"id": "z"}]},
+        {"id": "north", "children": tail.into_iter().chain([json!({"id": "past"})]).collect::<Vec<_>>()},
+        {"id": "south", "children": [{"id": "s1"}, {"id": "s2"}]},
+        {"id": "west", "children": [{"id": "w1", "children": [{"id": "w2"}]}]},
+    ]);
+    let given = 2 + MAX_TREE_NODES + 1 + 3 + 3;
+    let over = st.apply(&decl, &json!({"items": {"catalogue": {"nodes": nested}}}));
+    assert_eq!(count(&st.items["catalogue"].nodes), MAX_TREE_NODES);
+    assert_eq!(over.cut, [("catalogue".to_string(), given)]);
+    assert_eq!(over.nodes, 2, "the node without an id and its child");
+    assert_eq!(st.items["catalogue"].cut, Some(given));
+
+    // Fewer again: no cut left to say.
+    assert_eq!(st.apply(&decl, &json!({"items": {"catalogue": {"nodes": flat(3)}}})).notice(), None);
+    assert_eq!(st.items["catalogue"].cut, None);
+    assert!(serde_json::to_value(&st.items["catalogue"]).unwrap().get("cut").is_none());
+
+    // A dropdown's options past its limit are still in the generic count: only a tree's cut is
+    // said apart.
+    let decl = choice_date_range_panel();
+    let mut st = PanelState::new(&decl);
+    let options: Vec<Value> = (0..=crate::panel::MAX_CHOICES).map(|i| json!({"id": i.to_string()})).collect();
+    let over = st.apply(&decl, &json!({"items": {"product": {"options": options}}}));
+    assert_eq!(st.items["product"].nodes.len(), crate::panel::MAX_CHOICES);
+    assert!(over.cut.is_empty() && st.items["product"].cut.is_none());
+    let notice = over.notice().unwrap();
+    assert!(notice.contains("1 option(s) or tree node(s) left out") && notice.contains("past a dropdown's limit"), "{notice}");
+}
+
+/// A node's label is folded (lower case, accents aside) once, when the node comes: a search,
+/// which runs every frame it is typed, compares against that and folds no label (#1546).
+#[test]
+fn a_tree_search_reads_the_label_folded_once() {
+    use crate::PanelState;
+    use crate::panel::TreeNode;
+    let words = |q: &str| TreeNode::fold(q).split_whitespace().map(String::from).collect::<Vec<_>>();
+    let mut node = TreeNode::new("3547809".into(), "Santo André – São Paulo".into(), None, Vec::new());
+    assert_eq!(node.folded, "santo andre – sao paulo");
+    assert!(node.holds_words(&words("SÃO andre")));
+    assert!(node.holds_words(&[]), "no words: every node");
+    assert!(!node.holds_words(&words("são josé")));
+    // What it compares is what was stored, not the label folded again.
+    node.folded = "outro".into();
+    assert!(node.holds_words(&words("outro")) && !node.holds_words(&words("santo")));
+    // From a plugin's answer, the label, or the id standing for it, is folded as it is kept.
+    let decl = tree_panel();
+    let mut st = PanelState::new(&decl);
+    st.apply(
+        &decl,
+        &json!({"items": {"catalogue": {"nodes": [
+            {"id": "a", "label": "A\u{301}rvore"},
+            {"id": "Içá"},
+            {"id": "two", "label": "Água\nRíos"},
+        ]}}}),
+    );
+    let folded: Vec<&str> = st.items["catalogue"].nodes.iter().map(|n| n.folded.as_str()).collect();
+    assert_eq!(folded, ["arvore", "ica", "agua rios"]);
+    assert_eq!(TreeNode::fold("Ñandú Çà Åland İzmir"), "nandu ca aland izmir");
+}
+
 #[test]
 fn registry_entries_say_how_a_plugin_runs() {
     use crate::manifest::Runtime;
