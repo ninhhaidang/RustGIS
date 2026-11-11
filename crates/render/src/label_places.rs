@@ -17,6 +17,8 @@ pub(super) struct CurveSpec {
     pub advances: Vec<f32>,
     pub gap: f32,
     pub overrun: f32,
+    /// How far off the line, in screen points ([`line_labels::off_line`]).
+    pub off: f32,
 }
 
 #[derive(Clone)]
@@ -81,6 +83,11 @@ impl Curves {
             let Some((x, y)) = self.spec.line.anchor(*d) else { continue };
             let angle =
                 self.spec.line.parallel(width, self.spec.overrun, Some(*d)).map(|(_, _, a)| a).or_else(|| self.spec.line.direction(*d));
+            // Off the line as its curve would be.
+            let (x, y) = angle.map_or((x, y), |a| {
+                let (x, y, _) = line_labels::parallel_off((x, y, a), self.spec.off);
+                (x, y)
+            });
             let mut preview = LabelPlace { x, y, angle, glyphs: Vec::new() };
             if preview.transform(template, at) {
                 return Some(preview);
@@ -96,7 +103,11 @@ impl Curves {
         let at = *self.positions.get(i)?;
         #[cfg(test)]
         LAYOUTS.with(|n| n.set(n.get() + 1));
-        let ((x, y), turns) = self.spec.line.curved(&self.spec.advances, self.spec.gap, self.spec.overrun, Some(at))?;
+        let ((x, y), turns) = self
+            .spec
+            .line
+            .curved(&self.spec.advances, self.spec.gap, self.spec.overrun, Some(at))
+            .and_then(|c| line_labels::curved_off(c, self.spec.off))?;
         // Reuse the preceding rejected place's vector and String capacities. The accepted
         // middle preview retains its own glyphs; later failed attempts can share this pool.
         let mut glyphs = std::mem::take(&mut template.glyphs);

@@ -313,6 +313,7 @@ fn class(
         wrap_length,
         line_align,
         repeat,
+        line_offset: 0.0,
         show_all: false,
         callout: None,
         moved: Vec::new(),

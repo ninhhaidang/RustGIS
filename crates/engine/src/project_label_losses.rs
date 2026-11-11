@@ -68,6 +68,8 @@ struct Class {
     #[serde(default)]
     callout: Option<serde_json::Value>,
     #[serde(default)]
+    line_offset: Option<serde_json::Value>,
+    #[serde(default)]
     show_all: Option<serde_json::Value>,
 }
 
@@ -77,6 +79,8 @@ struct Labels {
     moved: MoveCount,
     #[serde(default)]
     callout: Option<serde_json::Value>,
+    #[serde(default)]
+    line_offset: Option<serde_json::Value>,
     #[serde(default)]
     show_all: Option<serde_json::Value>,
     #[serde(default)]
@@ -120,6 +124,12 @@ fn adjusted_callout(value: Option<&serde_json::Value>) -> bool {
     })
 }
 
+/// A distance from the line (#1187) that isn't a number (read as on the line) or is out of its
+/// range (held to it); null is on the line.
+fn adjusted_line_offset(value: Option<&serde_json::Value>) -> bool {
+    value.is_some_and(|v| !v.is_null() && v.as_f64().is_none_or(|n| !rustgis_map::symbology::LABEL_OFFSET.contains(&n)))
+}
+
 /// Whether a "Show all labels" setting is something other than true or false (null is none).
 fn damaged_flag(value: Option<&serde_json::Value>) -> bool {
     value.is_some_and(|v| !v.is_boolean() && !v.is_null())
@@ -133,17 +143,19 @@ fn count<'a>(
     name: &str,
     what: &str,
 ) -> Vec<(ReadPart, String)> {
-    let (mut moves, mut callouts, mut flags) = (0usize, 0usize, 0usize);
+    let (mut moves, mut callouts, mut offsets, mut flags) = (0usize, 0usize, 0usize, 0usize);
     let mut diagrams = rustgis_map::diagram::DiagramAudit::default();
     for layer in raw {
         diagrams = diagrams.plus(layer.diagram);
         let labels = &layer.labels;
         moves = moves.saturating_add(labels.moved.0);
         callouts = callouts.saturating_add(usize::from(adjusted_callout(labels.callout.as_ref())));
+        offsets = offsets.saturating_add(usize::from(adjusted_line_offset(labels.line_offset.as_ref())));
         flags = flags.saturating_add(usize::from(damaged_flag(labels.show_all.as_ref())));
         for class in &labels.classes {
             moves = moves.saturating_add(class.moved.0);
             callouts = callouts.saturating_add(usize::from(adjusted_callout(class.callout.as_ref())));
+            offsets = offsets.saturating_add(usize::from(adjusted_line_offset(class.line_offset.as_ref())));
             flags = flags.saturating_add(usize::from(damaged_flag(class.show_all.as_ref())));
         }
     }
@@ -155,6 +167,10 @@ fn count<'a>(
     }
     if callouts > 0 {
         messages.push(format!("{name}: {callouts} callout length setting(s) adjusted or disabled while opening {what}"));
+    }
+    if offsets > 0 {
+        messages
+            .push(format!("{name}: {offsets} label distance(s) from the line out of range or not a number adjusted while opening {what}"));
     }
     if flags > 0 {
         messages

@@ -6,6 +6,12 @@
 /// default limit, 25°. Past it, where a line bends sharply, the label is left out.
 pub(super) const MAX_TURN: f32 = 0.436;
 
+/// The least a curved label's characters may close up when set off its line (the distance from
+/// one to the next along the text, as a share of the distance on the line): inside a bend they
+/// close up as the label moves off it, and past this they would run into one another, so the
+/// place is left out, as one past [`MAX_TURN`] is.
+pub(super) const MIN_SPREAD: f32 = 0.8;
+
 /// The most characters a label curves along a line: a longer one is placed straight, so a long
 /// attribute value on many lines doesn't lay out, and draw, character by character.
 pub(super) const MAX_CURVED_CHARS: usize = 200;
@@ -287,6 +293,59 @@ pub(super) fn positions(total: f32, width: f32, overrun: f32) -> Vec<f32> {
     out
 }
 
+/// Which way is up for text turned `angle` (radians, clockwise, upright): a unit step in screen
+/// points (y down) from its baseline toward its top.
+fn up(angle: f32) -> (f32, f32) {
+    (angle.sin(), -angle.cos())
+}
+
+/// How far a label's centre sits from its line, in screen points: `offset` points from the line
+/// to the text's nearest edge (`height` the text's, both in screen points), above it as the text
+/// reads when positive and below when negative; 0 is on the line.
+pub(super) fn off_line(offset: f32, height: f32) -> f32 {
+    if offset == 0.0 || !offset.is_finite() { 0.0 } else { (offset.abs() + height.max(0.0) / 2.0).copysign(offset) }
+}
+
+/// Straight text at `(x, y)` turned `angle` ([`Line::parallel`]'s) moved `off` screen points
+/// above itself as it reads (negative: below).
+pub(super) fn parallel_off((x, y, angle): (f32, f32, f32), off: f32) -> (f32, f32, f32) {
+    let (ux, uy) = up(angle);
+    (x + off * ux, y + off * uy, angle)
+}
+
+/// Curved text ([`Line::curved`]'s centre and characters) moved `off` screen points above itself as
+/// it reads (negative: below), each character along its own way up, so the text keeps following the
+/// line. The centre goes with its middle character. `None` where, inside a bend, the characters
+/// would close up past [`MIN_SPREAD`] (or cross).
+pub(super) fn curved_off(
+    ((cx, cy), mut turns): ((f32, f32), Vec<(f32, f32, f32)>),
+    off: f32,
+) -> Option<((f32, f32), Vec<(f32, f32, f32)>)> {
+    if off == 0.0 {
+        return Some(((cx, cy), turns));
+    }
+    let (mx, my) = up(turns.get(turns.len() / 2)?.2);
+    let (sx, sy) = (off * mx, off * my);
+    // Moved in place (curved places are laid out often): the character before, where it was and
+    // where it went.
+    let mut before: Option<((f32, f32), (f32, f32))> = None;
+    for t in &mut turns {
+        let was = (t.0, t.1);
+        let (ux, uy) = up(t.2);
+        (t.0, t.1) = (t.0 + off * ux - sx, t.1 + off * uy - sy);
+        if let Some((b_was, b_now)) = before {
+            let (w, n) = ((was.0 - b_was.0, was.1 - b_was.1), (t.0 - b_now.0, t.1 - b_now.1));
+            let along = w.0 * w.0 + w.1 * w.1;
+            // How far the step now goes the way it went, as a share of how far it went.
+            if along > 0.0 && (n.0 * w.0 + n.1 * w.1) / along < MIN_SPREAD {
+                return None;
+            }
+        }
+        before = Some((was, (t.0, t.1)));
+    }
+    Some(((cx + sx, cy + sy), turns))
+}
+
 /// The most labels a line repeats a label in (the one at its middle among them).
 pub(super) const MAX_REPEATS: usize = 32;
 
@@ -431,5 +490,55 @@ mod tests {
         assert!(glyphs.windows(2).all(|w| w[1].0 > w[0].0), "left to right");
         // A right angle at the middle: too sharp for the text.
         assert!(curved(&[(0.0, 100.0), (100.0, 100.0), (100.0, 0.0)], &[10.0; 6], 0.0, 0.0, None).is_none());
+    }
+
+    /// A distance from the line goes to the text's nearest edge, either side, and 0 is on it (#1187).
+    #[test]
+    fn a_distance_from_the_line_reaches_the_nearest_edge() {
+        assert_eq!(off_line(0.0, 12.0), 0.0);
+        assert_eq!(off_line(4.0, 12.0), 10.0);
+        assert_eq!(off_line(-4.0, 12.0), -10.0);
+        assert_eq!(off_line(f32::NAN, 12.0), 0.0);
+    }
+
+    /// Above is as the text reads, not north: over a level line it is up the screen, beside a line
+    /// read downward it is to the right, and on a line drawn right to left it is still up.
+    #[test]
+    fn parallel_text_above_the_line_is_above_as_it_reads() {
+        let level = parallel(&[(0.0, 50.0), (100.0, 50.0)], 40.0, 0.0, None).unwrap();
+        let (x, y, a) = parallel_off(level, 10.0);
+        assert!((x - 50.0).abs() < 1e-3 && (y - 40.0).abs() < 1e-3 && a.abs() < 1e-6);
+        let (_, y, _) = parallel_off(level, -10.0);
+        assert!((y - 60.0).abs() < 1e-3, "below");
+        let backward = parallel(&[(100.0, 50.0), (0.0, 50.0)], 40.0, 0.0, None).unwrap();
+        assert!((parallel_off(backward, 10.0).1 - 40.0).abs() < 1e-3, "the way it was drawn doesn't count");
+        // A vertical line reads downward, so the text's top faces right.
+        let vertical = parallel(&[(50.0, 0.0), (50.0, 100.0)], 40.0, 0.0, None).unwrap();
+        let (x, y, _) = parallel_off(vertical, 10.0);
+        assert!((x - 60.0).abs() < 1e-3 && (y - 50.0).abs() < 1e-3);
+    }
+
+    /// Curved text set off its line follows the line's bend: outside a bend its characters spread,
+    /// inside they close up, and too far inside (or 0) it is left out (or as on the line).
+    #[test]
+    fn curved_text_off_the_line_follows_it_and_leaves_a_bend_too_tight_inside() {
+        // A hill of radius 200 (its centre below): above the line is outside the bend.
+        let arc: Vec<(f32, f32)> = (0..=40)
+            .map(|i| {
+                let t = (i as f32 / 40.0 - 0.5) * 1.2;
+                (200.0 * t.sin() + 200.0, 200.0 - 200.0 * t.cos())
+            })
+            .collect();
+        let on = curved(&arc, &[10.0; 8], 0.0, 0.0, None).unwrap();
+        assert_eq!(curved_off(on.clone(), 0.0), Some(on.clone()));
+        let spread = |c: &((f32, f32), Vec<(f32, f32, f32)>)| (c.1[7].0 - c.1[0].0).hypot(c.1[7].1 - c.1[0].1);
+        let above = curved_off(on.clone(), 20.0).unwrap();
+        assert!(above.0.1 < on.0.1 - 19.0, "the centre rises with it");
+        assert!(spread(&above) > spread(&on), "outside the bend, apart");
+        assert!(above.1.iter().zip(&on.1).all(|(a, b)| a.2 == b.2), "each character keeps its turn");
+        let below = curved_off(on.clone(), -20.0).unwrap();
+        assert!(spread(&below) < spread(&on), "inside it, closer");
+        // A quarter of the way to the bend's centre: they would run together.
+        assert!(curved_off(on, -50.0).is_none());
     }
 }

@@ -2334,6 +2334,11 @@ pub struct LabelClass {
     /// the one at its middle, as QGIS's repeat distance; none is the one at its middle.
     #[serde(default, deserialize_with = "de_repeat", skip_serializing_if = "Option::is_none")]
     pub repeat: Option<f32>,
+    /// Along a line, how far the label sits from it (points, within [`LABEL_OFFSET`], to the
+    /// text's nearest edge), as QGIS's distance from a line: above it as the text reads when
+    /// positive, below when negative, on it at 0.
+    #[serde(default, deserialize_with = "de_line_offset", skip_serializing_if = "is_zero")]
+    pub line_offset: f32,
     /// Every label drawn, over the others where they crowd, rather than some left out.
     #[serde(default, deserialize_with = "de_flag", skip_serializing_if = "std::ops::Not::not")]
     pub show_all: bool,
@@ -2629,6 +2634,15 @@ fn de_label_offset<'de, D: serde::Deserializer<'de>>(d: D) -> Result<[f32; 2], D
     Ok(lenient::<D, [f64; 2]>(d)?.map_or([0.0; 2], |o| o.map(within)))
 }
 
+/// A label's distance from its line, within [`LABEL_OFFSET`]; one that isn't a number is none.
+pub fn label_line_offset(v: f64) -> f32 {
+    if v.is_finite() { v.clamp(*LABEL_OFFSET.start(), *LABEL_OFFSET.end()) as f32 } else { 0.0 }
+}
+
+fn de_line_offset<'de, D: serde::Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
+    Ok(lenient::<D, f64>(d)?.map_or(0.0, label_line_offset))
+}
+
 fn is_no_offset(o: &[f32; 2]) -> bool {
     *o == [0.0; 2]
 }
@@ -2901,6 +2915,7 @@ impl LabelClass {
             wrap_length: 0,
             line_align: crate::layout::TextAlign::Left,
             repeat: None,
+            line_offset: 0.0,
             show_all: false,
             callout: None,
             moved: Vec::new(),
@@ -3232,6 +3247,31 @@ mod tests {
         assert_eq!(serde_json::from_value::<Labeling>(serde_json::to_value(&on).unwrap()).unwrap(), on);
         let junk = read(serde_json::json!({"other_positions": "yes"}));
         assert!(!junk.default.other_positions);
+        assert_eq!(junk.default.field, "name");
+    }
+
+    /// A label saved before the distance from a line sits on it and saves as before; a distance
+    /// is kept either way, held to its range, and one that isn't a number is none (#1187).
+    #[test]
+    fn a_line_offset_is_kept_and_old_labels_save_as_before() {
+        let base = serde_json::json!({"enabled": true, "field": "name", "size": 9.0, "color": [0, 0, 0, 255], "halo": true, "bold": false});
+        let read = |extra: serde_json::Value| {
+            let mut v = base.clone();
+            if let (Some(o), Some(e)) = (v.as_object_mut(), extra.as_object()) {
+                o.extend(e.clone());
+            }
+            serde_json::from_value::<Labeling>(v).unwrap()
+        };
+        let old = read(serde_json::json!({}));
+        assert_eq!(old.default.line_offset, 0.0);
+        assert!(serde_json::to_value(&old).unwrap().get("line_offset").is_none());
+        for (given, kept) in [(4.5, 4.5), (-3.0, -3.0), (900.0, 200.0), (-900.0, -200.0)] {
+            let l = read(serde_json::json!({"line_offset": given}));
+            assert_eq!(l.default.line_offset, kept, "{given}");
+            assert_eq!(serde_json::from_value::<Labeling>(serde_json::to_value(&l).unwrap()).unwrap(), l);
+        }
+        let junk = read(serde_json::json!({"line_offset": "above"}));
+        assert_eq!(junk.default.line_offset, 0.0);
         assert_eq!(junk.default.field, "name");
     }
 

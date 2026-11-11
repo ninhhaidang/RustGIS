@@ -22,6 +22,7 @@ fn curved(line: &[(f32, f32)]) -> Candidate {
                 advances: vec![10.0; 4],
                 gap: 0.0,
                 overrun: 10.0,
+                off: 0.0,
             }),
             positions,
             None,
@@ -642,4 +643,54 @@ fn rejected_curved_places_reuse_grapheme_allocations() {
     let next = curves.place(1, &mut template).unwrap();
     assert_eq!(next.glyphs.iter().map(|g| g.text.as_ptr()).collect::<Vec<_>>(), allocations);
     assert_eq!(next.glyphs.iter().map(|g| g.text.as_str()).collect::<String>(), "road");
+}
+
+/// Other places along the line sit off it by the class's distance too (#1187): with its middle
+/// taken, the label goes to another place along the line, as far above it as the middle would be.
+#[test]
+fn other_places_along_the_line_keep_its_distance() {
+    for placement in [LabelPlacement::Parallel, LabelPlacement::Curved] {
+        let (mut map, id, view) = map_with_line(true);
+        let labels = &mut map.layer_mut(id).unwrap().labels;
+        labels.default.placement = placement;
+        labels.default.other_positions = true;
+        let road = |map: &mut Map| {
+            let r = render(map, &view).unwrap();
+            r.labels.iter().find(|l| l.text == "road").map(|l| (l.x, l.y, l.size)).unwrap()
+        };
+        let on = road(&mut map);
+        // A point off the line: its box still meets the blocker at the middle.
+        map.layer_mut(id).unwrap().labels.default.line_offset = 1.0;
+        let off = road(&mut map);
+        assert!((off.0 - view.width as f32 / 2.0).abs() > 1.0, "{placement:?}: another place along the line: {off:?}");
+        let gap = 1.33 + text::block_height("road", on.2) / 2.0;
+        assert!((on.1 - off.1 - gap).abs() < 0.01, "{placement:?}: {on:?} → {off:?}");
+    }
+}
+
+/// A curved label that fits nowhere along its line is shown unplaced off the line by its distance,
+/// turned as the line runs (#1187).
+#[test]
+fn an_unplaced_curved_label_sits_off_its_line() {
+    let (mut map, id, view) = map_with_line(false);
+    map.label_display.show_unplaced = true;
+    let layer = map.layer_mut(id).unwrap();
+    // A line far shorter than its text: no place along it can take the curve.
+    layer.dataset.features[0].geometry = Some(Geometry::Line(vec![vec![Coord::new(-0.01, 0.0), Coord::new(0.01, 0.0)]]));
+    layer.dataset.features[0].attrs[0] = Value::Text("a river named at great length".into());
+    layer.touch_geometry();
+    layer.labels.default.placement = LabelPlacement::Curved;
+    layer.labels.default.other_positions = true;
+    let unplaced = |map: &mut Map| {
+        let r = render(map, &view).unwrap();
+        assert!(r.labels.is_empty());
+        assert_eq!(r.unplaced.len(), 1);
+        let u = &r.unplaced[0];
+        (u.x, u.y, u.size)
+    };
+    let on = unplaced(&mut map);
+    map.layer_mut(id).unwrap().labels.default.line_offset = 4.0;
+    let off = unplaced(&mut map);
+    let gap = 4.0 * 1.33 + text::block_height("a river named at great length", on.2) / 2.0;
+    assert!((off.0 - on.0).abs() < 0.01 && (on.1 - off.1 - gap).abs() < 0.01, "{on:?} → {off:?}");
 }

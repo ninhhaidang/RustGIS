@@ -4537,6 +4537,9 @@ fn render_frame(
                                 (line.clone(), None)
                             };
                             let overrun = size;
+                            // Off the line by its class's distance (#1187): above it as the text
+                            // reads, or below; its anchors stay on the line.
+                            let off = line_labels::off_line(class.line_offset * 1.33 * label_factor, text::block_height(&text, size));
                             let positions = |width| match locked_at {
                                 Some(at) => {
                                     let won = lock.as_ref().and_then(|keys| keys.get(&key)).map_or(0, |won| won.place);
@@ -4575,6 +4578,13 @@ fn render_frame(
                                     line_places = Some(LinePlaces { anchors: anchors(&positions), ..Default::default() });
                                     let Some((cx, cy)) = line.anchor(locked_at.unwrap_or(line.length() / 2.0)) else { continue };
                                     let angle = line.parallel(width, overrun, locked_at).map(|(_, _, a)| a);
+                                    // Off the line as its curves will be (by the line's direction
+                                    // where the text can't fit, as a tilted view's preview is).
+                                    let (cx, cy) =
+                                        angle.or_else(|| line.direction(locked_at.unwrap_or(line.length() / 2.0))).map_or((cx, cy), |a| {
+                                            let (x, y, _) = line_labels::parallel_off((cx, cy, a), off);
+                                            (x, y)
+                                        });
                                     // The preview is also View Unplaced's middle when every curve fails.
                                     places.push((0, cx, cy, angle, Vec::new()));
                                     let locked = lock.as_ref().and_then(|k| k.get(&key)).map(|won| usize::from(won.place));
@@ -4585,13 +4595,17 @@ fn render_frame(
                                             advances,
                                             gap: spacing * 1.33,
                                             overrun,
+                                            off,
                                         }),
                                         positions,
                                         locked,
                                     ));
                                 } else {
                                     for (i, at) in line_labels::repeats(line.length(), repeat) {
-                                        let Some(((cx, cy), turns)) = line.curved(&advances, spacing * 1.33, overrun, Some(at)) else {
+                                        let Some(((cx, cy), turns)) = line
+                                            .curved(&advances, spacing * 1.33, overrun, Some(at))
+                                            .and_then(|c| line_labels::curved_off(c, off))
+                                        else {
                                             continue;
                                         };
                                         let glyphs = chars
@@ -4616,7 +4630,9 @@ fn render_frame(
                                 // range: if the middle cannot fit, none can. Keep it as place 0
                                 // so a lock's alternative indices do not change.
                                 for (i, at) in along {
-                                    if let Some((x, y, angle)) = line.parallel(width, overrun, Some(at)) {
+                                    if let Some((x, y, angle)) =
+                                        line.parallel(width, overrun, Some(at)).map(|p| line_labels::parallel_off(p, off))
+                                    {
                                         if try_others && i > 0 {
                                             line_alternatives.push(LabelPlace { x, y, angle: Some(angle), glyphs: Vec::new() });
                                         } else {
@@ -10522,6 +10538,59 @@ mod tests {
         m.layer_mut(line).unwrap().labels.default.placement = rustgis_map::LabelPlacement::Curved;
         let r = render(&mut m, &view).unwrap();
         assert!(r.labels.iter().any(|l| l.text == "Obere Töss" && !l.glyphs.is_empty()), "curved in one line");
+    }
+
+    /// A distance from the line sets a line's label above it or below it, to the text's nearest
+    /// edge, straight or curved; 0 leaves it on the line and a point's label isn't moved (#1187).
+    #[test]
+    fn a_distance_sets_a_line_label_above_or_below_its_line() {
+        let mut m = Map::new("Map");
+        m.basemap = rustgis_map::Basemap::Blank;
+        let mut d = Dataset::new("towns", GeometryType::Point, vec![Field::new("name", FieldType::Text)]);
+        d.push(Some(Geometry::Point(Coord::new(0.0, -0.5))), vec![Value::Text("Winterthur".into())]);
+        let id = m.add_dataset(d);
+        let mut d = Dataset::new("rivers", GeometryType::Polyline, vec![Field::new("name", FieldType::Text)]);
+        d.push(Some(Geometry::Line(vec![vec![Coord::new(-1.0, 0.5), Coord::new(1.0, 0.5)]])), vec![Value::Text("Töss".into())]);
+        let line = m.add_dataset(d);
+        let camera = Camera { center: lonlat_to_merc(Coord::new(0.0, 0.0)), res: 1500.0, bearing: 0.0, pitch: 0.0 };
+        m.camera = camera;
+        let view = View { width: 400.0, height: 200.0, pixels_per_point: 1.0, camera, sky: false };
+        for (layer, placement) in [(id, rustgis_map::LabelPlacement::Right), (line, rustgis_map::LabelPlacement::Parallel)] {
+            let l = m.layer_mut(layer).unwrap();
+            l.labels.enabled = true;
+            l.labels.default.field = "name".into();
+            l.labels.default.placement = placement;
+        }
+        let at = |m: &mut Map| {
+            let r = render(m, &view).unwrap();
+            let find = |t: &str| r.labels.iter().find(|l| l.text == t).map(|l| (l.x, l.y, l.size)).unwrap();
+            (find("Winterthur"), find("Töss"))
+        };
+        let (town, on) = at(&mut m);
+        for layer in [id, line] {
+            m.layer_mut(layer).unwrap().labels.default.line_offset = 4.0;
+        }
+        let (town2, above) = at(&mut m);
+        assert_eq!(town, town2, "a point's label isn't moved");
+        // Points × 1.33, as the text's size, to the text's nearest edge: half its height more.
+        let gap = 4.0 * 1.33 + text::block_height("Töss", on.2) / 2.0;
+        assert!((above.0 - on.0).abs() < 0.01 && (on.1 - above.1 - gap).abs() < 0.01, "{on:?} → {above:?}");
+        m.layer_mut(line).unwrap().labels.default.line_offset = -4.0;
+        let (_, below) = at(&mut m);
+        assert!((below.1 - on.1 - gap).abs() < 0.01, "{on:?} → {below:?}");
+        m.layer_mut(line).unwrap().labels.default.line_offset = 0.0;
+        assert_eq!(at(&mut m).1, on, "0 is on the line, as before");
+        // Curved, its characters go with it.
+        m.layer_mut(line).unwrap().labels.default.placement = rustgis_map::LabelPlacement::Curved;
+        let curved = |m: &mut Map| {
+            let r = render(m, &view).unwrap();
+            let l = r.labels.iter().find(|l| l.text == "Töss").unwrap();
+            assert!(!l.glyphs.is_empty(), "curved");
+            l.glyphs.iter().map(|g| l.y + g.dy).sum::<f32>() / l.glyphs.len() as f32
+        };
+        let on = curved(&mut m);
+        m.layer_mut(line).unwrap().labels.default.line_offset = 4.0;
+        assert!((on - curved(&mut m) - gap).abs() < 0.05, "above, curved");
     }
 
     #[test]
