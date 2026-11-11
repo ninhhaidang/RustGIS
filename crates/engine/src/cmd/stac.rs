@@ -20,7 +20,7 @@ pub fn commands() -> Vec<C> {
         C::new("stac.addFootprints", "Add STAC Footprints", "Home › Add › Web Data › STAC Search", add_footprints_cmd).roles(&[]).effects(crate::policy::Effects::NONE)
             .params(r#"{"footprints": GeoJSON FeatureCollection (items' footprints, as STAC Search finds them), "name"?: text}"#),
         C::new("stac.addCube", "Add STAC Data Cube", "Home › Add › Web Data › STAC Search", add_cube).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network)).params(
-            r#"{"url"?: a STAC API (default: Earth Search), or the collection.json of a static collection laid out by date (JAXA Earth's), "collection": id, "asset": key (a band, such as NDVI), "bbox"?: [west, south, east, north] | "view" (default: the map's extent), "start", "end": dates, "maxCloud"?: percent, "range"?: [low, high] (the values shown from black to white, in the asset's own units after its raster:bands scale and offset, the same for every date and tile; default: each file's 2nd–98th percentile), "name"?: text, "connection"?: "as service.add: the saved web-service connection whose login the request uses"} → a tile layer per tile of the grid the items cover, each a file per date following the time slider, which turns on over their dates when it is off (desktop)"#,
+            r#"{"url"?: a STAC API (default: Earth Search), or the collection.json of a static collection laid out by date (JAXA Earth's), "collection": id, "asset": key (a band, such as NDVI), "bbox"?: [west, south, east, north] | "view" (default: the map's extent), "start", "end": dates, "maxCloud"?: percent, "range"?: [low, high] (the values shown from black to white, in the asset's own units after its raster:bands scale and offset, the same for every date and tile; default: each file's 2nd–98th percentile) | "auto" (one range for every date and tile, the 2nd–98th percentiles of a sample: the newest file of up to four tiles, read at an overview), "name"?: text, "attribution"?: text, at most 500 characters (the credit its tile layers show, as in tiles.add), "connection"?: "as service.add: the saved web-service connection whose login the request uses"} → a tile layer per tile of the grid the items cover, each a file per date following the time slider, which turns on over their dates when it is off (desktop)"#,
         ),
         C::new("stac.addAsset", "Add STAC Asset", "Home › Add › Web Data › STAC Search", add_asset).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network)).params(
             r#"{"item": a STAC item (as stac.search returns it) | "url": an item's address (Planetary Computer assets are signed), "asset"?: key (default: visual, else the first GeoTIFF, else the first data asset), "name"?: text, "connection"?: "as service.add"}"#,
@@ -969,7 +969,10 @@ fn add_cube(s: &mut Session, p: &Value) -> CmdResult {
     {
         let bound = crate::service_logins::request_params(s, p)?;
         let p = bound.as_ref();
-        let range = match p.get("range").filter(|v| !v.is_null()) {
+        // "auto": worked out from a sample of the files once they are found (an entry of the cube
+        // catalog that gives none, as JAXA Earth's don't).
+        let auto = p.get("range").and_then(Value::as_str).is_some_and(|r| r.trim() == "auto");
+        let range = match p.get("range").filter(|v| !v.is_null() && !auto) {
             None => None,
             Some(v) => {
                 // Two finite numbers, nothing else: a value that isn't one is refused, not skipped.
@@ -977,68 +980,31 @@ fn add_cube(s: &mut Session, p: &Value) -> CmdResult {
                     v.as_array().filter(|a| a.len() == 2).and_then(|a| a.iter().map(|x| x.as_f64().filter(|x| x.is_finite())).collect());
                 match r.as_deref() {
                     Some([lo, hi]) if lo < hi => Some((*lo, *hi)),
-                    _ => return Err("range is [low, high], low below high".into()),
+                    _ => return Err("range is [low, high], low below high, or \"auto\"".into()),
                 }
             }
         };
-        let CubeFiles {
-            tiles,
-            scale,
-            scales: _,
-            nodata: _,
-            items,
-            named_tiles,
-            without,
-            duplicates,
-            scales_differ,
-            coded,
-            collection,
-            asset,
-        } = cube_files(s, p, MAX_CUBE_ITEMS)?;
+        // The credit each tile layer of the cube shows (a catalog entry's, as JAXA's terms ask).
+        if p.get("attribution").is_some_and(|v| !v.is_null() && !v.is_string()) {
+            return Err("attribution is text, at most 500 characters".into());
+        }
+        let attribution = ps(p, "attribution").map(str::trim).filter(|a| !a.is_empty()).map(str::to_string);
+        // A project keeps 500 characters of a tile layer's credit (TileLayer::repair): a longer one
+        // is refused, not cut on the way.
+        if let Some(n) = attribution.as_ref().map(|a| a.chars().count()).filter(|n| *n > 500) {
+            return Err(format!("attribution is {n} characters; a tile layer's credit is at most 500"));
+        }
+        let CubeFiles { tiles, scale, scales, nodata, items, named_tiles, without, duplicates, scales_differ, coded, collection, asset } =
+            cube_files(s, p, MAX_CUBE_ITEMS)?;
         // A tile layer's look has no way to name them, so on the map they are values.
         if coded > 0 {
             s.warn(format!(
                 "{collection}: {coded} file(s) mark failed retrievals with codes, which the map draws as values (inside its range or stretch); Trend Analysis and cube summaries skip them"
             ));
         }
-        // One range can't hold if the files store their values alike no longer (a processing
-        // change of scale or offset partway).
-        if range.is_some() && scales_differ {
-            return Err(format!(
-                "the {asset} files don't all have the same scale and offset, so one range can't fit them all: leave range out"
-            ));
-        }
-        // The range in the files' stored values.
-        let look = match (range, scale) {
-            (Some(_), Some((k, o))) if k == 0.0 || !k.is_finite() || !o.is_finite() => {
-                return Err(format!(
-                    "the {asset} files' metadata gives a scale of {k} and an offset of {o}, so a range in the band's units can't be set: leave range out"
-                ));
-            }
-            (Some((lo, hi)), Some((k, o))) => {
-                let (a, b) = ((lo - o) / k, (hi - o) / k);
-                format!("#range={},{}", a.min(b), a.max(b))
-            }
-            (Some((lo, hi)), None) => format!("#range={lo},{hi}"),
-            (None, _) => String::new(),
-        };
-        let base = ps(p, "name").map(str::trim).filter(|n| !n.is_empty()).map_or_else(|| format!("{collection} {asset}"), str::to_string);
-        let mut dates: Vec<f64> = Vec::new();
-        let many = tiles.len() > 1;
-        let mut added = Vec::new();
-        // What the map had: a cube that can't be added whole puts its tile layers back as they
-        // were (those it replaced, the same cube added before, included) and takes out the layers
-        // it added. The rest (the view a file framed, the slider) comes back with the project
-        // snapshot the command runs under (`Session::guarded`), as for any command that fails.
-        let (tiles_before, layers_before): (Vec<rustgis_map::TileLayer>, Vec<u32>) =
-            (s.map().tiles.clone(), s.map().layers.iter().map(|l| l.id).collect());
-        let undo = |s: &mut Session| {
-            let m = s.map_mut();
-            m.tiles = tiles_before.clone();
-            m.layers.retain(|l| layers_before.contains(&l.id));
-        };
-        // A tile layer per grid tile, each reading its first file's header, within the map's room
-        // for tile layers: a catalog without grid tiles (keyed by footprint) could make hundreds.
+        // Refused before anything is read for a range. A tile layer per grid tile, each reading its
+        // first file's header, within the map's room for tile layers: a catalog without grid tiles
+        // (keyed by footprint) could make hundreds.
         let room = rustgis_map::tiles::MAX_TILE_LAYERS.saturating_sub(s.map().tiles.len());
         if tiles.len() > room {
             // Items naming no grid tile are told apart by footprint, which can differ scene by scene.
@@ -1065,9 +1031,102 @@ fn add_cube(s: &mut Session, p: &Value) -> CmdResult {
                 bad.chars().take(200).collect::<String>()
             ));
         }
+        // The cube's dates, all its tiles' (as the slider will step through them), within the
+        // slider's steps, its own dates included when it has them: refused before the sample too.
+        let mut dates: Vec<f64> = tiles.values().flat_map(|by_day| by_day.keys()).map(|d| *d as f64 * 86_400_000.0).collect();
+        dates.sort_by(f64::total_cmp);
+        dates.dedup();
+        // At most MAX_CUBE_ITEMS dates, well under the slider's steps; were it ever more, the cube
+        // is refused rather than left with files the slider can't reach.
+        if dates.len() > rustgis_map::time::MAX_STEPS {
+            return Err(format!("{} dates; the time slider takes {} at most", dates.len(), rustgis_map::time::MAX_STEPS));
+        }
+        if let Some(t) = s.map().time.as_ref().filter(|t| !t.dates.is_empty()) {
+            let mut all: Vec<f64> = t.dates.iter().chain(&dates).copied().collect();
+            all.sort_by(f64::total_cmp);
+            all.dedup();
+            if all.len() > rustgis_map::time::MAX_STEPS {
+                return Err(format!(
+                    "the time slider's dates and the cube's make {}, more than its {} steps: take a shorter period",
+                    all.len(),
+                    rustgis_map::time::MAX_STEPS
+                ));
+            }
+        }
+        // A range from the files themselves: one for every date and tile, as a range given is.
+        let mut sampled = None;
+        let range = if !auto {
+            range
+        } else if scales_differ {
+            s.warn(format!(
+                "the {asset} files don't all have the same scale and offset, so no one range fits them all: each file is stretched on its own"
+            ));
+            None
+        } else if let Some((k, o)) = scale.filter(|(k, o)| *k == 0.0 || !k.is_finite() || !o.is_finite()) {
+            s.warn(format!(
+                "the {asset} files' metadata gives a scale of {k} and an offset of {o}, so no range in the band's units fits them: each file is stretched on its own"
+            ));
+            None
+        } else {
+            match sample_range(&tiles, &scales, scale, &nodata) {
+                Ok(Sample::Range(r)) => {
+                    sampled = Some(r);
+                    Some((r[0], r[1]))
+                }
+                // Classes drawn in their own colours take no range.
+                Ok(Sample::Classes) => {
+                    s.warn(format!("{collection}: the {asset} files are classes drawn in their own colours, so no range is set for them"));
+                    None
+                }
+                Ok(Sample::Empty) => {
+                    s.warn(format!("{collection}: the sample of the {asset} files holds no values to set a range by, so each file is stretched on its own"));
+                    None
+                }
+                Err(e) => {
+                    s.warn(format!(
+                        "{collection}: the {asset} files couldn't be sampled for a range ({e}), so each file is stretched on its own"
+                    ));
+                    None
+                }
+            }
+        };
+        // One range can't hold if the files store their values alike no longer (a processing
+        // change of scale or offset partway).
+        if range.is_some() && scales_differ {
+            return Err(format!(
+                "the {asset} files don't all have the same scale and offset, so one range can't fit them all: leave range out"
+            ));
+        }
+        // The range in the files' stored values.
+        let look = match (range, scale) {
+            (Some(_), Some((k, o))) if k == 0.0 || !k.is_finite() || !o.is_finite() => {
+                return Err(format!(
+                    "the {asset} files' metadata gives a scale of {k} and an offset of {o}, so a range in the band's units can't be set: leave range out"
+                ));
+            }
+            (Some((lo, hi)), Some((k, o))) => {
+                let (a, b) = ((lo - o) / k, (hi - o) / k);
+                format!("#range={},{}", a.min(b), a.max(b))
+            }
+            (Some((lo, hi)), None) => format!("#range={lo},{hi}"),
+            (None, _) => String::new(),
+        };
+        let base = ps(p, "name").map(str::trim).filter(|n| !n.is_empty()).map_or_else(|| format!("{collection} {asset}"), str::to_string);
+        let many = tiles.len() > 1;
+        let mut added = Vec::new();
+        // What the map had: a cube that can't be added whole puts its tile layers back as they
+        // were (those it replaced, the same cube added before, included) and takes out the layers
+        // it added. The rest (the view a file framed, the slider) comes back with the project
+        // snapshot the command runs under (`Session::guarded`), as for any command that fails.
+        let (tiles_before, layers_before): (Vec<rustgis_map::TileLayer>, Vec<u32>) =
+            (s.map().tiles.clone(), s.map().layers.iter().map(|l| l.id).collect());
+        let undo = |s: &mut Session| {
+            let m = s.map_mut();
+            m.tiles = tiles_before.clone();
+            m.layers.retain(|l| layers_before.contains(&l.id));
+        };
         for (tile, by_day) in &tiles {
             let urls: Vec<(f64, String)> = by_day.iter().map(|(d, u)| (*d as f64 * 86_400_000.0, format!("{u}{look}"))).collect();
-            dates.extend(urls.iter().map(|(d, _)| *d));
             let Some((_, first)) = urls.first() else { continue };
             let name = if many { format!("{base} {tile}") } else { base.clone() };
             let r = match super::layer::add_url(s, &json!({"url": first, "name": name, "cube": true, "connection": p.get("connection")})) {
@@ -1087,6 +1146,9 @@ fn add_cube(s: &mut Session, p: &Value) -> CmdResult {
                 Some(t) => {
                     t.time_urls = urls;
                     t.name = name;
+                    if let Some(a) = &attribution {
+                        t.attribution = a.clone();
+                    }
                     added.push(r);
                 }
                 None => {
@@ -1097,14 +1159,6 @@ fn add_cube(s: &mut Session, p: &Value) -> CmdResult {
                     ));
                 }
             }
-        }
-        dates.sort_by(f64::total_cmp);
-        dates.dedup();
-        // At most MAX_CUBE_ITEMS dates, well under the slider's steps; were it ever more, the cube
-        // is refused rather than left with files the slider can't reach.
-        if dates.len() > rustgis_map::time::MAX_STEPS {
-            undo(s);
-            return Err(format!("{} dates; the time slider takes {} at most", dates.len(), rustgis_map::time::MAX_STEPS));
         }
         // The slider over the cube's dates: on over them when it is off; when it is on, taking
         // them in (its own dates and the cube's, or its span widened to theirs), so every file
@@ -1138,6 +1192,10 @@ fn add_cube(s: &mut Session, p: &Value) -> CmdResult {
             return Err(e);
         }
         let mut out = json!({"items": items, "tiles": tiles.len(), "dates": dates.len(), "layers": added.len()});
+        if let Some(r) = sampled {
+            out["range"] = json!(r);
+            out["rangeFrom"] = json!("sample");
+        }
         if without > 0 {
             out["skipped"] = json!(without);
         }
@@ -1146,6 +1204,63 @@ fn add_cube(s: &mut Session, p: &Value) -> CmdResult {
         }
         Ok(out)
     }
+}
+
+/// The files a cube's range is sampled from, at most, and the most pixels a side read from each.
+#[cfg(not(target_arch = "wasm32"))]
+const SAMPLE_FILES: usize = 4;
+#[cfg(not(target_arch = "wasm32"))]
+const SAMPLE_SIDE: u32 = 512;
+
+/// A band's range from a sample of a cube's files (`"range": "auto"`), as GeoLibre's JAXA Earth
+/// panel sets one: the newest file of up to four of its tiles (spread over them), each read at its
+/// finest overview no larger than 512 pixels a side (the middle of its coarsest one otherwise),
+/// its values scaled as its metadata says, its codes for no value left out, and the 2nd to 98th
+/// percentiles of them all ([`cubes::percentile_range`]).
+#[cfg(not(target_arch = "wasm32"))]
+fn sample_range(
+    tiles: &std::collections::BTreeMap<String, std::collections::BTreeMap<i64, String>>,
+    scales: &std::collections::HashMap<String, (f64, f64)>,
+    scale: Option<(f64, f64)>,
+    nodata: &std::collections::HashMap<String, Vec<f64>>,
+) -> Result<Sample, String> {
+    use crate::render::rustgis_tiles::{cog, cubes};
+    let newest: Vec<&String> = tiles.values().filter_map(|by_day| by_day.values().next_back()).collect();
+    let n = newest.len();
+    let picked: Vec<&String> = (0..n.min(SAMPLE_FILES)).filter_map(|i| newest.get(i * n / n.min(SAMPLE_FILES))).copied().collect();
+    let mut values = Vec::new();
+    for href in picked {
+        let info = cog::info_blocking(href)?;
+        let l = &info.layout;
+        if l.palette.is_some() {
+            return Ok(Sample::Classes);
+        }
+        let level = l.levels.iter().position(|v| v.width.max(v.height) <= SAMPLE_SIDE).or(l.levels.len().checked_sub(1));
+        let Some((level, lv)) = level.and_then(|i| l.levels.get(i).map(|lv| (i, lv))) else {
+            return Err(format!("{href}: it has no image to sample"));
+        };
+        let (w, h) = (lv.width.min(SAMPLE_SIDE), lv.height.min(SAMPLE_SIDE));
+        let (c0, r0) = ((lv.width - w) / 2, (lv.height - h) / 2);
+        let read = cog::read_values_blocking(&info, href, level, 0, (c0, c0 + w), (r0, r0 + h))?;
+        let (k, o) = scales.get(href).copied().or(scale).unwrap_or((1.0, 0.0));
+        let fill: Vec<f32> = nodata.get(href).map(|f| f.iter().map(|v| *v as f32).collect()).unwrap_or_default();
+        values.extend(read.into_iter().filter(|v| v.is_finite() && !fill.contains(v)).map(|v| f64::from(v) * k + o));
+    }
+    if values.is_empty() {
+        return Ok(Sample::Empty);
+    }
+    // Values there, but spread wider than a number holds (a scale from hostile metadata).
+    cubes::percentile_range(values).map(Sample::Range).ok_or_else(|| "its values spread wider than one range can hold".to_string())
+}
+
+/// What a sample of a cube's files gives for its range.
+#[cfg(not(target_arch = "wasm32"))]
+enum Sample {
+    Range([f64; 2]),
+    /// No value in it.
+    Empty,
+    /// The files are a palette's classes, drawn in their own colours.
+    Classes,
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

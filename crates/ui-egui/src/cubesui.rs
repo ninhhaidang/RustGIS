@@ -2,10 +2,12 @@
 //! theme, by where the map is and by words; each cube's provider, period, step, resolution and
 //! licence; and the cube added to the time slider (`cube.open`, so it is undoable like any other
 //! command) or taken to Trend Analysis. The list is the hosted one once read, else the built-in
-//! one.
+//! one, and JAXA Earth's datasets once its catalog is read (opengeos/RustGIS#1532): the pane says
+//! how many, which of its datasets can't be cubes and why, and each one's credit and licence.
 
 use egui::vec2;
 use rustgis_engine::render::rustgis_tiles::cubes::{self, Entry, Source};
+use rustgis_engine::render::rustgis_tiles::jaxa;
 use serde_json::json;
 
 use crate::RustGisApp;
@@ -50,7 +52,10 @@ pub fn pane(app: &mut RustGisApp, ui: &mut egui::Ui) {
     // The hosted list, asked for once a run of the app; not in tests, which keep to the built-in
     // one.
     #[cfg(not(test))]
-    cubes::fetch_hosted();
+    {
+        cubes::fetch_hosted();
+        jaxa::fetch();
+    }
     let t = crate::theme::Tokens::get(ui.ctx());
     ui.label(
         egui::RichText::new(tl!("Data cubes ready to open: a series of images over time, with its collection, band and range filled in."))
@@ -86,6 +91,7 @@ pub fn pane(app: &mut RustGisApp, ui: &mut egui::Ui) {
     });
     ui.checkbox(&mut app.ui.cubes.here, tl!("Only cubes with data where the map is"));
     ui.label(egui::RichText::new(tl!("With no period, a cube is added over its last full calendar year.")).small().color(t.text_dim));
+    jaxa_line(ui, &t);
     let all = cubes::list();
     let st = &app.ui.cubes;
     let area = if st.here { view } else { None };
@@ -104,13 +110,17 @@ pub fn pane(app: &mut RustGisApp, ui: &mut egui::Ui) {
     egui::ScrollArea::vertical().id_salt("cubes_list").show(ui, |ui| {
         for e in &shown {
             ui.separator();
-            ui.label(egui::RichText::new(e.name.as_str()).strong());
+            let title = ui.label(egui::RichText::new(e.name.as_str()).strong());
+            // A JAXA Earth collection's licence is read once its entry comes into view.
+            let shown = ui.is_rect_visible(title.rect);
             ui.label(egui::RichText::new(format!("{} · {} · {} · {}", e.provider, period(e), e.step, e.resolution)).small());
             let source = match &e.source {
                 Source::Stac { collection, asset } => format!("STAC {collection} · {asset}"),
                 Source::Zarr { variable } => format!("Zarr · {variable}"),
             };
-            ui.label(egui::RichText::new(format!("{source} · {}", e.license)).small().color(t.text_dim));
+            let terms =
+                if e.credit.is_empty() { e.license.clone() } else { crate::i18n::fmt("Credit: {credit}", &[("credit", &e.credit)]) };
+            ui.label(egui::RichText::new(format!("{source} · {terms}")).small().color(t.text_dim));
             ui.horizontal_wrapped(|ui| {
                 // A cube is read on the desktop: the browser can't add one yet, nor work out a
                 // trend over a collection.
@@ -146,6 +156,9 @@ pub fn pane(app: &mut RustGisApp, ui: &mut egui::Ui) {
                     action = Some((true, (*e).clone()));
                 }
                 ui.hyperlink_to(tl!("About"), e.about.as_str());
+                if !e.credit.is_empty() {
+                    licence_link(ui, e, shown);
+                }
             });
         }
     });
@@ -153,6 +166,81 @@ pub fn pane(app: &mut RustGisApp, ui: &mut egui::Ui) {
         Some((false, e)) => add(app, &e),
         Some((true, e)) => trend(app, &e),
         None => {}
+    }
+}
+
+/// What JAXA Earth's catalog adds to the list, or why it doesn't yet.
+fn jaxa_line(ui: &mut egui::Ui, t: &crate::theme::Tokens) {
+    match jaxa::status() {
+        jaxa::Status::Unread => {}
+        jaxa::Status::Reading => {
+            ui.label(egui::RichText::new(tl!("Reading JAXA Earth's catalog…")).small().color(t.text_dim));
+            // The tile cache's waker comes with the map view, which a layout, the model builder
+            // or the catalog view keeps from drawing: look again until the catalog is read.
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+        }
+        jaxa::Status::Read(c) => {
+            let text = crate::i18n::fmt(
+                "JAXA Earth: {cubes} cubes from its catalog; {left} of its {datasets} datasets are left out (hover for why)",
+                &[("cubes", &c.entries.len().to_string()), ("left", &c.left_out.len().to_string()), ("datasets", &c.datasets.to_string())],
+            );
+            let why: Vec<String> = c.left_out.iter().map(|l| format!("{} ({}): {}", l.title, l.id, l.why)).collect();
+            ui.label(egui::RichText::new(text).small().color(t.text_dim)).on_hover_text(why.join("\n"));
+            if !c.cut.is_empty() {
+                let text = crate::i18n::fmt(
+                    "JAXA Earth: {n} of its catalog's texts are cut or not read (hover for which)",
+                    &[("n", &c.cut.len().to_string())],
+                );
+                ui.label(egui::RichText::new(text).small().color(t.text_dim)).on_hover_text(c.cut.join("\n"));
+            }
+            let hidden = cubes::jaxa_hidden();
+            if !hidden.is_empty() {
+                let text = crate::i18n::fmt(
+                    "JAXA Earth: {n} of its cubes have the id of one of the list's own and are left out (hover for which)",
+                    &[("n", &hidden.len().to_string())],
+                );
+                ui.label(egui::RichText::new(text).small().color(t.text_dim)).on_hover_text(hidden.join("\n"));
+            }
+        }
+        jaxa::Status::Failed(why) => {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(
+                    egui::RichText::new(crate::i18n::fmt("JAXA Earth's catalog couldn't be read: {why}", &[("why", &why)]))
+                        .small()
+                        .color(egui::Color32::from_rgb(0xC0, 0x30, 0x30)),
+                );
+                if ui.small_button(tl!("Try again")).clicked() {
+                    jaxa::retry();
+                }
+            });
+        }
+    }
+}
+
+/// A JAXA Earth cube's licence: its collection's own once read (asked for when `shown`), JAXA's
+/// terms when it can't be.
+fn licence_link(ui: &mut egui::Ui, e: &Entry, shown: bool) {
+    match jaxa::licence(&e.url) {
+        Some(Ok(l)) => {
+            let tip = l.title.clone().unwrap_or_else(|| l.url.clone());
+            ui.hyperlink_to(tl!("Licence"), l.url.as_str()).on_hover_text(tip);
+        }
+        Some(Err(why)) => {
+            ui.hyperlink_to(tl!("JAXA's terms"), jaxa::TERMS)
+                .on_hover_text(crate::i18n::fmt("The collection's own licence wasn't read: {why}", &[("why", &why)]));
+        }
+        None => {
+            // Not in tests, which read nothing from the web.
+            #[cfg(not(test))]
+            if shown {
+                jaxa::fetch_licence(&e.url);
+                // As for the catalog: look again until the licence is read.
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+            }
+            #[cfg(test)]
+            let _ = shown;
+            ui.label(egui::RichText::new(tl!("Licence…")).small().weak());
+        }
     }
 }
 
@@ -250,6 +338,8 @@ mod tests {
     /// only where the map is), and refuses half a period before anything runs.
     #[test]
     fn the_pane_lists_cubes_by_theme_and_words() {
+        // The list as another test leaves it: with JAXA Earth's datasets read.
+        jaxa_read();
         let mut app = RustGisApp::with_sample();
         app.run("ui.dialog", json!({"name": "dataCubes"})).unwrap();
         assert_eq!(app.ui.web_data, "dataCubes");
@@ -279,6 +369,31 @@ mod tests {
         // What an earlier add said goes with a failed one.
         assert!(app.ui.cubes.info.is_none());
         assert!(app.session.map().layers.iter().all(|l| l.name != e.name));
+    }
+
+    /// JAXA Earth's catalog as read on 2026-11-08 (its fixture in the tiles crate), taken as the
+    /// pane takes it: its number of cubes.
+    fn jaxa_read() -> usize {
+        jaxa::take(include_str!("../../tiles/tests/data/jaxa_catalog.v2.md").as_bytes()).unwrap()
+    }
+
+    /// JAXA Earth's catalog, once read, adds its datasets to the list: found by its keywords, each
+    /// with its credit, and the pane says how many of its datasets can't be cubes.
+    #[test]
+    fn jaxa_earths_datasets_join_the_list() {
+        assert_eq!(jaxa_read(), 80);
+        let mut app = RustGisApp::with_sample();
+        (app.ui.cubes.here, app.ui.cubes.query) = (false, "gsmap monthly".into());
+        let mut h = harness(app, pane);
+        h.run();
+        assert!(h.query_by_label("JAXA Earth: 80 cubes from its catalog; 41 of its 119 datasets are left out (hover for why)").is_some());
+        assert!(h.query_by_label("Precipitation Rate (Monthly)").is_some());
+        assert!(h.query_by_label_contains("Credit: JAXA, Precipitation Rate (Monthly)").is_some());
+        // Its licence is read from its collection, which tests leave alone.
+        assert!(h.query_all_by_label("Licence…").count() >= 1);
+        let shown = h.query_all_by_role_and_label(egui::accesskit::Role::Button, "Add to Time Slider").count();
+        assert_eq!(shown, cubes::select(&cubes::list(), None, None, Some("gsmap monthly")).unwrap().len());
+        assert!(shown >= 2, "{shown}");
     }
 
     /// Trend Analysis… opens Trend Analysis on the cube, with the period typed; its form shows the

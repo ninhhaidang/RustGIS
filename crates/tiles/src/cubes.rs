@@ -5,7 +5,8 @@
 //! through `stac.addCube` or `layer.addZarr`).
 //!
 //! The list is built into the app, and kept up to date with the app's other assets ([`HOSTED`]),
-//! which is used once read.
+//! which is used once read. JAXA Earth's own catalog, read live ([`crate::jaxa`]), adds its
+//! datasets to whichever of the two is in use.
 //!
 //! An entry, as the list holds it:
 //!
@@ -70,6 +71,12 @@ pub struct Entry {
     pub license: String,
     /// The provider's page about it.
     pub about: String,
+    /// What a map using it credits, as its terms ask (a JAXA Earth dataset: JAXA and the
+    /// dataset's name); empty for the list's entries, whose licence says it.
+    pub credit: String,
+    /// More words it is found by, besides its id, name and provider (a JAXA Earth dataset's
+    /// keywords and bands); empty for the list's entries.
+    pub words: String,
 }
 
 impl Entry {
@@ -85,9 +92,9 @@ impl Entry {
         if aw <= ae { meets(aw, ae) } else { meets(aw, 180.0) || meets(-180.0, ae) }
     }
 
-    /// Whether every word is in its id, name or provider (letter case aside).
+    /// Whether every word is in its id, name, provider or other words (letter case aside).
     pub fn has_words(&self, words: &[String]) -> bool {
-        let text = format!("{} {} {}", self.id, self.name, self.provider).to_lowercase();
+        let text = format!("{} {} {} {}", self.id, self.name, self.provider, self.words).to_lowercase();
         words.iter().all(|w| text.contains(w.as_str()))
     }
 
@@ -123,6 +130,7 @@ impl Entry {
             ("range", self.range.map(|r| json!(r))),
             ("cellSize", self.cell_size.map(|c| json!(c))),
             ("maxCloud", self.max_cloud.map(|c| json!(c))),
+            ("credit", (!self.credit.is_empty()).then(|| json!(self.credit))),
         ] {
             if let Some(x) = x {
                 v[k] = x;
@@ -144,9 +152,46 @@ fn built_in_arc() -> &'static Arc<Vec<Entry>> {
 }
 
 /// The list in use: the hosted one ([`fetch_hosted`]) once it has been read, else the built-in
-/// one.
+/// one, followed by JAXA Earth's datasets once its catalog has been read ([`crate::jaxa::fetch`]).
 pub fn list() -> Arc<Vec<Entry>> {
+    combined(base(), crate::jaxa::entries())
+}
+
+/// The hosted list once read, else the built-in one.
+fn base() -> Arc<Vec<Entry>> {
     hosted().lock().unwrap_or_else(|e| e.into_inner()).clone().unwrap_or_else(|| built_in_arc().clone())
+}
+
+/// JAXA Earth's cubes left out of the list in use because one of the list's own has their id
+/// (said by the pane and `cube.catalog`).
+pub fn jaxa_hidden() -> Vec<String> {
+    crate::jaxa::entries().map_or_else(Vec::new, |more| clashing(&base(), &more))
+}
+
+/// The ids of `more` that `base` has too.
+fn clashing(base: &[Entry], more: &[Entry]) -> Vec<String> {
+    more.iter().filter(|e| base.iter().any(|b| b.id == e.id)).map(|e| e.id.clone()).collect()
+}
+
+/// `base` followed by `more`: the same list until either changes, so the pane drawing it every
+/// frame doesn't copy it every frame.
+fn combined(base: Arc<Vec<Entry>>, more: Option<Arc<Vec<Entry>>>) -> Arc<Vec<Entry>> {
+    type Both = (Arc<Vec<Entry>>, Arc<Vec<Entry>>, Arc<Vec<Entry>>);
+    static LAST: Mutex<Option<Both>> = Mutex::new(None);
+    let Some(more) = more.filter(|m| !m.is_empty()) else { return base };
+    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((b, m, all)) = last.as_ref()
+        && Arc::ptr_eq(b, &base)
+        && Arc::ptr_eq(m, &more)
+    {
+        return all.clone();
+    }
+    // An entry of `more` with the id of one of `base` is left out: the list's own comes first
+    // ([`jaxa_hidden`] says which).
+    let all: Vec<Entry> = base.iter().cloned().chain(more.iter().filter(|e| !base.iter().any(|b| b.id == e.id)).cloned()).collect();
+    let all = Arc::new(all);
+    *last = Some((base, more, all.clone()));
+    all
 }
 
 /// The entry with this id, in the list in use.
@@ -336,18 +381,60 @@ fn entry(v: &Value) -> Result<Entry, String> {
         max_cloud,
         license: text("license", 200)?,
         about: web(&text("about", 2000)?).ok_or("about is a web address (https or http)")?,
+        credit: String::new(),
+        words: String::new(),
     })
 }
 
 /// A date written `YYYY-MM-DD`, and a real day.
 fn date(v: Option<&Value>) -> Option<String> {
-    let d = v?.as_str()?.trim();
+    day(v?.as_str()?)
+}
+
+/// A day written `YYYY-MM-DD`, and a real one.
+pub(crate) fn day(d: &str) -> Option<String> {
+    let d = d.trim();
     let shaped = d.len() == 10 && d.bytes().enumerate().all(|(i, b)| if i == 4 || i == 7 { b == b'-' } else { b.is_ascii_digit() });
     (shaped && rustgis_data::time::parse_text(d).is_some_and(|ms| rustgis_data::time::format(ms, "YYYY-MM-DD") == d)).then(|| d.to_string())
 }
 
+/// A band's values shown from the low colour to the high one, when an entry gives none: the 2nd
+/// and 98th percentiles of `values` (a sample of its files; not-a-number left out), so a few
+/// outliers don't wash the colours out, rounded outward to a step two orders of magnitude below
+/// the span (a pressure at 101175..101475 keeps that span). Values all alike are widened by half a
+/// unit each way; none at all give none, and neither do values spread wider than a number holds.
+pub fn percentile_range(mut values: Vec<f64>) -> Option<[f64; 2]> {
+    values.retain(|v| v.is_finite());
+    if values.is_empty() {
+        return None;
+    }
+    let last = values.len() - 1;
+    let at = |values: &mut Vec<f64>, q: f64| {
+        let i = ((q * last as f64).round() as usize).min(last);
+        *values.select_nth_unstable_by(i, f64::total_cmp).1
+    };
+    let (mut lo, mut hi) = (at(&mut values, 0.02), at(&mut values, 0.98));
+    if hi <= lo {
+        let min = values.iter().copied().fold(f64::INFINITY, f64::min);
+        let max = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        (lo, hi) = (min, max);
+    }
+    if hi <= lo {
+        // Past 2^53 half a unit is lost to rounding: no span, so no range.
+        let (a, b) = (lo - 0.5, hi + 0.5);
+        return (a < b).then_some([a, b]);
+    }
+    let step = 10f64.powf((hi - lo).log10().floor() - 2.0);
+    // Twelve significant digits: a step of 0.001 times a whole number leaves no tail of 9s.
+    let clean = |v: f64| format!("{v:.12e}").parse::<f64>().unwrap_or(v);
+    // In steps, to a millionth first: 0.098 / 0.0001 is 980.0000000000001, which isn't 981 steps.
+    let steps = |v: f64| ((v / step) * 1e6).round() / 1e6;
+    let (a, b) = (clean(steps(lo).floor() * step), clean(steps(hi).ceil() * step));
+    (a.is_finite() && b.is_finite() && a < b).then_some([a, b])
+}
+
 /// A web address (https or http), as given.
-fn web(u: &str) -> Option<String> {
+pub(crate) fn web(u: &str) -> Option<String> {
     let lower = u.to_ascii_lowercase();
     ((lower.starts_with("https://") || lower.starts_with("http://"))
         && u.len() > lower.find("://").map_or(0, |i| i + 3)
@@ -473,6 +560,49 @@ mod tests {
         assert_eq!(take_hosted(BUILT_IN.as_bytes()).unwrap(), built_in().len());
         assert_eq!(list().len(), built_in().len());
         assert!(HOSTED.starts_with("https://assets.rustgis.app/"));
+    }
+
+    /// A range from values: their 2nd to 98th percentiles, rounded outward to a clean step, so an
+    /// outlier doesn't stretch it; values all alike widened, none at all none.
+    #[test]
+    fn a_range_from_values_leaves_outliers_out() {
+        let mut v: Vec<f64> = (0..=1000).map(f64::from).collect();
+        v.extend([1e9, f64::NAN, f64::INFINITY]);
+        assert_eq!(percentile_range(v), Some([20.0, 981.0]));
+        // A narrow span at a large offset keeps its span.
+        let p: Vec<f64> = (0..=300).map(|i| 101_175.0 + f64::from(i)).collect();
+        assert_eq!(percentile_range(p), Some([101_181.0, 101_469.0]));
+        // Small values round to their own step, without a tail of nines.
+        assert_eq!(percentile_range((0..=100).map(|i| f64::from(i) * 0.001).collect()), Some([0.002, 0.098]));
+        assert_eq!(percentile_range(vec![3.0; 10]), Some([2.5, 3.5]));
+        assert_eq!(percentile_range(vec![f64::NAN]), None);
+        assert_eq!(percentile_range(Vec::new()), None);
+        // A span past the largest number has no range (the caller says why: not "no values").
+        assert_eq!(percentile_range(vec![-1e308, 1e308]), None);
+        // Values all alike past 2^53 can't be widened by half a unit: no range either.
+        assert_eq!(percentile_range(vec![1e17; 10]), None);
+        // Mostly one value, a few others: the full span rather than nothing.
+        let mut few = vec![0.0; 100];
+        few.push(5.0);
+        assert_eq!(percentile_range(few), Some([0.0, 5.0]));
+    }
+
+    /// Another list's entries follow the one in use, the same list until either changes, and one
+    /// with an id the list has is left out.
+    #[test]
+    fn more_entries_follow_the_list() {
+        let base = Arc::new(built_in().to_vec());
+        let mut extra = built_in()[0].clone();
+        extra.id = "JAXA.Test_daily/B1".into();
+        let more = Arc::new(vec![extra, built_in()[1].clone()]);
+        let all = combined(base.clone(), Some(more.clone()));
+        assert_eq!(all.len(), base.len() + 1);
+        assert_eq!(all.last().map(|e| e.id.as_str()), Some("JAXA.Test_daily/B1"));
+        assert!(Arc::ptr_eq(&all, &combined(base.clone(), Some(more.clone()))), "not copied again");
+        assert!(Arc::ptr_eq(&combined(base.clone(), None), &base));
+        let id = built_in()[1].id.clone();
+        assert_eq!(clashing(&base, &more), [id], "the one left out is named");
+        assert!(clashing(&base, &more[..1]).is_empty());
     }
 
     /// The last full year: the one before this while the cube runs on, its end's once it ended,

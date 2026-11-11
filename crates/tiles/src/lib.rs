@@ -19,6 +19,7 @@ pub mod earthdata;
 pub mod embeddings;
 pub mod failure;
 pub mod geocode;
+pub mod jaxa;
 pub mod logins;
 pub mod mbtiles;
 pub mod mvt;

@@ -112,6 +112,16 @@ and band, such as INPE's [Brazil Data Cube](https://data.inpe.br/bdc/) or Sentin
   period from 15 January still has January's file. The codes a collection gives for a failed
   retrieval (`dn.error`) draw on the map as values, inside its range or stretch, and a notice says
   how many files have them; Trend Analysis and cube summaries skip them.
+- **One range for the whole cube, from its files:** `"range": "auto"` takes the 2nd and 98th
+  percentiles of a sample of the files found: the newest file of up to four of the cube's tiles,
+  each read at its finest overview no larger than 512 pixels a side, its values scaled as its
+  metadata says and its codes for no value left out. The range is the same for every date and
+  tile, and the answer gives it (`"range"`, with `"rangeFrom": "sample"`). A sample with no values,
+  files whose scale changes partway, files whose metadata gives a scale of 0 (or none finite), or a
+  sample that can't be read leave each file stretched on its own, and a notice says so. Files of
+  classes in their own colours take no range and keep their colours, and a notice says so.
+- **Credit:** `"attribution"` puts a credit on each tile layer the cube adds (as `tiles.add`
+  takes it, at most 500 characters); a cube opened from the catalog passes its entry's.
 - **Web app:** creating a cube with **Add as Time Series** is desktop-only. Saved cube tile
   layers can draw in the web app when their servers allow browser requests (CORS).
 - **Its trend:** the same search, given to Trend Analysis (`cube.trend` with `collection`,
@@ -151,7 +161,8 @@ scripts and the assistant use the same list.
   provider's page.
 - **Opening one** (desktop; `cube.open` with the entry's `"id"`): a STAC entry is added as
   `stac.addCube` adds a cube, over the map's extent (or `"bbox"`), with the entry's collection,
-  band, range and cloud cover cap (`"range"` and `"maxCloud"` override the last two). A Zarr entry
+  band, range and cloud cover cap (`"range"` and `"maxCloud"` override the last two); an entry that
+  gives no range takes one from its files (`"range": "auto"`, above). A Zarr entry
   is added as `layer.addZarr` adds a variable that follows the time slider; its variable is read
   whole, but an area given must meet the entry's. The period is `"start"` and `"end"`, given together; with neither, it
   is the entry's last full calendar year (the year before this one while the cube is kept up to
@@ -178,6 +189,43 @@ Only cubes RustGIS reads today are listed. Collections whose files sit behind si
 (Landsat Collection 2 on Earth Search) are left out. Digital Earth Australia's catalog sits behind
 a firewall that may ask a program making many requests in a row for a browser check for a while;
 its searches then fail until it lets them through again.
+
+#### JAXA Earth's datasets, read live
+
+The [JAXA Earth API](https://data.earth.jaxa.jp/en/)'s datasets join the list from JAXA's own
+catalog ([`catalog.v2.md`](https://data.earth.jaxa.jp/app/mcp/catalog.v2.md)), which the app
+reads once a run, in the background, the first time the Data Cubes pane opens: precipitation
+(GSMaP), land and sea surface temperature, vegetation, soil moisture, evapotranspiration,
+aerosols, chlorophyll-a, elevation (AW3D30) and land cover, among others. They add to the list in
+use (the hosted one, or the built-in one); they don't replace it. Until the catalog is read the
+pane says so, and when it can't be (offline) it says why, with **Try again**.
+
+- **A cube a band:** each dataset in JAXA's EPSG:4326 grid is listed once for each of its bands,
+  with the id `<dataset id>/<band>` (`cube.open` takes it), its title, provider, area, period,
+  step and resolution as JAXA's catalog gives them, its themes from its title and keywords, and
+  its keywords and bands to search by. Its collection is read where the catalog says, only in
+  JAXA's buckets.
+- **What can't be a cube is said:** the pane counts the datasets left out, and lists them with why
+  when the pointer is over that line (`cube.catalog` gives them under `"jaxa"`): the two polar
+  ones (EPSG:3031 and EPSG:3995, sea ice), the climatologies (averages of past years, whose dates
+  have no year) and the hourly series (a cube has one file a day).
+- **Range and cell size:** JAXA gives no range for its bands, so the cube is added with
+  `"range": "auto"` (above): one range from a sample of the files that cover the map's extent (whole JAXA grid tiles, so it can reach past the view). The cell size
+  Trend Analysis reads at is the catalog's resolution, in degrees.
+- **Licence and credit:** each collection names its own licence: JAXA's
+  [terms of use](https://earth.jaxa.jp/en/data/policy/) for most, NASA's or Copernicus's for some.
+  The pane reads it from the collection as its entry comes into view and links it as **Licence**;
+  `cube.open` reads it too and gives it in its answer. JAXA's terms ask for credit: a cube added
+  from the list credits "JAXA" and the dataset's name on its tile layers. The data is free to use
+  and share with that credit; commercial use is free too, but JAXA's terms (section 2.3) ask to be
+  told of it in advance.
+- **Limits:** `cube.catalog` lists JAXA's datasets once the pane has read the catalog; a command or
+  script that never opens the pane sees `"jaxa": {"state": "unread"}`. The catalog is read once a
+  run; after a failed read, **Try again** reads it again. Text too long for the list (a title
+  over 160 characters, a field over 2,000) is cut, its name ends in "…", and the pane and
+  `cube.catalog` (`"cut"`) say which; they also name the fields that aren't read (a resolution
+  that isn't kilometres, a field given twice, a field name that isn't letters and digits). A JAXA cube whose id the list already has is left out for
+  the list's own, and the pane and `cube.catalog` (`"hidden"`) name it.
 
 An entry, as the list holds it (built in from `crates/tiles/src/cubes.json`, and kept with the app's
 assets); a cube is proposed by adding one:

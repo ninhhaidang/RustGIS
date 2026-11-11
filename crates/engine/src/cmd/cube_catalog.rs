@@ -2,7 +2,8 @@
 //! area and words, and `cube.open` adds one to the map through the command that reads it
 //! (`stac.addCube`, or `layer.addZarr` following the time slider), with the entry's collection,
 //! band, range and cloud cap. `cube.trend` and `cube.reduce` take an entry by `"cube"` too
-//! ([`with_entry`]).
+//! ([`with_entry`]). JAXA Earth's datasets join the list once the Data Cubes pane has read its
+//! catalog (`rustgis_tiles::jaxa`); `cube.catalog` says where that stands.
 
 use std::borrow::Cow;
 
@@ -10,15 +11,16 @@ use serde_json::{Value, json};
 
 use super::ps;
 use crate::render::rustgis_tiles::cubes::{self, Entry, Source};
+use crate::render::rustgis_tiles::jaxa;
 use crate::{CmdResult, CommandSpec as C, Session};
 
 pub fn commands() -> Vec<C> {
     vec![
         C::new("cube.catalog", "Data Cube Catalog", "Home › Add › Web Data", catalog).roles(&[]).effects(crate::policy::Effects::NONE).view().params(
-            r#"{"theme"?: "vegetation"|"land cover"|"water"|"climate"|"ocean"|"atmosphere"|"elevation", "bbox"?: [west, south, east, north] | "view" (entries with data there; default: anywhere), "query"?: "words, all of them in an entry's name, provider or id"} → the data cubes ready to open (cube.open), each with its provider, themes, area, period, step, resolution, source (a STAC collection and band, or a Zarr variable) and licence"#,
+            r#"{"theme"?: "vegetation"|"land cover"|"water"|"climate"|"ocean"|"atmosphere"|"elevation", "bbox"?: [west, south, east, north] | "view" (entries with data there; default: anywhere), "query"?: "words, all of them in an entry's name, provider, id or keywords (a JAXA Earth entry's bands and step too)"} → the data cubes ready to open (cube.open), each with its provider, themes, area, period, step, resolution, source (a STAC collection and band, or a Zarr variable), licence and credit; JAXA Earth's datasets (a cube a band) once the Data Cubes pane has read its catalog, and "jaxa": where that stands (unread, reading, read with the datasets left out and why, or failed)"#,
         ),
         C::new("cube.open", "Open a Data Cube", "Home › Add › Web Data", open).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network)).params(
-            r#"{"id": an entry of cube.catalog, "bbox"?: [west, south, east, north] | "view" (a STAC entry's area, default the map's extent; a Zarr entry's variable is read whole, but an area given must meet the entry's), "start"?, "end"?: dates, both or neither (default: the entry's last full calendar year), "maxCloud"?: percent (a STAC entry's cloud cover cap; default the entry's), "range"?: [low, high] (a STAC entry's values shown from black to white, in the band's units; default the entry's), "name"?: text} → the cube on the map, following the time slider, as stac.addCube or layer.addZarr adds it (desktop)"#,
+            r#"{"id": an entry of cube.catalog (a JAXA Earth dataset's is "<dataset id>/<band>"), "bbox"?: [west, south, east, north] | "view" (a STAC entry's area, default the map's extent; a Zarr entry's variable is read whole, but an area given must meet the entry's), "start"?, "end"?: dates, both or neither (default: the entry's last full calendar year), "maxCloud"?: percent (a STAC entry's cloud cover cap; default the entry's), "range"?: [low, high] | "auto" (a STAC entry's values shown from black to white, in the band's units; default the entry's, or "auto" for one that gives none: the 2nd–98th percentiles of a sample of the files, as stac.addCube takes it), "name"?: text} → the cube on the map, following the time slider, as stac.addCube or layer.addZarr adds it (desktop); an entry with a credit (JAXA Earth's) puts it on the cube's tile layers and gives its collection's licence"#,
         ),
     ]
 }
@@ -36,12 +38,60 @@ fn catalog(s: &mut Session, p: &Value) -> CmdResult {
     // The hosted list, once the app has read it; else the built-in one.
     let all = cubes::list();
     let list = cubes::select(&all, ps(p, "theme"), area, ps(p, "query"))?;
-    Ok(json!({"count": list.len(), "cubes": list.iter().map(|e| e.json()).collect::<Vec<_>>(), "themes": cubes::THEMES}))
+    let entries: Vec<Value> = list
+        .iter()
+        .map(|e| {
+            let mut v = e.json();
+            if let Some(Ok(l)) = jaxa::licence(&e.url) {
+                v["licenseUrl"] = json!(l.url);
+            }
+            v
+        })
+        .collect();
+    Ok(json!({"count": list.len(), "cubes": entries, "themes": cubes::THEMES, "jaxa": jaxa_status()}))
 }
 
+/// Where JAXA Earth's catalog stands: its datasets left out, with why, once read.
+fn jaxa_status() -> Value {
+    match jaxa::status() {
+        jaxa::Status::Unread => json!({"state": "unread", "note": "read when the Data Cubes pane is first shown"}),
+        jaxa::Status::Reading => json!({"state": "reading"}),
+        jaxa::Status::Read(c) => json!({
+            "state": "read", "cubes": c.entries.len(), "datasets": c.datasets,
+            "leftOut": c.left_out.iter().map(|l| json!({"id": l.id, "title": l.title, "why": l.why})).collect::<Vec<_>>(),
+            "cut": c.cut,
+            "hidden": cubes::jaxa_hidden(),
+        }),
+        jaxa::Status::Failed(e) => json!({"state": "failed", "error": e}),
+    }
+}
+
+/// `cube.open`. It runs on the UI thread, as `stac.addCube` (which it calls) does: their STAC search
+/// and first reads of the files aren't on a background path yet, and this one moves with them. What
+/// it adds there is bounded: a JAXA collection's licence, at most 1 MB within 60 s, kept for the
+/// run once read (one that failed after 5 s or more is asked for again only 10 minutes later); and
+/// a range's sample, the newest file of up to four tiles, read at an overview: each file's header
+/// and values are two reads of up to two minutes apiece, so a server that stalls on every read
+/// holds the window up to 16 minutes in all. The sample comes after the refusals that read no file
+/// (room for the tile layers, web addresses, the slider's steps); a cube refused once its files
+/// are opened (one that isn't a cloud-optimised GeoTIFF read in place) has spent it.
 fn open(s: &mut Session, p: &Value) -> CmdResult {
     let id = ps(p, "id").map(str::trim).filter(|i| !i.is_empty()).ok_or("id is required (an entry of cube.catalog)")?;
-    open_entry(s, &cubes::find(id)?, p)
+    open_entry(s, &find(id)?, p)
+}
+
+/// The catalog's entry `id`. One not found, while JAXA Earth's catalog isn't read (its datasets
+/// join the list then), says where that stands.
+fn find(id: &str) -> Result<Entry, String> {
+    cubes::find(id).map_err(|e| {
+        let why = match jaxa::status() {
+            jaxa::Status::Read(_) => return e,
+            jaxa::Status::Unread => "it hasn't been read in this run (the Data Cubes pane reads it when first shown)".to_string(),
+            jaxa::Status::Reading => "it is being read".to_string(),
+            jaxa::Status::Failed(f) => format!("it couldn't be read ({f})"),
+        };
+        format!("{e}; JAXA Earth's datasets join it once their catalog is read, and {why}")
+    })
 }
 
 /// Adds `e` to the map, with the area, period and options of `p` (as `cube.open` takes them).
@@ -64,16 +114,22 @@ pub(crate) fn open_entry(s: &mut Session, e: &Entry, p: &Value) -> CmdResult {
     let mut r = match &e.source {
         Source::Stac { collection, asset } => {
             let mut q = json!({"url": e.url, "collection": collection, "asset": asset, "bbox": area, "start": start, "end": end});
-            if let Some(r) = given("range").cloned().or_else(|| e.range.map(|r| json!(r))) {
-                q["range"] = r;
-            }
+            // An entry that gives no range (JAXA Earth's) takes one from a sample of its files.
+            q["range"] = given("range").cloned().unwrap_or_else(|| e.range.map_or_else(|| json!("auto"), |r| json!(r)));
             if let Some(c) = given("maxCloud").cloned().or_else(|| e.max_cloud.map(|c| json!(c))) {
                 q["maxCloud"] = c;
             }
             if let Some(n) = name {
                 q["name"] = json!(n);
             }
-            s.run("stac.addCube", &q)?
+            if !e.credit.is_empty() {
+                q["attribution"] = json!(e.credit);
+            }
+            let mut r = s.run("stac.addCube", &q)?;
+            if !e.credit.is_empty() {
+                credit(s, e, &mut r);
+            }
+            r
         }
         Source::Zarr { variable } => {
             let mut q = json!({"url": e.url, "variable": variable, "time": true, "start": start, "end": through(&end)});
@@ -90,6 +146,21 @@ pub(crate) fn open_entry(s: &mut Session, e: &Entry, p: &Value) -> CmdResult {
         }
     }
     Ok(r)
+}
+
+/// Gives the credit a STAC cube's tile layers took (`stac.addCube`'s `attribution`), as its terms
+/// ask, and its collection's licence (a JAXA Earth dataset's: JAXA's terms for most, NASA's or
+/// Copernicus's for some), or says why it wasn't read.
+fn credit(s: &mut Session, e: &Entry, r: &mut Value) {
+    r["credit"] = json!(e.credit);
+    // The browser reads the licence in the pane instead.
+    #[cfg(target_arch = "wasm32")]
+    let _ = s;
+    #[cfg(not(target_arch = "wasm32"))]
+    match jaxa::licence_blocking(&e.url) {
+        Ok(l) => r["license"] = json!({"url": l.url, "title": l.title}),
+        Err(why) => s.warn(format!("{}: its collection's licence wasn't read ({why}); JAXA's terms are at {}", e.name, jaxa::TERMS)),
+    }
 }
 
 /// The period asked for (both ends or neither), else the entry's last full calendar year; one
@@ -135,7 +206,7 @@ fn through(end: &Value) -> Value {
 /// would override them.
 pub fn with_entry(p: &Value) -> Result<Cow<'_, Value>, String> {
     let Some(id) = p.get("cube").filter(|v| !v.is_null()) else { return Ok(Cow::Borrowed(p)) };
-    let e = cubes::find(id.as_str().ok_or("cube is an entry's id, from cube.catalog")?)?;
+    let e = find(id.as_str().ok_or("cube is an entry's id, from cube.catalog")?)?;
     if let Some(k) =
         ["layer", "layers", "path", "url", "collection", "asset", "variable"].into_iter().find(|k| p.get(*k).is_some_and(|v| !v.is_null()))
     {

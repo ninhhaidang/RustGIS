@@ -19484,6 +19484,178 @@ fn a_stac_data_cube_on_the_time_slider() {
     assert_eq!((s.map().tiles.len(), s.map().layers.len()), (tiles, layers));
 }
 
+/// An entry that gives no range, as JAXA Earth's don't, is added with one from a sample of its
+/// files (`"range": "auto"`): the same for every date. Its credit goes on the tile layers it
+/// added, and its collection's licence comes back with it.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn an_entry_without_a_range_takes_one_from_its_files() {
+    use crate::render::rustgis_tiles::cubes;
+    let (cog, _) = serve_ranges(rustgis_data::raster::cog::example(512, 256));
+    let item = |id: &str, date: &str| {
+        format!(
+            r#"{{"type": "Feature", "id": "{id}", "collection": "cube", "bbox": [10, 45, 11, 46], "geometry": null,
+               "properties": {{"datetime": "{date}T00:00:00Z", "bdc:tiles": ["T1"]}},
+               "assets": {{"B1": {{"href": "{cog}/{id}.tif", "eo:bands": [{{"scale": 0.0001}}]}}}}}}"#
+        )
+    };
+    let features = [item("a1", "2024-01-01"), item("a2", "2024-01-17")].join(",");
+    let licence = r#"{"type": "Collection", "id": "cube", "license": "proprietary", "links": [{"rel": "license", "href": "https://earth.jaxa.jp/en/data/policy/"}]}"#;
+    let base = serve_routes(
+        vec![("/v1/search", format!(r#"{{"type": "FeatureCollection", "features": [{features}]}}"#)), ("/v1", licence.to_string())],
+        8,
+    );
+    let mut entry = cubes::find("bdc-mod13q1-ndvi").unwrap();
+    entry.url = format!("{base}/v1");
+    entry.source = cubes::Source::Stac { collection: "cube".into(), asset: "B1".into() };
+    (entry.bbox, entry.start, entry.end) = ([0.0, 40.0, 20.0, 50.0], "2023-05-01".into(), Some("2024-12-31".into()));
+    (entry.range, entry.credit) = (None, "JAXA, A test dataset".into());
+    let mut s = Session::new(Project::default());
+    let r = crate::cmd::cube_catalog::open_entry(&mut s, &entry, &json!({"bbox": [10, 45, 11, 46]})).unwrap();
+    // The example's values run 0 to 255 (0 to 0.0255 scaled): its 2nd to 98th percentiles.
+    let range: Vec<f64> = r["range"].as_array().unwrap().iter().filter_map(Value::as_f64).collect();
+    assert!(range.len() == 2 && range[0] >= 0.0 && range[0] < 0.002 && range[1] > 0.023 && range[1] <= 0.0256, "{r}");
+    assert_eq!(r["rangeFrom"], "sample");
+    let look = format!("#range={},{}", range[0] / 0.0001, range[1] / 0.0001);
+    let tile = &s.map().tiles[0];
+    assert!(tile.time_urls.len() == 2 && tile.time_urls.iter().all(|(_, u)| u.ends_with(&look)), "{:?} {look}", tile.time_urls);
+    assert_eq!(tile.attribution, "JAXA, A test dataset");
+    assert_eq!(
+        (r["credit"].as_str(), r["license"]["url"].as_str()),
+        (Some("JAXA, A test dataset"), Some("https://earth.jaxa.jp/en/data/policy/"))
+    );
+    // Opened again over the same files, its new tile layer (in place of the old one) keeps the credit.
+    crate::cmd::cube_catalog::open_entry(&mut s, &entry, &json!({"bbox": [10, 45, 11, 46]})).unwrap();
+    assert!(s.map().tiles.iter().filter(|t| !t.time_urls.is_empty()).all(|t| t.attribution == "JAXA, A test dataset"));
+    assert!(!s.map().tiles.is_empty());
+    // A range given takes its place, as for any entry.
+    let mut t = Session::new(Project::default());
+    let r = crate::cmd::cube_catalog::open_entry(&mut t, &entry, &json!({"bbox": [10, 45, 11, 46], "range": [0, 0.01]})).unwrap();
+    assert!(r.get("rangeFrom").is_none() && t.map().tiles[0].time_urls.iter().all(|(_, u)| u.ends_with("#range=0,100")), "{r}");
+    // Other text is refused, naming "auto", before anything is read.
+    assert!(
+        t.run("stac.addCube", &json!({"url": entry.url, "collection": "cube", "asset": "B1", "range": "wide"}))
+            .unwrap_err()
+            .contains("\"auto\"")
+    );
+    // A credit longer than a project keeps, or one that isn't text, is refused before anything is
+    // read.
+    for a in [json!("x".repeat(501)), json!(42), json!(["x"])] {
+        let e = t.run("stac.addCube", &json!({"url": entry.url, "collection": "cube", "asset": "B1", "attribution": a})).unwrap_err();
+        assert!(e.contains("at most 500"), "{a}: {e}");
+    }
+    // Files of classes in their own colours take no range, and a notice says so.
+    use rustgis_data::raster::cog::{Example, example_with};
+    let (classes, _) = serve_ranges(example_with(&Example { size: 512, tile: 256, classes: true, ..Example::default() }));
+    let features = [item("a1", "2024-01-01")].join(",").replace(&cog, &classes);
+    let base = serve_routes(vec![("/v1/search", format!(r#"{{"type": "FeatureCollection", "features": [{features}]}}"#))], 4);
+    let mut u = Session::new(Project::default());
+    let mark = u.notices_given();
+    let r = u
+        .run(
+            "stac.addCube",
+            &json!({"url": format!("{base}/v1"), "collection": "cube", "asset": "B1", "range": "auto", "bbox": [10, 45, 11, 46], "start": "2023-05-01", "end": "2024-12-31"}),
+        )
+        .unwrap();
+    assert!(r.get("range").is_none() && r.get("rangeFrom").is_none(), "{r}");
+    assert!(u.notices_since(mark).iter().any(|n| n.text.contains("classes drawn in their own colours")), "{:?}", u.notices_since(mark));
+    // Files whose metadata gives a scale of 0 aren't sampled: no range fits them, and a notice
+    // says each file is stretched on its own (a range can't be left out of a catalog entry).
+    let features = [item("a1", "2024-01-01")].join(",").replace("\"scale\": 0.0001", "\"scale\": 0");
+    let base = serve_routes(vec![("/v1/search", format!(r#"{{"type": "FeatureCollection", "features": [{features}]}}"#))], 4);
+    let mut z = Session::new(Project::default());
+    let mark = z.notices_given();
+    let r = z
+        .run(
+            "stac.addCube",
+            &json!({"url": format!("{base}/v1"), "collection": "cube", "asset": "B1", "range": "auto", "bbox": [10, 45, 11, 46], "start": "2023-05-01", "end": "2024-12-31"}),
+        )
+        .unwrap();
+    assert!(r.get("range").is_none() && !z.map().tiles.is_empty(), "{r}");
+    assert!(z.notices_since(mark).iter().any(|n| n.text.contains("gives a scale of 0")), "{:?}", z.notices_since(mark));
+    // A collection whose licence can't be read: the cube is still added and credited, and a
+    // notice says the licence wasn't read, pointing to JAXA's terms. Opened again, the licence is
+    // asked for again (this server answers its second request for it).
+    let search = format!(r#"{{"type": "FeatureCollection", "features": [{}]}}"#, [item("a1", "2024-01-01")].join(","));
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let licence = licence.to_string();
+    std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        let mut asked = 0;
+        for stream in listener.incoming().take(16) {
+            let Ok(mut c) = stream else { continue };
+            let mut buf = [0u8; 4096];
+            let read = c.read(&mut buf).unwrap_or(0);
+            let req = String::from_utf8_lossy(&buf[..read]);
+            let path = req.split_whitespace().nth(1).unwrap_or("/");
+            let body = if path.starts_with("/v1/search") {
+                Some(search.clone())
+            } else if path == "/v1" {
+                asked += 1;
+                (asked > 1).then(|| licence.clone())
+            } else {
+                None
+            };
+            let _ = match body {
+                Some(b) => write!(c, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{b}", b.len()),
+                None => write!(c, "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"),
+            };
+        }
+    });
+    entry.url = format!("{base}/v1");
+    let mut w = Session::new(Project::default());
+    let mark = w.notices_given();
+    let r = crate::cmd::cube_catalog::open_entry(&mut w, &entry, &json!({"bbox": [10, 45, 11, 46]})).unwrap();
+    assert!(r.get("license").is_none() && w.map().tiles[0].attribution == "JAXA, A test dataset", "{r}");
+    let said = w.notices_since(mark);
+    assert!(said.iter().any(|n| n.text.contains("its collection's licence wasn't read")), "{said:?}");
+    let mark = w.notices_given();
+    let r = crate::cmd::cube_catalog::open_entry(&mut w, &entry, &json!({"bbox": [10, 45, 11, 46]})).unwrap();
+    assert_eq!(r["license"]["url"], "https://earth.jaxa.jp/en/data/policy/", "{r}");
+    let said = w.notices_since(mark);
+    assert!(!said.iter().any(|n| n.text.contains("licence wasn't read")), "{said:?}");
+    // A licence whose server stalls (here 6 s, then a 404) isn't asked for again at the next
+    // cube.open: its error is given at once, saying when it will be. The stall must outlast
+    // `jaxa::SLOW_READ` (5 s), and the two opens come well within `jaxa::RETRY_AFTER` (10 min).
+    let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = asked.clone();
+    let search = format!(r#"{{"type": "FeatureCollection", "features": [{}]}}"#, [item("a1", "2024-01-01")].join(","));
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        for stream in listener.incoming().take(16) {
+            let Ok(mut c) = stream else { continue };
+            let mut buf = [0u8; 4096];
+            let read = c.read(&mut buf).unwrap_or(0);
+            let req = String::from_utf8_lossy(&buf[..read]);
+            let path = req.split_whitespace().nth(1).unwrap_or("/").to_string();
+            if path.starts_with("/v1/search") {
+                let _ = write!(c, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{search}", search.len());
+            } else {
+                if path == "/v1" {
+                    counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(6));
+                    let _ = write!(c, "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                });
+            }
+        }
+    });
+    entry.url = format!("{base}/v1");
+    let mut w = Session::new(Project::default());
+    crate::cmd::cube_catalog::open_entry(&mut w, &entry, &json!({"bbox": [10, 45, 11, 46]})).unwrap();
+    let (mark, before) = (w.notices_given(), asked.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(before >= 1, "the licence was asked for");
+    let r = crate::cmd::cube_catalog::open_entry(&mut w, &entry, &json!({"bbox": [10, 45, 11, 46]})).unwrap();
+    assert!(r.get("license").is_none(), "{r}");
+    assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), before, "not asked for again");
+    let said = w.notices_since(mark);
+    assert!(said.iter().any(|n| n.text.contains("licence wasn't read") && n.text.contains("10 minutes")), "{said:?}");
+}
+
 /// The data cube catalog (#683): its entries listed by theme, area and words; one opened as typing
 /// its values into `stac.addCube` would (its collection, band, range and cloud cap filled in, its
 /// last full year by default), or into `layer.addZarr` following the slider; `cube.trend` and
@@ -19494,6 +19666,9 @@ fn a_catalog_entry_opens_as_its_command_would() {
     use crate::render::rustgis_tiles::cubes;
     let mut s = Session::new(Project::default());
     let ids = |r: &Value| r["cubes"].as_array().unwrap().iter().map(|c| c["id"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    // An id not in the list, while JAXA Earth's catalog is unread (as here), says so.
+    let e = s.run("cube.open", &json!({"id": "JAXA.Test_daily/B1"})).unwrap_err();
+    assert!(e.contains("no data cube") && e.contains("hasn't been read in this run"), "{e}");
     let all = s.run("cube.catalog", &json!({})).unwrap();
     assert_eq!(all["count"].as_u64(), Some(cubes::built_in().len() as u64));
     assert_eq!(all["themes"].as_array().map(Vec::len), Some(cubes::THEMES.len()));
