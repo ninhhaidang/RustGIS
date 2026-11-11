@@ -4402,7 +4402,9 @@ fn drawing_group(app: &mut RustGisApp, ui: &mut Ui, layer: &rustgis_engine::map:
                     crate::widgets::one_step_per_press(app, &resp);
                     let _ = app.run("layer.color", json!({"color": crate::theme::rgba(c).hex8()}));
                 }
-                ui.label(egui::RichText::new(tl!("Color")).size(11.5));
+                // A line has no inside: its colour is the line's (the outline is the "Outline" width below).
+                let name = if layer.geometry_type() == GeometryType::Polyline { tl!("Color") } else { tl!("Fill") };
+                ui.label(egui::RichText::new(name).size(11.5));
             });
             let mut w = layer.renderer.base_symbol().stroke_width;
             ui.horizontal(|ui| {
@@ -5289,6 +5291,17 @@ mod tests {
         assert!(layer.no_fill.is_none());
         assert_eq!(layer.renderer, renderer);
         assert!(h.query_by_label("No Fill").is_some());
+    }
+
+    #[test]
+    fn drawing_names_the_colour_by_what_it_changes() {
+        let mut h = drawing_harness();
+        for (layer, fill) in [("Countries", true), ("Cities", true), ("Rivers", false)] {
+            h.state_mut().run("layer.select", json!({"layer": layer})).unwrap();
+            h.run();
+            // The colour well itself is also labelled "Color", so only "Fill" tells the two apart.
+            assert_eq!(h.query_by_label("Fill").is_some(), fill, "{layer}");
+        }
     }
 
     /// Drags a number of the harness from `at` by 16, 32 and 48 points, calling `each` between.
