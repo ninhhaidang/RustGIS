@@ -7182,12 +7182,11 @@ mod tests {
             last = n;
         }
         assert!(last * 30 < full && last < built_in, "{last} of {full}");
-        // Each part's extent is at most its full one (a simplified ring can lose an extreme
-        // vertex, within the tolerance).
-        for (c, f) in outline_level(v, 1).unwrap().iter().zip(level0) {
-            assert_eq!(c.index, f.index);
-            for (a, b) in c.parts.iter().zip(&f.parts) {
-                assert!(a.width() <= b.width() + 1e-6 && a.height() <= b.height() + 1e-6);
+        // Each part's extent is still its own: a simplified ring keeps its extreme vertices.
+        for level in 1..=OUTLINE_LEVELS {
+            for (c, f) in outline_level(v, level).unwrap().iter().zip(level0) {
+                assert_eq!(c.index, f.index);
+                assert_eq!(c.parts, f.parts, "level {level}");
             }
         }
         // The level for a zoom: within a device pixel, full detail zoomed in, the coarsest out.

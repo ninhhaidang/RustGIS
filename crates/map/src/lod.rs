@@ -1,10 +1,11 @@
 //! Thinned display copies of a layer's geometry, for drawing it zoomed out.
 //!
 //! A detailed layer seen whole puts many vertices in each pixel: walking them all on every frame
-//! makes panning and zooming stall. A thinned copy keeps a vertex only when it is a set distance
-//! from the last one kept, so the map draws from far fewer vertices and looks the same. Copies
-//! are made per level (a tolerance of 2^level projection units) on first use and kept, a few
-//! at a time; the renderer picks the level just under a device pixel at the view's zoom.
+//! makes panning and zooming stall. A thinned copy is simplified with Douglas–Peucker, keeping
+//! only the vertices its shape needs to stay within a set distance of the original (#1750), so
+//! the map draws from far fewer vertices and looks the same. Copies are made per level (a
+//! tolerance of 2^level projection units) on first use and kept, a few at a time; the renderer
+//! picks the level just under a device pixel at the view's zoom.
 
 use rustgis_data::{Coord, Geometry};
 
@@ -54,10 +55,10 @@ pub(crate) struct Display {
     pub bytes: usize,
 }
 
-/// A display copy projected only after thinning. Mercator's largest derivative over the
-/// bounds of each line or ring converts the tolerance to degrees, including polar clamping.
-/// Other projections retain projected-space thinning: sampled scales cannot bound their seams
-/// or singularities. Non-finite vertices survive thinning and still break paths after projection.
+/// A display copy in `flat`, simplified to `tol` map units. In Web Mercator each line and ring is
+/// projected on its own and then simplified, so the full projected geometry is never built; other
+/// projections are projected whole first (a seam can cut a ring). Points the projection can't
+/// show (not finite) are kept and still break paths.
 pub fn project_thinned(g: &Geometry, flat: &crate::projection::Flat, tol: f64) -> Geometry {
     if !tol.is_finite() || tol <= 0.0 {
         return flat.project(g);
@@ -65,12 +66,9 @@ pub fn project_thinned(g: &Geometry, flat: &crate::projection::Flat, tol: f64) -
     if !matches!(flat, crate::projection::Flat::Mercator) {
         return thin(&flat.project(g), tol);
     }
-    flat.project(&thin_with(g, |run| {
-        let latitude = run.iter().filter(|c| c.is_finite()).fold(0.0f64, |lat, c| lat.max(c.y.abs().min(rustgis_geom::MAX_LAT)));
-        // |dx| + |dy| in degrees times this derivative bounds projected Euclidean distance.
-        let per_degree = rustgis_geom::MERCATOR_R * std::f64::consts::PI / 180.0 / latitude.to_radians().cos();
-        thin_run(run, tol / per_degree)
-    }))
+    // Each line and ring is projected on its own and simplified in map units, so the error bound
+    // holds on the map exactly, and the whole projected geometry is never built.
+    simplify_mapped(g, tol, Some(&|c: Coord| flat.forward_checked(c).unwrap_or(Coord::new(f64::NAN, f64::NAN))))
 }
 
 /// Builds a Mercator display level without ever constructing the full projected geometry.
@@ -176,130 +174,157 @@ pub fn tolerance(level: i32) -> f64 {
     2f64.powi(level)
 }
 
-/// A copy of `g` keeping, along each line and ring, only vertices at least `tol` (measured as
-/// |dx| + |dy|) from the last vertex kept, and always each one's first and last. A ring that
-/// would keep fewer than four vertices stays whole, so a small polygon still has an area to fill.
+/// A display copy of `g` within `tol` projection units: [`simplify`] (Douglas–Peucker).
 pub fn thin(g: &Geometry, tol: f64) -> Geometry {
-    thin_with(g, |run| thin_run(run, tol))
-}
-
-/// Applies a run-specific thinning rule while preserving points and rings with too few kept vertices.
-fn thin_with(g: &Geometry, run: impl Fn(&[Coord]) -> Vec<Coord>) -> Geometry {
-    match g {
-        Geometry::Point(_) | Geometry::MultiPoint(_) => g.clone(),
-        Geometry::Line(parts) => Geometry::Line(parts.iter().map(|p| run(p)).collect()),
-        Geometry::Polygon(polys) => Geometry::Polygon(
-            polys
-                .iter()
-                .map(|rings| {
-                    rings
-                        .iter()
-                        .map(|r| {
-                            let kept = run(r);
-                            if kept.len() < 4 { r.clone() } else { kept }
-                        })
-                        .collect()
-                })
-                .collect(),
-        ),
-    }
-}
-
-/// The vertices of one line or ring kept at a tolerance. A point the projection couldn't show
-/// (not finite) is kept, with the vertex after it, so the renderer still breaks the line there.
-fn thin_run(run: &[Coord], tol: f64) -> Vec<Coord> {
-    let mut out = Vec::new();
-    let mut last: Option<Coord> = None;
-    let n = run.len();
-    for (i, c) in run.iter().enumerate() {
-        let finite = c.x.is_finite() && c.y.is_finite();
-        let keep = match last {
-            Some(l) if finite && i + 1 != n => (c.x - l.x).abs() + (c.y - l.y).abs() >= tol,
-            _ => true,
-        };
-        if keep {
-            out.push(*c);
-            last = finite.then_some(*c);
-        }
-    }
-    out
+    simplify(g, tol)
 }
 
 /// A copy of `g` simplified by Douglas–Peucker (Douglas and Peucker, "Algorithms for the
 /// reduction of the number of points required to represent a digitized line or its caricature",
 /// The Canadian Cartographer 10(2), 1973): along each line and ring, every dropped vertex is
 /// within `tol` (projection units, Euclidean) of the simplified line, and the first and last are
-/// kept. Unlike [`thin`], which keeps a vertex every `tol` along a shape, it keeps only the ones
-/// its shape needs, so a detailed coastline keeps far fewer at the same error. A ring keeps at
-/// least a triangle (or stays whole when it has no more), so a small polygon still has an area to
-/// fill; a point the projection couldn't show (not finite) is kept, and the stretches either side
-/// of it are simplified apart. A tolerance that is not a positive number keeps `g` as it is.
+/// kept. Unlike distance thinning, which keeps a vertex every `tol` along a shape, it keeps only
+/// the ones its shape needs, so a detailed coastline keeps far fewer at the same error. A ring
+/// keeps its extreme vertices (so its extent) and at least a triangle (or stays whole when it has
+/// no more; a ring with no area keeps two of its vertices, one repeated), so a small polygon still
+/// has an area to fill; a point the projection couldn't show (not finite) is kept, and the
+/// stretches either side of it are simplified apart. A tolerance that is not a positive number
+/// keeps `g` as it is.
 pub fn simplify(g: &Geometry, tol: f64) -> Geometry {
     if !tol.is_finite() || tol <= 0.0 {
         return g.clone();
     }
+    simplify_mapped(g, tol, None)
+}
+
+/// [`simplify`] after mapping each coordinate through `f` (a projection), one line or ring at a
+/// time; `None` keeps them as they are. `tol` must be a positive number.
+fn simplify_mapped(g: &Geometry, tol: f64, f: Option<&dyn Fn(Coord) -> Coord>) -> Geometry {
+    fn mapped<'a>(run: &'a [Coord], f: Option<&dyn Fn(Coord) -> Coord>) -> std::borrow::Cow<'a, [Coord]> {
+        match f {
+            Some(f) => run.iter().map(|c| f(*c)).collect::<Vec<_>>().into(),
+            None => run.into(),
+        }
+    }
     match g {
-        Geometry::Point(_) | Geometry::MultiPoint(_) => g.clone(),
-        Geometry::Line(parts) => Geometry::Line(parts.iter().map(|p| simplify_run(p, tol)).collect()),
+        Geometry::Point(_) | Geometry::MultiPoint(_) => match f {
+            Some(f) => g.map_coords(&f),
+            None => g.clone(),
+        },
+        Geometry::Line(parts) => Geometry::Line(parts.iter().map(|p| simplify_run(&mapped(p, f), tol)).collect()),
         Geometry::Polygon(polys) => {
-            Geometry::Polygon(polys.iter().map(|rings| rings.iter().map(|r| simplify_ring(r, tol)).collect()).collect())
+            Geometry::Polygon(polys.iter().map(|rings| rings.iter().map(|r| simplify_ring(&mapped(r, f), tol)).collect()).collect())
         }
     }
 }
 
 /// One ring simplified, kept to at least a closed triangle.
 fn simplify_ring(ring: &[Coord], tol: f64) -> Vec<Coord> {
-    let kept = simplify_run(ring, tol);
-    if kept.len() >= 4 || ring.len() <= 4 {
-        return if kept.len() >= 4 { kept } else { ring.to_vec() };
+    let keep = keep_mask(ring, tol, true);
+    let kept = keep.iter().filter(|k| **k).count();
+    let n = ring.len();
+    if kept >= 4 || n <= 4 {
+        return if kept >= 4 { collect_kept(ring, &keep) } else { ring.to_vec() };
     }
-    // Too few kept: the first vertex, the one farthest from it, and the one farthest from the
-    // line between them make the triangle that covers the most of it.
-    let (Some(&first), Some(&last)) = (ring.first(), ring.last()) else { return ring.to_vec() };
-    let far = |from: &dyn Fn(Coord) -> f64| {
-        ring.iter().enumerate().filter(|(_, c)| c.is_finite()).fold((0, -1.0f64), |best, (i, c)| {
-            let d = from(*c);
-            if d > best.1 { (i, d) } else { best }
-        })
-    };
-    let (a, _) = far(&|c| (c.x - first.x).hypot(c.y - first.y));
-    let Some(&pa) = ring.get(a) else { return ring.to_vec() };
-    let (b, _) = far(&|c| segment_distance(c, first, pa));
-    let mut corners = [a, b];
+    // Too few kept (all of the ring is within `tol` of them): grow them into a triangle, each time
+    // adding the vertex farthest from what is kept. A triangle has every pair of its corners as an
+    // edge, so the vertices are still within `tol` of it.
+    let mut corners: Vec<usize> = (0..n - 1).filter(|&i| keep.get(i).copied().unwrap_or(false)).collect();
+    while corners.len() < 3 {
+        let from = |c: Coord| match corners.as_slice() {
+            [a] => ring.get(*a).map_or(f64::NAN, |a| (c.x - a.x).hypot(c.y - a.y)),
+            [a, b] => match (ring.get(*a), ring.get(*b)) {
+                (Some(a), Some(b)) => segment_distance(c, *a, *b),
+                _ => f64::NAN,
+            },
+            _ => f64::NAN,
+        };
+        let far = (0..n - 1)
+            .filter(|i| !corners.contains(i))
+            .filter_map(|i| ring.get(i).filter(|c| c.is_finite()).map(|c| (i, from(*c))))
+            .fold(None, |best: Option<(usize, f64)>, (i, d)| if d > best.map_or(0.0, |b| b.1) { Some((i, d)) } else { best });
+        // Every vertex on what is kept already (a ring with no area, such as an out-and-back
+        // sliver): the kept vertices, the last repeated, rather than the whole ring.
+        let Some((i, _)) = far else {
+            let Some(&last) = corners.last() else { return ring.to_vec() };
+            corners.resize(3, last);
+            break;
+        };
+        corners.push(i);
+    }
     corners.sort_unstable();
-    let mut out = vec![first];
-    out.extend(corners.iter().filter(|&&i| i != 0 && i + 1 != ring.len()).filter_map(|&i| ring.get(i).copied()));
-    out.dedup();
-    out.push(last);
-    if out.len() >= 4 { out } else { ring.to_vec() }
+    let mut out: Vec<Coord> = corners.iter().filter_map(|&i| ring.get(i).copied()).collect();
+    out.extend(ring.last().copied());
+    out
 }
 
-/// The vertices of one line or ring kept by Douglas–Peucker, each finite stretch on its own.
+/// The kept vertices of `run`, in order.
+fn collect_kept(run: &[Coord], keep: &[bool]) -> Vec<Coord> {
+    run.iter().zip(keep).filter_map(|(c, k)| k.then_some(*c)).collect()
+}
+
+/// The vertices of one line kept by Douglas–Peucker ([`keep_mask`]).
 fn simplify_run(run: &[Coord], tol: f64) -> Vec<Coord> {
+    collect_kept(run, &keep_mask(run, tol, false))
+}
+
+/// Which vertices of one line or ring Douglas–Peucker keeps, each finite stretch on its own. With
+/// `extremes`, its leftmost, rightmost, lowest and highest vertices are kept too, so a simplified
+/// ring has the same extent as the original: culling, and drawing a tiny polygon as its box, go
+/// by the extent of the full geometry.
+fn keep_mask(run: &[Coord], tol: f64, extremes: bool) -> Vec<bool> {
     let mut keep = vec![false; run.len()];
-    let mut start = 0;
-    for (i, c) in run.iter().enumerate() {
-        if !c.is_finite() {
-            if let Some(k) = keep.get_mut(i) {
-                *k = true;
+    let mark = |keep: &mut [bool], i: usize| {
+        if let Some(k) = keep.get_mut(i) {
+            *k = true;
+        }
+    };
+    if extremes {
+        let mut most: [Option<(usize, f64)>; 4] = [None; 4];
+        for (i, c) in run.iter().enumerate().filter(|(_, c)| c.is_finite()) {
+            for (slot, v) in most.iter_mut().zip([-c.x, c.x, -c.y, c.y]) {
+                if slot.is_none_or(|(_, best)| v > best) {
+                    *slot = Some((i, v));
+                }
             }
-            if i > start {
-                douglas_peucker(run, start, i - 1, tol, &mut keep);
-            }
-            start = i + 1;
+        }
+        for (i, _) in most.into_iter().flatten() {
+            mark(&mut keep, i);
         }
     }
-    if start < run.len() {
-        douglas_peucker(run, start, run.len() - 1, tol, &mut keep);
+    // Douglas–Peucker runs between the vertices kept already, within each finite stretch.
+    let mut start: Option<usize> = None;
+    for (i, c) in run.iter().enumerate() {
+        if !c.is_finite() {
+            mark(&mut keep, i);
+            start = None;
+            continue;
+        }
+        let forced = keep.get(i).copied().unwrap_or(false);
+        match start {
+            None => start = Some(i),
+            Some(s) if forced => {
+                douglas_peucker(run, s, i, tol, &mut keep);
+                start = Some(i);
+            }
+            Some(_) => {}
+        }
+        if run.get(i + 1).is_none_or(|n| !n.is_finite()) {
+            match start {
+                Some(s) if s < i => douglas_peucker(run, s, i, tol, &mut keep),
+                _ => mark(&mut keep, i),
+            }
+            start = None;
+        }
     }
-    run.iter().zip(keep).filter_map(|(c, k)| k.then_some(*c)).collect()
+    keep
 }
 
 /// Marks the vertices of `run[first..=last]` (all finite) Douglas–Peucker keeps at `tol`. It works
 /// from a stack, not by recursion, so a long run can't overflow the thread's stack, and its work is
 /// bounded: Douglas–Peucker is quadratic on a shape that splits unevenly at every step (a zigzag),
 /// so past [`DP_WORK`] distances a vertex the spans still open are thinned by distance instead
-/// ([`thin_run`]'s rule), which keeps every dropped vertex within `tol` too.
+/// (a vertex every `tol` along them), which keeps every dropped vertex within `tol` too.
 fn douglas_peucker(run: &[Coord], first: usize, last: usize, tol: f64, keep: &mut [bool]) {
     for i in [first, last] {
         if let Some(k) = keep.get_mut(i) {
@@ -401,15 +426,8 @@ mod tests {
             }
             assert_eq!(kept[0].first(), full[0].first());
             assert_eq!(kept[0].last(), full[0].last());
-            // Each dropped vertex is within tolerance of its preceding retained source vertex.
-            let mut at = 0;
-            for c in &full[0] {
-                if kept[0].get(at + 1) == Some(c) {
-                    at += 1;
-                }
-                let anchor = kept[0][at];
-                assert!((c.x - anchor.x).hypot(c.y - anchor.y) <= 10_000.0 + 1e-6);
-            }
+            // Each dropped vertex is within tolerance of the simplified line, on the map.
+            assert!(within(&full[0], &kept[0], 10_000.0 + 1e-6), "{south}..{north}");
         }
     }
 
@@ -467,14 +485,15 @@ mod tests {
     }
 
     #[test]
-    fn thinning_keeps_ends_and_far_vertices() {
+    fn thinning_keeps_ends_and_the_vertices_the_shape_needs() {
+        // A straight run keeps its ends only, however long; a corner is kept.
         let run: Vec<Coord> = (0..=100).map(|i| Coord::new(i as f64 * 0.1, 0.0)).collect();
-        let Geometry::Line(parts) = thin(&Geometry::Line(vec![run]), 1.0) else { panic!("a line") };
-        let kept = &parts[0];
-        assert_eq!(kept.first(), Some(&Coord::new(0.0, 0.0)));
-        assert_eq!(kept.last(), Some(&Coord::new(10.0, 0.0)));
-        assert!(kept.len() <= 12, "{} vertices kept", kept.len());
-        assert!(kept.windows(2).all(|w| (w[1].x - w[0].x).abs() <= 1.0 + 1e-9));
+        let Geometry::Line(parts) = thin(&Geometry::Line(vec![run.clone()]), 1.0) else { panic!("a line") };
+        assert_eq!(parts[0], vec![Coord::new(0.0, 0.0), Coord::new(10.0, 0.0)]);
+        let mut bent = run;
+        bent.push(Coord::new(10.0, 5.0));
+        let Geometry::Line(parts) = thin(&Geometry::Line(vec![bent]), 1.0) else { panic!("a line") };
+        assert_eq!(parts[0], vec![Coord::new(0.0, 0.0), Coord::new(10.0, 0.0), Coord::new(10.0, 5.0)]);
     }
 
     #[test]
@@ -483,16 +502,20 @@ mod tests {
             vec![Coord::new(0.0, 0.0), Coord::new(0.01, 0.0), Coord::new(f64::NAN, f64::NAN), Coord::new(0.02, 0.0), Coord::new(5.0, 0.0)];
         let Geometry::Line(parts) = thin(&Geometry::Line(vec![run]), 1.0) else { panic!("a line") };
         let kept = &parts[0];
-        assert_eq!(kept.len(), 4);
-        assert!(kept[1].x.is_nan());
-        assert_eq!(kept[2], Coord::new(0.02, 0.0));
+        // Each side of the break keeps its own ends.
+        assert_eq!(kept.len(), 5);
+        assert!(kept[2].x.is_nan());
+        assert_eq!((kept[1], kept[3]), (Coord::new(0.01, 0.0), Coord::new(0.02, 0.0)));
     }
 
     #[test]
-    fn a_small_ring_stays_whole() {
+    fn a_small_ring_keeps_an_area_to_fill() {
+        // A ring under the tolerance keeps a triangle; one that is already a triangle stays whole.
         let ring = vec![Coord::new(0.0, 0.0), Coord::new(0.1, 0.0), Coord::new(0.1, 0.1), Coord::new(0.0, 0.1), Coord::new(0.0, 0.0)];
-        let g = Geometry::Polygon(vec![vec![ring.clone()]]);
-        assert_eq!(thin(&g, 1.0), g);
+        let Geometry::Polygon(p) = thin(&Geometry::Polygon(vec![vec![ring.clone()]]), 1.0) else { panic!("a polygon") };
+        assert_eq!(p[0][0], vec![Coord::new(0.0, 0.0), Coord::new(0.1, 0.0), Coord::new(0.1, 0.1), Coord::new(0.0, 0.0)]);
+        let triangle = Geometry::Polygon(vec![p[0].clone()]);
+        assert_eq!(thin(&triangle, 1.0), triangle);
         assert_eq!(thinnable(&Geometry::MultiPoint(ring)), 0);
     }
 
@@ -508,11 +531,21 @@ mod tests {
             (0..20_000).map(|i| i as f64 * 0.01).map(|x| Coord::new(x, (x * 0.3).sin() * 20.0 + ((x * 37.0).sin() * 0.05))).collect();
         let g = Geometry::Line(vec![run.clone()]);
         let Geometry::Line(dp) = simplify(&g, 0.5) else { panic!("a line") };
-        let Geometry::Line(thinned) = thin(&g, 0.5) else { panic!("a line") };
+        // What distance thinning (#1066, a vertex kept every 0.5 along the run) used to keep.
+        let mut last = run[0];
+        let thinned = 1 + run
+            .iter()
+            .filter(|c| {
+                (c.x - last.x).abs() + (c.y - last.y).abs() >= 0.5 && {
+                    last = **c;
+                    true
+                }
+            })
+            .count();
         assert_eq!(dp[0].first(), run.first());
         assert_eq!(dp[0].last(), run.last());
         assert!(within(&run, &dp[0], 0.5));
-        assert!(dp[0].len() * 4 < thinned[0].len(), "{} against {}", dp[0].len(), thinned[0].len());
+        assert!(dp[0].len() * 4 < thinned, "{} against {thinned}", dp[0].len());
         // A closed ring keeps its shape, and a tiny ring still a triangle to fill.
         let ring: Vec<Coord> = (0..=1000)
             .map(|i| f64::from(i) * std::f64::consts::TAU / 1000.0)
@@ -524,11 +557,59 @@ mod tests {
         assert!(kept.len() >= 4 && kept.len() < 100 && kept.first() == kept.last(), "{}", kept.len());
         assert!(within(&ring, kept, 1.0));
         let Geometry::Polygon(p) = simplify(&Geometry::Polygon(vec![vec![ring.clone()]]), 1e6) else { panic!("a polygon") };
-        let tri = &p[0][0];
-        assert_eq!(tri.len(), 4);
-        assert_eq!(tri.first(), tri.last());
-        let area = ((tri[1].x - tri[0].x) * (tri[2].y - tri[0].y) - (tri[2].x - tri[0].x) * (tri[1].y - tri[0].y)).abs() / 2.0;
-        assert!(area > 1000.0, "{area}");
+        // Simplified past its size, the circle keeps its four extremes: its extent stays its own.
+        let diamond = &p[0][0];
+        assert_eq!(diamond.len(), 5);
+        assert_eq!(diamond.first(), diamond.last());
+        let twice: f64 = diamond.windows(2).map(|w| w[0].x * w[1].y - w[1].x * w[0].y).sum();
+        assert!((twice.abs() / 2.0 - 20_000.0).abs() < 1.0, "{}", twice.abs() / 2.0);
+        let extent = |r: &[Coord]| {
+            r.iter().fold(rustgis_geom::Extent::EMPTY, |mut e, c| {
+                e.expand(*c);
+                e
+            })
+        };
+        assert_eq!(extent(diamond), extent(&ring));
+    }
+
+    /// A ring whose extremes are two vertices grows from them into a triangle, still within the
+    /// tolerance of every vertex.
+    #[test]
+    fn a_ring_with_two_extremes_grows_into_a_triangle() {
+        let ring = vec![Coord::new(0.0, 0.0), Coord::new(5.0, 4.9), Coord::new(10.0, 10.0), Coord::new(5.0, 5.1), Coord::new(0.0, 0.0)];
+        let Geometry::Polygon(p) = simplify(&Geometry::Polygon(vec![vec![ring.clone()]]), 1.0) else { panic!("a polygon") };
+        let kept = &p[0][0];
+        assert_eq!(kept, &vec![Coord::new(0.0, 0.0), Coord::new(5.0, 4.9), Coord::new(10.0, 10.0), Coord::new(0.0, 0.0)]);
+        assert!(within(&ring, kept, 1.0));
+    }
+
+    /// A long sliver keeps its extremes (four vertices) and stays within the tolerance.
+    #[test]
+    fn a_sliver_ring_keeps_its_extremes() {
+        let ring: Vec<Coord> = (0..=20)
+            .map(|i| Coord::new(f64::from(i) * 0.5, f64::from(i) * 0.5 + 0.01))
+            .chain((1..20).rev().map(|i| Coord::new(f64::from(i) * 0.5, f64::from(i) * 0.5 - 0.01)))
+            .chain([Coord::new(0.0, 0.01)])
+            .collect();
+        let Geometry::Polygon(p) = simplify(&Geometry::Polygon(vec![vec![ring.clone()]]), 1.0) else { panic!("a polygon") };
+        let kept = &p[0][0];
+        assert_eq!(kept.len(), 4, "{kept:?}");
+        assert_eq!(kept.first(), kept.last());
+        assert!(kept.contains(&Coord::new(10.0, 10.01)), "the far corner stays: {kept:?}");
+        assert!(within(&ring, kept, 1.0));
+    }
+
+    /// A ring with no area (out along a line and back) keeps four of its vertices, not all of them.
+    #[test]
+    fn an_out_and_back_ring_keeps_four_vertices() {
+        let out: Vec<Coord> = (0..=50).map(|i| Coord::new(f64::from(i), 0.0)).collect();
+        let ring: Vec<Coord> = out.iter().chain(out.iter().rev().skip(1)).copied().collect();
+        let Geometry::Polygon(p) = simplify(&Geometry::Polygon(vec![vec![ring.clone()]]), 1.0) else { panic!("a polygon") };
+        let kept = &p[0][0];
+        assert_eq!(kept.len(), 4, "{kept:?}");
+        assert_eq!(kept.first(), kept.last());
+        assert!(kept.contains(&Coord::new(50.0, 0.0)));
+        assert!(within(&ring, kept, 1.0));
     }
 
     #[test]

@@ -50,8 +50,12 @@ fn main() {
                 let camera = Camera { center: Coord::new(c.x + i as f64 * res * 3.0, c.y), res, bearing: 0.0, pitch: 0.0 };
                 View { width: 1480.0, height: 900.0, pixels_per_point: 1.0, camera, sky: false }
             };
-            // Warm the caches, then time.
-            for i in 0..3 {
+            // The first frame at a zoom builds its display level (on the first variant, which draws
+            // both; the others reuse it); then the caches are warm.
+            let t = std::time::Instant::now();
+            let _ = render(&mut m, &frame(0));
+            let cold = t.elapsed().as_secs_f64() * 1000.0;
+            for i in 1..3 {
                 let _ = render(&mut m, &frame(i));
             }
             let n = 15;
@@ -59,7 +63,12 @@ fn main() {
             for i in 0..n {
                 let _ = render(&mut m, &frame(i));
             }
-            println!("{vname:7} {name:13}: {:6.1} ms/frame", t.elapsed().as_secs_f64() * 1000.0 / n as f64);
+            let warm = t.elapsed().as_secs_f64() * 1000.0 / n as f64;
+            if outline && layer {
+                println!("{vname:7} {name:13}: {warm:6.1} ms/frame, first (building the level) {cold:6.1} ms");
+            } else {
+                println!("{vname:7} {name:13}: {warm:6.1} ms/frame");
+            }
         }
     }
 }

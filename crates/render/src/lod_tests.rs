@@ -162,6 +162,14 @@ fn lod_landcover_matches_full_geometry_at_several_zooms_and_densities() {
 #[test]
 fn lod_display_survives_rejected_frame_and_returns_without_rebuilding() {
     let mut map = landcover(84);
+    // Every other vertex raised about a metre (by its own position, so shared vertices and ring
+    // ends stay together): zoomed in a thousand times, a pixel is about 0.2 m and simplifying
+    // keeps nearly every vertex, so that frame's level is rejected; zoomed out it drops them.
+    for f in map.layers[0].dataset.features.iter_mut() {
+        if let Some(g) = f.geometry.as_mut() {
+            *g = g.map_coords(&|c: Coord| Coord::new(c.x, c.y + if ((c.x * 1e7).round() as i64) % 2 == 0 { 1e-5 } else { 0.0 }));
+        }
+    }
     let view = View {
         width: 420.0,
         height: 320.0,
