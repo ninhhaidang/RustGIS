@@ -199,13 +199,41 @@ static WINDOW_TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
 #[cfg(not(target_arch = "wasm32"))]
 const MAX_WINDOW_READS: usize = 16;
 
+/// A file downloading from its web address, to be added when it lands ([`UiState::downloads`]).
+pub struct Download {
+    /// The session's download id.
+    pub id: u64,
+    /// Its address.
+    pub url: String,
+    /// The parameters to add it with.
+    pub params: Value,
+    /// Where it lands. While the list holds this, the download is wanted: Cancel takes it out.
+    pub slot: Slot<Result<Vec<u8>, String>>,
+    /// How far it has come (the status bar's).
+    pub progress: std::sync::Arc<rustgis_engine::render::rustgis_tiles::cache::Progress>,
+}
+
+/// A download or a window's read under way, for the status bar ([`RustGisApp::downloads_under_way`]).
+#[derive(Debug)]
+pub(crate) struct UnderWay {
+    /// Its download id, for [`RustGisApp::cancel_download`].
+    pub id: u64,
+    /// Its address, as messages name it.
+    pub shown: String,
+    /// How far a whole file's download has come; `None` for a window's read, which isn't counted.
+    pub progress: Option<std::sync::Arc<rustgis_engine::render::rustgis_tiles::cache::Progress>>,
+}
+
 /// See [`UiState::window_reads`].
 #[cfg(not(target_arch = "wasm32"))]
 type WindowRead =
     (u64, String, Value, Slot<Result<rustgis_engine::cmd::layer::CogWindow, String>>, std::sync::Arc<std::sync::atomic::AtomicBool>);
 
-/// A window's turn to be read off the frame, or `None` once `left` says its project was closed:
-/// one waiting for its turn then gives up its place at once, without being read.
+/// A window's turn to be read off the frame, or `None` once `left` says its project was closed or
+/// its download was cancelled: one waiting for its turn then gives up its place at once, without
+/// being read. One being read gives up its turn within a moment too ([`read_cog_window_until`]).
+///
+/// [`read_cog_window_until`]: rustgis_engine::cmd::layer::read_cog_window_until
 #[cfg(not(target_arch = "wasm32"))]
 fn window_turn(left: &std::sync::atomic::AtomicBool) -> Option<std::sync::MutexGuard<'static, ()>> {
     loop {
@@ -746,9 +774,8 @@ pub struct UiState {
     pub pending_csv: Option<Value>,
     /// CRS override for the next Shapefile picked by Import Shapefile with Projection.
     pub pending_shapefile: Option<Value>,
-    /// Data downloading from web addresses (Home › Add › Add Data › From URL): the address, the parameters to
-    /// add it with, and where the download lands.
-    pub downloads: Vec<(u64, String, Value, Slot<Result<Vec<u8>, String>>)>,
+    /// Data downloading from web addresses (Home › Add › Add Data › From URL).
+    pub downloads: Vec<Download>,
     /// A project downloading from its web address (`ui.openUrl`, a `?project=` link): the
     /// session's download id, the address and where the download lands. A later one replaces it;
     /// opening another project meanwhile drops it.
@@ -4552,17 +4579,26 @@ impl RustGisApp {
             }
             let slot: Slot<Result<Vec<u8>, String>> = Slot::default();
             let land = slot.clone();
+            // Wanted while `UiState::downloads` holds its slot: Cancel (or the app gone) stops its
+            // transfer at the next bytes that come (natively; the browser's fetch runs on).
+            let watch = std::sync::Arc::downgrade(&slot);
+            let wanted: rustgis_engine::render::rustgis_tiles::cache::Still = std::sync::Arc::new(move || watch.strong_count() > 1);
+            let progress = std::sync::Arc::<rustgis_engine::render::rustgis_tiles::cache::Progress>::default();
             // A Shapefile address brings its companion parts under the same download owner.
-            rustgis_engine::cmd::layer::download_data(
-                &url,
-                if q.get("geolibreProject").and_then(Value::as_bool) == Some(true) {
-                    rustgis_engine::map::geolibre::MAX_TEXT
-                } else {
-                    rustgis_engine::render::rustgis_tiles::cache::MAX_DOWNLOAD
-                },
-                Box::new(move |r| *land.lock().unwrap_or_else(|e| e.into_inner()) = Some(r)),
-            );
-            self.ui.downloads.push((id, url, q, slot));
+            rustgis_engine::render::rustgis_tiles::cache::with_still(wanted, || {
+                rustgis_engine::render::rustgis_tiles::cache::with_progress(Some(progress.clone()), || {
+                    rustgis_engine::cmd::layer::download_data(
+                        &url,
+                        if q.get("geolibreProject").and_then(Value::as_bool) == Some(true) {
+                            rustgis_engine::map::geolibre::MAX_TEXT
+                        } else {
+                            rustgis_engine::render::rustgis_tiles::cache::MAX_DOWNLOAD
+                        },
+                        Box::new(move |r| *land.lock().unwrap_or_else(|e| e.into_inner()) = Some(r)),
+                    )
+                })
+            });
+            self.ui.downloads.push(Download { id, url, params: q, slot, progress });
 
             Ok(Value::Null)
         })
@@ -4645,9 +4681,9 @@ impl RustGisApp {
             }
         }
         let mut landed = Vec::new();
-        self.ui.downloads.retain(|(id, url, p, slot)| match slot.lock().unwrap_or_else(|e| e.into_inner()).take() {
+        self.ui.downloads.retain(|d| match d.slot.lock().unwrap_or_else(|e| e.into_inner()).take() {
             Some(r) => {
-                landed.push((*id, url.clone(), p.clone(), r));
+                landed.push((d.id, d.url.clone(), d.params.clone(), r));
                 false
             }
             None => true,
@@ -4685,6 +4721,49 @@ impl RustGisApp {
                 }
             }
         }
+    }
+
+    /// The downloads and windows' reads under way off the frame, oldest first.
+    pub(crate) fn downloads_under_way(&self) -> Vec<UnderWay> {
+        let shown = |id: u64, url: &str, progress: Option<&std::sync::Arc<_>>| UnderWay {
+            id,
+            shown: rustgis_engine::sources::address_in_message(url),
+            progress: progress.cloned(),
+        };
+        let downloads = self.ui.downloads.iter().map(|d| shown(d.id, &d.url, Some(&d.progress)));
+        #[cfg(not(target_arch = "wasm32"))]
+        let downloads = downloads.chain(self.ui.window_reads.iter().map(|(id, url, ..)| shown(*id, url, None)));
+        let mut under_way: Vec<_> = downloads.collect();
+        under_way.sort_by_key(|d| d.id);
+        under_way
+    }
+
+    /// Cancels a download or a window's read under way (the status bar's Cancel): it is dropped
+    /// and said, and the command waiting for it answered, as one that failed is. A window gives up
+    /// its turn, or its place in the queue for one, within a moment. A whole file's transfer stops
+    /// at the next bytes that come, as its download is no longer wanted (`add_url`); in the
+    /// browser it runs to its end, and what it brings is thrown away.
+    pub(crate) fn cancel_download(&mut self, id: u64) {
+        let cancelled = self.ui.downloads.iter().position(|d| d.id == id).map(|i| {
+            let d = self.ui.downloads.remove(i);
+            (d.url, d.params)
+        });
+        #[cfg(not(target_arch = "wasm32"))]
+        let cancelled = cancelled.or_else(|| {
+            let i = self.ui.window_reads.iter().position(|d| d.0 == id)?;
+            let (_, url, p, _, left) = self.ui.window_reads.remove(i);
+            left.store(true, std::sync::atomic::Ordering::Relaxed);
+            Some((url, p))
+        });
+        let Some((url, mut p)) = cancelled else { return };
+        connectiontree::take_origin_key(&mut p);
+        let e = tl!("cancelled");
+        self.session.request_failed(&p, e);
+        self.session.download_failed(id);
+        rustgis_engine::cmd::geolibre::discard_pending(&mut self.session, &p);
+        let why = rustgis_engine::sources::message_with_address(&url, e);
+        self.landed_in_dialog(&p, Err(&why));
+        self.session.notify(why, false);
     }
 
     /// Says why a download or a window's read failed, and answers the command waiting for it.
@@ -4746,8 +4825,20 @@ impl RustGisApp {
             let turn = window_turn(&leaving);
             let read = if turn.is_some() {
                 // On a thread no command's catch reaches: a bug must not leave it running forever.
-                let read = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| rustgis_engine::cmd::layer::read_cog_window(&asked)));
-                read.unwrap_or_else(|_| Err(tl!("Reading the window failed unexpectedly").to_string()))
+                let read = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    rustgis_engine::cmd::layer::read_cog_window_until(&asked, &leaving)
+                }));
+                let read = read.unwrap_or_else(|_| Err(tl!("Reading the window failed unexpectedly").to_string()));
+                // Stopped by `left`: said as one given up before its turn is. A read that failed
+                // for its own reason keeps it.
+                read.map_err(|e| {
+                    if leaving.load(std::sync::atomic::Ordering::Relaxed) && e.contains(rustgis_engine::render::rustgis_tiles::cog::STOPPED)
+                    {
+                        tl!("given up during its read: its project was closed, or more than 64 downloads started after it").to_string()
+                    } else {
+                        e
+                    }
+                })
             } else {
                 Err(tl!("given up before its read began: its project was closed, or more than 64 downloads started after it").to_string())
             };
@@ -6079,6 +6170,78 @@ mod record_tests {
         assert_eq!(slow.held.load(Ordering::Relaxed), 0, "nothing is asked of the server");
         let said = |n: &rustgis_engine::Notice| n.text.contains("scene.tif") && n.text.contains("before its read began");
         assert!(app.session.notices.iter().any(said), "{:?}", app.session.notices);
+    }
+
+    /// Cancel stops a window's read waiting on a slow server's tiles within a moment: the next
+    /// read may take its turn, the read is said cancelled, and nothing is added when the tiles
+    /// come in after all.
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn a_cancelled_window_gives_up_its_turn_at_once() {
+        use std::sync::atomic::Ordering;
+        let _turn = crate::fetching::turn();
+        let slow = crate::fetching::slow_ranges(rustgis_engine::data::raster::cog::example(1024, 256));
+        let url = format!("{}/scene.tif", slow.origin);
+        // The header in hand: only the tiles wait, for the server's 20 s.
+        rustgis_engine::render::rustgis_tiles::cog::info_blocking(&url).unwrap();
+        slow.open.store(false, Ordering::Relaxed);
+        let mut app = RustGisApp::with_sample();
+        app.run("ui.addUrl", json!({"url": url, "bbox": [10.25, 45.5, 10.5, 45.75], "name": "Cancelled"})).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while slow.held.load(Ordering::Relaxed) == 0 {
+            assert!(std::time::Instant::now() < deadline, "no request held");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let under_way = app.downloads_under_way();
+        assert!(under_way.len() == 1 && under_way[0].shown.contains("scene.tif") && under_way[0].progress.is_none(), "{under_way:?}");
+        app.cancel_download(under_way[0].id);
+        assert!(app.ui.window_reads.is_empty() && app.downloads_under_way().is_empty());
+        let said = |n: &rustgis_engine::Notice| n.text.contains("scene.tif") && n.text.contains("cancelled") && !n.error;
+        assert!(app.session.notices.iter().any(said), "{:?}", app.session.notices);
+        // The server still holds the tiles, but the read's turn is free within a moment.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while crate::WINDOW_TURN.try_lock().is_err() {
+            assert!(std::time::Instant::now() < deadline, "the cancelled read kept its turn");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        slow.open.store(true, Ordering::Relaxed);
+        for _ in 0..25 {
+            app.poll_data_downloads();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(app.session.map().layer_by_name("Cancelled").is_none());
+    }
+
+    /// Cancel drops a whole file's download as one that failed: said, and not added when its
+    /// bytes come in after all.
+    #[test]
+    fn a_cancelled_download_isnt_added_when_it_lands() {
+        use rustgis_engine::render::rustgis_tiles::cache;
+        use std::sync::{Arc, Mutex};
+        let _turn = crate::fetching::turn();
+        // The fetcher is the process's: put back however the test ends.
+        struct Fetcher;
+        impl Drop for Fetcher {
+            fn drop(&mut self) {
+                cache::clear_fetcher();
+            }
+        }
+        let held = Arc::new(Mutex::new(Vec::<cache::Done>::new()));
+        let callbacks = held.clone();
+        cache::set_fetcher(move |_, done| callbacks.lock().unwrap().push(done));
+        let _fetcher = Fetcher;
+        let mut app = RustGisApp::with_sample();
+        app.run("ui.addUrl", json!({"url": "https://cancel.invalid/places.geojson", "name": "Cancelled download"})).unwrap();
+        assert_eq!(held.lock().unwrap().len(), 1, "one fetch for the file");
+        let under_way = app.downloads_under_way();
+        assert!(under_way.len() == 1 && under_way[0].shown.contains("places.geojson") && under_way[0].progress.is_some(), "{under_way:?}");
+        app.cancel_download(under_way[0].id);
+        assert!(app.ui.downloads.is_empty() && app.downloads_under_way().is_empty());
+        let said = |n: &rustgis_engine::Notice| n.text.contains("places.geojson") && n.text.contains("cancelled");
+        assert!(app.session.notices.iter().any(said), "{:?}", app.session.notices);
+        held.lock().unwrap().pop().unwrap()(Ok(br#"{"type":"Point","coordinates":[1,2]}"#.to_vec()));
+        app.poll_data_downloads();
+        assert!(app.session.map().layer_by_name("Cancelled download").is_none());
     }
 
     /// The next window is read only once the frame has taken the last: a frame that stalls holds

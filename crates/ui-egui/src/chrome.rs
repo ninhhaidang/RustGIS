@@ -355,6 +355,11 @@ pub fn status_bar(app: &mut RustGisApp, ui: &mut Ui) {
                     sep(ui, &t);
                     crate::readjob::status(app, ui, &t);
                 }
+                // Downloads and windows being read off the frame, each with its Cancel.
+                if !app.ui.downloads.is_empty() || window_reads_under_way(app) {
+                    sep(ui, &t);
+                    downloads_status(app, ui, &t);
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     // The CPU/GPU backend toggle, then the frame rate (live while the map moves,
                     // "— fps" when idle), then the last render's cost.
@@ -456,6 +461,67 @@ pub fn status_bar(app: &mut RustGisApp, ui: &mut Ui) {
                 });
             });
         });
+}
+
+/// Whether windows are being read off the frame (none in the browser).
+fn window_reads_under_way(app: &RustGisApp) -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    return !app.ui.window_reads.is_empty();
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = app;
+        false
+    }
+}
+
+/// The downloads under way in the status bar, each with how far it has come and its Cancel
+/// (`RustGisApp::cancel_download`): one in the bar itself, several as a menu of them.
+fn downloads_status(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
+    let under_way = app.downloads_under_way();
+    let mut cancel = None;
+    ui.spinner();
+    match under_way.as_slice() {
+        [] => {}
+        [one] => download_row(ui, t, one, &mut cancel),
+        many => {
+            ui.menu_button(crate::i18n::fmt("{n} downloads", &[("n", &many.len().to_string())]), |ui| {
+                for d in many {
+                    ui.horizontal(|ui| download_row(ui, t, d, &mut cancel));
+                }
+            });
+        }
+    }
+    // The bar moves while the bytes come in on their threads.
+    ui.ctx().request_repaint_after(std::time::Duration::from_millis(200));
+    if let Some(id) = cancel {
+        app.cancel_download(id);
+    }
+}
+
+/// One download in the status bar: what it is doing, its address (cut short, whole on hover), its
+/// progress and its Cancel. A file's whole download shows a bar once the server said its size and
+/// the megabytes read before; a window's read ("Reading…", as its start notice says) isn't
+/// counted, nor is a download in the browser.
+fn download_row(ui: &mut Ui, t: &Tokens, d: &crate::UnderWay, cancel: &mut Option<u64>) {
+    let received = d.progress.as_ref().map_or(0, |p| p.received());
+    let fraction = d.progress.as_ref().and_then(|p| p.fraction());
+    let doing = match (&d.progress, fraction) {
+        (None, _) => tl!("Reading…").to_string(),
+        (Some(_), None) if received > 0 => {
+            crate::i18n::fmt("Downloading… {mb} MB", &[("mb", &format!("{:.1}", received as f64 / 1_048_576.0))])
+        }
+        (Some(_), _) => tl!("Downloading…").to_string(),
+    };
+    ui.label(egui::RichText::new(doing).size(11.5).color(t.text_dim));
+    let short: String =
+        if d.shown.chars().count() > 48 { format!("{}…", d.shown.chars().take(47).collect::<String>()) } else { d.shown.clone() };
+    ui.label(egui::RichText::new(short).size(11.5)).on_hover_text(&d.shown);
+    if let Some(f) = fraction {
+        ui.add(egui::ProgressBar::new(f).show_percentage().desired_width(120.0).desired_height(12.0));
+    }
+    if ui.small_button(tl!("Cancel")).on_hover_text(tl!("Stop this download; nothing is added")).clicked() {
+        *cancel = Some(d.id);
+    }
 }
 
 fn sep(ui: &mut Ui, t: &Tokens) {

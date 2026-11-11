@@ -627,7 +627,7 @@ mod tests {
                     assert_eq!(seen.len(), 2, "{:?}", app.session.notices);
                     assert!(seen[1].contains("REQUEST=GetCoverage"));
                     assert_eq!(logins::apply(&seen[1]).unwrap().is_some(), !anonymous);
-                    let (_, _, params, _) = app.ui.downloads.first().expect("the coverage download was dispatched");
+                    let params = &app.ui.downloads.first().expect("the coverage download was dispatched").params;
                     assert_eq!(params.get("connection").and_then(Value::as_str), (!anonymous).then_some(id.as_str()));
                     assert_eq!(params.get("anonymous").and_then(Value::as_bool).unwrap_or(false), anonymous);
                 } else {

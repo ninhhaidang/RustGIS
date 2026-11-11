@@ -245,8 +245,8 @@ mod tests {
             let (asked, limit) = cache::split_download_limit(&asked);
             assert_eq!(asked, url);
             assert_eq!(limit, Some(cache::MAX_DOWNLOAD));
-            assert_eq!(app.ui.downloads[0].2["zoom"], zoom, "completion preserves the claim's JSON representation");
-            assert_eq!(app.ui.downloads[0].2["request"], receipt, "completion retains the opaque request's exact receipt");
+            assert_eq!(app.ui.downloads[0].params["zoom"], zoom, "completion preserves the claim's JSON representation");
+            assert_eq!(app.ui.downloads[0].params["request"], receipt, "completion retains the opaque request's exact receipt");
             done(Ok(b"east,north\n1,2\n3,4\n".to_vec()));
             app.poll_data_downloads();
             let places = app.session.map().layer_by_name(&name).unwrap();

@@ -1264,7 +1264,7 @@ mod tests {
         app.ui.stac.waiting = Some((asked, slot));
         app.ui.stac.connection = two["id"].as_str().map(str::to_string);
         poll(&mut app, &egui::Context::default());
-        let (_, _, params, _) = app.ui.downloads.last().unwrap();
+        let params = &app.ui.downloads.last().unwrap().params;
         assert_eq!(params["connection"], one["id"], "token completion must not re-read the picker");
         assert_ne!(params["connection"], two["id"]);
     }

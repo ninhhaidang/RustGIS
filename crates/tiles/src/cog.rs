@@ -1430,10 +1430,52 @@ pub const MAX_VALUES_READ: u64 = 64_000_000;
 /// A file's header, waiting for it: for an analysis that reads the values (opengeos/RustGIS#579).
 #[cfg(not(target_arch = "wasm32"))]
 pub fn info_blocking(url: &str) -> Result<Arc<Info>, String> {
+    info_until(url, &std::sync::atomic::AtomicBool::new(false))
+}
+
+/// [`info_blocking`], giving up within 100 ms of `stop` being set (a download's Cancel), with
+/// [`STOPPED`].
+#[cfg(not(target_arch = "wasm32"))]
+pub fn info_until(url: &str, stop: &std::sync::atomic::AtomicBool) -> Result<Arc<Info>, String> {
     let url = split(url).0;
     let (tx, rx) = std::sync::mpsc::channel();
     with_info(url, Box::new(move |r| tx.send(r).unwrap_or_default()));
-    rx.recv_timeout(Duration::from_secs(120)).map_err(|_| message_with_address(url, "no answer in two minutes"))?
+    wait_until(&rx, Duration::from_secs(120), stop).map_err(|stopped| stopped_or(stopped, url, "no answer in two minutes"))?
+}
+
+/// What a read given up for its `stop` says.
+#[cfg(not(target_arch = "wasm32"))]
+pub const STOPPED: &str = "stopped before it was read";
+
+/// How often a blocking read looks at its `stop` while it waits.
+#[cfg(not(target_arch = "wasm32"))]
+const STOP_STEP: Duration = Duration::from_millis(100);
+
+/// What `rx` sends within `limit`, waited for in steps of [`STOP_STEP`]: `Err(true)` once `stop`
+/// is set, `Err(false)` when nothing came in time (or the sender is gone).
+#[cfg(not(target_arch = "wasm32"))]
+fn wait_until<T>(rx: &std::sync::mpsc::Receiver<T>, limit: Duration, stop: &std::sync::atomic::AtomicBool) -> Result<T, bool> {
+    let end = Instant::now() + limit;
+    loop {
+        if stop.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(true);
+        }
+        let left = end.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(false);
+        }
+        match rx.recv_timeout(left.min(STOP_STEP)) {
+            Ok(v) => return Ok(v),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return Err(false),
+        }
+    }
+}
+
+/// [`STOPPED`] for a wait given up for its `stop`, else `late`; both name the address.
+#[cfg(not(target_arch = "wasm32"))]
+fn stopped_or(stopped: bool, url: &str, late: &str) -> String {
+    message_with_address(url, if stopped { STOPPED } else { late })
 }
 
 /// Band `band`'s values (0-based) in a window of a level: columns `cols.0..cols.1` and rows
@@ -1451,12 +1493,15 @@ pub fn read_values_blocking(
     cols: (u32, u32),
     rows: (u32, u32),
 ) -> Result<Vec<f32>, String> {
-    read_values_counted_blocking(info, url, level, band, cols, rows).map(|(values, _, _)| values)
+    let never = std::sync::atomic::AtomicBool::new(false);
+    read_values_counted_blocking(info, url, level, band, cols, rows, &never).map(|(values, _, _)| values)
 }
 
 /// [`read_values_blocking`], with how many of the window's values `f32` rounded (32- and 64-bit
 /// whole numbers and 64-bit floats it doesn't hold exactly; no-data isn't counted), and how many
-/// it can't hold at all (past its range: left out, NaN).
+/// it can't hold at all (past its range: left out, NaN). It gives up within 100 ms of `stop`
+/// being set (a download's Cancel), with [`STOPPED`]; the tiles already asked for are
+/// still fetched, for the cache.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn read_values_counted_blocking(
     info: &Arc<Info>,
@@ -1465,6 +1510,7 @@ pub fn read_values_counted_blocking(
     band: usize,
     cols: (u32, u32),
     rows: (u32, u32),
+    stop: &std::sync::atomic::AtomicBool,
 ) -> Result<(Vec<f32>, u64, u64), String> {
     let url = split(url).0.to_string();
     let l = info.layout.levels.get(level).ok_or("no such overview")?;
@@ -1495,9 +1541,13 @@ pub fn read_values_counted_blocking(
         (r0..=r1).flat_map(|ty| (c0..=c1).filter_map(move |tx| ty.checked_mul(across).and_then(|t| t.checked_add(tx)))).collect();
     // Reserved first: a window the machine can't hold is an error, not a crash (#1291).
     let (mut out, mut rounded, mut overflowed) = (rustgis_data::raster::filled(w, h, f32::NAN).map_err(|e| e.to_string())?, 0u64, 0u64);
+    if stop.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err(message_with_address(&url, STOPPED));
+    }
     let (tx, rx) = std::sync::mpsc::channel();
     fetch_bands(info.clone(), url.clone(), level, tiles.clone(), vec![band], Box::new(move |r| tx.send(r).unwrap_or_default()));
-    let picked = rx.recv_timeout(Duration::from_secs(120)).map_err(|_| message_with_address(&url, "tiles not read in two minutes"))??;
+    let picked =
+        wait_until(&rx, Duration::from_secs(120), stop).map_err(|stopped| stopped_or(stopped, &url, "tiles not read in two minutes"))??;
     let nodata = info.layout.nodata.map(|v| v as f32);
     for (&t, p) in tiles.iter().zip(&picked) {
         let Some((chunk, b)) = p.first() else { continue };

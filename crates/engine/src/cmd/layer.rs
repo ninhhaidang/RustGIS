@@ -4481,6 +4481,14 @@ fn add_cog_window(s: &mut Session, p: &Value, url: &str) -> CmdResult {
 /// quote the address without its keys.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn read_cog_window(asked: &WindowAsked) -> Result<CogWindow, String> {
+    read_cog_window_until(asked, &std::sync::atomic::AtomicBool::new(false))
+}
+
+/// [`read_cog_window`], giving up within a moment of `stop` being set (the app's Cancel of the
+/// download, or its project closed): in the wait on the header, before each band and in the wait
+/// on its tiles. Making the raster and writing its GeoTIFF, once the values are in, don't look.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn read_cog_window_until(asked: &WindowAsked, stop: &std::sync::atomic::AtomicBool) -> Result<CogWindow, String> {
     use crate::render::rustgis_tiles::cog;
     use rustgis_data::raster::cog::Level;
     let url = asked.url.as_str();
@@ -4489,7 +4497,7 @@ pub fn read_cog_window(asked: &WindowAsked) -> Result<CogWindow, String> {
     let cell = asked.cell;
     // The five minutes count from the header's read.
     let started = std::time::Instant::now();
-    let info = cog::info_blocking(url).map_err(named)?;
+    let info = cog::info_until(url, stop).map_err(named)?;
     let layout = &info.layout;
     let (pw, ph) = (layout.transform.pixel_width, layout.transform.pixel_height);
     if !(pw.is_finite() && ph.is_finite() && pw != 0.0 && ph != 0.0) {
@@ -4642,7 +4650,8 @@ pub fn read_cog_window(asked: &WindowAsked) -> Result<CogWindow, String> {
     let (mut bands, mut rounded, mut overflowed) = (Vec::with_capacity(count), Vec::with_capacity(count), 0u64);
     for band in 0..count {
         band_in_time(band, count, started.elapsed(), WINDOW_WAIT).map_err(named)?;
-        let (values, changed, past) = cog::read_values_counted_blocking(&info, url, level, band, (c0, c1), (r0, r1)).map_err(named)?;
+        let (values, changed, past) =
+            cog::read_values_counted_blocking(&info, url, level, band, (c0, c1), (r0, r1), stop).map_err(named)?;
         bands.push(values);
         rounded.push(changed);
         overflowed += past;
