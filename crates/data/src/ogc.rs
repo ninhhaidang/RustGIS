@@ -469,7 +469,7 @@ pub struct Service {
 /// between answers (#1519). Reading stops at [`MAX_READ_LAYERS`], or sooner when the layers'
 /// request addresses are long ([`read_limit`], [`MAX_COPIED_ADDRESS_BYTES`]); past that none is
 /// read. An ArcGIS list is read only as far as it is listed.
-const MAX_LISTED_LAYERS: usize = 2_000;
+pub const MAX_LISTED_LAYERS: usize = 2_000;
 /// Most layers or collections read from one document, which is hostile input.
 const MAX_READ_LAYERS: usize = if cfg!(test) { 3_000 } else { 100_000 };
 /// Most bytes of a document's own request addresses (its GetMap's, GetFeature's…) copied into

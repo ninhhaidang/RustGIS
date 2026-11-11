@@ -31,7 +31,7 @@ const DOCUMENT_ROLES: &[crate::ParamRole] = &[
 pub fn commands() -> Vec<C> {
     let mut commands = vec![
         C::new("service.layers", "Service Layers", "Home › Add", layers).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network)).view().params(
-            r#"{"url": "a WMS, WMTS or WFS address (GetCapabilities is added), an OGC API collections address or landing page (its map tiles and linked collections), or an ArcGIS FeatureServer, MapServer, ImageServer or VectorTileServer, or an ArcGIS services directory or folder (its folders and services, each listed by its own url)", "type"?: "wms"|"wmts"|"wfs"|"ogcapi"|"arcgis" (guessed from the address), "text"?: "the capabilities document, when already fetched", "documents"?: [{"url": "a discovered document address", "text": "its fetched JSON"}], "connection"?: "the saved web-service connection id whose login the requests use"} → layers with source_url, and next when supplied documents need another fetch"#,
+            r#"{"url": "a WMS, WMTS or WFS address (GetCapabilities is added), an OGC API collections address or landing page (its map tiles and linked collections), or an ArcGIS FeatureServer, MapServer, ImageServer or VectorTileServer, or an ArcGIS services directory or folder (its folders and services, each listed by its own url)", "type"?: "wms"|"wmts"|"wfs"|"ogcapi"|"arcgis" (guessed from the address), "text"?: "the capabilities document, when already fetched", "documents"?: [{"url": "a discovered document address", "text": "its fetched JSON"}], "connection"?: "the saved web-service connection id whose login the requests use", "filter"?: "words a layer's title or name must all contain, in any case: every layer read is searched, not only those a listing shows, and the first 2000 that match are listed; what a listing says in a notice, a search says only in its notes"} → layers with source_url (with filter, total: the layers read, and matched: how many match), and next when supplied documents need another fetch"#,
         ),
         C::new("service.add", "Add Service Layer", "Home › Add", add).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network)).params(
             r#"{"url": "as service.layers", "type"?, "layer": "the layer's name (service.layers lists them)", "name"?: text, "time"?: "a time-enabled WMS or WMTS layer: by default (or \"slider\", true) it follows the time slider, turned on with the layer's times when it is off; or one of its dates (2024-06-01), or \"default\" (false): its service's default", "text"?: "the capabilities document, when already fetched", "documents"?: "additional fetched documents, as service.layers", "source_url"?: "the listed layer's source_url", "describe"?: "a WCS coverage's DescribeCoverage document, when already fetched", "tiles"?: "an OGC API layer's tile template, when already read from its tileset (the app's)", "bbox"?: [west, south, east, north] | "view" | "full": a WCS coverage's area (the view by default); for a WFS, OGC API or ArcGIS feature layer, only the features that cross it (the whole layer, "full", by default), "connection"?: "the id of the saved web-service connection it comes from (connection.browse gives it): the layer records it, and is read with its login"}"#,
@@ -108,6 +108,8 @@ struct Discovery {
     excluded_layers: bool,
     /// A document left collections out (past its listing limit, or unreadable items links).
     incomplete: bool,
+    /// How many layers were read, before a filter kept those matching it ([`discover_matching`]).
+    read: usize,
 }
 
 impl Discovery {
@@ -153,7 +155,24 @@ fn capabilities(s: &mut Session, p: &Value) -> Result<Discovery, String> {
 /// off the frame ([`Session::left_document`]), when a document not in yet is its `next`. Long
 /// document addresses list fewer layers ([`MAX_LISTED_ADDRESS_BYTES`]), said in a note.
 fn discover(s: &mut Session, p: &Value, left: bool) -> Result<Discovery, String> {
+    discover_matching(s, p, left, &[])
+}
+
+/// [`discover`], keeping only the layers whose title or name contains each of `words` (lower
+/// case), when there are any: every layer read is searched, and the first
+/// [`rustgis_data::ogc::MAX_LISTED_LAYERS`] matches are listed (#1577).
+fn discover_matching(s: &mut Session, p: &Value, left: bool, words: &[String]) -> Result<Discovery, String> {
     let mut found = read_documents(s, p, left)?;
+    found.read = found.service.layers.len();
+    if !words.is_empty() {
+        let keep: Vec<bool> = found.service.layers.iter().map(|l| matches_words(l, words)).collect();
+        let mut kept = keep.iter();
+        found.service.layers.retain(|_| kept.next().copied().unwrap_or(false));
+        let mut kept = keep.iter();
+        found.sources.retain(|_| kept.next().copied().unwrap_or(false));
+        let max = rustgis_data::ogc::MAX_LISTED_LAYERS;
+        found.service.listed = (found.service.layers.len() > max).then_some(max);
+    }
     let listed = found.service.listed.unwrap_or(usize::MAX).min(found.sources.len());
     let mut bytes = 0usize;
     let cut = found.sources[..listed].iter().position(|source| {
@@ -171,6 +190,13 @@ fn discover(s: &mut Session, p: &Value, left: bool) -> Result<Discovery, String>
         ));
     }
     Ok(found)
+}
+
+/// Whether a layer's title or name contains each of `words` (lower case): Add From Service's
+/// filter, which matched the listed layers in the dialog before #1577.
+fn matches_words(layer: &rustgis_data::ogc::ServiceLayer, words: &[String]) -> bool {
+    let (title, name) = (layer.title.to_lowercase(), layer.name.to_lowercase());
+    words.iter().all(|w| title.contains(w.as_str()) || name.contains(w.as_str()))
 }
 
 fn read_documents(s: &mut Session, p: &Value, left: bool) -> Result<Discovery, String> {
@@ -678,12 +704,29 @@ pub(crate) fn layers(s: &mut Session, p: &Value) -> CmdResult {
     let p = owned.as_ref().unwrap_or(p);
     let bound = crate::service_logins::request_params(s, p)?;
     let p = bound.as_ref();
-    let mut found = capabilities(s, p)?;
-    notify_withheld(s, found.service.withheld_addresses);
-    let of = layer_count(&found.service);
-    let total = found.service.layers.len();
+    let words: Vec<String> = match p.get("filter") {
+        None | Some(Value::Null) => Vec::new(),
+        // Each word once: a repeated one would be looked for again in every layer it's in.
+        Some(Value::String(f)) => {
+            let mut words: Vec<String> = f.split_whitespace().map(str::to_lowercase).collect();
+            words.sort_unstable();
+            words.dedup();
+            words
+        }
+        Some(_) => return Err("filter must be text: the words a layer's title or name must all contain".into()),
+    };
+    let mut found = discover_matching(s, p, false, &words)?;
+    // A search reads again what a listing read (Add From Service's, once per pause in typing),
+    // so the listing's notice isn't repeated; the answer's notes still say it (#1577).
+    if words.is_empty() {
+        notify_withheld(s, found.service.withheld_addresses);
+    }
+    let searched = !words.is_empty();
+    // The layers read, or with a filter those matching it.
+    let found_layers = found.service.layers.len();
+    let of = if searched { format!("{found_layers} matching layers") } else { layer_count(&found.service) };
     let mut cut = None;
-    if let Some(listed) = found.service.listed.filter(|&listed| listed < total) {
+    if let Some(listed) = found.service.listed.filter(|&listed| listed < found_layers) {
         found.service.layers.truncate(listed);
         let note = format!("only the first {listed} of {of} are listed; service.add takes any of them by name");
         found.service.notes.push(note.clone());
@@ -691,11 +734,15 @@ pub(crate) fn layers(s: &mut Session, p: &Value) -> CmdResult {
     }
     let mut out = service_json(&found.service);
     // How many there are, for a window that says it its own way: `listedNote` says the list
-    // stops (Add From Service: its filter searches only those listed), and `atLeast` that the
-    // document has more than were read.
+    // stops (Add From Service searches past it with `filter`), and `atLeast` that the document
+    // has more than were read.
     let past_limit = found.service.past_read_limit.is_some();
-    if cut.is_some() || past_limit {
-        out["total"] = json!(total);
+    if cut.is_some() || past_limit || searched {
+        out["total"] = json!(found.read);
+    }
+    // (With a filter, `total` counts every layer read, and `matched` those matching it.)
+    if searched {
+        out["matched"] = json!(found_layers);
     }
     if past_limit {
         out["atLeast"] = json!(true);

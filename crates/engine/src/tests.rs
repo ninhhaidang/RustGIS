@@ -16747,6 +16747,81 @@ fn a_long_document_address_lists_fewer_layers() {
     assert!(s.run("service.groupPlan", &json!({"url": "https://api.example.org/collections", "text": text})).is_ok());
 }
 
+/// `service.layers` with `filter` searches every layer read, not only the first 2000 it lists, and
+/// counts the matches (#1577: IBGE's WFS has 10,186 types, in an order that changes).
+#[test]
+fn a_filter_searches_past_the_listing() {
+    let types: String = (1..=2500)
+        .map(|i| {
+            let title = if (2101..=2103).contains(&i) { format!("Solos do Brasil {i}") } else { format!("Tipo {i}") };
+            format!("<FeatureType><Name>t:{i}</Name><Title>{title}</Title></FeatureType>")
+        })
+        .collect();
+    let caps = format!(r#"<WFS_Capabilities version="2.0.0"><FeatureTypeList>{types}</FeatureTypeList></WFS_Capabilities>"#);
+    let url = "https://wfs.example.org/wfs";
+    let mut s = Session::new(Project::default());
+    let names = |v: &Value| v["layers"].as_array().unwrap().iter().map(|l| l["name"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    // Without a filter, as before: the first 2000, and no count of matches.
+    let all = s.run("service.layers", &json!({"url": url, "text": caps})).unwrap();
+    assert_eq!((&all["count"], &all["total"]), (&json!(2000), &json!(2500)));
+    assert!(all.get("matched").is_none());
+    // Words in the title or the name, in any case, all of them: past the listing too.
+    let found = s.run("service.layers", &json!({"url": url, "text": caps, "filter": "  BRASIL solos "})).unwrap();
+    assert_eq!(names(&found), ["t:2101", "t:2102", "t:2103"]);
+    assert_eq!((&found["count"], &found["matched"], &found["total"]), (&json!(3), &json!(3), &json!(2500)));
+    assert!(found.get("listedNote").is_none() && found["notes"].as_array().unwrap().is_empty(), "{found}");
+    assert_eq!(found["layers"][0]["source_url"], all["layers"][0]["source_url"]);
+    assert_eq!(names(&s.run("service.layers", &json!({"url": url, "text": caps, "filter": "t:2500"})).unwrap()), ["t:2500"]);
+    let none = s.run("service.layers", &json!({"url": url, "text": caps, "filter": "solos nada"})).unwrap();
+    assert_eq!((&none["count"], &none["matched"]), (&json!(0), &json!(0)));
+    // More matches than a listing holds: the first 2000, said, with how many match.
+    let many = s.run("service.layers", &json!({"url": url, "text": caps, "filter": "tipo"})).unwrap();
+    assert_eq!((&many["count"], &many["matched"], &many["total"]), (&json!(2000), &json!(2497), &json!(2500)));
+    assert_eq!(many["listedNote"], "only the first 2000 of 2497 matching layers are listed; service.add takes any of them by name");
+    // A blank filter is none.
+    assert!(s.run("service.layers", &json!({"url": url, "text": caps, "filter": "  "})).unwrap().get("matched").is_none());
+}
+
+/// A search reads again the documents a listing read, so it doesn't say again what reading them
+/// says: Add From Service searches once per pause in typing, and the notices would repeat (#1577).
+/// The answer's notes still say it.
+#[test]
+fn a_search_does_not_repeat_the_listings_notice() {
+    // A landing page whose collections link doesn't get the address's token: one withheld.
+    let url = "https://collections.invalid/root?f=json&token=RGSYNTH_search";
+    let landing = r#"{"links":[{"rel":"data","type":"application/json","href":"/catalog?f=json"}]}"#;
+    let collections: Vec<Value> = (1..=3)
+        .map(|i| json!({"id": format!("c{i}"), "title": format!("C {i}"), "links": [{"rel": "items", "type": "application/geo+json", "href": format!("https://collections.invalid/collections/c{i}/items")}]}))
+        .collect();
+    let documents = json!([{"url": "https://collections.invalid/catalog?f=json", "text": json!({"collections": collections}).to_string()}]);
+    let mut s = Session::new(Project::default());
+    let withheld = |s: &Session, mark| s.notices_since(mark).iter().filter(|n| n.text.contains("didn't get its keys")).count();
+    let said = |v: &Value| v["notes"].as_array().unwrap().iter().any(|n| n.as_str().unwrap().contains("didn't get its keys"));
+    let mark = s.notice_mark();
+    let p = json!({"url": url, "type": "ogcapi", "text": landing, "documents": documents});
+    let listing = s.run("service.layers", &p).unwrap();
+    assert_eq!(withheld(&s, mark), 1, "{:?}", s.notices_since(mark));
+    assert!(said(&listing), "{listing}");
+    for filter in ["c 1", "c 2", "c"] {
+        let mut p = p.clone();
+        p["filter"] = json!(filter);
+        let found = s.run("service.layers", &p).unwrap();
+        assert!(found["matched"].as_u64().unwrap() > 0 && said(&found), "{found}");
+    }
+    assert_eq!(withheld(&s, mark), 1, "{:?}", s.notices_since(mark));
+    // A word given many times is looked for once, with the same answer.
+    let mut many = p.clone();
+    many["filter"] = json!(vec!["c"; 50_000].join(" ") + " 2");
+    let found = s.run("service.layers", &many).unwrap();
+    assert_eq!(found["matched"], 1, "{found}");
+    // A filter that isn't text is refused, not ignored.
+    for filter in [json!(["c"]), json!(5)] {
+        let mut p = p.clone();
+        p["filter"] = filter;
+        assert!(s.run("service.layers", &p).unwrap_err().contains("filter must be text"));
+    }
+}
+
 /// A layer past what RustGIS reads of a document is refused for that reason, not as absent.
 #[test]
 fn a_layer_past_the_read_limit_is_refused_saying_so() {

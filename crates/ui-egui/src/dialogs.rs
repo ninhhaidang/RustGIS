@@ -852,6 +852,66 @@ fn go_to(app: &mut RustGisApp, url: &str, kind: &str, way: Vec<(String, &'static
 /// How many of a service's layers Add From Service lists.
 const SHOWN_LAYERS: usize = 500;
 
+/// How long typing pauses before Add From Service searches all of a listing that stops short:
+/// reading the documents again takes a moment for a large one (IBGE's WFS, 12 MB), so not on
+/// every key (#1577).
+pub(crate) const SEARCH_PAUSE: web_time::Duration = web_time::Duration::from_millis(300);
+
+/// A filter's words as `service.layers` takes them: lower case, one space apart.
+fn filter_key(filter: &str) -> String {
+    filter.split_whitespace().map(str::to_lowercase).collect::<Vec<_>>().join(" ")
+}
+
+/// The search of all of a service's layers with the filter, when its listing stops short of them
+/// (`listedNote`) and typing has paused for [`SEARCH_PAUSE`]: `service.layers` again on the
+/// documents the dialog keeps, with `filter`, so nothing is downloaded. A listing that holds them
+/// all is filtered in the dialog, as before. Gives how long until a search is due, to draw again
+/// then. One read of the documents on the UI thread per pause in typing, as for each document
+/// that arrives (`poll_service`): the parsed layers aren't kept, which would hold up to 100,000
+/// of them. It stays on the frame because `service.layers` binds a saved connection's login to
+/// the addresses its rows carry, in this session: a session of its own off the frame would leave
+/// that out, and adding a row would go without it. Nothing is fetched (the documents are
+/// kept, and no search starts while one is `pending`); IBGE's WFS, 12 MB and 10,186 layers,
+/// takes about 0.3 s in a dev build.
+fn search_all(app: &mut RustGisApp) -> Option<web_time::Duration> {
+    let conn = app.ui.service.as_mut()?;
+    let key = filter_key(&app.ui.service_browse.filter);
+    let short = conn.listing.as_ref().is_some_and(|v| v.get("listedNote").is_some());
+    if !short || key.is_empty() || conn.pending.is_some() || conn.search.as_ref().is_some_and(|s| s.filter == key) {
+        return None;
+    }
+    let now = web_time::Instant::now();
+    match &conn.typed {
+        Some((typed, at)) if *typed == key => {
+            let waited = now.duration_since(*at);
+            if waited < SEARCH_PAUSE {
+                return Some(SEARCH_PAUSE - waited);
+            }
+        }
+        _ => {
+            conn.typed = Some((key, now));
+            return Some(SEARCH_PAUSE);
+        }
+    }
+    let mut p = json!({"url": conn.url, "text": conn.text, "documents": conn.documents, "filter": key});
+    if conn.kind != "auto" {
+        p["type"] = json!(conn.kind);
+    }
+    if let Some(connection) = &conn.connection {
+        p["connection"] = json!(connection);
+    }
+    // Not `app.run`: an error belongs in the dialog, as the listing's does.
+    let listing = app.session.run("service.layers", &p);
+    conn.search = Some(crate::ServiceSearch { filter: key, listing });
+    conn.added = None;
+    None
+}
+
+/// The search's answer for the filter as typed now, when there is one and it holds layers.
+fn searched<'a>(conn: &'a crate::ServiceConn, filter: &str) -> Option<&'a Value> {
+    conn.search.as_ref().filter(|s| s.filter == filter_key(filter)).and_then(|s| s.listing.as_ref().ok())
+}
+
 /// The listed layers matching `filter` (words their title or name contains), with their place in
 /// the listing.
 fn matching_rows<'a>(layers: &'a [Value], filter: &str) -> Vec<(usize, &'a Value)> {
@@ -892,13 +952,24 @@ fn refresh_added(app: &mut RustGisApp) {
     if conn.added.as_ref().is_some_and(|a| a.revision == revision && a.map == map && a.filter == *filter) {
         return;
     }
-    let layers: &[Value] = conn.listing.as_ref().and_then(|v| v.get("layers")).and_then(Value::as_array).map_or(&[], Vec::as_slice);
-    let matching = matching_rows(layers, filter);
-    let matched = matching.len();
-    let shown: Vec<usize> = matching.into_iter().take(SHOWN_LAYERS).map(|(i, _)| i).collect();
+    // Every layer matching the filter, when all of a listing that stops short were searched: its
+    // answer holds only matches (the first 2000), and counts them all.
+    let search = searched(conn, filter);
+    let was_searched = search.is_some();
+    let listing = search.or(conn.listing.as_ref());
+    let layers: &[Value] = listing.and_then(|v| v.get("layers")).and_then(Value::as_array).map_or(&[], Vec::as_slice);
+    let (matched, shown): (usize, Vec<usize>) = match search {
+        Some(v) => {
+            (v.get("matched").and_then(Value::as_u64).map_or(layers.len(), |m| m as usize), (0..layers.len().min(SHOWN_LAYERS)).collect())
+        }
+        None => {
+            let matching = matching_rows(layers, filter);
+            (matching.len(), matching.into_iter().take(SHOWN_LAYERS).map(|(i, _)| i).collect())
+        }
+    };
     let removals = rustgis_engine::cmd::service_added::added(app.session.map(), layers, &shown);
     let rows = shown.into_iter().map(|i| (i, removals.get(i).cloned().flatten())).collect();
-    conn.added = Some(crate::ServiceAdded { revision, map, filter: filter.clone(), matched, rows });
+    conn.added = Some(crate::ServiceAdded { revision, map, filter: filter.clone(), matched, searched: was_searched, rows });
 }
 
 /// Add From Service: a WMS, WMTS, WFS, WCS, OGC API Features or ArcGIS REST service by its address
@@ -992,6 +1063,9 @@ fn add_service(app: &mut RustGisApp, ui: &mut egui::Ui) -> bool {
         crate::connectionui::picked(&list, app.dialogs.connection.as_deref(), url).is_none().then(|| (url.to_string(), kind))
     });
     let mut keep_root = false;
+    if let Some(due) = search_all(app) {
+        ui.ctx().request_repaint_after(due);
+    }
     refresh_added(app);
     if let Some(conn) = &app.ui.service {
         ui.separator();
@@ -1018,7 +1092,7 @@ fn add_service(app: &mut RustGisApp, ui: &mut egui::Ui) -> bool {
             let layers = v.get("layers").and_then(Value::as_array).unwrap_or(&none);
             let grouped = kind.starts_with("OGC API");
             // A listing that stops short counts them all, and says so here in the dialog's own
-            // words instead of its note: the filter searches only those listed.
+            // words instead of its note: the filter searches all of them (`search_all`).
             let listed_note = v.get("listedNote").and_then(Value::as_str);
             let count = crate::connectionui::layer_count(v);
             ui.horizontal(|ui| {
@@ -1038,15 +1112,41 @@ fn add_service(app: &mut RustGisApp, ui: &mut egui::Ui) -> bool {
                     ui.label(egui::RichText::new(n).small().weak());
                 }
             }
+            // The filter searches all of them, once typing pauses (`search_all`).
             if listed_note.is_some() {
-                ui.label(
-                    egui::RichText::new(crate::i18n::fmt(
-                        "The filter searches the first {n} of them; the service.add command adds any other by its name.",
+                let key = filter_key(&app.ui.service_browse.filter);
+                let line = if key.is_empty() {
+                    Some(crate::i18n::fmt(
+                        "The first {n} of them are listed; the filter searches all of them.",
                         &[("n", &layers.len().to_string())],
                     ))
-                    .small()
-                    .weak(),
-                );
+                } else {
+                    match conn.search.as_ref().filter(|s| s.filter == key).map(|s| &s.listing) {
+                        None => {
+                            let total = v.get("total").and_then(Value::as_u64).map_or(layers.len().to_string(), |n| n.to_string());
+                            Some(crate::i18n::fmt("Searching all {total} layers…", &[("total", &total)]))
+                        }
+                        Some(Err(e)) => {
+                            ui.colored_label(t.red, e);
+                            None
+                        }
+                        // The search's own notes, beside the listing's: more matches than it
+                        // lists (its `listedNote`), or a list cut by its addresses' length.
+                        Some(Ok(found)) => {
+                            let shown: Vec<&str> =
+                                v.get("notes").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).collect();
+                            for n in found.get("notes").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
+                                if !shown.contains(&n) {
+                                    ui.label(egui::RichText::new(n).small().weak());
+                                }
+                            }
+                            None
+                        }
+                    }
+                };
+                if let Some(line) = line {
+                    ui.label(egui::RichText::new(line).small().weak());
+                }
             }
             // A long list is filtered by words; a directory's services lead back to it.
             let browse = &mut app.ui.service_browse;
@@ -1111,6 +1211,13 @@ fn add_service(app: &mut RustGisApp, ui: &mut egui::Ui) -> bool {
             }
             let added = conn.added.as_ref();
             let rows: &[(usize, Option<Removal>)] = added.map_or(&[], |a| a.rows.as_slice());
+            // A search's rows are places in its answer, which holds only matches.
+            let row_layers = match added.filter(|a| a.searched) {
+                Some(_) => {
+                    searched(conn, &app.ui.service_browse.filter).and_then(|v| v.get("layers")).and_then(Value::as_array).unwrap_or(&none)
+                }
+                None => layers,
+            };
             if let Some(a) = added.filter(|a| a.matched > SHOWN_LAYERS) {
                 ui.label(
                     egui::RichText::new(crate::i18n::fmt(
@@ -1134,7 +1241,7 @@ fn add_service(app: &mut RustGisApp, ui: &mut egui::Ui) -> bool {
                     egui::ScrollArea::vertical().id_salt("add_service_layers_scroll").auto_shrink([false, false]).show(ui, |ui| {
                         let style = ui.style().clone();
                         for (i, removal) in rows {
-                            let Some(l) = layers.get(*i) else { continue };
+                            let Some(l) = row_layers.get(*i) else { continue };
                             ui.horizontal(|ui| {
                                 ui.add_space(2.0);
                                 let kind = l.get("offer").and_then(|o| o.get("type")).and_then(Value::as_str);
@@ -2487,6 +2594,8 @@ mod tests {
                 }],
             })),
             added: None,
+            typed: None,
+            search: None,
             error: None,
             failure: None,
         });
@@ -2538,6 +2647,8 @@ mod tests {
                 }],
             })),
             added: None,
+            typed: None,
+            search: None,
             error: None,
             failure: None,
         });
@@ -2599,6 +2710,8 @@ mod tests {
                 }],
             })),
             added: None,
+            typed: None,
+            search: None,
             error: None,
             failure: None,
         });
@@ -2653,6 +2766,8 @@ mod tests {
                 }],
             })),
             added: None,
+            typed: None,
+            search: None,
             error: None,
             failure: None,
         });

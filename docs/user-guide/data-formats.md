@@ -327,6 +327,13 @@ list each repeating a somewhat shorter one. An ArcGIS service or directory is an
 A dynamic MapServer offers each of those layers twice, as features and as a
 map, so its list can be twice as long. A note says how many are left out past either limit.
 
+When a list stops short of the layers read, Add From Service's filter searches every layer
+read, not only those listed: once typing pauses, the documents it already has are read again
+for the layers whose title or name contains each word (`service.layers` with `"filter"`), and
+the first 2,000 matches are listed, with how many match and a note when more match. Layers past
+the read limits above, and an ArcGIS service's past its first 2,000, aren't read, so the filter
+doesn't find them either.
+
 A WMS or WMTS layer's tiles are asked for down to the detail its service gives, and stretched
 only past it: a WMTS layer's over the zooms of its tile matrix set (or those its
 `TileMatrixSetLimits` name; swisstopo's SWISSIMAGE goes to zoom 20), a WMS layer's between the

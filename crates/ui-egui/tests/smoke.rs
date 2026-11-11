@@ -2434,8 +2434,24 @@ fn a_service_is_listed_when_its_capabilities_land() {
     h.step();
 }
 
+/// Whether typing in Add From Service's filter has paused long enough for its search
+/// (`SEARCH_PAUSE`), set rather than waited for: a slow frame neither runs it early nor late.
+enum Pause {
+    Waiting,
+    Over,
+}
+
+fn typed_at(app: &mut RustGisApp, pause: Pause) {
+    let now = web_time::Instant::now();
+    let at = match pause {
+        Pause::Waiting => now + std::time::Duration::from_secs(3600),
+        Pause::Over => now.checked_sub(std::time::Duration::from_secs(1)).expect("a clock past its first second"),
+    };
+    app.ui.service.as_mut().unwrap().typed.as_mut().expect("the filter was typed").1 = at;
+}
+
 /// A listing that stops short says in Add From Service how many layers there are, that its filter
-/// searches only those listed, and how many of them are shown, in one place and not three.
+/// searches all of them, and how many of them are shown, in one place and not three.
 #[test]
 fn a_cut_listing_says_what_the_filter_searches() {
     use std::io::{Read, Write};
@@ -2479,13 +2495,44 @@ Connection: close
     h.step();
     h.step();
     h.get_by_label_contains("Local: 2001 layers");
-    h.get_by_label("The filter searches the first 2000 of them; the service.add command adds any other by its name.");
+    h.get_by_label("The first 2000 of them are listed; the filter searches all of them.");
     h.get_by_label("500 of 2000 are listed.");
     assert!(h.query_by_label_contains("only the first 2000").is_none(), "the note isn't said twice");
     h.state_mut().ui.service_browse.filter = "t:20".into();
     h.step();
     h.step();
     assert!(h.query_by_label_contains("are listed.").is_none(), "its 12 matches are all shown");
+    // A layer past the first 2000 is found once typing pauses: all of them are searched (#1577).
+    h.state_mut().ui.service_browse.filter = "T:2001".into();
+    h.step();
+    typed_at(h.state_mut(), Pause::Waiting);
+    h.step();
+    h.get_by_label("Searching all 2001 layers…");
+    assert!(h.query_by_label_contains("t:2001").is_none(), "not among the 2000 listed");
+    typed_at(h.state_mut(), Pause::Over);
+    h.step();
+    h.step();
+    assert!(h.query_by_label_contains("Searching all").is_none());
+    h.get_by_label_contains("t:2001");
+    let conn = h.state().ui.service.as_ref().unwrap();
+    let a = conn.added.as_ref().unwrap();
+    assert!(a.searched && a.matched == 1 && a.rows.len() == 1);
+    // Its row adds it from the search's answer, as a listed row would.
+    let row = &conn.search.as_ref().unwrap().listing.as_ref().unwrap()["layers"][a.rows[0].0];
+    assert_eq!(row["name"], "t:2001");
+    // More matches than a search lists: its note says so, not only how many rows are shown.
+    h.state_mut().ui.service_browse.filter = "t:".into();
+    h.step();
+    typed_at(h.state_mut(), Pause::Over);
+    h.step();
+    h.step();
+    h.get_by_label("only the first 2000 of 2001 matching layers are listed; service.add takes any of them by name");
+    h.get_by_label("500 of 2001 are listed.");
+    // Cleared, the listing is filtered here again.
+    h.state_mut().ui.service_browse.filter.clear();
+    h.step();
+    h.step();
+    h.get_by_label("The first 2000 of them are listed; the filter searches all of them.");
 }
 
 #[test]
