@@ -48,12 +48,11 @@ _GeoLibre: docs/data-formats.md, docs/features.md › Adding data, SQL and datab
   the 3D cube.
 - [x] **GDAL raster formats beyond GeoTIFF and ASCII grid** ([#117](https://github.com/opengeos/RustGIS/issues/117), desktop).
 - [ ] **OGC services**: partial. WMS, WMTS, WFS and OGC API Features from their capabilities
-  ([#120](https://github.com/opengeos/RustGIS/issues/120)), OGC API Tiles ([#144](https://github.com/opengeos/RustGIS/issues/144)), WCS and CSW ([#178](https://github.com/opengeos/RustGIS/issues/178)). Still missing: auto-refresh (_Roadmap: any
-  time_).
+  ([#120](https://github.com/opengeos/RustGIS/issues/120)), OGC API Tiles ([#144](https://github.com/opengeos/RustGIS/issues/144)), WCS and CSW ([#178](https://github.com/opengeos/RustGIS/issues/178)). Still missing: auto-refresh (_Roadmap: style and map_).
 - [ ] **ArcGIS services**: FeatureServer, MapServer, ImageServer and VectorTileServer, with OAuth
   and a Portal browser. Partial: the four layer types through From Service… ([#120](https://github.com/opengeos/RustGIS/issues/120)); a token in
   the service address is sent with its requests (saved sources drop it); sign-in with OAuth to
-  ArcGIS Online and Enterprise. Missing: a Portal browser (_Roadmap: data at the source_).
+  ArcGIS Online and Enterprise. Missing: a Portal browser (_Roadmap: add data_).
 - [ ] **STAC browser and cloud catalogs**: STAC, Planetary Computer, Earth Engine, Overture,
   Source Cooperative, NASA Earthdata, Planet and Hugging Face. Partial: STAC Search ([#128](https://github.com/opengeos/RustGIS/issues/128)),
   Planetary Computer with signed assets ([#144](https://github.com/opengeos/RustGIS/issues/144)), Overture Maps and Source Cooperative ([#158](https://github.com/opengeos/RustGIS/issues/158)), NASA
@@ -62,14 +61,14 @@ _GeoLibre: docs/data-formats.md, docs/features.md › Adding data, SQL and datab
   ArcGIS Hub ([#176](https://github.com/opengeos/RustGIS/issues/176)), four Natural Earth sample layers. Missing: more Natural Earth themes; a Web
   Data menu of global and per-country services ([#528](https://github.com/opengeos/RustGIS/issues/528)).
 - [ ] **Database connections**: PostgreSQL/PostGIS, SQL Server/Azure SQL with write-back, Apache
-  Iceberg. Partial: PostGIS ([#125](https://github.com/opengeos/RustGIS/issues/125)), MySQL, MariaDB and SQL Server tables read live on the desktop.
-  Missing: write-back (_Roadmap: data at the source_) and Iceberg.
+  Iceberg. Partial: PostGIS ([#125](https://github.com/opengeos/RustGIS/issues/125)), MySQL, MariaDB and SQL Server tables read live on the desktop;
+  edits saved back to PostGIS tables. Missing: write-back to SQL Server, and Iceberg.
 - [x] **Spatial SQL workspace** ([#131](https://github.com/opengeos/RustGIS/issues/131)): an SQL pane over DuckDB Spatial on the desktop. The web app
   has no in-browser engine: SQL in the browser is left to GeoLibre, which runs DuckDB, PGlite and
   Sedona there.
 - [ ] **Private S3 buckets**: partial. `s3://` addresses, SigV4-signed connections, saved
-  connections without their secrets and an S3 browser, desktop and web ([#150](https://github.com/opengeos/RustGIS/issues/150)). Missing: SSO, IAM
-  roles and secrets kept in the keychain (_Roadmap: solid ground_).
+  connections without their secrets and an S3 browser, desktop and web ([#150](https://github.com/opengeos/RustGIS/issues/150)). S3 keys can be kept in
+  the desktop keychain. Missing: SSO and IAM roles.
 - [ ] **3D and media data**: LiDAR (LAS/LAZ/COPC/EPT) as layers, 3D Tiles, I3S, Gaussian splats,
   placed glTF models, georeferenced video, geotagged photos, ICESat-2/GEDI. Partial: LAS, LAZ and
   COPC as point layers ([#137](https://github.com/opengeos/RustGIS/issues/137)), geotagged photos with thumbnails ([#175](https://github.com/opengeos/RustGIS/issues/175)); the rest is missing.
@@ -92,15 +91,16 @@ _GeoLibre: docs/features.md › Map workspace, Rendering engines and 3D globe; d
   bodies, thumbnail previews. Partial: a basemap gallery (OpenFreeMap, USGS Imagery), custom tile
   layers and a Basemaps plugin.
 - [ ] **Multi-map grid**: N synchronized panes. Partial: Side by Side with two maps and linked
-  views and cursors (_Roadmap: any time_).
+  views and cursors (_Roadmap: style and map_).
 - [ ] **Coordinate grids and readouts**: UTM and MGRS/USNG grids, UTM/MGRS/DDM readouts,
-  grid-reference search, pointer elevation. Partial: graticule, decimal/DMS and coordinate navigation
-  (_Roadmap: any time_).
+  grid-reference search, pointer elevation. Partial: graticule, decimal/DMS, UTM and MGRS readouts and
+  coordinate navigation (_Roadmap: style and map_ for the grids).
 - [ ] **Live data overlays**: RainViewer radar, a Timelapse of annual cloudless imagery, live feeds
   (quakes, satellites, fires, AIS). Missing.
 - [ ] **Wikipedia cards, Street View/Mapillary, OpenAerialMap, historical imagery**. Missing.
 - [ ] **On-map right-click menu with quick analysis**: copy the coordinate, open it elsewhere, run
-  a buffer, isochrone or viewshed from the point. Missing (_Roadmap: any time_).
+  a buffer, isochrone or viewshed from the point. Partial: copy the coordinate, and a quick buffer,
+  viewshed or line of sight from the point (_Roadmap: analyse_ for isochrones).
 - [ ] **Flight simulator, camera tours, atmosphere**. Partial: a First-Person walk and animation
   keyframes.
 - [ ] ~~Multiple rendering engines (MapLibre, Mapbox, Cesium, ArcGIS)~~: out of scope by design;
@@ -116,30 +116,31 @@ _GeoLibre: docs/features.md › Layers, styling, and labels; docs/user-guide/sty
   By Expression, `labels.by`); Unique Values by expression (`layer.symbology` `expression`), as
   which QGIS's rule-based renderers import, scale ranges as `@map_scale`; display filters are
   per-scale clauses; a rule renderer edited as rules is missing
-  (_Roadmap: expressions and cartography_).
+  (_Roadmap: style and map_).
 - [ ] **Heatmap and point-clustering renderers**. Partial: hexagon/square aggregation; kernel density
   is implemented as an analysis tool, while dynamic heatmap and point-clustering renderers remain outstanding
-  (_Roadmap: expressions and cartography_).
-- [ ] **More classification methods**: standard deviation, geometric interval, manual breaks.
-  Partial: Jenks, equal interval, quantile (_Roadmap: fixes and quick wins_).
+  (_Roadmap: style and map_).
+- [x] **More classification methods**: standard deviation, geometric interval, manual breaks.
 - [ ] **Symbol library**: a marker library, custom SVG/PNG markers, fill patterns, pie/donut/bar
   diagrams, arrow lines, inverted-polygon masks, geometry generators. Partial: 5 marker shapes,
   pie/bar diagrams on features from several fields (`layer.diagram`), each slice or bar labelled
   with its value, percent or both, and the categories listed in layout legends (_Roadmap:
-  expressions and cartography_ for markers, patterns and a library).
+  style and map_ for markers, patterns and a library).
 - [ ] **Style interchange**: import/export SLD, QGIS QML, Mapbox GL JSON. Partial: MapLibre style
-  export and `.rgisstyle` (_Roadmap: expressions and cartography_ for QML and SLD import).
+  export, `.rgisstyle`, QGIS layer styles for the supported renderers and QML colour ramps
+  (_Roadmap: style and map_ for more of QML, and SLD import).
 - [ ] **Smart styling**: automatic palette on add, one-click style suggestions. Missing.
 - [ ] **Label engine depth**: expression labels, offset, rotation, wrap, case, priority,
-  de-duplication, number formats. Partial: label classes with SQL queries, field labels with
-  placement and scale ranges; a labeling pane is underway ([#618](https://github.com/opengeos/RustGIS/issues/618), [#722](https://github.com/opengeos/RustGIS/issues/722)). Expression labels:
-  _Roadmap: expressions and cartography_.
+  de-duplication, number formats. Partial: label classes with SQL queries, placement, offsets,
+  wrapping and scale ranges in the Labeling pane ([#618](https://github.com/opengeos/RustGIS/issues/618), [#722](https://github.com/opengeos/RustGIS/issues/722)); label text, size,
+  colour and angle by expression (_Roadmap: style and map_ for case, priority and number formats).
 - [ ] **On-map legend and colorbar controls**. Partial: the legend is in Contents and layouts only
-  (_Roadmap: expressions and cartography_).
+  (_Roadmap: style and map_).
 - [ ] **Popup and tooltip designer**: field picking, formats (date, link, image), an expression
-  title, hover tooltips. Partial: popup modes only (_Roadmap: expressions and cartography_).
+  title, hover tooltips. Partial: popup modes, links and pictures (_Roadmap: style and map_ for
+  fields, formats and a title).
 - [ ] **Raster histogram stretch UI and Raster Attribute Table**. Partial: stretch types and DRA
-  (_Roadmap: expressions and cartography_).
+  (_Roadmap: style and map_).
 - [ ] **Colour-ramp library and style presets manager**. Partial: custom colour ramps and QGIS,
   GDAL and GMT palette files.
 
@@ -150,26 +151,26 @@ _GeoLibre: docs/features.md › Attribute data and expressions; docs/arcgis-edit
 - [ ] **Topological digitizing and CAD dimensions**: shared-edge drawing, dimension lines,
   building massing. Partial: snapping, topology validation, traverse.
 - [ ] **Write-back to sources**: GeoPackage, GeoJSON, PostGIS, SQL Server, ArcGIS FeatureService.
-  Missing; edits stay in the project (_Roadmap: data at the source_ for GeoPackage and PostGIS).
+  Partial: GeoPackage and PostGIS tables on the desktop (_Roadmap: edit_ for Shapefile and
+  GeoJSON).
 - [ ] **Expression builder and engine**: one engine shared by filters, labels, styles and Calculate
   Field, with a function reference. Partial: one expression language serves queries, filters,
-  label classes, attribute rules, Calculate Field and symbols (docs: Expressions); labels by
-  expression and a builder are missing (_Roadmap: expressions and cartography_).
-- [ ] **Virtual fields and persistent attribute joins**. Missing; relationships exist (_Roadmap:
-  data at the source_; a one-off join field tool under solid ground).
+  label classes, attribute rules, Calculate Field and symbols (docs: Expressions); an expression
+  builder is missing.
+- [ ] **Virtual fields and persistent attribute joins**. Missing; relationships and the one-off Join Field
+  exist (_Roadmap: projects, saved files and the data model_).
 - [ ] **Attribute form designer**: widgets, constraints, conditional visibility. Partial: domains,
-  subtypes, attribute rules (_Roadmap: data at the source_).
+  subtypes, attribute rules (_Roadmap: edit_).
 - [ ] **Editor tracking fields**: created/edited by and at. Partial: archiving keeps edit times
-  (_Roadmap: data at the source_).
+  (_Roadmap: edit_).
 - [ ] **Table column management**: rename, hide and reorder columns, a column explorer. Partial:
-  sort, filter, add/delete field (_Roadmap: data at the source_).
+  sort, filter, add/delete field, hide and reorder columns (_Roadmap: edit_ for renaming).
 - [ ] **Quick filters**: per-field checkboxes and range/date controls. Partial: a definition query
-  (_Roadmap: expressions and cartography_).
-- [ ] **Selection gestures**: polygon, freehand, radius. Partial: click and box; Neighborhood
-  Explorer selects by radius (_Roadmap: fixes and quick wins_).
+  (_Roadmap: style and map_).
+- [x] **Selection gestures**: polygon, freehand, radius.
 - [ ] **Charts panel and dashboards**: histogram, scatter, bar, line, box and pie charts,
   indicators, cross-filtering. Partial: Exploratory Analysis, Infographics, layout/report charts
-  (_Roadmap: analysis_ for charts linked to the selection).
+  (_Roadmap: analyse_ for charts linked to the selection).
 
 ## Analysis
 _GeoLibre: docs/features.md › Processing and analysis; docs/user-guide/processing.md,
@@ -179,18 +180,17 @@ model-builder.md, segmentation.md, obia.md_
   spatial join, clip, erase, split, intersect, identity, union, symmetrical difference, update
   and near are built in.
 - [ ] **More built-in vector tools**: attribute join, extract vertices, points along lines,
-  fix/check geometry, random extract, buffer options. Partial: Merge (append layers), extract
-  vertices and points along lines are built in, as Merge, Feature Vertices To Points and Points
-  Along Lines (_Roadmap: solid ground_).
+  fix/check geometry, random extract, buffer options. Partial: Join Field, Merge, Feature
+  Vertices To Points, Points Along Lines, and Check and Repair Geometry are built in.
 - [ ] **Routing services**: isochrones, service areas, OD matrix, multi-stop routing,
-  turn-by-turn (Valhalla/OSRM). Partial: shortest path over a line layer (_Roadmap: analysis_).
+  turn-by-turn (Valhalla/OSRM). Partial: shortest path over a line layer, and online Directions
+  (_Roadmap: analyse_).
 - [ ] **Geocoding**: forward, batch and reverse, with multiple providers and a place search box.
   Partial: place search and address tables (Nominatim, Photon, PDOK's Locatieserver or your own server), a local locator,
-  a search box. Missing: reverse geocoding (_Roadmap: analysis_).
+  a search box. Missing: reverse geocoding (_Roadmap: analyse_).
 - [ ] **Spatial statistics**: Emerging Hot Spot (Getis-Ord Gi\*), composite score builder.
-  Partial: Suitability Modeler (_Roadmap: analysis_ for hot spots).
-- [ ] **H3 and DGGS grids**: H3, A5, DGGRID, DGGAL. Partial: A5 grids (_Roadmap: any time_ for
-  H3).
+  Partial: Suitability Modeler (_Roadmap: analyse_ for hot spots).
+- [ ] **H3 and DGGS grids**: H3, A5, DGGRID, DGGAL. Partial: A5 grids (_Roadmap: analyse_ for H3).
 - [ ] ~~AI segmentation and detection~~ (SAM/SamGeo, ONNX/YOLO detection, OBIA with eCognition
   import): left to GeoLibre, which has SAM and ONNX models built in and an OBIA workbench with
   eCognition import. RustGIS has pixel classification.
@@ -199,21 +199,21 @@ model-builder.md, segmentation.md, obia.md_
 - [x] **Re-run or copy history as code; batch runs over a folder**: history copied as code, batch
   runs over layers and folders (`gp.batch`).
 - [ ] **Viewshed from public terrain tiles (no DEM needed)**. Partial: needs a loaded elevation
-  raster (_Roadmap: analysis_ for a DEM downloader).
+  raster (_Roadmap: analyse_ for a DEM downloader).
 - [x] **Conversion**: vector to PMTiles/GeoParquet, raster to COG: GeoParquet, COG and vector and
   raster PMTiles out ([#557](https://github.com/opengeos/RustGIS/issues/557)).
 - [x] **Time Slider**: vector layers by a date field (`time.bind`), data cubes, trends (Sen's
   slope, Mann–Kendall), GIF export.
 - [ ] **Point cloud annotation**: ASPRS classes, 3D boxes. Missing.
 - [ ] **Hydrology and elevation downloaders**: NLDI navigation, USGS 3DEP and LiDAR, a global DEM
-  downloader. Missing (_Roadmap: analysis_ for a DEM downloader).
+  downloader. Missing (_Roadmap: analyse_ for a DEM downloader).
 
 ## Layouts & printing
 _GeoLibre: docs/features.md › Map tools, printing, and media; docs/user-guide/print-layout.md_
 
 - [x] **SVG layout export**: each element a named group, map frames and surrounds as vectors.
 - [ ] **Atlas along a line, page-filtered tables and charts, copy to clipboard**. Partial:
-  per-feature map series (_Roadmap: any time_ for the clipboard).
+  per-feature map series, and a page copied to the clipboard.
 - [ ] **Map and video recording**: canvas recording, a marker along a line to MP4, camera tours.
   Partial: keyframe PNG frames, time slider GIFs.
 - [x] **STL 3D export**: binary STL beside OBJ and glTF.
@@ -240,7 +240,7 @@ storymaps.md_
   ([#873](https://github.com/opengeos/RustGIS/issues/873)); the browser has neither yet.
 - [ ] **Startup preferences and shareable interface settings**. Partial: start-up preferences,
   Pane Sets and ribbon/QAT customization.
-- [ ] **Layer metadata with STAC Item export**. Missing (_Roadmap: data at the source_).
+- [ ] **Layer metadata with STAC Item export**. Missing (_Roadmap: add data_).
 - [ ] **Browser extension ("Open data in …")**. Missing.
 
 ## Scripting & integrations
@@ -286,10 +286,12 @@ deployment-capabilities.md, ui-profiles.md_
   deployment. Missing.
 - [ ] **Package-manager and store channels**: winget, a Homebrew Cask, the Mac App Store. Partial:
   winget, Homebrew, the AUR, Fedora COPR and the Microsoft Store; the Mac App Store is missing.
-- [ ] **Windows code signing**. Missing (_Roadmap: solid ground_).
-- [ ] **Auto-update**. Partial: Check for Updates (_Roadmap: solid ground_ for in-place updates).
+- [ ] **Windows code signing**. Missing (_Roadmap: platform, docs and security_).
+- [ ] **Auto-update**. Partial: Check for Updates, with Download and Install for Windows `setup.exe`
+  installs (_Roadmap: platform, docs and security_ for the macOS app).
 - [ ] **Desktop network features**: OS trust store, mTLS client certificates, network log,
-  reloading files changed on disk. Missing (_Roadmap: solid ground_ for reloading files).
+  reloading files changed on disk. Partial: Reload Data for linked files and tile archives
+  (_Roadmap: add data_ for noticing changes).
 
 ## AI
 _GeoLibre: docs/user-guide/ai-assistant.md, docs/features.md › AI, Python, and automation_
@@ -306,8 +308,8 @@ _GeoLibre: docs/features.md › Platforms and interface; docs/i18n.md_
   Persian and Hebrew. Partial: 20 languages; Persian text is drawn right to left, while the panes
   keep their left-to-right layout.
 - [ ] **Translated geoprocessing tool names**. Missing (possibly deliberate).
-- [ ] **Keyboard-shortcut cheat sheet**. Partial: Command Search; rebindable shortcuts are on the
-  roadmap (_any time_, [#562](https://github.com/opengeos/RustGIS/issues/562)).
+- [ ] **Keyboard-shortcut cheat sheet**. Partial: Command Search, and shortcuts rebindable with
+  JSON import and export ([#562](https://github.com/opengeos/RustGIS/issues/562)).
 
 ## Already at or beyond parity
 - A native single-binary app, with every action a command shared by the ribbon, CLI, notebooks,

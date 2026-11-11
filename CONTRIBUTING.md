@@ -51,9 +51,10 @@ something on the roadmap (or not on it) interests you, propose it and open a pul
 [Maintaining RustGIS](docs/maintaining.md) says who approves each of these and what happens when a
 proposal gets no reply.
 
-Roadmap themes are not releases or an order; an item moves to Done when it lands. A
-pull request that lands a roadmap item, or an item of [GEOLIBRE_PARITY.md](GEOLIBRE_PARITY.md),
-updates that file in the same change.
+Roadmap themes are not releases or an order. A pull request that lands a roadmap item removes it
+from the roadmap, or narrows it to what is left; one that lands an item of
+[GEOLIBRE_PARITY.md](GEOLIBRE_PARITY.md) updates that file. Either change goes in the same pull
+request.
 
 ## AI-assisted contributions
 
