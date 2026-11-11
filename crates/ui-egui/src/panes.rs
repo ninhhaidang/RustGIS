@@ -5209,7 +5209,8 @@ fn symbol_editor(app: &mut RustGisApp, ui: &mut Ui, s: Symbol, g: GeometryType, 
         });
         egui::Grid::new("symbol_grid").num_columns(2).spacing(vec2(10.0, 6.0)).show(ui, |ui| {
             if g != GeometryType::Polyline {
-                ui.label(tl!("Color"));
+                // The same name as the ribbon's Drawing group gives this `layer.color` button.
+                ui.label(tl!("Fill"));
                 let mut c = c32(s.fill);
                 let resp = crate::widgets::color_button(ui, &mut c);
                 if resp.changed() {
