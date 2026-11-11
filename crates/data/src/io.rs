@@ -2686,6 +2686,82 @@ fn shapefile_keeps(g: Option<&Geometry>, gt: GeometryType) -> bool {
     }
 }
 
+/// What [`shapefile_parts_in`] leaves out of geometry `g` it writes to a layer of type `gt`, as
+/// (vertices, parts), `drawable` telling the vertices it writes: the vertices that aren't, and the
+/// line parts and polygon rings with too few drawable vertices (a part needs two, a ring three),
+/// whether written so or left so by those vertices, a hole going with its polygon's outer ring.
+/// `None` for geometry it leaves out whole, of another kind or with nothing drawable
+/// ([`left_out_note`]'s). The same filters as the writer's.
+fn shapefile_geometry_losses(g: Option<&Geometry>, gt: GeometryType, drawable: fn(&Coord) -> bool) -> Option<(usize, usize)> {
+    let count = |r: &[Coord]| r.iter().filter(|c| drawable(c)).count();
+    match (g, gt) {
+        (Some(g @ (Geometry::Point(_) | Geometry::MultiPoint(_))), GeometryType::Point) => {
+            let (mut all, mut kept) = (0usize, 0usize);
+            g.for_each_coord(|c| {
+                all += 1;
+                kept += usize::from(drawable(&c));
+            });
+            (kept > 0).then_some((all - kept, 0))
+        }
+        (Some(Geometry::Line(parts)), GeometryType::Polyline) => {
+            let missing = parts.iter().map(|p| p.len() - count(p)).sum();
+            let short = parts.iter().filter(|p| count(p) < 2).count();
+            (short < parts.len()).then_some((missing, short))
+        }
+        (Some(Geometry::Polygon(polys)), GeometryType::Polygon) => {
+            let outer_kept = |poly: &[Vec<Coord>]| poly.first().is_some_and(|outer| count(outer) >= 3);
+            if !polys.iter().any(|poly| outer_kept(poly)) {
+                return None;
+            }
+            let missing = polys.iter().flatten().map(|r| r.len() - count(r)).sum();
+            let rings = polys
+                .iter()
+                .map(|poly| if outer_kept(poly) { poly.iter().skip(1).filter(|r| count(r) < 3).count() } else { poly.len() })
+                .sum();
+            Some((missing, rings))
+        }
+        _ => None,
+    }
+}
+
+/// What an export to a Shapefile in `crs` says it leaves out of the geometry it writes, one
+/// notice per kind with a count, or none: vertices with a missing (NaN) or infinite coordinate,
+/// and the line parts or polygon rings without enough vertices to draw. Features left out whole
+/// are [`left_out_note`]'s. In another system than longitude/latitude, the export writes the
+/// projected copy and refuses a coordinate that doesn't project to a finite one ([`project`]), so
+/// every vertex it writes is drawable (an infinite latitude in Web Mercator is written at
+/// 85.05°), and only parts too short to draw are left out. `target` names what was written; line
+/// breaks and other control characters in it show as spaces.
+pub fn shapefile_geometry_notes(ds: &Dataset, target: &str, crs: Crs) -> Vec<String> {
+    let drawable: fn(&Coord) -> bool = if crs == Crs::LonLat { |c| c.x.is_finite() && c.y.is_finite() } else { |_| true };
+    let (mut vertices, mut parts) = (0usize, 0usize);
+    for f in &ds.features {
+        let Some((v, p)) = shapefile_geometry_losses(f.geometry.as_ref(), ds.geometry_type, drawable) else { continue };
+        vertices += v;
+        parts += p;
+    }
+    let target: String = target.chars().map(dbf_notice_char).collect();
+    let mut notes = Vec::new();
+    if vertices > 0 {
+        let what = if vertices == 1 {
+            "1 vertex with a missing or infinite coordinate was".to_string()
+        } else {
+            format!("{vertices} vertices with a missing or infinite coordinate were")
+        };
+        notes.push(format!("{target}: {what} left out of the Shapefile"));
+    }
+    if parts > 0 {
+        let (one, many, why) = if ds.geometry_type == GeometryType::Polyline {
+            ("line part", "line parts", "with fewer than 2 drawable vertices")
+        } else {
+            ("polygon ring", "polygon rings", "with fewer than 3 drawable vertices or in a polygon whose outer ring was left out")
+        };
+        let what = if parts == 1 { format!("1 {one} was") } else { format!("{parts} {many} were") };
+        notes.push(format!("{target}: {what} left out of the Shapefile, {why}"));
+    }
+    notes
+}
+
 /// A dataset as the files of a Shapefile: (extension, bytes) for `.shp`, `.shx`, `.dbf`, `.prj`
 /// (WGS 84) and `.cpg` (UTF-8). Shapefiles hold one kind of shape and features with geometry:
 /// features without it (or with nothing drawable) are left out, and the count of them returned.
@@ -2871,6 +2947,122 @@ mod tests {
         }
         assert_eq!(left_out_note("out", "shp", 0), None);
         assert_eq!(left_out_note("out", "gpkg", 0), None);
+    }
+
+    /// A Shapefile export leaves out vertices with a missing or infinite coordinate, and the line
+    /// parts and polygon rings that leaves too short to draw, and says how many; the features
+    /// themselves are written. A feature with nothing drawable left is the left-out notice's, and
+    /// clean geometry gives no notice (#1687).
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_shapefile_says_which_vertices_and_parts_it_leaves_out() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let c = Coord::new;
+        let nan = f64::NAN;
+        let inf = f64::INFINITY;
+        let dir = tempfile::tempdir()?;
+        let coords = |g: &Option<Geometry>| {
+            let mut n = 0;
+            if let Some(g) = g {
+                g.for_each_coord(|_| n += 1);
+            }
+            n
+        };
+
+        // The issue's case: a multipoint of four, one member's x missing, is written with three.
+        let mut points = Dataset::new("mp", GeometryType::Point, vec![]);
+        points.push(Some(Geometry::MultiPoint(vec![c(0., 0.), c(nan, 1.), c(2., 2.), c(3., 3.)])), vec![]);
+        assert_eq!(write_path(&points, &dir.path().join("mp.shp"))?, 0);
+        let (back, _) = read_path(&dir.path().join("mp.shp"))?;
+        assert_eq!(coords(&back.features[0].geometry), 3);
+        assert_eq!(
+            shapefile_geometry_notes(&points, "mp.shp", Crs::LonLat),
+            ["mp.shp: 1 vertex with a missing or infinite coordinate was left out of the Shapefile"]
+        );
+
+        // Lines: two vertices go, and the part left with one finite vertex goes with them, as does
+        // a part written with one vertex.
+        let mut lines = Dataset::new("lines", GeometryType::Polyline, vec![]);
+        let parts = vec![vec![c(0., 0.), c(nan, 1.), c(2., 2.)], vec![c(5., 5.), c(inf, 6.)], vec![c(9., 9.)]];
+        lines.push(Some(Geometry::Line(parts)), vec![]);
+        assert_eq!(write_path(&lines, &dir.path().join("lines.shp"))?, 0);
+        let (back, _) = read_path(&dir.path().join("lines.shp"))?;
+        assert_eq!(coords(&back.features[0].geometry), 2);
+        assert_eq!(
+            shapefile_geometry_notes(&lines, "lines.shp", Crs::LonLat),
+            [
+                "lines.shp: 2 vertices with a missing or infinite coordinate were left out of the Shapefile",
+                "lines.shp: 2 line parts were left out of the Shapefile, with fewer than 2 drawable vertices",
+            ]
+        );
+
+        // Polygons: the first keeps its outer ring but loses a hole left with two vertices; the
+        // second loses its outer ring, and its whole hole with it.
+        let square = |x: f64| vec![c(x, 0.), c(x + 4., 0.), c(x + 4., 4.), c(x, 4.), c(x, 0.)];
+        let hole = |x: f64| vec![c(x + 1., 1.), c(x + 2., 1.), c(x + 2., 2.), c(x + 1., 1.)];
+        let mut broken_hole = hole(0.);
+        broken_hole[1] = c(nan, nan);
+        broken_hole[2] = c(nan, 2.);
+        let mut broken_outer = square(10.);
+        broken_outer[1] = c(inf, 0.);
+        broken_outer[2] = c(14., nan);
+        broken_outer[3] = c(nan, 4.);
+        let mut polys = Dataset::new("polys", GeometryType::Polygon, vec![]);
+        polys.push(Some(Geometry::Polygon(vec![vec![square(0.), broken_hole], vec![broken_outer, hole(10.)]])), vec![]);
+        assert_eq!(write_path(&polys, &dir.path().join("polys.shp"))?, 0);
+        let (back, _) = read_path(&dir.path().join("polys.shp"))?;
+        assert_eq!(coords(&back.features[0].geometry), 5);
+        assert_eq!(
+            shapefile_geometry_notes(&polys, "polys.shp", Crs::LonLat),
+            [
+                "polys.shp: 5 vertices with a missing or infinite coordinate were left out of the Shapefile",
+                "polys.shp: 3 polygon rings were left out of the Shapefile, with fewer than 3 drawable vertices or in a polygon whose outer ring was left out",
+            ]
+        );
+
+        // A feature with nothing drawable left is counted left out whole, not vertex by vertex.
+        let mut gone = Dataset::new("gone", GeometryType::Point, vec![]);
+        gone.push(Some(Geometry::MultiPoint(vec![c(nan, 0.), c(0., inf)])), vec![]);
+        gone.push(Some(Geometry::Point(c(1., 1.))), vec![]);
+        assert_eq!(write_path(&gone, &dir.path().join("gone.shp"))?, 1);
+        assert!(shapefile_geometry_notes(&gone, "gone.shp", Crs::LonLat).is_empty());
+
+        // Clean geometry: nothing to say.
+        for ds in [&points, &lines, &polys] {
+            let mut clean = ds.clone();
+            clean.features[0].geometry = match ds.geometry_type {
+                GeometryType::Point => Some(Geometry::MultiPoint(vec![c(0., 0.), c(1., 1.)])),
+                GeometryType::Polyline => Some(Geometry::Line(vec![vec![c(0., 0.), c(1., 1.)]])),
+                _ => Some(Geometry::Polygon(vec![vec![square(0.), hole(0.)]])),
+            };
+            assert!(shapefile_geometry_notes(&clean, "clean.shp", Crs::LonLat).is_empty(), "{}", ds.name);
+        }
+
+        // Projected, the export writes the projected copy. Web Mercator writes an infinite
+        // latitude at 85.05°, so that vertex and its part are written and nothing is said of
+        // them; a part of one vertex is still left out. A missing coordinate can't be projected,
+        // so the export is refused. In longitude/latitude, the infinite latitude goes, and its
+        // part with it.
+        let mut merc = Dataset::new("merc", GeometryType::Polyline, vec![]);
+        merc.push(Some(Geometry::Line(vec![vec![c(0., 0.), c(1., inf)], vec![c(5., 5.)], vec![c(7., 7.), c(8., 8.)]])), vec![]);
+        assert_eq!(write_path_in(&merc, &dir.path().join("merc.shp"), Crs::WebMercator)?, 0);
+        let (back, _) = read_path(&dir.path().join("merc.shp"))?;
+        assert_eq!(coords(&back.features[0].geometry), 4);
+        assert_eq!(
+            shapefile_geometry_notes(&merc, "merc.shp", Crs::WebMercator),
+            ["merc.shp: 1 line part was left out of the Shapefile, with fewer than 2 drawable vertices"]
+        );
+        assert_eq!(write_path(&merc, &dir.path().join("merc-4326.shp"))?, 0);
+        let (back, _) = read_path(&dir.path().join("merc-4326.shp"))?;
+        assert_eq!(coords(&back.features[0].geometry), 2);
+        assert_eq!(
+            shapefile_geometry_notes(&merc, "merc-4326.shp", Crs::LonLat),
+            [
+                "merc-4326.shp: 1 vertex with a missing or infinite coordinate was left out of the Shapefile",
+                "merc-4326.shp: 2 line parts were left out of the Shapefile, with fewer than 2 drawable vertices",
+            ]
+        );
+        assert!(write_path_in(&points, &dir.path().join("mp-3857.shp"), Crs::WebMercator).is_err());
+        Ok(())
     }
 
     /// A GeoPackage export loses no geometry: a layer read from a GeoJSON of a polygon and a point

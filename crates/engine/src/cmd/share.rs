@@ -47,6 +47,7 @@ pub fn commands() -> Vec<C> {
             if matches!(ext.as_str(), "shp" | "zip") {
                 dbf_notes.extend(rustgis_data::io::shapefile_names_note(&t.dataset.fields, path));
                 dbf_notes.extend(rustgis_data::io::shapefile_values_notes(&t.dataset, path));
+                dbf_notes.extend(rustgis_data::io::shapefile_geometry_notes(&t.dataset, path, Crs::LonLat));
             }
             if matches!(ext.as_str(), "parquet" | "geoparquet") {
                 dbf_notes.extend(rustgis_data::source::parquet::values_note(&t.dataset, path));
@@ -650,6 +651,7 @@ fn write_layer(l: &rustgis_map::Layer, path: &str, asked: Option<Crs>, gpkg: Gpk
     if shapefile {
         dbf_notes.extend(rustgis_data::io::shapefile_names_note(&ds.fields, path));
         dbf_notes.extend(rustgis_data::io::shapefile_values_notes(ds, path));
+        dbf_notes.extend(rustgis_data::io::shapefile_geometry_notes(ds, path, crs));
     }
     // FlatGeobuf, KML, GPX and Shapefile hold features with geometry only (a Shapefile, only
     // geometry it can draw, of the layer's kind).
