@@ -76,7 +76,7 @@ RustGIS is also published to these package managers, which keep it up to date:
 | Platform | Command |
 | --- | --- |
 | Windows x64 ([winget](https://learn.microsoft.com/windows/package-manager/)) | `winget install OpenGeos.RustGIS` (x64 only for now: on ARM64, use the ARM64 setup.exe or .msi above) |
-| macOS ([Homebrew](https://brew.sh)) | `brew install --cask opengeos/rustgis/rustgis` |
+| macOS and Linux ([Homebrew](https://github.com/Homebrew/homebrew-cask/blob/main/Casks/r/rustgis.rb)) | `brew install --cask rustgis` (the DMG on macOS, the AppImage on Linux) |
 | macOS and Linux, command-line tool only (Homebrew) | `brew install opengeos/rustgis/rustgis-cli` |
 | Arch Linux ([AUR](https://aur.archlinux.org/packages/rustgis-bin)) | `yay -S rustgis-bin` (or any AUR helper) |
 | Fedora ([COPR](https://copr.fedorainfracloud.org/coprs/giswqs/rustgis/)) | `sudo dnf copr enable giswqs/rustgis && sudo dnf install rustgis` |
@@ -86,7 +86,11 @@ RustGIS and `rustgis-cli` before `winget upgrade`: the setup.exe, run silently, 
 for each to close and otherwise stops without installing (exit code 2), rather than replace only
 part of it. The same goes for Help › Check for Updates › Install and Restart: close any other
 RustGIS window first, or the update waits for it and then isn't installed (RustGIS says so).
-On Homebrew 5.1 and later, run `brew trust opengeos/rustgis` once before installing from the tap.
+The `rustgis` cask is in Homebrew's own repository, so it needs no tap. The `rustgis-cli`
+formula comes from the opengeos/rustgis tap; installing it by that full name trusts just that
+formula, with no separate `brew trust` step. If you installed the app from that tap
+before (`opengeos/rustgis/rustgis`), it keeps updating from there; to move to Homebrew's cask,
+run `brew uninstall --cask opengeos/rustgis/rustgis && brew install --cask rustgis`.
 Each package is the same build as the release page, and a new release reaches the package
 managers shortly after it is published (winget after Microsoft's review).
 

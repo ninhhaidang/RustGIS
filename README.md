@@ -135,7 +135,7 @@ The [user guide](https://rustgis.app/user-guide/) covers each area in detail,
   [Microsoft Store](https://apps.microsoft.com/detail/9ppjw8h561lq) on Windows 10 and 11, which
   installs it in one click and keeps it up to date.
 - **Package managers**: `winget install OpenGeos.RustGIS`,
-  `brew install --cask opengeos/rustgis/rustgis`, `yay -S rustgis-bin` (AUR), or
+  `brew install --cask rustgis` (macOS and Linux), `yay -S rustgis-bin` (AUR), or
   `sudo dnf copr enable giswqs/rustgis && sudo dnf install rustgis` (Fedora).
 - **From source**: `cargo run --release -p rustgis` (Rust 1.90 or later).
 

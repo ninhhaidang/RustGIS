@@ -18,7 +18,7 @@ with its tag.
 
 | Channel | Package | Install | Secret |
 | --- | --- | --- | --- |
-| Homebrew tap [opengeos/homebrew-rustgis](https://github.com/opengeos/homebrew-rustgis) | cask `rustgis` (the DMGs), formula `rustgis-cli` (macOS and Linux) | `brew install --cask opengeos/rustgis/rustgis` | `HOMEBREW_TAP_DEPLOY_KEY` |
+| Homebrew tap [opengeos/homebrew-rustgis](https://github.com/opengeos/homebrew-rustgis) | cask `rustgis` (the DMGs), formula `rustgis-cli` (macOS and Linux) | `brew install --cask opengeos/rustgis/rustgis` and `brew install opengeos/rustgis/rustgis-cli` | `HOMEBREW_TAP_DEPLOY_KEY` |
 | [AUR](https://aur.archlinux.org/packages/rustgis-bin) | `rustgis-bin` (the .deb files, x86_64 and aarch64) | `yay -S rustgis-bin` | `AUR_SSH_PRIVATE_KEY` |
 | [Fedora COPR](https://copr.fedorainfracloud.org/coprs/giswqs/rustgis/) | `rustgis` (the .rpm files plus AppStream metainfo) | `sudo dnf copr enable giswqs/rustgis && sudo dnf install rustgis` | `COPR_CONFIG` |
 | [winget](https://github.com/microsoft/winget-pkgs/tree/master/manifests/o/OpenGeos/RustGIS) | `OpenGeos.RustGIS` (setup.exe per user, .msi per machine) | `winget install OpenGeos.RustGIS` | `WINGET_TOKEN` |
@@ -47,8 +47,11 @@ packaging/homebrew/render.sh 0.1.0 SHA256SUMS /tmp/tap && brew style /tmp/tap/Ca
 
 - **Homebrew**: the tap repository has a write deploy key; its private half is
   `HOMEBREW_TAP_DEPLOY_KEY`. Taps need `brew trust opengeos/rustgis` once on Homebrew 5.1 and
-  later. The official homebrew/cask repository can take the cask once the repository meets
-  Homebrew's notability rules (75 stars, 30 days old).
+  later. Since 0.6.0 the app's cask is also in Homebrew's own repository
+  ([`Casks/r/rustgis.rb`](https://github.com/Homebrew/homebrew-cask/blob/main/Casks/r/rustgis.rb),
+  the DMGs on macOS and the AppImages on Linux; #89), which the docs point users to:
+  `brew install --cask rustgis`. This workflow doesn't update it; Homebrew's own automation
+  does. The tap's cask stays for people who installed from the tap.
 - **AUR**: the maintainer account (giswqs) lists the public half of `AUR_SSH_PRIVATE_KEY` under
   *My Account › SSH Public Key*.
 - **COPR**: the project `giswqs/rustgis` builds for the Fedora x86_64 and aarch64 chroots.
