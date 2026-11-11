@@ -1220,6 +1220,24 @@ fn a_tree_cut_at_its_limit_says_so() {
     assert_eq!(over.nodes, 2, "the node without an id and its child");
     assert_eq!(st.items["catalogue"].cut, Some(given));
 
+    // Two trees cut in one answer: one part, with the count and each tree.
+    let mut m: Value = serde_json::from_str(&testing::panel_manifest("tree-panel")).unwrap();
+    for id in ["catalogue", "places"] {
+        m["panel"]["items"].as_array_mut().unwrap().push(json!({"kind": "tree", "id": id, "label": id, "command": "q"}));
+    }
+    let two = Manifest::parse(&m.to_string()).unwrap().panel.unwrap();
+    let mut both = PanelState::new(&two);
+    let over = both
+        .apply(&two, &json!({"items": {"catalogue": {"nodes": flat(MAX_TREE_NODES + 1)}, "places": {"nodes": flat(MAX_TREE_NODES + 2)}}}));
+    let notice = over.notice().unwrap();
+    assert_eq!(notice.matches("tree(s) cut").count(), 1, "{notice}");
+    assert!(notice.contains(&format!("2 tree(s) cut: only the first {MAX_TREE_NODES} nodes")), "{notice}");
+    assert!(
+        notice.contains(&format!("catalogue ({} nodes given)", MAX_TREE_NODES + 1))
+            && notice.contains(&format!("places ({} nodes given)", MAX_TREE_NODES + 2)),
+        "{notice}"
+    );
+
     // Fewer again: no cut left to say.
     assert_eq!(st.apply(&decl, &json!({"items": {"catalogue": {"nodes": flat(3)}}})).notice(), None);
     assert_eq!(st.items["catalogue"].cut, None);

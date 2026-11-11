@@ -559,10 +559,18 @@ impl Dropped {
                 parts.push(format!("{} {what}: {names}{more}", ids.len().saturating_add(unlisted)));
             }
         }
-        for (id, given) in &self.cut {
+        if !self.cut.is_empty() {
+            let names = self
+                .cut
+                .iter()
+                .take(MAX_NAMED)
+                .map(|(id, given)| format!("{} ({given} nodes given)", diagnostic_name(id)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let more = if self.cut.len() > MAX_NAMED { ", …" } else { "" };
             parts.push(format!(
-                "tree {} was given {given} nodes: only the first {MAX_TREE_NODES} are kept, the most a tree holds",
-                diagnostic_name(id)
+                "{} tree(s) cut: only the first {MAX_TREE_NODES} nodes are kept, the most a tree holds: {names}{more}",
+                self.cut.len()
             ));
         }
         if self.nodes > 0 {

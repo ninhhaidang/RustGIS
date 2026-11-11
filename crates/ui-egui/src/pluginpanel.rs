@@ -1327,6 +1327,56 @@ mod tests {
         assert_eq!(shown_value(&json!("two")), "two");
     }
 
+    /// A tree the plugin gave more nodes than it holds says so under it: under its rows, and
+    /// under a search that finds nothing, since what it looks for may be among those left out;
+    /// a tree within its limit says nothing (#1546).
+    #[test]
+    fn a_cut_tree_says_so_under_its_rows_and_an_empty_search() {
+        let _turn = crate::fetching::turn();
+        use egui_kittest::kittest::Queryable;
+        use rustgis_engine::plugins;
+        let mut m: Value = serde_json::from_str(&plugins::testing::panel_manifest("ui-cut")).unwrap();
+        m["panel"]["items"] = json!([{"kind": "tree", "id": "area", "label": "Area", "command": "q", "search": true}]);
+        m["panel"].as_object_mut().unwrap().remove("state");
+        let manifest = m.to_string();
+        let zip = plugins::testing::zip_of(&[("plugin.json", manifest.as_bytes()), ("plugin.wasm", &plugins::testing::wasm())]);
+        plugins::load(plugins::Package::from_zip(&zip).unwrap(), "test").unwrap();
+        let decl = plugins::Manifest::parse(&manifest).unwrap().panel.unwrap();
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1400.0, 860.0)).with_step_dt(0.05).build_ui_state(
+            |ui, app: &mut RustGisApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            RustGisApp::with_sample(),
+        );
+        h.state_mut().run("ui.pane.plugin", json!({"id": "ui-cut"})).unwrap();
+        h.run_steps(3);
+        let give = |h: &mut egui_kittest::Harness<'_, RustGisApp>, n: usize| {
+            let nodes: Vec<Value> = (0..n).map(|i| json!({"id": format!("m{i}"), "label": format!("Place {i}")})).collect();
+            let st = h.state_mut().session.plugin_panels.get_mut("ui-cut").unwrap();
+            st.apply(&decl, &json!({"items": {"area": {"nodes": nodes}}}));
+            h.run_steps(3);
+        };
+        let given = MAX_TREE_NODES + 1;
+        give(&mut h, given);
+        let note = format!(
+            "Only the first {MAX_TREE_NODES} of the {given} nodes the plugin gave are shown: a tree holds at most {MAX_TREE_NODES}."
+        );
+        assert!(h.query_by_label("Place 0").is_some(), "its rows shown");
+        assert!(h.query_by_label(&note).is_some(), "the note under them");
+        // The node past the limit isn't found, and the note says why it may not be.
+        h.state_mut().ui.plugin_panel.search.insert("area".into(), format!("Place {MAX_TREE_NODES}"));
+        h.run_steps(3);
+        assert!(h.query_by_label("Nothing matches.").is_some());
+        assert!(h.query_by_label(&note).is_some(), "the note under an empty search too");
+        h.state_mut().ui.plugin_panel.search.clear();
+        give(&mut h, 3);
+        assert!(h.query_by_label("Place 2").is_some());
+        assert!(h.query_by_label_contains("Only the first").is_none(), "a tree within its limit says nothing");
+        plugins::unload("ui-cut");
+    }
+
     /// A plugin's command adding data by address doesn't wait for it: the app downloads it off
     /// the frame, as the browser does, and the layer lands as the plugin asked for it (#1144).
     #[test]
