@@ -623,7 +623,8 @@ feature of the clip, erase, overlay, update or split layer with no polygon, and 
 without geometry, a point or line in the polygon layer (as Minimum Bounding Geometry's flat hulls
 are), or an empty polygon. Clip also leaves out a mask whose polygons, unioned, have no area, and
 the others a feature of several parts that, unioned, come to nothing (Update writes it as it is),
-saying how many. When none of the features of that layer is left, Clip, Intersect and Split, whose
+saying how many. Clip also says how many input features it leaves out for having no geometry, or
+an empty one. When none of the features of that layer is left, Clip, Intersect and Split, whose
 result would be empty, stop with an error. In all of them, a feature selected twice in that layer is
 used once.
 
