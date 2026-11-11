@@ -1989,7 +1989,8 @@ fn publication(s: &mut Session, p: &Value) -> CmdResult {
                         } else {
                             // A legend that can't be measured there (a source that can't be read
                             // through) leaves that scale untried too, which is said.
-                            let measured = crate::render::layout::legend_sizes_mm(s.map_mut(), render_scale, false, false, &[]);
+                            let measured =
+                                crate::render::layout::legend_sizes_mm(s.map_mut(), render_scale, false, false, (&[], &Default::default()));
                             if measured.is_none() {
                                 unknown_at.get_or_insert(tried);
                             }
