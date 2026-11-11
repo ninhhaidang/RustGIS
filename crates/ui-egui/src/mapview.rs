@@ -943,12 +943,32 @@ fn main_view(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
         app.map.callout_lonlat.clear();
         app.map.callout_map.clear();
     }
-    let settling = (tilted || globe_view || tiled_flat) && !moving && app.ws.playing.is_none() && !hold;
+    // A flat, north-up map's exact frame after a pan or zoom is drawn off the UI thread too
+    // (#1750): its last frame, shifted and scaled, stays on screen until the new one arrives, and
+    // moving again stops it. A change to the map itself (an edit, a layer shown or hidden, a
+    // resize) is still drawn at once, so it shows without waiting. The browser has one thread: there
+    // the worker draws it at once, as before.
+    let flat_settle = cfg!(not(target_arch = "wasm32"))
+        && !globe_view
+        && cam.bearing == 0.0
+        && cam.pitch == 0.0
+        && app.session.map().tiles.is_empty()
+        && (app.map.texture.is_some() || app.map.gpu_frame.is_some())
+        && app.map.key.is_some_and(|k| k.rev == key.rev && k.size == key.size && k.sources == key.sources && (k.cam != key.cam || k.draft))
+        // A frame the worker couldn't draw (it panicked, or the system refused its thread) is
+        // drawn on the UI thread, as before: a refused thread costs smoothness, not the frame.
+        && !app.map.tilt_settle.failed(key);
+    let settling = (tilted || globe_view || tiled_flat || flat_settle) && !moving && app.ws.playing.is_none() && !hold;
     let mut tilt_draped = tilt_draped;
     // A frame finishing during a new gesture is obsolete. Drain it now so it neither holds
-    // the worker slot nor keeps screenshot/idle waiters waiting for a frame we will not show.
-    if !settling && let Some((_, done)) = app.map.tilt_settle.take() {
-        app.session.map_mut().adopt_caches(&done.map);
+    // the worker slot nor keeps screenshot/idle waiters waiting for a frame we will not show;
+    // one still being drawn is stopped, so the worker is free once the map rests again.
+    if !settling {
+        if let Some((_, done)) = app.map.tilt_settle.take() {
+            app.session.map_mut().adopt_caches(&done.map);
+        } else if app.map.tilt_settle.busy() {
+            app.map.tilt_settle.cancel();
+        }
     }
     // A GPU scene that re-projects (no pictures) of this map, at this size: a camera move needs
     // no picture drawn on the CPU meanwhile. One whose tile layers are all live, without labels
@@ -977,7 +997,8 @@ fn main_view(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
         if let Some((k, done)) = app.map.tilt_settle.take() {
             app.session.map_mut().adopt_caches(&done.map);
             // A frame of this view that couldn't be drawn isn't tried again: nothing is to fill.
-            if same_view(k, key) && done.rendered.is_none() && done.archives.current([&done.map]) {
+            // (One stopped part-way just wasn't wanted any more.)
+            if same_view(k, key) && done.rendered.is_none() && !done.cancelled && done.archives.current([&done.map]) {
                 app.map.filling = false;
             }
             // One drawn before tiles or data arrived still shows; the next follows. So does one
@@ -1017,6 +1038,10 @@ fn main_view(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
             }
             let backend = if gpu_ok { rustgis_engine::render::Backend::GpuLive } else { rustgis_engine::render::Backend::Cpu };
             app.map.tilt_settle.start_backend(ui.ctx(), key, app.session.map().clone(), view, backend);
+            // A worker the system refused wakes no frame: the next draws it here.
+            if flat_settle && app.map.tilt_settle.failed(key) {
+                ui.ctx().request_repaint();
+            }
         }
         let shown = (app.map.texture.is_some() || app.map.gpu_frame.is_some())
             && app.map.key.is_some_and(|k| same_view(Key { draft: false, ..k }, key));
@@ -1027,7 +1052,12 @@ fn main_view(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
                 draped = app.map.drape.prepare(ui.ctx(), app.session.map_mut(), drape_key, tiles, w, h, ppp, time);
             } else if tilted {
                 tilt_draped = app.map.tilt_drape.prepare(ui.ctx(), app.session.map_mut(), drape_key, tiles, w, h, ppp, time);
-            } else if app.map.preview_attempt != Some(key) && !reprojects && !(keep_frame && app.map.tilt_settle.busy()) {
+            } else if app.map.preview_attempt != Some(key)
+                && !reprojects
+                // The last frame, shifted, stands in while the worker draws; if it couldn't, a preview.
+                && !(flat_settle && app.map.tilt_settle.busy())
+                && !(keep_frame && app.map.tilt_settle.busy())
+            {
                 // A kept frame waits for the exact one; if that couldn't be drawn, a preview.
                 // A small preview shows a visibility change immediately. The exact frame is
                 // already on its way. Even a failed preview is attempted only once per key.
@@ -5147,6 +5177,69 @@ mod tests {
         assert_eq!(shown_layers(&app.session), before, "back as they were");
         app.run("layer.visibility", json!({"layer": "Countries", "visible": false})).expect("hide");
         assert_ne!(shown_layers(&app.session), before, "a layer hidden");
+    }
+
+    /// A flat map's exact frame after a pan or zoom is drawn off the UI thread (#1750): its last
+    /// frame stays on screen (no preview) while the worker draws, moving again stops the worker,
+    /// and the frame for where the map rests arrives.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_flat_maps_settled_frame_is_drawn_off_the_ui_thread() {
+        let _turn = crate::fetching::turn();
+        let app = RustGisApp::with_sample();
+        let mut h =
+            egui_kittest::Harness::builder().with_size(vec2(900.0, 550.0)).with_step_dt(0.000_05).with_max_steps(10_000).build_ui_state(
+                |ui, app: &mut RustGisApp| {
+                    let ctx = ui.ctx().clone();
+                    app.logic(&ctx);
+                    app.ui(ui);
+                },
+                app,
+            );
+        let cam_of = |st: &RustGisApp| {
+            let c = st.session.map().camera;
+            ((c.center.x * 100.0) as i64, (c.center.y * 100.0) as i64)
+        };
+        let exact = |h: &mut egui_kittest::Harness<'_, RustGisApp>, what: &str| {
+            let end = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            loop {
+                h.step();
+                let st = h.state();
+                if st.map.key.is_some_and(|k| k.rev == st.session.revision && !k.draft && (k.cam.0, k.cam.1) == cam_of(st))
+                    && !st.map.tilt_settle.busy()
+                {
+                    break;
+                }
+                assert!(std::time::Instant::now() < end, "{what}");
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        };
+        exact(&mut h, "the first frame did not arrive");
+        assert!(h.state().session.map().tiles.is_empty(), "the sample has no tile layers");
+        // A pan (the camera moved as a drag moves it, not by a command, which changes the map's
+        // revision) come to rest: the frame is drawn on the worker, the last one stays meanwhile.
+        let before = h.state().map.key.expect("a frame");
+        let shift = |h: &mut egui_kittest::Harness<'_, RustGisApp>, px: f64| {
+            let cam = &mut h.state_mut().session.map_mut().camera;
+            cam.center.x += cam.res * px;
+        };
+        shift(&mut h, 200.0);
+        h.step();
+        assert!(h.state().map.tilt_settle.busy(), "the pan's frame is drawn on the worker");
+        assert_eq!(h.state().map.key, Some(before), "the last frame stays on screen, no preview");
+        // Moving again stops it; once the map rests, the frame for where it is arrives.
+        h.state_mut().map.last_interaction = f64::MAX;
+        shift(&mut h, 150.0);
+        h.step();
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while h.state().map.tilt_settle.busy() {
+            assert!(std::time::Instant::now() < end, "the stopped frame never came back");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            h.step();
+        }
+        h.state_mut().map.last_interaction = -10.0;
+        exact(&mut h, "the frame of the resting map did not arrive");
+        assert_eq!(h.state().map.key.map(|k| k.rev), Some(before.rev));
     }
 
     /// #1051: changing a layer's transparency over a tiled basemap kept the exact frame on

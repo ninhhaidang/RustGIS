@@ -6,6 +6,7 @@
 //! the labels too, for export and the command line.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+pub mod cancel;
 mod canvas;
 mod diagrams;
 mod effects;
@@ -2090,6 +2091,10 @@ fn render_with_backend(map: &mut Map, view: &View, full_res_rasters: bool, backe
 fn render_any(map: &mut Map, view: &View, full_res_rasters: bool, backend: Backend, record: bool) -> Option<RenderOutput> {
     let revisions = archive_revisions([&*map]);
     let output = render_pass(map, view, full_res_rasters, backend, record);
+    // A frame stopped part-way (see `cancel`) is no frame.
+    if cancel::requested() {
+        return None;
+    }
     revisions.current([&*map]).then_some(output).flatten()
 }
 
@@ -2462,6 +2467,11 @@ fn render_tilted(map: &mut Map, view: &View, full_res_rasters: bool, sources_rea
     let (mut attribution, mut tiles_pending, mut tile_errors) = (Vec::<String>::new(), false, Vec::<String>::new());
     let (mut partial, mut pending_in_place) = (Vec::<u32>::new(), Vec::<u32>::new());
     for (i, b) in bands_of.into_iter().enumerate() {
+        // A stopped frame (see `cancel`) draws no further band, nor its drape or warp.
+        if cancel::requested() {
+            map.label_lock = lock;
+            return None;
+        }
         let v = band_view(view, &b);
         let Some(RenderOutput::Cpu(r)) =
             render_frame(map, &v, full_res_rasters, Backend::Cpu, Labels::Tilted(view, &mut candidates), false)
@@ -2517,6 +2527,10 @@ fn render_tilted(map: &mut Map, view: &View, full_res_rasters: bool, sources_rea
         }
     }
     map.label_lock = lock;
+    // A frame stopped during its last band goes no further (see `cancel`).
+    if cancel::requested() {
+        return None;
+    }
     match &ground {
         Some(g) => {
             drape_terrain(pm.pixels(), view, map, &kept, g);
@@ -2741,10 +2755,19 @@ fn gpu_turned(map: &mut Map, view: &View, full_res_rasters: bool, sources_ready:
     let mut plain = true;
     let last = bands.len().saturating_sub(1);
     for (i, b) in bands.iter().enumerate() {
+        // A stopped frame (see `cancel`) draws no further band, nor falls back to the CPU.
+        if cancel::requested() {
+            map.label_lock = lock;
+            return None;
+        }
         let v = band_view(view, b);
         let Some(RenderOutput::Gpu(scene)) =
             render_frame(map, &v, full_res_rasters, Backend::Gpu, Labels::Tilted(view, &mut candidates), false)
         else {
+            if cancel::requested() {
+                map.label_lock = lock;
+                return None;
+            }
             plain = false;
             break;
         };
@@ -2800,6 +2823,10 @@ fn gpu_turned(map: &mut Map, view: &View, full_res_rasters: bool, sources_ready:
         cmds.extend(scene.cmds);
     }
     map.label_lock = lock;
+    // A frame stopped during its last band goes no further (see `cancel`).
+    if cancel::requested() {
+        return None;
+    }
     if !plain {
         return None;
     }
@@ -3926,6 +3953,10 @@ fn render_frame(
     // The layer drawn last, whose tile layers go over it before the next.
     let mut below: Option<u32> = None;
     for li in order {
+        // A frame no longer wanted stops between layers (see `cancel`).
+        if cancel::requested() {
+            break;
+        }
         if let Some(id) = below.take() {
             draw_tiles!(Some(id));
         }
@@ -4101,6 +4132,10 @@ fn render_frame(
         // polygons.
         let mut extruded_charts: Option<Canvas> = None;
         let mut draw_chunk = |layer: &mut rustgis_map::Layer| -> rustgis_data::Result<()> {
+            // A stopped frame draws no more of a layer or a streamed chunk (see `cancel`).
+            if cancel::requested() {
+                return Ok(());
+            }
             // The definition query and the display filters that apply at this scale (a feature draws
             // only if it matches all of them).
             let mut rows = layer.drawn_rows(scale);
@@ -4316,8 +4351,20 @@ fn render_frame(
                     // Polygons with stacked fills (patterns) draw them in place of their single fill.
                     let has_fills = layer.has_fills();
                     let mut stacked: Vec<(&[Vec<Coord>], Symbol, &[LineStroke])> = Vec::new();
+                    // Vertices drawn since the stop was last looked at (see `cancel`).
+                    let mut since_look = 0usize;
                     for (row, g) in drawn.iter().enumerate() {
+                        // And every few thousand features, or vertices, of a large layer.
+                        if (row % cancel::EVERY == 0 && row > 0 || since_look >= cancel::EVERY_VERTICES) && cancel::requested() {
+                            break;
+                        }
+                        if since_look >= cancel::EVERY_VERTICES {
+                            since_look = 0;
+                        }
+                        #[cfg(test)]
+                        cancel::DRAWN.set(cancel::DRAWN.get() + 1);
                         let Some(g) = g else { continue };
+                        since_look += rustgis_map::lod::vertices(g);
                         let e = extents.get(row).copied().unwrap_or_else(|| g.extent());
                         // A point's marks, shifted from it, may show while the point is off the view.
                         let marked_in = || {
@@ -4514,6 +4561,10 @@ fn render_frame(
             } else {
                 Vec::new()
             };
+            // A stopped frame places no labels for the rest of the layer (see `cancel`).
+            if cancel::requested() {
+                return Ok(());
+            }
             if label_fields.iter().any(Option::is_some) {
                 let label_factor = layer.size_factor(label_scale);
                 // Each class's font, where it is installed. An export (`full_res_rasters`: see
@@ -4917,6 +4968,10 @@ fn render_frame(
             // All coordinates are read here: filtering only to the viewport can change labels,
             // shadows and screen-space effects whose geometry lies beyond its boundary.
             let result = visit_complete(source.as_ref(), &mut |features| {
+                // A frame no longer wanted reads no further (see `cancel`).
+                if cancel::requested() {
+                    return Err(rustgis_data::DataError::Cancelled);
+                }
                 chunk.clear_cache();
                 chunk.selection =
                     features.iter().enumerate().filter_map(|(r, f)| selected_order.contains_key(&f.id).then_some(r)).collect();
@@ -4928,6 +4983,10 @@ fn render_frame(
                 Ok(())
             });
             if let Err(e) = result {
+                // Stopped, not failed: the source is fine.
+                if cancel::requested() {
+                    return None;
+                }
                 if let Some(s) = &mut layer.source {
                     s.error = Some(e.to_string());
                 }
@@ -4969,6 +5028,11 @@ fn render_frame(
             ctx.highlight(&mut pm, &geometry, &symbol, &strokes, turn);
             cpu_dirty = true;
         }
+    }
+    // A frame stopped part-way (see `cancel`) is no frame: its tiles, labels and effects aren't
+    // worth working out.
+    if cancel::requested() {
+        return None;
     }
     if let Some(id) = below {
         draw_tiles!(Some(id));

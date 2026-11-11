@@ -1436,3 +1436,75 @@ fn streamed_extrusions_keep_their_charts_on_top() {
         assert!(n * 10 >= whole * 9, "chunks of {size}: {n} chart px, {whole} resident");
     }
 }
+
+/// A frame stopped while a streamed layer is read reads no further chunk (#1750), and the stop
+/// isn't taken for a failure of the source.
+#[test]
+fn a_stopped_frame_reads_no_further_chunk_and_leaves_its_source_unfailed() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    /// Chunks that set the frame's stop flag once the first is drawn.
+    struct StopAfterFirst {
+        chunks: Chunks,
+        stop: Arc<AtomicBool>,
+    }
+    impl FeatureSource for StopAfterFirst {
+        fn info(&self) -> &SourceInfo {
+            self.chunks.info()
+        }
+        fn read(&self, r: &Request) -> rustgis_data::Result<Batch> {
+            self.chunks.read(r)
+        }
+        fn streams_chunks(&self) -> bool {
+            true
+        }
+        fn visit_chunks(
+            &self,
+            e: Option<Extent>,
+            n: usize,
+            visit: &mut dyn FnMut(Vec<Feature>) -> rustgis_data::Result<()>,
+        ) -> rustgis_data::Result<Batch> {
+            self.chunks.visit_chunks(e, n, &mut |chunk| {
+                let r = visit(chunk);
+                self.stop.store(true, Ordering::Relaxed);
+                r
+            })
+        }
+    }
+    let mut m = Map::new("m");
+    if let Some(d) = world_dataset("Countries", sample_data::COUNTRIES) {
+        m.add_dataset(d);
+    }
+    let ds = m.layers[0].dataset.clone();
+    assert!(ds.features.len() > 100);
+    let info = SourceInfo {
+        name: ds.name.clone(),
+        format: "test",
+        geometry_type: ds.geometry_type,
+        fields: ds.fields.clone(),
+        extent: ds.extent(),
+        count: Some(ds.features.len() as u64),
+        crs: "EPSG:4326".into(),
+        indexed: true,
+        notes: Vec::new(),
+        zm_dropped: false,
+    };
+    let stop = Arc::new(AtomicBool::new(false));
+    let mut layer = m.layers[0].clone();
+    layer.dataset.features = ds.features.iter().take(1).cloned().collect::<Vec<_>>().into();
+    layer.source = Some(SourceLayer::from_path(
+        "test.shp",
+        None,
+        Box::new(StopAfterFirst { chunks: Chunks { info, ds, size: 20 }, stop: stop.clone() }),
+    ));
+    m.layers[0] = layer;
+    let view = View { width: 64.0, height: 48.0, pixels_per_point: 1.0, camera: Camera::world(), sky: false };
+    settle(&mut m, &view);
+    stop.store(false, Ordering::Relaxed);
+    let _guard = crate::cancel::install(stop.clone());
+    crate::cancel::DRAWN.set(0);
+    assert!(render(&mut m, &view).is_none(), "a stopped frame is no frame");
+    let drawn = crate::cancel::DRAWN.get();
+    assert!(drawn <= 20, "{drawn} features drawn: the read went on past the first chunk");
+    assert!(m.layers[0].source.as_ref().is_some_and(|s| s.error.is_none()), "a stop isn't a source error");
+}
