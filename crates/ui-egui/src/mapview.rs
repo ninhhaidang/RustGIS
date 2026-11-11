@@ -318,7 +318,8 @@ pub struct MapView {
     /// How the pointer's coordinates read (status bar, right-click menu); a preference.
     pub coord_format: crate::CoordReadout,
     pub render_ms: u64,
-    pub notices_seen: usize,
+    /// The session's notice mark when toasts were last made ([`rustgis_engine::Session::notice_mark`]).
+    pub notices_seen: u64,
     pub toasts: Vec<Toast>,
     /// Toasts made so far, numbering each for a steady id.
     pub toasts_made: u64,
