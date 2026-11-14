@@ -4045,6 +4045,35 @@ fn geopackage_keeps_a_moment_in_a_date_field_from_becoming_a_day() {
     assert!(back.value(0, 0).is_null(), "{:?}", back.value(0, 0));
 }
 
+/// A property length that runs past the feature's properties (a hostile or damaged file) skips
+/// that feature as unreadable, whole and streamed, instead of panicking in the reader; the
+/// features around it are read. Found by fuzzing `read_layers`.
+#[test]
+fn flatgeobuf_property_lengths_past_the_end_skip_the_feature() {
+    let mut ds = Dataset::new("places", GeometryType::Point, vec![Field::new("name", FieldType::Text)]);
+    for (i, name) in ["first", "BROKEN", "third"].into_iter().enumerate() {
+        ds.push(Some(Geometry::Point(Coord::new(i as f64, 0.0))), vec![Value::Text(name.into())]);
+    }
+    let mut bytes = fgb::write(&ds).unwrap();
+    // The u32 length before "BROKEN" (6) made far longer than the properties.
+    let at = bytes.windows(10).position(|w| w == [6, 0, 0, 0, b'B', b'R', b'O', b'K', b'E', b'N']).unwrap();
+    bytes[at..at + 4].copy_from_slice(&0x7fff_0000u32.to_le_bytes());
+    let src = open_bytes("places.fgb", bytes, None).unwrap();
+    let batch = src.read(&Request::all()).unwrap();
+    assert_eq!(batch.skipped, 1);
+    let mut names: Vec<String> = batch.features.iter().map(|f| f.attrs[0].to_string()).collect();
+    names.sort();
+    assert_eq!(names, ["first", "third"]);
+    let mut rows = 0;
+    let streamed = src
+        .visit_chunks(None, 256, &mut |chunk| {
+            rows += chunk.len();
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!((rows, streamed.skipped), (2, 1));
+}
+
 /// A readable size prefix can contain invalid UTF-8 properties. Classification ignores
 /// that row just as whole and streamed reads do, and the read reports the skipped feature.
 #[test]

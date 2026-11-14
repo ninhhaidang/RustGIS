@@ -39,6 +39,9 @@ pub struct FgbSource {
     reproject: Reproject,
     /// The field each of the header's columns is read into, `None` for one left out (binary).
     slots: Vec<Option<usize>>,
+    /// The type of each of the header's columns, to check a feature's properties against
+    /// ([`properties_fit`]).
+    kinds: Vec<ColumnType>,
     /// Kept after the input so all readers close before the private workspace is removed.
     #[cfg(not(target_arch = "wasm32"))]
     _workspace: Option<Arc<super::gdal::ReloadWorkspace>>,
@@ -167,8 +170,10 @@ impl FgbSource {
         let mut date_columns = Vec::new();
         let mut fields = Vec::new();
         let mut slots = Vec::new();
+        let mut kinds = Vec::new();
         let mut left_out = Vec::new();
         for c in h.columns().iter().flat_map(|cols| cols.iter()) {
+            kinds.push(c.type_());
             match field_type(c.type_()) {
                 Some(ty) => {
                     if c.type_() == ColumnType::DateTime {
@@ -225,6 +230,7 @@ impl FgbSource {
             input,
             reproject,
             slots,
+            kinds,
             #[cfg(not(target_arch = "wasm32"))]
             _workspace: None,
         };
@@ -250,7 +256,7 @@ impl FgbSource {
             };
             // Reads skip a feature with unreadable properties and report it in Batch::skipped.
             // Such a feature must not influence the inferred date type either.
-            if feature.process_properties(&mut props).is_err() {
+            if !properties_fit(feature, &self.kinds) || feature.process_properties(&mut props).is_err() {
                 continue;
             }
             for &k in columns {
@@ -345,7 +351,7 @@ impl FgbSource {
                 unread_dates: Vec::new(),
                 rounded_dates: Vec::new(),
             };
-            if f.process_properties(&mut props).is_err() {
+            if !properties_fit(f, &self.kinds) || f.process_properties(&mut props).is_err() {
                 out.skipped += 1;
                 continue;
             }
@@ -410,7 +416,7 @@ impl FgbSource {
                 unread_dates: Vec::new(),
                 rounded_dates: Vec::new(),
             };
-            if f.process_properties(&mut props).is_err() {
+            if !properties_fit(f, &self.kinds) || f.process_properties(&mut props).is_err() {
                 out.skipped += 1;
                 continue;
             }
@@ -721,7 +727,7 @@ impl FgbSource {
                 unread_dates: Vec::new(),
                 rounded_dates: Vec::new(),
             };
-            if feat.process_properties(&mut props).is_err() {
+            if !properties_fit(feat, &self.kinds) || feat.process_properties(&mut props).is_err() {
                 out.skipped += 1;
                 continue;
             }
@@ -827,6 +833,42 @@ fn field_type(t: ColumnType) -> Option<FieldType> {
         ColumnType::Binary => return None,
         _ => FieldType::Text,
     })
+}
+
+/// Whether a feature's property bytes hold what they say, laid out as FlatGeobuf has them: each a
+/// column index (`u16`), then the value, its width fixed by the column's type, or a `u32` length
+/// and that many bytes for text, JSON, date-times and binary. flatgeobuf 6.0.1 slices them as the
+/// file says and panics on a length past the end, which the browser can't catch; the fix
+/// (flatgeobuf#544) isn't released yet. A feature that fails this is skipped as unreadable, as one
+/// whose properties the reader refuses. Remove it once a release with that fix is used.
+fn properties_fit(feature: &flatgeobuf::FgbFeature, kinds: &[ColumnType]) -> bool {
+    let Some(bytes) = feature.fbs_feature().properties().map(|p| p.bytes()) else { return true };
+    let mut at = 0usize;
+    // As the reader does, a single byte left at the end is ignored.
+    while at.saturating_add(1) < bytes.len() {
+        let Some(&[lo, hi]) = bytes.get(at..at + 2) else { return false };
+        at += 2;
+        // An index past the columns is the reader's own error, not a panic.
+        let Some(kind) = kinds.get(usize::from(u16::from_le_bytes([lo, hi]))) else { return true };
+        let width = match *kind {
+            ColumnType::Byte | ColumnType::UByte | ColumnType::Bool => 1,
+            ColumnType::Short | ColumnType::UShort => 2,
+            ColumnType::Int | ColumnType::UInt | ColumnType::Float => 4,
+            ColumnType::Long | ColumnType::ULong | ColumnType::Double => 8,
+            ColumnType::String | ColumnType::Json | ColumnType::DateTime | ColumnType::Binary => {
+                let Some(&[a, b, c, d]) = bytes.get(at..at.saturating_add(4)) else { return false };
+                at += 4;
+                usize::try_from(u32::from_le_bytes([a, b, c, d])).unwrap_or(usize::MAX)
+            }
+            // A type the reader doesn't know: it reads nothing for it, and neither does this.
+            _ => 0,
+        };
+        match at.checked_add(width) {
+            Some(end) if end <= bytes.len() => at = end,
+            _ => return false,
+        }
+    }
+    true
 }
 
 /// Collects a feature's properties into values in field order.
