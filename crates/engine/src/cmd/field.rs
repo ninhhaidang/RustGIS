@@ -847,9 +847,9 @@ mod tests {
     #[test]
     fn a_field_package_holds_only_its_map_and_a_basemap_of_any_name_is_read() {
         let temp = Temp::new("only");
-        // A name a Linux file can have, which a package's folders couldn't hold as it is. Windows
-        // refuses `:`, `\`, `*` and `?` in a file name, so there the name has characters it allows
-        // that a package still renames, the same number of them.
+        // A name a file can have anywhere but Windows, which a package's folders couldn't hold as
+        // it is. Windows refuses `:`, `\`, `*` and `?` in a file name, so there the name has
+        // characters it allows that a package still renames, the same number of them.
         let name = if cfg!(windows) { "site#a&b%é.mbtiles" } else { "site:a\\b*?.mbtiles" };
         let archive = temp.path().join(name);
         std::fs::write(&archive, b"stand-in archive bytes").unwrap();
