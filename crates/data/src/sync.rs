@@ -244,12 +244,48 @@ mod native {
             }
             Ok(changed)
         }
+
+        /// The names of the files that differ from this record by what metadata alone shows:
+        /// added, removed, or another length. Reads no file, so a change that keeps every length
+        /// isn't seen; [`FileSync::changed`] hashes them. An unreadable file counts as differing.
+        pub fn resized(&self, path: &Path) -> Vec<String> {
+            let now = parts(path);
+            let mut differ: Vec<String> =
+                now.iter().filter(|(name, p)| !self.files.iter().any(|(n, _)| n == name) && p.exists()).map(|(n, _)| n.clone()).collect();
+            for (name, was) in &self.files {
+                let is = now.iter().find(|(n, _)| n == name).map(|(_, p)| len(p));
+                let same = match (was, is) {
+                    (None, None | Some(Ok(None))) => true,
+                    (Some(was), Some(Ok(Some(len)))) => len == was.len,
+                    _ => false,
+                };
+                if !same {
+                    differ.push(name.clone());
+                }
+            }
+            differ
+        }
     }
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resized_sees_lengths_and_presence_without_reading() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.geojson");
+        std::fs::write(&path, "{}").unwrap();
+        let record = FileSync::read(&path).unwrap();
+        assert!(record.resized(&path).is_empty());
+        std::fs::write(&path, "[]").unwrap();
+        assert!(record.resized(&path).is_empty(), "same length: only a hash tells");
+        std::fs::write(&path, "{ }").unwrap();
+        assert_eq!(record.resized(&path), ["a.geojson"]);
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(record.resized(&path), ["a.geojson"]);
+    }
 
     #[test]
     fn a_shapefile_set_records_its_companions_and_the_missing_ones() {

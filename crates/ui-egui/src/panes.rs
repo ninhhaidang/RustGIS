@@ -1904,6 +1904,48 @@ fn disk_note(app: &RustGisApp, layer: Option<&Layer>, tile: Option<usize>) -> Op
     }
 }
 
+/// The note after a layer's name, its details and tint, as [`disk_note`] gives them. A layer read
+/// whole from a Shapefile or GeoJSON file it publishes to (`source.publish`) also says whether it
+/// holds edits the file lacks (`syncmark`), and its file's changes point to Publish to Source,
+/// which refuses to overwrite them, rather than Reload Data, which can't read it again.
+pub(crate) fn layer_note(app: &mut RustGisApp, l: &Layer, ctx: &egui::Context) -> Option<(String, String, Option<bool>)> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use crate::diskwatch::Status;
+        if !crate::diskwatch::publishes(l) || crate::diskwatch::reloadable(l) {
+            return disk_note(app, Some(l), None);
+        }
+        let edited = crate::syncmark::edited(app, l, ctx) == Some(true);
+        let status = if app.watch_files { crate::diskwatch::layer_status(app, l) } else { Status::Unchanged };
+        let unpublished = tl!("This layer has edits its file doesn't have yet. Publish to Source writes them to the file.");
+        match (status, edited) {
+            (Status::Changed, true) => Some((
+                tl!("(edits not published, changed on disk)").to_string(),
+                tl!("This layer has edits its file doesn't have, and the file changed on disk since it was read. Publish to Source refuses rather than overwrite that change; Export Features keeps the edits in a new file.").to_string(),
+                Some(false),
+            )),
+            (Status::Changed, false) => Some((
+                tl!("(changed on disk)").to_string(),
+                tl!("Changed on disk: the file may have changed since it was read. Add it again to see the change; Source File State checks it.").to_string(),
+                Some(false),
+            )),
+            (Status::Unchanged | Status::Folder, true) => Some((tl!("(edits not published)").to_string(), unpublished.to_string(), None)),
+            // Missing or unreadable: Publish refuses a file unlike its record, so edits can only be
+            // exported until it's back.
+            (status, edited) => crate::diskwatch::row_note(&status, false).map(|(note, detail, tint)| {
+                let blocked = tl!("This layer has edits its file doesn't have. Publish to Source can't write them until the file is back as it was read; Export Features keeps them in a new file.");
+                let detail = if edited { crate::i18n::fmt("{detail}\n{blocked}", &[("detail", &detail), ("blocked", blocked)]) } else { detail };
+                (note, detail, tint)
+            }),
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = ctx;
+        disk_note(app, Some(l), None)
+    }
+}
+
 /// A layer's row and, expanded, its legend; returns the rectangle of both. With `reorder` off
 /// (the list is filtered or children are sorted by name) the row can't be dragged.
 fn layer_row(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, scale: f64, reorder: bool, t: &Tokens) -> Rect {
@@ -1918,7 +1960,7 @@ fn layer_row(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, scale: f64, reorder: 
         (text, w)
     });
     let mut shown = if l.definition_query.is_some() { format!("{}  {}", l.name, tl!("(filtered)")) } else { l.name.clone() };
-    let disk = disk_note(app, Some(l), None);
+    let disk = layer_note(app, l, ui.ctx());
     if let Some((note, _, _)) = disk.as_ref().filter(|(note, _, _)| !note.is_empty()) {
         shown = format!("{shown}  {note}");
     }

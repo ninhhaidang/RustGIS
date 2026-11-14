@@ -79,6 +79,8 @@ mod popupmedia;
 mod portalsui;
 #[cfg(not(target_arch = "wasm32"))]
 mod readjob;
+#[cfg(not(target_arch = "wasm32"))]
+mod syncmark;
 
 /// How a command asked for ended ([`readjob::run_then`] on the desktop; the browser runs it where
 /// it's asked): what it answered when it ran, or why it never ran (cancelled, or left), which is
@@ -1206,6 +1208,9 @@ pub struct RustGisApp {
     pub watch_files: bool,
     #[cfg(not(target_arch = "wasm32"))]
     diskwatch: diskwatch::Watch,
+    /// Which layers hold edits their file lacks, for the Layers pane.
+    #[cfg(not(target_arch = "wasm32"))]
+    syncmark: syncmark::Marks,
     /// ModelBuilder's view: the model on its canvas.
     pub mb: modelbuilder::ModelBuilder,
     pub ws: workspacepanes::WorkspaceState,
@@ -1477,6 +1482,8 @@ impl RustGisApp {
             watch_files: false,
             #[cfg(not(target_arch = "wasm32"))]
             diskwatch: diskwatch::Watch::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            syncmark: syncmark::Marks::default(),
             mb: modelbuilder::ModelBuilder::default(),
             ws: workspacepanes::WorkspaceState::default(),
             time: timebar::TimeBarState::default(),
@@ -5916,6 +5923,8 @@ impl RustGisApp {
         if self.watch_files {
             diskwatch::tick(self, ctx);
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        syncmark::tick(self);
         self.ensure_script_font();
         // Fonts downloaded by the web app.
         let fonts: Vec<(String, Vec<u8>)> = match &self.services.font_inbox {

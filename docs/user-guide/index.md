@@ -397,6 +397,14 @@ can't check it.
 On the desktop, make the layer active and choose **Source File State** in Command Search; what it
 found shows in the status bar. CLI and Python: `source.syncState` with `{"layer":"parcels"}`.
 
+The desktop's Layers pane also marks such a layer as it goes: **(edits not published)** once it
+holds rows its file lacks (its rows are hashed in the background while the pane shows the layer,
+once after the project opens and again after each edit), and **(changed on disk)** when the file changes, by the same look at its
+metadata as for linked files, never its data. A file whose length differs from the record, or
+that gained or lost a part, is marked even when it changed while the project was closed; one
+changed then without a change of length is found by Source File State or Publish. The row's
+tooltip says what to do; no notification offers Reload Data, which can't read such a layer.
+
 ### Publish to source
 
 `source.publish` writes a layer's edits back over the Shapefile or `.geojson` file it was read
