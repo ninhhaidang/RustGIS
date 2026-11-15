@@ -17,24 +17,25 @@ use rustgis_tiles::template::{self, TileId};
 /// drape, `tilt_drape` in the app): few enough to lay out every frame.
 pub const CELLS: usize = 40;
 
-/// The fewest cells along each side of a band laid over the relief in the frame that stays on
-/// screen once the map settles, and in exports (#1523; [`settled_cells`] grows it with the
-/// picture, #1882): fine enough that a ridge's outline follows the ridge, where 40 drew it in long
-/// straight lines and let a massif sink into its surroundings.
+/// The fewest cells along the longer side of a band laid over the relief in the frame that stays
+/// on screen once the map settles, and in exports (#1523; [`settled_cells`] grows it with the
+/// picture, #1882; [`settled_grid`] the shorter side, #2037): fine enough that a ridge's outline
+/// follows the ridge, where 40 drew it in long straight lines and let a massif sink into its
+/// surroundings.
 pub const SETTLED_CELLS: usize = 4 * CELLS;
 
-/// The most cells along each side of a band laid over the relief in the settled frame and in
-/// exports (#1882): 1280 showed no more of a ridge than 640, for about three times the memory.
+/// The most cells along the longer side of a band laid over the relief in the settled frame and
+/// in exports (#1882): 1280 showed no more of a ridge than 640, for about three times the memory.
 pub const MAX_SETTLED_CELLS: usize = 4 * SETTLED_CELLS;
 
 /// Pixels of a band's picture to each of its mesh's cells in the settled frame and in exports
 /// (#1882): a finer mesh outruns the picture draped over it.
 const PX_PER_SETTLED_CELL: u32 = 4;
 
-/// Cells along each side of a band laid over the relief in the settled frame and in exports
+/// Cells along the longer side of a band laid over the relief in the settled frame and in exports
 /// (#1882): one every [`PX_PER_SETTLED_CELL`] pixels of the longer side of the band's picture,
-/// `picture_px`, and no more than `dem_cells`, the ground's own cells across the band
-/// ([`Ground::cells_across`], `None` when unknown); never fewer than [`SETTLED_CELLS`] (no
+/// `picture_px`, and no more than `dem_cells`, the ground's own cells along that side of the band
+/// ([`Ground::cells_along`], `None` when unknown); never fewer than [`SETTLED_CELLS`] (no
 /// coarser than before) nor more than [`MAX_SETTLED_CELLS`].
 pub fn settled_cells(picture_px: u32, dem_cells: Option<f64>) -> usize {
     let mut n = (picture_px / PX_PER_SETTLED_CELL) as usize;
@@ -42,6 +43,27 @@ pub fn settled_cells(picture_px: u32, dem_cells: Option<f64>) -> usize {
         n = n.min(d.max(0.0).ceil() as usize);
     }
     n.clamp(SETTLED_CELLS, MAX_SETTLED_CELLS)
+}
+
+/// Cells across and down a band's mesh in the settled frame and in exports (#2037), its picture
+/// `picture` (width, height) pixels and the ground's own cells across and down the band
+/// `dem_cells` ([`Ground::cells_along`], `None` when unknown): along the picture's longer side,
+/// [`settled_cells`] of it; along the shorter, as many as keep the cells the same size in the
+/// picture, no more than the ground's cells along that side nor fewer than [`CELLS`]. A band
+/// wider than tall no longer pays its long side's cells down its short one, finer there than
+/// the picture.
+pub fn settled_grid(picture: (u32, u32), dem_cells: (Option<f64>, Option<f64>)) -> (usize, usize) {
+    let wide = picture.0 >= picture.1;
+    let ((long, short), (dem_long, dem_short)) =
+        if wide { (picture, dem_cells) } else { ((picture.1, picture.0), (dem_cells.1, dem_cells.0)) };
+    let n = settled_cells(long, dem_long);
+    // In u64: the product overflows a 32-bit usize (wasm) once a side passes 6.7 M px.
+    let mut m = (n as u64 * u64::from(short)).div_ceil(u64::from(long.max(1))) as usize;
+    if let Some(d) = dem_short.filter(|d| d.is_finite()) {
+        m = m.min(d.max(0.0).ceil() as usize);
+    }
+    let m = m.max(CELLS);
+    if wide { (n, m) } else { (m, n) }
 }
 
 /// The deepest zoom of elevation tiles read.
@@ -138,30 +160,40 @@ impl Ground {
         per_unit(m, self.body)
     }
 
-    /// How many of the ground's own cells span the stretch of ground with these `corners` (Web
-    /// Mercator), along the longer side of their box in the ground's grid: a DEM's cells, the
-    /// box clipped to the DEM (a geographic DEM's columns met again a whole turn round, as
-    /// [`raster_height`] reads them; a whole turn's not clipped at all); elevation tiles'
-    /// pixels at the zoom read. A turned stretch's box is up to √2 longer than its side.
-    /// `None` when no corner lands on the grid's plane.
-    pub fn cells_across(&self, corners: &[Coord]) -> Option<f64> {
-        // `turn`: a geographic DEM's columns in 360°, where `raster_height` meets it again.
-        let (pixels, (w, h), full_turn, turn): (Vec<(f64, f64)>, _, _, _) = match &self.heights {
-            Heights::Raster { raster, wrap_width } => {
-                let t = raster.transformer();
-                let pixels = corners.iter().filter_map(|m| t.from_merc(*m)).map(|n| raster.transform.to_pixel(n)).collect();
-                let turn = t.is_geographic().then(|| 360.0 / raster.transform.pixel_width.abs()).filter(|t| t.is_finite());
-                (pixels, (f64::from(raster.width), f64::from(raster.height)), wrap_width.is_some(), turn)
-            }
+    /// Where the Web Mercator point `m` falls on the ground's grid, in its cells (column, row):
+    /// a DEM's pixels; elevation tiles' pixels at the zoom read. `None` off the DEM's plane.
+    pub fn grid_point(&self, m: Coord) -> Option<(f64, f64)> {
+        match &self.heights {
+            Heights::Raster { raster, .. } => raster.transformer().from_merc(m).map(|n| raster.transform.to_pixel(n)),
             Heights::Tiles { zoom, .. } => {
                 let half = std::f64::consts::PI * MERCATOR_R;
                 let n = 256.0 * f64::from(1u32 << (*zoom).min(30));
-                let pixels = corners.iter().map(|m| ((m.x + half) / (2.0 * half) * n, (half - m.y) / (2.0 * half) * n)).collect();
-                (pixels, (n, n), false, None)
+                Some(((m.x + half) / (2.0 * half) * n, (half - m.y) / (2.0 * half) * n))
+            }
+        }
+    }
+
+    /// How many of the ground's own cells span the stretch of ground with these `corners` (Web
+    /// Mercator), across and down their box in the ground's grid (#2037): a DEM's cells, the
+    /// box clipped to the DEM (a geographic DEM's columns met again a whole turn round, as
+    /// [`raster_height`] reads them; a whole turn's not clipped at all); elevation tiles'
+    /// pixels at the zoom read. `None` when no corner lands on the grid's plane.
+    pub fn cells_across(&self, corners: &[Coord]) -> Option<(f64, f64)> {
+        let pixels = corners.iter().filter_map(|m| self.grid_point(*m));
+        // `turn`: a geographic DEM's columns in 360°, where `raster_height` meets it again.
+        let ((w, h), full_turn, turn) = match &self.heights {
+            Heights::Raster { raster, wrap_width } => {
+                let t = raster.transformer();
+                let turn = t.is_geographic().then(|| 360.0 / raster.transform.pixel_width.abs()).filter(|t| t.is_finite());
+                ((f64::from(raster.width), f64::from(raster.height)), wrap_width.is_some(), turn)
+            }
+            Heights::Tiles { zoom, .. } => {
+                let n = 256.0 * f64::from(1u32 << (*zoom).min(30));
+                ((n, n), false, None)
             }
         };
         let (mut x0, mut y0, mut x1, mut y1) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
-        for (x, y) in pixels.into_iter().filter(|(x, y)| x.is_finite() && y.is_finite()) {
+        for (x, y) in pixels.filter(|(x, y)| x.is_finite() && y.is_finite()) {
             (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
         }
         if x0 > x1 {
@@ -179,7 +211,30 @@ impl Ground {
             }
             None => across(x0, x1, w),
         };
-        Some(x.max(across(y0, y1, h)))
+        Some((x, across(y0, y1, h)))
+    }
+
+    /// How many of the ground's own cells lie along each side of a band with these `corners`
+    /// (Web Mercator; top left, top right, bottom left, bottom right), across and down (#2037):
+    /// the box of [`Ground::cells_across`] measured along each side as it lies on the grid (its
+    /// top and bottom edges across, its left and right edges down, each on its own: a grid of
+    /// cells longer than wide doesn't keep a band's sides square), so a band turned a quarter on
+    /// it takes its rows across and its columns down. That is the grid's spacing along the side,
+    /// the finest detail it holds there, not the cells a diagonal side passes through. A side
+    /// whose direction is unknown (a corner off the grid's plane, edges that cancel out) takes
+    /// the box's longer side.
+    pub fn cells_along(&self, corners: &[Coord; 4]) -> Option<(f64, f64)> {
+        let (cols, rows) = self.cells_across(corners)?;
+        let longer = cols.max(rows);
+        let [a, b, c, d] = corners.map(|m| self.grid_point(m).filter(|(x, y)| x.is_finite() && y.is_finite()));
+        // Two edges' sum, the side's direction on the grid; the box's extent along it.
+        let along = |p: Option<(f64, f64)>, q: Option<(f64, f64)>, r: Option<(f64, f64)>, t: Option<(f64, f64)>| {
+            let ((p, q), (r, t)) = (p.zip(q)?, r.zip(t)?);
+            let (x, y) = (q.0 - p.0 + t.0 - r.0, q.1 - p.1 + t.1 - r.1);
+            let len = x.hypot(y);
+            (len > 0.0 && len.is_finite()).then(|| cols * (x / len).abs() + rows * (y / len).abs())
+        };
+        Some((along(a, b, c, d).unwrap_or(longer), along(a, c, b, d).unwrap_or(longer)))
     }
 
     /// Whether elevation tiles are still on their way (drawing again later shows more).
@@ -381,21 +436,99 @@ mod tests {
     }
 
     #[test]
+    fn the_settled_mesh_keeps_its_cells_square_in_the_picture() {
+        // #2037: the bands of a 1600 × 1100 export of #2017's view, at 96 and 288 dpi. The longer
+        // side as before; the shorter with cells of the same size.
+        for (picture, cells) in [
+            ((2359, 1343), (589, 336)),
+            ((1668, 950), (417, 238)),
+            ((1179, 451), (294, 113)),
+            ((4096, 2332), (640, 365)),
+            ((3537, 1353), (640, 245)),
+            ((1343, 2359), (336, 589)),
+            ((1600, 1600), (400, 400)),
+        ] {
+            assert_eq!(settled_grid(picture, (None, None)), cells, "{picture:?}");
+        }
+        // The shorter side no coarser than the moving drape's, the longer no coarser than 160.
+        assert_eq!(settled_grid((4000, 100), (None, None)), (640, CELLS));
+        assert_eq!(settled_grid((0, 0), (None, None)), (SETTLED_CELLS, CELLS));
+        assert_eq!(settled_grid((400, 300), (None, None)), (SETTLED_CELLS, SETTLED_CELLS * 3 / 4));
+        // Each side no finer than the ground's cells along it (the longer side floored at 160).
+        assert_eq!(settled_grid((2359, 1343), (Some(1000.0), Some(200.0))), (589, 200));
+        assert_eq!(settled_grid((2359, 1343), (Some(300.0), Some(1000.0))), (300, 171));
+        assert_eq!(settled_grid((2359, 1343), (Some(100.0), Some(10.0))), (SETTLED_CELLS, CELLS));
+        assert_eq!(settled_grid((2359, 1343), (Some(f64::NAN), Some(f64::INFINITY))), (589, 336));
+        // No overflow on a 32-bit usize.
+        assert_eq!(settled_grid((u32::MAX, u32::MAX), (None, None)), (MAX_SETTLED_CELLS, MAX_SETTLED_CELLS));
+    }
+
+    #[test]
+    fn a_band_counts_the_ground_cells_along_its_own_sides() {
+        // #2037: a Web Mercator DEM of 1 km cells, 400 × 400; a band 40 km across and 10 km down.
+        let gt = GeoTransform { origin_x: -200_000.0, origin_y: 200_000.0, pixel_width: 1000.0, pixel_height: -1000.0 };
+        let raster = Arc::new(
+            Raster::new("heights", 400, 400, vec![vec![0.0; 160_000]], gt, Crs::WebMercator, None, ColorHint::Gray, "Float32").unwrap(),
+        );
+        let ground = Ground { heights: Heights::Raster { raster, wrap_width: None }, exaggeration: 1.0, body: 1.0 };
+        let band = |deg: f64| {
+            let (s, c) = deg.to_radians().sin_cos();
+            [(-20_000.0, 5_000.0), (20_000.0, 5_000.0), (-20_000.0, -5_000.0), (20_000.0, -5_000.0)]
+                .map(|(x, y)| Coord::new(x * c - y * s, x * s + y * c))
+        };
+        let close = |a: (f64, f64), b: (f64, f64)| (a.0 - b.0).abs() < 1e-6 && (a.1 - b.1).abs() < 1e-6;
+        // North up: 40 across, 10 down; turned a quarter, still 40 along it, its box's rows.
+        let north = ground.cells_along(&band(0.0)).unwrap();
+        assert!(close(north, (40.0, 10.0)), "{north:?}");
+        let quarter = ground.cells_along(&band(90.0)).unwrap();
+        assert!(close(quarter, (40.0, 10.0)), "{quarter:?}");
+        assert!(close(ground.cells_across(&band(90.0)).unwrap(), (10.0, 40.0)));
+        // Turned 30°: its box measured along each side, no less than the side itself.
+        let turned = ground.cells_along(&band(30.0)).unwrap();
+        assert!(turned.0 >= 40.0 && turned.1 >= 10.0 && turned.0 > turned.1, "{turned:?}");
+        // Off the DEM: no cells; partly on: the part on it.
+        assert_eq!(ground.cells_along(&band(0.0).map(|m| Coord::new(m.x + 1e6, m.y + 1e6))), Some((0.0, 0.0)));
+        let half_on = ground.cells_along(&band(0.0).map(|m| Coord::new(m.x + 200_000.0, m.y))).unwrap();
+        assert!(close(half_on, (20.0, 10.0)), "{half_on:?}");
+        // Top and bottom edges running opposite ways: no direction across, the box's longer side.
+        let crossed = [band(0.0)[0], band(0.0)[1], band(0.0)[3], band(0.0)[2]];
+        assert!(close(ground.cells_along(&crossed).unwrap(), (40.0, 10.0)), "{:?}", ground.cells_along(&crossed));
+        // Cells ten times taller than wide (1 km × 10 km): a band 10 km down by 40 km across, its
+        // long side turned to point 45° up on the map, lies 28.3 columns and 2.83 rows along it,
+        // and 7.07 columns and 0.71 rows down. Each side measured along its own direction.
+        let gt = GeoTransform { origin_x: -200_000.0, origin_y: 2_000_000.0, pixel_width: 1000.0, pixel_height: -10_000.0 };
+        let raster = Arc::new(
+            Raster::new("heights", 400, 400, vec![vec![0.0; 160_000]], gt, Crs::WebMercator, None, ColorHint::Gray, "Float32").unwrap(),
+        );
+        let tall = Ground { heights: Heights::Raster { raster, wrap_width: None }, exaggeration: 1.0, body: 1.0 };
+        let (cols, rows) = tall.cells_across(&band(45.0)).unwrap();
+        let (x, y) = tall.cells_along(&band(45.0)).unwrap();
+        // Across: direction (28.3, -2.83) on the grid; down: (7.07, 0.71), each normalised.
+        let unit = |x: f64, y: f64| (x / x.hypot(y), y / x.hypot(y));
+        let (ax, ay) = unit(1.0, 0.1);
+        let (dx, dy) = unit(1.0, -0.1);
+        assert!((x - (cols * ax + rows * ay)).abs() < 1e-6, "{x} from {cols} × {rows}");
+        assert!((y - (cols * dx + rows * dy.abs())).abs() < 1e-6, "{y} from {cols} × {rows}");
+        // Both sides about as many as the box's columns: neither is cut to its rows.
+        assert!(x > 0.9 * cols && y > 0.9 * cols, "{x}, {y} from {cols} × {rows}");
+    }
+
+    #[test]
     fn a_stretch_spans_the_ground_cells_under_it() {
         // A 4 × 3 grid of 90° by 60° cells, the whole Earth: a stretch over two columns spans 2
         // cells, one past its edges only the grid's.
         let ground = raster_ground(90.0, Crs::LonLat, None);
         let at = |lon: f64, lat: f64| lonlat_to_merc(Coord::new(lon, lat));
         let two = ground.cells_across(&[at(0.0, 30.0), at(180.0, 30.0), at(0.0, -30.0), at(180.0, -30.0)]).unwrap();
-        assert!((two - 2.0).abs() < 1e-6, "{two}");
+        assert!((two.0 - 2.0).abs() < 1e-6 && (two.1 - 1.0).abs() < 1e-6, "{two:?}");
         let all = ground.cells_across(&[Coord::new(-1e8, 1e8), Coord::new(1e8, -1e8)]).unwrap();
-        assert!(all <= 4.0 + 1e-9, "{all}");
+        assert!(all.0 <= 4.0 + 1e-9 && all.1 <= 3.0 + 1e-9, "{all:?}");
         assert_eq!(ground.cells_across(&[]), None);
         // Across the seam, the whole stretch: 135° to 225° (-135°) spans one cell, not the half
         // cell short of the grid's edge; the same stretch a turn away likewise.
-        let seam = ground.cells_across(&[at(135.0, 30.0), at(225.0, 30.0)]).unwrap();
+        let seam = ground.cells_across(&[at(135.0, 30.0), at(225.0, 30.0)]).unwrap().0;
         assert!((seam - 1.0).abs() < 1e-6, "{seam}");
-        let away = ground.cells_across(&[at(495.0, 30.0), at(585.0, 30.0)]).unwrap();
+        let away = ground.cells_across(&[at(495.0, 30.0), at(585.0, 30.0)]).unwrap().0;
         assert!((away - 1.0).abs() < 1e-6, "{away}");
         // A regional DEM of 1° cells beside the seam: a stretch across the seam from it counts
         // the cells it reaches there, as its heights are read, though its middle is off the DEM.
@@ -405,9 +538,9 @@ mod tests {
                 Arc::new(Raster::new("heights", 10, 3, vec![vec![0.0; 30]], gt, Crs::LonLat, None, ColorHint::Gray, "Float32").unwrap());
             Ground { heights: Heights::Raster { raster, wrap_width: None }, exaggeration: 1.0, body: 1.0 }
         };
-        let east_of_seam = regional(-180.0).cells_across(&[at(170.0, 30.0), at(186.0, 30.0)]).unwrap();
+        let east_of_seam = regional(-180.0).cells_across(&[at(170.0, 30.0), at(186.0, 30.0)]).unwrap().0;
         assert!((east_of_seam - 6.0).abs() < 1e-6, "{east_of_seam}");
-        let a_turn_on = regional(0.0).cells_across(&[at(345.0, 30.0), at(365.0, 30.0)]).unwrap();
+        let a_turn_on = regional(0.0).cells_across(&[at(345.0, 30.0), at(365.0, 30.0)]).unwrap().0;
         assert!((a_turn_on - 5.0).abs() < 1e-6, "{a_turn_on}");
         // Elevation tiles: their pixels at the zoom read; the whole world at zoom 2 is 1024.
         let tiles = Ground {
@@ -424,10 +557,10 @@ mod tests {
         };
         let half = std::f64::consts::PI * MERCATOR_R;
         let world = tiles.cells_across(&[Coord::new(-2.0 * half, half), Coord::new(2.0 * half, -half)]).unwrap();
-        assert!((world - 1024.0).abs() < 1e-6, "{world}");
-        // An eighth of the world across, a sixteenth down: the longer side.
+        assert!((world.0 - 1024.0).abs() < 1e-6 && (world.1 - 1024.0).abs() < 1e-6, "{world:?}");
+        // An eighth of the world across, a sixteenth down.
         let quarter = tiles.cells_across(&[Coord::new(0.0, 0.0), Coord::new(half / 2.0, -half / 4.0)]).unwrap();
-        assert!((quarter - 256.0).abs() < 1e-6, "{quarter}");
+        assert!((quarter.0 - 256.0).abs() < 1e-6 && (quarter.1 - 128.0).abs() < 1e-6, "{quarter:?}");
     }
 
     #[test]

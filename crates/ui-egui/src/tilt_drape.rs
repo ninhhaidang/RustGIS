@@ -32,7 +32,7 @@ const TILE_REFRESH: f64 = 0.5;
 const CELLS: usize = 16;
 /// Mesh cells along each side of a band over terrain: the moving drape's, as
 /// `render::terrain::CELLS`, kept coarse because the mesh is laid out every frame (the settled
-/// frame's is finer, `render::terrain::settled_cells`).
+/// frame's is finer, `render::terrain::settled_grid`).
 const TERRAIN_CELLS: usize = render::terrain::CELLS;
 
 struct Drape {

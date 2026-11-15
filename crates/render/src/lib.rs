@@ -2591,7 +2591,7 @@ fn render_tilted(map: &mut Map, view: &View, full_res_rasters: bool, sources_rea
 /// its own stretch of ground, all drawn far to near so nearer slopes hide what lies behind
 /// them; fog with distance, and the sky behind. (Without terrain, [`Warp`] does it per pixel.)
 /// Cancel is looked at before each band's grid of heights is read (up to 641 × 641 points,
-/// `terrain::settled_cells`) and while the triangles are drawn, the long part; ordering them
+/// `terrain::settled_grid`) and while the triangles are drawn, the long part; ordering them
 /// doesn't. False when an export cancelled meanwhile, or a settled frame gone out of date
 /// (`cancel`), stopped it, the picture left half drawn.
 fn drape_terrain(pm: &mut Pixmap, view: &View, map: &Map, bands: &[(View, (f64, f64), Pixmap)], ground: &terrain::Ground) -> bool {
@@ -2618,8 +2618,8 @@ fn drape_terrain(pm: &mut Pixmap, view: &View, map: &Map, bands: &[(View, (f64, 
         None => pm.fill(c(fog)),
     }
     // Every band's triangles: (depth, band, cell * 2 + which half), with each band's grid of
-    // vertices (screen point, picture point, depth) and its cells a side. Indices, not corners: the
-    // settled mesh is fine (`terrain::settled_cells`), and corners copied into each triangle took
+    // vertices (screen point, picture point, depth) and its cells across. Indices, not corners: the
+    // settled mesh is fine (`terrain::settled_grid`), and corners copied into each triangle took
     // 112 bytes a triangle against 16 (13 MB against 8 with the grids, for a 1600 × 1100 export
     // at 160 cells).
     type Vertex = ((f64, f64), (f64, f64), f64);
@@ -2631,11 +2631,11 @@ fn drape_terrain(pm: &mut Pixmap, view: &View, map: &Map, bands: &[(View, (f64, 
             return false;
         }
         let kb = f64::from(pic.width()) / v.width.max(1e-9);
-        let n = band_cells(v, pic.width().max(pic.height()), ground);
-        let grid: Vec<Option<Vertex>> = (0..=n)
-            .flat_map(|j| (0..=n).map(move |i| (i, j)))
+        let (nx, ny) = band_cells(v, (pic.width(), pic.height()), ground);
+        let grid: Vec<Option<Vertex>> = (0..=ny)
+            .flat_map(|j| (0..=nx).map(move |i| (i, j)))
             .map(|(i, j)| {
-                let (lx, ly) = (v.width * i as f64 / n as f64, v.height * j as f64 / n as f64);
+                let (lx, ly) = (v.width * i as f64 / nx as f64, v.height * j as f64 / ny as f64);
                 let m = v.camera.to_map(lx, ly, v.width, v.height);
                 let depth = 1.0 / cam.depth_scale(m, h)?;
                 let (u, gv) = cam.ground_px(m);
@@ -2645,8 +2645,8 @@ fn drape_terrain(pm: &mut Pixmap, view: &View, map: &Map, bands: &[(View, (f64, 
             .collect();
         // Its own stretch of ground, a little over at the seams.
         let margin = ((d1.min(far) - d0) * 0.02).max(0.0);
-        for (cell, (i, j)) in (0..n).flat_map(|j| (0..n).map(move |i| (i, j))).enumerate() {
-            let Some(halves) = triangles(&grid, n, i, j) else { continue };
+        for (cell, (i, j)) in (0..ny).flat_map(|j| (0..nx).map(move |i| (i, j))).enumerate() {
+            let Some(halves) = triangles(&grid, nx, i, j) else { continue };
             for (half, [p, q, r]) in halves.into_iter().enumerate() {
                 let depth = (p.2 + q.2 + r.2) / 3.0;
                 if depth < d0 - margin || depth > d1 + margin || p.2.min(q.2).min(r.2) > far {
@@ -2661,7 +2661,7 @@ fn drape_terrain(pm: &mut Pixmap, view: &View, map: &Map, bands: &[(View, (f64, 
                 tris.push((depth, bi as u32, (cell * 2 + half) as u32));
             }
         }
-        grids.push((n, grid));
+        grids.push((nx, grid));
     }
     tris.sort_by(|a, b| b.0.total_cmp(&a.0));
     let fog_paint = |t: f64| paint(fog, t as f32);
@@ -2671,9 +2671,9 @@ fn drape_terrain(pm: &mut Pixmap, view: &View, map: &Map, bands: &[(View, (f64, 
         if drawn % 4096 == 0 && (rustgis_data::progress::check().is_err() || cancel::requested()) {
             return false;
         }
-        let (Some((_, _, pic)), Some((n, grid))) = (bands.get(bi as usize), grids.get(bi as usize)) else { continue };
-        let (n, cell) = (*n, at as usize / 2);
-        let Some([p, q, r]) = triangles(grid, n, cell % n, cell / n).and_then(|t| t.get(at as usize % 2).copied()) else { continue };
+        let (Some((_, _, pic)), Some((nx, grid))) = (bands.get(bi as usize), grids.get(bi as usize)) else { continue };
+        let (nx, cell) = (*nx, at as usize / 2);
+        let Some([p, q, r]) = triangles(grid, nx, cell % nx, cell / nx).and_then(|t| t.get(at as usize % 2).copied()) else { continue };
         let (dst, src) = ([p.0, q.0, r.0], [p.1, q.1, r.1]);
         let Some(t) = affine(src, dst) else { continue };
         // Each edge moved a hair outward along its normal, so neighbours overlap and leave no seam.
@@ -2690,18 +2690,19 @@ fn drape_terrain(pm: &mut Pixmap, view: &View, map: &Map, bands: &[(View, (f64, 
     true
 }
 
-/// Cells along each side of the mesh laying the band `v` over `ground`, its picture
-/// `picture_px` on its longer side: as fine as the picture, up to the ground's own cells across
-/// the band (#1882).
-fn band_cells(v: &View, picture_px: u32, ground: &terrain::Ground) -> usize {
+/// Cells across and down the mesh laying the band `v` over `ground`, its picture `picture`
+/// (width, height) pixels: as fine as the picture, the same size both ways, up to the ground's
+/// own cells along each side of the band (#1882, #2037; `terrain::settled_grid`).
+fn band_cells(v: &View, picture: (u32, u32), ground: &terrain::Ground) -> (usize, usize) {
     let corners = [(0.0, 0.0), (v.width, 0.0), (0.0, v.height), (v.width, v.height)].map(|(x, y)| v.camera.to_map(x, y, v.width, v.height));
-    terrain::settled_cells(picture_px, ground.cells_across(&corners))
+    let along = ground.cells_along(&corners);
+    terrain::settled_grid(picture, (along.map(|a| a.0), along.map(|a| a.1)))
 }
 
-/// The two triangles of the cell (`i`, `j`) of a band's grid of `n` cells a side, [a, b, d] and
+/// The two triangles of the cell (`i`, `j`) of a band's grid of `nx` cells across, [a, b, d] and
 /// [a, d, c] of its corners a b / c d; none when a corner couldn't be placed.
-fn triangles<V: Copy>(grid: &[Option<V>], n: usize, i: usize, j: usize) -> Option<[[V; 3]; 2]> {
-    let at = |i: usize, j: usize| grid.get(j * (n + 1) + i).copied().flatten();
+fn triangles<V: Copy>(grid: &[Option<V>], nx: usize, i: usize, j: usize) -> Option<[[V; 3]; 2]> {
+    let at = |i: usize, j: usize| grid.get(j * (nx + 1) + i).copied().flatten();
     let (a, b, c, d) = (at(i, j)?, at(i + 1, j)?, at(i, j + 1)?, at(i + 1, j + 1)?);
     Some([[a, b, d], [a, d, c]])
 }
@@ -9291,11 +9292,13 @@ mod tests {
 
     #[test]
     fn the_settled_mesh_follows_the_picture_up_to_the_dem() {
-        // #1882: each band's mesh grows with its picture, within 160 and 640 cells a side, and
-        // never past the DEM's own cells across its ground; a small DEM keeps 160.
+        // #1882: each band's mesh grows with its picture, within 160 and 640 cells along its
+        // longer side, and never past the DEM's own cells along its ground; a small DEM keeps
+        // 160. #2037: the shorter side with cells of the same size, no fewer than 40.
         use rustgis_data::raster::{ColorHint, Crs, GeoTransform, Raster};
+        type Band = ((u32, u32), (usize, usize), Option<(f64, f64)>);
         let camera = Camera { center: Coord::new(0.0, 0.0), res: 10.0, bearing: 30.0, pitch: 65.0 };
-        let cells = |side: u32, cell: f64, ppp: f64| -> Vec<(usize, Option<f64>)> {
+        let cells = |side: u32, cell: f64, ppp: f64| -> Vec<Band> {
             let half = f64::from(side) * cell / 2.0;
             let gt = GeoTransform { origin_x: -half, origin_y: half, pixel_width: cell, pixel_height: -cell };
             let heights = vec![0.0; (side * side) as usize];
@@ -9313,23 +9316,38 @@ mod tests {
                     let v = band_view(&view, b);
                     let (w, h) = v.pixel_size();
                     let c = [(0.0, 0.0), (v.width, 0.0), (0.0, v.height), (v.width, v.height)];
-                    let across = g.cells_across(&c.map(|(x, y)| v.camera.to_map(x, y, v.width, v.height)));
-                    (band_cells(&v, w.max(h), &g), across)
+                    let along = g.cells_along(&c.map(|(x, y)| v.camera.to_map(x, y, v.width, v.height)));
+                    ((w, h), band_cells(&v, (w, h), &g), along)
                 })
                 .collect()
         };
+        let long = |b: &Band| b.1.0.max(b.1.1);
         // A DEM of 8 m cells, 16 km a side: finer than the bands' pictures.
         let (screen, print) = (cells(2000, 8.0, 1.0), cells(2000, 8.0, 3.0));
-        assert!(print.iter().all(|(n, _)| (terrain::SETTLED_CELLS..=terrain::MAX_SETTLED_CELLS).contains(n)), "{print:?}");
-        assert!(screen.iter().zip(&print).all(|(a, b)| a.0 <= b.0), "{screen:?} vs {print:?}");
-        assert!(print.iter().any(|(n, _)| *n == terrain::MAX_SETTLED_CELLS), "{print:?}");
-        assert!(screen.iter().any(|(n, _)| *n > terrain::SETTLED_CELLS && *n < terrain::MAX_SETTLED_CELLS), "{screen:?}");
-        // A coarser DEM caps the bands at its cells across them, no lower than 160.
+        assert!(print.iter().all(|b| (terrain::SETTLED_CELLS..=terrain::MAX_SETTLED_CELLS).contains(&long(b))), "{print:?}");
+        assert!(screen.iter().zip(&print).all(|(a, b)| a.1.0 <= b.1.0 && a.1.1 <= b.1.1), "{screen:?} vs {print:?}");
+        assert!(print.iter().any(|b| long(b) == terrain::MAX_SETTLED_CELLS), "{print:?}");
+        assert!(screen.iter().any(|b| long(b) > terrain::SETTLED_CELLS && long(b) < terrain::MAX_SETTLED_CELLS), "{screen:?}");
+        // The bands are wider than tall: fewer rows than columns, each as many pixels high as a
+        // column is wide (to the pixel), or the moving drape's 40.
+        for b in screen.iter().chain(&print) {
+            let ((w, h), (nx, ny), _) = *b;
+            assert!(w > h && ny < nx, "{b:?}");
+            let (cw, ch) = (f64::from(w) / nx as f64, f64::from(h) / ny as f64);
+            assert!(ny == terrain::CELLS || (ch <= cw && cw - ch < ch / (ny - 1) as f64), "{b:?}");
+        }
+        // A coarser DEM caps each side at its cells along it, no lower than 160 along the longer
+        // side and 40 along the shorter.
         let coarse = cells(400, 40.0, 3.0);
-        assert!(coarse.iter().all(|(n, d)| *n <= d.unwrap_or(0.0).ceil().max(terrain::SETTLED_CELLS as f64) as usize), "{coarse:?}");
-        assert!(coarse.iter().zip(&print).any(|(c, p)| c.0 < p.0), "{coarse:?} vs {print:?}");
-        // A 120-cell DEM: 160 everywhere, as before.
-        assert!(cells(120, 100.0, 3.0).iter().all(|(n, _)| *n == terrain::SETTLED_CELLS));
+        let cap = |d: Option<f64>, floor: usize| d.unwrap_or(0.0).ceil().max(floor as f64) as usize;
+        for b in &coarse {
+            let (_, (nx, ny), along) = *b;
+            assert!(nx <= cap(along.map(|a| a.0), terrain::SETTLED_CELLS), "{b:?}");
+            assert!(ny <= cap(along.map(|a| a.1), terrain::CELLS), "{b:?}");
+        }
+        assert!(coarse.iter().zip(&print).any(|(c, p)| c.1.0 < p.1.0), "{coarse:?} vs {print:?}");
+        // A 120-cell DEM: 160 across everywhere, as before.
+        assert!(cells(120, 100.0, 3.0).iter().all(|b| b.1.0 == terrain::SETTLED_CELLS), "{:?}", cells(120, 100.0, 3.0));
     }
 
     #[test]
