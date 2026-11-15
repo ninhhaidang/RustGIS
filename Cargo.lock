@@ -5980,8 +5980,9 @@ dependencies = [
 
 [[package]]
 name = "terrio-crs"
-version = "0.2.3"
-source = "git+https://github.com/opengeos/terrio?rev=02068f6fef3c4326199e878687712c41e64552f1#02068f6fef3c4326199e878687712c41e64552f1"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a75b204c693afa267f00b04e9bf7a4158a6132cd0d0213bfe0e1317aa59d6b33"
 dependencies = [
  "geographiclib-rs",
  "libc",

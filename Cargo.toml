@@ -68,9 +68,8 @@ weezl = "0.2"
 zstd = { version = "0.14", default-features = false }
 crs-definitions = { version = "0.6", default-features = false, features = ["proj4"] }
 # Coordinate systems and transformations: EPSG, ESRI and IAU tables, datum shifts and grids, in pure
-# Rust (opengeos/RustGIS#2032). From opengeos/terrio until a release after terrio-crs 0.2.3 carries
-# the transforms RustGIS uses (inverse, PROJ strings, GeoTIFF keys, axis order).
-terrio-crs = { git = "https://github.com/opengeos/terrio", rev = "02068f6fef3c4326199e878687712c41e64552f1", default-features = false }
+# Rust (opengeos/RustGIS#2032).
+terrio-crs = { version = "0.2.4", default-features = false }
 base64 = "0.23"
 # Deflate for PDF image streams.
 miniz_oxide = "0.9"
