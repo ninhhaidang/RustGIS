@@ -47749,6 +47749,135 @@ fn native_date_source_repair_and_reload_use_finished_candidates() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// `map.goToXY` takes a `position` written as the search box reads one (#1042, discussion
+/// #1157): decimal degrees, degrees, minutes and seconds, UTM and MGRS; one that names no place
+/// says why, and the Earth's grids name no place on another body.
+#[test]
+fn go_to_xy_reads_a_position_as_the_search_box_does() {
+    let mut s = world();
+    let at = |s: &Session| {
+        let c = s.map().center_lonlat();
+        ((c.y * 1e3).round() / 1e3, (c.x * 1e3).round() / 1e3)
+    };
+    // The forms the dialog's hint shows, all New York (GeographicLib's `GeoConvert` for the grids).
+    assert_eq!(rustgis_geom::format_utm(rustgis_geom::Coord::new(-74.006, 40.7128)).as_deref(), Some("18north 583959 4507351"));
+    assert_eq!(
+        rustgis_geom::to_mgrs(rustgis_geom::Coord::new(-74.006, 40.7128), 5).map(|m| m.compact()).as_deref(),
+        Some("18TWL8395907350")
+    );
+    for q in [
+        "40.7128, -74.006",
+        "40°42'46\"N 74°0'22\"W",
+        "40°42′46″N 74°0′22″W",
+        "18north 583959 4507351",
+        "18T WL 83959 07350",
+        "18TWL8395907350",
+    ] {
+        s.run("map.goToXY", &json!({"lon": 0, "lat": 0})).unwrap();
+        s.run("map.goToXY", &json!({"position": q, "scale": 50_000})).unwrap();
+        assert_eq!(at(&s), (40.713, -74.006), "{q}");
+    }
+    assert!((s.map().scale() - 50_000.0).abs() < 1.0);
+    // What the reading assumed is said: an MGRS square's center, or the order of two bare numbers
+    // (so `2.35, 48.85` typed as x, y shows where it went, and a swap shows too). A reference to
+    // the meter, or degrees with hemisphere letters, say nothing.
+    for (q, said) in [
+        ("18TWL", Some("names a 100 km square, not a point: went to its center")),
+        ("18TWL8307", Some("names a 1 km square")),
+        ("2.35, 48.85", Some("Read 2.35, 48.85 as latitude 2.35, longitude 48.85")),
+        ("-122.4, 37.8", Some("as latitude 37.8, longitude -122.4")),
+        ("18TWL8395907350", None),
+        ("40°42′46″N 74°0′22″W", None),
+    ] {
+        let mark = s.notice_mark();
+        s.run("map.goToXY", &json!({"position": q})).unwrap();
+        let notices: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+        match said {
+            Some(t) => assert!(notices.len() == 1 && notices[0].contains(t), "{q}: {notices:?}"),
+            None => assert!(notices.is_empty(), "{q}: {notices:?}"),
+        }
+    }
+    // Longitude and latitude each take degrees, minutes and seconds, as the dialog's boxes send
+    // them; a letter of the other axis is refused, not swapped; numbers say nothing.
+    for (lon, lat) in [("74°0′22″W", "40°42′46″N"), ("W 74 0 22", "N 40 42 46"), ("-74 0 22", "40 42 46"), ("-74.006", "40.7128")]
+    {
+        // From elsewhere each time, so the text is what moves the map.
+        s.run("map.goToXY", &json!({"lon": 0, "lat": 0})).unwrap();
+        let mark = s.notice_mark();
+        s.run("map.goToXY", &json!({"lon": lon, "lat": lat})).unwrap();
+        assert_eq!(at(&s), (40.713, -74.006), "{lon} {lat}");
+        assert!(s.notices_since(mark).is_empty());
+    }
+    let axis_refused = |s: &mut Session, lon: &str, lat: &str| s.run("map.goToXY", &json!({"lon": lon, "lat": lat})).unwrap_err();
+    assert!(axis_refused(&mut s, "40°42′46″N", "74°0′22″W").contains("belongs to the latitude"));
+    assert!(axis_refused(&mut s, "74 60 0", "40").contains("under 60"));
+    assert!(axis_refused(&mut s, "-74W", "40").contains("both a minus sign"));
+    assert!(axis_refused(&mut s, "74", "91 N").contains("within ±90"));
+    // A word that ends in N, S, E or W is no hemisphere: it gets the usage message.
+    for word in ["Paris", "Lisbon"] {
+        let refused = axis_refused(&mut s, word, "40");
+        assert!(refused.contains("write the longitude") && !refused.contains("belongs to"), "{refused}");
+    }
+    // A decimal comma or a pasted pair in one box is refused, not read as degrees and minutes.
+    assert!(axis_refused(&mut s, "2,35", "48").contains("one value"));
+    assert!(axis_refused(&mut s, "48.85, 2.35", "48").contains("one value"));
+    assert!(axis_refused(&mut s, "48.85 2.35", "48").contains("write the longitude"));
+    // A mark says which place a number fills: seconds after degrees with no minutes are seconds,
+    // not minutes; marks out of order, or no degrees, are refused.
+    for (lat, want) in [("40°30″N", 40.008), ("40 30″", 40.008), ("40°30′N", 40.5), ("40°30", 40.5), ("40°0′30″", 40.008)] {
+        s.run("map.goToXY", &json!({"lon": 0, "lat": 0})).unwrap();
+        s.run("map.goToXY", &json!({"lon": "10", "lat": lat})).unwrap();
+        assert_eq!(at(&s).0, want, "{lat}");
+    }
+    assert!(axis_refused(&mut s, "10", "30″40°").contains("out of order"));
+    assert!(axis_refused(&mut s, "10", "40′30′").contains("out of order"));
+    assert!(axis_refused(&mut s, "10", "30′").contains("write the latitude"));
+    assert!(axis_refused(&mut s, "10", "°40").contains("write the latitude"));
+    // Typographic quotes, as pasted from a document, are marks like any other.
+    s.run("map.goToXY", &json!({"lon": 0, "lat": 0})).unwrap();
+    s.run("map.goToXY", &json!({"lon": "74°0’22”W", "lat": "40°42’46”N"})).unwrap();
+    assert_eq!(at(&s), (40.713, -74.006));
+    assert!(axis_refused(&mut s, &"9".repeat(500), "40").contains("longer than"));
+    // Numbers still go as before.
+    s.run("map.goToXY", &json!({"lon": 10, "lat": 50})).unwrap();
+    assert_eq!(at(&s), (50.0, 10.0));
+    // Refused, with the reason the search box gives, and the map stays where it was.
+    let refused = |s: &mut Session, p: Value| s.run("map.goToXY", &p).unwrap_err();
+    let e = refused(&mut s, json!({"position": "33UZZ1234512345"}));
+    assert!(e.starts_with("no place at this grid reference") && e.contains("100 km square"), "{e}");
+    assert!(refused(&mut s, json!({"position": "Paris"})).contains("write a position as"));
+    // Minutes follow whole degrees and seconds whole minutes, as in the X and Y boxes: `40.5°30′`
+    // isn't read as 41°.
+    for q in ["40.5°30′N 74°W", "40°30.5′15″N 74°W"] {
+        assert!(refused(&mut s, json!({"position": q})).contains("write a position as"), "{q}");
+    }
+    for q in ["40.7, 200", "95, 100", "-91, 200"] {
+        assert!(refused(&mut s, json!({"position": q})).contains("within ±90"), "{q}");
+    }
+    // Not plain decimals, so not a range: `1e1` isn't how a latitude is written.
+    let e = refused(&mut s, json!({"position": "1e1, 2"}));
+    assert!(!e.contains("within ±90"), "{e}");
+    assert!(refused(&mut s, json!({"position": "  "})).contains("empty"));
+    assert!(refused(&mut s, json!({"position": "4".repeat(10_000)})).contains("longer than"));
+    assert!(refused(&mut s, json!({"position": 40.7})).contains("must be text"));
+    assert!(refused(&mut s, json!({"position": "40.7, -74", "lon": 1})).contains("not both"));
+    assert!(refused(&mut s, json!({})).contains("lon is required"));
+    // A scale that can't be used is refused, not dropped, whether a position or numbers are given.
+    for scale in [json!("50k"), json!(0), json!(-5), json!(true)] {
+        assert!(refused(&mut s, json!({"position": "40.7, -74", "scale": scale})).contains("scale must be"), "{scale}");
+        assert!(refused(&mut s, json!({"lon": 1, "lat": 1, "scale": scale})).contains("scale must be"), "{scale}");
+    }
+    assert!(refused(&mut s, json!({"position": "., 5"})).contains("write a position as"));
+    assert_eq!(at(&s), (50.0, 10.0));
+    // On another body degrees still name a place; the Earth's grids don't.
+    s.run("map.body", &json!({"name": "Mars"})).unwrap();
+    s.run("map.goToXY", &json!({"position": "18.4, 77.5"})).unwrap();
+    assert_eq!(at(&s), (18.4, 77.5));
+    assert!(refused(&mut s, json!({"position": "18TWL8395907350"})).contains("Earth's grids"));
+    let e = refused(&mut s, json!({"position": "Olympus"}));
+    assert!(e.contains("write a position as") && !e.contains("UTM"), "{e}");
+}
+
 /// A mobile map package says what simplifying its layers changed or left alone (#1811): a line
 /// reaching 95° (bad data) has its vertex taken as the pole, and a part of one vertex left out;
 /// lines with a longitude too far out are left as they were; one notice per kind. A clean layer,

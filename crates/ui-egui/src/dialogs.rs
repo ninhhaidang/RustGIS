@@ -216,8 +216,10 @@ impl Dialogs {
                 self.flag = true;
             }
             "goToXY" => {
+                // The map's center, the longitude within ±180 even when the view has been panned
+                // past the antimeridian.
                 let c = s.map().center_lonlat();
-                self.a = format!("{:.4}", c.x);
+                self.a = format!("{:.4}", crate::mapmenu::wrap_lon(c.x));
                 self.b = format!("{:.4}", c.y);
             }
             "bookmark" => self.text = rustgis_engine::cmd::navigate::new_bookmark_name(s.map()),
@@ -394,21 +396,48 @@ pub fn show(app: &mut RustGisApp, ctx: &egui::Context) {
         match which {
             "selectByAttributes" => close = select_by_attributes(app, ui, &t),
             "goToXY" => {
+                // UTM and MGRS are the Earth's grids, so another body's map offers degrees alone.
+                // A grid reference, once typed, is where Go goes: the degree boxes gray out.
+                let earth = app.session.map().body().is_earth();
+                let by_grid = earth && !app.dialogs.text.trim().is_empty();
                 egui::Grid::new("xy").num_columns(2).spacing(vec2(10.0, 8.0)).show(ui, |ui| {
                     let input_label = ui.label(tl!("Longitude (X)"));
-                    ui.add(egui::TextEdit::singleline(&mut app.dialogs.a).desired_width(200.0)).labelled_by(input_label.id);
+                    ui.add_enabled(!by_grid, egui::TextEdit::singleline(&mut app.dialogs.a).hint_text("-74.006 · 74°0′22″W").desired_width(300.0))
+                        .labelled_by(input_label.id);
                     ui.end_row();
                     let input_label = ui.label(tl!("Latitude (Y)"));
-                    ui.add(egui::TextEdit::singleline(&mut app.dialogs.b).desired_width(200.0)).labelled_by(input_label.id);
+                    ui.add_enabled(!by_grid, egui::TextEdit::singleline(&mut app.dialogs.b).hint_text("40.7128 · 40°42′46″N").desired_width(300.0))
+                        .labelled_by(input_label.id);
                     ui.end_row();
+                    if earth {
+                        let input_label = ui.label(tl!("Or grid reference"));
+                        ui.add(egui::TextEdit::singleline(&mut app.dialogs.text).hint_text("18TWL8395907350 · 18north 583959 4507351").desired_width(300.0))
+                            .labelled_by(input_label.id);
+                        ui.end_row();
+                    }
                     let input_label = ui.label(tl!("Scale 1:"));
-                    ui.add(egui::TextEdit::singleline(&mut app.dialogs.c).hint_text(tl!("keep current")).desired_width(200.0)).labelled_by(input_label.id);
+                    ui.add(egui::TextEdit::singleline(&mut app.dialogs.c).hint_text(tl!("keep current")).desired_width(300.0)).labelled_by(input_label.id);
                     ui.end_row();
                 });
+                // Below the boxes, wrapped to the dialog's width rather than widening it.
+                let hint = if earth {
+                    tl!("Degrees as decimals or degrees, minutes and seconds; or a UTM or MGRS reference in place of both.")
+                } else {
+                    tl!("Degrees as decimals or degrees, minutes and seconds.")
+                };
+                ui.label(egui::RichText::new(hint).weak());
                 close = buttons(app, ui, "Go", |app| {
-                    let mut p = json!({"lon": app.dialogs.a.trim(), "lat": app.dialogs.b.trim()});
-                    if let Ok(s) = app.dialogs.c.trim().replace(',', "").parse::<f64>() {
-                        p["scale"] = json!(s);
+                    let grid = app.dialogs.text.trim();
+                    let mut p = if app.session.map().body().is_earth() && !grid.is_empty() {
+                        json!({"position": grid})
+                    } else {
+                        json!({"lon": app.dialogs.a.trim(), "lat": app.dialogs.b.trim()})
+                    };
+                    // The command refuses a scale it can't use: commas go only where they group
+                    // thousands (50,000), so a decimal comma (1,5) is refused, not read as 15.
+                    let scale = scale_text(&app.dialogs.c);
+                    if !scale.is_empty() {
+                        p["scale"] = json!(scale);
                     }
                     app.run("map.goToXY", p).map(|_| ())
                 });
@@ -2649,6 +2678,23 @@ fn crs_details(ui: &mut egui::Ui, chosen: &str, current: &str, t: &Tokens) {
     }
 }
 
+/// A scale box's text as the command reads it: commas that group thousands (`50,000`,
+/// `1,000,000.5`) taken out, any other comma (a decimal comma, `1,5`) left in, so the command
+/// refuses it rather than reading `15`.
+fn scale_text(text: &str) -> String {
+    let text = text.trim();
+    let whole = text.split_once('.').map_or(text, |(w, _)| w);
+    let grouped = whole.contains(',') && {
+        let mut groups = whole.split(',');
+        let first = groups.next().unwrap_or("");
+        (1..=3).contains(&first.len())
+            && first.chars().all(|c| c.is_ascii_digit())
+            && groups.all(|g| g.len() == 3 && g.chars().all(|c| c.is_ascii_digit()))
+    };
+    let decimals = text.split_once('.').is_none_or(|(_, d)| !d.contains(','));
+    if grouped && decimals { text.replace(',', "") } else { text.to_string() }
+}
+
 /// The columns a name-based edit can reach. Keep both the initial choice and the picker in
 /// step with the command's case-insensitive lookup, including duplicate names in imported data.
 fn calculation_fields(dataset: &rustgis_engine::data::Dataset) -> impl Iterator<Item = &rustgis_engine::data::Field> {
@@ -2658,6 +2704,29 @@ fn calculation_fields(dataset: &rustgis_engine::data::Dataset) -> impl Iterator<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A scale's commas go only where they group thousands: a decimal comma is left for the
+    /// command to refuse, not read as a bigger number.
+    #[test]
+    fn a_scale_box_takes_commas_only_between_thousands() {
+        for (typed, sent) in [
+            ("50,000", "50000"),
+            (" 1,000,000 ", "1000000"),
+            ("1,000,000.5", "1000000.5"),
+            ("50000", "50000"),
+            ("1,5", "1,5"),
+            ("50,00", "50,00"),
+            ("1234,567", "1234,567"),
+            (",500", ",500"),
+            ("1,000.5,5", "1,000.5,5"),
+            ("", ""),
+        ] {
+            assert_eq!(scale_text(typed), sent, "{typed}");
+        }
+        let mut s = rustgis_engine::Session::new(rustgis_engine::Project::default());
+        let refused = s.run("map.goToXY", &json!({"lon": 0, "lat": 0, "scale": scale_text("1,5")})).unwrap_err();
+        assert!(refused.contains("scale must be a positive number"), "{refused}");
+    }
 
     /// A field dialog opened on a standalone table acts on that table, and on no other once
     /// another project is open: table ids start again in each project.

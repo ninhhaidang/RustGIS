@@ -72,7 +72,7 @@ fn point_geojson(c: Coord) -> String {
 }
 
 /// A longitude within ±180 (a view can run past the antimeridian).
-fn wrap_lon(lon: f64) -> f64 {
+pub(crate) fn wrap_lon(lon: f64) -> f64 {
     (lon + 180.0).rem_euclid(360.0) - 180.0
 }
 

@@ -33,7 +33,7 @@ const MAX_ROWS: usize = 50_000;
 /// index it picks is one the command finds.
 pub const LIMIT: usize = 30;
 /// Most characters of a query, and of a value shown.
-const MAX_CHARS: usize = 200;
+pub(crate) const MAX_CHARS: usize = 200;
 
 /// Identifies a tile layer across stack reordering without relying on catalog metadata. It uses
 /// temporal source metadata rather than the current URL, which changes with the time slider.
@@ -644,9 +644,13 @@ fn tokens(text: &str) -> Option<Vec<Tok>> {
 }
 
 /// One axis: degrees, and maybe minutes and seconds; `None` for anything else.
-fn axis(nums: &[f64]) -> Option<f64> {
+pub(crate) fn axis(nums: &[f64]) -> Option<f64> {
     let (d, rest) = nums.split_first()?;
     if rest.len() > 2 || rest.iter().any(|v| !(0.0..60.0).contains(v)) {
+        return None;
+    }
+    // Minutes follow whole degrees and seconds whole minutes: `40.5°30′` says two things at once.
+    if nums.iter().rev().skip(1).any(|v| v.fract() != 0.0) {
         return None;
     }
     let m = rest.first().copied().unwrap_or(0.0);
