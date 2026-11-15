@@ -351,6 +351,16 @@ its type). A WebMercatorQuad tileset is found by its
 tile matrix set, whatever the server calls it. A service that asks for a token says so. In the web app the server must allow requests
 from web pages (CORS).
 
+For an address ending in a layer id, such as `…/NFHL/MapServer/21`, list the service root
+(`…/NFHL/MapServer`) with `service.layers`, then pass `"layer":"21"` to `service.add`
+with that same root. Both MapServer and FeatureServer services can offer feature layers.
+
+When an ArcGIS feature page fails with a server error, a timeout or a reset connection, RustGIS
+retries that offset with half as many features, down to one feature per page. Subsequent pages
+keep the smaller size. A notice counts the requests retried with smaller pages. Persistent
+failures identify the layer and offset; features already received are kept with an incomplete-read
+notice. The feature, byte, memory and overall wait limits still apply, and Cancel stops the read.
+
 A coverage is read once, for the view when it was added (its DescribeCoverage first, for its axes,
 format and bounds; `service.coverage` gives the GetCoverage address alone). Moving the map doesn't
 ask for it again: add it again for another area. The server reprojects it to EPSG:4326 (WCS 2.0
@@ -379,6 +389,16 @@ each service's own terms:
 - **OGC API Features:** `bbox`, longitude first; the `next` pages keep it.
 - **ArcGIS:** an envelope in EPSG:4326 the features intersect; the pages past the record limit
   keep it.
+
+For an ArcGIS feature layer, `service.add` also accepts a SQL `"where"` clause in the service's
+field names. It is sent as one query value, combined with `"bbox"` when given, and kept by every
+page, including retries. Without it the query stays `1=1` (the whole layer). A clause rejected
+by the server gives an error; it is never retried without the filter. Other service types do not
+accept this parameter.
+
+```sh
+rustgis-cli run --cmd 'service.add={"url":"https://hazards.fema.gov/arcgis/rest/services/public/NFHL/MapServer","layer":"28","where":"DFIRM_ID=\u002747157C\u0027"}'
+```
 
 A WFS 1.0 service reads its box in the feature type's own coordinate system, so it is asked for
 the whole layer, as is an area across the antimeridian; a note says so. When a whole layer takes

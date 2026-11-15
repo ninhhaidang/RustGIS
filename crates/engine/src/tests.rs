@@ -20170,6 +20170,68 @@ fn arcgis_features_read_past_the_record_limit() {
     );
 }
 
+/// A where clause is encoded as one query value, combined with the area and kept by every
+/// page. Omitting it retains the whole-layer query; a rejected clause fails without a layer.
+#[test]
+fn arcgis_service_add_where_filters_every_page_and_reports_rejection() {
+    use ogc_server::{Route, Server, arcgis_layer, arcgis_page};
+    let path = "/arcgis/rest/services/P/MapServer/28";
+    let rest = "&outFields=*&returnGeometry=true&outSR=4326&f=geojson";
+    let filtered = "DFIRM_ID%3D%2747157C%27%20AND%20NOTE%3D%27A%26B%27";
+    let area = "&geometry=-91,34,-89,36&geometryType=esriGeometryEnvelope&inSR=4326&spatialRel=esriSpatialRelIntersects";
+    let query = |clause: &str, offset| {
+        let area = if clause == filtered { area } else { "" };
+        let query =
+            if clause == "1%3D1" { format!("where={clause}{rest}") } else { format!("{}&where={clause}", rest.trim_start_matches('&')) };
+        format!("{path}/query?{query}{area}&resultOffset={offset}&resultRecordCount=2&orderByFields=OBJECTID")
+    };
+    let mut refused = Route::new(&query("bad_http", 0), "Invalid where clause");
+    refused.status = 400;
+    let server = Server::new(vec![
+        Route::new(path, &arcgis_layer(2, true)),
+        Route::new(&query("1%3D1", 0), &arcgis_page(&[0, 1], true)),
+        Route::new(&query("1%3D1", 2), &arcgis_page(&[2], false)),
+        Route::new(&query(filtered, 0), &arcgis_page(&[7, 8], true)),
+        Route::new(&query(filtered, 2), &arcgis_page(&[9], false)),
+        Route::new(&query("bad", 0), r#"{"error":{"code":400,"message":"Invalid where clause"}}"#),
+        refused,
+    ]);
+    let service = r#"{"currentVersion":11,"layers":[{"id":28,"name":"Flood"}]}"#;
+    let url = format!("{}/arcgis/rest/services/P/MapServer", server.base);
+    for clause in [None, Some("DFIRM_ID='47157C' AND NOTE='A&B'"), Some("bad"), Some("bad_http")] {
+        let mut session = Session::new(Project::default());
+        let mut params = json!({"url":url,"layer":"28","text":service});
+        if let Some(clause) = clause {
+            params["where"] = json!(clause);
+            if clause.starts_with("DFIRM_ID") {
+                params["bbox"] = json!([-91, 34, -89, 36]);
+            }
+        }
+        let result = session.run("service.add", &params);
+        if clause.is_some_and(|clause| clause.starts_with("bad")) {
+            let error = result.unwrap_err();
+            assert!(error.contains("where clause") && error.contains("rejected"), "{error}");
+            assert!(session.map().layers.is_empty());
+        } else {
+            assert_eq!(result.unwrap()["features"], 3);
+            let ids = session.map().layers[0].dataset.features.iter().map(|f| f.attrs[0].as_f64()).collect::<Vec<_>>();
+            let first = if clause.is_some() { 7.0 } else { 0.0 };
+            assert_eq!(ids, [Some(first), Some(first + 1.0), Some(first + 2.0)]);
+            if clause.is_some() {
+                let source = session.map().layers[0].dataset.source.as_deref().unwrap();
+                assert!(source.contains(&format!("where={filtered}")) && source.contains("geometry=-91,34,-89,36"), "{source}");
+            }
+        }
+    }
+    let clauses = server
+        .requests()
+        .into_iter()
+        .filter(|r| r.path.ends_with("/query"))
+        .map(|r| r.query.iter().filter(|(k, _)| k == "where").map(|(_, v)| v.clone()).collect::<Vec<_>>())
+        .collect::<Vec<_>>();
+    assert_eq!(clauses, [vec!["1%3D1"], vec!["1%3D1"], vec![filtered], vec![filtered], vec!["bad"], vec!["bad_http"]]);
+}
+
 /// An ArcGIS layer whose description lists protocol buffers is read through service.add in `f=pbf`
 /// pages into one layer, known by its address; one whose first such page can't be read is read in
 /// GeoJSON pages instead (#1326).
