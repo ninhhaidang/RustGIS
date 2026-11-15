@@ -721,7 +721,7 @@ fn canonical_path(path: &str) -> String {
     if path.is_empty() {
         return "/".into();
     }
-    path.split('/').map(|part| encode(&decode_path(part), true)).collect::<Vec<_>>().join("/")
+    path.split('/').map(|part| encode(&rustgis_data::address::percent_decode(part), true)).collect::<Vec<_>>().join("/")
 }
 
 /// Whether an address (its scheme, its origin and its host, all lower-case) is at AWS S3.
@@ -913,7 +913,7 @@ fn canonical_query(q: &str) -> String {
         .filter(|p| !p.is_empty())
         .map(|p| {
             let (k, v) = p.split_once('=').unwrap_or((p, ""));
-            (encode(&decode(k), true), encode(&decode(v), true))
+            (encode(&rustgis_data::address::form_decode(k), true), encode(&rustgis_data::address::form_decode(v), true))
         })
         .collect();
     pairs.sort();
@@ -931,36 +931,6 @@ pub fn encode(s: &str, slash: bool) -> String {
         }
     }
     out
-}
-
-/// Decodes a path's percent-escapes (a `+` stays a plus).
-fn decode_path(s: &str) -> String {
-    decode(&s.replace('+', "%2B"))
-}
-
-/// Decodes percent-escapes (and `+` as a space, as query strings do).
-fn decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while let Some(&b) = bytes.get(i) {
-        let hexval = |c: u8| (c as char).to_digit(16);
-        match (b, bytes.get(i + 1).and_then(|&c| hexval(c)), bytes.get(i + 2).and_then(|&c| hexval(c))) {
-            (b'%', Some(h), Some(l)) => {
-                out.push((h * 16 + l) as u8);
-                i += 3;
-            }
-            (b'+', _, _) => {
-                out.push(b' ');
-                i += 1;
-            }
-            _ => {
-                out.push(b);
-                i += 1;
-            }
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -1275,7 +1245,6 @@ mod tests {
         assert_eq!(amz_date(1_709_251_199), "20240229T235959Z");
         assert_eq!(encode("a b/c~d+é", false), "a%20b/c~d%2B%C3%A9");
         assert_eq!(encode("a/b", true), "a%2Fb");
-        assert_eq!(decode("a%2Fb+c%zz"), "a/b c%zz");
         assert_eq!(canonical_query("b=2&a=x%20y&a=1"), "a=1&a=x%20y&b=2");
         assert_eq!(format!("{:?}", example()), "Credentials(…)");
     }

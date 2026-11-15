@@ -307,7 +307,7 @@ impl Warp {
                             let mut p = c.splitn(3, '|');
                             let epsg = p.next()?.parse().ok()?;
                             let lat_first = p.next()? == "n";
-                            let name = unescape(p.next()?);
+                            let name = crate::address::percent_decode(p.next()?);
                             (!name.is_empty() && name.len() <= MAX_SYSTEM_NAME).then_some(System { epsg, name, lat_first })
                         })
                         .collect();
@@ -320,7 +320,7 @@ impl Warp {
                         let n = |t: &str| t.parse::<f64>().ok().filter(|v| v.is_finite());
                         let u = |t: &str| t.parse::<u32>().ok().filter(|v| *v > 0);
                         let m = Matrix {
-                            id: unescape(id),
+                            id: crate::address::percent_decode(id),
                             left: n(left)?,
                             top: n(top)?,
                             cell: n(cell).filter(|c| *c > 0.0)?,
@@ -496,24 +496,6 @@ impl Warp {
 /// A matrix identifier in an address's fragment, its separators escaped.
 fn escape(id: &str) -> String {
     percent_escape(id, b"%|~;#{}")
-}
-
-fn unescape(id: &str) -> String {
-    let bytes = id.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while let Some(&b) = bytes.get(i) {
-        if b == b'%'
-            && let Some(v) = id.get(i + 1..i + 3).and_then(|h| u8::from_str_radix(h, 16).ok())
-        {
-            out.push(v);
-            i += 3;
-            continue;
-        }
-        out.push(b);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// Whether a layer's box from a capabilities document (a WMS `BoundingBox`: `minx`, `miny`,

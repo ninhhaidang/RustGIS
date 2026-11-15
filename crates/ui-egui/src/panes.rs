@@ -947,7 +947,7 @@ fn source_name(src: &str) -> SourceName {
         // a path, its %-escapes decoded.
         if scheme == "file" || host.is_empty() {
             let path = if host.eq_ignore_ascii_case("localhost") { rest.find('/').and_then(|i| rest.get(i..)).unwrap_or("") } else { rest };
-            return path_name(&percent_decoded(path));
+            return path_name(&rustgis_engine::data::address::percent_decode(path));
         }
         // Only the host ignores case: a database's name doesn't.
         let db = DATABASE_SCHEMES
@@ -959,30 +959,6 @@ fn source_name(src: &str) -> SourceName {
         return SourceName { key, label: name.clone(), hover: name };
     }
     path_name(src)
-}
-
-/// `%XX` escapes in a `file://` path decoded (`My%20Data.gpkg` is `My Data.gpkg`); a `%` not
-/// followed by two hex digits stays as it is.
-fn percent_decoded(s: &str) -> String {
-    let b = s.as_bytes();
-    let mut out = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while let Some(&c) = b.get(i) {
-        // Two hex digits exactly (`from_str_radix` alone would take a sign).
-        let digits = b.get(i + 1..i + 3).filter(|h| h.iter().all(u8::is_ascii_hexdigit));
-        let hex = digits.and_then(|h| std::str::from_utf8(h).ok()).and_then(|h| u8::from_str_radix(h, 16).ok());
-        match (c, hex) {
-            (b'%', Some(v)) => {
-                out.push(v);
-                i += 3;
-            }
-            _ => {
-                out.push(c);
-                i += 1;
-            }
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// A path as a source group: its last part, with the whole path as hover text.

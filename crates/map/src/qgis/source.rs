@@ -134,12 +134,22 @@ fn csv(datasource: &str, dir: &str) -> Source {
     let path = path.strip_prefix("file://").or_else(|| path.strip_prefix("file:")).unwrap_or(path);
     let q = query(q);
     let get = |k: &str| q.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone()).filter(|v| !v.is_empty());
-    Source::Csv { path: absolute(&decode(path), dir), x: get("xField"), y: get("yField"), wkt: get("wktField"), crs: get("crs") }
+    Source::Csv {
+        path: absolute(&rustgis_data::address::percent_decode(path), dir),
+        x: get("xField"),
+        y: get("yField"),
+        wkt: get("wktField"),
+        crs: get("crs"),
+    }
 }
 
 /// `key=value` pairs joined by `&`, each value percent-decoded (QGIS's web sources).
 fn query(s: &str) -> Vec<(String, String)> {
-    s.split('&').take(200).filter_map(|kv| kv.split_once('=').or(Some((kv, "")))).map(|(k, v)| (k.to_string(), decode(v))).collect()
+    s.split('&')
+        .take(200)
+        .filter_map(|kv| kv.split_once('=').or(Some((kv, ""))))
+        .map(|(k, v)| (k.to_string(), rustgis_data::address::percent_decode(v)))
+        .collect()
 }
 
 /// `key=value` and `key='value'` pairs joined by spaces (QGIS's connection texts).
@@ -196,27 +206,6 @@ pub fn is_relative(path: &str) -> bool {
     let path = path.trim();
     let windows_drive = path.as_bytes().get(1) == Some(&b':') && path.as_bytes().first().is_some_and(u8::is_ascii_alphabetic);
     !(path.starts_with('/') || path.starts_with('\\') || windows_drive || path.contains("://"))
-}
-
-/// Percent-decodes `s` (`%7B` to `{`); a broken escape is kept as it is.
-fn decode(s: &str) -> String {
-    let b = s.as_bytes();
-    let mut out = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while let Some(&c) = b.get(i) {
-        let hex = |j: usize| b.get(j).and_then(|h| (*h as char).to_digit(16));
-        match (c, hex(i + 1), hex(i + 2)) {
-            (b'%', Some(h), Some(l)) => {
-                out.push((h * 16 + l) as u8);
-                i += 3;
-            }
-            _ => {
-                out.push(c);
-                i += 1;
-            }
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
 }
 
 #[cfg(test)]
@@ -311,6 +300,5 @@ mod tests {
             read("delimitedtext", "file:./pts.csv?wktField=geom", dir),
             Source::Csv { path: "/data/project/pts.csv".into(), x: None, y: None, wkt: Some("geom".into()), crs: None }
         );
-        assert_eq!(decode("%E2%9C%93%zz"), "✓%zz");
     }
 }

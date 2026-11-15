@@ -195,26 +195,7 @@ pub(crate) fn keyword_pairs(dsn: &str) -> Vec<(String, String)> {
     pairs
 }
 
-/// Text with its `%XX` escapes decoded (a malformed escape is kept as it is).
-pub(crate) fn percent_decode(s: &str) -> String {
-    let b = s.as_bytes();
-    let mut out = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while let Some(&c) = b.get(i) {
-        let hex = |j: usize| b.get(j).and_then(|h| (*h as char).to_digit(16));
-        match (c, hex(i + 1), hex(i + 2)) {
-            (b'%', Some(h), Some(l)) => {
-                out.push((h * 16 + l) as u8);
-                i += 3;
-            }
-            _ => {
-                out.push(c);
-                i += 1;
-            }
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
+pub(crate) use crate::address::percent_decode;
 
 #[cfg(test)]
 mod tests {

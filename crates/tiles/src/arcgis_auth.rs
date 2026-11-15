@@ -144,39 +144,7 @@ fn form(params: &[(&str, &str)]) -> String {
     params.iter().map(|(k, v)| format!("{k}={}", encode(v))).collect::<Vec<_>>().join("&")
 }
 
-/// Decodes a query value (`+` is a space).
-fn decode(s: &str) -> String {
-    decode_with(s, true)
-}
-
-/// Decodes `%XX` escapes, and `+` as a space when `plus` (form data, not a pasted token).
-fn decode_with(s: &str, plus: bool) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while let Some(&b) = bytes.get(i) {
-        match b {
-            b'+' if plus => out.push(b' '),
-            b'%' => {
-                let hex = bytes.get(i + 1..i + 3).and_then(|h| std::str::from_utf8(h).ok()).and_then(|h| u8::from_str_radix(h, 16).ok());
-                if let Some(v) = hex {
-                    out.push(v);
-                    i += 2;
-                } else {
-                    out.push(b'%');
-                }
-            }
-            _ => out.push(b),
-        }
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-/// A query's parameters, decoded.
-pub fn query_params(query: &str) -> Vec<(String, String)> {
-    query.split('&').filter(|p| !p.is_empty()).map(|p| p.split_once('=').unwrap_or((p, ""))).map(|(k, v)| (decode(k), decode(v))).collect()
-}
+pub use rustgis_data::address::query_params;
 
 /// Whether `id` looks like an OAuth client id (ArcGIS's are 16 letters and digits).
 pub fn valid_client_id(id: &str) -> bool {
@@ -530,7 +498,7 @@ pub fn adopt_url_token(url: &str) -> Result<String, String> {
             let (k, v) = p.split_once('=').unwrap_or((p, ""));
             if rustgis_data::address::normalized_name(k).as_deref() == Some("token") {
                 // A token is pasted, not form-encoded: its `+` stays a `+`.
-                token = Some(decode_with(v, false));
+                token = Some(rustgis_data::address::percent_decode(v));
                 false
             } else {
                 true
