@@ -839,8 +839,9 @@ fn to_dates(ds: &mut Dataset, fi: usize, ty: FieldType, reader: &rustgis_data::d
     Ok(out)
 }
 
-/// `edit.deleteField`: removes a field and every reference to it (symbology, labels, the data
-/// design), or refuses while the definition query or a display filter reads it.
+/// `edit.deleteField`: removes a field and the references to it (symbology and its expressions
+/// by feature, labels, the data design, diagrams, the extrusion's height and base, the marker
+/// rotation), or refuses while the definition query or a display filter reads it.
 /// A standalone table's field just goes: nothing refers to it. Its rows are changed on the
 /// desktop worker ([`table_ahead`]), with progress and Cancel.
 fn delete_field(s: &mut Session, p: &Json) -> CmdResult {
@@ -877,6 +878,9 @@ fn delete_field(s: &mut Session, p: &Json) -> CmdResult {
         return Err(format!("display filter '{}' uses '{name}': change or remove it first", f.name));
     }
     let read_before = l.renderer.expression().is_some_and(|e| rustgis_data::query::parse_fields(e, &l.dataset).is_ok());
+    // The symbol's expressions by feature that read the field, found while it is there (#2081).
+    let by = &l.symbol_by;
+    let by_read = [&by.size, &by.fill, &by.stroke, &by.stroke_width, &by.angle].map(|t| t.as_deref().is_some_and(needs));
     let removed = l.dataset.fields.remove(fi).name;
     for f in &mut l.dataset.features {
         if fi < f.attrs.len() {
@@ -946,6 +950,59 @@ fn delete_field(s: &mut Session, p: &Json) -> CmdResult {
             }
             diagram_note = Some(format!("{}: its diagram drew the deleted field {removed}, so that slice or bar is removed", l.name));
         }
+    }
+    // Nor its extrusion (#2081): a height or base read from the field goes back to its constant,
+    // said once for both. Nor its marker rotation, which goes: the markers stop turning.
+    let mut extrusion_note = None;
+    if let Some(x) = &mut l.extrusion {
+        let mut what = Vec::new();
+        for (read, name) in [(&mut x.field, "height"), (&mut x.base_field, "base")] {
+            if read.as_deref().is_some_and(|f| f.eq_ignore_ascii_case(&removed)) {
+                *read = None;
+                what.push(name);
+            }
+        }
+        if !what.is_empty() {
+            let what = what.join(" and ");
+            extrusion_note =
+                Some(format!("{}: its extrusion's {what} read the deleted field {removed}, so it uses its constant {what}", l.name));
+        }
+    }
+    let mut rotation_note = None;
+    if l.marker_rotation.as_ref().is_some_and(|r| r.field.eq_ignore_ascii_case(&removed)) {
+        l.marker_rotation = None;
+        rotation_note = Some(format!("{}: its markers turned by the deleted field {removed}, so they are no longer turned", l.name));
+    }
+    // Nor its expressions by feature: one that read the field is removed, and the symbol draws as
+    // without it. Judged by the field it read, not by whether its text still parses: a field
+    // named like a keyword (`null = 'x'`) would parse again as the keyword, and a name matching
+    // another field but for case would read that one. Said once for all of them.
+    let by = &mut l.symbol_by;
+    let parts = [
+        (&mut by.size, "size"),
+        (&mut by.fill, "fill colour"),
+        (&mut by.stroke, "outline colour"),
+        (&mut by.stroke_width, "outline width"),
+        (&mut by.angle, "angle"),
+    ];
+    let mut gone = Vec::new();
+    for ((text, part), read) in parts.into_iter().zip(by_read) {
+        if read {
+            *text = None;
+            gone.push(part);
+        }
+    }
+    let by_note = match gone.split_last() {
+        None => None,
+        Some((part, [])) => Some(format!("{}: its symbol's {part} expression read the deleted field {removed}, so it is removed", l.name)),
+        Some((last, rest)) => Some(format!(
+            "{}: its symbol's {} and {last} expressions read the deleted field {removed}, so they are removed",
+            l.name,
+            rest.join(", ")
+        )),
+    };
+    for note in [extrusion_note, rotation_note, by_note].into_iter().flatten() {
+        s.notify(note, false);
     }
     if let Some(note) = diagram_note {
         s.notify(note, false);
