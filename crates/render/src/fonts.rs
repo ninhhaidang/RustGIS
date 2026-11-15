@@ -245,6 +245,8 @@ pub fn serif_available() -> bool {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CjkRegion {
     SimplifiedChinese,
+    /// Taiwan's standard glyph forms (Traditional Chinese).
+    TraditionalChinese,
     Japanese,
     Korean,
 }
@@ -262,6 +264,14 @@ fn cjk_candidates(region: CjkRegion) -> &'static [(&'static str, u32)] {
             ("/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc", 2),
             ("/usr/share/fonts/noto-cjk/NotoSansSC-Regular.otf", 0),
             ("/usr/share/fonts/wenquanyi/wqy-microhei/wqy-microhei.ttc", 0),
+        ],
+        // macOS's PingFang TC has no fixed place in its collection: see `cjk_named_candidates`.
+        CjkRegion::TraditionalChinese => &[
+            ("C:\\Windows\\Fonts\\msjh.ttc", 0),
+            ("/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc", 3),
+            ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", 3),
+            ("/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc", 3),
+            ("/usr/share/fonts/noto-cjk/NotoSansTC-Regular.otf", 0),
         ],
         CjkRegion::Japanese => &[
             ("C:\\Windows\\Fonts\\YuGothR.ttc", 0),
@@ -283,26 +293,63 @@ fn cjk_candidates(region: CjkRegion) -> &'static [(&'static str, u32)] {
     }
 }
 
+/// Installed CJK collections whose face is found by family name, not by index: (path, family).
+fn cjk_named_candidates(region: CjkRegion) -> &'static [(&'static str, &'static str)] {
+    match region {
+        CjkRegion::TraditionalChinese => &[("/System/Library/Fonts/PingFang.ttc", "PingFang TC")],
+        _ => &[],
+    }
+}
+
+/// A CJK font file's bytes. CJK collections are large; accept up to 128 MiB.
+fn read_cjk(path: &str) -> Option<Vec<u8>> {
+    let meta = std::fs::metadata(path).ok()?;
+    if meta.len() > 128 << 20 {
+        return None;
+    }
+    std::fs::read(path).ok()
+}
+
+/// The regular face of `family` in a font file or collection: the face whose family name is
+/// `family` and whose style is Regular. Other weights name themselves differently
+/// ("PingFang TC Medium").
+fn regular_face(bytes: &[u8], family: &str) -> Option<u32> {
+    use ttf_parser::name_id::{FAMILY, SUBFAMILY};
+    let faces = ttf_parser::fonts_in_collection(bytes).unwrap_or(1).min(256);
+    (0..faces).find(|&i| {
+        ttf_parser::Face::parse(bytes, i).is_ok_and(|face| {
+            let named = |id: u16, want: &str| face.names().into_iter().any(|n| n.name_id == id && n.to_string().as_deref() == Some(want));
+            named(FAMILY, family) && named(SUBFAMILY, "Regular")
+        })
+    })
+}
+
 /// An installed CJK font for `region` (bytes and face index), found once. `None` on the web or
-/// when nothing suitable is installed.
+/// when nothing suitable is installed. Traditional Chinese falls back to the Simplified face,
+/// which has the Traditional characters in mainland China's glyph forms.
 pub fn cjk_font(region: CjkRegion) -> Option<&'static (Vec<u8>, u32)> {
-    static FOUND: [OnceLock<Option<(Vec<u8>, u32)>>; 3] = [OnceLock::new(), OnceLock::new(), OnceLock::new()];
+    static FOUND: [OnceLock<Option<(Vec<u8>, u32)>>; 4] = [OnceLock::new(), OnceLock::new(), OnceLock::new(), OnceLock::new()];
     let slot = match region {
         CjkRegion::SimplifiedChinese => &FOUND[0],
         CjkRegion::Japanese => &FOUND[1],
         CjkRegion::Korean => &FOUND[2],
+        CjkRegion::TraditionalChinese => &FOUND[3],
     };
-    slot.get_or_init(|| {
-        cjk_candidates(region).iter().find_map(|(path, index)| {
-            let meta = std::fs::metadata(path).ok()?;
-            // CJK collections are large; accept up to 128 MiB.
-            if meta.len() > 128 << 20 {
-                return None;
-            }
-            std::fs::read(path).ok().filter(|b| valid_font(b, *index)).map(|b| (b, *index))
+    let found = slot.get_or_init(|| {
+        let indexed =
+            cjk_candidates(region).iter().find_map(|(path, index)| read_cjk(path).filter(|b| valid_font(b, *index)).map(|b| (b, *index)));
+        indexed.or_else(|| {
+            cjk_named_candidates(region).iter().find_map(|(path, family)| {
+                let bytes = read_cjk(path)?;
+                let index = regular_face(&bytes, family).filter(|i| valid_font(&bytes, *i))?;
+                Some((bytes, index))
+            })
         })
-    })
-    .as_ref()
+    });
+    match (found, region) {
+        (None, CjkRegion::TraditionalChinese) => cjk_font(CjkRegion::SimplifiedChinese),
+        (found, _) => found.as_ref(),
+    }
 }
 
 /// Whether `bytes` hold a font with face `index` that the font parser accepts. Fonts handed to the
@@ -315,6 +362,7 @@ pub fn valid_font(bytes: &[u8], index: u32) -> bool {
 pub fn cjk_font_url(region: CjkRegion) -> &'static str {
     match region {
         CjkRegion::SimplifiedChinese => "https://assets.rustgis.app/fonts/NotoSansSC-Regular.otf",
+        CjkRegion::TraditionalChinese => "https://assets.rustgis.app/fonts/NotoSansTC-Regular.otf",
         CjkRegion::Japanese => "https://assets.rustgis.app/fonts/NotoSansJP-Regular.otf",
         CjkRegion::Korean => "https://assets.rustgis.app/fonts/NotoSansKR-Regular.otf",
     }
@@ -485,6 +533,23 @@ mod tests {
         assert!(!super::covers_lao(epaint_default_fonts::UBUNTU_LIGHT, 0));
         assert!(!super::covers_lao(b"not a font", 0));
         assert_eq!(super::script_font_url(super::ScriptFont::Lao), None);
+    }
+
+    /// A face is found by its family and Regular style, not by its place in a collection
+    /// (PingFang TC on macOS); nothing is found in a file without that family.
+    #[test]
+    fn regular_face_is_found_by_family_name() {
+        assert_eq!(super::regular_face(epaint_default_fonts::HACK_REGULAR, "Hack"), Some(0));
+        assert_eq!(super::regular_face(epaint_default_fonts::HACK_REGULAR, "PingFang TC"), None);
+        assert_eq!(super::regular_face(b"not a font", "Hack"), None);
+    }
+
+    /// Traditional Chinese has a web face of its own, not the Simplified one.
+    #[test]
+    fn traditional_chinese_has_its_own_web_face() {
+        use super::{CjkRegion, cjk_font_url};
+        assert!(cjk_font_url(CjkRegion::TraditionalChinese).ends_with("/NotoSansTC-Regular.otf"));
+        assert_ne!(cjk_font_url(CjkRegion::TraditionalChinese), cjk_font_url(CjkRegion::SimplifiedChinese));
     }
 
     /// A variable Noto Serif (one file for every weight, its italic beside it) is found in a

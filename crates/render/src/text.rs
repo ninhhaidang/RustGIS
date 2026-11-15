@@ -166,11 +166,12 @@ fn invisible(c: char) -> bool {
 
 /// An installed CJK face for `region`, parsed once; `None` when there is none (or on the web).
 fn cjk(region: CjkRegion) -> Option<&'static FontRef<'static>> {
-    static FACES: [OnceLock<Option<FontRef<'static>>>; 3] = [OnceLock::new(), OnceLock::new(), OnceLock::new()];
+    static FACES: [OnceLock<Option<FontRef<'static>>>; 4] = [OnceLock::new(), OnceLock::new(), OnceLock::new(), OnceLock::new()];
     let slot = match region {
         CjkRegion::SimplifiedChinese => &FACES[0],
         CjkRegion::Japanese => &FACES[1],
         CjkRegion::Korean => &FACES[2],
+        CjkRegion::TraditionalChinese => &FACES[3],
     };
     slot.get_or_init(|| crate::fonts::cjk_font(region).and_then(|(b, i)| FontRef::try_from_slice_and_index(b, *i).ok())).as_ref()
 }

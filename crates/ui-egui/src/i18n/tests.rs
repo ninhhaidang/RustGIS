@@ -42,10 +42,12 @@ fn lookup_fallback_and_tags() {
     assert_eq!(lang_from_tag("zh-Hant-TW").map(Lang::code), Some("zh-tw"));
     assert_eq!(lang_from_tag("zh-Hans-TW").map(Lang::code), Some("zh"));
     assert_eq!(first_supported(["zh-TW", "de-DE"]).map(Lang::code), Some("zh-tw"));
-    // Hong Kong and Macau keep falling back: no catalog of their own.
+    // Hong Kong and Macau keep falling back, whatever the script: no catalog of their own.
     assert_eq!(lang_from_tag("zh-HK"), None);
     assert_eq!(lang_from_tag("zh-Hant-HK"), None);
+    assert_eq!(lang_from_tag("zh-Hans-HK"), None);
     assert_eq!(lang_from_tag("zh-MO"), None);
+    assert_eq!(lang_from_tag("zh-Hans-MO"), None);
     assert_eq!(lang_from_tag("C").map(Lang::code), Some("en"));
     assert_eq!(lang_from_tag("xx-YY"), None);
     assert_eq!(first_supported(["xx", "fr-CA", "de"]).map(Lang::code), Some("fr"));
@@ -101,7 +103,7 @@ fn traditional_chinese_registration_and_fallback() {
     assert_eq!(Lang::from_code("zh-TW"), Some(tw));
     assert_eq!(tw.name(), "繁體中文（台灣）");
     assert_eq!(tw.english(), "Chinese (Traditional, Taiwan)");
-    assert_eq!(tw.script(), Script::Cjk(CjkFont::SimplifiedChinese));
+    assert_eq!(tw.script(), Script::Cjk(CjkFont::TraditionalChinese));
     assert_eq!(tr(tw, "Open"), "開啟");
     // Taiwan's GIS terms, not the Simplified catalog's words in Traditional characters.
     assert_eq!(tr(tw, "Buffer"), "環域");
@@ -110,6 +112,10 @@ fn traditional_chinese_registration_and_fallback() {
     // Taiwan's table words: 欄 is a column, 列 a row.
     assert_eq!(tr(tw, "Columns"), "欄");
     assert_eq!(tr(tw, "Rows"), "列");
+    // Selecting features is 選取 and "by" is 依; choosing from options stays 選擇.
+    assert_eq!(tr(tw, "Select By Attributes"), "依屬性選取");
+    assert_eq!(tr(tw, "Clear Selection"), "清除選取");
+    assert_eq!(tr(tw, "Choose a field"), "選擇欄位");
     assert_eq!(tr(tw, "A string not in the Traditional Chinese catalog"), "A string not in the Traditional Chinese catalog");
     let zh = Lang::from_code("zh").unwrap_or(Lang::EN);
     assert_ne!(tr(tw, "Open"), tr(zh, "Open"));

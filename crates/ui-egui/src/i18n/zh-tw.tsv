@@ -4,7 +4,7 @@
 "instance" must be a layer's instance number, not {value}	"instance" 必須是圖層的實例編號，而不是 {value}
 "layer" must be a layer's id or name, not {value}	"layer" 必須是圖層的 ID 或名稱，而不是 {value}
 '{b}' isn't a bucket name	「{b}」不是有效的儲存貯體名稱
-'{date}' isn't a date: write it as YYYY-MM-DD	「{date}」不是日期：請按 YYYY-MM-DD 格式填寫
+'{date}' isn't a date: write it as YYYY-MM-DD	「{date}」不是日期：請依 YYYY-MM-DD 格式填寫
 '{size}' isn't a cell size: give a number	「{size}」不是網格大小：請輸入數字
 '{text}' isn't a scale: type one such as 1:12,345	「{text}」不是比例尺：請輸入類似 1:12,345 的值
 (b4-b3)/(b4+b3)	(b4-b3)/(b4+b3)
@@ -110,7 +110,7 @@ A3 portrait sheet	A3 縱向圖紙
 A4 landscape sheet	A4 橫向圖紙
 A4 portrait sheet	A4 縱向圖紙
 A5 Grid	A5 網格
-A5's equal-area pentagonal cells at a resolution, over the map's extent, a layer or the world, as polygons with their ids.	按指定解析度在地圖範圍、某個圖層或全球範圍內產生 A5 等積五邊形單元，以帶 id 的多邊形輸出。
+A5's equal-area pentagonal cells at a resolution, over the map's extent, a layer or the world, as polygons with their ids.	依指定解析度在地圖範圍、某個圖層或全球範圍內產生 A5 等積五邊形單元，以帶 id 的多邊形輸出。
 About	關於
 About plugins	關於外掛
 About RustGIS	關於 RustGIS
@@ -163,7 +163,7 @@ Add an elevation raster to the map first	請先向地圖新增高程網格
 Add an ellipse.	新增橢圓。
 Add an empty layer with a ready-made schema, to draw into.	新增具有現成結構描述的空圖層，用於繪製。
 Add an input for each layer the model reads.	為模型讀取的每個圖層新增一個輸入。
-Add an output to keep a result under a name.	新增輸出以按名稱保留結果。
+Add an output to keep a result under a name.	新增輸出以依名稱保留結果。
 Add and Open	新增並開啟
 Add and Open Notebook	新增並開啟筆記本
 Add Archive	新增封存
@@ -228,7 +228,7 @@ Add rule	新增規則
 Add sample countries	新增範例國家資料
 Add Sample Data	新增範例資料
 Add Satellite Embeddings	新增衛星嵌入向量
-Add Satellite Embeddings over Time	按時間新增衛星嵌入
+Add Satellite Embeddings over Time	依時間新增衛星嵌入
 Add Selected ({n})	新增所選項（{n}）
 Add Service Layer	新增服務圖層
 Add skill…	新增技能…
@@ -250,7 +250,7 @@ Add this GeoTIFF to the map	將此 GeoTIFF 新增到地圖
 Add this MCP server to your agent:	將此 MCP 伺服器新增到您的代理程式：
 Add Tile Layer	新增圖磚圖層
 Add Tile Layer…	新增圖磚圖層…
-Add To Current Selection	新增至目前選擇
+Add To Current Selection	新增至目前選取
 Add to Favourites	新增到我的最愛
 Add to Map	新增到地圖
 Add to Time Slider	新增到時間滑桿
@@ -319,7 +319,7 @@ All tables with geometry	所有含幾何的表
 All years, on the time slider	所有年份，顯示在時間滑桿上
 Allow	允許
 Allow ChatGPT plan use when signing in. If your workspace doesn't permit it, ask its admin or choose an API key provider.	登入時請允許使用 ChatGPT 方案。如果您的工作區不允許，請聯絡其管理員，或選擇使用 API 金鑰的提供方。
-Allow Feature Selection	允許圖徵選擇
+Allow Feature Selection	允許圖徵選取
 Allow only certain combinations of values across fields.	僅允許欄位間的特定值組合。
 Allow such actions for this conversation	在本次對話中允許此類操作
 Allow this action?	允許此操作？
@@ -367,7 +367,7 @@ Apply Style	套用樣式
 Apply to layers	套用到圖層
 Apply to the selected layer	套用於所選圖層
 Approve agents' actions without asking	無需詢問即批准代理程式的操作
-Approximate local-distance selection. The retained geographic prefilter can exclude features near the outline.	基於區域性近似距離進行選擇。保留的地理預篩選可能會排除輪廓附近的圖徵。
+Approximate local-distance selection. The retained geographic prefilter can exclude features near the outline.	基於區域性近似距離進行選取。保留的地理預篩選可能會排除輪廓附近的圖徵。
 ArcGIS	ArcGIS
 ArcGIS Hub	ArcGIS Hub
 ArcGIS Portal	ArcGIS 入口網站
@@ -404,7 +404,7 @@ Assign Escape	指派 Escape
 Assistant settings	助理設定
 At both ends	兩端
 At inner vertices	內部頂點
-At intervals	按間隔
+At intervals	依間隔
 at most	最多
 At the end	在終點
 At the start	在起點
@@ -478,7 +478,7 @@ Blank Letter page	空白 Letter 頁面
 Blank Map	空白地圖
 Blank Page	空白頁面
 Blend: {mode}	混合：{mode}
-Block Feature Selection	禁止圖徵選擇
+Block Feature Selection	禁止圖徵選取
 Blue	藍
 Blur	模糊
 Bold	粗體
@@ -525,16 +525,16 @@ Bundle the active map and its data.	打包作用中的地圖及其資料。
 Bundle the geoprocessing history with the layers it made.	將地理處理歷史記錄與其產生的圖層一起打包。
 Bundle the project and its data into one file to share.	將專案及其資料打包為一個檔案以便分享。
 Bundle the visible layers, with simplified geometry for phones and tablets.	打包可見圖層，並為手機和平板電腦簡化幾何。
-By\nAttributes	按\n屬性
-By\nLocation	按\n位置
-By Coordinates	按坐標
-By Coordinates…	按坐標…
-By Expression	按運算式
-By layer	按圖層
-By Place or Address	按地點或地址
-By Place or Address…	按地點或地址…
+By\nAttributes	依\n屬性
+By\nLocation	依\n位置
+By Coordinates	依坐標
+By Coordinates…	依坐標…
+By Expression	依運算式
+By layer	依圖層
+By Place or Address	依地點或地址
+By Place or Address…	依地點或地址…
 by {author}	作者：{author}
-By {field}	按 {field}
+By {field}	依 {field}
 cached tiles	已快取的圖磚
 Calculate	計算
 Calculate\nGeometry	計算\n幾何
@@ -544,7 +544,7 @@ Calculate field values.	計算欄位值。
 Calculate fields and enforce conditions on every edit.	在每次編輯時計算欄位並強制執行條件。
 Calculate Geometry	計算幾何
 Calculate Geometry Attributes	計算幾何屬性
-Calculate raster statistics per polygon	按多邊形計算網格統計
+Calculate raster statistics per polygon	依多邊形計算網格統計
 Calculate Statistics	計算統計
 Calculated {rows} features	已計算 {rows} 個圖徵
 Calculates a magnitude-per-unit-area surface from point features using a kernel function.	使用核函式根據點圖徵計算單位面積量值的表面。
@@ -644,7 +644,7 @@ Choose how the flat map lays out the Earth.	選擇平面地圖如何展示地球
 Choose how the layer is drawn.	選擇圖層的繪製方式。
 Choose how the raster is drawn.	選擇網格的繪製方式。
 Choose Layers	選擇圖層
-Choose polygon, lasso, or radius selection.	選擇多邊形、套索或半徑選擇方式。
+Choose polygon, lasso, or radius selection.	選擇多邊形、套索或半徑選取方式。
 Choose Project…	選擇專案…
 Choose S3 Connection	選擇 S3 連線
 Choose S3 connection	選擇 S3 連線
@@ -689,17 +689,17 @@ Clear Log	清除記錄
 Clear mask	清除遮罩
 Clear NLDI result	清除 NLDI 結果
 Clear search	清除搜尋
-Clear Selection	清除選擇
-Clear selection	清除選擇
+Clear Selection	清除選取
+Clear selection	清除選取
 Clear Session Log	清除工作階段記錄
 Clear the filter to reorder	請清除篩選器後再重新排序
-Clear the selection in every layer.	清除所有圖層中的選擇。
-Clear the selection.	清除選擇。
+Clear the selection in every layer.	清除所有圖層中的選取。
+Clear the selection.	清除選取。
 Clear Visibility Range	清除可見範圍
 Click a feature, then drag its vertices · click an edge to add one	點選圖徵，然後拖曳其頂點 · 點選邊可新增頂點
 Click a point on the map	點選地圖上的點
 Click a source to add it, or to open its browser connected. Right-click for favourites.	點選資料來源以新增它，或開啟已連線的瀏覽器。按右鍵可管理我的最愛。
-Click or drag a box to select features. Shift adds, Ctrl removes.	點選或拖曳矩形框選擇圖徵。按 Shift 新增，按 Ctrl 移除。
+Click or drag a box to select features. Shift adds, Ctrl removes.	點選或拖曳矩形框選取圖徵。按 Shift 新增，按 Ctrl 移除。
 Click or drag a box · Shift adds · Ctrl removes	點選或拖曳矩形框 · Shift 新增 · Ctrl 移除
 Click points a smooth curve passes through; double-click to finish.	點選平滑曲線經過的點；按兩下完成。
 Click the corners of a polygon; double-click to close it.	點選多邊形的角點；按兩下閉合。
@@ -724,19 +724,19 @@ Click to add vertices · double-click to finish	點選新增頂點 · 按兩下�
 Click to add vertices · double-click to finish the line	點選新增頂點 · 按兩下完成線
 Click to edit the description	點選以編輯描述
 Click to place a point graphic.	點選放置點圖形。
-Click to select the node	點選以選擇節點
-Click to select, double-click to add, right-click for more	點選選擇，按兩下新增，按右鍵檢視更多
-Click vertices · click the start or double-click to select · Shift adds · Ctrl/Cmd removes · Esc cancels	點選頂點 · 點選起點或按兩下以選擇 · Shift 新增 · Ctrl/Cmd 移除 · Esc 取消
+Click to select the node	點選以選取節點
+Click to select, double-click to add, right-click for more	點選選取，按兩下新增，按右鍵檢視更多
+Click vertices · click the start or double-click to select · Shift adds · Ctrl/Cmd removes · Esc cancels	點選頂點 · 點選起點或按兩下以選取 · Shift 新增 · Ctrl/Cmd 移除 · Esc 取消
 Client ID	用戶端 ID
 Clip	裁切
 Clip a raster to the view, or resample it.	將網格裁切到檢視，或對其重新取樣。
 Clip Features	裁切圖徵
 Clip or resample	裁切或重新取樣
 Clip To Map View	裁切到地圖檢視
-Clip To Polygon	按多邊形裁切
-Clip to polygon layer	按多邊形圖層裁切
+Clip To Polygon	依多邊形裁切
+Clip to polygon layer	依多邊形圖層裁切
 Clipboard	剪貼簿
-Clips input features by each split polygon, writing one layer per split polygon or split field value.	按每個分割多邊形裁切輸入圖徵，為每個分割多邊形或分割欄位值寫入一個圖層。
+Clips input features by each split polygon, writing one layer per split polygon or split field value.	依每個分割多邊形裁切輸入圖徵，為每個分割多邊形或分割欄位值寫入一個圖層。
 Close	關閉
 Close (Esc)	關閉 (Esc)
 Close All	全部關閉
@@ -836,7 +836,7 @@ Copied the layout to the clipboard	已將圖面配置複製到剪貼簿
 Copied the layout to the clipboard at {dpi} dpi, not {wanted}: the page is too large for a larger image	已以 {dpi} dpi（而非 {wanted} dpi）將圖面配置複製到剪貼簿：頁面太大，無法產生更大的影像
 Copied the map to the clipboard	已將地圖複製到剪貼簿
 Copied {path}	已複製 {path}
-Copied. The log cut its parameters short or took their secrets out, so it may not run as it ran.	已複製。記錄截斷了其參數或移除了其中的金鑰，因此它可能無法按原樣執行。
+Copied. The log cut its parameters short or took their secrets out, so it may not run as it ran.	已複製。記錄截斷了其參數或移除了其中的金鑰，因此它可能無法依原樣執行。
 Copies the (selected) features of a layer to a new layer.	將圖層的（所選）圖徵複製到新圖層。
 Copy	複製
 Copy / Cut / Paste features	複製/剪下/貼上圖徵
@@ -887,7 +887,7 @@ Couldn't load the plugin registry: {error}	無法載入外掛目錄：{error}
 Counterclockwise	逆時針
 Countries, cities, rivers and lakes	國家、城市、河流和湖泊
 Country	國家
-Counts a layer's points by the A5 cell holding them (cells of equal area, so the count is a density), with a field's sum and mean.	按包含點的 A5 單元統計圖層的點數（單元面積相等，因此計數即為密度），並計算某欄位的總和與平均值。
+Counts a layer's points by the A5 cell holding them (cells of equal area, so the count is a density), with a field's sum and mean.	依包含點的 A5 單元統計圖層的點數（單元面積相等，因此計數即為密度），並計算某欄位的總和與平均值。
 Counts the points that fall inside each polygon.	統計落在每個多邊形內的點數。
 Counts, totals and top categories of what's in view.	檢視中內容的計數、總計和主要類別。
 CPU	CPU
@@ -905,9 +905,9 @@ Create Profile	建立剖面
 Create Thumbnail	建立縮圖
 Creates a point at each vertex of the input features.	在輸入圖徵的每個頂點處建立一個點。
 Creates a point inside each input feature.	在每個輸入圖徵內部建立一個點。
-Creates points at a set distance along each line, or each polygon ring.	沿每條線或每個多邊形環按設定間距建立點。
+Creates points at a set distance along each line, or each polygon ring.	沿每條線或每個多邊形環依設定間距建立點。
 Creates points from a table's x and y coordinate fields.	根據表的 x 和 y 坐標欄位建立點。
-Creates polygons around input features at a given distance.	在輸入圖徵周圍按給定距離建立多邊形。
+Creates polygons around input features at a given distance.	在輸入圖徵周圍依給定距離建立多邊形。
 Credit: {credit}	來源：{credit}
 Cross Section	橫斷面
 Cross Section (2 clicks)	橫斷面（2 次點選）
@@ -961,7 +961,7 @@ Database connections are used by the desktop app	資料庫連線由桌面應用�
 databases are read through DuckDB, a program the browser can't run	資料庫透過 DuckDB 讀取，而瀏覽器無法執行該程式
 Database…	資料庫…
 Dataset	資料集
-Datasets on Hugging Face by name or owner/name; browse a dataset's files and add GeoTIFFs, GeoParquet, PMTiles, LiDAR and other files.	按名稱或 owner/name 查詢 Hugging Face 上的資料集；瀏覽資料集的檔案並新增 GeoTIFF、GeoParquet、PMTiles、LiDAR 等檔案。
+Datasets on Hugging Face by name or owner/name; browse a dataset's files and add GeoTIFFs, GeoParquet, PMTiles, LiDAR and other files.	依名稱或 owner/name 查詢 Hugging Face 上的資料集；瀏覽資料集的檔案並新增 GeoTIFF、GeoParquet、PMTiles、LiDAR 等檔案。
 Date	日期
 Dates	日期
 Dates a cell needs	網格所需日期數
@@ -1143,7 +1143,7 @@ Draw a line across the selected polygons; double-click to cut them	繪製一條�
 Draw a model: chain tools from input layers to the results to keep	繪製模型：將工具從輸入圖層串聯到要保留的結果
 Draw a model: chain tools from input layers to the results to keep.	繪製模型：將工具從輸入圖層串聯到要保留的結果。
 Draw as: {how}	繪製方式：{how}
-Draw at its place in the stack, the bottom stroke first	按其在堆疊中的位置繪製，先繪製底部筆畫
+Draw at its place in the stack, the bottom stroke first	依其在堆疊中的位置繪製，先繪製底部筆畫
 Draw every feature's strokes of one level before the next, so casings join under the cores where lines meet	先繪製所有圖徵同一層級的筆畫，再繪製下一層級，使線條相交處的外框在內芯下方連接
 Draw every label, over the others where they crowd, rather than leaving some out.	繪製所有標註，在擁擠處相互疊壓，而不是省略部分標註。
 Draw it over every other element	繪製在所有其他元素之上
@@ -1154,7 +1154,7 @@ Draw labels at every scale and distance.	在所有比例尺和距離下繪製標
 Draw new features in the selected layer. Double-click to finish lines and polygons.	在所選圖層中繪製新圖徵。按兩下完成線和多邊形。
 Draw new single-band rasters with the grey stretch again.	重新使用灰階拉伸繪製新的單波段網格。
 Draw only polygon outlines, keeping their colors and widths.	僅繪製多邊形輪廓，保留其顏色和寬度。
-Draw points as bins coloured by how many fall in each.	將點繪製為按落入數量著色的分箱。
+Draw points as bins coloured by how many fall in each.	將點繪製為依落入數量著色的分箱。
 Draw polygons as outlines only.	僅以輪廓繪製多邊形。
 Draw single-band rasters added from now on with this color scheme, stretch and resampling.	此後新增的單波段網格將使用此配色方案、拉伸和重新取樣進行繪製。
 Draw strokes in levels	分級繪製筆畫
@@ -1192,7 +1192,7 @@ e.g. pop_est > 100000000 AND continent = 'Asia'	例如 pop_est > 100000000 AND c
 e.g. pop_max > 1000000	例如 pop_max > 1000000
 Each class labels the features its own clause matches, so a feature can get a label from more than one.	每個標註類別標註其自身子句符合的圖徵，因此一個圖徵可能從多個標註類別獲得標註。
 Each click on the map adds a point, until you click this again.	每次點選地圖都會新增一個點，直到再次點選此按鈕。
-Each geoprocessing run becomes a step, chained by its outputs	每次地理處理執行成為一個步驟，按其輸出串聯
+Each geoprocessing run becomes a step, chained by its outputs	每次地理處理執行成為一個步驟，依其輸出串聯
 Each line's whole result, to read or copy	每一行的完整結果，供檢視或複製
 Earth Index has no points in the view	Earth Index 在檢視中沒有點
 Earth Search	Earth Search
@@ -1430,7 +1430,7 @@ Fields colored by score, drawn from zoom 9	依得分著色的田塊，從縮放�
 Fields of the World	Fields of the World
 Fields of the World…	Fields of the World…
 fields, comma separated	欄位，以逗號分隔
-Fields, numbers, 'text', + - * / % ^, || to join text, comparisons, CASE and functions such as round(), upper(), if() or scale_linear(). Applies to the selected rows, or every row when none is selected.	欄位、數字、'text'、+ - * / % ^、用於串接文字的 ||、比較、CASE 以及 round()、upper()、if() 或 scale_linear() 等函式。套用於所選列；未選擇時套用於所有列。
+Fields, numbers, 'text', + - * / % ^, || to join text, comparisons, CASE and functions such as round(), upper(), if() or scale_linear(). Applies to the selected rows, or every row when none is selected.	欄位、數字、'text'、+ - * / % ^、用於串接文字的 ||、比較、CASE 以及 round()、upper()、if() 或 scale_linear() 等函式。套用於所選列；未選取時套用於所有列。
 Fields, statistics, groups, pictures, attachments and charts in the report.	報表中的欄位、統計、群組、圖片、附件和圖表。
 Fields:	欄位：
 File	檔案
@@ -1452,7 +1452,7 @@ Fills for	填滿對象
 Film grain	底片顆粒
 Filter	篩選
 Filter bookmarks	篩選書籤
-Filter by command	按命令篩選
+Filter by command	依命令篩選
 Filter layers	篩選圖層
 Filter rows…	篩選列…
 Find a place by coordinates, name, or address.	依坐標、名稱或地址尋找地點。
@@ -1500,7 +1500,7 @@ Follow the time slider	跟隨時間滑桿
 Font	字型
 for a store that doesn't say	用於未註明的儲存
 For ArcGIS Online, the client ID is RustGIS's own app. For an ArcGIS Enterprise portal, register an OAuth app on it (Content › New item › Developer credentials) whose redirect URL is {redirect}, and give its client ID.	對於 ArcGIS Online，用戶端 ID 是 RustGIS 內建的應用程式。對於 ArcGIS Enterprise 入口網站，請在入口網站上註冊一個 OAuth 應用程式（內容 › 新增項目 › 開發者憑證），其重新導向網址為 {redirect}，並填寫其用戶端 ID。
-for the layers that change with time, as they list their times (2024-06-01, 1995)	用於隨時間變化的圖層，按其列出時間的形式（2024-06-01、1995）
+for the layers that change with time, as they list their times (2024-06-01, 1995)	用於隨時間變化的圖層，依其列出時間的形式（2024-06-01、1995）
 Forest	森林
 Forget Earthdata Login Token	清除 Earthdata Login 權杖
 Forget Saved Keys	清除已儲存的金鑰
@@ -1683,7 +1683,7 @@ Hosted Imagery	託管影像
 Hour	小時
 How dark the shadows the terrain casts are, from 0 (none) to 1, for the sun set above	地形投下的陰影有多深，從 0（無）到 1，針對所設的太陽位置
 How far the label sits from the line, to the text's nearest edge; 0 is on the line.	標註與線的距離，到文字最近的邊緣；0 表示在線上。
-How much of each zone each class of polygons covers, with the classes' totals shared out to the zones by area.	每類多邊形覆蓋各分區的面積，各類的總計按面積分配到各分區。
+How much of each zone each class of polygons covers, with the classes' totals shared out to the zones by area.	每類多邊形覆蓋各分區的面積，各類的總計依面積分配到各分區。
 How often RustGIS keeps a copy of unsaved work, to offer it back after a crash.	RustGIS 保留未儲存工作副本的頻率，以便在異常終止後提供復原。
 How the layer's colours combine with the tile layers and basemap beneath.	圖層顏色與下方圖磚圖層和底圖的混合方式。
 How the layer's colours combine with what's beneath.	圖層顏色與下方內容的混合方式。
@@ -1824,15 +1824,15 @@ Into	寫入到
 Into the group just above it, as its last item	移入緊鄰其上的群組，作為最後一項
 invalid child id	子程序 ID 無效
 Invalid or reserved shortcut key.	快速鍵無效或已被保留。
-Invalid selection outline · draw a smaller area	選擇輪廓無效 · 請繪製更小的區域
-Invalid selection outline · draw a smaller radius	選擇輪廓無效 · 請繪製更小的半徑
+Invalid selection outline · draw a smaller area	選取輪廓無效 · 請繪製更小的區域
+Invalid selection outline · draw a smaller radius	選取輪廓無效 · 請繪製更小的半徑
 Invalid shortcut binding.	快速鍵繫結無效。
 Invalid shortcut key.	快速鍵無效。
 Invalid: {error}	無效：{error}
 Invert	反轉
 Invert Color Ramp	反轉色帶
 Invert color scheme	反轉配色方案
-Invert the selection.	反轉選擇。
+Invert the selection.	反轉選取。
 IS	IS
 IS NULL	IS NULL
 Israel	以色列
@@ -1940,7 +1940,7 @@ Labels	標註
 labels are drawn for feature layers, not rasters	標註只為圖徵圖層繪製，不為網格繪製
 Labels are drawn for feature layers, not rasters.	標註只為圖徵圖層繪製，不為網格繪製。
 Labels are off for this layer: the clause applies once they are on.	此圖層的標註已關閉：開啟後子句才會生效。
-Labels by Expression	按運算式標註
+Labels by Expression	依運算式標註
 Lagoon	潟湖
 Lambert Conformal Conic	蘭伯特等角圓錐投影
 Lambert Cylindrical Equal Area	蘭伯特等積圓柱投影
@@ -2027,9 +2027,9 @@ Link Cursors	連結游標
 Link Views	連結檢視
 List	列出
 List a Dataset's Files	列出資料集的檔案
-List by data source	按資料來源列出
-List by drawing order	按繪製順序列出
-List by selection	按選擇列出
+List by data source	依資料來源列出
+List by drawing order	依繪製順序列出
+List by selection	依選取列出
 List Columns in File	列出檔案中的欄
 List Commands	列出命令
 List Connections	列出連線
@@ -2056,8 +2056,8 @@ Listing…	正在列出…
 Lit	亮面
 Live summary of the features in view.	檢視中圖徵的即時彙總。
 Load	載入
-Load a GeoPackage layer's rows again as they are in the file, dropping its edits.	按檔案中的現狀重新載入 GeoPackage 圖層的列，放棄其編輯。
-Load a PostGIS layer's rows again as they are in the database, dropping its edits.	按資料庫中的現狀重新載入 PostGIS 圖層的列，放棄其編輯。
+Load a GeoPackage layer's rows again as they are in the file, dropping its edits.	依檔案中的現狀重新載入 GeoPackage 圖層的列，放棄其編輯。
+Load a PostGIS layer's rows again as they are in the database, dropping its edits.	依資料庫中的現狀重新載入 PostGIS 圖層的列，放棄其編輯。
 Load a Theme from File…	從檔案載入主題…
 Load All Features	載入所有圖徵
 Load All parameters must be an object	Load All 的參數必須是物件
@@ -2074,8 +2074,8 @@ Loading the GeoLibre tools…	正在載入 GeoLibre 工具…
 Loading…	正在載入…
 Loads map tiles from the web	從網路載入地圖圖磚
 Loads one feature table of a GeoPackage on this computer (up to 100,000 rows) so its edits can be saved back to that table with Edit › Save to GeoPackage. It needs an INTEGER PRIMARY KEY.	載入此電腦上 GeoPackage 的一個圖徵表（最多 100,000 列），以便透過「編輯 › 儲存到 GeoPackage」將編輯儲存回該表。需要 INTEGER PRIMARY KEY。
-Loads the layer's rows again as they are in the database now. Its edits that weren't saved are dropped (Undo brings them back).	按資料庫中的目前狀態重新載入圖層的列。未儲存的編輯將被放棄（可用「復原」還原）。
-Loads the layer's rows again as they are in the file now. Its edits that weren't saved are dropped (Undo brings them back).	按檔案中的目前狀態重新載入圖層的列。未儲存的編輯將被放棄（可用「復原」還原）。
+Loads the layer's rows again as they are in the database now. Its edits that weren't saved are dropped (Undo brings them back).	依資料庫中的目前狀態重新載入圖層的列。未儲存的編輯將被放棄（可用「復原」還原）。
+Loads the layer's rows again as they are in the file now. Its edits that weren't saved are dropped (Undo brings them back).	依檔案中的目前狀態重新載入圖層的列。未儲存的編輯將被放棄（可用「復原」還原）。
 Local	本機
 Locate	定位
 Locate GeoLibre Runner	定位 GeoLibre 執行器
@@ -2123,7 +2123,7 @@ Manually reread this archive from disk without changing its presentation. Undo c
 Map	地圖
 Map\nFrame	地圖\n框
 Map (the current view)	地圖（目前檢視）
-map by date	按日期顯示地圖
+map by date	依日期顯示地圖
 Map centre	地圖中心
 Map draw	地圖繪製
 Map Extent	地圖範圍
@@ -2354,7 +2354,7 @@ New Publication Layout	新增出版圖面配置
 New Relationship…	新增關係…
 New Report	新增報表
 New rows	新列
-New Selection	建立新選擇內容
+New Selection	建立新選取內容
 New Style	新增樣式
 New Style From Layer	從圖層新增樣式
 New Task	新增任務
@@ -2399,7 +2399,7 @@ no home folder	沒有主資料夾
 no layer	無圖層
 No layer has a field of dates.	沒有圖層包含日期欄位。
 no layer has a field of dates: add one that has, or a tile layer whose address has a date (map.addTiles)	沒有圖層包含日期欄位：請新增一個包含日期欄位的圖層，或網址中含有日期的圖磚圖層（map.addTiles）
-No layer selected	未選擇圖層
+No layer selected	未選取圖層
 No layers match	沒有符合的圖層
 No layers match your search.	沒有符合搜尋條件的圖層。
 No mask	無遮罩
@@ -2743,7 +2743,7 @@ Planet Open Data	Planet Open Data
 Planet Open Data…	Planet Open Data…
 Planet's imagery of disasters (CC BY-NC), a static STAC catalog on Source Cooperative: pick an event, then Find Items.	Planet 的災害影像（CC BY-NC），Source Cooperative 上的靜態 STAC 目錄：選擇一個事件，然後查詢項目。
 Planetary Computer	Planetary Computer
-Planning a route sends its start, stops and destination to a routing server, and looking up a place by name sends the name to OpenStreetMap's Nominatim.	規劃路線會將起點、途經點和終點傳送到路徑伺服器；按名稱查詢地點會將名稱傳送到 OpenStreetMap 的 Nominatim。
+Planning a route sends its start, stops and destination to a routing server, and looking up a place by name sends the name to OpenStreetMap's Nominatim.	規劃路線會將起點、途經點和終點傳送到路徑伺服器；依名稱查詢地點會將名稱傳送到 OpenStreetMap 的 Nominatim。
 Play	播放
 Play the animation.	播放動畫。
 Play through the steps.	依次播放各步驟。
@@ -2856,8 +2856,8 @@ Provide shortcut file text, data or a path.	請提供快速鍵檔案的文字、
 Provider	提供者
 Provinces:	省份：
 Proximity	鄰近
-Public GIS portals of US counties and cities, by state.	美國縣市的公開 GIS 入口網站，按州列出。
-Public GIS portals of US federal agencies, by department.	美國聯邦機構的公開 GIS 入口網站，按部門列出。
+Public GIS portals of US counties and cities, by state.	美國縣市的公開 GIS 入口網站，依州列出。
+Public GIS portals of US federal agencies, by department.	美國聯邦機構的公開 GIS 入口網站，依部門列出。
 Public GIS portals of US states and the District of Columbia.	美國各州和哥倫比亞特區的公開 GIS 入口網站。
 Public layers on ArcGIS Online or another ArcGIS portal: feature, map, image and vector tile services, web maps and GeoJSON files.	ArcGIS Online 或其他 ArcGIS 入口網站上的公開圖層：圖徵、地圖、影像和向量圖磚服務、Web 地圖和 GeoJSON 檔案。
 Publication Layout	出版圖面配置
@@ -2884,7 +2884,7 @@ radius km	半徑 km
 radius m	半徑 m
 Radius {distance} (approximate)	半徑 {distance}（近似）
 Rain	雨
-Raise polygons by a height or a field.	按高度或欄位抬升多邊形。
+Raise polygons by a height or a field.	依高度或欄位抬升多邊形。
 Raise Priority	提高優先順序
 Random points in polygons	多邊形內隨機點
 Range	範圍
@@ -2909,7 +2909,7 @@ Read and write files on this computer	讀寫此電腦上的檔案
 Read error	讀取錯誤
 Read the bands picked for the view (at most about 6 km a side)	讀取為檢視選定的波段（每邊最多約 6 km）
 Read the map's layers and features	讀取地圖的圖層和圖徵
-Read the points in the view, coloured by their principal components	讀取檢視中的點，按其主成分著色
+Read the points in the view, coloured by their principal components	讀取檢視中的點，依其主成分著色
 Read the selected layer's local source again. Folders reload only when you choose Reload Data; they are not watched. Undo restores in-memory data and configuration, not overwritten files or historical streamed contents.	重新讀取所選圖層的本機資料來源。資料夾只有在您選擇重新載入資料時才會重新載入，不會自動監看。復原會還原記憶體中的資料和組態，但不會還原被覆寫的檔案或歷史串流內容。
 Reading a granule's files needs an Earthdata Login token, which works for every NASA DAAC. It is kept until RustGIS closes unless you tick Remember, never in the project, and sent only to NASA's Earthdata data servers.	讀取顆粒的檔案需要 Earthdata Login 權杖，該權杖適用於所有 NASA DAAC。除非勾選「記住」，否則它只會保留到 RustGIS 關閉為止，絕不儲存在專案中，並且只傳送到 NASA 的 Earthdata 資料伺服器。
 Reading in place…	正在就地讀取…
@@ -3194,7 +3194,7 @@ Save Log As…	記錄另存為…
 Save Map File	儲存地圖檔案
 Save Model	儲存模型
 Save Notebook	儲存筆記本
-save or load a pane set by name	按名稱儲存或載入窗格集
+save or load a pane set by name	依名稱儲存或載入窗格集
 Save Project	儲存專案
 Save project	儲存專案
 Save Project As	專案另存為
@@ -3256,7 +3256,7 @@ Scale 1:	比例尺 1:
 Scale and rotate entered distances and directions to the grid.	將輸入的距離和方向縮放並旋前往網格。
 Scale ×2	縮放 ×2
 Scale ×½	縮放 ×½
-Scaled by sum	按總和縮放
+Scaled by sum	依總和縮放
 Scene	場景
 Score threshold	得分閾值
 Score two rasters 1–10 and weight them	對兩個網格按 1–10 評分並加權
@@ -3315,59 +3315,59 @@ See the map as people with colour vision deficiencies do.	以色覺缺陷人士�
 See the tools you've run.	檢視已執行的工具。
 See whether a newer RustGIS has been released.	檢查是否發布了更新的 RustGIS。
 SELECT	SELECT
-Select	選擇
-Select (click)	選擇（點選）
-Select (rectangle)	選擇（矩形）
-Select a direction…	選擇方向…
-Select a feature layer in Layers to label it.	在圖層窗格中選擇一個圖徵圖層以進行標註。
-Select a feature layer in the Layers pane	在圖層窗格中選擇一個圖徵圖層
-Select a field	選擇欄位
-Select a layer in Layers to style it.	在圖層窗格中選擇一個圖層以設定其樣式。
-Select a layer in the Layers pane	在圖層窗格中選擇一個圖層
-select a layer in the Layers pane first	請先在圖層窗格中選擇一個圖層
-Select a layer in the Layers pane.	在圖層窗格中選擇一個圖層。
-Select a layer linked to a local file or folder, or an editable GeoPackage layer.	請選擇連結到本機檔案或資料夾的圖層，或可編輯的 GeoPackage 圖層。
-Select a navigation method after tracing a point.	追蹤一個點後，選擇導覽方法。
-Select a raster or tile layer in the Layers pane first	請先在圖層窗格中選擇一個網格圖層或圖磚圖層
+Select	選取
+Select (click)	選取（點選）
+Select (rectangle)	選取（矩形）
+Select a direction…	選取方向…
+Select a feature layer in Layers to label it.	在圖層窗格中選取一個圖徵圖層以進行標註。
+Select a feature layer in the Layers pane	在圖層窗格中選取一個圖徵圖層
+Select a field	選取欄位
+Select a layer in Layers to style it.	在圖層窗格中選取一個圖層以設定其樣式。
+Select a layer in the Layers pane	在圖層窗格中選取一個圖層
+select a layer in the Layers pane first	請先在圖層窗格中選取一個圖層
+Select a layer in the Layers pane.	在圖層窗格中選取一個圖層。
+Select a layer linked to a local file or folder, or an editable GeoPackage layer.	請選取連結到本機檔案或資料夾的圖層，或可編輯的 GeoPackage 圖層。
+Select a navigation method after tracing a point.	追蹤一個點後，選取導覽方法。
+Select a raster or tile layer in the Layers pane first	請先在圖層窗格中選取一個網格圖層或圖磚圖層
 Select All	全選
-Select an element to format it.	選擇一個元素以設定其格式。
-Select By\nAttributes	按屬性\n選擇
-Select By\nLocation	按位置\n選擇
-Select By Attributes	按屬性選擇
-Select by Lasso	按套索選擇
-Select by Polygon	按多邊形選擇
-Select by Radius	按半徑選擇
-Select every feature.	選擇所有圖徵。
-Select features by their spatial relationship.	按空間關係選擇圖徵。
-Select features that intersect another layer.	選擇與另一圖層相交的圖徵。
-Select features with a SQL expression.	使用 SQL 運算式選擇圖徵。
-Select Layer	選擇圖層
-Select Layer By Attribute	按屬性選擇圖層
-Select Layer By Location	按位置選擇圖層
+Select an element to format it.	選取一個元素以設定其格式。
+Select By\nAttributes	依屬性\n選取
+Select By\nLocation	依位置\n選取
+Select By Attributes	依屬性選取
+Select by Lasso	依套索選取
+Select by Polygon	依多邊形選取
+Select by Radius	依半徑選取
+Select every feature.	選取所有圖徵。
+Select features by their spatial relationship.	依空間關係選取圖徵。
+Select features that intersect another layer.	選取與另一圖層相交的圖徵。
+Select features with a SQL expression.	使用 SQL 運算式選取圖徵。
+Select Layer	選取圖層
+Select Layer By Attribute	依屬性選取圖層
+Select Layer By Location	依位置選取圖層
 Select None	全不選
-Select one text on the map, or a layout element, to format it.	選擇地圖上的一段文字或一個圖面配置元素以設定其格式。
-Select options	選擇選項
-Select Related	選擇相關
-Select Rows	選擇列
-Select rows with a SQL expression.	使用 SQL 運算式選擇列。
-Select Subset From Current Selection	從目前選擇中選擇子集
-Select the rows related to the selection.	選擇與所選內容相關的列。
-Select Tile Layer	選擇圖磚圖層
+Select one text on the map, or a layout element, to format it.	選取地圖上的一段文字或一個圖面配置元素以設定其格式。
+Select options	選取選項
+Select Related	選取相關
+Select Rows	選取列
+Select rows with a SQL expression.	使用 SQL 運算式選取列。
+Select Subset From Current Selection	從目前選取中選取子集
+Select the rows related to the selection.	選取與所選內容相關的列。
+Select Tile Layer	選取圖磚圖層
 Selectable	可選取
 Selectable Layers	可選取圖層
-Selectable on the map: the Select tool picks its features	可在地圖上選擇：選擇工具可選取其圖徵
-Selected	已選擇
+Selectable on the map: the Select tool picks its features	可在地圖上選取：選取工具可選取其圖徵
+Selected	已選取
 Selected Features: {n}	所選圖徵：{n}
-Selected in Layers	在圖層中選擇的圖層
+Selected in Layers	在圖層中選取的圖層
 Selected only	僅所選
 Selected records only	僅所選記錄
-Selecting Features	選擇圖徵
-Selection	選擇
-Selection outline is outside the supported map surface; draw a smaller area.	選擇輪廓超出支援的地圖表面範圍；請繪製更小的區域。
-Selection outline is too complex; draw a simpler area.	選擇輪廓過於複雜；請繪製更簡單的區域。
-Selection Type	選擇類型
-Selects features that intersect features in another layer.	選擇與另一圖層中圖徵相交的圖徵。
-Selects features with a SQL where clause, e.g. pop_est > 1000000.	使用 SQL where 子句選擇圖徵，例如 pop_est > 1000000。
+Selecting Features	選取圖徵
+Selection	選取
+Selection outline is outside the supported map surface; draw a smaller area.	選取輪廓超出支援的地圖表面範圍；請繪製更小的區域。
+Selection outline is too complex; draw a simpler area.	選取輪廓過於複雜；請繪製更簡單的區域。
+Selection Type	選取類型
+Selects features that intersect features in another layer.	選取與另一圖層中圖徵相交的圖徵。
+Selects features with a SQL where clause, e.g. pop_est > 1000000.	使用 SQL where 子句選取圖徵，例如 pop_est > 1000000。
 Semicolon	分號
 Send	傳送
 Send Backward	下移一層
@@ -3399,7 +3399,7 @@ Set Domain	設定屬性域
 Set Filter	設定篩選器
 Set Geometry	設定幾何
 Set Map Tool	設定地圖工具
-Set per feature from an expression, e.g. "pop" / 1e5 or CASE WHEN … END; colors as '#RRGGBB'. Empty: the symbol's own.	根據運算式按圖徵設定，例如 "pop" / 1e5 或 CASE WHEN … END；顏色為 '#RRGGBB'。留空：使用符號自身的值。
+Set per feature from an expression, e.g. "pop" / 1e5 or CASE WHEN … END; colors as '#RRGGBB'. Empty: the symbol's own.	根據運算式依圖徵設定，例如 "pop" / 1e5 或 CASE WHEN … END；顏色為 '#RRGGBB'。留空：使用符號自身的值。
 Set Scale	設定比例尺
 Set Subtypes	設定子類型
 Set the pixels inside a polygon	設定多邊形內的像素
@@ -3462,7 +3462,7 @@ Show Group	顯示群組
 Show labels	顯示標註
 Show latitude/longitude lines on the basemap.	在底圖上顯示經緯線。
 Show Layers	顯示圖層
-Show layers through time: only the features whose date falls in the slider's window, and dated imagery for its date.	按時間顯示圖層：僅顯示日期落在滑桿時間視窗內的圖徵，以及該日期的帶日期影像。
+Show layers through time: only the features whose date falls in the slider's window, and dated imagery for its date.	依時間顯示圖層：僅顯示日期落在滑桿時間視窗內的圖徵，以及該日期的帶日期影像。
 Show legend	顯示圖例
 Show legend and source layers	顯示圖例和來源圖層
 Show legend in Layers	在圖層中顯示圖例
@@ -3480,8 +3480,8 @@ Show or hide the Layers pane.	顯示或隱藏圖層窗格。
 Show or hide the Tools pane.	顯示或隱藏工具窗格。
 Show rulers. Drag from a ruler to add a guide; drag a guide back onto it to remove it.	顯示尺規。從尺規拖出可新增參考線；將參考線拖回尺規可將其移除。
 Show source layers	顯示來源圖層
-Show the bands picked of every year on the time slider, read in place as the map needs them	在時間滑桿上顯示每一年所選的波段，按地圖需要就地讀取
-Show the bands picked, read in place as the map needs them	顯示選定的波段，按地圖需要就地讀取
+Show the bands picked of every year on the time slider, read in place as the map needs them	在時間滑桿上顯示每一年所選的波段，依地圖需要就地讀取
+Show the bands picked, read in place as the map needs them	顯示選定的波段，依地圖需要就地讀取
 Show the description	顯示描述
 Show the Labeling pane for the selected layer.	顯示所選圖層的標註窗格。
 Show the labels that don't fit, in red.	以紅色顯示無法放置的標註。
@@ -3668,7 +3668,7 @@ Statistic is already listed for this field.	此欄位已列出該統計量。
 Statistic is not available for this field.	此欄位不可使用該統計量。
 Statistics	統計
 Statistics Field	統計欄位
-Statistics of fields, for the whole table or for each group of records sharing the case fields' values.	針對整個表或按案例欄位值相同的記錄分組計算欄位統計。
+Statistics of fields, for the whole table or for each group of records sharing the case fields' values.	針對整個表或依案例欄位值相同的記錄分組計算欄位統計。
 Status	狀態
 Status Bar	狀態列
 Std. Dev.	標準差
@@ -3704,7 +3704,7 @@ Strokes	筆畫
 Strokes for	筆畫適用於
 Style	樣式
 Style Items	樣式項目
-Style this layer as a QGIS layer style file (.qml) does	按 QGIS 圖層樣式檔案（.qml）設定此圖層的樣式
+Style this layer as a QGIS layer style file (.qml) does	依 QGIS 圖層樣式檔案（.qml）設定此圖層的樣式
 Style › Drawing	樣式 › 繪製
 Styles	樣式
 Su	日
@@ -3715,10 +3715,10 @@ Subtypes, one per line: code=name	子類型，每行一個：代碼=名稱
 Suitability Modeler	適宜性建模器
 Sum Fields	加總欄位
 Summarise	彙總
-Summarise a Data Cube over Time	按時間彙總資料立方體
-Summarise over time	按時間彙總
+Summarise a Data Cube over Time	依時間彙總資料立方體
+Summarise over time	依時間彙總
 Summarise the conversation so far, so a long chat stays within the model's context	總結目前的對話，使長對話保持在模型的上下文範圍內
-Summarise Zarr Over Time	按時間彙總 Zarr
+Summarise Zarr Over Time	依時間彙總 Zarr
 Summarising the earlier conversation to keep it within the model's context…	正在總結之前的對話，使其保持在模型的上下文範圍內…
 Summarize	彙總
 Summarize\nWithin	範圍內\n彙總
@@ -3735,11 +3735,11 @@ Sweden	瑞典
 Swipe	捲簾
 Switch	切換
 Switch between GPU and CPU map rendering	在 GPU 和 CPU 地圖渲染之間切換
-Switch Selection	切換選擇
-Switch selection	切換選擇
+Switch Selection	切換選取
+Switch selection	切換選取
 Switch to a dark basemap	切換到深色底圖
 Symbol	符號
-Symbol by Expression	按運算式設定符號
+Symbol by Expression	依運算式設定符號
 Symbol Color	符號顏色
 Symbology	符號系統
 Symbology Pane	符號系統窗格
@@ -3790,7 +3790,7 @@ the 100 km square letters aren't used in this zone	此分帶中不使用 100 km 
 The active project or map changed; reopen Define Projection for the intended layer.	目前專案或地圖已變更；請為目標圖層重新開啟「定義投影」。
 The active project or map changed; reopen the GeoPackage dialog for the intended layer.	目前專案或地圖已變更；請為目標圖層重新開啟 GeoPackage 對話方塊。
 The address fields are empty in every row.	所有列的地址欄位均為空。
-The angles run counterclockwise, as in mathematics	角度按逆時針方向增加，與數學中相同
+The angles run counterclockwise, as in mathematics	角度依逆時針方向增加，與數學中相同
 The answer isn't UTF-8 text	回應不是 UTF-8 文字
 the answer isn't UTF-8 text	回應不是 UTF-8 文字
 The assistant follows a skill's instructions when it uses it. Whatever they say, its commands that need your approval still ask.	助理使用某個技能時會遵循其說明。無論說明寫了什麼，需要您批准的命令仍會詢問。
@@ -3919,7 +3919,7 @@ The saved coordinate format isn't known to this version, so decimal degrees are 
 The saved favourite arrangement of publication layouts can't be used ({why}), so "classic" is used.	無法使用已儲存的出版圖面配置收藏排列方式（{why}），因此改用「classic」。
 The saved password could not be used. Type a password to try again; check Remember on this computer to replace the saved password.	無法使用已儲存的密碼。請輸入密碼重試；勾選「在此電腦上記住」可取代已儲存的密碼。
 The saved S3 connection no longer matches this source.	已儲存的 S3 連線與此資料來源不再符合。
-The saved sign-in changed. Select your account again.	儲存的登入資訊已變更。請重新選擇帳戶。
+The saved sign-in changed. Select your account again.	儲存的登入資訊已變更。請重新選取帳戶。
 The saved thread setting “{value}” isn't a number from 1 to 1024; RustGIS uses the default.	儲存的執行緒設定「{value}」不是 1 到 1024 的數字；RustGIS 使用預設值。
 The saved worldview '{code}' isn't one this version knows, so it is ignored until you choose one	此版本無法辨識已儲存的世界觀「{code}」，因此在您選擇之前將予以忽略
 The saved worldview detail '{code}' isn't one this version knows; simplified borders are used	此版本無法辨識已儲存的世界觀細節「{code}」；將使用簡化的國界
@@ -4051,7 +4051,7 @@ Time Series at a Point	單點時間序列
 Time Slider	時間滑桿
 Time Slider Settings	時間滑桿設定
 Timeout	逾時
-Tint by elevation	按高程著色
+Tint by elevation	依高程著色
 Tissot's Indicatrix	底索指示線
 Title	標題
 To	至
@@ -4073,7 +4073,7 @@ Tools that analyse features.	分析圖徵的工具。
 Tools that analyse rasters.	分析網格的工具。
 Tools you run appear here.	執行的工具會顯示在這裡。
 Top	頂部
-Top raster with a colour scale, not drawn by classes	帶色階的頂層網格，而不是按類別繪製
+Top raster with a colour scale, not drawn by classes	帶色階的頂層網格，而不是依類別繪製
 Topmost Layer	最頂層圖層
 Topographic and Bathymetric	地形與水深
 Topology	位相
@@ -4110,19 +4110,19 @@ Trying again…	正在重試…
 Tu	二
 Turkey	土耳其
 Turn each mark with the line's direction	使每個標記隨線的方向旋轉
-Turn each point's marker by the angle in a field, in degrees	按欄位中的角度（度）旋轉每個點的標記
+Turn each point's marker by the angle in a field, in degrees	依欄位中的角度（度）旋轉每個點的標記
 Turn editing on or off for the map.	開啟或關閉地圖的編輯。
 Turn Labels Off	關閉標註
 Turn labels on or off.	開啟或關閉標註。
 Turn Off	關閉
 Turn on or off the optional parts of RustGIS, such as Imagery.	開啟或關閉 RustGIS 的選用元件，例如影像。
 Turn on the Basemaps plugin	啟用底圖外掛
-Turn the mark by the layer's rotation field, its offset with it	按圖層的旋轉欄位旋轉標記，其偏移也隨之旋轉
+Turn the mark by the layer's rotation field, its offset with it	依圖層的旋轉欄位旋轉標記，其偏移也隨之旋轉
 Turn the time slider off: every feature shows again.	關閉時間滑桿：所有圖徵將再次顯示。
 Turned further, clockwise	繼續順時針旋轉
 Turns a field's values into fields: a row for each combination of the row fields' values, a column for each value of the pivot field.	將欄位的值轉換為欄位：列欄位值的每種組合一列，樞紐欄位的每個值一欄。
 Turns a table's addresses into points: each row's address fields are joined with commas (such as street, city, country) and looked up. OpenStreetMap's public Nominatim and Photon take up to 100 addresses a run, one a second; PDOK's Locatieserver (Dutch addresses) and a server of your own take more.	將表中的地址轉換為點：每列的地址欄位（如街道、城市、國家）以逗號串接後進行查詢。OpenStreetMap 的公開 Nominatim 和 Photon 每次執行最多處理 100 筆地址，每秒一筆；PDOK 的 Locatieserver（荷蘭地址）和您自己的伺服器可處理更多。
-Two layers are named {name}: the step names it, so it replays on the first of them. Rename one to tell them apart.	有兩個圖層名為 {name}：此步驟按名稱引用，因此將在其中第一個圖層上重播。請重新命名其中一個以便區分。
+Two layers are named {name}: the step names it, so it replays on the first of them. Rename one to tell them apart.	有兩個圖層名為 {name}：此步驟依名稱引用，因此將在其中第一個圖層上重播。請重新命名其中一個以便區分。
 Type	類型
 type a file name	請輸入檔名
 type a longitude and latitude, or click the map	輸入經度和緯度，或點選地圖
@@ -4332,8 +4332,8 @@ Where the font isn't installed, the text is drawn in this family	字型未安裝
 Where the map opens: the full extent or a view you saved.	地圖開啟的位置：全圖範圍或已儲存的檢視。
 Where tools work	工具作用範圍
 Whether the Layers pane lists the layer's classes	圖層窗格是否列出該圖層的類別
-Whether the Select tool picks these layers' features on the map	選擇工具是否在地圖上選取這些圖層的圖徵
-Whether the Select tool picks this layer's features on the map	選擇工具是否在地圖上選取此圖層的圖徵
+Whether the Select tool picks these layers' features on the map	選取工具是否在地圖上選取這些圖層的圖徵
+Whether the Select tool picks this layer's features on the map	選取工具是否在地圖上選取此圖層的圖徵
 Whether the service is asked for one picture of the view or for tiles.	向服務請求檢視的一張圖片還是圖磚。
 Which 5 countries have the largest GDP?	哪 5 個國家的 GDP 最高？
 While drawing, click two points on a feature's edge to follow the edge between them	繪製時，在圖徵邊上點選兩個點，即可沿兩點之間的邊追蹤
@@ -4351,7 +4351,7 @@ Width (mm)	寬度（mm）
 Windows	視窗
 Winkel Tripel	溫克爾三重投影
 Wireframe	線框
-With no period, a cube is added over its last full calendar year.	未指定時段時，立方體按其最後一個完整日曆年新增。
+With no period, a cube is added over its last full calendar year.	未指定時段時，立方體依其最後一個完整日曆年新增。
 With the field	隨欄位
 With the line	隨線
 Withdrawn	已下架
@@ -4390,7 +4390,7 @@ Wrap length	換行長度
 Write a plugin	編寫外掛
 Writes a separate two-vertex line for each consecutive vertex pair.	為每對相鄰頂點分別寫出一條兩點線。
 Writes every feature with its geometry made valid where it can be: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved. Features with a missing or non-finite coordinate anywhere, even in a hole, or left with no usable points or, for polygons, no area once repaired, are written without geometry. Other features too complex to check, or whose repair fails, are written unchanged. Says what was repaired in each.	寫出所有圖徵並儘可能使其幾何有效：閉合環，刪除重複頂點和退化部分，解決自相交、重疊部分以及位於外殼之外的孔洞。任何位置（即使在孔洞中）存在缺失或非有限坐標的圖徵，或修復後沒有可用點、對於面而言沒有面積的圖徵，將不帶幾何寫出。其他過於複雜而無法檢查或修復失敗的圖徵將原樣寫出。並說明每個圖徵修復了什麼。
-Writes one axis-aligned bounding rectangle per feature in stored longitude/latitude coordinates. Zero-area envelopes are skipped.	按儲存的經緯度坐標為每個圖徵寫出一個與坐標軸對齊的外包矩形。跳過面積為零的包絡矩形。
+Writes one axis-aligned bounding rectangle per feature in stored longitude/latitude coordinates. Zero-area envelopes are skipped.	依儲存的經緯度坐標為每個圖徵寫出一個與坐標軸對齊的外包矩形。跳過面積為零的包絡矩形。
 Writes Sen's slope, the test's Z and p-value, and the slope where the trend is significant.	輸出 Sen 斜率、檢定的 Z 值和 p 值，以及趨勢顯著處的斜率。
 Writes the features with invalid geometry, such as self-intersecting or unclosed rings, holes outside their shell or overlapping parts, and says what is wrong with each.	寫出幾何無效的圖徵，例如自相交或未閉合的環、位於外殼之外的孔洞或重疊部分，並說明每個圖徵的問題。
 writing the copy failed unexpectedly	寫入副本意外失敗
@@ -4452,7 +4452,7 @@ Zoom To Tile Layer	縮放至圖磚圖層
 Zoom to Tokyo	縮放至東京
 Zoom To World	縮放至世界
 Zoom {z} · Bearing {b}° · Pitch {p}°	縮放層級 {z} · 方位角 {b}° · 俯仰角 {p}°
-Zoom: the map's zoom level, as web maps count it. Bearing: the direction the top of the map faces, clockwise from north. Pitch: the tilt from looking straight down. Click to reset bearing and pitch.	縮放：地圖的縮放層級，按 Web 地圖的計算方式。方位角：地圖頂部朝向的方向，從正北順時針計算。俯仰角：相對於垂直俯視的傾斜角度。點選可重設方位角和俯仰角。
+Zoom: the map's zoom level, as web maps count it. Bearing: the direction the top of the map faces, clockwise from north. Pitch: the tilt from looking straight down. Click to reset bearing and pitch.	縮放：地圖的縮放層級，依 Web 地圖的計算方式。方位角：地圖頂部朝向的方向，從正北順時針計算。俯仰角：相對於垂直俯視的傾斜角度。點選可重設方位角和俯仰角。
 {agent} was stopped by you.	您已停止 {agent}。
 {names}: needs Node.js (npx) for its ACP adapter.	{names}：其 ACP 配接器需要 Node.js（npx）。
 {name} is larger than {mb} MB	{name} 大於 {mb} MB
