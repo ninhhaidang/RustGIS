@@ -206,7 +206,11 @@ fn glyphs(out: &mut String, defs: &mut Defs, run: &GlyphRun) {
     });
     // The halo's copy is decoration: hidden from screen readers, which read the label once (as a
     // PDF marks it an artifact).
-    let label = if run.halo.is_some() { r#" aria-hidden="true""#.to_string() } else { format!(r#" aria-label="{}""#, super::esc(&text)) };
+    let label = if run.halo.is_some() || run.decorative {
+        r#" aria-hidden="true""#.to_string()
+    } else {
+        format!(r#" aria-label="{}""#, super::esc(&text))
+    };
     let _ = writeln!(out, r#"<g{label}{}{stroke}{}>"#, paint("fill", run.color), transform_attr(run.transform));
     for g in &run.glyphs {
         let id = match defs.glyphs.get(&(face, g.id.0)) {
@@ -386,7 +390,15 @@ mod tests {
         let o = font.glyph_id('o');
         let glyphs =
             vec![Glyph { id: o, x: 0.0, ch: 'o' }, Glyph { id: font.glyph_id(' '), x: 6.0, ch: ' ' }, Glyph { id: o, x: 9.0, ch: 'o' }];
-        d.glyphs(GlyphRun { font, size: 12.0, color: Color::BLACK, transform: Transform::from_translate(60.0, 40.0), glyphs, halo: None });
+        d.glyphs(GlyphRun {
+            font,
+            size: 12.0,
+            color: Color::BLACK,
+            transform: Transform::from_translate(60.0, 40.0),
+            glyphs,
+            halo: None,
+            decorative: false,
+        });
         let mut pic = tiny_skia::Pixmap::new(2, 2).unwrap();
         pic.fill(Color::from_rgba8(0, 128, 0, 255));
         d.image(pic.as_ref(), Transform::from_scale(5.0, 5.0), 0.5, false);
@@ -432,9 +444,20 @@ mod tests {
         let glyphs = vec![Glyph { id: ab_glyph::Font::glyph_id(font, 'H'), x: 0.0, ch: 'H' }];
         let upm = ab_glyph::Font::units_per_em(font).unwrap();
         let mut d = Drawing::new(40.0, 40.0);
-        let run = |color, halo| GlyphRun { font, size: 10.0, color, transform: Transform::identity(), glyphs: glyphs.clone(), halo };
+        let run = |color, halo| GlyphRun {
+            font,
+            size: 10.0,
+            color,
+            transform: Transform::identity(),
+            glyphs: glyphs.clone(),
+            halo,
+            decorative: false,
+        };
         d.glyphs(run(Color::WHITE, Some(2.0)));
         d.glyphs(run(Color::BLACK, None));
+        let mut second_strike = run(Color::BLACK, None);
+        second_strike.decorative = true;
+        d.glyphs(second_strike);
         let (_, _, list) = d.finish();
         let (mut svg, mut defs) = (String::new(), Defs::default());
         items(&mut svg, &mut defs, &list).unwrap();
@@ -444,6 +467,7 @@ mod tests {
         let groups: Vec<&str> = svg.lines().filter(|l| l.starts_with("<g ")).collect();
         assert!(groups[0].starts_with(r#"<g aria-hidden="true""#) && !groups[0].contains("aria-label"), "{svg}");
         assert!(groups[1].starts_with(r#"<g aria-label="H""#) && !groups[1].contains("stroke"), "{svg}");
+        assert!(groups[2].starts_with(r#"<g aria-hidden="true""#) && !groups[2].contains("aria-label"), "{svg}");
     }
 
     /// A blended map layer over another, each in a layer (#1815), blends with the one beneath in

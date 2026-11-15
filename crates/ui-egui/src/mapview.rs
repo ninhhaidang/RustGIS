@@ -2086,14 +2086,22 @@ fn draw_label(p: &egui::Painter, l: &PlacedLabel, at: Pos2) {
     draw_label_ink(p, l, at, true, true);
 }
 
+/// The UI draws in its interface font until a named face is actually installed in egui. This
+/// decision uses only readiness, never font-file reads or the renderer's parsed face cache.
+fn fallback_bold_width(bold: bool, named_ready: bool, px: f32) -> f32 {
+    use rustgis_engine::render::fonts;
+    if bold && !named_ready && fonts::bold_is_synthetic() { fonts::bold_thickening(px) } else { 0.0 }
+}
+
 /// Draws a label (not a curved one) at `at`: its halo when `halo`, its text when `text`.
 fn draw_label_ink(p: &egui::Painter, l: &PlacedLabel, at: Pos2, halo: bool, text: bool) {
     let family = crate::labelfonts::family(p.ctx(), l.font, l.bold, l.italic);
     // Bold with no heavier face to draw it in: drawn again a little to its right, as exports do.
     // (In the interface fonts: those of a named family not loaded yet too.)
-    use rustgis_engine::render::fonts;
-    let thick = if family.is_none() && l.bold && fonts::bold_is_synthetic() { fonts::bold_thickening(l.size * 1.33) } else { 0.0 };
-    let strikes = std::iter::once(egui::Vec2::ZERO).chain((thick > 0.0).then_some(vec2(thick, 0.0)));
+    let thick = fallback_bold_width(l.bold, family.is_some(), l.size * 1.33);
+    let angle = l.angle.filter(|a| a.is_finite() && a.abs() > 1e-3);
+    let shift = angle.map_or(vec2(thick, 0.0), |a| vec2(thick * a.cos(), thick * a.sin()));
+    let strikes = std::iter::once(egui::Vec2::ZERO).chain((thick > 0.0).then_some(shift));
     let galley = p.layout_job(label_job(&l.text, l.size, l.bold, l.italic, l.spacing, l.line_align, family));
     // Text set beside an icon is lined up by its edge, with egui's own measure of its width.
     let anchor = if l.align < -0.25 {
@@ -2104,7 +2112,7 @@ fn draw_label_ink(p: &egui::Painter, l: &PlacedLabel, at: Pos2, halo: bool, text
         Align2::CENTER_CENTER
     };
     // A label turned with the map (along a street): turned about its centre, at `at`.
-    if let Some(angle) = l.angle.filter(|a| a.is_finite() && a.abs() > 1e-3) {
+    if let Some(angle) = angle {
         let (pos, r) = place_galley(Align2::CENTER_CENTER, at, &galley);
         if halo {
             draw_background(p, l, r, angle);
@@ -5012,6 +5020,58 @@ mod tile_redraw_tests {
 mod halo_tests {
     use super::*;
     use rustgis_engine::map::Rgba;
+
+    /// A child process gives the font cache a deterministic built-in-only fixture without
+    /// changing this test process's environment or racing its other font tests.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn synthetic_bold_strikes_follow_the_baseline() {
+        if std::env::var_os("RUSTGIS_BOLD_PARITY_CHILD").is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "mapview::halo_tests::synthetic_bold_strikes_follow_the_baseline", "--nocapture"])
+                .env("RUSTGIS_BOLD_PARITY_CHILD", "1")
+                .env("RUSTGIS_BUILTIN_FONTS", "1")
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+            return;
+        }
+        use rustgis_engine::render::LabelGlyph;
+        assert!(rustgis_engine::render::fonts::bold_is_synthetic());
+        for curved in [false, true] {
+            for angle in [0.0, std::f32::consts::FRAC_PI_2] {
+                let mut l = label(None);
+                (l.x, l.y, l.size, l.bold, l.halo) = (100.0, 100.0, 30.0, true, None);
+                // An unavailable explicit family must use the same fallback as no family.
+                l.font = Some(u16::MAX);
+                let thick = fallback_bold_width(l.bold, false, l.size * 1.33);
+                assert!(thick > 0.0);
+                l.font = None;
+                assert_eq!(fallback_bold_width(l.bold, false, l.size * 1.33), thick);
+                assert_eq!(fallback_bold_width(l.bold, true, l.size * 1.33), 0.0, "a ready named family draws its own face");
+                // The named family may already be indexed for exports while egui is still loading
+                // it: its fallback stays bold until the readiness flag becomes true.
+                l.font = Some(0);
+                assert_eq!(fallback_bold_width(l.bold, false, l.size * 1.33), thick);
+                l.font = Some(u16::MAX);
+                if curved {
+                    l.glyphs = vec![LabelGlyph { text: "A".into(), dx: 0.0, dy: 0.0, angle }];
+                } else {
+                    l.angle = Some(angle);
+                }
+                let ctx = egui::Context::default();
+                crate::theme::install_fonts(&ctx, &[], None);
+                let mut output = ctx.run_ui(egui::RawInput::default(), |ui| draw_label(ui.painter(), &l, pos2(l.x, l.y)));
+                output.textures_delta.clear();
+                let positions: Vec<Pos2> =
+                    output.shapes.iter().filter_map(|s| if let egui::Shape::Text(t) = &s.shape { Some(t.pos) } else { None }).collect();
+                assert_eq!(positions.len(), 2, "one actual text and one visual strike");
+                let ui_shift = positions[1] - positions[0];
+                let expected = vec2(thick * angle.cos(), thick * angle.sin());
+                assert!((ui_shift - expected).length() < 1e-3, "curved={curved}, angle={angle}: {ui_shift:?}");
+            }
+        }
+    }
 
     #[test]
     fn a_backgrounds_outline_is_its_rectangle_rounded_and_turned() {

@@ -117,8 +117,9 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
     point north across the whole frame. A warning says so; `"northArrow": "always"` draws one, and
     `"none"` leaves it out at any span.
   - **Legend box**: over the map, the legend's box is left clear where the map shows nothing under
-    it but its plain paper or water: no layer, label, context layer, basemap shape or graticule
-    line, no web tiles, and no veil. Its text then sits on the page as on open sea. The answer's
+    it but its light plain paper or water: no layer, label, context layer, basemap shape or graticule
+    line, no web tiles, and no veil. Dark basemaps keep a white backing so the dark legend text
+    stays readable. Over light water its text sits on the page as on open sea. The answer's
     `legendBox` says whether it has one; the clear box is still an element, to fill by hand, and
     `"legendBox": "always"` keeps it white. A legend in a side column or on a card keeps its box
     (`legendBox` is `true`).

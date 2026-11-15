@@ -236,6 +236,7 @@ mod tests {
             transform: Transform::from_row(1.0, 0.0, kx, 1.0, 10.0, 40.0),
             glyphs: text.chars().zip(0..).map(|(ch, i)| Glyph { id: font.glyph_id(ch), x: 11.0 * i as f32, ch }).collect(),
             halo: None,
+            decorative: false,
         };
         let mut d = Drawing::new(200.0, 100.0);
         d.glyphs(run(0.0));
@@ -360,6 +361,7 @@ mod tests {
             transform: Transform::from_row(2.0, 0.0, 0.0, 2.0, 10.0, 40.0),
             glyphs: "Rio".chars().zip(0..).map(|(ch, i)| Glyph { id: font.glyph_id(ch), x: 11.0 * i as f32, ch }).collect(),
             halo,
+            decorative: false,
         };
         let page = || {
             let mut d = Drawing::new(200.0, 100.0);
@@ -387,6 +389,19 @@ mod tests {
         // In outlines: the halo as its glyphs' outlines, filled and stroked.
         let outlines = streams(&write_with(&[page()], "Halo", Options { text: Text::Outlines, ..Options::default() }).0);
         assert!(!outlines.contains(" Tr\n") && !outlines.contains("/Artifact") && outlines.contains("\nB\n"), "{outlines}");
+        // A synthetic-bold copy is decoration too, without a halo's stroked rendering mode.
+        let mut drawing = Drawing::new(200.0, 100.0);
+        drawing.glyphs(run(None, Color::BLACK));
+        let mut strike = run(None, Color::BLACK);
+        strike.transform.tx += 1.0;
+        strike.decorative = true;
+        drawing.glyphs(strike);
+        let pdf = write_with(&[Page::drawing(drawing, 100.0, 50.0)], "Bold", Options { text: Text::Fonts, ..Options::default() }).0;
+        let content = streams(&pdf);
+        let (before, artifact) = content.split_once("/Artifact BMC\n").unwrap();
+        assert_eq!(before.matches("BT\n").count(), 1, "the actual text is kept once");
+        let artifact = artifact.split("EMC\n").next().unwrap();
+        assert!(artifact.starts_with("BT\n") && !artifact.contains(" Tr\n"), "{artifact}");
     }
 
     /// A face whose licence forbids embedding (fsType 2) is set in outlines, and said.

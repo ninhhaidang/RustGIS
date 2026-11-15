@@ -208,6 +208,17 @@ impl Ground {
     fn raw_height(&self, m: Coord) -> Option<f64> {
         match &self.heights {
             Heights::Raster { raster, wrap_width } => raster_height(raster, m, *wrap_width),
+            Heights::Tiles { url, encoding, zoom, read, pending, waiting } => {
+                tile_height(url, *encoding, *zoom, read, pending, waiting, m).0
+            }
+        }
+    }
+
+    /// A usable shore height and whether its requested detail was read. A ready ancestor can
+    /// supply the height after a detailed tile failed, but the shore must still be read again.
+    fn shore_height(&self, m: Coord) -> (Option<f64>, bool) {
+        match &self.heights {
+            Heights::Raster { raster, wrap_width } => (raster_height(raster, m, *wrap_width), true),
             Heights::Tiles { url, encoding, zoom, read, pending, waiting } => tile_height(url, *encoding, *zoom, read, pending, waiting, m),
         }
     }
@@ -351,7 +362,7 @@ impl Ground {
                     .water
                     .as_ref()
                     .and_then(|w| w.level(m))
-                    .or_else(|| tile_height(url, *encoding, coarse.min(*zoom), read, pending, waiting, m))?;
+                    .or_else(|| tile_height(url, *encoding, coarse.min(*zoom), read, pending, waiting, m).0)?;
                 let h = raw * self.exaggeration;
                 h.is_finite().then_some(h)
             }
@@ -481,7 +492,8 @@ fn tile_at(m: Coord, zoom: u8) -> Option<(TileId, f64, f64)> {
 
 /// An elevation tile's height at a Web Mercator point: the tile at `zoom` once read (its fetch
 /// starts here, with one [`COARSE_LEVELS`] up), meanwhile the nearest coarser one read already.
-/// A failed fetch is tried again only after the cache's back-off.
+/// A failed fetch is tried again only after the cache's back-off. The flag says the height
+/// came from the requested detail tile, so shore sampling needs no second lookup.
 fn tile_height(
     url: &str,
     encoding: TerrainEncoding,
@@ -490,8 +502,8 @@ fn tile_height(
     pending: &RefCell<bool>,
     waiting: &RefCell<std::collections::HashSet<TileId>>,
     m: Coord,
-) -> Option<f64> {
-    let (id, _, _) = tile_at(m, zoom)?;
+) -> (Option<f64>, bool) {
+    let Some((id, _, _)) = tile_at(m, zoom) else { return (None, false) };
     let tile = |id: TileId, fetch: bool| -> Option<Arc<Payload>> {
         if let Some(t) = read.borrow().get(&id) {
             return t.clone();
@@ -525,10 +537,10 @@ fn tile_height(
             && let Payload::Image(pm) = &*p
             && let Some((_, fx, fy)) = tile_at(m, t.z)
         {
-            return pixel_height(pm, encoding, fx, fy);
+            return (pixel_height(pm, encoding, fx, fy), k == 0);
         }
     }
-    None
+    (None, false)
 }
 
 /// The height an elevation tile's pixels give at (`fx`, `fy`) across it, bilinearly.

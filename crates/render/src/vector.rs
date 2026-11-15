@@ -106,6 +106,8 @@ pub struct GlyphRun {
     /// A halo's copy of the text, drawn under it (#1815): its glyphs filled and stroked this wide
     /// (in the run's pixels), rounded, in `color`. `None` for the text itself.
     pub halo: Option<f32>,
+    /// A second visual strike of the same text, excluded from accessible/searchable text.
+    pub decorative: bool,
 }
 
 impl GlyphRun {
@@ -620,6 +622,7 @@ mod tests {
             transform: Transform::identity(),
             glyphs: vec![Glyph { id: ab_glyph::Font::glyph_id(font, 'W'), x: 0.0, ch: 'W' }],
             halo: None,
+            decorative: false,
         };
         let mut page = Drawing::new(10.0, 10.0);
         page.glyphs(run());

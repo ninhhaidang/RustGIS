@@ -2532,9 +2532,9 @@ pub fn frame_coverage_judged_on(
 }
 
 /// Whether a frame showing `map` at 1:`scale` around `center`, `size` (mm) wide and tall, shows
-/// one plain colour under `under` (mm from the frame's top left), the basemap's water or land
-/// colour, and nothing else: no layer, label or context layer, no outline of the basemap's. Drawn as the map is, on a
-/// grid of about `cells` cells across the frame's longer side, its label lock set aside (and put
+/// one light plain colour under `under` (mm from the frame's top left), the basemap's water or
+/// land colour, and nothing else: no layer, label or context layer, no outline of the basemap's.
+/// Drawn as the map is, on a grid of about `cells` cells across the frame's longer side, its label lock set aside (and put
 /// back) as [`frame_coverage`] does. Web tiles aren't fetched for it, so a map with any is not
 /// plain anywhere; nor is a frame that can't be drawn. For a publication's legend, which needs no
 /// box there (#1379).
@@ -2589,7 +2589,10 @@ pub fn frame_plain_under(
     // one colour, data or context, isn't the background.
     let rgba = |p: tiny_skia::PremultipliedColorU8| (p.red(), p.green(), p.blue(), p.alpha());
     let Some(first) = seen.next().map(rgba) else { return false };
-    let background = [water, land].iter().any(|c| (c.0[0], c.0[1], c.0[2], 255) == first);
+    // Legend text stays dark (LEGEND_TEXT), so dark water or land must keep its paper backing.
+    let background = [water, land]
+        .iter()
+        .any(|c| (c.0[0], c.0[1], c.0[2], 255) == first && u16::from(c.r()) + u16::from(c.g()) + u16::from(c.b()) > 3 * 160);
     background && seen.all(|p| rgba(p) == first)
 }
 
@@ -3435,6 +3438,19 @@ mod tests {
         (map.body, map.basemap) = ("earth".into(), rustgis_map::Basemap::Blank);
         map.tiles.push(rustgis_map::TileLayer::new("tiles", rustgis_map::TileKind::Raster, "https://example.invalid/{z}/{x}/{y}.png"));
         assert!(!plain(&mut map, (2.0, 86.0, 12.0, 12.0)), "web tiles aren't fetched for it, so nothing is plain");
+    }
+
+    #[test]
+    fn plain_dark_basemaps_keep_the_legend_paper_while_light_ones_clear_it() {
+        for body in ["earth", "mars"] {
+            for basemap in [rustgis_map::Basemap::Midnight, rustgis_map::Basemap::Paper, rustgis_map::Basemap::Ocean] {
+                let mut map = Map::new("plain");
+                (map.body, map.basemap, map.graticule) = (body.into(), basemap, false);
+                // The Earth frame is open Gulf of Guinea water; on Mars it is the palette's grey.
+                let plain = frame_plain_under(&mut map, Coord::new(0.0, 0.0), 1_000_000.0, (100.0, 100.0), (40.0, 40.0, 20.0, 20.0), 128);
+                assert_eq!(plain, basemap != rustgis_map::Basemap::Midnight, "{body}: {basemap:?}");
+            }
+        }
     }
 
     /// A layer that only outlines its polygons isn't counted as drawn, unless nothing else is shown,

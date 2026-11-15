@@ -33,6 +33,7 @@ struct Recording {
     layer: bool,
     /// The glyphs kept are a halo this wide ([`Canvas::halo`]).
     halo: Option<f32>,
+    decorative: bool,
 }
 
 impl Canvas {
@@ -50,7 +51,17 @@ impl Canvas {
     pub fn recording(width: u32, height: u32) -> Option<Canvas> {
         let pm = Pixmap::new(width, height)?;
         let drawing = Drawing::new(width as f32, height as f32);
-        Some(Canvas { pm, rec: Some(Box::new(Recording { drawing, dirty: false, ts: Transform::identity(), layer: false, halo: None })) })
+        Some(Canvas {
+            pm,
+            rec: Some(Box::new(Recording {
+                drawing,
+                dirty: false,
+                ts: Transform::identity(),
+                layer: false,
+                halo: None,
+                decorative: false,
+            })),
+        })
     }
 
     /// Whether it records.
@@ -208,8 +219,22 @@ impl Canvas {
         self.keep(|r| {
             run.transform = r.ts.pre_concat(run.transform);
             run.halo = run.halo.or(r.halo);
+            run.decorative |= r.decorative;
             r.drawing.glyphs(run);
         });
+    }
+
+    /// Draws another visual strike of existing text. Its recorded glyphs remain visible but
+    /// are marked as decoration for PDF selection and SVG accessibility.
+    pub fn decoration(&mut self, f: impl FnOnce(&mut Canvas)) {
+        let old = self.rec.as_ref().map(|r| r.decorative);
+        if let Some(r) = &mut self.rec {
+            r.decorative = true;
+        }
+        f(self);
+        if let (Some(r), Some(old)) = (&mut self.rec, old) {
+            r.decorative = old;
+        }
     }
 
     /// Draws with `f`, what is kept moved by `t` (from `f`'s space to this canvas's); for drawing
@@ -496,6 +521,7 @@ mod tests {
             transform: Transform::identity(),
             glyphs: vec![crate::vector::Glyph { id: ab_glyph::Font::glyph_id(font, 'A'), x: 0.0, ch: 'A' }],
             halo: None,
+            decorative: false,
         };
         for width in [0.0, -1.0, f32::NAN, f32::INFINITY] {
             let mut c = Canvas::recording(40, 20).unwrap();

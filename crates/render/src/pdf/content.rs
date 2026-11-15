@@ -289,7 +289,8 @@ impl Writer<'_> {
             set_color(out, &mut st.stroke, run.color, "RG");
             stroke_state(out, st, &GlyphRun::halo_stroke(w * scale));
         }
-        if halo.is_some() {
+        let decorative = halo.is_some() || run.decorative;
+        if decorative {
             // The copy is decoration, marked so (an artifact) for readers that leave artifacts out
             // of what they copy and find. (An empty `ActualText` would hide it from every reader's
             // text, but VectorCraft then drops the halo altogether.)
@@ -326,7 +327,14 @@ impl Writer<'_> {
             pen = x + p.advance * size;
         }
         // (The rendering mode is text state, kept past ET: set back for the text that follows.)
-        out.extend_from_slice(if halo.is_some() { b"] TJ\n0 Tr\nET\nEMC\n" } else { b"] TJ\nET\n" });
+        out.extend_from_slice(b"] TJ\n");
+        if halo.is_some() {
+            out.extend_from_slice(b"0 Tr\n");
+        }
+        out.extend_from_slice(b"ET\n");
+        if decorative {
+            out.extend_from_slice(b"EMC\n");
+        }
     }
 
     /// Places a picture: an image object (with its alpha as a soft mask) drawn where it lies.
@@ -749,6 +757,7 @@ mod tests {
             transform: Transform::from_translate(210.0, 40.0),
             glyphs,
             halo: None,
+            decorative: false,
         });
         let mut pic = Pixmap::new(4, 4).unwrap();
         pic.fill(Color::from_rgba8(0, 160, 0, 200));
@@ -834,7 +843,15 @@ mod tests {
         let x = font.h_advance_unscaled(a) / upm * 20.0 + 5.0;
         let mut d = Drawing::new(100.0, 100.0);
         let glyphs = vec![Glyph { id: a, x: 0.0, ch: 'A' }, Glyph { id: v, x, ch: 'V' }];
-        d.glyphs(GlyphRun { font, size: 20.0, color: Color::BLACK, transform: Transform::from_translate(10.0, 50.0), glyphs, halo: None });
+        d.glyphs(GlyphRun {
+            font,
+            size: 20.0,
+            color: Color::BLACK,
+            transform: Transform::from_translate(10.0, 50.0),
+            glyphs,
+            halo: None,
+            decorative: false,
+        });
         let objs = objects(&write(&[Page::drawing(d, 10.0, 10.0)], ""));
         let content = objs.iter().map(|o| String::from_utf8_lossy(&o.1).into_owned()).find(|c| c.contains("TJ")).unwrap();
         assert!(content.contains("1 0 0 -1 10 50 Tm\n") && content.contains("[<00>-250<01>] TJ"), "{content}");
