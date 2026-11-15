@@ -681,7 +681,11 @@ ribbon and the layer's right-click menu. A tab per topic shows one part at a tim
 - **Display**: the visibility range (**Out Beyond**, **In Beyond**, **Clear Limits**),
   **Transparency**, **Masking**, a raster's **Layer Blend** or a feature layer's **Reference
   scale**, and the **Depth priority** that View › Scene › Raise and Lower Priority change (a
-  higher one draws on top, whatever the layer order).
+  higher one draws on top, whatever the layer order). A polygon layer also has its
+  **Extrusion**, as Style › Extrusion, Faces and Light and Shadow set it: the **Type** (None,
+  Constant height or By a numeric field) and, once extruded, the **Height (m)** of a constant
+  height (the ribbon sets 50 km), **Factor**, **Base** with **Base (m)**, **Face Culling**,
+  **Lighting** and **Cast Shadow**. Each change undoes on its own.
 - **Query**, for a feature layer: its definition query, the SQL clause the features must match to
   draw (the grammar is in [Expressions](expressions.md)). Buttons add a field or an operator, and
   the **Functions** and **Variables** menus add a function (left open for its arguments, with what

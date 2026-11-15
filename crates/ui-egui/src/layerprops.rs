@@ -300,8 +300,8 @@ fn source(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, t: &Tokens) {
     });
 }
 
-/// When and how the layer draws: its visibility range, transparency, masking, and a raster's
-/// blend or a feature layer's reference scale.
+/// When and how the layer draws: its visibility range, transparency, masking, a raster's blend or
+/// a feature layer's reference scale, its depth priority and, for a polygon layer, its extrusion.
 fn display(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, t: &Tokens) {
     heading(ui, "Visibility Range", t);
     crate::ribbon::scale_range_rows(app, ui, l, "layer_properties_scale", 12.5);
@@ -320,6 +320,96 @@ fn display(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, t: &Tokens) {
         crate::panes::reference_scale_row(app, ui, l);
     }
     priority_row(app, ui, l);
+    if !l.is_raster() && l.geometry_type() == GeometryType::Polygon {
+        heading(ui, "Extrusion", t);
+        extrusion(app, ui, l);
+    }
+}
+
+/// A polygon layer's extrusion, as the ribbon's Style › Extrusion, Faces and Light and Shadow
+/// groups set it, for the layer the pane shows: its Type, then once extruded the constant Height
+/// or the field, Factor, Base, Face Culling, Lighting (the ribbon has it in both of its groups:
+/// it is one setting) and Cast Shadow. The Type and Base lists and the Factor and Base (m) rows
+/// are the ribbon's own.
+fn extrusion(app: &mut RustGisApp, ui: &mut Ui, l: &Layer) {
+    let x = l.extrusion.as_ref();
+    let fields = crate::ribbon::numeric_fields(l);
+    ui.horizontal(|ui| {
+        let input_label = ui.label(tl!("Type"));
+        let shown = match x {
+            None => tl!("None").to_string(),
+            Some(x) => match &x.field {
+                None => tl!("Constant height").to_string(),
+                Some(f) => crate::i18n::fmt("By {field}", &[("field", f)]),
+            },
+        };
+        egui::ComboBox::from_id_salt(("layer_properties_extrusion", l.instance_id()))
+            .selected_text(shown)
+            .width(160.0)
+            .show_ui(ui, |ui| {
+                crate::ribbon::extrusion_type_choices(ui, app, l.id, x, &fields);
+            })
+            .response
+            .labelled_by(input_label.id);
+    });
+    let Some(x) = x else { return };
+    if x.field.is_none() {
+        height_row(app, ui, l, x);
+    }
+    crate::ribbon::extrusion_factor_row(app, ui, l.id, x, "layer_properties", 12.5);
+    ui.horizontal(|ui| {
+        let input_label = ui.label(tl!("Base"));
+        let shown = match &x.base_field {
+            Some(f) => crate::i18n::fmt("By {field}", &[("field", f)]),
+            None if x.base > 0.0 => crate::i18n::fmt("Constant ({m} m)", &[("m", &x.base.to_string())]),
+            None => tl!("Ground").to_string(),
+        };
+        egui::ComboBox::from_id_salt(("layer_properties_extrusion_base", l.instance_id()))
+            .selected_text(shown)
+            .width(160.0)
+            .show_ui(ui, |ui| {
+                crate::ribbon::extrusion_base_choices(ui, app, l.id, x, &fields);
+            })
+            .response
+            .labelled_by(input_label.id)
+            .on_hover_text(tl!("What the walls stand on: the ground, a field or the constant Base (m)."));
+    });
+    crate::ribbon::extrusion_base_row(app, ui, l.id, x, "layer_properties", 12.5);
+    let mut culling = x.face_culling;
+    if ui.checkbox(&mut culling, tl!("Face Culling")).on_hover_text(tl!("Hide walls facing away from you.")).changed() {
+        run(app, "layer.faces", json!({"layer": l.id, "culling": culling}));
+    }
+    let mut lighting = x.lighting;
+    if ui.checkbox(&mut lighting, tl!("Lighting")).on_hover_text(tl!("Shade walls by the way they face the light.")).changed() {
+        run(app, "layer.faces", json!({"layer": l.id, "lighting": lighting}));
+    }
+    let mut shadows = x.shadows;
+    if ui.checkbox(&mut shadows, tl!("Cast Shadow")).on_hover_text(tl!("Extruded shapes cast shadows on the map.")).changed() {
+        run(app, "layer.lightShadow", json!({"layer": l.id, "shadows": shadows}));
+    }
+}
+
+/// The constant height of `l`'s extrusion, in metres before the Factor (`layer.extrusion`),
+/// which the ribbon sets only by choosing Constant height. A drag is one step, set when let go; a
+/// saved height out of range is shown, not written back.
+fn height_row(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, x: &rustgis_engine::map::effects::Extrusion) {
+    let mut h = if x.height.is_finite() { x.height } else { 0.0 };
+    ui.horizontal(|ui| {
+        let input_label = ui.label(tl!("Height (m)"));
+        let drag = crate::widgets::Dragged::lend(ui, egui::Id::unique(("layer_properties_extrusion_height", l.instance_id())), &mut h);
+        let r = ui
+            .add(
+                egui::DragValue::new(&mut h)
+                    .update_while_editing(false)
+                    .range(0.0..=1e7)
+                    .clamp_existing_to_range(false)
+                    .speed(x.height.max(10.0) * 0.02),
+            )
+            .labelled_by(input_label.id);
+        if drag.settled(ui, &r, &mut h) && h != x.height {
+            run(app, "layer.extrusion", json!({"layer": l.id, "type": "height", "height": h}));
+        }
+    });
 }
 
 /// The layer's depth priority (`layer.priority`), as the ribbon's Raise and Lower Priority set it:
@@ -597,6 +687,121 @@ mod tests {
         assert!(super::source_in_view(&app.ui), "a raster's information is on Source too");
         app.run("ui.pane.details", json!({"layer": raster})).unwrap();
         assert!(super::source_in_view(&app.ui), "naming a layer shows it, even when in view");
+    }
+
+    /// A polygon layer's Display tab sets its extrusion with the ribbon's commands, for the layer
+    /// the pane shows, each change a step of its own; choosing the type it has changes nothing. A
+    /// point layer has no Extrusion part.
+    #[test]
+    fn the_display_tab_sets_a_polygon_layers_extrusion() {
+        let app = with_cities();
+        let countries = layer_id(&app, "Countries");
+        let mut h = harness(app);
+        h.run();
+        open_tab(&mut h, "Display");
+        assert!(h.query_by_role_and_label(Role::ComboBox, "Type").is_none(), "no extrusion for points");
+        h.state_mut().session.run("layer.select", &json!({"layer": countries})).unwrap();
+        h.run_steps(2);
+        let x = |h: &egui_kittest::Harness<'static, RustGisApp>| h.state().session.map().layer(countries).unwrap().extrusion.clone();
+        assert!(h.query_by_role_and_label(Role::ComboBox, "Base").is_none(), "nothing more until extruded");
+        let steps = h.state().session.undo_depth();
+        for _ in 0..2 {
+            h.get_by_role_and_label(Role::ComboBox, "Type").click();
+            h.run();
+            h.get_by_role_and_label(Role::RadioButton, "Constant height").click();
+            h.run();
+        }
+        let set = x(&h).unwrap();
+        assert!(set.field.is_none() && set.height == 50_000.0, "{set:?}");
+        assert_eq!(h.state().session.undo_depth(), steps + 1, "choosing it again changes nothing");
+        for label in ["Height (m)", "Factor", "Base (m)"] {
+            assert!(h.query_by_role_and_label(Role::SpinButton, label).is_some(), "missing input: {label}");
+        }
+        // Dragged right over several frames, then let go: one step.
+        let at = h.get_by_role_and_label(Role::SpinButton, "Height (m)").rect().center();
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        h.event(egui::Event::PointerMoved(at));
+        h.step();
+        h.event(button(at, true));
+        h.step();
+        for i in 1..=4 {
+            h.event(egui::Event::PointerMoved(at + egui::vec2(10.0 * i as f32, 0.0)));
+            h.step();
+        }
+        h.event(button(at + egui::vec2(40.0, 0.0), false));
+        h.step();
+        h.run();
+        assert!(x(&h).unwrap().height > 50_000.0, "{:?}", x(&h));
+        assert_eq!(h.state().session.undo_depth(), steps + 2, "a drag is one step");
+        h.get_by_role_and_label(Role::ComboBox, "Base").click();
+        h.run();
+        h.get_by_role_and_label(Role::RadioButton, "By pop_est").click();
+        h.run();
+        assert_eq!(x(&h).unwrap().base_field.as_deref(), Some("pop_est"));
+        h.get_by_role_and_label(Role::ComboBox, "Base").click();
+        h.run();
+        h.get_by_role_and_label(Role::RadioButton, "By pop_est").click();
+        h.run();
+        assert_eq!(h.state().session.undo_depth(), steps + 3, "choosing the base it has changes nothing");
+        h.get_by_role_and_label(Role::CheckBox, "Cast Shadow").click();
+        h.run();
+        h.get_by_role_and_label(Role::CheckBox, "Lighting").click();
+        h.run();
+        let set = x(&h).unwrap();
+        assert!(set.shadows && !set.lighting && set.face_culling, "{set:?}");
+        assert_eq!(h.state().session.undo_depth(), steps + 5, "each change a step of its own");
+        h.get_by_role_and_label(Role::ComboBox, "Type").click();
+        h.run();
+        h.get_by_role_and_label(Role::RadioButton, "None").click();
+        h.run();
+        assert!(x(&h).is_none());
+        assert!(h.query_by_role_and_label(Role::CheckBox, "Cast Shadow").is_none(), "nothing more once flat");
+    }
+
+    /// Changing the Factor keeps a height below 1,000 m as it is, constant or the fallback of a
+    /// field extrusion (used where the field holds no number): left out of the command, the
+    /// height would be raised to 1,000 m.
+    #[test]
+    fn the_factor_keeps_a_low_constant_height() {
+        for kind in [json!({"type": "height", "height": 200}), json!({"type": "field", "field": "pop_est", "height": 200})] {
+            factor_keeps_the_height(kind);
+        }
+    }
+
+    fn factor_keeps_the_height(kind: serde_json::Value) {
+        let mut app = with_cities();
+        let countries = layer_id(&app, "Countries");
+        app.session.run("layer.select", &json!({"layer": countries})).unwrap();
+        app.session.run("layer.extrusion", &kind).unwrap();
+        let mut h = harness(app);
+        h.run();
+        open_tab(&mut h, "Display");
+        let at = h.get_by_role_and_label(Role::SpinButton, "Factor").rect().center();
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        h.event(egui::Event::PointerMoved(at));
+        h.step();
+        h.event(button(at, true));
+        h.step();
+        for i in 1..=4 {
+            h.event(egui::Event::PointerMoved(at + egui::vec2(10.0 * i as f32, 0.0)));
+            h.step();
+        }
+        h.event(button(at + egui::vec2(40.0, 0.0), false));
+        h.step();
+        h.run();
+        let x = h.state().session.map().layer(countries).unwrap().extrusion.clone().unwrap();
+        assert!(x.factor > 1.0, "the factor changed: {x:?}");
+        assert_eq!(x.height, 200.0, "the height is kept: {kind} {x:?}");
     }
 
     /// Each tab's inputs are reachable by their row labels.

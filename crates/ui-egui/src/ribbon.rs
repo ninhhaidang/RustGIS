@@ -4144,30 +4144,12 @@ fn effects_groups(app: &mut RustGisApp, ui: &mut Ui, layer: &rustgis_engine::map
     });
     if gt == GeometryType::Polygon {
         let x = layer.extrusion.clone();
-        let numeric: Vec<String> = layer.dataset.fields.iter().filter(|f| f.ty.is_numeric()).map(|f| f.name.clone()).collect();
-        let base_fields = numeric.clone();
+        let (id, numeric) = (layer.id, numeric_fields(layer));
         group(ui, "Extrusion", |ui| {
-            let cur = x.clone();
+            let (cur, fields) = (x.clone(), numeric.clone());
             big_menu(ui, app, "polygon_layer", "Type", "Raise polygons by a height or a field.", move |ui, app| {
-                if ui.radio(cur.is_none(), tl!("None")).clicked() {
-                    let _ = app.run("layer.extrusion", json!({"type": "none"}));
+                if extrusion_type_choices(ui, app, id, cur.as_ref(), &fields) {
                     ui.close();
-                }
-                if ui.radio(cur.as_ref().is_some_and(|x| x.field.is_none()), tl!("Constant height")).clicked() {
-                    let _ = app.run("layer.extrusion", json!({"type": "height", "height": 50_000}));
-                    ui.close();
-                }
-                for f in &numeric {
-                    if ui
-                        .radio(
-                            cur.as_ref().and_then(|x| x.field.as_deref()) == Some(f.as_str()),
-                            crate::i18n::fmt("By {field}", &[("field", f)]),
-                        )
-                        .clicked()
-                    {
-                        let _ = app.run("layer.extrusion", json!({"type": "field", "field": f}));
-                        ui.close();
-                    }
                 }
             });
             if let Some(xx) = &x {
@@ -4175,7 +4157,7 @@ fn effects_groups(app: &mut RustGisApp, ui: &mut Ui, layer: &rustgis_engine::map
                     // What the walls stand on: the ground, a constant (Base (m) below) or a numeric
                     // field (the constant is used where the field holds no number). A small menu
                     // over Factor, so the group stays narrow on a 1366 px window.
-                    let (on, fields) = (xx.clone(), base_fields);
+                    let on = xx.clone();
                     small_menu(
                         ui,
                         app,
@@ -4183,70 +4165,13 @@ fn effects_groups(app: &mut RustGisApp, ui: &mut Ui, layer: &rustgis_engine::map
                         "Base",
                         "What the walls stand on: the ground, a field or the constant Base (m).",
                         move |ui, app| {
-                            if ui.radio(on.base_field.is_none() && (on.base <= 0.0 || on.base.is_nan()), tl!("Ground")).clicked() {
-                                let _ = app.run("layer.extrusionBase", json!({"field": null, "base": 0}));
+                            if extrusion_base_choices(ui, app, id, &on, &numeric) {
                                 ui.close();
-                            }
-                            // A constant base is set with Base (m); once set, it can be chosen over a field.
-                            if on.base > 0.0 {
-                                let label = crate::i18n::fmt("Constant ({m} m)", &[("m", &on.base.to_string())]);
-                                if ui.radio(on.base_field.is_none(), label).clicked() {
-                                    let _ = app.run("layer.extrusionBase", json!({"field": null}));
-                                    ui.close();
-                                }
-                            }
-                            for f in &fields {
-                                if ui
-                                    .radio(on.base_field.as_deref() == Some(f.as_str()), crate::i18n::fmt("By {field}", &[("field", f)]))
-                                    .clicked()
-                                {
-                                    let _ = app.run("layer.extrusionBase", json!({"field": f}));
-                                    ui.close();
-                                }
                             }
                         },
                     );
-                    // As Base (m) below: a saved factor out of range is shown, not written back.
-                    let mut k = if xx.factor.is_finite() { xx.factor } else { 1.0 };
-                    ui.horizontal(|ui| {
-                        let input_label = ui.label(egui::RichText::new(tl!("Factor")).size(11.5));
-                        // Kept across a drag until it is let go (#607).
-                        let drag = Dragged::lend(ui, egui::Id::unique(("extrusion_factor", layer.id)), &mut k);
-                        let r = ui
-                            .add(
-                                egui::DragValue::new(&mut k)
-                                    .update_while_editing(false)
-                                    .range(0.0..=1e6)
-                                    .clamp_existing_to_range(false)
-                                    .speed(xx.factor.max(0.0001) * 0.02),
-                            )
-                            .labelled_by(input_label.id);
-                        if drag.settled(ui, &r, &mut k) && k != xx.factor {
-                            let t = if xx.field.is_some() { "field" } else { "height" };
-                            let _ = app.run("layer.extrusion", json!({"type": t, "field": xx.field, "factor": k}));
-                        }
-                    });
-                    // A saved base outside the range (below 0, or no number) is shown as it is, never
-                    // written back just by being shown: only a drag or an edit sends the command.
-                    let mut b = if xx.base.is_finite() { xx.base } else { 0.0 };
-                    ui.horizontal(|ui| {
-                        let input_label = ui.label(egui::RichText::new(tl!("Base (m)")).size(11.5));
-                        // Kept across a drag until it is let go, as the factor is.
-                        let drag = Dragged::lend(ui, egui::Id::unique(("extrusion_base", layer.id)), &mut b);
-                        let r = ui
-                            .add(
-                                egui::DragValue::new(&mut b)
-                                    .update_while_editing(false)
-                                    .range(0.0..=1e7)
-                                    .clamp_existing_to_range(false)
-                                    .speed(xx.base.max(10.0) * 0.02),
-                            )
-                            .labelled_by(input_label.id)
-                            .on_hover_text(tl!("The constant base: used where no field is chosen, or the field holds no number."));
-                        if drag.settled(ui, &r, &mut b) && b != xx.base {
-                            let _ = app.run("layer.extrusionBase", json!({"base": b}));
-                        }
-                    });
+                    extrusion_factor_row(app, ui, id, xx, "ribbon", 11.5);
+                    extrusion_base_row(app, ui, id, xx, "ribbon", 11.5);
                 });
             }
         });
@@ -4301,6 +4226,160 @@ fn effects_groups(app: &mut RustGisApp, ui: &mut Ui, layer: &rustgis_engine::map
             });
         }
     }
+}
+
+/// The names of `layer`'s numeric fields: what an extrusion's height or base can be read from.
+pub(crate) fn numeric_fields(layer: &rustgis_engine::map::Layer) -> Vec<String> {
+    layer.dataset.fields.iter().filter(|f| f.ty.is_numeric()).map(|f| f.name.clone()).collect()
+}
+
+/// The extrusion types of layer `id` as radio buttons, shared by the ribbon's Type menu and the
+/// Layer Properties pane: None, Constant height, and By <field> for each of `fields`. Choosing the
+/// type the layer has changes nothing, so a constant height isn't reset to 50 km by choosing it
+/// again. Whether one was clicked, so a menu can close.
+pub(crate) fn extrusion_type_choices(
+    ui: &mut Ui,
+    app: &mut RustGisApp,
+    id: u32,
+    cur: Option<&rustgis_engine::map::effects::Extrusion>,
+    fields: &[String],
+) -> bool {
+    let mut clicked = false;
+    let on = cur.is_none();
+    if ui.radio(on, tl!("None")).clicked() {
+        clicked = true;
+        if !on {
+            let _ = app.run("layer.extrusion", json!({"layer": id, "type": "none"}));
+        }
+    }
+    let on = cur.is_some_and(|x| x.field.is_none());
+    if ui.radio(on, tl!("Constant height")).clicked() {
+        clicked = true;
+        if !on {
+            let _ = app.run("layer.extrusion", json!({"layer": id, "type": "height", "height": 50_000}));
+        }
+    }
+    for f in fields {
+        let on = cur.and_then(|x| x.field.as_deref()) == Some(f.as_str());
+        if ui.radio(on, crate::i18n::fmt("By {field}", &[("field", f)])).clicked() {
+            clicked = true;
+            if !on {
+                let _ = app.run("layer.extrusion", json!({"layer": id, "type": "field", "field": f}));
+            }
+        }
+    }
+    clicked
+}
+
+/// What layer `id`'s walls stand on, as radio buttons shared by the ribbon's Base menu and the
+/// Layer Properties pane: the ground, the constant Base (m) once it is set, or By <field> for each
+/// of `fields`. As with the type, choosing the base the layer has changes nothing. Whether one was
+/// clicked, so a menu can close.
+pub(crate) fn extrusion_base_choices(
+    ui: &mut Ui,
+    app: &mut RustGisApp,
+    id: u32,
+    x: &rustgis_engine::map::effects::Extrusion,
+    fields: &[String],
+) -> bool {
+    let mut clicked = false;
+    let on = x.base_field.is_none() && (x.base <= 0.0 || x.base.is_nan());
+    if ui.radio(on, tl!("Ground")).clicked() {
+        clicked = true;
+        if !on {
+            let _ = app.run("layer.extrusionBase", json!({"layer": id, "field": null, "base": 0}));
+        }
+    }
+    // A constant base is set with Base (m); once set, it can be chosen over a field.
+    if x.base > 0.0 {
+        let label = crate::i18n::fmt("Constant ({m} m)", &[("m", &x.base.to_string())]);
+        let on = x.base_field.is_none();
+        if ui.radio(on, label).clicked() {
+            clicked = true;
+            if !on {
+                let _ = app.run("layer.extrusionBase", json!({"layer": id, "field": null}));
+            }
+        }
+    }
+    for f in fields {
+        let on = x.base_field.as_deref() == Some(f.as_str());
+        if ui.radio(on, crate::i18n::fmt("By {field}", &[("field", f)])).clicked() {
+            clicked = true;
+            if !on {
+                let _ = app.run("layer.extrusionBase", json!({"layer": id, "field": f}));
+            }
+        }
+    }
+    clicked
+}
+
+/// Layer `id`'s extrusion Factor, shared by the ribbon and the Layer Properties pane (`salt`
+/// keeps their drags apart). As Base (m): a saved factor out of range is shown, not written back.
+pub(crate) fn extrusion_factor_row(
+    app: &mut RustGisApp,
+    ui: &mut Ui,
+    id: u32,
+    x: &rustgis_engine::map::effects::Extrusion,
+    salt: &str,
+    size: f32,
+) {
+    let mut k = if x.factor.is_finite() { x.factor } else { 1.0 };
+    ui.horizontal(|ui| {
+        let input_label = ui.label(egui::RichText::new(tl!("Factor")).size(size));
+        // Kept across a drag until it is let go (#607).
+        let drag = Dragged::lend(ui, egui::Id::unique(("extrusion_factor", salt, id)), &mut k);
+        let r = ui
+            .add(
+                egui::DragValue::new(&mut k)
+                    .update_while_editing(false)
+                    .range(0.0..=1e6)
+                    .clamp_existing_to_range(false)
+                    .speed(x.factor.max(0.0001) * 0.02),
+            )
+            .labelled_by(input_label.id);
+        if drag.settled(ui, &r, &mut k) && k != x.factor {
+            // The height is sent with the factor, constant or the field's fallback where it holds
+            // no number: left out, `layer.extrusion` would raise one below 1,000 m to 1,000 m.
+            let p = match &x.field {
+                Some(f) => json!({"layer": id, "type": "field", "field": f, "height": x.height, "factor": k}),
+                None => json!({"layer": id, "type": "height", "height": x.height, "factor": k}),
+            };
+            let _ = app.run("layer.extrusion", p);
+        }
+    });
+}
+
+/// Layer `id`'s constant extrusion base, Base (m), shared by the ribbon and the Layer Properties
+/// pane (`salt` keeps their drags apart). A saved base outside the range (below 0, or no number)
+/// is shown as it is, never written back just by being shown: only a drag or an edit sends the
+/// command.
+pub(crate) fn extrusion_base_row(
+    app: &mut RustGisApp,
+    ui: &mut Ui,
+    id: u32,
+    x: &rustgis_engine::map::effects::Extrusion,
+    salt: &str,
+    size: f32,
+) {
+    let mut b = if x.base.is_finite() { x.base } else { 0.0 };
+    ui.horizontal(|ui| {
+        let input_label = ui.label(egui::RichText::new(tl!("Base (m)")).size(size));
+        // Kept across a drag until it is let go, as the factor is.
+        let drag = Dragged::lend(ui, egui::Id::unique(("extrusion_base", salt, id)), &mut b);
+        let r = ui
+            .add(
+                egui::DragValue::new(&mut b)
+                    .update_while_editing(false)
+                    .range(0.0..=1e7)
+                    .clamp_existing_to_range(false)
+                    .speed(x.base.max(10.0) * 0.02),
+            )
+            .labelled_by(input_label.id)
+            .on_hover_text(tl!("The constant base: used where no field is chosen, or the field holds no number."));
+        if drag.settled(ui, &r, &mut b) && b != x.base {
+            let _ = app.run("layer.extrusionBase", json!({"layer": id, "base": b}));
+        }
+    });
 }
 
 fn imagery_groups(app: &mut RustGisApp, ui: &mut Ui) {
