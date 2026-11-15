@@ -131,8 +131,9 @@ pub fn commands() -> Vec<C> {
         .params(r#"{"name": string, "map"?: name (default: the active map)}"#),
         C::new("bookmark.rename", "Rename Bookmark", "Bookmarks", |s, p| {
             let new = ps(p, "newName").map(str::trim).filter(|n| !n.is_empty()).ok_or("newName is required")?;
+            let new = super::within("newName", "a bookmark's name", new, MAX_BOOKMARK_NAME)?;
             let (mi, bi) = bookmark_at(s, p)?;
-            let name = unique_bookmark_name(s, mi, Some(bi), new);
+            let name = unique_bookmark_name(s, mi, Some(bi), &new);
             if let Some(b) = s.project.maps.get_mut(mi).and_then(|m| m.bookmarks.get_mut(bi)) {
                 b.name = name.clone();
             }
@@ -155,7 +156,7 @@ pub fn commands() -> Vec<C> {
         }).inputs(bookmark_inputs).roles(&[]).effects(crate::policy::Effects::NONE)
         .params(r#"{"name": string (it takes the current view; its map must be in view), "map"?: name}"#),
         C::new("bookmark.describe", "Bookmark Description", "Bookmarks", |s, p| {
-            let text: String = ps(p, "description").ok_or("description is required")?.trim().chars().take(MAX_DESCRIPTION).collect();
+            let text = super::within("description", "a bookmark's description", ps(p, "description").ok_or("description is required")?.trim(), MAX_DESCRIPTION)?;
             let (mi, bi) = bookmark_at(s, p)?;
             if let Some(b) = s.project.maps.get_mut(mi).and_then(|m| m.bookmarks.get_mut(bi)) {
                 b.description = text;
@@ -843,14 +844,15 @@ fn add_bookmark(s: &mut Session, p: &Value) -> CmdResult {
     if s.project.maps.get(mi).is_some_and(|m| m.bookmarks.len() >= MAX_BOOKMARKS) {
         return Err(format!("a map keeps at most {MAX_BOOKMARKS} bookmarks"));
     }
+    let description =
+        super::within("description", "a bookmark's description", ps(p, "description").unwrap_or_default().trim(), MAX_DESCRIPTION)?;
     let given = ps(p, "name").map(str::trim).filter(|n| !n.is_empty());
     let base = match given {
-        Some(n) => n.to_string(),
+        Some(n) => super::within("name", "a bookmark's name", n, MAX_BOOKMARK_NAME)?,
         None => s.project.maps.get(mi).map_or_else(|| "Bookmark 1".into(), new_bookmark_name),
     };
     // A taken name is numbered, never replacing the bookmark that has it (#351).
     let name = unique_bookmark_name(s, mi, None, &base);
-    let description: String = ps(p, "description").unwrap_or_default().trim().chars().take(MAX_DESCRIPTION).collect();
     let m = s.project.maps.get_mut(mi).ok_or("no map")?;
     m.bookmarks.push(Bookmark { description, ..Bookmark::new(name.clone(), m.camera) });
     Ok(json!({"name": name}))
@@ -1148,7 +1150,8 @@ fn rename_choice(s: &super::InputContext<'_>, p: &Value) -> Result<(usize, Strin
         return Err("name is required".into());
     }
     let i = map_at(s, p)?;
-    let name = super::numbered(n, |n| s.project.maps.iter().enumerate().any(|(j, m)| j != i && m.name.eq_ignore_ascii_case(n)));
+    let n = super::within("name", "a map's name", n, super::MAX_NAME)?;
+    let name = super::numbered(&n, |n| s.project.maps.iter().enumerate().any(|(j, m)| j != i && m.name.eq_ignore_ascii_case(n)));
     Ok((i, name))
 }
 /// Renaming preserves defaults on the same incarnation; it does not model a later map namespace.

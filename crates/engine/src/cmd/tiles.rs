@@ -933,6 +933,12 @@ fn set(s: &mut Session, p: &Value) -> CmdResult {
     let i = find(s, p)?.ok_or("name or index is required")?;
     let mode = blend(p)?;
     let look = cog_look(p)?;
+    // Before the legends are prepared: a refused name must leave no login activated.
+    let rename = ps(p, "rename")
+        .map(str::trim)
+        .filter(|r| !r.is_empty())
+        .map(|r| super::within("rename", "a tile layer's name", r, 120))
+        .transpose()?;
     let mut new_legends = match p.get("legend") {
         None => None,
         Some(Value::Null) => Some(Vec::new()),
@@ -1003,8 +1009,8 @@ fn set(s: &mut Session, p: &Value) -> CmdResult {
     if let Some(m) = mode {
         t.blend = m;
     }
-    if let Some(r) = ps(p, "rename").map(str::trim).filter(|r| !r.is_empty()) {
-        t.name = r.chars().take(120).collect();
+    if let Some(r) = rename {
+        t.name = r;
     }
     if let Some(url) = new_url {
         // A dated layer keeps the look at every date: its template takes it too, and a data

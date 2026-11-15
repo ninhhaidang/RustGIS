@@ -64,8 +64,9 @@ pub fn commands() -> Vec<C> {
         C::new("layout.rename", "Rename Layout", "Browser", |s, p| {
             let name = ps(p, "newName").map(str::trim).filter(|n| !n.is_empty()).ok_or("newName is required")?;
             let i = index(s, &by_name(p))?;
+            let name = super::within("newName", "a layout's name", name, super::MAX_NAME)?;
             // Unique among the other layouts, so names keep finding one layout.
-            let unique = numbered(name, |n| s.project.layouts.iter().enumerate().any(|(j, l)| j != i && l.name.eq_ignore_ascii_case(n)));
+            let unique = numbered(&name, |n| s.project.layouts.iter().enumerate().any(|(j, l)| j != i && l.name.eq_ignore_ascii_case(n)));
             if let Some(l) = s.project.layouts.get_mut(i) {
                 l.name = unique.clone();
             }
@@ -291,7 +292,7 @@ pub(crate) fn new_layout(s: &mut Session, p: &Value) -> CmdResult {
         &json!({"page": ps(p, "page").unwrap_or("letter"), "orientation": ps(p, "orientation").unwrap_or("landscape"), "width": p.get("width"), "height": p.get("height")}),
         None,
     )?;
-    let name = unique_name(s, ps(p, "name").unwrap_or("Layout"));
+    let name = unique_name(s, &super::within("name", "a layout's name", ps(p, "name").unwrap_or("Layout").trim(), super::MAX_NAME)?);
     let mut l = Layout::new(name.clone(), w, h);
     match ps(p, "template").unwrap_or("map") {
         "blank" => {}
