@@ -33,6 +33,11 @@ type_complexity = "allow"
 rustgis-engine = { workspace = true }
 rustgis-ui-egui = { workspace = true }
 
+# The iOS app's icon, drawn from the logo's code (`build.rs`).
+[build-dependencies]
+tiny-skia = { workspace = true }
+png = "0.18"
+
 [target.'cfg(target_os = "android")'.dependencies]
 # Without the `geolibre` feature: a phone can't run the `geolibre` program.
 rustgis-engine = { workspace = true }

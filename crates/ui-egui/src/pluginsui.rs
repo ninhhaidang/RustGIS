@@ -485,6 +485,14 @@ fn tell_unloaded(app: &mut RustGisApp) {
 
 /// Checks a package that arrived (a file, a download) and asks the user to accept it.
 pub fn received(app: &mut RustGisApp, bytes: Vec<u8>, from: Option<Box<Entry>>) {
+    // Every way a package arrives (opened, dropped, downloaded) is refused here, before it is read
+    // or offered for installing, where none could be installed.
+    if !rp::INSTALLS {
+        let _ = (bytes, from);
+        app.plugins.message = Some((false, not_installed_here().to_string()));
+        app.session.notify(not_installed_here(), true);
+        return;
+    }
     let r = (|| {
         if let Some(e) = &from {
             let sha = rp::package::sha256_hex(&bytes);
@@ -645,6 +653,12 @@ fn download(app: &mut RustGisApp, e: &Entry, ctx: &egui::Context) {
 /// Picks a package file to install (or reads `path`, from scripts), then asks before
 /// installing it.
 pub fn install_from_file(app: &mut RustGisApp, path: Option<&str>) {
+    // Said before a file is asked for, where none could be installed.
+    if !rp::INSTALLS {
+        app.plugins.message = Some((false, not_installed_here().to_string()));
+        app.session.notify(not_installed_here(), true);
+        return;
+    }
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(path) = path {
         match std::fs::read(path) {
@@ -932,6 +946,12 @@ fn installed_tab(app: &mut RustGisApp, ui: &mut egui::Ui, t: &Tokens) {
 const ROW_H: f32 = 104.0;
 
 fn browse_tab(app: &mut RustGisApp, ui: &mut egui::Ui, t: &Tokens) {
+    // Where nothing can be installed (iOS), the registry isn't fetched: the reason stands in
+    // for it.
+    if !rp::INSTALLS {
+        not_installed_card(ui, t);
+        return;
+    }
     if app.plugins.registry.is_none() && !app.plugins.busy() {
         refresh(app, ui.ctx());
     }
@@ -1092,7 +1112,32 @@ fn browse_row(ui: &mut egui::Ui, t: &Tokens, e: &Entry, web: bool) -> bool {
     clicked
 }
 
+/// Why plugins can't be installed here (iOS, `rustgis_plugins::INSTALLS`), in the interface's
+/// language.
+fn not_installed_here() -> &'static str {
+    tl!(
+        "Plugins can't be installed on iOS: Apple doesn't let an app download code that adds to what it does. Use them in RustGIS on a computer or in the browser."
+    )
+}
+
+/// [`not_installed_here`], where the way to install would be.
+fn not_installed_card(ui: &mut egui::Ui, t: &Tokens) {
+    card(ui, t, |ui| {
+        ui.label(egui::RichText::new(not_installed_here()).color(t.text));
+    });
+}
+
 fn settings_tab(app: &mut RustGisApp, ui: &mut egui::Ui, t: &Tokens) {
+    if !rp::INSTALLS {
+        not_installed_card(ui, t);
+    } else {
+        install_card(app, ui, t);
+    }
+    registry_card(app, ui, t);
+}
+
+/// Installing from a file, and on the desktop from a plugin folder.
+fn install_card(app: &mut RustGisApp, ui: &mut egui::Ui, t: &Tokens) {
     card(ui, t, |ui| {
         ui.label(egui::RichText::new(tl!("Install from a file")).font(semibold(13.0)));
         ui.label(
@@ -1122,6 +1167,10 @@ fn settings_tab(app: &mut RustGisApp, ui: &mut egui::Ui, t: &Tokens) {
             }
         });
     });
+}
+
+/// The registry's address, and what plugins may do.
+fn registry_card(app: &mut RustGisApp, ui: &mut egui::Ui, t: &Tokens) {
     card(ui, t, |ui| {
         ui.label(egui::RichText::new(tl!("Plugin registry")).font(semibold(13.0)));
         ui.label(

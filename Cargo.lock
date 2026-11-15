@@ -5063,10 +5063,12 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "objc2-ui-kit 0.3.2",
  "objc2-uniform-type-identifiers 0.3.2",
+ "png",
  "rustgis-engine",
  "rustgis-ui-egui",
  "rustgis-ui-touch",
  "serde_json",
+ "tiny-skia 0.12.0",
  "winit",
 ]
 

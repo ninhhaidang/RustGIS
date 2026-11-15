@@ -51,10 +51,58 @@ if [ "$profile" = release ]; then xcrun strip -x "$app/RustGIS"; fi
 
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' "$root/Cargo.toml" | head -1)
 # The build number App Store Connect wants rising with each upload: IOS_BUILD, or the commits.
-build=${IOS_BUILD:-$(git -C "$root" rev-list --count HEAD 2>/dev/null || echo 1)}
+# A shallow clone or a tree without git can't count them: for a device (an upload) that is
+# refused, as a repeated number would be; the Simulator's build takes 1.
+build=${IOS_BUILD:-}
+if [ -z "$build" ]; then
+    if [ "$(git -C "$root" rev-parse --is-shallow-repository 2>/dev/null)" = false ]; then
+        build=$(git -C "$root" rev-list --count HEAD)
+    elif [ "$kind" = device ]; then
+        echo "build-ios: no full git history to number the build: set IOS_BUILD" >&2
+        exit 1
+    else
+        build=1
+    fi
+fi
 sed -e "s/@VERSION@/$version/" -e "s/@BUILD@/$build/" -e "s/@PLATFORM@/$platform/" "$here/ios/Info.plist" > "$app/Info.plist"
+# What Xcode's own builds record, which App Store Connect checks an upload for.
+sdk_version=$(xcrun --sdk "$sdk" --show-sdk-version)
+sdk_build=$(xcrun --sdk "$sdk" --show-sdk-build-version)
+xcode=$(xcodebuild -version | sed -n 's/^Xcode \([0-9]*\)\.\([0-9]*\).*/\1\2/p' | head -1)
+xcode_build=$(xcodebuild -version | sed -n 's/^Build version //p' | head -1)
+platform_lower=$(echo "$sdk" | tr '[:upper:]' '[:lower:]')
+for kv in "DTPlatformName string $platform_lower" "DTPlatformVersion string $sdk_version" \
+    "DTSDKName string $platform_lower$sdk_version" "DTSDKBuild string $sdk_build" \
+    "DTPlatformBuild string $sdk_build" "DTXcode string ${xcode}0" "DTXcodeBuild string $xcode_build" \
+    "DTCompiler string com.apple.compilers.llvm.clang.1_0" "BuildMachineOSBuild string $(sw_vers -buildVersion)"; do
+    set -- $kv
+    /usr/libexec/PlistBuddy -c "Add :$1 $2 $3" "$app/Info.plist" >/dev/null
+done
 plutil -lint -s "$app/Info.plist"
 printf 'APPL????' > "$app/PkgInfo"
+
+# The icon, which build.rs drew from the logo's code: an asset catalog of its one 1024-pixel
+# image, compiled by actool into the bundle, with the keys it adds merged into Info.plist.
+# (Cargo keeps it in build/rustgis-mobile-<hash>/out, or build/rustgis-mobile/<hash>/out in newer
+# versions: the newest of either.)
+icon=$(find "$target_dir/$target/$profile/build" -path '*rustgis-mobile*' -name AppIcon.png -exec ls -t {} + 2>/dev/null | head -1)
+[ -n "$icon" ] || { echo "build-ios: build.rs drew no AppIcon.png" >&2; exit 1; }
+assets=$out/Assets.xcassets
+rm -rf "$assets" && mkdir -p "$assets/AppIcon.appiconset"
+cp "$icon" "$assets/AppIcon.appiconset/AppIcon.png"
+cat > "$assets/Contents.json" <<'JSON'
+{ "info": { "author": "xcode", "version": 1 } }
+JSON
+cat > "$assets/AppIcon.appiconset/Contents.json" <<'JSON'
+{
+  "images": [{ "filename": "AppIcon.png", "idiom": "universal", "platform": "ios", "size": "1024x1024" }],
+  "info": { "author": "xcode", "version": 1 }
+}
+JSON
+xcrun actool "$assets" --compile "$app" --platform "$sdk" --minimum-deployment-target 15.0 \
+    --target-device iphone --target-device ipad --app-icon AppIcon \
+    --output-partial-info-plist "$out/icon.plist" --output-format human-readable-text --notices --warnings >/dev/null
+/usr/libexec/PlistBuddy -c "Merge $out/icon.plist" "$app/Info.plist" >/dev/null
 
 if [ "$kind" = simulator ]; then
     # The simulator runs anything signed, even ad hoc.

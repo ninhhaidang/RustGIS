@@ -43,6 +43,11 @@ is gone or has changed), the web app says so once and lists it on the **Installe
 loaded*, with why. **Retry** downloads a plugin from the registry again; **Remove** forgets it, so
 the web app stops trying at start. A plugin that fails to load is never forgotten on its own.
 
+The iOS app installs no plugins, from the registry or from a file, and doesn't fetch the
+registry: Apple's App Review doesn't let an app download code that adds to what it does
+(guideline 2.5.2), and a plugin is such code. The **Browse** tab says so, and so does any way of
+installing one.
+
 On the command line:
 
 ```sh

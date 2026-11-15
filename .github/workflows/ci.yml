@@ -62,6 +62,33 @@ jobs:
       - name: Build for the browser
         run: cargo build --locked --target wasm32-unknown-unknown -p rustgis-web
 
+  # The iOS app (apps/rustgis-mobile, #1902): linted for devices and built for the Simulator,
+  # where macOS is tested (pushes to main, a manual run on every platform, a pull request labelled
+  # `ci:macos` or `ci:full`). Unlike the tests, it runs from the next push after the label is
+  # added, not straight away (ci-label.yml runs test-rust.yml only).
+  ios:
+    name: iOS app
+    if: >-
+      github.event_name == 'push'
+      || (github.event_name == 'workflow_dispatch' && inputs.platforms != 'linux')
+      || contains(github.event.pull_request.labels.*.name, 'ci:macos')
+      || contains(github.event.pull_request.labels.*.name, 'ci:full')
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          targets: aarch64-apple-ios, aarch64-apple-ios-sim
+          components: clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          # Only main saves the cache (see test-rust.yml).
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Lint the app for devices
+        run: cargo clippy --locked --target aarch64-apple-ios -p rustgis-mobile --all-targets
+      - name: Build the app for the Simulator
+        run: apps/rustgis-mobile/build-ios.sh --debug simulator
+
   # Every dependency's licence must be one the project accepts (deny.toml). The third-party
   # notices the packages ship (`cargo xtask notices`) only warn here when out of date, since
   # Dependabot can't regenerate them; the release build requires them current.

@@ -318,6 +318,8 @@ pub fn entry_status(e: &rustgis_plugins::registry::Entry) -> Value {
 /// [`fetch_registry`]).
 fn browse(s: &mut Session, p: &Value) -> CmdResult {
     let url = ps(p, "url").map(str::trim).filter(|s| !s.is_empty()).unwrap_or(rustgis_plugins::registry::DEFAULT_URL);
+    // Not fetched where nothing in it could be installed.
+    rustgis_plugins::may_install()?;
     #[cfg(not(target_arch = "wasm32"))]
     {
         Ok(Value::Array(fetch_registry(s, url)?.iter().map(entry_status).collect()))
@@ -366,6 +368,7 @@ pub fn install_checked(e: &rustgis_plugins::registry::Entry, bytes: &[u8]) -> Re
 fn install_from_registry(s: &mut Session, p: &Value) -> CmdResult {
     let id = ps(p, "id").ok_or("id is required")?;
     let url = ps(p, "url").map(str::trim).filter(|s| !s.is_empty()).unwrap_or(rustgis_plugins::registry::DEFAULT_URL);
+    rustgis_plugins::may_install()?;
     #[cfg(not(target_arch = "wasm32"))]
     {
         let entries = fetch_registry(s, url)?;
