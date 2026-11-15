@@ -46,7 +46,13 @@ Data added by its address, from a web server or an S3 bucket, is described in
 other assets: by collection, dates, the most cloud cover and (by default) where the map is, in the
 order you pick under **Sort by** (the API's own, newest first, oldest first or least cloud first;
 an API whose items come back visibly not in that order is reported, and so is a page whose order
-can't be checked, such as dates in mixed time zones). A static catalog is walked
+can't be checked, such as dates in mixed time zones). **Dates** starts unticked (the Sentinel-2
+service ticks it, for its last 90 days) and **Most cloud cover (%)** starts ticked: tick or untick
+either to put that filter in or leave it out of the search while keeping what you typed. A
+ticked box left blank puts nothing in the search (any date, any cloud cover); a cloud limit that
+is not a number from 0 to 100 is refused with a message, not dropped. In an API search, a
+collection without `eo:cloud_cover` finds nothing with a limit set; a static catalog keeps an item
+that doesn't say how cloudy it is. A static catalog is walked
 in its own order, so it has no sort. The default API is Element 84's [Earth Search](https://earth-search.aws.element84.com/v1);
 Microsoft's [Planetary Computer](https://planetarycomputer.microsoft.com/api/stac/v1) is offered
 beside it, and other APIs with GET item search work. **Collections** lists what the API offers,
