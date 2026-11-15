@@ -2359,7 +2359,7 @@ mod native {
             struct Trickle;
             impl Read for Trickle {
                 fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-                    std::thread::sleep(Duration::from_millis(10));
+                    std::thread::sleep(Duration::from_millis(10)); // test-wait: simulate a trickling response body
                     if let Some(b) = buf.first_mut() {
                         *b = b'x';
                     }
@@ -2372,7 +2372,7 @@ mod native {
             assert!(start.elapsed() < Duration::from_secs(1));
             std::thread::scope(|scope| {
                 scope.spawn(|| {
-                    std::thread::sleep(Duration::from_millis(30));
+                    std::thread::sleep(Duration::from_millis(30)); // test-wait: cancel while the simulated request is running
                     *cancel.lock().unwrap() = true;
                 });
                 // The work outlasts the cancel however late the cancelling thread runs.
@@ -2380,7 +2380,7 @@ mod native {
                 let e = cancellable(&cancel, Instant::now() + Duration::from_secs(10), move || {
                     let end = Instant::now() + Duration::from_secs(5);
                     while !*flag.lock().unwrap() && Instant::now() < end {
-                        std::thread::sleep(Duration::from_millis(5));
+                        std::thread::sleep(Duration::from_millis(5)); // test-wait: legacy polling for cancellation in the fake request
                     }
                     Ok(())
                 })
@@ -2389,7 +2389,7 @@ mod native {
             });
             assert!(request_target(&mut socket, &cancel, Instant::now() + Duration::from_secs(10)).is_none());
             let e = cancellable(&Mutex::new(false), Instant::now() + Duration::from_millis(20), || {
-                std::thread::sleep(Duration::from_millis(100));
+                std::thread::sleep(Duration::from_millis(100)); // test-wait: simulate a request exceeding its deadline
                 Ok(())
             })
             .unwrap_err();

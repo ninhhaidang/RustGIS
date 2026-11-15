@@ -294,7 +294,7 @@ mod tests {
                 return cleared;
             }
             assert!(Instant::now() < end, "keychain worker did not finish");
-            std::thread::sleep(Duration::from_millis(1));
+            std::thread::sleep(Duration::from_millis(1)); // test-wait: legacy polling for the keychain worker
         }
     }
 

@@ -2004,7 +2004,7 @@ mod tests {
     /// Reads every table of a live database: `RUSTGIS_TEST_POSTGIS="host=… dbname=… user=…
     /// password=…" cargo test -p rustgis-data -- --ignored postgis_live --nocapture`.
     #[test]
-    #[ignore]
+    #[ignore = "needs a live PostGIS database in RUSTGIS_TEST_POSTGIS"]
     fn postgis_live() {
         let Ok(dsn) = std::env::var("RUSTGIS_TEST_POSTGIS") else { return };
         let db = super::super::duckdb::Database::parse(&dsn);

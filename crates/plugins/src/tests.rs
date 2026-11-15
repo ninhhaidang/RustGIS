@@ -319,7 +319,7 @@ fn wasm_host_requests_stop_at_the_time_limit() {
     impl Host for Slow {
         fn call(&mut self, _: &str, _: &Value) -> Result<Value, String> {
             self.0 += 1;
-            std::thread::sleep(std::time::Duration::from_millis(100));
+            std::thread::sleep(std::time::Duration::from_millis(100)); // test-wait: simulate a slow host call
             Ok(json!(1))
         }
     }
@@ -1539,7 +1539,7 @@ fn process_plugins_that_hang_are_stopped() {
         let pid = host.logs.first().and_then(|p| p.parse::<i32>().ok()).and_then(rustix::process::Pid::from_raw).unwrap();
         let t0 = std::time::Instant::now();
         while rustix::process::test_kill_process(pid).is_ok() && t0.elapsed() < std::time::Duration::from_secs(10) {
-            std::thread::sleep(std::time::Duration::from_millis(50));
+            std::thread::sleep(std::time::Duration::from_millis(50)); // test-wait: legacy polling for killed plugin exit
         }
         assert!(rustix::process::test_kill_process(pid).is_err(), "the grandchild {pid:?} still runs");
     }
@@ -1567,10 +1567,10 @@ fn process_tools_show_progress_and_can_be_cancelled() {
     // What it logs shows while it runs.
     let t0 = std::time::Instant::now();
     while control.last_log().is_none() && t0.elapsed() < std::time::Duration::from_secs(20) {
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::thread::sleep(std::time::Duration::from_millis(20)); // test-wait: legacy polling for the plugin log
     }
     while control.last_log().as_deref() != Some("step 1 of 3") && t0.elapsed() < std::time::Duration::from_secs(20) {
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::thread::sleep(std::time::Duration::from_millis(20)); // test-wait: legacy polling for plugin progress
     }
     assert_eq!(control.last_log().as_deref(), Some("step 1 of 3"));
     // A cancel stops it promptly, and the run fails as cancelled.
@@ -1624,7 +1624,7 @@ fn poll_until(plugin: &str, host: &mut Recorder, done: impl Fn(&crate::session::
         if done(&polled, host) || t0.elapsed() > std::time::Duration::from_secs(20) {
             return polled;
         }
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::thread::sleep(std::time::Duration::from_millis(20)); // test-wait: legacy polling for session plugin events
     }
 }
 
@@ -1635,7 +1635,7 @@ fn error_output_past_what_is_kept_is_counted() {
     let kept = crate::process::errors(std::io::Cursor::new(text.into_bytes()), None);
     let t0 = std::time::Instant::now();
     while kept.lock().unwrap().dropped < 5 && t0.elapsed() < std::time::Duration::from_secs(10) {
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::thread::sleep(std::time::Duration::from_millis(10)); // test-wait: legacy polling for the stderr reader
     }
     let k = kept.lock().unwrap();
     assert_eq!((k.dropped, k.lines.len(), k.lines.front().map(String::as_str)), (5, 20, Some("line 5")));
@@ -1672,7 +1672,7 @@ fn session_plugins_keep_one_program_running() {
     for i in 0..5_000 {
         crate::session::event("sess-keep", &json!({"event": "view", "view": {"scale": i, "pad": "x".repeat(100)}}));
     }
-    std::thread::sleep(std::time::Duration::from_secs(3));
+    std::thread::sleep(std::time::Duration::from_secs(3)); // test-wait: let the paused session consume its bounded event queue
     poll_until("sess-keep", &mut host, |_, _| true);
     let heard = crate::call(&p, &mut host, &command("v"), false).unwrap();
     let views = heard["events"].as_array().unwrap().len();
@@ -1718,7 +1718,7 @@ fn session_plugins_that_end_or_fail_are_started_again() {
         let pid = rustix::process::Pid::from_raw(left.as_i64().unwrap() as i32).unwrap();
         let t0 = std::time::Instant::now();
         while !gone(pid) && t0.elapsed() < std::time::Duration::from_secs(10) {
-            std::thread::sleep(std::time::Duration::from_millis(50));
+            std::thread::sleep(std::time::Duration::from_millis(50)); // test-wait: legacy polling for session process exit
         }
         assert!(gone(pid), "{pid:?} still runs");
     }
@@ -1775,14 +1775,14 @@ fn an_exited_session_whose_output_keeps_flowing_is_ended() {
             ended = Some(e);
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(1));
+        std::thread::sleep(std::time::Duration::from_millis(1)); // test-wait: legacy polling for the flowing session to end
     }
     let ended = ended.expect("the session didn't end");
     assert!(ended.unread, "{ended:?}");
     assert!(!crate::session::is_running("sess-flow"));
     let t0 = std::time::Instant::now();
     while !gone(pid) && t0.elapsed() < std::time::Duration::from_secs(10) {
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::thread::sleep(std::time::Duration::from_millis(50)); // test-wait: legacy polling for session process exit
     }
     assert!(gone(pid), "{pid:?} still runs");
     let _ = std::fs::remove_dir_all(&dir);
@@ -2068,7 +2068,7 @@ fn python_environments_are_declared_checked_and_required() {
 /// Downloads uv and a Python and runs a plugin in its environment (network; run by hand:
 /// `cargo test -p rustgis-plugins --features testing -- --ignored python_environments_are_made`).
 #[test]
-#[ignore]
+#[ignore = "needs network downloads of uv, Python and packages"]
 fn python_environments_are_made() {
     let plugins = std::env::temp_dir().join(format!("rustgis-test-pyenv-made-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&plugins);
@@ -2129,9 +2129,9 @@ fn python_environment_preparations_wait_for_the_lock() {
     let prep = std::thread::spawn(move || crate::pyenv::prepare("pyenv-wait", &mut |l| heard.lock().unwrap().push(l.to_string())));
     let t0 = std::time::Instant::now();
     while said.lock().unwrap().is_empty() && t0.elapsed() < std::time::Duration::from_secs(10) {
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::thread::sleep(std::time::Duration::from_millis(20)); // test-wait: legacy polling for the environment lock notice
     }
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    std::thread::sleep(std::time::Duration::from_millis(200)); // test-wait: legacy delay before asserting preparation stays blocked
     assert!(!prep.is_finished(), "it waits while the lock is held");
     let waiting = said.lock().unwrap().clone();
     assert_eq!(waiting, ["Waiting for another preparation of this environment to finish"]);
@@ -2156,7 +2156,7 @@ fn python_environment_preparations_wait_for_the_lock() {
 /// Two preparations of one environment at once (the app and rustgis-cli): the second waits for
 /// the first and finds its environment (network; run by hand with `--ignored`).
 #[test]
-#[ignore]
+#[ignore = "needs network downloads of uv and Python"]
 fn python_environments_are_prepared_one_at_a_time() {
     let plugins = std::env::temp_dir().join(format!("rustgis-test-pyenv-lock-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&plugins);

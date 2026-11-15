@@ -506,7 +506,7 @@ mod tests {
         let worker = std::thread::spawn(f);
         while !worker.is_finished() {
             relay.poll(s);
-            std::thread::sleep(Duration::from_millis(5));
+            std::thread::sleep(Duration::from_millis(5)); // test-wait: legacy polling while driving relay requests
         }
         worker.join().unwrap()
     }
@@ -566,7 +566,7 @@ mod tests {
         assert_eq!(relay.poll(&mut s), 0, "nothing refused reached the app");
         relay.stop();
         // Stopped with the relay.
-        std::thread::sleep(STOP_POLL * 4);
+        std::thread::sleep(STOP_POLL * 4); // test-wait: legacy delay for the stopped listener to close
         assert!(
             TcpStream::connect(("127.0.0.1", port))
                 .map(|mut c| {
@@ -608,7 +608,7 @@ mod tests {
             if c.write_all(&[b]).is_err() {
                 break;
             }
-            std::thread::sleep(Duration::from_millis(200));
+            std::thread::sleep(Duration::from_millis(200)); // test-wait: trickle a request past the server deadline
         }
         // Cut off at the deadline: the server has closed (end of stream or a reset).
         let mut buf = [0u8; 64];

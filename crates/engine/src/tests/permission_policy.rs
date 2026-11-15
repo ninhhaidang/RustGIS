@@ -1541,7 +1541,7 @@ fn permission_policy_plugin_tools_follow_the_callers_control_while_running() {
         });
         let start = Instant::now();
         while !ready.is_file() && !worker.is_finished() && start.elapsed() < Duration::from_secs(10) {
-            std::thread::sleep(Duration::from_millis(5));
+            std::thread::sleep(Duration::from_millis(5)); // test-wait: legacy polling for the plugin readiness file
         }
         let entered = ready.is_file();
         control.cancel();

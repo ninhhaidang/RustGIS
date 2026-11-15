@@ -1346,7 +1346,7 @@ mod tests {
             let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
             while app.diskwatch.scan.is_some() {
                 assert!(std::time::Instant::now() < end, "the scan never landed");
-                std::thread::sleep(std::time::Duration::from_millis(5));
+                std::thread::sleep(std::time::Duration::from_millis(5)); // test-wait: legacy polling for the disk scan
                 tick(app, ctx);
             }
         }
@@ -1506,7 +1506,7 @@ mod tests {
         let end = std::time::Instant::now() + std::time::Duration::from_secs(30);
         while crate::exportjob::land(&mut app) {
             assert!(std::time::Instant::now() < end, "the export never landed");
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            std::thread::sleep(std::time::Duration::from_millis(5)); // test-wait: legacy polling for export completion
         }
         scan(&mut app, &ctx, 3);
         assert_eq!(app.diskwatch.status(&rows), Status::Changed, "the editable layer on the replaced table holds its old rows");
@@ -1522,7 +1522,7 @@ mod tests {
                 return edited;
             }
             assert!(std::time::Instant::now() < end, "the hash never landed");
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            std::thread::sleep(std::time::Duration::from_millis(5)); // test-wait: legacy polling for the disk hash
         }
     }
 
@@ -1552,7 +1552,7 @@ mod tests {
         let ctx = egui::Context::default();
         scan(&mut app, &ctx, 2);
         // Another program writes the same bytes: only its metadata changed.
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::thread::sleep(std::time::Duration::from_millis(20)); // test-wait: separate filesystem modification timestamps
         std::fs::write(&path, std::fs::read(&path).unwrap()).unwrap();
         scan(&mut app, &ctx, 2);
         assert_eq!(status_of(&app, id), Status::Changed);
@@ -1569,7 +1569,7 @@ mod tests {
         let (mut app, id, path) = published_layer(dir.path());
         let ctx = egui::Context::default();
         scan(&mut app, &ctx, 2);
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::thread::sleep(std::time::Duration::from_millis(20)); // test-wait: separate filesystem modification timestamps
         std::fs::write(&path, std::fs::read(&path).unwrap()).unwrap();
         scan(&mut app, &ctx, 2);
         assert_eq!(status_of(&app, id), Status::Changed);
@@ -1594,7 +1594,7 @@ mod tests {
         let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while slot.lock().unwrap().is_none() {
             assert!(std::time::Instant::now() < end, "the scan never answered");
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            std::thread::sleep(std::time::Duration::from_millis(5)); // test-wait: legacy polling for the unread disk scan
         }
         // Published through the session alone, then that old answer lands with later scans.
         app.session.run("edit.enable", &json!({"on": true})).unwrap();
@@ -1662,7 +1662,7 @@ mod tests {
         let end = std::time::Instant::now() + std::time::Duration::from_secs(30);
         while crate::exportjob::land(&mut app) {
             assert!(std::time::Instant::now() < end, "the publish never landed");
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            std::thread::sleep(std::time::Duration::from_millis(5)); // test-wait: legacy polling for publish completion
         }
         assert!(std::fs::read_to_string(&path).unwrap().contains("Jones"));
         scan(&mut app, &ctx, 3);
@@ -1714,7 +1714,7 @@ mod tests {
         let end = std::time::Instant::now() + std::time::Duration::from_secs(30);
         while !app.reads.read_finished_for_tests() {
             assert!(std::time::Instant::now() < end, "the first reload never finished reading");
-            std::thread::sleep(std::time::Duration::from_millis(1));
+            std::thread::sleep(std::time::Duration::from_millis(1)); // test-wait: legacy polling for the first reload to finish reading
         }
         replace(3);
         app.run("ui.reloadData", json!({"layer": id})).unwrap();
@@ -1722,7 +1722,7 @@ mod tests {
             let end = std::time::Instant::now() + std::time::Duration::from_secs(30);
             while crate::readjob::land(app) {
                 assert!(std::time::Instant::now() < end, "the reads never landed");
-                std::thread::sleep(std::time::Duration::from_millis(5));
+                std::thread::sleep(std::time::Duration::from_millis(5)); // test-wait: legacy polling for queued reload completion
             }
         };
         let mark = app.session.notice_mark();

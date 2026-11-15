@@ -82,7 +82,7 @@ fn s3_saved_checkbox_save_row_forget_and_explicit_blank_login() {
         if h.state().ui.connection.test.is_none() {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::thread::sleep(std::time::Duration::from_millis(10)); // test-wait: legacy polling for the S3 connection probe
         h.step();
     }
     assert!(h.state().ui.connection.test.is_none(), "localhost test must finish before Save");

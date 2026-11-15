@@ -8938,7 +8938,7 @@ mod tests {
         let start = std::time::Instant::now();
         while probe.cast_shadow_waiters() == 0 && !export.is_finished() {
             assert!(start.elapsed() < std::time::Duration::from_secs(30), "the export neither waited for the grid nor ended");
-            std::thread::sleep(std::time::Duration::from_millis(1));
+            std::thread::sleep(std::time::Duration::from_millis(1)); // test-wait: legacy polling for the export to wait on shadow grids
         }
         let waited = probe.cast_shadow_waiters() > 0;
         drop(hold);

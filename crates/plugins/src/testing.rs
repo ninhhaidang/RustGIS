@@ -432,11 +432,11 @@ pub fn serve_if_child() {
             let _ = writeln!(out, "{}", json!({"progress": "step 1 of 3"}));
             let _ = out.flush();
             loop {
-                std::thread::sleep(std::time::Duration::from_secs(1));
+                std::thread::sleep(std::time::Duration::from_secs(1)); // test-wait: keep the hung fixture alive until cancelled
             }
         }
         Some('s') => loop {
-            std::thread::sleep(std::time::Duration::from_secs(1));
+            std::thread::sleep(std::time::Duration::from_secs(1)); // test-wait: keep the hung fixture alive until cancelled
         },
         // Logs forever, as fast as it can, saying on its error output once it has written more
         // than a pipe holds: from then on its output is waiting to be read, whenever it runs.
@@ -467,7 +467,7 @@ pub fn serve_if_child() {
                 let _ = out.flush();
             }
             loop {
-                std::thread::sleep(std::time::Duration::from_secs(1));
+                std::thread::sleep(std::time::Duration::from_secs(1)); // test-wait: keep the hung fixture alive until cancelled
             }
         }
         Some('m') => {
@@ -478,7 +478,7 @@ pub fn serve_if_child() {
                 let _ = std::fs::write(ready, b"started");
                 let start = std::time::Instant::now();
                 while !std::path::Path::new(release).is_file() && start.elapsed() < std::time::Duration::from_secs(20) {
-                    std::thread::sleep(std::time::Duration::from_millis(5));
+                    std::thread::sleep(std::time::Duration::from_millis(5)); // test-wait: hold the fixture until its release file appears
                 }
             }
             let _ = writeln!(out, "{}", json!({"progress": "making"}));
@@ -599,7 +599,7 @@ fn serve_session(mut input: impl std::io::BufRead, mut out: impl std::io::Write)
             Some('p') => {
                 let _ = writeln!(out, "{}", json!({"ok": "paused", "id": id}));
                 let _ = out.flush();
-                std::thread::sleep(std::time::Duration::from_secs(2));
+                std::thread::sleep(std::time::Duration::from_secs(2)); // test-wait: simulate a session paused between commands
                 continue;
             }
             // Answered first, so the request comes after the command.
@@ -617,7 +617,7 @@ fn serve_session(mut input: impl std::io::BufRead, mut out: impl std::io::Write)
                 std::process::exit(3);
             }
             Some('s') => loop {
-                std::thread::sleep(std::time::Duration::from_secs(1));
+                std::thread::sleep(std::time::Duration::from_secs(1)); // test-wait: keep the hung session alive until stopped
             },
             Some('z') => {
                 let _ = writeln!(out, "{}", json!({"ok": "bye", "id": id}));

@@ -403,7 +403,7 @@ mod tests {
                 4,
                 || (),
                 |_, _, x| {
-                    std::thread::sleep(std::time::Duration::from_millis(1));
+                    std::thread::sleep(std::time::Duration::from_millis(1)); // test-wait: pace items so worker threads can enter the panic fixture
                     if std::thread::current().id() != caller {
                         on_worker.store(true, std::sync::atomic::Ordering::Relaxed);
                         panic!("a worker's panic");
@@ -491,7 +491,7 @@ mod tests {
                     if std::thread::current().id() != caller {
                         panic!("a worker's panic");
                     }
-                    std::thread::sleep(std::time::Duration::from_millis(1));
+                    std::thread::sleep(std::time::Duration::from_millis(1)); // test-wait: pace items so worker threads can enter the panic fixture
                     *x
                 },
             )
@@ -559,7 +559,7 @@ mod tests {
                     if std::thread::current().id() != caller {
                         panic!("a worker's panic");
                     }
-                    std::thread::sleep(std::time::Duration::from_millis(1));
+                    std::thread::sleep(std::time::Duration::from_millis(1)); // test-wait: pace items so worker threads can enter the panic fixture
                 },
             )
         }));
@@ -585,7 +585,7 @@ mod tests {
                     s.insert(std::thread::current().id());
                 }
                 // Long enough that the other threads start and take the rest.
-                std::thread::sleep(std::time::Duration::from_millis(50));
+                std::thread::sleep(std::time::Duration::from_millis(50)); // test-wait: simulate long items so workers share the queue
                 Ok::<_, Cancelled>((i, x * 10))
             },
         )

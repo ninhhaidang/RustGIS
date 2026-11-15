@@ -65,7 +65,7 @@ fn settle(map: &mut Map, view: &View) {
         if !pending {
             return;
         }
-        std::thread::sleep(std::time::Duration::from_millis(1));
+        std::thread::sleep(std::time::Duration::from_millis(1)); // test-wait: legacy polling for streamed map reads
     }
     panic!("the background reads did not land");
 }

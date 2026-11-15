@@ -1590,7 +1590,7 @@ mod tests {
     #[test]
     fn pieces_made_on_threads_are_written_in_order() {
         let slow_first = |_: &mut (), k: usize| {
-            std::thread::sleep(std::time::Duration::from_millis(((40 - k) % 7) as u64));
+            std::thread::sleep(std::time::Duration::from_millis(((40 - k) % 7) as u64)); // test-wait: finish pieces out of order to exercise ordered writing
             Ok(vec![k as u8])
         };
         let mut written = Vec::new();

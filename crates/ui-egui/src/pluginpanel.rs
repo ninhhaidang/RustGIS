@@ -1416,7 +1416,7 @@ mod tests {
         while h.state().session.map().layer_by_name("Places").is_none() {
             assert!(std::time::Instant::now() < deadline, "timed out waiting");
             h.step();
-            std::thread::sleep(std::time::Duration::from_millis(20));
+            std::thread::sleep(std::time::Duration::from_millis(20)); // test-wait: legacy polling for plugin-added data
         }
         let places = h.state().session.map().layer_by_name("Places").unwrap();
         let e = places.dataset.extent();
@@ -1535,7 +1535,7 @@ mod tests {
         while h.state().session.map().layer_by_name("Scan").is_none() {
             assert!(std::time::Instant::now() < deadline, "timed out waiting");
             h.step();
-            std::thread::sleep(std::time::Duration::from_millis(20));
+            std::thread::sleep(std::time::Duration::from_millis(20)); // test-wait: legacy polling for the downloaded scan
         }
         assert!(h.state().session.map().layer_by_name("Scan").is_some_and(|l| l.is_raster()));
         assert!(h.state().ui.cog_probes.is_empty());
@@ -1575,7 +1575,7 @@ mod tests {
             let frame = std::time::Instant::now();
             h.step();
             assert!(frame.elapsed() < std::time::Duration::from_secs(5), "the read held the frame");
-            std::thread::sleep(std::time::Duration::from_millis(20));
+            std::thread::sleep(std::time::Duration::from_millis(20)); // test-wait: legacy pacing while the plugin window read is held
         }
         assert!(h.state().session.map().layer_by_name("Window").is_none(), "nothing waited");
         assert!(h.state().session.plugin_retries_waiting());
@@ -1585,7 +1585,7 @@ mod tests {
         while !landed(h.state()) {
             assert!(std::time::Instant::now() < deadline, "timed out waiting: {:?}", h.state().session.notices);
             h.step();
-            std::thread::sleep(std::time::Duration::from_millis(20));
+            std::thread::sleep(std::time::Duration::from_millis(20)); // test-wait: legacy polling for the plugin window result
         }
         let app = h.state();
         assert!(app.session.map().layer_by_name("Window").is_some_and(|l| l.is_raster()));
@@ -1656,7 +1656,7 @@ mod tests {
                 if !ran.is_empty() {
                     break;
                 }
-                std::thread::sleep(std::time::Duration::from_millis(5));
+                std::thread::sleep(std::time::Duration::from_millis(5)); // test-wait: legacy polling for the failed download continuation
             }
             assert_eq!(ran.len(), 1, "{params}: {ran:?}");
             assert!(ran[0].1.as_ref().is_err_and(|e| e.contains("404")), "{params}: {ran:?}");

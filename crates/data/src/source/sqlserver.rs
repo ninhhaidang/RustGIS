@@ -1256,7 +1256,7 @@ mod tests {
 
     /// `RUSTGIS_TEST_MSSQL=mssql://user:password@host/database?... cargo test -- --ignored sqlserver_live --nocapture`.
     #[test]
-    #[ignore]
+    #[ignore = "needs a live SQL Server database in RUSTGIS_TEST_MSSQL"]
     fn sqlserver_live() {
         let Ok(address) = std::env::var("RUSTGIS_TEST_MSSQL") else { return };
         let super::super::duckdb::Database::Sqlserver(address) = super::super::duckdb::Database::parse(&address) else {
@@ -1309,7 +1309,7 @@ mod tests {
     /// `RUSTGIS_TEST_MSSQL=… cargo test -- --ignored sqlserver_live_zm`: creates and drops two
     /// tables in the database.
     #[test]
-    #[ignore]
+    #[ignore = "needs a live SQL Server database with table creation rights in RUSTGIS_TEST_MSSQL"]
     fn sqlserver_live_zm() {
         let Ok(address) = std::env::var("RUSTGIS_TEST_MSSQL") else { return };
         let super::super::duckdb::Database::Sqlserver(address) = super::super::duckdb::Database::parse(&address) else {

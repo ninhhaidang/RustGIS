@@ -40,7 +40,7 @@ fn wait_for_frame(h: &mut egui_kittest::Harness<'_, RustGisApp>) {
         if !h.state().map.drawing() && cache::in_flight() == 0 && cache::generation() == tiles {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(2));
+        std::thread::sleep(std::time::Duration::from_millis(2)); // test-wait: legacy polling for a settled GPU frame
     }
 }
 

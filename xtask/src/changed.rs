@@ -265,6 +265,9 @@ pub fn run(root: &Path, args: &[String]) -> Result<(), String> {
         [base] if !base.starts_with('-') => Some(base),
         _ => return Err(USAGE.into()),
     };
+    if !list {
+        super::test_hygiene::run(root)?;
+    }
     let (name, mb, ahead) = base(root, asked)?;
     let mut files: Vec<String> = git(root, &["diff", "--name-only", "--no-renames", "-z", &mb])?.split('\0').map(str::to_string).collect();
     files.extend(git(root, &["ls-files", "--others", "--exclude-standard", "-z"])?.split('\0').map(str::to_string));

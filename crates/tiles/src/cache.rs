@@ -4100,7 +4100,7 @@ mod tests {
         let _alarm = super::alarm_turn();
         let before = generation();
         notify_at(Instant::now() + Duration::from_millis(20));
-        std::thread::sleep(std::time::Duration::from_millis(40));
+        std::thread::sleep(std::time::Duration::from_millis(40)); // test-wait: cross the scheduled redraw alarm deadline
         assert!(generation() > before);
     }
 
@@ -4277,7 +4277,7 @@ mod tests {
                 if stream.write_all(&[0u8; 1000]).is_err() {
                     return;
                 }
-                std::thread::sleep(std::time::Duration::from_millis(20));
+                std::thread::sleep(std::time::Duration::from_millis(20)); // test-wait: simulate a slow download body
             }
         });
         let wanted = std::sync::Arc::new(AtomicBool::new(true));
@@ -4292,11 +4292,11 @@ mod tests {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while progress.received() < 5_000 {
             assert!(std::time::Instant::now() < deadline, "nothing counted: {progress:?}");
-            std::thread::sleep(std::time::Duration::from_millis(20));
+            std::thread::sleep(std::time::Duration::from_millis(20)); // test-wait: legacy polling for download progress
         }
         assert_eq!(progress.total.load(Ordering::Relaxed), 1_000_000);
         let first = progress.received();
-        std::thread::sleep(std::time::Duration::from_millis(200));
+        std::thread::sleep(std::time::Duration::from_millis(200)); // test-wait: sample progress again after more body chunks
         let then = progress.received();
         assert!(then > first && then < 1_000_000, "{first} then {then}");
         assert!(progress.fraction().is_some_and(|f| f > 0.0 && f < 1.0), "{progress:?}");
@@ -4359,7 +4359,7 @@ mod tests {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while progress.received() < 5_000 {
             assert!(std::time::Instant::now() < deadline, "nothing counted: {progress:?}");
-            std::thread::sleep(std::time::Duration::from_millis(20));
+            std::thread::sleep(std::time::Duration::from_millis(20)); // test-wait: legacy polling for download progress
         }
         assert_eq!(progress.fraction(), None, "{progress:?}");
         let _ = release.send(());
@@ -5065,7 +5065,7 @@ mod tests {
                 resolved = Some(r);
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            std::thread::sleep(std::time::Duration::from_millis(5)); // test-wait: legacy polling for bound style resolution
         }
         let resolved = resolved.expect("style must resolve from fetched documents");
         let Source::Vector { tiles, .. } = &resolved.style.sources[0].1 else { panic!("vector source") };
@@ -5880,7 +5880,7 @@ mod tests {
                     m.fetch_max(now, Ordering::SeqCst);
                     let mut buf = [0u8; 2048];
                     let _ = stream.read(&mut buf);
-                    std::thread::sleep(std::time::Duration::from_millis(150));
+                    std::thread::sleep(std::time::Duration::from_millis(150)); // test-wait: keep fixture requests overlapping to measure concurrency
                     o.fetch_sub(1, Ordering::SeqCst);
                     let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\ntile");
                 });
@@ -6204,7 +6204,7 @@ mod tests {
                 started_tx.send(()).unwrap();
             } else {
                 std::thread::spawn(move || {
-                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    std::thread::sleep(std::time::Duration::from_millis(50)); // test-wait: complete the fake download asynchronously
                     done(Ok(b"1".to_vec()));
                 });
             }

@@ -1947,7 +1947,7 @@ mod tests {
     /// Every drawing in `RUSTGIS_DXF_DIR`: features per layer and their extent (compared by hand
     /// against GDAL's reading of the same files).
     #[test]
-    #[ignore]
+    #[ignore = "needs external DXF samples in RUSTGIS_DXF_DIR"]
     fn dxf_samples() {
         let Ok(dir) = std::env::var("RUSTGIS_DXF_DIR") else { return };
         let mut paths: Vec<_> = std::fs::read_dir(dir).unwrap().filter_map(|e| e.ok()).map(|e| e.path()).collect();

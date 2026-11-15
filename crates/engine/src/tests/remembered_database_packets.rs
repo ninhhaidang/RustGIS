@@ -31,7 +31,7 @@ impl Server {
                 let (mut stream, _) = match listener.accept() {
                     Ok(pair) => pair,
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(std::time::Duration::from_millis(2));
+                        std::thread::sleep(std::time::Duration::from_millis(2)); // test-wait: pace nonblocking accepts so the fixture can stop
                         continue;
                     }
                     Err(_) => break,

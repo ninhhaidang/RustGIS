@@ -981,7 +981,7 @@ mod tests {
         while d.busy() {
             assert!(d.prepare(&ctx, &mut m, key, 0, 800.0, 600.0, 1.0, 0.1));
             assert!(std::time::Instant::now() < end, "the worker never ended");
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            std::thread::sleep(std::time::Duration::from_millis(5)); // test-wait: legacy polling for drape worker completion
         }
         assert!(d.failed == Some(key));
         // A job for an earlier map change isn't waited for: the next prepare lets it go.
@@ -1002,7 +1002,7 @@ mod tests {
         let end = std::time::Instant::now() + std::time::Duration::from_secs(30);
         while d.let_go_running() {
             assert!(std::time::Instant::now() < end, "the let-go worker never ended");
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            std::thread::sleep(std::time::Duration::from_millis(5)); // test-wait: legacy polling for the let-go worker
         }
         d.failed = Some(key);
         // Panning far away draws the next drape at once, covering the view.
@@ -1088,7 +1088,7 @@ mod tests {
         let end = std::time::Instant::now() + std::time::Duration::from_secs(30);
         while d.busy() {
             assert!(std::time::Instant::now() < end, "the worker never ended");
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            std::thread::sleep(std::time::Duration::from_millis(5)); // test-wait: legacy polling for the resting drape
             d.warm(&ctx, &mut m, key, 0, 800.0, 600.0, 1.0, 0.1);
         }
         assert!(d.drape.is_none());
@@ -1153,7 +1153,7 @@ mod tests {
         let end = std::time::Instant::now() + std::time::Duration::from_secs(30);
         while d.drape.is_none() {
             assert!(std::time::Instant::now() < end, "the view moved to was never draped");
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            std::thread::sleep(std::time::Duration::from_millis(5)); // test-wait: legacy polling for the new-view drape
             d.warm(&ctx, &mut m, key, 0, 800.0, 600.0, 1.0, 0.1);
         }
     }
@@ -1179,7 +1179,7 @@ mod tests {
         let end = std::time::Instant::now() + std::time::Duration::from_secs(30);
         while d.busy() {
             assert!(std::time::Instant::now() < end, "the drape never came");
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            std::thread::sleep(std::time::Duration::from_millis(5)); // test-wait: legacy polling for drape preparation
             assert!(d.prepare(ctx, m, key, 0, 800.0, 600.0, 1.0, time));
         }
     }

@@ -1903,7 +1903,7 @@ mod tests {
         let end = std::time::Instant::now() + std::time::Duration::from_secs(60);
         while crate::readjob::land(&mut app) {
             assert!(std::time::Instant::now() < end, "the model never landed");
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            std::thread::sleep(std::time::Duration::from_millis(5)); // test-wait: legacy polling for model completion
         }
         assert_eq!(app.session.map().layers.len(), layers + 2);
         assert!(app.mb.graph.nodes.iter().all(|n| app.mb.status.get(&n.id) == Some(&Status::Done)));
@@ -1917,7 +1917,7 @@ mod tests {
         run_model(&mut app);
         while crate::readjob::land(&mut app) {
             assert!(std::time::Instant::now() < end, "the models never landed");
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            std::thread::sleep(std::time::Duration::from_millis(5)); // test-wait: legacy polling for model completion
         }
         assert_eq!(app.session.map().layers.len(), layers + 4);
         assert!(app.mb.graph.nodes.iter().all(|n| app.mb.status.get(&n.id) == Some(&Status::Done)));
@@ -1928,7 +1928,7 @@ mod tests {
         app.reads.cancel_for_tests();
         while crate::readjob::land(&mut app) {
             assert!(std::time::Instant::now() < end, "the model never landed");
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            std::thread::sleep(std::time::Duration::from_millis(5)); // test-wait: legacy polling for model completion
         }
         assert_eq!(app.session.map().layers.len(), layers + 4);
         assert!(app.mb.status.is_empty());

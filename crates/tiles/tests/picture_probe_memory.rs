@@ -114,7 +114,7 @@ fn settled(url: &str) -> State {
     let start = Instant::now();
     loop {
         match cache::get(url, Want::Image) {
-            State::Pending if start.elapsed() < Duration::from_secs(120) => std::thread::sleep(Duration::from_millis(5)),
+            State::Pending if start.elapsed() < Duration::from_secs(120) => std::thread::sleep(Duration::from_millis(5)), // test-wait: legacy polling for picture decoding
             other => return other,
         }
     }

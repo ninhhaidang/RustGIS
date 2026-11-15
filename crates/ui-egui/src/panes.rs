@@ -7351,7 +7351,7 @@ mod tests {
         let end = std::time::Instant::now() + std::time::Duration::from_secs(60);
         while h.state().gp.tool_run.is_some() {
             assert!(std::time::Instant::now() < end, "the run never landed");
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            std::thread::sleep(std::time::Duration::from_millis(10)); // test-wait: legacy polling for the background tool
             h.step();
         }
         let app = h.state();
@@ -7588,7 +7588,7 @@ mod tests {
                 let ctx = ui.ctx().clone();
                 app.logic(&ctx);
                 if frame.get() {
-                    std::thread::sleep(std::time::Duration::from_millis(300));
+                    std::thread::sleep(std::time::Duration::from_millis(300)); // test-wait: simulate a slow frame between double-clicks
                 }
                 app.ui(ui);
             },
@@ -7680,7 +7680,7 @@ mod tests {
             if rustgis_engine::render::tile_source_layers(&app.session.map().tiles[0]).is_some() {
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            std::thread::sleep(std::time::Duration::from_millis(10)); // test-wait: legacy polling for archive source layers
         }
         let mut h = egui_kittest::Harness::builder().with_size(vec2(1200.0, 900.0)).with_max_steps(64).build_ui_state(
             |ui, app: &mut RustGisApp| {

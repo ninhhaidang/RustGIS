@@ -1339,7 +1339,7 @@ mod tests {
     /// Reads every table of a live database: `RUSTGIS_TEST_MYSQL="mysql://user:password@host/db"
     /// cargo test -p rustgis-data -- --ignored mysql_live --nocapture`.
     #[test]
-    #[ignore]
+    #[ignore = "needs a live MySQL or MariaDB database in RUSTGIS_TEST_MYSQL"]
     fn mysql_live() {
         let Ok(address) = std::env::var("RUSTGIS_TEST_MYSQL") else { return };
         let super::super::duckdb::Database::Mysql(address) = super::super::duckdb::Database::parse(&address) else {

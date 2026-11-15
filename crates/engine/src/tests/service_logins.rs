@@ -178,7 +178,7 @@ fn temporary_probe_caches_are_isolated_and_revoked_data_cannot_be_read() {
             match cache::get(address, Want::Json) {
                 State::Pending => {
                     assert!(started.elapsed() < std::time::Duration::from_secs(10), "temporary probe fetch timed out");
-                    std::thread::sleep(std::time::Duration::from_millis(2));
+                    std::thread::sleep(std::time::Duration::from_millis(2)); // test-wait: legacy polling for the authenticated probe response
                 }
                 state => break state,
             }
@@ -250,7 +250,7 @@ impl LoginFile {
                 let (mut stream, _) = match listener.accept() {
                     Ok(stream) => stream,
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(std::time::Duration::from_millis(2));
+                        std::thread::sleep(std::time::Duration::from_millis(2)); // test-wait: pace nonblocking accepts so the fixture can stop
                         continue;
                     }
                     Err(_) => break,
@@ -339,7 +339,7 @@ fn a_reopened_http_raster_recovers_its_pixels_after_login_without_reloading_unch
     let start = std::time::Instant::now();
     while reopened.map_mut().sync_sources(&view, scale, false) {
         assert!(start.elapsed() < std::time::Duration::from_secs(30), "raster recovery timed out");
-        std::thread::sleep(std::time::Duration::from_millis(5));
+        std::thread::sleep(std::time::Duration::from_millis(5)); // test-wait: legacy polling for recovered raster pixels
     }
     let layer = &reopened.map().layers[0];
     let raster = layer.raster.as_ref().unwrap();

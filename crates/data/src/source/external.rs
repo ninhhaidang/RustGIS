@@ -376,7 +376,7 @@ mod tests {
             std::fs::create_dir(&scratch).unwrap();
             std::fs::write(scratch.join("overview.tmp"), [0; 129]).unwrap();
             // Hold the lock until normal completion; killing/reaping must release it.
-            std::thread::sleep(std::time::Duration::from_secs(3));
+            std::thread::sleep(std::time::Duration::from_secs(3)); // test-wait: keep the child lock held until the budget check kills it
             std::fs::write(root.join("finished"), b"conversion was allowed to finish").unwrap();
             drop(alive);
             return;
@@ -422,7 +422,7 @@ mod tests {
             });
             let start = Instant::now();
             while !ready.exists() && start.elapsed() < Duration::from_secs(5) {
-                std::thread::sleep(Duration::from_millis(10));
+                std::thread::sleep(Duration::from_millis(10)); // test-wait: legacy polling for the grandchild readiness marker
             }
             let result = rx.recv_timeout(Duration::from_secs(5));
             let held_pipes = ready.exists() && !finished.exists();
@@ -431,7 +431,7 @@ mod tests {
             runner.join().unwrap();
             let start = Instant::now();
             while !finished.exists() && start.elapsed() < Duration::from_secs(5) {
-                std::thread::sleep(Duration::from_millis(10));
+                std::thread::sleep(Duration::from_millis(10)); // test-wait: legacy polling for the grandchild completion marker
             }
             assert!(finished.exists(), "the pipe-holder must finish after release");
             assert!(held_pipes, "the grandchild must retain its pipes until explicitly released");

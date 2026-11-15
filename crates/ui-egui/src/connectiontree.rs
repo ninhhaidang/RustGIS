@@ -684,7 +684,7 @@ mod tests {
         while !done(h.state()) {
             assert!(std::time::Instant::now() < deadline, "timed out waiting");
             h.step();
-            std::thread::sleep(std::time::Duration::from_millis(20));
+            std::thread::sleep(std::time::Duration::from_millis(20)); // test-wait: legacy polling while driving connection-tree frames
         }
     }
 

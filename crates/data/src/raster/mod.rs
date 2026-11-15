@@ -2487,7 +2487,7 @@ mod scan_tests {
 /// <https://source.coop/giswqs/opengeos>): `cargo test -p rustgis-data -- --ignored samples`.
 #[cfg(test)]
 #[test]
-#[ignore]
+#[ignore = "needs external raster samples in RUSTGIS_SAMPLE_RASTERS"]
 fn samples() {
     let Ok(dir) = std::env::var("RUSTGIS_SAMPLE_RASTERS") else { return };
     let mut paths: Vec<_> =

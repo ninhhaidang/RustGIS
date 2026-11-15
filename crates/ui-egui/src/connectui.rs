@@ -373,7 +373,7 @@ mod tests {
                     return n.clone();
                 }
                 assert!(std::time::Instant::now() < deadline, "the frame never ran the script");
-                std::thread::sleep(std::time::Duration::from_millis(50));
+                std::thread::sleep(std::time::Duration::from_millis(50)); // test-wait: legacy polling for the bridge script to run
                 app.logic(&ctx);
             }
         };

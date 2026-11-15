@@ -207,7 +207,7 @@ fn probe_server_with_answer(
                     break stream;
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < deadline => {
-                    std::thread::sleep(Duration::from_millis(10));
+                    std::thread::sleep(Duration::from_millis(10)); // test-wait: pace nonblocking accepts until a probe or deadline
                 }
                 Err(e) => panic!("the Test did not connect: {e}"),
             }
@@ -245,7 +245,7 @@ fn finish_probe(h: &mut Harness) {
         if h.state().ui.connection.test.is_none() {
             return;
         }
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::thread::sleep(std::time::Duration::from_millis(20)); // test-wait: legacy polling for the connection probe
     }
     panic!("the Test did not finish");
 }
@@ -374,7 +374,7 @@ fn unsaved_authenticated_test_discards_late_results_after_edit_cancel_or_project
             if old.lock().unwrap().is_some() {
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(20));
+            std::thread::sleep(std::time::Duration::from_millis(20)); // test-wait: legacy polling for the discarded probe result
         }
         assert!(old.lock().unwrap().is_some(), "the detached request must actually complete");
         assert_eq!(h.state().dialogs.info, None, "{action}");

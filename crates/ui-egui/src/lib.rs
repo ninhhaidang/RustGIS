@@ -6336,7 +6336,7 @@ pub(crate) mod fetching {
                         count.fetch_add(1, Ordering::Relaxed);
                         let start = std::time::Instant::now();
                         while !shut.load(Ordering::Relaxed) && start.elapsed() < std::time::Duration::from_secs(20) {
-                            std::thread::sleep(std::time::Duration::from_millis(5));
+                            std::thread::sleep(std::time::Duration::from_millis(5)); // test-wait: hold range responses until the fixture release flag
                         }
                     }
                     let request = String::from_utf8_lossy(&request[..read]).to_ascii_lowercase();
@@ -6372,7 +6372,7 @@ pub(crate) mod fetching {
                     if std::time::Instant::now() >= deadline {
                         return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "no request reached the test server"));
                     }
-                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    std::thread::sleep(std::time::Duration::from_millis(10)); // test-wait: pace nonblocking accepts until a request or deadline
                 }
                 Err(e) => return Err(e),
             }
@@ -6777,7 +6777,7 @@ mod record_tests {
                 let frame = std::time::Instant::now();
                 h.step();
                 assert!(frame.elapsed() < std::time::Duration::from_secs(5), "the read held the frame");
-                std::thread::sleep(std::time::Duration::from_millis(20));
+                std::thread::sleep(std::time::Duration::from_millis(20)); // test-wait: legacy pacing while the window read is held
             }
             let frame = std::time::Instant::now();
             h.step();
@@ -6789,7 +6789,7 @@ mod record_tests {
             while h.state().session.map().layer_by_name("Window").is_none() {
                 assert!(std::time::Instant::now() < deadline, "timed out waiting: {:?}", h.state().session.notices);
                 h.step();
-                std::thread::sleep(std::time::Duration::from_millis(20));
+                std::thread::sleep(std::time::Duration::from_millis(20)); // test-wait: legacy polling for the window layer
             }
             let app = h.state();
             assert!(app.ui.window_reads.is_empty());
@@ -6831,7 +6831,7 @@ mod record_tests {
         while !app.ui.window_reads.is_empty() {
             assert!(std::time::Instant::now() < deadline, "its place wasn't given up");
             app.poll_data_downloads();
-            std::thread::sleep(std::time::Duration::from_millis(20));
+            std::thread::sleep(std::time::Duration::from_millis(20)); // test-wait: legacy polling for abandoned window cleanup
         }
         drop(reading);
         assert_eq!(slow.held.load(Ordering::Relaxed), 0, "nothing is asked of the server");
@@ -6857,7 +6857,7 @@ mod record_tests {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while slow.held.load(Ordering::Relaxed) == 0 {
             assert!(std::time::Instant::now() < deadline, "no request held");
-            std::thread::sleep(std::time::Duration::from_millis(20));
+            std::thread::sleep(std::time::Duration::from_millis(20)); // test-wait: legacy polling for a held range request
         }
         let under_way = app.downloads_under_way();
         assert!(under_way.len() == 1 && under_way[0].shown.contains("scene.tif") && under_way[0].progress.is_none(), "{under_way:?}");
@@ -6869,12 +6869,12 @@ mod record_tests {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
         while crate::WINDOW_TURN.try_lock().is_err() {
             assert!(std::time::Instant::now() < deadline, "the cancelled read kept its turn");
-            std::thread::sleep(std::time::Duration::from_millis(20));
+            std::thread::sleep(std::time::Duration::from_millis(20)); // test-wait: legacy polling for the cancelled window turn
         }
         slow.open.store(true, Ordering::Relaxed);
         for _ in 0..25 {
             app.poll_data_downloads();
-            std::thread::sleep(std::time::Duration::from_millis(20));
+            std::thread::sleep(std::time::Duration::from_millis(20)); // test-wait: legacy settling delay after releasing cancelled window reads
         }
         assert!(app.session.map().layer_by_name("Cancelled").is_none());
     }
@@ -6928,16 +6928,16 @@ mod record_tests {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         while landed(&app) == 0 {
             assert!(std::time::Instant::now() < deadline, "no read landed");
-            std::thread::sleep(std::time::Duration::from_millis(20));
+            std::thread::sleep(std::time::Duration::from_millis(20)); // test-wait: legacy polling for the first window result
         }
         // No frame takes it, so the other isn't read.
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        std::thread::sleep(std::time::Duration::from_millis(500)); // test-wait: legacy delay before asserting the next window is still blocked
         assert_eq!(landed(&app), 1);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         while !app.ui.window_reads.is_empty() {
             assert!(std::time::Instant::now() < deadline, "timed out waiting: {:?}", app.session.notices);
             app.poll_data_downloads();
-            std::thread::sleep(std::time::Duration::from_millis(20));
+            std::thread::sleep(std::time::Duration::from_millis(20)); // test-wait: legacy polling for remaining window reads
         }
         assert!(app.session.map().layer_by_name("First").is_some() && app.session.map().layer_by_name("Second").is_some());
     }
@@ -6952,7 +6952,7 @@ mod record_tests {
             while !app.ui.window_reads.is_empty() {
                 assert!(std::time::Instant::now() < deadline, "timed out waiting");
                 app.poll_data_downloads();
-                std::thread::sleep(std::time::Duration::from_millis(20));
+                std::thread::sleep(std::time::Duration::from_millis(20)); // test-wait: legacy polling for window failure results
             }
         };
         let _turn = crate::fetching::turn();
@@ -7475,7 +7475,7 @@ mod download_service_tests {
             let started = std::time::Instant::now();
             while app.ui.service.as_ref().unwrap().reading.is_some() && started.elapsed() < std::time::Duration::from_secs(5) {
                 app.poll_service();
-                std::thread::sleep(std::time::Duration::from_millis(1));
+                std::thread::sleep(std::time::Duration::from_millis(1)); // test-wait: legacy polling for service listing completion
             }
             assert!(app.ui.service.as_ref().unwrap().reading.is_none());
         };
@@ -7507,7 +7507,7 @@ mod download_service_tests {
                 let started = std::time::Instant::now();
                 let reading = conn.reading.as_ref().unwrap();
                 while reading.slot.lock().unwrap().is_none() && started.elapsed() < std::time::Duration::from_secs(5) {
-                    std::thread::sleep(std::time::Duration::from_millis(1));
+                    std::thread::sleep(std::time::Duration::from_millis(1)); // test-wait: legacy polling for the connection result slot
                 }
                 assert!(reading.slot.lock().unwrap().is_some(), "the result is ready but has not landed");
                 conn.reading.as_ref().unwrap().control.cancel();
@@ -7720,7 +7720,7 @@ mod download_service_tests {
         let end = std::time::Instant::now() + std::time::Duration::from_secs(30);
         while crate::exportjob::land(&mut app) {
             assert!(std::time::Instant::now() < end, "the export never landed");
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            std::thread::sleep(std::time::Duration::from_millis(10)); // test-wait: legacy polling for GeoPackage export completion
         }
         assert_eq!(rustgis_engine::data::source::layers(&path).unwrap(), ["Cities", "borders"]);
         let countries = app.session.map().layer_by_name("Countries").map(|l| l.dataset.features.len() as u64);

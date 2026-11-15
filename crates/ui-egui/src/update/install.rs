@@ -405,7 +405,7 @@ mod tests {
         let path = dir.path().join("RustGIS-0.6.0-windows-x86_64-setup.exe");
         save(&path, b"installer", &sha256(b"installer")).unwrap();
         let written = std::fs::metadata(&path).unwrap().modified().unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::thread::sleep(std::time::Duration::from_millis(20)); // test-wait: separate timestamps to detect an unwanted installer rewrite
         save(&path, b"installer", &sha256(b"installer")).unwrap();
         assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), written);
         // Another file at that name is replaced.

@@ -99,7 +99,7 @@ impl Server {
                 let (mut stream, _) = match listener.accept() {
                     Ok(s) => s,
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(Duration::from_millis(5));
+                        std::thread::sleep(Duration::from_millis(5)); // test-wait: pace nonblocking accepts so the fixture can stop
                         continue;
                     }
                     Err(e) => panic!("accept: {e}"),
@@ -140,7 +140,7 @@ impl Server {
                     Some(r) => {
                         let until = Instant::now() + r.delay;
                         while Instant::now() < until && !stopping.load(Ordering::SeqCst) {
-                            std::thread::sleep(Duration::from_millis(5));
+                            std::thread::sleep(Duration::from_millis(5)); // test-wait: simulate the route delay while still checking fixture shutdown
                         }
                         let extra: String = r.headers.iter().map(|(k, v)| format!("{k}: {v}\r\n")).collect();
                         let body = r.bytes.unwrap_or_else(|| r.body.replace("{base}", &origin).into_bytes());

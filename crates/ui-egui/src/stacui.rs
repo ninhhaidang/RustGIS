@@ -2541,7 +2541,7 @@ mod tests {
                 return;
             }
             poll_preparing(app, &ctx);
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            std::thread::sleep(std::time::Duration::from_millis(10)); // test-wait: legacy polling for area preparation
         }
         panic!("the search area was not made in five seconds");
     }

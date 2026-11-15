@@ -1878,7 +1878,7 @@ pub(crate) mod tests {
                 return;
             }
             assert!(std::time::Instant::now() < end, "fake keychain timed out");
-            std::thread::sleep(std::time::Duration::from_millis(1));
+            std::thread::sleep(std::time::Duration::from_millis(1)); // test-wait: legacy polling for the fake keychain
         }
     }
 
@@ -2230,7 +2230,7 @@ pub(crate) mod tests {
             .any(|p| matches!(app.assistant.keys.status(p), Some(crate::assistantkeys::Status::Pending { .. })))
         {
             assert!(std::time::Instant::now() < end);
-            std::thread::sleep(std::time::Duration::from_millis(1));
+            std::thread::sleep(std::time::Duration::from_millis(1)); // test-wait: legacy polling for migrated provider keys
             poll_keys(&mut app, &ctx);
         }
         assert!(app.assistant.agent.is_none());
@@ -2564,7 +2564,7 @@ pub(crate) mod tests {
         let end = std::time::Instant::now() + std::time::Duration::from_secs(3);
         while app.assistant.models_slot.is_none() && app.assistant.models_error.is_none() {
             assert!(std::time::Instant::now() < end, "the sign-in read never finished");
-            std::thread::sleep(std::time::Duration::from_millis(1));
+            std::thread::sleep(std::time::Duration::from_millis(1)); // test-wait: legacy polling for saved-account models
             poll(&mut app, &ctx);
         }
         assert_eq!(app.assistant.account.as_ref().map(|a| a.kept), Some(chatgpt::Kept::SettingsFile));
@@ -2599,7 +2599,7 @@ pub(crate) mod tests {
         let end = std::time::Instant::now() + std::time::Duration::from_secs(3);
         while h.state().assistant.models_slot.is_none() {
             assert!(std::time::Instant::now() < end, "the sign-in read never finished");
-            std::thread::sleep(std::time::Duration::from_millis(1));
+            std::thread::sleep(std::time::Duration::from_millis(1)); // test-wait: legacy polling for switched-account models
             h.run_steps(1);
         }
         h.state_mut().assistant.models_slot = None;

@@ -2018,7 +2018,7 @@ mod tests {
             }
             fn slice(&self, i: usize) -> Result<Option<(Arc<Raster>, usize)>, String> {
                 // The early dates the slowest, so readers that place as they read finish them last.
-                std::thread::sleep(std::time::Duration::from_millis(((12 - i.min(12)) * 3) as u64));
+                std::thread::sleep(std::time::Duration::from_millis(((12 - i.min(12)) * 3) as u64)); // test-wait: finish early cube dates last to exercise result ordering
                 let gt = GeoTransform { origin_x: 0.0, origin_y: 0.0, pixel_width: 1.0, pixel_height: -1.0 };
                 let r = Raster::new("s", 1, 1, vec![vec![i as f32]], gt, Crs::LonLat, None, ColorHint::Gray, "Float32")
                     .map_err(|e| e.to_string())?;

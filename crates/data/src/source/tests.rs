@@ -1573,7 +1573,7 @@ fn hostile_files_are_errors_not_panics() {
 /// Reads every vector file in `RUSTGIS_SAMPLE_VECTORS` (the opengeos sample data, e.g.
 /// <https://source.coop/giswqs/opengeos>): `cargo test -p rustgis-data -- --ignored vector_samples --nocapture`.
 #[test]
-#[ignore]
+#[ignore = "needs external vector samples in RUSTGIS_SAMPLE_VECTORS"]
 fn vector_samples() {
     let Ok(dir) = std::env::var("RUSTGIS_SAMPLE_VECTORS") else { return };
     let mut paths: Vec<_> =
@@ -2035,7 +2035,7 @@ fn writes_points_lines_kmz_and_zipped_shapefiles() {
 /// Compares the browser's GeoPackage reader with SQLite on every table of every `.gpkg` in
 /// `RUSTGIS_SAMPLE_VECTORS`: `cargo test -p rustgis-data --release -- --ignored gpkg_mem_matches --nocapture`.
 #[test]
-#[ignore]
+#[ignore = "needs external GeoPackage samples in RUSTGIS_SAMPLE_VECTORS"]
 fn gpkg_mem_matches_sqlite() {
     let Ok(dir) = std::env::var("RUSTGIS_SAMPLE_VECTORS") else { return };
     let mut paths: Vec<_> = std::fs::read_dir(dir).unwrap().filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| ext(p) == "gpkg").collect();
@@ -2383,7 +2383,7 @@ fn damaged_shapefiles_are_errors_or_skips_not_panics() {
 /// Reads every Shapefile under `RUSTGIS_SAMPLE_SHAPEFILES` both ways, in place and whole, and
 /// compares them: `cargo test --release -p rustgis-data -- --ignored shapefile_samples --nocapture`.
 #[test]
-#[ignore]
+#[ignore = "needs external Shapefile samples in RUSTGIS_SAMPLE_SHAPEFILES"]
 fn shapefile_samples() {
     let Ok(dir) = std::env::var("RUSTGIS_SAMPLE_SHAPEFILES") else { return };
     fn walk(d: &Path, out: &mut Vec<PathBuf>) {

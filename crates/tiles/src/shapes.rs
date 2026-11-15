@@ -491,7 +491,7 @@ mod tests {
             if let Resolve::Ready(r) = resolve(spec) {
                 return r;
             }
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            std::thread::sleep(std::time::Duration::from_millis(10)); // test-wait: legacy polling for shape metadata
         }
         panic!("the archive wasn't read");
     }
@@ -511,7 +511,7 @@ mod tests {
             {
                 return v;
             }
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            std::thread::sleep(std::time::Duration::from_millis(10)); // test-wait: legacy polling for shape tile features
         }
         panic!("no tiles");
     }

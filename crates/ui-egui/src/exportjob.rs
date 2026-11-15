@@ -142,7 +142,7 @@ mod tests {
         app.session.active_layer = app.session.map().layer_by_name("Countries").map(|l| l.id);
         while land(&mut app) {
             assert!(std::time::Instant::now() < end, "the export never landed");
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            std::thread::sleep(std::time::Duration::from_millis(5)); // test-wait: legacy polling for background export completion
         }
         assert!(app.export_job.is_none());
         let exported = format!("Exported {}", path.display());
@@ -173,7 +173,7 @@ mod tests {
             let end = std::time::Instant::now() + std::time::Duration::from_secs(120);
             while land(&mut app) {
                 assert!(std::time::Instant::now() < end, "{name} never landed");
-                std::thread::sleep(std::time::Duration::from_millis(5));
+                std::thread::sleep(std::time::Duration::from_millis(5)); // test-wait: legacy polling for background export completion
             }
             let exported = format!("Exported {}", path.display());
             assert!(app.session.notices.iter().any(|n| n.text == exported && !n.error), "{:?}", app.session.notices.last());
@@ -220,7 +220,7 @@ mod tests {
         let end = std::time::Instant::now() + std::time::Duration::from_secs(120);
         while land(&mut app) {
             assert!(std::time::Instant::now() < end, "Export Orbit never landed");
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            std::thread::sleep(std::time::Duration::from_millis(5)); // test-wait: legacy polling for background export completion
         }
         let exported = format!("Exported {}", path.display());
         assert!(app.session.notices.iter().any(|n| n.text == exported && !n.error), "{:?}", app.session.notices.last());
@@ -243,7 +243,7 @@ mod tests {
         let end = std::time::Instant::now() + std::time::Duration::from_secs(120);
         while land(&mut app) {
             assert!(std::time::Instant::now() < end, "Export Map never landed");
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            std::thread::sleep(std::time::Duration::from_millis(5)); // test-wait: legacy polling for background export completion
         }
         let r = rustgis_engine::data::raster::geotiff::read(std::io::Cursor::new(std::fs::read(&path).unwrap()), "map").unwrap();
         // 400 × 300 points at 192 DPI.

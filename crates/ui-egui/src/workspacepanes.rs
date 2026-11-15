@@ -1155,7 +1155,7 @@ mod tests {
             if h.state().ws.reducing.is_none() {
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            std::thread::sleep(std::time::Duration::from_millis(10)); // test-wait: legacy polling for time-series reduction
         }
         assert!(h.state().ws.reducing.is_none(), "the summary lands");
         let mean = h

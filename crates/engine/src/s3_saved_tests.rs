@@ -239,7 +239,7 @@ fn read_view(s: &mut Session, id: u32) -> usize {
     let mut pending = s.map_mut().sync_sources(&view, scale, false);
     let start = std::time::Instant::now();
     while pending && start.elapsed() < std::time::Duration::from_secs(30) {
-        std::thread::sleep(std::time::Duration::from_millis(5));
+        std::thread::sleep(std::time::Duration::from_millis(5)); // test-wait: legacy polling for streamed source reads
         pending = s.map_mut().sync_sources(&view, scale, false);
     }
     s.map().layer(id).map_or(0, |l| l.dataset.features.len())
@@ -621,7 +621,7 @@ fn settle(srv: &Server) {
     let (mut last, mut quiet) = (usize::MAX, 0);
     for _ in 0..200 {
         cache::wait(std::time::Duration::from_millis(200));
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::thread::sleep(std::time::Duration::from_millis(50)); // test-wait: legacy quiet-period check for remaining S3 requests
         let now = srv.requests();
         quiet = if now == last { quiet + 1 } else { 0 };
         if quiet >= 4 {
@@ -748,7 +748,7 @@ fn s3_saved_projects_hold_no_keys_and_reload_through_their_one_connection() {
         if !found.is_null() {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::thread::sleep(std::time::Duration::from_millis(10)); // test-wait: legacy polling for the S3 identify result
     }
     assert_eq!((found["sourceLayer"].as_str(), found["attributes"]["name"].as_str()), (Some("parks"), Some("Central")), "{found}");
     assert_eq!(p.srv.key_ids(from), BTreeSet::from(["SAVEDKEYA".to_string()]));

@@ -1564,7 +1564,7 @@ pub(crate) mod tests {
                 if !got.is_empty() {
                     return got.iter().map(|p| format!("{}:{:?}", p.source_layer, p.props.first().map(|v| &v.1))).collect();
                 }
-                std::thread::sleep(std::time::Duration::from_millis(10));
+                std::thread::sleep(std::time::Duration::from_millis(10)); // test-wait: legacy polling for vector tile picks
             }
             Vec::new()
         };
@@ -1595,14 +1595,14 @@ pub(crate) mod tests {
             if !got.is_empty() {
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            std::thread::sleep(std::time::Duration::from_millis(10)); // test-wait: legacy polling for vector tile picks
         }
         assert_eq!(got.len(), 2);
         for (u, v) in [(3510.0, 3495.0), (200.0, 505.0)] {
             let (x, y) = at(u, v);
             for _ in 0..50 {
                 assert!(pick(&styled, x, y, m_per_px, 3.0, 10).is_empty());
-                std::thread::sleep(std::time::Duration::from_millis(5));
+                std::thread::sleep(std::time::Duration::from_millis(5)); // test-wait: legacy delay while asserting hidden features stay unpickable
             }
         }
         // A hidden source layer is left out of the style: not picked, the others still are. Other
@@ -1613,7 +1613,7 @@ pub(crate) mod tests {
             if layers.is_some() {
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            std::thread::sleep(std::time::Duration::from_millis(10)); // test-wait: legacy polling for tile source layers
         }
         assert_eq!(layers.unwrap(), ["parks", "roads", "pois", "plots"]);
         let without_roads = Spec { hidden_layers: vec!["roads".into()], ..spec.clone() };
@@ -1624,7 +1624,7 @@ pub(crate) mod tests {
             if !park.is_empty() {
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            std::thread::sleep(std::time::Duration::from_millis(10)); // test-wait: legacy polling for park features
         }
         assert_eq!(park.len(), 1, "the park is still there");
         let (x, y) = at(200.0, 505.0);
@@ -1681,7 +1681,7 @@ pub(crate) mod tests {
             if !got.is_empty() {
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            std::thread::sleep(std::time::Duration::from_millis(10)); // test-wait: legacy polling for cross-tile feature picks
         }
         assert_eq!(got.iter().map(|p| p.source_layer.as_str()).collect::<Vec<_>>(), vec!["pois"]);
         let _ = std::fs::remove_dir_all(dir);

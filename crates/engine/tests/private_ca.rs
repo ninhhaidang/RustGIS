@@ -52,7 +52,7 @@ fn private_ca_platform_trust() {
                 let _ = child.wait();
                 panic!("private CA case {case} exceeded its 90-second deadline");
             }
-            thread::sleep(Duration::from_millis(20));
+            thread::sleep(Duration::from_millis(20)); // test-wait: legacy polling for the isolated CA test child
         };
         assert!(status.success(), "private CA case {case}: {status}");
     }
@@ -142,7 +142,7 @@ fn assert_image(url: &str, trusted: bool) {
             }
             cache::State::Pending => {
                 assert!(Instant::now() < deadline, "HTTPS tile worker did not settle within ten seconds: {url}");
-                thread::sleep(Duration::from_millis(10));
+                thread::sleep(Duration::from_millis(10)); // test-wait: legacy polling for the HTTPS tile result
             }
         }
     }
@@ -302,7 +302,7 @@ impl Server {
                 let (socket, _) = match listener.accept() {
                     Ok(pair) => pair,
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        thread::sleep(Duration::from_millis(5));
+                        thread::sleep(Duration::from_millis(5)); // test-wait: pace nonblocking accepts so the fixture can stop
                         continue;
                     }
                     Err(e) => panic!("HTTPS accept: {e}"),

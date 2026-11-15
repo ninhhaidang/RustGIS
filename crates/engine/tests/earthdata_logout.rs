@@ -21,7 +21,7 @@ fn read(url: &str) -> State {
     let start = Instant::now();
     loop {
         match cache::get(url, Want::Json) {
-            State::Pending if start.elapsed() < Duration::from_secs(30) => std::thread::sleep(Duration::from_millis(2)),
+            State::Pending if start.elapsed() < Duration::from_secs(30) => std::thread::sleep(Duration::from_millis(2)), // test-wait: legacy polling for the Earthdata response
             other => return other,
         }
     }

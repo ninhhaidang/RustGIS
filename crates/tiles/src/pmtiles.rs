@@ -1941,7 +1941,7 @@ pub(crate) mod tests {
                 if i.is_some() {
                     break;
                 }
-                std::thread::sleep(std::time::Duration::from_millis(10));
+                std::thread::sleep(std::time::Duration::from_millis(10)); // test-wait: legacy polling for archive metadata
                 i = info(&a).unwrap();
             }
             let i = i.unwrap();
@@ -1995,7 +1995,7 @@ pub(crate) mod tests {
             if !matches!(resolved, crate::source::Resolve::Pending) {
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            std::thread::sleep(std::time::Duration::from_millis(10)); // test-wait: legacy polling for archive resolution
             resolved = crate::source::resolve(&spec);
         }
         let crate::source::Resolve::Ready(r) = resolved else { panic!("not resolved") };
@@ -2007,7 +2007,7 @@ pub(crate) mod tests {
             if !matches!(state, crate::cache::State::Pending) {
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            std::thread::sleep(std::time::Duration::from_millis(10)); // test-wait: legacy polling for the decoded raster tile
             state = crate::cache::get(&url, crate::cache::Want::Image);
         }
         match state {

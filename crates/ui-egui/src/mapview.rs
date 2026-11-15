@@ -5410,7 +5410,7 @@ mod tests {
         let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while !h.state().map.labels.iter().any(|l| l.text == "Place 3") || h.state().map.drawing() {
             assert!(std::time::Instant::now() < end, "labels never drawn");
-            std::thread::sleep(std::time::Duration::from_millis(2));
+            std::thread::sleep(std::time::Duration::from_millis(2)); // test-wait: legacy polling for rendered labels
             h.step();
         }
         let rect = h.state().map.view_rect.unwrap().0;
@@ -5473,7 +5473,7 @@ mod tests {
         let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while !h.state().map.labels.iter().any(|l| l.collide.pinned) || h.state().map.drawing() {
             assert!(std::time::Instant::now() < end, "labels never drawn again");
-            std::thread::sleep(std::time::Duration::from_millis(2));
+            std::thread::sleep(std::time::Duration::from_millis(2)); // test-wait: legacy polling for restored pinned labels
             h.step();
         }
         // Shift-click on a label never moved: no undo step, so undo takes back the move.
@@ -5717,7 +5717,7 @@ mod tests {
         let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while h.state().map.key.is_none() || h.state().map.drawing() {
             assert!(std::time::Instant::now() < end, "exact globe frame did not arrive");
-            std::thread::sleep(std::time::Duration::from_millis(2));
+            std::thread::sleep(std::time::Duration::from_millis(2)); // test-wait: legacy polling for the exact globe frame
             h.step();
         }
         assert!(!h.state().map.labels.is_empty(), "the sample has labels");
@@ -5784,7 +5784,7 @@ mod tests {
                     break;
                 }
                 assert!(std::time::Instant::now() < end, "{what}");
-                std::thread::sleep(std::time::Duration::from_millis(2));
+                std::thread::sleep(std::time::Duration::from_millis(2)); // test-wait: legacy polling for the settled flat frame
             }
         };
         exact(&mut h, "the first frame did not arrive");
@@ -5807,7 +5807,7 @@ mod tests {
         let end = std::time::Instant::now() + std::time::Duration::from_secs(30);
         while h.state().map.tilt_settle.busy() {
             assert!(std::time::Instant::now() < end, "the stopped frame never came back");
-            std::thread::sleep(std::time::Duration::from_millis(2));
+            std::thread::sleep(std::time::Duration::from_millis(2)); // test-wait: legacy polling for the stopped frame
             h.step();
         }
         h.state_mut().map.last_interaction = -10.0;
@@ -5843,7 +5843,7 @@ mod tests {
                     break;
                 }
                 assert!(std::time::Instant::now() < end, "{what}");
-                std::thread::sleep(std::time::Duration::from_millis(2));
+                std::thread::sleep(std::time::Duration::from_millis(2)); // test-wait: legacy polling for the moving flat frame
             }
         };
         exact(&mut h, "the first frame did not arrive");
@@ -5860,7 +5860,7 @@ mod tests {
         let end = std::time::Instant::now() + std::time::Duration::from_secs(30);
         while h.state().map.key == Some(before) {
             assert!(std::time::Instant::now() < end, "the gap's frame never landed");
-            std::thread::sleep(std::time::Duration::from_millis(2));
+            std::thread::sleep(std::time::Duration::from_millis(2)); // test-wait: legacy polling for the gap frame
             h.step();
         }
         let st = h.state();
@@ -5950,7 +5950,7 @@ mod tests {
                     break;
                 }
                 assert!(std::time::Instant::now() < end, "{what}");
-                std::thread::sleep(std::time::Duration::from_millis(2));
+                std::thread::sleep(std::time::Duration::from_millis(2)); // test-wait: legacy polling for the styled frame
             }
         };
         exact(&mut h, "the first exact frame did not arrive");
@@ -5974,7 +5974,7 @@ mod tests {
         let end = std::time::Instant::now() + std::time::Duration::from_secs(20);
         while h.state().map.key.is_some_and(|k| k.rev == shown) {
             assert!(std::time::Instant::now() < end, "no frame of the changes arrived");
-            std::thread::sleep(std::time::Duration::from_millis(2));
+            std::thread::sleep(std::time::Duration::from_millis(2)); // test-wait: legacy polling for the changed style revision
             h.step();
         }
         assert_eq!(h.state().map.key.map(|k| k.rev), Some(first), "the earlier change's frame was shown first");
@@ -6027,7 +6027,7 @@ mod tests {
         let end = std::time::Instant::now() + std::time::Duration::from_secs(30);
         let step = |h: &mut egui_kittest::Harness<'_, RustGisApp>, what: &str| {
             assert!(std::time::Instant::now() < end, "{what}");
-            std::thread::sleep(std::time::Duration::from_millis(2));
+            std::thread::sleep(std::time::Duration::from_millis(2)); // test-wait: legacy polling for the tilted frame fade
             h.step();
         };
         // The first frame, drawn while the drape stood in for it, fades in too.
@@ -6082,7 +6082,7 @@ mod tests {
             let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
             while h.state().map.key.is_none_or(|k| k.draft || k.size != h.state().map.view_px) || h.state().map.drawing() {
                 assert!(std::time::Instant::now() < end, "{what}");
-                std::thread::sleep(std::time::Duration::from_millis(2));
+                std::thread::sleep(std::time::Duration::from_millis(2)); // test-wait: legacy polling for the post-drag frame
                 h.step();
             }
         };

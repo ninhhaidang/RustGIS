@@ -2370,7 +2370,7 @@ mod tests {
                 if render::render(&mut m, &view).is_some_and(|r| !r.tiles_pending) {
                     break;
                 }
-                std::thread::sleep(std::time::Duration::from_millis(10));
+                std::thread::sleep(std::time::Duration::from_millis(10)); // test-wait: legacy polling for vector tile rendering
             }
             let Some(RenderOutput::Gpu(scene)) = render::render_backend(&mut m, &view, Backend::Gpu) else { panic!("gpu scene") };
             assert!(scene.cmds.iter().any(|c| matches!(c, DrawCmd::TileMeshes { .. })), "meshes at {res}");

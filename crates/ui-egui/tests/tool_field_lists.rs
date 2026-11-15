@@ -40,7 +40,7 @@ fn click_run(h: &mut Harness<'_, RustGisApp>) {
     let end = std::time::Instant::now() + std::time::Duration::from_secs(60);
     while h.state().gp.tool_run.is_some() {
         assert!(std::time::Instant::now() < end, "the run never landed");
-        std::thread::sleep(std::time::Duration::from_millis(5));
+        std::thread::sleep(std::time::Duration::from_millis(5)); // test-wait: legacy polling for background tool completion
         h.run_steps(1);
     }
     h.run_steps(2);

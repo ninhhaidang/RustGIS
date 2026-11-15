@@ -2306,7 +2306,7 @@ mod tests {
             let end = std::time::Instant::now() + std::time::Duration::from_secs(60);
             while crate::readjob::land(app) {
                 assert!(std::time::Instant::now() < end, "the script never landed");
-                std::thread::sleep(std::time::Duration::from_millis(5));
+                std::thread::sleep(std::time::Duration::from_millis(5)); // test-wait: legacy polling for script completion
             }
         };
         // The results say Running… until it lands, then each line's result, as Run #1.
@@ -2616,7 +2616,7 @@ mod tests {
         let end = std::time::Instant::now() + std::time::Duration::from_secs(60);
         while land_job(&mut app) {
             assert!(std::time::Instant::now() < end, "the run never landed");
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            std::thread::sleep(std::time::Duration::from_millis(5)); // test-wait: legacy polling for workflow completion
         }
         assert!(app.workflow.job.is_none() && app.workflow.error.is_none(), "{:?}", app.workflow.error);
         assert!(app.workflow.result.as_ref().is_some_and(|r| r["layer"].is_u64()), "{:?}", app.workflow.result);
@@ -2642,7 +2642,7 @@ mod tests {
         assert!(app.session.notices.iter().any(|n| n.text.contains("still running")));
         while land_job(&mut app) {
             assert!(std::time::Instant::now() < end, "the run never landed");
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            std::thread::sleep(std::time::Duration::from_millis(5)); // test-wait: legacy polling for workflow completion
         }
     }
 
@@ -2687,7 +2687,7 @@ mod tests {
         while h.state().export_job.is_some() {
             assert!(std::time::Instant::now() < end, "conversion never landed");
             h.step();
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            std::thread::sleep(std::time::Duration::from_millis(5)); // test-wait: legacy polling for the export result
         }
         h.run();
         let text = std::fs::read_to_string(&path).unwrap();

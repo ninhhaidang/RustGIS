@@ -14635,7 +14635,7 @@ fn plugin_fetches_run_the_command_again_when_they_land() {
         if !ran.is_empty() || t0.elapsed() > std::time::Duration::from_secs(10) {
             break ran;
         }
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::thread::sleep(std::time::Duration::from_millis(20)); // test-wait: legacy polling for the resumed plugin command
     };
     assert_eq!(ran.len(), 1);
     assert_eq!(ran[0].0, "plugin:eng-fetch-web/f");
@@ -14655,7 +14655,7 @@ fn plugin_fetches_run_the_command_again_when_they_land() {
         if !ran.is_empty() || t0.elapsed() > std::time::Duration::from_secs(10) {
             break ran;
         }
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::thread::sleep(std::time::Duration::from_millis(20)); // test-wait: legacy polling for the resumed plugin command
     };
     assert!(ran[0].1.as_ref().unwrap_err().contains("404"), "{:?}", ran[0].1);
     // A held pinned retry publishes revocation instead of disappearing from the UI.
@@ -14701,7 +14701,7 @@ fn plugin_fetches_run_the_command_again_when_they_land() {
         if !ran.is_empty() || t0.elapsed() > std::time::Duration::from_secs(10) {
             break ran;
         }
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::thread::sleep(std::time::Duration::from_millis(20)); // test-wait: legacy polling for the resumed plugin command
     };
     let bare = ran[0].1.as_ref().unwrap();
     assert!(bare["text"].as_str().unwrap().starts_with('{'), "{bare}");
@@ -14981,14 +14981,14 @@ fn session_plugins_ask_between_commands_and_hear_the_map() {
         let t0 = std::time::Instant::now();
         while !done(s) && t0.elapsed() < std::time::Duration::from_secs(20) {
             s.poll_plugin_sessions();
-            std::thread::sleep(std::time::Duration::from_millis(20));
+            std::thread::sleep(std::time::Duration::from_millis(20)); // test-wait: legacy polling for session plugin events
         }
     };
     // Long enough for a request it sent to be answered.
     let settle = |s: &mut Session| {
         for _ in 0..25 {
             s.poll_plugin_sessions();
-            std::thread::sleep(std::time::Duration::from_millis(20));
+            std::thread::sleep(std::time::Duration::from_millis(20)); // test-wait: legacy settling delay for session plugin events
         }
     };
     // Its first command starts it, and what that command changes is told to it too.
@@ -15083,7 +15083,7 @@ fn session_plugins_turn() -> std::sync::MutexGuard<'static, ()> {
 fn wait_for_exit(plugin: &str) {
     let t0 = std::time::Instant::now();
     while !rustgis_plugins::session::has_exited(plugin) && t0.elapsed() < std::time::Duration::from_secs(10) {
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::thread::sleep(std::time::Duration::from_millis(10)); // test-wait: legacy polling for session plugin exit
     }
 }
 
@@ -15134,7 +15134,7 @@ fn session_plugin_downloads_between_commands_are_fetched_without_an_app() {
             break a;
         }
         assert!(t0.elapsed() < std::time::Duration::from_secs(20), "no answer");
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::thread::sleep(std::time::Duration::from_millis(50)); // test-wait: legacy polling for the plugin download response
     };
     assert!(answer["error"].is_string() && answer["ok"]["pending"].is_null(), "{answer}");
     assert!(s.take_url_requests().is_empty(), "nothing left for an app that isn't there");
@@ -15230,7 +15230,7 @@ fn session_plugin_downloads_between_commands_are_left_to_the_app() {
     let t0 = std::time::Instant::now();
     while s.url_requests.is_empty() && t0.elapsed() < std::time::Duration::from_secs(20) {
         s.poll_plugin_sessions();
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::thread::sleep(std::time::Duration::from_millis(20)); // test-wait: legacy polling for the plugin download request
     }
     let asked = s.take_url_requests();
     let urls: Vec<&Value> = asked.iter().map(|q| &q.params()["url"]).collect();
@@ -16231,7 +16231,7 @@ fn large_sources_stream_a_view_at_a_time() {
     let mut pending = s.map_mut().sync_sources(&lonlat, scale, false);
     let start = std::time::Instant::now();
     while pending && start.elapsed() < std::time::Duration::from_secs(30) {
-        std::thread::sleep(std::time::Duration::from_millis(5));
+        std::thread::sleep(std::time::Duration::from_millis(5)); // test-wait: legacy polling for streamed source reads
         pending = s.map_mut().sync_sources(&lonlat, scale, false);
     }
     assert!(!pending);
@@ -17134,7 +17134,7 @@ fn identify_reports_vector_tile_features() {
             if !r.is_null() {
                 return r;
             }
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            std::thread::sleep(std::time::Duration::from_millis(10)); // test-wait: legacy polling for vector tile identify results
         }
         Value::Null
     };
@@ -17211,7 +17211,7 @@ fn tile_source_layers_can_be_hidden() {
         if listed.get("sourceLayers").is_some() {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::thread::sleep(std::time::Duration::from_millis(10)); // test-wait: legacy polling for tile source metadata
     }
     assert_eq!(listed["sourceLayers"], json!(["parks", "roads"]), "{listed}");
     assert!(listed.get("hiddenLayers").is_none());
@@ -17225,7 +17225,7 @@ fn tile_source_layers_can_be_hidden() {
                 names.sort();
                 return names;
             }
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            std::thread::sleep(std::time::Duration::from_millis(10)); // test-wait: legacy polling for visible tile source names
         }
         Vec::new()
     };
@@ -17537,7 +17537,7 @@ fn mbtiles_archives_frame_the_map_on_their_bounds() {
     while delayed.style_view.is_some() {
         assert!(std::time::Instant::now() < deadline, "metadata never became ready");
         delayed.follow_style_view();
-        std::thread::sleep(std::time::Duration::from_millis(5));
+        std::thread::sleep(std::time::Duration::from_millis(5)); // test-wait: legacy polling for delayed archive framing
     }
     near_iceland(&delayed);
 
@@ -17586,7 +17586,7 @@ fn mbtiles_archives_frame_the_map_on_their_bounds() {
     while queued.style_view.is_some() {
         assert!(std::time::Instant::now() < deadline, "queued archive never framed after capacity became available");
         queued.follow_style_view();
-        std::thread::sleep(std::time::Duration::from_millis(5));
+        std::thread::sleep(std::time::Duration::from_millis(5)); // test-wait: legacy polling for queued archive framing
     }
     near_iceland(&queued);
 
@@ -17984,7 +17984,7 @@ fn shapefile_by_its_shp_address() {
                 break r;
             }
             assert!(std::time::Instant::now() < until, "{url}: the download didn't land");
-            std::thread::sleep(std::time::Duration::from_millis(20));
+            std::thread::sleep(std::time::Duration::from_millis(20)); // test-wait: legacy polling for the Shapefile download
         }
     };
     // The app's download of a signed .shp refused says what the 403 may mean, without the signature.
@@ -21435,7 +21435,7 @@ fn area_review_streamed_filters_keep_clean_features_and_report_unavailable_rows(
             if !pending {
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            std::thread::sleep(std::time::Duration::from_millis(5)); // test-wait: legacy polling for streamed filtered features
         }
         assert!(!pending);
         let layer = session.map().layer(id).unwrap();
@@ -23610,7 +23610,7 @@ fn serve_with(
                 if let Some(g) = &gate {
                     let start = std::time::Instant::now();
                     while !g.load(std::sync::atomic::Ordering::Relaxed) && start.elapsed() < std::time::Duration::from_secs(60) {
-                        std::thread::sleep(std::time::Duration::from_millis(5));
+                        std::thread::sleep(std::time::Duration::from_millis(5)); // test-wait: hold fixture replies until the release flag is set
                     }
                 }
                 let req = String::from_utf8_lossy(&buf[..read]).to_ascii_lowercase();
@@ -24060,7 +24060,7 @@ fn an_entry_without_a_range_takes_one_from_its_files() {
                     counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 }
                 std::thread::spawn(move || {
-                    std::thread::sleep(std::time::Duration::from_secs(6));
+                    std::thread::sleep(std::time::Duration::from_secs(6)); // test-wait: simulate a slow missing range response
                     let _ = write!(c, "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
                 });
             }
@@ -25248,7 +25248,7 @@ fn a_waiting_sessions_next_command_reads_a_failed_overview_again() {
     assert!(layer(&s).data.is_none() && layer(&s).read_failure().is_some());
     assert_eq!(sent.load(Ordering::Relaxed), 0, "read again before its wait was over");
     // One run after does, waiting for it: the layer holds its overview as the command answers.
-    std::thread::sleep(Duration::from_millis(1100));
+    std::thread::sleep(Duration::from_millis(1100)); // test-wait: cross the failed-overview retry backoff
     s.run("info.project", &json!({})).unwrap();
     let rl = layer(&s);
     assert!(rl.data.is_some(), "{:?}", rl.error);
@@ -25285,7 +25285,7 @@ fn permission_policy_raster_retry_keeps_the_original_owner() {
         assert_eq!(raster.read_failure().map(|(_, _, n)| n), Some(1));
         s.map_mut().add_raster("Scene", raster);
         live.store(false, SeqCst);
-        std::thread::sleep(Duration::from_millis(1100));
+        std::thread::sleep(Duration::from_millis(1100)); // test-wait: cross the failed-overview retry backoff
         if restricted {
             let scope = Scope::agent(AgentAccess::Refuse, true, "raster-retry", None, Arc::new(Live));
             s.with_scope(scope, |s| s.run("info.project", &json!({}))).unwrap().unwrap();
@@ -25490,7 +25490,7 @@ fn serve_s3_together(files: Vec<(&'static str, Vec<u8>)>) -> String {
                 asked.lock().unwrap().insert(key);
                 let start = std::time::Instant::now();
                 while asked.lock().unwrap().len() < files.len() && start.elapsed() < Duration::from_secs(150) {
-                    std::thread::sleep(Duration::from_millis(5));
+                    std::thread::sleep(Duration::from_millis(5)); // test-wait: hold S3 replies until all keys have been requested
                 }
                 if req.starts_with("head ") {
                     let _ = write!(s, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
@@ -27848,7 +27848,7 @@ fn a_zarr_step_is_read_off_the_frame_in_the_app() {
         while first(s) != want {
             assert!(std::time::Instant::now() < end, "the step never landed: {:?}", first(s));
             s.follow_time_landed();
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            std::thread::sleep(std::time::Duration::from_millis(5)); // test-wait: legacy polling for the requested Zarr step
         }
     };
     // The move returns at once: the layer shows the step before, then step 2 once it lands;
@@ -27877,7 +27877,7 @@ fn a_zarr_step_is_read_off_the_frame_in_the_app() {
     while s.zarr_waiting() {
         assert!(std::time::Instant::now() < end, "the failing step never landed");
         s.follow_time_landed();
-        std::thread::sleep(std::time::Duration::from_millis(5));
+        std::thread::sleep(std::time::Duration::from_millis(5)); // test-wait: legacy polling for the failed Zarr step
     }
     let errors: Vec<_> = s.notices_since(mark).iter().filter(|n| n.error).map(|n| n.text.clone()).collect();
     assert!(errors.len() == 1 && errors[0].contains("and 1 more layer:"), "{errors:?}");
@@ -27995,7 +27995,7 @@ fn permission_review_zarr_worker_rechecks_captured_still_before_a_local_read() {
         // This isolated scenario has one worker: observe completion before any frame can consume it.
         while !crate::cmd::zarr::landed_since(&mut completed) {
             assert!(std::time::Instant::now() < end, "the held worker never completed");
-            std::thread::sleep(std::time::Duration::from_millis(2));
+            std::thread::sleep(std::time::Duration::from_millis(2)); // test-wait: legacy polling for worker completion before a frame consumes it
         }
         if revoke_after {
             live.store(false, Ordering::SeqCst);
@@ -28014,7 +28014,7 @@ fn permission_review_zarr_worker_rechecks_captured_still_before_a_local_read() {
         while s.zarr_waiting() {
             assert!(std::time::Instant::now() < end, "the completed Zarr worker never landed");
             s.follow_time_landed();
-            std::thread::sleep(std::time::Duration::from_millis(2));
+            std::thread::sleep(std::time::Duration::from_millis(2)); // test-wait: legacy polling for the completed Zarr step
         }
         let revoked = revoke_before || revoke_after;
         let raster = s.map().layer(id).unwrap().raster.as_ref().unwrap();
@@ -28311,7 +28311,7 @@ fn load_all_features_waits_for_a_source_still_opening() {
     assert!(!started.is_open() && started.is_pending());
     let load = std::thread::spawn(move || layer.load_all());
     // Still waiting while the server holds its answers, rather than failed at once.
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    std::thread::sleep(std::time::Duration::from_millis(300)); // test-wait: legacy delay before asserting the source load is still blocked
     assert!(!load.is_finished(), "the load didn't wait for the source: {:?}", load.join().unwrap().err());
     gate.store(true, std::sync::atomic::Ordering::Relaxed);
     assert_eq!(load.join().unwrap().unwrap().features.len(), 100);
@@ -28345,7 +28345,7 @@ fn flatgeobuf_and_geoparquet_by_address_are_read_in_place() {
         let mut pending = s.map_mut().sync_sources(&view, scale, false);
         let start = std::time::Instant::now();
         while pending && start.elapsed() < std::time::Duration::from_secs(30) {
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            std::thread::sleep(std::time::Duration::from_millis(5)); // test-wait: legacy polling for streamed source reads
             pending = s.map_mut().sync_sources(&view, scale, false);
         }
         assert!(!pending);
@@ -30321,7 +30321,7 @@ fn postgis_layers_reopen_without_secrets() {
 /// table is added, drawn, saved and opened again.
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
-#[ignore]
+#[ignore = "needs a live PostGIS database with geometry tables in RUSTGIS_TEST_POSTGIS"]
 fn postgis_live_end_to_end() {
     let Ok(dsn) = std::env::var("RUSTGIS_TEST_POSTGIS") else { return };
     let mut s = Session::new(Project::default());
@@ -30385,7 +30385,7 @@ fn mysql_layers_reopen_without_secrets() {
 /// added, drawn, saved and opened again.
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
-#[ignore]
+#[ignore = "needs a live MySQL or MariaDB database with geometry tables in RUSTGIS_TEST_MYSQL"]
 fn mysql_live_end_to_end() {
     let Ok(address) = std::env::var("RUSTGIS_TEST_MYSQL") else { return };
     let mut s = Session::new(Project::default());
@@ -30448,7 +30448,7 @@ fn sqlserver_layers_reopen_without_secrets() {
 /// `RUSTGIS_TEST_MSSQL` names a live database: add every table, stream one, draw, save and reopen.
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
-#[ignore]
+#[ignore = "needs a live SQL Server database with geometry tables in RUSTGIS_TEST_MSSQL"]
 fn sqlserver_live_end_to_end() {
     let Ok(address) = std::env::var("RUSTGIS_TEST_MSSQL") else { return };
     let mut s = Session::new(Project::default());
@@ -36362,7 +36362,7 @@ fn postgis_tab_needs_a_connection() {
 /// (as for `postgis_live_end_to_end`) with a table that has an integer primary key.
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
-#[ignore]
+#[ignore = "needs a live PostGIS table with an integer primary key in RUSTGIS_TEST_POSTGIS"]
 fn postgis_tab_live() {
     let Ok(dsn) = std::env::var("RUSTGIS_TEST_POSTGIS") else { return };
     let mut s = Session::new(Project::default());
@@ -36471,7 +36471,7 @@ fn postgis_edits_are_counted_and_checked() {
 /// two tables of its own.
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
-#[ignore]
+#[ignore = "needs a live PostGIS database with table creation rights in RUSTGIS_TEST_POSTGIS"]
 fn postgis_edits_live() {
     /// Drops the test's tables, however the test ends.
     struct Cleanup(String, String, String);
@@ -36598,7 +36598,7 @@ fn postgis_edits_live() {
 /// `RUSTGIS_TEST_POSTGIS` names a database where the test may make and drop a table.
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
-#[ignore]
+#[ignore = "needs a live PostGIS database with table creation rights in RUSTGIS_TEST_POSTGIS"]
 fn postgis_dates_live() {
     use rustgis_data::{FieldType, Value as V};
     /// Drops the table, however the test ends.
@@ -39505,7 +39505,7 @@ fn a_replaced_mbtiles_file_is_read_again() {
                     _ => panic!("not an image"),
                 },
                 cache::State::Failed(e) => panic!("{e}"),
-                cache::State::Pending => std::thread::sleep(std::time::Duration::from_millis(10)),
+                cache::State::Pending => std::thread::sleep(std::time::Duration::from_millis(10)), // test-wait: legacy polling for the legend image
             }
         }
         panic!("the tile never came");
@@ -39515,7 +39515,7 @@ fn a_replaced_mbtiles_file_is_read_again() {
             match source::resolve(&crate::render::tile_spec(&s.map().tiles[0])) {
                 source::Resolve::Ready(style) => return style.attribution.clone(),
                 source::Resolve::Failed(e) => panic!("{e}"),
-                _ => std::thread::sleep(std::time::Duration::from_millis(10)),
+                _ => std::thread::sleep(std::time::Duration::from_millis(10)), // test-wait: legacy polling for tile source attribution
             }
         }
         panic!("the style never came");
@@ -39717,7 +39717,7 @@ fn geolibre_remote_plain_tiff_folder_opacity_is_not_baked_twice() {
             let (mut stream, _) = match listener.accept() {
                 Ok(connection) => connection,
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(std::time::Duration::from_millis(2));
+                    std::thread::sleep(std::time::Duration::from_millis(2)); // test-wait: pace nonblocking accepts so the fixture can stop
                     continue;
                 }
                 Err(_) => break,
@@ -42933,7 +42933,7 @@ fn raster_classes_run_on_another_thread() {
     let end = std::time::Instant::now() + std::time::Duration::from_secs(60);
     while control.progress().is_none() {
         assert!(std::time::Instant::now() < end, "the run never counted its work");
-        std::thread::sleep(std::time::Duration::from_millis(1));
+        std::thread::sleep(std::time::Duration::from_millis(1)); // test-wait: legacy polling for background classification progress
     }
     control.cancel();
     let e = worker.join().unwrap().err().unwrap_or_default();
@@ -44506,7 +44506,7 @@ fn reopening_zarr_twice_does_not_reuse_cached_or_late_reads_from_the_previous_op
     while s.zarr_waiting() || crate::cmd::zarr::kept_slice(&old_key).is_none() {
         assert!(std::time::Instant::now() < end, "the pending reads never completed");
         s.follow_time_landed();
-        std::thread::sleep(std::time::Duration::from_millis(2));
+        std::thread::sleep(std::time::Duration::from_millis(2)); // test-wait: legacy polling for reads from the old Zarr opening
     }
     assert_eq!(crate::cmd::zarr::kept_slice(&old_key).unwrap().value(0, 0, 0), Some(208.0), "the late completion contains old pixels");
     assert_eq!(s.map().layer(id).unwrap().raster.as_ref().unwrap().data.as_ref().unwrap().value(0, 0, 0), Some(502.0));
@@ -44514,7 +44514,7 @@ fn reopening_zarr_twice_does_not_reuse_cached_or_late_reads_from_the_previous_op
     while s.zarr_waiting() {
         assert!(std::time::Instant::now() < end, "the fresh cached-step replacement never landed");
         s.follow_time_landed();
-        std::thread::sleep(std::time::Duration::from_millis(2));
+        std::thread::sleep(std::time::Duration::from_millis(2)); // test-wait: legacy polling for the replacement Zarr step
     }
     assert_eq!(crate::cmd::zarr::kept_slice(&cached_key).unwrap().value(0, 0, 0), Some(108.0));
     assert_eq!(s.map().layer(id).unwrap().raster.as_ref().unwrap().data.as_ref().unwrap().value(0, 0, 0), Some(501.0));
@@ -44575,7 +44575,7 @@ fn a_zarr_step_requested_after_reload_does_not_join_a_pending_read_of_the_old_st
     while s.zarr_waiting() {
         assert!(std::time::Instant::now() < end, "the step never landed");
         s.follow_time_landed();
-        std::thread::sleep(std::time::Duration::from_millis(2));
+        std::thread::sleep(std::time::Duration::from_millis(2)); // test-wait: legacy polling for the new Zarr step
     }
     assert_eq!(first(&s), Some(501.0), "the layer shows the rewritten chunks, not the pre-reload step");
     std::fs::remove_dir_all(dir).unwrap();
@@ -48398,7 +48398,7 @@ fn an_orbit_drawn_on_another_thread_counts_its_frames_and_stops_on_cancel() {
     let end = std::time::Instant::now() + std::time::Duration::from_secs(120);
     while control.progress().is_none_or(|(done, _)| done < 2) {
         assert!(std::time::Instant::now() < end, "no frame was counted");
-        std::thread::sleep(std::time::Duration::from_millis(2));
+        std::thread::sleep(std::time::Duration::from_millis(2)); // test-wait: legacy polling for background orbit progress
     }
     control.cancel();
     let e = drawing.join().unwrap().unwrap_err();

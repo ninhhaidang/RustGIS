@@ -114,6 +114,7 @@ is out of scope.
 
 ## Quality gates
 `cargo xtask ci` (fmt, clippy -D warnings, tests, layers) before every commit.
+`cargo xtask test-hygiene` (also in CI) requires `// test-wait: reason` on timer waits in tests and `#[ignore = "reason"]` on ignored tests; prefer completion or progress signals.
 While you work, `cargo xtask changed` runs the same checks on only the packages your branch changes
 and those that depend on them, or on the whole workspace when a changed file such as `Cargo.lock` is
 outside every package and nothing includes it.

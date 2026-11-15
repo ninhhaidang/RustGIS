@@ -428,7 +428,7 @@ mod tests {
                 return o;
             }
             assert!(Instant::now() < deadline, "the bridge never ran the command file");
-            std::thread::sleep(Duration::from_millis(20));
+            std::thread::sleep(Duration::from_millis(20)); // test-wait: legacy polling for the bridge command result
         }
     }
 
@@ -456,7 +456,7 @@ mod tests {
         assert_eq!(ready["command"], b.command_path().display().to_string());
         let mut s = sample();
         let (layers, undo) = (s.map().layers.len(), s.undo_depth());
-        std::thread::sleep(POLL * 2);
+        std::thread::sleep(POLL * 2); // test-wait: cross the bridge poll interval to check stale commands stay ignored
         assert!(b.poll(&mut s).is_none(), "the old command file ran");
 
         write_command(&b, "# two layers\nlayer.addSample {\"name\": \"countries\"}\nlayer.addSample {\"name\": \"cities\"}\n");
@@ -472,7 +472,7 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(5);
         while !b.inner.changed.load(SeqCst) {
             assert!(Instant::now() < deadline, "the change was never seen");
-            std::thread::sleep(Duration::from_millis(20));
+            std::thread::sleep(Duration::from_millis(20)); // test-wait: legacy polling for the file-change flag
         }
         assert!(b.result_path().exists(), "kept until the run");
         assert!(run_next(&b, &mut s).success);

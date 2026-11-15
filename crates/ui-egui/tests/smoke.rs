@@ -2265,7 +2265,7 @@ fn data_from_a_web_address_lands_later() {
         if h.state().session.map().layer_by_name("Pin").is_some() {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::thread::sleep(std::time::Duration::from_millis(20)); // test-wait: legacy polling for downloaded data
     }
     assert_eq!(h.state().session.map().layers.len(), before + 1);
     assert!(h.state().session.map().layer_by_name("Pin").is_some());
@@ -2302,7 +2302,7 @@ fn address_failures_keep_status_without_credentials() {
             if h.state().session.notices.iter().any(|n| n.error) {
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            std::thread::sleep(std::time::Duration::from_millis(10)); // test-wait: legacy polling for the address error notice
         }
         let notices = &h.state().session.notices;
         let failure = notices.iter().find(|n| n.error).unwrap_or_else(|| panic!("{file}: no failure notice"));
@@ -2329,7 +2329,7 @@ fn shapefile_part_failures_keep_one_address_and_the_http_reason() {
             if h.state().session.notices.iter().any(|notice| notice.error) {
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            std::thread::sleep(std::time::Duration::from_millis(10)); // test-wait: legacy polling for the Shapefile failure notice
         }
         let failure = h.state().session.notices.iter().find(|notice| notice.error).unwrap();
         assert!(failure.text.contains(&format!("/{name}.dbf")) && failure.text.contains("404"), "{failure:?}");
@@ -2431,7 +2431,7 @@ fn an_unnamed_cog_address_is_read_in_place() {
         if h.state().session.map().layers.iter().any(|l| l.name == "Ortho") {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::thread::sleep(std::time::Duration::from_millis(20)); // test-wait: legacy polling for the probed raster layer
     }
     let t = h.state().session.map().layers.iter().find(|l| l.name == "Ortho").and_then(|l| l.raster.clone());
     assert!(t.is_some_and(|r| r.in_place && r.path.as_deref() == Some(url.as_str())), "added as a raster layer read in place");
@@ -2447,7 +2447,7 @@ fn an_unnamed_cog_address_is_read_in_place() {
         if h.state().session.map().layers.iter().any(|l| l.name == "Null") {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::thread::sleep(std::time::Duration::from_millis(20)); // test-wait: legacy polling for the refused raster layer
     }
     let t = h.state().session.map().layers.iter().find(|l| l.name == "Null").and_then(|l| l.raster.clone());
     assert!(t.is_some_and(|r| r.in_place && r.path.as_deref() == Some(null_url.as_str())), "added as a raster layer read in place");
@@ -2457,7 +2457,7 @@ fn an_unnamed_cog_address_is_read_in_place() {
     assert!(h.state().ui.cog_probes.is_empty());
     for _ in 0..50 {
         h.step();
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::thread::sleep(std::time::Duration::from_millis(20)); // test-wait: legacy settling delay to check duplicate probes stay absent
     }
     assert!(!h.state().session.map().layers.iter().any(|l| l.name == "Late"));
 }
@@ -2626,7 +2626,7 @@ fn a_project_from_a_web_address_opens_when_it_lands() {
         if h.state().session.project.name == "Shared map" {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::thread::sleep(std::time::Duration::from_millis(20)); // test-wait: legacy polling for the downloaded project
     }
     assert_eq!(h.state().session.project.name, "Shared map");
     assert_eq!(h.state().session.map().layers.len(), layers);
@@ -2670,7 +2670,7 @@ fn a_late_project_download_leaves_the_newer_project_and_the_picker_alone() {
         if h.state().ui.project_download.is_none() {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::thread::sleep(std::time::Duration::from_millis(20)); // test-wait: legacy polling for the stale project download
     }
     assert!(h.state().ui.project_download.is_none());
     assert_eq!(h.state().session.project.name, newer);
@@ -2684,7 +2684,7 @@ fn a_late_project_download_leaves_the_newer_project_and_the_picker_alone() {
         if h.state().session.project.name == "late" {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::thread::sleep(std::time::Duration::from_millis(20)); // test-wait: legacy polling for the later project download
     }
     assert_eq!(h.state().session.project.name, "late");
     assert_eq!(h.state().ui.pending_open, Some("style.add"));
@@ -2715,7 +2715,7 @@ fn a_service_is_listed_when_its_capabilities_land() {
         if h.state().ui.service.as_ref().is_some_and(|c| c.listing.is_some() || c.error.is_some() || c.failure.is_some()) {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::thread::sleep(std::time::Duration::from_millis(20)); // test-wait: legacy polling for service capabilities
     }
     let conn = h.state().ui.service.as_ref().unwrap();
     assert_eq!(conn.error, None);
@@ -2776,7 +2776,7 @@ Connection: close
         if h.state().ui.service.as_ref().is_some_and(|c| c.listing.is_some() || c.error.is_some() || c.failure.is_some()) {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::thread::sleep(std::time::Duration::from_millis(20)); // test-wait: legacy polling for the filtered listing
     }
     let conn = h.state().ui.service.as_ref().unwrap();
     assert_eq!(conn.error, None);
@@ -2860,7 +2860,7 @@ fn connections_section_and_dialog() {
         if h.state().dialogs.info.as_ref().is_some_and(|s| s.contains("1 layers")) || h.state().dialogs.error.is_some() {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::thread::sleep(std::time::Duration::from_millis(20)); // test-wait: legacy polling for connection test feedback
     }
     assert_eq!(h.state().dialogs.error, None);
     assert!(
@@ -2921,7 +2921,7 @@ fn add_service_keeps_and_picks_connections() {
             if h.state().ui.service.as_ref().is_some_and(|c| c.listing.is_some() || c.error.is_some() || c.failure.is_some()) {
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(20));
+            std::thread::sleep(std::time::Duration::from_millis(20)); // test-wait: legacy polling for the selected service listing
         }
         let conn = h.state().ui.service.as_ref().unwrap();
         assert_eq!(conn.error, None);
@@ -3141,7 +3141,7 @@ fn stac_dialog_keeps_and_picks_connections() {
         if !h.state().ui.stac.collections.is_empty() || h.state().ui.stac.error.is_some() {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::thread::sleep(std::time::Duration::from_millis(20)); // test-wait: legacy polling for STAC collections
     }
     assert_eq!(h.state().ui.stac.error, None);
     assert_eq!(h.state().ui.stac.collections, vec![("c1".to_string(), "C".to_string())]);
@@ -3263,7 +3263,7 @@ fn connections_test_feedback_tracks_edited_inputs() {
         if old.lock().unwrap().is_some() {
             break;
         }
-        std::thread::sleep(Duration::from_millis(20));
+        std::thread::sleep(Duration::from_millis(20)); // test-wait: legacy polling for the old connection probe
     }
     assert!(old.lock().unwrap().is_some(), "the discarded request must actually finish");
     assert_eq!(h.state().dialogs.info, None);
@@ -3280,7 +3280,7 @@ fn connections_test_feedback_tracks_edited_inputs() {
             if h.state().ui.connection.test.is_none() {
                 break;
             }
-            std::thread::sleep(Duration::from_millis(20));
+            std::thread::sleep(Duration::from_millis(20)); // test-wait: legacy polling for the edited connection probe
         }
         assert!(h.state().ui.connection.test.is_none());
         if succeeds {
@@ -3342,7 +3342,7 @@ fn connections_tree_browses_and_adds() {
         if h.query_by_label("A").is_some() {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::thread::sleep(std::time::Duration::from_millis(20)); // test-wait: legacy polling for the expanded connection tree
     }
     assert!(h.query_by_label("A").is_some(), "the layers are listed under the connection");
     let before = h.state().session.map().tiles.len();
@@ -3690,7 +3690,7 @@ fn wait_for_ogc(h: &mut egui_kittest::Harness<'static, RustGisApp>, ready: impl 
             return;
         }
         assert!(std::time::Instant::now() < deadline, "service did not finish: {:?}", h.state().ui.service.as_ref().map(|c| &c.error));
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::thread::sleep(std::time::Duration::from_millis(10)); // test-wait: legacy polling for OGC service state
     }
 }
 
@@ -3803,7 +3803,7 @@ fn ogc_landing_reconnecting_ignores_a_delayed_response() {
     let until = std::time::Instant::now() + std::time::Duration::from_millis(500);
     while std::time::Instant::now() < until {
         h.step();
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::thread::sleep(std::time::Duration::from_millis(10)); // test-wait: legacy settling delay for a stale reconnect response
     }
     let conn = h.state().ui.service.as_ref().unwrap();
     assert_eq!(conn.url, current.root());
@@ -3877,7 +3877,7 @@ fn ogc_group_background_import_does_not_land_in_a_new_project() {
     let until = std::time::Instant::now() + std::time::Duration::from_millis(250);
     while std::time::Instant::now() < until {
         h.step();
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::thread::sleep(std::time::Duration::from_millis(10)); // test-wait: legacy settling delay for an abandoned group import
     }
     assert!(h.state().session.map().layers.is_empty());
     assert!(h.state().session.map().service_groups.is_empty());

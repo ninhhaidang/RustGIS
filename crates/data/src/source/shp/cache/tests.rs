@@ -307,7 +307,7 @@ fn wait_removed(path: &Path) {
     let deadline = Instant::now() + Duration::from_secs(10);
     while path.exists() {
         assert!(Instant::now() < deadline, "release cleanup was never retried: {}", path.display());
-        std::thread::sleep(Duration::from_millis(10));
+        std::thread::sleep(Duration::from_millis(10)); // test-wait: legacy polling for cache cleanup
     }
 }
 
@@ -436,7 +436,7 @@ fn wait_ready(child: &mut Process, root: &Path) -> PathBuf {
     while !marker.exists() {
         assert!(child.0.try_wait().unwrap().is_none(), "cache child exited before holding its lease");
         assert!(Instant::now() < deadline, "cache child did not become ready");
-        std::thread::sleep(Duration::from_millis(10));
+        std::thread::sleep(Duration::from_millis(10)); // test-wait: legacy polling for the child lease marker
     }
     PathBuf::from(std::fs::read_to_string(marker).unwrap())
 }
@@ -575,7 +575,7 @@ fn cache_child_fixture() {
     let scratch = marker.with_extension("tmp");
     std::fs::write(&scratch, lease.path().to_string_lossy().as_bytes()).unwrap();
     std::fs::rename(scratch, marker).unwrap();
-    std::thread::sleep(Duration::from_secs(60));
+    std::thread::sleep(Duration::from_secs(60)); // test-wait: keep the fixture lease alive until its parent kills it
     drop(lease);
 }
 
@@ -661,7 +661,7 @@ fn cache_unix_unsafe_root_is_rejected_before_an_attacker_lock() {
             break;
         }
         assert!(Instant::now() < deadline, "unsafe root reached the attacker's blocking lock");
-        std::thread::sleep(Duration::from_millis(10));
+        std::thread::sleep(Duration::from_millis(10)); // test-wait: legacy polling for rejection of the unsafe root
     }
     assert_eq!(std::fs::read(lock_path).unwrap(), b"sentinel");
     assert_eq!(root.0.metadata().unwrap().mode() & 0o777, 0o777, "do not repair untrusted roots");

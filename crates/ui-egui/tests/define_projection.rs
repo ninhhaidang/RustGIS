@@ -190,7 +190,7 @@ fn downloaded_shapefile_keeps_the_requested_source_crs() {
         if h.state().session.map().layer_by_name("Downloaded").is_some() {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::thread::sleep(std::time::Duration::from_millis(20)); // test-wait: legacy polling for the downloaded layer
     }
     let layer = h.state().session.map().layer_by_name("Downloaded").unwrap();
     let point = layer.dataset.features[0].geometry.as_ref().unwrap().label_point().unwrap();

@@ -1274,7 +1274,7 @@ mod tests {
                 while crate::readjob::showing(h.state()) {
                     assert!(std::time::Instant::now() < end);
                     crate::readjob::land(h.state_mut());
-                    std::thread::sleep(std::time::Duration::from_millis(1));
+                    std::thread::sleep(std::time::Duration::from_millis(1)); // test-wait: legacy polling for field deletion completion
                 }
                 h.run_steps(2);
             }

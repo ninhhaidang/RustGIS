@@ -240,7 +240,7 @@ mod tests {
                 break d;
             }
             assert!(std::time::Instant::now() < end, "the frame never came");
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            std::thread::sleep(std::time::Duration::from_millis(5)); // test-wait: legacy polling for the tilted frame
         };
         assert_eq!(done.0, 7);
         let Some(RenderOutput::Cpu(r)) = done.1.rendered else { panic!("a CPU frame") };
@@ -264,7 +264,7 @@ mod tests {
         let (m, v) = (map.clone(), view);
         s.start_with(&ctx, 3u8, stop, move || {
             while !seen.load(std::sync::atomic::Ordering::Relaxed) {
-                std::thread::sleep(std::time::Duration::from_millis(1));
+                std::thread::sleep(std::time::Duration::from_millis(1)); // test-wait: hold the fake renderer until cancellation is seen
             }
             draw(m, v, Backend::Cpu, seen)
         });
@@ -276,7 +276,7 @@ mod tests {
                 break d;
             }
             assert!(std::time::Instant::now() < end, "the stopped frame never came back");
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            std::thread::sleep(std::time::Duration::from_millis(5)); // test-wait: legacy polling for the cancelled frame
         };
         assert_eq!(done.0, 3);
         assert!(done.1.cancelled && done.1.rendered.is_none());
@@ -298,7 +298,7 @@ mod tests {
         while s.busy() {
             assert!(s.take().is_none());
             assert!(std::time::Instant::now() < end, "the worker never ended");
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            std::thread::sleep(std::time::Duration::from_millis(5)); // test-wait: legacy polling for the failed frame worker
         }
         assert!(s.failed(1u8) && !s.failed(2u8));
         s.start(&ctx, 1u8, map.clone(), view);

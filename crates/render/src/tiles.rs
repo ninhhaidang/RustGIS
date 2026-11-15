@@ -1500,7 +1500,7 @@ pub(crate) mod tests {
         HOLD.store(false, Ordering::SeqCst);
         let start = std::time::Instant::now();
         while HELD.lock().unwrap().is_empty() && start.elapsed() < std::time::Duration::from_secs(10) {
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            std::thread::sleep(std::time::Duration::from_millis(10)); // test-wait: legacy polling for the held tile request
         }
         for done in std::mem::take(&mut *HELD.lock().unwrap()) {
             done(Ok(tiny_skia::Pixmap::new(256, 256).unwrap().encode_png().unwrap()));

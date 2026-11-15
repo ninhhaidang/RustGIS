@@ -950,7 +950,7 @@ mod tests {
             if let Resolve::Ready(r) = resolve(spec) {
                 return r;
             }
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            std::thread::sleep(std::time::Duration::from_millis(10)); // test-wait: legacy polling for picture metadata
         }
         panic!("the archive wasn't read");
     }
@@ -973,7 +973,7 @@ mod tests {
             if !d.pending {
                 return (pm, d);
             }
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            std::thread::sleep(std::time::Duration::from_millis(10)); // test-wait: legacy polling for picture drawing
         }
         panic!("still pending");
     }
@@ -1072,7 +1072,7 @@ mod tests {
         // One deadline for the frame, whoever asks; an inner call keeps within it.
         let ((a, b, inner), _) = paced(Pace::Settling, || {
             let a = pace().map(|p| p.1);
-            std::thread::sleep(Duration::from_millis(2));
+            std::thread::sleep(Duration::from_millis(2)); // test-wait: advance real time to check nested frame deadlines agree
             let (inner, _) = paced(Pace::Moving, || pace().map(|p| p.1));
             (a, pace().map(|p| p.1), inner)
         });
