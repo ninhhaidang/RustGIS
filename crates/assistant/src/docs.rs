@@ -37,6 +37,7 @@ pub const PAGES: &[Page] = pages![
     "user-guide/layouts.md",
     "user-guide/sharing.md",
     "user-guide/workspace.md",
+    "user-guide/field-work.md",
     "user-guide/assistant.md",
     "comparison/index.md",
     "comparison/geolibre.md",

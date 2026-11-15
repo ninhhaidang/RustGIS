@@ -15,6 +15,7 @@ This guide walks through RustGIS by task. Each page covers one part of the app:
 | [Layouts and Reports](layouts.md) | Page layouts, map series, reports, presentations and notebooks |
 | [Sharing](sharing.md) | Exports, packages and open-format web maps, layers, styles and scenes |
 | [Workspace](workspace.md) | Linked views, the Browser view, animation, profiles, offline areas, customizing the ribbon |
+| [Field Work](field-work.md) | The phone apps: capturing and editing by touch, the device's position and tracks, photos, offline basemaps and field packages |
 | [AI Assistant](assistant.md) | A chat pane that answers questions and acts on the map through commands |
 
 <figure markdown="span">

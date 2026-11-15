@@ -20,9 +20,9 @@ Formats](data-formats.md).
 | Geotagged photos (JPEG with EXIF GPS): points with their thumbnails | Yes | No |
 | Esri File Geodatabase (`.gdb` folder; 3D multipatches as footprints) | Yes (desktop) | No |
 | Through GDAL: AutoCAD DWG, MapInfo TAB, OpenStreetMap XML, File Geodatabases RustGIS can't read itself… | Yes (desktop, when GDAL is installed) | No |
-| PostgreSQL/PostGIS databases, read live (large tables a view at a time) | Yes (desktop) | No |
-| MySQL and MariaDB databases, read live (large tables a view at a time) | Yes (desktop) | No |
-| SQL Server and Azure SQL databases, read live (large tables a view at a time) | Yes (desktop) | No |
+| PostgreSQL/PostGIS databases, read live (large tables a view at a time) | Yes (desktop and phones) | No |
+| MySQL and MariaDB databases, read live (large tables a view at a time) | Yes (desktop and phones) | No |
+| SQL Server and Azure SQL databases, read live (large tables a view at a time) | Yes (desktop and phones) | No |
 | DuckDB databases (`.duckdb`, `.ddb`) and SQL queries | Yes (desktop, when DuckDB is installed) | No |
 | GeoTIFF and cloud-optimised GeoTIFF (`.tif`, `.tiff`) | Yes | Yes |
 | ASCII grid (`.asc`, with an optional `.prj`) | Yes | No |

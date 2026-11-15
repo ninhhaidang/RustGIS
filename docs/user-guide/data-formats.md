@@ -530,7 +530,7 @@ out.
 
 ## PostgreSQL and PostGIS
 
-The desktop app reads the geometry and geography columns of a PostGIS database live, talking to the
+The desktop and phone apps read the geometry and geography columns of a PostGIS database live, talking to the
 server itself: see [PostgreSQL and PostGIS](data.md#postgresql-and-postgis).
 
 | Source | How to add it | Notes |
@@ -539,7 +539,7 @@ server itself: see [PostgreSQL and PostGIS](data.md#postgresql-and-postgis).
 
 ## MySQL and MariaDB
 
-The desktop app reads the spatial columns of a MySQL (8 or later) or MariaDB (10.2 or later)
+The desktop and phone apps read the spatial columns of a MySQL (8 or later) or MariaDB (10.2 or later)
 database live, talking to the server itself: see [MySQL and MariaDB](data.md#mysql-and-mariadb).
 
 | Source | How to add it | Notes |
@@ -548,7 +548,7 @@ database live, talking to the server itself: see [MySQL and MariaDB](data.md#mys
 
 ## SQL Server and Azure SQL
 
-The desktop app reads SQL Server 2012 or later and Azure SQL spatial tables live, without an
+The desktop and phone apps read SQL Server 2012 or later and Azure SQL spatial tables live, without an
 external client: see [SQL Server and Azure SQL](data.md#sql-server-and-azure-sql).
 
 | Source | How to add it | Notes |
