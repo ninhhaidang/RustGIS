@@ -1978,7 +1978,7 @@ fn script(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens, fit: bool) {
     }
     // Braces, brackets and quotes closing themselves (#662): what the box does with the keys,
     // followed through after it.
-    let before = crate::scriptcomplete::before(ui, box_id, &app.workflow.script);
+    let before = crate::completion::before(ui, box_id, &app.workflow.script);
     let out = egui::ScrollArea::vertical().id_salt("script_box").max_height(room).auto_shrink([false, true]).show(ui, |ui| {
         egui::TextEdit::multiline(&mut app.workflow.script)
             .id(box_id)

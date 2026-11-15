@@ -14,11 +14,11 @@
 
 use egui::text::{CCursor, CCursorRange};
 use egui::widgets::text_edit::{TextEditOutput, TextEditState};
-use egui::{Id, Key, Ui};
+use egui::{Id, Ui};
 use rustgis_engine::Quotes;
 use rustgis_engine::cmd::workflows::refused_in_script;
 
-use crate::completion::{GAP, List, Offered, Tip, Worked};
+use crate::completion::{Before, GAP, Keyed, List, Offered, Tip, Worked, byte_at, char_at, pairs};
 
 /// The most suggestions the list shows.
 const MAX_ITEMS: usize = 10;
@@ -106,11 +106,6 @@ pub fn word_at(script: &str, at: usize) -> Option<(usize, String)> {
         return None;
     }
     Some((at - word.chars().count(), word.to_string()))
-}
-
-/// The byte char `at` of `script` starts at (its end for `at` at the end); None past it.
-fn byte_at(script: &str, at: usize) -> Option<usize> {
-    if at == 0 { Some(0) } else { script.char_indices().nth(at - 1).map(|(b, c)| b + c.len_utf8()) }
 }
 
 /// The command whose parameters a cursor is in (`hint_at`): its line's start and its `{` (char
@@ -1264,29 +1259,6 @@ pub fn accept(ui: &Ui, box_id: Id, script: &mut String, offer: &Offer, item: &st
     store(ui, box_id, complete);
 }
 
-/// The cursor and the character before it, and the script's length (bytes), as they were before
-/// the box took this frame's keys: what `braces` tells the box's edit from.
-#[derive(Clone, Copy, Debug)]
-pub struct Before {
-    at: usize,
-    prev: Option<char>,
-    len: usize,
-}
-
-/// `Before` the box takes the keys, with it focused and no text selected.
-pub fn before(ui: &Ui, box_id: Id, script: &str) -> Option<Before> {
-    if !ui.memory(|m| m.has_focus(box_id)) {
-        return None;
-    }
-    let at = TextEditState::load(ui.ctx(), box_id)?.cursor.char_range().filter(|r| r.is_empty())?.primary.index.0;
-    Some(Before { at, prev: at.checked_sub(1).and_then(|i| char_at(script, i)), len: script.len() })
-}
-
-/// The character at char `at` of `script`.
-fn char_at(script: &str, at: usize) -> Option<char> {
-    script.get(byte_at(script, at)?..)?.chars().next()
-}
-
 /// Whether the end of `line` is inside a string.
 fn in_string(line: &str) -> bool {
     let mut q = Quotes::default();
@@ -1294,15 +1266,6 @@ fn in_string(line: &str) -> bool {
         q.read(c);
     }
     q.quoted()
-}
-
-/// What this frame's input did to the box, as `brace` needs it: a brace, bracket or quote typed,
-/// Backspace, or anything else (an undo or redo, a paste, a cut), which it leaves as it is.
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum Keyed {
-    Pair,
-    Backspace,
-    Other,
 }
 
 /// The closing character of an opening brace, bracket or quote.
@@ -1357,41 +1320,9 @@ fn brace(script: &str, before: Before, now: usize, keyed: Keyed) -> Option<Strin
 }
 
 /// After the box: its edit followed through as `brace` says, from what was there `before` it
-/// took the keys. Read from what the box did rather than from the keys, so it holds whatever
-/// keyboard types the brace, bracket or quote (Shift, AltGr, Option). The cursor stays where the
-/// box put it, and the box's undo takes the brace back with what was typed with it.
+/// took the keys (`completion::pairs`).
 pub fn braces(ui: &Ui, before: Option<Before>, out: &TextEditOutput, script: &mut String) {
-    let (Some(before), Some(now)) = (before, out.cursor_range.filter(|r| r.is_empty()).map(|r| r.primary.index.0)) else { return };
-    if !out.response.response.changed() {
-        return;
-    }
-    // One edit, made by one of those keys: the brace, bracket or quote typed alone (Shift, AltGr
-    // or Option as it takes), or Backspace alone.
-    let keyed = ui.input(|i| {
-        let edits: Vec<&egui::Event> = i
-            .events
-            .iter()
-            .filter(|e| match e {
-                egui::Event::Text(_) | egui::Event::Paste(_) | egui::Event::Cut | egui::Event::Ime(_) => true,
-                // Undo and redo, not every key with Ctrl: Windows reports AltGr, which types a
-                // brace on many keyboards, as Ctrl+Alt.
-                egui::Event::Key { key, pressed: true, modifiers, .. } => {
-                    *key == Key::Backspace || (modifiers.command && matches!(key, Key::Z | Key::Y))
-                }
-                _ => false,
-            })
-            .collect();
-        match edits.as_slice() {
-            [egui::Event::Text(t)] if matches!(t.as_str(), "{" | "}" | "[" | "]" | "\"") => Keyed::Pair,
-            [egui::Event::Key { key: Key::Backspace, modifiers, .. }] if modifiers.is_none() => Keyed::Backspace,
-            _ => Keyed::Other,
-        }
-    });
-    if let Some(new) = brace(script, before, now, keyed) {
-        *script = new;
-        // The box drew the text as it left it: show the brace from the next frame on, now.
-        ui.ctx().request_repaint();
-    }
+    pairs(ui, before, out, script, &['{', '}', '[', ']', '"'], brace);
 }
 
 #[cfg(test)]

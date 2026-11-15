@@ -4,10 +4,12 @@
 //! something the help is about (`Tip`). What to offer and what the help says are the caller's
 //! (the Script pane's `scriptcomplete`, an expression's `exprcomplete`); where the list goes, how
 //! it scrolls, its keys and its state between frames are here, so every box that completes looks
-//! and behaves the same.
+//! and behaves the same. So is what tells a bracket or quote typed from a paste or an undo, for
+//! the boxes whose brackets and quotes close themselves (`pairs`); which ones close, and where,
+//! is each language's.
 
 use egui::text::CCursor;
-use egui::widgets::text_edit::TextEditOutput;
+use egui::widgets::text_edit::{TextEditOutput, TextEditState};
 use egui::{Id, Key, Modifiers, Ui};
 
 /// The list's narrowest width.
@@ -391,6 +393,101 @@ impl<O: Offered> List<O> {
             self.drawn = Some((area, size));
         }
         clicked
+    }
+}
+
+/// The byte char `at` of `text` starts at (its end for `at` at the end); None past it.
+pub(crate) fn byte_at(text: &str, at: usize) -> Option<usize> {
+    if at == 0 { Some(0) } else { text.char_indices().nth(at - 1).map(|(b, c)| b + c.len_utf8()) }
+}
+
+/// The character at char `at` of `text`.
+pub(crate) fn char_at(text: &str, at: usize) -> Option<char> {
+    text.get(byte_at(text, at)?..)?.chars().next()
+}
+
+/// The cursor and the character before it, and the text's length (bytes), as they were before
+/// the box took this frame's keys: what `pairs` tells the box's edit from.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Before {
+    pub(crate) at: usize,
+    pub(crate) prev: Option<char>,
+    pub(crate) len: usize,
+}
+
+/// `Before` the box takes the keys, with it focused and no text selected.
+pub(crate) fn before(ui: &Ui, box_id: Id, text: &str) -> Option<Before> {
+    if !ui.memory(|m| m.has_focus(box_id)) {
+        return None;
+    }
+    let at = TextEditState::load(ui.ctx(), box_id)?.cursor.char_range().filter(|r| r.is_empty())?.primary.index.0;
+    Some(Before { at, prev: at.checked_sub(1).and_then(|i| char_at(text, i)), len: text.len() })
+}
+
+/// What this frame's input did to the box, as a box's pairing rule needs it: one of the
+/// characters it pairs typed, Backspace, or anything else (an undo or redo, a paste, a cut),
+/// which it leaves as it is.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Keyed {
+    Pair,
+    Backspace,
+    Other,
+}
+
+/// After the box: its edit followed through as `rule` says (the text as the box left it, what
+/// was there `before`, the cursor now, and `Keyed`; None to leave the edit as it is), the keys
+/// that make those edits being one of `paired` typed alone, or Backspace. Read from what the box
+/// did rather than from the keys, so it holds whatever keyboard types the character (Shift,
+/// AltGr, Option). The cursor stays where the box put it, and the box's undo takes the closer
+/// back with what was typed with it. Every box whose brackets and quotes close themselves goes
+/// through here, so they all tell a key typed from a paste or an undo alike.
+pub(crate) fn pairs(
+    ui: &Ui,
+    before: Option<Before>,
+    out: &TextEditOutput,
+    text: &mut String,
+    paired: &[char],
+    rule: impl FnOnce(&str, Before, usize, Keyed) -> Option<String>,
+) {
+    let (Some(before), Some(now)) = (before, out.cursor_range.filter(|r| r.is_empty()).map(|r| r.primary.index.0)) else { return };
+    if !out.response.response.changed() {
+        return;
+    }
+    // One edit, made by one of those keys: the character typed alone (Shift, AltGr or Option as
+    // it takes), or Backspace alone. Typed as text, or committed by an input method: with one
+    // running (ibus, fcitx) on Wayland, every key comes that way, a `(` included, between empty
+    // compositions that edit nothing.
+    let keyed = ui.input(|i| {
+        use egui::ImeEvent;
+        let edits: Vec<&egui::Event> = i
+            .events
+            .iter()
+            .filter(|e| match e {
+                egui::Event::Ime(ImeEvent::Preedit { text, .. } | ImeEvent::Commit(text)) => !text.is_empty(),
+                egui::Event::Ime(ImeEvent::DeleteSurrounding { .. }) => true,
+                egui::Event::Text(_) | egui::Event::Paste(_) | egui::Event::Cut => true,
+                // Undo and redo, not every key with Ctrl: Windows reports AltGr, which types a
+                // bracket on many keyboards, as Ctrl+Alt.
+                egui::Event::Key { key, pressed: true, modifiers, .. } => {
+                    *key == Key::Backspace || (modifiers.command && matches!(key, Key::Z | Key::Y))
+                }
+                _ => false,
+            })
+            .collect();
+        match edits.as_slice() {
+            [egui::Event::Text(t) | egui::Event::Ime(ImeEvent::Commit(t))]
+                if t.chars().count() == 1 && t.chars().all(|c| paired.contains(&c)) =>
+            {
+                Keyed::Pair
+            }
+            [egui::Event::Key { key: Key::Backspace, modifiers, .. }] if modifiers.is_none() => Keyed::Backspace,
+            _ => Keyed::Other,
+        }
+    });
+    if let Some(new) = rule(text.as_str(), before, now, keyed) {
+        *text = new;
+        // The box drew the text as it left it: show the closer from the next frame on, now.
+        ui.ctx().request_repaint();
     }
 }
 

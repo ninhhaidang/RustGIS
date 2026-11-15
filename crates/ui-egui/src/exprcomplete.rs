@@ -2,7 +2,8 @@
 //! list (`completion`) under the cursor, holding what the language takes there as the parser
 //! reads it (`query::complete_at`): the dataset's fields, its functions, variables and keywords,
 //! each with its help beside. It opens once a character of the word is typed, or with
-//! Ctrl+Space. Nothing is listed here by hand: what the language learns is offered too.
+//! Ctrl+Space. Nothing is listed here by hand: what the language learns is offered too. A `(`,
+//! `'` or `"` typed closes itself, as the Script pane's braces do (`completion::pairs`).
 
 use egui::text::{CCursor, CCursorRange};
 use egui::widgets::text_edit::{TextEditOutput, TextEditState};
@@ -10,7 +11,7 @@ use egui::{Id, Key, Modifiers, Ui};
 use rustgis_engine::data::Dataset;
 use rustgis_engine::data::query::{self, Call, Completion, FuncSpec, Kw, Place, VARS};
 
-use crate::completion::{GAP, List, Offered, Tip, Worked};
+use crate::completion::{Before, GAP, Keyed, List, Offered, Tip, Worked, byte_at, char_at, pairs};
 
 /// The most fields the list holds (typing narrows them; it scrolls): a table of hundreds of
 /// columns mustn't draw hundreds of rows. The functions, variables and keywords after them are
@@ -184,6 +185,8 @@ pub(crate) fn expr_edit(
     if !state.list.is_open() {
         state.tip.keys(ui, id);
     }
+    // What was there before the box takes the keys, for a `(` or quote typed to close itself.
+    let before = crate::completion::before(ui, id, text);
     let open = state.list.is_open();
     let escape = open || state.tip.is_shown();
     let filter = egui::EventFilter { tab: open, horizontal_arrows: true, vertical_arrows: true, escape };
@@ -243,8 +246,71 @@ pub(crate) fn expr_edit(
         state.accepted = accepted;
         state.worked = None;
         store(ui, id, state);
+    } else {
+        pairs(ui, before, &out, text, &['(', ')', '\'', '"'], pair);
     }
     out.response.response
+}
+
+/// What may follow a `(` or quote that closes itself: nothing, a space, a `)` or a `,`.
+fn closes(c: char) -> bool {
+    c.is_whitespace() || matches!(c, ')' | ',')
+}
+
+/// The quote char `at` of `text` is inside of: `'` a text's, `"` or `!` a field name's; None
+/// in the code. A doubled `'` or `"` in one is part of it, as the expression reads it (it ends
+/// and starts again), and `!=` is an operator, not a name's `!`.
+fn quoted_at(text: &str, at: usize) -> Option<char> {
+    let cs: Vec<char> = text.chars().collect();
+    let mut quote = None;
+    for (i, &c) in cs.iter().enumerate().take(at) {
+        quote = match quote {
+            None if c == '\'' || c == '"' => Some(c),
+            None if c == '!' && cs.get(i + 1) != Some(&'=') => Some('!'),
+            Some(q) if c == q => None,
+            q => q,
+        };
+    }
+    quote
+}
+
+/// The expression once the box's edit is followed through (`completion::pairs`): the edit read
+/// from `text` as the box left it, what was there `before`, and the cursor `now` (a char index).
+/// A `(` typed closes itself (`(|)`) when nothing, a space, a `)` or a `,` follows it; a `'` or
+/// `"` too (`'|'`), when it also comes where a value can start (the start, a space, `(`, `,` or
+/// an operator); a `)` typed right before a `)` steps over it rather than add one, and so does a
+/// quote typed before the one that ends its text or name; Backspace in an empty `(|)`, `'|'` or
+/// `"|"` deletes both. Not in a text or a field's name, nor past the longest expression read
+/// (`MAX_LEN`, as the box takes no more), and only for the keys that make those edits (`keyed`).
+/// The cursor stays where the box put it. None to leave the edit as it is.
+fn pair(text: &str, before: Before, now: usize, keyed: Keyed) -> Option<String> {
+    let Before { at, prev, len } = before;
+    let plain = |i: usize| quoted_at(text, i).is_none();
+    let (typed, next) = (char_at(text, at), char_at(text, now));
+    let typed_one = keyed == Keyed::Pair && text.len() == len + 1 && now == at + 1;
+    let one_deleted = keyed == Keyed::Backspace && text.len() + 1 == len && now + 1 == at && plain(now);
+    let cut = byte_at(text, if one_deleted { now } else { at })?;
+    let (b, rest) = (text.get(..cut)?, text.get(cut..)?);
+    // What may come before a quote that closes itself.
+    let opens = |c: char| c.is_whitespace() || matches!(c, '(' | ',' | '=' | '<' | '>' | '+' | '-' | '*' | '/' | '%' | '^' | '|');
+    let new = match (typed, next) {
+        (Some('('), next) if typed_one && plain(at) && next.is_none_or(closes) => Some(format!("{b}(){}", rest.get(1..)?)),
+        (Some(q @ ('\'' | '"')), next) if typed_one && plain(at) && next.is_none_or(closes) && prev.is_none_or(opens) => {
+            Some(format!("{b}{q}{q}{}", rest.get(1..)?))
+        }
+        // The `)` typed goes: the cursor, after it, is after the one that was there.
+        (Some(')'), Some(')')) if typed_one && plain(at) => Some(format!("{b}{}", rest.get(1..)?)),
+        // So does a quote that ends its text or name (in it before, out of it after).
+        (Some(q @ ('\'' | '"')), Some(n)) if typed_one && q == n && quoted_at(text, at) == Some(q) && plain(now) => {
+            Some(format!("{b}{}", rest.get(1..)?))
+        }
+        // The closer that followed the deleted opener, now at the cursor.
+        (_, Some(next)) if one_deleted && matches!((prev, next), (Some('('), ')') | (Some('\''), '\'') | (Some('"'), '"')) => {
+            Some(format!("{b}{}", rest.get(1..)?))
+        }
+        _ => None,
+    };
+    new.filter(|t| t.chars().count() <= query::MAX_LEN)
 }
 
 /// The span (bytes) of argument `arg` (from 0) in a function's `signature` (`round(x[, places])`):
@@ -365,9 +431,10 @@ fn draw_help(ui: &mut Ui, item: &Item, ds: Option<&Dataset>, width: f32) {
 
 /// Puts `item` in place of the offer's word in `text`, the rest of the word after the cursor
 /// too: a field as the expression names it (in the quote it was begun with; a `!` name holding a
-/// `!` in double quotes, as `!` has no escape), a function with its bracket open (closed too when
-/// it takes no arguments; a `(` already there is used, not doubled), a variable or keyword as it
-/// is; as one undo step of the box, the cursor after it, and the box keeps the focus. Returns
+/// `!` in double quotes, as `!` has no escape), a function with its brackets, the cursor inside
+/// them as a `(` typed closes itself (`pair`), after them when it takes no arguments (before
+/// other text, the bracket only open; a `(` already there is used, not doubled), a variable or
+/// keyword as it is; as one undo step of the box, the cursor after it, and the box keeps the focus. Returns
 /// where it was put: the new text's hash and the cursor.
 fn accept(ui: &Ui, id: Id, text: &mut String, offer: &Offer, item: &str) -> Option<(u64, usize)> {
     let (new, at) = written(text, offer, item)?;
@@ -407,6 +474,8 @@ fn written(text: &str, offer: &Offer, item: &str) -> Option<(String, usize)> {
     let chars: Vec<char> = text.chars().collect();
     let (before, rest) = (chars.get(..offer.start)?, chars.get(offer.end..)?);
     let mut after = rest.get(word_rest(rest, offer.quote)..).unwrap_or_default();
+    // Chars of what's put the cursor goes back over: into a function's brackets.
+    let mut back = 0;
     let put = match of {
         Item::Field(name) => match offer.quote.filter(|q| *q != '!' || !name.contains('!')) {
             Some(q) => {
@@ -420,6 +489,10 @@ fn written(text: &str, offer: &Offer, item: &str) -> Option<(String, usize)> {
             format!("{}(", f.name)
         }
         Item::Function(f) if f.max == 0 => format!("{}()", f.name),
+        Item::Function(f) if after.first().is_none_or(|c| closes(*c)) => {
+            back = 1;
+            format!("{}()", f.name)
+        }
         Item::Function(f) => format!("{}(", f.name),
         Item::Variable(_, name) => name.to_string(),
         Item::Keyword(k) => k.word().to_string(),
@@ -427,7 +500,7 @@ fn written(text: &str, offer: &Offer, item: &str) -> Option<(String, usize)> {
     let mut new: String = before.iter().collect();
     new.push_str(&put);
     new.extend(after);
-    Some((new, offer.start + put.chars().count()))
+    Some((new, (offer.start + put.chars().count()).saturating_sub(back)))
 }
 
 #[cfg(test)]
@@ -711,7 +784,10 @@ mod tests {
             ("ro▮und(2)", "round()", "round(▮2)"),
             // With no closing quote, what follows is the rest of the expression: it stays.
             ("\"Po▮ > 1", "\"Pop Est\"", "\"Pop Est\"▮ > 1"),
-            ("ro▮", "round()", "round(▮"),
+            // The brackets closed as a `(` typed closes itself, the cursor inside.
+            ("ro▮", "round()", "round(▮)"),
+            ("ro▮ + 1", "round()", "round(▮) + 1"),
+            ("abs(ro▮)", "round()", "abs(round(▮))"),
             ("ro▮(2)", "round()", "round(▮2)"),
             ("p▮", "pi()", "pi()▮"),
         ] {
@@ -723,5 +799,131 @@ mod tests {
             got.insert(cursor, '▮');
             assert_eq!(got.into_iter().collect::<String>(), want, "{text}");
         }
+    }
+
+    /// What `pair` makes of `ins` typed at char `at` of `old` (`▮` there in the messages).
+    fn typed(old: &str, at: usize, ins: &str) -> Option<String> {
+        let b = byte_at(old, at).unwrap();
+        let text = format!("{}{ins}{}", &old[..b], &old[b..]);
+        let before = Before { at, prev: at.checked_sub(1).and_then(|i| char_at(old, i)), len: old.len() };
+        let keyed = if ins.chars().count() == 1 { Keyed::Pair } else { Keyed::Other };
+        pair(&text, before, at + ins.chars().count(), keyed)
+    }
+
+    /// What `pair` makes of Backspace at char `at` of `old`.
+    fn backspace(old: &str, at: usize) -> Option<String> {
+        let b = byte_at(old, at - 1).unwrap();
+        let e = byte_at(old, at).unwrap();
+        let text = format!("{}{}", &old[..b], &old[e..]);
+        let before = Before { at, prev: char_at(old, at - 1), len: old.len() };
+        pair(&text, before, at - 1, Keyed::Backspace)
+    }
+
+    /// `(` closes itself before nothing, a space, a `)` or a `,`; not before other text, in a
+    /// text or a field's name, nor for a paste; `)` steps over a `)`; Backspace in an empty `()`
+    /// deletes both.
+    #[test]
+    fn a_bracket_typed_closes_itself() {
+        assert_eq!(typed("round", 5, "(").as_deref(), Some("round()"));
+        assert_eq!(typed("abs() + 1", 4, "(").as_deref(), Some("abs(()) + 1"), "before a closing bracket");
+        assert_eq!(typed("concat(a, )", 10, "(").as_deref(), Some("concat(a, ())"), "an argument");
+        assert_eq!(typed("x pop", 2, "("), None, "before other text");
+        assert_eq!(typed("name = 'a ", 10, "("), None, "in a text");
+        assert_eq!(typed("\"Pop ", 5, "("), None, "in a field's name");
+        assert_eq!(typed("!Pop ", 5, "("), None, "in a `!` name");
+        assert_eq!(typed("pop != ", 7, "(").as_deref(), Some("pop != ()"), "`!=` is no name");
+        assert_eq!(typed("ñandú", 5, "(").as_deref(), Some("ñandú()"), "chars, not bytes");
+        assert_eq!(typed("round", 5, "(("), None, "more than the bracket typed");
+        let long = "x".repeat(query::MAX_LEN - 1);
+        assert_eq!(typed(&long, long.len(), "("), None, "not past the longest expression");
+        let short = "x".repeat(query::MAX_LEN - 2);
+        assert!(typed(&short, short.len(), "(").is_some(), "up to it");
+        assert_eq!(typed("round(1)", 7, ")").as_deref(), Some("round(1)"), "stepped over");
+        assert_eq!(typed("'a)'", 2, ")"), None, "not over one in a text");
+        assert_eq!(backspace("round()", 6).as_deref(), Some("round"));
+        assert_eq!(backspace("round(1)", 6), None, "not empty");
+        let before = Before { at: 5, prev: Some('d'), len: 5 };
+        assert_eq!(pair("round(", before, 6, Keyed::Other), None, "a paste, an undo");
+    }
+
+    /// A `'` or `"` closes itself where a value can start: not after a word or a quote; one typed
+    /// before the quote that ends its text or name steps over it, not an escaped one; Backspace in
+    /// an empty `''` or `""` deletes both, not after a text's closing quote.
+    #[test]
+    fn a_quote_works_as_a_bracket() {
+        assert_eq!(typed("", 0, "'").as_deref(), Some("''"), "the start");
+        assert_eq!(typed("name = ", 7, "'").as_deref(), Some("name = ''"));
+        assert_eq!(typed("name=", 5, "'").as_deref(), Some("name=''"), "right after an operator");
+        assert_eq!(typed("upper()", 6, "'").as_deref(), Some("upper('')"), "in a call");
+        assert_eq!(typed("concat(a,)", 9, "\"").as_deref(), Some("concat(a,\"\")"), "a field's name");
+        assert_eq!(typed("x ab", 2, "'"), None, "before other text");
+        assert_eq!(typed("ab", 2, "'"), None, "after a word");
+        assert_eq!(typed("''", 2, "'"), None, "after a quote");
+        assert_eq!(typed("'ab'", 3, "'").as_deref(), Some("'ab'"), "stepped over");
+        assert_eq!(typed("\"ab\"", 3, "\"").as_deref(), Some("\"ab\""), "a name's too");
+        assert_eq!(typed("'ab\"", 3, "\""), None, "not another quote's");
+        assert_eq!(typed("'a''b'", 3, "'"), None, "not an escaped one");
+        assert_eq!(backspace("name = ''", 8).as_deref(), Some("name = "));
+        assert_eq!(backspace("\"\"", 1).as_deref(), Some(""));
+        assert_eq!(backspace("'a''", 3), None, "a text's closing quote");
+    }
+
+    /// In the box: `(` closes itself, the cursor inside, `)` steps over, Backspace deletes both;
+    /// a function taken from the list has its brackets closed too.
+    #[test]
+    fn brackets_close_themselves_in_the_box() {
+        let data = ds();
+        let id = Id::unique("expr");
+        let mut h = egui_kittest::Harness::new_ui_state(
+            move |ui, text: &mut String| {
+                let label = ui.label("Expression");
+                let _ = expr_edit(ui, id, text, Some(&data), |e| e).labelled_by(label.id);
+            },
+            String::new(),
+        );
+        h.run();
+        h.ctx.memory_mut(|m| m.request_focus(id));
+        h.run();
+        for c in ["abs", "(", "p", "o", "p", ")"] {
+            h.event(egui::Event::Text(c.into()));
+            h.run();
+        }
+        assert_eq!(h.state(), "abs(pop)", "`)` stepped over");
+        h.key_press(Key::ArrowLeft);
+        h.run();
+        h.event(egui::Event::Text(" + ro".into()));
+        h.run();
+        h.key_press(Key::Enter);
+        h.run();
+        h.event(egui::Event::Text("1".into()));
+        h.run();
+        assert_eq!(h.state(), "abs(pop + round(1))", "the function's brackets closed, the cursor inside");
+        let mut h = egui_kittest::Harness::new_ui_state(
+            move |ui, text: &mut String| {
+                let label = ui.label("Expression");
+                let _ = expr_edit(ui, id, text, None, |e| e).labelled_by(label.id);
+            },
+            "x".to_string(),
+        );
+        h.run();
+        h.ctx.memory_mut(|m| m.request_focus(id));
+        let mut state = TextEditState::load(&h.ctx, id).unwrap_or_default();
+        state.cursor.set_char_range(Some(CCursorRange::one(CCursor::new(1))));
+        state.store(&h.ctx, id);
+        h.run();
+        h.event(egui::Event::Text("(".into()));
+        h.run();
+        h.key_press(Key::Backspace);
+        h.run();
+        assert_eq!(h.state(), "x", "Backspace in `()` deletes both");
+        // As Wayland types with an input method running (ibus, fcitx): the `(` committed by it,
+        // after an empty composition.
+        h.event(egui::Event::Ime(egui::ImeEvent::Preedit { text: String::new(), active_range_chars: None }));
+        h.event(egui::Event::Ime(egui::ImeEvent::Commit("(".into())));
+        h.run();
+        assert_eq!(h.state(), "x()", "an input method's `(` closes itself too");
+        h.event(egui::Event::Ime(egui::ImeEvent::Commit(")".into())));
+        h.run();
+        assert_eq!(h.state(), "x()", "and its `)` steps over");
     }
 }
