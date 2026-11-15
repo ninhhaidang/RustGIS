@@ -362,11 +362,13 @@ fn rename_box(app: &mut RustGisApp, ui: &mut Ui, l: &Layer, c: &Class, key: egui
         return;
     }
     if edit.lost_focus() {
+        // Left alone only when unchanged as typed. A name past the limit is sent as typed even when
+        // its cut is the class's own name: the command cuts it and says so (#2122).
         let name = label_class_name(&r.text);
-        if name == c.it.name {
+        if r.text.trim() == c.it.name {
             return;
         }
-        if run(app, "labels.class.rename", json!({"class": c.it.name, "name": name})).is_some() {
+        if run(app, "labels.class.rename", json!({"class": c.it.name, "name": r.text})).is_some() {
             // Default stays chosen by no name; another class goes by its new one.
             if c.name.is_some() {
                 choose(ui, app, l, Some(&name));
@@ -2384,6 +2386,69 @@ mod tests {
         assert_eq!(names(h.state()), ["big", "Default"]);
         assert!(shown(&h, "big"), "still chosen by its new name");
         assert_eq!(h.state().session.undo_depth(), steps + 1);
+    }
+
+    /// A name typed past 100 characters is cut to them, and the cut is said (#2122): the box sends
+    /// the name as typed, so the command sees how long it was.
+    #[test]
+    fn a_long_name_typed_in_the_pane_is_cut_and_said() {
+        let mut app = with_cities();
+        app.run("labels.class.add", json!({"name": "Big"})).unwrap();
+        let mut h = harness(app);
+        h.run();
+        pick_class(&mut h, "Default", "Big");
+        h.get_by_label("Rename").click();
+        h.run();
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        h.key_press(egui::Key::Backspace);
+        h.run();
+        h.get_by_role(egui::accesskit::Role::TextInput).type_text(&"b".repeat(101));
+        h.run();
+        h.key_press(egui::Key::Enter);
+        h.run();
+        let kept = "b".repeat(100);
+        assert_eq!(names(h.state()), [kept.as_str(), "Default"]);
+        assert!(shown(&h, &kept), "still chosen by its new name");
+        let said: Vec<&str> =
+            h.state().session.notices.iter().filter(|n| n.text.starts_with("Label Classes:")).map(|n| n.text.as_str()).collect();
+        let want = format!(
+            "Label Classes: Cities: a label class's name takes at most 100 characters, so the name given (101) is cut to 100, kept as '{kept}'"
+        );
+        assert_eq!(said, [want.as_str()]);
+    }
+
+    /// A name typed past 100 characters whose cut is the class's own name is still sent, so the
+    /// cut is said (#2122), rather than the box closing silently.
+    #[test]
+    fn a_long_name_typed_in_the_pane_that_cuts_to_the_same_name_is_said() {
+        let kept = "b".repeat(100);
+        let mut h = harness(with_cities());
+        h.run();
+        // A class made and renamed through the pane: a 100-character name is wider than the
+        // chooser, which the test can't click.
+        h.get_by_label("New").click();
+        h.run();
+        let rename = |h: &mut egui_kittest::Harness<'static, RustGisApp>, text: &str| {
+            h.get_by_label("Rename").click();
+            h.run();
+            h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+            h.key_press(egui::Key::Backspace);
+            h.run();
+            h.get_by_role(egui::accesskit::Role::TextInput).type_text(text);
+            h.run();
+            h.key_press(egui::Key::Enter);
+            h.run();
+        };
+        rename(&mut h, &kept);
+        assert_eq!(names(h.state()), [kept.as_str(), "Default"]);
+        rename(&mut h, &"b".repeat(101));
+        assert_eq!(names(h.state()), [kept.as_str(), "Default"]);
+        let said: Vec<&str> =
+            h.state().session.notices.iter().filter(|n| n.text.starts_with("Label Classes:")).map(|n| n.text.as_str()).collect();
+        let want = format!(
+            "Label Classes: Cities: a label class's name takes at most 100 characters, so the name given (101) is cut to 100, kept as '{kept}'"
+        );
+        assert_eq!(said, [want.as_str()]);
     }
 
     /// A rename left open when the pane is hidden is gone when it shows again.

@@ -6555,6 +6555,38 @@ fn styles_refuse_or_say_what_they_cut() {
     assert_eq!(said(&s, mark, "Import Styles"), ["Import Styles: 1 style(s) replaced by a later one of the same name in the file"]);
 }
 
+/// A label class's name given past 100 characters is cut to them, as since #640, and the cut is
+/// said with how much (#2122), when a class is added or renamed. At 100, trimmed, it's taken
+/// whole, and nothing is said.
+#[test]
+fn a_label_class_name_over_100_characters_is_cut_and_said() {
+    let mut s = world();
+    let id = s.map().layer_by_name("Cities").unwrap().id;
+    let at = |n: usize| "é".repeat(n);
+    let cut = |s: &Session, mark: u64| {
+        s.notices_since(mark).iter().filter(|n| n.text.starts_with("Label Classes:")).map(|n| n.text.clone()).collect::<Vec<_>>()
+    };
+    let mark = s.notice_mark();
+    assert_eq!(s.run("labels.class.add", &json!({"layer": id, "name": at(101)})).unwrap()["class"], at(100));
+    let want = format!(
+        "Label Classes: Cities: a label class's name takes at most 100 characters, so the name given (101) is cut to 100, kept as '{}'",
+        at(100)
+    );
+    assert_eq!(cut(&s, mark), [want]);
+    let b = "b".repeat(100);
+    let mark = s.notice_mark();
+    assert_eq!(s.run("labels.class.add", &json!({"layer": id, "name": format!("  {b}  ")})).unwrap()["class"], b);
+    assert!(cut(&s, mark).is_empty(), "100 characters, trimmed, are taken whole");
+    let mark = s.notice_mark();
+    s.run("labels.class.rename", &json!({"layer": id, "class": at(100), "name": "c".repeat(101)})).unwrap();
+    assert_eq!(cut(&s, mark).len(), 1, "a rename's cut is said too");
+    let mark = s.notice_mark();
+    s.run("labels.class.rename", &json!({"layer": id, "class": "c".repeat(100), "name": "Short"})).unwrap();
+    assert!(cut(&s, mark).is_empty());
+    let names: Vec<String> = s.map().layer(id).unwrap().labels.classes.iter().map(|c| c.name.clone()).collect();
+    assert!(names.contains(&"Short".to_string()) && names.contains(&b), "{names:?}");
+}
+
 /// A project template keeps no features, so no saved label moves either, and says so.
 #[test]
 fn a_project_template_leaves_out_label_moves() {
