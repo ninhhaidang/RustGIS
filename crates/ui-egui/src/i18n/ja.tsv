@@ -7,6 +7,9 @@
 '{size}' isn't a cell size: give a number	「{size}」はセル サイズではありません: 数値を指定してください
 '{text}' isn't a scale: type one such as 1:12,345	「{text}」は縮尺ではありません: 1:12,345 のように入力してください
 (b4-b3)/(b4+b3)	(b4-b3)/(b4+b3)
+(changed on disk)	(ディスク上で変更済み)
+(edits not published)	(編集は未公開)
+(edits not published, changed on disk)	(編集は未公開、ディスク上で変更済み)
 (expression)	(式)
 (filtered)	(フィルター適用)
 (none)	(なし)
@@ -15,6 +18,7 @@
 + Input	+ 入力
 + New expression	+ 新しい式
 + Output	+ 出力
+-74.006 · 74°0′22″W	-74.006 · 74°0′22″W
 /F	/F
 /PID	/PID
 /T	/T
@@ -26,8 +30,10 @@
 12:00 UTC	12:00 UTC
 16 imported Zarr stores are already queued	インポートした Zarr ストア 16 件がすでにキューに入っています
 18:00 UTC	18:00 UTC
+18TWL8395907350 · 18north 583959 4507351	18TWL8395907350 · 18north 583959 4507351
 3035, vn2000tm3	3035, vn2000tm3
 3D mesh	3D メッシュ
+40.7128 · 40°42′46″N	40.7128 · 40°42′46″N
 <None>	<なし>
 <null>	<null>
 A .geolibre project as a map	.geolibre プロジェクトをマップとして
@@ -50,8 +56,10 @@ A country's administrative boundaries from geoBoundaries (CC BY 4.0): the countr
 A custom stretch is in this raster's own units: pick another stretch type to save it as the default.	カスタム ストレッチはこのラスター固有の単位で指定されています。既定値として保存するには、別のストレッチ タイプを選択してください。
 A data cube's trend needs its period: fill in From and To	データ キューブのトレンドには期間が必要です: 開始と終了を入力してください
 A date is missing between two commas	2 つのカンマの間の日付がありません
+A drawing never says its coordinate system: its coordinates are read in this one. Leave it blank to keep them as they are.	図面は座標系を示しません: 座標はこの座標系で読み取られます。空のままにすると座標はそのままです。
 A fast, free and open-source GIS written in pure Rust, for mapping, analyzing and sharing geospatial data on the desktop and in the browser.	純粋な Rust で書かれた高速・無料のオープンソース GIS。デスクトップとブラウザーで地理空間データの地図作成、解析、共有ができます。
 A field (known once the model runs)	フィールド (モデルの実行後に判明)
+A field package opens on a computer or a phone, which have a folder for its basemaps: open it there. Bring Back (Data › Offline) takes its edits into the project here.	フィールド パッケージは、ベースマップ用のフォルダーがあるコンピューターまたはスマートフォンで開きます: そちらで開いてください。[持ち帰り] ([データ] › [オフライン]) で、その編集をここのプロジェクトに取り込みます。
 A flat scene centred on the view (azimuthal equidistant).	ビューを中心とした平面シーン (正距方位図法)。
 A GeoLens server's datasets, read as features (the first 1,000 of each).	GeoLens サーバーのデータセットをフィーチャとして読み込みます (各データセットの最初の 1,000 件)。
 A globe scene.	地球儀シーン。
@@ -62,13 +70,16 @@ A large serif title; the note, the locator and the legend in a column at the rig
 A latitude and longitude (40.7, -74.0 or 40°42'N 74°0'W), a layer, a bookmark or a value in a layer's table. Enter picks the highlighted row; Search places looks the text up as a place	緯度経度 (40.7, -74.0 または 40°42'N 74°0'W)、レイヤー、ブックマーク、またはレイヤーのテーブル内の値。Enter で強調表示された行を選択し、[場所を検索] でテキストを場所として検索します
 A layer keeps at most {max} label classes besides Default.	レイヤーには「既定」のほかに最大 {max} 個のラベル クラスを保持できます。
 A layer the model reads	モデルが読み込むレイヤー
+A light from the side opposite the sun that lightens the slopes turned toward it, from 0 (none) to 1	太陽の反対側からの光で、そちらを向いた斜面を明るくします。0 (なし) から 1 まで
 A line break wherever this occurs, left out (a space puts each word on its own line).	これが現れる箇所で改行し、この文字自体は表示しません (スペースを指定すると単語ごとに改行します)。
 A line for the Script pane	スクリプト ウィンドウ用の 1 行
+A line or polygon can't cross the 180° meridian: draw it in two parts, one on each side	ラインやポリゴンは 180° の経線をまたげません: 両側に 1 つずつ、2 つの部分に分けて描画してください
 A line, or markers or hash marks along it	ライン、またはそれに沿ったマーカーやハッシュ マーク
 A magnifying lens that follows the pointer.	ポインターに追従する拡大鏡。
 A map, feature or coverage service's address: WMS, WMTS, WFS, WCS, OGC API Features or Tiles, or an ArcGIS FeatureServer, MapServer, ImageServer or VectorTileServer (or a services directory, to browse).	マップ、フィーチャ、またはカバレッジ サービスのアドレス: WMS、WMTS、WFS、WCS、OGC API Features または Tiles、あるいは ArcGIS FeatureServer、MapServer、ImageServer または VectorTileServer (参照する場合はサービス ディレクトリ)。
 a name, or owner/name such as giswqs/geospatial	名前、または giswqs/geospatial のような所有者/名前
 A named endpoint you can reuse. Keys are kept until RustGIS closes unless you choose to remember them on this computer; the connection itself never keeps them.	再利用できる名前付きエンドポイントです。このコンピューターに保存することを選ばない限り、キーは RustGIS を閉じるまで保持されます。接続自体がキーを保持することはありません。
+A named endpoint you can reuse. Passwords and keys last for this session unless you choose to remember them on this computer; the connection itself never keeps them.	再利用できる名前付きのエンドポイントです。パスワードとキーは、このコンピューターに保存することを選ばない限り、このセッションの間だけ有効です。接続自体には保持されません。
 A named endpoint you can reuse. Passwords last for this session unless you choose to remember them in this computer's password store.	再利用できる名前付きエンドポイントです。このコンピューターのパスワード ストアに保存することを選ばない限り、パスワードはこのセッションの間だけ有効です。
 A new GeoPackage	新しい GeoPackage
 A new table in a GeoPackage	GeoPackage 内の新しいテーブル
@@ -79,12 +90,15 @@ A place or an address	場所または住所
 A previously saved key is still kept unencrypted in the app's preferences until it can be moved to the system keychain.	以前に保存したキーは、システム キーチェーンに移動できるまで、アプリの環境設定に暗号化されずに保持されています。
 A project keeps at least one map	プロジェクトには少なくとも 1 つのマップが必要です
 A projected coordinate system.	投影座標系。
+A projected system such as EPSG:32616, or EPSG:4326 for degrees	EPSG:32616 などの投影座標系、または度単位の EPSG:4326
+a raster layer has no definition query or time binding: the Query and Time tabs are a feature layer's	ラスター レイヤーには定義クエリも時間のバインドもありません: [クエリ] と [時間] タブはフィーチャ レイヤー用です
 A rectangle behind the text.	テキストの背後の四角形。
 A report listing the selected layer's records, page after page.	選択したレイヤーのレコードをページごとに一覧表示するレポート。
 A result that only feeds other tools is removed once the model has run; add an output to keep it.	他のツールに渡すだけの結果は、モデルの実行後に削除されます。残すには出力を追加してください。
 A result the model keeps, under a name	モデルが名前を付けて残す結果
 A rustgis-cli command, for a POSIX shell (macOS, Linux, WSL, Git Bash)	rustgis-cli コマンド (POSIX シェル用: macOS、Linux、WSL、Git Bash)
 A saved key could not be read. A key entered now will be kept for this session only.	保存したキーを読み取れませんでした。今入力したキーはこのセッションの間だけ保持されます。
+A search area holds at most {n} shapes: Clear it to start again	検索範囲に含められる図形は最大 {n} 個です: クリアしてやり直してください
 A service import or refresh is already running.	サービスのインポートまたは更新が既に進行中です。
 A service's layers stay in their service group.	サービスのレイヤーはそのサービス グループ内に留まります。
 A small chart of several numeric fields, drawn on each feature over its symbol	複数の数値フィールドの小さなグラフを、各フィーチャのシンボルの上に描画します
@@ -100,6 +114,7 @@ A token for {server}	{server} のトークン
 A token is set.	トークンが設定されています。
 a vector a pixel	ピクセルごとに 1 つのベクトル
 a vector an image patch	画像パッチごとに 1 つのベクトル
+A WGS 84 UTM zone for MGRS labels, by its EPSG code (32632); empty: the map's when it is one, else the zone at the frame's centre.	MGRS ラベル用の WGS 84 UTM ゾーン (EPSG コードで指定、32632)。空の場合: マップの座標系が UTM ゾーンならそれ、それ以外はフレーム中心のゾーン。
 A Zarr store (format 2 or 3) by its web address, with consolidated metadata, or a folder on this computer. A variable's map is read for the steps picked of its other dimensions, such as time.	統合メタデータを持つ Zarr ストア (フォーマット 2 または 3) の Web アドレス、またはこのコンピューター上のフォルダー。変数のマップは、時間など他の次元で選んだステップについて読み込まれます。
 A Zarr variable's values through time at points clicked on the map.	マップ上でクリックしたポイントにおける Zarr 変数の値の時間変化。
 A2 landscape sheet	A2 横向き用紙
@@ -169,6 +184,7 @@ Add Archive	アーカイブの追加
 Add as Time Series	時系列として追加
 add at least two keyframes	キーフレームを 2 つ以上追加してください
 Add Cell	セルの追加
+Add Circle	円の追加
 Add Color Ramp File…	カラー ランプ ファイルの追加…
 Add Color Ramps	カラー ランプの追加
 Add color ramps to the project from a .rgisramp file, a QGIS style, a GDAL color file or a GMT palette.	.rgisramp ファイル、QGIS スタイル、GDAL カラー ファイル、または GMT パレットからカラー ランプをプロジェクトに追加します。
@@ -222,6 +238,7 @@ Add Plugin Folder…	プラグイン フォルダーの追加…
 Add points	ポイントの追加
 Add PostGIS Layer	PostGIS レイヤーの追加
 Add raster tiles, vector tiles or a map style by address.	アドレスでラスター タイル、ベクター タイル、またはマップ スタイルを追加します。
+Add Rotated Box	回転ボックスの追加
 Add Rule	ルールの追加
 Add rule	ルールの追加
 Add sample countries	サンプルの国データを追加
@@ -341,21 +358,27 @@ An API key sent in a header must use plain ASCII characters.	ヘッダーで送�
 An ArcGIS Online organization's or an ArcGIS Enterprise portal's address; ArcGIS Online when blank	ArcGIS Online 組織または ArcGIS Enterprise ポータルのアドレス。空白の場合は ArcGIS Online
 An AWS profile	AWS プロファイル
 an enqueued add is not a success	キューに入れた追加は成功ではありません
+An EPSG code, WKT or a PROJ string; empty: the map's own when it is projected, else the UTM zone at the view's centre	EPSG コード、WKT、または PROJ 文字列。空の場合: 投影座標系ならマップ自身のもの、それ以外はビュー中心の UTM ゾーン
 Analysis	解析
 Analyze	解析
 Analyze › AI	解析 › AI
 Analyze › Workflows	解析 › ワークフロー
 AND	AND
 Angle	角度
+Angle (°)	角度 (°)
 Animated GIF	アニメーション GIF
+Animated GIF or PNG frames (zip)	アニメーション GIF または PNG フレーム (zip)
 Animation	アニメーション
 Another dropped file wasn't opened: drop it again once you've answered about the unsaved changes.	ドロップされた別のファイルは開かれませんでした: 未保存の変更に回答してから、もう一度ドロップしてください。
+Another project is open now: open the dialog again from its table.	別のプロジェクトが開かれています: そのテーブルからダイアログを再度開いてください。
 another project was opened	別のプロジェクトが開かれました
 Another run is under way.	別の実行が進行中です。
 Any	任意
 anywhere in the records	レコード内のどこでも
 API key	API キー
 API key in a header	ヘッダー内の API キー
+API key in the query	クエリ内の API キー
+API's own order	API 独自の順序
 Appends vector layers of the same geometry type into a new layer, optionally combining their attributes.	ジオメトリの種類が同じベクター レイヤーを新しいレイヤーにまとめ、必要に応じて属性を統合します。
 Application	アプリケーション
 Apply	適用
@@ -452,6 +475,8 @@ Bangladesh	バングラデシュ
 Banner	バナー
 Bar	棒
 Bar Chart	棒グラフ
+Base	ベース
+Base (m)	ベース (m)
 Basemap	ベースマップ
 Basemaps	ベースマップ
 Basic authentication	Basic 認証
@@ -465,10 +490,10 @@ Below 1:5,000,000 show everything; beyond it only what matches:	1:5,000,000 よ�
 Below Left	左下
 Below Right	右下
 Best	最適
+Between cells (bilinear)	セル間 (共一次内挿)
 Bevel	ベベル
 Bike	自転車
 Bilinear	共一次内挿
-Bind To Time Slider	タイム スライダーにバインド
 Bind to Time Slider	タイム スライダーにバインド
 Bindings: {bindings} · Conflicts: {conflicts} · Unknown commands: {unknown}	割り当て: {bindings} · 競合: {conflicts} · 不明なコマンド: {unknown}
 Blank	空白
@@ -489,11 +514,16 @@ Boolean	ブール型
 Borders at 1:110m, a small download (about 250 KB)	1:110m の国境、小さなダウンロード (約 250 KB)
 Both ends	両端
 Bottom	下
+Bound to the time slider	タイム スライダーにバインド済み
 Boundaries…	行政界…
 Bounding\nGeometry	境界\nジオメトリ
+Box Construction	ボックスの作成
 Brazil	ブラジル
 Brightness	明るさ
 Brightness, contrast, saturation and sepia for the whole map.	マップ全体の明るさ、コントラスト、彩度、セピア。
+Bring a field package's edits and photos back to the offline area it was made from.	フィールド パッケージの編集と写真を、作成元のオフライン エリアに持ち帰ります。
+Bring Back	持ち帰り
+Bring Back Edits	編集の持ち帰り
 Bring Forward	前面へ移動
 Bring this bookmark's map into view to update it	更新するには、このブックマークのマップを表示してください
 Bring to Front	最前面へ移動
@@ -578,8 +608,11 @@ Cell size	セル サイズ
 cell size	セル サイズ
 cell size °	セル サイズ °
 Cells	セル
+Census Bureau's public server	米国国勢調査局の公開サーバー
 Center	中心
 Center Map Here	ここをマップの中心にする
+Center X	中心 X
+Center Y	中心 Y
 Centered	中央
 Central meridian	中央経線
 Chain functions	関数を連結
@@ -590,6 +623,7 @@ Change the map's backdrop.	マップの背景を変更します。
 Change the map's coordinate system	マップの座標系を変更
 Change the page size and orientation.	ページのサイズと向きを変更します。
 Change the project (add layers, edit features, change symbology)	プロジェクトの変更 (レイヤーの追加、フィーチャの編集、シンボルの変更)
+Changed on disk: the file may have changed since it was read. Add it again to see the change; Source File State checks it.	ディスク上で変更済み: 読み込み後にファイルが変更された可能性があります。変更を確認するにはもう一度追加してください。[ソース ファイルの状態] で確認できます。
 Changed rows	変更された行
 Character	文字
 Chart categories	グラフのカテゴリ
@@ -619,13 +653,17 @@ Choose a contrast stretch for the raster layer.	ラスター レイヤーのコ�
 Choose a country	国を選択
 Choose a delimited text file or a spreadsheet, then pick its columns.	区切りテキストファイルまたはスプレッドシートを選び、次にその列を選択します。
 Choose a destination	目的地を選択
+Choose a DXF drawing, then set its coordinate system and whether its blocks are drawn.	DXF 図面を選択し、座標系とブロックを描画するかどうかを設定します。
 Choose a field	フィールドを選択
+Choose a field from the list: the previous choice is missing or shadowed by an earlier field with the same name ignoring case.	一覧からフィールドを選択してください: 以前の選択が存在しないか、大文字と小文字を区別せずに同名の前のフィールドに隠れています。
 Choose a field to apply this renderer:	このレンダラーを適用するフィールドを選択してください:
 choose a file first	先にファイルを選択してください
+choose a folder	フォルダーの選択
 Choose a GeoPackage layer	GeoPackage レイヤーを選択
 Choose a layer	レイヤーを選択
 Choose a layer…	レイヤーを選択…
 Choose a model.	モデルを選択してください。
+Choose a position within the supported map and construction grid.	サポートされているマップと作成グリッドの範囲内で位置を選択してください。
 Choose a resampling type for the raster layer.	ラスター レイヤーのリサンプリング タイプを選択します。
 Choose a saved S3 connection before opening this source.	このソースを開く前に、保存済みの S3 接続を選択してください。
 Choose a shortcut file in the browser.	ブラウザーでショートカット ファイルを選択してください。
@@ -651,12 +689,18 @@ Choose S3 connection…	S3 接続を選択…
 Choose the interface language.	インターフェイスの言語を選択します。
 Choose the source coordinate system before importing	インポート前にソース座標系を選択
 Choose the source coordinate system before importing. It replaces a missing or incorrect .prj without changing the original file.	インポート前にソース座標系を選択します。元のファイルを変更せずに、欠落または誤った .prj を置き換えます。
+Choose where to save {name}.	{name} の保存先を選択してください。
 Choose which layers a click identifies.	クリックで個別属性を表示するレイヤーを選択します。
 Choose which saved connection to use for this address. This choice lasts for this session.	このアドレスに使用する保存済み接続を選択してください。この選択はこのセッションの間有効です。
 Choose which saved connection to use for this database. This choice lasts for this session.	このデータベースに使用する保存済み接続を選択してください。この選択はこのセッションの間有効です。
 Choose which tabs the ribbon shows.	リボンに表示するタブを選択します。
 Choose…	選択…
+Choosing a file isn't available here on Android yet.	Android では、ここでのファイルの選択にまだ対応していません。
+Choosing a file isn't available here on iOS yet.	iOS では、ここでのファイルの選択にまだ対応していません。
+Choosing a folder isn't available on Android yet.	Android ではフォルダーの選択にまだ対応していません。
+Choosing a folder isn't available on iOS yet.	iOS ではフォルダーの選択にまだ対応していません。
 Circle	円
+Circle Construction	円の作成
 Circle Radius (km)	円の半径 (km)
 Cities	都市
 Class	クラス
@@ -679,6 +723,7 @@ Claude Code and Codex connect through an ACP adapter. On first use, npx download
 Clear	クリア
 Clear\nLimits	制限の\nクリア
 Clear all diagnostic history for this session	このセッションの診断履歴をすべて消去
+Clear Coordinate System	座標系のクリア
 Clear Diagram	ダイアグラムの消去
 Clear Filters	フィルターのクリア
 Clear Guides	ガイドのクリア
@@ -710,6 +755,7 @@ Click the map to place text	マップをクリックしてテキストを配置
 Click the map to place text.	マップをクリックしてテキストを配置します。
 Click the map to trace a point	マップをクリックしてポイントをトレース
 Click the map · Esc cancels	マップをクリック · Esc でキャンセル
+Click the map · Esc to stop	マップをクリック · Esc で停止
 Click the map: {n} of {total}	マップをクリック: {total} 中 {n}
 Click the observer on the map	マップ上で観測点をクリック
 Click the observer, then the target	観測点をクリックし、次に対象をクリック
@@ -768,6 +814,7 @@ Colorbar	カラーバー
 Colormap	カラーマップ
 Colors from the raster's own color table.	ラスター自身のカラー テーブルの色。
 Colour ramps (RustGIS, QGIS, GDAL, GMT)	カラー ランプ (RustGIS、QGIS、GDAL、GMT)
+Column Statistics	列の統計
 Columns	列
 Columns named like longitude/latitude, easting/northing or geometry are picked for you.	longitude/latitude、easting/northing、geometry のような名前の列は自動的に選択されます。
 Combinations from the box above, one per line	上のボックスの値の組み合わせ (1 行に 1 つ)
@@ -808,6 +855,7 @@ connection.new returned no id	connection.new が ID を返しませんでした
 Connections	接続
 Connections you add are listed here	追加した接続がここに一覧表示されます
 Constant	定数
+Constant ({m} m)	定数 ({m} m)
 Constant height	一定の高さ
 Constant…	定数…
 Content	内容
@@ -819,6 +867,7 @@ Control Point Fit	コントロール ポイントでフィット
 Conversion	変換
 Convert	変換
 Convert a layer to another format	レイヤーを別の形式に変換
+Convert Field to Dates	フィールドを日付に変換
 Convert the selected layer's labels into an annotation layer.	選択したレイヤーのラベルをアノテーション レイヤーに変換します。
 Convert this layer's labels into an annotation layer.	このレイヤーのラベルをアノテーション レイヤーに変換します。
 Convert To Annotation	アノテーションに変換
@@ -829,7 +878,7 @@ Coordinate	座標
 Coordinate System	座標系
 Coordinate system	座標系
 Coordinate System…	座標系…
-Coordinates in {format}. Click to switch: decimal degrees, DMS, UTM, MGRS. UTM and MGRS cover the Earth from 80° S to 84° N.	{format} の座標。クリックで切り替え: 10 進度、DMS、UTM、MGRS。UTM と MGRS の範囲は南緯 80° から北緯 84° までです。
+Coordinates in {format}. Click to switch: decimal degrees, DMS, UTM, MGRS. UTM and MGRS are grids of the Earth, read in UPS north of 84° N and south of 80° S.	{format} での座標。クリックで切り替え: 10 進度、DMS、UTM、MGRS。UTM と MGRS は地球全体のグリッドで、北緯 84° より北と南緯 80° より南では UPS で読み取ります。
 Copied the command.	コマンドをコピーしました。
 Copied the layout to the clipboard	レイアウトをクリップボードにコピーしました
 Copied the layout to the clipboard at {dpi} dpi, not {wanted}: the page is too large for a larger image	レイアウトを {wanted} dpi ではなく {dpi} dpi でクリップボードにコピーしました: ページが大きすぎるため、これ以上大きな画像にできません
@@ -851,7 +900,6 @@ Copy As GeoJSON	GeoJSON としてコピー
 Copy as Python	Python としてコピー
 Copy Command	コマンドのコピー
 Copy coordinates to the clipboard	座標をクリップボードにコピー
-Copy coordinates to the clipboard. No {format} here: outside the UTM zones (80° S to 84° N), so latitude and longitude are copied	座標をクリップボードにコピーします。ここは UTM ゾーンの範囲外 (南緯 80° から北緯 84° 以外) のため {format} はなく、緯度と経度をコピーします
 Copy coordinates to the clipboard. {format} is a grid of the Earth, so latitude and longitude are copied	座標をクリップボードにコピーします。{format} は地球のグリッドのため、緯度と経度をコピーします
 Copy details	詳細をコピー
 Copy diagnostics	診断情報をコピー
@@ -883,6 +931,8 @@ Couldn't download the update: {error}	更新をダウンロードできません
 Couldn't download the {view} worldview ({error}); the map keeps the {current} borders	{view} の国境をダウンロードできませんでした ({error})。マップは {current} の国境のままです
 Couldn't install the update: {error}	更新をインストールできませんでした: {error}
 Couldn't load the plugin registry: {error}	プラグイン レジストリを読み込めませんでした: {error}
+Couldn't start reading: {e}	読み込みを開始できませんでした: {e}
+Couldn't start the search: {e}	検索を開始できませんでした: {e}
 Counterclockwise	反時計回り
 Countries, cities, rivers and lakes	国、都市、河川、湖沼
 Country	国
@@ -918,6 +968,7 @@ Ctrl+T	Ctrl+T
 Ctrl+Z	Ctrl+Z
 Cumulative	累積
 Current date	現在の日付
+Current extent	現在の範囲
 Current Project	現在のプロジェクト
 Current scale ({scale})	現在の縮尺 ({scale})
 Current time	現在の時刻
@@ -962,9 +1013,12 @@ Database…	データベース…
 Dataset	データセット
 Datasets on Hugging Face by name or owner/name; browse a dataset's files and add GeoTIFFs, GeoParquet, PMTiles, LiDAR and other files.	Hugging Face のデータセットを名前または所有者/名前で検索します。データセットのファイルを参照し、GeoTIFF、GeoParquet、PMTiles、LiDAR などのファイルを追加します。
 Date	日付
+Date and time	日付と時刻
+Date field	日付フィールド
 Dates	日付
 Dates a cell needs	セルに必要な日付数
 Dates a cell needs is a whole number, or empty for half	セルに必要な日付数は整数で指定するか、半数にする場合は空欄にします
+DateTime	日時
 Day	日
 Day and night shading for a time.	指定時刻の昼夜の陰影。
 Decimal	10 進
@@ -981,12 +1035,15 @@ Define Projection…	投影法を定義…
 Definition\nQuery	定義\nクエリ
 Definition Query	定義クエリ
 Definition query	定義クエリ
-Definition Query…	定義クエリ…
-Degrees	度
+Degrees as decimals or degrees, minutes and seconds.	10 進度、または度分秒。
+Degrees as decimals or degrees, minutes and seconds; or a UTM or MGRS reference in place of both.	10 進度、または度分秒。両方の代わりに UTM または MGRS の参照も使えます。
+degrees, as the cell size is in degrees	度 (セル サイズが度単位のため)
 degrees, minutes and seconds	度分秒
 Delete	削除
 Delete (or Backspace)	削除 (または Backspace)
+Delete Box	ボックスの削除
 Delete Cell	セルの削除
+Delete Circle	円の削除
 Delete Color Ramp	カラー ランプの削除
 Delete Element	エレメントの削除
 Delete Field	フィールドの削除
@@ -999,6 +1056,8 @@ Delete Notebook	ノートブックの削除
 Delete Page	ページの削除
 Delete Presentation	プレゼンテーションの削除
 Delete Report	レポートの削除
+Delete Selected Box	選択したボックスの削除
+Delete Selected Circle	選択した円の削除
 Delete selected rows	選択した行を削除
 Delete Style	スタイルの削除
 Delete Task	タスクの削除
@@ -1025,7 +1084,7 @@ Destination key	目的地キー
 Destinations ({operation}): {places}	宛先 ({operation}): {places}
 Detail	詳細度
 Details	詳細
-Details of the selected layer.	選択したレイヤーの詳細。
+Details of the selected layer, on the Source tab of its properties.	選択したレイヤーの詳細 (プロパティの [ソース] タブ)。
 Details…	詳細…
 Deviations	標準偏差数
 DGGS	DGGS
@@ -1104,17 +1163,21 @@ DRA	DRA
 Drag / middle-drag	ドラッグ / 中ボタン ドラッグ
 Drag a box	ボックスをドラッグ
 Drag a box on the map · Esc cancels	マップ上でドラッグして範囲を指定 · Esc でキャンセル
+Drag a box on the map · Esc to stop	マップ上でボックスをドラッグ · Esc で停止
 Drag a box or click to zoom in	ボックスをドラッグまたはクリックして拡大
 Drag a box to draw an ellipse.	ボックスをドラッグして楕円を描画します。
 Drag a box to zoom into.	ボックスをドラッグして拡大します。
 Drag a label to where it should be · drag the map to pan · Esc to stop	ラベルを目的の位置へドラッグ · マップをドラッグしてパン · Esc で終了
 Drag a label to where it should be; its callout's line follows. Shift-click a moved label to put it back.	ラベルを目的の位置へドラッグします。引き出し線も追従します。移動したラベルを Shift キーを押しながらクリックすると元に戻ります。
 Drag a map frame to pan its map, wheel to zoom it · Esc to stop	マップ フレームをドラッグして画面移動、ホイールでズーム · Esc で停止
+Drag a new box or click one created in this session. Other polygons use Edit Vertices.	新しいボックスをドラッグするか、このセッションで作成したボックスをクリックします。その他のポリゴンには [頂点の編集] を使用します。
+Drag a new circle or click one created in this session. Other polygons use Edit Vertices.	新しい円をドラッグするか、このセッションで作成した円をクリックします。その他のポリゴンには [頂点の編集] を使用します。
 Drag a rectangle, then pick a PNG or JPEG image to place in it.	四角形をドラッグし、そこに配置する PNG または JPEG 画像を選択します。
 Drag a tool from the palette to start building, or add an input layer.	パレットからツールをドラッグして作成を開始するか、入力レイヤーを追加してください。
 Drag a vertex to move it · click an edge to add one · Delete removes the chosen vertex	頂点をドラッグして移動 · エッジをクリックで頂点を追加 · Delete で選択した頂点を削除
 Drag an area · release to select · Shift adds · Ctrl/Cmd removes · Esc cancels	領域をドラッグ · 離して選択 · Shift で追加 · Ctrl/Cmd で削除 · Esc でキャンセル
 Drag from a node's right port to another node's left port to connect them.	ノードの右ポートから別のノードの左ポートへドラッグして接続します。
+Drag from centre to edge to draw. Drag inside to move; drag the radius handle to resize. Ctrl/Cmd+drag draws over existing features. Space or middle-drag pans; releasing Space keeps this tool.	中心から端へドラッグして描画します。内側をドラッグすると移動、半径ハンドルをドラッグするとサイズを変更します。Ctrl/Cmd+ドラッグで既存のフィーチャの上に描画します。Space または中ボタン ドラッグで画面を移動し、Space を離してもこのツールのままです。
 Drag from the centre out	中心から外側へドラッグ
 Drag from the centre to draw a circle.	中心からドラッグして円を描画します。
 Drag from the centre · release to select · Shift adds · Ctrl/Cmd removes · Esc cancels	中心からドラッグ · 離して選択 · Shift で追加 · Ctrl/Cmd で削除 · Esc でキャンセル
@@ -1128,6 +1191,7 @@ Drag to draw	ドラッグして描画
 Drag to draw a freehand line.	ドラッグしてフリーハンドのラインを描画します。
 Drag to draw a freehand polygon.	ドラッグしてフリーハンドのポリゴンを描画します。
 Drag to draw a rectangle.	ドラッグして四角形を描画します。
+Drag to draw. Drag the paddle to rotate. Shift snaps angles; Ctrl/Cmd+drag draws over existing boxes. Space or middle-drag pans; releasing Space keeps this tool.	ドラッグして描画します。回転ハンドルをドラッグして回転します。Shift で角度をスナップし、Ctrl/Cmd+ドラッグで既存のボックスの上に描画します。Space または中ボタン ドラッグで画面を移動し、Space を離してもこのツールのままです。
 Drag to resize the message box	ドラッグしてメッセージ ボックスのサイズを変更
 Drag tools from the palette onto the canvas.	パレットからキャンバスにツールをドラッグします。
 Drag vertices on the map; click an edge to add one	マップ上で頂点をドラッグ。エッジをクリックで頂点を追加
@@ -1143,17 +1207,24 @@ Draw a model: chain tools from input layers to the results to keep	モデルを�
 Draw a model: chain tools from input layers to the results to keep.	モデルを作成: 入力レイヤーから残す結果までツールをつなげます。
 Draw as: {how}	描画方法: {how}
 Draw at its place in the stack, the bottom stroke first	重なり順の位置で、下のストロークから描画します
+Draw boxes; drag the paddle to rotate, corners to resize. Space or middle-drag pans.	ボックスを描画します。回転ハンドルをドラッグして回転、角をドラッグしてサイズを変更します。Space または中ボタン ドラッグで画面を移動します。
+Draw circle features from centre to edge; drag the radius handle to resize. Space or middle-drag pans.	中心から端へ円フィーチャを描画します。半径ハンドルをドラッグしてサイズを変更します。Space または中ボタン ドラッグで画面を移動します。
 Draw every feature's strokes of one level before the next, so casings join under the cores where lines meet	すべてのフィーチャのストロークをレベルごとに描画し、ラインが交わる箇所でケーシングが中心線の下でつながるようにします
+Draw every feature.	すべてのフィーチャを描画します。
 Draw every label, over the others where they crowd, rather than leaving some out.	一部のラベルを省略せず、混み合う場所では重ねてでもすべてのラベルを描画します。
+Draw extent	範囲を描画
 Draw it over every other element	他のすべてのエレメントの上に描画します
 Draw it over the element above it	上のエレメントの上に描画します
 Draw it under every other element	他のすべてのエレメントの下に描画します
 Draw it under the element below it	下のエレメントの下に描画します
 Draw labels at every scale and distance.	すべての縮尺と距離でラベルを描画します。
+Draw line	ラインを描画
 Draw new features in the selected layer. Double-click to finish lines and polygons.	選択したレイヤーに新しいフィーチャを描画します。ラインとポリゴンはダブルクリックで終了します。
 Draw new single-band rasters with the grey stretch again.	新しい単バンド ラスターを再びグレー ストレッチで描画します。
 Draw only polygon outlines, keeping their colors and widths.	色と幅を保ったまま、ポリゴンのアウトラインのみを描画します。
+Draw point	ポイントを描画
 Draw points as bins coloured by how many fall in each.	ポイントを、各ビンに含まれる数で色分けしたビンとして描画します。
+Draw polygon	ポリゴンを描画
 Draw polygons as outlines only.	ポリゴンをアウトラインのみで描画します。
 Draw single-band rasters added from now on with this color scheme, stretch and resampling.	今後追加する単バンド ラスターを、この配色、ストレッチ、リサンプリングで描画します。
 Draw strokes in levels	ストロークをレベル順に描画
@@ -1177,6 +1248,10 @@ Duplicate Layout	レイアウトの複製
 Duplicate Map	マップの複製
 Duration: {duration} ms	所要時間: {duration} ms
 Dusk	夕暮れ
+DXF drawing	DXF 図面
+DXF picker request is no longer available	DXF ピッカーの要求は利用できなくなりました
+DXF picker request limit reached	DXF ピッカーの要求数が上限に達しました
+DXF…	DXF…
 Dynamic\nText	動的\nテキスト
 Dynamic Picture	動的画像
 Dynamic picture	動的画像
@@ -1189,6 +1264,7 @@ e.g. 0, 255, -9999	例: 0, 255, -9999
 e.g. continent = 'Europe'	例: continent = 'Europe'
 e.g. pop_est > 100000000 AND continent = 'Asia'	例: pop_est > 100000000 AND continent = 'Asia'
 e.g. pop_max > 1000000	例: pop_max > 1000000
+Each 100 km square named with its grid zone designation (32T MT), and the lines by their kilometres' last two digits. The grid is in a WGS 84 UTM zone: the one given, else the map's, else the one at the frame's centre.	各 100 km 方眼はグリッド ゾーン指定子 (32T MT) で、線はキロメートル値の下 2 桁で名前が付きます。グリッドは WGS 84 UTM ゾーンで、指定されたゾーン、なければマップのゾーン、それもなければフレーム中心のゾーンです。
 Each class labels the features its own clause matches, so a feature can get a label from more than one.	各クラスは自身の句に一致するフィーチャにラベルを付けるため、1 つのフィーチャに複数のクラスからラベルが付くことがあります。
 Each click on the map adds a point, until you click this again.	マップをクリックするたびにポイントを追加します。もう一度これをクリックするまで続きます。
 Each geoprocessing run becomes a step, chained by its outputs	各ジオプロセシングの実行がステップになり、出力によって連結されます
@@ -1213,7 +1289,9 @@ Edit	編集
 Edit\nVertices	頂点の\n編集
 Edit and run the notebook.	ノートブックを編集して実行します。
 Edit Attribute	属性の編集
+Edit Box Dimensions	ボックスの寸法を編集
 Edit Cell	セルの編集
+Edit Circle Dimensions	円の寸法を編集
 Edit Connection	接続の編集
 Edit Description	説明の編集
 Edit GeoPackage Table	GeoPackage テーブルの編集
@@ -1234,6 +1312,7 @@ Editing settings.	編集設定。
 Editor\nTools	エディター\nツール
 Editor Tools	エディター ツール
 Editorial	エディトリアル
+Edits not published	編集は未公開
 Edits since the project was saved.	プロジェクトの保存後の編集。
 Edits the project	プロジェクトの編集
 Edit…	編集…
@@ -1246,6 +1325,8 @@ Elevation model	標高モデル
 Elevation profiles along lines, cross sections and more.	ラインに沿った標高プロファイル、断面など。
 Eligible requests in RustGIS use your ChatGPT plan. You can manage usage in ChatGPT settings.	RustGIS の対象となるリクエストには ChatGPT プランが使われます。使用量は ChatGPT の設定で管理できます。
 Ellipse	楕円
+Embedded sessions open peer project JSON only	埋め込みセッションではピア プロジェクトの JSON のみ開けます
+Embedded sessions receive projects from the host page	埋め込みセッションはホスト ページからプロジェクトを受け取ります
 Embeddings	埋め込み
 Ember	残り火
 Empty	空
@@ -1264,9 +1345,10 @@ End Offset	終点オフセット
 Endpoint	エンドポイント
 Enhancement	強調
 Enter	Enter
+Enter a valid query parameter name before testing this connection.	この接続をテストする前に、有効なクエリ パラメーター名を入力してください。
 Enter an API key.	API キーを入力してください。
 Enter an EPSG code as a number, such as 32650	EPSG コードを数値で入力してください (例: 32650)
-Enter the password or key for this connection. Web-service logins last for this session only.	この接続のパスワードまたはキーを入力してください。Web サービスのログインはこのセッションの間のみ有効です。
+Enter the password or key for this connection. Remember on this computer is optional.	この接続のパスワードまたはキーを入力してください。[このコンピューターに保存する] は任意です。
 Enter the provider's address.	プロバイダーのアドレスを入力してください。
 Enter this connection's password or API key to log in.	ログインするには、この接続のパスワードまたは API キーを入力してください。
 Enter to send, Shift+Enter for a new line	Enter で送信、Shift+Enter で改行
@@ -1280,6 +1362,7 @@ EPSG:	EPSG:
 EPSG:2263	EPSG:2263
 EPSG:25832, WKT or a PROJ string; empty: the map's when projected, else the UTM zone at the frame's centre.	EPSG:25832、WKT、または PROJ 文字列。空の場合: 投影座標系ならマップのもの、それ以外はフレーム中心の UTM ゾーン。
 EPSG:32616	EPSG:32616
+EPSG:3857	EPSG:3857
 EPSG:4326	EPSG:4326
 Equal	Equal
 Equal Earth	イコールアース図法
@@ -1340,6 +1423,9 @@ Export Map…	マップのエクスポート…
 Export Mesh	メッシュのエクスポート
 Export Mesh (OBJ)…	メッシュのエクスポート (OBJ)…
 Export Model	モデルのエクスポート
+Export Orbit	オービットのエクスポート
+Export Orbit takes an object of parameters	[オービットのエクスポート] にはパラメーターのオブジェクトを指定します
+Export Orbit…	オービットのエクスポート…
 Export Presentation	プレゼンテーションのエクスポート
 Export Presentation…	プレゼンテーションのエクスポート…
 Export Raster	ラスターのエクスポート
@@ -1362,6 +1448,7 @@ Export Time Animation	時系列アニメーションのエクスポート
 Export To 3D	3D にエクスポート
 Export To 3D File	3D ファイルにエクスポート
 Exported to {path}.	{path} にエクスポートしました。
+exporting an orbit needs the desktop app	オービットのエクスポートにはデスクトップ アプリが必要です
 exporting animations needs the desktop app	アニメーションのエクスポートにはデスクトップ アプリが必要です
 exporting time animations needs the desktop app	時系列アニメーションのエクスポートにはデスクトップ アプリが必要です
 Exports a styled raster layer as Web Mercator PNG tiles in a PMTiles archive.	スタイル設定済みのラスター レイヤーを Web メルカトル PNG タイルとして PMTiles アーカイブにエクスポートします。
@@ -1379,6 +1466,8 @@ Extract	抽出
 Extracts the parts of input features that fall inside clip polygons.	入力フィーチャのうち、クリップ ポリゴン内に含まれる部分を抽出します。
 Extruded shapes cast shadows on the map.	押し出した形状がマップに影を落とします。
 Extrusion	押し出し
+Extrusion Base	押し出しのベース
+F2	F2
 Face Culling	面のカリング
 Faces	面
 Factor	係数
@@ -1429,6 +1518,7 @@ Fields colored by score, drawn from zoom 9	スコアで色分けされた圃場 
 Fields of the World	Fields of the World
 Fields of the World…	Fields of the World…
 fields, comma separated	フィールド (カンマ区切り)
+Fields, numbers, 'text', + - * / % ^, || to join text, comparisons, CASE and functions such as round(), upper(), if() or scale_linear(). Applies to every row of the table.	フィールド、数値、'テキスト'、+ - * / % ^、テキストを連結する ||、比較、CASE、round()、upper()、if()、scale_linear() などの関数。テーブルのすべての行に適用されます。
 Fields, numbers, 'text', + - * / % ^, || to join text, comparisons, CASE and functions such as round(), upper(), if() or scale_linear(). Applies to the selected rows, or every row when none is selected.	フィールド、数値、'text'、+ - * / % ^、テキスト結合の ||、比較、CASE、および round()、upper()、if()、scale_linear() などの関数。選択した行に適用され、選択がない場合はすべての行に適用されます。
 Fields, statistics, groups, pictures, attachments and charts in the report.	レポート内のフィールド、統計、グループ、画像、添付ファイル、グラフ。
 Fields:	フィールド：
@@ -1444,6 +1534,7 @@ Fill	塗りつぶし
 Fill Cache	キャッシュの作成
 Fill in: {fields}	入力してください: {fields}
 Fill Layers	塗りつぶしレイヤー
+Fill light	フィル ライト
 Fill the cache whenever the projection changes.	投影法が変わるたびにキャッシュを作成します。
 Fill {n}	塗りつぶし {n}
 Fills	塗りつぶし
@@ -1503,6 +1594,7 @@ for the layers that change with time, as they list their times (2024-06-01, 1995
 Forest	森林
 Forget Earthdata Login Token	Earthdata Login トークンを削除
 Forget Saved Keys	保存したキーを削除
+Forget Saved Login	保存済みのログイン情報を削除
 Forget Saved Password	保存したパスワードを削除
 Forget this plugin: the app stops trying to load it at start.	このプラグインを登録解除します: 起動時に読み込みを試みなくなります。
 Format	形式
@@ -1510,6 +1602,9 @@ Found: {names}. An agent works on this map through RustGIS's tools and with its 
 Fr	金
 Frame rate	フレーム レート
 Frame rate, draw time, data size and memory.	フレーム レート、描画時間、データ サイズ、メモリ。
+Frame time	フレーム時間
+Frame time (ms, GIF)	フレーム時間 (ms、GIF)
+Frames	フレーム
 France	フランス
 Free the prepared geometry.	準備したジオメトリを解放します。
 Freehand	フリーハンド
@@ -1529,6 +1624,7 @@ Full lines	全体線
 Full size	フル サイズ
 Function	関数
 Function Editor	関数エディター
+Functions ▾	関数 ▾
 Gamma	ガンマ
 Gemini stopped the reply ({reason}).	Gemini が回答を停止しました（{reason}）。
 General	全般
@@ -1539,7 +1635,9 @@ Geocode	ジオコーディング
 Geocode Addresses	住所のジオコーディング
 Geocode Addresses…	住所のジオコーディング…
 Geocoder	ジオコーダー
+Geocoding cancelled; no layer was added.	ジオコーディングをキャンセルしました。レイヤーは追加されていません。
 Geocoding {n} addresses…	{n} 件の住所をジオコーディングしています…
+Geocoding…	ジオコーディングしています…
 Geodata Service	ジオデータ サービス
 Geodesic circles on a grid that show how the map's projection distorts scale, area and angles.	マップの投影法が縮尺、面積、角度をどのように歪めるかを示す、グリッド上の測地円。
 GeoJSON	GeoJSON
@@ -1607,12 +1705,16 @@ Graphics	グラフィックス
 Graphics and Text	グラフィックスとテキスト
 Graphics Layer	グラフィックス レイヤー
 Graticule	経緯線
+Graticule options	経緯線のオプション
 Greece	ギリシャ
 Green	緑
 Greys	グレー
 Grid	グリッド
+Grid pixels; angle clockwise from grid right.	グリッド ピクセル。角度はグリッドの右方向から時計回り。
 Grid Spacing (degrees)	グリッド間隔 (度)
+Ground	地面
 Ground\nTo Grid	グラウンド\n→グリッド
+Ground heights	地面の高さ
 Ground To Grid	グラウンド → グリッド
 Group	グループ
 GROUP BY	GROUP BY
@@ -1636,6 +1738,7 @@ Head/Tail Breaks	ヘッド/テール分割
 Header name	ヘッダー名
 Height	高さ
 Height (mm)	高さ (mm)
+Height (points)	高さ (ポイント)
 Help	ヘルプ
 Help › Help	ヘルプ › ヘルプ
 Hexagons	六角形
@@ -1683,7 +1786,9 @@ Hour	時
 How dark the shadows the terrain casts are, from 0 (none) to 1, for the sun set above	地形が落とす影の濃さです。0 (なし) から 1 まで、設定した太陽に対する値
 How far the label sits from the line, to the text's nearest edge; 0 is on the line.	ラベルと線の距離で、テキストの最も近い端までの長さです。0 は線上に置きます。
 How much of each zone each class of polygons covers, with the classes' totals shared out to the zones by area.	各クラスのポリゴンが各ゾーンをどれだけ覆うか。クラスの合計値は面積に応じてゾーンに配分されます。
+How much the sky each cell sees, over the terrain around it, scales its ambient light, from 0 (not at all) to 1	各セルが周囲の地形越しに見える空の量で環境光を調整する度合いです。0 (まったくしない) から 1 まで
 How often RustGIS keeps a copy of unsaved work, to offer it back after a crash.	RustGIS が未保存の作業のコピーを保持する頻度です。クラッシュ後に復元を提案します。
+How the ground between the observer and a cell is read: the cell each point falls in, or between the cells' centres. Between cells is an estimate too, but closer on ground that bulges, a hill seen from its top, where the nearest cell can hide cells just inside the horizon.	観測点とセルの間の地面をどう読み取るか: 各点が含まれるセルを使うか、セルの中心の間で補間します。[セル間] も推定値ですが、山頂から山を見るときのように地面が盛り上がっている場所ではより正確です。そのような場所では、最寄りのセルが地平線のすぐ内側のセルを隠すことがあります。
 How the layer's colours combine with the tile layers and basemap beneath.	レイヤーの色と、下にあるタイル レイヤーやベースマップとの合成方法。
 How the layer's colours combine with what's beneath.	レイヤーの色と下にあるものとの合成方法。
 HTTP failure	HTTP エラー
@@ -1719,9 +1824,12 @@ Image…	画像…
 Imperial	ヤード・ポンド法
 Import	インポート
 Import All	すべてインポート
+Import block contents	ブロックの内容をインポート
 Import Bookmarks	ブックマークのインポート
 Import Bookmarks…	ブックマークのインポート…
 Import Deep Learning Package	ディープ ラーニング パッケージのインポート
+Import DXF	DXF のインポート
+Import DXF…	DXF のインポート…
 Import GeoLibre Project	GeoLibre プロジェクトをインポート
 Import Keyboard Shortcuts	キーボード ショートカットのインポート
 Import Keyboard Shortcuts…	キーボード ショートカットのインポート…
@@ -1758,8 +1866,10 @@ in progress	進行中
 In project	プロジェクト内
 In RustGIS, it can:	RustGIS 内でできること:
 In the browser, pick the .shp and .dbf together, with any sidecars, or pick a ZIP. The override applies to every Shapefile in the ZIP.	ブラウザーでは、.shp と .dbf を付随ファイルと一緒に選択するか、ZIP を選択してください。指定は ZIP 内のすべての Shapefile に適用されます。
+In the coordinate system's units, or degrees without one	座標系の単位。座標系がない場合は度
 In the coordinate system's units: metres for UTM.	座標系の単位: UTM ではメートル。
 In the middle	中央
+In the web app, give a CORS-enabled proxy server; direct Census access needs the desktop app or CLI.	Web アプリでは CORS 対応のプロキシ サーバーを指定してください。Census に直接アクセスするにはデスクトップ アプリまたは CLI が必要です。
 In use	使用中
 Include End Point	終点を含める
 Indent	インデント
@@ -1822,6 +1932,7 @@ Interval	間隔
 Into	出力先
 Into the group just above it, as its last item	すぐ上のグループの末尾へ
 invalid child id	子プロセス ID が無効です
+Invalid DXF picker request	無効な DXF ピッカーの要求
 Invalid or reserved shortcut key.	ショートカット キーが無効か予約されています。
 Invalid selection outline · draw a smaller area	選択範囲の輪郭が無効です · より小さな領域を描画してください
 Invalid selection outline · draw a smaller radius	選択範囲の輪郭が無効です · より小さな半径で描画してください
@@ -1968,6 +2079,7 @@ Layer Properties · {layer}	レイヤー プロパティ · {layer}
 Layer Template	レイヤー テンプレート
 Layer Templates	レイヤー テンプレート
 layer {id}	レイヤー {id}
+Layer: {layer} · Feature {feature}	レイヤー: {layer} · フィーチャ {feature}
 Layers	レイヤー
 Layers ({n})	レイヤー ({n})
 Layers and Table Views	レイヤーとテーブル ビュー
@@ -1982,6 +2094,7 @@ Layout: {kind}	レイアウト: {kind}
 Layouts	レイアウト
 Learn	学習
 Learning\nResources	学習\nリソース
+Least cloud first	雲量の少ない順
 Leave the keys blank to log in with the keys saved on this computer, or type others, then Save.	このコンピューターに保存されたキーでログインするにはキーを空欄のままにするか、別のキーを入力してから「保存」をクリックしてください。
 Left	左
 Legend	凡例
@@ -2061,6 +2174,7 @@ Load a Theme from File…	ファイルからテーマを読み込む…
 Load All Features	すべてのフィーチャを読み込む
 Load All parameters must be an object	Load All のパラメーターはオブジェクトである必要があります
 Load an unpacked plugin from its folder while you develop it.	開発中のプラグインを、パッケージ化せずにフォルダーから読み込みます。
+Load file…	ファイルの読み込み…
 Load for editing	編集用に読み込む
 Load more	さらに読み込む
 Load sources & plot	ソースを読み込んで描画
@@ -2094,7 +2208,7 @@ Log Out	ログアウト
 Log Out of Connection	接続からログアウト
 Logged in	ログイン済み
 Logged in for this session	このセッションでログイン済み
-Logged out. Enter the password or key to log in again.	ログアウトしました。再度ログインするにはパスワードまたはキーを入力してください。
+Logged out. Log in explicitly to use this connection again.	ログアウトしました。この接続を再び使用するには、明示的にログインしてください。
 Logging is off: commands run now aren't recorded.	ログ記録はオフです: 現在実行するコマンドは記録されません。
 Login	ログイン
 Long	長整数
@@ -2112,6 +2226,7 @@ Major Rivers	主要な河川
 Make a new layer of the selected features.	選択したフィーチャから新しいレイヤーを作成します。
 Make a task of the steps recorded	記録したステップからタスクを作成
 Make Layer From Selected Features	選択したフィーチャからレイヤーを作成
+Making the search area…	検索範囲を作成しています…
 Manage	管理
 Manage Bookmarks	ブックマークの管理
 Manage Edits	編集の管理
@@ -2180,6 +2295,7 @@ Measure geodesic distances and areas on the map.	マップ上で測地線距離�
 Measure on this body, with one of its basemaps.	この天体上で、そのベースマップの 1 つを使って計測します。
 Measure with an elevation raster	標高ラスターで計測
 Measured grid	計測グリッド
+Measured grid's coordinate system	計測グリッドの座標系
 Measurement units	計測単位
 Measurement units must be metric or imperial	計測単位は metric または imperial である必要があります
 Measurements so far.	これまでの計測値。
@@ -2196,6 +2312,7 @@ Meters	メートル
 Method	手法
 Metric	メートル法
 MGRS	MGRS
+MGRS labels	MGRS ラベル
 Midnight	真夜中
 Miles	マイル
 Miller Cylindrical	ミラー図法
@@ -2314,8 +2431,10 @@ NDVI, MODIS, rain…	NDVI、MODIS、雨…
 NDVI, NDWI, SAVI, NBR, NDBI, EVI.	NDVI、NDWI、SAVI、NBR、NDBI、EVI。
 Near	近接
 Near Features	近接フィーチャ
+Nearest cell	最寄りのセル
 Nearest Neighbor	最近隣内挿
 Neatline	ネットライン
+Needs RustGIS {min}	RustGIS {min} が必要
 Needs three or more bands.	3 つ以上のバンドが必要です。
 Needs two or more numeric fields.	2 つ以上の数値フィールドが必要です。
 Neighborhood Explorer	近傍エクスプローラー
@@ -2362,6 +2481,7 @@ New Template	新しいテンプレート
 New Template (a layout page)	新しいテンプレート (レイアウト ページ)
 New Workspace	新しいワークスペース
 New Workspace From Visible Rasters	表示中のラスターから新しいワークスペースを作成
+Newest first	新しい順
 Next	次へ
 Next Coordinate Format	次の座標形式
 Next Extent	次の範囲
@@ -2425,6 +2545,7 @@ No relationships (Data Design › Relationships)	リレーションシップは�
 No relationships yet	リレーションシップはまだありません
 No reports yet. Publish › New Report lists the selected layer's records.	レポートはまだありません。[公開] › [新しいレポート] で選択したレイヤーのレコードを一覧表示します。
 no row	行なし
+No saved login for this connection. Enter it again.	この接続には保存済みのログイン情報がありません。もう一度入力してください。
 No saved S3 keys. Enter accessKeyId and secretAccessKey.	保存された S3 キーがありません。accessKeyId と secretAccessKey を入力してください。
 No saved web-service connection with this id.	この ID の保存済み Web サービス接続はありません。
 No serif font is installed, so this text is drawn in the sans-serif	セリフ フォントがインストールされていないため、このテキストはサンセリフで描画されます
@@ -2432,6 +2553,7 @@ no service or file links	サービスやファイルへのリンクがありま�
 No services match your search.	検索に一致するサービスがありません。
 No standalone tables	スタンドアロン テーブルはありません
 No styles yet	スタイルはまだありません
+no such table	そのようなテーブルはありません
 No such tile layer	そのタイル レイヤーはありません
 no system keychain in this build	このビルドにはシステム キーチェーンがありません
 No tasks yet. Record one, or make one from your geoprocessing history with Analyze › Task.	タスクはまだありません。記録するか、[解析] › [タスク] でジオプロセシング履歴から作成してください。
@@ -2449,20 +2571,24 @@ none, or from PGPASSWORD, MYSQL_PWD or SQLCMDPASSWORD	なし、または PGPASSW
 None. Add one by address, or from a basemap plugin.	なし。アドレスで、またはベースマップ プラグインから追加します。
 North	北
 North\nArrow	方位\n記号
+north of 84° N and south of 80° S the grid is UPS, which has no zone number: write north 2000000 2444268, south 2000000 1555732, or polar MGRS such as Z AM 00000 44268	北緯 84° より北と南緯 80° より南のグリッドは UPS で、ゾーン番号がありません: north 2000000 2444268、south 2000000 1555732、または Z AM 00000 44268 のような極域の MGRS で入力してください
 North Polar Stereographic	北極ステレオ図法
 NOT	NOT
 Not a GeoLibre project	GeoLibre プロジェクトではありません
 Not a number: {fields}	数値ではありません: {fields}
 not a picture	画像ではありません
 not a RustGIS layout	RustGIS レイアウトではありません
+Not a RustGIS project	RustGIS プロジェクトではありません
 not a RustGIS project	RustGIS プロジェクトではありません
 not a UTM or MGRS grid reference	UTM または MGRS のグリッド参照ではありません
 Not added: a drawn line holds at most 10,000 points	追加されませんでした: 描画するラインの頂点は最大 10,000 個です
 Not applied yet.	まだ適用されていません。
+Not available for {platform}	{platform} では利用できません
+Not bound	バインドなし
 Not for texts: a text is edited in the Format pane.	テキストには使用できません: テキストは書式ウィンドウで編集します。
 Not loaded	未読み込み
 not needed	不要
-Not available for {platform}	{platform} では利用できません
+Not on a phone: these tools run as a program of their own, which a phone can't run. Use them in RustGIS on a computer.	スマートフォンでは使えません: これらのツールは独立したプログラムとして動作し、スマートフォンでは実行できません。コンピューター上の RustGIS で使用してください。
 Not sandboxed	サンドボックス外
 Not saved yet	未保存
 Not searched, as they didn't load: {folders}	読み込めなかったため検索していません: {folders}
@@ -2482,6 +2608,8 @@ Nothing to test	テストするものがありません
 Nothing was found at this address.	このアドレスには何も見つかりませんでした。
 Nothing was recorded, so no task was made.	何も記録されなかったため、タスクは作成されませんでした。
 Now	現在
+Now: the map's own, else the UTM zone at the centre	現在: マップ自身の座標系。それ以外は中心の UTM ゾーン
+Now: {crs}	現在: {crs}
 Nugget	ナゲット
 NULL	NULL
 Nulls	Null
@@ -2502,6 +2630,7 @@ Offset right	右へのオフセット
 OGC API	OGC API
 OGC API Features and Tiles	OGC API Features と Tiles
 Older copies waiting: {n}.	待機中の古いコピー: {n}。
+Oldest first	古い順
 Ollama (local)	Ollama（ローカル）
 On	オン
 On Hold	保留中
@@ -2524,9 +2653,10 @@ One stroke, from the symbol. Add strokes for casings, parallel lines and offsets
 only a discovered list can invalidate the saved table	only a discovered list can invalidate the saved table
 Only a tile archive read from a file (PMTiles or MBTiles) can be repaired.	修復できるのは、ファイルから読み込んだタイル アーカイブ (PMTiles または MBTiles) のみです。
 Only cubes with data where the map is	マップの表示範囲にデータがあるキューブのみ
-Only features matching this expression draw in {layer}.	この式に一致するフィーチャのみが {layer} に描画されます。
 Only selected polygons will be included in the output.	選択したポリゴンのみが出力に含まれます。
 Only the commands run in the project open now	現在開いているプロジェクトで実行したコマンドのみ
+Only the features matching this clause draw. Ctrl+Enter applies it.	この句に一致するフィーチャのみを描画します。Ctrl+Enter で適用します。
+Only the features whose date falls in the slider's window draw	日付がスライダーの期間内にあるフィーチャのみを描画します
 Only the first {kept} of the {given} nodes the plugin gave are shown: a tree holds at most {kept}.	プラグインが渡したノードのうち、最初の {kept} 個 (全 {given} 個) のみ表示されます: ツリーに保持できるのは最大 {kept} 個です。
 Only the map's area	マップの範囲のみ
 Only where the map is	マップの表示範囲のみ
@@ -2534,6 +2664,7 @@ Opacity	不透明度
 Open	開く
 Open a .rgis project	.rgis プロジェクトを開く
 Open a Data Cube	データ キューブを開く
+open a file	ファイルを開く
 open a layout first	先にレイアウトを開いてください
 Open a model file (*.model.json)	モデル ファイル (*.model.json) を開く
 Open a model of this project	このプロジェクトのモデルを開く
@@ -2600,6 +2731,7 @@ Optional. Shift+Enter starts a new line.	省略可能。Shift+Enter で改行し
 Options	オプション
 OR	OR
 Or	または
+Or grid reference	またはグリッド参照
 Or run in a POSIX shell, for Claude Code or Codex:	または POSIX シェルで実行 (Claude Code または Codex の場合):
 Or run in PowerShell, for Claude Code or Codex:	または PowerShell で実行 (Claude Code または Codex の場合):
 Or run, for Claude Code or Codex:	または、Claude Code か Codex では次を実行します:
@@ -2609,6 +2741,7 @@ Orientation	向き
 Origin	出発地
 Origin key	出発地キー
 Original	オリジナル
+Original grid pixels. A circle may appear elliptical in the map projection.	元のグリッド ピクセル。マップの投影では円が楕円に見えることがあります。
 Ortho Mapping	オルソ マッピング
 Other	その他
 Other copies of unsaved work will be offered at the next start ({n}).	未保存の作業の他のコピーは次回の起動時に提案されます ({n})。
@@ -2642,6 +2775,8 @@ Overture Maps…	Overture Maps…
 Overwrite existing values	既存の値を上書き
 Package	パッケージ
 Package a trained deep learning model.	学習済みのディープ ラーニング モデルをパッケージ化します。
+Package for\nthe Field	フィールド用\nパッケージ
+Package for the Field	フィールド用にパッケージ化
 Package Map	マップのパッケージ化
 Package Project	プロジェクトのパッケージ化
 Package Results	結果のパッケージ化
@@ -2673,6 +2808,7 @@ Pane Sets	ウィンドウ セット
 Panel	パネル
 Paper	紙
 Parallel	平行
+Parameter name	パラメーター名
 Parent folder	親フォルダー
 parks, bike lanes, flood zones…	公園、自転車レーン、浸水区域…
 Password	パスワード
@@ -2758,6 +2894,7 @@ Plugin Panel State	プラグイン パネルの状態
 Plugin registry	プラグイン レジストリ
 Plugins	プラグイン
 Plugins are .rgplugin files. Install only plugins from people you trust.	プラグインは .rgplugin ファイルです。信頼できる相手のプラグインのみインストールしてください。
+Plugins can't be installed on iOS: Apple doesn't let an app download code that adds to what it does. Use them in RustGIS on a computer or in the browser.	iOS ではプラグインをインストールできません: Apple はアプリの機能を追加するコードのダウンロードを認めていません。コンピューターまたはブラウザーの RustGIS で使用してください。
 Plugins marked Not sandboxed run as programs on your computer instead, and can do anything you can.	「サンドボックス外」と表示されたプラグインは、コンピューター上のプログラムとして実行され、あなたができることは何でもできます。
 Plugins run in a sandbox: they can't reach your files or the network, and they change the project only through RustGIS's own commands, within the permissions you accept.	プラグインはサンドボックス内で実行されます。ファイルやネットワークにはアクセスできず、プロジェクトの変更は、許可した権限の範囲内で RustGIS 自身のコマンドを通じてのみ行います。
 Plugins › Extensions	プラグイン › 拡張機能
@@ -2770,7 +2907,6 @@ Points	ポイント
 Points Along Lines	ラインに沿ったポイント
 points each	ポイント数 (各)
 Poland	ポーランド
-polar (UPS) grid references, north of 84° N or south of 80° S, aren't supported	極域 (UPS) のグリッド参照 (北緯 84° 以北または南緯 80° 以南) には対応していません
 Polar, conformal: Antarctica and the Southern Ocean.	極域、正角: 南極大陸と南極海。
 Polar, conformal: the Arctic and the northern lands.	極域、正角: 北極圏と北方の陸地。
 Polygon	ポリゴン
@@ -2861,6 +2997,7 @@ Public GIS portals of US states and the District of Columbia.	米国の州とコ
 Public layers on ArcGIS Online or another ArcGIS portal: feature, map, image and vector tile services, web maps and GeoJSON files.	ArcGIS Online または他の ArcGIS ポータル上の公開レイヤー: フィーチャ、マップ、イメージ、ベクター タイル サービス、Web マップ、GeoJSON ファイル。
 Publication Layout	出版用レイアウト
 Publish	公開
+Publish to Source	ソースに公開
 Publish › Output	公開 › 出力
 Put the layer back as it was then	レイヤーをその時点の状態に戻す
 Put this layer's moved labels back where their classes place them.	このレイヤーの移動したラベルを、クラスが配置する位置に戻します。
@@ -2873,12 +3010,14 @@ QGIS project	QGIS プロジェクト
 QGIS Project…	QGIS プロジェクト…
 Qualitative	定性
 Quantile	等量
+Query	クエリ
 Query files, web addresses and databases with DuckDB Spatial; add results to the map.	DuckDB Spatial でファイル、Web アドレス、データベースをクエリし、結果をマップに追加します。
 Quick\nAccess	クイック\nアクセス
 Quick Access Toolbar	クイック アクセス ツールバー
 Quick actions	クイック アクション
 Quick Analysis	クイック解析
 Radial	放射状
+Radius	半径
 radius km	半径 km
 radius m	半径 m
 Radius {distance} (approximate)	半径 {distance}（近似）
@@ -2911,6 +3050,7 @@ Read the map's layers and features	マップのレイヤーとフィーチャの
 Read the points in the view, coloured by their principal components	ビュー内のポイントを読み込み、主成分で色分けします
 Read the selected layer's local source again. Folders reload only when you choose Reload Data; they are not watched. Undo restores in-memory data and configuration, not overwritten files or historical streamed contents.	選択したレイヤーのローカル ソースを再読み込みします。フォルダーは、データの再読み込みを選んだときだけ再読み込みされ、監視はされません。元に戻すでメモリ内のデータと設定は復元されますが、上書きされたファイルや過去のストリーミング内容は復元されません。
 Reading a granule's files needs an Earthdata Login token, which works for every NASA DAAC. It is kept until RustGIS closes unless you tick Remember, never in the project, and sent only to NASA's Earthdata data servers.	グラニュールのファイルを読み込むには Earthdata Login トークンが必要です。これはすべての NASA DAAC で使えます。トークンは「保存する」にチェックを入れない限り RustGIS を閉じるまで保持され、プロジェクトには保存されず、NASA の Earthdata データ サーバーにのみ送信されます。
+Reading dates…	日付を読み込んでいます…
 Reading in place…	インプレースで読み込み中…
 Reading JAXA Earth's catalog…	JAXA Earth のカタログを読み取っています…
 Reading the catalog: {n} documents read, {m} items found…	カタログを読み込んでいます: {n} 件のドキュメントを読み込み、{m} 件のアイテムが見つかりました…
@@ -2923,6 +3063,7 @@ Reading the tileset of {name}	{name} のタイルセットを読み込み中
 Reading the window failed unexpectedly	ウィンドウの読み込みが予期せず失敗しました
 Reading {n} of Overture's {ty} files where the map is: {attribution}	マップの表示範囲にある Overture の {ty} ファイルを {n} 個読み込んでいます: {attribution}
 Reading {url}…	{url} を読み込んでいます…
+Reading {what}…	{what} を読み込んでいます…
 Reading…	読み取り中…
 Reads and writes files	ファイルの読み書き
 Reads the map	マップの読み取り
@@ -3079,10 +3220,13 @@ Right	右
 Right-click a source to add it here	ソースを右クリックしてここに追加
 Right-click for more	右クリックでその他の操作
 Robinson	ロビンソン図法
+Rock on steep slopes	急斜面の岩
 Rotate	回転
 Rotate (°)	回転 (°)
 Rotate 90°	90° 回転
 Rotate Map	マップの回転
+Rotated\nBox	回転\nボックス
+Rotated Box	回転ボックス
 Rotation	回転
 Rotation Type	回転タイプ
 rotation °	回転 °
@@ -3127,6 +3271,7 @@ RustGIS deep learning package	RustGIS ディープ ラーニング パッケー�
 RustGIS didn't close properly last time, so it started with the World Atlas instead of your start-up project. Open the project from the Project menu when you're ready.	前回 RustGIS が正しく終了しなかったため、起動時のプロジェクトの代わりに World Atlas で起動しました。準備ができたら、プロジェクト メニューからプロジェクトを開いてください。
 RustGIS didn't close properly last time.	RustGIS は前回正常に終了しませんでした。
 RustGIS doesn't have this tool. Install the tools it comes from, or delete the node.	RustGIS にはこのツールがありません。提供元のツールをインストールするか、ノードを削除してください。
+RustGIS field package	RustGIS フィールド パッケージ
 RustGIS is a free and open-source GIS written in pure Rust. It runs on the desktop and in the browser, and every action is a command you can also run from the command line.	RustGIS は純粋な Rust で書かれた無料のオープンソース GIS です。デスクトップとブラウザーで動作し、すべての操作はコマンドであり、コマンド ラインからも実行できます。
 RustGIS is closing	RustGIS を終了しています
 RustGIS layer file	RustGIS レイヤー ファイル
@@ -3163,12 +3308,15 @@ Sample data (Natural Earth)	サンプル データ（Natural Earth）
 Sample data © Natural Earth (public domain). RustGIS is licensed under Apache-2.0.	サンプル データ © Natural Earth（パブリック ドメイン）。RustGIS は Apache-2.0 ライセンスで提供されています。
 Sample data: Natural Earth (public domain). Licensed under Apache-2.0.	サンプル データ：Natural Earth（パブリック ドメイン）。Apache-2.0 ライセンス。
 Sans-serif	サンセリフ
+Satellite Embedding Change	衛星埋め込みの変化
 Satellite Embedding Datasets	衛星埋め込みデータセット
+Satellite Embedding Similarity	衛星埋め込みの類似度
 Satellite Embeddings	衛星埋め込み
 Satellite Embeddings…	衛星埋め込み…
 Saturation	彩度
 Saudi Arabia	サウジアラビア
 Save	保存
+save a file	ファイルの保存
 Save a GeoPackage layer's edits to its table in the file, unless rows changed there since.	GeoPackage レイヤーの編集をファイル内のテーブルに保存します。ただし、その後ファイル内で行が変更された場合を除きます。
 Save a PostGIS layer's edits to its table, unless rows changed there since.	PostGIS レイヤーの編集をテーブルに保存します。ただし、その後テーブルの行が変更された場合を除きます。
 Save As	名前を付けて保存
@@ -3203,6 +3351,7 @@ Save Style Items	スタイル アイテムの保存
 Save Task Item	タスク アイテムの保存
 Save the active map (with its data) as a map file.	アクティブなマップを (データとともに) マップ ファイルとして保存します。
 Save the connection first: a login belongs to a saved connection.	先に接続を保存してください: ログインは保存済みの接続に属します。
+Save the data in view, with the map's MBTiles and PMTiles basemaps, as a field package to open on a phone.	表示中のデータを、マップの MBTiles と PMTiles のベースマップとともに、スマートフォンで開くフィールド パッケージとして保存します。
 Save the last task as a task file.	最後のタスクをタスク ファイルとして保存します。
 Save the layout as a layout file.	レイアウトをレイアウト ファイルとして保存します。
 Save the model as a file (*.model.json)	モデルをファイル (*.model.json) として保存
@@ -3225,6 +3374,10 @@ Save Web Link Chart	Web リンク チャートの保存
 Save Web Map	Web マップの保存
 Save Web Scene	Web シーンの保存
 Saved	保存済み
+Saved and exported boxes are ordinary polygons. Box construction is kept only in this session.	保存およびエクスポートしたボックスは通常のポリゴンです。ボックスの作成情報はこのセッションの間だけ保持されます。
+Saved and exported circles are polygon approximations. Centre and radius are kept only in this session. New drags use a tolerance of 0.25 grid units or radius/10000, whichever is larger, before projection.	保存およびエクスポートした円はポリゴンによる近似です。中心と半径はこのセッションの間だけ保持されます。新しいドラッグでは、投影前に 0.25 グリッド単位と半径/10000 のうち大きい方を許容値として使用します。
+Saved arrangements of publication layouts left out: {count} (not usable by this version, a second name for one kept, or past the limit of 20). They are kept with the preferences.	除外した出版用レイアウトの保存済み配置: {count} 件 (このバージョンでは使用不可、保持済みの配置の 2 つ目の名前、または上限 20 件を超過)。これらは設定とともに保持されます。
+Saved arrangements of publication layouts passed over under a name saved or removed now are dropped: {count}.	今保存または削除した名前で見送られた出版用レイアウトの保存済み配置を破棄しました: {count} 件。
 Saved as the connection {name}	接続 {name} として保存しました
 Saved as the default style for new single-band rasters.	新しい単バンド ラスターの既定のスタイルとして保存しました。
 Saved connection	保存済みの接続
@@ -3233,7 +3386,10 @@ Saved keys are kept unencrypted in the browser's storage.	保存したキーは�
 Saved keys unavailable	保存したキーを使用できません
 Saved keys: leave the keys blank to log in with those this computer keeps.	保存したキー: このコンピューターに保存されたキーでログインするには、キーを空欄のままにしてください。
 Saved location	保存済みの場所
+Saved login	保存済みのログイン情報
+Saved login unavailable	保存済みのログイン情報を利用できません
 Saved models	保存したモデル
+Saved on this computer	このコンピューターに保存済み
 Saved password	保存したパスワード
 Saved S3 keys are unavailable. Enter the keys for this session.	保存した S3 キーを使用できません。このセッション用のキーを入力してください。
 Saved S3 keys could not be forgotten. The connection was not changed.	保存した S3 キーを削除できませんでした。接続は変更されていません。
@@ -3247,6 +3403,8 @@ Saved {path}	{path} を保存しました
 Saves the layer's edits to its table in one transaction. When a row you changed or deleted was changed or deleted in the database since it was loaded, or a new row's key is taken, nothing is saved and the rows are listed.	レイヤーの編集を 1 つのトランザクションでテーブルに保存します。変更または削除した行が読み込み後にデータベースで変更または削除された場合、または新しい行のキーが使用済みの場合は、何も保存されず、該当する行が一覧表示されます。
 Saves the layer's edits to its table in the GeoPackage file in one transaction. When a row you changed or deleted was changed or deleted in the file since it was loaded, nothing is saved and the rows are listed. Saving the project keeps edits in the project only; exporting writes a new file.	レイヤーの編集を 1 つのトランザクションで GeoPackage ファイル内のテーブルに保存します。変更または削除した行が読み込み後にファイル内で変更または削除された場合は、何も保存されず、該当する行が一覧表示されます。プロジェクトの保存では編集はプロジェクト内にのみ保持され、エクスポートでは新しいファイルが書き出されます。
 saving failed unexpectedly	保存が予期せず失敗しました
+Saving to a file of your choice isn't available here on Android yet.	Android では、ここで任意のファイルへの保存にまだ対応していません。
+Saving to a file of your choice isn't available here on iOS yet.	iOS では、ここで任意のファイルへの保存にまだ対応していません。
 Scale	縮尺
 Scale\nBar	縮尺\n記号
 Scale (×)	拡大縮小 (×)
@@ -3267,6 +3425,9 @@ Scroll the tabs left	タブを左にスクロール
 Scroll the tabs right	タブを右にスクロール
 Search	検索
 Search (this portal needs words)…	検索 (このポータルには単語が必要です)…
+Search area	検索範囲
+Search area: {points} point, {lines} line and {polygons} polygon part(s)	検索範囲: ポイント {points} 個、ライン {lines} 個、ポリゴン {polygons} 個の部分
+Search candidates not shown: {n} (limit {limit}).	表示されていない検索候補: {n} 件 (上限 {limit})。
 Search Catalogue	カタログの検索
 Search commands	コマンドを検索
 Search commands — e.g. buffer, basemap, labels	コマンドを検索（例: バッファー、ベースマップ、ラベル）
@@ -3280,6 +3441,7 @@ Search layers, places, lat/lon…	レイヤー、場所、緯度/経度を検索
 Search layers…	レイヤーを検索…
 Search NASA Earthdata Collections	NASA Earthdata コレクションの検索
 Search NASA Earthdata Granules	NASA Earthdata グラニュールの検索
+Search only items in these dates	これらの日付のアイテムのみを検索
 Search Open Data	オープン データの検索
 Search Open Data…	オープン データの検索…
 Search places for “{query}”	「{query}」で場所を検索
@@ -3287,6 +3449,7 @@ Search plugins	プラグインを検索
 Search Radius	検索半径
 Search results © OpenStreetMap contributors	検索結果 © OpenStreetMap contributors
 Search results: PDOK Locatieserver (Kadaster)	検索結果: PDOK Locatieserver (Kadaster)
+Search results: U.S. Census Bureau (address ranges)	検索結果: 米国国勢調査局 (住所範囲)
 Search Satellite Embeddings	衛星埋め込みの検索
 Search services and layers…	サービスとレイヤーを検索…
 Search services…	サービスを検索…
@@ -3317,6 +3480,8 @@ SELECT	SELECT
 Select	選択
 Select (click)	選択（クリック）
 Select (rectangle)	選択（四角形）
+Select a box created in this session.	このセッションで作成したボックスを選択してください。
+Select a circle created in this session.	このセッションで作成した円を選択してください。
 Select a direction…	方向を選択…
 Select a feature layer in Layers to label it.	ラベルを付けるには、レイヤー ウィンドウでフィーチャ レイヤーを選択してください。
 Select a feature layer in the Layers pane	レイヤー ウィンドウでフィーチャ レイヤーを選択してください
@@ -3356,6 +3521,7 @@ Selectable	選択可能
 Selectable Layers	選択可能レイヤー
 Selectable on the map: the Select tool picks its features	マップ上で選択可能: 選択ツールでフィーチャを選択できます
 Selected	選択済み
+Selected features	選択したフィーチャ
 Selected Features: {n}	選択フィーチャ：{n}
 Selected in Layers	レイヤーで選択中
 Selected only	選択のみ
@@ -3459,7 +3625,6 @@ Show different features at different scales.	縮尺ごとに異なるフィー�
 Show grid	グリッドを表示
 Show Group	グループを表示
 Show labels	ラベルを表示
-Show latitude/longitude lines on the basemap.	ベースマップに経緯線を表示します。
 Show Layers	レイヤーを表示
 Show layers through time: only the features whose date falls in the slider's window, and dated imagery for its date.	レイヤーを時系列で表示します: 日付がスライダーの期間内にあるフィーチャと、その日付の日付付き画像のみを表示します。
 Show legend	凡例を表示
@@ -3467,12 +3632,14 @@ Show legend and source layers	凡例とソース レイヤーを表示
 Show legend in Layers	レイヤー ウィンドウに凡例を表示
 Show Map	マップの表示
 Show Me	場所を表示
+Show no data	NoData を表示
 Show or hide	表示/非表示
 Show or hide the AI Assistant.	AI アシスタントを表示または非表示にします。
 Show or hide the Bookmarks pane: every map's bookmarks.	[ブックマーク] ウィンドウの表示/非表示を切り替えます: すべてのマップのブックマーク。
 Show or hide the Browser pane.	ブラウザー ウィンドウの表示/非表示を切り替えます。
 Show or hide the Data Sources pane.	データ ソース ウィンドウの表示/非表示を切り替えます。
 Show or hide the Data Sources pane: favourites, recent data, saved services, databases and STAC APIs, and a library of public sources.	データ ソース ウィンドウの表示/非表示を切り替えます: お気に入り、最近使用したデータ、保存したサービス、データベースと STAC API、公開ソースのライブラリ。
+Show or hide the graticule over the basemap: latitudes and longitudes, a measured grid or the UTM zones.	ベースマップ上の経緯線の表示/非表示を切り替えます: 緯度経度線、計測グリッド、または UTM ゾーン。
 Show or hide the group's layers	グループのレイヤーの表示/非表示
 Show or hide the layer.	レイヤーの表示/非表示を切り替えます。
 Show or hide the Layers pane.	レイヤー ウィンドウの表示/非表示を切り替えます。
@@ -3506,7 +3673,9 @@ Showing {n} items	{n} 件のアイテムを表示
 Showing {n} items (more match: narrow the search)	{n} 件のアイテムを表示 (他にも一致あり: 検索を絞り込んでください)
 Showing {n} items (some catalogs were too deep or too large to read: pick a catalog further down)	{n} 件のアイテムを表示 (深すぎるか大きすぎて読み込めないカタログがありました: より下位のカタログを選択してください)
 Showing {n} items (stopped after reading {r} documents: pick a catalog further down)	{n} 件のアイテムを表示 ({r} 件のドキュメントを読み込んだ時点で停止: より下位のカタログを選択してください)
+Showing {n} items ({f} catalog links were refused)	{n} 件のアイテムを表示中 ({f} 件のカタログ リンクを拒否)
 Showing {n} items ({f} documents couldn't be read)	{n} 件のアイテムを表示 ({f} 件のドキュメントを読み込めませんでした)
+Showing {n} items ({s} catalog links were skipped)	{n} 件のアイテムを表示中 ({s} 件のカタログ リンクをスキップ)
 Showing {n} of {m}	{m} 件中 {n} 件を表示
 Showing {n} of {m} items (narrow the search for others)	{m} 件中 {n} 件のアイテムを表示 (他を表示するには検索を絞り込んでください)
 Showing {n} of {total} on {portal}	{portal} の {total} 件中 {n} 件を表示
@@ -3539,16 +3708,18 @@ Single image	単一画像
 Single line	単線
 Single Symbol	単一シンボル
 Size	サイズ
-Size, bands, statistics and coordinate system.	サイズ、バンド、統計、座標系。
+Size, bands, statistics and coordinate system, on the Source tab of the raster's properties.	サイズ、バンド、統計、座標系 (ラスターのプロパティの [ソース] タブ)。
 Skill (SKILL.md or .zip)	スキル (SKILL.md または .zip)
 Skills	スキル
 Skills for the AI Assistant: {names}	AI アシスタント用スキル: {names}
+Sky visibility	天空の可視度
 Slideshow, PDF or PNG	スライドショー、PDF、PNG
 slight left	斜め左方向
 slight right	斜め右方向
+Slope (degrees), aspect, hillshade, NDVI, band math, thresholds.	傾斜角 (度)、傾斜方向、陰影起伏、NDVI、バンド演算、しきい値。
+Slope (degrees), hillshade, NDVI and more.	傾斜角 (度)、陰影起伏、NDVI など。
+Slope is in degrees (0–90), not percent.	傾斜角は度 (0–90) 単位で、パーセントではありません。
 Slope per	傾きの単位
-Slope, aspect, hillshade, NDVI, band math, thresholds.	傾斜角、傾斜方向、陰影起伏、NDVI、バンド演算、しきい値。
-Slope, hillshade, NDVI and more.	傾斜角、陰影起伏、NDVI など。
 Small scales	小縮尺
 Snap	スナップ
 Snap elements to guides, the page and each other as you move or resize them. Hold Alt to place one freely.	エレメントの移動やサイズ変更時に、ガイド、ページ、他のエレメントにスナップします。Alt キーを押しながら操作すると自由に配置できます。
@@ -3561,6 +3732,7 @@ Solid	実線
 Some images aren't shown: the notebook's images use all the memory set aside for them.	一部の画像は表示されません: ノートブックの画像が割り当てられたメモリをすべて使用しています。
 Some of the project's S3 sources wait for you to choose the saved connection that reads them	プロジェクトの一部の S3 ソースは、それを読み取る保存済み接続の選択を待っています
 Sort	並べ替え
+Sort by	並べ替え
 Sort: {field}	並べ替え: {field}
 Source	ソース
 Source Cooperative	Source Cooperative
@@ -3596,6 +3768,7 @@ Splits input features where they overlap overlay polygons, keeping both layers' 
 Spread	スプレッド
 SQL	SQL
 SQL Pane	SQL ウィンドウ
+SQL queries run through DuckDB, a program a phone can't run: open this project on a computer to query it.	SQL クエリは DuckDB で実行されますが、スマートフォンでは実行できません: クエリするにはこのプロジェクトをコンピューターで開いてください。
 SQL queries run through DuckDB, a program the desktop app calls: open this project in the desktop app to query it.	SQL クエリはデスクトップ アプリが呼び出すプログラム DuckDB で実行されます: クエリを実行するには、このプロジェクトをデスクトップ アプリで開いてください。
 SQL Query	SQL クエリ
 SQL Server	SQL Server
@@ -3642,6 +3815,7 @@ STAC API	STAC API
 STAC APIs	STAC API
 STAC catalog	STAC カタログ
 STAC Search	STAC 検索
+STAC Search Area	STAC 検索範囲
 STAC Search…	STAC 検索…
 Stack another fill on top	上に別の塗りつぶしを重ねる
 Stack another marker on top	上に別のマーカーを重ねる
@@ -3691,6 +3865,7 @@ Stop this download; nothing is added	このダウンロードを中止します�
 Stopped after {steps} steps; say "continue" to go on.	{steps} ステップで停止しました。続けるには「続けて」と言ってください。
 Stopped.	停止しました。
 Straight across, in rings from its first point, or round its first point	直線状、最初のポイントを中心とするリング状、または最初のポイントの周囲
+Street addresses only; positions are calculated along address ranges.	番地のみ。位置は住所範囲に沿って計算されます。
 street, city, country	番地、市区町村、国
 Stretch	ストレッチ
 Stretch\nType	ストレッチ\nタイプ
@@ -3792,6 +3967,8 @@ The address fields are empty in every row.	すべての行で住所フィール�
 The angles run counterclockwise, as in mathematics	角度は数学と同様に反時計回りです
 The answer isn't UTF-8 text	応答が UTF-8 テキストではありません
 the answer isn't UTF-8 text	応答が UTF-8 テキストではありません
+The API changed while the search area was being made: press Find Items to search it	検索範囲の作成中に API が変更されました: [アイテムを検索] を押して検索してください
+The API did not sort them by {sort}: they are in its own order	API は {sort} で並べ替えませんでした: API 独自の順序です
 The assistant follows a skill's instructions when it uses it. Whatever they say, its commands that need your approval still ask.	アシスタントはスキルを使うとき、その指示に従います。指示の内容にかかわらず、承認が必要なコマンドは引き続き確認を求めます。
 The assistant is busy; stop it or wait for it to finish.	アシスタントは処理中です。停止するか、完了するまでお待ちください。
 The assistant wants to run this, and {why}:	アシスタントが次の操作を実行しようとしています（{why}ため、確認が必要です）:
@@ -3807,12 +3984,14 @@ The clipboard came after you moved on, so nothing was pasted: paste with {keys}.
 The collection's own licence wasn't read: {why}	コレクション自体のライセンスを読み取れませんでした: {why}
 The connection failed; trying again in {seconds} s.	接続に失敗しました。{seconds} 秒後に再試行します。
 the connection has no id	接続に ID がありません
+The constant base: used where no field is chosen, or the field holds no number.	定数のベース: フィールドが選択されていない場合や、フィールドに数値がない場合に使用します。
 The coordinate format must be decimal, dms, utm or mgrs	座標形式は decimal、dms、utm、mgrs のいずれかである必要があります
 The country list couldn't be read ({e}): type a country's code	国のリストを読み込めませんでした ({e}): 国コードを入力してください
 The current elevation stays in effect while you edit inputs. Click Apply elevation to apply the value and units.	入力を編集している間は現在の標高が有効なままです。値と単位を適用するには [標高を適用] をクリックしてください。
 The dataset has nothing RustGIS can add	このデータセットには RustGIS が追加できるものがありません
 The desktop app adds data cubes	データ キューブはデスクトップ アプリで追加します
 The distance between two marks along the line	ライン上の 2 つのマークの間隔
+The distance to widen by is a number, 0 or more	広げる距離は 0 以上の数値です
 The environment (AWS_ACCESS_KEY_ID…)	環境変数 (AWS_ACCESS_KEY_ID…)
 The features where the map is	マップの表示範囲のフィーチャ
 The first 1,000 entries; narrow it down a folder at a time.	最初の 1,000 件です。フォルダーごとに絞り込んでください。
@@ -3822,10 +4001,13 @@ The first {n} of them are listed; the filter searches all of them.	最初の {n}
 The first {n} rows	最初の {n} 行
 The flowtrace didn't answer: the whole flowline nearest the point is shown.	フロートレースが応答しませんでした: ポイントに最も近い流路線全体を表示しています。
 the grid digits must be an even count of 0 to 10, half for the easting and half for the northing	グリッドの数字は 0 から 10 の偶数桁で、半分が東距、半分が北距です
+the hash stopped	ハッシュの計算が停止しました
+the images' projected system, else degrees	画像の投影座標系。それ以外は度
 The installed GeoLibre runner lists no tools.	インストール済みの GeoLibre ランナーにツールがありません。
 The installer is downloaded and checked. RustGIS closes, installs the update and opens again.	インストーラーをダウンロードして検証しました。RustGIS が終了して更新をインストールし、再度起動します。
 The interface colours, spacing and text sizes: a built-in theme or a file from the themes folder.	インターフェイスの色、間隔、文字サイズ: 組み込みテーマまたは themes フォルダーのファイル。
 The job covers the map view	ジョブはマップ ビューを対象とします
+The key is added to each request to this address as this parameter. It is never saved in the connection or project.	キーは、このアドレスへの各リクエストにこのパラメーターとして追加されます。接続やプロジェクトには保存されません。
 The key is kept for this session only.	キーはこのセッションの間だけ保持されます。
 The key is kept for this session only; it has not been remembered.	キーはこのセッションの間だけ保持され、保存されていません。
 The key is saved in the system keychain.	キーはシステム キーチェーンに保存されています。
@@ -3836,14 +4018,15 @@ The kilometres' last two digits, as topographic maps print them: 43 for 543000.	
 the latitude band must be a letter from C to X (not I or O)	緯度帯は C から X までの文字 (I と O を除く) である必要があります
 the layer Export Features was opened on is gone	「フィーチャのエクスポート」を開いたレイヤーがなくなりました
 The layer shows the step the time slider is at, and turns the slider on over the variable's dates.	レイヤーにはタイム スライダーの現在のステップが表示され、変数の日付範囲でスライダーがオンになります。
-the layer's description took too long	レイヤーの説明に時間がかかりすぎました
 The layer's file couldn't be read: {error}	レイヤーのファイルを読み込めませんでした: {error}
 The layer's fills	レイヤーの塗りつぶし
+the layer's projected system, else degrees	レイヤーの投影座標系。それ以外は度
 The layer's strokes	レイヤーのストローク
 the layout export failed unexpectedly	レイアウトのエクスポートが予期せず失敗しました
 The link doesn't say its STAC API: Find Items searches {api}	リンクに STAC API が示されていません: [アイテムを検索] は {api} を検索します
 The list of plugins to browse. Leave it empty for the RustGIS plugin registry.	参照するプラグインの一覧です。空欄にすると RustGIS プラグイン レジストリを使用します。
 The log cut it short or took its secrets out: it would run only in part	ログで省略されたかシークレットが取り除かれています: 一部しか実行されません
+The login is available for this session but was not remembered on this computer.	ログイン情報はこのセッションでは使用できますが、このコンピューターには保存されていません。
 The longest a callout's line may be.	引き出し線の最大の長さ。
 The map at the left; the title, locator, legend, sources and reference in a panel at the right.	左にマップ。タイトル、ロケーター、凡例、ソース、参照情報は右のパネルに配置します。
 the map has no GeoPackage layer loaded for editing (Home › Add Data › Edit GeoPackage Table…)	マップに編集用に読み込まれた GeoPackage レイヤーがありません (ホーム › データの追加 › GeoPackage テーブルの編集…)
@@ -3855,6 +4038,7 @@ the map isn't on screen in RustGIS (a layout or the catalog is shown), so it was
 the map it was asked for isn't open	要求されたマップが開いていません
 The map view as it is now	現在のマップ ビュー
 The map's extent isn't known yet	マップの範囲がまだわかりません
+The map's UTM zone, else the frame's	マップの UTM ゾーン。それ以外はフレームのもの
 The map's view takes {n} of Overture's {ty} files (up to {max}): zoom in, or add the theme as map tiles	マップの表示範囲には Overture の {ty} ファイルが {n} 個必要です (上限 {max}): 拡大するか、テーマをマップ タイルとして追加してください
 The map's, else its UTM zone	マップの座標系。それ以外は UTM ゾーン
 the MCP relay couldn't start	MCP リレーを起動できませんでした
@@ -3865,10 +4049,12 @@ The model declined this request.	モデルがこのリクエストを拒否し�
 The model declined this request: {why}	モデルがこのリクエストを拒否しました: {why}
 The model is ready to run.	モデルを実行する準備ができました。
 The model sent an empty reply; ask again, or try another model.	モデルから空の応答が返されました。もう一度質問するか、別のモデルをお試しください。
+The most cloud cover is a number from 0 to 100	最大雲量は 0 から 100 までの数値です
 The most threads a tool, a raster read or a map drawing uses: fewer keep cores free for other work.	ツール、ラスターの読み取り、マップ描画が使うスレッド数の上限です。少ないほど、他の作業にコアを残せます。
 The National Map	The National Map
 The National Map…	The National Map…
 The newest {shown} of {count} entries	{count} 件中、新しい {shown} 件
+The next page link was refused: it points where this search may not read, so only this page is loaded.	次のページのリンクを拒否しました: この検索が読み取れない場所を指しているため、このページのみを読み込みました。
 the NLDI's answer isn't UTF-8 text	NLDI の応答が UTF-8 テキストではありません
 the northing doesn't fall in the latitude band given	北距が指定された緯度帯に入っていません
 The notes are cut here: the release page has all of them.	リリース ノートはここで省略されています: すべての内容はリリース ページにあります。
@@ -3876,6 +4062,7 @@ the old file's list must disappear immediately	the old file's list must disappea
 The one waiting after it was left too	その後に待機していた 1 件も中止されました
 the open project has unsaved changes: save them before recovering other work	開いているプロジェクトに未保存の変更があります: 他の作業を復元する前に保存してください
 The open project has unsaved changes: save them, then recover this copy.	開いているプロジェクトに未保存の変更があります: 保存してから、このコピーを復元してください。
+The order by {sort} could not be checked: it is the API's own order	{sort} による順序を確認できませんでした: API 独自の順序です
 The page in colour, the title in light text and the map in a light card.	ページは色付き、タイトルは明るいテキスト、マップは明るいカード内に配置します。
 the page is too large to copy to the clipboard: export it instead	ページが大きすぎてクリップボードにコピーできません: 代わりにエクスポートしてください
 the page is too large to draw	ページが大きすぎて描画できません
@@ -3889,6 +4076,8 @@ The plugin blocklist couldn't be downloaded ({error}); the last one read, if any
 The plugin blocklist couldn't be read ({error}); the last one read, if any, stays in force.	プラグインのブロックリストを読み込めませんでした ({error})。最後に読み込んだリストがあれば、それが引き続き有効です。
 The plugin {id} wasn't loaded (open Plugins › Plugin Manager to see it): {reason}.	プラグイン {id} は読み込まれませんでした (「プラグイン › プラグイン マネージャー」を開いて確認してください): {reason}。
 The plugin {id} wasn't loaded. Open Plugins › Plugin Manager to see it.	プラグイン {id} は読み込まれませんでした。「プラグイン › プラグイン マネージャー」を開いて確認してください。
+The plugins installed in this browser can't be read, so this change isn't remembered: fix or remove "plugins_web" in the browser's saved preferences.	このブラウザーにインストールされたプラグインを読み取れないため、この変更は保存されません: ブラウザーの保存済み設定の「plugins_web」を修正または削除してください。
+The plugins installed in this browser couldn't be read (they aren't a JSON list): none is loaded, and plugins installed or removed now aren't remembered.	このブラウザーにインストールされたプラグインを読み取れませんでした (JSON のリストではありません): どれも読み込まれず、今インストールまたは削除したプラグインも保存されません。
 The portal's OAuth app	ポータルの OAuth アプリ
 the presentation export failed unexpectedly	プレゼンテーションのエクスポートが予期せず失敗しました
 the preview failed unexpectedly	プレビューが予期せず失敗しました
@@ -3914,8 +4103,13 @@ The reply stopped early ({reason}).	回答が途中で停止しました（{reas
 the report export failed unexpectedly	レポートのエクスポートが予期せず失敗しました
 The request failed.	リクエストに失敗しました。
 The result wired into this output is added to the map under this name.	この出力に接続された結果は、この名前でマップに追加されます。
+The saved arrangements of publication layouts can't be read: they are left as they are, and arrangements saved now last only until the app closes.	出版用レイアウトの保存済み配置を読み取れません: そのまま残し、今保存した配置はアプリを閉じるまでしか保持されません。
 The saved coordinate format isn't known to this version, so decimal degrees are shown.	保存された座標形式はこのバージョンでは認識できないため、10 進度で表示します。
 The saved favourite arrangement of publication layouts can't be used ({why}), so "classic" is used.	保存された出版用レイアウトのお気に入りの配置は使用できないため ({why})、「classic」を使用します。
+The saved login could not be forgotten. The connection was not changed.	保存済みのログイン情報を削除できませんでした。接続は変更されていません。
+The saved login could not be used. Enter it again.	保存済みのログイン情報を使用できませんでした。もう一度入力してください。
+The saved login is unavailable. Enter it for this session.	保存済みのログイン情報を利用できません。このセッション用に入力してください。
+The saved login was forgotten; a login in this session keeps working.	保存済みのログイン情報を削除しました。このセッションでのログインは引き続き有効です。
 The saved password could not be used. Type a password to try again; check Remember on this computer to replace the saved password.	保存したパスワードを使用できませんでした。パスワードを入力して再試行してください。保存したパスワードを置き換えるには「このコンピューターに保存する」をオンにしてください。
 The saved S3 connection no longer matches this source.	保存された S3 接続はこのソースと一致しなくなりました。
 The saved sign-in changed. Select your account again.	保存されたサインイン情報が変更されました。アカウントを再度選択してください。
@@ -3924,6 +4118,9 @@ The saved worldview '{code}' isn't one this version knows, so it is ignored unti
 The saved worldview detail '{code}' isn't one this version knows; simplified borders are used	保存された国境の詳細度 '{code}' はこのバージョンでは不明なため、簡略化した国境を使用します
 The scale the layer's symbol and label sizes are set for. At other scales they grow and shrink with the map, as on paper.	レイヤーのシンボルとラベルのサイズの基準となる縮尺です。ほかの縮尺では、紙の地図と同じようにマップに合わせて拡大・縮小します。
 The script, for the Script pane	スクリプト ウィンドウ用のスクリプト
+The search area has no point, line or polygon to search with	検索範囲に検索に使えるポイント、ライン、ポリゴンがありません
+The search area is still loading: search when it has finished	検索範囲はまだ読み込み中です: 完了してから検索してください
+the selected features	選択したフィーチャ
 The selected GeoPackage layer is no longer available; choose a layer	選択した GeoPackage レイヤーは利用できなくなりました。レイヤーを選択してください
 The server had a problem answering.	サーバーの応答中に問題が発生しました。
 The server is limiting requests.	サーバーがリクエストを制限しています。
@@ -3942,6 +4139,7 @@ The sign-in is kept in the system keychain, never in the app's settings or a pro
 The sign-in is still kept in the app's settings folder, readable by your user account: the system keychain is unavailable, so it hasn't been moved there yet.	サインイン情報はまだアプリの設定フォルダーに保存されており、あなたのユーザー アカウントで読み取れます: システムのキーチェーンを利用できないため、まだ移動されていません。
 The significance level is a number, such as 0.05	有意水準は数値で指定します (例: 0.05)
 The size of the menu, the panes and the text drawn in them.	メニュー、ペイン、およびそれらに描画される文字のサイズ。
+The slider's span, step and playback are on View › Time.	スライダーの期間、ステップ、再生は [表示] › [時間] にあります。
 The start-up project {path} didn't open: {error}	起動時のプロジェクト {path} を開けませんでした: {error}
 The start-up project {path} isn't a RustGIS project file.	起動時のプロジェクト {path} は RustGIS のプロジェクト ファイルではありません。
 The step's layer {name} isn't in the map.	ステップのレイヤー {name} がマップにありません。
@@ -3961,6 +4159,7 @@ The title over the map, the sources and the reference in boxes under it.	タイ�
 The token expired and was forgotten. Paste a new one.	トークンの有効期限が切れたため、削除しました。新しいトークンを貼り付けてください。
 The token expires on {date}.	トークンの有効期限は {date} です。
 the tool's own	ツール自身の
+the tool's own; {d}	ツール独自のもの。{d}
 The tools run on this project: saved with it, and each can run again	このプロジェクトで実行したツール: プロジェクトとともに保存され、それぞれ再実行できます
 The trend couldn't start: {error}	トレンド分析を開始できませんでした: {error}
 The trend failed unexpectedly	トレンド分析が予期せず失敗しました
@@ -3969,12 +4168,12 @@ the UTM zone must be 1 to 60	UTM ゾーンは 1 から 60 である必要があ�
 The values shown from black to white, the same for every date and tile (the band's own units). Empty: each file's own stretch.	黒から白で表示する値の範囲で、すべての日付とタイルで共通です (バンド自体の単位)。空欄: 各ファイル独自のストレッチ。
 the view has no extent	ビューに範囲がありません
 The view is larger than one read: its centre was read (zoom in for the rest)	ビューが 1 回の読み込みより大きいため、中心部を読み込みました (残りは拡大してください)
+the web app	Web アプリ
 The web app always runs the latest release: reload the page to get it.	Web アプリは常に最新リリースで動作します。ページを再読み込みすると取得できます。
 The web app can't link to files on this computer: add the file again with Add Data.	Web アプリはこのコンピューター上のファイルにリンクできません: データの追加でファイルをもう一度追加してください。
 The whole log, as CSV or JSON Lines (.jsonl): it may name files and addresses, so look at it before sharing it	ログ全体 (CSV または JSON Lines (.jsonl)): ファイルやアドレスが含まれる場合があるため、共有する前に確認してください
 the window's screenshot didn't come back in time, so the map was drawn offscreen	ウィンドウのスクリーンショットが時間内に返されなかったため、オフスクリーンでマップを描画しました
 the window's screenshot didn't hold the map, so it was drawn offscreen	ウィンドウのスクリーンショットにマップが含まれていなかったため、オフスクリーンで描画しました
-the web app	Web アプリ
 The {n} waiting after it were left too	その後に待機していた {n} 件も中止されました
 Theme	テーマ
 Theme {name} loaded and kept at {path}	テーマ {name} を読み込み、{path} に保存しました
@@ -3999,8 +4198,12 @@ This class is hidden, so it labels nothing.	このクラスは非表示のため
 This clause no longer reads, so no feature is labelled: {error}	この句を解釈できなくなったため、どのフィーチャにもラベルが付きません: {error}
 This computer keeps keys for this connection: leave the keys blank to log in with them.	このコンピューターにはこの接続のキーが保存されています。そのキーでログインするには、キーを空欄のままにしてください。
 This computer keeps this connection's keys: logging in reads them.	このコンピューターにはこの接続のキーが保存されています。ログイン時に読み取られます。
+This connection is logged out. Log in explicitly to use it again.	この接続はログアウトしています。再び使用するには、明示的にログインしてください。
 This font isn't installed here, so the text is drawn in the sans-serif	このフォントはここにインストールされていないため、テキストはサンセリフで描画されます
 This font isn't installed here, so the text is drawn in the serif	このフォントはここにインストールされていないため、テキストはセリフで描画されます
+This layer has edits its file doesn't have yet. Publish to Source writes them to the file.	このレイヤーには、ファイルにまだない編集があります。[ソースに公開] でファイルに書き込みます。
+This layer has edits its file doesn't have, and the file changed on disk since it was read. Publish to Source refuses rather than overwrite that change; Export Features keeps the edits in a new file.	このレイヤーにはファイルにない編集があり、ファイルは読み込み後にディスク上で変更されています。[ソースに公開] はその変更を上書きせずに拒否します。[フィーチャのエクスポート] では編集を新しいファイルに保持できます。
+This layer has edits its file doesn't have. Publish to Source can't write them until the file is back as it was read; Export Features keeps them in a new file.	このレイヤーにはファイルにない編集があります。ファイルが読み込み時の状態に戻るまで [ソースに公開] では書き込めません。[フィーチャのエクスポート] では新しいファイルに保持できます。
 This layer has no fields.	このレイヤーにはフィールドがありません。
 This layer has pending edits. Confirm Discard Edits and Reload first.	このレイヤーには保留中の編集があります。まず「編集を破棄して再読み込み」を確認してください。
 This layer's data is kept in the project or read from a database or web address: there's no file to repair.	このレイヤーのデータはプロジェクト内に保持されているか、データベースまたは Web アドレスから読み込まれています: 修復するファイルはありません。
@@ -4050,7 +4253,9 @@ Time Series at a Point	ポイントの時系列
 Time Slider	タイム スライダー
 Time Slider Settings	タイム スライダーの設定
 Timeout	タイムアウト
+timeout: service page	タイムアウト: サービス ページ
 Tint by elevation	標高で色付け
+Tints steep ground toward a rock colour before the light shades it, by the ground's own slope	光で陰影を付ける前に、地面自体の傾斜に応じて急な地面を岩の色に寄せます
 Tissot's Indicatrix	ティソーの指示楕円
 Title	タイトル
 To	終了
@@ -4058,8 +4263,10 @@ Toggle Dark Mode	ダーク モードの切り替え
 Toggle GPU Rendering	GPU レンダリングの切り替え
 Toggle Imperial Measurements	ヤード・ポンド法の計測を切り替え
 Token Required	トークンが必要です
+Tolerance	許容値
 Tolerance (km)	許容値（km）
 Tolls	有料道路
+Too many DXF pickers are open; close one before choosing another drawing	開いている DXF ピッカーが多すぎます。別の図面を選択する前に 1 つ閉じてください
 Too many shortcut changes to save.	保存するショートカットの変更が多すぎます。
 Too many shortcut changes to save. Changes apply only to this session.	ショートカットの変更が多すぎて保存できません。変更はこのセッションにのみ適用されます。
 Tool Gallery	ツール ギャラリー
@@ -4108,19 +4315,25 @@ Try other places round the point	ポイントの周囲の他の場所を試す
 Trying again…	再試行中…
 Tu	火
 Turkey	トルコ
+Turn	回転
+Turn (degrees)	回転 (度)
 Turn each mark with the line's direction	各マークをラインの方向に合わせて回転
 Turn each point's marker by the angle in a field, in degrees	各ポイントのマーカーをフィールドの角度 (度) で回転
+Turn editing on and choose a loaded polygon layer in a flat Earth map.	編集をオンにし、平面の地球マップで読み込み済みのポリゴン レイヤーを選択してください。
+Turn editing on and select a loaded polygon layer in a flat Earth map.	編集をオンにし、平面の地球マップで読み込み済みのポリゴン レイヤーを選んでください。
 Turn editing on or off for the map.	マップの編集のオン/オフを切り替えます。
 Turn Labels Off	ラベルをオフ
 Turn labels on or off.	ラベルのオン/オフを切り替えます。
 Turn Off	オフにする
+Turn off for collections without eo:cloud_cover	eo:cloud_cover のないコレクションではオフにします
 Turn on or off the optional parts of RustGIS, such as Imagery.	画像など、RustGIS のオプション部分をオン/オフにします。
 Turn on the Basemaps plugin	ベースマップ プラグインを有効にする
 Turn the mark by the layer's rotation field, its offset with it	マークをレイヤーの回転フィールドで回転し、オフセットも一緒に回転
 Turn the time slider off: every feature shows again.	タイム スライダーをオフにします: すべてのフィーチャが再び表示されます。
 Turned further, clockwise	さらに時計回りに回転
 Turns a field's values into fields: a row for each combination of the row fields' values, a column for each value of the pivot field.	フィールドの値をフィールドに変換します: 行フィールドの値の組み合わせごとに 1 行、ピボット フィールドの値ごとに 1 列を作成します。
-Turns a table's addresses into points: each row's address fields are joined with commas (such as street, city, country) and looked up. OpenStreetMap's public Nominatim and Photon take up to 100 addresses a run, one a second; PDOK's Locatieserver (Dutch addresses) and a server of your own take more.	テーブルの住所をポイントに変換します: 各行の住所フィールド (番地、市区町村、国など) をカンマで連結して検索します。OpenStreetMap の公開 Nominatim と Photon は 1 回の実行で最大 100 件、1 秒に 1 件まで処理します。PDOK の Locatieserver (オランダの住所) や独自のサーバーではさらに多く処理できます。
+Turns a table's addresses into points: each row's address fields are joined with commas (such as street, city, country) and looked up. OpenStreetMap's public Nominatim and Photon take up to 100 addresses a run, one a second; Census (U.S. street addresses) takes up to 10,000, one a second; PDOK and a server of your own take more.	テーブルの住所をポイントに変換します: 各行の住所フィールド (番地、市区町村、国など) をカンマで連結して検索します。OpenStreetMap の公開 Nominatim と Photon は 1 回の実行で最大 100 件、1 秒に 1 件まで処理します。Census (米国の番地) は最大 10,000 件、1 秒に 1 件です。PDOK や独自のサーバーではさらに多く処理できます。
+Turns the view about its centre, keeping its scale and pitch, and writes a frame a step: a .gif loops, a .zip holds the frames as PNGs.	縮尺と傾きを保ったままビューを中心の周りに回転させ、1 ステップごとに 1 フレームを書き出します: .gif はループし、.zip にはフレームが PNG として入ります。
 Two layers are named {name}: the step names it, so it replays on the first of them. Rename one to tell them apart.	{name} という名前のレイヤーが 2 つあります。ステップは名前で指定するため、最初のレイヤーで再生されます。区別するには一方の名前を変更してください。
 Type	種類
 type a file name	ファイル名を入力してください
@@ -4130,15 +4343,16 @@ Type an address or coordinates and press Enter, or click the map.	住所また�
 Type numbers separated by commas	カンマ区切りで数値を入力
 Type the access key ID and the secret access key to remember them on this computer.	このコンピューターに保存するには、アクセス キー ID とシークレット アクセス キーを入力してください。
 Type the keys to log in for this session, then Save.	このセッションでログインするためのキーを入力し、[保存] をクリックしてください。
-Type the password or key, or leave it blank to use this connection's session login, then Save.	パスワードまたはキーを入力するか、空欄のままにしてこの接続のセッション ログインを使用し、保存してください。
+Type the password or key to remember it on this computer.	このコンピューターに保存するパスワードまたはキーを入力してください。
+Type the password or key, or leave it blank to use this connection's session or saved login, then Save.	パスワードまたはキーを入力するか、空のままにしてこの接続のセッションまたは保存済みのログイン情報を使用し、[保存] をクリックします。
 Type the password to remember it on this computer.	このコンピューターに保存するには、パスワードを入力してください。
 Type the password, then Save. Remember on this computer is optional.	パスワードを入力してから「保存」をクリックしてください。「このコンピューターに保存する」は任意です。
 Typed below	下に入力
 typing must not start another lookup	typing must not start another lookup
+U.S. Census (addresses)	米国国勢調査 (住所)
 Ukraine	ウクライナ
 UM	UM
 Unavailable: {reason}	利用不可：{reason}
-Unbind From Time Slider	タイム スライダーからバインド解除
 Unbind from Time Slider	タイム スライダーからバインド解除
 Undo	元に戻す
 Undo (Ctrl+Z)	元に戻す (Ctrl+Z)
@@ -4162,6 +4376,7 @@ Units per step	ステップあたりの単位数
 unknown (an older project)	不明 (古いプロジェクト)
 Unknown shortcut binding field.	ショートカットの割り当てに不明なフィールドがあります。
 Unknown shortcut command.	不明なショートカット コマンドです。
+unknown tab: give general, source, display, query or time	不明なタブ: general、source、display、query、time のいずれかを指定してください
 UNKNOWN TOOL	不明なツール
 Unload the GeoLibre tools and stop loading them when RustGIS starts.	GeoLibre ツールをアンロードし、RustGIS の起動時に読み込まないようにします。
 Unsaved changes	未保存の変更
@@ -4176,9 +4391,11 @@ Up a level	1 つ上の階層へ
 Up to {n} points are compared: the oldest one was taken off.	最大 {n} 地点まで比較されます: 最も古い地点を外しました。
 Update	更新
 Update Bookmark	ブックマークの更新
+Update Circle	円の更新
 Update Features	更新フィーチャ
 Update Job	ジョブの更新
 Update Label Class	ラベル クラスの更新
+Update Rotated Box	回転ボックスの更新
 Update to {version}	{version} に更新
 Upload File	ファイルのアップロード
 Upload File…	ファイルのアップロード…
@@ -4202,6 +4419,7 @@ Use each feature's fill color	各フィーチャの塗りつぶしの色を使�
 Use each feature's line color	各フィーチャのラインの色を使用
 Use each feature's line width	各フィーチャのラインの幅を使用
 Use layers instead	代わりにレイヤーを使用
+Use System	システム設定を使用
 Use the Layer's Strokes	レイヤーのストロークを使用
 User	ユーザー
 USERPROFILE	USERPROFILE
@@ -4232,6 +4450,7 @@ Vantor Open Data	Vantor Open Data
 Vantor's open imagery of disasters: pick an event and a phase (before or after it), then Find Items.	Vantor による災害のオープン画像: イベントとフェーズ (前または後) を選び、アイテムを検索します。
 Vantor…	Vantor…
 Variable	変数
+Variables ▾	変数 ▾
 Variogram Model	バリオグラム モデル
 Vector and raster data	ベクター データとラスター データ
 Vector Layer	ベクター レイヤー
@@ -4300,12 +4519,12 @@ Web Layer	Web レイヤー
 Web Link Chart	Web リンク チャート
 Web maps	Web マップ
 Web Mercator	Web メルカトル
+Web Mercator grid metres, not ground metres.	Web Mercator のグリッド上のメートルで、地上のメートルではありません。
 Web Scene	Web シーン
 Web service (detected)	Web サービス (検出済み)
 Web Style	Web スタイル
 Web Tile Layers	Web タイル レイヤー
 Web Tool	Web ツール
-Web-service logins last for this session only.	Web サービスのログインはこのセッションの間のみ有効です。
 Website	ウェブサイト
 Weekly usage	週間使用量
 Weights	重み
@@ -4317,6 +4536,8 @@ WGS 84 / Web Mercator	WGS 84 / Web Mercator
 What each slice or bar says beside it: its value, its share in percent, or both	各スライスまたはバーの横に表示する内容: 値、割合 (パーセント)、またはその両方
 What RustGIS opens with: the World Atlas sample or a blank map.	RustGIS の起動時に開くもの: World Atlas サンプルまたは空白のマップ。
 What RustGIS opens with: the World Atlas sample, a blank map, a project you choose, or the last project opened or saved.	RustGIS の起動時に開くもの: World Atlas サンプル、空白のマップ、選択したプロジェクト、または最後に開いたか保存したプロジェクト。
+What the graticule draws: latitudes and longitudes, a measured grid or the UTM zones.	経緯線で描画するもの: 緯度経度線、計測グリッド、または UTM ゾーン。
+What the walls stand on: the ground, a field or the constant Base (m).	壁の土台: 地面、フィールド、または定数の [ベース (m)]。
 What to do, where to find it and why	何をするか、どこにあるか、その理由
 What's near a point	ポイントの近くにあるもの
 What's new	新機能
@@ -4344,9 +4565,11 @@ Whole map	マップ全体
 Whole shape	形状全体
 Whose borders the sample countries and the basemap outline show.	サンプルの国データとベースマップの輪郭線にどの国の見解による国境を表示するか。
 Wide (±1 step)	広い (±1 ステップ)
+Widen points and lines by ({unit})	ポイントとラインを広げる距離 ({unit})
 Wider (±3 steps)	より広い (±3 ステップ)
 Width	幅
 Width (mm)	幅 (mm)
+Width (points)	幅 (ポイント)
 Windows	ウィンドウ
 Winkel Tripel	ヴィンケル図法
 Wireframe	ワイヤーフレーム
@@ -4387,6 +4610,7 @@ Worldview	国境
 Wrap at	折り返し文字
 Wrap length	折り返しの長さ
 Write a plugin	プラグインを作成
+Write a turn of the view about its centre as an animated GIF or PNG frames.	ビューの中心周りの回転をアニメーション GIF または PNG フレームとして書き出します。
 Writes a separate two-vertex line for each consecutive vertex pair.	連続する頂点のペアごとに、2 頂点の個別のラインを書き出します。
 Writes every feature with its geometry made valid where it can be: rings closed, repeated vertices and degenerate parts dropped, self-intersections, overlapping parts and holes outside their shell resolved. Features with a missing or non-finite coordinate anywhere, even in a hole, or left with no usable points or, for polygons, no area once repaired, are written without geometry. Other features too complex to check, or whose repair fails, are written unchanged. Says what was repaired in each.	すべてのフィーチャのジオメトリを可能な限り有効にして書き出します: リングを閉じ、重複する頂点と縮退した部分を削除し、自己交差、重なる部分、外殻の外にある穴を解消します。穴の中も含め、どこかに欠落した座標や有限でない座標があるフィーチャ、または修復後に使用できる点が残らない (ポリゴンの場合は面積がなくなる) フィーチャは、ジオメトリなしで書き出されます。その他、複雑すぎて確認できないフィーチャや修復に失敗したフィーチャは、変更せずに書き出されます。各フィーチャで修復した内容を報告します。
 Writes one axis-aligned bounding rectangle per feature in stored longitude/latitude coordinates. Zero-area envelopes are skipped.	保存されている経度/緯度座標で、フィーチャごとに軸に平行な外接矩形を 1 つ書き出します。面積がゼロのエンベロープはスキップされます。
@@ -4396,6 +4620,7 @@ writing the copy failed unexpectedly	コピーの書き込みが予期せず失�
 X (mm)	X (mm)
 X column	X 列
 X Field	X フィールド
+X-API-Key	X-API-Key
 XY Table To Point	XY テーブル → ポイント
 XY Table To Point…	XY テーブル → ポイント…
 Y (mm)	Y (mm)
@@ -4404,6 +4629,7 @@ Y Field	Y フィールド
 Year	年
 Yes	はい
 You can undo this with {shortcut}.	{shortcut} で元に戻せます。
+You choose where the project is saved next.	次回はプロジェクトの保存先を選択します。
 You have version {version}.	現在のバージョンは {version} です。
 You're using your ChatGPT plan	ChatGPT プランを使用しています
 Your browser may reserve some shortcuts.	ブラウザーが一部のショートカットを予約している場合があります。
@@ -4454,8 +4680,8 @@ Zoom {z} · Bearing {b}° · Pitch {p}°	ズーム {z} · 方位 {b}° · 傾き
 Zoom: the map's zoom level, as web maps count it. Bearing: the direction the top of the map faces, clockwise from north. Pitch: the tilt from looking straight down. Click to reset bearing and pitch.	ズーム: Web マップでの数え方によるマップのズーム レベル。方位: マップの上端が向く方向で、北から時計回りに測ります。傾き: 真上から見下ろした状態からの傾斜です。クリックすると方位と傾きをリセットします。
 {agent} was stopped by you.	{agent} を停止しました。
 {names}: needs Node.js (npx) for its ACP adapter.	{names}: ACP アダプターに Node.js (npx) が必要です。
-{name} is larger than {mb} MB	{name} は {mb} MB を超えています
 {name} has no package for {platform}. It is available for: {platforms}.	{name} には {platform} 用のパッケージがありません。利用できるプラットフォーム: {platforms}。
+{name} is larger than {mb} MB	{name} は {mb} MB を超えています
 {name} runs as a program on your computer: it needs the desktop app or rustgis-cli.	{name} はコンピューター上のプログラムとして実行されます。デスクトップ アプリまたは rustgis-cli が必要です。
 {name} was withdrawn from the plugin registry and has been turned off.	{name} はプラグイン レジストリから取り下げられたため、無効にしました。
 {name} was withdrawn from the plugin registry: {reason}	{name} はプラグイン レジストリから取り下げられました: {reason}
