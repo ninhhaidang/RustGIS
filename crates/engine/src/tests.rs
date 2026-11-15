@@ -21741,6 +21741,101 @@ fn repair_source_checks_the_extrusion_base_field() {
 }
 
 #[test]
+fn deleting_a_field_clears_the_label_expressions_reading_it() {
+    // #2147: a label class's expressions by feature stopped reading a deleted field without a
+    // word, the saved project kept them, and Default starting again lost the ones left.
+    let mut s = world();
+    let about = |s: &Session, mark: u64, word: &str| -> Vec<String> {
+        s.notices_since(mark).iter().filter(|n| n.text.contains(word)).map(|n| n.text.clone()).collect()
+    };
+    let labels = |s: &Session| s.map().layer_by_name("Countries").map(|l| l.labels.clone()).unwrap();
+    for f in ["tag", "aside"] {
+        s.run("edit.addField", &json!({"layer": "Countries", "name": f, "type": "double"})).unwrap();
+    }
+    s.run("labels.by", &json!({"layer": "Countries", "size": "tag / 10 + 8", "color": "'red'"})).unwrap();
+    s.run("labels.class.add", &json!({"layer": "Countries", "name": "Big", "where": "name = 'x'"})).unwrap();
+    s.run("labels.by", &json!({"layer": "Countries", "class": "Big", "text": "name || tag", "angle": "TAG"})).unwrap();
+    // A field no expression reads goes without a word about the labels.
+    let mark = s.notice_mark();
+    s.run("edit.deleteField", &json!({"layer": "Countries", "field": "aside"})).unwrap();
+    assert_eq!(about(&s, mark, "label"), Vec::<String>::new());
+    // Those reading the field go, in every class, the others stay; said once, naming each.
+    let mark = s.notice_mark();
+    s.run("edit.deleteField", &json!({"layer": "Countries", "field": "tag"})).unwrap();
+    let got = labels(&s);
+    assert_eq!((got.default.by.size.as_deref(), got.default.by.color.as_deref()), (None, Some("'red'")));
+    let big = &got.classes[0].by;
+    assert_eq!((big.text.as_ref(), big.size.as_ref(), big.angle.as_ref(), big.color.as_deref()), (None, None, None, Some("'red'")));
+    assert_eq!(
+        about(&s, mark, "label"),
+        ["Countries: its label expressions read the deleted field tag, so they are removed: Default's size; Big's text, size and angle"]
+    );
+    let saved = serde_json::to_string(&got).unwrap();
+    assert!(!saved.contains("tag"), "{saved}");
+    // Undo brings the field and the expressions back.
+    s.run("edit.undo", &Value::Null).unwrap();
+    let got = labels(&s);
+    assert_eq!((got.default.by.size.as_deref(), got.classes[0].by.angle.as_deref()), (Some("tag / 10 + 8"), Some("TAG")));
+    // One part of one class.
+    s.run("labels.class.remove", &json!({"layer": "Countries", "class": "Big"})).unwrap();
+    let mark = s.notice_mark();
+    s.run("edit.deleteField", &json!({"layer": "Countries", "field": "tag"})).unwrap();
+    assert_eq!(
+        about(&s, mark, "label"),
+        ["Countries: its label class Default's size expression read the deleted field tag, so it is removed"]
+    );
+    // Default on the field, its text reading it too: the text goes, Default starts again on a
+    // name-like field keeping the expressions left, and the labels are turned off, said.
+    s.run("edit.addField", &json!({"layer": "Countries", "name": "label", "type": "text"})).unwrap();
+    s.run("labels.field", &json!({"layer": "Countries", "field": "label"})).unwrap();
+    s.run("labels.by", &json!({"layer": "Countries", "text": "upper(label)"})).unwrap();
+    assert!(labels(&s).enabled);
+    let mark = s.notice_mark();
+    s.run("edit.deleteField", &json!({"layer": "Countries", "field": "label"})).unwrap();
+    let got = labels(&s);
+    assert!(!got.enabled);
+    assert_eq!((got.default.by.text, got.default.by.color.as_deref()), (None, Some("'red'")));
+    let said = about(&s, mark, "label");
+    assert_eq!(said.len(), 2, "{said:?}");
+    assert_eq!(said[0], "Countries: its label class Default's text expression read the deleted field label, so it is removed");
+    let start =
+        format!("Countries: its label class Default labelled the deleted field label, so it starts again on field {}", got.default.field);
+    assert_eq!(said[1], format!("{start} with the default text symbol, and the labels are turned off"));
+    s.run("edit.undo", &Value::Null).unwrap();
+    let got = labels(&s);
+    assert!(got.enabled);
+    assert_eq!((got.default.field.as_str(), got.default.by.text.as_deref()), ("label", Some("upper(label)")));
+    // Labels off: a class set up is still said to start again, with nothing turned off.
+    s.run("labels.enable", &json!({"layer": "Countries", "on": false})).unwrap();
+    let mark = s.notice_mark();
+    s.run("edit.deleteField", &json!({"layer": "Countries", "field": "label"})).unwrap();
+    let field = labels(&s).default.field;
+    assert_eq!(
+        about(&s, mark, "starts again"),
+        [format!(
+            "Countries: its label class Default labelled the deleted field label, so it starts again on field {field} with the default text symbol"
+        )]
+    );
+}
+
+#[test]
+fn deleting_a_field_is_refused_while_the_time_slider_reads_it() {
+    // #2147: without its field the time slider showed every row, whatever its window.
+    let mut s = timed_events();
+    s.run("time.bind", &json!({"field": "when"})).unwrap();
+    let depth = s.undo_depth();
+    let err = s.run("edit.deleteField", &json!({"layer": "Events", "field": "WHEN"})).unwrap_err();
+    assert!(err.contains("the layer is bound to the time slider by 'when': unbind it first"), "{err}");
+    assert_eq!(s.undo_depth(), depth);
+    assert!(s.map().layer_by_name("Events").and_then(|l| l.dataset.field_index("when")).is_some());
+    assert_eq!(shown(&s), ["e0"]);
+    // Another field goes; once unbound, the slider's field goes too.
+    s.run("edit.deleteField", &json!({"layer": "Events", "field": "ms"})).unwrap();
+    s.run("time.unbind", &Value::Null).unwrap();
+    s.run("edit.deleteField", &json!({"layer": "Events", "field": "when"})).unwrap();
+}
+
+#[test]
 fn deleting_a_field_clears_the_extrusion_marker_rotation_and_symbol_expressions_reading_it() {
     // #2081: the extrusion's height and base, the marker rotation and the symbol's expressions
     // by feature stopped reading a deleted field without a word, and the saved project kept its
@@ -36683,8 +36778,17 @@ fn time_slider_survives_saving_cumulative_edits_and_bad_parameters() {
         l.dataset.features[0].attrs[fi] = rustgis_data::Value::Text("2015-12-01".into());
     }
     assert_eq!(shown(&t), ["e1", "e2", "e3", "e7"]);
-    // A field that is gone filters nothing.
-    t.run("edit.deleteField", &json!({"field": "when"})).unwrap();
+    // Deleting the slider's field is refused (#2147); a field gone otherwise (a source's fields
+    // changed outside a command) filters nothing.
+    assert!(t.run("edit.deleteField", &json!({"field": "when"})).unwrap_err().contains("time slider"));
+    {
+        let l = t.map_mut().layers.iter_mut().find(|l| l.name == "Events").unwrap();
+        let fi = l.dataset.field_index("when").unwrap();
+        l.dataset.fields.remove(fi);
+        for f in &mut l.dataset.features {
+            f.attrs.remove(fi);
+        }
+    }
     assert_eq!(shown(&t).len(), 8);
 }
 
