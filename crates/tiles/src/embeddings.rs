@@ -13,6 +13,8 @@
 //!   ([`pca_colors`]).
 //! - Tessera (Cambridge): 128 values a 10 m pixel, in a Zarr store of UTM zones read in place
 //!   (see [`tessera`]).
+//! - OlmoEarth v1.3 (Ai2): 128 values a 10 m pixel, in a Zarr store laid out like Tessera's
+//!   (see [`olmoearth`]).
 //!
 //! Nothing here waits on the network: searches and reads take a callback (the app's, off the
 //! frame), with blocking forms for the command line.
@@ -26,6 +28,7 @@ use serde_json::{Value as Json, json};
 
 use crate::cog::Look;
 
+pub mod olmoearth;
 pub mod tessera;
 
 /// What a dataset in the catalog is and what RustGIS does with it.
@@ -54,7 +57,7 @@ pub struct EmbeddingDataset {
 }
 
 /// The datasets, in the order they are listed.
-pub const DATASETS: [EmbeddingDataset; 6] = [
+pub const DATASETS: [EmbeddingDataset; 7] = [
     EmbeddingDataset {
         id: "alphaearth",
         name: "AlphaEarth Foundations (Google Satellite Embedding)",
@@ -83,6 +86,21 @@ pub const DATASETS: [EmbeddingDataset; 6] = [
         license: "",
         data_url: "https://registry.opendata.aws/tessera/",
         paper_url: "https://arxiv.org/abs/2506.20380",
+        search: true,
+    },
+    EmbeddingDataset {
+        id: "olmoearth",
+        name: "OlmoEarth v1.3",
+        provider: "Ai2",
+        model: "OlmoEarth-v1.3-Base",
+        kind: "pixel",
+        resolution: "10 m",
+        dimensions: 128,
+        years: Some((2017, 2025)),
+        coverage: "Global (UTM zones)",
+        license: olmoearth::LICENSE,
+        data_url: "https://source.coop/olmoearth/olmoearth-v1-3-embeddings",
+        paper_url: "https://allenai.org/blog/olmoearth-v1-3",
         search: true,
     },
     EmbeddingDataset {
@@ -849,8 +867,8 @@ mod tests {
 
     #[test]
     fn catalog() {
-        assert_eq!(DATASETS.len(), 6);
-        assert_eq!(DATASETS.iter().filter(|d| d.search).count(), 3);
+        assert_eq!(DATASETS.len(), 7);
+        assert_eq!(DATASETS.iter().filter(|d| d.search).count(), 4);
         assert_eq!(dataset("alphaearth").map(|d| d.dimensions), Some(64));
         assert!(dataset("nope").is_none());
         assert_eq!(dataset("earth-index").unwrap().to_json()["years"], json!([2024]));

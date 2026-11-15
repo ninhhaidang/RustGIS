@@ -26,10 +26,10 @@ pub fn commands() -> Vec<C> {
         .view(),
         // Not a view: it adds the footprints layer (by default).
         C::new("embeddings.search", "Search Satellite Embeddings", "Home › Add › Web Data", search).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network)).params(
-            r#"{"dataset": "alphaearth" | "earth-index" | "tessera", "year"?: number (AlphaEarth and Tessera: 2017–2025, default 2024), "bbox"?: [west, south, east, north] | "view" (the map's extent, the default), "footprints"?: bool (adds the tiles' footprints as a layer, default true)}"#,
+            r#"{"dataset": "alphaearth" | "earth-index" | "tessera" | "olmoearth", "year"?: number (AlphaEarth, Tessera and OlmoEarth: 2017–2025, default 2024), "bbox"?: [west, south, east, north] | "view" (the map's extent, the default), "footprints"?: bool (adds the tiles' footprints as a layer, default true)}"#,
         ),
         C::new("embeddings.add", "Add Satellite Embeddings", "Home › Add › Web Data", add).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network)).params(
-            r#"{"dataset": "alphaearth" | "earth-index" | "tessera", "url"?: "AlphaEarth's tile or Earth Index's file, as embeddings.search lists it (Earth Index: default the MGRS tile at the view's centre)", "year"?: number (Tessera, default 2024), "bands"?: [red, green, blue] (bands from 1; AlphaEarth default [2, 17, 10], Tessera [1, 2, 3]), "stretch"?: number (AlphaEarth: dequantised values shown over ±stretch, default 0.3), "dimension"?: number (Earth Index: a vector value kept as each point's `value`, from 1), "bbox"?: [west, south, east, north] | "view" (Earth Index and Tessera: the area read, default the map's extent), "name"?: text, "ran"?: (internal: what the app read)}"#,
+            r#"{"dataset": "alphaearth" | "earth-index" | "tessera" | "olmoearth", "url"?: "AlphaEarth's tile or Earth Index's file, as embeddings.search lists it (Earth Index: default the MGRS tile at the view's centre)", "year"?: number (Tessera and OlmoEarth, default 2024), "bands"?: [red, green, blue] (bands from 1; AlphaEarth default [2, 17, 10], Tessera and OlmoEarth [1, 2, 3]), "stretch"?: number (AlphaEarth: dequantised values shown over ±stretch, default 0.3), "dimension"?: number (Earth Index: a vector value kept as each point's `value`, from 1), "bbox"?: [west, south, east, north] | "view" (Earth Index, Tessera and OlmoEarth: the area read, default the map's extent), "name"?: text, "ran"?: (internal: what the app read)}"#,
         ),
         C::new("embeddings.addCube", "Add Satellite Embeddings over Time", "Home › Add › Web Data", add_cube).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network)).params(
             r#"{"dataset": "alphaearth", "bbox"?: [west, south, east, north] | "view" (the area searched, default the map's extent), "start"?: year (default 2017), "end"?: year (default 2025), "bands"?: [red, green, blue] (bands from 1, default [2, 17, 10]), "stretch"?: number (dequantised values shown over ±stretch, default 0.3), "name"?: text, "found"?: (internal: the tiles the app found, each {years: {year: address}}), "complete"?: (internal: false when the app's search read only part of the index)} → a tile layer per AlphaEarth tile, a file per year, following the time slider (turned on over the years when it is off)"#,
@@ -67,7 +67,7 @@ fn bbox(s: &Session, p: &Value) -> Result<[f64; 4], String> {
 
 /// The searchable dataset a command names.
 fn dataset(p: &Value) -> Result<&'static emb::EmbeddingDataset, String> {
-    let id = ps(p, "dataset").map(str::trim).ok_or("dataset is required (alphaearth, earth-index or tessera)")?;
+    let id = ps(p, "dataset").map(str::trim).ok_or("dataset is required (alphaearth, earth-index, tessera or olmoearth)")?;
     let d = emb::dataset(id).ok_or_else(|| format!("unknown dataset '{id}' (embeddings.datasets lists them)"))?;
     if !d.search {
         return Err(format!("{} is listed for its links only: RustGIS doesn't read it", d.name));
@@ -121,14 +121,14 @@ fn search(s: &mut Session, p: &Value) -> CmdResult {
         let (tiles, complete) = match d.id {
             "alphaearth" => emb::search_aef_blocking(area, year)?,
             "earth-index" => emb::search_earth_index_blocking(area)?,
-            _ => tessera::tiles(area, year),
+            _ => tessera::tiles(tessera::store(d.id).ok_or_else(|| format!("{} can't be searched", d.name))?, area, year),
         };
         let mut r = json!({"dataset": d.id, "year": year, "count": tiles.len(), "complete": complete,
             "tiles": tiles.iter().map(emb::Tile::to_json).collect::<Vec<_>>()});
         if !complete {
             s.notify(format!("{}: the area holds more tiles than one search reads; zoom in to list them all", d.name), false);
         }
-        if super::b(p, "footprints") != Some(false) && !tiles.is_empty() && d.id != "tessera" {
+        if super::b(p, "footprints") != Some(false) && !tiles.is_empty() && tessera::store(d.id).is_none() {
             let name = format!("{} tiles {year}", d.name.split(" (").next().unwrap_or(d.name));
             if let Some(id) = super::stac::add_collection(s, &emb::footprints_geojson(&tiles), &name)? {
                 r["layer"] = json!(id);
@@ -169,7 +169,7 @@ fn add(s: &mut Session, p: &Value) -> CmdResult {
             super::layer::add_cog(s, &json!({"name": name}), &look, probe)
         }
         "earth-index" => add_points(s, p, name),
-        _ => add_tessera(s, p, d, name),
+        _ => add_zones(s, p, d, name),
     }
 }
 
@@ -500,14 +500,22 @@ pub(crate) fn style_points(s: &mut Session, id: u32) {
     };
 }
 
-/// Tessera's three bands of the view, as a raster.
-fn add_tessera(s: &mut Session, p: &Value, d: &emb::EmbeddingDataset, name: Option<String>) -> CmdResult {
+/// Three bands of the view from a store of UTM zones (Tessera's, OlmoEarth's), as a raster.
+///
+/// Without `ran` it reads on the caller's thread. The app's routes (the pane) read off the frame
+/// and hand the file over (`ran`); a plugin's command in the app (`leave_downloads`) is refused.
+/// The app's assistant runs its tools on the frame without `leave_downloads`, so there it waits,
+/// as `embeddings.addCube` does (see its note): moving the assistant's tools off the frame is a
+/// change for all of them, not for this one.
+fn add_zones(s: &mut Session, p: &Value, d: &emb::EmbeddingDataset, name: Option<String>) -> CmdResult {
+    let z = tessera::store(d.id).ok_or_else(|| format!("{} can't be added", d.name))?;
     let year = year(d, p)?;
-    let b = bands(p, tessera::BANDS, tessera::DEFAULT_BANDS)?;
+    let b = bands(p, z.bands, tessera::DEFAULT_BANDS)?;
+    let none = format!("{} has no embeddings there", z.name);
     let (r, tif) = match handed(s, p)? {
-        Some((_, tif)) => match raster::read_bytes("tessera.tif", &tif) {
+        Some((_, tif)) => match raster::read_bytes(&format!("{}.tif", z.id), &tif) {
             Ok(r) if r.bands.iter().any(|band| band.stats.count > 0) => (r, tif),
-            Ok(_) => return Err("Tessera has no embeddings there".into()),
+            Ok(_) => return Err(none),
             Err(e) => return Err(e.to_string()),
         },
         None => {
@@ -515,13 +523,17 @@ fn add_tessera(s: &mut Session, p: &Value, d: &emb::EmbeddingDataset, name: Opti
             #[cfg(target_arch = "wasm32")]
             {
                 let _ = area;
-                return Err("in the web app, add Tessera with Home › Add › Web Data › Satellite Embeddings".into());
+                return Err(format!("in the web app, add {} with Home › Add › Web Data › Satellite Embeddings", z.name));
             }
             #[cfg(not(target_arch = "wasm32"))]
             {
-                let (r, cut) = tessera::read_blocking(area, year, b)?;
+                // A plugin's command in the app runs on the frame, where nothing may wait for the read.
+                if s.leave_downloads {
+                    return Err(format!("{}: read off the frame here: add it from Home › Add › Web Data › Satellite Embeddings", z.name));
+                }
+                let (r, cut) = tessera::read_blocking(z, area, year, b)?;
                 if cut {
-                    s.notify("Tessera: the view is larger than one read; its centre was read (zoom in for the rest)", false);
+                    s.notify(format!("{}: the view is larger than one read; its centre was read (zoom in for the rest)", z.name), false);
                 }
                 let tif = raster::geotiff::write(&r, 0).map_err(|e| e.to_string())?;
                 (r, tif)
@@ -529,11 +541,15 @@ fn add_tessera(s: &mut Session, p: &Value, d: &emb::EmbeddingDataset, name: Opti
         }
     };
     if r.bands.iter().all(|band| band.stats.count == 0) {
-        return Err("Tessera has no embeddings there".into());
+        return Err(none);
     }
-    let name = name.unwrap_or_else(|| format!("Tessera {year} ({})", band_label(b)));
-    let layer = RasterLayer::from_bytes(r, format!("tessera_{year}.tif"), tif);
-    super::raster::add_raster(s, &name, layer)
+    let name = name.unwrap_or_else(|| format!("{} {year} ({})", z.name, band_label(b)));
+    let layer = RasterLayer::from_bytes(r, format!("{}_{year}.tif", z.id), tif);
+    let mut out = super::raster::add_raster(s, &name, layer)?;
+    if !d.license.is_empty() {
+        out["license"] = json!(d.license);
+    }
+    Ok(out)
 }
 
 // Similarity and change (#1720): what AlphaEarth's 64 values are for.
@@ -902,7 +918,7 @@ mod tests {
     #[test]
     fn parameters() {
         let mut s = Session::new(Project::default());
-        assert_eq!(s.run("embeddings.datasets", &json!({})).unwrap()["datasets"].as_array().map(Vec::len), Some(6));
+        assert_eq!(s.run("embeddings.datasets", &json!({})).unwrap()["datasets"].as_array().map(Vec::len), Some(7));
         for bad in [
             json!({}),
             json!({"dataset": "clay"}),
@@ -922,6 +938,9 @@ mod tests {
             json!({"dataset": "earth-index", "url": "ftp://x"}),
             json!({"dataset": "tessera", "bands": [1, 2, 200]}),
             json!({"dataset": "tessera", "ran": 99}),
+            json!({"dataset": "olmoearth", "bands": [1, 2, 129]}),
+            json!({"dataset": "olmoearth", "year": 2016}),
+            json!({"dataset": "olmoearth", "ran": 97}),
             json!({"dataset": "earth-index", "ran": 98}),
         ] {
             assert!(s.run("embeddings.add", &bad).is_err(), "{bad}");
@@ -1167,6 +1186,7 @@ mod tests {
         for bad in [
             json!({}),
             json!({"dataset": "tessera", "point": [10.05, 45.05], "bbox": area}),
+            json!({"dataset": "olmoearth", "point": [10.05, 45.05], "bbox": area}),
             json!({"dataset": "alphaearth", "bbox": area}),
             json!({"dataset": "alphaearth", "point": [10.05, 45.05], "points": [[10.05, 45.05]], "bbox": area}),
             json!({"dataset": "alphaearth", "point": [10.05], "bbox": area}),
@@ -1198,6 +1218,10 @@ mod tests {
         s.leave_downloads = true;
         let e = s.run("embeddings.change", &json!({"dataset": "alphaearth", "bbox": area})).unwrap_err();
         assert!(e.contains("plugin"), "{e}");
+        for d in ["tessera", "olmoearth"] {
+            let e = s.run("embeddings.add", &json!({"dataset": d, "bbox": area})).unwrap_err();
+            assert!(e.contains("off the frame"), "{e}");
+        }
     }
 
     #[test]

@@ -45,8 +45,8 @@ pub struct State {
     /// AlphaEarth's bands shown (0-based) and stretch.
     pub aef_bands: [usize; 3],
     pub stretch: f32,
-    /// Tessera's bands (0-based).
-    pub tessera_bands: [usize; 3],
+    /// Tessera's and OlmoEarth's bands (0-based).
+    pub zone_bands: [usize; 3],
     /// Earth Index: a vector value kept as each point's `value` (0-based), if any.
     pub dimension: Option<usize>,
     /// AlphaEarth: search its tiles over all its years, each added as a cube on the time slider.
@@ -74,7 +74,7 @@ impl Default for State {
             year: 2024,
             aef_bands: emb::AEF_DEFAULT_BANDS,
             stretch: emb::AEF_DEFAULT_STRETCH,
-            tessera_bands: tessera::DEFAULT_BANDS,
+            zone_bands: tessera::DEFAULT_BANDS,
             dimension: None,
             all_years: false,
             reading: None,
@@ -207,7 +207,7 @@ pub fn poll(app: &mut RustGisApp, ctx: &egui::Context) {
                         return;
                     }
                     let mut p = json!({"dataset": req.dataset, "ran": req.id, "name": req.name});
-                    if req.dataset == "tessera" {
+                    if tessera::store(req.dataset).is_some() {
                         p["year"] = json!(req.year);
                         p["bands"] = json!(req.bands.map(|b| b + 1));
                     }
@@ -240,8 +240,8 @@ fn show_footprints(app: &mut RustGisApp) {
         let _ = app.run("layer.remove", json!({"layer": old}));
     }
     let st = &app.ui.embeddings;
-    // Tessera's results are its zones: no outlines worth drawing.
-    if st.found.is_empty() || st.dataset == "tessera" {
+    // Tessera's and OlmoEarth's results are their zones: no outlines worth drawing.
+    if st.found.is_empty() || tessera::store(st.dataset).is_some() {
         return;
     }
     let fc = emb::footprints_geojson(&st.found);
@@ -294,7 +294,7 @@ fn search(app: &mut RustGisApp) {
     match st.dataset {
         "alphaearth" => emb::search_aef(bbox, st.year, done),
         "earth-index" => emb::search_earth_index(bbox, done),
-        _ => done(Ok(tessera::tiles(bbox, st.year))),
+        id => done(Ok(tessera::tiles(tessera::store(id).unwrap_or(&tessera::TESSERA), bbox, st.year))),
     }
     st.reading = Some(Read::Search(slot));
 }
@@ -354,22 +354,23 @@ fn add(app: &mut RustGisApp, i: usize) {
             let req = Request { name, dataset: "earth-index", year: emb::EARTH_INDEX_YEAR, bands: [0; 3], id, cut: Default::default() };
             app.ui.embeddings.reading = Some(Read::Data(slot, req));
         }
-        _ => {
+        id => {
             let bbox = match view_bbox(app) {
                 Ok(b) => b,
                 Err(e) => return app.ui.embeddings.error = Some(e),
             };
+            let z = tessera::store(id).unwrap_or(&tessera::TESSERA);
             let st = &app.ui.embeddings;
-            let (year, bands) = (st.year, st.tessera_bands);
+            let (year, bands) = (st.year, st.zone_bands);
             let zone = tessera::zone_of((bbox[0] + bbox[2]) / 2.0);
-            let name = format!("Tessera {year} ({})", bands.map(|b| (b + 1).to_string()).join(", "));
+            let name = format!("{} {year} ({})", z.name, bands.map(|b| (b + 1).to_string()).join(", "));
             let (slot, land) = data_slot();
             let cut: std::sync::Arc<std::sync::atomic::AtomicBool> = Default::default();
             let cut_set = cut.clone();
             cache::download(
-                &tessera::group_url(zone),
+                &tessera::group_url(z, zone),
                 Box::new(move |r| {
-                    let plan = r.and_then(|b| tessera::parse_group(zone, &b)).and_then(|g| tessera::plan(g, bbox, year));
+                    let plan = r.and_then(|b| tessera::parse_group(z, zone, &b)).and_then(|g| tessera::plan(z, g, bbox, year));
                     match plan {
                         Ok(plan) => {
                             cut_set.store(plan.cut, std::sync::atomic::Ordering::Relaxed);
@@ -388,7 +389,7 @@ fn add(app: &mut RustGisApp, i: usize) {
                 }),
             );
             let id = app.session.download_started();
-            app.ui.embeddings.reading = Some(Read::Data(slot, Request { name, dataset: "tessera", year, bands, id, cut }));
+            app.ui.embeddings.reading = Some(Read::Data(slot, Request { name, dataset: z.id, year, bands, id, cut }));
         }
     }
 }
@@ -517,9 +518,9 @@ pub fn pane(app: &mut RustGisApp, ui: &mut egui::Ui) {
                     .on_hover_text(tl!("Values from −stretch to +stretch are shown from black to full colour"));
                 ui.end_row();
             }
-            "tessera" => {
+            "tessera" | "olmoearth" => {
                 ui.label(tl!("Bands"));
-                band_row(ui, &mut st.tessera_bands, tessera::BANDS);
+                band_row(ui, &mut st.zone_bands, tessera::BANDS);
                 ui.end_row();
             }
             "earth-index" => {
@@ -663,7 +664,7 @@ fn card(ui: &mut egui::Ui, t: &crate::theme::Tokens, tile: &Tile, i: usize, busy
             ui.set_width(ui.available_width());
             ui.add(egui::Label::new(egui::RichText::new(&tile.title).strong()).wrap());
             ui.add(egui::Label::new(egui::RichText::new(&tile.detail).small().color(t.text_dim)).wrap());
-            if !tile.id.is_empty() && tile.dataset != "tessera" {
+            if !tile.id.is_empty() && tessera::store(tile.dataset).is_none() {
                 ui.add(egui::Label::new(egui::RichText::new(&tile.id).small().color(t.text_dim)).truncate());
             }
             ui.horizontal_wrapped(|ui| {
