@@ -15,6 +15,29 @@ pub const PREF: &str = "connections";
 /// The version of that preference this RustGIS reads and writes. One from a newer RustGIS isn't
 /// read, and is kept as it is.
 pub const VERSION: u64 = 1;
+/// A web connection's saved-login marker is written under its own field. An older RustGIS
+/// reads `remembered` as a database password's marker and clears it on a web connection, so it
+/// would save the preference without the marker; a field it doesn't know it keeps unchanged.
+const WEB_MARKER: &str = "savedLogin";
+
+fn web_row(row: &Map<String, Value>) -> bool {
+    row.get("kind").and_then(Value::as_str).is_some_and(|k| SERVICE_KINDS.contains(&k.trim()))
+}
+
+/// A saved row as [`Connection`] reads it: a web connection's [`WEB_MARKER`] as its marker.
+fn read_marker(mut row: Value) -> Value {
+    if let Value::Object(o) = &mut row
+        && web_row(o)
+    {
+        let saved = o.remove(WEB_MARKER);
+        o.remove("remembered");
+        if let Some(saved) = saved {
+            o.insert("remembered".into(), saved);
+        }
+    }
+    row
+}
+
 /// Why the preference wasn't read when it couldn't be (`{why}`), and what to do.
 const UNREADABLE: &str =
     "the saved connections couldn't be read ({why}); fix or remove \"connections\" in the preferences file to use or change them";
@@ -56,9 +79,9 @@ pub struct Connection {
     /// still has them. Commands never take it from a caller.
     #[serde(default, rename = "savedKeys", skip_serializing_if = "is_false")]
     pub saved_keys: bool,
-    /// A database connection's password was saved in the system's secret store (never the
-    /// password itself, which is `DatabaseLogins`' to read). Set only by a login that asked to
-    /// remember it, and cleared when the saved password is forgotten or no longer fits.
+    /// A database password or web-service login was saved in the system's secret store (never
+    /// the secret itself). Set only by a login that asked to remember it, and cleared when the
+    /// saved credential is forgotten or no longer fits.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub remembered: bool,
     /// How a web-service connection logs in ([`SERVICE_AUTH`]; empty: it doesn't). The method
@@ -313,6 +336,16 @@ pub(crate) fn register_query_name(c: &Connection) -> Result<(), String> {
     Ok(())
 }
 
+/// Holds query-name capacity across a fallible saved-credential deletion without holding a lock.
+pub(crate) fn reserve_query_name(c: &Connection) -> Result<Option<rustgis_data::address::LoginQueryNameReservation>, String> {
+    if c.auth != "query" {
+        return Ok(None);
+    }
+    rustgis_data::address::reserve_login_query_name(&c.key_name)
+        .map(Some)
+        .ok_or_else(|| crate::render::rustgis_tiles::logins::TOO_MANY_QUERY_NAMES.into())
+}
+
 /// The names (never the values) of the query parameters `given` had that `saved` lacks, which a
 /// query login can carry: the keys an address held and saving left out, to offer as the login's
 /// parameter. At most four, each once. Only `name=value` pairs count: a bare segment can't be a
@@ -343,7 +376,7 @@ pub fn login_origin(c: &Connection) -> Option<String> {
 }
 
 /// Whether two definitions retain the same login identity: a database password uses the same
-/// database address; a session web login uses the same origin, method, user and key name.
+/// database address; a web login uses the same origin, method, user and key name.
 pub fn same_login(a: &Connection, b: &Connection) -> bool {
     a.kind == b.kind
         && if DATABASE_KINDS.contains(&a.kind.as_str()) {
@@ -390,8 +423,8 @@ pub fn clean(mut c: Connection) -> Result<(Connection, bool), String> {
     if c.kind != "s3" {
         c.saved_keys = false;
     }
-    // Only a database connection has a password to remember.
-    c.remembered &= DATABASE_KINDS.contains(&c.kind.as_str());
+    // Only a database connection has a password to remember, and a web service its login.
+    c.remembered &= DATABASE_KINDS.contains(&c.kind.as_str()) || !c.auth.is_empty();
     if c.kind != "s3" && !c.options.is_empty() {
         return Err(format!("{} connections take no options", c.kind));
     }
@@ -510,7 +543,7 @@ impl Connections {
         let mut stripped_flags = Vec::new();
         for row in rows {
             // Readability is checked even past the limit, without registering the login's name.
-            let read = serde_json::from_value::<Row>(row.clone()).ok().and_then(|r| {
+            let read = serde_json::from_value::<Row>(read_marker(row.clone())).ok().and_then(|r| {
                 let name = r.connection.name.trim().to_string();
                 let group = r.connection.group.trim().to_string();
                 let (c, stripped) = clean(r.connection).ok()?;
@@ -778,6 +811,12 @@ impl Connections {
         let mut rows: Vec<Value> = Vec::with_capacity(self.connections.len() + self.kept.rows.len());
         for c in &self.connections {
             let mut row = serde_json::to_value(c).unwrap_or(Value::Null);
+            if let Value::Object(o) = &mut row
+                && web_row(o)
+                && let Some(saved) = o.remove("remembered")
+            {
+                o.insert(WEB_MARKER.into(), saved);
+            }
             if let (Value::Object(row), Some(other)) = (&mut row, self.kept.fields.get(&c.id)) {
                 for (k, v) in other {
                     row.entry(k.clone()).or_insert_with(|| v.clone());
@@ -849,7 +888,7 @@ impl Connections {
         register_query_name(&c)?;
         self.next = following;
         c.id = format!("c{next}");
-        // A new connection, a copy or an import has no saved password: it is saved by a login.
+        // A new connection, a copy or an import has no saved login: it is saved by a login.
         c.remembered = false;
         self.connections.push(c.clone());
         if c.auth == "query" {
@@ -881,8 +920,9 @@ impl Connections {
         let slot = self.connections.iter().find(|c| c.id == id).ok_or_else(|| format!("no connection '{id}'"))?;
         c.id = id.into();
         c.saved_keys = slot.saved_keys && c.kind == "s3";
-        // Password identity includes the cleaned database kind, server and user.
-        c.remembered = slot.remembered && slot.kind == c.kind && slot.address == c.address;
+        // Password identity includes the cleaned database kind, server and user; a web login's,
+        // its origin, method, user and key name.
+        c.remembered = slot.remembered && same_login(slot, &c);
         Ok((c, stripped))
     }
 
@@ -927,9 +967,10 @@ impl Connections {
         Some(c)
     }
 
-    /// Says whether a database connection's password is saved; whether that changed the row.
+    /// Says whether a database password or web-service login is saved; whether that changed the row.
     pub fn set_remembered(&mut self, id: &str, on: bool) -> bool {
-        let Some(c) = self.connections.iter_mut().find(|c| c.id == id && DATABASE_KINDS.contains(&c.kind.as_str())) else {
+        let Some(c) = self.connections.iter_mut().find(|c| c.id == id && (DATABASE_KINDS.contains(&c.kind.as_str()) || !c.auth.is_empty()))
+        else {
             return false;
         };
         if c.remembered == on {

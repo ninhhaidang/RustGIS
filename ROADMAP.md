@@ -159,9 +159,8 @@ Big layers work, or say plainly where they stop
 - Autosave and crash recovery in the browser, as the desktop app has since
   [#873](https://github.com/opengeos/RustGIS/issues/873) (`apps/rustgis-web/src/web.rs`; the
   browser half needs an issue of its own).
-- The OS keychain for the remaining secrets: web-service basic-auth and API-key logins (for the
-  session today), and a plugin `secrets` permission bound to one origin
-  ([#760](https://github.com/opengeos/RustGIS/issues/760)); testing on each platform
+- A plugin `secrets` permission backed by the OS keychain and bound to one origin
+  ([#760](https://github.com/opengeos/RustGIS/issues/760)); testing the secret store on each platform
   ([#891](https://github.com/opengeos/RustGIS/issues/891)).
 - Waiting on upstream releases: Control-click menus on macOS
   ([#707](https://github.com/opengeos/RustGIS/issues/707)) and asking to save on ⌘Q

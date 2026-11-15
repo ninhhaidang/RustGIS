@@ -2,10 +2,13 @@
 //! STAC): HTTP basic authentication, an API key in a header, or an API key in a query parameter.
 //!
 //! The connection keeps the method, user name and header or parameter name, never the password
-//! or key. A secret given to `connection.login` lasts only for this session, held by connection
-//! id in [`crate::connections::DatabaseLogins`]. Its runtime identity also binds it to the
-//! canonical origin, method, user and header or parameter, so changing a definition cannot send
-//! an old secret elsewhere.
+//! or key. A secret given to `connection.login` lasts for this session, held by connection id in
+//! [`crate::connections::DatabaseLogins`], or on this computer too when the user asks to remember
+//! it: one opaque secret at the account `connection/<id>`, the JSON
+//! `{"version": 1, "origin", "auth", "user", "keyName", "secret"}`. The origin, method, user and header or
+//! parameter name travel with the secret, so a connection whose definition changed outside the
+//! app can never send it elsewhere or another way. Its runtime identity binds a session secret
+//! the same way.
 //!
 //! Each session/connection login has an opaque request binding. Only requests carrying that
 //! binding use its credential, and only at the connection's exact origin. Bindings distinguish
@@ -15,18 +18,35 @@
 //! Nothing here prints, returns or logs a secret: every failure is
 //! a fixed sentence.
 
-use rustgis_data::secrets::Secret;
+use rustgis_data::secrets::{Secret, SecretStore};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use crate::Session;
-use crate::connections::{Connection, LoginReason, LoginRequest, SERVICE_KINDS, WEB, login_origin};
+use crate::connections::{Connection, LoginReason, LoginRequest, SERVICE_KINDS, WEB, account, login_origin};
 use crate::render::rustgis_tiles::{cache, logins};
 
 /// A transient secret whose connection identity changed.
 pub const UNUSABLE: &str = "The session login could not be used. Enter it again.";
-/// Persistence is a separate feature; a service login never accesses the credential store.
-pub const SESSION_ONLY: &str = "Web-service logins last for this session only.";
+/// A saved login that can't be used (damaged, or saved for another origin, method, user, header
+/// or parameter).
+pub const SAVED_UNUSABLE: &str = "The saved login could not be used. Enter it again.";
+/// The connection is marked remembered, but the store has nothing for it.
+pub const NONE_SAVED: &str = "No saved login for this connection. Enter it again.";
+/// There is no credential store, or it refused.
+pub const UNAVAILABLE: &str = "The saved login is unavailable. Enter it for this session.";
+/// The login worked, the secret wasn't kept on this computer.
+pub const NOT_REMEMBERED: &str = "The login is available for this session but was not remembered on this computer.";
+/// A saved login couldn't be deleted, so what needed it gone didn't happen.
+pub const NOT_FORGOTTEN: &str = "The saved login could not be forgotten. The connection was not changed.";
+/// Forget found a login under this connection's id saved for another connection (or by a newer
+/// RustGIS), and left it.
+pub const OTHERS_LEFT: &str =
+    "The login saved under this connection's id belongs to another connection or a newer RustGIS, so it was left unchanged.";
+/// Automatic reads respect a deliberate logout until an explicit login.
+pub const LOGGED_OUT: &str = "This connection is logged out. Log in explicitly to use it again.";
 /// A login typed for a plain http:// address without the confirmation.
 pub const INSECURE: &str = "This connection's address uses plain http://, so its login would be sent unencrypted. Confirm with allowInsecure: true to send it anyway.";
 /// A password or key that can't be sent.
@@ -62,6 +82,178 @@ pub const ADD_COMMANDS: &[&str] = &[
     "layer.addDownload",
     "map.addTiles",
 ];
+
+/// The most bytes a stored value may have.
+const MAX_STORED: usize = 8192;
+
+#[derive(Serialize)]
+struct Stored<'a> {
+    version: u32,
+    origin: &'a str,
+    auth: &'a str,
+    user: &'a str,
+    #[serde(rename = "keyName")]
+    key_name: &'a str,
+    secret: &'a str,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Loaded {
+    version: u32,
+    origin: String,
+    auth: String,
+    user: String,
+    #[serde(rename = "keyName")]
+    key_name: String,
+    secret: String,
+}
+
+fn encode(c: &Connection, origin: &str, secret: &str) -> Result<Secret, &'static str> {
+    let stored = Stored { version: 1, origin, auth: &c.auth, user: &c.user, key_name: &c.key_name, secret };
+    let text = serde_json::to_string(&stored).map_err(|_| SAVED_UNUSABLE)?;
+    if text.len() > MAX_STORED {
+        return Err(SAVED_UNUSABLE);
+    }
+    Ok(Secret::new(text))
+}
+
+/// The secret of a stored value, when it was saved for exactly this origin, method, user and
+/// header or parameter name, and can still be sent that way.
+fn decode(value: &Secret, c: &Connection, origin: &str) -> Result<Secret, &'static str> {
+    let text = value.expose();
+    if text.len() > MAX_STORED {
+        return Err(SAVED_UNUSABLE);
+    }
+    // A decoding error would quote the text: its details are dropped.
+    let l: Loaded = serde_json::from_str(text).map_err(|_| SAVED_UNUSABLE)?;
+    if l.version != 1
+        || c.auth.is_empty()
+        || l.origin != origin
+        || l.auth != c.auth
+        || l.user != c.user
+        || l.key_name != c.key_name
+        || check_login_secret(c, &l.secret).is_err()
+    {
+        return Err(SAVED_UNUSABLE);
+    }
+    Ok(Secret::new(l.secret))
+}
+
+/// What reading a connection's saved login gave.
+pub enum Loading {
+    Found(Secret),
+    /// The store has none for it.
+    Missing,
+    /// There is no store, or it refused.
+    Unavailable,
+    /// What it holds can't be used (another origin, method, user or name, or damaged).
+    Unusable,
+}
+
+type Store<'a> = Option<&'a Arc<dyn SecretStore>>;
+
+/// Reads the login saved for `c` (the system may ask to unlock its store).
+pub fn load(store: Store<'_>, c: &Connection) -> Loading {
+    let Some(store) = store else { return Loading::Unavailable };
+    let value = match store.load(&account(&c.id)) {
+        Ok(Some(v)) => v,
+        Ok(None) => return Loading::Missing,
+        Err(_) => return Loading::Unavailable,
+    };
+    let Some(origin) = login_origin(c) else { return Loading::Unusable };
+    match decode(&value, c, &origin) {
+        Ok(secret) => Loading::Found(secret),
+        Err(_) => Loading::Unusable,
+    }
+}
+
+/// Whose a stored value is, for deciding whether to delete or overwrite it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Owner {
+    /// Saved for this connection's origin, method, user and header or parameter name.
+    Mine,
+    /// Not an envelope at all: no one can use it, so it never blocks this connection.
+    Damaged,
+    /// Another identity under the same id, or a newer RustGIS's envelope: left as it is.
+    Other,
+}
+
+const FIELDS: [&str; 6] = ["version", "origin", "auth", "user", "keyName", "secret"];
+
+/// Whose `value` is. It never looks at the secret, and an envelope from a newer version (another
+/// version, or fields this one doesn't know) is someone else's, never damaged.
+fn owner(value: &Secret, c: &Connection, origin: Option<&str>) -> Owner {
+    let text = value.expose();
+    if text.len() > MAX_STORED {
+        return Owner::Other;
+    }
+    let Ok(Value::Object(o)) = serde_json::from_str::<Value>(text) else { return Owner::Damaged };
+    match o.get("version").map(Value::as_u64) {
+        // A database password's envelope (`kind`, `address`, `password`) shares this account's id
+        // and has no version: another kind's value, never a damaged web login to replace or delete.
+        None | Some(None) if o.contains_key("kind") || o.contains_key("password") => return Owner::Other,
+        None | Some(None) => return Owner::Damaged,
+        Some(Some(1)) if o.keys().all(|k| FIELDS.contains(&k.as_str())) => {}
+        Some(Some(_)) => return Owner::Other,
+    }
+    let field = |name: &str| o.get(name).and_then(Value::as_str);
+    let (Some(saved_origin), Some(auth), Some(user), Some(key_name)) = (field("origin"), field("auth"), field("user"), field("keyName"))
+    else {
+        return Owner::Damaged;
+    };
+    if origin == Some(saved_origin) && auth == c.auth && user == c.user && key_name == c.key_name { Owner::Mine } else { Owner::Other }
+}
+
+/// Serializes each check-then-write of a stored login in this process, so two sessions can't
+/// both see an empty account and replace each other's. The store has no conditional write, so
+/// another process writing the same account can still race this.
+static STORE_WRITE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Keeps the login of `c` on this computer, replacing an earlier one of its own or a damaged
+/// value; whether it was kept. Another connection's or a newer version's value is left unchanged.
+pub fn save(store: Store<'_>, c: &Connection, secret: &str) -> bool {
+    let Some(store) = store else { return false };
+    if c.id.is_empty() || c.auth.is_empty() {
+        return false;
+    }
+    let Some(origin) = login_origin(c) else { return false };
+    let Ok(value) = encode(c, &origin, secret) else { return false };
+    let _held = STORE_WRITE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    match store.load(&account(&c.id)) {
+        Ok(Some(previous)) if owner(&previous, c, Some(&origin)) == Owner::Other => return false,
+        Err(_) => return false,
+        _ => {}
+    }
+    store.save(&account(&c.id), &value).is_ok()
+}
+
+/// What deleting the login saved for a web connection did.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Forgetting {
+    /// Its own (or a damaged) value was deleted, or there was none.
+    Done,
+    /// The value under its id is another connection's or a newer RustGIS's: left unchanged.
+    Others,
+    /// The store couldn't be read or refused the deletion.
+    Refused,
+}
+
+/// Deletes the login saved for `c` when it is this connection's or damaged. The id alone isn't
+/// ownership: another session can number a different connection the same.
+pub fn forget_saved(logins: &mut crate::connections::DatabaseLogins, c: &Connection) -> Forgetting {
+    let Some(store) = logins.secret_store().cloned() else { return Forgetting::Refused };
+    let _held = STORE_WRITE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let value = match store.load(&account(&c.id)) {
+        Ok(Some(value)) => value,
+        Ok(None) => return Forgetting::Done,
+        Err(_) => return Forgetting::Refused,
+    };
+    if owner(&value, c, login_origin(c).as_deref()) == Owner::Other {
+        return Forgetting::Others;
+    }
+    if logins.delete(&c.id).is_ok() { Forgetting::Done } else { Forgetting::Refused }
+}
 
 /// Whether `c` is a web-service connection (one that can log in with a method).
 pub fn is_service(c: &Connection) -> bool {
@@ -174,12 +366,27 @@ pub struct SessionLogins {
     /// A Test of a definition that isn't saved, or a plugin's command, is running: what it asks
     /// for carries no login, whichever saved connection shares its origin.
     anonymous: bool,
+    /// Connections logged out this session: their saved login isn't read again until an explicit
+    /// `connection.login`.
+    logged_out: BTreeSet<String>,
+    /// Why a saved login couldn't be read this session (a fixed sentence): the store isn't asked
+    /// again, nor is it said again, until an explicit `connection.login`.
+    failed: BTreeMap<String, &'static str>,
+    /// Connections whose saved-login failure resolution has said already.
+    said: BTreeSet<String>,
 }
 
 impl SessionLogins {
     pub fn new() -> Self {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        Self { session: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed), active: BTreeMap::new(), anonymous: false }
+        Self {
+            session: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            active: BTreeMap::new(),
+            anonymous: false,
+            logged_out: BTreeSet::new(),
+            failed: BTreeMap::new(),
+            said: BTreeSet::new(),
+        }
     }
 
     /// Starts or ends [`SessionLogins::anonymous`] reads, saying what it was.
@@ -269,7 +476,11 @@ pub(crate) fn activate(s: &mut Session, c: &Connection, secret: Option<&Secret>,
     let replaced = s.web_logins.active.remove(&c.id).map(|old| logins::deactivate(&old.binding)).is_some();
     if let Some(next) = next {
         s.web_logins.active.insert(c.id.clone(), next);
+        if let Some(secret) = secret {
+            s.database_logins.set_session_password(&c.id, secret.expose());
+        }
     }
+    retry(s, &c.id);
     let failed = reselect(s, c, &origin);
     // Only a login that was replaced or removed leaves cached authenticated responses to drop;
     // a first login, or none, changes no cached tile.
@@ -300,17 +511,44 @@ pub(crate) fn deactivate(s: &mut Session, c: &Connection, _origin: Option<String
     }
 }
 
+/// Ends this session's login and keeps it ended: a login saved on this computer is read again
+/// only by an explicit `connection.login`.
 pub(crate) fn logout(s: &mut Session, c: &Connection) {
     forget(s, c);
+    s.web_logins.logged_out.insert(c.id.clone());
 }
 
+/// Explicit login is the retry boundary for a failed store read or a deliberate logout.
+pub(crate) fn retry(s: &mut Session, id: &str) {
+    s.web_logins.failed.remove(id);
+    s.web_logins.logged_out.remove(id);
+    s.web_logins.said.remove(id);
+}
+
+/// Forgets a failed read of the saved login of `id` and that it was said, after the saved login
+/// is deleted: a blank login then asks for the login instead of repeating the old failure. A
+/// logout stays in place.
+pub(crate) fn forget_failure(s: &mut Session, id: &str) {
+    s.web_logins.failed.remove(id);
+    s.web_logins.said.remove(id);
+}
+
+/// Ends this session's login of `c` and its session secret (its definition changed or it was
+/// removed). The login saved on this computer is the caller's to delete.
 pub(crate) fn forget(s: &mut Session, c: &Connection) {
     deactivate(s, c, None);
+    retry(s, &c.id);
     s.database_logins.forget_connection(&c.id);
 }
 
 pub fn logged_in(s: &Session, c: &Connection) -> bool {
     s.web_logins.active.get(&c.id).is_some_and(|a| a.matches(c) && logins::is_active(&a.binding))
+}
+
+/// Whether this connection was deliberately logged out this session. Opening its sources must
+/// ask for an explicit login rather than automatically reloading its saved credential.
+pub fn logged_out(s: &Session, c: &Connection) -> bool {
+    s.web_logins.logged_out.contains(&c.id)
 }
 
 /// A plain address at the origin of a logged-in service connection, bound to that login. Anything
@@ -344,14 +582,36 @@ pub(crate) fn bind_logged_in(s: &Session, connection: &str, url: &str) -> Result
     })
 }
 
-pub fn known_secret(s: &Session, c: &Connection) -> Result<Secret, String> {
-    let Some(secret) = s.database_logins.session_password(&c.id) else {
-        return Err(REQUIRED.into());
-    };
-    if !s.web_logins.active.get(&c.id).is_some_and(|a| a.matches(c)) {
-        return Err(UNUSABLE.into());
+/// The secret `c` logs in with without one typed: the one given this session, else the one
+/// saved on this computer (read once: a failure is kept, and said, until an explicit login).
+/// Nothing is read for a connection logged out this session.
+pub fn known_secret(s: &mut Session, c: &Connection) -> Result<Secret, String> {
+    if s.web_logins.logged_out.contains(&c.id) {
+        return Err(LOGGED_OUT.into());
     }
-    Ok(secret.clone())
+    if let Some(secret) = s.database_logins.session_password(&c.id) {
+        if !s.web_logins.active.get(&c.id).is_some_and(|a| a.matches(c)) {
+            return Err(UNUSABLE.into());
+        }
+        return Ok(secret.clone());
+    }
+    if let Some(error) = s.web_logins.failed.get(&c.id) {
+        return Err((*error).into());
+    }
+    if !c.remembered || c.auth.is_empty() {
+        return Err(REQUIRED.into());
+    }
+    let error = match load(s.database_logins.secret_store(), c) {
+        Loading::Found(secret) => return Ok(secret),
+        Loading::Missing => {
+            s.connections.set_remembered(&c.id, false);
+            NONE_SAVED
+        }
+        Loading::Unavailable => UNAVAILABLE,
+        Loading::Unusable => SAVED_UNUSABLE,
+    };
+    s.web_logins.failed.insert(c.id.clone(), error);
+    Err(error.into())
 }
 
 /// Binds a request to a connection chosen in this session. A bare address can resolve to the
@@ -418,6 +678,19 @@ pub fn request(s: &mut Session, connection: Option<&str>, url: &str) -> Result<S
     }
     let active = s.web_logins.active.get(&c.id).ok_or(REQUIRED)?;
     logins::bind(&active.binding, plain).map_err(str::to_string)
+}
+
+/// Opens a service using its existing or remembered login without retrying a failed store read
+/// or undoing logout. A pending project connection choice is adopted only after success.
+pub fn open_connection(s: &mut Session, c: &Connection) -> Result<(), String> {
+    let answers = answers(s, c);
+    request(s, Some(&c.id), &c.address)?;
+    if answers && let Some(origin) = login_origin(c) {
+        reselect(s, c, &origin);
+        adopt(s, c);
+        resolve(s, Some(&BTreeSet::from([origin])));
+    }
+    Ok(())
 }
 
 pub fn request_params<'a>(s: &mut Session, p: &'a Value) -> Result<std::borrow::Cow<'a, Value>, String> {
@@ -742,7 +1015,7 @@ pub(crate) fn resolve(s: &mut Session, only: Option<&BTreeSet<String>>) {
         let rebound = if c.auth.is_empty() || logged_in(s, &c) {
             Ok(rebind_connection(s, &c))
         } else {
-            // A secret given this session was confirmed for this origin when it was typed.
+            // A session or saved secret was confirmed for this exact origin when it was typed.
             known_secret(s, &c).and_then(|secret| activate(s, &c, Some(&secret), true))
         };
         match rebound {
@@ -759,7 +1032,12 @@ pub(crate) fn resolve(s: &mut Session, only: Option<&BTreeSet<String>>) {
                     .database_logins
                     .requests(s.opened)
                     .any(|r| r.kind == WEB && r.key == origin && r.connections == [c.id.clone()] && r.reason == LoginReason::Password);
-                if e != REQUIRED && !already_asked {
+                // A saved login that can't be read is said once per session (the failure is kept
+                // until an explicit login); a missing login or a deliberate logout only asks.
+                let saved_failure = [NONE_SAVED, UNAVAILABLE, SAVED_UNUSABLE].contains(&e.as_str());
+                let say =
+                    if saved_failure { s.web_logins.said.insert(c.id.clone()) } else { e != REQUIRED && e != LOGGED_OUT && !already_asked };
+                if say {
                     s.notify(format!("{}: {e}", c.name), true);
                 }
                 pending.push(request(LoginReason::Password, vec![c.id.clone()]));
@@ -1006,4 +1284,55 @@ pub(crate) fn tag(s: &mut Session, params: &Value, before: Before, out: &Value) 
         resolve(s, Some(&origins));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod stored_tests {
+    use super::*;
+
+    #[test]
+    fn saved_envelope_binds_origin_method_user_and_parameter_without_echoing_errors() {
+        let c = Connection {
+            id: "c1".into(),
+            kind: "wmts".into(),
+            address: "https://remember-envelope.example.org/wmts".into(),
+            auth: "query".into(),
+            key_name: "api_key".into(),
+            ..Default::default()
+        };
+        let origin = login_origin(&c).unwrap();
+        let value = encode(&c, &origin, "envelope-secret-1979").unwrap();
+        assert_eq!(decode(&value, &c, &origin).unwrap().expose(), "envelope-secret-1979");
+        for foreign in ["http://remember-envelope.example.org", "https://remember-envelope.example.org:8443", "https://foreign.example.org"]
+        {
+            assert_eq!(decode(&value, &c, foreign), Err(SAVED_UNUSABLE));
+        }
+        for (field, replacement) in [("auth", "header"), ("keyName", "another_key"), ("user", "another-user")] {
+            let mut edited = c.clone();
+            match field {
+                "auth" => edited.auth = replacement.into(),
+                "keyName" => edited.key_name = replacement.into(),
+                _ => edited.user = replacement.into(),
+            }
+            assert_eq!(decode(&value, &edited, &origin), Err(SAVED_UNUSABLE));
+        }
+        let mut raw: Value = serde_json::from_str(value.expose()).unwrap();
+        for field in ["version", "origin", "auth", "user", "keyName", "secret"] {
+            let mut missing = raw.clone();
+            missing.as_object_mut().unwrap().remove(field);
+            assert_eq!(decode(&Secret::new(missing.to_string()), &c, &origin), Err(SAVED_UNUSABLE));
+        }
+        for version in [serde_json::json!(0), serde_json::json!(2), serde_json::json!("1")] {
+            let mut newer = raw.clone();
+            newer["version"] = version;
+            assert_eq!(decode(&Secret::new(newer.to_string()), &c, &origin), Err(SAVED_UNUSABLE));
+        }
+        raw["extra"] = Value::Bool(true);
+        assert_eq!(decode(&Secret::new(raw.to_string()), &c, &origin), Err(SAVED_UNUSABLE));
+        for bad in ["not json envelope-secret-1979", "[]", &"x".repeat(MAX_STORED + 1)] {
+            assert_eq!(decode(&Secret::new(bad), &c, &origin), Err(SAVED_UNUSABLE));
+        }
+        let invalid = encode(&c, &origin, "invalid\nsecret").unwrap();
+        assert_eq!(decode(&invalid, &c, &origin), Err(SAVED_UNUSABLE));
+    }
 }

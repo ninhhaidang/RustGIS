@@ -115,7 +115,14 @@ pub fn query_name_matches(raw: &str, name: &str) -> bool {
 /// one is read as holding a credential, though the name alone doesn't say so (`?layer=…` isn't
 /// one until a login names it). Held for this run; saved connections register theirs when they
 /// are read, added or changed.
-static LOGIN_NAMES: std::sync::RwLock<std::collections::BTreeSet<String>> = std::sync::RwLock::new(std::collections::BTreeSet::new());
+static LOGIN_NAMES: std::sync::RwLock<std::collections::BTreeMap<String, LoginName>> =
+    std::sync::RwLock::new(std::collections::BTreeMap::new());
+
+#[derive(Default)]
+struct LoginName {
+    committed: bool,
+    pending: usize,
+}
 
 /// How many names [`note_login_query_name`] holds.
 pub const MAX_LOGIN_NAMES: usize = 256;
@@ -130,10 +137,58 @@ pub fn note_login_query_name(name: &str) -> bool {
         return false;
     }
     let mut names = LOGIN_NAMES.write().unwrap_or_else(|e| e.into_inner());
-    if names.contains(&name) {
+    if let Some(entry) = names.get_mut(&name) {
+        entry.committed = true;
         return true;
     }
-    names.len() < MAX_LOGIN_NAMES && names.insert(name)
+    if names.len() >= MAX_LOGIN_NAMES {
+        return false;
+    }
+    names.insert(name, LoginName { committed: true, pending: 0 });
+    true
+}
+
+/// A provisional name occupying capacity without holding the registry lock across store I/O.
+/// Dropping it releases only this reservation; a name accepted elsewhere remains registered.
+pub struct LoginQueryNameReservation {
+    name: String,
+}
+
+impl LoginQueryNameReservation {
+    /// Makes the name permanent before committing the corresponding connection definition.
+    pub fn commit(self) {
+        if let Some(entry) = LOGIN_NAMES.write().unwrap_or_else(|e| e.into_inner()).get_mut(&self.name) {
+            entry.committed = true;
+        }
+    }
+}
+
+impl Drop for LoginQueryNameReservation {
+    fn drop(&mut self) {
+        let mut names = LOGIN_NAMES.write().unwrap_or_else(|e| e.into_inner());
+        if let Some(entry) = names.get_mut(&self.name) {
+            entry.pending = entry.pending.saturating_sub(1);
+            if entry.pending == 0 && !entry.committed {
+                names.remove(&self.name);
+            }
+        }
+    }
+}
+
+/// Reserves capacity through a fallible connection edit. The caller commits on success;
+/// dropping on failure releases the slot unless another caller accepted or still reserves it.
+pub fn reserve_login_query_name(name: &str) -> Option<LoginQueryNameReservation> {
+    let name = name.to_ascii_lowercase();
+    if !name.bytes().any(|b| b.is_ascii_alphanumeric()) {
+        return None;
+    }
+    let mut names = LOGIN_NAMES.write().unwrap_or_else(|e| e.into_inner());
+    if !names.contains_key(&name) && names.len() >= MAX_LOGIN_NAMES {
+        return None;
+    }
+    let entry = names.entry(name.clone()).or_default();
+    entry.pending = entry.pending.checked_add(1)?;
+    Some(LoginQueryNameReservation { name })
 }
 
 /// Context is collected from decoded query names, including legacy semicolon-separated pairs.
@@ -159,7 +214,7 @@ impl QueryNames {
                 names.sv |= k == "sv";
                 names.state |= k == "state";
                 let exact = String::from_utf8_lossy(before).to_ascii_lowercase();
-                if login.contains(&exact) && !names.login.contains(&exact) {
+                if login.get(&exact).is_some_and(|entry| entry.committed) && !names.login.contains(&exact) {
                     names.login.push(exact);
                 }
             }

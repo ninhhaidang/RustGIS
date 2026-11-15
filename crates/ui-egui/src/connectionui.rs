@@ -88,7 +88,12 @@ pub(crate) fn translated(e: &str) -> String {
         s3::MISMATCH => tl!("The saved S3 connection no longer matches this source."),
         STALE => tl!("This S3 connection choice is no longer available."),
         web::UNUSABLE => tl!("The session login could not be used. Enter it again."),
-        web::SESSION_ONLY => tl!("Web-service logins last for this session only."),
+        web::SAVED_UNUSABLE => tl!("The saved login could not be used. Enter it again."),
+        web::NONE_SAVED => tl!("No saved login for this connection. Enter it again."),
+        web::UNAVAILABLE => tl!("The saved login is unavailable. Enter it for this session."),
+        web::NOT_REMEMBERED => tl!("The login is available for this session but was not remembered on this computer."),
+        web::NOT_FORGOTTEN => tl!("The saved login could not be forgotten. The connection was not changed."),
+        web::LOGGED_OUT => tl!("This connection is logged out. Log in explicitly to use it again."),
         web::INSECURE => tl!("This connection uses unencrypted http://. Tick the confirmation before sending its password or key."),
         web::BAD_SECRET => tl!("The password or key must fit a 4096-byte HTTP header, without control characters."),
         web::HEADER_ASCII => tl!("An API key sent in a header must use plain ASCII characters."),
@@ -278,7 +283,7 @@ pub fn log_in(app: &mut RustGisApp, id: &str) -> bool {
             app.dialogs.info = Some(if DATABASE_KINDS.contains(&app.ui.connection.kind.as_str()) {
                 tl!("Type the password, then Save. Remember on this computer is optional.").to_string()
             } else if WEB_KINDS.contains(&app.ui.connection.kind.as_str()) {
-                tl!("Type the password or key, or leave it blank to use this connection's session login, then Save.").to_string()
+                tl!("Type the password or key, or leave it blank to use this connection's session or saved login, then Save.").to_string()
             } else if saved {
                 tl!("Leave the keys blank to log in with the keys saved on this computer, or type others, then Save.").to_string()
             } else {
@@ -496,7 +501,7 @@ fn password_prompt(app: &mut RustGisApp, id: &str, request: Option<LoginRequest>
             if WEB_KINDS.contains(&app.ui.connection.kind.as_str()) {
                 app.ui.connection.login = true;
                 app.dialogs.info =
-                    Some(tl!("Enter the password or key for this connection. Web-service logins last for this session only.").into());
+                    Some(tl!("Enter the password or key for this connection. Remember on this computer is optional.").into());
                 app.dialogs.error = error.map(|e| translated(&e));
                 return;
             }
@@ -733,8 +738,8 @@ fn clear_secrets(st: &mut State) {
 }
 
 /// Saves the definition, then logs in when a secret is typed, or the form was opened to log in
-/// (using this connection's session login or saved DB/S3 credentials). Only DB/S3 logins remember
-/// secrets. A login that worked with a warning keeps the dialog open to say so.
+/// (using this connection's session or saved credentials). Secrets are remembered only when
+/// asked. A login that worked with a warning keeps the dialog open to say so.
 fn save(app: &mut RustGisApp) -> Result<(), String> {
     let store = app.session.database_logins.has_store();
     let st = &app.ui.connection;
@@ -753,6 +758,9 @@ fn save(app: &mut RustGisApp) -> Result<(), String> {
     }
     if service && typed_secrets(st) && insecure(st) && !st.allow_insecure {
         return Err(translated(web::INSECURE));
+    }
+    if service && st.remember && !typed_secrets(st) {
+        return Err(tl!("Type the password or key to remember it on this computer.").into());
     }
     let keys_mode = st.kind == "s3" && st.credentials == "keys";
     let remember = keys_mode && st.remember && remember_blocked(store, &st.session_token).is_none();
@@ -794,7 +802,7 @@ fn save(app: &mut RustGisApp) -> Result<(), String> {
     let mut login = json!({"id": id});
     secrets(&app.ui.connection, &mut login);
     let database = DATABASE_KINDS.contains(&app.ui.connection.kind.as_str());
-    if database {
+    if database || service && store {
         login["remember"] = json!(app.ui.connection.remember);
     } else if remember {
         login["remember"] = json!(true);
@@ -850,7 +858,9 @@ pub fn dialog(app: &mut RustGisApp, ui: &mut egui::Ui) -> bool {
             "A named endpoint you can reuse. Keys are kept until RustGIS closes unless you choose to remember them on this computer; the connection itself never keeps them."
         )
     } else {
-        tl!("Web-service logins last for this session only.")
+        tl!(
+            "A named endpoint you can reuse. Passwords and keys last for this session unless you choose to remember them on this computer; the connection itself never keeps them."
+        )
     };
     ui.label(egui::RichText::new(intro).weak());
     let store = app.session.database_logins.has_store();
@@ -858,6 +868,7 @@ pub fn dialog(app: &mut RustGisApp, ui: &mut egui::Ui) -> bool {
     let saved_keys =
         app.ui.connection.id.as_deref().and_then(|id| app.session.connections.find(id)).is_some_and(|c| c.kind == "s3" && c.saved_keys);
     let current = app.ui.connection.id.as_deref().and_then(|id| app.session.connections.find(id));
+    let remembered = current.is_some_and(|c| web::is_service(c) && c.remembered);
     let logged_in = current.is_some_and(|c| web::logged_in(&app.session, c));
     let st = &mut app.ui.connection;
     let database = DATABASE_KINDS.contains(&st.kind.as_str());
@@ -1035,11 +1046,16 @@ pub fn dialog(app: &mut RustGisApp, ui: &mut egui::Ui) -> bool {
                         ui.label("");
                         ui.label(
                             egui::RichText::new(tl!(
-                                "The key is added to each request to this address as this parameter. It is never saved."
+                                "The key is added to each request to this address as this parameter. It is never saved in the connection or project."
                             ))
                             .small()
                             .weak(),
                         );
+                        ui.end_row();
+                    }
+                    if store {
+                        ui.label("");
+                        changed |= ui.checkbox(&mut st.remember, tl!("Remember on this computer")).changed();
                         ui.end_row();
                     }
                     if insecure(st) {
@@ -1049,11 +1065,17 @@ pub fn dialog(app: &mut RustGisApp, ui: &mut egui::Ui) -> bool {
                     } else {
                         st.allow_insecure = false;
                     }
-                    if logged_in {
+                    if logged_in || remembered {
                         ui.label(tl!("Status"));
                         ui.vertical(|ui| {
-                            ui.label(tl!("Logged in"));
-                            logout = ui.button(tl!("Log Out")).clicked();
+                            if logged_in {
+                                ui.label(tl!("Logged in"));
+                                logout = ui.button(tl!("Log Out")).clicked();
+                            }
+                            if remembered {
+                                ui.label(if store { tl!("Saved on this computer") } else { tl!("Saved login unavailable") });
+                                forget = ui.add_enabled(store, egui::Button::new(tl!("Forget Saved Login"))).clicked();
+                            }
                         });
                         ui.end_row();
                     }
@@ -1062,7 +1084,7 @@ pub fn dialog(app: &mut RustGisApp, ui: &mut egui::Ui) -> bool {
         }
     });
     // A credential-source switch never carries opt-in to the newly chosen source.
-    if source_changed || !(database || st.kind == "s3" && st.credentials == "keys") {
+    if source_changed || !(database || service && !st.auth.is_empty() && store || st.kind == "s3" && st.credentials == "keys") {
         st.remember = false;
     }
     if changed {
@@ -1074,11 +1096,19 @@ pub fn dialog(app: &mut RustGisApp, ui: &mut egui::Ui) -> bool {
         app.dialogs.error = None;
     }
     if forget && let Some(id) = app.ui.connection.id.clone() {
-        match forget_keys(app, &id) {
+        let result = if service {
+            app.run("connection.forgetLogin", json!({"id":id})).map(|_| ()).map_err(|e| translated(&e))
+        } else {
+            forget_keys(app, &id)
+        };
+        match result {
             Ok(()) => {
                 app.dialogs.error = None;
-                app.dialogs.info =
-                    Some(tl!("The keys saved on this computer were forgotten; a login in this session keeps working.").to_string());
+                app.dialogs.info = Some(if service {
+                    tl!("The saved login was forgotten; a login in this session keeps working.").to_string()
+                } else {
+                    tl!("The keys saved on this computer were forgotten; a login in this session keeps working.").to_string()
+                });
             }
             Err(e) => {
                 app.dialogs.info = None;
@@ -1088,7 +1118,7 @@ pub fn dialog(app: &mut RustGisApp, ui: &mut egui::Ui) -> bool {
     }
     if logout && let Some(id) = app.ui.connection.id.clone() {
         match app.run("connection.logout", json!({"id":id})) {
-            Ok(_) => app.dialogs.info = Some(tl!("Logged out. Enter the password or key to log in again.").into()),
+            Ok(_) => app.dialogs.info = Some(tl!("Logged out. Log in explicitly to use this connection again.").into()),
             Err(e) => app.dialogs.error = Some(translated(&e)),
         }
     }
@@ -1144,8 +1174,7 @@ pub fn dialog(app: &mut RustGisApp, ui: &mut egui::Ui) -> bool {
 pub fn open_connection(app: &mut RustGisApp, c: &Connection) -> Result<(), String> {
     if web::is_service(c)
         && !c.auth.is_empty()
-        && !web::logged_in(&app.session, c)
-        && let Err(e) = app.run("connection.login", json!({"id":c.id}))
+        && let Err(e) = web::open_connection(&mut app.session, c)
     {
         password_prompt(app, &c.id, password_request(app, &c.id), Some(e));
         return Ok(());
@@ -1516,7 +1545,7 @@ mod tests {
                 assert!(app.ui.connection.test.is_none());
                 assert!(app.ui.connection.id.is_none());
                 assert_eq!(app.session.connections.connections, vec![saved.clone()]);
-                assert_eq!(web::known_secret(&app.session, &saved).unwrap().expose(), "saved-validation-key");
+                assert_eq!(web::known_secret(&mut app.session, &saved).unwrap().expose(), "saved-validation-key");
                 for entry in app.session.log.entries().filter(|e| e.command == "connection.test") {
                     assert!(entry.params.get("apiKey").is_none());
                     assert!(entry.params.get("password").is_none());
@@ -1586,8 +1615,84 @@ mod tests {
             app.ui.connection.password = password;
             assert!(save(&mut app).is_err());
             assert_eq!(app.session.connections.find(id), Some(&saved));
-            assert_eq!(web::known_secret(&app.session, &saved).unwrap().expose(), "original-password");
+            assert_eq!(web::known_secret(&mut app.session, &saved).unwrap().expose(), "original-password");
         }
+    }
+
+    #[test]
+    fn opening_a_remembered_connection_adopts_a_missing_recorded_project_choice() {
+        use rustgis_engine::data::secrets::MemorySecrets;
+        use std::sync::Arc;
+
+        let mut app = RustGisApp::with_sample();
+        let origin = "https://open-remembered-adoption.example";
+        app.run("map.addTiles", json!({"url":format!("{origin}/tiles/{{z}}/{{x}}/{{y}}.png")})).unwrap();
+        app.session.map_mut().tiles[0].connection = "deleted-connection".into();
+        let made = app
+            .run("connection.new", json!({"kind":"wms", "address":format!("{origin}/wms"), "auth":"header", "keyName":"X-Api-Key"}))
+            .unwrap();
+        let id = made["id"].as_str().unwrap();
+        let store = Arc::new(MemorySecrets::new());
+        app.session.database_logins.set_store(Some(store.clone()));
+        app.session.connections.set_remembered(id, true);
+        let c = app.session.connections.find(id).unwrap().clone();
+        assert!(web::save(app.session.database_logins.secret_store(), &c, "remembered-adoption-key"));
+        app.session.database_logins.request(LoginRequest {
+            reason: LoginReason::Connection,
+            kind: WEB,
+            key: origin.into(),
+            connections: Vec::new(),
+            layers: Vec::new(),
+            tiles: 1,
+            opened: app.session.opened,
+            prompted: false,
+        });
+        assert!(!web::logged_in(&app.session, &c));
+
+        open_connection(&mut app, &c).unwrap();
+
+        assert!(web::logged_in(&app.session, &c));
+        assert_eq!(app.session.map().tiles[0].connection, c.id);
+        assert!(!app.session.database_logins.requests(app.session.opened).any(|r| r.kind == WEB && r.key == origin));
+    }
+
+    #[test]
+    fn opening_an_active_connection_resolves_a_choice_after_the_selected_peer_logs_out() {
+        let mut app = RustGisApp::with_sample();
+        let origin = "https://active-choice.example";
+        let mut ids = Vec::new();
+        for name in ["A", "B"] {
+            let made = app
+                .run(
+                    "connection.new",
+                    json!({
+                        "kind":"wms", "name":name, "address":format!("{origin}/wms"),
+                        "auth":"header", "keyName":"X-Key"
+                    }),
+                )
+                .unwrap();
+            let id = made["id"].as_str().unwrap().to_string();
+            app.run("connection.login", json!({"id":id,"apiKey":format!("secret-{name}")})).unwrap();
+            ids.push(id);
+        }
+        app.run("connection.logout", json!({"id":ids[1]})).unwrap();
+        let a = app.session.connections.find(&ids[0]).unwrap().clone();
+        assert!(web::logged_in(&app.session, &a));
+        assert_eq!(app.session.database_logins.selection(WEB, origin), None);
+        let mut project = rustgis_engine::Project::default();
+        project.map_mut().tiles.push(rustgis_engine::map::TileLayer::new(
+            "Unassigned",
+            rustgis_engine::map::TileKind::Raster,
+            format!("{origin}/tiles/{{z}}/{{x}}/{{y}}.png"),
+        ));
+        app.run("project.openText", json!({"text":serde_json::to_string(&project).unwrap()})).unwrap();
+        assert!(app.session.database_logins.requests(app.session.opened).any(|r| r.kind == WEB && r.reason == LoginReason::Choose));
+        open_connection(&mut app, &a).unwrap();
+        assert_eq!(app.session.database_logins.selection(WEB, origin), Some(a.id.as_str()));
+        assert!(!app.session.database_logins.requests(app.session.opened).any(|r| r.kind == WEB && r.key == origin));
+        assert_eq!(app.session.map().tiles[0].connection, a.id);
+        let applied = rustgis_engine::render::rustgis_tiles::logins::apply(&app.session.map().tiles[0].url).unwrap().unwrap();
+        assert_eq!(applied.header.unwrap().1, "secret-A");
     }
 
     #[test]

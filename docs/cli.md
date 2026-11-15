@@ -63,7 +63,8 @@ no parameters; otherwise use `--cmd 'id={json params}'`. What a command reports 
 which the app shows in its status bar, goes to standard error.
 
 Pass `--use-saved-secrets` to load the desktop app's saved connections and let
-`connection.login` and project sources use their remembered database passwords and S3 keys.
+`connection.login` and project sources use their remembered database passwords, S3 keys and
+web-service logins (Basic authentication or an API key in a header or query parameter).
 It also lets `ask` use the API key the app remembers, only for the same provider and address
 when the environment supplies no key, and the ChatGPT sign-in kept in the system keychain, and
 lets files on NASA's Earthdata data servers use the Earthdata Login token the app remembers
@@ -78,6 +79,15 @@ run continues without that saved secret and warns once on standard error. An unr
 malformed preferences file produces a separate warning when opting in; missing preferences are
 normal. On macOS, Keychain may ask once per item whether `rustgis-cli` may read it; **Always
 Allow** stops that question for the executable and item.
+
+Web-service logins are loaded only for the same connection ID, origin and login definition;
+the flag never shares a login with another connection. `connection.login` keeps an entered
+password or API key session-only unless `"remember": true` opts it into the OS store.
+If saving fails, the session login still works and a warning says it was not remembered.
+`connection.forgetLogin` deletes only the saved login, leaving the session login usable.
+`connection.logout` retains the saved login but blocks automatic reuse for the rest of the
+session until an explicit `connection.login`. See [Web-service logins](user-guide/data.md#web-service-logins)
+for exact-origin matching and HTTP confirmation.
 
 Nothing waits on `run` the way a window does, so a long run takes the bounds the app's panes give
 it on a thread: a trend over a data cube (`cube.trend`) may compare up to 20 billion pairs, ten

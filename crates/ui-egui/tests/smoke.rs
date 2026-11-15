@@ -8,6 +8,7 @@ use serde_json::json;
 mod remembered_database;
 
 mod remembered_s3;
+mod remembered_service;
 mod service_logins;
 /// Builds a headless World Atlas UI for interaction tests.
 fn harness() -> egui_kittest::Harness<'static, RustGisApp> {

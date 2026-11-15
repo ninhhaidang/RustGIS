@@ -244,13 +244,15 @@ goes back to the default, the cores up to 16 (see [Environments](user-guide/anal
 ### Saved connections and secrets
 
 `rustgis.Session(use_saved_secrets=True)` loads the desktop app's saved connection definitions
-and lets `connection.login` and project sources use their remembered database passwords and S3
-keys, and files on NASA's Earthdata data servers the remembered Earthdata Login token (which,
+and lets `connection.login` and project sources use their remembered database passwords, S3
+keys and web-service logins (Basic authentication or an API key in a header or query parameter),
+and files on NASA's Earthdata data servers the remembered Earthdata Login token (which,
 like a token given with `earthdata.login`, then serves every session of the process).
 Secrets are read lazily from the system keychain, only when a command needs one, under
-the desktop's rules: the same connection ID, kind and address or S3 endpoint. Parameters given
-to a command, and environment credentials selected by a connection, take precedence over saved
-secrets. Changes to the connection definitions aren't saved back to the desktop preferences.
+the desktop's rules: the same connection ID, kind and address or S3 endpoint; web-service logins
+require the same connection ID, exact origin and login definition. Parameters given to a command,
+and environment credentials selected by a connection, take precedence over saved secrets.
+Changes to the connection definitions aren't saved back to the desktop preferences.
 
 The default is `False`: nothing reads the keychain or desktop preferences, so scripts and CI
 remain opt-in. If the keychain is unavailable, locked or refuses access, the session emits one
@@ -266,6 +268,14 @@ diagnostic. On macOS, Keychain may ask once per item whether the Python executab
 **Always Allow** stops that question for that executable and item. Until such a question is
 answered (or a locked Secret Service on Linux responds), the command that asked waits, and so do
 other RustGIS calls in the process, even on other sessions; other Python threads keep running.
+
+For web-service connections, `s.run("connection.login", id="c1", apiKey="…")` keeps the key
+only for the session; `remember=True` opts a Basic password, header key or query key into the
+OS store. If saving fails, the session login still works and a warning says it was not remembered.
+`s.run("connection.forgetLogin", id="c1")` deletes only the saved login, leaving the session's
+login usable. `connection.logout` retains the saved login but blocks automatic reuse for the
+rest of the session until an explicit `connection.login`. See
+[Web-service logins](user-guide/data.md#web-service-logins) for matching and HTTP confirmation.
 
 ## Data in and out
 

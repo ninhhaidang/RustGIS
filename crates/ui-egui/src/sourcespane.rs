@@ -342,6 +342,10 @@ fn connection_header(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens, c: &Connecti
                 .on_hover_text(tl!("Keys were saved for this connection, but there is no credential store here to read them from."));
         }
     }
+    if rustgis_engine::service_logins::is_service(c) && c.remembered {
+        let label = if app.session.database_logins.has_store() { tl!("Saved login") } else { tl!("Saved login unavailable") };
+        ui.label(RichText::new(label).small().weak());
+    }
     ui.label(RichText::new(tl!(crate::connectionui::label(&c.kind))).small().weak());
     response.context_menu(|ui| {
         let mut items = vec![
@@ -374,9 +378,25 @@ fn connection_header(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens, c: &Connecti
                 }
                 ui.close();
             }
+            if service_login
+                && c.remembered
+                && ui.add_enabled(app.session.database_logins.has_store(), egui::Button::new(tl!("Forget Saved Login"))).clicked()
+            {
+                match app.run("connection.forgetLogin", json!({"id":c.id})) {
+                    Ok(_) => {
+                        crate::connectiontree::refresh(app, Some(&c.id));
+                        app.session.notify(tl!("The saved login was forgotten; a login in this session keeps working.").to_string(), false);
+                    }
+                    Err(e) => app.session.notify(crate::connectionui::translated(&e), true),
+                }
+                ui.close();
+            }
             if service_login && rustgis_engine::service_logins::logged_in(&app.session, c) && ui.button(tl!("Log Out")).clicked() {
                 match app.run("connection.logout", json!({"id": c.id})) {
-                    Ok(_) => crate::connectiontree::refresh(app, Some(&c.id)),
+                    Ok(_) => {
+                        crate::connectiontree::refresh(app, Some(&c.id));
+                        app.session.notify(tl!("Logged out. Log in explicitly to use this connection again.").to_string(), false);
+                    }
                     Err(e) => app.session.notify(crate::connectionui::translated(&e), true),
                 }
                 ui.close();

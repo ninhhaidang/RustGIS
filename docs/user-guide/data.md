@@ -897,7 +897,7 @@ database tests run synchronously on desktop. The web app doesn't offer database 
 connections; saved database rows remain visible but cannot be opened or tested there. Earth
 Search and Planetary Computer remain available under **Library**.
 
-For a new web-service connection, enter its Basic password or header API key to test it before
+For a new web-service connection, enter its Basic password or header/query API key to test it before
 saving. The test uses only the entered login, not a saved service login or an S3 session login
 at the same address.
 For an `http://` address, tick the confirmation before sending the login unencrypted. After a test
@@ -1072,11 +1072,42 @@ header** (the header's name, such as `X-API-Key`, and the key) or **API key in t
 parameter's name, such as `api_key`, and the key). The connection keeps only the method, the user
 name and the header or parameter name, never the password or key.
 The password or key goes to `connection.login {"id":"c1","password":"…"}` (basic) or
-`{"id":"c1","apiKey":"…"}` and lasts only for this session. Web-service logins never access the
-computer's credential store. Editing the origin, method, user or header or parameter name ends
-the login (a connection's kind doesn't change: make a new one); renaming the connection or
-changing its path at the same origin does not. **Log Out**
-(`connection.logout`) removes the session login. Log in again when a new session needs it.
+`{"id":"c1","apiKey":"…"}` and lasts only for this session by default.
+On desktop, **Remember on this computer** is unchecked initially. Checking it
+(`"remember": true` in `connection.login`) saves the Basic password, header key or query key in
+the operating system's credential store: macOS Keychain, Windows Credential Manager or Secret
+Service. **Test** never remembers a login. If the store is absent, unavailable or refuses access,
+the entered login still works for this session and a warning says it was not remembered.
+An unchecked replacement stays session-only and leaves any previously saved login unchanged.
+The web app has no OS-store hook and remains session-only.
+
+A remembered login is read only when needed, for the same connection ID, exact origin (scheme,
+host and port), method, user and header or query parameter name. It is never borrowed by another
+connection. A missing or unavailable saved login leaves the connection waiting for an entered
+login; it does not prevent session-only sign-in. The credential envelope is versioned; unknown
+versions are refused without rewriting the saved value. A failed store read is not retried merely
+by opening the source again: choose **Log In** or run `connection.login` explicitly to retry.
+Deleting or replacing a saved login, by **Remember**, **Forget Saved Login**, or an edit or
+removal, first checks whose it is. Connection IDs are numbered per computer, so another
+connection, or a newer RustGIS, can have saved a login under the same ID. A login saved for this
+connection's origin, method, user and header or parameter name is replaced or deleted, and so is
+a damaged value that no version can read. A login saved for another connection or by a newer
+RustGIS is left unchanged: **Remember** then keeps the entered login for the session only, with a
+warning, and **Forget Saved Login** says the entry was left.
+Editing the origin, method, user or header or
+parameter name ends the login and deletes the saved one (a connection's kind doesn't change:
+make a new one); renaming or changing its path at the same origin keeps it. Removing a connection
+also deletes its saved login; duplicating it copies neither its session nor its saved login.
+If the store refuses the deletion for a connection marked remembered, the edit or removal does
+not happen. A connection that isn't marked can still have a login saved by another session, so a
+store is checked for it too; if that fails, the change goes on with a warning that a saved login
+may remain. This check can ask to unlock the credential store even for a connection that isn't
+marked.
+
+**Forget Saved Login** (`connection.forgetLogin {"id":"c1"}`) deletes only the stored login,
+leaving the session's login usable. **Log Out** (`connection.logout`) ends the session login,
+but keeps the stored one. Logout prevents automatic reuse for the rest of that session until
+an explicit login, including `connection.login {"id":"c1"}` to use the saved login again.
 
 An API key in the query suits services such as Planet's basemaps, whose address is
 `https://api.planet.com/basemaps/v1/mosaics/wmts?api_key=…`: save the connection as
@@ -1140,8 +1171,11 @@ to make one for its address. `connection.list` reports these as `loginRequests` 
 Logging in retries waiting remote rasters without changing their style. A dated layer also asks
 for the login covering dates at its recorded connection's origin, even when it reopens on a date
 hosted elsewhere. Those foreign-origin dates stay anonymous.
-CLI and Python use the same session-only `connection.login` commands. ArcGIS sign-in and tokens
-keep their own [ArcGIS sign-in](#web-data). A login ends with the session that made it.
+CLI and Python remain session-only unless `--use-saved-secrets` / `use_saved_secrets=True`
+opts into remembered logins, as for database passwords and S3 keys. An active login still ends
+with its session; only an explicitly remembered one can be loaded again.
+Earthdata Login and ArcGIS OAuth sign-in and tokens keep their own
+[sign-in rules](web-data.md); these web-service login controls do not change them.
 Unbound fetches never adopt another session's service login.
 Layers added by plugins stay anonymous, including after saving and reopening a project or adding
 a saved connection later. To use a connection's login, add the layer yourself through that connection.

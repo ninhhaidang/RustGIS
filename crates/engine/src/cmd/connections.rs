@@ -1,4 +1,4 @@
-//! Saved connections and session-only logins. Listing handlers are called directly: these
+//! Saved connections and their logins. Listing handlers are called directly: these
 //! commands never edit the project, create undo snapshots or note recently added sources.
 
 use std::collections::BTreeMap;
@@ -32,15 +32,18 @@ pub fn commands() -> Vec<C> {
             r#"{"kind": "postgres"|"mysql"|"sqlserver"|"service"|"wms"|"wmts"|"wfs"|"wcs"|"ogcapi"|"arcgis"|"csw"|"stac"|"s3", "address"?: "as the kind's add command takes it, without its password or token (postgres:host=… dbname=… user=…, mysql://user@host/db, mssql://user@host/db, a service's or STAC API's https:// address, an S3 endpoint: AWS when absent)", "name"?: "unique (default from the address)", "group"?: text, "options"?: {"region"?: text, "buckets"?: "a,b", "credentials"?: "keys"|"profile"|"environment"|"none", "profile"?: text} (S3 only), "auth"?: "none"|"basic"|"header"|"query": how a web-service connection logs in (basic authentication, an API key in a header, or an API key in a query parameter; the password or key is given to connection.login, never kept here), "user"?: "the basic login's user name", "keyName"?: "the header (auth header, e.g. X-API-Key) or the query parameter (auth query, e.g. api_key) the API key goes in; a query parameter of that name is taken out of the address"} (the result's stripped is true when a password, token or key was left out of the address; strippedParameters names the key parameters left out, to give as keyName with auth query)"#,
         ),
         C::new("connection.edit", "Edit Connection", "Home › Add › Data Sources", edit).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Reserved)).view().params(
-            r#"{"id": "a connection's id or name", "name"?: text, "group"?: text, "address"?: text, "options"?: "as connection.new (replaces them)", "auth"?: "as connection.new", "user"?: text, "keyName"?: text, "kind"?: "its kind (unchanged)"} (another origin, login method, user or key name ends the web connection's session login)"#,
+            r#"{"id": "a connection's id or name", "name"?: text, "group"?: text, "address"?: text, "options"?: "as connection.new (replaces them)", "auth"?: "as connection.new", "user"?: text, "keyName"?: text, "kind"?: "its kind (unchanged)"} (another origin, login method, user or key name ends the web connection's login and deletes its saved one; for a connection this session didn't remember, a store that refuses the cleanup only warns that a saved login may remain)"#,
         ),
         C::new("connection.duplicate", "Duplicate Connection", "Home › Add › Data Sources", duplicate).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Reserved)).view().params(r#"{"id": "a connection's id or name", "name"?: text}"#),
-        C::new("connection.remove", "Remove Connection", "Home › Add › Data Sources", remove).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Reserved)).view().params(r#"{"id": "a connection's id or name"} (deletes its saved database password or S3 keys; ends its web-service session login)"#),
+        C::new("connection.remove", "Remove Connection", "Home › Add › Data Sources", remove).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Reserved)).view().params(r#"{"id": "a connection's id or name"} (deletes its saved password, keys or login, and ends its web-service session login; for a web-service connection this session didn't remember, a store that refuses the cleanup only warns that a saved login may remain)"#),
         C::new("connection.login", "Log In to Connection", "Home › Add › Data Sources", login_command).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Reserved)).view().params(
-            r#"{"id": "a connection's id or name; blank credentials explicitly use this ID's session credentials (or saved credentials for database/S3 connections)", "password"?: "a database password, or a web service's basic-authentication password", "apiKey"?: "a web service's API key (auth header or query)", "allowInsecure"?: "boolean, default false: confirms sending a web service's login to its plain http:// address, unencrypted", "accessKeyId"?: text, "secretAccessKey"?: text, "sessionToken"?: "temporary S3 credentials, never persisted", "remember"?: "boolean, default false: opt into this computer's credential store for a newly typed database password or complete S3 key pair (saved keys mode only). Web-service credentials are session-only and reject remember:true. No credentials are stored in connections or projects; a failed database/S3 save preserves the session login"} (a web service's login is sent only with this session's requests bound to that connection and only to its address's origin: the same scheme, host and port; an API key in the query replaces a parameter of the same name in the address; logging in to one of several connections chooses it for unassigned requests to that address)"#,
+            r#"{"id": "a connection's id or name; blank credentials explicitly use this ID's session or saved credentials", "password"?: "a database password, or a web service's basic-authentication password; session-only by default", "apiKey"?: "a web service's API key (auth header or query); session-only by default", "allowInsecure"?: "boolean, default false: confirms sending a web service's login to its plain http:// address, unencrypted", "accessKeyId"?: text, "secretAccessKey"?: text, "sessionToken"?: "temporary S3 credentials, never persisted", "remember"?: "boolean, default false: opt into this computer's credential store for a newly typed database password, web-service password or key, or complete S3 key pair (saved keys mode only). No credentials are stored in connections or projects; a failed save preserves the session login"} (a web service's login is sent only with this session's requests bound to that connection and only to its address's origin: the same scheme, host and port; an API key in the query replaces a parameter of the same name in the address; logging in to one of several connections chooses it for unassigned requests to that address)"#,
         ),
         C::new("connection.logout", "Log Out of Connection", "Home › Add › Data Sources", logout).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Reserved)).view().params(
-            r#"{"id": "a web-service connection's id or name"} (clears this session's login and its password or key, which is no longer sent)"#,
+            r#"{"id": "a web-service connection's id or name"} (clears this session's login and its password or key, which is no longer sent; a login saved on this computer stays, and is reused only after an explicit login)"#,
+        ),
+        C::new("connection.forgetLogin", "Forget Saved Login", "Home › Add › Data Sources", forget_login).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Reserved)).view().params(
+            r#"{"id": "a web-service connection's id or name"} (deletes the login saved on this computer; a login in this session keeps working)"#,
         ),
         C::new("connection.forgetSavedKeys", "Forget Saved Keys", "Home › Add › Data Sources", forget_saved_keys).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Reserved)).view().params(
             r#"{"id": "a saved S3 connection's id or name"} (deletes stored keys; a login in this session keeps working)"#,
@@ -80,13 +83,7 @@ fn shown(s: &Session, c: &Connection) -> Value {
     if c.kind == "s3" {
         out["savedKeys"] = json!(c.saved_keys);
     }
-    if web::is_service(c) {
-        if let Some(out) = out.as_object_mut() {
-            out.remove("remembered");
-        }
-    } else {
-        out["remembered"] = json!(c.remembered);
-    }
+    out["remembered"] = json!(c.remembered);
     // A web login over plain http:// is sent only once confirmed (`allowInsecure`).
     if !c.auth.is_empty() && c.address.get(..7).is_some_and(|s| s.eq_ignore_ascii_case("http://")) {
         out["insecure"] = json!(true);
@@ -279,20 +276,27 @@ fn edit(s: &mut Session, p: &Value) -> CmdResult {
     // A web login is for one origin, method, user and key name.
     let login_changed = web::is_service(&old) && !crate::connections::same_login(&old, &prepared);
     let credentials_changed = database_changed
+        || login_changed
         || (old.kind == "s3"
             && (endpoint_changed(&old, &prepared)
                 || (old.options.get("credentials").is_some_and(|v| v == "keys")
                     && prepared.options.get("credentials").is_none_or(|v| v != "keys"))));
     let redactions = s.connections.redaction_counts();
     let slot = s.connections.connections.iter_mut().find(|c| c.id == old.id).ok_or("connection no longer exists")?;
+    let reservation = crate::connections::reserve_query_name(&prepared)?;
+    let mut cleanup_warning = None;
     if credentials_changed {
-        delete_account(&mut s.database_logins, &old)?;
+        cleanup_warning = delete_changed_account(&mut s.database_logins, &old)?;
         prepared.saved_keys = false;
         prepared.remembered = false;
     }
-    // Last before the commit: a failed step above must not reserve the name.
-    crate::connections::register_query_name(&prepared)?;
+    if let Some(reservation) = reservation {
+        reservation.commit();
+    }
     let c = crate::connections::Connections::commit_update(slot, &mut s.connections.generation, prepared);
+    if let Some(warning) = cleanup_warning {
+        s.warn(warning);
+    }
     if c.auth == "query" {
         s.connections.refresh_redaction();
     }
@@ -344,9 +348,11 @@ fn duplicate(s: &mut Session, p: &Value) -> CmdResult {
 
 fn remove(s: &mut Session, p: &Value) -> CmdResult {
     let c = found(s, p)?.clone();
-    if DATABASE_KINDS.contains(&c.kind.as_str()) || c.kind == "s3" {
-        delete_account(&mut s.database_logins, &c)?;
-    }
+    let cleanup_warning = if DATABASE_KINDS.contains(&c.kind.as_str()) || c.kind == "s3" || web::is_service(&c) {
+        delete_changed_account(&mut s.database_logins, &c)?
+    } else {
+        None
+    };
     if web::is_service(&c) {
         web::forget(s, &c);
     }
@@ -354,6 +360,9 @@ fn remove(s: &mut Session, p: &Value) -> CmdResult {
         clear_identity(s, &c.id);
     }
     s.connections.remove(&c.id);
+    if let Some(warning) = cleanup_warning {
+        s.warn(warning);
+    }
     // The removed definition named one database: only its layers can change. The requests naming
     // it went with `clear_identity`.
     resolve_keys(s, &address_keys(&c.address));
@@ -379,6 +388,7 @@ fn forget_saved_keys(s: &mut Session, p: &Value) -> CmdResult {
 }
 
 /// Ends this session's login of a web-service connection and clears its transient secret.
+/// A login saved on this computer stays, until an explicit login chooses it again.
 fn logout(s: &mut Session, p: &Value) -> CmdResult {
     let c = found(s, p)?.clone();
     if !web::is_service(&c) {
@@ -388,6 +398,26 @@ fn logout(s: &mut Session, p: &Value) -> CmdResult {
     Ok(shown(s, &c))
 }
 
+/// Deletes the login of a web-service connection saved on this computer. The login of this
+/// session keeps working. A value under its id that is another connection's (or a newer
+/// RustGIS's) is left, and said.
+fn forget_login(s: &mut Session, p: &Value) -> CmdResult {
+    let c = found(s, p)?.clone();
+    if !web::is_service(&c) {
+        return Err(format!("{} connections have no saved web login (connection.forgetPassword, connection.forgetSavedKeys)", c.kind));
+    }
+    let others = delete_web_login(&mut s.database_logins, &c, true)?.0;
+    s.connections.set_remembered(&c.id, false);
+    web::forget_failure(s, &c.id);
+    if others {
+        s.warn(web::OTHERS_LEFT);
+    }
+    let c = s.connections.find(&c.id).cloned().unwrap_or(c);
+    Ok(shown(s, &c))
+}
+
+/// Deletes a database password or S3 keys saved for `c` (a web login goes through
+/// [`delete_web_login`]).
 fn delete_account(logins: &mut crate::connections::DatabaseLogins, c: &Connection) -> Result<(), String> {
     let (marked, error) = if c.kind == "s3" {
         (c.saved_keys, keys::NOT_FORGOTTEN)
@@ -401,6 +431,40 @@ fn delete_account(logins: &mut crate::connections::DatabaseLogins, c: &Connectio
     } else {
         Ok(())
     }
+}
+
+/// Deletes a web connection's saved login if it is its own (or damaged), never another
+/// connection's under the same id: whether such a one was left, and a warning when a cleanup the
+/// connection didn't ask for couldn't be done. A connection marked remembered (or `strict`) is
+/// refused instead: the edit, removal or forget doesn't happen.
+fn delete_web_login(
+    logins: &mut crate::connections::DatabaseLogins,
+    c: &Connection,
+    strict: bool,
+) -> Result<(bool, Option<&'static str>), String> {
+    let strict = strict || c.remembered;
+    if !logins.has_store() {
+        return if c.remembered { Err(web::NOT_FORGOTTEN.into()) } else { Ok((false, None)) };
+    }
+    match web::forget_saved(logins, c) {
+        web::Forgetting::Done => Ok((false, None)),
+        web::Forgetting::Others => Ok((true, None)),
+        web::Forgetting::Refused if strict => Err(web::NOT_FORGOTTEN.into()),
+        web::Forgetting::Refused => Ok((
+            false,
+            Some("The connection was changed, but a saved login may remain on this computer because the credential store refused cleanup."),
+        )),
+    }
+}
+
+/// Deletes the saved credential a changed or removed definition leaves behind. A web
+/// connection's is deleted only when it is its own (see [`delete_web_login`]).
+fn delete_changed_account(logins: &mut crate::connections::DatabaseLogins, c: &Connection) -> Result<Option<&'static str>, String> {
+    if web::is_service(c) {
+        return delete_web_login(logins, c, false).map(|(_, warning)| warning);
+    }
+    delete_account(logins, c)?;
+    Ok(None)
 }
 
 fn clear_identity(s: &mut Session, id: &str) {
@@ -795,6 +859,14 @@ fn login_command(s: &mut Session, p: &Value) -> CmdResult {
     let c = found(s, p)?.clone();
     // Logging in is the user's answer to a request waiting at this origin (the login ends it).
     let answers = web::is_service(&c) && web::answers(s, &c);
+    if web::is_service(&c) {
+        let remember = remember_flag(p)?;
+        insecure_flag(p)?;
+        let typed = ["password", "apiKey"].iter().any(|key| ps(p, key).is_some_and(|v| !v.is_empty()));
+        if !remember && !typed {
+            web::retry(s, &c.id);
+        }
+    }
     let result = login(s, &c, p)?;
     if web::is_service(&c) {
         if answers {
@@ -883,14 +955,11 @@ fn insecure_flag(p: &Value) -> Result<bool, String> {
     }
 }
 
-/// Logs in to a saved web-service connection with the password (basic) or key (header)
-/// typed, or else the one given this session. The login is sent to the connection's origin,
-/// and this connection is chosen for it. A connection without a login method is chosen for
-/// its origin, which then gets no login.
+/// Logs in to a saved web-service connection with the password (basic) or key (header, query)
+/// typed, or else the one given this session or saved on this computer. The login is sent to the
+/// connection's origin, and this connection is chosen for it. A connection without a login
+/// method is chosen for its origin, which then gets no login.
 fn service_login(s: &mut Session, c: &Connection, p: &Value, remember: bool) -> Result<Reopened, String> {
-    if remember {
-        return Err(web::SESSION_ONLY.into());
-    }
     let insecure = insecure_flag(p)?;
     if c.id.is_empty() {
         return Err(web::UNSAVED.into());
@@ -899,6 +968,9 @@ fn service_login(s: &mut Session, c: &Connection, p: &Value, remember: bool) -> 
     let key = ps(p, "apiKey").filter(|t| !t.is_empty());
     let typed = match (c.auth.as_str(), password, key) {
         ("", None, None) => {
+            if remember {
+                return Err("this connection has no login to remember: choose its login method (auth) first".into());
+            }
             web::activate(s, c, None, false)?;
             return Ok(Reopened::default());
         }
@@ -910,12 +982,15 @@ fn service_login(s: &mut Session, c: &Connection, p: &Value, remember: bool) -> 
     };
     let origin = crate::connections::login_origin(c).ok_or(web::NO_ORIGIN)?;
     let Some(typed) = typed else {
+        if remember {
+            return Err("remember keeps the password or key typed in this login: give it".into());
+        }
         // Already logged in: choose it again, keeping its binding and its cached tiles.
         if web::logged_in(s, c) {
             web::reselect(s, c, &origin);
             return Ok(Reopened::default());
         }
-        // Only the active login given this session can be reused.
+        // Given this session or saved on this computer: confirmed for this origin when typed.
         let secret = web::known_secret(s, c)?;
         web::activate(s, c, Some(&secret), true)?;
         return Ok(Reopened::default());
@@ -926,8 +1001,15 @@ fn service_login(s: &mut Session, c: &Connection, p: &Value, remember: bool) -> 
     }
     let secret = rustgis_data::secrets::Secret::new(typed);
     web::activate(s, c, Some(&secret), insecure)?;
-    s.database_logins.set_session_password(&c.id, typed);
-    Ok(Reopened::default())
+    let mut done = Reopened::default();
+    if remember {
+        if web::save(s.database_logins.secret_store(), c, typed) {
+            s.connections.set_remembered(&c.id, true);
+        } else {
+            done.warning = Some(web::NOT_REMEMBERED);
+        }
+    }
+    Ok(done)
 }
 
 fn tested(s: &Session, p: &Value) -> Result<Connection, String> {
