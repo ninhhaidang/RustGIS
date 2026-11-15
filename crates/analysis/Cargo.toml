@@ -17,5 +17,9 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }
 
+[features]
+# `Control::cancelled_at_look`, for the tests of crates that run the tools (not built otherwise).
+testing = []
+
 [dev-dependencies]
 proptest = { workspace = true }

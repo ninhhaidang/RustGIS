@@ -46666,26 +46666,35 @@ fn the_thread_setting_is_reserved() {
     assert!(!spec.mutates, "no undo step");
 }
 
-/// A long command stops when it is cancelled while it runs (#1562): every command the app runs
-/// on another thread (its exports and the commands that make a raster) and the long-running tools
-/// look at the Cancel flag in their work, not only before it starts. Their control is cancelled
-/// as soon as the work starts ([`rustgis_analysis::control::Control::cancelled_once_started`]),
-/// so no timing is involved: a run that never looks finishes and is caught by its count of looks.
+/// A folder in the temp directory that the test owns and that is removed however it ends.
 #[cfg(not(target_arch = "wasm32"))]
-#[test]
-fn long_commands_stop_when_cancelled_while_they_run() {
-    use rustgis_analysis::control::Control;
-    // Removed however the test ends.
-    struct Dir(std::path::PathBuf);
-    impl Drop for Dir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
+struct CancelDir(std::path::PathBuf);
+
+#[cfg(not(target_arch = "wasm32"))]
+impl CancelDir {
+    /// The folder `{prefix}-{process id}` in the temp directory, empty and created.
+    fn new(prefix: &str) -> CancelDir {
+        let dir = std::env::temp_dir().join(format!("{prefix}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        CancelDir(dir)
     }
-    let dir = Dir(std::env::temp_dir().join(format!("rustgis-cancel-{}", std::process::id())));
-    let _ = std::fs::remove_dir_all(&dir.0);
-    std::fs::create_dir_all(&dir.0).unwrap();
-    let out = |f: &str| dir.0.join(f).display().to_string();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for CancelDir {
+    /// Removes the folder and what the test left in it.
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// The sample project with what the background commands read: a DEM and what is made of it, training
+/// squares, an imagery workspace, a two-class scene with its training polygons, a layout, a report
+/// and a Shapefile layer with an edit to publish. Files go in `dir`. Returns it with the DEM's name.
+#[cfg(not(target_arch = "wasm32"))]
+fn cancel_world(dir: &std::path::Path) -> (Session, String) {
+    let out = |f: &str| dir.join(f).display().to_string();
     let mut s = world();
     s.run("layer.addDataBytes", &json!({"fileName": "dem.tif", "data": dem_b64()})).unwrap();
     let dem = s.map().layers.iter().find(|l| l.is_raster()).unwrap().name.clone();
@@ -46712,17 +46721,14 @@ fn long_commands_stop_when_cancelled_while_they_run() {
     s.run("share.exportLayer", &json!({"layer": "Cities", "path": out("towns.shp")})).unwrap();
     s.run("layer.addData", &json!({"path": out("towns.shp"), "name": "towns"})).unwrap();
     s.run("edit.setValue", &json!({"layer": "towns", "row": 0, "field": "name", "value": "Renamed"})).unwrap();
+    s.run("report.new", &json!({"layer": "Cities"})).unwrap();
+    (s, dem)
+}
 
-    // What didn't stop, and how often it looked.
-    let mut kept_going = Vec::new();
-    let mut note = |what: &str, result: Result<(), String>, control: &Control| {
-        let stopped = result.as_ref().is_err_and(|e| e.contains("cancelled"));
-        if !stopped || control.looked() == 0 {
-            kept_going.push(format!("{what}: {result:?}, looked {} times", control.looked()));
-        }
-    };
-
-    let rasters = [
+/// The commands that make a raster in the background, with parameters that run on [`cancel_world`].
+#[cfg(not(target_arch = "wasm32"))]
+fn cancel_rasters(dem: &str) -> Vec<(&'static str, Value)> {
+    vec![
         ("analysis.viewshed", json!({"layer": dem, "lon": 10.0055, "lat": 45.0395, "height": 2})),
         ("analysis.interpolate", json!({"layer": "Cities", "field": "pop_max"})),
         (
@@ -46746,7 +46752,73 @@ fn long_commands_stop_when_cancelled_while_they_run() {
         // Cancelled before the index is read: nothing reaches the network.
         ("embeddings.similarity", json!({"dataset": "alphaearth", "point": [10.01, 45.01], "bbox": [10.0, 45.0, 10.02, 45.02]})),
         ("embeddings.change", json!({"dataset": "alphaearth", "bbox": [10.0, 45.0, 10.02, 45.02]})),
-    ];
+    ]
+}
+
+/// The exports that run in the background, writing into `out`, with parameters that run on
+/// [`cancel_world`].
+#[cfg(not(target_arch = "wasm32"))]
+fn cancel_exports(out: &dyn Fn(&str) -> String, dem: &str) -> Vec<(&'static str, Value)> {
+    vec![
+        ("data.convert", json!({"layer": "Cities", "format": "geojson", "path": out("converted.geojson")})),
+        ("share.exportLayer", json!({"layer": "Cities", "path": out("cities.geojson")})),
+        ("share.exportRaster", json!({"layer": dem, "path": out("dem.tif")})),
+        ("share.exportMap", json!({"path": out("map.png"), "width": 320, "height": 200})),
+        ("map.exportOrbit", json!({"path": out("orbit.zip"), "frames": 3, "width": 96, "height": 64})),
+        ("layout.export", json!({"path": out("layout.pdf"), "dpi": 72})),
+        ("report.export", json!({"path": out("report.pdf"), "dpi": 72})),
+        ("source.publish", json!({"layer": "towns"})),
+    ]
+}
+
+/// The tools whose work grows past a second or two on real data: buffers, overlays, joins, hulls,
+/// densities and interpolation. A new long tool is added here (AGENTS.md › Never hold the window).
+#[cfg(not(target_arch = "wasm32"))]
+fn cancel_tools() -> Vec<(&'static str, Value)> {
+    vec![
+        ("buffer", json!({"input": "Cities", "distance": 100})),
+        ("dissolve", json!({"input": "Countries"})),
+        ("spatialJoin", json!({"target": "Cities", "join": "Countries"})),
+        ("clip", json!({"input": "Rivers", "clip": "Countries"})),
+        ("erase", json!({"input": "Rivers", "erase": "Countries"})),
+        ("intersect", json!({"input": "Rivers", "overlay": "Countries"})),
+        ("identity", json!({"input": "Rivers", "overlay": "Countries"})),
+        ("union", json!({"input": "Lakes", "overlay": "Countries"})),
+        ("symmetricalDifference", json!({"input": "Lakes", "overlay": "Countries"})),
+        ("update", json!({"input": "Countries", "update": "Lakes"})),
+        ("split", json!({"input": "Rivers", "split": "Countries"})),
+        ("simplify", json!({"input": "Countries", "tolerance": 1})),
+        ("countPoints", json!({"polygons": "Countries", "points": "Cities"})),
+        ("convexHull", json!({"input": "Countries", "group": "None", "output": "Hulls_each"})),
+        ("convexHull", json!({"input": "Countries", "group": "All", "output": "Hulls_all"})),
+        ("kernelDensity", json!({"input": "Cities", "crs": "EPSG:3857"})),
+        ("kriging", json!({"input": "Cities", "field": "pop_max"})),
+    ]
+}
+
+/// A long command stops when it is cancelled while it runs (#1562): every command the app runs
+/// on another thread (its exports and the commands that make a raster) and the long-running tools
+/// look at the Cancel flag in their work, not only before it starts. Their control is cancelled
+/// as soon as the work starts ([`rustgis_analysis::control::Control::cancelled_once_started`]),
+/// so no timing is involved: a run that never looks finishes and is caught by its count of looks.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn long_commands_stop_when_cancelled_while_they_run() {
+    use rustgis_analysis::control::Control;
+    let dir = CancelDir::new("rustgis-cancel");
+    let out = |f: &str| dir.0.join(f).display().to_string();
+    let (mut s, dem) = cancel_world(&dir.0);
+
+    // What didn't stop, and how often it looked.
+    let mut kept_going = Vec::new();
+    let mut note = |what: &str, result: Result<(), String>, control: &Control| {
+        let stopped = result.as_ref().is_err_and(|e| e.contains("cancelled"));
+        if !stopped || control.looked() == 0 {
+            kept_going.push(format!("{what}: {result:?}, looked {} times", control.looked()));
+        }
+    };
+
+    let rasters = cancel_rasters(&dem);
     // Every command that runs in the background is here, and only those.
     fn listed<'a>(l: &[(&'a str, Value)]) -> std::collections::BTreeSet<&'a str> {
         l.iter().map(|(c, _)| *c).collect()
@@ -46761,17 +46833,7 @@ fn long_commands_stop_when_cancelled_while_they_run() {
         crate::cmd::workflows::raster_abandon(&mut s, id);
     }
 
-    let exports = [
-        ("data.convert", json!({"layer": "Cities", "format": "geojson", "path": out("converted.geojson")})),
-        ("share.exportLayer", json!({"layer": "Cities", "path": out("cities.geojson")})),
-        ("share.exportRaster", json!({"layer": dem, "path": out("dem.tif")})),
-        ("share.exportMap", json!({"path": out("map.png"), "width": 320, "height": 200})),
-        ("map.exportOrbit", json!({"path": out("orbit.zip"), "frames": 3, "width": 96, "height": 64})),
-        ("layout.export", json!({"path": out("layout.pdf"), "dpi": 72})),
-        ("report.export", json!({"path": out("report.pdf"), "dpi": 72})),
-        ("source.publish", json!({"layer": "towns"})),
-    ];
-    s.run("report.new", &json!({"layer": "Cities"})).unwrap();
+    let exports = cancel_exports(&out, &dem);
     let registered = crate::cmd::exports::IN_BACKGROUND.iter().map(|(c, ..)| *c).collect::<std::collections::BTreeSet<_>>();
     assert_eq!(listed(&exports), registered, "add a new background export here");
     for (command, p) in &exports {
@@ -46845,28 +46907,7 @@ fn long_commands_stop_when_cancelled_while_they_run() {
     note("layer.repairSource", read.run(&control).map(|_| ()), &control);
     std::fs::remove_file(replacement).unwrap();
 
-    // The tools whose work grows past a second or two on real data: buffers, overlays, joins,
-    // hulls, densities and interpolation. Run in the background as the Analysis pane runs them; a
-    // new long tool is added here (AGENTS.md › Never hold the window).
-    let tools = [
-        ("buffer", json!({"input": "Cities", "distance": 100})),
-        ("dissolve", json!({"input": "Countries"})),
-        ("spatialJoin", json!({"target": "Cities", "join": "Countries"})),
-        ("clip", json!({"input": "Rivers", "clip": "Countries"})),
-        ("erase", json!({"input": "Rivers", "erase": "Countries"})),
-        ("intersect", json!({"input": "Rivers", "overlay": "Countries"})),
-        ("identity", json!({"input": "Rivers", "overlay": "Countries"})),
-        ("union", json!({"input": "Lakes", "overlay": "Countries"})),
-        ("symmetricalDifference", json!({"input": "Lakes", "overlay": "Countries"})),
-        ("update", json!({"input": "Countries", "update": "Lakes"})),
-        ("split", json!({"input": "Rivers", "split": "Countries"})),
-        ("simplify", json!({"input": "Countries", "tolerance": 1})),
-        ("countPoints", json!({"polygons": "Countries", "points": "Cities"})),
-        ("convexHull", json!({"input": "Countries", "group": "None", "output": "Hulls_each"})),
-        ("convexHull", json!({"input": "Countries", "group": "All", "output": "Hulls_all"})),
-        ("kernelDensity", json!({"input": "Cities", "crs": "EPSG:3857"})),
-        ("kriging", json!({"input": "Cities", "field": "pop_max"})),
-    ];
+    let tools = cancel_tools();
     for (tool, params) in &tools {
         // The parameters are good: a run that isn't cancelled succeeds.
         s.run("gp.run", &json!({"tool": tool, "params": params})).unwrap_or_else(|e| panic!("{tool}: {e}"));
@@ -46880,6 +46921,162 @@ fn long_commands_stop_when_cancelled_while_they_run() {
         note(&format!("{tool} {params}"), finished, &control);
     }
     assert!(kept_going.is_empty(), "these ran on after Cancel:\n{}", kept_going.join("\n"));
+}
+
+/// What Cancel leaves behind (#1562): each command that runs in the background (the rasters, the
+/// exports and the long tools of [`long_commands_stop_when_cancelled_while_they_run`]) is cancelled
+/// at its 1st, 2nd, 3rd… look at the flag ([`Control::cancelled_at_look`]) and the session, the
+/// folder and the next run are looked at. Cancel must leave the project, its undo steps and the
+/// files as they were, and the same command run again must work and undo like a first run. The
+/// commands that read from the network (`embeddings.*`) aren't here: nothing offline runs them to
+/// the end.
+///
+/// The first looks are tried in turn up to [`LOOKS`], and the command's last, which has the most
+/// done (a long command has hundreds: a look for each feature). A command ends the sweep when it
+/// finishes before reaching the look.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn cancelling_at_each_check_leaves_nothing_behind() {
+    use rustgis_analysis::control::Control;
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+    /// The looks tried one by one, from the first.
+    const LOOKS: u64 = 3;
+    let dir = CancelDir::new("rustgis-cancel-state");
+    let out = |f: &str| dir.0.join(f).display().to_string();
+    let (mut s, dem) = cancel_world(&dir.0);
+    // The project (but for the counters undo moves on to redraw the layers), its undo steps and
+    // what waits to be applied; and the folder's files.
+    /// Takes the counters of how often a layer's geometry changed out of a serialized project.
+    fn without_revisions(v: &mut Value) {
+        match v {
+            Value::Object(m) => {
+                m.remove("geometry_rev");
+                m.values_mut().for_each(without_revisions);
+            }
+            Value::Array(a) => a.iter_mut().for_each(without_revisions),
+            _ => {}
+        }
+    }
+    let state = |s: &Session| {
+        let mut project = serde_json::to_value(&s.project).unwrap();
+        without_revisions(&mut project);
+        (project, s.undo_depth(), s.pending.len(), s.plugin_runs.len(), s.raster_runs.len())
+    };
+    let files = || -> BTreeMap<String, Vec<u8>> {
+        let read = std::fs::read_dir(&dir.0).unwrap();
+        read.map(|e| e.unwrap())
+            .map(|e| (e.file_name().to_string_lossy().into_owned(), std::fs::read(e.path()).unwrap_or_default()))
+            .collect()
+    };
+    let mut problems = Vec::new();
+    // Each family runs and applies a command as the app does; `adds` is whether a finished run
+    // adds an undo step. `fresh` builds the world again before each run, for a command whose
+    // finished run can't be undone and leaves nothing for the next to do (publishing an edit).
+    type Attempt<'a> = &'a dyn Fn(&mut Session, &Arc<Control>) -> Result<(), String>;
+    let mut sweep = |s: &mut Session, what: &str, adds: bool, fresh: bool, attempt: Attempt| {
+        let renew = |s: &mut Session| {
+            if fresh {
+                *s = cancel_world(&dir.0).0;
+            }
+        };
+        renew(s);
+        // How many looks a whole run takes.
+        let counting = Control::cancelled_at_look(u64::MAX);
+        let before = state(s);
+        if let Err(e) = attempt(s, &counting) {
+            problems.push(format!("{what}: a run that isn't cancelled failed: {e}"));
+            return;
+        }
+        let total = counting.looked();
+        if adds {
+            while s.undo_depth() > before.1 {
+                s.undo();
+            }
+        }
+        for n in (1..=total.min(LOOKS)).chain([total]) {
+            renew(s);
+            let (before, held) = (state(s), files());
+            let control = Control::cancelled_at_look(n);
+            let result = attempt(s, &control);
+            if result.is_ok() {
+                // Finished before its `n`th look: nothing more to cancel.
+                if adds {
+                    s.undo();
+                }
+                break;
+            }
+            let e = result.unwrap_err();
+            if !e.contains("cancelled") {
+                problems.push(format!("{what}, look {n} of {total}: failed instead of stopping: {e}"));
+            }
+            if state(s) != before {
+                problems.push(format!("{what}, look {n} of {total}: Cancel changed the session"));
+            }
+            if files() != held {
+                problems.push(format!("{what}, look {n} of {total}: Cancel changed the files in the folder"));
+            }
+            match attempt(s, &Control::new()) {
+                Err(e) => problems.push(format!("{what}, look {n} of {total}: it can't be run again: {e}")),
+                Ok(()) if adds => {
+                    if s.undo_depth() != before.1 + 1 {
+                        problems.push(format!(
+                            "{what}, look {n} of {total}: run again, its undo steps went from {} to {}, not by 1",
+                            before.1,
+                            s.undo_depth()
+                        ));
+                    }
+                    while s.undo_depth() > before.1 {
+                        s.undo();
+                    }
+                    if state(s) != before {
+                        problems.push(format!("{what}, look {n} of {total}: undoing the run again doesn't give the project back"));
+                    }
+                }
+                Ok(()) => {}
+            }
+        }
+    };
+
+    // Embeddings read from the network, which no offline run finishes.
+    for (command, p) in cancel_rasters(&dem).into_iter().filter(|(c, _)| !c.starts_with("embeddings.")) {
+        let attempt = |s: &mut Session, control: &Arc<Control>| {
+            let run = crate::cmd::workflows::raster_start(s, command, &p)?;
+            let id = run.id;
+            match run.run(control) {
+                Ok(made) => {
+                    crate::cmd::workflows::raster_land(s, id, made)?;
+                    let mut ran = p.clone();
+                    ran["ran"] = json!(id);
+                    s.run(command, &ran).map(|_| ())
+                }
+                Err(e) => {
+                    crate::cmd::workflows::raster_abandon(s, id);
+                    Err(e)
+                }
+            }
+        };
+        sweep(&mut s, command, true, false, &attempt);
+    }
+    for (command, p) in cancel_exports(&out, &dem) {
+        let attempt = |s: &mut Session, control: &Arc<Control>| {
+            let run = crate::cmd::exports::export_start(s, command, &p)?;
+            let started = run.started();
+            crate::cmd::exports::export_land(s, started, run.run(control)).map(|_| ())
+        };
+        sweep(&mut s, command, false, command == "source.publish", &attempt);
+    }
+    for (tool, params) in cancel_tools() {
+        let attempt = |s: &mut Session, control: &Arc<Control>| {
+            let run = crate::cmd::gp::tool_start(s, tool, &params)?;
+            let id = run.id;
+            let done = run.run(control);
+            crate::cmd::gp::tool_complete(s, id, done)?;
+            s.run("gp.finish", &json!({"id": id})).map(|_| ())
+        };
+        sweep(&mut s, &format!("{tool} {params}"), true, false, &attempt);
+    }
+    assert!(problems.is_empty(), "Cancel left behind:\n{}", problems.join("\n"));
 }
 
 /// A GeoLibre step of a model is worked out on the copy and taken by the run here, as a built-in

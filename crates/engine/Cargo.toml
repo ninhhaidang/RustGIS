@@ -40,6 +40,8 @@ miniz_oxide = { workspace = true }
 # Writing sample GeoPackages.
 rusqlite = { workspace = true }
 rustgis-plugins = { workspace = true, features = ["testing"] }
+# Cancelling a command at each of its checks in turn.
+rustgis-analysis = { workspace = true, features = ["testing"] }
 tiny-skia = { workspace = true }
 # Parsing the addresses commands ask for in tests.
 url = { workspace = true }
