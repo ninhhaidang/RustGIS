@@ -52,8 +52,8 @@ something on the roadmap (or not on it) interests you, propose it and open a pul
 proposal gets no reply.
 
 Roadmap themes are not releases or an order. A pull request that lands a roadmap item removes it
-from the roadmap, or narrows it to what is left; one that lands an item of
-[GEOLIBRE_PARITY.md](GEOLIBRE_PARITY.md) updates that file. Either change goes in the same pull
+from the roadmap, or narrows it to what is left; one that lands an item of the
+[GeoLibre parity checklist](docs/geolibre-parity.md) updates that file. Either change goes in the same pull
 request.
 
 ## AI-assisted contributions

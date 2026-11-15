@@ -369,6 +369,19 @@ RustGIS works out a map's scale with the OGC's 0.28 mm screen pixel, QGIS at 96 
 inch, so the same view is a larger scale in QGIS; scales from QGIS (reference scales, visibility
 ranges) are multiplied by 0.945 on the way in, so a layer shows at the same zoom in both.
 
+## Layers pane terminology
+
+- **Active layer**: the one layer that commands needing a layer act on, including the
+  Style and Data tabs, attribute table and Zoom To Layer. It is always part of the layer
+  selection. Use "active layer" rather than "current layer" or "selected layer" for this role.
+- **Layer selection**: the layers picked together in the Layers pane for an action on all
+  of them, such as removing, showing or hiding, moving or grouping. It is kept with the open
+  project's state and is not saved in the project file. Use "layer selection" rather than
+  "multi-select" or "layer set".
+- **Feature selection**: the features picked in a layer, shown by its count badge and the
+  Selection view. A bare "selection" always means feature selection. Layer selection picks
+  layers, so it is a separate concept.
+
 ## Panes and command search
 
 The left pane has tabs for **Layers**, **Browser** and **Data Sources**. Right-hand panes

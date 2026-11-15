@@ -5,12 +5,12 @@ _Last reviewed: 2026-10-23 (v0.3.0)._
 What [GeoLibre v3.4.0](https://github.com/opengeos/GeoLibre/tree/v3.4.0) offers and where RustGIS stands:
 **missing** or **partial**, or ticked when done. It moved here from [#77](https://github.com/opengeos/RustGIS/issues/77) so that anyone can keep it
 current: **tick or update an item in the pull request that lands it**. Where an item is planned,
-_Roadmap_ names its theme in [ROADMAP.md](ROADMAP.md). The GeoLibre and Whitebox geoprocessing
+_Roadmap_ names its theme in [ROADMAP.md](https://github.com/opengeos/RustGIS/blob/main/ROADMAP.md). The GeoLibre and Whitebox geoprocessing
 suite RustGIS runs is not counted either way.
 
 Sources: GeoLibre [v3.4.0](https://github.com/opengeos/GeoLibre/tree/v3.4.0) `docs/features.md`,
 `docs/data-formats.md` and the other GeoLibre docs named per
-section; RustGIS [ROADMAP.md](ROADMAP.md), [docs/](docs/) and the command registry
+section; RustGIS [ROADMAP.md](https://github.com/opengeos/RustGIS/blob/main/ROADMAP.md), [user guide](user-guide/index.md) and the command registry
 (`crates/engine/src/cmd`). Some items may be out of scope for a pure-Rust GIS (noted inline);
 strike those through with a reason rather than leaving them open.
 
@@ -257,7 +257,7 @@ docs/agent-skill.md_
 - [x] **MCP: drive the running desktop app**: the loopback relay lets external AI clients drive the
   app; `rustgis-cli mcp` ([#75](https://github.com/opengeos/RustGIS/issues/75)) runs on its own project.
 - [ ] **MCP Apps interactive map preview**. Partial: `view_map` returns a static PNG.
-- [x] **A shipped agent skill (SKILL.md)**: [skills/rustgis](skills/rustgis/SKILL.md) installs and
+- [x] **A shipped agent skill (SKILL.md)**: [skills/rustgis](https://github.com/opengeos/RustGIS/blob/main/skills/rustgis/SKILL.md) installs and
   manages the app; the assistant has built-in skills too.
 - [ ] **Plugin API breadth**: side and floating panels, menus, custom layers, map-click tools,
   assistant tools. Partial: commands, tools, a ribbon tab, assistant skills, process plugins.
