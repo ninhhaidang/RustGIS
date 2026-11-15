@@ -10904,6 +10904,41 @@ fn a_publication_layouts_raster_gets_a_colorbar() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Series page labels and dynamic text share the row-number fallback for null and blank names.
+#[test]
+fn map_series_empty_names_use_row_numbers() {
+    use crate::cmd::layout::{series_info, series_pages};
+    use rustgis_data::{Dataset, Field, FieldType, GeometryType, Value as V};
+    use rustgis_render::layout::{PageInfo, expand};
+
+    for (values, names) in [
+        ([V::Text("A".into()), V::Null, V::Text(String::new())], ["A", "2", "3"]),
+        ([V::Text(" A ".into()), V::Text(" \t\n\u{2003}".into()), V::Int(0)], [" A ", "2", "0"]),
+        ([V::Text("<Null>".into()), V::Bool(false), V::Null], ["<Null>", "False", "3"]),
+    ] {
+        let mut data = Dataset::new("Index", GeometryType::Point, vec![Field::new("name", FieldType::Text)]);
+        for value in values {
+            data.push(None, vec![value]);
+        }
+        let mut s = Session::new(Project::default());
+        s.map_mut().add_dataset(data);
+        s.run("layout.new", &json!({"name": "Atlas"})).unwrap();
+        s.run("layout.series", &json!({"layer": "Index", "nameField": "name"})).unwrap();
+        assert_eq!(series_pages(&s, 0).unwrap(), names);
+        for (page, name) in names.iter().enumerate() {
+            let info = series_info(&s, 0, page).unwrap();
+            assert_eq!(info, (3, name.to_string()), "the UI's current-page name agrees with the page list");
+            let result = s.run("layout.seriesPage", &json!({"page": page})).unwrap();
+            assert_eq!(result["name"], *name);
+            let info = PageInfo { page: page + 1, pages: info.0, page_name: info.1 };
+            assert_eq!(expand("{pageName}", &s.project.layouts[0], &info, None), *name);
+        }
+        // A removed name field uses the same fallback on every page.
+        s.project.layouts[0].series.as_mut().unwrap().name_field = "missing".into();
+        assert_eq!(series_pages(&s, 0).unwrap(), ["1", "2", "3"]);
+    }
+}
+
 #[test]
 fn layouts_compose_export_and_round_trip() {
     use base64::Engine;

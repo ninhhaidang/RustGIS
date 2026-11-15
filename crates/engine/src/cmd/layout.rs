@@ -4689,8 +4689,13 @@ fn series_layer(input: &impl super::InputSource, li: usize) -> Option<(&rustgis_
     Some((layer, layer.dataset.field_index(&sr.name_field)))
 }
 
+/// A series row's name, or its one-based row number when the field is missing, null or blank.
 fn page_name(layer: &rustgis_map::Layer, fi: Option<usize>, row: usize) -> String {
-    fi.map(|i| layer.dataset.value(row, i).to_string()).unwrap_or_else(|| (row + 1).to_string())
+    fi.map(|i| layer.dataset.value(row, i))
+        .filter(|v| !v.is_null())
+        .map(ToString::to_string)
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| (row + 1).to_string())
 }
 
 fn series_page(s: &mut Session, p: &Value) -> CmdResult {
