@@ -70,14 +70,16 @@ The shared pieces the everyday workflow stands on.
 A result is right, or RustGIS says what it lost or assumed
 ([AGENTS.md](AGENTS.md#never-silent)).
 - Known silent losses: a polygon looping round a pole drops out of Clip and Spatial Join
-  ([#1354](https://github.com/opengeos/RustGIS/issues/1354)); DuckDB queries (`ST_Force2D`) and
-  the TopoJSON reader drop Z without a notice, and the DXF reader keeps one `elevation` per entity
-  but not each vertex's Z (other readers, GDAL and SQL Server among them, say so since
-  [#1214](https://github.com/opengeos/RustGIS/pull/1214)); the KML and OSM readers leave out
-  unreadable coordinates, holes and parts without one, and GeoRSS its unreadable holes (GML says
-  so since [#1686](https://github.com/opengeos/RustGIS/pull/1686)) _(open)_.
-- A test that runs lossy sample files through every reader and writer and fails on any loss
-  without a notice, beside `hostile_params_never_panic` in `crates/engine/src/tests.rs` _(open)_.
+  ([#1354](https://github.com/opengeos/RustGIS/issues/1354)); DuckDB queries (`ST_Force2D`) drop Z
+  without a notice; the OSM reader leaves out rings that don't close, rings and member ways with
+  nodes or ways the file doesn't hold, and inner rings outside every outer one; and the text
+  readers' losses listed as `Silent` in `crates/engine/tests/never_silent_reading.rs`, among them
+  each vertex's Z in DXF and unreadable coordinates, holes and parts in KML, GeoRSS, MapInfo and
+  DXF. A fix makes its case `Said` _(open)_.
+- Lossy sample files in `never_silent_reading.rs` for the readers it doesn't cover yet: CityJSON,
+  CityGML and the binary formats (Shapefile, GeoPackage, FlatGeobuf, GeoParquet, OSM PBF, KMZ,
+  spreadsheets). It covers GeoJSON, TopoJSON, CSV, KML, GPX, GML, GeoRSS, DXF, LandXML and MapInfo;
+  exports are checked by `never_silent_roundtrip.rs` _(open)_.
 - A `--strict` option for `rustgis-cli run` that exits non-zero when a loss is reported, for
   scheduled jobs. Notices carry a severity but not a kind today (`Notice` in
   `crates/engine/src/lib.rs`): start with an issue on which notices count as a loss.
