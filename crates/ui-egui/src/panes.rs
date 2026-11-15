@@ -2146,6 +2146,83 @@ fn new_group(app: &mut RustGisApp, params: Value) {
     app.dialogs.text = name;
 }
 
+/// The several layers' Extrusion and Extrusion Base menus (#2160): the picked polygon layers
+/// raised alike by a numeric field every one has, or flattened, and, once all are raised, what
+/// they stand on. Two entries one level deep, as the ribbon's Type and Base menus, rather than
+/// nested menus three deep. One command for them all, so one undo step. Buttons, not radios: their
+/// settings may differ, and the ribbon shows one layer's.
+fn extrusion_menu(app: &mut RustGisApp, ui: &mut Ui, picked: &[u32]) {
+    let m = app.session.map();
+    let polygons: Vec<&Layer> =
+        picked.iter().filter_map(|id| m.layer(*id)).filter(|l| l.geometry_type() == GeometryType::Polygon).collect();
+    let Some((first, rest)) = polygons.split_first() else {
+        for label in ["Extrusion", "Extrusion Base"] {
+            ui.add_enabled(false, egui::Button::new(tl!(label))).on_disabled_hover_text(tl!("None of these layers are polygon layers."));
+        }
+        return;
+    };
+    // The numeric fields every one has, as the first spells them (the command matches each
+    // layer's own spelling).
+    let numeric = |l: &Layer, n: &str| l.dataset.field_index(n).and_then(|i| l.dataset.fields.get(i)).is_some_and(|f| f.ty.is_numeric());
+    let fields: Vec<String> = first
+        .dataset
+        .fields
+        .iter()
+        .filter(|f| f.ty.is_numeric() && rest.iter().all(|l| numeric(l, &f.name)))
+        .map(|f| f.name.clone())
+        .collect();
+    let raised = polygons.iter().all(|l| l.extrusion.is_some());
+    let ids: Vec<u32> = polygons.iter().map(|l| l.id).collect();
+    let run = |app: &mut RustGisApp, ui: &mut Ui, id: &str, mut p: Value| {
+        p["layer"] = json!(ids);
+        let _ = app.run(id, p);
+        ui.close();
+    };
+    // What both menus say first: that the others picked are left out, or that no field is shared.
+    let only = (ids.len() < picked.len()).then(|| {
+        let (n, all) = (ids.len().to_string(), picked.len().to_string());
+        crate::i18n::fmt("Polygon layers only: {n} of the {all} selected", &[("n", &n), ("all", &all)])
+    });
+    let head = |ui: &mut Ui| {
+        if let Some(text) = &only {
+            ui.weak(text.as_str());
+            ui.separator();
+        }
+    };
+    let by = |f: &str| crate::i18n::fmt("By {field}", &[("field", f)]);
+    let no_field = tl!("These layers share no numeric field.");
+    ui.menu_button(tl!("Extrusion"), |ui| {
+        head(ui);
+        if ui.button(tl!("None")).clicked() {
+            run(app, ui, "layer.extrusion", json!({"type": "none"}));
+        }
+        for f in &fields {
+            if ui.button(by(f)).clicked() {
+                run(app, ui, "layer.extrusion", json!({"type": "field", "field": f}));
+            }
+        }
+        if fields.is_empty() {
+            ui.weak(no_field);
+        }
+    });
+    if !raised {
+        ui.add_enabled(false, egui::Button::new(tl!("Extrusion Base")))
+            .on_disabled_hover_text(tl!("Extrude them all first: the base is what their walls stand on."));
+        return;
+    }
+    ui.menu_button(tl!("Extrusion Base"), |ui| {
+        head(ui);
+        if ui.button(tl!("Ground")).clicked() {
+            run(app, ui, "layer.extrusionBase", json!({"field": null, "base": 0}));
+        }
+        for f in &fields {
+            if ui.button(by(f)).clicked() {
+                run(app, ui, "layer.extrusionBase", json!({"field": f}));
+            }
+        }
+    });
+}
+
 /// The menu of several layers picked together: what acts on all of them; what needs one layer is
 /// there, dimmed, so it is known why it can't be used.
 fn layers_menu(app: &mut RustGisApp, ui: &mut Ui, picked: &[u32], reorder: bool) {
@@ -2218,6 +2295,7 @@ fn layers_menu(app: &mut RustGisApp, ui: &mut Ui, picked: &[u32], reorder: bool)
             }
         });
     }
+    extrusion_menu(app, ui, picked);
     ui.separator();
     for label in ["Attribute Table", "Symbology"] {
         ui.add_enabled(false, egui::Button::new(tl!(label))).on_disabled_hover_text(tl!("Pick a single layer."));

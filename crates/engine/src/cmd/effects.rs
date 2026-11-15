@@ -106,7 +106,7 @@ pub fn commands() -> Vec<C> {
             .effects(crate::policy::Effects::NONE)
             .when(need_polygons)
             .params(
-                r#"{"layer"?, "type": "none"|"height"|"field", "field"?: numeric field (metres), "height"?: metres, "factor"?: number}"#,
+                r#"{"layer"?: name|id | [name|id] (default: the active layer; a list is set alike in one step, or refused whole), "type": "none"|"height"|"field", "field"?: numeric field (metres), "height"?: metres, "factor"?: number}"#,
             ),
         C::new("layer.faces", "Faces", "Style › Faces", |s, p| {
             let (cull, light) = (b(p, "culling"), b(p, "lighting"));
@@ -142,7 +142,7 @@ pub fn commands() -> Vec<C> {
             .roles(&[])
             .effects(crate::policy::Effects::NONE)
             .when(need_polygons)
-            .params(r#"{"layer"?, "field"?: numeric field (metres; null or "" clears it), "base"?: metres (0 to 10,000,000)}"#),
+            .params(r#"{"layer"?: name|id | [name|id] (as layer.extrusion), "field"?: numeric field (metres; null or "" clears it), "base"?: metres (0 to 10,000,000)}"#),
     ]
 }
 
@@ -173,32 +173,102 @@ fn display_filters(s: &mut Session, p: &Value) -> CmdResult {
     Ok(json!({"filters": n}))
 }
 
+/// The layers an extrusion command changes, and whether they were given as a list: `"layer"` as a
+/// list of names or ids (each once), else the one layer it names, or the active layer.
+fn targets(s: &Session, p: &Value) -> Result<(Vec<u32>, bool), String> {
+    if p.get("layer").is_some_and(Value::is_array) { Ok((super::layer::layer_ids(s, p)?, true)) } else { Ok((vec![s.layer_id(p)?], false)) }
+}
+
+/// The names of the layers among `ids` that `bad` picks, quoted and joined ("'A', 'B'"; past five,
+/// the first five and "and 3 more"), or `None` when it picks none.
+fn named_where(s: &Session, ids: &[u32], bad: impl Fn(&rustgis_map::Layer) -> bool) -> Option<String> {
+    let names: Vec<String> = ids
+        .iter()
+        .filter_map(|id| s.map().layer(*id))
+        .filter(|l| bad(l))
+        .map(|l| format!("'{}'", crate::project::short_name(&l.name)))
+        .collect();
+    match names.len() {
+        0 => None,
+        n if n > 5 => Some(format!("{} and {} more", names[..5].join(", "), n - 5)),
+        _ => Some(names.join(", ")),
+    }
+}
+
+/// A list of layers is checked whole before any changes, so a refusal leaves every one as it was:
+/// each must be a polygon layer.
+fn all_polygons(s: &Session, ids: &[u32]) -> Result<(), String> {
+    match named_where(s, ids, |l| l.geometry_type() != GeometryType::Polygon) {
+        Some(names) => Err(format!("extrusion raises polygon layers, and these aren't: {names}; no layer changed")),
+        None => Ok(()),
+    }
+}
+
+/// A list of layers must all have the numeric field `n`, or none changes.
+fn all_have(s: &Session, ids: &[u32], n: &str) -> Result<(), String> {
+    match named_where(s, ids, |l| numeric_field(&l.dataset, n).is_err()) {
+        Some(names) => Err(format!("no numeric field '{n}' in {names}; no layer changed")),
+        None => Ok(()),
+    }
+}
+
+/// `layer.extrusion`: one layer, or a list of them set alike in one undo step. Each keeps its own
+/// height and factor when they are left out, as one layer does.
 fn extrusion(s: &mut Session, p: &Value) -> CmdResult {
-    let id = s.layer_id(p)?;
-    let l = s.map().layer(id).ok_or("no such layer")?;
-    let prev = l.extrusion.clone();
-    let x = match ps(p, "type").ok_or("type is required")? {
-        "none" => None,
-        t @ ("height" | "field") => {
-            let field = if t == "field" { Some(numeric_field(&l.dataset, ps(p, "field").ok_or("field is required")?)?) } else { None };
-            let keep = prev.unwrap_or_default();
+    let (ids, listed) = targets(s, p)?;
+    let t = ps(p, "type").ok_or("type is required")?;
+    let field = match t {
+        "none" | "height" => None,
+        "field" => Some(ps(p, "field").ok_or("field is required")?),
+        t => return Err(format!("unknown extrusion type '{t}'")),
+    };
+    if listed {
+        all_polygons(s, &ids)?;
+        if let Some(n) = field {
+            all_have(s, &ids, n)?;
+        }
+    }
+    let mut next = Vec::with_capacity(ids.len());
+    for &id in &ids {
+        let l = s.map().layer(id).ok_or("no such layer")?;
+        let x = if t == "none" {
+            None
+        } else {
+            let own = field.map(|n| numeric_field(&l.dataset, n)).transpose()?;
+            // A new extrusion starts at 1,000 m, so it shows; an extruded layer keeps its own height
+            // (the fallback where the field holds no number), as it keeps its factor.
+            let height = l.extrusion.as_ref().map(|x| x.height).filter(|h| h.is_finite()).unwrap_or(1000.0);
+            let keep = l.extrusion.clone().unwrap_or_default();
             Some(Extrusion {
-                field,
-                height: f(p, "height").unwrap_or(keep.height.max(1000.0)).clamp(0.0, 1e7),
+                field: own,
+                height: f(p, "height").unwrap_or(height).clamp(0.0, 1e7),
                 factor: f(p, "factor").unwrap_or(keep.factor).clamp(0.0, 1e6),
                 ..keep
             })
-        }
-        t => return Err(format!("unknown extrusion type '{t}'")),
-    };
-    let globe = s.map().projection.is_globe();
-    let mut r = with(s, p, |l| l.extrusion = x)?;
-    super::diagram::hidden_notice(s, id);
-    // The globe draws polygons flat; extrusion shows on flat maps.
-    if globe && let Some(o) = r.as_object_mut() {
-        o.insert("note".into(), json!("extrusion shows on flat maps; the globe draws the polygons flat"));
+        };
+        next.push((id, x));
     }
-    Ok(r)
+    for (id, x) in &mut next {
+        if let Some(l) = s.map_mut().layer_mut(*id) {
+            l.extrusion = x.take();
+        }
+    }
+    // Diagrams the extrusion hides: one notice, as for one layer, with how many more it holds for.
+    let hidden: Vec<String> = next.iter().filter_map(|(id, _)| s.map().layer(*id).and_then(super::diagram::hidden_text)).collect();
+    match hidden.as_slice() {
+        [] => {}
+        [one] => s.notify(one.clone(), false),
+        [first, rest @ ..] => {
+            let more = if rest.len() == 1 { "1 more layer".to_string() } else { format!("{} more layers", rest.len()) };
+            s.notify(format!("{first} (and {more} like it)"), false)
+        }
+    }
+    // The globe draws polygons flat; extrusion shows on flat maps.
+    Ok(if s.map().projection.is_globe() {
+        json!({"note": "extrusion shows on flat maps; the globe draws the polygons flat"})
+    } else {
+        Value::Null
+    })
 }
 
 /// The name of the numeric field `n` (matched as `field_index` matches), or why there is none.
@@ -214,21 +284,39 @@ fn numeric_field(ds: &rustgis_data::Dataset, n: &str) -> Result<String, String> 
 /// a constant (`base`), in metres times the extrusion's factor. Each left out stays as it is, so
 /// the height, its field and the factor never change here; null or an empty name clears the
 /// field, and a base that is no number, or is outside 0 to 1e7 metres (the height's limit), is
-/// refused rather than changed.
+/// refused rather than changed. A list of layers is set alike in one undo step, and only when every
+/// one is an extruded polygon layer with the field given.
 fn extrusion_base(s: &mut Session, p: &Value) -> CmdResult {
-    let id = s.layer_id(p)?;
-    let l = s.map().layer(id).ok_or("no such layer")?;
-    if l.extrusion.is_none() {
+    let (ids, listed) = targets(s, p)?;
+    if listed {
+        all_polygons(s, &ids)?;
+        if let Some(names) = named_where(s, &ids, |l| l.extrusion.is_none()) {
+            return Err(format!("turn extrusion on first (Layer Extrusion) in {names}; no layer changed"));
+        }
+    } else if ids.first().and_then(|id| s.map().layer(*id)).ok_or("no such layer")?.extrusion.is_none() {
         return Err("turn extrusion on first (Layer Extrusion)".into());
     }
-    let field = match p.get("field") {
+    let name = match p.get("field") {
         None => None,
         Some(Value::Null) => Some(None),
         Some(v) => match v.as_str().ok_or("field is a field name, or null to clear it")? {
             "" => Some(None),
-            n => Some(Some(numeric_field(&l.dataset, n)?)),
+            n => Some(Some(n)),
         },
     };
+    if listed && let Some(Some(n)) = name {
+        all_have(s, &ids, n)?;
+    }
+    // Each layer's own spelling of the field, as `field_index` matches it.
+    let mut fields = Vec::with_capacity(ids.len());
+    for &id in &ids {
+        let l = s.map().layer(id).ok_or("no such layer")?;
+        fields.push(match name {
+            Some(Some(n)) => Some(Some(numeric_field(&l.dataset, n)?)),
+            Some(None) => Some(None),
+            None => None,
+        });
+    }
     let base = match p.get("base") {
         None => None,
         Some(_) => {
@@ -239,14 +327,17 @@ fn extrusion_base(s: &mut Session, p: &Value) -> CmdResult {
             Some(b)
         }
     };
-    change_extrusion(s, p, |x| {
-        if let Some(v) = field {
-            x.base_field = v;
+    for (id, field) in ids.into_iter().zip(fields) {
+        if let Some(x) = s.map_mut().layer_mut(id).and_then(|l| l.extrusion.as_mut()) {
+            if let Some(v) = field {
+                x.base_field = v;
+            }
+            if let Some(v) = base {
+                x.base = v;
+            }
         }
-        if let Some(v) = base {
-            x.base = v;
-        }
-    })
+    }
+    Ok(Value::Null)
 }
 
 fn change_extrusion(s: &mut Session, p: &Value, f: impl FnOnce(&mut Extrusion)) -> CmdResult {

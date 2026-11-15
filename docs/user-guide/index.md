@@ -51,7 +51,8 @@ This guide walks through RustGIS by task. Each page covers one part of the app:
   outlined, is the one the Style and Data tabs act on. Right-click one of them to zoom to them
   all, show or hide them, allow or block selecting their features on the map, move them to the top
   or bottom of the drawing order (one in a group, to the top or bottom of its group), put them in
-  a group or take them out of one, or remove them; a layer the filter hides is left out.
+  a group or take them out of one, raise or flatten their polygons together
+  ([Extrusion](cartography.md#layer-effects)), or remove them; a layer the filter hides is left out.
   A new group made from the menu asks for its name. In scripts, `layer.select` takes
   a list and a `mode` (`replace`, `toggle` or `extend`), and the commands that remove, show, move,
   group or zoom to a layer take a list in `layer`, or the picked layers when it is left out.
