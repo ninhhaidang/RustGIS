@@ -1,8 +1,35 @@
 # Privacy
 
-The RustGIS desktop app and command line collect no analytics, telemetry or usage data.
-Local files and projects are processed on your device. Features that use remote services can
-send searches, coordinates, data or assistant context to those services, as described below.
+The RustGIS desktop app, the phone apps (Android, iPhone and iPad) and the command line collect
+no analytics, telemetry or usage data. Local files and projects are processed on your device.
+Features that use remote services can send searches, coordinates, data or assistant context to
+those services, as described below.
+
+## Phone apps
+
+The Android, iPhone and iPad apps send no analytics, telemetry or usage data to the RustGIS
+project. They include the desktop app's interface, so everything this page says about it applies
+to them too: its online services (a pop-up's pictures from `assets.rustgis.app` among them) and
+the AI Assistant are reachable from them. On top of that:
+
+- **Location**: used on the device to show your position, capture features at it and record
+  tracks, and only once you allow it. Recording a track keeps using it while the app is out of
+  sight, until you stop the track. A track is held in memory until you stop it, then kept in
+  your project as a line; one the app is closed during is lost, not saved. The app itself sends
+  positions nowhere, but the [AI Assistant](#ai-assistant-and-connected-agents), when you use
+  it, can send a feature's geometry to the provider you configure if one of its tools reads it.
+- **Camera and photos**: a photo you take is saved in the app's storage and attached to the
+  feature you capture. It leaves the device only in a project or field package you save or send.
+- **Files you open**: copied into the app's storage, where they are opened and edited. Remove
+  Unused Copies deletes the copies your project no longer uses. On iPhone and iPad these copies
+  are left out of the device's backups; if the system refuses that, the app says the copies
+  will be backed up.
+- **Notifications** (Android): used only for the notice Android requires while a track is
+  recorded with the app out of sight.
+
+Uninstalling the app removes its storage: the copies of files you opened, photos, settings and
+any project saved there. A project you saved elsewhere through the system's picker stays, but it
+names its data by those copies, so it loses that data unless you open the original files again.
 
 ## Local troubleshooting history
 
