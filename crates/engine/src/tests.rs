@@ -23444,12 +23444,20 @@ fn geocoding_places_and_addresses() {
     assert_eq!((r["matched"].as_u64(), r["unmatched"].as_u64()), (Some(3), Some(1)), "{r}");
     let l = s.map().layer_by_name("sites (geocoded)").unwrap();
     assert_eq!(l.dataset.features.len(), 4);
-    assert_eq!(l.dataset.fields.last().unwrap().name, "geocoded");
+    assert_eq!(l.dataset.fields[l.dataset.fields.len() - 2].name, "geocoded");
+    let status = l.dataset.field_index("match_status").unwrap();
+    assert_eq!((0..4).map(|r| l.dataset.value(r, status).to_string()).collect::<Vec<_>>(), ["matched", "matched", "matched", "unmatched"]);
     assert!(l.dataset.features[3].geometry.is_none());
     // The app's own answers: one address found, the other not.
     let places = json!({"Champ de Mars, Paris": {"lon": 2.29, "lat": 48.85, "name": "Champ de Mars"}, "5 Av. Anatole, Paris": null});
     let r = s.run("layer.geocode", &json!({"layer": "sites", "address": "street, city", "places": places, "name": "G"})).unwrap();
     assert_eq!((r["matched"].as_u64(), r["unmatched"].as_u64()), (Some(2), Some(2)));
+    let l = s.map().layer_by_name("G").unwrap();
+    let status = l.dataset.field_index("match_status").unwrap();
+    assert_eq!(
+        (0..4).map(|r| l.dataset.value(r, status).to_string()).collect::<Vec<_>>(),
+        ["matched", "matched", "unmatched", "unmatched"]
+    );
     for bad in
         [json!({"layer": "sites"}), json!({"layer": "sites", "address": "nope"}), json!({"layer": "sites", "address": "id", "places": 7})]
     {
@@ -23463,6 +23471,53 @@ fn geocoding_places_and_addresses() {
     // A public server takes a hundred addresses a run.
     let g = Geocoder::new(None, None).unwrap();
     assert!(crate::cmd::geocode::check_batch(&g, 101).unwrap_err().contains("100"));
+}
+
+/// Status is per source row, including duplicate, empty and unfound addresses; colliding input
+/// columns keep their names and values, and the unmatched notice still counts rows, not queries.
+#[test]
+fn geocoding_match_status_preserves_fields_and_unmatched_notice() {
+    let mut s = Session::new(Project::default());
+    let csv = "id,address,geocoded,MATCH_STATUS,match_status_\n1,A,old one,reviewed,kept\n2,A,old two,reviewed,kept\n3,B,old three,reviewed,kept\n4,,old four,reviewed,kept\n";
+    s.run("layer.addDataText", &json!({"fileName":"addresses.csv", "text":csv})).unwrap();
+    for (name, b, statuses, unmatched) in [
+        ("mixed", Value::Null, ["matched", "matched", "unmatched", "unmatched"], 2),
+        ("clean", json!({"lon":-77.1,"lat":38.1,"name":"B"}), ["matched", "matched", "matched", "unmatched"], 1),
+    ] {
+        let mark = s.notice_mark();
+        let result = s
+            .run(
+                "layer.geocode",
+                &json!({"table":"addresses", "address":"address", "name":name,
+            "places":{"A":{"lon":-77.0,"lat":38.0,"name":""}, "B":b}}),
+            )
+            .unwrap();
+        assert_eq!(result["unmatched"], unmatched);
+        let ds = &s.map().layer_by_name(name).unwrap().dataset;
+        let names: Vec<_> = ds.fields.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["id", "address", "geocoded", "MATCH_STATUS", "match_status_", "geocoded_", "match_status__"]);
+        assert_eq!(ds.features.len(), 4);
+        for (r, status) in statuses.iter().enumerate() {
+            assert_eq!(ds.value(r, 6).to_string(), *status);
+            assert_eq!(ds.features[r].geometry.is_some(), *status == "matched");
+            for c in 0..5 {
+                assert_eq!(ds.value(r, c), s.project.tables[0].dataset.value(r, c));
+            }
+        }
+        // A usable point counts as a match even if the provider gave no display name.
+        assert_eq!(ds.value(0, 5), &rustgis_data::Value::Text(String::new()));
+        let notices = s.notices_since(mark);
+        assert_eq!(notices.len(), 1);
+        assert_eq!(notices[0].text, format!("{unmatched} of 4 rows weren't found; they are in the table without a point"));
+    }
+    let mark = s.notice_mark();
+    s.run(
+        "layer.geocode",
+        &json!({"table":"addresses", "address":"id", "name":"all matched",
+        "places":{"1":{"lon":1,"lat":1}, "2":{"lon":2,"lat":2}, "3":{"lon":3,"lat":3}, "4":{"lon":4,"lat":4}}}),
+    )
+    .unwrap();
+    assert!(s.notices_since(mark).is_empty());
 }
 
 /// Applying supplied answers does not require a network-capable Census endpoint, including
@@ -23590,7 +23645,7 @@ fn geocoding_with_the_locatieserver() {
     assert_eq!(points[0], Some(rustgis_data::Geometry::Point(rustgis_geom::Coord::new(4.89803846, 52.37714446))));
     assert_eq!(points[1], Some(rustgis_data::Geometry::Point(rustgis_geom::Coord::new(4.47920127, 51.92272076))));
     assert_eq!(points[2], None);
-    let geocoded = l.dataset.fields.len() - 1;
+    let geocoded = l.dataset.field_index("geocoded").unwrap();
     assert_eq!(l.dataset.value(1, geocoded).to_string(), "Coolsingel 40, 3011AD Rotterdam");
     assert_eq!(left_out(&s).len(), 1, "one notice for the run: {:?}", left_out(&s));
     assert!(left_out(&s)[0].starts_with("1 of the geocoder's places"), "{:?}", left_out(&s));

@@ -184,6 +184,7 @@ fn rustgis_tiles_max() -> usize {
 }
 
 /// Turns addresses into points; desktop dialogs fetch off-frame and supply `places`.
+/// Keeps every source row and appends its returned name and whether it has a usable point.
 /// Without `places`, native lookup is synchronous, including the existing Script pane
 /// fallback, with no progress or Cancel. Moving that path off-frame needs cached network
 /// answers for script replay, so requests and later row-dependent commands are not repeated.
@@ -223,20 +224,26 @@ fn geocode(s: &mut Session, p: &Value) -> CmdResult {
     let src = source(s, p)?;
     let name =
         ps(p, "name").map(str::trim).filter(|n| !n.is_empty()).map(str::to_string).unwrap_or_else(|| format!("{} (geocoded)", src.name));
-    // The table's fields, and what the geocoder called each place.
+    // Keep the table's fields, even when they already name one of the output columns.
     let mut fields = src.fields.clone();
     let mut col = "geocoded".to_string();
     while fields.iter().any(|f| f.name.eq_ignore_ascii_case(&col)) {
         col.push('_');
     }
     fields.push(Field::new(col, FieldType::Text));
+    let mut status_col = "match_status".to_string();
+    while fields.iter().any(|f| f.name.eq_ignore_ascii_case(&status_col)) {
+        status_col.push('_');
+    }
+    fields.push(Field::new(status_col, FieldType::Text));
     let mut ds = rustgis_data::Dataset::new(name, GeometryType::Point, fields);
     let (mut matched, mut unmatched) = (0usize, 0usize);
     for (i, (feat, address)) in src.features.iter().zip(&rows).enumerate() {
-        let place = found.get(address).and_then(Option::as_ref);
+        let place = if address.is_empty() { None } else { found.get(address).and_then(Option::as_ref) };
         let mut attrs = feat.attrs.clone();
         attrs.resize(src.fields.len(), Attr::Null);
         attrs.push(place.map(|pl| Attr::Text(pl.name.clone())).unwrap_or(Attr::Null));
+        attrs.push(Attr::Text(if place.is_some() { "matched" } else { "unmatched" }.into()));
         if place.is_some() {
             matched += 1;
         } else {
