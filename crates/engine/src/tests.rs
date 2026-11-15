@@ -12550,7 +12550,7 @@ fn a_link_chart_says_what_its_limits_leave_out() {
         let html = std::fs::read_to_string(dir.join(format!("{name}.html"))).unwrap();
         (html.matches("\"relationship\":").count(), html.matches("\"group\":").count(), html)
     };
-    let limits = "a link chart takes at most 3000 features, 20000 links and 200 links from one feature";
+    let limits = "a link chart takes at most 3000 features, 20000 links and 200 links from one feature in each relationship";
     // One feature related to 250: 200 links are drawn from it.
     add(&mut s, "fan_one.csv", &["k".to_string()]);
     add(&mut s, "fan_many.csv", &vec!["k".to_string(); 250]);
@@ -12597,6 +12597,53 @@ fn a_link_chart_says_what_its_limits_leave_out() {
     let (links, nodes, html) = drawn("Full");
     assert_eq!((links, nodes), (200, 201));
     assert!(said(&s, mark, "Full").is_empty() && !html.contains("Shows "));
+    // The 200 a feature takes counts links drawn, not destinations tried: with the chart at 2,999,
+    // a feature whose first 200 destinations need room it hasn't got still draws its link to one
+    // already in the chart. On a session of its own, so the relationships are only these three.
+    let mut t = world();
+    t.run("share.dataStore", &json!({"name": "out", "path": dir.to_str().unwrap()})).unwrap();
+    let rows: String = (0..200).map(|i| format!("10,{},-,q\n", 45.0 + i as f64 * 0.0001)).collect();
+    let csv = format!("lon,lat,key,key2\n{rows}10,46,x,q\n");
+    t.run("layer.addDataBytes", &json!({"fileName": "past_d.csv", "data": base64::engine::general_purpose::STANDARD.encode(csv)})).unwrap();
+    add(&mut t, "past_first.csv", &["x".to_string()]);
+    let fill_one: Vec<String> = std::iter::once("s".to_string()).chain((0..1497).map(|i| format!("f{i}"))).collect();
+    let fill_many: Vec<String> = ["s", "s"].iter().map(|k| k.to_string()).chain((0..1497).map(|i| format!("f{i}"))).collect();
+    add(&mut t, "past_fill_one.csv", &fill_one);
+    add(&mut t, "past_fill_many.csv", &fill_many);
+    add(&mut t, "past_last.csv", &["q".to_string()]);
+    for (name, origin, destination, key) in [
+        ("First", "past_first", "past_d", "key"),
+        ("Fill", "past_fill_one", "past_fill_many", "key"),
+        ("Last", "past_last", "past_d", "key2"),
+    ] {
+        t.run(
+            "data.relate",
+            &json!({"name": name, "origin": origin, "originKey": "key", "destination": destination, "destinationKey": key}),
+        )
+        .unwrap();
+    }
+    t.run("share.linkChart", &json!({})).unwrap();
+    // First draws 1 link (2 features), Fill 1,499 (2,997), and Last its one link to x (1 more).
+    assert_eq!((drawn("Relationships").0, drawn("Relationships").1), (1501, 3000));
+    // A feature isn't drawn alone: one feature related to 2 (3 features), then pairs. After 1,498
+    // pairs the chart holds 2,999, and a pair needs 2 more: the rest are left out whole, rather
+    // than an origin drawn without its link.
+    let odd_one: Vec<String> = std::iter::once("s".to_string()).chain((0..1500).map(|i| format!("o{i}"))).collect();
+    let odd_many: Vec<String> = ["s", "s"].iter().map(|k| k.to_string()).chain((0..1500).map(|i| format!("o{i}"))).collect();
+    add(&mut s, "odd_one.csv", &odd_one);
+    add(&mut s, "odd_many.csv", &odd_many);
+    s.run(
+        "data.relate",
+        &json!({"name": "Odd", "origin": "odd_one", "originKey": "key", "destination": "odd_many", "destinationKey": "key"}),
+    )
+    .unwrap();
+    let mark = s.notice_mark();
+    s.run("share.linkChart", &json!({"relationship": "Odd"})).unwrap();
+    assert_eq!((drawn("Odd").0, drawn("Odd").1), (1500, 2999), "every feature drawn has a link");
+    assert_eq!(
+        said(&s, mark, "Odd"),
+        [format!("Odd: the link chart shows 2999 of the 3003 related features and 1500 of the 1502 links; {limits}")]
+    );
     // 101 features each related to the same 200: 20,200 links, each feature within its 200. The
     // chart's 20,000 links are the first 100 features'; the 101st has no room.
     add(&mut s, "mesh_one.csv", &vec!["m".to_string(); 101]);

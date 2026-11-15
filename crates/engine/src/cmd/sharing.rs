@@ -1392,14 +1392,29 @@ fn link_chart(s: &Session, rel: Option<&str>) -> Result<(String, Option<String>)
             if links.len() >= MAX_LINKS {
                 continue;
             }
-            let Some(a) = node(&mut index, &mut nodes, om, o, orow, gi) else { continue };
-            for &drow in drows.iter().take(MAX_FEATURE_LINKS) {
-                if links.len() >= MAX_LINKS {
+            // The feature is drawn with its first link, never alone: each link needs room for
+            // whichever of its ends the chart doesn't hold yet. A feature without room is left
+            // out; one already in the chart may still be linked.
+            // Up to 200 links drawn from it: destinations the chart has no room for don't count
+            // toward them, so a later one it can draw still is.
+            let mut a = index.get(&(om, o.id, orow)).copied();
+            let mut drawn_here = 0;
+            for &drow in drows {
+                if drawn_here >= MAX_FEATURE_LINKS || links.len() >= MAX_LINKS {
                     break;
                 }
-                // A feature the chart has no room for: one already in it may still be linked.
-                let Some(b) = node(&mut index, &mut nodes, dm, d, drow, gi) else { continue };
-                links.push(json!({"source": a, "target": b, "relationship": r.name}));
+                let new = usize::from(a.is_none()) + usize::from(!index.contains_key(&(dm, d.id, drow)));
+                if nodes.len() + new > MAX_NODES {
+                    continue;
+                }
+                let (Some(from), Some(to)) =
+                    (a.or_else(|| node(&mut index, &mut nodes, om, o, orow, gi)), node(&mut index, &mut nodes, dm, d, drow, gi))
+                else {
+                    continue;
+                };
+                a = Some(from);
+                links.push(json!({"source": from, "target": to, "relationship": r.name}));
+                drawn_here += 1;
             }
         }
     }
@@ -1453,7 +1468,7 @@ const moving=N.reduce((m,a)=>Math.max(m,Math.abs(a.vx),Math.abs(a.vy)),0);if(mov
     );
     let said = left.map(|left| {
         format!(
-            "the link chart shows {left}; a link chart takes at most {MAX_NODES} features, {MAX_LINKS} links and {MAX_FEATURE_LINKS} links from one feature"
+            "the link chart shows {left}; a link chart takes at most {MAX_NODES} features, {MAX_LINKS} links and {MAX_FEATURE_LINKS} links from one feature in each relationship"
         )
     });
     Ok((html, said))
