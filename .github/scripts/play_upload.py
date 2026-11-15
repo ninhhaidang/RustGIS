@@ -206,41 +206,51 @@ def upload_once(
     base = f"{API}/{urllib.parse.quote(package)}/edits"
     edit = request("POST", base, {**auth, "Content-Type": "application/json"}, b"{}")["id"]
     try:
-        uploaded = request(
-            "POST",
-            f"{UPLOAD_API}/{urllib.parse.quote(package)}/edits/{edit}/bundles?uploadType=media",
-            {**auth, "Content-Type": "application/octet-stream"},
-            bundle.read_bytes(),
+        try:
+            uploaded = request(
+                "POST",
+                f"{UPLOAD_API}/{urllib.parse.quote(package)}/edits/{edit}/bundles?uploadType=media",
+                {**auth, "Content-Type": "application/octet-stream"},
+                bundle.read_bytes(),
+            )
+            code = int(uploaded["versionCode"])
+        except RuntimeError as error:
+            # A manual run may have uploaded this very bundle already: release that one, once Play's
+            # copy is shown to be the same bytes (another commit can have the same commit count).
+            if version_code is None or not is_used_version_code(error):
+                raise
+            held = request("GET", f"{base}/{edit}/bundles", auth, None).get("bundles", [])
+            sha256 = next((b.get("sha256") for b in held if int(b.get("versionCode", -1)) == version_code), None)
+            if sha256 != hashlib.sha256(bundle.read_bytes()).hexdigest():
+                raise RuntimeError(
+                    f"Play already has version code {version_code}, from another build than this bundle: "
+                    "release that build in Play Console, or build a later commit"
+                ) from None
+            print(
+                f"play_upload: Play already has this bundle (version code {version_code}), so that upload is released",
+                file=sys.stderr,
+            )
+            code = version_code
+        release = {"name": name, "versionCodes": [str(code)], "status": status}
+        if notes:
+            release["releaseNotes"] = [{"language": "en-US", "text": release_notes(notes)}]
+        request(
+            "PUT",
+            f"{base}/{edit}/tracks/{urllib.parse.quote(track)}",
+            {**auth, "Content-Type": "application/json"},
+            json.dumps({"track": track, "releases": [release]}).encode(),
         )
-        code = int(uploaded["versionCode"])
-    except RuntimeError as error:
-        # A manual run may have uploaded this very bundle already: release that one, once Play's
-        # copy is shown to be the same bytes (another commit can have the same commit count).
-        if version_code is None or not is_used_version_code(error):
-            raise
-        held = request("GET", f"{base}/{edit}/bundles", auth, None).get("bundles", [])
-        sha256 = next((b.get("sha256") for b in held if int(b.get("versionCode", -1)) == version_code), None)
-        if sha256 != hashlib.sha256(bundle.read_bytes()).hexdigest():
-            raise RuntimeError(
-                f"Play already has version code {version_code}, from another build than this bundle: "
-                "release that build in Play Console, or build a later commit"
-            ) from None
-        print(
-            f"play_upload: Play already has this bundle (version code {version_code}), so that upload is released",
-            file=sys.stderr,
-        )
-        code = version_code
-    release = {"name": name, "versionCodes": [str(code)], "status": status}
-    if notes:
-        release["releaseNotes"] = [{"language": "en-US", "text": release_notes(notes)}]
-    request(
-        "PUT",
-        f"{base}/{edit}/tracks/{urllib.parse.quote(track)}",
-        {**auth, "Content-Type": "application/json"},
-        json.dumps({"track": track, "releases": [release]}).encode(),
-    )
-    request("POST", f"{base}/{edit}:commit", auth, b"")
-    return code
+        request("POST", f"{base}/{edit}:commit", auth, b"")
+        return code
+    except Exception:
+        # An edit left open keeps what was uploaded to it until Play expires it: drop it now, so a
+        # retry starts clean. Any failure counts (a refusal, the network, an answer without a
+        # version code), and a failed drop is said without hiding the error that came first.
+        try:
+            request("DELETE", f"{base}/{edit}", auth, None)
+        except (RuntimeError, OSError) as dropped:
+            print(f"play_upload: the refused edit {edit} could not be dropped: {dropped}", file=sys.stderr)
+        raise
 
 
 def upload(

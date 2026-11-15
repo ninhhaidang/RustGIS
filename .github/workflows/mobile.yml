@@ -311,11 +311,11 @@ jobs:
     timeout-minutes: 30
     environment: mobile-release
     # One upload at a time across runs: Play drops an open edit when the same account starts another.
-    # GitHub keeps one waiting job per group, so a third upload queued while one runs and one waits
-    # cancels the waiting one: that run shows the upload cancelled, and it is re-run from there.
+    # `queue: max` keeps every waiting upload (up to 100) instead of only the latest.
     concurrency:
       group: google-play-upload
       cancel-in-progress: false
+      queue: max
     steps:
       # The script from a checkout of the same commit that no build has run in.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
