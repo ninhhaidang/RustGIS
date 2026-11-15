@@ -1512,8 +1512,16 @@ value isn't: chunks never written are left empty, but chunks missing from inside
 fill value. `scale_factor` and `add_offset` are applied. The coordinates must be evenly spaced (a curvilinear grid isn't read);
 longitude/latitude grids of 0–360° are turned to -180–180°, and projected ones take their
 coordinate system from the variable's grid mapping (`crs_wkt`, `spatial_ref`, an EPSG code) or
-`"crs"`. Blosclz-compressed and transposed chunks and shards inside shards aren't read yet, and
-say so. A store by web address must allow the browser to fetch it (CORS) for the web app;
+`"crs"`. A grid placed by the zarr-conventions `spatial:transform` (an affine transform with no
+rotation, pixel- or node-registered) reads no coordinates, and the transform wins over coordinates
+the store also holds. It is the variable's own, or that of the nearest group above it (up to 64
+levels up) that gives one, taken with that group's `spatial:shape`, which must be the variable's map's. Its map
+dimensions are those `spatial:dimensions` names. `proj:code`, `proj:wkt2` or `proj:epsg` give
+the coordinate system, after the variable's own attributes and its grid mapping, and before a
+`spatial_ref` or `crs` array beside it. A variable opened by its own address doesn't see its
+groups' attributes: open the store's address with `"variable"` instead.
+Blosclz-compressed and transposed chunks and shards inside shards aren't read yet, and say so. A
+store by web address must allow the browser to fetch it (CORS) for the web app;
 Google Cloud's CMIP6 bucket does, ARCO-ERA5's doesn't (the desktop reads both).
 
 ```sh
@@ -1527,7 +1535,8 @@ coordinates (by byte range when they are stored uncompressed). In a sharded arra
 shard's index by range, then only the shard's chunks the window needs, one range each; a window
 over more than 4,096 of the shards' chunks reads its shards whole instead. A box is placed by the variable's
 coordinates, read whole, so it takes grids of up to 4,000,000 cells a side; a longer one takes
-`"cells"`. A box reaching past the grid is read within it, and says so; one over a longitude grid's
+`"cells"`. A grid placed by its `spatial:transform` places a box by arithmetic, whatever its
+size. A box reaching past the grid is read within it, and says so; one over a longitude grid's
 edge (0°/360°, or ±180°) is refused: give a box on each side (one round the whole globe is the
 whole grid); `raster.zarrInfo` with
 `"bbox"` gives the cells a box covers (`window.cells`). A window is at least 2 × 2 cells (a box within one cell is widened to two, and says so), and

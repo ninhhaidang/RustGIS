@@ -49076,6 +49076,43 @@ fn a_zarr_window_reads_only_its_chunks_by_range() {
     }
 }
 
+/// A web store whose group places its grid by `spatial:transform` and `proj:code`, as the AlphaEarth
+/// mosaic (#1720), with axes longer than `MAX_COORDS` and no coordinate arrays: a box is placed by
+/// arithmetic and reads only the chunks it touches.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_zarr_box_on_a_spatial_transform_reads_no_coordinates() {
+    // `v` (time 1, y 5,000,000, x 5,000,000; int16, `row·100 + col`) in chunks of 1 × 2 × 3, of
+    // which only the first two are stored; 1 m cells in UTM 23S from (0, 8).
+    let n = 5_000_000u64;
+    let v = json!({"zarr_format": 3, "node_type": "array", "shape": [1, n, n], "data_type": "int16",
+        "chunk_grid": {"name": "regular", "configuration": {"chunk_shape": [1, 2, 3]}}, "codecs": [{"name": "bytes"}],
+        "fill_value": -1, "dimension_names": ["time", "y", "x"]});
+    let root = json!({"zarr_format": 3, "node_type": "group", "attributes": {"proj:code": "EPSG:32723",
+        "spatial:transform": [1.0, 0.0, 0.0, 0.0, -1.0, 8.0], "spatial:shape": [n, n]}, "consolidated_metadata": {"kind": "inline", "metadata": {"v": v}}});
+    let chunk =
+        |gx: u64| (0..2u64).flat_map(|r| (0..3u64).map(move |c| (r * 100 + gx * 3 + c) as i16)).flat_map(i16::to_le_bytes).collect();
+    let files = vec![
+        ("/s.zarr/zarr.json".to_string(), root.to_string().into_bytes()),
+        ("/s.zarr/v/c/0/0/0".to_string(), chunk(0)),
+        ("/s.zarr/v/c/0/0/1".to_string(), chunk(1)),
+    ];
+    let (base, log) = serve_ranged_files(files);
+    let url = format!("{base}/s.zarr");
+    let mut s = Session::new(Project::default());
+    let info = s.run("raster.zarrInfo", &json!({"url": url, "variable": "v", "bbox": [0.5, 6.5, 4.5, 7.5]})).unwrap();
+    assert_eq!(info["window"]["cells"], json!([0, 0, 5, 2]));
+    let r = s.run("layer.addZarr", &json!({"url": url, "variable": "v", "index": {"time": 0}, "bbox": [0.5, 6.5, 4.5, 7.5]})).unwrap();
+    let id = r["layer"].as_u64().unwrap() as u32;
+    let data = s.map().layer(id).unwrap().raster.as_ref().unwrap().data.clone().unwrap();
+    assert_eq!((data.width, data.height, data.crs), (5, 2, rustgis_data::raster::Crs::Epsg(32723)));
+    assert_eq!((data.transform.origin_x, data.transform.origin_y, data.transform.pixel_width), (0.0, 8.0, 1.0));
+    assert_eq!(data.bands[0].data, (0..2).flat_map(|r| (0..5).map(move |c| (r * 100 + c) as f32)).collect::<Vec<_>>());
+    let asked: Vec<String> = log.lock().unwrap().iter().map(|(p, _)| p.clone()).collect();
+    assert!(asked.iter().all(|p| !p.starts_with("/s.zarr/v/") || p == "/s.zarr/v/c/0/0/0" || p == "/s.zarr/v/c/0/0/1"), "{asked:?}");
+    assert!(asked.iter().all(|p| !p.starts_with("/s.zarr/x") && !p.starts_with("/s.zarr/y")), "{asked:?}");
+}
+
 /// `layer.rename` refuses a name over 200 characters (once trimmed) rather than cutting it
 /// (#1817): the layer keeps its name and the error gives the length. Characters are counted, not
 /// bytes, so a name in a non-Latin script at 200 is taken; 200 and fewer are taken whole.
