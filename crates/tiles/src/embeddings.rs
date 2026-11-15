@@ -278,15 +278,7 @@ fn year_of(t: i64) -> i32 {
         _ => t,
     };
     let days = ms.div_euclid(86_400_000);
-    // Howard Hinnant's civil_from_days.
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = yoe + era * 400 + i64::from(m <= 2);
+    let (y, _, _) = rustgis_data::date::civil_from_days(days);
     i32::try_from(y).unwrap_or(0)
 }
 
@@ -442,14 +434,7 @@ pub fn aef_series(fields: &[Field], batch: &Batch, (first, last): (i32, i32), bb
 
 /// The first moment of a year, in milliseconds since 1970 (UTC): a time slider's step for it.
 pub fn year_start_ms(year: i32) -> f64 {
-    // Howard Hinnant's days_from_civil for 1 January, which it counts as month 11 of the year
-    // before (March is its month 1).
-    let y = i64::from(year) - 1;
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let doy = (153 * 10 + 2) / 5;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146_097 + doe - 719_468;
+    let days = rustgis_data::date::days_from_civil(i64::from(year), 1, 1);
     days as f64 * 86_400_000.0
 }
 

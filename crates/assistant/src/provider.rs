@@ -463,33 +463,7 @@ pub fn retry_delay_for(
 /// Seconds from now until an HTTP date (IMF-fixdate, `Wed, 21 Oct 2015 07:28:00 GMT`), 0 when it
 /// has passed. In the browser, which has no clock here, a date counts as "not soon".
 fn http_date_wait(v: &str) -> Option<f64> {
-    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-    // `<weekday>, <day> <month> <year> <hh:mm:ss> GMT`
-    let mut p = v.split_whitespace().skip(1);
-    let day: i64 = p.next()?.parse().ok()?;
-    let name = p.next()?;
-    let month = MONTHS.iter().position(|m| *m == name)? as i64 + 1;
-    let year: i64 = p.next()?.parse().ok()?;
-    let mut hms = p.next()?.split(':').map(|x| x.parse::<i64>().ok());
-    let (h, mi, s) = (hms.next()??, hms.next()??, hms.next()??);
-    // Bounded, so the arithmetic below can't overflow on a hostile header.
-    if p.next()? != "GMT"
-        || !(1..=31).contains(&day)
-        || !(1970..=9999).contains(&year)
-        || !(0..=23).contains(&h)
-        || !(0..=59).contains(&mi)
-        || !(0..=60).contains(&s)
-    {
-        return None;
-    }
-    // Days since 1970-01-01 (Howard Hinnant's days_from_civil).
-    let y = if month <= 2 { year - 1 } else { year };
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let doy = (153 * (if month > 2 { month - 3 } else { month + 9 }) + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let at = era.checked_mul(146_097)?.checked_add(doe - 719_468)?.checked_mul(86_400)?.checked_add(h * 3600 + mi * 60 + s)?;
-    Some(date_delay(at, now_unix()))
+    Some(date_delay(rustgis_engine::data::date::http_date(v)?, now_unix()))
 }
 
 fn date_delay(at: i64, now: Option<i64>) -> f64 {
@@ -499,6 +473,12 @@ fn date_delay(at: i64, now: Option<i64>) -> f64 {
 
 #[cfg(test)]
 mod retry_clock_tests {
+    #[test]
+    fn a_date_that_does_not_exist_is_not_a_wait() {
+        // 31 February once rolled over to 3 March.
+        assert_eq!(super::http_date_wait("Sun, 31 Feb 2030 00:00:00 GMT"), None);
+    }
+
     #[test]
     fn missing_clock_never_shortens_a_valid_http_date_wait() {
         assert!(super::date_delay(1000, None).is_infinite());

@@ -5,6 +5,8 @@
 //! Everything here came from the server or the network, so it is untrusted text: bounded,
 //! stripped of markup and control characters, and only ever shown as text.
 
+use rustgis_data::date::http_date;
+
 /// Headers kept from a failed answer: who answered, what it wants, and the request's id.
 pub const KEPT_HEADERS: [&str; 13] = [
     "server",
@@ -224,43 +226,9 @@ fn retry_after_secs(value: &str, now: u64) -> Option<u64> {
     let value = value.trim();
     let secs = match value.parse::<u64>() {
         Ok(secs) => secs,
-        Err(_) => http_date(value)?.saturating_sub(now),
+        Err(_) => u64::try_from(http_date(value)?).ok()?.saturating_sub(now),
     };
     Some(secs.clamp(1, MAX_RETRY_AFTER))
-}
-
-/// An HTTP date's seconds since 1970 (the IMF-fixdate form servers send: `Sun, 06 Nov 1994
-/// 08:49:37 GMT`).
-fn http_date(s: &str) -> Option<u64> {
-    let mut parts = s.split_whitespace();
-    let (_, day, month, year, time, zone) = (parts.next()?, parts.next()?, parts.next()?, parts.next()?, parts.next()?, parts.next()?);
-    if zone != "GMT" || parts.next().is_some() {
-        return None;
-    }
-    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-    let month = MONTHS.iter().position(|m| *m == month)? as i64 + 1;
-    let (day, year): (i64, i64) = (day.parse().ok()?, year.parse().ok()?);
-    // Each field unsigned: a sign isn't a time.
-    let mut hms = time.split(':').map(|p| p.parse::<u8>().ok().map(i64::from));
-    let (h, m, sec) = (hms.next()??, hms.next()??, hms.next()??);
-    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
-    let days_in_month = match month {
-        2 if leap => 29,
-        2 => 28,
-        4 | 6 | 9 | 11 => 30,
-        _ => 31,
-    };
-    if !(1..=days_in_month).contains(&day) || !(1970..=9999).contains(&year) || h > 23 || m > 59 || sec > 60 || hms.next().is_some() {
-        return None;
-    }
-    // Days since 1970 of a date in the proleptic Gregorian calendar (Howard Hinnant's algorithm).
-    let y = if month <= 2 { year - 1 } else { year };
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let doy = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146_097 + doe - 719_468;
-    u64::try_from(days * 86_400 + h * 3600 + m * 60 + sec).ok()
 }
 
 /// A status's usual name (`403` → `Forbidden`), for the common ones.
@@ -487,6 +455,8 @@ mod tests {
         assert_eq!(http_date("Sun, 32 Nov 1994 08:49:37 GMT"), None);
         assert_eq!(http_date("Wed, 31 Feb 2024 00:00:00 GMT"), None, "no 31 February");
         assert_eq!(http_date("Sun, 06 Nov 1994 -8:49:37 GMT"), None, "no negative hour");
+        assert_eq!(http_date("Sun, 06 Nov 1994 +8:49:37 GMT"), None, "no sign on an hour");
+        assert_eq!(http_date("Sun, +6 Nov 1994 08:49:37 GMT"), None, "no sign on a day");
         assert!(http_date("Thu, 29 Feb 2024 00:00:00 GMT").is_some() && http_date("Sat, 29 Feb 2025 00:00:00 GMT").is_none());
         // A refused answer's own header.
         let headers = vec![("Retry-After".to_string(), "12".to_string())];

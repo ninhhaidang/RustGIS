@@ -340,19 +340,28 @@ pub(crate) fn days_in_month(y: i64, m: i64) -> i64 {
 
 /// Days since 1970-01-01 of a proleptic Gregorian date (Howard Hinnant's `days_from_civil`,
 /// <https://howardhinnant.github.io/date_algorithms.html>).
-pub(crate) fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
-    let y = if month <= 2 { year - 1 } else { year };
+///
+/// `month` is 1 to 12 and `day` is 1 to the month's length; a date that doesn't exist rolls over
+/// (31 February is 3 March) rather than being refused, so check it with `days_in_month` first
+/// where that matters. Exact for every year within about ±2.5×10¹⁶ (what an `i64` count of days
+/// holds); beyond that the arithmetic saturates instead of overflowing.
+pub fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let y = if month <= 2 { year.saturating_sub(1) } else { year };
     let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let mp = (month + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + doe - 719_468
+    let yoe = y.rem_euclid(400);
+    let mp = month.saturating_add(9) % 12;
+    let doy = ((153 * mp + 2) / 5).saturating_add(day).saturating_sub(1);
+    let doe = (yoe * 365 + yoe / 4 - yoe / 100).saturating_add(doy);
+    era.saturating_mul(146_097).saturating_add(doe).saturating_sub(719_468)
 }
 
-/// The proleptic Gregorian date `days` after 1970-01-01 (Hinnant's `civil_from_days`).
-pub(crate) fn civil_from_days(days: i64) -> (i64, i64, i64) {
-    let z = days + 719_468;
+/// The proleptic Gregorian date `days` after 1970-01-01 as `(year, month, day)`, with the month
+/// 1 to 12 and the day 1 to 31 (Hinnant's `civil_from_days`). Before 1970 `days` is negative.
+///
+/// Exact for every year within about ±2.5×10¹⁶ (what an `i64` count of days holds); a `days`
+/// beyond that saturates instead of overflowing, so any `i64` is safe to pass.
+pub fn civil_from_days(days: i64) -> (i64, i64, i64) {
+    let z = days.saturating_add(719_468);
     let era = z.div_euclid(146_097);
     let doe = z - era * 146_097;
     let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
@@ -363,6 +372,37 @@ pub(crate) fn civil_from_days(days: i64) -> (i64, i64, i64) {
     (yoe + era * 400 + i64::from(month <= 2), month, day)
 }
 
+/// Seconds since 1970-01-01 UTC of an HTTP date in the IMF-fixdate form servers send
+/// (`Sun, 06 Nov 1994 08:49:37 GMT`, as a `Retry-After` header carries), or `None` when it isn't
+/// one: another zone, a date that doesn't exist (no 31 February), a year outside 1970 to 9999, or
+/// a time past 23:59:60. The weekday is skipped, not checked.
+pub fn http_date(s: &str) -> Option<i64> {
+    const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let mut parts = s.split_whitespace();
+    let (_, day, month, year, time, zone) = (parts.next()?, parts.next()?, parts.next()?, parts.next()?, parts.next()?, parts.next()?);
+    if zone != "GMT" || parts.next().is_some() {
+        return None;
+    }
+    let month = MONTHS.iter().position(|m| *m == month)? as i64 + 1;
+    // Each field is up to `n` digits and nothing else: `parse` alone would take a leading `+`.
+    let digits = |p: &str, n: usize| {
+        (!p.is_empty() && p.len() <= n && p.bytes().all(|b| b.is_ascii_digit())).then(|| p.parse::<i64>().ok()).flatten()
+    };
+    let (day, year) = (digits(day, 2)?, digits(year, 4)?);
+    let mut hms = time.split(':').map(|p| digits(p, 2));
+    let (h, m, sec) = (hms.next()??, hms.next()??, hms.next()??);
+    if !(1..=days_in_month(year, month)).contains(&day)
+        || !(1970..=9999).contains(&year)
+        || h > 23
+        || m > 59
+        || sec > 60
+        || hms.next().is_some()
+    {
+        return None;
+    }
+    Some(days_from_civil(year, month, day) * 86_400 + h * 3600 + m * 60 + sec)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -370,6 +410,19 @@ mod tests {
     /// A date-time from ISO text; one that doesn't read is far outside every range.
     fn dt(s: &str) -> DateTime {
         DateTime::parse(s).unwrap_or(DateTime { micros: i64::MIN, offset: None })
+    }
+
+    /// The shared day arithmetic holds at both ends of `i64` without overflowing, and still
+    /// round-trips an ordinary date.
+    #[test]
+    fn civil_days_saturate_instead_of_overflowing() {
+        for v in [i64::MIN, i64::MIN + 1, -1, 0, 1, i64::MAX - 1, i64::MAX] {
+            let _ = civil_from_days(v);
+            let _ = days_from_civil(v, v, v);
+            let _ = days_from_civil(v, 3, 1);
+        }
+        assert_eq!(days_from_civil(1970, 1, 1), 0);
+        assert_eq!(civil_from_days(days_from_civil(2026, 11, 15)), (2026, 11, 15));
     }
 
     #[test]

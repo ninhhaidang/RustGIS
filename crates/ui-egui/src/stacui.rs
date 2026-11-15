@@ -719,16 +719,7 @@ pub fn open_preset(app: &mut RustGisApp, preset: Option<Preset>, p: &serde_json:
 fn days_ago(n: u64) -> String {
     let now = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     let days = (now / 86_400).saturating_sub(n) as i64;
-    // Days to a civil date (proleptic Gregorian), after Howard Hinnant's algorithm.
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = yoe + era * 400 + i64::from(m <= 2);
+    let (y, m, d) = rustgis_engine::data::date::civil_from_days(days);
     format!("{y:04}-{m:02}-{d:02}")
 }
 

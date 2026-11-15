@@ -9,6 +9,7 @@
 
 use std::collections::{HashSet, VecDeque};
 
+use rustgis_data::date::days_from_civil;
 use serde_json::{Value, json};
 
 use super::{Item, Search, datetime, is_web, link, resolve, text};
@@ -292,17 +293,6 @@ pub fn instant(s: &str) -> Option<i64> {
         _ => return None,
     };
     Some(days * 86_400 + hh * 3600 + mm * 60 + ss - offset)
-}
-
-/// Days since 1970-01-01 of a civil date (proleptic Gregorian), after Howard Hinnant's algorithm.
-fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let mp = (m + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + doe - 719_468
 }
 
 /// A walk of a static catalog from one node: the documents still to read, and the items found.
