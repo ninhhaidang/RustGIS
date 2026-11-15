@@ -185,10 +185,26 @@ pub struct Terrain {
     pub source: TerrainSource,
     #[serde(default = "one")]
     pub exaggeration: f64,
+    /// Water bodies drawn flat at their level (#1915). None: the ground's heights everywhere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub water: Option<TerrainWater>,
 }
 
 fn one() -> f64 {
     1.0
+}
+
+/// A terrain's water (#1915): inside each polygon of a layer the ground is flat, at the lowest
+/// height along the polygon's shore or at the value of a field, instead of the DEM's heights
+/// (a surface model is often noisy or stepped over water).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TerrainWater {
+    /// The polygon layer of water bodies, by name (as the terrain's DEM).
+    pub layer: String,
+    /// A numeric field holding each water body's level (metres); a row without one takes its
+    /// shore's lowest height. None: every water body's shore.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<String>,
 }
 
 /// The most a terrain's heights are exaggerated.

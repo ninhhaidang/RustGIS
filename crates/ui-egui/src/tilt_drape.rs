@@ -855,6 +855,7 @@ mod tests {
                 m.view.terrain = Some(rustgis_engine::map::view::Terrain {
                     source: rustgis_engine::map::view::TerrainSource::Layer("dem".into()),
                     exaggeration: 3.0,
+                    water: None,
                 });
             }
             let mut d = TiltDrape::default();

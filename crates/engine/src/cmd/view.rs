@@ -49,7 +49,7 @@ pub fn commands() -> Vec<C> {
         }).roles(&[]).effects(crate::policy::Effects::NONE)
         .params(r#"{"mode": "none"|"distance", "distance"?: metres from the view's centre}"#),
         C::new("map.terrain", "Terrain", "View › Scene", terrain).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network)).params(
-            r#"{"layer"?: a DEM raster layer (heights in metres; without layer or tiles, and no terrain yet, the active layer when it is a raster) | "tiles"?: elevation tile URL with {z}/{x}/{y}, "encoding"?: "terrarium"|"mapbox" (tiles; default terrarium), "exaggeration"?: 0 to 20 (default 1, or the terrain's), "off"?: true}"#,
+            r##"{"layer"?: a DEM raster layer (heights in metres; without layer or tiles, and no terrain yet, the active layer when it is a raster) | "tiles"?: elevation tile URL with {z}/{x}/{y}, "encoding"?: "terrarium"|"mapbox" (tiles; default terrarium), "exaggeration"?: 0 to 20 (default 1, or the terrain's), "water"?: water bodies drawn flat at their level {"layer": a polygon layer, "level"?: a numeric field of levels in metres (default: each polygon's lowest height along its shore)}, or false to take it off (default: as it was), "off"?: true}"##,
         ),
         C::new("map.exportOrbit", "Export Orbit", "View › Scene", |s, p| super::exports::write_here(s, p, "map.exportOrbit")).inputs(orbit_inputs).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
             .view()
@@ -300,14 +300,66 @@ fn walk(s: &mut Session, p: &Value) -> CmdResult {
     Ok(json!({"lon": c.x, "lat": c.y}))
 }
 
+/// A terrain's water (#1915) from `map.terrain`'s `"water"` object, checked: a polygon layer of a
+/// name of its own, and a numeric field of it.
+fn terrain_water(s: &Session, w: &serde_json::Map<String, Value>) -> Result<rustgis_map::view::TerrainWater, String> {
+    if let Some(k) = w.keys().find(|k| !matches!(k.as_str(), "layer" | "level")) {
+        return Err(format!("water has no '{k}' (layer, level)"));
+    }
+    let name = w
+        .get("layer")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        .ok_or("water needs a layer: a polygon layer of water bodies")?;
+    let l = s.map().layer_by_name(name).ok_or_else(|| format!("no layer '{name}'"))?;
+    if l.geometry_type() != rustgis_data::GeometryType::Polygon {
+        return Err(format!("'{name}' isn't a polygon layer (water bodies)"));
+    }
+    // A layer read in chunks holds only the view's: its lakes would come and go with the view.
+    if l.is_streamed() {
+        return Err(format!("'{name}' is read a view at a time: water needs a layer that holds all its polygons"));
+    }
+    if s.map().layers.iter().filter(|o| o.name.eq_ignore_ascii_case(name)).count() > 1 {
+        return Err(format!("more than one layer is called '{name}': give the water a name of its own, then try again"));
+    }
+    let level = match w.get("level") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(f)) => {
+            let i = l.dataset.field_index(f).ok_or_else(|| format!("'{name}' has no field '{f}'"))?;
+            let field = &l.dataset.fields[i];
+            if !field.ty.is_numeric() {
+                return Err(format!("water's level field '{}' isn't numeric (levels in metres)", field.name));
+            }
+            Some(field.name.clone())
+        }
+        Some(_) => return Err("water's level is a field name".into()),
+    };
+    Ok(rustgis_map::view::TerrainWater { layer: l.name.clone(), level })
+}
+
 /// Sets the map's terrain: the relief a tilted view drapes the map over, from a DEM raster layer
 /// or elevation tiles, or turns it off. Parameters are checked before anything changes.
+///
+/// Runs on the UI thread: it changes the map's view settings, which the frames read. With water
+/// (#1915) it reads the water's shores over a DEM layer for its notices, bounded by the render
+/// crate's `MAX_SHORE_SAMPLES` heights, with no progress or Cancel; the read is kept, so the
+/// frames that follow draw from it instead of reading the shores again. Over elevation tiles it
+/// reads no height (the coarse count comes from the shapes).
 fn terrain(s: &mut Session, p: &Value) -> CmdResult {
     use rustgis_map::view::{MAX_EXAGGERATION, Terrain, TerrainEncoding, TerrainSource};
     if p.get("off").and_then(Value::as_bool) == Some(true) {
         s.map_mut().view.terrain = None;
         return Ok(json!({"terrain": null}));
     }
+    // Left out (or null, as for the exaggeration), the water stays as it was; false takes it off
+    // (#1915).
+    let water = match p.get("water") {
+        None | Some(Value::Null) => None,
+        Some(Value::Bool(false)) => Some(None),
+        Some(Value::Object(w)) => Some(Some(terrain_water(s, w)?)),
+        Some(_) => return Err("water is an object {\"layer\", \"level\"?}, or false to take it off".into()),
+    };
     let exaggeration = match p.get("exaggeration").filter(|v| !v.is_null()) {
         Some(_) => {
             Some(f(p, "exaggeration").filter(|v| v.is_finite()).ok_or("exaggeration must be a number")?.clamp(0.0, MAX_EXAGGERATION))
@@ -356,9 +408,16 @@ fn terrain(s: &mut Session, p: &Value) -> CmdResult {
     let m = s.map_mut();
     let old_terrain = m.view.terrain.clone();
     let t = match (source, m.view.terrain.take()) {
-        (Some(source), old) => Terrain { source, exaggeration: exaggeration.or(old.map(|t| t.exaggeration)).unwrap_or(1.0) },
-        // Only a new exaggeration: the terrain keeps its source.
-        (None, Some(old)) => Terrain { exaggeration: exaggeration.unwrap_or(old.exaggeration), ..old },
+        (Some(source), old) => {
+            let (old_exaggeration, old_water) = old.map_or((None, None), |t| (Some(t.exaggeration), t.water));
+            Terrain { source, exaggeration: exaggeration.or(old_exaggeration).unwrap_or(1.0), water: water.clone().unwrap_or(old_water) }
+        }
+        // Only a new exaggeration or water: the terrain keeps its source.
+        (None, Some(old)) => Terrain {
+            exaggeration: exaggeration.unwrap_or(old.exaggeration),
+            water: water.clone().unwrap_or_else(|| old.water.clone()),
+            ..old
+        },
         (None, None) => {
             return Err(
                 "make a DEM raster layer the active layer first (a script can instead name a layer, or give elevation tiles)".into()
@@ -371,6 +430,7 @@ fn terrain(s: &mut Session, p: &Value) -> CmdResult {
             TerrainSource::Tiles { url, encoding } => json!({"tiles": crate::sources::redact_output(url), "encoding": encoding.code()}),
         },
         "exaggeration": t.exaggeration,
+        "water": t.water.as_ref().map(|w| json!({"layer": w.layer, "level": w.level})),
     });
     // The terrain keeps its DEM by name: with two layers of that name (a rename can make them),
     // it would draw the first one's heights. Checked for a terrain kept on too.
@@ -386,11 +446,58 @@ fn terrain(s: &mut Session, p: &Value) -> CmdResult {
         }
         return Err(e);
     }
+    // So does its water (kept through other changes, a rename can give its name to another).
+    if let Some(w) = &t.water
+        && m.layers.iter().filter(|l| l.name.eq_ignore_ascii_case(&w.layer)).count() > 1
+    {
+        let e = format!(
+            "more than one layer is called '{}': give the water a name of its own, then try again (Terrain stays as it was)",
+            w.layer
+        );
+        if let Some(old) = old_terrain {
+            m.view.terrain = Some(old);
+        }
+        return Err(e);
+    }
     let heights_from = match &t.source {
         TerrainSource::Layer(n) => Some(n.clone()),
         TerrainSource::Tiles { .. } => None,
     };
+    let water_layer = t.water.as_ref().filter(|_| water.is_some()).map(|w| w.layer.clone());
     m.view.terrain = Some(t);
+    // When the water is set, what its levels left out is said, with how many.
+    if let Some(name) = water_layer {
+        use rustgis_render::terrain::Ground;
+        // Water polygons with no height along their shore (off the DEM) and no level stay on the
+        // ground. Over elevation tiles a shore whose tiles haven't come yet isn't off the
+        // ground: not said there, nor are tiles asked for here.
+        let over_dem = || Ground::of(s.map(), &s.map().camera).map_or(0, |g| g.water_unlevelled());
+        let unlevelled = match if heights_from.is_some() { over_dem() } else { 0 } {
+            0 => None,
+            1 => Some(format!(
+                "Water: 1 polygon of '{name}' has no height along its shore (off the DEM) and no level, so stays on the ground"
+            )),
+            n => Some(format!(
+                "Water: {n} polygons of '{name}' have no height along their shore (off the DEM) and no level, so stay on the ground"
+            )),
+        };
+        // When the layer's shores together are too long to read every half cell, all of them are
+        // read at one wider step: a lowest point may be missed, leaving the water a little high.
+        // Said over a DEM and over tiles alike (the step follows the shores' length, not the
+        // heights read).
+        let coarse = match Ground::water_coarse_unread(s.map(), &s.map().camera) {
+            0 => None,
+            1 => Some(format!(
+                "Water: the shore of 1 polygon of '{name}' was read at wider steps than half a cell of the heights (shores too long to read whole), so its level may lie a little above its lowest shore"
+            )),
+            n => Some(format!(
+                "Water: the shores of {n} polygons of '{name}' were read at wider steps than half a cell of the heights (shores too long to read whole), so their levels may lie a little above their lowest shore"
+            )),
+        };
+        for said in [unlevelled, coarse].into_iter().flatten() {
+            s.notify(said, false);
+        }
+    }
     // Turned on: which layer gives the heights (any raster can be the active layer, an RGB image
     // too), and what to do to see the relief.
     if was_off {

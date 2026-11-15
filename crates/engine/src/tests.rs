@@ -7721,7 +7721,8 @@ fn terrain_is_set_from_a_dem_or_tiles() {
         if let Some(l) = m.layers.iter_mut().filter(|l| l.is_raster()).nth(1) {
             l.name = first.clone();
         }
-        m.view.terrain = Some(rustgis_map::view::Terrain { source: rustgis_map::view::TerrainSource::Layer(first), exaggeration: 1.0 });
+        m.view.terrain =
+            Some(rustgis_map::view::Terrain { source: rustgis_map::view::TerrainSource::Layer(first), exaggeration: 1.0, water: None });
         let mut opened = Session::new(Project::default());
         crate::cmd::project::reset_to(&mut opened, saved);
         assert!(opened.notices.iter().any(|n| n.text.contains("is shared by two layers")), "{:?}", opened.notices);
@@ -11440,6 +11441,114 @@ fn modify_tools_snapping_topology_relationships_and_elevation() {
     assert!(s.run("edit.elevation", &json!({"mode": "surface", "surface": "Cities"})).is_err(), "not a raster");
     let tools = s.run("edit.tools", &Value::Null).unwrap();
     assert!(tools.as_array().unwrap().len() >= 9);
+}
+
+/// The terrain's water (#1915): a polygon layer and a numeric field, checked before anything
+/// changes; kept through other changes and saved; a polygon with no level said; following the
+/// layer's renames; taken off with false.
+#[test]
+fn terrain_water_is_a_polygon_layer_of_its_own() {
+    use base64::Engine;
+    let mut s = Session::new(Project::default());
+    s.run("layer.addDataBytes", &json!({"fileName": "dem.tif", "data": dem_b64()})).unwrap();
+    let dem = s.map().layers.iter().find(|l| l.is_raster()).map(|l| l.name.clone()).unwrap();
+    let v = s.run("map.terrain", &json!({"layer": dem})).unwrap();
+    assert_eq!(v["water"], Value::Null, "off by default");
+    let square = |x0: f64, y0: f64| json!([[[x0, y0], [x0 + 0.01, y0], [x0 + 0.01, y0 + 0.01], [x0, y0 + 0.01], [x0, y0]]]);
+    let lakes = json!({"type": "FeatureCollection", "features": [
+        {"type": "Feature", "properties": {"nivel": 210.5, "nome": "a"}, "geometry": {"type": "Polygon", "coordinates": square(10.01, 45.01)}},
+        {"type": "Feature", "properties": {"nivel": null, "nome": "b"}, "geometry": {"type": "Polygon", "coordinates": square(20.0, 20.0)}},
+    ]});
+    let data = base64::engine::general_purpose::STANDARD.encode(lakes.to_string().as_bytes());
+    s.run("layer.addDataBytes", &json!({"fileName": "lagos.geojson", "data": data.clone()})).unwrap();
+    let lagos = s.map().layers.iter().find(|l| !l.is_raster()).map(|l| l.name.clone()).unwrap();
+    for (water, said) in [
+        (json!({"layer": "Nowhere"}), "no layer"),
+        (json!({"layer": dem}), "isn't a polygon layer"),
+        (json!({"layer": lagos, "level": "fundo"}), "has no field"),
+        (json!({"layer": lagos, "level": "nome"}), "isn't numeric"),
+        (json!({"layer": lagos, "depth": 3}), "has no 'depth'"),
+        (json!({}), "needs a layer"),
+        (json!(lagos), "is an object"),
+    ] {
+        let e = s.run("map.terrain", &json!({"water": water})).unwrap_err();
+        assert!(e.contains(said), "{water}: {e}");
+    }
+    assert_eq!(s.map().view.terrain.as_ref().unwrap().water, None);
+    // Set: the pond off the DEM, with no level either, stays on the ground, said once.
+    let mark = s.notice_mark();
+    let v = s.run("map.terrain", &json!({"water": {"layer": lagos, "level": "nivel"}})).unwrap();
+    assert_eq!(v["water"], json!({"layer": lagos, "level": "nivel"}));
+    let said: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+    assert_eq!(said.iter().filter(|t| t.contains(&format!("1 polygon of '{lagos}' has no height along its shore"))).count(), 1, "{said:?}");
+    // Another change keeps it, and it is saved with the project.
+    let mark = s.notice_mark();
+    let v = s.run("map.terrain", &json!({"exaggeration": 2})).unwrap();
+    assert_eq!(v["water"]["layer"], json!(lagos));
+    assert!(s.notices_since(mark).iter().all(|n| !n.text.starts_with("Water")), "said only when the water is set");
+    let saved = serde_json::to_string(&s.map().view).unwrap_or_default();
+    let back: rustgis_map::view::ViewSettings = serde_json::from_str(&saved).unwrap_or_default();
+    assert_eq!(back.terrain, s.map().view.terrain);
+    // The water follows its layer's renames.
+    let id = s.map().layer_by_name(&lagos).map(|l| l.id).unwrap();
+    s.run("layer.rename", &json!({"layer": id, "name": "represas"})).unwrap();
+    assert_eq!(s.map().view.terrain.as_ref().and_then(|t| t.water.as_ref()).map(|w| w.layer.as_str()), Some("represas"));
+    // Another layer renamed onto the water's name: a change that keeps the water is refused,
+    // and the terrain stays as it was.
+    s.run("layer.addDataBytes", &json!({"fileName": "outros.geojson", "data": data})).unwrap();
+    let other = s.map().layers.iter().filter(|l| !l.is_raster()).map(|l| l.id).max().unwrap();
+    s.run("layer.rename", &json!({"layer": other, "name": "represas"})).unwrap();
+    let e = s.run("map.terrain", &json!({"exaggeration": 3})).unwrap_err();
+    assert!(e.contains("give the water a name of its own"), "{e}");
+    assert_eq!(s.map().view.terrain.as_ref().map(|t| t.exaggeration), Some(2.0));
+    s.run("layer.rename", &json!({"layer": other, "name": "outros"})).unwrap();
+    // Over elevation tiles not read yet, nothing is said to be off the ground.
+    let mark = s.notice_mark();
+    s.run("map.terrain", &json!({"tiles": "https://e.com/{z}/{x}/{y}.png", "water": {"layer": "represas"}})).unwrap();
+    assert!(s.notices_since(mark).iter().all(|n| !n.text.starts_with("Water")), "{:?}", s.notices_since(mark));
+    // Deleting the level field takes the levels with it, said: the lakes go back to their shores.
+    s.run("map.terrain", &json!({"water": {"layer": "represas", "level": "nivel"}})).unwrap();
+    let mark = s.notice_mark();
+    s.run("edit.deleteField", &json!({"layer": id, "field": "nivel"})).unwrap();
+    assert_eq!(s.map().view.terrain.as_ref().and_then(|t| t.water.as_ref()).map(|w| w.level.clone()), Some(None));
+    let said: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+    assert!(said.iter().any(|t| t.contains("levels came from the deleted field nivel")), "{said:?}");
+    // Deleting another field leaves them, and says nothing of the water.
+    s.run("map.terrain", &json!({"water": {"layer": "represas"}})).unwrap();
+    let mark = s.notice_mark();
+    s.run("edit.deleteField", &json!({"layer": id, "field": "nome"})).unwrap();
+    assert!(s.notices_since(mark).iter().all(|n| !n.text.starts_with("Water")), "{:?}", s.notices_since(mark));
+    // A shore too long to read every half cell is said over tiles too (from its shape: no tile is
+    // asked for): 30° a side, read at zoom 15's 4.8 m pixels, is past the budget.
+    let sea = json!({"type": "FeatureCollection", "features": [{"type": "Feature", "properties": {}, "geometry":
+        {"type": "Polygon", "coordinates": [[[0.0, 0.0], [30.0, 0.0], [30.0, 30.0], [0.0, 30.0], [0.0, 0.0]]]}}]});
+    let sea = base64::engine::general_purpose::STANDARD.encode(sea.to_string().as_bytes());
+    s.run("layer.addDataBytes", &json!({"fileName": "mar.geojson", "data": sea})).unwrap();
+    let mar = s.map().layers.iter().filter(|l| !l.is_raster()).max_by_key(|l| l.id).map(|l| l.name.clone()).unwrap();
+    s.map_mut().camera.res = 1.0;
+    let mark = s.notice_mark();
+    s.run("map.terrain", &json!({"water": {"layer": mar}})).unwrap();
+    let said: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+    assert!(said.iter().any(|t| t.contains(&format!("the shore of 1 polygon of '{mar}' was read at wider steps"))), "{said:?}");
+    // Null is left out, as for the exaggeration (a script's default None): the water stays.
+    let v = s.run("map.terrain", &json!({"water": null, "exaggeration": null})).unwrap();
+    assert_eq!(v["water"]["layer"], json!(mar));
+    // Removing the water's layer is said; the water keeps its name, for a layer of that name to
+    // bring it back.
+    let sea_id = s.map().layer_by_name(&mar).map(|l| l.id).unwrap();
+    let mark = s.notice_mark();
+    s.run("layer.remove", &json!({"layer": sea_id})).unwrap();
+    let said: Vec<String> = s.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+    assert!(said.iter().any(|t| t.contains(&format!("its layer '{mar}' was removed"))), "{said:?}");
+    assert_eq!(s.map().view.terrain.as_ref().and_then(|t| t.water.as_ref()).map(|w| w.layer.clone()), Some(mar.clone()));
+    // False takes it off; the terrain stays.
+    let v = s.run("map.terrain", &json!({"water": false})).unwrap();
+    assert_eq!(v["water"], Value::Null);
+    assert!(s.map().view.terrain.is_some());
+    // A saved project's water is read back (the schema fixture `terrain_water.rgis`).
+    let saved = Project::from_json(include_str!("../../../schema/fixtures/terrain_water.rgis")).unwrap();
+    let water = saved.maps[0].view.terrain.as_ref().and_then(|t| t.water.clone());
+    assert_eq!(water, Some(rustgis_map::view::TerrainWater { layer: "lagos".into(), level: Some("nivel".into()) }));
 }
 
 /// A 40×40 lon/lat DEM near (10°E, 45°N): a hill in the middle, with a wall to its east.

@@ -953,6 +953,19 @@ fn delete_field(s: &mut Session, p: &Json) -> CmdResult {
     if let Some(name) = single {
         s.notify(format!("{name}: its classes read the deleted field {removed}, so it is drawn with a single symbol"), false);
     }
+    // Nor the terrain's water, when its levels came from the field (#1915): its lakes go back to
+    // their shores' lowest heights, said.
+    let layer_name = s.map().layer(id).map(|l| l.name.clone()).unwrap_or_default();
+    if let Some(w) = s.map_mut().view.terrain.as_mut().and_then(|t| t.water.as_mut())
+        && w.layer.eq_ignore_ascii_case(&layer_name)
+        && w.level.as_deref().is_some_and(|f| f.eq_ignore_ascii_case(&removed))
+    {
+        w.level = None;
+        s.notify(
+            format!("Water: its levels came from the deleted field {removed}, so its lakes lie at their shores' lowest heights"),
+            false,
+        );
+    }
     Ok(json!({"rulesRemoved": removed_rules}))
 }
 

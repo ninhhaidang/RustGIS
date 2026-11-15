@@ -5488,6 +5488,10 @@ fn references_follow_layer(s: &mut Session, old: &str, new: &str) {
             replace(mask);
         }
     }
+    // The terrain's water layer (#1915), kept by name as a mask is.
+    if let Some(water) = s.map_mut().view.terrain.as_mut().and_then(|t| t.water.as_mut()) {
+        replace(&mut water.layer);
+    }
     // Elevation and Map Series selectors compare spellings exactly, even though lookup does not.
     if case_only {
         if s.map().layers.iter().filter(|l| l.name.eq_ignore_ascii_case(old)).count() == 1 {
@@ -5634,8 +5638,17 @@ pub(crate) fn drop_layers(s: &mut Session, ids: &[u32]) {
 }
 
 /// After layers called `names` are removed: a terrain drawn from one of them would lose its
-/// relief, or take another layer's heights by that name, so it is turned off, and said.
+/// relief, or take another layer's heights by that name, so it is turned off, and said. Its water
+/// layer removed (#1915), the water keeps the name, so a layer of that name brings it back, and
+/// its lakes lie on the ground meanwhile: said.
 fn terrain_follows_removal(s: &mut Session, names: &[String]) {
+    let water = s.map().view.terrain.as_ref().and_then(|t| t.water.as_ref()).map(|w| w.layer.clone());
+    if let Some(w) = water.filter(|w| names.iter().any(|n| n.eq_ignore_ascii_case(w)) && named_layers(s, w) == 0) {
+        s.notify(
+            format!("Water: its layer '{w}' was removed, so its lakes lie on the ground until a layer of that name comes back"),
+            false,
+        );
+    }
     let Some(dem) = terrain_dem(s).filter(|d| names.iter().any(|n| n.eq_ignore_ascii_case(d))) else { return };
     s.map_mut().view.terrain = None;
     let said = if named_layers(s, &dem) > 0 {

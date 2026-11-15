@@ -586,6 +586,7 @@ fn outputs_redact_urls_capabilities_and_local_paths_across_scopes() {
             encoding: rustgis_map::view::TerrainEncoding::default(),
         },
         exaggeration: 1.5,
+        water: None,
     });
 
     // 4. Rasters: one local filesystem path, one URL with ?token=..., and one rustgis-s3: wrapper.
