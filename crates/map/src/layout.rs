@@ -182,12 +182,12 @@ pub fn utm_epsg(lon: f64, lat: f64) -> u32 {
 }
 
 /// The WGS 84 UTM zone a coordinate system names by its EPSG code (`EPSG:32632`, `32632`, any
-/// case): its zone and whether it is the northern hemisphere's. `None` for any other system, and
-/// for a UTM zone given as WKT or a PROJ string, which MGRS labels don't read.
+/// case, also `epsg 32632`): its zone and whether it is the northern hemisphere's. `None` for any
+/// other system, and for a UTM zone given as WKT or a PROJ string, which MGRS labels don't read.
 pub fn utm_zone_of(crs: &str) -> Option<(u8, bool)> {
     let t = crs.trim();
     let digits = match t.get(..5) {
-        Some(p) if p.eq_ignore_ascii_case("EPSG:") => t.get(5..)?.trim(),
+        Some(p) if p.eq_ignore_ascii_case("EPSG:") || p.eq_ignore_ascii_case("EPSG ") => t.get(5..)?.trim(),
         _ => t,
     };
     if !(digits.len() == 5 && digits.bytes().all(|b| b.is_ascii_digit())) {
@@ -2050,6 +2050,8 @@ mod tests {
             (" epsg:32760 ", Some((60, false))),
             ("32601", Some((1, true))),
             ("EPSG: 32733", Some((33, false))),
+            ("epsg 32632", Some((32, true))),
+            (" EPSG 32733 ", Some((33, false))),
             ("EPSG:32600", None),
             ("EPSG:32661", None),
             ("EPSG:32761", None),

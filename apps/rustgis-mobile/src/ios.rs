@@ -204,8 +204,7 @@ impl PickerDelegate {
                     // The pick's folder is marked while documents are copied into it, for the
                     // whole pick: Remove Unused Copies keeps it, also between two documents.
                     // Unmarked, the pick is still kept while a copy's `.part` is in it.
-                    let mark = picked.join(rustgis_ui_touch::COPYING);
-                    let _ = std::fs::create_dir_all(&picked).and_then(|()| std::fs::write(&mark, b""));
+                    let copying_mark = rustgis_ui_touch::mark_copying(&picked).ok();
                     let mut copies = 0usize;
                     let mut sources: Vec<Option<String>> = Vec::new();
                     for url in urls {
@@ -216,7 +215,7 @@ impl PickerDelegate {
                         });
                         copies += usize::from(copy_in(&copied, &purpose, &url, &picked.join(k.to_string())));
                     }
-                    let _ = std::fs::remove_file(&mark);
+                    drop(copying_mark);
                     // Every copy failed, each removing its own file and folder: this one is empty
                     // too.
                     if copies == 0 {

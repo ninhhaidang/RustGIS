@@ -370,7 +370,8 @@ class _Api:
 
         A file of several layers (the tables of a GeoPackage, a GDAL file split by geometry
         type) reports the first as ``"layer"`` and every one as ``"layers"``, so ``"layers"``
-        decides. Standalone tables added with the layers are in :meth:`info`, not returned.
+        decides. Any standalone tables that were actually added are in :meth:`info`, not
+        returned. GeoPackage attribute-only tables are not imported when adding a whole file.
 
         Args:
             result: The command's result.
@@ -562,7 +563,9 @@ class _Api:
             path: The file: GeoJSON, CSV, Shapefile (or a zip of them), GeoPackage, GeoParquet,
                 FlatGeobuf, KML/KMZ, GPX, GeoTIFF, ASCII grid, and the formats GDAL or DuckDB
                 read when they are installed.
-            name: The layer's name (the file's name when left out).
+            name: The layer's name (the file's name when left out). Native multi-layer imports
+                apply it only to the first layer. GDAL or DuckDB files split into several layers keep
+                their generated names and report the ignored name in a notice.
             **params: More ``layer.addData`` parameters, e.g. ``layer=`` for one table of a
                 GeoPackage, ``x=`` and ``y=`` for a CSV's coordinate columns.
 

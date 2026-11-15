@@ -10,14 +10,14 @@
 //!
 //! A pick still being copied into is kept too. The phones mark a pick's folder with [`COPYING`]
 //! while they copy into it, and write each copy under a `.part` name of its own, renamed once
-//! whole. A mark or a `.part` file left by a copy the app was killed during stops counting after
-//! [`STALE`], and its pick is judged like any other.
+//! whole. A mark owned by this process protects the whole batch regardless of its age. A mark
+//! from a previous process, or a `.part` left after a crash, stops counting after [`STALE`].
 
 use rustgis_ui_egui::rustgis_engine::data::dirs;
 use rustgis_ui_egui::{RustGisApp, i18n, tl};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// The deepest a file of a pick is (`picked/<pick>/<source folder>/<file>`), looked for a level
 /// deeper: a pick holds no deeper folders, and a link out of it is never followed.
@@ -27,7 +27,62 @@ const DEPTH: usize = 3;
 /// pick, and remove once done.
 pub const COPYING: &str = ".copying";
 
-/// How long a pick's [`COPYING`] mark or `.part` file counts after it was last written: a copy
+/// The process lifetime token shared with the platform copy worker. Android installs Java's
+/// static UUID before the phone is used; iOS uses the token generated here.
+static COPY_OWNER: OnceLock<String> = OnceLock::new();
+
+/// This process's document-copy token. It is independent of the wall clock and process-id reuse.
+pub fn copy_owner() -> &'static str {
+    use std::hash::BuildHasher as _;
+    COPY_OWNER.get_or_init(|| {
+        let random = std::collections::hash_map::RandomState::new();
+        format!("process-{:016x}{:016x}", random.hash_one(0u8), random.hash_one(1u8))
+    })
+}
+
+/// Installs Android's process-wide Java token before the front end can inspect unused copies.
+/// A conflicting second installation is refused rather than treating another owner as active.
+pub fn set_copy_owner(owner: String) -> Result<(), String> {
+    if owner.is_empty() || owner.len() > 128 || !owner.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+        return Err(tl!("The document-copy owner is invalid.").to_string());
+    }
+    if let Some(current) = COPY_OWNER.get() {
+        return if current == &owner { Ok(()) } else { Err(tl!("The document-copy owner was already initialized.").to_string()) };
+    }
+    COPY_OWNER.set(owner).map_err(|_| tl!("The document-copy owner was already initialized.").to_string())
+}
+
+/// A document batch's mark, removed on completion or unwinding. The platform keeps this guard
+/// alive across document-provider waits and gaps between files.
+pub struct Copying {
+    mark: PathBuf,
+}
+
+/// Marks `folder` for this process for the guard's whole lifetime.
+pub fn mark_copying(folder: &Path) -> std::io::Result<Copying> {
+    std::fs::create_dir_all(folder)?;
+    let mark = folder.join(COPYING);
+    std::fs::write(&mark, copy_owner())?;
+    Ok(Copying { mark })
+}
+
+impl Drop for Copying {
+    fn drop(&mut self) {
+        if owned_mark(&self.mark) {
+            let _ = std::fs::remove_file(&self.mark);
+        }
+    }
+}
+
+/// Reads at most the token limit plus one byte, even for a damaged or hostile marker file.
+fn owned_mark(file: &Path) -> bool {
+    use std::io::Read as _;
+    let Ok(file) = std::fs::File::open(file) else { return false };
+    let mut owner = Vec::with_capacity(129);
+    file.take(129).read_to_end(&mut owner).is_ok() && owner == copy_owner().as_bytes()
+}
+
+/// How long an abandoned or legacy [`COPYING`] mark or `.part` file counts after it was last written: a copy
 /// writes its `.part` as it goes, but iOS may first download a document from iCloud for a while.
 const STALE: std::time::Duration = std::time::Duration::from_secs(60 * 60);
 
@@ -133,11 +188,11 @@ fn gather(path: &Path, depth: usize, files: &mut Vec<(PathBuf, u64)>) -> bool {
     complete
 }
 
-/// Whether `file` says its pick is being copied into: a [`COPYING`] mark or a `.part` copy, written
-/// in the last [`STALE`].
+/// A mark owned by this process, however old; otherwise a legacy/abandoned mark or `.part`
+/// copy written in the last [`STALE`].
 fn in_flight(file: &Path) -> bool {
-    let marks = file.file_name().is_some_and(|n| n == COPYING) || file.extension().is_some_and(|e| e == "part");
-    marks && recent(file)
+    let mark = file.file_name().is_some_and(|n| n == COPYING);
+    (mark && owned_mark(file)) || ((mark || file.extension().is_some_and(|e| e == "part")) && recent(file))
 }
 
 /// Whether `file` was last written in the last [`STALE`] (or in the future, as a clock set back
@@ -447,6 +502,34 @@ mod tests {
         let removed = remove_unused(&picked, &asked, "{}", &AtomicBool::new(false)).unwrap();
         assert_eq!((removed.files, removed.busy, removed.now_named), (0, 1, 0));
         assert!(picked.join("5/0/roads.gpkg").exists());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn an_old_active_batch_between_documents_stays_protected_until_completion() {
+        let root = std::env::temp_dir().join(format!("rustgis-copies-owner-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let picked = root.join("picked");
+        let pick = picked.join("7");
+        std::fs::create_dir_all(pick.join("0")).unwrap();
+        std::fs::write(pick.join("0/roads.gpkg"), b"whole").unwrap();
+        let asked = unused(&picked, "{}", &AtomicBool::new(false)).unwrap();
+        let guard = mark_copying(&pick).unwrap();
+        let mark = pick.join(COPYING);
+        let long_ago = std::time::SystemTime::now() - STALE - std::time::Duration::from_secs(60);
+        std::fs::File::options().write(true).open(&mark).unwrap().set_modified(long_ago).unwrap();
+        // No .part exists: a provider is paused before the next document begins.
+        let found = unused(&picked, "{}", &AtomicBool::new(false)).unwrap();
+        assert!(found.picks.is_empty());
+        assert_eq!(found.busy_picks.as_slice(), std::slice::from_ref(&pick));
+        assert_eq!(remove_unused(&picked, &asked, "{}", &AtomicBool::new(false)).unwrap().busy, 1);
+        assert!(pick.join("0/roads.gpkg").exists());
+        drop(guard);
+        assert!(!mark.exists());
+        assert_eq!(unused(&picked, "{}", &AtomicBool::new(false)).unwrap().picks.as_slice(), std::slice::from_ref(&pick));
+        std::fs::write(&mark, b"previous-process-owner").unwrap();
+        std::fs::File::options().write(true).open(&mark).unwrap().set_modified(long_ago).unwrap();
+        assert_eq!(unused(&picked, "{}", &AtomicBool::new(false)).unwrap().picks, [pick]);
         std::fs::remove_dir_all(&root).unwrap();
     }
 

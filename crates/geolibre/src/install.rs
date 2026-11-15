@@ -254,6 +254,11 @@ mod tests {
         assert_eq!(crate::runner::version_of(&dest).as_deref(), Some("geolibre-cli 1.8.1"));
         assert!(!staged.exists() && !tmp.0.join(format!("{}.old", crate::runner::exe_name())).exists());
     }
+}
+
+#[cfg(test)]
+mod release_tests {
+    use super::*;
 
     /// The installer asks for the pinned release, never the latest one.
     #[test]

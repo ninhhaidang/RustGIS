@@ -98,6 +98,20 @@ impl Report {
     pub fn skipped(&mut self, layer: &str, text: impl Into<String>) {
         self.note(layer, NoteKind::Skipped, text);
     }
+
+    /// Withdraws a provisional note once checking against the destination fields disproves it.
+    fn forget(&mut self, layer: &str, kind: NoteKind, text: &str) {
+        let key = (layer.to_string(), kind, text.to_string());
+        let Some(&at) = self.index.get(&key) else { return };
+        if let Some(note) = self.notes.get_mut(at)
+            && note.count > 1
+        {
+            note.count -= 1;
+            return;
+        }
+        self.notes.retain(|n| n.layer != layer || n.kind != kind || n.text != text);
+        self.index = self.notes.iter().enumerate().map(|(i, n)| ((n.layer.clone(), n.kind, n.text.clone()), i)).collect();
+    }
 }
 
 /// A layer's look as a QGIS style has it, in RustGIS's terms. Each part is `None` (or empty) when
@@ -120,6 +134,9 @@ pub struct Style {
     pub labels: Option<Labeling>,
     /// Its diagram: a pie or bar chart on each feature.
     pub diagram: Option<crate::DiagramSettings>,
+    /// The scaled diagram's original classification, for checking once the destination fields
+    /// are known. Import metadata only, not a saved diagram setting.
+    pub diagram_by: Option<String>,
     /// 0 opaque to 100 invisible.
     pub transparency: Option<f32>,
     /// The field whose dates the time slider reads (QGIS's time settings). Not applied by
@@ -331,6 +348,12 @@ pub fn rules_expression(rules: &[RuleFilter]) -> String {
 }
 
 impl Style {
+    /// Checks an imported diagram against the destination's fields. Its size classification
+    /// is compared with the categories actually retained, so provisional import notes agree.
+    pub fn check_diagram_fields(&self, layer: &mut crate::Layer, name: &str, report: &mut Report) {
+        diagram::check_fields(layer, name, self.diagram_by.as_deref(), report);
+    }
+
     /// Gives `layer` this style's parts (those it sets).
     pub fn apply(&self, layer: &mut crate::Layer) {
         if let Some(t) = self.transparency {
@@ -676,7 +699,7 @@ fn read_style_node(node: Node, layer: &str, report: &mut Report) -> Style {
     if let Some(r) = child(node, "renderer-v2") {
         renderer::read(r, layer, &mut style, report);
     }
-    style.diagram = diagram::read(node, layer, style.reference_scale, report);
+    style.diagram = diagram::read(node, layer, style.reference_scale, &mut style.diagram_by, report);
     // A raster's renderer: its opacity, and its colouring as RustGIS's raster style.
     if let Some(r) = child(node, "pipe").and_then(|p| child(p, "rasterrenderer")) {
         if let Some(o) = r.attribute("opacity").and_then(|o| o.trim().parse::<f32>().ok()).filter(|o| o.is_finite() && *o < 1.0) {

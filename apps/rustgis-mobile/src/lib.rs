@@ -9,7 +9,8 @@
 //! Not here yet: preferences and the keychain; autosave.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
-#[cfg(any(target_os = "android", target_os = "ios"))]
+#[cfg(any(target_os = "android", target_os = "ios", test))]
+#[cfg_attr(test, expect(dead_code, reason = "host tests exercise picker contracts without starting a phone window"))]
 mod shell;
 
 #[cfg(target_os = "android")]

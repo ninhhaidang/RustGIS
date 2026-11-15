@@ -255,13 +255,15 @@ jobs:
           RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          [ -d flaky ] || exit 0
-          sort -u flaky/flaky-*.txt | while read -r test; do
+          shopt -s nullglob
+          files=(flaky/flaky-*.txt)
+          [ "${#files[@]}" -gt 0 ] || exit 0
+          sort -u "${files[@]}" | while read -r test; do
             title="Flaky test: $test"
             runners="$(grep -lxF -- "$test" flaky/flaky-*.txt | sed 's|^flaky/flaky-||; s|\.txt$||' | paste -sd, - | sed 's/,/, /g')"
             body="$test failed and passed on a retry on $runners, for $GITHUB_SHA: $RUN"
-            open="$(gh issue list -R "$GITHUB_REPOSITORY" --state open --search "in:title \"$title\"" --json number,title \
-              | jq -r --arg t "$title" '[.[] | select(.title == $t)][0].number // ""')"
+            open="$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues?state=open&per_page=100" \
+              | jq -sr --arg t "$title" '[.[][] | select(.pull_request | not) | select(.title == $t)][0].number // ""')"
             if [ -n "$open" ]; then
               gh issue comment "$open" -R "$GITHUB_REPOSITORY" --body "Flaky again: $body"
             else

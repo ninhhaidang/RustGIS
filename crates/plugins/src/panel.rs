@@ -1440,6 +1440,7 @@ mod tests {
             &d,
             &json!({"items": {"form": {"fields": [
                 {"id": "no choices", "kind": "select"},
+                {"id": "no-choices", "kind": "select"},
                 {"id": "kind", "kind": "unknown"},
                 {"id": "pick", "kind": "select", "choices": ["a", "a", "b"]},
                 {"id": "pick", "kind": "text"},

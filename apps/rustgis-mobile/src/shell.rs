@@ -56,16 +56,17 @@ type Asked = Rc<RefCell<crate::Requests>>;
 #[derive(Clone)]
 struct Kept {
     csv: Option<serde_json::Value>,
+    shapefile: Option<serde_json::Value>,
     open: Option<&'static str>,
     picture: Option<Vec<rustgis_engine::geom::Coord>>,
     layout_picture: bool,
 }
 
 impl Kept {
-    fn of(app: &RustGisApp) -> Kept {
-        let ui = &app.ui;
+    fn of(ui: &rustgis_ui_egui::UiState) -> Kept {
         Kept {
             csv: ui.pending_csv.clone(),
+            shapefile: ui.pending_shapefile.clone(),
             open: ui.pending_open,
             picture: ui.pending_picture.clone(),
             layout_picture: ui.pending_layout_picture,
@@ -75,6 +76,7 @@ impl Kept {
     fn restore(self, app: &mut RustGisApp) {
         let ui = &mut app.ui;
         ui.pending_csv = self.csv;
+        ui.pending_shapefile = self.shapefile;
         ui.pending_open = self.open;
         ui.pending_picture = self.picture;
         ui.pending_layout_picture = self.layout_picture;
@@ -110,7 +112,7 @@ struct App<P: Phone> {
     /// The requests for files waited on.
     asked: Asked,
     /// What the front end kept for that picker, as the frame began ([`Kept`]).
-    kept: Option<Kept>,
+    kept: Rc<RefCell<Option<Kept>>>,
     /// Whether a picker was refused in this frame because one was up.
     refused_picker: Rc<std::cell::Cell<bool>>,
     /// Files picked for a dialog (purpose, name, copy), until their picker has answered in
@@ -164,7 +166,12 @@ impl<P: Phone> App<P> {
                 self.app.position = None;
             }
         }
-        for event in phone.take_events() {
+        let events = phone.take_events();
+        // Mirrors EventBuffer.PER_FRAME in the Android bridge: a full batch may leave more queued.
+        if events.len() >= 512 {
+            ctx.request_repaint();
+        }
+        for event in events {
             match event {
                 Event::Picked { purpose, name, path } => {
                     // A file answers its own request; one of an earlier request (still being
@@ -286,19 +293,20 @@ impl<P: Phone> App<P> {
             return;
         }
         let (inbox, problems, reading, ctx) = (self.inbox.clone(), self.problems.clone(), self.reading.clone(), ctx.clone());
-        reading.fetch_add(1, Ordering::Relaxed);
         let unread: Vec<(String, PathBuf)> = reads.iter().flat_map(|(_, files)| files.clone()).collect();
-        let counted = reading.clone();
-        let started = std::thread::Builder::new().name("picked files".into()).spawn(move || {
-            let mut held = 0u64;
-            for (purpose, files) in reads {
-                read_batch(&purpose, files, &inbox, &problems, &mut held);
-            }
-            reading.fetch_sub(1, Ordering::Relaxed);
-            ctx.request_repaint();
+        let retire: Vec<_> =
+            reads.iter().filter(|(purpose, _)| purpose.starts_with("dxf:")).map(|(purpose, _)| crate::mark(purpose)).collect();
+        let started = start_reader(&self.inbox, &self.reading, retire, || {
+            std::thread::Builder::new().name("picked files".into()).spawn(move || {
+                let mut held = 0u64;
+                for (purpose, files) in reads {
+                    read_batch(&purpose, files, &inbox, &problems, &mut held);
+                }
+                reading.fetch_sub(1, Ordering::Relaxed);
+                ctx.request_repaint();
+            })
         });
         if let Err(e) = started {
-            counted.fetch_sub(1, Ordering::Relaxed);
             let error = e.to_string();
             // Nothing will read these copies now: they go, as they would have once read.
             for (name, path) in unread {
@@ -307,6 +315,29 @@ impl<P: Phone> App<P> {
             }
         }
     }
+}
+
+/// Balance admission and retire waiting dialogs even when the OS refuses a worker.
+fn start_reader<T>(
+    inbox: &Inbox,
+    reading: &AtomicUsize,
+    retire: Vec<String>,
+    spawn: impl FnOnce() -> std::io::Result<T>,
+) -> std::io::Result<T> {
+    reading.fetch_add(1, Ordering::Relaxed);
+    match spawn() {
+        Ok(worker) => Ok(worker),
+        Err(error) => {
+            reading.fetch_sub(1, Ordering::Relaxed);
+            retire_unread(inbox, retire);
+            Err(error)
+        }
+    }
+}
+
+/// A worker that cannot start answers its DXF requests just as a cancelled picker does.
+fn retire_unread(inbox: &Inbox, marks: Vec<String>) {
+    inbox.lock().unwrap_or_else(|e| e.into_inner()).extend(marks.into_iter().map(|mark| (mark, Vec::new())));
 }
 
 /// Reads one folder's files of a pick (name, copy) into `inbox`, marked for the dialog that
@@ -367,8 +398,15 @@ fn use_picker<P: Phone + 'static>(
     refusals: &Refusals,
     asked: &Asked,
     refused_picker: &Rc<std::cell::Cell<bool>>,
+    kept: &Rc<RefCell<Option<Kept>>>,
 ) {
     let (picker, refused, asking, answers) = (phone.clone(), refusals.clone(), asked.clone(), inbox.clone());
+    let candidate = Rc::new(RefCell::new(None));
+    let snapshot = candidate.clone();
+    app.services.open_options = Some(Box::new(move |ui| {
+        *snapshot.borrow_mut() = Some(Kept::of(ui));
+    }));
+    let admitted = kept.clone();
     let refused_while_up = refused_picker.clone();
     app.services.open_async = Some(Box::new(move |purpose: &str| {
         log::info!("asking for files: {purpose}");
@@ -384,6 +422,10 @@ fn use_picker<P: Phone + 'static>(
                 true
             }
         };
+        let options = candidate.borrow_mut().take();
+        if !refused_here {
+            *admitted.borrow_mut() = options;
+        }
         let ended = asking.borrow_mut().asked(purpose, refused_here);
         // Refused because another picker was up: the shell puts back what the front end kept
         // for that one ([`Kept`]).
@@ -431,7 +473,7 @@ impl<P: Phone> eframe::App for App<P> {
         // A second picker asked for while one was up was refused: what the front end kept for
         // the first is put back, so its file is read as it was asked for.
         if self.refused_picker.replace(false)
-            && let Some(kept) = self.kept.clone()
+            && let Some(kept) = self.kept.borrow().clone()
         {
             kept.restore(&mut self.app);
         }
@@ -486,7 +528,9 @@ impl<P: Phone> eframe::App for App<P> {
                 });
             }
         }
-        self.kept = self.phone.as_ref().is_some_and(|phone| phone.picking()).then(|| Kept::of(&self.app));
+        if !self.phone.as_ref().is_some_and(|phone| phone.picking()) {
+            self.kept.borrow_mut().take();
+        }
         // The pushed files open as files dropped on the desktop window do: once the window
         // runs, read off its thread with progress and Cancel, each failure said in the window.
         // Opened before the event loop, a large one would hold the app's start.
@@ -603,10 +647,11 @@ pub fn run<P: Phone + 'static>(
 ) -> eframe::Result {
     let (inbox, refusals, asked) = (Inbox::default(), Refusals::default(), Asked::default());
     let refused_picker = Rc::new(std::cell::Cell::new(false));
+    let kept = Rc::new(RefCell::new(None));
     let phone = match phone {
         Ok(phone) => {
             let phone = Rc::new(phone);
-            use_picker(&mut app, &phone, &inbox, &refusals, &asked, &refused_picker);
+            use_picker(&mut app, &phone, &inbox, &refusals, &asked, &refused_picker, &kept);
             Some(phone)
         }
         Err(e) => {
@@ -634,7 +679,7 @@ pub fn run<P: Phone + 'static>(
                 inbox,
                 refusals,
                 asked,
-                kept: None,
+                kept,
                 refused_picker,
                 waiting: Vec::new(),
                 problems: Problems::default(),
@@ -642,4 +687,74 @@ pub fn run<P: Phone + 'static>(
             }))
         }),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::{Value, json};
+    use std::cell::Cell;
+
+    #[derive(Default)]
+    struct FakePhone(Cell<bool>);
+    impl Platform for FakePhone {
+        fn pick_files(&self, _: &str) -> Result<(), String> {
+            self.0.set(true);
+            Ok(())
+        }
+        fn save_file(&self, _: &str, _: Vec<u8>) -> Result<(), String> {
+            Ok(())
+        }
+        fn locate(&self, _: bool) -> Result<(), String> {
+            Ok(())
+        }
+        fn keep_locating(&self, _: bool) -> Result<(), String> {
+            Ok(())
+        }
+        fn take_photo(&self) -> Result<(), String> {
+            Ok(())
+        }
+        fn take_events(&self) -> Vec<Event> {
+            Vec::new()
+        }
+    }
+    impl Phone for FakePhone {
+        fn insets(&self, _: f32) -> Option<(egui::SafeAreaInsets, Option<bool>)> {
+            None
+        }
+        fn bars_light(&self, _: bool, _: &eframe::Frame) {}
+        fn busy(&self) -> bool {
+            self.0.get()
+        }
+    }
+
+    #[test]
+    fn same_frame_refused_picker_restores_the_options_of_the_admitted_request() {
+        let mut app = RustGisApp::with_sample();
+        let phone = Rc::new(FakePhone::default());
+        let (inbox, refusals, asked) = (Inbox::default(), Refusals::default(), Asked::default());
+        let refused = Rc::new(Cell::new(false));
+        let kept = Rc::new(RefCell::new(None));
+        use_picker(&mut app, &phone, &inbox, &refusals, &asked, &refused, &kept);
+        let options = json!({"x": "longitude", "y": "latitude"});
+        app.run("ui.addDelimited", options.clone()).unwrap();
+        app.run("ui.addData", Value::Null).unwrap();
+        assert!(refused.replace(false));
+        kept.borrow().clone().unwrap().restore(&mut app);
+        assert_eq!(app.ui.pending_csv, Some(options));
+        // Refusing DXF while the accepted picker is up retires exactly its own request.
+        app.run("ui.addDxf", Value::Null).unwrap();
+        assert_eq!(inbox.lock().unwrap().len(), 1);
+        assert!(inbox.lock().unwrap()[0].0.starts_with(rustgis_ui_egui::DXF_PICK));
+    }
+    #[test]
+    fn a_worker_refused_before_reading_retires_its_dxf_answer() {
+        let inbox = Inbox::default();
+        let reading = AtomicUsize::new(0);
+        let result: std::io::Result<()> =
+            start_reader(&inbox, &reading, vec![crate::mark("dxf:7")], || Err(std::io::Error::other("injected worker refusal")));
+        assert!(result.is_err());
+        assert_eq!(reading.load(Ordering::Relaxed), 0);
+        assert_eq!(*inbox.lock().unwrap(), vec![(crate::mark("dxf:7"), Vec::<u8>::new())]);
+    }
 }

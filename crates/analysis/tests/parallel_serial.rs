@@ -183,6 +183,7 @@ fn outputs(s: &Scene) -> Vec<(String, Made)> {
     add("dissolve", tool("dissolve", json!({"input": "polygons", "field": "class", "statistics": stats})));
     add("near", tool("near", json!({"input": "points", "near": "polygons"})));
     add("convex hull", tool("convexHull", json!({"input": "polygons", "group": "None"})));
+    add("convex hull all", tool("convexHull", json!({"input": "polygons", "group": "All"})));
     add("feature to point", tool("featureToPoint", json!({"input": "polygons"})));
     add("simplify", tool("simplify", json!({"input": "polygons", "tolerance": 5})));
     add("select by location", tool("selectByLocation", json!({"input": "points", "select": "polygons", "distance": 1})));

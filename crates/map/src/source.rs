@@ -1810,6 +1810,9 @@ mod tests {
         assert!(dataset.zm_dropped);
         assert_eq!(report.messages.iter().filter(|n| n.contains("conversion left out 2 source features")).count(), 1);
         assert_eq!(dataset.features.len(), 1);
+        let (_, counted) = layer.load_all_counted().unwrap();
+        assert_eq!(counted.messages.iter().filter(|n| n.contains("conversion left out 2 source features")).count(), 1);
+        assert!(!counted.zm_noted, "a flag with no Z/M diagnostic cannot suppress the export warning");
     }
 
     /// Project-restored disk and embedded date sources schedule their classification, share

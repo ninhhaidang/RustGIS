@@ -462,7 +462,9 @@ selectable or editable; a tile not yet loaded may need another click once it arr
 **Reload** in the Basemap gallery (`map.reloadWebLayers`) clears cached tiles and styles and
 fetches them again.
 
-**Reloading a local tile archive (desktop).** After changing a PMTiles or MBTiles file on disk,
+### Reloading a local tile archive (desktop)
+
+After changing a PMTiles or MBTiles file on disk,
 right-click its row in Layers and choose **Reload Data** (**Reload Tile Archive** in Command
 Search). CLI, Python, MCP and the Assistant use
 `map.reloadTiles={"index":0}`; `"name"` or catalog `"id"` can select the archive instead.
@@ -510,6 +512,10 @@ every tile payload. It allows at most **64 MiB stored and 64 MiB decoded index b
 index entries**, **4,096 unique directories** (including the root), and **four leaf levels**;
 each stored directory read is limited to **16 MiB**. An invalid index or an exceeded validation
 budget is an explicit error without eviction, even if an unusually large index is otherwise valid.
+Validation also refuses a stored tile range over **16 MiB**, or one outside the header's declared
+tile-data section (including a zero-length section with nonempty tile entries). Ordinary loading
+can still draw other tiles from such an archive; reload and repair require the replacement's
+entire index to pass these checks before changing the source or dropping cached data.
 
 Neither action is available for local archives in the web app, or for remote tile services.
 On Windows, an open MBTiles file may not be replaceable while RustGIS holds it open: reload

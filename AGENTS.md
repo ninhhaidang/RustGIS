@@ -43,7 +43,8 @@ is out of scope.
 - A new background raster command or export, or a tool whose work grows with its input, goes in
   the lists in `crates/engine/src/tests.rs` (`cancel_rasters`, `cancel_exports`, `cancel_tools`);
   `cancel_rasters` and `cancel_exports` must match the background registries. A read-ahead command
-  (`reads::prepare`, such as `service.layers`) has no list: add its call to the test below by hand.
+  (`reads::prepare`, such as `service.layers`) has no list: add its call to
+  `long_commands_stop_when_cancelled_while_they_run` by hand.
   `long_commands_stop_when_cancelled_while_they_run` fails one that never looks at Cancel;
   `cancelling_at_each_check_leaves_nothing_behind` cancels each command of the three lists at its
   first three checks and its last, and fails one that leaves the project, its undo steps or the
@@ -108,7 +109,7 @@ Work that splits into independent parts runs on several threads where practical:
 A change that works where you tried it is often missing elsewhere. Before calling it done, say in
 the pull request which of these it reaches and why the rest don't apply:
 - the desktop app, the browser (file access through `Services`), the command line, Python, the
-  phone (the touch bar);
+  phone (the touch interface, `ui-touch`);
 - the ribbon, shortcuts and command search; the Assistant and MCP (do their tool descriptions
   show the new option?); plugins;
 - the way back: what you add can be undone, removed or reopened.
@@ -137,7 +138,8 @@ packages ship (the release build fails on stale ones).
 Pull requests run CI on Linux (plus the Android and iOS builds when they touch
 `apps/rustgis-mobile`); pushes to `main` test every platform. When a pull request touches
 platform-specific code, paths or file dialogs, label it `ci:windows` or `ci:macos` to test there,
-or `ci:full` for every platform and the release build.
+or `ci:full` for every platform and the release build. Label-triggered runs start the tests
+immediately; label-gated build jobs in `ci.yml` start from the next push.
 
 ## Review comments
 - Fix in the pull request what a review finds wrong: bugs, crash paths, silent data loss, a broken

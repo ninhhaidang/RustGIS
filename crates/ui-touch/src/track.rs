@@ -136,8 +136,6 @@ pub(crate) struct Average {
     pub lat: f64,
     /// How far the positions lie from it, in metres (their root mean square distance).
     pub spread: f64,
-    /// The mean of the accuracies they gave, in metres, when every one gave one.
-    pub accuracy: Option<f64>,
     pub count: usize,
 }
 
@@ -163,8 +161,7 @@ pub(crate) fn average(fixes: &[Fix]) -> Option<Average> {
         dx * dx + dy * dy
     };
     let spread = (fixes.iter().map(metres).sum::<f64>() / fixes.len() as f64).sqrt();
-    let accuracy = fixes.iter().map(|f| f.accuracy).sum::<Option<f64>>().map(|sum| sum / fixes.len() as f64);
-    Some(Average { lon: (lon + 540.0).rem_euclid(360.0) - 180.0, lat, spread, accuracy, count: fixes.len() })
+    Some(Average { lon: (lon + 540.0).rem_euclid(360.0) - 180.0, lat, spread, count: fixes.len() })
 }
 
 /// What the Capture sheet says of an average being taken.
@@ -332,15 +329,14 @@ mod tests {
         let a = average(&[fix(10.0, 20.0, Some(5.0), None), fix(10.0002, 20.0, Some(5.0), None)]).unwrap();
         assert!((a.lon - 10.0001).abs() < 1e-9 && (a.lat - 20.0).abs() < 1e-9, "{a:?}");
         assert_eq!(a.count, 2);
-        assert_eq!(a.accuracy, Some(5.0));
         // About 21 m apart: each about 10.5 m from the middle.
         assert!((a.spread - 10.46).abs() < 0.2, "{a:?}");
         // One three times as exact counts nine times as much.
         let b = average(&[fix(10.0, 20.0, Some(1.0), None), fix(10.001, 20.0, Some(3.0), None)]).unwrap();
         assert!((b.lon - 10.0001).abs() < 1e-9, "{b:?}");
-        // One without an accuracy: all count the same, and no accuracy is given.
+        // One without an accuracy: all count the same.
         let c = average(&[fix(10.0, 20.0, Some(1.0), None), fix(10.001, 20.0, None, None)]).unwrap();
-        assert!((c.lon - 10.0005).abs() < 1e-9 && c.accuracy.is_none(), "{c:?}");
+        assert!((c.lon - 10.0005).abs() < 1e-9, "{c:?}");
         // Accuracies out of all measure, or of nothing, still weigh: none is infinite or nothing.
         let e = average(&[fix(10.0, 20.0, Some(1e300), None), fix(10.001, 20.0, Some(1e300), None)]).unwrap();
         assert!((e.lon - 10.0005).abs() < 1e-9, "{e:?}");

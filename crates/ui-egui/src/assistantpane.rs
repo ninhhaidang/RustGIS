@@ -76,6 +76,9 @@ pub struct AssistantState {
     /// may block or ask (desktop only).
     #[cfg(not(target_arch = "wasm32"))]
     sign_in_read: Option<SignInRead>,
+    /// A refused saved-account store is reported once through this app session's notices.
+    #[cfg(not(target_arch = "wasm32"))]
+    sign_in_store_error_said: bool,
     /// The first sign-in's confirmation that the ChatGPT plan is in use, until dismissed.
     welcome: bool,
     /// A failed request to send again: its generation and when.
@@ -260,25 +263,49 @@ fn sync_skills(app: &mut RustGisApp, force: bool) {
     }
 }
 
-/// A sign-in read under way: the account it checks (`None`: take whichever is selected) and
-/// where the worker leaves what it read.
+/// A saved account and the reason its store or tokens could not be read.
 #[cfg(not(target_arch = "wasm32"))]
-type SignInRead = (Option<chatgpt::Binding>, Slot<Option<chatgpt::Credentials>>);
+type SignInResult = (Option<chatgpt::Credentials>, Option<rustgis_assistant::Error>);
+/// A read under way: the account checked (`None`: whichever is selected) and its result slot.
+#[cfg(not(target_arch = "wasm32"))]
+type SignInRead = (Option<chatgpt::Binding>, Slot<SignInResult>);
 
 /// Starts reading the selected ChatGPT sign-in on a worker; [`poll_sign_in`] applies it. With
 /// `checking`, it only says whether that sign-in is still there (after a failed request).
 #[cfg(not(target_arch = "wasm32"))]
 fn read_sign_in(app: &mut RustGisApp, checking: Option<chatgpt::Binding>, ctx: &egui::Context) {
-    let slot: Slot<Option<chatgpt::Credentials>> = Slot::default();
+    let slot: Slot<SignInResult> = Slot::default();
     let (out, ctx) = (slot.clone(), ctx.clone());
     std::thread::spawn(move || {
-        let c = chatgpt::load_any();
+        let c = chatgpt::load_any_report();
         if let Ok(mut s) = out.lock() {
             *s = Some(c);
         }
         ctx.request_repaint();
     });
     app.assistant.sign_in_read = Some((checking, slot));
+}
+
+/// Keeps account-store refusal visible without emitting the same failure on every poll.
+#[cfg(not(target_arch = "wasm32"))]
+fn sign_in_store_error(app: &mut RustGisApp, error: rustgis_assistant::Error) {
+    if !app.assistant.sign_in_store_error_said {
+        app.assistant.sign_in_store_error_said = true;
+        app.session.warn(crate::i18n::fmt("Could not read saved ChatGPT sign-ins: {reason}", &[("reason", &error.to_string())]));
+    }
+    app.assistant.login_error = Some(error.auth_context());
+}
+
+/// Reads the account list while preserving the same refusal notice as the background read.
+#[cfg(not(target_arch = "wasm32"))]
+fn saved_accounts(app: &mut RustGisApp) -> Vec<chatgpt::Credentials> {
+    match chatgpt::accounts() {
+        Ok(accounts) => accounts,
+        Err(error) => {
+            sign_in_store_error(app, error);
+            Vec::new()
+        }
+    }
 }
 
 /// Applies a finished sign-in read, if the sign-in provider is still the one chosen (account
@@ -293,6 +320,10 @@ fn poll_sign_in(app: &mut RustGisApp, ctx: &egui::Context) {
     let checking = checking.clone();
     app.assistant.sign_in_read = None;
     let Some(cfg) = app.assistant.agent.as_ref().map(|a| a.config.clone()).filter(Config::login) else { return };
+    let (read, warning) = read;
+    if let Some(warning) = warning {
+        sign_in_store_error(app, warning);
+    }
     let usable = read.filter(|c| c.signed_in() && c.plan_allowed());
     if let Some(binding) = checking {
         // Still signed in, or another account selected and signed in (requests for this one
@@ -490,7 +521,7 @@ fn signed_in(app: &mut RustGisApp, c: &chatgpt::Credentials, ctx: &egui::Context
     app.assistant.sign_in_read = None;
     app.assistant.account = Some(c.account());
     app.assistant.login_error = None;
-    let saved = chatgpt::accounts().unwrap_or_default();
+    let saved = saved_accounts(app);
     // "Use another account" with an account already saved registers RustGIS for it again.
     app.assistant.duplicate = saved.iter().any(|a| a.subject == c.subject && a.client_id != c.client_id);
     app.assistant.accounts = Some(saved);
@@ -1110,7 +1141,10 @@ fn account_row(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens, cfg: &mut Config) 
         }
         return;
     }
-    let saved = app.assistant.accounts.get_or_insert_with(|| chatgpt::accounts().unwrap_or_default()).clone();
+    if app.assistant.accounts.is_none() {
+        app.assistant.accounts = Some(saved_accounts(app));
+    }
+    let saved = app.assistant.accounts.clone().unwrap_or_default();
     let active = saved.iter().find(|c| c.client_id == cfg.client_id && c.subject == cfg.account);
     let label = active.map(chatgpt::Credentials::label).unwrap_or_else(|| tl!("Choose an account").into());
     let picker = egui::ComboBox::from_id_salt("assistant_account").selected_text(label).width(180.0).truncate().show_ui(ui, |ui| {
@@ -2604,17 +2638,46 @@ pub(crate) mod tests {
         }
         h.state_mut().assistant.models_slot = None;
         // A read begun before choosing an account must not undo the choice when it finishes.
-        let stale: Slot<Option<chatgpt::Credentials>> = Slot::default();
+        let stale: Slot<SignInResult> = Slot::default();
         h.state_mut().assistant.sign_in_read = Some((None, stale.clone()));
         h.get_by_value(&a.label()).click();
         h.run_steps(4);
         h.get_by_label(&b.label()).click();
         h.run_steps(4);
-        *stale.lock().unwrap() = Some(Some(a.clone()));
+        *stale.lock().unwrap() = Some((Some(a.clone()), None));
         h.run_steps(4);
         assert!(h.state().assistant.models_slot.is_some());
         assert_eq!(h.state().assistant.agent.as_ref().unwrap().config.client_id, b.client_id);
         assert_eq!(chatgpt::load_any().unwrap().client_id, b.client_id);
+    }
+
+    /// A refused store is distinct from no saved account and reaches notices once, not just logs.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_refused_sign_in_read_is_visible_once_and_a_clean_read_is_quiet() {
+        let ctx = egui::Context::default();
+        let mut app = plan_app();
+        app.session.notices.clear();
+        let finish = |app: &mut RustGisApp, warning: Option<rustgis_assistant::Error>| {
+            let slot: Slot<SignInResult> = Slot::default();
+            *slot.lock().unwrap() = Some((None, warning));
+            app.assistant.sign_in_read = Some((None, slot));
+            poll_sign_in(app, &ctx);
+        };
+        finish(&mut app, None);
+        assert!(app.session.notices.is_empty());
+        let warning =
+            rustgis_assistant::Error::new(rustgis_assistant::Recovery::Auth, "the ChatGPT sign-ins were saved by a newer RustGIS");
+        finish(&mut app, Some(warning.clone()));
+        finish(&mut app, Some(warning));
+        assert_eq!(app.session.notices.len(), 1);
+        assert!(app.session.notices[0].text.contains("newer RustGIS"));
+        assert!(app.assistant.login_error.as_ref().unwrap().detail.contains("newer RustGIS"));
+        let mut other = plan_app();
+        other.assistant.agent.as_mut().unwrap().config = Config::from_env("custom");
+        other.session.notices.clear();
+        finish(&mut other, Some("a stale read for another provider".into()));
+        assert!(other.session.notices.is_empty() && other.assistant.login_error.is_none());
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -2633,8 +2696,8 @@ pub(crate) mod tests {
             ..Default::default()
         };
         let finish = |app: &mut RustGisApp, checking: Option<chatgpt::Binding>, read: Option<chatgpt::Credentials>| {
-            let slot: Slot<Option<chatgpt::Credentials>> = Slot::default();
-            *slot.lock().unwrap() = Some(read);
+            let slot: Slot<SignInResult> = Slot::default();
+            *slot.lock().unwrap() = Some((read, None));
             app.assistant.sign_in_read = Some((checking, slot));
             poll_sign_in(app, &ctx);
         };

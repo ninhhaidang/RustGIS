@@ -686,8 +686,9 @@ layers**: the prediction, named by `output`, and `<output>_variance`.
 the count of output polygon features whose total area is less than one millionth (`1e-6`) of
 their input feature's area, measured in the overlay plane. These may be slivers along the clip
 boundary; they are kept unchanged. Check these features before using the result as a map series
-index, where a tiny sliver can make an apparently empty page. Ordinary clipped pieces give no
-sliver notice, and empty intersections are still left out.
+index, where a tiny sliver can make an apparently empty page. A genuine small piece of a very
+large input can also trigger this notice. Pieces at or above the ratio give no sliver notice,
+and empty intersections are still left out.
 
 **Erase** (`erase`) removes from `input` features (points, lines or polygons) their parts inside
 the `erase` polygons. An erase polygon's edge counts as inside it, as for Clip, so a point on the
@@ -948,9 +949,9 @@ digits, so `06/23/2021` converts but `6/23/2021` doesn't).
    A date such as `2026-03-05` becomes `2026-03`, keeping different years separate.
 2. Run **Summary Statistics** on the permits, with **Case Fields** = `issue_month` and a
    **COUNT** statistic on `issue_date` (use **Add statistic**).
-3. Read `FREQUENCY` as the number of permits per month. Records without a date form a separate
-   group with an empty key. The output
-   contains months present in the data; it does not fill in missing months with zero.
+3. Read `FREQUENCY` as the number of permits per month. A null date and an empty-text date form
+   separate groups with null and empty-text keys; if both forms occur, there are two groups. The
+   output contains months present in the data; it does not fill in missing months with zero.
 
 **Minimum Bounding Geometry** (`convexHull`) encloses each feature in its convex hull (Group
 Option `None`), or all of them in one (`All`, with `count`, the features it enclosed). It passes
@@ -1741,9 +1742,12 @@ The Imagery tab's groups open their tools in the Workflows pane. The tab belongs
     (each channel's most frequent value among the pixels that show). Class names are kept with
     `nearest` and `mode`; other methods remove them with a notice naming the affected bands.
     Palette images use `nearest` for sampling and `mode` for aggregation, keeping their classes.
-  - Cells off the raster are its no-data value. A raster without one keeps its bands as they are,
-    with NaN there in a floating-point type and 0 in a whole-number one, as GDAL leaves them; a
-    colour image gains an alpha band instead, so they are see-through.
+  - Cells off the raster use 0 in every band when the image has alpha or gains it, so they are
+    see-through. Otherwise an explicit no-data value takes precedence. Without either, every
+    band uses NaN when any band has class names, the type is floating-point, or RGB data has
+    more than three bands (for example RGBI, whose fourth band is data). Other unlabelled
+    whole-number data uses 0. A three-band RGB image without alpha or no-data gains an alpha
+    band for its outside cells.
   - Datums are shifted as everywhere in RustGIS, through each system's transformation to WGS 84
     (a Helmert step for SAD69 or Córrego Alegre, a few metres from the IBGE's grid shifts).
   - The result has to fit in memory (120 million values, cells times bands, or more on a computer

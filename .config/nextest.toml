@@ -13,6 +13,6 @@ retries = 2
 fail-fast = false
 
 [profile.ci.junit]
-# target/nextest/ci/junit.xml: the report flaky-tests.sh reads (`<flakyFailure>` marks a test that
-# passed only on a retry).
+# target/nextest/ci/junit.xml: the report flaky-tests.sh reads (`<flakyFailure>` or `<flakyError>`
+# marks a test that passed only on a retry).
 path = "junit.xml"

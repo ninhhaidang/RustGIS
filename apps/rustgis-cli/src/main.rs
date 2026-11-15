@@ -223,12 +223,16 @@ fn choose_provider(args: &[String], env: &Environment, saved: Option<&Saved>) ->
 /// Builds a request's configuration without reading unrelated credentials during management.
 /// A prompt may use the desktop's API key for its provider and address; model listing uses
 /// only environment API keys, so `--models` never prompts for a saved API key.
-fn configuration(provider: &str, args: &[String], env: &Environment, saved: Option<&Saved>) -> Config {
+fn configuration(provider: &str, args: &[String], env: &Environment, saved: Option<&Saved>) -> Result<Config, String> {
     let mut cfg = (env.config)(provider);
-    if cfg.login()
-        && let Some(c) = rustgis_assistant::chatgpt::load_any()
-    {
-        cfg.sign_in(&c);
+    if cfg.login() {
+        let (credentials, warning) = rustgis_assistant::chatgpt::load_any_report();
+        if let Some(warning) = warning {
+            return Err(format!("could not read saved ChatGPT sign-ins: {warning}"));
+        }
+        if let Some(c) = credentials {
+            cfg.sign_in(&c);
+        }
     }
     if let Some(m) = opt(args, "--model").map(str::to_string).or_else(|| env.model.clone()) {
         cfg.model = m;
@@ -243,7 +247,7 @@ fn configuration(provider: &str, args: &[String], env: &Environment, saved: Opti
     {
         cfg.key = key.expose().to_string();
     }
-    cfg
+    Ok(cfg)
 }
 
 const NEEDS_REQUEST: &str = "ask needs a request, e.g. rustgis-cli ask --sample \"Which countries have the largest GDP?\"";
@@ -374,7 +378,7 @@ fn ask(s: &mut Session, args: &[String], saved: Option<&Saved>, env: &Environmen
     if !models && prompt.is_none() {
         return Err(NEEDS_REQUEST.into());
     }
-    let mut cfg = configuration(&provider, args, env, saved);
+    let mut cfg = configuration(&provider, args, env, saved)?;
     // A signed-in account's requests renew its tokens as needed.
     // Without a usable sign-in, say how to sign in before asking for anything.
     if cfg.login()
@@ -1051,14 +1055,14 @@ mod tests {
     fn a_prompt_uses_the_saved_key_but_model_listing_does_not_read_it() {
         let store = anthropic_key();
         let opted_in = saved(remembered(), &store);
-        let list = configuration("anthropic", &args(&["ask", "--models"]), &bare(), Some(&opted_in));
+        let list = configuration("anthropic", &args(&["ask", "--models"]), &bare(), Some(&opted_in)).unwrap();
         let request = provider::models_request(&list);
         assert!(request.headers.iter().all(|(_, value)| !value.contains("stored-sentinel")));
         assert!(store.accounts().is_empty());
-        let environment_list = configuration("openai", &args(&["ask", "--models"]), &with_openai_key(), Some(&opted_in));
+        let environment_list = configuration("openai", &args(&["ask", "--models"]), &with_openai_key(), Some(&opted_in)).unwrap();
         assert_eq!(environment_list.key, "env-key");
         assert!(store.accounts().is_empty());
-        let prompt = configuration("anthropic", &args(&["ask", "--provider", "anthropic", "hi"]), &bare(), Some(&opted_in));
+        let prompt = configuration("anthropic", &args(&["ask", "--provider", "anthropic", "hi"]), &bare(), Some(&opted_in)).unwrap();
         assert_eq!(prompt.key, "stored-sentinel");
         assert_eq!(store.accounts(), ["assistant/anthropic"]);
     }
@@ -1067,17 +1071,17 @@ mod tests {
     fn without_the_opt_in_or_consent_no_key_is_read_and_the_environment_key_wins() {
         let store = anthropic_key();
         // No --use-saved-secrets: the model list goes out without the saved key.
-        let request = provider::models_request(&configuration("anthropic", &args(&["ask", "--models"]), &bare(), None));
+        let request = provider::models_request(&configuration("anthropic", &args(&["ask", "--models"]), &bare(), None).unwrap());
         assert!(request.headers.iter().all(|(_, value)| !value.contains("stored-sentinel")));
         // Opted in, but the desktop does not remember keys.
         let off = saved(desktop(&[(provider::REMEMBER_KEY_PREF, "off")]), &store);
-        assert_eq!(configuration("anthropic", &args(&["ask", "hi"]), &bare(), Some(&off)).key, "");
+        assert_eq!(configuration("anthropic", &args(&["ask", "hi"]), &bare(), Some(&off)).unwrap().key, "");
         // A key from the environment is the one used, and nothing is read.
         let opted_in = saved(remembered(), &store);
-        assert_eq!(configuration("openai", &args(&["ask", "hi"]), &with_openai_key(), Some(&opted_in)).key, "env-key");
+        assert_eq!(configuration("openai", &args(&["ask", "hi"]), &with_openai_key(), Some(&opted_in)).unwrap().key, "env-key");
         // The desktop sends its key to its own address only: another one gets no key.
         let elsewhere = args(&["ask", "--base-url", "https://elsewhere.example/v1", "hi"]);
-        assert_eq!(configuration("anthropic", &elsewhere, &bare(), Some(&opted_in)).key, "");
+        assert_eq!(configuration("anthropic", &elsewhere, &bare(), Some(&opted_in)).unwrap().key, "");
         assert!(store.accounts().is_empty());
     }
 
@@ -1101,6 +1105,22 @@ mod tests {
         assert!(output.status.success(), "{stdout}\n{}", String::from_utf8_lossy(&output.stderr));
         assert!(stdout.contains("1 passed"), "the isolated run didn't run {name}:\n{stdout}");
         false
+    }
+
+    /// A refused store is an actionable CLI error, while no store is a clean signed-out state.
+    #[test]
+    fn a_refused_chatgpt_store_is_reported_before_a_cli_request() {
+        if !in_isolated_settings("tests::a_refused_chatgpt_store_is_reported_before_a_cli_request") {
+            return;
+        }
+        let path = rustgis_assistant::chatgpt::auth_path().unwrap();
+        let text = "{\"version\":3,\"accounts\":[]}";
+        std::fs::write(&path, text).unwrap();
+        let error = configuration("chatgpt", &args(&["ask", "hi"]), &bare(), None).err().unwrap();
+        assert!(error.contains("could not read saved ChatGPT sign-ins") && error.contains("newer RustGIS"), "{error}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+        std::fs::remove_file(&path).unwrap();
+        assert!(configuration("chatgpt", &args(&["ask", "hi"]), &bare(), None).unwrap().key.is_empty());
     }
 
     #[test]

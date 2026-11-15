@@ -36,13 +36,18 @@ public class MainActivity extends NativeActivity {
     private static final int PHOTO = 5;
     /**
      * The most events kept for the Rust side: two days of a position a second out of sight. The
-     * Rust side keeps as many positions between frames (FIXES_KEPT), so a batch goes whole into a track.
+     * Rust side keeps as many positions between frames (FIXES_KEPT), and each frame drains a bounded batch into its track.
      */
     private static final int MOST_EVENTS = 200_000;
     private static final int COPY_BUFFER = 1 << 16;
+    /** Shared by every activity/copy worker for this process, including activity recreation. */
+    private static final String COPY_OWNER = java.util.UUID.randomUUID().toString();
+
+    /** Rust installs this token before inspecting unused document copies. */
+    public String copyOwner() { return COPY_OWNER; }
 
     /** Oldest first; a deque, so the oldest goes at once when MOST_EVENTS wait. */
-    private final java.util.ArrayDeque<String> events = new java.util.ArrayDeque<>();
+    private final EventBuffer events = new EventBuffer(MOST_EVENTS);
     /** Pickers shown and not yet answered in full (guarded by events). */
     private int asked;
     /** The window's insets as insets() gives them, written on the main thread. */
@@ -57,14 +62,15 @@ public class MainActivity extends NativeActivity {
      * TrackService is refused, so it is tried again the next time the app comes into sight.
      */
     private boolean keepWanted;
-    /** Events dropped past MOST_EVENTS since the Rust side last took them (guarded by events). */
-    private int dropped;
     /** Why TrackService couldn't run, until takeEvents says so. */
-    private static volatile String refusal;
+    private static final java.util.concurrent.atomic.AtomicReference<String> refusal =
+            new java.util.concurrent.atomic.AtomicReference<>();
     /** The activity, while it is created: TrackService's refusal reaches it at once. */
     private static volatile MainActivity current;
     /** The listener positions arrive on, while they are asked for. */
     private android.location.LocationListener positions;
+    /** Providers this listener actually registered, on the main thread. */
+    private final LocationProviders requestedProviders = new LocationProviders();
     /** The user is being asked for leave to use the location, and hasn't answered. */
     private boolean asking;
     /** The activity is in sight (between onStart and onStop). */
@@ -261,7 +267,7 @@ public class MainActivity extends NativeActivity {
      * positions out of sight now, not at the next frame (an app out of sight draws none).
      */
     static void serviceRefused(String why) {
-        refusal = why;
+        refusal.set(why);
         MainActivity activity = current;
         if (activity != null) {
             activity.keepLocatingRefused();
@@ -318,11 +324,9 @@ public class MainActivity extends NativeActivity {
                 if (!locating || manager == null) {
                     return;
                 }
-                for (String other : new String[] {android.location.LocationManager.GPS_PROVIDER,
-                        android.location.LocationManager.NETWORK_PROVIDER}) {
-                    if (manager.getAllProviders().contains(other) && manager.isProviderEnabled(other)) {
-                        return;
-                    }
+                if (requestedProviders.anyEnabled(other -> manager.getAllProviders().contains(other)
+                        && manager.isProviderEnabled(other))) {
+                    return;
                 }
                 stopped("This device's location was turned off in its settings.");
             }
@@ -341,6 +345,7 @@ public class MainActivity extends NativeActivity {
                 if (manager.getAllProviders().contains(provider) && manager.isProviderEnabled(provider)
                         && (!satellites || allowed(android.Manifest.permission.ACCESS_FINE_LOCATION))) {
                     manager.requestLocationUpdates(provider, 1000, 0, positions, getMainLooper());
+                    requestedProviders.add(provider);
                     asked++;
                 }
             } catch (SecurityException | IllegalArgumentException e) {
@@ -358,6 +363,7 @@ public class MainActivity extends NativeActivity {
             manager.removeUpdates(positions);
         }
         positions = null;
+        requestedProviders.clear();
     }
 
     @Override
@@ -461,20 +467,13 @@ public class MainActivity extends NativeActivity {
 
     /** What happened since the last call, oldest first, one event to a line. */
     public String takeEvents() {
-        String why = refusal;
+        String why = refusal.getAndSet(null);
         if (why != null) {
-            refusal = null;
             keepLocatingRefused();
             add("failed\t" + why);
         }
         synchronized (events) {
-            if (dropped > 0) {
-                events.addFirst("failed\t" + dropped + " positions found while RustGIS was out of sight were dropped: more were waiting than it keeps.");
-                dropped = 0;
-            }
-            String taken = String.join("\n", events);
-            events.clear();
-            return taken;
+            return events.take();
         }
     }
 
@@ -549,12 +548,7 @@ public class MainActivity extends NativeActivity {
 
     private void add(String event) {
         synchronized (events) {
-            // Out of sight for days, the oldest go first, and how many is said.
-            if (events.size() >= MOST_EVENTS) {
-                events.pollFirst();
-                dropped++;
-            }
-            events.add(event.replaceAll("[\\n\\r]", " "));
+            events.add(event);
         }
     }
 
@@ -635,7 +629,9 @@ public class MainActivity extends NativeActivity {
                 try {
                     if (dir.mkdirs()) {
                         try {
-                            mark.createNewFile();
+                            try (FileOutputStream active = new FileOutputStream(mark)) {
+                                active.write(COPY_OWNER.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                            }
                         } catch (java.io.IOException e) {
                             // Unmarked, the pick is still kept while a copy's .part is in it.
                         }

@@ -118,7 +118,7 @@ end, by double-clicking a tab, or with ++ctrl+f1++ (++cmd+f1++ on macOS, where F
 key). Click a tab to peek at its commands while collapsed. When the window is narrower than the
 ribbon, arrows at its ends scroll it.
 
-### Diagnostics
+### Messages
 
 Open **View › Windows › Messages**, click the status-bar notice or **Messages** button,
 or search for **Messages** in Command Search (`ui.pane.diagnosticLog`). This troubleshooting
@@ -273,7 +273,7 @@ in Command Search. Reload rereads the same local source, table or raster subdata
 adding other tables from its container. It retains the layer's name, identity, drawing order,
 group, visibility, opacity, styling, labels, filters and map camera. Local PMTiles and MBTiles
 tile archives have their own **Reload Data** on their Layers row; see
-[Maps › Reloading a local tile archive](maps.md).
+[Maps › Reloading a local tile archive](maps.md#reloading-a-local-tile-archive-desktop).
 
 Supported targets are linked vectors, rasters (including time-following Zarr variables),
 GDAL/DuckDB file-backed layers and editable local GeoPackage tables. GDAL-linked File

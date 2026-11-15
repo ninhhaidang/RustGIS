@@ -306,6 +306,10 @@ fn kernel_density_on(
         return Err("kernel density requires a projected coordinate system with linear units (e.g. meters or feet), not geographic coordinates in degrees".into());
     }
 
+    if crs.is_geocentric() {
+        return Err("kernel density requires a projected coordinate system with linear units, not geocentric coordinates".into());
+    }
+
     // Determine spatial extent
     let pt_extent = points_extent(points).ok_or("points have empty extent")?;
     let base_extent = resolve_grid_extent(&pt_extent, bandwidth, custom_extent)?;
@@ -578,6 +582,17 @@ mod tests {
         let pts = vec![(Coord::new(10.0, 20.0), 1.0)];
         let err = kernel_density(&pts, None, 1.0, 10.0, KernelType::Quartic, "geo_crs", Crs::LonLat).unwrap_err();
         assert!(err.contains("requires a projected coordinate system"), "{err}");
+    }
+
+    #[test]
+    fn public_kernel_density_rejects_geocentric_coordinates() {
+        let points = [(Coord::new(10.0, 20.0), 1.0)];
+        let geocentric = Crs::from_epsg(4978).unwrap();
+        assert!(geocentric.is_geocentric());
+        let error = crate::kernel_density(&points, None, 1.0, 10.0, KernelType::Quartic, "earth_xyz", geocentric).unwrap_err();
+        assert!(error.contains("geocentric"), "{error}");
+        let projected = crate::kernel_density(&points, None, 1.0, 10.0, KernelType::Quartic, "projected", Crs::WebMercator).unwrap();
+        assert!(projected.bands[0].data.iter().any(|value| *value > 0.0));
     }
 
     #[test]

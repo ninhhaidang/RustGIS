@@ -481,7 +481,10 @@ pub fn info(archive: &str) -> Result<Option<Arc<Info>>, String> {
 pub fn info_blocking(archive: &str, timeout: std::time::Duration) -> Result<Arc<Info>, String> {
     let (tx, rx) = std::sync::mpsc::channel();
     with_info(archive, Box::new(move |r| tx.send(r).unwrap_or_default()));
-    rx.recv_timeout(timeout).map_err(|_| format!("{archive}: no answer in {} s", timeout.as_secs()))?
+    rx.recv_timeout(timeout).map_err(|error| match error {
+        std::sync::mpsc::RecvTimeoutError::Timeout => format!("{archive}: no answer in {} s", timeout.as_secs()),
+        std::sync::mpsc::RecvTimeoutError::Disconnected => format!("{archive}: metadata read ended without an answer"),
+    })?
 }
 
 /// Calls `f` with the archive's info, once it is read.
@@ -496,9 +499,17 @@ fn with_info(archive: &str, f: Box<dyn FnOnce(Result<Arc<Info>, String>) + Send>
         return;
     }
     let epoch = crate::cache::archive_epoch(archive);
+    with_info_at_epoch(archive, epoch, f);
+}
+
+/// Admits a caller already checked and bound to its lifetime. Reload may retire the captured
+/// epoch before admission; that caller still gets exactly one terminal answer.
+fn with_info_at_epoch(archive: &str, epoch: u64, f: Box<dyn FnOnce(Result<Arc<Info>, String>) + Send>) {
+    let mut f = Some(f);
     let result = crate::cache::if_archive_current(archive, epoch, || {
+        let f = f.take()?;
         let mut all = archives().lock().unwrap_or_else(|e| e.into_inner());
-        match all.get_mut(archive) {
+        Some(match all.get_mut(archive) {
             Some(State::Ready(i)) => (Some((f, Ok(i.clone()))), false, None),
             Some(State::Loading(waiting)) => {
                 waiting.push(f);
@@ -511,8 +522,9 @@ fn with_info(archive: &str, f: Box<dyn FnOnce(Result<Arc<Info>, String>) + Send>
                 all.insert(archive.to_string(), State::Loading(vec![f]));
                 (None, true, None)
             }
-        }
-    });
+        })
+    })
+    .flatten();
     if let Some((answer, start, retry_at)) = result {
         if let Some(at) = retry_at {
             crate::cache::notify_at(at);
@@ -523,6 +535,9 @@ fn with_info(archive: &str, f: Box<dyn FnOnce(Result<Arc<Info>, String>) + Send>
         if start {
             load(archive.to_string(), epoch);
         }
+    }
+    if let Some(f) = f {
+        f(Err(crate::cache::DROPPED.into()));
     }
 }
 
@@ -1291,6 +1306,28 @@ pub(crate) mod tests {
             }
         }
         assert!(failures.is_empty(), "{failures:?}");
+    }
+
+    #[test]
+    fn a_reload_before_metadata_admission_answers_the_old_caller() {
+        let _turn = crate::cache::turn();
+        let source = "/pmtiles-stale-admission-regression.pmtiles";
+        let old_epoch = crate::cache::archive_epoch(source);
+        crate::cache::reload_archive(source);
+        let (tx, rx) = std::sync::mpsc::channel();
+        with_info_at_epoch(source, old_epoch, Box::new(move |result| tx.send(result.map(|info| info.attribution())).unwrap()));
+        assert_eq!(rx.try_recv().unwrap(), Err(crate::cache::DROPPED.to_string()));
+        assert!(matches!(rx.try_recv(), Err(std::sync::mpsc::TryRecvError::Disconnected)), "one terminal callback");
+        assert!(!archives().lock().unwrap().contains_key(source), "stale admission publishes no metadata");
+        // The same caller admitted at the current epoch receives the ready archive normally.
+        let bytes = archive(&[(0, 0, 0, vec![1])], 1, true, "{}");
+        let (ready, _, _) = parse_head(&bytes).unwrap();
+        archives().lock().unwrap().insert(source.into(), State::Ready(Arc::new(ready)));
+        let (tx, rx) = std::sync::mpsc::channel();
+        with_info_at_epoch(source, crate::cache::archive_epoch(source), Box::new(move |result| tx.send(result.is_ok()).unwrap()));
+        assert!(rx.try_recv().unwrap());
+        assert!(matches!(rx.try_recv(), Err(std::sync::mpsc::TryRecvError::Disconnected)));
+        archives().lock().unwrap().remove(source);
     }
 
     #[test]

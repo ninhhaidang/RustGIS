@@ -54,10 +54,17 @@ first and its points last, so its points are drawn on top, and a KML's ground ov
 them. A name given goes to the first map layer added, the bottom one (a standalone table only gets
 it when the file has no map layer). A GeoPackage adds its tables in name order, and a file read
 through GDAL keeps its layers in the file's order and orders only the types within each layer.
-GeoPackage attribute-only tables are not supported. Adding a whole file reports their count in
-one notice. Tile and other unsupported GeoPackage contents are also counted by type. The omission counts cover catalog entries without a registered geometry column; unknown content types are combined into one counted "other" group. Only contents registered in `gpkg_contents` are considered; arbitrary unregistered SQLite tables are ignored. Desktop uploads add their first feature table, with the existing note naming how many feature tables the file contains. Browser uploads with virtual generated `table_name` or `data_type` catalog columns cannot be evaluated and are refused with an explanation; materialize these columns or select a feature table explicitly. A file
-containing only attribute tables is refused with the count. Selecting a
-feature table explicitly adds only that table.
+GeoPackage attribute-only tables are not supported. Adding a whole file reports their count in one
+notice. Tile and other unsupported GeoPackage contents are also counted by type. The omission counts
+cover catalog entries without a registered geometry column; unknown content types are combined into
+one counted "other" group. Only contents registered in `gpkg_contents` are considered; arbitrary
+unregistered SQLite tables are ignored. Desktop uploads add their first feature table, with the
+existing note naming how many feature tables the file contains. Browser uploads with virtual
+generated `table_name` or `data_type` catalog columns cannot be evaluated and are refused with an
+explanation; materialize these columns or select a feature table explicitly. A file containing only
+attribute or tile tables is refused with the count. Selecting a feature table explicitly adds only
+that table.
+
 On the desktop, **Home › Add › Add Data › Add Folder…** connects a folder to the Browser; the web
 app does not offer folder connections.
 On the desktop, a file Add Data reads whole (a GeoTIFF or another raster, one GDAL converts, a
@@ -100,10 +107,11 @@ a specific longitude/latitude pair is preferred over generic X/Y when it gives i
 non-0,0 positions on at least as many rows as the first pair gives finite positions.
 That pair is used for the whole file.
 The published aliases `Longitude Decimal Degrees`/`Latitude Decimal Degrees` and
-`Longitutde`/`Lattitude` are recognised too. The dialog checks its first 1,000 rows to pick
-defaults, and recomputes unchanged defaults when you leave the coordinate-system box or press
-Enter; columns you picked stay picked. With a projected coordinate system, defaults prefer
-X/Y or easting/northing columns when the file also has longitude/latitude columns.
+`Longitutde`/`Lattitude` are recognised too. The dialog checks the first 1,000 rows of delimited
+text, or every row of a spreadsheet, to pick defaults. It recomputes unchanged defaults when you
+leave the coordinate-system box or press Enter; columns you picked stay picked. With a projected
+coordinate system, defaults prefer X/Y or easting/northing columns when the file also has
+longitude/latitude columns.
 Add Data checks all rows. Coordinates still outside degree ranges are counted in a
 notice. Points placed at exactly 0,0 are also counted in a notice: these often mean missing
 coordinates, but the points are kept. A CSV without coordinate columns, or a layer without geometry, opens as a
@@ -118,11 +126,12 @@ the project, from two fields of coordinates and their coordinate system. In a te
 
 Excel `.xls` records, formula operands and sheet bounds are checked before opening, including
 sheets that were not selected. The workbook shares a memory budget across its sheets and retained
-metadata. Value and formula grids are counted separately, with conservative estimates for
-formula strings, defined names and sheet state. Formula-heavy workbooks can reach this budget
-before their value-grid limit. A file with damaged records or excessive allocations is refused with the reason. Normal
-cached formula values are read. A formula's direct cell reference to row 65,536 is currently
-refused because the XLS reader cannot handle that reference safely.
+metadata. Value and formula grids are counted separately, with conservative allocation estimates
+for formula strings, defined names and sheet state. Formula-heavy workbooks can reach this budget
+before their value-grid limit. A file with damaged records or excessive allocations is refused
+with the reason. Normal cached formula values are read. A formula's direct cell reference to
+row 65,536 is currently refused because the XLS reader cannot handle that reference safely.
+
 **Home › Add › Add Data › Graphics Layer** adds a layer for [drawn graphics](cartography.md#graphics),
 and **Data › Layer Templates** adds empty layers with ready-made schemas to draw into.
 
@@ -658,7 +667,8 @@ plus `geocoded`, what the geocoder called the place, and a text field `match_sta
 
 Rows that weren't found stay in its table without a point, and a notice counts them; filter
 `match_status = 'unmatched'` to review them. A field of the same name in the input is kept, and
-the new one gets an underscore appended (`match_status_`; filter that one then). `matched` means the geocoder returned a point, not that
+the generated field gets underscores appended until its name is unique (`match_status_`,
+`match_status__`, and so on); filter the generated field. `matched` means the geocoder returned a point, not that
 it is the exact address: it may be placed along the street or at a broader place. The geocoders
 don't give a match score, so there is none in the output.
 

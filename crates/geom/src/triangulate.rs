@@ -189,7 +189,7 @@ mod tests {
         assert!(!triangulate_reporting(&l, &[]).unwrap().1);
         let inner = vec![vec![(1.0, 1.0), (2.0, 1.0), (2.0, 2.0), (1.0, 2.0)]];
         assert!(!triangulate_reporting(&sq, &inner).unwrap().1);
-        // A hole that stays clear of the left side is fine.
+        // A hole touching the left side at points, without sharing an edge, is fine.
         assert!(!triangulate_reporting(&sq, &[vec![(0.0, 1.0), (2.0, 2.0), (0.0, 3.0)]]).unwrap().1);
     }
 

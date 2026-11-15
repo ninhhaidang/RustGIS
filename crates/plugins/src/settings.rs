@@ -51,8 +51,8 @@ pub const WRITE: &str = "host.setSettings";
 
 /// Where settings are kept: one saved text per plugin id.
 trait Backing {
-    /// The text saved for `id`, or `None` when nothing was. At most one byte past [`MAX_SAVED`]
-    /// is read from where it is kept (too much is told by [`parse`]).
+    /// The text saved for `id`, or `None` when nothing was. Filesystem reads stop one byte past
+    /// [`MAX_SAVED`]; browser storage already holds the whole string. [`parse`] checks both.
     fn load(&self, id: &str) -> Result<Option<String>, String>;
     /// Replaces the text saved for `id`; a failure leaves what was saved as it was.
     fn save(&self, id: &str, text: &str) -> Result<(), String>;

@@ -68,7 +68,7 @@ fn set_sheet(ctx: &egui::Context, sheet: Sheet) {
     ctx.data_mut(|d| d.insert_temp(egui::Id::unique("touch_sheet"), sheet));
 }
 
-pub use copies::COPYING;
+pub use copies::{COPYING, Copying, copy_owner, mark_copying, set_copy_owner};
 
 /// Whether unused copies of picked files are being removed (Remove Unused Copies): a phone's shell
 /// holds files sent to the app until it is done, as one could open a project naming a copy the

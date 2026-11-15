@@ -1906,7 +1906,7 @@ fn clip_on(inp: &dyn Inputs, p: &Json, threads: Option<usize>, cache_bytes: Opti
     }
     r.messages.extend(left.notes("Clip", &clip_ds.name));
     if slivers > 0 {
-        r.messages.push(format!("Clip: {slivers} output feature(s) have less than one millionth of their input feature's area; they may be slivers along the clip boundary (kept unchanged)"));
+        r.messages.push(format!("Clip: {slivers} output feature(s) have less than one millionth of their input feature's area in the overlay plane; they may be slivers along the clip boundary (kept unchanged)"));
     }
     Ok(r)
 }
@@ -5220,11 +5220,12 @@ fn ground_area_perimeter(g: &Geometry) -> (f64, f64) {
             let polar = ring.0.first().zip(ring.0.last()).is_some_and(|(a, b)| (a.x - b.x).abs() > 180.0);
             let orientable = !polar && ring.0.iter().all(|c| c.x.is_finite() && (-90.0..=90.0).contains(&c.y));
             let polygon = geo::Polygon::new(ring, vec![]);
-            // Within a longitude span of 180°, the ring cannot enclose more than a hemisphere.
+            // Within an unwrapped longitude span of 180°, the ring cannot enclose more than a
+            // hemisphere.
             // Use signed magnitude there: a tiny overlay sliver can have opposite planar and
             // geodesic windings, making its unsigned area nearly the whole Earth (#1966).
-            let wide = polygon.bounding_rect().is_some_and(|bounds| bounds.width() > 180.0);
-            let (rp, ra) = if orientable && wide {
+            let wide = orientable && polygon.bounding_rect().is_some_and(|bounds| bounds.width() > 180.0);
+            let (rp, ra) = if wide {
                 polygon.orient(Direction::Default).geodesic_perimeter_area_unsigned()
             } else {
                 // Keep smaller local rings and polar caps; invalid coordinates bypass orientation.
@@ -13524,7 +13525,7 @@ mod tests {
                 r.messages,
                 [
                     "Clip: 2 features kept",
-                    "Clip: 2 output feature(s) have less than one millionth of their input feature's area; they may be slivers along the clip boundary (kept unchanged)",
+                    "Clip: 2 output feature(s) have less than one millionth of their input feature's area in the overlay plane; they may be slivers along the clip boundary (kept unchanged)",
                 ]
             );
             let out = layer(r);

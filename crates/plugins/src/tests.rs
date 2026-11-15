@@ -458,6 +458,29 @@ fn pinned_tool_schema_refuses_changed_defaults_display_and_stale_load() {
     crate::unload("unit-schema-pin");
 }
 
+/// Registry scan limits and omitted identifier samples remain explicit.
+#[test]
+fn registry_limits_and_unnamed_skips_are_counted_without_a_dangling_list() {
+    let entry = json!({"id":"kept", "name":"Kept", "version":"1.0.0", "package":"kept.rgplugin", "sha256":"a".repeat(64)});
+    let url = "https://plugins.rustgis.app/registry.json";
+    let (kept, notice) = registry::parse_with_notice(&json!([entry.clone()]).to_string(), url).unwrap();
+    assert_eq!(kept.len(), 1);
+    assert_eq!(notice, None);
+    let (kept, notice) = registry::parse_with_notice("[7,8]", url).unwrap();
+    assert!(kept.is_empty());
+    let notice = notice.unwrap();
+    assert!(notice.starts_with("2 plugin(s)") && notice.ends_with("listed twice)"), "{notice}");
+    // Cheap malformed entries fill the inspected window; the valid tail is deliberately
+    // uninspected, rather than silently disappearing or being counted as malformed.
+    let mut entries = vec![Value::Null; registry::MAX_ENTRIES];
+    entries.push(entry);
+    let (kept, notice) = registry::parse_with_notice(&Value::Array(entries).to_string(), url).unwrap();
+    assert!(kept.is_empty());
+    let notice = notice.unwrap();
+    assert!(notice.starts_with(&format!("1 plugin registry entry past the first {} was not inspected", registry::MAX_ENTRIES)), "{notice}");
+    assert!(notice.contains(&format!("{} plugin(s) in the plugin registry were skipped", registry::MAX_ENTRIES)), "{notice}");
+}
+
 /// Registry and blocklist parsing validates entries and resolves package addresses safely.
 #[test]
 fn registries_and_blocklists_are_read_defensively() {
@@ -480,7 +503,7 @@ fn registries_and_blocklists_are_read_defensively() {
     let (_, notice) = registry::parse_with_notice(&text, "https://plugins.rustgis.app/registry.json").unwrap();
     let notice = notice.unwrap_or_default();
     assert!(
-        notice.starts_with("6 plugin(s) in the plugin registry were skipped") && notice.ends_with(": bad, nohash, bad-min, a-plugin"),
+        notice.starts_with("6 plugin(s) in the plugin registry were skipped") && notice.ends_with(": bad, nohash, bad-min, a-plugin, …"),
         "{notice}"
     );
     assert_eq!(v[1].package, "https://plugins.rustgis.app/packages/b/b-1.2.0.rgplugin");
@@ -1986,11 +2009,15 @@ fn process_packages_unpack_safely() {
     {
         use std::os::unix::fs::PermissionsExt;
         crate::settings::patch("unpacked", &json!({"values": {"kept": true}})).unwrap();
+        let environment = crate::pyenv::env_dir("unpacked").unwrap();
+        std::fs::create_dir_all(&environment).unwrap();
+        std::fs::write(environment.join("leftover.txt"), "synthetic environment").unwrap();
         let parent = plugins.join("unpacked");
         let mode = std::fs::metadata(&parent).unwrap().permissions();
         std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o555)).unwrap();
         let failed = crate::store::uninstall("unpacked");
         std::fs::set_permissions(&parent, mode).unwrap();
+        assert!(!environment.exists(), "independent Python cleanup must run after an unpacked-folder failure");
         // Root removes it anyway: then there is nothing to check here.
         if let Err(e) = failed {
             assert!(e.contains("its saved settings were kept") && e.contains(&settings.display().to_string()), "{e}");
@@ -2656,11 +2683,23 @@ fn a_bad_platform_package_is_dropped_alone() {
     let notice = notice.unwrap();
     // A plugin left with no package at all is said as a plugin skipped, first.
     assert!(notice.starts_with("1 plugin(s) in the plugin registry were skipped") && notice.contains(": g-no-address; "), "{notice}");
-    assert!(notice.contains("; 6 package(s) for a platform in the plugin registry were skipped"), "{notice}");
+    assert!(notice.contains("; 7 package(s) for a platform in the plugin registry were skipped"), "{notice}");
     assert!(
         notice.ends_with(": a-no-address (Linux), b-no-hash (Linux), c-not-an-object (Linux), d-bad-size (Linux), e-own-too (Linux), …"),
         "{notice}"
     );
+    // An invalid shared fallback beside good platform packages is counted on every platform.
+    let fallback = json!([{"id": "shared", "name": "Shared", "version": "1.0.0",
+        "package": "http://insecure.example.org/a.rgplugin", "sha256": any,
+        "packages": {"windows": good}}])
+    .to_string();
+    for platform in ["windows", "linux", "macos"] {
+        let (entries, notice) = registry::parse_noting(&fallback, url, Some(platform)).unwrap();
+        assert_eq!(entries.len(), 1);
+        let notice = notice.unwrap();
+        assert!(notice.contains("1 package(s)") && notice.ends_with("shared (shared)"), "{platform}: {notice}");
+        assert_eq!(entries[0].available(), platform == "windows");
+    }
     let clean = json!([
         {"id": "ok", "name": "ok", "version": "1.0.0", "packages": {"windows": good, "plan9": {"package": "p.rgplugin", "sha256": lin}}},
         // `null` is no packages: the entry's own package, as without the field.

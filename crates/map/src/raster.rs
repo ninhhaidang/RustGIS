@@ -2169,12 +2169,30 @@ impl RasterLayer {
         self.masked_stats().is_some_and(|m| m.first().is_some_and(|s| s.count == 0))
     }
 
+    /// Unique Values without an enumerated statistics list shows every configured value, just
+    /// as an explicit request for all classes does. None of those classes can be missed.
+    fn lists_every_class(&self, all_classes: bool) -> bool {
+        match &self.style.renderer {
+            RasterRenderer::UniqueValues { band, .. } => {
+                if all_classes {
+                    return true;
+                }
+                let masked = self.masked_stats();
+                let stats = masked.as_ref().and_then(|m| m.first()).or_else(|| self.data.as_ref()?.bands.get(*band).map(|b| &b.stats));
+                stats.is_none_or(|s| s.categories.is_none())
+            }
+            RasterRenderer::Classify { .. } => all_classes,
+            _ => false,
+        }
+    }
+
     /// Whether the classes a legend lists for it ([`RasterLayer::legend_classes`]) come from a
     /// sample of its pixels: under a mask, a band of more than [`MASK_STATS_SAMPLE`] cells has its
     /// statistics read from every few cells ([`RasterMask::stats`]), so a class too rare for the
     /// sample can be missing (#1679). Not with `all_classes` for Unique Values or Classify, nor when
-    /// no class can be listed (a mask hiding every pixel included); a colour table's come from the sample only when its own statistics,
-    /// read whole, can't list its values.
+    /// no class can be listed (a mask hiding every pixel included). Unique Values without an
+    /// enumerated statistics list shows every class. A colour table's come from the sample only
+    /// when its own statistics, read whole, can't list its values.
     pub fn classes_from_sample(&self, all_classes: bool) -> bool {
         let Some(r) = &self.data else { return false };
         if !self.style.renderer.draws_classes() || self.style.mask.is_empty() || self.classes_unknown() || self.mask_hides_all() {
@@ -2184,7 +2202,7 @@ impl RasterLayer {
         let sampled = r.bands.get(band).is_some_and(|b| b.data.len() > MASK_STATS_SAMPLE);
         let from_sample = match &self.style.renderer {
             RasterRenderer::Colormap => r.bands.first().is_some_and(|b| b.stats.categories.is_none()),
-            _ => !all_classes,
+            _ => !self.lists_every_class(all_classes),
         };
         sampled && from_sample
     }
@@ -2194,10 +2212,11 @@ impl RasterLayer {
     /// while the map draws the full resolution: a class too rare for the overview can be missing
     /// (#1679). Not with `all_classes` for Unique Values or Classify, whose every class is listed
     /// whatever the statistics, nor when no class can be listed ([`RasterLayer::classes_unknown`],
-    /// or a mask hiding every pixel).
+    /// or a mask hiding every pixel), or when Unique Values lists every configured class because
+    /// its statistics have no enumerated values.
     pub fn classes_from_overview(&self, all_classes: bool) -> bool {
         let Some(r) = &self.data else { return false };
-        let every = all_classes && !matches!(self.style.renderer, RasterRenderer::Colormap);
+        let every = self.lists_every_class(all_classes);
         self.style.renderer.draws_classes()
             && (self.in_place || r.overview.is_some())
             && !every
@@ -2470,6 +2489,35 @@ mod tests {
         assert_eq!(rl.legend_classes(false), None);
         rl.style.renderer = RasterRenderer::Rgb { red: 0, green: 0, blue: 0 };
         assert_eq!(rl.legend_classes(true), None);
+    }
+
+    /// Without an enumerated statistics list, Unique Values lists all configured classes; neither
+    /// an overview nor masked sampling can then hide a class from the legend.
+    #[test]
+    fn unique_values_listing_every_class_has_no_missing_class_warning() {
+        let side = 2049u32;
+        let gt = GeoTransform { origin_x: 0.0, origin_y: 1.0, pixel_width: 0.01, pixel_height: -0.01 };
+        let cells = (0..side * side).map(|i| (i % 1000) as f32).collect();
+        let raster = Raster::new("many", side, side, vec![cells], gt, Crs::LonLat, None, ColorHint::Gray, "UInt16").unwrap();
+        assert!(raster.bands[0].stats.categories.is_none());
+        let mut layer = RasterLayer::from_path(raster, "many.tif");
+        layer.style.renderer = RasterRenderer::UniqueValues {
+            band: 0,
+            ramp: Ramp::Harbour,
+            values: (0..1000).map(|v| (f64::from(v), Rgba::rgb(30, 100, 200))).collect(),
+        };
+        layer.in_place = true;
+        assert_eq!(layer.legend_classes(false).unwrap().len(), 1000);
+        assert!(!layer.classes_from_overview(false));
+        layer.style.mask = RasterMask { values: vec![999.0], ..RasterMask::default() };
+        assert_eq!(layer.legend_classes(false).unwrap().len(), 999);
+        assert!(!layer.classes_from_sample(false) && !layer.classes_from_overview(false));
+        // Once a sampled subset supplies the legend, the rare-class warning applies again.
+        layer.style.mask = RasterMask { min: Some(0.0), max: Some(3.0), ..RasterMask::default() };
+        // Sampling every second cell sees 0 and 2, missing the configured odd values.
+        assert_eq!(layer.legend_classes(false).unwrap().len(), 2);
+        assert!(layer.classes_from_sample(false) && layer.classes_from_overview(false));
+        assert!(!layer.classes_from_sample(true) && !layer.classes_from_overview(true));
     }
 
     /// A colour table has no entry for a negative value, and the map draws none: neither the

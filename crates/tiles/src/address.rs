@@ -60,8 +60,9 @@ impl Origin {
         Ok(self)
     }
 
-    /// Retains this trusted origin's address while narrowing its observed reach.
-    /// This constructor is for in-process transport/UI code, never document deserialization.
+    /// Records the address and reach observed by trusted in-process transport/UI code. The
+    /// observed peer can be local even when the address's spelling looks public; this does not
+    /// narrow a previous origin. Never use document data as the observed reach.
     pub fn with_observed_reach(url: &str, reach: Reach) -> Result<Self, String> {
         check_reach(url, Reach::Local)?;
         if reach == Reach::Forbidden {

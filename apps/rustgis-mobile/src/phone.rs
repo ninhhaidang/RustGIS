@@ -40,7 +40,13 @@ impl Phone {
                 })
             })
             .map_err(|e| i18n::fmt("Android's Java side can't be reached: {error}", &[("error", &e.to_string())]))?;
-        Ok(Phone { activity, unreachable: RefCell::new(None) })
+        let phone = Phone { activity, unreachable: RefCell::new(None) };
+        let owner = phone.java(|env, activity| {
+            let token = env.call_method(activity, jni_str!("copyOwner"), jni_sig!(() -> JString), &[])?.l()?;
+            env.cast_local::<JString>(token)?.try_to_string(env)
+        })?;
+        rustgis_ui_touch::set_copy_owner(owner)?;
+        Ok(phone)
     }
 
     /// Runs `call` with the Java environment and the activity, on this thread.

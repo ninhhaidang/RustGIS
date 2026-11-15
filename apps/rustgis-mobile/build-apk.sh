@@ -96,7 +96,9 @@ strip=$(ls "$ANDROID_NDK_HOME"/toolchains/llvm/prebuilt/*/bin/llvm-strip | head 
 find "$out/apk/lib" -name librustgis_mobile.so -exec "$strip" {} \;
 # Each segment aligned to 16 KB pages, which Android 15 phones may use and Google Play requires.
 readelf=$(ls "$ANDROID_NDK_HOME"/toolchains/llvm/prebuilt/*/bin/llvm-readelf | head -1)
+checked=0
 while IFS= read -r -d '' so; do
+    checked=$((checked + 1))
     # In an assignment of its own, so a readelf that fails stops the script.
     info=$("$readelf" -lW "$so")
     for align in $(awk '$1 == "LOAD" { print $NF }' <<< "$info"); do
@@ -106,6 +108,7 @@ while IFS= read -r -d '' so; do
         fi
     done
 done < <(find "$out/apk/lib" -name '*.so' -print0)
+[ "$checked" -gt 0 ] || { echo "build-apk: no native libraries to check for 16 KB alignment" >&2; exit 1; }
 
 # The activity's Java half, compiled without Gradle: javac, then d8 to Android's bytecode.
 rm -rf "$out/java" && mkdir -p "$out/java/classes" "$out/java/dex"

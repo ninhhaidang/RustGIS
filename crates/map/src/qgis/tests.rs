@@ -2106,6 +2106,26 @@ fn a_subset_string_reading_the_scale_is_left_out() {
 }
 
 #[test]
+fn a_resolved_diagram_note_keeps_other_same_named_layers_notes() {
+    let mut report = Report::default();
+    let styles = ["value", "angle"].map(|field| {
+        let xml = format!(
+            r##"<qgis><LinearlyInterpolatedDiagramRenderer diagramType="Pie" lowerValue="0" upperValue="10" lowerWidth="2" upperWidth="4" classificationField="value"><DiagramCategory enabled="1"><attribute field="{field}" color="#ff0000"/><attribute field="nosuch" color="#00ff00"/></DiagramCategory></LinearlyInterpolatedDiagramRenderer></qgis>"##
+        );
+        read_style(&xml, "same", &mut report).unwrap()
+    });
+    assert_eq!(report.notes.iter().find(|n| n.text.contains("not by")).unwrap().count, 2);
+    for (style, field) in styles.iter().zip(["value", "angle"]) {
+        let mut data = rustgis_data::Dataset::new("same", rustgis_data::GeometryType::Point, Vec::new());
+        data.fields.push(rustgis_data::Field::new(field, rustgis_data::FieldType::Double));
+        let mut layer = crate::Layer::new(1, data);
+        style.apply(&mut layer);
+        style.check_diagram_fields(&mut layer, "same", &mut report);
+    }
+    assert_eq!(report.notes.iter().find(|n| n.text.contains("not by")).unwrap().count, 1, "only one layer's provisional note is withdrawn");
+}
+
+#[test]
 fn diagrams_carry_over_as_pie_diagrams() {
     use crate::{DiagramKind, DiagramSize};
     let read = |name: &str| {
@@ -2145,11 +2165,12 @@ fn diagrams_carry_over_as_pie_diagrams() {
     assert_eq!(fields(&s.diagram.unwrap()), ["id", "value"]);
     assert!(said(&report, r#"1 diagram category by an expression (the first: `"angle" / 2`)"#), "{:?}", report.notes);
 
-    // Sized between two values by the sum of its categories, as RustGIS sizes it: not noted.
+    // Sized by its categories, with the zero lower radius raised to the visible minimum: noted.
     let (s, report) = read("pie-scaled");
     let DiagramSize::Scaled { min_size, max_size, min, max } = s.diagram.unwrap().size else { panic!("not scaled") };
     assert!(min_size == crate::diagram::MIN_SIZE && (max_size - mm(10.0)).abs() < 1e-3 && min == 0.0 && max == 400.0);
-    assert!(report.notes.is_empty(), "{:?}", report.notes);
+    assert!(said(&report, "smaller than RustGIS draws them"), "{:?}", report.notes);
+    assert!(!said(&report, "not by"), "{:?}", report.notes);
 
     // Histograms and stacked bars are left out, noted: RustGIS's bars draw shares, not values.
     for (name, part) in [
@@ -2225,7 +2246,14 @@ fn diagrams_carry_over_as_pie_diagrams() {
     ));
     assert!(matches!(d.unwrap().size, DiagramSize::Fixed(r) if r == crate::diagram::MAX_SIZE));
     assert!(said(&report, "larger than RustGIS draws them") && said(&report, "outline, wider"), "{:?}", report.notes);
-    // Between two values from a lower value other than 0: noted; from 0, as the corpus' pie, not.
+    for (width, floored) in [("0", true), ("0.1", true), ("2", false)] {
+        let (_, report) = style(&qml(
+            &format!(r##"<DiagramCategory enabled="1" width="{width}"><attribute field="a" color="#ff0000"/></DiagramCategory>"##),
+            "",
+        ));
+        assert_eq!(said(&report, "smaller than RustGIS draws them"), floored, "{width}: {:?}", report.notes);
+    }
+    // Between two values: the zero minimum radius is noted independently of the value range.
     let scaled = |lower: &str| {
         format!(
             r##"<qgis version="3.40.0"><LinearlyInterpolatedDiagramRenderer diagramType="Pie" lowerValue="{lower}" upperValue="400" lowerWidth="0" upperWidth="20" classificationField="a"><DiagramCategory enabled="1"><attribute field="a" color="#ff0000"/></DiagramCategory></LinearlyInterpolatedDiagramRenderer></qgis>"##
@@ -2234,7 +2262,8 @@ fn diagrams_carry_over_as_pie_diagrams() {
     let (_, report) = style(&scaled("100"));
     assert!(said(&report, "from a lower value other than 0"), "{:?}", report.notes);
     let (_, report) = style(&scaled("0"));
-    assert!(report.notes.is_empty(), "{:?}", report.notes);
+    assert!(said(&report, "smaller than RustGIS draws them"), "{:?}", report.notes);
+    assert!(!said(&report, "from a lower value other than 0"), "{:?}", report.notes);
     // Several diagrams of a kind left out: only that is said.
     let two = r##"<DiagramCategory enabled="1"><attribute field="a" color="#ff0000"/></DiagramCategory><DiagramCategory enabled="1"><attribute field="b" color="#ff0000"/></DiagramCategory>"##;
     let (d, report) = style(&qml(two, "").replace(r#"diagramType="Pie""#, r#"diagramType="Histogram""#));

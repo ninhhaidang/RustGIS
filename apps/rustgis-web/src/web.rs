@@ -1309,6 +1309,7 @@ fn services(inbox: Inbox, font_inbox: Inbox, notes: Notes, ctx: egui::Context, e
                 ctx.request_repaint();
             });
         })),
+        open_options: None,
         download: Some(Box::new(|name: &str, bytes: Vec<u8>| download(name, &bytes))),
         inbox: Some(inbox),
         geolibre_manifests: Some(Box::new(move |slot| crate::geolibre::manifests(slot, gl_list_ctx.clone()))),

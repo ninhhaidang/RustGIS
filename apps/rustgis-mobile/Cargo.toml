@@ -30,6 +30,10 @@ too_many_arguments = "allow"
 type_complexity = "allow"
 
 [dev-dependencies]
+rustgis-ui-touch = { workspace = true }
+eframe = { workspace = true, features = ["default_fonts", "wgpu", "x11", "wayland"] }
+serde_json = { workspace = true }
+log = { workspace = true }
 rustgis-engine = { workspace = true }
 rustgis-ui-egui = { workspace = true }
 

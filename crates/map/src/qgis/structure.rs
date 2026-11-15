@@ -48,6 +48,7 @@ pub fn bookmarks(root: Node, report: &mut Report) -> Vec<ProjectBookmark> {
     // Those whose rotation doesn't read, facing north.
     let mut unturned = Vec::new();
     let mut groups: Vec<&str> = Vec::new();
+    let mut seen_groups = std::collections::HashSet::new();
     // Those with no name, named "Bookmark".
     let mut unnamed = 0usize;
     // Those whose own coordinate system is there but doesn't read (no code, no PROJ string):
@@ -66,7 +67,7 @@ pub fn bookmarks(root: Node, report: &mut Report) -> Vec<ProjectBookmark> {
             continue;
         }
         if let Some(g) = b.attribute("group").map(str::trim).filter(|g| !g.is_empty())
-            && !groups.contains(&g)
+            && seen_groups.insert(g)
         {
             groups.push(g);
         }

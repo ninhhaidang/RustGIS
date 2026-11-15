@@ -222,7 +222,13 @@ pub fn checked_legends(legends: impl IntoIterator<Item = rustgis_data::ogc::Lege
     legends
         .into_iter()
         .map(|l| rustgis_data::ogc::Legend { url: l.url.trim().to_string(), min_scale: scale(l.min_scale), max_scale: scale(l.max_scale) })
-        .filter(|l| is_web(&l.url) && rustgis_data::login_address::inner(&l.url).len() <= MAX_LEGEND_URL)
+        .filter(|l| {
+            // Percent-escaping can use three bytes per original byte; advertised_len below
+            // still enforces the original 4,096-byte budget after recognized escapes normalize.
+            is_web(&l.url)
+                && rustgis_data::login_address::inner(&l.url).len() <= MAX_LEGEND_URL * 3
+                && rustgis_data::login_address::advertised_len(&l.url) <= MAX_LEGEND_URL
+        })
         .take(rustgis_data::ogc::MAX_LEGENDS)
         .collect()
 }
@@ -773,6 +779,31 @@ mod tests {
         assert_eq!(checked_legends([legend]).first().map(|l| l.url.as_str()), Some(url.as_str()));
         assert_eq!(rustgis_data::login_address::inner(&url), "https://maps.test/legend?LAYER=a%20b");
         assert!(check_url(&url).is_ok());
+    }
+
+    #[test]
+    fn a_near_limit_legend_keeps_spaces_encoded_for_its_login() {
+        use rustgis_data::{login_address, ogc::Legend};
+        let document = login_address::bind("0123456789abcdef", "https://maps.test", "https://maps.test/wms").unwrap();
+        let prefix = "https://maps.test/legend?name=";
+        let raw = format!("{prefix}{}x", " ".repeat(MAX_LEGEND_URL - prefix.len() - 1));
+        assert_eq!(raw.len(), MAX_LEGEND_URL);
+        let url = login_address::inherit(&document, &raw);
+        assert!(login_address::inner(&url).len() > MAX_LEGEND_URL);
+        assert_eq!(login_address::advertised_len(&url), raw.len());
+        assert_eq!(checked_legends([Legend { url: url.clone(), ..Default::default() }]).len(), 1);
+        let over = login_address::inherit(&document, &format!("{raw}x"));
+        assert!(checked_legends([Legend { url: over, ..Default::default() }]).is_empty());
+        // Arbitrary escapes do not bypass the advertised byte limit.
+        let long = format!("{prefix}{}", "%41".repeat(MAX_LEGEND_URL));
+        let long = login_address::inherit(&document, &long);
+        assert!(checked_legends([Legend { url: long, ..Default::default() }]).is_empty());
+        let encoded = login_address::inner(&url).to_string();
+        assert_eq!(
+            checked_legends([Legend { url: encoded, ..Default::default() }]).len(),
+            1,
+            "saved URLs retain the same budget after unbinding"
+        );
     }
 
     #[test]

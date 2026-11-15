@@ -2473,6 +2473,28 @@ mod login_binding_tests {
     use super::*;
 
     #[test]
+    fn a_near_limit_encoded_legend_survives_save_and_recovery_unbinding() {
+        use rustgis_data::{login_address, ogc::Legend};
+        let document = login_address::bind("0123456789abcdef", "https://maps.test", "https://maps.test/wms").unwrap();
+        let prefix = "https://maps.test/legend?name=";
+        let raw = format!("{prefix}{}x", " ".repeat(rustgis_map::tiles::MAX_LEGEND_URL - prefix.len() - 1));
+        let bound = login_address::inherit(&document, &raw);
+        let mut tile = rustgis_map::TileLayer::new("Legend", rustgis_map::tiles::TileKind::Raster, "https://maps.test/{z}/{x}/{y}.png");
+        tile.legends = rustgis_map::tiles::checked_legends([Legend { url: bound.clone(), ..Default::default() }]);
+        assert_eq!(tile.legends.len(), 1);
+        let mut project = Project::default();
+        project.map_mut().tiles.push(tile);
+        let (saved, _) = project.saved_text(None).unwrap();
+        for text in [saved, project.recovery_text().unwrap()] {
+            assert!(!text.contains(login_address::PREFIX));
+            let opened = Project::from_json(&text).unwrap();
+            let legends = &opened.map().tiles[0].legends;
+            assert_eq!(legends.len(), 1, "unbinding must not make an accepted legend too long");
+            assert_eq!(legends[0].url, login_address::inner(&bound));
+        }
+    }
+
+    #[test]
     fn saves_and_imports_strip_runtime_capabilities_including_recorded_urls() {
         let url = rustgis_data::login_address::bind(
             "0123456789abcdef",

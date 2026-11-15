@@ -52,7 +52,7 @@ vectors as a layout's PDF is (see Layouts), in the system viewer on desktop; **C
 Clipboard** copies a map image. **Export To 3D** writes a layer as a Wavefront OBJ or binary STL model
 with polygons extruded by a field (`share.export3d` writes STL when `path` ends in `.stl`). STL
 holds closed solids only: lines and zero-height features are left out, zero-area triangles are
-skipped, and a cap that can't be triangulated is fanned over its outer ring, filling any holes; one
+skipped, and a cap that can't be triangulated is fanned over its outer ring, filling any holes; a cap that
 the triangulator can only finish as a fan (a hole touching the outer ring along an edge, for
 example) is fanned over what is left of it. Either fan may spill outside the polygon; the notices
 say how many. OBJ

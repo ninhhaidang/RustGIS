@@ -17,13 +17,19 @@ use roxmltree::Node;
 use super::{Report, child, color, points, renderer::field_name};
 use crate::Rgba;
 use crate::diagram::{
-    DiagramCategory, DiagramKind, DiagramLabel, DiagramSettings, DiagramSize, MAX_CATEGORIES, MAX_SIZE, MAX_STROKE_WIDTH,
+    DiagramCategory, DiagramKind, DiagramLabel, DiagramSettings, DiagramSize, MAX_CATEGORIES, MAX_SIZE, MAX_STROKE_WIDTH, MIN_SIZE,
 };
 
 /// The layer's diagram from its `<…DiagramRenderer>` (a child of a project's `<maplayer>` or a
 /// style's `<qgis>`), or `None` when it has none, it is switched off or nothing of it can be
 /// drawn (noted). `reference` is the layer's reference scale (RustGIS's), for sizes in map units.
-pub(super) fn read(node: Node, layer: &str, reference: Option<f64>, report: &mut Report) -> Option<DiagramSettings> {
+pub(super) fn read(
+    node: Node,
+    layer: &str,
+    reference: Option<f64>,
+    classification: &mut Option<String>,
+    report: &mut Report,
+) -> Option<DiagramSettings> {
     let r = node.children().find(|c| c.is_element() && c.tag_name().name().ends_with("DiagramRenderer"))?;
     let cats: Vec<Node> = r.children().filter(|c| c.has_tag_name("DiagramCategory")).collect();
     // Switched off: QGIS draws nothing, and neither does RustGIS.
@@ -124,10 +130,9 @@ pub(super) fn read(node: Node, layer: &str, reference: Option<f64>, report: &mut
             .filter_map(|k| r.attribute(k).map(str::trim))
             .find(|v| !v.is_empty())
             .unwrap_or_default();
+        *classification = Some(by.to_string());
         if !sums_categories(by, &categories) {
-            let what =
-                if by.is_empty() { "a field by its number".to_string() } else { format!("`{}`", by.chars().take(80).collect::<String>()) };
-            report.approximated(layer, format!("its diagrams sized by the sum of their categories, not by {what}"));
+            report.approximated(layer, sizing_note(by));
         }
         // QGIS grows the pie's area from the lower value's, RustGIS from nothing: the two agree
         // when the range starts at 0.
@@ -176,10 +181,16 @@ pub(super) fn read(node: Node, layer: &str, reference: Option<f64>, report: &mut
         }
     }
 
-    let largest = match size {
-        DiagramSize::Fixed(s) => s,
-        DiagramSize::Scaled { min_size, max_size, .. } => min_size.max(max_size),
+    let (smallest, largest) = match size {
+        DiagramSize::Fixed(s) => (s, s),
+        DiagramSize::Scaled { min_size, max_size, .. } => (min_size.min(max_size), min_size.max(max_size)),
     };
+    if smallest < MIN_SIZE {
+        report.approximated(
+            layer,
+            format!("its diagrams smaller than RustGIS draws them, drawn at least {:.2} mm across", MIN_SIZE * 2.0 * 25.4 / 96.0),
+        );
+    }
     if largest > MAX_SIZE {
         report.approximated(
             layer,
@@ -204,6 +215,42 @@ pub(super) fn read(node: Node, layer: &str, reference: Option<f64>, report: &mut
     }
     .clamped();
     (!d.categories.is_empty()).then_some(d)
+}
+
+fn sizing_note(by: &str) -> String {
+    let what = if by.is_empty() { "a field's value".to_string() } else { format!("`{}`", by.chars().take(80).collect::<String>()) };
+    format!("its diagrams sized by the sum of their categories, not by {what}")
+}
+
+pub(super) fn check_fields(layer: &mut crate::Layer, name: &str, by: Option<&str>, report: &mut Report) {
+    if layer.graphics {
+        report.skipped(name, "its diagrams (a graphics layer draws none)");
+        return;
+    }
+    let Some(d) = layer.diagram.as_mut() else { return };
+    let missing: Vec<String> =
+        d.categories.iter().filter(|c| layer.dataset.field_index(&c.field).is_none()).map(|c| c.field.clone()).collect();
+    if missing.is_empty() {
+        return;
+    }
+    d.categories.retain(|c| layer.dataset.field_index(&c.field).is_some());
+    let none_left = d.categories.is_empty();
+    let matches_size = by.is_some_and(|by| sums_categories(by, &d.categories));
+    let scaled = matches!(d.size, DiagramSize::Scaled { .. });
+    if none_left {
+        layer.diagram = None;
+    }
+    let shown: Vec<&str> = missing.iter().take(8).map(String::as_str).collect();
+    let more = if missing.len() > shown.len() { ", …" } else { "" };
+    let what = if none_left { "its diagrams, whose fields the layer hasn't" } else { "its diagram categories on fields the layer hasn't" };
+    report.skipped(name, format!("{what} ({}{more})", shown.join(", ")));
+    if scaled && (none_left || matches_size) {
+        if let Some(by) = by {
+            report.forget(name, super::NoteKind::Approximated, &sizing_note(by));
+        }
+    } else if scaled {
+        report.approximated(name, "its diagrams sized by the sum of the categories left, without those on fields the layer hasn't");
+    }
 }
 
 /// Whether `by` (a field, or an expression adding fields) is the sum of exactly the categories'

@@ -149,11 +149,11 @@ fn output_within(c: Command, limit: Duration) -> Option<Output> {
 fn spawn_when_free(c: &mut Command, stop: &dyn Fn() -> Option<String>) -> Result<std::process::Child, String> {
     let start = Instant::now();
     loop {
+        if let Some(why) = stop() {
+            return Err(why);
+        }
         match c.spawn() {
             Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && start.elapsed() < Duration::from_secs(1) => {
-                if let Some(why) = stop() {
-                    return Err(why);
-                }
                 std::thread::sleep(Duration::from_millis(10));
             }
             Err(e) => return Err(e.to_string()),
@@ -393,25 +393,6 @@ fn stop_reason(live: &dyn Fn() -> Result<(), String>) -> Option<String> {
 mod tests {
     use super::*;
 
-    /// Runner versions 1.x are used; anything else, or a version that can't be read, isn't, and
-    /// the reason names the runner, its version and the supported range.
-    #[test]
-    fn supported_runner_versions() {
-        for ok in ["geolibre-cli 1.0.0", "geolibre-cli 1.8.0", "geolibre-cli v1.8.2", "geolibre-cli 1.9.0-dev", "geolibre-cli 1.99.3+abc"] {
-            assert_eq!(check_supported("r", ok), Ok(()), "{ok}");
-        }
-        for bad in ["geolibre-cli 2.0.0", "geolibre-cli 2.0.0-rc.1", "geolibre-cli 0.11.0"] {
-            let e = check_supported("/opt/geolibre", bad).unwrap_err();
-            assert!(e.contains("/opt/geolibre") && e.contains(bad) && e.contains("1.0.0") && e.contains("2.0.0"), "{e}");
-        }
-        for unreadable in ["geolibre-cli", "geolibre-cli 1.8", "geolibre-cli 1.8.0.1", "geolibre-cli one"] {
-            assert!(check_supported("r", unreadable).unwrap_err().contains("can't read"), "{unreadable}");
-        }
-        assert!(download_url().ends_with(&format!("/releases/tag/v{RELEASE}")));
-        let pinned = parse_version(&format!("geolibre-cli {RELEASE}")).unwrap();
-        assert!(pinned >= SUPPORTED_FROM && pinned < SUPPORTED_BEFORE, "the pinned release is supported");
-    }
-
     /// Discovery passes over a runner outside the supported range for the next supported one,
     /// and says why; with only an unsupported one, there is no runner but the reason is given.
     #[test]
@@ -490,5 +471,38 @@ mod tests {
         let closed = with_still(std::sync::Arc::new(|| false), || stop_reason(&fine));
         assert_eq!(closed.as_deref(), Some(CLOSED), "a program started for a project no longer open is stopped, and says so");
         assert_eq!(with_still(std::sync::Arc::new(|| true), || stop_reason(&fine)), None);
+    }
+}
+
+#[cfg(test)]
+mod portable_tests {
+    use super::*;
+
+    /// A stopped run is refused before attempting even an invalid executable. This also keeps
+    /// every busy-file retry behind the same cancellation check.
+    #[test]
+    fn stopped_run_never_attempts_to_spawn() {
+        let mut command = Command::new("");
+        let error = spawn_when_free(&mut command, &|| Some("cancelled before spawn".to_string())).unwrap_err();
+        assert_eq!(error, "cancelled before spawn");
+    }
+
+    /// Runner versions 1.x are used; anything else, or a version that can't be read, isn't, and
+    /// the reason names the runner, its version and the supported range.
+    #[test]
+    fn supported_runner_versions() {
+        for ok in ["geolibre-cli 1.0.0", "geolibre-cli 1.8.0", "geolibre-cli v1.8.2", "geolibre-cli 1.9.0-dev", "geolibre-cli 1.99.3+abc"] {
+            assert_eq!(check_supported("r", ok), Ok(()), "{ok}");
+        }
+        for bad in ["geolibre-cli 2.0.0", "geolibre-cli 2.0.0-rc.1", "geolibre-cli 0.11.0"] {
+            let e = check_supported("/opt/geolibre", bad).unwrap_err();
+            assert!(e.contains("/opt/geolibre") && e.contains(bad) && e.contains("1.0.0") && e.contains("2.0.0"), "{e}");
+        }
+        for unreadable in ["geolibre-cli", "geolibre-cli 1.8", "geolibre-cli 1.8.0.1", "geolibre-cli one"] {
+            assert!(check_supported("r", unreadable).unwrap_err().contains("can't read"), "{unreadable}");
+        }
+        assert!(download_url().ends_with(&format!("/releases/tag/v{RELEASE}")));
+        let pinned = parse_version(&format!("geolibre-cli {RELEASE}")).unwrap();
+        assert!(pinned >= SUPPORTED_FROM && pinned < SUPPORTED_BEFORE, "the pinned release is supported");
     }
 }

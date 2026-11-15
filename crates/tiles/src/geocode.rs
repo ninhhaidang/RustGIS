@@ -255,6 +255,8 @@ impl Geocoder {
                 found.limited = entries.len().saturating_sub(i);
                 break;
             }
+            // An overlong label is a malformed Census response, not a candidate with no usable
+            // position: refuse it whole rather than shorten or substitute its matched address.
             if self.kind == Kind::Census
                 && e.get("matchedAddress").and_then(Value::as_str).is_some_and(|name| name.chars().nth(500).is_some())
             {

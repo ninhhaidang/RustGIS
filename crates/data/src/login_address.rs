@@ -95,6 +95,63 @@ pub fn inner(address: &str) -> &str {
     parse(address).ok().flatten().map_or(address, |b| b.url)
 }
 
+/// A URL's length with the whitespace/control escapes [`as_sent`] writes counted at their
+/// original UTF-8 width. Other escapes keep their byte length. Plain saved URLs use the same
+/// rule because project saving removes runtime login wrappers, retaining their encoded URL.
+/// Callers also bound the encoded address: this is a limit on the advertised-equivalent URL,
+/// not permission to decode arbitrary escapes or to accept an unbounded runtime wrapper.
+pub fn advertised_len(address: &str) -> usize {
+    let url = match parse(address) {
+        Ok(Some(bound)) => bound.url,
+        Ok(None) => address,
+        Err(_) => return address.len(),
+    };
+    let mut chars = url.char_indices();
+    let (mut length, mut in_path) = (0usize, true);
+    while let Some((at, c)) = chars.next() {
+        if c == '?' || c == '#' {
+            in_path = false;
+        }
+        let escaped = (c == '%').then(|| escaped_char(url.get(at..).unwrap_or_default())).flatten();
+        if let Some((decoded, width)) = escaped
+            && !matches!(decoded, '\t' | '\n' | '\r')
+            && (decoded.is_whitespace() || decoded.is_control() || (decoded == '\\' && !in_path))
+        {
+            length += decoded.len_utf8();
+            for _ in 1..width {
+                let _ = chars.next();
+            }
+        } else {
+            length += c.len_utf8();
+        }
+    }
+    length
+}
+
+/// One percent-encoded UTF-8 character and the bytes its escapes occupy, without decoding the
+/// rest of the URL. Four bytes is the most a character can occupy.
+fn escaped_char(text: &str) -> Option<(char, usize)> {
+    let hex = |b: u8| (b as char).to_digit(16).map(|v| v as u8);
+    let byte = |at: usize| {
+        let s = text.as_bytes().get(at..at + 3)?;
+        (s.first() == Some(&b'%')).then_some(())?;
+        Some(hex(*s.get(1)?)? * 16 + hex(*s.get(2)?)?)
+    };
+    let first = byte(0)?;
+    let n = match first {
+        0..=0x7f => 1,
+        0xc2..=0xdf => 2,
+        0xe0..=0xef => 3,
+        0xf0..=0xf4 => 4,
+        _ => return None,
+    };
+    let mut bytes = [0; 4];
+    for (i, b) in bytes.iter_mut().take(n).enumerate() {
+        *b = byte(i * 3)?;
+    }
+    Some((std::str::from_utf8(bytes.get(..n)?).ok()?.chars().next()?, n * 3))
+}
+
 /// Canonical origin of a plain URL or a well-formed bound URL.
 pub fn origin(address: &str) -> Option<String> {
     raw_origin(inner(address))
@@ -191,6 +248,23 @@ pub fn check(address: &str) -> Result<(), &'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn advertised_length_counts_only_binding_normalization_escapes() {
+        let base = bind("0123456789abcdef", "https://maps.test", "https://maps.test/wms").unwrap();
+        for raw in ["https://maps.test/a b?name=a\u{2003}b", "https://maps.test/a\\b?q=a\\b", "https://maps.test/x?q=a\u{000b}b"] {
+            let bound = inherit(&base, raw);
+            assert_eq!(advertised_len(&bound), raw.len(), "{raw:?}");
+        }
+        for encoded in ["%41", "%2F", "%09", "%0A", "%0D", "%E2%80", "%FF", "%zz", "%5C"] {
+            let url = format!("https://maps.test/{encoded}");
+            let bound = inherit(&base, &url);
+            assert_eq!(advertised_len(&bound), url.len(), "{encoded}");
+            assert_eq!(advertised_len(&url), url.len(), "plain addresses stay unchanged");
+        }
+        let broken = "rustgis-login:broken";
+        assert_eq!(advertised_len(broken), broken.len());
+    }
 
     #[test]
     fn binding_length_and_alphabet_are_checked() {

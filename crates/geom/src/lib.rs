@@ -562,7 +562,7 @@ fn wgs84_parallel_m(lat_deg: f64, dlon_deg: f64) -> f64 {
     WGS84_A / (1.0 - WGS84_E2 * s * s).sqrt() * c.abs() * dlon_deg.to_radians().abs()
 }
 
-/// Coordinates closer than this (degrees, about 11 m, half a unit in the fourth decimal) are on one
+/// Coordinates closer than this (degrees, about 11 m, one unit in the fourth decimal) are on one
 /// parallel or meridian, for [`ring_lon_steps`]: a band written with coordinates rounded to four
 /// decimals or more keeps its full turns.
 const NEAR_DEG: f64 = 1e-4;
@@ -1739,6 +1739,7 @@ mod tests {
         assert_eq!(format_distance(-99_949.0), "-99.9 km");
         assert_eq!(format_distance(-99_960.0), "-100 km");
         assert_eq!(format_area(-0.3), "0 m²");
+        assert_eq!(format_area(-0.5), "0 m²");
         assert_eq!(format_area(-0.0), "0 m²");
         assert_eq!(format_area(-0.6), "-1 m²");
         assert_eq!(format_area(-999_999.4), "-999999 m²");

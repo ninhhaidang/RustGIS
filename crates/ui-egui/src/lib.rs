@@ -371,6 +371,9 @@ pub struct Services {
     /// Opens a file picker for `"data"`, `"project"`, or `"shapefile"`; results land in `inbox`.
     /// Shapefile picks carry [`SHAPEFILE_PICK`] after sidecars are gathered into ZIPs.
     pub open_async: Option<Box<dyn Fn(&str)>>,
+    /// Snapshot the pending options immediately before a picker is submitted. Phone shells
+    /// retain these only on admission, so a refused picker cannot overwrite an active request.
+    pub open_options: Option<Box<dyn Fn(&UiState)>>,
     /// Asks the device's camera for a photo (a phone's shell): the photo arrives in
     /// [`RustGisApp::photos`]. `None` where there is no camera to ask.
     pub take_photo: Option<Box<dyn Fn() -> Result<(), String>>>,
@@ -3716,6 +3719,9 @@ impl RustGisApp {
                     self.ui.pending_open = None;
                     // `null`: the dialog, for the file picked.
                     self.ui.pending_csv = Some(opts.unwrap_or(Value::Null));
+                    if let Some(snapshot) = &self.services.open_options {
+                        snapshot(&self.ui);
+                    }
                     open("text");
                 } else if let Some(path) = dialogs::pick_open(
                     &["csv", "tsv", "txt", "dat", "gz", "xlsx", "xlsm", "xlsb", "xls", "ods"],
@@ -3750,6 +3756,9 @@ impl RustGisApp {
                     self.ui.next_dxf = self.ui.next_dxf.checked_add(1).ok_or(tl!("DXF picker request limit reached"))?;
                     let id = self.ui.next_dxf;
                     self.ui.pending_dxf.insert(id, opts.unwrap_or(Value::Null));
+                    if let Some(snapshot) = &self.services.open_options {
+                        snapshot(&self.ui);
+                    }
                     open(&format!("dxf:{id}"));
                 } else if let Some(path) = dialogs::pick_open(&["dxf"], tl!("DXF drawing")) {
                     return match opts {
@@ -3907,6 +3916,9 @@ impl RustGisApp {
                     self.ui.pending_open = None;
                     self.ui.pending_csv = None;
                     self.ui.pending_shapefile = Some(json!({"crs": text}));
+                    if let Some(snapshot) = &self.services.open_options {
+                        snapshot(&self.ui);
+                    }
                     open("shapefile");
                 } else if let Some(path) = dialogs::pick_open(&["shp", "zip"], tl!("Shapefile")) {
                     // Read on a thread of its own, as Add Data's other files are.
@@ -3923,6 +3935,9 @@ impl RustGisApp {
                     self.ui.pending_picture = None;
                     self.ui.pending_open = None;
                     self.ui.pending_csv = None;
+                    if let Some(snapshot) = &self.services.open_options {
+                        snapshot(&self.ui);
+                    }
                     open("data");
                 } else if let Some(path) = dialogs::pick_open(
                     &[
@@ -3991,6 +4006,9 @@ impl RustGisApp {
                     self.ui.pending_layout_picture = false;
                     self.ui.pending_picture = None;
                     self.ui.pending_open = None;
+                    if let Some(snapshot) = &self.services.open_options {
+                        snapshot(&self.ui);
+                    }
                     open("project");
                     self.ui.backstage = false;
                 } else if let Some(path) = dialogs::pick_open(
@@ -4081,6 +4099,9 @@ impl RustGisApp {
             "ui.reportLayoutFile" => {
                 if let Some(open) = &self.services.open_async {
                     self.ui.pending_open = Some("report.existingTemplate");
+                    if let Some(snapshot) = &self.services.open_options {
+                        snapshot(&self.ui);
+                    }
                     open("item");
                 } else if let Some(path) = dialogs::pick_open(&["rgislayout"], tl!("RustGIS layout")) {
                     return self.run("report.existingTemplate", json!({"path": path}));
@@ -4125,6 +4146,9 @@ impl RustGisApp {
                     self.ui.pending_layout_picture = false;
                     self.ui.pending_picture = None;
                     self.ui.pending_open = None;
+                    if let Some(snapshot) = &self.services.open_options {
+                        snapshot(&self.ui);
+                    }
                     open("layout");
                 } else if let Some(path) = dialogs::pick_open(&["rgislayout"], tl!("RustGIS layout")) {
                     return self.run("layout.import", json!({"path": path}));
@@ -4136,6 +4160,9 @@ impl RustGisApp {
                     self.ui.pending_layout_picture = true;
                     self.ui.pending_picture = None;
                     self.ui.pending_open = None;
+                    if let Some(snapshot) = &self.services.open_options {
+                        snapshot(&self.ui);
+                    }
                     open("picture");
                 } else if let Some(path) = dialogs::pick_open(&["png", "jpg", "jpeg"], tl!("Pictures")) {
                     let v = self.run("layout.addElement", json!({"layout": li, "kind": "picture", "path": path}))?;
@@ -4212,6 +4239,9 @@ impl RustGisApp {
                 };
                 if let Some(open) = &self.services.open_async {
                     self.ui.pending_open = Some(cmd);
+                    if let Some(snapshot) = &self.services.open_options {
+                        snapshot(&self.ui);
+                    }
                     open(match kind {
                         "ramps" => "ramp",
                         "geolibreProject" => "project",
@@ -4421,6 +4451,9 @@ impl RustGisApp {
                     self.ui.pending_layout_picture = false;
                     self.ui.pending_picture = None;
                     self.ui.pending_open = Some("presentation.imagePage");
+                    if let Some(snapshot) = &self.services.open_options {
+                        snapshot(&self.ui);
+                    }
                     open("picture");
                 } else if let Some(path) = dialogs::pick_open(&["png", "jpg", "jpeg"], tl!("Pictures")) {
                     return self.run("presentation.imagePage", json!({"path": path}));
@@ -4532,6 +4565,9 @@ impl RustGisApp {
                 let cmd = if p.get("map").and_then(Value::as_bool) == Some(true) { "map.thumbnail" } else { "project.thumbnail" };
                 if let Some(open) = &self.services.open_async {
                     self.ui.pending_open = Some(cmd);
+                    if let Some(snapshot) = &self.services.open_options {
+                        snapshot(&self.ui);
+                    }
                     open("picture");
                 } else if let Some(path) = dialogs::pick_open(&["png", "jpg", "jpeg"], tl!("Pictures")) {
                     return self.run(cmd, json!({"path": path}));
@@ -4639,7 +4675,8 @@ impl RustGisApp {
                 let name = format!("{}.{ext}", l.name);
                 // The features written, read whole, give their own extent (not a raster's, or the
                 // one a streamed layer's source declares).
-                let notes = rustgis_engine::data::export_notes([(ds, ds.extent())], &name, crs);
+                let mut notes = rustgis_engine::data::export_notes([(ds, ds.extent())], &name, crs);
+                rustgis_engine::cmd::share::coalesce_read_zm(&mut notes, &name, ds, &lost);
                 let mut dbf_notes = Vec::new();
                 if ext == "zip" {
                     dbf_notes.extend(io::shapefile_names_note(&ds.fields, &name));
@@ -4654,7 +4691,7 @@ impl RustGisApp {
                 if lost.rows > 0 {
                     dbf_notes.push(format!("{name}: {} rows couldn't be read and were left out", lost.rows));
                 }
-                dbf_notes.extend(rustgis_engine::cmd::share::read_date_notes(&name, &l.name, &lost));
+                dbf_notes.extend(rustgis_engine::cmd::share::read_notes(&name, &l.name, &lost));
                 // CSV holds a point a row, GPX a name for each feature and no areas.
                 dbf_notes.extend(io::export_losses_notes(ds, &ext, io::name_field(ds), &name));
                 if let Some(note) = io::left_out_note(&name, &ext, left_out) {
@@ -4943,6 +4980,9 @@ impl RustGisApp {
                 if let Some(open) = &self.services.open_async {
                     self.ui.pending_layout_picture = false;
                     self.ui.pending_open = None;
+                    if let Some(snapshot) = &self.services.open_options {
+                        snapshot(&self.ui);
+                    }
                     open("picture");
                 } else if let Some(path) = dialogs::pick_open(&["png", "jpg", "jpeg"], tl!("Pictures")) {
                     return self.add_picture(json!({"path": path}));

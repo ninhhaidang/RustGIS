@@ -285,9 +285,7 @@ attributes kept.
 - A scene with a free camera and each layer's elevation mode (on the ground, relative, absolute),
   Phase 2 of [#726](https://github.com/opengeos/RustGIS/issues/726), after the Z design above.
 - LiDAR point layers (LAS/LAZ/COPC, read today as points) drawn at their heights in the scene.
-- Terrain from several layers ([#1310](https://github.com/opengeos/RustGIS/issues/1310)), and
-  finer terrain once a tilted view settles
-  ([#1523](https://github.com/opengeos/RustGIS/issues/1523)).
+- Terrain from several layers ([#1310](https://github.com/opengeos/RustGIS/issues/1310)).
 - 3D objects and 3D Tiles follow.
 
 ## Exploratory

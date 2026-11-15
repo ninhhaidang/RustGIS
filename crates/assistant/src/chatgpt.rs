@@ -1004,18 +1004,34 @@ mod native {
     /// The selected registration, including signed-out accounts. Reads the keychain only to move
     /// an older version's tokens into it (once); otherwise only the file.
     pub fn load_any() -> Option<Credentials> {
-        let path = auth_path()?;
-        let _guard = store(&path).ok()?;
-        load_any_at(&path, vault())
+        let (credentials, warning) = load_any_report();
+        if let Some(warning) = warning {
+            log::warn!("{warning}");
+        }
+        credentials
     }
 
+    /// Reads the selected registration and preserves a refused-store diagnostic for the caller.
+    /// A missing store is a clean signed-out state. A token-store failure may still return the
+    /// readable registration without tokens, as [`load_any`] does.
+    pub fn load_any_report() -> (Option<Credentials>, Option<Error>) {
+        let Some(path) = auth_path() else { return (None, None) };
+        let _guard = match store(&path) {
+            Ok(guard) => guard,
+            Err(e) => return (None, Some(e)),
+        };
+        load_any_report_at(&path, vault())
+    }
+
+    #[cfg(test)]
     fn load_any_at(path: &Path, v: &Vault) -> Option<Credentials> {
+        load_any_report_at(path, v).0
+    }
+
+    fn load_any_report_at(path: &Path, v: &Vault) -> (Option<Credentials>, Option<Error>) {
         match selected_at(path, v) {
-            Ok(c) => c,
-            Err(e) => {
-                log::warn!("{e}");
-                read_accounts(path).ok()?.selected().map(Credentials::without_tokens)
-            }
+            Ok(c) => (c, None),
+            Err(e) => (read_accounts(path).ok().and_then(|accounts| accounts.selected().map(Credentials::without_tokens)), Some(e)),
         }
     }
 
@@ -2018,17 +2034,28 @@ mod native {
             let e = read_accounts(&path).err().unwrap();
             assert!(e.to_string().contains("newer RustGIS (version 3; this one reads 2)"), "{e}");
             assert!(read_credentials(&path, &v).is_err());
+            let (credentials, warning) = load_any_report_at(&path, &v);
+            assert!(credentials.is_none());
+            let warning = warning.unwrap().to_string();
+            assert!(warning.contains("newer RustGIS") && !warning.contains("synthetic"), "{warning}");
             assert!(write_credentials(&path, &v, &synthetic(now() + 100_000)).is_err());
             assert!(sign_out_at(&path, &v).is_err());
             assert!(remove_at(&path, &v, "oaiapp_synthetic", "user-1").is_err());
             assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
             // A version that isn't a plain integer is unreadable, not newer-or-not.
             for odd in [serde_json::json!("3"), serde_json::json!(3.0), serde_json::json!(true)] {
-                let mut v: Value = serde_json::from_str(&text).unwrap();
-                v["version"] = odd;
-                std::fs::write(&path, v.to_string()).unwrap();
+                let mut record: Value = serde_json::from_str(&text).unwrap();
+                record["version"] = odd;
+                std::fs::write(&path, record.to_string()).unwrap();
                 assert!(read_accounts(&path).is_err());
+                let before = std::fs::read(&path).unwrap();
+                let (credentials, warning) = load_any_report_at(&path, &v);
+                assert!(credentials.is_none() && warning.unwrap().to_string().contains("version isn't a whole number"));
+                assert_eq!(std::fs::read(&path).unwrap(), before);
             }
+            let missing = dir.path().join("missing.json");
+            let (credentials, warning) = load_any_report_at(&missing, &v);
+            assert!(credentials.is_none() && warning.is_none());
         }
 
         #[test]

@@ -387,10 +387,20 @@ pub fn uninstall(id: &str) -> Result<(), String> {
         None => e,
     };
     if is_package {
-        if let Some(unpacked) = unpacked_dir(id).filter(|u| u.is_dir()) {
-            std::fs::remove_dir_all(&unpacked).map_err(|e| kept(format!("{}: {e}", unpacked.display())))?;
+        let mut failures = Vec::new();
+        if let Some(unpacked) = unpacked_dir(id).filter(|u| u.is_dir())
+            && let Err(e) = std::fs::remove_dir_all(&unpacked)
+        {
+            failures.push(format!("{}: {e}", unpacked.display()));
         }
-        crate::pyenv::remove(id).map_err(kept)?;
+        // The package is already gone: attempt independent cleanup even when one directory
+        // cannot be removed, and name every leftover path before preserving its settings.
+        if let Err(e) = crate::pyenv::remove(id) {
+            failures.push(e);
+        }
+        if !failures.is_empty() {
+            return Err(kept(failures.join("; ")));
+        }
     }
     if erase {
         crate::settings::remove(id).map_err(kept)?;

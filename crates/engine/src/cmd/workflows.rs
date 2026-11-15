@@ -1935,11 +1935,12 @@ pub(crate) fn convert_work(s: &Session, p: &Value) -> Result<super::exports::Wor
             let ds = whole.as_ref().unwrap_or(&layer.dataset);
             rustgis_data::progress::begin(ds.features.len());
             let (text, mut notes) = converted(ds, &params)?;
+            super::share::coalesce_read_zm(&mut notes, &path, ds, &unreadable);
             rustgis_data::io::write_atomic(std::path::Path::new(&path), text.as_bytes()).map_err(|e| format!("{path}: {e}"))?;
             if unreadable.rows > 0 {
                 notes.push(format!("{path}: {} rows couldn't be read and were left out", unreadable.rows));
             }
-            notes.extend(super::share::read_date_notes(&path, &ds.name, &unreadable));
+            notes.extend(super::share::read_notes(&path, &ds.name, &unreadable));
             (notes, rustgis_data::export::numbers_written_as_null(&ds.features, &ds.fields, format))
         };
         let bytes = std::fs::metadata(&path).map_err(|e| format!("{path}: {e}"))?.len();

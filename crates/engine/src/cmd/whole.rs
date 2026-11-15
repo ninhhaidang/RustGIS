@@ -31,6 +31,7 @@ pub(crate) struct Unread {
     rows: usize,
     dates: Option<String>,
     rounded: Option<String>,
+    messages: Vec<String>,
 }
 
 impl Whole {
@@ -72,7 +73,7 @@ impl Whole {
 impl Unread {
     /// What a whole read of `layer` couldn't read, to say.
     pub(crate) fn of(layer: String, unread: Unreadable) -> Self {
-        Unread { layer, rows: unread.rows, dates: unread.dates, rounded: unread.rounded }
+        Unread { layer, rows: unread.rows, dates: unread.dates, rounded: unread.rounded, messages: unread.messages }
     }
 
     /// Says the rows left out, as Load All Features says them, the dates read as null and the
@@ -87,13 +88,16 @@ impl Unread {
         if let Some(rounded) = &self.rounded {
             s.notify(format!("{}: {rounded}", self.layer), false);
         }
+        for message in &self.messages {
+            s.notify(message.clone(), false);
+        }
     }
 
     /// What [`Unread::say`] says, as lines: for a tool's messages.
     pub(crate) fn lines(&self) -> Vec<String> {
         let rows = (self.rows > 0).then(|| unread_notice(&self.layer, self.rows));
         let dates = [&self.dates, &self.rounded].into_iter().flatten().map(|n| format!("{}: {n}", self.layer));
-        rows.into_iter().chain(dates).collect()
+        rows.into_iter().chain(dates).chain(self.messages.iter().cloned()).collect()
     }
 
     /// `error`, with the rows left out when there were any: they may be why it failed.
@@ -184,4 +188,101 @@ pub(crate) fn layers_read_whole<'a>(s: &super::InputContext<'a>, command: &str, 
         _ => Vec::new(),
     };
     layers.into_iter().filter(|l| l.is_streamed()).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A detached read can be the first opening: its source metadata never reaches the live
+    /// layer, so the command and export must carry the diagnostics with the rows they read.
+    #[test]
+    fn detached_whole_reads_relay_new_metadata_and_leave_clean_reads_quiet() {
+        for (tag, coordinates, lossy) in [("3d", "[1,2,3]", true), ("xy", "[1,2]", false)] {
+            let path = std::env::temp_dir().join(format!("rustgis-whole-notices-{}-{tag}.geojson", std::process::id()));
+            let coordinates: serde_json::Value = serde_json::from_str(coordinates).unwrap();
+            let text = serde_json::json!({"type":"FeatureCollection","features":[{
+                "type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":coordinates}
+            }]})
+            .to_string();
+            std::fs::write(&path, text).unwrap();
+            let mut layer = Layer::new(1, Dataset::new("sites", rustgis_data::GeometryType::Point, Vec::new()));
+            let mut source = rustgis_map::source::SourceLayer::default();
+            source.path = Some(path.display().to_string());
+            layer.source = Some(source);
+            let (dataset, unread) = Whole::of(&layer).read().unwrap();
+            assert_eq!(dataset.features.len(), 1);
+            assert_eq!(dataset.zm_dropped, lossy);
+            assert!(layer.source.as_ref().unwrap().info().is_none(), "the live source remains unopened");
+            assert_eq!(unread.lines().iter().filter(|n| n.contains("Z or M")).count(), usize::from(lossy));
+            let mut session = Session::new(crate::Project::new("notices"));
+            unread.say(&mut session);
+            assert_eq!(session.notices.len(), usize::from(lossy));
+            let (_, lost) = layer.load_all_counted().unwrap();
+            let export = super::super::share::read_notes("out.kml", &layer.name, &lost);
+            assert_eq!(export.len(), usize::from(lossy));
+            assert!(export.iter().all(|n| n.starts_with("out.kml: ")));
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+
+    /// Commands and tools keep non-date diagnostics alongside the existing specialized dates.
+    #[test]
+    fn whole_read_messages_reach_both_session_and_tool_consumers_once() {
+        let unread = Unread::of(
+            "sites".into(),
+            Unreadable {
+                dates: Some("1 value isn't a date and was read as empty, in 'day'".into()),
+                messages: vec!["source: conversion left out 2 source features".into()],
+                ..Default::default()
+            },
+        );
+        let mut session = Session::new(crate::Project::new("notices"));
+        unread.say(&mut session);
+        assert_eq!(session.notices.iter().map(|n| &n.text).collect::<Vec<_>>(), unread.lines().iter().collect::<Vec<_>>());
+        assert_eq!(session.notices.len(), 2);
+        assert_eq!(unread.lines().iter().filter(|n| n.contains("conversion left out 2")).count(), 1);
+        assert!(Unread::of("clean".into(), Unreadable::default()).lines().is_empty());
+    }
+
+    /// A fresh counted Z/M report replaces the export's generic loss notice, while a resident
+    /// layer that lost its heights earlier still needs that generic export warning.
+    #[test]
+    fn whole_exports_report_dimension_loss_once_and_keep_resident_warnings() {
+        let root = std::env::temp_dir().join(format!("rustgis-whole-export-notices-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        for (tag, coordinates, old_loss, expected) in [
+            ("3d", Some(serde_json::json!([1, 2, 3])), false, 1),
+            ("xy", Some(serde_json::json!([1, 2])), false, 0),
+            ("resident", None, true, 1),
+        ] {
+            let mut ds = Dataset::new("sites", rustgis_data::GeometryType::Point, Vec::new());
+            ds.push(Some(rustgis_data::Geometry::Point(rustgis_geom::Coord::new(1.0, 2.0))), Vec::new());
+            ds.zm_dropped = old_loss;
+            let mut layer = Layer::new(1, ds);
+            if let Some(coordinates) = coordinates {
+                let input = root.join(format!("{tag}.geojson"));
+                let text = serde_json::json!({"type":"FeatureCollection","features":[{
+                    "type":"Feature","properties":{},"geometry":{"type":"Point","coordinates":coordinates}
+                }]})
+                .to_string();
+                std::fs::write(&input, text).unwrap();
+                let mut source = rustgis_map::source::SourceLayer::default();
+                source.path = Some(input.display().to_string());
+                layer.source = Some(source);
+            }
+            let mut session = Session::new(crate::Project::new("notices"));
+            let id = session.map_mut().add_layer(layer);
+            let output = root.join(format!("{tag}.kml"));
+            session.run("share.exportLayer", &serde_json::json!({"layer":id,"path":output})).unwrap();
+            let notes: Vec<_> = session.notices.iter().filter(|n| n.text.contains("Z or M")).collect();
+            assert_eq!(notes.len(), expected, "{tag}: {notes:?}");
+            if tag == "3d" {
+                assert!(notes[0].text.contains("1 feature had Z or M"), "the counted reader report survives");
+            } else if old_loss {
+                assert!(notes[0].text.contains("its geometry has no Z or M"), "the older loss is still reported");
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }
