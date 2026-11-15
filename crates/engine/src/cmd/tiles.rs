@@ -63,6 +63,8 @@ pub const NETWORK: &[&str] = &[
     "arcgis.signIn",
     "arcgis.signOut",
     "arcgis.token",
+    // A sign-in reaches Copernicus Data Space's sign-in host.
+    "copernicus.login",
 ];
 
 /// Registers commands for tile-layer sources, drawing properties, coverage and celestial bodies.

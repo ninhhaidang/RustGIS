@@ -3409,6 +3409,15 @@ mod native {
                 {
                     req = req.header("Authorization", &auth);
                 }
+                // A Copernicus Data Space sign-in's token goes to its data hosts only, asked for at
+                // each hop like Earthdata's (and renewed first when it is about to expire). A hop
+                // carrying it makes a refusal status-only: a server may echo the token back.
+                if !prepared.signed
+                    && let Some(auth) = crate::copernicus::authorization_fresh(&at)
+                {
+                    carried_login = true;
+                    req = req.header("Authorization", &auth);
+                }
                 // An ArcGIS sign-in's token goes to the portal and the servers it covers, asked for at
                 // each hop like Earthdata's.
                 if !prepared.signed
@@ -3431,6 +3440,9 @@ mod native {
                 // A data host refusing the request (or the token): say what to do.
                 if status == 401 && crate::earthdata::is_data_host(&at) {
                     return Err(Failure::without_answer("", crate::earthdata::refused_message(url), Reason::Status(status)));
+                }
+                if status == 401 && crate::copernicus::is_data_host(&at) {
+                    return Err(Failure::without_answer("", crate::copernicus::refused_message(url), Reason::Status(status)));
                 }
                 // A store that serves ranges but not the last bytes by their count (GitHub's release
                 // files, on Azure storage, answer `bytes=-n` with 501): the file's length from a
@@ -4928,6 +4940,80 @@ mod tests {
         assert!(logins::apply(&target).is_err());
         assert!(prepare_get(&plain).unwrap().signed);
         assert!(s3::disconnect(name));
+    }
+
+    /// A Copernicus Data Space token, from a fake Keycloak, read by fake data hosts on this
+    /// computer: refused without it, a range read with it, and never past a redirect elsewhere.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_copernicus_token_goes_to_its_data_hosts_only_and_never_past_a_redirect() {
+        let _turn = crate::cache::turn();
+        use crate::copernicus;
+        copernicus::logout();
+        let grant = r#"{"access_token":"synthetic-cdse-access","expires_in":1800,"refresh_expires_in":3600,"refresh_token":"synthetic-cdse-refresh"}"#;
+        let keycloak = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{grant}",
+            grant.len()
+        );
+        let (identity, _) = serve_recorded(vec![keycloak.into_bytes()]);
+        let (elsewhere, elsewhere_asked) =
+            serve_recorded(vec![b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nelse".to_vec()]);
+        let refused = br#"{"code":"DAT-ZIP-604","message":"Token not found"}"#;
+        let mut unauthorized = format!(
+            "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            refused.len()
+        )
+        .into_bytes();
+        unauthorized.extend_from_slice(refused);
+        let partial =
+            b"HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-3/100\r\nContent-Length: 4\r\nConnection: close\r\n\r\nII*\0".to_vec();
+        let away =
+            format!("HTTP/1.1 302 Found\r\nLocation: {elsewhere}/copy.tif\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").into_bytes();
+        // A refusal that echoes the token back, in a header and in its body.
+        let echoed = "echo synthetic-cdse-access";
+        let forbidden = format!(
+            "HTTP/1.1 403 Forbidden
+x-request-id: synthetic-cdse-access
+Content-Length: {}
+Connection: close
+
+{echoed}",
+            echoed.len()
+        )
+        .into_bytes();
+        let (data, data_asked) = serve_recorded(vec![unauthorized, partial, away, forbidden]);
+        copernicus::TEST_HOSTS.lock().unwrap_or_else(|e| e.into_inner()).push(data.clone());
+        let agent = native::agent();
+        let file = format!("{data}/odata/v1/Products(abc)/Nodes(p)/Nodes(f.tif)/$value");
+
+        // Without a sign-in: the 401 says what to do.
+        let e = native::get(&agent, &format!("{file}{RANGE}0-3"), &[]).unwrap_err();
+        assert!(e.contains("f.tif: Copernicus Data Space asks for a sign-in") && e.contains("copernicus.login"), "{e}");
+        let asked = data_asked.recv_timeout(Duration::from_secs(5)).unwrap().to_ascii_lowercase();
+        assert!(!asked.contains("authorization:"), "{asked}");
+
+        // Signed in: the range is read with the token.
+        copernicus::login_at(&identity, "synthetic.user@example.invalid", "synthetic-password", None).unwrap();
+        assert_eq!(native::get(&agent, &format!("{file}{RANGE}0-3"), &[]).unwrap(), b"II*\0");
+        let asked = data_asked.recv_timeout(Duration::from_secs(5)).unwrap().to_ascii_lowercase();
+        assert!(asked.contains("authorization: bearer synthetic-cdse-access\r\n"), "{asked}");
+        assert!(asked.contains("range: bytes=0-3\r\n"), "{asked}");
+
+        // A redirect off the data hosts goes without it.
+        assert_eq!(native::get(&agent, &format!("{data}/away"), &[]).unwrap(), b"else");
+        let asked = data_asked.recv_timeout(Duration::from_secs(5)).unwrap().to_ascii_lowercase();
+        assert!(asked.contains("authorization: bearer synthetic-cdse-access\r\n"), "{asked}");
+        let followed = elsewhere_asked.recv_timeout(Duration::from_secs(5)).unwrap().to_ascii_lowercase();
+        assert!(followed.starts_with("get /copy.tif http/1.1\r\n"), "{followed}");
+        assert!(!followed.contains("authorization") && !followed.contains("synthetic-cdse"), "{followed}");
+
+        // A detailed download's refusal keeps no header or body from a hop that carried the token.
+        let failure = native::get_detailed(&agent, &format!("{data}/echo")).unwrap_err();
+        assert!(failure.answer.is_none(), "{failure:?}");
+        assert!(!format!("{failure:?}").contains("synthetic-cdse"), "{failure:?}");
+
+        copernicus::TEST_HOSTS.lock().unwrap_or_else(|e| e.into_inner()).retain(|h| *h != data);
+        copernicus::logout();
     }
 
     #[cfg(not(target_arch = "wasm32"))]

@@ -23,6 +23,8 @@ fn permission_review_authentication_changes_are_reserved() {
         ("arcgis.token", json!({"url":"https://auth-review.example.invalid/arcgis/rest/services","token":"RGSYNTH_review_auth"})),
         ("arcgis.signOut", json!({})),
         ("arcgis.cancelSignIn", json!({})),
+        ("copernicus.login", json!({"username":"review@example.invalid","password":"RGSYNTH_review_auth"})),
+        ("copernicus.logout", json!({})),
     ] {
         let call = Call::command(id, params);
         assert!(matches!(s.review(&agent(AgentAccess::Allow), &call), Outcome::Refused(_)), "{id} is reserved even with external access");

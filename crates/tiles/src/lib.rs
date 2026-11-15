@@ -12,6 +12,7 @@ pub mod arcgis_auth;
 pub mod boundaries;
 pub mod cache;
 pub mod cog;
+pub mod copernicus;
 pub mod cubes;
 mod dem;
 pub mod draw;

@@ -1017,3 +1017,31 @@ fn supplied_service_documents_are_preserved_with_counted_unchecked_notices() {
         }
     }
 }
+
+/// A Copernicus Data Space sign-in's password and one-time code are emptied wherever its
+/// parameters are kept, and a refused one never quotes them. Nothing here reaches the network:
+/// the sign-in is refused before any request.
+#[test]
+fn copernicus_sign_in_secrets_stay_out_of_history_and_errors() {
+    let params = json!({"username": "reader@example.invalid", "password": SECRET, "totp": "246810"});
+    let kept = serde_json::to_string(&crate::cmd::history::redacted(&params)).unwrap();
+    assert!(!kept.contains(SECRET) && !kept.contains("246810"), "{kept}");
+    assert!(kept.contains("reader@example.invalid"), "{kept}");
+    let mut s = world();
+    for refused in [
+        json!({"username": "reader@example.invalid"}),
+        json!({"username": "reader@example.invalid", "password": 7}),
+        json!({"password": SECRET}),
+        json!({"username": "reader@example.invalid", "password": SECRET, "totp": "12ab"}),
+        json!({"username": "reader@example.invalid", "password": format!("{SECRET}\n")}),
+    ] {
+        let e = s.run("copernicus.login", &refused).unwrap_err();
+        assert!(!e.contains(SECRET) && !e.contains("12ab"), "{e}");
+    }
+    // A one-time code given as a number (its leading zeros lost) is refused, not dropped.
+    let e = s.run("copernicus.login", &json!({"username": "reader@example.invalid", "password": SECRET, "totp": 246810})).unwrap_err();
+    assert!(e.contains("totp is text") && !e.contains(SECRET) && !e.contains("246810"), "{e}");
+    let status = s.run("copernicus.status", &Value::Null).unwrap();
+    assert_eq!(status, json!({"signedIn": false, "expired": false}));
+    assert_eq!(s.run("copernicus.logout", &Value::Null).unwrap(), status);
+}

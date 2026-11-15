@@ -5051,6 +5051,9 @@ fn hostile_params_never_panic(shard: usize) {
         json!({"id": "c1", "remember": true, "source": "rustgis-s3:junk", "node": 5}),
         json!({"source": "rustgis-s3::0::s3://bucket/key", "id": "c1", "remember": {"a": 1}}),
         json!({"source": 7, "id": ["c1"]}),
+        // A sign-in past its username: a password of the wrong type is refused before any request.
+        json!({"username": "junk@example.invalid", "password": 7, "totp": []}),
+        json!({"username": "junk@example.invalid", "password": "", "totp": "x"}),
     ];
     let ids: Vec<&str> = Session::new(Project::default())
         .registry

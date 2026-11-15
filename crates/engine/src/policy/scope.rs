@@ -9,6 +9,7 @@ use std::sync::Arc;
 pub(super) struct RuntimeAccounts {
     arcgis: crate::render::rustgis_tiles::arcgis_auth::AccountIdentity,
     earthdata: crate::render::rustgis_tiles::earthdata::AccountIdentity,
+    copernicus: crate::render::rustgis_tiles::copernicus::AccountIdentity,
     web: crate::render::rustgis_tiles::logins::AccountIdentity,
 }
 impl RuntimeAccounts {
@@ -17,16 +18,17 @@ impl RuntimeAccounts {
         Ok(Self {
             arcgis: crate::render::rustgis_tiles::arcgis_auth::account_identity()?,
             earthdata: crate::render::rustgis_tiles::earthdata::account_identity()?,
+            copernicus: crate::render::rustgis_tiles::copernicus::account_identity()?,
             web: crate::render::rustgis_tiles::logins::account_identity(s.web_logins.session_id())?,
         })
     }
     /// A rotation/replacement, including renewal, invalidates old consent and held sends.
     pub(super) fn is_current(&self) -> bool {
-        self.arcgis.is_current() && self.earthdata.is_current() && self.web.is_current()
+        self.arcgis.is_current() && self.earthdata.is_current() && self.copernicus.is_current() && self.web.is_current()
     }
     /// Whether the only account that changed is Earthdata's, by its remembered token being read.
     pub(super) fn restored_since(&self) -> bool {
-        self.arcgis.is_current() && self.web.is_current() && self.earthdata.restored_since()
+        self.arcgis.is_current() && self.copernicus.is_current() && self.web.is_current() && self.earthdata.restored_since()
     }
 }
 
