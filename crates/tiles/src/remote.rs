@@ -11,7 +11,7 @@ pub fn install() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         remote::set_fetcher(|url, want, done| {
-            if let Err(e) = crate::address::check(url, None) {
+            if let Err(e) = crate::address::check_reach(url, crate::cache::ceiling_for(url)) {
                 done(Err(Failed::Other(e)));
                 return;
             }

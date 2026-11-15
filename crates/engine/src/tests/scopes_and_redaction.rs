@@ -734,3 +734,15 @@ fn outputs_redact_urls_capabilities_and_local_paths_across_scopes() {
 
     rustgis_plugins::unload("plug");
 }
+
+#[test]
+fn an_agent_url_request_cannot_clear_a_document_restriction() {
+    use crate::render::rustgis_tiles::{address::Reach, cache};
+    let url = "http://127.0.0.1:1/restricted-agent-url.geojson";
+    cache::restrict_to_public(url);
+    let mut s = world();
+    let scope = agent_scope(AgentAccess::Full, "restricted-url");
+    let call = Call::command("layer.addUrl", json!({"url": url, "fromDocument": false}));
+    assert!(s.run_scoped(scope, &call).is_err());
+    assert_eq!(cache::ceiling_for(url), Reach::Public);
+}

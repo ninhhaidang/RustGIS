@@ -57,9 +57,154 @@ pub fn parse(v: &Value) -> Option<Msg> {
     }
 }
 
-/// Whether the embedding page may run `command`: the interface's own commands only.
+/// Interface commands an embedding page may run: panes, tabs, the ribbon, look and language,
+/// units, and harmless view or chrome toggles. Appearance and unit commands here update only the
+/// embedded visit's in-memory interface state ([`pref_pair`] makes `save_pref` a no-op and
+/// `load_pref` empty when `embedded`, so `localStorage` on the RustGIS origin is never read or
+/// written). Commands that fetch web addresses, open or export files, print, open pages, touch the
+/// clipboard, record tasks or recover autosaves stay out.
+const UI_EMBED: &[&str] = &[
+    "ui.about",
+    "ui.animationPlay",
+    "ui.backstage",
+    "ui.catalogView",
+    "ui.commandSearch",
+    "ui.coordinateFormat",
+    "ui.gp.open",
+    "ui.identify",
+    "ui.itemPopups",
+    "ui.language",
+    "ui.layoutSelect",
+    "ui.layoutTool",
+    "ui.linkCursors",
+    "ui.magnifier",
+    "ui.map.gpu",
+    "ui.measurementUnits",
+    "ui.moveSharedVertices",
+    "ui.pane.bookmarks",
+    "ui.pane.catalog",
+    "ui.pane.contents",
+    "ui.pane.design",
+    "ui.pane.details",
+    "ui.pane.diagnosticLog",
+    "ui.pane.diagnostics",
+    "ui.pane.editing",
+    "ui.pane.format",
+    "ui.pane.geoprocessing",
+    "ui.pane.history",
+    "ui.pane.infographics",
+    "ui.pane.jobs",
+    "ui.pane.labeling",
+    "ui.pane.layerProperties",
+    "ui.pane.notebook",
+    "ui.pane.presentation",
+    "ui.pane.profile",
+    "ui.pane.report",
+    "ui.pane.sources",
+    "ui.pane.symbology",
+    "ui.pane.tasks",
+    "ui.pane.timeSeries",
+    "ui.pane.workflows",
+    "ui.paneSet",
+    "ui.ribbon",
+    "ui.scale",
+    "ui.shortcuts",
+    "ui.splitView",
+    "ui.tab",
+    "ui.theme",
+    "ui.themeFile",
+    "ui.timePlay",
+    "ui.timeSlider",
+    "ui.traceEdges",
+];
+
+/// Whether the embedding page may run `command`: safe interface commands only.
 pub fn runnable(command: &str) -> bool {
-    command.strip_prefix("ui.").is_some_and(|rest| !rest.is_empty())
+    UI_EMBED.contains(&command)
+}
+
+/// Whether startup query links (`?project=`, `?data=`, `?stac=`, `?style=`, `?tiles=`, `?zarr=`,
+/// `?registry=`) run on page load: never in `?embed`, which starts blank and receives its
+/// project through `postMessage`.
+pub const fn startup_links_allowed(embedded: bool) -> bool {
+    !embedded
+}
+
+const STARTUP_LINK_KEYS: [&str; 7] = ["project", "data", "stac", "style", "tiles", "zarr", "registry"];
+
+fn decode_query_value(raw: &str, plus_as_space: bool) -> Option<String> {
+    let bytes = raw.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes.get(i).copied()? {
+            b'+' if plus_as_space => {
+                out.push(b' ');
+                i += 1;
+            }
+            b'%' => {
+                let hi = char::from(*bytes.get(i + 1)?).to_digit(16)?;
+                let lo = char::from(*bytes.get(i + 2)?).to_digit(16)?;
+                out.push(((hi << 4) | lo) as u8);
+                i += 3;
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+/// Counts startup address query parameters skipped when `?embed` disables startup links.
+pub fn skipped_startup_links(query: &str, embedded: bool) -> Vec<(&'static str, usize)> {
+    if startup_links_allowed(embedded) {
+        return Vec::new();
+    }
+    let trimmed = query.trim_start_matches('?');
+    let mut skipped = Vec::new();
+    for key in STARTUP_LINK_KEYS {
+        let plus_as_space = matches!(key, "project" | "registry");
+        let count = trimmed
+            .split('&')
+            .filter_map(|kv| kv.strip_prefix(key)?.strip_prefix('='))
+            .filter(|raw| !raw.trim().is_empty())
+            // A value that doesn't decode (a bad `%` escape) is still a link left out: only blank text isn't.
+            .filter(|raw| decode_query_value(raw, plus_as_space).is_none_or(|v| !v.trim().is_empty()))
+            .count();
+        if count > 0 {
+            skipped.push((key, count));
+        }
+    }
+    skipped
+}
+
+/// Reports each kind of startup link skipped in `?embed`, one notice per parameter kind with count.
+pub fn notify_skipped_startup_links(session: &mut rustgis_ui_egui::rustgis_engine::Session, query: &str, embedded: bool) {
+    for (kind, count) in skipped_startup_links(query, embedded) {
+        session.notify(
+            rustgis_ui_egui::i18n::fmt(
+                "?embed receives its project from the host page, so {count} {param} link(s) were left out",
+                &[("count", &count.to_string()), ("param", &format!("?{kind}="))],
+            ),
+            false,
+        );
+    }
+}
+
+pub type PrefLoad = Box<dyn Fn(&str) -> Option<String>>;
+pub type PrefSave = Box<dyn Fn(&str, &str)>;
+
+/// Builds the `(load_pref, save_pref)` pair for `Services`: in `?embed`, neither callback reads or
+/// writes persistent browser storage, so `UI_EMBED` appearance and unit commands affect only the
+/// embedded session in memory.
+pub fn pref_pair(
+    embedded: bool,
+    load_persistent: impl Fn(&str) -> Option<String> + 'static,
+    save_persistent: impl Fn(&str, &str) + 'static,
+) -> (PrefLoad, PrefSave) {
+    if embedded { (Box::new(|_| None), Box::new(|_, _| {})) } else { (Box::new(load_persistent), Box::new(save_persistent)) }
 }
 
 pub fn ready() -> Value {
@@ -154,11 +299,92 @@ mod tests {
     }
 
     #[test]
-    fn the_page_runs_only_interface_commands() {
-        assert!(runnable("ui.language"));
-        for other in ["ui.", "layer.addData", "project.open", "share.exportMap", "gp.run", "uix.language", ""] {
-            assert!(!runnable(other), "{other}");
+    fn the_page_runs_only_safe_interface_commands() {
+        for safe in [
+            "ui.language",
+            "ui.theme",
+            "ui.themeFile",
+            "ui.scale",
+            "ui.ribbon",
+            "ui.tab",
+            "ui.backstage",
+            "ui.pane.contents",
+            "ui.pane.symbology",
+            "ui.pane.geoprocessing",
+            "ui.map.gpu",
+            "ui.coordinateFormat",
+            "ui.measurementUnits",
+            "ui.timeSlider",
+            "ui.magnifier",
+            "ui.identify",
+        ] {
+            assert!(runnable(safe), "{safe}");
         }
+        for blocked in [
+            "ui.",
+            "ui.addUrl",
+            "ui.openUrl",
+            "ui.stacLink",
+            "ui.stac",
+            "ui.stac.sentinel2",
+            "ui.addZarr",
+            "ui.plugins",
+            "ui.extensions",
+            "ui.installPlugin",
+            "ui.searchOpenData",
+            "ui.connection",
+            "ui.s3Connections",
+            "ui.importService",
+            "ui.refreshService",
+            "ui.addService",
+            "ui.exportMap",
+            "ui.exportLayer",
+            "ui.exportRaster",
+            "ui.exportLayout",
+            "ui.exportReport",
+            "ui.exportPresentation",
+            "ui.exportAnimation",
+            "ui.timeExport",
+            "ui.printMap",
+            "ui.printLayout",
+            "ui.save",
+            "ui.saveAs",
+            "ui.saveLayout",
+            "ui.saveItem",
+            "ui.share",
+            "ui.open",
+            "ui.openItem",
+            "ui.addFile",
+            "ui.addData",
+            "ui.learn",
+            "ui.copy",
+            "ui.cut",
+            "ui.copyPath",
+            "ui.captureMap",
+            "ui.captureLayout",
+            "ui.taskRecord",
+            "ui.recover",
+            "ui.autosave",
+            "ui.startup",
+            "ui.mcpRelay",
+            "ui.dialog",
+            "ui.pane.assistant",
+            "ui.pane.directions",
+            "ui.pane.sql",
+            "ui.pane.webData",
+            "ui.pane.plugin",
+            "ui.pluginForm",
+            "layer.addData",
+            "project.open",
+            "share.exportMap",
+            "gp.run",
+            "uix.language",
+            "",
+        ] {
+            assert!(!runnable(blocked), "{blocked}");
+        }
+        assert!(startup_links_allowed(false));
+        assert!(!startup_links_allowed(true));
     }
 
     #[test]
@@ -180,5 +406,83 @@ mod tests {
         // A change undone before it settles posts nothing.
         assert_eq!(c.due(k(5), t), (false, Some(SETTLE)));
         assert_eq!(c.due(k(4), t + SETTLE), (false, None));
+    }
+
+    #[test]
+    fn embedded_startup_reports_skipped_query_links_with_counts_and_stays_quiet_when_clean() {
+        use rustgis_ui_egui::rustgis_engine::{Project, Session};
+        let mut clean = Session::new(Project::default());
+        let mark = clean.notice_mark();
+        notify_skipped_startup_links(&mut clean, "?embed&lang=de&extent=-10,35,20,60", true);
+        assert!(clean.notices_since(mark).is_empty(), "non-link query parameters in ?embed emit no skipped-link notice");
+
+        let mut standalone = Session::new(Project::default());
+        let mark = standalone.notice_mark();
+        notify_skipped_startup_links(&mut standalone, "?data=https%3A%2F%2Fexample.com%2Fa.geojson", false);
+        assert!(standalone.notices_since(mark).is_empty(), "standalone visits run startup links instead of skipping them");
+
+        let mut skipped = Session::new(Project::default());
+        let mark = skipped.notice_mark();
+        notify_skipped_startup_links(
+            &mut skipped,
+            "?embed&project=https%3A%2F%2Fexample.com%2Fp.rgis&data=https%3A%2F%2Fexample.com%2Fa.geojson&data=https%3A%2F%2Fexample.com%2Fb.geojson&registry=https%3A%2F%2Fexample.com%2Freg.json&stac=",
+            true,
+        );
+        let notices: Vec<String> = skipped.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+        assert_eq!(notices.len(), 3, "{notices:?}");
+        assert!(notices[0].contains("1 ?project="), "{notices:?}");
+        assert!(notices[1].contains("2 ?data="), "{notices:?}");
+        assert!(notices[2].contains("1 ?registry="), "{notices:?}");
+
+        // A value that doesn't decode is still a link left out, so it is counted.
+        let mut undecodable = Session::new(Project::default());
+        let mark = undecodable.notice_mark();
+        notify_skipped_startup_links(&mut undecodable, "?embed&data=%zz", true);
+        let notices: Vec<String> = undecodable.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+        assert_eq!(notices.len(), 1, "{notices:?}");
+        assert!(notices[0].contains("1 ?data="), "{notices:?}");
+    }
+
+    #[test]
+    fn embedded_preferences_stay_in_memory_without_reading_or_writing_storage() {
+        use std::sync::{Arc, Mutex};
+
+        let reads = Arc::new(Mutex::new(Vec::<String>::new()));
+        let writes = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
+        let r_log = reads.clone();
+        let w_log = writes.clone();
+        let (load_pref, save_pref) = pref_pair(
+            true,
+            move |k| {
+                r_log.lock().unwrap().push(k.to_string());
+                Some("dark".into())
+            },
+            move |k, v| {
+                w_log.lock().unwrap().push((k.to_string(), v.to_string()));
+            },
+        );
+        let services = rustgis_ui_egui::Services { load_pref: Some(load_pref), save_pref: Some(save_pref), ..Default::default() };
+        let mut app = rustgis_ui_egui::RustGisApp::with_sample().with_services(services);
+        app.embedded = true;
+
+        for (cmd, params) in [
+            ("ui.theme", json!({"dark": true})),
+            ("ui.themeFile", json!({})),
+            ("ui.language", json!({"code": "de"})),
+            ("ui.scale", json!({"factor": 1.25})),
+            ("ui.ribbon", json!({"minimized": true})),
+            ("ui.measurementUnits", json!({"units": "imperial"})),
+            ("ui.coordinateFormat", json!({"format": "dms"})),
+            ("ui.map.gpu", json!({"on": true})),
+        ] {
+            assert!(runnable(cmd), "{cmd}");
+            app.run(cmd, params).unwrap_or_else(|e| panic!("{cmd} failed: {e}"));
+        }
+
+        assert_eq!(app.ui.language, "de");
+        assert!(app.ui.ribbon_minimized);
+        assert!(app.ui.measurement_imperial);
+        assert!(reads.lock().unwrap().is_empty(), "embedded mode must not read saved storage preferences");
+        assert!(writes.lock().unwrap().is_empty(), "embedded mode must not write saved storage preferences");
     }
 }

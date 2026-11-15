@@ -555,7 +555,11 @@ pub(crate) fn download_layer(s: &mut Session, name: &str, url: &str, max: usize,
             }
             // A description has a small budget of its own.
             let budget = if describing { left.min(DESCRIPTION_MAX) } else { left };
-            let page = cache::download_blocking_within(pages.next_url(), budget, wait)?;
+            let page = if address::reach(pages.referrer()) == address::Reach::Public {
+                cache::download_public_omitting_within(pages.next_url(), budget, wait, &[])?
+            } else {
+                cache::download_blocking_within(pages.next_url(), budget, wait)?
+            };
             if page.len() > left {
                 return Err("the pages are larger than RustGIS downloads".into());
             }

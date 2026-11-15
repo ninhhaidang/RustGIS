@@ -48574,6 +48574,20 @@ fn a_command_says_once_that_it_couldnt_zoom() {
     assert_eq!(s.map().camera.center, view.center);
 }
 
+/// A request from a page on the user's own machine (an origin that isn't public) leaves a
+/// document's restriction on its URL in place; only a request the user named directly clears it.
+/// The UI's add goes through the same helper, so it can't lift the restriction either.
+#[test]
+fn a_local_request_with_an_origin_keeps_a_document_restriction() {
+    use crate::render::rustgis_tiles::{address::Reach, cache};
+    let url = "https://restriction-keep.example/scene.tif";
+    cache::restrict_to_public(url);
+    crate::cmd::layer::mark_url_reach(url, Some("http://localhost:8080/"), false);
+    assert_eq!(cache::ceiling_for(url), Reach::Public);
+    crate::cmd::layer::mark_url_reach(url, None, false);
+    assert_eq!(cache::ceiling_for(url), Reach::Local);
+}
+
 /// A save never writes a file it couldn't open again (#1985): a feature with a coordinate that
 /// isn't a number would be held as null, so saving the project, packaging it and packaging the
 /// map are refused, saying where, and the files already there are kept as they were. With the

@@ -60,6 +60,24 @@ impl Origin {
         Ok(self)
     }
 
+    /// Final fetched address after redirects (retaining only verified login bindings).
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+
+    /// Observed network reach across all hops of this fetch.
+    pub fn reach(&self) -> Reach {
+        self.reach
+    }
+
+    /// Narrows the observed reach to `ceiling`, never widening a forbidden or public origin.
+    pub fn narrow_reach(mut self, ceiling: Reach) -> Self {
+        if self.reach != Reach::Forbidden {
+            self.reach = self.reach.min(ceiling);
+        }
+        self
+    }
+
     /// Checks a descendant without replacing the document's observed reach with host spelling.
     pub(crate) fn check(&self, url: &str) -> Result<(), String> {
         // Expansion can introduce a selector that was hidden from document joining.

@@ -11,6 +11,7 @@
 
 use egui::vec2;
 use rustgis_engine::render::rustgis_tiles::{
+    address::{self, Origin, Reach},
     cache,
     stac::{
         self, Item,
@@ -24,7 +25,8 @@ use rustgis_engine::cmd::stac_area::{Loaded, Prepared};
 use rustgis_engine::data::Geometry;
 use rustgis_engine::geom::Coord;
 
-type Answer = Slot<Result<Vec<u8>, String>>;
+type Answer = Slot<Result<cache::Fetched, String>>;
+type BytesAnswer = Slot<Result<Vec<u8>, String>>;
 
 /// What is being fetched.
 enum Asked {
@@ -34,9 +36,10 @@ enum Asked {
     /// search as a GET in the address when it went as a POST and fits in one: asked if the server
     /// refuses the POST.
     Search(String, Option<String>),
-    /// A token for an asset that needs signing: the token service's address, the asset's and the
-    /// layer's name and saved connection, captured when Add was requested.
-    Token { token_url: String, href: String, name: String, connection: Option<String> },
+    /// A token for an asset that needs signing: the token service's address, the asset's, the
+    /// layer's name, saved connection, supplying document origin and reach, captured when Add was
+    /// requested.
+    Token { token_url: String, href: String, name: String, connection: Option<String>, from: String, public: bool },
     /// An item's or a collection's document (a `?stac=` link), by its address.
     Link(String),
     /// A static catalog's document, for its children, by its address.
@@ -174,6 +177,8 @@ pub struct State {
     pub node: String,
     pub node_title: String,
     pub trail: Vec<(String, String)>,
+    node_reach: Option<Reach>,
+    trail_reach: Vec<Option<Reach>>,
     pub children: Vec<Child>,
     /// `pre`, `post` or empty: an event's imagery before or after it.
     pub phase: String,
@@ -253,6 +258,8 @@ impl Default for State {
             node: String::new(),
             node_title: String::new(),
             trail: Vec::new(),
+            node_reach: None,
+            trail_reach: Vec::new(),
             children: Vec::new(),
             phase: String::new(),
             walk: None,
@@ -274,19 +281,25 @@ impl Default for State {
     }
 }
 
-fn fetch(url: &str) -> Answer {
+fn fetch(url: &str, from_document: bool) -> Answer {
     let slot: Answer = Slot::default();
     let land = slot.clone();
-    cache::download(url, Box::new(move |r| *land.lock().unwrap_or_else(|e| e.into_inner()) = Some(r)));
+    let done = Box::new(move |r| *land.lock().unwrap_or_else(|e| e.into_inner()) = Some(r));
+    if from_document {
+        cache::download_public_with_origin(url, done);
+    } else {
+        cache::download_with_origin(url, done);
+    }
     slot
 }
 
 /// Reads with the selected API's login only; a catalog's foreign links stay anonymous.
-fn fetch_service(app: &mut RustGisApp, url: &str) -> Answer {
+fn fetch_service(app: &mut RustGisApp, url: &str, from_document: bool) -> Answer {
+    let from_document = from_document || app.ui.stac.api_from_document;
     let connection = selected_connection(app);
     let base = app.ui.stac.api.clone();
     match crate::serviceui::request_from(app, connection.as_deref(), &base, url) {
-        Ok(url) => fetch(&url),
+        Ok(url) => fetch(&url, from_document),
         Err(e) => Slot::new(std::sync::Mutex::new(Some(Err(crate::connectionui::translated(&e))))),
     }
 }
@@ -299,14 +312,11 @@ fn post_service(app: &mut RustGisApp, url: &str, body: String) -> Answer {
         Ok(url) => {
             let slot: Answer = Slot::default();
             let land = slot.clone();
-            let done = Box::new(move |r| *land.lock().unwrap_or_else(|e| e.into_inner()) = Some(r));
-            // The API the user typed or picked may be on their own network; one that a document
-            // named (an opened item's or collection's root link) is internet only.
-            if app.ui.stac.api_from_document {
-                cache::post_json(&url, body, done);
-            } else {
-                cache::post_json_named(&url, body, done);
-            }
+            let public = app.ui.stac.api_from_document;
+            let done = Box::new(move |r| {
+                *land.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
+            });
+            cache::post_json_with_origin(&url, body, public, done);
             slot
         }
         Err(e) => Slot::new(std::sync::Mutex::new(Some(Err(crate::connectionui::translated(&e))))),
@@ -315,7 +325,7 @@ fn post_service(app: &mut RustGisApp, url: &str, body: String) -> Answer {
 
 /// An item's preview picture: being fetched, shown, or not to be had.
 enum Thumb {
-    Loading(Answer),
+    Loading(BytesAnswer),
     Ready(egui::TextureHandle),
     Failed,
 }
@@ -375,12 +385,7 @@ fn want_thumbs(app: &mut RustGisApp) {
         if st.thumbs.contains_key(&a.href) {
             continue;
         }
-        let ok = !stac::needs_signing(&a.href)
-            && rustgis_engine::render::rustgis_tiles::address::check(
-                &a.href,
-                Some(item.origin.as_deref().unwrap_or("https://item.invalid/")),
-            )
-            .is_ok();
+        let ok = !stac::needs_signing(&a.href) && item.check_href(&a.href).is_ok();
         let address = if ok {
             use rustgis_engine::render::rustgis_tiles::logins;
             if logins::origin(&base).is_some_and(|origin| logins::origin(&a.href).as_deref() == Some(origin.as_str())) {
@@ -391,10 +396,16 @@ fn want_thumbs(app: &mut RustGisApp) {
         } else {
             None
         };
+        let public = item.origin_reach == Reach::Public;
         let picture = address.map(|address| {
-            let slot: Answer = Slot::default();
+            let slot: BytesAnswer = Slot::default();
             let land = slot.clone();
-            cache::download_limited(&address, THUMB_BYTES, Box::new(move |r| *land.lock().unwrap_or_else(|e| e.into_inner()) = Some(r)));
+            let done = Box::new(move |r| *land.lock().unwrap_or_else(|e| e.into_inner()) = Some(r));
+            if public {
+                cache::download_public_limited(&address, THUMB_BYTES, done);
+            } else {
+                cache::download_limited(&address, THUMB_BYTES, done);
+            }
             Thumb::Loading(slot)
         });
         st.thumbs.insert(a.href.clone(), picture.unwrap_or(Thumb::Failed));
@@ -419,7 +430,7 @@ pub fn poll(app: &mut RustGisApp, ctx: &egui::Context) {
         && r.is_err()
     {
         let get = get.clone();
-        let slot = fetch_service(app, &get);
+        let slot = fetch_service(app, &get, false);
         app.ui.stac.waiting = Some((Asked::Search(get, None), slot));
         return;
     }
@@ -427,7 +438,7 @@ pub fn poll(app: &mut RustGisApp, ctx: &egui::Context) {
     st.error = None;
     let previous = st.info.take();
     match asked {
-        Asked::Collections(api) => match r.and_then(|b| stac::parse_collections(&b)) {
+        Asked::Collections(api) => match r.and_then(|f| stac::parse_collections(&f.bytes)) {
             Ok(c) => {
                 st.info = Some(i18n::fmt("{n} collections", &[("n", &c.len().to_string())]));
                 st.collections = c.into_iter().map(|c| (c.id, c.title)).collect();
@@ -435,53 +446,77 @@ pub fn poll(app: &mut RustGisApp, ctx: &egui::Context) {
             }
             Err(e) => st.error = Some(e),
         },
-        Asked::Search(url, _) => match r.and_then(|b| Ok((stac::parse_items(&b, &url)?, stac::parse_matched(&b), stac::has_next(&b)))) {
-            Ok(((items, next), matched, has_next)) => {
-                let n = items.len().to_string();
-                // Logical order until the line is whole: `fmt` puts a finished message in display
-                // form, so it runs once, over the count and the note together.
-                let count = match matched.filter(|m| *m as usize > items.len()) {
-                    Some(m) => {
-                        i18n::fmt_raw("Showing {n} of {m} items (narrow the search for others)", &[("n", &n), ("m", &m.to_string())])
+        Asked::Search(url, _) => {
+            match r.and_then(|f| {
+                let origin = if f.origin.url().is_empty() { Origin::named(&url) } else { f.origin };
+                Ok((
+                    stac::parse_items_from_origin(&f.bytes, &origin)?,
+                    stac::parse_matched(&f.bytes),
+                    stac::has_next(&f.bytes),
+                    stac::next_refused(&f.bytes, &origin),
+                ))
+            }) {
+                Ok(((items, next), matched, has_next, refused)) => {
+                    let n = items.len().to_string();
+                    // Logical order until the line is whole: `fmt` puts a finished message in display
+                    // form, so it runs once, over the count and the note together.
+                    let count = match matched.filter(|m| !refused && *m as usize > items.len()) {
+                        Some(m) => {
+                            i18n::fmt_raw("Showing {n} of {m} items (narrow the search for others)", &[("n", &n), ("m", &m.to_string())])
+                        }
+                        // A POST search's `next` link has no address to give, so `next` is none for it.
+                        None if !refused && (next.is_some() || has_next) => {
+                            i18n::fmt_raw("Showing {n} items (more match: narrow the search)", &[("n", &n)])
+                        }
+                        None => i18n::fmt_raw("Showing {n} items", &[("n", &n)]),
+                    };
+                    // An API that can't sort may ignore the sort instead of refusing it: say so.
+                    // The sort that was sent, not the dropdown's value now.
+                    let asked = st.asked_sort.as_deref();
+                    st.info = Some(match sort_ignored_note(&items, asked).or_else(|| sort_unchecked_note(&items, asked)) {
+                        Some(note) => i18n::fmt("{count}. {note}", &[("count", &count), ("note", &note)]),
+                        None => i18n::fmt("{count}", &[("count", &count)]),
+                    });
+                    if refused {
+                        let note =
+                            tl!("The next page link was refused: it points where this search may not read, so only this page is loaded.");
+                        st.info = Some(i18n::fmt("{count}. {note}", &[("count", st.info.as_deref().unwrap_or(&count)), ("note", note)]));
                     }
-                    // A POST search's `next` link has no address to give, so `next` is none for it.
-                    None if next.is_some() || has_next => i18n::fmt_raw("Showing {n} items (more match: narrow the search)", &[("n", &n)]),
-                    None => i18n::fmt_raw("Showing {n} items", &[("n", &n)]),
-                };
-                // An API that can't sort may ignore the sort instead of refusing it: say so.
-                // The sort that was sent, not the dropdown's value now.
-                let asked = st.asked_sort.as_deref();
-                st.info = Some(match sort_ignored_note(&items, asked).or_else(|| sort_unchecked_note(&items, asked)) {
-                    Some(note) => i18n::fmt("{count}. {note}", &[("count", &count), ("note", &note)]),
-                    None => i18n::fmt("{count}", &[("count", &count)]),
-                });
-                st.details = None;
-                st.counted = true;
-                st.chosen = items.iter().map(|i| i.pick(None).map(|a| a.key.clone()).unwrap_or_default()).collect();
-                st.items = items;
-                st.searched_area = st.asked_area;
-                show_footprints(app);
+                    st.details = None;
+                    st.counted = true;
+                    st.chosen = items.iter().map(|i| i.pick(None).map(|a| a.key.clone()).unwrap_or_default()).collect();
+                    st.items = items;
+                    st.searched_area = st.asked_area;
+                    show_footprints(app);
+                }
+                Err(e) => st.error = Some(e),
             }
-            Err(e) => st.error = Some(e),
-        },
-        Asked::Token { token_url, href, name, connection } => match r.and_then(|b| stac::parse_sas(&b)) {
-            Ok(token) => {
+        }
+        Asked::Token { token_url, href, name, connection, from, public } => {
+            let signed = r.and_then(|f| stac::parse_sas(&f.bytes)).and_then(|token| {
                 stac::remember_token(&token_url, &token);
-                add_url_from(app, &stac::sign(&href, &token), &name, connection.as_deref());
+                let signed = stac::sign(&href, &token);
+                address::check_reach(&signed, rustgis_engine::cmd::layer::origin_ceiling(Some(&from), public))?;
+                Ok(signed)
+            });
+            match signed {
+                Ok(signed) => add_url_from(app, &signed, &name, connection.as_deref(), &from, public),
+                Err(e) => app.ui.stac.error = Some(e),
             }
-            Err(e) => st.error = Some(e),
-        },
+        }
         Asked::Link(url) => landed_link(app, &url, r),
-        Asked::Children(url) => match r.and_then(|b| catalog::parse_children(&b, &url)) {
+        Asked::Children(url) => match r.and_then(|f| Ok((f.origin.reach(), catalog::parse_children_from_origin(&f.bytes, &f.origin)?))) {
             // A search's count (or a walk's progress), landed first, is kept.
-            Ok(c) if st.walk.is_some() || (st.counted && !st.items.is_empty()) => {
+            Ok((reach, c)) if st.walk.is_some() || (st.counted && !st.items.is_empty()) => {
+                st.node_reach = Some(reach);
                 st.info = previous;
                 st.children = c;
                 if url == st.api.trim() {
                     st.listed = url.clone();
                 }
             }
-            Ok(c) => {
+            Ok((reach, c)) => {
+                st.node_reach = Some(reach);
                 st.info = Some(if c.is_empty() {
                     tl!("No catalogs below this one: Find Items lists its items").to_string()
                 } else {
@@ -509,15 +544,22 @@ fn poll_walk(app: &mut RustGisApp, ctx: &egui::Context) {
         let landed = slot.lock().unwrap_or_else(|e| e.into_inner()).take();
         match landed {
             Some(r) => {
-                walk.land(url, r);
+                walk.land_fetched(url, r);
                 fetching.swap_remove(i);
             }
             None => i += 1,
         }
     }
+    let ancestor_public = app.ui.stac.trail_reach.iter().flatten().any(|r| *r == Reach::Public);
     while fetching.len() < catalog::AT_ONCE {
-        let Some(url) = walk.next_url() else { break };
-        let slot = fetch_service(app, &url);
+        let is_root = walk.reads == 0 && fetching.is_empty();
+        let Some((url, parent_public)) = walk.next_request() else { break };
+        let from_document = if is_root {
+            app.ui.stac.api_from_document || ancestor_public
+        } else {
+            app.ui.stac.api_from_document || ancestor_public || walk.root_reach() == Some(Reach::Public) || parent_public
+        };
+        let slot = fetch_service(app, &url, from_document);
         fetching.push((url, slot));
     }
     if !walk.finished() {
@@ -632,27 +674,46 @@ fn days_ago(n: u64) -> String {
 
 /// Adds an asset by its address, signing it first when it needs it (a token in hand is used; one
 /// still to fetch is fetched off the frame, and the asset added when it lands).
-fn add_signed(app: &mut RustGisApp, href: &str, name: &str) {
+fn add_signed(app: &mut RustGisApp, href: &str, name: &str, from: &str, public: bool) {
+    let ceiling = rustgis_engine::cmd::layer::origin_ceiling(Some(from), public);
+    if let Err(e) = address::check_reach(href, ceiling) {
+        app.ui.stac.error = Some(e);
+        return;
+    }
     if !stac::needs_signing(href) {
-        return add_url(app, href, name);
+        return add_url(app, href, name, from, public);
     }
     match stac::sas_token_url(href) {
         Ok(token_url) => match stac::cached_token(&token_url) {
-            Some(token) => add_url(app, &stac::sign(href, &token), name),
+            Some(token) => {
+                let signed = stac::sign(href, &token);
+                if let Err(e) = address::check_reach(&signed, ceiling) {
+                    app.ui.stac.error = Some(e);
+                    return;
+                }
+                add_url(app, &signed, name, from, public);
+            }
             None => {
-                let slot = fetch(&token_url);
+                if let Err(e) = address::check_reach(&token_url, ceiling) {
+                    app.ui.stac.error = Some(e);
+                    return;
+                }
+                let slot = fetch(&token_url, public);
                 app.ui.stac.info = Some(tl!("Signing the asset (Planetary Computer)…").to_string());
                 let connection = selected_connection(app);
-                app.ui.stac.waiting = Some((Asked::Token { token_url, href: href.to_string(), name: name.to_string(), connection }, slot));
+                app.ui.stac.waiting = Some((
+                    Asked::Token { token_url, href: href.to_string(), name: name.to_string(), connection, from: from.to_string(), public },
+                    slot,
+                ));
             }
         },
         Err(e) => app.ui.stac.error = Some(e),
     }
 }
 
-fn add_url(app: &mut RustGisApp, href: &str, name: &str) {
+fn add_url(app: &mut RustGisApp, href: &str, name: &str, from: &str, public: bool) {
     let connection = selected_connection(app);
-    add_url_from(app, href, name, connection.as_deref());
+    add_url_from(app, href, name, connection.as_deref(), from, public);
 }
 
 fn selected_connection(app: &RustGisApp) -> Option<String> {
@@ -660,8 +721,8 @@ fn selected_connection(app: &RustGisApp) -> Option<String> {
         .map(|c| c.id.clone())
 }
 
-fn add_url_from(app: &mut RustGisApp, href: &str, name: &str, connection: Option<&str>) {
-    let mut p = json!({"url": href, "name": name, "zoom": true});
+fn add_url_from(app: &mut RustGisApp, href: &str, name: &str, connection: Option<&str>, from: &str, public: bool) {
+    let mut p = json!({"url": href, "name": name, "zoom": true, "from": from, "fromDocument": public});
     if let Some(connection) = connection {
         p["connection"] = json!(connection);
     }
@@ -670,10 +731,26 @@ fn add_url_from(app: &mut RustGisApp, href: &str, name: &str, connection: Option
     }
 }
 
+/// The web document an item's asset links were read from, taking observed document provenance over
+/// self-reported links.
+fn item_document_origin(app: &RustGisApp, item: &Item) -> String {
+    item.origin
+        .as_deref()
+        .or(item.url.as_deref())
+        .or_else(|| {
+            let api = app.ui.stac.api.trim();
+            (!api.is_empty()).then_some(api)
+        })
+        .unwrap_or("https://item.invalid/")
+        .to_string()
+}
+
 /// Adds an item's asset (the one named, else the default) under the item's name.
 fn add_item_asset(app: &mut RustGisApp, item: &Item, key: Option<&str>) {
+    let from = item_document_origin(app, item);
+    let public = item.origin_reach == Reach::Public;
     match item.asset_href(key) {
-        Ok((key, href)) => add_signed(app, &href, &format!("{} {key}", item.id)),
+        Ok((key, href)) => add_signed(app, &href, &format!("{} {key}", item.id), &from, public),
         Err(e) => app.ui.stac.error = Some(e),
     }
 }
@@ -682,10 +759,10 @@ fn add_item_asset(app: &mut RustGisApp, item: &Item, key: Option<&str>) {
 /// the frame.
 pub fn open_link(app: &mut RustGisApp, url: &str) -> Result<(), String> {
     let url = url.trim();
-    rustgis_engine::render::rustgis_tiles::address::check(url, None)?;
+    address::check(url, None)?;
     app.run("ui.dialog", serde_json::json!({"name": "stac"}))?;
     let address = rustgis_engine::service_logins::request(&mut app.session, None, url)?;
-    let slot = fetch(&address);
+    let slot = fetch(&address, false);
     app.ui.stac.error = None;
     app.ui.stac.info = Some(i18n::fmt("Opening {url}…", &[("url", url)]));
     app.ui.stac.waiting = Some((Asked::Link(url.to_string()), slot));
@@ -694,26 +771,28 @@ pub fn open_link(app: &mut RustGisApp, url: &str) -> Result<(), String> {
 
 /// A linked document: an item is shown and its default asset added; a collection is chosen in the
 /// dialog, with its API, ready to search.
-fn landed_link(app: &mut RustGisApp, url: &str, r: Result<Vec<u8>, String>) {
-    let bytes = match r {
-        Ok(b) => b,
+fn landed_link(app: &mut RustGisApp, requested_url: &str, r: Result<cache::Fetched, String>) {
+    let fetched = match r {
+        Ok(f) => f,
         Err(e) => {
             app.ui.stac.error = Some(e);
             return;
         }
     };
-    let kind = serde_json::from_slice::<serde_json::Value>(&bytes)
+    let effective_url = fetched.origin.url();
+    let bytes = &fetched.bytes;
+    let kind = serde_json::from_slice::<serde_json::Value>(bytes)
         .ok()
         .and_then(|v| Some((v.get("type")?.as_str()?.to_string(), v.get("id").and_then(|i| i.as_str()).map(str::to_string))));
     // The API: the address before `/collections/`, else the document's root (or parent) link.
-    let api = stac::api_of(&bytes, url);
+    let api = stac::api_of(bytes, effective_url);
     // Without one, the dialog keeps its API, and says which it is.
     let unknown =
         |app: &RustGisApp| i18n::fmt("The link doesn't say its STAC API: Find Items searches {api}", &[("api", &app.ui.stac.api)]);
     match kind {
-        Some((t, _)) if t == "Feature" => match stac::parse_item(&bytes, url) {
+        Some((t, _)) if t == "Feature" => match stac::parse_item_from_origin(bytes, &fetched.origin) {
             Ok(mut item) => {
-                item.url.get_or_insert_with(|| url.to_string());
+                item.url.get_or_insert_with(|| effective_url.to_string());
                 app.ui.stac.collection = item.collection.clone();
                 app.ui.stac.chosen = vec![item.pick(None).map(|a| a.key.clone()).unwrap_or_default()];
                 app.ui.stac.items = vec![item.clone()];
@@ -745,8 +824,10 @@ fn landed_link(app: &mut RustGisApp, url: &str, r: Result<Vec<u8>, String>) {
             }
         }
         _ => {
-            app.ui.stac.error =
-                Some(i18n::fmt("{url}: not a STAC item or collection", &[("url", &rustgis_engine::sources::address_in_message(url))]))
+            app.ui.stac.error = Some(i18n::fmt(
+                "{url}: not a STAC item or collection",
+                &[("url", &rustgis_engine::sources::address_in_message(requested_url))],
+            ))
         }
     }
 }
@@ -788,9 +869,15 @@ fn browse(app: &mut RustGisApp, to: Option<(String, String)>) {
         Some((title, url)) => {
             let above = std::mem::replace(&mut st.node_title, title);
             let above_url = std::mem::replace(&mut st.node, url);
+            let above_reach = st.node_reach.take();
             st.trail.push((above, above_url));
+            st.trail_reach.push(above_reach);
         }
-        None => (st.node, st.node_title, st.trail) = (String::new(), String::new(), Vec::new()),
+        None => {
+            (st.node, st.node_title, st.node_reach) = (String::new(), String::new(), None);
+            st.trail.clear();
+            st.trail_reach.clear();
+        }
     }
     fetch_children(app);
 }
@@ -800,8 +887,10 @@ fn browse_up(app: &mut RustGisApp, depth: usize) {
     let st = &mut app.ui.stac;
     st.walk = None;
     let Some((title, url)) = st.trail.get(depth).cloned() else { return };
+    let reach = st.trail_reach.get(depth).copied().flatten();
     st.trail.truncate(depth);
-    (st.node_title, st.node) = (title, url);
+    st.trail_reach.truncate(depth);
+    (st.node_title, st.node, st.node_reach) = (title, url, reach);
     fetch_children(app);
 }
 
@@ -810,14 +899,18 @@ fn fetch_children(app: &mut RustGisApp) {
     let st = &mut app.ui.stac;
     st.children.clear();
     st.error = None;
-    let url = if st.node.is_empty() { st.api.trim().to_string() } else { st.node.clone() };
-    if let Err(e) = rustgis_engine::render::rustgis_tiles::address::check(&url, None) {
+    let is_root = st.node.is_empty();
+    let url = if is_root { st.api.trim().to_string() } else { st.node.clone() };
+    let ancestor_public = st.trail_reach.iter().flatten().any(|r| *r == Reach::Public);
+    let from_document = if is_root { st.api_from_document } else { st.api_from_document || ancestor_public };
+    let ceiling = if from_document { Reach::Public } else { Reach::Local };
+    if let Err(e) = address::check_reach(&url, ceiling) {
         st.error = Some(e);
         return;
     }
     st.info = Some(tl!("Reading the catalog…").to_string());
     st.counted = false;
-    let slot = fetch_service(app, &url);
+    let slot = fetch_service(app, &url, from_document);
     app.ui.stac.waiting = Some((Asked::Children(url), slot));
 }
 
@@ -901,8 +994,9 @@ fn drop_listing(st: &mut State) {
     st.collections.clear();
     st.items.clear();
     st.collection.clear();
-    (st.node, st.node_title) = (String::new(), String::new());
+    (st.node, st.node_title, st.node_reach) = (String::new(), String::new(), None);
     st.trail.clear();
+    st.trail_reach.clear();
     st.children.clear();
     // What Save as Connection would keep: listed again before it is offered.
     st.listed.clear();
@@ -1140,7 +1234,7 @@ pub fn dialog(app: &mut RustGisApp, ui: &mut egui::Ui) {
         match stac::api(Some(app.ui.stac.api.as_str())) {
             Ok(api) => {
                 let typed = app.ui.stac.api.trim().to_string();
-                let slot = fetch_service(app, &stac::collections_url(&api));
+                let slot = fetch_service(app, &stac::collections_url(&api), false);
                 app.ui.stac.waiting = Some((Asked::Collections(typed), slot));
             }
             Err(e) => app.ui.stac.error = Some(e),
@@ -1772,7 +1866,9 @@ fn send_search(app: &mut RustGisApp, p: serde_json::Value, is_static: bool) {
     if is_static {
         let st = &app.ui.stac;
         let root = if st.node.is_empty() { st.api.trim().to_string() } else { st.node.clone() };
-        let walk = rustgis_engine::render::rustgis_tiles::address::check(&root, None)
+        let ancestor_public = !st.node.is_empty() && st.trail_reach.iter().flatten().any(|r| *r == Reach::Public);
+        let ceiling = if st.api_from_document || ancestor_public { Reach::Public } else { Reach::Local };
+        let walk = address::check_reach(&root, ceiling)
             .and(search)
             .and_then(|s| Ok(Walk::new(&root, catalog::Filter::from_search(&s, Some(st.phase.as_str()))?, s.limit)));
         match walk {
@@ -1801,7 +1897,7 @@ fn send_search(app: &mut RustGisApp, p: serde_json::Value, is_static: bool) {
         Ok((url, body, get)) => {
             let slot = match body {
                 Some(body) => post_service(app, &url, body),
-                None => fetch_service(app, &url),
+                None => fetch_service(app, &url, false),
             };
             app.ui.stac.asked_sort = p["sortby"].as_str().map(str::to_string);
             app.ui.stac.waiting = Some((Asked::Search(url, get), slot));
@@ -2020,13 +2116,16 @@ mod tests {
         app.ui.stac.api = api.into();
         app.ui.stac.connection = one["id"].as_str().map(str::to_string);
         let asked = Asked::Token {
-            token_url: "https://snapshot-token.invalid/token".into(),
+            token_url: "http://127.0.0.1:9/token".into(),
             href: "http://127.0.0.1:9/points.geojson".into(),
             name: "Original asset".into(),
             connection: selected_connection(&app),
+            from: api.into(),
+            public: false,
         };
         let slot = Slot::default();
-        *slot.lock().unwrap() = Some(Ok(br#"{"token":"sig=snapshot"}"#.to_vec()));
+        *slot.lock().unwrap() =
+            Some(Ok(cache::Fetched { bytes: br#"{"token":"sig=snapshot"}"#.to_vec(), origin: Origin::named("http://127.0.0.1:9/token") }));
         app.ui.stac.waiting = Some((asked, slot));
         app.ui.stac.connection = two["id"].as_str().map(str::to_string);
         poll(&mut app, &egui::Context::default());
@@ -2245,7 +2344,10 @@ mod tests {
         app.ui.stac.waiting = Some((Asked::Collections("https://one.example/stac".into()), late.clone()));
         switch_api(&mut app.ui.stac, "https://two.example/stac");
         assert!(app.ui.stac.waiting.is_none());
-        *late.lock().unwrap() = Some(Ok(br#"{"collections":[{"id":"old","title":"Old"}]}"#.to_vec()));
+        *late.lock().unwrap() = Some(Ok(cache::Fetched {
+            bytes: br#"{"collections":[{"id":"old","title":"Old"}]}"#.to_vec(),
+            origin: Origin::named("https://one.example/stac"),
+        }));
         poll(&mut app, &ctx);
         assert!(app.ui.stac.collections.is_empty());
         assert_eq!(app.ui.stac.api, "https://two.example/stac");
@@ -2503,7 +2605,12 @@ mod tests {
     #[test]
     fn a_post_search_with_a_next_link_says_more_match() {
         let ctx = egui::Context::default();
-        let answer = |body: &str| -> Answer { Slot::new(std::sync::Mutex::new(Some(Ok(body.as_bytes().to_vec())))) };
+        let answer = |body: &str| -> Answer {
+            Slot::new(std::sync::Mutex::new(Some(Ok(cache::Fetched {
+                bytes: body.as_bytes().to_vec(),
+                origin: Origin::named("http://127.0.0.1/search"),
+            }))))
+        };
         // A POST `next` link has no address, so the parser gives none; the pane still says so.
         let post_next = r#"{"type":"FeatureCollection","features":[],"links":[{"rel":"next","method":"POST","href":"http://127.0.0.1/search","body":{"token":"x"}}]}"#;
         let mut app = RustGisApp::with_sample();
@@ -2516,6 +2623,24 @@ mod tests {
         app.ui.stac.waiting = Some((Asked::Search("http://127.0.0.1/search".into(), None), answer(all)));
         poll(&mut app, &ctx);
         let said = app.ui.stac.info.clone().unwrap_or_default();
+        assert!(!said.contains("more match"), "{said}");
+    }
+
+    #[test]
+    fn a_next_link_the_reach_refuses_is_said_rather_than_read_as_more_matches() {
+        let ctx = egui::Context::default();
+        // A public document's next page on the local network is dropped by the parser: the pane says
+        // so, and does not ask the user to narrow a search whose next page it won't load.
+        let page = r#"{"type":"FeatureCollection","features":[],"links":[{"rel":"next","href":"http://127.0.0.1/search?page=2"}]}"#;
+        let answer: Answer = Slot::new(std::sync::Mutex::new(Some(Ok(cache::Fetched {
+            bytes: page.as_bytes().to_vec(),
+            origin: Origin::named("https://example.com/search"),
+        }))));
+        let mut app = RustGisApp::with_sample();
+        app.ui.stac.waiting = Some((Asked::Search("https://example.com/search".into(), None), answer));
+        poll(&mut app, &ctx);
+        let said = app.ui.stac.info.clone().unwrap_or_default();
+        assert!(said.contains("refused"), "{said}");
         assert!(!said.contains("more match"), "{said}");
     }
 
@@ -2645,5 +2770,252 @@ mod tests {
         app.ui.stac.api_from_document = true;
         switch_api(&mut app.ui.stac, "https://example.org/stac/v1");
         assert!(!app.ui.stac.api_from_document, "picking an API is the user's choice");
+    }
+
+    #[test]
+    fn stac_document_assets_and_links_enforce_public_reach() {
+        let _turn = crate::fetching::turn();
+        let seen: std::sync::Arc<std::sync::Mutex<Vec<(String, rustgis_engine::render::rustgis_tiles::address::Reach)>>> =
+            std::sync::Arc::default();
+        let log = seen.clone();
+        cache::set_fetcher_with_origin(move |url, ceiling, done, _| {
+            let clean = cache::split_download_limit(&url).0.split("#rustgis-range=").next().unwrap_or(&url).to_string();
+            log.lock().unwrap().push((clean.clone(), ceiling));
+            let origin = rustgis_engine::render::rustgis_tiles::address::Origin::named(&clean);
+            done(Ok(cache::Fetched { bytes: br#"{"type":"FeatureCollection","features":[]}"#.to_vec(), origin }));
+        });
+
+        let mut app = RustGisApp::with_sample();
+        let doc = "https://example.com/stac/item.json";
+        for bad in [
+            "http://127.0.0.1:8080/internal.geojson",
+            "http://localhost:8080/internal.geojson",
+            "http://169.254.169.254/latest/meta-data",
+            "http://10.0.0.1/internal.tif",
+        ] {
+            let raw = json!({
+                "type": "Feature",
+                "id": "scene-1",
+                "bbox": [0.0, 0.0, 1.0, 1.0],
+                "properties": {"datetime": "2025-01-01T00:00:00Z"},
+                "links": [{"rel": "self", "href": "http://127.0.0.1:8080/spoofed-self.json"}],
+                "assets": {"data": {"href": bad, "type": "application/geo+json", "roles": ["data"]}}
+            });
+            app.ui.stac.error = None;
+            landed_link(&mut app, doc, Ok(cache::Fetched { bytes: raw.to_string().into_bytes(), origin: Origin::named(doc) }));
+            let err = app.ui.stac.error.as_deref().unwrap_or("");
+            assert!(
+                err.contains("local network") || err.contains("never fetched"),
+                "{bad} must be refused by address policy when linked from {doc}, got: {err:?}"
+            );
+            assert!(app.ui.downloads.is_empty() && app.ui.cog_probes.is_empty(), "{bad} must not start a download or probe");
+        }
+        assert!(seen.lock().unwrap().is_empty(), "refused private asset links must never reach the transport");
+
+        let public_item = json!({
+            "type": "Feature",
+            "id": "scene-ok",
+            "bbox": [0.0, 0.0, 1.0, 1.0],
+            "properties": {"datetime": "2025-01-01T00:00:00Z"},
+            "assets": {"data": {"href": "https://example.com/data/places.geojson", "type": "application/geo+json", "roles": ["data"]}}
+        });
+        app.ui.stac.error = None;
+        landed_link(&mut app, doc, Ok(cache::Fetched { bytes: public_item.to_string().into_bytes(), origin: Origin::named(doc) }));
+        assert_eq!(app.ui.stac.error, None);
+        assert_eq!(app.ui.downloads.last().map(|d| d.params["from"].as_str()), Some(Some(doc)));
+        assert_eq!(app.ui.downloads.last().and_then(|d| d.params["fromDocument"].as_bool()), Some(true));
+        assert_eq!(
+            seen.lock().unwrap().last().cloned(),
+            Some(("https://example.com/data/places.geojson".into(), rustgis_engine::render::rustgis_tiles::address::Reach::Public))
+        );
+    }
+
+    #[test]
+    fn local_origin_stac_item_fetches_local_thumbnail_with_local_reach() {
+        let _turn = crate::fetching::turn();
+        let seen: std::sync::Arc<std::sync::Mutex<Vec<(String, Reach)>>> = std::sync::Arc::default();
+        let log = seen.clone();
+        cache::set_fetcher_with_origin(move |url, ceiling, done, _| {
+            let clean = cache::split_download_limit(&url).0.to_string();
+            log.lock().unwrap().push((clean.clone(), ceiling));
+            done(Ok(cache::Fetched { bytes: vec![0x89, b'P', b'N', b'G'], origin: Origin::named(&clean) }));
+        });
+
+        let mut app = RustGisApp::with_sample();
+        let local_doc = "http://localhost:8080/stac/item.json";
+        let local_thumb = "http://localhost:8080/stac/preview.png";
+        let raw = json!({
+            "type": "Feature",
+            "id": "local-scene",
+            "bbox": [0.0, 0.0, 1.0, 1.0],
+            "properties": {"datetime": "2025-01-01T00:00:00Z"},
+            "assets": {
+                "thumbnail": {"href": local_thumb, "type": "image/png", "roles": ["thumbnail"]}
+            }
+        });
+        let item = stac::parse_item_from_origin(raw.to_string().as_bytes(), &Origin::named(local_doc)).unwrap();
+        assert_eq!(item.origin_reach, Reach::Local);
+        app.ui.stac.api = "http://localhost:8080/stac".into();
+        app.ui.stac.items = vec![item];
+        want_thumbs(&mut app);
+        assert!(matches!(app.ui.stac.thumbs.get(local_thumb), Some(Thumb::Loading(_))));
+        assert_eq!(seen.lock().unwrap().as_slice(), &[(local_thumb.to_string(), Reach::Local)]);
+    }
+
+    #[test]
+    fn local_stac_link_redirecting_to_public_host_rejects_local_assets() {
+        let _turn = crate::fetching::turn();
+        let seen: std::sync::Arc<std::sync::Mutex<Vec<(String, Reach)>>> = std::sync::Arc::default();
+        let log = seen.clone();
+        let redirected_doc = "https://public-redirect.example/stac/item.json";
+        cache::set_fetcher_with_origin(move |url, ceiling, done, _| {
+            let clean = cache::split_download_limit(&url).0.to_string();
+            log.lock().unwrap().push((clean.clone(), ceiling));
+            let body = json!({
+                "type": "Feature",
+                "id": "redirected-scene",
+                "bbox": [0.0, 0.0, 1.0, 1.0],
+                "properties": {"datetime": "2025-01-01T00:00:00Z"},
+                "assets": {
+                    "data": {"href": "http://127.0.0.1:8080/internal.geojson", "type": "application/geo+json", "roles": ["data"]},
+                    "thumbnail": {"href": "http://127.0.0.1:8080/preview.png", "type": "image/png", "roles": ["thumbnail"]}
+                }
+            });
+            done(Ok(cache::Fetched { bytes: body.to_string().into_bytes(), origin: Origin::named(redirected_doc) }));
+        });
+
+        let mut app = RustGisApp::with_sample();
+        open_link(&mut app, "http://127.0.0.1:8080/stac-redirect").unwrap();
+        poll(&mut app, &egui::Context::default());
+
+        assert_eq!(seen.lock().unwrap().as_slice(), &[("http://127.0.0.1:8080/stac-redirect".to_string(), Reach::Local)]);
+        assert_eq!(app.ui.stac.items.first().map(|i| i.origin_reach), Some(Reach::Public));
+        assert_eq!(app.ui.stac.items.first().and_then(|i| i.origin.as_deref()), Some(redirected_doc));
+        let err = app.ui.stac.error.as_deref().unwrap_or("");
+        assert!(err.contains("local network"), "redirected public STAC item must reject loopback assets, got: {err:?}");
+        assert!(app.ui.downloads.is_empty());
+
+        seen.lock().unwrap().clear();
+        want_thumbs(&mut app);
+        assert!(matches!(app.ui.stac.thumbs.get("http://127.0.0.1:8080/preview.png"), Some(Thumb::Failed)));
+        assert!(seen.lock().unwrap().is_empty(), "redirected public STAC item must not fetch loopback thumbnails");
+    }
+
+    #[test]
+    fn static_catalog_walk_uses_user_reach_for_root_and_observed_reach_for_descendants() {
+        let _turn = crate::fetching::turn();
+        let seen: std::sync::Arc<std::sync::Mutex<Vec<(String, Reach)>>> = std::sync::Arc::default();
+
+        // Case 1: User-selected internal hostname whose DNS resolves to a private IP (Reach::Local).
+        // The initial root request uses Reach::Local, and once it lands with Reach::Local its local
+        // child/item links also use Reach::Local.
+        {
+            let log = seen.clone();
+            cache::set_fetcher_with_origin(move |url, ceiling, done, _| {
+                let clean = cache::split_download_limit(&url).0.to_string();
+                log.lock().unwrap().push((clean.clone(), ceiling));
+                let body = if clean.ends_with("/catalog.json") {
+                    json!({
+                        "type": "Catalog",
+                        "id": "corp",
+                        "links": [{"rel": "item", "href": "http://10.0.0.5/stac/item.json"}]
+                    })
+                } else {
+                    json!({
+                        "type": "Feature",
+                        "id": "corp-item",
+                        "bbox": [0.0, 0.0, 1.0, 1.0],
+                        "properties": {"datetime": "2025-01-01T00:00:00Z"},
+                        "assets": {"data": {"href": "http://10.0.0.5/stac/scene.geojson", "type": "application/geo+json"}}
+                    })
+                };
+                let origin = Origin::connected(&clean, "10.0.0.5".parse().unwrap()).unwrap().narrow_reach(ceiling);
+                done(Ok(cache::Fetched { bytes: body.to_string().into_bytes(), origin }));
+            });
+
+            let mut app = RustGisApp::with_sample();
+            app.ui.stac.api = "https://catalog.corp.example.com/catalog.json".into();
+            app.ui.stac.use_view = false;
+            app.ui.stac.max_cloud.clear();
+            find_items(&mut app);
+            let ctx = egui::Context::default();
+            poll(&mut app, &ctx);
+            poll(&mut app, &ctx);
+            poll(&mut app, &ctx);
+
+            assert_eq!(
+                seen.lock().unwrap().as_slice(),
+                &[
+                    ("https://catalog.corp.example.com/catalog.json".into(), Reach::Local),
+                    ("http://10.0.0.5/stac/item.json".into(), Reach::Local),
+                ]
+            );
+            assert_eq!(app.ui.stac.items.len(), 1);
+            assert_eq!(app.ui.stac.items[0].origin_reach, Reach::Local);
+        }
+
+        // Case 2: User-selected root resolves to a public peer (Reach::Public).
+        // The initial root request still uses Reach::Local (user-named), and once it lands with
+        // Reach::Public its descendant links switch to Reach::Public.
+        seen.lock().unwrap().clear();
+        {
+            let log = seen.clone();
+            cache::set_fetcher_with_origin(move |url, ceiling, done, _| {
+                let clean = cache::split_download_limit(&url).0.to_string();
+                log.lock().unwrap().push((clean.clone(), ceiling));
+                let body = if clean.ends_with("/catalog.json") {
+                    json!({
+                        "type": "Catalog",
+                        "id": "pub",
+                        "links": [{"rel": "item", "href": "https://public.example.com/stac/item.json"}]
+                    })
+                } else {
+                    json!({
+                        "type": "Feature",
+                        "id": "pub-item",
+                        "bbox": [0.0, 0.0, 1.0, 1.0],
+                        "properties": {"datetime": "2025-01-01T00:00:00Z"},
+                        "assets": {"data": {"href": "https://public.example.com/stac/scene.geojson", "type": "application/geo+json"}}
+                    })
+                };
+                let origin = Origin::connected(&clean, "93.184.216.34".parse().unwrap()).unwrap().narrow_reach(ceiling);
+                done(Ok(cache::Fetched { bytes: body.to_string().into_bytes(), origin }));
+            });
+
+            let mut app = RustGisApp::with_sample();
+            app.ui.stac.api = "https://public.example.com/catalog.json".into();
+            app.ui.stac.use_view = false;
+            app.ui.stac.max_cloud.clear();
+            find_items(&mut app);
+            let ctx = egui::Context::default();
+            poll(&mut app, &ctx);
+            poll(&mut app, &ctx);
+            poll(&mut app, &ctx);
+
+            assert_eq!(
+                seen.lock().unwrap().as_slice(),
+                &[
+                    ("https://public.example.com/catalog.json".into(), Reach::Local),
+                    ("https://public.example.com/stac/item.json".into(), Reach::Public),
+                ]
+            );
+            assert_eq!(app.ui.stac.items.len(), 1);
+            assert_eq!(app.ui.stac.items[0].origin_reach, Reach::Public);
+        }
+    }
+    #[test]
+    fn a_refused_next_link_is_reported_without_claiming_more_match() {
+        let mut app = RustGisApp::with_sample();
+        let body =
+            br#"{"type":"FeatureCollection","features":[],"numberMatched":100,"links":[{"rel":"next","href":"http://127.0.0.1/private"}]}"#;
+        let answer = Slot::new(std::sync::Mutex::new(Some(Ok(cache::Fetched {
+            bytes: body.to_vec(),
+            origin: Origin::named("https://public.example/search"),
+        }))));
+        app.ui.stac.waiting = Some((Asked::Search("http://127.0.0.1/start".into(), None), answer));
+        poll(&mut app, &egui::Context::default());
+        let said = app.ui.stac.info.as_deref().unwrap();
+        assert!(said.contains("next page link was refused"), "{said}");
+        assert!(!said.contains("more match") && !said.contains("narrow the search"), "{said}");
     }
 }

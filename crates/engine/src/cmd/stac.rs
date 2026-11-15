@@ -177,21 +177,23 @@ fn search(s: &mut Session, p: &Value) -> CmdResult {
     {
         // A shape goes in the body of a POST, which has no limit that matters; a server that
         // refuses it is asked again in the query, when the shape is short enough for one.
-        let (bytes, url, posted) = if search.intersects.is_some() {
+        let (fetched, posted) = if search.intersects.is_some() {
             let post = stac::search_post_url(&api);
             let body = stac::search_body(&search)?.to_string();
-            match crate::render::rustgis_tiles::cache::post_json_named_blocking(&post, &body) {
-                Ok(bytes) => (bytes, post, true),
+            match crate::render::rustgis_tiles::cache::post_json_named_blocking_with_origin(&post, &body) {
+                Ok(fetched) => (fetched, true),
                 Err(e) => {
                     let url = stac::search_url(&api, &search).map_err(|_| e.clone())?;
-                    (crate::render::rustgis_tiles::cache::download_blocking(&url).map_err(|_| e)?, url, false)
+                    (crate::render::rustgis_tiles::cache::download_blocking_with_origin(&url).map_err(|_| e)?, false)
                 }
             }
         } else {
             let url = stac::search_url(&api, &search)?;
-            (crate::render::rustgis_tiles::cache::download_blocking(&url)?, url, false)
+            (crate::render::rustgis_tiles::cache::download_blocking_with_origin(&url)?, false)
         };
-        let (items, next) = stac::parse_items(&bytes, &url)?;
+        let bytes = fetched.bytes;
+        let origin = fetched.origin;
+        let (items, next) = stac::parse_items_from_origin(&bytes, &origin)?;
         // A POST's next link is a request with a body, which is not an address to give back.
         let next = if posted {
             // `parse_items` drops a POST link, so the answer itself says whether there are more.
@@ -201,6 +203,10 @@ fn search(s: &mut Session, p: &Value) -> CmdResult {
             }
             None
         } else {
+            // `parse_items` drops a next link the reach refuses: said, so the missing page isn't taken for none.
+            if stac::next_refused(&bytes, &origin) {
+                s.warn("the answer's next page link is refused (it points where this search may not read), so only this page is loaded");
+            }
             next
         };
         // An API without the sort extension may ignore a sort instead of refusing it.

@@ -149,12 +149,16 @@ pub fn expand(template: &str, t: TileId, tile_size: u32, tms: bool, subdomains: 
     let n = 1u64 << t.z.min(30);
     let flipped = n.saturating_sub(1).saturating_sub(u64::from(t.y));
     let (y, neg_y) = if tms { (flipped, u64::from(t.y)) } else { (u64::from(t.y), flipped) };
+    // A chosen host or switch value that carries a URL delimiter would move the split between the
+    // authority and the rest of the address (a subdomain of `192.168.1.5/x?` reaches another host),
+    // so the delimiters are percent-encoded where the value goes in.
     let pick = |opts: &[&str]| -> String {
         if opts.is_empty() {
             return String::new();
         }
         let i = (u64::from(t.x) + u64::from(t.y)) as usize % opts.len();
-        opts.get(i).copied().unwrap_or_default().to_string()
+        let value = opts.get(i).copied().unwrap_or_default();
+        value.replace('/', "%2F").replace('?', "%3F").replace('#', "%23").replace('@', "%40")
     };
     let mut out = String::with_capacity(template.len() + 16);
     let mut rest = template;
@@ -195,6 +199,11 @@ pub fn expand(template: &str, t: TileId, tile_size: u32, tms: bool, subdomains: 
         rest = after.get(close + 1..).unwrap_or_default();
     }
     out.push_str(rest);
+    if crate::cache::ceiling_for(template) == crate::address::Reach::Public
+        && crate::cache::ceiling_for(&out) != crate::address::Reach::Public
+    {
+        crate::cache::restrict_to_public(&out);
+    }
     out
 }
 
@@ -405,6 +414,18 @@ mod tests {
         let wms = expand("https://x/wms?BBOX={bbox-epsg-3857}&WIDTH={width}", TileId { z: 0, x: 0, y: 0 }, 256, false, &[]);
         assert_eq!(wms, "https://x/wms?BBOX=-20037508.343,-20037508.343,20037508.343,20037508.343&WIDTH=256");
         assert_eq!(expand("https://x/{z}/{x}/{y}{r}.png", t, 256, false, &[]), "https://x/3/5/2.png");
+    }
+
+    /// A subdomain value with a delimiter stays in the host it was given for (#2055).
+    #[test]
+    fn a_subdomain_value_cannot_move_the_host_split() {
+        let t = TileId { z: 3, x: 5, y: 2 };
+        let hostile = ["192.168.1.5/x?".to_string()];
+        assert_eq!(
+            expand("https://{s}.tiles.example/{z}/{x}/{y}.png", t, 256, false, &hostile),
+            "https://192.168.1.5%2Fx%3F.tiles.example/3/5/2.png"
+        );
+        assert_eq!(expand("https://{switch:x,a@b}.x/{z}", t, 256, false, &[]), "https://a%40b.x/3", "a switch value is encoded too");
     }
 
     #[test]

@@ -50,7 +50,7 @@ pub fn commands() -> Vec<C> {
             .params(r#"{"layer"?: name|id, "crs": "EPSG:… or WKT; reinterpret native coordinates, without rewriting the source file"}"#),
         C::new("layer.loadAll", "Load All Features", "Layers", load_all).roles(&[]).effects(crate::policy::Effects::NONE).when(need_streamed).params(r#"{"layer"?: name|id}"#),
         C::new("layer.addUrl", "Add Data From URL", "Home › Add › Add Data", add_url).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Network)).params(
-            r#"{"url": "https://…/data.geojson|.csv|.parquet|.fgb|.gpkg|.zip|.shp (its .dbf fetched beside it, and its .shx, .prj and .cpg when there)|.kml|.kmz|.gpx|.tif|.jp2 (JPEG 2000: desktop, through GDAL) (the format from the address, else the contents) | a .pmtiles archive", "name"?: text, "layer"?: "one layer of a zip, KML or GPX", "zoom"?: "bool: true frames everything added; false keeps the view, even on an empty map; omitted, the first content on an empty map is framed (a GeoParquet, FlatGeobuf or cloud-optimised GeoTIFF read in place likewise; a PMTiles or MBTiles archive ignores zoom and is framed on its bounds unless it covers the whole world)", "x"?, "y"?, "wkt"?, "crs"?, "delimiter"?, "paperSpace"?, "blocks"?, "stream"?, "as"? (as layer.addData), "whole"?: "bool: download a cloud-optimised GeoTIFF whole (as a raster layer) instead of reading it in place (an address without a file name is read in place when its first bytes are a cloud-optimised GeoTIFF)", "cog"?: "bool: the address is a cloud-optimised GeoTIFF whatever its name says (the app's probe found it so)", "bbox"?: "[west, south, east, north] in degrees | "view": a cloud-optimised GeoTIFF's window as a raster layer (desktop and command line), read by range at full resolution, in the file's coordinate system, with its colour table and class names; at most 64 million values (all bands)", "cellSize"?: "with bbox: the coarsest overview whose cells are at most this size is read (the file's units; metres for longitude/latitude, a degree taken as 111.32 km)", "cube"?: "bool: a data cube's file: a tile layer that follows the time slider (stac.addCube adds them), kept one when the project opens again", "start"?, "end"?, "unit"?, "interval"?, "dates"?: "a GeoTIFF address with date placeholders ({date:YYYY}, {YYYY}{MM}{DD}), one file per date: the dates it spans and steps through (as time.set), turning the time slider on", "connection"?: "the id of the saved web-service connection it comes from (as service.add)", "anonymous"?: bool (internal: a plugin-origin download must never adopt a saved login), "request"?: "number (internal: the download a plugin command left to the app, #1202)"}"#,
+            r#"{"url": "https://…/data.geojson|.csv|.parquet|.fgb|.gpkg|.zip|.shp (its .dbf fetched beside it, and its .shx, .prj and .cpg when there)|.kml|.kmz|.gpx|.tif|.jp2 (JPEG 2000: desktop, through GDAL) (the format from the address, else the contents) | a .pmtiles archive", "name"?: text, "layer"?: "one layer of a zip, KML or GPX", "zoom"?: "bool: true frames everything added; false keeps the view, even on an empty map; omitted, the first content on an empty map is framed (a GeoParquet, FlatGeobuf or cloud-optimised GeoTIFF read in place likewise; a PMTiles or MBTiles archive ignores zoom and is framed on its bounds unless it covers the whole world)", "x"?, "y"?, "wkt"?, "crs"?, "delimiter"?, "paperSpace"?, "blocks"?, "stream"?, "as"? (as layer.addData), "whole"?: "bool: download a cloud-optimised GeoTIFF whole (as a raster layer) instead of reading it in place (an address without a file name is read in place when its first bytes are a cloud-optimised GeoTIFF)", "cog"?: "bool: the address is a cloud-optimised GeoTIFF whatever its name says (the app's probe found it so)", "bbox"?: "[west, south, east, north] in degrees | "view": a cloud-optimised GeoTIFF's window as a raster layer (desktop and command line), read by range at full resolution, in the file's coordinate system, with its colour table and class names; at most 64 million values (all bands)", "cellSize"?: "with bbox: the coarsest overview whose cells are at most this size is read (the file's units; metres for longitude/latitude, a degree taken as 111.32 km)", "cube"?: "bool: a data cube's file: a tile layer that follows the time slider (stac.addCube adds them), kept one when the project opens again", "start"?, "end"?, "unit"?, "interval"?, "dates"?: "a GeoTIFF address with date placeholders ({date:YYYY}, {YYYY}{MM}{DD}), one file per date: the dates it spans and steps through (as time.set), turning the time slider on", "connection"?: "the id of the saved web-service connection it comes from (as service.add)", "from"?: "the web document address that named url (internal: enforces public-address reach)", "fromDocument"?: bool, "anonymous"?: bool (internal: a plugin-origin download must never adopt a saved login), "request"?: "number (internal: the download a plugin command left to the app, #1202)"}"#,
         ),
         C::new("layer.addDownload", "Add Downloaded Data", "Home › Add", add_download).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Reserved).with(crate::policy::Effect::Files))
             .params(r#"{"id": a download the app finished (Home › Add › Add Data › From URL), "url": its address, "name"?: text, "layer"?: text, "zoom"?: bool, "x"?, "y"?, "wkt"?, "crs"?, "delimiter"?, "paperSpace"?, "blocks"?, "stream"?, "as"? (as layer.addData), "service"?: bool (a service's features: their axes (when they came as GeoJSON) and paging are checked, and the address is kept as the layer's source), "bounds"?: [west, south, east, north] (with service: the layer's longitude/latitude bounds from its capabilities, which its axes are checked against; without bounds they are left as they come; ignored without service), "coverage"?: bool (a WCS coverage: a GeoTIFF, else the service's error, and its request kept as the layer's source), "drawingInfo"?: object (internal, with service: an ArcGIS layer's drawingInfo from its description, which the layer is drawn with), "geolibreProject"?: bool (internal: downloaded project JSON), "geolibreLayer"?: {"token", "record"} (internal: reserved imported layer and its saved style), "geolibreZarr"?: bool (internal: an imported Zarr slice as GeoTIFF), "connection"?: "as layer.addUrl", "anonymous"?: bool (internal: preserves a plugin-origin download's anonymous reads), "request"?: number (internal: the download a plugin command left to the app, #1202), "window"?: {"bbox", "cellSize"?, "cog"?} (internal: what a cloud-optimised GeoTIFF's window the app read off the frame asked for, for a task to read it again, #1330)}"#),
@@ -3790,9 +3790,75 @@ pub(crate) fn add_url(s: &mut Session, p: &Value) -> CmdResult {
     Ok(out)
 }
 
+/// Parses the optional document origin (`"from"`, `"fromDocument"`) on a URL-loading command,
+/// returning `(origin_for_address_check, public_document_reach)`.
+pub fn request_origin(p: &Value) -> Result<(Option<&str>, bool), String> {
+    let from = match p.get("from") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(s)) => {
+            let s = s.trim();
+            (!s.is_empty()).then_some(s)
+        }
+        Some(_) => return Err("\"from\" must be a string".into()),
+    };
+    let from_document = match p.get("fromDocument") {
+        None | Some(Value::Null) => None,
+        Some(Value::Bool(b)) => Some(*b),
+        Some(_) => return Err("\"fromDocument\" must be true or false".into()),
+    };
+    let from_public = from.is_some_and(|u| {
+        crate::render::rustgis_tiles::address::reach(crate::render::rustgis_tiles::logins::inner(u))
+            == crate::render::rustgis_tiles::address::Reach::Public
+    });
+    let public = from_document.unwrap_or(false) || from_public;
+    let origin = if public && from.is_none() { Some("https://document.invalid/") } else { from };
+    Ok((origin, public))
+}
+
+/// Network reach ceiling implied by `(origin, public)` from [`request_origin`].
+pub fn origin_ceiling(origin: Option<&str>, public: bool) -> crate::render::rustgis_tiles::address::Reach {
+    use crate::render::rustgis_tiles::{address, logins};
+    if origin.is_some_and(|u| address::reach(logins::inner(u)) == address::Reach::Forbidden) {
+        address::Reach::Forbidden
+    } else if public {
+        address::Reach::Public
+    } else {
+        address::Reach::Local
+    }
+}
+
+/// Records the reach a URL (and its Shapefile parts) was requested with: a document's request
+/// restricts it to public addresses; a user's own request without an origin clears that again.
+pub fn mark_url_reach(url: &str, origin: Option<&str>, public: bool) {
+    use crate::render::rustgis_tiles::cache;
+    if public {
+        cache::restrict_to_public(url);
+        if let Some(parts) = rustgis_data::io::shapefile_part_urls(url) {
+            for (_, part) in parts {
+                cache::restrict_to_public(&part);
+            }
+        }
+    } else if origin.is_none() {
+        cache::allow_named(url);
+        if let Some(parts) = rustgis_data::io::shapefile_part_urls(url) {
+            for (_, part) in parts {
+                cache::allow_named(&part);
+            }
+        }
+    }
+}
+
 fn add_url_as_given(s: &mut Session, p: &Value) -> CmdResult {
+    let (origin, public) = request_origin(p)?;
+    if (origin.is_some() || public)
+        && let Some(raw) = ps(p, "url").map(str::trim).filter(|u| !u.is_empty())
+    {
+        let _ = web_address(raw)?;
+        crate::render::rustgis_tiles::address::check_reach(raw, origin_ceiling(origin, public))?;
+    }
     let bound = crate::service_logins::request_params(s, p)?;
     let p = bound.as_ref();
+    let (origin, public) = request_origin(p).map_err(|e| e.to_string()).map(|(o, pub_)| (o.or(origin), pub_ || public))?;
     if !s.import_completion(p) {
         no_geolibre_state(p)?;
     }
@@ -3854,6 +3920,12 @@ fn add_url_as_given(s: &mut Session, p: &Value) -> CmdResult {
     // An address read through a saved S3 connection is judged by the address it wraps; the whole
     // address stays what is fetched and kept.
     let lower = web_address(url)?;
+    if origin.is_some() || public {
+        crate::render::rustgis_tiles::address::check_reach(url, origin_ceiling(origin, public))?;
+    }
+    if public || origin.is_some() || s.policy_user() {
+        mark_url_reach(url, origin, public);
+    }
     // A scan (`"as"`) keeps the pixels and none of the coordinates: the file is downloaded whole and
     // read as one (`add_named_bytes` checks it is an image), never read in place.
     let scan = super::raster::as_scan(p)?;
@@ -3971,8 +4043,20 @@ fn add_url_as_given(s: &mut Session, p: &Value) -> CmdResult {
                 return add_cog(s, p, url, true);
             }
         }
+        // A URL a web document restricted to public addresses stays so: a request from a local
+        // origin (or none) doesn't lift the restriction its earlier request set.
+        let public =
+            public || crate::render::rustgis_tiles::cache::ceiling_for(url) == crate::render::rustgis_tiles::address::Reach::Public;
         let bytes = if rustgis_data::io::shapefile_part_urls(url).is_some() {
-            download_shapefile_blocking(url)?
+            download_shapefile_blocking_with(url, public)?
+        } else if public {
+            crate::render::rustgis_tiles::cache::download_public_within(
+                url,
+                crate::render::rustgis_tiles::cache::MAX_DOWNLOAD,
+                crate::render::rustgis_tiles::cache::BLOCKING_TIMEOUT,
+            )
+            .map_err(crate::render::rustgis_tiles::cache::large_file_hint)
+            .map_err(named)?
         } else {
             crate::render::rustgis_tiles::cache::download_blocking(url).map_err(named)?
         };
@@ -4112,15 +4196,21 @@ fn parts_left_out(url: &str, bytes: &[u8], p: &Value) -> Option<String> {
 /// `.prj` and `.cpg` beside it (each but the `.dbf` only when it is there), zipped, within one
 /// download's budget together.
 #[cfg(not(target_arch = "wasm32"))]
-fn download_shapefile_blocking(url: &str) -> Result<Vec<u8>, String> {
+fn download_shapefile_blocking_with(url: &str, public: bool) -> Result<Vec<u8>, String> {
     use crate::render::rustgis_tiles::cache;
     let parts = rustgis_data::io::shapefile_part_urls(url).unwrap_or_default();
+    if public {
+        for (_, part) in &parts {
+            crate::render::rustgis_tiles::address::check(part, Some(url)).map_err(|e| part_failed(part, e))?;
+        }
+    }
     // One wait for all the parts together, as for one download.
     let until = std::time::Instant::now() + cache::BLOCKING_TIMEOUT;
     // Past it, a part isn't asked for at all (a zero timeout may mean none), and a timeout says
     // where a large file goes instead.
     let within = |u: &str, max: usize, omit: &'static [u16]| match until.saturating_duration_since(std::time::Instant::now()) {
         w if w.is_zero() => Err(cache::large_file_hint("timed out".into())),
+        w if public => cache::download_public_omitting_within(u, max, w, omit).map_err(cache::large_file_hint),
         w => cache::download_blocking_omitting_within(u, max, w, omit).map_err(cache::large_file_hint),
     };
     let shp = within(url, cache::MAX_DOWNLOAD, &[]).map_err(|e| part_failed(url, e))?;
@@ -4154,29 +4244,43 @@ fn download_shapefile_blocking(url: &str) -> Result<Vec<u8>, String> {
 /// `.prj` and `.cpg` too, one after another, and `done` gets them zipped (#1238), within `max`
 /// bytes together.
 pub fn download_data(url: &str, max: usize, done: crate::render::rustgis_tiles::cache::Done) {
+    download_data_from(url, false, max, done);
+}
+
+/// Like [`download_data`], restricting network connections to public internet addresses when `public`
+/// is `true` (an address named by a web document rather than directly by the user).
+pub fn download_data_from(url: &str, public: bool, max: usize, done: crate::render::rustgis_tiles::cache::Done) {
     use crate::render::rustgis_tiles::cache;
     let Some(parts) = rustgis_data::io::shapefile_part_urls(url) else {
-        return cache::download_limited(url, max, done);
+        return if public { cache::download_public_limited(url, max, done) } else { cache::download_limited(url, max, done) };
     };
+    if public {
+        for (_, part) in &parts {
+            if let Err(e) = crate::render::rustgis_tiles::address::check(part, Some(url)) {
+                return done(Err(part_failed(part, e)));
+            }
+        }
+    }
     let shp_url = url.to_string();
-    cache::download_limited(
-        url,
-        max,
-        Box::new(move |r| match r.and_then(|shp| url_file_name(&shp_url, &shp).map(|name| (name, shp))) {
-            // Already zipped: as it is.
-            Ok((_, shp)) if is_zip(&shp) => done(Ok(shp)),
-            Ok((_, shp)) if is_web_page(&shp) => done(Err("a web page answered, not a .shp".into())),
-            Ok((name, shp)) => {
-                let left = max.saturating_sub(shp.len());
-                download_parts(name, shp, parts.into_iter(), Vec::new(), left, done);
-            }
-            // Name the complete known address before the app or session redacts this again.
-            Err(e) => {
-                let why = status_hint(&shp_url, &e);
-                done(Err(format!("{}{why}", crate::sources::message_with_address(&shp_url, &e))))
-            }
-        }),
-    );
+    let on_shp: cache::Done = Box::new(move |r| match r.and_then(|shp| url_file_name(&shp_url, &shp).map(|name| (name, shp))) {
+        // Already zipped: as it is.
+        Ok((_, shp)) if is_zip(&shp) => done(Ok(shp)),
+        Ok((_, shp)) if is_web_page(&shp) => done(Err("a web page answered, not a .shp".into())),
+        Ok((name, shp)) => {
+            let left = max.saturating_sub(shp.len());
+            download_parts(name, shp, parts.into_iter(), Vec::new(), left, public, done);
+        }
+        // Name the complete known address before the app or session redacts this again.
+        Err(e) => {
+            let why = status_hint(&shp_url, &e);
+            done(Err(format!("{}{why}", crate::sources::message_with_address(&shp_url, &e))))
+        }
+    });
+    if public {
+        cache::download_public_limited(url, max, on_shp);
+    } else {
+        cache::download_limited(url, max, on_shp);
+    }
 }
 
 /// A Shapefile's parts zipped, within the budget they were downloaded in (`left` being what is
@@ -4193,7 +4297,7 @@ fn zipped_within(name: &str, shp: Vec<u8>, got: Vec<(&'static str, Vec<u8>)>, le
 }
 
 /// The next of a Shapefile's parts for [`download_data`], then the zip once they are all in: the
-/// steps of `download_shapefile_blocking` as callbacks, sharing its rules (`part_not_there`,
+/// steps of `download_shapefile_blocking_with` as callbacks, sharing its rules (`part_not_there`,
 /// `part_failed`, `zipped_within`), so a change to one goes in both.
 fn download_parts(
     name: String,
@@ -4201,6 +4305,7 @@ fn download_parts(
     mut parts: std::vec::IntoIter<(&'static str, String)>,
     mut got: Vec<(&'static str, Vec<u8>)>,
     left: usize,
+    public: bool,
     done: crate::render::rustgis_tiles::cache::Done,
 ) {
     let Some((ext, url)) = parts.next() else {
@@ -4208,21 +4313,22 @@ fn download_parts(
         return;
     };
     let next = url.clone();
-    crate::render::rustgis_tiles::cache::download_limited_omitting(
-        &next,
-        left,
-        part_absences(ext, &url),
-        Box::new(move |r| match r.and_then(|b| page_part(ext, b)) {
-            Ok(None) => download_parts(name, shp, parts, got, left, done),
-            Ok(Some(b)) => {
-                let left = left.saturating_sub(b.len());
-                got.push((ext, b));
-                download_parts(name, shp, parts, got, left, done);
-            }
-            Err(e) if part_not_there(ext, &url, &e) => download_parts(name, shp, parts, got, left, done),
-            Err(e) => done(Err(part_failed(&url, over_shared_limit(e)))),
-        }),
-    );
+    let omit = part_absences(ext, &url);
+    let step: crate::render::rustgis_tiles::cache::Done = Box::new(move |r| match r.and_then(|b| page_part(ext, b)) {
+        Ok(None) => download_parts(name, shp, parts, got, left, public, done),
+        Ok(Some(b)) => {
+            let left = left.saturating_sub(b.len());
+            got.push((ext, b));
+            download_parts(name, shp, parts, got, left, public, done);
+        }
+        Err(e) if part_not_there(ext, &url, &e) => download_parts(name, shp, parts, got, left, public, done),
+        Err(e) => done(Err(part_failed(&url, over_shared_limit(e)))),
+    });
+    if public {
+        crate::render::rustgis_tiles::cache::download_public_limited_omitting(&next, left, omit, step);
+    } else {
+        crate::render::rustgis_tiles::cache::download_limited_omitting(&next, left, omit, step);
+    }
 }
 
 /// Adds a FlatGeobuf or GeoParquet by its address as a layer read in place: a view's features at
@@ -6097,4 +6203,31 @@ pub(crate) fn external_dataset_selector(command: &str) -> bool {
             | "service.coverage"
             | "identify.featureInfo"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::Session;
+    use serde_json::json;
+
+    /// A URL a web document restricted to public addresses stays restricted when a later request
+    /// comes from a local origin: its blocking download goes through the public agent, which
+    /// refuses a local address before connecting (#2055).
+    #[test]
+    fn a_public_restriction_holds_for_a_blocking_download_from_a_local_origin() {
+        let url = "http://127.0.0.1:1/rustgis-restricted-download.dat";
+        crate::render::rustgis_tiles::cache::restrict_to_public(url);
+        let mut s = Session::new(crate::sample::world_project());
+        let e = s
+            .run("layer.addUrl", &json!({"url": url, "from": "http://127.0.0.1:9/doc", "fromDocument": false}))
+            .expect_err("a public restriction must refuse the local address");
+        assert!(e.contains("local network"), "{e}");
+    }
+    #[test]
+    fn false_document_flag_cannot_widen_a_public_origin() {
+        let params = json!({"from": "https://catalog.example/item", "fromDocument": false});
+        let (origin, public) = super::request_origin(&params).unwrap();
+        assert!(public);
+        assert_eq!(super::origin_ceiling(origin, public), crate::render::rustgis_tiles::address::Reach::Public);
+    }
 }

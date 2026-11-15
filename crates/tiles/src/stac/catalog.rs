@@ -57,14 +57,19 @@ pub fn label_of(url: &str) -> String {
 /// The children (`child` links) of a catalog's document fetched from `from`: web addresses only,
 /// sorted by title.
 pub fn parse_children(bytes: &[u8], from: &str) -> Result<Vec<Child>, String> {
+    parse_children_from_origin(bytes, &crate::address::Origin::named(from))
+}
+
+/// Like [`parse_children`], carrying the observed post-redirect [`crate::address::Origin`] and reach.
+pub fn parse_children_from_origin(bytes: &[u8], origin: &crate::address::Origin) -> Result<Vec<Child>, String> {
     let v = super::json(bytes)?;
     if !v.is_object() || !matches!(v.get("type").and_then(Value::as_str), Some("Catalog" | "Collection")) {
         return Err("the answer isn't a STAC catalog or collection".into());
     }
     let mut seen = HashSet::new();
-    let mut out: Vec<Child> = links(&v, "child", from)
+    let mut out: Vec<Child> = links(&v, "child", origin.url())
         .into_iter()
-        .filter(|(url, _)| is_web(url) && crate::address::check(url, Some(from)).is_ok() && seen.insert(url.clone()))
+        .filter(|(url, _)| is_web(url) && origin.check(url).is_ok() && seen.insert(url.clone()))
         .take(MAX_CHILDREN)
         .map(|(url, title)| Child { title: if title.is_empty() { label_of(&url) } else { title }, url })
         .collect();
@@ -264,14 +269,17 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
 /// A walk of a static catalog from one node: the documents still to read, and the items found.
 #[derive(Debug)]
 pub struct Walk {
-    /// Items to read (before more catalogs, so the first found come quickly), with their depth.
-    items: VecDeque<(String, usize)>,
-    /// Catalogs and collections to read, with their depth.
-    folders: VecDeque<(String, usize)>,
+    /// Items to read (before more catalogs, so the first found come quickly), with their depth and
+    /// whether their parent document had internet-only reach.
+    items: VecDeque<(String, usize, bool)>,
+    /// Catalogs and collections to read, with their depth and parent internet-only reach.
+    folders: VecDeque<(String, usize, bool)>,
     /// Addresses handed out to read.
     visited: HashSet<String>,
-    /// Addresses handed out and not yet answered: their depth.
-    asked: Vec<(String, usize)>,
+    /// Addresses handed out and not yet answered: their depth and parent internet-only reach.
+    asked: Vec<(String, usize, bool)>,
+    /// Observed network reach of the root document once it lands.
+    root_reach: Option<crate::address::Reach>,
     filter: Filter,
     limit: usize,
     found: Vec<Item>,
@@ -288,9 +296,10 @@ impl Walk {
     pub fn new(root: &str, filter: Filter, limit: usize) -> Walk {
         Walk {
             items: VecDeque::new(),
-            folders: VecDeque::from([(root.trim().to_string(), 0)]),
+            folders: VecDeque::from([(root.trim().to_string(), 0, false)]),
             visited: HashSet::new(),
             asked: Vec::new(),
+            root_reach: None,
             filter,
             limit: limit.clamp(1, super::MAX_ITEMS),
             found: Vec::new(),
@@ -300,18 +309,28 @@ impl Walk {
         }
     }
 
-    /// The next document to read, if the walk wants one: none once enough items are found, the
-    /// budget is spent or nothing is left (some may still be waiting for their answers).
-    pub fn next_url(&mut self) -> Option<String> {
+    /// Observed network reach of the walk's root document once its response has landed.
+    pub fn root_reach(&self) -> Option<crate::address::Reach> {
+        self.root_reach
+    }
+
+    /// The next document to read, paired with whether its parent document had public-only reach.
+    pub fn next_request(&mut self) -> Option<(String, bool)> {
         while self.found.len() < self.limit && self.reads + self.asked.len() < MAX_READS {
-            let (url, depth) = self.items.pop_front().or_else(|| self.folders.pop_front())?;
+            let (url, depth, parent_public) = self.items.pop_front().or_else(|| self.folders.pop_front())?;
             if !self.visited.insert(url.clone()) {
                 continue;
             }
-            self.asked.push((url.clone(), depth));
-            return Some(url);
+            self.asked.push((url.clone(), depth, parent_public));
+            return Some((url, parent_public));
         }
         None
+    }
+
+    /// The next document to read, if the walk wants one: none once enough items are found, the
+    /// budget is spent or nothing is left (some may still be waiting for their answers).
+    pub fn next_url(&mut self) -> Option<String> {
+        self.next_request().map(|(url, _)| url)
     }
 
     /// How many documents are asked for and not yet answered.
@@ -344,22 +363,37 @@ impl Walk {
 
     /// Takes the answer for `url` (handed out by [`Walk::next_url`]).
     pub fn land(&mut self, url: &str, answer: Result<Vec<u8>, String>) {
-        let Some(i) = self.asked.iter().position(|(u, _)| u == url) else { return };
-        let (_, depth) = self.asked.swap_remove(i);
+        self.land_fetched(url, answer.map(|bytes| crate::cache::Fetched { bytes, origin: crate::address::Origin::named(url) }));
+    }
+
+    /// Like [`Walk::land`], carrying the observed post-redirect [`crate::address::Origin`] and reach.
+    pub fn land_fetched(&mut self, url: &str, answer: Result<crate::cache::Fetched, String>) {
+        let Some(i) = self.asked.iter().position(|(u, _, _)| u == url) else { return };
+        let (_, depth, parent_public) = self.asked.swap_remove(i);
         self.reads += 1;
-        let Some(v) = answer.ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()).filter(Value::is_object) else {
+        let Ok(fetched) = answer else {
             self.failed += 1;
             return;
         };
+        let origin = if parent_public { fetched.origin.narrow_reach(crate::address::Reach::Public) } else { fetched.origin };
+        if depth == 0 {
+            self.root_reach = Some(origin.reach());
+        }
+        let Some(v) = serde_json::from_slice::<Value>(&fetched.bytes).ok().filter(Value::is_object) else {
+            self.failed += 1;
+            return;
+        };
+        let from = origin.url();
+        let child_public = origin.reach() == crate::address::Reach::Public;
         match v.get("type").and_then(Value::as_str) {
-            Some("Feature") => self.keep(&v, url),
+            Some("Feature") => self.keep(&v, &origin),
             Some(kind @ ("Catalog" | "Collection")) => {
                 // A collection whose data are its own assets (as Portolan's are), not items'.
                 if kind == "Collection"
-                    && links(&v, "item", url).is_empty()
-                    && let Some(c) = collection_item(&v, url)
+                    && links(&v, "item", from).is_empty()
+                    && let Some(c) = collection_item(&v, from)
                 {
-                    self.keep(&c, url);
+                    self.keep(&c, &origin);
                 }
                 if depth >= MAX_DEPTH {
                     self.cut |= v.get("links").and_then(Value::as_array).is_some_and(|l| !l.is_empty());
@@ -368,16 +402,20 @@ impl Walk {
                 for (rel, queue) in [("item", true), ("child", false)] {
                     // Links past the most followed leave the walk incomplete, and say so.
                     self.cut |= too_many(&v, rel);
-                    for (u, _) in links(&v, rel, url) {
+                    for (u, _) in links(&v, rel, from) {
                         // A document on the web can't send the walk into the local network.
-                        if !is_web(&u) || self.visited.contains(&u) || crate::address::check(&u, Some(url)).is_err() {
+                        if !is_web(&u) || self.visited.contains(&u) || origin.check(&u).is_err() {
                             continue;
                         }
                         if self.items.len() + self.folders.len() >= MAX_QUEUE {
                             self.cut = true;
                             break;
                         }
-                        if queue { self.items.push_back((u, depth + 1)) } else { self.folders.push_back((u, depth + 1)) }
+                        if queue {
+                            self.items.push_back((u, depth + 1, child_public));
+                        } else {
+                            self.folders.push_back((u, depth + 1, child_public));
+                        }
                     }
                 }
             }
@@ -385,11 +423,11 @@ impl Walk {
         }
     }
 
-    fn keep(&mut self, v: &Value, from: &str) {
+    fn keep(&mut self, v: &Value, origin: &crate::address::Origin) {
         if self.found.len() >= self.limit {
             return;
         }
-        let Some(item) = super::item(v, Some(from)) else {
+        let Some(item) = super::item_with_reach(v, Some(origin.url()), Some(origin.reach())) else {
             self.failed += 1;
             return;
         };
@@ -454,16 +492,23 @@ pub fn walk_blocking(root: &str, filter: Filter, limit: usize) -> Walk {
     let mut w = Walk::new(root, filter, limit);
     loop {
         // A few documents at a time, each on its own thread.
-        let urls: Vec<String> = std::iter::from_fn(|| w.next_url()).take(AT_ONCE).collect();
+        let urls: Vec<(String, bool)> = std::iter::from_fn(|| w.next_request()).take(AT_ONCE).collect();
         if urls.is_empty() {
             break;
         }
-        let answers: Vec<(String, Result<Vec<u8>, String>)> = std::thread::scope(|s| {
+        let answers: Vec<(String, Result<crate::cache::Fetched, String>)> = std::thread::scope(|s| {
             let handles: Vec<_> = urls
                 .into_iter()
-                .map(|u| {
+                .map(|(u, public)| {
                     s.spawn(move || {
-                        let r = crate::cache::download_blocking(&u);
+                        let ceiling = if public { crate::address::Reach::Public } else { crate::address::Reach::Local };
+                        let r = crate::cache::download_blocking_with_origin_within(
+                            &u,
+                            crate::cache::MAX_DOWNLOAD,
+                            std::time::Duration::from_secs(60),
+                            &[],
+                            ceiling,
+                        );
                         (u, r)
                     })
                 })
@@ -471,10 +516,10 @@ pub fn walk_blocking(root: &str, filter: Filter, limit: usize) -> Walk {
             handles.into_iter().filter_map(|h| h.join().ok()).collect()
         });
         for (u, r) in answers {
-            w.land(&u, r);
+            w.land_fetched(&u, r);
         }
         // A thread that died leaves its document asked for: it counts as failed.
-        for u in w.asked.iter().map(|(u, _)| u.clone()).collect::<Vec<_>>() {
+        for u in w.asked.iter().map(|(u, ..)| u.clone()).collect::<Vec<_>>() {
             w.land(&u, Err("the read failed".into()));
         }
     }

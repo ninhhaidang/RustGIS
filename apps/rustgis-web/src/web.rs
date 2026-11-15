@@ -127,7 +127,8 @@ pub fn start() {
                     let font_inbox: Inbox = Inbox::default();
                     let notes = Notes::default();
                     let q = query();
-                    let project = params(&q, "project", 1).into_iter().next();
+                    let allow_links = crate::embed::startup_links_allowed(embedded);
+                    let project = if allow_links { params(&q, "project", 1).into_iter().next() } else { None };
                     let mut app = RustGisApp::with_sample().with_services(services(
                         inbox.clone(),
                         font_inbox,
@@ -135,6 +136,7 @@ pub fn start() {
                         cc.egui_ctx.clone(),
                         embedded,
                     ));
+                    app.embedded = embedded;
                     // Settings › Start-up, unless `?blank`, `?projection=EPSG:3010` (a preset id,
                     // `mercator`, `globe`) or `?extent=minLon,minLat,maxLon,maxLat` says otherwise
                     // for this visit.
@@ -161,27 +163,6 @@ pub fn start() {
                             None => log::warn!("?lang={code}: no such interface language; following the browser's"),
                         }
                     }
-                    // `?project=<url>` opens a native project or imports a GeoLibre map asynchronously.
-                    // Keep this startup path exclusive: other links could otherwise add data
-                    // to different maps depending on when the import completes.
-                    if let Some(url) = &project {
-                        if let Err(e) = app.run("ui.openUrl", serde_json::json!({"url": url})) {
-                            app.session.notify(format!("?project={}", message_with_address(url, &e)), true);
-                        }
-                        let skipped: Vec<&str> =
-                            ["data", "stac", "style", "tiles", "zarr"].into_iter().filter(|k| !params(&q, k, 1).is_empty()).collect();
-                        if !skipped.is_empty() {
-                            let list = skipped.iter().map(|k| format!("?{k}=")).collect::<Vec<_>>().join(", ");
-                            app.session.notify(
-                                rustgis_ui_egui::i18n::fmt(
-                                    "?project= opens a project or imports a map, so {list} links were left out",
-                                    &[("list", &list)],
-                                ),
-                                false,
-                            );
-                        }
-                    }
-                    let links = if project.is_some() { "" } else { q.as_str() };
                     // `#zoom/lat/lon/bearing/pitch` (a MapLibre map link) places the map; without
                     // it, `?extent=` or `?data=`, the first `?style=` opens at the style's own view.
                     let fragment = hash();
@@ -193,60 +174,88 @@ pub fn start() {
                         }
                         r.is_ok()
                     };
-                    let placed = linked || param(&q, "extent").is_some_and(|e| !e.is_empty()) || !params(links, "data", 1).is_empty();
-                    // `?data=<url>` (repeatable) adds data by web address, downloaded in the
-                    // background, the map zoomed to the first file that lands with something to
-                    // show (unless a `#` map link placed it); `?style=<url>` adds a MapLibre style;
-                    // `?tiles=<template>` a tile layer. Links that share a map. What fails is said
-                    // in a notice.
-                    for url in params(links, "data", 16) {
-                        if let Err(e) = app.run("ui.addUrl", serde_json::json!({"url": url, "zoom": !linked})) {
-                            app.session.notify(format!("?data={}", message_with_address(&url, &e)), true);
+                    // `?embed` starts blank and receives its project over postMessage; startup
+                    // address parameters run only in standalone visits.
+                    if allow_links {
+                        // `?project=<url>` opens a native project or imports a GeoLibre map asynchronously.
+                        // Keep this startup path exclusive: other links could otherwise add data
+                        // to different maps depending on when the import completes.
+                        if let Some(url) = &project {
+                            if let Err(e) = app.run("ui.openUrl", serde_json::json!({"url": url})) {
+                                app.session.notify(format!("?project={}", message_with_address(url, &e)), true);
+                            }
+                            let skipped: Vec<&str> =
+                                ["data", "stac", "style", "tiles", "zarr"].into_iter().filter(|k| !params(&q, k, 1).is_empty()).collect();
+                            if !skipped.is_empty() {
+                                let list = skipped.iter().map(|k| format!("?{k}=")).collect::<Vec<_>>().join(", ");
+                                app.session.notify(
+                                    rustgis_ui_egui::i18n::fmt(
+                                        "?project= opens a project or imports a map, so {list} links were left out",
+                                        &[("list", &list)],
+                                    ),
+                                    false,
+                                );
+                            }
                         }
-                    }
-                    // `?stac=<url>`: a STAC item (its default asset is added, signed when it is a
-                    // Planetary Computer one) or a collection (STAC Search opens on it).
-                    // One link: the dialog follows one document at a time, so others are said to
-                    // be skipped rather than lost.
-                    let stac = params(links, "stac", 4);
-                    if let Some(url) = stac.first()
-                        && let Err(e) = app.run("ui.stacLink", serde_json::json!({"url": url}))
-                    {
-                        app.session.notify(format!("?stac={}", message_with_address(url, &e)), true);
-                    }
-                    if stac.len() > 1 {
-                        app.session.notify(format!("only the first ?stac= link is opened ({} more were left out)", stac.len() - 1), false);
-                    }
-                    let mut style_view = project.is_none() && !placed;
-                    for (key, kind) in [("style", Some("style")), ("tiles", None)] {
-                        for url in params(links, key, 8) {
-                            let mut p = serde_json::json!({"url": url});
-                            if let Some(kind) = kind {
-                                p["kind"] = serde_json::json!(kind);
-                                if style_view {
-                                    p["view"] = serde_json::json!(true);
+                        let links = if project.is_some() { "" } else { q.as_str() };
+                        let placed = linked || param(&q, "extent").is_some_and(|e| !e.is_empty()) || !params(links, "data", 1).is_empty();
+                        // `?data=<url>` (repeatable) adds data by web address, downloaded in the
+                        // background, the map zoomed to the first file that lands with something to
+                        // show (unless a `#` map link placed it); `?style=<url>` adds a MapLibre style;
+                        // `?tiles=<template>` a tile layer. Links that share a map. What fails is said
+                        // in a notice.
+                        for url in params(links, "data", 16) {
+                            if let Err(e) = app.run("ui.addUrl", serde_json::json!({"url": url, "zoom": !linked})) {
+                                app.session.notify(format!("?data={}", message_with_address(&url, &e)), true);
+                            }
+                        }
+                        // `?stac=<url>`: a STAC item (its default asset is added, signed when it is a
+                        // Planetary Computer one) or a collection (STAC Search opens on it).
+                        // One link: the dialog follows one document at a time, so others are said to
+                        // be skipped rather than lost.
+                        let stac = params(links, "stac", 4);
+                        if let Some(url) = stac.first()
+                            && let Err(e) = app.run("ui.stacLink", serde_json::json!({"url": url}))
+                        {
+                            app.session.notify(format!("?stac={}", message_with_address(url, &e)), true);
+                        }
+                        if stac.len() > 1 {
+                            app.session
+                                .notify(format!("only the first ?stac= link is opened ({} more were left out)", stac.len() - 1), false);
+                        }
+                        let mut style_view = project.is_none() && !placed;
+                        for (key, kind) in [("style", Some("style")), ("tiles", None)] {
+                            for url in params(links, key, 8) {
+                                let mut p = serde_json::json!({"url": url});
+                                if let Some(kind) = kind {
+                                    p["kind"] = serde_json::json!(kind);
+                                    if style_view {
+                                        p["view"] = serde_json::json!(true);
+                                    }
+                                }
+                                match app.run("map.addTiles", p) {
+                                    // The first style added opens at its view, not one that failed.
+                                    Ok(_) => style_view &= kind.is_none(),
+                                    Err(e) => app.session.notify(format!("?{key}={}", message_with_address(&url, &e)), true),
                                 }
                             }
-                            match app.run("map.addTiles", p) {
-                                // The first style added opens at its view, not one that failed.
-                                Ok(_) => style_view &= kind.is_none(),
-                                Err(e) => app.session.notify(format!("?{key}={}", message_with_address(&url, &e)), true),
-                            }
                         }
-                    }
-                    // `?zarr=<url>` opens Add Zarr Variable on a store, its variables listed.
-                    // Read as `?data=` is, so a `+` in the address stays a `+`.
-                    if let Some(url) = params(links, "zarr", 1).into_iter().next()
-                        && let Err(e) = app.run("ui.addZarr", serde_json::json!({"address": url}))
-                    {
-                        app.session.notify(format!("?zarr={}", message_with_address(&url, &e)), true);
-                    }
-                    // `?registry=<url>` opens the Plugin Manager on another plugin registry for this
-                    // visit (a pull request's preview, say); installing still asks as usual.
-                    if let Some(url) = param(&q, "registry").filter(|u| !u.is_empty())
-                        && let Err(e) = app.run("ui.plugins", serde_json::json!({"open": true, "registry": url, "tab": "browse"}))
-                    {
-                        log::warn!("?registry={url}: {e}");
+                        // `?zarr=<url>` opens Add Zarr Variable on a store, its variables listed.
+                        // Read as `?data=` is, so a `+` in the address stays a `+`.
+                        if let Some(url) = params(links, "zarr", 1).into_iter().next()
+                            && let Err(e) = app.run("ui.addZarr", serde_json::json!({"address": url}))
+                        {
+                            app.session.notify(format!("?zarr={}", message_with_address(&url, &e)), true);
+                        }
+                        // `?registry=<url>` opens the Plugin Manager on another plugin registry for this
+                        // visit (a pull request's preview, say); installing still asks as usual.
+                        if let Some(url) = param(&q, "registry").filter(|u| !u.is_empty())
+                            && let Err(e) = app.run("ui.plugins", serde_json::json!({"open": true, "registry": url, "tab": "browse"}))
+                        {
+                            log::warn!("?registry={url}: {e}");
+                        }
+                    } else {
+                        crate::embed::notify_skipped_startup_links(&mut app.session, &q, embedded);
                     }
                     let embed = if embedded {
                         match Embed::listen(cc.egui_ctx.clone()) {
@@ -850,14 +859,15 @@ async fn fetch_reached(
 /// following redirects; an error status is `HTTP <status>`.
 async fn post_json(
     url: &str,
+    ceiling: rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::address::Reach,
     body: &str,
     capture: Capture,
     still: Option<rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::cache::Still>,
-) -> Result<Vec<u8>, String> {
+) -> Result<rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::cache::Fetched, String> {
     use rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::{cache::RequestDiagnostics, failure::Failure};
     let mut diagnostics = RequestDiagnostics::with_capture(url, "POST", capture);
     let answer = async {
-        use rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::{address, cache, logins, s3};
+        use rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::{cache, logins, s3};
         let (promise, authenticated) = crate::request::prepare_and_send(
             &still,
             || async {
@@ -868,11 +878,13 @@ async fn post_json(
                 if prepared.signed {
                     return Err("S3 signed JSON POST requests are not supported.".into());
                 }
-                let target = logins::inherit(url, &prepared.url);
+                let destination = check_destination(&prepared.url, ceiling)?;
+                let target = logins::inherit(url, &destination);
                 let login = logins::apply(&target).map_err(str::to_string)?;
-                check_destination(prepared.url.as_str(), address::Reach::Local)?;
-                // Only the request carries the login (an API key in the query); messages keep the plain address.
-                let request = login.as_ref().map_or(prepared.url.as_str(), |applied| applied.url.as_str());
+                let request = match &login {
+                    Some(applied) => check_destination(&applied.url, ceiling)?,
+                    None => destination,
+                };
                 let err = |e: wasm_bindgen::JsValue| {
                     if login.is_some() { "the browser couldn't process the authenticated request".to_string() } else { format!("{e:?}") }
                 };
@@ -895,7 +907,7 @@ async fn post_json(
                     init.set_referrer_policy(web_sys::ReferrerPolicy::NoReferrer);
                     init.set_credentials(web_sys::RequestCredentials::Omit);
                 }
-                Ok((window, request.to_string(), init, login.is_some()))
+                Ok((window, request, init, login.is_some()))
             },
             |(window, request, init, authenticated)| (window.fetch_with_str_and_init(&request, &init), authenticated),
         )
@@ -918,7 +930,14 @@ async fn post_json(
             if bytes.length() as usize > cache::MAX_BYTES {
                 return Err(format!("{} bytes is too large", bytes.length()));
             }
-            Ok(bytes.to_vec())
+            let destination = check_destination(&resp.url(), ceiling)?;
+            let origin = cache::Fetched {
+                bytes: bytes.to_vec(),
+                origin: rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::address::Origin::named(&destination)
+                    .retain_binding(url)?
+                    .narrow_reach(ceiling),
+            };
+            Ok(origin)
         }
         .await;
         cache::check_still(&still)?;
@@ -934,13 +953,14 @@ async fn post_json(
 /// (`Access-Control-Expose-Headers`); without it, the header is read as any other file's.
 async fn head(
     url: &str,
+    ceiling: rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::address::Reach,
     capture: Capture,
     still: Option<rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::cache::Still>,
 ) -> Result<rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::cache::Head, String> {
     use rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::{cache::RequestDiagnostics, failure::Failure};
     let mut diagnostics = RequestDiagnostics::with_capture(url, "HEAD", capture);
     let answer = async {
-        use rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::{address, cache, logins, s3};
+        use rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::{cache, logins, s3};
         let sent = crate::request::prepare_and_send(
             &still,
             || async {
@@ -952,11 +972,13 @@ async fn head(
                 if prepared.signed {
                     return Ok(None);
                 }
-                let url = prepared.url.as_str();
-                check_destination(url, address::Reach::Local)?;
-                let target = logins::inherit(bound, url);
+                let destination = check_destination(&prepared.url, ceiling)?;
+                let target = logins::inherit(bound, &destination);
                 let login = logins::apply(&target).map_err(str::to_string)?;
-                let request = login.as_ref().map_or(url, |applied| applied.url.as_str());
+                let request = match &login {
+                    Some(applied) => check_destination(&applied.url, ceiling)?,
+                    None => destination.clone(),
+                };
                 let err = |e: wasm_bindgen::JsValue| {
                     if login.is_some() { "the browser couldn't process the authenticated request".to_string() } else { format!("{e:?}") }
                 };
@@ -980,7 +1002,7 @@ async fn head(
                     init.set_referrer_policy(web_sys::ReferrerPolicy::NoReferrer);
                     init.set_credentials(web_sys::RequestCredentials::Omit);
                 }
-                Ok(Some((window, request.to_string(), init, url.to_string(), login.is_some())))
+                Ok(Some((window, request, init, destination, login.is_some())))
             },
             |request| {
                 request.map(|(window, request, init, url, authenticated)| {
@@ -1128,16 +1150,16 @@ fn services(inbox: Inbox, font_inbox: Inbox, notes: Notes, ctx: egui::Context, e
         });
     });
     // So are HEAD requests (a GeoTIFF made on request saying how long its header is).
-    rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::cache::set_header(|url, done| {
+    rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::cache::set_header(|url, ceiling, done| {
         wasm_bindgen_futures::spawn_local(crate::request::handoff(
-            move |capture, still| async move { head(&url, capture, still).await },
+            move |capture, still| async move { head(&url, ceiling, capture, still).await },
             done,
         ));
     });
     // So are JSON documents POSTed (the NLDI's flowtrace).
-    rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::cache::set_poster(|url, body, done| {
+    rustgis_ui_egui::rustgis_engine::render::rustgis_tiles::cache::set_poster_with_origin(|url, ceiling, body, done| {
         wasm_bindgen_futures::spawn_local(crate::request::handoff(
-            move |capture, still| async move { post_json(&url, &body, capture, still).await },
+            move |capture, still| async move { post_json(&url, ceiling, &body, capture, still).await },
             done,
         ));
     });
@@ -1147,25 +1169,15 @@ fn services(inbox: Inbox, font_inbox: Inbox, notes: Notes, ctx: egui::Context, e
     let font_sink = font_inbox.clone();
     let fetch_ctx = ctx.clone();
     let http_ctx = ctx.clone();
-    let (load_pref, save_pref): (Box<dyn Fn(&str) -> Option<String>>, Box<dyn Fn(&str, &str)>) = if embedded {
-        let prefs = Rc::new(RefCell::new(HashMap::<String, String>::new()));
-        let saved = prefs.clone();
-        (
-            Box::new(move |key: &str| prefs.borrow().get(key).cloned()),
-            Box::new(move |key: &str, value: &str| {
-                saved.borrow_mut().insert(key.to_string(), value.to_string());
-            }),
-        )
-    } else {
-        (
-            Box::new(|key: &str| storage().and_then(|s| s.get_item(&format!("rustgis.{key}")).ok().flatten())),
-            Box::new(|key: &str, value: &str| {
-                if let Some(s) = storage() {
-                    let _ = s.set_item(&format!("rustgis.{key}"), value);
-                }
-            }),
-        )
-    };
+    let (load_pref, save_pref) = crate::embed::pref_pair(
+        embedded,
+        |key: &str| storage().and_then(|s| s.get_item(&format!("rustgis.{key}")).ok().flatten()),
+        |key: &str, value: &str| {
+            if let Some(s) = storage() {
+                let _ = s.set_item(&format!("rustgis.{key}"), value);
+            }
+        },
+    );
     // Plugins' settings, bound before `with_services` restores the plugins that were installed.
     rustgis_ui_egui::rustgis_engine::plugins::settings::set_browser_storage(plugin_settings_storage(embedded));
     let arcgis_ctx = ctx.clone();
