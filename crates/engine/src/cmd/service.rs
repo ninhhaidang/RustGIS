@@ -507,6 +507,8 @@ pub(crate) fn bounds_of(v: Option<&Value>) -> Result<Option<[f64; 4]>, String> {
 /// (75 s at most). A page is fetched only where the page before it may point.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn download_features(s: &mut Session, name: &str, url: &str, max: usize) -> Result<Vec<u8>, String> {
+    // Its features alone: what they are used for (a task's input, an export) has no layer to draw
+    // with the service's symbology, so how the description says it is drawn (`.1`) is dropped.
     match download_layer(s, name, url, max, false)?.0 {
         Downloaded::Bytes(bytes) => Ok(bytes),
         // Not given without protocol buffer pages.

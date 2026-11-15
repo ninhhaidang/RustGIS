@@ -189,6 +189,11 @@ impl Session {
         if ["geolibreProject", "geolibreLayer", "geolibreZarr"].iter().any(|k| p.get(k).is_some()) {
             return Err("internal import targets require an engine import request".into());
         }
+        // How an ArcGIS service draws a layer is read by the app from the layer's description
+        // while it reads the features (#2080), never asked for with an address.
+        if p.get("drawingInfo").is_some() {
+            return Err("drawingInfo is internal: the app reads it from an ArcGIS layer's description".into());
+        }
         if self.policy_has_no_operation() {
             return self.request_url_authorized(p);
         }

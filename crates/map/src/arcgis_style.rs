@@ -2,12 +2,17 @@
 //! it) translated onto a feature layer just added from its service (#2080).
 use serde_json::Value;
 
-use crate::symbology::{Dash, LineStroke, MAX_STROKE_WIDTH, Marker};
-use crate::{Layer, Renderer, Rgba, Symbol};
-use rustgis_data::GeometryType;
+use std::collections::{BTreeMap, BTreeSet};
+
+use crate::symbology::{ClassMethod, Dash, LineStroke, MAX_STROKE_WIDTH, Marker, OTHER_FILL, normalize_label};
+use crate::{Layer, Ramp, Renderer, Rgba, Symbol};
+use rustgis_data::{FieldType, GeometryType};
 
 /// The largest marker, in points, as Style › Marker sizes one.
 const MAX_MARKER_SIZE: f32 = 80.0;
+
+/// The most classes a service's renderer brings, as many as a QGIS style's.
+const MAX_CLASSES: usize = 4096;
 
 /// The colour a picture marker is drawn in, which RustGIS can't draw yet.
 const PICTURE_FILL: Rgba = Rgba::rgb(0x80, 0x80, 0x80);
@@ -36,25 +41,37 @@ impl Notes {
 }
 
 /// Gives `layer`, a feature layer just added from an ArcGIS service, the symbology its
-/// description's `drawingInfo` sets: its renderer, when RustGIS draws its kind, and its
-/// transparency. What can't be drawn as the service draws it is noted, its labels too; a renderer
-/// of a kind RustGIS doesn't read leaves the layer's own. Anything but an object changes nothing.
+/// description's `drawingInfo` sets: its renderer, when RustGIS draws its kind (a simple one, by
+/// unique values of a field or by class breaks), and its transparency. What can't be drawn as the
+/// service draws it is noted, its labels too; a renderer RustGIS doesn't read leaves the layer's
+/// own. Anything but an object changes nothing.
 pub fn apply(layer: &mut Layer, drawing_info: &Value, notes: &mut Notes) {
     if !drawing_info.is_object() || layer.is_raster() {
         return;
     }
-    if let Some(t) = drawing_info.get("transparency").and_then(Value::as_f64).filter(|t| t.is_finite()) {
-        if !(0.0..=100.0).contains(&t) {
-            notes.add("transparency past 0 to 100, brought into it");
+    match drawing_info.get("transparency").filter(|t| !t.is_null()).map(|t| t.as_f64().filter(|t| t.is_finite())) {
+        Some(Some(t)) => {
+            if !(0.0..=100.0).contains(&t) {
+                notes.add("transparency past 0 to 100, brought into it");
+            }
+            layer.transparency = t.clamp(0.0, 100.0) as f32;
         }
-        layer.transparency = t.clamp(0.0, 100.0) as f32;
+        Some(None) => notes.add("a transparency RustGIS can't read, left out"),
+        None => {}
     }
     // The service's labels aren't carried over (#2080), unless it shows none.
     let labelled = drawing_info.get("labelingInfo").and_then(Value::as_array).is_some_and(|l| !l.is_empty());
     if labelled && drawing_info.get("showLabels").and_then(Value::as_bool) != Some(false) {
         notes.add("its labels, left out");
     }
-    let Some(renderer) = drawing_info.get("renderer").filter(|r| r.is_object()) else { return };
+    let renderer = match drawing_info.get("renderer") {
+        None | Some(Value::Null) => return,
+        Some(r) if r.is_object() => r,
+        Some(_) => {
+            notes.add("its renderer, which RustGIS can't read, drawn with RustGIS's single symbol");
+            return;
+        }
+    };
     let g = layer.geometry_type();
     if g == GeometryType::None {
         return;
@@ -64,13 +81,13 @@ pub fn apply(layer: &mut Layer, drawing_info: &Value, notes: &mut Notes) {
             notes.add("its renderer names no symbol, drawn with RustGIS's single symbol");
         }
         Some("simple") => {
-            if let Some((symbol, dash)) = symbol(renderer.get("symbol").unwrap_or(&Value::Null), g, notes) {
+            if let Some((symbol, dash)) = symbol(renderer.get("symbol").unwrap_or(&Value::Null), g, None, notes) {
                 layer.renderer = Renderer::Single(symbol);
-                layer.line_strokes = dash.map(|d| vec![LineStroke { dash: Some(d), ..LineStroke::default() }]).unwrap_or_default();
+                layer.line_strokes = dash.map(strokes).unwrap_or_default();
             }
         }
-        Some("uniqueValue") => notes.add("its renderer by unique values, drawn with RustGIS's single symbol"),
-        Some("classBreaks") => notes.add("its renderer by class breaks, drawn with RustGIS's single symbol"),
+        Some("uniqueValue") => unique(layer, renderer, g, notes),
+        Some("classBreaks") => class_breaks(layer, renderer, g, notes),
         _ => notes.add("its renderer, of a kind RustGIS doesn't read, drawn with RustGIS's single symbol"),
     }
     if renderer.get("visualVariables").and_then(Value::as_array).is_some_and(|v| !v.is_empty()) {
@@ -81,15 +98,258 @@ pub fn apply(layer: &mut Layer, drawing_info: &Value, notes: &mut Notes) {
     }
 }
 
+/// A renderer by unique values (`uniqueValue`) of one field as a Unique Values renderer: a class
+/// for each value it lists, with its label, and its default symbol (`defaultSymbol`, with
+/// `defaultLabel`) for the rest, which draw nothing without one, as ArcGIS draws them. One by
+/// several fields or by an expression leaves the layer's own renderer, noted.
+fn unique(layer: &mut Layer, r: &Value, g: GeometryType, notes: &mut Notes) {
+    let Some((fi, field)) = class_field(layer, r, "field1", notes) else { return };
+    if ["field2", "field3"].iter().any(|k| r.get(k).and_then(Value::as_str).is_some_and(|f| !f.trim().is_empty())) {
+        notes.add("its renderer by the values of several fields, drawn with RustGIS's single symbol");
+        return;
+    }
+    let ty = layer.dataset.fields.get(fi).map_or(FieldType::Text, |f| f.ty);
+    let infos = r.get("uniqueValueInfos").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+    let (ramp, n) = (Ramp::default(), infos.len().min(MAX_CLASSES));
+    let mut classes: Vec<(String, Symbol)> = Vec::new();
+    let mut seen = BTreeSet::new();
+    let (mut class_labels, mut class_strokes) = (BTreeMap::new(), BTreeMap::new());
+    for info in infos {
+        let Some(value) = info.get("value").and_then(|v| class_value(v, ty)) else {
+            notes.add("classes with no value RustGIS can read, left out");
+            continue;
+        };
+        // A value listed again is drawn as its first class, as ArcGIS draws it.
+        if seen.contains(&value) {
+            notes.add("values listed twice, drawn as their first class");
+            continue;
+        }
+        if classes.len() >= MAX_CLASSES {
+            notes.add("classes past the first 4096, drawn as all other values");
+            break;
+        }
+        seen.insert(value.clone());
+        let color = ramp.pick(classes.len(), n);
+        let (symbol, dash) = class_symbol(info.get("symbol"), g, Some(color), color, notes);
+        if let Some(label) = label(info, "label", notes).filter(|l| *l != value) {
+            class_labels.insert(value.clone(), label);
+        }
+        if let Some(d) = dash {
+            class_strokes.insert(value.clone(), strokes(d));
+        }
+        classes.push((value, symbol));
+    }
+    if classes.is_empty() {
+        notes.add("its renderer by unique values lists none, drawn with RustGIS's single symbol");
+        return;
+    }
+    let (other, other_strokes) = match r.get("defaultSymbol").filter(|s| !s.is_null()) {
+        // A picture marker of its own is grey, as a simple renderer's: there is no ramp to take.
+        Some(s) => {
+            let (symbol, dash) = class_symbol(Some(s), g, None, OTHER_FILL, notes);
+            (symbol, dash.map(strokes).unwrap_or_default())
+        }
+        None => {
+            // They draw nothing, so a layer whose values it doesn't list would show nothing
+            // unsaid (its legend leaves a hidden <all other values> out, #207).
+            let ds = &layer.dataset;
+            let printed = |v: &rustgis_data::Value| match v {
+                rustgis_data::Value::Text(t) => t.clone(),
+                v => v.to_string(),
+            };
+            if (0..ds.features.len()).any(|row| !seen.contains(&printed(ds.value(row, fi)))) {
+                notes.add("features of values it doesn't list, not drawn, as ArcGIS draws them");
+            }
+            (Symbol { fill: Rgba::TRANSPARENT, stroke: Rgba::TRANSPARENT, stroke_width: 0.0, ..Symbol::default_for(g, 0) }, Vec::new())
+        }
+    };
+    layer.renderer = Renderer::Unique {
+        field,
+        classes,
+        other,
+        ramp,
+        class_labels,
+        other_label: label(r, "defaultLabel", notes),
+        class_strokes,
+        other_strokes,
+        class_fills: BTreeMap::new(),
+        other_fills: Vec::new(),
+        expression: None,
+    };
+    layer.line_strokes = Vec::new();
+}
+
+/// A renderer by class breaks (`classBreaks`) as a Graduated Colors renderer with its bounds, kept
+/// as they are (Manual), each class with its label. What RustGIS draws otherwise is noted: values
+/// outside every class or none (ArcGIS draws them with its default symbol, or not at all), gaps
+/// between classes, a background fill. One by a normalised value or an expression leaves the
+/// layer's own renderer, noted.
+fn class_breaks(layer: &mut Layer, r: &Value, g: GeometryType, notes: &mut Notes) {
+    if r.get("normalizationType").and_then(Value::as_str).is_some_and(|t| t != "esriNormalizeByNone") {
+        notes.add("its renderer by class breaks of a normalised value, drawn with RustGIS's single symbol");
+        return;
+    }
+    let Some((fi, field)) = class_field(layer, r, "field", notes) else { return };
+    let finite = |v: Option<&Value>| v.and_then(Value::as_f64).filter(|v| v.is_finite());
+    let mut infos: Vec<(f64, &Value)> = Vec::new();
+    for info in r.get("classBreakInfos").and_then(Value::as_array).into_iter().flatten() {
+        let Some(max) = finite(info.get("classMaxValue")) else {
+            notes.add("classes with no upper bound RustGIS can read, left out");
+            continue;
+        };
+        if infos.len() >= MAX_CLASSES {
+            notes.add("classes past the first 4096, left out");
+            break;
+        }
+        infos.push((max, info));
+    }
+    let Some(last) = infos.iter().map(|i| i.0).reduce(f64::max) else {
+        notes.add("its renderer by class breaks lists none, drawn with RustGIS's single symbol");
+        return;
+    };
+    infos.sort_by(|a, b| a.0.total_cmp(&b.0));
+    // A class whose upper bound one before has is never drawn: what it holds is in that one.
+    let listed = infos.len();
+    infos.dedup_by(|b, a| b.0 == a.0);
+    if infos.len() < listed {
+        notes.add("classes with the upper bound of one before, left out");
+    }
+    let ds = &layer.dataset;
+    let values = || (0..ds.features.len()).map(|row| ds.value(row, fi).as_f64());
+    let lowest = |info: &Value| finite(info.get("classMinValue"));
+    let min = finite(r.get("minValue"))
+        .or_else(|| infos.first().and_then(|i| lowest(i.1)))
+        .or_else(|| values().flatten().filter(|v| v.is_finite()).reduce(f64::min))
+        .unwrap_or(last)
+        .min(infos.first().map_or(last, |i| i.0));
+    // A value between one class's top and the next one's lowest is in none for ArcGIS; here, in
+    // the next. Where classes overlap, both draw a value in the first that holds it.
+    let tops: Vec<f64> = infos.iter().map(|i| i.0).collect();
+    let in_gap = |v: f64| {
+        let i = tops.partition_point(|t| *t < v);
+        i > 0 && infos.get(i).and_then(|b| lowest(b.1)).is_some_and(|lo| v < lo)
+    };
+    if values().flatten().any(in_gap) {
+        notes.add("values between its classes, drawn in the class above");
+    }
+    if values().flatten().any(|v| v < min || v > last) {
+        notes.add("values below its first class or above its last, drawn in the first or last class");
+    }
+    if values().any(|v| v.is_none()) {
+        notes.add("features with no value, drawn grey");
+    }
+    if r.get("backgroundFillSymbol").is_some_and(Value::is_object) {
+        notes.add("its background fill under the class symbols, left out");
+    }
+    let (ramp, n) = (Ramp::default(), infos.len());
+    let (mut symbols, mut class_labels, mut class_strokes) = (Vec::new(), BTreeMap::new(), BTreeMap::new());
+    for (i, (_, info)) in infos.iter().enumerate() {
+        let color = ramp.pick(i, n);
+        let (symbol, dash) = class_symbol(info.get("symbol"), g, Some(color), color, notes);
+        if let Some(label) = label(info, "label", notes) {
+            class_labels.insert(i, label);
+        }
+        if let Some(d) = dash {
+            class_strokes.insert(i, strokes(d));
+        }
+        symbols.push(symbol);
+    }
+    layer.renderer = Renderer::Graduated {
+        field,
+        breaks: infos.iter().map(|i| i.0).collect(),
+        symbols,
+        ramp,
+        method: ClassMethod::Manual,
+        min,
+        classes: n,
+        class_labels,
+        class_strokes,
+        class_fills: BTreeMap::new(),
+    };
+    layer.line_strokes = Vec::new();
+}
+
+/// The layer's field a renderer classes by (its `key`), its place and its name as the layer has
+/// it; `None`, noted, when it classes by an expression (`valueExpression`, in Arcade), names none
+/// or one the layer hasn't.
+fn class_field(layer: &Layer, r: &Value, key: &str, notes: &mut Notes) -> Option<(usize, String)> {
+    if r.get("valueExpression").and_then(Value::as_str).is_some_and(|e| !e.trim().is_empty()) {
+        notes.add("its renderer by an expression (Arcade), drawn with RustGIS's single symbol");
+        return None;
+    }
+    let Some(name) = r.get(key).and_then(Value::as_str).filter(|f| !f.trim().is_empty()) else {
+        notes.add("its renderer names no field, drawn with RustGIS's single symbol");
+        return None;
+    };
+    let Some(fi) = layer.dataset.field_index(name.trim()) else {
+        notes.add("its renderer's field, which the layer hasn't, drawn with RustGIS's single symbol");
+        return None;
+    };
+    Some((fi, layer.dataset.fields.get(fi).map_or_else(|| name.to_string(), |f| f.name.clone())))
+}
+
+/// A class's value as the layer's values print where they are matched to it (Unique Values
+/// compares them as text): a number in a numeric field as RustGIS prints it (`"1.0"` as `1`);
+/// `None` for a value that is neither text nor a number.
+fn class_value(v: &Value, ty: FieldType) -> Option<String> {
+    let text = match v {
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.to_string(),
+        _ => return None,
+    };
+    if !matches!(ty, FieldType::Integer | FieldType::Double) {
+        return Some(text);
+    }
+    let t = text.trim();
+    let printed = t
+        .parse::<i64>()
+        .map(rustgis_data::Value::Int)
+        .ok()
+        .or_else(|| t.parse::<f64>().ok().filter(|v| v.is_finite()).map(rustgis_data::Value::Float))
+        .map(|v| v.to_string());
+    Some(printed.unwrap_or(text))
+}
+
+/// A legend label (`key`), when there is one, as one typed by hand is kept (one line, at most
+/// [`MAX_LABEL`](crate::symbology::MAX_LABEL) characters); one that changes is noted.
+fn label(v: &Value, key: &str, notes: &mut Notes) -> Option<String> {
+    let text = v.get(key).and_then(Value::as_str)?;
+    let label = normalize_label(text);
+    if label != text.trim() {
+        notes.add("legend labels of several lines or over 200 characters, joined into one line and cut");
+    }
+    Some(label).filter(|l| !l.is_empty())
+}
+
+/// A class's symbol for a `g` layer and its line's dash pattern: its own; a picture marker as a
+/// circle in `picture`, a ramp's colour so that its classes tell apart (grey without one); one
+/// RustGIS can't draw as its own symbol in `color` (noted).
+fn class_symbol(s: Option<&Value>, g: GeometryType, picture: Option<Rgba>, color: Rgba, notes: &mut Notes) -> (Symbol, Option<Dash>) {
+    symbol(s.unwrap_or(&Value::Null), g, picture, notes).unwrap_or_else(|| {
+        let base = Symbol::default_for(g, 0);
+        let symbol = match g {
+            GeometryType::Polyline => Symbol { fill: color, stroke: color, ..base },
+            GeometryType::Polygon => Symbol { fill: color.with_alpha(base.fill.a()), ..base },
+            _ => Symbol { fill: color, ..base },
+        };
+        (symbol, None)
+    })
+}
+
+/// A dashed line's stacked stroke, which takes its colour and width from the renderer.
+fn strokes(dash: Dash) -> Vec<LineStroke> {
+    vec![LineStroke { dash: Some(dash), ..LineStroke::default() }]
+}
+
 /// An ArcGIS symbol as a RustGIS symbol for a `g` layer, with a line's dash pattern; `None` (noted)
-/// for a symbol that isn't for that geometry or that RustGIS can't draw.
-fn symbol(s: &Value, g: GeometryType, notes: &mut Notes) -> Option<(Symbol, Option<Dash>)> {
+/// for a symbol that isn't for that geometry or that RustGIS can't draw. A picture marker is a
+/// circle in `picture`, a ramp's colour, or grey without one.
+fn symbol(s: &Value, g: GeometryType, picture: Option<Rgba>, notes: &mut Notes) -> Option<(Symbol, Option<Dash>)> {
     let kind = s.get("type").and_then(Value::as_str).unwrap_or_default();
     let base = Symbol::default_for(g, 0);
     match (kind, g) {
         ("esriSFS", GeometryType::Polygon) => {
-            let style = s.get("style").and_then(Value::as_str).unwrap_or("esriSFSSolid");
-            let fill = match style {
+            let fill = match style(s, notes).unwrap_or("esriSFSSolid") {
                 "esriSFSNull" | "esriSFSHollow" => Rgba::TRANSPARENT,
                 "esriSFSSolid" => color(s.get("color"), notes),
                 "esriSFSBackwardDiagonal"
@@ -114,7 +374,7 @@ fn symbol(s: &Value, g: GeometryType, notes: &mut Notes) -> Option<(Symbol, Opti
             Some((Symbol { fill: c, stroke: c, stroke_width: width, ..base }, dash))
         }
         ("esriSMS", GeometryType::Point) => {
-            let marker = match s.get("style").and_then(Value::as_str) {
+            let marker = match style(s, notes) {
                 Some("esriSMSSquare") => Marker::Square,
                 Some("esriSMSDiamond") => Marker::Diamond,
                 Some("esriSMSTriangle") => Marker::Triangle,
@@ -146,12 +406,21 @@ fn symbol(s: &Value, g: GeometryType, notes: &mut Notes) -> Option<(Symbol, Opti
             Some((Symbol { fill, stroke, stroke_width, size: size(s.get("size"), base.size, notes), marker }, None))
         }
         ("esriPMS", GeometryType::Point) => {
-            notes.add("picture markers, drawn as grey circles");
+            let fill = match picture {
+                Some(c) => {
+                    notes.add("picture markers, drawn as circles in a ramp's colours");
+                    c
+                }
+                None => {
+                    notes.add("picture markers, drawn as grey circles");
+                    PICTURE_FILL
+                }
+            };
             // The larger of its width and height, so that one past the largest is said once.
             let points = |k: &str| s.get(k).and_then(Value::as_f64).filter(|v| v.is_finite()).unwrap_or(f64::NEG_INFINITY);
             let larger = if points("height") > points("width") { s.get("height") } else { s.get("width") };
             let size = size(larger, base.size, notes);
-            Some((Symbol { fill: PICTURE_FILL, size, ..base }, None))
+            Some((Symbol { fill, size, ..base }, None))
         }
         ("esriPFS", GeometryType::Polygon) => {
             notes.add("picture fills, drawn with their outline only");
@@ -184,11 +453,11 @@ fn outline(s: &Value, dashed: &'static str, notes: &mut Notes) -> (Rgba, f32) {
 /// RustGIS doesn't know is drawn solid, noted.
 fn line(s: Option<&Value>, width: f32, notes: &mut Notes) -> (Rgba, f32, Option<Dash>) {
     let Some(s) = s.filter(|s| s.is_object()) else { return (Rgba::TRANSPARENT, 0.0, None) };
-    let style = s.get("style").and_then(Value::as_str).unwrap_or("esriSLSSolid");
+    let style = style(s, notes).unwrap_or("esriSLSSolid");
     if style == "esriSLSNull" {
         return (Rgba::TRANSPARENT, 0.0, None);
     }
-    let w = s.get("width").and_then(Value::as_f64).filter(|w| w.is_finite()).map_or(width, |w| {
+    let w = number(s.get("width"), "line widths RustGIS can't read, drawn at RustGIS's", notes).map_or(width, |w| {
         if w > f64::from(MAX_STROKE_WIDTH) {
             notes.add("line widths past RustGIS's widest (50 points), drawn at it");
         } else if w < 0.0 {
@@ -251,7 +520,7 @@ fn color(v: Option<&Value>, notes: &mut Notes) -> Rgba {
 /// A marker's size in points, `default` when it names none, within Style › Marker's range; one
 /// past it, or below 0, is said.
 fn size(v: Option<&Value>, default: f32, notes: &mut Notes) -> f32 {
-    v.and_then(Value::as_f64).filter(|s| s.is_finite()).map_or(default, |s| {
+    number(v, "marker sizes RustGIS can't read, drawn at RustGIS's", notes).map_or(default, |s| {
         if s > f64::from(MAX_MARKER_SIZE) {
             notes.add("marker sizes past RustGIS's largest (80 points), drawn at it");
         } else if s < 0.0 {
@@ -259,6 +528,28 @@ fn size(v: Option<&Value>, default: f32, notes: &mut Notes) -> f32 {
         }
         (s as f32).clamp(0.0, MAX_MARKER_SIZE)
     })
+}
+
+/// A symbol's style (`style`), `None` when it names none; one that isn't text is noted and taken as
+/// none (ArcGIS's default style).
+fn style<'a>(s: &'a Value, notes: &mut Notes) -> Option<&'a str> {
+    let v = s.get("style").filter(|v| !v.is_null())?;
+    let style = v.as_str();
+    if style.is_none() {
+        notes.add("styles RustGIS can't read, drawn as ArcGIS's default");
+    }
+    style
+}
+
+/// A number of a symbol (`v`), `None` when it names none; one that isn't a number is noted with
+/// `unread` and taken as none.
+fn number(v: Option<&Value>, unread: &'static str, notes: &mut Notes) -> Option<f64> {
+    let v = v.filter(|v| !v.is_null())?;
+    let n = v.as_f64().filter(|n| n.is_finite());
+    if n.is_none() {
+        notes.add(unread);
+    }
+    n
 }
 
 /// Whether a marker is turned or shifted from its point.
@@ -379,11 +670,11 @@ mod tests {
         for (info, said) in [
             (
                 json!({"renderer": {"type": "uniqueValue", "field1": "NAME", "uniqueValueInfos": []}}),
-                "its renderer by unique values, drawn with RustGIS's single symbol",
+                "its renderer by unique values lists none, drawn with RustGIS's single symbol",
             ),
             (
                 json!({"renderer": {"type": "classBreaks", "field": "NAME", "classBreakInfos": []}}),
-                "its renderer by class breaks, drawn with RustGIS's single symbol",
+                "its renderer by class breaks lists none, drawn with RustGIS's single symbol",
             ),
             (json!({"renderer": {"type": "heatmap"}}), "its renderer, of a kind RustGIS doesn't read, drawn with RustGIS's single symbol"),
             (
@@ -520,10 +811,264 @@ mod tests {
         assert_eq!(s.size, MAX_MARKER_SIZE);
         assert_eq!(notes.text(), "picture markers, drawn as grey circles; marker sizes past RustGIS's largest (80 points), drawn at it");
         // Not an object: nothing changes.
-        for info in [json!(null), json!([]), json!("simple"), json!({"renderer": "simple"})] {
+        for info in [json!(null), json!([]), json!("simple"), json!({"renderer": null})] {
             let (l, notes) = styled(GeometryType::Point, info);
             assert_eq!(l.renderer, layer(GeometryType::Point).renderer);
             assert!(notes.is_empty());
         }
+        // A renderer that isn't an object is said.
+        for renderer in [json!("simple"), json!([]), json!(3)] {
+            let (l, notes) = styled(GeometryType::Point, json!({ "renderer": renderer }));
+            assert_eq!(l.renderer, layer(GeometryType::Point).renderer);
+            assert_eq!(notes.text(), "its renderer, which RustGIS can't read, drawn with RustGIS's single symbol");
+        }
+    }
+
+    /// A `g` layer with a text field `NAME` and a numeric `CODE` of type `code`, a feature for each
+    /// of `rows`.
+    fn with_rows(g: GeometryType, code: FieldType, rows: &[(&str, rustgis_data::Value)]) -> Layer {
+        let mut ds = Dataset::new("l", g, vec![Field::new("NAME", FieldType::Text), Field::new("CODE", code)]);
+        for (name, code) in rows {
+            ds.push(None, vec![rustgis_data::Value::Text((*name).to_string()), code.clone()]);
+        }
+        Layer::new(1, ds)
+    }
+
+    fn styled_rows(mut l: Layer, info: Value) -> (Layer, Notes) {
+        let mut notes = Notes::default();
+        apply(&mut l, &info, &mut notes);
+        (l, notes)
+    }
+
+    #[test]
+    fn unique_values_of_a_field_take_the_services_classes_and_labels() {
+        use rustgis_data::Value as V;
+        let fill = |c: [u8; 4]| json!({"type": "esriSFS", "style": "esriSFSSolid", "color": c});
+        let info = json!({"renderer": {"type": "uniqueValue", "field1": "name", "uniqueValueInfos": [
+            {"value": "BOSA", "label": "Bosa", "symbol": fill([255, 0, 0, 255])},
+            {"value": "SUBA", "label": "SUBA", "symbol": fill([0, 0, 255, 255])},
+            {"value": "BOSA", "label": "again", "symbol": fill([0, 255, 0, 255])}]}});
+        let l = with_rows(GeometryType::Polygon, FieldType::Integer, &[("BOSA", V::Null), ("SUBA", V::Null), ("USME", V::Null)]);
+        let (l, notes) = styled_rows(l, info);
+        // USME, which it doesn't list, isn't drawn, and that is said.
+        assert_eq!(
+            notes.text(),
+            "values listed twice, drawn as their first class; features of values it doesn't list, not drawn, as ArcGIS draws them"
+        );
+        let Renderer::Unique { field, classes, class_labels, other, other_label, .. } = &l.renderer else { panic!("{:?}", l.renderer) };
+        // The field as the layer names it; a value listed again is drawn as its first class.
+        assert_eq!(field, "NAME");
+        assert_eq!(classes.iter().map(|c| c.0.as_str()).collect::<Vec<_>>(), ["BOSA", "SUBA"]);
+        // A label that is its value isn't kept.
+        assert_eq!(class_labels.iter().collect::<Vec<_>>(), [(&"BOSA".to_string(), &"Bosa".to_string())]);
+        assert_eq!(l.renderer.symbol_for(&l.dataset, 0).fill, Rgba::rgb(255, 0, 0));
+        assert_eq!(l.renderer.symbol_for(&l.dataset, 1).fill, Rgba::rgb(0, 0, 255));
+        // Without a default symbol, the rest draw nothing, as ArcGIS draws them.
+        assert_eq!((other.fill.a(), other.stroke.a(), other_label.as_deref()), (0, 0, None));
+        assert_eq!(l.renderer.symbol_for(&l.dataset, 2), *other);
+    }
+
+    #[test]
+    fn a_numeric_fields_values_match_as_rustgis_prints_them() {
+        use rustgis_data::Value as V;
+        let marker = |c: [u8; 4]| json!({"type": "esriSMS", "color": c, "size": 6});
+        for code in [FieldType::Integer, FieldType::Double] {
+            let value = |v: i64| if code == FieldType::Integer { V::Int(v) } else { V::Float(v as f64) };
+            let info = json!({"renderer": {"type": "uniqueValue", "field1": "CODE", "uniqueValueInfos": [
+                {"value": "1.0", "symbol": marker([255, 0, 0, 255])}, {"value": 2, "symbol": marker([0, 0, 255, 255])},
+                {"value": null, "symbol": marker([0, 255, 0, 255])}]}});
+            let (l, notes) = styled_rows(with_rows(GeometryType::Point, code, &[("a", value(1)), ("b", value(2))]), info);
+            assert_eq!(l.renderer.symbol_for(&l.dataset, 0).fill, Rgba::rgb(255, 0, 0));
+            assert_eq!(l.renderer.symbol_for(&l.dataset, 1).fill, Rgba::rgb(0, 0, 255));
+            assert_eq!(notes.text(), "classes with no value RustGIS can read, left out");
+        }
+        // In a text field, a value stays as it is.
+        assert_eq!(class_value(&json!("1.0"), FieldType::Text).as_deref(), Some("1.0"));
+    }
+
+    #[test]
+    fn picture_marker_classes_are_circles_in_a_ramps_colours() {
+        let picture = json!({"type": "esriPMS", "imageData": "iVBORw0KGgo=", "width": 11, "height": 12});
+        let info = json!({"renderer": {"type": "uniqueValue", "field1": "NAME", "uniqueValueInfos": [
+            {"value": "1", "label": "Distrital", "symbol": picture.clone()}, {"value": "2", "label": "Privado", "symbol": picture}]}});
+        let (l, notes) = styled(GeometryType::Point, info);
+        let Renderer::Unique { classes, .. } = &l.renderer else { panic!("{:?}", l.renderer) };
+        let fills: Vec<Rgba> = classes.iter().map(|c| c.1.fill).collect();
+        assert_eq!(fills, [Ramp::default().pick(0, 2), Ramp::default().pick(1, 2)]);
+        assert_ne!(fills.first(), fills.get(1), "the classes tell apart");
+        assert!(classes.iter().all(|c| c.1.marker == Marker::Circle && c.1.size == 12.0));
+        assert_eq!(notes.text(), "picture markers, drawn as circles in a ramp's colours (2 symbols)");
+    }
+
+    #[test]
+    fn line_classes_keep_their_dashes_and_the_default_symbol_draws_the_rest() {
+        let line = |style: &str, c: [u8; 4]| json!({"type": "esriSLS", "style": style, "color": c, "width": 2});
+        let info = json!({"renderer": {"type": "uniqueValue", "field1": "NAME",
+            "uniqueValueInfos": [{"value": "a", "symbol": line("esriSLSDash", [255, 0, 0, 255])}, {"value": "b", "symbol": line("esriSLSSolid", [0, 0, 255, 255])}],
+            "defaultSymbol": line("esriSLSDot", [9, 9, 9, 255]), "defaultLabel": "Others"}});
+        let (l, notes) = styled(GeometryType::Polyline, info);
+        assert!(notes.is_empty(), "{}", notes.text());
+        assert!(l.line_strokes.is_empty());
+        let Renderer::Unique { class_strokes, other, other_label, other_strokes, .. } = &l.renderer else { panic!("{:?}", l.renderer) };
+        assert_eq!(class_strokes.keys().collect::<Vec<_>>(), ["a"]);
+        assert_eq!(class_strokes.get("a").and_then(|s| s.first()).and_then(|s| s.dash).map(|d| d.steps().to_vec()), Some(vec![8.0, 6.0]));
+        assert_eq!((other.stroke, other_label.as_deref()), (Rgba::rgb(9, 9, 9), Some("Others")));
+        assert_eq!(other_strokes.first().and_then(|s| s.dash).map(|d| d.steps().to_vec()), Some(vec![2.0, 6.0]));
+    }
+
+    #[test]
+    fn a_class_rustgis_cant_draw_takes_a_ramps_colour() {
+        let info = json!({"renderer": {"type": "uniqueValue", "field1": "NAME", "uniqueValueInfos": [
+            {"value": "a", "symbol": {"type": "CIMSymbolReference"}}, {"value": "b", "symbol": {"type": "esriSMS"}}]}});
+        let (l, notes) = styled(GeometryType::Polygon, info);
+        let Renderer::Unique { classes, .. } = &l.renderer else { panic!("{:?}", l.renderer) };
+        let base = Symbol::default_for(GeometryType::Polygon, 0);
+        assert_eq!(classes.first().map(|c| c.1.fill), Some(Ramp::default().pick(0, 2).with_alpha(base.fill.a())));
+        assert_eq!(
+            notes.text(),
+            "a symbol of a kind RustGIS doesn't read, drawn with RustGIS's own; a symbol for another kind of geometry, drawn with RustGIS's own"
+        );
+    }
+
+    #[test]
+    fn unique_values_rustgis_doesnt_class_by_leave_the_layers_own_and_are_said() {
+        let own = layer(GeometryType::Polygon).renderer;
+        let infos = json!([{"value": "a", "symbol": {"type": "esriSFS", "color": [1, 2, 3, 255]}}]);
+        for (renderer, said) in [
+            (
+                json!({"type": "uniqueValue", "field1": "NAME", "field2": "KIND", "fieldDelimiter": ",", "uniqueValueInfos": infos.clone()}),
+                "its renderer by the values of several fields, drawn with RustGIS's single symbol",
+            ),
+            (
+                json!({"type": "uniqueValue", "field1": "NAME", "field2": "", "field3": "KIND", "uniqueValueInfos": infos.clone()}),
+                "its renderer by the values of several fields, drawn with RustGIS's single symbol",
+            ),
+            (
+                json!({"type": "uniqueValue", "field1": "NAME", "valueExpression": "$feature.NAME", "uniqueValueInfos": infos.clone()}),
+                "its renderer by an expression (Arcade), drawn with RustGIS's single symbol",
+            ),
+            (
+                json!({"type": "uniqueValue", "uniqueValueInfos": infos.clone()}),
+                "its renderer names no field, drawn with RustGIS's single symbol",
+            ),
+            (
+                json!({"type": "uniqueValue", "field1": "KIND", "uniqueValueInfos": infos.clone()}),
+                "its renderer's field, which the layer hasn't, drawn with RustGIS's single symbol",
+            ),
+            (
+                json!({"type": "classBreaks", "field": "NAME", "normalizationType": "esriNormalizeByField", "normalizationField": "AREA"}),
+                "its renderer by class breaks of a normalised value, drawn with RustGIS's single symbol",
+            ),
+        ] {
+            let (l, notes) = styled(GeometryType::Polygon, json!({ "renderer": renderer }));
+            assert_eq!(l.renderer, own);
+            assert_eq!(notes.text(), said);
+        }
+    }
+
+    #[test]
+    fn class_breaks_take_the_services_bounds_labels_and_symbols() {
+        use rustgis_data::Value as V;
+        let fill = |c: [u8; 4]| json!({"type": "esriSFS", "style": "esriSFSSolid", "color": c});
+        let info = json!({"renderer": {"type": "classBreaks", "field": "CODE", "minValue": 5000, "classBreakInfos": [
+            {"classMaxValue": 1_500_000, "label": "800,000 – 1,500,000", "symbol": fill([0, 0, 255, 255])},
+            {"classMaxValue": 800_000, "symbol": fill([255, 0, 0, 255])}]}});
+        let rows = [("a", V::Float(6000.0)), ("b", V::Float(900_000.0))];
+        let (l, notes) = styled_rows(with_rows(GeometryType::Polygon, FieldType::Double, &rows), info);
+        assert!(notes.is_empty(), "{}", notes.text());
+        let Renderer::Graduated { field, breaks, min, method, classes, class_labels, .. } = &l.renderer else { panic!("{:?}", l.renderer) };
+        // Sorted by their upper bounds, kept as they are.
+        assert_eq!(
+            (field.as_str(), breaks.as_slice(), *min, *method, *classes),
+            ("CODE", [800_000.0, 1_500_000.0].as_slice(), 5000.0, ClassMethod::Manual, 2)
+        );
+        assert_eq!(class_labels.iter().collect::<Vec<_>>(), [(&1, &"800,000 – 1,500,000".to_string())]);
+        assert_eq!(l.renderer.symbol_for(&l.dataset, 0).fill, Rgba::rgb(255, 0, 0));
+        assert_eq!(l.renderer.symbol_for(&l.dataset, 1).fill, Rgba::rgb(0, 0, 255));
+    }
+
+    #[test]
+    fn what_class_breaks_draw_otherwise_is_said_only_when_it_happens() {
+        use rustgis_data::Value as V;
+        let fill = json!({"type": "esriSFS", "color": [1, 2, 3, 255]});
+        let info = json!({"renderer": {"type": "classBreaks", "field": "CODE", "minValue": 10,
+            "classBreakInfos": [{"classMinValue": 10, "classMaxValue": 20, "symbol": fill}, {"classMinValue": 25, "classMaxValue": 30, "symbol": fill},
+                {"classMaxValue": "x", "symbol": fill}, {"classMaxValue": 20, "symbol": fill}],
+            "backgroundFillSymbol": {"type": "esriSFS", "color": [0, 0, 0, 255]}}});
+        let rows = [("a", V::Int(5)), ("b", V::Null), ("c", V::Int(40)), ("d", V::Int(22))];
+        let (l, notes) = styled_rows(with_rows(GeometryType::Polygon, FieldType::Integer, &rows), info.clone());
+        let Renderer::Graduated { breaks, .. } = &l.renderer else { panic!("{:?}", l.renderer) };
+        assert_eq!(breaks.as_slice(), [20.0, 30.0], "each bound once");
+        assert_eq!(
+            notes.text(),
+            "classes with no upper bound RustGIS can read, left out; classes with the upper bound of one before, left out; \
+             values between its classes, drawn in the class above; \
+             values below its first class or above its last, drawn in the first or last class; features with no value, drawn grey; \
+             its background fill under the class symbols, left out"
+        );
+        // Every value within the classes, none between them: nothing is said.
+        let info = json!({"renderer": {"type": "classBreaks", "field": "CODE",
+            "classBreakInfos": [{"classMinValue": 10, "classMaxValue": 20, "symbol": fill}, {"classMinValue": 25, "classMaxValue": 30, "symbol": fill}]}});
+        let (l, notes) = styled_rows(with_rows(GeometryType::Polygon, FieldType::Integer, &[("a", V::Int(10)), ("b", V::Int(30))]), info);
+        assert!(notes.is_empty(), "{}", notes.text());
+        let Renderer::Graduated { min, .. } = l.renderer else { panic!() };
+        assert_eq!(min, 10.0, "from the first class without a minValue");
+    }
+
+    #[test]
+    fn values_of_the_wrong_type_are_said_and_taken_as_none() {
+        let info = json!({"renderer": {"type": "simple", "symbol": {"type": "esriSMS", "style": 3, "color": [0, 0, 0, 255], "size": "big",
+            "outline": {"color": [0, 0, 0, 255], "width": "w"}}}, "transparency": "half"});
+        let (l, notes) = styled(GeometryType::Point, info);
+        let Renderer::Single(s) = l.renderer else { panic!("a single symbol") };
+        let base = Symbol::default_for(GeometryType::Point, 0);
+        assert_eq!((s.marker, s.size, s.stroke_width, l.transparency), (Marker::Circle, base.size, 0.0, 0.0));
+        assert_eq!(
+            notes.text(),
+            "a transparency RustGIS can't read, left out; styles RustGIS can't read, drawn as ArcGIS's default; \
+             line widths RustGIS can't read, drawn at RustGIS's; marker sizes RustGIS can't read, drawn at RustGIS's"
+        );
+    }
+
+    #[test]
+    fn the_services_labels_are_kept_as_one_typed_by_hand() {
+        use crate::symbology::MAX_LABEL;
+        let fill = json!({"type": "esriSFS", "color": [1, 2, 3, 255]});
+        let info = json!({"renderer": {"type": "uniqueValue", "field1": "NAME", "uniqueValueInfos": [
+            {"value": "a", "label": "two\nlines ", "symbol": fill}, {"value": "b", "label": "x".repeat(MAX_LABEL + 50), "symbol": fill}],
+            "defaultSymbol": fill, "defaultLabel": "  \t "}});
+        let (l, notes) = styled(GeometryType::Polygon, info);
+        let Renderer::Unique { class_labels, other_label, .. } = &l.renderer else { panic!("{:?}", l.renderer) };
+        // Said once for both; a blank one isn't.
+        assert_eq!(notes.text(), "legend labels of several lines or over 200 characters, joined into one line and cut (2 symbols)");
+        assert_eq!(class_labels.get("a").map(String::as_str), Some("two lines"));
+        assert_eq!(class_labels.get("b").map(|l| l.chars().count()), Some(MAX_LABEL));
+        assert_eq!(other_label, &None, "a blank label is none");
+    }
+
+    #[test]
+    fn a_default_picture_marker_is_grey_as_a_simple_ones() {
+        let picture = json!({"type": "esriPMS", "width": 10, "height": 10});
+        let info = json!({"renderer": {"type": "uniqueValue", "field1": "NAME",
+            "uniqueValueInfos": [{"value": "a", "symbol": {"type": "esriSMS", "color": [1, 2, 3, 255]}}], "defaultSymbol": picture}});
+        let (l, notes) = styled(GeometryType::Point, info);
+        let Renderer::Unique { other, .. } = &l.renderer else { panic!("{:?}", l.renderer) };
+        assert_eq!(other.fill, PICTURE_FILL);
+        assert_eq!(notes.text(), "picture markers, drawn as grey circles");
+    }
+
+    #[test]
+    fn classes_past_the_most_are_left_out_and_said() {
+        let fill = json!({"type": "esriSFS", "color": [1, 2, 3, 255]});
+        let infos: Vec<Value> = (0..=MAX_CLASSES).map(|i| json!({"value": format!("v{i}"), "symbol": fill})).collect();
+        let (l, notes) =
+            styled(GeometryType::Polygon, json!({"renderer": {"type": "uniqueValue", "field1": "NAME", "uniqueValueInfos": infos}}));
+        let Renderer::Unique { classes, .. } = &l.renderer else { panic!("{:?}", l.renderer) };
+        assert_eq!((classes.len(), notes.text().as_str()), (MAX_CLASSES, "classes past the first 4096, drawn as all other values"));
+        let infos: Vec<Value> = (0..=MAX_CLASSES).map(|i| json!({"classMaxValue": i, "symbol": fill})).collect();
+        let (l, notes) =
+            styled(GeometryType::Polygon, json!({"renderer": {"type": "classBreaks", "field": "NAME", "classBreakInfos": infos}}));
+        let Renderer::Graduated { breaks, .. } = &l.renderer else { panic!("{:?}", l.renderer) };
+        assert_eq!((breaks.len(), notes.text().as_str()), (MAX_CLASSES, "classes past the first 4096, left out"));
     }
 }
