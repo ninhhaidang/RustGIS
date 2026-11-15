@@ -508,13 +508,19 @@ pub(crate) fn bounds_of(v: Option<&Value>) -> Result<Option<[f64; 4]>, String> {
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn download_features(s: &mut Session, name: &str, url: &str, max: usize) -> Result<Vec<u8>, String> {
     // Its features alone: what they are used for (a task's input, an export) has no layer to draw
-    // with the service's symbology, so how the description says it is drawn (`.1`) is dropped.
+    // with the service's symbology, so how the description says it is drawn, or why it couldn't
+    // be read (`.1`), is dropped.
     match download_layer(s, name, url, max, false)?.0 {
         Downloaded::Bytes(bytes) => Ok(bytes),
         // Not given without protocol buffer pages.
         Downloaded::Read(..) => Err(crate::sources::message_with_address(url, "the pages were read as protocol buffers")),
     }
 }
+
+/// How an ArcGIS layer's description says it is drawn (its `drawingInfo`), or a note saying why
+/// it couldn't be read; none when there is nothing to say.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) type Drawing = Option<Result<Value, String>>;
 
 /// A service's features as [`download_features`] downloads them.
 #[cfg(not(target_arch = "wasm32"))]
@@ -528,9 +534,10 @@ pub(crate) enum Downloaded {
 
 /// A service's features at `url`, as [`download_features`] downloads them; with `pbf`, an ArcGIS
 /// layer whose description lists protocol buffers is read in them, in pages. With them, how an
-/// ArcGIS layer's description says it is drawn (its `drawingInfo`), when it says.
+/// ArcGIS layer's description says it is drawn (its `drawingInfo`), or a note saying why it
+/// couldn't be read (#2152), when there is something to say.
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn download_layer(s: &mut Session, name: &str, url: &str, max: usize, pbf: bool) -> Result<(Downloaded, Option<Value>), String> {
+pub(crate) fn download_layer(s: &mut Session, name: &str, url: &str, max: usize, pbf: bool) -> Result<(Downloaded, Drawing), String> {
     download_layer_with(s, name, url, max, pbf, |url, max, timeout, ceiling| {
         crate::render::rustgis_tiles::cache::download_blocking_with_origin_within(url, max, timeout, &[], ceiling)
     })
@@ -550,13 +557,18 @@ fn download_layer_with(
         std::time::Duration,
         crate::render::rustgis_tiles::address::Reach,
     ) -> Result<crate::render::rustgis_tiles::cache::Fetched, String>,
-) -> Result<(Downloaded, Option<Value>), String> {
+) -> Result<(Downloaded, Drawing), String> {
     use crate::render::rustgis_tiles::{address, cache};
     use rustgis_data::ogc::{DESCRIPTION_MAX, DESCRIPTION_TIMEOUT, Step, begin, begin_with_pbf, max_paged_features};
     let mut until = std::time::Instant::now() + cache::BLOCKING_TIMEOUT;
     let mut left = max;
     let mut step = if pbf { begin_with_pbf(url, max_paged_features()) } else { begin(url, max_paged_features()) };
-    let mut drawing = None;
+    // A query asking for a window of its own says so before anything is fetched: it has no
+    // description to say how it is drawn.
+    let mut drawing = match &mut step {
+        Step::Fetch(pages) => pages.take_drawing_info(),
+        _ => None,
+    };
     let mut previous: Option<address::Origin> = None;
     let (downloaded, note) = loop {
         let pages = match step {
@@ -1416,8 +1428,11 @@ fn add_discovered(s: &mut Session, p: &Value, url: &str, want: &str, found: &Dis
                             Downloaded::Read(read) => super::layer::add_read(s, &json!({"name": name}), *read, keep_view)?,
                         };
                         mark_service_source(s, &r, from);
-                        if let Some(drawing) = &drawing {
-                            apply_drawing_info(s, &r, &name, drawing);
+                        match &drawing {
+                            Some(Ok(drawing)) => apply_drawing_info(s, &r, &name, drawing),
+                            // Why the service's symbology couldn't be read (#2152).
+                            Some(Err(note)) => s.notify(format!("{name}: {note}"), false),
+                            None => {}
                         }
                         r
                     };

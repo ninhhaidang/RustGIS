@@ -2573,6 +2573,30 @@ fn a_service_layer_from_the_app_comes_in_with_its_services_symbology() {
     assert_eq!(hydrants.transparency, 40.0);
 }
 
+/// An ArcGIS layer added from the app whose description couldn't be read, or whose query asks for
+/// a window of its own and so reads none, keeps RustGIS's own symbol and says why (#2152).
+#[test]
+fn a_service_layer_from_the_app_says_why_its_services_symbology_didnt_come_in() {
+    use ogc_server::{Route, Server, arcgis_page};
+    use rustgis_ui_egui::rustgis_engine::map::Renderer;
+    // No description, only the features.
+    let layer = "/arcgis/rest/services/P/FeatureServer/0";
+    let server = Server::new(vec![Route::new(&format!("{layer}/query"), &arcgis_page(&[0, 1], false))]);
+    let mut h = harness();
+    h.step();
+    let cases = [("Broken", "", "which RustGIS couldn't read ("), ("Window", "&resultRecordCount=5", "not read for an address")];
+    for (name, query, why) in cases {
+        let url = format!("{}{layer}/query?where=1%3D1&outFields=*&f=geojson{query}", server.base);
+        h.state_mut().run("ui.addUrl", json!({"url": url, "name": name, "service": true})).unwrap();
+        wait_for_ogc(&mut h, |app| app.session.map().layer_by_name(name).is_some());
+        let app = h.state();
+        let added = app.session.map().layer_by_name(name).unwrap();
+        assert!(matches!(&added.renderer, Renderer::Single(_)), "{:?}", added.renderer);
+        let said = format!("{name}: its service's symbology, {why}");
+        assert!(app.session.notices.iter().any(|n| n.text.starts_with(&said)), "{:?}", app.session.notices);
+    }
+}
+
 /// A service layer whose features can't be fetched at all is said as an error, and its download
 /// is forgotten: no layer is added and nothing is left waiting.
 #[test]

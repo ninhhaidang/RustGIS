@@ -515,6 +515,22 @@ pub(crate) fn read_pages(app: &mut RustGisApp, landed: Landed) {
     go_on(app, landed, rustgis_engine::render::rustgis_tiles::cache::MAX_DOWNLOAD, step);
 }
 
+/// How its ArcGIS service draws the layer being read, from its description, goes with it to be
+/// added (#2080); why it couldn't be read is said (#2152), also before anything is fetched for a
+/// query asking for a window of its own, which has no description.
+fn drawn(app: &mut RustGisApp, landed: &mut Landed, step: &mut Step) {
+    let Step::Fetch(pages) = step else { return };
+    match pages.take_drawing_info() {
+        Some(Ok(drawing)) => {
+            if let Some(params) = landed.params.as_object_mut() {
+                params.insert("drawingInfo".to_string(), drawing);
+            }
+        }
+        Some(Err(note)) => noted(app, landed, Some(note)),
+        None => {}
+    }
+}
+
 /// A bounded description or retryable feature page fetched off the frame. Native downloads
 /// end at the timeout; the browser's late answer is discarded by the polling read.
 fn fetch_within(url: &str, max: usize, timeout: std::time::Duration) -> Slot<Result<Vec<u8>, String>> {
@@ -556,18 +572,8 @@ pub fn poll_pages(app: &mut RustGisApp, ctx: &egui::Context) {
             Some(answer) => {
                 // The description isn't the features: it leaves them the whole budget.
                 let left = if describing { read.left } else { read.left.saturating_sub(answer.as_ref().map_or(0, Vec::len)) };
-                let mut step = (*read.pages).land(answer);
-                let mut landed = read.landed;
-                // How its ArcGIS service draws the layer, from its description, goes with it to be
-                // added (#2080).
-                if describing
-                    && let Step::Fetch(pages) = &mut step
-                    && let Some(drawing) = pages.take_drawing_info()
-                    && let Some(params) = landed.params.as_object_mut()
-                {
-                    params.insert("drawingInfo".to_string(), drawing);
-                }
-                go_on(app, landed, left, step);
+                let step = (*read.pages).land(answer);
+                go_on(app, read.landed, left, step);
             }
             None => app.ui.service_pages.push(read),
         }
@@ -590,13 +596,15 @@ fn next_request(app: &mut RustGisApp, params: &Value, pages: &Pages) -> Result<S
 
 /// The next answer fetched, or the collection added (with a note when some features were left
 /// unread), or why it couldn't be fetched said.
-pub(crate) fn go_on(app: &mut RustGisApp, landed: Landed, left: usize, step: Step) {
+pub(crate) fn go_on(app: &mut RustGisApp, mut landed: Landed, left: usize, mut step: Step) {
     if let Err(e) = app.session.download_continues(landed.id) {
         app.session.request_failed(&landed.params, &e);
         app.landed_in_dialog(&landed.params, Err(&e));
         app.session.notify(e, true);
         return;
     }
+    // Only for a download still going: one cancelled says nothing of how it would be drawn.
+    drawn(app, &mut landed, &mut step);
     let still = app.session.download_still(landed.id);
     rustgis_engine::render::rustgis_tiles::cache::with_optional_still(still, || {
         match step {

@@ -3143,6 +3143,19 @@ fn exceeded(page: &serde_json::Value) -> bool {
         .any(|v| v.and_then(|v| v.as_bool()) == Some(true))
 }
 
+/// What an ArcGIS layer read from a query asking for a window of its own says of its symbology,
+/// which its description says and isn't asked for (#2152).
+const WINDOW_DRAWING: &str = "its service's symbology, not read for an address that asks for its own resultOffset or resultRecordCount, drawn with RustGIS's single symbol";
+
+/// What an ArcGIS layer says of its symbology when its description couldn't be read (`why`), cut
+/// and with any secret left out (#2152).
+fn drawing_unread(why: &str) -> String {
+    // An error holding an address isn't repeated: `redact` keeps its path, which can hold a key.
+    let mut why = if why.contains("://") { "its description couldn't be fetched".to_string() } else { crate::diagnostics::redact(why) };
+    crate::diagnostics::cut_with_ellipsis(&mut why, MAX_REASON);
+    format!("its service's symbology, which RustGIS couldn't read ({why}), drawn with RustGIS's single symbol")
+}
+
 /// Whether an address is an ArcGIS layer's query (`…/FeatureServer/0/query`, `…/MapServer/3/query`).
 fn is_arcgis_query(url: &str) -> bool {
     let b = base(url).trim_end_matches('/').to_ascii_lowercase();
@@ -3226,6 +3239,12 @@ fn arcgis_page_error(bytes: &[u8]) -> Option<String> {
         return None;
     }
     let v: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    arcgis_error_text(&v)
+}
+
+/// What an ArcGIS answer already read (`v`) says when it is the service's error (`{"error": …}`),
+/// whatever its size, as [`arcgis_page_error`] says it.
+fn arcgis_error_text(v: &serde_json::Value) -> Option<String> {
     let error = v.get("error")?.as_object()?;
     let code = error.get("code").and_then(serde_json::Value::as_u64).unwrap_or(0);
     let message = error.get("message").and_then(serde_json::Value::as_str).unwrap_or("query refused");
@@ -3430,9 +3449,9 @@ pub struct Pages {
     /// Why the layer's first protocol buffer page couldn't be read, when it is read in GeoJSON
     /// pages instead: said in the note it ends with.
     pbf_failed: Option<String>,
-    /// How an ArcGIS layer's description says it is drawn (its `drawingInfo`, an object), until
-    /// taken ([`Pages::take_drawing_info`]).
-    drawing_info: Option<serde_json::Value>,
+    /// How an ArcGIS layer's description says it is drawn (its `drawingInfo`, an object), or what
+    /// says why it couldn't be read, until taken ([`Pages::take_drawing_info`]).
+    drawing_info: Option<Result<serde_json::Value, String>>,
 }
 
 /// What the answer being fetched is.
@@ -3599,7 +3618,8 @@ fn start(url: &str, max: usize, pbf: bool) -> Step {
         decoded_bytes: 0,
         decoded_budget: max_decoded_bytes(),
         pbf_failed: None,
-        drawing_info: None,
+        // A query asking for a window of its own skips the description that says how it is drawn.
+        drawing_info: (is_arcgis_query(url) && !paged).then(|| Err(WINDOW_DRAWING.to_string())),
     }))
 }
 
@@ -3693,9 +3713,13 @@ impl Pages {
     }
 
     /// How the ArcGIS layer being read says it is drawn: its description's `drawingInfo` (an
-    /// object), once the description is read, and only the first time it is asked for. A reader
-    /// takes it after landing the description, before the features are read.
-    pub fn take_drawing_info(&mut self) -> Option<serde_json::Value> {
+    /// object), once the description is read, or a note saying why it couldn't be read (the
+    /// description failed, wasn't JSON, was the service's error or held a `drawingInfo` that isn't
+    /// an object; or the query asks for a window of its own, so none was asked for). Only the first
+    /// time it is asked for; none when there is nothing to say (no description, or one without a
+    /// `drawingInfo`). A reader takes it before fetching and after landing the description, before
+    /// the features are read.
+    pub fn take_drawing_info(&mut self) -> Option<Result<serde_json::Value, String>> {
         self.drawing_info.take()
     }
 
@@ -3795,8 +3819,25 @@ impl Pages {
             return self.advance();
         }
         if let Phase::Describe { pbf } = self.phase {
-            let mut layer: Option<serde_json::Value> = answer.ok().and_then(|b| serde_json::from_slice(&b).ok());
-            self.drawing_info = layer.as_mut().and_then(|l| l.as_object_mut()?.remove("drawingInfo")).filter(serde_json::Value::is_object);
+            // Read once, whatever its size: the service's error may be as long as a description.
+            let read: Result<serde_json::Value, String> = answer.and_then(|b| {
+                let v: serde_json::Value = serde_json::from_slice(&b).map_err(|_| "not JSON".to_string())?;
+                match arcgis_error_text(&v) {
+                    Some(error) => Err(error),
+                    None if !v.is_object() => Err("not an object".to_string()),
+                    None => Ok(v),
+                }
+            });
+            let (mut layer, unread) = match read {
+                Ok(layer) => (Some(layer), None),
+                Err(why) => (None, Some(why)),
+            };
+            self.drawing_info = match (layer.as_mut().and_then(|l| l.as_object_mut()?.remove("drawingInfo")), unread) {
+                (_, Some(why)) => Some(Err(drawing_unread(&why))),
+                (Some(d), None) if d.is_object() => Some(Ok(d)),
+                (None | Some(serde_json::Value::Null), None) => None,
+                (Some(_), None) => Some(Err(drawing_unread("not an object"))),
+            };
             let pbf = pbf && layer.as_ref().is_some_and(supports_pbf);
             return match layer.as_ref().and_then(arcgis_paging) {
                 Some(ArcgisPaging { size: Some(size), order }) => {
@@ -6011,28 +6052,55 @@ mod tests {
     }
 
     /// An ArcGIS layer's description gives how it is drawn (its `drawingInfo`) once, to be taken
-    /// before its features are read; one without it, or with something other than an object,
-    /// gives none (#2080).
+    /// before its features are read; one without it gives nothing to say, and one that couldn't be
+    /// read, or with a `drawingInfo` that isn't an object, says why (#2080, #2152).
     #[test]
     fn an_arcgis_description_gives_its_drawing_info_once() {
         let q = "https://x.org/a/MapServer/3/query?where=1%3D1&f=geojson";
         let drawing = serde_json::json!({"renderer": {"type": "simple"}, "transparency": 20});
+        let unread = |why: &str| {
+            Some(Err(format!("its service's symbology, which RustGIS couldn't read ({why}), drawn with RustGIS's single symbol")))
+        };
+        let json = |v: serde_json::Value| Ok(v.to_string().into_bytes());
         for (description, expected) in [
-            (serde_json::json!({"currentVersion": 11, "drawingInfo": drawing}), Some(drawing.clone())),
-            (serde_json::json!({"currentVersion": 11, "drawingInfo": "simple"}), None),
-            (serde_json::json!({"currentVersion": 11}), None),
+            (json(serde_json::json!({"currentVersion": 11, "drawingInfo": drawing})), Some(Ok(drawing.clone()))),
+            (json(serde_json::json!({"currentVersion": 11, "drawingInfo": "simple"})), unread("not an object")),
+            (json(serde_json::json!({"currentVersion": 11, "drawingInfo": null})), None),
+            (json(serde_json::json!({"currentVersion": 11})), None),
+            (json(serde_json::json!({"error": {"code": 498, "message": "Invalid token."}})), unread("service error: 498: Invalid token.")),
+            (Ok(b"<html>busy</html>".to_vec()), unread("not JSON")),
+            (json(serde_json::json!([1])), unread("not an object")),
+            // The service's error, however long, as a description may be.
+            (
+                json(serde_json::json!({"error": {"code": 500, "message": "Failed.", "details": ["x".repeat(EDGE)]}})),
+                unread("service error: 500: Failed."),
+            ),
+            // An address in the error isn't repeated: its path may hold a key.
+            (Err("https://x.org/key/s3cr3t/a/MapServer/3: http status: 502".to_string()), unread("its description couldn't be fetched")),
+            (Err("timeout: service page".to_string()), unread("timeout: service page")),
         ] {
-            let Step::Fetch(pages) = begin(q, 100) else { panic!("the description is fetched first") };
+            let Step::Fetch(mut pages) = begin(q, 100) else { panic!("the description is fetched first") };
             assert!(pages.describing());
-            let Step::Fetch(mut pages) = pages.land(Ok(description.to_string().into_bytes())) else { panic!("then the features") };
+            assert_eq!(pages.take_drawing_info(), None, "nothing to say before it is read");
+            // Whatever it holds, the features are read next, as they are when it couldn't be read.
+            let Step::Fetch(mut pages) = pages.land(description) else { panic!("then the features") };
             assert!(!pages.describing());
             assert_eq!(pages.take_drawing_info(), expected);
             assert_eq!(pages.take_drawing_info(), None, "only once");
         }
-        // A description that couldn't be read gives none, and the features are read as they are.
         let Step::Fetch(pages) = begin(q, 100) else { panic!("the description is fetched first") };
-        let Step::Fetch(mut pages) = pages.land(Err("timed out".into())) else { panic!("then the features") };
-        assert_eq!((pages.take_drawing_info(), pages.next_url()), (None, q));
+        let Step::Fetch(pages) = pages.land(Err("timed out".into())) else { panic!("then the features") };
+        assert_eq!(pages.next_url(), q);
+        // A query asking for a window of its own skips the description, and says so from the start;
+        // another service's address has nothing to say.
+        for window in ["resultOffset=10", "resultRecordCount=5"] {
+            let Step::Fetch(mut pages) = begin(&format!("{q}&{window}"), 100) else { panic!("its features are fetched") };
+            assert!(!pages.describing());
+            let said = pages.take_drawing_info().and_then(Result::err).unwrap_or_default();
+            assert!(said.contains("resultOffset or resultRecordCount"), "{said}");
+        }
+        let Step::Fetch(mut pages) = begin("https://x.org/collections/a/items?f=json", 100) else { panic!("its features are fetched") };
+        assert_eq!(pages.take_drawing_info(), None);
     }
 
     /// The addresses an ArcGIS layer is paged with: its description's (with the token), each page's

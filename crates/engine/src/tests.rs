@@ -20507,7 +20507,8 @@ fn arcgis_layer_read_in_protocol_buffer_pages() {
 
 /// An ArcGIS layer added through service.add is drawn as its description's `drawingInfo` says:
 /// its symbol and transparency, with a notice of what RustGIS draws otherwise; a layer whose
-/// description says nothing keeps RustGIS's own symbol (#2080).
+/// description says nothing keeps RustGIS's own symbol (#2080), and one whose description couldn't
+/// be read keeps it too, said (#2152).
 #[test]
 fn an_arcgis_layer_comes_in_with_its_services_symbology() {
     use ogc_server::{Route, Server, arcgis_page};
@@ -20526,8 +20527,11 @@ fn an_arcgis_layer_comes_in_with_its_services_symbology() {
         Route::new(&page(0), &arcgis_page(&[0, 1], false)),
         Route::new(&layer(1), &described(Value::Null)),
         Route::new(&page(1), &arcgis_page(&[0, 1], false)),
+        // No description: its features alone, as they are asked for.
+        Route::new(&format!("{}/query", layer(2)), &arcgis_page(&[0, 1], false)),
     ]);
-    let service = r#"{"currentVersion": 11.5, "layers": [{"id": 0, "name": "Schools"}, {"id": 1, "name": "Plain"}]}"#;
+    let service =
+        r#"{"currentVersion": 11.5, "layers": [{"id": 0, "name": "Schools"}, {"id": 1, "name": "Plain"}, {"id": 2, "name": "Broken"}]}"#;
     let url = format!("{}/arcgis/rest/services/S/MapServer", server.base);
     let mut s = Session::new(Project::default());
     s.run("service.add", &json!({"url": url, "layer": "Schools", "text": service})).unwrap();
@@ -20547,6 +20551,12 @@ fn an_arcgis_layer_comes_in_with_its_services_symbology() {
     let rustgis_map::Renderer::Single(sym) = &plain.renderer else { panic!("{:?}", plain.renderer) };
     assert!(sym.default_seed(plain.geometry_type()).is_some(), "RustGIS's own symbol: {sym:?}");
     assert!(!s.notices.iter().any(|n| n.text.starts_with("Plain")));
+    s.run("service.add", &json!({"url": url, "layer": "Broken", "text": service})).unwrap();
+    let broken = s.map().layer_by_name("Broken").unwrap();
+    assert!(matches!(&broken.renderer, rustgis_map::Renderer::Single(_)), "{:?}", broken.renderer);
+    let texts: Vec<_> = s.notices.iter().map(|n| n.text.as_str()).filter(|t| t.starts_with("Broken")).collect();
+    let (failed, drawn) = ("Broken: its service's symbology, which RustGIS couldn't read (", "), drawn with RustGIS's single symbol");
+    assert!(texts.iter().any(|t| t.starts_with(failed) && t.contains("404") && t.ends_with(drawn)), "{texts:?}");
 }
 
 /// A service download the app read off the frame is drawn as its ArcGIS description's

@@ -143,11 +143,12 @@ fn unique(layer: &mut Layer, r: &Value, g: GeometryType, notes: &mut Notes) {
         notes.add("its renderer by unique values lists none, drawn with RustGIS's single symbol");
         return;
     }
-    let (other, other_strokes) = match r.get("defaultSymbol").filter(|s| !s.is_null()) {
+    // Its label only with a symbol to show it by.
+    let (other, other_strokes, other_label) = match r.get("defaultSymbol").filter(|s| !s.is_null()) {
         // A picture marker of its own is grey, as a simple renderer's: there is no ramp to take.
         Some(s) => {
             let (symbol, dash) = class_symbol(Some(s), g, None, OTHER_FILL, notes);
-            (symbol, dash.map(strokes).unwrap_or_default())
+            (symbol, dash.map(strokes).unwrap_or_default(), label(r, "defaultLabel", notes))
         }
         None => {
             // They draw nothing, so a layer whose values it doesn't list would show nothing
@@ -160,7 +161,11 @@ fn unique(layer: &mut Layer, r: &Value, g: GeometryType, notes: &mut Notes) {
             if (0..ds.features.len()).any(|row| !seen.contains(&printed(ds.value(row, fi)))) {
                 notes.add("features of values it doesn't list, not drawn, as ArcGIS draws them");
             }
-            (Symbol { fill: Rgba::TRANSPARENT, stroke: Rgba::TRANSPARENT, stroke_width: 0.0, ..Symbol::default_for(g, 0) }, Vec::new())
+            (
+                Symbol { fill: Rgba::TRANSPARENT, stroke: Rgba::TRANSPARENT, stroke_width: 0.0, ..Symbol::default_for(g, 0) },
+                Vec::new(),
+                None,
+            )
         }
     };
     layer.renderer = Renderer::Unique {
@@ -169,7 +174,7 @@ fn unique(layer: &mut Layer, r: &Value, g: GeometryType, notes: &mut Notes) {
         other,
         ramp,
         class_labels,
-        other_label: label(r, "defaultLabel", notes),
+        other_label,
         class_strokes,
         other_strokes,
         class_fills: BTreeMap::new(),
@@ -214,6 +219,11 @@ fn class_breaks(layer: &mut Layer, r: &Value, g: GeometryType, notes: &mut Notes
     if infos.len() < listed {
         notes.add("classes with the upper bound of one before, left out");
     }
+    // A lower bound that is there but isn't a number is read as if it weren't.
+    let unread = |v: Option<&Value>| v.is_some_and(|v| !v.is_null()) && finite(v).is_none();
+    if unread(r.get("minValue")) || infos.iter().any(|i| unread(i.1.get("classMinValue"))) {
+        notes.add("lower bounds RustGIS can't read, left out");
+    }
     let ds = &layer.dataset;
     let values = || (0..ds.features.len()).map(|row| ds.value(row, fi).as_f64());
     let lowest = |info: &Value| finite(info.get("classMinValue"));
@@ -232,7 +242,11 @@ fn class_breaks(layer: &mut Layer, r: &Value, g: GeometryType, notes: &mut Notes
     if values().flatten().any(in_gap) {
         notes.add("values between its classes, drawn in the class above");
     }
-    if values().flatten().any(|v| v < min || v > last) {
+    // Below the higher of the renderer's lowest (`minValue`, below which ArcGIS begins no class)
+    // and its first class's own: in none for ArcGIS, in the first here.
+    let first = infos.first();
+    let floor = first.and_then(|i| lowest(i.1)).map_or(min, |lo| lo.max(min).min(first.map_or(last, |i| i.0)));
+    if values().flatten().any(|v| v < floor || v > last) {
         notes.add("values below its first class or above its last, drawn in the first or last class");
     }
     if values().any(|v| v.is_none()) {
@@ -323,9 +337,9 @@ fn label(v: &Value, key: &str, notes: &mut Notes) -> Option<String> {
 
 /// A class's symbol for a `g` layer and its line's dash pattern: its own; a picture marker as a
 /// circle in `picture`, a ramp's colour so that its classes tell apart (grey without one); one
-/// RustGIS can't draw as its own symbol in `color` (noted).
+/// RustGIS can't draw, or none, as its own symbol in `color` (noted).
 fn class_symbol(s: Option<&Value>, g: GeometryType, picture: Option<Rgba>, color: Rgba, notes: &mut Notes) -> (Symbol, Option<Dash>) {
-    symbol(s.unwrap_or(&Value::Null), g, picture, notes).unwrap_or_else(|| {
+    let own = || {
         let base = Symbol::default_for(g, 0);
         let symbol = match g {
             GeometryType::Polyline => Symbol { fill: color, stroke: color, ..base },
@@ -333,7 +347,12 @@ fn class_symbol(s: Option<&Value>, g: GeometryType, picture: Option<Rgba>, color
             _ => Symbol { fill: color, ..base },
         };
         (symbol, None)
-    })
+    };
+    let Some(s) = s.filter(|s| !s.is_null()) else {
+        notes.add("classes with no symbol, drawn in a ramp's colours");
+        return own();
+    };
+    symbol(s, g, picture, notes).unwrap_or_else(own)
 }
 
 /// A dashed line's stacked stroke, which takes its colour and width from the renderer.
@@ -1044,6 +1063,43 @@ mod tests {
         assert_eq!(class_labels.get("a").map(String::as_str), Some("two lines"));
         assert_eq!(class_labels.get("b").map(|l| l.chars().count()), Some(MAX_LABEL));
         assert_eq!(other_label, &None, "a blank label is none");
+    }
+
+    /// What a first class starting above the renderer's `minValue`, a lower bound that isn't a
+    /// number and a class with no symbol leave out is said; a default label with no default symbol
+    /// to show it by isn't kept (#2152).
+    #[test]
+    fn lower_bounds_and_missing_symbols_are_said() {
+        use rustgis_data::Value as V;
+        let fill = json!({"type": "esriSFS", "color": [1, 2, 3, 255]});
+        let breaks = |min: Value, first: Value| {
+            json!({"renderer": {"type": "classBreaks", "field": "CODE", "minValue": min, "classBreakInfos": [
+                {"classMinValue": first, "classMaxValue": 20, "symbol": fill},
+                {"classMinValue": 20, "classMaxValue": 30, "symbol": fill}]}})
+        };
+        let rows = |v: i64| with_rows(GeometryType::Polygon, FieldType::Integer, &[("a", V::Int(v)), ("b", V::Int(30))]);
+        // Below the first class's own lower bound, though above the renderer's: said.
+        let (_, notes) = styled_rows(rows(5), breaks(json!(0), json!(10)));
+        assert_eq!(notes.text(), "values below its first class or above its last, drawn in the first or last class");
+        let (_, notes) = styled_rows(rows(10), breaks(json!(0), json!(10)));
+        assert!(notes.is_empty(), "{}", notes.text());
+        // A lower bound that isn't a number is said; one absent or null isn't.
+        for (min, first) in [(json!("low"), json!(10)), (json!(0), json!({"v": 1}))] {
+            let (_, notes) = styled_rows(rows(10), breaks(min, first));
+            assert_eq!(notes.text(), "lower bounds RustGIS can't read, left out");
+        }
+        let (_, notes) = styled_rows(rows(10), breaks(json!(null), json!(10)));
+        assert!(notes.is_empty(), "{}", notes.text());
+        // A class with no symbol takes a ramp's colour, said as such.
+        let info = json!({"renderer": {"type": "uniqueValue", "field1": "NAME",
+            "uniqueValueInfos": [{"value": "a"}, {"value": "b", "symbol": null}], "defaultLabel": "x".repeat(300)}});
+        let (l, notes) = styled(GeometryType::Polygon, info);
+        let Renderer::Unique { classes, other_label, .. } = &l.renderer else { panic!("{:?}", l.renderer) };
+        let base = Symbol::default_for(GeometryType::Polygon, 0);
+        assert_eq!(classes.first().map(|c| c.1.fill), Some(Ramp::default().pick(0, 2).with_alpha(base.fill.a())));
+        // The default label, with no default symbol to show it by, is neither kept nor said cut.
+        assert_eq!(other_label, &None);
+        assert_eq!(notes.text(), "classes with no symbol, drawn in a ramp's colours (2 symbols)");
     }
 
     #[test]
