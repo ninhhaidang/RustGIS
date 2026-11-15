@@ -1628,6 +1628,24 @@ fn part(g: &Geometry, mask: &MultiPolygon<f64>, inside: bool) -> Option<Geometry
     }
 }
 
+/// Clip's part and whether its total polygon area is less than one millionth of the input's:
+/// a possible boundary sliver, kept unchanged. Measure both in the overlay plane while they
+/// are already projected, once per feature, without projecting the result back again to measure
+/// it. The input's overlapping polygon parts must first be dissolved, as for [`part`].
+fn clip_part(g: &Geometry, mask: &MultiPolygon<f64>) -> Option<(Geometry, bool)> {
+    use geo::Area;
+    if let Some(whole) = to_multipolygon(g) {
+        let piece = whole.intersection(mask);
+        if piece.0.is_empty() {
+            return None;
+        }
+        let sliver = piece.unsigned_area() < whole.unsigned_area() * 1e-6;
+        from_multipolygon(&piece).map(|g| (g, sliver))
+    } else {
+        part(g, mask, true).map(|g| (g, false))
+    }
+}
+
 /// Clip each input feature to the union of only the selected clip polygons whose projected
 /// extents meet it. Union candidates together so overlapping masks never duplicate output.
 /// Cancel is looked at, and progress counted, mask by mask and feature by feature; one mask's
@@ -1798,6 +1816,7 @@ fn clip_on(inp: &dyn Inputs, p: &Json, threads: Option<usize>, cache_bytes: Opti
     // The masks reaching each pole: a point at one is in them at any longitude (#1033).
     let at_poles = AtPoles::new(masks.iter().map(|(m, _)| plane_poles(m)));
     let mut out = copy_schema(ds, out_name(p, format!("{}_Clip", ds.name)), ds.geometry_type);
+    let mut slivers = 0;
     let input_rows = rows(inp, p, "input", ds);
     // Input features without geometry, or with an empty one: nothing of them can be kept.
     let without = input_rows
@@ -1868,14 +1887,15 @@ fn clip_on(inp: &dyn Inputs, p: &Json, threads: Option<usize>, cache_bytes: Opti
                 let shape = dissolved(g);
                 Ok(if let [i] = near.as_slice() {
                     cache.big = None;
-                    masks.get(*i).and_then(|(m, _)| part(&shape, m, true))
+                    masks.get(*i).and_then(|(m, _)| clip_part(&shape, m))
                 } else {
-                    part(&shape, &cache.union_of(&near, &masks), true)
+                    clip_part(&shape, &cache.union_of(&near, &masks))
                 })
             },
         )?;
         for (&r, c) in batch.iter().zip(clipped) {
-            let (Some(f), Some(c)) = (ds.features.get(r), c) else { continue };
+            let (Some(f), Some((c, sliver))) = (ds.features.get(r), c) else { continue };
+            slivers += usize::from(sliver);
             out.push(Some(c), f.attrs.clone());
         }
     }
@@ -1885,6 +1905,9 @@ fn clip_on(inp: &dyn Inputs, p: &Json, threads: Option<usize>, cache_bytes: Opti
         r.messages.push(format!("Clip: {without} feature(s) of '{}' left out: they have no geometry to clip", ds.name));
     }
     r.messages.extend(left.notes("Clip", &clip_ds.name));
+    if slivers > 0 {
+        r.messages.push(format!("Clip: {slivers} output feature(s) have less than one millionth of their input feature's area; they may be slivers along the clip boundary (kept unchanged)"));
+    }
     Ok(r)
 }
 
@@ -13357,6 +13380,53 @@ mod tests {
         );
         let clean = clip(&m, &serde_json::json!({"input": "clean", "clip": "masks"})).unwrap();
         assert!(!clean.messages.iter().any(|m| m.contains("no geometry")), "{:?}", clean.messages);
+    }
+
+    /// A shared diagonal becomes a small positive-area overlap when the mask is normalized.
+    /// Count kept features once, across workers, without changing their geometry; an ordinary
+    /// partial clip needs no notice.
+    #[test]
+    fn clip_reports_kept_boundary_slivers_but_not_ordinary_pieces() {
+        use geo::Area;
+        let poly = |pts: &[(f64, f64)]| Geometry::Polygon(vec![vec![pts.iter().map(|&(x, y)| Coord::new(x, y)).collect()]]);
+        let (x, y, d) = (-89.7, 35.05, 0.01);
+        let tract = poly(&[(x, y), (x + d, y + d), (x - d, y + d), (x, y)]);
+        let town = poly(&[(x, y), (x + d, y + d), (x + 6.0 * d, y - 0.3 * d), (x, y)]);
+        let mask = union_all(to_multipolygon(&town).unwrap().0.iter());
+        // The old part path keeps this sliver: exactly-zero checks miss it. Keep its coordinates
+        // bit for bit, and count the two output features rather than dropped boundary contacts.
+        let expected = part(&tract, &mask, true).unwrap();
+        let area = to_multipolygon(&expected).unwrap().unsigned_area();
+        assert!(area > 0.0 && area < to_multipolygon(&tract).unwrap().unsigned_area() * 1e-6, "{area}");
+        let mut tracts = Dataset::new("tracts", GeometryType::Polygon, vec![]);
+        for _ in 0..2 {
+            tracts.push(Some(tract.clone()), vec![]);
+        }
+        let ordinary = sq(x + 0.2 * d, y - 0.1 * d, 0.8 * d);
+        let ordinary_area = to_multipolygon(&ordinary).unwrap().unsigned_area();
+        let mut clean = Dataset::new("clean", GeometryType::Polygon, vec![]);
+        clean.push(Some(ordinary), vec![]);
+        let mut masks = Dataset::new("masks", GeometryType::Polygon, vec![]);
+        masks.push(Some(town), vec![]);
+        let m = Map(HashMap::from([("tracts".into(), tracts), ("clean".into(), clean), ("masks".into(), masks)]));
+        for threads in [1, 4] {
+            let r = clip_on(&m, &serde_json::json!({"input": "tracts", "clip": "masks"}), Some(threads), None).unwrap();
+            assert_eq!(
+                r.messages,
+                [
+                    "Clip: 2 features kept",
+                    "Clip: 2 output feature(s) have less than one millionth of their input feature's area; they may be slivers along the clip boundary (kept unchanged)",
+                ]
+            );
+            let out = layer(r);
+            assert_eq!(out.features.len(), 2);
+            assert!(out.features.iter().all(|f| f.geometry.as_ref() == Some(&expected)));
+            let clean = clip_on(&m, &serde_json::json!({"input": "clean", "clip": "masks"}), Some(threads), None).unwrap();
+            assert_eq!(clean.messages, ["Clip: 1 features kept"]);
+            let clean = layer(clean);
+            let area = to_multipolygon(clean.features[0].geometry.as_ref().unwrap()).unwrap().unsigned_area();
+            assert!(area > ordinary_area * 1e-6 && area < ordinary_area, "{area} / {ordinary_area}");
+        }
     }
 
     /// Clip gives the same rows, bit for bit, on several threads as on one (#1252), and whatever its

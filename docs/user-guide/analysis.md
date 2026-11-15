@@ -682,6 +682,13 @@ contribute their points, while lines and polygons contribute their bounding-box 
 two distinct locations with numeric values are needed. It adds **two separate Float32 GeoTIFF
 layers**: the prediction, named by `output`, and `<output>_variance`.
 
+**Clip** (`clip`) keeps the parts of `input` inside the `clip` polygons. It gives one notice with
+the count of output polygon features whose total area is less than one millionth (`1e-6`) of
+their input feature's area, measured in the overlay plane. These may be slivers along the clip
+boundary; they are kept unchanged. Check these features before using the result as a map series
+index, where a tiny sliver can make an apparently empty page. Ordinary clipped pieces give no
+sliver notice, and empty intersections are still left out.
+
 **Erase** (`erase`) removes from `input` features (points, lines or polygons) their parts inside
 the `erase` polygons. An erase polygon's edge counts as inside it, as for Clip, so a point on the
 edge or a stretch of line along it is erased; features left with nothing are left out, and one
