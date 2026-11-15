@@ -198,3 +198,41 @@ jobs:
       os: ${{ needs.plan.outputs.os }}
       # The release build runs nightly; `ci:full` asks for it before merging.
       release-build: ${{ contains(github.event.pull_request.labels.*.name, 'ci:full') }}
+
+  # A test that failed and then passed on a retry (.config/nextest.toml) on a push to main gets an
+  # issue, or a comment on its open one: a retry hides a flaky test from the run, not from us. A
+  # pull request only lists them in the test jobs' summaries. Like nightly.yml's report, it writes
+  # issues and runs none of the repository's code.
+  flaky:
+    name: Flaky tests
+    needs: test
+    if: ${{ !cancelled() && github.event_name == 'push' && github.repository == 'opengeos/RustGIS' }}
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      # One file a runner, flaky-<runner>.txt, each line a test ("<binary> <test>").
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: flaky-*
+          merge-multiple: true
+          path: flaky
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          [ -d flaky ] || exit 0
+          sort -u flaky/flaky-*.txt | while read -r test; do
+            title="Flaky test: $test"
+            runners="$(grep -lxF -- "$test" flaky/flaky-*.txt | sed 's|^flaky/flaky-||; s|\.txt$||' | paste -sd, - | sed 's/,/, /g')"
+            body="$test failed and passed on a retry on $runners, for $GITHUB_SHA: $RUN"
+            open="$(gh issue list -R "$GITHUB_REPOSITORY" --state open --search "in:title \"$title\"" --json number,title \
+              | jq -r --arg t "$title" '[.[] | select(.title == $t)][0].number // ""')"
+            if [ -n "$open" ]; then
+              gh issue comment "$open" -R "$GITHUB_REPOSITORY" --body "Flaky again: $body"
+            else
+              gh issue create -R "$GITHUB_REPOSITORY" --title "$title" \
+                --body "$body. A retry hides a flaky test from the run, so it is listed here. Fix the test; if it waits on a timer, wait for completion instead (\`cargo xtask test-hygiene\`)."
+            fi
+          done

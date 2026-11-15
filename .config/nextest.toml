@@ -1,0 +1,18 @@
+# cargo-nextest settings. Only CI uses the `ci` profile (.github/workflows/test-rust.yml); a bare
+# `cargo nextest run` and `cargo xtask ci` are unchanged.
+
+[profile.ci]
+# A test that fails is run again, up to twice. One that passes on a retry is flaky: CI lists it in
+# the job summary (.github/scripts/flaky-tests.sh), and on `main` opens an issue for it, so a retry
+# hides nothing. One that fails all three times fails the run.
+#
+# This is a stopgap for tests that wait on timers (#2099 added `cargo xtask test-hygiene`, which
+# lists them). Once those are gone, set `retries` back to 0: a test that fails then is a bug.
+retries = 2
+# Report every failing test in one run, not only the first.
+fail-fast = false
+
+[profile.ci.junit]
+# target/nextest/ci/junit.xml: the report flaky-tests.sh reads (`<flakyFailure>` marks a test that
+# passed only on a retry).
+path = "junit.xml"

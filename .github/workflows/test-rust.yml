@@ -2,6 +2,11 @@ name: Rust tests
 
 # The workspace's tests and layering check on each runner in `os` (a JSON list), for CI and CI on
 # label, and the release build of the apps as well for the nightly run.
+#
+# The tests run under cargo-nextest, which runs a test that fails again, up to twice (the `ci`
+# profile in .config/nextest.toml). A test that passes on a retry is flaky: it is listed in the
+# job summary, and on a push to main ci.yml opens an issue for it. The retries are a stopgap for
+# tests that wait on timers (`cargo xtask test-hygiene`); once those are gone they go back to zero.
 
 on:
   workflow_call:
@@ -54,8 +59,45 @@ jobs:
           # its own cache would hold the release build as well, and one used once a night is
           # evicted before the next.
           save-if: ${{ github.ref == 'refs/heads/main' && !inputs.release-build }}
+      # Nextest's own checksums are verified by the action, as for the tools the other workflows
+      # install; the version is pinned.
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2
+        with:
+          tool: cargo-nextest@0.9.151
       - name: Tests
-        run: cargo test --workspace --locked
+        run: cargo nextest run --workspace --locked --profile ci
+      - name: Flaky tests
+        id: flaky
+        if: ${{ !cancelled() }}
+        shell: bash
+        env:
+          RUNNER: ${{ matrix.os }}
+        run: |
+          .github/scripts/flaky-tests.sh target/nextest/ci/junit.xml > "flaky-$RUNNER.txt"
+          if [ -s "flaky-$RUNNER.txt" ]; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::Tests that passed only on a retry on $RUNNER: see the job summary."
+            {
+              echo "### Flaky tests ($RUNNER)"
+              echo
+              echo "These failed and then passed on a retry, so the run did not fail. Each is a bug to fix."
+              echo
+              sed 's/^/- `/; s/$/`/' "flaky-$RUNNER.txt"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+      # ci.yml's `flaky` job reads these on a push to main. The nightly run and pull requests only
+      # show the summary.
+      - name: Keep the flaky tests' names
+        if: ${{ !cancelled() && steps.flaky.outputs.found == 'true' && github.event_name == 'push' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: flaky-${{ matrix.os }}
+          path: flaky-${{ matrix.os }}.txt
+          retention-days: 1
+      # Nextest doesn't run doctests. The workspace has one, a compile-only example (`no_run`) in
+      # rustgis-data's geotiff reader, but it keeps the examples in doc comments compiling.
+      - name: Doctests
+        run: cargo test --doc --workspace --locked
       - name: Layering check
         run: cargo xtask layers
       - name: Build release apps

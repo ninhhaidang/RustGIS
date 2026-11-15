@@ -58,6 +58,14 @@ Config `include` directives are also rejected so those checks cannot be bypassed
 another file; put intentional dependency patches in `Cargo.toml` for review.
 User-level Cargo mirrors are outside this repository check.
 
+CI runs the workspace's tests with [cargo-nextest](https://nexte.st), and `cargo test --doc` for the
+doctests it doesn't run (`.config/nextest.toml`, profile `ci`). Nextest runs a test that fails
+again, up to twice, and a test that passes on a retry is flaky: it is listed in the job summary,
+and on a push to `main` it gets an issue titled `Flaky test: <binary> <test>`. A flaky test is a
+bug to fix, not a retry to rely on; the retries are a stopgap for tests that wait on timers
+(`cargo xtask test-hygiene`) and go back to zero once those are gone. `cargo xtask ci` still runs
+`cargo test` locally.
+
 Workflow actions are pinned to full commit SHAs with the previous version or branch in a comment.
 Dependabot's existing GitHub Actions updates keep these pins current. When changing an action,
 resolve the commit in that action's own repository and keep the version comment in step.
