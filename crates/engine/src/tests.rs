@@ -30765,8 +30765,8 @@ fn map_rename_keeps_map_names_unique() {
     for p in [json!({}), json!({"name": "  "}), json!({"name": 3})] {
         assert!(s.run("map.rename", &p).is_err(), "{p}");
     }
-    // A long name keeps to 200 characters, number included.
-    let long = "é".repeat(300);
+    // A name at the limit keeps to 200 characters, number included.
+    let long = "é".repeat(200);
     s.run("map.rename", &json!({"name": long})).unwrap();
     s.run("map.new", &Value::Null).unwrap();
     let r = s.run("map.rename", &json!({"name": long})).unwrap();
@@ -30913,8 +30913,8 @@ fn bookmarks_are_managed_in_place_on_any_map() {
     assert_eq!(s.run("bookmark.add", &json!({"name": "europe"})).unwrap()["name"], "europe 2");
     assert_eq!(s.run("bookmark.add", &json!({"name": "Europe"})).unwrap()["name"], "Europe 3");
     assert_eq!(names(&s).len(), first.len() + 2);
-    // A long name that is taken keeps its number within the 120 characters.
-    let long = "x".repeat(150);
+    // A name at the limit that is taken keeps its number within the 120 characters.
+    let long = "x".repeat(120);
     let mut longs = Vec::new();
     for _ in 0..2 {
         longs.push(s.run("bookmark.add", &json!({"name": long})).unwrap()["name"].as_str().unwrap().to_string());
@@ -30940,7 +30940,8 @@ fn bookmarks_are_managed_in_place_on_any_map() {
     // A description, trimmed and kept to 2000 characters; empty clears it.
     s.run("bookmark.describe", &json!({"name": "Africa", "description": "  Indonesia, really  "})).unwrap();
     assert_eq!(s.map().bookmarks.iter().find(|b| b.name == "Africa").map(|b| b.description.as_str()), Some("Indonesia, really"));
-    s.run("bookmark.describe", &json!({"name": "Africa", "description": "é".repeat(3000)})).unwrap();
+    assert!(s.run("bookmark.describe", &json!({"name": "Africa", "description": "é".repeat(2001)})).is_err());
+    s.run("bookmark.describe", &json!({"name": "Africa", "description": "é".repeat(2000)})).unwrap();
     assert_eq!(s.map().bookmarks.iter().find(|b| b.name == "Africa").map(|b| b.description.chars().count()), Some(2000));
     // Move: to the front, and past the end to the back.
     s.run("bookmark.move", &json!({"name": "Africa", "to": 0})).unwrap();
@@ -31755,7 +31756,7 @@ fn layout_guides_are_set_kept_and_undone() {
 #[test]
 fn layout_names_keep_to_200_characters_with_their_number() {
     let mut s = world();
-    let long = "é".repeat(300);
+    let long = "é".repeat(200);
     s.run("layout.new", &json!({"name": long})).unwrap();
     let r = s.run("layout.new", &json!({"name": long})).unwrap();
     let name = r["name"].as_str().unwrap_or_default().to_string();
@@ -31893,8 +31894,8 @@ fn map_duplicate_copies_a_map_beside_it_and_leaves_layouts_alone() {
     for m in [json!(0), json!("Nowhere")] {
         assert!(s.run("map.duplicate", &json!({"map": m})).is_err(), "{m}");
     }
-    // A long name keeps to 200 characters with " copy".
-    s.run("map.rename", &json!({"name": "é".repeat(300)})).unwrap();
+    // A name at the limit keeps to 200 characters with " copy".
+    s.run("map.rename", &json!({"name": "é".repeat(200)})).unwrap();
     let name = s.run("map.duplicate", &Value::Null).unwrap()["name"].as_str().unwrap_or_default().to_string();
     assert_eq!((name.chars().count(), name.ends_with(" copy")), (200, true), "{name}");
 }
@@ -49202,4 +49203,33 @@ fn layout_no_data_legend_is_optional_and_saved() {
     ));
     let old: rustgis_map::layout::Layout = serde_json::from_value(old).unwrap();
     assert!(matches!(old.element(3).unwrap().kind, ElementKind::Legend { show_no_data: false, .. }));
+}
+
+/// #2139: a name or text over its limit is refused with its length and the limit, and nothing
+/// changes; one at the limit is taken whole.
+#[test]
+fn bookmark_layout_map_names_over_their_limit_are_refused() {
+    let mut s = world();
+    let long = |n: usize| "x".repeat(n);
+    let snapshot = |s: &Session| (s.map().name.clone(), s.map().bookmarks.len(), s.project.layouts.len());
+    let before = snapshot(&s);
+    for (cmd, params, of) in [
+        ("bookmark.add", json!({"name": long(121)}), "a bookmark's name takes at most 120"),
+        ("bookmark.add", json!({"name": "b", "description": long(2001)}), "a bookmark's description takes at most 2000"),
+        ("bookmark.rename", json!({"name": "Europe", "newName": long(121)}), "a bookmark's name takes at most 120"),
+        ("map.rename", json!({"name": long(201)}), "a map's name takes at most 200"),
+        ("layout.new", json!({"name": long(201)}), "a layout's name takes at most 200"),
+    ] {
+        let e = s.run(cmd, &params).unwrap_err();
+        assert!(e.contains(of), "{cmd}: {e}");
+    }
+    assert_eq!(snapshot(&s), before);
+    s.run("layout.new", &json!({"name": "L"})).unwrap();
+    let e = s.run("layout.rename", &json!({"name": "L", "newName": long(201)})).unwrap_err();
+    assert!(e.contains("a layout's name takes at most 200"), "{e}");
+    let e = s.run("bookmark.describe", &json!({"name": "b", "description": long(2001)}));
+    assert!(e.is_err());
+    s.run("bookmark.add", &json!({"name": long(120), "description": long(2000)})).unwrap();
+    s.run("map.rename", &json!({"name": long(200)})).unwrap();
+    assert_eq!(s.map().name.chars().count(), 200);
 }

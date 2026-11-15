@@ -946,6 +946,11 @@ fn set(s: &mut Session, p: &Value) -> CmdResult {
         }
     }
     let hidden = hidden_layers(p)?;
+    let rename = ps(p, "rename")
+        .map(str::trim)
+        .filter(|r| !r.is_empty())
+        .map(|r| super::within("rename", "a tile layer's name", r, 120))
+        .transpose()?;
     let old_name = s.map().tiles.get(i).map(|t| t.name.clone());
     let m = s.map_mut();
     let Some(t) = m.tiles.get_mut(i) else { return Err("no tile layer at that index".into()) };
@@ -1003,8 +1008,8 @@ fn set(s: &mut Session, p: &Value) -> CmdResult {
     if let Some(m) = mode {
         t.blend = m;
     }
-    if let Some(r) = ps(p, "rename").map(str::trim).filter(|r| !r.is_empty()) {
-        t.name = r.chars().take(120).collect();
+    if let Some(r) = rename {
+        t.name = r;
     }
     if let Some(url) = new_url {
         // A dated layer keeps the look at every date: its template takes it too, and a data
