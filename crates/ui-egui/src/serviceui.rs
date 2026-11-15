@@ -557,8 +557,18 @@ pub fn poll_pages(app: &mut RustGisApp, ctx: &egui::Context) {
             Some(answer) => {
                 // The description isn't the features: it leaves them the whole budget.
                 let left = if describing { read.left } else { read.left.saturating_sub(answer.as_ref().map_or(0, Vec::len)) };
-                let step = (*read.pages).land(answer);
-                go_on(app, read.landed, left, step);
+                let mut step = (*read.pages).land(answer);
+                let mut landed = read.landed;
+                // How its ArcGIS service draws the layer, from its description, goes with it to be
+                // added (#2080).
+                if describing
+                    && let Step::Fetch(pages) = &mut step
+                    && let Some(drawing) = pages.take_drawing_info()
+                    && let Some(params) = landed.params.as_object_mut()
+                {
+                    params.insert("drawingInfo".to_string(), drawing);
+                }
+                go_on(app, landed, left, step);
             }
             None => app.ui.service_pages.push(read),
         }

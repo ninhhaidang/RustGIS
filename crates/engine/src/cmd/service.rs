@@ -447,15 +447,7 @@ pub fn features_answer(s: &mut Session, name: &str, bytes: Vec<u8>, bounds: Opti
 /// address `url`, not the file name their download was read under: Add From Service then knows
 /// them as added, to remove.
 pub(crate) fn mark_service_source(s: &mut Session, r: &Value, url: &str) {
-    let ids: Vec<u32> = r
-        .get("layers")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .chain(r.get("layer"))
-        .filter_map(Value::as_u64)
-        .filter_map(|i| u32::try_from(i).ok())
-        .collect();
+    let ids = added_layers(r);
     let anonymous = s.web_logins.is_anonymous();
     for id in ids {
         if let Some(l) = s.map_mut().layer_mut(id) {
@@ -465,6 +457,33 @@ pub(crate) fn mark_service_source(s: &mut Session, r: &Value, url: &str) {
                 l.connection.clear();
             }
         }
+    }
+}
+
+/// The layers an add's result `r` names (`layer`, `layers`).
+fn added_layers(r: &Value) -> Vec<u32> {
+    r.get("layers")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .chain(r.get("layer"))
+        .filter_map(Value::as_u64)
+        .filter_map(|i| u32::try_from(i).ok())
+        .collect()
+}
+
+/// Gives the layers an add's result `r` names the symbology their ArcGIS service's description
+/// sets (`drawing`, its `drawingInfo`), and says, by the layer's `name`, what of it RustGIS draws
+/// otherwise (#2080).
+pub(crate) fn apply_drawing_info(s: &mut Session, r: &Value, name: &str, drawing: &Value) {
+    let mut notes = rustgis_map::arcgis_style::Notes::default();
+    for id in added_layers(r) {
+        if let Some(l) = s.map_mut().layer_mut(id) {
+            rustgis_map::arcgis_style::apply(l, drawing, &mut notes);
+        }
+    }
+    if !notes.is_empty() {
+        s.notify(format!("{name}: the service's symbology came in, except: {}", notes.text()), false);
     }
 }
 
@@ -488,7 +507,7 @@ pub(crate) fn bounds_of(v: Option<&Value>) -> Result<Option<[f64; 4]>, String> {
 /// (75 s at most). A page is fetched only where the page before it may point.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn download_features(s: &mut Session, name: &str, url: &str, max: usize) -> Result<Vec<u8>, String> {
-    match download_layer(s, name, url, max, false)? {
+    match download_layer(s, name, url, max, false)?.0 {
         Downloaded::Bytes(bytes) => Ok(bytes),
         // Not given without protocol buffer pages.
         Downloaded::Read(..) => Err(crate::sources::message_with_address(url, "the pages were read as protocol buffers")),
@@ -506,14 +525,16 @@ pub(crate) enum Downloaded {
 }
 
 /// A service's features at `url`, as [`download_features`] downloads them; with `pbf`, an ArcGIS
-/// layer whose description lists protocol buffers is read in them, in pages.
+/// layer whose description lists protocol buffers is read in them, in pages. With them, how an
+/// ArcGIS layer's description says it is drawn (its `drawingInfo`), when it says.
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn download_layer(s: &mut Session, name: &str, url: &str, max: usize, pbf: bool) -> Result<Downloaded, String> {
+pub(crate) fn download_layer(s: &mut Session, name: &str, url: &str, max: usize, pbf: bool) -> Result<(Downloaded, Option<Value>), String> {
     use crate::render::rustgis_tiles::{address, cache};
     use rustgis_data::ogc::{DESCRIPTION_MAX, DESCRIPTION_TIMEOUT, Step, begin, begin_with_pbf, max_paged_features};
     let mut until = std::time::Instant::now() + cache::BLOCKING_TIMEOUT;
     let mut left = max;
     let mut step = if pbf { begin_with_pbf(url, max_paged_features()) } else { begin(url, max_paged_features()) };
+    let mut drawing = None;
     let (downloaded, note) = loop {
         let pages = match step {
             Step::Done(bytes, note) => break (Downloaded::Bytes(bytes), note),
@@ -548,13 +569,16 @@ pub(crate) fn download_layer(s: &mut Session, name: &str, url: &str, max: usize,
         // Nor their time: the features have all of it from when the description is in.
         if describing {
             until = std::time::Instant::now() + cache::BLOCKING_TIMEOUT;
+            if let Step::Fetch(pages) = &mut step {
+                drawing = pages.take_drawing_info();
+            }
         }
     };
     cache::check_still(&cache::current_still())?;
     if let Some(note) = note {
         s.notify(format!("{name}: {note}"), false);
     }
-    Ok(downloaded)
+    Ok((downloaded, drawing))
 }
 
 /// A tile template given for a service's layer: a web address with `{z}`, `{x}` and `{y}`, that
@@ -1341,7 +1365,8 @@ fn add_discovered(s: &mut Session, p: &Value, url: &str, want: &str, found: &Dis
                         r
                     } else {
                         let max = crate::render::rustgis_tiles::cache::MAX_DOWNLOAD;
-                        let r = match download_layer(s, &name, from, max, true).map_err(|e| slow_whole_layer(e, given))? {
+                        let (downloaded, drawing) = download_layer(s, &name, from, max, true).map_err(|e| slow_whole_layer(e, given))?;
+                        let r = match downloaded {
                             Downloaded::Bytes(bytes) => {
                                 let bytes = features_answer(s, &name, bytes, layer.bbox);
                                 super::raster::add_named_bytes(s, &json!({"name": name}), format!("{name}.geojson"), bytes, keep_view)?
@@ -1351,6 +1376,9 @@ fn add_discovered(s: &mut Session, p: &Value, url: &str, want: &str, found: &Dis
                             Downloaded::Read(read) => super::layer::add_read(s, &json!({"name": name}), *read, keep_view)?,
                         };
                         mark_service_source(s, &r, from);
+                        if let Some(drawing) = &drawing {
+                            apply_drawing_info(s, &r, &name, drawing);
+                        }
                         r
                     };
                     // Over an area, the features crossing it: the view stays, or goes to a box given

@@ -1300,6 +1300,44 @@ mod tests {
         rustgis_plugins::unload("eng-keys-real");
     }
 
+    /// A plugin's service download is added with the `drawingInfo` the app read from the ArcGIS
+    /// layer's description, drawn as it says; the same key on a download that isn't a service's
+    /// is a changed request, refused (#2080).
+    #[test]
+    fn a_plugins_service_download_is_added_with_its_drawing_info() {
+        let mut s = Session::new(crate::project::Project::default());
+        let command = load_test_plugin("eng-drawing-info");
+        let answer = br#"{"type": "FeatureCollection", "features": [{"type": "Feature", "properties": {"A": 1},
+            "geometry": {"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 0]]]}}]}"#;
+        let drawing = json!({"renderer": {"type": "simple", "symbol": {"type": "esriSFS", "color": [0, 92, 230, 255]}}});
+        for (url, service) in
+            [("https://x.org/arcgis/rest/services/Z/FeatureServer/0/query?f=geojson", true), ("https://x.org/zones.geojson", false)]
+        {
+            let mut asked = json!({"url": url, "name": if service { "Zones" } else { "Plain" }});
+            if service {
+                asked["service"] = json!(true);
+            }
+            ask(&mut s, &command, asked).unwrap();
+            let taken = s.take_url_requests();
+            let id = s.download_started_for(&taken[0]).unwrap();
+            assert!(s.download_landed(id, answer.to_vec()));
+            let mut p = taken[0].params().clone();
+            p["id"] = json!(id);
+            p["drawingInfo"] = drawing.clone();
+            let r = s.complete_download(id, &p);
+            if service {
+                r.unwrap();
+            } else {
+                assert!(r.unwrap_err().contains("parameters changed"));
+            }
+        }
+        let zones = s.map().layer_by_name("Zones").unwrap();
+        let rustgis_map::Renderer::Single(sym) = zones.renderer else { panic!("{:?}", zones.renderer) };
+        assert_eq!(sym.fill, rustgis_map::Rgba::rgb(0, 92, 230));
+        assert!(s.map().layer_by_name("Plain").is_none());
+        rustgis_plugins::unload("eng-drawing-info");
+    }
+
     /// Refusal requires a real claim and cannot consume a different caller's bytes by number.
     #[test]
     fn a_refused_landing_hides_the_keys_of_its_address() {

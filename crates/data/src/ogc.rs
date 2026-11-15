@@ -3367,6 +3367,9 @@ pub struct Pages {
     /// Why the layer's first protocol buffer page couldn't be read, when it is read in GeoJSON
     /// pages instead: said in the note it ends with.
     pbf_failed: Option<String>,
+    /// How an ArcGIS layer's description says it is drawn (its `drawingInfo`, an object), until
+    /// taken ([`Pages::take_drawing_info`]).
+    drawing_info: Option<serde_json::Value>,
 }
 
 /// What the answer being fetched is.
@@ -3523,6 +3526,7 @@ fn start(url: &str, max: usize, pbf: bool) -> Step {
         decoded_bytes: 0,
         decoded_budget: max_decoded_bytes(),
         pbf_failed: None,
+        drawing_info: None,
     }))
 }
 
@@ -3588,6 +3592,7 @@ fn read_first(url: &str, first: Vec<u8>, max: usize, paging: Option<ArcgisPaging
         decoded_bytes: 0,
         decoded_budget: max_decoded_bytes(),
         pbf_failed: None,
+        drawing_info: None,
     };
     pages.advance()
 }
@@ -3606,6 +3611,13 @@ impl Pages {
     /// Whether the answer to fetch now is an ArcGIS layer's description, read before its features.
     pub fn describing(&self) -> bool {
         matches!(self.phase, Phase::Describe { .. })
+    }
+
+    /// How the ArcGIS layer being read says it is drawn: its description's `drawingInfo` (an
+    /// object), once the description is read, and only the first time it is asked for. A reader
+    /// takes it after landing the description, before the features are read.
+    pub fn take_drawing_info(&mut self) -> Option<serde_json::Value> {
+        self.drawing_info.take()
     }
 
     /// The address to fetch now.
@@ -3694,7 +3706,8 @@ impl Pages {
             return self.advance();
         }
         if let Phase::Describe { pbf } = self.phase {
-            let layer: Option<serde_json::Value> = answer.ok().and_then(|b| serde_json::from_slice(&b).ok());
+            let mut layer: Option<serde_json::Value> = answer.ok().and_then(|b| serde_json::from_slice(&b).ok());
+            self.drawing_info = layer.as_mut().and_then(|l| l.as_object_mut()?.remove("drawingInfo")).filter(serde_json::Value::is_object);
             let pbf = pbf && layer.as_ref().is_some_and(supports_pbf);
             return match layer.as_ref().and_then(arcgis_paging) {
                 Some(ArcgisPaging { size: Some(size), order }) => {
@@ -5463,6 +5476,7 @@ mod tests {
             decoded_bytes: 0,
             decoded_budget: max_decoded_bytes(),
             pbf_failed: None,
+            drawing_info: None,
         };
         // A page in another coordinate system, or of another geometry type, isn't joined; one
         // that doesn't say its system is.
@@ -5738,6 +5752,31 @@ mod tests {
             serde_json::json!({"type": "FeatureCollection", "features": []})
         );
         assert!(note.is_some_and(|n| n.contains("first 0 features")));
+    }
+
+    /// An ArcGIS layer's description gives how it is drawn (its `drawingInfo`) once, to be taken
+    /// before its features are read; one without it, or with something other than an object,
+    /// gives none (#2080).
+    #[test]
+    fn an_arcgis_description_gives_its_drawing_info_once() {
+        let q = "https://x.org/a/MapServer/3/query?where=1%3D1&f=geojson";
+        let drawing = serde_json::json!({"renderer": {"type": "simple"}, "transparency": 20});
+        for (description, expected) in [
+            (serde_json::json!({"currentVersion": 11, "drawingInfo": drawing}), Some(drawing.clone())),
+            (serde_json::json!({"currentVersion": 11, "drawingInfo": "simple"}), None),
+            (serde_json::json!({"currentVersion": 11}), None),
+        ] {
+            let Step::Fetch(pages) = begin(q, 100) else { panic!("the description is fetched first") };
+            assert!(pages.describing());
+            let Step::Fetch(mut pages) = pages.land(Ok(description.to_string().into_bytes())) else { panic!("then the features") };
+            assert!(!pages.describing());
+            assert_eq!(pages.take_drawing_info(), expected);
+            assert_eq!(pages.take_drawing_info(), None, "only once");
+        }
+        // A description that couldn't be read gives none, and the features are read as they are.
+        let Step::Fetch(pages) = begin(q, 100) else { panic!("the description is fetched first") };
+        let Step::Fetch(mut pages) = pages.land(Err("timed out".into())) else { panic!("then the features") };
+        assert_eq!((pages.take_drawing_info(), pages.next_url()), (None, q));
     }
 
     /// The addresses an ArcGIS layer is paged with: its description's (with the token), each page's

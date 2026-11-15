@@ -2547,6 +2547,31 @@ fn service_features_are_read_in_protocol_buffer_pages() {
     assert_eq!(formats, ["json", "pbf", "pbf"]);
 }
 
+/// An ArcGIS layer added from the app, read off the frame, is drawn as its description's
+/// `drawingInfo` says (#2080).
+#[test]
+fn a_service_layer_from_the_app_comes_in_with_its_services_symbology() {
+    use ogc_server::{Route, Server};
+    use rustgis_ui_egui::rustgis_engine::map::{Renderer, Rgba, symbology::Marker};
+    let layer = "/arcgis/rest/services/P/FeatureServer/0";
+    let described = json!({"currentVersion": 11.5, "maxRecordCount": 2, "supportedQueryFormats": "JSON, geoJSON, PBF",
+        "advancedQueryCapabilities": {"supportsPagination": true}, "fields": [{"name": "OBJECTID", "type": "esriFieldTypeOID"}],
+        "drawingInfo": {"renderer": {"type": "simple", "symbol": {"type": "esriSMS", "style": "esriSMSTriangle", "color": [0, 112, 255, 255], "size": 12}},
+            "transparency": 40}})
+    .to_string();
+    let page = format!("{layer}/query?where=1%3D1&outFields=*&resultOffset=0&resultRecordCount=2&orderByFields=OBJECTID&f=pbf");
+    let server = Server::new(vec![Route::new(layer, &described), Route::bytes(&page, esripbf_answers::page(&[0, 1], false, "OBJECTID"))]);
+    let mut h = harness();
+    h.step();
+    let url = format!("{}{layer}/query?where=1%3D1&outFields=*&f=geojson", server.base);
+    h.state_mut().run("ui.addUrl", json!({"url": url, "name": "Hydrants", "service": true})).unwrap();
+    wait_for_ogc(&mut h, |app| app.session.map().layer_by_name("Hydrants").is_some());
+    let hydrants = h.state().session.map().layer_by_name("Hydrants").unwrap();
+    let Renderer::Single(sym) = hydrants.renderer else { panic!("{:?}", hydrants.renderer) };
+    assert_eq!((sym.marker, sym.fill, sym.size), (Marker::Triangle, Rgba::rgb(0, 112, 255), 12.0));
+    assert_eq!(hydrants.transparency, 40.0);
+}
+
 /// A service layer whose features can't be fetched at all is said as an error, and its download
 /// is forgotten: no layer is added and nothing is left waiting.
 #[test]

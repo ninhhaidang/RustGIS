@@ -19956,6 +19956,80 @@ fn arcgis_layer_read_in_protocol_buffer_pages() {
     );
 }
 
+/// An ArcGIS layer added through service.add is drawn as its description's `drawingInfo` says:
+/// its symbol and transparency, with a notice of what RustGIS draws otherwise; a layer whose
+/// description says nothing keeps RustGIS's own symbol (#2080).
+#[test]
+fn an_arcgis_layer_comes_in_with_its_services_symbology() {
+    use ogc_server::{Route, Server, arcgis_page};
+    let q = "where=1%3D1&outFields=*&returnGeometry=true&outSR=4326";
+    let layer = |id: u32| format!("/arcgis/rest/services/S/MapServer/{id}");
+    let page = |id: u32| format!("{}/query?{q}&f=geojson&resultOffset=0&resultRecordCount=2&orderByFields=OBJECTID", layer(id));
+    let described = |drawing: Value| {
+        json!({"currentVersion": 11.5, "maxRecordCount": 2, "advancedQueryCapabilities": {"supportsPagination": true},
+            "fields": [{"name": "OBJECTID", "type": "esriFieldTypeOID"}], "drawingInfo": drawing})
+        .to_string()
+    };
+    let schools = json!({"renderer": {"type": "simple", "symbol": {"type": "esriSMS", "style": "esriSMSSquare", "color": [230, 0, 0, 255], "size": 10,
+        "outline": {"color": [0, 0, 0, 255], "width": 1}}, "visualVariables": [{"type": "sizeInfo", "field": "OBJECTID"}]}, "transparency": 25});
+    let server = Server::new(vec![
+        Route::new(&layer(0), &described(schools)),
+        Route::new(&page(0), &arcgis_page(&[0, 1], false)),
+        Route::new(&layer(1), &described(Value::Null)),
+        Route::new(&page(1), &arcgis_page(&[0, 1], false)),
+    ]);
+    let service = r#"{"currentVersion": 11.5, "layers": [{"id": 0, "name": "Schools"}, {"id": 1, "name": "Plain"}]}"#;
+    let url = format!("{}/arcgis/rest/services/S/MapServer", server.base);
+    let mut s = Session::new(Project::default());
+    s.run("service.add", &json!({"url": url, "layer": "Schools", "text": service})).unwrap();
+    let schools = s.map().layer_by_name("Schools").unwrap();
+    let rustgis_map::Renderer::Single(sym) = schools.renderer else { panic!("{:?}", schools.renderer) };
+    assert_eq!((sym.marker, sym.fill, sym.size), (rustgis_map::symbology::Marker::Square, rustgis_map::Rgba::rgb(230, 0, 0), 10.0));
+    assert_eq!(schools.transparency, 25.0);
+    let texts: Vec<_> = s.notices.iter().map(|n| n.text.as_str()).collect();
+    assert!(
+        texts.contains(
+            &"Schools: the service's symbology came in, except: sizes, colours or rotations by value (visual variables), left out"
+        ),
+        "{texts:?}"
+    );
+    s.run("service.add", &json!({"url": url, "layer": "Plain", "text": service})).unwrap();
+    let plain = s.map().layer_by_name("Plain").unwrap();
+    let rustgis_map::Renderer::Single(sym) = &plain.renderer else { panic!("{:?}", plain.renderer) };
+    assert!(sym.default_seed(plain.geometry_type()).is_some(), "RustGIS's own symbol: {sym:?}");
+    assert!(!s.notices.iter().any(|n| n.text.starts_with("Plain")));
+}
+
+/// A service download the app read off the frame is drawn as its ArcGIS description's
+/// `drawingInfo` says when it is added, given with it; without `service` it is left alone (#2080).
+#[test]
+fn a_service_download_is_added_with_the_drawing_info_given() {
+    let answer = r#"{"type": "FeatureCollection", "features": [{"type": "Feature", "properties": {"A": 1},
+        "geometry": {"type": "Polygon", "coordinates": [[[0, 0], [1, 0], [1, 1], [0, 0]]]}}]}"#;
+    let drawing = json!({"renderer": {"type": "simple", "symbol": {"type": "esriSFS", "style": "esriSFSDiagonalCross", "color": [0, 92, 230, 255],
+        "outline": {"type": "esriSLS", "style": "esriSLSSolid", "color": [255, 255, 255, 255], "width": 2}}}});
+    let mut s = Session::new(Project::default());
+    for (name, service) in [("Zones", true), ("Not a service", false)] {
+        let id = s.download_started();
+        assert!(s.download_landed(id, answer.as_bytes().to_vec()));
+        let url =
+            if service { "https://x.org/arcgis/rest/services/Z/FeatureServer/0/query?f=geojson" } else { "https://x.org/zones.geojson" };
+        let mut p = json!({"id": id, "url": url, "name": name, "drawingInfo": drawing});
+        if service {
+            p["service"] = json!(true);
+        }
+        s.run("layer.addDownload", &p).unwrap();
+    }
+    let zones = s.map().layer_by_name("Zones").unwrap();
+    let rustgis_map::Renderer::Single(sym) = zones.renderer else { panic!("{:?}", zones.renderer) };
+    assert_eq!((sym.fill, sym.stroke, sym.stroke_width), (rustgis_map::Rgba::rgb(0, 92, 230), rustgis_map::Rgba::rgb(255, 255, 255), 2.0));
+    let texts: Vec<_> = s.notices.iter().map(|n| n.text.as_str()).collect();
+    assert!(texts.contains(&"Zones: the service's symbology came in, except: hatched fills, drawn solid"), "{texts:?}");
+    let other = s.map().layer_by_name("Not a service").unwrap();
+    let rustgis_map::Renderer::Single(sym) = &other.renderer else { panic!("{:?}", other.renderer) };
+    assert!(sym.default_seed(other.geometry_type()).is_some(), "RustGIS's own symbol: {sym:?}");
+}
+
 /// An ArcGIS layer's description, read before its features, doesn't count against their budget:
 /// features that fit it alone are read whole (#1326).
 #[test]

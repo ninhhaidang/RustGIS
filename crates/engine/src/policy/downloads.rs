@@ -471,7 +471,10 @@ impl Session {
                 || (key == "zoom"
                     && crate::cmd::bool_value(value) == Some(false)
                     && claim.params.get(key).and_then(crate::cmd::bool_value) == Some(true))
-                || (key == "window" && asked_window(&claim.params, value));
+                || (key == "window" && asked_window(&claim.params, value))
+                // How an ArcGIS service draws the layer, read by the app from its description
+                // while reading its features (#2080).
+                || (key == "drawingInfo" && value.is_object() && claim.params.get("service").and_then(Value::as_bool) == Some(true));
             if !refinement && claim.params.get(key) != Some(value) {
                 return Err("the download's address or parameters changed since it was requested".into());
             }
