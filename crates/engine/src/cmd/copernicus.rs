@@ -63,6 +63,6 @@ fn logout(_s: &mut Session, _p: &Value) -> CmdResult {
     copernicus::logout();
     // Files read with the token are cached by address: they go with it, as at an Earthdata or
     // ArcGIS sign-out.
-    crate::render::rustgis_tiles::cache::clear();
+    crate::render::rustgis_tiles::cache::sign_out();
     Ok(status())
 }

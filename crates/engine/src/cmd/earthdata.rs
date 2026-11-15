@@ -66,7 +66,7 @@ fn logout(_s: &mut Session, _p: &Value) -> CmdResult {
     let forgotten = earthdata::logout();
     // Files and documents read with the token are cached by address: they go with it, as at an
     // ArcGIS sign-out. Always, since a token forgotten on expiry may have read what is kept.
-    crate::render::rustgis_tiles::cache::clear();
+    crate::render::rustgis_tiles::cache::sign_out();
     let mut out = status();
     if let Err(w) = forgotten {
         out["warning"] = json!(w);

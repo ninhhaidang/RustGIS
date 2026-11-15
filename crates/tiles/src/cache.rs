@@ -245,6 +245,9 @@ fn lock() -> std::sync::MutexGuard<'static, Cache> {
 static GENERATION: AtomicU64 = AtomicU64::new(0);
 static CLEARS: AtomicU64 = AtomicU64::new(0);
 static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+/// The [`mbtiles::epoch`](crate::mbtiles::epoch) of the latest [`sign_out`]: an answer to a read
+/// asked for before it is not kept ([`land`]).
+static SIGNED_OUT: AtomicU64 = AtomicU64::new(0);
 
 /// Source revisions are locked before any retained cache. Publication and reload share this
 /// lock; callbacks and I/O must always run after releasing it.
@@ -1086,6 +1089,21 @@ pub fn clear() {
     notify();
 }
 
+/// Forgets everything, as [`clear`], at the sign-out of a login the downloads use without a
+/// binding of their own (Earthdata, ArcGIS, Copernicus). A read under way with it that answers
+/// after this is not kept either, as [`login_gone`] does for a service login.
+pub fn sign_out() {
+    // Before the clear: an answer that lands between the two is dropped, one before goes with it.
+    SIGNED_OUT.fetch_max(crate::mbtiles::next_epoch(), Ordering::SeqCst);
+    clear();
+}
+
+/// Whether a read asked for at `asked_at` (an [`mbtiles::epoch`](crate::mbtiles::epoch)) began
+/// before the latest [`sign_out`].
+fn signed_out_since(asked_at: u64) -> bool {
+    asked_at < SIGNED_OUT.load(Ordering::SeqCst)
+}
+
 /// The resource a cache key reads: its address without a download budget, a byte range or a
 /// tail, and for a tile of a PMTiles, COG or MBTiles archive, the archive's address.
 fn resource_of(key: &str) -> &str {
@@ -1356,6 +1374,8 @@ impl Drop for Answer {
 
 /// Keeps what a fetch asked for at `asked_at` answered. A tile of an MBTiles file forgotten since may be
 /// of the old file, so it is dropped. Its slot went with the forget: one there now is a newer read's.
+/// One asked for before a [`sign_out`] may have been read with the login that ended: dropped too, and
+/// its slot, which the sign-out's clear kept pending, forgotten so the tile is asked for again.
 fn land(key: &str, entry: Option<Entry>, asked_at: u64, ceiling: crate::address::Reach) {
     if entry.is_some() && login_gone(key) {
         return;
@@ -1371,7 +1391,10 @@ fn land(key: &str, entry: Option<Entry>, asked_at: u64, ceiling: crate::address:
     // before its [`forget`] takes the lock, so a read that lands after it is seen here.
     let restricted = ceiling != crate::address::Reach::Public && ceiling_for(key) == crate::address::Reach::Public;
     // Asked for before the record of forgotten files was emptied, so it can't be told: read again.
-    match entry.filter(|_| !restricted && !crate::mbtiles::asked_before_emptied(key, asked_at)) {
+    // Asked for before a sign-out: read again, with whatever login is current now. Checked under
+    // the lock: the sign-out is recorded before its clear takes it.
+    let stale = crate::mbtiles::asked_before_emptied(key, asked_at) || signed_out_since(asked_at);
+    match entry.filter(|_| !restricted && !stale) {
         Some(entry) => keep_for(&mut c, key, entry, ceiling),
         // Never answered (or dropped by the fetcher): forgotten, fetched again when asked for.
         None => {
@@ -6094,6 +6117,46 @@ Connection: close
                 }
             }
         }
+    }
+
+    /// A read under way at a sign-out (Earthdata, ArcGIS, Copernicus) whose answer comes after it
+    /// isn't kept: the slot the sign-out's clear left pending is forgotten, and the next request
+    /// reads again. A local server holds its answer until the sign-out is over.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn an_answer_after_a_sign_out_is_not_kept() {
+        use std::io::Write;
+        let _turn = turn();
+        let timeout = Duration::from_secs(10);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/signed-out.json", listener.local_addr().unwrap());
+        let (arrived_tx, arrived_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let server = std::thread::spawn(move || {
+            for i in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                read_request(&mut stream);
+                if i == 0 {
+                    arrived_tx.send(()).unwrap();
+                    release_rx.recv_timeout(timeout).unwrap();
+                }
+                let body = format!("{{\"read\":{i}}}");
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            }
+        });
+        assert!(matches!(get(&url, Want::Json), State::Pending));
+        arrived_rx.recv_timeout(timeout).unwrap();
+        sign_out();
+        assert!(matches!(lock().slots.get(&url).map(|s| &s.entry), Some(Entry::Pending)), "the clear keeps reads under way");
+        release_tx.send(()).unwrap();
+        wait(timeout);
+        assert!(!lock().slots.contains_key(&url), "an answer asked for before the sign-out was kept");
+        // Asked for again, after the sign-out: that answer is kept.
+        assert!(matches!(get(&url, Want::Json), State::Pending));
+        wait(timeout);
+        server.join().unwrap();
+        assert!(matches!(get(&url, Want::Json), State::Ready(p) if matches!(p.as_ref(), Payload::Json(v) if v["read"] == 1)));
+        clear();
     }
 
     /// A pending or dropped restricted fetch cannot blank a completed explicit layer.

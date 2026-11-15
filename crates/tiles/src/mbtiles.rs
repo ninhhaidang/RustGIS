@@ -115,6 +115,12 @@ pub(crate) fn epoch() -> u64 {
     EPOCH.load(Ordering::SeqCst)
 }
 
+/// Moves the epoch on and returns the new one: what was asked for before it is told apart from
+/// what is asked for after (a sign-out, [`cache::sign_out`](crate::cache::sign_out)).
+pub(crate) fn next_epoch() -> u64 {
+    EPOCH.fetch_add(1, Ordering::SeqCst) + 1
+}
+
 /// Whether a tile address is of a file forgotten after `epoch`.
 pub(crate) fn forgotten_since(url: &str, epoch: u64) -> bool {
     parse_url(url)

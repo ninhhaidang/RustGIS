@@ -115,7 +115,7 @@ fn sign_out(_s: &mut Session, p: &Value) -> CmdResult {
     let (revocations, gone) = arcgis_auth::sign_out(portal.as_deref());
     // Tiles and documents read with the token are cached by address: they go with it.
     if gone > 0 {
-        crate::render::rustgis_tiles::cache::clear();
+        crate::render::rustgis_tiles::cache::sign_out();
     }
     #[cfg(not(target_arch = "wasm32"))]
     arcgis_auth::revoke_all(revocations);
