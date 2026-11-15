@@ -933,6 +933,12 @@ fn set(s: &mut Session, p: &Value) -> CmdResult {
     let i = find(s, p)?.ok_or("name or index is required")?;
     let mode = blend(p)?;
     let look = cog_look(p)?;
+    // Before the legends are prepared: a refused name must leave no login activated.
+    let rename = ps(p, "rename")
+        .map(str::trim)
+        .filter(|r| !r.is_empty())
+        .map(|r| super::within("rename", "a tile layer's name", r, 120))
+        .transpose()?;
     let mut new_legends = match p.get("legend") {
         None => None,
         Some(Value::Null) => Some(Vec::new()),
@@ -946,11 +952,6 @@ fn set(s: &mut Session, p: &Value) -> CmdResult {
         }
     }
     let hidden = hidden_layers(p)?;
-    let rename = ps(p, "rename")
-        .map(str::trim)
-        .filter(|r| !r.is_empty())
-        .map(|r| super::within("rename", "a tile layer's name", r, 120))
-        .transpose()?;
     let old_name = s.map().tiles.get(i).map(|t| t.name.clone());
     let m = s.map_mut();
     let Some(t) = m.tiles.get_mut(i) else { return Err("no tile layer at that index".into()) };

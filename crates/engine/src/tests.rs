@@ -49211,24 +49211,32 @@ fn layout_no_data_legend_is_optional_and_saved() {
 fn bookmark_layout_map_names_over_their_limit_are_refused() {
     let mut s = world();
     let long = |n: usize| "x".repeat(n);
-    let snapshot = |s: &Session| (s.map().name.clone(), s.map().bookmarks.len(), s.project.layouts.len());
-    let before = snapshot(&s);
+    s.run("map.addTiles", &json!({"url": "https://example.com/{z}/{x}/{y}.png"})).unwrap();
+    s.run("layout.new", &json!({"name": "L"})).unwrap();
+    s.run("bookmark.add", &json!({"name": "b", "description": "d"})).unwrap();
+    let snapshot = |s: &Session| {
+        (
+            s.map().name.clone(),
+            s.map().bookmarks.iter().map(|b| (b.name.clone(), b.description.clone())).collect::<Vec<_>>(),
+            s.project.layouts.iter().map(|l| l.name.clone()).collect::<Vec<_>>(),
+            s.map().tiles.iter().map(|t| t.name.clone()).collect::<Vec<_>>(),
+        )
+    };
     for (cmd, params, of) in [
         ("bookmark.add", json!({"name": long(121)}), "a bookmark's name takes at most 120"),
         ("bookmark.add", json!({"name": "b", "description": long(2001)}), "a bookmark's description takes at most 2000"),
         ("bookmark.rename", json!({"name": "Europe", "newName": long(121)}), "a bookmark's name takes at most 120"),
         ("map.rename", json!({"name": long(201)}), "a map's name takes at most 200"),
         ("layout.new", json!({"name": long(201)}), "a layout's name takes at most 200"),
+        ("layout.rename", json!({"name": "L", "newName": long(201)}), "a layout's name takes at most 200"),
+        ("bookmark.describe", json!({"name": "b", "description": long(2001)}), "a bookmark's description takes at most 2000"),
+        ("map.setTiles", json!({"index": 0, "rename": long(121)}), "a tile layer's name takes at most 120"),
     ] {
+        let before = snapshot(&s);
         let e = s.run(cmd, &params).unwrap_err();
         assert!(e.contains(of), "{cmd}: {e}");
+        assert_eq!(snapshot(&s), before, "{cmd}");
     }
-    assert_eq!(snapshot(&s), before);
-    s.run("layout.new", &json!({"name": "L"})).unwrap();
-    let e = s.run("layout.rename", &json!({"name": "L", "newName": long(201)})).unwrap_err();
-    assert!(e.contains("a layout's name takes at most 200"), "{e}");
-    let e = s.run("bookmark.describe", &json!({"name": "b", "description": long(2001)}));
-    assert!(e.is_err());
     s.run("bookmark.add", &json!({"name": long(120), "description": long(2000)})).unwrap();
     s.run("map.rename", &json!({"name": long(200)})).unwrap();
     assert_eq!(s.map().name.chars().count(), 200);
