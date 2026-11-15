@@ -242,7 +242,7 @@ fn check_compound(bytes: &[u8]) -> Result<()> {
     let max_sector = body.len() / size;
     // The FAT's sectors: 109 listed in the header, more in a chain of DIFAT sectors whose last
     // entry links to the next (calamine takes the link off the end of the list it has gathered).
-    let mut difat = words(bytes.get(76..512).unwrap_or(&[]));
+    let mut difat = words(bytes.get(76..512).unwrap_or(&[]))?;
     let mut next = u32_at(68);
     let mut hops = 0usize;
     while next < RESERVED_SECTORS {
@@ -255,7 +255,7 @@ fn check_compound(bytes: &[u8]) -> Result<()> {
             // calamine would take the last FAT sector gathered for the next link.
             return damaged("a DIFAT sector is past the end of the file");
         }
-        difat.extend(words(more));
+        difat.extend(words(more)?);
         next = difat.pop().unwrap_or(END_OF_CHAIN);
     }
     let fat_sectors: Vec<u32> = difat.into_iter().filter(|id| *id < DIFAT_SECTOR).collect();
@@ -263,7 +263,15 @@ fn check_compound(bytes: &[u8]) -> Result<()> {
     if fat_sectors.len() > max_sector + 1 {
         return damaged("its allocation table is larger than the file");
     }
-    let fat: Vec<u32> = fat_sectors.iter().flat_map(|id| words(sector(*id))).collect();
+    let mut fat = Vec::new();
+    for id in fat_sectors {
+        // A FAT sector bypasses Sectors::read. calamine slices from this start even when
+        // EOF was reached before it, and panics instead of returning an error.
+        if (id as usize).saturating_mul(size) > body.len() {
+            return damaged("a FAT sector is past the end of the file");
+        }
+        fat.extend(words(sector(id))?);
+    }
     let main = Sectors { table: &fat, data_len: body.len(), size };
     // The directory, one 128-byte entry per stream; its chain starts in the header, and calamine
     // reads it to its end.
@@ -295,7 +303,7 @@ fn check_compound(bytes: &[u8]) -> Result<()> {
         let mini_len = root_sectors.iter().map(|id| sector(*id).len()).sum::<usize>().min(root_len);
         let table_len = mini_fat_len.saturating_mul(size);
         let mini_fat: Vec<u8> = main.read(u32_at(60), table_len)?.into_iter().flat_map(sector).copied().take(table_len).collect();
-        (words(&mini_fat), mini_len, root_sectors)
+        (words(&mini_fat)?, mini_len, root_sectors)
     } else {
         (Vec::new(), 0, Vec::new())
     };
@@ -380,10 +388,14 @@ impl Sectors<'_> {
     }
 }
 
-/// A sector's (or a table's) little-endian 32-bit words; a partial word at the end is dropped, as
-/// calamine drops it.
-fn words(b: &[u8]) -> Vec<u32> {
-    b.as_chunks::<4>().0.iter().map(|w| u32::from_le_bytes(*w)).collect()
+/// A sector's (or a table's) little-endian 32-bit words. calamine asserts that no partial
+/// word remains, so refuse a cut-short table before handing the file to it.
+fn words(b: &[u8]) -> Result<Vec<u32>> {
+    let (whole, tail) = b.as_chunks::<4>();
+    if !tail.is_empty() {
+        return damaged("an allocation table ends with a partial 32-bit word");
+    }
+    Ok(whole.iter().map(|w| u32::from_le_bytes(*w)).collect())
 }
 
 fn damaged<T>(what: &str) -> Result<T> {
@@ -1099,6 +1111,80 @@ mod tests {
         damaged(&bom, "starts past");
         // A DIFAT chain whose next sector is past the end of the file.
         damaged(&ole2(9, 1, 0, 50, 1, &sectors(&[FAT, END], 0xFF)), "past the end");
+    }
+
+    #[test]
+    fn truncated_xls_allocation_tables_are_refused_before_calamine() {
+        const END: u32 = 0xFFFF_FFFE;
+        // Both sector sizes, each table calamine interprets as u32 words, and each partial
+        // word length. Generate the container rather than keeping opaque fuzz artifacts.
+        for shift in [9, 12] {
+            let size = 1usize << shift;
+            for table in ["FAT", "DIFAT", "mini FAT"] {
+                for tail in 1..=3 {
+                    let mut book = ole2(shift, 1, 1, END, 0, &[]);
+                    book.resize(size, 0);
+                    let mut fat = vec![0xFF; size];
+                    fat[..4].copy_from_slice(&0xFFFF_FFFDu32.to_le_bytes());
+                    fat[4..8].copy_from_slice(&END.to_le_bytes());
+                    fat[8..12].copy_from_slice(&END.to_le_bytes());
+                    book.extend(fat);
+                    let mut dir = vec![0; size];
+                    dir[116..120].copy_from_slice(&END.to_le_bytes());
+                    book.extend(dir);
+                    book.extend(END.to_le_bytes());
+                    book.extend(vec![0xFF; tail]);
+                    match table {
+                        "FAT" => book[80..84].copy_from_slice(&2u32.to_le_bytes()),
+                        "DIFAT" => book[68..72].copy_from_slice(&2u32.to_le_bytes()),
+                        _ => {
+                            book[60..64].copy_from_slice(&2u32.to_le_bytes());
+                            book[64..68].copy_from_slice(&1u32.to_le_bytes());
+                        }
+                    }
+                    let check = check_compound(&book).unwrap_err().to_string();
+                    assert!(check.contains("partial 32-bit word"), "{shift}/{table}/{tail}: {check}");
+                    for error in [
+                        sheet_names(&book).unwrap_err().to_string(),
+                        columns(&book, None, None).unwrap_err().to_string(),
+                        read(&book, "cut.xls", None, &CsvOptions::default()).unwrap_err().to_string(),
+                    ] {
+                        assert_eq!(error, check, "{shift}/{table}/{tail}: parser must never be reached");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn xls_fat_sectors_past_eof_are_refused_before_calamine() {
+        const END: u32 = 0xFFFF_FFFE;
+        // A 1541-byte container, as in #1952: after the 512-byte header there are two
+        // sectors and five bytes. FAT id 3 begins after those bytes, although id 0 is sound.
+        let mut body = sectors(&[0xFFFF_FFFD, END], 0xFF);
+        body.extend([0; 512]);
+        body.extend([0; 5]);
+        for id in [3u32, 0x7FFF_FFFF] {
+            let mut book = ole2(9, 1, 1, END, 0, &body);
+            book[80..84].copy_from_slice(&id.to_le_bytes());
+            let check = check_compound(&book).unwrap_err().to_string();
+            assert!(check.contains("a FAT sector is past the end"), "{check}");
+            assert_eq!(sheet_names(&book).unwrap_err().to_string(), check);
+            assert_eq!(columns(&book, None, None).unwrap_err().to_string(), check);
+            assert_eq!(read(&book, "cut.xls", None, &CsvOptions::default()).unwrap_err().to_string(), check);
+        }
+    }
+
+    #[test]
+    fn xls_unused_and_word_aligned_trailing_bytes_still_pass() {
+        const END: u32 = 0xFFFF_FFFE;
+        let mut book = small_book(&[0xFFFF_FFFD, END, END, END], 0, 64, &[END]);
+        // Extra file bytes don't matter unless read as an allocation table.
+        book.extend([0xFF; 3]);
+        assert!(check_compound(&book).is_ok());
+        // A table cut at a whole word is still safe for calamine's word conversion.
+        assert_eq!(words(&END.to_le_bytes()).unwrap(), [END]);
+        assert!(words(&[]).unwrap().is_empty());
     }
 
     #[test]
