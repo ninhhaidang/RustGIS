@@ -6,9 +6,11 @@ with its basemap for working offline, edited there with the device's position an
 brought back into the project it came from.
 
 !!! note "Getting the app"
-    The phone apps are not in the app stores yet. Until they are, they are built from source: see
-    [`apps/rustgis-mobile`](https://github.com/opengeos/RustGIS/tree/main/apps/rustgis-mobile)
-    for the Android APK and the iOS build.
+    From v0.7.0, each [release](https://github.com/opengeos/RustGIS/releases/latest) carries
+    signed Android APKs (`RustGIS-<version>-android-arm64.apk` for phones and tablets), and the
+    app goes to Google Play and, for iPhones and iPads, to the App Store once their reviews
+    finish. To build it yourself, see
+    [`apps/rustgis-mobile`](https://github.com/opengeos/RustGIS/tree/main/apps/rustgis-mobile).
 
 ## The touch interface
 

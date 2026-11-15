@@ -1,6 +1,6 @@
 # Roadmap
 
-_Last reviewed: 2026-11-10 (v0.6.0). Reviewed at each release; if this date is old, trust the
+_Last reviewed: 2026-11-15 (v0.7.0). Reviewed at each release; if this date is old, trust the
 linked issues over this page._
 
 This page lists the work planned for RustGIS and where help is most useful; details of each item
@@ -69,9 +69,7 @@ The shared pieces the everyday workflow stands on.
 ### Correct results
 A result is right, or RustGIS says what it lost or assumed
 ([AGENTS.md](AGENTS.md#never-silent)).
-- Known silent losses: a polygon looping round a pole drops out of Clip and Spatial Join
-  ([#1354](https://github.com/opengeos/RustGIS/issues/1354)); DuckDB queries (`ST_Force2D`) drop Z
-  without a notice; the OSM reader leaves out rings that don't close, rings and member ways with
+- Known silent losses: DuckDB queries (`ST_Force2D`) drop Z without a notice; the OSM reader leaves out rings that don't close, rings and member ways with
   nodes or ways the file doesn't hold, and inner rings outside every outer one; and the text
   readers' losses listed as `Silent` in `crates/engine/tests/never_silent_reading.rs`, among them
   each vertex's Z in DXF and unreadable coordinates, holes and parts in KML, GeoRSS, MapInfo and
@@ -83,15 +81,9 @@ A result is right, or RustGIS says what it lost or assumed
 - A `--strict` option for `rustgis-cli run` that exits non-zero when a loss is reported, for
   scheduled jobs. Notices carry a severity but not a kind today (`Notice` in
   `crates/engine/src/lib.rs`): start with an issue on which notices count as a loss.
-- Coordinate systems read wrongly from WKT: grad-based systems
-  ([#1692](https://github.com/opengeos/RustGIS/issues/1692)), anything named Web Mercator
-  ([#1699](https://github.com/opengeos/RustGIS/issues/1699)); systems not read at all: Natural
-  Earth, Winkel Tripel and Eckert IV ([#1701](https://github.com/opengeos/RustGIS/issues/1701)).
 - Grid datum shifts (NTv2 and GeoTIFF grids) for NAD27, NAD83(HARN), GDA94↔GDA2020 and OSGB36
-  without the GDAL program, a notice whenever a layer is read without its shift, and the shifts
-  named in GeoPackage, File Geodatabase and WKT2 definitions kept
-  ([#1677](https://github.com/opengeos/RustGIS/issues/1677),
-  [#1678](https://github.com/opengeos/RustGIS/issues/1678)). _Coordinate first._
+  without the GDAL program (a layer read without its shift says so today). _Coordinate first_
+  (needs an issue).
 - Data without a coordinate system: one written rule per format (assumed with a notice, or
   refused), tested. Custom coordinate systems saved by name
   ([#1702](https://github.com/opengeos/RustGIS/issues/1702)).
@@ -107,12 +99,8 @@ features build on.
   already are refused, [#1364](https://github.com/opengeos/RustGIS/pull/1364)); packages
   (`.rgispkg`) that hold everything or say what stayed linked; projects written to disk as they
   save, not built in memory first.
-- A JSON Schema for `.rgis` with fixture files and a CI check that fails when the format drifts;
-  a project saved by each release kept as a test that must keep opening; a snapshot test of
-  command ids and parameters, so a removal is always deliberate.
-- An older RustGIS keeps settings it can't read (connections, favourites, plugin and account
-  data); the GeoLibre runner pinned to versions known to work, with a notice outside them
-  ([#1405](https://github.com/opengeos/RustGIS/issues/1405) items 3 and 4).
+- A snapshot test of command ids and parameters, so a removal is always deliberate (the project
+  file's JSON Schema, its fixtures and the files past releases saved are checked today).
 - A compressed encoding of today's project JSON, read one release before it is written; a
   reference system: named connections, copies that remember their source, missing and changed
   states, a place for results ([#1653](https://github.com/opengeos/RustGIS/issues/1653)).
@@ -138,17 +126,10 @@ Big layers work, or say plainly where they stop
   FlatGeobuf, GeoParquet and Shapefiles read in place, which are read a chunk at a time
   (`visits_chunks`). Remote FlatGeobuf and GeoParquet still stop at the cap when read whole.
 - Shapefile, KML, KMZ and GPX exported a chunk at a time, as the other formats are.
-- Faster raster writing: COG export at Deflate level 1 with a predictor (3 for floating-point
-  samples, 2 for integers) and its tiles compressed on several cores (`cogwrite.rs` writes level
-  6, no predictor, on one thread today); Hillshade written as Byte.
 - Faster drawing: layers read in place read and projected once per draw, filtered by extent
   ([#1065](https://github.com/opengeos/RustGIS/issues/1065)); only the changed layer redrawn
   ([#1057](https://github.com/opengeos/RustGIS/issues/1057)); a heavy layer drawn on several
   cores ([#1067](https://github.com/opengeos/RustGIS/issues/1067)).
-- More analysis tools on several cores
-  ([#1252](https://github.com/opengeos/RustGIS/issues/1252)) and within the memory budget
-  ([#1291](https://github.com/opengeos/RustGIS/issues/1291)), through the shared helpers named in
-  [AGENTS.md](AGENTS.md#never-hold-the-window).
 - Long work off the UI thread: what [#1562](https://github.com/opengeos/RustGIS/issues/1562)
   leaves open, such as a warning in debug builds when the UI thread is held too long.
 
@@ -174,21 +155,20 @@ Big layers work, or say plainly where they stop
 ### Plugins
 What plugin authors have asked for. An addition that plugins declare through
 `minRustgisVersion` needs two maintainers ([docs/maintaining.md](docs/maintaining.md)).
-- Panels: a text box ([#1260](https://github.com/opengeos/RustGIS/issues/1260)); trees past
-  5,000 nodes, or a notice when cut ([#1546](https://github.com/opengeos/RustGIS/issues/1546)); a
+- Panels: a text box ([#1260](https://github.com/opengeos/RustGIS/issues/1260)); a
   command that asks for its parameters in a dialog
   ([#1547](https://github.com/opengeos/RustGIS/issues/1547)).
-- Host requests: `host.fetch` without the parsed
-  copy ([#1265](https://github.com/opengeos/RustGIS/issues/1265)), a file or folder chosen by the
-  user ([#1438](https://github.com/opengeos/RustGIS/issues/1438)); for session plugins,
+- Host requests: a file or folder chosen by the user in a panel (a process plugin's file
+  parameter hands it a path today; [#1438](https://github.com/opengeos/RustGIS/issues/1438)); for
+  session plugins,
   symbology and raster tile requests and a view in a page layout (asked on
   [#1518](https://github.com/opengeos/RustGIS/issues/1518), which session plugins closed).
 - The WebAssembly plugin memory limit raised or made configurable
   ([#1357](https://github.com/opengeos/RustGIS/issues/1357)); commands that declare what they
   reach, instead of special cases by id ([#1316](https://github.com/opengeos/RustGIS/issues/1316)).
-- Plugin versions ordered through prereleases, and an older RustGIS offered the newest release it
-  can run ([#1405](https://github.com/opengeos/RustGIS/issues/1405) items 5 and 6). _Coordinate
-  first_ (registry feed).
+- An older RustGIS offered the newest plugin release it can run (one that needs a newer RustGIS
+  is marked today; [#1405](https://github.com/opengeos/RustGIS/issues/1405) item 6).
+  _Coordinate first_ (registry feed).
 
 ## The everyday workflow
 In the order of the work: add data, style it, edit it, analyse it, lay it out and share it.
@@ -196,7 +176,6 @@ In the order of the work: add data, style it, edit it, analyse it, lay it out an
 ### Add data
 - Georeferencer: side-by-side window, transform picker, more formats
   ([#609](https://github.com/opengeos/RustGIS/issues/609)).
-- GeoTIFF transparency masks ([#1564](https://github.com/opengeos/RustGIS/issues/1564)).
 - ArcGIS: browsing a signed-in portal's own content (Hub search, sign-in and adding by address
   work today); Esri JSON for layers that offer neither protocol buffers nor GeoJSON (older
   servers; GeoJSON is asked for whenever `supportedQueryFormats` lacks PBF, in
@@ -227,17 +206,18 @@ On top of the expression language:
 And alongside it:
 - Label placement: candidate positions, conflicts, obstacles and fitting
   ([#995](https://github.com/opengeos/RustGIS/issues/995)); line labels that try other places
-  along the line ([#1187](https://github.com/opengeos/RustGIS/issues/1187)).
+  along the line (an offset above or below it is done) ([#1187](https://github.com/opengeos/RustGIS/issues/1187)).
 - Kernel density (heat map) as a renderer; point clustering.
 - SVG and PNG markers, image fill patterns and a symbol library.
 - A legend and colour bar on the map (layouts have both).
 - Extend QGIS QML style import beyond the supported renderers
   ([#882](https://github.com/opengeos/RustGIS/issues/882)); add SLD styles.
-- A histogram for raster stretches; raster attribute tables and legend labels from class names
-  ([#889](https://github.com/opengeos/RustGIS/issues/889)).
-- UTM and MGRS grids drawn on the map ([#1042](https://github.com/opengeos/RustGIS/issues/1042))
-  _(open)_; more than two synced maps side by side _(open)_; auto-refresh for web service layers
-  _(open)_.
+- A histogram for raster stretches; editable raster class labels (labels from a colour table or
+  `.aux.xml` attribute table are read; [#889](https://github.com/opengeos/RustGIS/issues/889)).
+- What [#1042](https://github.com/opengeos/RustGIS/issues/1042) leaves open of UTM and MGRS
+  grids: MGRS square labels in layout frames north of 84° N or south of 80° S, where MGRS uses UPS
+  (measured and UTM zone graticules, MGRS labels elsewhere and UPS readouts are done) _(open)_;
+  more than two synced maps side by side _(open)_; auto-refresh for web service layers _(open)_.
 - GPU map: vector tiles and labels on the GPU tile layer
   ([#635](https://github.com/opengeos/RustGIS/issues/635),
   [#596](https://github.com/opengeos/RustGIS/issues/596)).
@@ -275,9 +255,8 @@ attributes kept.
   reference cases _(open)_.
 
 ### Lay out and share
-- Layout legends: a label per layer ([#1654](https://github.com/opengeos/RustGIS/issues/1654)), a
-  classified raster's classes ([#1679](https://github.com/opengeos/RustGIS/issues/1679)), entries
-  reordered and renamed, several values grouped into one unique-value class.
+- Layout legends: entries reordered and renamed, several values grouped into one unique-value
+  class (a label per layer and a classified raster's classes are done).
 - Map series at a fixed scale, with the current feature highlighted and its attributes in the
   page's text.
 
@@ -295,8 +274,9 @@ Open questions rather than plans; discuss before building.
 - Layers kept in their own coordinate system rather than WGS 84.
 - Long work in the browser on Web Workers or WebAssembly threads (the desktop rule of
   [#1562](https://github.com/opengeos/RustGIS/issues/1562) leaves the browser out).
-- Integrating [opengeos/terrio](https://github.com/opengeos/terrio), the pure-Rust raster, vector
-  and point cloud I/O library: which of its drivers, coordinate transformations and GDAL-style
+- Integrating more of [opengeos/terrio](https://github.com/opengeos/terrio), the pure-Rust raster,
+  vector and point cloud I/O library (coordinate transformations and ellipsoids already come from
+  its `terrio-crs`): which of its drivers and GDAL-style
   operations could back or replace RustGIS's own readers, or stand in for the GDAL program, and
   which of them build for the web app ([#663](https://github.com/opengeos/RustGIS/issues/663)).
 - Native NetCDF-4/HDF5 without GDAL ([#396](https://github.com/opengeos/RustGIS/issues/396)),
@@ -311,10 +291,9 @@ Open questions rather than plans; discuss before building.
   ([#951](https://github.com/opengeos/RustGIS/discussions/951)).
 
 ## Not planned for RustGIS
-Left to GeoLibre, which is web and mobile first
+Left to GeoLibre, which is web first
 ([#951](https://github.com/opengeos/RustGIS/discussions/951)). Open a discussion if you think one
 belongs here after all.
-- Mobile and field data collection apps.
 - Real-time collaborative editing.
 - An SQL engine inside the web app (the desktop has DuckDB).
 - Segmentation with SAM and other ONNX models.

@@ -2366,7 +2366,7 @@ dependencies = [
 
 [[package]]
 name = "rustgis-analysis"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "a5",
  "geo",
@@ -2379,7 +2379,7 @@ dependencies = [
 
 [[package]]
 name = "rustgis-data"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -2429,9 +2429,10 @@ dependencies = [
 
 [[package]]
 name = "rustgis-engine"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "base64 0.23.1",
+ "getrandom 0.4.3",
  "iana-time-zone",
  "image",
  "log",
@@ -2461,7 +2462,7 @@ dependencies = [
 
 [[package]]
 name = "rustgis-geom"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "geographiclib-rs",
  "serde",
@@ -2469,7 +2470,7 @@ dependencies = [
 
 [[package]]
 name = "rustgis-map"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "base64 0.23.1",
  "roxmltree",
@@ -2483,7 +2484,7 @@ dependencies = [
 
 [[package]]
 name = "rustgis-plugins"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "base64 0.23.1",
  "log",
@@ -2501,7 +2502,7 @@ dependencies = [
 
 [[package]]
 name = "rustgis-render"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "ab_glyph",
  "base64 0.23.1",
@@ -2525,7 +2526,7 @@ dependencies = [
 
 [[package]]
 name = "rustgis-tiles"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "base64 0.23.1",
  "brotli-decompressor",

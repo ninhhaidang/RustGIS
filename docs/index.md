@@ -54,6 +54,13 @@ Map operations are commands you can script from the command line, Python or the 
     topology, and undo project edits.
     [Editing](user-guide/editing.md) · [Data design](user-guide/editing.md#data-design)
 
+-   **Field work**
+
+    Carry a map to an Android phone (iOS through the App Store to follow) with its offline
+    basemap, capture points, lines and polygons by touch or at the device's position, record
+    tracks, attach photos, and bring the edits back into the project.
+    [Field Work](user-guide/field-work.md)
+
 -   **AI Assistant**
 
     Ask about your data or tell the map what to do. Choose a model provider or sign in with

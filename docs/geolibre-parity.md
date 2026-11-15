@@ -151,8 +151,8 @@ _GeoLibre: docs/features.md › Attribute data and expressions; docs/arcgis-edit
 - [ ] **Topological digitizing and CAD dimensions**: shared-edge drawing, dimension lines,
   building massing. Partial: snapping, topology validation, traverse.
 - [ ] **Write-back to sources**: GeoPackage, GeoJSON, PostGIS, SQL Server, ArcGIS FeatureService.
-  Partial: GeoPackage and PostGIS tables on the desktop (_Roadmap: edit_ for Shapefile and
-  GeoJSON).
+  Partial: GeoPackage and PostGIS tables on the desktop, and Shapefile and GeoJSON files through
+  Publish to Source (`source.publish`).
 - [ ] **Expression builder and engine**: one engine shared by filters, labels, styles and Calculate
   Field, with a function reference. Partial: one expression language serves queries, filters,
   label classes, attribute rules, Calculate Field and symbols (docs: Expressions); an expression
