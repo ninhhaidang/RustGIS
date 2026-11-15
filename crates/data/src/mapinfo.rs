@@ -21,10 +21,6 @@ const MAX_COORDS: usize = 10_000_000;
 /// The most rings of a region whose holes are found by nesting (the test is quadratic).
 const MAX_NESTED_RINGS: usize = 5_000;
 
-pub fn is_mif_name(name: &str) -> bool {
-    std::path::Path::new(name).extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("mif"))
-}
-
 /// The words of the file, with quoted strings as single words (quotes dropped).
 fn words(text: &str) -> Vec<String> {
     let mut out = Vec::new();

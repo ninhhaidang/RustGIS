@@ -14,12 +14,6 @@ use crate::{DataError, Dataset, Field, FieldType, Geometry, GeometryType, ReadRe
 /// GeoRSS file types (feeds are often plain `.xml`, which is read when its contents say so).
 pub const EXTENSIONS: &[&str] = &["georss", "rss", "atom"];
 
-/// Whether a file name is a GeoRSS feed.
-pub fn is_georss_name(name: &str) -> bool {
-    let ext = std::path::Path::new(name).extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
-    EXTENSIONS.contains(&ext.as_str())
-}
-
 /// Whether XML text looks like a feed with places in it.
 pub fn looks_like_georss(text: &str) -> bool {
     let head = crate::io::cut(text, 8192);

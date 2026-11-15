@@ -33,16 +33,6 @@ pub enum TileRole {
     Legend(usize),
 }
 
-/// A slot's identity across a bridge exchange. Positions are deliberately absent, so reordering
-/// layers preserves identity while changing their owner, role or id does not.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum SlotAt {
-    Layer { id: u32, role: LayerRole },
-    Tile { id: String, role: TileRole },
-    Group { id: u32, child: Option<u32> },
-    Terrain,
-}
-
 pub struct Slot<'a> {
     pub at: SlotPos,
     pub value: &'a str,

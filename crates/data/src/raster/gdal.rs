@@ -73,11 +73,6 @@ pub fn available() -> bool {
     program("gdal_translate").is_some() && program("gdalinfo").is_some()
 }
 
-/// Whether a file's contents are JPEG 2000 (see [`super::jpeg2000_extension`]).
-pub fn is_jpeg2000(bytes: &[u8]) -> bool {
-    super::jpeg2000_extension(bytes).is_some()
-}
-
 /// What converting a file's contents made: the GeoTIFF's bytes, and whether the raster was taken
 /// as WGS 84 (see [`Converted::assumed_lonlat`]).
 pub struct ConvertedBytes {

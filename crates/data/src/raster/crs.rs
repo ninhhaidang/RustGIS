@@ -945,12 +945,6 @@ pub fn note_used(def: &str, label: impl FnOnce() -> String) {
     });
 }
 
-/// The notes ([`grid_note`]) of the systems this thread asked for a transformer for since it
-/// last looked: what a command used beyond its project's layers and maps.
-pub fn take_used_notes() -> Vec<String> {
-    take_used().iter().filter_map(|(def, label)| grid_note_of(def, label)).collect()
-}
-
 /// The systems this thread asked for a transformer for since it last looked, as (definition,
 /// label): for a worker thread (a background export) to hand to the session that says them.
 pub fn take_used() -> Vec<(String, String)> {

@@ -1812,11 +1812,6 @@ impl RasterStyle {
     }
 }
 
-/// Valid values of a band, sorted, sampled down to about `max` of them.
-pub fn sorted_sample(r: &Raster, band: usize, max: usize) -> Vec<f64> {
-    sorted_sample_masked(r, band, max, &RasterMask::default())
-}
-
 fn sorted_sample_masked(r: &Raster, band: usize, max: usize, mask: &RasterMask) -> Vec<f64> {
     let Some(b) = r.bands.get(band) else { return Vec::new() };
     let step = (b.data.len() / max.max(1)).max(1);

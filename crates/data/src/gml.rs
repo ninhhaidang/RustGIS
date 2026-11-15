@@ -25,11 +25,6 @@ pub const EXTENSIONS: &[&str] = &["gml"];
 /// Most feature types (layers) read from one file.
 const MAX_LAYERS: usize = 64;
 
-pub fn is_gml_name(name: &str) -> bool {
-    let ext = std::path::Path::new(name).extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
-    EXTENSIONS.contains(&ext.as_str())
-}
-
 pub(crate) fn local<'a>(n: &Node<'a, '_>) -> &'a str {
     n.tag_name().name()
 }

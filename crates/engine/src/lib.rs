@@ -1527,12 +1527,6 @@ impl Session {
         self.zarr_off_frame && cmd::zarr::waiting(self)
     }
 
-    /// Drops the private prepared value left by a command that did not take it; owned reads
-    /// enter only through [`cmd::reads::read_land`].
-    pub fn drop_read(&mut self) {
-        self.read_ahead = None;
-    }
-
     /// Shows the Zarr steps read off the frame ([`Session::zarr_off_frame`]) once they land: the
     /// app asks each frame. Named scopes leave the completion for its native owner. True when
     /// one landed, so the map draws again.

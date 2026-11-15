@@ -583,13 +583,7 @@ pub fn snapshot_wait(a: &Value) -> f64 {
 
 /// A `snapshot` drawn offscreen at `max_width` in the view's shape, with `note` saying why when it
 /// was asked of the screen.
-pub fn render_snapshot(s: &mut Session, a: &Value, note: Option<&str>) -> Result<Value, String> {
-    render_snapshot_with(s, a, note, None)
-}
 pub(crate) fn render_snapshot_checked(s: &mut Session, a: &Value, note: Option<&str>, scope: &Scope) -> Result<Value, String> {
-    render_snapshot_with(s, a, note, Some(scope))
-}
-fn render_snapshot_with(s: &mut Session, a: &Value, note: Option<&str>, scope: Option<&Scope>) -> Result<Value, String> {
     let asked = a.get("max_width").and_then(Value::as_f64).filter(|v| v.is_finite()).unwrap_or(1024.0).clamp(64.0, MAX_VIEW);
     // The view's shape, so the image shows what the window does: a very tall view is narrowed
     // to fit rather than squashed.
@@ -600,17 +594,13 @@ fn render_snapshot_with(s: &mut Session, a: &Value, note: Option<&str>, scope: O
     let png = rustgis_engine::cmd::share::map_png(s, Some(width), Some(height), None)?;
     // Tiles still on their way are missing from it.
     let settled = rustgis_engine::render::rustgis_tiles::cache::in_flight() == 0;
-    snapshot_result_with(s, &png, "render", settled, a, note, scope)
+    snapshot_result_checked(s, &png, "render", settled, a, note, scope)
 }
 
-/// A `snapshot` result: the image, and the view it shows as JSON. `mode` is how it was made
-/// (`screen` or `render`) and `settled` whether drawing had finished. Saves the PNG to
-/// `save_path` when the arguments name one (the caller checked the server allows it).
-pub fn snapshot_result(s: &mut Session, png: &[u8], mode: &str, settled: bool, a: &Value, note: Option<&str>) -> Result<Value, String> {
-    snapshot_result_with(s, png, mode, settled, a, note, None)
-}
-/// Formats a delivered screenshot inside its already resumed initiating scope.
-#[cfg(not(target_arch = "wasm32"))]
+/// A `snapshot` result, formatted inside its already resumed initiating scope: the image, and the
+/// view it shows as JSON. `mode` is how it was made (`screen` or `render`) and `settled` whether
+/// drawing had finished. Saves the PNG to `save_path` when the arguments name one, checking the
+/// scope still allows writing files at that moment.
 pub(crate) fn snapshot_result_checked(
     s: &mut Session,
     png: &[u8],
@@ -620,27 +610,11 @@ pub(crate) fn snapshot_result_checked(
     note: Option<&str>,
     scope: &Scope,
 ) -> Result<Value, String> {
-    snapshot_result_with(s, png, mode, settled, a, note, Some(scope))
-}
-/// Checks late save authority and acquires metadata through inherited dispatch.
-fn snapshot_result_with(
-    s: &mut Session,
-    png: &[u8],
-    mode: &str,
-    settled: bool,
-    a: &Value,
-    note: Option<&str>,
-    scope: Option<&Scope>,
-) -> Result<Value, String> {
     use base64::Engine;
-    if let Some(scope) = scope {
-        scope.check_live(Effects::NONE)?;
-    }
+    scope.check_live(Effects::NONE)?;
     let saved = match save_path(a) {
         Some(path) => {
-            if let Some(scope) = scope {
-                scope.check_live(Effects::NONE.with(rustgis_engine::policy::Effect::Files))?;
-            }
+            scope.check_live(Effects::NONE.with(rustgis_engine::policy::Effect::Files))?;
             std::fs::write(path, png).map_err(|e| format!("could not save the snapshot to '{path}': {e}"))?;
             Some(path)
         }

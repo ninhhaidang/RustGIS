@@ -26,11 +26,6 @@ const MAX_COORDS: usize = 20_000_000;
 /// The most objects (layers) read.
 const MAX_OBJECTS: usize = 64;
 
-pub fn is_topojson_name(name: &str) -> bool {
-    let n = name.to_ascii_lowercase();
-    n.ends_with(".topojson") || n.ends_with(".topo.json")
-}
-
 /// Whether JSON text is a TopoJSON topology.
 pub fn looks_like_topojson(text: &str) -> bool {
     // The first 512 bytes, cut at a character boundary.

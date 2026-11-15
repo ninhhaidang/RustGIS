@@ -1965,13 +1965,8 @@ pub fn post_json_blocking(url: &str, body: &str) -> Result<Vec<u8>, String> {
 }
 
 /// Like [`post_json_blocking`], to an address the user named: it may be on their own network, as
-/// a download from one is ([`download_blocking`]). Not for addresses a document pointed to.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn post_json_named_blocking(url: &str, body: &str) -> Result<Vec<u8>, String> {
-    post_json_named_blocking_with_origin(url, body).map(|f| f.bytes)
-}
-
-/// Like [`post_json_named_blocking`], preserving transport-observed provenance.
+/// a download from one is ([`download_blocking`]). Not for addresses a document pointed to. Keeps
+/// the transport-observed provenance with the bytes.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn post_json_named_blocking_with_origin(url: &str, body: &str) -> Result<Fetched, String> {
     let ceiling = ceiling_for(url);

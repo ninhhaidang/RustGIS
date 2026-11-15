@@ -68,10 +68,6 @@ const AREA_KEYS: &[&str] = &[
     "water",
 ];
 
-pub fn is_osm_pbf_name(name: &str) -> bool {
-    name.to_ascii_lowercase().ends_with(".osm.pbf")
-}
-
 /// Whether bytes start like an OSM PBF file (its first block an `OSMHeader`), not a vector tile.
 pub fn looks_like_osm_pbf(bytes: &[u8]) -> bool {
     bytes.get(4..64).is_some_and(|h| h.windows(9).any(|w| w == b"OSMHeader"))
