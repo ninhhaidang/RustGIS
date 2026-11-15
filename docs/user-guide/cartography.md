@@ -716,11 +716,13 @@ so a balcony or a bridge floats above the ground. The base is a numeric field's 
 `base_height` the CityGML and CityJSON readers give each part), else a constant in metres, both
 multiplied by the same **Factor** as the height. A value that is no number takes the constant,
 and a negative base is the ground. Shadows fall from the base, roof labels sit at the top, and a
-web scene (**Publish › Share As › Web Scene**) raises the parts too. It is set with the
-`layer.extrusionBase` command (`field`, `base`), which changes nothing else; `"field": null`
-clears the field, and turning extrusion off drops the base with it. Without a tilt, and on a
-tilted map drawn without the graphics card, extrusions are painted in the order they stand on the
-ground, so a part raised over a building behind it may be painted under it.
+web scene (**Publish › Share As › Web Scene**) raises the parts too. Once a layer is extruded,
+**Style › Extrusion › Base** chooses **Ground** (which also sets **Base (m)** to 0), a field
+(**By base_height**), or the constant **Base (m)** sets, listed once it is above 0; neither changes
+the height or the factor. The `layer.extrusionBase` command does the same (`field`, `base`;
+`"field": null` clears the field). Turning extrusion off drops the base with it. Without a tilt,
+and on a tilted map drawn without the graphics card, extrusions are painted in the order they
+stand on the ground, so a part raised over a building behind it may be painted under it.
 
 For a raster layer, the **Style** tab also has **Layer Blend** (multiply, screen, overlay,
 darken, lighten, difference), **Swipe** (the layer shows only left of a divider you slide, to

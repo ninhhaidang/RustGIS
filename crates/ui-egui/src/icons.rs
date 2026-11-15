@@ -890,6 +890,13 @@ pub fn paint(painter: &Painter, r: Rect, name: &str, ink: Color32, accent: Color
         "point_layer" => p.circle(12.0, 12.0, 5.0, Some(accent), Some((1.2, ink))),
         "line_layer" => p.line(&[(3.0, 17.0), (9.0, 8.0), (15.0, 15.0), (21.0, 6.0)], 2.2, accent),
         "polygon_layer" => p.polygon_shape(&[(3.0, 8.0), (11.0, 3.0), (21.0, 7.0), (19.0, 20.0), (5.0, 19.0)], 180),
+        // A block raised over the ground: what an extrusion stands on (Style › Extrusion › Base).
+        "extrusion_base" => {
+            p.line(&[(2.0, 20.0), (22.0, 20.0)], 1.4, ink);
+            p.line(&[(8.0, 19.0), (8.0, 14.0)], 1.0, p.tint(160));
+            p.line(&[(16.0, 19.0), (16.0, 14.0)], 1.0, p.tint(160));
+            p.rect(5.0, 4.0, 14.0, 9.0, Some(p.tint(110)), Some((1.3, ink)), 1.0);
+        }
         // A lit globe with an orbit: the 3D view.
         "globe_view" => {
             p.circle(11.0, 12.0, 8.0, Some(teal.gamma_multiply(0.85)), None);
@@ -1349,6 +1356,7 @@ pub const ALL: &[&str] = &[
     "point_layer",
     "line_layer",
     "polygon_layer",
+    "extrusion_base",
     "globe_view",
     "planet",
     "raster_layer",
