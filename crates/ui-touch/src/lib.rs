@@ -20,9 +20,10 @@
 
 use egui::{Align, Color32, CornerRadius, Layout, Rect, RichText, Sense, Stroke, Ui, Vec2};
 use rustgis_ui_egui::theme::Tokens;
-use rustgis_ui_egui::{RustGisApp, icons, tl};
+use rustgis_ui_egui::{RustGisApp, i18n, icons, tl};
 use serde_json::{Value, json};
 
+mod copies;
 mod edit;
 mod form;
 mod photos;
@@ -76,6 +77,8 @@ pub fn chrome(app: &mut RustGisApp, ui: &mut Ui) {
     // Each position the shell reported goes to the average and the track being taken; while a
     // track is being recorded, positions keep coming with the app out of sight.
     track::take(app, &ctx);
+    // What Remove Unused Copies found or removed, off the window's thread.
+    copies::poll(app, &ctx);
     // With positioning off (Hide My Position, or Android ending it), an average being taken
     // stops: the sheet no longer shows it, and positions from before would mix into the next.
     if !app.locate {
@@ -145,6 +148,7 @@ pub fn chrome(app: &mut RustGisApp, ui: &mut Ui) {
                         0
                     }
                     + usize::from(app.session.map().name.ends_with(" (offline)"))
+                    + copies_rows(&ctx)
             }
             Sheet::Capture => capture_rows(app, &ctx),
             Sheet::None => 0,
@@ -1403,6 +1407,12 @@ fn more(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
     egui::ScrollArea::vertical().auto_shrink([false, true]).show(ui, |ui| {
         for (icon, label, command) in rows {
             if row(ui, t, icon, label) {
+                // While unused copies are being removed, nothing may bring back or open a layer
+                // reading one: the project was looked at once, as the removal began.
+                if copies::removing(ui.ctx()) && ["edit.undo", "edit.redo", "ui.open", "project.new"].contains(&command) {
+                    app.session.notify(tl!("Wait for the unused copies to be removed."), false);
+                    continue;
+                }
                 // Open and New ask first when the project has unsaved changes: the front end's
                 // own question, as for the ribbon's buttons.
                 set_sheet(ui.ctx(), Sheet::None);
@@ -1443,6 +1453,10 @@ fn more(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
             set_sheet(&ctx, Sheet::None);
             run(app, "ui.saveItem", json!({"kind": "fieldPackage"}));
         }
+        // The copies of picked files nothing in the project names, removed once agreed.
+        if copies::folder().is_some_and(|f| f.is_dir()) {
+            copies_row(app, ui, t, &ctx);
+        }
         // The whole of RustGIS is still there, for a tablet or a job the touch interface has no
         // button for yet. The Project page's Start brings this interface back at the next start.
         if row(ui, t, "pane", tl!("Use the Desktop Interface")) {
@@ -1458,6 +1472,65 @@ fn more(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens) {
             }
         }
     });
+}
+
+/// How many rows Remove Unused Copies takes in the More sheet: none on a computer, two while it
+/// asks.
+fn copies_rows(ctx: &egui::Context) -> usize {
+    match copies::folder() {
+        Some(f) if f.is_dir() => match copies::job(ctx) {
+            copies::Job::Asking(_) => 2,
+            _ => 1,
+        },
+        _ => 0,
+    }
+}
+
+/// Remove Unused Copies: the row that starts it, what it is doing (with Cancel), or what it found
+/// (with Remove and Keep).
+fn copies_row(app: &mut RustGisApp, ui: &mut Ui, t: &Tokens, ctx: &egui::Context) {
+    match copies::job(ctx) {
+        copies::Job::Idle => {
+            if row(ui, t, "delete", tl!("Remove Unused Copies")) {
+                copies::start(app, ctx);
+            }
+        }
+        copies::Job::Scanning(..) | copies::Job::Removing(..) => {
+            let doing = if matches!(copies::job(ctx), copies::Job::Removing(..)) {
+                tl!("Removing the unused copies…")
+            } else {
+                tl!("Looking for unused copies…")
+            };
+            ui.horizontal(|ui| {
+                ui.set_min_height(TARGET);
+                ui.spinner();
+                ui.label(RichText::new(doing).size(15.0).color(t.text));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if action(ui, t, tl!("Cancel"), 96.0, false, true) {
+                        copies::cancel(ctx);
+                    }
+                });
+            });
+        }
+        copies::Job::Asking(found) => {
+            let (count, size) = (found.files.to_string(), copies::size(found.bytes));
+            let template = if found.files == 1 {
+                "1 copy of a picked file ({size}) isn't named by this project. A project saved on this phone that names it won't find it, nor will Undo bring back a layer that reads from it."
+            } else {
+                "{count} copies of picked files ({size}) aren't named by this project. A project saved on this phone that names one won't find it, nor will Undo bring back a layer that reads from one."
+            };
+            let text = i18n::fmt(template, &[("count", &count), ("size", &size)]);
+            ui.label(RichText::new(text).size(14.0).color(t.text));
+            ui.horizontal(|ui| {
+                if action(ui, t, tl!("Remove Them"), 140.0, true, true) {
+                    copies::confirm(app, ctx, found.clone());
+                }
+                if action(ui, t, tl!("Keep Them"), 120.0, false, true) {
+                    copies::cancel(ctx);
+                }
+            });
+        }
+    }
 }
 
 /// A row of a sheet's list: an icon and a label, as wide as the sheet. Says whether it was tapped.

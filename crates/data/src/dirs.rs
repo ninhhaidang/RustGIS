@@ -27,6 +27,12 @@ pub fn set_root(root: PathBuf) -> bool {
     ROOT.set(root).is_ok()
 }
 
+/// The app's own folder, where the system gave it one ([`set_root`]): a phone's app storage.
+/// `None` on a computer, whose folders follow its own conventions.
+pub fn root() -> Option<PathBuf> {
+    ROOT.get().cloned()
+}
+
 /// The environment variable that names the settings folder.
 pub const CONFIG_ENV: &str = "RUSTGIS_CONFIG_DIR";
 /// The environment variable that names the app-data folder.

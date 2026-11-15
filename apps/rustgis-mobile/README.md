@@ -67,8 +67,12 @@ Rust calls Java and never the other way: each frame the app collects what happen
 - **Saving.** Save, Save As and the exports offer their file through the picker, as the browser
   offers a download. A project saved this way names its picked data by the copies' paths in the
   app's storage.
-- **Not yet.** Choosing a folder (Add Folder, a Zarr store) says it isn't available. The copies of
-  data and projects in `files/picked` are never removed (a dialog's file is removed once read). Bringing edits back to the original file is phase 3.
+- **Copies.** The copies of data and projects in `files/picked` stay (a dialog's file is removed
+  once read): a project saved on the phone names its data by them. **Remove Unused Copies**, in
+  the More sheet, removes the picks the project in the window names no file of, once the user has
+  seen how many and how large and agreed; a pick goes whole, so a Shapefile's `.dbf` goes only
+  with its `.shp`. It runs off the window's thread, with Cancel.
+- **Not yet.** Choosing a folder (Add Folder, a Zarr store) says it isn't available.
 
 ## The touch interface
 
@@ -279,12 +283,20 @@ clone, which can't count them, is refused without it).
 
 ### TestFlight and the App Store
 
-This needs the project's Apple Developer account, which the steps below assume; none of it is
-automated yet.
+This needs the project's Apple Developer account. The app (`org.rustgis.mobile`, App Store
+Connect app "RustGIS"), an Apple Distribution certificate, the "RustGIS App Store" profile and an
+App Store Connect API key ("RustGIS upload", App Manager) exist; build 1451 (0.6.0) went to
+TestFlight this way. None of it is automated in CI yet.
 
 1. In App Store Connect, make the app with the bundle id `org.rustgis.mobile`.
 2. In the developer account, make an Apple Distribution certificate (in the keychain of the Mac
-   that builds) and an App Store provisioning profile for `org.rustgis.mobile`.
+   that builds) and an App Store provisioning profile for `org.rustgis.mobile`. Signing over SSH
+   can't use the login keychain without its password: keep the identity in a keychain of its
+   own, with a password of its own, and unlock it before building
+   (`security unlock-keychain -p <its password> rustgis-signing.keychain`; `IOS_SIGN_IDENTITY` may
+   be the identity's SHA-1 from `security find-identity -v -p codesigning`). Its issuer, Apple's
+   WWDR G3 intermediate (`AppleWWDRCAG3.cer` from apple.com/certificateauthority), goes in that
+   keychain too.
 3. Build and upload, with an App Store Connect API key (`~/.appstoreconnect/private_keys/AuthKey_<id>.p8`):
 
    ```sh
@@ -317,7 +329,7 @@ cp parcels.gpkg "$(xcrun simctl get_app_container booted org.rustgis.mobile data
 | Camera | `UIImagePickerController`: the photo is written as a JPEG to `Library/Application Support/photos`. A device without a camera (the Simulator) says so |
 | Soft keyboard | winit's own (`UIKeyInput`): letters, Backspace and Return reach the form. The room the keyboard takes comes from UIKit's keyboard notices and keeps the field above it. Return reaches the form as the Enter key: winit 0.30 hands it on as the character `"\n"`, which egui takes for no key, so winit's view is given a subclass whose `insertText:` keeps Return for the shell, which gives egui an Enter. Each field then does what it does with Enter: a single-line one ends typing, and a dialog's text box takes Enter as its button (Shift+Enter there starts a new line, which the soft keyboard can't type) |
 | Folders | Settings, app data and the cache are in `Library/Application Support` |
-| Picked copies | Kept in `picked/`, as on Android: data and projects open from their copies and are edited there. The folder is left out of the device's backups (`NSURLIsExcludedFromBackupKey`), as the documents are the user's elsewhere. Nothing removes old copies yet |
+| Picked copies | Kept in `picked/`, as on Android: data and projects open from their copies and are edited there. The folder is left out of the device's backups (`NSURLIsExcludedFromBackupKey`), as the documents are the user's elsewhere. Remove Unused Copies removes those the project doesn't name, as on Android |
 | Plain HTTP | App Transport Security is off for every host (`NSAllowsArbitraryLoads`): a project's tile layers and services may be any `http://` server, not known when the app is built, so a list of exceptions can't name them. The App Review notes say so |
 | Plugins | None can be installed, and the registry isn't fetched: App Review doesn't let an app download code that adds to what it does (guideline 2.5.2), and a plugin, from the registry or a file, is such code. Each way of installing one says so (`rustgis_plugins::INSTALLS`). A later build could carry plugins reviewed with the app |
 
