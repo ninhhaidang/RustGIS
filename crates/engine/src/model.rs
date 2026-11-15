@@ -820,8 +820,9 @@ struct ImportItem<T> {
     extra: HashMap<String, Value>,
 }
 
-/// Check declared versions and model contents before import can discard data.
-/// Missing versions are legacy files. The stricter field checks apply only to file import.
+/// Check declared versions, required capabilities (`requires`, as a project's; see
+/// [`crate::project::CAPABILITIES`]) and model contents before import can discard data. Missing
+/// versions are legacy files. The stricter field checks apply only to file import.
 pub(crate) fn check_file(v: &Value) -> Result<(), String> {
     let graph = v.get("graph");
     // A model by its schema, a web tool by its format, even when a newer RustGIS changed what it
@@ -838,14 +839,18 @@ pub(crate) fn check_file(v: &Value) -> Result<(), String> {
             return Err("this model or web tool has an unsupported version. Update RustGIS to import it.".into());
         }
     }
+    crate::project::check_requires(v.get("requires"), "model or web tool", "import")?;
     if graph.is_none() && v.get("steps").is_none() {
         return Err("not a RustGIS model or web tool (no graph or steps)".into());
     }
     if graph.is_some() && v.get("steps").is_some() {
         return Err("a model file cannot contain both a graph and steps. Choose one representation before importing it.".into());
     }
-    let fields: &[&str] =
-        if graph.is_some() { &["$schema", "version", "name", "graph"] } else { &["format", "version", "name", "steps", "parameters"] };
+    let fields: &[&str] = if graph.is_some() {
+        &["$schema", "version", "requires", "name", "graph"]
+    } else {
+        &["format", "version", "requires", "name", "steps", "parameters"]
+    };
     if v.as_object().is_some_and(|file| file.keys().any(|key| !fields.contains(&key.as_str()))) {
         return Err("model file has unsupported fields. Update RustGIS to import this model.".into());
     }

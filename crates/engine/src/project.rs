@@ -913,19 +913,19 @@ impl<'de> serde::de::Visitor<'de> for RequiresVisitor {
 }
 
 /// The capabilities a document requires that this RustGIS doesn't know, each once, or why its
-/// `requires` can't be read.
-fn unknown_capabilities(requires: &Requires, kind: &str) -> Result<Vec<String>, String> {
+/// `requires` can't be read (`open`: what that refusal says to update RustGIS for).
+fn unknown_capabilities(requires: &Requires, kind: &str, open: &str) -> Result<Vec<String>, String> {
     let names = match requires {
         Requires::Nothing => return Ok(Vec::new()),
         Requires::Names(names) => names,
         Requires::TooMany => {
             return Err(format!(
-                "this {kind} lists more than {MAX_REQUIRES} things it needs (`requires`), more than this RustGIS reads. It may be damaged, or from a newer RustGIS: update RustGIS to open it."
+                "this {kind} lists more than {MAX_REQUIRES} things it needs (`requires`), more than this RustGIS reads. It may be damaged, or from a newer RustGIS: update RustGIS to {open} it."
             ));
         }
         Requires::NotNames => {
             return Err(format!(
-                "this {kind} lists what it needs (`requires`) as something other than names, so this RustGIS can't tell whether it reads it. It may be damaged, or from a newer RustGIS: update RustGIS to open it."
+                "this {kind} lists what it needs (`requires`) as something other than names, so this RustGIS can't tell whether it reads it. It may be damaged, or from a newer RustGIS: update RustGIS to {open} it."
             ));
         }
     };
@@ -982,7 +982,23 @@ pub(crate) fn check_format(text: &str, kind: &str) -> Result<(), String> {
     if header.format > u64::from(READ_FORMAT) {
         return Err(format!("this {kind} was saved by a newer RustGIS (format {}). Update RustGIS to open it.", header.format));
     }
-    let unknown = unknown_capabilities(&header.requires, kind)?;
+    requires_known(&header.requires, kind, "open")
+}
+
+/// Refuse a document whose `requires` (`None` when it has none) lists a capability this RustGIS
+/// doesn't know, naming them, as [`check_format`] does: for files read as JSON values, such as
+/// models and web tools. `open` is what the refusal says to update RustGIS for ("import").
+pub(crate) fn check_requires(requires: Option<&serde_json::Value>, kind: &str, open: &str) -> Result<(), String> {
+    let requires = match requires {
+        None => Requires::Nothing,
+        Some(v) => Requires::deserialize(v).map_err(|e| format!("not a RustGIS {kind}: {e}"))?,
+    };
+    requires_known(&requires, kind, open)
+}
+
+/// Refuse what `requires` lists that this RustGIS doesn't know, each name said once.
+fn requires_known(requires: &Requires, kind: &str, open: &str) -> Result<(), String> {
+    let unknown = unknown_capabilities(requires, kind, open)?;
     if !unknown.is_empty() {
         let mut said: Vec<String> = Vec::new();
         for name in unknown.iter().map(|n| capability_said(n)) {
@@ -990,7 +1006,7 @@ pub(crate) fn check_format(text: &str, kind: &str) -> Result<(), String> {
                 said.push(name);
             }
         }
-        return Err(format!("this {kind} needs what this RustGIS can't read: {}. Update RustGIS to open it.", crate::names_said(&said)));
+        return Err(format!("this {kind} needs what this RustGIS can't read: {}. Update RustGIS to {open} it.", crate::names_said(&said)));
     }
     Ok(())
 }

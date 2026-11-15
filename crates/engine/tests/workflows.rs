@@ -35,6 +35,15 @@ fn model_import_refuses_unsupported_files_without_changing_session() {
         (json!({"version": 2, "steps": "unreadable future steps"}), "unsupported version"),
         (json!({"version": null, "graph": {"nodes": []}}), "unsupported version"),
         (json!({"version": "1", "steps": []}), "unsupported version"),
+        (
+            json!({"version": "1.0.0", "requires": ["futureLoops"], "graph": "unreadable future graph"}),
+            "can't read: futureLoops. Update RustGIS to import it",
+        ),
+        (json!({"version": 1, "requires": ["futureSteps", "futureSteps"], "steps": "unreadable"}), "can't read: futureSteps. Update"),
+        (
+            json!({"requires": "futureLoops", "steps": []}),
+            "other than names, so this RustGIS can't tell whether it reads it. It may be damaged, or from a newer RustGIS: update RustGIS to import it",
+        ),
         (json!({"graph": {"nodes": []}, "description": "Keep this"}), "file has unsupported fields"),
         (json!({"steps": [], "future": true}), "file has unsupported fields"),
         (json!({"graph": {"nodes": []}, "steps": [{"tool": "buffer", "params": {}}]}), "both a graph and steps"),
@@ -140,7 +149,11 @@ fn model_import_refuses_unsupported_files_without_changing_session() {
         {
             let error = s.run("model.import", &params).unwrap_err();
             assert!(error.contains(message), "{error}");
-            if message == "unsupported version" || message.starts_with("node ") || message.contains("unsupported fields") {
+            if message == "unsupported version"
+                || message.starts_with("node ")
+                || message.contains("unsupported fields")
+                || message.contains("can't read")
+            {
                 assert!(error.contains("Update RustGIS"), "{error}");
             }
             assert_eq!(serde_json::to_value(&s.project).unwrap(), before);
@@ -152,7 +165,8 @@ fn model_import_refuses_unsupported_files_without_changing_session() {
     }
 }
 
-/// Actual graph and web-tool writers still round-trip, with or without their legacy version marker.
+/// Actual graph and web-tool writers still round-trip, with or without their legacy version marker,
+/// and with a list of required capabilities this version has.
 #[test]
 fn model_import_preserves_supported_and_legacy_files() {
     use base64::Engine;
@@ -190,10 +204,13 @@ fn model_import_preserves_supported_and_legacy_files() {
     {
         let file: Value = serde_json::from_str(&text).unwrap();
         assert_eq!(file["version"], if index == 0 { json!("1.0.0") } else { json!(1) });
-        for legacy in [false, true] {
+        // As written, without the legacy version marker, and requiring nothing this version lacks.
+        for variant in ["current", "legacy", "requires"] {
             let mut file = file.clone();
-            if legacy {
-                file.as_object_mut().unwrap().remove("version");
+            match variant {
+                "legacy" => drop(file.as_object_mut().unwrap().remove("version")),
+                "requires" => file["requires"] = json!([]),
+                _ => {}
             }
             let text = file.to_string();
             let path = scratch.path(if index == 0 { "graph.model.json" } else { "steps.rgistool" });
