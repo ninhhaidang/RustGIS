@@ -22999,15 +22999,28 @@ fn dropped_z_values_are_said_on_import_and_export() {
         let mark = s.notice_mark();
         let id = s.run("layer.addData", &json!({"path": src, "stream": stream})).unwrap()["layer"].as_u64().unwrap();
         assert!(s.notices_since(mark).iter().any(|n| n.text.contains("Z or M values")), "stream {stream}: {:?}", s.notices_since(mark));
-        let out = dir.join(format!("out-{stream}.geojson"));
+        let said = |s: &Session, mark, path: &std::path::Path| {
+            let notes: Vec<_> = s.notices_since(mark).iter().filter(|n| n.text.contains("Z or M")).map(|n| &n.text).collect();
+            let loss = if stream {
+                format!("wells: {}", rustgis_data::zm_note(Some(1)))
+            } else {
+                "its geometry has no Z or M values, which were dropped when wells was read".into()
+            };
+            assert_eq!(notes, [&format!("{}: {loss}", path.display())], "stream {stream}");
+        };
+        // Every output describes its loss, even after import or an earlier export said it.
+        // A counted reader diagnostic replaces the generic export warning, rather than adding one.
+        for repeat in 0..2 {
+            let out = dir.join(format!("out-{stream}-{repeat}.geojson"));
+            let mark = s.notice_mark();
+            s.run("share.exportLayer", &json!({"layer": id, "path": out})).unwrap();
+            said(&s, mark, &out);
+            assert!(std::fs::read_to_string(&out).unwrap().contains("[1.0,2.0]"));
+        }
+        let converted = dir.join(format!("converted-{stream}.csv"));
         let mark = s.notice_mark();
-        s.run("share.exportLayer", &json!({"layer": id, "path": out})).unwrap();
-        let said = |s: &Session, mark| s.notices_since(mark).iter().any(|n| n.text.contains("its geometry has no Z or M values"));
-        assert!(said(&s, mark), "stream {stream}: {:?}", s.notices_since(mark));
-        assert!(std::fs::read_to_string(&out).unwrap().contains("[1.0,2.0]"));
-        let mark = s.notice_mark();
-        s.run("data.convert", &json!({"layer": id, "format": "wkt", "path": dir.join(format!("converted-{stream}.csv"))})).unwrap();
-        assert!(said(&s, mark), "stream {stream}");
+        s.run("data.convert", &json!({"layer": id, "format": "wkt", "path": converted})).unwrap();
+        said(&s, mark, &converted);
     }
     let mut s = world();
     let mark = s.notice_mark();
