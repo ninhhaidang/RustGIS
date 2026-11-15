@@ -2782,8 +2782,8 @@ mod tests {
     }
 
     /// Calculate Field suggests as the expression is typed (#1240): Enter takes the highlighted
-    /// field, quoted as the expression needs, and doesn't calculate; Escape closes the list and
-    /// leaves the dialog and the text as they are.
+    /// field, quoted as the expression needs, and doesn't calculate; Escape closes the list, or
+    /// a call's signature, and leaves the dialog and the text as they are.
     #[test]
     fn calculate_field_suggests_the_fields_as_its_expression_is_typed() {
         use egui::accesskit::Role;
@@ -2812,6 +2812,14 @@ mod tests {
         assert!(h.query_by_role_and_label(Role::Button, "round()").is_none(), "the list closed");
         assert_eq!(h.state().dialogs.text, "\"Pop Est\" * ro");
         assert_eq!(h.state().dialogs.open, Some("calculateField"));
+        // In a call its signature shows; Escape closes it, not the dialog.
+        h.event(egui::Event::Text(" + round(".into()));
+        h.run();
+        assert!(h.query_by_role_and_label(Role::Label, "round(x[, places])").is_some(), "the signature shown");
+        h.key_press(egui::Key::Escape);
+        h.run();
+        assert!(h.query_by_role_and_label(Role::Label, "round(x[, places])").is_none(), "the signature closed");
+        assert_eq!(h.state().dialogs.open, Some("calculateField"), "Escape took the signature, not the dialog");
     }
 
     /// The app in a harness, its fonts installed on the first pass (the dialog draws on the next).

@@ -14,11 +14,11 @@
 
 use egui::text::{CCursor, CCursorRange};
 use egui::widgets::text_edit::{TextEditOutput, TextEditState};
-use egui::{Id, Key, Modifiers, Ui};
+use egui::{Id, Key, Ui};
 use rustgis_engine::Quotes;
 use rustgis_engine::cmd::workflows::refused_in_script;
 
-use crate::completion::{FRAME, GAP, HELP_WIDTH, List, Offered, Worked, place, popup};
+use crate::completion::{GAP, List, Offered, Tip, Worked};
 
 /// The most suggestions the list shows.
 const MAX_ITEMS: usize = 10;
@@ -1056,12 +1056,8 @@ impl Offered for Offer {
 /// The help shown by the cursor while it's in a line's `{…}`.
 #[derive(Clone, Default)]
 struct HintState {
-    /// The command it's for: what Escape acts on.
-    shown: Option<Hint>,
-    /// What Escape closed: not shown again until the cursor leaves those braces.
-    dismissed: Option<Hint>,
-    /// Its whole size last frame, scroll aside (`popup`): where it goes.
-    size: Option<egui::Vec2>,
+    /// Where it floats, for the command whose braces the cursor is in (`completion::Tip`).
+    tip: Tip<Hint>,
     /// What it was worked out to show, for which cursor, script (its hash), language (the help is
     /// translated) and plugins' revision (a plugin's command comes and goes with its plugin): not
     /// again each frame the cursor blinks.
@@ -1085,7 +1081,7 @@ pub fn filter(ui: &Ui, box_id: Id) -> egui::EventFilter {
         tab: true,
         horizontal_arrows: true,
         vertical_arrows: true,
-        escape: state.list.is_open() || state.hint.shown.is_some(),
+        escape: state.list.is_open() || state.hint.tip.is_shown(),
     }
 }
 
@@ -1104,12 +1100,8 @@ pub fn close(ui: &Ui, box_id: Id) {
 pub fn keys(ui: &Ui, box_id: Id, script: &str) -> Option<(Offer, String)> {
     let mut state = load(ui, box_id);
     // The help by the cursor (no list open): Escape closes it.
-    if !state.list.is_open() && state.hint.shown.is_some() && ui.memory(|m| m.has_focus(box_id)) {
-        if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
-            state.hint.dismissed = state.hint.shown.take();
-            state.hint.size = None;
-            store(ui, box_id, state);
-        }
+    if !state.list.is_open() && state.hint.tip.keys(ui, box_id) {
+        store(ui, box_id, state);
         return None;
     }
     if !state.list.is_open() {
@@ -1207,33 +1199,19 @@ pub fn hint(ui: &Ui, box_id: Id, out: &TextEditOutput, visible: egui::Rect, scri
             found
         }
     };
-    // Out of the braces, what Escape closed may show again next time.
-    if found.is_none() {
-        state.hint.dismissed = None;
-    }
-    // Anchored at the line's `{` sideways, so it doesn't slide with each key typed; on the
-    // cursor's line, which it doesn't cover.
-    let galley_rect = |i: usize| out.galley.pos_from_cursor(CCursor::new(i)).translate(out.galley_pos.to_vec2());
-    let shown = found.filter(|(h, _)| state.hint.dismissed.as_ref() != Some(h)).and_then(|(h, help)| {
-        let cursor = galley_rect(at?);
-        let brace = galley_rect(h.brace).left();
-        let anchor = egui::Rect::from_x_y_ranges(brace..=brace, cursor.y_range());
-        visible.intersects(cursor).then_some((anchor, h, help))
+    // Anchored at the line's `{`.
+    let rows = found.as_ref().map_or(0, |(_, help)| help.params.len() + 3);
+    let (about, help): (Option<(Hint, usize)>, Option<Help>) = found
+        .map(|(h, help)| {
+            let brace = h.brace;
+            ((h, brace), help)
+        })
+        .unzip();
+    state.hint.tip.show(ui, box_id.with("complete_hint"), out, visible, at, about, rows, |ui, width| {
+        if let Some(help) = &help {
+            draw_help(ui, help, width);
+        }
     });
-    let Some((cursor, at_line, help)) = shown else {
-        state.hint.shown = None;
-        state.hint.size = None;
-        store(ui, box_id, state);
-        return;
-    };
-    let row = ui.text_style_height(&egui::TextStyle::Monospace) + ui.spacing().item_spacing.y + 4.0;
-    let screen = ui.ctx().content_rect();
-    let width = (screen.width() - FRAME).clamp(0.0, HELP_WIDTH);
-    let size = state.hint.size.unwrap_or(egui::vec2(width + FRAME, row * (help.params.len() + 3) as f32));
-    let (corner, room) = place(cursor, size, screen, row * 3.0);
-    let (_, size) = popup(ui, box_id.with("complete_hint"), corner, room, |ui| draw_help(ui, &help, width));
-    state.hint.shown = Some(at_line);
-    state.hint.size = Some(size);
     store(ui, box_id, state);
 }
 
@@ -2220,7 +2198,8 @@ mod tests {
     }
 
     /// Typing a command's parameters keeps its help by the cursor; past the closing brace it's
-    /// gone, and Escape closes it until the cursor leaves the braces.
+    /// gone, and Escape closes it until the cursor leaves the braces (a list opening over it
+    /// doesn't).
     #[test]
     fn the_help_stays_by_the_cursor_in_the_braces() {
         use egui_kittest::kittest::Queryable;
@@ -2237,6 +2216,14 @@ mod tests {
         assert!(h.get_by_role(egui::accesskit::Role::MultilineTextInput).is_focused(), "and the box keeps the focus");
         type_in(&mut h, ", ");
         assert!(h.query_by_label(&sig).is_none(), "not again in the same braces");
+        // A list opening over it, and Escape closing the list: still closed.
+        type_in(&mut h, "\"");
+        h.get_by_role_and_label(egui::accesskit::Role::Button, "layer");
+        h.key_press(egui::Key::Escape);
+        h.run();
+        assert!(h.query_by_role_and_label(egui::accesskit::Role::Button, "layer").is_none(), "the list closed");
+        assert!(h.query_by_label(&sig).is_none(), "not again once the list closes");
+        type_in(&mut h, "x\": 1");
         type_in(&mut h, "}");
         assert!(h.query_by_label(&sig).is_none(), "past the closing brace");
         type_in(&mut h, "\nlabels.style {");

@@ -1,8 +1,10 @@
 //! A list of suggestions floating by a text box's cursor, as in a code editor, with the help of
 //! the highlighted item beside it: ↑/↓ move the highlight, Enter or Tab accept it, Escape closes
-//! the list, or pressing an item accepts it. What to offer and what the help says are the caller's
-//! (the Script pane's `scriptcomplete`); where the list goes, how it scrolls, its keys and its
-//! state between frames are here, so every box that completes looks and behaves the same.
+//! the list, or pressing an item accepts it; and the help floating by the cursor while it's in
+//! something the help is about (`Tip`). What to offer and what the help says are the caller's
+//! (the Script pane's `scriptcomplete`, an expression's `exprcomplete`); where the list goes, how
+//! it scrolls, its keys and its state between frames are here, so every box that completes looks
+//! and behaves the same.
 
 use egui::text::CCursor;
 use egui::widgets::text_edit::TextEditOutput;
@@ -75,6 +77,91 @@ impl<W: PartialEq, T: Clone> Worked<W, T> {
     /// The value, if worked out for this cursor, text and `with`.
     pub fn get(this: &Option<Self>, at: Option<usize>, text: u64, with: &W) -> Option<T> {
         this.as_ref().filter(|w| w.at == at && w.text == text && w.with == *with).map(|w| w.value.clone())
+    }
+}
+
+/// Help floating by a box's cursor while it's in something the help is about (a command's
+/// braces, a function's call), so it stays in view while that is typed: on the cursor's line,
+/// which it doesn't cover, and anchored sideways at where that starts, so it doesn't slide with
+/// each key typed. Escape closes it until the cursor leaves what it was about (its key, `K`).
+#[derive(Clone)]
+pub(crate) struct Tip<K> {
+    /// What it shows the help about: what Escape acts on.
+    shown: Option<K>,
+    /// What Escape closed: not shown again until the cursor leaves it.
+    dismissed: Option<K>,
+    /// Its whole size last frame, scroll aside (`popup`): where it goes.
+    size: Option<egui::Vec2>,
+}
+
+impl<K> Default for Tip<K> {
+    fn default() -> Self {
+        Self { shown: None, dismissed: None, size: None }
+    }
+}
+
+impl<K: Clone + PartialEq> Tip<K> {
+    /// Whether it shows: Escape is then its own.
+    pub fn is_shown(&self) -> bool {
+        self.shown.is_some()
+    }
+
+    /// Before the box (its id `id`) sees the keys, with the help shown and the box focused:
+    /// Escape closes it (and the box keeps the focus). Whether the keys were its to read.
+    pub fn keys(&mut self, ui: &Ui, id: Id) -> bool {
+        if self.shown.is_none() || !ui.memory(|m| m.has_focus(id)) {
+            return false;
+        }
+        if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+            self.dismissed = self.shown.take();
+            self.size = None;
+        }
+        true
+    }
+
+    /// After the box (`out`): the help `found` for the cursor at char `at` (None: no cursor, or
+    /// none to show it by, such as a list open over it), as what it's about and the char where
+    /// that starts, drawn by `draw`
+    /// (given the width it takes), `rows` monospace lines high at first guess. Not with the
+    /// cursor out of the box's view (`visible`) or what Escape closed.
+    pub fn show(
+        &mut self,
+        ui: &Ui,
+        id: Id,
+        out: &TextEditOutput,
+        visible: egui::Rect,
+        at: Option<usize>,
+        found: Option<(K, usize)>,
+        rows: usize,
+        draw: impl FnOnce(&mut Ui, f32),
+    ) {
+        // Out of what Escape closed (in nothing, or straight into something else), it may show
+        // again next time. Only with a cursor to show it by: with none (the window left, text
+        // selected, a list open over it) where the cursor is isn't known, and it stays closed.
+        let here = found.as_ref().map(|(k, _)| k);
+        if at.is_some() && here != self.dismissed.as_ref() {
+            self.dismissed = None;
+        }
+        let galley_rect = |i: usize| out.galley.pos_from_cursor(CCursor::new(i)).translate(out.galley_pos.to_vec2());
+        let shown = found.filter(|(k, _)| self.dismissed.as_ref() != Some(k)).and_then(|(k, start)| {
+            let cursor = galley_rect(at?);
+            let left = galley_rect(start).left();
+            let anchor = egui::Rect::from_x_y_ranges(left..=left, cursor.y_range());
+            visible.intersects(cursor).then_some((anchor, k))
+        });
+        let Some((anchor, k)) = shown else {
+            self.shown = None;
+            self.size = None;
+            return;
+        };
+        let row = ui.text_style_height(&egui::TextStyle::Monospace) + ui.spacing().item_spacing.y + 4.0;
+        let screen = ui.ctx().content_rect();
+        let width = (screen.width() - FRAME).clamp(0.0, HELP_WIDTH);
+        let size = self.size.unwrap_or(egui::vec2(width + FRAME, row * rows as f32));
+        let (corner, room) = place(anchor, size, screen, row * 3.0);
+        let (_, size) = popup(ui, id, corner, room, |ui| draw(ui, width));
+        self.shown = Some(k);
+        self.size = Some(size);
     }
 }
 

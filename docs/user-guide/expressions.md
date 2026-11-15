@@ -198,6 +198,11 @@ may switch the input source, type the first letter instead). ↑/↓ move throug
 or Tab take the highlighted item (Enter doesn't calculate while the list is open) and Escape
 closes it. Inside a quoted field name (`"Pop`) only fields are suggested.
 
+Inside a function's brackets, its signature floats by the cursor while no list is open, with the
+argument being typed marked (`round(x[, places])`) and what the function gives. A list that
+opens hides it, and it comes back when the list closes; Escape with no list open closes it until
+the cursor leaves that call.
+
 A number goes into a number field as it is: a decimal field keeps every digit of `1 / 3` (a
 whole number past 2^53 becomes the nearest decimal, as a decimal field holds it). A whole-number
 field holds whole numbers, so a decimal result, or text written as one, loses its fraction toward

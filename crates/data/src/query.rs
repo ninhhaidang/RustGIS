@@ -34,7 +34,7 @@ mod complete;
 #[cfg(test)]
 mod legacy;
 
-pub use complete::{Completion, Place, complete_at};
+pub use complete::{Call, Completion, Place, complete_at};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Expr {
@@ -679,9 +679,9 @@ struct Parser<'a> {
     /// there, and what is wrong in what was typed before (a field no layer has, a date against
     /// a number) doesn't stop it. `None` everywhere else, which changes nothing.
     probe: Option<RefCell<Probe>>,
-    /// The calls being read, innermost last: the function (`None` for a name no function has)
-    /// and which argument.
-    calls: Vec<(Option<Func>, usize)>,
+    /// The calls being read, innermost last: the function (`None` for a name no function has),
+    /// which argument, and the token of its `(`.
+    calls: Vec<(Option<Func>, usize, usize)>,
 }
 
 /// What the parser looked for at the end of the tokens: what may come next there.
@@ -691,8 +691,8 @@ struct Probe {
     operand: bool,
     keywords: Vec<Kw>,
     symbols: Vec<&'static str>,
-    /// The call the end is in, when it was first reached.
-    call: Option<(Option<Func>, usize)>,
+    /// The call the end is in, when it was first reached (as in `Parser::calls`).
+    call: Option<(Option<Func>, usize, usize)>,
     /// The field a value at the end is compared with (`name = ▮`, `name IN (▮`).
     field: Option<usize>,
 }
@@ -1162,8 +1162,8 @@ impl Parser<'_> {
         if spec.is_none() && !self.probing() {
             return Err(format!("unknown function '{name}'"));
         }
+        self.calls.push((spec.map(|s| s.func), 0, self.pos));
         self.pos += 1; // '('
-        self.calls.push((spec.map(|s| s.func), 0));
         let mut args = Vec::new();
         if !self.eat(&Tok::RParen) {
             loop {

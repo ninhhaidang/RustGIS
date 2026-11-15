@@ -40,12 +40,21 @@ pub struct Completion {
     /// and in one spelling (`<>`, not `!=`; `=`, not `==`). Where a value goes, the `(` or the
     /// sign (`-1`) that can start one isn't listed: the value is (`operand`).
     pub symbols: Vec<&'static str>,
-    /// The function whose arguments the cursor is in, and which argument (from 0); `None`
-    /// outside a call or in a call of a name no function has.
-    pub call: Option<(FuncSpec, usize)>,
+    /// The call whose arguments the cursor is in, the innermost; `None` outside a call or in a
+    /// call of a name no function has.
+    pub call: Option<Call>,
     /// The field (its index in the dataset) a value typed here is compared with: `name = ▮`,
     /// `name LIKE '▮`, `name IN ('a', ▮`, `pop BETWEEN ▮`.
     pub field: Option<usize>,
+}
+
+/// A call the cursor is in, from [`complete_at`]: its function, which argument (from 0), and
+/// where its `(` is (a char index), what help about it is anchored at.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Call {
+    pub spec: FuncSpec,
+    pub arg: usize,
+    pub open: usize,
 }
 
 /// The order symbols are given in.
@@ -107,7 +116,7 @@ pub fn complete_at(text: &str, cursor: usize, ds: &Dataset) -> Option<Completion
     }
     let keywords = Kw::ALL.iter().copied().filter(|k| keywords.contains(k)).collect();
     let symbols = SYMBOLS.into_iter().filter(|s| probe.symbols.contains(s)).collect();
-    let call = probe.call.and_then(|(f, arg)| Some((f?.spec(), arg)));
+    let call = probe.call.and_then(|(f, arg, tok)| Some(Call { spec: f?.spec(), arg, open: spans.get(tok)?.start }));
     // Inside text only its call and the field it is compared with mean anything; inside a
     // field's quotes, a field name: no keyword nor symbol goes in a name.
     let code = place == Place::Code;
@@ -196,7 +205,7 @@ mod tests {
         // Inside text no word of the language goes: only the call and the field are said.
         assert!(!c.operand && c.keywords.is_empty() && c.symbols.is_empty());
         let c = at_end("area('h");
-        assert_eq!((c.place, c.call.map(|(f, a)| (f.func, a))), (Place::Text, Some((Func::Area, 0))));
+        assert_eq!((c.place, c.call.map(|c| (c.spec.func, c.arg))), (Place::Text, Some((Func::Area, 0))));
         // A doubled quote is one quote, as the lexer reads it.
         assert_eq!(at_end("name = 'O''Br").prefix, "O'Br");
         // A value compared with something that isn't a field has no field to take values from.
@@ -205,15 +214,18 @@ mod tests {
 
     #[test]
     fn a_call_says_its_function_and_argument() {
+        let call = |c: &Completion| c.call.map(|c| (c.spec.func, c.arg, c.open));
         let c = at_end("round(");
-        assert_eq!(c.call.map(|(f, a)| (f.func, a)), Some((Func::Round, 0)));
+        assert_eq!(call(&c), Some((Func::Round, 0, 5)));
         assert!(c.operand && c.symbols.contains(&")"));
         let c = at_end("round(pop, ");
-        assert_eq!(c.call.map(|(f, a)| (f.func, a)), Some((Func::Round, 1)));
+        assert_eq!(call(&c), Some((Func::Round, 1, 5)));
         let c = at_end("round(abs(pop");
-        assert_eq!(c.call.map(|(f, a)| (f.func, a)), Some((Func::Abs, 0)), "the innermost");
+        assert_eq!(call(&c), Some((Func::Abs, 0, 9)), "the innermost");
         let c = at_end("round(abs(pop), 2");
-        assert_eq!(c.call.map(|(f, a)| (f.func, a)), Some((Func::Round, 1)));
+        assert_eq!(call(&c), Some((Func::Round, 1, 5)));
+        // Where its `(` is counts characters, not bytes.
+        assert_eq!(call(&at_end("'é' || upper(")), Some((Func::Upper, 0, 12)));
         assert!(c.symbols.contains(&",") && c.symbols.contains(&")"));
         assert_eq!(at_end("round(pop) ").call, None, "closed");
         assert_eq!(at_end("nosuch(").call, None, "a name no function has");
