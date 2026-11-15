@@ -1990,6 +1990,22 @@ mod tests {
         assert_eq!(h.state().workflow.script, r#"layer.displayFilters {"filters": [{}]!"#, "and is stepped over");
     }
 
+    /// As Wayland types with an input method running (ibus, fcitx): a `{` committed by it, after
+    /// an empty composition, closes itself, and its `}` steps over.
+    #[test]
+    fn braces_from_an_input_method() {
+        let mut h = pane();
+        type_in(&mut h, "labels.style ");
+        h.event(egui::Event::Ime(egui::ImeEvent::Preedit { text: String::new(), active_range_chars: None }));
+        h.event(egui::Event::Ime(egui::ImeEvent::Commit("{".into())));
+        h.run();
+        assert_eq!(h.state().workflow.script, "labels.style {}");
+        h.event(egui::Event::Ime(egui::ImeEvent::Commit("}".into())));
+        h.run();
+        type_in(&mut h, "!");
+        assert_eq!(h.state().workflow.script, "labels.style {}!", "the cursor stepped over the brace");
+    }
+
     /// In the pane: a quote closes itself and the lists still open in it; accepting a key takes
     /// in its closing quote, accepting a tool keeps it, and a quote typed before it steps over.
     #[test]

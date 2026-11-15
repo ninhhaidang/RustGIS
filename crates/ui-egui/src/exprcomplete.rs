@@ -257,6 +257,9 @@ fn closes(c: char) -> bool {
     c.is_whitespace() || matches!(c, ')' | ',')
 }
 
+/// What may come before a quote that closes itself, a space aside: where a value can start.
+const OPENS: &[char] = &['(', ',', '=', '<', '>', '+', '-', '*', '/', '%', '^', '|'];
+
 /// The quote char `at` of `text` is inside of: `'` a text's, `"` or `!` a field name's; None
 /// in the code. A doubled `'` or `"` in one is part of it, as the expression reads it (it ends
 /// and starts again), and `!=` is an operator, not a name's `!`.
@@ -291,8 +294,7 @@ fn pair(text: &str, before: Before, now: usize, keyed: Keyed) -> Option<String> 
     let one_deleted = keyed == Keyed::Backspace && text.len() + 1 == len && now + 1 == at && plain(now);
     let cut = byte_at(text, if one_deleted { now } else { at })?;
     let (b, rest) = (text.get(..cut)?, text.get(cut..)?);
-    // What may come before a quote that closes itself.
-    let opens = |c: char| c.is_whitespace() || matches!(c, '(' | ',' | '=' | '<' | '>' | '+' | '-' | '*' | '/' | '%' | '^' | '|');
+    let opens = |c: char| c.is_whitespace() || OPENS.contains(&c);
     let new = match (typed, next) {
         (Some('('), next) if typed_one && plain(at) && next.is_none_or(closes) => Some(format!("{b}(){}", rest.get(1..)?)),
         (Some(q @ ('\'' | '"')), next) if typed_one && plain(at) && next.is_none_or(closes) && prev.is_none_or(opens) => {
@@ -434,9 +436,11 @@ fn draw_help(ui: &mut Ui, item: &Item, ds: Option<&Dataset>, width: f32) {
 /// `!` in double quotes, as `!` has no escape), a function with its brackets, the cursor inside
 /// them as a `(` typed closes itself (`pair`), after them when it takes no arguments (before
 /// other text, the bracket only open; a `(` already there is used, not doubled), a variable or
-/// keyword as it is; as one undo step of the box, the cursor after it, and the box keeps the focus. Returns
-/// where it was put: the new text's hash and the cursor.
+/// keyword as it is; as one undo step of the box, the cursor after it. Nothing when it doesn't
+/// fit (`written`). Either way the box keeps the focus (a click on the list took it), so the list
+/// stays open when nothing was put. Returns where it was put: the new text's hash and the cursor.
 fn accept(ui: &Ui, id: Id, text: &mut String, offer: &Offer, item: &str) -> Option<(u64, usize)> {
+    ui.memory_mut(|m| m.request_focus(id));
     let (new, at) = written(text, offer, item)?;
     let mut state = TextEditState::load(ui.ctx(), id).unwrap_or_default();
     let mut undoer = state.undoer();
@@ -446,7 +450,6 @@ fn accept(ui: &Ui, id: Id, text: &mut String, offer: &Offer, item: &str) -> Opti
     *text = new;
     state.cursor.set_char_range(Some(CCursorRange::one(CCursor::new(at))));
     state.store(ui.ctx(), id);
-    ui.memory_mut(|m| m.request_focus(id));
     Some((egui::util::hash(text.as_str()), at))
 }
 
@@ -468,14 +471,16 @@ fn word_rest(rest: &[char], quote: Option<char>) -> usize {
     0
 }
 
-/// `text` with `item` of `offer` accepted (`accept`), and where the cursor goes (chars).
+/// `text` with `item` of `offer` accepted (`accept`), and where the cursor goes (chars). None
+/// past the longest expression read (`MAX_LEN`, as the box takes no more): nothing is put in
+/// part, as a call left open there couldn't be closed.
 fn written(text: &str, offer: &Offer, item: &str) -> Option<(String, usize)> {
     let of = find(offer, item)?;
     let chars: Vec<char> = text.chars().collect();
     let (before, rest) = (chars.get(..offer.start)?, chars.get(offer.end..)?);
     let mut after = rest.get(word_rest(rest, offer.quote)..).unwrap_or_default();
     // Chars of what's put the cursor goes back over: into a function's brackets.
-    let mut back = 0;
+    let mut into_brackets = 0;
     let put = match of {
         Item::Field(name) => match offer.quote.filter(|q| *q != '!' || !name.contains('!')) {
             Some(q) => {
@@ -490,17 +495,20 @@ fn written(text: &str, offer: &Offer, item: &str) -> Option<(String, usize)> {
         }
         Item::Function(f) if f.max == 0 => format!("{}()", f.name),
         Item::Function(f) if after.first().is_none_or(|c| closes(*c)) => {
-            back = 1;
+            into_brackets = 1;
             format!("{}()", f.name)
         }
         Item::Function(f) => format!("{}(", f.name),
         Item::Variable(_, name) => name.to_string(),
         Item::Keyword(k) => k.word().to_string(),
     };
+    if before.len() + put.chars().count() + after.len() > query::MAX_LEN {
+        return None;
+    }
     let mut new: String = before.iter().collect();
     new.push_str(&put);
     new.extend(after);
-    Some((new, (offer.start + put.chars().count()).saturating_sub(back)))
+    Some((new, (offer.start + put.chars().count()).saturating_sub(into_brackets)))
 }
 
 #[cfg(test)]
@@ -799,6 +807,136 @@ mod tests {
             got.insert(cursor, '▮');
             assert_eq!(got.into_iter().collect::<String>(), want, "{text}");
         }
+    }
+
+    /// At the longest expression read, an item that fits whole is written, and one a char
+    /// longer isn't, nor any part of it: a function, a field, a keyword.
+    #[test]
+    fn accepting_stays_within_the_longest_expression() {
+        let accepted = |pad: usize, typed: &str, item: &str| {
+            let text = format!("{}{typed}", "x".repeat(pad));
+            let offer = offer_at(&text, text.chars().count(), &ds(), false).unwrap();
+            written(&text, &offer, item).map(|(new, _)| new.chars().skip(pad).collect::<String>())
+        };
+        for (typed, item, want) in
+            [(" + ro", "round()", " + round()"), (" + Po", "\"Pop Est\"", " + \"Pop Est\""), (" > 1 a", "AND", " > 1 AND")]
+        {
+            let pad = query::MAX_LEN - want.chars().count();
+            assert_eq!(accepted(pad, typed, item).as_deref(), Some(want), "{item} fits whole");
+            assert_eq!(accepted(pad + 1, typed, item), None, "{item} a char too long");
+        }
+    }
+
+    /// Clicks the list's `item`: pressed, and let go two frames later, as a real click is, as the
+    /// Script pane's `a_click_accepts_an_item` does.
+    fn click(h: &mut egui_kittest::Harness<'_, String>, item: &str) {
+        use egui_kittest::kittest::Queryable;
+        let at = h.get_by_role_and_label(egui::accesskit::Role::Button, item).rect().center();
+        let button =
+            |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
+        h.event(egui::Event::PointerMoved(at));
+        h.step();
+        h.event(button(true));
+        h.step();
+        h.step();
+        h.event(button(false));
+        h.run();
+    }
+
+    /// A function clicked in the list is written, and the box keeps the focus (the list is under
+    /// it, so the button let go there is a click outside it): what's typed next goes in its
+    /// brackets.
+    #[test]
+    fn a_click_accepts_and_the_box_keeps_the_focus() {
+        let data = ds();
+        let id = Id::unique("expr");
+        let mut h = egui_kittest::Harness::new_ui_state(
+            move |ui, text: &mut String| {
+                let label = ui.label("Expression");
+                let _ = expr_edit(ui, id, text, Some(&data), |e| e).labelled_by(label.id);
+            },
+            String::new(),
+        );
+        h.run();
+        h.ctx.memory_mut(|m| m.request_focus(id));
+        h.run();
+        h.event(egui::Event::Text("ro".into()));
+        h.run();
+        click(&mut h, "round()");
+        assert!(h.ctx.memory(|m| m.has_focus(id)), "the box keeps the focus");
+        h.event(egui::Event::Text("1".into()));
+        h.run();
+        assert_eq!(h.state(), "round(1)");
+    }
+
+    /// A click whose press and release come in one frame (a quick tap, a slow frame) reaches the
+    /// item too, and the box keeps the focus. (kittest's `click()` gives each its own frame.)
+    #[test]
+    fn a_click_in_one_frame_accepts_too() {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        let data = ds();
+        let id = Id::unique("expr");
+        let mut h = egui_kittest::Harness::new_ui_state(
+            move |ui, text: &mut String| {
+                let label = ui.label("Expression");
+                let _ = expr_edit(ui, id, text, Some(&data), |e| e).labelled_by(label.id);
+            },
+            String::new(),
+        );
+        h.run();
+        h.ctx.memory_mut(|m| m.request_focus(id));
+        h.run();
+        h.event(egui::Event::Text("ro".into()));
+        h.run();
+        let at = h.get_by_role_and_label(Role::Button, "round()").rect().center();
+        let button =
+            |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: Modifiers::NONE };
+        h.event(egui::Event::PointerMoved(at));
+        h.run();
+        h.input_mut().events.extend([button(true), button(false)]);
+        h.run();
+        assert!(h.ctx.memory(|m| m.has_focus(id)), "the box keeps the focus");
+        h.event(egui::Event::Text("1".into()));
+        h.run();
+        assert_eq!(h.state(), "round(1)");
+    }
+
+    /// In the box, at the longest expression read: Enter on a function that doesn't fit writes
+    /// nothing, and the list stays open; so does a click on it, the box keeping the focus.
+    #[test]
+    fn accepting_what_does_not_fit_leaves_the_list_open() {
+        use egui::accesskit::Role;
+        use egui_kittest::kittest::Queryable;
+        let data = ds();
+        let id = Id::unique("expr");
+        // `ro` typed ends it at the longest: `round()` doesn't fit.
+        let start = format!("{} + r", "x".repeat(query::MAX_LEN - 5));
+        let mut h = egui_kittest::Harness::new_ui_state(
+            move |ui, text: &mut String| {
+                let label = ui.label("Expression");
+                let _ = expr_edit(ui, id, text, Some(&data), |e| e).labelled_by(label.id);
+            },
+            start.clone(),
+        );
+        h.run();
+        h.ctx.memory_mut(|m| m.request_focus(id));
+        let mut state = TextEditState::load(&h.ctx, id).unwrap_or_default();
+        state.cursor.set_char_range(Some(CCursorRange::one(CCursor::new(start.chars().count()))));
+        state.store(&h.ctx, id);
+        h.run();
+        h.event(egui::Event::Text("o".into()));
+        h.run();
+        assert!(h.query_by_role_and_label(Role::Button, "round()").is_some(), "offered");
+        h.key_press(Key::Enter);
+        h.run();
+        assert_eq!(h.state().chars().count(), query::MAX_LEN, "nothing written");
+        assert!(h.state().ends_with(" + ro"));
+        assert!(h.query_by_role_and_label(Role::Button, "round()").is_some(), "the list still open");
+        click(&mut h, "round()");
+        assert!(h.state().ends_with(" + ro") && h.state().chars().count() == query::MAX_LEN, "nothing written on a click");
+        assert!(h.ctx.memory(|m| m.has_focus(id)), "the box keeps the focus");
+        assert!(h.query_by_role_and_label(Role::Button, "round()").is_some(), "the list still open after a click");
     }
 
     /// What `pair` makes of `ins` typed at char `at` of `old` (`▮` there in the messages).

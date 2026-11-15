@@ -185,11 +185,14 @@ pub(crate) struct List<O> {
     /// The highlighted item the list last scrolled to: it scrolls to a new one only (so a wheel
     /// can still move it).
     scrolled_to: Option<usize>,
+    /// Whether the button pressed on the list is still down: egui takes the focus from the box
+    /// when it comes up (a click elsewhere), and it goes back to the box then.
+    pressed: bool,
 }
 
 impl<O> Default for List<O> {
     fn default() -> Self {
-        Self { open: None, dismissed: None, drawn: None, pointer_leads: false, scrolled_to: None }
+        Self { open: None, dismissed: None, drawn: None, pointer_leads: false, scrolled_to: None, pressed: false }
     }
 }
 
@@ -285,11 +288,24 @@ impl<O: Offered> List<O> {
         if !ui.input(|i| i.focused) {
             self.close();
             self.drawn = None;
+            self.pressed = false;
             return None;
         }
-        // A press on the list: only then does it outlive the box's focus.
-        let on_list =
-            self.drawn.is_some_and(|(r, _)| ui.input(|i| i.pointer.any_down() && i.pointer.hover_pos().is_some_and(|p| r.contains(p))));
+        // A press on the list: only then does it outlive the box's focus. Pressed this frame
+        // counts though the button is up again (a quick tap, a slow frame): the item takes it.
+        let on_list = self.drawn.is_some_and(|(r, _)| {
+            ui.input(|i| (i.pointer.any_down() || i.pointer.any_pressed()) && i.pointer.hover_pos().is_some_and(|p| r.contains(p)))
+        });
+        // The button pressed there, once up, took the focus from the box (a click outside it, a
+        // single-line box's list being under it), the list having taken the press: what was
+        // clicked was the box's list, so the focus goes back to it, and the list shows again
+        // next frame if there's still something to offer (an item that didn't fit).
+        if on_list && ui.input(|i| i.pointer.any_pressed()) {
+            self.pressed = true;
+        } else if self.pressed && ui.input(|i| !i.pointer.any_down()) {
+            self.pressed = false;
+            ui.memory_mut(|m| m.request_focus(out.response.response.id));
+        }
         let offer = if out.response.response.has_focus() {
             // A cursor, not a selection: with text selected, Enter and Tab act on it as usual.
             work(out.cursor_range.filter(|r| r.is_empty()).map(|r| r.primary.index.0))
@@ -456,7 +472,8 @@ pub(crate) fn pairs(
     // One edit, made by one of those keys: the character typed alone (Shift, AltGr or Option as
     // it takes), or Backspace alone. Typed as text, or committed by an input method: with one
     // running (ibus, fcitx) on Wayland, every key comes that way, a `(` included, between empty
-    // compositions that edit nothing.
+    // compositions that edit nothing. A composition under way (a non-empty `Preedit`) is no key
+    // typed: what it holds isn't written yet.
     let keyed = ui.input(|i| {
         use egui::ImeEvent;
         let edits: Vec<&egui::Event> = i
