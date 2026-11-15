@@ -208,8 +208,9 @@ pub fn layers(src: &Path) -> Result<Vec<String>> {
 /// GDAL overrides accept `AUTH:CODE`: at least two ASCII letters for the authority and an ASCII
 /// alphanumeric code (also `.` and `_`), at most 64 bytes total; or the exact well-known geographic
 /// names `WGS84`, `WGS72`, `NAD27`, `NAD83` (in any case, as GDAL reads them). Files, addresses, WKT and other aliases are refused.
-/// Returns the converted layers, and the layers that couldn't be converted (with why), so a
-/// partial result is never mistaken for the whole file.
+/// Returns the converted layers and notices about layers or features left out, so a partial
+/// result is never mistaken for the whole file. Feature losses compare the known source count
+/// with the converted headers, including when reusing cached conversions.
 pub fn convert(src: &Path, layer: Option<&str>, crs: Option<&str>) -> Result<(Vec<Converted>, Vec<String>)> {
     check_crs(crs)?;
     let dir = cache_dir().ok_or_else(|| DataError::Format("no cache folder for GDAL conversions".into()))?;
@@ -233,6 +234,8 @@ fn check_crs(crs: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+/// Converts selected layers, reporting failed layers and known feature-count shortfalls across
+/// all their geometry families. Cache hits are checked too, without scanning converted features.
 fn convert_in(dir: &Path, src: &Path, layer: Option<&str>, crs: Option<&str>) -> Result<(Vec<Converted>, Vec<String>)> {
     check_crs(crs)?;
     if !available() {
@@ -277,6 +280,26 @@ fn convert_in(dir: &Path, src: &Path, layer: Option<&str>, crs: Option<&str>) ->
                 Err(e) => errors.push(e),
             }
         }
+        // Count all converted families together: splitting a mixed layer isn't a loss. Read
+        // only the headers, so checking a cache hit doesn't scan its features or date columns.
+        // A layer with nothing converted and no error lost every feature (all empty polygons,
+        // say); one that failed is said below, with why.
+        if (out.len() > before || errors.is_empty())
+            && let Some(expected) = l.count.and_then(|n| u64::try_from(n).ok()).filter(|n| *n > 0)
+        {
+            // A part whose header can't be read leaves the count unchecked, and says so.
+            let count: std::result::Result<u64, DataError> = out
+                .iter()
+                .skip(before)
+                .try_fold(0u64, |total, converted| Ok(total.saturating_add(super::fgb::header_feature_count(&converted.path)?)));
+            match count {
+                Ok(actual) if actual < expected => {
+                    failed.push(format!("{}: GDAL conversion left out {} of {expected} source features", l.name, expected - actual));
+                }
+                Ok(_) => {}
+                Err(e) => failed.push(format!("{}: couldn't check how many features GDAL's conversion kept ({e})", l.name)),
+            }
+        }
         // A layer none of whose parts converted is reported, with the first reason.
         if out.len() == before
             && let Some(e) = errors.into_iter().next()
@@ -286,7 +309,10 @@ fn convert_in(dir: &Path, src: &Path, layer: Option<&str>, crs: Option<&str>) ->
         }
     }
     if out.is_empty() {
-        return Err(last.unwrap_or_else(|| DataError::Format("GDAL found no features to read".into())));
+        // Nothing converted and no error: what was left out says why (all of it empty polygons).
+        return Err(last.unwrap_or_else(|| {
+            DataError::Format(if failed.is_empty() { "GDAL found no features to read".into() } else { failed.join("; ") })
+        }));
     }
     Ok((out, failed))
 }
@@ -789,6 +815,50 @@ mod tests {
         assert_eq!(again.iter().map(|c| &c.path).collect::<Vec<_>>(), out.iter().map(|c| &c.path).collect::<Vec<_>>());
         let _ = std::fs::remove_dir_all(dir);
     }
+
+    /// Indexed FlatGeobuf conversion drops empty polygons in GDAL, before RustGIS reads it.
+    /// Both a new conversion and a cache hit must say how many source features were lost.
+    #[test]
+    fn conversion_reports_empty_polygons_left_out_but_not_clean_input() {
+        if !usable() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let polygon = r#"{"type":"Feature","properties":{"id":2},"geometry":{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,0]]]}}"#;
+        let empty = r#"{"type":"Feature","properties":{"id":1},"geometry":{"type":"Polygon","coordinates":[]}}"#;
+        for lossy in [true, false] {
+            let path = dir.path().join(if lossy { "lossy.geojsonl" } else { "clean.geojsonl" });
+            std::fs::write(&path, if lossy { format!("{empty}\n{polygon}\n") } else { format!("{polygon}\n") }).unwrap();
+            for _ in 0..2 {
+                let (converted, notes) = convert_in(&dir.path().join("cache"), &path, None, None).unwrap();
+                assert_eq!(converted.len(), 1);
+                let source = super::super::open_path(&converted[0].path, None).unwrap();
+                let batch = source.read(&super::super::Request { extent: None, limit: 10 }).unwrap();
+                assert_eq!(batch.features.len(), 1);
+                assert_eq!(batch.skipped, 0, "GDAL dropped the feature before RustGIS read it");
+                if lossy {
+                    assert_eq!(notes, vec!["lossy: GDAL conversion left out 1 of 2 source features"]);
+                } else {
+                    assert!(notes.is_empty(), "clean input loses no features: {notes:?}");
+                }
+            }
+        }
+        let empties = dir.path().join("empties.geojsonl");
+        std::fs::write(&empties, format!("{empty}\n{empty}\n")).unwrap();
+        // A file of only empty polygons converts to nothing: the error says how many were left out.
+        for _ in 0..2 {
+            let error = convert_in(&dir.path().join("cache"), &empties, None, None).unwrap_err().to_string();
+            assert!(error.contains("empties: GDAL conversion left out 2 of 2 source features"), "{error}");
+        }
+        // A cached conversion whose header can't be read is said, and the layer still comes back.
+        let path = dir.path().join("clean.geojsonl");
+        let (converted, _) = convert_in(&dir.path().join("cache"), &path, None, None).unwrap();
+        std::fs::write(&converted[0].path, b"not a FlatGeobuf").unwrap();
+        let (again, notes) = convert_in(&dir.path().join("cache"), &path, None, None).unwrap();
+        assert_eq!(again.len(), 1);
+        assert!(notes.len() == 1 && notes[0].starts_with("clean: couldn't check how many features GDAL's conversion kept"), "{notes:?}");
+    }
+
     #[test]
     fn fresh_conversion_reports_dropped_dimensions_but_not_for_clean_xy_data() {
         if !usable() {
