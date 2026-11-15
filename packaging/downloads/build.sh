@@ -12,9 +12,14 @@ readonly SOURCE_REPOSITORY="opengeos/RustGIS"
 readonly MIRROR_ORIGIN="https://downloads.rustgis.app"
 readonly MAX_MIRRORED_BYTES=$((100 * 1024 * 1024))
 readonly METADATA_ONLY="${DOWNLOAD_MIRROR_METADATA_ONLY:-false}"
-# The Store-only MSIX, and the release's own SHA256SUMS (the mirror writes SHA256SUMS.txt).
+# The Store-only packages (the MSIX, the Android App Bundle for Google Play, the iOS app signed for
+# the App Store: none installs on its own), and the release's own checksum files (SHA256SUMS and
+# the phone packages' .sha256; the mirror writes SHA256SUMS.txt).
 readonly OMITTED_ASSET_PATTERNS_JSON='[
   "\\.msix$",
+  "\\.aab$",
+  "\\.ipa$",
+  "\\.(apk|aab|ipa)\\.sha256$",
   "^SHA256SUMS$"
 ]'
 
