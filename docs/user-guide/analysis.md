@@ -39,13 +39,40 @@ Hiding the column the rows are sorted by clears the sort. The order and hidden c
 per table until another project is opened, and are not saved in the project.
 
 A text column's menu also has **Convert to Date** and **Convert to Date and Time**
-(`edit.convertField`, `"type"`: `date` or `datetime`): the field becomes a date field and each
-value is read as ISO 8601 (`2026-03-05`; `2026-03-05T14:30:00+02:00`, or with a space for the
-`T`). Text that isn't a date becomes empty, and a notice counts those rows and shows the first
-few; undo brings the text back. Digits past the microsecond are rounded to it, and a notice counts
-those. A field with text and none of it a date is refused and stays text. Use it for dates from CSV, GeoJSON or other files that hold them as
-text. A field with a domain, subtypes or contingent values, or one a definition query or display
-filter would no longer read as dates (comparing it with a number), is refused.
+(`edit.convertField`, `"type"`: `date` or `datetime`). A dialog lists only presets that read
+every non-empty value, with a few rows showing the result for each format. Choose a format and
+click **Convert**: `03/05/2026` means March 5 with **MM/DD/YYYY**, May 3 with **DD/MM/YYYY**.
+No format is selected for you. Checking the column and converting run in the background on the
+desktop, with progress and **Cancel**. Changing the column while its dialog is open closes the
+dialog, so an old preview can't convert new text.
+
+For commands, `format` is optional and defaults to `"iso"`: ISO 8601 (`2026-03-05`;
+`2026-03-05T14:30:00+02:00`, or with a space for the `T`). An explicit numeric pattern uses
+`%Y` (four-digit year), `%m` (month), `%d` (day), `%H` (24-hour clock), `%M` (minute),
+`%S` (second), `%f` (fractional second digits), `%z` (`Z`, `+0200` or `+02:00`), and `%%` (a
+literal percent). Month, day, hour, minute, second and `%y` take two digits. Other characters
+match literally; surrounding whitespace is ignored. For example:
+
+```json
+{"layer":"Permits","field":"issued","type":"datetime","format":"%m/%d/%Y %H:%M"}
+```
+
+`%y` requires `pivotYear`, the first year of a 100-year window (1 to 9900). For example,
+`"format":"%d/%m/%y","pivotYear":1926` maps `26` to 1926 and `25` to 2025. The dialog's
+**Include two-digit years** reveals this window for its presets. Month names and other
+language-dependent formats aren't supported.
+
+Spreadsheet day numbers use `"format":"excel1900"` or `"format":"excel1904"`. The 1900
+system's day 1 is 1900-01-01; day 60 is invalid (1900-02-29 never existed); day 61 is
+1900-03-01. The 1904 system's day 0 is 1904-01-01. Fractions are time of day, so use
+`datetime` for non-midnight times. A `date` conversion refuses values with a time or zone
+that it cannot keep.
+
+Text that doesn't match becomes empty, and a notice counts those rows and shows the first
+few; undo brings the text back. Digits past the microsecond are rounded to it, and a notice
+counts those. A field with text and none of it a date is refused and stays text. A field with
+a domain, subtypes or contingent values, or one a definition query or display filter would no
+longer read as dates (comparing it with a number), is refused.
 
 #### Editing a standalone table
 

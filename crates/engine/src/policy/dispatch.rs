@@ -160,7 +160,9 @@ impl Session {
             return Err("only Add Data, Load All, Repair/Reload Data, Convert To Annotation, models, scripts, tile archives, service reads, topology and Source File State prepare background work".into());
         }
         let mut params = params.as_object().cloned().ok_or("read parameters must be an object")?;
-        if matches!(command, "layer.loadAll" | "layer.reloadData" | "layer.repairSource" | "labels.convert" | "source.syncState") {
+        if matches!(command, "layer.loadAll" | "layer.reloadData" | "layer.repairSource" | "labels.convert" | "source.syncState")
+            || (command == "edit.convertField" && params.get("table").is_none_or(Value::is_null))
+        {
             let id = self.layer_id(&Value::Object(params.clone()))?;
             params.insert("layer".into(), json!(id));
         }

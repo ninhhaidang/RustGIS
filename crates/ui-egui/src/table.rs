@@ -1,6 +1,8 @@
 //! The attribute table, docked under the map: sort, filter to the selection, select rows (synced
 //! with the map) and edit values in place, a layer's or a standalone table's.
 
+mod dates;
+
 use std::collections::HashMap;
 
 use egui::{Sense, Stroke, Ui, vec2};
@@ -15,6 +17,8 @@ use crate::{RustGisApp, icons};
 #[derive(Default)]
 pub struct TableState {
     pub folder: Option<std::path::PathBuf>,
+    /// A date conversion choice, tied to the rows it previews.
+    dates: Option<dates::Dialog>,
     sort: Option<(usize, bool)>,
     /// The displayed schema that gives a positional sort its meaning, until a command changes it.
     sort_schema: Option<(ViewKey, Vec<Field>)>,
@@ -217,6 +221,7 @@ impl CellEdit {
 /// The attribute table of the layer (`table_layer`) or standalone table (`table_standalone`)
 /// shown, docked under the map: its rows, toolbar and cell editor. Edits run as commands.
 pub fn show(app: &mut RustGisApp, ui: &mut Ui) {
+    dates::show(app, ui.ctx());
     let layer_id = app.session.table_layer;
     // An edit is the layer's or table's it was opened on: the view closed (however) or showing
     // another, it is dropped rather than written later to whatever row has its place.
@@ -566,12 +571,12 @@ pub fn show(app: &mut RustGisApp, ui: &mut Ui) {
             if let Some((i, ty)) = convert
                 && let Some(fd) = ds.fields.get(i)
             {
-                // Refused (a streamed layer, a data design on the field): said, unless the command said so.
-                let mark = app.session.notice_mark();
-                if let Err(e) = app.run("edit.convertField", target(json!({"field": fd.name, "type": ty})))
-                    && app.session.notices_since(mark).is_empty()
-                {
-                    app.session.notify(e, true);
+                let params = target(json!({"field": fd.name, "type": ty}));
+                if is_layer && layer_id.and_then(|id| app.session.map().layer(id)).is_some_and(|l| l.is_streamed()) {
+                    // Use the ordinary command admission refusal before scanning a view sample.
+                    let _ = app.run("edit.convertField", params);
+                } else {
+                    app.table.dates = Some(dates::Dialog::new(key, table_instance, ds.clone(), i, ty, params));
                 }
             }
             if by_other_name {

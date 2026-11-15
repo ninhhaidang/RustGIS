@@ -46,6 +46,7 @@ pub struct ReadAhead {
     work: Option<ReadWork>,
     /// A table write retains its admitted project and table identity across queue waits.
     table: Option<(u64, u32, u64)>,
+    preview: Option<rustgis_data::Dataset>,
 }
 
 impl ReadAhead {
@@ -61,18 +62,37 @@ impl ReadAhead {
         self.work.is_some()
     }
 
+    /// Keeps the rows approved in a UI preview across a queue wait. Ordinary table writes
+    /// still refresh their input when they start.
+    pub fn keep_preview(&mut self, dataset: rustgis_data::Dataset) {
+        self.preview = Some(dataset);
+    }
+
     /// Refreshes a table write's input immediately before its worker starts, so queued writes
     /// see earlier writes' output. The admitted operation, owner and table contents identity stay fixed;
     /// landing still rejects changes made while the worker runs. Other reads keep their input.
     pub fn refresh_table_input(mut self, s: &Session) -> Result<Self, String> {
-        let Some((opened, table, instance)) = self.table else { return Ok(self) };
         self.owner.check()?;
         let CommandOp::Registered { spec, params } = self.op.op() else { return Err("not a registered read command".into()) };
+        if let Some(preview) = &self.preview {
+            let dataset = if let Some(table) = s.named_table(spec, params) {
+                &s.project.table(table).ok_or("no table")?.dataset
+            } else {
+                &s.map().layer(s.layer_id(params)?).ok_or("no layer")?.dataset
+            };
+            if dataset.fields != preview.fields || !dataset.features.shares(&preview.features) {
+                return Err("the data changed after its date preview: choose the format again".into());
+            }
+        }
+        let Some((opened, table, instance)) = self.table else { return Ok(self) };
         if s.opened != opened
             || s.named_table(spec, params) != Some(table)
             || s.project.table(table).is_none_or(|t| t.instance_id() != instance)
         {
             return Err("the table changed while the edit was waiting: run the edit again".into());
+        }
+        if self.preview.is_some() {
+            return Ok(self);
         }
         self.work = super::edit::table_ahead(s, spec.id, params)?;
         Ok(self)
@@ -82,7 +102,7 @@ impl ReadAhead {
     /// [`rustgis_analysis::control`]). A read that fails gives its failure to the command, which
     /// says it as it would have; only a cancelled run (or a bug in a reader) is an error here.
     pub fn run(self, control: &std::sync::Arc<rustgis_analysis::control::Control>) -> Result<Read, String> {
-        let ReadAhead { name, op, owner, source, work, table: _ } = self;
+        let ReadAhead { name, op, owner, source, work, table: _, preview: _ } = self;
         owner.check()?;
         let current = owner.clone();
         let still = std::sync::Arc::new(move || current.check().is_ok());
@@ -187,7 +207,7 @@ pub(crate) fn prepare(s: &mut Session, op: Authorized<CommandOp>, owner: Continu
     let table = super::edit::table_edit_in_background(spec.id)
         .and_then(|_| s.named_table(spec, params))
         .and_then(|id| s.project.table(id).map(|t| (s.opened, id, t.instance_id())));
-    Ok(ReadAhead { name, op, owner, source, work, table })
+    Ok(ReadAhead { name, op, owner, source, work, table, preview: None })
 }
 
 /// Consumes a completed read under its initiating owner, with ordinary command history and undo.

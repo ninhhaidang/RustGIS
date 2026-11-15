@@ -2610,7 +2610,7 @@ impl RustGisApp {
             if let Some(command) = archive {
                 return readjob::run(self, command, params);
             }
-            if params.get("table").is_some_and(|t| !t.is_null())
+            if (id == "edit.convertField" || params.get("table").is_some_and(|t| !t.is_null()))
                 && let Some((command, _)) = rustgis_engine::cmd::edit::table_edit_in_background(id)
             {
                 return readjob::run(self, command, params);

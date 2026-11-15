@@ -45913,6 +45913,12 @@ fn long_commands_stop_when_cancelled_while_they_run() {
         note(command, read.run(&control).map(|_| ()), &control);
     }
 
+    let params = json!({"layer":"Cities", "field":"name", "type":"date", "format":"%m/%d/%Y"});
+    let read = crate::cmd::reads::read_ahead(&mut s, "edit.convertField", &params).unwrap();
+    assert!(read.reads());
+    let control = Control::cancelled_once_started();
+    note("layer date conversion", read.run(&control).map(|_| ()), &control);
+
     // Replacement validation can now scan temporal fields as well as probing geometry.
     let mut dates = rustgis_data::Dataset::new(
         "dates",
@@ -48377,4 +48383,91 @@ fn published_text_import_paths() {
     assert_eq!(s.project.tables.len(), 1);
     assert_eq!(s.project.tables[0].dataset.name, "routes");
     assert!(s.read_ahead.is_none());
+}
+
+/// Explicit patterns share loss notices and atomic refusal on both layer and table targets.
+#[test]
+fn convert_field_uses_explicit_date_formats() {
+    for table in [false, true] {
+        let mut s = world();
+        if table {
+            s.run("layer.addDataText", &json!({"fileName":"dates.csv", "text":"id\n1\n2\n3\n"})).unwrap();
+        }
+        let target = if table { json!({"table":"dates"}) } else { json!({"layer":"Cities"}) };
+        let run = |s: &mut Session, cmd, extra: serde_json::Value| {
+            let mut p = target.clone();
+            p.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            s.run(cmd, &p)
+        };
+        run(&mut s, "edit.addField", json!({"name":"day", "type":"text"})).unwrap();
+        for (row, text) in ["03/05/2026", "04/06/2026", "bad"].iter().enumerate() {
+            run(&mut s, "edit.setValue", json!({"row":row, "field":"day", "value":text})).unwrap();
+        }
+        let ds = |s: &Session| {
+            if table { s.project.tables[0].dataset.clone() } else { s.map().layer_by_name("Cities").unwrap().dataset.clone() }
+        };
+        let before = ds(&s);
+        assert!(
+            run(&mut s, "edit.convertField", json!({"field":"day", "type":"date", "format":"%m/%d/%y"})).unwrap_err().contains("pivotYear")
+        );
+        assert_eq!(ds(&s), before);
+        let mark = s.notice_mark();
+        let out = run(&mut s, "edit.convertField", json!({"field":"day", "type":"date", "format":"%d/%m/%Y"})).unwrap();
+        assert_eq!(out, json!({"converted":2, "null":1}));
+        let after = ds(&s);
+        let fi = after.field_index("day").unwrap();
+        assert_eq!(after.value(0, fi).to_string(), "2026-05-03");
+        assert!(s.notices_since(mark).iter().any(|n| n.text.contains("1 row") && n.text.contains("'bad'")));
+        s.run("edit.undo", &json!({})).unwrap();
+        assert_eq!(ds(&s), before);
+        let mark = s.notice_mark();
+        assert!(run(&mut s, "edit.convertField", json!({"field":"day", "type":"date", "format":"%Y%m%d"})).is_err());
+        assert_eq!(ds(&s), before);
+        assert!(s.notices_since(mark).iter().all(|notice| notice.error));
+        run(&mut s, "edit.setValue", json!({"row":2, "field":"day", "value":""})).unwrap();
+        let mark = s.notice_mark();
+        run(&mut s, "edit.convertField", json!({"field":"day", "type":"date", "format":"%m/%d/%Y"})).unwrap();
+        assert!(s.notices_since(mark).is_empty());
+        assert_eq!(ds(&s).value(0, fi).to_string(), "2026-03-05");
+    }
+}
+
+/// Prepared layer and table conversions preserve undo and refuse intervening row edits. This
+/// also guards against consuming a prepared result as the other target's result type.
+#[test]
+fn convert_field_workers_refuse_stale_rows() {
+    use crate::cmd::reads::{read_ahead, read_land};
+    use rustgis_analysis::control::Control;
+    for table in [false, true] {
+        let mut s = world();
+        if table {
+            s.run("layer.addDataText", &json!({"fileName":"dates.csv", "text":"id\n1\n"})).unwrap();
+        }
+        let target = if table { json!({"table":"dates"}) } else { json!({"layer":"Cities"}) };
+        let params = |extra: serde_json::Value| {
+            let mut p = target.clone();
+            p.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            p
+        };
+        let ds = |s: &Session| {
+            if table { s.project.tables[0].dataset.clone() } else { s.map().layer_by_name("Cities").unwrap().dataset.clone() }
+        };
+        s.run("edit.addField", &params(json!({"name":"day", "type":"text"}))).unwrap();
+        s.run("edit.setValue", &params(json!({"row":0, "field":"day", "value":"03/05/2026"}))).unwrap();
+        let p = params(json!({"field":"day", "type":"date", "format":"%m/%d/%Y"}));
+        let before = ds(&s);
+        let read = read_ahead(&mut s, "edit.convertField", &p).unwrap();
+        assert!(read.reads());
+        let read = read.run(&Control::new()).unwrap();
+        read_land(&mut s, read).unwrap();
+        let converted = ds(&s);
+        assert_eq!(converted.value(0, converted.field_index("day").unwrap()).to_string(), "2026-03-05");
+        s.run("edit.undo", &json!({})).unwrap();
+        assert_eq!(ds(&s), before);
+        let read = read_ahead(&mut s, "edit.convertField", &p).unwrap().run(&Control::new()).unwrap();
+        s.run("edit.setValue", &params(json!({"row":0, "field":"day", "value":"04/06/2026"}))).unwrap();
+        assert!(read_land(&mut s, read).unwrap_err().contains("changed"));
+        let after = ds(&s);
+        assert_eq!(after.value(0, after.field_index("day").unwrap()).to_string(), "04/06/2026");
+    }
 }

@@ -29,7 +29,7 @@ pub fn commands() -> Vec<C> {
             .params(r#"{"layer"?, "table"?: name|id (a standalone table, instead of a layer), "field": string}"#),
         C::new("edit.convertField", "Convert Field to Dates", "Attribute Table", convert_field).roles(&[]).effects(crate::policy::Effects::NONE)
             .when(need_layer_or_table)
-            .params(r#"{"layer"?, "table"?: name|id (a standalone table, instead of a layer), "field": string, "type": "date"|"datetime"}"#),
+            .params(r#"{"layer"?, "table"?: name|id (a standalone table, instead of a layer), "field": string, "type": "date"|"datetime", "format"?: "iso" (default)|strftime numeric pattern|"excel1900"|"excel1904", "pivotYear"?: first year of the 100-year window for %y}"#),
         C::new("edit.calculateField", "Calculate Field", "Attribute Table", calculate_field).roles(&[]).effects(crate::policy::Effects::NONE)
             .when(super::design::need_editable_or_table)
             .params(r#"{"layer"?, "table"?: name|id (a standalone table, instead of a layer: every row), "field": string, "expression": "an expression: fields, 'text', numbers, + - * / % ^ ||, functions (see the Expressions page)"}"#),
@@ -642,18 +642,22 @@ fn add_field(s: &mut Session, p: &Json) -> CmdResult {
 }
 
 /// `edit.convertField`: makes a text field a date or date-time field, reading each value as ISO
-/// 8601 (`2026-03-05`; `2026-03-05T14:30:00+02:00`, or with a space for the `T`). A date field
+/// 8601 by default, or an explicit numeric pattern or spreadsheet epoch (`2026-03-05`;
+/// `2026-03-05T14:30:00+02:00`, or with a space for the `T`). A date field
 /// also takes a date-time at midnight without a zone. Values that aren't dates become null, said
 /// with their count and the first few, and undo brings them back; digits past the microsecond are
 /// rounded off, and said. A field with text and none of it a date is refused and stays text. Refused while a data design
 /// (domain, subtype, contingent values) names the field or a definition query or display filter
-/// would stop reading with it. It runs on the UI thread: it is one parse of the text of a layer
-/// held in memory (a layer read in place is refused, as every `edit.*` command is), measured at
-/// about 60 ms for a million values, with nothing to read or wait for that progress could show.
-/// A standalone table has none of these to refuse it and converts on the desktop worker
-/// ([`table_ahead`]), with progress and Cancel.
+/// would stop reading with it. Layer and table conversions run on the desktop worker
+/// ([`table_ahead`]), with progress and Cancel; a layer read in place is refused as every
+/// `edit.*` command is. The shared rows' first copy cannot be interrupted.
 fn convert_field(s: &mut Session, p: &Json) -> CmdResult {
-    if let Some(result) = land_table_edit(s, p, "edit.convertField") {
+    // A prepared result has one concrete type: do not consume it while probing another type.
+    let landed = match target(s, p)? {
+        Target::Layer(_) => land_layer_dates(s, p),
+        Target::Table(_) => land_table_edit(s, p, "edit.convertField"),
+    };
+    if let Some(result) = landed {
         return result;
     }
     let t = write_target(s, p)?;
@@ -663,6 +667,12 @@ fn convert_field(s: &mut Session, p: &Json) -> CmdResult {
         "datetime" | "date-time" | "timestamp" => FieldType::DateTime,
         other => return Err(format!("'{other}' isn't a type a field converts to: date or datetime")),
     };
+    let format = match p.get("format") {
+        None => "iso",
+        Some(v) => v.as_str().ok_or("format must be a string")?,
+    };
+    let pivot = p.get("pivotYear").map(|v| v.as_i64().ok_or("pivotYear must be an integer")).transpose()?;
+    let reader = rustgis_data::date_format::DateFormat::new(format, pivot)?;
     let (name, Dates { converted, nulled, rounded, examples }) = match t {
         Target::Table(_) => {
             let ds = data_mut(s, t)?;
@@ -671,9 +681,9 @@ fn convert_field(s: &mut Session, p: &Json) -> CmdResult {
             if field.ty != FieldType::Text {
                 return Err(format!("'{name}' is a {} field: only a text field converts to dates", field.ty.label()));
             }
-            (name, to_dates(ds, fi, ty)?)
+            (name, to_dates(ds, fi, ty, &reader)?)
         }
-        Target::Layer(id) => convert_layer_field(s, id, fi, ty)?,
+        Target::Layer(id) => convert_layer_field(s, id, fi, ty, &reader)?,
     };
     let (kind, one) = if ty == FieldType::Date { ("dates", "a date") } else { ("date-times", "a date-time") };
     if nulled > 0 {
@@ -692,8 +702,22 @@ fn convert_field(s: &mut Session, p: &Json) -> CmdResult {
 
 /// Field `fi` of layer `id` as dates ([`to_dates`]) and its name, unless something that reads it
 /// would stop reading it (see [`convert_field`]).
-fn convert_layer_field(s: &mut Session, id: u32, fi: usize, ty: FieldType) -> Result<(String, Dates), String> {
+fn convert_layer_field(
+    s: &mut Session,
+    id: u32,
+    fi: usize,
+    ty: FieldType,
+    reader: &rustgis_data::date_format::DateFormat,
+) -> Result<(String, Dates), String> {
+    let name = check_layer_dates(s, id, fi, ty)?;
     let l = s.map_mut().layer_mut(id).ok_or("no layer")?;
+    Ok((name, to_dates(&mut l.dataset, fi, ty, reader)?))
+}
+
+/// Checks every schema consumer again when prepared dates land, so concurrent design edits
+/// cannot make the new type unreadable. Does not scan or copy feature rows.
+fn check_layer_dates(s: &Session, id: u32, fi: usize, ty: FieldType) -> Result<String, String> {
+    let l = s.map().layer(id).ok_or("no layer")?;
     let field = l.dataset.fields.get(fi).ok_or("no such field")?;
     let name = field.name.clone();
     if field.ty != FieldType::Text {
@@ -750,7 +774,7 @@ fn convert_layer_field(s: &mut Session, id: u32, fi: usize, ty: FieldType) -> Re
     if let Some(r) = l.design.rules.iter().find(|r| rule_reads(r, &l.dataset) && !rule_reads(r, &schema)) {
         return Err(format!("attribute rule '{}' wouldn't read '{name}' as dates: change or remove it first", r.name));
     }
-    Ok((name, to_dates(&mut l.dataset, fi, ty)?))
+    Ok(name)
 }
 
 /// What turning a text field into dates did ([`to_dates`]).
@@ -768,7 +792,7 @@ struct Dates {
 /// Makes text field `fi` of `ds` a `ty` (date or date-time) field: how many values became dates,
 /// how many became null, how many were rounded to the microsecond, and the first few nulled.
 /// A field with text and none of it a date is refused and left as it is.
-fn to_dates(ds: &mut Dataset, fi: usize, ty: FieldType) -> Result<Dates, String> {
+fn to_dates(ds: &mut Dataset, fi: usize, ty: FieldType, reader: &rustgis_data::date_format::DateFormat) -> Result<Dates, String> {
     let name = ds.fields.get(fi).map(|f| f.name.clone()).unwrap_or_default();
     let mut out = Dates { converted: 0, nulled: 0, rounded: 0, examples: Vec::new() };
     let mut dates = Vec::with_capacity(ds.features.len());
@@ -781,8 +805,8 @@ fn to_dates(ds: &mut Dataset, fi: usize, ty: FieldType) -> Result<Dates, String>
         };
         let (date, cut) = match v {
             v if v.asks_null() => (Value::Null, false),
-            Value::Text(t) => Value::parse_stored_counted(t, ty),
-            other => (Value::parse(&other.to_string(), ty), false),
+            Value::Text(t) => reader.parse(t, ty),
+            other => reader.parse(&other.to_string(), ty),
         };
         if date.is_null() && !v.asks_null() {
             out.nulled += 1;
@@ -799,7 +823,8 @@ fn to_dates(ds: &mut Dataset, fi: usize, ty: FieldType) -> Result<Dates, String>
     if out.converted == 0 && out.nulled > 0 {
         let one = if ty == FieldType::Date { "a date" } else { "a date-time" };
         return Err(format!(
-            "'{name}' stays text: none of its values is {one} (ISO 8601, like 2026-03-05), first {}",
+            "'{name}' stays text: none of its values is {one} ({}), first {}",
+            reader.description(),
             out.examples.first().map_or("", String::as_str)
         ));
     }
@@ -1021,7 +1046,9 @@ pub(crate) fn script_table(
 /// table and editing flag. Cancel is checked between rows and before/after the handler. The
 /// shared row storage's first copy and one expression evaluation cannot be interrupted.
 pub(crate) fn table_ahead(s: &Session, command: &str, p: &Json) -> Result<Option<super::reads::ReadWork>, String> {
-    let Target::Table(i) = target(s, p)? else { return Ok(None) };
+    let Target::Table(i) = target(s, p)? else {
+        return if command == "edit.convertField" { layer_dates_ahead(s, p).map(Some) } else { Ok(None) };
+    };
     let &(_, name, handler) = TABLE_EDITS.iter().find(|(id, ..)| *id == command).ok_or("not a table edit")?;
     let table = s.project.tables.get(i).ok_or("no such table")?.clone();
     let (opened, id, input, p, editing) = (s.opened, table.id, table.dataset.clone(), p.clone(), s.map().editing.settings.enabled);
@@ -1040,6 +1067,74 @@ pub(crate) fn table_ahead(s: &Session, command: &str, p: &Json) -> Result<Option
         })();
         TableEdit { opened, id, input, result }
     })))
+}
+
+/// A layer conversion installs only its rows and fields, after checking its identity and schema.
+struct LayerDates {
+    opened: u64,
+    id: u32,
+    instance: u64,
+    input: Dataset,
+    result: Result<(Dataset, Json, Vec<crate::Notice>), String>,
+}
+
+/// Captures shared rows only; the worker uses an isolated table session. Layer schema
+/// consumers are checked before capture and again at landing, without cloning edit archives.
+fn layer_dates_ahead(s: &Session, p: &Json) -> Result<super::reads::ReadWork, String> {
+    let id = s.layer_id(p)?;
+    let layer = s.map().layer(id).ok_or("no layer")?;
+    let fi = field_of(s, Target::Layer(id), ps(p, "field").ok_or("field is required")?)?;
+    let ty = match ps(p, "type").unwrap_or("").to_ascii_lowercase().as_str() {
+        "date" => FieldType::Date,
+        "datetime" | "date-time" | "timestamp" => FieldType::DateTime,
+        _ => return Err("type must be date or datetime".into()),
+    };
+    check_layer_dates(s, id, fi, ty)?;
+    let (opened, instance, input) = (s.opened, layer.instance_id(), layer.dataset.clone());
+    let (dataset, mut p) = (input.clone(), p.clone());
+    Ok(super::reads::ahead("Convert Field", "edit.convertField".into(), move || {
+        let result = (|| {
+            rustgis_data::progress::begin(0);
+            rustgis_data::progress::check().map_err(|e| e.to_string())?;
+            let mut copy = Session::new(crate::Project::default());
+            let table = copy.project.put_table(dataset);
+            p.as_object_mut().ok_or("parameters must be an object")?.remove("layer");
+            p["table"] = json!(table);
+            let answer = convert_field(&mut copy, &p)?;
+            rustgis_data::progress::check().map_err(|e| e.to_string())?;
+            let output = copy.project.table(table).ok_or("no table")?.dataset.clone();
+            Ok((output, answer, copy.notices))
+        })();
+        LayerDates { opened, id, instance, input, result }
+    }))
+}
+
+/// Rejects stale worker output and rechecks current design constraints before installing one
+/// conversion as one undo step. Changes to unrelated map properties remain in place.
+fn land_layer_dates(s: &mut Session, p: &Json) -> Option<CmdResult> {
+    let ahead = super::reads::take::<LayerDates>(s, "edit.convertField")?;
+    Some((|| {
+        let id = s.layer_id(p)?;
+        let layer = s.map().layer(id).ok_or("no layer")?;
+        if s.opened != ahead.opened
+            || id != ahead.id
+            || layer.instance_id() != ahead.instance
+            || layer.dataset.fields != ahead.input.fields
+            || !layer.dataset.features.shares(&ahead.input.features)
+        {
+            return Err("the layer changed while it was converted: run the conversion again".into());
+        }
+        let (output, answer, notices) = ahead.result?;
+        let fi = field_of(s, Target::Layer(id), ps(p, "field").ok_or("field is required")?)?;
+        let ty = output.fields.get(fi).ok_or("no field")?.ty;
+        check_layer_dates(s, id, fi, ty)?;
+        let layer = s.map_mut().layer_mut(id).ok_or("no layer")?;
+        (layer.dataset.fields, layer.dataset.features) = (output.fields, output.features);
+        for notice in notices {
+            s.notify(notice.text, notice.error);
+        }
+        Ok(answer)
+    })())
 }
 
 /// Installs only this command's prepared table edit, rejecting changed input instead of doing
