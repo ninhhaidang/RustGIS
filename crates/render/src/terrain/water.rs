@@ -438,6 +438,52 @@ mod tests {
     }
 
     #[test]
+    fn a_blocks_base_over_elevation_tiles_goes_below_its_waters_level() {
+        // #1914: over elevation tiles the block's base is read at a coarse zoom of its own, and a
+        // lake inside the box counts at its level there too, as the ground is drawn at it. Every
+        // tile here failed (drawn at 0); a lake at −50 m covers part of the box.
+        let mut read = std::collections::HashMap::new();
+        for z in 0..=2u8 {
+            for x in 0..(1u32 << z) {
+                for y in 0..(1u32 << z) {
+                    read.insert(super::super::TileId { z, x, y }, None);
+                }
+            }
+        }
+        let url = "https://example.invalid/{z}/{x}/{y}.png";
+        let mut g = Ground {
+            heights: Heights::Tiles {
+                url: url.into(),
+                encoding: rustgis_map::view::TerrainEncoding::Terrarium,
+                zoom: 2,
+                read: std::cell::RefCell::new(read),
+                pending: std::cell::RefCell::new(false),
+                waiting: std::cell::RefCell::new(std::collections::HashSet::new()),
+            },
+            exaggeration: 2.0,
+            body: 1.0,
+            water: None,
+        };
+        let mut m = Map::new("Map");
+        m.view.terrain = Some(rustgis_map::view::Terrain {
+            source: rustgis_map::view::TerrainSource::Tiles { url: url.into(), encoding: rustgis_map::view::TerrainEncoding::Terrarium },
+            exaggeration: 2.0,
+            block: Some(rustgis_map::view::TerrainBlock {
+                extent: Some([0.0, 0.0, 5000.0, 5000.0]),
+                depth: Some(300.0),
+                walls: rustgis_map::view::BLOCK_WALLS,
+            }),
+            water: None,
+        });
+        let dry = g.block(&m).expect("a block");
+        assert!((dry.base + 600.0).abs() < 1e-6, "{dry:?}");
+        g.water = Some(Arc::new(Water::build(vec![(vec![square(1000.0, 1000.0, 2000.0)], Some(-50.0))], &g, MAX_SHORE_SAMPLES)));
+        assert_eq!(g.height(Coord::new(2000.0, 2000.0)), Some(-100.0));
+        let wet = g.block(&m).expect("a block");
+        assert!((wet.base + 700.0).abs() < 1e-6, "the base below the lake's level: {wet:?}");
+    }
+
+    #[test]
     fn water_lies_flat_at_its_shores_lowest_height() {
         let at = |lon, lat| lonlat_to_merc(Coord::new(lon, lat));
         let (mut m, camera) = hill_with_water(None);

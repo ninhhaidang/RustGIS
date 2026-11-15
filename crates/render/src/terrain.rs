@@ -336,8 +336,15 @@ impl Ground {
         let coarse = if coarse.is_finite() { coarse.clamp(0.0, f64::from(MAX_TILE_ZOOM)) as u8 } else { 0 };
         let sample = |m: Coord| match &self.heights {
             Heights::Raster { .. } => self.height(m),
+            // A water body's level first, as `height` takes it, so the ground drawn in a lake
+            // counts at its level.
             Heights::Tiles { url, encoding, zoom, read, pending, waiting } => {
-                let h = tile_height(url, *encoding, coarse.min(*zoom), read, pending, waiting, m)? * self.exaggeration;
+                let raw = self
+                    .water
+                    .as_ref()
+                    .and_then(|w| w.level(m))
+                    .or_else(|| tile_height(url, *encoding, coarse.min(*zoom), read, pending, waiting, m))?;
+                let h = raw * self.exaggeration;
                 h.is_finite().then_some(h)
             }
         };
