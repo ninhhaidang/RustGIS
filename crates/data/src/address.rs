@@ -24,9 +24,15 @@ fn hex(bytes: &[u8]) -> Option<u32> {
     bytes.iter().try_fold(0, |n, b| Some(n * 16 + char::from(*b).to_digit(16)?))
 }
 
+#[derive(Clone, Copy)]
+enum DecodeMode {
+    Form,
+    LiteralPlus,
+}
+
 /// One byte-preserving pass. Lossy UTF-8 is applied only after all passes, so percent-encoded
 /// bytes and literal Unicode take the same route. Invalid escapes remain literal.
-fn decode_pass(bytes: &[u8]) -> Vec<u8> {
+fn decode_pass(bytes: &[u8], mode: DecodeMode) -> Vec<u8> {
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while let Some(&b) = bytes.get(i) {
@@ -42,7 +48,7 @@ fn decode_pass(bytes: &[u8]) -> Vec<u8> {
             out.extend_from_slice(c.encode_utf8(&mut [0; 4]).as_bytes());
             i += 6;
         } else {
-            out.push(if b == b'+' { b' ' } else { b });
+            out.push(if b == b'+' && matches!(mode, DecodeMode::Form) { b' ' } else { b });
             i += 1;
         }
     }
@@ -50,19 +56,19 @@ fn decode_pass(bytes: &[u8]) -> Vec<u8> {
 }
 
 /// Repeated decoding stops at a fixed point; a fifth changing pass is unresolved.
-fn decoded_name(raw: &str) -> Option<Vec<u8>> {
+fn decoded_name(raw: &str, mode: DecodeMode) -> Option<Vec<u8>> {
     if raw.len() > MAX_NAME_BYTES {
         return None;
     }
     let mut name = raw.as_bytes().to_vec();
     for _ in 0..MAX_DECODE_PASSES {
-        let next = decode_pass(&name);
+        let next = decode_pass(&name, mode);
         if next == name {
             return Some(name);
         }
         name = next;
     }
-    (decode_pass(&name) == name).then_some(name)
+    (decode_pass(&name, mode) == name).then_some(name)
 }
 
 /// Canonical comparison spelling; invalid UTF-8 contributes no ASCII name characters.
@@ -72,7 +78,62 @@ fn letters(bytes: &[u8]) -> String {
 
 /// ASCII letters and digits after bounded decoding, lower-cased; `None` means Unresolved.
 pub fn normalized_name(raw: &str) -> Option<String> {
-    decoded_name(raw).map(|s| letters(&s))
+    decoded_name(raw, DecodeMode::Form).map(|s| letters(&s))
+}
+
+/// Whether a raw parameter name matches `name`, case-insensitively, as written or after any of
+/// its bounded decoding passes (a configured name is literal text, so an intermediate spelling
+/// can be it). Unlike generic form-name classification, literal and decoded `+` remain `+` on
+/// every pass. A name with no escape is compared as written, however long; an escaped one that
+/// is too long or still decodes after the budget is withheld rather than risk keeping a key.
+pub fn query_name_matches(raw: &str, name: &str) -> bool {
+    if raw.eq_ignore_ascii_case(name) {
+        return true;
+    }
+    if !raw.bytes().any(|b| b == b'%' || b == b'\\') {
+        return false;
+    }
+    if raw.len() > MAX_NAME_BYTES {
+        return true;
+    }
+    let mut current = raw.as_bytes().to_vec();
+    for _ in 0..MAX_DECODE_PASSES {
+        let next = decode_pass(&current, DecodeMode::LiteralPlus);
+        if next == current {
+            return false;
+        }
+        if next.eq_ignore_ascii_case(name.as_bytes()) {
+            return true;
+        }
+        current = next;
+    }
+    decode_pass(&current, DecodeMode::LiteralPlus) != current
+}
+
+/// The query parameter names (ASCII, case-insensitive, punctuation preserved) saved web-service
+/// connections send their API key in, at most [`MAX_LOGIN_NAMES`]: names only, never a key. A query that carries
+/// one is read as holding a credential, though the name alone doesn't say so (`?layer=…` isn't
+/// one until a login names it). Held for this run; saved connections register theirs when they
+/// are read, added or changed.
+static LOGIN_NAMES: std::sync::RwLock<std::collections::BTreeSet<String>> = std::sync::RwLock::new(std::collections::BTreeSet::new());
+
+/// How many names [`note_login_query_name`] holds.
+pub const MAX_LOGIN_NAMES: usize = 256;
+
+/// Remembers that `name` is where a web-service login sends its key (see [`LOGIN_NAMES`]):
+/// whether it is held. A name without a letter or digit, or a new one once [`MAX_LOGIN_NAMES`]
+/// are held, is not, and the caller refuses the login rather than send a key that addresses
+/// wouldn't be redacted of.
+pub fn note_login_query_name(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    if !name.bytes().any(|b| b.is_ascii_alphanumeric()) {
+        return false;
+    }
+    let mut names = LOGIN_NAMES.write().unwrap_or_else(|e| e.into_inner());
+    if names.contains(&name) {
+        return true;
+    }
+    names.len() < MAX_LOGIN_NAMES && names.insert(name)
 }
 
 /// Context is collected from decoded query names, including legacy semicolon-separated pairs.
@@ -81,18 +142,26 @@ pub struct QueryNames {
     sig: bool,
     sv: bool,
     state: bool,
+    /// Names of this query that a web-service login sends its key in.
+    login: Vec<String>,
 }
 
 impl QueryNames {
     /// Collects context flags without decoding values or retaining query payloads.
     pub fn of(query: &str) -> Self {
         let mut names = Self::default();
+        let login = LOGIN_NAMES.read().unwrap_or_else(|e| e.into_inner());
         for pair in query.split(['&', ';']) {
-            if let Some(decoded) = decoded_name(pair_name(pair)) {
-                let k = letters(decoded.split(|b| *b == b'=').next().unwrap_or(&decoded));
+            if let Some(decoded) = decoded_name(pair_name(pair), DecodeMode::Form) {
+                let before = decoded.split(|b| *b == b'=').next().unwrap_or(&decoded);
+                let k = letters(before);
                 names.sig |= k == "sig";
                 names.sv |= k == "sv";
                 names.state |= k == "state";
+                let exact = String::from_utf8_lossy(before).to_ascii_lowercase();
+                if login.contains(&exact) && !names.login.contains(&exact) {
+                    names.login.push(exact);
+                }
             }
         }
         names
@@ -130,9 +199,15 @@ fn credential(k: &str, query: &QueryNames) -> bool {
 /// Classifies a raw name. An encoded equals sign is checked both as a name boundary and as
 /// part of the whole name; values after a literal equals sign are never decoded here.
 pub fn name_class(raw: &str, query: &QueryNames) -> NameClass {
-    let Some(decoded) = decoded_name(raw) else { return NameClass::Unresolved };
+    let Some(decoded) = decoded_name(raw, DecodeMode::Form) else { return NameClass::Unresolved };
     let before = decoded.split(|b| *b == b'=').next().unwrap_or(&decoded);
-    if credential(&letters(&decoded), query) || credential(&letters(before), query) { NameClass::Credential } else { NameClass::Plain }
+    let custom =
+        query.login.iter().any(|name| name.as_bytes().eq_ignore_ascii_case(&decoded) || name.as_bytes().eq_ignore_ascii_case(before));
+    if custom || credential(&letters(&decoded), query) || credential(&letters(before), query) {
+        NameClass::Credential
+    } else {
+        NameClass::Plain
+    }
 }
 
 /// True for recognized credentials and unresolved names; no query context is assumed.
@@ -145,7 +220,7 @@ pub fn log_sensitive(raw: &str) -> bool {
     if secret_key(raw) {
         return true;
     }
-    let Some(decoded) = decoded_name(raw) else { return true };
+    let Some(decoded) = decoded_name(raw, DecodeMode::Form) else { return true };
     let name = String::from_utf8_lossy(&decoded);
     let k = letters(&decoded);
     if k.contains("body")
@@ -203,7 +278,7 @@ pub fn log_sensitive(raw: &str) -> bool {
 /// Forwarding options compare their complete decoded spelling, including punctuation. The
 /// broader credential normalization must not make an unknown name into an allowlisted one.
 fn option_name(raw: &str) -> Option<String> {
-    decoded_name(raw).map(|s| String::from_utf8_lossy(&s).to_ascii_lowercase())
+    decoded_name(raw, DecodeMode::Form).map(|s| String::from_utf8_lossy(&s).to_ascii_lowercase())
 }
 
 /// Only a literal equals sign separates a raw name from its value.
@@ -534,6 +609,78 @@ fn inherit_reviewed(from: &str, to: &str, relation: Relation, skip: &[&str], rev
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_query_names_preserve_plus_and_other_punctuation_through_decoding() {
+        for raw in [
+            "zq+custom757",
+            "ZQ+CUSTOM757",
+            "zq%2Bcustom757",
+            "ZQ%2bcustom757",
+            "zq%252Bcustom757",
+            "zq%25252Bcustom757",
+            "zq%2525252Bcustom757",
+            r"zq\u002Bcustom757",
+            r"zq%255Cu002Bcustom757",
+        ] {
+            assert!(query_name_matches(raw, "zq+custom757"), "{raw}");
+            assert!(!query_name_matches(raw, "zq custom757"), "{raw}");
+            assert!(!query_name_matches(raw, "zq-custom757"), "{raw}");
+        }
+        for (raw, name) in [
+            ("zq%2Dcustom757", "ZQ-custom757"),
+            ("zq%2Ecustom757", "zq.custom757"),
+            ("zq%5Fcustom757", "zq_custom757"),
+            ("zq%252Bcustom757%25", "zq+custom757%"),
+            ("zq%2Bcustom757%zz", "zq+custom757%zz"),
+        ] {
+            assert!(query_name_matches(raw, name), "{raw}");
+            assert!(!query_name_matches(raw, "zqcustom757"), "{raw}");
+        }
+        for raw in ["zq custom757", "zq%20custom757", "zq%2520custom757", "zq%2custom757", "zq%zzcustom757"] {
+            assert!(!query_name_matches(raw, "zq+custom757"), "{raw}");
+        }
+    }
+
+    #[test]
+    fn explicit_query_name_decoding_stays_bounded_and_fails_closed() {
+        // Four changing passes resolve; a fifth must withhold even a nonmatching name.
+        assert!(!query_name_matches("zq%2525252Bcustom757", "other"));
+        assert!(query_name_matches("zq%252525252Bcustom757", "other"));
+        assert!(!query_name_matches(&"a".repeat(MAX_NAME_BYTES), "other"));
+        assert!(!query_name_matches(&"a".repeat(MAX_NAME_BYTES + 1), "other"), "a long escape-free name is only itself");
+        assert!(query_name_matches(&format!("%41{}", "a".repeat(MAX_NAME_BYTES)), "other"), "a long escaped name is withheld");
+        // A configured literal name can be an intermediate spelling of the address's key.
+        assert!(query_name_matches("zq%2561custom757", "zq%61custom757"));
+        assert!(query_name_matches("zq%2561custom757", "zqacustom757"));
+        assert!(!query_name_matches("zq%2561custom757", "zq%62custom757"));
+    }
+
+    #[test]
+    fn generic_name_decoding_still_uses_form_plus_semantics() {
+        for raw in ["zq+custom757", "zq%2Bcustom757", "zq%252Bcustom757", r"zq\u002Bcustom757"] {
+            assert_eq!(option_name(raw).as_deref(), Some("zq custom757"), "{raw}");
+        }
+    }
+
+    /// Once the run holds as many login parameter names as it can, a new one is refused (so its
+    /// login is), never silently left unredacted; a held one is still accepted.
+    #[test]
+    fn login_query_names_beyond_the_limit_are_refused_not_dropped() {
+        assert!(note_login_query_name("zq_fill_0"));
+        assert!(!note_login_query_name("_-.~"));
+        for i in 0..MAX_LOGIN_NAMES {
+            note_login_query_name(&format!("zqfill{i}"));
+        }
+        assert!(!note_login_query_name("zq-refused-name"));
+        let mut refused = "https://h.invalid/p?zqrefusedname=RGSYNTH_key".to_string();
+        redact_query(&mut refused);
+        assert!(refused.contains("RGSYNTH_key"), "a refused name is not marked: {refused}");
+        assert!(note_login_query_name("ZQFill0"), "a held name is still accepted");
+        let mut held = "https://h.invalid/p?zqfill0=RGSYNTH_key&a=1".to_string();
+        redact_query(&mut held);
+        assert_eq!(held, "https://h.invalid/p?a=1");
+    }
 
     #[test]
     fn canonical_names_remove_encoded_and_unresolved_pairs_without_touching_values() {

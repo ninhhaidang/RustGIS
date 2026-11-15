@@ -1044,15 +1044,31 @@ previous one. CLI and Python connections last only for the run.
 #### Web-service logins
 
 A WMS, WMTS, WFS, WCS, OGC API, ArcGIS REST, CSW or STAC connection can log in: its form's
-**Login** picks **None**, **Basic authentication** (a user name and a password) or **API key in a
-header** (the header's name, such as `X-API-Key`, and the key). The connection keeps only the method,
-the user name and the header name, never the password or key.
+**Login** picks **None**, **Basic authentication** (a user name and a password), **API key in a
+header** (the header's name, such as `X-API-Key`, and the key) or **API key in the query** (the
+parameter's name, such as `api_key`, and the key). The connection keeps only the method, the user
+name and the header or parameter name, never the password or key.
 The password or key goes to `connection.login {"id":"c1","password":"…"}` (basic) or
 `{"id":"c1","apiKey":"…"}` and lasts only for this session. Web-service logins never access the
-computer's credential store. Editing the origin, method, user or header name ends the login (a
-connection's kind doesn't change: make a new one); renaming the connection or changing its path
-at the same origin does not. **Log Out**
+computer's credential store. Editing the origin, method, user or header or parameter name ends
+the login (a connection's kind doesn't change: make a new one); renaming the connection or
+changing its path at the same origin does not. **Log Out**
 (`connection.logout`) removes the session login. Log in again when a new session needs it.
+
+An API key in the query suits services such as Planet's basemaps, whose address is
+`https://api.planet.com/basemaps/v1/mosaics/wmts?api_key=…`: save the connection as
+`connection.new {"kind":"wmts","address":"https://api.planet.com/basemaps/v1/mosaics/wmts","auth":"query","keyName":"api_key"}`,
+then log in with the key. The parameter, percent-encoded, is added to each request to the
+connection's origin (capabilities, tiles, feature pages and refreshes), replacing a parameter of
+the same name (whatever its case or escaping) that an address already holds, so it is sent once.
+The key is in no address that is saved, shown or recorded: a key typed into the address is left
+out of the saved connection. When the connection does not already use a query login, the result
+of `connection.new` or `connection.edit` offers up to four plain parameter names as
+`strippedParameters`, never their values; the notice explains how to use them for a query login.
+A parameter that a query login names is also
+left out of any other address that carries it, saved or recorded, for as long as RustGIS runs.
+A run holds up to 256 different parameter names; a connection or login with yet another one is
+refused (restart RustGIS, or reuse a name) rather than sent without that protection.
 
 Creating a login requires secure random numbers: the operating system's generator on desktop,
 or the browser's `crypto.getRandomValues` in the web app. If that source is missing or fails,

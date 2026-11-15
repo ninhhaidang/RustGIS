@@ -870,8 +870,9 @@ async fn post_json(
                 }
                 let target = logins::inherit(url, &prepared.url);
                 let login = logins::apply(&target).map_err(str::to_string)?;
-                let request = prepared.url.as_str();
-                check_destination(request, address::Reach::Local)?;
+                check_destination(prepared.url.as_str(), address::Reach::Local)?;
+                // Only the request carries the login (an API key in the query); messages keep the plain address.
+                let request = login.as_ref().map_or(prepared.url.as_str(), |applied| applied.url.as_str());
                 let err = |e: wasm_bindgen::JsValue| {
                     if login.is_some() { "the browser couldn't process the authenticated request".to_string() } else { format!("{e:?}") }
                 };

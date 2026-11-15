@@ -9,12 +9,16 @@ use std::{
 };
 
 use base64::Engine;
+use rustgis_data::address::query_name_matches;
 use rustgis_data::secrets::Secret;
 
-/// Maximum header name length, in bytes.
+/// Maximum header or query parameter name length, in bytes.
 pub const MAX_NAME: usize = 64;
 /// Maximum encoded credential header length, in bytes (including `Basic `).
 pub const MAX_VALUE: usize = 4096;
+/// A query login whose parameter name can't be held for redaction this run.
+pub const TOO_MANY_QUERY_NAMES: &str =
+    "Too many different API-key query parameter names are in use this run: reuse one, or restart RustGIS.";
 
 pub use rustgis_data::login_address::origin;
 
@@ -43,6 +47,13 @@ pub fn valid_header_name(name: &str) -> bool {
     !blocked.iter().any(|s| name.eq_ignore_ascii_case(s))
         && !name.get(..6).is_some_and(|s| s.eq_ignore_ascii_case("proxy-"))
         && !name.get(..4).is_some_and(|s| s.eq_ignore_ascii_case("sec-"))
+}
+
+/// A query parameter name of at most [`MAX_NAME`] unreserved ASCII characters (letters, digits
+/// and `-_.~`), at least one a letter or digit, so it is the same text raw, percent-encoded and
+/// in a form, and redaction can recognize it.
+pub fn valid_query_name(name: &str) -> bool {
+    name.len() <= MAX_NAME && name.bytes().all(unreserved) && name.bytes().any(|b| b.is_ascii_alphanumeric())
 }
 
 /// A nonempty credential of at most [`MAX_VALUE`] bytes, without control characters.
@@ -74,6 +85,8 @@ pub fn valid_basic(user: &str, password: &str) -> bool {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Method {
     Header(String),
+    /// The credential is the value of this query parameter, added to each request to the origin.
+    Query(String),
 }
 
 // Deliberately no Debug: neither credentials nor their derived redaction patterns are printable.
@@ -149,9 +162,12 @@ fn activate_with_random(
     if origin.starts_with("http://") && !insecure {
         return Err("An HTTP login requires explicit permission to send credentials insecurely.");
     }
-    let Method::Header(name) = &method;
-    if !valid_header_name(name) {
-        return Err("The login header name is not allowed.");
+    let valid_name = match &method {
+        Method::Header(name) => valid_header_name(name),
+        Method::Query(name) => valid_query_name(name),
+    };
+    if !valid_name {
+        return Err("The login header or query parameter name is not allowed.");
     }
     if !valid_value(value) {
         return Err("The login credential must be nonempty, within the size limit, and contain no controls.");
@@ -178,6 +194,12 @@ fn activate_with_random(
     for _ in 0..4 {
         let binding = random_token(&mut random)?;
         if !entries.contains_key(&binding) {
+            // Only a successful activation reserves a query name for address redaction.
+            if let Method::Query(name) = &method
+                && !rustgis_data::address::note_login_query_name(name)
+            {
+                return Err(TOO_MANY_QUERY_NAMES);
+            }
             entries.insert(
                 binding.clone(),
                 Entry { owner: owner.to_string(), origin: origin.to_string(), method, value: Secret::new(value), redactions },
@@ -276,8 +298,68 @@ pub fn apply(address: &str) -> Result<Option<Applied>, &'static str> {
     if entry.origin != b.origin || origin(b.url).as_deref() != Some(b.origin) {
         return Err("The service login does not cover this address.");
     }
-    let Method::Header(name) = &entry.method;
-    Ok(Some(Applied { url: b.url.to_string(), header: Some((name.clone(), entry.value.expose().to_string())) }))
+    let applied = match &entry.method {
+        Method::Header(name) => Applied { url: b.url.to_string(), header: Some((name.clone(), entry.value.expose().to_string())) },
+        Method::Query(name) => Applied { url: set_query_parameter(b.url, name, Some(entry.value.expose())), header: None },
+    };
+    Ok(Some(applied))
+}
+
+/// `url` without the query parameter `name`, however its name is cased or escaped. A key given
+/// in an address is a secret the connection never keeps.
+pub fn without_query_parameter(url: &str, name: &str) -> String {
+    set_query_parameter(url, name, None)
+}
+
+/// `url` with the query parameter `name` set to `value`, percent-encoded, or left out (`None`). A
+/// parameter of that name already in the address (its case aside, and however its name is
+/// escaped) is replaced: the login's value wins and is sent once. The fragment stays after the
+/// query. Other pairs keep their text; empty ones go.
+fn set_query_parameter(url: &str, name: &str, value: Option<&str>) -> String {
+    let (address, fragment) = url.split_once('#').map_or((url, None), |(address, fragment)| (address, Some(fragment)));
+    let (head, query) = address.split_once('?').unwrap_or((address, ""));
+    let mut kept = String::with_capacity(query.len() + name.len() + value.map_or(0, str::len) + 2);
+    let mut matched = false;
+    for pair in query.split('&') {
+        // A legacy `;` separator may hide the parameter inside an `&` pair.
+        let parts: Vec<&str> = pair
+            .split(';')
+            .filter(|part| {
+                let hit = query_name_matches(part.split('=').next().unwrap_or_default(), name);
+                matched |= hit;
+                !part.is_empty() && !hit
+            })
+            .collect();
+        if !parts.is_empty() {
+            if !kept.is_empty() {
+                kept.push('&');
+            }
+            kept.push_str(&parts.join(";"));
+        }
+    }
+    // Nothing to take out: the address is returned as it was.
+    if value.is_none() && !matched {
+        return url.to_string();
+    }
+    if let Some(value) = value {
+        if !kept.is_empty() {
+            kept.push('&');
+        }
+        kept.push_str(name);
+        kept.push('=');
+        append_percent_encoded(&mut kept, value);
+    }
+    let mut result = String::with_capacity(url.len() + kept.len());
+    result.push_str(head);
+    if !kept.is_empty() {
+        result.push('?');
+        result.push_str(&kept);
+    }
+    if let Some(fragment) = fragment {
+        result.push('#');
+        result.push_str(fragment);
+    }
+    result
 }
 
 fn unreserved(b: u8) -> bool {
@@ -537,6 +619,35 @@ mod tests {
     }
 
     #[test]
+    fn failed_query_activation_does_not_reserve_its_parameter_name() {
+        let _turn = crate::cache::turn();
+        let origin = "https://failed-query-activation.example";
+        let live = activate_with_random(origin, "live-query-test", Method::Header("X-Key".into()), "live-key", false, |bytes| {
+            bytes.fill(0x51);
+            Ok(())
+        })
+        .unwrap();
+        for (name, fail_entropy) in [("zq_failed_entropy757", true), ("zq_failed_collision757", false)] {
+            let result = activate_with_random(origin, name, Method::Query(name.into()), "failed-query-key", false, |bytes| {
+                bytes.fill(0x51);
+                if fail_entropy { Err("entropy unavailable") } else { Ok(()) }
+            });
+            assert!(result.is_err());
+            let original = format!("{origin}/tiles?{name}=public");
+            let mut address = original.clone();
+            rustgis_data::address::redact_query(&mut address);
+            assert_eq!(address, original, "failed activation registered {name}");
+        }
+        assert!(deactivate(&live));
+        let name = "zq_successful_activation757";
+        let live = activate(origin, "successful-query-test", Method::Query(name.into()), "successful-query-key", false).unwrap();
+        let mut address = format!("{origin}/tiles?{name}=private");
+        rustgis_data::address::redact_query(&mut address);
+        assert_eq!(address, format!("{origin}/tiles"));
+        assert!(deactivate(&live));
+    }
+
+    #[test]
     fn collisions_retry_without_overwriting_and_exhaust_after_four_attempts() {
         let _turn = crate::cache::turn();
         let target = "https://collision-login.example";
@@ -640,5 +751,113 @@ mod tests {
         assert!(deactivate(&binding));
         let message = scrub(&format!("failed: {url}"));
         assert!(!message.contains(rustgis_data::login_address::PREFIX) && !message.contains(&binding));
+    }
+
+    #[test]
+    fn query_names_are_plain_unreserved_text() {
+        for name in ["a", "AZaz09-_.~", &"a".repeat(MAX_NAME)] {
+            assert!(valid_query_name(name), "{name}");
+        }
+        for name in ["", "_", "-.~", "a b", "a=b", "a&b", "a;b", "a#b", "a?b", "a/b", "a%41", "a+b", "é", "a\n", &"a".repeat(MAX_NAME + 1)]
+        {
+            assert!(!valid_query_name(name), "{name:?}");
+            assert!(activate("https://query-name.example", "name", Method::Query(name.into()), "value", false).is_err(), "{name:?}");
+        }
+    }
+
+    #[test]
+    fn query_key_is_encoded_replaces_its_parameter_once_and_keeps_the_fragment() {
+        let _turn = crate::cache::turn();
+        let target = "https://query-login.example";
+        let binding = activate(target, "query", Method::Query("API_Key".into()), "query value/+?&=é", false).unwrap();
+        let value = "query%20value%2F%2B%3F%26%3D%C3%A9";
+        for (url, expected) in [
+            ("tiles", "tiles?API_Key=VALUE"),
+            ("tiles#fragment?ignored", "tiles?API_Key=VALUE#fragment?ignored"),
+            ("tiles?x=1#f", "tiles?x=1&API_Key=VALUE#f"),
+            ("tiles?", "tiles?API_Key=VALUE"),
+            ("tiles?x=1&", "tiles?x=1&API_Key=VALUE"),
+            ("tiles?api_KEY=old", "tiles?API_Key=VALUE"),
+            ("tiles?x=1&%61PI%5fKey=old&y=2&API_Key", "tiles?x=1&y=2&API_Key=VALUE"),
+            ("tiles?%2561PI_key=old", "tiles?API_Key=VALUE"),
+            ("tiles?api_key=a&api_key=b", "tiles?API_Key=VALUE"),
+            ("tiles?a=1;api_key=old;b=2&c=3", "tiles?a=1;b=2&c=3&API_Key=VALUE"),
+            ("tiles?api_key_other=1&x_API_Key=2", "tiles?api_key_other=1&x_API_Key=2&API_Key=VALUE"),
+        ] {
+            let bound = bind(&binding, &format!("{target}/{url}")).unwrap();
+            let applied = apply(&bound).unwrap().unwrap();
+            assert_eq!(applied.url, format!("{target}/{}", expected.replace("VALUE", value)), "{url}");
+            assert!(applied.header.is_none());
+            // The bound address, the one kept and logged, still has no key.
+            assert!(!bound.contains("query%20value") && !bound.contains("query value"));
+        }
+        // Only the origin's own addresses carry it.
+        for url in ["http://query-login.example/tile", "https://query-login.example:444/tile", "https://other.example/tile"] {
+            assert!(bind(&binding, url).is_err());
+            assert!(apply(url).unwrap().is_none());
+        }
+        assert!(deactivate(&binding));
+    }
+
+    #[test]
+    fn query_key_is_scrubbed_raw_and_encoded_and_never_printed() {
+        let _turn = crate::cache::turn();
+        let target = "https://query-scrub.example";
+        let secret = "scrub query/+é key";
+        let binding = activate(target, "query-scrub", Method::Query("scrub_param".into()), secret, false).unwrap();
+        let encoded = percent_encode(secret);
+        assert_eq!(
+            scrub(&format!("echoed {secret} and {encoded} and {}", encoded.to_ascii_lowercase())),
+            "echoed [redacted] and [redacted] and [redacted]"
+        );
+        let url = bind(&binding, &format!("{target}/tile")).unwrap();
+        let applied = apply(&url).unwrap().unwrap();
+        assert!(applied.url.ends_with(&format!("scrub_param={encoded}")));
+        assert_eq!(format!("{applied:?}"), "Applied(<redacted>)");
+        let failure = scrub_error(&format!("{}: refused ({})", applied.url, secret));
+        assert!(!failure.contains(secret) && !failure.contains(&encoded), "{failure}");
+        assert!(deactivate(&binding));
+        assert_eq!(scrub("scrub_param"), "scrub_param");
+    }
+
+    #[test]
+    fn without_query_parameter_drops_every_spelling_and_changes_nothing_else() {
+        for (url, expected) in [
+            ("https://h/p?api_key=1", "https://h/p"),
+            ("https://h/p?a=1&API_KEY=1&b=2#f", "https://h/p?a=1&b=2#f"),
+            ("https://h/p?%41pi_key=1&a=1", "https://h/p?a=1"),
+            ("https://h/p?%252541pi_key=1&a=1", "https://h/p?a=1"),
+            ("https://h/p?a=1;Api_Key=1&b=2", "https://h/p?a=1&b=2"),
+            ("https://h/p?api_key_2=1&x_api_key", "https://h/p?api_key_2=1&x_api_key"),
+            // Nothing to take out: the text is returned as it was, empty pairs and all.
+            ("https://h/p?", "https://h/p?"),
+            ("https://h/p?a=1&&b=2&", "https://h/p?a=1&&b=2&"),
+            ("https://h/p#f", "https://h/p#f"),
+        ] {
+            assert_eq!(without_query_parameter(url, "api_key"), expected, "{url}");
+        }
+    }
+
+    #[test]
+    fn junk_addresses_and_names_never_panic_when_the_key_is_set() {
+        for url in ["", "?", "#", "?#", "&&&", "?=&=", "?%", "?%4", "?%zz=1", "?é=1&%c3=2", "?;;;", "?a=%ff%fe", "https://h?a#b?c#d"] {
+            let _ = set_query_parameter(url, "api_key", Some("v"));
+            let _ = without_query_parameter(url, "api_key");
+        }
+        assert!(!query_name_matches("%", "a") && !query_name_matches("%4", "a") && !query_name_matches("%zz", "a"));
+        assert!(query_name_matches("%41", "a") && query_name_matches("A", "a") && !query_name_matches("ab", "a"));
+    }
+
+    #[test]
+    fn a_login_parameter_name_marks_addresses_that_carry_it_as_keys() {
+        let _turn = crate::cache::turn();
+        let mut plain = "https://marker.example/wmts?zqmarkerlogin9=hidden&layer=a".to_string();
+        rustgis_data::address::redact_query(&mut plain);
+        assert_eq!(plain, "https://marker.example/wmts?zqmarkerlogin9=hidden&layer=a");
+        let binding = activate("https://marker.example", "marker", Method::Query("ZQ_Marker-Login9".into()), "marker-key", false).unwrap();
+        let mut marked = "https://marker.example/wmts?zq_%254darker-login9=hidden&zqmarkerlogin9=dataset&layer=a".to_string();
+        rustgis_data::address::redact_query(&mut marked);
+        assert_eq!(marked, "https://marker.example/wmts?zqmarkerlogin9=dataset&layer=a");
+        assert!(deactivate(&binding));
     }
 }

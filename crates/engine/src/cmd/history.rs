@@ -142,6 +142,9 @@ pub(crate) fn redacted(v: &Value) -> Value {
         Value::String(t) => Value::String(redacted_parameter(t)),
         Value::Array(a) => Value::Array(a.iter().map(redacted).collect()),
         Value::Object(o) => {
+            // A rejected definition never registers its name, but its submitted URL can still
+            // hold a key. Use this object's explicit login context without changing the registry.
+            let query_name = query_login_name(o);
             let beside_address = |k: &str| o.iter().any(|(sibling, v)| sibling != k && crate::project_log::address_context(sibling, v, 0));
             let secret = |k: &str, v: &Value| {
                 secret_key(k)
@@ -150,12 +153,36 @@ pub(crate) fn redacted(v: &Value) -> Value {
             };
             Value::Object(
                 o.iter()
-                    .map(|(k, v)| (redacted_parameter(k), if secret(k, v) { Value::String(String::new()) } else { redacted(v) }))
+                    .map(|(k, v)| {
+                        let value = if secret(k, v) {
+                            Value::String(String::new())
+                        } else if k == "address"
+                            && let (Some(name), Some(address)) = (query_name, v.as_str())
+                        {
+                            let address = crate::render::rustgis_tiles::logins::without_query_parameter(address, name);
+                            Value::String(redacted_parameter(&address))
+                        } else {
+                            redacted(v)
+                        };
+                        (redacted_parameter(k), value)
+                    })
                     .collect(),
             )
         }
         other => other.clone(),
     }
+}
+
+/// The query parameter an object may name as its login: `keyName` beside `auth: query`, or
+/// beside no `auth` at all (`connection.edit` keeps the saved method when it is left out),
+/// whether or not the definition was accepted: its own address may hold a pasted key either way.
+/// Another explicit method (`basic`, `header`, `none`) names no query parameter.
+pub(crate) fn query_login_name(o: &serde_json::Map<String, Value>) -> Option<&str> {
+    let auth = o.get("auth").and_then(Value::as_str).map(str::trim);
+    if auth.is_some_and(|auth| !auth.eq_ignore_ascii_case("query")) {
+        return None;
+    }
+    o.get("keyName").and_then(Value::as_str).map(str::trim).filter(|name| !name.is_empty())
 }
 
 /// Replay parameters are data, not diagnostic payloads: preserve innocent markup and public

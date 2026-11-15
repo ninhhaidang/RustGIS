@@ -148,6 +148,7 @@ fn object(id: &str, value: &Value, depth: usize, config_depth: usize, registered
         return invalid(value, report);
     }
     let mut replacement = None;
+    let query_name = crate::cmd::history::query_login_name(obj);
     let mut unchecked = false;
     for (key, v) in obj {
         unchecked |= !matches!(durable::public_address(key), Kept::Unchanged);
@@ -206,7 +207,18 @@ fn object(id: &str, value: &Value, depth: usize, config_depth: usize, registered
                     Value::Array(a) => a.iter().any(|v| !v.is_string() && suspicious(v)),
                     _ => false,
                 };
-                address(v, report)
+                match query_name
+                    .zip(v.as_str())
+                    .map(|(name, s)| crate::render::rustgis_tiles::logins::without_query_parameter(s, name))
+                    .filter(|stripped| Some(stripped.as_str()) != v.as_str())
+                {
+                    // The same object names its login parameter, registered or not.
+                    Some(stripped) => {
+                        report.withheld = report.withheld.saturating_add(1);
+                        Some(address(&Value::String(stripped.clone()), report).unwrap_or(Value::String(stripped)))
+                    }
+                    None => address(v, report),
+                }
             }
         } else if registered && (role == Some(Role::Configuration) || CONFIG.contains(&k.as_str())) && v.is_object() {
             object("", v, depth, config_depth + 1, true, report)

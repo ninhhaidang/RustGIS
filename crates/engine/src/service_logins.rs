@@ -1,10 +1,11 @@
 //! Logins of saved web-service connections (WMS, WMTS, WFS, WCS, OGC API, ArcGIS REST, CSW,
-//! STAC): HTTP basic authentication or an API key in a header.
+//! STAC): HTTP basic authentication, an API key in a header, or an API key in a query parameter.
 //!
-//! The connection keeps the method, user name and header name, never the password or key.
-//! A secret given to `connection.login` lasts only for this session, held by connection id in
-//! [`crate::connections::DatabaseLogins`]. Its runtime identity also binds it to the canonical
-//! origin, method, user and header, so changing a definition cannot send an old secret elsewhere.
+//! The connection keeps the method, user name and header or parameter name, never the password
+//! or key. A secret given to `connection.login` lasts only for this session, held by connection
+//! id in [`crate::connections::DatabaseLogins`]. Its runtime identity also binds it to the
+//! canonical origin, method, user and header or parameter, so changing a definition cannot send
+//! an old secret elsewhere.
 //!
 //! Each session/connection login has an opaque request binding. Only requests carrying that
 //! binding use its credential, and only at the connection's exact origin. Bindings distinguish
@@ -33,7 +34,7 @@ pub const BAD_SECRET: &str = "The password or key must be at most 4096 bytes, wi
 /// An API key a header can't carry the same way everywhere (the browser sends Latin-1 only).
 pub const HEADER_ASCII: &str = "An API key sent in a header must use plain ASCII characters.";
 /// A login asked of a connection with nothing to log in with this session.
-pub const REQUIRED: &str = "This connection's login is required: give its password (basic) or apiKey (header).";
+pub const REQUIRED: &str = "This connection's login is required: give its password (basic) or apiKey (header, query).";
 /// A login for a definition that isn't saved.
 pub const UNSAVED: &str = "Save the connection first: a login belongs to a saved connection.";
 /// An address a login can't go to.
@@ -67,11 +68,12 @@ pub fn is_service(c: &Connection) -> bool {
     SERVICE_KINDS.contains(&c.kind.as_str())
 }
 
-/// The secret a login of `c` sends, as its header method sends it.
+/// The secret a login of `c` sends, as its method sends it: in a header, or as a query parameter.
 fn method(c: &Connection, secret: &str) -> Option<(logins::Method, String)> {
     match c.auth.as_str() {
         "basic" => Some((logins::Method::Header("Authorization".into()), logins::basic(&c.user, secret))),
         "header" => Some((logins::Method::Header(c.key_name.clone()), secret.to_string())),
+        "query" => Some((logins::Method::Query(c.key_name.clone()), secret.to_string())),
         _ => None,
     }
 }

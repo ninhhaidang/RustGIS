@@ -244,17 +244,31 @@ fn embedded_redacted(v: &Value, depth: usize) -> Value {
             Value::String(sql_secrets_removed(&t))
         }
         Value::Array(a) if depth < 8 => Value::Array(a.iter().map(|x| embedded_redacted(x, depth + 1)).collect()),
-        Value::Object(o) if depth < 8 => Value::Object(
-            o.iter()
-                .map(|(k, x)| {
-                    // Preserve History's plain-key refinement; the log-only fields share diagnostics'
-                    // canonical list.
-                    let sensitive =
-                        rustgis_data::address::normalized_name(k).as_deref() != Some("key") && rustgis_data::address::log_sensitive(k);
-                    (k.clone(), if sensitive { Value::String(String::new()) } else { embedded_redacted(x, depth + 1) })
-                })
-                .collect(),
-        ),
+        Value::Object(o) if depth < 8 => {
+            // The same-object login names the key parameter that "auth" would otherwise hide.
+            let query_name = crate::cmd::history::query_login_name(o);
+            Value::Object(
+                o.iter()
+                    .map(|(k, x)| {
+                        // Preserve History's plain-key refinement; the log-only fields share diagnostics'
+                        // canonical list.
+                        let sensitive =
+                            rustgis_data::address::normalized_name(k).as_deref() != Some("key") && rustgis_data::address::log_sensitive(k);
+                        let value = if sensitive {
+                            Value::String(String::new())
+                        } else if k == "address"
+                            && let (Some(name), Some(address)) = (query_name, x.as_str())
+                        {
+                            let address = crate::render::rustgis_tiles::logins::without_query_parameter(address, name);
+                            embedded_redacted(&Value::String(address), depth + 1)
+                        } else {
+                            embedded_redacted(x, depth + 1)
+                        };
+                        (k.clone(), value)
+                    })
+                    .collect(),
+            )
+        }
         // Past eight levels, left out, as `clip` does: JSON read from a text wasn't clipped, and
         // what is that deep isn't looked at.
         Value::Array(_) | Value::Object(_) => Value::String("…".into()),
