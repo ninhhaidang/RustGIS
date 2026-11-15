@@ -159,6 +159,7 @@ fn save_edits(s: &mut Session, p: &Value) -> CmdResult {
         // The versions saved over, while an undo step can bring them back.
         s.saved_over.retain(rustgis_map::source::Versions::held_elsewhere);
         s.saved_over.push(edit.versions);
+        let written = s.notice_mark();
         s.notify(
             format!("{name}: saved to {table}: {} new, {} changed, {} deleted", saved.inserted.len(), saved.updated, saved.deleted),
             false,
@@ -169,6 +170,7 @@ fn save_edits(s: &mut Session, p: &Value) -> CmdResult {
         for note in postgis::saved_dates_notes(&fields, &saved, &super::saved_target(&name, &table)) {
             s.notify(note, false);
         }
+        s.retain_written_notices(written);
         Ok(json!({
             "saved": true,
             "inserted": saved.inserted.len(),

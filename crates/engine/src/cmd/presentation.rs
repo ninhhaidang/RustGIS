@@ -134,16 +134,19 @@ pub fn commands() -> Vec<C> {
         .when(need_presentation)
         .params(r#"{"presentation"?, "page": index}"#),
         C::new("presentation.save", "Presentation File", "Publish › Save As", |s, p| {
+            let written = s.notice_mark();
             let path = ps(p, "path").ok_or("path is required")?;
             let i = index(s, p)?;
             let bytes = presentation_file(s, i)?;
             rustgis_data::io::write_atomic(Path::new(path), &bytes).map_err(|e| format!("{path}: {e}"))?;
+            s.retain_written_notices(written);
             Ok(json!({"path": path}))
         }).inputs(object_inputs).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
         .view()
         .when(need_presentation)
         .params(r#"{"presentation"?, "path": "*.rgispres"}"#),
         C::new("presentation.export", "Export Presentation", "Publish › Output", |s, p| {
+            let written = s.notice_mark();
             let path = ps(p, "path").ok_or("path is required")?.to_string();
             let i = index(s, p)?;
             let dpi = f(p, "dpi").unwrap_or(120.0).clamp(48.0, 300.0);
@@ -159,6 +162,7 @@ pub fn commands() -> Vec<C> {
             };
             let (bytes, pages) = export_bytes(s, i, format, dpi)?;
             rustgis_data::io::write_atomic(Path::new(&path), &bytes).map_err(|e| format!("{path}: {e}"))?;
+            s.retain_written_notices(written);
             Ok(json!({"path": path, "pages": pages, "bytes": bytes.len()}))
         }).inputs(export_inputs).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
         .view()

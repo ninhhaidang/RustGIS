@@ -2502,7 +2502,11 @@ fn file_delivered(s: &mut Session, p: &Value) -> CmdResult {
         report.file_delivered(id, error);
     }
     for message in &file.record.messages {
-        s.notify(message.clone(), !file.record.ok);
+        if file.record.ok {
+            s.notify_written(message.clone(), false);
+        } else {
+            s.notify(message.clone(), true);
+        }
     }
     let out = json!({"file": file.file_name, "delivered": file.record.ok, "messages": file.record.messages});
     s.push_gp_record(file.record);
@@ -2649,6 +2653,9 @@ fn apply_with(
         }
         Ok(r) => r,
     };
+    // File outputs reach the message publication below only after the native atomic write.
+    // Pending browser downloads return above that point and are retained on delivery instead.
+    let wrote_file = matches!(&result.output, Output::File { .. });
     let out = match result.output {
         Output::File { file_name, bytes } => {
             #[cfg(test)]
@@ -2761,7 +2768,11 @@ fn apply_with(
     let messages = result.messages.clone();
     if !opts.quiet {
         for m in &messages {
-            s.notify(m.clone(), false);
+            if wrote_file {
+                s.notify_written(m.clone(), false);
+            } else {
+                s.notify(m.clone(), false);
+            }
         }
     }
     let ids: Vec<u32> = match (out.get("layer"), out.get("layers")) {

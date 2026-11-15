@@ -334,6 +334,7 @@ pub(crate) fn export_reach(input: &super::InputContext<'_>, p: &Value) -> crate:
 
 /// Renders every step (or those from `from` to `to`) and writes them as a GIF or a zip of PNGs.
 fn export(s: &mut Session, p: &Value) -> CmdResult {
+    let written = s.notice_mark();
     // Files are written by the desktop app; the browser's go through its services.
     if cfg!(target_arch = "wasm32") {
         return Err("exporting time animations needs the desktop app".into());
@@ -365,6 +366,7 @@ fn export(s: &mut Session, p: &Value) -> CmdResult {
     super::zarr::follow_time_now(s);
     let bytes = made.map_err(|_| "exporting the time steps failed unexpectedly".to_string())??;
     rustgis_data::io::write_atomic(std::path::Path::new(&path), &bytes).map_err(|e| format!("{path}: {e}"))?;
+    s.retain_written_notices(written);
     Ok(json!({"path": path, "frames": steps.len(), "bytes": bytes.len()}))
 }
 

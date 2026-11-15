@@ -15,6 +15,10 @@ mod review_boundaries;
 #[path = "tests/table_statistics.rs"]
 mod table_statistics;
 
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "tests/write_notices.rs"]
+mod write_notices;
+
 #[path = "tests/task_reentry.rs"]
 mod task_reentry;
 

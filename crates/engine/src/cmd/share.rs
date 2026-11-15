@@ -102,12 +102,9 @@ pub fn gpkg_table(p: &Value, ext: &str) -> Result<GpkgTable, String> {
     Ok(GpkgTable { mode, name })
 }
 
-/// Puts the table a GeoPackage export wrote, and whether it replaced one, in its result `out`;
-/// an export into an existing GeoPackage also says so, what went with a replaced table, and
-/// which views and triggers elsewhere name it. Layers read in place from a replaced table read
-/// it again.
-fn report_table(s: &mut Session, path: &str, gpkg: &GpkgTable, default: &str, table: Option<GpkgWritten>, out: &mut Value) {
-    let Some(table) = table else { return };
+/// File-only GeoPackage diagnostics, available even if delivery cannot refresh live layers.
+fn table_write_notes(path: &str, gpkg: &GpkgTable, default: &str, table: &GpkgWritten) -> Vec<String> {
+    let mut notes = Vec::new();
     // A new file's table is said only when it isn't the name asked for, or by default the
     // layer's (a reserved name is prefixed, control characters and edge spaces dropped); one
     // added to or replaced in a file is always named below.
@@ -124,11 +121,9 @@ fn report_table(s: &mut Session, path: &str, gpkg: &GpkgTable, default: &str, ta
                 table.table
             )
         };
-        s.notify(note, false);
+        notes.push(note);
     }
     if gpkg.mode != GpkgMode::NewFile {
-        let (reread, failed) =
-            if table.replaced { super::gpkg::reset_sources(s, Path::new(path), &table.table, true) } else { (0, Vec::new()) };
         let note = if table.replaced {
             format!(
                 "{path}: replaced its table {}, dropping the old table's indexes, triggers, column descriptions, metadata links and extension records",
@@ -137,7 +132,29 @@ fn report_table(s: &mut Session, path: &str, gpkg: &GpkgTable, default: &str, ta
         } else {
             format!("{path}: added the table {}", table.table)
         };
-        s.notify(note, false);
+        notes.push(note);
+        if !table.dependents.is_empty() {
+            let n = table.dependents.len();
+            notes.push(format!(
+                "{path}: {n} view{} or trigger{} naming {} may no longer work if a column it uses is gone: {}",
+                if n == 1 { "" } else { "s" },
+                if n == 1 { "" } else { "s" },
+                table.table,
+                table.dependents.join(", ")
+            ));
+        }
+    }
+    notes
+}
+
+fn report_table(s: &mut Session, path: &str, gpkg: &GpkgTable, default: &str, table: Option<GpkgWritten>, out: &mut Value) {
+    let Some(table) = table else { return };
+    for note in table_write_notes(path, gpkg, default, &table) {
+        s.notify_written(note, false);
+    }
+    if gpkg.mode != GpkgMode::NewFile {
+        let (reread, failed) =
+            if table.replaced { super::gpkg::reset_sources(s, Path::new(path), &table.table, true) } else { (0, Vec::new()) };
         if reread > 0 {
             let layers = if reread == 1 { "layer reads" } else { "layers read" };
             s.notify(format!("{path}: {reread} {layers} {} in place, now the new table", table.table), false);
@@ -162,19 +179,6 @@ fn report_table(s: &mut Session, path: &str, gpkg: &GpkgTable, default: &str, ta
                 failed.join(", ")
             );
             s.notify(note, true);
-        }
-        if !table.dependents.is_empty() {
-            let n = table.dependents.len();
-            s.notify(
-                format!(
-                    "{path}: {n} view{} or trigger{} naming {} may no longer work if a column it uses is gone: {}",
-                    if n == 1 { "" } else { "s" },
-                    if n == 1 { "" } else { "s" },
-                    table.table,
-                    table.dependents.join(", ")
-                ),
-                false,
-            );
         }
     }
     out["table"] = json!(table.table);
@@ -800,6 +804,10 @@ fn write_layer(l: &rustgis_map::Layer, path: &str, asked: Option<Crs>, gpkg: Gpk
     let written_path = Some(path.to_string());
     let path = path.to_string();
     let default = ds.name.clone();
+    let mut refused_notes = table.as_ref().map(|t| table_write_notes(&path, &gpkg, &default, t)).unwrap_or_default();
+    if let Some(note) = null_numbers_note(&path, null_numbers) {
+        refused_notes.push(note.english());
+    }
     let then: Option<super::exports::Then> = if table.is_some() || null_numbers > 0 {
         Some(Box::new(move |s: &mut Session, out: &mut Value| {
             notify_null_numbers(s, &path, null_numbers);
@@ -813,6 +821,8 @@ fn write_layer(l: &rustgis_map::Layer, path: &str, asked: Option<Crs>, gpkg: Gpk
     };
     Ok(Wrote {
         answer,
+        diagnostics: Vec::new(),
+        refused_notes,
         notes: said,
         written_path,
         then,
@@ -826,15 +836,20 @@ fn write_layer(l: &rustgis_map::Layer, path: &str, asked: Option<Crs>, gpkg: Gpk
 /// Reports numeric loss after the file has been written, keeping the output path literal in
 /// translated interface text. A clean export emits no loss notice.
 pub(crate) fn notify_null_numbers(s: &mut Session, path: &str, count: usize) {
-    if count > 0 {
-        s.notify_text(
-            crate::notice_text::NoticeText::format(
-                "{path}: {count} attribute value(s) that aren't finite numbers (NaN or infinity) were written as null",
-                [("path", path.to_string().into()), ("count", count.to_string().into())],
-            ),
-            false,
-        );
+    if let Some(note) = null_numbers_note(path, count) {
+        let mark = s.notice_mark();
+        s.notify_text(note, false);
+        s.retain_written_notices(mark);
     }
+}
+
+pub(crate) fn null_numbers_note(path: &str, count: usize) -> Option<crate::notice_text::NoticeText> {
+    (count > 0).then(|| {
+        crate::notice_text::NoticeText::format(
+            "{path}: {count} attribute value(s) that aren't finite numbers (NaN or infinity) were written as null",
+            [("path", path.to_string().into()), ("count", count.to_string().into())],
+        )
+    })
 }
 
 /// Whether `a` and `b` are the same existing file.

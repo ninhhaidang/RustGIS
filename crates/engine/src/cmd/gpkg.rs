@@ -303,6 +303,7 @@ fn save_edits(s: &mut Session, p: &Value) -> CmdResult {
         s.saved_over.retain(rustgis_map::source::Versions::held_elsewhere);
         s.saved_over.push(edit.versions);
         reset_sources(s, path, table, false);
+        let written = s.notice_mark();
         s.notify(
             format!(
                 "{name}: saved to {table} in {}: {} new, {} changed, {} deleted",
@@ -328,6 +329,7 @@ fn save_edits(s: &mut Session, p: &Value) -> CmdResult {
         if let Some(note) = rustgis_data::io::utc_dates_note(&fields, &utc_dates, &super::saved_target(&name, table)) {
             s.notify(note, false);
         }
+        s.retain_written_notices(written);
         Ok(json!({"saved": true, "inserted": saved.inserted.len(), "updated": saved.updated, "deleted": saved.deleted,
             "unchanged": saved.unchanged, "keys": saved.inserted.iter().map(|(_, k)| k.cast_signed()).collect::<Vec<_>>(), "skippedFields": saved.skipped_fields}))
     }

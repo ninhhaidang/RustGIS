@@ -122,7 +122,7 @@ fn export_log(s: &mut Session, p: &Value) -> CmdResult {
     rustgis_data::io::write_atomic_with(&path, |w| s.log.write(w, format == "csv")).map_err(|e| format!("{}: {e}", path.display()))?;
     // Entries dropped past the log's limits aren't in the file: said.
     let dropped = s.log.dropped_said().map(|d| format!("; not in it: {d}")).unwrap_or_default();
-    s.notify(format!("Exported the session log ({n} entries) to {}{dropped}", path.display()), false);
+    s.notify_written(format!("Exported the session log ({n} entries) to {}{dropped}", path.display()), false);
     Ok(json!({"path": path.display().to_string(), "entries": n, "format": format}))
 }
 
@@ -537,8 +537,10 @@ fn write(s: &mut Session, path: PathBuf) -> CmdResult {
     let stripped = report.layer_addresses();
     s.mark_saved();
     s.edit_counts.clear();
-    s.notify(format!("Saved {}", path.display()), false);
+    let written = s.notice_mark();
+    s.notify_written(format!("Saved {}", path.display()), false);
     crate::durable::notify(s, &report);
+    s.retain_written_notices(written);
     s.path = Some(destination);
     Ok(json!({"path": path.display().to_string(), "stripped": stripped}))
 }

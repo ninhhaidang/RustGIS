@@ -166,9 +166,11 @@ pub fn commands() -> Vec<C> {
         }).roles(&[]).effects(crate::policy::Effects::NONE)
         .params(r#"{"index"?: number (the last one when omitted), "all"?: bool}"#),
         C::new("animation.export", "Export Animation", "View › Animation", |s, p| {
+            let written = s.notice_mark();
             let path = ps(p, "path").ok_or("path is required (a .zip of PNG frames)")?.to_string();
             let bytes = animation_zip(s, p)?;
             rustgis_data::io::write_atomic(std::path::Path::new(&path), &bytes).map_err(|e| format!("{path}: {e}"))?;
+            s.retain_written_notices(written);
             Ok(json!({"path": path, "bytes": bytes.len()}))
         }).inputs(map_render_inputs).roles(&[]).effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
         .view()
@@ -243,6 +245,7 @@ pub fn commands() -> Vec<C> {
         C::new("offline.download", "Download Map", "Data › Offline", offline_download).roles(&[]).effects(crate::policy::Effects::NONE)
             .params(r#"{"name"?: string, "extent"?: [minLon, minLat, maxLon, maxLat] (the map view when omitted)}"#),
         C::new("offline.package", "Package for the Field", "Data › Offline", |s, p| {
+            let written = s.notice_mark();
             let path = super::ps(p, "path").ok_or("path is required")?.to_string();
             super::field::not_the_project(s, std::path::Path::new(&path))?;
             let had = s.project.offline_areas.len();
@@ -251,6 +254,7 @@ pub fn commands() -> Vec<C> {
                 super::field::forget_new_areas(s, had);
                 return Err(format!("{path}: {e}"));
             }
+            s.retain_written_notices(written);
             Ok(super::field::packaged(&path, &area, bytes.len()))
         })
         .roles(&[])

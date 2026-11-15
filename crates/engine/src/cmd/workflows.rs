@@ -985,6 +985,7 @@ fn save_model(s: &mut Session, p: &Value) -> CmdResult {
 
 /// A model as a `*.model.json` file: written to `path`, or its text returned.
 fn export_model(s: &mut Session, p: &Value) -> CmdResult {
+    let written = s.notice_mark();
     let (name, g, _) = model_graph(s, p)?;
     let (text, report) =
         crate::durable::output_owned(g, |g| serde_json::to_string_pretty(&crate::model::to_file(&name, g)).map_err(|e| e.to_string()))?;
@@ -994,6 +995,7 @@ fn export_model(s: &mut Session, p: &Value) -> CmdResult {
         Some(path) => {
             rustgis_data::io::write_atomic(std::path::Path::new(path), text.as_bytes()).map_err(|e| format!("{path}: {e}"))?;
             note_passed_graph(s, p);
+            s.retain_written_notices(written);
             Ok(json!({"model": name, "path": path}))
         }
         None => {
@@ -1933,6 +1935,7 @@ pub(crate) fn convert_work(s: &Session, p: &Value) -> Result<super::exports::Wor
         let bytes = std::fs::metadata(&path).map_err(|e| format!("{path}: {e}"))?.len();
         notes.push(format!("Exported {path}"));
         let target = path.clone();
+        let refused_notes = super::share::null_numbers_note(&target, null_numbers).map(|n| n.english()).into_iter().collect();
         let then = (null_numbers > 0).then(|| {
             Box::new(move |s: &mut Session, _: &mut Value| {
                 super::share::notify_null_numbers(s, &target, null_numbers);
@@ -1942,6 +1945,8 @@ pub(crate) fn convert_work(s: &Session, p: &Value) -> Result<super::exports::Wor
         Ok(super::exports::Wrote {
             answer: json!({"path": path, "bytes": bytes}),
             notes,
+            diagnostics: Vec::new(),
+            refused_notes,
             written_path: Some(path),
             then,
             #[cfg(not(target_arch = "wasm32"))]

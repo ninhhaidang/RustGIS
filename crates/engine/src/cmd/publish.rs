@@ -74,6 +74,8 @@ pub(crate) fn publish_work(s: &Session, p: &Value) -> Result<super::exports::Wor
                 }
                 return Ok(Wrote {
                     answer: serde_json::json!({"layer": id, "path": path, "published": false, "features": features}),
+                    diagnostics: Vec::new(),
+                    refused_notes: Vec::new(),
                     notes: vec![format!("{name} has no edits its file lacks, so {path} wasn't written")],
                     written_path: None,
                     then: None,
@@ -111,6 +113,7 @@ pub(crate) fn publish_work(s: &Session, p: &Value) -> Result<super::exports::Wor
             let new = rustgis_data::sync::Synced { files: published.files, rows: read };
             let (said, written_path) = (path.clone(), Some(path.clone()));
             let then: Then = Box::new(move |s: &mut Session, _: &mut Value| {
+                let mark = s.notice_mark();
                 s.remember_source_write(instance, said.clone(), new.clone());
                 // The record follows the file: the layer read from it takes the record of what
                 // was written, unless it was read again or its record changed meanwhile.
@@ -136,11 +139,14 @@ pub(crate) fn publish_work(s: &Session, p: &Value) -> Result<super::exports::Wor
                     }
                     _ => s.warn(format!("{said} was written, but {name} changed while it was: add the file again to compare them")),
                 }
-                s.notify(format!("Published {name} to {said}"), false);
+                s.notify_written(format!("Published {name} to {said}"), false);
+                s.retain_written_notices(mark);
                 Ok(())
             });
             Ok(Wrote {
                 answer: serde_json::json!({"layer": id, "path": path, "published": true, "features": published.features}),
+                diagnostics: Vec::new(),
+                refused_notes: Vec::new(),
                 notes: published.notes,
                 written_path,
                 then: Some(then),

@@ -1076,11 +1076,13 @@ pub(crate) fn names_place(v: &Value, keys: &[&str], depth: usize) -> bool {
 /// are extruded to a height, lines are polylines (OBJ only), points are small cubes. Coordinates
 /// are metres east and north of the layer's south-west corner.
 fn export_3d(s: &mut Session, p: &Value) -> CmdResult {
+    let written = s.notice_mark();
     let path = ps(p, "path").ok_or("path is required")?.to_string();
     if path.to_ascii_lowercase().ends_with(".stl") {
         let (bytes, report) = stl_bytes(s, p)?;
         rustgis_data::io::write_atomic(Path::new(&path), &bytes).map_err(|e| format!("{path}: {e}"))?;
-        s.notify(format!("Exported {path}"), false);
+        s.retain_written_notices(written);
+        s.notify_written(format!("Exported {path}"), false);
         return Ok(json!({
             "path": path, "bytes": bytes.len(), "triangles": report.triangles,
             "skippedDegenerate": report.degenerate, "linesDropped": report.lines, "capsFanned": report.fanned,
@@ -1088,7 +1090,8 @@ fn export_3d(s: &mut Session, p: &Value) -> CmdResult {
     }
     let obj = obj_text(s, p)?;
     rustgis_data::io::write_atomic(Path::new(&path), obj.as_bytes()).map_err(|e| format!("{path}: {e}"))?;
-    s.notify(format!("Exported {path}"), false);
+    s.retain_written_notices(written);
+    s.notify_written(format!("Exported {path}"), false);
     Ok(json!({"path": path, "bytes": obj.len()}))
 }
 
@@ -1736,9 +1739,11 @@ pub fn item_bytes(s: &mut Session, kind: &str, p: &Value) -> Result<(String, Vec
 
 /// Writes an item to `path`.
 pub(crate) fn save_item(s: &mut Session, kind: &str, p: &Value) -> CmdResult {
+    let written = s.notice_mark();
     let path = ps(p, "path").ok_or("path is required")?.to_string();
     let (_, bytes) = item_bytes(s, kind, p)?;
     rustgis_data::io::write_atomic(Path::new(&path), &bytes).map_err(|e| format!("{path}: {e}"))?;
+    s.retain_written_notices(written);
     Ok(json!({"path": path, "bytes": bytes.len()}))
 }
 

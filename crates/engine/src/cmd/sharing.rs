@@ -345,6 +345,7 @@ fn target(input: &impl super::InputSource, p: &Value, name: &str, ext: &str) -> 
 }
 
 fn share(s: &mut Session, p: &Value, kind: &str) -> CmdResult {
+    let written = s.notice_mark();
     let ((name, bytes, source), chart_note) = if kind == "linkChart" { link_chart_item(s, p)? } else { (share_bytes(s, kind, p)?, None) };
     let ext = KINDS.iter().find(|k| k.0 == kind).map_or("bin", |k| k.1);
     let path = target(s, p, &name, ext)?;
@@ -353,6 +354,7 @@ fn share(s: &mut Session, p: &Value, kind: &str) -> CmdResult {
         return Err(format!("{path} already holds the shared {} '{}'; choose another name or path", other.kind, other.name));
     }
     rustgis_data::io::write_atomic(Path::new(&path), &bytes).map_err(|e| format!("{path}: {e}"))?;
+    s.retain_written_notices(written);
     let t = now();
     let shared = &mut s.project.shared;
     let id = match shared.iter_mut().find(|i| i.path == path) {
@@ -379,7 +381,8 @@ fn share(s: &mut Session, p: &Value, kind: &str) -> CmdResult {
             id
         }
     };
-    s.notify(format!("Shared {name} to {path}"), false);
+    let written = s.notice_mark();
+    s.notify_written(format!("Shared {name} to {path}"), false);
     // After it, so the status bar, which shows the last notice, keeps saying it.
     note_label_classes(s, kind, p);
     note_export(s, kind, p, &path);
@@ -387,6 +390,7 @@ fn share(s: &mut Session, p: &Value, kind: &str) -> CmdResult {
     if let Some(note) = chart_note {
         s.notify(note, false);
     }
+    s.retain_written_notices(written);
     Ok(json!({"item": id, "path": path, "bytes": bytes.len()}))
 }
 
