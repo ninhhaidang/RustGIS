@@ -2,12 +2,16 @@
 # Builds the iOS app (#1902) on macOS with Xcode's command-line tools: target/ios/RustGIS.app.
 #
 #   apps/rustgis-mobile/build-ios.sh [--debug] [simulator|device]     (default: simulator)
+#   apps/rustgis-mobile/build-ios.sh --sign-only
 #
 # simulator: for the iOS Simulator on an Apple-silicon Mac (aarch64-apple-ios-sim), signed ad hoc.
 # device:    for iPhones and iPads (aarch64-apple-ios), signed with IOS_SIGN_IDENTITY and the
 #            provisioning profile IOS_PROFILE (a .mobileprovision for org.rustgis.mobile), and
 #            packed as target/ios/RustGIS.ipa for TestFlight. Without them the app is built
-#            unsigned, with no .ipa, and the script exits 1.
+#            unsigned, with no .ipa, and the script exits 1; IOS_UNSIGNED=1 asks for that build
+#            and exits 0. --sign-only then signs that bundle and packs the .ipa, building
+#            nothing: CI builds with no signing identity on the machine (every crate's build
+#            script runs during the build) and signs in a step of its own.
 #
 # Needs: Xcode (xcrun, codesign, plutil) and the Rust iOS targets (see README.md). There is no
 # Xcode project: cargo builds the executable, and this script makes the bundle around it.
@@ -15,9 +19,11 @@ set -euo pipefail
 
 profile=release
 kind=simulator
+sign_only=
 for arg in "$@"; do
     case $arg in
         --debug) profile=debug ;;
+        --sign-only) sign_only=1; kind=device ;;
         simulator | device) kind=$arg ;;
         *) echo "build-ios: say simulator or device, not $arg (and --debug, if wanted)" >&2; exit 1 ;;
     esac
@@ -35,6 +41,31 @@ case $target_dir in /*) ;; *) target_dir=$root/$target_dir ;; esac
 out=$target_dir/ios
 app=$out/RustGIS.app
 
+# Signs the device bundle with IOS_SIGN_IDENTITY and the profile IOS_PROFILE, and packs the .ipa.
+sign_app() {
+    if [ -z "${IOS_SIGN_IDENTITY:-}" ] || [ -z "${IOS_PROFILE:-}" ]; then
+        # Not a success: there is no .ipa, and the app won't install on a device.
+        echo "build-ios: IOS_SIGN_IDENTITY and IOS_PROFILE aren't both set: $app is unsigned, and no .ipa was made." >&2
+        exit 1
+    fi
+    cp "$IOS_PROFILE" "$app/embedded.mobileprovision"
+    # The entitlements are the profile's own (the team, the app id, background location needs none).
+    security cms -D -i "$IOS_PROFILE" > "$out/profile.plist"
+    plutil -extract Entitlements xml1 -o "$out/entitlements.plist" "$out/profile.plist"
+    codesign --force --sign "$IOS_SIGN_IDENTITY" --entitlements "$out/entitlements.plist" --timestamp=none "$app"
+    rm -rf "$out/Payload" "$out/RustGIS.ipa" && mkdir -p "$out/Payload"
+    cp -R "$app" "$out/Payload/"
+    (cd "$out" && zip -qry RustGIS.ipa Payload)
+    rm -rf "$out/Payload"
+    ls -lh "$out/RustGIS.ipa"
+}
+if [ -n "$sign_only" ]; then
+    [ "$kind" = device ] || { echo "build-ios: --sign-only signs a device build, not a $kind one" >&2; exit 1; }
+    [ -x "$app/RustGIS" ] || { echo "build-ios: no app to sign at $app: build it with IOS_UNSIGNED=1 first" >&2; exit 1; }
+    sign_app
+    exit 0
+fi
+
 # macOS's bash 3.2 can't expand an empty array under `set -u`: a flag that may be empty instead.
 flag=
 if [ "$profile" = release ]; then flag=--release; fi
@@ -51,7 +82,8 @@ if [ "$profile" = release ]; then xcrun strip -x "$app/RustGIS"; fi
 # RustGIS's licence and the notices of the crates it is built from go with every copy.
 cp "$root/LICENSE" "$root/apps/rustgis-mobile/THIRD-PARTY-LICENSES.txt" "$app/"
 
-version=$(sed -n 's/^version = "\(.*\)"/\1/p' "$root/Cargo.toml" | head -1)
+version=$(awk '/^\[/ { s = ($0 == "[workspace.package]") } s && /^version *=/ { gsub(/.*= *"|".*/, ""); print; exit }' "$root/Cargo.toml")
+[ -n "$version" ] || { echo "build-ios: no version in $root/Cargo.toml" >&2; exit 1; }
 # The build number App Store Connect wants rising with each upload: IOS_BUILD, or the commits.
 # A shallow clone or a tree without git can't count them: for a device (an upload) that is
 # refused, as a repeated number would be; the Simulator's build takes 1.
@@ -113,18 +145,9 @@ if [ "$kind" = simulator ]; then
     exit 0
 fi
 
-if [ -z "${IOS_SIGN_IDENTITY:-}" ] || [ -z "${IOS_PROFILE:-}" ]; then
-    # Not a success: there is no .ipa, and the app won't install on a device.
-    echo "build-ios: IOS_SIGN_IDENTITY and IOS_PROFILE aren't both set: $app is unsigned, and no .ipa was made." >&2
-    exit 1
+if [ "${IOS_UNSIGNED:-}" = 1 ]; then
+    # Asked for (CI's pull request builds): the bundle is complete, and isn't signed.
+    echo "build-ios: $app is complete and unsigned (IOS_UNSIGNED=1); no .ipa was made."
+    exit 0
 fi
-cp "$IOS_PROFILE" "$app/embedded.mobileprovision"
-# The entitlements are the profile's own (the team, the app id, background location needs none).
-security cms -D -i "$IOS_PROFILE" > "$out/profile.plist"
-plutil -extract Entitlements xml1 -o "$out/entitlements.plist" "$out/profile.plist"
-codesign --force --sign "$IOS_SIGN_IDENTITY" --entitlements "$out/entitlements.plist" --timestamp=none "$app"
-rm -rf "$out/Payload" "$out/RustGIS.ipa" && mkdir -p "$out/Payload"
-cp -R "$app" "$out/Payload/"
-(cd "$out" && zip -qry RustGIS.ipa Payload)
-rm -rf "$out/Payload"
-ls -lh "$out/RustGIS.ipa"
+sign_app
