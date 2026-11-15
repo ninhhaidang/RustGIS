@@ -380,9 +380,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let picked = root.join("picked");
         // A Shapefile the project names by its .shp (its .dbf beside it), and a GeoPackage it
-        // doesn't name, from another pick; a loose file too.
-        let shapes = picked.join("1/0");
-        let unused_pick = picked.join("2/0");
+        // doesn't name, from another pick; a loose file too. A path the project names is joined a
+        // folder at a time, as the folder is listed: Windows lists `1\0` where `join("1/0")` keeps `1/0`.
+        let shapes = picked.join("1").join("0");
+        let unused_pick = picked.join("2").join("0");
         std::fs::create_dir_all(&shapes).unwrap();
         std::fs::create_dir_all(&unused_pick).unwrap();
         std::fs::write(shapes.join("roads.shp"), b"shp").unwrap();
@@ -411,15 +412,16 @@ mod tests {
         for pick in ["1/0", "2/0"] {
             std::fs::create_dir_all(picked.join(pick)).unwrap();
         }
-        std::fs::write(picked.join("1/0/a.gpkg"), b"a").unwrap();
-        std::fs::write(picked.join("2/0/b.gpkg"), b"bb").unwrap();
+        let a = picked.join("1").join("0").join("a.gpkg");
+        std::fs::write(&a, b"a").unwrap();
+        std::fs::write(picked.join("2").join("0").join("b.gpkg"), b"bb").unwrap();
         let found = unused(&picked, "{}", &AtomicBool::new(false)).unwrap();
         assert_eq!(found.picks.len(), 2);
         // An Undo brings back the layer reading a.gpkg before Remove Them.
-        let now = serde_json::json!({"path": picked.join("1/0/a.gpkg").to_string_lossy()}).to_string();
+        let now = serde_json::json!({"path": a.to_string_lossy()}).to_string();
         let removed = remove_unused(&picked, &found, &now, &AtomicBool::new(false)).unwrap();
         assert_eq!((removed.files, removed.now_named), (1, 1));
-        assert!(picked.join("1/0/a.gpkg").exists() && !picked.join("2").exists());
+        assert!(a.exists() && !picked.join("2").exists());
         std::fs::remove_dir_all(&root).unwrap();
     }
 

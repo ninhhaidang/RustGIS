@@ -77,12 +77,19 @@ const LIMITS: &[(&str, f64, Where, &str)] = &[
     ("EPSG:32760", 16.0, Where::Outside, "transverse Mercator far from its meridian, within 1e-4°"),
     ("EPSG:32601", 16.0, Where::Outside, "transverse Mercator far from its meridian, within 1e-4°"),
     ("EPSG:2193", 16.0, Where::Outside, "transverse Mercator far from its meridian, within 1e-4°"),
+    ("EPSG:27700", 16.0, Where::Outside, "transverse Mercator far from its meridian, within 1e-4°"),
     // The datum transformation is chosen for each place by its area of use, as PROJ chooses it:
     // there and back may take different ones at the area's edge (OSGB 1936's at 9°W, 45.6 m
     // apart; at 0°E 61°N 135 m, at 1.72°E 49.75°N 150 m: PROJ 9.8.1 the same to the digit).
-    ("EPSG:27700", 16.0, Where::Outside, "transverse Mercator far from its meridian, within 1e-4°"),
+    // Just outside the area, in none of the transformations' areas, PROJ falls back to a
+    // different one each way: up to 154 m, and as far as 2.02° out (84 m at 9.94°W 60.55°N).
     ("EPSG:27700", 200.0, Where::NearEdge(0.5), "the datum transformation differs there and back at the area's edge"),
+    ("EPSG:27700", 200.0, Where::Beyond(3.0), "the datum transformation differs there and back just outside the area"),
     ("EPSG:2056", 16.0, Where::Outside, "oblique Mercator far from its centre line, within 1e-4°"),
+    // Its datum, NAD83, has transformations to WGS 84 for Alaska and for Hawaii (up to 0.97 m)
+    // as well as none; outside the area of use there and back may take one and not the other
+    // (0.60 m at 156.6°W 26.8°N, 0.75 m at 180°W 53.8°N: PROJ 9.8.1 the same to the digit).
+    ("EPSG:3347", 1.0, Where::Outside, "NAD83's transformation for Alaska or Hawaii is taken one way only"),
     // Albers' inverse (PROJ's) snaps a latitude within about 0.02° of a pole onto
     // it. Those `from_lonlat` takes are the ones within 1e-4° of the pole.
     ("EPSG:5070", 16.0, Where::Outside, "Albers takes a place near a pole as the pole, within 1e-4°"),
@@ -101,6 +108,8 @@ enum Where {
     NearPole(f64),
     /// Within this many degrees of the area of use's edge, on either side.
     NearEdge(f64),
+    /// Outside the area of use, within this many degrees of its edge.
+    Beyond(f64),
 }
 
 impl Where {
@@ -109,15 +118,15 @@ impl Where {
             Where::Outside => !inside,
             Where::Anywhere => true,
             Where::NearPole(d) => p.y.abs() >= 90.0 - d,
-            // Within `d` of the box's outline, inside or out.
-            Where::NearEdge(d) => {
+            // Within `d` of the box's outline, inside (`NearEdge` only) or out.
+            Where::NearEdge(d) | Where::Beyond(d) => {
                 // The longitude as it lies nearest the box, a turn either way (boxes run east of
                 // 180° across the antimeridian).
                 let off = |lon: f64| (w - lon).max(lon - e).max(0.0);
                 let lon = [p.x, p.x + 360.0, p.x - 360.0].into_iter().min_by(|a, b| off(*a).total_cmp(&off(*b))).unwrap_or(p.x);
                 let outside_by = off(lon).hypot((s - p.y).max(p.y - n).max(0.0));
                 let inside_by = (lon - w).min(e - lon).min(p.y - s).min(n - p.y);
-                if inside { inside_by < d } else { outside_by < d }
+                if inside { matches!(self, Where::NearEdge(_)) && inside_by < d } else { outside_by < d }
             }
         }
     }
