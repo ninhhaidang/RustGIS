@@ -79,6 +79,11 @@ impl Phone {
         }
     }
 
+    /// Whether a picker for opening is on the screen and hasn't answered.
+    pub fn picking(&self) -> bool {
+        self.java(|env, activity| env.call_method(activity, jni_str!("picking"), jni_sig!(() -> boolean), &[])?.z()).unwrap_or(false)
+    }
+
     /// Whether something asked for is still to be reported: the window keeps asking while it is.
     pub fn busy(&self) -> bool {
         self.java(|env, activity| env.call_method(activity, jni_str!("busy"), jni_sig!(() -> boolean), &[])?.z()).unwrap_or(false)

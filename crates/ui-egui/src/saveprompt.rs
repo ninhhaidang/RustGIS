@@ -47,7 +47,7 @@ pub(crate) struct SavePromptState {
 /// the project as it is (the picker answers later, and the dialog reads the result at once);
 /// Don't Save and Cancel are the desktop's.
 pub(crate) fn asks(app: &RustGisApp, id: &str) -> bool {
-    REPLACES.contains(&id) && app.session.dirty() && (app.opens_files() || cfg!(target_os = "android"))
+    REPLACES.contains(&id) && app.session.dirty() && (app.opens_files() || cfg!(any(target_os = "android", target_os = "ios")))
 }
 
 /// Whether the project has unsaved changes in a shell that asks about them (the desktop app).

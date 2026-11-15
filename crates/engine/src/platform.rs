@@ -33,6 +33,14 @@ pub enum Event {
     },
     /// A picker closed without a choice.
     Cancelled,
+    /// A request for files ([`Platform::pick_files`]'s `purpose`) ended with none: its picker
+    /// answered, but no file of it could be copied (each failure said beside this). Unlike
+    /// [`Event::Cancelled`], which is the picker on the screen, it names the request, as another
+    /// may have been asked for while its files were being copied.
+    Ended {
+        /// What the request was asked for.
+        purpose: String,
+    },
     /// A file was written where the user chose.
     Saved {
         /// The name it was offered under.
@@ -56,7 +64,7 @@ pub enum Event {
 
 impl Event {
     /// Reads an event a shell passed as one line of tab-separated fields (`picked`, `cancelled`,
-    /// `saved`, `photo`, `position`, `stopped`, `failed`). A line that is none of these is a failure that quotes it: nothing a
+    /// `ended`, `saved`, `photo`, `position`, `stopped`, `failed`). A line that is none of these is a failure that quotes it: nothing a
     /// shell reports is dropped. A position is `position`, longitude, latitude, accuracy (empty
     /// when unknown) and, optionally, its time in milliseconds since 1970.
     pub fn parse(line: &str) -> Event {
@@ -66,6 +74,7 @@ impl Event {
                 Event::Picked { purpose: purpose.to_string(), name: name.to_string(), path: PathBuf::from(path) }
             }
             ["cancelled"] => Event::Cancelled,
+            ["ended", purpose] => Event::Ended { purpose: purpose.to_string() },
             ["photo", name, path] if !path.is_empty() => Event::Photo { name: name.to_string(), path: PathBuf::from(path) },
             ["stopped"] => Event::Stopped,
             // A name is the user's own text and may hold a tab: the rest of the line is the name.
@@ -128,8 +137,9 @@ pub trait Platform {
     fn keep_locating(&self, on: bool) -> Result<(), String>;
 
     /// Asks the device's camera for a photo: an [`Event::Photo`] follows with where it was
-    /// written (in the app's own storage), or [`Event::Cancelled`] when the user took none. `Ok`
-    /// means the camera was asked, not that a photo was taken.
+    /// written (in the app's own storage), or [`Event::Cancelled`] when there is none (the user
+    /// took none, or it couldn't be kept). `Ok` means the camera was asked, not that a photo was
+    /// taken.
     fn take_photo(&self) -> Result<(), String>;
 
     /// What happened since the last call, oldest first.
@@ -147,6 +157,7 @@ mod tests {
             Event::Picked { purpose: "data".into(), name: "parcels.gpkg".into(), path: PathBuf::from("/data/picked/1/parcels.gpkg") }
         );
         assert_eq!(Event::parse("cancelled"), Event::Cancelled);
+        assert_eq!(Event::parse("ended\tdxf:3"), Event::Ended { purpose: "dxf:3".into() });
         assert_eq!(
             Event::parse("photo\tphoto-1.jpg\t/data/photos/photo-1.jpg"),
             Event::Photo { name: "photo-1.jpg".into(), path: PathBuf::from("/data/photos/photo-1.jpg") }
@@ -174,6 +185,7 @@ mod tests {
         for line in [
             "",
             "picked\tdata",
+            "ended",
             "moved\tx",
             "saved",
             "photo\ta.jpg",

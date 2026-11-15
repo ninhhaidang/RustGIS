@@ -2086,7 +2086,7 @@ impl RustGisApp {
         }
         // On Android the file is written once the user has chosen its place, and the shell
         // says then whether it was.
-        let offered = if cfg!(target_os = "android") {
+        let offered = if cfg!(any(target_os = "android", target_os = "ios")) {
             crate::i18n::fmt("Choose where to save {name}.", &[("name", &file)])
         } else {
             crate::i18n::fmt("Download offered: {name}. The browser doesn't say whether it saved the file.", &[("name", &file)])
@@ -2111,7 +2111,7 @@ impl RustGisApp {
                     self.session.notify(e, true);
                     return false;
                 }
-                let offered = if cfg!(target_os = "android") {
+                let offered = if cfg!(any(target_os = "android", target_os = "ios")) {
                     crate::i18n::fmt("Choose where to save {name}.", &[("name", name)])
                 } else {
                     crate::i18n::fmt("Download offered: {name}", &[("name", name)])
@@ -5990,13 +5990,22 @@ impl RustGisApp {
                 ctx.request_repaint_after(std::time::Duration::from_millis(250));
             }
         }
-        // A picker Android doesn't have was asked for: said, as the click did nothing.
+        // A picker the phone doesn't have was asked for: said, as the click did nothing.
         #[cfg(target_os = "android")]
         for what in filedialog::take_refused() {
             let text = match what {
                 "choose a folder" => tl!("Choosing a folder isn't available on Android yet."),
                 "save a file" => tl!("Saving to a file of your choice isn't available here on Android yet."),
                 _ => tl!("Choosing a file isn't available here on Android yet."),
+            };
+            self.session.notify(text, false);
+        }
+        #[cfg(target_os = "ios")]
+        for what in filedialog::take_refused() {
+            let text = match what {
+                "choose a folder" => tl!("Choosing a folder isn't available on iOS yet."),
+                "save a file" => tl!("Saving to a file of your choice isn't available here on iOS yet."),
+                _ => tl!("Choosing a file isn't available here on iOS yet."),
             };
             self.session.notify(text, false);
         }

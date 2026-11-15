@@ -1,8 +1,8 @@
 # rustgis-mobile
 
-RustGIS on Android ([#1902](https://github.com/opengeos/RustGIS/issues/1902)). It runs the desktop
-front end (`rustgis-ui-egui`) in a `NativeActivity`, with the system's file picker for opening and
-saving, and the touch interface (`rustgis-ui-touch`) around its map, which can capture points,
+RustGIS on Android and iOS ([#1902](https://github.com/opengeos/RustGIS/issues/1902)). It runs the
+desktop front end (`rustgis-ui-egui`) in a `NativeActivity` on Android and in a UIKit window on iOS
+(see [iOS](#ios)), with the system's file picker for opening and saving, and the touch interface (`rustgis-ui-touch`) around its map, which can capture points,
 lines and polygons with their attributes, edit their shapes, snap, and show where the device is.
 It averages positions, records tracks (also out of sight), attaches photos to features, and takes a
 map with its offline basemap to the field and its edits back (see Field packages).
@@ -243,3 +243,75 @@ What it showed is wrong or missing:
 - The desktop ribbon and panes are unusable at a phone's width, as expected. Phase 2 is a new front end.
 - The map draws on the CPU here (the emulator has no GPU). Frame rates need a phone.
 - Not tried on a phone: arm64, a real GPU, pinch zoom, the soft keyboard, memory limits.
+
+## iOS
+
+The same app on iPhones and iPads: `src/shell.rs` is what both systems share (the window, the
+picked files, the events), `src/android.rs` and `src/phone.rs` are Android's half, and `src/ios.rs`
+is iOS's, which calls UIKit and Core Location through `objc2`. The executable is `src/main.rs`.
+
+### Build
+
+On a Mac with Xcode, once:
+
+```sh
+rustup target add aarch64-apple-ios aarch64-apple-ios-sim
+```
+
+Then:
+
+```sh
+apps/rustgis-mobile/build-ios.sh                 # the iOS Simulator, release: target/ios/RustGIS.app
+apps/rustgis-mobile/build-ios.sh --debug         # the same, quicker to build
+xcrun simctl boot "iPhone 17" && open -a Simulator
+xcrun simctl install booted target/ios/RustGIS.app
+xcrun simctl launch --console booted org.rustgis.mobile    # the app's log on the terminal
+```
+
+`build-ios.sh device` builds for iPhones and iPads; with `IOS_SIGN_IDENTITY` (an Apple
+Development or Distribution identity in the keychain) and `IOS_PROFILE` (a provisioning profile for
+`org.rustgis.mobile`) it signs the app and packs `target/ios/RustGIS.ipa`, for a device or for
+TestFlight. There is no Xcode project: cargo builds the executable and the script makes the bundle
+around it, with `ios/Info.plist`.
+
+Files put in the app's Documents folder are opened once the window is up, as the pushed files are
+on Android:
+
+```sh
+cp parcels.gpkg "$(xcrun simctl get_app_container booted org.rustgis.mobile data)/Documents/"
+```
+
+### The phone, from Rust
+
+| | On iOS |
+|---|---|
+| Opening | UIKit's document picker, any file, several at once (a Shapefile's parts). It gives the original documents, wherever they are (iCloud Drive, another app's folder): each is read inside its security scope, through a file coordinator (a document in iCloud Drive is downloaded first), and copied into `Library/Application Support/picked/…` off the main thread, a folder for each folder the documents came from, and opened from there as on Android. The original is not changed |
+| Saving | The bytes are written to the app's `tmp` folder under the name offered, off the main thread, and then the document picker exports a copy where the user chooses; then the file in `tmp` is removed. Cancelled, the app says the file wasn't saved |
+| Position | Core Location, best accuracy. Asked the first time (`NSLocationWhenInUseUsageDescription`); positions start once the user allows them. Refused, now or later in Settings, the app says so and stops asking |
+| Out of sight | Recording a track turns on background location updates (the app's `location` background mode in `Info.plist`), with iOS's indicator that an app is using the location. Positions found out of sight wait, at most 200,000, as on Android |
+| Camera | `UIImagePickerController`: the photo is written as a JPEG to `Library/Application Support/photos`. A device without a camera (the Simulator) says so |
+| Soft keyboard | winit's own (`UIKeyInput`): letters and Backspace reach the form. The room the keyboard takes comes from UIKit's keyboard notices and keeps the field above it. Return types nothing, as winit 0.30 hands it on as a character: typing ends with a tap outside the field |
+| Folders | Settings, app data and the cache are in `Library/Application Support` |
+| Picked copies | Kept in `picked/`, as on Android: data and projects open from their copies and are edited there. The folder is left out of the device's backups (`NSURLIsExcludedFromBackupKey`), as the documents are the user's elsewhere. Nothing removes old copies yet |
+| Plain HTTP | App Transport Security is off for every host (`NSAllowsArbitraryLoads`): a project's tile layers and services may be any `http://` server, not known when the app is built, so a list of exceptions can't name them. The App Review notes say so |
+
+`src/ios.rs` is the one module of the app with `unsafe` code beyond Android's `no_mangle`, an
+exception to the workspace's rule allowed by `#![expect(unsafe_code)]` on the module: UIKit's
+delegates are Objective-C classes made with `objc2`'s `define_class!`, which needs `unsafe impl`,
+and a few of UIKit's calls are unsafe in `objc2`. Each block says why it holds.
+
+Two things winit 0.30 doesn't do on iOS 27 are done in `src/ios.rs`:
+
+- **Scenes.** iOS 27 refuses an app without a scene. `Info.plist` names a scene delegate of the
+  app's, which puts winit's window in the scene once both are there (winit makes its window
+  before scenes, after the scene is connected), or iOS shows nothing.
+- **The safe area.** eframe 0.37 makes its GPU surface the size of winit's safe area, while egui
+  lays out over the whole screen: on a phone with a notch or a home indicator the picture was
+  stretched and its bottom cut off. The window is given a safe area of none (a subclass of
+  winit's, made at start-up), and the shell keeps the interface out of the real one itself.
+
+The Simulator's Metal falls short of wgpu's default limits, so the app asks for egui's, no better
+than the GPU's own.
+
+Tested on the iOS 27.2 Simulator (iPhone 17 and iPhone 18 Pro). Not yet on a device: the camera,
+GPS out of doors, memory limits and the frame rate on a phone's GPU need one.

@@ -1,15 +1,19 @@
 [package]
 name = "rustgis-mobile"
-description = "RustGIS on Android (#1902): the desktop front end in a NativeActivity, with the phone's file picker"
+description = "RustGIS on Android and iOS (#1902): the desktop front end with the touch interface, in a NativeActivity or a UIKit window"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish = false
 
-# The library Android's NativeActivity loads (`android.app.lib_name` in AndroidManifest.xml).
-# On every other target it is empty.
+# The library Android's NativeActivity loads (`android.app.lib_name` in AndroidManifest.xml),
+# and which the iOS executable (`src/main.rs`) links. On every other target both are empty.
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "rustgis-mobile"
+path = "src/main.rs"
 
 # `android_main` is exported by name, which the workspace's `forbid` can't allow: keep the
 # other workspace lints in step here, as the desktop app does.
@@ -25,11 +29,17 @@ allow_attributes_without_reason = "warn"
 too_many_arguments = "allow"
 type_complexity = "allow"
 
+[dev-dependencies]
+rustgis-engine = { workspace = true }
+rustgis-ui-egui = { workspace = true }
+
 [target.'cfg(target_os = "android")'.dependencies]
 # Without the `geolibre` feature: a phone can't run the `geolibre` program.
 rustgis-engine = { workspace = true }
 rustgis-ui-egui = { workspace = true }
 rustgis-ui-touch = { workspace = true }
+# The front end's picker state, kept while a picker is up (`src/shell.rs`).
+serde_json = { workspace = true }
 # NativeActivity's soft keyboard support is poor: a real app moves to
 # GameActivity (`android-game-activity`), which also allows `accesskit`.
 eframe = { workspace = true, features = ["default_fonts", "wgpu", "android-native-activity"] }
@@ -43,3 +53,24 @@ log = { workspace = true }
 jni = "0.22"
 # `log` records to logcat.
 android_logger = "0.15"
+
+[target.'cfg(target_os = "ios")'.dependencies]
+# Without the `geolibre` feature: a phone can't run the `geolibre` program.
+rustgis-engine = { workspace = true }
+rustgis-ui-egui = { workspace = true }
+rustgis-ui-touch = { workspace = true }
+# The front end's picker state, kept while a picker is up (`src/shell.rs`).
+serde_json = { workspace = true }
+eframe = { workspace = true, features = ["default_fonts", "wgpu"] }
+egui = { workspace = true }
+# The status bar's style (`WindowExtIOS`). Keep the version in step with eframe's.
+winit = { version = "0.30", default-features = false }
+log = { workspace = true }
+# UIKit, Core Location and the document picker (`src/ios.rs`): the versions egui-winit uses.
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-ui-kit = { version = "0.3", features = ["objc2-uniform-type-identifiers"] }
+objc2-core-location = "0.3"
+objc2-uniform-type-identifiers = "0.3"
+# The file coordinator's reader (`NSFileCoordinator`): the version objc2-foundation uses.
+block2 = "0.6"

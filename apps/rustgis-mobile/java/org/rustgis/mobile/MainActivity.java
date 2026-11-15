@@ -68,8 +68,8 @@ public class MainActivity extends NativeActivity {
     private boolean asking;
     /** The activity is in sight (between onStart and onStop). */
     private boolean started;
-    /** A picker for opening is shown and has not answered (the main thread's alone). */
-    private boolean picking;
+    /** A picker for opening is shown and has not answered (written on the main thread). */
+    private volatile boolean picking;
     /** The photo the camera app is writing, until it answers (the main thread's alone). */
     private File photo;
     private String saveName = "";
@@ -519,6 +519,11 @@ public class MainActivity extends NativeActivity {
             bottom = insets.getSystemWindowInsetBottom();
         }
         return left + " " + top + " " + right + " " + bottom;
+    }
+
+    /** Whether a picker for opening is shown and hasn't answered (its copies may still be running). */
+    public boolean picking() {
+        return picking;
     }
 
     /** Whether something asked for is still to be reported. */

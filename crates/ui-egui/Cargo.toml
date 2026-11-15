@@ -29,8 +29,8 @@ sys-locale = { version = "0.3", features = ["js"] }
 # Pictures kept with features (photo thumbnails), shown in the identify popup.
 image = { workspace = true, features = ["gif", "jpeg", "webp"] }
 
-# The system's file dialogs. `rfd` has no Android backend: `filedialog.rs` stands in there.
-[target.'cfg(not(any(target_arch = "wasm32", target_os = "android")))'.dependencies]
+# The system's file dialogs. `rfd` has no Android or iOS backend: `filedialog.rs` stands in there.
+[target.'cfg(not(any(target_arch = "wasm32", target_os = "android", target_os = "ios")))'.dependencies]
 rfd = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
