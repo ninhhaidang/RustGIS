@@ -89,6 +89,32 @@ jobs:
       - name: Build the app for the Simulator
         run: apps/rustgis-mobile/build-ios.sh --debug simulator
 
+  # The Android app (apps/rustgis-mobile, #1902): the Rust library and the activity's Java half
+  # built into an APK for the emulator's x86_64, with the runner's Android SDK, NDK and JDK. As
+  # slow as a test run, it runs where the iOS job does (pushes to main, a manual run on every
+  # platform, a pull request labelled `ci:full`), from the next push after the label is added.
+  android:
+    name: Android app
+    if: >-
+      github.event_name == 'push'
+      || (github.event_name == 'workflow_dispatch' && inputs.platforms != 'linux')
+      || contains(github.event.pull_request.labels.*.name, 'ci:full')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          targets: x86_64-linux-android
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          # Only main saves the cache (see test-rust.yml).
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2
+        with:
+          tool: cargo-ndk
+      - name: Build the APK
+        run: apps/rustgis-mobile/build-apk.sh --debug x86_64
+
   # Every dependency's licence must be one the project accepts (deny.toml). The third-party
   # notices the packages ship (`cargo xtask notices`) only warn here when out of date, since
   # Dependabot can't regenerate them; the release build requires them current.

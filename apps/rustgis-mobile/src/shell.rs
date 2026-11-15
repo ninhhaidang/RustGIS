@@ -346,10 +346,12 @@ fn read_batch(purpose: &str, files: Vec<(String, PathBuf)>, inbox: &Inbox, probl
     inbox.lock().unwrap_or_else(|e| e.into_inner()).extend(read.into_iter().map(|(name, bytes)| (format!("{mark}{name}"), bytes)));
 }
 
-/// Removes a picked file's copy, and its folder once that is empty.
+/// Removes a picked file's copy, and its folders once they are empty: the one for its source
+/// folder, and the one for its pick.
 fn remove_copy(path: &Path) {
     let _ = std::fs::remove_file(path);
-    if let Some(folder) = path.parent() {
+    for folder in path.ancestors().skip(1).take(2) {
+        // Not removed while it holds anything (another copy).
         let _ = std::fs::remove_dir(folder);
     }
 }

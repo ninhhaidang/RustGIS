@@ -310,10 +310,12 @@ fn safe_name(name: &str) -> String {
     }
 }
 
-/// Removes `path` and its folder once that is empty.
+/// Removes `path`, and its folders once they are empty.
 fn remove_with_folder(path: &Path) {
     let _ = std::fs::remove_file(path);
-    if let Some(folder) = path.parent() {
+    // Its folder and the one above (a pick's folder for its source folders), each only while
+    // empty.
+    for folder in path.ancestors().skip(1).take(2) {
         let _ = std::fs::remove_dir(folder);
     }
 }
