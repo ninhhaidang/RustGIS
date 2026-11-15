@@ -2442,6 +2442,34 @@ pub fn frame_coverage(map: &mut Map, center: Coord, scale: f64, w_mm: f64, h_mm:
     frame_coverage_judged_on(map, center, scale, (w_mm, h_mm), (w_mm, h_mm), cells)
 }
 
+/// The visible layers a frame showing `map` at 1:`scale` around `center` takes as context around
+/// its data, by id: those that only outline their polygons ([`only_outlines`]) unless nothing else
+/// is shown, and those that fill them in one colour ([`plain_fill`]) beside a layer drawn by classes
+/// or a raster, when they run on past a frame `judged` (mm) wide and tall, as neighbouring states
+/// do. [`frame_coverage`] leaves them out of what the map draws; a publication's legend leaves them
+/// out too (#1379).
+pub fn context_layers(map: &Map, center: Coord, scale: f64, judged: (f64, f64)) -> Vec<u32> {
+    let at = frame_render_scale(map, center, scale);
+    if map.layers.iter().filter(|l| map.draws_at(l, at)).all(only_outlines) {
+        return Vec::new();
+    }
+    let classes =
+        map.layers.iter().any(|l| map.draws_at(l, at) && (l.is_raster() || !matches!(&l.renderer, rustgis_map::Renderer::Single(_))));
+    let judged_view = View {
+        width: judged.0 * PT_PER_MM,
+        height: judged.1 * PT_PER_MM,
+        pixels_per_point: 1.0,
+        camera: frame_camera(map, center, scale, 0.0, 0.0),
+        sky: false,
+    };
+    let frame = crate::view_lonlat(map, &judged_view);
+    let past_the_frame = |l: &rustgis_map::Layer| {
+        let e = l.shown_extent();
+        !e.is_empty() && (e.min_x < frame.min_x || e.max_x > frame.max_x || e.min_y < frame.min_y || e.max_y > frame.max_y)
+    };
+    map.layers.iter().filter(|l| l.visible && (only_outlines(l) || (classes && plain_fill(l) && past_the_frame(l)))).map(|l| l.id).collect()
+}
+
 /// [`frame_coverage`] of a frame `size` (mm), with what runs on past the frame judged on a frame
 /// `judged` (mm) with the same centre: a drawing wider than the frame asked for, cut for frames
 /// moved inside it, leaves out the same one-colour layers as that frame does.
@@ -2481,24 +2509,7 @@ pub fn frame_coverage_judged_on(
             self.map.label_lock_line_anchors = std::mem::take(&mut self.anchors);
         }
     }
-    let at = frame_render_scale(map, center, scale);
-    let outlines: Vec<u32> = if map.layers.iter().filter(|l| map.draws_at(l, at)).all(only_outlines) {
-        Vec::new()
-    } else {
-        let classes =
-            map.layers.iter().any(|l| map.draws_at(l, at) && (l.is_raster() || !matches!(&l.renderer, rustgis_map::Renderer::Single(_))));
-        let judged_view = View { width: judged.0 * PT_PER_MM, height: judged.1 * PT_PER_MM, ..view };
-        let frame = crate::view_lonlat(map, &judged_view);
-        let past_the_frame = |l: &rustgis_map::Layer| {
-            let e = l.shown_extent();
-            !e.is_empty() && (e.min_x < frame.min_x || e.max_x > frame.max_x || e.min_y < frame.min_y || e.max_y > frame.max_y)
-        };
-        map.layers
-            .iter()
-            .filter(|l| l.visible && (only_outlines(l) || (classes && plain_fill(l) && past_the_frame(l))))
-            .map(|l| l.id)
-            .collect()
-    };
+    let outlines = context_layers(map, center, scale, judged);
     for l in map.layers.iter_mut().filter(|l| outlines.contains(&l.id)) {
         l.visible = false;
     }

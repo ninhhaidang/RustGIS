@@ -8887,10 +8887,15 @@ fn publication_layouts_fit_their_pages() {
             assert!(reference.contains("Web Mercator") && reference.contains("WGS 84") && reference.contains("2°"), "{reference}");
             assert!(text("Author").unwrap().contains("{date}"), "the date stays a token the layout fills");
             // Nothing said but, over the sample world's land, the surrounds sharing its one corner
-            // of sea, or the map moved in its frame for the legend (placement has its own tests).
+            // of sea, the map moved in its frame for the legend (placement has its own tests), or
+            // the lakes in one colour beside the countries by classes left out of the legend as
+            // context (#1379).
             let said: Vec<&str> = r["warnings"].as_array().unwrap().iter().filter_map(|w| w.as_str()).collect();
             assert!(
-                said.len() <= 2 && said.iter().all(|w| w.contains("on what the map shows") || w.contains("in its frame")),
+                said.len() <= 3
+                    && said.iter().all(|w| w.contains("on what the map shows")
+                        || w.contains("in its frame")
+                        || w.contains("context layer around the data (Lakes)")),
                 "{profile}: {r}"
             );
         } else {
@@ -9883,6 +9888,105 @@ fn a_publication_legend_takes_the_columns_that_fit_the_free_rectangle() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Context around the data is left out of a publication's legend, which a warning names (#1379):
+/// a layer that only outlines its polygons, and one in one colour running on past the frame beside
+/// a layer drawn by classes. A study area in one colour inside the frame is data, and stays listed,
+/// and so does a context layer sharing its name. `"contextInLegend": true` lists them all; a choice
+/// that isn't true or false is refused.
+#[test]
+fn a_publication_legend_leaves_out_context_layers() {
+    let dir = std::env::temp_dir().join(format!("rustgis-legend-context-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let square = |[w, s, e, n]: [f64; 4], k: &str| {
+        json!({"type": "Feature", "properties": {"k": k}, "geometry":
+            {"type": "Polygon", "coordinates": [[[w, s], [e, s], [e, n], [w, n], [w, s]]]}})
+    };
+    let file = |name: &str, features: Vec<Value>| {
+        let path = dir.join(name);
+        std::fs::write(&path, json!({"type": "FeatureCollection", "features": features}).to_string()).unwrap();
+        path.display().to_string()
+    };
+    let data = file("data.geojson", vec![square([0.0, 0.0, 5.0, 10.0], "a"), square([5.0, 0.0, 10.0, 10.0], "b")]);
+    let around = file("around.geojson", vec![square([-30.0, -30.0, 40.0, 40.0], "x")]);
+    let border = file("border.geojson", vec![square([1.0, 1.0, 9.0, 9.0], "x")]);
+    let study = file("study.geojson", vec![square([2.0, 2.0, 4.0, 4.0], "x")]);
+    let laid = |extra: Value| {
+        let mut s = Session::new(Project::default());
+        for path in [&around, &data, &study, &border] {
+            s.run("layer.addData", &json!({"path": path})).unwrap();
+        }
+        // The study area under the name of the context layer around: that name stays listed.
+        if extra.get("mixed").is_some() {
+            s.run("layer.rename", &json!({"layer": "study", "name": "around"})).unwrap();
+        }
+        s.run("layer.symbology", &json!({"layer": "data", "type": "unique", "field": "k"})).unwrap();
+        s.run("layer.color", &json!({"layer": "border", "color": "#00000000"})).unwrap();
+        let mut p = json!({"profile": "a4-portrait", "extent": [0, 0, 10, 10], "author": "", "locator": "none"});
+        p.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone().into_iter().filter(|(k, _)| k != "mixed"));
+        let r = s.run("layout.publication", &p)?;
+        let layout = s.project.layouts.last().unwrap();
+        let exclude = layout
+            .elements
+            .iter()
+            .find_map(|e| match &e.kind {
+                rustgis_map::layout::ElementKind::Legend { exclude, .. } => Some(exclude.clone()),
+                _ => None,
+            })
+            .expect("a legend");
+        let said =
+            r["warnings"].as_array().unwrap().iter().filter_map(|w| w.as_str()).find(|w| w.contains("context layer")).map(String::from);
+        Ok::<_, String>((exclude, said))
+    };
+    let (mut exclude, said) = laid(json!({})).unwrap();
+    exclude.sort();
+    assert_eq!(exclude, ["around", "border"], "the context, not the data nor the study area");
+    let said = said.expect("said");
+    assert!(said.contains("2 context layers") && said.contains("around") && said.contains("border"), "{said}");
+    let (exclude, said) = laid(json!({"mixed": true})).unwrap();
+    assert_eq!(exclude, ["border"], "a name a data layer shares stays: {said:?}");
+    let (exclude, said) = laid(json!({"contextInLegend": true})).unwrap();
+    assert!(exclude.is_empty() && said.is_none(), "{exclude:?} {said:?}");
+    let bad = laid(json!({"contextInLegend": "yes"})).unwrap_err();
+    assert!(bad.contains("contextInLegend is true or false"), "{bad}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A publication whose extent spans 20° or more has no north arrow: its graticule gives north,
+/// and one arrow can't point north across the whole frame, which a warning says (#1379).
+/// `"northArrow": "always"` draws one, `"none"` leaves it out at any span, and an unknown choice is
+/// refused. An extent's width counts as long as it is at its middle latitude.
+#[test]
+fn a_publication_has_no_north_arrow_at_a_continental_span() {
+    use crate::cmd::layout::extent_span_deg;
+    assert!(extent_span_deg(&rustgis_geom::Extent::new(0.0, 60.0, 40.0, 62.0)) < 20.0, "40° of longitude at 61°N is under 20°");
+    assert!(extent_span_deg(&rustgis_geom::Extent::new(-82.0, -56.5, -34.5, 13.0)) >= 20.0);
+    let path = std::env::temp_dir().join(format!("rustgis-north-{}.geojson", std::process::id()));
+    std::fs::write(
+        &path,
+        json!({"type": "FeatureCollection", "features": [{"type": "Feature", "properties": {}, "geometry":
+            {"type": "Polygon", "coordinates": [[[-80.0, -55.0], [-35.0, -55.0], [-35.0, 12.0], [-80.0, 12.0], [-80.0, -55.0]]]}}]})
+        .to_string(),
+    )
+    .unwrap();
+    let laid = |extent: Value, choice: Value| {
+        let mut s = Session::new(Project::default());
+        s.run("layer.addData", &json!({"path": path.display().to_string()})).unwrap();
+        let r = s.run("layout.publication", &json!({"profile": "a4-portrait", "extent": extent, "author": "", "northArrow": choice}))?;
+        let arrows = r["elements"].as_array().unwrap().iter().filter(|e| e["name"] == "North Arrow").count();
+        let said = r["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().starts_with("no north arrow"));
+        Ok::<_, String>((arrows, said))
+    };
+    let continent = json!([-82, -56.5, -34.5, 13]);
+    assert_eq!(laid(continent.clone(), Value::Null).unwrap(), (0, true), "none on a continent, and said");
+    assert_eq!(laid(continent.clone(), json!("auto")).unwrap(), (0, true));
+    assert_eq!(laid(continent.clone(), json!("always")).unwrap(), (1, false));
+    assert_eq!(laid(json!([-50, -20, -40, -10]), Value::Null).unwrap(), (1, false), "one on a smaller extent");
+    assert_eq!(laid(json!([-50, -20, -40, -10]), json!("none")).unwrap(), (0, false), "asked for: not said");
+    let bad = laid(continent, json!("north")).unwrap_err();
+    assert!(bad.contains("northArrow is \"auto\", \"always\" or \"none\""), "{bad}");
+    let _ = std::fs::remove_file(&path);
+}
+
 /// `"colorbar": "none"` leaves a raster's colorbar out of a publication, and its room in the
 /// legend's box with it: the box is the legend's height plus its padding (#1680). An unknown
 /// choice is refused.
@@ -10475,8 +10579,9 @@ fn a_publication_reads_streamed_layers_for_the_move_searchs_wide_drawing() {
 #[test]
 fn a_veil_panel_groups_the_surrounds_by_the_bands_shape() {
     use crate::cmd::layout::veil_panel;
-    let (legend, arrow, scale) = ((80.0, 50.0), (8.0, 12.0), (60.0, 10.0));
+    let (legend, arrow, scale) = ((80.0, 50.0), Some((8.0, 12.0)), (60.0, 10.0));
     let (l, locator, a, b) = veil_panel((0.0, 0.0, 160.0, 70.0), legend, Some(40.0), arrow, scale, 3.0).unwrap();
+    let a = a.unwrap();
     assert!(l.0 + l.2 <= locator.unwrap().0, "beside it: {l:?} {locator:?}");
     assert!(a.0 + a.2 <= 160.0 && b.1 >= locator.unwrap().1 + 40.0, "{a:?} {b:?}");
     let apart =
@@ -10486,6 +10591,15 @@ fn a_veil_panel_groups_the_surrounds_by_the_bands_shape() {
     assert!(l.1 >= b.1 + b.3 && locator.unwrap().0 == b.0, "under it: {l:?} {b:?}");
     assert!(veil_panel((0.0, 0.0, 60.0, 60.0), legend, Some(40.0), arrow, scale, 3.0).is_none());
     assert!(veil_panel((0.0, 0.0, 160.0, 70.0), legend, None, arrow, scale, 3.0).unwrap().1.is_none());
+    // With no north arrow (a continental extent, #1379), the locator stands alone over the scale bar.
+    let (_, locator, a, b) = veil_panel((0.0, 0.0, 160.0, 70.0), legend, Some(40.0), None, scale, 3.0).unwrap();
+    assert!(a.is_none(), "no place for an arrow there isn't: {a:?}");
+    assert_eq!(locator.unwrap().0, b.0, "the locator over the scale bar: {locator:?} {b:?}");
+    // With neither, the scale bar heads its group, with no gap over it: a band just as tall as the
+    // legend and the bar one over the other takes them.
+    let (l, locator, a, b) = veil_panel((0.0, 0.0, 80.0, 63.0), legend, None, None, scale, 3.0).unwrap();
+    assert!(locator.is_none() && a.is_none(), "{locator:?} {a:?}");
+    assert_eq!((b.1, l.1), (0.0, 13.0), "the bar at the band's top, the legend under it: {b:?} {l:?}");
 }
 
 /// With no room for any shape of the legend on either side of a centred map, the map moves towards
@@ -47546,7 +47660,9 @@ fn the_footer_lines_up_with_a_legend_at_the_right() {
 
 /// `layout.publication` itself lines the footer's right column up with a legend placed at the
 /// right (#1379): with `"arrangement": "legendRight"` and a legend wide enough to start between
-/// 45 % and 70 % of the frame's width, the Reference Box starts where the Legend Box does.
+/// 45 % and 70 % of the frame's width, the Reference Box starts where the Legend Box does. The
+/// sample's lakes stay listed (`"contextInLegend": true`): the legend's widths these names give
+/// are measured with them.
 #[test]
 fn a_publication_footer_lines_up_with_its_legend() {
     let piaui = json!([-46.8, -11.6, -38.5, -2.2]);
@@ -47562,7 +47678,7 @@ fn a_publication_footer_lines_up_with_its_legend() {
         s.run("layer.rename", &json!({"layer": "Countries", "name": name})).unwrap();
         s.run(
             "layout.publication",
-            &json!({"profile": "a4-portrait", "extent": piaui, "arrangement": "legendRight", "author": "", "sources": "Natural Earth"}),
+            &json!({"profile": "a4-portrait", "extent": piaui, "arrangement": "legendRight", "author": "", "sources": "Natural Earth", "contextInLegend": true}),
         )
         .unwrap();
         let l = s.project.layouts.last().unwrap();

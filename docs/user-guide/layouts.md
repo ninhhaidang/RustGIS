@@ -103,6 +103,14 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
     ordinary elements, to move or delete as any other; `"veil": false` leaves the map unveiled and
     at its scale. If the legend or colorbar cannot fit, the result warns about clipping or resizing.
     A streamed layer still loading gets a fixed-size legend to adjust by hand.
+  - **Context and north**: the layers the placement takes as context around the data (polygons
+    only outlined, and polygons in one colour that run on past the frame beside a layer drawn by
+    classes or a raster) are left out of the legend too, which a warning names;
+    `"contextInLegend": true` lists them. A name is left out only when every layer shown under it
+    is context. When the extent spans 20° or more on its longer side (its width taken at its middle
+    latitude), the layout has no north arrow: the graticule gives north there, and one arrow can't
+    point north across the whole frame. A warning says so; `"northArrow": "always"` draws one, and
+    `"none"` leaves it out at any span.
   - **Decimal comma**: `"decimal": ","` prints the graticule, scale bar and colorbar numbers and
     `{scale}` with a decimal comma and points between thousands (`0,05`, `1:6.300.000`).
     `layout.page={"decimal": ","}` sets it on any layout; `"."` restores decimal points.
