@@ -1717,6 +1717,12 @@ fn wgs84_like(datum: Option<&Node>) -> Option<&'static str> {
         | "SIRGAS_2000"
         | "SIRGAS2000"
         | "SISTEMA_DE_REFERENCIA_GEOCENTRICO_PARA_LAS_AMERICAS_2000" => Some("+ellps=GRS80 +towgs84=0,0,0"),
+        // TWD97, Taiwan's datum (EPSG:3824), including the 2020 realization the Ministry of the
+        // Interior's own data uses (`GCS_TWD97[2020]` on `D_TWD_1997`): EPSG's TWD97 to WGS 84
+        // (1) (EPSG:3830) is null too, to about 1 m. On GRS 1980 only, like MAGNA below.
+        "TWD_1997" | "TWD97" | "TAIWAN_DATUM_1997" => datum
+            .filter(|d| ellipsoid_matches(d, "+proj=longlat +ellps=GRS80"))
+            .map(|_| "+ellps=GRS80 +towgs84=0,0,0"),
         // MAGNA-SIRGAS, Colombia's densification of SIRGAS (EPSG:4686, and its 2018 realization):
         // null too, as the bundled EPSG:9377 (GRS 1980, no shift) has it (#1476), on that
         // ellipsoid only, so a definition naming another one keeps it.
@@ -2929,6 +2935,33 @@ pub(crate) mod tests {
         // The EPSG datum name, as OGC WKT writes it.
         let ogc = geographic.replace("D_GDA2020", "Geocentric_Datum_of_Australia_2020");
         assert_eq!(read_wkt(&ogc), Ok((Crs::LonLat, None)));
+    }
+
+    #[test]
+    fn twd97_reads_as_wgs_84_without_a_note() {
+        // The .prj of the Ministry of the Interior's county boundaries (TWD97 2020 realization).
+        let geographic = r#"GEOGCS["GCS_TWD97[2020]",DATUM["D_TWD_1997",SPHEROID["GRS_1980",6378137.0,298.257222101]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]]"#;
+        assert_eq!(read_wkt(geographic), Ok((Crs::LonLat, None)));
+        // The EPSG datum name, as OGC WKT writes it.
+        let ogc = geographic.replace("D_TWD_1997", "Taiwan_Datum_1997");
+        assert_eq!(read_wkt(&ogc), Ok((Crs::LonLat, None)));
+        // TWD97 / TM2 zone 121 (EPSG:3826), as ArcGIS writes it: no note either.
+        let tm2 = r#"PROJCS["TWD_1997_TM_Taiwan",GEOGCS["GCS_TWD_1997",DATUM["D_TWD_1997",SPHEROID["GRS_1980",6378137.0,298.257222101]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],PARAMETER["False_Easting",250000.0],PARAMETER["False_Northing",0.0],PARAMETER["Central_Meridian",121.0],PARAMETER["Scale_Factor",0.9999],PARAMETER["Latitude_Of_Origin",0.0],UNIT["Meter",1.0]]"#;
+        let (crs, note) = read_wkt(tm2).unwrap();
+        assert_eq!(note, None);
+        // Taipei 101, about (306 km, 2,770 km) in TM2.
+        let lonlat = crs.transformer().unwrap().to_lonlat(Coord::new(306_000.0, 2_770_000.0)).unwrap();
+        assert!((lonlat.x - 121.56).abs() < 0.01 && (lonlat.y - 25.03).abs() < 0.01, "{lonlat:?}");
+        // TWD67, the older datum on another ellipsoid, still gets its note.
+        let twd67 = r#"GEOGCS["GCS_TWD_1967",DATUM["D_TWD_1967",SPHEROID["GRS_1967_Truncated",6378160.0,298.25]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]]"#;
+        assert!(read_wkt(twd67).unwrap().1.is_some_and(|n| n.contains("D_TWD_1967")));
+        // A file that names TWD97 on another spheroid keeps it, and its note.
+        let other =
+            geographic.replace(r#"SPHEROID["GRS_1980",6378137.0,298.257222101]"#, r#"SPHEROID["International_1924",6378388.0,297.0]"#);
+        let (crs, note) = read_wkt(&other).unwrap();
+        assert!(note.is_some_and(|n| n.contains("D_TWD_1997")));
+        let def = crs.custom_def().unwrap();
+        assert!((def.proj4.contains("6378388") || def.proj4.contains("+ellps=intl")) && !def.proj4.contains("GRS80"), "{}", def.proj4);
     }
 
     #[test]
