@@ -190,6 +190,9 @@ text against a pattern of many `%`s) is unknown.
 
 ## Calculate Field
 
+Calculate Field fills an existing field; it does not create one. If the target field is missing,
+the error points to **Add Field** (`edit.addField`): create the field first, then calculate it.
+
 As the expression is typed, a list under the cursor suggests what can go there: the fields
 (quoted when their name needs it: `"Pop Est"`), the functions, the variables and the keywords
 that start with what's typed, each with its help beside (a function's signature, description

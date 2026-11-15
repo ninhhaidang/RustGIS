@@ -42,8 +42,10 @@ pub fn run(s: &mut Session, p: &Json) -> CmdResult {
     if !properties(l.geometry_type()).iter().any(|(k, _)| *k == property) {
         return Err("property does not match the layer geometry".into());
     }
-    if !units(property).iter().any(|(k, _)| *k == unit) {
-        return Err("unit does not match the property".into());
+    let accepted = units(property);
+    if !accepted.iter().any(|(k, _)| *k == unit) {
+        let valid = accepted.iter().map(|(key, _)| *key).collect::<Vec<_>>().join(", ");
+        return Err(format!("unit does not match the property; valid units: {valid}"));
     }
     let transformer = if unit == "projected" {
         let code = p.get("epsg").and_then(Json::as_u64).and_then(|n| u32::try_from(n).ok()).ok_or("EPSG code is required")?;

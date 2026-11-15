@@ -207,3 +207,27 @@ fn area_in_square_miles_is_one_per_640_acres() {
     let miles = s.map().layer(id).unwrap().dataset.value(0, 0).as_f64().unwrap();
     assert!((acres / miles - 640.0).abs() < 1e-10);
 }
+
+/// The rejected unit lists only the requested property's units, including coordinate choices.
+#[test]
+fn invalid_unit_lists_the_property_units() {
+    for (kind, property, invalid, valid) in [
+        (GeometryType::Polygon, "area", "sqft", "m2, km2, ha, ac, ft2, mi2"),
+        (GeometryType::Polygon, "perimeter", "m2", "m, km, ft, mi"),
+        (GeometryType::Polyline, "length", "m2", "m, km, ft, mi"),
+        (GeometryType::Point, "x", "m", "deg, projected"),
+    ] {
+        let (mut s, id) = session(kind, vec![None]);
+        let error = s
+            .run(
+                "edit.calculateGeometry",
+                &json!({
+                    "layer": id, "field": "result", "overwrite": true,
+                    "property": property, "unit": invalid, "scope": "all"
+                }),
+            )
+            .unwrap_err();
+        assert_eq!(error, format!("unit does not match the property; valid units: {valid}"));
+        assert_eq!(s.map().layer(id).unwrap().dataset.value(0, 0), &Value::Float(99.0));
+    }
+}

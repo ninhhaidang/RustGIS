@@ -1205,7 +1205,8 @@ fn calculate_field(s: &mut Session, p: &Json) -> CmdResult {
         return result;
     }
     let t = write_target(s, p)?;
-    let fi = field_of(s, t, ps(p, "field").ok_or("field is required")?)?;
+    let field = ps(p, "field").ok_or("field is required")?;
+    let fi = data(s, t)?.field_index(field).ok_or_else(|| format!("no field named '{field}'; use Add Field (edit.addField) first"))?;
     let expr = ps(p, "expression").map(str::trim).filter(|e| !e.is_empty()).ok_or("expression is required")?.to_string();
     let Target::Layer(id) = t else {
         editing_on(s)?;
@@ -1406,6 +1407,38 @@ fn split_op(e: &str) -> (&str, Option<char>, Option<&str>) {
 mod tests {
     use super::*;
     use rustgis_data::{Dataset, Field};
+
+    /// Calculate Field never adds fields: layer and table callers get the same next step.
+    #[test]
+    fn missing_calculation_field_points_to_add_field() {
+        for table in [false, true] {
+            let mut s = Session::new(crate::Project::default());
+            let mut ds = Dataset::new("calc", GeometryType::None, vec![Field::new("n", FieldType::Double)]);
+            ds.push(None, vec![Value::Float(7.0)]);
+            let target = if table {
+                json!({"table": s.project.add_table(ds)})
+            } else {
+                let id = s.map_mut().add_dataset(ds);
+                s.active_layer = Some(id);
+                json!({"layer": id})
+            };
+            let mut p = target.clone();
+            p["field"] = json!("T2");
+            p["expression"] = json!("n * 2");
+            let error = s.run("edit.calculateField", &p).unwrap_err();
+            assert_eq!(error, "no field named 'T2'; use Add Field (edit.addField) first");
+            let t = super::target(&s, &target).unwrap();
+            assert!(data(&s, t).unwrap().field_index("T2").is_none());
+            assert_eq!(data(&s, t).unwrap().value(0, 0), &Value::Float(7.0));
+            let mut add = target;
+            add["name"] = json!("T2");
+            add["type"] = json!("double");
+            s.run("edit.addField", &add).unwrap();
+            s.run("edit.calculateField", &p).unwrap();
+            let ds = data(&s, t).unwrap();
+            assert_eq!(ds.value(0, ds.field_index("T2").unwrap()), &Value::Float(14.0));
+        }
+    }
 
     /// Not a number is null in a whole-number field, said as such, not past its range; a number
     /// past the range is null where it's said, and at the range's end elsewhere, as before.
