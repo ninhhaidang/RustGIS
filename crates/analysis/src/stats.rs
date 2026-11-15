@@ -430,13 +430,34 @@ impl Column {
 /// value that isn't a finite number counts as null); another gives each value's text, and a date
 /// field its dates as well.
 pub fn column(ds: &Dataset, rows: &[usize], field: usize, as_numbers: bool) -> Column {
+    match read_column(ds, rows, field, as_numbers, || Ok::<(), std::convert::Infallible>(())) {
+        Ok(column) => column,
+        Err(never) => match never {},
+    }
+}
+
+/// Reads a statistics column with cancellation between bounded groups of rows.
+pub(crate) fn checked_column(ds: &Dataset, rows: &[usize], field: usize, as_numbers: bool) -> Result<Column, String> {
+    Ok(read_column(ds, rows, field, as_numbers, crate::control::check)?)
+}
+
+fn read_column<E>(
+    ds: &Dataset,
+    rows: &[usize],
+    field: usize,
+    as_numbers: bool,
+    mut check: impl FnMut() -> Result<(), E>,
+) -> Result<Column, E> {
     let numeric = as_numbers || ds.fields.get(field).is_some_and(|f| f.ty.is_numeric());
     let mut nulls = 0;
     if numeric {
         let mut out = Vec::with_capacity(rows.len());
         let mut whole = Vec::with_capacity(rows.len());
         let mut rounded_texts = 0;
-        for &r in rows {
+        for (position, &r) in rows.iter().enumerate() {
+            if position % 4096 == 0 {
+                check()?;
+            }
             let v = ds.value(r, field);
             match v.as_f64() {
                 Some(x) => {
@@ -466,11 +487,15 @@ pub fn column(ds: &Dataset, rows: &[usize], field: usize, as_numbers: bool) -> C
             column.whole = whole;
         }
         column.rounded_texts = rounded_texts;
-        column
+        check()?;
+        Ok(column)
     } else {
         let mut out = Vec::with_capacity(rows.len());
         let mut dates = Vec::new();
-        for &r in rows {
+        for (position, &r) in rows.iter().enumerate() {
+            if position % 4096 == 0 {
+                check()?;
+            }
             match ds.value(r, field) {
                 Value::Null => nulls += 1,
                 v => {
@@ -486,8 +511,140 @@ pub fn column(ds: &Dataset, rows: &[usize], field: usize, as_numbers: bool) -> C
         if dates.len() == column_len(&column) {
             column.dates = dates;
         }
-        column
+        check()?;
+        Ok(column)
     }
+}
+
+/// A stable sort with Cancel between small sorts, merge runs and final copies. Indices are
+/// merged instead of cloned strings, so each output value is copied only once. The two index
+/// buffers cost two `usize`s per value (16 bytes on a 64-bit host), in addition to the output;
+/// this trades scratch space for cancellation without cloning text at each merge pass.
+fn checked_sorted<T: Clone>(values: &[T], compare: impl Fn(&T, &T) -> Ordering) -> Result<Vec<T>, String> {
+    const BLOCK: usize = 4096;
+    let mut order = Vec::with_capacity(values.len());
+    for position in 0..values.len() {
+        if position % BLOCK == 0 {
+            crate::control::check()?;
+        }
+        order.push(position);
+    }
+    let by_index =
+        |a: &usize, b: &usize| values.get(*a).zip(values.get(*b)).map_or_else(|| a.cmp(b), |(x, y)| compare(x, y).then_with(|| a.cmp(b)));
+    for block in order.chunks_mut(BLOCK) {
+        crate::control::check()?;
+        block.sort_unstable_by(&by_index);
+    }
+    let mut scratch = Vec::with_capacity(order.len());
+    let mut width = BLOCK;
+    while width < order.len() {
+        scratch.clear();
+        for start in (0..order.len()).step_by(width.saturating_mul(2)) {
+            let middle = start.saturating_add(width).min(order.len());
+            let end = middle.saturating_add(width).min(order.len());
+            let (mut left, mut right) = (start, middle);
+            while left < middle || right < end {
+                if scratch.len() % BLOCK == 0 {
+                    crate::control::check()?;
+                }
+                let take_left =
+                    right == end || (left < middle && order.get(left).zip(order.get(right)).is_some_and(|(a, b)| by_index(a, b).is_le()));
+                let at = if take_left {
+                    let at = left;
+                    left += 1;
+                    at
+                } else {
+                    let at = right;
+                    right += 1;
+                    at
+                };
+                scratch.push(*order.get(at).ok_or("a statistics sort index is missing")?);
+            }
+        }
+        std::mem::swap(&mut order, &mut scratch);
+        width = width.saturating_mul(2);
+    }
+    let mut sorted = Vec::with_capacity(order.len());
+    for (position, index) in order.into_iter().enumerate() {
+        if position % BLOCK == 0 {
+            crate::control::check()?;
+        }
+        sorted.push(values.get(index).ok_or("a statistics sort index is outside its column")?.clone());
+    }
+    crate::control::check()?;
+    Ok(sorted)
+}
+
+/// Computes with cancellation during the column's potentially long ordering passes. A single
+/// aggregate reduction after ordering finishes before the final Cancel check.
+pub(crate) fn checked_compute(stat: Stat, column: &Column, separator: &str) -> Result<Value, String> {
+    crate::control::check()?;
+    let frequency = matches!(stat, Stat::Mode | Stat::Minority | Stat::Unique);
+    let ordered =
+        frequency || (matches!(stat, Stat::Median | Stat::Percentile(_) | Stat::Iqr) && matches!(column.values, Values::Numbers(_)));
+    if ordered && !column.dates.is_empty() {
+        if stat == Stat::Unique {
+            let mut keys = Vec::with_capacity(column.dates.len());
+            for (position, date) in column.dates.iter().enumerate() {
+                if position % 4096 == 0 {
+                    crate::control::check()?;
+                }
+                keys.extend(date.temporal_key());
+            }
+            let mut keys = checked_sorted(&keys, Ord::cmp)?;
+            keys.dedup();
+            crate::control::check()?;
+            return Ok(count(keys.len()));
+        }
+        if matches!(stat, Stat::Mode | Stat::Minority) {
+            let dates = checked_sorted(&column.dates, |a, b| a.temporal_key().cmp(&b.temporal_key()))?;
+            let value = pick_run_by(&dates, stat == Stat::Mode, |a, b| a.temporal_key() == b.temporal_key()).cloned().unwrap_or_default();
+            crate::control::check()?;
+            return Ok(value);
+        }
+    }
+    // Rounding checks sort exact percentile ranks only when some whole value exceeds 2^53.
+    let mut exact_needed = frequency;
+    if ordered
+        && !frequency
+        && !column.whole.is_empty()
+        && let Values::Numbers(values) = &column.values
+    {
+        for (position, (number, whole)) in values.iter().zip(&column.whole).enumerate() {
+            if position % 4096 == 0 {
+                crate::control::check()?;
+            }
+            if whole.map(i128::from).or_else(|| decimal_whole(*number)).is_some_and(|n| n.unsigned_abs() > 1 << 53) {
+                exact_needed = true;
+                break;
+            }
+        }
+    }
+    if exact_needed
+        && !column.whole.is_empty()
+        && column.exact.get().is_none()
+        && let Values::Numbers(values) = &column.values
+    {
+        let mut exact = Vec::with_capacity(values.len());
+        for (position, (value, whole)) in values.iter().zip(&column.whole).enumerate() {
+            if position % 4096 == 0 {
+                crate::control::check()?;
+            }
+            exact.push(whole.map_or(Value::Float(*value), Value::Int));
+        }
+        let _ = column.exact.set(checked_sorted(&exact, cmp_number)?);
+    }
+    let sorted_needed = !matches!(stat, Stat::Unique | Stat::Mode | Stat::Minority) || column.exact.get().is_none();
+    if ordered && sorted_needed && column.sorted.get().is_none() {
+        let sorted = match &column.values {
+            Values::Numbers(values) => Values::Numbers(checked_sorted(values, f64::total_cmp)?),
+            Values::Texts(values) => Values::Texts(checked_sorted(values, Ord::cmp)?),
+        };
+        let _ = column.sorted.set(sorted);
+    }
+    let value = compute(stat, column, separator);
+    crate::control::check()?;
+    Ok(value)
 }
 
 /// A count as a value.
@@ -540,7 +697,9 @@ pub fn compute(stat: Stat, column: &Column, separator: &str) -> Value {
         }
         (_, Values::Numbers(v)) => {
             // MODE and MINORITY tell whole numbers apart exactly, as UNIQUE does.
-            if let (Stat::Mode | Stat::Minority, Some(e)) = (stat, column.exact()) {
+            if matches!(stat, Stat::Mode | Stat::Minority)
+                && let Some(e) = column.exact()
+            {
                 return number(pick_run_by(e, stat == Stat::Mode, |a, b| cmp_number(a, b).is_eq()).and_then(Value::as_f64));
             }
             let sorted = || match column.sorted() {
@@ -852,6 +1011,45 @@ fn percentile(s: &[f64], k: f64) -> Option<f64> {
 mod tests {
     use super::*;
     use rustgis_data::{Field, GeometryType};
+
+    #[test]
+    fn statistics_preparation_checks_cancel_between_rows_and_sort_runs() {
+        let mut ds = Dataset::new("numbers", GeometryType::None, vec![Field::new("n", FieldType::Integer)]);
+        for n in 0..10_000 {
+            ds.push(None, vec![Value::Int(n)]);
+        }
+        let rows: Vec<usize> = (0..ds.features.len()).collect();
+        let cancelled = crate::control::Control::cancelled_at_look(2);
+        {
+            let _installed = crate::control::install(Some(cancelled.clone()));
+            assert!(checked_column(&ds, &rows, 0, false).is_err());
+        }
+        assert_eq!(cancelled.looked(), 2);
+        let values: Vec<i64> = (0..10_000).rev().map(|n| n % 701).collect();
+        let mut expected = values.clone();
+        expected.sort();
+        assert_eq!(checked_sorted(&values, Ord::cmp).unwrap(), expected);
+        let cancelled = crate::control::Control::cancelled_at_look(7);
+        {
+            let _installed = crate::control::install(Some(cancelled.clone()));
+            assert!(checked_sorted(&values, Ord::cmp).is_err());
+        }
+        assert_eq!(cancelled.looked(), 7);
+        for offset in [0, 1i64 << 53] {
+            let mut values = Dataset::new("values", GeometryType::None, vec![Field::new("n", FieldType::Integer)]);
+            for n in 0..10_000 {
+                values.push(None, vec![Value::Int(offset + n)]);
+            }
+            for stat in [Stat::Median, Stat::Percentile(37), Stat::Mode, Stat::Minority, Stat::Unique, Stat::Iqr, Stat::Sum] {
+                let ordinary = column(&values, &rows, 0, false);
+                let checked = column(&values, &rows, 0, false);
+                let expected = compute(stat, &ordinary, ",");
+                let actual = checked_compute(stat, &checked, ",").unwrap();
+                assert_eq!(actual, expected, "{stat:?}, offset {offset}");
+                assert_eq!(rounded(stat, &checked, &actual), rounded(stat, &ordinary, &expected));
+            }
+        }
+    }
 
     /// Numbers as a group's values.
     fn nums(v: &[f64]) -> Values {

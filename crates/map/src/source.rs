@@ -1792,6 +1792,26 @@ impl SourceLayer {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn whole_layer_report_keeps_effective_conversion_notes_and_dimensions() {
+        use rustgis_data::{Dataset, GeometryType};
+        let mut original = Dataset::new("converted", GeometryType::Point, Vec::new());
+        original.push(Some(rustgis_data::Geometry::Point(rustgis_geom::Coord::new(1.0, 2.0))), Vec::new());
+        let bytes = std::sync::Arc::new(rustgis_data::source::fgb::write(&original).unwrap());
+        let handle = rustgis_data::source::open_shared("converted.fgb", bytes.clone(), None).unwrap();
+        let mut source = super::SourceLayer::from_bytes("converted.fgb", bytes, None, handle);
+        let mut info = source.info().unwrap().clone();
+        info.notes.push("conversion left out 2 source features".into());
+        info.zm_dropped = true;
+        source.conversion_info = Some(info);
+        let mut layer = crate::Layer::new(1, Dataset::new("layer", GeometryType::Point, Vec::new()));
+        layer.source = Some(source);
+        let (dataset, report) = layer.load_all_reported().unwrap();
+        assert!(dataset.zm_dropped);
+        assert_eq!(report.messages.iter().filter(|n| n.contains("conversion left out 2 source features")).count(), 1);
+        assert_eq!(dataset.features.len(), 1);
+    }
+
     /// Project-restored disk and embedded date sources schedule their classification, share
     /// the pending open across copies, and expose typed dates only after it lands.
     #[cfg(not(target_arch = "wasm32"))]

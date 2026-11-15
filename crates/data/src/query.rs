@@ -232,26 +232,44 @@ fn other_date_form(t: &str) -> bool {
 
 /// Whether `f` works on numbers, so it gives null for a date.
 fn number_func(f: Func) -> bool {
-    matches!(
-        f,
+    match f {
         Func::Abs
-            | Func::Round
-            | Func::Floor
-            | Func::Ceil
-            | Func::Sqrt
-            | Func::Exp
-            | Func::Ln
-            | Func::Log10
-            | Func::Min
-            | Func::Max
-            | Func::Clamp
-            | Func::ScaleLinear
-            | Func::ScaleExp
-            | Func::ToInt
-            | Func::ToReal
-            | Func::ColorRgb
-            | Func::ColorRgba
-    )
+        | Func::Round
+        | Func::Floor
+        | Func::Ceil
+        | Func::Sqrt
+        | Func::Exp
+        | Func::Ln
+        | Func::Log10
+        | Func::Min
+        | Func::Max
+        | Func::Clamp
+        | Func::ScaleLinear
+        | Func::ScaleExp
+        | Func::ToInt
+        | Func::ToReal
+        | Func::ColorRgb
+        | Func::ColorRgba => true,
+        // Keep this exhaustive: a new function must decide whether dates are valid arguments.
+        // text_or_date separately excludes numeric-result functions that do not take numbers.
+        Func::If
+        | Func::Coalesce
+        | Func::NullIf
+        | Func::Pi
+        | Func::ToString
+        | Func::Length
+        | Func::Upper
+        | Func::Lower
+        | Func::Trim
+        | Func::Substr
+        | Func::Left
+        | Func::Right
+        | Func::Replace
+        | Func::Concat
+        | Func::Area
+        | Func::Perimeter
+        | Func::LineLength => false,
+    }
 }
 
 /// A function's catalog entry: how it is called and what it gives. The parser reads it (a call

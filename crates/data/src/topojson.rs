@@ -281,6 +281,23 @@ fn arcs_used(g: &Json, depth: usize, used: &mut std::collections::BTreeSet<usize
     }
 }
 
+/// Properties on nested geometries don't belong to the enclosing feature's property object.
+/// Count what rebuilding cannot retain; JSON parsing already limits nesting, and this walk
+/// independently stops at that same bound.
+fn nested_properties(g: &Json, depth: usize) -> usize {
+    if depth >= 128 {
+        return 0;
+    }
+    g.get("geometries")
+        .and_then(Json::as_array)
+        .into_iter()
+        .flatten()
+        .map(|child| {
+            child.get("properties").and_then(Json::as_object).map_or(0, Map::len).saturating_add(nested_properties(child, depth + 1))
+        })
+        .fold(0usize, usize::saturating_add)
+}
+
 /// A transform's scale and translate, for x and y; `None` when either can't be read.
 fn read_transform(t: &Json) -> Option<([f64; 2], [f64; 2])> {
     let s = t.get("scale")?.as_array()?;
@@ -370,11 +387,12 @@ fn read_with(file_name: &str, text: &str, budget: usize) -> Result<Vec<(Dataset,
         };
         // Geometries that couldn't be read, those left out at the coordinate limit, and the arcs
         // drawn through by those rebuilt.
-        let (mut bad, mut cut) = (0usize, 0usize);
+        let (mut bad, mut cut, mut properties_left_out) = (0usize, 0usize, 0usize);
         let mut used = std::collections::BTreeSet::new();
         let features: Vec<Json> = members
             .into_iter()
             .map(|g| {
+                properties_left_out = properties_left_out.saturating_add(nested_properties(g, 0));
                 let geometry = if empty_on_purpose(g) {
                     Json::Null
                 } else {
@@ -405,6 +423,14 @@ fn read_with(file_name: &str, text: &str, budget: usize) -> Result<Vec<(Dataset,
         let fc = json!({"type": "FeatureCollection", "features": features});
         let title = if objects.len() == 1 { stem.to_string() } else { format!("{stem} {name}") };
         let (ds, mut rep) = crate::io::read_geojson(&fc.to_string(), &title)?;
+        if properties_left_out > 0 {
+            let what = if properties_left_out == 1 {
+                "1 property on a nested geometry was".to_string()
+            } else {
+                format!("{properties_left_out} properties on nested geometries were")
+            };
+            rep.messages.push(format!("{what} left out: only each feature's own properties are read"));
+        }
         // Geometries left out are said with why; their features are kept, with their attributes,
         // so they aren't counted as skipped.
         if bad > 0 {
@@ -458,6 +484,27 @@ mod tests {
 {"type":"LineString","properties":{"prop0":"value0","prop1":0},"arcs":[0]},
 {"type":"Polygon","properties":{"prop0":"value0","prop1":{"this":"that"}},"arcs":[[-2]]}]}},
 "arcs":[[[4000,0],[1999,9999],[2000,-9999],[2000,9999]],[[0,0],[0,9999],[2000,0],[0,-9999],[-2000,0]]]}"#;
+
+    #[test]
+    fn nested_geometry_properties_are_said_without_losing_outer_properties() {
+        let topology = |nested: bool| {
+            json!({"type":"Topology", "arcs":[], "objects":{"o":{
+            "type":"GeometryCollection", "geometries":[{"type":"GeometryCollection", "properties":{"outer":"kept"},
+                "geometries":[{"type":"Point", "coordinates":[1,2], "properties":if nested { json!({"inner":42}) } else { json!({}) }}]}]
+        }}}).to_string()
+        };
+        for nested in [false, true] {
+            let layers = read("nested.topojson", &topology(nested)).unwrap();
+            let (ds, report) = &layers[0];
+            assert_eq!(ds.features.len(), 1);
+            assert_eq!(ds.value(0, ds.field_index("outer").unwrap()), &crate::Value::Text("kept".into()));
+            assert_eq!(ds.features[0].geometry, Some(Geometry::Point(Coord::new(1.0, 2.0))));
+            assert_eq!(report.messages.iter().any(|m| m.contains("1 property on a nested geometry was left out")), nested);
+            if !nested {
+                assert!(report.messages.is_empty(), "{report:?}");
+            }
+        }
+    }
 
     #[test]
     fn reads_the_specification_example() {

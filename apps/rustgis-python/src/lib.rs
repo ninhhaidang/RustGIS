@@ -167,26 +167,47 @@ impl Engine {
                     .ok_or_else(|| format!("no layer named '{name}'")),
             }?;
             if !selected && found.is_streamed() {
-                let (ds, unread) = found.load_all_counted().map_err(|e| format!("{}: {e}", found.name))?;
+                // Source metadata was reported when this layer opened. A fresh whole read may
+                // discover further notes, which must survive this boundary without replaying those.
+                let opened_notes: Vec<String> = found
+                    .source
+                    .as_ref()
+                    .and_then(|source| source.info())
+                    .map(|info| info.notes.iter().map(|note| format!("{}: {note}", info.name)).collect())
+                    .unwrap_or_default();
+                let (ds, report) = found.load_all_reported().map_err(|e| format!("{}: {e}", found.name))?;
                 let name = found.name.clone();
-                match unread.rows {
+                match report.skipped {
                     0 => {}
                     1 => session.warn(format!("{name}: 1 row couldn't be read and was left out")),
                     n => session.warn(format!("{name}: {n} rows couldn't be read and were left out")),
                 }
-                for dates in [unread.dates, unread.rounded].into_iter().flatten() {
-                    session.notify(format!("{name}: {dates}"), false);
+                for message in report.messages.into_iter().filter(|message| !opened_notes.contains(message)) {
+                    session.notify(message, false);
+                }
+                if let Some(note) = rustgis_engine::data::zm_export_note([&ds], &format!("{name} as GeoJSON")) {
+                    session.notify(note, false);
                 }
                 return Ok(rustgis_engine::data::io::to_geojson(&ds).to_string());
             }
             if !selected {
-                return Ok(rustgis_engine::data::io::to_geojson(&found.dataset).to_string());
+                let text = rustgis_engine::data::io::to_geojson(&found.dataset).to_string();
+                let note = rustgis_engine::data::zm_export_note([&found.dataset], &format!("{} as GeoJSON", found.name));
+                if let Some(note) = note {
+                    session.notify(note, false);
+                }
+                return Ok(text);
             }
             let mut ds = rustgis_engine::data::Dataset::new(found.name.clone(), found.geometry_type(), found.dataset.fields.clone());
+            ds.zm_dropped = found.dataset.zm_dropped;
             for f in found.selection.iter().filter_map(|r| found.dataset.features.get(*r)) {
                 ds.push(f.geometry.clone(), f.attrs.clone());
             }
-            Ok::<String, String>(rustgis_engine::data::io::to_geojson(&ds).to_string())
+            let text = rustgis_engine::data::io::to_geojson(&ds).to_string();
+            if let Some(note) = rustgis_engine::data::zm_export_note([&ds], &format!("{} as GeoJSON", ds.name)) {
+                session.notify(note, false);
+            }
+            Ok::<String, String>(text)
         });
         self.flush(py);
         result.map_err(RustGISError::new_err)

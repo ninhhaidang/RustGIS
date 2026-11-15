@@ -915,6 +915,7 @@ fn projected2(p: &Node) -> Result<Node, String> {
     let mut items = vec![Item::Node(geographic2(base, false)?)];
     let unit = cs_unit(p, &LENGTH_UNIT);
     let to_m = factor(unit).unwrap_or(1.0);
+    let unusable_unit = unit.is_some() && factor(unit).is_none();
     if let Some(conv) = p.child("CONVERSION") {
         let method = conv.child_of(&["METHOD", "PROJECTION"]);
         let mapped = method.and_then(|m| lookup(m, METHODS, |r| (r.0, r.1)));
@@ -948,7 +949,7 @@ fn projected2(p: &Node) -> Result<Node, String> {
             items.push(Item::Node(Node::new("PARAMETER", name, [Item::Num(v)])));
         }
     }
-    items.push(Item::Node(Node::new("UNIT", unit.map_or("metre", Node::title), [Item::Num(to_m)])));
+    items.push(Item::Node(Node::new("UNIT", unit.map_or("metre", Node::title), (!unusable_unit).then_some(Item::Num(to_m)))));
     items.extend(axes(p));
     items.extend(authority(p));
     Ok(Node::new("PROJCS", p.title(), items))
@@ -1228,6 +1229,15 @@ fn geographic(g: &Node) -> Result<Crs, String> {
 
 /// A projected system: by EPSG code for the common names, else as a PROJ definition.
 fn projected(p: &Node) -> Result<Crs, String> {
+    let invalid_unit = p.child("UNIT").is_some_and(|unit| unit.num(0).is_none());
+    let invalid_axis = p
+        .child("GEOGCS")
+        .and_then(|g| g.child("DATUM"))
+        .and_then(|datum| datum.child_of(&["SPHEROID", "ELLIPSOID"]))
+        .is_some_and(|ellipsoid| ellipsoid.num(0).is_none());
+    if invalid_unit || invalid_axis {
+        return Err("a projected system with a unit or datum radius that isn't a finite number isn't supported".into());
+    }
     let name = norm(p.title());
     let method = norm(p.child("PROJECTION").map_or("", Node::title));
     let pseudo = method == "MERCATOR_AUXILIARY_SPHERE" || method == "POPULAR_VISUALISATION_PSEUDO_MERCATOR";
@@ -4155,6 +4165,50 @@ pub(crate) mod tests {
     /// Web Mercator's codes with a shift of zero, as GDAL writes them, are Web Mercator. Read from
     /// their parameters, as Mercator on an ellipsoid, points would be 21 km off.
     #[test]
+    fn projected_systems_refuse_present_unusable_units_and_radii() {
+        for original in [ESRI_32631, ESRI_3857] {
+            for (from, to) in [
+                (r#"UNIT["Meter",1.0]]"#, r#"UNIT["Meter",1e400]]"#),
+                (r#"UNIT["Meter",1.0]]"#, r#"UNIT["Meter"]]"#),
+                ("6378137.0,298.257223563", "1e400,298.257223563"),
+            ] {
+                let malformed = original.replace(from, to);
+                assert_ne!(malformed, original);
+                assert!(crs_from_wkt(&malformed).is_err(), "{:?}", crs_from_wkt(&malformed));
+            }
+        }
+        let wkt2 = include_str!("wkt2_corpus.tsv")
+            .lines()
+            .find(|l| l.contains("Popular Visualisation Pseudo Mercator"))
+            .and_then(|l| l.rsplit('\t').next())
+            .unwrap();
+        let mut parsed = parse(wkt2).unwrap();
+        // Remove the projected authority: this checks its supplied definition, not trusted EPSG.
+        parsed.items.retain(|i| !matches!(i, Item::Node(n) if n.name.eq_ignore_ascii_case("ID")));
+        let unit = cs_unit(&parsed, &LENGTH_UNIT).unwrap();
+        let title = unit.title().to_string();
+        for numbers in [vec![], vec![Item::Num(f64::INFINITY)]] {
+            let mut malformed = parsed.clone();
+            for item in &mut malformed.items {
+                if let Item::Node(n) = item {
+                    if n.name.eq_ignore_ascii_case("LENGTHUNIT") {
+                        *n = Node::new("LENGTHUNIT", &title, numbers.clone());
+                    } else if n.name.eq_ignore_ascii_case("AXIS") {
+                        for nested in &mut n.items {
+                            if let Item::Node(unit) = nested
+                                && unit.name.eq_ignore_ascii_case("LENGTHUNIT")
+                            {
+                                *unit = Node::new("LENGTHUNIT", &title, numbers.clone());
+                            }
+                        }
+                    }
+                }
+            }
+            assert!(projected(&projected2(&malformed).unwrap()).is_err());
+        }
+    }
+
+    #[test]
     fn web_mercator_with_a_zero_shift_is_web_mercator() {
         // EPSG:3785, and GDAL 1's EPSG:900913.
         let popular = r#"PROJCS["Popular Visualisation CRS / Mercator",GEOGCS["Popular Visualisation CRS (deprecated)",DATUM["Popular_Visualisation_Datum",SPHEROID["Popular Visualisation Sphere",6378137,0,AUTHORITY["EPSG","7059"]],TOWGS84[0,0,0,0,0,0,0],AUTHORITY["EPSG","6055"]],PRIMEM["Greenwich",0,AUTHORITY["EPSG","8901"]],UNIT["degree",0.0174532925199433,AUTHORITY["EPSG","9122"]],AXIS["Latitude",NORTH],AXIS["Longitude",EAST],AUTHORITY["EPSG","4055"]],PROJECTION["Mercator_1SP"],PARAMETER["central_meridian",0],PARAMETER["scale_factor",1],PARAMETER["false_easting",0],PARAMETER["false_northing",0],UNIT["metre",1,AUTHORITY["EPSG","9001"]],AXIS["Easting",EAST],AXIS["Northing",NORTH],EXTENSION["PROJ4","+proj=merc +a=6378137 +b=6378137 +lat_ts=0 +lon_0=0 +x_0=0 +y_0=0 +k=1 +units=m +nadgrids=@null +wktext +no_defs"],AUTHORITY["EPSG","3785"]]"#;
@@ -4193,6 +4247,9 @@ pub(crate) mod tests {
             (r#""Central_Meridian",0.0"#, r#""Central_Meridian",10.0"#),
             (r#""Auxiliary_Sphere_Type",0.0"#, r#""Auxiliary_Sphere_Type",1.0"#),
             (r#"UNIT["Meter",1.0]]"#, r#"UNIT["Foot_US",0.3048006096012192]]"#),
+            (r#"UNIT["Meter",1.0]]"#, r#"UNIT["Meter",1e400]]"#),
+            (r#"UNIT["Meter",1.0]]"#, r#"UNIT["Meter"]]"#),
+            ("6378137.0,298.257223563", "1e400,298.257223563"),
         ] {
             let off = ESRI_3857.replace(from, to);
             assert_ne!(off, ESRI_3857, "{from}");

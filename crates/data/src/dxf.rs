@@ -1055,6 +1055,14 @@ struct Drawing {
     bad: usize,
 }
 
+/// The magnitude of an ACI color index (negative means its layer is off). The one signed
+/// integer without a positive counterpart is malformed and must not overflow while reading.
+/// When encountered in a layer definition or drawn entity it refuses the drawing rather than
+/// substituting a color. Skipped paper-space entities and unused blocks are not color-validated.
+fn color_magnitude(color: i64) -> Result<i64> {
+    color.checked_abs().ok_or_else(|| DataError::Format("DXF color index has no representable positive value".into()))
+}
+
 /// Reads the records of each section.
 fn drawing(records: &[Record]) -> Result<Drawing> {
     let mut d = Drawing { layers: HashMap::new(), blocks: HashMap::new(), entities: Vec::new(), unread: BTreeMap::new(), bad: 0 };
@@ -1081,7 +1089,7 @@ fn drawing(records: &[Record]) -> Result<Drawing> {
         match section {
             "TABLES" if r.kind == "LAYER" => {
                 if let Some(name) = g.s(2).map(str::trim) {
-                    let color = g.i(62).map(|c| c.abs()).unwrap_or(7);
+                    let color = g.i(62).map(color_magnitude).transpose()?.unwrap_or(7);
                     d.layers.insert(name.to_ascii_lowercase(), (name.to_string(), color, g.s(6).map(str::trim).unwrap_or("").to_string()));
                 }
             }
@@ -1267,7 +1275,7 @@ fn emit(
         let color = match e.color {
             0 => from.color.unwrap_or(7),
             256 => table.map(|(_, c, _)| *c).unwrap_or(7),
-            c => c.abs(),
+            c => color_magnitude(c)?,
         };
         if let Shape::Insert(ins) = &e.shape {
             // The contents of blocks (图块) are drawn only when asked for: left out, they are
@@ -1597,6 +1605,25 @@ mod tests {
     /// A DXF from (code, value) pairs.
     fn dxf(pairs: &[(i32, &str)]) -> Vec<u8> {
         pairs.iter().map(|(c, v)| format!("{c:>3}\n{v}\n")).collect::<String>().into_bytes()
+    }
+
+    #[test]
+    fn minimum_integer_color_is_refused_without_panicking() {
+        for (section, kind) in [("TABLES", "LAYER"), ("ENTITIES", "POINT")] {
+            let bytes = dxf(&[
+                (0, "SECTION"),
+                (2, section),
+                (0, kind),
+                (2, "Survey"),
+                (62, "-9223372036854775808"),
+                (10, "1"),
+                (20, "2"),
+                (0, "ENDSEC"),
+                (0, "EOF"),
+            ]);
+            let error = read("color.dxf", &bytes, &Options::default()).unwrap_err().to_string();
+            assert!(error.contains("color index"), "{section}: {error}");
+        }
     }
 
     fn sample() -> Vec<u8> {

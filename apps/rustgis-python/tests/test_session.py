@@ -3,6 +3,7 @@
 import json
 import shutil
 import subprocess
+import warnings
 
 import pytest
 
@@ -19,6 +20,18 @@ POINTS = {"type": "FeatureCollection", "features": [
 def sample():
     """A session with the World Atlas sample open."""
     return rustgis.Session(sample=True)
+
+
+def test_startup_plugin_failures_are_reported(monkeypatch):
+    monkeypatch.setattr(rustgis, "load_plugins", lambda: ["Survey: invalid cached blocklist"])
+    with pytest.warns(RuntimeWarning, match="Survey: invalid cached blocklist"):
+        session = rustgis.Session(plugins=True)
+    assert session.info()["layers"] == []
+    monkeypatch.setattr(rustgis, "load_plugins", lambda: [])
+    with warnings.catch_warnings(record=True) as seen:
+        warnings.simplefilter("always")
+        rustgis.Session(plugins=True)
+    assert not any(issubclass(warning.category, RuntimeWarning) for warning in seen)
 
 
 def test_version_matches_the_engine():
@@ -400,6 +413,26 @@ def test_a_layer_read_in_place_exports_its_whole_source(tmp_path):
     session.notices()
     assert len(layer.to_geojson()["features"]) == 2
     assert [text for text, _ in session.notices() if "1 row couldn't be read and was left out" in text]
+
+
+def test_geojson_export_reports_lost_heights_without_repeating_opening_notes(tmp_path):
+    for stream in (False, True):
+        session = rustgis.Session()
+        path = tmp_path / "heights.geojson"
+        path.write_text(json.dumps({"type": "FeatureCollection", "features": [{
+            "type": "Feature", "geometry": {"type": "Point", "coordinates": [1, 2, 3]}, "properties": {}
+        }]}))
+        layer = session.add_data(path, stream=stream)
+        opening = [text for text, _ in session.notices()]
+        exported = layer.to_geojson()
+        assert exported["features"][0]["geometry"]["coordinates"] == [1, 2]
+        notes = [text for text, _ in session.notices()]
+        assert any("as GeoJSON" in text and "no Z or M" in text for text in notes)
+        assert not set(opening).intersection(notes), "opening reader notes must not be replayed"
+        clean = session.add_geojson(POINTS, name="clean")
+        session.notices()
+        clean.to_geojson()
+        assert session.notices() == []
 
 
 def test_a_layer_of_another_session_is_refused(sample):

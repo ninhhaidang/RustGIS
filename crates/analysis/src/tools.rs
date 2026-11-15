@@ -2513,7 +2513,8 @@ const SPLIT_PART_CHUNK: usize = if cfg!(test) { 64 } else { 65_536 };
 /// as the other half holds of twice the largest input feature's and area's coordinates. Cancel
 /// is looked at, and progress counted, item by item in each step; one feature made ready, one
 /// area's union and one part are each a step without a look, which can be long for an area of
-/// many large polygons.
+/// many large polygons. Candidate ordering is another unchecked step, bounded by the
+/// layer's feature count when adding pole candidates; its reused buffer is sorted in place.
 fn split_on(inp: &dyn Inputs, p: &Json, threads: Option<usize>) -> Result<ToolResult, String> {
     let ds = input(inp, p, "input")?;
     if ds.geometry_type == GeometryType::None {
@@ -2534,6 +2535,7 @@ fn split_on(inp: &dyn Inputs, p: &Json, threads: Option<usize>) -> Result<ToolRe
     let mut groups: Vec<(String, Vec<usize>)> = Vec::new();
     let mut by_key: HashMap<(bool, String), usize> = HashMap::new();
     for (zi, z) in zones.iter().enumerate() {
+        crate::control::check()?;
         let Some(f) = sp.features.get(z.row) else { continue };
         let value = field.and_then(|i| f.attrs.get(i)).filter(|v| !v.is_null());
         // -0 is 0, in the key and the name alike.
@@ -2554,34 +2556,81 @@ fn split_on(inp: &dyn Inputs, p: &Json, threads: Option<usize>) -> Result<ToolRe
         }
     }
     let prefix = out_name(p, ds.name.clone());
-    let located: Vec<(usize, Extent)> =
-        rows(inp, p, "input", ds).into_iter().filter_map(|r| Some((r, ds.features.get(r)?.geometry.as_ref()?.extent()))).collect();
-    let index = ExtentIndex::new(located.iter().map(|(_, e)| *e));
+    let mut located = Vec::new();
+    for row in rows(inp, p, "input", ds) {
+        crate::control::check()?;
+        if let Some(geometry) = ds.features.get(row).and_then(|feature| feature.geometry.as_ref()) {
+            located.push((row, geometry.extent()));
+        }
+    }
+    let index = ExtentIndex::with_checks(located.iter().map(|(_, e)| *e), crate::control::check)?;
     // The input points at each pole: in a split polygon reaching it, at any longitude (#1033).
     let point = |r: usize| {
         ds.features.get(r).and_then(|f| f.geometry.as_ref()).is_some_and(|g| matches!(g, Geometry::Point(_) | Geometry::MultiPoint(_)))
     };
-    let points_at_poles = AtPoles::new(located.iter().map(|(r, e)| if point(*r) { poles(e) } else { (false, false) }));
+    let mut points_at_poles = AtPoles::default();
+    for (i, (row, extent)) in located.iter().enumerate() {
+        crate::control::check()?;
+        let (north, south) = if point(*row) { poles(extent) } else { (false, false) };
+        if north {
+            points_at_poles.north.push(i);
+        }
+        if south {
+            points_at_poles.south.push(i);
+        }
+    }
     // Each split area: its polygons, their extent and the poles they reach.
     let areas: Vec<(String, Vec<&Zone>, Extent, (bool, bool))> = groups
         .into_iter()
         .map(|(name, members)| {
-            let polys: Vec<&Zone> = members.iter().filter_map(|zi| zones.get(*zi)).collect();
-            let ext = polys.iter().fold(Extent::EMPTY, |e, z| e.union(&z.ext));
-            let reached = polys.iter().map(|z| poles(&z.ext)).fold((false, false), |(n, s), (zn, zs)| (n || zn, s || zs));
-            (name, polys, ext, reached)
+            crate::control::check()?;
+            let mut polys = Vec::new();
+            let mut ext = Extent::EMPTY;
+            let mut reached = (false, false);
+            for zi in members {
+                crate::control::check()?;
+                if let Some(zone) = zones.get(zi) {
+                    polys.push(zone);
+                    ext = ext.union(&zone.ext);
+                    let (north, south) = poles(&zone.ext);
+                    reached = (reached.0 || north, reached.1 || south);
+                }
+            }
+            Ok((name, polys, ext, reached))
         })
-        .collect();
+        .collect::<Result<_, String>>()?;
     // The input features an area meets, by their place in `located`, in the index's order.
-    let met_by = |ext: &Extent, reached: (bool, bool), cand_buf: &mut Vec<usize>| {
-        index.candidates_into(ext, cand_buf);
-        points_at_poles.add_to(reached, cand_buf);
-        cand_buf.retain(|&li| {
-            located.get(li).is_some_and(|(r, e)| {
+    let met_by = |ext: &Extent, reached: (bool, bool), cand_buf: &mut Vec<usize>| -> Result<(), String> {
+        index.checked_candidates_into(ext, cand_buf)?;
+        for rows in [reached.0.then_some(&points_at_poles.north), reached.1.then_some(&points_at_poles.south)].into_iter().flatten() {
+            for chunk in rows.chunks(4096) {
+                crate::control::check()?;
+                cand_buf.extend_from_slice(chunk);
+            }
+        }
+        if reached.0 || reached.1 {
+            cand_buf.sort_unstable();
+            crate::control::check()?;
+            cand_buf.dedup();
+        }
+        let mut kept = 0;
+        for position in 0..cand_buf.len() {
+            if position % 4096 == 0 {
+                crate::control::check()?;
+            }
+            let Some(li) = cand_buf.get(position).copied() else { continue };
+            if located.get(li).is_some_and(|(r, e)| {
                 ds.features.get(*r).is_some_and(|f| f.geometry.is_some())
                     && (e.intersects(ext) || (point(*r) && meet_at_a_pole(poles(e), reached)))
-            })
-        });
+            }) {
+                if let Some(slot) = cand_buf.get_mut(kept) {
+                    *slot = li;
+                }
+                kept += 1;
+            }
+        }
+        cand_buf.truncate(kept);
+        Ok(())
     };
     // Which features some area meets, and how many parts there are to make: looked up area by
     // area (the index's lookups, quick), counted area by area, with Cancel looked at for each and
@@ -2593,7 +2642,7 @@ fn split_on(inp: &dyn Inputs, p: &Json, threads: Option<usize>) -> Result<ToolRe
     for (done, (_, _, ext, reached)) in areas.iter().enumerate() {
         crate::control::check()?;
         crate::control::reached(done);
-        met_by(ext, *reached, &mut cand_buf);
+        met_by(ext, *reached, &mut cand_buf)?;
         pairs = pairs.saturating_add(cand_buf.len());
         for (k, &li) in cand_buf.iter().enumerate() {
             if k % 4096 == 4095 {
@@ -2685,7 +2734,7 @@ fn split_on(inp: &dyn Inputs, p: &Json, threads: Option<usize>) -> Result<ToolRe
         };
         let mut work: Vec<(usize, usize)> = Vec::new();
         for (ai, (_, _, ext, reached)) in batch.iter().enumerate() {
-            met_by(ext, *reached, &mut cand_buf);
+            met_by(ext, *reached, &mut cand_buf)?;
             for &li in &cand_buf {
                 work.push((ai, li));
                 if work.len() >= SPLIT_PART_CHUNK {
@@ -2778,8 +2827,8 @@ fn dissolve(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
         if !requests.is_empty() {
             record_order(&mut records);
             // Each record is in one group: counted here, each is counted once.
-            rounded.count_texts(ds, &records, &requests, false);
-            attrs.extend(statistic_values(ds, &records, &requests, false, separator, &mut rounded));
+            rounded.count_texts(ds, &records, &requests, false)?;
+            attrs.extend(statistic_values(ds, &records, &requests, false, separator, &mut rounded)?);
         }
         out.push(from_multipolygon(&u), attrs);
     }
@@ -5114,14 +5163,14 @@ fn count_points_on(inp: &dyn Inputs, p: &Json, threads: Option<usize>) -> Result
         out.fields.extend(added);
         // A point in several overlapping polygons is read for each of them: counted over the
         // points, not the polygons' lists, each is counted once.
-        rounded.count_texts(pts, &summarised, &requests, false);
+        rounded.count_texts(pts, &summarised, &requests, false)?;
         let width = out.fields.len();
         for (f, mut records) in out.features.iter_mut().zip(members) {
             if f.attrs.len() < width {
                 f.attrs.resize(width, Value::Null);
             }
             record_order(&mut records);
-            let values = statistic_values(pts, &records, &requests, false, separator, &mut rounded);
+            let values = statistic_values(pts, &records, &requests, false, separator, &mut rounded)?;
             for (i, v) in values.into_iter().enumerate() {
                 if let Some(slot) = f.attrs.get_mut(first + i) {
                     *slot = v;
@@ -5497,11 +5546,11 @@ fn summary_statistics(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> 
     rs.sort_unstable();
     rs.dedup();
     let mut rounded = Rounded::new(requests.len());
-    rounded.count_texts(ds, &rs, &requests, as_numbers);
+    rounded.count_texts(ds, &rs, &requests, as_numbers)?;
     for group in stats::group_rows(ds, &rs, &cases) {
         let mut row = group.key;
         row.push(stats::count(group.rows.len()));
-        row.extend(statistic_values(ds, &group.rows, &requests, as_numbers, separator, &mut rounded));
+        row.extend(statistic_values(ds, &group.rows, &requests, as_numbers, separator, &mut rounded)?);
         // One past the last id: `push` would search them all for each group.
         out.push_next(None, row);
     }
@@ -5548,7 +5597,7 @@ impl Rounded {
     /// records `rows` are whole numbers written as text past the i64 range, read as decimals.
     /// Called once over the records a tool reads, each once, so a value is counted once however
     /// many groups (Summarize Within's polygons) it is summarised in.
-    fn count_texts(&mut self, ds: &Dataset, rows: &[usize], requests: &[crate::stats::Request], as_numbers: bool) {
+    fn count_texts(&mut self, ds: &Dataset, rows: &[usize], requests: &[crate::stats::Request], as_numbers: bool) -> Result<(), String> {
         // Each field once, in the requests' order, which names them in the notice.
         let mut fields: Vec<usize> = Vec::new();
         for r in requests {
@@ -5557,7 +5606,7 @@ impl Rounded {
             }
         }
         for field in fields {
-            let n = crate::stats::column(ds, rows, field, as_numbers).rounded_texts();
+            let n = crate::stats::checked_column(ds, rows, field, as_numbers)?.rounded_texts();
             if n == 0 {
                 continue;
             }
@@ -5567,6 +5616,7 @@ impl Rounded {
                 None => self.texts.push((name.to_string(), n)),
             }
         }
+        Ok(())
     }
 }
 
@@ -5583,30 +5633,33 @@ fn statistic_values(
     as_numbers: bool,
     separator: &str,
     rounded: &mut Rounded,
-) -> Vec<Value> {
+) -> Result<Vec<Value>, String> {
     use crate::stats;
     let mut read: Vec<(usize, stats::Column)> = Vec::new();
     let mut out = Vec::with_capacity(requests.len());
     for r in requests {
+        crate::control::check()?;
         let i = match read.iter().position(|(f, _)| *f == r.field) {
             Some(i) => i,
             None => {
-                read.push((r.field, stats::column(ds, rows, r.field, as_numbers)));
+                read.push((r.field, stats::checked_column(ds, rows, r.field, as_numbers)?));
                 read.len() - 1
             }
         };
-        let value = read.get(i).map_or(Value::Null, |(_, c)| {
-            let v = stats::compute(r.stat, c, separator);
+        let value = if let Some((_, c)) = read.get(i) {
+            let v = stats::checked_compute(r.stat, c, separator)?;
             if stats::rounded(r.stat, c, &v)
                 && let Some(n) = rounded.results.get_mut(out.len())
             {
                 *n += 1;
             }
             v
-        });
+        } else {
+            Value::Null
+        };
         out.push(value);
     }
-    out
+    Ok(out)
 }
 
 /// The notices for what a statistics list lost to decimals: the statistics that came out rounded,
@@ -5794,7 +5847,7 @@ fn pivot_table(inp: &dyn Inputs, p: &Json) -> Result<ToolResult, String> {
     // numbers written as text past the i64 range that a statistic read as decimals, each once.
     let mut rounded = Rounded::new(columns.len());
     if let Some(stat) = stat {
-        rounded.count_texts(ds, &rs, &[Request { field: value, stat }], false);
+        rounded.count_texts(ds, &rs, &[Request { field: value, stat }], false)?;
     }
     let mut column_of: HashMap<usize, usize> = HashMap::with_capacity(rs.len());
     for (c, column) in columns.iter().enumerate() {
@@ -6519,8 +6572,21 @@ impl ExtentIndex {
 
     /// An index of these extents, numbered in order from 0.
     pub(crate) fn new(extents: impl Iterator<Item = Extent>) -> Self {
-        let extents: Vec<Extent> = extents.collect();
-        let total = extents.iter().fold(Extent::EMPTY, |t, e| t.union(e));
+        match Self::with_checks(extents, || Ok::<(), std::convert::Infallible>(())) {
+            Ok(index) => index,
+            Err(never) => match never {},
+        }
+    }
+
+    fn with_checks<E>(extents: impl Iterator<Item = Extent>, mut check: impl FnMut() -> Result<(), E>) -> Result<Self, E> {
+        let mut collected = Vec::new();
+        let mut total = Extent::EMPTY;
+        for extent in extents {
+            check()?;
+            total = total.union(&extent);
+            collected.push(extent);
+        }
+        let extents = collected;
         let n_cells = (extents.len() as f64).sqrt().clamp(4.0, 256.0);
         let mut index = ExtentIndex {
             total,
@@ -6531,20 +6597,23 @@ impl ExtentIndex {
             references: 0,
         };
         if extents.len() <= Self::MAX_LINEAR_FEATURES || total.is_empty() {
-            return index;
+            return Ok(index);
         }
         let mut references = 0usize;
         for e in &extents {
+            check()?;
             let ((x0, y0), (x1, y1)) = (index.key(e.min_x, e.min_y), index.key(e.max_x, e.max_y));
             references = references.saturating_add(((x1 - x0 + 1) as usize).saturating_mul((y1 - y0 + 1) as usize));
             if references > Self::MAX_REFERENCES {
-                return index;
+                return Ok(index);
             }
         }
         let mut grid: std::collections::HashMap<(i64, i64), Vec<usize>> = std::collections::HashMap::new();
         for (i, e) in extents.iter().enumerate() {
+            check()?;
             let ((x0, y0), (x1, y1)) = (index.key(e.min_x, e.min_y), index.key(e.max_x, e.max_y));
             for x in x0..=x1 {
+                check()?;
                 for y in y0..=y1 {
                     grid.entry((x, y)).or_default().push(i);
                 }
@@ -6552,7 +6621,7 @@ impl ExtentIndex {
         }
         index.grid = Some(grid);
         index.references = references;
-        index
+        Ok(index)
     }
 
     /// Conservative retained grid allocation estimate: spare reference capacity plus table
@@ -6626,6 +6695,37 @@ impl ExtentIndex {
         }
         out.sort_unstable();
         out.dedup();
+    }
+
+    /// Split's potentially layer-wide preparation lookup, with Cancel during collection.
+    /// The single in-place sort is an unchecked step, bounded by MAX_REFERENCES (one million).
+    fn checked_candidates_into(&self, ext: &Extent, out: &mut Vec<usize>) -> Result<(), String> {
+        out.clear();
+        let Some(grid) = &self.grid else {
+            for i in 0..self.len {
+                if i % 4096 == 0 {
+                    crate::control::check()?;
+                }
+                out.push(i);
+            }
+            return Ok(());
+        };
+        let Some(((x0, y0), (x1, y1))) = self.query_cells(ext) else { return Ok(()) };
+        for x in x0..=x1 {
+            for y in y0..=y1 {
+                crate::control::check()?;
+                if let Some(indices) = grid.get(&(x, y)) {
+                    for chunk in indices.chunks(4096) {
+                        crate::control::check()?;
+                        out.extend_from_slice(chunk);
+                    }
+                }
+            }
+        }
+        out.sort_unstable();
+        crate::control::check()?;
+        out.dedup();
+        Ok(())
     }
 
     /// The features whose extents may meet `ext`, in order and once each: every feature without a
@@ -7720,6 +7820,15 @@ fn feature_envelope_to_polygon(inp: &dyn Inputs, p: &Json) -> Result<ToolResult,
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn split_extent_preparation_checks_cancel_before_finishing_the_layer() {
+        let cancelled = crate::control::Control::cancelled_at_look(7);
+        let _installed = crate::control::install(Some(cancelled.clone()));
+        let extent = Extent { min_x: 0.0, min_y: 0.0, max_x: 1.0, max_y: 1.0 };
+        assert!(ExtentIndex::with_checks(std::iter::repeat_n(extent, 10_000), crate::control::check).is_err());
+        assert_eq!(cancelled.looked(), 7);
+    }
+
     use super::*;
     use crate::geodesic::geodesic_buffer;
     use rustgis_data::Feature;

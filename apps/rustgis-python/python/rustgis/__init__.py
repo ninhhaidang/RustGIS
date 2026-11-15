@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import warnings
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple, Union
 
 from ._rustgis import Engine as _Engine
@@ -787,7 +788,8 @@ class Session(_Api):
     ) -> None:
         """Starts a session, optionally opening a project, the sample and data files."""
         if plugins:
-            load_plugins()
+            for problem in load_plugins():
+                warnings.warn(problem, RuntimeWarning, stacklevel=2)
         self._engine = _Engine(use_saved_secrets)
         previous = None
         if threads is not None:

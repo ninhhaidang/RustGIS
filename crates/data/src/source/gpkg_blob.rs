@@ -27,12 +27,16 @@ fn envelope_len(flags: u8) -> Option<usize> {
     }
 }
 
-/// A GeoPackage geometry blob: the header's envelope (if any) and the WKB after it.
+/// A version-zero GeoPackage geometry blob: its envelope (if any) and WKB. Newer header
+/// versions are unreadable, as they are for an empty geometry; never decode them as version zero.
 pub(crate) fn split_blob(b: &[u8]) -> Option<(Option<Extent>, &[u8])> {
     let (magic, rest) = b.split_at_checked(2)?;
     if magic != b"GP" {
         // Some writers store plain WKB.
         return Some((None, b));
+    }
+    if rest.first() != Some(&0) {
+        return None;
     }
     let &flags = rest.get(1)?;
     let little = flags & 1 == 1;
@@ -103,4 +107,24 @@ pub(crate) fn temporal(
         super::unread_date(rounded, k);
     }
     v
+}
+
+#[cfg(test)]
+mod version_tests {
+    use super::*;
+
+    #[test]
+    fn nonempty_geometry_headers_refuse_newer_versions() {
+        let mut point = vec![1, 1, 0, 0, 0];
+        point.extend(10f64.to_le_bytes());
+        point.extend(20f64.to_le_bytes());
+        let mut blob = b"GP\0\x01\0\0\0\0".to_vec();
+        blob.extend(&point);
+        assert_eq!(split_blob(&blob), Some((None, point.as_slice())));
+        for version in [1, u8::MAX] {
+            blob[2] = version;
+            assert!(split_blob(&blob).is_none(), "version {version}");
+        }
+        assert_eq!(split_blob(&point), Some((None, point.as_slice())), "plain WKB remains supported");
+    }
 }
