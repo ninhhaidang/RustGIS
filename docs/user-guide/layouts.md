@@ -365,8 +365,8 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
   sets its text in the letters' own outlines, so it shows the family wherever it is opened, and
   the text can still be searched and copied; no font file goes into it. **Picture** places a PNG
   or JPEG.
-- **Map Series**: one page per feature of an index layer, with the frame zoomed to each feature;
-  step through pages, refresh, and export every page into one PDF.
+- **Map Series**: one page per feature of an index layer; see [Map series](#map-series) for setup,
+  page names, scales and a locator.
 - Click an element to select it, drag to move, drag its handles to resize, and edit it in the
   **Format** pane, which opens as a tab beside the other right-hand panes. Closing the pane keeps
   the element selected; selecting an element, or clicking the selected one, opens it again. The
@@ -451,6 +451,42 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
   typed. A page that would pass 16 million pixels, or 12,000 pixels on a side, is copied at a lower
   dpi, and the notice says so; a page that would need less than 36 dpi is too large to copy, so
   export it instead.
+
+## Map series
+
+Select the main map frame, then **Publish › Map Frames › Map Series** and choose its index layer
+(tracts, for example). The series follows the layer's feature order. **Previous Page** and
+**Next Page** step through it; **Refresh** refits the current page after changes to the index layer.
+
+Use `layout.series` to set a page-name field and margin; for example, on the active layout:
+
+```text
+layout.series={"layer":"Tracts","nameField":"GEOID","margin":0.1}
+```
+
+Without `frame` (the frame's element id), the command uses the layout's first map frame, so
+name the frame when the series is on another one. Running `layout.series` again starts the series
+over at its first page. `nameField` supplies
+`{pageName}` in dynamic text; if omitted, it uses the index layer's label field, or the row number
+(starting at 1) when that field is unavailable. Add a text element such as
+`Tract {pageName} · {page} of {pages}`. In commands, `layout.seriesPage={"page":0}` is the
+first page; the displayed `{page}` starts at 1.
+
+The frame fits each feature's extent anew, so its scale varies by page. `margin` is a fraction
+of the feature's longitude/latitude extent added on **each side**: `0.1` (the default) adds
+10% of its width on the left and right, and 10% of its height above and below, with at least
+0.01° on each side. Bind a scale bar to the series frame; `{scale}` text uses the layout's first
+map frame, so keep the series on that frame when using it. A feature without geometry or with
+an empty extent leaves the frame at the preceding view.
+
+For a locator, add a second map frame and pan/zoom it to the whole study area. Select that
+locator frame, then **Publish › Map Frames › Extent Indicator** and choose the main frame.
+The locator outlines the main frame's changing extent as the series turns its pages.
+
+**Export Layout** writes all pages to PDF by default, but only the **first 500** when there are
+more, with a warning. Split longer books' index data into layers of at most 500 features.
+`layout.export` with `"allPages":false` writes only the current PDF page; PNG and SVG always
+write the current page.
 
 ## Reports
 

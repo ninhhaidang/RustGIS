@@ -34,7 +34,10 @@ Select a layer in Layers and open **Style › Symbology** (or the Symbology pane
   (`layer.symbology={"type": "unique", "expression": "…"}`).
 - **Graduated Colors**: 1 to 12 classes of a numeric field by natural breaks (Jenks), equal
   interval, quantile, geometric interval, standard deviation, arithmetic progression or head/tail
-  breaks (the Method list is in alphabetical order). Geometric interval makes class
+  breaks (the Method list is in alphabetical order). Quantile sorts the values and places each
+  class's upper bound at an **observed value**, without interpolation between values. It aims for
+  similar record counts per class; ties can give unequal counts or fewer distinct classes.
+  Geometric interval makes class
   widths grow by one ratio, for values piled up at the low end; for a field that reaches zero or
   below, the minimum is taken as if it sat at a hundredth of the range, so the widths grow by
   101^(1/classes). Standard deviation makes classes one deviation wide about the mean, and leaves

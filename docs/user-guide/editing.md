@@ -24,6 +24,20 @@ feature edits; use ++cmd++ instead of ++ctrl++ on macOS. While typing in a text 
 shortcuts undo or redo the typing instead. Saving keeps the undo history; opening or creating
 a project clears it. Undo does not reverse files already written by an export.
 
+## Which parcel area to report
+
+**Calculate Geometry** and `area('ac')` measure the polygon on the WGS 84 ellipsoid, regardless
+of the display projection, with holes subtracted. Acres use 4,046.8564224 square metres per acre.
+This is a measurement of the mapped boundary, not a deed acreage or a terrain-surface area.
+
+A State Plane area is measured on that projection's flat grid, so its scale distortion and units
+(often US survey square feet rather than international ones) make it differ slightly: on Shelby
+County, Tennessee parcels, by about 0.01% from the same boundaries in EPSG:2274.
+
+A stored `Shape__Area` field is the area when the file was made, in that file's units; it isn't
+updated when a boundary is edited, so check both before comparing. A deed acreage describes the
+recorded parcel, which can differ from the mapped boundary.
+
 ## Modifying features
 
 <figure markdown="span">
