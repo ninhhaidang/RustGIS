@@ -351,6 +351,20 @@ other). Android installs an update only when it is signed with the certificate t
 was: with one key, an APK from GitHub and a build from Play update each other. With a key Play
 makes, they can't, and someone moving between them must uninstall first.
 
+A release also releases the bundle on Google Play's **production** track
+(`.github/scripts/play_upload.py`, which calls the Play Developer API with no third-party Action):
+it reaches users once Google's review passes. Until the app's first release is published in Play
+Console, Play takes only drafts, so the release is made a draft there (and the run says so) for
+someone to roll out by hand. A manual run with `play` uploads to the track and status it is given,
+by default an internal testing draft. It needs a Google Cloud service account Play Console lets
+release, its JSON key in the `mobile-release` environment as `PLAY_SERVICE_ACCOUNT_JSON`:
+
+1. In Google Cloud (any project), enable the Google Play Android Developer API, create a service
+   account and a JSON key for it.
+2. In Play Console, Users and permissions › Invite new users: the service account's email, with
+   access to RustGIS only and the permissions to release to production and to testing tracks.
+3. `gh secret set PLAY_SERVICE_ACCOUNT_JSON -e mobile-release < key.json`, then delete `key.json`.
+
 The Android release key (`ANDROID_KEYSTORE_BASE64`) can't be replaced: an APK signed with
 another key doesn't install as an update of one signed with it. Keep a copy of the keystore and
 its password outside GitHub. The iOS certificate and profile expire after a year: renew them in

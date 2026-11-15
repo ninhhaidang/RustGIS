@@ -3,8 +3,9 @@ name: Mobile release
 # The phone apps (apps/rustgis-mobile, #1902) for a published release: signed Android APKs (one for
 # arm64, one for x86_64), the Android App Bundle for Google Play signed with the same key (see the
 # README for its role in Play App Signing) and the signed iOS app (an IPA for the App Store), each
-# attached to the release with its .sha256, and the iOS build uploaded to TestFlight. A manual run
-# (from main) builds and signs them all and keeps them as workflow artifacts; it uploads to
+# attached to the release with its .sha256; the App Bundle released on Google Play's production
+# track, and the iOS build uploaded to TestFlight. A manual run (from
+# main) builds and signs them all and keeps them as workflow artifacts; it uploads to Play and
 # TestFlight only when asked. A pull request that changes apps/rustgis-mobile or this workflow
 # builds both with no secrets: the Android APK signed with a throwaway debug key, the iOS app
 # unsigned.
@@ -24,6 +25,8 @@ name: Mobile release
 #   APPLE_IOS_PROVISIONING_PROFILE_BASE64: the App Store profile for org.rustgis.mobile.
 #   APP_STORE_CONNECT_API_KEY_ID, APP_STORE_CONNECT_API_ISSUER_ID, APP_STORE_CONNECT_API_KEY:
 #     an App Store Connect API key (App Manager) for the upload; the key is the .p8's text.
+#   PLAY_SERVICE_ACCOUNT_JSON: the JSON key of a Google Cloud service account that Play Console
+#     lets release to production and testing tracks, for the App Bundle's upload to Google Play.
 # A job whose secrets are missing says which and stops: a release without its phone apps is
 # said, not passed over.
 
@@ -44,6 +47,20 @@ on:
         description: "iOS build number, for a commit already uploaded (default: the commit count)"
         type: string
         default: ""
+      play:
+        description: "Upload the App Bundle to Google Play"
+        type: boolean
+        default: false
+      play_track:
+        description: "Google Play track for the upload"
+        type: choice
+        options: [internal, alpha, beta, production]
+        default: internal
+      play_status:
+        description: "Google Play release: a draft to roll out in Play Console, or completed to roll it out"
+        type: choice
+        options: [draft, completed]
+        default: draft
 
 permissions:
   contents: read
@@ -266,6 +283,49 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.event.release.tag_name }}
         run: gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
+
+  # Its own job, after the signing: the App Bundle on Google Play. A published release goes to the
+  # production track, rolled out to everyone once Google's review passes; a manual run goes to the
+  # track and status asked for (by default an internal testing draft). An app never published yet
+  # takes only drafts, which the script makes it and says. Only this job holds the Play service
+  # account's key.
+  android-play:
+    name: Upload the App Bundle to Google Play
+    if: github.event_name == 'release' || inputs.play
+    needs: [android-build, android-sign]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: mobile-release
+    steps:
+      # The script from a checkout of the same commit that no build has run in.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: rustgis-android-bundle
+          path: bundle
+      - name: Upload
+        env:
+          PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          VERSION: ${{ needs.android-build.outputs.version }}
+          TAG: ${{ github.event.release.tag_name }}
+          TRACK: ${{ github.event_name == 'release' && 'production' || inputs.play_track }}
+          STATUS: ${{ github.event_name == 'release' && 'completed' || inputs.play_status }}
+        run: |
+          set -euo pipefail
+          if [ -z "$PLAY_SERVICE_ACCOUNT_JSON" ]; then
+            echo "::error::No upload: the secret PLAY_SERVICE_ACCOUNT_JSON isn't set in the mobile-release environment."
+            exit 1
+          fi
+          if [ -n "$TAG" ]; then
+            notes="RustGIS $VERSION. What's new: https://github.com/opengeos/RustGIS/releases/tag/$TAG"
+          else
+            notes="RustGIS $VERSION, built from ${GITHUB_SHA::8}."
+          fi
+          python3 .github/scripts/play_upload.py "bundle/RustGIS-$VERSION-android.aab" \
+            --package org.rustgis.mobile --track "$TRACK" --status "$STATUS" \
+            --name "$VERSION (${TAG:-${GITHUB_SHA::8}})" --notes "$notes"
 
   ios-build:
     name: iOS app
