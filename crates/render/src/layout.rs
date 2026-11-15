@@ -2531,6 +2531,68 @@ pub fn frame_coverage_judged_on(
     Some((gw, gh, drawn))
 }
 
+/// Whether a frame showing `map` at 1:`scale` around `center`, `size` (mm) wide and tall, shows
+/// one plain colour under `under` (mm from the frame's top left), the basemap's water or land
+/// colour, and nothing else: no layer, label or context layer, no outline of the basemap's. Drawn as the map is, on a
+/// grid of about `cells` cells across the frame's longer side, its label lock set aside (and put
+/// back) as [`frame_coverage`] does. Web tiles aren't fetched for it, so a map with any is not
+/// plain anywhere; nor is a frame that can't be drawn. For a publication's legend, which needs no
+/// box there (#1379).
+pub fn frame_plain_under(
+    map: &mut Map,
+    center: Coord,
+    scale: f64,
+    (w_mm, h_mm): (f64, f64),
+    under: (f64, f64, f64, f64),
+    cells: u32,
+) -> bool {
+    if !map.tiles.is_empty() || !(w_mm > 0.0 && h_mm > 0.0) {
+        return false;
+    }
+    let (w, h) = (w_mm * PT_PER_MM, h_mm * PT_PER_MM);
+    let ppp = f64::from(cells.clamp(8, 1024)) / w.max(h);
+    let view = View { width: w, height: h, pixels_per_point: ppp, camera: frame_camera(map, center, scale, 0.0, 0.0), sky: false };
+    // The background as the map draws it: on another body, the land's grey (Map::palette).
+    let (water, land, ..) = map.palette();
+    struct Lock<'a> {
+        lock: Option<Vec<(rustgis_map::LabelKey, rustgis_map::LockedPlace)>>,
+        anchors: std::collections::HashMap<rustgis_map::LabelKey, Coord>,
+        map: &'a mut Map,
+    }
+    impl Drop for Lock<'_> {
+        fn drop(&mut self) {
+            self.map.label_lock = self.lock.take();
+            self.map.label_lock_line_anchors = std::mem::take(&mut self.anchors);
+        }
+    }
+    let lock = Lock { lock: map.label_lock.take(), anchors: std::mem::take(&mut map.label_lock_line_anchors), map };
+    let Some(img) = crate::render(&mut *lock.map, &view) else { return false };
+    drop(lock);
+    // A streamed layer still reading, or a raster read in place whose tiles are on their way or
+    // were drawn from less than the view needs: what lies under the rectangle isn't known yet.
+    if img.data_pending || !img.pending_in_place.is_empty() || !img.partial.is_empty() {
+        return false;
+    }
+    // The labels are drawn apart from the features, as the frame draws them over its map.
+    let crate::Rendered { pixmap, labels, unplaced, label_layers, .. } = img;
+    let mut canvas = Canvas::from_pixmap(pixmap);
+    crate::draw_labels(&mut canvas, (&unplaced, &labels, &label_layers), ppp as f32);
+    let pm = canvas.into_pixmap();
+    let (gw, gh) = (pm.width() as usize, pm.height() as usize);
+    // Every cell the rectangle touches, partly too.
+    let cell = |v: f64, size: f64, n: usize, round: fn(f64) -> f64| (round(v / size * n as f64).max(0.0) as usize).min(n);
+    let (c0, c1) = (cell(under.0, w_mm, gw, f64::floor), cell(under.0 + under.2, w_mm, gw, f64::ceil));
+    let (r0, r1) = (cell(under.1, h_mm, gh, f64::floor), cell(under.1 + under.3, h_mm, gh, f64::ceil));
+    let px = pm.pixels();
+    let mut seen = (r0..r1).flat_map(|r| (c0..c1).map(move |c| r * gw + c)).map(|i| px[i]);
+    // One colour, and that the basemap's water or land: a polygon filling the whole rectangle in
+    // one colour, data or context, isn't the background.
+    let rgba = |p: tiny_skia::PremultipliedColorU8| (p.red(), p.green(), p.blue(), p.alpha());
+    let Some(first) = seen.next().map(rgba) else { return false };
+    let background = [water, land].iter().any(|c| (c.0[0], c.0[1], c.0[2], 255) == first);
+    background && seen.all(|p| rgba(p) == first)
+}
+
 /// A legend entry's symbol `s` of the layer `l` in the box (`x`, `y`, `w`, `h`): a point as
 /// [`point_swatch`] draws it with `strokes`, or a line or a filled box a swatch wide, in the middle
 /// of the box.
@@ -3324,6 +3386,55 @@ mod tests {
         map.tiles.truncate(1);
         map.tiles[0].visible = false;
         assert_eq!(red(&map, 300.0, &[], 1e6).0, 0, "hidden");
+    }
+
+    /// Plain under a rectangle is nothing drawn there but the background: the basemap's paper, not a
+    /// layer or its label, not an outline that coverage takes as context, and never with web tiles
+    /// (#1379).
+    #[test]
+    fn frame_plain_under_counts_everything_drawn_but_the_background() {
+        use rustgis_data::{Dataset, Geometry};
+        let square = |name: &str, half: f64| {
+            let mut d = Dataset::new(name, GeometryType::Polygon, Vec::new());
+            let ring = [(-half, -half), (half, -half), (half, half), (-half, half), (-half, -half)];
+            d.push(Some(Geometry::Polygon(vec![vec![ring.map(|(x, y)| Coord::new(x, y)).to_vec()]])), Vec::new());
+            d
+        };
+        let mut map = Map::new("m");
+        (map.basemap, map.graticule) = (rustgis_map::Basemap::Blank, false);
+        map.add_dataset(square("data", 0.1));
+        // A 100 mm frame at 1:1,000,000 shows about 0.9° across: the square sits in its middle.
+        let plain = |map: &mut Map, under| frame_plain_under(map, Coord::new(0.0, 0.0), 1_000_000.0, (100.0, 100.0), under, 128);
+        assert!(plain(&mut map, (2.0, 70.0, 25.0, 25.0)), "a corner is the blank paper");
+        assert!(!plain(&mut map, (40.0, 40.0, 20.0, 20.0)), "the data in the middle");
+        assert!(!plain(&mut map, (48.0, 48.0, 4.0, 4.0)), "one colour all over, but the data's, not the background");
+        map.graticule = true;
+        assert!(!plain(&mut map, (2.0, 2.0, 96.0, 96.0)), "the map's own graticule is drawn in the frame too");
+        map.graticule = false;
+        let border = map.add_dataset(square("border", 0.3));
+        if let Some(l) = map.layers.iter_mut().find(|l| l.id == border) {
+            let outline = rustgis_map::Symbol::default_for(GeometryType::Polygon, 0);
+            l.renderer = rustgis_map::Renderer::Single(rustgis_map::Symbol { fill: Rgba::new(0, 0, 0, 0), ..outline });
+        }
+        assert!(plain(&mut map, (2.0, 86.0, 12.0, 12.0)), "the outline (17 to 83 mm) runs clear of that corner");
+        assert!(!plain(&mut map, (2.0, 2.0, 96.0, 96.0)), "an outline coverage leaves out still counts here");
+        // A point left of the rectangle, its label running into it: the label counts.
+        let mut d = Dataset::new("named", GeometryType::Point, vec![rustgis_data::Field::new("name", rustgis_data::FieldType::Text)]);
+        d.push(Some(Geometry::Point(Coord::new(-0.2, -0.25))), vec![rustgis_data::Value::Text("A long place name".into())]);
+        let named = map.add_dataset(d);
+        let right_of_it = (31.0, 63.0, 67.0, 33.0);
+        map.layer_mut(border).unwrap().visible = false;
+        assert!(plain(&mut map, right_of_it), "the point itself lies outside it");
+        map.layer_mut(named).unwrap().labels.enabled = true;
+        assert!(!plain(&mut map, right_of_it), "its label lies inside it");
+        map.layer_mut(named).unwrap().labels.enabled = false;
+        // On another body the background is drawn in the land's grey (Map::palette), not the
+        // Earth basemap's water: that grey is the background there.
+        (map.body, map.basemap) = ("mars".into(), rustgis_map::Basemap::Paper);
+        assert!(plain(&mut map, (2.0, 86.0, 12.0, 12.0)), "Mars's plain grey is its background");
+        (map.body, map.basemap) = ("earth".into(), rustgis_map::Basemap::Blank);
+        map.tiles.push(rustgis_map::TileLayer::new("tiles", rustgis_map::TileKind::Raster, "https://example.invalid/{z}/{x}/{y}.png"));
+        assert!(!plain(&mut map, (2.0, 86.0, 12.0, 12.0)), "web tiles aren't fetched for it, so nothing is plain");
     }
 
     /// A layer that only outlines its polygons isn't counted as drawn, unless nothing else is shown,

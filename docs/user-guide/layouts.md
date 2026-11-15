@@ -85,9 +85,14 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
     fill and no labels, such as neighbouring borders, don't count as what the map draws here, unless
     nothing else is shown, nor do polygon layers in one colour with no labels that run on past the
     frame, such as neighbouring states, beside a layer drawn by classes or a raster. When no shape
-    of the legend fits, the map is first moved towards an edge, as far as the asked extent stays in
-    the frame, so the room on both its sides joins (the answer's `mapShift`, in mm right and down,
-    and a warning). Where the projection stretches, as Web Mercator does away from the equator, the
+    of the legend fits, the map is first moved towards an edge, by a quarter, a half, three quarters
+    or all of the way the asked extent can go and stay in the frame, so the room on both its sides
+    joins (the answer's `mapShift`, in mm right and down, and a warning). Of the moves that need the
+    fewest legend columns, the one that leaves the extent's centre nearest the page's visual centre
+    (in the middle across, 45% of the way down) is kept: a move away from that centre goes only as
+    far as makes room, one towards it as far as keeps it nearest. Of the moves within 1 mm of the
+    nearest, the one with the most room is kept. Where the projection stretches, as Web Mercator
+    does away from the equator, the
     moved frame is drawn at its new centre's ground scale, and the extent has to stay whole at that
     scale. Only when no move makes room for it, a continuous map with a long legend is veiled: at
     the asked scale, at least 80% of the extent's part of the frame and 30% of the rest are drawn
@@ -111,6 +116,12 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
     latitude), the layout has no north arrow: the graticule gives north there, and one arrow can't
     point north across the whole frame. A warning says so; `"northArrow": "always"` draws one, and
     `"none"` leaves it out at any span.
+  - **Legend box**: over the map, the legend's box is left clear where the map shows nothing under
+    it but its plain paper or water: no layer, label, context layer, basemap shape or graticule
+    line, no web tiles, and no veil. Its text then sits on the page as on open sea. The answer's
+    `legendBox` says whether it has one; the clear box is still an element, to fill by hand, and
+    `"legendBox": "always"` keeps it white. A legend in a side column or on a card keeps its box
+    (`legendBox` is `true`).
   - **Decimal comma**: `"decimal": ","` prints the graticule, scale bar and colorbar numbers and
     `{scale}` with a decimal comma and points between thousands (`0,05`, `1:6.300.000`).
     `layout.page={"decimal": ","}` sets it on any layout; `"."` restores decimal points.

@@ -50284,6 +50284,80 @@ fn layout_no_data_legend_is_optional_and_saved() {
     assert!(matches!(old.element(3).unwrap().kind, ElementKind::Legend { show_no_data: false, .. }));
 }
 
+/// Over the map, a legend with nothing under it but the blank paper (no layer, no graticule line)
+/// has a clear box; one over data or a graticule line, or with "legendBox": "always", a white one
+/// (#1379).
+#[test]
+fn a_publication_legend_over_plain_paper_has_no_box() {
+    let dir = std::env::temp_dir().join(format!("rustgis-legend-box-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("a_layer_name.geojson");
+    let json = json!({"type": "FeatureCollection", "features": [{"type": "Feature", "properties": {}, "geometry":
+        {"type": "Polygon", "coordinates": [[[0.0, 0.0], [15.0, 0.0], [15.0, 10.0], [0.0, 10.0], [0.0, 0.0]]]}}]});
+    std::fs::write(&path, json.to_string()).unwrap();
+    let laid = |profile: &str, extent: Value, legend_box: Value| {
+        let mut s = Session::new(Project::default());
+        s.run("map.basemap", &json!({"name": "blank"})).unwrap();
+        for _ in 0..2 {
+            s.run("layer.addData", &json!({"path": path.display().to_string()})).unwrap();
+        }
+        let p = json!({"profile": profile, "extent": extent, "author": "", "locator": "none", "legendBox": legend_box});
+        let r = s.run("layout.publication", &p).unwrap();
+        let l = s.project.layouts.last().unwrap();
+        let fill = l.elements.iter().find(|e| e.name == "Legend Box").map(|e| match &e.kind {
+            rustgis_map::layout::ElementKind::Rectangle { fill, .. } => fill.0[3],
+            _ => panic!("the legend's box is a rectangle"),
+        });
+        (r["legendBox"].as_bool().unwrap(), fill.expect("the box is kept as an element, clear or not"))
+    };
+    assert_eq!(laid("figure-2col", json!([-8, -6, 23, 16]), Value::Null), (false, 0), "clear over the paper");
+    assert_eq!(laid("figure-2col", json!([-8, -6, 23, 16]), json!("auto")), (false, 0), "\"auto\" is the default");
+    let (boxed, alpha) = laid("figure-2col", json!([-8, -6, 23, 16]), json!("always"));
+    assert!(boxed && alpha > 0, "\"always\" keeps it white");
+    // At this extent a graticule line runs under the legend's corner.
+    let (boxed, alpha) = laid("a4-landscape", json!([-5, -5, 20, 15]), Value::Null);
+    assert!(boxed && alpha > 0, "a line under it keeps the box");
+    // In a side column (panel) or on a card (modular), the legend keeps its box, by default too.
+    for style in ["panel", "modular"] {
+        let mut s = Session::new(Project::default());
+        s.run("map.basemap", &json!({"name": "blank"})).unwrap();
+        s.run("layer.addData", &json!({"path": path.display().to_string()})).unwrap();
+        let p = json!({"profile": "a4-landscape", "extent": [-8, -6, 23, 16], "author": "", "style": style});
+        let r = s.run("layout.publication", &p).unwrap();
+        let l = s.project.layouts.last().unwrap();
+        let filled = l.elements.iter().any(|e| {
+            e.name == "Legend Box" && matches!(&e.kind, rustgis_map::layout::ElementKind::Rectangle { fill, .. } if fill.0[3] > 0)
+        });
+        assert!(r["legendBox"] == json!(true) && filled, "{style}: {r}");
+    }
+    let mut s = Session::new(Project::default());
+    s.run("layer.addData", &json!({"path": path.display().to_string()})).unwrap();
+    let bad = s.run("layout.publication", &json!({"legendBox": "never"})).unwrap_err();
+    assert!(bad.contains("legendBox is"), "{bad}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A map moved aside for its legend stays nearest the page's visual centre: moved away from it (down,
+/// here, the frame's centre being under the page's), it goes less than all of the way the extent
+/// can go when part of it is enough (#1379).
+#[test]
+fn a_publication_map_moved_aside_stays_nearest_the_visual_centre() {
+    let mut s = Session::new(Project::default());
+    for name in ["Other countries", "Area"] {
+        s.run("layer.addSample", &json!({"name": "countries"})).unwrap();
+        s.run("layer.rename", &json!({"layer": "Countries", "name": name})).unwrap();
+    }
+    s.run("layer.definitionQuery", &json!({"layer": "Area", "where": "continent = 'Europe'"})).unwrap();
+    s.run("layer.symbology", &json!({"layer": "Area", "type": "unique", "field": "name"})).unwrap();
+    let p = json!({"profile": "a4-portrait", "extent": [-25, 34, 45, 72], "author": "", "title": "Europe"});
+    let r = s.run("layout.publication", &p).unwrap();
+    let dy = r["mapShift"][1].as_f64().unwrap();
+    // All of the way down is 36 mm here (what the move was before #1379's item 8).
+    assert!(dy > 1.0 && dy < 35.0, "moved down, less than all the way: {r}");
+    let said = r["warnings"].as_array().unwrap().iter().filter_map(|w| w.as_str()).any(|w| w.contains(&format!("{:.0} mm down", dy)));
+    assert!(said, "{r}");
+}
+
 /// #2139: a name or text over its limit is refused with its length and the limit, and nothing
 /// changes; one at the limit is taken whole.
 #[test]
