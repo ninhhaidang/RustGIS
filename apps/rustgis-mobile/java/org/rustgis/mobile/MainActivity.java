@@ -628,7 +628,18 @@ public class MainActivity extends NativeActivity {
                     }
                 }
                 int copies = 0;
+                // The pick's folder is marked while documents are copied into it, for the whole
+                // pick: Remove Unused Copies keeps it, also between two documents (the name is
+                // rustgis_ui_touch::COPYING).
+                File mark = new File(dir, ".copying");
                 try {
+                    if (dir.mkdirs()) {
+                        try {
+                            mark.createNewFile();
+                        } catch (java.io.IOException e) {
+                            // Unmarked, the pick is still kept while a copy's .part is in it.
+                        }
+                    }
                     for (Uri uri : uris) {
                         String folder = sourceFolder(uri);
                         String authority = String.valueOf(uri.getAuthority());
@@ -642,6 +653,8 @@ public class MainActivity extends NativeActivity {
                             copies++;
                         }
                     }
+                } finally {
+                    mark.delete();
                     // Nothing copied (each failure said): this request ends, by name, as another
                     // may have been asked for meanwhile (Import DXF stops waiting).
                     if (copies == 0) {
@@ -650,7 +663,6 @@ public class MainActivity extends NativeActivity {
                         dir.delete();
                         add("ended\t" + purpose);
                     }
-                } finally {
                     answered();
                 }
             }).start();
@@ -719,12 +731,17 @@ public class MainActivity extends NativeActivity {
         for (int n = 2; file.exists(); n++) {
             file = new File(dir, n + "-" + name);
         }
+        // Written under a name of its own, made for this copy alone (".part"), and renamed once
+        // whole: Remove Unused Copies keeps a pick holding one, so a copy being written is never
+        // taken for unused, and no document of the pick is written over.
+        File part = null;
         try {
             if (!dir.isDirectory() && !dir.mkdirs()) {
                 throw new java.io.IOException("the app's storage can't be written to");
             }
+            part = File.createTempFile(".copy-", ".part", dir);
             try (InputStream in = getContentResolver().openInputStream(uri);
-                    OutputStream out = new FileOutputStream(file)) {
+                    OutputStream out = new FileOutputStream(part)) {
                 if (in == null) {
                     throw new java.io.IOException("it can't be read");
                 }
@@ -733,13 +750,18 @@ public class MainActivity extends NativeActivity {
                     out.write(buffer, 0, n);
                 }
             }
+            if (!part.renameTo(file)) {
+                throw new java.io.IOException("the copy couldn't be given its name");
+            }
             // The copy's own name: a second document of one name is told from the first.
             add("picked\t" + purpose + "\t" + file.getName() + "\t" + file.getAbsolutePath());
             return true;
         } catch (Throwable e) {
             // Half a copy would only fill the storage: nothing reports its path to remove it later.
             // (The folder goes only once it is empty.)
-            file.delete();
+            if (part != null) {
+                part.delete();
+            }
             dir.delete();
             add("failed\t" + name + " wasn't opened: " + e.getMessage());
             return false;

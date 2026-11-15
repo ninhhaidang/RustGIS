@@ -201,6 +201,11 @@ impl PickerDelegate {
                     if std::fs::create_dir_all(&root).is_ok() {
                         exclude_from_backup(&copied, &root);
                     }
+                    // The pick's folder is marked while documents are copied into it, for the
+                    // whole pick: Remove Unused Copies keeps it, also between two documents.
+                    // Unmarked, the pick is still kept while a copy's `.part` is in it.
+                    let mark = picked.join(rustgis_ui_touch::COPYING);
+                    let _ = std::fs::create_dir_all(&picked).and_then(|()| std::fs::write(&mark, b""));
                     let mut copies = 0usize;
                     let mut sources: Vec<Option<String>> = Vec::new();
                     for url in urls {
@@ -210,6 +215,12 @@ impl PickerDelegate {
                             sources.len() - 1
                         });
                         copies += usize::from(copy_in(&copied, &purpose, &url, &picked.join(k.to_string())));
+                    }
+                    let _ = std::fs::remove_file(&mark);
+                    // Every copy failed, each removing its own file and folder: this one is empty
+                    // too.
+                    if copies == 0 {
+                        let _ = std::fs::remove_dir(&picked);
                     }
                     // Nothing copied (each failure said): this request ends, by name, as
                     // another may have been asked for meanwhile (Import DXF stops waiting).
@@ -278,7 +289,29 @@ fn copy_in(shared: &Shared, purpose: &str, url: &NSURL, folder: &Path) -> bool {
     }
 }
 
+/// Copies `from` to `file` through a `.part` file in `folder` made for this copy alone (created
+/// new, never one already there), renamed to `file` once whole; the `.part` is removed if not.
+fn copy_via_part(from: &Path, folder: &Path, file: &Path) -> std::io::Result<()> {
+    let mut n = 0u32;
+    let part = loop {
+        let part = folder.join(format!(".copy-{n}.part"));
+        match std::fs::File::options().write(true).create_new(true).open(&part) {
+            Ok(_) => break part,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && n < 10_000 => n += 1,
+            Err(e) => return Err(e),
+        }
+    };
+    let copied = std::fs::copy(from, &part).and_then(|_| std::fs::rename(&part, file));
+    if copied.is_err() {
+        let _ = std::fs::remove_file(&part);
+    }
+    copied
+}
+
 /// Copies the document at `url` to `file` (in `folder`, made first) inside a coordinated read.
+/// It is written under a name of its own, made for this copy alone (`.part`), and renamed once
+/// whole: Remove Unused Copies keeps a pick holding one, so a copy being written is never taken
+/// for unused, and no document of the pick is written over.
 fn coordinated_copy(url: &NSURL, folder: &Path, file: &Path) -> Result<(), String> {
     use objc2::AnyThread as _;
     std::fs::create_dir_all(folder).map_err(|e| e.to_string())?;
@@ -286,11 +319,10 @@ fn coordinated_copy(url: &NSURL, folder: &Path, file: &Path) -> Result<(), Strin
     let reader = block2::RcBlock::new(|read: std::ptr::NonNull<NSURL>| {
         // SAFETY: the URL the coordinator hands its reader, alive while the reader runs.
         let read = unsafe { read.as_ref() };
-        let copied = read
-            .path()
-            .map(|p| PathBuf::from(p.to_string()))
-            .ok_or_else(|| i18n::fmt("the system gave no path for it", &[]))
-            .and_then(|path| std::fs::copy(path, file).map(|_| ()).map_err(|e| e.to_string()));
+        let copied = match read.path() {
+            None => Err(i18n::fmt("the system gave no path for it", &[])),
+            Some(path) => copy_via_part(&PathBuf::from(path.to_string()), folder, file).map_err(|e| e.to_string()),
+        };
         result.replace(Some(copied));
     });
     let coordinator = objc2_foundation::NSFileCoordinator::initWithFilePresenter(objc2_foundation::NSFileCoordinator::alloc(), None);

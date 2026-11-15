@@ -226,7 +226,8 @@ impl<P: Phone> App<P> {
         // longer is: with no file picked (each copy failed, said), it is ended.
         let ended = self.asked.borrow_mut().frame(busy || phone.picking());
         self.end(ended);
-        if !busy && !self.waiting.is_empty() {
+        // Held while unused copies are being removed: a project picked could name one of them.
+        if !busy && !self.waiting.is_empty() && !rustgis_ui_touch::removing_copies(ctx) {
             self.open_waiting(ctx, raw_input);
         }
         // Positions arrive between frames too: looked for while they are wanted. Asked for from
@@ -489,7 +490,9 @@ impl<P: Phone> eframe::App for App<P> {
         // The pushed files open as files dropped on the desktop window do: once the window
         // runs, read off its thread with progress and Cancel, each failure said in the window.
         // Opened before the event loop, a large one would hold the app's start.
-        for path in self.pushed.drain(..) {
+        // Held, as picked files are, while unused copies are being removed.
+        let pushed = if rustgis_ui_touch::removing_copies(ctx) { Vec::new() } else { std::mem::take(&mut self.pushed) };
+        for path in pushed {
             raw_input.dropped_files.push(Arc::new(Pushed(path)));
         }
         self.app.drop_stale_clicks(raw_input);

@@ -68,6 +68,15 @@ fn set_sheet(ctx: &egui::Context, sheet: Sheet) {
     ctx.data_mut(|d| d.insert_temp(egui::Id::unique("touch_sheet"), sheet));
 }
 
+pub use copies::COPYING;
+
+/// Whether unused copies of picked files are being removed (Remove Unused Copies): a phone's shell
+/// holds files sent to the app until it is done, as one could open a project naming a copy the
+/// removal has already judged unused.
+pub fn removing_copies(ctx: &egui::Context) -> bool {
+    copies::removing(ctx)
+}
+
 /// The touch interface (a `rustgis_ui_egui::Chrome`): the bar, the sheet asked for, and the map
 /// in what is left.
 pub fn chrome(app: &mut RustGisApp, ui: &mut Ui) {
