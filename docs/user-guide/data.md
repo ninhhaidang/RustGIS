@@ -268,14 +268,19 @@ and more. RustGIS doesn't link to GDAL: each layer is converted once, by `ogr2og
 FlatGeobuf with a spatial index in WGS 84 (GDAL reprojects it), kept in the cache folder
 (`~/.cache/rustgis/gdal` on Linux, `~/Library/Caches/RustGIS/gdal` on macOS,
 `%LOCALAPPDATA%\RustGIS\cache\gdal` on Windows, or `RUSTGIS_GDAL_CACHE`). Adding the file again
-reuses the conversion until the file changes, and large layers stream like any large FlatGeobuf
-(below). Every layer of the file is added; a layer mixing geometry types is added as one layer
-per type, its points on top and its polygons at the bottom. Curves become straight segments, and
+reuses the conversion and its layer listing until the file's path, size or modification time
+changes (for a File Geodatabase folder, RustGIS checks its files too). Missing or unreadable
+cached listings are rebuilt; **Reload** always reads the source afresh. The first listing skips
+spatial extents but keeps feature counts to check for conversion losses. Large layers stream
+like any large FlatGeobuf (below). Every layer of the file is added; a layer mixing geometry
+types is added as one layer per type, its points on top and its polygons at the bottom. Curves become straight segments, and
 3D surfaces (an Esri multipatch, such as the buildings of swissBUILDINGS3D, is read as a TIN)
 become flat polygons, one part per face, without their heights. The conversion leaves out a
 feature it can't index, such as a polygon with no coordinates; when GDAL gives the layer's feature
 count, adding the file says how many were left out, also when it reuses a conversion. Projects
-remember the original file and convert it again if the cached copy is gone.
+remember the original file and convert it again if the cached copy is gone. A listing that runs
+past five minutes, or a conversion past thirty minutes, stops with an error naming the source
+file and the operation that exceeded its limit.
 
 ## SQL queries and DuckDB databases
 
