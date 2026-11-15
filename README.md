@@ -13,7 +13,7 @@
 <p align="center">
   <img alt="Written in Rust" src="https://img.shields.io/badge/written%20in-Rust-b84a2c?style=flat-square&logo=rust&logoColor=white">
   <img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-2563eb?style=flat-square">
-  <img alt="21 languages" src="https://img.shields.io/badge/languages-21-0e9384?style=flat-square">
+  <img alt="22 languages" src="https://img.shields.io/badge/languages-22-0e9384?style=flat-square">
   <a href="https://plugins.rustgis.app"><img alt="Plugins" src="https://img.shields.io/badge/plugins-registry-7c3aed?style=flat-square"></a>
   <a href="https://pypi.org/project/rustgis/"><img alt="PyPI" src="https://img.shields.io/pypi/v/rustgis?style=flat-square&logo=python&logoColor=white&label=pypi"></a>
   <a href="https://colab.research.google.com/github/opengeos/RustGIS/blob/main/apps/rustgis-python/examples/getting-started.ipynb"><img alt="Open in Colab" src="https://colab.research.google.com/assets/colab-badge.svg"></a>
@@ -114,7 +114,7 @@ Every screenshot is RustGIS itself, rendered offscreen by `cargo run -p rustgis-
 | **AI Assistant** | Ask about your data or tell the map what to do in plain language, with Anthropic, OpenAI (a key, or your ChatGPT plan by signing in on the desktop or command line), Gemini, OpenRouter, Requesty, TrustedRouter, Opper, Ollama or any OpenAI-compatible model; also `rustgis-cli ask`, and an [MCP server](docs/mcp.md) (`rustgis-cli mcp`) for Claude Code, Cursor, VS Code and other agents; skills; on the desktop, agents such as Claude Code and Codex started from the app, and external AI clients driving the open app; keys optionally remembered in the system keychain on the desktop (in the web app, unencrypted in the browser's storage) |
 | **Plugins** | Sandboxed WebAssembly [plugins](docs/plugins.md) add commands, tools and ribbon tabs; install them from [plugins.rustgis.app](https://plugins.rustgis.app) on the desktop, command line and web. Process plugins (desktop and command line) run as programs (with Python environments RustGIS makes), in the background or for the whole session; panels offer trees, dropdowns, date pickers and sliders |
 | **Python** | The [`rustgis` package](docs/python.md) on PyPI: the engine in-process, `rustgis.Map` in Jupyter and `rustgis.qt.MapWidget` in Qt applications |
-| **Interface** | Layers, Browser and Data Sources panes as tabs, command search (Ctrl+K), keyboard shortcuts, dark mode, custom themes (desktop) and an interface scale, a customizable ribbon and Quick Access Toolbar, linked side-by-side maps, a History pane of tool runs and the session log, autosave and crash recovery (desktop), Check for Updates (desktop), 21 languages |
+| **Interface** | Layers, Browser and Data Sources panes as tabs, command search (Ctrl+K), keyboard shortcuts, dark mode, custom themes (desktop) and an interface scale, a customizable ribbon and Quick Access Toolbar, linked side-by-side maps, a History pane of tool runs and the session log, autosave and crash recovery (desktop), Check for Updates (desktop), 22 languages |
 
 _(desktop)_ marks what the web app doesn't do; most of these also work from the command line and
 Python.

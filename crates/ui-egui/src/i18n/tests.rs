@@ -36,8 +36,16 @@ fn lookup_fallback_and_tags() {
     assert_eq!(lang_from_tag("el-CY").map(Lang::code), Some("el"));
     assert_eq!(lang_from_tag("zh-Hans-CN").map(Lang::code), Some("zh"));
     assert_eq!(lang_from_tag("zh_CN.UTF-8").map(Lang::code), Some("zh"));
-    assert_eq!(lang_from_tag("zh-TW"), None);
+    assert_eq!(lang_from_tag("zh-TW").map(Lang::code), Some("zh-tw"));
+    assert_eq!(lang_from_tag("zh_TW.UTF-8").map(Lang::code), Some("zh-tw"));
+    assert_eq!(lang_from_tag("zh-Hant").map(Lang::code), Some("zh-tw"));
+    assert_eq!(lang_from_tag("zh-Hant-TW").map(Lang::code), Some("zh-tw"));
+    assert_eq!(lang_from_tag("zh-Hans-TW").map(Lang::code), Some("zh"));
+    assert_eq!(first_supported(["zh-TW", "de-DE"]).map(Lang::code), Some("zh-tw"));
+    // Hong Kong and Macau keep falling back: no catalog of their own.
+    assert_eq!(lang_from_tag("zh-HK"), None);
     assert_eq!(lang_from_tag("zh-Hant-HK"), None);
+    assert_eq!(lang_from_tag("zh-MO"), None);
     assert_eq!(lang_from_tag("C").map(Lang::code), Some("en"));
     assert_eq!(lang_from_tag("xx-YY"), None);
     assert_eq!(first_supported(["xx", "fr-CA", "de"]).map(Lang::code), Some("fr"));
@@ -85,6 +93,26 @@ fn greek_registration_and_fallback() {
     assert_eq!(el.script(), Script::Alphabetic);
     assert_eq!(tr(el, "Open"), "Άνοιγμα");
     assert_eq!(tr(el, "A string not in the Greek catalog"), "A string not in the Greek catalog");
+}
+
+#[test]
+fn traditional_chinese_registration_and_fallback() {
+    let tw = Lang::from_code("zh-tw").unwrap_or(Lang::EN);
+    assert_eq!(Lang::from_code("zh-TW"), Some(tw));
+    assert_eq!(tw.name(), "繁體中文（台灣）");
+    assert_eq!(tw.english(), "Chinese (Traditional, Taiwan)");
+    assert_eq!(tw.script(), Script::Cjk(CjkFont::SimplifiedChinese));
+    assert_eq!(tr(tw, "Open"), "開啟");
+    // Taiwan's GIS terms, not the Simplified catalog's words in Traditional characters.
+    assert_eq!(tr(tw, "Buffer"), "環域");
+    assert_eq!(tr(tw, "Raster"), "網格");
+    assert_eq!(tr(tw, "Feature"), "圖徵");
+    // Taiwan's table words: 欄 is a column, 列 a row.
+    assert_eq!(tr(tw, "Columns"), "欄");
+    assert_eq!(tr(tw, "Rows"), "列");
+    assert_eq!(tr(tw, "A string not in the Traditional Chinese catalog"), "A string not in the Traditional Chinese catalog");
+    let zh = Lang::from_code("zh").unwrap_or(Lang::EN);
+    assert_ne!(tr(tw, "Open"), tr(zh, "Open"));
 }
 
 #[test]

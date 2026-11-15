@@ -599,6 +599,20 @@ fn versions_and_translations() {
     m.i18n.insert("zh-CN".into(), [("Hello".to_string(), "你好".to_string())].into());
     assert_eq!(m.translate("zh", "Hello"), "你好");
     assert_eq!(m.translate("zh-TW", "Hello"), "哈囉");
+    // The interface's `zh-tw` matches `zh-TW`, and a Hong Kong or `zh-Hant` interface finds
+    // the plugin's Traditional text.
+    assert_eq!(m.translate("zh-tw", "Hello"), "哈囉");
+    assert_eq!(m.translate("zh-Hant", "Hello"), "哈囉");
+    // Chinese falls back only within its script: English, never the other script's text.
+    let mut simplified_only = Manifest::parse(&testing::manifest("tr", &[])).unwrap();
+    simplified_only.i18n.insert("zh".into(), [("Hello".to_string(), "你好".to_string())].into());
+    simplified_only.i18n.insert("zh-CN".into(), [("Bye".to_string(), "再见".to_string())].into());
+    assert_eq!(simplified_only.translate("zh-tw", "Hello"), "Hello");
+    assert_eq!(simplified_only.translate("zh-tw", "Bye"), "Bye");
+    assert_eq!(simplified_only.translate("zh-Hans-TW", "Hello"), "你好");
+    let mut traditional_only = Manifest::parse(&testing::manifest("tr", &[])).unwrap();
+    traditional_only.i18n.insert("zh-TW".into(), [("Hello".to_string(), "哈囉".to_string())].into());
+    assert_eq!(traditional_only.translate("zh", "Hello"), "Hello");
     // Loaded plugins translate for the interface (tool names, parameters), by language.
     load("unit-i18n", &[]);
     assert_eq!(crate::translate("de", "Hello").as_deref(), Some("Hallo"));
