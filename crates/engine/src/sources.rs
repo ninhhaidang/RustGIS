@@ -4,7 +4,7 @@
 //! without their passwords, tokens or signatures.
 
 use rustgis_data::source::credentials::{redact_query, secret_key};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -89,17 +89,17 @@ impl Kept {
     /// holding a secret doesn't stop being one; `known` is the row's known details (its `extra`), a
     /// sibling too. Only then are the classified entries removed.
     fn without_secrets(&mut self, mut o: Map<String, Value>, address: &str, known: &Value) -> Map<String, Value> {
-        let secret: Vec<String> = o
+        // Count address-bearing siblings once; unknown preference fields are not capped.
+        let addresses =
+            o.iter().filter(|(k, v)| !k.eq_ignore_ascii_case("data") && !k.eq_ignore_ascii_case("text") && web_address(v, 0)).count();
+        let beside = web_address(&Value::String(address.into()), 0) || web_address(known, 0);
+        let secret: BTreeSet<String> = o
             .iter()
             .filter(|(k, v)| {
                 let mut probe = Map::new();
                 probe.insert((*k).clone(), (*v).clone());
-                if web_address(&Value::String(address.into()), 0)
-                    || web_address(known, 0)
-                    || o.iter().any(|(other, v)| {
-                        other != *k && !other.eq_ignore_ascii_case("data") && !other.eq_ignore_ascii_case("text") && web_address(v, 0)
-                    })
-                {
+                let own_address = !k.eq_ignore_ascii_case("data") && !k.eq_ignore_ascii_case("text") && web_address(v, 0);
+                if beside || addresses > usize::from(own_address) {
                     probe.insert("\u{1}beside".into(), "https://a".into());
                 }
                 holds_secret(&Value::Object(probe))
@@ -797,7 +797,7 @@ pub(crate) fn strip_capabilities(address: &str) -> String {
 
 fn strip_capabilities_at(address: &str, depth: usize) -> String {
     if depth >= 8 {
-        return String::new();
+        return "[address omitted]".into();
     }
     let text = address.trim_start();
     if let Some((head, archive)) = template_archive(text) {
@@ -866,6 +866,10 @@ pub fn scrub_s3_wrappers(text: &str) -> String {
 }
 
 /// Recursively redacts known URL fields in a JSON value for non-User callers.
+/// `tilesets`, `describe` and `capabilities` name protocol documents' addresses, not their
+/// contents: respectively `ogc::tileset`, `describe_coverage_url` and Identify's `next_fetch`.
+/// Supplied protocol bodies are parsed separately; Identify's input `capabilities` parameter
+/// contains XML, while its result field of the same name is a GetCapabilities address.
 pub(crate) fn redact_url_fields(value: &mut Value) {
     match value {
         Value::Object(map) => {
@@ -1034,6 +1038,19 @@ fn build_library() -> Vec<(&'static str, Source)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deeply_nested_capability_addresses_say_when_the_inner_address_is_omitted() {
+        let public = "https://example.invalid/data.tif";
+        assert_eq!(strip_capabilities(public), public);
+        let prefix = crate::render::rustgis_tiles::s3::ANONYMOUS;
+        for depth in [8, 32] {
+            let nested = format!("{}{public}", prefix.repeat(depth));
+            let shown = strip_capabilities(&nested);
+            assert!(shown.ends_with("[address omitted]"), "{shown}");
+            assert!(!shown.contains(public), "the unvisited inner address is not returned");
+        }
+    }
 
     #[test]
     fn restored_sources_never_reuse_a_previous_process_login_binding() {

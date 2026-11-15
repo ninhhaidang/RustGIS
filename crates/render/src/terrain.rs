@@ -449,9 +449,17 @@ fn raster_corners(r: &Raster) -> Option<([f64; 4], [f64; 4])> {
     Some((xs, ys))
 }
 
-/// A DEM's height at a Web Mercator point, read bilinearly from its first band; nodata and
-/// points off it give `None`.
+/// A DEM's first-band height at a Web Mercator point, before exaggeration or water. Uses
+/// the same bounded bilinear sampling and full-turn wrapping as [`Ground`]; nodata, empty
+/// grids and points off the DEM give `None`.
+pub fn dem_height(raster: &Raster, at: Coord) -> Option<f64> {
+    raster_height(raster, at, crate::raster::full_turn_width(raster))
+}
+
 fn raster_height(r: &Raster, m: Coord, wrap_width: Option<i64>) -> Option<f64> {
+    if r.width == 0 || r.height == 0 {
+        return None;
+    }
     let n = r.transformer().from_merc(m)?;
     let (px, py) = r.transform.to_pixel(n);
     let px = r.wrap_col(px);
@@ -582,6 +590,29 @@ mod tests {
         let raster = Arc::new(Raster::new("heights", 4, 3, vec![data], gt, crs, nodata, ColorHint::Gray, "Float32").unwrap());
         let wrap_width = crate::raster::full_turn_width(&raster);
         Ground { heights: Heights::Raster { raster, wrap_width }, exaggeration: 1.0, body: 1.0, water: None }
+    }
+
+    #[test]
+    fn dem_sampler_refuses_empty_grid_dimensions() {
+        let mut raster = Raster::new(
+            "DEM",
+            2,
+            1,
+            vec![vec![10.0, 20.0]],
+            GeoTransform { origin_x: 0.0, origin_y: 100.0, pixel_width: 100.0, pixel_height: -100.0 },
+            Crs::WebMercator,
+            None,
+            ColorHint::Gray,
+            "Float32",
+        )
+        .unwrap();
+        let at = Coord::new(0.0, 50.0);
+        assert!(dem_height(&raster, at).is_some());
+        raster.width = 0;
+        assert_eq!(dem_height(&raster, at), None);
+        raster.width = 2;
+        raster.height = 0;
+        assert_eq!(dem_height(&raster, Coord::new(50.0, 100.0)), None);
     }
 
     #[test]

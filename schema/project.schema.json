@@ -162,6 +162,22 @@
       ],
       "type": "object"
     },
+    "FieldOrigin": {
+      "description": "A field copy's exact home and offline-area identities (128 random bits each).",
+      "properties": {
+        "area": {
+          "type": "string"
+        },
+        "project": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "project",
+        "area"
+      ],
+      "type": "object"
+    },
     "FieldType": {
       "oneOf": [
         {
@@ -602,6 +618,10 @@
         "extent": {
           "$ref": "#/$defs/Extent"
         },
+        "id": {
+          "description": "Persistent identity, independent of the editable display name.",
+          "type": "string"
+        },
         "map": {
           "description": "The map it came from (by name).",
           "type": "string"
@@ -875,7 +895,7 @@
   },
   "$id": "https://raw.githubusercontent.com/opengeos/RustGIS/main/schema/project.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "A RustGIS project file, as RustGIS reads it. Generated from the Rust types by `cargo xtask schema`; don't edit it by hand. It writes format 1 and reads formats up to 2.",
+  "description": "A RustGIS project file, as RustGIS reads it. Generated from the Rust types by `cargo xtask schema`; don't edit it by hand. It writes format 2 and reads formats up to 2.",
   "properties": {
     "active_map": {
       "format": "uint",
@@ -898,6 +918,17 @@
       },
       "type": "array"
     },
+    "field_origin": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/FieldOrigin"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The home and area this field copy belongs to, retained through ordinary saves."
+    },
     "folders": {
       "default": [],
       "description": "Folder connections shown in the Browser.",
@@ -907,7 +938,7 @@
       "type": "array"
     },
     "format": {
-      "default": 1,
+      "default": 2,
       "description": "The format read from disk; serialization always declares the current writer's format.",
       "format": "uint32",
       "maximum": 2,
@@ -990,6 +1021,10 @@
       },
       "type": "array"
     },
+    "origin_id": {
+      "description": "Persistent home-project identity for offline returns; legacy projects acquire it when packaged.",
+      "type": "string"
+    },
     "presentations": {
       "default": [],
       "description": "Presentations: pages of maps, text, images and videos.",
@@ -1017,7 +1052,13 @@
     "requires": {
       "description": "The capabilities this file needs past its format, each one this RustGIS knows.",
       "items": {
-        "enum": [],
+        "enum": [
+          "terrain-block",
+          "terrain-water",
+          "shaded-relief-effects",
+          "normalized-legend-urls",
+          "field-origin"
+        ],
         "type": "string"
       },
       "maxItems": 256,
@@ -1080,7 +1121,13 @@
   ],
   "title": "RustGIS project (.rgis)",
   "type": "object",
-  "x-rustgis-capabilities": [],
+  "x-rustgis-capabilities": [
+    "terrain-block",
+    "terrain-water",
+    "shaded-relief-effects",
+    "normalized-legend-urls",
+    "field-origin"
+  ],
   "x-rustgis-reads-format": 2,
-  "x-rustgis-writes-format": 1
+  "x-rustgis-writes-format": 2
 }

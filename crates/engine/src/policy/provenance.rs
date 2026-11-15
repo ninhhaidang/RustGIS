@@ -89,7 +89,10 @@ impl Session {
             "model.new" => "model",
             _ => return,
         };
-        if p.get("fromHistory").and_then(Value::as_bool) == Some(true) && p.get("steps").is_none() && self.history_from_file > 0 {
+        if p.get("fromHistory").and_then(Value::as_bool) == Some(true)
+            && p.get("steps").is_none_or(Value::is_null)
+            && self.history_from_file > 0
+        {
             return;
         }
         let name = if kind == "notebook" {

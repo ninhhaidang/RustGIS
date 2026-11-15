@@ -736,6 +736,65 @@ fn outputs_redact_urls_capabilities_and_local_paths_across_scopes() {
     rustgis_plugins::unload("plug");
 }
 
+/// Legacy field recovery is reserved to direct native User dispatch.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn legacy_field_recovery_cannot_be_requested_by_restricted_ingress() {
+    use base64::Engine;
+    let mut s = world();
+    let (_, bytes) = crate::cmd::field::package(&mut s, &json!({"name":"Site","extent":[-180,-85,180,85]})).unwrap();
+    let entries = rustgis_data::zip::read(&bytes).unwrap();
+    let (_, project) = entries.iter().find(|(name, _)| name.ends_with(".rgis")).unwrap();
+    let mut project: Value = serde_json::from_slice(project).unwrap();
+    project["format"] = json!(1);
+    project.as_object_mut().unwrap().remove("field_origin");
+    project.as_object_mut().unwrap().remove("requires");
+    let bytes = rustgis_data::zip::write(&[("Site.rgis".into(), serde_json::to_vec(&project).unwrap())]).unwrap();
+    let params = json!({"data":base64::engine::general_purpose::STANDARD.encode(bytes),"legacyArea":"Site"});
+    let (before, state, depth) = (serde_json::to_value(&s.project).unwrap(), s.state(), s.undo_depth());
+    let error =
+        s.run_scoped(agent_scope(AgentAccess::Allow, "legacy-recovery"), &Call::command("offline.bringBack", params.clone())).unwrap_err();
+    assert!(error.contains("native User"), "{error}");
+    let (scope, _) = assistant_scope(7117);
+    assert!(s.run_scoped(scope, &Call::command("offline.bringBack", params.clone())).is_err());
+    isolate_plugins();
+    plugin("legacy-recovery-files", &["edit", "files"]);
+    let error = forward(&mut s, "legacy-recovery-files", "offline.bringBack", params.clone()).unwrap_err();
+    assert!(error.contains("native User"), "{error}");
+    rustgis_plugins::unload("legacy-recovery-files");
+    let result =
+        s.narrowed(Narrow::Item { kind: "task", name: "legacy recovery".into() }, |s| s.run("offline.bringBack", &params)).unwrap();
+    assert!(result.is_err());
+    assert_eq!(serde_json::to_value(&s.project).unwrap(), before);
+    assert_eq!((s.state(), s.undo_depth()), (state, depth));
+}
+
+/// Protocol document selectors are URLs in actual command results, including restricted ones.
+#[test]
+fn service_result_document_fields_are_addresses_and_keep_public_query_values() {
+    let params = json!({"url":"https://protocol-fields.example/catalog", "type":"ogcapi",
+        "text":json!({"collections":[{"id":"roads","title":"Roads","links":[
+            {"rel":"tilesets-map","type":"application/json","href":"https://protocol-fields.example/tiles?f=json&style=light"}
+        ]}]}).to_string()});
+    let mut s = world();
+    let native = s.run("service.layers", &params).unwrap();
+    let restricted = s.run_scoped(agent_scope(AgentAccess::Allow, "protocol-fields"), &Call::command("service.layers", params)).unwrap();
+    for result in [&native, &restricted] {
+        let address = result["layers"].as_array().unwrap().iter().find_map(|layer| layer["tilesets"].as_str()).unwrap();
+        assert_eq!(address, "https://protocol-fields.example/tiles?f=json&style=light");
+    }
+    let coverage = r#"<wcs:Capabilities version="2.0.1" xmlns:wcs="http://www.opengis.net/wcs/2.0" xmlns:ows="http://www.opengis.net/ows/2.0" xmlns:xlink="http://www.w3.org/1999/xlink"><ows:OperationsMetadata><ows:Operation name="GetCoverage"><ows:DCP><ows:HTTP><ows:Get xlink:href="https://protocol-fields.example/wcs?style=light&amp;"/></ows:HTTP></ows:DCP></ows:Operation></ows:OperationsMetadata><wcs:Contents><wcs:CoverageSummary><wcs:CoverageId>soil</wcs:CoverageId><ows:Title>Soil</ows:Title></wcs:CoverageSummary></wcs:Contents></wcs:Capabilities>"#;
+    let result = s
+        .run_scoped(
+            agent_scope(AgentAccess::Allow, "protocol-fields-wcs"),
+            &Call::command("service.layers", json!({"url":"https://protocol-fields.example/wcs", "text":coverage})),
+        )
+        .unwrap();
+    let describe = result["layers"][0]["offer"]["describe"].as_str().unwrap();
+    assert!(describe.starts_with("https://protocol-fields.example/wcs?"), "{describe}");
+    assert!(describe.to_ascii_lowercase().contains("request=describecoverage"), "{describe}");
+}
+
 #[test]
 fn an_agent_url_request_cannot_clear_a_document_restriction() {
     use crate::render::rustgis_tiles::{address::Reach, cache};

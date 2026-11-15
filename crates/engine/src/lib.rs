@@ -801,6 +801,8 @@ pub struct Session {
     /// The count of cloud-optimised GeoTIFF headers landed when [`Session::notice_landed_rasters`]
     /// last looked back at the dates a dated series has shown (`cog::landed_count`).
     cog_headers_seen: u64,
+    /// Last loaded DEM and block extent validated for each live map; no pixel buffers retained.
+    terrain_blocks_checked: std::collections::HashMap<u64, cmd::terrain_blocks::Checked>,
     /// Layer whose attribute table is open.
     pub table_layer: Option<u32>,
     /// The standalone table shown in the attribute table instead of a layer, by its id.
@@ -1247,6 +1249,7 @@ impl Session {
             crs_used_elsewhere: Vec::new(),
             grid_notes_checked: None,
             cog_headers_seen: 0,
+            terrain_blocks_checked: Default::default(),
             table_layer: None,
             table_standalone: None,
             clipboard: None,
@@ -1635,6 +1638,9 @@ impl Session {
                 render::rustgis_tiles::mbtiles::close_unused(files.into_iter());
             }
             // Pixels the command read in place (a project, an import) say what they lost.
+            if res.is_ok() {
+                cmd::terrain_blocks::after_command(self, id);
+            }
             self.notice_landed_pixels();
             // And the coordinate systems that needed a missing datum grid, after every command.
             self.say_grid_notes();
@@ -2185,6 +2191,7 @@ impl Session {
     /// Once for each layer's pixels, failure or file, one notice of each kind; the app calls it
     /// each frame.
     pub fn notice_landed_rasters(&mut self) {
+        cmd::terrain_blocks::landed(self);
         self.notice_landed_pixels();
         // From frames too: a system a frame first drew needs no command after it to be said.
         self.say_grid_notes_now_and_then();

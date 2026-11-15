@@ -6472,6 +6472,7 @@ fn opening_projects_reports_moved_label_and_callout_adjustments() {
         transparency: 0.0,
     });
     project.offline_areas.push(crate::project::OfflineArea {
+        id: String::new(),
         name: "Field copy".into(),
         map: "Map".into(),
         extent: rustgis_geom::Extent::new(-1.0, -1.0, 1.0, 1.0),
@@ -12849,6 +12850,17 @@ fn a_link_chart_says_what_its_limits_leave_out() {
     let shows = "300 of the 301 related features and 20000 of the 20200 links";
     assert_eq!(said(&s, mark, "Mesh"), [format!("Mesh: the link chart shows {shows}; {limits}")]);
     assert!(html.contains(&format!("Shows {shows}.")));
+    // A self-link needs one node, including the last available slot. Counting its endpoints
+    // twice would stop at 2,999 even though all 3,000 features and links fit.
+    let keys: Vec<String> = (0..3000).map(|i| format!("self{i}")).collect();
+    add(&mut s, "self.csv", &keys);
+    s.run("data.relate", &json!({"name": "Self", "origin": "self", "originKey": "key", "destination": "self", "destinationKey": "key"}))
+        .unwrap();
+    let mark = s.notice_mark();
+    s.run("share.linkChart", &json!({"relationship": "Self"})).unwrap();
+    let (links, nodes, html) = drawn("Self");
+    assert_eq!((links, nodes), (3000, 3000));
+    assert!(said(&s, mark, "Self").is_empty() && !html.contains("Shows "));
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -17551,7 +17563,12 @@ fn split_sources_keep_their_points_on_top() {
     let origin =
         |family| rustgis_map::source::DuckdbOrigin { sql: Some("SELECT 1".into()), database: None, table: None, crs: None, family };
     let parts = duckdb_parts(&mut s, "Trip", duckdb::Output { parts, skipped: 0, other_family: 0 }, origin);
-    add_converted(&mut s, &json!({}), "the query", "DuckDB query", parts).unwrap();
+    let requested = "Requested".repeat(500);
+    add_converted(&mut s, &json!({"name": requested}), "the query", "DuckDB query", parts).unwrap();
+    let warning: Vec<_> = s.notices.iter().filter(|n| n.text.contains("converted layer parts keep their generated names")).collect();
+    assert_eq!(warning.len(), 1);
+    assert!(warning[0].text.contains("3 converted layer parts") && warning[0].text.len() < 300);
+    assert!(!warning[0].text.contains(&requested));
     assert_eq!(names(&s), ["Trip (points)", "Trip (lines)", "Trip (polygons)"]);
 
     // A GDAL file with two mixed layers: each keeps its points on top, and the file's second layer
@@ -17571,6 +17588,18 @@ fn split_sources_keep_their_points_on_top() {
     let original = dir.join("file.gpx").display().to_string();
     add_converted(&mut s, &json!({}), &original, &original, gdal_parts(converted, &original, None)).unwrap();
     assert_eq!(names(&s), ["b (points)", "b (lines)", "b (polygons)", "a (points)", "a (lines)", "a (polygons)"]);
+
+    assert!(!s.notices.iter().any(|n| n.text.contains("converted layer parts keep their generated names")), "no ignored name was supplied");
+    let mut single = Session::new(Project::default());
+    let output = duckdb::Output {
+        parts: vec![duckdb::Part { path: write("single", Family::Points), family: Family::Points, count: 1 }],
+        skipped: 0,
+        other_family: 0,
+    };
+    let one = duckdb_parts(&mut single, "Generated", output, origin);
+    add_converted(&mut single, &json!({"name": "Requested"}), "the query", "DuckDB query", one).unwrap();
+    assert_eq!(names(&single), ["Requested"]);
+    assert!(!single.notices.iter().any(|n| n.text.contains("converted layer parts keep their generated names")));
 
     // A file the built-in readers split by type (a KML here, as GPX, OSM or DXF): the same order,
     // and the first layer added (the polygons, away from the rest) still frames an empty map on
@@ -21960,7 +21989,8 @@ fn deleting_a_field_clears_the_label_expressions_reading_it() {
         ["Countries: its label expressions read the deleted field tag, so they are removed: Default's size; Big's text, size and angle"]
     );
     let saved = serde_json::to_string(&got).unwrap();
-    assert!(!saved.contains("tag"), "{saved}");
+    let reopened: rustgis_map::Labeling = serde_json::from_str(&saved).unwrap();
+    assert_eq!(reopened, got, "the saved label expressions stay cleared");
     // Undo brings the field and the expressions back.
     s.run("edit.undo", &Value::Null).unwrap();
     let got = labels(&s);
@@ -22018,6 +22048,16 @@ fn deleting_a_field_is_refused_while_the_time_slider_reads_it() {
     assert_eq!(s.undo_depth(), depth);
     assert!(s.map().layer_by_name("Events").and_then(|l| l.dataset.field_index("when")).is_some());
     assert_eq!(shown(&s), ["e0"]);
+    // Turning off the map slider retains its layer binding; deletion still refuses without
+    // an undo step, even though every row is now shown.
+    s.run("time.set", &json!({"off": true})).unwrap();
+    let off_depth = s.undo_depth();
+    assert!(s.map().time.is_none());
+    assert!(s.map().layer_by_name("Events").and_then(|layer| layer.time.as_ref()).is_some());
+    let error = s.run("edit.deleteField", &json!({"layer": "Events", "field": "when"})).unwrap_err();
+    assert!(error.contains("unbind it first"), "{error}");
+    assert_eq!(s.undo_depth(), off_depth);
+    assert!(s.map().layer_by_name("Events").and_then(|layer| layer.dataset.field_index("when")).is_some());
     // Another field goes; once unbound, the slider's field goes too.
     s.run("edit.deleteField", &json!({"layer": "Events", "field": "ms"})).unwrap();
     s.run("time.unbind", &Value::Null).unwrap();
@@ -30683,7 +30723,7 @@ fn keys_read_by_commands() -> Vec<(String, std::collections::BTreeSet<String>)> 
                             let call = if *m == module { name.as_str() } else { qualified.as_str() };
                             let key = format!("{m}::{name}");
                             // A dispatcher by kind: its arms read keys for other commands.
-                            if key == "items::item_bytes" {
+                            if matches!(key.as_str(), "items::item_bytes" | "items::item_output") {
                                 continue;
                             }
                             if !seen.contains(&key) && args.iter().any(|a| calls(&body, call, a)) {
@@ -34265,6 +34305,9 @@ fn a_new_renderer_from_a_style_or_subtypes_ends_no_fill() {
     assert!(said.iter().any(|t| t.contains("turning No Fill off drops")), "{said:?}");
     let l = s.map().layer(id).unwrap();
     assert!(l.no_fill.is_none() && l.hidden_fills.is_none());
+    let rustgis_map::Renderer::Unique { classes, other, .. } = &l.renderer else { panic!("subtype classes") };
+    assert!(classes.iter().all(|(_, symbol)| symbol.fill.a() > 0));
+    assert!(other.fill.a() > 0, "the new renderer's fills are drawn after No Fill ends");
 }
 
 /// A class's fill colour chosen while No Fill is on is recorded for Restore Fill only while the
@@ -35843,6 +35886,59 @@ fn model_graph_drops_are_noticed() {
     assert_eq!(said(&s, mark, "model graph"), 0, "{:?}", s.notices_since(mark));
     let saved = s.project.models.iter().find(|m| m.name == "Lossy").and_then(|m| m.graph.as_ref()).map(|g| g.edges.len());
     assert_eq!(saved, Some(2), "the connection naming \" i2 \" follows its trimmed id");
+}
+
+#[test]
+fn imported_history_with_null_steps_does_not_make_a_trusted_model() {
+    let mut s = world();
+    s.run("gp.run", &json!({"tool": "buffer", "params": {"input": "Cities", "distance": 100}})).unwrap();
+    s.history_from_file = 1;
+    for (name, null_steps) in [("Omitted steps", false), ("Null steps", true)] {
+        let mut params = json!({"name": name, "fromHistory": true});
+        if null_steps {
+            params["steps"] = Value::Null;
+        }
+        s.run("model.new", &params).unwrap();
+        assert!(!s.item_trusted("model", name), "a history model remains imported with null_steps={null_steps}");
+    }
+    s.history_from_file = 0;
+    s.run("model.new", &json!({"name": "Local history", "fromHistory": true, "steps": null})).unwrap();
+    assert!(s.item_trusted("model", "Local history"));
+}
+
+#[test]
+fn unreadable_model_nodes_do_not_redirect_their_connections() {
+    for unreadable_first in [false, true] {
+        let kept = json!({"id": " A ", "kind": "input", "layer": "Cities"});
+        let unreadable = json!({"id": "A", "kind": "unknown"});
+        let mut nodes = if unreadable_first { vec![unreadable, kept] } else { vec![kept, unreadable] };
+        nodes.push(json!({"id": "out", "kind": "output", "name": "Result"}));
+        let (graph, dropped) = crate::model::graph_from_json_counted(&json!({
+            "nodes": nodes,
+            "edges": [
+                {"from": "A", "fromPort": "out", "to": "out", "toPort": "in"},
+                {"from": " A ", "fromPort": "out", "to": "out", "toPort": "in"}
+            ]
+        }))
+        .unwrap();
+        assert_eq!(dropped.nodes, 1);
+        assert_eq!(dropped.edges, 1, "the unreadable node's connection must be omitted");
+        assert_eq!(graph.edges.len(), 1, "the valid node's original ID still resolves");
+        assert_eq!(graph.edges[0].from, "A");
+    }
+    // A readable node with the exact same original ID still owns its connections.
+    let (graph, dropped) = crate::model::graph_from_json_counted(&json!({
+        "nodes": [
+            {"id": "A", "kind": "unknown"},
+            {"id": "A", "kind": "input", "layer": "Cities"},
+            {"id": "out", "kind": "output", "name": "Result"}
+        ],
+        "edges": [{"from": "A", "fromPort": "out", "to": "out", "toPort": "in"}]
+    }))
+    .unwrap();
+    assert_eq!(dropped.nodes, 1);
+    assert_eq!(dropped.edges, 0);
+    assert_eq!(graph.edges.len(), 1);
 }
 
 /// ModelBuilder graphs: validated, run in flow order, intermediate results dropped, outputs named.
@@ -43551,6 +43647,37 @@ fn plugin_rasters_with_a_null_path_need_no_files() {
     rustgis_plugins::unload("eng-null-path");
 }
 
+/// A disabled command rejects foreign completions without consuming the rightful owner's raster.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn disabled_extensions_do_not_release_another_callers_raster() {
+    use crate::cmd::workflows::{raster_land, raster_start};
+    use crate::policy::{AgentAccess, Effects, Revocation, Scope};
+    use rustgis_analysis::control::Control;
+    struct Live;
+    impl Revocation for Live {
+        fn allows(&self, _: Effects) -> bool {
+            true
+        }
+    }
+    let mut s = world();
+    s.run("layer.addDataBytes", &json!({"fileName": "dem.tif", "data": dem_b64()})).unwrap();
+    let p = json!({"layer": "dem", "function": "hillshade"});
+    let run = raster_start(&mut s, "raster.function", &p).unwrap();
+    let id = run.id;
+    let made = run.run(&Control::new()).unwrap();
+    assert_eq!(raster_land(&mut s, id, made), Ok(true));
+    s.run("extension.disable", &json!({"id": "imagery"})).unwrap();
+    let foreign = Scope::agent(AgentAccess::Refuse, true, "foreign-raster", None, std::sync::Arc::new(Live));
+    assert!(s.with_scope(foreign, |s| s.run("raster.function", &json!({"ran": id}))).unwrap().is_err());
+    assert!(s.raster_results.iter().any(|(n, _)| *n == id), "foreign rejection preserves the result");
+    assert!(s.run("dl.remove", &json!({"ran": id, "name": "unrelated"})).is_err());
+    assert!(s.raster_results.iter().any(|(n, _)| *n == id), "another command cannot consume it");
+    s.run("extension.enable", &json!({"id": "imagery"})).unwrap();
+    assert!(s.finish_raster("raster.function", id, &p).is_ok());
+    assert!(!s.raster_results.iter().any(|(n, _)| *n == id));
+}
+
 /// The Analysis pane's single-pass raster tools made on another thread (#1291 step 3): each raster
 /// handed over (`ran`) is the one its command makes here, bit for bit and with what the command
 /// says of it besides, and a cancelled run is an error saying so.
@@ -45650,9 +45777,8 @@ fn importing_a_file_that_is_neither_map_nor_project_says_so() {
     assert!(e.contains("Update RustGIS"), "{e}");
 }
 
-/// Format 2 is read a release before anything writes it (#1853 piece 1): a project of format 2
-/// opens, and is saved again in the format this RustGIS writes; one needing a capability this
-/// RustGIS doesn't know is refused naming it; a newer format is refused as before.
+/// A project of format 2 opens and is saved again in the format this RustGIS writes; one needing
+/// an unknown capability is refused naming it, and a newer format is refused as before.
 #[test]
 fn format_2_is_read_unless_it_needs_what_this_rustgis_cannot_read() {
     let s = world();
@@ -45664,8 +45790,8 @@ fn format_2_is_read_unless_it_needs_what_this_rustgis_cannot_read() {
         }
         v.to_string()
     };
-    // Format 2, with no capabilities, an empty list or none: read whole, and written back as
-    // format 1, the format this RustGIS writes.
+    // Format 2, with no capabilities, an empty list or none: read whole, and written back in
+    // the current format without inventing required capabilities.
     for requires in [None, Some(json!([])), Some(Value::Null)] {
         let p = Project::from_json(&as_format(2, requires.clone())).unwrap();
         assert_eq!(p.format, 2);
@@ -46586,6 +46712,7 @@ fn opening_a_diagram_that_wont_show_says_why() {
     let mut offline = Session::new(Project::from_json(&clean).unwrap());
     let snapshot = s.map().clone();
     offline.project.offline_areas.push(crate::project::OfflineArea {
+        id: String::new(),
         name: "Trip".into(),
         map: snapshot.name.clone(),
         extent: rustgis_geom::Extent::new(-10.0, -10.0, 10.0, 10.0),

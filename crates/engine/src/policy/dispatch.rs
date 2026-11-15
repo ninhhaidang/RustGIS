@@ -717,8 +717,12 @@ impl Session {
         // command of an extension that is off, as `Session::run` does: the one asked for, and
         // the one a completion finishes.
         if let Some(why) = self.extensions().blocks(id) {
-            // A completion's raster is let go, as `finish_raster` does.
-            if let Some(run) = params.get("ran").and_then(Value::as_u64) {
+            // Only its own completion may release the raster, as `finish_raster` does.
+            if let Some(run) = params.get("ran").and_then(Value::as_u64)
+                && let Some(c) = self.raster_results.iter().find(|(n, _)| *n == run).and_then(|(_, m)| m.continuation.as_ref())
+                && c.node.id() == id
+                && self.check_delivery_owner(c).is_ok()
+            {
                 self.raster_results.retain(|(n, _)| *n != run);
             }
             return Err(why);

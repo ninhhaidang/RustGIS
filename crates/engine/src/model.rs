@@ -520,6 +520,9 @@ pub fn graph_from_json_counted(v: &Value) -> Result<(ModelGraph, GraphDropped), 
     for n in nodes {
         let Ok(mut node) = serde_json::from_value::<ModelNode>(n.clone()) else {
             dropped.nodes += 1;
+            if let Some(id) = n.get("id").and_then(Value::as_str) {
+                given_dropped.push(id.to_string());
+            }
             continue;
         };
         let id: String = node.id.trim().chars().take(MAX_NODE_ID).collect();

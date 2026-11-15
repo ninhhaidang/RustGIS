@@ -1676,7 +1676,7 @@ pub fn item_output(s: &mut Session, kind: &str, p: &Value) -> Result<(String, Ve
             crate::project::ensure_map_imports_complete(map)?;
             let map = embedded_map(map, &mut MAX_EMBED.clone());
             let name = map.name.clone();
-            (name, durable_bytes(s, map)?)
+            (name, durable_bytes_with(s, map, crate::project::map_file_bytes)?)
         }
         "layer" => {
             let id = s.layer_id(p)?;
@@ -1686,7 +1686,7 @@ pub fn item_output(s: &mut Session, kind: &str, p: &Value) -> Result<(String, Ve
             }
             let layer = embed_layer(l, &mut MAX_EMBED.clone());
             let name = layer.name.clone();
-            (name, durable_bytes(s, layer)?)
+            (name, durable_bytes_with(s, layer, crate::project::layer_file_bytes)?)
         }
         "styles" => {
             if s.project.styles.is_empty() {
@@ -1723,7 +1723,11 @@ pub fn item_output(s: &mut Session, kind: &str, p: &Value) -> Result<(String, Ve
             (name, bytes)
         }
         "projectPackage" => (s.project.name.clone(), package_project(s)?),
-        "fieldPackage" => super::field::package(s, p)?,
+        "fieldPackage" => {
+            let (name, bytes, notes) = super::field::package_output(s, p)?;
+            construction_notes.extend(notes);
+            (name, bytes)
+        }
         "mapPackage" | "mobilePackage" => {
             let tol = f(p, "tolerance").unwrap_or(0.001).clamp(0.0, 1.0);
             (s.map().name.clone(), package_map(s, kind == "mobilePackage", tol)?)
@@ -1794,15 +1798,27 @@ pub fn item_output(s: &mut Session, kind: &str, p: &Value) -> Result<(String, Ve
 pub(crate) fn save_item(s: &mut Session, kind: &str, p: &Value) -> CmdResult {
     let written = s.notice_mark();
     let path = ps(p, "path").ok_or("path is required")?.to_string();
-    let (_, bytes) = item_bytes(s, kind, p)?;
+    let (_, bytes, notes) = item_output(s, kind, p)?;
     rustgis_data::io::write_atomic(Path::new(&path), &bytes).map_err(|e| format!("{path}: {e}"))?;
+    for note in notes {
+        s.notify(note, false);
+    }
     s.retain_written_notices(written);
     Ok(json!({"path": path, "bytes": bytes.len()}))
 }
 
 /// Consumes the existing item draft, emitting losses after serialization has completed.
 fn durable_bytes<T: crate::durable::Durable + serde::Serialize>(s: &mut Session, value: T) -> Result<Vec<u8>, String> {
-    let (bytes, report) = crate::durable::output_owned(value, to_json)?;
+    durable_bytes_with(s, value, to_json)
+}
+
+/// Serializes an item through its document writer, after the same durable-field transaction.
+fn durable_bytes_with<T: crate::durable::Durable>(
+    s: &mut Session,
+    value: T,
+    write: impl FnOnce(&T) -> Result<Vec<u8>, String>,
+) -> Result<Vec<u8>, String> {
+    let (bytes, report) = crate::durable::output_owned(value, write)?;
     crate::durable::notify(s, &report);
     Ok(bytes)
 }

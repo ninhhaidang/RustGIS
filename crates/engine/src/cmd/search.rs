@@ -724,6 +724,12 @@ pub fn parse_lat_lon(text: &str) -> Option<Coord> {
         groups = nums.into_iter().map(|v| (vec![v], None)).collect();
     }
     let [(a, ha), (b, hb)] = <[_; 2]>::try_from(groups).ok()?;
+    // As in By Coordinates, a hemisphere supplies the sign; a minus sign is ambiguous.
+    if (ha.is_some() && a.first().is_some_and(|v| v.is_sign_negative()))
+        || (hb.is_some() && b.first().is_some_and(|v| v.is_sign_negative()))
+    {
+        return None;
+    }
     let (mut a, mut b) = (axis(&a)?, axis(&b)?);
     let sign = |v: f64, h: char| if matches!(h, 'S' | 'W') { -v.abs() } else { v };
     let (lat, lon) = match (ha, hb) {
@@ -1101,9 +1107,23 @@ mod tests {
 
     #[test]
     fn non_coordinates_are_refused() {
-        for t in
-            ["Paris", "New York", "95, 200", "40.7", "40.7N 74W 3E", "1 2 3", "40N 50S", "", "12-5", "40° 61' N 74 W", "Seattle 47 -122"]
-        {
+        for t in [
+            "Paris",
+            "New York",
+            "95, 200",
+            "40.7",
+            "40.7N 74W 3E",
+            "1 2 3",
+            "40N 50S",
+            "",
+            "12-5",
+            "40° 61' N 74 W",
+            "Seattle 47 -122",
+            "-40 N, 74 W",
+            "40 N, -74 E",
+            "-0 N, 74 W",
+            "-40 S, 74 W",
+        ] {
             assert_eq!(parse_lat_lon(t), None, "{t}");
         }
     }

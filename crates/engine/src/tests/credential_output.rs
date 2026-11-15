@@ -520,10 +520,10 @@ fn durable_future_documents_keep_their_exact_text_unchecked() {
         assert_eq!(kept.contains(SECRET), unchecked == 1, "{kept}");
     }
     // A task document's reader doesn't look at `requires`, so listing one doesn't keep it unchecked;
-    // of format 2, which its typed copy would lose, it stays as written, as before.
+    // a future format stays as written because its typed copy could lose new fields.
     for (task, unchecked) in [
         (json!({"name": "t", "requires": ["z-values"], "steps": []}), 0),
-        (json!({"format": crate::project::READ_FORMAT, "name": "t", "steps": []}), 1),
+        (json!({"format": crate::project::READ_FORMAT + 1, "name": "t", "steps": []}), 1),
     ] {
         let (_, report) = crate::roles::command("task.import", &json!({"text": task.to_string()}), 0);
         assert_eq!(report.unchecked, unchecked, "{task}");
@@ -844,7 +844,9 @@ fn durable_database_origins_clean_each_owned_field_without_opening_a_database() 
                 let mark = s.notice_mark();
                 let (_, bytes) = crate::cmd::items::item_bytes(&mut s, "layer", &json!({"layer":1})).unwrap();
                 let written: Value = serde_json::from_slice(&bytes).unwrap();
-                assert_eq!(written, expected["maps"][0]["layers"][0]);
+                let mut expected_layer = expected["maps"][0]["layers"][0].clone();
+                expected_layer["format"] = json!(crate::project::FORMAT);
+                assert_eq!(written, expected_layer);
                 assert_eq!(s.notices_since(mark).len(), usize::from(private), "layer export has one aggregate notice or none");
             }
             assert_eq!(serde_json::to_value(&s.project).unwrap(), before, "{role}: all output rolls back live fields");

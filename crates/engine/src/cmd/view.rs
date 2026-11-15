@@ -547,6 +547,17 @@ fn terrain(s: &mut Session, p: &Value) -> CmdResult {
         }
         return Err(e);
     }
+    // Data may arrive after this command. Loaded DEMs can be checked now; deferred ones are
+    // checked by notice_landed_rasters before their next frame, or after a successful command.
+    if let (TerrainSource::Layer(name), Some(block)) = (&t.source, &t.block)
+        && let Some(raster) = m.layer_by_name(name).and_then(|layer| layer.raster.as_ref()).and_then(|raster| raster.data.as_ref())
+        && let Err(reason) = super::terrain_blocks::check(&crate::project::short_name(name), raster, block.extent)
+    {
+        if let Some(old) = old_terrain {
+            m.view.terrain = Some(old);
+        }
+        return Err(format!("{reason}{kept} (Terrain stays as it was)"));
+    }
     // The box the block is cut to, as numbers: the DEM's (an approximation for one turned by its
     // projection) when none was given.
     out["block"] = t.block.as_ref().map_or(Value::Null, |b| {
@@ -561,6 +572,9 @@ fn terrain(s: &mut Session, p: &Value) -> CmdResult {
         };
         json!({"extent": extent, "extent_from": from, "depth": b.depth, "walls": walls})
     });
+    if matches!(t.source, TerrainSource::Layer(_)) && t.block.is_some() && dem_box.is_none() {
+        out["block"]["pendingDem"] = json!(true);
+    }
     // The terrain keeps its DEM by name: with two layers of that name (a rename can make them),
     // it would draw the first one's heights. Checked for a terrain kept on too.
     if let TerrainSource::Layer(n) = &t.source

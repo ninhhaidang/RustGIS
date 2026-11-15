@@ -95,6 +95,14 @@ Each release adds a small project and preferences file written by that release a
 `released_projects_and_preferences_still_open`. Record a skip in the fixtures' README when a
 release has no such file format. Current-writer examples do not replace these historical files.
 
+New project saves and map/layer exports write format 2. Their `requires` header names only
+features present in the saved payload: `terrain-block`, `terrain-water`,
+`shaded-relief-effects` (cast shadows, sky visibility, fill light or rock colour) and
+`normalized-legend-urls` for normalized legend addresses. Project
+requirements include offline map snapshots. Earlier format-2 readers refuse unknown required
+capabilities instead of opening and later saving away those settings; legacy format-1 files
+still open.
+
 ## New dependencies
 
 A proposal for a dependency answers:

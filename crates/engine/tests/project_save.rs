@@ -170,7 +170,7 @@ fn file_compatibility_rejects_future_formats_before_importing() -> Result<(), St
     Ok(())
 }
 
-/// Existing writers keep bare payloads, while readers accept legacy and explicitly supported metadata.
+/// Map/layer writers declare compatibility; readers also accept their legacy bare payloads.
 #[test]
 fn file_compatibility_keeps_current_and_legacy_companion_files() -> Result<(), String> {
     use rustgis_engine::{data::Dataset, data::GeometryType, map::Layer};
@@ -182,7 +182,11 @@ fn file_compatibility_keeps_current_and_legacy_companion_files() -> Result<(), S
     {
         let (_, bytes) = rustgis_engine::cmd::items::item_bytes(&mut original, kind, &params)?;
         let value: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-        assert!(value.get("format").is_none(), "current writer unchanged: {kind}");
+        if kind == "styles" {
+            assert!(value.get("format").is_none(), "style arrays retain their legacy shape");
+        } else {
+            assert_eq!(value["format"], rustgis_engine::project::FORMAT, "{kind}");
+        }
         for declared in [false, true] {
             if declared && kind == "styles" {
                 continue; // Style writers still emit the existing array, with no wrapper.
@@ -190,6 +194,9 @@ fn file_compatibility_keeps_current_and_legacy_companion_files() -> Result<(), S
             let mut payload = value.clone();
             if declared {
                 payload["format"] = json!(rustgis_engine::project::FORMAT);
+            } else if let Some(object) = payload.as_object_mut() {
+                object.remove("format");
+                object.remove("requires");
             }
             let mut loaded = Session::new(Project::new("Loaded"));
             loaded.run(command, &json!({"text": payload.to_string()}))?;

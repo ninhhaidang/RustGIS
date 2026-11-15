@@ -2714,6 +2714,18 @@ fn a_key_in_the_address_is_left_out_and_its_parameter_offered_as_the_login() {
         )
         .unwrap();
     assert!(plain.get("stripped").is_none(), "{plain}");
+    // A declared query key is a credential even when its name otherwise looks public.
+    let mark = s.notice_mark();
+    let custom = s.run("connection.new", &json!({"kind":"wmts","name":"Declared query key","address":format!("{origin}/declared?zqdeclared757=RGSYNTHdeclared757&layer=a"),"auth":"query","keyName":"zqdeclared757"})).unwrap();
+    assert_eq!(custom["address"], format!("{origin}/declared?layer=a"));
+    assert!(custom.get("omittedPublicParameterCount").is_none(), "{custom}");
+    assert!(custom.get("omittedPublicParameters").is_none(), "{custom}");
+    let edited_custom = s
+        .run("connection.edit", &json!({"id":custom["id"],"address":format!("{origin}/declared?zqdeclared757=RGSYNTHedited757&layer=a")}))
+        .unwrap();
+    assert!(edited_custom.get("omittedPublicParameterCount").is_none(), "{edited_custom}");
+    assert!(edited_custom.get("omittedPublicParameters").is_none(), "{edited_custom}");
+    assert!(s.notices_since(mark).iter().all(|n| !n.text.contains("public query component")));
     // An edit that moves a key into the address is the same.
     let edited = s.run("connection.edit", &json!({"id":clean["id"],"address":format!("{origin}/clean?token=edited-757")})).unwrap();
     assert_eq!(edited["stripped"], true);
@@ -2727,6 +2739,73 @@ fn a_key_in_the_address_is_left_out_and_its_parameter_offered_as_the_login() {
     assert!(bare.get("strippedParameters").is_none(), "{bare}");
     let said = format!("{bare}{:?}", s.notices_since(mark));
     assert!(!said.contains("RGSYNTHbare757"), "{said}");
+    // Legacy credential-bearing ampersand pairs are dropped conservatively. Public options
+    // lost alongside a key are counted separately, never offered as credential names.
+    let legacy_mark = s.notice_mark();
+    let legacy = s
+        .run(
+            "connection.new",
+            &json!({"kind":"wmts","name":"Legacy separators","address":format!("{origin}/legacy?x=1;token=RGSYNTHlegacy757")}),
+        )
+        .unwrap();
+    assert_eq!(legacy["stripped"], true);
+    assert_eq!(legacy["strippedParameters"], json!(["token"]));
+    assert_eq!(legacy["address"], format!("{origin}/legacy"));
+    assert_eq!(legacy["omittedPublicParameterCount"], 1);
+    assert_eq!(legacy["omittedPublicParameters"], json!(["x"]));
+    let collateral: Vec<_> = s.notices_since(legacy_mark).iter().filter(|n| n.text.contains("public query component")).collect();
+    assert_eq!(collateral.len(), 1);
+    assert!(collateral[0].text.contains("Legacy separators") && collateral[0].text.contains("first names: x"));
+    assert!(!collateral[0].text.contains("RGSYNTHlegacy757"));
+    let repeated = s.run("connection.new", &json!({"kind":"wmts","name":"Repeated public option","address":format!("{origin}/legacy?x=1;token=RGSYNTHlegacyRepeated&x=1&style=light")})).unwrap();
+    assert_eq!(repeated["address"], format!("{origin}/legacy?x=1&style=light"));
+    assert_eq!(repeated["omittedPublicParameterCount"], 1);
+    assert_eq!(repeated["omittedPublicParameters"], json!(["x"]));
+
+    // Semicolon suffixes after a key may be its value, never public names or login hints.
+    for (i, suffix) in ["RGSYNTHopaque757=x", "tokenRGSYNTHopaque757=x"].iter().enumerate() {
+        let mark = s.notice_mark();
+        let result = s
+            .run(
+                "connection.new",
+                &json!({"kind":"wmts","name":format!("Private suffix {i}"),"address":format!("{origin}/private?token=p;{suffix}")}),
+            )
+            .unwrap();
+        let shown = format!("{result}{:?}", s.notices_since(mark));
+        assert!(!shown.contains("RGSYNTHopaque757"), "{shown}");
+        assert!(result.get("omittedPublicParameters").is_none(), "{result}");
+        assert_eq!(result["strippedParameters"], json!(["token"]));
+    }
+    let mark = s.notice_mark();
+    let userinfo = s
+        .run(
+            "connection.new",
+            &json!({"kind":"wmts","name":"Private authority","address":"https://u:p?RGSYNTHopaque757=x@host.example/wmts"}),
+        )
+        .unwrap();
+    let shown = format!("{userinfo}{:?}", s.notices_since(mark));
+    assert!(!shown.contains("RGSYNTHopaque757"), "{shown}");
+    assert!(userinfo.get("omittedPublicParameters").is_none() && userinfo.get("strippedParameters").is_none(), "{userinfo}");
+
+    // A custom key name is a redaction hint even before a method is chosen; the saved definition
+    // must be as safe as its replay log. An explicit no-login method leaves ordinary data alone.
+    let no_method = s
+        .run("connection.new", &json!({"kind":"wmts","name":"Custom without method","address":format!("{origin}/custom?zqwithoutmethod757=RGSYNTHnomethod757&layer=a"),"keyName":"zqwithoutmethod757"}))
+        .unwrap();
+    assert_eq!(no_method["stripped"], true);
+    assert_eq!(no_method["strippedParameters"], json!(["zqwithoutmethod757"]));
+    assert_eq!(no_method["address"], format!("{origin}/custom?layer=a"));
+    assert!(no_method.get("omittedPublicParameterCount").is_none());
+    assert!(!s.connections.to_json().contains("RGSYNTHnomethod757"));
+    let public_hint = s.run("connection.new", &json!({"kind":"wmts","name":"Public name used as key hint","address":format!("{origin}/custom?layer=public-code&style=light"),"keyName":"layer"})).unwrap();
+    assert_eq!(public_hint["address"], format!("{origin}/custom?style=light"));
+    assert_eq!(public_hint["strippedParameters"], json!(["layer"]));
+    assert!(public_hint.get("omittedPublicParameterCount").is_none());
+    let explicit_none = s
+        .run("connection.new", &json!({"kind":"wmts","name":"Explicit no login","address":format!("{origin}/none?zqordinary757=public-code"),"keyName":"zqordinary757","auth":"none"}))
+        .unwrap();
+    assert!(explicit_none.get("stripped").is_none());
+    assert_eq!(explicit_none["address"], format!("{origin}/none?zqordinary757=public-code"));
 }
 
 /// A key in a query login is sent on the wire to the origin (and only as the parameter the

@@ -985,7 +985,7 @@ fn class_symbol<'a>(r: &'a mut Renderer, class: &ClassRef) -> Option<&'a mut rus
 }
 
 /// A symbol's fill No Fill made transparent, shown again in its own colour.
-fn show_fill(sym: &mut rustgis_map::Symbol) {
+pub(super) fn show_fill(sym: &mut rustgis_map::Symbol) {
     if sym.fill.a() == 0 {
         sym.fill = sym.fill.with_alpha(shown_fill_alpha());
     }
@@ -3331,7 +3331,8 @@ enum ConvertedOrigin {
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn add_converted(s: &mut Session, p: &Value, label: &str, original: &str, converted: Vec<Converted>) -> CmdResult {
     let empty_before = super::map_is_empty(s);
-    let single = converted.len() == 1;
+    let parts = converted.len();
+    let single = parts == 1;
     let (mut ids, mut features, mut streamed) = (Vec::new(), 0u64, false);
     for c in converted {
         let mut q = json!({"name": c.name});
@@ -3384,6 +3385,15 @@ pub(crate) fn add_converted(s: &mut Session, p: &Value, label: &str, original: &
     }
     if ids.is_empty() {
         return Err(format!("{label}: none of its layers could be added"));
+    }
+    if !single && let Some(name) = ps(p, "name") {
+        s.notify_text(
+            crate::notice_text::NoticeText::format(
+                "Name '{name}' was not used: {parts} converted layer parts keep their generated names",
+                [("name", crate::project::short_name(name).into()), ("parts", parts.to_string().into())],
+            ),
+            false,
+        );
     }
     Ok(json!({"layer": ids.first(), "layers": ids, "features": features, "streamed": streamed}))
 }

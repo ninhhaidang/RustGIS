@@ -20,6 +20,8 @@ repos:
         name: fixture projects match the project schema
         files: ^schema/fixtures/.*\.rgis$
         types: [file]
+        # The upstream JSON/YAML tags do not recognize our .rgis extension.
+        types_or: []
         args: ["--schemafile", "schema/project.schema.json", "--default-filetype", "json"]
   - repo: local
     hooks:

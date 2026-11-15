@@ -283,7 +283,7 @@ pub(crate) fn say_conversion_fallbacks(s: &mut Session) {
 /// Why a block with `extent` can't be drawn on the DEM `dem` (its name, its box and its footprint,
 /// as `cmd/view.rs` refuses it): no box fits the DEM and the block has none, or its box lies off the
 /// DEM's footprint. None when it can be drawn.
-fn off_dem(extent: Option<[f64; 4]>, dem: Option<&(String, Option<[f64; 4]>, Option<[f64; 4]>)>) -> Option<String> {
+pub(super) fn off_dem(extent: Option<[f64; 4]>, dem: Option<&(String, Option<[f64; 4]>, Option<[f64; 4]>)>) -> Option<String> {
     let (n, bbox, footprint) = dem?;
     match (*bbox, extent) {
         (None, None) => Some(format!("no box fits inside '{n}'s extent on the map: give the block an extent [xmin, ymin, xmax, ymax]")),

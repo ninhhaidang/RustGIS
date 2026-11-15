@@ -8,8 +8,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::GpRecord;
 
+#[path = "project_capabilities.rs"]
+mod capabilities;
 #[path = "project_label_losses.rs"]
 pub(crate) mod label_losses;
+pub(crate) use capabilities::{layer_file_bytes, map_file_bytes};
 
 /// A map export cannot keep runtime-only download reservations, even in a larger project.
 pub(crate) fn ensure_map_imports_complete(map: &Map) -> Result<(), String> {
@@ -59,15 +62,15 @@ pub fn open_command(path: &str) -> &'static str {
 /// RustGIS release version. Advance it when an older reader would lose meaningful saved
 /// information on resaving; within format 2, such an addition is named in `requires` instead
 /// (see [`READ_FORMAT`] and [`CAPABILITIES`]).
-pub const FORMAT: u32 = 1;
-/// The newest format this RustGIS reads. Format 2 is read a release before anything writes it
+pub const FORMAT: u32 = 2;
+/// The newest format this RustGIS reads. Format 2 was made readable before writing began
 /// (#1853): a document of format 2 opens when this RustGIS knows every capability it `requires`,
 /// so what a later RustGIS adds to format 2, and an older one would lose, is listed there and
 /// refused by name instead.
 pub const READ_FORMAT: u32 = 2;
-/// The capabilities a saved document may require that this RustGIS reads. None yet: format 2 is
-/// format 1's content, and each later addition an older reader would lose comes with its name.
-pub const CAPABILITIES: &[&str] = &[];
+/// The saved additions this RustGIS understands. Writers require only capabilities used by
+/// their payload, so a format-2 reader without them refuses instead of discarding their fields.
+pub const CAPABILITIES: &[&str] = &["terrain-block", "terrain-water", "shaded-relief-effects", "normalized-legend-urls", "field-origin"];
 /// The most entries a document's `requires` may list: past it the document is refused without
 /// the rest being read.
 pub(crate) const MAX_REQUIRES: usize = 256;
@@ -338,6 +341,7 @@ pub(crate) fn public_login_params(value: &serde_json::Value) -> Option<serde_jso
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(remote = "Self")]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Project {
     /// Read-time adjustments (labels, diagrams, layouts), consumed by the session and never saved.
@@ -347,6 +351,12 @@ pub struct Project {
     #[serde(default = "format", serialize_with = "write_format")]
     pub format: u32,
     pub name: String,
+    /// Persistent home-project identity for offline returns; legacy projects acquire it when packaged.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub origin_id: String,
+    /// The home and area this field copy belongs to, retained through ordinary saves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field_origin: Option<FieldOrigin>,
     #[cfg_attr(feature = "schema", schemars(with = "Vec<crate::schema::Open>"))]
     pub maps: Vec<Map>,
     pub active_map: usize,
@@ -560,10 +570,31 @@ pub struct Job {
     pub updated: f64,
 }
 
+/// A field copy's exact home and offline-area identities (128 random bits each).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct FieldOrigin {
+    pub project: String,
+    pub area: String,
+}
+
+pub(crate) fn field_id() -> Result<String, String> {
+    let mut bits = [0u8; 16];
+    getrandom::fill(&mut bits).map_err(|e| format!("cannot make a field-package identity: {e}"))?;
+    Ok(bits.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+pub(crate) fn valid_field_id(id: &str) -> bool {
+    id.len() == 32 && id.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
 /// A map's data clipped to an extent, to take into the field.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct OfflineArea {
+    /// Persistent identity, independent of the editable display name.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub id: String,
     pub name: String,
     /// The map it came from (by name).
     pub map: String,
@@ -1039,6 +1070,8 @@ impl Project {
             read_notices: Vec::new(),
             format: FORMAT,
             name: name.into(),
+            origin_id: String::new(),
+            field_origin: None,
             maps: vec![Map::new("Map")],
             active_map: 0,
             tables: Vec::new(),
@@ -1619,6 +1652,13 @@ impl Project {
                 format!("not a RustGIS project: {msg}")
             }
         })?;
+        let mut area_ids = std::collections::HashSet::new();
+        if (!p.origin_id.is_empty() && !valid_field_id(&p.origin_id))
+            || p.field_origin.as_ref().is_some_and(|origin| !valid_field_id(&origin.project) || !valid_field_id(&origin.area))
+            || p.offline_areas.iter().any(|area| !area.id.is_empty() && (!valid_field_id(&area.id) || !area_ids.insert(area.id.as_str())))
+        {
+            return Err("not a RustGIS project: an offline field identity is invalid or duplicated".into());
+        }
         p.ensure_imports_complete().map_err(|_| "a project file cannot contain runtime GeoLibre download reservations".to_string())?;
         // (A backstop: `check_format` has refused it already.)
         if p.format > READ_FORMAT {
@@ -2205,6 +2245,8 @@ impl Durable for Project {
             read_notices: _,
             format: _,
             name: _,
+            origin_id: _,
+            field_origin: _,
             maps,
             active_map: _,
             tables,
@@ -2233,7 +2275,7 @@ impl Durable for Project {
             p.child(Owner::Map(i), v);
         }
         for (i, v) in offline_areas.iter().enumerate() {
-            let OfflineArea { name: _, map: _, extent: _, created: _, synced: _, data } = v;
+            let OfflineArea { id: _, name: _, map: _, extent: _, created: _, synced: _, data } = v;
             p.child(Owner::Area(i), data);
         }
         for (i, v) in tables.iter().enumerate() {

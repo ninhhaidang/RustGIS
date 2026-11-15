@@ -159,6 +159,48 @@ Give one package to one phone at a time, and make a new package after each Bring
 phone's edits to the same package, brought back after the first's, would undo the first's where
 they differ. A package for an area the project doesn't have is refused.
 
+### Origin identities and older field copies
+
+Download Map gives each new offline area and its home project stable identities. New field
+packages preserve those identities, including after Save As and reopening. Bring Back checks
+both before applying edits or writing photos. Packaging an older area can also add identities
+to its home project: save that project so the return can be matched to it. Undo can remove the
+newly created area and identities too.
+
+Saving a project with these identities declares the `field-origin` capability, even when the
+offline area has never been sent as a field package. Earlier RustGIS releases that do not
+support this capability refuse the saved project rather than discard its return association.
+
+A field copy made before these identities were introduced still opens, and Send Field Package
+preserves its edits and photos as an unverified legacy return. Ordinary Bring Back refuses to
+guess its home from names. After verifying which original home offline area it belongs to, a
+user can explicitly recover it from the native command line:
+
+```sh
+rustgis-cli run --project home.rgis \
+  --cmd 'offline.bringBack={"path":"legacy-return.rgisfield","legacyArea":"Site"}' \
+  --save recovered-home.rgis
+```
+
+`legacyArea` accepts entirely ID-less returns and direct User dispatch. Assistant, MCP, plugin
+and imported-item calls cannot select this recovery path, and it cannot override present,
+malformed or incomplete identities. The result reports the unverified origin; normal conflict,
+photo and Undo handling still apply. Make a fresh field package for further edits and save its
+home project.
+
+If the older field copy was saved as a plain `.rgis` project, send its existing edits and photos
+first with the explicit legacy-return option:
+
+```sh
+rustgis-cli run --project edited-field.rgis \
+  --cmd 'offline.package={"path":"legacy-return.rgisfield","legacyReturn":true}'
+```
+
+Use the project and photo files on the device where those edits were saved, or copy its
+referenced photos along with it. This preserves the old copy's data without inventing an origin
+identity. A newly identified package whose home cannot be found requires the home project saved
+after packaging; legacy recovery cannot change that association.
+
 ## What differs on a phone
 
 - **Plugins** can't be installed on an iPhone or iPad: App Store rules don't allow an app to

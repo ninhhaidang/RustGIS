@@ -49,7 +49,11 @@ url = { workspace = true }
 proptest = { workspace = true }
 
 # Time slider animations as GIFs (exported by the desktop app only).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.4", features = ["wasm_js"] }
+
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+getrandom = "0.4"
 image = { workspace = true, features = ["gif"] }
 
 # The live PostGIS tests make their own tables, and change rows as someone else would.

@@ -1645,7 +1645,10 @@ fn subtypes(s: &mut Session, p: &Json) -> CmdResult {
         let base = l.renderer.base_symbol();
         // The classes come from every feature, so a definition query doesn't drop any; the
         // features past them are counted among those it lets through, which are drawn.
-        let (r, rest) = rustgis_map::Renderer::unique_counted(&l.dataset, &[], &fname, rustgis_map::Ramp::default(), base)?;
+        let (mut r, rest) = rustgis_map::Renderer::unique_counted(&l.dataset, &[], &fname, rustgis_map::Ramp::default(), base)?;
+        if l.no_fill == Some(rustgis_map::NoFill::Symbols) {
+            r.map_symbols(super::layer::show_fill);
+        }
         let rows = l.visible_rows();
         past = PastClasses { features: drawn_past(&l.dataset, &r, &fname, &rows), ..rest };
         l.renderer = r;

@@ -249,21 +249,22 @@ pub fn commands() -> Vec<C> {
             let path = super::ps(p, "path").ok_or("path is required")?.to_string();
             super::field::not_the_project(s, std::path::Path::new(&path))?;
             let had = s.project.offline_areas.len();
-            let (area, bytes) = super::field::package(s, p)?;
+            let (area, bytes, notes) = super::field::package_output(s, p)?;
             if let Err(e) = rustgis_data::io::write_atomic(std::path::Path::new(&path), &bytes) {
                 super::field::forget_new_areas(s, had);
                 return Err(format!("{path}: {e}"));
             }
+            for note in notes { s.notify(note, false); }
             s.retain_written_notices(written);
             Ok(super::field::packaged(&path, &area, bytes.len()))
         })
         .roles(&[])
         .effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
-        .params(r#"{"path": "*.rgisfield", "name"?: offline area name, "extent"?: [minLon, minLat, maxLon, maxLat]}"#),
+        .params(r#"{"path": "*.rgisfield", "name"?: offline area name, "extent"?: [minLon, minLat, maxLon, maxLat], "legacyReturn"?: "native User only: send an old ID-less field project saved as a plain project; its return requires explicit legacyArea confirmation at home"}"#),
         C::new("offline.bringBack", "Bring Back Edits", "Data › Offline", super::field::bring_back)
             .roles(&[])
             .effects(crate::policy::Effects::NONE.with(crate::policy::Effect::Files))
-            .params(r#"{"path"?: "*.rgisfield", "data"?: base64 of one}"#),
+            .params(r#"{"path"?: "*.rgisfield", "data"?: base64 of one, "legacyArea"?: "native User only: explicitly verified home offline area for an entirely ID-less legacy return; cannot override any present or incomplete identity"}"#),
         C::new("offline.sync", "Sync", "Data › Offline", offline_sync).roles(&[]).effects(crate::policy::Effects::NONE).params(r#"{"name": offline area}"#),
         C::new("offline.remove", "Remove", "Data › Offline", |s, p| {
             let n = ps(p, "name").ok_or("name is required")?;
@@ -678,10 +679,13 @@ pub(crate) fn offline_download(s: &mut Session, p: &Value) -> CmdResult {
     if s.project.offline_areas.len() >= MAX_AREAS {
         return Err(format!("a project keeps at most {MAX_AREAS} offline areas; remove one first"));
     }
+    let id = crate::project::field_id()?;
+    let origin_id = if s.project.origin_id.is_empty() { crate::project::field_id()? } else { s.project.origin_id.clone() };
     let data = snapshot(s.map_mut(), &e);
     let features: usize = data.layers.iter().map(|l| l.dataset.features.len()).sum();
     let t = now();
-    s.project.offline_areas.push(OfflineArea { name: name.clone(), map: s.map().name.clone(), extent: e, created: t, synced: t, data });
+    s.project.origin_id = origin_id;
+    s.project.offline_areas.push(OfflineArea { id, name: name.clone(), map: s.map().name.clone(), extent: e, created: t, synced: t, data });
     Ok(json!({"name": name, "features": features}))
 }
 
