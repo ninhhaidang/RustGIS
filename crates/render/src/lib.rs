@@ -2483,6 +2483,8 @@ fn render_tilted(map: &mut Map, view: &View, full_res_rasters: bool, sources_rea
     // once (at most eight, `Camera::tilt_bands`, each capped at `MAX_BAND_PX` a side) where the flat warp holds
     // one at a time: the cost of hiding what slopes stand in front of.
     let ground = terrain::Ground::of(map, &view.camera);
+    // The bands' Shaded Relief draws this ground's water (see `relief_water`).
+    let _water = BandWater::set(ground.as_ref().and_then(|g| g.water().cloned()));
     let mut kept: Vec<(View, (f64, f64), Pixmap)> = Vec::new();
     let last = bands_of.len().saturating_sub(1);
     let (mut attribution, mut tiles_pending, mut tile_errors) = (Vec::<String>::new(), false, Vec::<String>::new());
@@ -3847,6 +3849,62 @@ fn render_turned(map: &mut Map, view: &View, full_res_rasters: bool, record: boo
     Some(Rendered { pixmap: pm.into_pixmap(), ..r })
 }
 
+thread_local! {
+    /// The terrain's water the bands of a tilted view, and of its drape, draw their Shaded Relief
+    /// with (#1915), taken from the ground the whole view lies on ([`BandWater`]): each band at
+    /// its own camera would read the shores again (over elevation tiles, at its own zoom), and
+    /// could get another level than the ground's once shore tiles land between two bands.
+    /// `None` when no view set it; `Some(None)` when the view has no water.
+    static BAND_WATER: std::cell::RefCell<Option<Option<std::sync::Arc<terrain::Water>>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Holds [`BAND_WATER`] while a tilted view's bands are drawn, and puts back what was there when
+/// dropped (also when a band panics).
+struct BandWater(Option<Option<std::sync::Arc<terrain::Water>>>);
+
+impl BandWater {
+    fn set(water: Option<std::sync::Arc<terrain::Water>>) -> BandWater {
+        BandWater(BAND_WATER.with(|w| w.replace(Some(water))))
+    }
+}
+
+impl Drop for BandWater {
+    fn drop(&mut self) {
+        let kept = self.0.take();
+        BAND_WATER.with(|w| *w.borrow_mut() = kept);
+    }
+}
+
+/// The terrain's water a frame's Shaded Relief layers draw flat at its level with the even light
+/// of flat ground (#1915), and whether shore tiles it was read from are still on their way. A
+/// band of a tilted view or drape takes the whole view's ([`BAND_WATER`]); another frame reads it
+/// for the view it stands in for. `None` without water or with no Shaded Relief layer drawn at
+/// `scale`.
+fn relief_water(map: &Map, view: &View, labels_to: &Labels, scale: f64) -> Option<(std::sync::Arc<terrain::Water>, bool)> {
+    map.view.terrain.as_ref()?.water.as_ref()?;
+    let relief = map.layers.iter().any(|l| {
+        l.visible
+            && map.draws_at(l, scale)
+            && l.raster.as_ref().is_some_and(|r| matches!(r.style.renderer, rustgis_map::RasterRenderer::ShadedRelief { .. }))
+    });
+    if !relief {
+        return None;
+    }
+    if matches!(labels_to, Labels::Tilted(..) | Labels::Shared)
+        && let Some(water) = BAND_WATER.with(|w| w.borrow().clone())
+    {
+        // The view waits for its own ground's tiles.
+        return water.map(|w| (w, false));
+    }
+    let camera = match labels_to {
+        Labels::Turned(to) | Labels::Tilted(to, _) => &to.camera,
+        Labels::Own | Labels::Shared => &view.camera,
+    };
+    let ground = terrain::Ground::of(map, camera)?;
+    let pending = ground.pending();
+    ground.water().cloned().map(|w| (w, pending))
+}
+
 /// Draws one north-up frame. `labels_to` says where its labels go: a turned or tilted view the
 /// frame stands in for places them itself (and draws their icons). `full_res_rasters` marks an
 /// export, which draws everything as it will stay: rasters at full resolution, and labels in
@@ -4159,6 +4217,10 @@ fn render_frame(
     };
     // Extrusion heights are metres on the map's body.
     let body = map.body().ratio();
+    // The terrain's water, drawn flat by Shaded Relief.
+    let (lake_light, lake_pending) = relief_water(map, view, &labels_to, scale).map_or((None, false), |(w, p)| (Some(w), p));
+    // Shore tiles the water's levels wait for: the relief is drawn again once they land.
+    tile_out.pending |= lake_pending;
     // The layer drawn last, whose tile layers go over it before the next.
     let mut below: Option<u32> = None;
     for li in order {
@@ -4242,7 +4304,11 @@ fn render_frame(
                     rustgis_map::raster::CastShadows::None => None,
                 };
                 let (shadow, sky) = (lit(rl.cast_shadows(false, owner, shadows_landed)), lit(rl.sky_view(false, owner, shadows_landed)));
-                let light = raster::Lights { shadow: shadow.as_deref().map(Vec::as_slice), sky: sky.as_deref().map(Vec::as_slice) };
+                let light = raster::Lights {
+                    shadow: shadow.as_deref().map(Vec::as_slice),
+                    sky: sky.as_deref().map(Vec::as_slice),
+                    water: lake_light.as_deref(),
+                };
                 // Read in place: the part in view, at the level the view needs.
                 let address = rl.path.as_deref().filter(|_| rl.in_place);
                 let mut draw_it = |pm: &mut Pixmap, opacity: f32| match address {
@@ -5885,6 +5951,9 @@ pub fn render_tilt_drape(map: &mut Map, view: &View, margin: f64, max_side: u32)
     let anchors = std::mem::take(&mut map.label_lock_line_anchors);
     map.label_display.paused = true;
     let mut out = Vec::new();
+    // The bands' Shaded Relief draws the whole view's water (see `relief_water`).
+    let scale = map.ground_res_at(&view.camera) / rustgis_geom::PIXEL_M;
+    let _water = BandWater::set(relief_water(map, view, &Labels::Own, scale).map(|(w, _)| w));
     for b in bands {
         let (mut w, mut h) = (b.width * (1.0 + 2.0 * margin), b.height * (1.0 + 2.0 * margin));
         let mut camera = b.camera;

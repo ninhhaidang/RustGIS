@@ -72,7 +72,7 @@ pub fn export(layer: &RasterLayer, min_zoom: u8, max_zoom: u8, opacity: f32) -> 
     };
     let shadow = lit(layer.cast_shadows(true, (u64::MAX, u64::MAX), || {}), "cast shadows weren't")?;
     let sky = lit(layer.sky_view(true, (u64::MAX, u64::MAX), || {}), "sky visibility wasn't")?;
-    let light = raster::Lights { shadow: shadow.as_deref().map(Vec::as_slice), sky: sky.as_deref().map(Vec::as_slice) };
+    let light = raster::Lights { shadow: shadow.as_deref().map(Vec::as_slice), sky: sky.as_deref().map(Vec::as_slice), water: None };
     // A raster read in place waits for its tiles natively, two minutes at most in all.
     let deadline = web_time::Instant::now() + rustgis_data::raster::IN_PLACE_WAIT;
     let mut tiles = Vec::new();

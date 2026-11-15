@@ -38,7 +38,7 @@ fn strip(y: f64, y0: f64, step: f64, n: usize) -> usize {
 }
 
 /// The water bodies of a terrain's water layer, flat at their levels.
-pub(super) struct Water {
+pub(crate) struct Water {
     lakes: Vec<Lake>,
     /// The box round every lake, split into `cols` × `rows` cells, each listing the lakes whose
     /// boxes reach into it.
@@ -136,7 +136,7 @@ impl Water {
 impl Water {
     /// The level (metres, before exaggeration) of the water at a Web Mercator point, when one of
     /// the lakes holds it. Where water polygons overlap, the first in the layer's rows gives it.
-    pub(super) fn level(&self, m: Coord) -> Option<f64> {
+    pub(crate) fn level(&self, m: Coord) -> Option<f64> {
         if self.lakes.is_empty() || !self.extent.contains(m) {
             return None;
         }
@@ -713,5 +713,178 @@ mod tests {
         assert!(s.contains(Coord::new(9.0, 5.0)));
         assert!(!s.contains(Coord::new(5.0, 5.0)), "the island is land");
         assert!(!s.contains(Coord::new(11.0, 5.0)));
+    }
+
+    /// Shaded Relief draws the lake's cells at its level with flat ground's even light, the
+    /// terrain's slope and the hill's shading gone from the water (#1915 part 2); the island and
+    /// the land around keep theirs.
+    #[test]
+    fn shaded_relief_lights_the_water_as_flat_ground() {
+        let (mut m, _) = hill_with_water(None);
+        let lagos = m.layers.iter().find(|l| l.name == "lagos").map(|l| l.id).unwrap();
+        m.layer_mut(lagos).unwrap().visible = false;
+        let dem = m.layers.iter().find(|l| l.raster.is_some()).map(|l| l.id).unwrap();
+        let relief = |m: &mut Map, ramp: Option<rustgis_map::Ramp>| {
+            let l = m.layer_mut(dem).unwrap();
+            l.visible = true;
+            l.raster.as_mut().unwrap().style.renderer = rustgis_map::RasterRenderer::ShadedRelief {
+                band: 0,
+                ramp,
+                azimuth: 315.0,
+                altitude: 45.0,
+                z_factor: 1.0,
+                shadow: 0.0,
+                sky: 0.0,
+                fill: 0.0,
+                rock: None,
+            };
+        };
+        let camera = rustgis_map::Camera { center: lonlat_to_merc(Coord::new(0.35, -0.05)), res: 300.0, bearing: 0.0, pitch: 0.0 };
+        let view = crate::View { width: 200.0, height: 200.0, pixels_per_point: 1.0, camera, sky: false };
+        let px = |r: &crate::Rendered, lon: f64, lat: f64| {
+            let (x, y) = view.to_screen(lonlat_to_merc(Coord::new(lon, lat)));
+            r.pixmap.pixel(x as u32, y as u32).map(|c| [c.red(), c.green(), c.blue()]).unwrap()
+        };
+        let lake = [(0.25, 0.05), (0.45, -0.15), (0.3, -0.1), (0.47, 0.07)];
+        let (island, land) = ((0.35, 0.0), (0.1, 0.0));
+        for ramp in [None, Some(rustgis_map::Ramp::Terrain)] {
+            relief(&mut m, ramp.clone());
+            let wet = crate::render_complete(&mut m, &view).unwrap();
+            let water = m.view.terrain.as_mut().unwrap().water.take();
+            let dry = crate::render_complete(&mut m, &view).unwrap();
+            m.view.terrain.as_mut().unwrap().water = water;
+            let first = px(&wet, lake[0].0, lake[0].1);
+            for (lon, lat) in lake {
+                assert_eq!(px(&wet, lon, lat), first, "one even colour on the lake at ({lon}, {lat}), ramp {ramp:?}");
+            }
+            assert!(lake.iter().any(|(lon, lat)| px(&dry, *lon, *lat) != first), "the hill's slope shows there without water");
+            if ramp.is_none() {
+                // White, lit as flat ground: the ambient quarter and three quarters of the flat
+                // hillshade (180 at 45°).
+                let flat = (255.0_f64 * (0.25 + 0.75 * 180.0 / 255.0)).round() as u8;
+                assert_eq!(first, [flat; 3]);
+            }
+            for (lon, lat) in [island, land] {
+                assert_eq!(px(&wet, lon, lat), px(&dry, lon, lat), "({lon}, {lat}) is land");
+            }
+        }
+    }
+
+    /// A tilted view's drape bands, drawn one by one at cameras of their own, light the water as
+    /// the whole view reads it (#1915 part 2).
+    #[test]
+    fn a_tilted_views_drape_bands_light_the_water_flat() {
+        let (mut m, mut camera) = hill_with_water(None);
+        let lagos = m.layers.iter().find(|l| l.name == "lagos").map(|l| l.id).unwrap();
+        m.layer_mut(lagos).unwrap().visible = false;
+        let dem = m.layers.iter().find(|l| l.raster.is_some()).map(|l| l.id).unwrap();
+        let l = m.layer_mut(dem).unwrap();
+        l.visible = true;
+        l.raster.as_mut().unwrap().style.renderer = rustgis_map::RasterRenderer::ShadedRelief {
+            band: 0,
+            ramp: None,
+            azimuth: 315.0,
+            altitude: 45.0,
+            z_factor: 1.0,
+            shadow: 0.0,
+            sky: 0.0,
+            fill: 0.0,
+            rock: None,
+        };
+        camera.center = lonlat_to_merc(Coord::new(0.35, -0.3));
+        let view = crate::View { width: 300.0, height: 200.0, pixels_per_point: 1.0, camera, sky: false };
+        let lake = [(0.25, 0.05), (0.45, -0.15), (0.3, -0.1), (0.47, 0.07)];
+        // Each lake point in the first band that holds it.
+        let colours = |m: &mut Map| -> Vec<[u8; 3]> {
+            let patches = crate::render_tilt_drape(m, &view, 0.0, 512);
+            lake.iter()
+                .filter_map(|(lon, lat)| {
+                    patches.iter().find_map(|p| {
+                        let (x, y) = p.band.camera.to_screen(lonlat_to_merc(Coord::new(*lon, *lat)), p.band.width, p.band.height);
+                        let (sx, sy) = (p.pixmap.width() as f64 / p.band.width, p.pixmap.height() as f64 / p.band.height);
+                        p.pixmap.pixel((x * sx) as u32, (y * sy) as u32).filter(|c| c.alpha() > 0).map(|c| [c.red(), c.green(), c.blue()])
+                    })
+                })
+                .collect()
+        };
+        let wet = colours(&mut m);
+        assert_eq!(wet.len(), lake.len(), "every lake point is in a band");
+        assert!(wet.iter().all(|c| *c == wet[0]), "{wet:?}");
+        let flat = (255.0_f64 * (0.25 + 0.75 * 180.0 / 255.0)).round() as u8;
+        assert_eq!(wet[0], [flat; 3]);
+        m.view.terrain.as_mut().unwrap().water = None;
+        let dry = colours(&mut m);
+        assert!(dry.iter().any(|c| *c != wet[0]), "{dry:?}");
+    }
+
+    /// A DEM cell the shore crosses is water or land whole, by its centre, for its colour as for
+    /// its light: with nearest resampling every pixel in it is drawn alike (#1915 part 2).
+    #[test]
+    fn a_cell_the_shore_crosses_is_drawn_whole_by_its_centre() {
+        let (mut m, _) = hill_with_water(None);
+        let lagos = m.layers.iter().find(|l| l.name == "lagos").map(|l| l.id).unwrap();
+        m.layer_mut(lagos).unwrap().visible = false;
+        let dem = m.layers.iter().find(|l| l.raster.is_some()).map(|l| l.id).unwrap();
+        let l = m.layer_mut(dem).unwrap();
+        l.visible = true;
+        let style = &mut l.raster.as_mut().unwrap().style;
+        style.resampling = rustgis_map::raster::Resampling::Nearest;
+        style.renderer = rustgis_map::RasterRenderer::ShadedRelief {
+            band: 0,
+            ramp: Some(rustgis_map::Ramp::Terrain),
+            azimuth: 315.0,
+            altitude: 45.0,
+            z_factor: 1.0,
+            shadow: 0.0,
+            sky: 0.0,
+            fill: 0.0,
+            rock: None,
+        };
+        let camera = rustgis_map::Camera { center: lonlat_to_merc(Coord::new(0.25, -0.1)), res: 300.0, bearing: 0.0, pitch: 0.0 };
+        let view = crate::View { width: 200.0, height: 200.0, pixels_per_point: 1.0, camera, sky: false };
+        let drawn = crate::render_complete(&mut m, &view).unwrap();
+        let px = |lon: f64, lat: f64| {
+            let (x, y) = view.to_screen(lonlat_to_merc(Coord::new(lon, lat)));
+            drawn.pixmap.pixel(x as u32, y as u32).map(|c| [c.red(), c.green(), c.blue()]).unwrap()
+        };
+        // The lake's west shore is at 0.2°; the DEM's cell from 0.1875° to 0.21875° has its centre
+        // in the lake, so its land west of the shore is drawn as the lake.
+        assert_eq!(px(0.19, -0.11), px(0.215, -0.11), "one cell, one colour");
+        assert_eq!(px(0.19, -0.11), px(0.3, -0.1), "the lake's");
+    }
+
+    /// Over elevation tiles not read yet, the water Shaded Relief draws is read from shores still
+    /// on their way: the frame says so, so an export waits for them (#1915 part 2).
+    #[test]
+    fn relief_water_over_tiles_on_their_way_leaves_the_frame_pending() {
+        let (mut m, _) = hill_with_water(None);
+        let dem = m.layers.iter().find(|l| l.raster.is_some()).map(|l| l.id).unwrap();
+        let l = m.layer_mut(dem).unwrap();
+        l.visible = true;
+        l.raster.as_mut().unwrap().style.renderer = rustgis_map::RasterRenderer::ShadedRelief {
+            band: 0,
+            ramp: None,
+            azimuth: 315.0,
+            altitude: 45.0,
+            z_factor: 1.0,
+            shadow: 0.0,
+            sky: 0.0,
+            fill: 0.0,
+            rock: None,
+        };
+        let camera = rustgis_map::Camera { center: lonlat_to_merc(Coord::new(0.35, -0.05)), res: 300.0, bearing: 0.0, pitch: 0.0 };
+        let view = crate::View { width: 200.0, height: 200.0, pixels_per_point: 1.0, camera, sky: false };
+        let scale = m.ground_res_at(&camera) / rustgis_geom::PIXEL_M;
+        let (_, pending) = crate::relief_water(&m, &view, &crate::Labels::Own, scale).expect("water over the DEM");
+        assert!(!pending, "a DEM layer waits for nothing");
+        m.view.terrain.as_mut().unwrap().source = rustgis_map::view::TerrainSource::Tiles {
+            url: "https://relief-water.invalid/{z}/{x}/{y}.png".into(),
+            encoding: TerrainEncoding::Terrarium,
+        };
+        let (_, pending) = crate::relief_water(&m, &view, &crate::Labels::Own, scale).expect("water over tiles");
+        assert!(pending, "shore tiles on their way");
+        // Without a Shaded Relief drawn, nothing is read.
+        m.layer_mut(dem).unwrap().visible = false;
+        assert!(crate::relief_water(&m, &view, &crate::Labels::Own, scale).is_none());
     }
 }
