@@ -279,8 +279,30 @@ impl<'a> Prepare<'a> {
         self.owners.pop();
     }
 
-    /// Counts the values `dataset` is written without ([`rustgis_data::Dataset::unsaved_numbers`]).
+    /// Counts the values `dataset` is written without ([`rustgis_data::Dataset::unsaved_numbers`]),
+    /// and refuses the output when a feature has a coordinate that isn't a number: the file would
+    /// hold it as null and couldn't be opened again (#1985). Refused here, before anything is
+    /// written, so a file already there is kept as it was.
     pub(crate) fn count_numbers(&mut self, dataset: &rustgis_data::Dataset) {
+        let unsaved = dataset.unsaved_coordinates();
+        if unsaved > 0 && self.refusal.is_none() {
+            // The first few by feature id, as the attribute table shows them, so they can be
+            // found: such a feature isn't one without geometry, which a filter would find.
+            let rows: Vec<String> = dataset
+                .features
+                .iter()
+                .filter(|f| f.geometry.as_ref().is_some_and(|g| !g.is_finite()))
+                .take(3)
+                .map(|f| f.id.to_string())
+                .collect();
+            let more = if unsaved > rows.len() { ", …" } else { "" };
+            let word = if unsaved == 1 { "id" } else { "ids" };
+            self.refusal = Some(format!(
+                "not saved: {unsaved} feature(s) in '{}' ({word} {}{more}) have a coordinate that isn't a number (NaN or infinite), which the saved file couldn't hold or be opened again with; delete or redraw their geometry first",
+                crate::project::short_name(&dataset.name),
+                rows.join(", ")
+            ));
+        }
         self.record_numbers(dataset.unsaved_numbers(), format!("'{}'", crate::project::short_name(&dataset.name)).into());
     }
 

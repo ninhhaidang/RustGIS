@@ -129,7 +129,10 @@ impl ShpSource {
             Some(c) => Reproject::from_crs(c, &mut notes),
             None => shp_reproject(crate::raster::read_prj(path).as_deref(), &mut notes)?,
         };
-        let extent = if native.is_empty() || !native.min_x.is_finite() { Extent::EMPTY } else { reproject.extent_to_lonlat(&native) };
+        // A header box with a corner that isn't a number (a shape's NaN or infinity, #1985) is
+        // no extent at all.
+        let finite = [native.min_x, native.min_y, native.max_x, native.max_y].iter().all(|v| v.is_finite());
+        let extent = if native.is_empty() || !finite { Extent::EMPTY } else { reproject.extent_to_lonlat(&native) };
         if reproject.is_lonlat()
             && !extent.is_empty()
             && (extent.min_x < -180.5 || extent.max_x > 180.5 || extent.min_y < -90.5 || extent.max_y > 90.5)
@@ -210,6 +213,12 @@ impl FeatureSource for ShpSource {
                 return Ok(());
             }
             let geometry = match parse_shape(&buf) {
+                // A coordinate that isn't a number (NaN or infinite) has no place: the record is
+                // left out and counted, as one that can't be converted (#1985).
+                Ok(Some(g)) if !g.is_finite() => {
+                    skipped += 1;
+                    return Ok(());
+                }
                 Ok(Some(g)) => match self.reproject.geometry(g) {
                     Some(g) => Some(g),
                     None => {
@@ -302,6 +311,12 @@ impl FeatureSource for ShpSource {
                 return Ok(());
             }
             let geometry = match parse_shape(&buf) {
+                // A coordinate that isn't a number (NaN or infinite) has no place: the record is
+                // left out and counted, as one that can't be converted (#1985).
+                Ok(Some(g)) if !g.is_finite() => {
+                    skipped += 1;
+                    return Ok(());
+                }
                 Ok(Some(g)) => match self.reproject.geometry(g) {
                     Some(g) => Some(g),
                     None => {

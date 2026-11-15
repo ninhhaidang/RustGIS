@@ -367,13 +367,23 @@ pub struct Dataset {
 
 impl Dataset {
     /// How many of its values a saved project holds as null, not as they are: numbers that aren't
-    /// finite (NaN, infinity), which JSON can't write ([`Value`]'s `Serialize`). None for a window
+    /// finite (NaN, infinity), which JSON can't write ([`Value`]'s `Serialize`). Zero for a window
     /// onto a source, whose rows aren't saved.
     pub fn unsaved_numbers(&self) -> usize {
         if self.windowed {
             return 0;
         }
         self.features.iter().flat_map(|f| &f.attrs).filter(|v| v.is_non_finite()).count()
+    }
+
+    /// How many of its features have a coordinate that isn't a number (NaN, infinity), which a
+    /// saved project would hold as null and couldn't open again ([`Geometry::is_finite`], #1985).
+    /// Zero for a window onto a source, whose rows aren't saved.
+    pub fn unsaved_coordinates(&self) -> usize {
+        if self.windowed {
+            return 0;
+        }
+        self.features.iter().filter(|f| f.geometry.as_ref().is_some_and(|g| !g.is_finite())).count()
     }
 }
 

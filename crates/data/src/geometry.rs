@@ -124,6 +124,18 @@ impl Geometry {
         }
     }
 
+    /// Whether every coordinate is a number: none is NaN (which some writers use for an empty
+    /// point) or infinite, which have no place and which a saved project can't hold (#1985).
+    pub fn is_finite(&self) -> bool {
+        // Stops at the first that isn't.
+        match self {
+            Geometry::Point(c) => c.is_finite(),
+            Geometry::MultiPoint(v) => v.iter().all(|c| c.is_finite()),
+            Geometry::Line(parts) => parts.iter().flatten().all(|c| c.is_finite()),
+            Geometry::Polygon(polys) => polys.iter().flatten().flatten().all(|c| c.is_finite()),
+        }
+    }
+
     /// Rings whose polar winding encloses no single area, including holes.
     pub fn ambiguous_area_rings(&self) -> usize {
         match self {

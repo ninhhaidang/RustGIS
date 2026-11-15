@@ -2793,7 +2793,7 @@ pub(crate) fn read_shapefile_parts(mut parts: ShapefileParts, name: &str, crs: O
             t
         }),
     };
-    let (mut converted, mut unconverted, mut zm_shapes) = (0usize, 0usize, 0usize);
+    let (mut converted, mut unconverted, mut zm_shapes, mut not_numbers) = (0usize, 0usize, 0usize, 0usize);
     let mut unread_dates = vec![0usize; ds.fields.len()];
     // Numbers that aren't finite (`nan`, `inf`), read as empty and counted for a notice.
     let mut nonfinite = vec![0usize; ds.fields.len()];
@@ -2838,6 +2838,16 @@ pub(crate) fn read_shapefile_parts(mut parts: ShapefileParts, name: &str, crs: O
         {
             source_kind = g.kind();
         }
+        // A coordinate that isn't a number (NaN, which some writers use for an empty point, or an
+        // infinity) has no place: the shape keeps its attributes without its geometry, counted
+        // (#1985). Checked before converting, so it isn't taken for a conversion that failed.
+        let geom = match geom {
+            Some(g) if !g.is_finite() => {
+                not_numbers += 1;
+                None
+            }
+            g => g,
+        };
         let geom = match (&to_lonlat, geom) {
             (Some(t), Some(g)) => {
                 let mut ok = true;
@@ -2892,7 +2902,7 @@ pub(crate) fn read_shapefile_parts(mut parts: ShapefileParts, name: &str, crs: O
     ds.geometry_type = dominant_type(&ds);
     // A bad .prj must not turn a spatial layer into an attribute-only table and hide the
     // conversion warning. Its shapes can be recovered by importing with an override.
-    if ds.geometry_type == GeometryType::None && unconverted > 0 {
+    if ds.geometry_type == GeometryType::None && (unconverted > 0 || not_numbers > 0) {
         ds.geometry_type = source_kind;
     }
     integral_numeric_to_integer(&mut ds);
@@ -2902,6 +2912,11 @@ pub(crate) fn read_shapefile_parts(mut parts: ShapefileParts, name: &str, crs: O
     }
     if report.skipped > 0 {
         report.messages.push(format!("{} shapes were unreadable or unsupported", report.skipped));
+    }
+    if not_numbers > 0 {
+        report.messages.push(format!(
+            "{name}: {not_numbers} shape(s) have a coordinate that isn't a number (NaN or infinite): their features are kept without geometry"
+        ));
     }
     ds.crs_incomplete = unconverted > 0;
     if unconverted > 0 && converted == 0 {
@@ -5456,6 +5471,63 @@ mod tests {
         let (_, rep) = read_path(&shp).unwrap();
         assert!(rep.messages.iter().any(|m| m.contains("not longitude/latitude")), "{:?}", rep.messages);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A shape with a coordinate that isn't a number (NaN, as some writers mark an empty point, or
+    /// an infinity) keeps its attributes without its geometry, counted (#1985), with or without a
+    /// `.prj` to convert from, and isn't taken for a failed conversion. A clean file says nothing.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn shapefile_coordinates_that_arent_numbers_are_left_out_and_said() {
+        use shapefile::dbase::{FieldValue, Record, TableWriterBuilder};
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
+        let write = |name: &str, points: &[(f64, f64)]| {
+            let shp = dir.join(name);
+            let table = TableWriterBuilder::new().add_character_field("name".try_into().unwrap(), 10);
+            let mut w = shapefile::Writer::from_path(&shp, table).unwrap();
+            for (i, &(x, y)) in points.iter().enumerate() {
+                let mut r = Record::default();
+                r.insert("name".into(), FieldValue::Character(Some(format!("p{i}"))));
+                w.write_shape_and_record(&shapefile::Point::new(x, y), &r).unwrap();
+            }
+            shp
+        };
+        let said = |m: &[String]| m.iter().any(|m| m.contains("isn't a number"));
+        let bad = write("bad.shp", &[(f64::NAN, 20.0), (11.0, 21.0), (f64::INFINITY, 22.0)]);
+        let (ds, rep) = read_path(&bad).unwrap();
+        assert_eq!(ds.features.len(), 3, "the features are kept");
+        assert!(ds.features[0].geometry.is_none() && ds.features[2].geometry.is_none());
+        assert_eq!(ds.features[1].geometry, Some(Geometry::Point(Coord::new(11.0, 21.0))));
+        assert_eq!(ds.value(0, 0), &Value::Text("p0".into()), "with their attributes");
+        assert_eq!(ds.geometry_type, GeometryType::Point);
+        assert_eq!(ds.unsaved_coordinates(), 0);
+        assert!(
+            rep.messages.contains(
+                &"bad: 2 shape(s) have a coordinate that isn't a number (NaN or infinite): their features are kept without geometry"
+                    .to_string()
+            ),
+            "{:?}",
+            rep.messages
+        );
+        // Every shape so: still a point layer, not a table.
+        let all = write("all.shp", &[(f64::NAN, f64::NAN)]);
+        let (ds, rep) = read_path(&all).unwrap();
+        assert_eq!(ds.geometry_type, GeometryType::Point);
+        assert!(said(&rep.messages), "{:?}", rep.messages);
+        // With a .prj to convert from, said as not a number, not as a failed conversion.
+        let prj = r#"PROJCS["WGS_1984_UTM_Zone_31N",GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",SPHEROID["WGS_1984",6378137.0,298.257223563]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]],PROJECTION["Transverse_Mercator"],PARAMETER["False_Easting",500000.0],PARAMETER["False_Northing",0.0],PARAMETER["Central_Meridian",3.0],PARAMETER["Scale_Factor",0.9996],PARAMETER["Latitude_Of_Origin",0.0],UNIT["Meter",1.0]]"#;
+        let utm = write("utm.shp", &[(f64::NAN, 5_411_550.2), (451_219.33, 5_411_550.2)]);
+        std::fs::write(dir.join("utm.prj"), prj).unwrap();
+        let (ds, rep) = read_path(&utm).unwrap();
+        assert!(ds.features[0].geometry.is_none() && ds.features[1].geometry.is_some());
+        assert!(said(&rep.messages), "{:?}", rep.messages);
+        assert!(!rep.messages.iter().any(|m| m.contains("converted")), "{:?}", rep.messages);
+        assert!(!ds.crs_incomplete);
+        // A clean file says nothing of it.
+        let clean = write("clean.shp", &[(10.0, 20.0)]);
+        let (_, rep) = read_path(&clean).unwrap();
+        assert!(!said(&rep.messages), "{:?}", rep.messages);
     }
     /// An ESRI .prj without an authority retains the national datum shift (issue #807).
     #[cfg(not(target_arch = "wasm32"))]

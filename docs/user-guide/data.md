@@ -230,7 +230,12 @@ nothing. The datum's ellipsoid is retained for datum transformations and
 exported coordinate system definitions.
 
 Shapefile text uses a supported `.cpg` encoding, otherwise the `.dbf` code page, with UTF-8 as
-the fallback. Keep the sidecar files together.
+the fallback. Keep the sidecar files together. A shape with a coordinate that isn't a number (NaN,
+which some programs write for an empty point, or an infinity) has no place: its feature keeps its
+attributes without geometry, and a notice says how many (a large Shapefile read in place on the
+desktop leaves the whole record out, counted with its unreadable shapes). A project, project package or map package is never saved with such a
+coordinate, since it couldn't be opened again: the save is refused, saying which layer, and a file
+already there is kept as it was.
 
 ## Attribute tables and fields
 

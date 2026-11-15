@@ -48284,6 +48284,119 @@ fn a_command_says_once_that_it_couldnt_zoom() {
     assert_eq!(s.map().camera.center, view.center);
 }
 
+/// A save never writes a file it couldn't open again (#1985): a feature with a coordinate that
+/// isn't a number would be held as null, so saving the project, packaging it and packaging the
+/// map are refused, saying where, and the files already there are kept as they were. With the
+/// geometry gone, each saves and opens again.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_save_refuses_coordinates_that_arent_numbers_and_keeps_the_file() {
+    use rustgis_data::{Coord, Dataset, Geometry, GeometryType};
+    struct Dir(std::path::PathBuf);
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    let dir = Dir(std::env::temp_dir().join(format!("rustgis-nan-save-{}-{nanos}", std::process::id())));
+    std::fs::create_dir_all(&dir.0).unwrap();
+    let path = |n: &str| dir.0.join(n).display().to_string();
+    let mut s = Session::new(Project::default());
+    let mut ds = Dataset::new("ways", GeometryType::Polyline, vec![]);
+    ds.push(Some(Geometry::Line(vec![vec![Coord::new(0.0, 20.0), Coord::new(1.0, 20.5)]])), vec![]);
+    let id = s.map_mut().add_dataset(ds);
+    // Saved clean first: these files must survive a refused save.
+    let saves = [("project.saveAs", "p.rgis"), ("project.package", "p.rgispkg"), ("map.package", "m.rgismpk")];
+    for (cmd, file) in saves {
+        s.run(cmd, &json!({"path": path(file)})).unwrap();
+    }
+    let before: Vec<Vec<u8>> = saves.iter().map(|(_, f)| std::fs::read(path(f)).unwrap()).collect();
+    let layer = s.map_mut().layer_mut(id).unwrap();
+    layer.dataset.push(Some(Geometry::Line(vec![vec![Coord::new(0.0, 10.0), Coord::new(f64::NAN, 10.5)]])), vec![]);
+    layer.dataset.push(Some(Geometry::Point(Coord::new(f64::INFINITY, 0.0))), vec![]);
+    layer.touch_geometry();
+    // Named by their ids, as the attribute table shows them.
+    let ids: Vec<String> = layer.dataset.features.iter().skip(1).map(|f| f.id.to_string()).collect();
+    let said = format!("2 feature(s) in 'ways' (ids {}) have a coordinate that isn't a number", ids.join(", "));
+    for ((cmd, file), was) in saves.iter().zip(&before) {
+        let e = s.run(cmd, &json!({"path": path(file)})).unwrap_err();
+        assert!(e.contains(&said), "{cmd}: {e}");
+        assert_eq!(&std::fs::read(path(file)).unwrap(), was, "{cmd} kept the file as it was");
+    }
+    // Their geometry gone, the features save and open again.
+    let layer = s.map_mut().layer_mut(id).unwrap();
+    layer.dataset.features = layer
+        .dataset
+        .features
+        .iter()
+        .map(|f| {
+            let mut f = f.clone();
+            f.geometry = f.geometry.filter(|g| g.is_finite());
+            f
+        })
+        .collect();
+    layer.touch_geometry();
+    for (cmd, file) in saves {
+        s.run(cmd, &json!({"path": path(file)})).unwrap();
+    }
+    let mut t = Session::new(Project::default());
+    t.run("project.open", &json!({"path": path("p.rgis")})).unwrap();
+    assert_eq!(t.map().layer_by_name("ways").unwrap().dataset.features.len(), 3);
+}
+
+/// A Shapefile read in place (streamed) leaves out a shape with a coordinate that isn't a number,
+/// counted, as one it can't convert (#1985): nothing NaN reaches the map. Read whole, the feature
+/// keeps its attributes without geometry. Either way the project saves and opens again.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_shapefile_coordinate_that_isnt_a_number_reaches_no_layer() {
+    use rustgis_data::{Coord, Dataset, Geometry, GeometryType};
+    // Removed however the test ends.
+    struct Dir(std::path::PathBuf);
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    let guard = Dir(std::env::temp_dir().join(format!("rustgis-nan-stream-{}-{nanos}", std::process::id())));
+    let dir = guard.0.clone();
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut s = Session::new(Project::default());
+    let mut ds = Dataset::new("pts", GeometryType::Point, vec![]);
+    ds.push(Some(Geometry::Point(Coord::new(10.0, 20.0))), vec![]);
+    ds.push(Some(Geometry::Point(Coord::new(11.0, 21.0))), vec![]);
+    let id = s.map_mut().add_dataset(ds);
+    let shp = dir.join("pts.shp");
+    s.run("share.exportLayer", &json!({"layer": id, "path": shp})).unwrap();
+    // Header 100, record header 8, shape type 4: the first point's x at 112.
+    let mut b = std::fs::read(&shp).unwrap();
+    b[112..120].copy_from_slice(&f64::NAN.to_le_bytes());
+    std::fs::write(&shp, &b).unwrap();
+    for stream in [false, true] {
+        let mut t = Session::new(Project::default());
+        let mark = t.notice_mark();
+        let id = t.run("layer.addData", &json!({"path": shp, "stream": stream})).unwrap()["layer"].as_u64().unwrap() as u32;
+        if stream {
+            t.run("layer.loadAll", &json!({"layer": id})).unwrap();
+        }
+        let notices: Vec<String> = t.notices_since(mark).iter().map(|n| n.text.clone()).collect();
+        let said = if stream {
+            "pts: 1 row couldn't be read and was left out"
+        } else {
+            "pts: 1 shape(s) have a coordinate that isn't a number (NaN or infinite): their features are kept without geometry"
+        };
+        assert!(notices.iter().any(|n| n == said), "stream {stream}: {notices:?}");
+        let geometries: Vec<_> = t.map().layer(id).unwrap().dataset.features.iter().map(|f| f.geometry.clone()).collect();
+        let kept = Some(Geometry::Point(Coord::new(11.0, 21.0)));
+        assert_eq!(geometries, if stream { vec![kept] } else { vec![None, kept] }, "stream {stream}");
+        let saved = dir.join(format!("p-{stream}.rgis"));
+        t.run("project.saveAs", &json!({"path": saved})).unwrap();
+        Session::new(Project::default()).run("project.open", &json!({"path": saved})).unwrap();
+    }
+}
+
 #[test]
 fn plugin_installs_are_refused_with_the_reason_where_they_cant_be() {
     let mut s = Session::new(Project::default());
