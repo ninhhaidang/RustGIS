@@ -35,6 +35,12 @@ pub trait Phone: Platform {
     fn picking(&self) -> bool {
         self.busy()
     }
+
+    /// Whether the soft keyboard's Return was pressed since the last frame, where the system
+    /// passes it on as no key egui knows (iOS). The shell gives egui an Enter for it.
+    fn take_return(&self) -> bool {
+        false
+    }
 }
 
 /// What a service couldn't do, kept until the next frame says it in the window (a service has
@@ -464,6 +470,19 @@ impl<P: Phone> eframe::App for App<P> {
             self.keyboard = keyboard;
         }
         self.take_phone_events(ctx, raw_input);
+        // The soft keyboard's Return, as the Enter key egui knows: each field does with it what
+        // it does with Enter.
+        if self.phone.as_ref().is_some_and(|phone| phone.take_return()) {
+            for pressed in [true, false] {
+                raw_input.events.push(egui::Event::Key {
+                    key: egui::Key::Enter,
+                    physical_key: None,
+                    pressed,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                });
+            }
+        }
         self.kept = self.phone.as_ref().is_some_and(|phone| phone.picking()).then(|| Kept::of(&self.app));
         // The pushed files open as files dropped on the desktop window do: once the window
         // runs, read off its thread with progress and Cancel, each failure said in the window.

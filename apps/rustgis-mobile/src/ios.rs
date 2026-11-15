@@ -598,6 +598,61 @@ fn attach_window() {
         window.makeKeyAndVisible();
     }
     fill_screen(&window);
+    match window.rootViewController().and_then(|controller| controller.view()) {
+        Some(view) => take_return(&view),
+        // winit makes its view controller with the window, so this shouldn't happen: said in the
+        // log, as Return then does nothing for the session.
+        None => log::warn!("winit's window has no view yet: the soft keyboard's Return won't reach the form"),
+    }
+}
+
+/// The name of [`take_return`]'s class.
+const RETURN_KEY: &std::ffi::CStr = c"RustGISKeyView";
+
+thread_local! {
+    /// Whether the soft keyboard's Return was pressed since the shell last asked
+    /// ([`Ios::take_return`]).
+    static RETURNED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Makes the soft keyboard's Return reach egui, by making winit's view an instance of a
+/// subclass of winit's whose `insertText:` keeps a Return for the shell ([`RETURNED`]) and
+/// passes everything else on. winit 0.30 hands Return on as the character `"\n"`, which egui
+/// takes for no key at all: a field then couldn't be left with Return. As Enter, it does what
+/// each field does with Enter.
+fn take_return(view: &objc2_ui_kit::UIView) {
+    use objc2::runtime::{AnyClass, AnyObject, ClassBuilder, Sel};
+    if view.class().name() == RETURN_KEY {
+        return;
+    }
+    extern "C-unwind" fn insert_text(this: &AnyObject, _cmd: Sel, text: &NSString) {
+        if text.to_string() == "\n" {
+            RETURNED.with(|r| r.set(true));
+            if let Some(mtm) = MainThreadMarker::new() {
+                wake(mtm);
+            }
+            return;
+        }
+        let Some(winit) = this.class().superclass() else {
+            // A subclass always has one: said in the log should it not, as the text is dropped.
+            log::warn!("typed text was dropped: winit's view has no superclass");
+            return;
+        };
+        // SAFETY: `this` is winit's view (the class is only given to it), whose class is the
+        // superclass here; its `insertText:` takes the text.
+        unsafe { msg_send![super(this, winit), insertText: text] }
+    }
+    let class = AnyClass::get(RETURN_KEY).or_else(|| {
+        let mut builder = ClassBuilder::new(RETURN_KEY, view.class())?;
+        // SAFETY: the method has the signature UIKeyInput's `insertText:` has.
+        unsafe { builder.add_method(sel!(insertText:), insert_text as extern "C-unwind" fn(_, _, _)) };
+        Some(builder.register())
+    });
+    if let Some(class) = class {
+        // SAFETY: the new class is a subclass of the view's own, with no instance variables of
+        // its own, so the view is a valid instance of it.
+        unsafe { objc2::ffi::object_setClass((view as *const objc2_ui_kit::UIView).cast_mut().cast(), class) };
+    }
 }
 
 /// The name of [`fill_screen`]'s class.
@@ -985,6 +1040,10 @@ impl shell::Phone for Ios {
         if let Some(window) = frame.winit_window() {
             window.set_preferred_status_bar_style(if light { StatusBarStyle::DarkContent } else { StatusBarStyle::LightContent });
         }
+    }
+
+    fn take_return(&self) -> bool {
+        RETURNED.with(|r| r.replace(false))
     }
 
     fn busy(&self) -> bool {
