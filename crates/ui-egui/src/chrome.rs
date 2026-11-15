@@ -765,6 +765,14 @@ pub fn shortcuts(app: &mut RustGisApp, ctx: &egui::Context) {
             crate::boxedit::cancel(app);
             continue;
         }
+        if id == "tool.set"
+            && p.get("tool").and_then(serde_json::Value::as_str) == Some("explore")
+            && app.session.tool == rustgis_engine::Tool::Circle
+            && crate::circleedit::drawing(app)
+        {
+            crate::circleedit::cancel(app);
+            continue;
+        }
         // With Edit Vertices, Delete removes the chosen vertex rather than the feature.
         if id == "edit.delete"
             && app.session.active_layout.is_none()

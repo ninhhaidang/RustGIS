@@ -3,16 +3,13 @@
 //! geometry to match the feature; foreign geometry is never fitted to a new box. Insert/delete
 //! edits through `design::apply` forget records, while sync and restore paths can retain them
 //! subject to that geometry-equality check.
-use std::collections::BTreeMap;
-use std::hash::{Hash, Hasher};
-use std::sync::Arc;
-
 use rustgis_data::raster::{Crs, ImageGrid, Transformer};
 use rustgis_data::{Geometry, GeometryType};
 use rustgis_geom::Coord;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use crate::construction::{Cache, Construction, Record};
 use crate::{CmdResult, Session};
 
 /// A frozen planar grid, with x right and y down. The default is Web Mercator grid metres,
@@ -37,13 +34,14 @@ impl Frame {
     pub fn from_grid(grid: &ImageGrid) -> Result<Self, String> {
         let epsg = u32::from(grid.crs().epsg());
         if epsg == 0 {
-            return Err("box grids currently require a recognised EPSG coordinate system".into());
+            return Err("construction grids currently require a recognised EPSG coordinate system".into());
         }
         Ok(Self { epsg, width: grid.width(), height: grid.height(), affine: grid.affine() })
     }
     fn grid(&self) -> Result<ImageGrid, String> {
-        let crs =
-            Crs::from_epsg(self.epsg).filter(|c| !c.lacks_datum_shift()).ok_or("box grid needs a supported EPSG coordinate system")?;
+        let crs = Crs::from_epsg(self.epsg)
+            .filter(|c| !c.lacks_datum_shift())
+            .ok_or("construction grid needs a supported EPSG coordinate system")?;
         ImageGrid::new(self.width, self.height, crs, self.affine).map_err(|e| e.to_string())
     }
     fn projection(&self) -> Option<std::rc::Rc<Transformer>> {
@@ -132,102 +130,12 @@ impl BoxSpec {
     }
 }
 
-type Key = (u64, u64, u64, u64);
-#[derive(Clone)]
-struct Record {
-    spec: BoxSpec,
-    geometry: Geometry,
-}
-type Shard = Arc<BTreeMap<Key, Arc<Record>>>;
-
-/// Immutable snapshots accompany undo and background exports. An edit copies at most 512
-/// record references and the 256-entry directory; construction geometries remain shared.
-#[derive(Clone, Default)]
-pub(crate) struct Cache {
-    shards: Arc<Vec<Shard>>,
-    len: usize,
-}
-impl Cache {
-    fn key(s: &Session, layer: u32, row: usize) -> Option<Key> {
-        let l = s.map().layer(layer)?;
-        Some((s.map().instance_id(), l.instance_id(), l.replacement_revision(), l.dataset.features.get(row)?.id))
-    }
-    fn shard(key: Key) -> usize {
-        let mut hash = std::collections::hash_map::DefaultHasher::new();
-        key.hash(&mut hash);
-        (hash.finish() % 256) as usize
-    }
-    fn get(&self, key: Key, geometry: &Geometry) -> Option<&Record> {
-        self.shards.get(Self::shard(key))?.get(&key).map(|r| r.as_ref()).filter(|r| r.geometry == *geometry)
-    }
-    fn room(&self) -> Result<(), String> {
-        if self.len >= 100_000 {
-            Err("this session already holds 100000 box constructions; start a new session for more".into())
-        } else {
-            Ok(())
-        }
-    }
-    fn remember(&mut self, key: Key, record: Record) -> Result<(), String> {
-        let at = Self::shard(key);
-        if self.shards.is_empty() {
-            let empty = Arc::new(BTreeMap::new());
-            self.shards = Arc::new(vec![empty; 256]);
-        }
-        let shards = Arc::make_mut(&mut self.shards);
-        let shard = shards.get_mut(at).ok_or("box cache is unavailable")?;
-        let exists = shard.contains_key(&key);
-        if !exists && shard.len() >= 512 {
-            return Err("box construction cache capacity reached; start a new session for more".into());
-        }
-        Arc::make_mut(shard).insert(key, Arc::new(record));
-        if !exists {
-            self.len += 1;
-        }
-        Ok(())
-    }
-    fn remove(&mut self, key: Key) {
-        let at = Self::shard(key);
-        if self.shards.get(at).is_none_or(|s| !s.contains_key(&key)) {
-            return;
-        }
-        if let Some(shard) = Arc::make_mut(&mut self.shards).get_mut(at)
-            && Arc::make_mut(shard).remove(&key).is_some()
-        {
-            self.len = self.len.saturating_sub(1);
-        }
-    }
-    pub(crate) fn export_note(&self, map: u64, layer: &rustgis_map::Layer) -> Result<Option<String>, String> {
-        if self.len == 0 {
-            return Ok(None);
-        }
-        let mut count = 0;
-        for (row, feature) in layer.dataset.features.iter().enumerate() {
-            if row.is_multiple_of(256) {
-                rustgis_data::progress::check().map_err(|e| e.to_string())?;
-            }
-            let key = (map, layer.instance_id(), layer.replacement_revision(), feature.id);
-            if feature.geometry.as_ref().is_some_and(|g| self.get(key, g).is_some()) {
-                count += 1;
-            }
-        }
-        Ok((count > 0).then(|| format!("{count} rotated box(es): session-only construction is not included in this export and will not survive reimport; the source polygons use four transformed corners, with curved grid edges approximated by straight edges")))
-    }
-}
-/// Forget the live record for insertion/removal paths that call this hook (`design::apply`).
-/// This prevents id reuse in those paths from adopting construction; undo keeps its own cache.
-/// Sync and restore paths may retain records, guarded by `box_spec`'s geometry-equality check.
-pub(crate) fn forget_feature(s: &mut Session, layer: u32, feature: u64) {
-    if let Some(l) = s.map().layer(layer) {
-        let key = (s.map().instance_id(), l.instance_id(), l.replacement_revision(), feature);
-        s.boxes.remove(key);
-    }
-}
 impl Session {
     /// Only unchanged boxes constructed in this session get constrained handles. Imported
     /// polygons and boxes whose vertices were independently edited are never silently refitted.
     pub fn box_spec(&self, layer: u32, row: usize) -> Option<BoxSpec> {
         let g = self.map().layer(layer)?.dataset.features.get(row)?.geometry.as_ref()?;
-        self.boxes.get(Cache::key(self, layer, row)?, g).map(|r| r.spec.clone())
+        self.constructions.get(Cache::key(self, layer, row)?, g).and_then(|r| r.spec.box_spec().cloned())
     }
 }
 
@@ -286,7 +194,7 @@ pub(crate) fn add(s: &mut Session, p: &Value) -> CmdResult {
     reject_table(p)?;
     let id = s.layer_id(p)?;
     check_layer(s, id)?;
-    s.boxes.room()?;
+    s.constructions.room()?;
     let b = parsed(p, None)?;
     if let Some(attributes) = p.get("attributes") {
         let attributes = attributes.as_object().ok_or("attributes must be an object")?;
@@ -313,7 +221,7 @@ fn remember(s: &mut Session, id: u32, row: usize, spec: BoxSpec) -> Result<(), S
     if g != spec.geometry()? {
         return Err("an edit rule changed the box geometry".into());
     }
-    s.boxes.remember(key, Record { spec, geometry: g })
+    s.constructions.remember(key, Record { spec: Construction::Box(spec), geometry: g })
 }
 pub(crate) fn update(s: &mut Session, p: &Value) -> CmdResult {
     let id = s.layer_id(p)?;
@@ -324,7 +232,11 @@ pub(crate) fn update(s: &mut Session, p: &Value) -> CmdResult {
     let row = row(p)?;
     let key = Cache::key(s, id, row).ok_or("no such feature")?;
     let g = s.map().layer(id).and_then(|l| l.dataset.features.get(row)).and_then(|f| f.geometry.as_ref()).ok_or("missing box geometry")?;
-    let before = s.boxes.get(key, g).map(|r| r.spec.clone()).ok_or("this feature has no unchanged box construction; use Edit Vertices")?;
+    let before = s
+        .constructions
+        .get(key, g)
+        .and_then(|r| r.spec.box_spec().cloned())
+        .ok_or("this feature has no unchanged box construction; use Edit Vertices")?;
     if p.get("featureId").is_some_and(|v| v.as_u64() != Some(key.3)) {
         return Err("the feature changed during this edit".into());
     }
@@ -501,7 +413,7 @@ mod tests {
         let (mut s, id) = session();
         let b = spec();
         let row = add(&mut s, &b);
-        let cache = s.boxes.clone();
+        let cache = s.constructions.clone();
         let layer = s.map().layer(id).unwrap().clone();
         let map = s.map().instance_id();
         for n in 0..45 {
@@ -509,8 +421,8 @@ mod tests {
             b.angle = f64::from(n);
             s.run("edit.updateBox", &json!({"row":row,"box":b})).unwrap();
         }
-        assert!(cache.export_note(map, &layer).unwrap().unwrap().starts_with("1 rotated box"));
-        assert!(s.boxes.export_note(map, &layer).unwrap().is_none());
+        assert!(cache.export_notes(map, &layer).unwrap()[0].starts_with("1 rotated box"));
+        assert!(s.constructions.export_notes(map, &layer).unwrap().is_empty());
     }
     #[test]
     fn box_edit_geojson_is_plain_geometry_with_counted_export_notes() {
@@ -538,7 +450,7 @@ mod tests {
         assert!(reopened.box_spec(other, 0).is_none());
         let ordinary = Dataset::new("ordinary", GeometryType::Polygon, vec![]);
         let ordinary = rustgis_map::Layer::new(99, ordinary);
-        assert!(s.boxes.export_note(s.map().instance_id(), &ordinary).unwrap().is_none());
+        assert!(s.constructions.export_notes(s.map().instance_id(), &ordinary).unwrap().is_empty());
     }
     #[test]
     fn box_edit_non_polygon_formats_keep_their_geometry_loss_notices() {
@@ -585,7 +497,7 @@ mod tests {
         let cut = add(&mut s, &b);
         let original = s.map().layer(id).unwrap().dataset.features[cut].clone();
         s.run("edit.cut", &json!({})).unwrap();
-        assert_eq!(s.boxes.len, 1);
+        assert_eq!(s.constructions.len, 1);
         assert_eq!(s.box_spec(id, kept), Some(b.clone()));
         s.run("edit.paste", &json!({"layer":id})).unwrap();
         assert_eq!(s.map().layer(id).unwrap().dataset.features[cut], original);
@@ -683,7 +595,7 @@ mod tests {
             assert!(error.contains("polygon layer"), "{error}");
             assert!(s.map().layer(id).unwrap().dataset.features.is_empty());
             assert_eq!(s.undo_depth(), depth);
-            assert_eq!(s.boxes.len, 0);
+            assert_eq!(s.constructions.len, 0);
         }
     }
 

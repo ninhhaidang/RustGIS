@@ -103,7 +103,7 @@ fn handles(app: &RustGisApp, rect: Rect, b: &BoxSpec) -> Vec<(Handle, Pos2)> {
 fn handle_at(app: &RustGisApp, rect: Rect, p: Pos2, b: &BoxSpec) -> Option<Handle> {
     handles(app, rect, b).into_iter().rev().find(|(_, at)| at.distance(p) <= 8.).map(|(h, _)| h)
 }
-fn hits(app: &mut RustGisApp, c: Coord) -> Vec<(u32, usize)> {
+pub(crate) fn hits(app: &mut RustGisApp, c: Coord) -> Vec<(u32, usize)> {
     let Some(id) = app.session.active_layer else { return Vec::new() };
     let Some(p) = app.session.map().to_map(c) else { return Vec::new() };
     let (tol, scale) = (app.session.map().camera.res * 5., app.session.scale());

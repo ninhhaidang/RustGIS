@@ -193,11 +193,11 @@ GeoTIFFs. This does not bind a layer to an image or save image metadata.
 Construction is kept only in the current session. An independent vertex edit disables the
 box handles rather than silently fitting a new box; undo restores them. Saving/reopening or
 sharing GeoJSON leaves **ordinary polygons** and ordinary feature properties. In-session edits
-preserve feature identity; import uses the normal GeoJSON reader. There is no automatic
-recognition of imported polygons. Use **Edit Vertices** to edit those polygons.
+preserve feature identity; import uses the normal GeoJSON reader. Copy/paste transfers ordinary polygon geometry and attributes, not construction parameters;
+the original keeps its constrained handles. There is no automatic recognition of imported polygons. Use **Edit Vertices** to edit those polygons.
 **Export Features** (`share.exportLayer`) includes one counted note explaining that box
-construction does not round-trip. Other shares and project saves do not currently emit this
-note; their saved output also has no box construction.
+construction does not round-trip. Explicit project saves/downloads, map/layer files, project
+and map packages, data conversions and feature-bearing web shares report the same loss.
 Source polygons contain four transformed corners joined by straight edges; curved grid edges
 are approximated. The target format may further approximate or omit geometry: CSV writes
 representative points and GPX does not retain polygon areas, with their own format-specific notes.
@@ -221,6 +221,59 @@ to change attribute values.
 An optional `box.frame` holds `epsg`, original `width`/`height` and the full GDAL-order `affine` array. Only recognised EPSG
 frames with supported datum transformations are accepted. These parameters are command input,
 not GeoJSON properties or a new saved-file representation.
+
+### Circles
+
+On a loaded polygon layer, turn **Edit › Edit** on and choose **Edit › Features › Circle**.
+This creates ordinary feature polygons, independently of the annotation workflow or graphics.
+The existing **Editing** pane opens with centre X/Y, radius and polygon tolerance controls.
+
+- Drag from the centre to the edge to create a circle. Drag inside an existing circle to select and move
+  it, or drag its round radius handle to resize with the centre fixed.
+- Click to select, ++alt++-click to cycle overlaps, ++shift++-click to extend the selection.
+  ++ctrl++/++cmd++-drag forces a new circle over existing features.
+- Hold ++space++ and drag, or middle-drag, to pan; releasing ++space++ keeps Circle active.
+  Right-click for **Edit Circle Dimensions** or **Delete Selected Circle** (just that object).
+- Each completed gesture is one undo step. ++esc++ cancels the preview before another press
+  leaves the tool. Templates, ordinary attributes and edit rules work as for other features.
+
+The interactive tool uses the same flat Earth view and frozen construction grids as Rotated
+Box. Its default radius is in **Web Mercator grid metres, not ground metres**. Scripts may
+supply `circle.frame` from an original GeoTIFF grid via `box_edit::Frame::from_grid`; centre,
+radius and tolerance then use original image pixels, including rotated or skewed grids.
+A pixel circle may look elliptical on the map. Geometry commands remain view-independent.
+Antimeridian crossings, polar editing limits and unsupported transformations are refused.
+
+The exact centre/radius are session-only. Geometry is regenerated with 32–2048 straight edges;
+`tolerance` (command default **0.25 grid units**) bounds the local-circle sagitta **before projection**,
+not error in geographic coordinates or ground distance. New mouse-drawn circles choose the
+larger of 0.25 grid units and radius/10000; this value is shown in the pane and preserved by
+moves and resizes. Requests needing more than 2048 edges
+are refused; increase tolerance or reduce radius. Commands report the edge count and approximation.
+Changing a radius does not repeatedly rescale old vertices.
+
+Exported GeoJSON holds only ordinary polygons and feature properties. **Export Features**
+reports a counted circle-construction/approximation note, separately from any box or format
+losses. Explicit project saves/downloads, map/layer files, project and map packages, data
+conversions and feature-bearing web shares report this loss too. Reopening a project or
+importing GeoJSON leaves polygons; use **Edit Vertices** for those. There is no automatic
+circle detection, image binding or custom metadata. Independent geometry edits disable the
+circle handles; undo restores them when the original geometry returns. Copy/paste produces
+ordinary polygons in the target; the original retains its circle construction.
+
+```text
+edit.addCircle={"layer":"Training polygons","circle":{"center":[1000,1000],"radius":100,"tolerance":0.25},"attributes":{"class":"tree"}}
+edit.updateCircle={"layer":"Training polygons","row":0,"circle":{"center":[1010,1000],"radius":120,"tolerance":0.25}}
+edit.circleInfo={"layer":"Training polygons","row":0}
+edit.deleteCircle={"layer":"Training polygons","row":0}
+```
+
+Replace `row:0` with the row returned by `edit.addCircle`. Update/delete accept `featureId`
+to refuse stale rows. Updates preserve IDs and attributes, inherit an omitted frame and refuse
+an explicitly changed frame. `edit.updateCircle` changes shape only; use `edit.setValue` for
+attributes. Attribute names must already exist. `edit.circleInfo` returns the current construction.
+`circle.frame` has the same EPSG, dimensions and affine input fields as `box.frame`, with no
+new saved-file representation.
 
 ### Moving shared polygon vertices
 

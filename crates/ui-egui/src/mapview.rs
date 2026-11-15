@@ -50,6 +50,7 @@ enum DragKind {
     /// Moving or inserting a vertex with the Edit Vertices tool.
     Vertex,
     BoxEdit,
+    CircleEdit,
     /// Moving the selected text graphic, grabbed by its text (#516): its layer id and row, and
     /// where the press was. Held by the drag itself, so it ends with it, however it ends.
     Text {
@@ -484,6 +485,11 @@ impl Default for MapView {
 impl MapView {
     pub(crate) fn cancel_rotated_box_drag(&mut self) {
         if matches!(self.drag, Some((_, DragKind::BoxEdit))) {
+            self.drag = None;
+        }
+    }
+    pub(crate) fn cancel_circle_drag(&mut self) {
+        if matches!(self.drag, Some((_, DragKind::CircleEdit))) {
             self.drag = None;
         }
     }
@@ -2743,6 +2749,7 @@ fn interact(app: &mut RustGisApp, ui: &mut Ui, resp: &egui::Response, rect: Rect
     }
     let tool = app.session.tool;
     crate::boxedit::cancel_stale(app);
+    crate::circleedit::cancel_stale(app);
     if tool == Tool::RotatedBox {
         if resp.secondary_clicked() {
             if let Some(c) = resp.interact_pointer_pos().and_then(|p| screen_to_lonlat(app, rect, p)) {
@@ -2751,6 +2758,15 @@ fn interact(app: &mut RustGisApp, ui: &mut Ui, resp: &egui::Response, rect: Rect
             app.map.popup = None;
         }
         resp.context_menu(|ui| crate::boxedit::context_menu(app, ui));
+    }
+    if tool == Tool::Circle {
+        if resp.secondary_clicked() {
+            if let Some(c) = resp.interact_pointer_pos().and_then(|p| screen_to_lonlat(app, rect, p)) {
+                crate::circleedit::click(app, c, false, false);
+            }
+            app.map.popup = None;
+        }
+        resp.context_menu(|ui| crate::circleedit::context_menu(app, ui));
     }
     cancel_changed_selection(app, rect);
 
@@ -2868,7 +2884,7 @@ fn interact(app: &mut RustGisApp, ui: &mut Ui, resp: &egui::Response, rect: Rect
     }
 
     let shift = ui.input(|i| i.modifiers.shift);
-    let middle = ui.input(|i| i.pointer.middle_down() || (tool == Tool::RotatedBox && i.key_down(egui::Key::Space)));
+    let middle = ui.input(|i| i.pointer.middle_down() || (matches!(tool, Tool::RotatedBox | Tool::Circle) && i.key_down(egui::Key::Space)));
     let ctrl = ui.input(|i| i.modifiers.ctrl || i.modifiers.command);
     // Dragging with the right button turns the map or the globe (to the right turns it
     // clockwise) and tilts it (up tilts it further), as in MapLibre.
@@ -2912,9 +2928,12 @@ fn interact(app: &mut RustGisApp, ui: &mut Ui, resp: &egui::Response, rect: Rect
             DragKind::Label { origin }
         } else if middle {
             crate::boxedit::cancel(app);
+            crate::circleedit::cancel(app);
             DragKind::Pan
         } else if tool == Tool::RotatedBox && crate::boxedit::drag_start(app, rect, origin, ctrl) {
             DragKind::BoxEdit
+        } else if tool == Tool::Circle && crate::circleedit::drag_start(app, rect, origin, ctrl) {
+            DragKind::CircleEdit
         } else if tool == Tool::EditVertices && crate::vertexedit::drag_start(app, rect, origin) {
             DragKind::Vertex
         } else {
@@ -3035,6 +3054,17 @@ fn interact(app: &mut RustGisApp, ui: &mut Ui, resp: &egui::Response, rect: Rect
         crate::boxedit::drag_stop(app);
         return;
     }
+    if let (Some((_, DragKind::CircleEdit)), Some(p)) = (app.map.drag, resp.interact_pointer_pos()) {
+        crate::circleedit::drag_to(app, rect, p);
+        ui.ctx().request_repaint();
+    }
+    if resp.drag_stopped()
+        && let Some((_, DragKind::CircleEdit)) = app.map.drag
+    {
+        app.map.drag = None;
+        crate::circleedit::drag_stop(app);
+        return;
+    }
     if let (Some((_, DragKind::Vertex)), Some(p)) = (app.map.drag, resp.interact_pointer_pos()) {
         crate::vertexedit::drag_to(app, rect, p);
         ui.ctx().request_repaint();
@@ -3148,7 +3178,7 @@ fn interact(app: &mut RustGisApp, ui: &mut Ui, resp: &egui::Response, rect: Rect
     if resp.double_clicked() {
         if matches!(tool, Tool::Measure | Tool::MeasureArea) || tool.draws_edit() || vertex_shape(tool) {
             finish_sketch(app);
-        } else if matches!(tool, Tool::EditVertices | Tool::RotatedBox) {
+        } else if matches!(tool, Tool::EditVertices | Tool::RotatedBox | Tool::Circle) {
             // Its two clicks chose a vertex or a feature; zooming would lose the place.
         } else if let Some(p) = resp.interact_pointer_pos() {
             // A double-click on a text graphic edits it in the Format pane; elsewhere it zooms in.
@@ -3281,6 +3311,11 @@ fn interact(app: &mut RustGisApp, ui: &mut Ui, resp: &egui::Response, rect: Rect
                     crate::boxedit::click(app, c, shift, ui.input(|i| i.modifiers.alt));
                 }
             }
+            Tool::Circle => {
+                if !middle {
+                    crate::circleedit::click(app, c, shift, ui.input(|i| i.modifiers.alt));
+                }
+            }
             Tool::CreatePoint => {
                 let _ = app.run("edit.addFeature", with_template(app, json!({"geometry": {"type": "Point", "coordinates": [c.x, c.y]}})));
             }
@@ -3322,12 +3357,17 @@ fn interact(app: &mut RustGisApp, ui: &mut Ui, resp: &egui::Response, rect: Rect
     {
         ui.ctx().set_cursor_icon(icon);
     }
-    if resp.secondary_clicked() && tool != Tool::RotatedBox {
+    if tool == Tool::Circle
+        && let Some(icon) = hover.and_then(|p| crate::circleedit::cursor(app, rect, p))
+    {
+        ui.ctx().set_cursor_icon(icon);
+    }
+    if resp.secondary_clicked() && !matches!(tool, Tool::RotatedBox | Tool::Circle) {
         app.map.menu_lonlat = app.map.pointer_lonlat;
         app.map.menu_text = resp.interact_pointer_pos().and_then(|p| text_graphic_at(app, ui.ctx(), rect, p));
     }
     // No menu off the Earth (a globe's corners): there is no place for it to act on.
-    if tool != Tool::RotatedBox
+    if !matches!(tool, Tool::RotatedBox | Tool::Circle)
         && let Some(c) = app.map.menu_lonlat
     {
         resp.context_menu(|ui| crate::mapmenu::show(app, ui, c));
@@ -3486,7 +3526,7 @@ fn overlays(app: &mut RustGisApp, ui: &mut Ui, p: &egui::Painter, rect: Rect, t:
     let editing = &app.session.map().editing;
     if editing.settings.enabled
         && editing.settings.show_vertices
-        && !matches!(app.session.tool, Tool::EditVertices | Tool::RotatedBox)
+        && !matches!(app.session.tool, Tool::EditVertices | Tool::RotatedBox | Tool::Circle)
         && (app.session.tool.creates() || app.session.tool.draws_edit() || app.ui.right == Some(crate::RightPane::Editing))
     {
         let mut verts: Vec<Coord> = Vec::new();
@@ -3515,6 +3555,9 @@ fn overlays(app: &mut RustGisApp, ui: &mut Ui, p: &egui::Painter, rect: Rect, t:
     }
     if app.session.tool == Tool::RotatedBox {
         crate::boxedit::draw(app, p, rect, accent);
+    }
+    if app.session.tool == Tool::Circle {
+        crate::circleedit::draw(app, p, rect, accent);
     }
     // The navigator: a compass, zoom buttons and a pan pad in the top-left corner.
     if app.session.map().view.navigator {
@@ -3753,6 +3796,7 @@ fn overlays(app: &mut RustGisApp, ui: &mut Ui, p: &egui::Painter, rect: Rect, t:
             Some("Drag a vertex to move it · click an edge to add one · Delete removes the chosen vertex")
         }
         Tool::EditVertices => Some("Click a feature, then drag its vertices · click an edge to add one"),
+        Tool::Circle => Some("Drag centre to edge · radius handle resizes · Space or middle-drag pans · Alt-click cycles overlaps"),
         Tool::RotatedBox => Some("Drag a box · paddle rotates · Shift snaps · Space or middle-drag pans · Alt-click cycles overlaps"),
         Tool::ZoomIn => Some("Drag a box or click to zoom in"),
         Tool::MoveLabel => Some("Drag a label to where it should be · drag the map to pan · Esc to stop"),

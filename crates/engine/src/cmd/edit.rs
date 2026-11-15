@@ -41,6 +41,14 @@ pub fn commands() -> Vec<C> {
             .when(crate::cmd::design::need_editable).params(r#"{"layer"?:name|id,"row":number,"featureId"?:number}"#),
         C::new("edit.boxInfo", "Box Construction", "Edit › Features", crate::box_edit::info).roles(&[]).effects(crate::policy::Effects::NONE).view()
             .params(r#"{"layer"?:name|id,"row":number}"#),
+        C::new("edit.addCircle", "Add Circle", "Edit › Features", crate::circle_edit::add).inputs(crate::circle_edit::new_circle_inputs).roles(&[crate::ParamRole { key: "circle", role: crate::Role::Opaque }, crate::ParamRole { key: "attributes", role: crate::Role::Opaque }]).effects(crate::policy::Effects::NONE)
+            .when(crate::cmd::design::need_editable).params(r#"{"layer"?: name|id, "circle": {"center":[x,y],"radius":number,"tolerance"?:number (default 0.25 grid units),"frame"?:{"epsg":number,"width":pixels,"height":pixels,"affine":[x0,xc,xr,y0,yc,yr]}},"attributes"?:{field:value},"template"?:string}"#),
+        C::new("edit.updateCircle", "Update Circle", "Edit › Features", crate::circle_edit::update).roles(&[crate::ParamRole { key: "circle", role: crate::Role::Opaque }]).effects(crate::policy::Effects::NONE)
+            .when(crate::cmd::design::need_editable).params(r#"{"layer"?:name|id,"row":number,"featureId"?:number,"circle":as edit.addCircle}"#),
+        C::new("edit.deleteCircle", "Delete Circle", "Edit › Features", crate::circle_edit::delete_circle).roles(&[]).effects(crate::policy::Effects::NONE)
+            .when(crate::cmd::design::need_editable).params(r#"{"layer"?:name|id,"row":number,"featureId"?:number}"#),
+        C::new("edit.circleInfo", "Circle Construction", "Edit › Features", crate::circle_edit::info).roles(&[]).effects(crate::policy::Effects::NONE).view()
+            .params(r#"{"layer"?:name|id,"row":number}"#),
     ]
 }
 

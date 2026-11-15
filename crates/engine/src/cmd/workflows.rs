@@ -1874,11 +1874,12 @@ fn convert(s: &mut Session, p: &Value) -> CmdResult {
     if s.map().layer(id).is_some_and(|l| l.is_streamed()) {
         return Err("a streamed layer needs a path to convert its whole source; text conversion would contain only the loaded view".into());
     }
+    let construction_notes = s.constructions.export_notes(s.map().instance_id(), s.map().layer(id).ok_or("no such layer")?)?;
     let ds = feature_ds(s, p)?;
     let (text, notes) = converted(ds, p)?;
     let null_numbers = rustgis_data::export::numbers_written_as_null(&ds.features, &ds.fields, conversion_format(p)?);
     let target = ds.name.clone();
-    for note in notes {
+    for note in notes.into_iter().chain(construction_notes) {
         s.notify(note, false);
     }
     super::share::notify_null_numbers(s, &target, null_numbers);
@@ -1895,7 +1896,9 @@ pub(crate) fn convert_work(s: &Session, p: &Value) -> Result<super::exports::Wor
     let path = ps(p, "path").ok_or("path is required")?.to_string();
     conversion_format(p)?;
     let params = p.clone();
+    let (constructions, map) = (s.constructions.clone(), s.map().instance_id());
     Ok(Box::new(move || {
+        let construction_notes = constructions.export_notes(map, &layer)?;
         let format = conversion_format(&params)?;
         let chunks = if layer.is_streamed() && matches!(format, "geojson" | "csv") { layer.chunk_export()? } else { None };
         let (mut notes, null_numbers) = if let Some((source, ds)) = chunks {
@@ -1940,6 +1943,7 @@ pub(crate) fn convert_work(s: &Session, p: &Value) -> Result<super::exports::Wor
             (notes, rustgis_data::export::numbers_written_as_null(&ds.features, &ds.fields, format))
         };
         let bytes = std::fs::metadata(&path).map_err(|e| format!("{path}: {e}"))?.len();
+        notes.extend(construction_notes);
         notes.push(format!("Exported {path}"));
         let target = path.clone();
         let refused_notes = super::share::null_numbers_note(&target, null_numbers).map(|n| n.english()).into_iter().collect();

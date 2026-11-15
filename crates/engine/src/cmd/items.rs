@@ -788,21 +788,28 @@ pub(crate) fn safe(name: &str) -> String {
     if s.trim().is_empty() { "project".into() } else { s }
 }
 
+/// Fold group visibility and keep exactly the layers a mobile package includes. The source
+/// used for construction notices must use this same rule before geometry is simplified.
+fn mobile_map(mut m: Map) -> Map {
+    // Groups folded into their layers: a hidden group's layers are dropped with the others.
+    m.bake_groups();
+    // A hidden DEM still gives the terrain its heights (it can stay hidden): it is kept.
+    let dem = match &m.view.terrain {
+        Some(rustgis_map::view::Terrain { source: rustgis_map::view::TerrainSource::Layer(n), .. }) => Some(n.clone()),
+        _ => None,
+    };
+    let kept = |l: &rustgis_map::Layer| l.visible || (l.is_raster() && dem.as_deref().is_some_and(|d| l.name.eq_ignore_ascii_case(d)));
+    let hidden: Vec<u32> = m.layers.iter().filter(|l| !kept(l)).map(|l| l.id).collect();
+    m.release_tiles(&hidden);
+    m.layers.retain(|l| kept(l));
+    m
+}
+
 /// A package of the active map; `mobile` drops hidden layers and simplifies geometry.
 fn package_map(s: &mut Session, mobile: bool, tol: f64) -> Result<Vec<u8>, String> {
     let mut m = embedded_map(s.map(), &mut MAX_EMBED.clone());
     if mobile {
-        // Groups folded into their layers: a hidden group's layers are dropped with the others.
-        m.bake_groups();
-        // A hidden DEM still gives the terrain its heights (it can stay hidden): it is kept.
-        let dem = match &m.view.terrain {
-            Some(rustgis_map::view::Terrain { source: rustgis_map::view::TerrainSource::Layer(n), .. }) => Some(n.clone()),
-            _ => None,
-        };
-        let kept = |l: &rustgis_map::Layer| l.visible || (l.is_raster() && dem.as_deref().is_some_and(|d| l.name.eq_ignore_ascii_case(d)));
-        let hidden: Vec<u32> = m.layers.iter().filter(|l| !kept(l)).map(|l| l.id).collect();
-        m.release_tiles(&hidden);
-        m.layers.retain(|l| kept(l));
+        m = mobile_map(m);
     }
     // What Simplify left alone or changed beyond simplifying (a latitude past a pole taken as the
     // pole, a one-vertex line part left out, a feature left as it was or too intricate), over all
@@ -1079,8 +1086,11 @@ fn export_3d(s: &mut Session, p: &Value) -> CmdResult {
     let written = s.notice_mark();
     let path = ps(p, "path").ok_or("path is required")?.to_string();
     if path.to_ascii_lowercase().ends_with(".stl") {
-        let (bytes, report) = stl_bytes(s, p)?;
+        let (bytes, report, construction_notes) = stl_bytes(s, p)?;
         rustgis_data::io::write_atomic(Path::new(&path), &bytes).map_err(|e| format!("{path}: {e}"))?;
+        for note in construction_notes {
+            s.notify(note, false);
+        }
         s.retain_written_notices(written);
         s.notify_written(format!("Exported {path}"), false);
         return Ok(json!({
@@ -1088,8 +1098,11 @@ fn export_3d(s: &mut Session, p: &Value) -> CmdResult {
             "skippedDegenerate": report.degenerate, "linesDropped": report.lines, "capsFanned": report.fanned,
         }));
     }
-    let obj = obj_text(s, p)?;
+    let (obj, construction_notes) = obj_text(s, p)?;
     rustgis_data::io::write_atomic(Path::new(&path), obj.as_bytes()).map_err(|e| format!("{path}: {e}"))?;
+    for note in construction_notes {
+        s.notify(note, false);
+    }
     s.retain_written_notices(written);
     s.notify_written(format!("Exported {path}"), false);
     Ok(json!({"path": path, "bytes": obj.len()}))
@@ -1128,6 +1141,7 @@ enum Item {
 /// A layer's 3D mesh, shared by the OBJ and STL exports.
 #[derive(Default)]
 struct Mesh {
+    constructions: crate::construction::Counts,
     items: Vec<Item>,
     vertices: usize,
     /// Rough size of the file, to stop a runaway export early.
@@ -1218,6 +1232,9 @@ fn layer_mesh(s: &Session, p: &Value, keep_lines: bool) -> Result<Mesh, String> 
     let mut mesh = Mesh { keep_lines, ..Mesh::default() };
     let rows = l.visible_rows();
     for (row, ft) in l.dataset.features.iter().enumerate() {
+        if row.is_multiple_of(256) {
+            rustgis_data::progress::check().map_err(|e| e.to_string())?;
+        }
         // A feature with no geometry draws nothing, so its height is neither used nor reported.
         if rows.get(row) != Some(&true) || ft.geometry.is_none() {
             continue;
@@ -1243,6 +1260,7 @@ fn layer_mesh(s: &Session, p: &Value, keep_lines: bool) -> Result<Mesh, String> 
             mesh.flat += 1;
             continue;
         }
+        let before = mesh.vertices;
         match &ft.geometry {
             Some(Geometry::Polygon(polys)) => {
                 for rings in polys {
@@ -1353,6 +1371,9 @@ fn layer_mesh(s: &Session, p: &Value, keep_lines: bool) -> Result<Mesh, String> 
             }
             None => {}
         }
+        if mesh.vertices > before {
+            s.constructions.count_feature(s.map().instance_id(), l, ft, &mut mesh.constructions);
+        }
     }
     if mesh.vertices == 0 {
         if mesh.flat > 0 && !mesh.keep_lines {
@@ -1377,7 +1398,7 @@ fn ring_area(r: &[(f64, f64)]) -> f64 {
 }
 
 /// A feature layer as Wavefront OBJ text.
-fn obj_text(s: &mut Session, p: &Value) -> Result<String, String> {
+fn obj_text(s: &mut Session, p: &Value) -> Result<(String, Vec<String>), String> {
     let mesh = layer_mesh(s, p, true)?;
     mesh_notices(s, &mesh);
     let mut obj = String::new();
@@ -1414,7 +1435,7 @@ fn obj_text(s: &mut Session, p: &Value) -> Result<String, String> {
             return Err("the 3D file would be too large; export fewer features".into());
         }
     }
-    Ok(obj)
+    Ok((obj, mesh.constructions.notes()))
 }
 
 /// What an STL export left out or approximated.
@@ -1467,7 +1488,7 @@ pub(crate) fn fanned_caps_note(n: usize) -> String {
 }
 
 /// A feature layer as binary STL, noting what it leaves out.
-fn stl_bytes(s: &mut Session, p: &Value) -> Result<(Vec<u8>, StlReport), String> {
+fn stl_bytes(s: &mut Session, p: &Value) -> Result<(Vec<u8>, StlReport, Vec<String>), String> {
     let mesh = layer_mesh(s, p, false)?;
     let (bytes, report) = mesh_stl(&mesh, MAX_STL_TRIANGLES)?;
     mesh_notices(s, &mesh);
@@ -1488,7 +1509,7 @@ fn stl_bytes(s: &mut Session, p: &Value) -> Result<(Vec<u8>, StlReport), String>
         "STL has no units: coordinates are metres east and north of the model's south-west corner and up from the features' base (below 0 for a negative height), in 32-bit floats",
         false,
     );
-    Ok((bytes, report))
+    Ok((bytes, report, mesh.constructions.notes()))
 }
 
 /// A mesh as binary STL: an 80-byte header, the triangle count, then per triangle a normal and
@@ -1622,6 +1643,33 @@ pub const ITEMS: &[(&str, &str, &str)] = &[
 
 /// An item as file bytes, with a suggested file name.
 pub fn item_bytes(s: &mut Session, kind: &str, p: &Value) -> Result<(String, Vec<u8>), String> {
+    let (name, bytes, notes) = item_output(s, kind, p)?;
+    for note in notes {
+        s.notify(note, false);
+    }
+    Ok((name, bytes))
+}
+
+/// Builds an item and returns construction-loss notes for publication only after delivery.
+pub fn item_output(s: &mut Session, kind: &str, p: &Value) -> Result<(String, Vec<u8>, Vec<String>), String> {
+    let mut construction_notes = match kind {
+        "map" => {
+            let m = saved_map(s, p)?;
+            s.constructions.output_notes(m.layers.iter().map(|l| (m.instance_id(), l)))?
+        }
+        "layer" => {
+            let id = s.layer_id(p)?;
+            s.constructions.export_notes(s.map().instance_id(), s.map().layer(id).ok_or("no such layer")?)?
+        }
+        "template" | "projectPackage" => s.construction_output_notes()?,
+        "mobilePackage" if s.constructions.len > 0 => {
+            let m = mobile_map(s.map().clone());
+            s.constructions.output_notes(m.layers.iter().map(|l| (m.instance_id(), l)))?
+        }
+        "mapPackage" | "fieldPackage" => s.constructions.output_notes(s.map().layers.iter().map(|l| (s.map().instance_id(), l)))?,
+        "gpPackage" => s.constructions.output_notes(gp_result_layers(s).into_iter().map(|(m, l)| (m.instance_id(), l)))?,
+        _ => Vec::new(),
+    };
     let (name, bytes) = match kind {
         "map" => {
             let map = saved_map(s, p)?;
@@ -1692,12 +1740,16 @@ pub fn item_bytes(s: &mut Session, kind: &str, p: &Value) -> Result<(String, Vec
         "obj" => {
             let id = s.layer_id(p)?;
             let name = s.map().layer(id).map(|l| l.name.clone()).unwrap_or_default();
-            (name, obj_text(s, p)?.into_bytes())
+            let (text, notes) = obj_text(s, p)?;
+            construction_notes = notes;
+            (name, text.into_bytes())
         }
         "stl" => {
             let id = s.layer_id(p)?;
             let name = s.map().layer(id).map(|l| l.name.clone()).unwrap_or_default();
-            (name, stl_bytes(s, p)?.0)
+            let (bytes, _, notes) = stl_bytes(s, p)?;
+            construction_notes = notes;
+            (name, bytes)
         }
         "report" | "reportTemplate" => {
             let i = super::report::index(s, p)?;
@@ -1726,7 +1778,8 @@ pub fn item_bytes(s: &mut Session, kind: &str, p: &Value) -> Result<(String, Vec
             (format!("{name}_tiles"), super::deeplearning::hosted_bytes(s, p)?.0)
         }
         k if super::sharing::KINDS.iter().any(|x| x.0 == k) => {
-            let (name, bytes, _) = super::sharing::share_bytes(s, k, p)?;
+            let (name, bytes, _, notes) = super::sharing::share_output(s, k, p)?;
+            construction_notes = notes;
             super::sharing::note_label_classes(s, k, p);
             super::sharing::note_export(s, k, p, &name);
             (name, bytes)
@@ -1734,7 +1787,7 @@ pub fn item_bytes(s: &mut Session, kind: &str, p: &Value) -> Result<(String, Vec
         k => return Err(format!("unknown item '{k}'")),
     };
     let ext = ITEMS.iter().find(|i| i.0 == kind).map_or("json", |i| i.1);
-    Ok((format!("{}.{ext}", safe(&name)), bytes))
+    Ok((format!("{}.{ext}", safe(&name)), bytes, construction_notes))
 }
 
 /// Writes an item to `path`.

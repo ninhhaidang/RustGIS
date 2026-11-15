@@ -147,7 +147,7 @@ pub(crate) fn apply_with(s: &mut Session, id: u32, changes: Vec<Change>, new_def
             _ => None,
         };
         if let Some(feature) = feature {
-            crate::box_edit::forget_feature(s, id, feature);
+            crate::construction::forget_feature(s, id, feature);
         }
     }
     let elevation = s.map().editing.settings.elevation.clone();

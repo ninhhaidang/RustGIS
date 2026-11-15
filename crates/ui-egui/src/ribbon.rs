@@ -2686,6 +2686,25 @@ fn edit_tab(app: &mut RustGisApp, ui: &mut Ui) {
             }
             r.on_disabled_hover_text(tl!("Turn editing on and select a loaded polygon layer in a flat Earth map."));
         });
+        let can_circle = crate::circleedit::ready(app);
+        ui.add_enabled_ui(can_circle, |ui| {
+            let r = big(
+                ui,
+                app,
+                "g_circle",
+                "Circle",
+                "Draw circle features from centre to edge; drag the radius handle to resize. Space or middle-drag pans.",
+                "tool.set",
+                json!({"tool":"circle"}),
+                app.session.tool == Tool::Circle,
+                false,
+            );
+            if r.clicked() {
+                app.map.cancel_sketch();
+                app.ui.open_right(RightPane::Editing);
+            }
+            r.on_disabled_hover_text(tl!("Turn editing on and select a loaded polygon layer in a flat Earth map."));
+        });
         big(ui, app, "delete", "Delete", "Delete the selected features.", "edit.delete", Value::Null, false, false);
         let r = big(
             ui,

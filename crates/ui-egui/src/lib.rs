@@ -90,6 +90,7 @@ pub enum Landed {
     NotRun(String),
 }
 mod boxedit;
+mod circleedit;
 #[cfg(not(target_arch = "wasm32"))]
 mod relayshot;
 #[cfg(not(target_arch = "wasm32"))]
@@ -1158,6 +1159,7 @@ impl RustGisApp {
 pub struct RustGisApp {
     pub session: Session,
     pub(crate) boxes: boxedit::State,
+    pub(crate) circles: circleedit::State,
     pub ui: UiState,
     pub map: mapview::MapView,
     pub dialogs: dialogs::Dialogs,
@@ -1459,6 +1461,7 @@ impl RustGisApp {
         RustGisApp {
             session: s,
             boxes: boxedit::State::default(),
+            circles: circleedit::State::default(),
             ui,
             map: mapview::MapView::default(),
             dialogs: dialogs::Dialogs::default(),
@@ -2084,6 +2087,7 @@ impl RustGisApp {
         let stem: String = stem.chars().take(200).collect();
         // Not an undoable edit: saving names the project, as `project.saveAs` does, once the
         // browser takes the file.
+        let construction_notes = self.session.construction_output_notes()?;
         let old = std::mem::replace(&mut self.session.project.name, stem.clone());
         let (text, report) = match self.session.project.saved_text(None) {
             Ok(saved) => saved,
@@ -2111,6 +2115,9 @@ impl RustGisApp {
         };
         self.session.notify(offered, false);
         report.notify(&mut self.session);
+        for note in construction_notes {
+            self.session.notify(note, false);
+        }
         self.ui.web_file = Some(file);
         Ok(())
     }
@@ -2762,6 +2769,7 @@ impl RustGisApp {
         // vertex or held gesture to the replacement feature at the same row.
         crate::vertexedit::cancel_stale_drag(self);
         crate::boxedit::cancel_stale(self);
+        crate::circleedit::cancel_stale(self);
         if let Err(e) = &r {
             self.command_failed(id, e, notice_mark);
         }
@@ -4140,8 +4148,8 @@ impl RustGisApp {
                 // A field package makes an offline area first: one not saved after all goes again.
                 let areas = self.session.project.offline_areas.len();
                 let session = &mut self.session;
-                let (name, bytes) =
-                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| rustgis_engine::cmd::items::item_bytes(session, kind, p)))
+                let (name, bytes, notes) =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| rustgis_engine::cmd::items::item_output(session, kind, p)))
                         .unwrap_or_else(|_| Err("saving failed unexpectedly".into()))
                         .inspect_err(|e| {
                             // An area a field package made before it failed goes too.
@@ -4150,7 +4158,11 @@ impl RustGisApp {
                         })?;
                 if self.services.download.is_some() {
                     // Not handed over (the failure is said): the area made for it goes too.
-                    if !self.download(&name, bytes) {
+                    if self.download(&name, bytes) {
+                        for note in notes {
+                            self.session.notify(note, false);
+                        }
+                    } else {
                         rustgis_engine::cmd::field::forget_new_areas(&mut self.session, areas);
                     }
                 } else {
@@ -4161,6 +4173,9 @@ impl RustGisApp {
                             if let Err(e) = rustgis_engine::data::io::write_atomic(std::path::Path::new(&path), &bytes) {
                                 rustgis_engine::cmd::field::forget_new_areas(&mut self.session, areas);
                                 return Err(e.to_string());
+                            }
+                            for note in notes {
+                                self.session.notify(note, false);
                             }
                             self.session.notify(i18n::fmt("Saved {name}", &[("name", &path)]), false);
                         }
@@ -4595,6 +4610,7 @@ impl RustGisApp {
             }
             "ui.exportLayer" if self.services.download.is_some() => {
                 let id = self.export_target(p)?;
+                let construction_notes = self.session.layer_construction_output_notes(id)?;
                 let l = self.session.map().layer(id).ok_or_else(|| tl!("select a layer in the Layers pane first").to_string())?;
                 // Any format the dialog offers here (`dialogs::export_formats`): not GeoPackage or
                 // FlatGeobuf, which the data crate refuses in the browser.
@@ -4648,7 +4664,7 @@ impl RustGisApp {
                     self.session.notify(format!("{name}: no .prj written, as {} has no WKT form", crs.label()), false);
                 }
                 if self.download(&name, bytes) {
-                    for note in notes.into_iter().chain(dbf_notes) {
+                    for note in notes.into_iter().chain(dbf_notes).chain(construction_notes) {
                         self.session.notify(note, false);
                     }
                 }
