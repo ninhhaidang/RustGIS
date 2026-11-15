@@ -2,6 +2,7 @@
 
 import base64
 import contextlib
+import hashlib
 import io
 import json
 import subprocess
@@ -51,6 +52,20 @@ class JwtTest(unittest.TestCase):
             self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
 
 
+def bundle_file(directory: str) -> Path:
+    """Writes a stand-in App Bundle.
+
+    Args:
+        directory: Where to write it.
+
+    Returns:
+        Its path.
+    """
+    bundle = Path(directory) / "app.aab"
+    bundle.write_bytes(b"bundle")
+    return bundle
+
+
 class UploadTest(unittest.TestCase):
     def test_an_edit_gets_the_bundle_a_draft_release_and_is_committed(self):
         calls = []
@@ -64,11 +79,9 @@ class UploadTest(unittest.TestCase):
             return {}
 
         with tempfile.TemporaryDirectory() as directory:
-            bundle = Path(directory) / "app.aab"
-            bundle.write_bytes(b"bundle")
-            code = play_upload.upload("org.rustgis.mobile", bundle, "internal", "draft", "0.6.0", "Notes",
-                                      "TOKEN", request)
-        self.assertEqual(code, 1506)
+            result = play_upload.upload("org.rustgis.mobile", bundle_file(directory), "internal", "draft", "0.6.0",
+                                        "Notes", "TOKEN", request=request)
+        self.assertEqual(result, (1506, "draft"))
         self.assertEqual([c[0] for c in calls], ["POST", "POST", "PUT", "POST"])
         self.assertEqual(calls[1][2], b"bundle")
         track = json.loads(calls[2][2])
@@ -77,29 +90,45 @@ class UploadTest(unittest.TestCase):
         self.assertEqual(track["releases"][0]["status"], "draft")
         self.assertEqual(track["releases"][0]["releaseNotes"][0]["language"], "en-US")
         self.assertTrue(calls[3][1][-1].endswith("E1:commit"))
+        self.assertEqual(calls[3][2], b"")
 
-    def test_an_unpublished_app_gets_a_draft_and_says_so(self):
-        statuses = []
+    def check_draft_fallback(self, refuse_at):
+        """Checks a draft-app refusal at `refuse_at` (PUT or commit) gives a new edit with a draft.
+
+        Args:
+            refuse_at: "PUT" for the track's update, "commit" for the edit's commit.
+        """
+        edits, statuses, pending = [], [], {}
 
         def request(method, url, headers, body):
             if url.endswith("/edits"):
-                return {"id": "E1"}
+                edits.append(f"E{len(edits) + 1}")
+                return {"id": edits[-1]}
             if "/bundles" in url:
                 return {"versionCode": 7}
             if method == "PUT":
-                status = json.loads(body)["releases"][0]["status"]
-                statuses.append(status)
-                if status != "draft":
+                pending["status"] = json.loads(body)["releases"][0]["status"]
+                statuses.append(pending["status"])
+                if refuse_at == "PUT" and pending["status"] != "draft":
                     raise RuntimeError("PUT: HTTP 400: Only releases with status draft may be created on draft app.")
+            if url.endswith(":commit") and refuse_at == "commit" and pending["status"] != "draft":
+                raise RuntimeError("POST: HTTP 400: Only releases with status draft may be created on draft app.")
             return {}
 
         with tempfile.TemporaryDirectory() as directory:
-            bundle = Path(directory) / "app.aab"
-            bundle.write_bytes(b"bundle")
             with contextlib.redirect_stderr(io.StringIO()) as said:
-                play_upload.upload("org.rustgis.mobile", bundle, "production", "completed", "1", "", "T", request)
+                result = play_upload.upload("org.rustgis.mobile", bundle_file(directory), "production", "completed",
+                                            "1", "", "T", request=request)
+        self.assertEqual(result, (7, "draft"))
         self.assertEqual(statuses, ["completed", "draft"])
+        self.assertEqual(edits, ["E1", "E2"])
         self.assertIn("draft", said.getvalue())
+
+    def test_an_unpublished_app_gets_a_draft_when_the_track_refuses(self):
+        self.check_draft_fallback("PUT")
+
+    def test_an_unpublished_app_gets_a_draft_when_the_commit_refuses(self):
+        self.check_draft_fallback("commit")
 
     def test_other_track_errors_are_not_retried(self):
         def request(method, url, headers, body):
@@ -112,10 +141,46 @@ class UploadTest(unittest.TestCase):
             return {}
 
         with tempfile.TemporaryDirectory() as directory:
-            bundle = Path(directory) / "app.aab"
-            bundle.write_bytes(b"bundle")
             with self.assertRaises(RuntimeError):
-                play_upload.upload("org.rustgis.mobile", bundle, "production", "completed", "1", "", "T", request)
+                play_upload.upload("org.rustgis.mobile", bundle_file(directory), "production", "completed", "1", "",
+                                   "T", request=request)
+
+    def test_a_bundle_play_already_has_is_released_by_its_version_code(self):
+        tracks = []
+        held = {"sha256": hashlib.sha256(b"bundle").hexdigest()}
+
+        def request(method, url, headers, body):
+            if url.endswith("/edits"):
+                return {"id": "E1"}
+            if method == "GET" and url.endswith("/bundles"):
+                return {"bundles": [{"versionCode": 1505, "sha256": "0"}, {"versionCode": 1506, **held}]}
+            if "/bundles" in url:
+                raise RuntimeError("POST: HTTP 403: APK specified version code 1506 has already been used.")
+            if method == "PUT":
+                tracks.append(json.loads(body))
+            return {}
+
+        with tempfile.TemporaryDirectory() as directory:
+            with contextlib.redirect_stderr(io.StringIO()) as said:
+                result = play_upload.upload("org.rustgis.mobile", bundle_file(directory), "production", "completed",
+                                            "1", "", "T", 1506, request=request)
+            self.assertEqual(result, (1506, "completed"))
+            self.assertEqual(tracks[0]["releases"][0]["versionCodes"], ["1506"])
+            self.assertIn("1506", said.getvalue())
+            # Without the version code, the refusal stands.
+            with self.assertRaises(RuntimeError):
+                play_upload.upload("org.rustgis.mobile", bundle_file(directory), "production", "completed", "1", "",
+                                   "T", request=request)
+            # Play's bundle with that code is another build (another commit with the same count).
+            held["sha256"] = hashlib.sha256(b"another build").hexdigest()
+            with self.assertRaisesRegex(RuntimeError, "another build"):
+                play_upload.upload("org.rustgis.mobile", bundle_file(directory), "production", "completed", "1", "",
+                                   "T", 1506, request=request)
+            self.assertEqual(len(tracks), 1)
+
+    def test_a_key_openssl_cannot_read_is_named(self):
+        with self.assertRaisesRegex(RuntimeError, "openssl couldn't sign"):
+            play_upload.openssl_sign(b"data", "not a key")
 
     def test_long_notes_are_cut_at_a_word_within_the_limit(self):
         notes = play_upload.release_notes("word " * 200)

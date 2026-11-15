@@ -83,6 +83,7 @@ jobs:
     timeout-minutes: 90
     outputs:
       version: ${{ steps.version.outputs.version }}
+      version_code: ${{ steps.version.outputs.version_code }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -110,6 +111,8 @@ jobs:
             exit 1
           fi
           echo "version=$crate" >> "$GITHUB_OUTPUT"
+          # The version code build-apk.sh gives the APKs and the App Bundle.
+          echo "version_code=$(git rev-list --count HEAD)" >> "$GITHUB_OUTPUT"
 
       # The platform the manifest targets (build-apk.sh refuses an older one), named here rather
       # than left to the runner image.
@@ -230,7 +233,17 @@ jobs:
               exit 1
             fi
             # Only its own architecture's library.
-            libs="$(unzip -Z1 "dist/$apk" 'lib/*' | cut -d/ -f2 | sort -u | tr '\n' ' ')"
+            # `unzip` exits 11 for an APK with no libraries (the check below then names none); any
+            # other failure (a damaged APK) is said with unzip's own message.
+            status=0
+            listing="$(unzip -Z1 "dist/$apk" 'lib/*' 2>&1)" || status=$?
+            if [ "$status" -eq 11 ]; then
+              listing=""
+            elif [ "$status" -ne 0 ]; then
+              echo "::error::unzip couldn't read $apk: $listing"
+              exit 1
+            fi
+            libs="$(printf '%s\n' "$listing" | grep . | cut -d/ -f2 | sort -u | tr '\n' ' ' || true)"
             if [ "$libs" != "$abi " ]; then
               echo "::error::$apk holds libraries for: $libs"
               exit 1
@@ -285,10 +298,11 @@ jobs:
         run: gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
 
   # Its own job, after the signing: the App Bundle on Google Play. A published release goes to the
-  # production track, rolled out to everyone once Google's review passes; a manual run goes to the
-  # track and status asked for (by default an internal testing draft). An app never published yet
-  # takes only drafts, which the script makes it and says. Only this job holds the Play service
-  # account's key.
+  # production track, rolled out to everyone once Google's review passes; a pre-release goes to
+  # internal testing as a draft, never to production; a manual run goes to the track and status
+  # asked for (by default an internal testing draft). An app never published yet takes only drafts,
+  # which the script makes it and says. A build Play already has (a manual run's upload of the same
+  # commit) is released by its version code. Only this job holds the Play service account's key.
   android-play:
     name: Upload the App Bundle to Google Play
     if: github.event_name == 'release' || inputs.play
@@ -296,6 +310,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: mobile-release
+    # One upload at a time across runs: Play drops an open edit when the same account starts another.
+    # GitHub keeps one waiting job per group, so a third upload queued while one runs and one waits
+    # cancels the waiting one: that run shows the upload cancelled, and it is re-run from there.
+    concurrency:
+      group: google-play-upload
+      cancel-in-progress: false
     steps:
       # The script from a checkout of the same commit that no build has run in.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -310,8 +330,9 @@ jobs:
           PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
           VERSION: ${{ needs.android-build.outputs.version }}
           TAG: ${{ github.event.release.tag_name }}
-          TRACK: ${{ github.event_name == 'release' && 'production' || inputs.play_track }}
-          STATUS: ${{ github.event_name == 'release' && 'completed' || inputs.play_status }}
+          VERSION_CODE: ${{ needs.android-build.outputs.version_code }}
+          TRACK: ${{ github.event_name == 'release' && (github.event.release.prerelease && 'internal' || 'production') || inputs.play_track }}
+          STATUS: ${{ github.event_name == 'release' && (github.event.release.prerelease && 'draft' || 'completed') || inputs.play_status }}
         run: |
           set -euo pipefail
           if [ -z "$PLAY_SERVICE_ACCOUNT_JSON" ]; then
@@ -325,7 +346,7 @@ jobs:
           fi
           python3 .github/scripts/play_upload.py "bundle/RustGIS-$VERSION-android.aab" \
             --package org.rustgis.mobile --track "$TRACK" --status "$STATUS" \
-            --name "$VERSION (${TAG:-${GITHUB_SHA::8}})" --notes "$notes"
+            --name "$VERSION (${TAG:-${GITHUB_SHA::8}})" --notes "$notes" --version-code "$VERSION_CODE"
 
   ios-build:
     name: iOS app
