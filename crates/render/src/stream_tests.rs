@@ -545,6 +545,7 @@ fn layout_export_keeps_all_drawn_legend_classes() {
             title: "classes".into(),
             all_classes: false,
             hide_other: false,
+            show_no_data: false,
             exclude: vec![],
             columns: 1,
             labels: Default::default(),

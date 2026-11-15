@@ -956,6 +956,10 @@ pub enum ElementKind {
         /// the features it stands for are drawn as before.
         #[serde(default)]
         hide_other: bool,
+        /// Include the grey fallback for Graduated Colors' missing numeric values. Absent in
+        /// older layouts, whose appearance is preserved; this changes only the legend.
+        #[serde(default, skip_serializing_if = "is_false")]
+        show_no_data: bool,
         /// Layers (by name, any case) the legend leaves out though the map draws them: a mask, a
         /// highlight, a basemap-like layer. Empty, it lists every layer it would otherwise.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]

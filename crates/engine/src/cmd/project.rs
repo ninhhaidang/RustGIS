@@ -618,6 +618,7 @@ pub(crate) fn bbox(e: rustgis_geom::Extent) -> Value {
 /// Everything about the open project in one call (the AI Assistant's and MCP's `list_layers`).
 /// Layers are in table-of-contents order, top first. `nameFilter` keeps the layers and tables
 /// whose name holds it (ignoring case); `includeFields: false` leaves out their fields.
+/// Project inventory; additive element addresses leave existing map-frame summaries intact.
 fn info(s: &mut Session, p: &Value) -> CmdResult {
     let filter = ps(p, "nameFilter").map(|f| f.trim().to_lowercase()).filter(|f| !f.is_empty());
     let named = |name: &str| filter.as_deref().is_none_or(|f| name.to_lowercase().contains(f));
@@ -689,7 +690,7 @@ fn info(s: &mut Session, p: &Value) -> CmdResult {
                 })
                 .collect();
             // The page in millimetres, as `layout.page` sets it.
-            json!({"name": lo.name, "width": lo.width, "height": lo.height, "mapFrames": frames})
+            json!({"name": lo.name, "width": lo.width, "height": lo.height, "mapFrames": frames, "elements": super::layout::element_list(lo)})
         })
         .collect();
     Ok(json!({

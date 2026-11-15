@@ -121,6 +121,8 @@ pub struct LayoutView {
     /// What the page was drawn without (in the browser, which doesn't wait): drawn again once it
     /// lands.
     page_wait: Option<PageWait>,
+    /// The last clipping warning shown, cleared when the text fits or another layout opens.
+    text_warning: Option<String>,
     /// Page zoom (0 or 1 = fit) and pan, in screen points, of the layout `viewed` names.
     zoom: f32,
     pan: egui::Vec2,
@@ -206,6 +208,7 @@ pub(crate) fn follow_project(app: &mut RustGisApp) {
         app.layout.drawn = None;
         app.layout.typing.clear();
         app.layout.viewed = None;
+        app.layout.text_warning = None;
         app.layout.views.clear();
     }
     app.layout.project = Some(opened);
@@ -267,6 +270,7 @@ impl LayoutView {
         if self.viewed.as_deref() == Some(name) {
             return;
         }
+        self.text_warning = None;
         if let Some(old) = self.viewed.replace(name.to_string()) {
             self.views.insert(old, (self.zoom, self.pan));
         }
@@ -741,6 +745,14 @@ pub fn show(app: &mut RustGisApp, ui: &mut Ui) {
             let web = cfg!(target_arch = "wasm32");
             let frames = (web && frames_pending) || said.to_come;
             say_frame_shadows(app, &said);
+            let clipped = rustgis_engine::render::layout::clipped_text(&layout, &app.session.project.maps, dpi, &info);
+            let note = rustgis_engine::render::layout::clipped_text_notice(&clipped);
+            if note != app.layout.text_warning {
+                if let Some(note) = &note {
+                    app.session.warn(note.clone());
+                }
+                app.layout.text_warning = note;
+            }
             // Waiting for the frames draws it again anyway: the legends are asked about once
             // they are whole.
             let legends = web && !frames && rustgis_engine::render::layout::legends_pending(&layout, &app.session.project.maps);
@@ -1697,7 +1709,7 @@ fn properties(app: &mut RustGisApp, ui: &mut Ui, layout: &Layout, li: usize) {
                         });
                         ui.end_row();
                     }
-                    ElementKind::Legend { title, all_classes, hide_other, columns, .. } => {
+                    ElementKind::Legend { title, all_classes, hide_other, show_no_data, columns, .. } => {
                         let input_label = ui.label(tl!("Title"));
                         if let Some(tt) = text_field(app, ui, (li, id, "title"), title, false, input_label.id) {
                             update(app, json!({"title": tt}));
@@ -1714,6 +1726,12 @@ fn properties(app: &mut RustGisApp, ui: &mut Ui, layout: &Layout, li: usize) {
                         let mut hide = *hide_other;
                         if ui.checkbox(&mut hide, "").labelled_by(input_label.id).changed() {
                             update(app, json!({"hideOther": hide}));
+                        }
+                        ui.end_row();
+                        let input_label = ui.label(tl!("Show no data"));
+                        let mut show = *show_no_data;
+                        if ui.checkbox(&mut show, "").labelled_by(input_label.id).changed() {
+                            update(app, json!({"showNoData": show}));
                         }
                         ui.end_row();
                         let input_label = ui.label(tl!("Columns"));

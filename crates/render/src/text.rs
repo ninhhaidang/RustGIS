@@ -537,11 +537,18 @@ const SLANT: f32 = 0.2126;
 /// and rightmost pixel offsets. With a negative spacing the letters can run backwards past the
 /// pen, and a slant moves their tops right and their descenders left; (0, 0) when nothing draws.
 pub fn styled_extent(text: &str, px: f32, face: Face, spacing: f32) -> (f32, f32) {
-    let Some((f, slanted)) = face_font(face) else { return (0.0, 0.0) };
+    styled_bounds(text, px, face, spacing).map_or((0.0, 0.0), |r| (r.left(), r.right()))
+}
+
+/// Ink bounds relative to the pen's start and the line's centre, measured as [`styled_at`]
+/// draws it. Whitespace has no bounds; fallback glyphs, spacing and synthetic italics count.
+pub(crate) fn styled_bounds(text: &str, px: f32, face: Face, spacing: f32) -> Option<Rect> {
+    let (f, slanted) = face_font(face)?;
     let sf = f.as_scaled(em(f, px));
     let base = (sf.ascent() + sf.descent()) / 2.0;
     let (glyphs, _) = shape(text, px, f, sans_beside(f, face));
     let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
+    let (mut top, mut bottom) = (f32::INFINITY, f32::NEG_INFINITY);
     for (i, (gf, id, x, _)) in glyphs.into_iter().enumerate() {
         // Measured as `styled_at` draws it.
         let italic = leans(face, f, slanted, gf);
@@ -551,8 +558,10 @@ pub fn styled_extent(text: &str, px: f32, face: Face, spacing: f32) -> (f32, f32
         let (lean_top, lean_bottom) = if italic { (SLANT * (base - bb.min.y), SLANT * (base - bb.max.y)) } else { (0.0, 0.0) };
         lo = lo.min(bb.min.x + lean_top.min(lean_bottom));
         hi = hi.max(bb.max.x + lean_top.max(lean_bottom) + if italic { 1.0 } else { 0.0 });
+        top = top.min(bb.min.y);
+        bottom = bottom.max(bb.max.y);
     }
-    if lo.is_finite() && hi.is_finite() { (lo, hi) } else { (0.0, 0.0) }
+    Rect::from_ltrb(lo, top, hi, bottom)
 }
 
 /// Draws `text` from `left` (pixels), its line centred on `cy`, at `px` in `face` with `spacing`

@@ -10,6 +10,9 @@
 Home › New Layout adds a page layout (Letter, Legal, Tabloid or A5 to A0, landscape or portrait)
 with a map frame, title, legend, north arrow, scale bar and a dynamic credits line. The command
 `layout.new` also accepts custom `width` and `height` in millimetres and `"template": "blank"`.
+Both `layout.new` and each layout in `info` include an `elements` array with each element's
+`element` ID, `name` and `kind`, ready to use in `layout.update` or `layout.removeElement`.
+The existing layout index, name and `info` map-frame summaries keep their meanings.
 Layouts open as tabs next to the maps; while one is open, its groups lead the Publish tab:
 
 - **Publication layouts**: Home › New Layout › **Publication Layout** builds a finished sheet or
@@ -228,6 +231,11 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
     (`"allClasses": true`) to list every class of every visible layer instead, and **Hide other
     values** (`"hideOther": true`) to leave `<all other values>` out of the legend in either
     mode (the features it stands for are still drawn).
+  - **Show no data** (`"showNoData": true` on `layout.addElement` or `layout.update`) adds a
+    **No data** row for a Graduated Colors layer's missing numeric values, using the same
+    symbol as the map. It follows the frame's definition query and display filters; with
+    **All classes**, it lists the symbol even when unused. It is off by default, including in
+    older saved layouts. It changes only the legend; other renderer kinds keep their entries.
   - **Rasters drawn by classes** (Colormap, Unique Values, Classify) are listed under their name
     with the rows the Layers pane shows for them: a swatch of each class's colour and its label,
     the class name in the file when it has one, else the value or the range. The legend lists the
@@ -326,6 +334,11 @@ Layouts open as tabs next to the maps; while one is open, its groups lead the Pu
   be an arrow. From a command:
   `layout.addElement={"kind":"arrow","angle":30,"length":60}`, or
   `layout.update={"element":7,"angle":-90}` to turn one.
+- **Text clipping**: the layout view and PNG, PDF and SVG exports warn when a text element or
+  legend title runs off the page, or a text element has more lines than its height allows.
+  The notice counts and names the affected elements with their IDs. A line may extend beyond
+  its element's width while remaining on the page; that alone is not clipped. Reduce the size,
+  add line breaks, or resize or move the element to keep all its text.
 - **Text** and **Dynamic Text**: `{date}`, `{time}`, `{scale}`, `{map}`, `{crs}`, `{page}`,
   `{pages}`, `{pageName}` and `{layout}` fill in when the page is drawn; the Format pane's
   **Insert Dynamic Text** menu, under the text, lists each with what it shows. The text, its

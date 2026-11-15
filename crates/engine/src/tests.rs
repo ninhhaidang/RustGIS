@@ -49050,3 +49050,88 @@ fn convert_field_workers_refuse_stale_rows() {
         assert_eq!(after.value(0, after.field_index("day").unwrap()).to_string(), "04/06/2026");
     }
 }
+
+/// The template's element list is additive; scripts can use its IDs without reading a project.
+#[test]
+fn layout_creation_and_info_return_element_addresses() {
+    isolate_plugins();
+    let mut s = Session::new(Project::default());
+    let made = s.run("layout.new", &json!({"name": "Addressable"})).unwrap();
+    assert_eq!(made["layout"], 0);
+    assert_eq!(made["name"], "Addressable");
+    let elements = made["elements"].as_array().unwrap();
+    assert_eq!(elements.len(), 6);
+    let title = elements.iter().find(|e| e["name"] == "Title").unwrap();
+    assert_eq!(title["kind"], "text");
+    s.run("layout.update", &json!({"element": title["element"], "text": "Addressed"})).unwrap();
+    let info = s.run("info.project", &Value::Null).unwrap();
+    assert_eq!(info["layouts"][0]["elements"], made["elements"]);
+    assert_eq!(info["layouts"][0]["mapFrames"][0]["id"], 1);
+    let blank = s.run("layout.new", &json!({"template": "blank"})).unwrap();
+    assert_eq!(blank["elements"], json!([]));
+}
+
+/// All export formats deliver a counted notice through the real Session command path; a long
+/// line inside the page is kept even outside its box, and clean exports produce no such notice.
+#[test]
+fn layout_exports_report_cut_text_and_clean_exports_do_not() {
+    isolate_plugins();
+    let dir = std::env::temp_dir().join(format!("rustgis-layout-clipping-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut s = Session::new(Project::default());
+    s.run("layout.new", &json!({"template": "blank", "width": 120, "height": 90})).unwrap();
+    let a = s.run("layout.addElement", &json!({"kind":"text", "text":"Long title on the page", "x":110, "y":10, "w":5, "h":12})).unwrap()["element"].clone();
+    let b = s
+        .run("layout.addElement", &json!({"kind":"text", "text":"one\ntwo\nthree\nfour\nfive", "x":10, "y":30, "w":60, "h":2}))
+        .unwrap()["element"]
+        .clone();
+    s.run("layout.update", &json!({"element":a, "name":"Heading"})).unwrap();
+    s.run("layout.update", &json!({"element":b, "name":"Sources"})).unwrap();
+    for clean in [false, true] {
+        if clean {
+            s.run("layout.update", &json!({"element":a, "x":10})).unwrap();
+            s.run("layout.update", &json!({"element":b, "h":50})).unwrap();
+        }
+        for ext in ["png", "pdf", "svg"] {
+            s.notices.clear();
+            s.run("layout.export", &json!({"path":dir.join(format!("page.{ext}")), "dpi":48})).unwrap();
+            let notes: Vec<_> = s.notices.iter().filter(|n| n.text.contains("Text is cut off")).collect();
+            if clean {
+                assert!(notes.is_empty(), "{ext}: {notes:?}");
+            } else {
+                assert_eq!(notes.len(), 1, "{ext}: {notes:?}");
+                let note = &notes[0].text;
+                assert!(note.contains("2 layout element(s)") && note.contains("Heading (1)") && note.contains("Sources (2)"), "{note}");
+            }
+        }
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// The optional legend flag survives serialization and undo, while old layouts omit it and
+/// retain their appearance. Creation and updates use the same command parameter.
+#[test]
+fn layout_no_data_legend_is_optional_and_saved() {
+    isolate_plugins();
+    use rustgis_map::layout::ElementKind;
+    let mut s = Session::new(Project::default());
+    s.run("layout.new", &Value::Null).unwrap();
+    let old = serde_json::to_value(&s.project.layouts[0]).unwrap();
+    assert!(old["elements"][2]["kind"]["Legend"].get("show_no_data").is_none());
+    assert!(s.run("layout.addElement", &json!({"kind":"text", "showNoData":true})).unwrap_err().contains("only legends"));
+    assert!(s.run("layout.update", &json!({"element":2, "showNoData":true})).unwrap_err().contains("only legends"));
+    s.run("layout.update", &json!({"element":3, "showNoData":true})).unwrap();
+    assert!(matches!(s.project.layouts[0].element(3).unwrap().kind, ElementKind::Legend { show_no_data: true, .. }));
+    let saved = serde_json::to_string(&s.project.layouts[0]).unwrap();
+    let loaded: rustgis_map::layout::Layout = serde_json::from_str(&saved).unwrap();
+    assert!(matches!(loaded.element(3).unwrap().kind, ElementKind::Legend { show_no_data: true, .. }));
+    s.run("edit.undo", &Value::Null).unwrap();
+    assert_eq!(serde_json::to_value(&s.project.layouts[0]).unwrap(), old);
+    let made = s.run("layout.addElement", &json!({"kind":"legend", "showNoData":true})).unwrap();
+    assert!(matches!(
+        s.project.layouts[0].element(made["element"].as_u64().unwrap() as u32).unwrap().kind,
+        ElementKind::Legend { show_no_data: true, .. }
+    ));
+    let old: rustgis_map::layout::Layout = serde_json::from_value(old).unwrap();
+    assert!(matches!(old.element(3).unwrap().kind, ElementKind::Legend { show_no_data: false, .. }));
+}

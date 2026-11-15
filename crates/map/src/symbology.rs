@@ -1589,6 +1589,18 @@ impl Renderer {
         rustgis_data::value::numeric_classes(classes.iter().map(|(k, _)| k.as_str()))
     }
 
+    /// The existing Graduated Colors fallback, for an optional layout legend row. With `rows`,
+    /// include it only when a kept feature lacks a numeric value; `None` lists it unconditionally
+    /// for an all-classes legend. Other renderer kinds keep their own legend semantics.
+    pub fn no_data_legend(&self, ds: &Dataset, rows: Option<&[bool]>) -> Option<LegendEntry> {
+        let Renderer::Graduated { field, .. } = self else { return None };
+        let fi = ds.field_index(field);
+        let used = rows.is_none_or(|rows| {
+            (0..ds.features.len()).any(|r| rows.get(r).copied().unwrap_or(true) && fi.and_then(|fi| ds.value(r, fi).as_f64()).is_none())
+        });
+        used.then(|| LegendEntry { label: "No data".into(), symbol: self.symbol_in(ds, 0, None), strokes: Vec::new(), fallback: false })
+    }
+
     /// Every row of its legend, whatever the features: the classes, then a Unique Values'
     /// `<all other values>`; none for a single symbol.
     pub fn legend(&self) -> Vec<LegendEntry> {
