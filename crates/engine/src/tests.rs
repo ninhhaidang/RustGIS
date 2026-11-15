@@ -29407,6 +29407,102 @@ fn a_failed_multi_file_add_leaves_the_map_as_it_was() {
     assert!(crate::cmd::catalogs::area(&s, &json!({"bbox": [200.0, 0.0, 10.0, 1.0]})).unwrap_err().contains("antimeridian"));
 }
 
+/// World files (#2075): a JPEG a `.jgw` and a `.prj` place opens as a placed raster, not a photo;
+/// a camera JPEG with a stray world file and no `.prj` stays a photo; `"as": "scan"` ignores the
+/// world file, and a scan reopened from a project stays one.
+#[test]
+fn a_jpeg_with_a_world_file_opens_placed_not_as_a_photo() {
+    use rustgis_data::photo;
+    let dir = std::env::temp_dir().join(format!("rustgis-jgw-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = |f: &str| dir.join(f).display().to_string();
+    image::RgbImage::from_pixel(8, 4, image::Rgb([200, 100, 50])).save(dir.join("aerial.jpg")).unwrap();
+    std::fs::write(dir.join("aerial.jgw"), "0.25\n0\n0\n-0.25\n-96.875\n33.125\n").unwrap();
+    std::fs::write(
+        dir.join("aerial.prj"),
+        r#"GEOGCS["GCS_WGS_1984",DATUM["D_WGS_1984",SPHEROID["WGS_1984",6378137.0,298.257223563]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]]"#,
+    )
+    .unwrap();
+    let mut s = Session::new(Project::default());
+    s.run("layer.addData", &json!({"path": path("aerial.jpg")})).unwrap();
+    assert!(s.map().layer_by_name("Photos").is_none());
+    let l = s.map().layer_by_name("aerial").unwrap();
+    let r = l.raster.as_ref().and_then(|r| r.data.as_ref()).unwrap();
+    assert!(r.georeferenced);
+    let e = r.extent();
+    assert!((e.min_x + 97.0).abs() < 1e-9 && (e.max_y - 33.25).abs() < 1e-9, "{e:?}");
+
+    // A camera's photo with a stray world file and no `.prj` stays a photo, at its GPS position.
+    std::fs::write(dir.join("camera.jpg"), photo::example(true, (43.4674, "N"), (11.8851, "E"))).unwrap();
+    std::fs::write(dir.join("camera.wld"), "1\n0\n0\n-1\n0\n0\n").unwrap();
+    s.run("layer.addData", &json!({"path": path("camera.jpg")})).unwrap();
+    assert_eq!(s.map().layer_by_name("Photos").map(|l| l.dataset.features.len()), Some(1));
+
+    // As a scan, the world file is passed over; the project reopens it as one.
+    let mut t = Session::new(Project::default());
+    t.run("layer.addData", &json!({"path": path("aerial.jpg"), "as": "scan", "name": "scan"})).unwrap();
+    // (Laid over a placement, and georeferenced or not.)
+    let scan = |t: &Session| {
+        t.map()
+            .layer_by_name("scan")
+            .and_then(|l| l.raster.as_ref())
+            .map(|r| (r.placement.is_some(), r.data.as_ref().map(|d| d.georeferenced)))
+    };
+    assert_eq!(scan(&t), Some((true, Some(false))));
+    let text = serde_json::to_string(&t.project).unwrap();
+    let mut u = Session::new(Project::default());
+    u.run("project.openText", &json!({"text": text})).unwrap();
+    assert_eq!(scan(&u), Some((true, Some(false))));
+
+    // A picture that opened without coordinates for want of a .prj reopens as it was added, laid
+    // over the view: a .prj that turns up later doesn't move it (the notice says to add it again).
+    image::GrayImage::from_pixel(4, 2, image::Luma([7])).save(dir.join("plan.png")).unwrap();
+    std::fs::write(dir.join("plan.pgw"), "0.5\n0\n0\n-0.5\n10.25\n49.75\n").unwrap();
+    let mut v = Session::new(Project::default());
+    v.run("layer.addData", &json!({"path": path("plan.png")})).unwrap();
+    let plan = |v: &Session| {
+        v.map()
+            .layer_by_name("plan")
+            .and_then(|l| l.raster.as_ref())
+            .map(|r| (r.placement.is_some(), r.data.as_ref().map(|d| d.georeferenced)))
+    };
+    assert_eq!(plan(&v), Some((true, Some(false))));
+    assert!(v.notices.iter().any(|n| n.text.contains("add it again")), "the missing .prj is said");
+    let text = serde_json::to_string(&v.project).unwrap();
+    std::fs::copy(dir.join("aerial.prj"), dir.join("plan.prj")).unwrap();
+    let mut w = Session::new(Project::default());
+    w.run("project.openText", &json!({"text": text})).unwrap();
+    assert_eq!(plan(&w), Some((true, Some(false))));
+    // Added now, it is placed; a project that kept it placed still opens it when the .prj is
+    // gone, and says it has no coordinates now, rather than drawing it near 0°, 0° without a word.
+    let mut z = Session::new(Project::default());
+    z.run("layer.addData", &json!({"path": path("plan.png")})).unwrap();
+    assert_eq!(plan(&z), Some((false, Some(true))));
+    let text = serde_json::to_string(&z.project).unwrap();
+    std::fs::remove_file(dir.join("plan.prj")).unwrap();
+    let mut gone = Session::new(Project::default());
+    gone.run("project.openText", &json!({"text": text})).unwrap();
+    let lost = gone.map().layer_by_name("plan").and_then(|l| l.raster.as_ref()).and_then(|r| r.data.as_ref()).map(|d| d.lost.clone());
+    assert!(lost.as_ref().is_some_and(|l| l.iter().any(|m| m.contains("no coordinates now"))), "{lost:?}");
+    std::fs::copy(dir.join("aerial.prj"), dir.join("plan.prj")).unwrap();
+
+    // A GeoTIFF added as a scan reopens as one, without its own coordinates.
+    let placed = rustgis_data::raster::read_path(&dir.join("plan.png")).unwrap();
+    rustgis_data::raster::cogwrite::write_file(&placed, 0, &dir.join("tagged.tif")).unwrap();
+    let mut x = Session::new(Project::default());
+    x.run("layer.addData", &json!({"path": path("tagged.tif"), "as": "scan"})).unwrap();
+    let tagged = |x: &Session| {
+        x.map().layer_by_name("tagged").and_then(|l| l.raster.as_ref()).and_then(|r| r.data.as_ref()).map(|d| d.georeferenced)
+    };
+    assert_eq!(tagged(&x), Some(false));
+    let text = serde_json::to_string(&x.project).unwrap();
+    let mut y = Session::new(Project::default());
+    y.run("project.openText", &json!({"text": text})).unwrap();
+    assert_eq!(tagged(&y), Some(false));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// Geotagged photos: a folder of them becomes a point layer with each photo's time, camera and
 /// thumbnail; photos without a position are named, not added; an upload joins the Photos layer;
 /// a project keeps the thumbnails.

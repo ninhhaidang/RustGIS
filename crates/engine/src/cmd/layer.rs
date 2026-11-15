@@ -1631,8 +1631,9 @@ fn add_data(s: &mut Session, p: &Value) -> CmdResult {
     // `"as": "scan"` opens a TIFF, PNG or JPEG as a picture with no coordinates, a photo too.
     let scan = super::raster::wants_scan(p, path)?;
     // A photo: a point in the photo layer (one without a GPS position is named and left out). In the
-    // browser `add_photos` asks for an upload, so a JPEG isn't taken for a scan there either.
-    if !scan && rustgis_data::photo::is_photo_name(path) {
+    // browser `add_photos` asks for an upload, so a JPEG isn't taken for a scan there either. A
+    // JPEG with a world file beside it (`.jgw`) is a picture placed by it, a raster (#2075).
+    if !scan && rustgis_data::photo::is_photo_name(path) && !rustgis_data::raster::world::places(Path::new(path)) {
         let name = ps(p, "name").map(str::trim).filter(|n| !n.is_empty()).unwrap_or(PHOTOS).to_string();
         return add_photos(s, &json!({"paths": [path], "name": name}));
     }
@@ -2019,12 +2020,12 @@ pub(crate) fn add_data_ahead(p: &Value) -> Option<super::reads::ReadWork> {
     const NAME: &str = "Add Data";
     let path = gdb_path(ps(p, "path")?).into_owned();
     let scan = super::raster::wants_scan(p, &path).ok()?;
-    if !scan && rustgis_data::photo::is_photo_name(&path) {
+    if !scan && rustgis_data::photo::is_photo_name(&path) && !rustgis_data::raster::world::places(Path::new(&path)) {
         return None;
     }
     if rustgis_data::raster::is_raster_name(&path) {
-        let key = super::raster::read_key(&path);
-        return Some(ahead(NAME, key, move || super::raster::read_raster(&path)));
+        let key = super::raster::read_key(&path, scan);
+        return Some(ahead(NAME, key, move || super::raster::read_raster_as(&path, scan)));
     }
     if rustgis_data::raster::zarr::is_store(Path::new(&path)) {
         return None;

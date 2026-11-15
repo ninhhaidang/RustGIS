@@ -563,9 +563,9 @@ pub(crate) fn say_losses(s: &mut Session, losses: Vec<(String, String)>) {
 
 /// Opens a raster file by path.
 pub fn add_path(s: &mut Session, path: &str, name: Option<&str>, scan: bool) -> CmdResult {
-    let mut r = match super::reads::take(s, &read_key(path)) {
+    let mut r = match super::reads::take(s, &read_key(path, scan)) {
         Some(r) => r,
-        None => read_raster(path),
+        None => read_raster_as(path, scan),
     }?;
     if scan {
         r = r.into_scan().map_err(|e| format!("{path}: {e}"))?;
@@ -574,17 +574,21 @@ pub fn add_path(s: &mut Session, path: &str, name: Option<&str>, scan: bool) -> 
     // Absolute, so the project finds it again from anywhere (`absolute`, unlike `canonicalize`,
     // gives plain paths on Windows rather than `\\?\` ones).
     let full = std::path::absolute(path).map(|p| p.display().to_string()).unwrap_or_else(|_| path.to_string());
+    // A scan is laid over the view as it is added, and that placement makes it reopen as one.
     add_raster(s, &name, RasterLayer::from_path(r, full))
 }
 
-/// The raster at `path`, read whole.
-pub(crate) fn read_raster(path: &str) -> Result<Raster, String> {
-    raster::read_path(Path::new(path)).map_err(|e| format!("{path}: {e}"))
+/// The raster at `path`, read whole; for a `scan`, as the file holds it, without the world file
+/// beside it (#2075).
+pub(crate) fn read_raster_as(path: &str, scan: bool) -> Result<Raster, String> {
+    let read = if scan { raster::read_path_unplaced(Path::new(path), None, None) } else { raster::read_path(Path::new(path)) };
+    read.map_err(|e| format!("{path}: {e}"))
 }
 
-/// The key [`add_path`]'s read of `path` is taken by (see [`super::reads`]).
-pub(crate) fn read_key(path: &str) -> String {
-    format!("raster:{path}")
+/// The key [`add_path`]'s read of `path` is taken by (see [`super::reads`]): a scan's read, without
+/// the world file, isn't another's.
+pub(crate) fn read_key(path: &str, scan: bool) -> String {
+    if scan { format!("raster-scan:{path}") } else { format!("raster:{path}") }
 }
 
 /// A raster GDAL converts and the conversion it read.
