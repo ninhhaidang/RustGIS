@@ -7,6 +7,8 @@ repos:
       - id: check-json
         exclude: \.geojson$
       - id: end-of-file-fixer
+        # Keep the original bytes emitted by released writers, including absent EOF newlines.
+        exclude: ^crates/engine/testdata/releases/v[^/]+\.(rgis|prefs\.json)$
       - id: trailing-whitespace
       - id: check-added-large-files
         args: ["--maxkb=1024"]

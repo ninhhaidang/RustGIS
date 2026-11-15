@@ -12,6 +12,10 @@ pub const FILE: &str = "prefs.json";
 
 static WRITE_LOCK: Mutex<()> = Mutex::new(());
 
+#[cfg(test)]
+#[path = "tests/released_files.rs"]
+mod released_files;
+
 /// Reads the desktop preferences. A missing file is normal; unreadable or malformed files
 /// return an error without including any preference values in the diagnostic.
 pub fn read() -> Result<Map<String, Value>, String> {

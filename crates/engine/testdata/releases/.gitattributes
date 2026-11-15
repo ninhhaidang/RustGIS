@@ -1,0 +1,3 @@
+# Preserve released writers' bytes across platforms, including their line endings.
+v*.rgis -text
+v*.prefs.json -text

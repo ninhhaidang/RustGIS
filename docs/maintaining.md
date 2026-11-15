@@ -87,6 +87,13 @@ same files. New and changed code follows these rules; not every existing reader 
 - A program RustGIS installs from elsewhere, such as the native GeoLibre runner, is pinned to a
   known release and moved forward by a pull request.
 
+Keep historical projects and preferences in the
+[release fixtures](../crates/engine/testdata/releases/README.md). These are the original bytes
+written by the release named in each filename: never regenerate, reformat or resave them.
+Each release adds a small project and preferences file written by that release and extends
+`released_projects_and_preferences_still_open`. Record a skip in the fixtures' README when a
+release has no such file format. Current-writer examples do not replace these historical files.
+
 ## New dependencies
 
 A proposal for a dependency answers:

@@ -15,6 +15,7 @@ of use.
 
 | File | Author / source | Licence |
 |---|---|---|
+| Historical release projects and preferences (`crates/engine/testdata/releases/v*.rgis`, `v*.prefs.json`) | The RustGIS project: unchanged output of the published v0.2.0–v0.6.0 binaries, with made-up layer data; writers and archive checksums in the [fixture README](crates/engine/testdata/releases/README.md) | Apache-2.0 |
 | Interface themes (`crates/ui-egui/themes/light.json`, `dark.json`) | The RustGIS project | Apache-2.0 |
 | Sample data (`countries`, `cities`, `rivers`, `lakes` GeoJSON), embedded at build time from [rustgis-assets](https://github.com/opengeos/rustgis-assets/tree/main/data) | Natural Earth 1:110m, attributes trimmed | Public domain |
 | Worldviews (`countries_<code>.geojson` and `original/countries_<code>.geojson.gz` on [source.coop](https://source.coop/opengeos/data/rustgis/worldviews)), downloaded by the app when one is chosen, not part of it | Natural Earth's Admin 0 Countries (1:10m) and its points of view, with the sample countries' attributes by `scripts/worldviews.py` in [rustgis-assets](https://github.com/opengeos/rustgis-assets): simplified to 1:110m density, or at their original detail | Public domain |
