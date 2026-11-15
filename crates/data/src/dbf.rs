@@ -184,6 +184,19 @@ pub(crate) fn floats_as_numeric(dbf: &mut [u8]) {
     retype_columns(dbf, b'F', b'N');
 }
 
+/// The number of decimal places declared for each field in the `.dbf` header.
+pub(crate) fn field_decimals(dbf: &[u8]) -> Vec<u8> {
+    let header_len = usize::from(u16::from_le_bytes([dbf.get(8).copied().unwrap_or(0), dbf.get(9).copied().unwrap_or(0)]));
+    let mut decimals = Vec::new();
+    for start in (32..header_len.min(dbf.len())).step_by(32) {
+        if dbf.get(start).is_none_or(|b| *b == 0x0D) {
+            break;
+        }
+        decimals.push(dbf.get(start + 17).copied().unwrap_or(0));
+    }
+    decimals
+}
+
 /// Changes the type of the `.dbf` columns whose type letter is `from` (either case) to `to` in the
 /// header, and returns their positions among the columns.
 fn retype_columns(dbf: &mut [u8], from: u8, to: u8) -> Vec<usize> {

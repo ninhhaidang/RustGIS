@@ -322,7 +322,7 @@ pub fn shapefile(ds: &Dataset, path: &Path, synced: &Synced) -> Result<Published
     if let Some(note) = crate::io::dates_as_text_note(&ds.fields, &path.display().to_string()) {
         notes.push(note);
     }
-    // The reader infers integers from whole numeric values, even in a decimal DBF column.
+    // The reader infers integers from whole numeric values when no decimals are declared in the DBF header.
     let integral: Vec<String> = ds
         .fields
         .iter()
@@ -1290,9 +1290,9 @@ mod tests {
         assert_eq!(published.read.features.first().unwrap().attrs[0], Value::Text(stamp.into()));
     }
 
-    /// Editing the last fractional values changes the read-back field kind, which must be said.
+    /// Editing values to whole numbers keeps the read-back field kind as Double when decimals are declared.
     #[test]
-    fn a_double_field_read_back_as_integer_says_so() {
+    fn a_double_field_with_declared_decimals_reads_back_as_double() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("parcels.shp");
         let (mut ds, sync) = written(&parcels(), &path);
@@ -1302,17 +1302,63 @@ mod tests {
         rows[1].attrs[1] = Value::Float(200.0);
         ds.features = rows.into();
         let published = shapefile(&ds, &path, &sync).unwrap();
-        assert_eq!(published.read.fields[1].ty, FieldType::Integer);
-        assert_eq!(published.read.features.first().unwrap().attrs[1], Value::Int(100));
-        assert_eq!(published.notes.len(), 1, "{:?}", published.notes);
-        let note = &published.notes[0];
-        assert!(note.contains("1 double field read back as integer") && note.contains("'ACRES'"), "{note}");
-        assert!(note.contains(&path.display().to_string()), "{note}");
+        assert_eq!(published.read.fields[1].ty, FieldType::Double);
+        assert_eq!(published.read.features.first().unwrap().attrs[1], Value::Float(100.0));
+        assert!(published.notes.is_empty(), "{:?}", published.notes);
         let again = shapefile(&published.read, &path, &Synced { files: published.files, rows: published.rows }).unwrap();
         assert!(again.notes.is_empty(), "{:?}", again.notes);
     }
 
-    /// A whole-valued double reads as Integer, but its existing wide decimal column still fits.
+    /// When an existing file column has no declared decimals (N(x,0)), whole-valued Double data
+    /// reuses the column and reads back as Integer, producing an explanatory note.
+    #[test]
+    fn a_double_field_reused_from_an_integer_column_reads_back_as_integer_and_notes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("counts.shp");
+        let mut ds = Dataset::new("counts", GeometryType::Point, vec![Field::new("ID", FieldType::Integer)]);
+        ds.push(Some(Geometry::Point(Coord::new(10.0, 20.0))), vec![Value::Int(100)]);
+        let (mut ds, sync) = written(&ds, &path);
+        assert_eq!(ds.fields[0].ty, FieldType::Integer);
+
+        ds.fields[0].ty = FieldType::Double;
+        let mut rows: Vec<_> = ds.features.iter().cloned().collect();
+        rows[0].attrs[0] = Value::Float(100.0);
+        ds.features = rows.into();
+
+        let published = shapefile(&ds, &path, &sync).unwrap();
+        assert_eq!(published.read.fields[0].ty, FieldType::Integer);
+        assert_eq!(published.read.features.first().unwrap().attrs[0], Value::Int(100));
+        assert_eq!(published.notes.len(), 1, "{:?}", published.notes);
+        let note = &published.notes[0];
+        assert!(note.contains("1 double field read back as integer") && note.contains("'ID'"), "{note}");
+        assert!(note.contains(&path.display().to_string()), "{note}");
+    }
+
+    /// When an existing file column has declared decimals (e.g. N(10,2)), an Integer field does not
+    /// keep the decimal column; it remakes the column without decimals and stays Integer.
+    #[test]
+    fn an_integer_field_does_not_reuse_a_decimal_column() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("parcels.shp");
+        let (mut ds, sync) = written(&parcels(), &path);
+        assert_eq!(ds.fields[1].ty, FieldType::Double);
+
+        ds.fields[1].ty = FieldType::Integer;
+        let mut rows: Vec<_> = ds.features.iter().cloned().collect();
+        rows[0].attrs[1] = Value::Int(100);
+        rows[1].attrs[1] = Value::Int(200);
+        ds.features = rows.into();
+
+        let published = shapefile(&ds, &path, &sync).unwrap();
+        assert_eq!(published.read.fields[1].ty, FieldType::Integer);
+        assert_eq!(published.read.features.first().unwrap().attrs[1], Value::Int(100));
+        assert_eq!(published.notes.len(), 1, "{:?}", published.notes);
+        let note = &published.notes[0];
+        assert!(note.contains("'ACRES' N(24,15) to N(24,0)"), "{note}");
+        assert!(note.contains(&path.display().to_string()), "{note}");
+    }
+
+    /// A whole-valued double reads as Double when decimals are declared, and its existing wide decimal column still fits.
     #[test]
     fn an_integral_double_keeps_its_wide_decimal_column() {
         let dir = tempfile::tempdir().unwrap();
@@ -1323,7 +1369,7 @@ mod tests {
         rows[1].attrs[1] = Value::Float(200.0);
         ds.features = rows.into();
         let (mut ds, sync) = written(&ds, &path);
-        assert_eq!(ds.fields[1].ty, FieldType::Integer);
+        assert_eq!(ds.fields[1].ty, FieldType::Double);
         let before = std::fs::read(path.with_extension("dbf")).unwrap();
         let mut rows: Vec<_> = ds.features.iter().cloned().collect();
         rows[0].attrs[0] = Value::Text("Smyth".into());
